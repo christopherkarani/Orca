@@ -1,16 +1,123 @@
 const std = @import("std");
+
+const audit = @import("../audit/mod.zig");
+const core = @import("../core/mod.zig");
 const exit_codes = @import("exit_codes.zig");
 const help = @import("help.zig");
 
+const ReplayCliOptions = struct {
+    session: []const u8 = "last",
+    json: bool = false,
+    only_denied: bool = false,
+    verify: bool = false,
+};
+
 pub fn command(argv: []const []const u8, stdout: anytype, stderr: anytype) !u8 {
-    if (argv.len > 0 and (std.mem.eql(u8, argv[0], "--help") or std.mem.eql(u8, argv[0], "-h"))) {
-        _ = try help.writeCommand(stdout, "replay");
-        return exit_codes.success;
+    const options = parseOptions(argv, stdout, stderr) catch |err| switch (err) {
+        error.HelpShown => return exit_codes.success,
+        error.Usage => return exit_codes.usage,
+        else => return err,
+    };
+
+    var gpa_state: std.heap.GeneralPurposeAllocator(.{}) = .init;
+    defer _ = gpa_state.deinit();
+    const allocator = gpa_state.allocator();
+
+    const workspace_root = core.supervisor.resolveWorkspaceRoot(allocator, null, ".") catch |err| {
+        try stderr.print("aegis replay: failed to resolve workspace: {s}\n", .{@errorName(err)});
+        return exit_codes.general;
+    };
+    defer allocator.free(workspace_root);
+
+    var session = audit.replay.load(allocator, workspace_root, .{
+        .session = options.session,
+        .only_denied = options.only_denied,
+        .verify = options.verify,
+    }) catch |err| switch (err) {
+        error.FileNotFound => {
+            try stderr.writeAll("aegis replay: session not found.\n");
+            return exit_codes.general;
+        },
+        error.HashVerificationFailed => {
+            const session_dir_path = sessionDirPathForError(allocator, workspace_root, options.session) catch null;
+            defer if (session_dir_path) |path| allocator.free(path);
+            const verify_result = if (session_dir_path) |path| audit.replay.verifySessionDir(allocator, path) catch null else null;
+            if (verify_result) |result| {
+                defer result.deinit(allocator);
+                if (result.reason) |reason| try stderr.print("aegis replay: hash verification failed: {s}\n", .{reason}) else try stderr.writeAll("aegis replay: hash verification failed.\n");
+            } else {
+                try stderr.writeAll("aegis replay: hash verification failed.\n");
+            }
+            return exit_codes.general;
+        },
+        else => {
+            try stderr.print("aegis replay: failed: {s}\n", .{@errorName(err)});
+            return exit_codes.general;
+        },
+    };
+    defer session.deinit();
+
+    if (options.json) {
+        try audit.replay.writeJson(stdout, session);
+    } else {
+        try audit.replay.writeHuman(stdout, session, options.verify);
     }
-    if (argv.len > 0) {
-        try stderr.print("aegis replay: unknown option '{s}'.\n", .{argv[0]});
-        return exit_codes.usage;
+    return exit_codes.success;
+}
+
+fn parseOptions(argv: []const []const u8, stdout: anytype, stderr: anytype) !ReplayCliOptions {
+    var options: ReplayCliOptions = .{};
+    var index: usize = 0;
+    while (index < argv.len) : (index += 1) {
+        const arg = argv[index];
+        if (std.mem.eql(u8, arg, "--help") or std.mem.eql(u8, arg, "-h")) {
+            _ = try help.writeCommand(stdout, "replay");
+            return error.HelpShown;
+        } else if (std.mem.eql(u8, arg, "--session")) {
+            index += 1;
+            if (index >= argv.len) {
+                try stderr.writeAll("aegis replay: --session requires a session id or 'last'.\n");
+                return error.Usage;
+            }
+            options.session = argv[index];
+        } else if (std.mem.eql(u8, arg, "--json")) {
+            options.json = true;
+        } else if (std.mem.eql(u8, arg, "--verify")) {
+            options.verify = true;
+        } else if (std.mem.eql(u8, arg, "--only")) {
+            index += 1;
+            if (index >= argv.len or !std.mem.eql(u8, argv[index], "denied")) {
+                try stderr.writeAll("aegis replay: --only currently supports only 'denied'.\n");
+                return error.Usage;
+            }
+            options.only_denied = true;
+        } else {
+            try stderr.print("aegis replay: unknown option '{s}'.\n", .{arg});
+            return error.Usage;
+        }
     }
-    try stderr.writeAll("aegis replay: not implemented yet\n");
-    return exit_codes.unsupported;
+    return options;
+}
+
+fn sessionDirPathForError(allocator: std.mem.Allocator, workspace_root: []const u8, requested: []const u8) ![]u8 {
+    const session_id = if (std.mem.eql(u8, requested, "last")) blk: {
+        const last_path = try std.fs.path.join(allocator, &.{ workspace_root, ".aegis", "last" });
+        defer allocator.free(last_path);
+        const text = try std.fs.cwd().readFileAlloc(allocator, last_path, core.limits.max_session_id_len + 2);
+        defer allocator.free(text);
+        break :blk try allocator.dupe(u8, std.mem.trim(u8, text, " \t\r\n"));
+    } else try allocator.dupe(u8, requested);
+    defer allocator.free(session_id);
+    return try std.fs.path.join(allocator, &.{ workspace_root, ".aegis", "sessions", session_id });
+}
+
+test "replay rejects invalid --only value" {
+    var stdout_buf: [512]u8 = undefined;
+    var stderr_buf: [512]u8 = undefined;
+    var stdout_stream = std.io.fixedBufferStream(&stdout_buf);
+    var stderr_stream = std.io.fixedBufferStream(&stderr_buf);
+
+    const code = try command(&.{ "--only", "allowed" }, stdout_stream.writer(), stderr_stream.writer());
+    try std.testing.expectEqual(exit_codes.usage, code);
+    try std.testing.expect(std.mem.indexOf(u8, stderr_stream.getWritten(), "--only") != null);
 }

@@ -37,3 +37,87 @@
 - Phase 04 remains CLI-only; no process supervision, policy matching, MCP proxying, staging engine, or red-team execution was implemented.
 - `doctor` reports planned capability rows with the existing Phase 03 capability states and does not claim active enforcement.
 - `init` writes a minimal `.aegis/policy.yaml`, refuses overwrite without `--force`, and does not persist secrets.
+
+# Phase 05 Session Supervisor Plan
+
+## Assumptions
+
+- Phase 05 owns only direct-child process supervision behind `aegis run`; policy enforcement, audit persistence, env filtering, filesystem staging, command guard, MCP proxying, and sandboxing remain out of scope.
+- The CLI should parse `--workspace`, `--mode`, `--session-name`, and `--` while the core supervisor resolves workspace, creates session metadata, launches the child, waits, and reports the result.
+- Child stdout/stderr should inherit the terminal for real CLI runs; unit tests should use platform-portable Zig helper invocations or intentionally missing commands.
+- Workspace detection should prefer explicit workspace, then nearest parent `.git`, then current working directory, and should not fail outside a Git repository.
+
+## Checklist
+
+- [x] Add Phase 05 tests first for run config parsing, workspace detection, successful child execution, non-zero child exit propagation, missing command errors, and session metadata.
+- [x] Implement `src/core/supervisor.zig` with `RunConfig`, `SessionResult`, workspace resolution, session creation, child launch/wait, and exit status mapping.
+- [x] Replace `src/cli/run.zig` placeholder with real argument parsing, summary output, useful missing-command errors, and child exit propagation.
+- [x] Update run help text to describe Phase 05 options without claiming future enforcement.
+- [x] Run `zig build`, `zig build test`, and requested manual smoke tests.
+- [x] Document review results, limitations, security notes, and acceptance criteria status.
+
+## Review
+
+- `zig build` passed.
+- `zig build test` passed.
+- Manual smoke tests passed:
+  - `zig-out/bin/aegis run -- echo hello` returned exit code `0` and streamed `hello`.
+  - `zig-out/bin/aegis run --workspace . -- echo hello` returned exit code `0` and resolved the workspace to this checkout.
+  - `zig-out/bin/aegis run --mode observe -- echo hello` returned exit code `0` and printed `Mode: observe`.
+  - `zig-out/bin/aegis run -- /bin/sh -c 'exit 7'` returned exit code `7`.
+  - `zig-out/bin/aegis run -- aegis-definitely-missing-command` returned exit code `1` with `command not found`.
+- Phase 05 is direct-child supervision only. It does not implement policy enforcement, environment filtering, audit persistence, filesystem staging, command guard, MCP proxying, sandboxing, network guard, approvals, or process-tree containment.
+- Session lifecycle events are created in memory only for Phase 06 audit integration points; no persistent event log is written.
+- Unit tests suppress child stdout/stderr to avoid corrupting Zig's `--listen` build-test protocol; the real CLI inherits child stdio.
+- Windows manual smoke was not run from this macOS checkout; the supervisor tests use Zig child commands for portable coverage, and the Unix-specific `/bin/sh -c 'exit 7'` smoke documents the local exit-code propagation check.
+
+## Review Fixes
+
+- [x] Fixed post-spawn start-hook failures so the supervisor kills/reaps the child before returning the hook error.
+- [x] Fixed lifecycle event target ownership so returned events do not point at stack-backed `session.id.slice()` storage.
+- [x] Added regression tests for hook-failure cleanup and owned session event target values.
+
+# Phase 06 Audit Log and Replay Plan
+
+## Assumptions
+
+- Phase 06 owns persistent audit artifacts for `aegis run` only: no policy enforcement, approvals, command guards, MCP mediation, filesystem staging, network enforcement, or raw child output capture.
+- The audit module is the only persistent event writer; CLI and supervisor may create event models but persistence goes through `src/audit`.
+- Deterministic event serialization will use explicit stable field ordering for Aegis event fields rather than a general-purpose canonical JSON implementation.
+- The hash chain will hash `previous_hash || canonical_event_without_event_hash`, with `previous_hash` represented as the previous event's hex hash or empty bytes for the first event.
+- `summary.json` will record bounded session metadata plus the final event hash so `replay --verify` can detect summary tampering as well as event tampering.
+
+## Checklist
+
+- [x] Add Phase 06 tests first for audit directory creation, JSONL writing, stable serialization/hash verification, summary artifacts, last session resolution, replay human output, replay JSON output, denied filtering, and tamper detection.
+- [x] Implement audit redaction hook, deterministic event serializer, hash-chain writer, summary writer, and replay verifier.
+- [x] Wire `aegis run` to create `.aegis/sessions/<session-id>/`, write events and summaries, and update `.aegis/last` after a completed session.
+- [x] Implement `aegis replay` options: `--session last`, `--json`, `--only denied`, and `--verify`.
+- [x] Update command help without claiming future-phase enforcement.
+- [x] Run `zig build`, `zig build test`, and required manual smoke/tamper checks.
+- [x] Document review results, limitations, security notes, and acceptance criteria status.
+
+## Review
+
+- `zig build` passed.
+- `zig build test` passed.
+- Manual smoke tests passed:
+  - `zig-out/bin/aegis run -- echo hello` returned exit code `0`, streamed `hello`, and created `.aegis/sessions/2026-05-06T17-58-43Z_3cb3/`.
+  - `.aegis/sessions/2026-05-06T17-58-43Z_3cb3/events.jsonl` exists and contains `session_start`, `process_launch`, and `session_exit`.
+  - `.aegis/last` points to `2026-05-06T17-58-43Z_3cb3`.
+  - `zig-out/bin/aegis replay --session last` prints the session timeline.
+  - `zig-out/bin/aegis replay --session last --verify` prints `Hash chain: verified`.
+  - `zig-out/bin/aegis replay --session last --json` emits a JSON array of events.
+  - `zig-out/bin/aegis replay --session last --only denied` succeeds and prints no event rows for this allowed Phase 06 run.
+  - Tampering `events.jsonl` by changing `echo hello` to `echo tampered` made `aegis replay --session last --verify` fail with `invalid event_hash`; the file was restored and verification passed again.
+- Phase 06 remains audit/replay only. It does not implement policy enforcement, approvals, command guards, MCP mediation, filesystem staging, network enforcement, sandboxing, or raw child output capture.
+- The deterministic event format uses explicit stable field ordering for Aegis event fields rather than full generic canonical JSON.
+- The redaction hook is intentionally basic in Phase 06; it redacts common secret-shaped strings before event/summary persistence but is not a full redaction engine.
+
+## Review Fixes
+
+- [x] Fixed workspace fallback so a non-Git start directory is preserved instead of resolving to `/` or a parent Git checkout.
+- [x] Added a regression test using a temp directory outside the repository for non-Git workspace fallback.
+- [x] Hardened audit verification so malformed/missing event fields return verification failure reasons instead of panicking.
+- [x] Added malformed-event verification regression coverage.
+- [x] Re-ran `zig build`, `zig build test`, a non-Git `aegis run`/`replay --verify` smoke test, and a malformed-event replay failure smoke test.

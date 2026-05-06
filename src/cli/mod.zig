@@ -103,7 +103,7 @@ test "command-specific help works through help command and command flag" {
     stderr_stream.reset();
     const flag_code = try run(&.{ "run", "--help" }, stdout_stream.writer(), stderr_stream.writer());
     try std.testing.expectEqual(exit_codes.success, flag_code);
-    try std.testing.expect(std.mem.indexOf(u8, stdout_stream.getWritten(), "process supervision starts in Phase 05") != null);
+    try std.testing.expect(std.mem.indexOf(u8, stdout_stream.getWritten(), "direct-child supervision") != null);
 }
 
 test "version prints development version" {
@@ -194,14 +194,15 @@ test "placeholder commands reject unknown options" {
     try std.testing.expect(std.mem.indexOf(u8, stderr_stream.getWritten(), "unknown option") != null);
 }
 
-test "placeholder commands return unsupported when invoked" {
+test "run dispatch launches child command" {
     var stdout_buf: [256]u8 = undefined;
     var stderr_buf: [256]u8 = undefined;
     var stdout_stream = std.io.fixedBufferStream(&stdout_buf);
     var stderr_stream = std.io.fixedBufferStream(&stderr_buf);
 
-    const code = try run(&.{ "run", "--", "true" }, stdout_stream.writer(), stderr_stream.writer());
-    try std.testing.expectEqual(exit_codes.unsupported, code);
-    try std.testing.expectEqualStrings("", stdout_stream.getWritten());
-    try std.testing.expect(std.mem.indexOf(u8, stderr_stream.getWritten(), "not implemented yet") != null);
+    const code = try run_command.commandForTest(&.{ "--", "zig", "version" }, stdout_stream.writer(), stderr_stream.writer(), .ignore);
+    try std.testing.expectEqual(exit_codes.success, code);
+    try std.testing.expect(std.mem.indexOf(u8, stdout_stream.getWritten(), "Aegis session started") != null);
+    try std.testing.expect(std.mem.indexOf(u8, stdout_stream.getWritten(), "Aegis session ended: exit code 0") != null);
+    try std.testing.expectEqualStrings("", stderr_stream.getWritten());
 }
