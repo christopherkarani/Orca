@@ -13,9 +13,9 @@ pub const commands = [_]CommandInfo{
         .summary = "Run a command under Aegis",
         .usage = "aegis run [options] -- <command> [args...]",
         .details = &.{
-            "Starts a direct-child supervision session, writes audit artifacts, validates the selected policy, and mirrors the child exit code.",
-            "Options: --workspace <path>, --mode observe|ask|strict|ci, --policy <path>, --session-name <name>, --help",
-            "Policy is evaluated and audited in Phase 07, but this command does not claim policy enforcement yet.",
+            "Starts a direct-child supervision session, filters the child environment through policy, writes audit artifacts, and mirrors the child exit code.",
+            "Options: --workspace <path>, --mode observe|ask|strict|ci, --policy <path>, --session-name <name>, --no-secrets, --inherit-env, --help",
+            "Strict and CI modes default to no-secrets child environments. --inherit-env is allowed only when the selected policy permits inheritance.",
         },
     },
     .{

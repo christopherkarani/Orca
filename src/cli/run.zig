@@ -2,6 +2,7 @@ const std = @import("std");
 
 const audit = @import("../audit/mod.zig");
 const core = @import("../core/mod.zig");
+const intercept = @import("../intercept/mod.zig");
 const policy = @import("../policy/mod.zig");
 const exit_codes = @import("exit_codes.zig");
 const help = @import("help.zig");
@@ -12,6 +13,8 @@ const RunOptions = struct {
     mode_explicit: bool = false,
     policy_path: ?[]const u8 = null,
     session_name: ?[]const u8 = null,
+    no_secrets: bool = false,
+    inherit_env: bool = false,
     command_argv: []const []const u8 = &.{},
 };
 
@@ -44,7 +47,23 @@ fn commandWithStdio(argv: []const []const u8, stdout: anytype, stderr: anytype, 
         return exit_codes.general;
     };
     defer loaded_policy.deinit();
-    const session_mode = if (options.mode_explicit) options.mode else loaded_policy.policy.mode.toCoreMode();
+    const effective_policy_mode = if (options.mode_explicit) coreModeToPolicyMode(options.mode) else loaded_policy.policy.mode;
+    const session_mode = effective_policy_mode.toCoreMode();
+
+    var filtered_env = intercept.env.filterCurrent(allocator, &loaded_policy.policy, effective_policy_mode, .{
+        .no_secrets = options.no_secrets,
+        .inherit_env = options.inherit_env,
+    }) catch |err| switch (err) {
+        error.InheritEnvDenied => {
+            try stderr.writeAll("aegis run: --inherit-env is not allowed by the selected policy/mode.\n");
+            return exit_codes.general;
+        },
+        else => {
+            try stderr.print("aegis run: failed to filter environment: {s}\n", .{@errorName(err)});
+            return exit_codes.general;
+        },
+    };
+    defer filtered_env.deinit();
 
     const StartPrinter = struct {
         writer: @TypeOf(stdout),
@@ -96,6 +115,8 @@ fn commandWithStdio(argv: []const []const u8, stdout: anytype, stderr: anytype, 
         .session_name = options.session_name,
         .policy_source = loaded_policy.path,
         .stdio = stdio,
+        .env_map = &filtered_env.env_map,
+        .env_redactions = filtered_env.redactions,
         .before_spawn = before_spawn,
         .on_session_start = .{
             .context = &start_printer,
@@ -197,6 +218,10 @@ fn parseOptions(argv: []const []const u8, stdout: anytype, stderr: anytype) !Run
                 return error.Usage;
             }
             options.session_name = argv[index];
+        } else if (std.mem.eql(u8, arg, "--no-secrets")) {
+            options.no_secrets = true;
+        } else if (std.mem.eql(u8, arg, "--inherit-env")) {
+            options.inherit_env = true;
         } else if (std.mem.startsWith(u8, arg, "-")) {
             try stderr.print("aegis run: unknown option '{s}'.\n", .{arg});
             return error.Usage;
@@ -220,6 +245,15 @@ fn parseMode(value: []const u8) ?core.types.Mode {
     if (std.mem.eql(u8, value, "strict")) return .strict;
     if (std.mem.eql(u8, value, "ci")) return .ci;
     return null;
+}
+
+fn coreModeToPolicyMode(mode: core.types.Mode) policy.schema.Mode {
+    return switch (mode) {
+        .observe => .observe,
+        .ask => .ask,
+        .strict => .strict,
+        .ci => .ci,
+    };
 }
 
 fn printSessionStart(stdout: anytype, session: core.session.Session) !void {
@@ -316,4 +350,15 @@ test "run accepts policy path and uses policy mode when mode is not explicit" {
     try std.testing.expectEqual(exit_codes.success, code);
     try std.testing.expect(std.mem.indexOf(u8, stdout_stream.getWritten(), "Mode: strict") != null);
     try std.testing.expectEqualStrings("", stderr_stream.getWritten());
+}
+
+test "run rejects inherit-env when selected policy disallows it" {
+    var stdout_buf: [512]u8 = undefined;
+    var stderr_buf: [512]u8 = undefined;
+    var stdout_stream = std.io.fixedBufferStream(&stdout_buf);
+    var stderr_stream = std.io.fixedBufferStream(&stderr_buf);
+
+    const code = try commandForTest(&.{ "--policy", "policies/strict.yaml", "--inherit-env", "--", "zig", "version" }, stdout_stream.writer(), stderr_stream.writer(), .ignore);
+    try std.testing.expectEqual(exit_codes.general, code);
+    try std.testing.expect(std.mem.indexOf(u8, stderr_stream.getWritten(), "--inherit-env is not allowed") != null);
 }

@@ -21,9 +21,17 @@ pub const RunConfig = struct {
     session_name: ?[]const u8 = null,
     policy_source: ?[]const u8 = null,
     stdio: StdioBehavior = .inherit,
+    env_map: ?*const std.process.EnvMap = null,
+    env_redactions: []const EnvRedactionRecord = &.{},
     before_spawn: ?StartHook = null,
     on_session_start: ?StartHook = null,
     on_event: ?EventHook = null,
+};
+
+pub const EnvRedactionRecord = struct {
+    name: []const u8,
+    labels: []const []const u8,
+    reason: []const u8,
 };
 
 pub const StartHook = struct {
@@ -90,7 +98,7 @@ pub fn run(allocator: std.mem.Allocator, config: RunConfig) !SessionResult {
         .platform = platform.detectOs(),
     };
 
-    const event_count: usize = if (config.policy_source != null) 4 else 3;
+    const event_count: usize = (if (config.policy_source != null) @as(usize, 4) else @as(usize, 3)) + config.env_redactions.len;
     var events = try allocator.alloc(event.Event, event_count);
     errdefer allocator.free(events);
     var event_target_values = try allocator.alloc([]const u8, event_count);
@@ -106,6 +114,11 @@ pub fn run(allocator: std.mem.Allocator, config: RunConfig) !SessionResult {
     var next_event_index: usize = 1;
     if (config.policy_source) |policy_source| {
         events[next_event_index] = try makeOwnedTargetEvent(allocator, &event_target_values, &owned_targets, session, started_at, .policy_loaded, .file_path, policy_source);
+        next_event_index += 1;
+    }
+
+    for (config.env_redactions) |record| {
+        events[next_event_index] = try makeEnvRedactionEvent(allocator, &event_target_values, &owned_targets, session, started_at, record);
         next_event_index += 1;
     }
 
@@ -128,6 +141,7 @@ pub fn run(allocator: std.mem.Allocator, config: RunConfig) !SessionResult {
 
     var child = std.process.Child.init(argv, allocator);
     child.cwd = workspace_root;
+    child.env_map = config.env_map;
     switch (config.stdio) {
         .inherit => {
             child.stdin_behavior = .Inherit;
@@ -174,6 +188,27 @@ pub fn run(allocator: std.mem.Allocator, config: RunConfig) !SessionResult {
         .event_target_values = event_target_values,
         .allocator = allocator,
     };
+}
+
+fn makeEnvRedactionEvent(
+    allocator: std.mem.Allocator,
+    event_target_values: *[][]const u8,
+    owned_targets: *usize,
+    session: session_mod.Session,
+    timestamp: time.Timestamp,
+    record: EnvRedactionRecord,
+) !event.Event {
+    var ev = try makeOwnedTargetEvent(allocator, event_target_values, owned_targets, session, timestamp, .secret_redacted, .env_var, record.name);
+    ev.decision = .{
+        .result = .redact,
+        .reason = record.reason,
+        .ci_may_proceed = true,
+    };
+    ev.redactions = .{
+        .count = @intCast(record.labels.len),
+        .labels = record.labels,
+    };
+    return ev;
 }
 
 fn commandDisplay(allocator: std.mem.Allocator, command: []const u8, args: []const []const u8) ![]u8 {
@@ -379,6 +414,34 @@ test "running a simple child populates session metadata and events" {
     try std.testing.expectEqualStrings(result.session.id.slice(), result.events[2].target.value);
     try std.testing.expect(result.events[0].target.value.ptr != result.session.id.slice().ptr);
     try std.testing.expect(result.events[2].target.value.ptr != result.session.id.slice().ptr);
+}
+
+test "filtered child environment receives allowed vars and not denied vars" {
+    if (builtin.os.tag == .windows) return error.SkipZigTest;
+
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const root = try tmp.dir.realpathAlloc(std.testing.allocator, ".");
+    defer std.testing.allocator.free(root);
+
+    var env_map = std.process.EnvMap.init(std.testing.allocator);
+    defer env_map.deinit();
+    try env_map.put("PATH", "/usr/bin:/bin");
+    try env_map.put("SAFE_FAKE", "visible");
+
+    var result = try run(std.testing.allocator, .{
+        .command = "/bin/sh",
+        .args = &.{ "-c", "env > child-env.txt" },
+        .workspace = root,
+        .stdio = .ignore,
+        .env_map = &env_map,
+    });
+    defer result.deinit();
+
+    const written = try tmp.dir.readFileAlloc(std.testing.allocator, "child-env.txt", 4096);
+    defer std.testing.allocator.free(written);
+    try std.testing.expect(std.mem.indexOf(u8, written, "SAFE_FAKE=visible") != null);
+    try std.testing.expect(std.mem.indexOf(u8, written, "FAKE_GITHUB_TOKEN") == null);
 }
 
 test "child non-zero exit code is propagated" {

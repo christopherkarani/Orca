@@ -46,8 +46,21 @@ const common_strict_rules =
     \\  deny_patterns:
     \\    - "*TOKEN*"
     \\    - "*SECRET*"
+    \\    - "*PASSWORD*"
+    \\    - "*PASSWD*"
+    \\    - "*PRIVATE*"
     \\    - "*KEY*"
     \\    - "AWS_*"
+    \\    - "AZURE_*"
+    \\    - "GITHUB_TOKEN"
+    \\    - "GH_TOKEN"
+    \\    - "OPENAI_API_KEY"
+    \\    - "ANTHROPIC_API_KEY"
+    \\    - "GOOGLE_API_KEY"
+    \\    - "GOOGLE_APPLICATION_CREDENTIALS"
+    \\    - "NPM_TOKEN"
+    \\    - "PYPI_TOKEN"
+    \\    - "SSH_AUTH_SOCK"
     \\
     \\files:
     \\  read:
@@ -126,8 +139,21 @@ pub const observe_policy =
     \\  deny_patterns:
     \\    - "*TOKEN*"
     \\    - "*SECRET*"
+    \\    - "*PASSWORD*"
+    \\    - "*PASSWD*"
+    \\    - "*PRIVATE*"
     \\    - "*KEY*"
     \\    - "AWS_*"
+    \\    - "AZURE_*"
+    \\    - "GITHUB_TOKEN"
+    \\    - "GH_TOKEN"
+    \\    - "OPENAI_API_KEY"
+    \\    - "ANTHROPIC_API_KEY"
+    \\    - "GOOGLE_API_KEY"
+    \\    - "GOOGLE_APPLICATION_CREDENTIALS"
+    \\    - "NPM_TOKEN"
+    \\    - "PYPI_TOKEN"
+    \\    - "SSH_AUTH_SOCK"
     \\
     \\files:
     \\  read:
@@ -178,7 +204,21 @@ pub const trusted_policy =
     \\  deny_patterns:
     \\    - "*TOKEN*"
     \\    - "*SECRET*"
+    \\    - "*PASSWORD*"
+    \\    - "*PASSWD*"
+    \\    - "*PRIVATE*"
     \\    - "*KEY*"
+    \\    - "AWS_*"
+    \\    - "AZURE_*"
+    \\    - "GITHUB_TOKEN"
+    \\    - "GH_TOKEN"
+    \\    - "OPENAI_API_KEY"
+    \\    - "ANTHROPIC_API_KEY"
+    \\    - "GOOGLE_API_KEY"
+    \\    - "GOOGLE_APPLICATION_CREDENTIALS"
+    \\    - "NPM_TOKEN"
+    \\    - "PYPI_TOKEN"
+    \\    - "SSH_AUTH_SOCK"
     \\
     \\files:
     \\  read:

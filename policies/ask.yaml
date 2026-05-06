@@ -15,8 +15,21 @@ env:
   deny_patterns:
     - "*TOKEN*"
     - "*SECRET*"
+    - "*PASSWORD*"
+    - "*PASSWD*"
+    - "*PRIVATE*"
     - "*KEY*"
     - "AWS_*"
+    - "AZURE_*"
+    - "GITHUB_TOKEN"
+    - "GH_TOKEN"
+    - "OPENAI_API_KEY"
+    - "ANTHROPIC_API_KEY"
+    - "GOOGLE_API_KEY"
+    - "GOOGLE_APPLICATION_CREDENTIALS"
+    - "NPM_TOKEN"
+    - "PYPI_TOKEN"
+    - "SSH_AUTH_SOCK"
 
 files:
   read:

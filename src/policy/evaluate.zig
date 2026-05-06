@@ -202,11 +202,37 @@ fn riskHeuristic(surface: Surface, value: []const u8) ?Risk {
     return switch (surface) {
         .file_read => if (matchers.matchesPath("~/.ssh/**", value) or matchers.matchesPath("~/.aws/**", value) or matchers.matchesPath("./.env*", value)) .{ .score = 90, .reason = "sensitive file path" } else null,
         .file_write => if (matchers.matchesPath("./.git/**", value) or matchers.matchesPath("./.aegis/**", value)) .{ .score = 80, .reason = "control directory write" } else null,
-        .env => if (matchers.matchesPattern("*TOKEN*", value) or matchers.matchesPattern("*SECRET*", value) or matchers.matchesPattern("*KEY*", value) or matchers.matchesPattern("AWS_*", value)) .{ .score = 90, .reason = "secret-like environment variable" } else null,
+        .env => if (isSecretLikeEnvName(value)) .{ .score = 90, .reason = "secret-like environment variable" } else null,
         .command => if (matchers.matchesCommand("rm -rf *", value) or matchers.matchesCommand("curl * | sh", value) or matchers.matchesCommand("sudo *", value)) .{ .score = 95, .reason = "high-risk command pattern" } else null,
         .network => if (std.mem.indexOf(u8, value, "localhost") != null or std.mem.startsWith(u8, value, "127.")) .{ .score = 40, .reason = "local network destination" } else null,
         .mcp => null,
     };
+}
+
+fn isSecretLikeEnvName(value: []const u8) bool {
+    const patterns = [_][]const u8{
+        "*TOKEN*",
+        "*SECRET*",
+        "*PASSWORD*",
+        "*PASSWD*",
+        "*PRIVATE*",
+        "*KEY*",
+        "AWS_*",
+        "AZURE_*",
+        "GITHUB_TOKEN",
+        "GH_TOKEN",
+        "OPENAI_API_KEY",
+        "ANTHROPIC_API_KEY",
+        "GOOGLE_API_KEY",
+        "GOOGLE_APPLICATION_CREDENTIALS",
+        "NPM_TOKEN",
+        "PYPI_TOKEN",
+        "SSH_AUTH_SOCK",
+    };
+    for (patterns) |pattern| {
+        if (matchers.matchesPattern(pattern, value)) return true;
+    }
+    return false;
 }
 
 fn commandDisplay(allocator: std.mem.Allocator, argv: []const []const u8) ![]u8 {
