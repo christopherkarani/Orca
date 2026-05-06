@@ -13,8 +13,9 @@ pub const commands = [_]CommandInfo{
         .summary = "Run a command under Aegis",
         .usage = "aegis run [options] -- <command> [args...]",
         .details = &.{
-            "Placeholder in Phase 04; process supervision starts in Phase 05.",
-            "Options: --help",
+            "Starts a direct-child supervision session, writes Phase 06 audit artifacts, and mirrors the child exit code.",
+            "Options: --workspace <path>, --mode observe|ask|strict|ci, --session-name <name>, --help",
+            "This phase does not claim policy enforcement, sandboxing, or process-tree containment.",
         },
     },
     .{
@@ -35,7 +36,7 @@ pub const commands = [_]CommandInfo{
         },
     },
     .{ .name = "policy", .summary = "Validate and explain policies", .usage = "aegis policy [--help]", .details = &.{"Placeholder in Phase 04; policy engine starts in Phase 07."} },
-    .{ .name = "replay", .summary = "Replay an audit session", .usage = "aegis replay [--help]", .details = &.{"Placeholder in Phase 04; audit replay starts in Phase 06."} },
+    .{ .name = "replay", .summary = "Replay an audit session", .usage = "aegis replay [--session <id|last>] [--json] [--only denied] [--verify]", .details = &.{"Reads .aegis session artifacts, renders a timeline, and can verify the event hash chain."} },
     .{ .name = "diff", .summary = "Show staged writes", .usage = "aegis diff [--help]", .details = &.{"Placeholder in Phase 04; staged writes start in Phase 09."} },
     .{ .name = "apply", .summary = "Apply staged writes", .usage = "aegis apply [--help]", .details = &.{"Placeholder in Phase 04; staged writes start in Phase 09."} },
     .{ .name = "discard", .summary = "Discard staged writes", .usage = "aegis discard [--help]", .details = &.{"Placeholder in Phase 04; staged writes start in Phase 09."} },
