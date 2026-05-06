@@ -13,8 +13,9 @@ pub const commands = [_]CommandInfo{
         .summary = "Run a command under Aegis",
         .usage = "aegis run [options] -- <command> [args...]",
         .details = &.{
-            "Placeholder in Phase 04; process supervision starts in Phase 05.",
-            "Options: --help",
+            "Starts a Phase 05 direct-child supervision session and mirrors the child exit code.",
+            "Options: --workspace <path>, --mode observe|ask|strict|ci, --session-name <name>, --help",
+            "This phase does not claim policy enforcement, audit persistence, sandboxing, or process-tree containment.",
         },
     },
     .{

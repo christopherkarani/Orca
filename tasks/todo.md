@@ -37,3 +37,42 @@
 - Phase 04 remains CLI-only; no process supervision, policy matching, MCP proxying, staging engine, or red-team execution was implemented.
 - `doctor` reports planned capability rows with the existing Phase 03 capability states and does not claim active enforcement.
 - `init` writes a minimal `.aegis/policy.yaml`, refuses overwrite without `--force`, and does not persist secrets.
+
+# Phase 05 Session Supervisor Plan
+
+## Assumptions
+
+- Phase 05 owns only direct-child process supervision behind `aegis run`; policy enforcement, audit persistence, env filtering, filesystem staging, command guard, MCP proxying, and sandboxing remain out of scope.
+- The CLI should parse `--workspace`, `--mode`, `--session-name`, and `--` while the core supervisor resolves workspace, creates session metadata, launches the child, waits, and reports the result.
+- Child stdout/stderr should inherit the terminal for real CLI runs; unit tests should use platform-portable Zig helper invocations or intentionally missing commands.
+- Workspace detection should prefer explicit workspace, then nearest parent `.git`, then current working directory, and should not fail outside a Git repository.
+
+## Checklist
+
+- [x] Add Phase 05 tests first for run config parsing, workspace detection, successful child execution, non-zero child exit propagation, missing command errors, and session metadata.
+- [x] Implement `src/core/supervisor.zig` with `RunConfig`, `SessionResult`, workspace resolution, session creation, child launch/wait, and exit status mapping.
+- [x] Replace `src/cli/run.zig` placeholder with real argument parsing, summary output, useful missing-command errors, and child exit propagation.
+- [x] Update run help text to describe Phase 05 options without claiming future enforcement.
+- [x] Run `zig build`, `zig build test`, and requested manual smoke tests.
+- [x] Document review results, limitations, security notes, and acceptance criteria status.
+
+## Review
+
+- `zig build` passed.
+- `zig build test` passed.
+- Manual smoke tests passed:
+  - `zig-out/bin/aegis run -- echo hello` returned exit code `0` and streamed `hello`.
+  - `zig-out/bin/aegis run --workspace . -- echo hello` returned exit code `0` and resolved the workspace to this checkout.
+  - `zig-out/bin/aegis run --mode observe -- echo hello` returned exit code `0` and printed `Mode: observe`.
+  - `zig-out/bin/aegis run -- /bin/sh -c 'exit 7'` returned exit code `7`.
+  - `zig-out/bin/aegis run -- aegis-definitely-missing-command` returned exit code `1` with `command not found`.
+- Phase 05 is direct-child supervision only. It does not implement policy enforcement, environment filtering, audit persistence, filesystem staging, command guard, MCP proxying, sandboxing, network guard, approvals, or process-tree containment.
+- Session lifecycle events are created in memory only for Phase 06 audit integration points; no persistent event log is written.
+- Unit tests suppress child stdout/stderr to avoid corrupting Zig's `--listen` build-test protocol; the real CLI inherits child stdio.
+- Windows manual smoke was not run from this macOS checkout; the supervisor tests use Zig child commands for portable coverage, and the Unix-specific `/bin/sh -c 'exit 7'` smoke documents the local exit-code propagation check.
+
+## Review Fixes
+
+- [x] Fixed post-spawn start-hook failures so the supervisor kills/reaps the child before returning the hook error.
+- [x] Fixed lifecycle event target ownership so returned events do not point at stack-backed `session.id.slice()` storage.
+- [x] Added regression tests for hook-failure cleanup and owned session event target values.

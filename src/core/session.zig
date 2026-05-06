@@ -22,6 +22,7 @@ pub const Session = struct {
     command: []const u8,
     args: []const []const u8,
     workspace_root: []const u8,
+    session_name: ?[]const u8 = null,
     policy_hash: ?[]const u8 = null,
     mode: types.Mode,
     platform: platform.Os,
@@ -60,9 +61,11 @@ test "session model can be constructed from core types" {
         .command = "aegis",
         .args = &.{"run"},
         .workspace_root = "/tmp/aegis",
+        .session_name = "unit-test",
         .mode = .observe,
         .platform = platform.detectOs(),
     };
     try std.testing.expectEqualStrings("aegis", session.command);
+    try std.testing.expectEqualStrings("unit-test", session.session_name.?);
     try std.testing.expectEqual(types.Mode.observe, session.mode);
 }
