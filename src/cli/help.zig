@@ -46,7 +46,13 @@ pub const commands = [_]CommandInfo{
     .{ .name = "diff", .summary = "Show staged writes", .usage = "aegis diff [--session <id|last>] [--file <path>]", .details = &.{"Shows unified diffs for Aegis-mediated staged writes. This does not claim transparent interception of arbitrary child-process file IO."} },
     .{ .name = "apply", .summary = "Apply staged writes", .usage = "aegis apply [--session <id|last>] [--file <path>]", .details = &.{"Applies reviewed staged writes after original-state checks where feasible."} },
     .{ .name = "discard", .summary = "Discard staged writes", .usage = "aegis discard [--session <id|last>] [--file <path>]", .details = &.{"Removes staged writes without changing workspace files."} },
-    .{ .name = "mcp", .summary = "MCP proxy and inspection commands", .usage = "aegis mcp [--help]", .details = &.{"Placeholder in Phase 04; MCP proxying starts in Phase 11."} },
+    .{ .name = "mcp", .summary = "MCP proxy and inspection commands", .usage = "aegis mcp <inspect|proxy> --command <server> [options]", .details = &.{
+        "Subcommands:",
+        "  aegis mcp inspect --command <server> [--name <server-name>] [--policy <path>]",
+        "  aegis mcp proxy --command <server> [--name <server-name>] [--policy <path>] [--mode observe|ask|strict|ci]",
+        "The proxy speaks newline-delimited stdio JSON-RPC and writes only MCP protocol messages to stdout while proxying.",
+        "Remote HTTP MCP, OAuth, and hosted gateway behavior are not implemented in Phase 11.",
+    } },
     .{ .name = "redteam", .summary = "Run red-team fixtures", .usage = "aegis redteam [--help]", .details = &.{"Placeholder in Phase 04; red-team execution starts in Phase 13."} },
     .{ .name = "shim", .summary = "Internal PATH shim callback", .usage = "aegis shim exec -- <command> [args...]", .details = &.{
         "Internal callback used by session-local PATH shims under .aegis/sessions/<id>/shims/.",

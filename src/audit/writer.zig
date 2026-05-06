@@ -100,7 +100,9 @@ pub const SessionWriter = struct {
         defer self.allocator.free(aegis_dir);
         try std.fs.cwd().makePath(aegis_dir);
 
-        const tmp_path = try std.fs.path.join(self.allocator, &.{ aegis_dir, "last.tmp" });
+        const tmp_name = try std.fmt.allocPrint(self.allocator, "last.tmp.{s}", .{self.session_id.slice()});
+        defer self.allocator.free(tmp_name);
+        const tmp_path = try std.fs.path.join(self.allocator, &.{ aegis_dir, tmp_name });
         defer self.allocator.free(tmp_path);
         const last_path = try std.fs.path.join(self.allocator, &.{ aegis_dir, "last" });
         defer self.allocator.free(last_path);

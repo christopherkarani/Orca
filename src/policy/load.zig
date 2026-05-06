@@ -27,6 +27,9 @@ const Section = enum {
     commands,
     network,
     mcp,
+    mcp_servers,
+    mcp_server,
+    mcp_server_tools,
     audit,
     ignored,
 };
@@ -86,6 +89,7 @@ const Builder = struct {
     mcp_deny: std.ArrayList([]const u8) = .empty,
     mcp_ask: std.ArrayList([]const u8) = .empty,
     mcp_default: ?schema.DecisionValue = null,
+    active_mcp_server: ?[]const u8 = null,
     audit_level: schema.AuditLevel = .full,
     audit_redact_secrets: bool = true,
     audit_tamper_evident: bool = true,
@@ -114,10 +118,14 @@ const Builder = struct {
         freeList(self.allocator, &self.mcp_allow);
         freeList(self.allocator, &self.mcp_deny);
         freeList(self.allocator, &self.mcp_ask);
+        if (self.active_mcp_server) |server| self.allocator.free(server);
     }
 
     fn append(self: *Builder, target: ListTarget, value: []const u8) !void {
-        const owned = try self.allocator.dupe(u8, value);
+        const owned = if ((target == .mcp_allow or target == .mcp_deny or target == .mcp_ask) and self.active_mcp_server != null)
+            try std.fmt.allocPrint(self.allocator, "{s}.{s}", .{ self.active_mcp_server.?, value })
+        else
+            try self.allocator.dupe(u8, value);
         errdefer self.allocator.free(owned);
         switch (target) {
             .env_allow => try self.env_allow.append(self.allocator, owned),
@@ -336,6 +344,32 @@ fn parseYaml(allocator: std.mem.Allocator, text: []const u8, source_path: ?[]con
             continue;
         }
 
+        if (indent == 2 and (section == .mcp or section == .mcp_servers or section == .mcp_server or section == .mcp_server_tools)) {
+            section = .mcp;
+            if (selfActiveMcpServerClear(&builder)) {}
+            try applyYamlField(&builder, section, key, value, &list_target);
+            if (std.mem.eql(u8, key, "servers")) section = .mcp_servers;
+            continue;
+        }
+
+        if (indent == 4 and (section == .mcp_servers or section == .mcp_server or section == .mcp_server_tools)) {
+            if (builder.active_mcp_server) |server| builder.allocator.free(server);
+            builder.active_mcp_server = try builder.allocator.dupe(u8, key);
+            section = .mcp_server;
+            continue;
+        }
+
+        if (indent == 6 and section == .mcp_server) {
+            if (!std.mem.eql(u8, key, "tools")) return error.InvalidPolicy;
+            section = .mcp_server_tools;
+            continue;
+        }
+
+        if (indent == 8 and section == .mcp_server_tools) {
+            try applyRuleSetField(&builder, .mcp_allow, .mcp_deny, .mcp_ask, &builder.mcp_default, key, try parseScalar(value), &list_target);
+            continue;
+        }
+
         if (indent == 2 and (section == .files or section == .files_read or section == .files_write)) {
             if (std.mem.eql(u8, key, "read")) {
                 section = .files_read;
@@ -352,6 +386,15 @@ fn parseYaml(allocator: std.mem.Allocator, text: []const u8, source_path: ?[]con
     }
 
     return builder.toPolicy(source_path);
+}
+
+fn selfActiveMcpServerClear(builder: *Builder) bool {
+    if (builder.active_mcp_server) |server| {
+        builder.allocator.free(server);
+        builder.active_mcp_server = null;
+        return true;
+    }
+    return false;
 }
 
 fn applyYamlField(builder: *Builder, section: Section, key: []const u8, value: []const u8, list_target: *ListTarget) !void {
@@ -477,6 +520,20 @@ fn parseJsonMcp(builder: *Builder, value: std.json.Value) !void {
     try parseJsonRulesWithKeys(builder, value, .mcp_allow, .mcp_deny, .mcp_ask, &builder.mcp_default, &.{ "allow", "deny", "ask", "default", "servers" });
     if (value.object.get("servers")) |servers| {
         if (servers != .object) return error.InvalidPolicy;
+        var it = servers.object.iterator();
+        while (it.next()) |entry| {
+            if (entry.value_ptr.* != .object) return error.InvalidPolicy;
+            try rejectUnknownKeys(entry.value_ptr.*.object, &.{ "tools" });
+            const tools = entry.value_ptr.*.object.get("tools") orelse return error.InvalidPolicy;
+            if (tools != .object) return error.InvalidPolicy;
+            if (builder.active_mcp_server) |server| builder.allocator.free(server);
+            builder.active_mcp_server = try builder.allocator.dupe(u8, entry.key_ptr.*);
+            try parseJsonRules(builder, tools, .mcp_allow, .mcp_deny, .mcp_ask, &builder.mcp_default);
+            if (builder.active_mcp_server) |server| {
+                builder.allocator.free(server);
+                builder.active_mcp_server = null;
+            }
+        }
     }
 }
 
@@ -624,4 +681,34 @@ test "JSON policies reject unknown keys instead of silently changing policy mean
     try std.testing.expectError(error.InvalidPolicy, parseFromSlice(std.testing.allocator,
         \\{"version":1,"mode":"strict","defualt":"allow"}
     , "bad.json"));
+}
+
+test "MCP server-scoped policy shape flattens to server tool selectors" {
+    var yaml_policy = try parseFromSlice(std.testing.allocator,
+        \\version: 1
+        \\mode: strict
+        \\mcp:
+        \\  default: ask
+        \\  servers:
+        \\    github:
+        \\      tools:
+        \\        allow:
+        \\          - search_repositories
+        \\          - get_file_contents
+        \\        ask:
+        \\          - create_issue
+        \\        deny:
+        \\          - delete_repository
+    , "mcp.yaml");
+    defer yaml_policy.deinit();
+    try std.testing.expectEqualStrings("github.search_repositories", yaml_policy.mcp.allow[0]);
+    try std.testing.expectEqualStrings("github.create_issue", yaml_policy.mcp.ask[0]);
+    try std.testing.expectEqualStrings("github.delete_repository", yaml_policy.mcp.deny[0]);
+
+    var json_policy = try parseFromSlice(std.testing.allocator,
+        \\{"version":1,"mode":"strict","mcp":{"default":"ask","servers":{"github":{"tools":{"allow":["search_repositories"],"deny":["delete_repository"]}}}}}
+    , "mcp.json");
+    defer json_policy.deinit();
+    try std.testing.expectEqualStrings("github.search_repositories", json_policy.mcp.allow[0]);
+    try std.testing.expectEqualStrings("github.delete_repository", json_policy.mcp.deny[0]);
 }
