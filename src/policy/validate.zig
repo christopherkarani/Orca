@@ -10,7 +10,7 @@ pub fn policy(value: *const schema.Policy) !void {
     try validateRuleSet("files.read", value.files.read, core.limits.max_path_len);
     try validateRuleSet("files.write", value.files.write, core.limits.max_path_len);
     try validateRuleSet("commands", value.commands, core.limits.max_command_len);
-    try validateRuleSet("network", value.network, core.limits.max_url_len);
+    try validateNetwork(value.network);
     try validateRuleSet("mcp", value.mcp, core.limits.max_event_field_len);
 }
 
@@ -24,6 +24,12 @@ fn validateRuleSet(label: []const u8, rules: schema.RuleSet, max_len: usize) !vo
     for (rules.allow) |rule| try validateString(label, rule, max_len);
     for (rules.deny) |rule| try validateString(label, rule, max_len);
     for (rules.ask) |rule| try validateString(label, rule, max_len);
+}
+
+fn validateNetwork(network: schema.NetworkPolicy) !void {
+    for (network.allow) |rule| try validateString("network.allow", rule, core.limits.max_url_len);
+    for (network.deny) |rule| try validateString("network.deny", rule, core.limits.max_url_len);
+    for (network.ask) |rule| try validateString("network.ask", rule, core.limits.max_url_len);
 }
 
 fn validateString(_: []const u8, value: []const u8, max_len: usize) !void {

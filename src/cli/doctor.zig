@@ -15,7 +15,10 @@ const doctor_capabilities = [_]DoctorCapability{
     .{ .label = "env filtering", .capability = .env_filtering },
     .{ .label = "staged writes", .capability = .path_staging },
     .{ .label = "mcp stdio proxy", .capability = .mcp_stdio_proxy },
-    .{ .label = "network enforcement", .capability = .network_enforce },
+    .{ .label = "network policy engine", .capability = .network_policy_engine },
+    .{ .label = "network observation", .capability = .network_observe },
+    .{ .label = "transparent network enforcement", .capability = .network_enforce },
+    .{ .label = "proxy-mediated enforcement", .capability = .network_proxy_enforce },
     .{ .label = "strong sandbox", .capability = .strong_sandbox },
 };
 
@@ -36,7 +39,7 @@ pub fn command(argv: []const []const u8, stdout: anytype, stderr: anytype) !u8 {
     try stdout.writeAll("Capabilities:\n");
     for (doctor_capabilities) |item| {
         const report = core.platform.reportCapability(os, item.capability);
-        try stdout.print("  {s}: planned ({s}; {s})\n", .{ item.label, report.state.toString(), report.note });
+        try stdout.print("  {s}: {s} ({s})\n", .{ item.label, report.state.toString(), report.note });
     }
     return exit_codes.success;
 }
@@ -52,6 +55,9 @@ test "doctor prints OS and planned capabilities" {
     try std.testing.expectEqual(exit_codes.success, code);
     try std.testing.expect(std.mem.indexOf(u8, stdout_stream.getWritten(), "Aegis Doctor") != null);
     try std.testing.expect(std.mem.indexOf(u8, stdout_stream.getWritten(), "OS:") != null);
-    try std.testing.expect(std.mem.indexOf(u8, stdout_stream.getWritten(), "process supervision: planned") != null);
+    try std.testing.expect(std.mem.indexOf(u8, stdout_stream.getWritten(), "process supervision:") != null);
+    try std.testing.expect(std.mem.indexOf(u8, stdout_stream.getWritten(), "network policy engine: active") != null);
+    try std.testing.expect(std.mem.indexOf(u8, stdout_stream.getWritten(), "transparent network enforcement: unavailable") != null);
+    try std.testing.expect(std.mem.indexOf(u8, stdout_stream.getWritten(), "proxy-mediated enforcement: unavailable") != null);
     try std.testing.expectEqualStrings("", stderr_stream.getWritten());
 }

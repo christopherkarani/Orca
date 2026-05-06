@@ -238,6 +238,71 @@
 
 # Phase 11 MCP Stdio Proxy Plan
 
+# Phase 12 Network Egress Guard Plan
+
+## Assumptions
+
+- Phase 12 owns network policy decision logic, destination parsing/matching, exfiltration heuristics, audit events, CLI run-time overlays, child environment metadata hooks, and honest capability reporting.
+- Transparent network enforcement is not universally implemented in this phase. Direct Aegis decisions and child environment metadata hooks may be active, while proxy-mediated and OS-level transparent enforcement remain deferred to platform backend phases unless a managed proxy is actually started later.
+- Network policy should extend the existing policy schema without breaking Phase 07 policy files: `network.mode`, `network.detect_exfiltration`, and current `allow`/`ask`/`deny` rules must all parse.
+- Tests must use synthetic destinations and local safe commands only. No test may require external network access or persist raw fake secrets.
+
+## Research Check
+
+- [x] Read `CODEX_MASTER_PROMPT.md`, `CANONICAL_IMPLEMENTATION_DECISIONS.md`, `ARCHITECTURE_CONTRACTS.md`, `SECURITY_INVARIANTS.md`, `PRODUCTION_READINESS_GATES.md`, and `12_NETWORK_EGRESS_GUARD.md`.
+- [x] Verified `src/intercept/network.zig` is currently a stub and policy network evaluation only matches raw host strings.
+- [x] Verified audit persistence redacts target values and decision reasons through `audit/redact_bridge.zig`, but Phase 12 needs URL-aware redaction before network event persistence.
+- [x] Verified `aegis run` already has policy/env/command guard hooks where run-time network overlays and child environment metadata can be installed.
+
+## Checklist
+
+- [x] Add tests first for exact/wildcard/IP/local/private/metadata matching, deny priority, strict/CI ask behavior, network modes, exfiltration heuristics, URL redaction, CLI overlays, network audit/replay, and doctor output.
+- [x] Implement `src/intercept/network.zig` as a pure testable decision engine with destination parsing, host/IP classification, policy matching, exfiltration scoring, and redacted audit target helpers.
+- [x] Extend policy schema/loading/presets/explain for `network.mode` and `network.detect_exfiltration` while preserving existing policy compatibility.
+- [x] Wire `aegis run` flags: `--no-network`, `--allow-network <domain>`, and `--network observe|ask|allowlist|open|off`.
+- [x] Add bounded child environment metadata hooks without claiming active proxy or OS-level transparent enforcement.
+- [x] Emit network audit events for configured allow rules, deny rules, exfiltration suspicion, and temporary run-time allow rules, with redaction before persistence.
+- [x] Update `aegis doctor` capability rows to distinguish policy engine, observation, transparent enforcement, and proxy-mediated enforcement honestly.
+- [x] Run `zig build`, `zig build test`, and required manual verification commands.
+- [x] Document review results, known limitations, security notes, and acceptance criteria status.
+
+## Review
+
+- `zig build test` passed.
+- `zig build` passed.
+- Manual `aegis run --workspace <tmp> --no-network -- true` passed and wrote `network_connect_denied` events with `network mode off`.
+- Manual `aegis run --workspace <tmp> --allow-network api.github.com -- true` passed and wrote replayable `network_connect_allowed` events for `api.github.com`.
+- Manual `aegis policy explain network api.github.com` returned `allow` via `network.allow[0]`.
+- Manual `aegis policy explain network pastebin.com` returned `deny` via `network.deny[0]` with paste-site exfiltration risk.
+- Manual `aegis doctor` reported:
+  - network policy engine: active
+  - network observation: partial
+  - transparent network enforcement: unavailable
+  - proxy-mediated enforcement: unavailable
+- Manual replay verification passed for sessions with generated network events.
+- Manual synthetic secret URL smoke confirmed the fake `sk-fakeSyntheticOpenAIKey...` value did not appear in `events.jsonl` or replay output.
+
+## Known Limitations
+
+- Phase 12 does not implement universal transparent OS-level network enforcement. `aegis doctor` reports transparent network enforcement as unavailable.
+- Proxy-mediated enforcement is unavailable in this phase because no managed local proxy is started.
+- Network audit events are emitted for Aegis-mediated policy decisions and configured run-time network rules, not for every socket opened by arbitrary child processes.
+
+## Security Notes
+
+- Deny rules beat allow rules.
+- CI mode converts ask decisions to deny and never prompts.
+- Direct IP, localhost, private network, and cloud metadata destinations deny by default unless explicitly allowed.
+- URL targets are redacted before persistence; synthetic secret URL values were checked against both `events.jsonl` and replay output.
+
+## Review Fixes
+
+- [x] Fixed capability reporting so proxy-mediated network enforcement is `unavailable` unless a managed proxy is actually started. Child env metadata now reports `AEGIS_PROXY_MEDIATED_NETWORK_ENFORCEMENT=unavailable`.
+- [x] Fixed core policy API network evaluation to preserve `NetworkAction.scheme` and `NetworkAction.port` when constructing the destination for policy matching.
+- [x] Fixed `UnknownDomainTracker` to duplicate host keys on insert and free owned keys on deinit.
+- [x] Added regression tests for scheme/port network matching and owned unknown-domain tracker keys.
+- [x] Re-ran `zig build test`, `zig build`, and `aegis doctor` network capability smoke.
+
 ## Assumptions
 
 - Phase 11 is stdio-only MCP proxying: no remote HTTP MCP, OAuth, hosted gateway, resources/prompts/sampling enforcement beyond pass-through logging for unknown methods.
