@@ -26,6 +26,7 @@ const Section = enum {
     files_write,
     commands,
     network,
+    network_detect_exfiltration,
     mcp,
     mcp_servers,
     mcp_server,
@@ -85,6 +86,8 @@ const Builder = struct {
     network_deny: std.ArrayList([]const u8) = .empty,
     network_ask: std.ArrayList([]const u8) = .empty,
     network_default: ?schema.DecisionValue = null,
+    network_mode: ?schema.NetworkMode = null,
+    network_detect_exfiltration: schema.ExfiltrationDetection = .{},
     mcp_allow: std.ArrayList([]const u8) = .empty,
     mcp_deny: std.ArrayList([]const u8) = .empty,
     mcp_ask: std.ArrayList([]const u8) = .empty,
@@ -191,10 +194,12 @@ const Builder = struct {
                 .default = self.commands_default,
             },
             .network = .{
+                .mode = self.network_mode,
                 .allow = try self.network_allow.toOwnedSlice(self.allocator),
                 .deny = try self.network_deny.toOwnedSlice(self.allocator),
                 .ask = try self.network_ask.toOwnedSlice(self.allocator),
                 .default = self.network_default,
+                .detect_exfiltration = self.network_detect_exfiltration,
             },
             .mcp = .{
                 .allow = try self.mcp_allow.toOwnedSlice(self.allocator),
@@ -382,6 +387,20 @@ fn parseYaml(allocator: std.mem.Allocator, text: []const u8, source_path: ?[]con
             }
         }
 
+        if (indent == 2 and section == .network_detect_exfiltration) {
+            section = .network;
+        }
+
+        if (indent == 2 and section == .network and std.mem.eql(u8, key, "detect_exfiltration")) {
+            section = .network_detect_exfiltration;
+            continue;
+        }
+
+        if (indent == 4 and section == .network_detect_exfiltration) {
+            try applyNetworkDetectionField(&builder, key, try parseScalar(value));
+            continue;
+        }
+
         try applyYamlField(&builder, section, key, value, &list_target);
     }
 
@@ -416,7 +435,16 @@ fn applyYamlField(builder: *Builder, section: Section, key: []const u8, value: [
             if (std.mem.eql(u8, key, "mode")) builder.files_write_mode = schema.WriteMode.parse(scalar) orelse return error.UnsupportedPolicyWriteMode else try applyRuleSetField(builder, .files_write_allow, .files_write_deny, .files_write_ask, &builder.files_write_default, key, scalar, list_target);
         },
         .commands => try applyRuleSetField(builder, .commands_allow, .commands_deny, .commands_ask, &builder.commands_default, key, scalar, list_target),
-        .network => try applyRuleSetField(builder, .network_allow, .network_deny, .network_ask, &builder.network_default, key, scalar, list_target),
+        .network => {
+            if (std.mem.eql(u8, key, "mode")) {
+                builder.network_mode = schema.NetworkMode.parse(scalar) orelse return error.UnsupportedPolicyMode;
+            } else if (std.mem.eql(u8, key, "detect_exfiltration")) {
+                list_target.* = .none;
+            } else {
+                try applyRuleSetField(builder, .network_allow, .network_deny, .network_ask, &builder.network_default, key, scalar, list_target);
+            }
+        },
+        .network_detect_exfiltration => try applyNetworkDetectionField(builder, key, scalar),
         .mcp => {
             if (std.mem.eql(u8, key, "servers")) {
                 list_target.* = .none;
@@ -445,6 +473,16 @@ fn applyRuleSetField(
     if (std.mem.eql(u8, key, "allow")) list_target.* = allow_target else if (std.mem.eql(u8, key, "deny")) list_target.* = deny_target else if (std.mem.eql(u8, key, "ask")) list_target.* = ask_target else if (std.mem.eql(u8, key, "default")) default_field.* = try parseDecision(scalar) else return error.InvalidPolicy;
 }
 
+fn applyNetworkDetectionField(builder: *Builder, key: []const u8, scalar: []const u8) !void {
+    if (std.mem.eql(u8, key, "dns")) {
+        builder.network_detect_exfiltration.dns = try parseBool(scalar);
+    } else if (std.mem.eql(u8, key, "long_query_strings")) {
+        builder.network_detect_exfiltration.long_query_strings = try parseBool(scalar);
+    } else if (std.mem.eql(u8, key, "secret_patterns")) {
+        builder.network_detect_exfiltration.secret_patterns = try parseBool(scalar);
+    } else return error.InvalidPolicy;
+}
+
 fn parseJson(allocator: std.mem.Allocator, text: []const u8, source_path: ?[]const u8) !schema.Policy {
     var parsed = std.json.parseFromSlice(std.json.Value, allocator, text, .{}) catch return error.InvalidPolicy;
     defer parsed.deinit();
@@ -464,7 +502,7 @@ fn parseJson(allocator: std.mem.Allocator, text: []const u8, source_path: ?[]con
     if (object.get("env")) |value| try parseJsonEnv(&builder, value);
     if (object.get("files")) |value| try parseJsonFiles(&builder, value);
     if (object.get("commands")) |value| try parseJsonRules(&builder, value, .commands_allow, .commands_deny, .commands_ask, &builder.commands_default);
-    if (object.get("network")) |value| try parseJsonRules(&builder, value, .network_allow, .network_deny, .network_ask, &builder.network_default);
+    if (object.get("network")) |value| try parseJsonNetwork(&builder, value);
     if (object.get("mcp")) |value| try parseJsonMcp(&builder, value);
     if (object.get("audit")) |value| try parseJsonAudit(&builder, value);
     return builder.toPolicy(source_path);
@@ -514,6 +552,18 @@ fn parseJsonRulesWithKeys(builder: *Builder, value: std.json.Value, allow: ListT
     if (object.get("deny")) |list| try appendJsonList(builder, deny, list);
     if (object.get("ask")) |list| try appendJsonList(builder, ask, list);
     if (object.get("default")) |default| default_field.* = schema.DecisionValue.parse(try expectString(default)) orelse return error.UnsupportedPolicyDecision;
+}
+
+fn parseJsonNetwork(builder: *Builder, value: std.json.Value) !void {
+    try parseJsonRulesWithKeys(builder, value, .network_allow, .network_deny, .network_ask, &builder.network_default, &.{ "allow", "deny", "ask", "default", "mode", "detect_exfiltration" });
+    if (value.object.get("mode")) |mode| builder.network_mode = schema.NetworkMode.parse(try expectString(mode)) orelse return error.UnsupportedPolicyMode;
+    if (value.object.get("detect_exfiltration")) |detect| {
+        if (detect != .object) return error.InvalidPolicy;
+        try rejectUnknownKeys(detect.object, &.{ "dns", "long_query_strings", "secret_patterns" });
+        if (detect.object.get("dns")) |item| builder.network_detect_exfiltration.dns = try expectBool(item);
+        if (detect.object.get("long_query_strings")) |item| builder.network_detect_exfiltration.long_query_strings = try expectBool(item);
+        if (detect.object.get("secret_patterns")) |item| builder.network_detect_exfiltration.secret_patterns = try expectBool(item);
+    }
 }
 
 fn parseJsonMcp(builder: *Builder, value: std.json.Value) !void {

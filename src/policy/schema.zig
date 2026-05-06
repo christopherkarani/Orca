@@ -134,7 +134,60 @@ pub const FilesPolicy = struct {
 };
 
 pub const CommandsPolicy = RuleSet;
-pub const NetworkPolicy = RuleSet;
+
+pub const NetworkMode = enum {
+    off,
+    ask,
+    allowlist,
+    observe,
+    open,
+
+    pub fn parse(value: []const u8) ?NetworkMode {
+        inline for (@typeInfo(NetworkMode).@"enum".fields) |field| {
+            if (std.mem.eql(u8, value, field.name)) return @enumFromInt(field.value);
+        }
+        return null;
+    }
+
+    pub fn toString(self: NetworkMode) []const u8 {
+        return @tagName(self);
+    }
+};
+
+pub const ExfiltrationDetection = struct {
+    dns: bool = true,
+    long_query_strings: bool = true,
+    secret_patterns: bool = true,
+};
+
+pub const NetworkPolicy = struct {
+    mode: ?NetworkMode = null,
+    allow: []const []const u8 = &.{},
+    deny: []const []const u8 = &.{},
+    ask: []const []const u8 = &.{},
+    default: ?DecisionValue = null,
+    detect_exfiltration: ExfiltrationDetection = .{},
+
+    pub fn effectiveMode(self: NetworkPolicy) NetworkMode {
+        if (self.mode) |mode| return mode;
+        if (self.default) |default| {
+            return switch (default) {
+                .allow => .open,
+                .deny => .allowlist,
+                .ask => .ask,
+                .observe => .observe,
+            };
+        }
+        return .allowlist;
+    }
+
+    pub fn deinit(self: NetworkPolicy, allocator: std.mem.Allocator) void {
+        freeStringList(allocator, self.allow);
+        freeStringList(allocator, self.deny);
+        freeStringList(allocator, self.ask);
+    }
+};
+
 pub const MCPPolicy = RuleSet;
 
 pub const AuditPolicy = struct {

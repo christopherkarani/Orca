@@ -15,7 +15,15 @@ const RunOptions = struct {
     session_name: ?[]const u8 = null,
     no_secrets: bool = false,
     inherit_env: bool = false,
+    no_network: bool = false,
+    network_mode: ?policy.schema.NetworkMode = null,
+    allow_network_values: [32][]const u8 = undefined,
+    allow_network_count: usize = 0,
     command_argv: []const []const u8 = &.{},
+
+    fn allowNetwork(self: *const RunOptions) []const []const u8 {
+        return self.allow_network_values[0..self.allow_network_count];
+    }
 };
 
 pub fn command(argv: []const []const u8, stdout: anytype, stderr: anytype) !u8 {
@@ -50,6 +58,8 @@ fn commandWithStdio(argv: []const []const u8, stdout: anytype, stderr: anytype, 
     const effective_policy_mode = if (options.mode_explicit) coreModeToPolicyMode(options.mode) else loaded_policy.policy.mode;
     const session_mode = effective_policy_mode.toCoreMode();
 
+    try applyNetworkOverlay(allocator, &loaded_policy.policy, options);
+
     var filtered_env = intercept.env.filterCurrent(allocator, &loaded_policy.policy, effective_policy_mode, .{
         .no_secrets = options.no_secrets,
         .inherit_env = options.inherit_env,
@@ -64,6 +74,7 @@ fn commandWithStdio(argv: []const []const u8, stdout: anytype, stderr: anytype, 
         },
     };
     defer filtered_env.deinit();
+    try installNetworkEnvironment(allocator, &filtered_env.env_map, loaded_policy.policy.network);
 
     const StartPrinter = struct {
         writer: @TypeOf(stdout),
@@ -121,6 +132,7 @@ fn commandWithStdio(argv: []const []const u8, stdout: anytype, stderr: anytype, 
         pub fn beforeProcessLaunch(context: *anyopaque, session: core.session.Session) !void {
             const self: *@This() = @ptrCast(@alignCast(context));
             try self.installShims(session);
+            try self.auditNetworkStartupEvents(session);
             const display = try intercept.commands.displayArgvAlloc(self.allocator, self.command_argv);
             defer self.allocator.free(display);
 
@@ -195,6 +207,37 @@ fn commandWithStdio(argv: []const []const u8, stdout: anytype, stderr: anytype, 
             try self.env_map.put("AEGIS_MODE", self.effective_mode.toString());
         }
 
+        fn auditNetworkStartupEvents(self: *@This(), session: core.session.Session) !void {
+            const mode = self.selected_policy.network.effectiveMode();
+            if (mode == .off) {
+                try self.auditNetworkDecision(session, "*", .network_connect_attempt, null);
+                const decision: core.decision.Decision = .{
+                    .result = .deny,
+                    .reason = "network mode off; enforcement=unavailable",
+                    .ci_may_proceed = false,
+                };
+                try self.auditNetworkDecision(session, "*", .network_connect_denied, decision);
+            }
+            for (self.selected_policy.network.allow) |allowed| {
+                const network_decision = try intercept.network.evaluate(self.allocator, self.selected_policy, self.effective_mode, allowed, .{ .enforcement_mode = .unavailable, .ci_mode = self.effective_mode == .ci });
+                defer network_decision.deinit(self.allocator);
+                try self.auditNetworkDecision(session, network_decision.redacted_target, .network_connect_attempt, null);
+                try self.auditNetworkDecision(session, network_decision.redacted_target, if (network_decision.decision.result == .deny) .network_connect_denied else .network_connect_allowed, network_decision.decision);
+                if (network_decision.exfil_findings.len > 0) {
+                    try self.auditNetworkDecision(session, network_decision.redacted_target, .network_exfiltration_suspected, network_decision.decision);
+                }
+            }
+            for (self.selected_policy.network.deny) |denied| {
+                const network_decision = try intercept.network.evaluate(self.allocator, self.selected_policy, self.effective_mode, denied, .{ .enforcement_mode = .unavailable, .ci_mode = self.effective_mode == .ci });
+                defer network_decision.deinit(self.allocator);
+                try self.auditNetworkDecision(session, network_decision.redacted_target, .network_connect_attempt, null);
+                try self.auditNetworkDecision(session, network_decision.redacted_target, .network_connect_denied, network_decision.decision);
+                if (network_decision.exfil_findings.len > 0) {
+                    try self.auditNetworkDecision(session, network_decision.redacted_target, .network_exfiltration_suspected, network_decision.decision);
+                }
+            }
+        }
+
         fn resolveApproval(self: *@This(), command_decision: intercept.commands.CommandDecision, display: []const u8) !intercept.approvals.ApprovalChoice {
             if (self.effective_mode == .ci) return .deny;
             const stdin_file = std.fs.File.stdin();
@@ -223,6 +266,21 @@ fn commandWithStdio(argv: []const []const u8, stdout: anytype, stderr: anytype, 
                 .event_type = event_type,
                 .actor = .{ .kind = .aegis, .display = "aegis" },
                 .target = .{ .kind = .command, .value = display },
+                .decision = maybe_decision,
+            };
+            try self.audit_context.writer.?.appendEvent(ev);
+        }
+
+        fn auditNetworkDecision(self: *@This(), session: core.session.Session, target: []const u8, event_type: core.event.EventType, maybe_decision: ?core.decision.Decision) !void {
+            if (self.audit_context.writer == null) return;
+            const ts = core.time.Timestamp.now();
+            const ev: core.event.Event = .{
+                .session_id = session.id,
+                .event_id = try core.event.generateEventId(ts),
+                .timestamp = ts,
+                .event_type = event_type,
+                .actor = .{ .kind = .aegis, .display = "aegis" },
+                .target = .{ .kind = .network_endpoint, .value = target },
                 .decision = maybe_decision,
             };
             try self.audit_context.writer.?.appendEvent(ev);
@@ -397,6 +455,31 @@ fn parseOptions(argv: []const []const u8, stdout: anytype, stderr: anytype) !Run
             options.no_secrets = true;
         } else if (std.mem.eql(u8, arg, "--inherit-env")) {
             options.inherit_env = true;
+        } else if (std.mem.eql(u8, arg, "--no-network")) {
+            options.no_network = true;
+            options.network_mode = .off;
+        } else if (std.mem.eql(u8, arg, "--allow-network")) {
+            index += 1;
+            if (index >= argv.len) {
+                try stderr.writeAll("aegis run: --allow-network requires a domain or IP destination.\n");
+                return error.Usage;
+            }
+            if (options.allow_network_count >= options.allow_network_values.len) {
+                try stderr.writeAll("aegis run: too many --allow-network rules.\n");
+                return error.Usage;
+            }
+            options.allow_network_values[options.allow_network_count] = argv[index];
+            options.allow_network_count += 1;
+        } else if (std.mem.eql(u8, arg, "--network")) {
+            index += 1;
+            if (index >= argv.len) {
+                try stderr.writeAll("aegis run: --network requires observe, ask, allowlist, open, or off.\n");
+                return error.Usage;
+            }
+            options.network_mode = policy.schema.NetworkMode.parse(argv[index]) orelse {
+                try stderr.print("aegis run: unsupported network mode '{s}'. Expected observe, ask, allowlist, open, or off.\n", .{argv[index]});
+                return error.Usage;
+            };
         } else if (std.mem.startsWith(u8, arg, "-")) {
             try stderr.print("aegis run: unknown option '{s}'.\n", .{arg});
             return error.Usage;
@@ -412,6 +495,53 @@ fn parseOptions(argv: []const []const u8, stdout: anytype, stderr: anytype) !Run
     }
 
     return options;
+}
+
+fn applyNetworkOverlay(allocator: std.mem.Allocator, selected_policy: *policy.schema.Policy, options: RunOptions) !void {
+    if (options.no_network) selected_policy.network.mode = .off;
+    if (options.network_mode) |mode| selected_policy.network.mode = mode;
+    const runtime_allow = options.allowNetwork();
+    if (runtime_allow.len == 0) return;
+
+    const old_allow = selected_policy.network.allow;
+    const old_len = old_allow.len;
+    var next = try allocator.alloc([]const u8, old_len + runtime_allow.len);
+    errdefer allocator.free(next);
+    for (old_allow, 0..) |value, index| next[index] = value;
+    var copied: usize = 0;
+    errdefer {
+        for (next[old_len .. old_len + copied]) |value| allocator.free(value);
+    }
+    for (runtime_allow, 0..) |value, index| {
+        if (std.mem.startsWith(u8, value, "*.")) {
+            next[old_len + index] = try allocator.dupe(u8, value);
+        } else {
+            const destination = try intercept.network.parseDestination(value);
+            next[old_len + index] = try destination.endpointDisplay(allocator);
+        }
+        copied += 1;
+    }
+    if (old_allow.len > 0) allocator.free(old_allow);
+    selected_policy.network.allow = next;
+    if (selected_policy.network.mode == null) selected_policy.network.mode = .allowlist;
+}
+
+fn installNetworkEnvironment(allocator: std.mem.Allocator, env_map: *std.process.EnvMap, network_policy: policy.schema.NetworkPolicy) !void {
+    try env_map.put("AEGIS_NETWORK_POLICY_ENGINE", "active");
+    try env_map.put("AEGIS_NETWORK_MODE", network_policy.effectiveMode().toString());
+    try env_map.put("AEGIS_TRANSPARENT_NETWORK_ENFORCEMENT", "unavailable");
+    try env_map.put("AEGIS_PROXY_MEDIATED_NETWORK_ENFORCEMENT", "unavailable");
+    if (network_policy.allow.len > 0) {
+        var list: std.ArrayList(u8) = .empty;
+        defer list.deinit(allocator);
+        for (network_policy.allow, 0..) |allowed, index| {
+            if (index > 0) try list.append(allocator, ',');
+            try list.appendSlice(allocator, allowed);
+        }
+        const owned = try list.toOwnedSlice(allocator);
+        defer allocator.free(owned);
+        try env_map.put("AEGIS_NETWORK_ALLOW", owned);
+    }
 }
 
 fn parseMode(value: []const u8) ?core.types.Mode {
@@ -603,6 +733,46 @@ test "run command guard denies destructive command before spawn" {
     const events = try readLastEvents(std.testing.allocator, root);
     defer std.testing.allocator.free(events);
     try std.testing.expect(std.mem.indexOf(u8, events, "\"type\":\"command_denied\"") != null);
+}
+
+test "run no-network sets network mode off and audits denied network state" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const root = try tmp.dir.realpathAlloc(std.testing.allocator, ".");
+    defer std.testing.allocator.free(root);
+
+    var stdout_buf: [2048]u8 = undefined;
+    var stderr_buf: [2048]u8 = undefined;
+    var stdout_stream = std.io.fixedBufferStream(&stdout_buf);
+    var stderr_stream = std.io.fixedBufferStream(&stderr_buf);
+
+    const code = try command(&.{ "--workspace", root, "--no-network", "--", "true" }, stdout_stream.writer(), stderr_stream.writer());
+    try std.testing.expectEqual(exit_codes.success, code);
+    const events = try readLastEvents(std.testing.allocator, root);
+    defer std.testing.allocator.free(events);
+    try std.testing.expect(std.mem.indexOf(u8, events, "\"type\":\"network_connect_denied\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, events, "\"type\":\"network_exfiltration_suspected\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, events, "network mode off") != null);
+}
+
+test "run allow-network adds temporary allow rule and redacts URL secrets in audit" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const root = try tmp.dir.realpathAlloc(std.testing.allocator, ".");
+    defer std.testing.allocator.free(root);
+
+    var stdout_buf: [2048]u8 = undefined;
+    var stderr_buf: [2048]u8 = undefined;
+    var stdout_stream = std.io.fixedBufferStream(&stdout_buf);
+    var stderr_stream = std.io.fixedBufferStream(&stderr_buf);
+
+    const code = try command(&.{ "--workspace", root, "--allow-network", "https://api.github.com/repos?token=sk-fakeSyntheticOpenAIKey1234567890", "--", "true" }, stdout_stream.writer(), stderr_stream.writer());
+    try std.testing.expectEqual(exit_codes.success, code);
+    const events = try readLastEvents(std.testing.allocator, root);
+    defer std.testing.allocator.free(events);
+    try std.testing.expect(std.mem.indexOf(u8, events, "\"type\":\"network_connect_allowed\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, events, "api.github.com") != null);
+    try std.testing.expect(std.mem.indexOf(u8, events, "sk-fakeSyntheticOpenAIKey") == null);
 }
 
 fn readLastSessionId(allocator: std.mem.Allocator, root: []const u8) ![]u8 {

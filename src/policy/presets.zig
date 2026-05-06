@@ -121,10 +121,23 @@ const common_strict_rules =
     \\    - "git push*"
     \\
     \\network:
+    \\  mode: allowlist
     \\  default: deny
     \\  allow:
     \\    - "api.github.com"
+    \\    - "*.github.com"
     \\    - "registry.npmjs.org"
+    \\    - "pypi.org"
+    \\  ask:
+    \\    - "*.githubusercontent.com"
+    \\  deny:
+    \\    - "pastebin.com"
+    \\    - "*.ngrok.io"
+    \\    - "*.requestbin.net"
+    \\  detect_exfiltration:
+    \\    dns: true
+    \\    long_query_strings: true
+    \\    secret_patterns: true
     \\
     \\mcp:
     \\  default: ask
@@ -212,7 +225,16 @@ pub const observe_policy =
     \\    - "rm -rf *"
     \\
     \\network:
+    \\  mode: observe
     \\  default: observe
+    \\  deny:
+    \\    - "pastebin.com"
+    \\    - "*.ngrok.io"
+    \\    - "*.requestbin.net"
+    \\  detect_exfiltration:
+    \\    dns: true
+    \\    long_query_strings: true
+    \\    secret_patterns: true
     \\
     \\mcp:
     \\  default: observe
