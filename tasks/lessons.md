@@ -20,3 +20,8 @@
 - Policy discovery must fail closed when a configured policy path exists but cannot be loaded or parsed. Only a genuinely missing optional discovery location may fall through to the next source.
 - Policy parsers must reject unknown schema keys in every supported format. A misspelled deny/default key changes security meaning and should be an invalid policy, not ignored configuration.
 - Runtime audit artifacts under `.aegis/last` and `.aegis/sessions/` are local state from smoke tests. Keep them out of commits and ignore them explicitly.
+
+## 2026-05-06 Phase 08 Secret Protection Review
+
+- Redaction tests must include embedded secret-bearing arguments inside larger event strings, not only standalone `NAME=value` strings. Joined command targets can otherwise persist raw synthetic secrets even when summary argument redaction passes.
+- Environment filtering must separate policy inheritance from effective mode. A `--mode observe` override cannot turn `env.inherit: false` into inherited unmatched variables; minimal environments should admit only explicit `env.allow` matches.

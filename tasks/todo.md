@@ -176,3 +176,63 @@
 - [x] Fixed JSON parsing to reject unknown top-level and nested policy keys, including misspelled rule keys like `denny` or `defualt`.
 - [x] Added regression tests for non-missing workspace policy load failures and unknown JSON keys.
 - [x] Removed generated `.aegis` runtime state from the worktree and ignored `.aegis/last`, `.aegis/last.tmp`, and `.aegis/sessions/`.
+
+# Phase 08 Environment and Secret Protection Plan
+
+## Assumptions
+
+- Phase 08 owns environment filtering for direct children launched by `aegis run` and reusable redaction before audit persistence. It must not implement filesystem, command, network, MCP, keychain, password-manager, cloud credential, or future brokered secret features.
+- Strict and CI mode should default to a minimal safe environment and fail closed when `--inherit-env` is requested without policy support.
+- Observe and trusted modes may inherit environment according to policy, but audit persistence and replay output must still redact secret-like names and values.
+- Policy `env.allow` and `env.deny_patterns` are already in the Phase 07 schema; Phase 08 should enforce those through the policy evaluator rather than adding ad hoc CLI decisions.
+- Tests must use only obvious fake synthetic secrets and must assert that raw fake values are absent from persisted audit files and replay output.
+
+## Research Check
+
+- [x] Read `CODEX_MASTER_PROMPT.md`, `CANONICAL_IMPLEMENTATION_DECISIONS.md`, `ARCHITECTURE_CONTRACTS.md`, `SECURITY_INVARIANTS.md`, `PRODUCTION_READINESS_GATES.md`, and `08_ENV_AND_SECRET_PROTECTION.md`.
+- [x] Verified `src/intercept/env.zig` is currently a stub and `src/core/supervisor.zig` launches children without custom environment filtering.
+- [x] Verified `src/audit/writer.zig` persists events through `src/audit/hash_chain.zig`, where target/decision string redaction currently uses a minimal bridge.
+- [x] Verified policy env parsing already supports `inherit`, `allow`, `deny_patterns`, `ask`, and `default`, but built-in deny patterns need expansion for Phase 08.
+
+## Checklist
+
+- [x] Add tests first for secret-like env names, env allowlist, env deny patterns, strict/CI no-secrets behavior, `--no-secrets`, `--inherit-env` policy restrictions, secret value detection, stable redaction fingerprints, audit redaction events, persistence redaction, and replay redaction.
+- [x] Implement reusable secret detection and redaction with stable SHA-256 fingerprints in the audit layer.
+- [x] Implement policy-driven environment filtering in `src/intercept/env.zig`.
+- [x] Wire filtered environments and redaction events into the supervisor/run/audit path without persisting raw secret values.
+- [x] Add `aegis run --no-secrets` and guarded `aegis run --inherit-env`.
+- [x] Expand built-in and checked-in policy deny patterns for common secret variable names.
+- [x] Update run help text and keep capability claims bounded to Phase 08.
+- [x] Run `zig build`, `zig build test`, and the requested manual smokes.
+- [x] Document review results, limitations, security notes, and acceptance criteria status.
+
+## Review
+
+- `zig build` passed.
+- `zig build test` passed.
+- Manual `FAKE_GITHUB_TOKEN=fake_secret_value aegis run --no-secrets -- /usr/bin/env` passed: child output did not contain `FAKE_GITHUB_TOKEN` or `fake_secret_value`; audit files and replay output did not contain `fake_secret_value`; `secret_redacted` was present; `replay --verify` reported `Hash chain: verified`.
+- Manual strict-mode smoke passed: `OPENAI_API_KEY=fake_secret_value GITHUB_TOKEN=fake_secret_value aegis run --mode strict -- /usr/bin/env` did not expose those variables to the child and did not persist `fake_secret_value`.
+- Manual observe-policy smoke passed: `FAKE_GITHUB_TOKEN=fake_secret_value aegis run --policy policies/observe.yaml -- /usr/bin/env` inherited the fake variable to the child but audit files and replay output did not contain `fake_secret_value`.
+- Manual policy smoke passed: a temp policy with `env.allow: SAFE_PHASE08` and `env.deny_patterns: FAKE_*` exposed `SAFE_PHASE08=visible`, stripped `FAKE_DENIED=hidden`, and did not persist `hidden`.
+- Manual `--inherit-env` smoke passed: strict policy rejected it with a non-zero exit and explicit error, while a temp trusted policy with `env.inherit: true` inherited safe variables and still respected `env.deny_patterns`.
+- Review fix: high-entropy redaction no longer flags path-shaped values such as local workspace paths, avoiding noisy false positives in audit events.
+
+## Known Limitations
+
+- Environment filtering is direct-child wrapper-level enforcement through `std.process.Child.env_map`; it is not OS-level process-tree containment.
+- Observe policy can still pass fake secrets to the child by design, but audit and replay persistence redact them.
+- Redaction heuristics are intentionally conservative and pattern-based; they may miss unknown secret formats or redact some non-secret token-shaped values.
+- No keychain, 1Password, Bitwarden, cloud credential broker, or secret injection flow was added in this phase.
+
+## Security Notes
+
+- Raw synthetic secret values are redacted before event serialization, hash-chain calculation, JSONL write, summary write, and replay display.
+- `secret_redacted` events store env names and stable SHA-256 fingerprints only; they do not store raw values.
+- Strict, CI, and redteam modes force no-secrets behavior by default.
+- `--inherit-env` fails closed unless `env.inherit: true` is present in the selected policy.
+
+## Review Fixes
+
+- [x] Fixed embedded secret assignments in command targets so joined `process_launch` command strings are redacted before JSONL persistence.
+- [x] Fixed observe-mode overrides so policies with `env.inherit: false` keep minimal allowlist-only environments.
+- [x] Added regression tests for both review findings and updated `tasks/lessons.md`.

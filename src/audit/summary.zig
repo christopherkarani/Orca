@@ -56,7 +56,8 @@ pub fn writeJson(writer: anytype, input: SummaryInput) !void {
     try writer.writeAll(",\"mode\":");
     try core.util.writeJsonString(writer, input.session.mode.toString());
     try writer.writeAll(",\"policy\":");
-    try core.util.writeJsonString(writer, redact_bridge.redactString(input.policy));
+    var policy_buf: [256]u8 = undefined;
+    try core.util.writeJsonString(writer, redact_bridge.redactStringBounded(input.policy, &policy_buf));
     try writer.writeAll(",\"command\":");
     try writeCommandArray(writer, input.session.command, input.session.args);
     try writer.writeAll(",\"status\":");
@@ -67,6 +68,8 @@ pub fn writeJson(writer: anytype, input: SummaryInput) !void {
 }
 
 pub fn writeMarkdown(writer: anytype, input: SummaryInput) !void {
+    var policy_buf: [256]u8 = undefined;
+    const safe_policy = redact_bridge.redactStringBounded(input.policy, &policy_buf);
     try writer.print(
         \\# Aegis Session {s}
         \\
@@ -82,7 +85,7 @@ pub fn writeMarkdown(writer: anytype, input: SummaryInput) !void {
         \\- Final event hash: `{s}`
         \\
     , .{
-        redact_bridge.redactString(input.policy),
+        safe_policy,
         input.session.mode.toString(),
         statusText(input.status),
         input.event_count,
@@ -92,10 +95,12 @@ pub fn writeMarkdown(writer: anytype, input: SummaryInput) !void {
 
 fn writeCommandArray(writer: anytype, command: []const u8, args: []const []const u8) !void {
     try writer.writeByte('[');
-    try core.util.writeJsonString(writer, redact_bridge.redactString(command));
+    var command_buf: [256]u8 = undefined;
+    try core.util.writeJsonString(writer, redact_bridge.redactStringBounded(command, &command_buf));
     for (args) |arg| {
         try writer.writeByte(',');
-        try core.util.writeJsonString(writer, redact_bridge.redactString(arg));
+        var arg_buf: [256]u8 = undefined;
+        try core.util.writeJsonString(writer, redact_bridge.redactStringBounded(arg, &arg_buf));
     }
     try writer.writeByte(']');
 }
@@ -121,10 +126,12 @@ pub fn statusText(status: core.supervisor.ChildStatus) []const u8 {
 }
 
 fn writeCommandDisplay(writer: anytype, command: []const u8, args: []const []const u8) !void {
-    try writer.writeAll(redact_bridge.redactString(command));
+    var command_buf: [256]u8 = undefined;
+    try writer.writeAll(redact_bridge.redactStringBounded(command, &command_buf));
     for (args) |arg| {
         try writer.writeByte(' ');
-        try writer.writeAll(redact_bridge.redactString(arg));
+        var arg_buf: [256]u8 = undefined;
+        try writer.writeAll(redact_bridge.redactStringBounded(arg, &arg_buf));
     }
 }
 
@@ -150,4 +157,28 @@ test "summary json records final hash and bounded command metadata" {
     });
     try std.testing.expect(std.mem.indexOf(u8, list.items, "\"final_event_hash\":\"abc\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, list.items, "\"command\":[\"echo\",\"hello\"]") != null);
+}
+
+test "summary redacts synthetic secret command metadata" {
+    const ts = core.time.Timestamp.fromUnixSeconds(1_777_983_130);
+    const session: core.session.Session = .{
+        .id = try core.session.generateSessionId(ts),
+        .started_at = ts,
+        .ended_at = ts,
+        .command = "echo",
+        .args = &.{"fake_secret_value"},
+        .workspace_root = "/tmp/aegis",
+        .mode = .observe,
+        .platform = core.platform.detectOs(),
+    };
+    var list: std.ArrayList(u8) = .empty;
+    defer list.deinit(std.testing.allocator);
+    try writeJson(list.writer(std.testing.allocator), .{
+        .session = session,
+        .status = .{ .exited = 0 },
+        .event_count = 3,
+        .final_event_hash = "abc",
+    });
+    try std.testing.expect(std.mem.indexOf(u8, list.items, "fake_secret_value") == null);
+    try std.testing.expect(std.mem.indexOf(u8, list.items, "[REDACTED:") != null);
 }

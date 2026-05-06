@@ -48,7 +48,7 @@ fn writeEventFields(writer: anytype, ev: core.event.Event, previous_hash: ?[]con
     try writer.writeAll(",\"redactions\":");
     try writeRedactions(writer, ev.redactions);
     try writer.writeAll(",\"previous_hash\":");
-    try writeNullableString(writer, previous_hash);
+    try writeNullableRawString(writer, previous_hash);
     if (event_hash_value) |hash| {
         try writer.writeAll(",\"event_hash\":");
         try core.util.writeJsonString(writer, hash);
@@ -72,7 +72,8 @@ fn writeTarget(writer: anytype, target: core.types.Target) !void {
     try writer.writeAll("\"kind\":");
     try core.util.writeJsonString(writer, @tagName(target.kind));
     try writer.writeAll(",\"value\":");
-    try core.util.writeJsonString(writer, redact_bridge.redactString(target.value));
+    var redacted_buf: [256]u8 = undefined;
+    try core.util.writeJsonString(writer, redact_bridge.redactTargetValueBounded(@tagName(target.kind), target.value, &redacted_buf));
     try writer.writeByte('}');
 }
 
@@ -87,7 +88,8 @@ fn writeDecision(writer: anytype, maybe_decision: ?core.decision.Decision) !void
     try writer.writeAll(",\"rule_id\":");
     try writeNullableString(writer, decision.rule_id);
     try writer.writeAll(",\"reason\":");
-    try core.util.writeJsonString(writer, redact_bridge.redactString(decision.reason));
+    var reason_buf: [256]u8 = undefined;
+    try core.util.writeJsonString(writer, redact_bridge.redactStringBounded(decision.reason, &reason_buf));
     try writer.writeAll(",\"risk_score\":");
     if (decision.risk_score) |score| {
         try writer.print("{d}", .{score});
@@ -109,7 +111,16 @@ fn writeRedactions(writer: anytype, redactions: core.event.RedactionSummary) !vo
 
 fn writeNullableString(writer: anytype, value: ?[]const u8) !void {
     if (value) |string| {
-        try core.util.writeJsonString(writer, redact_bridge.redactString(string));
+        var redacted_buf: [256]u8 = undefined;
+        try core.util.writeJsonString(writer, redact_bridge.redactStringBounded(string, &redacted_buf));
+    } else {
+        try writer.writeAll("null");
+    }
+}
+
+fn writeNullableRawString(writer: anytype, value: ?[]const u8) !void {
+    if (value) |string| {
+        try core.util.writeJsonString(writer, string);
     } else {
         try writer.writeAll("null");
     }

@@ -131,3 +131,85 @@ test "session writer creates directory and writes deterministic JSONL" {
     try std.testing.expect(std.mem.indexOf(u8, events, "\"event_hash\"") != null);
     try std.testing.expectEqual(@as(usize, 1), session_writer.event_count);
 }
+
+test "session writer persists redacted synthetic secrets before JSONL write" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const root = try tmp.dir.realpathAlloc(std.testing.allocator, ".");
+    defer std.testing.allocator.free(root);
+    const ts = core.time.Timestamp.fromUnixSeconds(1_777_983_130);
+    const session: core.session.Session = .{
+        .id = try core.session.generateSessionId(ts),
+        .started_at = ts,
+        .command = "echo",
+        .args = &.{"fake_secret_value"},
+        .workspace_root = root,
+        .mode = .observe,
+        .platform = core.platform.detectOs(),
+    };
+    var event_id: core.event.EventId = .{ .value = undefined, .len = 0 };
+    const event_id_text = try std.fmt.bufPrint(&event_id.value, "evt_000001", .{});
+    event_id.len = event_id_text.len;
+    const ev: core.event.Event = .{
+        .session_id = session.id,
+        .event_id = event_id,
+        .timestamp = ts,
+        .event_type = .process_launch,
+        .actor = .{ .kind = .aegis, .display = "aegis" },
+        .target = .{ .kind = .command, .value = "echo fake_secret_value" },
+    };
+
+    var session_writer = try SessionWriter.init(std.testing.allocator, session);
+    defer session_writer.deinit();
+    try session_writer.appendEvent(ev);
+
+    const rel_events_path = try std.fs.path.join(std.testing.allocator, &.{ ".aegis", "sessions", session.id.slice(), "events.jsonl" });
+    defer std.testing.allocator.free(rel_events_path);
+    const events = try tmp.dir.readFileAlloc(std.testing.allocator, rel_events_path, 4096);
+    defer std.testing.allocator.free(events);
+
+    try std.testing.expect(std.mem.indexOf(u8, events, "fake_secret_value") == null);
+    try std.testing.expect(std.mem.indexOf(u8, events, "[REDACTED:secret:synthetic_secret:sha256:") != null);
+}
+
+test "session writer redacts embedded secret assignments in command targets" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const root = try tmp.dir.realpathAlloc(std.testing.allocator, ".");
+    defer std.testing.allocator.free(root);
+    const ts = core.time.Timestamp.fromUnixSeconds(1_777_983_130);
+    const session: core.session.Session = .{
+        .id = try core.session.generateSessionId(ts),
+        .started_at = ts,
+        .command = "/bin/echo",
+        .args = &.{"OPENAI_API_KEY=sk-fakeSyntheticOpenAIKey1234567890"},
+        .workspace_root = root,
+        .mode = .observe,
+        .platform = core.platform.detectOs(),
+    };
+    var event_id: core.event.EventId = .{ .value = undefined, .len = 0 };
+    const event_id_text = try std.fmt.bufPrint(&event_id.value, "evt_000001", .{});
+    event_id.len = event_id_text.len;
+    const ev: core.event.Event = .{
+        .session_id = session.id,
+        .event_id = event_id,
+        .timestamp = ts,
+        .event_type = .process_launch,
+        .actor = .{ .kind = .aegis, .display = "aegis" },
+        .target = .{ .kind = .command, .value = "/bin/echo OPENAI_API_KEY=sk-fakeSyntheticOpenAIKey1234567890" },
+    };
+
+    var session_writer = try SessionWriter.init(std.testing.allocator, session);
+    defer session_writer.deinit();
+    try session_writer.appendEvent(ev);
+
+    const rel_events_path = try std.fs.path.join(std.testing.allocator, &.{ ".aegis", "sessions", session.id.slice(), "events.jsonl" });
+    defer std.testing.allocator.free(rel_events_path);
+    const events = try tmp.dir.readFileAlloc(std.testing.allocator, rel_events_path, 4096);
+    defer std.testing.allocator.free(events);
+
+    try std.testing.expect(std.mem.indexOf(u8, events, "sk-fakeSyntheticOpenAIKey") == null);
+    try std.testing.expect(std.mem.indexOf(u8, events, "[REDACTED:env:OPENAI_API_KEY:sha256:") != null);
+}
