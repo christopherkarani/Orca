@@ -35,6 +35,38 @@ pub const SessionWriter = struct {
         };
     }
 
+    pub fn openExisting(allocator: std.mem.Allocator, workspace_root: []const u8, session_id_text: []const u8) !SessionWriter {
+        const aegis_dir = try std.fs.path.join(allocator, &.{ workspace_root, ".aegis" });
+        defer allocator.free(aegis_dir);
+        const sessions_dir = try std.fs.path.join(allocator, &.{ aegis_dir, "sessions" });
+        defer allocator.free(sessions_dir);
+        const session_dir_path = try std.fs.path.join(allocator, &.{ sessions_dir, session_id_text });
+        errdefer allocator.free(session_dir_path);
+
+        const events_path = try std.fs.path.join(allocator, &.{ session_dir_path, "events.jsonl" });
+        defer allocator.free(events_path);
+        const state = try readExistingState(allocator, events_path);
+
+        var events_file = try std.fs.cwd().openFile(events_path, .{ .mode = .read_write });
+        errdefer events_file.close();
+        try events_file.seekFromEnd(0);
+
+        var session_id: core.session.SessionId = .{ .value = undefined, .len = 0 };
+        if (session_id_text.len > session_id.value.len) return error.InvalidSessionId;
+        @memcpy(session_id.value[0..session_id_text.len], session_id_text);
+        session_id.len = session_id_text.len;
+
+        return .{
+            .allocator = allocator,
+            .workspace_root = workspace_root,
+            .session_id = session_id,
+            .session_dir_path = session_dir_path,
+            .events_file = events_file,
+            .previous_hash = state.previous_hash,
+            .event_count = state.event_count,
+        };
+    }
+
     pub fn deinit(self: *SessionWriter) void {
         self.events_file.close();
         self.allocator.free(self.session_dir_path);
@@ -89,6 +121,32 @@ pub const SessionWriter = struct {
         };
     }
 };
+
+const ExistingState = struct {
+    previous_hash: ?hash_chain.HashHex,
+    event_count: usize,
+};
+
+fn readExistingState(allocator: std.mem.Allocator, events_path: []const u8) !ExistingState {
+    const text = try std.fs.cwd().readFileAlloc(allocator, events_path, core.limits.max_mcp_message_len);
+    defer allocator.free(text);
+    var previous_hash: ?hash_chain.HashHex = null;
+    var event_count: usize = 0;
+    var lines = std.mem.splitScalar(u8, text, '\n');
+    while (lines.next()) |line| {
+        if (line.len == 0) continue;
+        var parsed = try std.json.parseFromSlice(std.json.Value, allocator, line, .{});
+        defer parsed.deinit();
+        const object = parsed.value.object;
+        const hash_value = object.get("event_hash") orelse return error.InvalidEventSchema;
+        if (hash_value != .string or hash_value.string.len != hash_chain.hex_hash_len) return error.InvalidEventSchema;
+        var hash: hash_chain.HashHex = undefined;
+        @memcpy(hash[0..], hash_value.string);
+        previous_hash = hash;
+        event_count += 1;
+    }
+    return .{ .previous_hash = previous_hash, .event_count = event_count };
+}
 
 test "session writer creates directory and writes deterministic JSONL" {
     var tmp = std.testing.tmpDir(.{});

@@ -71,6 +71,15 @@ const common_strict_rules =
     \\      - "./.env.*"
     \\      - "~/.ssh/**"
     \\      - "~/.aws/**"
+    \\      - "~/.gcloud/**"
+    \\      - "~/.azure/**"
+    \\      - "~/.config/gh/**"
+    \\      - "**/id_rsa"
+    \\      - "**/id_ed25519"
+    \\      - "**/*credentials*"
+    \\      - "**/*credential*"
+    \\      - "**/*secret*"
+    \\      - "**/*token*"
     \\  write:
     \\    allow:
     \\      - "./**"
@@ -161,6 +170,9 @@ pub const observe_policy =
     \\    deny:
     \\      - "~/.ssh/**"
     \\      - "~/.aws/**"
+    \\      - "~/.gcloud/**"
+    \\      - "~/.azure/**"
+    \\      - "~/.config/gh/**"
     \\      - "./.env"
     \\      - "./.env.*"
     \\  write:
@@ -227,6 +239,9 @@ pub const trusted_policy =
     \\    deny:
     \\      - "~/.ssh/**"
     \\      - "~/.aws/**"
+    \\      - "~/.gcloud/**"
+    \\      - "~/.azure/**"
+    \\      - "~/.config/gh/**"
     \\      - "./.env"
     \\      - "./.env.*"
     \\  write:
