@@ -25,3 +25,15 @@
 
 - Redaction tests must include embedded secret-bearing arguments inside larger event strings, not only standalone `NAME=value` strings. Joined command targets can otherwise persist raw synthetic secrets even when summary argument redaction passes.
 - Environment filtering must separate policy inheritance from effective mode. A `--mode observe` override cannot turn `env.inherit: false` into inherited unmatched variables; minimal environments should admit only explicit `env.allow` matches.
+
+## 2026-05-06 Phase 09 Filesystem Staging Review
+
+- Filesystem security tests must cover protected home-directory paths when the workspace itself is `$HOME`; matching only normalized `./...` workspace paths can bypass `~/...` deny rules.
+- Staging apply must authenticate both sides of the review contract: verify the original workspace hash and the staged blob hash before writing.
+- Diff must render the captured original from the staging session, not the live workspace file, so review output remains stable after workspace drift.
+
+## 2026-05-07 Phase 10 Command Guard Review
+
+- New CLI modules must be included in the actual patch, not only referenced by imports; untracked source files make clean-checkout builds fail.
+- Approval state must survive the wrapper boundary. If a parent approves an ask-class command that is also shimmed, pass a bounded approval token to the shim or the shim will re-deny the command.
+- Shim coverage must match classifier coverage for risky executable aliases. If `pip3`, `python3`, `ssh`, `scp`, or `nc` are classified, they need corresponding shims in the initial wrapper set.

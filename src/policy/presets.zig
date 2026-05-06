@@ -71,6 +71,15 @@ const common_strict_rules =
     \\      - "./.env.*"
     \\      - "~/.ssh/**"
     \\      - "~/.aws/**"
+    \\      - "~/.gcloud/**"
+    \\      - "~/.azure/**"
+    \\      - "~/.config/gh/**"
+    \\      - "**/id_rsa"
+    \\      - "**/id_ed25519"
+    \\      - "**/*credentials*"
+    \\      - "**/*credential*"
+    \\      - "**/*secret*"
+    \\      - "**/*token*"
     \\  write:
     \\    allow:
     \\      - "./**"
@@ -84,10 +93,32 @@ const common_strict_rules =
     \\  allow:
     \\    - "git status"
     \\    - "git diff *"
+    \\    - "ls *"
+    \\    - "pwd"
+    \\    - "echo *"
+    \\    - "true"
+    \\    - "false"
+    \\    - "zig version"
+    \\    - "zig build *"
     \\  deny:
     \\    - "rm -rf *"
+    \\    - "find * -delete"
+    \\    - "shred *"
     \\    - "curl * | sh"
+    \\    - "wget * | bash"
     \\    - "sudo *"
+    \\    - "su *"
+    \\    - "doas *"
+    \\    - "powershell *EncodedCommand*"
+    \\    - "powershell *-enc*"
+    \\    - "cat .env"
+    \\    - "cat ~/.ssh/*"
+    \\  ask:
+    \\    - "npm install*"
+    \\    - "pnpm install*"
+    \\    - "yarn install*"
+    \\    - "pip install*"
+    \\    - "git push*"
     \\
     \\network:
     \\  default: deny
@@ -161,6 +192,9 @@ pub const observe_policy =
     \\    deny:
     \\      - "~/.ssh/**"
     \\      - "~/.aws/**"
+    \\      - "~/.gcloud/**"
+    \\      - "~/.azure/**"
+    \\      - "~/.config/gh/**"
     \\      - "./.env"
     \\      - "./.env.*"
     \\  write:
@@ -227,6 +261,9 @@ pub const trusted_policy =
     \\    deny:
     \\      - "~/.ssh/**"
     \\      - "~/.aws/**"
+    \\      - "~/.gcloud/**"
+    \\      - "~/.azure/**"
+    \\      - "~/.config/gh/**"
     \\      - "./.env"
     \\      - "./.env.*"
     \\  write:

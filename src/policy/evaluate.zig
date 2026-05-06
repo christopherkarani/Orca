@@ -203,10 +203,41 @@ fn riskHeuristic(surface: Surface, value: []const u8) ?Risk {
         .file_read => if (matchers.matchesPath("~/.ssh/**", value) or matchers.matchesPath("~/.aws/**", value) or matchers.matchesPath("./.env*", value)) .{ .score = 90, .reason = "sensitive file path" } else null,
         .file_write => if (matchers.matchesPath("./.git/**", value) or matchers.matchesPath("./.aegis/**", value)) .{ .score = 80, .reason = "control directory write" } else null,
         .env => if (isSecretLikeEnvName(value)) .{ .score = 90, .reason = "secret-like environment variable" } else null,
-        .command => if (matchers.matchesCommand("rm -rf *", value) or matchers.matchesCommand("curl * | sh", value) or matchers.matchesCommand("sudo *", value)) .{ .score = 95, .reason = "high-risk command pattern" } else null,
+        .command => commandRiskHeuristic(value),
         .network => if (std.mem.indexOf(u8, value, "localhost") != null or std.mem.startsWith(u8, value, "127.")) .{ .score = 40, .reason = "local network destination" } else null,
         .mcp => null,
     };
+}
+
+fn commandRiskHeuristic(value: []const u8) ?Risk {
+    if (matchers.matchesCommand("rm -rf *", value) or
+        matchers.matchesCommand("find * -delete", value) or
+        matchers.matchesCommand("shred *", value) or
+        matchers.matchesCommand("sudo *", value) or
+        matchers.matchesCommand("su *", value) or
+        matchers.matchesCommand("doas *", value) or
+        matchers.matchesCommand("cat .env", value) or
+        matchers.matchesCommand("cat ~/.ssh/*", value) or
+        containsIgnoreCase(value, "powershell -encodedcommand") or
+        containsIgnoreCase(value, "powershell -enc") or
+        containsIgnoreCase(value, "base64 -d | sh") or
+        containsIgnoreCase(value, "base64 -d | bash"))
+    {
+        return .{ .score = 95, .reason = "high-risk command pattern" };
+    }
+    if ((containsIgnoreCase(value, "curl") or containsIgnoreCase(value, "wget")) and
+        (containsIgnoreCase(value, "| sh") or containsIgnoreCase(value, "| bash")))
+    {
+        return .{ .score = 90, .reason = "network script command pattern" };
+    }
+    if (matchers.matchesCommand("git push --force*", value)) return .{ .score = 95, .reason = "force git remote write" };
+    if (matchers.matchesCommand("git push*", value)) return .{ .score = 80, .reason = "git remote write" };
+    if (matchers.matchesCommand("npm install*", value) or matchers.matchesCommand("pip install*", value)) return .{ .score = 70, .reason = "package install command" };
+    return null;
+}
+
+fn containsIgnoreCase(haystack: []const u8, needle: []const u8) bool {
+    return std.ascii.indexOfIgnoreCase(haystack, needle) != null;
 }
 
 fn isSecretLikeEnvName(value: []const u8) bool {
