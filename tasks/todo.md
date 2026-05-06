@@ -236,3 +236,59 @@
 - [x] Fixed embedded secret assignments in command targets so joined `process_launch` command strings are redacted before JSONL persistence.
 - [x] Fixed observe-mode overrides so policies with `env.inherit: false` keep minimal allowlist-only environments.
 - [x] Added regression tests for both review findings and updated `tasks/lessons.md`.
+
+# Phase 09 Filesystem Guard and Staged Writes Plan
+
+## Assumptions
+
+- Phase 09 implements the filesystem decision engine and staged-write workflow for Aegis-controlled operations only. It must not claim transparent OS-level interception of arbitrary child-process file IO.
+- Filesystem read/write decisions should route through the existing policy evaluator and include matched-rule explanations where available, with default protected-path behavior supplementing policy defaults.
+- Staged writes live under `.aegis/sessions/<session-id>/` and must remain reviewable through `aegis diff`, `aegis apply`, and `aegis discard`.
+- Persistent file/staging audit events must go through the existing audit writer and redaction bridge before storage.
+- Strict/CI ambiguity should fail closed for path decisions, especially traversal, symlink escape, missing workspace context, and invalid policy state.
+
+## Research Check
+
+- [x] Read `CODEX_MASTER_PROMPT.md`, `CODEX_AGENT_CONTEXT.md`, `CANONICAL_IMPLEMENTATION_DECISIONS.md`, `ARCHITECTURE_CONTRACTS.md`, `SECURITY_INVARIANTS.md`, `PRODUCTION_READINESS_GATES.md`, and `09_FILESYSTEM_GUARD_AND_STAGING.md`.
+- [x] Reviewed existing Phase 04-08 task notes and lessons for CLI exit behavior, audit failure handling, policy fail-closed behavior, and redaction persistence.
+- [x] Verify current CLI diff/apply/discard placeholders, build test registration, policy action shape, audit event model, and session layout before implementation.
+
+## Checklist
+
+- [x] Add tests first for relative/absolute path normalization, workspace containment, traversal escape, symlink escape, `.env`, fake `~/.ssh/id_ed25519`, staged create/update, diff/apply/discard, staging index integrity, and audit events.
+- [x] Implement filesystem path normalization and containment checks in `src/intercept/files.zig`.
+- [x] Implement file read/write policy evaluation and default sensitive read/protected write rules without ad hoc CLI-only decisions.
+- [x] Implement staged write storage under `.aegis/sessions/<session-id>/staged/`, `original/`, and `staging-index.json`.
+- [x] Implement diff/apply/discard core operations with original-state verification where feasible.
+- [x] Wire `aegis diff`, `aegis apply`, and `aegis discard` to the staging engine, including `--session last` and `--file <path>`.
+- [x] Emit filesystem audit events through the existing redacted audit persistence path.
+- [x] Update help/docs only as needed, with honest Aegis-mediated coverage limits.
+- [x] Run `zig build`, `zig build test`, and required manual Phase 09 smoke checks.
+- [x] Document review results, known limitations, security notes, and acceptance criteria status.
+
+## Review
+
+- `zig build --summary all` passed.
+- `zig build test --summary all` passed with 85/85 tests.
+- Manual staged apply smoke passed:
+  - Created an Aegis-mediated staged file in session `2026-05-06T20-23-24Z_4c40`.
+  - Verified `.aegis/sessions/2026-05-06T20-23-24Z_4c40/staging-index.json` existed before apply.
+  - `aegis diff --session last` showed the staged create diff.
+  - `aegis apply --session last` applied the staged file.
+  - `aegis replay --session last --verify` showed `file_write_attempt`, `file_write_staged`, and `file_apply`, with hash-chain verification passing.
+- Manual staged discard smoke passed:
+  - Created an Aegis-mediated staged file in session `2026-05-06T20-23-31Z_a8f3`.
+  - Verified `.aegis/sessions/2026-05-06T20-23-31Z_a8f3/staging-index.json` existed before discard.
+  - `aegis discard --session last` discarded the staged file without creating it in the workspace.
+  - `aegis replay --session last --verify` showed `file_write_attempt`, `file_write_staged`, and `file_discard`, with hash-chain verification passing.
+- Manual symlink escape smoke passed with `SymlinkEscapesWorkspace`.
+- Phase 09 implements the filesystem decision engine and staged-write workflow for Aegis-mediated operations. It does not claim transparent OS-level interception of arbitrary child-process file IO.
+- Unicode normalization is documented as a limitation of this phase; paths are UTF-8 validated and separator/case handling is conservative.
+
+## Review Fixes
+
+- [x] Fix builtin home-directory read denies so workspace-at-home paths like `.ssh/config` still match `~/.ssh/**`.
+- [x] Verify `staged_hash` before applying create/update entries so reviewed staged bytes cannot be swapped before apply.
+- [x] Generate diffs against the captured `original/` copy for update/delete entries instead of live workspace contents.
+- [x] Add regression tests for all three review findings.
+- [x] Re-run `zig build` and `zig build test`.

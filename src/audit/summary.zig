@@ -38,6 +38,64 @@ pub fn writeFiles(allocator: std.mem.Allocator, session_dir_path: []const u8, in
     }
 }
 
+pub fn updateFinalHash(allocator: std.mem.Allocator, session_dir_path: []const u8, event_count: usize, final_event_hash: []const u8) !void {
+    const json_path = try std.fs.path.join(allocator, &.{ session_dir_path, "summary.json" });
+    defer allocator.free(json_path);
+    const md_path = try std.fs.path.join(allocator, &.{ session_dir_path, "summary.md" });
+    defer allocator.free(md_path);
+    const text = try std.fs.cwd().readFileAlloc(allocator, json_path, core.limits.max_event_field_len);
+    defer allocator.free(text);
+    var parsed = try std.json.parseFromSlice(std.json.Value, allocator, text, .{});
+    defer parsed.deinit();
+    const object = parsed.value.object;
+
+    var list: std.ArrayList(u8) = .empty;
+    defer list.deinit(allocator);
+    const writer = list.writer(allocator);
+    try writer.writeByte('{');
+    try writer.print("\"version\":{d}", .{object.get("version").?.integer});
+    try writeStringValueField(writer, "session_id", object.get("session_id").?);
+    try writeStringValueField(writer, "started_at", object.get("started_at").?);
+    try writer.writeAll(",\"ended_at\":");
+    try writeNullableJsonValue(writer, object.get("ended_at").?);
+    try writeStringValueField(writer, "workspace_root", object.get("workspace_root").?);
+    try writeStringValueField(writer, "mode", object.get("mode").?);
+    try writeStringValueField(writer, "policy", object.get("policy").?);
+    try writer.writeAll(",\"command\":");
+    try writeCommandJsonValue(writer, object.get("command").?.array);
+    try writer.writeAll(",\"status\":");
+    try writeStatusJsonValue(writer, object.get("status").?.object);
+    try writer.print(",\"event_count\":{d},\"final_event_hash\":", .{event_count});
+    try core.util.writeJsonString(writer, final_event_hash);
+    try writer.writeByte('}');
+
+    const file = try std.fs.cwd().createFile(json_path, .{});
+    defer file.close();
+    try file.writeAll(list.items);
+    try file.writeAll("\n");
+    try file.sync();
+
+    var md: std.ArrayList(u8) = .empty;
+    defer md.deinit(allocator);
+    const md_writer = md.writer(allocator);
+    try md_writer.print("# Aegis Session {s}\n\n- Command: `", .{object.get("session_id").?.string});
+    try writeCommandDisplayFromJson(md_writer, object.get("command").?.array);
+    try md_writer.print("`\n- Policy: {s}\n- Mode: {s}\n- Status: {s} {d}\n- Events: {d}\n- Final event hash: `{s}`\n", .{
+        object.get("policy").?.string,
+        object.get("mode").?.string,
+        object.get("status").?.object.get("kind").?.string,
+        object.get("status").?.object.get("code").?.integer,
+        event_count,
+        final_event_hash,
+    });
+    {
+        const md_file = try std.fs.cwd().createFile(md_path, .{});
+        defer md_file.close();
+        try md_file.writeAll(md.items);
+        try md_file.sync();
+    }
+}
+
 pub fn writeJson(writer: anytype, input: SummaryInput) !void {
     var started_buf: [32]u8 = undefined;
     const started = try input.session.started_at.formatIso(&started_buf);
@@ -113,6 +171,41 @@ fn writeStatus(writer: anytype, status: core.supervisor.ChildStatus) !void {
         .stopped => |signal| try writer.print("\"kind\":\"stopped\",\"code\":{d}", .{signal}),
         .unknown => |code| try writer.print("\"kind\":\"unknown\",\"code\":{d}", .{code}),
     }
+    try writer.writeByte('}');
+}
+
+fn writeStringValueField(writer: anytype, name: []const u8, value: std.json.Value) !void {
+    try writer.writeByte(',');
+    try core.util.writeJsonString(writer, name);
+    try writer.writeByte(':');
+    try core.util.writeJsonString(writer, value.string);
+}
+
+fn writeNullableJsonValue(writer: anytype, value: std.json.Value) !void {
+    if (value == .null) try writer.writeAll("null") else try core.util.writeJsonString(writer, value.string);
+}
+
+fn writeCommandJsonValue(writer: anytype, command: std.json.Array) !void {
+    try writer.writeByte('[');
+    for (command.items, 0..) |item, index| {
+        if (index > 0) try writer.writeByte(',');
+        try core.util.writeJsonString(writer, item.string);
+    }
+    try writer.writeByte(']');
+}
+
+fn writeCommandDisplayFromJson(writer: anytype, command: std.json.Array) !void {
+    for (command.items, 0..) |item, index| {
+        if (index > 0) try writer.writeByte(' ');
+        try writer.writeAll(item.string);
+    }
+}
+
+fn writeStatusJsonValue(writer: anytype, status: std.json.ObjectMap) !void {
+    try writer.writeByte('{');
+    try writer.writeAll("\"kind\":");
+    try core.util.writeJsonString(writer, status.get("kind").?.string);
+    try writer.print(",\"code\":{d}", .{status.get("code").?.integer});
     try writer.writeByte('}');
 }
 
