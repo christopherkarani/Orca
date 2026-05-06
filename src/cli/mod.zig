@@ -182,7 +182,7 @@ test "doctor dispatch prints platform capabilities" {
     try std.testing.expectEqualStrings("", stderr_stream.getWritten());
 }
 
-test "placeholder commands reject unknown options" {
+test "policy command rejects unknown subcommands" {
     var stdout_buf: [256]u8 = undefined;
     var stderr_buf: [256]u8 = undefined;
     var stdout_stream = std.io.fixedBufferStream(&stdout_buf);
@@ -191,7 +191,7 @@ test "placeholder commands reject unknown options" {
     const code = try run(&.{ "policy", "--bad" }, stdout_stream.writer(), stderr_stream.writer());
     try std.testing.expectEqual(exit_codes.usage, code);
     try std.testing.expectEqualStrings("", stdout_stream.getWritten());
-    try std.testing.expect(std.mem.indexOf(u8, stderr_stream.getWritten(), "unknown option") != null);
+    try std.testing.expect(std.mem.indexOf(u8, stderr_stream.getWritten(), "unknown subcommand") != null);
 }
 
 test "run dispatch launches child command" {

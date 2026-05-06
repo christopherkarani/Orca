@@ -14,3 +14,6 @@ zig-out/
 events.jsonl
 summary.json
 summary.md
+.aegis/last
+.aegis/last.tmp
+.aegis/sessions/

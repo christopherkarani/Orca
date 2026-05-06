@@ -8,6 +8,7 @@ pub const SummaryInput = struct {
     status: core.supervisor.ChildStatus,
     event_count: usize,
     final_event_hash: []const u8,
+    policy: []const u8 = "none",
 };
 
 pub fn writeFiles(allocator: std.mem.Allocator, session_dir_path: []const u8, input: SummaryInput) !void {
@@ -54,7 +55,8 @@ pub fn writeJson(writer: anytype, input: SummaryInput) !void {
     try core.util.writeJsonString(writer, input.session.workspace_root);
     try writer.writeAll(",\"mode\":");
     try core.util.writeJsonString(writer, input.session.mode.toString());
-    try writer.writeAll(",\"policy\":\"none\"");
+    try writer.writeAll(",\"policy\":");
+    try core.util.writeJsonString(writer, redact_bridge.redactString(input.policy));
     try writer.writeAll(",\"command\":");
     try writeCommandArray(writer, input.session.command, input.session.args);
     try writer.writeAll(",\"status\":");
@@ -73,13 +75,14 @@ pub fn writeMarkdown(writer: anytype, input: SummaryInput) !void {
     try writeCommandDisplay(writer, input.session.command, input.session.args);
     try writer.print(
         \\`
-        \\- Policy: none
+        \\- Policy: {s}
         \\- Mode: {s}
         \\- Status: {s}
         \\- Events: {d}
         \\- Final event hash: `{s}`
         \\
     , .{
+        redact_bridge.redactString(input.policy),
         input.session.mode.toString(),
         statusText(input.status),
         input.event_count,
