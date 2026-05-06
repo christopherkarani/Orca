@@ -76,3 +76,48 @@
 - [x] Fixed post-spawn start-hook failures so the supervisor kills/reaps the child before returning the hook error.
 - [x] Fixed lifecycle event target ownership so returned events do not point at stack-backed `session.id.slice()` storage.
 - [x] Added regression tests for hook-failure cleanup and owned session event target values.
+
+# Phase 06 Audit Log and Replay Plan
+
+## Assumptions
+
+- Phase 06 owns persistent audit artifacts for `aegis run` only: no policy enforcement, approvals, command guards, MCP mediation, filesystem staging, network enforcement, or raw child output capture.
+- The audit module is the only persistent event writer; CLI and supervisor may create event models but persistence goes through `src/audit`.
+- Deterministic event serialization will use explicit stable field ordering for Aegis event fields rather than a general-purpose canonical JSON implementation.
+- The hash chain will hash `previous_hash || canonical_event_without_event_hash`, with `previous_hash` represented as the previous event's hex hash or empty bytes for the first event.
+- `summary.json` will record bounded session metadata plus the final event hash so `replay --verify` can detect summary tampering as well as event tampering.
+
+## Checklist
+
+- [x] Add Phase 06 tests first for audit directory creation, JSONL writing, stable serialization/hash verification, summary artifacts, last session resolution, replay human output, replay JSON output, denied filtering, and tamper detection.
+- [x] Implement audit redaction hook, deterministic event serializer, hash-chain writer, summary writer, and replay verifier.
+- [x] Wire `aegis run` to create `.aegis/sessions/<session-id>/`, write events and summaries, and update `.aegis/last` after a completed session.
+- [x] Implement `aegis replay` options: `--session last`, `--json`, `--only denied`, and `--verify`.
+- [x] Update command help without claiming future-phase enforcement.
+- [x] Run `zig build`, `zig build test`, and required manual smoke/tamper checks.
+- [x] Document review results, limitations, security notes, and acceptance criteria status.
+
+## Review
+
+- `zig build` passed.
+- `zig build test` passed.
+- Manual smoke tests passed:
+  - `zig-out/bin/aegis run -- echo hello` returned exit code `0`, streamed `hello`, and created `.aegis/sessions/2026-05-06T17-58-43Z_3cb3/`.
+  - `.aegis/sessions/2026-05-06T17-58-43Z_3cb3/events.jsonl` exists and contains `session_start`, `process_launch`, and `session_exit`.
+  - `.aegis/last` points to `2026-05-06T17-58-43Z_3cb3`.
+  - `zig-out/bin/aegis replay --session last` prints the session timeline.
+  - `zig-out/bin/aegis replay --session last --verify` prints `Hash chain: verified`.
+  - `zig-out/bin/aegis replay --session last --json` emits a JSON array of events.
+  - `zig-out/bin/aegis replay --session last --only denied` succeeds and prints no event rows for this allowed Phase 06 run.
+  - Tampering `events.jsonl` by changing `echo hello` to `echo tampered` made `aegis replay --session last --verify` fail with `invalid event_hash`; the file was restored and verification passed again.
+- Phase 06 remains audit/replay only. It does not implement policy enforcement, approvals, command guards, MCP mediation, filesystem staging, network enforcement, sandboxing, or raw child output capture.
+- The deterministic event format uses explicit stable field ordering for Aegis event fields rather than full generic canonical JSON.
+- The redaction hook is intentionally basic in Phase 06; it redacts common secret-shaped strings before event/summary persistence but is not a full redaction engine.
+
+## Review Fixes
+
+- [x] Fixed workspace fallback so a non-Git start directory is preserved instead of resolving to `/` or a parent Git checkout.
+- [x] Added a regression test using a temp directory outside the repository for non-Git workspace fallback.
+- [x] Hardened audit verification so malformed/missing event fields return verification failure reasons instead of panicking.
+- [x] Added malformed-event verification regression coverage.
+- [x] Re-ran `zig build`, `zig build test`, a non-Git `aegis run`/`replay --verify` smoke test, and a malformed-event replay failure smoke test.

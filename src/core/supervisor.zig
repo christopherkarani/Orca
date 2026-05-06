@@ -6,6 +6,7 @@ const platform = @import("platform.zig");
 const session_mod = @import("session.zig");
 const time = @import("time.zig");
 const types = @import("types.zig");
+const util = @import("util.zig");
 
 pub const StdioBehavior = enum {
     inherit,
@@ -19,12 +20,19 @@ pub const RunConfig = struct {
     mode: types.Mode = .observe,
     session_name: ?[]const u8 = null,
     stdio: StdioBehavior = .inherit,
+    before_spawn: ?StartHook = null,
     on_session_start: ?StartHook = null,
+    on_event: ?EventHook = null,
 };
 
 pub const StartHook = struct {
     context: *anyopaque,
     callback: *const fn (context: *anyopaque, session: session_mod.Session) anyerror!void,
+};
+
+pub const EventHook = struct {
+    context: *anyopaque,
+    callback: *const fn (context: *anyopaque, ev: event.Event) anyerror!void,
 };
 
 pub const ChildStatus = union(enum) {
@@ -92,7 +100,18 @@ pub fn run(allocator: std.mem.Allocator, config: RunConfig) !SessionResult {
         }
     }
     events[0] = try makeOwnedTargetEvent(allocator, &event_target_values, &owned_targets, session, started_at, .session_start, .session, session.id.slice());
-    events[1] = try makeOwnedTargetEvent(allocator, &event_target_values, &owned_targets, session, started_at, .process_launch, .command, config.command);
+
+    const command_display = try commandDisplay(allocator, config.command, config.args);
+    defer allocator.free(command_display);
+    events[1] = try makeOwnedTargetEvent(allocator, &event_target_values, &owned_targets, session, started_at, .process_launch, .command, command_display);
+
+    if (config.before_spawn) |hook| {
+        try hook.callback(hook.context, session);
+    }
+    if (config.on_event) |hook| {
+        try hook.callback(hook.context, events[0]);
+        try hook.callback(hook.context, events[1]);
+    }
 
     var argv = try allocator.alloc([]const u8, config.args.len + 1);
     defer allocator.free(argv);
@@ -136,6 +155,9 @@ pub fn run(allocator: std.mem.Allocator, config: RunConfig) !SessionResult {
     session.ended_at = ended_at;
     const status = childStatusFromTerm(term);
     events[2] = try makeOwnedTargetEvent(allocator, &event_target_values, &owned_targets, session, ended_at, .session_exit, .session, session.id.slice());
+    if (config.on_event) |hook| {
+        try hook.callback(hook.context, events[2]);
+    }
 
     return .{
         .session = session,
@@ -144,6 +166,17 @@ pub fn run(allocator: std.mem.Allocator, config: RunConfig) !SessionResult {
         .event_target_values = event_target_values,
         .allocator = allocator,
     };
+}
+
+fn commandDisplay(allocator: std.mem.Allocator, command: []const u8, args: []const []const u8) ![]u8 {
+    var list: std.ArrayList(u8) = .empty;
+    errdefer list.deinit(allocator);
+    try list.appendSlice(allocator, command);
+    for (args) |arg| {
+        try list.append(allocator, ' ');
+        try list.appendSlice(allocator, arg);
+    }
+    return try list.toOwnedSlice(allocator);
 }
 
 pub fn resolveWorkspaceRoot(
@@ -155,17 +188,28 @@ pub fn resolveWorkspaceRoot(
         return try std.fs.cwd().realpathAlloc(allocator, workspace);
     }
 
-    var current = try std.fs.cwd().realpathAlloc(allocator, start_path);
+    const fallback = try std.fs.cwd().realpathAlloc(allocator, start_path);
+    errdefer allocator.free(fallback);
+    var current = try allocator.dupe(u8, fallback);
     errdefer allocator.free(current);
 
     while (true) {
         const git_path = try std.fs.path.join(allocator, &.{ current, ".git" });
         defer allocator.free(git_path);
 
-        if (hasGitMarker(git_path)) return current;
+        if (hasGitMarker(git_path)) {
+            allocator.free(fallback);
+            return current;
+        }
 
-        const parent = std.fs.path.dirname(current) orelse return current;
-        if (std.mem.eql(u8, parent, current)) return current;
+        const parent = std.fs.path.dirname(current) orelse {
+            allocator.free(current);
+            return fallback;
+        };
+        if (std.mem.eql(u8, parent, current)) {
+            allocator.free(current);
+            return fallback;
+        }
 
         const next = try allocator.dupe(u8, parent);
         allocator.free(current);
@@ -280,7 +324,20 @@ test "workspace detection finds nearest git parent" {
 }
 
 test "workspace detection falls back to start directory outside git" {
-    const root = try std.fs.cwd().realpathAlloc(std.testing.allocator, std.fs.path.sep_str);
+    const tmp_parent = if (std.process.getEnvVarOwned(std.testing.allocator, "TMPDIR")) |value| value else |_| try std.testing.allocator.dupe(u8, "/tmp");
+    defer std.testing.allocator.free(tmp_parent);
+
+    var suffix_buf: [8]u8 = undefined;
+    const suffix = try util.randomHexSuffix(&suffix_buf);
+    const relative_name = try std.fmt.allocPrint(std.testing.allocator, "aegis-non-git-{s}", .{suffix});
+    defer std.testing.allocator.free(relative_name);
+    const tmp_path = try std.fs.path.join(std.testing.allocator, &.{ tmp_parent, relative_name });
+    defer std.testing.allocator.free(tmp_path);
+
+    try std.fs.cwd().makePath(tmp_path);
+    defer std.fs.cwd().deleteTree(tmp_path) catch {};
+
+    const root = try std.fs.cwd().realpathAlloc(std.testing.allocator, tmp_path);
     defer std.testing.allocator.free(root);
 
     const resolved = try resolveWorkspaceRoot(std.testing.allocator, null, root);
