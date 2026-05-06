@@ -37,3 +37,10 @@
 - New CLI modules must be included in the actual patch, not only referenced by imports; untracked source files make clean-checkout builds fail.
 - Approval state must survive the wrapper boundary. If a parent approves an ask-class command that is also shimmed, pass a bounded approval token to the shim or the shim will re-deny the command.
 - Shim coverage must match classifier coverage for risky executable aliases. If `pip3`, `python3`, `ssh`, `scp`, or `nc` are classified, they need corresponding shims in the initial wrapper set.
+
+## 2026-05-07 Phase 11 MCP Stdio Proxy Review
+
+- MCP metadata scanning must feed enforcement state, not just audit output. If a tool is flagged critical during `tools/list`, later `tools/call` must fail closed even when the tool name matches a broad allow rule.
+- JSON-RPC notifications are one-way. A stdio proxy must forward notifications without waiting for a response, or compliant MCP clients can deadlock after `notifications/initialized`.
+- MCP inspect clients must complete the initialize lifecycle by sending `notifications/initialized` before normal requests like `tools/list`.
+- CLI command parsing for subprocess launchers must preserve multi-token argv; `--command node -- server.js` and similar shapes are common for MCP servers.

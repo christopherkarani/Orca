@@ -16,4 +16,5 @@ summary.json
 summary.md
 .aegis/last
 .aegis/last.tmp
+.aegis/last.tmp.*
 .aegis/sessions/

@@ -128,7 +128,12 @@ const common_strict_rules =
     \\
     \\mcp:
     \\  default: ask
+    \\  allow:
+    \\    - "*.search_*"
+    \\    - "*.list_*"
+    \\    - "*.get_*"
     \\  deny:
+    \\    - "*.delete_*"
     \\    - "*.shell"
     \\    - "*.run_command"
     \\

@@ -9,4 +9,4 @@ pub const prompts = @import("prompts.zig");
 pub const sampling = @import("sampling.zig");
 pub const manifests = @import("manifests.zig");
 
-pub const phase = "02-repo-bootstrap";
+pub const phase = "11-mcp-stdio-proxy";

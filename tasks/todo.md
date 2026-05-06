@@ -73,6 +73,23 @@
 
 ## Review Fixes
 
+- [x] Enforce critical/high tool metadata findings during later `tools/call`, not only during `tools/list` audit.
+- [x] Forward JSON-RPC notifications without waiting for server responses, including `notifications/initialized`.
+- [x] Make `aegis mcp inspect` send `notifications/initialized` before `tools/list`.
+- [x] Preserve multi-token server argv passed with `--command ... -- ...`.
+- [x] Add regression tests and update fake fixtures for compliant initialization and metadata enforcement.
+- [x] Re-run `zig build`, `zig build test`, and focused MCP smokes.
+
+## Review Fix Results
+
+- `zig build` passed.
+- `zig build test` passed.
+- Added regression coverage for notification pass-through, metadata-gated denial of safe-looking `search_*` tools, and multi-token `--command` parsing.
+- Updated the fake MCP server to require `notifications/initialized` before `tools/list`; `aegis mcp inspect --command fixtures/mcp/fake_server.py` and `aegis mcp inspect --command python3 -- fixtures/mcp/fake_server.py` both passed.
+- Verified `notifications/initialized` does not produce proxy stdout and does not block the next request.
+- Verified `search_admin_secret` is denied with `MCP tool call denied by flagged metadata` even though default policy allows `*.search_*`.
+- Re-ran invalid JSON-RPC, oversized message, fake-secret redaction, protocol-clean stdout, and replay verification smokes.
+
 - [x] Fixed post-spawn start-hook failures so the supervisor kills/reaps the child before returning the hook error.
 - [x] Fixed lifecycle event target ownership so returned events do not point at stack-backed `session.id.slice()` storage.
 - [x] Added regression tests for hook-failure cleanup and owned session event target values.
@@ -218,6 +235,53 @@
 - Review fix: high-entropy redaction no longer flags path-shaped values such as local workspace paths, avoiding noisy false positives in audit events.
 
 ## Known Limitations
+
+# Phase 11 MCP Stdio Proxy Plan
+
+## Assumptions
+
+- Phase 11 is stdio-only MCP proxying: no remote HTTP MCP, OAuth, hosted gateway, resources/prompts/sampling enforcement beyond pass-through logging for unknown methods.
+- Stdio MCP protocol traffic is newline-delimited UTF-8 JSON-RPC. The proxy must reject oversized, invalid, or embedded-newline messages for the affected action.
+- `aegis mcp proxy` must reserve stdout for JSON-RPC only; diagnostics, server stderr, and human/debug logs go to stderr or audit files.
+- MCP tool-call decisions must use the existing policy evaluator. Server-scoped policy config can be flattened to existing `server.tool` MCP selectors.
+- Persistent MCP audit events must use the existing audit writer and redaction path; tool arguments are stored only as bounded/redacted target strings.
+- Interactive ask approvals are supported only when not in CI mode and when the proxy has a prompt-capable stderr/stdin path; CI converts ask to deny.
+
+## Research Check
+
+- [x] Read `CODEX_MASTER_PROMPT.md`, `CANONICAL_IMPLEMENTATION_DECISIONS.md`, `ARCHITECTURE_CONTRACTS.md`, `SECURITY_INVARIANTS.md`, `PRODUCTION_READINESS_GATES.md`, and `11_MCP_STDIO_PROXY.md`.
+- [x] Verified `src/mcp/jsonrpc.zig`, `src/mcp/stdio.zig`, `src/mcp/proxy.zig`, and `src/mcp/tools.zig` are placeholders.
+- [x] Verified MCP policy evaluation already exists as flat selectors via `policy.evaluate` and needs server-scoped YAML/JSON parsing support for the Phase 11 policy shape.
+- [x] Verified audit persistence goes through `src/audit/writer.zig` and target/decision fields are redacted by `src/audit/redact_bridge.zig`.
+
+## Checklist
+
+- [x] Add Phase 11 tests first for JSON-RPC framing, invalid/oversized input, metadata scanning, policy shape parsing, and proxy behavior.
+- [x] Add fake stdio MCP server/client fixtures for smoke tests.
+- [x] Implement bounded JSON-RPC line parser/writer with no embedded-newline acceptance.
+- [x] Implement MCP tool metadata extraction, schema limits, risk classification, and suspicious metadata findings.
+- [x] Implement stdio server subprocess proxying for `initialize`, `tools/list`, `tools/call`, and pass-through unknown methods.
+- [x] Enforce `tools/call` through existing policy evaluation, including matched rule reporting and CI ask-to-deny behavior.
+- [x] Integrate approval request events and user approval/denial events without waiting in CI.
+- [x] Emit MCP audit events through the audit writer with secret-like arguments redacted before persistence.
+- [x] Implement `aegis mcp inspect --command <server>` and `aegis mcp proxy --command <server>`.
+- [x] Update help text without claiming future HTTP/OAuth behavior.
+- [x] Run `zig build`, `zig build test`, and manual MCP smoke tests.
+- [x] Document review results, limitations, security notes, and acceptance criteria status.
+
+## Review
+
+- `zig build` passed.
+- `zig build test` passed.
+- Manual `aegis mcp inspect --command fixtures/mcp/fake_server.py` passed and listed safe, write, delete, and malicious tools with findings.
+- Manual `fixtures/mcp/fake_client.py | aegis mcp proxy --command fixtures/mcp/fake_server.py` passed: `initialize`, `tools/list`, and safe `search_issues` forwarded; `delete_repository` returned a JSON-RPC policy error.
+- Manual invalid JSON-RPC input returned a valid JSON-RPC error response with `id: null`.
+- Manual oversized MCP input returned a valid JSON-RPC error response with code `-32002`.
+- Manual secret argument smoke confirmed `fake_secret_value` does not appear in `.aegis/sessions/**/events.jsonl`; MCP audit target values are redacted with stable fingerprints.
+- Manual replay passed with MCP events visible and `Hash chain: verified`.
+- Protocol stdout validation passed for proxy, invalid, secret-argument, and oversized smokes; server stderr logs stayed on stderr.
+- Non-CI `ask` decisions now use a best-effort `/dev/tty` approval channel so MCP protocol stdin remains reserved for JSON-RPC; if no TTY is available, ask fails closed.
+- Phase 11 remains stdio-only. Remote HTTP MCP, OAuth, hosted gateway behavior, and full resources/prompts/sampling mediation remain out of scope for later phases.
 
 - Environment filtering is direct-child wrapper-level enforcement through `std.process.Child.env_map`; it is not OS-level process-tree containment.
 - Observe policy can still pass fake secrets to the child by design, but audit and replay persistence redact them.
