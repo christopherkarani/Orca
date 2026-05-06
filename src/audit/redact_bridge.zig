@@ -71,6 +71,7 @@ pub fn classifyString(value: []const u8) ?RedactionMatch {
         if (classifySecretValue(assignment.value)) |match| return match;
     }
     if (classifyEmbeddedAssignment(value)) |match| return match;
+    if (classifyEmbeddedSecretToken(value)) |match| return match;
     return classifySecretValue(value);
 }
 
@@ -78,7 +79,7 @@ pub fn classifySecretValue(value: []const u8) ?RedactionMatch {
     const trimmed = std.mem.trim(u8, value, " \t\r\n");
     if (trimmed.len == 0) return null;
 
-    if (containsIgnoreCase(trimmed, "fake_secret") or containsIgnoreCase(trimmed, "secret_value")) {
+    if (containsIgnoreCase(trimmed, "fake_secret") or containsIgnoreCase(trimmed, "fake-secret") or containsIgnoreCase(trimmed, "secret_value") or containsIgnoreCase(trimmed, "secret-value")) {
         return .{ .label = "secret:synthetic_secret", .fingerprint = fingerprint8(trimmed) };
     }
     if (containsIgnoreCase(trimmed, "-----BEGIN ") and containsIgnoreCase(trimmed, "PRIVATE KEY-----")) {
@@ -152,6 +153,15 @@ fn classifyEmbeddedAssignment(value: []const u8) ?RedactionMatch {
             }
             if (classifySecretValue(assignment.value)) |match| return match;
         }
+    }
+    return null;
+}
+
+fn classifyEmbeddedSecretToken(value: []const u8) ?RedactionMatch {
+    var tokens = std.mem.tokenizeAny(u8, value, " \t\r\n?&=|,;:\"'()[]{}<>");
+    while (tokens.next()) |raw_token| {
+        const token = std.mem.trim(u8, raw_token, ":");
+        if (classifySecretValue(token)) |match| return match;
     }
     return null;
 }
