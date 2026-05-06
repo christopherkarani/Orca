@@ -292,3 +292,68 @@
 - [x] Generate diffs against the captured `original/` copy for update/delete entries instead of live workspace contents.
 - [x] Add regression tests for all three review findings.
 - [x] Re-run `zig build` and `zig build test`.
+
+# Phase 10 Command Guard and Approvals Plan
+
+## Assumptions
+
+- Phase 10 owns command classification, command decision enforcement for Aegis-mediated execution, interactive/session approvals, audit events, and initial PATH shims only. It must not claim full OS-level or process-tree interception.
+- Command parsing should be pragmatic and token-aware enough for high-signal dangerous patterns, not a complete shell parser.
+- Command decisions must route through `policy.evaluate` and persistent events must use the existing audit writer/redaction path.
+- CI mode must convert every ask outcome to deny and must never read from stdin.
+- Shims should be session-local under `.aegis/sessions/<session-id>/shims/`, cover a small practical command set first, and avoid recursion by resolving the real binary with the shim directory removed from `PATH`.
+
+## Research Check
+
+- [x] Read `CODEX_MASTER_PROMPT.md`, `CANONICAL_IMPLEMENTATION_DECISIONS.md`, `ARCHITECTURE_CONTRACTS.md`, `SECURITY_INVARIANTS.md`, `PRODUCTION_READINESS_GATES.md`, and `10_COMMAND_GUARD_AND_APPROVALS.md`.
+- [x] Reviewed existing policy evaluation, audit writer/redaction, event schema, run supervision, and current intercept command/approval stubs.
+- [x] Checked existing lessons for audit/redaction, fail-closed policy behavior, and runtime artifact handling.
+
+## Checklist
+
+- [x] Add tests first for command classification, policy decisions, CI ask denial, session approval, audit redaction, run integration, and shim callback behavior.
+- [x] Implement command risk classes, bounded command display, tokenization, high-risk pattern matching, and risk scoring in `src/intercept/commands.zig`.
+- [x] Implement approval session state and interactive prompt handling in `src/intercept/approvals.zig`.
+- [x] Wire command evaluation through the existing policy engine with deny priority, risk-backed decisions, and matched-rule preservation.
+- [x] Emit command attempt/allowed/denied/approval/user decision events through the audit path without persisting child stdout/stderr.
+- [x] Integrate command guard into `aegis run` before child launch and make denied commands return non-zero.
+- [x] Add `aegis shim exec -- <command> [args...]`, create session shim directories, prepend PATH only inside the Aegis session, and generate a small safe shim set.
+- [x] Update help and task review notes with honest wrapper/shim coverage limitations.
+- [x] Run `zig build`, `zig build test`, and all requested manual smoke checks.
+- [x] Document review results, known limitations, security notes, and acceptance criteria status.
+
+## Review
+
+- `zig build --summary all` passed.
+- `zig build test --summary all` passed with 100/100 tests.
+- Manual CI smoke passed: `aegis run --workspace /tmp/aegis-phase10.F5pjLB --mode ci -- npm install left-pad` returned exit code `3` without prompting.
+- Manual safe command smoke passed: `aegis run --workspace /tmp/aegis-phase10.F5pjLB -- true` returned exit code `0`.
+- Manual dangerous command smoke passed: `aegis run --workspace /tmp/aegis-phase10.F5pjLB -- rm -rf /` returned exit code `3`.
+- Manual replay smoke passed with command decision events and `Hash chain: verified`.
+- Manual fake-secret smoke passed: `OPENAI_API_KEY=sk-fakeSyntheticOpenAIKey1234567890` did not appear raw in session audit files.
+- Manual PATH shim directory smoke passed: the session contained shims for `bash`, `curl`, `git`, `node`, `npm`, `pip`, `pnpm`, `python`, `sh`, `wget`, `yarn`, and `zsh`.
+- Manual shim callback smoke passed: `aegis shim exec -- git status` delegated to the real `git`, and `aegis shim exec -- rm -rf /` returned exit code `3` with command denial events.
+
+## Known Limitations
+
+- Command parsing is pragmatic and pattern-based; it intentionally is not a complete shell parser.
+- Command Guard protects Aegis-mediated direct execution and wrapper/PATH-shim callbacks. It does not claim full OS-level or process-tree interception.
+- The initial direct child command is policy-checked before launch; PATH shims are best-effort wrapper infrastructure for commands resolved inside the Aegis session environment.
+- The initial shim set is small and POSIX-shell oriented. Windows-specific `.cmd`/PowerShell shim coverage is left for later platform phases.
+- Non-interactive ask decisions outside CI are denied instead of prompting to avoid hangs.
+
+## Security Notes
+
+- Deny decisions beat allow for mandatory high-risk classifier findings.
+- CI mode never prompts; ask decisions become deny.
+- Command audit events go through the existing redacting audit writer and do not persist raw child stdout/stderr.
+- Shim delegation removes the session shim directory from `PATH` before resolving the real binary to avoid recursive shim invocation.
+- Command strings are bounded before evaluation/logging, and serialized audit target/decision fields remain redacted.
+
+## Review Fixes
+
+- [x] Added the new `src/cli/shim.zig` module to the visible patch with intent-to-add so clean-checkout reviews include it.
+- [x] Preserved parent approvals across shim callbacks using SHA-256 command approval hashes, with one-time approvals consumed before real-binary delegation.
+- [x] Expanded shim coverage for risky aliases recognized by the classifier, including `pip3`, `python3`, `ssh`, `scp`, `nc`, `netcat`, `powershell`, and `pwsh`.
+- [x] Added regression tests for approved ask-class shim delegation, approval hash redaction, and risky alias shim coverage.
+- [x] Re-ran `zig build` and `zig build test`, plus focused shim manual smokes.

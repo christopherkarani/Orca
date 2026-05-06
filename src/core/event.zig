@@ -22,6 +22,7 @@ pub const EventType = enum {
     file_apply,
     file_discard,
     command_attempt,
+    command_approval_requested,
     command_allowed,
     command_denied,
     network_connect_attempt,
