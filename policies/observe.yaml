@@ -1,0 +1,42 @@
+version: 1
+mode: observe
+
+workspace:
+  root: "."
+  write_mode: staged
+
+env:
+  inherit: true
+  deny_patterns:
+    - "*TOKEN*"
+    - "*SECRET*"
+    - "*KEY*"
+    - "AWS_*"
+
+files:
+  read:
+    default: observe
+    deny:
+      - "~/.ssh/**"
+      - "~/.aws/**"
+      - "./.env"
+      - "./.env.*"
+  write:
+    default: observe
+    mode: staged
+
+commands:
+  default: observe
+  deny:
+    - "rm -rf *"
+
+network:
+  default: observe
+
+mcp:
+  default: observe
+
+audit:
+  level: full
+  redact_secrets: true
+  tamper_evident: true

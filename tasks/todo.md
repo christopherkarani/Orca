@@ -121,3 +121,58 @@
 - [x] Hardened audit verification so malformed/missing event fields return verification failure reasons instead of panicking.
 - [x] Added malformed-event verification regression coverage.
 - [x] Re-ran `zig build`, `zig build test`, a non-Git `aegis run`/`replay --verify` smoke test, and a malformed-event replay failure smoke test.
+
+# Phase 07 Policy Engine Plan
+
+## Assumptions
+
+- Phase 07 is policy evaluation only: no filesystem, command, network, MCP, or sandbox enforcement should be claimed or added yet.
+- YAML support can be implemented for the minimum v1 schema without adding a dependency; JSON policies should also parse through Zig's standard JSON parser.
+- Policy discovery order is CLI path, workspace `.aegis/policy.yaml`, user config `~/.config/aegis/policy.yaml`, then built-in preset.
+- `aegis policy explain` can use the discovered/default policy because the requested command shape has no explicit policy path option.
+- `aegis run --policy <path>` should validate/load the policy and audit a `policy_loaded` event, but should still run the child without enforcing policy decisions.
+
+## Research Check
+
+- [x] Read Phase 07, canonical implementation decisions, architecture contracts, security invariants, and production readiness gates.
+- [x] Verified existing `src/policy` files are stubs and Phase 06 audit/run wiring is the integration point.
+- [x] Verified event type `policy_loaded` already exists and replay can display arbitrary event types from JSONL.
+
+## Checklist
+
+- [x] Add policy tests first for parsing, invalid failures, discovery, modes, matching, explanations, deny priority, and built-in presets.
+- [x] Implement versioned policy schema, built-in presets, bounded loading, minimal YAML/JSON parsing, validation, and discovery.
+- [x] Implement rule matchers for files, env vars, commands, network domains, and MCP `server.tool` selectors.
+- [x] Implement decision priority and explanations with matched rule IDs where possible.
+- [x] Implement `aegis policy check` and `aegis policy explain`.
+- [x] Wire `aegis run --policy` to load policy and emit a `policy_loaded` audit event without claiming enforcement.
+- [x] Add built-in policy files/templates for observe, ask, strict, and ci.
+- [x] Run `zig build`, `zig build test`, and required manual smoke tests.
+- [x] Document review results, limitations, security notes, and acceptance criteria status.
+
+## Review
+
+- `zig build` passed.
+- `zig build test` passed.
+- Manual policy checks passed:
+  - `aegis policy check policies/strict.yaml`
+  - `aegis policy check policies/ask.yaml`
+  - `aegis policy check policies/observe.yaml`
+  - `aegis policy check policies/ci.yaml`
+- Manual explanations passed:
+  - `aegis policy explain file.read ~/.ssh/id_ed25519` returned `deny` with `files.read.deny[2]`.
+  - `aegis policy explain file.read ./.env` returned `deny` with `files.read.deny[0]`.
+  - `aegis policy explain command "rm -rf /"` returned `deny` with `commands.deny[0]`.
+  - `aegis policy explain network api.github.com` returned `allow` with `network.allow[0]`.
+- `aegis run --policy policies/strict.yaml -- echo hello` passed and replay for the session showed `policy_loaded`.
+- `aegis replay --session last --verify` passed with `Hash chain: verified`.
+- Invalid policy smoke test returned non-zero with `UnsupportedPolicyMode`.
+- Phase 07 remains policy evaluation only. It does not enforce filesystem, command, network, environment, MCP, sandbox, or approval decisions yet.
+- CI-mode ask decisions are converted to deny inside the evaluator so policy evaluation never waits for interactive input.
+
+## Review Fixes
+
+- [x] Fixed policy discovery so optional workspace/user policy locations fall through only on `FileNotFound`; unreadable, malformed, or otherwise unloadable discovered policies now fail closed.
+- [x] Fixed JSON parsing to reject unknown top-level and nested policy keys, including misspelled rule keys like `denny` or `defualt`.
+- [x] Added regression tests for non-missing workspace policy load failures and unknown JSON keys.
+- [x] Removed generated `.aegis` runtime state from the worktree and ignored `.aegis/last`, `.aegis/last.tmp`, and `.aegis/sessions/`.

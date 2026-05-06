@@ -19,6 +19,7 @@ pub const RunConfig = struct {
     workspace: ?[]const u8 = null,
     mode: types.Mode = .observe,
     session_name: ?[]const u8 = null,
+    policy_source: ?[]const u8 = null,
     stdio: StdioBehavior = .inherit,
     before_spawn: ?StartHook = null,
     on_session_start: ?StartHook = null,
@@ -89,9 +90,10 @@ pub fn run(allocator: std.mem.Allocator, config: RunConfig) !SessionResult {
         .platform = platform.detectOs(),
     };
 
-    var events = try allocator.alloc(event.Event, 3);
+    const event_count: usize = if (config.policy_source != null) 4 else 3;
+    var events = try allocator.alloc(event.Event, event_count);
     errdefer allocator.free(events);
-    var event_target_values = try allocator.alloc([]const u8, 3);
+    var event_target_values = try allocator.alloc([]const u8, event_count);
     errdefer allocator.free(event_target_values);
     var owned_targets: usize = 0;
     errdefer {
@@ -101,16 +103,22 @@ pub fn run(allocator: std.mem.Allocator, config: RunConfig) !SessionResult {
     }
     events[0] = try makeOwnedTargetEvent(allocator, &event_target_values, &owned_targets, session, started_at, .session_start, .session, session.id.slice());
 
+    var next_event_index: usize = 1;
+    if (config.policy_source) |policy_source| {
+        events[next_event_index] = try makeOwnedTargetEvent(allocator, &event_target_values, &owned_targets, session, started_at, .policy_loaded, .file_path, policy_source);
+        next_event_index += 1;
+    }
+
     const command_display = try commandDisplay(allocator, config.command, config.args);
     defer allocator.free(command_display);
-    events[1] = try makeOwnedTargetEvent(allocator, &event_target_values, &owned_targets, session, started_at, .process_launch, .command, command_display);
+    events[next_event_index] = try makeOwnedTargetEvent(allocator, &event_target_values, &owned_targets, session, started_at, .process_launch, .command, command_display);
+    next_event_index += 1;
 
     if (config.before_spawn) |hook| {
         try hook.callback(hook.context, session);
     }
     if (config.on_event) |hook| {
-        try hook.callback(hook.context, events[0]);
-        try hook.callback(hook.context, events[1]);
+        for (events[0..next_event_index]) |ev| try hook.callback(hook.context, ev);
     }
 
     var argv = try allocator.alloc([]const u8, config.args.len + 1);
@@ -154,9 +162,9 @@ pub fn run(allocator: std.mem.Allocator, config: RunConfig) !SessionResult {
     const ended_at = time.Timestamp.now();
     session.ended_at = ended_at;
     const status = childStatusFromTerm(term);
-    events[2] = try makeOwnedTargetEvent(allocator, &event_target_values, &owned_targets, session, ended_at, .session_exit, .session, session.id.slice());
+    events[next_event_index] = try makeOwnedTargetEvent(allocator, &event_target_values, &owned_targets, session, ended_at, .session_exit, .session, session.id.slice());
     if (config.on_event) |hook| {
-        try hook.callback(hook.context, events[2]);
+        try hook.callback(hook.context, events[next_event_index]);
     }
 
     return .{
@@ -278,7 +286,7 @@ const FailingHookContext = struct {
 test "run config construction captures phase 05 inputs" {
     const config: RunConfig = .{
         .command = "zig",
-        .args = &.{ "version" },
+        .args = &.{"version"},
         .workspace = ".",
         .mode = .observe,
         .session_name = "smoke",

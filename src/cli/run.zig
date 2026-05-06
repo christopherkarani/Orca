@@ -2,12 +2,15 @@ const std = @import("std");
 
 const audit = @import("../audit/mod.zig");
 const core = @import("../core/mod.zig");
+const policy = @import("../policy/mod.zig");
 const exit_codes = @import("exit_codes.zig");
 const help = @import("help.zig");
 
 const RunOptions = struct {
     workspace: ?[]const u8 = null,
     mode: core.types.Mode = .observe,
+    mode_explicit: bool = false,
+    policy_path: ?[]const u8 = null,
     session_name: ?[]const u8 = null,
     command_argv: []const []const u8 = &.{},
 };
@@ -26,6 +29,22 @@ fn commandWithStdio(argv: []const []const u8, stdout: anytype, stderr: anytype, 
     var gpa_state: std.heap.GeneralPurposeAllocator(.{}) = .init;
     defer _ = gpa_state.deinit();
     const allocator = gpa_state.allocator();
+
+    const workspace_root_for_policy = core.supervisor.resolveWorkspaceRoot(allocator, options.workspace, ".") catch |err| switch (err) {
+        error.FileNotFound => {
+            try stderr.print("aegis run: workspace not found: {s}\n", .{options.workspace orelse "."});
+            return exit_codes.general;
+        },
+        else => return err,
+    };
+    defer allocator.free(workspace_root_for_policy);
+
+    var loaded_policy = policy.load.discover(allocator, options.policy_path, workspace_root_for_policy) catch |err| {
+        try stderr.print("aegis run: invalid policy: {s}\n", .{@errorName(err)});
+        return exit_codes.general;
+    };
+    defer loaded_policy.deinit();
+    const session_mode = if (options.mode_explicit) options.mode else loaded_policy.policy.mode.toCoreMode();
 
     const StartPrinter = struct {
         writer: @TypeOf(stdout),
@@ -73,8 +92,9 @@ fn commandWithStdio(argv: []const []const u8, stdout: anytype, stderr: anytype, 
         .command = options.command_argv[0],
         .args = options.command_argv[1..],
         .workspace = options.workspace,
-        .mode = options.mode,
+        .mode = session_mode,
         .session_name = options.session_name,
+        .policy_source = loaded_policy.path,
         .stdio = stdio,
         .before_spawn = before_spawn,
         .on_session_start = .{
@@ -109,6 +129,7 @@ fn commandWithStdio(argv: []const []const u8, stdout: anytype, stderr: anytype, 
             .status = result.status,
             .event_count = writer.event_count,
             .final_event_hash = final_hash,
+            .policy = loaded_policy.path,
         });
         try writer.writeLastPointer();
     }
@@ -161,6 +182,14 @@ fn parseOptions(argv: []const []const u8, stdout: anytype, stderr: anytype) !Run
                 try stderr.print("aegis run: unsupported mode '{s}'. Expected observe, ask, strict, or ci.\n", .{argv[index]});
                 return error.Usage;
             };
+            options.mode_explicit = true;
+        } else if (std.mem.eql(u8, arg, "--policy")) {
+            index += 1;
+            if (index >= argv.len) {
+                try stderr.writeAll("aegis run: --policy requires a path.\n");
+                return error.Usage;
+            }
+            options.policy_path = argv[index];
         } else if (std.mem.eql(u8, arg, "--session-name")) {
             index += 1;
             if (index >= argv.len) {
@@ -265,4 +294,26 @@ test "run reports missing command usefully" {
 
 pub fn commandForTest(argv: []const []const u8, stdout: anytype, stderr: anytype, stdio: core.supervisor.StdioBehavior) !u8 {
     return commandWithStdio(argv, stdout, stderr, stdio, false);
+}
+
+test "run accepts policy path and uses policy mode when mode is not explicit" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    {
+        const file = try tmp.dir.createFile("strict.yaml", .{});
+        defer file.close();
+        try file.writeAll(policy.presets.text(.strict));
+    }
+    const path = try tmp.dir.realpathAlloc(std.testing.allocator, "strict.yaml");
+    defer std.testing.allocator.free(path);
+
+    var stdout_buf: [1024]u8 = undefined;
+    var stderr_buf: [512]u8 = undefined;
+    var stdout_stream = std.io.fixedBufferStream(&stdout_buf);
+    var stderr_stream = std.io.fixedBufferStream(&stderr_buf);
+
+    const code = try commandForTest(&.{ "--policy", path, "--", "zig", "version" }, stdout_stream.writer(), stderr_stream.writer(), .ignore);
+    try std.testing.expectEqual(exit_codes.success, code);
+    try std.testing.expect(std.mem.indexOf(u8, stdout_stream.getWritten(), "Mode: strict") != null);
+    try std.testing.expectEqualStrings("", stderr_stream.getWritten());
 }
