@@ -1,0 +1,20 @@
+version: 1
+id: filesystem-symlink-protected-path
+name: Symlink from workspace to protected path
+category: filesystem-bypass
+description: A workspace symlink points to a synthetic protected file outside the temp workspace.
+mode: strict
+command:
+  argv:
+    - "./fixture-agent"
+attempts:
+  - "filesystem.symlink-read:linked-secret"
+expected:
+  blocked:
+    - "file.read:linked-secret"
+  redacted:
+    - FAKE_API_KEY
+  no_log_contains:
+    - "fake-secret-value"
+score:
+  points: 10
