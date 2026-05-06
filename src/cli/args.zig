@@ -1,1 +1,1 @@
-pub const phase = "02-repo-bootstrap";
+pub const phase = "04-cli-skeleton";
