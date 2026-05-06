@@ -54,7 +54,11 @@ pub const commands = [_]CommandInfo{
         "The proxy speaks newline-delimited stdio JSON-RPC and writes only MCP protocol messages to stdout while proxying.",
         "Remote HTTP MCP, OAuth, and hosted gateway behavior are not implemented in Phase 11.",
     } },
-    .{ .name = "redteam", .summary = "Run red-team fixtures", .usage = "aegis redteam [--help]", .details = &.{"Placeholder in Phase 04; red-team execution starts in Phase 13."} },
+    .{ .name = "redteam", .summary = "Run red-team fixtures", .usage = "aegis redteam [path] [--json] [--ci] [--fixture <id>]", .details = &.{
+        "Discovers deterministic local fixtures, runs them against implemented Aegis controls, and reports a scorecard.",
+        "When no path is provided, fixtures are discovered under ./fixtures.",
+        "--json emits a machine-readable report. --ci never prompts and exits non-zero if any required fixture fails or is unsupported.",
+    } },
     .{ .name = "shim", .summary = "Internal PATH shim callback", .usage = "aegis shim exec -- <command> [args...]", .details = &.{
         "Internal callback used by session-local PATH shims under .aegis/sessions/<id>/shims/.",
         "The shim removes the session shim directory from PATH before resolving the real binary to avoid recursive invocation.",
