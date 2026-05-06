@@ -14,8 +14,9 @@ pub const commands = [_]CommandInfo{
         .usage = "aegis run [options] -- <command> [args...]",
         .details = &.{
             "Starts a direct-child supervision session, filters the child environment through policy, checks the direct command through Command Guard, writes audit artifacts, and mirrors the child exit code.",
-            "Options: --workspace <path>, --mode observe|ask|strict|ci, --policy <path>, --session-name <name>, --no-secrets, --inherit-env, --help",
+            "Options: --workspace <path>, --mode observe|ask|strict|ci, --policy <path>, --session-name <name>, --no-secrets, --inherit-env, --no-network, --allow-network <domain>, --network observe|ask|allowlist|open|off, --help",
             "Strict and CI modes default to no-secrets child environments. --inherit-env is allowed only when the selected policy permits inheritance.",
+            "Network flags update the run-time policy and audit network decisions. Phase 12 provides decision logic plus child environment metadata hooks, not active proxy or transparent network enforcement.",
             "Phase 10 shims provide wrapper/PATH coverage for a small command set inside the session; they do not claim full OS-level process-tree interception.",
         },
     },

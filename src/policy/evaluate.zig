@@ -1,6 +1,7 @@
 const std = @import("std");
 
 const core = @import("../core/mod.zig");
+const network_guard = @import("../intercept/network.zig");
 const matchers = @import("matchers.zig");
 const schema = @import("schema.zig");
 
@@ -24,7 +25,29 @@ pub fn action(policy: *const schema.Policy, requested: core.types.Action, ctx: s
             defer allocator.free(display);
             return evaluateRuleSet(allocator, mode, .command, "commands", policy.commands, display);
         },
-        .network_connect => |network_action| evaluateRuleSet(allocator, mode, .network, "network", policy.network, network_action.host),
+        .network_connect => |network_action| {
+            const destination_text = try networkDestinationText(allocator, network_action);
+            defer allocator.free(destination_text);
+            var network_decision = try network_guard.evaluate(allocator, policy, mode, destination_text, .{ .ci_mode = mode == .ci });
+            defer network_decision.deinit(allocator);
+            const owned_rule_id = if (network_decision.decision.rule_id) |rule_id| try allocator.dupe(u8, rule_id) else null;
+            errdefer if (owned_rule_id) |rule_id| allocator.free(rule_id);
+            const explanation = try allocator.dupe(u8, network_decision.decision.reason);
+            errdefer allocator.free(explanation);
+            return .{
+                .decision = .{
+                    .result = network_decision.decision.result,
+                    .rule_id = owned_rule_id,
+                    .reason = explanation,
+                    .risk_score = network_decision.decision.risk_score,
+                    .requires_user = network_decision.decision.requires_user,
+                    .ci_may_proceed = network_decision.decision.ci_may_proceed,
+                },
+                .matched_rule = if (network_decision.matched_rule) |rule| .{ .id = owned_rule_id.?, .pattern = rule.pattern } else null,
+                .explanation = explanation,
+                .owned_rule_id = owned_rule_id,
+            };
+        },
         .mcp_tool_call => |tool| {
             const selector = try mcpSelector(allocator, tool.server, tool.tool_name);
             defer allocator.free(selector);
@@ -281,6 +304,22 @@ fn mcpSelector(allocator: std.mem.Allocator, server: ?[]const u8, name: []const 
     return allocator.dupe(u8, name);
 }
 
+fn networkDestinationText(allocator: std.mem.Allocator, network_action: core.types.NetworkAction) ![]u8 {
+    const host = network_action.host;
+    const host_for_port = if (std.mem.indexOfScalar(u8, host, ':') != null and !(std.mem.startsWith(u8, host, "[") and std.mem.endsWith(u8, host, "]")))
+        try std.fmt.allocPrint(allocator, "[{s}]", .{host})
+    else
+        try allocator.dupe(u8, host);
+    defer allocator.free(host_for_port);
+
+    if (network_action.scheme) |scheme| {
+        if (network_action.port) |port| return std.fmt.allocPrint(allocator, "{s}://{s}:{d}", .{ scheme, host_for_port, port });
+        return std.fmt.allocPrint(allocator, "{s}://{s}", .{ scheme, host_for_port });
+    }
+    if (network_action.port) |port| return std.fmt.allocPrint(allocator, "{s}:{d}", .{ host_for_port, port });
+    return allocator.dupe(u8, host);
+}
+
 test "deny priority beats allow for file paths" {
     const load = @import("load.zig");
     var policy = try load.parseFromSlice(std.testing.allocator,
@@ -321,6 +360,29 @@ test "rule matching covers env command network and mcp" {
     var mcp_result = try mcp(&policy, "filesystem.run_command", std.testing.allocator);
     defer mcp_result.deinit(std.testing.allocator);
     try std.testing.expectEqual(core.decision.DecisionResult.deny, mcp_result.decision.result);
+}
+
+test "network action evaluation preserves scheme and port" {
+    const load = @import("load.zig");
+    var policy = try load.parseFromSlice(std.testing.allocator,
+        \\version: 1
+        \\mode: strict
+        \\network:
+        \\  mode: allowlist
+        \\  allow:
+        \\    - "api.github.com:443"
+    , "network-port.yaml");
+    defer policy.deinit();
+
+    const result = try action(&policy, .{ .network_connect = .{
+        .host = "api.github.com",
+        .port = 443,
+        .scheme = "https",
+    } }, .{}, std.testing.allocator);
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(core.decision.DecisionResult.allow, result.decision.result);
+    try std.testing.expectEqualStrings("network.allow[0]", result.matched_rule.?.id);
 }
 
 test "ci mode converts ask to deny without prompting" {

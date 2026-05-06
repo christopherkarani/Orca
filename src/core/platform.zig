@@ -20,7 +20,9 @@ pub const Capability = enum {
     shell_wrapping,
     path_shims,
     mcp_stdio_proxy,
+    network_policy_engine,
     network_observe,
+    network_proxy_enforce,
     network_enforce,
     strong_sandbox,
 
@@ -65,10 +67,12 @@ pub fn defaultCapabilityState(os: Os, capability: Capability) CapabilityState {
         .path_staging,
         .shell_wrapping,
         .mcp_stdio_proxy,
+        .network_policy_engine,
         => .unknown,
         .process_supervision,
         .path_shims,
         .network_observe,
+        .network_proxy_enforce,
         .network_enforce,
         .strong_sandbox,
         => .unavailable,
@@ -76,13 +80,25 @@ pub fn defaultCapabilityState(os: Os, capability: Capability) CapabilityState {
 }
 
 pub fn reportCapability(os: Os, capability: Capability) CapabilityReport {
-    const state = defaultCapabilityState(os, capability);
+    const state = switch (capability) {
+        .network_policy_engine => .active,
+        .network_observe => .partial,
+        .network_proxy_enforce => .unavailable,
+        .network_enforce => .unavailable,
+        else => defaultCapabilityState(os, capability),
+    };
     return .{
         .capability = capability,
         .state = state,
         .note = switch (state) {
+            .active => if (capability == .network_policy_engine) "pure policy decisions are implemented and tested" else "backend reported active",
+            .partial => if (capability == .network_observe) "network audit events exist for Aegis-mediated decisions; transparent observation is platform-dependent" else "partial backend support",
             .unknown => "phase 03 model only; backend not implemented",
-            .unavailable => "not implemented in phase 03",
+            .unavailable => switch (capability) {
+                .network_proxy_enforce => "no managed network proxy is started in Phase 12",
+                .network_enforce => "transparent OS-level network enforcement is not implemented in Phase 12",
+                else => "not implemented in phase 03",
+            },
             else => "backend reported capability",
         },
     };

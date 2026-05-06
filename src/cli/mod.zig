@@ -180,7 +180,7 @@ test "doctor dispatch prints platform capabilities" {
     const code = try run(&.{"doctor"}, stdout_stream.writer(), stderr_stream.writer());
     try std.testing.expectEqual(exit_codes.success, code);
     try std.testing.expect(std.mem.indexOf(u8, stdout_stream.getWritten(), "Capabilities:") != null);
-    try std.testing.expect(std.mem.indexOf(u8, stdout_stream.getWritten(), "planned") != null);
+    try std.testing.expect(std.mem.indexOf(u8, stdout_stream.getWritten(), "network policy engine: active") != null);
     try std.testing.expectEqualStrings("", stderr_stream.getWritten());
 }
 

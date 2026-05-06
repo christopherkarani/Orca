@@ -44,3 +44,9 @@
 - JSON-RPC notifications are one-way. A stdio proxy must forward notifications without waiting for a response, or compliant MCP clients can deadlock after `notifications/initialized`.
 - MCP inspect clients must complete the initialize lifecycle by sending `notifications/initialized` before normal requests like `tools/list`.
 - CLI command parsing for subprocess launchers must preserve multi-token argv; `--command node -- server.js` and similar shapes are common for MCP servers.
+
+## 2026-05-07 Phase 12 Network Guard Review
+
+- Network capability reporting must distinguish decision-only controls from active egress enforcement. Do not report proxy-mediated enforcement as partial unless Aegis actually starts or configures a managed proxy path.
+- Policy action adapters must preserve all structured action fields. For network decisions, build evaluator input from host, port, and scheme instead of dropping port/scheme context.
+- Long-lived trackers must own string keys. Never store borrowed slices from temporary parser buffers in maps that outlive the evaluated input.
