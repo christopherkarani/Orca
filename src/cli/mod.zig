@@ -14,6 +14,7 @@ pub const discard = @import("discard.zig");
 pub const mcp = @import("mcp.zig");
 pub const redteam = @import("redteam.zig");
 pub const completions = @import("completions.zig");
+pub const shim = @import("shim.zig");
 
 pub const version = "0.0.0-dev";
 
@@ -67,6 +68,7 @@ pub fn runWithCwd(cwd: std.fs.Dir, argv: []const []const u8, stdout: anytype, st
     if (std.mem.eql(u8, command, "discard")) return discard.command(argv[1..], stdout, stderr);
     if (std.mem.eql(u8, command, "mcp")) return mcp.command(argv[1..], stdout, stderr);
     if (std.mem.eql(u8, command, "redteam")) return redteam.command(argv[1..], stdout, stderr);
+    if (std.mem.eql(u8, command, "shim")) return shim.command(argv[1..], stdout, stderr);
     try stderr.writeAll("aegis: unknown command '");
     try stderr.writeAll(command);
     try stderr.writeAll("'. Run 'aegis help' for usage.\n");

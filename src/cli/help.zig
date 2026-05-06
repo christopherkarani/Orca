@@ -13,9 +13,10 @@ pub const commands = [_]CommandInfo{
         .summary = "Run a command under Aegis",
         .usage = "aegis run [options] -- <command> [args...]",
         .details = &.{
-            "Starts a direct-child supervision session, filters the child environment through policy, writes audit artifacts, and mirrors the child exit code.",
+            "Starts a direct-child supervision session, filters the child environment through policy, checks the direct command through Command Guard, writes audit artifacts, and mirrors the child exit code.",
             "Options: --workspace <path>, --mode observe|ask|strict|ci, --policy <path>, --session-name <name>, --no-secrets, --inherit-env, --help",
             "Strict and CI modes default to no-secrets child environments. --inherit-env is allowed only when the selected policy permits inheritance.",
+            "Phase 10 shims provide wrapper/PATH coverage for a small command set inside the session; they do not claim full OS-level process-tree interception.",
         },
     },
     .{
@@ -42,11 +43,16 @@ pub const commands = [_]CommandInfo{
         "Explanations show the decision, reason, matched rule when available, and policy mode.",
     } },
     .{ .name = "replay", .summary = "Replay an audit session", .usage = "aegis replay [--session <id|last>] [--json] [--only denied] [--verify]", .details = &.{"Reads .aegis session artifacts, renders a timeline, and can verify the event hash chain."} },
-    .{ .name = "diff", .summary = "Show staged writes", .usage = "aegis diff [--help]", .details = &.{"Placeholder in Phase 04; staged writes start in Phase 09."} },
-    .{ .name = "apply", .summary = "Apply staged writes", .usage = "aegis apply [--help]", .details = &.{"Placeholder in Phase 04; staged writes start in Phase 09."} },
-    .{ .name = "discard", .summary = "Discard staged writes", .usage = "aegis discard [--help]", .details = &.{"Placeholder in Phase 04; staged writes start in Phase 09."} },
+    .{ .name = "diff", .summary = "Show staged writes", .usage = "aegis diff [--session <id|last>] [--file <path>]", .details = &.{"Shows unified diffs for Aegis-mediated staged writes. This does not claim transparent interception of arbitrary child-process file IO."} },
+    .{ .name = "apply", .summary = "Apply staged writes", .usage = "aegis apply [--session <id|last>] [--file <path>]", .details = &.{"Applies reviewed staged writes after original-state checks where feasible."} },
+    .{ .name = "discard", .summary = "Discard staged writes", .usage = "aegis discard [--session <id|last>] [--file <path>]", .details = &.{"Removes staged writes without changing workspace files."} },
     .{ .name = "mcp", .summary = "MCP proxy and inspection commands", .usage = "aegis mcp [--help]", .details = &.{"Placeholder in Phase 04; MCP proxying starts in Phase 11."} },
     .{ .name = "redteam", .summary = "Run red-team fixtures", .usage = "aegis redteam [--help]", .details = &.{"Placeholder in Phase 04; red-team execution starts in Phase 13."} },
+    .{ .name = "shim", .summary = "Internal PATH shim callback", .usage = "aegis shim exec -- <command> [args...]", .details = &.{
+        "Internal callback used by session-local PATH shims under .aegis/sessions/<id>/shims/.",
+        "The shim removes the session shim directory from PATH before resolving the real binary to avoid recursive invocation.",
+        "This is wrapper-level coverage only and does not claim transparent OS-level interception.",
+    } },
     .{ .name = "version", .summary = "Print version", .usage = "aegis version [--help]", .details = &.{"Prints the current Aegis version."} },
     .{ .name = "help", .summary = "Show help", .usage = "aegis help [command]", .details = &.{"Shows top-level help or command-specific help."} },
 };
