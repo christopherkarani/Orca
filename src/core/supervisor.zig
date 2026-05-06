@@ -24,6 +24,7 @@ pub const RunConfig = struct {
     env_map: ?*const std.process.EnvMap = null,
     env_redactions: []const EnvRedactionRecord = &.{},
     before_spawn: ?StartHook = null,
+    before_process_launch: ?StartHook = null,
     on_session_start: ?StartHook = null,
     on_event: ?EventHook = null,
 };
@@ -122,16 +123,24 @@ pub fn run(allocator: std.mem.Allocator, config: RunConfig) !SessionResult {
         next_event_index += 1;
     }
 
-    const command_display = try commandDisplay(allocator, config.command, config.args);
-    defer allocator.free(command_display);
-    events[next_event_index] = try makeOwnedTargetEvent(allocator, &event_target_values, &owned_targets, session, started_at, .process_launch, .command, command_display);
-    next_event_index += 1;
-
     if (config.before_spawn) |hook| {
         try hook.callback(hook.context, session);
     }
     if (config.on_event) |hook| {
         for (events[0..next_event_index]) |ev| try hook.callback(hook.context, ev);
+    }
+
+    if (config.before_process_launch) |hook| {
+        try hook.callback(hook.context, session);
+    }
+
+    const command_display = try commandDisplay(allocator, config.command, config.args);
+    defer allocator.free(command_display);
+    events[next_event_index] = try makeOwnedTargetEvent(allocator, &event_target_values, &owned_targets, session, started_at, .process_launch, .command, command_display);
+    next_event_index += 1;
+
+    if (config.on_event) |hook| {
+        try hook.callback(hook.context, events[next_event_index - 1]);
     }
 
     var argv = try allocator.alloc([]const u8, config.args.len + 1);

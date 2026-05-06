@@ -93,10 +93,32 @@ const common_strict_rules =
     \\  allow:
     \\    - "git status"
     \\    - "git diff *"
+    \\    - "ls *"
+    \\    - "pwd"
+    \\    - "echo *"
+    \\    - "true"
+    \\    - "false"
+    \\    - "zig version"
+    \\    - "zig build *"
     \\  deny:
     \\    - "rm -rf *"
+    \\    - "find * -delete"
+    \\    - "shred *"
     \\    - "curl * | sh"
+    \\    - "wget * | bash"
     \\    - "sudo *"
+    \\    - "su *"
+    \\    - "doas *"
+    \\    - "powershell *EncodedCommand*"
+    \\    - "powershell *-enc*"
+    \\    - "cat .env"
+    \\    - "cat ~/.ssh/*"
+    \\  ask:
+    \\    - "npm install*"
+    \\    - "pnpm install*"
+    \\    - "yarn install*"
+    \\    - "pip install*"
+    \\    - "git push*"
     \\
     \\network:
     \\  default: deny

@@ -79,9 +79,13 @@ fn commandWithStdio(argv: []const []const u8, stdout: anytype, stderr: anytype, 
     const AuditContext = struct {
         allocator: std.mem.Allocator,
         writer: ?audit.writer.SessionWriter = null,
+        session: ?core.session.Session = null,
+        workspace_root_owned: ?[]const u8 = null,
 
         pub fn init(context: *anyopaque, session: core.session.Session) !void {
             const self: *@This() = @ptrCast(@alignCast(context));
+            self.session = session;
+            self.workspace_root_owned = try self.allocator.dupe(u8, session.workspace_root);
             self.writer = try audit.writer.SessionWriter.init(self.allocator, session);
         }
 
@@ -93,10 +97,147 @@ fn commandWithStdio(argv: []const []const u8, stdout: anytype, stderr: anytype, 
         pub fn deinit(self: *@This()) void {
             if (self.writer) |*writer| writer.deinit();
             self.writer = null;
+            self.session = null;
+            if (self.workspace_root_owned) |root| self.allocator.free(root);
+            self.workspace_root_owned = null;
         }
     };
     var audit_context: AuditContext = .{ .allocator = allocator };
     defer audit_context.deinit();
+
+    var session_approvals = intercept.approvals.SessionApprovals.init(allocator);
+    defer session_approvals.deinit();
+
+    const CommandGuardContext = struct {
+        allocator: std.mem.Allocator,
+        selected_policy: *const policy.schema.Policy,
+        effective_mode: policy.schema.Mode,
+        command_argv: []const []const u8,
+        env_map: *std.process.EnvMap,
+        audit_context: *AuditContext,
+        approvals: *intercept.approvals.SessionApprovals,
+        stderr: @TypeOf(stderr),
+
+        pub fn beforeProcessLaunch(context: *anyopaque, session: core.session.Session) !void {
+            const self: *@This() = @ptrCast(@alignCast(context));
+            try self.installShims(session);
+            const display = try intercept.commands.displayArgvAlloc(self.allocator, self.command_argv);
+            defer self.allocator.free(display);
+
+            try self.auditCommandEvent(session, .command_attempt, display, null);
+
+            var command_decision = try intercept.commands.evaluate(self.allocator, self.selected_policy, self.effective_mode, self.command_argv);
+            defer command_decision.deinit(self.allocator);
+
+            var final_decision = command_decision.decision;
+            var approval_reason: ?[]const u8 = null;
+            defer if (approval_reason) |reason| self.allocator.free(reason);
+            const already_approved = self.approvals.contains(display);
+            if (already_approved and final_decision.result == .ask) {
+                approval_reason = try std.fmt.allocPrint(self.allocator, "session approval matched command: {s}", .{display});
+                final_decision = .{
+                    .result = .allow,
+                    .reason = approval_reason.?,
+                    .risk_score = command_decision.decision.risk_score,
+                    .ci_may_proceed = true,
+                };
+            } else if (final_decision.result == .ask) {
+                try self.auditCommandEvent(session, .command_approval_requested, display, final_decision);
+                const choice = try self.resolveApproval(command_decision, display);
+                switch (choice) {
+                    .allow_once, .allow_session => {
+                        if (choice == .allow_session) try self.approvals.allowForSession(display, command_decision.decision.reason);
+                        try intercept.commands.appendApprovalHashEnv(
+                            self.allocator,
+                            self.env_map,
+                            if (choice == .allow_session) intercept.commands.approved_session_env else intercept.commands.approved_once_env,
+                            display,
+                        );
+                        approval_reason = try std.fmt.allocPrint(self.allocator, "user approved command {s}", .{if (choice == .allow_session) "for this session" else "once"});
+                        final_decision = .{
+                            .result = .allow,
+                            .reason = approval_reason.?,
+                            .risk_score = command_decision.decision.risk_score,
+                            .ci_may_proceed = true,
+                        };
+                        try self.auditCommandEvent(session, .user_approval, display, final_decision);
+                    },
+                    .deny => {
+                        approval_reason = try self.allocator.dupe(u8, "user denied command approval");
+                        final_decision = .{
+                            .result = .deny,
+                            .reason = approval_reason.?,
+                            .risk_score = command_decision.decision.risk_score,
+                            .ci_may_proceed = false,
+                        };
+                        try self.auditCommandEvent(session, .user_denial, display, final_decision);
+                    },
+                }
+            }
+
+            if (final_decision.result == .allow or final_decision.result == .observe) {
+                try self.auditCommandEvent(session, .command_allowed, display, final_decision);
+                return;
+            }
+            try self.auditCommandEvent(session, .command_denied, display, final_decision);
+            return error.CommandDenied;
+        }
+
+        fn installShims(self: *@This(), session: core.session.Session) !void {
+            const self_exe = try std.fs.selfExePathAlloc(self.allocator);
+            defer self.allocator.free(self_exe);
+            const shim_dir = try intercept.commands.createShimDirectory(self.allocator, session.workspace_root, session.id.slice(), self_exe);
+            defer self.allocator.free(shim_dir);
+            try intercept.commands.prependShimPath(self.allocator, self.env_map, shim_dir);
+            try self.env_map.put("AEGIS_SESSION_ID", session.id.slice());
+            try self.env_map.put("AEGIS_WORKSPACE_ROOT", session.workspace_root);
+            if (self.selected_policy.source_path) |path| try self.env_map.put("AEGIS_POLICY_PATH", path);
+            try self.env_map.put("AEGIS_MODE", self.effective_mode.toString());
+        }
+
+        fn resolveApproval(self: *@This(), command_decision: intercept.commands.CommandDecision, display: []const u8) !intercept.approvals.ApprovalChoice {
+            if (self.effective_mode == .ci) return .deny;
+            const stdin_file = std.fs.File.stdin();
+            if (!stdin_file.isTty()) {
+                try self.stderr.writeAll("aegis run: command requires approval, but stdin is non-interactive; denying.\n");
+                return .deny;
+            }
+            var stdin_buf: [1024]u8 = undefined;
+            var stdin_reader = stdin_file.readerStreaming(&stdin_buf);
+            return intercept.approvals.prompt(&stdin_reader.interface, self.stderr, .{
+                .command = display,
+                .risk_class = command_decision.classification.risk_class.toString(),
+                .risk_reason = command_decision.classification.reason,
+                .policy_reason = command_decision.decision.reason,
+                .matched_rule = command_decision.decision.rule_id,
+            });
+        }
+
+        fn auditCommandEvent(self: *@This(), session: core.session.Session, event_type: core.event.EventType, display: []const u8, maybe_decision: ?core.decision.Decision) !void {
+            if (self.audit_context.writer == null) return;
+            const ts = core.time.Timestamp.now();
+            const ev: core.event.Event = .{
+                .session_id = session.id,
+                .event_id = try core.event.generateEventId(ts),
+                .timestamp = ts,
+                .event_type = event_type,
+                .actor = .{ .kind = .aegis, .display = "aegis" },
+                .target = .{ .kind = .command, .value = display },
+                .decision = maybe_decision,
+            };
+            try self.audit_context.writer.?.appendEvent(ev);
+        }
+    };
+    var command_guard_context: CommandGuardContext = .{
+        .allocator = allocator,
+        .selected_policy = &loaded_policy.policy,
+        .effective_mode = effective_policy_mode,
+        .command_argv = options.command_argv,
+        .env_map = &filtered_env.env_map,
+        .audit_context = &audit_context,
+        .approvals = &session_approvals,
+        .stderr = stderr,
+    };
 
     const before_spawn = if (audit_enabled) core.supervisor.StartHook{
         .context = &audit_context,
@@ -118,6 +259,10 @@ fn commandWithStdio(argv: []const []const u8, stdout: anytype, stderr: anytype, 
         .env_map = &filtered_env.env_map,
         .env_redactions = filtered_env.redactions,
         .before_spawn = before_spawn,
+        .before_process_launch = if (audit_enabled) core.supervisor.StartHook{
+            .context = &command_guard_context,
+            .callback = CommandGuardContext.beforeProcessLaunch,
+        } else null,
         .on_session_start = .{
             .context = &start_printer,
             .callback = StartPrinter.print,
@@ -135,6 +280,36 @@ fn commandWithStdio(argv: []const []const u8, stdout: anytype, stderr: anytype, 
         error.FileNotFound => {
             try stderr.print("aegis run: workspace not found: {s}\n", .{options.workspace orelse "."});
             return exit_codes.general;
+        },
+        error.CommandDenied => {
+            if (audit_context.writer) |*writer| {
+                if (audit_context.session) |session| {
+                    var ended = session;
+                    if (audit_context.workspace_root_owned) |root| ended.workspace_root = root;
+                    ended.ended_at = core.time.Timestamp.now();
+                    const ts = ended.ended_at.?;
+                    const ev: core.event.Event = .{
+                        .session_id = ended.id,
+                        .event_id = try core.event.generateEventId(ts),
+                        .timestamp = ts,
+                        .event_type = .session_exit,
+                        .actor = .{ .kind = .aegis, .display = "aegis" },
+                        .target = .{ .kind = .session, .value = ended.id.slice() },
+                    };
+                    try writer.appendEvent(ev);
+                    const final_hash = writer.finalHash() orelse "";
+                    try audit.summary.writeFiles(allocator, writer.session_dir_path, .{
+                        .session = ended,
+                        .status = .{ .exited = exit_codes.denial },
+                        .event_count = writer.event_count,
+                        .final_event_hash = final_hash,
+                        .policy = loaded_policy.path,
+                    });
+                    try writeLastPointerNoMakePath(allocator, ended.workspace_root, ended.id.slice());
+                }
+            }
+            try stderr.writeAll("aegis run: command denied by command guard.\n");
+            return exit_codes.denial;
         },
         else => {
             try stderr.print("aegis run: failed to launch child: {s}\n", .{@errorName(err)});
@@ -361,4 +536,97 @@ test "run rejects inherit-env when selected policy disallows it" {
     const code = try commandForTest(&.{ "--policy", "policies/strict.yaml", "--inherit-env", "--", "zig", "version" }, stdout_stream.writer(), stderr_stream.writer(), .ignore);
     try std.testing.expectEqual(exit_codes.general, code);
     try std.testing.expect(std.mem.indexOf(u8, stderr_stream.getWritten(), "--inherit-env is not allowed") != null);
+}
+
+test "run command guard denies ci ask without prompting and audits command events" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const root = try tmp.dir.realpathAlloc(std.testing.allocator, ".");
+    defer std.testing.allocator.free(root);
+
+    var stdout_buf: [2048]u8 = undefined;
+    var stderr_buf: [2048]u8 = undefined;
+    var stdout_stream = std.io.fixedBufferStream(&stdout_buf);
+    var stderr_stream = std.io.fixedBufferStream(&stderr_buf);
+
+    const code = try command(&.{ "--workspace", root, "--mode", "ci", "--", "npm", "install", "OPENAI_API_KEY=sk-fakeSyntheticOpenAIKey1234567890" }, stdout_stream.writer(), stderr_stream.writer());
+    try std.testing.expectEqual(exit_codes.denial, code);
+    try std.testing.expect(std.mem.indexOf(u8, stderr_stream.getWritten(), "command denied") != null);
+
+    const events = try readLastEvents(std.testing.allocator, root);
+    defer std.testing.allocator.free(events);
+    try std.testing.expect(std.mem.indexOf(u8, events, "\"type\":\"command_attempt\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, events, "\"type\":\"command_denied\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, events, "sk-fakeSyntheticOpenAIKey") == null);
+    try std.testing.expect(std.mem.indexOf(u8, events, "[REDACTED:env:OPENAI_API_KEY:sha256:") != null);
+}
+
+test "run command guard allows safe command and creates session shim directory" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const root = try tmp.dir.realpathAlloc(std.testing.allocator, ".");
+    defer std.testing.allocator.free(root);
+
+    var stdout_buf: [2048]u8 = undefined;
+    var stderr_buf: [2048]u8 = undefined;
+    var stdout_stream = std.io.fixedBufferStream(&stdout_buf);
+    var stderr_stream = std.io.fixedBufferStream(&stderr_buf);
+
+    const code = try command(&.{ "--workspace", root, "--", "true" }, stdout_stream.writer(), stderr_stream.writer());
+    try std.testing.expectEqual(exit_codes.success, code);
+    try std.testing.expectEqualStrings("", stderr_stream.getWritten());
+
+    const session_id = try readLastSessionId(std.testing.allocator, root);
+    defer std.testing.allocator.free(session_id);
+    const shim_path = try std.fs.path.join(std.testing.allocator, &.{ root, ".aegis", "sessions", session_id, "shims", "git" });
+    defer std.testing.allocator.free(shim_path);
+    try std.fs.cwd().access(shim_path, .{});
+
+    const events = try readLastEvents(std.testing.allocator, root);
+    defer std.testing.allocator.free(events);
+    try std.testing.expect(std.mem.indexOf(u8, events, "\"type\":\"command_allowed\"") != null);
+}
+
+test "run command guard denies destructive command before spawn" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const root = try tmp.dir.realpathAlloc(std.testing.allocator, ".");
+    defer std.testing.allocator.free(root);
+
+    var stdout_buf: [2048]u8 = undefined;
+    var stderr_buf: [2048]u8 = undefined;
+    var stdout_stream = std.io.fixedBufferStream(&stdout_buf);
+    var stderr_stream = std.io.fixedBufferStream(&stderr_buf);
+
+    const code = try command(&.{ "--workspace", root, "--", "rm", "-rf", "/" }, stdout_stream.writer(), stderr_stream.writer());
+    try std.testing.expectEqual(exit_codes.denial, code);
+    const events = try readLastEvents(std.testing.allocator, root);
+    defer std.testing.allocator.free(events);
+    try std.testing.expect(std.mem.indexOf(u8, events, "\"type\":\"command_denied\"") != null);
+}
+
+fn readLastSessionId(allocator: std.mem.Allocator, root: []const u8) ![]u8 {
+    const last_path = try std.fs.path.join(allocator, &.{ root, ".aegis", "last" });
+    defer allocator.free(last_path);
+    const text = try std.fs.cwd().readFileAlloc(allocator, last_path, core.limits.max_session_id_len + 2);
+    defer allocator.free(text);
+    return try allocator.dupe(u8, std.mem.trim(u8, text, " \t\r\n"));
+}
+
+fn readLastEvents(allocator: std.mem.Allocator, root: []const u8) ![]u8 {
+    const session_id = try readLastSessionId(allocator, root);
+    defer allocator.free(session_id);
+    const events_path = try std.fs.path.join(allocator, &.{ root, ".aegis", "sessions", session_id, "events.jsonl" });
+    defer allocator.free(events_path);
+    return try std.fs.cwd().readFileAlloc(allocator, events_path, 64 * 1024);
+}
+
+fn writeLastPointerNoMakePath(allocator: std.mem.Allocator, workspace_root: []const u8, session_id: []const u8) !void {
+    const last_path = try std.fs.path.join(allocator, &.{ workspace_root, ".aegis", "last" });
+    defer allocator.free(last_path);
+    const file = try std.fs.cwd().createFile(last_path, .{ .truncate = true });
+    defer file.close();
+    try file.writeAll(session_id);
+    try file.writeAll("\n");
+    try file.sync();
 }
