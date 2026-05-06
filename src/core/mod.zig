@@ -9,4 +9,17 @@ pub const supervisor = @import("supervisor.zig");
 pub const limits = @import("limits.zig");
 pub const util = @import("util.zig");
 
-pub const phase = "02-repo-bootstrap";
+pub const phase = "03-core-types-and-allocators";
+
+test {
+    _ = errors;
+    _ = types;
+    _ = time;
+    _ = platform;
+    _ = session;
+    _ = event;
+    _ = decision;
+    _ = supervisor;
+    _ = limits;
+    _ = util;
+}
