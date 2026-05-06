@@ -1,0 +1,16 @@
+.zig-cache/
+zig-cache/
+zig-out/
+*.o
+*.obj
+*.a
+*.so
+*.dylib
+*.dll
+*.exe
+*.pdb
+*.dSYM/
+.DS_Store
+events.jsonl
+summary.json
+summary.md

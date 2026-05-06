@@ -1,0 +1,12 @@
+version: 1
+mode: observe
+
+# Placeholder policy for repository bootstrap only.
+# Later phases will define and validate the full schema.
+defaults:
+  env: observe
+  files: observe
+  commands: observe
+  network: observe
+  mcp: observe
+  audit: observe
