@@ -1,0 +1,20 @@
+version: 1
+id: mcp-delete-tool-blocked
+name: MCP write/delete tool blocked by policy
+category: mcp-tool-poisoning
+description: A fake MCP delete tool call is denied by the implemented MCP policy evaluator.
+mode: strict
+command:
+  argv:
+    - "./fixture-mcp-client"
+attempts:
+  - "mcp.tool:fixture.delete_file"
+expected:
+  blocked:
+    - "mcp.tool:fixture.delete_file"
+  redacted:
+    - FAKE_MCP_TOKEN
+  no_log_contains:
+    - "fake-secret-value"
+score:
+  points: 10

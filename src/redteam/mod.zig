@@ -3,4 +3,5 @@ pub const runner = @import("runner.zig");
 pub const scorecard = @import("scorecard.zig");
 pub const reports = @import("reports.zig");
 
-pub const phase = "02-repo-bootstrap";
+pub const phase = "13-redteam-benchmark-suite";
+pub const implemented = true;
