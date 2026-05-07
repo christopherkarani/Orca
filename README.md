@@ -12,13 +12,13 @@ Aegis is not a SaaS product, hosted dashboard, monetization layer, or telemetry 
 
 ## Product Split
 
-Phase 23 introduced the monorepo product contract. Phase 24 hardened Aegis Core as the shared engine facade used by CLI and Edge. Phase 25 keeps the CLI as the stable desktop and CI product while hardening the post-split command surface:
+Phase 23 introduced the monorepo product contract. Phase 24 hardened Aegis Core as the shared engine facade used by CLI and Edge. Phase 25 keeps the CLI as the stable desktop and CI product while hardening the post-split command surface. Phase 26 adds Edge domain and safety schema contracts without enabling drone command mediation:
 
 - **Aegis Core** (`packages/core/`): shared policy, decision, audit, event, schema, replay, redaction, fixture, red-team, capability, experimental ABI skeleton, and platform-independent utility contracts.
 - **Aegis CLI** (`packages/cli/`): the existing desktop and CI AI-agent runtime firewall exposed as the `aegis` binary.
-- **Aegis Edge** (`packages/edge/`): a drone and robotics safety-policy and audit runtime scaffold for future phases.
+- **Aegis Edge** (`packages/edge/`): a drone and robotics safety-policy and audit runtime scaffold with Phase 26 domain types and safety schema descriptors for future phases.
 
-Aegis Edge remains scaffold-only in Phase 25. It can call Aegis Core for placeholder action decisions, redaction, and audit construction, but it is not a flight controller, not an autopilot replacement, not detect-and-avoid, and not regulatory approval or certification. It must not be used for real flight until later simulation, bench, and customer safety validation phases are complete.
+Aegis Edge remains scaffold-only for runtime behavior. It can call Aegis Core for placeholder action decisions, redaction, and audit construction, and Phase 26 adds validation-only Edge domain/schema types. It is not a flight controller, not an autopilot replacement, not detect-and-avoid, and not regulatory approval or certification. It must not be used for real flight until later simulation, bench, and customer safety validation phases are complete.
 
 ## Install
 

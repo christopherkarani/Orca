@@ -1,0 +1,150 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://aegis.local/schemas/edge-policy-v1.json",
+  "title": "Aegis Edge policy schema v1",
+  "description": "Versioned safety policy shape for Aegis Edge domain validation. This schema does not represent active drone command mediation, real-flight readiness, MAVLink, PX4, ArduPilot, or regulatory certification.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["version", "vehicle", "safety", "commands"],
+  "properties": {
+    "version": { "const": 1 },
+    "vehicle": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "autopilot", "adapter"],
+      "properties": {
+        "kind": { "enum": ["drone_multirotor", "drone_fixed_wing", "drone_vtol", "ground_robot", "simulated_vehicle", "unknown"] },
+        "autopilot": { "enum": ["px4", "ardupilot", "fake", "custom", "unknown"] },
+        "adapter": { "enum": ["fake", "mavlink", "ros2", "custom", "unknown"] }
+      }
+    },
+    "safety": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "state_freshness": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["max_state_age_ms", "deny_commands_on_stale_state"],
+          "properties": {
+            "max_state_age_ms": { "type": "integer", "minimum": 1 },
+            "deny_commands_on_stale_state": { "type": "boolean" },
+            "allow_emergency_land_on_stale_state": { "type": "boolean" }
+          }
+        },
+        "geofence": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["type", "altitude_floor_m", "altitude_ceiling_m", "altitude_reference", "boundary_action"],
+          "properties": {
+            "type": { "enum": ["circle", "allowed_polygon"] },
+            "center": { "$ref": "#/$defs/geoPoint" },
+            "vertices": { "type": "array", "minItems": 3, "items": { "$ref": "#/$defs/geoPoint" } },
+            "max_radius_m": { "type": "number", "minimum": 0 },
+            "home_position": { "$ref": "#/$defs/geoPoint" },
+            "altitude_floor_m": { "type": "number" },
+            "altitude_ceiling_m": { "type": "number" },
+            "altitude_reference": { "$ref": "#/$defs/altitudeReference" },
+            "boundary_action": { "enum": ["deny", "ask", "return_to_home", "land", "hold"] }
+          }
+        },
+        "velocity": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["max_horizontal_mps", "max_vertical_mps"],
+          "properties": {
+            "max_horizontal_mps": { "type": "number", "minimum": 0 },
+            "max_vertical_mps": { "type": "number", "minimum": 0 }
+          }
+        },
+        "battery": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["deny_takeoff_below_percent", "return_home_below_percent", "land_below_percent"],
+          "properties": {
+            "deny_takeoff_below_percent": { "type": "number", "minimum": 0, "maximum": 100 },
+            "return_home_below_percent": { "type": "number", "minimum": 0, "maximum": 100 },
+            "land_below_percent": { "type": "number", "minimum": 0, "maximum": 100 },
+            "require_fresh_battery_state": { "type": "boolean" }
+          }
+        }
+      }
+    },
+    "commands": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "allow": { "$ref": "#/$defs/commandList" },
+        "ask": { "$ref": "#/$defs/commandList" },
+        "deny": { "$ref": "#/$defs/commandList" },
+        "require_operator_approval": { "$ref": "#/$defs/commandList" }
+      }
+    },
+    "network": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "mode": { "enum": ["allowlist", "denylist", "offline"] }
+      }
+    },
+    "audit": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "level": { "enum": ["full", "summary"] },
+        "redact_secrets": { "type": "boolean" }
+      }
+    }
+  },
+  "$defs": {
+    "altitudeReference": { "enum": ["amsl", "agl", "home_relative", "terrain_relative", "unknown"] },
+    "geoPoint": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["latitude_deg", "longitude_deg", "altitude_m", "altitude_reference"],
+      "properties": {
+        "latitude_deg": { "type": "number", "minimum": -90, "maximum": 90 },
+        "longitude_deg": { "type": "number", "minimum": -180, "maximum": 180 },
+        "altitude_m": { "type": "number" },
+        "altitude_reference": { "$ref": "#/$defs/altitudeReference" }
+      }
+    },
+    "commandList": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/commandAction" },
+      "uniqueItems": true
+    },
+    "commandAction": {
+      "enum": [
+        "read_telemetry",
+        "read_mission_status",
+        "read_vehicle_state",
+        "read_camera_frame",
+        "arm",
+        "disarm",
+        "takeoff",
+        "land",
+        "return_to_home",
+        "hold_position",
+        "set_waypoint",
+        "set_velocity",
+        "set_altitude",
+        "set_heading",
+        "start_mission",
+        "pause_mission",
+        "resume_mission",
+        "upload_mission",
+        "change_geofence",
+        "disable_geofence",
+        "disable_failsafe",
+        "set_mode",
+        "override_operator",
+        "raw_actuator_output",
+        "payload_release",
+        "firmware_update",
+        "companion_computer_reboot",
+        "telemetry_stream_external"
+      ]
+    }
+  }
+}

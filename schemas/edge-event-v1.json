@@ -1,0 +1,36 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://aegis.local/schemas/edge-event-v1.json",
+  "title": "Aegis Edge event schema v1",
+  "description": "Versioned placeholder surface for future Edge audit events. It defines event names only and does not emit active drone mediation events in Phase 26.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["version", "event_type", "timestamp_ms"],
+  "properties": {
+    "version": { "const": 1 },
+    "event_type": {
+      "enum": [
+        "edge.session_start",
+        "edge.session_exit",
+        "vehicle.state_observed",
+        "vehicle.command_requested",
+        "vehicle.command_allowed",
+        "vehicle.command_denied",
+        "vehicle.command_approval_required",
+        "safety.geofence_violation",
+        "safety.altitude_violation",
+        "safety.velocity_violation",
+        "safety.stale_state_denied",
+        "safety.battery_constraint",
+        "emergency.land_allowed",
+        "emergency.return_home_allowed",
+        "adapter.message_received",
+        "adapter.message_forwarded",
+        "adapter.message_denied"
+      ]
+    },
+    "timestamp_ms": { "type": "integer" },
+    "vehicle_id": { "type": "string" },
+    "correlation_id": { "type": "string" }
+  }
+}
