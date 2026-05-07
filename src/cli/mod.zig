@@ -1,4 +1,5 @@
 const std = @import("std");
+const build_options = @import("build_options");
 
 pub const args = @import("args.zig");
 pub const exit_codes = @import("exit_codes.zig");
@@ -15,8 +16,9 @@ pub const mcp = @import("mcp.zig");
 pub const redteam = @import("redteam.zig");
 pub const completions = @import("completions.zig");
 pub const shim = @import("shim.zig");
+pub const version_command = @import("version.zig");
 
-pub const version = "0.0.0-dev";
+pub const version = build_options.version;
 
 pub fn run(argv: []const []const u8, stdout: anytype, stderr: anytype) !u8 {
     return runWithCwd(std.fs.cwd(), argv, stdout, stderr);
@@ -46,15 +48,23 @@ pub fn runWithCwd(cwd: std.fs.Dir, argv: []const []const u8, stdout: anytype, st
     }
 
     if (std.mem.eql(u8, command, "version") or std.mem.eql(u8, command, "--version")) {
-        if (argv.len > 1) {
-            if (argv.len == 2 and (std.mem.eql(u8, argv[1], "--help") or std.mem.eql(u8, argv[1], "-h"))) {
+        if (argv.len > 2) {
+            try stderr.writeAll("aegis version: expected at most one argument. Run 'aegis help version' for usage.\n");
+            return exit_codes.usage;
+        }
+        if (argv.len == 2) {
+            if (std.mem.eql(u8, argv[1], "--help") or std.mem.eql(u8, argv[1], "-h")) {
                 _ = try help.writeCommand(stdout, "version");
                 return exit_codes.success;
             }
-            try stderr.writeAll("aegis version: expected no arguments. Run 'aegis help version' for usage.\n");
+            if (std.mem.eql(u8, argv[1], "--json")) {
+                try version_command.writeJson(stdout, version_command.current());
+                return exit_codes.success;
+            }
+            try stderr.writeAll("aegis version: unsupported argument. Run 'aegis help version' for usage.\n");
             return exit_codes.usage;
         }
-        try stdout.writeAll("aegis " ++ version ++ "\n");
+        try version_command.writePlain(stdout, version_command.current());
         return exit_codes.success;
     }
 
@@ -118,12 +128,13 @@ test "version prints development version" {
     const code = try run(&.{"version"}, stdout_stream.writer(), stderr_stream.writer());
 
     try std.testing.expectEqual(exit_codes.success, code);
-    try std.testing.expectEqualStrings("aegis 0.0.0-dev\n", stdout_stream.getWritten());
+    try std.testing.expect(std.mem.startsWith(u8, stdout_stream.getWritten(), "aegis "));
+    try std.testing.expect(std.mem.indexOf(u8, stdout_stream.getWritten(), version) != null);
     try std.testing.expectEqualStrings("", stderr_stream.getWritten());
 }
 
-test "version supports help and rejects extra arguments" {
-    var stdout_buf: [256]u8 = undefined;
+test "version supports json, help, and rejects extra arguments" {
+    var stdout_buf: [1024]u8 = undefined;
     var stderr_buf: [256]u8 = undefined;
     var stdout_stream = std.io.fixedBufferStream(&stdout_buf);
     var stderr_stream = std.io.fixedBufferStream(&stderr_buf);
@@ -135,10 +146,22 @@ test "version supports help and rejects extra arguments" {
 
     stdout_stream.reset();
     stderr_stream.reset();
+    const json_code = try run(&.{ "version", "--json" }, stdout_stream.writer(), stderr_stream.writer());
+    try std.testing.expectEqual(exit_codes.success, json_code);
+    try std.testing.expectEqualStrings("", stderr_stream.getWritten());
+    var parsed = try std.json.parseFromSlice(std.json.Value, std.testing.allocator, stdout_stream.getWritten(), .{});
+    defer parsed.deinit();
+    try std.testing.expectEqualStrings(version, parsed.value.object.get("version").?.string);
+    try std.testing.expect(parsed.value.object.get("commit") != null);
+    try std.testing.expect(parsed.value.object.get("target") != null);
+    try std.testing.expect(parsed.value.object.get("build_date") != null);
+
+    stdout_stream.reset();
+    stderr_stream.reset();
     const invalid_code = try run(&.{ "version", "typo" }, stdout_stream.writer(), stderr_stream.writer());
     try std.testing.expectEqual(exit_codes.usage, invalid_code);
     try std.testing.expectEqualStrings("", stdout_stream.getWritten());
-    try std.testing.expect(std.mem.indexOf(u8, stderr_stream.getWritten(), "expected no arguments") != null);
+    try std.testing.expect(std.mem.indexOf(u8, stderr_stream.getWritten(), "unsupported argument") != null);
 }
 
 test "unknown command returns non-zero with useful message" {

@@ -70,3 +70,8 @@
 
 - MCP sampling is normally server-originated. A stdio proxy must inspect server-to-client JSON-RPC requests as well as client-to-server requests, and default-deny sampling before forwarding it to the client.
 - MCP manifests are a trust boundary, not just metadata. Manifest defaults must only apply when the launched command/args, expected binary hash, and environment allowlist binding have been checked.
+
+## 2026-05-07 Phase 19 Release Pipeline Review
+
+- New modules and package/template files must be staged or otherwise included in the actual patch before declaring merge readiness. Local tests can pass with untracked files that clean checkout CI will never see.
+- GitHub Actions inputs are shell input until proven otherwise. Do not interpolate `${{ inputs.* }}` directly into `run:` commands; pass them through environment variables and keep any dynamic command text inside the Aegis-mediated child process.

@@ -73,7 +73,10 @@ pub const commands = [_]CommandInfo{
         "The shim removes the session shim directory from PATH before resolving the real binary to avoid recursive invocation.",
         "This is wrapper-level coverage only and does not claim transparent OS-level interception.",
     } },
-    .{ .name = "version", .summary = "Print version", .usage = "aegis version [--help]", .details = &.{"Prints the current Aegis version."} },
+    .{ .name = "version", .summary = "Print version", .usage = "aegis version [--json] [--help]", .details = &.{
+        "Prints the current Aegis version.",
+        "--json emits version, commit, target, and build_date fields for release automation.",
+    } },
     .{ .name = "help", .summary = "Show help", .usage = "aegis help [command]", .details = &.{"Shows top-level help or command-specific help."} },
 };
 

@@ -6,6 +6,7 @@ pub const intercept = @import("intercept/mod.zig");
 pub const mcp = @import("mcp/mod.zig");
 pub const sandbox = @import("sandbox/mod.zig");
 pub const redteam = @import("redteam/mod.zig");
+pub const release = @import("release/mod.zig");
 
 test {
     _ = cli;
@@ -16,4 +17,5 @@ test {
     _ = mcp;
     _ = sandbox;
     _ = redteam;
+    _ = release;
 }

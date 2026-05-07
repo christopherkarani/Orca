@@ -23,7 +23,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Install Aegis
-        run: ./scripts/install-aegis.sh
+        run: ./scripts/install.sh
       - name: Check Aegis policy
         run: aegis policy check .aegis/policy.yaml
       - name: Run agent safely
