@@ -179,6 +179,18 @@ pub fn build(b: *std.Build) void {
     });
     const run_phase25_hardening_tests = b.addRunArtifact(phase25_hardening_tests);
 
+    const phase26_edge_domain_tests = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("tests/phase26_edge_domain.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .name = "aegis_edge", .module = aegis_edge_mod },
+            },
+        }),
+    });
+    const run_phase26_edge_domain_tests = b.addRunArtifact(phase26_edge_domain_tests);
+
     const test_step = b.step("test", "Run unit tests");
     test_step.dependOn(&run_lib_tests.step);
     test_step.dependOn(&run_exe_tests.step);
@@ -191,6 +203,7 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&run_edge_exe_tests.step);
     test_step.dependOn(&run_phase23_contract_tests.step);
     test_step.dependOn(&run_phase25_hardening_tests.step);
+    test_step.dependOn(&run_phase26_edge_domain_tests.step);
 
     const fuzz_tests = b.addTest(.{
         .root_module = b.createModule(.{

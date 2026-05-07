@@ -90,3 +90,7 @@
 
 - When release version defaults change, update or remove checked-in `dist/` artifacts in the same patch. Stale artifact names and checksums can make the documented local install path fail even when source builds and tests pass.
 - Do not leave binary execution packs under Markdown names. Use `file` or equivalent when a newly reviewed `.md` file renders as binary garbage, then remove it unless it is intentionally versioned in the correct artifact location.
+
+## 2026-05-07 Phase 26 Edge Domain Review
+
+- Before declaring a phase complete, compare `git diff --name-only <base>` with `git ls-files --others --exclude-standard`. If build wiring imports new modules or tests, those files must be tracked/staged so a clean-checkout patch can build.

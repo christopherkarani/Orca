@@ -1,8 +1,11 @@
 const std = @import("std");
 const aegis_core = @import("aegis_core");
 
-pub const phase = "23-product-split-edge-scaffold";
-pub const installed_message = "Aegis Edge scaffold is installed. Drone command mediation is not implemented yet.";
+pub const domain = @import("domain/mod.zig");
+pub const schema = @import("schema/mod.zig");
+
+pub const phase = "26-edge-domain-model-and-safety-schema";
+pub const installed_message = "Aegis Edge domain and safety schema package is installed. Drone command mediation is not implemented yet.";
 pub const core = aegis_core;
 
 pub const CapabilityStatus = enum {
@@ -149,12 +152,12 @@ pub fn evaluateVehicleStateReadThroughCore(
 
 pub fn capabilityReports() []const CapabilityReport {
     return &.{
-        .{ .capability = .policy_scaffold, .status = .scaffolded, .note = "Types and package boundaries exist for future Edge policy work." },
+        .{ .capability = .policy_scaffold, .status = .scaffolded, .note = "Phase 26 domain types and versioned safety schema descriptors exist for future Edge policy work." },
         .{ .capability = .fake_adapter, .status = .scaffolded, .note = "Fake adapter is local-only and has no hardware dependency." },
-        .{ .capability = .command_mediation, .status = .not_implemented, .note = "Drone command mediation is not implemented yet." },
-        .{ .capability = .mavlink_gateway, .status = .not_implemented, .note = "MAVLink is out of scope for Phase 24." },
-        .{ .capability = .px4_adapter, .status = .not_implemented, .note = "PX4 integration is out of scope for Phase 24." },
-        .{ .capability = .ardupilot_adapter, .status = .not_implemented, .note = "ArduPilot integration is out of scope for Phase 24." },
+        .{ .capability = .command_mediation, .status = .not_implemented, .note = "Drone command mediation is not implemented in Phase 26." },
+        .{ .capability = .mavlink_gateway, .status = .not_implemented, .note = "MAVLink is out of scope for Phase 26." },
+        .{ .capability = .px4_adapter, .status = .not_implemented, .note = "PX4 integration is out of scope for Phase 26." },
+        .{ .capability = .ardupilot_adapter, .status = .not_implemented, .note = "ArduPilot integration is out of scope for Phase 26." },
         .{ .capability = .real_flight_enforcement, .status = .unavailable, .note = "Real-flight behavior requires later simulation, bench, and customer safety validation phases." },
         .{ .capability = .detect_and_avoid, .status = .unavailable, .note = "Aegis Edge is not a detect-and-avoid system." },
         .{ .capability = .regulatory_certification, .status = .unavailable, .note = "Aegis Edge is not regulatory approval or certification." },
@@ -171,6 +174,8 @@ pub fn doctor(writer: anytype) !void {
 
 test {
     _ = core;
+    _ = domain;
+    _ = schema;
     _ = capabilityReports;
     _ = FakeAdapter;
     _ = evaluateVehicleStateReadThroughCore;
