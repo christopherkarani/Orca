@@ -4,6 +4,7 @@ const builtin = @import("builtin");
 const platform = @import("../core/platform.zig");
 const linux_backend = @import("linux.zig");
 const macos_backend = @import("macos.zig");
+const windows_backend = @import("windows.zig");
 
 pub const Feature = enum {
     policy_engine,
@@ -220,6 +221,7 @@ pub fn detect(os: platform.Os) ReportSet {
     return switch (os) {
         .linux => linux_backend.detect(),
         .macos => macos_backend.detect(),
+        .windows => windows_backend.detect(),
         else => fallbackReport(os),
     };
 }
@@ -231,6 +233,9 @@ pub fn prepare(allocator: std.mem.Allocator, request: PrepareRequest) PreparedSa
     }
     if (builtin.os.tag == .macos and report.os == .macos) {
         return macos_backend.prepare(allocator, request, report);
+    }
+    if (builtin.os.tag == .windows and report.os == .windows) {
+        return windows_backend.prepare(allocator, request, report);
     }
     return prepareFallback(allocator, request, report);
 }
@@ -354,6 +359,15 @@ test "macOS backend is selected explicitly instead of generic fallback" {
     const report = detect(.macos);
     try std.testing.expectEqual(platform.Os.macos, report.os);
     try std.testing.expectEqualStrings("macos", report.backend_name);
+    try std.testing.expectEqual(Level.active, report.get(.env_filtering).level);
+    try std.testing.expectEqual(Level.wrapper_only, report.get(.path_shims).level);
+    try std.testing.expectEqual(Level.unavailable, report.get(.strong_sandbox).level);
+}
+
+test "Windows backend is selected explicitly instead of generic fallback" {
+    const report = detect(.windows);
+    try std.testing.expectEqual(platform.Os.windows, report.os);
+    try std.testing.expectEqualStrings("windows", report.backend_name);
     try std.testing.expectEqual(Level.active, report.get(.env_filtering).level);
     try std.testing.expectEqual(Level.wrapper_only, report.get(.path_shims).level);
     try std.testing.expectEqual(Level.unavailable, report.get(.strong_sandbox).level);

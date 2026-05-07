@@ -45,4 +45,27 @@ pub fn build(b: *std.Build) void {
     const test_step = b.step("test", "Run unit tests");
     test_step.dependOn(&run_lib_tests.step);
     test_step.dependOn(&run_exe_tests.step);
+
+    const windows_target = b.resolveTargetQuery(.{
+        .cpu_arch = .x86_64,
+        .os_tag = .windows,
+    });
+    const windows_mod = b.addModule("aegis-windows-check", .{
+        .root_source_file = b.path("src/root.zig"),
+        .target = windows_target,
+        .optimize = optimize,
+    });
+    const windows_exe = b.addExecutable(.{
+        .name = "aegis-windows-check",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/main.zig"),
+            .target = windows_target,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .name = "aegis", .module = windows_mod },
+            },
+        }),
+    });
+    const check_windows_step = b.step("check-windows", "Compile Aegis for Windows without running it");
+    check_windows_step.dependOn(&windows_exe.step);
 }

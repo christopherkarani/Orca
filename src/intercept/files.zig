@@ -3,6 +3,7 @@ const std = @import("std");
 const audit = @import("../audit/mod.zig");
 const core = @import("../core/mod.zig");
 const policy = @import("../policy/mod.zig");
+const windows_backend = @import("../sandbox/windows.zig");
 
 pub const max_staged_file_bytes: usize = 16 * 1024 * 1024;
 
@@ -766,6 +767,9 @@ fn rawBuiltinReadRule(raw_path: []const u8) ?BuiltinRule {
     for (read_rules) |rule| {
         if (matchesRule(rule.pattern, raw_path)) return rule;
     }
+    if (windows_backend.protectedPathMatchProcessEnv(std.heap.page_allocator, raw_path) catch null) |matched| {
+        return .{ .id = matched.id, .pattern = matched.pattern };
+    }
     return null;
 }
 
@@ -1035,7 +1039,22 @@ test "path traversal cannot escape workspace" {
     try std.testing.expectError(error.OutsideWorkspace, normalizePath(std.testing.allocator, root, "../outside.txt"));
 }
 
+test "backslash path normalization supports Windows-style relative traversal" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try tmp.dir.makePath("src");
+    try tmp.dir.writeFile(.{ .sub_path = "src/main.zig", .data = "pub fn main() void {}\n" });
+    const root = try tmp.dir.realpathAlloc(std.testing.allocator, ".");
+    defer std.testing.allocator.free(root);
+
+    var normalized = try normalizePath(std.testing.allocator, root, "src\\..\\src\\main.zig");
+    defer normalized.deinit(std.testing.allocator);
+    try std.testing.expectEqualStrings("src/main.zig", normalized.relative_path);
+    try std.testing.expectEqualStrings("./src/main.zig", normalized.policy_path);
+}
+
 test "symlink escape to protected path is blocked" {
+    if (@import("builtin").os.tag == .windows or @import("builtin").os.tag == .wasi) return error.SkipZigTest;
     if (std.process.getEnvVarOwned(std.testing.allocator, "CI_NO_SYMLINKS")) |_| return error.SkipZigTest else |_| {}
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
@@ -1078,6 +1097,19 @@ test "default sensitive read decisions deny env and fake ssh key" {
     defer ssh_decision.deinit(std.testing.allocator);
     try std.testing.expectEqual(core.decision.DecisionResult.deny, ssh_decision.decision.result);
     try std.testing.expectEqualStrings("builtin.files.read.deny[2]", ssh_decision.decision.rule_id.?);
+}
+
+test "Windows simulated protected paths are denied by helper without reading real secrets" {
+    const roots: windows_backend.EnvRoots = .{
+        .user_profile = "C:\\Users\\Fake Dev",
+        .app_data = "C:\\Users\\Fake Dev\\AppData\\Roaming",
+        .local_app_data = "C:\\Users\\Fake Dev\\AppData\\Local",
+    };
+
+    try std.testing.expect((try windows_backend.protectedPathMatch(std.testing.allocator, "%USERPROFILE%\\.ssh\\id_ed25519", roots)) != null);
+    try std.testing.expect((try windows_backend.protectedPathMatch(std.testing.allocator, "%APPDATA%\\GitHub CLI\\hosts.yml", roots)) != null);
+    try std.testing.expect((try windows_backend.protectedPathMatch(std.testing.allocator, "%LOCALAPPDATA%\\Google\\Chrome\\User Data\\Default\\Login Data", roots)) != null);
+    try std.testing.expect((try windows_backend.protectedPathMatch(std.testing.allocator, "C:\\Users\\Fake Dev\\project\\src\\main.zig", roots)) == null);
 }
 
 test "home workspace still denies protected home credential directories" {
@@ -1210,6 +1242,22 @@ test "staged create update diff apply discard and index integrity" {
     const discarded = try discardStaged(std.testing.allocator, root, session_id, "src/new.txt", null);
     try std.testing.expectEqual(@as(usize, 1), discarded.count);
     try std.testing.expectError(error.FileNotFound, tmp.dir.access("src/new.txt", .{}));
+}
+
+test "staging workflow accepts Windows-style backslash paths as workspace relative paths" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try tmp.dir.makePath(".git");
+    try tmp.dir.makePath("src");
+    const root = try tmp.dir.realpathAlloc(std.testing.allocator, ".");
+    defer std.testing.allocator.free(root);
+    var loaded = try policy.load.loadPreset(std.testing.allocator, .strict);
+    defer loaded.deinit();
+
+    var staged = try stageWrite(std.testing.allocator, &loaded, root, "windows-stage-test", "src\\created with spaces.txt", "hello\n", null);
+    defer staged.deinit(std.testing.allocator);
+    try std.testing.expectEqualStrings("src/created with spaces.txt", staged.entry.normalized_path);
+    try std.testing.expect(std.mem.indexOf(u8, staged.entry.staged_path, "created with spaces.txt") != null);
 }
 
 test "apply rejects tampered staged blob hash" {

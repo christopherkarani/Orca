@@ -59,11 +59,17 @@ fn writeReport(stdout: anytype, os: core.platform.Os, backend_report: sandbox.ba
         try stdout.writeAll("Linux backend:\n");
     } else if (os == .macos) {
         try stdout.writeAll("macOS backend:\n");
+    } else if (os == .windows) {
+        try stdout.writeAll("Windows backend:\n");
     } else {
         try stdout.writeAll("Backend:\n");
     }
     try stdout.print("  selected: {s}\n", .{backend_report.backend_name});
     try stdout.print("  fallback mode: {s} ({s})\n", .{ backend_report.fallback_level.toString(), backend_report.fallback_note });
+    if (os == .windows) {
+        try writeWindowsBackendReport(stdout, backend_report);
+        return;
+    }
     try writeBackendLine(stdout, backend_report, .policy_engine);
     try writeBackendLine(stdout, backend_report, .env_filtering);
     try writeBackendLine(stdout, backend_report, .path_staging);
@@ -83,6 +89,23 @@ fn writeReport(stdout: anytype, os: core.platform.Os, backend_report: sandbox.ba
     try writeBackendLine(stdout, backend_report, .network_enforce);
     try writeBackendLine(stdout, backend_report, .mcp_stdio_proxy);
     try writeBackendLine(stdout, backend_report, .strong_sandbox);
+    try writeBackendLine(stdout, backend_report, .audit);
+}
+
+fn writeWindowsBackendReport(stdout: anytype, backend_report: sandbox.backend.ReportSet) !void {
+    try writeBackendLine(stdout, backend_report, .policy_engine);
+    try writeBackendLine(stdout, backend_report, .env_filtering);
+    try writeBackendLine(stdout, backend_report, .path_staging);
+    try writeBackendLine(stdout, backend_report, .path_shims);
+    const shell = backend_report.get(.shell_wrapping);
+    try stdout.print("  cmd wrapper: partial ({s})\n", .{shell.note});
+    try stdout.print("  PowerShell wrapper: partial ({s})\n", .{shell.note});
+    const cleanup = backend_report.get(.process_supervision);
+    try stdout.print("  process cleanup: {s} ({s})\n", .{ cleanup.level.toString(), cleanup.note });
+    try stdout.writeAll("  transparent file enforcement: limited (no transparent Windows filesystem enforcement is installed; Aegis-mediated staging and protected path matching are active)\n");
+    try writeBackendLine(stdout, backend_report, .network_enforce);
+    try writeBackendLine(stdout, backend_report, .strong_sandbox);
+    try writeBackendLine(stdout, backend_report, .mcp_stdio_proxy);
     try writeBackendLine(stdout, backend_report, .audit);
 }
 
@@ -143,6 +166,29 @@ test "doctor can render macOS backend details from an injected report" {
     try std.testing.expect(std.mem.indexOf(u8, written, "transparent file enforcement: limited") != null);
     try std.testing.expect(std.mem.indexOf(u8, written, "shell shims: wrapper-only") != null);
     try std.testing.expect(std.mem.indexOf(u8, written, "process supervision: active") != null);
+    try std.testing.expect(std.mem.indexOf(u8, written, "transparent network enforcement: limited") != null);
+    try std.testing.expect(std.mem.indexOf(u8, written, "strong sandbox: unavailable") != null);
+    try std.testing.expect(std.mem.indexOf(u8, written, "mcp stdio proxy: active") != null);
+    try std.testing.expect(std.mem.indexOf(u8, written, "audit/replay: active") != null);
+}
+
+test "doctor can render Windows backend details from an injected report" {
+    var stdout_buf: [4096]u8 = undefined;
+    var stdout_stream = std.io.fixedBufferStream(&stdout_buf);
+    const report = sandbox.backend.detect(.windows);
+
+    try writeReport(stdout_stream.writer(), .windows, report);
+
+    const written = stdout_stream.getWritten();
+    try std.testing.expect(std.mem.indexOf(u8, written, "Windows backend:") != null);
+    try std.testing.expect(std.mem.indexOf(u8, written, "selected: windows") != null);
+    try std.testing.expect(std.mem.indexOf(u8, written, "env filtering: active") != null);
+    try std.testing.expect(std.mem.indexOf(u8, written, "path staging: active") != null);
+    try std.testing.expect(std.mem.indexOf(u8, written, "PATH shims: wrapper-only") != null);
+    try std.testing.expect(std.mem.indexOf(u8, written, "cmd wrapper: partial") != null);
+    try std.testing.expect(std.mem.indexOf(u8, written, "PowerShell wrapper: partial") != null);
+    try std.testing.expect(std.mem.indexOf(u8, written, "process cleanup: partial") != null);
+    try std.testing.expect(std.mem.indexOf(u8, written, "transparent file enforcement: limited") != null);
     try std.testing.expect(std.mem.indexOf(u8, written, "transparent network enforcement: limited") != null);
     try std.testing.expect(std.mem.indexOf(u8, written, "strong sandbox: unavailable") != null);
     try std.testing.expect(std.mem.indexOf(u8, written, "mcp stdio proxy: active") != null);
