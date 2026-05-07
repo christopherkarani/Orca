@@ -1,43 +1,31 @@
 # Aegis Edge Safety Policy
 
-Phase 26 defines safety policy data structures and validation. It does not enforce flight safety, mediate real drone commands, or integrate MAVLink, PX4, ArduPilot, ROS2, or real hardware. Aegis Edge is not ready for real flight and must not be used for real flight.
+Phase 27 implements local Edge policy evaluation. It validates policy files and evaluates fake/simulation/bench command requests against vehicle state. It does not enforce flight safety, mediate real drone commands, or integrate MAVLink, PX4, ArduPilot, ROS2, SITL, or real hardware. Aegis Edge is not ready for real flight and must not be used for real flight.
 
 ## Safety Envelope
 
-The safety envelope can describe:
+The safety envelope supports:
 
-- geofence shape and boundary action
+- state freshness constraints
+- circular WGS84 geofence constraints
 - altitude limits with explicit altitude reference
 - horizontal and vertical velocity limits
 - battery thresholds
-- mode constraints
-- command allow, ask, deny, and operator-approval lists
-- network constraints
-- emergency behavior constraints
-- stale-state constraints
+- command allow, ask, and deny lists
+- network mode metadata
+- emergency-safe policy defaults for local decisions
+- audit settings
 
-Geofence validation is schema/domain validation only. It catches malformed radius, polygon, and altitude limit inputs. It does not perform full geospatial containment or flight-path enforcement in Phase 26.
+Policy evaluation returns a Core decision plus findings, violated constraints, matched rules, recommended fallback actions, prepared audit events, and an explanation string.
 
 ## Validation Rules
 
-Validation catches:
+Validation rejects missing version, unknown strict vehicle/autopilot/adapter values, invalid latitude/longitude, unknown altitude references, invalid geofence radius, unsupported geofence shapes, max altitude below min altitude, invalid velocity limits, invalid battery thresholds, inconsistent battery thresholds, duplicate command entries, ambiguous stale-state policy, invalid network settings, invalid audit settings, and unknown emergency defaults.
 
-- latitude outside `[-90, 90]`
-- longitude outside `[-180, 180]`
-- negative geofence radius
-- max altitude lower than min altitude
-- negative speed limits
-- battery thresholds outside `[0, 100]`
-- inconsistent battery thresholds
-- unknown coordinate frame where known frame is required
-- unknown altitude reference where known reference is required
-- stale or expired state when fresh state is required
-- missing vehicle id
-- missing timestamp source
-- duplicate command entries across allow/ask/deny/operator-approval lists
+Deny priority is fail-closed: an explicit `deny` wins over allow or ask. Duplicate command entries are invalid so policy authors cannot hide conflicts.
 
-Deny priority is documented for fail-closed policy resolution. Validation still rejects duplicate entries across command lists so policy authors cannot hide a deny/allow conflict.
+## Safety Boundary
 
-## Provenance
+Stale, expired, unknown, or ambiguous state is unsafe. Emergency `land` may proceed on stale state only when policy explicitly allows it and `land` is not denied. `return_to_home` may proceed on stale state only when policy explicitly allows it and a home position is available. These are policy decisions and recommendations only; no emergency runtime behavior is triggered.
 
-State provenance distinguishes fake adapter, PX4 SITL, ArduPilot SITL, bench, customer adapter, and unknown. Fake adapter state must remain fake. Unknown provenance is not safe for fresh-known validation.
+Fake adapter state must remain fake. Simulation examples are not flight validation.

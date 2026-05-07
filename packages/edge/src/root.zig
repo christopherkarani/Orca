@@ -2,19 +2,22 @@ const std = @import("std");
 const aegis_core = @import("aegis_core");
 
 pub const domain = @import("domain/mod.zig");
+pub const policy = @import("policy/mod.zig");
 pub const schema = @import("schema/mod.zig");
 
-pub const phase = "26-edge-domain-model-and-safety-schema";
-pub const installed_message = "Aegis Edge domain and safety schema package is installed. Drone command mediation is not implemented yet.";
+pub const phase = "27-edge-policy-engine-extensions";
+pub const installed_message = "Aegis Edge policy evaluation is installed. It evaluates policies and audit events only; drone command mediation is not implemented yet.";
 pub const core = aegis_core;
 
 pub const CapabilityStatus = enum {
+    active,
     unavailable,
     scaffolded,
     not_implemented,
 
     pub fn toString(self: CapabilityStatus) []const u8 {
         return switch (self) {
+            .active => "active",
             .unavailable => "unavailable",
             .scaffolded => "scaffolded",
             .not_implemented => "not implemented",
@@ -26,6 +29,7 @@ pub const EdgeCapability = enum {
     policy_scaffold,
     fake_adapter,
     command_mediation,
+    policy_evaluation,
     mavlink_gateway,
     px4_adapter,
     ardupilot_adapter,
@@ -38,6 +42,7 @@ pub const EdgeCapability = enum {
             .policy_scaffold => "edge policy scaffold",
             .fake_adapter => "fake adapter scaffold",
             .command_mediation => "drone command mediation",
+            .policy_evaluation => "edge policy evaluation",
             .mavlink_gateway => "MAVLink gateway",
             .px4_adapter => "PX4 adapter",
             .ardupilot_adapter => "ArduPilot adapter",
@@ -129,7 +134,7 @@ pub const FakeAdapter = struct {
     pub fn capabilityReports() []const CapabilityReport {
         return &.{
             .{ .capability = .fake_adapter, .status = .scaffolded, .note = "Local fake adapter placeholder only; no hardware IO." },
-            .{ .capability = .command_mediation, .status = .not_implemented, .note = "Drone command mediation is deferred to a later phase." },
+        .{ .capability = .command_mediation, .status = .not_implemented, .note = "Drone command mediation is deferred to a later phase." },
         };
     }
 
@@ -152,12 +157,13 @@ pub fn evaluateVehicleStateReadThroughCore(
 
 pub fn capabilityReports() []const CapabilityReport {
     return &.{
-        .{ .capability = .policy_scaffold, .status = .scaffolded, .note = "Phase 26 domain types and versioned safety schema descriptors exist for future Edge policy work." },
+        .{ .capability = .policy_scaffold, .status = .scaffolded, .note = "Phase 26 domain types and versioned safety schema descriptors exist for Edge policy work." },
+        .{ .capability = .policy_evaluation, .status = .active, .note = "Phase 27 evaluates Edge policy decisions locally for fake/simulation/bench evidence; it sends no vehicle commands." },
         .{ .capability = .fake_adapter, .status = .scaffolded, .note = "Fake adapter is local-only and has no hardware dependency." },
-        .{ .capability = .command_mediation, .status = .not_implemented, .note = "Drone command mediation is not implemented in Phase 26." },
-        .{ .capability = .mavlink_gateway, .status = .not_implemented, .note = "MAVLink is out of scope for Phase 26." },
-        .{ .capability = .px4_adapter, .status = .not_implemented, .note = "PX4 integration is out of scope for Phase 26." },
-        .{ .capability = .ardupilot_adapter, .status = .not_implemented, .note = "ArduPilot integration is out of scope for Phase 26." },
+        .{ .capability = .command_mediation, .status = .not_implemented, .note = "Drone command mediation is not implemented in Phase 27." },
+        .{ .capability = .mavlink_gateway, .status = .not_implemented, .note = "MAVLink is out of scope for Phase 27." },
+        .{ .capability = .px4_adapter, .status = .not_implemented, .note = "PX4 integration is out of scope for Phase 27." },
+        .{ .capability = .ardupilot_adapter, .status = .not_implemented, .note = "ArduPilot integration is out of scope for Phase 27." },
         .{ .capability = .real_flight_enforcement, .status = .unavailable, .note = "Real-flight behavior requires later simulation, bench, and customer safety validation phases." },
         .{ .capability = .detect_and_avoid, .status = .unavailable, .note = "Aegis Edge is not a detect-and-avoid system." },
         .{ .capability = .regulatory_certification, .status = .unavailable, .note = "Aegis Edge is not regulatory approval or certification." },
@@ -175,6 +181,7 @@ pub fn doctor(writer: anytype) !void {
 test {
     _ = core;
     _ = domain;
+    _ = policy;
     _ = schema;
     _ = capabilityReports;
     _ = FakeAdapter;

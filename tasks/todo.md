@@ -1,31 +1,35 @@
-# Phase 26 Edge Domain Model and Safety Schema
+# Phase 27 Edge Policy Engine Extensions
 
 ## Assumptions
 
-- The Edge governing documents named in the task prompt are not present in this checkout. The task prompt, current package contracts, Phase 23-25 docs/tests, security invariants, architecture contracts, and memory notes are the active contract.
-- Phase 26 is a foundational Edge domain/schema phase only. It may define types, units, coordinate frames, schemas, documentation, and validation helpers, but must not implement command mediation, MAVLink/PX4/ArduPilot/ROS2 integration, real-flight behavior, operator approval runtime flows, telemetry, SaaS, monetization, or regulatory/certification claims.
-- Aegis Edge is a future policy and audit runtime between autonomous agents and control bridges. It is not a flight controller, autopilot replacement, detect-and-avoid system, or certification product.
-- Edge must continue importing Aegis Core successfully and CLI v1.1 behavior must not regress.
-- Unknown, stale, expired, fake, or ambiguous state must fail validation where fresh/known state is required.
-- Units, coordinate frames, altitude references, timestamp sources, and provenance must be explicit and preserved for later audit/reporting phases.
+- The prompt-named Edge governing documents (`README_START_HERE.md`, `CODEX_MASTER_PROMPT_EDGE.md`, `context/...`, and `phases/27_EDGE_POLICY_ENGINE_EXTENSIONS.md`) are not present in this checkout under those exact paths. The active contract for this phase is the user prompt, existing Phase 26 Edge domain/schema code, current Aegis architecture/security documents, and prior task lessons.
+- Phase 27 must implement Edge policy loading, validation, policy decision APIs, CLI evaluation/explain/check commands, examples, docs, and tests. It must not send commands to MAVLink/PX4/ArduPilot/ROS2, real hardware, SITL, or any external service.
+- Edge policy decisions must reuse the shared Aegis Core decision vocabulary and Core audit/redaction surfaces. Edge may have domain-specific evaluation structs, but not a disconnected decision model.
+- Stale, expired, unknown, ambiguous, unitless, or frame-less state is unsafe unless a policy explicitly permits a narrow emergency-safe decision such as land-on-stale-state.
+- Circular WGS84 geofence enforcement is in scope. Polygon geofences may remain schema-reserved/unsupported if validation and docs fail clearly.
 
 ## Research And False-Positive Check
 
-- [x] Reviewed memory for Aegis phase discipline, verification gates, and prior Edge scaffold boundaries.
-- [x] Confirmed the prompt-named Phase 26/context files are absent from this checkout and should not be fabricated.
-- [x] Review current Edge package, build targets, schema placeholders, docs, and tests.
-- [x] Compare requested Phase 26 scope against existing Phase 23-25 scaffold to avoid deleting useful honesty boundaries.
-- [x] Confirm whether `aegis-edge` already exists and whether schema commands fit without implying active mediation.
+- [x] Read memory for Aegis phase discipline, prior policy engine notes, and clean-checkout lessons.
+- [x] Read current root execution/security/architecture documents that exist in this checkout.
+- [x] Confirm prompt-named Edge governing files are absent and do not fabricate them.
+- [x] Inspect Core policy, decision, audit, redaction APIs and decide the narrow integration point.
+- [x] Inspect Phase 26 Edge domain/schema contracts and identify reusable validators.
+- [x] Inspect `aegis-edge` CLI/build/test wiring and examples/docs conventions.
+- [x] Re-check assumptions against explorer findings before implementation.
 
 ## TDD / Implementation Checklist
 
-- [x] Add failing/targeted tests for coordinate validation, altitude references, frame mismatch behavior, battery/altitude/speed/geofence limits, command policy conflicts, vehicle state freshness/provenance, command requests, risk classification, schemas, and Core import.
-- [x] Implement/harden Edge domain module structure under `packages/edge/src/domain/`.
-- [x] Implement/harden Edge schema module structure under `packages/edge/src/schema/`.
-- [x] Add versioned Edge policy, event, and safety-report schema surfaces with Zig validation structs and JSON schema files.
-- [x] Update `aegis-edge` only with honest `doctor`/`schema` commands if it fits the current architecture.
-- [x] Update Edge docs: package README plus domain model, safety policy, coordinate frames, and safety schemas.
-- [x] Add documentation regressions for no real-flight, no active MAVLink/PX4/ArduPilot, and no certification claims.
+- [x] Add focused Phase 27 tests first for policy parsing/validation failures, command decisions, freshness, geofence, altitude, velocity, battery, mode/authority, audit/redaction, CLI behavior, and Core decision reuse.
+- [x] Implement Edge policy load/parse/validate for versioned YAML and JSON-shaped inputs with strict unknown/invalid value behavior.
+- [x] Implement Edge evaluation API returning Core decisions plus findings, violated constraints, matched rules, fallback recommendations, audit-safe context, and explanations.
+- [x] Implement command policy semantics: deny priority, ask conversion in CI/non-interactive mode, critical default deny, emergency-safe land/RTH policy handling, and no command forwarding.
+- [x] Implement state freshness, circular geofence, altitude, velocity, battery, mode, and control-authority evaluation.
+- [x] Prepare Edge audit events through Core event/redaction APIs with bounded structured payloads and fake provenance labels.
+- [x] Implement `aegis-edge policy check`, `policy explain`, `policy evaluate`, `schema list`, and `schema print edge-policy-v1` without implying live mediation.
+- [x] Add deterministic fake/simulation examples under `examples/edge/`.
+- [x] Update Edge package README and Edge policy docs, including limitations and no-flight/no-certification boundaries.
+- [x] Run `git diff --name-only` and `git ls-files --others --exclude-standard` before final status so new modules/tests/examples are visible.
 
 ## Verification Checklist
 
@@ -39,17 +43,44 @@
 - [x] `./zig-out/bin/aegis redteam --ci`
 - [x] `./zig-out/bin/aegis-edge --help`
 - [x] `./zig-out/bin/aegis-edge doctor`
-- [x] `./zig-out/bin/aegis-edge schema list`
-- [x] `./zig-out/bin/aegis-edge schema print edge-policy-v1`
-- [x] Manual docs/schema safety review.
-- [x] Fake secret persistence check.
+- [x] `./zig-out/bin/aegis-edge policy check examples/edge/policies/geofence-basic.yaml`
+- [x] `./zig-out/bin/aegis-edge policy evaluate examples/edge/policies/geofence-basic.yaml --request examples/edge/requests/waypoint-outside-geofence.json --state examples/edge/states/fresh-state.json`
+- [x] `./zig-out/bin/aegis-edge policy evaluate examples/edge/policies/geofence-basic.yaml --request examples/edge/requests/land.json --state examples/edge/states/stale-state.json`
+- [x] Manual: waypoint outside geofence denied.
+- [x] Manual: `disable_failsafe` denied.
+- [x] Manual: land behavior follows emergency-safe policy.
+- [x] Manual: stale state denies normal movement commands.
+- [x] Manual: low battery behavior follows policy.
+- [x] Manual: fake secrets absent from persistent outputs and replay output.
+- [x] Manual: Edge docs do not claim MAVLink/PX4/ArduPilot support, real-flight readiness, or certification.
+- [x] Manual: Aegis CLI behavior unchanged.
 - [x] `git diff --check`
 
 ## Review
 
-- Added Phase 26 Edge domain modules for vehicle/platform, coordinates/units/frames, state, commands, mission, geofence, battery, link, sensors, risk, safety envelope, and validation.
-- Added versioned Edge policy, Edge event, and safety-report schema descriptors plus JSON schema files.
-- Added `aegis-edge schema list` and `aegis-edge schema print edge-policy-v1` as honest schema discovery commands; command mediation remains not implemented.
-- Added Phase 26 contract tests covering coordinate bounds, altitude reference requirements, NED/ENU mismatch behavior, safety envelope validation, geofence validation, vehicle state freshness/provenance, command request construction, risk classification, schema discoverability, Core import, and docs safety claims.
-- Updated Edge docs and schema docs to document Phase 26 while preserving no-real-flight/no-certification/no-active-integration boundaries.
-- Verification passed. `zig build test --summary all` reports 28/28 steps succeeded, 283/289 tests passed, 6 skipped.
+- Implemented Phase 27 Edge policy engine extensions under `packages/edge/src/policy/`.
+- Added strict Edge policy YAML/JSON loading, validation, command request/state JSON parsing, Core decision reuse, local safety checks, and prepared Core audit events.
+- Added `aegis-edge policy check`, `policy explain`, and `policy evaluate`; schema print now reads the checked-in schema.
+- Added deterministic fake/simulation examples under `examples/edge/`.
+- Updated Edge docs and schemas for policy-engine behavior while preserving no-command-mediation, no-real-flight, and no-certification boundaries.
+- Verification passed, including `zig build`, `zig build test`, Aegis CLI regression smokes, Edge policy CLI smokes, manual decision checks, docs claim scan, fake-secret persistence scan, JSON schema/example parsing, and `git diff --check`.
+
+## Review Fixes
+
+- [x] Reject command request / vehicle state ID mismatches before safety evaluation.
+- [x] Require matching parameters for `takeoff`, `set_waypoint`, `set_velocity`, `set_altitude`, `set_heading`, and `set_mode`.
+- [x] Reject Edge policies missing schema-required top-level `safety` or `commands` sections.
+- [x] Include `aegis-edge` in shell and PowerShell release artifacts.
+- [x] Escape `policy check --json` path output.
+- [x] Add regression tests for all review comments.
+- [x] Rerun focused tests, `zig build test`, `zig build`, Edge CLI checks, and `git diff --check`.
+
+## Review Fix Results
+
+- Request/state vehicle ID mismatches now fail with `VehicleIdMismatch` before evaluation allocates or emits audit payloads.
+- Parameterized movement/mode commands now fail closed when the required parameter payload is missing or the wrong parameter variant is provided.
+- JSON command request parsing now supports `heading` payloads so `set_heading` can satisfy the required-parameter contract.
+- Edge policy loading now enforces the published top-level schema contract for `safety` and `commands`.
+- Release packaging now copies both `aegis` and `aegis-edge` on shell and PowerShell release paths.
+- `aegis-edge policy check --json` now writes the policy path through Core JSON string escaping.
+- Verification passed after these fixes: `git diff --check`, `zig build`, `zig build test --summary all`, Aegis CLI smoke checks, Edge CLI smoke checks, manual policy-decision probes, docs limitation scan, and persistent fake-secret scan.

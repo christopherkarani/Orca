@@ -128,6 +128,7 @@ test "phase 26 command requests cover categories and default risk classification
             .command_id = "cmd-1",
             .vehicle_id = .{ .value = "edge-vehicle-1" },
             .action = action,
+            .parameters = validParametersFor(action),
             .actor = "agent-under-test",
             .timestamp = timestamp,
             .source = .fake_adapter,
@@ -138,9 +139,20 @@ test "phase 26 command requests cover categories and default risk classification
     try std.testing.expectEqual(domain.risk.RiskCategory.low, domain.risk.classifyCommand(.read_telemetry));
     try std.testing.expectEqual(domain.risk.RiskCategory.high, domain.risk.classifyCommand(.arm));
     try std.testing.expectEqual(domain.risk.RiskCategory.high, domain.risk.classifyCommand(.takeoff));
-    try std.testing.expectEqual(domain.risk.RiskCategory.medium, domain.risk.classifyCommand(.land));
+    try std.testing.expectEqual(domain.risk.RiskCategory.emergency_safe, domain.risk.classifyCommand(.land));
     try std.testing.expectEqual(domain.risk.RiskCategory.critical, domain.risk.classifyCommand(.disable_failsafe));
     try std.testing.expectEqual(domain.risk.RiskCategory.critical, domain.risk.classifyCommand(.raw_actuator_output));
+}
+
+fn validParametersFor(action: domain.commands.CommandAction) domain.commands.CommandParameters {
+    return switch (action) {
+        .takeoff, .set_altitude => .{ .altitude = .{ .altitude_m = 20, .altitude_reference = .amsl } },
+        .set_waypoint => .{ .waypoint = .{ .latitude_deg = 37, .longitude_deg = -122, .altitude_m = 20, .altitude_reference = .amsl } },
+        .set_velocity => .{ .velocity = .{ .vx_mps = 1, .vy_mps = 1, .vz_mps = 0, .frame = .local_ned } },
+        .set_heading => .{ .heading = domain.coordinates.Heading.degrees(90) },
+        .set_mode => .{ .mode = .mission },
+        else => .none,
+    };
 }
 
 test "phase 26 edge policy schema validates versioned safety shape" {

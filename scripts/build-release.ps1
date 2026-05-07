@@ -36,6 +36,8 @@ foreach ($target in $targets) {
     Copy-ReleasePayload $root
     New-Item -ItemType Directory -Force -Path (Join-Path $root "bin") | Out-Null
     Copy-Item -LiteralPath (Join-Path $prefix "bin/$($target.Bin)") -Destination (Join-Path $root "bin/$($target.Bin)")
+    $edgeBin = if ($target.Os -eq "windows") { "aegis-edge.exe" } else { "aegis-edge" }
+    Copy-Item -LiteralPath (Join-Path $prefix "bin/$edgeBin") -Destination (Join-Path $root "bin/$edgeBin")
 
     if ($target.Ext -eq "zip") {
         Compress-Archive -LiteralPath $root -DestinationPath (Join-Path $DistDir $artifact) -Force

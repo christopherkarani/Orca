@@ -13,6 +13,7 @@ pub const RiskCategory = enum {
     medium,
     high,
     critical,
+    emergency_safe,
     unknown,
 };
 
@@ -187,6 +188,7 @@ pub const CommandRequest = struct {
         if (self.actor.len == 0) return error.MissingActor;
         try self.timestamp.validate();
         if (self.source == .unknown) return error.UnknownStateIsUnsafe;
+        try validateParameterShape(self.action, self.parameters);
         switch (self.parameters) {
             .none => {},
             .waypoint => |point| try point.validate(),
@@ -198,3 +200,34 @@ pub const CommandRequest = struct {
         }
     }
 };
+
+fn validateParameterShape(action: CommandAction, parameters: CommandParameters) !void {
+    switch (action) {
+        .set_waypoint => try requireParameter(parameters, .waypoint),
+        .set_velocity => try requireParameter(parameters, .velocity),
+        .set_altitude, .takeoff => try requireParameter(parameters, .altitude),
+        .set_heading => try requireParameter(parameters, .heading),
+        .set_mode => try requireParameter(parameters, .mode),
+        else => {},
+    }
+}
+
+const RequiredParameter = enum {
+    waypoint,
+    velocity,
+    altitude,
+    heading,
+    mode,
+};
+
+fn requireParameter(parameters: CommandParameters, required: RequiredParameter) !void {
+    if (parameters == .none) return error.MissingCommandParameters;
+    const matches = switch (required) {
+        .waypoint => parameters == .waypoint,
+        .velocity => parameters == .velocity,
+        .altitude => parameters == .altitude,
+        .heading => parameters == .heading,
+        .mode => parameters == .mode,
+    };
+    if (!matches) return error.InvalidCommandParameters;
+}

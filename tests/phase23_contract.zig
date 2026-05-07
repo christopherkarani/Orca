@@ -49,6 +49,7 @@ test "phase 23 edge placeholder never reports active command or flight enforceme
             .regulatory_certification,
             => try std.testing.expect(report.status != .scaffolded),
             .policy_scaffold,
+            .policy_evaluation,
             .fake_adapter,
             => {},
         }

@@ -48,6 +48,11 @@ build_target() {
   copy_release_payload "$root"
   mkdir -p "$root/bin"
   cp "$prefix/bin/$bin_name" "$root/bin/$bin_name"
+  edge_bin_name="aegis-edge"
+  if [ "$os" = "windows" ]; then
+    edge_bin_name="aegis-edge.exe"
+  fi
+  cp "$prefix/bin/$edge_bin_name" "$root/bin/$edge_bin_name"
 
   if [ "$ext" = "zip" ]; then
     (cd "$work" && zip -qr "../../$artifact" "aegis-v${VERSION}-${os}-${arch}")
