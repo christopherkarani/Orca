@@ -39,8 +39,8 @@
         "additionalProperties": false,
         "required": ["risk", "default"],
         "properties": {
-          "risk": { "enum": ["low", "medium", "high", "critical"] },
-          "default": { "enum": ["allow", "deny", "ask", "observe"] }
+          "risk": { "enum": ["low", "medium", "high", "critical", "unknown"] },
+          "default": { "$ref": "#/$defs/enforcingDecision" }
         }
       }
     },
@@ -53,8 +53,11 @@
       "type": "object",
       "additionalProperties": false,
       "properties": {
-        "default": { "enum": ["allow", "deny", "ask", "observe"] }
+        "default": { "$ref": "#/$defs/enforcingDecision" }
       }
+    },
+    "enforcingDecision": {
+      "enum": ["allow", "deny", "ask"]
     }
   }
 }

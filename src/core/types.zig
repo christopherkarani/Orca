@@ -41,6 +41,13 @@ pub const TargetKind = enum {
     approval,
     staging_area,
     session,
+    edge_vehicle_state,
+    edge_vehicle_command,
+    edge_mission,
+    edge_geofence,
+    edge_telemetry,
+    edge_emergency,
+    edge_safety_envelope,
     unknown,
 };
 
@@ -116,6 +123,41 @@ pub const StagingAction = struct {
     path: Path,
 };
 
+pub const EdgeVehicleStateReadAction = struct {
+    vehicle_id: []const u8,
+};
+
+pub const EdgeVehicleCommandRequestAction = struct {
+    vehicle_id: []const u8,
+    command: []const u8,
+    source: ?[]const u8 = null,
+};
+
+pub const EdgeMissionUploadRequestAction = struct {
+    vehicle_id: []const u8,
+    mission_id: ?[]const u8 = null,
+};
+
+pub const EdgeGeofenceEvaluationRequestAction = struct {
+    vehicle_id: []const u8,
+    geofence_id: ?[]const u8 = null,
+};
+
+pub const EdgeTelemetryEgressRequestAction = struct {
+    vehicle_id: []const u8,
+    destination: []const u8,
+};
+
+pub const EdgeEmergencyCommandRequestAction = struct {
+    vehicle_id: []const u8,
+    command: []const u8,
+};
+
+pub const EdgeSafetyEnvelopeEvaluationRequestAction = struct {
+    vehicle_id: []const u8,
+    envelope_id: ?[]const u8 = null,
+};
+
 pub const Action = union(enum) {
     env_read: EnvAction,
     file_read: FileAction,
@@ -128,6 +170,13 @@ pub const Action = union(enum) {
     mcp_sampling_request: MCPSamplingAction,
     approval_decision: ApprovalAction,
     staging_decision: StagingAction,
+    edge_vehicle_state_read: EdgeVehicleStateReadAction,
+    edge_vehicle_command_request: EdgeVehicleCommandRequestAction,
+    edge_mission_upload_request: EdgeMissionUploadRequestAction,
+    edge_geofence_evaluation_request: EdgeGeofenceEvaluationRequestAction,
+    edge_telemetry_egress_request: EdgeTelemetryEgressRequestAction,
+    edge_emergency_command_request: EdgeEmergencyCommandRequestAction,
+    edge_safety_envelope_evaluation_request: EdgeSafetyEnvelopeEvaluationRequestAction,
 
     pub fn targetKind(self: Action) TargetKind {
         return switch (self) {
@@ -141,6 +190,13 @@ pub const Action = union(enum) {
             .mcp_sampling_request => .mcp_sampling,
             .approval_decision => .approval,
             .staging_decision => .staging_area,
+            .edge_vehicle_state_read => .edge_vehicle_state,
+            .edge_vehicle_command_request => .edge_vehicle_command,
+            .edge_mission_upload_request => .edge_mission,
+            .edge_geofence_evaluation_request => .edge_geofence,
+            .edge_telemetry_egress_request => .edge_telemetry,
+            .edge_emergency_command_request => .edge_emergency,
+            .edge_safety_envelope_evaluation_request => .edge_safety_envelope,
         };
     }
 };
@@ -164,4 +220,7 @@ test "action union covers enforcement surfaces" {
 
     const tool: Action = .{ .mcp_tool_call = .{ .tool_name = "read_file" } };
     try std.testing.expectEqual(TargetKind.mcp_tool, tool.targetKind());
+
+    const edge: Action = .{ .edge_vehicle_state_read = .{ .vehicle_id = "vehicle-1" } };
+    try std.testing.expectEqual(TargetKind.edge_vehicle_state, edge.targetKind());
 }

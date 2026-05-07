@@ -63,6 +63,56 @@ test "phase 23 fake secret guardrail covers redaction before durable strings" {
     try std.testing.expect(std.mem.indexOf(u8, redacted, "[REDACTED") != null);
 }
 
+test "policy schema matches runtime file-write and MCP server-scoped policy shapes" {
+    const text = try std.fs.cwd().readFileAlloc(std.testing.allocator, "schemas/policy-v1.json", 128 * 1024);
+    defer std.testing.allocator.free(text);
+    var parsed = try std.json.parseFromSlice(std.json.Value, std.testing.allocator, text, .{});
+    defer parsed.deinit();
+
+    const root = parsed.value.object;
+    const properties = root.get("properties").?.object;
+    const files_properties = properties.get("files").?.object.get("properties").?.object;
+    try std.testing.expect(files_properties.get("write_mode") == null);
+
+    const defs = root.get("$defs").?.object;
+    const file_write_properties = defs.get("fileWriteRuleSet").?.object.get("properties").?.object;
+    try std.testing.expect(file_write_properties.get("mode") != null);
+
+    const mcp_properties = defs.get("mcpPolicy").?.object.get("properties").?.object;
+    const servers = mcp_properties.get("servers").?.object;
+    const server_properties = servers.get("additionalProperties").?.object.get("properties").?.object;
+    try std.testing.expect(server_properties.get("tools") != null);
+
+    var policy = try aegis_core.policy.load.parseFromSlice(std.testing.allocator,
+        \\{"version":1,"mode":"strict","files":{"write":{"mode":"direct","allow":["docs/**"]}},"mcp":{"servers":{"github":{"tools":{"allow":["search_repositories"]}}}}}
+    , "schema-alignment.json");
+    defer policy.deinit();
+    try std.testing.expectEqual(aegis_core.policy.schema.WriteMode.direct, policy.files.write_mode);
+    try std.testing.expectEqualStrings("github.search_repositories", policy.mcp.allow[0]);
+}
+
+test "MCP manifest schema decision and risk enums match manifest parser behavior" {
+    const text = try std.fs.cwd().readFileAlloc(std.testing.allocator, "schemas/mcp-manifest-v1.json", 128 * 1024);
+    defer std.testing.allocator.free(text);
+    var parsed = try std.json.parseFromSlice(std.json.Value, std.testing.allocator, text, .{});
+    defer parsed.deinit();
+
+    const root = parsed.value.object;
+    const defs = root.get("$defs").?.object;
+    const decision_enum = defs.get("enforcingDecision").?.object.get("enum").?.array.items;
+    try expectJsonStringInEnum(decision_enum, "allow");
+    try expectJsonStringInEnum(decision_enum, "deny");
+    try expectJsonStringInEnum(decision_enum, "ask");
+    try expectJsonStringNotInEnum(decision_enum, "observe");
+
+    const properties = root.get("properties").?.object;
+    const tools_schema = properties.get("tools").?.object.get("additionalProperties").?.object;
+    const tool_properties = tools_schema.get("properties").?.object;
+    const risk_enum = tool_properties.get("risk").?.object.get("enum").?.array.items;
+    try expectJsonStringInEnum(risk_enum, "unknown");
+    try std.testing.expectEqualStrings("#/$defs/enforcingDecision", tool_properties.get("default").?.object.get("$ref").?.string);
+}
+
 fn expectNoUnsupportedReadinessClaim(text: []const u8) !void {
     const forbidden = [_][]const u8{
         "production-flight-ready",
@@ -80,5 +130,18 @@ fn expectNoUnsupportedReadinessClaim(text: []const u8) !void {
 
     for (forbidden) |phrase| {
         try std.testing.expect(std.mem.indexOf(u8, text, phrase) == null);
+    }
+}
+
+fn expectJsonStringInEnum(items: []const std.json.Value, expected: []const u8) !void {
+    for (items) |item| {
+        if (item == .string and std.mem.eql(u8, item.string, expected)) return;
+    }
+    return error.TestUnexpectedResult;
+}
+
+fn expectJsonStringNotInEnum(items: []const std.json.Value, forbidden: []const u8) !void {
+    for (items) |item| {
+        if (item == .string and std.mem.eql(u8, item.string, forbidden)) return error.TestUnexpectedResult;
     }
 }

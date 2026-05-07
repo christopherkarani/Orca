@@ -32,8 +32,7 @@
       "additionalProperties": false,
       "properties": {
         "read": { "$ref": "#/$defs/ruleSet" },
-        "write": { "$ref": "#/$defs/ruleSet" },
-        "write_mode": { "enum": ["staged", "direct"] }
+        "write": { "$ref": "#/$defs/fileWriteRuleSet" }
       }
     },
     "commands": { "$ref": "#/$defs/ruleSet" },
@@ -57,7 +56,7 @@
         }
       }
     },
-    "mcp": { "$ref": "#/$defs/ruleSet" },
+    "mcp": { "$ref": "#/$defs/mcpPolicy" },
     "audit": {
       "type": "object",
       "additionalProperties": false,
@@ -82,6 +81,38 @@
         "deny": { "$ref": "#/$defs/stringList" },
         "ask": { "$ref": "#/$defs/stringList" },
         "default": { "$ref": "#/$defs/decision" }
+      }
+    },
+    "fileWriteRuleSet": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "allow": { "$ref": "#/$defs/stringList" },
+        "deny": { "$ref": "#/$defs/stringList" },
+        "ask": { "$ref": "#/$defs/stringList" },
+        "default": { "$ref": "#/$defs/decision" },
+        "mode": { "enum": ["staged", "direct"] }
+      }
+    },
+    "mcpPolicy": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "allow": { "$ref": "#/$defs/stringList" },
+        "deny": { "$ref": "#/$defs/stringList" },
+        "ask": { "$ref": "#/$defs/stringList" },
+        "default": { "$ref": "#/$defs/decision" },
+        "servers": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["tools"],
+            "properties": {
+              "tools": { "$ref": "#/$defs/ruleSet" }
+            }
+          }
+        }
       }
     }
   }

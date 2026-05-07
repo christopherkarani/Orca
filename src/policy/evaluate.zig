@@ -68,6 +68,14 @@ pub fn action(policy: *const schema.Policy, requested: core.types.Action, ctx: s
             defer allocator.free(selector);
             return evaluateRuleSet(allocator, mode, .mcp, "mcp", policy.mcp, selector);
         },
+        .edge_vehicle_state_read,
+        .edge_vehicle_command_request,
+        .edge_mission_upload_request,
+        .edge_geofence_evaluation_request,
+        .edge_telemetry_egress_request,
+        .edge_emergency_command_request,
+        .edge_safety_envelope_evaluation_request,
+        => edgePlaceholderDecision(allocator, mode, edgeActionName(requested), edgeActionTarget(requested)),
         .approval_decision, .staging_decision => defaultDecision(allocator, mode, null, "unsupported policy action surface"),
     };
 }
@@ -205,6 +213,49 @@ fn defaultDecision(allocator: std.mem.Allocator, mode: schema.Mode, explicit_def
             .ci_may_proceed = actual == .allow or actual == .observe,
         },
         .explanation = explanation,
+    };
+}
+
+fn edgePlaceholderDecision(allocator: std.mem.Allocator, mode: schema.Mode, action_name: []const u8, target: []const u8) !schema.Evaluation {
+    _ = mode;
+    const explanation = try std.fmt.allocPrint(
+        allocator,
+        "edge.{s}: placeholder observe-only action for {s}; no real drone command enforcement in Phase 24",
+        .{ action_name, target },
+    );
+    return .{
+        .decision = .{
+            .result = .observe,
+            .reason = explanation,
+            .ci_may_proceed = true,
+        },
+        .explanation = explanation,
+    };
+}
+
+fn edgeActionName(requested: core.types.Action) []const u8 {
+    return switch (requested) {
+        .edge_vehicle_state_read => "vehicle_state_read",
+        .edge_vehicle_command_request => "vehicle_command_request",
+        .edge_mission_upload_request => "mission_upload_request",
+        .edge_geofence_evaluation_request => "geofence_evaluation_request",
+        .edge_telemetry_egress_request => "telemetry_egress_request",
+        .edge_emergency_command_request => "emergency_command_request",
+        .edge_safety_envelope_evaluation_request => "safety_envelope_evaluation_request",
+        else => "unknown",
+    };
+}
+
+fn edgeActionTarget(requested: core.types.Action) []const u8 {
+    return switch (requested) {
+        .edge_vehicle_state_read => |action_value| action_value.vehicle_id,
+        .edge_vehicle_command_request => |action_value| action_value.vehicle_id,
+        .edge_mission_upload_request => |action_value| action_value.vehicle_id,
+        .edge_geofence_evaluation_request => |action_value| action_value.vehicle_id,
+        .edge_telemetry_egress_request => |action_value| action_value.vehicle_id,
+        .edge_emergency_command_request => |action_value| action_value.vehicle_id,
+        .edge_safety_envelope_evaluation_request => |action_value| action_value.vehicle_id,
+        else => "edge-placeholder",
     };
 }
 

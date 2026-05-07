@@ -96,6 +96,10 @@ pub const SessionWriter = struct {
         return null;
     }
 
+    pub fn sessionDirPath(self: *const SessionWriter) []const u8 {
+        return self.session_dir_path;
+    }
+
     pub fn writeLastPointer(self: *const SessionWriter) !void {
         const aegis_dir = try std.fs.path.join(self.allocator, &.{ self.workspace_root, ".aegis" });
         defer self.allocator.free(aegis_dir);
