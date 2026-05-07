@@ -59,3 +59,9 @@
 ## 2026-05-07 Phase 15 macOS Backend Review
 
 - User-facing capability labels can also be CLI compatibility surface when parsers accept labels. If doctor wording changes, preserve older spellings as explicit aliases and add parser regression tests.
+
+## 2026-05-07 Phase 16 Windows Backend Review
+
+- Windows PATH shims cannot rely on `.cmd` batch forwarding as a security boundary. Batch `%*` re-parses metacharacters; use executable aliases or another argv-preserving mechanism.
+- If doctor says `cmd.exe` or `powershell.exe` are wrapper-guarded, generated shims must cover extension-qualified invocations such as `cmd.exe`, `powershell.exe`, `pwsh.exe`, and `git.exe`.
+- Shell command classifiers must analyze all argv tokens after `/c`, `/k`, `-Command`, or `-c`; checking only the first token misses split destructive flags like `rmdir /s /q` and `Remove-Item -Recurse -Force`.
