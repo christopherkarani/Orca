@@ -1,0 +1,59 @@
+param(
+    [string]$Version = $(if ($env:AEGIS_VERSION) { $env:AEGIS_VERSION } else { "0.19.0-dev" }),
+    [string]$Commit = $(if ($env:AEGIS_COMMIT) { $env:AEGIS_COMMIT } else { "unknown" }),
+    [string]$BuildDate = $(if ($env:AEGIS_BUILD_DATE) { $env:AEGIS_BUILD_DATE } else { (Get-Date).ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ssZ") }),
+    [string]$DistDir = $(if ($env:AEGIS_DIST_DIR) { $env:AEGIS_DIST_DIR } else { "dist" })
+)
+
+$ErrorActionPreference = "Stop"
+
+$targets = @(
+    @{ Os = "darwin"; Arch = "amd64"; Zig = "x86_64-macos"; Ext = "tar.gz"; Bin = "aegis" },
+    @{ Os = "darwin"; Arch = "arm64"; Zig = "aarch64-macos"; Ext = "tar.gz"; Bin = "aegis" },
+    @{ Os = "linux"; Arch = "amd64"; Zig = "x86_64-linux"; Ext = "tar.gz"; Bin = "aegis" },
+    @{ Os = "linux"; Arch = "arm64"; Zig = "aarch64-linux"; Ext = "tar.gz"; Bin = "aegis" },
+    @{ Os = "windows"; Arch = "amd64"; Zig = "x86_64-windows"; Ext = "zip"; Bin = "aegis.exe" }
+)
+
+function Copy-ReleasePayload($Root) {
+    New-Item -ItemType Directory -Force -Path $Root | Out-Null
+    Copy-Item README.md, LICENSE, SECURITY.md, CONTRIBUTING.md -Destination $Root
+    Copy-Item docs, policies, schemas, fixtures -Destination $Root -Recurse
+}
+
+if (Test-Path -LiteralPath $DistDir) { Remove-Item -LiteralPath $DistDir -Recurse -Force }
+New-Item -ItemType Directory -Force -Path $DistDir | Out-Null
+
+foreach ($target in $targets) {
+    $artifact = "aegis-v$Version-$($target.Os)-$($target.Arch).$($target.Ext)"
+    $work = Join-Path $DistDir "work/$($target.Os)-$($target.Arch)"
+    $prefix = Join-Path $work "prefix"
+    $root = Join-Path $work "aegis-v$Version-$($target.Os)-$($target.Arch)"
+
+    New-Item -ItemType Directory -Force -Path $prefix, $root | Out-Null
+    zig build -Dtarget=$($target.Zig) -Doptimize=ReleaseSafe -Dversion=$Version -Dcommit=$Commit -Dbuild-date=$BuildDate --prefix $prefix
+
+    Copy-ReleasePayload $root
+    New-Item -ItemType Directory -Force -Path (Join-Path $root "bin") | Out-Null
+    Copy-Item -LiteralPath (Join-Path $prefix "bin/$($target.Bin)") -Destination (Join-Path $root "bin/$($target.Bin)")
+
+    if ($target.Ext -eq "zip") {
+        Compress-Archive -LiteralPath $root -DestinationPath (Join-Path $DistDir $artifact) -Force
+    } else {
+        tar -C $work -czf (Join-Path $DistDir $artifact) (Split-Path -Leaf $root)
+    }
+    Write-Host "Built $(Join-Path $DistDir $artifact)"
+}
+
+& ./scripts/generate-checksums.sh $DistDir
+& ./scripts/generate-sbom.sh $DistDir
+
+if ($env:AEGIS_SIGNING_ENABLED -eq "1") {
+    if (-not $env:AEGIS_SIGNING_COMMAND) {
+        Write-Error "Signing requested but AEGIS_SIGNING_COMMAND is not set."
+        exit 1
+    }
+    Invoke-Expression $env:AEGIS_SIGNING_COMMAND
+} else {
+    Write-Host "Signing skipped; set AEGIS_SIGNING_ENABLED=1 and AEGIS_SIGNING_COMMAND in release environments."
+}

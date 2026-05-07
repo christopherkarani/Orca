@@ -3,11 +3,22 @@ const std = @import("std");
 pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
+    const version = b.option([]const u8, "version", "Aegis version metadata") orelse "0.19.0-dev";
+    const commit = b.option([]const u8, "commit", "Source commit metadata") orelse "unknown";
+    const build_date = b.option([]const u8, "build-date", "UTC build date metadata") orelse "unknown";
+
+    const build_options = b.addOptions();
+    build_options.addOption([]const u8, "version", version);
+    build_options.addOption([]const u8, "commit", commit);
+    build_options.addOption([]const u8, "build_date", build_date);
 
     const aegis_mod = b.addModule("aegis", .{
         .root_source_file = b.path("src/root.zig"),
         .target = target,
         .optimize = optimize,
+        .imports = &.{
+            .{ .name = "build_options", .module = build_options.createModule() },
+        },
     });
 
     const exe = b.addExecutable(.{
@@ -18,6 +29,7 @@ pub fn build(b: *std.Build) void {
             .optimize = optimize,
             .imports = &.{
                 .{ .name = "aegis", .module = aegis_mod },
+                .{ .name = "build_options", .module = build_options.createModule() },
             },
         }),
     });
@@ -54,6 +66,9 @@ pub fn build(b: *std.Build) void {
         .root_source_file = b.path("src/root.zig"),
         .target = windows_target,
         .optimize = optimize,
+        .imports = &.{
+            .{ .name = "build_options", .module = build_options.createModule() },
+        },
     });
     const windows_exe = b.addExecutable(.{
         .name = "aegis-windows-check",
@@ -63,6 +78,7 @@ pub fn build(b: *std.Build) void {
             .optimize = optimize,
             .imports = &.{
                 .{ .name = "aegis", .module = windows_mod },
+                .{ .name = "build_options", .module = build_options.createModule() },
             },
         }),
     });

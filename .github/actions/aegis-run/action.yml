@@ -13,13 +13,18 @@ runs:
   steps:
     - name: Check Aegis policy
       shell: bash
+      env:
+        AEGIS_ACTION_POLICY: ${{ inputs.policy }}
       run: |
-        if [ -f "${{ inputs.policy }}" ]; then
-          aegis policy check "${{ inputs.policy }}"
+        if [ -f "$AEGIS_ACTION_POLICY" ]; then
+          aegis policy check "$AEGIS_ACTION_POLICY"
         else
-          echo "Aegis policy not found at ${{ inputs.policy }}; initialize one with 'aegis init --preset github-actions'." >&2
+          echo "Aegis policy not found at $AEGIS_ACTION_POLICY; initialize one with 'aegis init --preset github-actions'." >&2
           exit 1
         fi
     - name: Run command through Aegis
       shell: bash
-      run: aegis run --mode ci -- ${{ inputs.command }}
+      env:
+        AEGIS_ACTION_COMMAND: ${{ inputs.command }}
+      run: |
+        aegis run --mode ci -- bash -c "$AEGIS_ACTION_COMMAND"

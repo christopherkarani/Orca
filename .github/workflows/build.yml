@@ -1,0 +1,32 @@
+name: build
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  build:
+    name: zig build (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-14, windows-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: mlugg/setup-zig@v2
+        with:
+          version: 0.15.2
+      - name: Build
+        run: zig build
+      - name: Version JSON
+        shell: bash
+        run: ./zig-out/bin/aegis version --json
+      - name: Check Windows target from Unix runners
+        if: runner.os != 'Windows'
+        run: zig build check-windows
+      - name: Check release artifact naming references
+        shell: bash
+        run: |
+          grep -R "aegis-v.*linux-amd64" scripts packaging .github/workflows
+          grep -R "checksums.txt" scripts packaging .github/workflows

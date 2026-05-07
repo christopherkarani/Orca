@@ -1,0 +1,27 @@
+{
+  "version": "0.19.0-dev",
+  "description": "Local runtime firewall for AI agents.",
+  "homepage": "https://github.com/chriskarani/aegis",
+  "license": "PLACEHOLDER_LICENSE_SELECT_BEFORE_V1",
+  "architecture": {
+    "64bit": {
+      "url": "https://github.com/chriskarani/aegis/releases/download/v0.19.0-dev/aegis-v0.19.0-dev-windows-amd64.zip",
+      "hash": "PLACEHOLDER_WINDOWS_AMD64_SHA256"
+    }
+  },
+  "bin": "bin\\aegis.exe",
+  "checkver": {
+    "github": "https://github.com/chriskarani/aegis"
+  },
+  "autoupdate": {
+    "architecture": {
+      "64bit": {
+        "url": "https://github.com/chriskarani/aegis/releases/download/v$version/aegis-v$version-windows-amd64.zip",
+        "hash": {
+          "url": "$baseurl/checksums.txt"
+        }
+      }
+    }
+  },
+  "notes": "PLACEHOLDER: verify checksums.txt from the release before publishing this manifest."
+}

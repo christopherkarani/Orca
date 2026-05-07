@@ -1,53 +1,58 @@
-# Phase 18 Agent Presets and Integrations Plan
+# Phase 19 Installers and Release Pipeline Plan
 
 ## Assumptions
 
-- Phase 18 is limited to practical local/CI adoption: editable policy presets, init preset selection, completions, GitHub Actions examples, doctor checks, and docs.
-- Presets must validate with the existing policy schema; comments are allowed because the YAML parser strips comments before parsing.
-- Agent-specific presets are conservative generic starting points unless Aegis has verifiable public behavior for that agent; docs and init warnings must say so.
-- CI integration is local/repo-only and must not assume hosted Aegis, external services, real tokens, or model-provider-specific secrets.
-- Doctor may report binaries/manifests/environment when detected, but binary presence is not a security proof.
+- Phase 19 is limited to build, package, install, workflow, checksum, SBOM hook, signing hook, release checklist, and version metadata work.
+- Release artifacts should package the built `aegis` binary plus runtime-supporting docs, policies, completions generation support, and preset files where applicable.
+- Signing is optional and hook-based in this phase; local builds and normal CI must not require signing secrets.
+- SBOM generation can be a deterministic metadata hook/template if no external SBOM tool is available locally.
+- Install scripts may support GitHub release downloads by default but must also support local artifact/checksum paths for verification and testing.
+- `aegis version --json` should be valid JSON with nullable or dev-safe metadata when CI does not inject commit/build date.
 
 ## Research Check
 
-- [x] Read Phase 18 and required canonical, architecture, security, and production gate docs.
-- [x] Review project lessons for phase-driven Aegis pitfalls: no untracked command modules, honest capability labels, CI non-interactive behavior, deny priority, redaction.
-- [x] Inspect current init, policy presets/load/validate, completions stub, help routing, doctor/platform capability reporting, and docs state.
-- [x] Capture baseline verification before implementation.
-- [x] Validate false-positive risks before broad edits: preset comments must parse, generated policies must not contain fake secrets, doctor must not print raw env values, and docs must avoid sandbox overclaims.
+- [x] Read Phase 19 and required canonical, architecture, security, and production gate docs.
+- [x] Review Aegis memory and lessons for phase boundaries, pinned Zig version, release integrity, and no false security claims.
+- [x] Inspect current build, CLI version routing, docs, scripts, packaging, and GitHub workflow surfaces.
+- [x] Validate assumptions against implementation after tests are in place: artifact names, checksum paths, metadata injection, package placeholders, CI command coverage, and no secret-looking template values.
 
 ## Checklist
 
-- [x] Add failing/focused tests for Phase 18 presets, init preset behavior, completions output, CI example presence, and doctor policy/secret reporting.
-- [x] Add `policies/presets/*.yaml` for all requested presets with safe comments and no secrets.
-- [x] Wire preset metadata/content into `aegis init --preset ...`, preserving no-overwrite unless `--force` and warning for generic/experimental presets.
-- [x] Implement shell completions for bash, zsh, fish, and PowerShell with top-level commands and common flags.
-- [x] Improve doctor integration checks for Git, workspace root, policy presence/validity, known agent binaries, MCP manifests, CI environment, shell type, platform backend status, audit/replay, red-team fixtures, and next-step recommendations.
-- [x] Add GitHub Actions reusable action/example workflow docs with audit artifact upload and `aegis redteam --ci`, with no real tokens.
-- [x] Add/update docs for presets, agent recipes, CI, quickstart/README as needed with honest limitations.
-- [x] Run required verification: `zig build`, `zig build test`, `./zig-out/bin/aegis redteam --ci`, and `aegis policy check` for every preset.
-- [x] Run manual smokes requested by the user and inspect generated/audit/replay outputs for synthetic secrets.
-- [x] Document review results, preset validation, integration support status, security notes, known limitations, and acceptance criteria status.
+- [x] Add focused tests/checks for `aegis version --json`, release artifact naming, release/package files, install script checksum paths, Dockerfile content, workflow command coverage, release checklist, and secret-pattern hygiene.
+- [x] Implement version metadata injection in `build.zig` and CLI output for plain and JSON version commands.
+- [x] Add release artifact naming/build helper logic and scripts for build, checksum generation, SBOM hook, and optional signing.
+- [x] Add safe macOS/Linux and Windows install scripts with OS/arch detection, checksum verification, safe install defaults, clear failure modes, and no telemetry/secrets behavior.
+- [x] Add package templates for Homebrew, Scoop, Winget, npm wrapper/downloader, and Docker CI image with clear placeholders and no credentials.
+- [x] Add GitHub Actions build, test, and release workflow templates that run `zig build`, `zig build test`, red-team CI where feasible, preset validation where feasible, release packaging, checksums, optional signing, and optional SBOM.
+- [x] Add release checklist/docs covering artifact names, manual checksum verification, signing/SBOM status, and honest limitations.
+- [x] Run required verification: `zig build`, `zig build test`, `./zig-out/bin/aegis redteam --ci`, `./zig-out/bin/aegis version`, and `./zig-out/bin/aegis version --json`.
+- [x] Run manual Phase 19 checks: script executability, unsupported OS/arch safe failures, placeholder fields, workflow commands, artifact naming consistency, checksum generation, and secret-pattern scan.
+- [x] Document review results, known limitations, signing/SBOM status, security notes, and acceptance criteria status.
 
 ## Review
 
-- Baseline verification before Phase 18 changes: `zig build` passed.
-- Baseline verification before Phase 18 changes: `zig build test` passed.
-- Implemented ten editable YAML presets under `policies/presets/`; all validate with `aegis policy check`.
-- Implemented `aegis init --preset` for all requested preset names, preserved no-overwrite behavior, added `--force`, and prints next steps plus generic/experimental warnings for agent-specific presets.
-- Implemented shell completion generation for bash, zsh, fish, and PowerShell and added CLI dispatch/help.
-- Improved `aegis doctor` with integration checks for workspace, Git, policy presence/validity, PATH agent binaries, MCP manifests, CI detection, shell type, audit/replay, red-team fixtures, platform backend status, and next-step recommendation.
-- Added GitHub Actions composite action metadata and CI docs with audit artifact upload and `aegis redteam --ci`.
-- Added docs for presets, agent recipes, CI, quickstart, and updated stale README/docs/policies wording to avoid unsupported sandbox claims.
-- Final verification: `zig build` passed.
-- Final verification: `zig build test` passed.
-- Final verification: `./zig-out/bin/aegis redteam --ci` passed with 10/10 fixtures.
-- Final verification: every file under `policies/presets/*.yaml` passed `./zig-out/bin/aegis policy check`.
-- Manual smoke in a temp workspace: `aegis init --preset generic-agent --force` created a valid ask-mode policy; `aegis policy check .aegis/policy.yaml` passed.
-- Manual smoke in a temp workspace: `aegis init --preset github-actions --force` created a valid ci-mode policy; `aegis doctor` reported `.aegis/policy.yaml: present and valid`.
-- Manual smoke: completions for bash, zsh, fish, and powershell were non-empty.
-- Manual smoke: invalid preset name failed clearly with an unsupported preset error.
-- Manual smoke: generated policies, doctor output, `events.jsonl`, and replay output did not contain the synthetic secret `ghp_fakeSecretShouldNotPrint`.
-- Known limitation: installed binaries do not yet package external `policies/presets/` files; `aegis init` uses embedded preset text and Phase 19 should align release packaging.
-- Known limitation: doctor binary detection reports PATH presence only and does not prove an agent is configured or secure.
-- Known limitation: shell completions are static top-level/common-flag completions, not full context-aware subcommand completion.
+- Implemented build metadata injection with `-Dversion`, `-Dcommit`, and `-Dbuild-date`; local defaults keep builds working without CI metadata.
+- Implemented `aegis version --json`; plain `aegis version` remains supported and prints `aegis 0.19.0-dev`.
+- Added release artifact naming helpers and Zig tests for all Phase 19 artifact names.
+- Added Phase 19 tests that package templates, installers, workflows, Dockerfile, release checklist, checksum paths, and secret-pattern hygiene are present.
+- Added macOS/Linux and Windows install scripts with OS/arch detection, local or release artifact support, checksum verification before extraction/install, safe default install locations, no telemetry, and clear unsupported OS/arch failures.
+- Added release helper scripts for cross-target archive generation, checksum generation, SBOM hook output, and optional signing command hooks.
+- Added Homebrew, Scoop, Winget, npm wrapper/downloader, and Docker CI image templates with placeholder versions/checksums/license values where release automation must fill them.
+- Added GitHub Actions `build.yml`, `test.yml`, and `release.yml` templates for build, tests, red-team CI, preset validation, release artifacts, checksums, optional signing, and SBOM hook output.
+- Added `docs/release/checklist.md` with artifact names, required checks, manual checksum verification, signing status, SBOM status, and security notes.
+- Final verification: `zig build --summary all` passed.
+- Final verification: `zig build test --summary all` passed with 206/212 tests passed and 6 skipped.
+- Final verification: `zig build check-windows --summary all` passed.
+- Final verification: `./zig-out/bin/aegis redteam --ci` passed 10/10 fixtures.
+- Final verification: `./zig-out/bin/aegis version` printed `aegis 0.19.0-dev`.
+- Final verification: `./zig-out/bin/aegis version --json` emitted valid JSON with `commit` and `build_date` as null for local builds.
+- Release smoke: `AEGIS_VERSION=0.19.0-dev AEGIS_DIST_DIR=dist-phase19-smoke ./scripts/build-release.sh` produced all five required archives plus `checksums.txt` and `sbom.json`.
+- Release smoke: `shasum -a 256 -c dist-phase19-smoke/checksums.txt` verified all generated archives.
+- Install smoke: `AEGIS_ARTIFACT_DIR=dist-phase19-smoke ./scripts/install.sh` installed the verified darwin-arm64 artifact into a temp directory and the installed binary returned JSON version metadata.
+- Install safety smoke: unsupported OS override failed clearly with `aegis install: unsupported operating system: Plan9`.
+- Package syntax checks passed for shell scripts, Homebrew Ruby, Scoop/npm JSON, and npm wrapper JavaScript.
+- PowerShell parser check was not run because `pwsh` is not installed locally.
+- Secret-pattern scan over packaging, scripts, workflows, release docs, audit logs, and replay output found no obvious raw credential patterns.
+- Known limitation: signing is hook-only and not proof of signed/notarized artifacts until a release environment provides and runs a signing command.
+- Known limitation: SBOM generation is hook/placeholder output unless release automation swaps in CycloneDX/SPDX tooling.
+- Known limitation: npm package is a wrapper/downloader template and intentionally does not download binaries while checksum placeholders remain.
