@@ -5,6 +5,7 @@ const help = @import("help.zig");
 
 const InitOptions = struct {
     mode: []const u8 = "ask",
+    preset: []const u8 = "generic-agent",
     force: bool = false,
 };
 
@@ -34,7 +35,7 @@ pub fn command(cwd: std.fs.Dir, argv: []const []const u8, stdout: anytype, stder
     defer file.close();
 
     try writePolicy(file, options.mode);
-    try stdout.print("Created .aegis/policy.yaml with mode '{s}'.\n", .{options.mode});
+    try stdout.print("Created .aegis/policy.yaml with preset '{s}' and mode '{s}'.\n", .{ options.preset, options.mode });
     return exit_codes.success;
 }
 
@@ -50,6 +51,17 @@ fn parseOptions(argv: []const []const u8, stdout: anytype, stderr: anytype) !Ini
             options.force = true;
         } else if (std.mem.eql(u8, arg, "--ci")) {
             options.mode = "ci";
+        } else if (std.mem.eql(u8, arg, "--preset")) {
+            index += 1;
+            if (index >= argv.len) {
+                try stderr.writeAll("aegis init: --preset requires generic-agent.\n");
+                return error.Usage;
+            }
+            if (!std.mem.eql(u8, argv[index], "generic-agent")) {
+                try stderr.print("aegis init: unsupported preset '{s}'. Expected generic-agent.\n", .{argv[index]});
+                return error.Usage;
+            }
+            options.preset = argv[index];
         } else if (std.mem.eql(u8, arg, "--mode")) {
             index += 1;
             if (index >= argv.len) {
@@ -83,9 +95,16 @@ fn writePolicy(file: std.fs.File, mode: []const u8) !void {
         \\mode: {s}
         \\
         \\env:
-        \\  default: redact
+        \\  inherit: false
+        \\  allow:
+        \\    - PATH
+        \\    - HOME
         \\files:
-        \\  default: ask
+        \\  read:
+        \\    default: ask
+        \\  write:
+        \\    default: ask
+        \\    mode: staged
         \\commands:
         \\  default: ask
         \\network:
@@ -93,7 +112,9 @@ fn writePolicy(file: std.fs.File, mode: []const u8) !void {
         \\mcp:
         \\  default: ask
         \\audit:
-        \\  enabled: true
+        \\  level: full
+        \\  redact_secrets: true
+        \\  tamper_evident: true
         \\
     , .{mode});
     try file.writeAll(policy);
@@ -108,7 +129,7 @@ test "init creates policy and refuses overwrite without force" {
     var stdout_stream = std.io.fixedBufferStream(&stdout_buf);
     var stderr_stream = std.io.fixedBufferStream(&stderr_buf);
 
-    const code = try command(tmp.dir, &.{"--mode", "strict"}, stdout_stream.writer(), stderr_stream.writer());
+    const code = try command(tmp.dir, &.{ "--mode", "strict" }, stdout_stream.writer(), stderr_stream.writer());
     try std.testing.expectEqual(exit_codes.success, code);
 
     const policy = try tmp.dir.readFileAlloc(std.testing.allocator, ".aegis/policy.yaml", 4096);
@@ -146,4 +167,23 @@ test "init force overwrites existing policy" {
     const policy = try tmp.dir.readFileAlloc(std.testing.allocator, ".aegis/policy.yaml", 4096);
     defer std.testing.allocator.free(policy);
     try std.testing.expect(std.mem.indexOf(u8, policy, "mode: observe") != null);
+}
+
+test "init accepts generic-agent preset alias" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    var stdout_buf: [512]u8 = undefined;
+    var stderr_buf: [512]u8 = undefined;
+    var stdout_stream = std.io.fixedBufferStream(&stdout_buf);
+    var stderr_stream = std.io.fixedBufferStream(&stderr_buf);
+
+    const code = try command(tmp.dir, &.{ "--preset", "generic-agent", "--force" }, stdout_stream.writer(), stderr_stream.writer());
+    try std.testing.expectEqual(exit_codes.success, code);
+    try std.testing.expect(std.mem.indexOf(u8, stdout_stream.getWritten(), "generic-agent") != null);
+    try std.testing.expectEqualStrings("", stderr_stream.getWritten());
+
+    const policy = try tmp.dir.readFileAlloc(std.testing.allocator, ".aegis/policy.yaml", 4096);
+    defer std.testing.allocator.free(policy);
+    try std.testing.expect(std.mem.indexOf(u8, policy, "version: 1") != null);
 }

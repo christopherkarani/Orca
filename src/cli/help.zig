@@ -23,7 +23,7 @@ pub const commands = [_]CommandInfo{
     .{
         .name = "init",
         .summary = "Create an Aegis policy",
-        .usage = "aegis init [--mode strict|ask|observe] [--ci] [--force]",
+        .usage = "aegis init [--preset generic-agent] [--mode strict|ask|observe] [--ci] [--force]",
         .details = &.{
             "Creates .aegis/policy.yaml from a minimal local template.",
             "Refuses to overwrite an existing policy unless --force is provided.",

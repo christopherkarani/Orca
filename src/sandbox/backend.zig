@@ -3,6 +3,7 @@ const builtin = @import("builtin");
 
 const platform = @import("../core/platform.zig");
 const linux_backend = @import("linux.zig");
+const macos_backend = @import("macos.zig");
 
 pub const Feature = enum {
     policy_engine,
@@ -29,14 +30,14 @@ pub const Feature = enum {
     pub fn label(self: Feature) []const u8 {
         return switch (self) {
             .policy_engine => "policy engine",
-            .audit => "audit",
+            .audit => "audit/replay",
             .env_filtering => "env filtering",
             .path_staging => "path staging",
             .shell_wrapping => "shell shims",
             .path_shims => "PATH shims",
             .mcp_stdio_proxy => "mcp stdio proxy",
             .network_observe => "network observation",
-            .network_enforce => "network enforcement",
+            .network_enforce => "transparent network enforcement",
             .process_supervision => "process supervision",
             .user_namespaces => "user namespace",
             .mount_namespaces => "mount namespace",
@@ -50,9 +51,16 @@ pub const Feature = enum {
     pub fn parse(value: []const u8) ?Feature {
         inline for (@typeInfo(Feature).@"enum".fields) |field| {
             const feature: Feature = @enumFromInt(field.value);
-            if (featureNameMatches(value, field.name) or featureNameMatches(value, feature.label())) return feature;
+            if (featureNameMatches(value, field.name) or featureNameMatches(value, feature.label()) or feature.aliasMatches(value)) return feature;
         }
         return null;
+    }
+
+    fn aliasMatches(self: Feature, value: []const u8) bool {
+        return switch (self) {
+            .network_enforce => featureNameMatches(value, "network enforcement"),
+            else => false,
+        };
     }
 };
 
@@ -69,6 +77,7 @@ fn featureNameMatches(value: []const u8, expected: []const u8) bool {
 pub const Level = enum {
     active,
     partial,
+    limited,
     observe_only,
     wrapper_only,
     unavailable,
@@ -79,6 +88,7 @@ pub const Level = enum {
         return switch (self) {
             .active => "active",
             .partial => "partial",
+            .limited => "limited",
             .observe_only => "observe-only",
             .wrapper_only => "wrapper-only",
             .unavailable => "unavailable",
@@ -89,7 +99,7 @@ pub const Level = enum {
 
     pub fn isUsable(self: Level) bool {
         return switch (self) {
-            .active, .partial, .observe_only, .wrapper_only => true,
+            .active, .partial, .limited, .observe_only, .wrapper_only => true,
             .unavailable, .unsupported, .failed => false,
         };
     }
@@ -166,13 +176,16 @@ pub const PreparedSandbox = struct {
     child: std.process.Child,
     report: ReportSet,
     process_group_cleanup: bool = false,
-    process_group_id: ?i32 = null,
+    process_group_id: ?std.posix.pid_t = null,
     spawned: bool = false,
 
     pub fn spawn(self: *PreparedSandbox) !void {
         try self.child.spawn();
-        if (builtin.os.tag == .linux and self.process_group_cleanup) {
-            self.process_group_id = @intCast(self.child.id);
+        switch (builtin.os.tag) {
+            .windows, .wasi => {},
+            else => if (self.process_group_cleanup) {
+                self.process_group_id = @intCast(self.child.id);
+            },
         }
         self.spawned = true;
     }
@@ -191,7 +204,7 @@ pub const PreparedSandbox = struct {
     pub fn terminateAfterParentError(self: *PreparedSandbox) void {
         if (!self.spawned) return;
         if (self.process_group_cleanup) {
-            if (self.process_group_id) |pgid| linux_backend.killProcessGroup(pgid);
+            if (self.process_group_id) |pgid| killProcessGroup(pgid);
         }
         _ = self.child.kill() catch self.child.wait() catch {};
         self.spawned = false;
@@ -199,13 +212,14 @@ pub const PreparedSandbox = struct {
 
     fn cleanupProcessGroup(self: *PreparedSandbox) void {
         if (!self.process_group_cleanup) return;
-        if (self.process_group_id) |pgid| linux_backend.killProcessGroup(pgid);
+        if (self.process_group_id) |pgid| killProcessGroup(pgid);
     }
 };
 
 pub fn detect(os: platform.Os) ReportSet {
     return switch (os) {
         .linux => linux_backend.detect(),
+        .macos => macos_backend.detect(),
         else => fallbackReport(os),
     };
 }
@@ -215,7 +229,29 @@ pub fn prepare(allocator: std.mem.Allocator, request: PrepareRequest) PreparedSa
     if (builtin.os.tag == .linux and report.os == .linux) {
         return linux_backend.prepare(allocator, request, report);
     }
+    if (builtin.os.tag == .macos and report.os == .macos) {
+        return macos_backend.prepare(allocator, request, report);
+    }
     return prepareFallback(allocator, request, report);
+}
+
+pub fn killProcessGroup(pgid: std.posix.pid_t) void {
+    switch (builtin.os.tag) {
+        .windows, .wasi => return,
+        else => {
+            if (pgid <= 0) return;
+            std.posix.kill(-pgid, std.posix.SIG.TERM) catch {};
+            std.Thread.sleep(50 * std.time.ns_per_ms);
+            std.posix.kill(-pgid, std.posix.SIG.KILL) catch {};
+        },
+    }
+}
+
+fn supportsPosixProcessGroups() bool {
+    return switch (builtin.os.tag) {
+        .windows, .wasi => false,
+        else => true,
+    };
 }
 
 pub fn prepareFallback(allocator: std.mem.Allocator, request: PrepareRequest, report: ReportSet) PreparedSandbox {
@@ -295,19 +331,32 @@ pub fn setReport(reports: *[feature_order.len]FeatureReport, feature: Feature, l
 test "backend capability levels are explicit and parseable" {
     try std.testing.expectEqualStrings("observe-only", Level.observe_only.toString());
     try std.testing.expectEqualStrings("wrapper-only", Level.wrapper_only.toString());
+    try std.testing.expectEqualStrings("limited", Level.limited.toString());
     try std.testing.expectEqual(Feature.user_namespaces, Feature.parse("user-namespaces").?);
     try std.testing.expectEqual(Feature.mount_namespaces, Feature.parse("mount namespace").?);
+    try std.testing.expectEqual(Feature.network_enforce, Feature.parse("network enforcement").?);
+    try std.testing.expectEqual(Feature.network_enforce, Feature.parse("network-enforcement").?);
+    try std.testing.expectEqual(Feature.network_enforce, Feature.parse("transparent network enforcement").?);
     try std.testing.expectEqual(Feature.strong_sandbox, Feature.parse("strong_sandbox").?);
 }
 
 test "fallback backend reports Linux-only features as unsupported without breaking baseline controls" {
-    const report = fallbackReport(.macos);
+    const report = fallbackReport(.freebsd);
     try std.testing.expectEqualStrings("fallback", report.backend_name);
     try std.testing.expectEqual(Level.active, report.get(.env_filtering).level);
     try std.testing.expectEqual(Level.wrapper_only, report.get(.path_shims).level);
     try std.testing.expectEqual(Level.unsupported, report.get(.user_namespaces).level);
     try std.testing.expectEqual(Level.unsupported, report.get(.strong_sandbox).level);
     try std.testing.expect(!report.featureAvailable(.strong_sandbox));
+}
+
+test "macOS backend is selected explicitly instead of generic fallback" {
+    const report = detect(.macos);
+    try std.testing.expectEqual(platform.Os.macos, report.os);
+    try std.testing.expectEqualStrings("macos", report.backend_name);
+    try std.testing.expectEqual(Level.active, report.get(.env_filtering).level);
+    try std.testing.expectEqual(Level.wrapper_only, report.get(.path_shims).level);
+    try std.testing.expectEqual(Level.unavailable, report.get(.strong_sandbox).level);
 }
 
 test "required backend features require active enforcement" {
