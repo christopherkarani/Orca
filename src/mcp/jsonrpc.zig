@@ -50,12 +50,38 @@ pub fn validateJsonRpc(value: std.json.Value) !void {
     const object = value.object;
     const version = object.get("jsonrpc") orelse return error.InvalidJsonRpc;
     if (version != .string or !std.mem.eql(u8, version.string, "2.0")) return error.InvalidJsonRpc;
+    if (object.get("id")) |id_value| try validateId(id_value);
     if (object.get("method")) |method| {
         if (method != .string or method.string.len == 0) return error.InvalidJsonRpc;
         return;
     }
-    if (object.get("result") != null or object.get("error") != null) return;
+    if (object.get("result") != null or object.get("error") != null) {
+        if (object.get("id") == null) return error.InvalidJsonRpc;
+        return;
+    }
     return error.InvalidJsonRpc;
+}
+
+pub fn idEquals(left: ?std.json.Value, right: ?std.json.Value) bool {
+    if (left == null or right == null) return left == null and right == null;
+    const a = left.?;
+    const b = right.?;
+    return switch (a) {
+        .null => b == .null,
+        .string => |string| b == .string and std.mem.eql(u8, string, b.string),
+        .integer => |integer| b == .integer and integer == b.integer,
+        else => false,
+    };
+}
+
+fn validateId(id_value: std.json.Value) !void {
+    switch (id_value) {
+        .string => |string| {
+            if (string.len > 256) return error.InvalidJsonRpc;
+        },
+        .integer, .null => {},
+        else => return error.InvalidJsonRpc,
+    }
 }
 
 pub fn methodOf(value: std.json.Value) ?[]const u8 {
@@ -127,8 +153,6 @@ fn writeIdValue(writer: anytype, id_value: std.json.Value) !void {
     switch (id_value) {
         .string => |string| try core.util.writeJsonString(writer, string),
         .integer => |integer| try writer.print("{d}", .{integer}),
-        .float => |float| try writer.print("{d}", .{float}),
-        .bool => |boolean| try writer.writeAll(if (boolean) "true" else "false"),
         .null => try writer.writeAll("null"),
         else => try writer.writeAll("null"),
     }
@@ -160,4 +184,12 @@ test "error response is valid json-rpc and keeps id" {
     try std.testing.expect(std.mem.endsWith(u8, response, "\n"));
     try std.testing.expect(std.mem.indexOf(u8, response, "\"id\":\"abc\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, response, "-32001") != null);
+}
+
+test "parser rejects malformed json-rpc ids" {
+    try std.testing.expectError(error.InvalidJsonRpc, parseLine(std.testing.allocator, "{\"jsonrpc\":\"2.0\",\"id\":{},\"method\":\"tools/list\"}"));
+    try std.testing.expectError(error.InvalidJsonRpc, parseLine(std.testing.allocator, "{\"jsonrpc\":\"2.0\",\"id\":[],\"method\":\"tools/list\"}"));
+    try std.testing.expectError(error.InvalidJsonRpc, parseLine(std.testing.allocator, "{\"jsonrpc\":\"2.0\",\"id\":true,\"method\":\"tools/list\"}"));
+    try std.testing.expectError(error.InvalidJsonRpc, parseLine(std.testing.allocator, "{\"jsonrpc\":\"2.0\",\"id\":1.5,\"method\":\"tools/list\"}"));
+    try std.testing.expectError(error.InvalidJsonRpc, parseLine(std.testing.allocator, "{\"jsonrpc\":\"2.0\",\"result\":{}}"));
 }

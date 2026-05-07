@@ -322,3 +322,21 @@ test "redaction catches embedded synthetic secret assignments in command text" {
     try std.testing.expect(std.mem.indexOf(u8, redacted, "sk-fakeSyntheticOpenAIKey") == null);
     try std.testing.expect(std.mem.startsWith(u8, redacted, "[REDACTED:env:OPENAI_API_KEY:sha256:"));
 }
+
+test "redaction covers synthetic policy url mcp and command contexts" {
+    const cases = [_][]const u8{
+        "env FAKE_GITHUB_TOKEN=ghp_fakeSyntheticTokenValue1234567890",
+        "policy: api_key: sk-ant-fakeSyntheticAnthropicKey1234567890",
+        "mcp args {\"OPENAI_API_KEY\":\"sk-fakeSyntheticOpenAIKey1234567890\"}",
+        "url=https://example.invalid/?token=sk-fakeSyntheticOpenAIKey1234567890",
+        "-----BEGIN PRIVATE KEY-----\nfake-secret-value\n-----END PRIVATE KEY-----",
+        "{\"type\":\"service_account\",\"private_key\":\"fake-secret-value\",\"client_email\":\"fake@example.invalid\"}",
+    };
+    for (cases) |case| {
+        var buf: [256]u8 = undefined;
+        const redacted = redactStringBounded(case, &buf);
+        try std.testing.expect(std.mem.indexOf(u8, redacted, "fakeSynthetic") == null);
+        try std.testing.expect(std.mem.indexOf(u8, redacted, "fake-secret-value") == null);
+        try std.testing.expect(std.mem.indexOf(u8, redacted, "[REDACTED:") != null);
+    }
+}

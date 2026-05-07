@@ -476,7 +476,16 @@ fn applyRuleSetField(
     list_target: *ListTarget,
 ) !void {
     _ = builder;
-    if (std.mem.eql(u8, key, "allow")) list_target.* = allow_target else if (std.mem.eql(u8, key, "deny")) list_target.* = deny_target else if (std.mem.eql(u8, key, "ask")) list_target.* = ask_target else if (std.mem.eql(u8, key, "default")) default_field.* = try parseDecision(scalar) else return error.InvalidPolicy;
+    if (std.mem.eql(u8, key, "allow")) {
+        if (scalar.len != 0) return error.InvalidPolicy;
+        list_target.* = allow_target;
+    } else if (std.mem.eql(u8, key, "deny")) {
+        if (scalar.len != 0) return error.InvalidPolicy;
+        list_target.* = deny_target;
+    } else if (std.mem.eql(u8, key, "ask")) {
+        if (scalar.len != 0) return error.InvalidPolicy;
+        list_target.* = ask_target;
+    } else if (std.mem.eql(u8, key, "default")) default_field.* = try parseDecision(scalar) else return error.InvalidPolicy;
 }
 
 fn applyNetworkDetectionField(builder: *Builder, key: []const u8, scalar: []const u8) !void {
@@ -579,7 +588,7 @@ fn parseJsonMcp(builder: *Builder, value: std.json.Value) !void {
         var it = servers.object.iterator();
         while (it.next()) |entry| {
             if (entry.value_ptr.* != .object) return error.InvalidPolicy;
-            try rejectUnknownKeys(entry.value_ptr.*.object, &.{ "tools" });
+            try rejectUnknownKeys(entry.value_ptr.*.object, &.{"tools"});
             const tools = entry.value_ptr.*.object.get("tools") orelse return error.InvalidPolicy;
             if (tools != .object) return error.InvalidPolicy;
             if (builder.active_mcp_server) |server| builder.allocator.free(server);
@@ -696,7 +705,14 @@ test "phase 18 preset files validate through policy loader" {
 
 test "invalid policies fail closed with clear parser errors" {
     try std.testing.expectError(error.MissingPolicyMode, parseFromSlice(std.testing.allocator, "version: 1\n", "bad.yaml"));
+    try std.testing.expectError(error.MissingPolicyVersion, parseFromSlice(std.testing.allocator, "mode: strict\n", "bad.yaml"));
     try std.testing.expectError(error.UnsupportedPolicyMode, parseFromSlice(std.testing.allocator, "version: 1\nmode: loose\n", "bad.yaml"));
+    try std.testing.expectError(error.InvalidPolicy, parseFromSlice(std.testing.allocator,
+        \\version: 1
+        \\mode: strict
+        \\commands:
+        \\  deny: ["rm -rf *"]
+    , "bad.yaml"));
 }
 
 test "policy discovery honors CLI path before workspace policy" {

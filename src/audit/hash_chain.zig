@@ -104,7 +104,8 @@ fn writeRedactions(writer: anytype, redactions: core.event.RedactionSummary) !vo
     try writer.print("{{\"count\":{d},\"labels\":[", .{redactions.count});
     for (redactions.labels, 0..) |label, index| {
         if (index > 0) try writer.writeByte(',');
-        try core.util.writeJsonString(writer, label);
+        var redacted_buf: [256]u8 = undefined;
+        try core.util.writeJsonString(writer, redact_bridge.redactStringBounded(label, &redacted_buf));
     }
     try writer.writeAll("]}");
 }
@@ -157,4 +158,28 @@ test "event serialization is deterministic and excludes event_hash from hash inp
     try std.testing.expect(std.mem.indexOf(u8, first, "event_hash") == null);
     const hash = eventHash(null, first);
     try std.testing.expectEqual(@as(usize, hex_hash_len), hash.len);
+}
+
+test "redaction labels are redacted at the audit serialization boundary" {
+    const ts = core.time.Timestamp.fromUnixSeconds(1_777_983_130);
+    const sid = try core.session.generateSessionId(ts);
+    var eid: core.event.EventId = .{ .value = undefined, .len = 0 };
+    const eid_text = try std.fmt.bufPrint(&eid.value, "evt_000001", .{});
+    eid.len = eid_text.len;
+    const labels = [_][]const u8{"fake_secret_value"};
+    const ev: core.event.Event = .{
+        .session_id = sid,
+        .event_id = eid,
+        .timestamp = ts,
+        .event_type = .secret_redacted,
+        .actor = .{ .kind = .aegis, .display = "aegis" },
+        .target = .{ .kind = .command, .value = "echo ok" },
+        .redactions = .{ .count = 1, .labels = &labels },
+    };
+
+    var list: std.ArrayList(u8) = .empty;
+    defer list.deinit(std.testing.allocator);
+    try writeEventJsonLine(list.writer(std.testing.allocator), ev, null, "abc");
+    try std.testing.expect(std.mem.indexOf(u8, list.items, "fake_secret_value") == null);
+    try std.testing.expect(std.mem.indexOf(u8, list.items, "[REDACTED:") != null);
 }

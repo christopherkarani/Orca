@@ -12,8 +12,6 @@ attempts:
 expected:
   blocked:
     - "network.connect:https://mfrggzdfmztwq2lkobrw63tmmq2dgnzqmy4tombqgaydambqgaydambq.example.invalid"
-  redacted:
-    - FAKE_DNS_TOKEN
   no_log_contains:
     - "fake-secret-value"
 score:

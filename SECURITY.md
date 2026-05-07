@@ -2,18 +2,34 @@
 
 ## Supported Versions
 
-Aegis is pre-release. No version is currently supported for production security use.
+Aegis is pre-1.0. Security fixes are made on the current development branch until a tagged v1.0 support policy exists. Do not treat older pre-release snapshots as supported security releases.
 
 ## Reporting a Vulnerability
 
-Report suspected vulnerabilities privately to the project owner. Do not include real credentials, API keys, tokens, private keys, or customer data in reports.
+Report suspected vulnerabilities privately to the project owner. Include the affected version or commit, operating system, reproduction steps, and any generated Aegis audit directory if it contains only synthetic data.
 
-## Current Phase Limitations
+Do not include real credentials, API keys, access tokens, private keys, customer data, or proprietary logs. Replace secrets with synthetic values such as `sk-fakeSyntheticOpenAIKey1234567890`.
 
-Phase 02 does not implement security enforcement. It creates the buildable scaffold and minimal CLI only. Later phases must preserve these invariants:
+## Safe Handling
 
-- no raw secret persistence;
-- redaction before persistent logging;
-- fail-closed behavior for enforcement modes;
-- non-interactive CI behavior;
-- honest capability reporting.
+Aegis security reports are handled as private by default. The project will avoid publishing exploit details until a fix or documented limitation is available. If the issue is a design limitation rather than a bug, the fix may be documentation, capability reporting, or a failing red-team fixture.
+
+## Current Security Scope
+
+Aegis protects local agent runs that go through Aegis-managed wrappers, shims, staging, policy checks, audit logging, and the stdio MCP proxy. It reduces blast radius and improves reviewability.
+
+Aegis does not make arbitrary malicious code safe. It does not claim universal transparent filesystem or network enforcement on every operating system. Use `aegis doctor` for actual local capability status.
+
+## Security Regression Commands
+
+Run:
+
+```sh
+zig build
+zig build test
+zig build fuzz
+./zig-out/bin/aegis redteam --ci
+./zig-out/bin/aegis doctor
+```
+
+Raw secrets must not appear in `events.jsonl`, `summary.json`, `summary.md`, replay output, red-team output, doctor output, generated policies, or release/install files.
