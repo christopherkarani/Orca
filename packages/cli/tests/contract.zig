@@ -20,3 +20,24 @@ test "cli package help still renders Aegis CLI command summary" {
     try std.testing.expect(std.mem.indexOf(u8, written, "Commands:") != null);
     try std.testing.expect(std.mem.indexOf(u8, written, "redteam") != null);
 }
+
+test "cli package can evaluate CLI actions through Core facade" {
+    var selected = try aegis_cli.core.api.parsePolicyFromSlice(std.testing.allocator,
+        \\version: 1
+        \\mode: strict
+        \\commands:
+        \\  allow:
+        \\    - "echo *"
+    , "cli-core-api.yaml");
+    defer selected.deinit();
+
+    var evaluation = try aegis_cli.core.api.evaluateAction(
+        std.testing.allocator,
+        &selected,
+        .{ .command_exec = .{ .argv = &.{ "echo", "hello" } } },
+        .{},
+    );
+    defer evaluation.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(aegis_cli.core.decision.DecisionResult.allow, evaluation.decision.result);
+}

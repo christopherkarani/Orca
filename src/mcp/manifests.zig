@@ -443,6 +443,9 @@ test "valid manifest parsing covers Phase 17 schema" {
         \\  delete_repository:
         \\    risk: critical
         \\    default: deny
+        \\  inspect_unknown:
+        \\    risk: unknown
+        \\    default: ask
         \\resources:
         \\  default: ask
         \\prompts:
@@ -459,6 +462,8 @@ test "valid manifest parsing covers Phase 17 schema" {
     try std.testing.expectEqualStrings("GITHUB_TOKEN", manifest.server.env_allow[0]);
     try std.testing.expectEqual(policy_schema.DecisionValue.allow, manifest.toolDefault("search_issues").?);
     try std.testing.expectEqual(policy_schema.DecisionValue.deny, manifest.toolDefault("delete_repository").?);
+    try std.testing.expectEqual(tools.RiskClass.unknown, manifest.tools[2].risk);
+    try std.testing.expectEqual(policy_schema.DecisionValue.ask, manifest.toolDefault("inspect_unknown").?);
     try std.testing.expectEqual(policy_schema.DecisionValue.ask, manifest.resources_default.?);
     try std.testing.expectEqual(policy_schema.DecisionValue.ask, manifest.prompts_default.?);
     try std.testing.expectEqual(policy_schema.DecisionValue.deny, manifest.sampling_default.?);

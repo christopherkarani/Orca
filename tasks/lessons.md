@@ -80,3 +80,8 @@
 
 - Shell-control detection must not bypass argv-level mandatory deny checks. When command text contains redirects, chains, or substitutions, classify both the tokenized argv and whole shell string, then keep the stricter result.
 - Policy pattern validation must match matcher semantics. If `[`/`]`/`{`/`}` are literals to the matcher, validation must allow real paths that contain them and reject only actually unsafe or unsupported input.
+
+## 2026-05-07 Phase 23 Product Split Review
+
+- New package roots and contract tests must be visible to `git diff` before build wiring lands. A clean-checkout build cannot rely on untracked files, even when local `zig build test` passes.
+- Public JSON schemas must be checked against runtime parser tests. If the parser supports nested shapes such as `files.write.mode` or `mcp.servers.<server>.tools`, the schema must accept that exact shape and reject parser-invalid alternatives.

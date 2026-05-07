@@ -21,10 +21,10 @@ Aegis Edge is the drone and robotics safety-policy and audit runtime scaffold fo
 
 ## Current Status
 
-Phase 23 is scaffold-only. Aegis Edge is not a flight controller, not an autopilot replacement, not detect-and-avoid, and not regulatory approval or certification. It must not be used for real flight until later simulation, bench, and customer safety validation phases are complete.
+Phase 24 remains scaffold-only for Edge behavior. Edge can now import Aegis Core and evaluate placeholder Edge actions through the shared Core decision contract. Aegis Edge is not a flight controller, not an autopilot replacement, not detect-and-avoid, and not regulatory approval or certification. It must not be used for real flight until later simulation, bench, and customer safety validation phases are complete.
 
 If installed, `aegis-edge` prints an honest scaffold message and reports unsupported capabilities as unavailable or not implemented.
 
 ## Future Phases
 
-Later phases may add simulation-only policy evaluation, bench validation, and adapter work. MAVLink, PX4, ArduPilot, and real-flight behavior remain out of scope for Phase 23.
+Later phases may add simulation-only policy evaluation, bench validation, and adapter work. MAVLink, PX4, ArduPilot, and real-flight behavior remain out of scope for Phase 24.
