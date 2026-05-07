@@ -1,11 +1,24 @@
 # Aegis Documentation
 
-Current docs:
+Launch docs:
 
-- `quickstart.md`: build, initialize, validate, run, and red-team smoke commands.
+- `install.md`: source builds, scripts, artifacts, checksums, and package templates.
+- `quickstart.md`: first policy, doctor, run, replay, and red-team commands.
+- `threat-model.md`: assets, actors, trust boundaries, non-goals, and limitations.
+- `policy.md`: schema, modes, priorities, examples, and CI behavior.
+- `mcp.md`: stdio MCP inspect/proxy, manifests, mediated methods, and limits.
+- `redteam.md`: fixture categories, CI mode, JSON output, and adding fixtures.
+- `agent-recipes.md`: generic local recipes and preset notes.
+- `ci.md`: GitHub Actions and artifact guidance.
+- `replay.md`: audit artifacts, hash-chain verification, and redaction behavior.
+- `filesystem-staging.md`, `network.md`, and `commands.md`: enforcement surfaces and limitations.
+- `compatibility.md`: consolidated platform matrix.
+- `platform-linux.md`, `platform-macos.md`, and `platform-windows.md`: platform-specific capability notes.
+- `troubleshooting.md`, `contributing-fixtures.md`, and `release.md`: operations and release references.
+
+Developer docs:
+
 - `presets.md`: supported policy presets and assumptions.
-- `agent-recipes.md`: local agent, MCP, CI, strict, trusted, red-team, and staged-write recipes.
-- `ci.md` and `ci/github-actions.md`: local CI integration examples.
 - `release/checklist.md`: Phase 19 release artifact, checksum, signing, SBOM, and install checklist.
 - `dev/`: architecture contracts, security invariants, production gates, and phase handoffs.
 

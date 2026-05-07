@@ -1,9 +1,48 @@
-# Network Guard
+# Network
 
-The network guard parses destinations, applies policy, and flags exfiltration heuristics. It does not imply transparent OS-level egress blocking unless `aegis doctor` reports active enforcement.
+Aegis includes a network decision engine and wrapper/proxy-mediated hooks.
 
-Strict defaults deny direct IPs, localhost, private networks, cloud metadata endpoints, and invalid destinations unless explicitly allowed. Deny beats allow.
+## Modes
 
-Heuristics cover long query strings, base64-like URL components, high-entropy DNS labels, long subdomains, paste sites, webhook/request-bin sites, tunneling services, direct IPs, and secret-like URL values. Secret-like URL values are redacted before audit persistence.
+- `off`: deny network decisions.
+- `allowlist`: allow only configured destinations.
+- `ask`: ask interactively where supported.
+- `observe`: log decisions.
+- `open`: allow decisions.
 
-Tests do not require external network access.
+```sh
+./zig-out/bin/aegis run --no-network -- <command>
+./zig-out/bin/aegis run --network allowlist --allow-network api.github.com -- <command>
+```
+
+## Policy
+
+```yaml
+network:
+  mode: allowlist
+  default: deny
+  allow:
+    - "api.github.com"
+  ask:
+    - "*.githubusercontent.com"
+  deny:
+    - "pastebin.com"
+    - "*.ngrok.io"
+    - "*.requestbin.net"
+  detect_exfiltration:
+    dns: true
+    long_query_strings: true
+    secret_patterns: true
+```
+
+## Exfiltration Heuristics
+
+Aegis flags long query strings, base64-like URL parts, high-entropy DNS labels, paste sites, request bins, tunneling services, direct IP destinations, secret-like values, and repeated unknown domains.
+
+## Enforcement Levels
+
+Policy decision is not the same as transparent network enforcement. `aegis doctor` distinguishes decision engine, observation, proxy-mediated enforcement, and transparent enforcement.
+
+## Redaction
+
+URLs are redacted before audit persistence when they contain secret-like material.

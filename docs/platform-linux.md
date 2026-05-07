@@ -1,9 +1,33 @@
-# Linux Platform Notes
+# Linux Platform
 
-Linux is the target for the strongest eventual OS-level backend. Current capability status must be checked with `aegis doctor`.
+Run:
 
-Active cross-platform controls include policy evaluation, environment filtering, command classification through Aegis wrappers/shims, staged writes for Aegis-mediated writes, stdio MCP proxy mediation, network decision heuristics, redaction, and audit/replay.
+```sh
+./zig-out/bin/aegis doctor
+```
 
-Transparent filesystem and network enforcement are only active when the backend reports them as active. If Linux kernel features are missing or not wired, Aegis must report limited, observe-only, wrapper-only, or unavailable.
+## Capability Matrix
 
-Known limitation: path-based controls cannot prove original provenance of a hardlink with an innocuous name. Use OS permissions and repository hygiene for hardlink-sensitive environments.
+| Feature | Status |
+|---|---|
+| Process supervision | active or partial, host-dependent |
+| Env filtering | active |
+| Staged writes | active |
+| Shell/PATH shims | wrapper-only |
+| MCP stdio proxy | active |
+| Network decision engine | active |
+| Transparent network enforcement | partial or limited, backend-dependent |
+| Transparent filesystem enforcement | partial or limited, backend-dependent |
+| Strong sandbox | partial only when doctor reports active kernel features |
+
+## Backend Features
+
+Doctor may report user namespaces, mount namespaces, seccomp, Landlock, cgroups, network enforcement, audit/replay, and strong sandbox state.
+
+## Fallback
+
+If kernel features are unavailable, Aegis falls back to wrapper/proxy, staged-write, policy, and audit controls. Required backend features fail closed when requested with `--require-backend`.
+
+## Limitations
+
+Linux capability varies by distro, kernel, container, and sysctl configuration. Do not assume strong sandboxing without checking `doctor`.

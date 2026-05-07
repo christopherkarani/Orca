@@ -1,9 +1,34 @@
-# Windows Platform Notes
+# Windows Platform
 
-Windows support is wrapper/shim-oriented for v1.0. Aegis must not claim batch-file forwarding or shell wrappers are a complete security boundary.
+Run:
 
-Aegis recognizes Windows drive-letter, UNC, PowerShell, `cmd.exe`, and common profile credential path forms in tests and policy helpers. Command classification covers PowerShell encoded-command flags, `Invoke-WebRequest`/`iwr`/`irm` piped to `iex`, destructive shell commands, and common credential reads.
+```powershell
+.\aegis.exe doctor
+```
 
-Transparent file and network enforcement are not claimed unless `aegis doctor` reports active support. Generated shims and wrappers must preserve argv as much as the platform path allows and must fail closed in CI for ask decisions.
+## Capability Matrix
 
-Tests use synthetic Windows paths only. They must not inspect real Windows profiles or credentials.
+| Feature | Status |
+|---|---|
+| Process supervision/cleanup | partial unless doctor reports active |
+| Env filtering | active |
+| Staged writes | active |
+| PATH shims | wrapper-only |
+| cmd and PowerShell wrappers | partial |
+| MCP stdio proxy | active |
+| Network decision engine | active |
+| Transparent network enforcement | limited |
+| Transparent file enforcement | limited |
+| Strong sandbox | unavailable unless doctor reports otherwise |
+
+## Path Normalization
+
+Policy matching handles Windows drive, UNC, backslash, and case-normalization edges where implemented. Validate policies on Windows before relying on them in CI.
+
+## Protected Paths
+
+Use policy deny rules for `.env`, SSH keys, cloud credentials, browser credential stores, and project metadata directories.
+
+## Limitations
+
+Batch forwarding is not treated as a strong security boundary. Use Aegis-managed sessions and check `doctor` for actual backend status.

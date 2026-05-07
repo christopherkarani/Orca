@@ -1,67 +1,58 @@
 # Agent Recipes
 
+These are starting points. Agent-specific presets are generic unless their policy file says otherwise.
+
 ## Generic Coding Agent
 
-```bash
-aegis init --preset generic-agent
-aegis policy check .aegis/policy.yaml
-aegis run -- ./scripts/agent-task.sh
+```sh
+./zig-out/bin/aegis init --preset generic-agent
+./zig-out/bin/aegis run -- <agent-command>
 ```
-
-Use this for a first local run. Writes are staged and common risky commands stay behind policy decisions.
 
 ## MCP Development
 
-```bash
-aegis init --preset mcp-dev
-aegis mcp manifest generate --command ./server -- --stdio > .aegis/mcp/server.yaml
-aegis mcp manifest check .aegis/mcp/server.yaml
-aegis mcp proxy --manifest .aegis/mcp/server.yaml --command ./server -- --stdio
+```sh
+./zig-out/bin/aegis run --policy policies/presets/mcp-dev.yaml -- <agent-command>
+./zig-out/bin/aegis mcp inspect --name demo --command python3 -- fixtures/mcp/fake_server.py
 ```
-
-Manifest trust is bound at proxy launch. A manifest does not make a server trusted by name alone.
-
-## CI Mode
-
-```bash
-aegis init --preset github-actions
-aegis run --mode ci -- ./scripts/agent-task.sh
-```
-
-CI mode never prompts. Ask decisions are denied unless the policy contains an explicit allow.
 
 ## Strict Local Mode
 
-```bash
-aegis init --preset strict-local
-aegis policy check .aegis/policy.yaml
+```sh
+./zig-out/bin/aegis run --policy policies/presets/strict-local.yaml --mode strict -- <agent-command>
 ```
-
-Use this for untrusted tasks. Add narrow allows only after reviewing policy explanations.
 
 ## Trusted Local Mode
 
-```bash
-aegis init --preset trusted-local
-aegis policy check .aegis/policy.yaml
+Use only for code and commands you already trust:
+
+```sh
+./zig-out/bin/aegis run --policy policies/presets/trusted-local.yaml --mode trusted -- <agent-command>
 ```
 
-Use this only in repositories you already trust. It is still redacted and staged, but it is intentionally less restrictive.
+## No-network Mode
 
-## Red-Team Run
-
-```bash
-aegis redteam --ci
+```sh
+./zig-out/bin/aegis run --no-network -- <agent-command>
 ```
 
-Fixtures are deterministic and local. They do not call real LLMs or require real credentials.
+This updates Aegis network policy decisions and environment metadata. It is not transparent network blocking unless `aegis doctor` reports an active backend.
+
+## CI Mode
+
+```sh
+./zig-out/bin/aegis run --mode ci -- zig build test
+./zig-out/bin/aegis redteam --ci
+```
 
 ## Staged Write Review
 
-```bash
-aegis run -- ./scripts/agent-task.sh
-aegis diff --session last
-aegis apply --session last
+```sh
+./zig-out/bin/aegis diff --session last
+./zig-out/bin/aegis apply --session last
+./zig-out/bin/aegis discard --session last
 ```
 
-Staging applies only to Aegis-mediated writes. Aegis does not claim universal transparent filesystem interception on every platform.
+## Preset Notes
+
+Presets exist for `claude-code`, `codex`, `cursor-agent`, `opencode`, `cline-roo`, `mcp-dev`, `github-actions`, `strict-local`, and `trusted-local`. They are local policy templates, not integrations with vendor services.

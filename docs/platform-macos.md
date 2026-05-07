@@ -1,9 +1,32 @@
-# macOS Platform Notes
+# macOS Platform
 
-macOS support is production-oriented for wrapper/proxy-mediated controls, not universal transparent sandboxing.
+Run:
 
-Aegis currently provides policy evaluation, environment filtering, command classification through wrappers/shims, staged writes for Aegis-mediated writes, protected path matching for common sensitive paths, stdio MCP proxy mediation, network decision heuristics, redaction, and audit/replay.
+```sh
+./zig-out/bin/aegis doctor
+```
 
-Transparent filesystem monitoring is not claimed. Transparent network enforcement is not claimed unless `aegis doctor` reports an active backend. macOS docs and demos must describe unsupported protections as limited or wrapper-only.
+Current macOS local output reports process supervision, env filtering, staged writes, MCP stdio proxy, network decision engine, and audit/replay as active.
 
-macOS sensitive path tests use synthetic `~/Library` and browser/profile paths. Tests must not read real user Keychain, browser, SSH, or cloud credential files.
+## Capability Matrix
+
+| Feature | Status |
+|---|---|
+| Process supervision | active |
+| Env filtering | active |
+| Staged writes | active |
+| Shell/PATH shims | wrapper-only |
+| MCP stdio proxy | active |
+| Network decision engine | active |
+| Network observation | observe-only |
+| Transparent network enforcement | limited |
+| Transparent file enforcement | limited |
+| Strong sandbox | unavailable |
+
+## Protected Paths
+
+Policies deny common secret paths such as `.env`, `~/.ssh/**`, cloud credential directories, keychains, and browser credential stores.
+
+## Limitations
+
+Aegis does not install a macOS Sandbox profile, Endpoint Security extension, kernel extension, or admin-only network filter by default. Wrapper-level protections are not transparent OS enforcement.
