@@ -8,4 +8,4 @@ Phase 19 package templates live under:
 - `npm/package.json`
 - `docker/Dockerfile`
 
-Templates use placeholder versions, licenses, and checksums until release automation fills them from `dist/checksums.txt`.
+Templates use release version metadata and placeholder checksums until release automation fills them from `dist/checksums.txt`. License fields remain pending until the project owner records the final license in `LICENSE`.

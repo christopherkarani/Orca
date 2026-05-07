@@ -2,6 +2,8 @@ const std = @import("std");
 
 const core = @import("../core/mod.zig");
 const hash_chain = @import("hash_chain.zig");
+const redact_bridge = @import("redact_bridge.zig");
+const audit_summary = @import("summary.zig");
 
 pub const ReplayOptions = struct {
     session: []const u8 = "last",
@@ -185,6 +187,20 @@ pub fn canonicalFromJsonValue(allocator: std.mem.Allocator, value: std.json.Valu
     errdefer list.deinit(allocator);
     const writer = list.writer(allocator);
     const object = try expectObject(value);
+    try rejectUnknownKeys(object, &.{
+        "version",
+        "session_id",
+        "event_id",
+        "timestamp",
+        "type",
+        "actor",
+        "target",
+        "decision",
+        "redactions",
+        "previous_hash",
+        "event_hash",
+    });
+    if (object.get("event_hash")) |event_hash| _ = try expectString(event_hash);
 
     try writer.writeByte('{');
     try writer.print("\"version\":{d}", .{try expectInteger(try requiredField(object, "version"))});
@@ -215,6 +231,7 @@ fn writeStringField(writer: anytype, name: []const u8, value: std.json.Value) !v
 
 fn writeActorValue(writer: anytype, value: std.json.Value) !void {
     const object = try expectObject(value);
+    try rejectUnknownKeys(object, &.{ "kind", "id", "display" });
     try writer.writeByte('{');
     try writer.writeAll("\"kind\":");
     try core.util.writeJsonString(writer, try expectString(try requiredField(object, "kind")));
@@ -227,6 +244,7 @@ fn writeActorValue(writer: anytype, value: std.json.Value) !void {
 
 fn writeTargetValue(writer: anytype, value: std.json.Value) !void {
     const object = try expectObject(value);
+    try rejectUnknownKeys(object, &.{ "kind", "value" });
     try writer.writeByte('{');
     try writer.writeAll("\"kind\":");
     try core.util.writeJsonString(writer, try expectString(try requiredField(object, "kind")));
@@ -241,6 +259,7 @@ fn writeDecisionValue(writer: anytype, value: std.json.Value) !void {
         return;
     }
     const object = try expectObject(value);
+    try rejectUnknownKeys(object, &.{ "result", "rule_id", "reason", "risk_score", "requires_user", "ci_may_proceed" });
     try writer.writeByte('{');
     try writer.writeAll("\"result\":");
     try core.util.writeJsonString(writer, try expectString(try requiredField(object, "result")));
@@ -260,6 +279,7 @@ fn writeDecisionValue(writer: anytype, value: std.json.Value) !void {
 
 fn writeRedactionsValue(writer: anytype, value: std.json.Value) !void {
     const object = try expectObject(value);
+    try rejectUnknownKeys(object, &.{ "count", "labels" });
     try writer.print("{{\"count\":{d},\"labels\":[", .{try expectInteger(try requiredField(object, "count"))});
     const labels = try expectArray(try requiredField(object, "labels"));
     for (labels.items, 0..) |label, index| {
@@ -316,6 +336,20 @@ fn requiredField(object: std.json.ObjectMap, name: []const u8) !std.json.Value {
     return object.get(name) orelse error.InvalidEventSchema;
 }
 
+fn rejectUnknownKeys(object: std.json.ObjectMap, allowed: []const []const u8) !void {
+    var iterator = object.iterator();
+    while (iterator.next()) |entry| {
+        var known = false;
+        for (allowed) |name| {
+            if (std.mem.eql(u8, entry.key_ptr.*, name)) {
+                known = true;
+                break;
+            }
+        }
+        if (!known) return error.InvalidEventSchema;
+    }
+}
+
 fn jsonNullableStringEquals(value: std.json.Value, expected: ?[]const u8) bool {
     if (expected) |string| return value == .string and std.mem.eql(u8, value.string, string);
     return value == .null;
@@ -355,32 +389,56 @@ fn loadEvents(allocator: std.mem.Allocator, session_dir_path: []const u8, only_d
 }
 
 fn eventFromJson(allocator: std.mem.Allocator, raw: []const u8, value: std.json.Value) !ReplayEvent {
-    const object = value.object;
-    const target = object.get("target").?.object;
-    const decision_result = decisionResultFromValue(allocator, object.get("decision").?) catch null;
+    _ = raw;
+    const object = try expectObject(value);
+    const target = try expectObject(try requiredField(object, "target"));
+    const decision_result = decisionResultFromValue(allocator, try requiredField(object, "decision")) catch null;
+    errdefer if (decision_result) |value_text| allocator.free(value_text);
+    const canonical_raw = try eventJsonLineFromValue(allocator, value);
+    errdefer allocator.free(canonical_raw);
     return .{
-        .raw = try allocator.dupe(u8, raw),
-        .timestamp = try allocator.dupe(u8, object.get("timestamp").?.string),
-        .event_type = try allocator.dupe(u8, object.get("type").?.string),
-        .target_value = try allocator.dupe(u8, target.get("value").?.string),
+        .raw = canonical_raw,
+        .timestamp = try allocator.dupe(u8, try expectString(try requiredField(object, "timestamp"))),
+        .event_type = try allocator.dupe(u8, try expectString(try requiredField(object, "type"))),
+        .target_value = try allocator.dupe(u8, try expectString(try requiredField(target, "value"))),
         .decision_result = decision_result,
     };
 }
 
 fn isDenied(value: std.json.Value) bool {
-    const object = value.object;
-    if (std.mem.endsWith(u8, object.get("type").?.string, "_denied")) return true;
+    const object = expectObject(value) catch return false;
+    const event_type = expectString(requiredField(object, "type") catch return false) catch return false;
+    if (std.mem.endsWith(u8, event_type, "_denied")) return true;
     const decision = object.get("decision") orelse return false;
     if (decision == .null) return false;
-    const result = decision.object.get("result") orelse return false;
+    const decision_object = expectObject(decision) catch return false;
+    const result = decision_object.get("result") orelse return false;
     return result == .string and std.mem.eql(u8, result.string, "deny");
 }
 
 fn decisionResultFromValue(allocator: std.mem.Allocator, value: std.json.Value) !?[]u8 {
     if (value == .null) return null;
-    const result = value.object.get("result") orelse return null;
+    const object = try expectObject(value);
+    const result = object.get("result") orelse return null;
     if (result != .string) return null;
     return try allocator.dupe(u8, result.string);
+}
+
+fn eventJsonLineFromValue(allocator: std.mem.Allocator, value: std.json.Value) ![]u8 {
+    const object = try expectObject(value);
+    const event_hash = try expectString(try requiredField(object, "event_hash"));
+    const canonical = try canonicalFromJsonValue(allocator, value);
+    defer allocator.free(canonical);
+
+    var list: std.ArrayList(u8) = .empty;
+    errdefer list.deinit(allocator);
+    const writer = list.writer(allocator);
+    if (canonical.len == 0 or canonical[canonical.len - 1] != '}') return error.InvalidEventSchema;
+    try writer.writeAll(canonical[0 .. canonical.len - 1]);
+    try writer.writeAll(",\"event_hash\":");
+    try core.util.writeJsonString(writer, event_hash);
+    try writer.writeByte('}');
+    return try list.toOwnedSlice(allocator);
 }
 
 const SummaryFields = struct {
@@ -402,13 +460,16 @@ fn readSummaryFields(allocator: std.mem.Allocator, session_dir_path: []const u8)
     defer allocator.free(text);
     var parsed = try std.json.parseFromSlice(std.json.Value, allocator, text, .{});
     defer parsed.deinit();
-    const object = parsed.value.object;
+    const object = try expectObject(parsed.value);
+    const canonical = try audit_summary.canonicalFromJsonValue(allocator, parsed.value);
+    defer allocator.free(canonical);
 
-    const command_display = try commandDisplayFromSummary(allocator, object.get("command").?.array);
+    const command_display = try commandDisplayFromSummary(allocator, try expectArray(try requiredField(object, "command")));
     errdefer allocator.free(command_display);
-    const policy = try allocator.dupe(u8, object.get("policy").?.string);
+    var policy_buf: [256]u8 = undefined;
+    const policy = try allocator.dupe(u8, redact_bridge.redactStringBounded(try expectString(try requiredField(object, "policy")), &policy_buf));
     errdefer allocator.free(policy);
-    const status_display = try statusDisplayFromSummary(allocator, object.get("status").?);
+    const status_display = try statusDisplayFromSummary(allocator, try requiredField(object, "status"));
     errdefer allocator.free(status_display);
     return .{ .command_display = command_display, .policy = policy, .status_display = status_display };
 }
@@ -430,6 +491,11 @@ fn readSummaryIntegrity(allocator: std.mem.Allocator, session_dir_path: []const 
     var parsed = try std.json.parseFromSlice(std.json.Value, allocator, text, .{});
     defer parsed.deinit();
     const object = try expectObject(parsed.value);
+    const canonical = try audit_summary.canonicalFromJsonValue(allocator, parsed.value);
+    defer allocator.free(canonical);
+    const computed_summary_hash = audit_summary.summaryHash(canonical);
+    const summary_hash_value = try expectString(try requiredField(object, "summary_hash"));
+    if (!std.mem.eql(u8, summary_hash_value, &computed_summary_hash)) return error.InvalidEventSchema;
     const count = try expectInteger(try requiredField(object, "event_count"));
     if (count < 0) return error.InvalidEventSchema;
     return .{
@@ -443,21 +509,41 @@ fn commandDisplayFromSummary(allocator: std.mem.Allocator, command_array: std.js
     errdefer list.deinit(allocator);
     for (command_array.items, 0..) |item, index| {
         if (index > 0) try list.append(allocator, ' ');
-        try list.appendSlice(allocator, item.string);
+        var command_buf: [256]u8 = undefined;
+        try list.appendSlice(allocator, redact_bridge.redactStringBounded(try expectString(item), &command_buf));
     }
     return try list.toOwnedSlice(allocator);
 }
 
 fn statusDisplayFromSummary(allocator: std.mem.Allocator, value: std.json.Value) ![]u8 {
-    const object = value.object;
-    const kind = object.get("kind").?.string;
-    const code = object.get("code").?.integer;
+    const object = try expectObject(value);
+    const kind = try expectString(try requiredField(object, "kind"));
+    const code = try expectInteger(try requiredField(object, "code"));
     return try std.fmt.allocPrint(allocator, "{s} {d}", .{ kind, code });
 }
 
 fn eventTime(timestamp: []const u8) []const u8 {
     if (timestamp.len >= 19) return timestamp[11..19];
     return timestamp;
+}
+
+fn testSummaryJsonAlloc(allocator: std.mem.Allocator, event_count: usize, final_event_hash: []const u8, command_json: []const u8) ![]u8 {
+    const canonical = try std.fmt.allocPrint(
+        allocator,
+        "{{\"version\":1,\"session_id\":\"s\",\"started_at\":\"2026-05-05T12:12:10Z\",\"ended_at\":\"2026-05-05T12:12:11Z\",\"workspace_root\":\"/tmp/aegis\",\"mode\":\"strict\",\"policy\":\"policy.yaml\",\"command\":{s},\"status\":{{\"kind\":\"exit\",\"code\":0}},\"event_count\":{d},\"final_event_hash\":\"{s}\"}}",
+        .{ command_json, event_count, final_event_hash },
+    );
+    defer allocator.free(canonical);
+    const summary_hash = audit_summary.summaryHash(canonical);
+    return try std.fmt.allocPrint(allocator, "{s},\"summary_hash\":\"{s}\"}}\n", .{ canonical[0 .. canonical.len - 1], &summary_hash });
+}
+
+fn writeTestSummary(path: []const u8, event_count: usize, final_event_hash: []const u8, command_json: []const u8) !void {
+    const text = try testSummaryJsonAlloc(std.testing.allocator, event_count, final_event_hash, command_json);
+    defer std.testing.allocator.free(text);
+    const file = try std.fs.cwd().createFile(path, .{});
+    defer file.close();
+    try file.writeAll(text);
 }
 
 test "verification detects modified event fields" {
@@ -492,14 +578,7 @@ test "verification detects modified event fields" {
         try file_writer.interface.print("{s},\"event_hash\":\"{s}\"}}\n", .{ event_text, &hash });
         try file_writer.interface.flush();
     }
-    {
-        const file = try std.fs.cwd().createFile(summary_path, .{});
-        defer file.close();
-        var buf: [1024]u8 = undefined;
-        var file_writer = file.writer(&buf);
-        try file_writer.interface.print("{{\"event_count\":1,\"final_event_hash\":\"{s}\"}}\n", .{&hash});
-        try file_writer.interface.flush();
-    }
+    try writeTestSummary(summary_path, 1, &hash, "[\"echo\",\"hello\"]");
     var ok = try verifySessionDir(std.testing.allocator, session_dir);
     defer ok.deinit(std.testing.allocator);
     try std.testing.expect(ok.ok);
@@ -515,6 +594,99 @@ test "verification detects modified event fields" {
     var bad = try verifySessionDir(std.testing.allocator, session_dir);
     defer bad.deinit(std.testing.allocator);
     try std.testing.expect(!bad.ok);
+}
+
+test "verification rejects event records with unauthenticated extra keys" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const root = try tmp.dir.realpathAlloc(std.testing.allocator, ".");
+    defer std.testing.allocator.free(root);
+
+    const session_dir = try std.fs.path.join(std.testing.allocator, &.{ root, ".aegis", "sessions", "extra-key" });
+    defer std.testing.allocator.free(session_dir);
+    try std.fs.cwd().makePath(session_dir);
+
+    const event_path = try std.fs.path.join(std.testing.allocator, &.{ session_dir, "events.jsonl" });
+    defer std.testing.allocator.free(event_path);
+    const summary_path = try std.fs.path.join(std.testing.allocator, &.{ session_dir, "summary.json" });
+    defer std.testing.allocator.free(summary_path);
+
+    const event_text =
+        "{\"version\":1,\"session_id\":\"s\",\"event_id\":\"e\",\"timestamp\":\"2026-05-05T12:12:10Z\",\"type\":\"session_start\",\"actor\":{\"kind\":\"aegis\",\"id\":null,\"display\":\"aegis\"},\"target\":{\"kind\":\"session\",\"value\":\"s\"},\"decision\":null,\"redactions\":{\"count\":0,\"labels\":[]},\"previous_hash\":null";
+    const hash = blk: {
+        const canonical = try std.fmt.allocPrint(std.testing.allocator, "{s}}}", .{event_text});
+        defer std.testing.allocator.free(canonical);
+        break :blk hash_chain.eventHash(null, canonical);
+    };
+    {
+        const file = try std.fs.cwd().createFile(event_path, .{});
+        defer file.close();
+        var buf: [1024]u8 = undefined;
+        var file_writer = file.writer(&buf);
+        try file_writer.interface.print("{s},\"extra\":\"fake_secret_value\",\"event_hash\":\"{s}\"}}\n", .{ event_text, &hash });
+        try file_writer.interface.flush();
+    }
+    try writeTestSummary(summary_path, 1, &hash, "[\"echo\",\"hello\"]");
+
+    var result = try verifySessionDir(std.testing.allocator, session_dir);
+    defer result.deinit(std.testing.allocator);
+    try std.testing.expect(!result.ok);
+    try std.testing.expectEqualStrings("malformed event", result.reason.?);
+}
+
+test "verification rejects tampered summary display fields" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const root = try tmp.dir.realpathAlloc(std.testing.allocator, ".");
+    defer std.testing.allocator.free(root);
+
+    const session_dir = try std.fs.path.join(std.testing.allocator, &.{ root, ".aegis", "sessions", "summary-tamper" });
+    defer std.testing.allocator.free(session_dir);
+    try std.fs.cwd().makePath(session_dir);
+
+    const event_path = try std.fs.path.join(std.testing.allocator, &.{ session_dir, "events.jsonl" });
+    defer std.testing.allocator.free(event_path);
+    const summary_path = try std.fs.path.join(std.testing.allocator, &.{ session_dir, "summary.json" });
+    defer std.testing.allocator.free(summary_path);
+
+    const event_text =
+        "{\"version\":1,\"session_id\":\"s\",\"event_id\":\"e\",\"timestamp\":\"2026-05-05T12:12:10Z\",\"type\":\"session_start\",\"actor\":{\"kind\":\"aegis\",\"id\":null,\"display\":\"aegis\"},\"target\":{\"kind\":\"session\",\"value\":\"s\"},\"decision\":null,\"redactions\":{\"count\":0,\"labels\":[]},\"previous_hash\":null";
+    const hash = blk: {
+        const canonical = try std.fmt.allocPrint(std.testing.allocator, "{s}}}", .{event_text});
+        defer std.testing.allocator.free(canonical);
+        break :blk hash_chain.eventHash(null, canonical);
+    };
+    {
+        const file = try std.fs.cwd().createFile(event_path, .{});
+        defer file.close();
+        var buf: [1024]u8 = undefined;
+        var file_writer = file.writer(&buf);
+        try file_writer.interface.print("{s},\"event_hash\":\"{s}\"}}\n", .{ event_text, &hash });
+        try file_writer.interface.flush();
+    }
+    const valid_summary = try testSummaryJsonAlloc(std.testing.allocator, 1, &hash, "[\"echo\",\"hello\"]");
+    defer std.testing.allocator.free(valid_summary);
+    {
+        const file = try std.fs.cwd().createFile(summary_path, .{});
+        defer file.close();
+        try file.writeAll(valid_summary);
+    }
+    var ok = try verifySessionDir(std.testing.allocator, session_dir);
+    defer ok.deinit(std.testing.allocator);
+    try std.testing.expect(ok.ok);
+
+    const tampered_summary = try std.mem.replaceOwned(u8, std.testing.allocator, valid_summary, "echo", "fake_secret_value");
+    defer std.testing.allocator.free(tampered_summary);
+    {
+        const file = try std.fs.cwd().createFile(summary_path, .{});
+        defer file.close();
+        try file.writeAll(tampered_summary);
+    }
+
+    var bad = try verifySessionDir(std.testing.allocator, session_dir);
+    defer bad.deinit(std.testing.allocator);
+    try std.testing.expect(!bad.ok);
+    try std.testing.expectEqualStrings("malformed summary.json", bad.reason.?);
 }
 
 test "verification reports malformed events instead of panicking" {
@@ -537,11 +709,7 @@ test "verification reports malformed events instead of panicking" {
         defer file.close();
         try file.writeAll("{\"version\":1,\"previous_hash\":null,\"event_hash\":\"abc\"}\n");
     }
-    {
-        const file = try std.fs.cwd().createFile(summary_path, .{});
-        defer file.close();
-        try file.writeAll("{\"event_count\":1,\"final_event_hash\":\"abc\"}\n");
-    }
+    try writeTestSummary(summary_path, 1, "abc", "[\"echo\",\"hello\"]");
 
     var result = try verifySessionDir(std.testing.allocator, session_dir);
     defer result.deinit(std.testing.allocator);
@@ -578,14 +746,7 @@ test "verification detects summary event count mismatch" {
         try file_writer.interface.print("{s},\"event_hash\":\"{s}\"}}\n", .{ event_text, &hash });
         try file_writer.interface.flush();
     }
-    {
-        const file = try std.fs.cwd().createFile(summary_path, .{});
-        defer file.close();
-        var buf: [1024]u8 = undefined;
-        var file_writer = file.writer(&buf);
-        try file_writer.interface.print("{{\"event_count\":2,\"final_event_hash\":\"{s}\"}}\n", .{&hash});
-        try file_writer.interface.flush();
-    }
+    try writeTestSummary(summary_path, 2, &hash, "[\"echo\",\"hello\"]");
 
     var result = try verifySessionDir(std.testing.allocator, session_dir);
     defer result.deinit(std.testing.allocator);

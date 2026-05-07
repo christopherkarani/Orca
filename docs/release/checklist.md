@@ -15,7 +15,7 @@ Expected artifact names:
 Build locally:
 
 ```bash
-AEGIS_VERSION=0.19.0-dev ./scripts/build-release.sh
+AEGIS_VERSION=1.0.0 ./scripts/build-release.sh
 shasum -a 256 -c dist/checksums.txt
 ```
 
@@ -32,7 +32,7 @@ tar -xzf aegis-vX.Y.Z-linux-amd64.tar.gz
 The installer scripts support verified local artifacts:
 
 ```bash
-AEGIS_VERSION=0.19.0-dev AEGIS_ARTIFACT_DIR=dist ./scripts/install.sh
+AEGIS_VERSION=1.0.0 AEGIS_ARTIFACT_DIR=dist ./scripts/install.sh
 ```
 
 Do not document blind `curl | sh` installation as the only path. Any remote installer example must also show the checksum verification alternative above.
@@ -72,5 +72,6 @@ Do not claim notarized or signed artifacts unless the release job actually signs
 - Install scripts verify `checksums.txt` before extraction and installation where SHA-256 tooling is available.
 - Install scripts refuse unsupported OS/architecture combinations.
 - Install scripts refuse to overwrite an unrelated existing file unless explicitly forced.
-- Package templates contain placeholder versions and checksums for release automation.
+- Package templates contain release version metadata and placeholder checksums for release automation.
+- Public distribution is blocked until the project owner records the final license in `LICENSE`.
 - Workflows do not print signing material and do not require signing for normal builds.

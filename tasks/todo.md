@@ -1,56 +1,119 @@
-# Phase 21 Documentation and Demo Plan
+# Aegis v1.0.0 Release-Candidate Audit
 
 ## Assumptions
 
-- Phase 21 is documentation, examples, and deterministic demo work only.
-- Existing CLI/runtime behavior is the source of truth; docs must not claim stronger transparent filesystem or network enforcement than `aegis doctor` reports.
-- The leaky-agent demo must use synthetic data only, require no LLM, require no external network, and leave no raw fake secret in audit, replay, summary, README, or docs.
-- Example policies should use existing policy schema and must pass `aegis policy check`.
-- Install documentation must match the Phase 19 scripts and packaging templates already present in the repo.
+- This is a final release-candidate audit, not a feature phase.
+- Fixes are allowed only for confirmed release blockers in the requested scope.
+- The local branch `release/v1.0.0-rc1` is the candidate under test.
+- Runtime behavior, tests, and scripts are the source of truth; docs must not overclaim beyond those results.
+- Fake secret fixtures and demo values must remain synthetic and must not appear in persistent audit or user-facing outputs.
 
-## Research Check
+## Research And False-Positive Check
 
-- [x] Read required Phase 21 context files and project lessons.
-- [x] Start read-only subagent checks for CLI behavior and documentation gaps.
-- [x] Inventory current CLI help, release scripts, packaging templates, policies, and red-team fixture behavior.
-- [x] Re-check assumptions after writing docs to identify false positives, gaps, and overclaims.
+- [x] Review lessons and prior project memory for known Aegis release-gate pitfalls.
+- [x] Inventory current build steps, scripts, policies, examples, docs, and runtime assets.
+- [x] Run independent read-only checks for docs/schema/security/platform surfaces before deciding whether any failure is a blocker.
+- [x] Re-check each suspected issue against runtime behavior or exact source evidence before patching.
 
-## TDD/Validation Checklist
+## TDD / Release Validation Checklist
 
-- [x] Create or update launch README with honest positioning, examples, platform matrix, docs links, contribution and disclosure paths.
-- [x] Create deterministic `examples/leaky-agent-demo/` with fake agent, local policy, scripts, expected-output notes, and no raw fake secret persistence.
-- [x] Create or update all requested documentation pages under `docs/`.
-- [x] Create documented examples under `examples/policies`, `examples/mcp`, `examples/ci`, `examples/staged-writes`, `examples/network`, and `examples/commands`.
-- [x] Create or update compatibility matrix using actual `aegis doctor` capability vocabulary.
-- [x] Add practical documentation validation checks for README/doc links, example policy validation, demo execution, and fake-secret scans.
-- [x] Validate all example and preset policies with `aegis policy check`.
-- [x] Manually verify quickstart/demo/replay flows from a clean temporary checkout.
+- [x] Baseline `zig build`.
+- [x] Baseline `zig build test`.
+- [x] Baseline `./zig-out/bin/aegis redteam --ci`.
+- [x] Baseline `./zig-out/bin/aegis doctor`.
+- [x] Baseline `./zig-out/bin/aegis version`.
+- [x] Baseline `./zig-out/bin/aegis version --json`.
+- [x] Run `scripts/v1-smoke-test.sh` if available.
+- [x] Run `zig build fuzz` if available.
+- [x] Validate every preset policy and every example policy.
+- [x] Verify README quickstart commands against the current CLI.
+- [x] Verify the leaky-agent demo works.
+- [x] Verify replay detects audit tampering.
+- [x] Verify fake secret values are absent from events, summaries, replay output, doctor output, demo output, README, and docs.
+- [x] Verify unsupported platform features are not reported as active.
+- [x] Verify MCP stdout remains protocol-only.
+- [x] Verify CI mode never prompts.
+- [x] Verify release artifacts build or release scripts clearly document how to build them.
+- [x] Verify install scripts do not collect telemetry.
+- [x] Verify docs do not claim perfect sandboxing or universal transparent network/filesystem enforcement.
+
+## Fix Scope
+
+- [x] If a release blocker is confirmed, add or run the smallest failing check that proves it.
+- [x] Patch only the blocker and directly related tests/docs/scripts.
+- [x] Re-run the affected checks plus the core release matrix.
+
+## Review
+
+- Fixed verified replay tamper handling: unknown event fields now fail verification, summary metadata has a `summary_hash`, verified replay rejects summary display tampering, and JSON replay output is rebuilt from known canonical event fields instead of raw lines.
+- Fixed review follow-up tamper hardening: `updateFinalHash` now verifies the existing `summary_hash` before rewriting `summary.json`, with a regression test proving modified summaries are not re-signed.
+- Updated v1.0.0 release metadata across `build.zig`, `build.zig.zon`, release/install scripts, package templates, SBOM output, docs, and MCP client info.
+- Added `schemas/policy-v1.json`, `schemas/event-v1.json`, and `schemas/mcp-manifest-v1.json`; schema JSON validates and the files are included in the tracked patch surface.
+- Fixed release/install script issues: `install.ps1` now derives its default URL from the selected version, and `build-release.ps1` writes checksums/SBOM natively instead of depending on POSIX shell helpers.
+- Added `scripts/v1-smoke-test.sh` and verified it.
+- Corrected docs for policy load order and Linux capability reporting; docs no longer claim active Linux strong sandbox or transparent filesystem enforcement.
+- Final verification passed: `zig build`, `zig build test`, `./zig-out/bin/aegis redteam --ci`, `./zig-out/bin/aegis doctor`, `./zig-out/bin/aegis version`, `./zig-out/bin/aegis version --json`, `scripts/v1-smoke-test.sh`, `zig build fuzz`, all policy checks, README quickstart, leaky-agent demo, replay tamper checks, MCP protocol-only stdout, CI no-prompt behavior, release artifact build/checksum verification with v1 schema files present in tar/zip artifacts, local install from artifact, docs validation, JSON/shell/Ruby syntax checks, `zig fetch --debug-hash .`, and `git diff --check`.
+
+Remaining release blocker:
+
+- `LICENSE` still records "License pending" and says not to distribute release artifacts until the project owner chooses and records the final license. I did not choose a license.
+
+---
+
+# Phase 23 Product Split And Monorepo Contract
+
+## Assumptions
+
+- Phase 23 is a product-structure phase, not a runtime-feature phase.
+- The Edge-specific prompt files named by the task are not present in this checkout; the task prompt, existing architecture contracts, security invariants, and lessons are the active contract.
+- Existing `src/` modules are stable Aegis CLI v1.0 implementation surface and should not be mass-moved if wrapper package roots can preserve behavior with lower risk.
+- `aegis` must remain the existing CLI binary.
+- Any `aegis-edge` binary added in this phase must be an honest scaffold only.
+
+## Research And False-Positive Check
+
+- [x] Review memory and `tasks/lessons.md` for phase-boundary, security, and clean-checkout pitfalls.
+- [x] Check whether named Edge governing docs exist in this checkout.
+- [x] Inspect current build/module layout before deciding whether to move code or add package wrapper roots.
+- [x] Verify current CLI behavior before making source changes where practical.
+- [x] Re-check all Edge wording for unsupported real-flight, certification, detect-and-avoid, autopilot, PX4, ArduPilot, and MAVLink claims.
+
+## TDD / Implementation Checklist
+
+- [x] Baseline `zig build`.
+- [x] Baseline `zig build test`.
+- [x] Baseline `./zig-out/bin/aegis redteam --ci`.
+- [x] Create `packages/core/src` and `packages/core/tests` as the shared package contract over policy, decision, audit, replay, redaction, schema, fixture/red-team, capability, and platform-independent utilities.
+- [x] Create `packages/cli/src` and `packages/cli/tests` as the CLI package contract over existing desktop/CI command behavior.
+- [x] Create `packages/edge/src` and `packages/edge/tests` with scaffold-only domain types, adapter contract, fake adapter placeholder, safety decision/envelope, audit placeholder, and doctor/capability placeholder.
+- [x] Add package READMEs for core, cli, and edge with purpose, belongs/does-not-belong, current status, and future phases.
+- [x] Update build configuration so core, cli, and edge package modules build/test; keep `aegis` output unchanged.
+- [x] Add an honest `aegis-edge` placeholder binary only if it can be kept scaffold-only and low risk.
+- [x] Add tests for package build roots, Edge scaffold honesty, docs real-flight readiness claims, and fake secret persistence guardrails.
+- [x] Preserve existing CLI behavior and imports; avoid rewrites unless a test proves they are necessary.
 
 ## Verification Checklist
 
 - [x] `zig build`
 - [x] `zig build test`
-- [x] `./zig-out/bin/aegis redteam --ci`
-- [x] `./zig-out/bin/aegis doctor`
+- [x] `./zig-out/bin/aegis --help`
+- [x] `./zig-out/bin/aegis version`
 - [x] `./zig-out/bin/aegis version --json`
-- [x] `./zig-out/bin/aegis policy check` for every example and preset policy.
-- [x] README links and docs links point to existing files.
-- [x] Leaky-agent demo runs without real LLMs, real secrets, or external network.
-- [x] `aegis replay --session last --verify` works after the demo.
-- [x] Fake secret values do not appear in persistent demo logs, replay output, README, or docs.
+- [x] `./zig-out/bin/aegis doctor`
+- [x] `./zig-out/bin/aegis run -- echo hello`
+- [x] `./zig-out/bin/aegis replay --session last --verify`
+- [x] `./zig-out/bin/aegis policy check`
+- [x] `./zig-out/bin/aegis redteam --ci`
+- [x] If added: `./zig-out/bin/aegis-edge --help`
+- [x] If added: `./zig-out/bin/aegis-edge doctor`
+- [x] `git diff --check`
 
 ## Review
 
-- Launch README now documents positioning, install, quickstart, demo, run/replay/staging/MCP/red-team examples, platform matrix, protections, non-promises, Why Zig, contribution, security disclosure, and docs links.
-- Added requested launch docs under `docs/` plus a consolidated compatibility matrix using `aegis doctor` capability vocabulary.
-- Added `examples/leaky-agent-demo/` with a temporary-workspace fake-agent demo, policy, POSIX and PowerShell scripts, expected-output notes, and runtime fake-secret scanning.
-- Added documented examples for policies, MCP, CI, staged writes, network, and command guard.
-- Added `scripts/validate-docs.sh` for markdown link checks, example policy checks, MCP manifest check, demo execution, fake-secret scan, and limitation wording checks.
-- Clean-copy quickstart smoke passed from `/tmp/aegis-clean.WZDxKg/aegis`: build, init, policy check, doctor, `aegis run -- echo hello`, replay verify, and red-team CI.
-- Verification passed: `zig build`, `zig build test`, `./zig-out/bin/aegis redteam --ci` with 10/10 fixtures, `./zig-out/bin/aegis doctor`, `./zig-out/bin/aegis version --json`, all example/preset policy checks, `scripts/validate-docs.sh`, MCP manifest check, fake-secret grep, overclaim grep, and `git diff --check`.
-
-Known limitations:
-
-- Demo demonstrates Aegis-mediated command denial, network policy decisions, audit, redaction, and replay; it intentionally does not claim transparent arbitrary file-read interception.
-- macOS docs reflect current local `doctor` output: transparent network and filesystem enforcement are limited, proxy-mediated network enforcement and strong sandbox are unavailable.
-- The PowerShell demo script is provided, but this run verified the POSIX script on macOS.
+- Added `packages/core`, `packages/cli`, and `packages/edge` package roots with focused contract tests.
+- Kept the stable v1.0 implementation in `src/` and used package roots as the Phase 23 monorepo contract to avoid risky import rewrites.
+- Added scaffold-only Edge domain, policy, adapter, audit, capability, doctor, and `aegis-edge` placeholder surfaces.
+- Updated `build.zig` so core, cli, edge, package contract tests, Phase 23 docs/security contract tests, and the existing `aegis` binary build together.
+- Updated `README.md`, `docs/README.md`, and package READMEs with product boundaries and explicit Edge non-flight limitations.
+- Made no-arg `aegis policy check` validate the built-in default policy so the exact Phase 23 smoke command succeeds without creating `.aegis/policy.yaml`.
+- Final verification passed: `zig build`, `zig build test`, `aegis --help`, `aegis version`, `aegis version --json`, `aegis doctor`, `aegis run -- echo hello`, `aegis replay --session last --verify`, `aegis policy check`, `aegis redteam --ci`, `aegis-edge --help`, `aegis-edge doctor`, `.aegis` fake-secret grep, and `git diff --check`.

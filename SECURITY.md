@@ -2,7 +2,7 @@
 
 ## Supported Versions
 
-Aegis is pre-1.0. Security fixes are made on the current development branch until a tagged v1.0 support policy exists. Do not treat older pre-release snapshots as supported security releases.
+The v1.0.x line receives security fixes once a v1.0.0 tag is published. Do not treat older pre-release snapshots as supported security releases.
 
 ## Reporting a Vulnerability
 

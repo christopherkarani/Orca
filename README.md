@@ -10,6 +10,16 @@ Aegis is a local, policy-driven runtime firewall for agent sessions. It launches
 
 Aegis is not a SaaS product, hosted dashboard, monetization layer, or telemetry service. It is a local CLI and library built around explicit policy, wrapper/proxy mediation, redaction, and honest platform capability reporting.
 
+## Product Split
+
+Phase 23 introduces a monorepo product contract:
+
+- **Aegis Core** (`packages/core/`): shared policy, decision, audit, event, schema, replay, redaction, fixture, red-team, capability, and platform-independent utility contracts.
+- **Aegis CLI** (`packages/cli/`): the existing desktop and CI AI-agent runtime firewall exposed as the `aegis` binary.
+- **Aegis Edge** (`packages/edge/`): a drone and robotics safety-policy and audit runtime scaffold for future phases.
+
+Aegis Edge is scaffold-only in Phase 23. It is not a flight controller, not an autopilot replacement, not detect-and-avoid, and not regulatory approval or certification. It must not be used for real flight until later simulation, bench, and customer safety validation phases are complete.
+
 ## Install
 
 Build from source with Zig `0.15.2`:
@@ -118,9 +128,9 @@ Capability states use the current `aegis doctor` vocabulary: `active`, `partial`
 | MCP sampling controls | active | active | active |
 | Network decision engine | active | active | active |
 | Proxy-mediated network enforcement | unavailable | unavailable | unavailable |
-| Transparent network enforcement | partial or limited, kernel-dependent | limited | limited |
-| Transparent filesystem enforcement | partial or limited, backend-dependent | limited | limited |
-| Strong sandbox | partial when backend reports kernel support | unavailable | unavailable |
+| Transparent network enforcement | observe-only | limited | limited |
+| Transparent filesystem enforcement | unavailable; staged writes active | limited | limited |
+| Strong sandbox | unavailable | unavailable | unavailable |
 | Process cleanup | active or partial | active | partial |
 | Red-team suite | active | active | active |
 
@@ -152,6 +162,9 @@ Aegis needs a small, portable CLI with explicit allocation, predictable binaries
 
 ## Docs
 
+- [Aegis Core package](packages/core/README.md)
+- [Aegis CLI package](packages/cli/README.md)
+- [Aegis Edge package](packages/edge/README.md)
 - [Quickstart](docs/quickstart.md)
 - [Install](docs/install.md)
 - [Threat model](docs/threat-model.md)

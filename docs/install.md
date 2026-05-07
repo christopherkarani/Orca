@@ -24,7 +24,7 @@ Windows templates:
 
 ```powershell
 .\scripts\build-release.ps1
-.\scripts\install.ps1 -InstallDir "$env:USERPROFILE\bin" -ChecksumFile .\dist\checksums.txt
+.\scripts\install.ps1 -Version 1.0.0 -ArtifactDir .\dist -InstallDir "$env:USERPROFILE\bin"
 ```
 
 Do not use an install-only path without verification. Download the archive, verify `dist/checksums.txt`, inspect the install script if using it, then install.
@@ -55,7 +55,7 @@ macOS builds provide process supervision, environment filtering, staged writes, 
 
 ## Linux Notes
 
-Linux builds use backend detection for namespace, seccomp, Landlock, cgroup, and process supervision capability. Kernel-backed protections may be partial or unavailable depending on the host.
+Linux builds use backend detection for namespace, seccomp, Landlock, cgroup, and process supervision capability. v1.0.0 does not install kernel-backed restrictions as an active strong sandbox.
 
 ## Windows Notes
 

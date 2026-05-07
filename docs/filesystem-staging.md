@@ -33,4 +33,4 @@ Staging applies to Aegis-mediated writes. It is not universal transparent filesy
 
 ## Platform Notes
 
-macOS and Windows currently document transparent filesystem enforcement as limited. Linux may provide stronger controls when backend features are active.
+macOS and Windows currently document transparent filesystem enforcement as limited. Linux v1.0.0 reports transparent filesystem enforcement as unavailable by default; future backends may provide stronger controls when active OS restrictions are installed.

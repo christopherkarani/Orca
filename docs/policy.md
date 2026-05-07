@@ -4,7 +4,7 @@ Policies are YAML files with `version: 1`.
 
 ## Locations And Load Order
 
-Commands accept `--policy <path>`. Without it, Aegis discovers `.aegis/policy.yaml` from the workspace. If no workspace policy exists, built-in defaults are used.
+Commands accept `--policy <path>`. Without it, Aegis discovers `.aegis/policy.yaml` from the workspace, then `$HOME/.config/aegis/policy.yaml`, then built-in defaults. If a discovered policy file exists but is invalid or unreadable, Aegis fails closed instead of silently falling through.
 
 ```sh
 ./zig-out/bin/aegis init --preset generic-agent

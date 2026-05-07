@@ -2,7 +2,7 @@
 set -eu
 
 ARTIFACT_DIR="${1:-dist}"
-VERSION="${AEGIS_VERSION:-0.19.0-dev}"
+VERSION="${AEGIS_VERSION:-1.0.0}"
 OUTPUT="${ARTIFACT_DIR}/sbom.json"
 
 mkdir -p "$ARTIFACT_DIR"

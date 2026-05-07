@@ -16,9 +16,9 @@ Use `aegis doctor` for the authoritative report on a specific machine. This matr
 | MCP sampling controls | active | active | active |
 | Network decision engine | active | active | active |
 | Proxy-mediated network enforcement | unavailable | unavailable | unavailable |
-| Transparent network enforcement | partial or limited | limited | limited |
-| Transparent filesystem enforcement | partial or limited | limited | limited |
-| Strong sandbox | partial when kernel backend is active | unavailable | unavailable |
+| Transparent network enforcement | observe-only | limited | limited |
+| Transparent filesystem enforcement | unavailable; staged writes active | limited | limited |
+| Strong sandbox | unavailable | unavailable | unavailable |
 | Process cleanup | active or partial | active | partial |
 | Red-team suite | active | active | active |
 
