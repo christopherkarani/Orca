@@ -61,8 +61,8 @@ test "phase25 docs preserve Edge no-real-flight safety boundary" {
     const edge_readme = try readFile(std.testing.allocator, "packages/edge/README.md");
     defer std.testing.allocator.free(edge_readme);
 
-    try std.testing.expect(std.mem.indexOf(u8, readme, "Aegis Edge policy evaluation is active for local decisions only") != null);
-    try std.testing.expect(std.mem.indexOf(u8, edge_readme, "Phase 27 implements Edge policy loading") != null);
+    try std.testing.expect(std.mem.indexOf(u8, readme, "MAVLink support is limited to fake-transport simulation/protocol mediation") != null);
+    try std.testing.expect(std.mem.indexOf(u8, edge_readme, "Phase 28 adds a MAVLink gateway foundation") != null);
     try std.testing.expect(std.mem.indexOf(u8, readme, "flight-ready") == null);
     try std.testing.expect(std.mem.indexOf(u8, edge_readme, "flight-ready") == null);
 }

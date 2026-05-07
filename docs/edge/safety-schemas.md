@@ -1,6 +1,6 @@
 # Aegis Edge Safety Schemas
 
-Phase 26 introduced versioned schema surfaces for Edge policy, audit, replay, and safety report work. Phase 27 uses the Edge policy schema for local policy evaluation. These schemas do not mean MAVLink, PX4, ArduPilot, ROS2, command mediation, real hardware integration, regulatory certification, or real-flight readiness exists. Aegis Edge is not ready for real flight and must not be used for real flight.
+Phase 26 introduced versioned schema surfaces for Edge policy, audit, replay, and safety report work. Phase 27 uses the Edge policy schema for local policy evaluation. Phase 28 adds MAVLink fake-transport protocol mediation. These schemas do not mean PX4, ArduPilot, ROS2, SITL, real hardware integration, regulatory certification, or real-flight readiness exists. Aegis Edge is not ready for real flight and must not be used for real flight.
 
 ## Schemas
 
@@ -26,7 +26,7 @@ Command list duplicates are invalid. Deny priority is documented for future fail
 
 ## Edge Events V1
 
-Event types are reserved for future audit/replay phases:
+Event types cover local policy decisions and fake MAVLink protocol mediation:
 
 - `edge.session_start`
 - `edge.session_exit`
@@ -47,11 +47,16 @@ Event types are reserved for future audit/replay phases:
 - `adapter.message_received`
 - `adapter.message_forwarded`
 - `adapter.message_denied`
+- `mavlink.frame_received`
+- `mavlink.message_classified`
+- `mavlink.command_mapped`
+- `mavlink.command_denied`
+- `mavlink.message_blocked`
 
-Phase 27 prepares Core audit events for local policy decisions using these names. It still does not emit active command-mediation or real-flight events.
+Phase 28 prepares Core audit events for local policy decisions and fake MAVLink gateway decisions using these names. It still does not emit real-flight events.
 
 ## Safety Report V1
 
 Safety reports support report id, version, vehicle profile, adapter profile, policy hash, scenario name/source, test environment, checks run, commands allowed/denied, violations, audit event references, limitations, and a non-certification disclaimer.
 
-Valid test environment labels are fake adapter, PX4 SITL, ArduPilot SITL, bench, and other. These labels support future reporting distinctions; they are not claims that Phase 27 runs SITL or real flight.
+Valid test environment labels are fake adapter, PX4 SITL, ArduPilot SITL, bench, and other. These labels support future reporting distinctions; they are not claims that Phase 28 runs SITL or real flight.

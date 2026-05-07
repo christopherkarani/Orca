@@ -203,6 +203,18 @@ pub fn build(b: *std.Build) void {
     });
     const run_phase27_edge_policy_engine_tests = b.addRunArtifact(phase27_edge_policy_engine_tests);
 
+    const phase28_mavlink_gateway_tests = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("tests/phase28_mavlink_gateway.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .name = "aegis_edge", .module = aegis_edge_mod },
+            },
+        }),
+    });
+    const run_phase28_mavlink_gateway_tests = b.addRunArtifact(phase28_mavlink_gateway_tests);
+
     const test_step = b.step("test", "Run unit tests");
     test_step.dependOn(&run_lib_tests.step);
     test_step.dependOn(&run_exe_tests.step);
@@ -217,6 +229,7 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&run_phase25_hardening_tests.step);
     test_step.dependOn(&run_phase26_edge_domain_tests.step);
     test_step.dependOn(&run_phase27_edge_policy_engine_tests.step);
+    test_step.dependOn(&run_phase28_mavlink_gateway_tests.step);
 
     const fuzz_tests = b.addTest(.{
         .root_module = b.createModule(.{

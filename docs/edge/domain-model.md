@@ -1,6 +1,6 @@
 # Aegis Edge Domain Model
 
-Aegis Edge models vehicle state, command requests, safety envelopes, and audit/report schema inputs. It is a policy and audit runtime foundation for later phases. It is not ready for real flight and must not be used for real flight.
+Aegis Edge models vehicle state, command requests, safety envelopes, MAVLink fake-transport mappings, and audit/report schema inputs. It is not ready for real flight and must not be used for real flight.
 
 ## Vehicle Profile
 
@@ -12,7 +12,7 @@ Vehicle identity and platform fields are explicit:
 - `AdapterKind`: fake, MAVLink, ROS2, custom, or unknown.
 - `VehicleMode`, `ArmState`, and `ControlAuthority`.
 
-These are domain values only. They are not mapped to MAVLink, PX4, ArduPilot, ROS2, or hardware numeric IDs in Phase 27.
+These are domain values. Phase 28 maps a supported subset of MAVLink messages into Edge command requests for fake/in-memory protocol mediation only. PX4, ArduPilot, ROS2, SITL, and hardware numeric integration remain unimplemented.
 
 ## Vehicle State
 
@@ -32,7 +32,7 @@ Freshness is explicit: `fresh`, `stale`, `expired`, or `unknown`. Unknown state 
 
 ## Command Requests
 
-`CommandRequest` is a validation and policy-evaluation input for later phases. It does not send commands anywhere.
+`CommandRequest` is a validation and policy-evaluation input. Phase 28 can build it from supported MAVLink frames, but that still does not send commands to real endpoints.
 
 Command categories are:
 
