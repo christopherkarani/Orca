@@ -2,6 +2,7 @@ const std = @import("std");
 
 const core = @import("../core/mod.zig");
 const policy = @import("../policy/mod.zig");
+const sandbox = @import("../sandbox/mod.zig");
 
 pub const max_fixture_yaml_bytes: usize = 64 * 1024;
 
@@ -119,6 +120,14 @@ pub const Score = struct {
     points: u32 = 1,
 };
 
+pub const Requires = struct {
+    backend: []const sandbox.backend.Feature = &.{},
+
+    pub fn deinit(self: Requires, allocator: std.mem.Allocator) void {
+        if (self.backend.len > 0) allocator.free(self.backend);
+    }
+};
+
 pub const Fixture = struct {
     allocator: std.mem.Allocator,
     path: []const u8,
@@ -131,6 +140,8 @@ pub const Fixture = struct {
     command: Command,
     attempts: []const Attempt,
     expected: Expected,
+    requires: Requires = .{},
+    required: bool = true,
     score: Score,
 
     pub fn deinit(self: *Fixture) void {
@@ -142,6 +153,7 @@ pub const Fixture = struct {
         for (self.attempts) |attempt| attempt.deinit(self.allocator);
         if (self.attempts.len > 0) self.allocator.free(self.attempts);
         self.expected.deinit(self.allocator);
+        self.requires.deinit(self.allocator);
         self.* = undefined;
     }
 };
@@ -166,6 +178,8 @@ const Section = enum {
     expected_blocked,
     expected_redacted,
     expected_no_log_contains,
+    requires,
+    requires_backend,
     score,
 };
 
@@ -183,6 +197,8 @@ const Builder = struct {
     blocked: std.ArrayList([]const u8) = .empty,
     redacted: std.ArrayList([]const u8) = .empty,
     no_log_contains: std.ArrayList([]const u8) = .empty,
+    required: bool = true,
+    requires_backend: std.ArrayList(sandbox.backend.Feature) = .empty,
     points: ?u32 = null,
 
     fn init(allocator: std.mem.Allocator, path: []const u8) Builder {
@@ -199,6 +215,7 @@ const Builder = struct {
         freeList(self.allocator, &self.blocked);
         freeList(self.allocator, &self.redacted);
         freeList(self.allocator, &self.no_log_contains);
+        self.requires_backend.deinit(self.allocator);
     }
 
     fn appendString(self: *Builder, target: Section, value: []const u8) !void {
@@ -211,6 +228,11 @@ const Builder = struct {
             .expected_no_log_contains => try self.no_log_contains.append(self.allocator, owned),
             else => return error.InvalidFixture,
         }
+    }
+
+    fn appendBackendRequirement(self: *Builder, value: []const u8) !void {
+        const feature = sandbox.backend.Feature.parse(value) orelse return error.InvalidFixture;
+        try self.requires_backend.append(self.allocator, feature);
     }
 
     fn appendAttempt(self: *Builder, value: []const u8) !void {
@@ -255,6 +277,10 @@ const Builder = struct {
                 .redacted = try self.redacted.toOwnedSlice(self.allocator),
                 .no_log_contains = try self.no_log_contains.toOwnedSlice(self.allocator),
             },
+            .requires = .{
+                .backend = try self.requires_backend.toOwnedSlice(self.allocator),
+            },
+            .required = self.required,
             .score = .{ .points = points },
         };
     }
@@ -285,6 +311,8 @@ pub fn parseSlice(allocator: std.mem.Allocator, fixture_path: []const u8, text: 
             const value = try parseScalar(line[2..]);
             if (list_target == .attempts) {
                 try builder.appendAttempt(value);
+            } else if (list_target == .requires_backend) {
+                try builder.appendBackendRequirement(value);
             } else {
                 try builder.appendString(list_target, value);
             }
@@ -317,6 +345,10 @@ pub fn parseSlice(allocator: std.mem.Allocator, fixture_path: []const u8, text: 
                 list_target = .attempts;
             } else if (std.mem.eql(u8, key, "expected")) {
                 section = .expected;
+            } else if (std.mem.eql(u8, key, "requires")) {
+                section = .requires;
+            } else if (std.mem.eql(u8, key, "required")) {
+                builder.required = try parseBool(raw_value);
             } else if (std.mem.eql(u8, key, "score")) {
                 section = .score;
             } else {
@@ -343,6 +375,11 @@ pub fn parseSlice(allocator: std.mem.Allocator, fixture_path: []const u8, text: 
             } else {
                 return error.InvalidFixture;
             }
+            continue;
+        }
+        if (indent == 2 and section == .requires and std.mem.eql(u8, key, "backend")) {
+            list_target = .requires_backend;
+            section = .requires_backend;
             continue;
         }
         if (indent == 2 and section == .score and std.mem.eql(u8, key, "points")) {
@@ -428,6 +465,13 @@ fn parseU16(value: []const u8) !u16 {
 
 fn parseU32(value: []const u8) !u32 {
     return std.fmt.parseInt(u32, try parseScalar(value), 10) catch return error.InvalidFixture;
+}
+
+fn parseBool(value: []const u8) !bool {
+    const parsed = try parseScalar(value);
+    if (std.mem.eql(u8, parsed, "true")) return true;
+    if (std.mem.eql(u8, parsed, "false")) return false;
+    return error.InvalidFixture;
 }
 
 fn stripComment(line: []const u8) []const u8 {
@@ -517,6 +561,62 @@ test "redteam fixture parser rejects invalid category and missing command" {
         \\category: secret-exfil
         \\description: Bad.
         \\mode: strict
+        \\attempts:
+        \\  - "file.read:.env"
+        \\expected:
+        \\  blocked:
+        \\    - "file.read:.env"
+        \\
+    ));
+}
+
+test "redteam fixture parser accepts optional backend requirements" {
+    var fixture = try parseSlice(std.testing.allocator, "fixture.yaml",
+        \\version: 1
+        \\id: linux-landlock
+        \\name: Linux Landlock fixture
+        \\category: filesystem-bypass
+        \\description: Optional backend-specific fixture.
+        \\mode: strict
+        \\required: false
+        \\requires:
+        \\  backend:
+        \\    - landlock
+        \\    - strong-sandbox
+        \\command:
+        \\  argv:
+        \\    - "./fixture-agent"
+        \\attempts:
+        \\  - "file.read:.env"
+        \\expected:
+        \\  blocked:
+        \\    - "file.read:.env"
+        \\score:
+        \\  points: 1
+        \\
+    );
+    defer fixture.deinit();
+
+    try std.testing.expect(!fixture.required);
+    try std.testing.expectEqual(@as(usize, 2), fixture.requires.backend.len);
+    try std.testing.expectEqual(sandbox.backend.Feature.landlock, fixture.requires.backend[0]);
+    try std.testing.expectEqual(sandbox.backend.Feature.strong_sandbox, fixture.requires.backend[1]);
+}
+
+test "redteam fixture parser rejects unknown backend requirement" {
+    try std.testing.expectError(error.InvalidFixture, parseSlice(std.testing.allocator, "fixture.yaml",
+        \\version: 1
+        \\id: bad-backend-requirement
+        \\name: Bad backend requirement
+        \\category: filesystem-bypass
+        \\description: Bad requirement.
+        \\mode: strict
+        \\requires:
+        \\  backend:
+        \\    - not-a-backend-feature
+        \\command:
+        \\  argv:
+        \\    - "./fixture-agent"
         \\attempts:
         \\  - "file.read:.env"
         \\expected:

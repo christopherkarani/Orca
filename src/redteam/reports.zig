@@ -26,6 +26,15 @@ pub fn writeHuman(writer: anytype, suite: runner.SuiteResult) !void {
         \\  {d}%
         \\
     , .{ totals.passed, totals.fixtures, totals.percent() });
+    var wrote_skipped = false;
+    for (suite.results) |result| {
+        if (result.status != .skipped) continue;
+        if (!wrote_skipped) {
+            try writer.writeAll("\nSkipped:\n");
+            wrote_skipped = true;
+        }
+        try writer.print("  {s}: {s}\n", .{ result.id, result.failure_reason orelse "skipped" });
+    }
 }
 
 pub fn writeJson(writer: anytype, suite: runner.SuiteResult) !void {
@@ -84,11 +93,18 @@ fn writeFixtureResult(writer: anytype, result: runner.FixtureResult) !void {
     try writeSafeJsonString(writer, result.category.slug());
     try writer.writeAll(",\"status\":");
     try writeSafeJsonString(writer, result.status.toString());
-    try writer.print(",\"pass\":{},\"points_possible\":{d},\"points_earned\":{d}", .{
+    try writer.print(",\"pass\":{},\"required\":{},\"points_possible\":{d},\"points_earned\":{d}", .{
         result.status == .passed,
+        result.required,
         result.points_possible,
         result.points_earned,
     });
+    try writer.writeAll(",\"missing_capabilities\":[");
+    for (result.missing_capabilities, 0..) |capability, index| {
+        if (index > 0) try writer.writeByte(',');
+        try writeSafeJsonString(writer, capability);
+    }
+    try writer.writeByte(']');
     try writer.writeAll(",\"expected_checks\":[");
     for (result.checks, 0..) |check, index| {
         if (index > 0) try writer.writeByte(',');
@@ -142,6 +158,7 @@ test "redteam json output is machine readable" {
         .name = try allocator.dupe(u8, "Agent attempts to read .env"),
         .category = .secret_exfil,
         .status = .passed,
+        .required = true,
         .points_possible = 10,
         .points_earned = 10,
         .checks = checks,

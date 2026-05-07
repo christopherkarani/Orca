@@ -65,13 +65,14 @@ pub fn defaultCapabilityState(os: Os, capability: Capability) CapabilityState {
     return switch (capability) {
         .env_filtering,
         .path_staging,
-        .shell_wrapping,
         .mcp_stdio_proxy,
         .network_policy_engine,
-        => .unknown,
+        => .active,
         .process_supervision,
         .path_shims,
         .network_observe,
+        => .partial,
+        .shell_wrapping,
         .network_proxy_enforce,
         .network_enforce,
         .strong_sandbox,
@@ -80,7 +81,13 @@ pub fn defaultCapabilityState(os: Os, capability: Capability) CapabilityState {
 }
 
 pub fn reportCapability(os: Os, capability: Capability) CapabilityReport {
-    const state = switch (capability) {
+    const state: CapabilityState = switch (capability) {
+        .process_supervision => if (os == .linux) .active else .partial,
+        .env_filtering => .active,
+        .path_staging => .active,
+        .shell_wrapping => .limited,
+        .path_shims => .limited,
+        .mcp_stdio_proxy => .active,
         .network_policy_engine => .active,
         .network_observe => .partial,
         .network_proxy_enforce => .unavailable,
@@ -91,13 +98,30 @@ pub fn reportCapability(os: Os, capability: Capability) CapabilityReport {
         .capability = capability,
         .state = state,
         .note = switch (state) {
-            .active => if (capability == .network_policy_engine) "pure policy decisions are implemented and tested" else "backend reported active",
-            .partial => if (capability == .network_observe) "network audit events exist for Aegis-mediated decisions; transparent observation is platform-dependent" else "partial backend support",
-            .unknown => "phase 03 model only; backend not implemented",
+            .active => switch (capability) {
+                .process_supervision => "Linux backend uses process-group cleanup where available",
+                .env_filtering => "child environment filtering is implemented and tested",
+                .path_staging => "Aegis-mediated write staging is implemented and tested",
+                .mcp_stdio_proxy => "stdio MCP proxy enforcement is implemented and tested",
+                .network_policy_engine => "pure policy decisions are implemented and tested",
+                else => "backend reported active",
+            },
+            .partial => switch (capability) {
+                .process_supervision => "direct-child supervision is implemented; Linux process-tree cleanup is backend-specific",
+                .network_observe => "network audit events exist for Aegis-mediated decisions; transparent observation is platform-dependent",
+                else => "partial backend support",
+            },
+            .limited => switch (capability) {
+                .shell_wrapping => "shell controls are wrapper-level",
+                .path_shims => "PATH shims are wrapper-level",
+                else => "limited backend support",
+            },
+            .unknown => "backend state is unknown",
             .unavailable => switch (capability) {
                 .network_proxy_enforce => "no managed network proxy is started in Phase 12",
                 .network_enforce => "transparent OS-level network enforcement is not implemented in Phase 12",
-                else => "not implemented in phase 03",
+                .strong_sandbox => "strong OS-level sandboxing is backend-specific and not universally available",
+                else => "not available on this platform",
             },
             else => "backend reported capability",
         },

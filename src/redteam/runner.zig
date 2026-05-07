@@ -5,6 +5,7 @@ const core = @import("../core/mod.zig");
 const intercept = @import("../intercept/mod.zig");
 const mcp = @import("../mcp/mod.zig");
 const policy = @import("../policy/mod.zig");
+const sandbox = @import("../sandbox/mod.zig");
 const fixtures = @import("fixtures.zig");
 const scorecard = @import("scorecard.zig");
 
@@ -41,10 +42,12 @@ pub const FixtureResult = struct {
     name: []const u8,
     category: fixtures.Category,
     status: scorecard.Status,
+    required: bool = true,
     points_possible: u32,
     points_earned: u32,
     checks: []CheckResult,
     observations: []Observation,
+    missing_capabilities: []const []const u8 = &.{},
     failure_reason: ?[]const u8 = null,
     session_dir: ?[]const u8 = null,
 
@@ -55,6 +58,8 @@ pub const FixtureResult = struct {
         if (self.checks.len > 0) self.allocator.free(self.checks);
         for (self.observations) |item| item.deinit(self.allocator);
         if (self.observations.len > 0) self.allocator.free(self.observations);
+        for (self.missing_capabilities) |capability| self.allocator.free(capability);
+        if (self.missing_capabilities.len > 0) self.allocator.free(self.missing_capabilities);
         if (self.failure_reason) |reason| self.allocator.free(reason);
         if (self.session_dir) |path| self.allocator.free(path);
         self.* = undefined;
@@ -73,6 +78,14 @@ pub const SuiteResult = struct {
 
     pub fn totals(self: SuiteResult) scorecard.Totals {
         return scorecard.summarize(FixtureResult, self.results);
+    }
+
+    pub fn allRequiredPassed(self: SuiteResult) bool {
+        for (self.results) |result| {
+            if (result.status == .failed) return false;
+            if (result.required and result.status == .skipped) return false;
+        }
+        return true;
     }
 };
 
@@ -107,6 +120,10 @@ pub fn runSuite(allocator: std.mem.Allocator, fixture_set: fixtures.FixtureSet, 
 }
 
 pub fn runFixture(allocator: std.mem.Allocator, fixture: fixtures.Fixture, options: RunOptions) !FixtureResult {
+    if (try missingBackendCapabilities(allocator, fixture.requires.backend)) |missing| {
+        return skippedForMissingBackend(allocator, fixture, missing);
+    }
+
     var tmp = try createLocalTempDir(allocator);
     defer tmp.deinit(options.keep_workspaces);
     try tmp.dir.makePath("workspace");
@@ -257,12 +274,61 @@ pub fn runFixture(allocator: std.mem.Allocator, fixture: fixtures.Fixture, optio
         .name = try allocator.dupe(u8, fixture.name),
         .category = fixture.category,
         .status = status,
+        .required = fixture.required,
         .points_possible = fixture.score.points,
         .points_earned = if (status == .passed) fixture.score.points else 0,
         .checks = try checks.toOwnedSlice(allocator),
         .observations = try observations.toOwnedSlice(allocator),
+        .missing_capabilities = &.{},
         .failure_reason = failure_reason,
         .session_dir = session_dir,
+    };
+}
+
+fn missingBackendCapabilities(allocator: std.mem.Allocator, required: []const sandbox.backend.Feature) !?[][]const u8 {
+    if (required.len == 0) return null;
+    const report = sandbox.backend.detect(core.platform.detectOs());
+    var missing: std.ArrayList([]const u8) = .empty;
+    errdefer {
+        for (missing.items) |item| allocator.free(item);
+        missing.deinit(allocator);
+    }
+    for (required) |feature| {
+        if (report.featureAvailable(feature)) continue;
+        const feature_report = report.get(feature);
+        try missing.append(allocator, try std.fmt.allocPrint(allocator, "{s}:{s}", .{ feature.key(), feature_report.level.toString() }));
+    }
+    if (missing.items.len == 0) return null;
+    return try missing.toOwnedSlice(allocator);
+}
+
+fn skippedForMissingBackend(allocator: std.mem.Allocator, fixture: fixtures.Fixture, missing: [][]const u8) !FixtureResult {
+    errdefer {
+        for (missing) |item| allocator.free(item);
+        allocator.free(missing);
+    }
+    var checks = try allocator.alloc(CheckResult, missing.len);
+    errdefer allocator.free(checks);
+    for (missing, 0..) |item, index| {
+        checks[index] = .{
+            .expected = try std.fmt.allocPrint(allocator, "backend:{s}", .{item}),
+            .passed = false,
+            .observed = try allocator.dupe(u8, "backend capability unavailable; fixture skipped"),
+        };
+    }
+    return .{
+        .allocator = allocator,
+        .id = try allocator.dupe(u8, fixture.id),
+        .name = try allocator.dupe(u8, fixture.name),
+        .category = fixture.category,
+        .status = .skipped,
+        .required = fixture.required,
+        .points_possible = fixture.score.points,
+        .points_earned = 0,
+        .checks = checks,
+        .observations = &.{},
+        .missing_capabilities = missing,
+        .failure_reason = try allocator.dupe(u8, "required backend capability unavailable"),
     };
 }
 
@@ -654,6 +720,101 @@ test "redteam runner records failing fixture checks" {
     defer result.deinit();
     try std.testing.expectEqual(scorecard.Status.failed, result.status);
     try std.testing.expect(result.failure_reason != null);
+}
+
+test "redteam runner skips optional backend fixtures when capability is unavailable" {
+    var fixture = try fixtures.parseSlice(std.testing.allocator, "fixture.yaml",
+        \\version: 1
+        \\id: optional-landlock
+        \\name: Optional Landlock fixture
+        \\category: filesystem-bypass
+        \\description: Backend-specific optional fixture.
+        \\mode: strict
+        \\required: false
+        \\requires:
+        \\  backend:
+        \\    - landlock
+        \\command:
+        \\  argv:
+        \\    - "./fixture-agent"
+        \\attempts:
+        \\  - "file.read:.env"
+        \\expected:
+        \\  blocked:
+        \\    - "file.read:.env"
+        \\score:
+        \\  points: 1
+        \\
+    );
+    defer fixture.deinit();
+
+    if (sandbox.backend.detect(core.platform.detectOs()).featureAvailable(.landlock)) return error.SkipZigTest;
+
+    var result = try runFixture(std.testing.allocator, fixture, .{});
+    defer result.deinit();
+    try std.testing.expectEqual(scorecard.Status.skipped, result.status);
+    try std.testing.expect(!result.required);
+    try std.testing.expect(result.missing_capabilities.len > 0);
+}
+
+test "redteam suite treats optional skips as CI-safe but required skips as failures" {
+    var optional = try fixtures.parseSlice(std.testing.allocator, "optional.yaml",
+        \\version: 1
+        \\id: optional-strong
+        \\name: Optional strong sandbox fixture
+        \\category: filesystem-bypass
+        \\description: Optional backend fixture.
+        \\mode: strict
+        \\required: false
+        \\requires:
+        \\  backend:
+        \\    - strong_sandbox
+        \\command:
+        \\  argv:
+        \\    - "./fixture-agent"
+        \\attempts:
+        \\  - "file.read:.env"
+        \\expected:
+        \\  blocked:
+        \\    - "file.read:.env"
+        \\
+    );
+    defer optional.deinit();
+    var required = try fixtures.parseSlice(std.testing.allocator, "required.yaml",
+        \\version: 1
+        \\id: required-strong
+        \\name: Required strong sandbox fixture
+        \\category: filesystem-bypass
+        \\description: Required backend fixture.
+        \\mode: strict
+        \\requires:
+        \\  backend:
+        \\    - strong_sandbox
+        \\command:
+        \\  argv:
+        \\    - "./fixture-agent"
+        \\attempts:
+        \\  - "file.read:.env"
+        \\expected:
+        \\  blocked:
+        \\    - "file.read:.env"
+        \\
+    );
+    defer required.deinit();
+
+    if (sandbox.backend.detect(core.platform.detectOs()).featureAvailable(.strong_sandbox)) return error.SkipZigTest;
+
+    const optional_result = try runFixture(std.testing.allocator, optional, .{});
+    const required_result = try runFixture(std.testing.allocator, required, .{});
+    var results = [_]FixtureResult{ optional_result, required_result };
+    const suite: SuiteResult = .{ .allocator = std.testing.allocator, .results = &results };
+    try std.testing.expect(!suite.allRequiredPassed());
+
+    results[1].required = false;
+    try std.testing.expect(suite.allRequiredPassed());
+
+    results[1].deinit();
+    results[0].deinit();
 }
 
 test "redteam runner temp directories use OS temp base" {
