@@ -12,6 +12,7 @@ pub const EventType = enum {
     session_start,
     session_exit,
     policy_loaded,
+    backend_capability,
     process_launch,
     file_read_attempt,
     file_read_allowed,

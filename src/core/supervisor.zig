@@ -3,6 +3,7 @@ const builtin = @import("builtin");
 
 const event = @import("event.zig");
 const platform = @import("platform.zig");
+const sandbox_backend = @import("../sandbox/backend.zig");
 const session_mod = @import("session.zig");
 const time = @import("time.zig");
 const types = @import("types.zig");
@@ -148,39 +149,33 @@ pub fn run(allocator: std.mem.Allocator, config: RunConfig) !SessionResult {
     argv[0] = config.command;
     @memcpy(argv[1..], config.args);
 
-    var child = std.process.Child.init(argv, allocator);
-    child.cwd = workspace_root;
-    child.env_map = config.env_map;
-    switch (config.stdio) {
-        .inherit => {
-            child.stdin_behavior = .Inherit;
-            child.stdout_behavior = .Inherit;
-            child.stderr_behavior = .Inherit;
+    var prepared = sandbox_backend.prepare(allocator, .{
+        .argv = argv,
+        .workspace_root = workspace_root,
+        .stdio = switch (config.stdio) {
+            .inherit => .inherit,
+            .ignore => .ignore,
         },
-        .ignore => {
-            child.stdin_behavior = .Ignore;
-            child.stdout_behavior = .Ignore;
-            child.stderr_behavior = .Ignore;
-        },
-    }
+        .env_map = config.env_map,
+    });
 
-    child.spawn() catch |err| switch (err) {
+    prepared.spawn() catch |err| switch (err) {
         error.FileNotFound => return error.CommandNotFound,
         else => return err,
     };
-    child.waitForSpawn() catch |err| switch (err) {
+    prepared.waitForSpawn() catch |err| switch (err) {
         error.FileNotFound => return error.CommandNotFound,
         else => return err,
     };
 
     if (config.on_session_start) |hook| {
         hook.callback(hook.context, session) catch |err| {
-            _ = child.kill() catch child.wait() catch {};
+            prepared.terminateAfterParentError();
             return err;
         };
     }
 
-    const term = try child.wait();
+    const term = try prepared.wait();
 
     const ended_at = time.Timestamp.now();
     session.ended_at = ended_at;

@@ -48,8 +48,7 @@ pub fn command(argv: []const []const u8, stdout: anytype, stderr: anytype) !u8 {
         try redteam.reports.writeHuman(stdout, suite);
     }
 
-    const totals = suite.totals();
-    if (options.ci and !totals.allRequiredPassed()) return exit_codes.redteam_failure;
+    if (options.ci and !suite.allRequiredPassed()) return exit_codes.redteam_failure;
     return exit_codes.success;
 }
 

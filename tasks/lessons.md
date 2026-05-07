@@ -50,3 +50,8 @@
 - Network capability reporting must distinguish decision-only controls from active egress enforcement. Do not report proxy-mediated enforcement as partial unless Aegis actually starts or configures a managed proxy path.
 - Policy action adapters must preserve all structured action fields. For network decisions, build evaluator input from host, port, and scheme instead of dropping port/scheme context.
 - Long-lived trackers must own string keys. Never store borrowed slices from temporary parser buffers in maps that outlive the evaluated input.
+
+## 2026-05-07 Phase 14 Linux Backend Review
+
+- Explicit backend requirements must be satisfied only by `active` capabilities. `partial`, `observe-only`, and `wrapper-only` are honest reports, but they are not enough to proceed when the user asks for a required backend feature.
+- Do not report `strong_sandbox` as partial merely because process supervision or kernel feature probes exist. It is unavailable until Aegis actually installs OS-level restrictions such as namespaces, seccomp filters, or Landlock rules.
