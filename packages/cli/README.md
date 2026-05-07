@@ -1,6 +1,6 @@
 # Aegis CLI
 
-Aegis CLI is the desktop and CI AI-agent runtime firewall product from Aegis v1.0.
+Aegis CLI is the desktop and CI AI-agent runtime firewall product from Aegis v1.1.
 
 ## What Belongs Here
 
@@ -17,7 +17,7 @@ Aegis CLI is the desktop and CI AI-agent runtime firewall product from Aegis v1.
 
 ## Current Status
 
-Phase 23 keeps the existing `aegis` binary and CLI behavior intact. This package is a product boundary around the v1.0 CLI implementation.
+Phase 25 keeps the existing `aegis` binary and CLI behavior intact while hardening command UX, Core integration, redaction, audit/replay, red-team, MCP, docs, and packaging behavior after the Core/CLI/Edge split.
 
 ## Future Phases
 

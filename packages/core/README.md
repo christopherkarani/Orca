@@ -35,3 +35,7 @@ The C ABI skeleton is experimental and not stable v1. See `ABI.md` for ownership
 ## Future Phases
 
 Later phases may move implementation files into this package after dependency cycles are deliberately removed and regression tests prove the CLI behavior remains unchanged.
+
+## Phase 25 CLI Contract
+
+Phase 25 keeps Core as the single engine facade for CLI policy loading, validation, evaluation, explanations, redaction, audit writing, replay verification, schema lookup, and shared red-team helpers. CLI code may keep product-specific parsing and UX, but it must not fork a second policy engine, audit writer, replay verifier, or redaction path.

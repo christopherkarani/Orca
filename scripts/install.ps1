@@ -1,5 +1,5 @@
 param(
-    [string]$Version = $(if ($env:AEGIS_VERSION) { $env:AEGIS_VERSION } else { "1.0.0" }),
+    [string]$Version = $(if ($env:AEGIS_VERSION) { $env:AEGIS_VERSION } else { "1.1.0" }),
     [string]$BaseUrl = $env:AEGIS_BASE_URL,
     [string]$InstallDir = $(if ($env:AEGIS_INSTALL_DIR) { $env:AEGIS_INSTALL_DIR } else { Join-Path $HOME ".aegis\bin" }),
     [string]$ArtifactDir = $env:AEGIS_ARTIFACT_DIR

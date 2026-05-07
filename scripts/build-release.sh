@@ -1,7 +1,7 @@
 #!/usr/bin/env sh
 set -eu
 
-VERSION="${AEGIS_VERSION:-1.0.0}"
+VERSION="${AEGIS_VERSION:-1.1.0}"
 COMMIT="${AEGIS_COMMIT:-$(git rev-parse --short HEAD 2>/dev/null || printf unknown)}"
 BUILD_DATE="${AEGIS_BUILD_DATE:-$(date -u +%Y-%m-%dT%H:%M:%SZ)}"
 DIST_DIR="${AEGIS_DIST_DIR:-dist}"
@@ -19,7 +19,7 @@ copy_release_payload() {
   root="$1"
   mkdir -p "$root"
   cp README.md LICENSE SECURITY.md CONTRIBUTING.md "$root/"
-  cp -R docs policies schemas fixtures "$root/"
+  cp -R docs policies schemas fixtures examples packages packaging scripts "$root/"
 }
 
 build_target() {

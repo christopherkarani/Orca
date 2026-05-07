@@ -1,7 +1,7 @@
 const std = @import("std");
 
-const audit = @import("../audit/mod.zig");
 const core = @import("../core/mod.zig");
+const core_api = @import("../core/api.zig");
 const intercept = @import("../intercept/mod.zig");
 const policy = @import("../policy/mod.zig");
 const exit_codes = @import("exit_codes.zig");
@@ -65,7 +65,7 @@ fn execWithEnv(allocator: std.mem.Allocator, command_argv: []const []const u8, e
     defer selected.deinit();
     const effective_mode = shimMode(&selected.policy, env_map);
 
-    var writer = audit.writer.SessionWriter.openExisting(allocator, workspace_root, session_id) catch |err| {
+    var writer = core_api.openAuditWriter(allocator, workspace_root, session_id) catch |err| {
         try stderr.print("aegis shim exec: failed to open audit log: {s}\n", .{@errorName(err)});
         return exit_codes.general;
     };
@@ -140,9 +140,9 @@ fn parseOptions(argv: []const []const u8, stdout: anytype, stderr: anytype) !Shi
 
 fn loadPolicyForShim(allocator: std.mem.Allocator, workspace_root: []const u8, env_map: *const std.process.EnvMap) !policy.schema.LoadedPolicy {
     if (env_map.get("AEGIS_POLICY_PATH")) |path| {
-        return policy.load.discover(allocator, path, workspace_root);
+        return core_api.discoverPolicy(allocator, path, workspace_root);
     }
-    return policy.load.discover(allocator, null, workspace_root);
+    return core_api.discoverPolicy(allocator, null, workspace_root);
 }
 
 fn shimMode(selected: *const policy.schema.Policy, env_map: *const std.process.EnvMap) policy.schema.Mode {
@@ -152,7 +152,7 @@ fn shimMode(selected: *const policy.schema.Policy, env_map: *const std.process.E
     return selected.mode;
 }
 
-fn appendCommandEvent(writer: *audit.writer.SessionWriter, session_id_text: []const u8, event_type: core.event.EventType, display: []const u8, decision: ?core.decision.Decision) !void {
+fn appendCommandEvent(writer: *core_api.AuditWriter, session_id_text: []const u8, event_type: core.event.EventType, display: []const u8, decision: ?core.decision.Decision) !void {
     var session_id: core.session.SessionId = .{ .value = undefined, .len = 0 };
     if (session_id_text.len > session_id.value.len) return error.InvalidSessionId;
     @memcpy(session_id.value[0..session_id_text.len], session_id_text);
@@ -167,16 +167,16 @@ fn appendCommandEvent(writer: *audit.writer.SessionWriter, session_id_text: []co
         .target = .{ .kind = .command, .value = display },
         .decision = decision,
     };
-    try writer.appendEvent(ev);
+    try core_api.appendAuditEvent(writer, ev);
     updateSummaryIfPresent(writer) catch {};
 }
 
-fn updateSummaryIfPresent(writer: *audit.writer.SessionWriter) !void {
+fn updateSummaryIfPresent(writer: *core_api.AuditWriter) !void {
     const summary_path = try std.fs.path.join(writer.allocator, &.{ writer.session_dir_path, "summary.json" });
     defer writer.allocator.free(summary_path);
     std.fs.cwd().access(summary_path, .{}) catch return;
     const final_hash = writer.finalHash() orelse return;
-    try audit.summary.updateFinalHash(writer.allocator, writer.session_dir_path, writer.event_count, final_hash);
+    try core_api.updateAuditSummaryFinalHash(writer.allocator, writer.session_dir_path, writer.event_count, final_hash);
 }
 
 test "shim parser rejects missing separator" {
@@ -318,7 +318,7 @@ fn prepareShimSession(allocator: std.mem.Allocator, root: []const u8) ![]u8 {
         .mode = .strict,
         .platform = core.platform.detectOs(),
     };
-    var writer = try audit.writer.SessionWriter.init(allocator, session);
+    var writer = try core_api.createAuditWriter(allocator, session);
     defer writer.deinit();
     return try allocator.dupe(u8, session.id.slice());
 }

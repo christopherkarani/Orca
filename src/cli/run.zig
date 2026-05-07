@@ -1,8 +1,8 @@
 const std = @import("std");
 const builtin = @import("builtin");
 
-const audit = @import("../audit/mod.zig");
 const core = @import("../core/mod.zig");
+const core_api = @import("../core/api.zig");
 const intercept = @import("../intercept/mod.zig");
 const policy = @import("../policy/mod.zig");
 const sandbox = @import("../sandbox/mod.zig");
@@ -58,7 +58,7 @@ fn commandWithStdio(argv: []const []const u8, stdout: anytype, stderr: anytype, 
     };
     defer allocator.free(workspace_root_for_policy);
 
-    var loaded_policy = policy.load.discover(allocator, options.policy_path, workspace_root_for_policy) catch |err| {
+    var loaded_policy = core_api.discoverPolicy(allocator, options.policy_path, workspace_root_for_policy) catch |err| {
         try stderr.print("aegis run: invalid policy: {s}\n", .{@errorName(err)});
         return exit_codes.general;
     };
@@ -99,7 +99,7 @@ fn commandWithStdio(argv: []const []const u8, stdout: anytype, stderr: anytype, 
     var start_printer: StartPrinter = .{ .writer = stdout };
     const AuditContext = struct {
         allocator: std.mem.Allocator,
-        writer: ?audit.writer.SessionWriter = null,
+        writer: ?core_api.AuditWriter = null,
         session: ?core.session.Session = null,
         workspace_root_owned: ?[]const u8 = null,
 
@@ -107,12 +107,12 @@ fn commandWithStdio(argv: []const []const u8, stdout: anytype, stderr: anytype, 
             const self: *@This() = @ptrCast(@alignCast(context));
             self.session = session;
             self.workspace_root_owned = try self.allocator.dupe(u8, session.workspace_root);
-            self.writer = try audit.writer.SessionWriter.init(self.allocator, session);
+            self.writer = try core_api.createAuditWriter(self.allocator, session);
         }
 
         pub fn append(context: *anyopaque, ev: core.event.Event) !void {
             const self: *@This() = @ptrCast(@alignCast(context));
-            try self.writer.?.appendEvent(ev);
+            try core_api.appendAuditEvent(&self.writer.?, ev);
         }
 
         pub fn deinit(self: *@This()) void {
@@ -249,7 +249,7 @@ fn commandWithStdio(argv: []const []const u8, stdout: anytype, stderr: anytype, 
                 .target = .{ .kind = .unknown, .value = target },
                 .decision = decision,
             };
-            try self.audit_context.writer.?.appendEvent(ev);
+            try core_api.appendAuditEvent(&self.audit_context.writer.?, ev);
         }
 
         fn auditBackendRequirementDenied(self: *@This(), session: core.session.Session, missing: sandbox.backend.FeatureReport) !void {
@@ -273,7 +273,7 @@ fn commandWithStdio(argv: []const []const u8, stdout: anytype, stderr: anytype, 
                 .target = .{ .kind = .unknown, .value = target },
                 .decision = decision,
             };
-            try self.audit_context.writer.?.appendEvent(ev);
+            try core_api.appendAuditEvent(&self.audit_context.writer.?, ev);
         }
 
         fn auditNetworkStartupEvents(self: *@This(), session: core.session.Session) !void {
@@ -337,7 +337,7 @@ fn commandWithStdio(argv: []const []const u8, stdout: anytype, stderr: anytype, 
                 .target = .{ .kind = .command, .value = display },
                 .decision = maybe_decision,
             };
-            try self.audit_context.writer.?.appendEvent(ev);
+            try core_api.appendAuditEvent(&self.audit_context.writer.?, ev);
         }
 
         fn auditNetworkDecision(self: *@This(), session: core.session.Session, target: []const u8, event_type: core.event.EventType, maybe_decision: ?core.decision.Decision) !void {
@@ -352,7 +352,7 @@ fn commandWithStdio(argv: []const []const u8, stdout: anytype, stderr: anytype, 
                 .target = .{ .kind = .network_endpoint, .value = target },
                 .decision = maybe_decision,
             };
-            try self.audit_context.writer.?.appendEvent(ev);
+            try core_api.appendAuditEvent(&self.audit_context.writer.?, ev);
         }
     };
     var command_guard_context: CommandGuardContext = .{
@@ -425,9 +425,9 @@ fn commandWithStdio(argv: []const []const u8, stdout: anytype, stderr: anytype, 
                         .actor = .{ .kind = .aegis, .display = "aegis" },
                         .target = .{ .kind = .session, .value = ended.id.slice() },
                     };
-                    try writer.appendEvent(ev);
+                    try core_api.appendAuditEvent(writer, ev);
                     const final_hash = writer.finalHash() orelse "";
-                    try audit.summary.writeFiles(allocator, writer.session_dir_path, .{
+                    try core_api.writeAuditSummary(allocator, writer.session_dir_path, .{
                         .session = ended,
                         .status = .{ .exited = exit_codes.denial },
                         .event_count = writer.event_count,
@@ -455,9 +455,9 @@ fn commandWithStdio(argv: []const []const u8, stdout: anytype, stderr: anytype, 
                         .actor = .{ .kind = .aegis, .display = "aegis" },
                         .target = .{ .kind = .session, .value = ended.id.slice() },
                     };
-                    try writer.appendEvent(ev);
+                    try core_api.appendAuditEvent(writer, ev);
                     const final_hash = writer.finalHash() orelse "";
-                    try audit.summary.writeFiles(allocator, writer.session_dir_path, .{
+                    try core_api.writeAuditSummary(allocator, writer.session_dir_path, .{
                         .session = ended,
                         .status = .{ .exited = exit_codes.unsupported },
                         .event_count = writer.event_count,
@@ -479,7 +479,7 @@ fn commandWithStdio(argv: []const []const u8, stdout: anytype, stderr: anytype, 
 
     if (audit_context.writer) |*writer| {
         const final_hash = writer.finalHash() orelse "";
-        try audit.summary.writeFiles(allocator, writer.session_dir_path, .{
+        try core_api.writeAuditSummary(allocator, writer.session_dir_path, .{
             .session = result.session,
             .status = result.status,
             .event_count = writer.event_count,

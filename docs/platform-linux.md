@@ -22,7 +22,7 @@ Run:
 
 ## Backend Features
 
-Doctor may report user namespaces, mount namespaces, seccomp, Landlock, cgroups, network observation, audit/replay, and strong sandbox state. Kernel feature probes are capability evidence only; v1.0.0 does not install namespace, seccomp, or Landlock restrictions as an active strong sandbox.
+Doctor may report user namespaces, mount namespaces, seccomp, Landlock, cgroups, network observation, audit/replay, and strong sandbox state. Kernel feature probes are capability evidence only; v1.1.0 does not install namespace, seccomp, or Landlock restrictions as an active strong sandbox.
 
 ## Fallback
 
@@ -30,4 +30,4 @@ If kernel features are unavailable, Aegis falls back to wrapper/proxy, staged-wr
 
 ## Limitations
 
-Linux capability varies by distro, kernel, container, and sysctl configuration. Do not assume transparent filesystem enforcement or strong sandboxing; v1.0.0 reports those as unavailable unless a future backend installs active OS restrictions.
+Linux capability varies by distro, kernel, container, and sysctl configuration. Do not assume transparent filesystem enforcement or strong sandboxing; v1.1.0 reports those as unavailable unless a future backend installs active OS restrictions.

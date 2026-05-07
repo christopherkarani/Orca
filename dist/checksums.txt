@@ -1,5 +1,5 @@
-23dd818a076cb5c65da1828903d720590bb1503529d0afbde217910913c97255  aegis-v1.0.0-darwin-amd64.tar.gz
-1592f7f4ebda0eba25539cd737b8b3621984e7e39fc56e2b0db38e1e5fa57ca1  aegis-v1.0.0-darwin-arm64.tar.gz
-e53c39328d9a159f2b4baf840b13f2717824ec2e90c8b2132708c30958293fbe  aegis-v1.0.0-linux-amd64.tar.gz
-9004b1256b2e0a2a3bf76af0bc440adfdeda3fe68b000eee224583c28047b4a9  aegis-v1.0.0-linux-arm64.tar.gz
-23ea48d2701afbc4f0d5b5fa84f5dd15160bf96916e94cfaffd0acbc6332374f  aegis-v1.0.0-windows-amd64.zip
+9143e75b324920364cd0b7f769f6a7f2ffc1fd8fc7bbcad29dddaa2cdb9f7737  aegis-v1.1.0-darwin-amd64.tar.gz
+76acd74b6bebf3e5d8ecefb190e9a103b1877e1f8b9992567fb551156832e3ef  aegis-v1.1.0-darwin-arm64.tar.gz
+881b58cd6261ad214f558ca38310a1ebd9e7f8534bbfd3337ab51525d3f62b5b  aegis-v1.1.0-linux-amd64.tar.gz
+174da889d8984dad5fafdc105676e312d181aa1677bf3ba4f19c12d44e96a93e  aegis-v1.1.0-linux-arm64.tar.gz
+dccc2c573ee5d720b1dfe104a3d7f408b3f5e9588e0e22f0bda86643676d1eed  aegis-v1.1.0-windows-amd64.zip

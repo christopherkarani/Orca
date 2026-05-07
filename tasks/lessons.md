@@ -85,3 +85,8 @@
 
 - New package roots and contract tests must be visible to `git diff` before build wiring lands. A clean-checkout build cannot rely on untracked files, even when local `zig build test` passes.
 - Public JSON schemas must be checked against runtime parser tests. If the parser supports nested shapes such as `files.write.mode` or `mcp.servers.<server>.tools`, the schema must accept that exact shape and reject parser-invalid alternatives.
+
+## 2026-05-07 Phase 25 CLI Hardening Review
+
+- When release version defaults change, update or remove checked-in `dist/` artifacts in the same patch. Stale artifact names and checksums can make the documented local install path fail even when source builds and tests pass.
+- Do not leave binary execution packs under Markdown names. Use `file` or equivalent when a newly reviewed `.md` file renders as binary garbage, then remove it unless it is intentionally versioned in the correct artifact location.

@@ -3,7 +3,7 @@ const std = @import("std");
 pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
-    const version = b.option([]const u8, "version", "Aegis version metadata") orelse "1.0.0";
+    const version = b.option([]const u8, "version", "Aegis version metadata") orelse "1.1.0";
     const commit = b.option([]const u8, "commit", "Source commit metadata") orelse "unknown";
     const build_date = b.option([]const u8, "build-date", "UTC build date metadata") orelse "unknown";
 
@@ -167,6 +167,18 @@ pub fn build(b: *std.Build) void {
     });
     const run_phase23_contract_tests = b.addRunArtifact(phase23_contract_tests);
 
+    const phase25_hardening_tests = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("tests/phase25_cli_hardening.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .name = "aegis", .module = aegis_mod },
+            },
+        }),
+    });
+    const run_phase25_hardening_tests = b.addRunArtifact(phase25_hardening_tests);
+
     const test_step = b.step("test", "Run unit tests");
     test_step.dependOn(&run_lib_tests.step);
     test_step.dependOn(&run_exe_tests.step);
@@ -178,6 +190,7 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&run_edge_contract_tests.step);
     test_step.dependOn(&run_edge_exe_tests.step);
     test_step.dependOn(&run_phase23_contract_tests.step);
+    test_step.dependOn(&run_phase25_hardening_tests.step);
 
     const fuzz_tests = b.addTest(.{
         .root_module = b.createModule(.{
@@ -192,6 +205,7 @@ pub fn build(b: *std.Build) void {
     const run_fuzz_tests = b.addRunArtifact(fuzz_tests);
     const fuzz_step = b.step("fuzz", "Run deterministic security mutation tests");
     fuzz_step.dependOn(&run_fuzz_tests.step);
+    test_step.dependOn(&run_fuzz_tests.step);
 
     const windows_target = b.resolveTargetQuery(.{
         .cpu_arch = .x86_64,

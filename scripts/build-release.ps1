@@ -1,5 +1,5 @@
 param(
-    [string]$Version = $(if ($env:AEGIS_VERSION) { $env:AEGIS_VERSION } else { "1.0.0" }),
+    [string]$Version = $(if ($env:AEGIS_VERSION) { $env:AEGIS_VERSION } else { "1.1.0" }),
     [string]$Commit = $(if ($env:AEGIS_COMMIT) { $env:AEGIS_COMMIT } else { "unknown" }),
     [string]$BuildDate = $(if ($env:AEGIS_BUILD_DATE) { $env:AEGIS_BUILD_DATE } else { (Get-Date).ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ssZ") }),
     [string]$DistDir = $(if ($env:AEGIS_DIST_DIR) { $env:AEGIS_DIST_DIR } else { "dist" })
@@ -18,7 +18,7 @@ $targets = @(
 function Copy-ReleasePayload($Root) {
     New-Item -ItemType Directory -Force -Path $Root | Out-Null
     Copy-Item README.md, LICENSE, SECURITY.md, CONTRIBUTING.md -Destination $Root
-    Copy-Item docs, policies, schemas, fixtures -Destination $Root -Recurse
+    Copy-Item docs, policies, schemas, fixtures, examples, packages, packaging, scripts -Destination $Root -Recurse
 }
 
 if (Test-Path -LiteralPath $DistDir) { Remove-Item -LiteralPath $DistDir -Recurse -Force }

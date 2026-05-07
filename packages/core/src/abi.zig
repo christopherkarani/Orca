@@ -15,7 +15,7 @@ pub const documentation =
 ;
 
 pub export fn aegis_core_version(output_ptr: [*]u8, output_len: usize, written_ptr: *usize) c_int {
-    return writeOutput("1.0.0-core-experimental", output_ptr, output_len, written_ptr);
+    return writeOutput("1.1.0-core-experimental", output_ptr, output_len, written_ptr);
 }
 
 pub export fn aegis_core_redact(input_ptr: [*]const u8, input_len: usize, output_ptr: [*]u8, output_len: usize, written_ptr: *usize) c_int {
