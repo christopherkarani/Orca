@@ -663,6 +663,10 @@ fn installNetworkEnvironment(allocator: std.mem.Allocator, env_map: *std.process
 fn installBackendEnvironment(env_map: *std.process.EnvMap, report: sandbox.backend.ReportSet) !void {
     try env_map.put("AEGIS_BACKEND", report.backend_name);
     try env_map.put("AEGIS_BACKEND_FALLBACK", report.fallback_level.toString());
+    try env_map.put("AEGIS_BACKEND_ENV_FILTERING", report.get(.env_filtering).level.toString());
+    try env_map.put("AEGIS_BACKEND_PATH_STAGING", report.get(.path_staging).level.toString());
+    try env_map.put("AEGIS_BACKEND_SHELL_WRAPPING", report.get(.shell_wrapping).level.toString());
+    try env_map.put("AEGIS_BACKEND_PATH_SHIMS", report.get(.path_shims).level.toString());
     try env_map.put("AEGIS_BACKEND_STRONG_SANDBOX", report.get(.strong_sandbox).level.toString());
     try env_map.put("AEGIS_BACKEND_PROCESS_SUPERVISION", report.get(.process_supervision).level.toString());
     try env_map.put("AEGIS_BACKEND_USER_NAMESPACES", report.get(.user_namespaces).level.toString());
@@ -670,6 +674,7 @@ fn installBackendEnvironment(env_map: *std.process.EnvMap, report: sandbox.backe
     try env_map.put("AEGIS_BACKEND_SECCOMP", report.get(.seccomp).level.toString());
     try env_map.put("AEGIS_BACKEND_LANDLOCK", report.get(.landlock).level.toString());
     try env_map.put("AEGIS_BACKEND_CGROUPS", report.get(.cgroups).level.toString());
+    try env_map.put("AEGIS_BACKEND_NETWORK_OBSERVE", report.get(.network_observe).level.toString());
     try env_map.put("AEGIS_BACKEND_NETWORK_ENFORCEMENT", report.get(.network_enforce).level.toString());
 }
 
@@ -924,7 +929,13 @@ test "run exports backend capability status to child environment" {
     const written = try tmp.dir.readFileAlloc(std.testing.allocator, "backend-env.txt", 8192);
     defer std.testing.allocator.free(written);
     try std.testing.expect(std.mem.indexOf(u8, written, "AEGIS_BACKEND=") != null);
+    try std.testing.expect(std.mem.indexOf(u8, written, "AEGIS_BACKEND_ENV_FILTERING=") != null);
+    try std.testing.expect(std.mem.indexOf(u8, written, "AEGIS_BACKEND_PATH_STAGING=") != null);
+    try std.testing.expect(std.mem.indexOf(u8, written, "AEGIS_BACKEND_SHELL_WRAPPING=") != null);
+    try std.testing.expect(std.mem.indexOf(u8, written, "AEGIS_BACKEND_PATH_SHIMS=") != null);
     try std.testing.expect(std.mem.indexOf(u8, written, "AEGIS_BACKEND_STRONG_SANDBOX=") != null);
+    try std.testing.expect(std.mem.indexOf(u8, written, "AEGIS_BACKEND_PROCESS_SUPERVISION=") != null);
+    try std.testing.expect(std.mem.indexOf(u8, written, "AEGIS_BACKEND_NETWORK_OBSERVE=") != null);
     try std.testing.expect(std.mem.indexOf(u8, written, "AEGIS_BACKEND_NETWORK_ENFORCEMENT=") != null);
 }
 

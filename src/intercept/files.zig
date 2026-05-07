@@ -117,6 +117,25 @@ const read_rules = [_]BuiltinRule{
     .{ .id = "builtin.files.read.deny[12]", .pattern = "**/*credential*" },
     .{ .id = "builtin.files.read.deny[13]", .pattern = "**/*secret*" },
     .{ .id = "builtin.files.read.deny[14]", .pattern = "**/*token*" },
+    .{ .id = "builtin.files.read.deny[15]", .pattern = "~/Library/Keychains/**" },
+    .{ .id = "builtin.files.read.deny[16]", .pattern = "./Library/Keychains/**" },
+    .{ .id = "builtin.files.read.deny[17]", .pattern = "~/Library/Application Support/**/Cookies*" },
+    .{ .id = "builtin.files.read.deny[18]", .pattern = "./Library/Application Support/**/Cookies*" },
+    .{ .id = "builtin.files.read.deny[19]", .pattern = "~/Library/Application Support/**/Login Data*" },
+    .{ .id = "builtin.files.read.deny[20]", .pattern = "./Library/Application Support/**/Login Data*" },
+    .{ .id = "builtin.files.read.deny[21]", .pattern = "~/Library/Application Support/Google/Chrome/**" },
+    .{ .id = "builtin.files.read.deny[22]", .pattern = "./Library/Application Support/Google/Chrome/**" },
+    .{ .id = "builtin.files.read.deny[23]", .pattern = "~/Library/Application Support/BraveSoftware/**" },
+    .{ .id = "builtin.files.read.deny[24]", .pattern = "./Library/Application Support/BraveSoftware/**" },
+    .{ .id = "builtin.files.read.deny[25]", .pattern = "~/Library/Application Support/Firefox/**" },
+    .{ .id = "builtin.files.read.deny[26]", .pattern = "./Library/Application Support/Firefox/**" },
+    .{ .id = "builtin.files.read.deny[27]", .pattern = "~/Library/Mobile Documents/**" },
+    .{ .id = "builtin.files.read.deny[28]", .pattern = "./Library/Mobile Documents/**" },
+    .{ .id = "builtin.files.read.deny[29]", .pattern = "~/.zsh_history" },
+    .{ .id = "builtin.files.read.deny[30]", .pattern = "~/.bash_history" },
+    .{ .id = "builtin.files.read.deny[31]", .pattern = "~/.zshrc" },
+    .{ .id = "builtin.files.read.deny[32]", .pattern = "~/.bashrc" },
+    .{ .id = "builtin.files.read.deny[33]", .pattern = "~/.profile" },
 };
 
 const write_rules = [_]BuiltinRule{
@@ -796,8 +815,8 @@ fn simpleGlobAt(pattern: []const u8, pattern_index: usize, value: []const u8, va
 
 fn homeRuleMatches(pattern: []const u8, path: []const u8) bool {
     if (!std.mem.startsWith(u8, pattern, "~/")) return false;
-    const home_z = std.posix.getenv("HOME") orelse return false;
-    const home: []const u8 = home_z;
+    const home = std.process.getEnvVarOwned(std.heap.page_allocator, "HOME") catch return false;
+    defer std.heap.page_allocator.free(home);
     if (homeRuleMatchesRoot(pattern, path, home)) return true;
     const real_home = std.fs.cwd().realpathAlloc(std.heap.page_allocator, home) catch return false;
     defer std.heap.page_allocator.free(real_home);
@@ -817,8 +836,8 @@ fn isWriteAllowed(result: core.decision.DecisionResult) bool {
 
 fn expandHome(allocator: std.mem.Allocator, raw_path: []const u8) ![]u8 {
     if (std.mem.eql(u8, raw_path, "~") or std.mem.startsWith(u8, raw_path, "~/")) {
-        const home_z = std.posix.getenv("HOME") orelse return try allocator.dupe(u8, raw_path);
-        const home: []const u8 = home_z;
+        const home = std.process.getEnvVarOwned(allocator, "HOME") catch return try allocator.dupe(u8, raw_path);
+        defer allocator.free(home);
         if (std.mem.eql(u8, raw_path, "~")) return try allocator.dupe(u8, home);
         return try std.fs.path.join(allocator, &.{ home, raw_path[2..] });
     }
@@ -1062,8 +1081,9 @@ test "default sensitive read decisions deny env and fake ssh key" {
 }
 
 test "home workspace still denies protected home credential directories" {
-    const home_z = std.posix.getenv("HOME") orelse return error.SkipZigTest;
-    const home_root = try std.fs.cwd().realpathAlloc(std.testing.allocator, home_z);
+    const home = std.process.getEnvVarOwned(std.testing.allocator, "HOME") catch return error.SkipZigTest;
+    defer std.testing.allocator.free(home);
+    const home_root = try std.fs.cwd().realpathAlloc(std.testing.allocator, home);
     defer std.testing.allocator.free(home_root);
     var loaded = try policy.load.loadPreset(std.testing.allocator, .strict);
     defer loaded.deinit();
@@ -1072,6 +1092,80 @@ test "home workspace still denies protected home credential directories" {
     defer ssh_decision.deinit(std.testing.allocator);
     try std.testing.expectEqual(core.decision.DecisionResult.deny, ssh_decision.decision.result);
     try std.testing.expectEqualStrings("builtin.files.read.deny[2]", ssh_decision.decision.rule_id.?);
+}
+
+test "macOS simulated Library protected paths are denied without reading real secrets" {
+    if (@import("builtin").os.tag != .macos) return error.SkipZigTest;
+
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try tmp.dir.makePath("Library/Keychains");
+    try tmp.dir.makePath("Library/Application Support/Google/Chrome/Default");
+    try tmp.dir.makePath("Library/Application Support/BraveSoftware/Brave-Browser/Default");
+    try tmp.dir.makePath("Library/Application Support/Firefox/Profiles/fake.default");
+    try tmp.dir.writeFile(.{ .sub_path = "Library/Keychains/login.keychain-db", .data = "fake_secret_value\n" });
+    try tmp.dir.writeFile(.{ .sub_path = "Library/Application Support/Google/Chrome/Default/Cookies", .data = "fake_secret_value\n" });
+    try tmp.dir.writeFile(.{ .sub_path = "Library/Application Support/Google/Chrome/Default/Login Data", .data = "fake_secret_value\n" });
+    try tmp.dir.writeFile(.{ .sub_path = "Library/Application Support/BraveSoftware/Brave-Browser/Default/Cookies", .data = "fake_secret_value\n" });
+    try tmp.dir.writeFile(.{ .sub_path = "Library/Application Support/Firefox/Profiles/fake.default/cookies.sqlite", .data = "fake_secret_value\n" });
+    const root = try tmp.dir.realpathAlloc(std.testing.allocator, ".");
+    defer std.testing.allocator.free(root);
+    var loaded = try policy.load.loadPreset(std.testing.allocator, .strict);
+    defer loaded.deinit();
+
+    const paths = [_][]const u8{
+        "Library/Keychains/login.keychain-db",
+        "Library/Application Support/Google/Chrome/Default/Cookies",
+        "Library/Application Support/Google/Chrome/Default/Login Data",
+        "Library/Application Support/BraveSoftware/Brave-Browser/Default/Cookies",
+        "Library/Application Support/Firefox/Profiles/fake.default/cookies.sqlite",
+    };
+    for (paths) |path| {
+        var decision = try decideRead(std.testing.allocator, &loaded, root, path);
+        defer decision.deinit(std.testing.allocator);
+        try std.testing.expectEqual(core.decision.DecisionResult.deny, decision.decision.result);
+        try std.testing.expect(std.mem.indexOf(u8, decision.decision.reason, "builtin.files.read.deny") != null);
+    }
+}
+
+test "macOS protected path matching is ASCII case-insensitive for simulated home paths" {
+    if (@import("builtin").os.tag != .macos) return error.SkipZigTest;
+
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try tmp.dir.makePath("library/keychains");
+    try tmp.dir.writeFile(.{ .sub_path = "library/keychains/LOGIN.KEYCHAIN-DB", .data = "fake_secret_value\n" });
+    const root = try tmp.dir.realpathAlloc(std.testing.allocator, ".");
+    defer std.testing.allocator.free(root);
+    var loaded = try policy.load.loadPreset(std.testing.allocator, .strict);
+    defer loaded.deinit();
+
+    var decision = try decideRead(std.testing.allocator, &loaded, root, "library/keychains/LOGIN.KEYCHAIN-DB");
+    defer decision.deinit(std.testing.allocator);
+    try std.testing.expectEqual(core.decision.DecisionResult.deny, decision.decision.result);
+    try std.testing.expect(std.mem.indexOf(u8, decision.decision.reason, "builtin.files.read.deny") != null);
+}
+
+test "macOS symlink escape into simulated Keychains path is rejected" {
+    if (@import("builtin").os.tag != .macos) return error.SkipZigTest;
+
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try tmp.dir.makePath("workspace");
+    try tmp.dir.makePath("fake-home/Library/Keychains");
+    try tmp.dir.writeFile(.{ .sub_path = "fake-home/Library/Keychains/login.keychain-db", .data = "fake_secret_value\n" });
+    const workspace = try tmp.dir.realpathAlloc(std.testing.allocator, "workspace");
+    defer std.testing.allocator.free(workspace);
+    const protected_file = try tmp.dir.realpathAlloc(std.testing.allocator, "fake-home/Library/Keychains/login.keychain-db");
+    defer std.testing.allocator.free(protected_file);
+    const link_path = try std.fs.path.join(std.testing.allocator, &.{ workspace, "linked-keychain" });
+    defer std.testing.allocator.free(link_path);
+    std.posix.symlink(protected_file, link_path) catch |err| switch (err) {
+        error.PermissionDenied => return error.SkipZigTest,
+        else => return err,
+    };
+
+    try std.testing.expectError(error.SymlinkEscapesWorkspace, normalizePath(std.testing.allocator, workspace, "linked-keychain"));
 }
 
 test "staged create update diff apply discard and index integrity" {

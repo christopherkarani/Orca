@@ -1,4 +1,5 @@
 const std = @import("std");
+const builtin = @import("builtin");
 
 const core = @import("../core/mod.zig");
 const policy = @import("../policy/mod.zig");
@@ -315,7 +316,7 @@ fn writePosixShim(allocator: std.mem.Allocator, shim_dir: []const u8, name: []co
     , .{ aegis_executable, name });
     defer allocator.free(script);
     try file.writeAll(script);
-    try file.chmod(0o755);
+    if (builtin.os.tag != .windows) try file.chmod(0o755);
 }
 
 fn isExecutable(path: []const u8) bool {
@@ -693,6 +694,29 @@ test "shim list covers risky aliases recognized by classifier" {
             if (std.mem.eql(u8, shim_name, name)) found = true;
         }
         try std.testing.expect(found);
+    }
+}
+
+test "shim directory includes sh bash and zsh wrappers" {
+    if (@import("builtin").os.tag == .windows) return error.SkipZigTest;
+
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const root = try tmp.dir.realpathAlloc(std.testing.allocator, ".");
+    defer std.testing.allocator.free(root);
+
+    const shim_dir = try createShimDirectory(std.testing.allocator, root, "shell-wrapper-test", "/usr/bin/true");
+    defer std.testing.allocator.free(shim_dir);
+
+    const shells = [_][]const u8{ "sh", "bash", "zsh" };
+    for (shells) |shell| {
+        const shim_path = try std.fs.path.join(std.testing.allocator, &.{ shim_dir, shell });
+        defer std.testing.allocator.free(shim_path);
+        try std.fs.cwd().access(shim_path, .{});
+        const script = try std.fs.cwd().readFileAlloc(std.testing.allocator, shim_path, 1024);
+        defer std.testing.allocator.free(script);
+        try std.testing.expect(std.mem.indexOf(u8, script, "aegis\" shim exec --") != null or std.mem.indexOf(u8, script, "true\" shim exec --") != null);
+        try std.testing.expect(std.mem.indexOf(u8, script, shell) != null);
     }
 }
 

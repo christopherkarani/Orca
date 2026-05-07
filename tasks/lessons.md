@@ -55,3 +55,7 @@
 
 - Explicit backend requirements must be satisfied only by `active` capabilities. `partial`, `observe-only`, and `wrapper-only` are honest reports, but they are not enough to proceed when the user asks for a required backend feature.
 - Do not report `strong_sandbox` as partial merely because process supervision or kernel feature probes exist. It is unavailable until Aegis actually installs OS-level restrictions such as namespaces, seccomp filters, or Landlock rules.
+
+## 2026-05-07 Phase 15 macOS Backend Review
+
+- User-facing capability labels can also be CLI compatibility surface when parsers accept labels. If doctor wording changes, preserve older spellings as explicit aliases and add parser regression tests.

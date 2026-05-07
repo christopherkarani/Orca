@@ -11,18 +11,17 @@ pub fn matchesPath(pattern: []const u8, path: []const u8) bool {
         return globMatch(pattern, path);
     }
     if (std.mem.startsWith(u8, pattern, "~/")) {
-        if (std.posix.getenv("HOME")) |home_z| {
-            const home: []const u8 = home_z;
-            if (std.mem.startsWith(u8, path, home)) {
-                const suffix = path[home.len..];
-                if (suffix.len == 0) return globMatch(pattern, "~");
-                if (std.mem.startsWith(u8, suffix, "/")) {
-                    var stack_buf: [4096]u8 = undefined;
-                    if (suffix.len + 1 <= stack_buf.len) {
-                        stack_buf[0] = '~';
-                        @memcpy(stack_buf[1 .. suffix.len + 1], suffix);
-                        return globMatch(pattern, stack_buf[0 .. suffix.len + 1]);
-                    }
+        const home = std.process.getEnvVarOwned(std.heap.page_allocator, "HOME") catch return false;
+        defer std.heap.page_allocator.free(home);
+        if (std.mem.startsWith(u8, path, home)) {
+            const suffix = path[home.len..];
+            if (suffix.len == 0) return globMatch(pattern, "~");
+            if (std.mem.startsWith(u8, suffix, "/")) {
+                var stack_buf: [4096]u8 = undefined;
+                if (suffix.len + 1 <= stack_buf.len) {
+                    stack_buf[0] = '~';
+                    @memcpy(stack_buf[1 .. suffix.len + 1], suffix);
+                    return globMatch(pattern, stack_buf[0 .. suffix.len + 1]);
                 }
             }
         }

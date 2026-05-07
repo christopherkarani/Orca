@@ -8,19 +8,20 @@ const cli = @import("mod.zig");
 
 const DoctorCapability = struct {
     label: []const u8,
-    capability: core.platform.Capability,
+    feature: ?sandbox.backend.Feature = null,
+    capability: ?core.platform.Capability = null,
 };
 
 const doctor_capabilities = [_]DoctorCapability{
-    .{ .label = "process supervision", .capability = .process_supervision },
-    .{ .label = "env filtering", .capability = .env_filtering },
-    .{ .label = "staged writes", .capability = .path_staging },
-    .{ .label = "mcp stdio proxy", .capability = .mcp_stdio_proxy },
+    .{ .label = "process supervision", .feature = .process_supervision },
+    .{ .label = "env filtering", .feature = .env_filtering },
+    .{ .label = "staged writes", .feature = .path_staging },
+    .{ .label = "mcp stdio proxy", .feature = .mcp_stdio_proxy },
     .{ .label = "network policy engine", .capability = .network_policy_engine },
-    .{ .label = "network observation", .capability = .network_observe },
-    .{ .label = "transparent network enforcement", .capability = .network_enforce },
+    .{ .label = "network observation", .feature = .network_observe },
+    .{ .label = "transparent network enforcement", .feature = .network_enforce },
     .{ .label = "proxy-mediated enforcement", .capability = .network_proxy_enforce },
-    .{ .label = "strong sandbox", .capability = .strong_sandbox },
+    .{ .label = "strong sandbox", .feature = .strong_sandbox },
 };
 
 pub fn command(argv: []const []const u8, stdout: anytype, stderr: anytype) !u8 {
@@ -45,31 +46,44 @@ fn writeReport(stdout: anytype, os: core.platform.Os, backend_report: sandbox.ba
     try stdout.print("Version: {s}\n\n", .{cli.version});
     try stdout.writeAll("Capabilities:\n");
     for (doctor_capabilities) |item| {
-        const report = core.platform.reportCapability(os, item.capability);
-        try stdout.print("  {s}: {s} ({s})\n", .{ item.label, report.state.toString(), report.note });
+        if (item.feature) |feature| {
+            const report = backend_report.get(feature);
+            try stdout.print("  {s}: {s} ({s})\n", .{ item.label, report.level.toString(), report.note });
+        } else if (item.capability) |capability| {
+            const report = core.platform.reportCapability(os, capability);
+            try stdout.print("  {s}: {s} ({s})\n", .{ item.label, report.state.toString(), report.note });
+        }
     }
     try stdout.writeByte('\n');
     if (os == .linux) {
         try stdout.writeAll("Linux backend:\n");
+    } else if (os == .macos) {
+        try stdout.writeAll("macOS backend:\n");
     } else {
         try stdout.writeAll("Backend:\n");
     }
     try stdout.print("  selected: {s}\n", .{backend_report.backend_name});
     try stdout.print("  fallback mode: {s} ({s})\n", .{ backend_report.fallback_level.toString(), backend_report.fallback_note });
     try writeBackendLine(stdout, backend_report, .policy_engine);
-    try writeBackendLine(stdout, backend_report, .audit);
     try writeBackendLine(stdout, backend_report, .env_filtering);
     try writeBackendLine(stdout, backend_report, .path_staging);
+    if (os == .macos) {
+        try stdout.writeAll("  transparent file enforcement: limited (no transparent macOS filesystem monitor is installed; Aegis-mediated staging and protected path matching are active)\n");
+    }
     try writeBackendLine(stdout, backend_report, .shell_wrapping);
     try writeBackendLine(stdout, backend_report, .path_shims);
     try writeBackendLine(stdout, backend_report, .process_supervision);
-    try writeBackendLine(stdout, backend_report, .user_namespaces);
-    try writeBackendLine(stdout, backend_report, .mount_namespaces);
-    try writeBackendLine(stdout, backend_report, .seccomp);
-    try writeBackendLine(stdout, backend_report, .landlock);
-    try writeBackendLine(stdout, backend_report, .cgroups);
+    if (os == .linux) {
+        try writeBackendLine(stdout, backend_report, .user_namespaces);
+        try writeBackendLine(stdout, backend_report, .mount_namespaces);
+        try writeBackendLine(stdout, backend_report, .seccomp);
+        try writeBackendLine(stdout, backend_report, .landlock);
+        try writeBackendLine(stdout, backend_report, .cgroups);
+    }
     try writeBackendLine(stdout, backend_report, .network_enforce);
+    try writeBackendLine(stdout, backend_report, .mcp_stdio_proxy);
     try writeBackendLine(stdout, backend_report, .strong_sandbox);
+    try writeBackendLine(stdout, backend_report, .audit);
 }
 
 fn writeBackendLine(stdout: anytype, backend_report: sandbox.backend.ReportSet, feature: sandbox.backend.Feature) !void {
@@ -90,9 +104,9 @@ test "doctor prints OS and planned capabilities" {
     try std.testing.expect(std.mem.indexOf(u8, stdout_stream.getWritten(), "OS:") != null);
     try std.testing.expect(std.mem.indexOf(u8, stdout_stream.getWritten(), "process supervision:") != null);
     try std.testing.expect(std.mem.indexOf(u8, stdout_stream.getWritten(), "network policy engine: active") != null);
-    try std.testing.expect(std.mem.indexOf(u8, stdout_stream.getWritten(), "transparent network enforcement: unavailable") != null);
+    try std.testing.expect(std.mem.indexOf(u8, stdout_stream.getWritten(), "transparent network enforcement: unavailable") != null or std.mem.indexOf(u8, stdout_stream.getWritten(), "transparent network enforcement: limited") != null or std.mem.indexOf(u8, stdout_stream.getWritten(), "transparent network enforcement: observe-only") != null);
     try std.testing.expect(std.mem.indexOf(u8, stdout_stream.getWritten(), "proxy-mediated enforcement: unavailable") != null);
-    try std.testing.expect(std.mem.indexOf(u8, stdout_stream.getWritten(), "Backend:") != null or std.mem.indexOf(u8, stdout_stream.getWritten(), "Linux backend:") != null);
+    try std.testing.expect(std.mem.indexOf(u8, stdout_stream.getWritten(), "Backend:") != null or std.mem.indexOf(u8, stdout_stream.getWritten(), "Linux backend:") != null or std.mem.indexOf(u8, stdout_stream.getWritten(), "macOS backend:") != null);
     try std.testing.expect(std.mem.indexOf(u8, stdout_stream.getWritten(), "env filtering: active") != null);
     try std.testing.expect(std.mem.indexOf(u8, stdout_stream.getWritten(), "strong sandbox:") != null);
     try std.testing.expectEqualStrings("", stderr_stream.getWritten());
@@ -111,5 +125,26 @@ test "doctor can render Linux backend details from an injected report" {
     try std.testing.expect(std.mem.indexOf(u8, written, "mount namespace:") != null);
     try std.testing.expect(std.mem.indexOf(u8, written, "seccomp:") != null);
     try std.testing.expect(std.mem.indexOf(u8, written, "landlock:") != null);
-    try std.testing.expect(std.mem.indexOf(u8, written, "network enforcement: observe-only") != null);
+    try std.testing.expect(std.mem.indexOf(u8, written, "transparent network enforcement: observe-only") != null);
+}
+
+test "doctor can render macOS backend details from an injected report" {
+    var stdout_buf: [4096]u8 = undefined;
+    var stdout_stream = std.io.fixedBufferStream(&stdout_buf);
+    const report = sandbox.backend.detect(.macos);
+
+    try writeReport(stdout_stream.writer(), .macos, report);
+
+    const written = stdout_stream.getWritten();
+    try std.testing.expect(std.mem.indexOf(u8, written, "macOS backend:") != null);
+    try std.testing.expect(std.mem.indexOf(u8, written, "selected: macos") != null);
+    try std.testing.expect(std.mem.indexOf(u8, written, "env filtering: active") != null);
+    try std.testing.expect(std.mem.indexOf(u8, written, "path staging: active") != null);
+    try std.testing.expect(std.mem.indexOf(u8, written, "transparent file enforcement: limited") != null);
+    try std.testing.expect(std.mem.indexOf(u8, written, "shell shims: wrapper-only") != null);
+    try std.testing.expect(std.mem.indexOf(u8, written, "process supervision: active") != null);
+    try std.testing.expect(std.mem.indexOf(u8, written, "transparent network enforcement: limited") != null);
+    try std.testing.expect(std.mem.indexOf(u8, written, "strong sandbox: unavailable") != null);
+    try std.testing.expect(std.mem.indexOf(u8, written, "mcp stdio proxy: active") != null);
+    try std.testing.expect(std.mem.indexOf(u8, written, "audit/replay: active") != null);
 }
