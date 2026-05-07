@@ -102,7 +102,7 @@ fn inspect(argv: []const []const u8, stdout: anytype, stderr: anytype) !u8 {
     };
     defer server.deinit();
 
-    const initialize = "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"protocolVersion\":\"2025-03-26\",\"capabilities\":{},\"clientInfo\":{\"name\":\"aegis\",\"version\":\"0.0.0-dev\"}}}";
+    const initialize = "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"protocolVersion\":\"2025-03-26\",\"capabilities\":{},\"clientInfo\":{\"name\":\"aegis\",\"version\":\"1.0.0\"}}}";
     const initialized = "{\"jsonrpc\":\"2.0\",\"method\":\"notifications/initialized\",\"params\":{}}";
     const list_tools = "{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"tools/list\",\"params\":{}}";
     const init_response = aegis_mcp.transport.ProcessServer.request(&server, allocator, initialize) catch |err| {

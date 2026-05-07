@@ -73,14 +73,14 @@ test "version json writer emits valid object shape with null metadata" {
     var stream = std.io.fixedBufferStream(&buffer);
 
     try writeJson(stream.writer(), .{
-        .version = "0.19.0-dev",
+        .version = "1.0.0",
         .commit = null,
         .target = "x86_64-linux",
         .build_date = null,
     });
 
     const json = stream.getWritten();
-    try std.testing.expect(std.mem.indexOf(u8, json, "\"version\": \"0.19.0-dev\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, json, "\"version\": \"1.0.0\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, json, "\"commit\": null") != null);
     try std.testing.expect(std.mem.indexOf(u8, json, "\"target\": \"x86_64-linux\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, json, "\"build_date\": null") != null);

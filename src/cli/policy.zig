@@ -23,11 +23,11 @@ pub fn command(argv: []const []const u8, stdout: anytype, stderr: anytype) !u8 {
 
 fn check(argv: []const []const u8, stdout: anytype, stderr: anytype) !u8 {
     if (argv.len == 1 and (std.mem.eql(u8, argv[0], "--help") or std.mem.eql(u8, argv[0], "-h"))) {
-        try stdout.writeAll("Usage:\n  aegis policy check <policy-path>\n");
+        try stdout.writeAll("Usage:\n  aegis policy check [policy-path]\n");
         return exit_codes.success;
     }
-    if (argv.len != 1) {
-        try stderr.writeAll("aegis policy check: expected exactly one policy path.\n");
+    if (argv.len > 1) {
+        try stderr.writeAll("aegis policy check: expected at most one policy path.\n");
         return exit_codes.usage;
     }
 
@@ -35,13 +35,17 @@ fn check(argv: []const []const u8, stdout: anytype, stderr: anytype) !u8 {
     defer _ = gpa_state.deinit();
     const allocator = gpa_state.allocator();
 
-    var policy_value = aegis_policy.load.loadFile(allocator, argv[0]) catch |err| {
-        try stderr.print("aegis policy check: invalid policy {s}: {s}\n", .{ argv[0], @errorName(err) });
-        return exit_codes.general;
-    };
+    const source = if (argv.len == 1) argv[0] else "builtin:strict";
+    var policy_value = if (argv.len == 1)
+        aegis_policy.load.loadFile(allocator, argv[0]) catch |err| {
+            try stderr.print("aegis policy check: invalid policy {s}: {s}\n", .{ argv[0], @errorName(err) });
+            return exit_codes.general;
+        }
+    else
+        try aegis_policy.load.loadPreset(allocator, aegis_policy.presets.defaultPreset());
     defer policy_value.deinit();
 
-    try stdout.print("Policy OK: {s}\nMode: {s}\n", .{ argv[0], policy_value.mode.toString() });
+    try stdout.print("Policy OK: {s}\nMode: {s}\n", .{ source, policy_value.mode.toString() });
     return exit_codes.success;
 }
 
@@ -117,6 +121,18 @@ test "policy check validates a file" {
     const code = try command(&.{ "check", path }, stdout_stream.writer(), stderr_stream.writer());
     try std.testing.expectEqual(exit_codes.success, code);
     try std.testing.expect(std.mem.indexOf(u8, stdout_stream.getWritten(), "Policy OK") != null);
+    try std.testing.expectEqualStrings("", stderr_stream.getWritten());
+}
+
+test "policy check without path validates the built-in default policy" {
+    var stdout_buf: [512]u8 = undefined;
+    var stderr_buf: [512]u8 = undefined;
+    var stdout_stream = std.io.fixedBufferStream(&stdout_buf);
+    var stderr_stream = std.io.fixedBufferStream(&stderr_buf);
+
+    const code = try command(&.{"check"}, stdout_stream.writer(), stderr_stream.writer());
+    try std.testing.expectEqual(exit_codes.success, code);
+    try std.testing.expect(std.mem.indexOf(u8, stdout_stream.getWritten(), "Policy OK: builtin:strict") != null);
     try std.testing.expectEqualStrings("", stderr_stream.getWritten());
 }
 

@@ -1,8 +1,8 @@
 class Aegis < Formula
   desc "Local runtime firewall for AI agents"
   homepage "https://github.com/chriskarani/aegis"
-  version "0.19.0-dev" # PLACEHOLDER_VERSION: release automation replaces this.
-  license :cannot_represent # PLACEHOLDER_LICENSE: choose final project license before public v1.0 distribution.
+  version "1.0.0" # PLACEHOLDER_VERSION: release automation replaces this.
+  license :cannot_represent # Choose the final project license before public distribution.
 
   on_macos do
     if Hardware::CPU.arm?

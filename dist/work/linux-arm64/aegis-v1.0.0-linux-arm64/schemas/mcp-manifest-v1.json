@@ -1,0 +1,60 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/chriskarani/aegis/schemas/mcp-manifest-v1.json",
+  "title": "Aegis MCP Manifest v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["version", "server"],
+  "properties": {
+    "version": { "const": 1 },
+    "server": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "transport", "command"],
+      "properties": {
+        "name": { "type": "string" },
+        "transport": { "enum": ["stdio", "http"] },
+        "command": { "type": "string" },
+        "args": {
+          "type": "array",
+          "items": { "type": "string" }
+        },
+        "expected_hash": { "type": ["string", "null"] },
+        "env": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "allow": {
+              "type": "array",
+              "items": { "type": "string" }
+            }
+          }
+        }
+      }
+    },
+    "tools": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["risk", "default"],
+        "properties": {
+          "risk": { "enum": ["low", "medium", "high", "critical"] },
+          "default": { "enum": ["allow", "deny", "ask", "observe"] }
+        }
+      }
+    },
+    "resources": { "$ref": "#/$defs/defaultSection" },
+    "prompts": { "$ref": "#/$defs/defaultSection" },
+    "sampling": { "$ref": "#/$defs/defaultSection" }
+  },
+  "$defs": {
+    "defaultSection": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "default": { "enum": ["allow", "deny", "ask", "observe"] }
+      }
+    }
+  }
+}

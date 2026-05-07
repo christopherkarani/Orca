@@ -1,5 +1,5 @@
 param(
-    [string]$Version = $(if ($env:AEGIS_VERSION) { $env:AEGIS_VERSION } else { "0.19.0-dev" }),
+    [string]$Version = $(if ($env:AEGIS_VERSION) { $env:AEGIS_VERSION } else { "1.0.0" }),
     [string]$Commit = $(if ($env:AEGIS_COMMIT) { $env:AEGIS_COMMIT } else { "unknown" }),
     [string]$BuildDate = $(if ($env:AEGIS_BUILD_DATE) { $env:AEGIS_BUILD_DATE } else { (Get-Date).ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ssZ") }),
     [string]$DistDir = $(if ($env:AEGIS_DIST_DIR) { $env:AEGIS_DIST_DIR } else { "dist" })
@@ -45,8 +45,37 @@ foreach ($target in $targets) {
     Write-Host "Built $(Join-Path $DistDir $artifact)"
 }
 
-& ./scripts/generate-checksums.sh $DistDir
-& ./scripts/generate-sbom.sh $DistDir
+$checksumsPath = Join-Path $DistDir "checksums.txt"
+$checksumLines = foreach ($artifact in Get-ChildItem -LiteralPath $DistDir -File | Where-Object { $_.Name -like "aegis-v*.tar.gz" -or $_.Name -like "aegis-v*.zip" } | Sort-Object Name) {
+    $hash = (Get-FileHash -Algorithm SHA256 -LiteralPath $artifact.FullName).Hash.ToLowerInvariant()
+    "$hash  $($artifact.Name)"
+}
+if (-not $checksumLines) {
+    Write-Error "No release artifacts found in $DistDir"
+    exit 1
+}
+$checksumLines | Set-Content -LiteralPath $checksumsPath -Encoding ASCII
+Write-Host "Wrote $checksumsPath"
+
+$sbomPath = Join-Path $DistDir "sbom.json"
+$sbom = [ordered]@{
+    sbom_format = "placeholder"
+    name = "aegis"
+    version = $Version
+    generator = "scripts/build-release.ps1"
+    status = "hook-only"
+    note = "Phase 19 provides an SBOM hook. Replace this placeholder with CycloneDX/SPDX output in the release environment if an SBOM tool is available."
+    components = @(
+        [ordered]@{
+            name = "aegis"
+            type = "application"
+            language = "zig"
+            dependencies = @()
+        }
+    )
+}
+$sbom | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath $sbomPath -Encoding ASCII
+Write-Host "Wrote $sbomPath"
 
 if ($env:AEGIS_SIGNING_ENABLED -eq "1") {
     if (-not $env:AEGIS_SIGNING_COMMAND) {

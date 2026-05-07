@@ -1,0 +1,88 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/chriskarani/aegis/schemas/policy-v1.json",
+  "title": "Aegis Policy v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["version", "mode"],
+  "properties": {
+    "version": { "const": 1 },
+    "mode": { "enum": ["observe", "ask", "strict", "ci", "redteam", "trusted"] },
+    "workspace": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "root": { "type": "string" },
+        "write_mode": { "enum": ["staged", "direct"] }
+      }
+    },
+    "env": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "inherit": { "type": "boolean" },
+        "allow": { "$ref": "#/$defs/stringList" },
+        "deny_patterns": { "$ref": "#/$defs/stringList" },
+        "ask": { "$ref": "#/$defs/stringList" },
+        "default": { "$ref": "#/$defs/decision" }
+      }
+    },
+    "files": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "read": { "$ref": "#/$defs/ruleSet" },
+        "write": { "$ref": "#/$defs/ruleSet" },
+        "write_mode": { "enum": ["staged", "direct"] }
+      }
+    },
+    "commands": { "$ref": "#/$defs/ruleSet" },
+    "network": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "mode": { "enum": ["off", "ask", "allowlist", "observe", "open"] },
+        "allow": { "$ref": "#/$defs/stringList" },
+        "deny": { "$ref": "#/$defs/stringList" },
+        "ask": { "$ref": "#/$defs/stringList" },
+        "default": { "$ref": "#/$defs/decision" },
+        "detect_exfiltration": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "dns": { "type": "boolean" },
+            "long_query_strings": { "type": "boolean" },
+            "secret_patterns": { "type": "boolean" }
+          }
+        }
+      }
+    },
+    "mcp": { "$ref": "#/$defs/ruleSet" },
+    "audit": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "level": { "enum": ["full", "minimal"] },
+        "redact_secrets": { "type": "boolean" },
+        "tamper_evident": { "type": "boolean" }
+      }
+    }
+  },
+  "$defs": {
+    "decision": { "enum": ["allow", "deny", "ask", "observe"] },
+    "stringList": {
+      "type": "array",
+      "items": { "type": "string" }
+    },
+    "ruleSet": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "allow": { "$ref": "#/$defs/stringList" },
+        "deny": { "$ref": "#/$defs/stringList" },
+        "ask": { "$ref": "#/$defs/stringList" },
+        "default": { "$ref": "#/$defs/decision" }
+      }
+    }
+  }
+}

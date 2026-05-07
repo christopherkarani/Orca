@@ -1,12 +1,12 @@
 param(
-    [string]$Version = $(if ($env:AEGIS_VERSION) { $env:AEGIS_VERSION } else { "0.19.0-dev" }),
-    [string]$BaseUrl = $(if ($env:AEGIS_BASE_URL) { $env:AEGIS_BASE_URL } else { "https://github.com/chriskarani/aegis/releases/download/v$($env:AEGIS_VERSION)" }),
+    [string]$Version = $(if ($env:AEGIS_VERSION) { $env:AEGIS_VERSION } else { "1.0.0" }),
+    [string]$BaseUrl = $env:AEGIS_BASE_URL,
     [string]$InstallDir = $(if ($env:AEGIS_INSTALL_DIR) { $env:AEGIS_INSTALL_DIR } else { Join-Path $HOME ".aegis\bin" }),
     [string]$ArtifactDir = $env:AEGIS_ARTIFACT_DIR
 )
 
 $ErrorActionPreference = "Stop"
-if (-not $env:AEGIS_VERSION -and $BaseUrl -like "*`$(`$env:AEGIS_VERSION)*") {
+if (-not $BaseUrl) {
     $BaseUrl = "https://github.com/chriskarani/aegis/releases/download/v$Version"
 }
 

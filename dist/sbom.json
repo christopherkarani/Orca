@@ -1,0 +1,16 @@
+{
+  "sbom_format": "placeholder",
+  "name": "aegis",
+  "version": "1.0.0",
+  "generator": "scripts/generate-sbom.sh",
+  "status": "hook-only",
+  "note": "Phase 19 provides an SBOM hook. Replace this placeholder with CycloneDX/SPDX output in the release environment if an SBOM tool is available.",
+  "components": [
+    {
+      "name": "aegis",
+      "type": "application",
+      "language": "zig",
+      "dependencies": []
+    }
+  ]
+}

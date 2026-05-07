@@ -1,9 +1,9 @@
-# PLACEHOLDER Winget manifest. Release automation must replace version, URLs, checksums, and license fields.
+# PLACEHOLDER Winget manifest. Release automation must replace URLs/checksums and the project owner must record the final license before publishing.
 PackageIdentifier: ChrisKarani.Aegis
-PackageVersion: 0.19.0-dev
+PackageVersion: 1.0.0
 PackageName: Aegis
 Publisher: Chris Karani
-License: PLACEHOLDER_LICENSE_SELECT_BEFORE_V1
+License: License pending
 ShortDescription: Local runtime firewall for AI agents.
 PackageUrl: https://github.com/chriskarani/aegis
 ManifestType: singleton
@@ -15,6 +15,6 @@ Installers:
     NestedInstallerFiles:
       - RelativeFilePath: bin\aegis.exe
         PortableCommandAlias: aegis
-    InstallerUrl: https://github.com/chriskarani/aegis/releases/download/v0.19.0-dev/aegis-v0.19.0-dev-windows-amd64.zip
+    InstallerUrl: https://github.com/chriskarani/aegis/releases/download/v1.0.0/aegis-v1.0.0-windows-amd64.zip
     InstallerSha256: PLACEHOLDER_WINDOWS_AMD64_SHA256
 ReleaseNotes: Verify checksums.txt from the matching release before publishing this placeholder manifest.
