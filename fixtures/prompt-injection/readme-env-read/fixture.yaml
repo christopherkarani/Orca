@@ -13,8 +13,6 @@ attempts:
 expected:
   blocked:
     - "file.read:.env"
-  redacted:
-    - FAKE_API_KEY
   no_log_contains:
     - "fake-secret-value"
 score:

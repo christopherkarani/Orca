@@ -2,6 +2,7 @@ const std = @import("std");
 
 const core = @import("../core/mod.zig");
 const hash_chain = @import("hash_chain.zig");
+const replay = @import("replay.zig");
 
 pub const SessionWriter = struct {
     allocator: std.mem.Allocator,
@@ -139,15 +140,29 @@ fn readExistingState(allocator: std.mem.Allocator, events_path: []const u8) !Exi
         if (line.len == 0) continue;
         var parsed = try std.json.parseFromSlice(std.json.Value, allocator, line, .{});
         defer parsed.deinit();
+        if (parsed.value != .object) return error.InvalidEventSchema;
         const object = parsed.value.object;
+        const previous_value = object.get("previous_hash") orelse return error.InvalidEventSchema;
+        var expected_previous: ?[]const u8 = null;
+        if (previous_hash) |*hash| expected_previous = hash[0..];
+        if (!jsonNullableStringEquals(previous_value, expected_previous)) return error.InvalidEventSchema;
+
+        const canonical = try replay.canonicalFromJsonValue(allocator, parsed.value);
+        defer allocator.free(canonical);
+        const computed = hash_chain.eventHash(expected_previous, canonical);
         const hash_value = object.get("event_hash") orelse return error.InvalidEventSchema;
-        if (hash_value != .string or hash_value.string.len != hash_chain.hex_hash_len) return error.InvalidEventSchema;
+        if (hash_value != .string or !std.mem.eql(u8, hash_value.string, &computed)) return error.InvalidEventSchema;
         var hash: hash_chain.HashHex = undefined;
-        @memcpy(hash[0..], hash_value.string);
+        @memcpy(hash[0..], &computed);
         previous_hash = hash;
         event_count += 1;
     }
     return .{ .previous_hash = previous_hash, .event_count = event_count };
+}
+
+fn jsonNullableStringEquals(value: std.json.Value, expected: ?[]const u8) bool {
+    if (expected) |string| return value == .string and std.mem.eql(u8, value.string, string);
+    return value == .null;
 }
 
 test "session writer creates directory and writes deterministic JSONL" {
@@ -272,4 +287,53 @@ test "session writer redacts embedded secret assignments in command targets" {
 
     try std.testing.expect(std.mem.indexOf(u8, events, "sk-fakeSyntheticOpenAIKey") == null);
     try std.testing.expect(std.mem.indexOf(u8, events, "[REDACTED:env:OPENAI_API_KEY:sha256:") != null);
+}
+
+test "openExisting fails closed on tampered existing event chain" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const root = try tmp.dir.realpathAlloc(std.testing.allocator, ".");
+    defer std.testing.allocator.free(root);
+    const ts = core.time.Timestamp.fromUnixSeconds(1_777_983_130);
+    const session: core.session.Session = .{
+        .id = try core.session.generateSessionId(ts),
+        .started_at = ts,
+        .command = "echo",
+        .args = &.{"hello"},
+        .workspace_root = root,
+        .mode = .observe,
+        .platform = core.platform.detectOs(),
+    };
+    var event_id: core.event.EventId = .{ .value = undefined, .len = 0 };
+    const event_id_text = try std.fmt.bufPrint(&event_id.value, "evt_000001", .{});
+    event_id.len = event_id_text.len;
+    const ev: core.event.Event = .{
+        .session_id = session.id,
+        .event_id = event_id,
+        .timestamp = ts,
+        .event_type = .session_start,
+        .actor = .{ .kind = .aegis, .display = "aegis" },
+        .target = .{ .kind = .session, .value = session.id.slice() },
+    };
+
+    {
+        var session_writer = try SessionWriter.init(std.testing.allocator, session);
+        defer session_writer.deinit();
+        try session_writer.appendEvent(ev);
+    }
+
+    const rel_events_path = try std.fs.path.join(std.testing.allocator, &.{ ".aegis", "sessions", session.id.slice(), "events.jsonl" });
+    defer std.testing.allocator.free(rel_events_path);
+    var events = try tmp.dir.readFileAlloc(std.testing.allocator, rel_events_path, 4096);
+    defer std.testing.allocator.free(events);
+    const pos = std.mem.indexOf(u8, events, "\"kind\":\"session\"").? + "\"kind\":\"".len;
+    @memcpy(events[pos .. pos + "session".len], "command");
+    {
+        const file = try tmp.dir.createFile(rel_events_path, .{ .truncate = true });
+        defer file.close();
+        try file.writeAll(events);
+    }
+
+    try std.testing.expectError(error.InvalidEventSchema, SessionWriter.openExisting(std.testing.allocator, root, session.id.slice()));
 }

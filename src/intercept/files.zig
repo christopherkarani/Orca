@@ -147,6 +147,7 @@ const write_rules = [_]BuiltinRule{
 pub fn normalizePath(allocator: std.mem.Allocator, workspace_root_raw: []const u8, raw_path: []const u8) !NormalizedPath {
     if (raw_path.len == 0 or std.mem.indexOfScalar(u8, raw_path, 0) != null) return error.InvalidPath;
     if (!std.unicode.utf8ValidateSlice(raw_path)) return error.InvalidUtf8;
+    if (isWindowsAbsolutePath(raw_path)) return error.OutsideWorkspace;
 
     const workspace_root = try std.fs.cwd().realpathAlloc(allocator, workspace_root_raw);
     errdefer allocator.free(workspace_root);
@@ -937,6 +938,11 @@ fn normalizeSeparatorsAlloc(allocator: std.mem.Allocator, value: []const u8) ![]
     return out;
 }
 
+fn isWindowsAbsolutePath(path: []const u8) bool {
+    if (path.len >= 2 and ((path[0] == '\\' and path[1] == '\\') or (path[0] == '/' and path[1] == '/'))) return true;
+    return path.len >= 3 and std.ascii.isAlphabetic(path[0]) and path[1] == ':' and (path[2] == '\\' or path[2] == '/');
+}
+
 fn sessionDirPath(allocator: std.mem.Allocator, workspace_root: []const u8, session_id: []const u8) ![]u8 {
     return try std.fs.path.join(allocator, &.{ workspace_root, ".aegis", "sessions", session_id });
 }
@@ -1110,6 +1116,66 @@ test "Windows simulated protected paths are denied by helper without reading rea
     try std.testing.expect((try windows_backend.protectedPathMatch(std.testing.allocator, "%APPDATA%\\GitHub CLI\\hosts.yml", roots)) != null);
     try std.testing.expect((try windows_backend.protectedPathMatch(std.testing.allocator, "%LOCALAPPDATA%\\Google\\Chrome\\User Data\\Default\\Login Data", roots)) != null);
     try std.testing.expect((try windows_backend.protectedPathMatch(std.testing.allocator, "C:\\Users\\Fake Dev\\project\\src\\main.zig", roots)) == null);
+}
+
+test "Windows drive and UNC paths cannot become workspace-relative escapes" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const root = try tmp.dir.realpathAlloc(std.testing.allocator, ".");
+    defer std.testing.allocator.free(root);
+    var loaded = try policy.load.loadPreset(std.testing.allocator, .strict);
+    defer loaded.deinit();
+
+    try std.testing.expectError(error.OutsideWorkspace, normalizePath(std.testing.allocator, root, "C:\\Users\\Fake Dev\\project\\file.txt"));
+    try std.testing.expectError(error.OutsideWorkspace, normalizePath(std.testing.allocator, root, "\\\\Server\\Share\\repo\\.ssh\\config"));
+
+    var github_hosts = try decideRead(std.testing.allocator, &loaded, root, "C:\\Users\\Fake Dev\\AppData\\Roaming\\GitHub CLI\\hosts.yml");
+    defer github_hosts.deinit(std.testing.allocator);
+    try std.testing.expectEqual(core.decision.DecisionResult.deny, github_hosts.decision.result);
+}
+
+test "hardlink path coverage denies protected hardlink names where supported" {
+    if (@import("builtin").os.tag == .windows or @import("builtin").os.tag == .wasi) return error.SkipZigTest;
+
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try tmp.dir.makePath("outside");
+    try tmp.dir.makePath("workspace/.ssh");
+    try tmp.dir.writeFile(.{ .sub_path = "outside/id_ed25519", .data = "fake-secret-value\n" });
+    const root = try tmp.dir.realpathAlloc(std.testing.allocator, "workspace");
+    defer std.testing.allocator.free(root);
+    const outside = try tmp.dir.realpathAlloc(std.testing.allocator, "outside/id_ed25519");
+    defer std.testing.allocator.free(outside);
+    const link_path = try std.fs.path.join(std.testing.allocator, &.{ root, ".ssh", "id_ed25519" });
+    defer std.testing.allocator.free(link_path);
+    std.posix.link(outside, link_path) catch |err| switch (err) {
+        error.PermissionDenied, error.AccessDenied, error.NotSameFileSystem => return error.SkipZigTest,
+        else => return err,
+    };
+
+    var loaded = try policy.load.loadPreset(std.testing.allocator, .strict);
+    defer loaded.deinit();
+    var decision = try decideRead(std.testing.allocator, &loaded, root, ".ssh/id_ed25519");
+    defer decision.deinit(std.testing.allocator);
+    try std.testing.expectEqual(core.decision.DecisionResult.deny, decision.decision.result);
+}
+
+test "path normalization covers spaces shell-sensitive chars and unicode variants" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try tmp.dir.makePath("safe dir");
+    try tmp.dir.writeFile(.{ .sub_path = "safe dir/file;$(echo).txt", .data = "ok\n" });
+    try tmp.dir.writeFile(.{ .sub_path = "safe dir/cafe\u{301}.txt", .data = "ok\n" });
+    const root = try tmp.dir.realpathAlloc(std.testing.allocator, ".");
+    defer std.testing.allocator.free(root);
+
+    var shell_sensitive = try normalizePath(std.testing.allocator, root, "safe dir/file;$(echo).txt");
+    defer shell_sensitive.deinit(std.testing.allocator);
+    try std.testing.expectEqualStrings("safe dir/file;$(echo).txt", shell_sensitive.relative_path);
+
+    var unicode = try normalizePath(std.testing.allocator, root, "safe dir/cafe\u{301}.txt");
+    defer unicode.deinit(std.testing.allocator);
+    try std.testing.expectEqualStrings("safe dir/cafe\u{301}.txt", unicode.relative_path);
 }
 
 test "home workspace still denies protected home credential directories" {

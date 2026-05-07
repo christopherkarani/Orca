@@ -118,13 +118,30 @@ pub fn runWithServer(
                 continue;
             };
             defer parsed_response.deinit();
+            if (!jsonrpc.idEquals(parsed_response.id(), message.id())) {
+                try jsonrpc.writeErrorResponse(client_writer, message.id(), .invalid_request, "MCP server response id mismatch");
+                continue;
+            }
 
-            try @import("stdio.zig").writeRawMessage(client_writer, response);
             if (std.mem.eql(u8, method, "initialize")) {
+                try @import("stdio.zig").writeRawMessage(client_writer, response);
                 try appendAudit(config.audit_writer, .mcp_initialize, .mcp_tool, config.server_name, null);
             } else if (std.mem.eql(u8, method, "tools/list")) {
-                try auditToolsList(allocator, config, parsed_response.value(), &metadata_gates);
+                var inventory = tools.inspectToolsListResponse(allocator, config.server_name, parsed_response.value()) catch |err| {
+                    try appendAudit(config.audit_writer, .mcp_tools_list, .mcp_tool, config.server_name, .{
+                        .result = .deny,
+                        .reason = "tools/list response failed security inspection",
+                        .risk_score = 90,
+                        .ci_may_proceed = false,
+                    });
+                    try jsonrpc.writeErrorResponse(client_writer, message.id(), errorCodeForInspectionError(err), "MCP tools/list response failed security inspection");
+                    continue;
+                };
+                defer inventory.deinit(allocator);
+                try auditToolsInventory(allocator, config, inventory, &metadata_gates);
+                try @import("stdio.zig").writeRawMessage(client_writer, response);
             } else if (std.mem.eql(u8, method, "resources/list")) {
+                try @import("stdio.zig").writeRawMessage(client_writer, response);
                 const target = try resources.listTargetDisplay(allocator, config.server_name);
                 defer allocator.free(target);
                 try appendAudit(config.audit_writer, .mcp_resources_list, .mcp_resource, target, .{
@@ -133,6 +150,7 @@ pub fn runWithServer(
                     .ci_may_proceed = true,
                 });
             } else if (std.mem.eql(u8, method, "prompts/list")) {
+                try @import("stdio.zig").writeRawMessage(client_writer, response);
                 const target = try prompts.listTargetDisplay(allocator, config.server_name);
                 defer allocator.free(target);
                 try appendAudit(config.audit_writer, .mcp_prompts_list, .mcp_prompt, target, .{
@@ -141,6 +159,7 @@ pub fn runWithServer(
                     .ci_may_proceed = true,
                 });
             } else {
+                try @import("stdio.zig").writeRawMessage(client_writer, response);
                 try appendAudit(config.audit_writer, .mcp_unknown_method, .unknown, method, .{
                     .result = .observe,
                     .reason = "passed through unknown MCP method",
@@ -269,26 +288,20 @@ fn handleToolsCall(
         try jsonrpc.writeErrorResponse(client_writer, jsonrpc.idOf(request_value), .internal_error, "MCP server emitted invalid JSON-RPC");
         return;
     };
-    parsed_response.deinit();
+    defer parsed_response.deinit();
+    if (!jsonrpc.idEquals(parsed_response.id(), jsonrpc.idOf(request_value))) {
+        try jsonrpc.writeErrorResponse(client_writer, jsonrpc.idOf(request_value), .invalid_request, "MCP server response id mismatch");
+        return;
+    }
     try @import("stdio.zig").writeRawMessage(client_writer, response);
 }
 
-fn auditToolsList(
+fn auditToolsInventory(
     allocator: std.mem.Allocator,
     config: Config,
-    response: std.json.Value,
+    inventory: tools.Inventory,
     metadata_gates: *std.StringHashMap(MetadataGate),
 ) !void {
-    var inventory = tools.inspectToolsListResponse(allocator, config.server_name, response) catch {
-        try appendAudit(config.audit_writer, .mcp_tools_list, .mcp_tool, config.server_name, .{
-            .result = .observe,
-            .reason = "tools/list response could not be inspected",
-            .ci_may_proceed = true,
-        });
-        return;
-    };
-    defer inventory.deinit(allocator);
-
     const target = try std.fmt.allocPrint(allocator, "{s}: {d} tools", .{ config.server_name, inventory.tools.len });
     defer allocator.free(target);
     try appendAudit(config.audit_writer, .mcp_tools_list, .mcp_tool, target, .{
@@ -587,7 +600,11 @@ fn handleResourceRead(
         try jsonrpc.writeErrorResponse(client_writer, jsonrpc.idOf(request_value), .internal_error, "MCP server emitted invalid JSON-RPC");
         return;
     };
-    parsed_response.deinit();
+    defer parsed_response.deinit();
+    if (!jsonrpc.idEquals(parsed_response.id(), jsonrpc.idOf(request_value))) {
+        try jsonrpc.writeErrorResponse(client_writer, jsonrpc.idOf(request_value), .invalid_request, "MCP server response id mismatch");
+        return;
+    }
     try @import("stdio.zig").writeRawMessage(client_writer, response);
 }
 
@@ -631,7 +648,11 @@ fn handlePromptGet(
         try jsonrpc.writeErrorResponse(client_writer, jsonrpc.idOf(request_value), .internal_error, "MCP server emitted invalid JSON-RPC");
         return;
     };
-    parsed_response.deinit();
+    defer parsed_response.deinit();
+    if (!jsonrpc.idEquals(parsed_response.id(), jsonrpc.idOf(request_value))) {
+        try jsonrpc.writeErrorResponse(client_writer, jsonrpc.idOf(request_value), .invalid_request, "MCP server response id mismatch");
+        return;
+    }
     try @import("stdio.zig").writeRawMessage(client_writer, response);
 }
 
@@ -680,7 +701,11 @@ fn handleSamplingRequest(
         try jsonrpc.writeErrorResponse(client_writer, jsonrpc.idOf(request_value), .internal_error, "MCP server emitted invalid JSON-RPC");
         return;
     };
-    parsed_response.deinit();
+    defer parsed_response.deinit();
+    if (!jsonrpc.idEquals(parsed_response.id(), jsonrpc.idOf(request_value))) {
+        try jsonrpc.writeErrorResponse(client_writer, jsonrpc.idOf(request_value), .invalid_request, "MCP server response id mismatch");
+        return;
+    }
     try @import("stdio.zig").writeRawMessage(client_writer, response);
 }
 
@@ -793,6 +818,13 @@ fn errorCodeForParseError(err: anyerror) jsonrpc.ErrorCode {
     };
 }
 
+fn errorCodeForInspectionError(err: anyerror) jsonrpc.ErrorCode {
+    return switch (err) {
+        error.McpToolCountExceeded, error.McpMessageTooLarge => .message_too_large,
+        else => .internal_error,
+    };
+}
+
 const FakeServer = struct {
     allocator: std.mem.Allocator,
     saw_initialize: bool = false,
@@ -895,10 +927,8 @@ test "proxy forwards initialize and tools/list" {
     , "test.yaml");
     defer policy.deinit();
     var server = FakeServer{ .allocator = std.testing.allocator };
-    var input: std.Io.Reader = .fixed(
-        "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\"}\n" ++
-            "{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"tools/list\"}\n"
-    );
+    var input: std.Io.Reader = .fixed("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\"}\n" ++
+        "{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"tools/list\"}\n");
     var output_buf: [2048]u8 = undefined;
     var output = std.io.fixedBufferStream(&output_buf);
     try runWithServer(std.testing.allocator, .{
@@ -926,10 +956,8 @@ test "proxy allows safe tool and blocks denied tool with json-rpc error" {
     , "test.yaml");
     defer policy.deinit();
     var server = FakeServer{ .allocator = std.testing.allocator };
-    var input: std.Io.Reader = .fixed(
-        "{\"jsonrpc\":\"2.0\",\"id\":3,\"method\":\"tools/call\",\"params\":{\"name\":\"search_issues\",\"arguments\":{\"q\":\"hi\"}}}\n" ++
-            "{\"jsonrpc\":\"2.0\",\"id\":4,\"method\":\"tools/call\",\"params\":{\"name\":\"delete_repository\",\"arguments\":{\"repo\":\"x\"}}}\n"
-    );
+    var input: std.Io.Reader = .fixed("{\"jsonrpc\":\"2.0\",\"id\":3,\"method\":\"tools/call\",\"params\":{\"name\":\"search_issues\",\"arguments\":{\"q\":\"hi\"}}}\n" ++
+        "{\"jsonrpc\":\"2.0\",\"id\":4,\"method\":\"tools/call\",\"params\":{\"name\":\"delete_repository\",\"arguments\":{\"repo\":\"x\"}}}\n");
     var output_buf: [2048]u8 = undefined;
     var output = std.io.fixedBufferStream(&output_buf);
     try runWithServer(std.testing.allocator, .{
@@ -1052,12 +1080,10 @@ test "resources and prompts list are logged while read/get are mediated" {
     defer writer.deinit();
 
     var server = FakeServer{ .allocator = std.testing.allocator };
-    var input: std.Io.Reader = .fixed(
-        "{\"jsonrpc\":\"2.0\",\"id\":6,\"method\":\"resources/list\"}\n" ++
-            "{\"jsonrpc\":\"2.0\",\"id\":7,\"method\":\"resources/read\",\"params\":{\"uri\":\"repo://docs/README.md\"}}\n" ++
-            "{\"jsonrpc\":\"2.0\",\"id\":8,\"method\":\"prompts/list\"}\n" ++
-            "{\"jsonrpc\":\"2.0\",\"id\":9,\"method\":\"prompts/get\",\"params\":{\"name\":\"review\",\"arguments\":{\"token\":\"fake_secret_value\"}}}\n"
-    );
+    var input: std.Io.Reader = .fixed("{\"jsonrpc\":\"2.0\",\"id\":6,\"method\":\"resources/list\"}\n" ++
+        "{\"jsonrpc\":\"2.0\",\"id\":7,\"method\":\"resources/read\",\"params\":{\"uri\":\"repo://docs/README.md\"}}\n" ++
+        "{\"jsonrpc\":\"2.0\",\"id\":8,\"method\":\"prompts/list\"}\n" ++
+        "{\"jsonrpc\":\"2.0\",\"id\":9,\"method\":\"prompts/get\",\"params\":{\"name\":\"review\",\"arguments\":{\"token\":\"fake_secret_value\"}}}\n");
     var output_buf: [4096]u8 = undefined;
     var output = std.io.fixedBufferStream(&output_buf);
     try runWithServer(std.testing.allocator, .{
@@ -1218,7 +1244,7 @@ test "sampling default deny ci ask deny and explicit allow" {
     , "test.yaml");
     defer allow_policy.deinit();
     var allow_server = FakeServer{ .allocator = std.testing.allocator };
-    var allow_input: std.Io.Reader = .fixed("{\"jsonrpc\":\"2.0\",\"id\":12,\"method\":\"sampling/createMessage\",\"params\":{\"model\":\"local\"}}\n");
+    var allow_input: std.Io.Reader = .fixed("{\"jsonrpc\":\"2.0\",\"id\":10,\"method\":\"sampling/createMessage\",\"params\":{\"model\":\"local\"}}\n");
     var allow_output_buf: [1024]u8 = undefined;
     var allow_output = std.io.fixedBufferStream(&allow_output_buf);
     try runWithServer(std.testing.allocator, .{
@@ -1288,10 +1314,8 @@ test "server-originated sampling allow forwards request and relays client respon
     defer policy.deinit();
 
     var server = ServerSamplingFirstServer{};
-    var input: std.Io.Reader = .fixed(
-        "{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"tools/list\"}\n" ++
-            "{\"jsonrpc\":\"2.0\",\"id\":\"srv-1\",\"result\":{\"role\":\"assistant\",\"content\":{\"type\":\"text\",\"text\":\"ok\"}}}\n"
-    );
+    var input: std.Io.Reader = .fixed("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"tools/list\"}\n" ++
+        "{\"jsonrpc\":\"2.0\",\"id\":\"srv-1\",\"result\":{\"role\":\"assistant\",\"content\":{\"type\":\"text\",\"text\":\"ok\"}}}\n");
     var output_buf: [4096]u8 = undefined;
     var output = std.io.fixedBufferStream(&output_buf);
     try runWithServer(std.testing.allocator, .{
@@ -1335,10 +1359,8 @@ test "proxy forwards notifications without waiting for responses" {
     var policy = try load.loadPreset(std.testing.allocator, .strict);
     defer policy.deinit();
     var server = FakeServer{ .allocator = std.testing.allocator };
-    var input: std.Io.Reader = .fixed(
-        "{\"jsonrpc\":\"2.0\",\"method\":\"notifications/initialized\",\"params\":{}}\n" ++
-            "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\"}\n"
-    );
+    var input: std.Io.Reader = .fixed("{\"jsonrpc\":\"2.0\",\"method\":\"notifications/initialized\",\"params\":{}}\n" ++
+        "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\"}\n");
     var output_buf: [1024]u8 = undefined;
     var output = std.io.fixedBufferStream(&output_buf);
     try runWithServer(std.testing.allocator, .{
@@ -1373,6 +1395,50 @@ const MaliciousSearchServer = struct {
     fn notify(_: *anyopaque, _: []const u8) !void {}
 };
 
+const MismatchedIdServer = struct {
+    saw_call: bool = false,
+
+    fn request(context: *anyopaque, allocator: std.mem.Allocator, line: []const u8) ![]u8 {
+        const self: *MismatchedIdServer = @ptrCast(@alignCast(context));
+        var parsed = try jsonrpc.parseLine(allocator, line);
+        defer parsed.deinit();
+        if (std.mem.eql(u8, parsed.method().?, "tools/call")) {
+            self.saw_call = true;
+            return allocator.dupe(u8, "{\"jsonrpc\":\"2.0\",\"id\":999,\"result\":{\"content\":[{\"type\":\"text\",\"text\":\"ok\"}]}}");
+        }
+        return allocator.dupe(u8, "{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{}}");
+    }
+
+    fn notify(_: *anyopaque, _: []const u8) !void {}
+};
+
+const TooManyToolsServer = struct {
+    fn request(_: *anyopaque, allocator: std.mem.Allocator, line: []const u8) ![]u8 {
+        var parsed = try jsonrpc.parseLine(allocator, line);
+        defer parsed.deinit();
+        const id = parsed.id().?;
+        var out: std.ArrayList(u8) = .empty;
+        errdefer out.deinit(allocator);
+        const writer = out.writer(allocator);
+        try writer.writeAll("{\"jsonrpc\":\"2.0\",\"id\":");
+        switch (id) {
+            .integer => |integer| try writer.print("{d}", .{integer}),
+            .string => |string| try core.util.writeJsonString(writer, string),
+            else => try writer.writeAll("null"),
+        }
+        try writer.writeAll(",\"result\":{\"tools\":[");
+        var index: usize = 0;
+        while (index < core.limits.max_mcp_tool_count + 1) : (index += 1) {
+            if (index > 0) try writer.writeByte(',');
+            try writer.print("{{\"name\":\"tool_{d}\",\"description\":\"ok\",\"inputSchema\":{{\"type\":\"object\"}}}}", .{index});
+        }
+        try writer.writeAll("]}}}");
+        return try out.toOwnedSlice(allocator);
+    }
+
+    fn notify(_: *anyopaque, _: []const u8) !void {}
+};
+
 test "critical metadata blocks later safe-looking allowed tool call" {
     const load = policy_mod.load;
     var policy = try load.parseFromSlice(std.testing.allocator,
@@ -1385,10 +1451,8 @@ test "critical metadata blocks later safe-looking allowed tool call" {
     , "test.yaml");
     defer policy.deinit();
     var server = MaliciousSearchServer{};
-    var input: std.Io.Reader = .fixed(
-        "{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"tools/list\"}\n" ++
-            "{\"jsonrpc\":\"2.0\",\"id\":3,\"method\":\"tools/call\",\"params\":{\"name\":\"search_issues\",\"arguments\":{\"q\":\"hi\"}}}\n"
-    );
+    var input: std.Io.Reader = .fixed("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"tools/list\"}\n" ++
+        "{\"jsonrpc\":\"2.0\",\"id\":3,\"method\":\"tools/call\",\"params\":{\"name\":\"search_issues\",\"arguments\":{\"q\":\"hi\"}}}\n");
     var output_buf: [2048]u8 = undefined;
     var output = std.io.fixedBufferStream(&output_buf);
     try runWithServer(std.testing.allocator, .{
@@ -1400,4 +1464,49 @@ test "critical metadata blocks later safe-looking allowed tool call" {
     try std.testing.expect(!server.saw_call);
     try std.testing.expect(std.mem.indexOf(u8, output.getWritten(), "\"error\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, output.getWritten(), "flagged metadata") != null);
+}
+
+test "proxy rejects mismatched server response ids" {
+    const load = policy_mod.load;
+    var policy = try load.parseFromSlice(std.testing.allocator,
+        \\version: 1
+        \\mode: strict
+        \\mcp:
+        \\  allow:
+        \\    - "fake.search_issues"
+    , "test.yaml");
+    defer policy.deinit();
+    var server = MismatchedIdServer{};
+    var input: std.Io.Reader = .fixed("{\"jsonrpc\":\"2.0\",\"id\":3,\"method\":\"tools/call\",\"params\":{\"name\":\"search_issues\"}}\n");
+    var output_buf: [1024]u8 = undefined;
+    var output = std.io.fixedBufferStream(&output_buf);
+    try runWithServer(std.testing.allocator, .{
+        .server_name = "fake",
+        .server_command_display = "fake",
+        .policy = &policy,
+        .mode = .strict,
+    }, &input, output.writer(), .{ .context = &server, .request = MismatchedIdServer.request, .notify = MismatchedIdServer.notify });
+    try std.testing.expect(server.saw_call);
+    try std.testing.expect(std.mem.indexOf(u8, output.getWritten(), "\"error\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, output.getWritten(), "\"id\":3") != null);
+    try std.testing.expect(std.mem.indexOf(u8, output.getWritten(), "\"result\"") == null);
+}
+
+test "proxy fails closed for high-volume tools/list responses" {
+    const load = policy_mod.load;
+    var policy = try load.loadPreset(std.testing.allocator, .strict);
+    defer policy.deinit();
+    var server = TooManyToolsServer{};
+    var input: std.Io.Reader = .fixed("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"tools/list\"}\n");
+    var output_buf: [4096]u8 = undefined;
+    var output = std.io.fixedBufferStream(&output_buf);
+    try runWithServer(std.testing.allocator, .{
+        .server_name = "fake",
+        .server_command_display = "fake",
+        .policy = &policy,
+        .mode = .strict,
+    }, &input, output.writer(), .{ .context = &server, .request = TooManyToolsServer.request, .notify = TooManyToolsServer.notify });
+    const written = output.getWritten();
+    try std.testing.expect(std.mem.indexOf(u8, written, "\"error\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, written, "\"tools\"") == null);
 }

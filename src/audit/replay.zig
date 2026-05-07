@@ -127,6 +127,7 @@ pub fn verifySessionDir(allocator: std.mem.Allocator, session_dir_path: []const 
 
     var previous_hash: ?hash_chain.HashHex = null;
     var last_hash: ?hash_chain.HashHex = null;
+    var event_count: usize = 0;
     var lines = std.mem.splitScalar(u8, events_text, '\n');
     while (lines.next()) |line| {
         if (line.len == 0) continue;
@@ -156,17 +157,19 @@ pub fn verifySessionDir(allocator: std.mem.Allocator, session_dir_path: []const 
 
         previous_hash = computed;
         last_hash = computed;
+        event_count += 1;
     }
 
-    const summary_hash = readSummaryFinalHash(allocator, session_dir_path) catch |err| switch (err) {
+    const summary_integrity = readSummaryIntegrity(allocator, session_dir_path) catch |err| switch (err) {
         error.FileNotFound => return fail(allocator, "missing summary.json"),
         error.InvalidEventSchema => return fail(allocator, "malformed summary.json"),
         else => return err,
     };
-    defer allocator.free(summary_hash);
+    defer summary_integrity.deinit(allocator);
+    if (summary_integrity.event_count != event_count) return fail(allocator, "summary event count mismatch");
     if (last_hash) |hash| {
-        if (!std.mem.eql(u8, summary_hash, &hash)) return fail(allocator, "summary final hash mismatch");
-    } else if (summary_hash.len != 0) {
+        if (!std.mem.eql(u8, summary_integrity.final_event_hash, &hash)) return fail(allocator, "summary final hash mismatch");
+    } else if (summary_integrity.final_event_hash.len != 0) {
         return fail(allocator, "summary final hash mismatch");
     }
 
@@ -177,7 +180,7 @@ fn fail(allocator: std.mem.Allocator, reason: []const u8) !VerifyResult {
     return .{ .ok = false, .reason = try allocator.dupe(u8, reason) };
 }
 
-fn canonicalFromJsonValue(allocator: std.mem.Allocator, value: std.json.Value) ![]u8 {
+pub fn canonicalFromJsonValue(allocator: std.mem.Allocator, value: std.json.Value) ![]u8 {
     var list: std.ArrayList(u8) = .empty;
     errdefer list.deinit(allocator);
     const writer = list.writer(allocator);
@@ -410,7 +413,16 @@ fn readSummaryFields(allocator: std.mem.Allocator, session_dir_path: []const u8)
     return .{ .command_display = command_display, .policy = policy, .status_display = status_display };
 }
 
-fn readSummaryFinalHash(allocator: std.mem.Allocator, session_dir_path: []const u8) ![]u8 {
+const SummaryIntegrity = struct {
+    event_count: usize,
+    final_event_hash: []u8,
+
+    fn deinit(self: SummaryIntegrity, allocator: std.mem.Allocator) void {
+        allocator.free(self.final_event_hash);
+    }
+};
+
+fn readSummaryIntegrity(allocator: std.mem.Allocator, session_dir_path: []const u8) !SummaryIntegrity {
     const summary_path = try std.fs.path.join(allocator, &.{ session_dir_path, "summary.json" });
     defer allocator.free(summary_path);
     const text = try std.fs.cwd().readFileAlloc(allocator, summary_path, core.limits.max_event_field_len);
@@ -418,7 +430,12 @@ fn readSummaryFinalHash(allocator: std.mem.Allocator, session_dir_path: []const 
     var parsed = try std.json.parseFromSlice(std.json.Value, allocator, text, .{});
     defer parsed.deinit();
     const object = try expectObject(parsed.value);
-    return try allocator.dupe(u8, try expectString(try requiredField(object, "final_event_hash")));
+    const count = try expectInteger(try requiredField(object, "event_count"));
+    if (count < 0) return error.InvalidEventSchema;
+    return .{
+        .event_count = @intCast(count),
+        .final_event_hash = try allocator.dupe(u8, try expectString(try requiredField(object, "final_event_hash"))),
+    };
 }
 
 fn commandDisplayFromSummary(allocator: std.mem.Allocator, command_array: std.json.Array) ![]u8 {
@@ -480,7 +497,7 @@ test "verification detects modified event fields" {
         defer file.close();
         var buf: [1024]u8 = undefined;
         var file_writer = file.writer(&buf);
-        try file_writer.interface.print("{{\"final_event_hash\":\"{s}\"}}\n", .{&hash});
+        try file_writer.interface.print("{{\"event_count\":1,\"final_event_hash\":\"{s}\"}}\n", .{&hash});
         try file_writer.interface.flush();
     }
     var ok = try verifySessionDir(std.testing.allocator, session_dir);
@@ -523,7 +540,7 @@ test "verification reports malformed events instead of panicking" {
     {
         const file = try std.fs.cwd().createFile(summary_path, .{});
         defer file.close();
-        try file.writeAll("{\"final_event_hash\":\"abc\"}\n");
+        try file.writeAll("{\"event_count\":1,\"final_event_hash\":\"abc\"}\n");
     }
 
     var result = try verifySessionDir(std.testing.allocator, session_dir);
@@ -531,4 +548,47 @@ test "verification reports malformed events instead of panicking" {
 
     try std.testing.expect(!result.ok);
     try std.testing.expectEqualStrings("malformed event", result.reason.?);
+}
+
+test "verification detects summary event count mismatch" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const root = try tmp.dir.realpathAlloc(std.testing.allocator, ".");
+    defer std.testing.allocator.free(root);
+    const session_dir = try std.fs.path.join(std.testing.allocator, &.{ root, ".aegis", "sessions", "count-mismatch" });
+    defer std.testing.allocator.free(session_dir);
+    try std.fs.cwd().makePath(session_dir);
+
+    const event_path = try std.fs.path.join(std.testing.allocator, &.{ session_dir, "events.jsonl" });
+    defer std.testing.allocator.free(event_path);
+    const summary_path = try std.fs.path.join(std.testing.allocator, &.{ session_dir, "summary.json" });
+    defer std.testing.allocator.free(summary_path);
+    const event_text =
+        "{\"version\":1,\"session_id\":\"s\",\"event_id\":\"e\",\"timestamp\":\"2026-05-05T12:12:10Z\",\"type\":\"session_start\",\"actor\":{\"kind\":\"aegis\",\"id\":null,\"display\":\"aegis\"},\"target\":{\"kind\":\"session\",\"value\":\"s\"},\"decision\":null,\"redactions\":{\"count\":0,\"labels\":[]},\"previous_hash\":null";
+    const hash = blk: {
+        const canonical = try std.fmt.allocPrint(std.testing.allocator, "{s}}}", .{event_text});
+        defer std.testing.allocator.free(canonical);
+        break :blk hash_chain.eventHash(null, canonical);
+    };
+    {
+        const file = try std.fs.cwd().createFile(event_path, .{});
+        defer file.close();
+        var buf: [1024]u8 = undefined;
+        var file_writer = file.writer(&buf);
+        try file_writer.interface.print("{s},\"event_hash\":\"{s}\"}}\n", .{ event_text, &hash });
+        try file_writer.interface.flush();
+    }
+    {
+        const file = try std.fs.cwd().createFile(summary_path, .{});
+        defer file.close();
+        var buf: [1024]u8 = undefined;
+        var file_writer = file.writer(&buf);
+        try file_writer.interface.print("{{\"event_count\":2,\"final_event_hash\":\"{s}\"}}\n", .{&hash});
+        try file_writer.interface.flush();
+    }
+
+    var result = try verifySessionDir(std.testing.allocator, session_dir);
+    defer result.deinit(std.testing.allocator);
+    try std.testing.expect(!result.ok);
+    try std.testing.expectEqualStrings("summary event count mismatch", result.reason.?);
 }

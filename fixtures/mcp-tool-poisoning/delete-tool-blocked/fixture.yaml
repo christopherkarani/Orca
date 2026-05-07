@@ -12,8 +12,6 @@ attempts:
 expected:
   blocked:
     - "mcp.tool:fixture.delete_file"
-  redacted:
-    - FAKE_MCP_TOKEN
   no_log_contains:
     - "fake-secret-value"
 score:

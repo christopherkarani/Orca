@@ -244,27 +244,33 @@ pub fn evaluate(
 
     const mode = policy.network.effectiveMode();
     const enforcement_mode = if (mode == .observe) EnforcementMode.observe_only else options.enforcement_mode;
+    const deny_match = findMatch("network.deny", destination, policy.network.deny);
+    const allow_match = findMatch("network.allow", destination, policy.network.allow);
+    const ask_match = findMatch("network.ask", destination, policy.network.ask);
     var findings = try detectExfiltration(allocator, destination, policy.network.detect_exfiltration);
     errdefer if (findings.len > 0) allocator.free(findings);
     if (options.unknown_tracker) |tracker| {
-        if (try tracker.record(destination.host)) {
-            const old_len = findings.len;
-            findings = try allocator.realloc(findings, old_len + 1);
-            findings[old_len] = .{ .signal = .many_unknown_domains, .score = 75 };
+        const policy_unknown_domain = destination.host_class == .domain and deny_match == null and allow_match == null and ask_match == null;
+        if (policy_unknown_domain) {
+            if (try tracker.record(destination.host)) {
+                const old_len = findings.len;
+                findings = try allocator.realloc(findings, old_len + 1);
+                findings[old_len] = .{ .signal = .many_unknown_domains, .score = 75 };
+            }
         }
     }
 
     const target = try redactedDestinationAlloc(allocator, destination);
     errdefer allocator.free(target);
 
-    if (findMatch("network.deny", destination, policy.network.deny)) |matched| {
+    if (deny_match) |matched| {
         return buildDecision(allocator, destination, .deny, matched, "explicit network deny", enforcement_mode, findings, target, true, options.ci_mode);
     }
-    if (findMatch("network.allow", destination, policy.network.allow)) |matched| {
+    if (allow_match) |matched| {
         const base = if (mode == .off) schema.DecisionValue.deny else schema.DecisionValue.allow;
         return buildDecision(allocator, destination, base, matched, if (mode == .off) "network mode off" else "explicit network allow", enforcement_mode, findings, target, true, options.ci_mode);
     }
-    if (findMatch("network.ask", destination, policy.network.ask)) |matched| {
+    if (ask_match) |matched| {
         const base: schema.DecisionValue = if (mode == .off or options.ci_mode or effective_mode == .ci) .deny else .ask;
         return buildDecision(allocator, destination, base, matched, if (base == .deny) "ask converted to deny in ci/off mode" else "explicit network ask", enforcement_mode, findings, target, true, options.ci_mode);
     }
@@ -578,7 +584,7 @@ fn base64ish(value: []const u8) bool {
 }
 
 fn urlContainsSecret(destination: Destination) bool {
-    return audit_redact.classifyString(destination.path) != null or audit_redact.classifyString(destination.query) != null;
+    return urlPartContainsSecret(destination.path) or urlPartContainsSecret(destination.query);
 }
 
 fn appendRedactedUrlPart(allocator: std.mem.Allocator, list: *std.ArrayList(u8), value: []const u8, query: bool) !void {
@@ -588,12 +594,75 @@ fn appendRedactedUrlPart(allocator: std.mem.Allocator, list: *std.ArrayList(u8),
         const next = std.mem.indexOfAnyPos(u8, value, cursor, separators) orelse value.len;
         const part = value[cursor..next];
         var buf: [256]u8 = undefined;
-        const redacted = audit_redact.redactStringBounded(part, &buf);
+        const redacted = redactUrlPartBounded(allocator, part, &buf);
         try list.appendSlice(allocator, redacted);
         if (next == value.len) break;
         try list.append(allocator, value[next]);
         cursor = next + 1;
     }
+}
+
+fn urlPartContainsSecret(part: []const u8) bool {
+    if (audit_redact.classifyString(part) != null) return true;
+    var buf: [1024]u8 = undefined;
+    if (percentDecodeBounded(part, &buf)) |decoded| {
+        return audit_redact.classifyString(decoded) != null;
+    }
+    return false;
+}
+
+fn redactUrlPartBounded(allocator: std.mem.Allocator, part: []const u8, buffer: []u8) []const u8 {
+    const direct = audit_redact.redactStringBounded(part, buffer);
+    if (direct.ptr != part.ptr or direct.len != part.len) return direct;
+    const decoded = percentDecodeAlloc(allocator, part) catch return part;
+    defer allocator.free(decoded);
+    if (audit_redact.classifyString(decoded) != null) {
+        return audit_redact.redactStringBounded(decoded, buffer);
+    }
+    return part;
+}
+
+fn percentDecodeBounded(value: []const u8, buffer: []u8) ?[]const u8 {
+    if (value.len > buffer.len) return null;
+    var out: usize = 0;
+    var i: usize = 0;
+    var changed = false;
+    while (i < value.len) {
+        if (value[i] == '%' and i + 2 < value.len) {
+            const hi = hexValue(value[i + 1]);
+            const lo = hexValue(value[i + 2]);
+            if (hi != null and lo != null) {
+                buffer[out] = (hi.? << 4) | lo.?;
+                out += 1;
+                i += 3;
+                changed = true;
+                continue;
+            }
+        }
+        buffer[out] = value[i];
+        out += 1;
+        i += 1;
+    }
+    if (!changed) return null;
+    return buffer[0..out];
+}
+
+fn percentDecodeAlloc(allocator: std.mem.Allocator, value: []const u8) ![]u8 {
+    const out = try allocator.alloc(u8, value.len);
+    if (percentDecodeBounded(value, out)) |decoded| {
+        const exact = try allocator.dupe(u8, decoded);
+        allocator.free(out);
+        return exact;
+    }
+    allocator.free(out);
+    return error.NoPercentEncoding;
+}
+
+fn hexValue(char: u8) ?u8 {
+    if (char >= '0' and char <= '9') return char - '0';
+    if (char >= 'a' and char <= 'f') return 10 + char - 'a';
+    if (char >= 'A' and char <= 'F') return 10 + char - 'A';
+    return null;
 }
 
 test "network decision allows exact and wildcard domains" {
@@ -718,6 +787,55 @@ test "redacted network targets do not include fake secrets" {
     defer std.testing.allocator.free(redacted);
     try std.testing.expect(std.mem.indexOf(u8, redacted, "sk-fakeSyntheticOpenAIKey") == null);
     try std.testing.expect(std.mem.indexOf(u8, redacted, "[REDACTED:") != null);
+}
+
+test "percent-encoded secret URL values are detected and redacted" {
+    const destination = try parseDestination("https://example.com/path?token=sk%2DfakeSyntheticOpenAIKey1234567890");
+    const findings = try detectExfiltration(std.testing.allocator, destination, .{});
+    defer std.testing.allocator.free(findings);
+    var found = false;
+    for (findings) |finding| {
+        if (finding.signal == .secret_like_url_value) found = true;
+    }
+    try std.testing.expect(found);
+
+    const redacted = try redactedDestinationAlloc(std.testing.allocator, destination);
+    defer std.testing.allocator.free(redacted);
+    try std.testing.expect(std.mem.indexOf(u8, redacted, "sk%2DfakeSyntheticOpenAIKey") == null);
+    try std.testing.expect(std.mem.indexOf(u8, redacted, "[REDACTED:") != null);
+}
+
+test "many unknown domains signal only counts policy-unknown domains" {
+    const load = @import("../policy/load.zig");
+    var policy = try load.parseFromSlice(std.testing.allocator,
+        \\version: 1
+        \\mode: strict
+        \\network:
+        \\  mode: allowlist
+        \\  allow:
+        \\    - "*.known.example"
+    , "network.yaml");
+    defer policy.deinit();
+
+    var tracker = UnknownDomainTracker.init(std.testing.allocator);
+    defer tracker.deinit();
+    for ([_][]const u8{ "a.known.example", "b.known.example", "c.known.example", "d.known.example", "e.known.example" }) |host| {
+        var decision = try evaluate(std.testing.allocator, &policy, .strict, host, .{ .unknown_tracker = &tracker });
+        defer decision.deinit(std.testing.allocator);
+        for (decision.exfil_findings) |finding| try std.testing.expect(finding.signal != .many_unknown_domains);
+    }
+
+    for ([_][]const u8{ "one.unknown.example", "two.unknown.example", "three.unknown.example", "four.unknown.example", "five.unknown.example" }, 0..) |host, index| {
+        var decision = try evaluate(std.testing.allocator, &policy, .strict, host, .{ .unknown_tracker = &tracker });
+        defer decision.deinit(std.testing.allocator);
+        if (index == 4) {
+            var found = false;
+            for (decision.exfil_findings) |finding| {
+                if (finding.signal == .many_unknown_domains) found = true;
+            }
+            try std.testing.expect(found);
+        }
+    }
 }
 
 test "unknown domain tracker owns host keys" {

@@ -58,6 +58,20 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&run_lib_tests.step);
     test_step.dependOn(&run_exe_tests.step);
 
+    const fuzz_tests = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("tests/fuzz/security_mutation.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .name = "aegis", .module = aegis_mod },
+            },
+        }),
+    });
+    const run_fuzz_tests = b.addRunArtifact(fuzz_tests);
+    const fuzz_step = b.step("fuzz", "Run deterministic security mutation tests");
+    fuzz_step.dependOn(&run_fuzz_tests.step);
+
     const windows_target = b.resolveTargetQuery(.{
         .cpu_arch = .x86_64,
         .os_tag = .windows,

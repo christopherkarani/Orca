@@ -75,3 +75,8 @@
 
 - New modules and package/template files must be staged or otherwise included in the actual patch before declaring merge readiness. Local tests can pass with untracked files that clean checkout CI will never see.
 - GitHub Actions inputs are shell input until proven otherwise. Do not interpolate `${{ inputs.* }}` directly into `run:` commands; pass them through environment variables and keep any dynamic command text inside the Aegis-mediated child process.
+
+## 2026-05-07 Phase 20 Security Hardening Review
+
+- Shell-control detection must not bypass argv-level mandatory deny checks. When command text contains redirects, chains, or substitutions, classify both the tokenized argv and whole shell string, then keep the stricter result.
+- Policy pattern validation must match matcher semantics. If `[`/`]`/`{`/`}` are literals to the matcher, validation must allow real paths that contain them and reject only actually unsafe or unsupported input.

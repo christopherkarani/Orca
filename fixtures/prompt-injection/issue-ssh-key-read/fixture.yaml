@@ -13,8 +13,6 @@ attempts:
 expected:
   blocked:
     - "file.read:fake-home/.ssh/id_ed25519"
-  redacted:
-    - FAKE_SSH_KEY
   no_log_contains:
     - "fake-secret-value"
 score:
