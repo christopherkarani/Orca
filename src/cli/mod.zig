@@ -76,7 +76,7 @@ pub fn runWithCwd(cwd: std.fs.Dir, argv: []const []const u8, stdout: anytype, st
 }
 
 test "help flag prints command summary" {
-    var stdout_buf: [2048]u8 = undefined;
+    var stdout_buf: [8192]u8 = undefined;
     var stderr_buf: [256]u8 = undefined;
     var stdout_stream = std.io.fixedBufferStream(&stdout_buf);
     var stderr_stream = std.io.fixedBufferStream(&stderr_buf);
@@ -172,7 +172,7 @@ test "init dispatch creates policy in provided working directory" {
 }
 
 test "doctor dispatch prints platform capabilities" {
-    var stdout_buf: [2048]u8 = undefined;
+    var stdout_buf: [8192]u8 = undefined;
     var stderr_buf: [256]u8 = undefined;
     var stdout_stream = std.io.fixedBufferStream(&stdout_buf);
     var stderr_stream = std.io.fixedBufferStream(&stderr_buf);

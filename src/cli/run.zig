@@ -1,9 +1,11 @@
 const std = @import("std");
+const builtin = @import("builtin");
 
 const audit = @import("../audit/mod.zig");
 const core = @import("../core/mod.zig");
 const intercept = @import("../intercept/mod.zig");
 const policy = @import("../policy/mod.zig");
+const sandbox = @import("../sandbox/mod.zig");
 const exit_codes = @import("exit_codes.zig");
 const help = @import("help.zig");
 
@@ -19,10 +21,16 @@ const RunOptions = struct {
     network_mode: ?policy.schema.NetworkMode = null,
     allow_network_values: [32][]const u8 = undefined,
     allow_network_count: usize = 0,
+    required_backend_values: [16]sandbox.backend.Feature = undefined,
+    required_backend_count: usize = 0,
     command_argv: []const []const u8 = &.{},
 
     fn allowNetwork(self: *const RunOptions) []const []const u8 {
         return self.allow_network_values[0..self.allow_network_count];
+    }
+
+    fn requiredBackendFeatures(self: *const RunOptions) []const sandbox.backend.Feature {
+        return self.required_backend_values[0..self.required_backend_count];
     }
 };
 
@@ -75,6 +83,8 @@ fn commandWithStdio(argv: []const []const u8, stdout: anytype, stderr: anytype, 
     };
     defer filtered_env.deinit();
     try installNetworkEnvironment(allocator, &filtered_env.env_map, loaded_policy.policy.network);
+    const backend_report = sandbox.backend.detect(core.platform.detectOs());
+    try installBackendEnvironment(&filtered_env.env_map, backend_report);
 
     const StartPrinter = struct {
         writer: @TypeOf(stdout),
@@ -127,11 +137,18 @@ fn commandWithStdio(argv: []const []const u8, stdout: anytype, stderr: anytype, 
         env_map: *std.process.EnvMap,
         audit_context: *AuditContext,
         approvals: *intercept.approvals.SessionApprovals,
+        backend_report: sandbox.backend.ReportSet,
+        required_backend_features: []const sandbox.backend.Feature,
         stderr: @TypeOf(stderr),
 
         pub fn beforeProcessLaunch(context: *anyopaque, session: core.session.Session) !void {
             const self: *@This() = @ptrCast(@alignCast(context));
             try self.installShims(session);
+            try self.auditBackendCapability(session);
+            if (self.backend_report.firstMissingRequired(self.required_backend_features)) |missing| {
+                try self.auditBackendRequirementDenied(session, missing);
+                return error.BackendRequirementUnavailable;
+            }
             try self.auditNetworkStartupEvents(session);
             const display = try intercept.commands.displayArgvAlloc(self.allocator, self.command_argv);
             defer self.allocator.free(display);
@@ -205,6 +222,58 @@ fn commandWithStdio(argv: []const []const u8, stdout: anytype, stderr: anytype, 
             try self.env_map.put("AEGIS_WORKSPACE_ROOT", session.workspace_root);
             if (self.selected_policy.source_path) |path| try self.env_map.put("AEGIS_POLICY_PATH", path);
             try self.env_map.put("AEGIS_MODE", self.effective_mode.toString());
+        }
+
+        fn auditBackendCapability(self: *@This(), session: core.session.Session) !void {
+            if (self.audit_context.writer == null) return;
+            const target = try std.fmt.allocPrint(self.allocator, "{s} backend", .{self.backend_report.backend_name});
+            defer self.allocator.free(target);
+            const reason = try std.fmt.allocPrint(self.allocator, "fallback={s}; strong_sandbox={s}; network_enforcement={s}", .{
+                self.backend_report.fallback_level.toString(),
+                self.backend_report.get(.strong_sandbox).level.toString(),
+                self.backend_report.get(.network_enforce).level.toString(),
+            });
+            defer self.allocator.free(reason);
+            const decision: core.decision.Decision = .{
+                .result = .observe,
+                .reason = reason,
+                .ci_may_proceed = true,
+            };
+            const ts = core.time.Timestamp.now();
+            const ev: core.event.Event = .{
+                .session_id = session.id,
+                .event_id = try core.event.generateEventId(ts),
+                .timestamp = ts,
+                .event_type = .backend_capability,
+                .actor = .{ .kind = .aegis, .display = "aegis" },
+                .target = .{ .kind = .unknown, .value = target },
+                .decision = decision,
+            };
+            try self.audit_context.writer.?.appendEvent(ev);
+        }
+
+        fn auditBackendRequirementDenied(self: *@This(), session: core.session.Session, missing: sandbox.backend.FeatureReport) !void {
+            if (self.audit_context.writer == null) return;
+            const target = try std.fmt.allocPrint(self.allocator, "required backend feature: {s}", .{missing.feature.key()});
+            defer self.allocator.free(target);
+            const reason = try std.fmt.allocPrint(self.allocator, "required backend feature unavailable: {s} is {s}", .{ missing.feature.key(), missing.level.toString() });
+            defer self.allocator.free(reason);
+            const decision: core.decision.Decision = .{
+                .result = .deny,
+                .reason = reason,
+                .ci_may_proceed = false,
+            };
+            const ts = core.time.Timestamp.now();
+            const ev: core.event.Event = .{
+                .session_id = session.id,
+                .event_id = try core.event.generateEventId(ts),
+                .timestamp = ts,
+                .event_type = .backend_capability,
+                .actor = .{ .kind = .aegis, .display = "aegis" },
+                .target = .{ .kind = .unknown, .value = target },
+                .decision = decision,
+            };
+            try self.audit_context.writer.?.appendEvent(ev);
         }
 
         fn auditNetworkStartupEvents(self: *@This(), session: core.session.Session) !void {
@@ -294,6 +363,8 @@ fn commandWithStdio(argv: []const []const u8, stdout: anytype, stderr: anytype, 
         .env_map = &filtered_env.env_map,
         .audit_context = &audit_context,
         .approvals = &session_approvals,
+        .backend_report = backend_report,
+        .required_backend_features = options.requiredBackendFeatures(),
         .stderr = stderr,
     };
 
@@ -368,6 +439,36 @@ fn commandWithStdio(argv: []const []const u8, stdout: anytype, stderr: anytype, 
             }
             try stderr.writeAll("aegis run: command denied by command guard.\n");
             return exit_codes.denial;
+        },
+        error.BackendRequirementUnavailable => {
+            if (audit_context.writer) |*writer| {
+                if (audit_context.session) |session| {
+                    var ended = session;
+                    if (audit_context.workspace_root_owned) |root| ended.workspace_root = root;
+                    ended.ended_at = core.time.Timestamp.now();
+                    const ts = ended.ended_at.?;
+                    const ev: core.event.Event = .{
+                        .session_id = ended.id,
+                        .event_id = try core.event.generateEventId(ts),
+                        .timestamp = ts,
+                        .event_type = .session_exit,
+                        .actor = .{ .kind = .aegis, .display = "aegis" },
+                        .target = .{ .kind = .session, .value = ended.id.slice() },
+                    };
+                    try writer.appendEvent(ev);
+                    const final_hash = writer.finalHash() orelse "";
+                    try audit.summary.writeFiles(allocator, writer.session_dir_path, .{
+                        .session = ended,
+                        .status = .{ .exited = exit_codes.unsupported },
+                        .event_count = writer.event_count,
+                        .final_event_hash = final_hash,
+                        .policy = loaded_policy.path,
+                    });
+                    try writeLastPointerNoMakePath(allocator, ended.workspace_root, ended.id.slice());
+                }
+            }
+            try stderr.writeAll("aegis run: required backend feature is unavailable.\n");
+            return exit_codes.unsupported;
         },
         else => {
             try stderr.print("aegis run: failed to launch child: {s}\n", .{@errorName(err)});
@@ -480,6 +581,21 @@ fn parseOptions(argv: []const []const u8, stdout: anytype, stderr: anytype) !Run
                 try stderr.print("aegis run: unsupported network mode '{s}'. Expected observe, ask, allowlist, open, or off.\n", .{argv[index]});
                 return error.Usage;
             };
+        } else if (std.mem.eql(u8, arg, "--require-backend")) {
+            index += 1;
+            if (index >= argv.len) {
+                try stderr.writeAll("aegis run: --require-backend requires a capability name.\n");
+                return error.Usage;
+            }
+            if (options.required_backend_count >= options.required_backend_values.len) {
+                try stderr.writeAll("aegis run: too many --require-backend values.\n");
+                return error.Usage;
+            }
+            options.required_backend_values[options.required_backend_count] = sandbox.backend.Feature.parse(argv[index]) orelse {
+                try stderr.print("aegis run: unsupported backend capability '{s}'.\n", .{argv[index]});
+                return error.Usage;
+            };
+            options.required_backend_count += 1;
         } else if (std.mem.startsWith(u8, arg, "-")) {
             try stderr.print("aegis run: unknown option '{s}'.\n", .{arg});
             return error.Usage;
@@ -542,6 +658,19 @@ fn installNetworkEnvironment(allocator: std.mem.Allocator, env_map: *std.process
         defer allocator.free(owned);
         try env_map.put("AEGIS_NETWORK_ALLOW", owned);
     }
+}
+
+fn installBackendEnvironment(env_map: *std.process.EnvMap, report: sandbox.backend.ReportSet) !void {
+    try env_map.put("AEGIS_BACKEND", report.backend_name);
+    try env_map.put("AEGIS_BACKEND_FALLBACK", report.fallback_level.toString());
+    try env_map.put("AEGIS_BACKEND_STRONG_SANDBOX", report.get(.strong_sandbox).level.toString());
+    try env_map.put("AEGIS_BACKEND_PROCESS_SUPERVISION", report.get(.process_supervision).level.toString());
+    try env_map.put("AEGIS_BACKEND_USER_NAMESPACES", report.get(.user_namespaces).level.toString());
+    try env_map.put("AEGIS_BACKEND_MOUNT_NAMESPACES", report.get(.mount_namespaces).level.toString());
+    try env_map.put("AEGIS_BACKEND_SECCOMP", report.get(.seccomp).level.toString());
+    try env_map.put("AEGIS_BACKEND_LANDLOCK", report.get(.landlock).level.toString());
+    try env_map.put("AEGIS_BACKEND_CGROUPS", report.get(.cgroups).level.toString());
+    try env_map.put("AEGIS_BACKEND_NETWORK_ENFORCEMENT", report.get(.network_enforce).level.toString());
 }
 
 fn parseMode(value: []const u8) ?core.types.Mode {
@@ -773,6 +902,51 @@ test "run allow-network adds temporary allow rule and redacts URL secrets in aud
     try std.testing.expect(std.mem.indexOf(u8, events, "\"type\":\"network_connect_allowed\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, events, "api.github.com") != null);
     try std.testing.expect(std.mem.indexOf(u8, events, "sk-fakeSyntheticOpenAIKey") == null);
+}
+
+test "run exports backend capability status to child environment" {
+    if (builtin.os.tag == .windows) return error.SkipZigTest;
+
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const root = try tmp.dir.realpathAlloc(std.testing.allocator, ".");
+    defer std.testing.allocator.free(root);
+
+    var stdout_buf: [2048]u8 = undefined;
+    var stderr_buf: [2048]u8 = undefined;
+    var stdout_stream = std.io.fixedBufferStream(&stdout_buf);
+    var stderr_stream = std.io.fixedBufferStream(&stderr_buf);
+
+    const code = try commandForTest(&.{ "--workspace", root, "--", "/bin/sh", "-c", "env > backend-env.txt" }, stdout_stream.writer(), stderr_stream.writer(), .ignore);
+    try std.testing.expectEqual(exit_codes.success, code);
+    try std.testing.expectEqualStrings("", stderr_stream.getWritten());
+
+    const written = try tmp.dir.readFileAlloc(std.testing.allocator, "backend-env.txt", 8192);
+    defer std.testing.allocator.free(written);
+    try std.testing.expect(std.mem.indexOf(u8, written, "AEGIS_BACKEND=") != null);
+    try std.testing.expect(std.mem.indexOf(u8, written, "AEGIS_BACKEND_STRONG_SANDBOX=") != null);
+    try std.testing.expect(std.mem.indexOf(u8, written, "AEGIS_BACKEND_NETWORK_ENFORCEMENT=") != null);
+}
+
+test "run require-backend fails closed when requested feature is unavailable" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const root = try tmp.dir.realpathAlloc(std.testing.allocator, ".");
+    defer std.testing.allocator.free(root);
+
+    var stdout_buf: [2048]u8 = undefined;
+    var stderr_buf: [2048]u8 = undefined;
+    var stdout_stream = std.io.fixedBufferStream(&stdout_buf);
+    var stderr_stream = std.io.fixedBufferStream(&stderr_buf);
+
+    const code = try command(&.{ "--workspace", root, "--mode", "ci", "--require-backend", "network_enforce", "--", "true" }, stdout_stream.writer(), stderr_stream.writer());
+    try std.testing.expectEqual(exit_codes.unsupported, code);
+    try std.testing.expect(std.mem.indexOf(u8, stderr_stream.getWritten(), "required backend feature is unavailable") != null);
+
+    const events = try readLastEvents(std.testing.allocator, root);
+    defer std.testing.allocator.free(events);
+    try std.testing.expect(std.mem.indexOf(u8, events, "\"type\":\"backend_capability\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, events, "required backend feature unavailable") != null);
 }
 
 fn readLastSessionId(allocator: std.mem.Allocator, root: []const u8) ![]u8 {

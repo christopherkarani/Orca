@@ -1,1 +1,330 @@
-pub const implemented = false;
+const std = @import("std");
+const builtin = @import("builtin");
+
+const platform = @import("../core/platform.zig");
+const linux_backend = @import("linux.zig");
+
+pub const Feature = enum {
+    policy_engine,
+    audit,
+    env_filtering,
+    path_staging,
+    shell_wrapping,
+    path_shims,
+    mcp_stdio_proxy,
+    network_observe,
+    network_enforce,
+    process_supervision,
+    user_namespaces,
+    mount_namespaces,
+    seccomp,
+    landlock,
+    cgroups,
+    strong_sandbox,
+
+    pub fn key(self: Feature) []const u8 {
+        return @tagName(self);
+    }
+
+    pub fn label(self: Feature) []const u8 {
+        return switch (self) {
+            .policy_engine => "policy engine",
+            .audit => "audit",
+            .env_filtering => "env filtering",
+            .path_staging => "path staging",
+            .shell_wrapping => "shell shims",
+            .path_shims => "PATH shims",
+            .mcp_stdio_proxy => "mcp stdio proxy",
+            .network_observe => "network observation",
+            .network_enforce => "network enforcement",
+            .process_supervision => "process supervision",
+            .user_namespaces => "user namespace",
+            .mount_namespaces => "mount namespace",
+            .seccomp => "seccomp",
+            .landlock => "landlock",
+            .cgroups => "cgroups",
+            .strong_sandbox => "strong sandbox",
+        };
+    }
+
+    pub fn parse(value: []const u8) ?Feature {
+        inline for (@typeInfo(Feature).@"enum".fields) |field| {
+            const feature: Feature = @enumFromInt(field.value);
+            if (featureNameMatches(value, field.name) or featureNameMatches(value, feature.label())) return feature;
+        }
+        return null;
+    }
+};
+
+fn featureNameMatches(value: []const u8, expected: []const u8) bool {
+    if (value.len != expected.len) return false;
+    for (value, expected) |actual, wanted| {
+        const normalized_actual = if (actual == '-' or actual == ' ') '_' else std.ascii.toLower(actual);
+        const normalized_wanted = if (wanted == '-' or wanted == ' ') '_' else std.ascii.toLower(wanted);
+        if (normalized_actual != normalized_wanted) return false;
+    }
+    return true;
+}
+
+pub const Level = enum {
+    active,
+    partial,
+    observe_only,
+    wrapper_only,
+    unavailable,
+    unsupported,
+    failed,
+
+    pub fn toString(self: Level) []const u8 {
+        return switch (self) {
+            .active => "active",
+            .partial => "partial",
+            .observe_only => "observe-only",
+            .wrapper_only => "wrapper-only",
+            .unavailable => "unavailable",
+            .unsupported => "unsupported",
+            .failed => "failed",
+        };
+    }
+
+    pub fn isUsable(self: Level) bool {
+        return switch (self) {
+            .active, .partial, .observe_only, .wrapper_only => true,
+            .unavailable, .unsupported, .failed => false,
+        };
+    }
+};
+
+pub const FeatureReport = struct {
+    feature: Feature,
+    level: Level,
+    note: []const u8,
+};
+
+pub const feature_order = [_]Feature{
+    .policy_engine,
+    .audit,
+    .env_filtering,
+    .path_staging,
+    .shell_wrapping,
+    .path_shims,
+    .mcp_stdio_proxy,
+    .network_observe,
+    .network_enforce,
+    .process_supervision,
+    .user_namespaces,
+    .mount_namespaces,
+    .seccomp,
+    .landlock,
+    .cgroups,
+    .strong_sandbox,
+};
+
+pub const ReportSet = struct {
+    os: platform.Os,
+    backend_name: []const u8,
+    fallback_level: Level,
+    fallback_note: []const u8,
+    reports: [feature_order.len]FeatureReport,
+
+    pub fn get(self: ReportSet, feature: Feature) FeatureReport {
+        for (self.reports) |report| {
+            if (report.feature == feature) return report;
+        }
+        unreachable;
+    }
+
+    pub fn featureAvailable(self: ReportSet, feature: Feature) bool {
+        return self.get(feature).level == .active;
+    }
+
+    pub fn featureSatisfiesRequirement(self: ReportSet, feature: Feature) bool {
+        return self.featureAvailable(feature);
+    }
+
+    pub fn firstMissingRequired(self: ReportSet, required: []const Feature) ?FeatureReport {
+        for (required) |feature| {
+            if (!self.featureSatisfiesRequirement(feature)) return self.get(feature);
+        }
+        return null;
+    }
+};
+
+pub const StdioBehavior = enum {
+    inherit,
+    ignore,
+};
+
+pub const PrepareRequest = struct {
+    argv: []const []const u8,
+    workspace_root: []const u8,
+    stdio: StdioBehavior = .inherit,
+    env_map: ?*const std.process.EnvMap = null,
+};
+
+pub const PreparedSandbox = struct {
+    child: std.process.Child,
+    report: ReportSet,
+    process_group_cleanup: bool = false,
+    process_group_id: ?i32 = null,
+    spawned: bool = false,
+
+    pub fn spawn(self: *PreparedSandbox) !void {
+        try self.child.spawn();
+        if (builtin.os.tag == .linux and self.process_group_cleanup) {
+            self.process_group_id = @intCast(self.child.id);
+        }
+        self.spawned = true;
+    }
+
+    pub fn waitForSpawn(self: *PreparedSandbox) !void {
+        try self.child.waitForSpawn();
+    }
+
+    pub fn wait(self: *PreparedSandbox) !std.process.Child.Term {
+        const term = try self.child.wait();
+        self.spawned = false;
+        self.cleanupProcessGroup();
+        return term;
+    }
+
+    pub fn terminateAfterParentError(self: *PreparedSandbox) void {
+        if (!self.spawned) return;
+        if (self.process_group_cleanup) {
+            if (self.process_group_id) |pgid| linux_backend.killProcessGroup(pgid);
+        }
+        _ = self.child.kill() catch self.child.wait() catch {};
+        self.spawned = false;
+    }
+
+    fn cleanupProcessGroup(self: *PreparedSandbox) void {
+        if (!self.process_group_cleanup) return;
+        if (self.process_group_id) |pgid| linux_backend.killProcessGroup(pgid);
+    }
+};
+
+pub fn detect(os: platform.Os) ReportSet {
+    return switch (os) {
+        .linux => linux_backend.detect(),
+        else => fallbackReport(os),
+    };
+}
+
+pub fn prepare(allocator: std.mem.Allocator, request: PrepareRequest) PreparedSandbox {
+    const report = detect(platform.detectOs());
+    if (builtin.os.tag == .linux and report.os == .linux) {
+        return linux_backend.prepare(allocator, request, report);
+    }
+    return prepareFallback(allocator, request, report);
+}
+
+pub fn prepareFallback(allocator: std.mem.Allocator, request: PrepareRequest, report: ReportSet) PreparedSandbox {
+    var child = std.process.Child.init(request.argv, allocator);
+    child.cwd = request.workspace_root;
+    child.env_map = request.env_map;
+    configureStdio(&child, request.stdio);
+    return .{ .child = child, .report = report };
+}
+
+pub fn configureStdio(child: *std.process.Child, stdio: StdioBehavior) void {
+    switch (stdio) {
+        .inherit => {
+            child.stdin_behavior = .Inherit;
+            child.stdout_behavior = .Inherit;
+            child.stderr_behavior = .Inherit;
+        },
+        .ignore => {
+            child.stdin_behavior = .Ignore;
+            child.stdout_behavior = .Ignore;
+            child.stderr_behavior = .Ignore;
+        },
+    }
+}
+
+pub fn fallbackReport(os: platform.Os) ReportSet {
+    var reports = baseReports(os);
+    setReport(&reports, .process_supervision, .unavailable, "direct child wait only; Linux process-group cleanup is not active on this platform");
+    setReport(&reports, .user_namespaces, .unsupported, "Linux user namespaces are unsupported on this platform");
+    setReport(&reports, .mount_namespaces, .unsupported, "Linux mount namespaces are unsupported on this platform");
+    setReport(&reports, .seccomp, .unsupported, "Linux seccomp-bpf is unsupported on this platform");
+    setReport(&reports, .landlock, .unsupported, "Linux Landlock is unsupported on this platform");
+    setReport(&reports, .cgroups, .unsupported, "Linux cgroup cleanup is unsupported on this platform");
+    setReport(&reports, .strong_sandbox, .unsupported, "no Linux OS-level sandbox backend is available on this platform");
+    return .{
+        .os = os,
+        .backend_name = "fallback",
+        .fallback_level = .wrapper_only,
+        .fallback_note = "wrapper-level controls only; Linux OS-level sandbox features are unavailable",
+        .reports = reports,
+    };
+}
+
+pub fn baseReports(os: platform.Os) [feature_order.len]FeatureReport {
+    _ = os;
+    var reports: [feature_order.len]FeatureReport = undefined;
+    for (feature_order, 0..) |feature, index| {
+        reports[index] = .{
+            .feature = feature,
+            .level = .unavailable,
+            .note = "not detected",
+        };
+    }
+    setReport(&reports, .policy_engine, .active, "policy evaluation is implemented before launch");
+    setReport(&reports, .audit, .active, "session audit writer records security events through redaction");
+    setReport(&reports, .env_filtering, .active, "child environment is built through env filtering");
+    setReport(&reports, .path_staging, .active, "Aegis-mediated writes use staged review artifacts");
+    setReport(&reports, .shell_wrapping, .wrapper_only, "session shell controls are wrapper-level");
+    setReport(&reports, .path_shims, .wrapper_only, "session PATH shims are wrapper-level");
+    setReport(&reports, .mcp_stdio_proxy, .active, "stdio MCP proxy enforcement is implemented for mediated MCP traffic");
+    setReport(&reports, .network_observe, .observe_only, "network policy decisions and audit observations are implemented");
+    setReport(&reports, .network_enforce, .observe_only, "transparent network enforcement is not active; decisions are observed and audited");
+    return reports;
+}
+
+pub fn setReport(reports: *[feature_order.len]FeatureReport, feature: Feature, level: Level, note: []const u8) void {
+    for (reports) |*report| {
+        if (report.feature == feature) {
+            report.level = level;
+            report.note = note;
+            return;
+        }
+    }
+    unreachable;
+}
+
+test "backend capability levels are explicit and parseable" {
+    try std.testing.expectEqualStrings("observe-only", Level.observe_only.toString());
+    try std.testing.expectEqualStrings("wrapper-only", Level.wrapper_only.toString());
+    try std.testing.expectEqual(Feature.user_namespaces, Feature.parse("user-namespaces").?);
+    try std.testing.expectEqual(Feature.mount_namespaces, Feature.parse("mount namespace").?);
+    try std.testing.expectEqual(Feature.strong_sandbox, Feature.parse("strong_sandbox").?);
+}
+
+test "fallback backend reports Linux-only features as unsupported without breaking baseline controls" {
+    const report = fallbackReport(.macos);
+    try std.testing.expectEqualStrings("fallback", report.backend_name);
+    try std.testing.expectEqual(Level.active, report.get(.env_filtering).level);
+    try std.testing.expectEqual(Level.wrapper_only, report.get(.path_shims).level);
+    try std.testing.expectEqual(Level.unsupported, report.get(.user_namespaces).level);
+    try std.testing.expectEqual(Level.unsupported, report.get(.strong_sandbox).level);
+    try std.testing.expect(!report.featureAvailable(.strong_sandbox));
+}
+
+test "required backend features require active enforcement" {
+    var reports = baseReports(.linux);
+    setReport(&reports, .network_enforce, .observe_only, "observe-only is not enforcement");
+    setReport(&reports, .seccomp, .partial, "API detected but no filter installed");
+    setReport(&reports, .path_shims, .wrapper_only, "wrapper-only control");
+    const report: ReportSet = .{
+        .os = .linux,
+        .backend_name = "test",
+        .fallback_level = .partial,
+        .fallback_note = "test",
+        .reports = reports,
+    };
+
+    try std.testing.expect(report.firstMissingRequired(&.{.env_filtering}) == null);
+    try std.testing.expectEqual(Feature.network_enforce, report.firstMissingRequired(&.{.network_enforce}).?.feature);
+    try std.testing.expectEqual(Feature.seccomp, report.firstMissingRequired(&.{.seccomp}).?.feature);
+    try std.testing.expectEqual(Feature.path_shims, report.firstMissingRequired(&.{.path_shims}).?.feature);
+}
