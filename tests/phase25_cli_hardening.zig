@@ -16,6 +16,8 @@ test "phase25 release scripts package runtime assets referenced by CLI docs" {
         try std.testing.expect(std.mem.indexOf(u8, sh, name) != null);
         try std.testing.expect(std.mem.indexOf(u8, ps1, name) != null);
     }
+    try std.testing.expect(std.mem.indexOf(u8, sh, "aegis-edge") != null);
+    try std.testing.expect(std.mem.indexOf(u8, ps1, "aegis-edge") != null);
 }
 
 test "phase25 Windows package templates match nested zip layout" {
@@ -53,14 +55,14 @@ test "phase25 MCP docs distinguish proxy stdin and list observation" {
     try std.testing.expect(std.mem.indexOf(u8, mcp_doc, "observes and audits `tools/list`, `resources/list`, and `prompts/list`") != null);
 }
 
-test "phase25 docs preserve Edge scaffold-only safety boundary" {
+test "phase25 docs preserve Edge no-real-flight safety boundary" {
     const readme = try readFile(std.testing.allocator, "README.md");
     defer std.testing.allocator.free(readme);
     const edge_readme = try readFile(std.testing.allocator, "packages/edge/README.md");
     defer std.testing.allocator.free(edge_readme);
 
-    try std.testing.expect(std.mem.indexOf(u8, readme, "Aegis Edge remains scaffold-only") != null);
-    try std.testing.expect(std.mem.indexOf(u8, edge_readme, "Phase 25 keeps Edge scaffold-only") != null);
+    try std.testing.expect(std.mem.indexOf(u8, readme, "Aegis Edge policy evaluation is active for local decisions only") != null);
+    try std.testing.expect(std.mem.indexOf(u8, edge_readme, "Phase 27 implements Edge policy loading") != null);
     try std.testing.expect(std.mem.indexOf(u8, readme, "flight-ready") == null);
     try std.testing.expect(std.mem.indexOf(u8, edge_readme, "flight-ready") == null);
 }

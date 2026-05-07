@@ -13,6 +13,8 @@ pub const event_types = [_][]const u8{
     "safety.velocity_violation",
     "safety.stale_state_denied",
     "safety.battery_constraint",
+    "safety.mode_constraint",
+    "safety.authority_constraint",
     "emergency.land_allowed",
     "emergency.return_home_allowed",
     "adapter.message_received",

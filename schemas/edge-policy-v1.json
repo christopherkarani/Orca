@@ -29,7 +29,8 @@
           "properties": {
             "max_state_age_ms": { "type": "integer", "minimum": 1 },
             "deny_commands_on_stale_state": { "type": "boolean" },
-            "allow_emergency_land_on_stale_state": { "type": "boolean" }
+            "allow_emergency_land_on_stale_state": { "type": "boolean" },
+            "allow_return_home_on_stale_state": { "type": "boolean" }
           }
         },
         "geofence": {
@@ -66,6 +67,14 @@
             "return_home_below_percent": { "type": "number", "minimum": 0, "maximum": 100 },
             "land_below_percent": { "type": "number", "minimum": 0, "maximum": 100 },
             "require_fresh_battery_state": { "type": "boolean" }
+          }
+        },
+        "emergency": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "allow_land": { "type": "boolean" },
+            "allow_return_to_home": { "type": "boolean" }
           }
         }
       }

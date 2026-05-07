@@ -94,3 +94,9 @@
 ## 2026-05-07 Phase 26 Edge Domain Review
 
 - Before declaring a phase complete, compare `git diff --name-only <base>` with `git ls-files --others --exclude-standard`. If build wiring imports new modules or tests, those files must be tracked/staged so a clean-checkout patch can build.
+
+## 2026-05-07 Phase 27 Edge Policy Review
+
+- Edge command evaluation must bind every request to the exact vehicle state being used. Separate request/state files are a safety boundary; mismatched vehicle IDs must fail before constraint evaluation.
+- Parameterized Edge commands must require the parameter variant their safety checks depend on. Missing or mismatched target data must be invalid, not treated as a command with no constraints.
+- Public schemas and release artifacts are part of the runtime contract. Required policy sections, JSON output escaping, and installed binaries must match what docs and schemas advertise.

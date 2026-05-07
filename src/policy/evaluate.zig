@@ -220,7 +220,7 @@ fn edgePlaceholderDecision(allocator: std.mem.Allocator, mode: schema.Mode, acti
     _ = mode;
     const explanation = try std.fmt.allocPrint(
         allocator,
-        "edge.{s}: placeholder observe-only action for {s}; no real drone command enforcement in Phase 24",
+        "edge.{s}: generic Core placeholder for {s}; use Aegis Edge Phase 27 policy evaluation for domain safety decisions; no real drone command enforcement",
         .{ action_name, target },
     );
     return .{

@@ -9,3 +9,4 @@ These examples are local-only and do not require real secrets, real LLMs, or ext
 - `staged-writes/`: staged write review notes.
 - `network/`: network policy examples.
 - `commands/`: command guard examples.
+- `edge/`: fake/simulation-only Edge policy evaluation examples.

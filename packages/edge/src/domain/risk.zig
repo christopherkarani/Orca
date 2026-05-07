@@ -11,6 +11,7 @@ pub fn classifyCommand(action: commands.CommandAction) RiskCategory {
         => .low,
         .land,
         .return_to_home,
+        => .emergency_safe,
         .hold_position,
         => .medium,
         .arm,

@@ -1,6 +1,6 @@
 # Aegis Edge Safety Schemas
 
-Phase 26 introduces versioned schema surfaces for later Edge policy, audit, replay, and safety report work. These schemas are documentation and validation contracts only. They do not mean MAVLink, PX4, ArduPilot, ROS2, command mediation, real hardware integration, regulatory certification, or real-flight readiness exists. Aegis Edge is not ready for real flight and must not be used for real flight.
+Phase 26 introduced versioned schema surfaces for Edge policy, audit, replay, and safety report work. Phase 27 uses the Edge policy schema for local policy evaluation. These schemas do not mean MAVLink, PX4, ArduPilot, ROS2, command mediation, real hardware integration, regulatory certification, or real-flight readiness exists. Aegis Edge is not ready for real flight and must not be used for real flight.
 
 ## Schemas
 
@@ -40,16 +40,18 @@ Event types are reserved for future audit/replay phases:
 - `safety.velocity_violation`
 - `safety.stale_state_denied`
 - `safety.battery_constraint`
+- `safety.mode_constraint`
+- `safety.authority_constraint`
 - `emergency.land_allowed`
 - `emergency.return_home_allowed`
 - `adapter.message_received`
 - `adapter.message_forwarded`
 - `adapter.message_denied`
 
-Phase 26 defines names only. It does not emit these events as active command mediation.
+Phase 27 prepares Core audit events for local policy decisions using these names. It still does not emit active command-mediation or real-flight events.
 
 ## Safety Report V1
 
 Safety reports support report id, version, vehicle profile, adapter profile, policy hash, scenario name/source, test environment, checks run, commands allowed/denied, violations, audit event references, limitations, and a non-certification disclaimer.
 
-Valid test environment labels are fake adapter, PX4 SITL, ArduPilot SITL, bench, and other. These labels support future reporting distinctions; they are not claims that Phase 26 runs SITL or real flight.
+Valid test environment labels are fake adapter, PX4 SITL, ArduPilot SITL, bench, and other. These labels support future reporting distinctions; they are not claims that Phase 27 runs SITL or real flight.

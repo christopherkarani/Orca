@@ -12,7 +12,7 @@ Vehicle identity and platform fields are explicit:
 - `AdapterKind`: fake, MAVLink, ROS2, custom, or unknown.
 - `VehicleMode`, `ArmState`, and `ControlAuthority`.
 
-These are domain values only. They are not mapped to MAVLink, PX4, ArduPilot, ROS2, or hardware numeric IDs in Phase 26.
+These are domain values only. They are not mapped to MAVLink, PX4, ArduPilot, ROS2, or hardware numeric IDs in Phase 27.
 
 ## Vehicle State
 
@@ -44,4 +44,4 @@ Each command request carries command id, vehicle id, action, parameters, actor, 
 
 ## Risk Classification
 
-Phase 26 includes default risk classification helpers only. Telemetry reads are low risk. Land and return-to-home are logged emergency-safe actions but still non-low. Arm, takeoff, and mission actions are high risk. Disabling failsafe/geofence, raw actuator output, firmware update, and payload release are critical by default.
+Telemetry reads are low risk. Land and return-to-home are `emergency_safe` actions, still logged and safety-checked. Arm, takeoff, and mission actions are high risk. Disabling failsafe/geofence, raw actuator output, firmware update, and payload release are critical by default.

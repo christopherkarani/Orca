@@ -28,6 +28,8 @@ test "edge capabilities report unsupported integrations as unavailable or not im
             .policy_scaffold,
             .fake_adapter,
             => try std.testing.expectEqual(edge.CapabilityStatus.scaffolded, report.status),
+            .policy_evaluation,
+            => try std.testing.expectEqual(edge.CapabilityStatus.active, report.status),
         }
     }
 }

@@ -46,9 +46,33 @@ pub const EventType = enum {
     secret_redacted,
     user_approval,
     user_denial,
+    vehicle_command_requested,
+    vehicle_command_allowed,
+    vehicle_command_denied,
+    vehicle_command_approval_required,
+    safety_geofence_violation,
+    safety_altitude_violation,
+    safety_velocity_violation,
+    safety_stale_state_denied,
+    safety_battery_constraint,
+    safety_mode_constraint,
+    safety_authority_constraint,
 
     pub fn toString(self: EventType) []const u8 {
-        return @tagName(self);
+        return switch (self) {
+            .vehicle_command_requested => "vehicle.command_requested",
+            .vehicle_command_allowed => "vehicle.command_allowed",
+            .vehicle_command_denied => "vehicle.command_denied",
+            .vehicle_command_approval_required => "vehicle.command_approval_required",
+            .safety_geofence_violation => "safety.geofence_violation",
+            .safety_altitude_violation => "safety.altitude_violation",
+            .safety_velocity_violation => "safety.velocity_violation",
+            .safety_stale_state_denied => "safety.stale_state_denied",
+            .safety_battery_constraint => "safety.battery_constraint",
+            .safety_mode_constraint => "safety.mode_constraint",
+            .safety_authority_constraint => "safety.authority_constraint",
+            else => @tagName(self),
+        };
     }
 };
 
