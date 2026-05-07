@@ -1,6 +1,6 @@
 # Aegis Edge Safety Policy
 
-Phase 27 implements local Edge policy evaluation. It validates policy files and evaluates fake/simulation/bench command requests against vehicle state. It does not enforce flight safety, mediate real drone commands, or integrate MAVLink, PX4, ArduPilot, ROS2, SITL, or real hardware. Aegis Edge is not ready for real flight and must not be used for real flight.
+Phase 27 implements local Edge policy evaluation. Phase 28 adds MAVLink fake-transport protocol mediation on top of that policy engine. It validates policy files and evaluates fake/simulation/bench command requests against vehicle state. It does not enforce flight safety, mediate real drone commands, or integrate PX4, ArduPilot, ROS2, SITL, or real hardware. Aegis Edge is not ready for real flight and must not be used for real flight.
 
 ## Safety Envelope
 
@@ -28,4 +28,4 @@ Deny priority is fail-closed: an explicit `deny` wins over allow or ask. Duplica
 
 Stale, expired, unknown, or ambiguous state is unsafe. Emergency `land` may proceed on stale state only when policy explicitly allows it and `land` is not denied. `return_to_home` may proceed on stale state only when policy explicitly allows it and a home position is available. These are policy decisions and recommendations only; no emergency runtime behavior is triggered.
 
-Fake adapter state must remain fake. Simulation examples are not flight validation.
+Fake adapter state must remain fake. MAVLink fake transport must remain labeled `fake_transport` or `fake_transport/simulation`. Simulation examples are not flight validation.

@@ -2,11 +2,12 @@ const std = @import("std");
 const aegis_core = @import("aegis_core");
 
 pub const domain = @import("domain/mod.zig");
+pub const mavlink = @import("mavlink/mod.zig");
 pub const policy = @import("policy/mod.zig");
 pub const schema = @import("schema/mod.zig");
 
-pub const phase = "27-edge-policy-engine-extensions";
-pub const installed_message = "Aegis Edge policy evaluation is installed. It evaluates policies and audit events only; drone command mediation is not implemented yet.";
+pub const phase = "28-mavlink-gateway-production";
+pub const installed_message = "Aegis Edge MAVLink gateway foundation is installed for fake-transport simulation and protocol mediation only; it is not real-flight ready.";
 pub const core = aegis_core;
 
 pub const CapabilityStatus = enum {
@@ -134,7 +135,7 @@ pub const FakeAdapter = struct {
     pub fn capabilityReports() []const CapabilityReport {
         return &.{
             .{ .capability = .fake_adapter, .status = .scaffolded, .note = "Local fake adapter placeholder only; no hardware IO." },
-        .{ .capability = .command_mediation, .status = .not_implemented, .note = "Drone command mediation is deferred to a later phase." },
+        .{ .capability = .command_mediation, .status = .active, .note = "MAVLink command mediation exists for fake/in-memory gateway tests only; no real endpoints." },
         };
     }
 
@@ -158,12 +159,12 @@ pub fn evaluateVehicleStateReadThroughCore(
 pub fn capabilityReports() []const CapabilityReport {
     return &.{
         .{ .capability = .policy_scaffold, .status = .scaffolded, .note = "Phase 26 domain types and versioned safety schema descriptors exist for Edge policy work." },
-        .{ .capability = .policy_evaluation, .status = .active, .note = "Phase 27 evaluates Edge policy decisions locally for fake/simulation/bench evidence; it sends no vehicle commands." },
-        .{ .capability = .fake_adapter, .status = .scaffolded, .note = "Fake adapter is local-only and has no hardware dependency." },
-        .{ .capability = .command_mediation, .status = .not_implemented, .note = "Drone command mediation is not implemented in Phase 27." },
-        .{ .capability = .mavlink_gateway, .status = .not_implemented, .note = "MAVLink is out of scope for Phase 27." },
-        .{ .capability = .px4_adapter, .status = .not_implemented, .note = "PX4 integration is out of scope for Phase 27." },
-        .{ .capability = .ardupilot_adapter, .status = .not_implemented, .note = "ArduPilot integration is out of scope for Phase 27." },
+        .{ .capability = .policy_evaluation, .status = .active, .note = "Phase 27 evaluates Edge policy decisions locally for fake/simulation/bench evidence." },
+        .{ .capability = .fake_adapter, .status = .active, .note = "Deterministic fake MAVLink transport is available for local tests and examples only." },
+        .{ .capability = .command_mediation, .status = .active, .note = "Phase 28 maps supported MAVLink commands through policy in fake gateway mode; no real endpoints." },
+        .{ .capability = .mavlink_gateway, .status = .active, .note = "MAVLink v1/v2 parsing, classification, mapping, mission tracking, and fake gateway decisions are active for simulation/protocol mediation." },
+        .{ .capability = .px4_adapter, .status = .not_implemented, .note = "PX4 integration is out of scope for Phase 28." },
+        .{ .capability = .ardupilot_adapter, .status = .not_implemented, .note = "ArduPilot integration is out of scope for Phase 28." },
         .{ .capability = .real_flight_enforcement, .status = .unavailable, .note = "Real-flight behavior requires later simulation, bench, and customer safety validation phases." },
         .{ .capability = .detect_and_avoid, .status = .unavailable, .note = "Aegis Edge is not a detect-and-avoid system." },
         .{ .capability = .regulatory_certification, .status = .unavailable, .note = "Aegis Edge is not regulatory approval or certification." },
@@ -181,6 +182,7 @@ pub fn doctor(writer: anytype) !void {
 test {
     _ = core;
     _ = domain;
+    _ = mavlink;
     _ = policy;
     _ = schema;
     _ = capabilityReports;

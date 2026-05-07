@@ -9,6 +9,14 @@ const usage =
     \\
     \\Commands:
     \\  doctor                         Show domain/schema capability status
+    \\  mavlink doctor                 Show MAVLink gateway capabilities and limitations
+    \\  mavlink inspect-frame <file-or-hex>
+    \\                                 Parse one MAVLink frame and print bounded metadata
+    \\  mavlink classify <file-or-hex>  Classify and map one MAVLink frame where supported
+    \\  mavlink simulate --policy <policy> --scenario <scenario>
+    \\                                 Run a deterministic fake-transport scenario
+    \\  mavlink gateway --fake --policy <policy>
+    \\                                 Configure fake/in-memory gateway mode only
     \\  policy check <policy>          Validate an Edge policy file
     \\  policy explain <policy> <cmd>   Explain one command decision with fake state
     \\  policy evaluate <policy> --request <request.json> --state <state.json>
@@ -17,7 +25,7 @@ const usage =
     \\  schema print <schema-id>       Print a built-in schema document
     \\  help                           Show this help
     \\
-    \\Policy evaluation is local-only. Drone command mediation is not implemented yet.
+    \\MAVLink support is fake-transport simulation/protocol mediation only. No serial, UDP, SITL, ROS2, or real-flight endpoint is opened.
     \\
 ;
 
@@ -66,12 +74,212 @@ pub fn run(argv: []const []const u8, stdout: anytype, stderr: anytype) !u8 {
     if (std.mem.eql(u8, command, "schema")) {
         return runSchema(argv[1..], stdout, stderr);
     }
+    if (std.mem.eql(u8, command, "mavlink")) {
+        return runMavlink(argv[1..], stdout, stderr);
+    }
     if (std.mem.eql(u8, command, "policy")) {
         return runPolicy(argv[1..], stdout, stderr);
     }
 
     try stderr.print("aegis-edge: unknown command '{s}'. Run 'aegis-edge --help' for usage.\n", .{command});
     return 64;
+}
+
+fn runMavlink(argv: []const []const u8, stdout: anytype, stderr: anytype) !u8 {
+    if (argv.len == 0) {
+        try stderr.writeAll("aegis-edge mavlink: expected doctor, inspect-frame, classify, simulate, or gateway.\n");
+        return 64;
+    }
+    if (std.mem.eql(u8, argv[0], "doctor")) return runMavlinkDoctor(argv[1..], stdout, stderr);
+    if (std.mem.eql(u8, argv[0], "inspect-frame")) return runMavlinkInspect(argv[1..], stdout, stderr);
+    if (std.mem.eql(u8, argv[0], "classify")) return runMavlinkClassify(argv[1..], stdout, stderr);
+    if (std.mem.eql(u8, argv[0], "simulate")) return runMavlinkSimulate(argv[1..], stdout, stderr);
+    if (std.mem.eql(u8, argv[0], "gateway")) return runMavlinkGateway(argv[1..], stdout, stderr);
+    try stderr.print("aegis-edge mavlink: unknown subcommand '{s}'.\n", .{argv[0]});
+    return 64;
+}
+
+fn runMavlinkDoctor(argv: []const []const u8, stdout: anytype, stderr: anytype) !u8 {
+    if (argv.len != 0) return usageError(stderr, "aegis-edge mavlink doctor: expected no arguments.\n");
+    try stdout.writeAll("MAVLink gateway foundation: active for fake_transport simulation/protocol mediation only.\n");
+    try stdout.writeAll("Supported parsing: MAVLink v1 and v2 frames, bounded payloads, partial streams, known-message CRC validation, MAVLink2 signing detection.\n");
+    try stdout.writeAll("Supported mediation subset: heartbeat/state, COMMAND_LONG, COMMAND_INT, SET_MODE, PARAM_SET safety toggles, setpoint targets, and generic mission upload messages.\n");
+    try stdout.writeAll("Unsupported: real serial/UDP endpoints, PX4 SITL, ArduPilot SITL, ROS2, real hardware flight, signing key management, and signing verification.\n");
+    try stdout.writeAll("Recommendation for real deployments: use MAVLink2 signing at the deployment boundary; Aegis Edge Phase 28 only detects signing presence.\n");
+    return 0;
+}
+
+fn runMavlinkInspect(argv: []const []const u8, stdout: anytype, stderr: anytype) !u8 {
+    if (argv.len != 1) return usageError(stderr, "aegis-edge mavlink inspect-frame: expected exactly one file path or hex string.\n");
+    var gpa_state: std.heap.GeneralPurposeAllocator(.{}) = .init;
+    defer _ = gpa_state.deinit();
+    const allocator = gpa_state.allocator();
+    const bytes = readFileOrHex(allocator, argv[0]) catch |err| {
+        try stderr.print("MAVLink frame input invalid: {s}\n", .{@errorName(err)});
+        return 65;
+    };
+    defer allocator.free(bytes);
+    const frame = edge.mavlink.framing.parseFrame(bytes) catch |err| {
+        try stderr.print("MAVLink frame invalid: {s}\n", .{@errorName(err)});
+        return 65;
+    };
+    try stdout.print("MAVLink frame: version={s} msgid={d} name={s} seq={d} sysid={d} compid={d} payload_len={d}\n", .{
+        @tagName(frame.version),
+        frame.msgid,
+        edge.mavlink.dialect.nameFor(frame.msgid),
+        frame.sequence,
+        frame.sysid,
+        frame.compid,
+        frame.payload.len,
+    });
+    try stdout.print("CRC: {s}\n", .{if (frame.checksum_valid == true) "valid" else if (frame.checksum_valid == false) "invalid" else "not-validated-for-unknown-message"});
+    try stdout.print("MAVLink2 signing: {s}\n", .{if (frame.signature_present) "present-detection-only" else "absent"});
+    try stdout.writeAll("Payload logging is bounded; raw payload bytes are not dumped unbounded.\n");
+    return 0;
+}
+
+fn runMavlinkClassify(argv: []const []const u8, stdout: anytype, stderr: anytype) !u8 {
+    if (argv.len != 1) return usageError(stderr, "aegis-edge mavlink classify: expected exactly one file path or hex string.\n");
+    var gpa_state: std.heap.GeneralPurposeAllocator(.{}) = .init;
+    defer _ = gpa_state.deinit();
+    const allocator = gpa_state.allocator();
+    const bytes = readFileOrHex(allocator, argv[0]) catch |err| {
+        try stderr.print("MAVLink frame input invalid: {s}\n", .{@errorName(err)});
+        return 65;
+    };
+    defer allocator.free(bytes);
+    const frame = edge.mavlink.framing.parseFrame(bytes) catch |err| {
+        try stderr.print("MAVLink frame invalid: {s}\n", .{@errorName(err)});
+        return 65;
+    };
+    const classification = edge.mavlink.classifier.classifyFrame(frame) catch |err| {
+        try stderr.print("MAVLink classification failed: {s}\n", .{@errorName(err)});
+        return 65;
+    };
+    var mapping = edge.mavlink.mapping.mapFrameToCommand(allocator, frame, .{ .vehicle_id = "edge-vehicle-1", .now_ms = 1_000_100 }) catch |err| {
+        try stderr.print("MAVLink mapping failed: {s}\n", .{@errorName(err)});
+        return 65;
+    };
+    defer mapping.deinit();
+    try stdout.print("Message: {s} ({d})\n", .{ classification.message_name, classification.message_id });
+    try stdout.print("Category: {s}\n", .{@tagName(classification.category)});
+    try stdout.print("Safety-sensitive: {}\n", .{classification.safety_sensitive});
+    if (classification.command_id) |command_id| try stdout.print("MAV_CMD: {d} ({s})\n", .{ command_id, edge.mavlink.commands.nameFor(command_id) });
+    if (mapping.request) |request| {
+        try stdout.print("Mapped Edge action: {s}\n", .{@tagName(request.action)});
+        try stdout.print("Risk: {s}\n", .{@tagName(request.risk_classification)});
+    } else if (mapping.unsupported) |unsupported| {
+        try stdout.print("Mapped Edge action: unsupported\nRisk: {s}\nReason: {s}\n", .{ @tagName(unsupported.risk), unsupported.reason });
+    } else {
+        try stdout.writeAll("Mapped Edge action: none\nRisk: low-or-unknown-message\n");
+    }
+    try stdout.writeAll("No command was sent to a vehicle, simulator, or flight controller.\n");
+    return 0;
+}
+
+fn runMavlinkSimulate(argv: []const []const u8, stdout: anytype, stderr: anytype) !u8 {
+    var policy_path: ?[]const u8 = null;
+    var scenario_path: ?[]const u8 = null;
+    var index: usize = 0;
+    while (index < argv.len) : (index += 1) {
+        if (std.mem.eql(u8, argv[index], "--policy")) {
+            index += 1;
+            if (index >= argv.len) return usageError(stderr, "aegis-edge mavlink simulate: --policy requires a file.\n");
+            policy_path = argv[index];
+        } else if (std.mem.eql(u8, argv[index], "--scenario")) {
+            index += 1;
+            if (index >= argv.len) return usageError(stderr, "aegis-edge mavlink simulate: --scenario requires a file.\n");
+            scenario_path = argv[index];
+        } else {
+            try stderr.print("aegis-edge mavlink simulate: unknown argument '{s}'.\n", .{argv[index]});
+            return 64;
+        }
+    }
+    const selected_policy_path = policy_path orelse return usageError(stderr, "aegis-edge mavlink simulate: missing --policy.\n");
+    const selected_scenario_path = scenario_path orelse return usageError(stderr, "aegis-edge mavlink simulate: missing --scenario.\n");
+
+    var gpa_state: std.heap.GeneralPurposeAllocator(.{}) = .init;
+    defer _ = gpa_state.deinit();
+    const allocator = gpa_state.allocator();
+    var loaded = edge.policy.loadFile(allocator, selected_policy_path, .{}) catch |err| {
+        try stderr.print("Edge policy invalid: {s}\n", .{@errorName(err)});
+        return 65;
+    };
+    defer loaded.deinit();
+    var scenario = loadScenario(allocator, selected_scenario_path) catch |err| {
+        try stderr.print("MAVLink scenario invalid: {s}\n", .{@errorName(err)});
+        return 65;
+    };
+    defer scenario.deinit();
+    const frame = edge.mavlink.framing.parseFrame(scenario.frame_bytes) catch |err| {
+        try stderr.print("Generated MAVLink scenario frame invalid: {s}\n", .{@errorName(err)});
+        return 65;
+    };
+    var tracker = edge.mavlink.mission.MissionTracker.init();
+    var result = if (edge.mavlink.dialect.isMission(frame.msgid)) blk: {
+        const count = try edge.mavlink.fake_transport.frameMissionCountV2(allocator, .{ .seq = 1, .sysid = 42, .compid = 191 }, 1);
+        defer allocator.free(count);
+        try tracker.observe(try edge.mavlink.messages.decode(try edge.mavlink.framing.parseFrame(count)));
+        break :blk try edge.mavlink.gateway.processMissionFrame(allocator, .{ .mode = .enforce, .direction = .companion_to_vehicle, .vehicle_id = "edge-vehicle-1", .now_ms = 1_000_500 }, &loaded.value, defaultStateForPolicy(&loaded.value, 1_000_000), frame, &tracker);
+    } else try edge.mavlink.gateway.processFrame(allocator, .{ .mode = .enforce, .direction = .companion_to_vehicle, .vehicle_id = "edge-vehicle-1", .now_ms = 1_000_500 }, &loaded.value, defaultStateForPolicy(&loaded.value, 1_000_000), frame);
+    defer result.deinit();
+
+    if (scenario.expected_decision) |expected| {
+        const actual = result.decision orelse {
+            try stderr.writeAll("MAVLink scenario expectation failed: expected decision but gateway produced none.\n");
+            return 65;
+        };
+        if (actual != expected) {
+            try stderr.print("MAVLink scenario expectation failed: expected_decision={s} actual={s}\n", .{ expected.toString(), actual.toString() });
+            return 65;
+        }
+    }
+    if (scenario.expected_forwarded) |expected| {
+        if (result.forwarded != expected) {
+            try stderr.print("MAVLink scenario expectation failed: expected_forwarded={} actual={}\n", .{ expected, result.forwarded });
+            return 65;
+        }
+    }
+
+    try stdout.print("Scenario: {s}\n", .{selected_scenario_path});
+    try stdout.writeAll("Transport: fake_transport/simulation\n");
+    try stdout.print("Message: {s} ({d})\n", .{ result.classification.message_name, result.classification.message_id });
+    try stdout.print("Decision: {s}\n", .{if (result.decision) |decision| decision.toString() else "none"});
+    try stdout.print("Forwarded: {}\nBlocked: {}\n", .{ result.forwarded, result.blocked });
+    try stdout.writeAll("Audit events:\n");
+    for (result.audit.records.items) |record| try stdout.print("  - {s}\n", .{record.event_type});
+    try stdout.writeAll("No real serial, UDP, SITL, ROS2, or hardware endpoint was opened.\n");
+    return 0;
+}
+
+fn runMavlinkGateway(argv: []const []const u8, stdout: anytype, stderr: anytype) !u8 {
+    var fake = false;
+    var policy_path: ?[]const u8 = null;
+    var index: usize = 0;
+    while (index < argv.len) : (index += 1) {
+        if (std.mem.eql(u8, argv[index], "--fake")) {
+            fake = true;
+        } else if (std.mem.eql(u8, argv[index], "--policy")) {
+            index += 1;
+            if (index >= argv.len) return usageError(stderr, "aegis-edge mavlink gateway: --policy requires a file.\n");
+            policy_path = argv[index];
+        } else {
+            try stderr.print("aegis-edge mavlink gateway: unknown argument '{s}'.\n", .{argv[index]});
+            return 64;
+        }
+    }
+    if (!fake) return usageError(stderr, "aegis-edge mavlink gateway: only --fake in-memory mode is implemented in Phase 28.\n");
+    const selected_policy_path = policy_path orelse return usageError(stderr, "aegis-edge mavlink gateway: missing --policy.\n");
+    var gpa_state: std.heap.GeneralPurposeAllocator(.{}) = .init;
+    defer _ = gpa_state.deinit();
+    var loaded = edge.policy.loadFile(gpa_state.allocator(), selected_policy_path, .{}) catch |err| {
+        try stderr.print("Edge policy invalid: {s}\n", .{@errorName(err)});
+        return 65;
+    };
+    defer loaded.deinit();
+    try stdout.print("MAVLink fake gateway configured with policy {s}\n", .{selected_policy_path});
+    try stdout.writeAll("Mode: fake_transport only. Real serial/UDP endpoints are deferred and were not opened.\n");
+    return 0;
 }
 
 fn runPolicy(argv: []const []const u8, stdout: anytype, stderr: anytype) !u8 {
@@ -386,6 +594,132 @@ fn writeEvaluation(stdout: anytype, evaluation: edge.policy.EdgeEvaluation, json
     try stdout.writeAll("No command was sent to a vehicle, adapter, simulator, or flight controller.\n");
 }
 
+fn readFileOrHex(allocator: std.mem.Allocator, value: []const u8) ![]u8 {
+    const text = std.fs.cwd().readFileAlloc(allocator, value, 16 * 1024) catch |err| switch (err) {
+        error.FileNotFound => return parseHexAlloc(allocator, value),
+        else => return err,
+    };
+    errdefer allocator.free(text);
+    if (text.len > 0 and (text[0] == edge.mavlink.framing.magic_v1 or text[0] == edge.mavlink.framing.magic_v2)) return text;
+    const parsed = try parseHexAlloc(allocator, text);
+    allocator.free(text);
+    return parsed;
+}
+
+fn parseHexAlloc(allocator: std.mem.Allocator, text: []const u8) ![]u8 {
+    var compact: std.ArrayList(u8) = .empty;
+    defer compact.deinit(allocator);
+    var index: usize = 0;
+    while (index < text.len) : (index += 1) {
+        const byte = text[index];
+        switch (byte) {
+            ' ', '\t', '\r', '\n', ':', '_' => continue,
+            '0' => if (index + 1 < text.len and (text[index + 1] == 'x' or text[index + 1] == 'X')) {
+                index += 1;
+                continue;
+            },
+            else => {},
+        }
+        try compact.append(allocator, byte);
+    }
+    if (compact.items.len == 0 or compact.items.len % 2 != 0) return error.InvalidHex;
+    var bytes = try allocator.alloc(u8, compact.items.len / 2);
+    errdefer allocator.free(bytes);
+    var out_index: usize = 0;
+    while (out_index < bytes.len) : (out_index += 1) {
+        const hi = hexValue(compact.items[out_index * 2]) orelse return error.InvalidHex;
+        const lo = hexValue(compact.items[out_index * 2 + 1]) orelse return error.InvalidHex;
+        bytes[out_index] = (hi << 4) | lo;
+    }
+    return bytes;
+}
+
+fn hexValue(byte: u8) ?u8 {
+    return switch (byte) {
+        '0'...'9' => byte - '0',
+        'a'...'f' => byte - 'a' + 10,
+        'A'...'F' => byte - 'A' + 10,
+        else => null,
+    };
+}
+
+const Scenario = struct {
+    allocator: std.mem.Allocator,
+    frame_path: []u8,
+    frame_bytes: []u8,
+    expected_decision: ?edge.core.decision.DecisionResult = null,
+    expected_forwarded: ?bool = null,
+
+    fn deinit(self: *Scenario) void {
+        self.allocator.free(self.frame_path);
+        self.allocator.free(self.frame_bytes);
+        self.* = undefined;
+    }
+};
+
+fn loadScenario(allocator: std.mem.Allocator, scenario_path: []const u8) !Scenario {
+    const text = try std.fs.cwd().readFileAlloc(allocator, scenario_path, 32 * 1024);
+    defer allocator.free(text);
+
+    var frame_value: ?[]const u8 = null;
+    var expected_decision: ?edge.core.decision.DecisionResult = null;
+    var expected_forwarded: ?bool = null;
+
+    var lines = std.mem.splitScalar(u8, text, '\n');
+    while (lines.next()) |raw_line| {
+        const no_comment = if (std.mem.indexOfScalar(u8, raw_line, '#')) |index| raw_line[0..index] else raw_line;
+        const line = std.mem.trim(u8, no_comment, " \t\r");
+        if (line.len == 0) continue;
+        const colon = std.mem.indexOfScalar(u8, line, ':') orelse return error.InvalidScenario;
+        const key = std.mem.trim(u8, line[0..colon], " \t");
+        const value = cleanScenarioScalar(line[colon + 1 ..]);
+        if (std.mem.eql(u8, key, "frame")) {
+            frame_value = value;
+        } else if (std.mem.eql(u8, key, "expected_decision")) {
+            expected_decision = std.meta.stringToEnum(edge.core.decision.DecisionResult, value) orelse return error.InvalidScenarioDecision;
+        } else if (std.mem.eql(u8, key, "expected_forwarded")) {
+            expected_forwarded = parseScenarioBool(value) catch return error.InvalidScenarioForwarded;
+        } else if (std.mem.eql(u8, key, "transport")) {
+            if (!std.mem.eql(u8, value, "fake_transport")) return error.UnsupportedScenarioTransport;
+        }
+    }
+
+    const frame_ref = frame_value orelse return error.MissingScenarioFrame;
+    const frame_path = try resolveScenarioPath(allocator, scenario_path, frame_ref);
+    errdefer allocator.free(frame_path);
+    const frame_bytes = try readFileOrHex(allocator, frame_path);
+    errdefer allocator.free(frame_bytes);
+    return .{
+        .allocator = allocator,
+        .frame_path = frame_path,
+        .frame_bytes = frame_bytes,
+        .expected_decision = expected_decision,
+        .expected_forwarded = expected_forwarded,
+    };
+}
+
+fn resolveScenarioPath(allocator: std.mem.Allocator, scenario_path: []const u8, frame_ref: []const u8) ![]u8 {
+    if (std.fs.path.isAbsolute(frame_ref)) return try allocator.dupe(u8, frame_ref);
+    const scenario_dir = std.fs.path.dirname(scenario_path) orelse ".";
+    return try std.fs.path.join(allocator, &.{ scenario_dir, frame_ref });
+}
+
+fn cleanScenarioScalar(raw: []const u8) []const u8 {
+    var value = std.mem.trim(u8, raw, " \t\r");
+    if (value.len >= 2) {
+        const first = value[0];
+        const last = value[value.len - 1];
+        if ((first == '"' and last == '"') or (first == '\'' and last == '\'')) value = value[1 .. value.len - 1];
+    }
+    return value;
+}
+
+fn parseScenarioBool(value: []const u8) !bool {
+    if (std.mem.eql(u8, value, "true")) return true;
+    if (std.mem.eql(u8, value, "false")) return false;
+    return error.InvalidBool;
+}
+
 test "aegis-edge help is honest policy evaluation output" {
     var stdout_buf: [2048]u8 = undefined;
     var stderr_buf: [128]u8 = undefined;
@@ -397,7 +731,7 @@ test "aegis-edge help is honest policy evaluation output" {
 
     try std.testing.expectEqual(@as(u8, 0), code);
     try std.testing.expect(std.mem.indexOf(u8, stdout_stream.getWritten(), "policy evaluate") != null);
-    try std.testing.expect(std.mem.indexOf(u8, stdout_stream.getWritten(), "Drone command mediation is not implemented yet") != null);
+    try std.testing.expect(std.mem.indexOf(u8, stdout_stream.getWritten(), "fake-transport simulation/protocol mediation only") != null);
     try std.testing.expectEqualStrings("", stderr_stream.getWritten());
 }
 
@@ -467,4 +801,106 @@ test "aegis-edge policy check json escapes policy path" {
     defer parsed.deinit();
     try std.testing.expectEqualStrings(policy_path, parsed.value.object.get("policy").?.string);
     try std.testing.expectEqualStrings("", stderr_stream.getWritten());
+}
+
+test "aegis-edge mavlink doctor inspect classify and simulate use fake transport only" {
+    var stdout_buf: [8192]u8 = undefined;
+    var stderr_buf: [512]u8 = undefined;
+    var stdout_stream = std.io.fixedBufferStream(&stdout_buf);
+    var stderr_stream = std.io.fixedBufferStream(&stderr_buf);
+
+    const doctor_argv = [_][]const u8{ "mavlink", "doctor" };
+    try std.testing.expectEqual(@as(u8, 0), try run(doctor_argv[0..], stdout_stream.writer(), stderr_stream.writer()));
+    try std.testing.expect(std.mem.indexOf(u8, stdout_stream.getWritten(), "fake_transport") != null);
+    try std.testing.expect(std.mem.indexOf(u8, stdout_stream.getWritten(), "signing verification") != null);
+    try std.testing.expectEqualStrings("", stderr_stream.getWritten());
+
+    stdout_stream.reset();
+    stderr_stream.reset();
+    const inspect_argv = [_][]const u8{ "mavlink", "inspect-frame", "fd2100002c2abf4c00000000803f0000000000000000000000000000000000000000000000009001010100b569" };
+    try std.testing.expectEqual(@as(u8, 0), try run(inspect_argv[0..], stdout_stream.writer(), stderr_stream.writer()));
+    try std.testing.expect(std.mem.indexOf(u8, stdout_stream.getWritten(), "COMMAND_LONG") != null);
+    try std.testing.expect(std.mem.indexOf(u8, stdout_stream.getWritten(), "CRC: valid") != null);
+    try std.testing.expectEqualStrings("", stderr_stream.getWritten());
+
+    stdout_stream.reset();
+    stderr_stream.reset();
+    const classify_argv = [_][]const u8{ "mavlink", "classify", "fd2100002c2abf4c00000000000000000000000000000000000000000000000000000000f04116000101008700" };
+    try std.testing.expectEqual(@as(u8, 0), try run(classify_argv[0..], stdout_stream.writer(), stderr_stream.writer()));
+    try std.testing.expect(std.mem.indexOf(u8, stdout_stream.getWritten(), "Mapped Edge action: takeoff") != null);
+    try std.testing.expectEqualStrings("", stderr_stream.getWritten());
+
+    stdout_stream.reset();
+    stderr_stream.reset();
+    const simulate_argv = [_][]const u8{
+        "mavlink",
+        "simulate",
+        "--policy",
+        "examples/edge/mavlink/policies/geofence-mavlink-basic.yaml",
+        "--scenario",
+        "examples/edge/mavlink/scenarios/geofence-deny.yaml",
+    };
+    try std.testing.expectEqual(@as(u8, 0), try run(simulate_argv[0..], stdout_stream.writer(), stderr_stream.writer()));
+    try std.testing.expect(std.mem.indexOf(u8, stdout_stream.getWritten(), "Decision: deny") != null);
+    try std.testing.expect(std.mem.indexOf(u8, stdout_stream.getWritten(), "No real serial, UDP, SITL, ROS2, or hardware endpoint was opened") != null);
+    try std.testing.expectEqualStrings("", stderr_stream.getWritten());
+}
+
+test "aegis-edge mavlink simulate reads scenario frame contents instead of filename" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const land_hex = try std.fs.cwd().readFileAlloc(std.testing.allocator, "examples/edge/mavlink/frames/command-land.hex", 1024);
+    defer std.testing.allocator.free(land_hex);
+    try tmp.dir.writeFile(.{ .sub_path = "renamed-frame.hex", .data = land_hex });
+    try tmp.dir.writeFile(.{ .sub_path = "neutral-name.yaml", .data =
+        \\name: neutral-name
+        \\transport: fake_transport
+        \\frame: renamed-frame.hex
+        \\expected_decision: allow
+        \\expected_forwarded: true
+    });
+    try tmp.dir.writeFile(.{ .sub_path = "mismatch.yaml", .data =
+        \\name: mismatch
+        \\transport: fake_transport
+        \\frame: renamed-frame.hex
+        \\expected_decision: deny
+        \\expected_forwarded: false
+    });
+    const root = try tmp.dir.realpathAlloc(std.testing.allocator, ".");
+    defer std.testing.allocator.free(root);
+    const scenario_path = try std.fs.path.join(std.testing.allocator, &.{ root, "neutral-name.yaml" });
+    defer std.testing.allocator.free(scenario_path);
+    const mismatch_path = try std.fs.path.join(std.testing.allocator, &.{ root, "mismatch.yaml" });
+    defer std.testing.allocator.free(mismatch_path);
+
+    var stdout_buf: [4096]u8 = undefined;
+    var stderr_buf: [512]u8 = undefined;
+    var stdout_stream = std.io.fixedBufferStream(&stdout_buf);
+    var stderr_stream = std.io.fixedBufferStream(&stderr_buf);
+    const simulate_argv = [_][]const u8{
+        "mavlink",
+        "simulate",
+        "--policy",
+        "examples/edge/mavlink/policies/geofence-mavlink-basic.yaml",
+        "--scenario",
+        scenario_path,
+    };
+    try std.testing.expectEqual(@as(u8, 0), try run(simulate_argv[0..], stdout_stream.writer(), stderr_stream.writer()));
+    try std.testing.expect(std.mem.indexOf(u8, stdout_stream.getWritten(), "Decision: allow") != null);
+    try std.testing.expect(std.mem.indexOf(u8, stdout_stream.getWritten(), "Forwarded: true") != null);
+    try std.testing.expectEqualStrings("", stderr_stream.getWritten());
+
+    stdout_stream.reset();
+    stderr_stream.reset();
+    const mismatch_argv = [_][]const u8{
+        "mavlink",
+        "simulate",
+        "--policy",
+        "examples/edge/mavlink/policies/geofence-mavlink-basic.yaml",
+        "--scenario",
+        mismatch_path,
+    };
+    try std.testing.expectEqual(@as(u8, 65), try run(mismatch_argv[0..], stdout_stream.writer(), stderr_stream.writer()));
+    try std.testing.expect(std.mem.indexOf(u8, stderr_stream.getWritten(), "MAVLink scenario expectation failed") != null);
 }

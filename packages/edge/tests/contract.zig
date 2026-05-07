@@ -16,18 +16,21 @@ test "edge scaffold exposes domain types without active enforcement claims" {
 test "edge capabilities report unsupported integrations as unavailable or not implemented" {
     for (edge.capabilityReports()) |report| {
         switch (report.capability) {
-            .mavlink_gateway,
             .px4_adapter,
             .ardupilot_adapter,
-            .command_mediation,
             => try std.testing.expectEqual(edge.CapabilityStatus.not_implemented, report.status),
+            .command_mediation,
+            => try std.testing.expectEqual(edge.CapabilityStatus.active, report.status),
+            .mavlink_gateway,
+            => try std.testing.expectEqual(edge.CapabilityStatus.active, report.status),
             .real_flight_enforcement,
             .detect_and_avoid,
             .regulatory_certification,
             => try std.testing.expectEqual(edge.CapabilityStatus.unavailable, report.status),
             .policy_scaffold,
-            .fake_adapter,
             => try std.testing.expectEqual(edge.CapabilityStatus.scaffolded, report.status),
+            .fake_adapter,
+            => try std.testing.expectEqual(edge.CapabilityStatus.active, report.status),
             .policy_evaluation,
             => try std.testing.expectEqual(edge.CapabilityStatus.active, report.status),
         }
@@ -42,7 +45,7 @@ test "edge doctor output names scaffold and not implemented states" {
     const written = stream.getWritten();
 
     try std.testing.expect(std.mem.indexOf(u8, written, edge.installed_message) != null);
-    try std.testing.expect(std.mem.indexOf(u8, written, "MAVLink gateway: not implemented") != null);
+    try std.testing.expect(std.mem.indexOf(u8, written, "MAVLink gateway: active") != null);
     try std.testing.expect(std.mem.indexOf(u8, written, "real-flight enforcement: unavailable") != null);
     try std.testing.expect(std.mem.indexOf(u8, written, "regulatory certification: unavailable") != null);
 }
