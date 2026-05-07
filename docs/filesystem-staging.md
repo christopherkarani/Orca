@@ -1,9 +1,36 @@
 # Filesystem Staging
 
-Aegis-mediated writes are staged for review when policy selects staged write mode. Staging records original and staged hashes, supports diff/apply/discard, and verifies expected original and staged content before apply.
+Staged writes let users review Aegis-mediated file changes before applying them.
 
-Path handling normalizes workspace-relative paths, rejects traversal and absolute escapes, handles backslash separators, blocks symlink escapes, and applies built-in protected path rules for `.env`, SSH, cloud credentials, macOS browser/profile paths, and similar sensitive files.
+```sh
+./zig-out/bin/aegis diff --session last
+./zig-out/bin/aegis apply --session last --file path/to/file
+./zig-out/bin/aegis discard --session last
+```
 
-This is not universal transparent filesystem interception. Code that writes outside Aegis staging can bypass staged review unless an active platform backend reports otherwise.
+## Layout
 
-Known limitation: hardlinks are path-visible but do not reveal original source provenance to the path normalizer.
+Session directories may include:
+
+- `staged/`
+- `original/`
+- `staging-index.json`
+- `events.jsonl`
+- `summary.json`
+- `summary.md`
+
+## Protections
+
+Aegis normalizes paths, records original hashes where feasible, verifies staged blob hashes before apply, and denies protected paths such as `.git/**`, `.aegis/**`, `.env`, SSH keys, and cloud credentials according to policy.
+
+## Symlink And Traversal Notes
+
+Path traversal and symlink escape attempts are treated as security-sensitive and covered by tests. Review diffs before applying staged writes.
+
+## Current Interception Limitations
+
+Staging applies to Aegis-mediated writes. It is not universal transparent filesystem interception unless the platform backend reports active support.
+
+## Platform Notes
+
+macOS and Windows currently document transparent filesystem enforcement as limited. Linux may provide stronger controls when backend features are active.

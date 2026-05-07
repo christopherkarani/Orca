@@ -1,20 +1,51 @@
 # Threat Model
 
-## Protects
+## Assets Protected
 
-Aegis protects Aegis-mediated local agent sessions by filtering environment variables, classifying commands, staging writes, mediating filesystem and network decisions through policy, proxying stdio MCP traffic, redacting synthetic/secret-like values before persistence, and writing tamper-evident audit logs.
+- Local environment variables passed to agent processes.
+- Secret-like values before persistent logging.
+- Protected paths such as `.env`, SSH keys, cloud credentials, and browser credential stores.
+- Aegis-mediated writes before they reach the workspace.
+- MCP tool calls, resource reads, prompt gets, and sampling requests that pass through the stdio proxy.
+- Audit integrity for Aegis-managed sessions.
 
-## Does Not Protect
+## Threat Actors
 
-Aegis is not a perfect sandbox. It does not guarantee transparent interception of every file, process, or network action on every platform. Code that runs outside Aegis wrappers, shims, staged-write APIs, or the MCP proxy is outside the current enforcement path.
+- Prompt-injected coding agents.
+- Malicious repository content that instructs an agent to read or expose secrets.
+- Untrusted MCP servers or tool metadata.
+- Local automation scripts launched through Aegis.
 
 ## Trust Boundaries
 
-- Agent subprocesses and child tools are untrusted.
-- MCP tools, prompts, resources, sampling requests, descriptions, and schemas are untrusted.
-- Policy, fixture, and audit files are untrusted input and must be bounded.
-- Audit logs are tamper-evident, not tamper-proof, unless externally anchored.
+- The user and local OS are trusted to launch Aegis intentionally.
+- Child processes are untrusted.
+- Policy files are trusted only after validation.
+- MCP protocol messages and manifests are untrusted inputs.
+- Audit artifacts are verified as untrusted local files during replay.
 
-## Fail-Closed Rules
+## Assumptions
 
-Strict and CI modes deny invalid or ambiguous security decisions where Aegis has an enforcement path. CI mode never prompts. Deny rules beat allow rules.
+- The protected process is launched through Aegis.
+- The user does not approve unsafe actions deliberately.
+- Aegis can write audit artifacts in the workspace.
+- Platform backend claims are checked with `aegis doctor`.
+
+## Non-goals
+
+Aegis does not promise perfect sandboxing, protection outside Aegis-launched sessions, defense against root/admin/kernel compromise, or universal transparent filesystem/network interception.
+
+## Platform Limitations
+
+Wrapper and proxy controls are not the same as OS-level enforcement. macOS and Windows currently report transparent file and network enforcement as limited. Linux capability depends on kernel and host settings.
+
+## Fail-closed Behavior
+
+Strict and CI modes deny invalid policies, missing required backend features, unsupported ask prompts in CI, and malformed untrusted inputs where enforcement is required.
+
+## Known Unsupported Cases
+
+- Agents launched outside Aegis.
+- Real network blocking when traffic bypasses Aegis and no active OS/backend enforcement exists.
+- Transparent blocking of arbitrary filesystem calls on platforms where `doctor` reports limited or unavailable support.
+- Privileged users who intentionally bypass wrappers, shims, or audit paths.

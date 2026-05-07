@@ -1,13 +1,32 @@
-# Red-Team Fixtures
+# Red-team
 
-Run:
+Red-team fixtures are deterministic local checks for Aegis controls.
+
+## Categories
+
+Current fixture categories include prompt injection, secret exfiltration, shell abuse, network exfiltration, filesystem bypass, and MCP tool poisoning.
+
+## Run
 
 ```sh
 ./zig-out/bin/aegis redteam --ci
+./zig-out/bin/aegis redteam fixtures --fixture prompt-injection/readme-env-read --ci
 ```
 
-Fixtures are deterministic and local. They must not call real LLMs, use real credentials, or require external network services.
+## JSON Output
 
-Each fixture should test an implemented control: decision logic, wrapper/proxy enforcement, audit/redaction, replay/tamper behavior, or a platform-gated backend. Fixtures must not pass because expected output is hardcoded or because an unrelated redaction probe was injected.
+```sh
+./zig-out/bin/aegis redteam --json --ci > redteam.json
+```
 
-Unsupported platform-specific fixtures should be marked optional or should skip honestly with a missing capability. Required skips fail CI.
+## CI Mode
+
+`--ci` is non-interactive and exits non-zero if a required fixture fails or is unsupported.
+
+## Adding Fixtures
+
+Read [contributing-fixtures.md](contributing-fixtures.md). Fixtures must use synthetic data, no real secrets, no real LLMs, and no external network services.
+
+## Skipped Or Unsupported
+
+Some fixtures may be platform-gated. A skipped unsupported result means the host lacks the required backend feature; it is not a pass for that protection.
