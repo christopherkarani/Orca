@@ -5,6 +5,10 @@ const core = @import("../core/mod.zig");
 const intercept = @import("../intercept/mod.zig");
 const policy_mod = @import("../policy/mod.zig");
 const jsonrpc = @import("jsonrpc.zig");
+const manifests = @import("manifests.zig");
+const prompts = @import("prompts.zig");
+const resources = @import("resources.zig");
+const sampling = @import("sampling.zig");
 const tools = @import("tools.zig");
 
 pub const implemented = true;
@@ -17,12 +21,14 @@ pub const Config = struct {
     audit_writer: ?*audit.writer.SessionWriter = null,
     approval_reader: ?*std.Io.Reader = null,
     approval_writer: ?*std.Io.Writer = null,
+    manifest: ?*const manifests.Manifest = null,
 };
 
 pub const ServerIo = struct {
     context: *anyopaque,
     request: *const fn (context: *anyopaque, allocator: std.mem.Allocator, line: []const u8) anyerror![]u8,
     notify: *const fn (context: *anyopaque, line: []const u8) anyerror!void,
+    read: ?*const fn (context: *anyopaque, allocator: std.mem.Allocator) anyerror![]u8 = null,
 };
 
 const MetadataGate = struct {
@@ -97,9 +103,15 @@ pub fn runWithServer(
         }
 
         if (std.mem.eql(u8, method, "tools/call")) {
-            try handleToolsCall(allocator, config, client_writer, server, owned_line, message.value(), &metadata_gates);
+            try handleToolsCall(allocator, config, client_reader, client_writer, server, owned_line, message.value(), &metadata_gates);
+        } else if (std.mem.eql(u8, method, "resources/read")) {
+            try handleResourceRead(allocator, config, client_reader, client_writer, server, owned_line, message.value());
+        } else if (std.mem.eql(u8, method, "prompts/get")) {
+            try handlePromptGet(allocator, config, client_reader, client_writer, server, owned_line, message.value());
+        } else if (sampling.isSamplingMethod(method)) {
+            try handleSamplingRequest(allocator, config, client_reader, client_writer, server, owned_line, message.value());
         } else {
-            const response = try server.request(server.context, allocator, owned_line);
+            const response = try requestServerForClient(allocator, config, client_reader, client_writer, server, owned_line);
             defer allocator.free(response);
             var parsed_response = jsonrpc.parseLine(allocator, response) catch {
                 try jsonrpc.writeErrorResponse(client_writer, message.id(), .internal_error, "MCP server emitted invalid JSON-RPC");
@@ -112,6 +124,22 @@ pub fn runWithServer(
                 try appendAudit(config.audit_writer, .mcp_initialize, .mcp_tool, config.server_name, null);
             } else if (std.mem.eql(u8, method, "tools/list")) {
                 try auditToolsList(allocator, config, parsed_response.value(), &metadata_gates);
+            } else if (std.mem.eql(u8, method, "resources/list")) {
+                const target = try resources.listTargetDisplay(allocator, config.server_name);
+                defer allocator.free(target);
+                try appendAudit(config.audit_writer, .mcp_resources_list, .mcp_resource, target, .{
+                    .result = .observe,
+                    .reason = "logged MCP resources/list response",
+                    .ci_may_proceed = true,
+                });
+            } else if (std.mem.eql(u8, method, "prompts/list")) {
+                const target = try prompts.listTargetDisplay(allocator, config.server_name);
+                defer allocator.free(target);
+                try appendAudit(config.audit_writer, .mcp_prompts_list, .mcp_prompt, target, .{
+                    .result = .observe,
+                    .reason = "logged MCP prompts/list response",
+                    .ci_may_proceed = true,
+                });
             } else {
                 try appendAudit(config.audit_writer, .mcp_unknown_method, .unknown, method, .{
                     .result = .observe,
@@ -126,6 +154,7 @@ pub fn runWithServer(
 fn handleToolsCall(
     allocator: std.mem.Allocator,
     config: Config,
+    client_reader: *std.Io.Reader,
     client_writer: anytype,
     server: ServerIo,
     request_line: []const u8,
@@ -146,8 +175,11 @@ fn handleToolsCall(
         allocator,
     );
     defer eval.deinit(allocator);
+    var influenced = try influenceToolDecision(allocator, eval, config, tool_name);
+    defer influenced.deinit(allocator);
 
-    const initial_decision = if (metadata_gates.get(tool_name)) |gate| gate.decision() else eval.decision;
+    const policy_decision = influenced.decision;
+    const initial_decision = if (metadata_gates.get(tool_name)) |gate| gate.decision() else policy_decision;
     try appendAudit(config.audit_writer, .mcp_tool_call, .mcp_tool, target, initial_decision);
 
     if (metadata_gates.get(tool_name)) |gate| {
@@ -190,14 +222,14 @@ fn handleToolsCall(
         try appendAudit(config.audit_writer, .user_approval, .approval, target, final);
     }
 
-    if (eval.decision.result == .ask) {
-        try appendAudit(config.audit_writer, .mcp_tool_call_approval_requested, .mcp_tool, target, eval.decision);
+    if (policy_decision.result == .ask) {
+        try appendAudit(config.audit_writer, .mcp_tool_call_approval_requested, .mcp_tool, target, policy_decision);
         if (config.mode == .ci or config.approval_reader == null or config.approval_writer == null) {
             const denied: core.decision.Decision = .{
                 .result = .deny,
-                .rule_id = eval.decision.rule_id,
+                .rule_id = policy_decision.rule_id,
                 .reason = if (config.mode == .ci) "ask converted to deny in ci mode" else "interactive approval unavailable for stdio proxy",
-                .risk_score = eval.decision.risk_score,
+                .risk_score = policy_decision.risk_score,
                 .ci_may_proceed = false,
             };
             try appendAudit(config.audit_writer, .user_denial, .approval, target, denied);
@@ -209,13 +241,13 @@ fn handleToolsCall(
         const choice = try intercept.approvals.prompt(config.approval_reader.?, config.approval_writer.?, .{
             .command = target,
             .risk_class = "mcp_tool",
-            .risk_reason = eval.decision.reason,
+            .risk_reason = policy_decision.reason,
             .policy_reason = eval.explanation,
             .matched_rule = if (eval.matched_rule) |rule| rule.id else null,
         });
         var session_approvals = intercept.approvals.SessionApprovals.init(allocator);
         defer session_approvals.deinit();
-        const final = try intercept.approvals.applyApproval(allocator, eval.decision, target, &session_approvals, choice);
+        const final = try intercept.approvals.applyApproval(allocator, policy_decision, target, &session_approvals, choice);
         defer allocator.free(final.reason);
         if (!final.allowsExecution(config.mode == .ci)) {
             try appendAudit(config.audit_writer, .user_denial, .approval, target, final);
@@ -224,14 +256,14 @@ fn handleToolsCall(
             return;
         }
         try appendAudit(config.audit_writer, .user_approval, .approval, target, final);
-    } else if (!eval.decision.allowsExecution(config.mode == .ci)) {
-        try appendAudit(config.audit_writer, .mcp_tool_call_denied, .mcp_tool, target, eval.decision);
+    } else if (!policy_decision.allowsExecution(config.mode == .ci)) {
+        try appendAudit(config.audit_writer, .mcp_tool_call_denied, .mcp_tool, target, policy_decision);
         try jsonrpc.writeErrorResponse(client_writer, jsonrpc.idOf(request_value), .policy_denied, "MCP tool call denied by policy");
         return;
     }
 
-    try appendAudit(config.audit_writer, .mcp_tool_call_allowed, .mcp_tool, target, eval.decision);
-    const response = try server.request(server.context, allocator, request_line);
+    try appendAudit(config.audit_writer, .mcp_tool_call_allowed, .mcp_tool, target, policy_decision);
+    const response = try requestServerForClient(allocator, config, client_reader, client_writer, server, request_line);
     defer allocator.free(response);
     var parsed_response = jsonrpc.parseLine(allocator, response) catch {
         try jsonrpc.writeErrorResponse(client_writer, jsonrpc.idOf(request_value), .internal_error, "MCP server emitted invalid JSON-RPC");
@@ -307,6 +339,403 @@ fn upsertMetadataGate(
     try metadata_gates.put(owned_name, .{ .risk = risk, .reason = owned_reason });
 }
 
+fn requestServerForClient(
+    allocator: std.mem.Allocator,
+    config: Config,
+    client_reader: *std.Io.Reader,
+    client_writer: anytype,
+    server: ServerIo,
+    request_line: []const u8,
+) ![]u8 {
+    var response = try server.request(server.context, allocator, request_line);
+    while (true) {
+        var parsed = jsonrpc.parseLine(allocator, response) catch return response;
+        const method = parsed.method();
+        if (method) |method_name| {
+            if (jsonrpc.idOf(parsed.value()) != null and sampling.isSamplingMethod(method_name)) {
+                try handleServerOriginatedSampling(allocator, config, client_reader, client_writer, server, parsed.value(), response);
+                parsed.deinit();
+                allocator.free(response);
+                const read = server.read orelse return error.McpServerOriginatedSamplingRequiresReadableTransport;
+                response = try read(server.context, allocator);
+                continue;
+            }
+        }
+        parsed.deinit();
+        return response;
+    }
+}
+
+fn handleServerOriginatedSampling(
+    allocator: std.mem.Allocator,
+    config: Config,
+    client_reader: *std.Io.Reader,
+    client_writer: anytype,
+    server: ServerIo,
+    request_value: std.json.Value,
+    request_line: []const u8,
+) !void {
+    const model_name = sampling.model(request_value);
+    const target = try sampling.targetDisplay(allocator, config.server_name, model_name, sampling.params(request_value));
+    defer allocator.free(target);
+
+    var eval = try policy_mod.evaluate.action(
+        config.policy,
+        .{ .mcp_sampling_request = .{ .server = config.server_name, .model = model_name } },
+        .{ .mode = config.mode },
+        allocator,
+    );
+    defer eval.deinit(allocator);
+    const manifest_default = if (config.manifest) |manifest| manifest.sampling_default else null;
+    var influenced = try influenceDecision(allocator, eval.decision, eval.matched_rule != null, manifest_default, config.mode, "manifest sampling default");
+    defer influenced.deinit(allocator);
+    var decision = influenced.decision;
+    if (manifest_default == null and eval.matched_rule == null) {
+        decision = .{
+            .result = .deny,
+            .reason = "sampling default deny",
+            .risk_score = 95,
+            .ci_may_proceed = false,
+        };
+    }
+    try appendAudit(config.audit_writer, .mcp_sampling_request, .mcp_sampling, target, decision);
+
+    if (decision.result == .ask) {
+        if (config.mode == .ci or config.approval_reader == null or config.approval_writer == null) {
+            const denied: core.decision.Decision = .{
+                .result = .deny,
+                .reason = if (config.mode == .ci) "ask converted to deny in ci mode" else "interactive approval unavailable for server-originated MCP sampling",
+                .risk_score = decision.risk_score,
+                .ci_may_proceed = false,
+            };
+            try appendAudit(config.audit_writer, .user_denial, .approval, target, denied);
+            try appendAudit(config.audit_writer, .mcp_sampling_request, .mcp_sampling, target, denied);
+            try sendServerSamplingError(allocator, server, request_value, "MCP sampling request denied by policy");
+            return;
+        }
+        const choice = try intercept.approvals.prompt(config.approval_reader.?, config.approval_writer.?, .{
+            .command = target,
+            .risk_class = "mcp_sampling",
+            .risk_reason = decision.reason,
+            .policy_reason = decision.reason,
+            .matched_rule = decision.rule_id,
+        });
+        var session_approvals = intercept.approvals.SessionApprovals.init(allocator);
+        defer session_approvals.deinit();
+        const final = try intercept.approvals.applyApproval(allocator, decision, target, &session_approvals, choice);
+        defer allocator.free(final.reason);
+        if (!final.allowsExecution(config.mode == .ci)) {
+            try appendAudit(config.audit_writer, .user_denial, .approval, target, final);
+            try appendAudit(config.audit_writer, .mcp_sampling_request, .mcp_sampling, target, final);
+            try sendServerSamplingError(allocator, server, request_value, "MCP sampling request denied by policy");
+            return;
+        }
+        try appendAudit(config.audit_writer, .user_approval, .approval, target, final);
+    } else if (!decision.allowsExecution(config.mode == .ci)) {
+        try appendAudit(config.audit_writer, .mcp_sampling_request, .mcp_sampling, target, decision);
+        try sendServerSamplingError(allocator, server, request_value, "MCP sampling request denied by policy");
+        return;
+    }
+
+    try @import("stdio.zig").writeRawMessage(client_writer, request_line);
+    const client_response = try @import("stdio.zig").readMessageLine(client_reader, allocator) orelse return error.McpClientClosedDuringSampling;
+    defer allocator.free(client_response);
+    var parsed_client_response = jsonrpc.parseLine(allocator, client_response) catch {
+        try sendServerSamplingError(allocator, server, request_value, "MCP sampling client response was invalid");
+        return;
+    };
+    defer parsed_client_response.deinit();
+    if (parsed_client_response.method() != null) {
+        try sendServerSamplingError(allocator, server, request_value, "MCP sampling client response must be a JSON-RPC response");
+        return;
+    }
+    try server.notify(server.context, client_response);
+}
+
+fn sendServerSamplingError(
+    allocator: std.mem.Allocator,
+    server: ServerIo,
+    request_value: std.json.Value,
+    message: []const u8,
+) !void {
+    const response = try jsonrpc.errorResponseAlloc(allocator, jsonrpc.idOf(request_value), .policy_denied, message);
+    defer allocator.free(response);
+    const line = std.mem.trimRight(u8, response, "\n");
+    try server.notify(server.context, line);
+}
+
+const InfluencedDecision = struct {
+    decision: core.decision.Decision,
+    owned_reason: ?[]const u8 = null,
+
+    fn deinit(self: *InfluencedDecision, allocator: std.mem.Allocator) void {
+        if (self.owned_reason) |reason| allocator.free(reason);
+    }
+};
+
+fn influenceToolDecision(
+    allocator: std.mem.Allocator,
+    eval: policy_mod.schema.Evaluation,
+    config: Config,
+    tool_name: []const u8,
+) !InfluencedDecision {
+    const manifest_default = if (config.manifest) |manifest| manifest.toolDefault(tool_name) else null;
+    return influenceDecision(allocator, eval.decision, eval.matched_rule != null, manifest_default, config.mode, "manifest tool default");
+}
+
+fn influenceDecision(
+    allocator: std.mem.Allocator,
+    policy_decision: core.decision.Decision,
+    matched_policy_rule: bool,
+    manifest_default: ?policy_mod.schema.DecisionValue,
+    mode: policy_mod.schema.Mode,
+    reason_prefix: []const u8,
+) !InfluencedDecision {
+    if (manifest_default == null) return .{ .decision = policy_decision };
+    const manifest_decision = manifestDefaultDecision(manifest_default.?, mode);
+    if (matched_policy_rule and policy_decision.result == .deny) return .{ .decision = policy_decision };
+    if (matched_policy_rule and rankDecision(policy_decision.result) >= rankDecision(manifest_decision)) return .{ .decision = policy_decision };
+    if (!matched_policy_rule and policy_decision.result == .deny and manifest_decision != .deny) {
+        // Mode defaults are allowed to be narrowed or opened by manifests, but CI ask-to-deny remains deny below.
+        if (mode == .ci and manifest_default.? == .ask) return .{ .decision = policy_decision };
+    }
+
+    const reason = try std.fmt.allocPrint(allocator, "{s}: {s}", .{ reason_prefix, @tagName(manifest_default.?) });
+    return .{
+        .decision = .{
+            .result = manifest_decision,
+            .reason = reason,
+            .risk_score = policy_decision.risk_score,
+            .requires_user = manifest_decision == .ask,
+            .ci_may_proceed = manifest_decision == .allow or manifest_decision == .observe,
+        },
+        .owned_reason = reason,
+    };
+}
+
+fn manifestDefaultDecision(default: policy_mod.schema.DecisionValue, mode: policy_mod.schema.Mode) core.decision.DecisionResult {
+    if (mode == .ci and default == .ask) return .deny;
+    return default.toDecisionResult();
+}
+
+fn rankDecision(result: core.decision.DecisionResult) u8 {
+    return switch (result) {
+        .deny => 4,
+        .ask => 3,
+        .allow => 2,
+        .observe => 1,
+        .redact, .stage, .broker => 0,
+    };
+}
+
+fn handleResourceRead(
+    allocator: std.mem.Allocator,
+    config: Config,
+    client_reader: *std.Io.Reader,
+    client_writer: anytype,
+    server: ServerIo,
+    request_line: []const u8,
+    request_value: std.json.Value,
+) !void {
+    const uri = resources.readUri(request_value) orelse {
+        try jsonrpc.writeErrorResponse(client_writer, jsonrpc.idOf(request_value), .invalid_params, "resources/read missing params.uri");
+        return;
+    };
+    const target = try resources.targetDisplay(allocator, config.server_name, uri);
+    defer allocator.free(target);
+
+    var eval = try policy_mod.evaluate.action(
+        config.policy,
+        .{ .mcp_resource_read = .{ .server = config.server_name, .uri = uri } },
+        .{ .mode = config.mode },
+        allocator,
+    );
+    defer eval.deinit(allocator);
+
+    const manifest_default = if (config.manifest) |manifest| manifest.resources_default else null;
+    var influenced = try influenceDecision(allocator, eval.decision, eval.matched_rule != null, manifest_default, config.mode, "manifest resource default");
+    defer influenced.deinit(allocator);
+    var decision = influenced.decision;
+    var sensitive_reason: ?[]const u8 = null;
+    defer if (sensitive_reason) |reason| allocator.free(reason);
+    if (resources.isSensitiveUri(uri) and eval.matched_rule == null and decision.result == .allow) {
+        sensitive_reason = try allocator.dupe(u8, "sensitive resource URI requires explicit policy allow");
+        decision = .{
+            .result = if (config.mode == .ci) .deny else .ask,
+            .reason = sensitive_reason.?,
+            .requires_user = config.mode != .ci,
+            .ci_may_proceed = false,
+            .risk_score = 85,
+        };
+    }
+    try appendAudit(config.audit_writer, .mcp_resource_read, .mcp_resource, target, decision);
+    if (!try enforceDecision(allocator, config, client_writer, jsonrpc.idOf(request_value), .mcp_resource_read, .mcp_resource, target, decision, "MCP resource read denied by policy")) return;
+
+    const response = try requestServerForClient(allocator, config, client_reader, client_writer, server, request_line);
+    defer allocator.free(response);
+    if (resources.responseTooLarge(response)) {
+        try appendAudit(config.audit_writer, .mcp_resource_read, .mcp_resource, target, .{
+            .result = .deny,
+            .reason = "MCP resource response exceeded audit-safe bounds",
+            .risk_score = 80,
+            .ci_may_proceed = false,
+        });
+        try jsonrpc.writeErrorResponse(client_writer, jsonrpc.idOf(request_value), .message_too_large, "MCP resource response too large");
+        return;
+    }
+    var parsed_response = jsonrpc.parseLine(allocator, response) catch {
+        try jsonrpc.writeErrorResponse(client_writer, jsonrpc.idOf(request_value), .internal_error, "MCP server emitted invalid JSON-RPC");
+        return;
+    };
+    parsed_response.deinit();
+    try @import("stdio.zig").writeRawMessage(client_writer, response);
+}
+
+fn handlePromptGet(
+    allocator: std.mem.Allocator,
+    config: Config,
+    client_reader: *std.Io.Reader,
+    client_writer: anytype,
+    server: ServerIo,
+    request_line: []const u8,
+    request_value: std.json.Value,
+) !void {
+    const prompt_name = prompts.getName(request_value) orelse {
+        try jsonrpc.writeErrorResponse(client_writer, jsonrpc.idOf(request_value), .invalid_params, "prompts/get missing params.name");
+        return;
+    };
+    const target = try prompts.targetDisplay(allocator, config.server_name, prompt_name, prompts.arguments(request_value));
+    defer allocator.free(target);
+
+    var eval = try policy_mod.evaluate.action(
+        config.policy,
+        .{ .mcp_prompt_get = .{ .server = config.server_name, .prompt_name = prompt_name } },
+        .{ .mode = config.mode },
+        allocator,
+    );
+    defer eval.deinit(allocator);
+    const manifest_default = if (config.manifest) |manifest| manifest.prompts_default else null;
+    var influenced = try influenceDecision(allocator, eval.decision, eval.matched_rule != null, manifest_default, config.mode, "manifest prompt default");
+    defer influenced.deinit(allocator);
+    const decision = influenced.decision;
+    try appendAudit(config.audit_writer, .mcp_prompt_get, .mcp_prompt, target, decision);
+    if (!try enforceDecision(allocator, config, client_writer, jsonrpc.idOf(request_value), .mcp_prompt_get, .mcp_prompt, target, decision, "MCP prompt get denied by policy")) return;
+
+    const response = try requestServerForClient(allocator, config, client_reader, client_writer, server, request_line);
+    defer allocator.free(response);
+    if (response.len > core.limits.max_event_field_len) {
+        try jsonrpc.writeErrorResponse(client_writer, jsonrpc.idOf(request_value), .message_too_large, "MCP prompt response too large");
+        return;
+    }
+    var parsed_response = jsonrpc.parseLine(allocator, response) catch {
+        try jsonrpc.writeErrorResponse(client_writer, jsonrpc.idOf(request_value), .internal_error, "MCP server emitted invalid JSON-RPC");
+        return;
+    };
+    parsed_response.deinit();
+    try @import("stdio.zig").writeRawMessage(client_writer, response);
+}
+
+fn handleSamplingRequest(
+    allocator: std.mem.Allocator,
+    config: Config,
+    client_reader: *std.Io.Reader,
+    client_writer: anytype,
+    server: ServerIo,
+    request_line: []const u8,
+    request_value: std.json.Value,
+) !void {
+    const model_name = sampling.model(request_value);
+    const target = try sampling.targetDisplay(allocator, config.server_name, model_name, sampling.params(request_value));
+    defer allocator.free(target);
+
+    var eval = try policy_mod.evaluate.action(
+        config.policy,
+        .{ .mcp_sampling_request = .{ .server = config.server_name, .model = model_name } },
+        .{ .mode = config.mode },
+        allocator,
+    );
+    defer eval.deinit(allocator);
+    const manifest_default = if (config.manifest) |manifest| manifest.sampling_default else null;
+    var influenced = try influenceDecision(allocator, eval.decision, eval.matched_rule != null, manifest_default, config.mode, "manifest sampling default");
+    defer influenced.deinit(allocator);
+    var decision = influenced.decision;
+    if (manifest_default == null and eval.matched_rule == null) {
+        decision = .{
+            .result = .deny,
+            .reason = "sampling default deny",
+            .risk_score = 95,
+            .ci_may_proceed = false,
+        };
+    }
+    try appendAudit(config.audit_writer, .mcp_sampling_request, .mcp_sampling, target, decision);
+    if (!try enforceDecision(allocator, config, client_writer, jsonrpc.idOf(request_value), .mcp_sampling_request, .mcp_sampling, target, decision, "MCP sampling request denied by policy")) return;
+
+    const response = try requestServerForClient(allocator, config, client_reader, client_writer, server, request_line);
+    defer allocator.free(response);
+    if (response.len > core.limits.max_event_field_len) {
+        try jsonrpc.writeErrorResponse(client_writer, jsonrpc.idOf(request_value), .message_too_large, "MCP sampling response too large");
+        return;
+    }
+    var parsed_response = jsonrpc.parseLine(allocator, response) catch {
+        try jsonrpc.writeErrorResponse(client_writer, jsonrpc.idOf(request_value), .internal_error, "MCP server emitted invalid JSON-RPC");
+        return;
+    };
+    parsed_response.deinit();
+    try @import("stdio.zig").writeRawMessage(client_writer, response);
+}
+
+fn enforceDecision(
+    allocator: std.mem.Allocator,
+    config: Config,
+    client_writer: anytype,
+    id: ?std.json.Value,
+    event_type: core.event.EventType,
+    target_kind: core.types.TargetKind,
+    target: []const u8,
+    decision: core.decision.Decision,
+    error_message: []const u8,
+) !bool {
+    if (decision.result == .ask) {
+        if (config.mode == .ci or config.approval_reader == null or config.approval_writer == null) {
+            const denied: core.decision.Decision = .{
+                .result = .deny,
+                .reason = if (config.mode == .ci) "ask converted to deny in ci mode" else "interactive approval unavailable for stdio proxy",
+                .risk_score = decision.risk_score,
+                .ci_may_proceed = false,
+            };
+            try appendAudit(config.audit_writer, .user_denial, .approval, target, denied);
+            try appendAudit(config.audit_writer, event_type, target_kind, target, denied);
+            try jsonrpc.writeErrorResponse(client_writer, id, .policy_denied, error_message);
+            return false;
+        }
+        const choice = try intercept.approvals.prompt(config.approval_reader.?, config.approval_writer.?, .{
+            .command = target,
+            .risk_class = @tagName(target_kind),
+            .risk_reason = decision.reason,
+            .policy_reason = decision.reason,
+            .matched_rule = decision.rule_id,
+        });
+        var session_approvals = intercept.approvals.SessionApprovals.init(allocator);
+        defer session_approvals.deinit();
+        const final = try intercept.approvals.applyApproval(allocator, decision, target, &session_approvals, choice);
+        defer allocator.free(final.reason);
+        if (!final.allowsExecution(config.mode == .ci)) {
+            try appendAudit(config.audit_writer, .user_denial, .approval, target, final);
+            try appendAudit(config.audit_writer, event_type, target_kind, target, final);
+            try jsonrpc.writeErrorResponse(client_writer, id, .policy_denied, error_message);
+            return false;
+        }
+        try appendAudit(config.audit_writer, .user_approval, .approval, target, final);
+        return true;
+    }
+    if (!decision.allowsExecution(config.mode == .ci)) {
+        try appendAudit(config.audit_writer, event_type, target_kind, target, decision);
+        try jsonrpc.writeErrorResponse(client_writer, id, .policy_denied, error_message);
+        return false;
+    }
+    return true;
+}
+
 fn riskRank(risk: tools.RiskClass) u8 {
     return switch (risk) {
         .unknown => 0,
@@ -369,6 +798,9 @@ const FakeServer = struct {
     saw_initialize: bool = false,
     saw_safe_call: bool = false,
     saw_notification: bool = false,
+    saw_resource_read: bool = false,
+    saw_prompt_get: bool = false,
+    saw_sampling: bool = false,
 
     fn request(context: *anyopaque, allocator: std.mem.Allocator, line: []const u8) ![]u8 {
         const self: *FakeServer = @ptrCast(@alignCast(context));
@@ -386,6 +818,24 @@ const FakeServer = struct {
             if (std.mem.eql(u8, jsonrpc.toolCallName(parsed.value()).?, "search_issues")) self.saw_safe_call = true;
             return allocator.dupe(u8, "{\"jsonrpc\":\"2.0\",\"id\":3,\"result\":{\"content\":[{\"type\":\"text\",\"text\":\"ok\"}]}}");
         }
+        if (std.mem.eql(u8, method, "resources/list")) {
+            return allocator.dupe(u8, "{\"jsonrpc\":\"2.0\",\"id\":6,\"result\":{\"resources\":[{\"uri\":\"repo://docs/README.md\",\"name\":\"README\"}]}}");
+        }
+        if (std.mem.eql(u8, method, "resources/read")) {
+            self.saw_resource_read = true;
+            return allocator.dupe(u8, "{\"jsonrpc\":\"2.0\",\"id\":7,\"result\":{\"contents\":[{\"uri\":\"repo://docs/README.md\",\"text\":\"resource ok fake_secret_value\"}]}}");
+        }
+        if (std.mem.eql(u8, method, "prompts/list")) {
+            return allocator.dupe(u8, "{\"jsonrpc\":\"2.0\",\"id\":8,\"result\":{\"prompts\":[{\"name\":\"review\"}]}}");
+        }
+        if (std.mem.eql(u8, method, "prompts/get")) {
+            self.saw_prompt_get = true;
+            return allocator.dupe(u8, "{\"jsonrpc\":\"2.0\",\"id\":9,\"result\":{\"messages\":[{\"role\":\"user\",\"content\":{\"type\":\"text\",\"text\":\"prompt fake_secret_value\"}}]}}");
+        }
+        if (sampling.isSamplingMethod(method)) {
+            self.saw_sampling = true;
+            return allocator.dupe(u8, "{\"jsonrpc\":\"2.0\",\"id\":10,\"result\":{\"role\":\"assistant\",\"content\":{\"type\":\"text\",\"text\":\"sampled\"}}}");
+        }
         return allocator.dupe(u8, "{\"jsonrpc\":\"2.0\",\"id\":9,\"result\":{}}");
     }
 
@@ -396,6 +846,42 @@ const FakeServer = struct {
         }
     }
 };
+
+const ServerSamplingFirstServer = struct {
+    saw_sampling_error: bool = false,
+    saw_sampling_client_response: bool = false,
+
+    fn request(_: *anyopaque, allocator: std.mem.Allocator, _: []const u8) ![]u8 {
+        return allocator.dupe(u8, "{\"jsonrpc\":\"2.0\",\"id\":\"srv-1\",\"method\":\"sampling/createMessage\",\"params\":{\"model\":\"local\",\"messages\":[{\"role\":\"user\",\"content\":{\"type\":\"text\",\"text\":\"fake_secret_value\"}}]}}");
+    }
+
+    fn read(_: *anyopaque, allocator: std.mem.Allocator) ![]u8 {
+        return allocator.dupe(u8, "{\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{\"tools\":[]}}");
+    }
+
+    fn notify(context: *anyopaque, line: []const u8) !void {
+        const self: *ServerSamplingFirstServer = @ptrCast(@alignCast(context));
+        if (std.mem.indexOf(u8, line, "\"error\"") != null and std.mem.indexOf(u8, line, "\"srv-1\"") != null) {
+            self.saw_sampling_error = true;
+        }
+        if (std.mem.indexOf(u8, line, "\"result\"") != null and std.mem.indexOf(u8, line, "\"srv-1\"") != null) {
+            self.saw_sampling_client_response = true;
+        }
+    }
+};
+
+fn testSession(workspace_root: []const u8) !core.session.Session {
+    const ts = core.time.Timestamp.fromUnixSeconds(1_777_983_130);
+    return .{
+        .id = try core.session.generateSessionId(ts),
+        .started_at = ts,
+        .command = "aegis mcp proxy",
+        .args = &.{"fake"},
+        .workspace_root = workspace_root,
+        .mode = .strict,
+        .platform = core.platform.detectOs(),
+    };
+}
 
 test "proxy forwards initialize and tools/list" {
     const load = policy_mod.load;
@@ -479,6 +965,351 @@ test "ask tool denies in ci mode without approval prompt" {
     }, &input, output.writer(), .{ .context = &server, .request = FakeServer.request, .notify = FakeServer.notify });
     try std.testing.expect(!server.saw_safe_call);
     try std.testing.expect(std.mem.indexOf(u8, output.getWritten(), "\"error\"") != null);
+}
+
+test "manifest tool default influences decision and explicit policy deny wins" {
+    const load = policy_mod.load;
+    var allow_policy = try load.parseFromSlice(std.testing.allocator,
+        \\version: 1
+        \\mode: strict
+        \\mcp:
+        \\  default: ask
+    , "test.yaml");
+    defer allow_policy.deinit();
+    var manifest = try manifests.parseFromSlice(std.testing.allocator,
+        \\version: 1
+        \\server:
+        \\  name: fake
+        \\  transport: stdio
+        \\  command: fake
+        \\tools:
+        \\  search_issues:
+        \\    risk: low
+        \\    default: allow
+        \\resources:
+        \\  default: ask
+        \\prompts:
+        \\  default: ask
+        \\sampling:
+        \\  default: deny
+    , "fake.yaml");
+    defer manifest.deinit(std.testing.allocator);
+    var server = FakeServer{ .allocator = std.testing.allocator };
+    var input: std.Io.Reader = .fixed("{\"jsonrpc\":\"2.0\",\"id\":3,\"method\":\"tools/call\",\"params\":{\"name\":\"search_issues\",\"arguments\":{\"q\":\"hi\"}}}\n");
+    var output_buf: [1024]u8 = undefined;
+    var output = std.io.fixedBufferStream(&output_buf);
+    try runWithServer(std.testing.allocator, .{
+        .server_name = "fake",
+        .server_command_display = "fake",
+        .policy = &allow_policy,
+        .mode = .strict,
+        .manifest = &manifest,
+    }, &input, output.writer(), .{ .context = &server, .request = FakeServer.request, .notify = FakeServer.notify });
+    try std.testing.expect(server.saw_safe_call);
+    try std.testing.expect(std.mem.indexOf(u8, output.getWritten(), "\"result\"") != null);
+
+    var deny_policy = try load.parseFromSlice(std.testing.allocator,
+        \\version: 1
+        \\mode: strict
+        \\mcp:
+        \\  deny:
+        \\    - "fake.search_issues"
+    , "test.yaml");
+    defer deny_policy.deinit();
+    var denied_server = FakeServer{ .allocator = std.testing.allocator };
+    var denied_input: std.Io.Reader = .fixed("{\"jsonrpc\":\"2.0\",\"id\":4,\"method\":\"tools/call\",\"params\":{\"name\":\"search_issues\"}}\n");
+    var denied_output_buf: [1024]u8 = undefined;
+    var denied_output = std.io.fixedBufferStream(&denied_output_buf);
+    try runWithServer(std.testing.allocator, .{
+        .server_name = "fake",
+        .server_command_display = "fake",
+        .policy = &deny_policy,
+        .mode = .strict,
+        .manifest = &manifest,
+    }, &denied_input, denied_output.writer(), .{ .context = &denied_server, .request = FakeServer.request, .notify = FakeServer.notify });
+    try std.testing.expect(!denied_server.saw_safe_call);
+    try std.testing.expect(std.mem.indexOf(u8, denied_output.getWritten(), "\"error\"") != null);
+}
+
+test "resources and prompts list are logged while read/get are mediated" {
+    const load = policy_mod.load;
+    var policy = try load.parseFromSlice(std.testing.allocator,
+        \\version: 1
+        \\mode: strict
+        \\mcp:
+        \\  allow:
+        \\    - "fake.repo://docs/README.md"
+        \\    - "fake.review"
+    , "test.yaml");
+    defer policy.deinit();
+
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const root = try tmp.dir.realpathAlloc(std.testing.allocator, ".");
+    defer std.testing.allocator.free(root);
+    const session = try testSession(root);
+    var writer = try audit.writer.SessionWriter.init(std.testing.allocator, session);
+    defer writer.deinit();
+
+    var server = FakeServer{ .allocator = std.testing.allocator };
+    var input: std.Io.Reader = .fixed(
+        "{\"jsonrpc\":\"2.0\",\"id\":6,\"method\":\"resources/list\"}\n" ++
+            "{\"jsonrpc\":\"2.0\",\"id\":7,\"method\":\"resources/read\",\"params\":{\"uri\":\"repo://docs/README.md\"}}\n" ++
+            "{\"jsonrpc\":\"2.0\",\"id\":8,\"method\":\"prompts/list\"}\n" ++
+            "{\"jsonrpc\":\"2.0\",\"id\":9,\"method\":\"prompts/get\",\"params\":{\"name\":\"review\",\"arguments\":{\"token\":\"fake_secret_value\"}}}\n"
+    );
+    var output_buf: [4096]u8 = undefined;
+    var output = std.io.fixedBufferStream(&output_buf);
+    try runWithServer(std.testing.allocator, .{
+        .server_name = "fake",
+        .server_command_display = "fake",
+        .policy = &policy,
+        .mode = .strict,
+        .audit_writer = &writer,
+    }, &input, output.writer(), .{ .context = &server, .request = FakeServer.request, .notify = FakeServer.notify });
+    try std.testing.expect(server.saw_resource_read);
+    try std.testing.expect(server.saw_prompt_get);
+    try std.testing.expect(std.mem.indexOf(u8, output.getWritten(), "\"result\"") != null);
+
+    const events_path = try std.fs.path.join(std.testing.allocator, &.{ writer.session_dir_path, "events.jsonl" });
+    defer std.testing.allocator.free(events_path);
+    const events = try std.fs.cwd().readFileAlloc(std.testing.allocator, events_path, 64 * 1024);
+    defer std.testing.allocator.free(events);
+    try std.testing.expect(std.mem.indexOf(u8, events, "\"type\":\"mcp_resources_list\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, events, "\"type\":\"mcp_prompts_list\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, events, "fake_secret_value") == null);
+}
+
+test "prompts get deny returns json-rpc error without forwarding" {
+    const load = policy_mod.load;
+    var policy = try load.parseFromSlice(std.testing.allocator,
+        \\version: 1
+        \\mode: strict
+        \\mcp:
+        \\  deny:
+        \\    - "fake.review"
+    , "test.yaml");
+    defer policy.deinit();
+
+    var server = FakeServer{ .allocator = std.testing.allocator };
+    var input: std.Io.Reader = .fixed("{\"jsonrpc\":\"2.0\",\"id\":9,\"method\":\"prompts/get\",\"params\":{\"name\":\"review\"}}\n");
+    var output_buf: [1024]u8 = undefined;
+    var output = std.io.fixedBufferStream(&output_buf);
+    try runWithServer(std.testing.allocator, .{
+        .server_name = "fake",
+        .server_command_display = "fake",
+        .policy = &policy,
+        .mode = .strict,
+    }, &input, output.writer(), .{ .context = &server, .request = FakeServer.request, .notify = FakeServer.notify });
+    try std.testing.expect(!server.saw_prompt_get);
+    try std.testing.expect(std.mem.indexOf(u8, output.getWritten(), "\"error\"") != null);
+}
+
+test "tool argument redaction reaches MCP audit events" {
+    const load = policy_mod.load;
+    var policy = try load.parseFromSlice(std.testing.allocator,
+        \\version: 1
+        \\mode: strict
+        \\mcp:
+        \\  allow:
+        \\    - "fake.search_issues"
+    , "test.yaml");
+    defer policy.deinit();
+
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const root = try tmp.dir.realpathAlloc(std.testing.allocator, ".");
+    defer std.testing.allocator.free(root);
+    const session = try testSession(root);
+    var writer = try audit.writer.SessionWriter.init(std.testing.allocator, session);
+    defer writer.deinit();
+
+    var server = FakeServer{ .allocator = std.testing.allocator };
+    var input: std.Io.Reader = .fixed("{\"jsonrpc\":\"2.0\",\"id\":3,\"method\":\"tools/call\",\"params\":{\"name\":\"search_issues\",\"arguments\":{\"OPENAI_API_KEY\":\"sk-fakeSyntheticOpenAIKey1234567890\"}}}\n");
+    var output_buf: [2048]u8 = undefined;
+    var output = std.io.fixedBufferStream(&output_buf);
+    try runWithServer(std.testing.allocator, .{
+        .server_name = "fake",
+        .server_command_display = "fake",
+        .policy = &policy,
+        .mode = .strict,
+        .audit_writer = &writer,
+    }, &input, output.writer(), .{ .context = &server, .request = FakeServer.request, .notify = FakeServer.notify });
+    try std.testing.expect(server.saw_safe_call);
+
+    const events_path = try std.fs.path.join(std.testing.allocator, &.{ writer.session_dir_path, "events.jsonl" });
+    defer std.testing.allocator.free(events_path);
+    const events = try std.fs.cwd().readFileAlloc(std.testing.allocator, events_path, 64 * 1024);
+    defer std.testing.allocator.free(events);
+    try std.testing.expect(std.mem.indexOf(u8, events, "sk-fakeSyntheticOpenAIKey") == null);
+    try std.testing.expect(std.mem.indexOf(u8, events, "[REDACTED:") != null);
+}
+
+test "sensitive resource uri asks by default and denies without approval" {
+    const load = policy_mod.load;
+    var policy = try load.parseFromSlice(std.testing.allocator,
+        \\version: 1
+        \\mode: strict
+        \\mcp:
+        \\  default: ask
+    , "test.yaml");
+    defer policy.deinit();
+    var server = FakeServer{ .allocator = std.testing.allocator };
+    var input: std.Io.Reader = .fixed("{\"jsonrpc\":\"2.0\",\"id\":7,\"method\":\"resources/read\",\"params\":{\"uri\":\"file:///Users/alice/.ssh/id_rsa\"}}\n");
+    var output_buf: [1024]u8 = undefined;
+    var output = std.io.fixedBufferStream(&output_buf);
+    try runWithServer(std.testing.allocator, .{
+        .server_name = "fake",
+        .server_command_display = "fake",
+        .policy = &policy,
+        .mode = .strict,
+    }, &input, output.writer(), .{ .context = &server, .request = FakeServer.request, .notify = FakeServer.notify });
+    try std.testing.expect(!server.saw_resource_read);
+    try std.testing.expect(std.mem.indexOf(u8, output.getWritten(), "\"error\"") != null);
+}
+
+test "sampling default deny ci ask deny and explicit allow" {
+    const load = policy_mod.load;
+    var default_policy = try load.parseFromSlice(std.testing.allocator,
+        \\version: 1
+        \\mode: strict
+    , "test.yaml");
+    defer default_policy.deinit();
+    var default_server = FakeServer{ .allocator = std.testing.allocator };
+    var default_input: std.Io.Reader = .fixed("{\"jsonrpc\":\"2.0\",\"id\":10,\"method\":\"sampling/createMessage\",\"params\":{\"model\":\"local\",\"messages\":[{\"role\":\"user\",\"content\":{\"type\":\"text\",\"text\":\"fake_secret_value\"}}]}}\n");
+    var default_output_buf: [1024]u8 = undefined;
+    var default_output = std.io.fixedBufferStream(&default_output_buf);
+    try runWithServer(std.testing.allocator, .{
+        .server_name = "fake",
+        .server_command_display = "fake",
+        .policy = &default_policy,
+        .mode = .strict,
+    }, &default_input, default_output.writer(), .{ .context = &default_server, .request = FakeServer.request, .notify = FakeServer.notify });
+    try std.testing.expect(!default_server.saw_sampling);
+    try std.testing.expect(std.mem.indexOf(u8, default_output.getWritten(), "\"error\"") != null);
+
+    var ask_policy = try load.parseFromSlice(std.testing.allocator,
+        \\version: 1
+        \\mode: ci
+        \\mcp:
+        \\  ask:
+        \\    - "fake.local"
+    , "test.yaml");
+    defer ask_policy.deinit();
+    var ask_server = FakeServer{ .allocator = std.testing.allocator };
+    var ask_input: std.Io.Reader = .fixed("{\"jsonrpc\":\"2.0\",\"id\":11,\"method\":\"sampling/createMessage\",\"params\":{\"model\":\"local\"}}\n");
+    var ask_output_buf: [1024]u8 = undefined;
+    var ask_output = std.io.fixedBufferStream(&ask_output_buf);
+    try runWithServer(std.testing.allocator, .{
+        .server_name = "fake",
+        .server_command_display = "fake",
+        .policy = &ask_policy,
+        .mode = .ci,
+    }, &ask_input, ask_output.writer(), .{ .context = &ask_server, .request = FakeServer.request, .notify = FakeServer.notify });
+    try std.testing.expect(!ask_server.saw_sampling);
+    try std.testing.expect(std.mem.indexOf(u8, ask_output.getWritten(), "\"error\"") != null);
+
+    var allow_policy = try load.parseFromSlice(std.testing.allocator,
+        \\version: 1
+        \\mode: strict
+        \\mcp:
+        \\  allow:
+        \\    - "fake.local"
+    , "test.yaml");
+    defer allow_policy.deinit();
+    var allow_server = FakeServer{ .allocator = std.testing.allocator };
+    var allow_input: std.Io.Reader = .fixed("{\"jsonrpc\":\"2.0\",\"id\":12,\"method\":\"sampling/createMessage\",\"params\":{\"model\":\"local\"}}\n");
+    var allow_output_buf: [1024]u8 = undefined;
+    var allow_output = std.io.fixedBufferStream(&allow_output_buf);
+    try runWithServer(std.testing.allocator, .{
+        .server_name = "fake",
+        .server_command_display = "fake",
+        .policy = &allow_policy,
+        .mode = .strict,
+    }, &allow_input, allow_output.writer(), .{ .context = &allow_server, .request = FakeServer.request, .notify = FakeServer.notify });
+    try std.testing.expect(allow_server.saw_sampling);
+    try std.testing.expect(std.mem.indexOf(u8, allow_output.getWritten(), "\"result\"") != null);
+}
+
+test "server-originated sampling is denied by default before reaching client" {
+    const load = policy_mod.load;
+    var policy = try load.parseFromSlice(std.testing.allocator,
+        \\version: 1
+        \\mode: strict
+    , "test.yaml");
+    defer policy.deinit();
+
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const root = try tmp.dir.realpathAlloc(std.testing.allocator, ".");
+    defer std.testing.allocator.free(root);
+    const session = try testSession(root);
+    var writer = try audit.writer.SessionWriter.init(std.testing.allocator, session);
+    defer writer.deinit();
+
+    var server = ServerSamplingFirstServer{};
+    var input: std.Io.Reader = .fixed("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"tools/list\"}\n");
+    var output_buf: [2048]u8 = undefined;
+    var output = std.io.fixedBufferStream(&output_buf);
+    try runWithServer(std.testing.allocator, .{
+        .server_name = "fake",
+        .server_command_display = "fake",
+        .policy = &policy,
+        .mode = .strict,
+        .audit_writer = &writer,
+    }, &input, output.writer(), .{
+        .context = &server,
+        .request = ServerSamplingFirstServer.request,
+        .notify = ServerSamplingFirstServer.notify,
+        .read = ServerSamplingFirstServer.read,
+    });
+
+    try std.testing.expect(server.saw_sampling_error);
+    try std.testing.expect(std.mem.indexOf(u8, output.getWritten(), "sampling/createMessage") == null);
+    try std.testing.expect(std.mem.indexOf(u8, output.getWritten(), "\"tools\"") != null);
+
+    const events_path = try std.fs.path.join(std.testing.allocator, &.{ writer.session_dir_path, "events.jsonl" });
+    defer std.testing.allocator.free(events_path);
+    const events = try std.fs.cwd().readFileAlloc(std.testing.allocator, events_path, 64 * 1024);
+    defer std.testing.allocator.free(events);
+    try std.testing.expect(std.mem.indexOf(u8, events, "\"type\":\"mcp_sampling_request\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, events, "fake_secret_value") == null);
+}
+
+test "server-originated sampling allow forwards request and relays client response" {
+    const load = policy_mod.load;
+    var policy = try load.parseFromSlice(std.testing.allocator,
+        \\version: 1
+        \\mode: strict
+        \\mcp:
+        \\  allow:
+        \\    - "fake.local"
+    , "test.yaml");
+    defer policy.deinit();
+
+    var server = ServerSamplingFirstServer{};
+    var input: std.Io.Reader = .fixed(
+        "{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"tools/list\"}\n" ++
+            "{\"jsonrpc\":\"2.0\",\"id\":\"srv-1\",\"result\":{\"role\":\"assistant\",\"content\":{\"type\":\"text\",\"text\":\"ok\"}}}\n"
+    );
+    var output_buf: [4096]u8 = undefined;
+    var output = std.io.fixedBufferStream(&output_buf);
+    try runWithServer(std.testing.allocator, .{
+        .server_name = "fake",
+        .server_command_display = "fake",
+        .policy = &policy,
+        .mode = .strict,
+    }, &input, output.writer(), .{
+        .context = &server,
+        .request = ServerSamplingFirstServer.request,
+        .notify = ServerSamplingFirstServer.notify,
+        .read = ServerSamplingFirstServer.read,
+    });
+
+    try std.testing.expect(server.saw_sampling_client_response);
+    try std.testing.expect(std.mem.indexOf(u8, output.getWritten(), "sampling/createMessage") != null);
+    try std.testing.expect(std.mem.indexOf(u8, output.getWritten(), "\"tools\"") != null);
+    try std.testing.expect(try @import("stdio.zig").isProtocolCleanOutput(output.getWritten(), std.testing.allocator));
 }
 
 test "invalid json-rpc fails safely with protocol error response" {

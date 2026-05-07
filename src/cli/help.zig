@@ -47,12 +47,16 @@ pub const commands = [_]CommandInfo{
     .{ .name = "diff", .summary = "Show staged writes", .usage = "aegis diff [--session <id|last>] [--file <path>]", .details = &.{"Shows unified diffs for Aegis-mediated staged writes. This does not claim transparent interception of arbitrary child-process file IO."} },
     .{ .name = "apply", .summary = "Apply staged writes", .usage = "aegis apply [--session <id|last>] [--file <path>]", .details = &.{"Applies reviewed staged writes after original-state checks where feasible."} },
     .{ .name = "discard", .summary = "Discard staged writes", .usage = "aegis discard [--session <id|last>] [--file <path>]", .details = &.{"Removes staged writes without changing workspace files."} },
-    .{ .name = "mcp", .summary = "MCP proxy and inspection commands", .usage = "aegis mcp <inspect|proxy> --command <server> [options]", .details = &.{
+    .{ .name = "mcp", .summary = "MCP proxy and inspection commands", .usage = "aegis mcp <inspect|proxy|list|trust|manifest> [options]", .details = &.{
         "Subcommands:",
         "  aegis mcp inspect --command <server> [--name <server-name>] [--policy <path>]",
-        "  aegis mcp proxy --command <server> [--name <server-name>] [--policy <path>] [--mode observe|ask|strict|ci]",
+        "  aegis mcp proxy --command <server> [--name <server-name>] [--policy <path>] [--manifest <path>] [--mode observe|ask|strict|ci]",
+        "  aegis mcp list",
+        "  aegis mcp trust <server> --tool <tool>",
+        "  aegis mcp manifest check <manifest.yaml>",
+        "  aegis mcp manifest generate --command <server-command> | --server <name>",
         "The proxy speaks newline-delimited stdio JSON-RPC and writes only MCP protocol messages to stdout while proxying.",
-        "Remote HTTP MCP, OAuth, and hosted gateway behavior are not implemented in Phase 11.",
+        "Remote HTTP MCP, OAuth, and hosted gateway behavior are limited/deferred in Phase 17.",
     } },
     .{ .name = "redteam", .summary = "Run red-team fixtures", .usage = "aegis redteam [path] [--json] [--ci] [--fixture <id>]", .details = &.{
         "Discovers deterministic local fixtures, runs them against implemented Aegis controls, and reports a scorecard.",

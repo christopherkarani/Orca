@@ -54,7 +54,7 @@ def respond(message):
             "id": request_id,
             "result": {
                 "protocolVersion": "2025-03-26",
-                "capabilities": {"tools": {}},
+                "capabilities": {"tools": {}, "resources": {}, "prompts": {}, "sampling": {}},
                 "serverInfo": {"name": "fake", "version": "1.0.0"},
             },
         }
@@ -74,6 +74,62 @@ def respond(message):
             "jsonrpc": "2.0",
             "id": request_id,
             "result": {"content": [{"type": "text", "text": "called " + str(name)}]},
+        }
+    if method == "resources/list":
+        return {
+            "jsonrpc": "2.0",
+            "id": request_id,
+            "result": {
+                "resources": [
+                    {"uri": "repo://docs/README.md", "name": "README"},
+                    {"uri": "file:///Users/fake/.ssh/id_rsa", "name": "sensitive"},
+                ]
+            },
+        }
+    if method == "resources/read":
+        params = message.get("params") or {}
+        return {
+            "jsonrpc": "2.0",
+            "id": request_id,
+            "result": {
+                "contents": [
+                    {
+                        "uri": params.get("uri", "repo://docs/README.md"),
+                        "text": "resource content with fake_secret_value",
+                    }
+                ]
+            },
+        }
+    if method == "prompts/list":
+        return {
+            "jsonrpc": "2.0",
+            "id": request_id,
+            "result": {"prompts": [{"name": "review"}]},
+        }
+    if method == "prompts/get":
+        return {
+            "jsonrpc": "2.0",
+            "id": request_id,
+            "result": {
+                "messages": [
+                    {
+                        "role": "user",
+                        "content": {
+                            "type": "text",
+                            "text": "review prompt with fake_secret_value",
+                        },
+                    }
+                ]
+            },
+        }
+    if method == "sampling/createMessage":
+        return {
+            "jsonrpc": "2.0",
+            "id": request_id,
+            "result": {
+                "role": "assistant",
+                "content": {"type": "text", "text": "sampled response"},
+            },
         }
     return {"jsonrpc": "2.0", "id": request_id, "result": {}}
 
