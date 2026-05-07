@@ -1,45 +1,49 @@
-# Phase 13 Red-team Benchmark Suite Plan
+# Phase 14 Linux Sandbox Backend Plan
 
 ## Assumptions
 
-- Phase 13 is limited to deterministic local red-team fixtures, fixture parsing/discovery, runner/reporting, scorecards, CLI integration, tests, and fixture documentation.
-- Fixtures must exercise already implemented Aegis decision/audit/replay behavior through the policy, intercept, MCP, command, network, filesystem, and audit modules. They must not claim transparent OS-level enforcement unless the backend actually provides it.
-- Fixtures will use synthetic local inputs and fake secrets only, run in temporary directories, avoid real home secret paths and external network calls, and verify that raw fake secret values are absent from `events.jsonl` and replay output.
-- CI mode is non-interactive: ask decisions are treated as deny through the existing policy/guard behavior.
+- Phase 14 is limited to Linux backend capability detection, honest backend reporting, safe fallback launch behavior, Linux-gated tests, doctor output, and red-team capability reporting.
+- Normal local development must not require root. Optional Linux kernel features may be detected and reported, but they must not be claimed active unless actually enabled for the run.
+- On non-Linux hosts, builds and tests must continue to pass, and Linux-specific runtime checks must be target-gated or exposed as pure detection/reporting tests.
+- Strong sandbox means meaningful OS-level restrictions are active, not just environment filtering, path staging, shims, policy decisions, or audit.
 
 ## Research Check
 
-- [x] Read Phase 13 and the required canonical, architecture, security, and production-readiness documents.
-- [x] Reviewed prior project task notes and lessons for redaction, CI ask-to-deny, command guard, MCP, filesystem, and network constraints.
-- [x] Inspect existing redteam stubs, CLI wiring, audit/replay APIs, intercept APIs, and tests before implementation.
-- [x] Validate which fixture expectations can be backed by current implemented controls and mark unsupported capabilities honestly.
+- [x] Read Phase 14 and the required canonical, architecture, security, and production-readiness documents.
+- [x] Review project lessons and prior Aegis memory for phase boundaries, honest capability reporting, and Zig verification expectations.
+- [x] Inspect existing sandbox stubs, platform capability model, run supervisor, doctor CLI, and red-team runner before implementation.
+- [x] Verify current test/build behavior before and after the Phase 14 changes.
+- [x] Research false positives in capability claims: namespace availability, seccomp/Landlock detection, network enforcement, path staging, and process cleanup.
 
 ## Checklist
 
-- [x] Add tests first for fixture parsing, invalid validation, discovery, score calculation, category grouping, JSON output, passing/failing fixture execution, forbidden log content detection, CI exit behavior, temporary directory isolation, and fake-secret absence in audit/replay output.
-- [x] Implement fixture format parsing and validation with bounded local-only YAML support.
-- [x] Implement fixture discovery for category directories, direct fixture directories, and `--fixture` selection.
-- [x] Implement deterministic runner that executes fixture commands in temporary directories and observes actual Aegis decisions/events/replay summaries.
-- [x] Implement scorecard totals, category grouping, human output, JSON output, skipped/unsupported status, and CI exit semantics.
-- [x] Wire `aegis redteam`, path selection, `--json`, `--ci`, and `--fixture`.
-- [x] Add at least ten deterministic fixtures across prompt-injection, secret-exfil, mcp-tool-poisoning, network-exfil, shell-abuse, and filesystem-bypass.
-- [x] Add docs for adding fixtures and limitations.
-- [x] Run `zig build`, `zig build test`, `aegis redteam`, `aegis redteam --json`, and `aegis redteam --ci`.
-- [x] Manually verify fixture count, category grouping, intentional CI failure behavior, fake-secret absence in `events.jsonl`, fake-secret absence in replay output, and readable human output.
-- [x] Document review results, limitations, security notes, and acceptance criteria status.
+- [x] Add tests first for explicit capability levels, Linux/non-Linux detection, backend fallback reporting, strict required-feature failure, and doctor Linux output formatting.
+- [x] Formalize the backend capability interface with explicit levels: active, partial, observe-only, wrapper-only, unavailable, unsupported, and failed.
+- [x] Implement Linux capability detection for wrapper controls, process supervision, user namespaces, mount namespaces, seccomp, Landlock, cgroups, network enforcement, and strong sandbox.
+- [x] Add a safe fallback backend path that launches simple commands without silently claiming unavailable OS features.
+- [x] Integrate backend selection/capability reporting into `aegis run` without weakening env filtering, staged writes, shell/PATH shims, audit, or policy behavior.
+- [x] Add strict/ci required-feature failure behavior for explicitly requested unavailable backend features.
+- [x] Improve process-tree cleanup where feasible, with non-Linux behavior preserved.
+- [x] Extend `aegis doctor` with Linux-specific backend details and honest active/partial/unavailable status.
+- [x] Add red-team capability reporting so unsupported Linux backend-specific checks skip or report unsupported instead of faking passes.
+- [x] Add Linux-gated tests for command launch, env filtering, staged writes reporting, shell/PATH shims reporting, namespace/seccomp/Landlock detection, fallback launch, and cleanup where feasible.
+- [x] Run `zig build`, `zig build test`, `./zig-out/bin/aegis doctor`, and `./zig-out/bin/aegis redteam --ci`.
+- [x] Document review results, known limitations, Linux capability status, unsupported features, security notes, and acceptance criteria status.
 
 ## Review
 
-- `zig build` passed.
-- `zig build test` passed.
-- `zig-out/bin/aegis redteam` passed: 10/10 fixtures, 100%.
-- `zig-out/bin/aegis redteam --json` emitted valid machine-readable JSON.
-- `zig-out/bin/aegis redteam --ci` passed with 10/10 fixtures and exit code 0.
-- `zig-out/bin/aegis redteam fixtures/secret-exfil` passed with 2/2 fixtures.
-- `zig-out/bin/aegis redteam --fixture secret-env-read-basic` passed with 1/1 fixtures.
-- Manual discovery check found 10 `fixture.yaml` files.
-- Manual CI regression check with a temporary intentionally failing fixture returned exit code 6.
-- JSON report verification confirmed forbidden synthetic values were absent: `fake-secret-value`, `sk-fakeSyntheticOpenAIKey`, `OPENSSH PRIVATE`, and `PRIVATE KEY`.
-- Review fix: replaced `std.testing.tmpDir` in the user-facing redteam runner with a fallible OS-temp helper, added regression coverage, and verified `aegis redteam` works from `/` with an absolute fixture path.
-- Red-team fixtures exercise current implemented controls: policy/intercept decisions, command classification, network decision heuristics, MCP metadata/tool evaluation, filesystem normalization/symlink escape detection, audit writer, and replay rendering.
-- Known limitation: filesystem and network fixtures prove Aegis-mediated decision/audit behavior; they do not claim transparent OS-level child-process file or socket interception.
+- Baseline before Phase 14 code changes: `zig build` passed.
+- Baseline before Phase 14 code changes: `zig build test` passed.
+- Mid-implementation checkpoint: `zig build test` passed after backend, doctor, run, and red-team capability integration.
+- Final verification: `zig build` passed.
+- Final verification: `zig build test` passed.
+- Final verification: `zig build -Dtarget=x86_64-linux` passed.
+- Final verification: `zig test -target x86_64-linux src/root.zig -fno-emit-bin` passed.
+- Final verification: `zig test -target x86_64-linux -fno-emit-bin --dep aegis -Mroot=src/main.zig -Maegis=src/root.zig` passed.
+- Final smoke: `./zig-out/bin/aegis doctor` passed on macOS and reported fallback backend with Linux-only features unsupported.
+- Final smoke: `./zig-out/bin/aegis redteam --ci` passed with 10/10 fixtures.
+- Local non-Linux smoke: `./zig-out/bin/aegis run -- echo hello` passed.
+- Local non-Linux smoke: `./zig-out/bin/aegis run --mode ci -- echo hello` passed.
+- Linux manual runtime checks could not be run on this macOS host; Linux compile-only gates and Linux-gated tests were added for CI.
+- Review fix: required backend features now require `active`; `partial`, `observe-only`, and `wrapper-only` no longer satisfy `--require-backend`.
+- Review fix: Linux `strong_sandbox` is now `unavailable` until Aegis actually installs namespace/seccomp/Landlock restrictions.
