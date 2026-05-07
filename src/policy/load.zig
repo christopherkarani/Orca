@@ -247,6 +247,12 @@ pub fn loadPreset(allocator: std.mem.Allocator, preset: presets.Preset) !schema.
     return parseFromSlice(allocator, presets.text(preset), source);
 }
 
+pub fn loadAgentPreset(allocator: std.mem.Allocator, preset: presets.AgentPreset) !schema.Policy {
+    const source = try std.fmt.allocPrint(allocator, "preset:{s}", .{presets.agentPresetName(preset)});
+    defer allocator.free(source);
+    return parseFromSlice(allocator, presets.agentPresetText(preset), source);
+}
+
 pub fn discover(
     allocator: std.mem.Allocator,
     cli_policy_path: ?[]const u8,
@@ -676,6 +682,16 @@ test "valid YAML policy parsing covers minimum schema" {
     try std.testing.expect(policy.files.read.deny.len >= 1);
     try std.testing.expect(policy.commands.deny.len >= 1);
     try std.testing.expect(policy.network.allow.len >= 1);
+}
+
+test "phase 18 preset files validate through policy loader" {
+    for (presets.agent_preset_infos) |info| {
+        var preset_policy = try loadAgentPreset(std.testing.allocator, info.preset);
+        defer preset_policy.deinit();
+        try std.testing.expectEqual(schema.version, preset_policy.version_value);
+        try std.testing.expect(preset_policy.audit.redact_secrets);
+        try std.testing.expect(preset_policy.audit.tamper_evident);
+    }
 }
 
 test "invalid policies fail closed with clear parser errors" {

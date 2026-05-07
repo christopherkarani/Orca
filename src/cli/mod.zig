@@ -68,6 +68,7 @@ pub fn runWithCwd(cwd: std.fs.Dir, argv: []const []const u8, stdout: anytype, st
     if (std.mem.eql(u8, command, "discard")) return discard.command(argv[1..], stdout, stderr);
     if (std.mem.eql(u8, command, "mcp")) return mcp.command(argv[1..], stdout, stderr);
     if (std.mem.eql(u8, command, "redteam")) return redteam.command(argv[1..], stdout, stderr);
+    if (std.mem.eql(u8, command, "completions")) return completions.command(argv[1..], stdout, stderr);
     if (std.mem.eql(u8, command, "shim")) return shim.command(argv[1..], stdout, stderr);
     try stderr.writeAll("aegis: unknown command '");
     try stderr.writeAll(command);
@@ -181,6 +182,18 @@ test "doctor dispatch prints platform capabilities" {
     try std.testing.expectEqual(exit_codes.success, code);
     try std.testing.expect(std.mem.indexOf(u8, stdout_stream.getWritten(), "Capabilities:") != null);
     try std.testing.expect(std.mem.indexOf(u8, stdout_stream.getWritten(), "network policy engine: active") != null);
+    try std.testing.expectEqualStrings("", stderr_stream.getWritten());
+}
+
+test "completions dispatch prints shell script" {
+    var stdout_buf: [4096]u8 = undefined;
+    var stderr_buf: [256]u8 = undefined;
+    var stdout_stream = std.io.fixedBufferStream(&stdout_buf);
+    var stderr_stream = std.io.fixedBufferStream(&stderr_buf);
+
+    const code = try run(&.{ "completions", "bash" }, stdout_stream.writer(), stderr_stream.writer());
+    try std.testing.expectEqual(exit_codes.success, code);
+    try std.testing.expect(std.mem.indexOf(u8, stdout_stream.getWritten(), "complete -F") != null);
     try std.testing.expectEqualStrings("", stderr_stream.getWritten());
 }
 

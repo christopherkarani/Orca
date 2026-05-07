@@ -8,9 +8,9 @@ Primary promise:
 
 ## Status
 
-Aegis is pre-release scaffold code. Phase 02 only bootstraps the repository, build, module layout, and minimal CLI. It does not yet enforce sandboxing, policy controls, filesystem staging, command mediation, MCP proxying, network controls, audit logging, or secret redaction.
+Aegis is pre-release software moving through phased implementation. Current local builds include policy validation/evaluation, audit/replay, staged-write review, command/network decision logic, stdio MCP proxy controls, red-team fixtures, platform capability reporting, policy presets, shell completions, and CI examples.
 
-Any command beyond `help` and `version` is intentionally reported as not implemented until later phases add tested behavior.
+Aegis does not claim universal transparent sandboxing on every operating system. Use `aegis doctor` to see the actual backend capability status for your machine.
 
 ## Toolchain
 
@@ -31,6 +31,22 @@ zig build run -- --help
 zig build run -- version
 ```
 
+Initialize a local policy:
+
+```bash
+zig build
+./zig-out/bin/aegis init --preset generic-agent
+./zig-out/bin/aegis policy check .aegis/policy.yaml
+./zig-out/bin/aegis doctor
+```
+
+Useful docs:
+
+- `docs/quickstart.md`
+- `docs/presets.md`
+- `docs/agent-recipes.md`
+- `docs/ci/github-actions.md`
+
 The canonical source layout is under `src/`:
 
 - `cli/` parses arguments and renders user-facing output.
@@ -44,4 +60,4 @@ The canonical source layout is under `src/`:
 
 ## Security Claims
 
-No runtime security protection is active in this phase. The current CLI is useful only for bootstrap verification. Future phases must not claim active enforcement until the protection exists, is tested, and is documented.
+Aegis reduces blast radius and improves auditability for agent runs through policy decisions, redaction, staged writes, wrappers/proxies, and platform-specific backend support. Unsupported transparent controls are reported as limited, observe-only, wrapper-only, or unavailable rather than active.

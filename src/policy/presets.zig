@@ -16,6 +16,72 @@ pub const Preset = enum {
     }
 };
 
+pub const AgentPreset = enum {
+    generic_agent,
+    claude_code,
+    codex,
+    cursor_agent,
+    opencode,
+    cline_roo,
+    mcp_dev,
+    github_actions,
+    strict_local,
+    trusted_local,
+
+    pub fn parse(value: []const u8) ?AgentPreset {
+        for (agent_preset_infos) |info| {
+            if (std.mem.eql(u8, value, info.name)) return info.preset;
+        }
+        return null;
+    }
+};
+
+pub const AgentPresetInfo = struct {
+    preset: AgentPreset,
+    name: []const u8,
+    experimental: bool,
+    warning: []const u8,
+};
+
+pub const agent_preset_infos = [_]AgentPresetInfo{
+    .{ .preset = .generic_agent, .name = "generic-agent", .experimental = false, .warning = "" },
+    .{ .preset = .claude_code, .name = "claude-code", .experimental = true, .warning = "claude-code is a generic/experimental preset; review assumptions before trusting it." },
+    .{ .preset = .codex, .name = "codex", .experimental = true, .warning = "codex is a generic/experimental preset; review assumptions before trusting it." },
+    .{ .preset = .cursor_agent, .name = "cursor-agent", .experimental = true, .warning = "cursor-agent is a generic/experimental preset; review assumptions before trusting it." },
+    .{ .preset = .opencode, .name = "opencode", .experimental = true, .warning = "opencode is a generic/experimental preset; review assumptions before trusting it." },
+    .{ .preset = .cline_roo, .name = "cline-roo", .experimental = true, .warning = "cline-roo is a generic/experimental preset; review assumptions before trusting it." },
+    .{ .preset = .mcp_dev, .name = "mcp-dev", .experimental = false, .warning = "" },
+    .{ .preset = .github_actions, .name = "github-actions", .experimental = false, .warning = "" },
+    .{ .preset = .strict_local, .name = "strict-local", .experimental = false, .warning = "" },
+    .{ .preset = .trusted_local, .name = "trusted-local", .experimental = false, .warning = "" },
+};
+
+pub fn agentPresetName(preset: AgentPreset) []const u8 {
+    return agentPresetInfo(preset).name;
+}
+
+pub fn agentPresetInfo(preset: AgentPreset) AgentPresetInfo {
+    for (agent_preset_infos) |info| {
+        if (info.preset == preset) return info;
+    }
+    unreachable;
+}
+
+pub fn agentPresetText(preset: AgentPreset) []const u8 {
+    return switch (preset) {
+        .generic_agent => generic_agent_policy,
+        .claude_code => claude_code_policy,
+        .codex => codex_policy,
+        .cursor_agent => cursor_agent_policy,
+        .opencode => opencode_policy,
+        .cline_roo => cline_roo_policy,
+        .mcp_dev => mcp_dev_policy,
+        .github_actions => github_actions_policy,
+        .strict_local => strict_local_policy,
+        .trusted_local => trusted_local_policy,
+    };
+}
+
 pub fn text(preset: Preset) []const u8 {
     return switch (preset) {
         .observe => observe_policy,
@@ -30,6 +96,69 @@ pub fn text(preset: Preset) []const u8 {
 pub fn defaultPreset() Preset {
     return .strict;
 }
+
+const generic_agent_policy =
+    \\# Aegis preset: generic-agent
+    \\# Conservative starting point for local coding agents with no proprietary assumptions.
+    \\# Edit allowlists for your repository before switching broad actions from ask to allow.
+    \\
+++ ask_policy;
+
+const claude_code_policy =
+    \\# Aegis preset: claude-code
+    \\# Generic/experimental: assumes a normal local coding-agent workflow, not private Claude Code internals.
+    \\
+++ ask_policy;
+
+const codex_policy =
+    \\# Aegis preset: codex
+    \\# Generic/experimental: designed for local Codex-style coding tasks without model-provider secrets.
+    \\
+++ ask_policy;
+
+const cursor_agent_policy =
+    \\# Aegis preset: cursor-agent
+    \\# Generic/experimental: conservative local editor-agent policy, not a claim about Cursor internals.
+    \\
+++ ask_policy;
+
+const opencode_policy =
+    \\# Aegis preset: opencode
+    \\# Generic/experimental: tuned for local coding-agent workflows and editable allowlists.
+    \\
+++ ask_policy;
+
+const cline_roo_policy =
+    \\# Aegis preset: cline-roo
+    \\# Generic/experimental: conservative policy for local editor agents with MCP-style extensions.
+    \\
+++ ask_policy;
+
+const mcp_dev_policy =
+    \\# Aegis preset: mcp-dev
+    \\# Conservative preset for developing stdio MCP servers through Aegis.
+    \\# Manifests still need explicit command/hash binding; this policy does not trust servers by name alone.
+    \\
+++ ask_policy;
+
+const github_actions_policy =
+    \\# Aegis preset: github-actions
+    \\# CI-safe preset. CI mode never prompts; ask-class decisions are denied unless explicitly allowed.
+    \\# Do not put workflow tokens or repository secrets in this policy.
+    \\
+++ ci_policy;
+
+const strict_local_policy =
+    \\# Aegis preset: strict-local
+    \\# Local strict mode. Unknown actions are denied or staged; add narrow allow rules as needed.
+    \\
+++ strict_policy;
+
+const trusted_local_policy =
+    \\# Aegis preset: trusted-local
+    \\# Less restrictive local preset for trusted repositories. Secret redaction and deny rules remain enabled.
+    \\
+++ trusted_policy;
 
 const common_strict_rules =
     \\workspace:
@@ -348,4 +477,17 @@ test "built-in presets expose required phase 07 policies" {
     try std.testing.expect(std.mem.indexOf(u8, text(.ask), "mode: ask") != null);
     try std.testing.expect(std.mem.indexOf(u8, text(.strict), "mode: strict") != null);
     try std.testing.expect(std.mem.indexOf(u8, text(.ci), "mode: ci") != null);
+}
+
+test "phase 18 agent presets are exposed with stable names" {
+    try std.testing.expectEqual(@as(usize, 10), agent_preset_infos.len);
+    try std.testing.expectEqual(AgentPreset.generic_agent, AgentPreset.parse("generic-agent").?);
+    try std.testing.expectEqual(AgentPreset.github_actions, AgentPreset.parse("github-actions").?);
+    try std.testing.expectEqual(AgentPreset.strict_local, AgentPreset.parse("strict-local").?);
+    try std.testing.expect(AgentPreset.parse("not-a-preset") == null);
+    for (agent_preset_infos) |info| {
+        const source = agentPresetText(info.preset);
+        try std.testing.expect(std.mem.indexOf(u8, source, "version: 1") != null);
+        try std.testing.expect(std.mem.indexOf(u8, source, "redact_secrets: true") != null);
+    }
 }

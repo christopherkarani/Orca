@@ -56,4 +56,10 @@ test "built-in presets validate" {
     var ci = try load.loadPreset(std.testing.allocator, .ci);
     defer ci.deinit();
     try policy(&ci);
+
+    for (@import("presets.zig").agent_preset_infos) |info| {
+        var agent_preset = try load.loadAgentPreset(std.testing.allocator, info.preset);
+        defer agent_preset.deinit();
+        try policy(&agent_preset);
+    }
 }

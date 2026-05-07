@@ -1,77 +1,53 @@
-# Phase 17 Advanced MCP and Server Manifests Plan
+# Phase 18 Agent Presets and Integrations Plan
 
 ## Assumptions
 
-- Phase 17 is limited to MCP v1.0 firewall hardening: manifests, resource/prompt/sampling mediation, CLI helpers, redaction, and transport abstraction groundwork.
-- Existing stdio MCP proxy behavior from Phase 11 must remain compatible for `initialize`, `notifications/initialized`, `tools/list`, and allowed `tools/call`.
-- Remote/HTTP MCP should be represented by bounded interfaces and honest limited/deferred status unless a small implementation can be completed without weakening stdio or adding network dependencies.
-- Manifest defaults may influence decisions, but explicit policy deny still wins and manifest data is never a security bypass.
-- Tests must use fake MCP servers, fake secrets, and local files only; no external network and no credentials.
+- Phase 18 is limited to practical local/CI adoption: editable policy presets, init preset selection, completions, GitHub Actions examples, doctor checks, and docs.
+- Presets must validate with the existing policy schema; comments are allowed because the YAML parser strips comments before parsing.
+- Agent-specific presets are conservative generic starting points unless Aegis has verifiable public behavior for that agent; docs and init warnings must say so.
+- CI integration is local/repo-only and must not assume hosted Aegis, external services, real tokens, or model-provider-specific secrets.
+- Doctor may report binaries/manifests/environment when detected, but binary presence is not a security proof.
 
 ## Research Check
 
-- [x] Read Phase 17 and required canonical, architecture, security, production gates, dependency matrix, project lessons, and relevant memory.
-- [x] Inspect current MCP proxy, manifest placeholders, schema limits, tools, resources, prompts, sampling, and transport modules.
-- [x] Inspect policy schema/evaluation for MCP action support and deny precedence.
-- [x] Inspect audit writer/replay/redaction path to confirm redaction-before-persistence behavior for MCP payloads.
-- [x] Inspect CLI `mcp` routing and existing tests/build wiring.
-- [x] Validate false-positive risks before broad edits: stdio stdout must stay protocol-only, CI ask must deny, generated manifests must not print env values, and oversized payload handling must remain fail-safe.
+- [x] Read Phase 18 and required canonical, architecture, security, and production gate docs.
+- [x] Review project lessons for phase-driven Aegis pitfalls: no untracked command modules, honest capability labels, CI non-interactive behavior, deny priority, redaction.
+- [x] Inspect current init, policy presets/load/validate, completions stub, help routing, doctor/platform capability reporting, and docs state.
+- [x] Capture baseline verification before implementation.
+- [x] Validate false-positive risks before broad edits: preset comments must parse, generated policies must not contain fake secrets, doctor must not print raw env values, and docs must avoid sandbox overclaims.
 
 ## Checklist
 
-- [x] Capture baseline verification before implementation.
-- [x] Add failing or focused tests for manifest parsing/validation and policy precedence.
-- [x] Implement MCP manifest model, bounded parser, validation, and starter generation without raw secrets.
-- [x] Wire manifest defaults into MCP tool/resource/prompt/sampling policy decisions while preserving explicit deny priority.
-- [x] Implement resource controls for `resources/list` logging and `resources/read` mediation, sensitive URI classification, response bounds, and redacted audit payloads.
-- [x] Implement prompt controls for `prompts/list` logging and `prompts/get` mediation, bounded/redacted prompt audit data, and CI non-interactive behavior.
-- [x] Implement sampling controls with default deny, ask/allow/deny support, CI ask-to-deny, security-sensitive audit events, bounded/redacted arguments, and valid JSON-RPC denial errors.
-- [x] Improve MCP redaction coverage for tools/resources/prompts/sampling and replay output.
-- [x] Extend CLI commands: `aegis mcp list`, `aegis mcp trust`, `aegis mcp manifest check`, and `aegis mcp manifest generate`.
-- [x] Add or refine transport abstraction for stdio plus explicit future HTTP stubs/status.
-- [x] Add fake MCP fixtures/tests covering resources, prompts, sampling, manifest CLI, transport compatibility, invalid/oversized messages, and fake-secret non-persistence.
-- [x] Run required verification: `zig build`, `zig build test`, `./zig-out/bin/aegis redteam --ci`.
-- [x] Run manual MCP smokes requested in Phase 17.
-- [x] Document review results, MCP feature support status, remote/HTTP status, security notes, and acceptance criteria status.
-- [x] Review fix: bind manifests to launched MCP command, args, expected hash, and env allowlist.
-- [x] Review fix: mediate server-originated sampling requests.
-- [x] Review fix verification: rerun required builds, tests, redteam, and targeted MCP smokes.
+- [x] Add failing/focused tests for Phase 18 presets, init preset behavior, completions output, CI example presence, and doctor policy/secret reporting.
+- [x] Add `policies/presets/*.yaml` for all requested presets with safe comments and no secrets.
+- [x] Wire preset metadata/content into `aegis init --preset ...`, preserving no-overwrite unless `--force` and warning for generic/experimental presets.
+- [x] Implement shell completions for bash, zsh, fish, and PowerShell with top-level commands and common flags.
+- [x] Improve doctor integration checks for Git, workspace root, policy presence/validity, known agent binaries, MCP manifests, CI environment, shell type, platform backend status, audit/replay, red-team fixtures, and next-step recommendations.
+- [x] Add GitHub Actions reusable action/example workflow docs with audit artifact upload and `aegis redteam --ci`, with no real tokens.
+- [x] Add/update docs for presets, agent recipes, CI, quickstart/README as needed with honest limitations.
+- [x] Run required verification: `zig build`, `zig build test`, `./zig-out/bin/aegis redteam --ci`, and `aegis policy check` for every preset.
+- [x] Run manual smokes requested by the user and inspect generated/audit/replay outputs for synthetic secrets.
+- [x] Document review results, preset validation, integration support status, security notes, known limitations, and acceptance criteria status.
 
 ## Review
 
-- Baseline verification before Phase 17 changes: `zig build` passed.
-- Baseline verification before Phase 17 changes: `zig build test` passed.
-- Existing MCP state: stdio framing and tool mediation exist; manifests, resources, prompts, and sampling modules were placeholders.
-- Existing policy state: MCP tool/resource/prompt/sampling action variants exist and use a shared MCP selector ruleset; deny precedence and CI ask-to-deny already exist in policy evaluation.
-- Existing CLI state: `aegis mcp` only supported `inspect` and `proxy`; Phase 17 commands need new routing.
-- Implemented manifest parser/validator for the Phase 17 YAML shape, including server metadata, env allowlist, per-tool risk/default, resource default, prompt default, and sampling default.
-- Implemented manifest influence for tools/resources/prompts/sampling while preserving explicit policy deny precedence.
-- Implemented `resources/list`, `resources/read`, `prompts/list`, `prompts/get`, and `sampling/createMessage` proxy handling.
-- Sampling defaults to deny; CI converts ask to deny and never prompts.
-- Sensitive resource URIs are treated as sensitive by default unless explicitly allowed by policy.
-- Added `aegis mcp list`, `aegis mcp trust`, `aegis mcp manifest check`, and `aegis mcp manifest generate`.
-- Added stdio transport descriptors and an explicit HTTP transport stub returning `HttpMcpTransportDeferred`; remote/HTTP MCP remains limited/deferred.
-- Updated fake MCP fixtures to exercise resources, prompts, sampling, and fake secrets.
-- Added `docs/dev/mcp-phase17.md` with supported/deferred MCP status.
+- Baseline verification before Phase 18 changes: `zig build` passed.
+- Baseline verification before Phase 18 changes: `zig build test` passed.
+- Implemented ten editable YAML presets under `policies/presets/`; all validate with `aegis policy check`.
+- Implemented `aegis init --preset` for all requested preset names, preserved no-overwrite behavior, added `--force`, and prints next steps plus generic/experimental warnings for agent-specific presets.
+- Implemented shell completion generation for bash, zsh, fish, and PowerShell and added CLI dispatch/help.
+- Improved `aegis doctor` with integration checks for workspace, Git, policy presence/validity, PATH agent binaries, MCP manifests, CI detection, shell type, audit/replay, red-team fixtures, platform backend status, and next-step recommendation.
+- Added GitHub Actions composite action metadata and CI docs with audit artifact upload and `aegis redteam --ci`.
+- Added docs for presets, agent recipes, CI, quickstart, and updated stale README/docs/policies wording to avoid unsupported sandbox claims.
 - Final verification: `zig build` passed.
 - Final verification: `zig build test` passed.
 - Final verification: `./zig-out/bin/aegis redteam --ci` passed with 10/10 fixtures.
-- Manual smoke: valid manifest check succeeded; invalid manifest check failed clearly with `UnsupportedRisk`.
-- Manual smoke: generated manifest omitted a fake GitHub token and passed manifest check.
-- Manual smoke: `aegis mcp list` discovered a local `.aegis/mcp/*.yaml` manifest.
-- Manual smoke: `aegis mcp trust fake --tool search_issues` printed a safe policy snippet instead of mutating config.
-- Manual smoke: fake MCP server resource reads and prompt gets were mediated; sampling was denied by default.
-- Manual smoke: proxy stdout contained only parseable JSON-RPC protocol lines.
-- Manual smoke: replay showed resource, prompt, and sampling events.
-- Manual smoke: fake secrets from MCP arguments/resources/prompts did not appear in `events.jsonl` or replay output.
-- Known limitation: remote/HTTP MCP is not production-implemented in Phase 17; only the interface/stub and status documentation are present.
-- Known limitation: prompt/resource response bodies are not persisted by default; audit records bounded redacted event targets and decisions.
-- Known limitation: MCP policy uses the existing selector model (`server.name`, `server.uri`, `server.model`) rather than a separate nested resource/prompt/sampling policy schema.
-- Review correction opened two P1 gaps: server-originated sampling was not mediated, and manifest defaults were not bound tightly enough to the launched process.
-- Review fix: manifest defaults now require exact command/args match, optional expected SHA-256 match, and a manifest-derived environment allowlist before the server is spawned.
-- Review fix: when a server emits `sampling/createMessage` while Aegis is waiting for a response, Aegis evaluates policy/manifest controls, sends denied sampling JSON-RPC errors back to the server by default, and only forwards to the client when explicitly allowed.
-- Review fix verification: `zig build` passed.
-- Review fix verification: `zig build test` passed.
-- Review fix verification: `./zig-out/bin/aegis redteam --ci` passed with 10/10 fixtures.
-- Targeted smoke: bound manifest proxy with expected hash produced protocol-clean JSON-RPC output.
-- Targeted smoke: mismatched launched command with a manifest failed with `ManifestCommandMismatch` and exit code 2.
+- Final verification: every file under `policies/presets/*.yaml` passed `./zig-out/bin/aegis policy check`.
+- Manual smoke in a temp workspace: `aegis init --preset generic-agent --force` created a valid ask-mode policy; `aegis policy check .aegis/policy.yaml` passed.
+- Manual smoke in a temp workspace: `aegis init --preset github-actions --force` created a valid ci-mode policy; `aegis doctor` reported `.aegis/policy.yaml: present and valid`.
+- Manual smoke: completions for bash, zsh, fish, and powershell were non-empty.
+- Manual smoke: invalid preset name failed clearly with an unsupported preset error.
+- Manual smoke: generated policies, doctor output, `events.jsonl`, and replay output did not contain the synthetic secret `ghp_fakeSecretShouldNotPrint`.
+- Known limitation: installed binaries do not yet package external `policies/presets/` files; `aegis init` uses embedded preset text and Phase 19 should align release packaging.
+- Known limitation: doctor binary detection reports PATH presence only and does not prove an agent is configured or secure.
+- Known limitation: shell completions are static top-level/common-flag completions, not full context-aware subcommand completion.
