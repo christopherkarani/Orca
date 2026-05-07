@@ -1,50 +1,56 @@
-# Phase 15 macOS Backend Plan
+# Phase 16 Windows Backend Plan
 
 ## Assumptions
 
-- Phase 15 is limited to macOS backend support and honest capability reporting; Windows and future sandbox hardening phases stay untouched.
-- macOS v1.0 support is wrapper/partial protection for local development: env filtering, staged writes, PATH/shell shims, command guard, MCP proxy compatibility, audit/redaction, process launch, and best-effort cleanup.
-- Transparent filesystem enforcement, transparent network enforcement, and strong sandboxing are not active on macOS in this phase unless real OS-level enforcement is implemented and tested.
-- Tests must use temporary directories that simulate sensitive macOS paths and must never inspect real user secrets, browser profiles, keychains, or cloud credentials.
+- Phase 16 is limited to Windows backend support and honest capability reporting; future MCP/installer/hardening phases stay untouched.
+- Windows v1.0 support should be useful wrapper-mediated local protection: process launch, env filtering, staging, PATH shims, cmd/PowerShell command guard coverage, protected path matching, MCP stdio compatibility, audit/replay compatibility, and clear doctor output.
+- Normal local development must not require administrator privileges, WFP drivers, kernel hooks, or transparent filesystem/network enforcement.
+- Unsupported or wrapper-only protections must not satisfy explicit required-backend checks unless they are reported `active`.
+- Tests must use simulated Windows sensitive paths and fake secrets only; no test may inspect real user profile credentials.
 
 ## Research Check
 
-- [x] Read Phase 15 and the required canonical, architecture, security, and production-readiness documents.
-- [x] Review project lessons and prior Aegis memory for phase boundaries, honest capability reporting, and Zig verification expectations.
-- [x] Inspect existing sandbox backend, Linux phase implementation, run integration, doctor CLI, env filtering, command shims, and filesystem staging before implementation.
-- [x] Validate false positives before coding: macOS backend claims, path matching on case-insensitive filesystems, symlink escape behavior, shell shim coverage, process cleanup behavior, redaction persistence, and non-macOS build impact.
+- [x] Read Phase 16 and required canonical, architecture, security, and production-readiness documents.
+- [x] Review project lessons and Aegis memory for phase boundaries, honest capability reporting, and Zig verification expectations.
+- [x] Inspect existing Linux/macOS backend interface, fallback prepare path, doctor output, run required-backend checks, env filtering, command shims, command classifier, filesystem staging, and red-team runner.
+- [x] Validate assumptions and false-positive risks before coding: Windows cannot claim full transparent file/network enforcement, `cmd.exe`/PowerShell executable interception is partial through PATH shims, Job Object cleanup is optional unless implemented and tested, and non-Windows builds must remain unaffected.
 
 ## Checklist
 
-- [x] Add macOS-gated and pure unit tests first for platform detection, backend capability detection, honest unsupported feature reporting, path normalization/protected matching, case-insensitive simulated paths, symlink escapes, env filtering, staging, PATH shim insertion, shell wrappers, process launch, and process cleanup where feasible.
-- [x] Implement `src/sandbox/macos.zig` using the Phase 14 backend interface and honest wrapper/partial capability levels.
-- [x] Wire backend selection so macOS uses the macOS backend while non-macOS fallback/Linux behavior stays intact.
-- [x] Add macOS process launch support with environment integration, PATH shim/shell wrapper compatibility, and best-effort child cleanup without admin/root requirements.
-- [x] Add macOS path helpers for home expansion, Library/Application Support/Keychains/browser/GitHub/SSH/cloud credential protected patterns, case-insensitive matching, relative traversal, and symlink escape detection using temporary test roots.
-- [x] Improve `aegis doctor` macOS output to show env filtering, path staging, shell shims, process supervision, transparent file/network enforcement, strong sandbox, MCP stdio proxy, and audit/replay with active/partial/limited/unavailable status.
-- [x] Verify strict/ci mode fails closed when an explicitly required backend feature is unavailable, while normal local wrapper/partial mode remains usable and visibly reported.
-- [x] Confirm audit/redaction compatibility: fake secrets do not persist to `events.jsonl` or replay output.
+- [x] Capture baseline verification before code edits.
+- [x] Implement explicit `src/sandbox/windows.zig` backend detection using the established backend interface.
+- [x] Wire Windows backend selection into `src/sandbox/backend.zig`.
+- [x] Add honest Windows capability states for env filtering, path staging, PATH shims, cmd/PowerShell wrappers, process cleanup, transparent file/network enforcement, strong sandbox, MCP stdio proxy, and audit/replay.
+- [x] Add Windows-specific `aegis doctor` output without changing macOS/Linux claims.
+- [x] Add Windows path normalization helpers covering drive letters, UNC paths, slash normalization, case-insensitive comparisons, `%USERPROFILE%`, `%APPDATA%`, `%LOCALAPPDATA%`, traversal, spaces, and PowerShell escaping where feasible.
+- [x] Add Windows protected path matching for SSH/cloud/browser/GitHub CLI/PSReadLine/common credential files using simulated paths.
+- [x] Integrate Windows protected path matching with filesystem guard raw-path decisions without reading real secrets.
+- [x] Add Windows-compatible PATH shim files and PATH/PATHEXT environment handling where feasible.
+- [x] Expand command classification for Windows cmd/PowerShell risky patterns.
+- [x] Add Windows-gated and pure deterministic tests for backend detection, path handling, protected matching, env filtering, staging, PATH shims, command classification, process launch, process cleanup status, and honest unsupported feature reporting.
 - [x] Run required verification: `zig build`, `zig build test`, `./zig-out/bin/aegis doctor`, `./zig-out/bin/aegis redteam --ci`.
-- [x] On macOS, run smoke checks: `aegis run -- echo hello`, `aegis run --mode ci -- echo hello`, `aegis init --preset generic-agent --force`, `aegis policy check .aegis/policy.yaml`, and fake-secret audit/replay inspection.
-- [x] Document review results, known limitations, macOS capability status, unsupported features, security notes, and acceptance criteria status.
+- [x] Document review results, known limitations, Windows capability status, unsupported features, security notes, and acceptance criteria status.
 
 ## Review
 
-- Baseline before Phase 15 code changes: `zig build` passed.
-- Baseline before Phase 15 code changes: `zig build test` passed.
+- Baseline before Phase 16 code changes: `zig build` passed.
+- Baseline before Phase 16 code changes: `zig build test` passed.
+- Interim verification: `zig build` passed after implementation.
+- Interim verification: `zig build test` initially failed on UNC path normalization producing three leading slashes; fixed and reran successfully.
+- Interim verification: `zig build check-windows` passed as a compile-only Windows target gate.
 - Final verification: `zig build` passed.
 - Final verification: `zig build test` passed.
-- Final verification: `zig build -Dtarget=x86_64-linux` passed.
-- Final verification: `zig build -Dtarget=aarch64-linux` passed.
-- Final verification: `zig build -Dtarget=x86_64-windows` passed after compile-only guards for existing POSIX-only code paths.
-- Final smoke: `./zig-out/bin/aegis doctor` passed on macOS and reported `selected: macos`.
+- Final verification: `zig build check-windows` passed.
+- Final verification: `zig build -Dtarget=x86_64-windows` passed.
+- Final smoke: `./zig-out/bin/aegis doctor` passed on macOS and reported `selected: macos`; Windows doctor rendering is covered by an injected-report unit test.
 - Final smoke: `./zig-out/bin/aegis redteam --ci` passed with 10/10 fixtures.
-- macOS smoke: `./zig-out/bin/aegis run -- echo hello` passed.
-- macOS smoke: `./zig-out/bin/aegis run --mode ci -- echo hello` passed.
-- macOS smoke in a temporary workspace: `aegis init --preset generic-agent --force` passed.
-- macOS smoke in the same temporary workspace: `aegis policy check .aegis/policy.yaml` passed.
-- Security smoke in a temporary workspace: `aegis run --mode ci -- echo fake_secret_value` produced redaction markers, and `fake_secret_value` was absent from `events.jsonl` and `aegis replay --verify` output.
-- Required backend failure smoke: `aegis run --mode ci --require-backend strong_sandbox -- echo hello` failed closed with exit code 4.
-- macOS capability status: env filtering active, path staging active, shell/PATH shims wrapper-only, process supervision active, transparent file enforcement limited, transparent network enforcement limited, strong sandbox unavailable, MCP stdio proxy active, audit/replay active.
-- Known limitations: macOS does not install transparent filesystem enforcement, transparent network enforcement, Endpoint Security controls, kernel extensions, Sandbox.app profiles, or admin/root-only containment by default.
-- Security notes: unsupported protections are not reported active; explicit required backend features still require `active`; tests use simulated macOS sensitive paths in temp directories; no raw fake secret persisted in audit or replay smoke output.
+- Local process smoke: `./zig-out/bin/aegis run -- echo hello` passed on macOS.
+- Required backend failure smoke: `./zig-out/bin/aegis run --mode ci --require-backend strong_sandbox -- echo hello` failed closed with exit code 4.
+- Windows capability status: env filtering active, path staging active, PATH shims wrapper-only, cmd wrapper partial, PowerShell wrapper partial, process cleanup partial, transparent file enforcement limited, transparent network enforcement limited, strong sandbox unavailable, MCP stdio proxy active, audit/replay active.
+- Unsupported features: no Windows Filtering Platform driver, no AppContainer profile, no transparent filesystem enforcement, no transparent network enforcement, no admin-required sandbox path, and no Job Object process-tree cleanup implementation in this phase.
+- Security notes: unsupported protections are not reported active; explicit required backend features still require `active`; Windows path tests use simulated profile roots; tests do not read real Windows user secrets; fake-secret redaction remains covered by existing audit/red-team tests.
+- Manual Windows checks not run on this macOS host: `aegis doctor` on Windows, `aegis run -- cmd /c echo hello`, `aegis run -- powershell -NoProfile -Command "Write-Output hello"`, `aegis run --mode ci -- cmd /c echo hello`, `aegis init --preset generic-agent --force`, `aegis policy check .aegis/policy.yaml`, encoded-command denial, and Windows audit/replay fake-secret inspection.
+- Review fix: replaced Windows `.cmd` batch shims with copied executable aliases so extension-qualified calls like `cmd.exe`, `powershell.exe`, `pwsh.exe`, and `git.exe` route through `aegis shim exec` by argv0.
+- Review fix: removed `%*` batch forwarding from the Windows shim path, eliminating cmd metacharacter re-parsing at the wrapper boundary.
+- Review fix: command classification now analyzes all argv tokens after `cmd /c`, `cmd /k`, `powershell -Command`, and `pwsh -Command`, with regression tests for split destructive/elevation/download-pipe forms.
+- Review fix verification: `zig build`, `zig build test`, `zig build check-windows`, `zig build -Dtarget=x86_64-windows`, `./zig-out/bin/aegis doctor`, `./zig-out/bin/aegis redteam --ci`, and required-backend fail-closed smoke all passed.
