@@ -1,56 +1,77 @@
-# Phase 16 Windows Backend Plan
+# Phase 17 Advanced MCP and Server Manifests Plan
 
 ## Assumptions
 
-- Phase 16 is limited to Windows backend support and honest capability reporting; future MCP/installer/hardening phases stay untouched.
-- Windows v1.0 support should be useful wrapper-mediated local protection: process launch, env filtering, staging, PATH shims, cmd/PowerShell command guard coverage, protected path matching, MCP stdio compatibility, audit/replay compatibility, and clear doctor output.
-- Normal local development must not require administrator privileges, WFP drivers, kernel hooks, or transparent filesystem/network enforcement.
-- Unsupported or wrapper-only protections must not satisfy explicit required-backend checks unless they are reported `active`.
-- Tests must use simulated Windows sensitive paths and fake secrets only; no test may inspect real user profile credentials.
+- Phase 17 is limited to MCP v1.0 firewall hardening: manifests, resource/prompt/sampling mediation, CLI helpers, redaction, and transport abstraction groundwork.
+- Existing stdio MCP proxy behavior from Phase 11 must remain compatible for `initialize`, `notifications/initialized`, `tools/list`, and allowed `tools/call`.
+- Remote/HTTP MCP should be represented by bounded interfaces and honest limited/deferred status unless a small implementation can be completed without weakening stdio or adding network dependencies.
+- Manifest defaults may influence decisions, but explicit policy deny still wins and manifest data is never a security bypass.
+- Tests must use fake MCP servers, fake secrets, and local files only; no external network and no credentials.
 
 ## Research Check
 
-- [x] Read Phase 16 and required canonical, architecture, security, and production-readiness documents.
-- [x] Review project lessons and Aegis memory for phase boundaries, honest capability reporting, and Zig verification expectations.
-- [x] Inspect existing Linux/macOS backend interface, fallback prepare path, doctor output, run required-backend checks, env filtering, command shims, command classifier, filesystem staging, and red-team runner.
-- [x] Validate assumptions and false-positive risks before coding: Windows cannot claim full transparent file/network enforcement, `cmd.exe`/PowerShell executable interception is partial through PATH shims, Job Object cleanup is optional unless implemented and tested, and non-Windows builds must remain unaffected.
+- [x] Read Phase 17 and required canonical, architecture, security, production gates, dependency matrix, project lessons, and relevant memory.
+- [x] Inspect current MCP proxy, manifest placeholders, schema limits, tools, resources, prompts, sampling, and transport modules.
+- [x] Inspect policy schema/evaluation for MCP action support and deny precedence.
+- [x] Inspect audit writer/replay/redaction path to confirm redaction-before-persistence behavior for MCP payloads.
+- [x] Inspect CLI `mcp` routing and existing tests/build wiring.
+- [x] Validate false-positive risks before broad edits: stdio stdout must stay protocol-only, CI ask must deny, generated manifests must not print env values, and oversized payload handling must remain fail-safe.
 
 ## Checklist
 
-- [x] Capture baseline verification before code edits.
-- [x] Implement explicit `src/sandbox/windows.zig` backend detection using the established backend interface.
-- [x] Wire Windows backend selection into `src/sandbox/backend.zig`.
-- [x] Add honest Windows capability states for env filtering, path staging, PATH shims, cmd/PowerShell wrappers, process cleanup, transparent file/network enforcement, strong sandbox, MCP stdio proxy, and audit/replay.
-- [x] Add Windows-specific `aegis doctor` output without changing macOS/Linux claims.
-- [x] Add Windows path normalization helpers covering drive letters, UNC paths, slash normalization, case-insensitive comparisons, `%USERPROFILE%`, `%APPDATA%`, `%LOCALAPPDATA%`, traversal, spaces, and PowerShell escaping where feasible.
-- [x] Add Windows protected path matching for SSH/cloud/browser/GitHub CLI/PSReadLine/common credential files using simulated paths.
-- [x] Integrate Windows protected path matching with filesystem guard raw-path decisions without reading real secrets.
-- [x] Add Windows-compatible PATH shim files and PATH/PATHEXT environment handling where feasible.
-- [x] Expand command classification for Windows cmd/PowerShell risky patterns.
-- [x] Add Windows-gated and pure deterministic tests for backend detection, path handling, protected matching, env filtering, staging, PATH shims, command classification, process launch, process cleanup status, and honest unsupported feature reporting.
-- [x] Run required verification: `zig build`, `zig build test`, `./zig-out/bin/aegis doctor`, `./zig-out/bin/aegis redteam --ci`.
-- [x] Document review results, known limitations, Windows capability status, unsupported features, security notes, and acceptance criteria status.
+- [x] Capture baseline verification before implementation.
+- [x] Add failing or focused tests for manifest parsing/validation and policy precedence.
+- [x] Implement MCP manifest model, bounded parser, validation, and starter generation without raw secrets.
+- [x] Wire manifest defaults into MCP tool/resource/prompt/sampling policy decisions while preserving explicit deny priority.
+- [x] Implement resource controls for `resources/list` logging and `resources/read` mediation, sensitive URI classification, response bounds, and redacted audit payloads.
+- [x] Implement prompt controls for `prompts/list` logging and `prompts/get` mediation, bounded/redacted prompt audit data, and CI non-interactive behavior.
+- [x] Implement sampling controls with default deny, ask/allow/deny support, CI ask-to-deny, security-sensitive audit events, bounded/redacted arguments, and valid JSON-RPC denial errors.
+- [x] Improve MCP redaction coverage for tools/resources/prompts/sampling and replay output.
+- [x] Extend CLI commands: `aegis mcp list`, `aegis mcp trust`, `aegis mcp manifest check`, and `aegis mcp manifest generate`.
+- [x] Add or refine transport abstraction for stdio plus explicit future HTTP stubs/status.
+- [x] Add fake MCP fixtures/tests covering resources, prompts, sampling, manifest CLI, transport compatibility, invalid/oversized messages, and fake-secret non-persistence.
+- [x] Run required verification: `zig build`, `zig build test`, `./zig-out/bin/aegis redteam --ci`.
+- [x] Run manual MCP smokes requested in Phase 17.
+- [x] Document review results, MCP feature support status, remote/HTTP status, security notes, and acceptance criteria status.
+- [x] Review fix: bind manifests to launched MCP command, args, expected hash, and env allowlist.
+- [x] Review fix: mediate server-originated sampling requests.
+- [x] Review fix verification: rerun required builds, tests, redteam, and targeted MCP smokes.
 
 ## Review
 
-- Baseline before Phase 16 code changes: `zig build` passed.
-- Baseline before Phase 16 code changes: `zig build test` passed.
-- Interim verification: `zig build` passed after implementation.
-- Interim verification: `zig build test` initially failed on UNC path normalization producing three leading slashes; fixed and reran successfully.
-- Interim verification: `zig build check-windows` passed as a compile-only Windows target gate.
+- Baseline verification before Phase 17 changes: `zig build` passed.
+- Baseline verification before Phase 17 changes: `zig build test` passed.
+- Existing MCP state: stdio framing and tool mediation exist; manifests, resources, prompts, and sampling modules were placeholders.
+- Existing policy state: MCP tool/resource/prompt/sampling action variants exist and use a shared MCP selector ruleset; deny precedence and CI ask-to-deny already exist in policy evaluation.
+- Existing CLI state: `aegis mcp` only supported `inspect` and `proxy`; Phase 17 commands need new routing.
+- Implemented manifest parser/validator for the Phase 17 YAML shape, including server metadata, env allowlist, per-tool risk/default, resource default, prompt default, and sampling default.
+- Implemented manifest influence for tools/resources/prompts/sampling while preserving explicit policy deny precedence.
+- Implemented `resources/list`, `resources/read`, `prompts/list`, `prompts/get`, and `sampling/createMessage` proxy handling.
+- Sampling defaults to deny; CI converts ask to deny and never prompts.
+- Sensitive resource URIs are treated as sensitive by default unless explicitly allowed by policy.
+- Added `aegis mcp list`, `aegis mcp trust`, `aegis mcp manifest check`, and `aegis mcp manifest generate`.
+- Added stdio transport descriptors and an explicit HTTP transport stub returning `HttpMcpTransportDeferred`; remote/HTTP MCP remains limited/deferred.
+- Updated fake MCP fixtures to exercise resources, prompts, sampling, and fake secrets.
+- Added `docs/dev/mcp-phase17.md` with supported/deferred MCP status.
 - Final verification: `zig build` passed.
 - Final verification: `zig build test` passed.
-- Final verification: `zig build check-windows` passed.
-- Final verification: `zig build -Dtarget=x86_64-windows` passed.
-- Final smoke: `./zig-out/bin/aegis doctor` passed on macOS and reported `selected: macos`; Windows doctor rendering is covered by an injected-report unit test.
-- Final smoke: `./zig-out/bin/aegis redteam --ci` passed with 10/10 fixtures.
-- Local process smoke: `./zig-out/bin/aegis run -- echo hello` passed on macOS.
-- Required backend failure smoke: `./zig-out/bin/aegis run --mode ci --require-backend strong_sandbox -- echo hello` failed closed with exit code 4.
-- Windows capability status: env filtering active, path staging active, PATH shims wrapper-only, cmd wrapper partial, PowerShell wrapper partial, process cleanup partial, transparent file enforcement limited, transparent network enforcement limited, strong sandbox unavailable, MCP stdio proxy active, audit/replay active.
-- Unsupported features: no Windows Filtering Platform driver, no AppContainer profile, no transparent filesystem enforcement, no transparent network enforcement, no admin-required sandbox path, and no Job Object process-tree cleanup implementation in this phase.
-- Security notes: unsupported protections are not reported active; explicit required backend features still require `active`; Windows path tests use simulated profile roots; tests do not read real Windows user secrets; fake-secret redaction remains covered by existing audit/red-team tests.
-- Manual Windows checks not run on this macOS host: `aegis doctor` on Windows, `aegis run -- cmd /c echo hello`, `aegis run -- powershell -NoProfile -Command "Write-Output hello"`, `aegis run --mode ci -- cmd /c echo hello`, `aegis init --preset generic-agent --force`, `aegis policy check .aegis/policy.yaml`, encoded-command denial, and Windows audit/replay fake-secret inspection.
-- Review fix: replaced Windows `.cmd` batch shims with copied executable aliases so extension-qualified calls like `cmd.exe`, `powershell.exe`, `pwsh.exe`, and `git.exe` route through `aegis shim exec` by argv0.
-- Review fix: removed `%*` batch forwarding from the Windows shim path, eliminating cmd metacharacter re-parsing at the wrapper boundary.
-- Review fix: command classification now analyzes all argv tokens after `cmd /c`, `cmd /k`, `powershell -Command`, and `pwsh -Command`, with regression tests for split destructive/elevation/download-pipe forms.
-- Review fix verification: `zig build`, `zig build test`, `zig build check-windows`, `zig build -Dtarget=x86_64-windows`, `./zig-out/bin/aegis doctor`, `./zig-out/bin/aegis redteam --ci`, and required-backend fail-closed smoke all passed.
+- Final verification: `./zig-out/bin/aegis redteam --ci` passed with 10/10 fixtures.
+- Manual smoke: valid manifest check succeeded; invalid manifest check failed clearly with `UnsupportedRisk`.
+- Manual smoke: generated manifest omitted a fake GitHub token and passed manifest check.
+- Manual smoke: `aegis mcp list` discovered a local `.aegis/mcp/*.yaml` manifest.
+- Manual smoke: `aegis mcp trust fake --tool search_issues` printed a safe policy snippet instead of mutating config.
+- Manual smoke: fake MCP server resource reads and prompt gets were mediated; sampling was denied by default.
+- Manual smoke: proxy stdout contained only parseable JSON-RPC protocol lines.
+- Manual smoke: replay showed resource, prompt, and sampling events.
+- Manual smoke: fake secrets from MCP arguments/resources/prompts did not appear in `events.jsonl` or replay output.
+- Known limitation: remote/HTTP MCP is not production-implemented in Phase 17; only the interface/stub and status documentation are present.
+- Known limitation: prompt/resource response bodies are not persisted by default; audit records bounded redacted event targets and decisions.
+- Known limitation: MCP policy uses the existing selector model (`server.name`, `server.uri`, `server.model`) rather than a separate nested resource/prompt/sampling policy schema.
+- Review correction opened two P1 gaps: server-originated sampling was not mediated, and manifest defaults were not bound tightly enough to the launched process.
+- Review fix: manifest defaults now require exact command/args match, optional expected SHA-256 match, and a manifest-derived environment allowlist before the server is spawned.
+- Review fix: when a server emits `sampling/createMessage` while Aegis is waiting for a response, Aegis evaluates policy/manifest controls, sends denied sampling JSON-RPC errors back to the server by default, and only forwards to the client when explicitly allowed.
+- Review fix verification: `zig build` passed.
+- Review fix verification: `zig build test` passed.
+- Review fix verification: `./zig-out/bin/aegis redteam --ci` passed with 10/10 fixtures.
+- Targeted smoke: bound manifest proxy with expected hash produced protocol-clean JSON-RPC output.
+- Targeted smoke: mismatched launched command with a manifest failed with `ManifestCommandMismatch` and exit code 2.

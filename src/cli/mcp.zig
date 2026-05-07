@@ -18,6 +18,9 @@ pub fn command(argv: []const []const u8, stdout: anytype, stderr: anytype) !u8 {
     }
     if (std.mem.eql(u8, argv[0], "inspect")) return inspect(argv[1..], stdout, stderr);
     if (std.mem.eql(u8, argv[0], "proxy")) return proxy(argv[1..], stdout, stderr);
+    if (std.mem.eql(u8, argv[0], "list")) return list(argv[1..], stdout, stderr);
+    if (std.mem.eql(u8, argv[0], "trust")) return trust(argv[1..], stdout, stderr);
+    if (std.mem.eql(u8, argv[0], "manifest")) return manifestCommand(argv[1..], stdout, stderr);
     try stderr.print("aegis mcp: unknown subcommand '{s}'.\n", .{argv[0]});
     return exit_codes.usage;
 }
@@ -27,6 +30,7 @@ const Options = struct {
     owns_command_argv: bool = false,
     server_name: []const u8 = "fake",
     policy_path: ?[]const u8 = null,
+    manifest_path: ?[]const u8 = null,
     mode: ?policy.schema.Mode = null,
 
     fn deinit(self: Options, allocator: std.mem.Allocator) void {
@@ -59,6 +63,10 @@ fn parseOptions(allocator: std.mem.Allocator, argv: []const []const u8, stderr: 
             index += 1;
             if (index >= argv.len) return error.Usage;
             options.policy_path = argv[index];
+        } else if (std.mem.eql(u8, arg, "--manifest")) {
+            index += 1;
+            if (index >= argv.len) return error.Usage;
+            options.manifest_path = argv[index];
         } else if (std.mem.eql(u8, arg, "--mode")) {
             index += 1;
             if (index >= argv.len) return error.Usage;
@@ -140,7 +148,7 @@ fn inspect(argv: []const []const u8, stdout: anytype, stderr: anytype) !u8 {
 
 fn proxy(argv: []const []const u8, stdout: anytype, stderr: anytype) !u8 {
     if (argv.len > 0 and (std.mem.eql(u8, argv[0], "--help") or std.mem.eql(u8, argv[0], "-h"))) {
-        try stdout.writeAll("Usage: aegis mcp proxy --command <server> [--name <server-name>] [--policy <path>] [--mode observe|ask|strict|ci]\n");
+        try stdout.writeAll("Usage: aegis mcp proxy --command <server> [--name <server-name>] [--policy <path>] [--manifest <path>] [--mode observe|ask|strict|ci]\n");
         return exit_codes.success;
     }
     var gpa_state: std.heap.GeneralPurposeAllocator(.{}) = .init;
@@ -154,6 +162,26 @@ fn proxy(argv: []const []const u8, stdout: anytype, stderr: anytype) !u8 {
     var loaded = try policy.load.discover(allocator, options.policy_path, workspace);
     defer loaded.deinit();
     const mode = options.mode orelse loaded.policy.mode;
+    var loaded_manifest: ?aegis_mcp.manifests.Manifest = null;
+    defer if (loaded_manifest) |*manifest| manifest.deinit(allocator);
+    var bound_launch: ?BoundManifestLaunch = null;
+    defer if (bound_launch) |*binding| binding.deinit(allocator);
+    if (options.manifest_path) |manifest_path| {
+        loaded_manifest = aegis_mcp.manifests.loadFile(allocator, manifest_path) catch |err| {
+            try stderr.print("aegis mcp proxy: invalid manifest: {s}\n", .{@errorName(err)});
+            return exit_codes.usage;
+        };
+        if (!std.mem.eql(u8, loaded_manifest.?.server.name, options.server_name)) {
+            try stderr.print("aegis mcp proxy: manifest server '{s}' does not match --name '{s}'.\n", .{ loaded_manifest.?.server.name, options.server_name });
+            return exit_codes.usage;
+        }
+        bound_launch = bindManifestLaunch(allocator, loaded_manifest.?, options.command_argv) catch |err| {
+            try stderr.print("aegis mcp proxy: manifest does not match launched server: {s}\n", .{@errorName(err)});
+            return exit_codes.usage;
+        };
+    }
+    const spawn_argv = if (bound_launch) |binding| binding.argv else options.command_argv;
+    const spawn_env = if (bound_launch) |*binding| &binding.env_map else null;
 
     const session = try makeSession(options.command_argv, workspace, mode);
     var session_writer = audit.writer.SessionWriter.init(allocator, session) catch |err| {
@@ -163,7 +191,7 @@ fn proxy(argv: []const []const u8, stdout: anytype, stderr: anytype) !u8 {
     defer session_writer.deinit();
     try session_writer.writeLastPointer();
 
-    var server = aegis_mcp.transport.ProcessServer.spawn(allocator, options.command_argv) catch |err| {
+    var server = aegis_mcp.transport.ProcessServer.spawnWithEnvMap(allocator, spawn_argv, spawn_env) catch |err| {
         try stderr.print("aegis mcp proxy: failed to start server: {s}\n", .{@errorName(err)});
         return exit_codes.general;
     };
@@ -194,10 +222,12 @@ fn proxy(argv: []const []const u8, stdout: anytype, stderr: anytype) !u8 {
         .audit_writer = &session_writer,
         .approval_reader = if (approval_reader_storage) |*reader| &reader.interface else null,
         .approval_writer = if (approval_writer_storage) |*writer| &writer.interface else null,
+        .manifest = if (loaded_manifest) |*manifest| manifest else null,
     }, &stdin_reader.interface, stdout, .{
         .context = &server,
         .request = aegis_mcp.transport.ProcessServer.request,
         .notify = aegis_mcp.transport.ProcessServer.notify,
+        .read = aegis_mcp.transport.ProcessServer.read,
     });
     if (approval_writer_storage) |*writer| writer.interface.flush() catch {};
     var completed_session = session;
@@ -210,6 +240,239 @@ fn proxy(argv: []const []const u8, stdout: anytype, stderr: anytype) !u8 {
         .policy = loaded.path,
     });
     return exit_codes.success;
+}
+
+fn list(argv: []const []const u8, stdout: anytype, stderr: anytype) !u8 {
+    if (argv.len > 0 and (std.mem.eql(u8, argv[0], "--help") or std.mem.eql(u8, argv[0], "-h"))) {
+        try stdout.writeAll("Usage: aegis mcp list\n");
+        return exit_codes.success;
+    }
+    if (argv.len != 0) {
+        try stderr.writeAll("aegis mcp list: unexpected arguments.\n");
+        return exit_codes.usage;
+    }
+    var gpa_state: std.heap.GeneralPurposeAllocator(.{}) = .init;
+    defer _ = gpa_state.deinit();
+    const allocator = gpa_state.allocator();
+    try stdout.writeAll("Known MCP servers:\n");
+    var found = false;
+    if (std.fs.cwd().openDir(".aegis/mcp", .{ .iterate = true })) |dir_value| {
+        var dir = dir_value;
+        defer dir.close();
+        var it = dir.iterate();
+        while (try it.next()) |entry| {
+            if (entry.kind != .file or !(std.mem.endsWith(u8, entry.name, ".yaml") or std.mem.endsWith(u8, entry.name, ".yml"))) continue;
+            const path = try std.fs.path.join(allocator, &.{ ".aegis", "mcp", entry.name });
+            defer allocator.free(path);
+            var manifest = aegis_mcp.manifests.loadFile(allocator, path) catch |err| {
+                try stdout.print("  invalid manifest: {s} ({s})\n", .{ path, @errorName(err) });
+                found = true;
+                continue;
+            };
+            defer manifest.deinit(allocator);
+            try stdout.print("  {s} transport={s} command={s} manifest={s}\n", .{ manifest.server.name, manifest.server.transport.toString(), manifest.server.command, path });
+            found = true;
+        }
+    } else |_| {}
+    if (!found) try stdout.writeAll("  none configured (checked .aegis/mcp/*.yaml)\n");
+    return exit_codes.success;
+}
+
+fn trust(argv: []const []const u8, stdout: anytype, stderr: anytype) !u8 {
+    if (argv.len > 0 and (std.mem.eql(u8, argv[0], "--help") or std.mem.eql(u8, argv[0], "-h"))) {
+        try stdout.writeAll("Usage: aegis mcp trust <server> --tool <tool>\n");
+        return exit_codes.success;
+    }
+    if (argv.len != 3 or !std.mem.eql(u8, argv[1], "--tool")) {
+        try stderr.writeAll("aegis mcp trust: expected <server> --tool <tool>.\n");
+        return exit_codes.usage;
+    }
+    const server = argv[0];
+    const tool = argv[2];
+    if (!safeSelectorPart(server) or !safeSelectorPart(tool)) {
+        try stderr.writeAll("aegis mcp trust: server and tool must be simple selector names.\n");
+        return exit_codes.usage;
+    }
+    try stdout.print(
+        \\Direct policy mutation is not implemented for this command.
+        \\Add this snippet to your policy after reviewing the server manifest:
+        \\
+        \\mcp:
+        \\  allow:
+        \\    - "{s}.{s}"
+        \\
+    , .{ server, tool });
+    return exit_codes.success;
+}
+
+fn manifestCommand(argv: []const []const u8, stdout: anytype, stderr: anytype) !u8 {
+    if (argv.len == 0 or std.mem.eql(u8, argv[0], "--help") or std.mem.eql(u8, argv[0], "-h")) {
+        try stdout.writeAll(
+            \\Usage:
+            \\  aegis mcp manifest check <manifest.yaml>
+            \\  aegis mcp manifest generate --command <server-command> [-- <args...>]
+            \\  aegis mcp manifest generate --server <name>
+            \\
+        );
+        return if (argv.len == 0) exit_codes.usage else exit_codes.success;
+    }
+    if (std.mem.eql(u8, argv[0], "check")) return manifestCheck(argv[1..], stdout, stderr);
+    if (std.mem.eql(u8, argv[0], "generate")) return manifestGenerate(argv[1..], stdout, stderr);
+    try stderr.print("aegis mcp manifest: unknown subcommand '{s}'.\n", .{argv[0]});
+    return exit_codes.usage;
+}
+
+fn manifestCheck(argv: []const []const u8, stdout: anytype, stderr: anytype) !u8 {
+    if (argv.len != 1) {
+        try stderr.writeAll("aegis mcp manifest check: expected <manifest.yaml>.\n");
+        return exit_codes.usage;
+    }
+    var gpa_state: std.heap.GeneralPurposeAllocator(.{}) = .init;
+    defer _ = gpa_state.deinit();
+    const allocator = gpa_state.allocator();
+    var manifest = aegis_mcp.manifests.loadFile(allocator, argv[0]) catch |err| {
+        try stderr.print("invalid MCP manifest: {s}\n", .{@errorName(err)});
+        return exit_codes.usage;
+    };
+    defer manifest.deinit(allocator);
+    try stdout.print("valid MCP manifest: server={s} transport={s} command={s} tools={d}\n", .{
+        manifest.server.name,
+        manifest.server.transport.toString(),
+        manifest.server.command,
+        manifest.tools.len,
+    });
+    return exit_codes.success;
+}
+
+fn manifestGenerate(argv: []const []const u8, stdout: anytype, stderr: anytype) !u8 {
+    var command_name: ?[]const u8 = null;
+    var server_name: ?[]const u8 = null;
+    var args_start: ?usize = null;
+    var index: usize = 0;
+    while (index < argv.len) : (index += 1) {
+        if (std.mem.eql(u8, argv[index], "--command")) {
+            index += 1;
+            if (index >= argv.len) return exit_codes.usage;
+            command_name = argv[index];
+        } else if (std.mem.eql(u8, argv[index], "--server")) {
+            index += 1;
+            if (index >= argv.len) return exit_codes.usage;
+            server_name = argv[index];
+        } else if (std.mem.eql(u8, argv[index], "--")) {
+            args_start = index + 1;
+            break;
+        } else {
+            try stderr.print("aegis mcp manifest generate: unknown option '{s}'.\n", .{argv[index]});
+            return exit_codes.usage;
+        }
+    }
+    const name = server_name orelse command_name orelse {
+        try stderr.writeAll("aegis mcp manifest generate: expected --command or --server.\n");
+        return exit_codes.usage;
+    };
+    const command_text = command_name orelse name;
+    const extra_args = if (args_start) |start| argv[start..] else &.{};
+    try aegis_mcp.manifests.writeStarterManifest(stdout, name, command_text, extra_args);
+    return exit_codes.success;
+}
+
+fn safeSelectorPart(value: []const u8) bool {
+    if (value.len == 0 or value.len > 128) return false;
+    for (value) |char| {
+        if (!(std.ascii.isAlphanumeric(char) or char == '_' or char == '-' or char == '.')) return false;
+    }
+    return true;
+}
+
+const BoundManifestLaunch = struct {
+    argv: []const []const u8,
+    env_map: std.process.EnvMap,
+
+    fn deinit(self: *BoundManifestLaunch, allocator: std.mem.Allocator) void {
+        for (self.argv) |arg| allocator.free(arg);
+        if (self.argv.len > 0) allocator.free(self.argv);
+        self.env_map.deinit();
+        self.* = undefined;
+    }
+};
+
+fn bindManifestLaunch(
+    allocator: std.mem.Allocator,
+    manifest: aegis_mcp.manifests.Manifest,
+    requested_argv: []const []const u8,
+) !BoundManifestLaunch {
+    if (manifest.server.transport != .stdio) return error.UnsupportedManifestTransport;
+    if (requested_argv.len != manifest.server.args.len + 1) return error.ManifestArgvMismatch;
+    if (!std.mem.eql(u8, requested_argv[0], manifest.server.command)) return error.ManifestCommandMismatch;
+    for (manifest.server.args, 0..) |expected, index| {
+        if (!std.mem.eql(u8, expected, requested_argv[index + 1])) return error.ManifestArgvMismatch;
+    }
+
+    const resolved_command = try resolveCommandPath(allocator, manifest.server.command);
+    errdefer allocator.free(resolved_command);
+    if (manifest.server.expected_hash) |expected_hash| {
+        try verifyExpectedHash(allocator, resolved_command, expected_hash);
+    }
+
+    var argv = try allocator.alloc([]const u8, requested_argv.len);
+    errdefer allocator.free(argv);
+    argv[0] = resolved_command;
+    var owned_count: usize = 1;
+    errdefer {
+        for (argv[0..owned_count]) |arg| allocator.free(arg);
+    }
+    for (requested_argv[1..], 1..) |arg, index| {
+        argv[index] = try allocator.dupe(u8, arg);
+        owned_count += 1;
+    }
+
+    var env_map = std.process.EnvMap.init(allocator);
+    errdefer env_map.deinit();
+    for (manifest.server.env_allow) |name| {
+        if (!safeEnvName(name)) return error.InvalidManifestEnvAllow;
+        if (std.process.getEnvVarOwned(allocator, name)) |value| {
+            defer allocator.free(value);
+            try env_map.put(name, value);
+        } else |_| {}
+    }
+
+    return .{ .argv = argv, .env_map = env_map };
+}
+
+fn resolveCommandPath(allocator: std.mem.Allocator, command_name: []const u8) ![]const u8 {
+    if (std.fs.path.isAbsolute(command_name) or std.mem.indexOfAny(u8, command_name, "/\\") != null) {
+        return std.fs.cwd().realpathAlloc(allocator, command_name) catch try allocator.dupe(u8, command_name);
+    }
+    const path_value = std.process.getEnvVarOwned(allocator, "PATH") catch return error.ManifestCommandNotFound;
+    defer allocator.free(path_value);
+    var parts = std.mem.splitScalar(u8, path_value, std.fs.path.delimiter);
+    while (parts.next()) |dir| {
+        if (dir.len == 0) continue;
+        const candidate = try std.fs.path.join(allocator, &.{ dir, command_name });
+        defer allocator.free(candidate);
+        std.fs.cwd().access(candidate, .{}) catch continue;
+        return std.fs.cwd().realpathAlloc(allocator, candidate) catch try allocator.dupe(u8, candidate);
+    }
+    return error.ManifestCommandNotFound;
+}
+
+fn verifyExpectedHash(allocator: std.mem.Allocator, resolved_command: []const u8, expected_hash: []const u8) !void {
+    const normalized_expected = if (std.mem.startsWith(u8, expected_hash, "sha256:")) expected_hash["sha256:".len..] else expected_hash;
+    if (normalized_expected.len != 64) return error.InvalidManifestExpectedHash;
+    const bytes = try std.fs.cwd().readFileAlloc(allocator, resolved_command, 128 * 1024 * 1024);
+    defer allocator.free(bytes);
+    var digest: [32]u8 = undefined;
+    std.crypto.hash.sha2.Sha256.hash(bytes, &digest, .{});
+    const hex = std.fmt.bytesToHex(digest, .lower);
+    if (!std.ascii.eqlIgnoreCase(normalized_expected, &hex)) return error.ManifestExpectedHashMismatch;
+}
+
+fn safeEnvName(value: []const u8) bool {
+    if (value.len == 0 or value.len > core.limits.max_env_name_len) return false;
+    for (value) |char| {
+        if (!(std.ascii.isAlphanumeric(char) or char == '_')) return false;
+    }
+    return true;
 }
 
 fn usageCode(err: anyerror, stderr: anytype) !u8 {
@@ -262,4 +525,129 @@ test "mcp command parsing preserves server argv after --command" {
     try std.testing.expectEqualStrings("node", options.command_argv[0]);
     try std.testing.expectEqualStrings("server.js", options.command_argv[1]);
     try std.testing.expectEqualStrings("--flag", options.command_argv[2]);
+}
+
+test "manifest binding requires exact argv hash and env allowlist" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    {
+        const file = try tmp.dir.createFile("server-bin", .{});
+        defer file.close();
+        try file.writeAll("fake server binary");
+    }
+    const server_path = try tmp.dir.realpathAlloc(std.testing.allocator, "server-bin");
+    defer std.testing.allocator.free(server_path);
+    var digest: [32]u8 = undefined;
+    std.crypto.hash.sha2.Sha256.hash("fake server binary", &digest, .{});
+    const hex = std.fmt.bytesToHex(digest, .lower);
+    const manifest_text = try std.fmt.allocPrint(std.testing.allocator,
+        \\version: 1
+        \\server:
+        \\  name: fake
+        \\  transport: stdio
+        \\  command: {s}
+        \\  args:
+        \\    - --stdio
+        \\  expected_hash: sha256:{s}
+        \\  env:
+        \\    allow:
+        \\      - PATH
+        \\tools:
+        \\  search:
+        \\    risk: low
+        \\    default: allow
+        \\resources:
+        \\  default: ask
+        \\prompts:
+        \\  default: ask
+        \\sampling:
+        \\  default: deny
+    , .{ server_path, &hex });
+    defer std.testing.allocator.free(manifest_text);
+    var manifest = try aegis_mcp.manifests.parseFromSlice(std.testing.allocator, manifest_text, "test.yaml");
+    defer manifest.deinit(std.testing.allocator);
+
+    var binding = try bindManifestLaunch(std.testing.allocator, manifest, &.{ server_path, "--stdio" });
+    defer binding.deinit(std.testing.allocator);
+    try std.testing.expectEqualStrings(server_path, binding.argv[0]);
+    try std.testing.expectEqualStrings("--stdio", binding.argv[1]);
+    try std.testing.expect(binding.env_map.get("PATH") != null);
+
+    try std.testing.expectError(error.ManifestCommandMismatch, bindManifestLaunch(std.testing.allocator, manifest, &.{ "/different", "--stdio" }));
+    try std.testing.expectError(error.ManifestArgvMismatch, bindManifestLaunch(std.testing.allocator, manifest, &.{ server_path, "--other" }));
+
+    const bad_manifest_text = try std.fmt.allocPrint(std.testing.allocator,
+        \\version: 1
+        \\server:
+        \\  name: fake
+        \\  transport: stdio
+        \\  command: {s}
+        \\  expected_hash: {s}
+        \\tools:
+    , .{ server_path, "0000000000000000000000000000000000000000000000000000000000000000" });
+    defer std.testing.allocator.free(bad_manifest_text);
+    var bad_manifest = try aegis_mcp.manifests.parseFromSlice(std.testing.allocator, bad_manifest_text, "bad.yaml");
+    defer bad_manifest.deinit(std.testing.allocator);
+    try std.testing.expectError(error.ManifestExpectedHashMismatch, bindManifestLaunch(std.testing.allocator, bad_manifest, &.{server_path}));
+}
+
+test "mcp manifest check list trust and generate commands are safe" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var old_cwd = try std.fs.cwd().openDir(".", .{});
+    defer old_cwd.close();
+    const tmp_path = try tmp.dir.realpathAlloc(std.testing.allocator, ".");
+    defer std.testing.allocator.free(tmp_path);
+    try std.posix.chdir(tmp_path);
+    defer std.posix.fchdir(old_cwd.fd) catch {};
+
+    try tmp.dir.makePath(".aegis/mcp");
+    {
+        const file = try tmp.dir.createFile(".aegis/mcp/github.yaml", .{});
+        defer file.close();
+        try file.writeAll(
+            \\version: 1
+            \\server:
+            \\  name: github
+            \\  transport: stdio
+            \\  command: github-mcp-server
+            \\tools:
+            \\  search_issues:
+            \\    risk: low
+            \\    default: allow
+            \\resources:
+            \\  default: ask
+            \\prompts:
+            \\  default: ask
+            \\sampling:
+            \\  default: deny
+        );
+    }
+
+    var stdout_buf: [4096]u8 = undefined;
+    var stderr_buf: [1024]u8 = undefined;
+    var stdout_stream = std.io.fixedBufferStream(&stdout_buf);
+    var stderr_stream = std.io.fixedBufferStream(&stderr_buf);
+
+    const check_code = try command(&.{ "manifest", "check", ".aegis/mcp/github.yaml" }, stdout_stream.writer(), stderr_stream.writer());
+    try std.testing.expectEqual(exit_codes.success, check_code);
+    try std.testing.expect(std.mem.indexOf(u8, stdout_stream.getWritten(), "valid MCP manifest") != null);
+
+    stdout_stream.reset();
+    stderr_stream.reset();
+    const list_code = try command(&.{"list"}, stdout_stream.writer(), stderr_stream.writer());
+    try std.testing.expectEqual(exit_codes.success, list_code);
+    try std.testing.expect(std.mem.indexOf(u8, stdout_stream.getWritten(), "github") != null);
+
+    stdout_stream.reset();
+    stderr_stream.reset();
+    const trust_code = try command(&.{ "trust", "github", "--tool", "search_issues" }, stdout_stream.writer(), stderr_stream.writer());
+    try std.testing.expectEqual(exit_codes.success, trust_code);
+    try std.testing.expect(std.mem.indexOf(u8, stdout_stream.getWritten(), "\"github.search_issues\"") != null);
+
+    stdout_stream.reset();
+    stderr_stream.reset();
+    const generate_code = try command(&.{ "manifest", "generate", "--command", "github-mcp-server", "--", "--token", "ghp_fakeSecretShouldNotPrint" }, stdout_stream.writer(), stderr_stream.writer());
+    try std.testing.expectEqual(exit_codes.success, generate_code);
+    try std.testing.expect(std.mem.indexOf(u8, stdout_stream.getWritten(), "ghp_fakeSecretShouldNotPrint") == null);
 }

@@ -65,3 +65,8 @@
 - Windows PATH shims cannot rely on `.cmd` batch forwarding as a security boundary. Batch `%*` re-parses metacharacters; use executable aliases or another argv-preserving mechanism.
 - If doctor says `cmd.exe` or `powershell.exe` are wrapper-guarded, generated shims must cover extension-qualified invocations such as `cmd.exe`, `powershell.exe`, `pwsh.exe`, and `git.exe`.
 - Shell command classifiers must analyze all argv tokens after `/c`, `/k`, `-Command`, or `-c`; checking only the first token misses split destructive flags like `rmdir /s /q` and `Remove-Item -Recurse -Force`.
+
+## 2026-05-07 Phase 17 MCP Review
+
+- MCP sampling is normally server-originated. A stdio proxy must inspect server-to-client JSON-RPC requests as well as client-to-server requests, and default-deny sampling before forwarding it to the client.
+- MCP manifests are a trust boundary, not just metadata. Manifest defaults must only apply when the launched command/args, expected binary hash, and environment allowlist binding have been checked.
