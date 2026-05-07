@@ -1,6 +1,7 @@
 const std = @import("std");
 const builtin = @import("builtin");
 const core = @import("../core/mod.zig");
+const core_api = @import("../core/api.zig");
 const aegis_mcp = @import("../mcp/mod.zig");
 const aegis_policy = @import("../policy/mod.zig");
 const sandbox = @import("../sandbox/mod.zig");
@@ -231,7 +232,7 @@ fn collectIntegrationContextAt(allocator: std.mem.Allocator, workspace_root: []c
     var policy_error: ?[]const u8 = null;
     if (fileExistsAbsolute(policy_path)) {
         policy_present = true;
-        if (aegis_policy.load.loadFile(allocator, policy_path)) |loaded_policy| {
+        if (core_api.loadPolicyFile(allocator, policy_path)) |loaded_policy| {
             var loaded = loaded_policy;
             loaded.deinit();
             policy_valid = true;

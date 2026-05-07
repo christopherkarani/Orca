@@ -1,5 +1,6 @@
 pub const cli = @import("cli/mod.zig");
 pub const core = @import("core/mod.zig");
+pub const core_api = @import("core/api.zig");
 pub const policy = @import("policy/mod.zig");
 pub const audit = @import("audit/mod.zig");
 pub const intercept = @import("intercept/mod.zig");
@@ -11,6 +12,7 @@ pub const release = @import("release/mod.zig");
 test {
     _ = cli;
     _ = core;
+    _ = core_api;
     _ = policy;
     _ = audit;
     _ = intercept;

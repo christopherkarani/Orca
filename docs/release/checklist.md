@@ -15,7 +15,7 @@ Expected artifact names:
 Build locally:
 
 ```bash
-AEGIS_VERSION=1.0.0 ./scripts/build-release.sh
+AEGIS_VERSION=1.1.0 ./scripts/build-release.sh
 shasum -a 256 -c dist/checksums.txt
 ```
 
@@ -32,7 +32,7 @@ tar -xzf aegis-vX.Y.Z-linux-amd64.tar.gz
 The installer scripts support verified local artifacts:
 
 ```bash
-AEGIS_VERSION=1.0.0 AEGIS_ARTIFACT_DIR=dist ./scripts/install.sh
+AEGIS_VERSION=1.1.0 AEGIS_ARTIFACT_DIR=dist ./scripts/install.sh
 ```
 
 Do not document blind `curl | sh` installation as the only path. Any remote installer example must also show the checksum verification alternative above.

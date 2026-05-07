@@ -1,11 +1,12 @@
 const std = @import("std");
 
 const aegis_mcp = @import("../mcp/mod.zig");
-const audit = @import("../audit/mod.zig");
 const core = @import("../core/mod.zig");
+const core_api = @import("../core/api.zig");
 const exit_codes = @import("exit_codes.zig");
 const help = @import("help.zig");
 const policy = @import("../policy/mod.zig");
+const version_command = @import("version.zig");
 
 pub fn command(argv: []const []const u8, stdout: anytype, stderr: anytype) !u8 {
     if (argv.len > 0 and (std.mem.eql(u8, argv[0], "--help") or std.mem.eql(u8, argv[0], "-h"))) {
@@ -96,13 +97,22 @@ fn inspect(argv: []const []const u8, stdout: anytype, stderr: anytype) !u8 {
 
     const options = parseOptions(allocator, argv, stderr) catch |err| return usageCode(err, stderr);
     defer options.deinit(allocator);
+    var loaded_policy: ?core_api.Policy = null;
+    defer if (loaded_policy) |*loaded| loaded.deinit();
+    if (options.policy_path) |path| {
+        loaded_policy = core_api.loadPolicyFile(allocator, path) catch |err| {
+            try stderr.print("aegis mcp inspect: invalid policy: {s}\n", .{@errorName(err)});
+            return exit_codes.general;
+        };
+    }
     var server = aegis_mcp.transport.ProcessServer.spawn(allocator, options.command_argv) catch |err| {
         try stderr.print("aegis mcp inspect: failed to start server: {s}\n", .{@errorName(err)});
         return exit_codes.general;
     };
     defer server.deinit();
 
-    const initialize = "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"protocolVersion\":\"2025-03-26\",\"capabilities\":{},\"clientInfo\":{\"name\":\"aegis\",\"version\":\"1.0.0\"}}}";
+    const initialize = try initializeRequestAlloc(allocator);
+    defer allocator.free(initialize);
     const initialized = "{\"jsonrpc\":\"2.0\",\"method\":\"notifications/initialized\",\"params\":{}}";
     const list_tools = "{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"tools/list\",\"params\":{}}";
     const init_response = aegis_mcp.transport.ProcessServer.request(&server, allocator, initialize) catch |err| {
@@ -132,7 +142,14 @@ fn inspect(argv: []const []const u8, stdout: anytype, stderr: anytype) !u8 {
 
     try stdout.print("MCP Server: {s}\nTransport: stdio\nTools:\n", .{options.server_name});
     for (inventory.tools) |tool| {
-        try stdout.print("  {s:<24} risk: {s:<8} default: {s}\n", .{ tool.name, tool.risk.toString(), aegis_mcp.tools.defaultDecisionForRisk(tool.risk) });
+        try stdout.print("  {s:<24} risk: {s:<8} default: {s}", .{ tool.name, tool.risk.toString(), aegis_mcp.tools.defaultDecisionForRisk(tool.risk) });
+        if (loaded_policy) |*selected| {
+            var evaluation = try core_api.evaluateAction(allocator, selected, .{ .mcp_tool_call = .{ .server = options.server_name, .tool_name = tool.name } }, .{});
+            defer evaluation.deinit(allocator);
+            try stdout.print(" policy: {s}", .{evaluation.decision.result.toString()});
+            if (evaluation.decision.rule_id) |rule_id| try stdout.print(" rule: {s}", .{rule_id});
+        }
+        try stdout.writeByte('\n');
     }
     try stdout.writeAll("\nFindings:\n");
     var finding_count: usize = 0;
@@ -159,7 +176,10 @@ fn proxy(argv: []const []const u8, stdout: anytype, stderr: anytype) !u8 {
     defer options.deinit(allocator);
     const workspace = try core.supervisor.resolveWorkspaceRoot(allocator, null, ".");
     defer allocator.free(workspace);
-    var loaded = try policy.load.discover(allocator, options.policy_path, workspace);
+    var loaded = core_api.discoverPolicy(allocator, options.policy_path, workspace) catch |err| {
+        try stderr.print("aegis mcp proxy: invalid policy: {s}\n", .{@errorName(err)});
+        return exit_codes.general;
+    };
     defer loaded.deinit();
     const mode = options.mode orelse loaded.policy.mode;
     var loaded_manifest: ?aegis_mcp.manifests.Manifest = null;
@@ -184,7 +204,7 @@ fn proxy(argv: []const []const u8, stdout: anytype, stderr: anytype) !u8 {
     const spawn_env = if (bound_launch) |*binding| &binding.env_map else null;
 
     const session = try makeSession(options.command_argv, workspace, mode);
-    var session_writer = audit.writer.SessionWriter.init(allocator, session) catch |err| {
+    var session_writer = core_api.createAuditWriter(allocator, session) catch |err| {
         try stderr.print("aegis mcp proxy: audit unavailable: {s}\n", .{@errorName(err)});
         return exit_codes.general;
     };
@@ -232,7 +252,7 @@ fn proxy(argv: []const []const u8, stdout: anytype, stderr: anytype) !u8 {
     if (approval_writer_storage) |*writer| writer.interface.flush() catch {};
     var completed_session = session;
     completed_session.ended_at = core.time.Timestamp.now();
-    try audit.summary.writeFiles(allocator, session_writer.session_dir_path, .{
+    try core_api.writeAuditSummary(allocator, session_writer.session_dir_path, .{
         .session = completed_session,
         .status = .{ .exited = 0 },
         .event_count = session_writer.event_count,
@@ -240,6 +260,14 @@ fn proxy(argv: []const []const u8, stdout: anytype, stderr: anytype) !u8 {
         .policy = loaded.path,
     });
     return exit_codes.success;
+}
+
+fn initializeRequestAlloc(allocator: std.mem.Allocator) ![]u8 {
+    return try std.fmt.allocPrint(
+        allocator,
+        "{{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{{\"protocolVersion\":\"2025-03-26\",\"capabilities\":{{}},\"clientInfo\":{{\"name\":\"aegis\",\"version\":\"{s}\"}}}}}}",
+        .{version_command.current().version},
+    );
 }
 
 fn list(argv: []const []const u8, stdout: anytype, stderr: anytype) !u8 {
@@ -525,6 +553,73 @@ test "mcp command parsing preserves server argv after --command" {
     try std.testing.expectEqualStrings("node", options.command_argv[0]);
     try std.testing.expectEqualStrings("server.js", options.command_argv[1]);
     try std.testing.expectEqualStrings("--flag", options.command_argv[2]);
+}
+
+test "mcp initialize request uses build version metadata" {
+    const request = try initializeRequestAlloc(std.testing.allocator);
+    defer std.testing.allocator.free(request);
+    try std.testing.expect(std.mem.indexOf(u8, request, "\"clientInfo\":{\"name\":\"aegis\",\"version\":\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, request, version_command.current().version) != null);
+    try std.testing.expect(std.mem.indexOf(u8, request, "\"version\":\"1.0.0\"") == null or std.mem.eql(u8, version_command.current().version, "1.0.0"));
+}
+
+test "mcp proxy reports invalid policy as CLI error" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    {
+        const file = try tmp.dir.createFile("bad-policy.yaml", .{});
+        defer file.close();
+        try file.writeAll(
+            \\version: 1
+            \\mode: not-a-mode
+        );
+    }
+    const policy_path = try tmp.dir.realpathAlloc(std.testing.allocator, "bad-policy.yaml");
+    defer std.testing.allocator.free(policy_path);
+
+    var stdout_buf: [1024]u8 = undefined;
+    var stderr_buf: [1024]u8 = undefined;
+    var stdout_stream = std.io.fixedBufferStream(&stdout_buf);
+    var stderr_stream = std.io.fixedBufferStream(&stderr_buf);
+
+    const code = try command(&.{ "proxy", "--policy", policy_path, "--command", "python3", "--", "fixtures/mcp/fake_server.py" }, stdout_stream.writer(), stderr_stream.writer());
+    try std.testing.expectEqual(exit_codes.general, code);
+    try std.testing.expectEqualStrings("", stdout_stream.getWritten());
+    try std.testing.expect(std.mem.indexOf(u8, stderr_stream.getWritten(), "aegis mcp proxy: invalid policy") != null);
+}
+
+test "mcp inspect policy option reports Core policy decisions" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    {
+        const file = try tmp.dir.createFile("mcp-policy.yaml", .{});
+        defer file.close();
+        try file.writeAll(
+            \\version: 1
+            \\mode: strict
+            \\mcp:
+            \\  allow:
+            \\    - "fake.search_issues"
+            \\  deny:
+            \\    - "fake.delete_repository"
+        );
+    }
+    const policy_path = try tmp.dir.realpathAlloc(std.testing.allocator, "mcp-policy.yaml");
+    defer std.testing.allocator.free(policy_path);
+
+    var stdout_buf: [8192]u8 = undefined;
+    var stderr_buf: [2048]u8 = undefined;
+    var stdout_stream = std.io.fixedBufferStream(&stdout_buf);
+    var stderr_stream = std.io.fixedBufferStream(&stderr_buf);
+
+    const code = try command(&.{ "inspect", "--name", "fake", "--policy", policy_path, "--command", "python3", "--", "fixtures/mcp/fake_server.py" }, stdout_stream.writer(), stderr_stream.writer());
+    try std.testing.expectEqual(exit_codes.success, code);
+    const output = stdout_stream.getWritten();
+    try std.testing.expect(std.mem.indexOf(u8, output, "search_issues") != null);
+    try std.testing.expect(std.mem.indexOf(u8, output, "policy: allow") != null);
+    try std.testing.expect(std.mem.indexOf(u8, output, "delete_repository") != null);
+    try std.testing.expect(std.mem.indexOf(u8, output, "policy: deny") != null);
+    _ = stderr_stream.getWritten();
 }
 
 test "manifest binding requires exact argv hash and env allowlist" {

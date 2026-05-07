@@ -1,6 +1,6 @@
 # PLACEHOLDER Winget manifest. Release automation must replace URLs/checksums and the project owner must record the final license before publishing.
 PackageIdentifier: ChrisKarani.Aegis
-PackageVersion: 1.0.0
+PackageVersion: 1.1.0
 PackageName: Aegis
 Publisher: Chris Karani
 License: License pending
@@ -13,8 +13,8 @@ Installers:
     InstallerType: zip
     NestedInstallerType: portable
     NestedInstallerFiles:
-      - RelativeFilePath: bin\aegis.exe
+      - RelativeFilePath: aegis-v1.1.0-windows-amd64\bin\aegis.exe
         PortableCommandAlias: aegis
-    InstallerUrl: https://github.com/chriskarani/aegis/releases/download/v1.0.0/aegis-v1.0.0-windows-amd64.zip
+    InstallerUrl: https://github.com/chriskarani/aegis/releases/download/v1.1.0/aegis-v1.1.0-windows-amd64.zip
     InstallerSha256: PLACEHOLDER_WINDOWS_AMD64_SHA256
 ReleaseNotes: Verify checksums.txt from the matching release before publishing this placeholder manifest.

@@ -1,6 +1,6 @@
 const std = @import("std");
-const audit = @import("../audit/mod.zig");
 const core = @import("../core/mod.zig");
+const core_api = @import("../core/api.zig");
 const intercept = @import("../intercept/mod.zig");
 const exit_codes = @import("exit_codes.zig");
 const help = @import("help.zig");
@@ -24,7 +24,7 @@ pub fn command(argv: []const []const u8, stdout: anytype, stderr: anytype) !u8 {
     };
     defer allocator.free(session_id);
     const audit_session = commandAuditSession(session_id, workspace_root, "aegis discard");
-    var session_writer = audit.writer.SessionWriter.openExisting(allocator, workspace_root, session_id) catch |err| {
+    var session_writer = core_api.openAuditWriter(allocator, workspace_root, session_id) catch |err| {
         try stderr.print("aegis discard: failed to open session audit log: {s}\n", .{@errorName(err)});
         return exit_codes.general;
     };
@@ -36,7 +36,7 @@ pub fn command(argv: []const []const u8, stdout: anytype, stderr: anytype) !u8 {
         return exit_codes.general;
     };
     if (session_writer.finalHash()) |hash| {
-        try audit.summary.updateFinalHash(allocator, session_writer.session_dir_path, session_writer.event_count, hash);
+        try core_api.updateAuditSummaryFinalHash(allocator, session_writer.session_dir_path, session_writer.event_count, hash);
     }
     try stdout.print("Discarded {d} staged file(s) from session {s}.\n", .{ result.count, session_id });
     return exit_codes.success;

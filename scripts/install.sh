@@ -1,7 +1,7 @@
 #!/usr/bin/env sh
 set -eu
 
-VERSION="${AEGIS_VERSION:-1.0.0}"
+VERSION="${AEGIS_VERSION:-1.1.0}"
 BASE_URL="${AEGIS_BASE_URL:-https://github.com/chriskarani/aegis/releases/download/v${VERSION}}"
 INSTALL_DIR="${AEGIS_INSTALL_DIR:-${HOME}/.local/bin}"
 ARTIFACT_DIR="${AEGIS_ARTIFACT_DIR:-}"

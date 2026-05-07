@@ -27,4 +27,4 @@ Update Homebrew, Scoop, WinGet, npm, and Docker templates from generated artifac
 
 ## Versioning
 
-v1.0.0 release candidates must build with `version` metadata set to `1.0.0` and pass the production readiness gates in `PRODUCTION_READINESS_GATES.md`.
+v1.1.0 release candidates must build with `version` metadata set to `1.1.0` and pass the production readiness gates in `PRODUCTION_READINESS_GATES.md`.

@@ -1,6 +1,7 @@
 .zig-cache/
 zig-cache/
 zig-out/
+dist/work/
 *.o
 *.obj
 *.a

@@ -1,7 +1,7 @@
 const std = @import("std");
 
-const audit = @import("../audit/mod.zig");
 const core = @import("../core/mod.zig");
+const core_api = @import("../core/api.zig");
 const exit_codes = @import("exit_codes.zig");
 const help = @import("help.zig");
 
@@ -29,7 +29,7 @@ pub fn command(argv: []const []const u8, stdout: anytype, stderr: anytype) !u8 {
     };
     defer allocator.free(workspace_root);
 
-    var session = audit.replay.load(allocator, workspace_root, .{
+    var session = core_api.loadReplay(allocator, workspace_root, .{
         .session = options.session,
         .only_denied = options.only_denied,
         .verify = options.verify,
@@ -41,7 +41,7 @@ pub fn command(argv: []const []const u8, stdout: anytype, stderr: anytype) !u8 {
         error.HashVerificationFailed => {
             const session_dir_path = sessionDirPathForError(allocator, workspace_root, options.session) catch null;
             defer if (session_dir_path) |path| allocator.free(path);
-            const verify_result = if (session_dir_path) |path| audit.replay.verifySessionDir(allocator, path) catch null else null;
+            const verify_result = if (session_dir_path) |path| core_api.verifyReplay(allocator, path) catch null else null;
             if (verify_result) |result| {
                 defer result.deinit(allocator);
                 if (result.reason) |reason| try stderr.print("aegis replay: hash verification failed: {s}\n", .{reason}) else try stderr.writeAll("aegis replay: hash verification failed.\n");
@@ -58,9 +58,9 @@ pub fn command(argv: []const []const u8, stdout: anytype, stderr: anytype) !u8 {
     defer session.deinit();
 
     if (options.json) {
-        try audit.replay.writeJson(stdout, session);
+        try core_api.writeReplayJson(stdout, session);
     } else {
-        try audit.replay.writeHuman(stdout, session, options.verify);
+        try core_api.writeReplayHuman(stdout, session, options.verify);
     }
     return exit_codes.success;
 }

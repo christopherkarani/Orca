@@ -1,7 +1,7 @@
 class Aegis < Formula
   desc "Local runtime firewall for AI agents"
   homepage "https://github.com/chriskarani/aegis"
-  version "1.0.0" # PLACEHOLDER_VERSION: release automation replaces this.
+  version "1.1.0" # PLACEHOLDER_VERSION: release automation replaces this.
   license :cannot_represent # Choose the final project license before public distribution.
 
   on_macos do

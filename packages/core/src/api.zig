@@ -1,128 +1,40 @@
-const std = @import("std");
 const aegis = @import("aegis");
 
-pub const Action = aegis.core.types.Action;
-pub const Decision = aegis.core.decision.Decision;
-pub const DecisionResult = aegis.core.decision.DecisionResult;
-pub const Evaluation = aegis.policy.schema.Evaluation;
-pub const EvaluationContext = aegis.policy.schema.EvaluationContext;
-pub const Policy = aegis.policy.schema.Policy;
-pub const ReplayOptions = aegis.audit.replay.ReplayOptions;
-pub const ReplaySession = aegis.audit.replay.ReplaySession;
-pub const VerifyResult = aegis.audit.replay.VerifyResult;
-pub const AuditWriter = aegis.audit.writer.SessionWriter;
+pub const Action = aegis.core_api.Action;
+pub const Decision = aegis.core_api.Decision;
+pub const DecisionResult = aegis.core_api.DecisionResult;
+pub const Evaluation = aegis.core_api.Evaluation;
+pub const EvaluationContext = aegis.core_api.EvaluationContext;
+pub const Policy = aegis.core_api.Policy;
+pub const LoadedPolicy = aegis.core_api.LoadedPolicy;
+pub const Preset = aegis.core_api.Preset;
+pub const ReplayOptions = aegis.core_api.ReplayOptions;
+pub const ReplaySession = aegis.core_api.ReplaySession;
+pub const VerifyResult = aegis.core_api.VerifyResult;
+pub const AuditWriter = aegis.core_api.AuditWriter;
+pub const SummaryInput = aegis.core_api.SummaryInput;
+pub const DecisionInput = aegis.core_api.DecisionInput;
+pub const AuditEventInput = aegis.core_api.AuditEventInput;
 
-pub const DecisionInput = struct {
-    result: DecisionResult,
-    reason: []const u8,
-    rule_id: ?[]const u8 = null,
-    risk_score: ?u8 = null,
-    requires_user: bool = false,
-    ci_may_proceed: bool = false,
-};
-
-pub const AuditEventInput = struct {
-    session_id: aegis.core.session.SessionId,
-    event_id: aegis.core.event.EventId,
-    timestamp: aegis.core.time.Timestamp,
-    event_type: aegis.core.event.EventType,
-    actor: aegis.core.types.Actor,
-    target: aegis.core.types.Target,
-    decision: ?Decision = null,
-    redactions: aegis.core.event.RedactionSummary = .{},
-};
-
-pub fn parsePolicyFromSlice(allocator: std.mem.Allocator, text: []const u8, source_path: ?[]const u8) !Policy {
-    return aegis.policy.load.parseFromSlice(allocator, text, source_path);
-}
-
-pub fn loadPolicyFile(allocator: std.mem.Allocator, path: []const u8) !Policy {
-    return aegis.policy.load.loadFile(allocator, path);
-}
-
-pub fn validatePolicy(policy: *const Policy) !void {
-    return aegis.policy.validate.policy(policy);
-}
-
-pub fn evaluateAction(allocator: std.mem.Allocator, policy: *const Policy, action: Action, context: EvaluationContext) !Evaluation {
-    return aegis.policy.evaluate.action(policy, action, context, allocator);
-}
-
-pub fn makeDecision(input: DecisionInput) Decision {
-    return .{
-        .result = input.result,
-        .rule_id = input.rule_id,
-        .reason = input.reason,
-        .risk_score = input.risk_score,
-        .requires_user = input.requires_user,
-        .ci_may_proceed = input.ci_may_proceed,
-    };
-}
-
-pub fn createAuditEvent(input: AuditEventInput) !aegis.core.event.Event {
-    return .{
-        .session_id = input.session_id,
-        .event_id = input.event_id,
-        .timestamp = input.timestamp,
-        .event_type = input.event_type,
-        .actor = input.actor,
-        .target = input.target,
-        .decision = input.decision,
-        .redactions = input.redactions,
-    };
-}
-
-pub fn createAuditWriter(allocator: std.mem.Allocator, session: aegis.core.session.Session) !AuditWriter {
-    return AuditWriter.init(allocator, session);
-}
-
-pub fn openAuditWriter(allocator: std.mem.Allocator, workspace_root: []const u8, session_id: []const u8) !AuditWriter {
-    return AuditWriter.openExisting(allocator, workspace_root, session_id);
-}
-
-pub fn appendAuditEvent(writer: *AuditWriter, event: aegis.core.event.Event) !void {
-    try writer.appendEvent(event);
-}
-
-pub fn redactString(value: []const u8) []const u8 {
-    return aegis.audit.redact_bridge.redactString(value);
-}
-
-pub fn redactStringBounded(value: []const u8, buffer: []u8) []const u8 {
-    return aegis.audit.redact_bridge.redactStringBounded(value, buffer);
-}
-
-pub fn redactTargetValueBounded(kind_name: []const u8, value: []const u8, buffer: []u8) []const u8 {
-    return aegis.audit.redact_bridge.redactTargetValueBounded(kind_name, value, buffer);
-}
-
-pub fn verifyReplay(allocator: std.mem.Allocator, session_dir_path: []const u8) !VerifyResult {
-    return aegis.audit.replay.verifySessionDir(allocator, session_dir_path);
-}
-
-pub fn loadReplay(allocator: std.mem.Allocator, workspace_root: []const u8, options: ReplayOptions) !ReplaySession {
-    return aegis.audit.replay.load(allocator, workspace_root, options);
-}
-
-pub fn writeReplayJson(writer: anytype, replay: ReplaySession) !void {
-    try aegis.audit.replay.writeJson(writer, replay);
-}
-
-pub fn writeReplayHuman(writer: anytype, replay: ReplaySession, show_verify: bool) !void {
-    try aegis.audit.replay.writeHuman(writer, replay, show_verify);
-}
-
-test "api module exposes policy evaluation without product-specific imports" {
-    var selected = try parsePolicyFromSlice(std.testing.allocator,
-        \\version: 1
-        \\mode: strict
-        \\commands:
-        \\  allow:
-        \\    - "echo *"
-    , "api-test.yaml");
-    defer selected.deinit();
-
-    var evaluation = try evaluateAction(std.testing.allocator, &selected, .{ .command_exec = .{ .argv = &.{ "echo", "ok" } } }, .{});
-    defer evaluation.deinit(std.testing.allocator);
-    try std.testing.expectEqual(DecisionResult.allow, evaluation.decision.result);
-}
+pub const parsePolicyFromSlice = aegis.core_api.parsePolicyFromSlice;
+pub const loadPolicyFile = aegis.core_api.loadPolicyFile;
+pub const loadPolicyPreset = aegis.core_api.loadPolicyPreset;
+pub const discoverPolicy = aegis.core_api.discoverPolicy;
+pub const validatePolicy = aegis.core_api.validatePolicy;
+pub const explainAction = aegis.core_api.explainAction;
+pub const writePolicyExplanation = aegis.core_api.writePolicyExplanation;
+pub const evaluateAction = aegis.core_api.evaluateAction;
+pub const makeDecision = aegis.core_api.makeDecision;
+pub const createAuditEvent = aegis.core_api.createAuditEvent;
+pub const createAuditWriter = aegis.core_api.createAuditWriter;
+pub const openAuditWriter = aegis.core_api.openAuditWriter;
+pub const appendAuditEvent = aegis.core_api.appendAuditEvent;
+pub const writeAuditSummary = aegis.core_api.writeAuditSummary;
+pub const updateAuditSummaryFinalHash = aegis.core_api.updateAuditSummaryFinalHash;
+pub const redactString = aegis.core_api.redactString;
+pub const redactStringBounded = aegis.core_api.redactStringBounded;
+pub const redactTargetValueBounded = aegis.core_api.redactTargetValueBounded;
+pub const verifyReplay = aegis.core_api.verifyReplay;
+pub const loadReplay = aegis.core_api.loadReplay;
+pub const writeReplayJson = aegis.core_api.writeReplayJson;
+pub const writeReplayHuman = aegis.core_api.writeReplayHuman;

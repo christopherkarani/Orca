@@ -1,6 +1,7 @@
 const std = @import("std");
 const aegis_policy = @import("../policy/mod.zig");
 const core = @import("../core/mod.zig");
+const core_api = @import("../core/api.zig");
 const exit_codes = @import("exit_codes.zig");
 const help = @import("help.zig");
 
@@ -37,12 +38,12 @@ fn check(argv: []const []const u8, stdout: anytype, stderr: anytype) !u8 {
 
     const source = if (argv.len == 1) argv[0] else "builtin:strict";
     var policy_value = if (argv.len == 1)
-        aegis_policy.load.loadFile(allocator, argv[0]) catch |err| {
+        core_api.loadPolicyFile(allocator, argv[0]) catch |err| {
             try stderr.print("aegis policy check: invalid policy {s}: {s}\n", .{ argv[0], @errorName(err) });
             return exit_codes.general;
         }
     else
-        try aegis_policy.load.loadPreset(allocator, aegis_policy.presets.defaultPreset());
+        try core_api.loadPolicyPreset(allocator, aegis_policy.presets.defaultPreset());
     defer policy_value.deinit();
 
     try stdout.print("Policy OK: {s}\nMode: {s}\n", .{ source, policy_value.mode.toString() });
@@ -73,7 +74,7 @@ fn explain(argv: []const []const u8, stdout: anytype, stderr: anytype) !u8 {
 
     const root = core.supervisor.resolveWorkspaceRoot(allocator, null, ".") catch try allocator.dupe(u8, ".");
     defer allocator.free(root);
-    var loaded = aegis_policy.load.discover(allocator, null, root) catch |err| {
+    var loaded = core_api.discoverPolicy(allocator, null, root) catch |err| {
         try stderr.print("aegis policy explain: failed to load policy: {s}\n", .{@errorName(err)});
         return exit_codes.general;
     };
@@ -82,13 +83,13 @@ fn explain(argv: []const []const u8, stdout: anytype, stderr: anytype) !u8 {
     const target = if (kind == .command and argv.len > 2) try joinArgs(allocator, argv[1..]) else try allocator.dupe(u8, argv[1]);
     defer allocator.free(target);
 
-    const evaluation = aegis_policy.explain.explain(allocator, &loaded.policy, kind, target) catch |err| {
+    const evaluation = core_api.explainAction(allocator, &loaded.policy, kind, target) catch |err| {
         try stderr.print("aegis policy explain: failed to evaluate action: {s}\n", .{@errorName(err)});
         return exit_codes.general;
     };
     defer evaluation.deinit(allocator);
 
-    try aegis_policy.explain.write(stdout, &loaded.policy, evaluation);
+    try core_api.writePolicyExplanation(stdout, &loaded.policy, evaluation);
     return exit_codes.success;
 }
 
