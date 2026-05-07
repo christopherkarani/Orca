@@ -23,9 +23,10 @@ pub const commands = [_]CommandInfo{
     .{
         .name = "init",
         .summary = "Create an Aegis policy",
-        .usage = "aegis init [--preset generic-agent] [--mode strict|ask|observe] [--ci] [--force]",
+        .usage = "aegis init [--preset <name>] [--mode strict|ask|observe|ci|trusted] [--ci] [--force]",
         .details = &.{
-            "Creates .aegis/policy.yaml from a minimal local template.",
+            "Creates .aegis/policy.yaml from a practical editable preset.",
+            "Presets: generic-agent, claude-code, codex, cursor-agent, opencode, cline-roo, mcp-dev, github-actions, strict-local, trusted-local.",
             "Refuses to overwrite an existing policy unless --force is provided.",
         },
     },
@@ -62,6 +63,10 @@ pub const commands = [_]CommandInfo{
         "Discovers deterministic local fixtures, runs them against implemented Aegis controls, and reports a scorecard.",
         "When no path is provided, fixtures are discovered under ./fixtures.",
         "--json emits a machine-readable report. --ci never prompts and exits non-zero if any required fixture fails or is unsupported.",
+    } },
+    .{ .name = "completions", .summary = "Generate shell completions", .usage = "aegis completions <bash|zsh|fish|powershell>", .details = &.{
+        "Prints a completion script to stdout for the requested shell.",
+        "The generated completions include top-level commands and common flags.",
     } },
     .{ .name = "shim", .summary = "Internal PATH shim callback", .usage = "aegis shim exec -- <command> [args...]", .details = &.{
         "Internal callback used by session-local PATH shims under .aegis/sessions/<id>/shims/.",

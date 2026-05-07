@@ -1,5 +1,11 @@
 # Aegis Documentation
 
-This directory is intentionally minimal in Phase 02. Product documentation will expand in later phases as behavior is implemented and tested.
+Current docs:
 
-Current security state: no runtime enforcement is active yet.
+- `quickstart.md`: build, initialize, validate, run, and red-team smoke commands.
+- `presets.md`: supported policy presets and assumptions.
+- `agent-recipes.md`: local agent, MCP, CI, strict, trusted, red-team, and staged-write recipes.
+- `ci.md` and `ci/github-actions.md`: local CI integration examples.
+- `dev/`: architecture contracts, security invariants, production gates, and phase handoffs.
+
+Aegis reports platform capability limits through `aegis doctor`; docs should not claim transparent sandboxing where the backend reports wrapper-only, observe-only, limited, or unavailable.
