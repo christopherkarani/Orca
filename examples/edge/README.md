@@ -1,6 +1,6 @@
 # Aegis Edge Examples
 
-These examples are fake/simulation policy-evaluation fixtures only. MAVLink examples are deterministic fake-transport fixtures; they do not connect to drones, PX4, ArduPilot, ROS2, SITL, serial devices, UDP endpoints, or real hardware.
+These examples are simulation policy-evaluation fixtures only. MAVLink examples are deterministic fake-transport fixtures. PX4 examples use deterministic fake-PX4 by default and can document opt-in local PX4 SITL checks. They do not connect to drones, ArduPilot, ROS2, serial hardware, or real hardware.
 
 Run from the repository root:
 
@@ -8,4 +8,7 @@ Run from the repository root:
 ./zig-out/bin/aegis-edge policy check examples/edge/policies/geofence-basic.yaml
 ./zig-out/bin/aegis-edge policy evaluate examples/edge/policies/geofence-basic.yaml --request examples/edge/requests/waypoint-outside-geofence.json --state examples/edge/states/fresh-state.json
 ./zig-out/bin/aegis-edge mavlink simulate --policy examples/edge/mavlink/policies/geofence-mavlink-basic.yaml --scenario examples/edge/mavlink/scenarios/geofence-deny.yaml
+./zig-out/bin/aegis-edge px4 scenario run --policy examples/edge/px4/policies/px4-geofence-basic.yaml --scenario examples/edge/px4/scenarios/waypoint-outside-geofence-deny.yaml
 ```
+
+PX4 SITL scenarios are simulation evidence only and must not be treated as real-flight readiness.

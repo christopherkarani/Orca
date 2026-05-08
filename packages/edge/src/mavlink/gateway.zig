@@ -43,6 +43,7 @@ pub const ProcessOptions = struct {
     direction: Direction = .unknown,
     vehicle_id: []const u8 = "edge-vehicle-1",
     now_ms: i128,
+    command_source: domain.state.StateProvenance = .fake_adapter,
     endpoint_policy: EndpointPolicy = .{},
 };
 
@@ -127,7 +128,7 @@ fn processFrameInternal(
         }
     }
 
-    var mapped = try mapping.mapFrameToCommand(allocator, frame, .{ .vehicle_id = options.vehicle_id, .now_ms = options.now_ms });
+    var mapped = try mapping.mapFrameToCommand(allocator, frame, .{ .vehicle_id = options.vehicle_id, .now_ms = options.now_ms, .source = options.command_source });
     defer mapped.deinit();
 
     if (mapped.request) |request| {

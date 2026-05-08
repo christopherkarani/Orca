@@ -1,32 +1,30 @@
-# Phase 28 MAVLink Gateway Production
+# Phase 29 PX4 SITL Integration
 
 ## Assumptions
 
-- The prompt-named governing documents (`README_START_HERE.md`, `CODEX_MASTER_PROMPT_EDGE.md`, `context/...`, `checklists/MAVLINK_PX4_ARDUPILOT_REQUIREMENTS.md`, and `phases/28_MAVLINK_GATEWAY_PRODUCTION.md`) are not present in this checkout under those exact paths. The active contract is the user prompt, existing Edge Phase 26/27 domain and policy code, current Aegis Core audit/redaction APIs, existing docs, and prior project lessons.
-- Phase 28 is a MAVLink gateway foundation only. It must stay local, deterministic, fake-transport based, and must not implement PX4 SITL, ArduPilot SITL, ROS2, real serial/UDP endpoints, real-flight deployment, SaaS, monetization, telemetry, certification claims, or operator approval runtime beyond policy decision hooks.
-- MAVLink CRC validation will be implemented for the supported common-dialect subset with fixed CRC extra values. Unknown-message CRC validation will be reported as unsupported rather than guessed.
-- `aegis-edge` exists and should gain `mavlink` subcommands while preserving existing `doctor`, `policy`, and `schema` behavior.
+- The prompt-named governing documents under `context/`, `phases/`, and `checklists/` are absent from this checkout. The active contract is the Phase 29 prompt, existing Edge docs/code, and prior Aegis phase lessons.
+- Phase 29 is PX4 SITL simulation integration only. It must not add ArduPilot SITL, real drone hardware integration, real-flight deployment, customer hardware procedures, SaaS, monetization, telemetry services, certification claims, or detect-and-avoid claims.
+- PX4 SITL may not be installed locally. Normal `zig build test` must pass with deterministic fake-PX4 coverage only; real PX4 checks must be opt-in and clearly skipped or unavailable otherwise.
+- The Phase 28 MAVLink gateway remains the command mediation core. PX4 code should wrap it and preserve MAVLink policy semantics rather than fork command policy logic.
 
 ## Research And False-Positive Check
 
-- [x] Read memory for Aegis phase discipline, Zig 0.15.2 workflow, and acceptance-smoke expectations.
-- [x] Confirm the prompt-named governing docs are absent in this checkout and do not fabricate their contents.
-- [x] Check MAVLink primary docs for packet formats, MAVLink2 signing flag, command protocol, mission protocol, and supported common-message constants.
-- [x] Inspect Edge domain/policy APIs for exact `CommandRequest`, required parameters, state/provenance, and Core decision integration.
-- [x] Inspect Core audit/redaction/event surfaces and `aegis-edge` CLI wiring before writing code.
-- [x] Re-check docs/examples wording for no PX4/ArduPilot/SITL/real-flight/certification claims.
+- [x] Read Aegis memory for phase discipline, Zig verification expectations, and Phase 28 MAVLink implementation notes.
+- [x] Confirm absent prompt-named `context/`, `phases/`, and `checklists/` files instead of inventing their contents.
+- [x] Inspect Edge domain, policy, MAVLink gateway, CLI, and audit/redaction surfaces.
+- [x] Verify fake-vs-SITL provenance boundaries in existing state and command types.
+- [x] Check docs/examples for claims that need updating or preserving.
 
 ## TDD / Implementation Checklist
 
-- [x] Add Phase 28 MAVLink tests first for framing/parser recovery, malformed input, bounded payloads, CRC, signing detection, classification, command mapping, endpoint policy, mission tracking, gateway decisions, fake transport, audit/redaction, and CLI behavior.
-- [x] Implement `packages/edge/src/mavlink/` modules for framing, parser, CRC, dialect constants, typed supported messages, command mapping, classifier, mission state, signing detection, gateway, audit payloads, and fake transport.
-- [x] Map supported MAVLink commands/messages into existing Edge `CommandRequest` actions and evaluate every mapped command through the Phase 27 Edge policy engine.
-- [x] Implement gateway modes: observe, enforce, ci/redteam, simulation, bench-reserved, and disabled with safe default behavior for unknown commands/endpoints.
-- [x] Track generic MAVLink mission uploads and deny/flag unsafe or incomplete mission items without autopilot-specific behavior.
-- [x] Add deterministic fake MAVLink transport helpers for tests and examples with explicit fake/simulation provenance.
-- [x] Wire `aegis-edge mavlink doctor`, `inspect-frame`, `classify`, `simulate`, and `gateway --fake` without opening real endpoints.
-- [x] Add deterministic examples under `examples/edge/mavlink/`.
-- [x] Update docs under `docs/edge/` and `packages/edge/README.md` with supported subset, limitations, fake transport, signing detection vs verification, mission limitations, endpoint policies, and no-real-flight boundaries.
+- [x] Add Phase 29 tests first for fake PX4 telemetry mapping, command mediation, scenario artifacts, doctor output, redaction, and SITL gating.
+- [x] Add `packages/edge/src/px4/` modules for configuration, connection status, fake adapter, telemetry mapping, command mediation, scenario runner, health/doctor reporting, and audit artifacts.
+- [x] Reuse Phase 28 MAVLink gateway for mapped command decisions in observe/enforce/simulation/ci modes.
+- [x] Add deterministic fake-PX4 adapter behavior with heartbeat, position, battery, ACK-like records, and explicit `fake_px4_adapter`/`fake_adapter` provenance.
+- [x] Add opt-in PX4 SITL detection and integration-test gating using `AEGIS_EDGE_RUN_PX4_SITL_TESTS=1` and endpoint configuration.
+- [x] Wire `aegis-edge px4 doctor`, `px4 scenario run`, `px4 observe`, `px4 gateway`, and `px4 test-fixture` with safe defaults and honest limitations.
+- [x] Add deterministic examples under `examples/edge/px4/`.
+- [x] Add/update docs under `docs/edge/` and `packages/edge/README.md` without real-flight, hardware, ArduPilot, detect-and-avoid, or certification claims.
 
 ## Verification Checklist
 
@@ -40,60 +38,66 @@
 - [x] `./zig-out/bin/aegis redteam --ci`
 - [x] `./zig-out/bin/aegis-edge --help`
 - [x] `./zig-out/bin/aegis-edge doctor`
-- [x] `./zig-out/bin/aegis-edge mavlink doctor`
-- [x] `./zig-out/bin/aegis-edge mavlink inspect-frame examples/edge/mavlink/frames/command-arm.hex`
-- [x] `./zig-out/bin/aegis-edge mavlink classify examples/edge/mavlink/frames/command-takeoff.hex`
-- [x] `./zig-out/bin/aegis-edge mavlink simulate --policy examples/edge/mavlink/policies/geofence-mavlink-basic.yaml --scenario examples/edge/mavlink/scenarios/geofence-deny.yaml`
-- [x] `./zig-out/bin/aegis-edge mavlink simulate --policy examples/edge/mavlink/policies/geofence-mavlink-basic.yaml --scenario examples/edge/mavlink/scenarios/disable-failsafe-deny.yaml`
-- [x] Manual: malformed frames fail safely.
+- [x] `./zig-out/bin/aegis-edge px4 doctor`
+- [x] `./zig-out/bin/aegis-edge px4 scenario run --policy examples/edge/px4/policies/px4-geofence-basic.yaml --scenario examples/edge/px4/scenarios/waypoint-outside-geofence-deny.yaml`
+- [x] `./zig-out/bin/aegis-edge px4 scenario run --policy examples/edge/px4/policies/px4-geofence-basic.yaml --scenario examples/edge/px4/scenarios/land-allow.yaml`
+- [x] `./zig-out/bin/aegis-edge px4 scenario run --policy examples/edge/px4/policies/px4-geofence-basic.yaml --scenario examples/edge/px4/scenarios/disable-failsafe-deny.yaml`
+- [x] Manual: fake PX4 scenario distinguishes fake adapter from PX4 SITL.
+- [x] Manual: missing PX4 SITL causes a clear skip/unavailable result, not a fake pass.
 - [x] Manual: waypoint outside geofence is denied.
 - [x] Manual: disable_failsafe is denied.
 - [x] Manual: land is allowed/logged according to policy.
-- [x] Manual: unknown command is not treated as safe.
-- [x] Manual: mission outside geofence is denied or flagged.
-- [x] Manual: fake transport provenance is explicit.
+- [x] Manual: unknown commands are not treated as safe.
 - [x] Manual: fake secrets do not appear in persistent outputs.
-- [x] Manual: docs do not claim PX4/ArduPilot integration, real-flight readiness, certification, detect-and-avoid, or autopilot replacement.
-- [x] Manual: Aegis CLI behavior unchanged.
+- [x] Manual: docs do not claim ArduPilot integration, real hardware, real-flight readiness, detect-and-avoid, or certification.
 - [x] `git diff --check`
-- [x] `git diff --name-only` and `git ls-files --others --exclude-standard` reviewed for clean-checkout completeness.
 
 ## Review
 
-- Implemented Phase 28 MAVLink gateway foundation under `packages/edge/src/mavlink/`.
-- Added safe MAVLink v1/v2 framing, parser recovery, known-message CRC validation, supported common-dialect decoding, command classification/mapping, endpoint checks, fake transport, gateway decisions, mission transaction tracking, signing presence detection, and bounded/redacted MAVLink audit records.
-- Wired `aegis-edge mavlink doctor`, `inspect-frame`, `classify`, `simulate`, and `gateway --fake`.
-- Added deterministic MAVLink policies, frames, and scenarios under `examples/edge/mavlink/`.
-- Updated Edge docs and capability reporting while preserving no-real-flight, no-PX4/ArduPilot/SITL/ROS2, no-real-endpoint, no-certification, and no-telemetry boundaries.
-- Verification passed: `zig build`, `zig build test --summary all`, Aegis CLI smoke checks, Aegis Edge MAVLink CLI checks, manual safety cases, docs claim scan, fake-secret persistence scan, and `git diff --check`.
+- Implemented Phase 29 PX4 SITL integration as simulation-only Edge work.
+- Added `packages/edge/src/px4/` with connection config/gating, fake-PX4 fixture adapter, telemetry-to-`VehicleState` mapping, gateway-backed command mediation, scenario runner, health/doctor output, and redacted audit/replay artifact writing.
+- Reused the Phase 28 MAVLink gateway and Phase 27 Edge policy engine for command decisions. PX4 mediation now passes the command source provenance explicitly so fake-PX4 remains `fake_adapter` and opt-in PX4 SITL can use `sitl_px4`.
+- Added deterministic fake-PX4 tests and examples for heartbeat/state mapping, geofence denial, land allow/logging, disable-failsafe denial, raw actuator denial, low-battery takeoff denial, scenario artifact redaction, doctor output, and PX4 SITL opt-in gating.
+- Added `aegis-edge px4 doctor`, `px4 scenario run`, `px4 observe`, `px4 gateway`, and `px4 test-fixture` with safe simulation defaults and explicit limitations.
+- Updated Edge docs, schemas prose, and examples to replace obsolete fake-only/PX4-unimplemented wording while preserving no ArduPilot, no hardware, no real-flight, no detect-and-avoid, and no certification boundaries.
+- PX4 SITL support status: partial/configured and opt-in. No live PX4 endpoint was available or required during this run.
+- Fake-PX4 adapter status: active for deterministic unit tests, examples, and scenario artifacts.
+- Tested PX4 version policy: `documented-by-phase-29` by default; local opt-in runs can set `AEGIS_EDGE_PX4_TESTED_VERSION`.
+- Integration-test gating: normal tests skip PX4 SITL; `AEGIS_EDGE_RUN_PX4_SITL_TESTS=1` plus `AEGIS_EDGE_PX4_ENDPOINT=host:port` is required for SITL integration runs.
+- Security notes: scenario notes and artifact strings pass through Core redaction; synthetic fake secret values were not present in generated artifacts.
+- Acceptance status: normal build/test and requested CLI smokes passed; Phase 30 can start from this Phase 29 baseline after review.
 
-# Phase 28 MAVLink Review Fixes - 2026-05-08
+# Phase 29 Review Fixes - 2026-05-08
 
 ## Assumptions
 
-- Treat the reviewer comments as correctness bugs in the current dirty Phase 28 patch.
-- Keep the fix scoped to MAVLink decoder/mapping/parser/simulation behavior and focused regression tests.
-- Preserve fake-transport-only boundaries; do not add real serial, UDP, SITL, ROS2, or hardware behavior.
+- Review comments are actionable correctness defects, not feature requests for future phases.
+- Fixes should remain scoped to PX4 SITL configuration ownership, SITL-required scenario gating, and the public Edge policy schema.
+- Normal unit tests must still use fake-PX4 by default and must not require PX4 SITL.
 
 ## TDD / Implementation Checklist
 
-- [x] Add regressions for `MISSION_ITEM` float latitude/longitude decoding versus `MISSION_ITEM_INT` scaled integers.
-- [x] Add regressions that global-relative altitude frames map to the home-relative altitude datum.
-- [x] Add a parser regression for a batch containing multiple individually valid frames whose combined bytes exceed one frame buffer.
-- [x] Add a simulation regression proving `--scenario` reads the YAML `frame:` field instead of inferring behavior from the filename.
-- [x] Patch message decoding, command mapping, parser buffering/draining, and scenario-file loading with minimal changes.
+- [x] Add a regression proving PX4 endpoint host slices returned from env/config helpers remain valid after the source env buffer is freed.
+- [x] Add a regression proving `requires_px4_sitl: true` cannot record a fake-PX4 pass when the scenario metadata omits or misstates `environment: px4_sitl`.
+- [x] Add schema regression coverage for circle geofence required fields and the runtime-supported `safety.altitude` block.
+- [x] Fix `integrationTestGateFromEnv` ownership and add a harmless deinit path for owned gate data.
+- [x] Fix PX4 scenario gating to reject inconsistent SITL-required metadata before fake execution.
+- [x] Align `schemas/edge-policy-v1.json` with the policy loader for circle geofences and altitude limits.
 
 ## Verification Checklist
 
-- [x] `zig build`
 - [x] `zig build test --summary all`
-- [x] Focused `aegis-edge mavlink simulate` smoke with a renamed scenario file.
+- [x] `zig build`
+- [x] `AEGIS_EDGE_RUN_PX4_SITL_TESTS=1 AEGIS_EDGE_PX4_ENDPOINT=127.0.0.1:14540 ./zig-out/bin/aegis-edge px4 doctor`
+- [x] `./zig-out/bin/aegis-edge px4 scenario run --policy examples/edge/px4/policies/px4-geofence-basic.yaml --scenario examples/edge/px4/scenarios/waypoint-outside-geofence-deny.yaml`
+- [x] `./zig-out/bin/aegis-edge px4 scenario run --policy examples/edge/px4/policies/px4-geofence-basic.yaml --scenario examples/edge/px4/scenarios/sitl-observe-heartbeat-skip.yaml`
 - [x] `git diff --check`
 
 ## Review
 
-- Split `MISSION_ITEM` and `MISSION_ITEM_INT` decoding so float-degree mission waypoints no longer get interpreted as scaled integer bit patterns.
-- Preserved MAVLink global-relative altitude frames as `home_relative` and fail closed on unknown altitude frames instead of silently treating them as AMSL.
-- Reworked parser feed buffering to drain valid frame batches incrementally when a read contains more than one maximum frame of valid data.
-- Replaced scenario filename matching with YAML `frame:`, `expected_decision`, and `expected_forwarded` loading, resolving frames relative to the scenario file.
-- Verification passed: `zig build`, `zig build test --summary all`, renamed-scenario `aegis-edge mavlink simulate`, and `git diff --check`.
+- Fixed `integrationTestGateFromEnv` so env-derived endpoint hosts are copied into owned gate storage with `IntegrationGate.deinit`.
+- Updated CLI PX4 doctor/scenario paths to keep the owned integration gate alive while reporting endpoint configuration and running scenarios.
+- Rejected scenarios that set `requires_px4_sitl: true` without `environment: px4_sitl`, preventing fake-PX4 execution from masquerading as SITL-required evidence.
+- Aligned `schemas/edge-policy-v1.json` with the runtime loader by requiring circle `center` and `max_radius_m`, constraining geofence type to implemented `circle`, removing advertised `vertices`, and adding the supported `safety.altitude` block.
+- Added regressions for endpoint ownership, SITL-required metadata gating, and schema/runtime alignment.
+- Verification passed: `zig build test --summary all`, `zig build`, env-enabled `aegis-edge px4 doctor`, fake geofence scenario, missing-SITL skip scenario, and `git diff --check`.

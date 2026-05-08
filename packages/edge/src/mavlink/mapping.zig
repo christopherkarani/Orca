@@ -82,6 +82,7 @@ fn mapMavCommand(
             const altitude = if (params[6] > 0) params[6] else 20;
             try buildRequest(allocator, result, frame, context, .takeoff, .{ .altitude = .{ .altitude_m = @floatCast(altitude), .altitude_reference = .amsl } }, null);
         },
+        mav_commands.MAV_CMD_NAV_LOITER_UNLIM => try buildRequest(allocator, result, frame, context, .hold_position, .none, null),
         mav_commands.MAV_CMD_NAV_LAND => try buildRequest(allocator, result, frame, context, .land, .none, null),
         mav_commands.MAV_CMD_NAV_RETURN_TO_LAUNCH => try buildRequest(allocator, result, frame, context, .return_to_home, .none, null),
         mav_commands.MAV_CMD_MISSION_START => try buildRequest(allocator, result, frame, context, .start_mission, .none, "mission-start"),
