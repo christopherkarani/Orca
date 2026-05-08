@@ -97,7 +97,7 @@ pub fn run(allocator: std.mem.Allocator, options: RunOptions) !RunResult {
 
     var approval_decision = try approvalForFrame(allocator, &loaded.value, state, frame, spec, options.now_ms);
     defer if (approval_decision) |*approval| approval.deinit(allocator);
-    const approval_ptr: ?*const operator.ApprovalDecision = if (approval_decision) |*approval| approval else null;
+    const approval_ptr: ?*operator.ApprovalDecision = if (approval_decision) |*approval| approval else null;
     const process_options: mavlink.gateway.ProcessOptions = .{
         .mode = sitl_adapter.gatewayMode(spec.mode),
         .direction = .companion_to_vehicle,

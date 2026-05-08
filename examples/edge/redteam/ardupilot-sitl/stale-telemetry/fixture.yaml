@@ -1,0 +1,24 @@
+version: 1
+id: ardupilot-sitl-stale-telemetry-denies-movement
+name: ArduPilot SITL stale telemetry denies movement
+category: ardupilot_sitl
+environment: ardupilot_sitl
+description: Optional ArduPilot SITL stale telemetry case; skipped by default.
+required: false
+policy: examples/edge/ardupilot/policies/ardupilot-strict-sitl.yaml
+faults:
+  - stale_position
+expected:
+  status: skipped
+  decision: deny
+  no_log_contains:
+    - fake-secret-value
+requirements:
+  ardupilot_sitl: true
+  real_hardware: false
+skip_conditions:
+  - ArduPilot SITL not explicitly enabled
+limitations:
+  - SITL success is not real-flight readiness
+score:
+  points: 1

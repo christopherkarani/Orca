@@ -42,6 +42,7 @@ pub const all_event_types = [_][]const u8{
     "operator.approval_denied",
     "operator.approval_expired",
     "operator.approval_revoked",
+    "operator.approval_invalid",
     "operator.approval_used",
     "operator.ask_denied_noninteractive",
     "emergency.evaluation_started",
@@ -119,6 +120,7 @@ pub fn toCoreEventType(event_type: []const u8) !core.event.EventType {
     if (std.mem.eql(u8, event_type, "operator.approval_denied")) return .operator_approval_denied;
     if (std.mem.eql(u8, event_type, "operator.approval_expired")) return .operator_approval_expired;
     if (std.mem.eql(u8, event_type, "operator.approval_revoked")) return .operator_approval_revoked;
+    if (std.mem.eql(u8, event_type, "operator.approval_invalid")) return .operator_approval_invalid;
     if (std.mem.eql(u8, event_type, "operator.approval_used")) return .operator_approval_used;
     if (std.mem.eql(u8, event_type, "operator.ask_denied_noninteractive")) return .operator_ask_denied_noninteractive;
     if (std.mem.eql(u8, event_type, "emergency.evaluation_started")) return .emergency_evaluation_started;
@@ -162,4 +164,8 @@ test "phase 33 event names map to Core event types" {
     inline for (all_event_types) |event_type| {
         _ = try toCoreEventType(event_type);
     }
+}
+
+test "invalid operator approval events map to Core replay event type" {
+    try std.testing.expectEqual(core.event.EventType.operator_approval_invalid, try toCoreEventType("operator.approval_invalid"));
 }

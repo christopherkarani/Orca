@@ -64,10 +64,12 @@ pub fn validateApproval(allocator: std.mem.Allocator, decision: decision_mod.App
         return result(allocator, .policy_mismatch, "policy hash changed");
     }
 
-    const constraints_hash = try token.hashSafetyConstraints(allocator, args.policy);
-    defer allocator.free(constraints_hash);
-    if (!std.mem.eql(u8, decision.safety_constraints_hash, constraints_hash)) {
-        return result(allocator, .safety_constraints_mismatch, "safety constraints changed");
+    if (args.policy.safety.approval.require_safety_constraints_hash) {
+        const constraints_hash = try token.hashSafetyConstraints(allocator, args.policy);
+        defer allocator.free(constraints_hash);
+        if (!std.mem.eql(u8, decision.safety_constraints_hash, constraints_hash)) {
+            return result(allocator, .safety_constraints_mismatch, "safety constraints changed");
+        }
     }
 
     if (args.policy.safety.approval.require_state_hash) {

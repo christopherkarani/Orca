@@ -68,6 +68,10 @@ const usage =
     \\                                 Create a local directory evidence bundle
     \\  replay --session last [--verify|--json|--findings|--commands|--approvals|--safety-case]
     \\                                 Replay a hash-chained Edge session under .aegis-edge
+    \\  redteam [list|validate] [--ci] [--json] [--category <category>] [--fixture <id>]
+    \\                                 Run deterministic simulation-only Edge red-team/fault-injection fixtures
+    \\  redteam --environment fake_adapter|px4_sitl|ardupilot_sitl --report safety-case --output <dir>
+    \\                                 Filter environments and generate scorecards/safety evidence
     \\  policy check <policy>          Validate an Edge policy file
     \\  policy explain <policy> <cmd>   Explain one command decision with fake state
     \\  policy evaluate <policy> --request <request.json> --state <state.json>
@@ -148,6 +152,9 @@ pub fn run(argv: []const []const u8, stdout: anytype, stderr: anytype) !u8 {
     }
     if (std.mem.eql(u8, command, "replay")) {
         return runEdgeReplay(argv[1..], stdout, stderr);
+    }
+    if (std.mem.eql(u8, command, "redteam")) {
+        return runRedteam(argv[1..], stdout, stderr);
     }
     if (std.mem.eql(u8, command, "policy")) {
         return runPolicy(argv[1..], stdout, stderr);
@@ -1241,7 +1248,7 @@ fn runSafetyCaseGenerate(argv: []const []const u8, stdout: anytype, stderr: anyt
         }
     }
     if (policy_path == null and scenario_path == null and std.mem.eql(u8, session, "last")) {
-        return runSafetyCaseShow(&.{"--session", "last"}, stdout, stderr);
+        return runSafetyCaseShow(&.{ "--session", "last" }, stdout, stderr);
     }
     const selected_policy = policy_path orelse return usageError(stderr, "aegis-edge safety-case generate: missing --policy.\n");
     const selected_scenario = scenario_path orelse return usageError(stderr, "aegis-edge safety-case generate: missing --scenario.\n");
@@ -1360,6 +1367,146 @@ fn runEdgeReplay(argv: []const []const u8, stdout: anytype, stderr: anytype) !u8
         return 65;
     };
     return 0;
+}
+
+const RedteamCommand = enum { run, list, validate };
+
+const RedteamOptions = struct {
+    command: RedteamCommand = .run,
+    root_path: []const u8 = "examples/edge/redteam",
+    category: ?edge.redteam.fixture.Category = null,
+    fixture_id: ?[]const u8 = null,
+    environment: ?edge.redteam.fixture.Environment = null,
+    output_dir: ?[]const u8 = null,
+    json: bool = false,
+    ci: bool = false,
+    safety_case_report: bool = false,
+};
+
+fn runRedteam(argv: []const []const u8, stdout: anytype, stderr: anytype) !u8 {
+    const options = parseRedteamOptions(argv, stderr) catch return 64;
+    var gpa_state: std.heap.GeneralPurposeAllocator(.{}) = .init;
+    defer _ = gpa_state.deinit();
+    const allocator = gpa_state.allocator();
+
+    var fixture_set = edge.redteam.runner.validateFixtures(allocator, .{
+        .root_path = options.root_path,
+        .category = options.category,
+        .fixture_id = options.fixture_id,
+        .environment = options.environment,
+        .output_dir = options.output_dir,
+        .ci = options.ci,
+        .safety_case_report = options.safety_case_report,
+    }) catch |err| {
+        try stderr.print("aegis-edge redteam: fixture validation failed: {s}\n", .{@errorName(err)});
+        return 65;
+    };
+    defer fixture_set.deinit();
+    if (fixture_set.fixtures.len == 0) {
+        try stderr.writeAll("aegis-edge redteam: no matching fixtures found.\n");
+        return 65;
+    }
+
+    switch (options.command) {
+        .list => {
+            for (fixture_set.fixtures) |fixture| {
+                try stdout.print("{s}\t{s}\t{s}\t{s}\n", .{ fixture.id, fixture.category.slug(), fixture.environment.toString(), if (fixture.required) "required" else "optional" });
+            }
+            return 0;
+        },
+        .validate => {
+            var required_count: usize = 0;
+            for (fixture_set.fixtures) |fixture| {
+                if (fixture.required) required_count += 1;
+            }
+            try stdout.print("Validated {d} Edge red-team fixtures ({d} required). No real hardware fixtures are accepted.\n", .{ fixture_set.fixtures.len, required_count });
+            return 0;
+        },
+        .run => {},
+    }
+
+    var suite = edge.redteam.runner.runSuite(allocator, fixture_set, .{
+        .root_path = options.root_path,
+        .category = options.category,
+        .fixture_id = options.fixture_id,
+        .environment = options.environment,
+        .output_dir = options.output_dir,
+        .ci = options.ci,
+        .safety_case_report = options.safety_case_report,
+    }) catch |err| {
+        try stderr.print("aegis-edge redteam: run failed: {s}\n", .{@errorName(err)});
+        return 65;
+    };
+    defer suite.deinit();
+
+    edge.redteam.report.writeArtifacts(allocator, suite, options.safety_case_report) catch |err| {
+        try stderr.print("aegis-edge redteam: report generation failed: {s}\n", .{@errorName(err)});
+        return 65;
+    };
+
+    if (options.json) {
+        try edge.redteam.report.writeJson(stdout, suite);
+    } else {
+        try edge.redteam.report.writeHuman(stdout, suite);
+    }
+    if (options.ci and !suite.allRequiredPassed()) return 6;
+    return 0;
+}
+
+fn parseRedteamOptions(argv: []const []const u8, stderr: anytype) !RedteamOptions {
+    var options: RedteamOptions = .{};
+    var index: usize = 0;
+    if (index < argv.len and !std.mem.startsWith(u8, argv[index], "-")) {
+        if (std.mem.eql(u8, argv[index], "list")) {
+            options.command = .list;
+            index += 1;
+        } else if (std.mem.eql(u8, argv[index], "validate")) {
+            options.command = .validate;
+            index += 1;
+        }
+    }
+    while (index < argv.len) : (index += 1) {
+        const arg = argv[index];
+        if (std.mem.eql(u8, arg, "--ci")) {
+            options.ci = true;
+        } else if (std.mem.eql(u8, arg, "--json")) {
+            options.json = true;
+        } else if (std.mem.eql(u8, arg, "--category")) {
+            index += 1;
+            if (index >= argv.len) return redteamUsage(stderr, "aegis-edge redteam: --category requires a value.\n");
+            options.category = edge.redteam.fixture.Category.parse(argv[index]) orelse return redteamUsage(stderr, "aegis-edge redteam: invalid --category.\n");
+        } else if (std.mem.eql(u8, arg, "--fixture")) {
+            index += 1;
+            if (index >= argv.len) return redteamUsage(stderr, "aegis-edge redteam: --fixture requires an id.\n");
+            options.fixture_id = argv[index];
+        } else if (std.mem.eql(u8, arg, "--environment")) {
+            index += 1;
+            if (index >= argv.len) return redteamUsage(stderr, "aegis-edge redteam: --environment requires a value.\n");
+            options.environment = edge.redteam.fixture.Environment.parse(argv[index]) orelse return redteamUsage(stderr, "aegis-edge redteam: invalid --environment.\n");
+        } else if (std.mem.eql(u8, arg, "--output")) {
+            index += 1;
+            if (index >= argv.len) return redteamUsage(stderr, "aegis-edge redteam: --output requires a directory.\n");
+            options.output_dir = argv[index];
+        } else if (std.mem.eql(u8, arg, "--report")) {
+            index += 1;
+            if (index >= argv.len) return redteamUsage(stderr, "aegis-edge redteam: --report requires a value.\n");
+            if (!std.mem.eql(u8, argv[index], "safety-case")) return redteamUsage(stderr, "aegis-edge redteam: only --report safety-case is supported.\n");
+            options.safety_case_report = true;
+        } else if (std.mem.eql(u8, arg, "--fixtures-root")) {
+            index += 1;
+            if (index >= argv.len) return redteamUsage(stderr, "aegis-edge redteam: --fixtures-root requires a directory.\n");
+            options.root_path = argv[index];
+        } else {
+            try stderr.print("aegis-edge redteam: unknown argument '{s}'.\n", .{arg});
+            return error.InvalidCliArguments;
+        }
+    }
+    return options;
+}
+
+fn redteamUsage(stderr: anytype, message: []const u8) !RedteamOptions {
+    try stderr.writeAll(message);
+    return error.InvalidCliArguments;
 }
 
 fn parseSessionOnly(argv: []const []const u8, stderr: anytype, command_name: []const u8) ![]const u8 {

@@ -18,3 +18,9 @@ Aegis Edge is not a flight controller and does not replace autopilot failsafes. 
 Aegis Edge Phase 33 safety-case reports preserve the same boundary: fake adapter evidence, PX4 SITL evidence, ArduPilot SITL evidence, and bench-preparation evidence are reported separately and never as real-flight validation.
 
 Missing SITL is reported as skipped or unsupported, not passed. Generated reports and bundles include a non-certification disclaimer and a `Real flight: Not performed` evidence row.
+
+Phase 34 red-team evidence preserves the same boundary. Red-team fixtures are
+synthetic and deterministic. They test safety-control behavior in fake adapter
+and optional SITL contexts, but they do not prove real-world operational safety,
+airworthiness, certification, detect-and-avoid, or autopilot replacement
+behavior.

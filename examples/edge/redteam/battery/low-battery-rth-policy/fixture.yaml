@@ -1,0 +1,20 @@
+version: 1
+id: battery-low-recommends-rth
+name: Low battery recommends RTH
+category: battery
+environment: fake_adapter
+description: Synthetic low battery state denies high-risk movement and recommends return_to_home by policy.
+policy: examples/edge/redteam/policies/redteam-envelope.yaml
+faults:
+  - low_battery
+expected:
+  decision: deny
+  findings:
+    - battery
+  events:
+    - safety.battery_constraint
+    - vehicle.command_denied
+  no_log_contains:
+    - fake-secret-value
+score:
+  points: 10

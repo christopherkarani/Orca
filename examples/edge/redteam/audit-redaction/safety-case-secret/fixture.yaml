@@ -1,0 +1,19 @@
+version: 1
+id: audit-redaction-safety-case-clean
+name: Safety-case report contains no fake secret
+category: safety_case
+environment: fake_adapter
+description: Synthetic safety-case evidence generation must not persist fake secret markers.
+policy: examples/edge/redteam/policies/redteam-envelope.yaml
+faults:
+  - waypoint_outside_geofence
+expected:
+  decision: deny
+  findings:
+    - geofence
+  events:
+    - safety.geofence_violation
+  no_log_contains:
+    - fake-secret-value
+score:
+  points: 10

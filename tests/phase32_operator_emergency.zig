@@ -258,18 +258,92 @@ test "phase 32 valid approval allows exact ask only when safety envelope passes"
     var decision = try operator.ApprovalDecision.approve(std.testing.allocator, approval_request, .{ .operator_id = "operator-1", .timestamp_ms = 1_000_600 });
     defer decision.deinit(std.testing.allocator);
 
-    var approved = try safety.evaluateSafetyWithApproval(std.testing.allocator, &loaded.value, state, takeoff, context(.ask), decision);
+    var approved = try safety.evaluateSafetyWithApproval(std.testing.allocator, &loaded.value, state, takeoff, context(.ask), &decision);
     defer approved.deinit();
     try std.testing.expectEqual(edge.core.decision.DecisionResult.allow, approved.decision.result);
     try std.testing.expect(approved.hasAuditEvent("operator.approval_used"));
     try std.testing.expect(approved.hasAuditEvent("vehicle.command_allowed_by_approval"));
+    try std.testing.expectEqual(@as(u32, 1), decision.used_count);
 
     const too_high = request("cmd-too-high", .takeoff, .{ .altitude = .{ .altitude_m = 121, .altitude_reference = .amsl } });
-    var denied = try safety.evaluateSafetyWithApproval(std.testing.allocator, &loaded.value, state, too_high, context(.ask), decision);
+    var denied = try safety.evaluateSafetyWithApproval(std.testing.allocator, &loaded.value, state, too_high, context(.ask), &decision);
     defer denied.deinit();
     try std.testing.expectEqual(edge.core.decision.DecisionResult.deny, denied.decision.result);
     try std.testing.expect(denied.hasFindingCategory(.altitude));
     try std.testing.expect(denied.hasAuditEvent("operator.approval_invalid"));
+}
+
+test "phase 32 one-time approval is consumed and cannot be reused" {
+    var loaded = try edge.policy.loadFromSlice(std.testing.allocator, phase32_policy_yaml, "phase32.yaml", .{});
+    defer loaded.deinit();
+    const state = freshState(.fake_adapter, 80, .fresh);
+    const arm = request("cmd-arm", .arm, .none);
+    var base = try safety.evaluateSafety(std.testing.allocator, &loaded.value, state, arm, context(.ask));
+    defer base.deinit();
+
+    var approval_request = try operator.createApprovalRequest(std.testing.allocator, .{
+        .policy = &loaded.value,
+        .command = arm,
+        .state = state,
+        .evaluation = base,
+        .requested_decision = .allow_once,
+        .created_at_ms = 1_000_500,
+        .expires_at_ms = 1_060_500,
+        .actor_id = "phase32-agent",
+        .reason = "single-use arm approval",
+    });
+    defer approval_request.deinit(std.testing.allocator);
+    var decision = try operator.ApprovalDecision.approve(std.testing.allocator, approval_request, .{ .operator_id = "operator-1", .timestamp_ms = 1_000_600 });
+    defer decision.deinit(std.testing.allocator);
+
+    var first = try safety.evaluateSafetyWithApproval(std.testing.allocator, &loaded.value, state, arm, context(.ask), &decision);
+    defer first.deinit();
+    try std.testing.expectEqual(edge.core.decision.DecisionResult.allow, first.decision.result);
+    try std.testing.expectEqual(@as(u32, 1), decision.used_count);
+
+    var second = try safety.evaluateSafetyWithApproval(std.testing.allocator, &loaded.value, state, arm, context(.ask), &decision);
+    defer second.deinit();
+    try std.testing.expectEqual(edge.core.decision.DecisionResult.deny, second.decision.result);
+    try std.testing.expect(second.hasAuditEvent("operator.approval_invalid"));
+    try std.testing.expectEqual(@as(u32, 1), decision.used_count);
+}
+
+test "phase 32 approval validation honors safety constraints hash opt-out" {
+    const allocator = std.testing.allocator;
+    const policy_yaml = try std.mem.replaceOwned(u8, allocator, phase32_policy_yaml, "    require_state_hash: true\n", "    require_state_hash: true\n    require_safety_constraints_hash: false\n");
+    defer allocator.free(policy_yaml);
+    var loaded = try edge.policy.loadFromSlice(allocator, policy_yaml, "phase32-no-constraints-hash.yaml", .{});
+    defer loaded.deinit();
+
+    const state = freshState(.fake_adapter, 80, .fresh);
+    const arm = request("cmd-arm", .arm, .none);
+    var evaluation = try safety.evaluateSafety(allocator, &loaded.value, state, arm, context(.ask));
+    defer evaluation.deinit();
+    var approval_request = try operator.createApprovalRequest(allocator, .{
+        .policy = &loaded.value,
+        .command = arm,
+        .state = state,
+        .evaluation = evaluation,
+        .requested_decision = .allow_once,
+        .created_at_ms = 1_000_500,
+        .expires_at_ms = 1_060_500,
+        .actor_id = "phase32-agent",
+        .reason = "constraints hash opt-out",
+    });
+    defer approval_request.deinit(allocator);
+    var decision = try operator.ApprovalDecision.approve(allocator, approval_request, .{ .operator_id = "operator-1", .timestamp_ms = 1_000_600 });
+    defer decision.deinit(allocator);
+
+    decision.safety_constraints_hash[0] = if (decision.safety_constraints_hash[0] == '0') '1' else '0';
+    var valid = try operator.validateApproval(allocator, decision, .{
+        .policy = &loaded.value,
+        .command = arm,
+        .state = state,
+        .evaluation = evaluation,
+        .now_ms = 1_000_700,
+    });
+    defer valid.deinit(allocator);
+    try std.testing.expectEqual(operator.ApprovalValidationStatus.valid, valid.status);
 }
 
 test "phase 32 CI non-interactive mode converts ask to deny without prompting" {
@@ -293,50 +367,50 @@ test "phase 32 safety PX4 and ArduPilot scenarios consume seeded approvals" {
     try tmp.dir.writeFile(.{
         .sub_path = "safety-valid.yaml",
         .data =
-            \\id: safety-valid-approval
-            \\command: takeoff
-            \\mode: simulation
-            \\approval: valid_once
-            \\expected_decision: allow
-            \\note: exact approval allows only the seeded takeoff scenario
+        \\id: safety-valid-approval
+        \\command: takeoff
+        \\mode: simulation
+        \\approval: valid_once
+        \\expected_decision: allow
+        \\note: exact approval allows only the seeded takeoff scenario
         ,
     });
     try tmp.dir.writeFile(.{
         .sub_path = "safety-expired.yaml",
         .data =
-            \\id: safety-expired-approval
-            \\command: arm
-            \\mode: simulation
-            \\approval: expired
-            \\expected_decision: deny
-            \\note: expired approval remains denied
+        \\id: safety-expired-approval
+        \\command: arm
+        \\mode: simulation
+        \\approval: expired
+        \\expected_decision: deny
+        \\note: expired approval remains denied
         ,
     });
     try tmp.dir.writeFile(.{
         .sub_path = "px4-valid.yaml",
         .data =
-            \\id: px4-valid-approval
-            \\environment: fake_px4
-            \\mode: enforce
-            \\command: arm
-            \\approval: valid_once
-            \\expected_decision: allow
-            \\expected_forwarded: true
-            \\note: fake PX4 scenario consumes an exact approval
+        \\id: px4-valid-approval
+        \\environment: fake_px4
+        \\mode: enforce
+        \\command: arm
+        \\approval: valid_once
+        \\expected_decision: allow
+        \\expected_forwarded: true
+        \\note: fake PX4 scenario consumes an exact approval
         ,
     });
     try tmp.dir.writeFile(.{
         .sub_path = "ardupilot-expired.yaml",
         .data =
-            \\id: ardupilot-expired-approval
-            \\environment: fake_ardupilot
-            \\vehicle: copter
-            \\mode: enforce
-            \\command: arm
-            \\approval: expired
-            \\expected_decision: deny
-            \\expected_forwarded: false
-            \\note: fake ArduPilot scenario rejects an expired approval
+        \\id: ardupilot-expired-approval
+        \\environment: fake_ardupilot
+        \\vehicle: copter
+        \\mode: enforce
+        \\command: arm
+        \\approval: expired
+        \\expected_decision: deny
+        \\expected_forwarded: false
+        \\note: fake ArduPilot scenario rejects an expired approval
         ,
     });
 
