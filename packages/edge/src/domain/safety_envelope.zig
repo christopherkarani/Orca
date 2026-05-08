@@ -50,6 +50,22 @@ pub const StateFreshnessPolicy = struct {
     }
 };
 
+pub const ApprovalPolicy = struct {
+    approval_ttl_ms: u64 = 60_000,
+    max_uses_default: u32 = 1,
+    require_operator_identity: bool = true,
+    require_state_hash: bool = true,
+    require_safety_constraints_hash: bool = true,
+    allow_broad_scopes: bool = false,
+    allow_non_overridable_override: bool = false,
+    allow_compatible_policy_hash: bool = false,
+
+    pub fn validate(self: ApprovalPolicy) !void {
+        if (self.approval_ttl_ms == 0) return error.InvalidApprovalPolicy;
+        if (self.max_uses_default == 0) return error.InvalidApprovalPolicy;
+    }
+};
+
 pub const CommandDisposition = enum {
     allow,
     ask,
@@ -116,6 +132,10 @@ pub const NetworkConstraints = struct {
 pub const EmergencyBehaviorConstraints = struct {
     allow_land: bool = true,
     allow_return_to_home: bool = true,
+    allow_hold_position: bool = true,
+    allow_stop_or_brake: bool = false,
+    allow_disarm: bool = false,
+    fallback_order: []const commands.CommandAction = &.{ .land, .hold_position, .return_to_home },
 };
 
 pub const SafetyEnvelope = struct {
@@ -126,6 +146,7 @@ pub const SafetyEnvelope = struct {
     state_freshness: ?StateFreshnessPolicy = null,
     commands: CommandPolicy = .{},
     network: NetworkConstraints = .{},
+    approval: ApprovalPolicy = .{},
     emergency: EmergencyBehaviorConstraints = .{},
 
     pub fn validate(self: SafetyEnvelope) !void {
@@ -134,6 +155,8 @@ pub const SafetyEnvelope = struct {
         if (self.velocity) |velocity| try velocity.validate();
         if (self.battery) |battery| try battery.validate();
         if (self.state_freshness) |freshness| try freshness.validate();
+        try self.approval.validate();
         try self.commands.validate();
+        if (self.emergency.fallback_order.len == 0) return error.InvalidEmergencyFallbackPolicy;
     }
 };

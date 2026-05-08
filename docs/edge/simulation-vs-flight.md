@@ -10,6 +10,8 @@ Aegis Edge Phase 31 evidence is fake-adapter, PX4 SITL, ArduPilot SITL, or bench
 
 `sitl_ardupilot` means a local ArduPilot SITL process was intentionally enabled for integration testing. It is useful for simulator evidence and command-mediation checks.
 
+Phase 32 operator approval and emergency-mode behavior remains simulation/SITL/bench-preparation evidence only. Operator approval does not make unsafe commands safe, and emergency mode does not bypass policy, autopilot failsafes, human authority, detect-and-avoid requirements, or regulatory obligations.
+
 None of these environments is real flight. None proves airworthiness, detect-and-avoid, operational safety, or regulatory compliance. Do not connect Phase 31 commands to real drone hardware or use these artifacts as flight approval.
 
 Aegis Edge is not a flight controller and does not replace autopilot failsafes. SITL evidence is useful for deterministic regression testing, not real-flight validation.

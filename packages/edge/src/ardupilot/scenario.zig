@@ -2,7 +2,9 @@ const std = @import("std");
 
 const domain = @import("../domain/mod.zig");
 const mavlink = @import("../mavlink/mod.zig");
+const operator = @import("../operator/mod.zig");
 const policy = @import("../policy/mod.zig");
+const safety = @import("../safety/mod.zig");
 const ardupilot_audit = @import("audit.zig");
 const connection = @import("connection.zig");
 const fake_adapter = @import("fake_adapter.zig");
@@ -49,6 +51,7 @@ const ScenarioSpec = struct {
     alt_m: f32 = 20,
     battery_percent: f64 = 80,
     state_freshness: domain.state.StateFreshness = .fresh,
+    approval_seed: operator.ApprovalSeedKind = .none,
     expected_decision: ?@import("aegis_core").decision.DecisionResult = null,
     expected_forwarded: ?bool = null,
     requires_ardupilot_sitl: bool = false,
@@ -91,26 +94,26 @@ pub fn run(allocator: std.mem.Allocator, options: RunOptions) !RunResult {
     const frame = try mavlink.framing.parseFrame(frame_bytes);
 
     const state = stateForScenario(spec, options.now_ms - 500);
-    const adapter = sitl_adapter.Adapter.init(.{
-        .environment = spec.environment,
-        .mode = spec.mode,
+
+    var approval_decision = try approvalForFrame(allocator, &loaded.value, state, frame, spec, options.now_ms);
+    defer if (approval_decision) |*approval| approval.deinit(allocator);
+    const approval_ptr: ?*const operator.ApprovalDecision = if (approval_decision) |*approval| approval else null;
+    const process_options: mavlink.gateway.ProcessOptions = .{
+        .mode = sitl_adapter.gatewayMode(spec.mode),
+        .direction = .companion_to_vehicle,
         .vehicle_id = "edge-vehicle-1",
         .now_ms = options.now_ms,
-    });
+        .command_source = sitl_adapter.provenanceFor(spec.environment),
+        .approval_decision = approval_ptr,
+    };
 
     var result = if (spec.command == .start_mission) blk: {
         var tracker = mavlink.mission.MissionTracker.init();
         const count = try mavlink.fake_transport.frameMissionCountV2(allocator, .{ .seq = 1, .sysid = 42, .compid = 191 }, 1);
         defer allocator.free(count);
         try tracker.observe(try mavlink.messages.decode(try mavlink.framing.parseFrame(count)));
-        break :blk try mavlink.gateway.processMissionFrame(allocator, .{
-            .mode = sitl_adapter.gatewayMode(spec.mode),
-            .direction = .companion_to_vehicle,
-            .vehicle_id = "edge-vehicle-1",
-            .now_ms = options.now_ms,
-            .command_source = sitl_adapter.provenanceFor(spec.environment),
-        }, &loaded.value, state, frame, &tracker);
-    } else try adapter.mediateFrame(allocator, &loaded.value, state, frame);
+        break :blk try mavlink.gateway.processMissionFrame(allocator, process_options, &loaded.value, state, frame, &tracker);
+    } else try mavlink.gateway.processFrame(allocator, process_options, &loaded.value, state, frame);
     defer result.deinit();
 
     if (spec.expected_decision) |expected| {
@@ -204,6 +207,7 @@ fn loadScenario(allocator: std.mem.Allocator, path: []const u8) !ScenarioSpec {
     var alt_m: f32 = 20;
     var battery_percent: f64 = 80;
     var freshness: domain.state.StateFreshness = .fresh;
+    var approval_seed: operator.ApprovalSeedKind = .none;
     var expected_decision: ?@import("aegis_core").decision.DecisionResult = null;
     var expected_forwarded: ?bool = null;
     var requires_ardupilot_sitl = false;
@@ -218,7 +222,7 @@ fn loadScenario(allocator: std.mem.Allocator, path: []const u8) !ScenarioSpec {
         const colon = std.mem.indexOfScalar(u8, line, ':') orelse return error.InvalidArduPilotScenario;
         const key = std.mem.trim(u8, line[0..colon], " \t");
         const value = cleanScalar(line[colon + 1 ..]);
-        if (std.mem.eql(u8, key, "id") or std.mem.eql(u8, key, "name")) id = value else if (std.mem.eql(u8, key, "environment")) environment = try connection.Environment.parse(value) else if (std.mem.eql(u8, key, "vehicle") or std.mem.eql(u8, key, "vehicle_type")) vehicle = try vehicle_kind.VehicleKind.parse(value) else if (std.mem.eql(u8, key, "mode")) mode = try connection.Mode.parse(value) else if (std.mem.eql(u8, key, "command")) command = try fake_adapter.actionFromName(value) else if (std.mem.eql(u8, key, "lat_int")) lat_int = try std.fmt.parseInt(i32, value, 10) else if (std.mem.eql(u8, key, "lon_int")) lon_int = try std.fmt.parseInt(i32, value, 10) else if (std.mem.eql(u8, key, "alt_m")) alt_m = try std.fmt.parseFloat(f32, value) else if (std.mem.eql(u8, key, "battery_percent")) battery_percent = try std.fmt.parseFloat(f64, value) else if (std.mem.eql(u8, key, "state_freshness")) freshness = std.meta.stringToEnum(domain.state.StateFreshness, value) orelse return error.InvalidArduPilotScenario else if (std.mem.eql(u8, key, "expected_decision")) expected_decision = std.meta.stringToEnum(@import("aegis_core").decision.DecisionResult, value) orelse return error.InvalidArduPilotScenario else if (std.mem.eql(u8, key, "expected_forwarded")) expected_forwarded = try parseBool(value) else if (std.mem.eql(u8, key, "requires_ardupilot_sitl")) requires_ardupilot_sitl = try parseBool(value) else if (std.mem.eql(u8, key, "timeout_ms")) timeout_ms = try std.fmt.parseInt(u64, value, 10) else if (std.mem.eql(u8, key, "note")) note = value else return error.InvalidArduPilotScenario;
+        if (std.mem.eql(u8, key, "id") or std.mem.eql(u8, key, "name")) id = value else if (std.mem.eql(u8, key, "environment")) environment = try connection.Environment.parse(value) else if (std.mem.eql(u8, key, "vehicle") or std.mem.eql(u8, key, "vehicle_type")) vehicle = try vehicle_kind.VehicleKind.parse(value) else if (std.mem.eql(u8, key, "mode")) mode = try connection.Mode.parse(value) else if (std.mem.eql(u8, key, "command")) command = try fake_adapter.actionFromName(value) else if (std.mem.eql(u8, key, "lat_int")) lat_int = try std.fmt.parseInt(i32, value, 10) else if (std.mem.eql(u8, key, "lon_int")) lon_int = try std.fmt.parseInt(i32, value, 10) else if (std.mem.eql(u8, key, "alt_m")) alt_m = try std.fmt.parseFloat(f32, value) else if (std.mem.eql(u8, key, "battery_percent")) battery_percent = try std.fmt.parseFloat(f64, value) else if (std.mem.eql(u8, key, "state_freshness")) freshness = std.meta.stringToEnum(domain.state.StateFreshness, value) orelse return error.InvalidArduPilotScenario else if (std.mem.eql(u8, key, "approval") or std.mem.eql(u8, key, "approval_seed")) approval_seed = try operator.parseApprovalSeedKind(value) else if (std.mem.eql(u8, key, "approval_scope")) {} else if (std.mem.eql(u8, key, "expected_decision")) expected_decision = std.meta.stringToEnum(@import("aegis_core").decision.DecisionResult, value) orelse return error.InvalidArduPilotScenario else if (std.mem.eql(u8, key, "expected_forwarded")) expected_forwarded = try parseBool(value) else if (std.mem.eql(u8, key, "requires_ardupilot_sitl")) requires_ardupilot_sitl = try parseBool(value) else if (std.mem.eql(u8, key, "timeout_ms")) timeout_ms = try std.fmt.parseInt(u64, value, 10) else if (std.mem.eql(u8, key, "note")) note = value else return error.InvalidArduPilotScenario;
     }
 
     return .{
@@ -233,11 +237,55 @@ fn loadScenario(allocator: std.mem.Allocator, path: []const u8) !ScenarioSpec {
         .alt_m = alt_m,
         .battery_percent = battery_percent,
         .state_freshness = freshness,
+        .approval_seed = approval_seed,
         .expected_decision = expected_decision,
         .expected_forwarded = expected_forwarded,
         .requires_ardupilot_sitl = requires_ardupilot_sitl,
         .timeout_ms = timeout_ms,
         .note = try allocator.dupe(u8, note),
+    };
+}
+
+fn approvalForFrame(
+    allocator: std.mem.Allocator,
+    selected_policy: *const @import("../schema/mod.zig").edge_policy_schema.EdgePolicyV1,
+    state: domain.state.VehicleState,
+    frame: mavlink.framing.Frame,
+    spec: ScenarioSpec,
+    now_ms: i128,
+) !?operator.ApprovalDecision {
+    if (spec.approval_seed == .none) return null;
+    var mapped = try mavlink.mapping.mapFrameToCommand(allocator, frame, .{
+        .vehicle_id = "edge-vehicle-1",
+        .now_ms = now_ms,
+        .source = sitl_adapter.provenanceFor(spec.environment),
+    });
+    defer mapped.deinit();
+    const request = mapped.request orelse return null;
+    var base = try safety.evaluateSafety(allocator, selected_policy, state, request, .{
+        .mode = evaluationMode(spec.mode),
+        .now_ms = now_ms,
+        .non_interactive = spec.mode == .ci or spec.mode == .redteam,
+    });
+    defer base.deinit();
+    return operator.createSeededApprovalDecision(allocator, spec.approval_seed, .{
+        .policy = selected_policy,
+        .command = request,
+        .state = state,
+        .evaluation = base,
+        .now_ms = now_ms,
+        .actor_id = "aegis-edge-ardupilot-scenario",
+    });
+}
+
+fn evaluationMode(mode: connection.Mode) policy.EvaluationMode {
+    return switch (mode) {
+        .observe => .observe,
+        .enforce => .ask,
+        .simulation => .simulation,
+        .ci => .ci,
+        .redteam => .redteam,
+        .bench => .bench,
     };
 }
 

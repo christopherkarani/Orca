@@ -22,6 +22,7 @@ pub const CompiledEnvelope = envelope.CompiledEnvelope;
 
 pub const compileEnvelope = envelope.compileEnvelope;
 pub const evaluateSafety = evaluator.evaluateSafety;
+pub const evaluateSafetyWithApproval = evaluator.evaluateSafetyWithApproval;
 pub const appendPreparedAuditEvents = evaluator.appendPreparedAuditEvents;
 pub const evaluateMissionSafety = mission_safety.evaluateMissionSafety;
 

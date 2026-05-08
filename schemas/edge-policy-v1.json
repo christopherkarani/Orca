@@ -78,12 +78,30 @@
             "require_fresh_battery_state": { "type": "boolean" }
           }
         },
+        "approval": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "approval_ttl_ms": { "type": "integer", "minimum": 1 },
+            "max_uses_default": { "type": "integer", "minimum": 1 },
+            "require_operator_identity": { "type": "boolean" },
+            "require_state_hash": { "type": "boolean" },
+            "require_safety_constraints_hash": { "type": "boolean" },
+            "allow_broad_scopes": { "type": "boolean" },
+            "allow_non_overridable_override": { "type": "boolean" },
+            "allow_compatible_policy_hash": { "type": "boolean" }
+          }
+        },
         "emergency": {
           "type": "object",
           "additionalProperties": false,
           "properties": {
             "allow_land": { "type": "boolean" },
-            "allow_return_to_home": { "type": "boolean" }
+            "allow_return_to_home": { "type": "boolean" },
+            "allow_hold_position": { "type": "boolean" },
+            "allow_stop_or_brake": { "type": "boolean" },
+            "allow_disarm": { "type": "boolean" },
+            "fallback_order": { "$ref": "#/$defs/commandList" }
           }
         }
       }

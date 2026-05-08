@@ -26,6 +26,10 @@ test "edge capabilities report unsupported integrations as unavailable or not im
             => try std.testing.expectEqual(edge.CapabilityStatus.active, report.status),
             .flight_safety_enforcement,
             => try std.testing.expectEqual(edge.CapabilityStatus.active, report.status),
+            .operator_approval,
+            => try std.testing.expectEqual(edge.CapabilityStatus.active, report.status),
+            .emergency_modes,
+            => try std.testing.expectEqual(edge.CapabilityStatus.active, report.status),
             .real_flight_enforcement,
             .detect_and_avoid,
             .regulatory_certification,
@@ -41,7 +45,7 @@ test "edge capabilities report unsupported integrations as unavailable or not im
 }
 
 test "edge doctor output names scaffold and not implemented states" {
-    var buffer: [4096]u8 = undefined;
+    var buffer: [8192]u8 = undefined;
     var stream = std.io.fixedBufferStream(&buffer);
 
     try edge.doctor(stream.writer());

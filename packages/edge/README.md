@@ -56,6 +56,14 @@ The safety evaluator itself never forwards commands. Gateway and adapter layers 
 
 Unknown, stale, expired, or ambiguous state is not treated as safe. Coordinate frames and altitude references must be explicit. Fake adapter state must remain labeled as fake adapter state. MAVLink fake transport provenance is reported as `fake_transport` or `fake_transport/simulation`; fake-PX4 state uses `fake_adapter`; opt-in PX4 SITL state uses `sitl_px4`; fake-ArduPilot state uses `fake_ardupilot_adapter`; opt-in ArduPilot SITL state uses `sitl_ardupilot`. SITL evidence is simulation evidence, not real-flight validation.
 
+## Operator Approval and Emergency Modes
+
+Phase 32 adds bounded local operator approval and policy-controlled emergency fallback decisions. Approval requests bind policy, vehicle, command, state, safety evaluation, safety constraints, provenance, scope, expiry, and use count. Exact-action one-use approval is the default. CI and red-team modes convert ask decisions to deny without prompting.
+
+Emergency evaluation supports policy-controlled LAND, HOLD, and RETURN_TO_HOME decisions in fake/SITL contexts. Emergency mode is not a policy bypass and does not enable disable-failsafe, disable-geofence, raw actuator output, or operator override commands by default.
+
+These features do not make Aegis Edge a flight controller, autopilot replacement, detect-and-avoid capability, regulatory certification, or real-flight validation.
+
 See:
 
 - `docs/edge/policy-engine.md`
