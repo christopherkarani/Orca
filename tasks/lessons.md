@@ -119,3 +119,9 @@
 ## 2026-05-08 Phase 31 Flight Safety Review
 
 - Safety exception flags need explicit fail-closed branches. Skipping a special-case allow is not enough when a later generic command allow can still permit the request.
+
+## 2026-05-08 Phase 33 Edge Audit Review
+
+- Before review handoff, force every new Phase source, test, doc, and example into `git diff` with tracking or intent-to-add. A clean-checkout review cannot see untracked audit/report modules even when local builds pass.
+- For allocator-owned slices that are reordered in place and later passed through evaluation paths, keep one `errdefer` owner until normal success frees or transfers ownership. Duplicate `errdefer` registrations create error-path double frees.
+- Generated `.aegis-edge` session state is local runtime output. Keep it ignored and untracked even when smoke commands produce useful approval or replay artifacts.

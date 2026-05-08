@@ -91,7 +91,6 @@ pub fn evaluateFallback(
     var order = try fallbackOrder(allocator, policy);
     errdefer allocator.free(order);
     prioritizeReason(&order, reason);
-    errdefer allocator.free(order);
     var last_denied: ?EmergencyDecision = null;
     for (order) |candidate| {
         var decision = try evaluateCommandWithOrder(allocator, policy, state, candidate, reason, options, order);

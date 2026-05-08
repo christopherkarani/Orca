@@ -7,6 +7,7 @@ const replay = @import("replay.zig");
 pub const SessionWriter = struct {
     allocator: std.mem.Allocator,
     workspace_root: []const u8,
+    audit_dir_name: []const u8 = ".aegis",
     session_id: core.session.SessionId,
     session_dir_path: []u8,
     events_file: std.fs.File,
@@ -14,7 +15,11 @@ pub const SessionWriter = struct {
     event_count: usize = 0,
 
     pub fn init(allocator: std.mem.Allocator, session: core.session.Session) !SessionWriter {
-        const aegis_dir = try std.fs.path.join(allocator, &.{ session.workspace_root, ".aegis" });
+        return initWithDirName(allocator, session, ".aegis");
+    }
+
+    pub fn initWithDirName(allocator: std.mem.Allocator, session: core.session.Session, audit_dir_name: []const u8) !SessionWriter {
+        const aegis_dir = try std.fs.path.join(allocator, &.{ session.workspace_root, audit_dir_name });
         defer allocator.free(aegis_dir);
         const sessions_dir = try std.fs.path.join(allocator, &.{ aegis_dir, "sessions" });
         defer allocator.free(sessions_dir);
@@ -30,6 +35,7 @@ pub const SessionWriter = struct {
         return .{
             .allocator = allocator,
             .workspace_root = session.workspace_root,
+            .audit_dir_name = audit_dir_name,
             .session_id = session.id,
             .session_dir_path = session_dir_path,
             .events_file = events_file,
@@ -37,7 +43,11 @@ pub const SessionWriter = struct {
     }
 
     pub fn openExisting(allocator: std.mem.Allocator, workspace_root: []const u8, session_id_text: []const u8) !SessionWriter {
-        const aegis_dir = try std.fs.path.join(allocator, &.{ workspace_root, ".aegis" });
+        return openExistingWithDirName(allocator, workspace_root, session_id_text, ".aegis");
+    }
+
+    pub fn openExistingWithDirName(allocator: std.mem.Allocator, workspace_root: []const u8, session_id_text: []const u8, audit_dir_name: []const u8) !SessionWriter {
+        const aegis_dir = try std.fs.path.join(allocator, &.{ workspace_root, audit_dir_name });
         defer allocator.free(aegis_dir);
         const sessions_dir = try std.fs.path.join(allocator, &.{ aegis_dir, "sessions" });
         defer allocator.free(sessions_dir);
@@ -60,6 +70,7 @@ pub const SessionWriter = struct {
         return .{
             .allocator = allocator,
             .workspace_root = workspace_root,
+            .audit_dir_name = audit_dir_name,
             .session_id = session_id,
             .session_dir_path = session_dir_path,
             .events_file = events_file,
@@ -101,7 +112,7 @@ pub const SessionWriter = struct {
     }
 
     pub fn writeLastPointer(self: *const SessionWriter) !void {
-        const aegis_dir = try std.fs.path.join(self.allocator, &.{ self.workspace_root, ".aegis" });
+        const aegis_dir = try std.fs.path.join(self.allocator, &.{ self.workspace_root, self.audit_dir_name });
         defer self.allocator.free(aegis_dir);
         try std.fs.cwd().makePath(aegis_dir);
 
