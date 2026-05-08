@@ -1,73 +1,54 @@
-# Phase 31 Flight Safety Enforcement
+# Phase 32 Operator Approval and Emergency Modes
 
 ## Assumptions
 
-- The prompt-named `README_START_HERE.md`, `CODEX_MASTER_PROMPT_EDGE.md`, `context/`, `checklists/`, and `phases/31_FLIGHT_SAFETY_ENFORCEMENT.md` files are absent from this checkout. The active contract is the Phase 31 prompt, existing Edge docs/code, current Phase 27-30 implementation, and project lessons.
-- Phase 31 is fake-adapter, PX4 SITL, and ArduPilot SITL safety enforcement only. It must not add operator approval runtime, emergency-mode runtime beyond recommended fallback decisions, hardware bench deployment, real drone hardware integration, real-flight deployment, customer hardware procedures, SaaS, monetization, telemetry services, regulatory/certification claims, detect-and-avoid, autopilot replacement behavior, or real-flight instructions.
-- The existing Phase 27 evaluator already enforces a subset of geofence, altitude, velocity, battery, freshness, mode, authority, and command-risk constraints. Phase 31 should harden and modularize that behavior rather than fork a competing decision engine.
-- Normal tests must remain deterministic and offline. PX4 and ArduPilot SITL remain opt-in and may skip or fail closed when no live simulator transport exists.
+- The prompt-named `README_START_HERE.md`, `CODEX_MASTER_PROMPT_EDGE.md`, `context/`, `checklists/`, and `phases/32_OPERATOR_APPROVAL_AND_EMERGENCY_MODES.md` files are absent from this checkout. The active contract is the Phase 32 prompt, root Aegis contracts, current Edge docs/code, Phase 31 task notes, and `tasks/lessons.md`.
+- Phase 32 is limited to operator approval and emergency-mode decision behavior for fake-adapter, PX4 SITL, and ArduPilot SITL contexts. It must not add Phase 33 safety-case report generation, Phase 34 red-team/fault-injection suite, hardware bench deployment, real drone hardware integration, real-flight deployment, customer hardware procedures, SaaS, monetization, telemetry, regulatory/certification claims, detect-and-avoid, autopilot replacement behavior, or real-flight instructions.
+- Existing Phase 31 safety enforcement is the integration point. Approval and emergency behavior should extend that evaluator and scenario flow rather than creating a separate command-decision engine.
+- Normal tests must remain deterministic and offline. PX4 and ArduPilot SITL remain opt-in and must not be mislabeled as fake evidence or real-flight evidence.
 
 ## Research And False-Positive Check
 
-- [x] Read Aegis memory and `tasks/lessons.md` for phase discipline, tracked-file hygiene, redaction, and SITL fake-vs-real boundaries.
+- [x] Read Aegis memory and `tasks/lessons.md` for phase discipline, tracked-file hygiene, redaction, fake-vs-SITL boundaries, and Phase 31 explicit-deny regression.
 - [x] Confirm absent prompt-named governing files instead of inventing their contents.
-- [x] Inspect Edge domain, policy loader/evaluator, MAVLink gateway, PX4 adapter, ArduPilot adapter, audit, schema, docs, and examples.
-- [x] Verify current baseline tests before implementation where useful.
-- [x] Re-check that new code does not overclaim real hardware, detect-and-avoid, autopilot replacement, or certification.
+- [ ] Inspect current Edge domain, policy loader/evaluator, safety evaluator, MAVLink gateway, PX4 scenario runner, ArduPilot scenario runner, audit event model, CLI, docs, and examples.
+- [ ] Verify current baseline tests before implementation where useful.
+- [ ] Re-check that new code does not overclaim real hardware, detect-and-avoid, autopilot replacement, regulatory/certification status, or real-flight readiness.
 
 ## TDD / Implementation Checklist
 
-- [x] Add Phase 31 safety tests first for envelope validation, structured findings, command risk defaults, geofence, altitude, velocity, battery, freshness, mode/authority, mission safety, CLI output, audit/redaction, and MAVLink/PX4/ArduPilot integration.
-- [x] Add reusable `packages/edge/src/safety/` modules for compiled envelopes, evaluator, constraint helpers, structured findings, mission checks, and reports.
-- [x] Keep `policy.evaluateEdgeAction` compatible while exposing the new safety evaluator API.
-- [x] Harden policy/envelope validation for positive velocity limits, positive geofence radius, battery thresholds, deny-priority command conflicts, unsupported geofence shape reporting, and explicit altitude references.
-- [x] Add mission safety request/state parsing and deterministic mission evaluation for upload/start decisions.
-- [x] Wire safety event names and structured finding payloads through Core audit where current event model allows bounded redacted payloads.
-- [x] Wire MAVLink, PX4, and ArduPilot fake/SITL paths through the safety evaluator without relabeling fake evidence as SITL.
-- [x] Add `aegis-edge safety check`, `safety evaluate`, `safety explain`, `safety scenario run`, and `safety doctor`.
-- [x] Create deterministic examples under `examples/edge/safety/` for policies, requests, states, and scenarios.
-- [x] Update docs under `docs/edge/` and `packages/edge/README.md` with supported/unsupported safety behavior and simulation-only limits.
+- [ ] Add Phase 32 approval model tests first: request/decision creation, exact-action scope, expiry, default max uses, policy/command/vehicle/state binding, stale/mismatched/expired/revoked/reused rejection, broad-scope rejection, and non-overridable command denial.
+- [ ] Add Phase 32 approval behavior tests: arm/takeoff ask creates approval request, exact valid approval allows only the bound action when the safety envelope passes, geofence/altitude failures still deny, CI mode ask becomes deny, and CI tests never prompt.
+- [ ] Add Phase 32 emergency tests: LAND/RTH/HOLD evaluation, RTH home-position requirement, stale-state LAND policy gate, disarm not default-safe, unsafe commands remain denied, and fallback ladder selects the first valid safe fallback or no safe fallback.
+- [ ] Add integration/audit/redaction tests for MAVLink fake, PX4 fake/SITL scenario flow, ArduPilot fake/SITL scenario flow, approval events, emergency events, secret redaction, replay-safe outputs, observe/enforce/CI semantics, and provenance preservation.
+- [ ] Implement reusable `packages/edge/src/operator/` modules for request/decision/scope/token/validation/store/prompt/audit behavior with bounded local-only persistence.
+- [ ] Implement reusable emergency-mode modules under `packages/edge/src/emergency/` or the closest existing Edge layout.
+- [ ] Wire approval flow into the safety evaluator: `ask` produces a bounded approval request, valid approvals can turn ask into allow, invalid/missing approvals stay ask/deny by mode, and non-overridable/safety-envelope denials remain denied.
+- [ ] Wire emergency fallback evaluation through policy-controlled safety behavior without creating a policy bypass.
+- [ ] Wire MAVLink, PX4, and ArduPilot scenario paths to consume pre-seeded approvals, expired/mismatched approvals, emergency fallback recommendations, and preserved fake/SITL provenance.
+- [ ] Add `aegis-edge operator ...` and `aegis-edge emergency ...` CLI commands plus approval/emergency info in `safety evaluate` where relevant.
+- [ ] Add deterministic examples under `examples/edge/operator/` for policies, requests, states, approvals, and scenarios.
+- [ ] Update docs under `docs/edge/` and `packages/edge/README.md` with approval lifecycle, scope/expiry/revocation, non-interactive CI behavior, emergency fallback behavior, simulation/SITL boundaries, and explicit non-flight limitations.
 
 ## Verification Checklist
 
-- [x] `zig build`
-- [x] `zig build test`
-- [x] `./zig-out/bin/aegis --help`
-- [x] `./zig-out/bin/aegis version`
-- [x] `./zig-out/bin/aegis doctor`
-- [x] `./zig-out/bin/aegis run -- echo hello`
-- [x] `./zig-out/bin/aegis replay --session last --verify`
-- [x] `./zig-out/bin/aegis redteam --ci`
-- [x] `./zig-out/bin/aegis-edge --help`
-- [x] `./zig-out/bin/aegis-edge doctor`
-- [x] `./zig-out/bin/aegis-edge safety doctor`
-- [x] `./zig-out/bin/aegis-edge safety evaluate --policy examples/edge/safety/policies/safety-geofence-basic.yaml --request examples/edge/safety/requests/waypoint-outside-geofence.json --state examples/edge/safety/states/fresh-state.json`
-- [x] `./zig-out/bin/aegis-edge safety evaluate --policy examples/edge/safety/policies/safety-battery-basic.yaml --request examples/edge/safety/requests/takeoff-low-battery.json --state examples/edge/safety/states/low-battery-state.json`
-- [x] `./zig-out/bin/aegis-edge safety evaluate --policy examples/edge/safety/policies/safety-geofence-basic.yaml --request examples/edge/safety/requests/land.json --state examples/edge/safety/states/stale-state.json`
-- [x] `./zig-out/bin/aegis-edge safety scenario run --policy examples/edge/safety/policies/safety-strict.yaml --scenario examples/edge/safety/scenarios/mission-outside-geofence-deny.yaml`
-- [x] Manual safety checks from the Phase 31 prompt.
-- [x] `git diff --check`
+- [ ] `zig build`
+- [ ] `zig build test`
+- [ ] `./zig-out/bin/aegis --help`
+- [ ] `./zig-out/bin/aegis version`
+- [ ] `./zig-out/bin/aegis doctor`
+- [ ] `./zig-out/bin/aegis run -- echo hello`
+- [ ] `./zig-out/bin/aegis replay --session last --verify`
+- [ ] `./zig-out/bin/aegis redteam --ci`
+- [ ] `./zig-out/bin/aegis-edge --help`
+- [ ] `./zig-out/bin/aegis-edge doctor`
+- [ ] `./zig-out/bin/aegis-edge operator list`
+- [ ] `./zig-out/bin/aegis-edge operator request --policy examples/edge/operator/policies/approval-basic.yaml --request examples/edge/operator/requests/arm.json --state examples/edge/operator/states/fresh-state.json`
+- [ ] `./zig-out/bin/aegis-edge emergency evaluate --policy examples/edge/operator/policies/emergency-basic.yaml --state examples/edge/operator/states/critical-battery-state.json --reason critical_battery`
+- [ ] `./zig-out/bin/aegis-edge emergency scenario run --policy examples/edge/operator/policies/emergency-basic.yaml --scenario examples/edge/operator/scenarios/critical-battery-emergency-land.yaml`
+- [ ] Manual Phase 32 checks from the prompt.
+- [ ] `git diff --check`
 
 ## Review
 
-- Implemented Phase 31 as a reusable `edge.safety` package with compiled envelopes, structured findings, command evaluation, mission evaluation, reports, deterministic scenario artifacts, and CLI commands.
-- Added `aegis-edge safety doctor/check/evaluate/explain/scenario run`.
-- MAVLink gateway now calls the safety evaluator directly; PX4 and ArduPilot adapters inherit that through their existing gateway delegation while preserving fake/PX4/ArduPilot provenance labels.
-- Added deterministic safety policies, requests, states, and scenarios under `examples/edge/safety/`.
-- Added docs for flight safety enforcement, envelope compilation, geofence, altitude/velocity, battery, state freshness, mission safety, findings, and simulation-vs-flight boundaries.
-- Added Core and Edge schema event names for safety evaluation/finding/mission events and extended safety report schema with structured findings.
-- Fixed the Edge CLI JSON request/state parser lifetime bug by adding owned parse handles for CLI evaluation paths.
-- Verification passed: `zig build`, `zig build test`, `git diff --check`, requested Aegis CLI smokes, requested `aegis-edge` safety smokes, PX4 fake scenario, ArduPilot fake scenario, secret-redaction grep, and docs boundary grep.
-- Known limitations: circle geofences only; no polygon support; no coordinate-frame conversion; no altitude-reference conversion; no real hardware integration; SITL remains opt-in; no operator approval runtime; no emergency runtime beyond fallback recommendations; no detect-and-avoid; no certification or real-flight readiness.
-
-## Review Fix Plan
-
-- [x] Add regression tests proving stale `land` and `return_to_home` deny when the policy disables those emergency actions, even if the command list allows them.
-- [x] Patch freshness evaluation so emergency stale-state handling has an explicit deny path instead of only skipping the allow exception.
-- [x] Re-run focused and full Zig verification, then document the result here.
-
-## Review Fix Result
-
-- Added a failing Phase 31 regression for stale `land` and `return_to_home` when `safety.emergency.allow_land` or `allow_return_to_home` is false while command rules still allow the action.
-- Fixed `evaluateFreshness` to return an explicit stale-state denial and audit event for disabled emergency stale-state actions before falling through to ordinary command allow behavior.
-- Verification: new regression first failed with stale `land` returning `allow`; after the fix, `zig build test --summary all`, `zig build`, `zig build test`, and `git diff --check` passed.
+- Pending implementation.
