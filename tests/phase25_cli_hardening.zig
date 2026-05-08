@@ -61,7 +61,7 @@ test "phase25 docs preserve Edge no-real-flight safety boundary" {
     const edge_readme = try readFile(std.testing.allocator, "packages/edge/README.md");
     defer std.testing.allocator.free(edge_readme);
 
-    try std.testing.expect(std.mem.indexOf(u8, readme, "PX4 SITL is opt-in local simulation only") != null);
+    try std.testing.expect(std.mem.indexOf(u8, readme, "PX4/ArduPilot SITL are opt-in local simulation only") != null);
     try std.testing.expect(std.mem.indexOf(u8, edge_readme, "Phase 28 adds a MAVLink gateway foundation") != null);
     try std.testing.expect(std.mem.indexOf(u8, readme, "flight-ready") == null);
     try std.testing.expect(std.mem.indexOf(u8, edge_readme, "flight-ready") == null);

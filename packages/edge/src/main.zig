@@ -1,5 +1,6 @@
 const std = @import("std");
 const edge = @import("aegis_edge");
+const schema_documents = @import("edge_schema_documents");
 
 const usage =
     \\Aegis Edge policy evaluation
@@ -9,6 +10,15 @@ const usage =
     \\
     \\Commands:
     \\  doctor                         Show domain/schema capability status
+    \\  ardupilot doctor               Show ArduPilot SITL simulation capability status
+    \\  ardupilot scenario run --policy <policy> --scenario <scenario>
+    \\                                 Run a deterministic fake-ArduPilot or opt-in SITL scenario
+    \\  ardupilot observe --duration <seconds>
+    \\                                 Observe deterministic fake-ArduPilot state unless SITL is explicitly enabled
+    \\  ardupilot gateway --policy <policy> --endpoint <endpoint> --mode observe|enforce|simulation
+    \\                                 Configure ArduPilot SITL mediation parameters without hardware assumptions
+    \\  ardupilot test-fixture --name <fixture>
+    \\                                 Print deterministic fake-ArduPilot fixture metadata
     \\  px4 doctor                     Show PX4 SITL simulation capability status
     \\  px4 scenario run --policy <policy> --scenario <scenario>
     \\                                 Run a deterministic fake-PX4 or opt-in SITL scenario
@@ -34,13 +44,13 @@ const usage =
     \\  schema print <schema-id>       Print a built-in schema document
     \\  help                           Show this help
     \\
-    \\MAVLink fake transport is deterministic by default. PX4 SITL is opt-in local simulation only. No real hardware, ROS2, ArduPilot SITL, or real-flight endpoint is opened by default.
+    \\MAVLink fake transport is deterministic by default. PX4 and ArduPilot SITL are opt-in local simulation only. No real hardware, ROS2, or real-flight endpoint is opened by default.
     \\
 ;
 
-const edge_policy_schema_path = "schemas/edge-policy-v1.json";
-const edge_event_schema_path = "schemas/edge-event-v1.json";
-const safety_report_schema_path = "schemas/safety-report-v1.json";
+const edge_policy_schema_document = schema_documents.edge_policy_v1;
+const edge_event_schema_document = schema_documents.edge_event_v1;
+const safety_report_schema_document = schema_documents.safety_report_v1;
 
 pub fn main() !void {
     var gpa_state: std.heap.GeneralPurposeAllocator(.{}) = .init;
@@ -82,6 +92,9 @@ pub fn run(argv: []const []const u8, stdout: anytype, stderr: anytype) !u8 {
     }
     if (std.mem.eql(u8, command, "schema")) {
         return runSchema(argv[1..], stdout, stderr);
+    }
+    if (std.mem.eql(u8, command, "ardupilot")) {
+        return runArduPilot(argv[1..], stdout, stderr);
     }
     if (std.mem.eql(u8, command, "px4")) {
         return runPx4(argv[1..], stdout, stderr);
@@ -175,7 +188,7 @@ fn runPx4Scenario(argv: []const []const u8, stdout: anytype, stderr: anytype) !u
         try stdout.print("Environment: {s}\nDecision: {s}\nForwarded: {}\nBlocked: {}\n", .{ result.environment.toString(), if (result.decision) |decision| decision.toString() else "none", result.forwarded, result.blocked });
         if (result.artifact_dir) |dir| try stdout.print("Artifacts: {s}\n", .{dir});
     }
-    try stdout.writeAll("Limitations: simulation evidence only; not ready for real flight; no hardware or ArduPilot integration.\n");
+    try stdout.writeAll("Limitations: simulation evidence only; not ready for real flight; no hardware integration; PX4 evidence is distinct from ArduPilot evidence.\n");
     return 0;
 }
 
@@ -271,6 +284,191 @@ fn runPx4TestFixture(argv: []const []const u8, stdout: anytype, stderr: anytype)
     return 0;
 }
 
+fn runArduPilot(argv: []const []const u8, stdout: anytype, stderr: anytype) !u8 {
+    if (argv.len == 0) {
+        try stderr.writeAll("aegis-edge ardupilot: expected doctor, scenario, observe, gateway, or test-fixture.\n");
+        return 64;
+    }
+    if (std.mem.eql(u8, argv[0], "doctor")) return runArduPilotDoctor(argv[1..], stdout, stderr);
+    if (std.mem.eql(u8, argv[0], "scenario")) return runArduPilotScenario(argv[1..], stdout, stderr);
+    if (std.mem.eql(u8, argv[0], "observe")) return runArduPilotObserve(argv[1..], stdout, stderr);
+    if (std.mem.eql(u8, argv[0], "gateway")) return runArduPilotGateway(argv[1..], stdout, stderr);
+    if (std.mem.eql(u8, argv[0], "test-fixture")) return runArduPilotTestFixture(argv[1..], stdout, stderr);
+    try stderr.print("aegis-edge ardupilot: unknown subcommand '{s}'.\n", .{argv[0]});
+    return 64;
+}
+
+fn runArduPilotDoctor(argv: []const []const u8, stdout: anytype, stderr: anytype) !u8 {
+    if (argv.len != 0) return usageError(stderr, "aegis-edge ardupilot doctor: expected no arguments.\n");
+    var gpa_state: std.heap.GeneralPurposeAllocator(.{}) = .init;
+    defer _ = gpa_state.deinit();
+    const allocator = gpa_state.allocator();
+    var gate = try edge.ardupilot.connection.integrationTestGateFromEnv(allocator);
+    defer gate.deinit(allocator);
+    var config = edge.ardupilot.connection.defaultConfig();
+    const version = try edge.ardupilot.connection.testedVersionFromEnv(allocator);
+    defer allocator.free(version);
+    config.tested_version = version;
+    config.vehicle = gate.vehicle;
+    if (gate.endpoint) |endpoint| config.endpoint = endpoint;
+    try edge.ardupilot.health.writeDoctor(stdout, .{ .config = config, .gate = gate });
+    return 0;
+}
+
+fn runArduPilotScenario(argv: []const []const u8, stdout: anytype, stderr: anytype) !u8 {
+    if (argv.len == 0 or !std.mem.eql(u8, argv[0], "run")) return usageError(stderr, "aegis-edge ardupilot scenario: expected run --policy <policy> --scenario <scenario>.\n");
+    var policy_path: ?[]const u8 = null;
+    var scenario_path: ?[]const u8 = null;
+    var artifact_dir: ?[]const u8 = null;
+    var index: usize = 1;
+    while (index < argv.len) : (index += 1) {
+        if (std.mem.eql(u8, argv[index], "--policy")) {
+            index += 1;
+            if (index >= argv.len) return usageError(stderr, "aegis-edge ardupilot scenario run: --policy requires a file.\n");
+            policy_path = argv[index];
+        } else if (std.mem.eql(u8, argv[index], "--scenario")) {
+            index += 1;
+            if (index >= argv.len) return usageError(stderr, "aegis-edge ardupilot scenario run: --scenario requires a file.\n");
+            scenario_path = argv[index];
+        } else if (std.mem.eql(u8, argv[index], "--artifacts")) {
+            index += 1;
+            if (index >= argv.len) return usageError(stderr, "aegis-edge ardupilot scenario run: --artifacts requires a directory.\n");
+            artifact_dir = argv[index];
+        } else {
+            try stderr.print("aegis-edge ardupilot scenario run: unknown argument '{s}'.\n", .{argv[index]});
+            return 64;
+        }
+    }
+    const selected_policy = policy_path orelse return usageError(stderr, "aegis-edge ardupilot scenario run: missing --policy.\n");
+    const selected_scenario = scenario_path orelse return usageError(stderr, "aegis-edge ardupilot scenario run: missing --scenario.\n");
+    var gpa_state: std.heap.GeneralPurposeAllocator(.{}) = .init;
+    defer _ = gpa_state.deinit();
+    const allocator = gpa_state.allocator();
+    var gate = try edge.ardupilot.connection.integrationTestGateFromEnv(allocator);
+    defer gate.deinit(allocator);
+    var result = edge.ardupilot.scenario.run(allocator, .{
+        .policy_path = selected_policy,
+        .scenario_path = selected_scenario,
+        .artifact_dir = artifact_dir,
+        .gate = gate,
+    }) catch |err| {
+        try stderr.print("ArduPilot scenario failed: {s}\n", .{@errorName(err)});
+        return 65;
+    };
+    defer result.deinit();
+    try stdout.print("{s}\n", .{result.summary});
+    if (result.skipped) {
+        try stdout.writeAll("Skipped result is not a fake-ArduPilot pass and not ArduPilot SITL success.\n");
+    } else {
+        try stdout.print("Environment: {s}\nVehicle: {s}\nDecision: {s}\nForwarded: {}\nBlocked: {}\n", .{ result.environment.toString(), result.vehicle.toString(), if (result.decision) |decision| decision.toString() else "none", result.forwarded, result.blocked });
+        if (result.artifact_dir) |dir| try stdout.print("Artifacts: {s}\n", .{dir});
+    }
+    try stdout.writeAll("Limitations: simulation evidence only; not ready for real flight; no hardware integration; ArduPilot behavior is not identical to PX4 behavior.\n");
+    return 0;
+}
+
+fn runArduPilotObserve(argv: []const []const u8, stdout: anytype, stderr: anytype) !u8 {
+    var duration: u64 = 5;
+    var index: usize = 0;
+    while (index < argv.len) : (index += 1) {
+        if (std.mem.eql(u8, argv[index], "--duration")) {
+            index += 1;
+            if (index >= argv.len) return usageError(stderr, "aegis-edge ardupilot observe: --duration requires seconds.\n");
+            duration = std.fmt.parseInt(u64, argv[index], 10) catch return usageError(stderr, "aegis-edge ardupilot observe: invalid --duration.\n");
+        } else {
+            try stderr.print("aegis-edge ardupilot observe: unknown argument '{s}'.\n", .{argv[index]});
+            return 64;
+        }
+    }
+    var gpa_state: std.heap.GeneralPurposeAllocator(.{}) = .init;
+    defer _ = gpa_state.deinit();
+    const allocator = gpa_state.allocator();
+    var fake = edge.ardupilot.fake_adapter.FakeArduPilotAdapter.init(allocator, .{ .vehicle = .copter });
+    defer fake.deinit();
+    var mapper = edge.ardupilot.telemetry_mapping.StateMapper.init(.{
+        .vehicle_id = "edge-vehicle-1",
+        .vehicle = .copter,
+        .provenance = .fake_ardupilot_adapter,
+        .now_ms = 1_000_000,
+    });
+    const heartbeat = try fake.heartbeatFrame(.{ .armed = true, .custom_mode = edge.ardupilot.telemetry_mapping.copter_mode_guided });
+    defer allocator.free(heartbeat);
+    try mapper.observeFrame(try edge.mavlink.framing.parseFrame(heartbeat));
+    const state = mapper.state();
+    try stdout.print("ArduPilot observe environment: fake_ardupilot\nDuration requested: {d}s\nVehicle: {s}\nMode: {s}\nArm state: {s}\nProvenance: {s}\n", .{ duration, state.vehicle_id.value, @tagName(state.mode), @tagName(state.arm_state), @tagName(state.provenance) });
+    try stdout.writeAll("No ArduPilot SITL endpoint or hardware was opened. Use opt-in ArduPilot SITL tests for local simulator evidence.\n");
+    return 0;
+}
+
+fn runArduPilotGateway(argv: []const []const u8, stdout: anytype, stderr: anytype) !u8 {
+    var policy_path: ?[]const u8 = null;
+    var endpoint_text: []const u8 = "127.0.0.1:14550";
+    var mode: edge.ardupilot.connection.Mode = .observe;
+    var protocol: edge.ardupilot.connection.Protocol = .udp;
+    var vehicle: edge.ardupilot.vehicle_kind.VehicleKind = .copter;
+    var index: usize = 0;
+    while (index < argv.len) : (index += 1) {
+        if (std.mem.eql(u8, argv[index], "--policy")) {
+            index += 1;
+            if (index >= argv.len) return usageError(stderr, "aegis-edge ardupilot gateway: --policy requires a file.\n");
+            policy_path = argv[index];
+        } else if (std.mem.eql(u8, argv[index], "--endpoint")) {
+            index += 1;
+            if (index >= argv.len) return usageError(stderr, "aegis-edge ardupilot gateway: --endpoint requires host:port.\n");
+            endpoint_text = argv[index];
+        } else if (std.mem.eql(u8, argv[index], "--mode")) {
+            index += 1;
+            if (index >= argv.len) return usageError(stderr, "aegis-edge ardupilot gateway: --mode requires observe|enforce|simulation.\n");
+            mode = edge.ardupilot.connection.Mode.parse(argv[index]) catch return usageError(stderr, "aegis-edge ardupilot gateway: invalid --mode.\n");
+        } else if (std.mem.eql(u8, argv[index], "--protocol")) {
+            index += 1;
+            if (index >= argv.len) return usageError(stderr, "aegis-edge ardupilot gateway: --protocol requires udp|tcp.\n");
+            protocol = edge.ardupilot.connection.Protocol.parse(argv[index]) catch return usageError(stderr, "aegis-edge ardupilot gateway: invalid --protocol.\n");
+        } else if (std.mem.eql(u8, argv[index], "--vehicle")) {
+            index += 1;
+            if (index >= argv.len) return usageError(stderr, "aegis-edge ardupilot gateway: --vehicle requires copter|plane|rover|sub|unknown.\n");
+            vehicle = edge.ardupilot.vehicle_kind.VehicleKind.parse(argv[index]) catch return usageError(stderr, "aegis-edge ardupilot gateway: invalid --vehicle.\n");
+        } else {
+            try stderr.print("aegis-edge ardupilot gateway: unknown argument '{s}'.\n", .{argv[index]});
+            return 64;
+        }
+    }
+    const selected_policy = policy_path orelse return usageError(stderr, "aegis-edge ardupilot gateway: missing --policy.\n");
+    const endpoint = edge.ardupilot.connection.Endpoint.parse(endpoint_text) catch return usageError(stderr, "aegis-edge ardupilot gateway: invalid endpoint.\n");
+    var gpa_state: std.heap.GeneralPurposeAllocator(.{}) = .init;
+    defer _ = gpa_state.deinit();
+    var loaded = edge.policy.loadFile(gpa_state.allocator(), selected_policy, .{}) catch |err| {
+        try stderr.print("Edge policy invalid: {s}\n", .{@errorName(err)});
+        return 65;
+    };
+    defer loaded.deinit();
+    try stdout.print("ArduPilot SITL gateway configured: endpoint={s}:{d} protocol={s} mode={s} vehicle={s}\n", .{ endpoint.host, endpoint.port, protocol.toString(), mode.toString(), vehicle.toString() });
+    try stdout.print("Policy: {s}\n", .{selected_policy});
+    try stdout.writeAll("Live ArduPilot SITL transport is opt-in local simulation only; this command does not assume hardware or real flight.\n");
+    try stdout.writeAll("Mapped commands are mediated through the Phase 28 MAVLink gateway and Phase 27 Edge policy engine.\n");
+    return 0;
+}
+
+fn runArduPilotTestFixture(argv: []const []const u8, stdout: anytype, stderr: anytype) !u8 {
+    var name: ?[]const u8 = null;
+    var index: usize = 0;
+    while (index < argv.len) : (index += 1) {
+        if (std.mem.eql(u8, argv[index], "--name")) {
+            index += 1;
+            if (index >= argv.len) return usageError(stderr, "aegis-edge ardupilot test-fixture: --name requires a fixture name.\n");
+            name = argv[index];
+        } else {
+            try stderr.print("aegis-edge ardupilot test-fixture: unknown argument '{s}'.\n", .{argv[index]});
+            return 64;
+        }
+    }
+    const selected = name orelse return usageError(stderr, "aegis-edge ardupilot test-fixture: missing --name.\n");
+    try stdout.print("ArduPilot fake fixture: {s}\n", .{selected});
+    try stdout.writeAll("Environment: fake_ardupilot\nProvenance: fake_ardupilot_adapter\nSupported names: heartbeat, position, battery, land, rtl, disable_failsafe, waypoint_outside_geofence\n");
+    try stdout.writeAll("Fixtures are deterministic fake-ArduPilot records and are not ArduPilot SITL success evidence.\n");
+    return 0;
+}
+
 fn runMavlink(argv: []const []const u8, stdout: anytype, stderr: anytype) !u8 {
     if (argv.len == 0) {
         try stderr.writeAll("aegis-edge mavlink: expected doctor, inspect-frame, classify, simulate, or gateway.\n");
@@ -290,7 +488,7 @@ fn runMavlinkDoctor(argv: []const []const u8, stdout: anytype, stderr: anytype) 
     try stdout.writeAll("MAVLink gateway foundation: active for fake_transport simulation/protocol mediation only.\n");
     try stdout.writeAll("Supported parsing: MAVLink v1 and v2 frames, bounded payloads, partial streams, known-message CRC validation, MAVLink2 signing detection.\n");
     try stdout.writeAll("Supported mediation subset: heartbeat/state, COMMAND_LONG, COMMAND_INT, SET_MODE, PARAM_SET safety toggles, setpoint targets, and generic mission upload messages.\n");
-    try stdout.writeAll("Unsupported in this MAVLink subcommand: serial hardware endpoints, ArduPilot SITL, ROS2, real hardware flight, signing key management, and signing verification. Use aegis-edge px4 for opt-in PX4 SITL simulation evidence.\n");
+    try stdout.writeAll("Unsupported in this generic MAVLink subcommand: serial hardware endpoints, ROS2, real hardware flight, signing key management, and signing verification. Use aegis-edge px4 or aegis-edge ardupilot for opt-in SITL simulation evidence.\n");
     try stdout.writeAll("Recommendation for real deployments: use MAVLink2 signing at the deployment boundary; Aegis Edge Phase 28 only detects signing presence.\n");
     return 0;
 }
@@ -560,7 +758,10 @@ fn runPolicyExplain(argv: []const []const u8, stdout: anytype, stderr: anytype) 
     };
     const state = defaultStateForPolicy(&loaded.value, 1_000_000);
     const command = defaultRequestForAction(&loaded.value, action, 1_000_100);
-    var evaluation = try edge.policy.evaluateEdgeAction(allocator, &loaded.value, command, state, .{ .mode = mode, .now_ms = 1_000_500, .non_interactive = mode == .ci });
+    var evaluation = edge.policy.evaluateEdgeAction(allocator, &loaded.value, command, state, .{ .mode = mode, .now_ms = 1_000_500, .non_interactive = mode == .ci }) catch |err| {
+        try stderr.print("Edge policy explain failed: {s}\n", .{@errorName(err)});
+        return 65;
+    };
     defer evaluation.deinit();
     try writeEvaluation(stdout, evaluation, json);
     return 0;
@@ -664,13 +865,13 @@ fn runSchema(argv: []const []const u8, stdout: anytype, stderr: anytype) !u8 {
         }
         const schema_id = argv[1];
         if (std.mem.eql(u8, schema_id, "edge-policy-v1")) {
-            return printSchemaFile(stdout, edge_policy_schema_path);
+            return printSchemaDocument(stdout, edge_policy_schema_document);
         }
         if (std.mem.eql(u8, schema_id, "edge-event-v1")) {
-            return printSchemaFile(stdout, edge_event_schema_path);
+            return printSchemaDocument(stdout, edge_event_schema_document);
         }
         if (std.mem.eql(u8, schema_id, "safety-report-v1")) {
-            return printSchemaFile(stdout, safety_report_schema_path);
+            return printSchemaDocument(stdout, safety_report_schema_document);
         }
         try stderr.print("aegis-edge schema print: unknown schema id '{s}'.\n", .{schema_id});
         return 64;
@@ -680,13 +881,9 @@ fn runSchema(argv: []const []const u8, stdout: anytype, stderr: anytype) !u8 {
     return 64;
 }
 
-fn printSchemaFile(stdout: anytype, path: []const u8) !u8 {
-    var gpa_state: std.heap.GeneralPurposeAllocator(.{}) = .init;
-    defer _ = gpa_state.deinit();
-    const text = try std.fs.cwd().readFileAlloc(gpa_state.allocator(), path, 256 * 1024);
-    defer gpa_state.allocator().free(text);
-    try stdout.writeAll(text);
-    try stdout.writeByte('\n');
+fn printSchemaDocument(stdout: anytype, document: []const u8) !u8 {
+    try stdout.writeAll(document);
+    if (document.len == 0 or document[document.len - 1] != '\n') try stdout.writeByte('\n');
     return 0;
 }
 
@@ -729,6 +926,8 @@ fn defaultRequestForAction(policy: *const edge.schema.edge_policy_schema.EdgePol
         .set_waypoint => .{ .waypoint = .{ .latitude_deg = center.latitude_deg, .longitude_deg = center.longitude_deg, .altitude_m = center.altitude_m + 20, .altitude_reference = center.altitude_reference } },
         .set_velocity => .{ .velocity = .{ .vx_mps = 1, .vy_mps = 1, .vz_mps = 0, .frame = .local_ned } },
         .set_altitude, .takeoff => .{ .altitude = .{ .altitude_m = center.altitude_m + 20, .altitude_reference = center.altitude_reference } },
+        .set_heading => .{ .heading = edge.domain.coordinates.Heading.degrees(90) },
+        .set_mode => .{ .mode = .guided },
         else => .none,
     };
     return edge.domain.commands.CommandRequest.init(.{
@@ -907,7 +1106,7 @@ fn parseScenarioBool(value: []const u8) !bool {
 }
 
 test "aegis-edge help is honest policy evaluation output" {
-    var stdout_buf: [2048]u8 = undefined;
+    var stdout_buf: [4096]u8 = undefined;
     var stderr_buf: [128]u8 = undefined;
     var stdout_stream = std.io.fixedBufferStream(&stdout_buf);
     var stderr_stream = std.io.fixedBufferStream(&stderr_buf);
@@ -917,12 +1116,12 @@ test "aegis-edge help is honest policy evaluation output" {
 
     try std.testing.expectEqual(@as(u8, 0), code);
     try std.testing.expect(std.mem.indexOf(u8, stdout_stream.getWritten(), "policy evaluate") != null);
-    try std.testing.expect(std.mem.indexOf(u8, stdout_stream.getWritten(), "PX4 SITL is opt-in local simulation only") != null);
+    try std.testing.expect(std.mem.indexOf(u8, stdout_stream.getWritten(), "PX4 and ArduPilot SITL are opt-in local simulation only") != null);
     try std.testing.expectEqualStrings("", stderr_stream.getWritten());
 }
 
-test "aegis-edge schema print uses checked-in edge policy schema" {
-    var stdout_buf: [8192]u8 = undefined;
+test "aegis-edge schema print uses embedded edge policy schema" {
+    var stdout_buf: [16384]u8 = undefined;
     var stderr_buf: [128]u8 = undefined;
     var stdout_stream = std.io.fixedBufferStream(&stdout_buf);
     var stderr_stream = std.io.fixedBufferStream(&stderr_buf);
@@ -933,6 +1132,31 @@ test "aegis-edge schema print uses checked-in edge policy schema" {
     try std.testing.expectEqual(@as(u8, 0), code);
     try std.testing.expect(std.mem.indexOf(u8, stdout_stream.getWritten(), "\"required\": [\"version\", \"vehicle\", \"safety\", \"commands\"]") != null);
     try std.testing.expect(std.mem.indexOf(u8, stdout_stream.getWritten(), "domain-schema-only") == null);
+    try std.testing.expectEqualStrings("", stderr_stream.getWritten());
+}
+
+test "aegis-edge schema print works outside repository cwd" {
+    const allocator = std.testing.allocator;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const original_cwd = try std.fs.cwd().realpathAlloc(allocator, ".");
+    defer allocator.free(original_cwd);
+    const tmp_cwd = try tmp.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(tmp_cwd);
+    try std.posix.chdir(tmp_cwd);
+    defer std.posix.chdir(original_cwd) catch {};
+
+    var stdout_buf: [8192]u8 = undefined;
+    var stderr_buf: [128]u8 = undefined;
+    var stdout_stream = std.io.fixedBufferStream(&stdout_buf);
+    var stderr_stream = std.io.fixedBufferStream(&stderr_buf);
+    const argv = [_][]const u8{ "schema", "print", "edge-event-v1" };
+
+    const code = try run(argv[0..], stdout_stream.writer(), stderr_stream.writer());
+
+    try std.testing.expectEqual(@as(u8, 0), code);
+    try std.testing.expect(std.mem.indexOf(u8, stdout_stream.getWritten(), "\"event_type\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, stdout_stream.getWritten(), "mavlink.command_denied") != null);
     try std.testing.expectEqualStrings("", stderr_stream.getWritten());
 }
 
@@ -948,6 +1172,22 @@ test "aegis-edge schema list is honest domain/schema output" {
     try std.testing.expectEqual(@as(u8, 0), code);
     try std.testing.expect(std.mem.indexOf(u8, stdout_stream.getWritten(), "edge-policy-v1") != null);
     try std.testing.expectEqualStrings("", stderr_stream.getWritten());
+}
+
+test "aegis-edge policy explain supplies safe defaults for heading and mode commands" {
+    inline for (.{ "set_heading", "set_mode" }) |command| {
+        var stdout_buf: [4096]u8 = undefined;
+        var stderr_buf: [512]u8 = undefined;
+        var stdout_stream = std.io.fixedBufferStream(&stdout_buf);
+        var stderr_stream = std.io.fixedBufferStream(&stderr_buf);
+        const argv = [_][]const u8{ "policy", "explain", "examples/edge/policies/geofence-basic.yaml", command };
+
+        const code = try run(argv[0..], stdout_stream.writer(), stderr_stream.writer());
+
+        try std.testing.expectEqual(@as(u8, 0), code);
+        try std.testing.expect(std.mem.indexOf(u8, stdout_stream.getWritten(), "Decision:") != null);
+        try std.testing.expectEqualStrings("", stderr_stream.getWritten());
+    }
 }
 
 test "aegis-edge policy check json escapes policy path" {

@@ -19,7 +19,7 @@ test "edge capabilities report unsupported integrations as unavailable or not im
             .px4_adapter,
             => try std.testing.expectEqual(edge.CapabilityStatus.partial, report.status),
             .ardupilot_adapter,
-            => try std.testing.expectEqual(edge.CapabilityStatus.not_implemented, report.status),
+            => try std.testing.expectEqual(edge.CapabilityStatus.partial, report.status),
             .command_mediation,
             => try std.testing.expectEqual(edge.CapabilityStatus.active, report.status),
             .mavlink_gateway,

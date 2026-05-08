@@ -155,6 +155,25 @@ test "phase 28 parser drains valid frame batches larger than one frame buffer" {
     try std.testing.expect(!stats.partial);
 }
 
+test "phase 28 MAVLink audit event names are accepted by Edge event schemas" {
+    const allocator = std.testing.allocator;
+    const text = try std.fs.cwd().readFileAlloc(allocator, "schemas/edge-event-v1.json", 128 * 1024);
+    defer allocator.free(text);
+    var parsed = try std.json.parseFromSlice(std.json.Value, allocator, text, .{});
+    defer parsed.deinit();
+
+    const event_enum = parsed.value.object
+        .get("properties").?.object
+        .get("event_type").?.object
+        .get("enum").?.array.items;
+
+    inline for (std.meta.fields(mavlink.audit.EventKind)) |field| {
+        const event_type = @field(mavlink.audit.EventKind, field.name).toString();
+        try std.testing.expect(edge.schema.edge_event_schema.hasEventType(event_type));
+        try expectJsonStringInArray(event_enum, event_type);
+    }
+}
+
 test "phase 28 classifier and mapping cover command subset and unknowns fail closed" {
     const allocator = std.testing.allocator;
     const heartbeat = try mavlink.fake_transport.frameHeartbeatV1(allocator, .{ .seq = 1, .sysid = 1, .compid = 1 });
@@ -457,4 +476,11 @@ fn freshState() domain.state.VehicleState {
         .state_freshness = .fresh,
         .provenance = .fake_adapter,
     };
+}
+
+fn expectJsonStringInArray(items: []const std.json.Value, expected: []const u8) !void {
+    for (items) |item| {
+        if (item == .string and std.mem.eql(u8, item.string, expected)) return;
+    }
+    return error.TestUnexpectedResult;
 }

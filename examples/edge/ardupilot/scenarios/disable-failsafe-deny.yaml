@@ -1,0 +1,9 @@
+id: ardupilot-disable-failsafe-deny
+environment: fake_ardupilot
+vehicle: copter
+mode: enforce
+command: disable_failsafe
+expected_decision: deny
+expected_forwarded: false
+timeout_ms: 2000
+note: "Failsafe-disabling PARAM_SET-like command is critical and deny-by-policy."

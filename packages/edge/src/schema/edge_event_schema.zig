@@ -20,6 +20,21 @@ pub const event_types = [_][]const u8{
     "adapter.message_received",
     "adapter.message_forwarded",
     "adapter.message_denied",
+    "mavlink.frame_received",
+    "mavlink.frame_invalid",
+    "mavlink.message_classified",
+    "mavlink.command_mapped",
+    "mavlink.command_allowed",
+    "mavlink.command_denied",
+    "mavlink.command_observed",
+    "mavlink.message_forwarded",
+    "mavlink.message_blocked",
+    "mavlink.mission_upload_started",
+    "mavlink.mission_item_observed",
+    "mavlink.mission_item_denied",
+    "mavlink.mission_upload_completed",
+    "mavlink.signing_detected",
+    "mavlink.unexpected_endpoint",
 };
 
 pub const EdgeEventV1 = struct {

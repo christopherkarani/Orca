@@ -13,6 +13,7 @@ pub const StateFreshness = enum {
 
 pub const StateProvenance = enum {
     fake_adapter,
+    fake_ardupilot_adapter,
     sitl_px4,
     sitl_ardupilot,
     bench,

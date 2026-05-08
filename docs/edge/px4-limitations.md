@@ -15,7 +15,7 @@ Not supported:
 - Real drone hardware.
 - Real-flight deployment.
 - Customer hardware bench procedures.
-- ArduPilot SITL.
+- ArduPilot behavior inside PX4 commands; use `aegis-edge ardupilot` for ArduPilot simulation evidence.
 - ROS2 control.
 - Detect-and-avoid.
 - Autopilot replacement behavior.
