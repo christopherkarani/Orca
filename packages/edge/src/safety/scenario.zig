@@ -1,6 +1,7 @@
 const std = @import("std");
 
 const domain = @import("../domain/mod.zig");
+const operator = @import("../operator/mod.zig");
 const policy = @import("../policy/mod.zig");
 const schema = @import("../schema/mod.zig");
 const evaluator = @import("evaluator.zig");
@@ -29,6 +30,9 @@ pub const RunResult = struct {
 };
 
 const ScenarioCommand = enum {
+    arm,
+    takeoff,
+    upload_mission,
     waypoint_inside,
     waypoint_outside_geofence,
     altitude_above_ceiling,
@@ -47,6 +51,7 @@ const ScenarioSpec = struct {
     id: []u8,
     command: ScenarioCommand,
     mode: evaluator.EvaluationMode = .strict,
+    approval_seed: operator.ApprovalSeedKind = .none,
     expected_decision: ?core.decision.DecisionResult = null,
     note: []u8,
 
@@ -112,7 +117,22 @@ fn evaluationForScenario(
             .status = .draft,
         }, context);
     }
-    return evaluator.evaluateSafety(allocator, selected_policy, base_state, requestForScenario(spec), context);
+    const request = requestForScenario(spec);
+    if (spec.approval_seed != .none) {
+        var base = try evaluator.evaluateSafety(allocator, selected_policy, base_state, request, context);
+        defer base.deinit();
+        var approval = (try operator.createSeededApprovalDecision(allocator, spec.approval_seed, .{
+            .policy = selected_policy,
+            .command = request,
+            .state = base_state,
+            .evaluation = base,
+            .now_ms = context.now_ms,
+            .actor_id = "aegis-edge-safety-scenario",
+        })) orelse return evaluator.evaluateSafety(allocator, selected_policy, base_state, request, context);
+        defer approval.deinit(allocator);
+        return evaluator.evaluateSafetyWithApproval(allocator, selected_policy, base_state, request, context, approval);
+    }
+    return evaluator.evaluateSafety(allocator, selected_policy, base_state, request, context);
 }
 
 fn stateForScenario(
@@ -147,6 +167,9 @@ fn stateForScenario(
 
 fn requestForScenario(spec: ScenarioSpec) domain.commands.CommandRequest {
     const action: domain.commands.CommandAction = switch (spec.command) {
+        .arm => .arm,
+        .takeoff => .takeoff,
+        .upload_mission => .upload_mission,
         .waypoint_inside, .waypoint_outside_geofence, .stale_waypoint => .set_waypoint,
         .altitude_above_ceiling => .set_altitude,
         .velocity_too_high => .set_velocity,
@@ -158,6 +181,7 @@ fn requestForScenario(spec: ScenarioSpec) domain.commands.CommandRequest {
         .mission_outside_geofence => .upload_mission,
     };
     const params: domain.commands.CommandParameters = switch (spec.command) {
+        .takeoff => .{ .altitude = .{ .altitude_m = 20, .altitude_reference = .amsl } },
         .waypoint_inside, .stale_waypoint => .{ .waypoint = .{ .latitude_deg = 37.0001, .longitude_deg = -122.0000, .altitude_m = 20, .altitude_reference = .amsl } },
         .waypoint_outside_geofence => .{ .waypoint = .{ .latitude_deg = 37.0100, .longitude_deg = -122.0000, .altitude_m = 20, .altitude_reference = .amsl } },
         .altitude_above_ceiling => .{ .altitude = .{ .altitude_m = 121, .altitude_reference = .amsl } },
@@ -189,6 +213,7 @@ fn loadScenario(allocator: std.mem.Allocator, path: []const u8) !ScenarioSpec {
     var id: ?[]const u8 = null;
     var command: ?ScenarioCommand = null;
     var mode: evaluator.EvaluationMode = .strict;
+    var approval_seed: operator.ApprovalSeedKind = .none;
     var expected_decision: ?core.decision.DecisionResult = null;
     var note: []const u8 = "";
 
@@ -200,7 +225,7 @@ fn loadScenario(allocator: std.mem.Allocator, path: []const u8) !ScenarioSpec {
         const colon = std.mem.indexOfScalar(u8, line, ':') orelse return error.InvalidSafetyScenario;
         const key = std.mem.trim(u8, line[0..colon], " \t");
         const value = cleanScalar(line[colon + 1 ..]);
-        if (std.mem.eql(u8, key, "id") or std.mem.eql(u8, key, "name")) id = value else if (std.mem.eql(u8, key, "command")) command = std.meta.stringToEnum(ScenarioCommand, value) orelse return error.InvalidSafetyScenario else if (std.mem.eql(u8, key, "mode")) mode = std.meta.stringToEnum(evaluator.EvaluationMode, value) orelse return error.InvalidSafetyScenario else if (std.mem.eql(u8, key, "expected_decision")) expected_decision = std.meta.stringToEnum(core.decision.DecisionResult, value) orelse return error.InvalidSafetyScenario else if (std.mem.eql(u8, key, "note")) note = value else return error.InvalidSafetyScenario;
+        if (std.mem.eql(u8, key, "id") or std.mem.eql(u8, key, "name")) id = value else if (std.mem.eql(u8, key, "command")) command = std.meta.stringToEnum(ScenarioCommand, value) orelse return error.InvalidSafetyScenario else if (std.mem.eql(u8, key, "mode")) mode = std.meta.stringToEnum(evaluator.EvaluationMode, value) orelse return error.InvalidSafetyScenario else if (std.mem.eql(u8, key, "approval") or std.mem.eql(u8, key, "approval_seed")) approval_seed = try operator.parseApprovalSeedKind(value) else if (isOperatorScenarioMetadataKey(key)) {} else if (std.mem.eql(u8, key, "expected_decision")) expected_decision = std.meta.stringToEnum(core.decision.DecisionResult, value) orelse return error.InvalidSafetyScenario else if (std.mem.eql(u8, key, "note")) note = value else return error.InvalidSafetyScenario;
     }
 
     return .{
@@ -208,9 +233,18 @@ fn loadScenario(allocator: std.mem.Allocator, path: []const u8) !ScenarioSpec {
         .id = try allocator.dupe(u8, id orelse std.fs.path.stem(path)),
         .command = command orelse return error.InvalidSafetyScenario,
         .mode = mode,
+        .approval_seed = approval_seed,
         .expected_decision = expected_decision,
         .note = try allocator.dupe(u8, note),
     };
+}
+
+fn isOperatorScenarioMetadataKey(key: []const u8) bool {
+    return std.mem.eql(u8, key, "request") or
+        std.mem.eql(u8, key, "state") or
+        std.mem.eql(u8, key, "approval_scope") or
+        std.mem.eql(u8, key, "max_uses") or
+        std.mem.eql(u8, key, "environment");
 }
 
 fn writeArtifacts(

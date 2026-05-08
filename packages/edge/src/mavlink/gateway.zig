@@ -3,6 +3,7 @@ const std = @import("std");
 const domain = @import("../domain/mod.zig");
 const policy = @import("../policy/mod.zig");
 const safety = @import("../safety/mod.zig");
+const operator = @import("../operator/mod.zig");
 const schema = @import("../schema/mod.zig");
 const audit_mod = @import("audit.zig");
 const classifier = @import("classifier.zig");
@@ -46,6 +47,7 @@ pub const ProcessOptions = struct {
     now_ms: i128,
     command_source: domain.state.StateProvenance = .fake_adapter,
     endpoint_policy: EndpointPolicy = .{},
+    approval_decision: ?*const operator.ApprovalDecision = null,
 };
 
 pub const ProcessResult = struct {
@@ -134,13 +136,11 @@ fn processFrameInternal(
 
     if (mapped.request) |request| {
         try audit.appendCommand(.command_mapped, frame, mapped.classification.command_id, .{ .note = @tagName(request.action), .decision = .observe });
-        var evaluation = try safety.evaluateSafety(
-            allocator,
-            selected_policy,
-            state,
-            request,
-            .{ .mode = policyMode(options.mode), .now_ms = options.now_ms, .non_interactive = options.mode == .ci or options.mode == .redteam },
-        );
+        const context: safety.EvaluationContext = .{ .mode = policyMode(options.mode), .now_ms = options.now_ms, .non_interactive = options.mode == .ci or options.mode == .redteam };
+        var evaluation = if (options.approval_decision) |approval|
+            try safety.evaluateSafetyWithApproval(allocator, selected_policy, state, request, context, approval.*)
+        else
+            try safety.evaluateSafety(allocator, selected_policy, state, request, context);
         defer evaluation.deinit();
 
         const policy_decision = evaluation.decision.result;
@@ -157,6 +157,9 @@ fn processFrameInternal(
         if (evaluation.hasAuditEvent("safety.mode_constraint")) try audit.append(.safety_mode_constraint, frame, .{ .note = evaluation.explanation, .decision = .deny });
         if (evaluation.hasAuditEvent("safety.authority_constraint")) try audit.append(.safety_authority_constraint, frame, .{ .note = evaluation.explanation, .decision = .deny });
         if (evaluation.hasAuditEvent("safety.mission_item_denied")) try audit.append(.safety_mission_item_denied, frame, .{ .note = evaluation.explanation, .decision = .deny });
+        if (evaluation.hasAuditEvent("operator.approval_requested")) try audit.append(.operator_approval_required, frame, .{ .note = evaluation.explanation, .decision = .ask });
+        if (evaluation.hasAuditEvent("operator.approval_used")) try audit.append(.operator_approval_used, frame, .{ .note = evaluation.explanation, .decision = .allow });
+        if (evaluation.hasAuditEvent("operator.approval_invalid")) try audit.append(.operator_approval_invalid, frame, .{ .note = evaluation.explanation, .decision = .deny });
         if (should_block and track_mission and (frame.msgid == @import("dialect.zig").MISSION_ITEM or frame.msgid == @import("dialect.zig").MISSION_ITEM_INT)) {
             tracker.markDenied();
             try audit.appendCommand(.mission_item_denied, frame, mapped.classification.command_id, .{ .note = evaluation.explanation, .decision = .deny });

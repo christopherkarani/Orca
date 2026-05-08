@@ -29,6 +29,9 @@ pub const EventKind = enum {
     safety_mode_constraint,
     safety_authority_constraint,
     safety_mission_item_denied,
+    operator_approval_required,
+    operator_approval_used,
+    operator_approval_invalid,
 
     pub fn toString(self: EventKind) []const u8 {
         return switch (self) {
@@ -55,6 +58,9 @@ pub const EventKind = enum {
             .safety_mode_constraint => "safety.mode_constraint",
             .safety_authority_constraint => "safety.authority_constraint",
             .safety_mission_item_denied => "safety.mission_item_denied",
+            .operator_approval_required => "operator.approval_requested",
+            .operator_approval_used => "operator.approval_used",
+            .operator_approval_invalid => "operator.approval_invalid",
         };
     }
 
@@ -83,6 +89,9 @@ pub const EventKind = enum {
             .safety_mode_constraint => .safety_mode_constraint,
             .safety_authority_constraint => .safety_authority_constraint,
             .safety_mission_item_denied => .safety_mission_item_denied,
+            .operator_approval_required => .operator_approval_requested,
+            .operator_approval_used => .operator_approval_used,
+            .operator_approval_invalid => .operator_approval_invalid,
         };
     }
 };

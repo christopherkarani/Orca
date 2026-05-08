@@ -2,6 +2,7 @@ const std = @import("std");
 
 const domain = @import("../domain/mod.zig");
 const policy_mod = @import("../policy/mod.zig");
+const operator = @import("../operator/mod.zig");
 const schema = @import("../schema/mod.zig");
 const findings_mod = @import("findings.zig");
 const core = @import("aegis_core");
@@ -23,6 +24,7 @@ pub const SafetyEvaluation = struct {
     risk_score: ?u8 = null,
     recommended_fallback: ?domain.commands.CommandAction = null,
     operator_approval_required: bool = false,
+    approval_request: ?operator.ApprovalRequest = null,
     ci_may_proceed: bool = false,
     audit_events: []AuditEventPayload = &.{},
     explanation: []const u8,
@@ -32,6 +34,7 @@ pub const SafetyEvaluation = struct {
         self.allocator.free(self.findings);
         for (self.audit_events) |event| self.allocator.free(event.target_value);
         self.allocator.free(self.audit_events);
+        if (self.approval_request) |*request| request.deinit(self.allocator);
         self.inner.deinit();
         self.* = undefined;
     }
@@ -84,6 +87,57 @@ pub const SafetyEvaluation = struct {
         self.audit_events = next;
     }
 };
+
+pub fn evaluateSafetyWithApproval(
+    allocator: std.mem.Allocator,
+    selected_policy: *const schema.edge_policy_schema.EdgePolicyV1,
+    vehicle_state: domain.state.VehicleState,
+    command_request: domain.commands.CommandRequest,
+    context: EvaluationContext,
+    approval_decision: operator.ApprovalDecision,
+) !SafetyEvaluation {
+    var evaluation = try evaluateSafety(allocator, selected_policy, vehicle_state, command_request, context);
+    errdefer evaluation.deinit();
+
+    var validation = try operator.validateApproval(allocator, approval_decision, .{
+        .policy = selected_policy,
+        .command = command_request,
+        .state = vehicle_state,
+        .evaluation = evaluation,
+        .now_ms = context.now_ms,
+    });
+    defer validation.deinit(allocator);
+
+    if (validation.isValid() and evaluation.decision.result == .ask) {
+        evaluation.decision = core.api.makeDecision(.{
+            .result = .allow,
+            .rule_id = if (evaluation.matched_rule) |rule| rule.id else null,
+            .reason = "allowed by bounded operator approval",
+            .risk_score = evaluation.risk_score,
+            .requires_user = false,
+            .ci_may_proceed = true,
+        });
+        evaluation.operator_approval_required = false;
+        evaluation.ci_may_proceed = true;
+        try evaluation.addAuditEvent("operator.approval_used", .approval, approval_decision.approval_decision_id, .allow);
+        try evaluation.addAuditEvent("vehicle.command_allowed_by_approval", .edge_vehicle_command, command_request.command_id, .allow);
+    } else if (!validation.isValid()) {
+        try evaluation.addAuditEvent(validation.audit_event, .approval, validation.audit_event, .deny);
+        if (evaluation.decision.result != .deny) {
+            evaluation.decision = core.api.makeDecision(.{
+                .result = .deny,
+                .rule_id = if (evaluation.matched_rule) |rule| rule.id else null,
+                .reason = "invalid or missing operator approval",
+                .risk_score = evaluation.risk_score,
+                .requires_user = false,
+                .ci_may_proceed = false,
+            });
+            evaluation.ci_may_proceed = false;
+            try evaluation.addAuditEvent("vehicle.command_denied_missing_approval", .edge_vehicle_command, command_request.command_id, .deny);
+        }
+    }
+    return evaluation;
+}
 
 pub fn evaluateSafety(
     allocator: std.mem.Allocator,
@@ -149,6 +203,30 @@ pub fn evaluateSafety(
     try appendAuditEventCopy(allocator, &audit_events, "safety.evaluation_completed", .edge_safety_envelope, inner.explanation, inner.decision.result);
 
     const disposition = selected_policy.commands.resolve(command_request.action);
+    var approval_request: ?operator.ApprovalRequest = null;
+    errdefer if (approval_request) |*request| request.deinit(allocator);
+    const approval_required = inner.decision.requires_user or disposition == .ask or disposition == .require_operator_approval;
+    if (approval_required and (context.mode == .ci or context.mode == .redteam or context.non_interactive)) {
+        try appendAuditEventCopy(allocator, &audit_events, "operator.ask_denied_noninteractive", .approval, "ask decision converted to deny in non-interactive mode", .deny);
+    } else if (inner.decision.result == .ask and approval_required) {
+        approval_request = try operator.createApprovalRequest(allocator, .{
+            .policy = selected_policy,
+            .command = command_request,
+            .state = vehicle_state,
+            .evaluation = .{
+                .decision = inner.decision,
+                .matched_rule = inner.matched_rule,
+                .explanation = inner.explanation,
+            },
+            .requested_decision = .allow_once,
+            .created_at_ms = context.now_ms,
+            .expires_at_ms = context.now_ms + @as(i128, @intCast(selected_policy.safety.approval.approval_ttl_ms)),
+            .actor_id = command_request.actor,
+            .operator_id = null,
+            .reason = inner.explanation,
+        });
+        try appendAuditEventCopy(allocator, &audit_events, "operator.approval_requested", .approval, approval_request.?.approval_request_id, .ask);
+    }
     return .{
         .allocator = allocator,
         .inner = inner,
@@ -158,7 +236,8 @@ pub fn evaluateSafety(
         .matched_rule = inner.matched_rule,
         .risk_score = inner.decision.risk_score,
         .recommended_fallback = inner.recommended_fallback,
-        .operator_approval_required = inner.decision.requires_user or disposition == .ask or disposition == .require_operator_approval,
+        .operator_approval_required = approval_required,
+        .approval_request = approval_request,
         .ci_may_proceed = inner.decision.ci_may_proceed,
         .audit_events = try audit_events.toOwnedSlice(allocator),
         .explanation = inner.explanation,
@@ -344,6 +423,21 @@ fn coreEventType(event_type: []const u8) !core.event.EventType {
     if (std.mem.eql(u8, event_type, "vehicle.command_allowed")) return .vehicle_command_allowed;
     if (std.mem.eql(u8, event_type, "vehicle.command_denied")) return .vehicle_command_denied;
     if (std.mem.eql(u8, event_type, "vehicle.command_approval_required")) return .vehicle_command_approval_required;
+    if (std.mem.eql(u8, event_type, "vehicle.command_allowed_by_approval")) return .vehicle_command_allowed_by_approval;
+    if (std.mem.eql(u8, event_type, "vehicle.command_denied_missing_approval")) return .vehicle_command_denied_missing_approval;
+    if (std.mem.eql(u8, event_type, "operator.approval_requested")) return .operator_approval_requested;
+    if (std.mem.eql(u8, event_type, "operator.approval_granted")) return .operator_approval_granted;
+    if (std.mem.eql(u8, event_type, "operator.approval_denied")) return .operator_approval_denied;
+    if (std.mem.eql(u8, event_type, "operator.approval_expired")) return .operator_approval_expired;
+    if (std.mem.eql(u8, event_type, "operator.approval_revoked")) return .operator_approval_revoked;
+    if (std.mem.eql(u8, event_type, "operator.approval_invalid")) return .operator_approval_invalid;
+    if (std.mem.eql(u8, event_type, "operator.approval_used")) return .operator_approval_used;
+    if (std.mem.eql(u8, event_type, "operator.ask_denied_noninteractive")) return .operator_ask_denied_noninteractive;
+    if (std.mem.eql(u8, event_type, "emergency.evaluation_started")) return .emergency_evaluation_started;
+    if (std.mem.eql(u8, event_type, "emergency.evaluation_completed")) return .emergency_evaluation_completed;
+    if (std.mem.eql(u8, event_type, "emergency.fallback_recommended")) return .emergency_fallback_recommended;
+    if (std.mem.eql(u8, event_type, "emergency.command_allowed")) return .emergency_command_allowed;
+    if (std.mem.eql(u8, event_type, "emergency.command_denied")) return .emergency_command_denied;
     if (std.mem.eql(u8, event_type, "safety.evaluation_started")) return .safety_evaluation_started;
     if (std.mem.eql(u8, event_type, "safety.evaluation_completed")) return .safety_evaluation_completed;
     if (std.mem.eql(u8, event_type, "safety.finding_created")) return .safety_finding_created;

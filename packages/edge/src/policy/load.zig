@@ -21,6 +21,7 @@ pub const LoadedPolicy = struct {
         self.allocator.free(self.value.safety.commands.ask);
         self.allocator.free(self.value.safety.commands.deny);
         self.allocator.free(self.value.safety.commands.require_operator_approval);
+        self.allocator.free(self.value.safety.emergency.fallback_order);
         if (self.source_path) |source| self.allocator.free(source);
         self.* = undefined;
     }
@@ -75,6 +76,7 @@ const Section = enum {
     velocity,
     altitude,
     battery,
+    approval,
     emergency,
     commands,
     network,
@@ -106,7 +108,9 @@ const PolicyBuilder = struct {
     altitude: ?domain.safety_envelope.AltitudeLimits = null,
     velocity: ?domain.safety_envelope.VelocityLimits = null,
     battery: ?domain.safety_envelope.BatteryPolicy = null,
+    approval: domain.safety_envelope.ApprovalPolicy = .{},
     emergency: domain.safety_envelope.EmergencyBehaviorConstraints = .{},
+    emergency_fallback_order: std.ArrayList(domain.commands.CommandAction) = .empty,
     commands_allow: std.ArrayList(domain.commands.CommandAction) = .empty,
     commands_ask: std.ArrayList(domain.commands.CommandAction) = .empty,
     commands_deny: std.ArrayList(domain.commands.CommandAction) = .empty,
@@ -119,6 +123,7 @@ const PolicyBuilder = struct {
         self.commands_ask.deinit(self.allocator);
         self.commands_deny.deinit(self.allocator);
         self.commands_approval.deinit(self.allocator);
+        self.emergency_fallback_order.deinit(self.allocator);
     }
 
     fn appendCommand(self: *PolicyBuilder, list: CommandList, action: domain.commands.CommandAction) !void {
@@ -171,6 +176,14 @@ const PolicyBuilder = struct {
         errdefer self.allocator.free(safety_command_policy.require_operator_approval);
 
         const geofence = try self.buildGeofence();
+        const default_emergency: domain.safety_envelope.EmergencyBehaviorConstraints = .{};
+        const fallback_order = if (self.emergency_fallback_order.items.len > 0)
+            try self.emergency_fallback_order.toOwnedSlice(self.allocator)
+        else
+            try self.allocator.dupe(domain.commands.CommandAction, default_emergency.fallback_order);
+        errdefer self.allocator.free(fallback_order);
+        var emergency = self.emergency;
+        emergency.fallback_order = fallback_order;
         const source_copy = if (self.source_path) |source| try self.allocator.dupe(u8, source) else null;
         errdefer if (source_copy) |source| self.allocator.free(source);
 
@@ -192,7 +205,8 @@ const PolicyBuilder = struct {
                     .state_freshness = self.freshness,
                     .commands = safety_command_policy,
                     .network = self.network,
-                    .emergency = self.emergency,
+                    .approval = self.approval,
+                    .emergency = emergency,
                 },
                 .commands = command_policy,
                 .network = self.network,
@@ -269,7 +283,7 @@ fn parseYamlPolicy(allocator: std.mem.Allocator, text: []const u8, source_path: 
 
         switch (section) {
             .vehicle => try parseYamlVehicle(&builder, key, value),
-            .safety, .state_freshness, .geofence, .geofence_center, .geofence_home_position, .velocity, .altitude, .battery, .emergency => {
+            .safety, .state_freshness, .geofence, .geofence_center, .geofence_home_position, .velocity, .altitude, .battery, .approval, .emergency => {
                 try parseYamlSafety(&builder, &section, indent, key, value);
             },
             .commands => try parseYamlCommands(&command_list, key),
@@ -290,7 +304,7 @@ fn parseYamlSafety(builder: *PolicyBuilder, section: *Section, indent: usize, ke
         section.* = .geofence;
     }
     if (indent == 2) {
-        if (std.mem.eql(u8, key, "state_freshness")) section.* = .state_freshness else if (std.mem.eql(u8, key, "geofence")) section.* = .geofence else if (std.mem.eql(u8, key, "velocity")) section.* = .velocity else if (std.mem.eql(u8, key, "altitude")) section.* = .altitude else if (std.mem.eql(u8, key, "battery")) section.* = .battery else if (std.mem.eql(u8, key, "emergency")) section.* = .emergency else return error.InvalidPolicy;
+        if (std.mem.eql(u8, key, "state_freshness")) section.* = .state_freshness else if (std.mem.eql(u8, key, "geofence")) section.* = .geofence else if (std.mem.eql(u8, key, "velocity")) section.* = .velocity else if (std.mem.eql(u8, key, "altitude")) section.* = .altitude else if (std.mem.eql(u8, key, "battery")) section.* = .battery else if (std.mem.eql(u8, key, "approval")) section.* = .approval else if (std.mem.eql(u8, key, "emergency")) section.* = .emergency else return error.InvalidPolicy;
         return;
     }
     if (section.* == .geofence and indent == 4 and std.mem.eql(u8, key, "center")) {
@@ -333,8 +347,11 @@ fn parseYamlSafety(builder: *PolicyBuilder, section: *Section, indent: usize, ke
             if (std.mem.eql(u8, key, "deny_takeoff_below_percent")) battery.deny_takeoff_below_percent = try parseF64(value) else if (std.mem.eql(u8, key, "return_home_below_percent")) battery.return_home_below_percent = try parseF64(value) else if (std.mem.eql(u8, key, "land_below_percent")) battery.land_below_percent = try parseF64(value) else if (std.mem.eql(u8, key, "require_fresh_battery_state")) battery.require_fresh_battery_state = try parseBool(value) else return error.InvalidPolicy;
             builder.battery = battery;
         },
+        .approval => {
+            if (std.mem.eql(u8, key, "approval_ttl_ms")) builder.approval.approval_ttl_ms = try parseU64(value) else if (std.mem.eql(u8, key, "max_uses_default")) builder.approval.max_uses_default = try parseU32(value) else if (std.mem.eql(u8, key, "require_operator_identity")) builder.approval.require_operator_identity = try parseBool(value) else if (std.mem.eql(u8, key, "require_state_hash")) builder.approval.require_state_hash = try parseBool(value) else if (std.mem.eql(u8, key, "require_safety_constraints_hash")) builder.approval.require_safety_constraints_hash = try parseBool(value) else if (std.mem.eql(u8, key, "allow_broad_scopes")) builder.approval.allow_broad_scopes = try parseBool(value) else if (std.mem.eql(u8, key, "allow_non_overridable_override")) builder.approval.allow_non_overridable_override = try parseBool(value) else if (std.mem.eql(u8, key, "allow_compatible_policy_hash")) builder.approval.allow_compatible_policy_hash = try parseBool(value) else return error.InvalidPolicy;
+        },
         .emergency => {
-            if (std.mem.eql(u8, key, "allow_land")) builder.emergency.allow_land = try parseBool(value) else if (std.mem.eql(u8, key, "allow_return_to_home")) builder.emergency.allow_return_to_home = try parseBool(value) else return error.UnknownEmergencyBehaviorDefault;
+            if (std.mem.eql(u8, key, "allow_land")) builder.emergency.allow_land = try parseBool(value) else if (std.mem.eql(u8, key, "allow_return_to_home")) builder.emergency.allow_return_to_home = try parseBool(value) else if (std.mem.eql(u8, key, "allow_hold_position")) builder.emergency.allow_hold_position = try parseBool(value) else if (std.mem.eql(u8, key, "allow_stop_or_brake")) builder.emergency.allow_stop_or_brake = try parseBool(value) else if (std.mem.eql(u8, key, "allow_disarm")) builder.emergency.allow_disarm = try parseBool(value) else if (std.mem.eql(u8, key, "fallback_order")) try parseFallbackOrder(builder, value) else return error.UnknownEmergencyBehaviorDefault;
         },
         else => return error.InvalidPolicy,
     }
@@ -353,6 +370,17 @@ fn parseYamlGeoPointField(point: *domain.coordinates.GeoPoint, key: []const u8, 
 
 fn parseYamlGeofence(builder: *PolicyBuilder, key: []const u8, value: []const u8) !void {
     if (std.mem.eql(u8, key, "type")) builder.geofence_type = value else if (std.mem.eql(u8, key, "max_radius_m")) builder.geofence_radius = try parseF64(value) else if (std.mem.eql(u8, key, "altitude_floor_m")) builder.geofence_floor = try parseF64(value) else if (std.mem.eql(u8, key, "altitude_ceiling_m")) builder.geofence_ceiling = try parseF64(value) else if (std.mem.eql(u8, key, "altitude_reference")) builder.geofence_alt_ref = try parseAltitudeReference(value) else if (std.mem.eql(u8, key, "boundary_action")) builder.geofence_boundary_action = try parseBoundaryAction(value) else if (std.mem.eql(u8, key, "vertices")) return error.UnsupportedGeofenceShape else return error.InvalidPolicy;
+}
+
+fn parseFallbackOrder(builder: *PolicyBuilder, value: []const u8) !void {
+    builder.emergency_fallback_order.clearRetainingCapacity();
+    var parts = std.mem.splitScalar(u8, value, ',');
+    while (parts.next()) |part| {
+        const name = cleanScalar(std.mem.trim(u8, part, " \t\r"));
+        if (name.len == 0) continue;
+        try builder.emergency_fallback_order.append(builder.allocator, try parseCommandAction(name));
+    }
+    if (builder.emergency_fallback_order.items.len == 0) return error.InvalidEmergencyFallbackPolicy;
 }
 
 fn parseYamlCommands(command_list: *CommandList, key: []const u8) !void {
@@ -408,7 +436,7 @@ fn parseJsonPolicy(allocator: std.mem.Allocator, text: []const u8, source_path: 
 }
 
 fn parseJsonSafety(builder: *PolicyBuilder, safety: std.json.ObjectMap) !void {
-    try rejectUnknownKeys(safety, &.{ "state_freshness", "geofence", "velocity", "altitude", "battery", "emergency" });
+    try rejectUnknownKeys(safety, &.{ "state_freshness", "geofence", "velocity", "altitude", "battery", "approval", "emergency" });
     if (safety.get("state_freshness")) |value| {
         const object = try expectObject(value);
         try rejectUnknownKeys(object, &.{ "max_state_age_ms", "deny_commands_on_stale_state", "allow_emergency_land_on_stale_state", "allow_return_home_on_stale_state" });
@@ -459,12 +487,35 @@ fn parseJsonSafety(builder: *PolicyBuilder, safety: std.json.ObjectMap) !void {
             .require_fresh_battery_state = if (object.get("require_fresh_battery_state")) |item| try expectBool(item) else true,
         };
     }
+    if (safety.get("approval")) |value| {
+        const object = try expectObject(value);
+        try rejectUnknownKeys(object, &.{ "approval_ttl_ms", "max_uses_default", "require_operator_identity", "require_state_hash", "require_safety_constraints_hash", "allow_broad_scopes", "allow_non_overridable_override", "allow_compatible_policy_hash" });
+        if (object.get("approval_ttl_ms")) |item| builder.approval.approval_ttl_ms = @intCast(try expectInteger(item));
+        if (object.get("max_uses_default")) |item| builder.approval.max_uses_default = @intCast(try expectInteger(item));
+        if (object.get("require_operator_identity")) |item| builder.approval.require_operator_identity = try expectBool(item);
+        if (object.get("require_state_hash")) |item| builder.approval.require_state_hash = try expectBool(item);
+        if (object.get("require_safety_constraints_hash")) |item| builder.approval.require_safety_constraints_hash = try expectBool(item);
+        if (object.get("allow_broad_scopes")) |item| builder.approval.allow_broad_scopes = try expectBool(item);
+        if (object.get("allow_non_overridable_override")) |item| builder.approval.allow_non_overridable_override = try expectBool(item);
+        if (object.get("allow_compatible_policy_hash")) |item| builder.approval.allow_compatible_policy_hash = try expectBool(item);
+    }
     if (safety.get("emergency")) |value| {
         const object = try expectObject(value);
-        try rejectUnknownKeys(object, &.{ "allow_land", "allow_return_to_home" });
+        try rejectUnknownKeys(object, &.{ "allow_land", "allow_return_to_home", "allow_hold_position", "allow_stop_or_brake", "allow_disarm", "fallback_order" });
         if (object.get("allow_land")) |item| builder.emergency.allow_land = try expectBool(item);
         if (object.get("allow_return_to_home")) |item| builder.emergency.allow_return_to_home = try expectBool(item);
+        if (object.get("allow_hold_position")) |item| builder.emergency.allow_hold_position = try expectBool(item);
+        if (object.get("allow_stop_or_brake")) |item| builder.emergency.allow_stop_or_brake = try expectBool(item);
+        if (object.get("allow_disarm")) |item| builder.emergency.allow_disarm = try expectBool(item);
+        if (object.get("fallback_order")) |item| try parseJsonFallbackOrder(builder, item);
     }
+}
+
+fn parseJsonFallbackOrder(builder: *PolicyBuilder, value: std.json.Value) !void {
+    builder.emergency_fallback_order.clearRetainingCapacity();
+    if (value != .array) return error.InvalidEmergencyFallbackPolicy;
+    for (value.array.items) |item| try builder.emergency_fallback_order.append(builder.allocator, try parseCommandAction(try expectString(item)));
+    if (builder.emergency_fallback_order.items.len == 0) return error.InvalidEmergencyFallbackPolicy;
 }
 
 fn parseJsonCommands(builder: *PolicyBuilder, object: std.json.ObjectMap) !void {

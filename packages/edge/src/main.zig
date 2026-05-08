@@ -44,6 +44,18 @@ const usage =
     \\                                 Explain one safety decision without forwarding commands
     \\  safety scenario run --policy <policy> --scenario <scenario>
     \\                                 Run a deterministic fake/simulation safety scenario
+    \\  operator request --policy <policy> --request <request.json> --state <state.json>
+    \\                                 Create a bounded local operator approval request
+    \\  operator approve <approval-request-id> --scope once
+    \\                                 Record a local explicit operator approval decision
+    \\  operator deny <approval-request-id>
+    \\                                 Record a local operator denial
+    \\  operator list                  List local session approval audit records
+    \\  operator revoke <approval-id>   Revoke a local approval record
+    \\  emergency evaluate --policy <policy> --state <state.json> --reason <reason>
+    \\                                 Evaluate policy-controlled emergency fallback behavior
+    \\  emergency scenario run --policy <policy> --scenario <scenario>
+    \\                                 Run a deterministic emergency decision scenario
     \\  policy check <policy>          Validate an Edge policy file
     \\  policy explain <policy> <cmd>   Explain one command decision with fake state
     \\  policy evaluate <policy> --request <request.json> --state <state.json>
@@ -112,6 +124,12 @@ pub fn run(argv: []const []const u8, stdout: anytype, stderr: anytype) !u8 {
     }
     if (std.mem.eql(u8, command, "safety")) {
         return runSafety(argv[1..], stdout, stderr);
+    }
+    if (std.mem.eql(u8, command, "operator")) {
+        return runOperator(argv[1..], stdout, stderr);
+    }
+    if (std.mem.eql(u8, command, "emergency")) {
+        return runEmergency(argv[1..], stdout, stderr);
     }
     if (std.mem.eql(u8, command, "policy")) {
         return runPolicy(argv[1..], stdout, stderr);
@@ -677,6 +695,287 @@ fn runMavlinkGateway(argv: []const []const u8, stdout: anytype, stderr: anytype)
     return 0;
 }
 
+fn runOperator(argv: []const []const u8, stdout: anytype, stderr: anytype) !u8 {
+    if (argv.len == 0) return usageError(stderr, "aegis-edge operator: expected request, approve, deny, list, or revoke.\n");
+    if (std.mem.eql(u8, argv[0], "request")) return runOperatorRequest(argv[1..], stdout, stderr);
+    if (std.mem.eql(u8, argv[0], "approve")) return runOperatorApprove(argv[1..], stdout, stderr);
+    if (std.mem.eql(u8, argv[0], "deny")) return runOperatorDeny(argv[1..], stdout, stderr);
+    if (std.mem.eql(u8, argv[0], "list")) return runOperatorList(argv[1..], stdout, stderr);
+    if (std.mem.eql(u8, argv[0], "revoke")) return runOperatorRevoke(argv[1..], stdout, stderr);
+    try stderr.print("aegis-edge operator: unknown subcommand '{s}'.\n", .{argv[0]});
+    return 64;
+}
+
+fn runOperatorRequest(argv: []const []const u8, stdout: anytype, stderr: anytype) !u8 {
+    var policy_path: ?[]const u8 = null;
+    var request_path: ?[]const u8 = null;
+    var state_path: ?[]const u8 = null;
+    var session_id: []const u8 = "last";
+    var json = false;
+    var index: usize = 0;
+    while (index < argv.len) : (index += 1) {
+        if (std.mem.eql(u8, argv[index], "--json")) {
+            json = true;
+        } else if (std.mem.eql(u8, argv[index], "--policy")) {
+            index += 1;
+            if (index >= argv.len) return usageError(stderr, "aegis-edge operator request: --policy requires a file.\n");
+            policy_path = argv[index];
+        } else if (std.mem.eql(u8, argv[index], "--request")) {
+            index += 1;
+            if (index >= argv.len) return usageError(stderr, "aegis-edge operator request: --request requires a file.\n");
+            request_path = argv[index];
+        } else if (std.mem.eql(u8, argv[index], "--state")) {
+            index += 1;
+            if (index >= argv.len) return usageError(stderr, "aegis-edge operator request: --state requires a file.\n");
+            state_path = argv[index];
+        } else if (std.mem.eql(u8, argv[index], "--session")) {
+            index += 1;
+            if (index >= argv.len) return usageError(stderr, "aegis-edge operator request: --session requires an id.\n");
+            session_id = argv[index];
+        } else {
+            try stderr.print("aegis-edge operator request: unknown argument '{s}'.\n", .{argv[index]});
+            return 64;
+        }
+    }
+    const selected_policy = policy_path orelse return usageError(stderr, "aegis-edge operator request: missing --policy.\n");
+    const selected_request = request_path orelse return usageError(stderr, "aegis-edge operator request: missing --request.\n");
+    const selected_state = state_path orelse return usageError(stderr, "aegis-edge operator request: missing --state.\n");
+
+    var gpa_state: std.heap.GeneralPurposeAllocator(.{}) = .init;
+    defer _ = gpa_state.deinit();
+    const allocator = gpa_state.allocator();
+    var loaded = edge.policy.loadFile(allocator, selected_policy, .{}) catch |err| {
+        try stderr.print("Edge policy invalid: {s}\n", .{@errorName(err)});
+        return 65;
+    };
+    defer loaded.deinit();
+    var parsed_command = loadCommandFile(allocator, selected_request, stderr) catch return 65;
+    defer parsed_command.deinit();
+    var parsed_state = loadStateFile(allocator, selected_state, stderr) catch return 65;
+    defer parsed_state.deinit();
+    var evaluation = edge.safety.evaluateSafety(allocator, &loaded.value, parsed_state.value, parsed_command.value, .{
+        .mode = .ask,
+        .now_ms = parsed_state.value.timestamp.value + 500,
+        .non_interactive = false,
+    }) catch |err| {
+        try stderr.print("Operator approval request evaluation failed: {s}\n", .{@errorName(err)});
+        return 65;
+    };
+    defer evaluation.deinit();
+    if (evaluation.approval_request == null) {
+        try stdout.print("No operator approval request created. Decision: {s}\n", .{evaluation.decision.result.toString()});
+        try stdout.writeAll("No command was sent. CI/non-interactive mode is not prompting.\n");
+        return 0;
+    }
+    const root = try std.fs.cwd().realpathAlloc(allocator, ".");
+    defer allocator.free(root);
+    var store = try edge.operator.ApprovalStore.init(allocator, root, session_id);
+    defer store.deinit();
+    try store.appendRequest(evaluation.approval_request.?);
+    if (json) {
+        try stdout.writeAll("{\"approval_request_id\":");
+        try edge.core.core.util.writeJsonString(stdout, evaluation.approval_request.?.approval_request_id);
+        try stdout.writeAll(",\"decision\":\"ask\",\"scope\":\"exact_action_only\",\"expires_at_ms\":");
+        try stdout.print("{d}", .{evaluation.approval_request.?.expires_at_ms});
+        try stdout.writeAll(",\"environment\":");
+        try edge.core.core.util.writeJsonString(stdout, @tagName(evaluation.approval_request.?.environment));
+        try stdout.writeAll("}\n");
+    } else {
+        try stdout.print("Approval request: {s}\n", .{evaluation.approval_request.?.approval_request_id});
+        try stdout.print("Command: {s} ({s})\nVehicle: {s}\nEnvironment: {s}\nRisk: {s}\nScope: exact_action_only\nExpires at ms: {d}\n", .{
+            evaluation.approval_request.?.command_id,
+            @tagName(evaluation.approval_request.?.command_type),
+            evaluation.approval_request.?.vehicle_id,
+            @tagName(evaluation.approval_request.?.environment),
+            @tagName(evaluation.approval_request.?.risk_class),
+            evaluation.approval_request.?.expires_at_ms,
+        });
+        if (evaluation.matched_rule) |rule| try stdout.print("Matched rule: {s} ({s})\n", .{ rule.id, rule.description });
+        try stdout.writeAll("Choices for an interactive operator are: allow once, deny, explain, abort. Broad approval is not the default.\n");
+        try stdout.writeAll("No command was sent to a vehicle, adapter, simulator, or flight controller. This is local simulation/SITL/bench-preparation evidence only.\n");
+    }
+    return 0;
+}
+
+fn runOperatorApprove(argv: []const []const u8, stdout: anytype, stderr: anytype) !u8 {
+    if (argv.len < 1) return usageError(stderr, "aegis-edge operator approve: expected <approval-request-id> --scope once.\n");
+    const approval_id = argv[0];
+    var scope_once = false;
+    var index: usize = 1;
+    while (index < argv.len) : (index += 1) {
+        if (std.mem.eql(u8, argv[index], "--scope")) {
+            index += 1;
+            if (index >= argv.len) return usageError(stderr, "aegis-edge operator approve: --scope requires once.\n");
+            scope_once = std.mem.eql(u8, argv[index], "once");
+        } else {
+            try stderr.print("aegis-edge operator approve: unknown argument '{s}'.\n", .{argv[index]});
+            return 64;
+        }
+    }
+    if (!scope_once) return usageError(stderr, "aegis-edge operator approve: only --scope once is supported in the local Phase 32 CLI.\n");
+    return appendOperatorCliDecision(stdout, approval_id, "operator.approval_granted", "approved once");
+}
+
+fn runOperatorDeny(argv: []const []const u8, stdout: anytype, stderr: anytype) !u8 {
+    if (argv.len != 1) return usageError(stderr, "aegis-edge operator deny: expected <approval-request-id>.\n");
+    return appendOperatorCliDecision(stdout, argv[0], "operator.approval_denied", "denied");
+}
+
+fn runOperatorRevoke(argv: []const []const u8, stdout: anytype, stderr: anytype) !u8 {
+    if (argv.len != 1) return usageError(stderr, "aegis-edge operator revoke: expected <approval-id>.\n");
+    var gpa_state: std.heap.GeneralPurposeAllocator(.{}) = .init;
+    defer _ = gpa_state.deinit();
+    const allocator = gpa_state.allocator();
+    const root = try std.fs.cwd().realpathAlloc(allocator, ".");
+    defer allocator.free(root);
+    var store = try edge.operator.ApprovalStore.init(allocator, root, "last");
+    defer store.deinit();
+    try store.revoke(argv[0], "operator-cli", 1_000_700);
+    try stdout.print("Approval revoked locally: {s}\n", .{argv[0]});
+    try stdout.writeAll("This local store is not a long-term authorization database.\n");
+    return 0;
+}
+
+fn runOperatorList(argv: []const []const u8, stdout: anytype, stderr: anytype) !u8 {
+    if (argv.len != 0) return usageError(stderr, "aegis-edge operator list: expected no arguments.\n");
+    var gpa_state: std.heap.GeneralPurposeAllocator(.{}) = .init;
+    defer _ = gpa_state.deinit();
+    const allocator = gpa_state.allocator();
+    const root = try std.fs.cwd().realpathAlloc(allocator, ".");
+    defer allocator.free(root);
+    var store = try edge.operator.ApprovalStore.init(allocator, root, "last");
+    defer store.deinit();
+    const maybe_text = std.fs.cwd().readFileAlloc(allocator, store.approvals_path, 128 * 1024) catch |err| switch (err) {
+        error.FileNotFound => null,
+        else => return err,
+    };
+    defer if (maybe_text) |text| allocator.free(text);
+    if (maybe_text == null or maybe_text.?.len == 0) {
+        try stdout.writeAll("No local operator approvals recorded for session last.\n");
+    } else {
+        try stdout.writeAll("Local operator approval audit records (session last):\n");
+        try stdout.writeAll(maybe_text.?);
+    }
+    try stdout.writeAll("Approval records are local-only, bounded, and not a long-term authorization database.\n");
+    return 0;
+}
+
+fn appendOperatorCliDecision(stdout: anytype, approval_id: []const u8, event_type: []const u8, label: []const u8) !u8 {
+    var gpa_state: std.heap.GeneralPurposeAllocator(.{}) = .init;
+    defer _ = gpa_state.deinit();
+    const allocator = gpa_state.allocator();
+    const root = try std.fs.cwd().realpathAlloc(allocator, ".");
+    defer allocator.free(root);
+    var store = try edge.operator.ApprovalStore.init(allocator, root, "last");
+    defer store.deinit();
+    try store.appendCliEvent(event_type, approval_id, "operator-cli", 1_000_700, label);
+    try stdout.print("Approval {s}: {s}\n", .{ label, approval_id });
+    try stdout.writeAll("Only exact-action local approvals are supported by this CLI path; CI/non-interactive mode never prompts.\n");
+    return 0;
+}
+
+fn runEmergency(argv: []const []const u8, stdout: anytype, stderr: anytype) !u8 {
+    if (argv.len == 0) return usageError(stderr, "aegis-edge emergency: expected evaluate or scenario.\n");
+    if (std.mem.eql(u8, argv[0], "evaluate")) return runEmergencyEvaluate(argv[1..], stdout, stderr);
+    if (std.mem.eql(u8, argv[0], "scenario")) return runEmergencyScenario(argv[1..], stdout, stderr);
+    try stderr.print("aegis-edge emergency: unknown subcommand '{s}'.\n", .{argv[0]});
+    return 64;
+}
+
+fn runEmergencyEvaluate(argv: []const []const u8, stdout: anytype, stderr: anytype) !u8 {
+    var policy_path: ?[]const u8 = null;
+    var state_path: ?[]const u8 = null;
+    var reason: edge.emergency.EmergencyReason = .unknown;
+    var json = false;
+    var index: usize = 0;
+    while (index < argv.len) : (index += 1) {
+        if (std.mem.eql(u8, argv[index], "--json")) {
+            json = true;
+        } else if (std.mem.eql(u8, argv[index], "--policy")) {
+            index += 1;
+            if (index >= argv.len) return usageError(stderr, "aegis-edge emergency evaluate: --policy requires a file.\n");
+            policy_path = argv[index];
+        } else if (std.mem.eql(u8, argv[index], "--state")) {
+            index += 1;
+            if (index >= argv.len) return usageError(stderr, "aegis-edge emergency evaluate: --state requires a file.\n");
+            state_path = argv[index];
+        } else if (std.mem.eql(u8, argv[index], "--reason")) {
+            index += 1;
+            if (index >= argv.len) return usageError(stderr, "aegis-edge emergency evaluate: --reason requires a value.\n");
+            reason = std.meta.stringToEnum(edge.emergency.EmergencyReason, argv[index]) orelse return usageError(stderr, "aegis-edge emergency evaluate: invalid reason.\n");
+        } else {
+            try stderr.print("aegis-edge emergency evaluate: unknown argument '{s}'.\n", .{argv[index]});
+            return 64;
+        }
+    }
+    const selected_policy = policy_path orelse return usageError(stderr, "aegis-edge emergency evaluate: missing --policy.\n");
+    const selected_state = state_path orelse return usageError(stderr, "aegis-edge emergency evaluate: missing --state.\n");
+    var gpa_state: std.heap.GeneralPurposeAllocator(.{}) = .init;
+    defer _ = gpa_state.deinit();
+    const allocator = gpa_state.allocator();
+    var loaded = edge.policy.loadFile(allocator, selected_policy, .{}) catch |err| {
+        try stderr.print("Emergency policy invalid: {s}\n", .{@errorName(err)});
+        return 65;
+    };
+    defer loaded.deinit();
+    var parsed_state = loadStateFile(allocator, selected_state, stderr) catch return 65;
+    defer parsed_state.deinit();
+    var decision = edge.emergency.evaluateFallback(allocator, &loaded.value, parsed_state.value, reason, .{ .now_ms = parsed_state.value.timestamp.value + 500 }) catch |err| {
+        try stderr.print("Emergency evaluation failed: {s}\n", .{@errorName(err)});
+        return 65;
+    };
+    defer decision.deinit(allocator);
+    try writeEmergencyDecision(stdout, decision, json);
+    return 0;
+}
+
+fn runEmergencyScenario(argv: []const []const u8, stdout: anytype, stderr: anytype) !u8 {
+    if (argv.len == 0 or !std.mem.eql(u8, argv[0], "run")) return usageError(stderr, "aegis-edge emergency scenario: expected run --policy <policy> --scenario <scenario>.\n");
+    var policy_path: ?[]const u8 = null;
+    var scenario_path: ?[]const u8 = null;
+    var index: usize = 1;
+    while (index < argv.len) : (index += 1) {
+        if (std.mem.eql(u8, argv[index], "--policy")) {
+            index += 1;
+            if (index >= argv.len) return usageError(stderr, "aegis-edge emergency scenario run: --policy requires a file.\n");
+            policy_path = argv[index];
+        } else if (std.mem.eql(u8, argv[index], "--scenario")) {
+            index += 1;
+            if (index >= argv.len) return usageError(stderr, "aegis-edge emergency scenario run: --scenario requires a file.\n");
+            scenario_path = argv[index];
+        } else {
+            try stderr.print("aegis-edge emergency scenario run: unknown argument '{s}'.\n", .{argv[index]});
+            return 64;
+        }
+    }
+    const selected_policy = policy_path orelse return usageError(stderr, "aegis-edge emergency scenario run: missing --policy.\n");
+    const selected_scenario = scenario_path orelse return usageError(stderr, "aegis-edge emergency scenario run: missing --scenario.\n");
+    var gpa_state: std.heap.GeneralPurposeAllocator(.{}) = .init;
+    defer _ = gpa_state.deinit();
+    const allocator = gpa_state.allocator();
+    const spec = loadEmergencyScenario(allocator, selected_scenario) catch |err| {
+        try stderr.print("Emergency scenario invalid: {s}\n", .{@errorName(err)});
+        return 65;
+    };
+    defer spec.deinit(allocator);
+    var loaded = edge.policy.loadFile(allocator, selected_policy, .{}) catch |err| {
+        try stderr.print("Emergency policy invalid: {s}\n", .{@errorName(err)});
+        return 65;
+    };
+    defer loaded.deinit();
+    var parsed_state = loadStateFile(allocator, spec.state_path, stderr) catch return 65;
+    defer parsed_state.deinit();
+    var decision = try edge.emergency.evaluateFallback(allocator, &loaded.value, parsed_state.value, spec.reason, .{ .now_ms = parsed_state.value.timestamp.value + 500 });
+    defer decision.deinit(allocator);
+    if (spec.expected_command) |expected| if (decision.command != expected) {
+        try stderr.print("Emergency scenario mismatch: expected_command={s} actual={s}\n", .{ @tagName(expected), @tagName(decision.command) });
+        return 65;
+    };
+    try stdout.print("Scenario: {s}\n", .{spec.id});
+    try writeEmergencyDecision(stdout, decision, false);
+    return 0;
+}
+
 fn runPolicy(argv: []const []const u8, stdout: anytype, stderr: anytype) !u8 {
     if (argv.len == 0) {
         try stderr.writeAll("aegis-edge policy: expected check, explain, or evaluate.\n");
@@ -1052,6 +1351,97 @@ fn runPolicyEvaluate(argv: []const []const u8, stdout: anytype, stderr: anytype)
     return 0;
 }
 
+fn loadCommandFile(allocator: std.mem.Allocator, path: []const u8, stderr: anytype) !edge.policy.ParsedCommandRequest {
+    const text = std.fs.cwd().readFileAlloc(allocator, path, 128 * 1024) catch |err| {
+        try stderr.print("Edge command request unreadable: {s}\n", .{@errorName(err)});
+        return err;
+    };
+    defer allocator.free(text);
+    return edge.policy.parseCommandRequestJsonOwned(allocator, text) catch |err| {
+        try stderr.print("Edge command request invalid: {s}\n", .{@errorName(err)});
+        return err;
+    };
+}
+
+fn loadStateFile(allocator: std.mem.Allocator, path: []const u8, stderr: anytype) !edge.policy.ParsedVehicleState {
+    const text = std.fs.cwd().readFileAlloc(allocator, path, 128 * 1024) catch |err| {
+        try stderr.print("Edge vehicle state unreadable: {s}\n", .{@errorName(err)});
+        return err;
+    };
+    defer allocator.free(text);
+    return edge.policy.parseVehicleStateJsonOwned(allocator, text) catch |err| {
+        try stderr.print("Edge vehicle state invalid: {s}\n", .{@errorName(err)});
+        return err;
+    };
+}
+
+fn writeEmergencyDecision(stdout: anytype, decision: edge.emergency.EmergencyDecision, json: bool) !void {
+    if (json) {
+        try stdout.writeAll("{\"status\":");
+        try edge.core.core.util.writeJsonString(stdout, @tagName(decision.status));
+        try stdout.writeAll(",\"command\":");
+        try edge.core.core.util.writeJsonString(stdout, @tagName(decision.command));
+        try stdout.writeAll(",\"reason\":");
+        try edge.core.core.util.writeJsonString(stdout, @tagName(decision.reason));
+        try stdout.writeAll(",\"policy_decision\":");
+        try edge.core.core.util.writeJsonString(stdout, decision.policy_decision.toString());
+        try stdout.writeAll(",\"audit_events\":[");
+        for (decision.audit_events, 0..) |event, index| {
+            if (index > 0) try stdout.writeByte(',');
+            try edge.core.core.util.writeJsonString(stdout, event.event_type);
+        }
+        try stdout.writeAll("]}\n");
+        return;
+    }
+    try stdout.print("Emergency status: {s}\n", .{@tagName(decision.status)});
+    try stdout.print("Recommended command: {s}\n", .{@tagName(decision.command)});
+    try stdout.print("Reason: {s}\nPolicy decision: {s}\n", .{ @tagName(decision.reason), decision.policy_decision.toString() });
+    if (decision.matched_rule) |rule| try stdout.print("Matched rule: {s}\n", .{rule});
+    try stdout.writeAll("Fallback order:");
+    for (decision.fallback_order) |command| try stdout.print(" {s}", .{@tagName(command)});
+    try stdout.writeByte('\n');
+    try stdout.writeAll("Audit events:\n");
+    for (decision.audit_events) |event| try stdout.print("  - {s}\n", .{event.event_type});
+    try stdout.writeAll("No emergency command was sent to real hardware. Emergency mode is policy-evaluated simulation/SITL/bench-preparation behavior only.\n");
+}
+
+const EmergencyScenarioSpec = struct {
+    id: []u8,
+    state_path: []u8,
+    reason: edge.emergency.EmergencyReason,
+    expected_command: ?edge.emergency.EmergencyCommand = null,
+
+    fn deinit(self: EmergencyScenarioSpec, allocator: std.mem.Allocator) void {
+        allocator.free(self.id);
+        allocator.free(self.state_path);
+    }
+};
+
+fn loadEmergencyScenario(allocator: std.mem.Allocator, path: []const u8) !EmergencyScenarioSpec {
+    const text = try std.fs.cwd().readFileAlloc(allocator, path, 32 * 1024);
+    defer allocator.free(text);
+    var id: ?[]const u8 = null;
+    var state_path: ?[]const u8 = null;
+    var reason: edge.emergency.EmergencyReason = .unknown;
+    var expected_command: ?edge.emergency.EmergencyCommand = null;
+    var lines = std.mem.splitScalar(u8, text, '\n');
+    while (lines.next()) |raw_line| {
+        const no_comment = if (std.mem.indexOfScalar(u8, raw_line, '#')) |comment| raw_line[0..comment] else raw_line;
+        const line = std.mem.trim(u8, no_comment, " \t\r");
+        if (line.len == 0) continue;
+        const colon = std.mem.indexOfScalar(u8, line, ':') orelse return error.InvalidEmergencyScenario;
+        const key = std.mem.trim(u8, line[0..colon], " \t");
+        const value = cleanScenarioScalar(line[colon + 1 ..]);
+        if (std.mem.eql(u8, key, "id") or std.mem.eql(u8, key, "name")) id = value else if (std.mem.eql(u8, key, "state")) state_path = value else if (std.mem.eql(u8, key, "reason")) reason = std.meta.stringToEnum(edge.emergency.EmergencyReason, value) orelse return error.InvalidEmergencyScenario else if (std.mem.eql(u8, key, "expected_command")) expected_command = std.meta.stringToEnum(edge.emergency.EmergencyCommand, value) orelse return error.InvalidEmergencyScenario else if (std.mem.eql(u8, key, "environment")) continue else return error.InvalidEmergencyScenario;
+    }
+    return .{
+        .id = try allocator.dupe(u8, id orelse std.fs.path.stem(path)),
+        .state_path = try allocator.dupe(u8, state_path orelse return error.InvalidEmergencyScenario),
+        .reason = reason,
+        .expected_command = expected_command,
+    };
+}
+
 fn usageError(stderr: anytype, message: []const u8) !u8 {
     try stderr.writeAll(message);
     return 64;
@@ -1391,7 +1781,7 @@ fn parseScenarioBool(value: []const u8) !bool {
 }
 
 test "aegis-edge help is honest policy evaluation output" {
-    var stdout_buf: [4096]u8 = undefined;
+    var stdout_buf: [8192]u8 = undefined;
     var stderr_buf: [128]u8 = undefined;
     var stdout_stream = std.io.fixedBufferStream(&stdout_buf);
     var stderr_stream = std.io.fixedBufferStream(&stderr_buf);
