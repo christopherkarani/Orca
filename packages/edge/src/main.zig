@@ -56,6 +56,18 @@ const usage =
     \\                                 Evaluate policy-controlled emergency fallback behavior
     \\  emergency scenario run --policy <policy> --scenario <scenario>
     \\                                 Run a deterministic emergency decision scenario
+    \\  safety-case generate --session last
+    \\                                 Regenerate/show the latest Edge safety-case evidence when available
+    \\  safety-case generate --scenario <scenario> --policy <policy>
+    \\                                 Generate hash-chained Edge audit evidence and JSON/Markdown safety reports
+    \\  safety-case show --session last [--json]
+    \\                                 Show a generated safety-case report
+    \\  safety-case verify --session last
+    \\                                 Verify the Edge audit hash chain for a safety-case session
+    \\  safety-case bundle --session last
+    \\                                 Create a local directory evidence bundle
+    \\  replay --session last [--verify|--json|--findings|--commands|--approvals|--safety-case]
+    \\                                 Replay a hash-chained Edge session under .aegis-edge
     \\  policy check <policy>          Validate an Edge policy file
     \\  policy explain <policy> <cmd>   Explain one command decision with fake state
     \\  policy evaluate <policy> --request <request.json> --state <state.json>
@@ -130,6 +142,12 @@ pub fn run(argv: []const []const u8, stdout: anytype, stderr: anytype) !u8 {
     }
     if (std.mem.eql(u8, command, "emergency")) {
         return runEmergency(argv[1..], stdout, stderr);
+    }
+    if (std.mem.eql(u8, command, "safety-case")) {
+        return runSafetyCase(argv[1..], stdout, stderr);
+    }
+    if (std.mem.eql(u8, command, "replay")) {
+        return runEdgeReplay(argv[1..], stdout, stderr);
     }
     if (std.mem.eql(u8, command, "policy")) {
         return runPolicy(argv[1..], stdout, stderr);
@@ -1187,6 +1205,180 @@ fn runSafetyScenario(argv: []const []const u8, stdout: anytype, stderr: anytype)
     if (result.artifact_dir) |dir| try stdout.print("Artifacts: {s}\n", .{dir});
     try stdout.writeAll("No real hardware, real-flight endpoint, or regulatory validation is implied.\n");
     return 0;
+}
+
+fn runSafetyCase(argv: []const []const u8, stdout: anytype, stderr: anytype) !u8 {
+    if (argv.len == 0) return usageError(stderr, "aegis-edge safety-case: expected generate, show, verify, or bundle.\n");
+    if (std.mem.eql(u8, argv[0], "generate")) return runSafetyCaseGenerate(argv[1..], stdout, stderr);
+    if (std.mem.eql(u8, argv[0], "show")) return runSafetyCaseShow(argv[1..], stdout, stderr);
+    if (std.mem.eql(u8, argv[0], "verify")) return runSafetyCaseVerify(argv[1..], stdout, stderr);
+    if (std.mem.eql(u8, argv[0], "bundle")) return runSafetyCaseBundle(argv[1..], stdout, stderr);
+    try stderr.print("aegis-edge safety-case: unknown subcommand '{s}'.\n", .{argv[0]});
+    return 64;
+}
+
+fn runSafetyCaseGenerate(argv: []const []const u8, stdout: anytype, stderr: anytype) !u8 {
+    var policy_path: ?[]const u8 = null;
+    var scenario_path: ?[]const u8 = null;
+    var session: []const u8 = "last";
+    var index: usize = 0;
+    while (index < argv.len) : (index += 1) {
+        if (std.mem.eql(u8, argv[index], "--policy")) {
+            index += 1;
+            if (index >= argv.len) return usageError(stderr, "aegis-edge safety-case generate: --policy requires a file.\n");
+            policy_path = argv[index];
+        } else if (std.mem.eql(u8, argv[index], "--scenario")) {
+            index += 1;
+            if (index >= argv.len) return usageError(stderr, "aegis-edge safety-case generate: --scenario requires a file.\n");
+            scenario_path = argv[index];
+        } else if (std.mem.eql(u8, argv[index], "--session")) {
+            index += 1;
+            if (index >= argv.len) return usageError(stderr, "aegis-edge safety-case generate: --session requires a value.\n");
+            session = argv[index];
+        } else {
+            try stderr.print("aegis-edge safety-case generate: unknown argument '{s}'.\n", .{argv[index]});
+            return 64;
+        }
+    }
+    if (policy_path == null and scenario_path == null and std.mem.eql(u8, session, "last")) {
+        return runSafetyCaseShow(&.{"--session", "last"}, stdout, stderr);
+    }
+    const selected_policy = policy_path orelse return usageError(stderr, "aegis-edge safety-case generate: missing --policy.\n");
+    const selected_scenario = scenario_path orelse return usageError(stderr, "aegis-edge safety-case generate: missing --scenario.\n");
+    var gpa_state: std.heap.GeneralPurposeAllocator(.{}) = .init;
+    defer _ = gpa_state.deinit();
+    const allocator = gpa_state.allocator();
+    var result = edge.audit.safety_case.generate(allocator, .{
+        .policy_path = selected_policy,
+        .scenario_path = selected_scenario,
+    }) catch |err| {
+        try stderr.print("Safety-case generation failed: {s}\n", .{@errorName(err)});
+        return 65;
+    };
+    defer result.deinit();
+    try stdout.print("{s}\nSession: {s}\nArtifacts: {s}\n", .{ result.summary, result.session_id, result.session_dir });
+    try stdout.writeAll("Limitations: safety-case evidence is simulation/SITL/bench-preparation/customer-evaluation only; no real-flight or certification claim.\n");
+    return 0;
+}
+
+fn runSafetyCaseShow(argv: []const []const u8, stdout: anytype, stderr: anytype) !u8 {
+    var session: []const u8 = "last";
+    var json = false;
+    var index: usize = 0;
+    while (index < argv.len) : (index += 1) {
+        if (std.mem.eql(u8, argv[index], "--session")) {
+            index += 1;
+            if (index >= argv.len) return usageError(stderr, "aegis-edge safety-case show: --session requires a value.\n");
+            session = argv[index];
+        } else if (std.mem.eql(u8, argv[index], "--json")) {
+            json = true;
+        } else {
+            try stderr.print("aegis-edge safety-case show: unknown argument '{s}'.\n", .{argv[index]});
+            return 64;
+        }
+    }
+    var gpa_state: std.heap.GeneralPurposeAllocator(.{}) = .init;
+    defer _ = gpa_state.deinit();
+    const allocator = gpa_state.allocator();
+    const root = try std.fs.cwd().realpathAlloc(allocator, ".");
+    defer allocator.free(root);
+    edge.audit.safety_case.show(stdout, allocator, root, session, json) catch |err| {
+        try stderr.print("Safety-case report unavailable: {s}\n", .{@errorName(err)});
+        return 65;
+    };
+    return 0;
+}
+
+fn runSafetyCaseVerify(argv: []const []const u8, stdout: anytype, stderr: anytype) !u8 {
+    const session = parseSessionOnly(argv, stderr, "aegis-edge safety-case verify") catch return 64;
+    var gpa_state: std.heap.GeneralPurposeAllocator(.{}) = .init;
+    defer _ = gpa_state.deinit();
+    const allocator = gpa_state.allocator();
+    const root = try std.fs.cwd().realpathAlloc(allocator, ".");
+    defer allocator.free(root);
+    const result = edge.audit.safety_case.verify(allocator, root, session) catch |err| {
+        try stderr.print("Safety-case verification failed: {s}\n", .{@errorName(err)});
+        return 65;
+    };
+    defer result.deinit(allocator);
+    if (!result.ok) {
+        try stderr.print("Safety-case hash chain invalid: {s}\n", .{result.reason orelse "unknown"});
+        return 65;
+    }
+    try stdout.print("Safety-case hash chain verified for session {s}\n", .{session});
+    return 0;
+}
+
+fn runSafetyCaseBundle(argv: []const []const u8, stdout: anytype, stderr: anytype) !u8 {
+    const session = parseSessionOnly(argv, stderr, "aegis-edge safety-case bundle") catch return 64;
+    var gpa_state: std.heap.GeneralPurposeAllocator(.{}) = .init;
+    defer _ = gpa_state.deinit();
+    const allocator = gpa_state.allocator();
+    const root = try std.fs.cwd().realpathAlloc(allocator, ".");
+    defer allocator.free(root);
+    const bundle_dir = edge.audit.safety_case.bundle(allocator, root, session) catch |err| {
+        try stderr.print("Safety-case bundle failed: {s}\n", .{@errorName(err)});
+        return 65;
+    };
+    defer allocator.free(bundle_dir);
+    try stdout.print("Evidence bundle: {s}\n", .{bundle_dir});
+    return 0;
+}
+
+fn runEdgeReplay(argv: []const []const u8, stdout: anytype, stderr: anytype) !u8 {
+    var options: edge.audit.edge_replay.ReplayOptions = .{};
+    var index: usize = 0;
+    while (index < argv.len) : (index += 1) {
+        if (std.mem.eql(u8, argv[index], "--session")) {
+            index += 1;
+            if (index >= argv.len) return usageError(stderr, "aegis-edge replay: --session requires a value.\n");
+            options.session = argv[index];
+        } else if (std.mem.eql(u8, argv[index], "--verify")) {
+            options.verify = true;
+        } else if (std.mem.eql(u8, argv[index], "--json")) {
+            options.json = true;
+        } else if (std.mem.eql(u8, argv[index], "--findings")) {
+            options.findings = true;
+        } else if (std.mem.eql(u8, argv[index], "--commands")) {
+            options.commands = true;
+        } else if (std.mem.eql(u8, argv[index], "--approvals")) {
+            options.approvals = true;
+        } else if (std.mem.eql(u8, argv[index], "--safety-case")) {
+            options.safety_case = true;
+        } else {
+            try stderr.print("aegis-edge replay: unknown argument '{s}'.\n", .{argv[index]});
+            return 64;
+        }
+    }
+    var gpa_state: std.heap.GeneralPurposeAllocator(.{}) = .init;
+    defer _ = gpa_state.deinit();
+    const allocator = gpa_state.allocator();
+    const root = try std.fs.cwd().realpathAlloc(allocator, ".");
+    defer allocator.free(root);
+    edge.audit.edge_replay.write(stdout, allocator, root, options) catch |err| {
+        try stderr.print("Edge replay failed: {s}\n", .{@errorName(err)});
+        return 65;
+    };
+    return 0;
+}
+
+fn parseSessionOnly(argv: []const []const u8, stderr: anytype, command_name: []const u8) ![]const u8 {
+    var session: []const u8 = "last";
+    var index: usize = 0;
+    while (index < argv.len) : (index += 1) {
+        if (std.mem.eql(u8, argv[index], "--session")) {
+            index += 1;
+            if (index >= argv.len) {
+                try stderr.print("{s}: --session requires a value.\n", .{command_name});
+                return error.InvalidCliArguments;
+            }
+            session = argv[index];
+        } else {
+            try stderr.print("{s}: unknown argument '{s}'.\n", .{ command_name, argv[index] });
+            return error.InvalidCliArguments;
+        }
+    }
+    return session;
 }
 
 fn runPolicyCheck(argv: []const []const u8, stdout: anytype, stderr: anytype) !u8 {

@@ -7,12 +7,13 @@ pub const policy = @import("policy/mod.zig");
 pub const safety = @import("safety/mod.zig");
 pub const operator = @import("operator/mod.zig");
 pub const emergency = @import("emergency/mod.zig");
+pub const audit = @import("audit/mod.zig");
 pub const px4 = @import("px4/mod.zig");
 pub const ardupilot = @import("ardupilot/mod.zig");
 pub const schema = @import("schema/mod.zig");
 
-pub const phase = "32-operator-approval-and-emergency-modes";
-pub const installed_message = "Aegis Edge operator approval and emergency-mode decision behavior is installed for deterministic fake-adapter, PX4 SITL, and ArduPilot SITL evidence only; it is not ready for real flight.";
+pub const phase = "33-edge-audit-replay-and-safety-case";
+pub const installed_message = "Aegis Edge audit/replay and safety-case evidence generation is installed for deterministic fake-adapter, PX4 SITL, and ArduPilot SITL evaluation evidence only; it is not ready for real flight.";
 pub const core = aegis_core;
 
 pub const CapabilityStatus = enum {
@@ -42,6 +43,9 @@ pub const EdgeCapability = enum {
     flight_safety_enforcement,
     operator_approval,
     emergency_modes,
+    audit_replay,
+    safety_case_reports,
+    evidence_bundles,
     px4_adapter,
     ardupilot_adapter,
     real_flight_enforcement,
@@ -58,6 +62,9 @@ pub const EdgeCapability = enum {
             .flight_safety_enforcement => "flight safety enforcement",
             .operator_approval => "operator approval",
             .emergency_modes => "emergency modes",
+            .audit_replay => "Edge audit/replay",
+            .safety_case_reports => "safety-case reports",
+            .evidence_bundles => "evidence bundles",
             .px4_adapter => "PX4 adapter",
             .ardupilot_adapter => "ArduPilot adapter",
             .real_flight_enforcement => "real-flight enforcement",
@@ -179,6 +186,9 @@ pub fn capabilityReports() []const CapabilityReport {
         .{ .capability = .flight_safety_enforcement, .status = .active, .note = "Phase 31 evaluates commands and mission plans against geofence, altitude, velocity, battery, freshness, mode, authority, and command-risk constraints for fake/SITL evidence only." },
         .{ .capability = .operator_approval, .status = .active, .note = "Phase 32 creates and validates bounded local operator approvals for fake/SITL/bench-preparation contexts; CI and red-team modes deny ask decisions without prompting." },
         .{ .capability = .emergency_modes, .status = .active, .note = "Phase 32 evaluates policy-controlled LAND/HOLD/RTH emergency fallback decisions in fake/SITL contexts only; it does not send real hardware commands." },
+        .{ .capability = .audit_replay, .status = .active, .note = "Phase 33 records hash-chained Edge sessions through the Aegis Core audit writer under .aegis-edge and replays them with Core verification." },
+        .{ .capability = .safety_case_reports, .status = .active, .note = "Phase 33 generates bounded JSON and Markdown safety-case reports for fake/SITL/bench-preparation evaluation evidence with explicit non-certification limitations." },
+        .{ .capability = .evidence_bundles, .status = .active, .note = "Phase 33 creates local directory evidence bundles with policy/scenario copies, reports, replay, findings, commands, limitations, hashes, and provenance." },
         .{ .capability = .px4_adapter, .status = .partial, .note = "PX4 SITL adapter supports opt-in local simulation checks plus deterministic fake-PX4 scenarios; no hardware or real-flight support." },
         .{ .capability = .ardupilot_adapter, .status = .partial, .note = "ArduPilot SITL adapter supports opt-in local simulation checks plus deterministic fake-ArduPilot scenarios; Copter-oriented coverage starts Phase 30; no hardware or real-flight support." },
         .{ .capability = .real_flight_enforcement, .status = .unavailable, .note = "Real-flight behavior requires later simulation, bench, and customer safety validation phases." },
@@ -206,6 +216,7 @@ test {
     _ = mavlink;
     _ = operator;
     _ = emergency;
+    _ = audit;
     _ = policy;
     _ = safety;
     _ = px4;

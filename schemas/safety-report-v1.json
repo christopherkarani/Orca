@@ -4,7 +4,7 @@
   "title": "Aegis safety report schema v1",
   "description": "Placeholder schema for future customer safety reports. Reports are engineering audit artifacts and are not regulatory approval, certification, airworthiness approval, or real-flight readiness claims.",
   "type": "object",
-  "additionalProperties": false,
+  "additionalProperties": true,
   "required": ["report_id", "report_version", "vehicle_profile", "adapter_profile", "policy_hash", "scenario_name", "scenario_source", "test_environment", "limitations"],
   "properties": {
     "report_id": { "type": "string", "minLength": 1 },
