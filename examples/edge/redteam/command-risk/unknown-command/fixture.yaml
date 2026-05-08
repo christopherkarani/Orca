@@ -1,0 +1,19 @@
+version: 1
+id: command-unknown-denied
+name: Unknown command denied
+category: mode_authority
+environment: fake_adapter
+description: Synthetic unknown command maps to a fail-closed command class.
+policy: examples/edge/redteam/policies/redteam-envelope.yaml
+faults:
+  - unknown_command
+expected:
+  decision: deny
+  findings:
+    - command_risk
+  events:
+    - vehicle.command_denied
+  no_log_contains:
+    - fake-secret-value
+score:
+  points: 10

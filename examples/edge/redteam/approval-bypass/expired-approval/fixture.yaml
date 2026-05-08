@@ -1,0 +1,17 @@
+version: 1
+id: approval-expired-denied
+name: Expired approval denied
+category: approval_bypass
+environment: fake_adapter
+description: Synthetic expired operator approval cannot authorize a command.
+policy: examples/edge/operator/policies/approval-strict.yaml
+faults:
+  - expired_approval
+expected:
+  decision: deny
+  events:
+    - operator.approval_expired
+  no_log_contains:
+    - fake-secret-value
+score:
+  points: 10

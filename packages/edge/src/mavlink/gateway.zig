@@ -47,7 +47,7 @@ pub const ProcessOptions = struct {
     now_ms: i128,
     command_source: domain.state.StateProvenance = .fake_adapter,
     endpoint_policy: EndpointPolicy = .{},
-    approval_decision: ?*const operator.ApprovalDecision = null,
+    approval_decision: ?*operator.ApprovalDecision = null,
 };
 
 pub const ProcessResult = struct {
@@ -138,7 +138,7 @@ fn processFrameInternal(
         try audit.appendCommand(.command_mapped, frame, mapped.classification.command_id, .{ .note = @tagName(request.action), .decision = .observe });
         const context: safety.EvaluationContext = .{ .mode = policyMode(options.mode), .now_ms = options.now_ms, .non_interactive = options.mode == .ci or options.mode == .redteam };
         var evaluation = if (options.approval_decision) |approval|
-            try safety.evaluateSafetyWithApproval(allocator, selected_policy, state, request, context, approval.*)
+            try safety.evaluateSafetyWithApproval(allocator, selected_policy, state, request, context, approval)
         else
             try safety.evaluateSafety(allocator, selected_policy, state, request, context);
         defer evaluation.deinit();

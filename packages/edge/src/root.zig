@@ -11,9 +11,10 @@ pub const audit = @import("audit/mod.zig");
 pub const px4 = @import("px4/mod.zig");
 pub const ardupilot = @import("ardupilot/mod.zig");
 pub const schema = @import("schema/mod.zig");
+pub const redteam = @import("redteam/mod.zig");
 
-pub const phase = "33-edge-audit-replay-and-safety-case";
-pub const installed_message = "Aegis Edge audit/replay and safety-case evidence generation is installed for deterministic fake-adapter, PX4 SITL, and ArduPilot SITL evaluation evidence only; it is not ready for real flight.";
+pub const phase = "34-edge-redteam-and-fault-injection";
+pub const installed_message = "Aegis Edge red-team and fault-injection evidence generation is installed for deterministic fake-adapter, PX4 SITL, and ArduPilot SITL evaluation evidence only; it is not ready for real flight.";
 pub const core = aegis_core;
 
 pub const CapabilityStatus = enum {
@@ -46,6 +47,7 @@ pub const EdgeCapability = enum {
     audit_replay,
     safety_case_reports,
     evidence_bundles,
+    redteam_fault_injection,
     px4_adapter,
     ardupilot_adapter,
     real_flight_enforcement,
@@ -65,6 +67,7 @@ pub const EdgeCapability = enum {
             .audit_replay => "Edge audit/replay",
             .safety_case_reports => "safety-case reports",
             .evidence_bundles => "evidence bundles",
+            .redteam_fault_injection => "red-team and fault injection",
             .px4_adapter => "PX4 adapter",
             .ardupilot_adapter => "ArduPilot adapter",
             .real_flight_enforcement => "real-flight enforcement",
@@ -155,7 +158,7 @@ pub const FakeAdapter = struct {
     pub fn capabilityReports() []const CapabilityReport {
         return &.{
             .{ .capability = .fake_adapter, .status = .scaffolded, .note = "Local fake adapter placeholder only; no hardware IO." },
-        .{ .capability = .command_mediation, .status = .active, .note = "MAVLink command mediation exists for fake/in-memory gateway tests only; no real endpoints." },
+            .{ .capability = .command_mediation, .status = .active, .note = "MAVLink command mediation exists for fake/in-memory gateway tests only; no real endpoints." },
         };
     }
 
@@ -189,6 +192,7 @@ pub fn capabilityReports() []const CapabilityReport {
         .{ .capability = .audit_replay, .status = .active, .note = "Phase 33 records hash-chained Edge sessions through the Aegis Core audit writer under .aegis-edge and replays them with Core verification." },
         .{ .capability = .safety_case_reports, .status = .active, .note = "Phase 33 generates bounded JSON and Markdown safety-case reports for fake/SITL/bench-preparation evaluation evidence with explicit non-certification limitations." },
         .{ .capability = .evidence_bundles, .status = .active, .note = "Phase 33 creates local directory evidence bundles with policy/scenario copies, reports, replay, findings, commands, limitations, hashes, and provenance." },
+        .{ .capability = .redteam_fault_injection, .status = .active, .note = "Phase 34 runs deterministic simulation-only Edge red-team fixtures and fault injections with scorecards, redacted audit/replay artifacts, and safety-case evidence; no real hardware or real-flight claims." },
         .{ .capability = .px4_adapter, .status = .partial, .note = "PX4 SITL adapter supports opt-in local simulation checks plus deterministic fake-PX4 scenarios; no hardware or real-flight support." },
         .{ .capability = .ardupilot_adapter, .status = .partial, .note = "ArduPilot SITL adapter supports opt-in local simulation checks plus deterministic fake-ArduPilot scenarios; Copter-oriented coverage starts Phase 30; no hardware or real-flight support." },
         .{ .capability = .real_flight_enforcement, .status = .unavailable, .note = "Real-flight behavior requires later simulation, bench, and customer safety validation phases." },
@@ -221,6 +225,7 @@ test {
     _ = safety;
     _ = px4;
     _ = schema;
+    _ = redteam;
     _ = capabilityReports;
     _ = FakeAdapter;
     _ = evaluateVehicleStateReadThroughCore;

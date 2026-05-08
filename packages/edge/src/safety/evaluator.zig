@@ -94,12 +94,12 @@ pub fn evaluateSafetyWithApproval(
     vehicle_state: domain.state.VehicleState,
     command_request: domain.commands.CommandRequest,
     context: EvaluationContext,
-    approval_decision: operator.ApprovalDecision,
+    approval_decision: *operator.ApprovalDecision,
 ) !SafetyEvaluation {
     var evaluation = try evaluateSafety(allocator, selected_policy, vehicle_state, command_request, context);
     errdefer evaluation.deinit();
 
-    var validation = try operator.validateApproval(allocator, approval_decision, .{
+    var validation = try operator.validateApproval(allocator, approval_decision.*, .{
         .policy = selected_policy,
         .command = command_request,
         .state = vehicle_state,
@@ -109,6 +109,9 @@ pub fn evaluateSafetyWithApproval(
     defer validation.deinit(allocator);
 
     if (validation.isValid() and evaluation.decision.result == .ask) {
+        const previous_used_count = approval_decision.used_count;
+        approval_decision.used_count += 1;
+        errdefer approval_decision.used_count = previous_used_count;
         evaluation.decision = core.api.makeDecision(.{
             .result = .allow,
             .rule_id = if (evaluation.matched_rule) |rule| rule.id else null,

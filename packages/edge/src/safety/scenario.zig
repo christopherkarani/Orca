@@ -130,7 +130,7 @@ fn evaluationForScenario(
             .actor_id = "aegis-edge-safety-scenario",
         })) orelse return evaluator.evaluateSafety(allocator, selected_policy, base_state, request, context);
         defer approval.deinit(allocator);
-        return evaluator.evaluateSafetyWithApproval(allocator, selected_policy, base_state, request, context, approval);
+        return evaluator.evaluateSafetyWithApproval(allocator, selected_policy, base_state, request, context, &approval);
     }
     return evaluator.evaluateSafety(allocator, selected_policy, base_state, request, context);
 }

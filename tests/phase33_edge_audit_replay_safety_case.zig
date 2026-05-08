@@ -99,6 +99,40 @@ test "phase 33 replay sections and evidence bundle are generated without secrets
     try std.testing.expect(std.mem.indexOf(u8, manifest, "sk-fakeSyntheticOpenAIKey1234567890") == null);
 }
 
+test "phase 33 invalid approval safety-case scenario replays through Core event mapping" {
+    const allocator = std.testing.allocator;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const root = try tmp.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(root);
+
+    var result = try edge.audit.safety_case.generate(allocator, .{
+        .policy_path = "examples/edge/operator/policies/approval-strict.yaml",
+        .scenario_path = "examples/edge/operator/scenarios/mismatched-policy-approval-deny.yaml",
+        .workspace_root = root,
+        .now = edge.core.core.time.Timestamp.fromUnixSeconds(1_777_983_130),
+    });
+    defer result.deinit();
+
+    try std.testing.expectEqual(edge.audit.safety_report.ScenarioResultStatus.passed, result.status);
+    const events_path = try std.fs.path.join(allocator, &.{ result.session_dir, "events.jsonl" });
+    defer allocator.free(events_path);
+    const events = try std.fs.cwd().readFileAlloc(allocator, events_path, 128 * 1024);
+    defer allocator.free(events);
+    try std.testing.expect(std.mem.indexOf(u8, events, "\"type\":\"operator.approval_invalid\"") != null);
+
+    const report_json_path = try std.fs.path.join(allocator, &.{ result.session_dir, "safety-report.json" });
+    defer allocator.free(report_json_path);
+    const report_json = try std.fs.cwd().readFileAlloc(allocator, report_json_path, 128 * 1024);
+    defer allocator.free(report_json);
+    try std.testing.expect(std.mem.indexOf(u8, report_json, "\"result_status\":\"passed\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, report_json, "\"approvals\"") != null);
+
+    const verify = try edge.audit.safety_case.verify(allocator, root, "last");
+    defer verify.deinit(allocator);
+    try std.testing.expect(verify.ok);
+}
+
 test "phase 33 tamper delete and reorder fail Core verification" {
     const allocator = std.testing.allocator;
     var tmp = std.testing.tmpDir(.{});

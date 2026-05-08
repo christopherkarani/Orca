@@ -1,6 +1,6 @@
 # Aegis Edge
 
-Aegis Edge is the drone and robotics safety-policy and audit package for local policy evaluation. Phase 28 adds a MAVLink gateway foundation for fake/in-memory simulation and protocol mediation. Phase 29 adds PX4 SITL integration for opt-in local simulation evidence and deterministic fake-PX4 scenarios. Phase 30 adds ArduPilot SITL integration for opt-in local simulation evidence and deterministic fake-ArduPilot scenarios. Phase 31 adds reusable flight safety enforcement for fake-adapter, PX4 SITL, and ArduPilot SITL contexts. Phase 32 adds bounded operator approvals and emergency fallback decisions. Phase 33 adds Edge audit/replay, safety-case reports, evidence bundles, traceability, and scenario result classification.
+Aegis Edge is the drone and robotics safety-policy and audit package for local policy evaluation. Phase 28 adds a MAVLink gateway foundation for fake/in-memory simulation and protocol mediation. Phase 29 adds PX4 SITL integration for opt-in local simulation evidence and deterministic fake-PX4 scenarios. Phase 30 adds ArduPilot SITL integration for opt-in local simulation evidence and deterministic fake-ArduPilot scenarios. Phase 31 adds reusable flight safety enforcement for fake-adapter, PX4 SITL, and ArduPilot SITL contexts. Phase 32 adds bounded operator approvals and emergency fallback decisions. Phase 33 adds Edge audit/replay, safety-case reports, evidence bundles, traceability, and scenario result classification. Phase 34 adds deterministic red-team and fault-injection evidence for fake-adapter and optional SITL contexts.
 
 Fake MAVLink remains the default deterministic path. PX4 SITL and ArduPilot SITL are optional and local-only; normal tests do not require PX4 or ArduPilot. Aegis Edge does not support ROS2 control, real hardware integration, or real-flight deployment. Aegis Edge is not a flight controller, not an autopilot replacement, not detect-and-avoid, not regulatory approval or certification, and is not ready for real flight. It must not be used for real flight.
 
@@ -16,6 +16,7 @@ The package currently provides:
 - ArduPilot SITL configuration/status reporting, deterministic fake-ArduPilot telemetry and command fixtures, policy-mediated ArduPilot scenarios, and redacted scenario artifacts.
 - Hash-chained Edge sessions under `.aegis-edge` using the Aegis Core audit writer and replay verifier.
 - JSON and Markdown safety-case reports, evidence bundles, and traceability matrices for fake/SITL/bench-preparation evidence.
+- Deterministic Edge red-team fixtures, simulation-only fault injection, scorecards, JSON output, and red-team safety-case evidence.
 - Honest `aegis-edge doctor`, `aegis-edge schema`, `aegis-edge policy`, `aegis-edge safety`, `aegis-edge safety-case`, `aegis-edge replay`, `aegis-edge mavlink`, `aegis-edge px4`, and `aegis-edge ardupilot` commands.
 
 ## CLI
@@ -41,6 +42,11 @@ aegis-edge safety-case show --session last
 aegis-edge safety-case verify --session last
 aegis-edge safety-case bundle --session last
 aegis-edge replay --session last --verify
+aegis-edge redteam validate
+aegis-edge redteam --ci
+aegis-edge redteam --json
+aegis-edge redteam --category geofence
+aegis-edge redteam --report safety-case
 ```
 
 These commands evaluate policy and simulated MAVLink/PX4/ArduPilot records. They do not send a command to a real vehicle or real flight controller. PX4 SITL checks are opt-in and must be labeled `sitl_px4`; fake-PX4 evidence remains labeled `fake_adapter`. ArduPilot SITL checks are opt-in and must be labeled `sitl_ardupilot`; fake-ArduPilot evidence remains labeled `fake_ardupilot_adapter`.
@@ -68,6 +74,19 @@ Phase 32 adds bounded local operator approval and policy-controlled emergency fa
 Emergency evaluation supports policy-controlled LAND, HOLD, and RETURN_TO_HOME decisions in fake/SITL contexts. Emergency mode is not a policy bypass and does not enable disable-failsafe, disable-geofence, raw actuator output, or operator override commands by default.
 
 These features do not make Aegis Edge a flight controller, autopilot replacement, detect-and-avoid capability, regulatory certification, or real-flight validation.
+
+## Red-Team And Fault Injection
+
+Phase 34 red-team fixtures live under `examples/edge/redteam`. Required
+fake/simulation fixtures run by default and PX4/ArduPilot SITL fixtures are
+optional. The runner classifies results as `passed`, `failed`, `skipped`,
+`unsupported`, or `inconclusive`; skipped, unsupported, and inconclusive are not
+counted as pass.
+
+Red-team fault injection is simulation-only. It exercises synthetic geofence,
+altitude, velocity, battery, state freshness, mission, MAVLink parser, MAVLink
+command, endpoint spoofing, approval bypass, emergency bypass, audit redaction,
+and safety-case scenarios without real hardware or external network dependency.
 
 ## Audit Replay And Safety Case
 
@@ -108,3 +127,8 @@ See:
 - `docs/edge/traceability.md`
 - `docs/edge/scenario-results.md`
 - `docs/edge/customer-safety-reports.md`
+- `docs/edge/redteam.md`
+- `docs/edge/fault-injection.md`
+- `docs/edge/redteam-fixtures.md`
+- `docs/edge/redteam-scorecards.md`
+- `docs/edge/sitl-redteam.md`

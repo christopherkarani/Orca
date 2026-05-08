@@ -384,15 +384,23 @@ fn buildApprovalEvidence(allocator: std.mem.Allocator, selected_policy: *const s
         .actor_id = "aegis-edge-safety-case",
     })) orelse return evidenceFromSafetyEvaluation(allocator, selected_policy, meta, base, classifyScenarioResult(base.decision.result, meta.expected_decision, false, false, true), provenanceFromState(parsed_state.value.provenance), "operator approval was required but not supplied");
     defer approval_decision.deinit(allocator);
-    var final = try safety.evaluateSafetyWithApproval(allocator, selected_policy, parsed_state.value, parsed_request.value, .{ .mode = .ask, .now_ms = parsed_state.value.timestamp.value + 500 }, approval_decision);
+    var final = try safety.evaluateSafetyWithApproval(allocator, selected_policy, parsed_state.value, parsed_request.value, .{ .mode = .ask, .now_ms = parsed_state.value.timestamp.value + 500 }, &approval_decision);
     defer final.deinit();
     var model = try evidenceFromSafetyEvaluation(allocator, selected_policy, meta, final, classifyScenarioResult(final.decision.result, meta.expected_decision, false, false, true), provenanceFromState(parsed_state.value.provenance), "operator approval scenario evaluated with bounded local approval");
+    const approval_event_id: []const u8 = if (final.hasAuditEvent("operator.approval_used"))
+        "operator.approval_used"
+    else if (final.hasAuditEvent("operator.approval_expired"))
+        "operator.approval_expired"
+    else if (final.hasAuditEvent("operator.approval_invalid"))
+        "operator.approval_invalid"
+    else
+        approval_decision.audit_event_reference;
     model.approvals = try allocator.alloc(safety_report.ApprovalRecord, 1);
     model.approvals[0] = .{
         .approval_id = try allocator.dupe(u8, approval_decision.approval_decision_id),
         .command = try allocator.dupe(u8, meta.command),
         .decision = try allocator.dupe(u8, @tagName(approval_decision.decision)),
-        .event_id = try allocator.dupe(u8, "operator.approval_used"),
+        .event_id = try allocator.dupe(u8, approval_event_id),
     };
     return model;
 }
