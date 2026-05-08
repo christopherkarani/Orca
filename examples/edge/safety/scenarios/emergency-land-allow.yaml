@@ -1,0 +1,5 @@
+id: emergency-land-allow
+mode: strict
+command: emergency_land
+expected_decision: allow
+note: "Fake safety scenario. LAND is emergency-safe when policy allows it; this is not emergency-mode runtime."

@@ -24,6 +24,7 @@ pub const SafetyReportV1 = struct {
     commands_allowed: []const []const u8 = &.{},
     commands_denied: []const []const u8 = &.{},
     violations_detected: []const []const u8 = &.{},
+    findings_present: bool = false,
     audit_event_references: []const []const u8 = &.{},
     limitations: []const []const u8 = &.{non_certification_disclaimer},
 

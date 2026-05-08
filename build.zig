@@ -246,6 +246,18 @@ pub fn build(b: *std.Build) void {
     });
     const run_phase30_ardupilot_sitl_tests = b.addRunArtifact(phase30_ardupilot_sitl_tests);
 
+    const phase31_flight_safety_tests = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("tests/phase31_flight_safety_enforcement.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .name = "aegis_edge", .module = aegis_edge_mod },
+            },
+        }),
+    });
+    const run_phase31_flight_safety_tests = b.addRunArtifact(phase31_flight_safety_tests);
+
     const test_step = b.step("test", "Run unit tests");
     test_step.dependOn(&run_lib_tests.step);
     test_step.dependOn(&run_exe_tests.step);
@@ -263,6 +275,7 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&run_phase28_mavlink_gateway_tests.step);
     test_step.dependOn(&run_phase29_px4_sitl_tests.step);
     test_step.dependOn(&run_phase30_ardupilot_sitl_tests.step);
+    test_step.dependOn(&run_phase31_flight_safety_tests.step);
 
     const fuzz_tests = b.addTest(.{
         .root_module = b.createModule(.{

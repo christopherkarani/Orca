@@ -1,0 +1,5 @@
+id: low-battery-takeoff-deny
+mode: strict
+command: takeoff_low_battery
+expected_decision: deny
+note: "Fake safety scenario. No hardware, SITL endpoint, or real-flight validation."

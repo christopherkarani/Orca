@@ -27,7 +27,6 @@ pub fn classifyCommand(action: commands.CommandAction) RiskCategory {
         .upload_mission,
         .set_mode,
         .change_geofence,
-        .companion_computer_reboot,
         .telemetry_stream_external,
         => .high,
         .disable_geofence,
@@ -36,6 +35,7 @@ pub fn classifyCommand(action: commands.CommandAction) RiskCategory {
         .raw_actuator_output,
         .payload_release,
         .firmware_update,
+        .companion_computer_reboot,
         => .critical,
     };
 }

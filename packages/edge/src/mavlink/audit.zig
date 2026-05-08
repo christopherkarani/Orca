@@ -23,6 +23,12 @@ pub const EventKind = enum {
     unexpected_endpoint,
     safety_geofence_violation,
     safety_altitude_violation,
+    safety_velocity_violation,
+    safety_stale_state_denied,
+    safety_battery_constraint,
+    safety_mode_constraint,
+    safety_authority_constraint,
+    safety_mission_item_denied,
 
     pub fn toString(self: EventKind) []const u8 {
         return switch (self) {
@@ -43,6 +49,12 @@ pub const EventKind = enum {
             .unexpected_endpoint => "mavlink.unexpected_endpoint",
             .safety_geofence_violation => "safety.geofence_violation",
             .safety_altitude_violation => "safety.altitude_violation",
+            .safety_velocity_violation => "safety.velocity_violation",
+            .safety_stale_state_denied => "safety.stale_state_denied",
+            .safety_battery_constraint => "safety.battery_constraint",
+            .safety_mode_constraint => "safety.mode_constraint",
+            .safety_authority_constraint => "safety.authority_constraint",
+            .safety_mission_item_denied => "safety.mission_item_denied",
         };
     }
 
@@ -65,6 +77,12 @@ pub const EventKind = enum {
             .unexpected_endpoint => .mavlink_unexpected_endpoint,
             .safety_geofence_violation => .safety_geofence_violation,
             .safety_altitude_violation => .safety_altitude_violation,
+            .safety_velocity_violation => .safety_velocity_violation,
+            .safety_stale_state_denied => .safety_stale_state_denied,
+            .safety_battery_constraint => .safety_battery_constraint,
+            .safety_mode_constraint => .safety_mode_constraint,
+            .safety_authority_constraint => .safety_authority_constraint,
+            .safety_mission_item_denied => .safety_mission_item_denied,
         };
     }
 };
