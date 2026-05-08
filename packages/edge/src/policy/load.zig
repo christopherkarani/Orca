@@ -26,6 +26,26 @@ pub const LoadedPolicy = struct {
     }
 };
 
+pub const ParsedCommandRequest = struct {
+    arena: std.heap.ArenaAllocator,
+    value: domain.commands.CommandRequest,
+
+    pub fn deinit(self: *ParsedCommandRequest) void {
+        self.arena.deinit();
+        self.* = undefined;
+    }
+};
+
+pub const ParsedVehicleState = struct {
+    arena: std.heap.ArenaAllocator,
+    value: domain.state.VehicleState,
+
+    pub fn deinit(self: *ParsedVehicleState) void {
+        self.arena.deinit();
+        self.* = undefined;
+    }
+};
+
 pub fn loadFile(allocator: std.mem.Allocator, path: []const u8, options: LoadOptions) !LoadedPolicy {
     const text = try std.fs.cwd().readFileAlloc(allocator, path, 256 * 1024);
     defer allocator.free(text);
@@ -439,6 +459,12 @@ fn parseJsonSafety(builder: *PolicyBuilder, safety: std.json.ObjectMap) !void {
             .require_fresh_battery_state = if (object.get("require_fresh_battery_state")) |item| try expectBool(item) else true,
         };
     }
+    if (safety.get("emergency")) |value| {
+        const object = try expectObject(value);
+        try rejectUnknownKeys(object, &.{ "allow_land", "allow_return_to_home" });
+        if (object.get("allow_land")) |item| builder.emergency.allow_land = try expectBool(item);
+        if (object.get("allow_return_to_home")) |item| builder.emergency.allow_return_to_home = try expectBool(item);
+    }
 }
 
 fn parseJsonCommands(builder: *PolicyBuilder, object: std.json.ObjectMap) !void {
@@ -474,7 +500,22 @@ fn validateLoadedPolicy(policy: *const schema.edge_policy_schema.EdgePolicyV1, o
 pub fn parseCommandRequestJson(allocator: std.mem.Allocator, text: []const u8) !domain.commands.CommandRequest {
     var parsed = std.json.parseFromSlice(std.json.Value, allocator, text, .{}) catch return error.InvalidCommandRequest;
     defer parsed.deinit();
-    const object = try expectObject(parsed.value);
+    return parseCommandRequestValue(allocator, parsed.value);
+}
+
+pub fn parseCommandRequestJsonOwned(allocator: std.mem.Allocator, text: []const u8) !ParsedCommandRequest {
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    errdefer arena.deinit();
+    const parsed = std.json.parseFromSliceLeaky(std.json.Value, arena.allocator(), text, .{}) catch return error.InvalidCommandRequest;
+    return .{
+        .arena = arena,
+        .value = try parseCommandRequestValue(arena.allocator(), parsed),
+    };
+}
+
+fn parseCommandRequestValue(allocator: std.mem.Allocator, value: std.json.Value) !domain.commands.CommandRequest {
+    _ = allocator;
+    const object = try expectObject(value);
     try rejectUnknownKeys(object, &.{ "command_id", "vehicle_id", "action", "actor", "timestamp_ms", "timestamp_source", "source", "parameters", "mission_id", "correlation_id", "operator_approval_id" });
     const action = try parseCommandAction(try expectString(object.get("action") orelse return error.InvalidCommandRequest));
     return domain.commands.CommandRequest.init(.{
@@ -497,7 +538,22 @@ pub fn parseCommandRequestJson(allocator: std.mem.Allocator, text: []const u8) !
 pub fn parseVehicleStateJson(allocator: std.mem.Allocator, text: []const u8) !domain.state.VehicleState {
     var parsed = std.json.parseFromSlice(std.json.Value, allocator, text, .{}) catch return error.InvalidVehicleState;
     defer parsed.deinit();
-    const object = try expectObject(parsed.value);
+    return parseVehicleStateValue(allocator, parsed.value);
+}
+
+pub fn parseVehicleStateJsonOwned(allocator: std.mem.Allocator, text: []const u8) !ParsedVehicleState {
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    errdefer arena.deinit();
+    const parsed = std.json.parseFromSliceLeaky(std.json.Value, arena.allocator(), text, .{}) catch return error.InvalidVehicleState;
+    return .{
+        .arena = arena,
+        .value = try parseVehicleStateValue(arena.allocator(), parsed),
+    };
+}
+
+fn parseVehicleStateValue(allocator: std.mem.Allocator, value: std.json.Value) !domain.state.VehicleState {
+    _ = allocator;
+    const object = try expectObject(value);
     try rejectUnknownKeys(object, &.{ "vehicle_id", "vehicle_kind", "autopilot", "mode", "arm_state", "position", "velocity", "battery", "control_authority", "home_position", "timestamp_ms", "timestamp_source", "state_freshness", "provenance" });
     return .{
         .vehicle_id = .{ .value = try expectString(object.get("vehicle_id") orelse return error.InvalidVehicleState) },

@@ -42,6 +42,7 @@ test "phase 23 edge placeholder never reports active command or flight enforceme
         switch (report.capability) {
             .command_mediation,
             .mavlink_gateway,
+            .flight_safety_enforcement,
             .px4_adapter,
             .ardupilot_adapter,
             .real_flight_enforcement,

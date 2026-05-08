@@ -4,12 +4,13 @@ const aegis_core = @import("aegis_core");
 pub const domain = @import("domain/mod.zig");
 pub const mavlink = @import("mavlink/mod.zig");
 pub const policy = @import("policy/mod.zig");
+pub const safety = @import("safety/mod.zig");
 pub const px4 = @import("px4/mod.zig");
 pub const ardupilot = @import("ardupilot/mod.zig");
 pub const schema = @import("schema/mod.zig");
 
-pub const phase = "30-ardupilot-sitl-integration";
-pub const installed_message = "Aegis Edge PX4 and ArduPilot SITL integrations are installed for opt-in simulation evidence and deterministic fake-adapter scenarios only; they are not ready for real flight.";
+pub const phase = "31-flight-safety-enforcement";
+pub const installed_message = "Aegis Edge flight safety enforcement is installed for deterministic fake-adapter, PX4 SITL, and ArduPilot SITL evidence only; it is not ready for real flight.";
 pub const core = aegis_core;
 
 pub const CapabilityStatus = enum {
@@ -36,6 +37,7 @@ pub const EdgeCapability = enum {
     command_mediation,
     policy_evaluation,
     mavlink_gateway,
+    flight_safety_enforcement,
     px4_adapter,
     ardupilot_adapter,
     real_flight_enforcement,
@@ -49,6 +51,7 @@ pub const EdgeCapability = enum {
             .command_mediation => "drone command mediation",
             .policy_evaluation => "edge policy evaluation",
             .mavlink_gateway => "MAVLink gateway",
+            .flight_safety_enforcement => "flight safety enforcement",
             .px4_adapter => "PX4 adapter",
             .ardupilot_adapter => "ArduPilot adapter",
             .real_flight_enforcement => "real-flight enforcement",
@@ -167,6 +170,7 @@ pub fn capabilityReports() []const CapabilityReport {
         .{ .capability = .fake_adapter, .status = .active, .note = "Deterministic fake MAVLink transport is available for local tests and examples only." },
         .{ .capability = .command_mediation, .status = .active, .note = "Phase 28 maps supported MAVLink commands through policy in fake gateway mode; no real endpoints." },
         .{ .capability = .mavlink_gateway, .status = .active, .note = "MAVLink v1/v2 parsing, classification, mapping, mission tracking, and gateway decisions are active for simulation/protocol mediation." },
+        .{ .capability = .flight_safety_enforcement, .status = .active, .note = "Phase 31 evaluates commands and mission plans against geofence, altitude, velocity, battery, freshness, mode, authority, and command-risk constraints for fake/SITL evidence only." },
         .{ .capability = .px4_adapter, .status = .partial, .note = "PX4 SITL adapter supports opt-in local simulation checks plus deterministic fake-PX4 scenarios; no hardware or real-flight support." },
         .{ .capability = .ardupilot_adapter, .status = .partial, .note = "ArduPilot SITL adapter supports opt-in local simulation checks plus deterministic fake-ArduPilot scenarios; Copter-oriented coverage starts Phase 30; no hardware or real-flight support." },
         .{ .capability = .real_flight_enforcement, .status = .unavailable, .note = "Real-flight behavior requires later simulation, bench, and customer safety validation phases." },
@@ -193,6 +197,7 @@ test {
     _ = domain;
     _ = mavlink;
     _ = policy;
+    _ = safety;
     _ = px4;
     _ = schema;
     _ = capabilityReports;

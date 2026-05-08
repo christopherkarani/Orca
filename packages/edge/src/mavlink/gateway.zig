@@ -2,6 +2,7 @@ const std = @import("std");
 
 const domain = @import("../domain/mod.zig");
 const policy = @import("../policy/mod.zig");
+const safety = @import("../safety/mod.zig");
 const schema = @import("../schema/mod.zig");
 const audit_mod = @import("audit.zig");
 const classifier = @import("classifier.zig");
@@ -133,11 +134,11 @@ fn processFrameInternal(
 
     if (mapped.request) |request| {
         try audit.appendCommand(.command_mapped, frame, mapped.classification.command_id, .{ .note = @tagName(request.action), .decision = .observe });
-        var evaluation = try policy.evaluateEdgeAction(
+        var evaluation = try safety.evaluateSafety(
             allocator,
             selected_policy,
-            request,
             state,
+            request,
             .{ .mode = policyMode(options.mode), .now_ms = options.now_ms, .non_interactive = options.mode == .ci or options.mode == .redteam },
         );
         defer evaluation.deinit();
@@ -150,6 +151,12 @@ fn processFrameInternal(
 
         if (evaluation.hasAuditEvent("safety.geofence_violation")) try audit.append(.safety_geofence_violation, frame, .{ .note = evaluation.explanation, .decision = .deny });
         if (evaluation.hasAuditEvent("safety.altitude_violation")) try audit.append(.safety_altitude_violation, frame, .{ .note = evaluation.explanation, .decision = .deny });
+        if (evaluation.hasAuditEvent("safety.velocity_violation")) try audit.append(.safety_velocity_violation, frame, .{ .note = evaluation.explanation, .decision = .deny });
+        if (evaluation.hasAuditEvent("safety.stale_state_denied")) try audit.append(.safety_stale_state_denied, frame, .{ .note = evaluation.explanation, .decision = .deny });
+        if (evaluation.hasAuditEvent("safety.battery_constraint")) try audit.append(.safety_battery_constraint, frame, .{ .note = evaluation.explanation, .decision = .deny });
+        if (evaluation.hasAuditEvent("safety.mode_constraint")) try audit.append(.safety_mode_constraint, frame, .{ .note = evaluation.explanation, .decision = .deny });
+        if (evaluation.hasAuditEvent("safety.authority_constraint")) try audit.append(.safety_authority_constraint, frame, .{ .note = evaluation.explanation, .decision = .deny });
+        if (evaluation.hasAuditEvent("safety.mission_item_denied")) try audit.append(.safety_mission_item_denied, frame, .{ .note = evaluation.explanation, .decision = .deny });
         if (should_block and track_mission and (frame.msgid == @import("dialect.zig").MISSION_ITEM or frame.msgid == @import("dialect.zig").MISSION_ITEM_INT)) {
             tracker.markDenied();
             try audit.appendCommand(.mission_item_denied, frame, mapped.classification.command_id, .{ .note = evaluation.explanation, .decision = .deny });

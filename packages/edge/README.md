@@ -1,6 +1,6 @@
 # Aegis Edge
 
-Aegis Edge is the drone and robotics safety-policy and audit package for local policy evaluation. Phase 28 adds a MAVLink gateway foundation for fake/in-memory simulation and protocol mediation. Phase 29 adds PX4 SITL integration for opt-in local simulation evidence and deterministic fake-PX4 scenarios. Phase 30 adds ArduPilot SITL integration for opt-in local simulation evidence and deterministic fake-ArduPilot scenarios.
+Aegis Edge is the drone and robotics safety-policy and audit package for local policy evaluation. Phase 28 adds a MAVLink gateway foundation for fake/in-memory simulation and protocol mediation. Phase 29 adds PX4 SITL integration for opt-in local simulation evidence and deterministic fake-PX4 scenarios. Phase 30 adds ArduPilot SITL integration for opt-in local simulation evidence and deterministic fake-ArduPilot scenarios. Phase 31 adds reusable flight safety enforcement for fake-adapter, PX4 SITL, and ArduPilot SITL contexts.
 
 Fake MAVLink remains the default deterministic path. PX4 SITL and ArduPilot SITL are optional and local-only; normal tests do not require PX4 or ArduPilot. Aegis Edge does not support ROS2 control, real hardware integration, or real-flight deployment. Aegis Edge is not a flight controller, not an autopilot replacement, not detect-and-avoid, not regulatory approval or certification, and is not ready for real flight. It must not be used for real flight.
 
@@ -9,11 +9,12 @@ The package currently provides:
 - Explicit vehicle, command, state, coordinate, geofence, battery, link, sensor, risk, and safety-envelope types.
 - Strict Edge policy parsing and validation for policy version `1`.
 - A shared-Core decision API for Edge command requests: `allow`, `ask`, `deny`, and `observe`.
-- Circular WGS84 geofence checks, altitude/velocity/battery/freshness/mode/authority constraints, and prepared audit events.
+- Reusable `edge.safety` evaluation with structured findings, compiled safety envelopes, mission safety checks, fallback recommendations, and prepared audit events.
+- Circular WGS84 geofence checks, altitude/velocity/battery/freshness/mode/authority constraints, and command-risk defaults.
 - MAVLink v1/v2 frame parsing, supported-message classification, command mapping, fake gateway decisions, generic mission upload tracking, and MAVLink2 signing presence detection.
 - PX4 SITL configuration/status reporting, deterministic fake-PX4 telemetry and command fixtures, policy-mediated PX4 scenarios, and redacted scenario artifacts.
 - ArduPilot SITL configuration/status reporting, deterministic fake-ArduPilot telemetry and command fixtures, policy-mediated ArduPilot scenarios, and redacted scenario artifacts.
-- Honest `aegis-edge doctor`, `aegis-edge schema`, `aegis-edge policy`, `aegis-edge mavlink`, `aegis-edge px4`, and `aegis-edge ardupilot` commands.
+- Honest `aegis-edge doctor`, `aegis-edge schema`, `aegis-edge policy`, `aegis-edge safety`, `aegis-edge mavlink`, `aegis-edge px4`, and `aegis-edge ardupilot` commands.
 
 ## CLI
 
@@ -21,6 +22,10 @@ The package currently provides:
 aegis-edge policy check examples/edge/policies/geofence-basic.yaml
 aegis-edge policy explain examples/edge/policies/geofence-basic.yaml set_waypoint
 aegis-edge policy evaluate examples/edge/policies/geofence-basic.yaml --request examples/edge/requests/waypoint-outside-geofence.json --state examples/edge/states/fresh-state.json
+aegis-edge safety doctor
+aegis-edge safety check --policy examples/edge/safety/policies/safety-geofence-basic.yaml
+aegis-edge safety evaluate --policy examples/edge/safety/policies/safety-geofence-basic.yaml --request examples/edge/safety/requests/waypoint-outside-geofence.json --state examples/edge/safety/states/fresh-state.json
+aegis-edge safety scenario run --policy examples/edge/safety/policies/safety-strict.yaml --scenario examples/edge/safety/scenarios/mission-outside-geofence-deny.yaml
 aegis-edge mavlink doctor
 aegis-edge mavlink inspect-frame examples/edge/mavlink/frames/command-arm.hex
 aegis-edge mavlink classify examples/edge/mavlink/frames/command-takeoff.hex
@@ -32,6 +37,8 @@ aegis-edge ardupilot scenario run --policy examples/edge/ardupilot/policies/ardu
 ```
 
 These commands evaluate policy and simulated MAVLink/PX4/ArduPilot records. They do not send a command to a real vehicle or real flight controller. PX4 SITL checks are opt-in and must be labeled `sitl_px4`; fake-PX4 evidence remains labeled `fake_adapter`. ArduPilot SITL checks are opt-in and must be labeled `sitl_ardupilot`; fake-ArduPilot evidence remains labeled `fake_ardupilot_adapter`.
+
+The safety evaluator itself never forwards commands. Gateway and adapter layers call it, then apply observe/enforce/CI forwarding semantics.
 
 ## What Does Not Belong Here
 
@@ -52,6 +59,13 @@ Unknown, stale, expired, or ambiguous state is not treated as safe. Coordinate f
 See:
 
 - `docs/edge/policy-engine.md`
+- `docs/edge/flight-safety-enforcement.md`
+- `docs/edge/safety-envelope.md`
+- `docs/edge/geofence-enforcement.md`
+- `docs/edge/altitude-velocity-enforcement.md`
+- `docs/edge/battery-enforcement.md`
+- `docs/edge/mission-safety.md`
+- `docs/edge/safety-findings.md`
 - `docs/edge/safety-policy.md`
 - `docs/edge/geofence-policy.md`
 - `docs/edge/command-risk.md`

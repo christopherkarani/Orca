@@ -18,7 +18,7 @@ pub const VelocityLimits = struct {
     max_vertical_mps: f64,
 
     pub fn validate(self: VelocityLimits) !void {
-        if (self.max_horizontal_mps < 0 or self.max_vertical_mps < 0) return error.InvalidSpeedLimit;
+        if (self.max_horizontal_mps <= 0 or self.max_vertical_mps <= 0) return error.InvalidSpeedLimit;
     }
 };
 

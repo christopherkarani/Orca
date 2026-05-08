@@ -13,10 +13,14 @@ pub const ViolatedConstraint = evaluate.ViolatedConstraint;
 
 pub const LoadOptions = load.LoadOptions;
 pub const LoadedPolicy = load.LoadedPolicy;
+pub const ParsedCommandRequest = load.ParsedCommandRequest;
+pub const ParsedVehicleState = load.ParsedVehicleState;
 
 pub const appendPreparedAuditEvents = evaluate.appendPreparedAuditEvents;
 pub const evaluateEdgeAction = evaluate.evaluateEdgeAction;
 pub const loadFile = load.loadFile;
 pub const loadFromSlice = load.loadFromSlice;
 pub const parseCommandRequestJson = load.parseCommandRequestJson;
+pub const parseCommandRequestJsonOwned = load.parseCommandRequestJsonOwned;
 pub const parseVehicleStateJson = load.parseVehicleStateJson;
+pub const parseVehicleStateJsonOwned = load.parseVehicleStateJsonOwned;

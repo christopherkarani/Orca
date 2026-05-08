@@ -1,0 +1,5 @@
+id: stale-state-deny
+mode: strict
+command: stale_waypoint
+expected_decision: deny
+note: "Fake stale-state safety scenario. Unknown or stale state is not treated as safe."

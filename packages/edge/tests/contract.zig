@@ -24,6 +24,8 @@ test "edge capabilities report unsupported integrations as unavailable or not im
             => try std.testing.expectEqual(edge.CapabilityStatus.active, report.status),
             .mavlink_gateway,
             => try std.testing.expectEqual(edge.CapabilityStatus.active, report.status),
+            .flight_safety_enforcement,
+            => try std.testing.expectEqual(edge.CapabilityStatus.active, report.status),
             .real_flight_enforcement,
             .detect_and_avoid,
             .regulatory_certification,

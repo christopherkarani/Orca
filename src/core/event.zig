@@ -72,6 +72,11 @@ pub const EventType = enum {
     safety_battery_constraint,
     safety_mode_constraint,
     safety_authority_constraint,
+    safety_evaluation_started,
+    safety_evaluation_completed,
+    safety_finding_created,
+    safety_command_risk_denied,
+    safety_mission_item_denied,
 
     pub fn toString(self: EventType) []const u8 {
         return switch (self) {
@@ -101,6 +106,11 @@ pub const EventType = enum {
             .safety_battery_constraint => "safety.battery_constraint",
             .safety_mode_constraint => "safety.mode_constraint",
             .safety_authority_constraint => "safety.authority_constraint",
+            .safety_evaluation_started => "safety.evaluation_started",
+            .safety_evaluation_completed => "safety.evaluation_completed",
+            .safety_finding_created => "safety.finding_created",
+            .safety_command_risk_denied => "safety.command_risk_denied",
+            .safety_mission_item_denied => "safety.mission_item_denied",
             else => @tagName(self),
         };
     }

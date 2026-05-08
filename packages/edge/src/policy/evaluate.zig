@@ -30,6 +30,8 @@ pub const SafetyFindingKind = enum {
     mode,
     authority,
     provenance,
+    mission,
+    command_risk,
 };
 
 pub const SafetyConstraintKind = enum {
@@ -42,6 +44,8 @@ pub const SafetyConstraintKind = enum {
     mode,
     authority,
     provenance,
+    mission,
+    command_risk,
 };
 
 pub const SafetyFinding = struct {
@@ -229,6 +233,12 @@ pub fn evaluateEdgeAction(
             }
         }
         if (result != .deny) {
+            if (try evaluateMissionCommand(&builder, request, vehicle_state)) |mission_result| {
+                result = mission_result.result;
+                rule_reason = mission_result.reason;
+            }
+        }
+        if (result != .deny) {
             if (try evaluateGeofence(&builder, policy, request, vehicle_state, context)) |geo_result| {
                 result = geo_result.result;
                 rule_reason = geo_result.reason;
@@ -342,11 +352,31 @@ fn evaluateFreshness(
     const not_fresh = state.state_freshness != .fresh or stale_by_age;
     if (!not_fresh) return null;
 
-    if (request.action == .land and freshness.allow_emergency_land_on_stale_state and policy.commands.resolve(.land) != .deny) {
-        try builder.addFinding(.state_freshness, "emergency land allowed on stale state age_ms={d}", .{age_ms});
-        return null;
+    if (request.action == .land) {
+        if (!freshness.allow_emergency_land_on_stale_state or !policy.safety.emergency.allow_land) {
+            try builder.addFinding(.state_freshness, "land denied on stale state because emergency landing is disabled age_ms={d}", .{age_ms});
+            try builder.addViolation(.state_freshness, "emergency land on stale state disabled by policy", .{});
+            try addSafetyAudit(builder, "safety.stale_state_denied", .edge_safety_envelope, "land stale state emergency action disabled", .deny, request.action);
+            return .{ .result = .deny, .reason = "stale land disabled by emergency policy" };
+        }
+        if (policy.commands.resolve(.land) != .deny) {
+            try builder.addFinding(.state_freshness, "emergency land allowed on stale state age_ms={d}", .{age_ms});
+            return null;
+        }
     }
-    if (request.action == .return_to_home and freshness.allow_return_home_on_stale_state and state.home_position != null and policy.commands.resolve(.return_to_home) != .deny) {
+    if (request.action == .return_to_home and (!freshness.allow_return_home_on_stale_state or !policy.safety.emergency.allow_return_to_home)) {
+        try builder.addFinding(.state_freshness, "return_to_home denied on stale state because emergency return is disabled age_ms={d}", .{age_ms});
+        try builder.addViolation(.state_freshness, "emergency return_to_home on stale state disabled by policy", .{});
+        try addSafetyAudit(builder, "safety.stale_state_denied", .edge_safety_envelope, "return_to_home stale state emergency action disabled", .deny, request.action);
+        return .{ .result = .deny, .reason = "stale return_to_home disabled by emergency policy" };
+    }
+    if (request.action == .return_to_home and state.home_position == null) {
+        try builder.addFinding(.state_freshness, "return_to_home denied on stale state without valid home position age_ms={d}", .{age_ms});
+        try builder.addViolation(.state_freshness, "return_to_home on stale state requires known home position", .{});
+        try addSafetyAudit(builder, "safety.stale_state_denied", .edge_safety_envelope, "return_to_home stale state without home position", .deny, request.action);
+        return .{ .result = .deny, .reason = "stale return_to_home missing home position" };
+    }
+    if (request.action == .return_to_home and state.home_position != null and policy.commands.resolve(.return_to_home) != .deny) {
         try builder.addFinding(.state_freshness, "return_to_home allowed on stale state with known home position age_ms={d}", .{age_ms});
         return null;
     }
@@ -389,6 +419,12 @@ fn evaluateBattery(
         try addSafetyAudit(builder, "safety.battery_constraint", .edge_safety_envelope, "takeoff below battery threshold", .deny, request.action);
         return .{ .result = .deny, .reason = "battery below takeoff threshold", .fallback = if (battery.percent_remaining <= battery_policy.land_below_percent) .land else .return_to_home };
     }
+    if (battery.percent_remaining <= battery_policy.land_below_percent and request.action == .land and !policy.safety.emergency.allow_land) {
+        try builder.addFinding(.battery, "land denied below critical battery because emergency landing is disabled: observed={d:.2}% threshold={d:.2}%", .{ battery.percent_remaining, battery_policy.land_below_percent });
+        try builder.addViolation(.battery, "emergency land disabled by policy", .{});
+        try addSafetyAudit(builder, "safety.battery_constraint", .edge_safety_envelope, "critical battery land disabled", .deny, request.action);
+        return .{ .result = .deny, .reason = "emergency land disabled" };
+    }
     if (battery.percent_remaining <= battery_policy.land_below_percent and request.action != .land) {
         try builder.addFinding(.battery, "land recommended below threshold: observed={d:.2}% threshold={d:.2}%", .{ battery.percent_remaining, battery_policy.land_below_percent });
         try addSafetyAudit(builder, "safety.battery_constraint", .edge_safety_envelope, "land threshold reached", .deny, request.action);
@@ -400,6 +436,19 @@ fn evaluateBattery(
         return .{ .result = .deny, .reason = "battery below return_home threshold", .fallback = .return_to_home };
     }
     return null;
+}
+
+fn evaluateMissionCommand(
+    builder: *EvaluationBuilder,
+    request: domain.commands.CommandRequest,
+    state: domain.state.VehicleState,
+) !?ConstraintDecision {
+    _ = state;
+    if (request.action != .start_mission) return null;
+    try builder.addFinding(.mission, "mission start denied because no prior safe mission status is attached to this request", .{});
+    try builder.addViolation(.mission, "mission start requires auditable mission safety status", .{});
+    try addSafetyAudit(builder, "safety.mission_item_denied", .edge_mission, "mission start missing safe mission status", .deny, request.action);
+    return .{ .result = .deny, .reason = "mission safety status required" };
 }
 
 fn evaluateModeAndAuthority(
@@ -653,6 +702,8 @@ fn isNeverSafeDefault(action: domain.commands.CommandAction) bool {
         .raw_actuator_output,
         .override_operator,
         .firmware_update,
+        .companion_computer_reboot,
+        .payload_release,
         => true,
         else => false,
     };
@@ -785,5 +836,6 @@ fn coreEventType(event_type: []const u8) !core.event.EventType {
     if (std.mem.eql(u8, event_type, "safety.battery_constraint")) return .safety_battery_constraint;
     if (std.mem.eql(u8, event_type, "safety.mode_constraint")) return .safety_mode_constraint;
     if (std.mem.eql(u8, event_type, "safety.authority_constraint")) return .safety_authority_constraint;
+    if (std.mem.eql(u8, event_type, "safety.mission_item_denied")) return .safety_mission_item_denied;
     return error.UnknownEdgeEventType;
 }
