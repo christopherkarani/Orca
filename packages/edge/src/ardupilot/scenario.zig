@@ -3,10 +3,11 @@ const std = @import("std");
 const domain = @import("../domain/mod.zig");
 const mavlink = @import("../mavlink/mod.zig");
 const policy = @import("../policy/mod.zig");
+const ardupilot_audit = @import("audit.zig");
 const connection = @import("connection.zig");
 const fake_adapter = @import("fake_adapter.zig");
-const px4_audit = @import("audit.zig");
 const sitl_adapter = @import("sitl_adapter.zig");
+const vehicle_kind = @import("vehicle_kind.zig");
 
 pub const RunOptions = struct {
     policy_path: []const u8,
@@ -20,6 +21,7 @@ pub const RunResult = struct {
     allocator: std.mem.Allocator,
     scenario_id: []u8,
     environment: connection.Environment,
+    vehicle: vehicle_kind.VehicleKind,
     skipped: bool = false,
     decision: ?@import("aegis_core").decision.DecisionResult = null,
     forwarded: bool = false,
@@ -38,7 +40,8 @@ pub const RunResult = struct {
 const ScenarioSpec = struct {
     allocator: std.mem.Allocator,
     id: []u8,
-    environment: connection.Environment = .fake_px4,
+    environment: connection.Environment = .fake_ardupilot,
+    vehicle: vehicle_kind.VehicleKind = .copter,
     mode: connection.Mode = .enforce,
     command: fake_adapter.CommandAction = .unknown,
     lat_int: i32 = 370000000,
@@ -48,7 +51,7 @@ const ScenarioSpec = struct {
     state_freshness: domain.state.StateFreshness = .fresh,
     expected_decision: ?@import("aegis_core").decision.DecisionResult = null,
     expected_forwarded: ?bool = null,
-    requires_px4_sitl: bool = false,
+    requires_ardupilot_sitl: bool = false,
     timeout_ms: u64 = 2_000,
     note: []u8,
 
@@ -63,24 +66,25 @@ pub fn run(allocator: std.mem.Allocator, options: RunOptions) !RunResult {
     var spec = try loadScenario(allocator, options.scenario_path);
     defer spec.deinit();
 
-    const gate = options.gate orelse connection.integrationTestGate(.{ .run_px4_sitl_tests = null, .endpoint = null });
-    if (spec.requires_px4_sitl and spec.environment != .px4_sitl) return error.Px4ScenarioRequiresSitlEnvironment;
-    if ((spec.environment == .px4_sitl or spec.requires_px4_sitl) and (gate.availability != .configured or !gate.enabled)) {
-        const summary = try std.fmt.allocPrint(allocator, "Scenario {s} skipped: PX4 SITL unavailable ({s}). No fake pass was recorded.", .{ spec.id, gate.reason });
+    const gate = options.gate orelse connection.integrationTestGate(.{ .run_ardupilot_sitl_tests = null, .endpoint = null, .vehicle = null });
+    if (spec.requires_ardupilot_sitl and spec.environment != .ardupilot_sitl) return error.ArduPilotScenarioRequiresSitlEnvironment;
+    if ((spec.environment == .ardupilot_sitl or spec.requires_ardupilot_sitl) and (gate.availability != .configured or !gate.enabled)) {
+        const summary = try std.fmt.allocPrint(allocator, "Scenario {s} skipped: ArduPilot SITL unavailable ({s}). No fake pass was recorded.", .{ spec.id, gate.reason });
         return .{
             .allocator = allocator,
             .scenario_id = try allocator.dupe(u8, spec.id),
-            .environment = .px4_sitl,
+            .environment = .ardupilot_sitl,
+            .vehicle = spec.vehicle,
             .skipped = true,
             .summary = summary,
         };
     }
-    if (spec.environment == .px4_sitl) return error.Px4SitlLiveTransportUnavailable;
+    if (spec.environment == .ardupilot_sitl) return error.ArduPilotSitlLiveTransportUnavailable;
 
     var loaded = try policy.loadFile(allocator, options.policy_path, .{});
     defer loaded.deinit();
 
-    var fake = fake_adapter.FakePx4Adapter.init(allocator, .{ .sysid = 42, .compid = 191 });
+    var fake = fake_adapter.FakeArduPilotAdapter.init(allocator, .{ .sysid = 42, .compid = 191, .vehicle = spec.vehicle });
     defer fake.deinit();
     const frame_bytes = try frameForScenario(&fake, spec);
     defer allocator.free(frame_bytes);
@@ -111,31 +115,42 @@ pub fn run(allocator: std.mem.Allocator, options: RunOptions) !RunResult {
 
     if (spec.expected_decision) |expected| {
         const actual = result.decision orelse return error.MissingScenarioDecision;
-        if (actual != expected) return error.Px4ScenarioDecisionMismatch;
+        if (actual != expected) return error.ArduPilotScenarioDecisionMismatch;
     }
     if (spec.expected_forwarded) |expected| {
-        if (result.forwarded != expected) return error.Px4ScenarioForwardingMismatch;
+        if (result.forwarded != expected) return error.ArduPilotScenarioForwardingMismatch;
     }
 
     const artifact_dir = if (options.artifact_dir) |dir| try allocator.dupe(u8, dir) else try defaultArtifactDir(allocator, spec.id);
     errdefer allocator.free(artifact_dir);
-    const endpoint = "127.0.0.1:14540";
-    try px4_audit.writeArtifacts(allocator, artifact_dir, .{
+    const endpoint = "127.0.0.1:14550";
+    try ardupilot_audit.writeArtifacts(allocator, artifact_dir, .{
         .scenario_id = spec.id,
         .environment = spec.environment,
-        .tested_version = "documented-by-phase-29",
+        .tested_version = "documented-by-phase-30",
+        .vehicle = spec.vehicle,
         .endpoint = endpoint,
     }, result, spec.note);
 
     const summary = try std.fmt.allocPrint(
         allocator,
-        "Scenario {s} environment={s} decision={s} forwarded={} blocked={} artifacts={s}. Evidence is simulation-only and not real-flight readiness.",
-        .{ spec.id, spec.environment.toString(), if (result.decision) |decision| decision.toString() else "none", result.forwarded, result.blocked, artifact_dir },
+        "Scenario {s} environment={s} vehicle={s} provenance={s} decision={s} forwarded={} blocked={} artifacts={s}. Evidence is simulation-only and not real-flight readiness.",
+        .{
+            spec.id,
+            spec.environment.toString(),
+            spec.vehicle.toString(),
+            @tagName(sitl_adapter.provenanceFor(spec.environment)),
+            if (result.decision) |decision| decision.toString() else "none",
+            result.forwarded,
+            result.blocked,
+            artifact_dir,
+        },
     );
     return .{
         .allocator = allocator,
         .scenario_id = try allocator.dupe(u8, spec.id),
         .environment = spec.environment,
+        .vehicle = spec.vehicle,
         .decision = result.decision,
         .forwarded = result.forwarded,
         .blocked = result.blocked,
@@ -144,7 +159,7 @@ pub fn run(allocator: std.mem.Allocator, options: RunOptions) !RunResult {
     };
 }
 
-fn frameForScenario(fake: *fake_adapter.FakePx4Adapter, spec: ScenarioSpec) ![]u8 {
+fn frameForScenario(fake: *fake_adapter.FakeArduPilotAdapter, spec: ScenarioSpec) ![]u8 {
     if (spec.command == .start_mission) return fake.missionWaypointFrame(spec.lat_int, spec.lon_int, spec.alt_m);
     return fake.commandFrame(.{
         .action = spec.command,
@@ -157,8 +172,8 @@ fn frameForScenario(fake: *fake_adapter.FakePx4Adapter, spec: ScenarioSpec) ![]u
 fn stateForScenario(spec: ScenarioSpec, timestamp_ms: i128) domain.state.VehicleState {
     return .{
         .vehicle_id = .{ .value = "edge-vehicle-1" },
-        .vehicle_kind = .drone_multirotor,
-        .autopilot_kind = .px4,
+        .vehicle_kind = spec.vehicle.toDomainKind(),
+        .autopilot_kind = .ardupilot,
         .mode = .guided,
         .arm_state = .armed,
         .position = .{ .latitude_deg = 37.0000, .longitude_deg = -122.0000, .altitude_m = 20, .altitude_reference = .amsl },
@@ -172,7 +187,7 @@ fn stateForScenario(spec: ScenarioSpec, timestamp_ms: i128) domain.state.Vehicle
 }
 
 fn defaultArtifactDir(allocator: std.mem.Allocator, id: []const u8) ![]u8 {
-    return std.fmt.allocPrint(allocator, ".aegis/edge/px4/{s}", .{id});
+    return std.fmt.allocPrint(allocator, ".aegis/edge/ardupilot/{s}", .{id});
 }
 
 fn loadScenario(allocator: std.mem.Allocator, path: []const u8) !ScenarioSpec {
@@ -180,7 +195,8 @@ fn loadScenario(allocator: std.mem.Allocator, path: []const u8) !ScenarioSpec {
     defer allocator.free(text);
 
     var id: ?[]const u8 = null;
-    var environment: connection.Environment = .fake_px4;
+    var environment: connection.Environment = .fake_ardupilot;
+    var vehicle: vehicle_kind.VehicleKind = .copter;
     var mode: connection.Mode = .enforce;
     var command: fake_adapter.CommandAction = .unknown;
     var lat_int: i32 = 370000000;
@@ -190,7 +206,7 @@ fn loadScenario(allocator: std.mem.Allocator, path: []const u8) !ScenarioSpec {
     var freshness: domain.state.StateFreshness = .fresh;
     var expected_decision: ?@import("aegis_core").decision.DecisionResult = null;
     var expected_forwarded: ?bool = null;
-    var requires_px4_sitl = false;
+    var requires_ardupilot_sitl = false;
     var timeout_ms: u64 = 2_000;
     var note: []const u8 = "";
 
@@ -199,16 +215,17 @@ fn loadScenario(allocator: std.mem.Allocator, path: []const u8) !ScenarioSpec {
         const no_comment = if (std.mem.indexOfScalar(u8, raw_line, '#')) |index| raw_line[0..index] else raw_line;
         const line = std.mem.trim(u8, no_comment, " \t\r");
         if (line.len == 0) continue;
-        const colon = std.mem.indexOfScalar(u8, line, ':') orelse return error.InvalidPx4Scenario;
+        const colon = std.mem.indexOfScalar(u8, line, ':') orelse return error.InvalidArduPilotScenario;
         const key = std.mem.trim(u8, line[0..colon], " \t");
         const value = cleanScalar(line[colon + 1 ..]);
-        if (std.mem.eql(u8, key, "id") or std.mem.eql(u8, key, "name")) id = value else if (std.mem.eql(u8, key, "environment")) environment = try connection.Environment.parse(value) else if (std.mem.eql(u8, key, "mode")) mode = try connection.Mode.parse(value) else if (std.mem.eql(u8, key, "command")) command = try fake_adapter.actionFromName(value) else if (std.mem.eql(u8, key, "lat_int")) lat_int = try std.fmt.parseInt(i32, value, 10) else if (std.mem.eql(u8, key, "lon_int")) lon_int = try std.fmt.parseInt(i32, value, 10) else if (std.mem.eql(u8, key, "alt_m")) alt_m = try std.fmt.parseFloat(f32, value) else if (std.mem.eql(u8, key, "battery_percent")) battery_percent = try std.fmt.parseFloat(f64, value) else if (std.mem.eql(u8, key, "state_freshness")) freshness = std.meta.stringToEnum(domain.state.StateFreshness, value) orelse return error.InvalidPx4Scenario else if (std.mem.eql(u8, key, "expected_decision")) expected_decision = std.meta.stringToEnum(@import("aegis_core").decision.DecisionResult, value) orelse return error.InvalidPx4Scenario else if (std.mem.eql(u8, key, "expected_forwarded")) expected_forwarded = try parseBool(value) else if (std.mem.eql(u8, key, "requires_px4_sitl")) requires_px4_sitl = try parseBool(value) else if (std.mem.eql(u8, key, "timeout_ms")) timeout_ms = try std.fmt.parseInt(u64, value, 10) else if (std.mem.eql(u8, key, "note")) note = value else return error.InvalidPx4Scenario;
+        if (std.mem.eql(u8, key, "id") or std.mem.eql(u8, key, "name")) id = value else if (std.mem.eql(u8, key, "environment")) environment = try connection.Environment.parse(value) else if (std.mem.eql(u8, key, "vehicle") or std.mem.eql(u8, key, "vehicle_type")) vehicle = try vehicle_kind.VehicleKind.parse(value) else if (std.mem.eql(u8, key, "mode")) mode = try connection.Mode.parse(value) else if (std.mem.eql(u8, key, "command")) command = try fake_adapter.actionFromName(value) else if (std.mem.eql(u8, key, "lat_int")) lat_int = try std.fmt.parseInt(i32, value, 10) else if (std.mem.eql(u8, key, "lon_int")) lon_int = try std.fmt.parseInt(i32, value, 10) else if (std.mem.eql(u8, key, "alt_m")) alt_m = try std.fmt.parseFloat(f32, value) else if (std.mem.eql(u8, key, "battery_percent")) battery_percent = try std.fmt.parseFloat(f64, value) else if (std.mem.eql(u8, key, "state_freshness")) freshness = std.meta.stringToEnum(domain.state.StateFreshness, value) orelse return error.InvalidArduPilotScenario else if (std.mem.eql(u8, key, "expected_decision")) expected_decision = std.meta.stringToEnum(@import("aegis_core").decision.DecisionResult, value) orelse return error.InvalidArduPilotScenario else if (std.mem.eql(u8, key, "expected_forwarded")) expected_forwarded = try parseBool(value) else if (std.mem.eql(u8, key, "requires_ardupilot_sitl")) requires_ardupilot_sitl = try parseBool(value) else if (std.mem.eql(u8, key, "timeout_ms")) timeout_ms = try std.fmt.parseInt(u64, value, 10) else if (std.mem.eql(u8, key, "note")) note = value else return error.InvalidArduPilotScenario;
     }
 
     return .{
         .allocator = allocator,
         .id = try allocator.dupe(u8, id orelse std.fs.path.stem(path)),
         .environment = environment,
+        .vehicle = vehicle,
         .mode = mode,
         .command = command,
         .lat_int = lat_int,
@@ -218,7 +235,7 @@ fn loadScenario(allocator: std.mem.Allocator, path: []const u8) !ScenarioSpec {
         .state_freshness = freshness,
         .expected_decision = expected_decision,
         .expected_forwarded = expected_forwarded,
-        .requires_px4_sitl = requires_px4_sitl,
+        .requires_ardupilot_sitl = requires_ardupilot_sitl,
         .timeout_ms = timeout_ms,
         .note = try allocator.dupe(u8, note),
     };

@@ -3,14 +3,14 @@ const edge = @import("aegis_edge");
 
 const domain = edge.domain;
 const mavlink = edge.mavlink;
-const px4 = edge.px4;
+const ardupilot = edge.ardupilot;
 
 const policy_yaml =
     \\version: 1
     \\
     \\vehicle:
     \\  kind: drone_multirotor
-    \\  autopilot: px4
+    \\  autopilot: ardupilot
     \\  adapter: mavlink
     \\
     \\safety:
@@ -57,6 +57,7 @@ const policy_yaml =
     \\    - set_waypoint
     \\    - set_velocity
     \\    - set_altitude
+    \\    - set_mode
     \\  deny:
     \\    - disable_failsafe
     \\    - disable_geofence
@@ -73,22 +74,27 @@ const policy_yaml =
     \\  redact_secrets: true
 ;
 
-test "phase 29 fake PX4 heartbeat position battery and stale mapping" {
+test "phase 30 fake ArduPilot heartbeat position battery mode and stale mapping" {
     const allocator = std.testing.allocator;
-    var fake = px4.fake_adapter.FakePx4Adapter.init(allocator, .{ .sysid = 42, .compid = 1 });
+    var fake = ardupilot.fake_adapter.FakeArduPilotAdapter.init(allocator, .{ .sysid = 42, .compid = 1, .vehicle = .copter });
     defer fake.deinit();
 
-    var mapper = px4.telemetry_mapping.StateMapper.init(.{
+    var mapper = ardupilot.telemetry_mapping.StateMapper.init(.{
         .vehicle_id = "edge-vehicle-1",
-        .provenance = .fake_adapter,
+        .vehicle = .copter,
+        .provenance = .fake_ardupilot_adapter,
         .now_ms = 1_000_000,
         .stale_after_ms = 1_000,
         .expire_after_ms = 5_000,
     });
 
-    const heartbeat = try fake.heartbeatFrame(.{ .armed = true, .base_mode = 0x80 });
+    const heartbeat = try fake.heartbeatFrame(.{ .armed = true, .custom_mode = ardupilot.telemetry_mapping.copter_mode_guided });
     defer allocator.free(heartbeat);
     try mapper.observeFrame(try mavlink.framing.parseFrame(heartbeat));
+
+    const unknown_mode_heartbeat = try fake.heartbeatFrame(.{ .armed = true, .custom_mode = 99, .base_mode = 0 });
+    defer allocator.free(unknown_mode_heartbeat);
+    try mapper.observeFrame(try mavlink.framing.parseFrame(unknown_mode_heartbeat));
 
     const position = try fake.globalPositionFrame(.{
         .lat_int = 370000000,
@@ -113,10 +119,11 @@ test "phase 29 fake PX4 heartbeat position battery and stale mapping" {
     try mapper.observeFrame(try mavlink.framing.parseFrame(battery));
 
     var state = mapper.state();
-    try std.testing.expectEqual(domain.state.StateProvenance.fake_adapter, state.provenance);
-    try std.testing.expectEqual(domain.vehicle.AutopilotKind.px4, state.autopilot_kind);
+    try std.testing.expectEqual(domain.state.StateProvenance.fake_ardupilot_adapter, state.provenance);
+    try std.testing.expectEqual(domain.vehicle.AutopilotKind.ardupilot, state.autopilot_kind);
+    try std.testing.expectEqual(domain.vehicle.VehicleKind.drone_multirotor, state.vehicle_kind);
     try std.testing.expectEqual(domain.vehicle.ArmState.armed, state.arm_state);
-    try std.testing.expectEqual(domain.vehicle.VehicleMode.guided, state.mode);
+    try std.testing.expectEqual(domain.vehicle.VehicleMode.unknown, state.mode);
     try std.testing.expectEqual(domain.coordinates.AltitudeReference.amsl, state.position.?.altitude_reference);
     try std.testing.expectApproxEqAbs(@as(f64, 37.0), state.position.?.latitude_deg, 0.000001);
     try std.testing.expectApproxEqAbs(@as(f64, -122.0), state.position.?.longitude_deg, 0.000001);
@@ -134,26 +141,26 @@ test "phase 29 fake PX4 heartbeat position battery and stale mapping" {
     try std.testing.expectEqual(domain.state.StateFreshness.expired, state.state_freshness);
 }
 
-test "phase 29 SITL provenance is never used for fake PX4 adapter frames" {
+test "phase 30 SITL provenance is never used for fake ArduPilot adapter frames" {
     const allocator = std.testing.allocator;
-    var fake = px4.fake_adapter.FakePx4Adapter.init(allocator, .{});
+    var fake = ardupilot.fake_adapter.FakeArduPilotAdapter.init(allocator, .{});
     defer fake.deinit();
-    var mapper = px4.telemetry_mapping.StateMapper.init(.{ .vehicle_id = "edge-vehicle-1", .provenance = .fake_adapter, .now_ms = 1_000_000 });
+    var mapper = ardupilot.telemetry_mapping.StateMapper.init(.{ .vehicle_id = "edge-vehicle-1", .vehicle = .copter, .provenance = .fake_ardupilot_adapter, .now_ms = 1_000_000 });
     const heartbeat = try fake.heartbeatFrame(.{});
     defer allocator.free(heartbeat);
     try mapper.observeFrame(try mavlink.framing.parseFrame(heartbeat));
-    try std.testing.expectEqual(domain.state.StateProvenance.fake_adapter, mapper.state().provenance);
-    try std.testing.expect(mapper.state().provenance != .sitl_px4);
+    try std.testing.expectEqual(domain.state.StateProvenance.fake_ardupilot_adapter, mapper.state().provenance);
+    try std.testing.expect(mapper.state().provenance != .sitl_ardupilot);
 }
 
-test "phase 29 PX4 mediation reuses MAVLink gateway policy decisions" {
+test "phase 30 ArduPilot mediation reuses MAVLink gateway policy decisions" {
     const allocator = std.testing.allocator;
-    var loaded = try edge.policy.loadFromSlice(allocator, policy_yaml, "phase29-policy.yaml", .{});
+    var loaded = try edge.policy.loadFromSlice(allocator, policy_yaml, "phase30-policy.yaml", .{});
     defer loaded.deinit();
-    var fake = px4.fake_adapter.FakePx4Adapter.init(allocator, .{ .sysid = 42, .compid = 191 });
+    var fake = ardupilot.fake_adapter.FakeArduPilotAdapter.init(allocator, .{ .sysid = 42, .compid = 191, .vehicle = .copter });
     defer fake.deinit();
-    const adapter = px4.sitl_adapter.Adapter.init(.{
-        .environment = .fake_px4,
+    const adapter = ardupilot.sitl_adapter.Adapter.init(.{
+        .environment = .fake_ardupilot,
         .mode = .enforce,
         .vehicle_id = "edge-vehicle-1",
         .now_ms = 1_000_500,
@@ -180,6 +187,13 @@ test "phase 29 PX4 mediation reuses MAVLink gateway policy decisions" {
     try std.testing.expect(land_result.forwarded);
     try std.testing.expect(land_result.audit.hasEvent(.command_allowed));
 
+    const rtl = try fake.commandFrame(.{ .action = .return_to_home });
+    defer allocator.free(rtl);
+    var rtl_result = try adapter.mediateFrame(allocator, &loaded.value, state, try mavlink.framing.parseFrame(rtl));
+    defer rtl_result.deinit();
+    try std.testing.expect(rtl_result.forwarded);
+    try std.testing.expect(rtl_result.audit.hasEvent(.command_allowed));
+
     const disable_failsafe = try fake.commandFrame(.{ .action = .disable_failsafe });
     defer allocator.free(disable_failsafe);
     var failsafe_result = try adapter.mediateFrame(allocator, &loaded.value, state, try mavlink.framing.parseFrame(disable_failsafe));
@@ -202,23 +216,23 @@ test "phase 29 PX4 mediation reuses MAVLink gateway policy decisions" {
     try std.testing.expectEqual(edge.core.decision.DecisionResult.deny, unknown_result.decision.?);
 }
 
-test "phase 29 CI converts ask to deny and observe logs while forwarding" {
+test "phase 30 CI converts ask to deny and observe logs while forwarding" {
     const allocator = std.testing.allocator;
-    var loaded = try edge.policy.loadFromSlice(allocator, policy_yaml, "phase29-policy.yaml", .{});
+    var loaded = try edge.policy.loadFromSlice(allocator, policy_yaml, "phase30-policy.yaml", .{});
     defer loaded.deinit();
-    var fake = px4.fake_adapter.FakePx4Adapter.init(allocator, .{ .sysid = 42, .compid = 191 });
+    var fake = ardupilot.fake_adapter.FakeArduPilotAdapter.init(allocator, .{ .sysid = 42, .compid = 191 });
     defer fake.deinit();
     const arm = try fake.commandFrame(.{ .action = .arm });
     defer allocator.free(arm);
     const frame = try mavlink.framing.parseFrame(arm);
 
-    const ci_adapter = px4.sitl_adapter.Adapter.init(.{ .environment = .fake_px4, .mode = .ci, .vehicle_id = "edge-vehicle-1", .now_ms = 1_000_500 });
+    const ci_adapter = ardupilot.sitl_adapter.Adapter.init(.{ .environment = .fake_ardupilot, .mode = .ci, .vehicle_id = "edge-vehicle-1", .now_ms = 1_000_500 });
     var ci = try ci_adapter.mediateFrame(allocator, &loaded.value, fakeFreshState(80, .fresh), frame);
     defer ci.deinit();
     try std.testing.expect(ci.blocked);
     try std.testing.expectEqual(edge.core.decision.DecisionResult.deny, ci.decision.?);
 
-    const observe_adapter = px4.sitl_adapter.Adapter.init(.{ .environment = .fake_px4, .mode = .observe, .vehicle_id = "edge-vehicle-1", .now_ms = 1_000_500 });
+    const observe_adapter = ardupilot.sitl_adapter.Adapter.init(.{ .environment = .fake_ardupilot, .mode = .observe, .vehicle_id = "edge-vehicle-1", .now_ms = 1_000_500 });
     var observed = try observe_adapter.mediateFrame(allocator, &loaded.value, fakeFreshState(80, .fresh), frame);
     defer observed.deinit();
     try std.testing.expect(observed.forwarded);
@@ -226,20 +240,25 @@ test "phase 29 CI converts ask to deny and observe logs while forwarding" {
     try std.testing.expect(observed.audit.hasEvent(.command_observed));
 }
 
-test "phase 29 stale state denies high risk takeoff unless emergency land" {
+test "phase 30 stale state and low battery deny high risk takeoff while preserving emergency land" {
     const allocator = std.testing.allocator;
-    var loaded = try edge.policy.loadFromSlice(allocator, policy_yaml, "phase29-policy.yaml", .{});
+    var loaded = try edge.policy.loadFromSlice(allocator, policy_yaml, "phase30-policy.yaml", .{});
     defer loaded.deinit();
-    var fake = px4.fake_adapter.FakePx4Adapter.init(allocator, .{ .sysid = 42, .compid = 191 });
+    var fake = ardupilot.fake_adapter.FakeArduPilotAdapter.init(allocator, .{ .sysid = 42, .compid = 191 });
     defer fake.deinit();
-    const adapter = px4.sitl_adapter.Adapter.init(.{ .environment = .fake_px4, .mode = .enforce, .vehicle_id = "edge-vehicle-1", .now_ms = 1_000_500 });
+    const adapter = ardupilot.sitl_adapter.Adapter.init(.{ .environment = .fake_ardupilot, .mode = .enforce, .vehicle_id = "edge-vehicle-1", .now_ms = 1_000_500 });
 
     const takeoff = try fake.commandFrame(.{ .action = .takeoff, .alt_m = 20 });
     defer allocator.free(takeoff);
-    var takeoff_result = try adapter.mediateFrame(allocator, &loaded.value, fakeFreshState(80, .stale), try mavlink.framing.parseFrame(takeoff));
-    defer takeoff_result.deinit();
-    try std.testing.expect(takeoff_result.blocked);
-    try std.testing.expectEqual(edge.core.decision.DecisionResult.deny, takeoff_result.decision.?);
+    var stale_takeoff = try adapter.mediateFrame(allocator, &loaded.value, fakeFreshState(80, .stale), try mavlink.framing.parseFrame(takeoff));
+    defer stale_takeoff.deinit();
+    try std.testing.expect(stale_takeoff.blocked);
+    try std.testing.expectEqual(edge.core.decision.DecisionResult.deny, stale_takeoff.decision.?);
+
+    var low_battery_takeoff = try adapter.mediateFrame(allocator, &loaded.value, fakeFreshState(20, .fresh), try mavlink.framing.parseFrame(takeoff));
+    defer low_battery_takeoff.deinit();
+    try std.testing.expect(low_battery_takeoff.blocked);
+    try std.testing.expectEqual(edge.core.decision.DecisionResult.deny, low_battery_takeoff.decision.?);
 
     const land = try fake.commandFrame(.{ .action = .land });
     defer allocator.free(land);
@@ -248,79 +267,88 @@ test "phase 29 stale state denies high risk takeoff unless emergency land" {
     try std.testing.expect(land_result.forwarded);
 }
 
-test "phase 29 fake scenario creates redacted artifacts and distinguishes fake from SITL" {
+test "phase 30 fake scenario creates redacted artifacts and distinguishes fake from SITL" {
     const allocator = std.testing.allocator;
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
     const root = try tmp.dir.realpathAlloc(allocator, ".");
     defer allocator.free(root);
 
-    var result = try px4.scenario.run(allocator, .{
-        .policy_path = "examples/edge/px4/policies/px4-geofence-basic.yaml",
-        .scenario_path = "examples/edge/px4/scenarios/waypoint-outside-geofence-deny.yaml",
+    var result = try ardupilot.scenario.run(allocator, .{
+        .policy_path = "examples/edge/ardupilot/policies/ardupilot-geofence-basic.yaml",
+        .scenario_path = "examples/edge/ardupilot/scenarios/waypoint-outside-geofence-deny.yaml",
         .artifact_dir = root,
         .now_ms = 1_000_500,
     });
     defer result.deinit();
 
     try std.testing.expect(!result.skipped);
-    try std.testing.expectEqual(px4.connection.Environment.fake_px4, result.environment);
+    try std.testing.expectEqual(ardupilot.connection.Environment.fake_ardupilot, result.environment);
+    try std.testing.expectEqual(ardupilot.vehicle_kind.VehicleKind.copter, result.vehicle);
     try std.testing.expectEqual(edge.core.decision.DecisionResult.deny, result.decision.?);
-    try std.testing.expect(std.mem.indexOf(u8, result.summary, "fake_px4") != null);
-    try std.testing.expect(std.mem.indexOf(u8, result.summary, "px4_sitl success") == null);
+    try std.testing.expect(std.mem.indexOf(u8, result.summary, "fake_ardupilot") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.summary, "ardupilot_sitl success") == null);
 
     const events_path = try std.fs.path.join(allocator, &.{ root, "events.jsonl" });
     defer allocator.free(events_path);
     const events = try std.fs.cwd().readFileAlloc(allocator, events_path, 32 * 1024);
     defer allocator.free(events);
-    try std.testing.expect(std.mem.indexOf(u8, events, "fake_px4") != null);
+    try std.testing.expect(std.mem.indexOf(u8, events, "fake_ardupilot") != null);
+    try std.testing.expect(std.mem.indexOf(u8, events, "fake_ardupilot_adapter") != null);
     try std.testing.expect(std.mem.indexOf(u8, events, "sk-fakeSyntheticOpenAIKey1234567890") == null);
 }
 
-test "phase 29 missing PX4 SITL skips only when integration tests are not enabled" {
-    const gate = px4.connection.integrationTestGate(.{
-        .run_px4_sitl_tests = null,
+test "phase 30 missing ArduPilot SITL skips only when integration tests are not enabled" {
+    const gate = ardupilot.connection.integrationTestGate(.{
+        .run_ardupilot_sitl_tests = null,
         .endpoint = null,
+        .vehicle = null,
     });
     try std.testing.expect(!gate.enabled);
-    try std.testing.expectEqual(px4.connection.IntegrationAvailability.skipped, gate.availability);
+    try std.testing.expectEqual(ardupilot.connection.IntegrationAvailability.skipped, gate.availability);
 
-    const enabled_missing = px4.connection.integrationTestGate(.{
-        .run_px4_sitl_tests = "1",
+    const enabled_missing = ardupilot.connection.integrationTestGate(.{
+        .run_ardupilot_sitl_tests = "1",
         .endpoint = null,
+        .vehicle = null,
     });
     try std.testing.expect(enabled_missing.enabled);
-    try std.testing.expectEqual(px4.connection.IntegrationAvailability.unavailable, enabled_missing.availability);
+    try std.testing.expectEqual(ardupilot.connection.IntegrationAvailability.unavailable, enabled_missing.availability);
 }
 
-test "phase 29 integration gate owns endpoint host copied from env buffers" {
+test "phase 30 integration gate owns endpoint host copied from env buffers" {
     const allocator = std.testing.allocator;
     const run_source = try allocator.dupe(u8, "1");
-    const endpoint_source = try allocator.dupe(u8, "127.0.0.1:14540");
+    const endpoint_source = try allocator.dupe(u8, "127.0.0.1:14550");
+    const vehicle_source = try allocator.dupe(u8, "copter");
 
-    var gate = try px4.connection.integrationTestGateOwned(allocator, .{
-        .run_px4_sitl_tests = run_source,
+    var gate = try ardupilot.connection.integrationTestGateOwned(allocator, .{
+        .run_ardupilot_sitl_tests = run_source,
         .endpoint = endpoint_source,
+        .vehicle = vehicle_source,
     });
     defer gate.deinit(allocator);
     allocator.free(run_source);
     allocator.free(endpoint_source);
+    allocator.free(vehicle_source);
 
     try std.testing.expect(gate.enabled);
-    try std.testing.expectEqual(px4.connection.IntegrationAvailability.configured, gate.availability);
+    try std.testing.expectEqual(ardupilot.connection.IntegrationAvailability.configured, gate.availability);
     try std.testing.expectEqualStrings("127.0.0.1", gate.endpoint.?.host);
-    try std.testing.expectEqual(@as(u16, 14540), gate.endpoint.?.port);
+    try std.testing.expectEqual(@as(u16, 14550), gate.endpoint.?.port);
+    try std.testing.expectEqual(ardupilot.vehicle_kind.VehicleKind.copter, gate.vehicle);
 }
 
-test "phase 29 SITL-required scenario cannot fall back to fake adapter metadata" {
+test "phase 30 SITL-required scenario cannot fall back to fake adapter metadata" {
     const allocator = std.testing.allocator;
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
     const inconsistent_scenario =
         \\id: requires-sitl-without-env
         \\mode: observe
+        \\vehicle: copter
         \\command: land
-        \\requires_px4_sitl: true
+        \\requires_ardupilot_sitl: true
         \\expected_decision: allow
         \\expected_forwarded: true
         \\note: "This metadata is intentionally inconsistent and must not fake-pass."
@@ -331,77 +359,46 @@ test "phase 29 SITL-required scenario cannot fall back to fake adapter metadata"
     const scenario_path = try std.fs.path.join(allocator, &.{ root, "requires-sitl-without-env.yaml" });
     defer allocator.free(scenario_path);
 
-    try std.testing.expectError(error.Px4ScenarioRequiresSitlEnvironment, px4.scenario.run(allocator, .{
-        .policy_path = "examples/edge/px4/policies/px4-geofence-basic.yaml",
+    try std.testing.expectError(error.ArduPilotScenarioRequiresSitlEnvironment, ardupilot.scenario.run(allocator, .{
+        .policy_path = "examples/edge/ardupilot/policies/ardupilot-geofence-basic.yaml",
         .scenario_path = scenario_path,
     }));
 }
 
-test "phase 29 configured PX4 SITL scenario cannot fake-pass as SITL success" {
-    const allocator = std.testing.allocator;
-    const gate = px4.connection.integrationTestGate(.{
-        .run_px4_sitl_tests = "1",
-        .endpoint = "127.0.0.1:14540",
+test "phase 30 configured SITL scenario does not execute fake adapter as SITL success" {
+    const gate = ardupilot.connection.integrationTestGate(.{
+        .run_ardupilot_sitl_tests = "1",
+        .endpoint = "127.0.0.1:14550",
+        .vehicle = "copter",
     });
-    try std.testing.expectEqual(px4.connection.IntegrationAvailability.configured, gate.availability);
+    try std.testing.expectEqual(ardupilot.connection.IntegrationAvailability.configured, gate.availability);
 
-    try std.testing.expectError(error.Px4SitlLiveTransportUnavailable, px4.scenario.run(allocator, .{
-        .policy_path = "examples/edge/px4/policies/px4-geofence-basic.yaml",
-        .scenario_path = "examples/edge/px4/scenarios/sitl-observe-heartbeat-skip.yaml",
+    try std.testing.expectError(error.ArduPilotSitlLiveTransportUnavailable, ardupilot.scenario.run(std.testing.allocator, .{
+        .policy_path = "examples/edge/ardupilot/policies/ardupilot-geofence-basic.yaml",
+        .scenario_path = "examples/edge/ardupilot/scenarios/sitl-observe-heartbeat-skip.yaml",
         .gate = gate,
     }));
 }
 
-test "phase 29 edge policy schema matches runtime circle geofence and altitude limits" {
-    const allocator = std.testing.allocator;
-    const text = try std.fs.cwd().readFileAlloc(allocator, "schemas/edge-policy-v1.json", 128 * 1024);
-    defer allocator.free(text);
-    var parsed = try std.json.parseFromSlice(std.json.Value, allocator, text, .{});
-    defer parsed.deinit();
-
-    const root = parsed.value.object;
-    const safety = root.get("properties").?.object.get("safety").?.object;
-    const safety_properties = safety.get("properties").?.object;
-    const geofence = safety_properties.get("geofence").?.object;
-    const geofence_required = geofence.get("required").?.array.items;
-    try expectJsonStringInArray(geofence_required, "center");
-    try expectJsonStringInArray(geofence_required, "max_radius_m");
-    try std.testing.expectEqualStrings("circle", geofence.get("properties").?.object.get("type").?.object.get("const").?.string);
-    try std.testing.expect(geofence.get("properties").?.object.get("home_position") != null);
-    try std.testing.expect(geofence.get("properties").?.object.get("vertices") == null);
-
-    const altitude = safety_properties.get("altitude").?.object;
-    const altitude_required = altitude.get("required").?.array.items;
-    try expectJsonStringInArray(altitude_required, "min_altitude_m");
-    try expectJsonStringInArray(altitude_required, "max_altitude_m");
-    try expectJsonStringInArray(altitude_required, "altitude_reference");
-}
-
-test "phase 29 doctor reports no hardware or real-flight readiness" {
+test "phase 30 doctor reports fake adapter, SITL unavailable, PX4 distinction, and no hardware readiness" {
     var stdout_buf: [4096]u8 = undefined;
     var stream = std.io.fixedBufferStream(&stdout_buf);
-    try px4.health.writeDoctor(stream.writer(), .{});
+    try ardupilot.health.writeDoctor(stream.writer(), .{});
     const output = stream.getWritten();
     try std.testing.expect(std.mem.indexOf(u8, output, "fake adapter: active") != null);
-    try std.testing.expect(std.mem.indexOf(u8, output, "PX4 SITL support:") != null);
+    try std.testing.expect(std.mem.indexOf(u8, output, "ArduPilot SITL support:") != null);
+    try std.testing.expect(std.mem.indexOf(u8, output, "PX4 and ArduPilot are reported separately") != null);
     try std.testing.expect(std.mem.indexOf(u8, output, "real-flight ready") == null);
     try std.testing.expect(std.mem.indexOf(u8, output, "certified") == null);
     try std.testing.expect(std.mem.indexOf(u8, output, "detect-and-avoid") != null);
     try std.testing.expect(std.mem.indexOf(u8, output, "sk-fakeSyntheticOpenAIKey1234567890") == null);
 }
 
-fn expectJsonStringInArray(items: []const std.json.Value, expected: []const u8) !void {
-    for (items) |item| {
-        if (item == .string and std.mem.eql(u8, item.string, expected)) return;
-    }
-    return error.TestUnexpectedResult;
-}
-
 fn fakeFreshState(percent: f64, freshness: domain.state.StateFreshness) domain.state.VehicleState {
     return .{
         .vehicle_id = .{ .value = "edge-vehicle-1" },
         .vehicle_kind = .drone_multirotor,
-        .autopilot_kind = .px4,
+        .autopilot_kind = .ardupilot,
         .mode = .guided,
         .arm_state = .armed,
         .position = .{ .latitude_deg = 37.0000, .longitude_deg = -122.0000, .altitude_m = 20, .altitude_reference = .amsl },
@@ -410,6 +407,6 @@ fn fakeFreshState(percent: f64, freshness: domain.state.StateFreshness) domain.s
         .home_position = .{ .latitude_deg = 37.0000, .longitude_deg = -122.0000, .altitude_m = 0, .altitude_reference = .amsl },
         .timestamp = .{ .value = 1_000_000, .source = .monotonic },
         .state_freshness = freshness,
-        .provenance = .fake_adapter,
+        .provenance = .fake_ardupilot_adapter,
     };
 }

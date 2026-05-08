@@ -15,6 +15,7 @@ pub const position_mask_velocity_ignored: u16 = (1 << 3) | (1 << 4) | (1 << 5) |
 pub const position_mask_position_ignored: u16 = (1 << 0) | (1 << 1) | (1 << 2) | (1 << 6) | (1 << 7) | (1 << 8) | (1 << 10) | (1 << 11);
 
 pub const Heartbeat = struct {
+    custom_mode: u32,
     vehicle_type: u8,
     autopilot: u8,
     base_mode: u8,
@@ -172,7 +173,7 @@ pub const SupportedMessage = union(enum) {
 pub fn decode(frame: framing.Frame) !SupportedMessage {
     const p = frame.payload;
     return switch (frame.msgid) {
-        dialect.HEARTBEAT => .{ .heartbeat = .{ .vehicle_type = p[4], .autopilot = p[5], .base_mode = p[6], .system_status = p[7] } },
+        dialect.HEARTBEAT => .{ .heartbeat = .{ .custom_mode = framing.readU32LE(p[0..4]), .vehicle_type = p[4], .autopilot = p[5], .base_mode = p[6], .system_status = p[7] } },
         dialect.SYS_STATUS,
         dialect.GPS_RAW_INT,
         dialect.GLOBAL_POSITION_INT,

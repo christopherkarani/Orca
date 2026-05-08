@@ -106,3 +106,12 @@
 - Environment-derived endpoint slices returned from helpers must own their storage or keep the env buffer alive with an explicit deinit path. Never return slices into freed env-var buffers.
 - `requires_px4_sitl` is an enforcement gate, not advisory metadata. Reject inconsistent scenario metadata before any fake-PX4 execution can produce a pass.
 - Public Edge policy schemas must match parser-required fields and supported blocks. Schema drift around geofence and altitude policy shape misleads policy authors and schema-driven tooling.
+
+## 2026-05-08 Phase 30 ArduPilot SITL Review
+
+- New Phase sources, docs, examples, and tests must be visible to `git diff` before review handoff. `build.zig` wiring plus untracked files is a clean-checkout build failure even when local tests pass.
+- A configured SITL gate is not proof of live SITL. Until a real transport exchange is implemented, SITL-labeled scenarios must skip when unavailable and fail closed when merely configured, never run fake adapters as SITL evidence.
+- Release archives are part of the reviewed contract. Regenerate checked-in archives and checksums whenever new binaries such as `aegis-edge` or package resources are added.
+- Built-in CLI schema printing must not depend on the caller's cwd. Use build-embedded schema documents or an executable/resource-prefix lookup, and regress arbitrary-cwd invocation.
+- Runtime schema descriptors, checked-in JSON schemas, and emitted audit event names must be tested together so persisted events like `mavlink.command_denied` validate.
+- If a public schema already advertises a domain-supported field such as `safety.geofence.home_position`, prefer implementing loader support and round-trip tests over silently narrowing the contract.

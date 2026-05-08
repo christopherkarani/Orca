@@ -51,6 +51,7 @@ const Section = enum {
     state_freshness,
     geofence,
     geofence_center,
+    geofence_home_position,
     velocity,
     altitude,
     battery,
@@ -76,6 +77,7 @@ const PolicyBuilder = struct {
     freshness: ?domain.safety_envelope.StateFreshnessPolicy = null,
     geofence_type: ?[]const u8 = null,
     geofence_center: ?domain.coordinates.GeoPoint = null,
+    geofence_home_position: ?domain.coordinates.GeoPoint = null,
     geofence_radius: ?f64 = null,
     geofence_floor: ?f64 = null,
     geofence_ceiling: ?f64 = null,
@@ -188,6 +190,7 @@ const PolicyBuilder = struct {
         if (radius <= 0) return error.InvalidGeofenceRadius;
         return .{
             .shape = .{ .circle = .{ .center = center, .max_radius_m = radius } },
+            .home_position = self.geofence_home_position,
             .altitude_floor_m = self.geofence_floor orelse return error.InvalidPolicy,
             .altitude_ceiling_m = self.geofence_ceiling orelse return error.InvalidPolicy,
             .altitude_reference = self.geofence_alt_ref orelse return error.UnknownAltitudeReference,
@@ -246,7 +249,7 @@ fn parseYamlPolicy(allocator: std.mem.Allocator, text: []const u8, source_path: 
 
         switch (section) {
             .vehicle => try parseYamlVehicle(&builder, key, value),
-            .safety, .state_freshness, .geofence, .geofence_center, .velocity, .altitude, .battery, .emergency => {
+            .safety, .state_freshness, .geofence, .geofence_center, .geofence_home_position, .velocity, .altitude, .battery, .emergency => {
                 try parseYamlSafety(&builder, &section, indent, key, value);
             },
             .commands => try parseYamlCommands(&command_list, key),
@@ -263,7 +266,7 @@ fn parseYamlVehicle(builder: *PolicyBuilder, key: []const u8, value: []const u8)
 }
 
 fn parseYamlSafety(builder: *PolicyBuilder, section: *Section, indent: usize, key: []const u8, value: []const u8) !void {
-    if (section.* == .geofence_center and indent <= 4 and !isGeofenceCenterKey(key)) {
+    if ((section.* == .geofence_center or section.* == .geofence_home_position) and indent <= 4 and !isGeoPointKey(key)) {
         section.* = .geofence;
     }
     if (indent == 2) {
@@ -272,6 +275,10 @@ fn parseYamlSafety(builder: *PolicyBuilder, section: *Section, indent: usize, ke
     }
     if (section.* == .geofence and indent == 4 and std.mem.eql(u8, key, "center")) {
         section.* = .geofence_center;
+        return;
+    }
+    if (section.* == .geofence and indent == 4 and std.mem.eql(u8, key, "home_position")) {
+        section.* = .geofence_home_position;
         return;
     }
     switch (section.*) {
@@ -283,8 +290,13 @@ fn parseYamlSafety(builder: *PolicyBuilder, section: *Section, indent: usize, ke
         .geofence => try parseYamlGeofence(builder, key, value),
         .geofence_center => {
             var center = builder.geofence_center orelse domain.coordinates.GeoPoint{ .latitude_deg = 0, .longitude_deg = 0, .altitude_m = 0, .altitude_reference = .unknown };
-            if (std.mem.eql(u8, key, "latitude_deg")) center.latitude_deg = try parseF64(value) else if (std.mem.eql(u8, key, "longitude_deg")) center.longitude_deg = try parseF64(value) else if (std.mem.eql(u8, key, "altitude_m")) center.altitude_m = try parseF64(value) else if (std.mem.eql(u8, key, "altitude_reference")) center.altitude_reference = try parseAltitudeReference(value) else return error.InvalidPolicy;
+            try parseYamlGeoPointField(&center, key, value);
             builder.geofence_center = center;
+        },
+        .geofence_home_position => {
+            var home = builder.geofence_home_position orelse domain.coordinates.GeoPoint{ .latitude_deg = 0, .longitude_deg = 0, .altitude_m = 0, .altitude_reference = .unknown };
+            try parseYamlGeoPointField(&home, key, value);
+            builder.geofence_home_position = home;
         },
         .velocity => {
             var velocity = builder.velocity orelse domain.safety_envelope.VelocityLimits{ .max_horizontal_mps = 0, .max_vertical_mps = 0 };
@@ -308,11 +320,15 @@ fn parseYamlSafety(builder: *PolicyBuilder, section: *Section, indent: usize, ke
     }
 }
 
-fn isGeofenceCenterKey(key: []const u8) bool {
+fn isGeoPointKey(key: []const u8) bool {
     return std.mem.eql(u8, key, "latitude_deg") or
         std.mem.eql(u8, key, "longitude_deg") or
         std.mem.eql(u8, key, "altitude_m") or
         std.mem.eql(u8, key, "altitude_reference");
+}
+
+fn parseYamlGeoPointField(point: *domain.coordinates.GeoPoint, key: []const u8, value: []const u8) !void {
+    if (std.mem.eql(u8, key, "latitude_deg")) point.latitude_deg = try parseF64(value) else if (std.mem.eql(u8, key, "longitude_deg")) point.longitude_deg = try parseF64(value) else if (std.mem.eql(u8, key, "altitude_m")) point.altitude_m = try parseF64(value) else if (std.mem.eql(u8, key, "altitude_reference")) point.altitude_reference = try parseAltitudeReference(value) else return error.InvalidPolicy;
 }
 
 fn parseYamlGeofence(builder: *PolicyBuilder, key: []const u8, value: []const u8) !void {
@@ -385,10 +401,11 @@ fn parseJsonSafety(builder: *PolicyBuilder, safety: std.json.ObjectMap) !void {
     }
     if (safety.get("geofence")) |value| {
         const object = try expectObject(value);
-        try rejectUnknownKeys(object, &.{ "type", "center", "vertices", "max_radius_m", "altitude_floor_m", "altitude_ceiling_m", "altitude_reference", "boundary_action" });
+        try rejectUnknownKeys(object, &.{ "type", "center", "home_position", "vertices", "max_radius_m", "altitude_floor_m", "altitude_ceiling_m", "altitude_reference", "boundary_action" });
         builder.geofence_type = try expectString(object.get("type") orelse return error.InvalidPolicy);
         if (object.get("vertices") != null) return error.UnsupportedGeofenceShape;
         builder.geofence_center = try parseGeoPointJson(object.get("center") orelse return error.InvalidPolicy);
+        if (object.get("home_position")) |home| builder.geofence_home_position = try parseGeoPointJson(home);
         builder.geofence_radius = try expectNumber(object.get("max_radius_m") orelse return error.InvalidPolicy);
         builder.geofence_floor = try expectNumber(object.get("altitude_floor_m") orelse return error.InvalidPolicy);
         builder.geofence_ceiling = try expectNumber(object.get("altitude_ceiling_m") orelse return error.InvalidPolicy);

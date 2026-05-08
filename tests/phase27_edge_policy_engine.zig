@@ -82,6 +82,59 @@ test "phase 27 edge policy loading validates versioned safety shape" {
     try std.testing.expectEqual(domain.safety_envelope.CommandDisposition.deny, loaded.value.commands.resolve(.disable_failsafe));
 }
 
+test "phase 27 policy loader supports geofence home position in YAML and JSON" {
+    const yaml_with_home = replaceFirst(valid_policy_yaml,
+        \\    max_radius_m: 500
+    ,
+        \\    home_position:
+        \\      latitude_deg: 37.100000
+        \\      longitude_deg: -122.100000
+        \\      altitude_m: 5
+        \\      altitude_reference: amsl
+        \\    max_radius_m: 500
+    );
+    var yaml_loaded = try policy.loadFromSlice(std.testing.allocator, yaml_with_home, "home-position.yaml", .{});
+    defer yaml_loaded.deinit();
+    const yaml_home = yaml_loaded.value.safety.geofence.?.home_position orelse return error.TestUnexpectedResult;
+    try std.testing.expectApproxEqAbs(@as(f64, 37.1), yaml_home.latitude_deg, 0.000001);
+    try std.testing.expectApproxEqAbs(@as(f64, -122.1), yaml_home.longitude_deg, 0.000001);
+    try std.testing.expectEqual(domain.coordinates.AltitudeReference.amsl, yaml_home.altitude_reference);
+
+    const json_with_home =
+        \\{
+        \\  "version": 1,
+        \\  "vehicle": { "kind": "drone_multirotor", "autopilot": "px4", "adapter": "fake" },
+        \\  "safety": {
+        \\    "state_freshness": { "max_state_age_ms": 1000, "deny_commands_on_stale_state": true },
+        \\    "geofence": {
+        \\      "type": "circle",
+        \\      "center": { "latitude_deg": 37.0, "longitude_deg": -122.0, "altitude_m": 0, "altitude_reference": "amsl" },
+        \\      "home_position": { "latitude_deg": 37.2, "longitude_deg": -122.2, "altitude_m": 6, "altitude_reference": "amsl" },
+        \\      "max_radius_m": 500,
+        \\      "altitude_floor_m": 2,
+        \\      "altitude_ceiling_m": 120,
+        \\      "altitude_reference": "amsl",
+        \\      "boundary_action": "deny"
+        \\    },
+        \\    "velocity": { "max_horizontal_mps": 8, "max_vertical_mps": 2 },
+        \\    "battery": { "deny_takeoff_below_percent": 35, "return_home_below_percent": 25, "land_below_percent": 15 }
+        \\  },
+        \\  "commands": {
+        \\    "allow": ["read_telemetry", "read_vehicle_state", "land", "return_to_home"],
+        \\    "ask": ["arm", "takeoff", "set_waypoint", "set_velocity", "set_altitude"],
+        \\    "deny": ["disable_failsafe", "disable_geofence", "raw_actuator_output"]
+        \\  },
+        \\  "network": { "mode": "allowlist" },
+        \\  "audit": { "level": "full", "redact_secrets": true }
+        \\}
+    ;
+    var json_loaded = try policy.loadFromSlice(std.testing.allocator, json_with_home, "home-position.json", .{});
+    defer json_loaded.deinit();
+    const json_home = json_loaded.value.safety.geofence.?.home_position orelse return error.TestUnexpectedResult;
+    try std.testing.expectApproxEqAbs(@as(f64, 37.2), json_home.latitude_deg, 0.000001);
+    try std.testing.expectApproxEqAbs(@as(f64, -122.2), json_home.longitude_deg, 0.000001);
+}
+
 test "phase 27 policy validation rejects unsafe or ambiguous policy input" {
     try expectPolicyError(error.MissingPolicyVersion,
         \\vehicle:

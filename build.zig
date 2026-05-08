@@ -13,6 +13,12 @@ pub fn build(b: *std.Build) void {
     build_options.addOption([]const u8, "build_date", build_date);
     const build_options_mod = build_options.createModule();
 
+    const edge_schema_documents = b.addOptions();
+    edge_schema_documents.addOption([]const u8, "edge_policy_v1", @embedFile("schemas/edge-policy-v1.json"));
+    edge_schema_documents.addOption([]const u8, "edge_event_v1", @embedFile("schemas/edge-event-v1.json"));
+    edge_schema_documents.addOption([]const u8, "safety_report_v1", @embedFile("schemas/safety-report-v1.json"));
+    const edge_schema_documents_mod = edge_schema_documents.createModule();
+
     const aegis_mod = b.addModule("aegis", .{
         .root_source_file = b.path("src/root.zig"),
         .target = target,
@@ -74,6 +80,7 @@ pub fn build(b: *std.Build) void {
             .optimize = optimize,
             .imports = &.{
                 .{ .name = "aegis_edge", .module = aegis_edge_mod },
+                .{ .name = "edge_schema_documents", .module = edge_schema_documents_mod },
             },
         }),
     });
@@ -227,6 +234,18 @@ pub fn build(b: *std.Build) void {
     });
     const run_phase29_px4_sitl_tests = b.addRunArtifact(phase29_px4_sitl_tests);
 
+    const phase30_ardupilot_sitl_tests = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("tests/phase30_ardupilot_sitl.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .name = "aegis_edge", .module = aegis_edge_mod },
+            },
+        }),
+    });
+    const run_phase30_ardupilot_sitl_tests = b.addRunArtifact(phase30_ardupilot_sitl_tests);
+
     const test_step = b.step("test", "Run unit tests");
     test_step.dependOn(&run_lib_tests.step);
     test_step.dependOn(&run_exe_tests.step);
@@ -243,6 +262,7 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&run_phase27_edge_policy_engine_tests.step);
     test_step.dependOn(&run_phase28_mavlink_gateway_tests.step);
     test_step.dependOn(&run_phase29_px4_sitl_tests.step);
+    test_step.dependOn(&run_phase30_ardupilot_sitl_tests.step);
 
     const fuzz_tests = b.addTest(.{
         .root_module = b.createModule(.{

@@ -12,7 +12,7 @@ Vehicle identity and platform fields are explicit:
 - `AdapterKind`: fake, MAVLink, ROS2, custom, or unknown.
 - `VehicleMode`, `ArmState`, and `ControlAuthority`.
 
-These are domain values. Phase 28 maps a supported subset of MAVLink messages into Edge command requests for fake/in-memory protocol mediation. Phase 29 maps deterministic fake-PX4 and opt-in PX4 SITL simulation records into Edge state and command decisions. ArduPilot, ROS2, and hardware numeric integration remain unimplemented.
+These are domain values. Phase 28 maps a supported subset of MAVLink messages into Edge command requests for fake/in-memory protocol mediation. Phase 29 maps deterministic fake-PX4 and opt-in PX4 SITL simulation records into Edge state and command decisions. Phase 30 maps deterministic fake-ArduPilot and opt-in ArduPilot SITL simulation records into Edge state and command decisions. ROS2 and hardware numeric integration remain unimplemented.
 
 ## Vehicle State
 
