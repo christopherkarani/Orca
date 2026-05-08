@@ -4,14 +4,16 @@ const aegis_core = @import("aegis_core");
 pub const domain = @import("domain/mod.zig");
 pub const mavlink = @import("mavlink/mod.zig");
 pub const policy = @import("policy/mod.zig");
+pub const px4 = @import("px4/mod.zig");
 pub const schema = @import("schema/mod.zig");
 
-pub const phase = "28-mavlink-gateway-production";
-pub const installed_message = "Aegis Edge MAVLink gateway foundation is installed for fake-transport simulation and protocol mediation only; it is not real-flight ready.";
+pub const phase = "29-px4-sitl-integration";
+pub const installed_message = "Aegis Edge PX4 SITL integration is installed for opt-in simulation evidence and deterministic fake-PX4 scenarios only; it is not ready for real flight.";
 pub const core = aegis_core;
 
 pub const CapabilityStatus = enum {
     active,
+    partial,
     unavailable,
     scaffolded,
     not_implemented,
@@ -19,6 +21,7 @@ pub const CapabilityStatus = enum {
     pub fn toString(self: CapabilityStatus) []const u8 {
         return switch (self) {
             .active => "active",
+            .partial => "partial",
             .unavailable => "unavailable",
             .scaffolded => "scaffolded",
             .not_implemented => "not implemented",
@@ -162,9 +165,9 @@ pub fn capabilityReports() []const CapabilityReport {
         .{ .capability = .policy_evaluation, .status = .active, .note = "Phase 27 evaluates Edge policy decisions locally for fake/simulation/bench evidence." },
         .{ .capability = .fake_adapter, .status = .active, .note = "Deterministic fake MAVLink transport is available for local tests and examples only." },
         .{ .capability = .command_mediation, .status = .active, .note = "Phase 28 maps supported MAVLink commands through policy in fake gateway mode; no real endpoints." },
-        .{ .capability = .mavlink_gateway, .status = .active, .note = "MAVLink v1/v2 parsing, classification, mapping, mission tracking, and fake gateway decisions are active for simulation/protocol mediation." },
-        .{ .capability = .px4_adapter, .status = .not_implemented, .note = "PX4 integration is out of scope for Phase 28." },
-        .{ .capability = .ardupilot_adapter, .status = .not_implemented, .note = "ArduPilot integration is out of scope for Phase 28." },
+        .{ .capability = .mavlink_gateway, .status = .active, .note = "MAVLink v1/v2 parsing, classification, mapping, mission tracking, and gateway decisions are active for simulation/protocol mediation." },
+        .{ .capability = .px4_adapter, .status = .partial, .note = "PX4 SITL adapter supports opt-in local simulation checks plus deterministic fake-PX4 scenarios; no hardware or real-flight support." },
+        .{ .capability = .ardupilot_adapter, .status = .not_implemented, .note = "ArduPilot integration is out of scope for Phase 29." },
         .{ .capability = .real_flight_enforcement, .status = .unavailable, .note = "Real-flight behavior requires later simulation, bench, and customer safety validation phases." },
         .{ .capability = .detect_and_avoid, .status = .unavailable, .note = "Aegis Edge is not a detect-and-avoid system." },
         .{ .capability = .regulatory_certification, .status = .unavailable, .note = "Aegis Edge is not regulatory approval or certification." },
@@ -177,6 +180,8 @@ pub fn doctor(writer: anytype) !void {
     for (capabilityReports()) |report| {
         try writer.print("  {s}: {s} - {s}\n", .{ report.capability.label(), report.status.toString(), report.note });
     }
+    try writer.writeAll("\nPX4:\n");
+    try px4.health.writeDoctor(writer, .{});
 }
 
 test {
@@ -184,6 +189,7 @@ test {
     _ = domain;
     _ = mavlink;
     _ = policy;
+    _ = px4;
     _ = schema;
     _ = capabilityReports;
     _ = FakeAdapter;

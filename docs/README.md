@@ -4,7 +4,7 @@ Product package docs:
 
 - `../packages/core/README.md`: Aegis Core shared policy, decision, audit, replay, redaction, fixture, schema registry, experimental ABI skeleton, and capability contract.
 - `../packages/cli/README.md`: Aegis CLI desktop and CI AI-agent runtime firewall contract.
-- `../packages/edge/README.md`: Aegis Edge scaffold plus Phase 26 domain/schema contract for future drone and robotics policy/audit work. Aegis Edge is not a flight controller, not an autopilot replacement, not detect-and-avoid, not regulatory approval or certification, and must not be used for real flight.
+- `../packages/edge/README.md`: Aegis Edge domain, policy, MAVLink, and PX4 SITL simulation contract. Aegis Edge is not a flight controller, not an autopilot replacement, not detect-and-avoid, not regulatory approval or certification, and must not be used for real flight.
 - `edge/`: Edge domain model, coordinate frames, safety policy, and safety schema notes.
 
 Launch docs:

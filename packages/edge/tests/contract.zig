@@ -17,6 +17,7 @@ test "edge capabilities report unsupported integrations as unavailable or not im
     for (edge.capabilityReports()) |report| {
         switch (report.capability) {
             .px4_adapter,
+            => try std.testing.expectEqual(edge.CapabilityStatus.partial, report.status),
             .ardupilot_adapter,
             => try std.testing.expectEqual(edge.CapabilityStatus.not_implemented, report.status),
             .command_mediation,

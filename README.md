@@ -12,13 +12,13 @@ Aegis is not a SaaS product, hosted dashboard, monetization layer, or telemetry 
 
 ## Product Split
 
-Phase 23 introduced the monorepo product contract. Phase 24 hardened Aegis Core as the shared engine facade used by CLI and Edge. Phase 25 keeps the CLI as the stable desktop and CI product while hardening the post-split command surface. Phase 26 added Edge domain and safety schema contracts. Phase 27 added local Edge policy evaluation. Phase 28 adds a MAVLink gateway foundation for fake/in-memory protocol mediation:
+Phase 23 introduced the monorepo product contract. Phase 24 hardened Aegis Core as the shared engine facade used by CLI and Edge. Phase 25 keeps the CLI as the stable desktop and CI product while hardening the post-split command surface. Phase 26 added Edge domain and safety schema contracts. Phase 27 added local Edge policy evaluation. Phase 28 added a MAVLink gateway foundation for fake/in-memory protocol mediation. Phase 29 adds PX4 SITL integration for opt-in local simulation evidence:
 
 - **Aegis Core** (`packages/core/`): shared policy, decision, audit, event, schema, replay, redaction, fixture, red-team, capability, experimental ABI skeleton, and platform-independent utility contracts.
 - **Aegis CLI** (`packages/cli/`): the existing desktop and CI AI-agent runtime firewall exposed as the `aegis` binary.
-- **Aegis Edge** (`packages/edge/`): a drone and robotics safety-policy and audit runtime with local policy decisions and Phase 28 fake MAVLink gateway scenarios.
+- **Aegis Edge** (`packages/edge/`): a drone and robotics safety-policy and audit runtime with local policy decisions, fake MAVLink gateway scenarios, deterministic fake-PX4 scenarios, and opt-in PX4 SITL checks.
 
-Aegis Edge policy evaluation is active for local decisions, and MAVLink support is limited to fake-transport simulation/protocol mediation. It can validate Edge policies, evaluate command requests against fake vehicle state, inspect/classify MAVLink frames, run deterministic fake MAVLink scenarios, prepare Core audit events, and explain safety findings. It does not open real serial, UDP, PX4, ArduPilot, ROS2, SITL, or hardware endpoints. It is not a flight controller, not an autopilot replacement, not detect-and-avoid, and not regulatory approval or certification. It must not be used for real flight.
+Aegis Edge policy evaluation is active for local decisions. MAVLink fake transport remains deterministic, and PX4 SITL is opt-in local simulation only. Edge can validate policies, evaluate command requests against simulated vehicle state, inspect/classify MAVLink frames, run deterministic fake MAVLink and fake-PX4 scenarios, prepare Core audit events, and explain safety findings. It does not support ArduPilot SITL, ROS2 control, real hardware integration, or real-flight deployment. It is not a flight controller, not an autopilot replacement, not detect-and-avoid, and not regulatory approval or certification. It must not be used for real flight.
 
 ## Install
 

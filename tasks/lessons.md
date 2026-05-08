@@ -100,3 +100,9 @@
 - Edge command evaluation must bind every request to the exact vehicle state being used. Separate request/state files are a safety boundary; mismatched vehicle IDs must fail before constraint evaluation.
 - Parameterized Edge commands must require the parameter variant their safety checks depend on. Missing or mismatched target data must be invalid, not treated as a command with no constraints.
 - Public schemas and release artifacts are part of the runtime contract. Required policy sections, JSON output escaping, and installed binaries must match what docs and schemas advertise.
+
+## 2026-05-08 Phase 29 PX4 SITL Review
+
+- Environment-derived endpoint slices returned from helpers must own their storage or keep the env buffer alive with an explicit deinit path. Never return slices into freed env-var buffers.
+- `requires_px4_sitl` is an enforcement gate, not advisory metadata. Reject inconsistent scenario metadata before any fake-PX4 execution can produce a pass.
+- Public Edge policy schemas must match parser-required fields and supported blocks. Schema drift around geofence and altitude policy shape misleads policy authors and schema-driven tooling.

@@ -1,6 +1,6 @@
 # Aegis Edge Safety Schemas
 
-Phase 26 introduced versioned schema surfaces for Edge policy, audit, replay, and safety report work. Phase 27 uses the Edge policy schema for local policy evaluation. Phase 28 adds MAVLink fake-transport protocol mediation. These schemas do not mean PX4, ArduPilot, ROS2, SITL, real hardware integration, regulatory certification, or real-flight readiness exists. Aegis Edge is not ready for real flight and must not be used for real flight.
+Phase 26 introduced versioned schema surfaces for Edge policy, audit, replay, and safety report work. Phase 27 uses the Edge policy schema for local policy evaluation. Phase 28 adds MAVLink fake-transport protocol mediation. Phase 29 adds fake-PX4 scenarios and opt-in PX4 SITL simulation evidence. These schemas do not mean ArduPilot, ROS2, real hardware integration, regulatory certification, or real-flight readiness exists. Aegis Edge is not ready for real flight and must not be used for real flight.
 
 ## Schemas
 
@@ -53,10 +53,10 @@ Event types cover local policy decisions and fake MAVLink protocol mediation:
 - `mavlink.command_denied`
 - `mavlink.message_blocked`
 
-Phase 28 prepares Core audit events for local policy decisions and fake MAVLink gateway decisions using these names. It still does not emit real-flight events.
+Phase 29 prepares Core audit events for local policy decisions, fake MAVLink gateway decisions, fake-PX4 scenarios, and opt-in PX4 SITL simulation evidence using these names. It still does not emit real-flight events.
 
 ## Safety Report V1
 
 Safety reports support report id, version, vehicle profile, adapter profile, policy hash, scenario name/source, test environment, checks run, commands allowed/denied, violations, audit event references, limitations, and a non-certification disclaimer.
 
-Valid test environment labels are fake adapter, PX4 SITL, ArduPilot SITL, bench, and other. These labels support future reporting distinctions; they are not claims that Phase 28 runs SITL or real flight.
+Valid test environment labels are fake adapter, PX4 SITL, ArduPilot SITL, bench, and other. PX4 SITL is an opt-in local simulation label in Phase 29. These labels are not claims of ArduPilot support or real flight.

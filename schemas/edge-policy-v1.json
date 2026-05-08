@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://aegis.local/schemas/edge-policy-v1.json",
   "title": "Aegis Edge policy schema v1",
-  "description": "Versioned safety policy shape for Aegis Edge domain validation. This schema does not represent active drone command mediation, real-flight readiness, MAVLink, PX4, ArduPilot, or regulatory certification.",
+  "description": "Versioned safety policy shape for Aegis Edge domain validation, MAVLink mediation, fake-PX4 scenarios, and opt-in PX4 SITL simulation evidence. This schema does not represent real-flight readiness, ArduPilot integration, real hardware, or regulatory certification.",
   "type": "object",
   "additionalProperties": false,
   "required": ["version", "vehicle", "safety", "commands"],
@@ -36,17 +36,26 @@
         "geofence": {
           "type": "object",
           "additionalProperties": false,
-          "required": ["type", "altitude_floor_m", "altitude_ceiling_m", "altitude_reference", "boundary_action"],
+          "required": ["type", "center", "max_radius_m", "altitude_floor_m", "altitude_ceiling_m", "altitude_reference", "boundary_action"],
           "properties": {
-            "type": { "enum": ["circle", "allowed_polygon"] },
+            "type": { "const": "circle" },
             "center": { "$ref": "#/$defs/geoPoint" },
-            "vertices": { "type": "array", "minItems": 3, "items": { "$ref": "#/$defs/geoPoint" } },
             "max_radius_m": { "type": "number", "minimum": 0 },
             "home_position": { "$ref": "#/$defs/geoPoint" },
             "altitude_floor_m": { "type": "number" },
             "altitude_ceiling_m": { "type": "number" },
             "altitude_reference": { "$ref": "#/$defs/altitudeReference" },
             "boundary_action": { "enum": ["deny", "ask", "return_to_home", "land", "hold"] }
+          }
+        },
+        "altitude": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["min_altitude_m", "max_altitude_m", "altitude_reference"],
+          "properties": {
+            "min_altitude_m": { "type": "number" },
+            "max_altitude_m": { "type": "number" },
+            "altitude_reference": { "$ref": "#/$defs/altitudeReference" }
           }
         },
         "velocity": {

@@ -1,15 +1,15 @@
 # MAVLink Gateway
 
-Phase 28 implements the Aegis Edge MAVLink gateway foundation for fake/in-memory protocol mediation. It parses MAVLink frames, classifies supported messages, maps supported commands into Edge `CommandRequest` values, evaluates those requests through the Phase 27 policy engine, and records bounded audit events.
+Phase 28 implements the Aegis Edge MAVLink gateway foundation for fake/in-memory protocol mediation. Phase 29 reuses this gateway for PX4 SITL simulation scenarios. It parses MAVLink frames, classifies supported messages, maps supported commands into Edge `CommandRequest` values, evaluates those requests through the Phase 27 policy engine, and records bounded audit events.
 
-This is not real-flight readiness. The gateway does not open serial ports, UDP sockets, PX4 SITL, ArduPilot SITL, ROS2 endpoints, or customer hardware. It is for deterministic simulation, bench-oriented protocol review, and local tests.
+This is not real-flight readiness. The gateway does not open serial ports, ArduPilot SITL, ROS2 endpoints, or customer hardware. PX4 SITL use is opt-in local simulation only. The default path is deterministic fake transport for simulation, bench-oriented protocol review, and local tests.
 
 ## Gateway Modes
 
 - `observe`: parse, classify, audit, and forward valid messages in fake transport. Denied policy results are logged but not blocked.
 - `enforce`: evaluate mapped commands and block denied or approval-required messages because no operator approval runtime exists in Phase 28.
 - `ci` / `redteam`: non-interactive. `ask` becomes deny and unknown command sources fail closed.
-- `simulation`: reserved for fake transport scenarios. Provenance is labeled `fake_transport/simulation`.
+- `simulation`: fake transport or fake-PX4 scenarios. Provenance is labeled `fake_transport/simulation` for MAVLink fixtures or `fake_adapter` for fake-PX4 state.
 - `bench`: reserved for later non-flight bench work. It is not a real hardware procedure.
 - `disabled`: no forwarding.
 

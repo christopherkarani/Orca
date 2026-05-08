@@ -9,6 +9,15 @@ const usage =
     \\
     \\Commands:
     \\  doctor                         Show domain/schema capability status
+    \\  px4 doctor                     Show PX4 SITL simulation capability status
+    \\  px4 scenario run --policy <policy> --scenario <scenario>
+    \\                                 Run a deterministic fake-PX4 or opt-in SITL scenario
+    \\  px4 observe --duration <seconds>
+    \\                                 Observe deterministic fake-PX4 state unless SITL is explicitly enabled
+    \\  px4 gateway --policy <policy> --endpoint <endpoint> --mode observe|enforce|simulation
+    \\                                 Configure PX4 SITL mediation parameters without hardware assumptions
+    \\  px4 test-fixture --name <fixture>
+    \\                                 Print deterministic fake-PX4 fixture metadata
     \\  mavlink doctor                 Show MAVLink gateway capabilities and limitations
     \\  mavlink inspect-frame <file-or-hex>
     \\                                 Parse one MAVLink frame and print bounded metadata
@@ -25,7 +34,7 @@ const usage =
     \\  schema print <schema-id>       Print a built-in schema document
     \\  help                           Show this help
     \\
-    \\MAVLink support is fake-transport simulation/protocol mediation only. No serial, UDP, SITL, ROS2, or real-flight endpoint is opened.
+    \\MAVLink fake transport is deterministic by default. PX4 SITL is opt-in local simulation only. No real hardware, ROS2, ArduPilot SITL, or real-flight endpoint is opened by default.
     \\
 ;
 
@@ -74,6 +83,9 @@ pub fn run(argv: []const []const u8, stdout: anytype, stderr: anytype) !u8 {
     if (std.mem.eql(u8, command, "schema")) {
         return runSchema(argv[1..], stdout, stderr);
     }
+    if (std.mem.eql(u8, command, "px4")) {
+        return runPx4(argv[1..], stdout, stderr);
+    }
     if (std.mem.eql(u8, command, "mavlink")) {
         return runMavlink(argv[1..], stdout, stderr);
     }
@@ -83,6 +95,180 @@ pub fn run(argv: []const []const u8, stdout: anytype, stderr: anytype) !u8 {
 
     try stderr.print("aegis-edge: unknown command '{s}'. Run 'aegis-edge --help' for usage.\n", .{command});
     return 64;
+}
+
+fn runPx4(argv: []const []const u8, stdout: anytype, stderr: anytype) !u8 {
+    if (argv.len == 0) {
+        try stderr.writeAll("aegis-edge px4: expected doctor, scenario, observe, gateway, or test-fixture.\n");
+        return 64;
+    }
+    if (std.mem.eql(u8, argv[0], "doctor")) return runPx4Doctor(argv[1..], stdout, stderr);
+    if (std.mem.eql(u8, argv[0], "scenario")) return runPx4Scenario(argv[1..], stdout, stderr);
+    if (std.mem.eql(u8, argv[0], "observe")) return runPx4Observe(argv[1..], stdout, stderr);
+    if (std.mem.eql(u8, argv[0], "gateway")) return runPx4Gateway(argv[1..], stdout, stderr);
+    if (std.mem.eql(u8, argv[0], "test-fixture")) return runPx4TestFixture(argv[1..], stdout, stderr);
+    try stderr.print("aegis-edge px4: unknown subcommand '{s}'.\n", .{argv[0]});
+    return 64;
+}
+
+fn runPx4Doctor(argv: []const []const u8, stdout: anytype, stderr: anytype) !u8 {
+    if (argv.len != 0) return usageError(stderr, "aegis-edge px4 doctor: expected no arguments.\n");
+    var gpa_state: std.heap.GeneralPurposeAllocator(.{}) = .init;
+    defer _ = gpa_state.deinit();
+    const allocator = gpa_state.allocator();
+    var gate = try edge.px4.connection.integrationTestGateFromEnv(allocator);
+    defer gate.deinit(allocator);
+    var config = edge.px4.connection.defaultConfig();
+    const version = try edge.px4.connection.testedVersionFromEnv(allocator);
+    defer allocator.free(version);
+    config.tested_version = version;
+    if (gate.endpoint) |endpoint| config.endpoint = endpoint;
+    try edge.px4.health.writeDoctor(stdout, .{ .config = config, .gate = gate });
+    return 0;
+}
+
+fn runPx4Scenario(argv: []const []const u8, stdout: anytype, stderr: anytype) !u8 {
+    if (argv.len == 0 or !std.mem.eql(u8, argv[0], "run")) return usageError(stderr, "aegis-edge px4 scenario: expected run --policy <policy> --scenario <scenario>.\n");
+    var policy_path: ?[]const u8 = null;
+    var scenario_path: ?[]const u8 = null;
+    var artifact_dir: ?[]const u8 = null;
+    var index: usize = 1;
+    while (index < argv.len) : (index += 1) {
+        if (std.mem.eql(u8, argv[index], "--policy")) {
+            index += 1;
+            if (index >= argv.len) return usageError(stderr, "aegis-edge px4 scenario run: --policy requires a file.\n");
+            policy_path = argv[index];
+        } else if (std.mem.eql(u8, argv[index], "--scenario")) {
+            index += 1;
+            if (index >= argv.len) return usageError(stderr, "aegis-edge px4 scenario run: --scenario requires a file.\n");
+            scenario_path = argv[index];
+        } else if (std.mem.eql(u8, argv[index], "--artifacts")) {
+            index += 1;
+            if (index >= argv.len) return usageError(stderr, "aegis-edge px4 scenario run: --artifacts requires a directory.\n");
+            artifact_dir = argv[index];
+        } else {
+            try stderr.print("aegis-edge px4 scenario run: unknown argument '{s}'.\n", .{argv[index]});
+            return 64;
+        }
+    }
+    const selected_policy = policy_path orelse return usageError(stderr, "aegis-edge px4 scenario run: missing --policy.\n");
+    const selected_scenario = scenario_path orelse return usageError(stderr, "aegis-edge px4 scenario run: missing --scenario.\n");
+    var gpa_state: std.heap.GeneralPurposeAllocator(.{}) = .init;
+    defer _ = gpa_state.deinit();
+    const allocator = gpa_state.allocator();
+    var gate = try edge.px4.connection.integrationTestGateFromEnv(allocator);
+    defer gate.deinit(allocator);
+    var result = edge.px4.scenario.run(allocator, .{
+        .policy_path = selected_policy,
+        .scenario_path = selected_scenario,
+        .artifact_dir = artifact_dir,
+        .gate = gate,
+    }) catch |err| {
+        try stderr.print("PX4 scenario failed: {s}\n", .{@errorName(err)});
+        return 65;
+    };
+    defer result.deinit();
+    try stdout.print("{s}\n", .{result.summary});
+    if (result.skipped) {
+        try stdout.writeAll("Skipped result is not a fake-PX4 pass and not PX4 SITL success.\n");
+    } else {
+        try stdout.print("Environment: {s}\nDecision: {s}\nForwarded: {}\nBlocked: {}\n", .{ result.environment.toString(), if (result.decision) |decision| decision.toString() else "none", result.forwarded, result.blocked });
+        if (result.artifact_dir) |dir| try stdout.print("Artifacts: {s}\n", .{dir});
+    }
+    try stdout.writeAll("Limitations: simulation evidence only; not ready for real flight; no hardware or ArduPilot integration.\n");
+    return 0;
+}
+
+fn runPx4Observe(argv: []const []const u8, stdout: anytype, stderr: anytype) !u8 {
+    var duration: u64 = 5;
+    var index: usize = 0;
+    while (index < argv.len) : (index += 1) {
+        if (std.mem.eql(u8, argv[index], "--duration")) {
+            index += 1;
+            if (index >= argv.len) return usageError(stderr, "aegis-edge px4 observe: --duration requires seconds.\n");
+            duration = std.fmt.parseInt(u64, argv[index], 10) catch return usageError(stderr, "aegis-edge px4 observe: invalid --duration.\n");
+        } else {
+            try stderr.print("aegis-edge px4 observe: unknown argument '{s}'.\n", .{argv[index]});
+            return 64;
+        }
+    }
+    var gpa_state: std.heap.GeneralPurposeAllocator(.{}) = .init;
+    defer _ = gpa_state.deinit();
+    const allocator = gpa_state.allocator();
+    var fake = edge.px4.fake_adapter.FakePx4Adapter.init(allocator, .{});
+    defer fake.deinit();
+    var mapper = edge.px4.telemetry_mapping.StateMapper.init(.{ .vehicle_id = "edge-vehicle-1", .provenance = .fake_adapter, .now_ms = 1_000_000 });
+    const heartbeat = try fake.heartbeatFrame(.{ .armed = true, .base_mode = 0x08 });
+    defer allocator.free(heartbeat);
+    try mapper.observeFrame(try edge.mavlink.framing.parseFrame(heartbeat));
+    const state = mapper.state();
+    try stdout.print("PX4 observe environment: fake_px4\nDuration requested: {d}s\nVehicle: {s}\nMode: {s}\nArm state: {s}\nProvenance: {s}\n", .{ duration, state.vehicle_id.value, @tagName(state.mode), @tagName(state.arm_state), @tagName(state.provenance) });
+    try stdout.writeAll("No PX4 SITL endpoint or hardware was opened. Use opt-in PX4 SITL tests for local simulator evidence.\n");
+    return 0;
+}
+
+fn runPx4Gateway(argv: []const []const u8, stdout: anytype, stderr: anytype) !u8 {
+    var policy_path: ?[]const u8 = null;
+    var endpoint_text: []const u8 = "127.0.0.1:14540";
+    var mode: edge.px4.connection.Mode = .observe;
+    var protocol: edge.px4.connection.Protocol = .udp;
+    var index: usize = 0;
+    while (index < argv.len) : (index += 1) {
+        if (std.mem.eql(u8, argv[index], "--policy")) {
+            index += 1;
+            if (index >= argv.len) return usageError(stderr, "aegis-edge px4 gateway: --policy requires a file.\n");
+            policy_path = argv[index];
+        } else if (std.mem.eql(u8, argv[index], "--endpoint")) {
+            index += 1;
+            if (index >= argv.len) return usageError(stderr, "aegis-edge px4 gateway: --endpoint requires host:port.\n");
+            endpoint_text = argv[index];
+        } else if (std.mem.eql(u8, argv[index], "--mode")) {
+            index += 1;
+            if (index >= argv.len) return usageError(stderr, "aegis-edge px4 gateway: --mode requires observe|enforce|simulation.\n");
+            mode = edge.px4.connection.Mode.parse(argv[index]) catch return usageError(stderr, "aegis-edge px4 gateway: invalid --mode.\n");
+        } else if (std.mem.eql(u8, argv[index], "--protocol")) {
+            index += 1;
+            if (index >= argv.len) return usageError(stderr, "aegis-edge px4 gateway: --protocol requires udp|tcp.\n");
+            protocol = edge.px4.connection.Protocol.parse(argv[index]) catch return usageError(stderr, "aegis-edge px4 gateway: invalid --protocol.\n");
+        } else {
+            try stderr.print("aegis-edge px4 gateway: unknown argument '{s}'.\n", .{argv[index]});
+            return 64;
+        }
+    }
+    const selected_policy = policy_path orelse return usageError(stderr, "aegis-edge px4 gateway: missing --policy.\n");
+    const endpoint = edge.px4.connection.Endpoint.parse(endpoint_text) catch return usageError(stderr, "aegis-edge px4 gateway: invalid endpoint.\n");
+    var gpa_state: std.heap.GeneralPurposeAllocator(.{}) = .init;
+    defer _ = gpa_state.deinit();
+    var loaded = edge.policy.loadFile(gpa_state.allocator(), selected_policy, .{}) catch |err| {
+        try stderr.print("Edge policy invalid: {s}\n", .{@errorName(err)});
+        return 65;
+    };
+    defer loaded.deinit();
+    try stdout.print("PX4 SITL gateway configured: endpoint={s}:{d} protocol={s} mode={s}\n", .{ endpoint.host, endpoint.port, protocol.toString(), mode.toString() });
+    try stdout.print("Policy: {s}\n", .{selected_policy});
+    try stdout.writeAll("Live PX4 SITL transport is opt-in local simulation only; this command does not assume hardware or real flight.\n");
+    try stdout.writeAll("Mapped commands are mediated through the Phase 28 MAVLink gateway and Phase 27 Edge policy engine.\n");
+    return 0;
+}
+
+fn runPx4TestFixture(argv: []const []const u8, stdout: anytype, stderr: anytype) !u8 {
+    var name: ?[]const u8 = null;
+    var index: usize = 0;
+    while (index < argv.len) : (index += 1) {
+        if (std.mem.eql(u8, argv[index], "--name")) {
+            index += 1;
+            if (index >= argv.len) return usageError(stderr, "aegis-edge px4 test-fixture: --name requires a fixture name.\n");
+            name = argv[index];
+        } else {
+            try stderr.print("aegis-edge px4 test-fixture: unknown argument '{s}'.\n", .{argv[index]});
+            return 64;
+        }
+    }
+    const selected = name orelse return usageError(stderr, "aegis-edge px4 test-fixture: missing --name.\n");
+    try stdout.print("PX4 fake fixture: {s}\n", .{selected});
+    try stdout.writeAll("Environment: fake_px4\nProvenance: fake_adapter\nSupported names: heartbeat, position, battery, land, disable_failsafe, waypoint_outside_geofence\n");
+    try stdout.writeAll("Fixtures are deterministic fake-PX4 records and are not PX4 SITL success evidence.\n");
+    return 0;
 }
 
 fn runMavlink(argv: []const []const u8, stdout: anytype, stderr: anytype) !u8 {
@@ -104,7 +290,7 @@ fn runMavlinkDoctor(argv: []const []const u8, stdout: anytype, stderr: anytype) 
     try stdout.writeAll("MAVLink gateway foundation: active for fake_transport simulation/protocol mediation only.\n");
     try stdout.writeAll("Supported parsing: MAVLink v1 and v2 frames, bounded payloads, partial streams, known-message CRC validation, MAVLink2 signing detection.\n");
     try stdout.writeAll("Supported mediation subset: heartbeat/state, COMMAND_LONG, COMMAND_INT, SET_MODE, PARAM_SET safety toggles, setpoint targets, and generic mission upload messages.\n");
-    try stdout.writeAll("Unsupported: real serial/UDP endpoints, PX4 SITL, ArduPilot SITL, ROS2, real hardware flight, signing key management, and signing verification.\n");
+    try stdout.writeAll("Unsupported in this MAVLink subcommand: serial hardware endpoints, ArduPilot SITL, ROS2, real hardware flight, signing key management, and signing verification. Use aegis-edge px4 for opt-in PX4 SITL simulation evidence.\n");
     try stdout.writeAll("Recommendation for real deployments: use MAVLink2 signing at the deployment boundary; Aegis Edge Phase 28 only detects signing presence.\n");
     return 0;
 }
@@ -248,7 +434,7 @@ fn runMavlinkSimulate(argv: []const []const u8, stdout: anytype, stderr: anytype
     try stdout.print("Forwarded: {}\nBlocked: {}\n", .{ result.forwarded, result.blocked });
     try stdout.writeAll("Audit events:\n");
     for (result.audit.records.items) |record| try stdout.print("  - {s}\n", .{record.event_type});
-    try stdout.writeAll("No real serial, UDP, SITL, ROS2, or hardware endpoint was opened.\n");
+    try stdout.writeAll("No serial hardware, SITL, ROS2, or hardware endpoint was opened by this fake MAVLink scenario.\n");
     return 0;
 }
 
@@ -278,7 +464,7 @@ fn runMavlinkGateway(argv: []const []const u8, stdout: anytype, stderr: anytype)
     };
     defer loaded.deinit();
     try stdout.print("MAVLink fake gateway configured with policy {s}\n", .{selected_policy_path});
-    try stdout.writeAll("Mode: fake_transport only. Real serial/UDP endpoints are deferred and were not opened.\n");
+    try stdout.writeAll("Mode: fake_transport only. Serial hardware endpoints were not opened.\n");
     return 0;
 }
 
@@ -731,7 +917,7 @@ test "aegis-edge help is honest policy evaluation output" {
 
     try std.testing.expectEqual(@as(u8, 0), code);
     try std.testing.expect(std.mem.indexOf(u8, stdout_stream.getWritten(), "policy evaluate") != null);
-    try std.testing.expect(std.mem.indexOf(u8, stdout_stream.getWritten(), "fake-transport simulation/protocol mediation only") != null);
+    try std.testing.expect(std.mem.indexOf(u8, stdout_stream.getWritten(), "PX4 SITL is opt-in local simulation only") != null);
     try std.testing.expectEqualStrings("", stderr_stream.getWritten());
 }
 
@@ -842,7 +1028,7 @@ test "aegis-edge mavlink doctor inspect classify and simulate use fake transport
     };
     try std.testing.expectEqual(@as(u8, 0), try run(simulate_argv[0..], stdout_stream.writer(), stderr_stream.writer()));
     try std.testing.expect(std.mem.indexOf(u8, stdout_stream.getWritten(), "Decision: deny") != null);
-    try std.testing.expect(std.mem.indexOf(u8, stdout_stream.getWritten(), "No real serial, UDP, SITL, ROS2, or hardware endpoint was opened") != null);
+    try std.testing.expect(std.mem.indexOf(u8, stdout_stream.getWritten(), "No serial hardware, SITL, ROS2, or hardware endpoint was opened") != null);
     try std.testing.expectEqualStrings("", stderr_stream.getWritten());
 }
 
@@ -853,20 +1039,22 @@ test "aegis-edge mavlink simulate reads scenario frame contents instead of filen
     const land_hex = try std.fs.cwd().readFileAlloc(std.testing.allocator, "examples/edge/mavlink/frames/command-land.hex", 1024);
     defer std.testing.allocator.free(land_hex);
     try tmp.dir.writeFile(.{ .sub_path = "renamed-frame.hex", .data = land_hex });
-    try tmp.dir.writeFile(.{ .sub_path = "neutral-name.yaml", .data =
+    const neutral_scenario =
         \\name: neutral-name
         \\transport: fake_transport
         \\frame: renamed-frame.hex
         \\expected_decision: allow
         \\expected_forwarded: true
-    });
-    try tmp.dir.writeFile(.{ .sub_path = "mismatch.yaml", .data =
+    ;
+    try tmp.dir.writeFile(.{ .sub_path = "neutral-name.yaml", .data = neutral_scenario });
+    const mismatch_scenario =
         \\name: mismatch
         \\transport: fake_transport
         \\frame: renamed-frame.hex
         \\expected_decision: deny
         \\expected_forwarded: false
-    });
+    ;
+    try tmp.dir.writeFile(.{ .sub_path = "mismatch.yaml", .data = mismatch_scenario });
     const root = try tmp.dir.realpathAlloc(std.testing.allocator, ".");
     defer std.testing.allocator.free(root);
     const scenario_path = try std.fs.path.join(std.testing.allocator, &.{ root, "neutral-name.yaml" });

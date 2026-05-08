@@ -1,4 +1,5 @@
 pub const MAV_CMD_NAV_WAYPOINT: u16 = 16;
+pub const MAV_CMD_NAV_LOITER_UNLIM: u16 = 17;
 pub const MAV_CMD_NAV_RETURN_TO_LAUNCH: u16 = 20;
 pub const MAV_CMD_NAV_LAND: u16 = 21;
 pub const MAV_CMD_NAV_TAKEOFF: u16 = 22;
@@ -16,6 +17,7 @@ pub const MAV_CMD_PAYLOAD_CONTROL_DEPLOY: u16 = 30002;
 pub fn nameFor(command: u16) []const u8 {
     return switch (command) {
         MAV_CMD_NAV_WAYPOINT => "MAV_CMD_NAV_WAYPOINT",
+        MAV_CMD_NAV_LOITER_UNLIM => "MAV_CMD_NAV_LOITER_UNLIM",
         MAV_CMD_NAV_RETURN_TO_LAUNCH => "MAV_CMD_NAV_RETURN_TO_LAUNCH",
         MAV_CMD_NAV_LAND => "MAV_CMD_NAV_LAND",
         MAV_CMD_NAV_TAKEOFF => "MAV_CMD_NAV_TAKEOFF",

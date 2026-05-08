@@ -11,8 +11,8 @@ Versioned v1 JSON Schemas:
 
 The runtime parsers reject unknown keys for these v1 formats. Future breaking schema changes require a new version and migration notes.
 
-Edge and safety-report schemas are versioned Phase 26 domain/schema contracts only. They do not claim real drone enforcement, real-flight readiness, regulatory approval, MAVLink, PX4, or ArduPilot support.
+Edge and safety-report schemas are versioned domain/schema contracts for local policy evaluation, MAVLink mediation, fake-PX4 scenarios, and opt-in PX4 SITL simulation evidence. They do not claim real drone enforcement, real-flight readiness, regulatory approval, ArduPilot support, or real hardware support.
 
-- `edge-policy-v1.json`: policy shape for domain validation.
-- `edge-event-v1.json`: future audit event name surface.
-- `safety-report-v1.json`: future customer safety report shape and limitation fields.
+- `edge-policy-v1.json`: policy shape for domain validation and simulation mediation.
+- `edge-event-v1.json`: audit event name surface for local Edge decisions and simulation evidence.
+- `safety-report-v1.json`: safety report shape and limitation fields for engineering audit artifacts.
