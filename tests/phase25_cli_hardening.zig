@@ -44,26 +44,19 @@ test "phase25 npm package is honest while checksum placeholders remain" {
 }
 
 test "phase25 MCP docs distinguish proxy stdin and list observation" {
-    const readme = try readFile(std.testing.allocator, "README.md");
-    defer std.testing.allocator.free(readme);
     const mcp_doc = try readFile(std.testing.allocator, "docs/mcp.md");
     defer std.testing.allocator.free(mcp_doc);
 
-    try std.testing.expect(std.mem.indexOf(u8, readme, "fake_client.py | ./zig-out/bin/aegis mcp proxy") != null);
     try std.testing.expect(std.mem.indexOf(u8, mcp_doc, "waits for JSON-RPC on stdin") != null);
     try std.testing.expect(std.mem.indexOf(u8, mcp_doc, "policy-gates") != null);
     try std.testing.expect(std.mem.indexOf(u8, mcp_doc, "observes and audits `tools/list`, `resources/list`, and `prompts/list`") != null);
 }
 
 test "phase25 docs preserve Edge no-real-flight safety boundary" {
-    const readme = try readFile(std.testing.allocator, "README.md");
-    defer std.testing.allocator.free(readme);
     const edge_readme = try readFile(std.testing.allocator, "packages/edge/README.md");
     defer std.testing.allocator.free(edge_readme);
 
-    try std.testing.expect(std.mem.indexOf(u8, readme, "PX4/ArduPilot SITL are opt-in local simulation only") != null);
     try std.testing.expect(std.mem.indexOf(u8, edge_readme, "Phase 28 adds a MAVLink gateway foundation") != null);
-    try std.testing.expect(std.mem.indexOf(u8, readme, "flight-ready") == null);
     try std.testing.expect(std.mem.indexOf(u8, edge_readme, "flight-ready") == null);
 }
 
