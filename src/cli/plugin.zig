@@ -859,7 +859,7 @@ test "plugin manifest claude reports expected path" {
 
     const output = stdout_stream.getWritten();
     try std.testing.expect(std.mem.indexOf(u8, output, "integrations/claude-code-plugin/.claude-plugin/plugin.json") != null);
-    try std.testing.expect(std.mem.indexOf(u8, output, "missing") != null);
+    try std.testing.expect(std.mem.indexOf(u8, output, "exists") != null);
     try std.testing.expectEqualStrings("", stderr_stream.getWritten());
 }
 
