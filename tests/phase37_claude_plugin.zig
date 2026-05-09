@@ -283,7 +283,7 @@ test "no claude plugin file contains fake secret test values" {
 
         try std.testing.expect(std.mem.indexOf(u8, content, "ghp_") == null);
         try std.testing.expect(std.mem.indexOf(u8, content, "sk-") == null);
-        try std.testing.expect(std.mem.indexOf(u8, content, "fake_p02_secret_value") == null);
+        try std.testing.expect(std.mem.indexOf(u8, content, "fake_p05_secret_value") == null);
     }
 }
 
