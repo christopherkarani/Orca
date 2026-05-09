@@ -1,0 +1,19 @@
+version: 1
+id: command-disable-failsafe-denied
+name: disable_failsafe denied
+category: mode_authority
+environment: fake_adapter
+description: Synthetic request attempts to disable failsafe controls.
+policy: examples/edge/redteam/policies/redteam-envelope.yaml
+faults:
+  - disable_failsafe
+expected:
+  decision: deny
+  findings:
+    - command_risk
+  events:
+    - vehicle.command_denied
+  no_log_contains:
+    - fake-secret-value
+score:
+  points: 10

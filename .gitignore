@@ -1,6 +1,7 @@
 .zig-cache/
 zig-cache/
 zig-out/
+dist/
 dist/work/
 *.o
 *.obj
@@ -20,3 +21,7 @@ summary.md
 .aegis/last.tmp.*
 .aegis/sessions/
 .aegis/edge/
+.aegis-edge/last
+.aegis-edge/last.tmp
+.aegis-edge/last.tmp.*
+.aegis-edge/sessions/

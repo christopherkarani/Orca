@@ -1,0 +1,61 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://aegis.local/schemas/hook-response-v1.json",
+  "title": "Aegis Hook Response v1",
+  "description": "JSON response emitted by the aegis hook command to stdout.",
+  "type": "object",
+  "required": ["version", "decision", "risk", "category", "reason", "message"],
+  "properties": {
+    "version": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 1,
+      "description": "Schema version. Must be 1."
+    },
+    "decision": {
+      "type": "string",
+      "enum": ["allow", "block", "warn", "ask", "context_only", "error"],
+      "description": "Host-actionable decision."
+    },
+    "risk": {
+      "type": "string",
+      "enum": ["low", "medium", "high", "critical", "unknown"],
+      "description": "Risk level assessed by Aegis."
+    },
+    "category": {
+      "type": "string",
+      "enum": ["command", "file", "prompt", "tool", "network", "mcp", "unknown"],
+      "description": "Decision category."
+    },
+    "reason": {
+      "type": "string",
+      "description": "Machine-readable reason code or explanation."
+    },
+    "rule": {
+      "type": ["string", "null"],
+      "description": "Matched policy rule identifier, if any."
+    },
+    "message": {
+      "type": "string",
+      "description": "Human-readable message suitable for surfacing to the user."
+    },
+    "redactions": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["field", "reason"],
+        "properties": {
+          "field": { "type": "string" },
+          "reason": { "type": "string" }
+        }
+      },
+      "description": "List of redacted fields and reasons."
+    },
+    "host_limitations": {
+      "type": "array",
+      "items": { "type": "string" },
+      "description": "Honest notes about host enforcement limits."
+    }
+  },
+  "additionalProperties": false
+}

@@ -115,3 +115,19 @@
 - Built-in CLI schema printing must not depend on the caller's cwd. Use build-embedded schema documents or an executable/resource-prefix lookup, and regress arbitrary-cwd invocation.
 - Runtime schema descriptors, checked-in JSON schemas, and emitted audit event names must be tested together so persisted events like `mavlink.command_denied` validate.
 - If a public schema already advertises a domain-supported field such as `safety.geofence.home_position`, prefer implementing loader support and round-trip tests over silently narrowing the contract.
+
+## 2026-05-08 Phase 31 Flight Safety Review
+
+- Safety exception flags need explicit fail-closed branches. Skipping a special-case allow is not enough when a later generic command allow can still permit the request.
+
+## 2026-05-08 Phase 33 Edge Audit Review
+
+- Before review handoff, force every new Phase source, test, doc, and example into `git diff` with tracking or intent-to-add. A clean-checkout review cannot see untracked audit/report modules even when local builds pass.
+- For allocator-owned slices that are reordered in place and later passed through evaluation paths, keep one `errdefer` owner until normal success frees or transfers ownership. Duplicate `errdefer` registrations create error-path double frees.
+- Generated `.aegis-edge` session state is local runtime output. Keep it ignored and untracked even when smoke commands produce useful approval or replay artifacts.
+
+## 2026-05-08 Phase 34 Edge Red-Team Review
+
+- Review readiness must include `git ls-files --others --exclude-standard` after every new phase module. Intent-to-add or staging belongs before any clean-checkout claim.
+- New audit event names emitted by safety paths must be added to every mapper in the persistence path in the same patch, then covered by a replay/safety-case regression.
+- One-time approval use is stateful. Validation alone is insufficient; the successful allow path must consume the approval before returning.

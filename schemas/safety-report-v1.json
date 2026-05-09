@@ -4,7 +4,7 @@
   "title": "Aegis safety report schema v1",
   "description": "Placeholder schema for future customer safety reports. Reports are engineering audit artifacts and are not regulatory approval, certification, airworthiness approval, or real-flight readiness claims.",
   "type": "object",
-  "additionalProperties": false,
+  "additionalProperties": true,
   "required": ["report_id", "report_version", "vehicle_profile", "adapter_profile", "policy_hash", "scenario_name", "scenario_source", "test_environment", "limitations"],
   "properties": {
     "report_id": { "type": "string", "minLength": 1 },
@@ -19,6 +19,32 @@
     "commands_allowed": { "type": "array", "items": { "type": "string" } },
     "commands_denied": { "type": "array", "items": { "type": "string" } },
     "violations_detected": { "type": "array", "items": { "type": "string" } },
+    "findings": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["finding_id", "category", "severity", "decision", "explanation", "provenance"],
+        "properties": {
+          "finding_id": { "type": "string", "minLength": 1 },
+          "category": {
+            "enum": ["geofence", "altitude", "velocity", "battery", "stale_state", "mode_constraint", "authority_constraint", "command_risk", "mission", "endpoint", "unsupported", "unknown"]
+          },
+          "severity": { "enum": ["info", "warning", "high", "critical"] },
+          "command_id": { "type": "string" },
+          "vehicle_id": { "type": "string" },
+          "constraint_id": { "type": "string" },
+          "observed_value": { "type": "string" },
+          "limit_value": { "type": "string" },
+          "frame_reference_unit": { "type": "string" },
+          "decision": { "enum": ["allow", "ask", "deny", "observe"] },
+          "explanation": { "type": "string", "minLength": 1 },
+          "timestamp_ms": { "type": "integer" },
+          "provenance": { "type": "string" },
+          "audit_event_reference": { "type": "string" }
+        }
+      }
+    },
     "audit_event_references": { "type": "array", "items": { "type": "string" } },
     "limitations": {
       "type": "array",

@@ -1,0 +1,16 @@
+{
+  "name": "aegis-local-plugins",
+  "version": "1.0.0",
+  "description": "Local Aegis plugins for Claude Code.",
+  "owner": {
+    "name": "Aegis"
+  },
+  "plugins": [
+    {
+      "name": "aegis",
+      "description": "Aegis safety hooks and skills for Claude Code.",
+      "source": "../claude-code-plugin",
+      "category": "developer-tools"
+    }
+  ]
+}

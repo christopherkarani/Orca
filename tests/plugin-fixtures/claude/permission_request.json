@@ -1,0 +1,9 @@
+{
+  "version": 1,
+  "host": "claude",
+  "event": "PermissionRequest",
+  "payload": {
+    "kind": "command",
+    "target": "rm -rf /"
+  }
+}

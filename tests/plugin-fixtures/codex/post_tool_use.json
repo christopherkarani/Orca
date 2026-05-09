@@ -1,0 +1,10 @@
+{
+  "version": 1,
+  "host": "codex",
+  "event": "PostToolUse",
+  "payload": {
+    "tool": "shell",
+    "command": "git status",
+    "exit_code": 0
+  }
+}

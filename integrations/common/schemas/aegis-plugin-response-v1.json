@@ -1,0 +1,125 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "AegisPluginResponseV1",
+  "description": "Response schema for Aegis plugin interactions. Returned by doctor, manifest, install, and MCP tool calls.",
+  "type": "object",
+  "required": ["version", "status"],
+  "properties": {
+    "version": {
+      "type": "string",
+      "enum": ["v1"],
+      "description": "Schema version."
+    },
+    "status": {
+      "type": "string",
+      "enum": ["ok", "missing", "error", "deferred", "limited"],
+      "description": "Overall response status."
+    },
+    "request_type": {
+      "type": "string",
+      "enum": [
+        "plugin_doctor",
+        "plugin_manifest",
+        "plugin_install",
+        "mcp_tool_call",
+        "policy_check",
+        "policy_explain",
+        "replay_summary",
+        "capabilities",
+        "drone_safety_status"
+      ],
+      "description": "Echo of the request type."
+    },
+    "aegis_version": {
+      "type": "string",
+      "description": "Aegis CLI version."
+    },
+    "aegis_binary_path": {
+      "type": ["string", "null"],
+      "description": "Path to the Aegis binary, if detectable."
+    },
+    "workspace_root": {
+      "type": "string",
+      "description": "Detected workspace root."
+    },
+    "policy": {
+      "type": "object",
+      "properties": {
+        "present": { "type": "boolean" },
+        "valid": { "type": "boolean" }
+      }
+    },
+    "plugin_directories": {
+      "type": "object",
+      "properties": {
+        "codex": { "type": "boolean" },
+        "claude": { "type": "boolean" },
+        "common": { "type": "boolean" }
+      }
+    },
+    "host_binaries": {
+      "type": "object",
+      "properties": {
+        "codex": { "type": "boolean" },
+        "claude": { "type": "boolean" }
+      }
+    },
+    "drone": {
+      "type": "object",
+      "description": "Drone safety status, present only when drone workstream is detected.",
+      "properties": {
+        "workstream_detected": { "type": "boolean" },
+        "safety_mode_active": { "type": "boolean" },
+        "live_control_policy": {
+          "type": "string",
+          "enum": ["default-deny"]
+        },
+        "simulation_demos": {
+          "type": "string",
+          "enum": ["allowed"]
+        }
+      }
+    },
+    "manifests": {
+      "type": "object",
+      "description": "Plugin manifest status, present for manifest requests.",
+      "properties": {
+        "codex": {
+          "type": "object",
+          "properties": {
+            "path": { "type": "string" },
+            "status": { "type": "string", "enum": ["exists", "missing"] }
+          }
+        },
+        "claude": {
+          "type": "object",
+          "properties": {
+            "path": { "type": "string" },
+            "status": { "type": "string", "enum": ["exists", "missing"] }
+          }
+        }
+      }
+    },
+    "install": {
+      "type": "object",
+      "description": "Install preview, present for install requests.",
+      "properties": {
+        "target": { "type": "string" },
+        "mode": { "type": "string", "enum": ["dry-run", "install"] },
+        "plugin_directory": { "type": "string" },
+        "plugin_directory_exists": { "type": "boolean" },
+        "next_step": { "type": "string" }
+      }
+    },
+    "warnings": {
+      "type": "array",
+      "items": { "type": "string" },
+      "description": "Non-fatal warnings about unsupported or partial features."
+    },
+    "message": {
+      "type": "string",
+      "description": "Human-readable status message."
+    }
+  },
+  "additionalProperties": false
+}

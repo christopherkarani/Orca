@@ -1,0 +1,9 @@
+{
+  "version": 1,
+  "host": "claude",
+  "event": "PreToolUse",
+  "payload": {
+    "tool": "Edit",
+    "path": ".env"
+  }
+}

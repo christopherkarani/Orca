@@ -20,4 +20,6 @@ Artifacts include scenario id, environment, provenance, vehicle type, endpoint m
 
 Fake scenarios use `environment: fake_ardupilot` and `fake_ardupilot_adapter` provenance. SITL scenarios use `environment: ardupilot_sitl`, `requires_ardupilot_sitl: true`, and `sitl_ardupilot` provenance.
 
+Phase 32 scenarios can include `approval: valid_once`, `approval: expired`, or another bounded approval seed to prove operator approvals are consumed by the same policy and safety path as normal fake-ArduPilot command mediation.
+
 Missing ArduPilot SITL produces a skip/unavailable result for SITL scenarios. It must not silently fall back to fake-ArduPilot and claim SITL success.

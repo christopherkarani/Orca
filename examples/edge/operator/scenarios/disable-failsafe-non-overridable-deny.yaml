@@ -1,0 +1,6 @@
+id: disable-failsafe-non-overridable-deny
+command: disable_failsafe
+request: examples/edge/operator/requests/disable-failsafe.json
+state: examples/edge/operator/states/fresh-state.json
+expected_decision: deny
+note: approval cannot make disable_failsafe safe by default

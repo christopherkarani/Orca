@@ -1,0 +1,137 @@
+# Aegis Plugin Release Notes
+
+## Version: 1.1.0
+
+Aegis 1.1.0 introduces the first native plugin release for Codex and Claude Code. The plugins add host-native commands, hooks, and diagnostics while keeping Aegis CLI as the source of truth for policy, replay, and security decisions.
+
+## Aegis CLI plugin surface
+
+Both host integrations call into the same CLI surface:
+
+- `aegis plugin doctor` — reports Aegis version, workspace state, policy status, host binary detection, plugin directories, and platform capabilities.
+- `aegis plugin manifest` — reports the expected plugin manifest path and whether it exists.
+- `aegis plugin install` — previews or performs installation from a release artifact or local path; it defaults to `--dry-run` and requires `--yes` for a real mutation.
+- `aegis decide` — returns stable JSON decisions for commands, files, prompts, and tool calls.
+- `aegis hook` — processes host lifecycle hooks with JSON payloads on stdin.
+
+## Codex plugin
+
+- Path: `integrations/codex-plugin/`
+- Manifest: `integrations/codex-plugin/.codex-plugin/plugin.json`
+- Skills: `aegis-doctor`, `aegis-init`, `aegis-protect`, `aegis-redteam`, `aegis-replay`
+- Hooks: `SessionStart`, `UserPromptSubmit`, `PreToolUse`, `PermissionRequest`, `PostToolUse`, `Stop`
+- Install guide: [docs/integrations/codex.md](docs/integrations/codex.md)
+
+The Codex plugin is a thin host integration. It does not reimplement policy logic or add MCP behavior.
+
+## Claude Code plugin
+
+- Path: `integrations/claude-code-plugin/`
+- Manifest: `integrations/claude-code-plugin/.claude-plugin/plugin.json`
+- Skills: `doctor`, `init`, `protect`, `redteam`, `replay`
+- Hooks: `SessionStart`, `UserPromptSubmit`, `PreToolUse`, `PermissionRequest`, `PostToolUse`, `SessionEnd`
+- Install guide: [docs/integrations/claude-code.md](docs/integrations/claude-code.md)
+
+The Claude Code plugin is also a thin host integration. It delegates policy and replay to Aegis CLI and does not add drone-specific plugin features.
+
+## Installation
+
+### From a release artifact
+
+1. Download the release zip for your host:
+   - `aegis-codex-plugin-vX.Y.Z.zip`
+   - `aegis-claude-code-plugin-vX.Y.Z.zip`
+2. Verify the checksum file before extracting anything:
+   ```sh
+   sha256sum -c aegis-plugin-checksums.txt
+   ```
+3. Extract the plugin to a local directory of your choice.
+4. Point Codex or Claude Code at the extracted plugin directory.
+
+### From a local path
+
+1. Build Aegis:
+   ```sh
+   zig build
+   ```
+2. Point your host at the repository path:
+   - Codex: `integrations/codex-plugin/`
+   - Claude Code: `integrations/claude-code-plugin/`
+3. Confirm the plugin is visible:
+   ```sh
+   ./zig-out/bin/aegis plugin doctor codex
+   ./zig-out/bin/aegis plugin doctor claude
+   ```
+
+### Checksum verification
+
+Always verify `aegis-plugin-checksums.txt` before installing a release zip. The checksum file is the release gate for `dist/plugins/aegis-codex-plugin-vX.Y.Z.zip` and `dist/plugins/aegis-claude-code-plugin-vX.Y.Z.zip`.
+
+## Verification
+
+Run these commands from the repository root:
+
+```sh
+zig build
+zig build test
+./zig-out/bin/aegis plugin doctor codex
+./zig-out/bin/aegis plugin doctor claude
+./zig-out/bin/aegis plugin manifest codex
+./zig-out/bin/aegis plugin manifest claude
+./zig-out/bin/aegis plugin install codex --dry-run
+./zig-out/bin/aegis plugin install claude --dry-run
+cat tests/plugin-fixtures/codex/pre_tool_use_command_safe.json | ./zig-out/bin/aegis hook codex PreToolUse
+cat tests/plugin-fixtures/claude/pre_tool_use_command_safe.json | ./zig-out/bin/aegis hook claude PreToolUse
+./zig-out/bin/aegis redteam --ci
+./zig-out/bin/aegis replay --session last --verify
+./scripts/package-plugins.sh
+```
+
+## Demo
+
+See [examples/plugin-demo/](examples/plugin-demo/) for the local demo flow.
+
+## Security model
+
+The strongest protection remains running the agent through `aegis run`; plugins provide native commands, hooks, and guardrails inside supported agent hosts.
+
+Aegis CLI remains the source of truth for policy decisions, replay, and audit behavior. Plugins are additive host integrations, not a replacement for supervised execution.
+
+## Known limitations
+
+- Hooks are advisory and depend on host support.
+- Official marketplace availability is not yet implemented.
+- Plugin installation is preview/dry-run by default.
+- No telemetry is collected.
+- The plugins do not protect sessions that are not launched through Aegis.
+- These plugins do not add MCP server functionality or drone-specific plugin features.
+
+## Checksums
+
+- Release checksum file: `dist/plugins/aegis-plugin-checksums.txt`
+- Verification command: `sha256sum -c aegis-plugin-checksums.txt`
+- Release zips:
+  - `dist/plugins/aegis-codex-plugin-vX.Y.Z.zip`
+  - `dist/plugins/aegis-claude-code-plugin-vX.Y.Z.zip`
+
+## Vulnerability reporting
+
+Report security issues privately through [SECURITY.md](SECURITY.md).
+
+## Contribution guidance
+
+Read [CONTRIBUTING.md](CONTRIBUTING.md), add deterministic tests or fixtures for security-sensitive changes, and verify with:
+
+```sh
+zig build
+zig build test
+./zig-out/bin/aegis redteam --ci
+```
+
+## Troubleshooting links
+
+- [docs/integrations/plugin-troubleshooting.md](docs/integrations/plugin-troubleshooting.md)
+- [docs/troubleshooting.md](docs/troubleshooting.md)
+- [docs/integrations/codex.md](docs/integrations/codex.md)
+- [docs/integrations/claude-code.md](docs/integrations/claude-code.md)
+- [PLUGIN_SECURITY_MODEL.md](PLUGIN_SECURITY_MODEL.md)

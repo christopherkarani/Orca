@@ -246,6 +246,93 @@ pub fn build(b: *std.Build) void {
     });
     const run_phase30_ardupilot_sitl_tests = b.addRunArtifact(phase30_ardupilot_sitl_tests);
 
+    const phase31_flight_safety_tests = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("tests/phase31_flight_safety_enforcement.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .name = "aegis_edge", .module = aegis_edge_mod },
+            },
+        }),
+    });
+    const run_phase31_flight_safety_tests = b.addRunArtifact(phase31_flight_safety_tests);
+
+    const phase32_operator_emergency_tests = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("tests/phase32_operator_emergency.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .name = "aegis_edge", .module = aegis_edge_mod },
+            },
+        }),
+    });
+    const run_phase32_operator_emergency_tests = b.addRunArtifact(phase32_operator_emergency_tests);
+
+    const phase33_edge_audit_replay_tests = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("tests/phase33_edge_audit_replay_safety_case.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .name = "aegis_edge", .module = aegis_edge_mod },
+            },
+        }),
+    });
+    const run_phase33_edge_audit_replay_tests = b.addRunArtifact(phase33_edge_audit_replay_tests);
+
+    const phase34_edge_redteam_tests = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("tests/phase34_edge_redteam_fault_injection.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .name = "aegis_edge", .module = aegis_edge_mod },
+            },
+        }),
+    });
+    const run_phase34_edge_redteam_tests = b.addRunArtifact(phase34_edge_redteam_tests);
+
+    const phase35_edge_data_guard_tests = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("tests/phase35_edge_data_guard.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .name = "aegis_edge", .module = aegis_edge_mod },
+            },
+        }),
+    });
+    const run_phase35_edge_data_guard_tests = b.addRunArtifact(phase35_edge_data_guard_tests);
+
+    const phase36_codex_plugin_tests = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("tests/phase36_codex_plugin.zig"),
+            .target = target,
+            .optimize = optimize,
+        }),
+    });
+    const run_phase36_codex_plugin_tests = b.addRunArtifact(phase36_codex_plugin_tests);
+
+    const phase37_claude_plugin_tests = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("tests/phase37_claude_plugin.zig"),
+            .target = target,
+            .optimize = optimize,
+        }),
+    });
+    const run_phase37_claude_plugin_tests = b.addRunArtifact(phase37_claude_plugin_tests);
+
+    const phase38_plugin_security_tests = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("tests/phase38_plugin_security_and_compatibility.zig"),
+            .target = target,
+            .optimize = optimize,
+        }),
+    });
+    const run_phase38_plugin_security_tests = b.addRunArtifact(phase38_plugin_security_tests);
+
     const test_step = b.step("test", "Run unit tests");
     test_step.dependOn(&run_lib_tests.step);
     test_step.dependOn(&run_exe_tests.step);
@@ -263,6 +350,14 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&run_phase28_mavlink_gateway_tests.step);
     test_step.dependOn(&run_phase29_px4_sitl_tests.step);
     test_step.dependOn(&run_phase30_ardupilot_sitl_tests.step);
+    test_step.dependOn(&run_phase31_flight_safety_tests.step);
+    test_step.dependOn(&run_phase32_operator_emergency_tests.step);
+    test_step.dependOn(&run_phase33_edge_audit_replay_tests.step);
+    test_step.dependOn(&run_phase34_edge_redteam_tests.step);
+    test_step.dependOn(&run_phase35_edge_data_guard_tests.step);
+    test_step.dependOn(&run_phase36_codex_plugin_tests.step);
+    test_step.dependOn(&run_phase37_claude_plugin_tests.step);
+    test_step.dependOn(&run_phase38_plugin_security_tests.step);
 
     const fuzz_tests = b.addTest(.{
         .root_module = b.createModule(.{

@@ -1,0 +1,41 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://aegis.local/schemas/host-capabilities-v1.json",
+  "title": "Aegis Host Capabilities v1",
+  "description": "Capability report exposed to host plugins so they know what Aegis can and cannot enforce.",
+  "type": "object",
+  "required": ["version", "aegis_version", "decisions", "limitations", "ci_mode"],
+  "properties": {
+    "version": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 1
+    },
+    "aegis_version": {
+      "type": "string"
+    },
+    "decisions": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "enum": ["command", "file", "prompt", "tool", "network", "mcp"]
+      },
+      "description": "Decision kinds supported by this Aegis build."
+    },
+    "limitations": {
+      "type": "array",
+      "items": { "type": "string" },
+      "description": "Honest capability limits."
+    },
+    "ci_mode": {
+      "type": "boolean",
+      "description": "Whether Aegis is running in CI mode (never prompts)."
+    },
+    "sandbox_level": {
+      "type": "string",
+      "enum": ["none", "wrapper-only", "observe-only", "limited", "active"],
+      "description": "Best available sandbox level on this platform."
+    }
+  },
+  "additionalProperties": false
+}

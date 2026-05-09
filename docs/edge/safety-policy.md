@@ -1,6 +1,6 @@
 # Aegis Edge Safety Policy
 
-Phase 27 implements local Edge policy evaluation. Phase 28 adds MAVLink fake-transport protocol mediation on top of that policy engine. Phase 29 adds deterministic fake-PX4 scenarios and opt-in PX4 SITL simulation evidence. Phase 30 adds deterministic fake-ArduPilot scenarios and opt-in ArduPilot SITL simulation evidence. It validates policy files and evaluates fake/simulation/bench command requests against vehicle state. It does not enforce flight safety, mediate real drone hardware commands, or integrate ROS2, customer hardware, or real hardware. Aegis Edge is not ready for real flight and must not be used for real flight.
+Phase 31 implements local flight safety enforcement for fake-adapter, PX4 SITL, and ArduPilot SITL evidence. It validates policy files and evaluates fake/simulation/bench command requests against vehicle state. It does not mediate real drone hardware commands or integrate ROS2, customer hardware, or real hardware. Aegis Edge is not ready for real flight and must not be used for real flight.
 
 ## Safety Envelope
 
@@ -15,8 +15,9 @@ The safety envelope supports:
 - network mode metadata
 - emergency-safe policy defaults for local decisions
 - audit settings
+- structured safety findings and Core audit event payloads
 
-Policy evaluation returns a Core decision plus findings, violated constraints, matched rules, recommended fallback actions, prepared audit events, and an explanation string.
+Safety evaluation returns a Core decision plus structured findings, violated constraints, matched rules, recommended fallback actions, prepared audit events, and an explanation string. The evaluator does not forward commands.
 
 ## Validation Rules
 

@@ -1,0 +1,19 @@
+version: 1
+id: audit-redaction-request-marker
+name: Fake secret in request is redacted
+category: audit_redaction
+environment: fake_adapter
+description: Synthetic request uses a fake secret marker that must never appear in outputs.
+policy: examples/edge/redteam/policies/redteam-envelope.yaml
+faults:
+  - waypoint_outside_geofence
+expected:
+  decision: deny
+  findings:
+    - geofence
+  events:
+    - safety.geofence_violation
+  no_log_contains:
+    - fake-secret-value
+score:
+  points: 10

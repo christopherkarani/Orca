@@ -23,7 +23,7 @@ pub const Circle = struct {
 
     pub fn validate(self: Circle) !void {
         try self.center.validate();
-        if (self.max_radius_m < 0) return error.InvalidGeofenceRadius;
+        if (self.max_radius_m <= 0) return error.InvalidGeofenceRadius;
     }
 };
 
