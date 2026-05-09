@@ -1,0 +1,30 @@
+---
+name: Aegis CLI plugin bug
+about: Report a bug in the Aegis CLI plugin surface
+title: "[CLI Plugin Bug] "
+---
+
+Remove secrets, tokens, credentials, private keys, and private paths from logs and policy files before pasting them here.
+
+## Environment
+
+- Aegis version:
+- OS:
+- Zig version:
+
+## What happened
+
+- Command run:
+- Expected behavior:
+- Actual behavior:
+
+## Diagnostics
+
+- [ ] I ran `./zig-out/bin/aegis plugin doctor`
+- [ ] I ran `./zig-out/bin/aegis redteam --ci`
+- [ ] I removed secrets from logs and policy files before pasting them here
+
+## Logs
+
+- Sanitized logs:
+- Notes:
