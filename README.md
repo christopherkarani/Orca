@@ -1,125 +1,97 @@
 # Aegis
 
-The open-source firewall for AI agents.
+The open-source firewall for AI agents. Run coding agents, local automations, and agent-host tools without giving them your whole laptop.
 
-Run coding agents, MCP servers, and local automations without giving them your whole laptop.
+## Why Aegis Exists
 
-## What Aegis Is
+AI coding agents, local automations, and agent-host tools can read files, run commands, use external tools, and touch sensitive state. Aegis provides local policy, redaction, audit, replay, and plugin guardrails so you can supervise agent sessions with explicit rules and tamper-evident logs.
 
-Aegis is a local, policy-driven runtime firewall for agent sessions. It launches an agent or automation as an Aegis-managed child process, filters its environment, applies command and network policy decisions, stages Aegis-mediated writes for review, proxies stdio MCP traffic, and writes tamper-evident audit logs that can be replayed later.
+## What Aegis Does
+
+- **`aegis run`** — launch an agent or command as an Aegis-managed child process with filtered environment variables and policy checks.
+- **Policy checks** — validate commands, file operations, and network requests against local policy before allowing them.
+- **Secret redaction** — detect and redact sensitive values from environment variables and logs.
+- **Audit logs** — write tamper-evident session events with hash-chain verification.
+- **Replay** — replay a session from audit logs to inspect exactly what happened.
+- **Red-team fixtures** — run deterministic, local-only synthetic tests against Aegis policy.
+- **Plugin doctor** — diagnose Aegis installation, plugin status, and platform capabilities.
+- **Codex plugin** — host-native skills and hooks that call Aegis CLI for policy decisions.
+- **Claude Code plugin** — host-native skills and hooks that call Aegis CLI for policy decisions.
 
 Aegis is not a SaaS product, hosted dashboard, monetization layer, or telemetry service. It is a local CLI and library built around explicit policy, wrapper/proxy mediation, redaction, and honest platform capability reporting.
 
-## Product Split
-
-Phase 23 introduced the monorepo product contract. Phase 24 hardened Aegis Core as the shared engine facade used by CLI and Edge. Phase 25 keeps the CLI as the stable desktop and CI product while hardening the post-split command surface. Phase 26 added Edge domain and safety schema contracts. Phase 27 added local Edge policy evaluation. Phase 28 added a MAVLink gateway foundation for fake/in-memory protocol mediation. Phase 29 added PX4 SITL integration for opt-in local simulation evidence. Phase 30 adds ArduPilot SITL integration for opt-in local simulation evidence:
-
-- **Aegis Core** (`packages/core/`): shared policy, decision, audit, event, schema, replay, redaction, fixture, red-team, capability, experimental ABI skeleton, and platform-independent utility contracts.
-- **Aegis CLI** (`packages/cli/`): the existing desktop and CI AI-agent runtime firewall exposed as the `aegis` binary.
-- **Aegis Edge** (`packages/edge/`): a drone and robotics safety-policy and audit runtime with local policy decisions, fake MAVLink gateway scenarios, deterministic fake-PX4 and fake-ArduPilot scenarios, and opt-in PX4/ArduPilot SITL checks.
-
-Aegis Edge policy evaluation is active for local decisions. MAVLink fake transport remains deterministic, and PX4/ArduPilot SITL are opt-in local simulation only. Edge can validate policies, evaluate command requests against simulated vehicle state, inspect/classify MAVLink frames, run deterministic fake MAVLink, fake-PX4, and fake-ArduPilot scenarios, prepare Core audit events, and explain safety findings. It does not support ROS2 control, real hardware integration, or real-flight deployment. It is not a flight controller, not an autopilot replacement, not detect-and-avoid, and not regulatory approval or certification. It must not be used for real flight.
-
-## Install
+## Quick Start
 
 Build from source with Zig `0.15.2`:
 
 ```sh
 zig build
-./zig-out/bin/aegis version --json
-```
-
-Install scripts and release packaging templates live in [`scripts/`](docs/install.md) and [`packaging/`](packaging/README.md). Do not run remote installers blindly; download artifacts, verify checksums from `dist/checksums.txt`, then install manually or with the platform script.
-
-```sh
-./scripts/build-release.sh
-./scripts/generate-checksums.sh
-shasum -a 256 -c dist/checksums.txt
-```
-
-See [Install](docs/install.md) for macOS, Linux, and Windows notes.
-
-## Quickstart
-
-```sh
-zig build
-./zig-out/bin/aegis init --preset generic-agent
-./zig-out/bin/aegis policy check .aegis/policy.yaml
 ./zig-out/bin/aegis doctor
+./zig-out/bin/aegis init --preset generic-agent
 ./zig-out/bin/aegis run -- echo hello
 ./zig-out/bin/aegis replay --session last --verify
+./zig-out/bin/aegis redteam --ci
 ```
 
 See [Quickstart](docs/quickstart.md) for the full first-run path.
 
-## Scary Demo
-
-The deterministic local demo shows a malicious README asking an agent to read `.env`, then a fake agent trying command and network-like exfiltration paths with synthetic data only.
-
-```sh
-cd examples/leaky-agent-demo
-./run-demo.sh
-../../zig-out/bin/aegis replay --session last --verify
-```
-
-The demo uses no LLM, no API keys, no external network, and no real secret paths. It demonstrates Aegis wrapper-mediated command denial, network policy decisions, redaction, audit logs, and replay. See [the demo README](examples/leaky-agent-demo/README.md).
-
-## Run A Protected Session
-
-```sh
-./zig-out/bin/aegis run --policy policies/presets/generic-agent.yaml --mode strict -- zig build test
-```
-
-`aegis run` protects the direct child session that Aegis launches. It does not protect agents or subprocesses launched outside Aegis.
-
-## Replay Audit Logs
-
-```sh
-./zig-out/bin/aegis replay --session last
-./zig-out/bin/aegis replay --session last --verify
-./zig-out/bin/aegis replay --session last --json
-```
-
-Replay reads `.aegis/sessions/<session>/events.jsonl`, `summary.json`, and `summary.md`, then verifies the hash chain when requested.
-
-## Review Staged Writes
-
-```sh
-./zig-out/bin/aegis diff --session last
-./zig-out/bin/aegis apply --session last --file docs/example.md
-./zig-out/bin/aegis discard --session last
-```
-
-Staged writes are for Aegis-mediated writes. They are not a claim of transparent filesystem interception on every platform.
-
-## MCP Proxy
-
-```sh
-./zig-out/bin/aegis mcp inspect --name demo --command python3 -- fixtures/mcp/fake_server.py
-python3 fixtures/mcp/fake_client.py | ./zig-out/bin/aegis mcp proxy --name demo --policy policies/presets/mcp-dev.yaml --command python3 -- fixtures/mcp/fake_server.py
-```
-
-Aegis mediates newline-delimited stdio MCP messages for launched servers, including tools, resources, prompts, and sampling controls. Remote HTTP MCP and hosted gateway behavior are not v1.1 defaults.
-
-## Red-team
-
-```sh
-./zig-out/bin/aegis redteam --ci
-./zig-out/bin/aegis redteam --json --ci
-```
-
-Fixtures are deterministic, local-only, and synthetic. See [Red-team](docs/redteam.md).
-
 ## Agent Host Plugins
 
-Aegis includes local plugin integrations for Codex and Claude Code.
+Aegis includes local plugin integrations for Codex and Claude Code. The plugins add host-native skills and lifecycle hooks that call the Aegis CLI for policy decisions, red-team checks, replay, and plugin diagnostics.
 
 - [Codex plugin](docs/integrations/codex.md)
 - [Claude Code plugin](docs/integrations/claude-code.md)
+- [Aegis CLI plugin surface](docs/integrations/aegis-cli-plugin.md)
 - [Plugin security model](docs/integrations/plugin-security-model.md)
 - [Plugin troubleshooting](docs/integrations/plugin-troubleshooting.md)
 
-The plugins add agent-host skills and lifecycle hooks that call the Aegis CLI for policy decisions, red-team checks, replay, and plugin diagnostics. The strongest local protection remains running agent processes through `aegis run`.
+Plugins are integration layers. Host hooks are limited by host capabilities. Aegis only protects sessions and actions routed through Aegis or host hooks. The strongest local protection remains running the agent through `aegis run`; plugins provide native commands, hooks, and guardrails inside supported agent hosts.
+
+## Installing Plugin Artifacts
+
+Plugin packages are produced under `dist/plugins/` after running the packaging script:
+
+```sh
+./scripts/package-plugins.sh
+```
+
+Artifacts include:
+
+```text
+dist/plugins/aegis-codex-plugin-vX.Y.Z.zip
+dist/plugins/aegis-claude-code-plugin-vX.Y.Z.zip
+dist/plugins/aegis-plugin-checksums.txt
+```
+
+Always verify checksums before installing:
+
+```sh
+sha256sum -c dist/plugins/aegis-plugin-checksums.txt
+```
+
+Then point Codex or Claude Code at the extracted plugin directory. See the per-host install guides above for details.
+
+Official marketplace availability is not yet implemented; use local path or release artifact install until distribution is available.
+
+## Security Model
+
+- **Aegis reduces blast radius.** It filters environments, checks commands, and writes audit logs for child sessions it launches.
+- **Aegis is not a perfect sandbox.** It works within OS constraints and honest capability reporting.
+- **Plugins are integration layers.** They call the Aegis CLI instead of duplicating policy logic.
+- **Host hooks are limited by host capabilities.** Aegis cannot enforce what the host IDE does not expose.
+- **Aegis only protects sessions and actions routed through Aegis or host hooks.** Agents launched outside Aegis are not protected.
+- **The strongest protection remains `aegis run -- <agent-command>`.**
+
+## What Aegis Does Not Promise
+
+- No perfect sandboxing claim.
+- No universal transparent file enforcement claim.
+- No universal transparent network enforcement claim.
+- No protection for agents launched outside Aegis.
+- No protection against root, admin, kernel, or debugger compromise.
+- No protection against users approving unsafe actions.
+- No safety for arbitrary malicious code or untrusted binaries.
+- The current plugin release does not add MCP server behavior or drone-specific plugin features.
 
 ## Platform Support
 
@@ -147,35 +119,8 @@ Capability states use the current `aegis doctor` vocabulary: `active`, `partial`
 
 Run `./zig-out/bin/aegis doctor` on your machine for the authoritative local report. See [Linux](docs/platform-linux.md), [macOS](docs/platform-macos.md), and [Windows](docs/platform-windows.md).
 
-## What Aegis Protects
+## Documentation
 
-- Child sessions launched through `aegis run`.
-- Environment variables passed to those child sessions.
-- Aegis-mediated command execution through direct checks and session PATH shims.
-- Aegis-mediated staged writes and protected path decisions.
-- Stdio MCP servers launched through `aegis mcp proxy`.
-- Network destinations that are evaluated by Aegis policy or wrapper/proxy-mediated hooks.
-- Persistent audit logs, summaries, and replay output through redaction and hash-chain verification.
-
-## What Aegis Does Not Promise
-
-- Perfect sandboxing.
-- Full transparent network enforcement on every platform.
-- Full transparent filesystem enforcement on every platform.
-- Protection for agents not launched through Aegis.
-- Protection from root, admin, kernel, or debugger compromise.
-- Protection when a user deliberately approves unsafe actions.
-- Safety for arbitrary malicious code or untrusted binaries.
-
-## Why Zig
-
-Aegis needs a small, portable CLI with explicit allocation, predictable binaries, strong cross-platform build control, and a low runtime footprint. Zig fits that shape without adding a managed runtime to every protected agent session.
-
-## Docs
-
-- [Aegis Core package](packages/core/README.md)
-- [Aegis CLI package](packages/cli/README.md)
-- [Aegis Edge package](packages/edge/README.md)
 - [Quickstart](docs/quickstart.md)
 - [Install](docs/install.md)
 - [Threat model](docs/threat-model.md)
@@ -189,11 +134,26 @@ Aegis needs a small, portable CLI with explicit allocation, predictable binaries
 - [Network](docs/network.md)
 - [Commands](docs/commands.md)
 - [Compatibility matrix](docs/compatibility.md)
-- [Linux platform](docs/platform-linux.md)
-- [macOS platform](docs/platform-macos.md)
-- [Windows platform](docs/platform-windows.md)
 - [Troubleshooting](docs/troubleshooting.md)
 - [Release](docs/release.md)
+
+Plugin docs:
+
+- [Aegis CLI plugin surface](docs/integrations/aegis-cli-plugin.md)
+- [Codex plugin](docs/integrations/codex.md)
+- [Claude Code plugin](docs/integrations/claude-code.md)
+- [Plugin security model](docs/integrations/plugin-security-model.md)
+- [Plugin troubleshooting](docs/integrations/plugin-troubleshooting.md)
+
+## Development
+
+```sh
+zig build
+zig build test
+./zig-out/bin/aegis doctor
+./zig-out/bin/aegis redteam --ci
+./scripts/package-plugins.sh
+```
 
 ## Contributing
 
@@ -207,6 +167,6 @@ zig build test
 
 For fixture work, read [Contributing fixtures](docs/contributing-fixtures.md).
 
-## Security Disclosure
+## Security
 
 Report vulnerabilities privately using [SECURITY.md](SECURITY.md). Do not include real credentials or proprietary logs in reports.
