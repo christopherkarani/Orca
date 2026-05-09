@@ -418,6 +418,7 @@ fn readBoundedStdin(allocator: std.mem.Allocator, max_len: usize) ![]u8 {
 }
 
 fn extractString(payload: std.json.Value, key: []const u8) ?[]const u8 {
+    if (payload != .object) return null;
     if (payload.object.get(key)) |v| {
         return switch (v) {
             .string => |s| s,

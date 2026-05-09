@@ -844,7 +844,7 @@ test "plugin manifest codex reports expected path" {
 
     const output = stdout_stream.getWritten();
     try std.testing.expect(std.mem.indexOf(u8, output, "integrations/codex-plugin/.codex-plugin/plugin.json") != null);
-    try std.testing.expect(std.mem.indexOf(u8, output, "missing") != null);
+    try std.testing.expect(std.mem.indexOf(u8, output, "exists") != null);
     try std.testing.expectEqualStrings("", stderr_stream.getWritten());
 }
 

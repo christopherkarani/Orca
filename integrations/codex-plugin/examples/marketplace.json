@@ -1,0 +1,20 @@
+{
+  "name": "aegis-local-plugins",
+  "interface": {
+    "displayName": "Aegis Local Plugins"
+  },
+  "plugins": [
+    {
+      "name": "aegis",
+      "source": {
+        "source": "local",
+        "path": "./integrations/codex-plugin"
+      },
+      "policy": {
+        "installation": "AVAILABLE",
+        "authentication": "ON_INSTALL"
+      },
+      "category": "Developer Tools"
+    }
+  ]
+}
