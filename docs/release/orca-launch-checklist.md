@@ -5,7 +5,7 @@
 - **Product**: Orca
 - **Version**: 1.1.0
 - **Tag**: `v1.1.0`
-- **GitHub Release URL**: (to be filled after release creation)
+- **GitHub Release URL**: https://github.com/christopherkarani/Aegis/releases/tag/v1.1.0
 
 ## Pre-Launch
 
@@ -27,9 +27,9 @@
 
 - [x] Tag created: `v1.1.0`
 - [x] Tag pushed to origin
-- [ ] GitHub release created
-- [ ] Artifacts uploaded to GitHub release
-- [ ] Checksum file uploaded to GitHub release
+- [x] GitHub release created
+- [x] Artifacts uploaded to GitHub release
+- [x] Checksum file uploaded to GitHub release
 
 ## Post-Launch (First 72 Hours)
 
