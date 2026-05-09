@@ -1,0 +1,13 @@
+{
+  "channel_kind": "mavlink_telemetry",
+  "direction": "vehicle_to_agent",
+  "vehicle_id": "edge-vehicle-1",
+  "scenario_id": "vehicle-state",
+  "provenance": "fake_adapter",
+  "vehicle_state": {
+    "mode": "guided",
+    "armed": true,
+    "battery_percent": 82,
+    "altitude_m": 20
+  }
+}

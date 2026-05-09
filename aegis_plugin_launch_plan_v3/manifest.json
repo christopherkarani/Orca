@@ -1,0 +1,23 @@
+{
+  "project": "Aegis plugin launch plan v3",
+  "created_at": "2026-05-09T04:51:27.877397+00:00",
+  "reason": "Removed accidental MCP and drone-plugin scope after review",
+  "next_phase": "P02_AGENT_HOST_INTEGRATION_API.md",
+  "files": [
+    "00_PLUGIN_LAUNCH_INDEX.md",
+    "AEGIS_CLI_PLUGIN_CONTRACT.md",
+    "CODEX_PLUGIN_PHASE_PROMPTS.md",
+    "P00_CURRENT_BASELINE_AND_SAFEPOINT.md",
+    "P01_AEGIS_CLI_PLUGIN_SURFACE.md",
+    "P02_AGENT_HOST_INTEGRATION_API.md",
+    "P03_CODEX_PLUGIN.md",
+    "P04_CLAUDE_CODE_PLUGIN.md",
+    "P05_PLUGIN_SECURITY_AND_COMPATIBILITY.md",
+    "P06_PLUGIN_DISTRIBUTION_AND_MARKETPLACE.md",
+    "P07_PLUGIN_LAUNCH_AND_POSTLAUNCH.md",
+    "PLAN_REVIEW_NOTES.md",
+    "PLUGIN_SECURITY_MODEL.md",
+    "README.md",
+    "SEPARATE_WORKSTREAM_GUARDRAILS.md"
+  ]
+}

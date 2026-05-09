@@ -1,0 +1,6 @@
+{
+  "version": 1,
+  "host": "claude",
+  "event": "SessionEnd",
+  "payload": {}
+}

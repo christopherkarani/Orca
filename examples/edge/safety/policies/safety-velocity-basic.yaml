@@ -1,0 +1,46 @@
+version: 1
+
+vehicle:
+  kind: drone_multirotor
+  autopilot: px4
+  adapter: fake
+
+safety:
+  state_freshness:
+    max_state_age_ms: 1000
+    deny_commands_on_stale_state: true
+  velocity:
+    max_horizontal_mps: 8
+    max_vertical_mps: 2
+  geofence:
+    type: circle
+    center:
+      latitude_deg: 37.000000
+      longitude_deg: -122.000000
+      altitude_m: 0
+      altitude_reference: amsl
+    max_radius_m: 500
+    altitude_floor_m: 2
+    altitude_ceiling_m: 120
+    altitude_reference: amsl
+    boundary_action: deny
+  battery:
+    deny_takeoff_below_percent: 35
+    return_home_below_percent: 25
+    land_below_percent: 15
+
+commands:
+  allow:
+    - read_telemetry
+    - read_vehicle_state
+    - land
+    - return_to_home
+  ask:
+    - set_velocity
+  deny:
+    - disable_failsafe
+    - disable_geofence
+    - raw_actuator_output
+
+network:
+  mode: allowlist

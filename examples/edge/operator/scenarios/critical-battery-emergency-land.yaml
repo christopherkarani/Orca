@@ -1,0 +1,5 @@
+id: critical-battery-emergency-land
+state: examples/edge/operator/states/critical-battery-state.json
+reason: critical_battery
+expected_command: land
+environment: fake_px4_adapter

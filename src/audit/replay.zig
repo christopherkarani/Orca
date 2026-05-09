@@ -9,6 +9,7 @@ pub const ReplayOptions = struct {
     session: []const u8 = "last",
     only_denied: bool = false,
     verify: bool = false,
+    audit_dir_name: []const u8 = ".aegis",
 };
 
 pub const ReplayEvent = struct {
@@ -50,9 +51,9 @@ pub const ReplaySession = struct {
 };
 
 pub fn load(allocator: std.mem.Allocator, workspace_root: []const u8, options: ReplayOptions) !ReplaySession {
-    const session_id = try resolveSessionId(allocator, workspace_root, options.session);
+    const session_id = try resolveSessionId(allocator, workspace_root, options.session, options.audit_dir_name);
     errdefer allocator.free(session_id);
-    const session_dir_path = try std.fs.path.join(allocator, &.{ workspace_root, ".aegis", "sessions", session_id });
+    const session_dir_path = try std.fs.path.join(allocator, &.{ workspace_root, options.audit_dir_name, "sessions", session_id });
     errdefer allocator.free(session_dir_path);
 
     const verify_result = try verifySessionDir(allocator, session_dir_path);
@@ -355,9 +356,9 @@ fn jsonNullableStringEquals(value: std.json.Value, expected: ?[]const u8) bool {
     return value == .null;
 }
 
-fn resolveSessionId(allocator: std.mem.Allocator, workspace_root: []const u8, requested: []const u8) ![]u8 {
+fn resolveSessionId(allocator: std.mem.Allocator, workspace_root: []const u8, requested: []const u8, audit_dir_name: []const u8) ![]u8 {
     if (!std.mem.eql(u8, requested, "last")) return try allocator.dupe(u8, requested);
-    const last_path = try std.fs.path.join(allocator, &.{ workspace_root, ".aegis", "last" });
+    const last_path = try std.fs.path.join(allocator, &.{ workspace_root, audit_dir_name, "last" });
     defer allocator.free(last_path);
     const text = try std.fs.cwd().readFileAlloc(allocator, last_path, core.limits.max_session_id_len + 2);
     defer allocator.free(text);

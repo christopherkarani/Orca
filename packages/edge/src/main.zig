@@ -36,6 +36,53 @@ const usage =
     \\                                 Run a deterministic fake-transport scenario
     \\  mavlink gateway --fake --policy <policy>
     \\                                 Configure fake/in-memory gateway mode only
+    \\  safety doctor                  Show flight safety enforcement capability status
+    \\  safety check --policy <policy> Validate and compile a safety envelope
+    \\  safety evaluate --policy <policy> --request <request.json> --state <state.json>
+    \\                                 Evaluate a command request through the Phase 31 safety API
+    \\  safety explain --policy <policy> --request <request.json> --state <state.json>
+    \\                                 Explain one safety decision without forwarding commands
+    \\  safety scenario run --policy <policy> --scenario <scenario>
+    \\                                 Run a deterministic fake/simulation safety scenario
+    \\  operator request --policy <policy> --request <request.json> --state <state.json>
+    \\                                 Create a bounded local operator approval request
+    \\  operator approve <approval-request-id> --scope once
+    \\                                 Record a local explicit operator approval decision
+    \\  operator deny <approval-request-id>
+    \\                                 Record a local operator denial
+    \\  operator list                  List local session approval audit records
+    \\  operator revoke <approval-id>   Revoke a local approval record
+    \\  emergency evaluate --policy <policy> --state <state.json> --reason <reason>
+    \\                                 Evaluate policy-controlled emergency fallback behavior
+    \\  emergency scenario run --policy <policy> --scenario <scenario>
+    \\                                 Run a deterministic emergency decision scenario
+    \\  data doctor                    Show Edge data/network guard status
+    \\  data classify --payload <file> [--json]
+    \\                                 Classify a local telemetry/data payload without sending it
+    \\  data evaluate --policy <policy> --payload <payload.json> --endpoint <endpoint.json> [--json]
+    \\                                 Evaluate local egress policy for a payload and endpoint
+    \\  data redact --payload <file> [--json]
+    \\                                 Print redacted/minimized payload output only
+    \\  data scenario run --policy <policy> --scenario <scenario>
+    \\                                 Run a deterministic local data guard scenario
+    \\  network explain --policy <policy> --endpoint <endpoint.json> [--json]
+    \\                                 Classify and explain one local endpoint
+    \\  safety-case generate --session last
+    \\                                 Regenerate/show the latest Edge safety-case evidence when available
+    \\  safety-case generate --scenario <scenario> --policy <policy>
+    \\                                 Generate hash-chained Edge audit evidence and JSON/Markdown safety reports
+    \\  safety-case show --session last [--json]
+    \\                                 Show a generated safety-case report
+    \\  safety-case verify --session last
+    \\                                 Verify the Edge audit hash chain for a safety-case session
+    \\  safety-case bundle --session last
+    \\                                 Create a local directory evidence bundle
+    \\  replay --session last [--verify|--json|--findings|--commands|--approvals|--safety-case]
+    \\                                 Replay a hash-chained Edge session under .aegis-edge
+    \\  redteam [list|validate] [--ci] [--json] [--category <category>] [--fixture <id>]
+    \\                                 Run deterministic simulation-only Edge red-team/fault-injection fixtures
+    \\  redteam --environment fake_adapter|px4_sitl|ardupilot_sitl --report safety-case --output <dir>
+    \\                                 Filter environments and generate scorecards/safety evidence
     \\  policy check <policy>          Validate an Edge policy file
     \\  policy explain <policy> <cmd>   Explain one command decision with fake state
     \\  policy evaluate <policy> --request <request.json> --state <state.json>
@@ -101,6 +148,30 @@ pub fn run(argv: []const []const u8, stdout: anytype, stderr: anytype) !u8 {
     }
     if (std.mem.eql(u8, command, "mavlink")) {
         return runMavlink(argv[1..], stdout, stderr);
+    }
+    if (std.mem.eql(u8, command, "safety")) {
+        return runSafety(argv[1..], stdout, stderr);
+    }
+    if (std.mem.eql(u8, command, "operator")) {
+        return runOperator(argv[1..], stdout, stderr);
+    }
+    if (std.mem.eql(u8, command, "emergency")) {
+        return runEmergency(argv[1..], stdout, stderr);
+    }
+    if (std.mem.eql(u8, command, "data")) {
+        return runData(argv[1..], stdout, stderr);
+    }
+    if (std.mem.eql(u8, command, "network")) {
+        return runNetwork(argv[1..], stdout, stderr);
+    }
+    if (std.mem.eql(u8, command, "safety-case")) {
+        return runSafetyCase(argv[1..], stdout, stderr);
+    }
+    if (std.mem.eql(u8, command, "replay")) {
+        return runEdgeReplay(argv[1..], stdout, stderr);
+    }
+    if (std.mem.eql(u8, command, "redteam")) {
+        return runRedteam(argv[1..], stdout, stderr);
     }
     if (std.mem.eql(u8, command, "policy")) {
         return runPolicy(argv[1..], stdout, stderr);
@@ -666,6 +737,287 @@ fn runMavlinkGateway(argv: []const []const u8, stdout: anytype, stderr: anytype)
     return 0;
 }
 
+fn runOperator(argv: []const []const u8, stdout: anytype, stderr: anytype) !u8 {
+    if (argv.len == 0) return usageError(stderr, "aegis-edge operator: expected request, approve, deny, list, or revoke.\n");
+    if (std.mem.eql(u8, argv[0], "request")) return runOperatorRequest(argv[1..], stdout, stderr);
+    if (std.mem.eql(u8, argv[0], "approve")) return runOperatorApprove(argv[1..], stdout, stderr);
+    if (std.mem.eql(u8, argv[0], "deny")) return runOperatorDeny(argv[1..], stdout, stderr);
+    if (std.mem.eql(u8, argv[0], "list")) return runOperatorList(argv[1..], stdout, stderr);
+    if (std.mem.eql(u8, argv[0], "revoke")) return runOperatorRevoke(argv[1..], stdout, stderr);
+    try stderr.print("aegis-edge operator: unknown subcommand '{s}'.\n", .{argv[0]});
+    return 64;
+}
+
+fn runOperatorRequest(argv: []const []const u8, stdout: anytype, stderr: anytype) !u8 {
+    var policy_path: ?[]const u8 = null;
+    var request_path: ?[]const u8 = null;
+    var state_path: ?[]const u8 = null;
+    var session_id: []const u8 = "last";
+    var json = false;
+    var index: usize = 0;
+    while (index < argv.len) : (index += 1) {
+        if (std.mem.eql(u8, argv[index], "--json")) {
+            json = true;
+        } else if (std.mem.eql(u8, argv[index], "--policy")) {
+            index += 1;
+            if (index >= argv.len) return usageError(stderr, "aegis-edge operator request: --policy requires a file.\n");
+            policy_path = argv[index];
+        } else if (std.mem.eql(u8, argv[index], "--request")) {
+            index += 1;
+            if (index >= argv.len) return usageError(stderr, "aegis-edge operator request: --request requires a file.\n");
+            request_path = argv[index];
+        } else if (std.mem.eql(u8, argv[index], "--state")) {
+            index += 1;
+            if (index >= argv.len) return usageError(stderr, "aegis-edge operator request: --state requires a file.\n");
+            state_path = argv[index];
+        } else if (std.mem.eql(u8, argv[index], "--session")) {
+            index += 1;
+            if (index >= argv.len) return usageError(stderr, "aegis-edge operator request: --session requires an id.\n");
+            session_id = argv[index];
+        } else {
+            try stderr.print("aegis-edge operator request: unknown argument '{s}'.\n", .{argv[index]});
+            return 64;
+        }
+    }
+    const selected_policy = policy_path orelse return usageError(stderr, "aegis-edge operator request: missing --policy.\n");
+    const selected_request = request_path orelse return usageError(stderr, "aegis-edge operator request: missing --request.\n");
+    const selected_state = state_path orelse return usageError(stderr, "aegis-edge operator request: missing --state.\n");
+
+    var gpa_state: std.heap.GeneralPurposeAllocator(.{}) = .init;
+    defer _ = gpa_state.deinit();
+    const allocator = gpa_state.allocator();
+    var loaded = edge.policy.loadFile(allocator, selected_policy, .{}) catch |err| {
+        try stderr.print("Edge policy invalid: {s}\n", .{@errorName(err)});
+        return 65;
+    };
+    defer loaded.deinit();
+    var parsed_command = loadCommandFile(allocator, selected_request, stderr) catch return 65;
+    defer parsed_command.deinit();
+    var parsed_state = loadStateFile(allocator, selected_state, stderr) catch return 65;
+    defer parsed_state.deinit();
+    var evaluation = edge.safety.evaluateSafety(allocator, &loaded.value, parsed_state.value, parsed_command.value, .{
+        .mode = .ask,
+        .now_ms = parsed_state.value.timestamp.value + 500,
+        .non_interactive = false,
+    }) catch |err| {
+        try stderr.print("Operator approval request evaluation failed: {s}\n", .{@errorName(err)});
+        return 65;
+    };
+    defer evaluation.deinit();
+    if (evaluation.approval_request == null) {
+        try stdout.print("No operator approval request created. Decision: {s}\n", .{evaluation.decision.result.toString()});
+        try stdout.writeAll("No command was sent. CI/non-interactive mode is not prompting.\n");
+        return 0;
+    }
+    const root = try std.fs.cwd().realpathAlloc(allocator, ".");
+    defer allocator.free(root);
+    var store = try edge.operator.ApprovalStore.init(allocator, root, session_id);
+    defer store.deinit();
+    try store.appendRequest(evaluation.approval_request.?);
+    if (json) {
+        try stdout.writeAll("{\"approval_request_id\":");
+        try edge.core.core.util.writeJsonString(stdout, evaluation.approval_request.?.approval_request_id);
+        try stdout.writeAll(",\"decision\":\"ask\",\"scope\":\"exact_action_only\",\"expires_at_ms\":");
+        try stdout.print("{d}", .{evaluation.approval_request.?.expires_at_ms});
+        try stdout.writeAll(",\"environment\":");
+        try edge.core.core.util.writeJsonString(stdout, @tagName(evaluation.approval_request.?.environment));
+        try stdout.writeAll("}\n");
+    } else {
+        try stdout.print("Approval request: {s}\n", .{evaluation.approval_request.?.approval_request_id});
+        try stdout.print("Command: {s} ({s})\nVehicle: {s}\nEnvironment: {s}\nRisk: {s}\nScope: exact_action_only\nExpires at ms: {d}\n", .{
+            evaluation.approval_request.?.command_id,
+            @tagName(evaluation.approval_request.?.command_type),
+            evaluation.approval_request.?.vehicle_id,
+            @tagName(evaluation.approval_request.?.environment),
+            @tagName(evaluation.approval_request.?.risk_class),
+            evaluation.approval_request.?.expires_at_ms,
+        });
+        if (evaluation.matched_rule) |rule| try stdout.print("Matched rule: {s} ({s})\n", .{ rule.id, rule.description });
+        try stdout.writeAll("Choices for an interactive operator are: allow once, deny, explain, abort. Broad approval is not the default.\n");
+        try stdout.writeAll("No command was sent to a vehicle, adapter, simulator, or flight controller. This is local simulation/SITL/bench-preparation evidence only.\n");
+    }
+    return 0;
+}
+
+fn runOperatorApprove(argv: []const []const u8, stdout: anytype, stderr: anytype) !u8 {
+    if (argv.len < 1) return usageError(stderr, "aegis-edge operator approve: expected <approval-request-id> --scope once.\n");
+    const approval_id = argv[0];
+    var scope_once = false;
+    var index: usize = 1;
+    while (index < argv.len) : (index += 1) {
+        if (std.mem.eql(u8, argv[index], "--scope")) {
+            index += 1;
+            if (index >= argv.len) return usageError(stderr, "aegis-edge operator approve: --scope requires once.\n");
+            scope_once = std.mem.eql(u8, argv[index], "once");
+        } else {
+            try stderr.print("aegis-edge operator approve: unknown argument '{s}'.\n", .{argv[index]});
+            return 64;
+        }
+    }
+    if (!scope_once) return usageError(stderr, "aegis-edge operator approve: only --scope once is supported in the local Phase 32 CLI.\n");
+    return appendOperatorCliDecision(stdout, approval_id, "operator.approval_granted", "approved once");
+}
+
+fn runOperatorDeny(argv: []const []const u8, stdout: anytype, stderr: anytype) !u8 {
+    if (argv.len != 1) return usageError(stderr, "aegis-edge operator deny: expected <approval-request-id>.\n");
+    return appendOperatorCliDecision(stdout, argv[0], "operator.approval_denied", "denied");
+}
+
+fn runOperatorRevoke(argv: []const []const u8, stdout: anytype, stderr: anytype) !u8 {
+    if (argv.len != 1) return usageError(stderr, "aegis-edge operator revoke: expected <approval-id>.\n");
+    var gpa_state: std.heap.GeneralPurposeAllocator(.{}) = .init;
+    defer _ = gpa_state.deinit();
+    const allocator = gpa_state.allocator();
+    const root = try std.fs.cwd().realpathAlloc(allocator, ".");
+    defer allocator.free(root);
+    var store = try edge.operator.ApprovalStore.init(allocator, root, "last");
+    defer store.deinit();
+    try store.revoke(argv[0], "operator-cli", 1_000_700);
+    try stdout.print("Approval revoked locally: {s}\n", .{argv[0]});
+    try stdout.writeAll("This local store is not a long-term authorization database.\n");
+    return 0;
+}
+
+fn runOperatorList(argv: []const []const u8, stdout: anytype, stderr: anytype) !u8 {
+    if (argv.len != 0) return usageError(stderr, "aegis-edge operator list: expected no arguments.\n");
+    var gpa_state: std.heap.GeneralPurposeAllocator(.{}) = .init;
+    defer _ = gpa_state.deinit();
+    const allocator = gpa_state.allocator();
+    const root = try std.fs.cwd().realpathAlloc(allocator, ".");
+    defer allocator.free(root);
+    var store = try edge.operator.ApprovalStore.init(allocator, root, "last");
+    defer store.deinit();
+    const maybe_text = std.fs.cwd().readFileAlloc(allocator, store.approvals_path, 128 * 1024) catch |err| switch (err) {
+        error.FileNotFound => null,
+        else => return err,
+    };
+    defer if (maybe_text) |text| allocator.free(text);
+    if (maybe_text == null or maybe_text.?.len == 0) {
+        try stdout.writeAll("No local operator approvals recorded for session last.\n");
+    } else {
+        try stdout.writeAll("Local operator approval audit records (session last):\n");
+        try stdout.writeAll(maybe_text.?);
+    }
+    try stdout.writeAll("Approval records are local-only, bounded, and not a long-term authorization database.\n");
+    return 0;
+}
+
+fn appendOperatorCliDecision(stdout: anytype, approval_id: []const u8, event_type: []const u8, label: []const u8) !u8 {
+    var gpa_state: std.heap.GeneralPurposeAllocator(.{}) = .init;
+    defer _ = gpa_state.deinit();
+    const allocator = gpa_state.allocator();
+    const root = try std.fs.cwd().realpathAlloc(allocator, ".");
+    defer allocator.free(root);
+    var store = try edge.operator.ApprovalStore.init(allocator, root, "last");
+    defer store.deinit();
+    try store.appendCliEvent(event_type, approval_id, "operator-cli", 1_000_700, label);
+    try stdout.print("Approval {s}: {s}\n", .{ label, approval_id });
+    try stdout.writeAll("Only exact-action local approvals are supported by this CLI path; CI/non-interactive mode never prompts.\n");
+    return 0;
+}
+
+fn runEmergency(argv: []const []const u8, stdout: anytype, stderr: anytype) !u8 {
+    if (argv.len == 0) return usageError(stderr, "aegis-edge emergency: expected evaluate or scenario.\n");
+    if (std.mem.eql(u8, argv[0], "evaluate")) return runEmergencyEvaluate(argv[1..], stdout, stderr);
+    if (std.mem.eql(u8, argv[0], "scenario")) return runEmergencyScenario(argv[1..], stdout, stderr);
+    try stderr.print("aegis-edge emergency: unknown subcommand '{s}'.\n", .{argv[0]});
+    return 64;
+}
+
+fn runEmergencyEvaluate(argv: []const []const u8, stdout: anytype, stderr: anytype) !u8 {
+    var policy_path: ?[]const u8 = null;
+    var state_path: ?[]const u8 = null;
+    var reason: edge.emergency.EmergencyReason = .unknown;
+    var json = false;
+    var index: usize = 0;
+    while (index < argv.len) : (index += 1) {
+        if (std.mem.eql(u8, argv[index], "--json")) {
+            json = true;
+        } else if (std.mem.eql(u8, argv[index], "--policy")) {
+            index += 1;
+            if (index >= argv.len) return usageError(stderr, "aegis-edge emergency evaluate: --policy requires a file.\n");
+            policy_path = argv[index];
+        } else if (std.mem.eql(u8, argv[index], "--state")) {
+            index += 1;
+            if (index >= argv.len) return usageError(stderr, "aegis-edge emergency evaluate: --state requires a file.\n");
+            state_path = argv[index];
+        } else if (std.mem.eql(u8, argv[index], "--reason")) {
+            index += 1;
+            if (index >= argv.len) return usageError(stderr, "aegis-edge emergency evaluate: --reason requires a value.\n");
+            reason = std.meta.stringToEnum(edge.emergency.EmergencyReason, argv[index]) orelse return usageError(stderr, "aegis-edge emergency evaluate: invalid reason.\n");
+        } else {
+            try stderr.print("aegis-edge emergency evaluate: unknown argument '{s}'.\n", .{argv[index]});
+            return 64;
+        }
+    }
+    const selected_policy = policy_path orelse return usageError(stderr, "aegis-edge emergency evaluate: missing --policy.\n");
+    const selected_state = state_path orelse return usageError(stderr, "aegis-edge emergency evaluate: missing --state.\n");
+    var gpa_state: std.heap.GeneralPurposeAllocator(.{}) = .init;
+    defer _ = gpa_state.deinit();
+    const allocator = gpa_state.allocator();
+    var loaded = edge.policy.loadFile(allocator, selected_policy, .{}) catch |err| {
+        try stderr.print("Emergency policy invalid: {s}\n", .{@errorName(err)});
+        return 65;
+    };
+    defer loaded.deinit();
+    var parsed_state = loadStateFile(allocator, selected_state, stderr) catch return 65;
+    defer parsed_state.deinit();
+    var decision = edge.emergency.evaluateFallback(allocator, &loaded.value, parsed_state.value, reason, .{ .now_ms = parsed_state.value.timestamp.value + 500 }) catch |err| {
+        try stderr.print("Emergency evaluation failed: {s}\n", .{@errorName(err)});
+        return 65;
+    };
+    defer decision.deinit(allocator);
+    try writeEmergencyDecision(stdout, decision, json);
+    return 0;
+}
+
+fn runEmergencyScenario(argv: []const []const u8, stdout: anytype, stderr: anytype) !u8 {
+    if (argv.len == 0 or !std.mem.eql(u8, argv[0], "run")) return usageError(stderr, "aegis-edge emergency scenario: expected run --policy <policy> --scenario <scenario>.\n");
+    var policy_path: ?[]const u8 = null;
+    var scenario_path: ?[]const u8 = null;
+    var index: usize = 1;
+    while (index < argv.len) : (index += 1) {
+        if (std.mem.eql(u8, argv[index], "--policy")) {
+            index += 1;
+            if (index >= argv.len) return usageError(stderr, "aegis-edge emergency scenario run: --policy requires a file.\n");
+            policy_path = argv[index];
+        } else if (std.mem.eql(u8, argv[index], "--scenario")) {
+            index += 1;
+            if (index >= argv.len) return usageError(stderr, "aegis-edge emergency scenario run: --scenario requires a file.\n");
+            scenario_path = argv[index];
+        } else {
+            try stderr.print("aegis-edge emergency scenario run: unknown argument '{s}'.\n", .{argv[index]});
+            return 64;
+        }
+    }
+    const selected_policy = policy_path orelse return usageError(stderr, "aegis-edge emergency scenario run: missing --policy.\n");
+    const selected_scenario = scenario_path orelse return usageError(stderr, "aegis-edge emergency scenario run: missing --scenario.\n");
+    var gpa_state: std.heap.GeneralPurposeAllocator(.{}) = .init;
+    defer _ = gpa_state.deinit();
+    const allocator = gpa_state.allocator();
+    const spec = loadEmergencyScenario(allocator, selected_scenario) catch |err| {
+        try stderr.print("Emergency scenario invalid: {s}\n", .{@errorName(err)});
+        return 65;
+    };
+    defer spec.deinit(allocator);
+    var loaded = edge.policy.loadFile(allocator, selected_policy, .{}) catch |err| {
+        try stderr.print("Emergency policy invalid: {s}\n", .{@errorName(err)});
+        return 65;
+    };
+    defer loaded.deinit();
+    var parsed_state = loadStateFile(allocator, spec.state_path, stderr) catch return 65;
+    defer parsed_state.deinit();
+    var decision = try edge.emergency.evaluateFallback(allocator, &loaded.value, parsed_state.value, spec.reason, .{ .now_ms = parsed_state.value.timestamp.value + 500 });
+    defer decision.deinit(allocator);
+    if (spec.expected_command) |expected| if (decision.command != expected) {
+        try stderr.print("Emergency scenario mismatch: expected_command={s} actual={s}\n", .{ @tagName(expected), @tagName(decision.command) });
+        return 65;
+    };
+    try stdout.print("Scenario: {s}\n", .{spec.id});
+    try writeEmergencyDecision(stdout, decision, false);
+    return 0;
+}
+
 fn runPolicy(argv: []const []const u8, stdout: anytype, stderr: anytype) !u8 {
     if (argv.len == 0) {
         try stderr.writeAll("aegis-edge policy: expected check, explain, or evaluate.\n");
@@ -676,6 +1028,903 @@ fn runPolicy(argv: []const []const u8, stdout: anytype, stderr: anytype) !u8 {
     if (std.mem.eql(u8, argv[0], "evaluate")) return runPolicyEvaluate(argv[1..], stdout, stderr);
     try stderr.print("aegis-edge policy: unknown subcommand '{s}'.\n", .{argv[0]});
     return 64;
+}
+
+fn runData(argv: []const []const u8, stdout: anytype, stderr: anytype) !u8 {
+    if (argv.len == 0) return usageError(stderr, "aegis-edge data: expected doctor, classify, evaluate, redact, or scenario.\n");
+    if (std.mem.eql(u8, argv[0], "doctor")) return runDataDoctor(argv[1..], stdout, stderr);
+    if (std.mem.eql(u8, argv[0], "classify")) return runDataClassify(argv[1..], stdout, stderr);
+    if (std.mem.eql(u8, argv[0], "evaluate")) return runDataEvaluate(argv[1..], stdout, stderr);
+    if (std.mem.eql(u8, argv[0], "redact")) return runDataRedact(argv[1..], stdout, stderr);
+    if (std.mem.eql(u8, argv[0], "scenario")) return runDataScenario(argv[1..], stdout, stderr);
+    try stderr.print("aegis-edge data: unknown subcommand '{s}'.\n", .{argv[0]});
+    return 64;
+}
+
+fn runNetwork(argv: []const []const u8, stdout: anytype, stderr: anytype) !u8 {
+    if (argv.len == 0 or !std.mem.eql(u8, argv[0], "explain")) return usageError(stderr, "aegis-edge network: expected explain --policy <policy> --endpoint <endpoint.json>.\n");
+    var policy_path: ?[]const u8 = null;
+    var endpoint_path: ?[]const u8 = null;
+    var json = false;
+    var index: usize = 1;
+    while (index < argv.len) : (index += 1) {
+        if (std.mem.eql(u8, argv[index], "--policy")) {
+            index += 1;
+            if (index >= argv.len) return usageError(stderr, "aegis-edge network explain: --policy requires a file.\n");
+            policy_path = argv[index];
+        } else if (std.mem.eql(u8, argv[index], "--endpoint")) {
+            index += 1;
+            if (index >= argv.len) return usageError(stderr, "aegis-edge network explain: --endpoint requires a file.\n");
+            endpoint_path = argv[index];
+        } else if (std.mem.eql(u8, argv[index], "--json")) {
+            json = true;
+        } else {
+            try stderr.print("aegis-edge network explain: unknown argument '{s}'.\n", .{argv[index]});
+            return 64;
+        }
+    }
+    const selected_policy = policy_path orelse return usageError(stderr, "aegis-edge network explain: missing --policy.\n");
+    const selected_endpoint = endpoint_path orelse return usageError(stderr, "aegis-edge network explain: missing --endpoint.\n");
+    var gpa_state: std.heap.GeneralPurposeAllocator(.{}) = .init;
+    defer _ = gpa_state.deinit();
+    const allocator = gpa_state.allocator();
+    var loaded = edge.data_guard.loadPolicyFile(allocator, selected_policy) catch |err| {
+        try stderr.print("Data guard policy invalid: {s}\n", .{@errorName(err)});
+        return 65;
+    };
+    defer loaded.deinit();
+    const endpoint_text = try std.fs.cwd().readFileAlloc(allocator, selected_endpoint, 32 * 1024);
+    defer allocator.free(endpoint_text);
+    var endpoint = edge.data_guard.parseEndpointJsonOwned(allocator, endpoint_text) catch |err| {
+        try stderr.print("Endpoint invalid: {s}\n", .{@errorName(err)});
+        return 65;
+    };
+    defer endpoint.deinit();
+    var classification = try edge.data_guard.classifyEndpoint(allocator, endpoint.value);
+    defer classification.deinit();
+    const decision = loaded.value.resolveEndpoint(endpoint.value, classification).decision;
+    if (json) {
+        try stdout.writeAll("{\"endpoint_kind\":");
+        try edge.core.core.util.writeJsonString(stdout, classification.kind.toString());
+        try stdout.writeAll(",\"decision\":");
+        try edge.core.core.util.writeJsonString(stdout, decision.toString());
+        try stdout.writeAll(",\"endpoint\":");
+        try edge.core.core.util.writeJsonString(stdout, classification.redacted_endpoint);
+        try stdout.print(",\"suspicious\":{}}}\n", .{classification.suspicious});
+    } else {
+        try stdout.print("Endpoint: {s}\nKind: {s}\nDecision: {s}\nReason: {s}\n", .{ classification.redacted_endpoint, classification.kind.toString(), decision.toString(), classification.reason });
+        try stdout.writeAll("No network connection was opened. Endpoint URLs are redacted before output.\n");
+    }
+    return 0;
+}
+
+fn runDataDoctor(argv: []const []const u8, stdout: anytype, stderr: anytype) !u8 {
+    if (argv.len != 0) return usageError(stderr, "aegis-edge data doctor: expected no arguments.\n");
+    try stdout.writeAll("Aegis Edge data/network guard: active for local classification, policy evaluation, redaction, audit/report evidence, and deterministic fake/SITL/customer-evaluation scenarios.\n");
+    try stdout.writeAll("Controls: data classes, telemetry channels, endpoint classification, allow/ask/deny policy, CI ask-to-deny, observe logging, exfiltration heuristics, and redaction before persistence.\n");
+    try stdout.writeAll("Unsupported: hosted telemetry, SaaS, real-flight deployment, real hardware procedures, detect-and-avoid, autopilot replacement, regulatory approval, or certification.\n");
+    try stdout.writeAll("No external network call, PX4 endpoint, ArduPilot endpoint, or hardware connection is opened by data doctor.\n");
+    return 0;
+}
+
+fn runDataClassify(argv: []const []const u8, stdout: anytype, stderr: anytype) !u8 {
+    var payload_path: ?[]const u8 = null;
+    var json = false;
+    var index: usize = 0;
+    while (index < argv.len) : (index += 1) {
+        if (std.mem.eql(u8, argv[index], "--payload")) {
+            index += 1;
+            if (index >= argv.len) return usageError(stderr, "aegis-edge data classify: --payload requires a file.\n");
+            payload_path = argv[index];
+        } else if (std.mem.eql(u8, argv[index], "--json")) {
+            json = true;
+        } else {
+            try stderr.print("aegis-edge data classify: unknown argument '{s}'.\n", .{argv[index]});
+            return 64;
+        }
+    }
+    const selected_payload = payload_path orelse return usageError(stderr, "aegis-edge data classify: missing --payload.\n");
+    var gpa_state: std.heap.GeneralPurposeAllocator(.{}) = .init;
+    defer _ = gpa_state.deinit();
+    const allocator = gpa_state.allocator();
+    const text = try std.fs.cwd().readFileAlloc(allocator, selected_payload, 256 * 1024);
+    defer allocator.free(text);
+    var result = edge.data_guard.classifyPayload(allocator, text) catch |err| {
+        try stderr.print("Payload classification failed: {s}\n", .{@errorName(err)});
+        return 65;
+    };
+    defer result.deinit();
+    try writeDataClassification(stdout, result, json);
+    return 0;
+}
+
+fn runDataEvaluate(argv: []const []const u8, stdout: anytype, stderr: anytype) !u8 {
+    var policy_path: ?[]const u8 = null;
+    var payload_path: ?[]const u8 = null;
+    var endpoint_path: ?[]const u8 = null;
+    var json = false;
+    var index: usize = 0;
+    while (index < argv.len) : (index += 1) {
+        if (std.mem.eql(u8, argv[index], "--policy")) {
+            index += 1;
+            if (index >= argv.len) return usageError(stderr, "aegis-edge data evaluate: --policy requires a file.\n");
+            policy_path = argv[index];
+        } else if (std.mem.eql(u8, argv[index], "--payload")) {
+            index += 1;
+            if (index >= argv.len) return usageError(stderr, "aegis-edge data evaluate: --payload requires a file.\n");
+            payload_path = argv[index];
+        } else if (std.mem.eql(u8, argv[index], "--endpoint")) {
+            index += 1;
+            if (index >= argv.len) return usageError(stderr, "aegis-edge data evaluate: --endpoint requires a file.\n");
+            endpoint_path = argv[index];
+        } else if (std.mem.eql(u8, argv[index], "--json")) {
+            json = true;
+        } else {
+            try stderr.print("aegis-edge data evaluate: unknown argument '{s}'.\n", .{argv[index]});
+            return 64;
+        }
+    }
+    const selected_policy = policy_path orelse return usageError(stderr, "aegis-edge data evaluate: missing --policy.\n");
+    const selected_payload = payload_path orelse return usageError(stderr, "aegis-edge data evaluate: missing --payload.\n");
+    const selected_endpoint = endpoint_path orelse return usageError(stderr, "aegis-edge data evaluate: missing --endpoint.\n");
+    var gpa_state: std.heap.GeneralPurposeAllocator(.{}) = .init;
+    defer _ = gpa_state.deinit();
+    const allocator = gpa_state.allocator();
+    var owned = evaluateDataGuardFiles(allocator, selected_policy, selected_payload, selected_endpoint) catch |err| {
+        try stderr.print("Data guard evaluation failed: {s}\n", .{@errorName(err)});
+        return 65;
+    };
+    defer owned.deinit();
+    try writeDataEvaluation(stdout, owned, json);
+    return 0;
+}
+
+fn runDataRedact(argv: []const []const u8, stdout: anytype, stderr: anytype) !u8 {
+    var payload_path: ?[]const u8 = null;
+    var json = false;
+    var index: usize = 0;
+    while (index < argv.len) : (index += 1) {
+        if (std.mem.eql(u8, argv[index], "--payload")) {
+            index += 1;
+            if (index >= argv.len) return usageError(stderr, "aegis-edge data redact: --payload requires a file.\n");
+            payload_path = argv[index];
+        } else if (std.mem.eql(u8, argv[index], "--json")) {
+            json = true;
+        } else {
+            try stderr.print("aegis-edge data redact: unknown argument '{s}'.\n", .{argv[index]});
+            return 64;
+        }
+    }
+    const selected_payload = payload_path orelse return usageError(stderr, "aegis-edge data redact: missing --payload.\n");
+    var gpa_state: std.heap.GeneralPurposeAllocator(.{}) = .init;
+    defer _ = gpa_state.deinit();
+    const allocator = gpa_state.allocator();
+    const text = try std.fs.cwd().readFileAlloc(allocator, selected_payload, 256 * 1024);
+    defer allocator.free(text);
+    var classification = try edge.data_guard.classifyPayload(allocator, text);
+    defer classification.deinit();
+    var redacted = try edge.data_guard.redactPayload(allocator, text, classification.classes, true);
+    defer redacted.deinit();
+    if (json) {
+        try stdout.writeAll("{\"redacted\":");
+        try edge.core.core.util.writeJsonString(stdout, redacted.text);
+        try stdout.print(",\"redaction_count\":{d},\"safe_to_persist\":{}}}\n", .{ redacted.redaction_count, redacted.safe_to_persist });
+    } else {
+        try stdout.writeAll(redacted.text);
+        try stdout.writeByte('\n');
+    }
+    return 0;
+}
+
+fn runDataScenario(argv: []const []const u8, stdout: anytype, stderr: anytype) !u8 {
+    if (argv.len == 0 or !std.mem.eql(u8, argv[0], "run")) return usageError(stderr, "aegis-edge data scenario: expected run --policy <policy> --scenario <scenario>.\n");
+    var policy_path: ?[]const u8 = null;
+    var scenario_path: ?[]const u8 = null;
+    var index: usize = 1;
+    while (index < argv.len) : (index += 1) {
+        if (std.mem.eql(u8, argv[index], "--policy")) {
+            index += 1;
+            if (index >= argv.len) return usageError(stderr, "aegis-edge data scenario run: --policy requires a file.\n");
+            policy_path = argv[index];
+        } else if (std.mem.eql(u8, argv[index], "--scenario")) {
+            index += 1;
+            if (index >= argv.len) return usageError(stderr, "aegis-edge data scenario run: --scenario requires a file.\n");
+            scenario_path = argv[index];
+        } else {
+            try stderr.print("aegis-edge data scenario run: unknown argument '{s}'.\n", .{argv[index]});
+            return 64;
+        }
+    }
+    const selected_policy = policy_path orelse return usageError(stderr, "aegis-edge data scenario run: missing --policy.\n");
+    const selected_scenario = scenario_path orelse return usageError(stderr, "aegis-edge data scenario run: missing --scenario.\n");
+    var gpa_state: std.heap.GeneralPurposeAllocator(.{}) = .init;
+    defer _ = gpa_state.deinit();
+    const allocator = gpa_state.allocator();
+    var scenario = try loadDataScenario(allocator, selected_scenario);
+    defer scenario.deinit(allocator);
+    var evaluation = try evaluateDataGuardFiles(allocator, selected_policy, scenario.payload_path, scenario.endpoint_path);
+    defer evaluation.deinit();
+    const ok = if (scenario.expected_decision) |expected| expected == evaluation.decision.result else true;
+    try stdout.print("Scenario {s}: decision={s} endpoint={s}\n", .{ scenario.id, evaluation.decision.result.toString(), evaluation.redacted_endpoint });
+    try stdout.print("Explanation: {s}\n", .{evaluation.explanation});
+    try stdout.writeAll("No external network call, hardware endpoint, or real-flight action was performed.\n");
+    return if (ok) 0 else 6;
+}
+
+fn evaluateDataGuardFiles(allocator: std.mem.Allocator, policy_path: []const u8, payload_path: []const u8, endpoint_path: []const u8) !edge.data_guard.EgressEvaluation {
+    var loaded = try edge.data_guard.loadPolicyFile(allocator, policy_path);
+    defer loaded.deinit();
+    const payload_text = try std.fs.cwd().readFileAlloc(allocator, payload_path, 256 * 1024);
+    defer allocator.free(payload_text);
+    const endpoint_text = try std.fs.cwd().readFileAlloc(allocator, endpoint_path, 32 * 1024);
+    defer allocator.free(endpoint_text);
+    var endpoint = try edge.data_guard.parseEndpointJsonOwned(allocator, endpoint_text);
+    defer endpoint.deinit();
+    const payload = parseDataPayload(payload_text);
+    return edge.data_guard.evaluateEgress(allocator, loaded.value, payload, endpoint.value, .{
+        .mode = loaded.value.mode,
+        .ci = loaded.value.mode == .ci,
+        .non_interactive = loaded.value.mode == .ci,
+    });
+}
+
+fn parseDataPayload(text: []const u8) edge.data_guard.TelemetryPayload {
+    var channel: edge.data_guard.ChannelKind = .unknown;
+    var direction: edge.data_guard.Direction = .unknown;
+    var source: []const u8 = "file";
+    var destination: []const u8 = "endpoint";
+    const vehicle_id: ?[]const u8 = if (edge.data_guard.data_classification.containsAny(text, &.{"vehicle_id"})) "edge-vehicle-1" else null;
+    const scenario_id: ?[]const u8 = null;
+    var provenance: []const u8 = "fake_adapter";
+    if (std.json.parseFromSlice(std.json.Value, std.heap.page_allocator, text, .{})) |parsed| {
+        defer parsed.deinit();
+        if (parsed.value == .object) {
+            const object = parsed.value.object;
+            if (object.get("channel_kind")) |value| {
+                if (value == .string) channel = edge.data_guard.ChannelKind.parse(value.string) orelse .unknown;
+            }
+            if (object.get("channel")) |value| {
+                if (value == .string) channel = edge.data_guard.ChannelKind.parse(value.string) orelse channel;
+            }
+            if (object.get("direction")) |value| {
+                if (value == .string) direction = edge.data_guard.Direction.parse(value.string) orelse .unknown;
+            }
+            if (object.get("provenance")) |value| {
+                if (value == .string) {
+                    if (std.mem.eql(u8, value.string, "sitl_px4")) provenance = "sitl_px4" else if (std.mem.eql(u8, value.string, "sitl_ardupilot")) provenance = "sitl_ardupilot" else if (std.mem.eql(u8, value.string, "fake_ardupilot_adapter")) provenance = "fake_ardupilot_adapter" else provenance = "fake_adapter";
+                }
+            }
+        }
+    } else |_| {}
+    if (channel == .safety_case_report or direction == .edge_to_customer_endpoint) {
+        source = "edge";
+        destination = "customer_endpoint";
+    }
+    return .{
+        .channel_kind = channel,
+        .direction = direction,
+        .source = source,
+        .destination = destination,
+        .vehicle_id = vehicle_id,
+        .scenario_id = scenario_id,
+        .provenance = provenance,
+        .payload = text,
+    };
+}
+
+const DataScenarioSpec = struct {
+    id: []u8,
+    payload_path: []u8,
+    endpoint_path: []u8,
+    expected_decision: ?edge.core.decision.DecisionResult = null,
+
+    fn deinit(self: DataScenarioSpec, allocator: std.mem.Allocator) void {
+        allocator.free(self.id);
+        allocator.free(self.payload_path);
+        allocator.free(self.endpoint_path);
+    }
+};
+
+fn loadDataScenario(allocator: std.mem.Allocator, path: []const u8) !DataScenarioSpec {
+    const text = try std.fs.cwd().readFileAlloc(allocator, path, 32 * 1024);
+    defer allocator.free(text);
+    var id: ?[]const u8 = null;
+    var payload: ?[]const u8 = null;
+    var endpoint: ?[]const u8 = null;
+    var expected: ?edge.core.decision.DecisionResult = null;
+    var lines = std.mem.splitScalar(u8, text, '\n');
+    while (lines.next()) |raw_line| {
+        const no_comment = if (std.mem.indexOfScalar(u8, raw_line, '#')) |comment| raw_line[0..comment] else raw_line;
+        const line = std.mem.trim(u8, no_comment, " \t\r");
+        if (line.len == 0) continue;
+        const colon = std.mem.indexOfScalar(u8, line, ':') orelse continue;
+        const key = std.mem.trim(u8, line[0..colon], " \t");
+        const value = cleanDataScalar(line[colon + 1 ..]);
+        if (std.mem.eql(u8, key, "id") or std.mem.eql(u8, key, "name")) id = value else if (std.mem.eql(u8, key, "payload")) payload = value else if (std.mem.eql(u8, key, "endpoint")) endpoint = value else if (std.mem.eql(u8, key, "expected_decision")) expected = std.meta.stringToEnum(edge.core.decision.DecisionResult, value) orelse null;
+    }
+    return .{
+        .id = try allocator.dupe(u8, id orelse std.fs.path.stem(path)),
+        .payload_path = try allocator.dupe(u8, payload orelse return error.InvalidDataGuardScenario),
+        .endpoint_path = try allocator.dupe(u8, endpoint orelse return error.InvalidDataGuardScenario),
+        .expected_decision = expected,
+    };
+}
+
+fn cleanDataScalar(raw: []const u8) []const u8 {
+    var value = std.mem.trim(u8, raw, " \t\r");
+    if (value.len >= 2) {
+        const first = value[0];
+        const last = value[value.len - 1];
+        if ((first == '"' and last == '"') or (first == '\'' and last == '\'')) value = value[1 .. value.len - 1];
+    }
+    return value;
+}
+
+fn writeDataClassification(stdout: anytype, result: edge.data_guard.data_classification.ClassificationResult, json: bool) !void {
+    if (json) {
+        try stdout.writeAll("{\"sensitivity\":");
+        try edge.core.core.util.writeJsonString(stdout, result.sensitivity.toString());
+        try stdout.writeAll(",\"classes\":[");
+        for (result.classes, 0..) |class, index| {
+            if (index > 0) try stdout.writeByte(',');
+            try edge.core.core.util.writeJsonString(stdout, class.toString());
+        }
+        try stdout.print("],\"size_bytes\":{d}}}\n", .{result.size_bytes});
+        return;
+    }
+    try stdout.print("Sensitivity: {s}\nClasses:", .{result.sensitivity.toString()});
+    for (result.classes) |class| try stdout.print(" {s}", .{class.toString()});
+    try stdout.print("\nSize bytes: {d}\n", .{result.size_bytes});
+    try stdout.writeAll("Payload was not sent anywhere. Unknown and sensitive classes are not treated as safe.\n");
+}
+
+fn writeDataEvaluation(stdout: anytype, evaluation: edge.data_guard.EgressEvaluation, json: bool) !void {
+    if (json) {
+        try stdout.writeAll("{\"decision\":");
+        try edge.core.core.util.writeJsonString(stdout, evaluation.decision.result.toString());
+        try stdout.writeAll(",\"endpoint_kind\":");
+        try edge.core.core.util.writeJsonString(stdout, evaluation.endpoint_kind.toString());
+        try stdout.writeAll(",\"redacted_endpoint\":");
+        try edge.core.core.util.writeJsonString(stdout, evaluation.redacted_endpoint);
+        try stdout.writeAll(",\"sensitivity\":");
+        try edge.core.core.util.writeJsonString(stdout, evaluation.sensitivity.toString());
+        try stdout.writeAll(",\"findings\":[");
+        for (evaluation.findings, 0..) |finding, index| {
+            if (index > 0) try stdout.writeByte(',');
+            try stdout.writeByte('{');
+            try stdout.writeAll("\"category\":");
+            try edge.core.core.util.writeJsonString(stdout, finding.category.toString());
+            try stdout.writeAll(",\"severity\":");
+            try edge.core.core.util.writeJsonString(stdout, finding.severity.toString());
+            try stdout.writeAll(",\"reason\":");
+            try edge.core.core.util.writeJsonString(stdout, finding.reason);
+            try stdout.writeByte('}');
+        }
+        try stdout.writeAll("]}\n");
+        return;
+    }
+    try stdout.print("Decision: {s}\nEndpoint: {s} ({s})\nSensitivity: {s}\n", .{ evaluation.decision.result.toString(), evaluation.redacted_endpoint, evaluation.endpoint_kind.toString(), evaluation.sensitivity.toString() });
+    try stdout.print("Explanation: {s}\n", .{evaluation.explanation});
+    try stdout.writeAll("Data classes:");
+    for (evaluation.data_classes) |class| try stdout.print(" {s}", .{class.toString()});
+    try stdout.writeAll("\nFindings:\n");
+    for (evaluation.findings) |finding| try stdout.print("  - {s}/{s}: {s}\n", .{ finding.category.toString(), finding.severity.toString(), finding.reason });
+    try stdout.writeAll("No external network call was made. Output is redacted/minimized.\n");
+}
+
+fn runSafety(argv: []const []const u8, stdout: anytype, stderr: anytype) !u8 {
+    if (argv.len == 0) return usageError(stderr, "aegis-edge safety: expected doctor, check, evaluate, explain, or scenario.\n");
+    if (std.mem.eql(u8, argv[0], "doctor")) return runSafetyDoctor(argv[1..], stdout, stderr);
+    if (std.mem.eql(u8, argv[0], "check")) return runSafetyCheck(argv[1..], stdout, stderr);
+    if (std.mem.eql(u8, argv[0], "evaluate")) return runSafetyEvaluate(argv[1..], stdout, stderr, false);
+    if (std.mem.eql(u8, argv[0], "explain")) return runSafetyEvaluate(argv[1..], stdout, stderr, true);
+    if (std.mem.eql(u8, argv[0], "scenario")) return runSafetyScenario(argv[1..], stdout, stderr);
+    try stderr.print("aegis-edge safety: unknown subcommand '{s}'.\n", .{argv[0]});
+    return 64;
+}
+
+fn runSafetyDoctor(argv: []const []const u8, stdout: anytype, stderr: anytype) !u8 {
+    if (argv.len != 0) return usageError(stderr, "aegis-edge safety doctor: expected no arguments.\n");
+    try stdout.writeAll("Aegis Edge flight safety enforcement: active for fake adapters and opt-in PX4/ArduPilot SITL simulation evidence only.\n");
+    try stdout.writeAll("Checks: command risk, geofence circle, altitude, velocity, battery, state freshness, mode, authority, mission item safety.\n");
+    try stdout.writeAll("Unsupported: polygon conversion, local/WGS84 conversion, NED/ENU conversion, detect-and-avoid, autopilot replacement, regulatory certification, real-flight readiness.\n");
+    try stdout.writeAll("No hardware, serial endpoint, SITL endpoint, or network connection is opened by safety doctor.\n");
+    return 0;
+}
+
+fn runSafetyCheck(argv: []const []const u8, stdout: anytype, stderr: anytype) !u8 {
+    var policy_path: ?[]const u8 = null;
+    var json = false;
+    var index: usize = 0;
+    while (index < argv.len) : (index += 1) {
+        if (std.mem.eql(u8, argv[index], "--json")) {
+            json = true;
+        } else if (std.mem.eql(u8, argv[index], "--policy")) {
+            index += 1;
+            if (index >= argv.len) return usageError(stderr, "aegis-edge safety check: --policy requires a file.\n");
+            policy_path = argv[index];
+        } else {
+            try stderr.print("aegis-edge safety check: unknown argument '{s}'.\n", .{argv[index]});
+            return 64;
+        }
+    }
+    const selected_policy = policy_path orelse return usageError(stderr, "aegis-edge safety check: missing --policy.\n");
+    var gpa_state: std.heap.GeneralPurposeAllocator(.{}) = .init;
+    defer _ = gpa_state.deinit();
+    const allocator = gpa_state.allocator();
+    var loaded = edge.policy.loadFile(allocator, selected_policy, .{}) catch |err| {
+        try stderr.print("Safety policy invalid: {s}\n", .{@errorName(err)});
+        return 65;
+    };
+    defer loaded.deinit();
+    var compiled = edge.safety.compileEnvelope(allocator, &loaded.value) catch |err| {
+        try stderr.print("Safety envelope invalid: {s}\n", .{@errorName(err)});
+        return 65;
+    };
+    defer compiled.deinit();
+    if (json) {
+        try stdout.writeAll("{\"ok\":true,\"policy\":");
+        try edge.core.core.util.writeJsonString(stdout, selected_policy);
+        try stdout.print(",\"geofence_count\":{d},\"rules\":{d}}}\n", .{ compiled.geofence_count, compiled.rules.len });
+    } else {
+        try stdout.print("Safety envelope valid: {s}\n", .{selected_policy});
+        try stdout.print("Compiled rules: {d}\nGeofences: {d}\n", .{ compiled.rules.len, compiled.geofence_count });
+        try stdout.writeAll("This is validation only; no command was sent and no hardware endpoint was opened.\n");
+    }
+    return 0;
+}
+
+fn runSafetyEvaluate(argv: []const []const u8, stdout: anytype, stderr: anytype, explain: bool) !u8 {
+    var policy_path: ?[]const u8 = null;
+    var request_path: ?[]const u8 = null;
+    var state_path: ?[]const u8 = null;
+    var command_text: ?[]const u8 = null;
+    var mode: edge.safety.EvaluationMode = .strict;
+    var json = false;
+    var index: usize = 0;
+    while (index < argv.len) : (index += 1) {
+        if (std.mem.eql(u8, argv[index], "--json")) {
+            json = true;
+        } else if (std.mem.eql(u8, argv[index], "--policy")) {
+            index += 1;
+            if (index >= argv.len) return usageError(stderr, "aegis-edge safety evaluate: --policy requires a file.\n");
+            policy_path = argv[index];
+        } else if (std.mem.eql(u8, argv[index], "--request")) {
+            index += 1;
+            if (index >= argv.len) return usageError(stderr, "aegis-edge safety evaluate: --request requires a file.\n");
+            request_path = argv[index];
+        } else if (std.mem.eql(u8, argv[index], "--state")) {
+            index += 1;
+            if (index >= argv.len) return usageError(stderr, "aegis-edge safety evaluate: --state requires a file.\n");
+            state_path = argv[index];
+        } else if (std.mem.eql(u8, argv[index], "--command")) {
+            index += 1;
+            if (index >= argv.len) return usageError(stderr, "aegis-edge safety explain: --command requires a command action.\n");
+            command_text = argv[index];
+        } else if (std.mem.eql(u8, argv[index], "--mode")) {
+            index += 1;
+            if (index >= argv.len) return usageError(stderr, "aegis-edge safety evaluate: --mode requires a value.\n");
+            mode = parseMode(argv[index]) catch |err| {
+                try stderr.print("aegis-edge safety evaluate: invalid mode: {s}\n", .{@errorName(err)});
+                return 64;
+            };
+        } else {
+            try stderr.print("aegis-edge safety evaluate: unknown argument '{s}'.\n", .{argv[index]});
+            return 64;
+        }
+    }
+    const selected_policy = policy_path orelse return usageError(stderr, "aegis-edge safety evaluate: missing --policy.\n");
+    var gpa_state: std.heap.GeneralPurposeAllocator(.{}) = .init;
+    defer _ = gpa_state.deinit();
+    const allocator = gpa_state.allocator();
+
+    var loaded = edge.policy.loadFile(allocator, selected_policy, .{}) catch |err| {
+        try stderr.print("Safety policy invalid: {s}\n", .{@errorName(err)});
+        return 65;
+    };
+    defer loaded.deinit();
+
+    var parsed_state: ?edge.policy.ParsedVehicleState = null;
+    defer if (parsed_state) |*parsed| parsed.deinit();
+    var parsed_command: ?edge.policy.ParsedCommandRequest = null;
+    defer if (parsed_command) |*parsed| parsed.deinit();
+
+    const state = if (state_path) |state_file| blk: {
+        const state_text = try std.fs.cwd().readFileAlloc(allocator, state_file, 128 * 1024);
+        defer allocator.free(state_text);
+        parsed_state = edge.policy.parseVehicleStateJsonOwned(allocator, state_text) catch |err| {
+            try stderr.print("Edge vehicle state invalid: {s}\n", .{@errorName(err)});
+            return 65;
+        };
+        break :blk parsed_state.?.value;
+    } else defaultStateForPolicy(&loaded.value, 1_000_000);
+
+    const command = if (request_path) |request_file| blk: {
+        const request_text = try std.fs.cwd().readFileAlloc(allocator, request_file, 128 * 1024);
+        defer allocator.free(request_text);
+        parsed_command = edge.policy.parseCommandRequestJsonOwned(allocator, request_text) catch |err| {
+            try stderr.print("Edge command request invalid: {s}\n", .{@errorName(err)});
+            return 65;
+        };
+        break :blk parsed_command.?.value;
+    } else blk: {
+        const action_text = command_text orelse return usageError(stderr, if (explain) "aegis-edge safety explain: missing --request/--state or --command.\n" else "aegis-edge safety evaluate: missing --request and --state.\n");
+        const action = std.meta.stringToEnum(edge.domain.commands.CommandAction, action_text) orelse {
+            try stderr.print("aegis-edge safety explain: unknown command '{s}'.\n", .{action_text});
+            return 64;
+        };
+        break :blk defaultRequestForAction(&loaded.value, action, 1_000_100);
+    };
+
+    var evaluation = edge.safety.evaluateSafety(allocator, &loaded.value, state, command, .{
+        .mode = mode,
+        .now_ms = state.timestamp.value + 500,
+        .non_interactive = mode == .ci or mode == .redteam,
+    }) catch |err| {
+        try stderr.print("Safety evaluation failed: {s}\n", .{@errorName(err)});
+        return 65;
+    };
+    defer evaluation.deinit();
+    try writeSafetyEvaluation(stdout, evaluation, json);
+    return 0;
+}
+
+fn runSafetyScenario(argv: []const []const u8, stdout: anytype, stderr: anytype) !u8 {
+    if (argv.len == 0 or !std.mem.eql(u8, argv[0], "run")) return usageError(stderr, "aegis-edge safety scenario: expected run --policy <policy> --scenario <scenario>.\n");
+    var policy_path: ?[]const u8 = null;
+    var scenario_path: ?[]const u8 = null;
+    var artifact_dir: ?[]const u8 = null;
+    var index: usize = 1;
+    while (index < argv.len) : (index += 1) {
+        if (std.mem.eql(u8, argv[index], "--policy")) {
+            index += 1;
+            if (index >= argv.len) return usageError(stderr, "aegis-edge safety scenario run: --policy requires a file.\n");
+            policy_path = argv[index];
+        } else if (std.mem.eql(u8, argv[index], "--scenario")) {
+            index += 1;
+            if (index >= argv.len) return usageError(stderr, "aegis-edge safety scenario run: --scenario requires a file.\n");
+            scenario_path = argv[index];
+        } else if (std.mem.eql(u8, argv[index], "--artifacts")) {
+            index += 1;
+            if (index >= argv.len) return usageError(stderr, "aegis-edge safety scenario run: --artifacts requires a directory.\n");
+            artifact_dir = argv[index];
+        } else {
+            try stderr.print("aegis-edge safety scenario run: unknown argument '{s}'.\n", .{argv[index]});
+            return 64;
+        }
+    }
+    const selected_policy = policy_path orelse return usageError(stderr, "aegis-edge safety scenario run: missing --policy.\n");
+    const selected_scenario = scenario_path orelse return usageError(stderr, "aegis-edge safety scenario run: missing --scenario.\n");
+    var gpa_state: std.heap.GeneralPurposeAllocator(.{}) = .init;
+    defer _ = gpa_state.deinit();
+    const allocator = gpa_state.allocator();
+    var result = edge.safety.scenario.run(allocator, .{
+        .policy_path = selected_policy,
+        .scenario_path = selected_scenario,
+        .artifact_dir = artifact_dir,
+    }) catch |err| {
+        try stderr.print("Safety scenario failed: {s}\n", .{@errorName(err)});
+        return 65;
+    };
+    defer result.deinit();
+    try stdout.print("{s}\nDecision: {s}\n", .{ result.summary, result.decision.toString() });
+    if (result.artifact_dir) |dir| try stdout.print("Artifacts: {s}\n", .{dir});
+    try stdout.writeAll("No real hardware, real-flight endpoint, or regulatory validation is implied.\n");
+    return 0;
+}
+
+fn runSafetyCase(argv: []const []const u8, stdout: anytype, stderr: anytype) !u8 {
+    if (argv.len == 0) return usageError(stderr, "aegis-edge safety-case: expected generate, show, verify, or bundle.\n");
+    if (std.mem.eql(u8, argv[0], "generate")) return runSafetyCaseGenerate(argv[1..], stdout, stderr);
+    if (std.mem.eql(u8, argv[0], "show")) return runSafetyCaseShow(argv[1..], stdout, stderr);
+    if (std.mem.eql(u8, argv[0], "verify")) return runSafetyCaseVerify(argv[1..], stdout, stderr);
+    if (std.mem.eql(u8, argv[0], "bundle")) return runSafetyCaseBundle(argv[1..], stdout, stderr);
+    try stderr.print("aegis-edge safety-case: unknown subcommand '{s}'.\n", .{argv[0]});
+    return 64;
+}
+
+fn runSafetyCaseGenerate(argv: []const []const u8, stdout: anytype, stderr: anytype) !u8 {
+    var policy_path: ?[]const u8 = null;
+    var scenario_path: ?[]const u8 = null;
+    var session: []const u8 = "last";
+    var index: usize = 0;
+    while (index < argv.len) : (index += 1) {
+        if (std.mem.eql(u8, argv[index], "--policy")) {
+            index += 1;
+            if (index >= argv.len) return usageError(stderr, "aegis-edge safety-case generate: --policy requires a file.\n");
+            policy_path = argv[index];
+        } else if (std.mem.eql(u8, argv[index], "--scenario")) {
+            index += 1;
+            if (index >= argv.len) return usageError(stderr, "aegis-edge safety-case generate: --scenario requires a file.\n");
+            scenario_path = argv[index];
+        } else if (std.mem.eql(u8, argv[index], "--session")) {
+            index += 1;
+            if (index >= argv.len) return usageError(stderr, "aegis-edge safety-case generate: --session requires a value.\n");
+            session = argv[index];
+        } else {
+            try stderr.print("aegis-edge safety-case generate: unknown argument '{s}'.\n", .{argv[index]});
+            return 64;
+        }
+    }
+    if (policy_path == null and scenario_path == null and std.mem.eql(u8, session, "last")) {
+        return runSafetyCaseShow(&.{ "--session", "last" }, stdout, stderr);
+    }
+    const selected_policy = policy_path orelse return usageError(stderr, "aegis-edge safety-case generate: missing --policy.\n");
+    const selected_scenario = scenario_path orelse return usageError(stderr, "aegis-edge safety-case generate: missing --scenario.\n");
+    var gpa_state: std.heap.GeneralPurposeAllocator(.{}) = .init;
+    defer _ = gpa_state.deinit();
+    const allocator = gpa_state.allocator();
+    var result = edge.audit.safety_case.generate(allocator, .{
+        .policy_path = selected_policy,
+        .scenario_path = selected_scenario,
+    }) catch |err| {
+        try stderr.print("Safety-case generation failed: {s}\n", .{@errorName(err)});
+        return 65;
+    };
+    defer result.deinit();
+    try stdout.print("{s}\nSession: {s}\nArtifacts: {s}\n", .{ result.summary, result.session_id, result.session_dir });
+    try stdout.writeAll("Limitations: safety-case evidence is simulation/SITL/bench-preparation/customer-evaluation only; no real-flight or certification claim.\n");
+    return 0;
+}
+
+fn runSafetyCaseShow(argv: []const []const u8, stdout: anytype, stderr: anytype) !u8 {
+    var session: []const u8 = "last";
+    var json = false;
+    var index: usize = 0;
+    while (index < argv.len) : (index += 1) {
+        if (std.mem.eql(u8, argv[index], "--session")) {
+            index += 1;
+            if (index >= argv.len) return usageError(stderr, "aegis-edge safety-case show: --session requires a value.\n");
+            session = argv[index];
+        } else if (std.mem.eql(u8, argv[index], "--json")) {
+            json = true;
+        } else {
+            try stderr.print("aegis-edge safety-case show: unknown argument '{s}'.\n", .{argv[index]});
+            return 64;
+        }
+    }
+    var gpa_state: std.heap.GeneralPurposeAllocator(.{}) = .init;
+    defer _ = gpa_state.deinit();
+    const allocator = gpa_state.allocator();
+    const root = try std.fs.cwd().realpathAlloc(allocator, ".");
+    defer allocator.free(root);
+    edge.audit.safety_case.show(stdout, allocator, root, session, json) catch |err| {
+        try stderr.print("Safety-case report unavailable: {s}\n", .{@errorName(err)});
+        return 65;
+    };
+    return 0;
+}
+
+fn runSafetyCaseVerify(argv: []const []const u8, stdout: anytype, stderr: anytype) !u8 {
+    const session = parseSessionOnly(argv, stderr, "aegis-edge safety-case verify") catch return 64;
+    var gpa_state: std.heap.GeneralPurposeAllocator(.{}) = .init;
+    defer _ = gpa_state.deinit();
+    const allocator = gpa_state.allocator();
+    const root = try std.fs.cwd().realpathAlloc(allocator, ".");
+    defer allocator.free(root);
+    const result = edge.audit.safety_case.verify(allocator, root, session) catch |err| {
+        try stderr.print("Safety-case verification failed: {s}\n", .{@errorName(err)});
+        return 65;
+    };
+    defer result.deinit(allocator);
+    if (!result.ok) {
+        try stderr.print("Safety-case hash chain invalid: {s}\n", .{result.reason orelse "unknown"});
+        return 65;
+    }
+    try stdout.print("Safety-case hash chain verified for session {s}\n", .{session});
+    return 0;
+}
+
+fn runSafetyCaseBundle(argv: []const []const u8, stdout: anytype, stderr: anytype) !u8 {
+    const session = parseSessionOnly(argv, stderr, "aegis-edge safety-case bundle") catch return 64;
+    var gpa_state: std.heap.GeneralPurposeAllocator(.{}) = .init;
+    defer _ = gpa_state.deinit();
+    const allocator = gpa_state.allocator();
+    const root = try std.fs.cwd().realpathAlloc(allocator, ".");
+    defer allocator.free(root);
+    const bundle_dir = edge.audit.safety_case.bundle(allocator, root, session) catch |err| {
+        try stderr.print("Safety-case bundle failed: {s}\n", .{@errorName(err)});
+        return 65;
+    };
+    defer allocator.free(bundle_dir);
+    try stdout.print("Evidence bundle: {s}\n", .{bundle_dir});
+    return 0;
+}
+
+fn runEdgeReplay(argv: []const []const u8, stdout: anytype, stderr: anytype) !u8 {
+    var options: edge.audit.edge_replay.ReplayOptions = .{};
+    var index: usize = 0;
+    while (index < argv.len) : (index += 1) {
+        if (std.mem.eql(u8, argv[index], "--session")) {
+            index += 1;
+            if (index >= argv.len) return usageError(stderr, "aegis-edge replay: --session requires a value.\n");
+            options.session = argv[index];
+        } else if (std.mem.eql(u8, argv[index], "--verify")) {
+            options.verify = true;
+        } else if (std.mem.eql(u8, argv[index], "--json")) {
+            options.json = true;
+        } else if (std.mem.eql(u8, argv[index], "--findings")) {
+            options.findings = true;
+        } else if (std.mem.eql(u8, argv[index], "--commands")) {
+            options.commands = true;
+        } else if (std.mem.eql(u8, argv[index], "--approvals")) {
+            options.approvals = true;
+        } else if (std.mem.eql(u8, argv[index], "--safety-case")) {
+            options.safety_case = true;
+        } else {
+            try stderr.print("aegis-edge replay: unknown argument '{s}'.\n", .{argv[index]});
+            return 64;
+        }
+    }
+    var gpa_state: std.heap.GeneralPurposeAllocator(.{}) = .init;
+    defer _ = gpa_state.deinit();
+    const allocator = gpa_state.allocator();
+    const root = try std.fs.cwd().realpathAlloc(allocator, ".");
+    defer allocator.free(root);
+    edge.audit.edge_replay.write(stdout, allocator, root, options) catch |err| {
+        try stderr.print("Edge replay failed: {s}\n", .{@errorName(err)});
+        return 65;
+    };
+    return 0;
+}
+
+const RedteamCommand = enum { run, list, validate };
+
+const RedteamOptions = struct {
+    command: RedteamCommand = .run,
+    root_path: []const u8 = "examples/edge/redteam",
+    category: ?edge.redteam.fixture.Category = null,
+    fixture_id: ?[]const u8 = null,
+    environment: ?edge.redteam.fixture.Environment = null,
+    output_dir: ?[]const u8 = null,
+    json: bool = false,
+    ci: bool = false,
+    safety_case_report: bool = false,
+};
+
+fn runRedteam(argv: []const []const u8, stdout: anytype, stderr: anytype) !u8 {
+    const options = parseRedteamOptions(argv, stderr) catch return 64;
+    var gpa_state: std.heap.GeneralPurposeAllocator(.{}) = .init;
+    defer _ = gpa_state.deinit();
+    const allocator = gpa_state.allocator();
+
+    var fixture_set = edge.redteam.runner.validateFixtures(allocator, .{
+        .root_path = options.root_path,
+        .category = options.category,
+        .fixture_id = options.fixture_id,
+        .environment = options.environment,
+        .output_dir = options.output_dir,
+        .ci = options.ci,
+        .safety_case_report = options.safety_case_report,
+    }) catch |err| {
+        try stderr.print("aegis-edge redteam: fixture validation failed: {s}\n", .{@errorName(err)});
+        return 65;
+    };
+    defer fixture_set.deinit();
+    if (fixture_set.fixtures.len == 0) {
+        try stderr.writeAll("aegis-edge redteam: no matching fixtures found.\n");
+        return 65;
+    }
+
+    switch (options.command) {
+        .list => {
+            for (fixture_set.fixtures) |fixture| {
+                try stdout.print("{s}\t{s}\t{s}\t{s}\n", .{ fixture.id, fixture.category.slug(), fixture.environment.toString(), if (fixture.required) "required" else "optional" });
+            }
+            return 0;
+        },
+        .validate => {
+            var required_count: usize = 0;
+            for (fixture_set.fixtures) |fixture| {
+                if (fixture.required) required_count += 1;
+            }
+            try stdout.print("Validated {d} Edge red-team fixtures ({d} required). No real hardware fixtures are accepted.\n", .{ fixture_set.fixtures.len, required_count });
+            return 0;
+        },
+        .run => {},
+    }
+
+    var suite = edge.redteam.runner.runSuite(allocator, fixture_set, .{
+        .root_path = options.root_path,
+        .category = options.category,
+        .fixture_id = options.fixture_id,
+        .environment = options.environment,
+        .output_dir = options.output_dir,
+        .ci = options.ci,
+        .safety_case_report = options.safety_case_report,
+    }) catch |err| {
+        try stderr.print("aegis-edge redteam: run failed: {s}\n", .{@errorName(err)});
+        return 65;
+    };
+    defer suite.deinit();
+
+    edge.redteam.report.writeArtifacts(allocator, suite, options.safety_case_report) catch |err| {
+        try stderr.print("aegis-edge redteam: report generation failed: {s}\n", .{@errorName(err)});
+        return 65;
+    };
+
+    if (options.json) {
+        try edge.redteam.report.writeJson(stdout, suite);
+    } else {
+        try edge.redteam.report.writeHuman(stdout, suite);
+    }
+    if (options.ci and !suite.allRequiredPassed()) return 6;
+    return 0;
+}
+
+fn parseRedteamOptions(argv: []const []const u8, stderr: anytype) !RedteamOptions {
+    var options: RedteamOptions = .{};
+    var index: usize = 0;
+    if (index < argv.len and !std.mem.startsWith(u8, argv[index], "-")) {
+        if (std.mem.eql(u8, argv[index], "list")) {
+            options.command = .list;
+            index += 1;
+        } else if (std.mem.eql(u8, argv[index], "validate")) {
+            options.command = .validate;
+            index += 1;
+        }
+    }
+    while (index < argv.len) : (index += 1) {
+        const arg = argv[index];
+        if (std.mem.eql(u8, arg, "--ci")) {
+            options.ci = true;
+        } else if (std.mem.eql(u8, arg, "--json")) {
+            options.json = true;
+        } else if (std.mem.eql(u8, arg, "--category")) {
+            index += 1;
+            if (index >= argv.len) return redteamUsage(stderr, "aegis-edge redteam: --category requires a value.\n");
+            options.category = edge.redteam.fixture.Category.parse(argv[index]) orelse return redteamUsage(stderr, "aegis-edge redteam: invalid --category.\n");
+        } else if (std.mem.eql(u8, arg, "--fixture")) {
+            index += 1;
+            if (index >= argv.len) return redteamUsage(stderr, "aegis-edge redteam: --fixture requires an id.\n");
+            options.fixture_id = argv[index];
+        } else if (std.mem.eql(u8, arg, "--environment")) {
+            index += 1;
+            if (index >= argv.len) return redteamUsage(stderr, "aegis-edge redteam: --environment requires a value.\n");
+            options.environment = edge.redteam.fixture.Environment.parse(argv[index]) orelse return redteamUsage(stderr, "aegis-edge redteam: invalid --environment.\n");
+        } else if (std.mem.eql(u8, arg, "--output")) {
+            index += 1;
+            if (index >= argv.len) return redteamUsage(stderr, "aegis-edge redteam: --output requires a directory.\n");
+            options.output_dir = argv[index];
+        } else if (std.mem.eql(u8, arg, "--report")) {
+            index += 1;
+            if (index >= argv.len) return redteamUsage(stderr, "aegis-edge redteam: --report requires a value.\n");
+            if (!std.mem.eql(u8, argv[index], "safety-case")) return redteamUsage(stderr, "aegis-edge redteam: only --report safety-case is supported.\n");
+            options.safety_case_report = true;
+        } else if (std.mem.eql(u8, arg, "--fixtures-root")) {
+            index += 1;
+            if (index >= argv.len) return redteamUsage(stderr, "aegis-edge redteam: --fixtures-root requires a directory.\n");
+            options.root_path = argv[index];
+        } else {
+            try stderr.print("aegis-edge redteam: unknown argument '{s}'.\n", .{arg});
+            return error.InvalidCliArguments;
+        }
+    }
+    return options;
+}
+
+fn redteamUsage(stderr: anytype, message: []const u8) !RedteamOptions {
+    try stderr.writeAll(message);
+    return error.InvalidCliArguments;
+}
+
+fn parseSessionOnly(argv: []const []const u8, stderr: anytype, command_name: []const u8) ![]const u8 {
+    var session: []const u8 = "last";
+    var index: usize = 0;
+    while (index < argv.len) : (index += 1) {
+        if (std.mem.eql(u8, argv[index], "--session")) {
+            index += 1;
+            if (index >= argv.len) {
+                try stderr.print("{s}: --session requires a value.\n", .{command_name});
+                return error.InvalidCliArguments;
+            }
+            session = argv[index];
+        } else {
+            try stderr.print("{s}: unknown argument '{s}'.\n", .{ command_name, argv[index] });
+            return error.InvalidCliArguments;
+        }
+    }
+    return session;
 }
 
 fn runPolicyCheck(argv: []const []const u8, stdout: anytype, stderr: anytype) !u8 {
@@ -819,14 +2068,18 @@ fn runPolicyEvaluate(argv: []const []const u8, stdout: anytype, stderr: anytype)
     const state_text = try std.fs.cwd().readFileAlloc(allocator, state_file, 128 * 1024);
     defer allocator.free(state_text);
 
-    const command = edge.policy.parseCommandRequestJson(allocator, request_text) catch |err| {
+    var parsed_command = edge.policy.parseCommandRequestJsonOwned(allocator, request_text) catch |err| {
         try stderr.print("Edge command request invalid: {s}\n", .{@errorName(err)});
         return 65;
     };
-    const state = edge.policy.parseVehicleStateJson(allocator, state_text) catch |err| {
+    defer parsed_command.deinit();
+    var parsed_state = edge.policy.parseVehicleStateJsonOwned(allocator, state_text) catch |err| {
         try stderr.print("Edge vehicle state invalid: {s}\n", .{@errorName(err)});
         return 65;
     };
+    defer parsed_state.deinit();
+    const command = parsed_command.value;
+    const state = parsed_state.value;
     var evaluation = edge.policy.evaluateEdgeAction(allocator, &loaded.value, command, state, .{ .mode = mode, .now_ms = state.timestamp.value + 500, .non_interactive = mode == .ci }) catch |err| {
         try stderr.print("Edge policy evaluation failed: {s}\n", .{@errorName(err)});
         return 65;
@@ -834,6 +2087,97 @@ fn runPolicyEvaluate(argv: []const []const u8, stdout: anytype, stderr: anytype)
     defer evaluation.deinit();
     try writeEvaluation(stdout, evaluation, json);
     return 0;
+}
+
+fn loadCommandFile(allocator: std.mem.Allocator, path: []const u8, stderr: anytype) !edge.policy.ParsedCommandRequest {
+    const text = std.fs.cwd().readFileAlloc(allocator, path, 128 * 1024) catch |err| {
+        try stderr.print("Edge command request unreadable: {s}\n", .{@errorName(err)});
+        return err;
+    };
+    defer allocator.free(text);
+    return edge.policy.parseCommandRequestJsonOwned(allocator, text) catch |err| {
+        try stderr.print("Edge command request invalid: {s}\n", .{@errorName(err)});
+        return err;
+    };
+}
+
+fn loadStateFile(allocator: std.mem.Allocator, path: []const u8, stderr: anytype) !edge.policy.ParsedVehicleState {
+    const text = std.fs.cwd().readFileAlloc(allocator, path, 128 * 1024) catch |err| {
+        try stderr.print("Edge vehicle state unreadable: {s}\n", .{@errorName(err)});
+        return err;
+    };
+    defer allocator.free(text);
+    return edge.policy.parseVehicleStateJsonOwned(allocator, text) catch |err| {
+        try stderr.print("Edge vehicle state invalid: {s}\n", .{@errorName(err)});
+        return err;
+    };
+}
+
+fn writeEmergencyDecision(stdout: anytype, decision: edge.emergency.EmergencyDecision, json: bool) !void {
+    if (json) {
+        try stdout.writeAll("{\"status\":");
+        try edge.core.core.util.writeJsonString(stdout, @tagName(decision.status));
+        try stdout.writeAll(",\"command\":");
+        try edge.core.core.util.writeJsonString(stdout, @tagName(decision.command));
+        try stdout.writeAll(",\"reason\":");
+        try edge.core.core.util.writeJsonString(stdout, @tagName(decision.reason));
+        try stdout.writeAll(",\"policy_decision\":");
+        try edge.core.core.util.writeJsonString(stdout, decision.policy_decision.toString());
+        try stdout.writeAll(",\"audit_events\":[");
+        for (decision.audit_events, 0..) |event, index| {
+            if (index > 0) try stdout.writeByte(',');
+            try edge.core.core.util.writeJsonString(stdout, event.event_type);
+        }
+        try stdout.writeAll("]}\n");
+        return;
+    }
+    try stdout.print("Emergency status: {s}\n", .{@tagName(decision.status)});
+    try stdout.print("Recommended command: {s}\n", .{@tagName(decision.command)});
+    try stdout.print("Reason: {s}\nPolicy decision: {s}\n", .{ @tagName(decision.reason), decision.policy_decision.toString() });
+    if (decision.matched_rule) |rule| try stdout.print("Matched rule: {s}\n", .{rule});
+    try stdout.writeAll("Fallback order:");
+    for (decision.fallback_order) |command| try stdout.print(" {s}", .{@tagName(command)});
+    try stdout.writeByte('\n');
+    try stdout.writeAll("Audit events:\n");
+    for (decision.audit_events) |event| try stdout.print("  - {s}\n", .{event.event_type});
+    try stdout.writeAll("No emergency command was sent to real hardware. Emergency mode is policy-evaluated simulation/SITL/bench-preparation behavior only.\n");
+}
+
+const EmergencyScenarioSpec = struct {
+    id: []u8,
+    state_path: []u8,
+    reason: edge.emergency.EmergencyReason,
+    expected_command: ?edge.emergency.EmergencyCommand = null,
+
+    fn deinit(self: EmergencyScenarioSpec, allocator: std.mem.Allocator) void {
+        allocator.free(self.id);
+        allocator.free(self.state_path);
+    }
+};
+
+fn loadEmergencyScenario(allocator: std.mem.Allocator, path: []const u8) !EmergencyScenarioSpec {
+    const text = try std.fs.cwd().readFileAlloc(allocator, path, 32 * 1024);
+    defer allocator.free(text);
+    var id: ?[]const u8 = null;
+    var state_path: ?[]const u8 = null;
+    var reason: edge.emergency.EmergencyReason = .unknown;
+    var expected_command: ?edge.emergency.EmergencyCommand = null;
+    var lines = std.mem.splitScalar(u8, text, '\n');
+    while (lines.next()) |raw_line| {
+        const no_comment = if (std.mem.indexOfScalar(u8, raw_line, '#')) |comment| raw_line[0..comment] else raw_line;
+        const line = std.mem.trim(u8, no_comment, " \t\r");
+        if (line.len == 0) continue;
+        const colon = std.mem.indexOfScalar(u8, line, ':') orelse return error.InvalidEmergencyScenario;
+        const key = std.mem.trim(u8, line[0..colon], " \t");
+        const value = cleanScenarioScalar(line[colon + 1 ..]);
+        if (std.mem.eql(u8, key, "id") or std.mem.eql(u8, key, "name")) id = value else if (std.mem.eql(u8, key, "state")) state_path = value else if (std.mem.eql(u8, key, "reason")) reason = std.meta.stringToEnum(edge.emergency.EmergencyReason, value) orelse return error.InvalidEmergencyScenario else if (std.mem.eql(u8, key, "expected_command")) expected_command = std.meta.stringToEnum(edge.emergency.EmergencyCommand, value) orelse return error.InvalidEmergencyScenario else if (std.mem.eql(u8, key, "environment")) continue else return error.InvalidEmergencyScenario;
+    }
+    return .{
+        .id = try allocator.dupe(u8, id orelse std.fs.path.stem(path)),
+        .state_path = try allocator.dupe(u8, state_path orelse return error.InvalidEmergencyScenario),
+        .reason = reason,
+        .expected_command = expected_command,
+    };
 }
 
 fn usageError(stderr: anytype, message: []const u8) !u8 {
@@ -979,6 +2323,75 @@ fn writeEvaluation(stdout: anytype, evaluation: edge.policy.EdgeEvaluation, json
     try stdout.writeAll("No command was sent to a vehicle, adapter, simulator, or flight controller.\n");
 }
 
+fn writeSafetyEvaluation(stdout: anytype, evaluation: edge.safety.SafetyEvaluation, json: bool) !void {
+    if (json) {
+        try stdout.writeAll("{\"decision\":");
+        try edge.core.core.util.writeJsonString(stdout, evaluation.decision.result.toString());
+        try stdout.writeAll(",\"explanation\":");
+        try edge.core.core.util.writeJsonString(stdout, evaluation.explanation);
+        try stdout.writeAll(",\"operator_approval_required\":");
+        try stdout.print("{}", .{evaluation.operator_approval_required});
+        try stdout.writeAll(",\"ci_may_proceed\":");
+        try stdout.print("{}", .{evaluation.ci_may_proceed});
+        if (evaluation.risk_score) |score| try stdout.print(",\"risk_score\":{d}", .{score});
+        if (evaluation.recommended_fallback) |fallback| {
+            try stdout.writeAll(",\"recommended_fallback\":");
+            try edge.core.core.util.writeJsonString(stdout, @tagName(fallback));
+        }
+        try stdout.writeAll(",\"findings\":[");
+        for (evaluation.findings, 0..) |finding, index| {
+            if (index > 0) try stdout.writeByte(',');
+            try stdout.writeByte('{');
+            try stdout.writeAll("\"id\":");
+            try edge.core.core.util.writeJsonString(stdout, finding.finding_id);
+            try stdout.writeAll(",\"category\":");
+            try edge.core.core.util.writeJsonString(stdout, @tagName(finding.category));
+            try stdout.writeAll(",\"severity\":");
+            try edge.core.core.util.writeJsonString(stdout, @tagName(finding.severity));
+            if (finding.constraint_id) |constraint_id| {
+                try stdout.writeAll(",\"constraint_id\":");
+                try edge.core.core.util.writeJsonString(stdout, constraint_id);
+            }
+            try stdout.writeAll(",\"explanation\":");
+            try edge.core.core.util.writeJsonString(stdout, finding.explanation);
+            try stdout.writeByte('}');
+        }
+        try stdout.writeAll("],\"audit_events\":[");
+        for (evaluation.audit_events, 0..) |event, index| {
+            if (index > 0) try stdout.writeByte(',');
+            try edge.core.core.util.writeJsonString(stdout, event.event_type);
+        }
+        try stdout.writeAll("]}\n");
+        return;
+    }
+
+    try stdout.print("Decision: {s}\n", .{evaluation.decision.result.toString()});
+    try stdout.print("Explanation: {s}\n", .{evaluation.explanation});
+    if (evaluation.risk_score) |score| try stdout.print("Risk score: {d}\n", .{score});
+    try stdout.print("Operator approval required: {}\n", .{evaluation.operator_approval_required});
+    try stdout.print("CI may proceed: {}\n", .{evaluation.ci_may_proceed});
+    if (evaluation.matched_rule) |rule| try stdout.print("Matched rule: {s} ({s})\n", .{ rule.id, rule.description });
+    if (evaluation.recommended_fallback) |fallback| try stdout.print("Recommended fallback: {s}\n", .{@tagName(fallback)});
+    if (evaluation.findings.len > 0) {
+        try stdout.writeAll("Safety findings:\n");
+        for (evaluation.findings) |finding| {
+            try stdout.print("  - {s}/{s}: {s}\n", .{ @tagName(finding.category), @tagName(finding.severity), finding.explanation });
+            if (finding.constraint_id) |constraint_id| try stdout.print("    constraint: {s}\n", .{constraint_id});
+            if (finding.observed_value) |observed| try stdout.print("    observed: {s}\n", .{observed});
+            if (finding.limit_value) |limit| try stdout.print("    limit: {s}\n", .{limit});
+        }
+    }
+    if (evaluation.violated_constraints.len > 0) {
+        try stdout.writeAll("Violated constraints:\n");
+        for (evaluation.violated_constraints) |constraint| try stdout.print("  - {s}: {s}\n", .{ @tagName(constraint.kind), constraint.message });
+    }
+    if (evaluation.audit_events.len > 0) {
+        try stdout.writeAll("Prepared audit events:\n");
+        for (evaluation.audit_events) |event| try stdout.print("  - {s}\n", .{event.event_type});
+    }
+    try stdout.writeAll("No command was sent to a vehicle, adapter, simulator, or flight controller.\n");
+}
+
 fn readFileOrHex(allocator: std.mem.Allocator, value: []const u8) ![]u8 {
     const text = std.fs.cwd().readFileAlloc(allocator, value, 16 * 1024) catch |err| switch (err) {
         error.FileNotFound => return parseHexAlloc(allocator, value),
@@ -1106,7 +2519,7 @@ fn parseScenarioBool(value: []const u8) !bool {
 }
 
 test "aegis-edge help is honest policy evaluation output" {
-    var stdout_buf: [4096]u8 = undefined;
+    var stdout_buf: [8192]u8 = undefined;
     var stderr_buf: [128]u8 = undefined;
     var stdout_stream = std.io.fixedBufferStream(&stdout_buf);
     var stderr_stream = std.io.fixedBufferStream(&stderr_buf);
@@ -1269,6 +2682,65 @@ test "aegis-edge mavlink doctor inspect classify and simulate use fake transport
     try std.testing.expectEqual(@as(u8, 0), try run(simulate_argv[0..], stdout_stream.writer(), stderr_stream.writer()));
     try std.testing.expect(std.mem.indexOf(u8, stdout_stream.getWritten(), "Decision: deny") != null);
     try std.testing.expect(std.mem.indexOf(u8, stdout_stream.getWritten(), "No serial hardware, SITL, ROS2, or hardware endpoint was opened") != null);
+    try std.testing.expectEqualStrings("", stderr_stream.getWritten());
+}
+
+test "aegis-edge safety commands evaluate and scenario-run without hardware" {
+    var stdout_buf: [8192]u8 = undefined;
+    var stderr_buf: [1024]u8 = undefined;
+    var stdout_stream = std.io.fixedBufferStream(&stdout_buf);
+    var stderr_stream = std.io.fixedBufferStream(&stderr_buf);
+
+    const doctor_argv = [_][]const u8{ "safety", "doctor" };
+    try std.testing.expectEqual(@as(u8, 0), try run(doctor_argv[0..], stdout_stream.writer(), stderr_stream.writer()));
+    try std.testing.expect(std.mem.indexOf(u8, stdout_stream.getWritten(), "flight safety enforcement") != null);
+    try std.testing.expect(std.mem.indexOf(u8, stdout_stream.getWritten(), "No hardware") != null);
+    try std.testing.expectEqualStrings("", stderr_stream.getWritten());
+
+    stdout_stream.reset();
+    stderr_stream.reset();
+    const check_argv = [_][]const u8{ "safety", "check", "--policy", "examples/edge/safety/policies/safety-geofence-basic.yaml" };
+    try std.testing.expectEqual(@as(u8, 0), try run(check_argv[0..], stdout_stream.writer(), stderr_stream.writer()));
+    try std.testing.expect(std.mem.indexOf(u8, stdout_stream.getWritten(), "Safety envelope valid") != null);
+    try std.testing.expectEqualStrings("", stderr_stream.getWritten());
+
+    stdout_stream.reset();
+    stderr_stream.reset();
+    const evaluate_argv = [_][]const u8{
+        "safety",
+        "evaluate",
+        "--policy",
+        "examples/edge/safety/policies/safety-geofence-basic.yaml",
+        "--request",
+        "examples/edge/safety/requests/waypoint-outside-geofence.json",
+        "--state",
+        "examples/edge/safety/states/fresh-state.json",
+    };
+    try std.testing.expectEqual(@as(u8, 0), try run(evaluate_argv[0..], stdout_stream.writer(), stderr_stream.writer()));
+    try std.testing.expect(std.mem.indexOf(u8, stdout_stream.getWritten(), "Decision: deny") != null);
+    try std.testing.expect(std.mem.indexOf(u8, stdout_stream.getWritten(), "geofence/high") != null);
+    try std.testing.expectEqualStrings("", stderr_stream.getWritten());
+
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const root = try tmp.dir.realpathAlloc(std.testing.allocator, ".");
+    defer std.testing.allocator.free(root);
+    stdout_stream.reset();
+    stderr_stream.reset();
+    const scenario_argv = [_][]const u8{
+        "safety",
+        "scenario",
+        "run",
+        "--policy",
+        "examples/edge/safety/policies/safety-strict.yaml",
+        "--scenario",
+        "examples/edge/safety/scenarios/mission-outside-geofence-deny.yaml",
+        "--artifacts",
+        root,
+    };
+    try std.testing.expectEqual(@as(u8, 0), try run(scenario_argv[0..], stdout_stream.writer(), stderr_stream.writer()));
+    try std.testing.expect(std.mem.indexOf(u8, stdout_stream.getWritten(), "Decision: deny") != null);
+    try std.testing.expect(std.mem.indexOf(u8, stdout_stream.getWritten(), "real-flight") != null);
     try std.testing.expectEqualStrings("", stderr_stream.getWritten());
 }
 

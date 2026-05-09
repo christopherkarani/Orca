@@ -110,6 +110,17 @@ Aegis mediates newline-delimited stdio MCP messages for launched servers, includ
 
 Fixtures are deterministic, local-only, and synthetic. See [Red-team](docs/redteam.md).
 
+## Agent Host Plugins
+
+Aegis includes local plugin integrations for Codex and Claude Code.
+
+- [Codex plugin](docs/integrations/codex.md)
+- [Claude Code plugin](docs/integrations/claude-code.md)
+- [Plugin security model](docs/integrations/plugin-security-model.md)
+- [Plugin troubleshooting](docs/integrations/plugin-troubleshooting.md)
+
+The plugins add agent-host skills and lifecycle hooks that call the Aegis CLI for policy decisions, red-team checks, replay, and plugin diagnostics. The strongest local protection remains running agent processes through `aegis run`.
+
 ## Platform Support
 
 Capability states use the current `aegis doctor` vocabulary: `active`, `partial`, `wrapper-only`, `observe-only`, `limited`, `unavailable`, and `unsupported`.

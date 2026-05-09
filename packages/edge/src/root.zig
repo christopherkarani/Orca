@@ -4,12 +4,18 @@ const aegis_core = @import("aegis_core");
 pub const domain = @import("domain/mod.zig");
 pub const mavlink = @import("mavlink/mod.zig");
 pub const policy = @import("policy/mod.zig");
+pub const safety = @import("safety/mod.zig");
+pub const operator = @import("operator/mod.zig");
+pub const emergency = @import("emergency/mod.zig");
+pub const audit = @import("audit/mod.zig");
 pub const px4 = @import("px4/mod.zig");
 pub const ardupilot = @import("ardupilot/mod.zig");
 pub const schema = @import("schema/mod.zig");
+pub const redteam = @import("redteam/mod.zig");
+pub const data_guard = @import("data_guard/mod.zig");
 
-pub const phase = "30-ardupilot-sitl-integration";
-pub const installed_message = "Aegis Edge PX4 and ArduPilot SITL integrations are installed for opt-in simulation evidence and deterministic fake-adapter scenarios only; they are not ready for real flight.";
+pub const phase = "35-edge-network-telemetry-data-guard";
+pub const installed_message = "Aegis Edge data/network guard evidence generation is installed for deterministic fake-adapter, PX4 SITL, and ArduPilot SITL evaluation evidence only; it is not ready for real flight.";
 pub const core = aegis_core;
 
 pub const CapabilityStatus = enum {
@@ -36,6 +42,14 @@ pub const EdgeCapability = enum {
     command_mediation,
     policy_evaluation,
     mavlink_gateway,
+    flight_safety_enforcement,
+    operator_approval,
+    emergency_modes,
+    audit_replay,
+    safety_case_reports,
+    evidence_bundles,
+    redteam_fault_injection,
+    data_network_guard,
     px4_adapter,
     ardupilot_adapter,
     real_flight_enforcement,
@@ -49,6 +63,14 @@ pub const EdgeCapability = enum {
             .command_mediation => "drone command mediation",
             .policy_evaluation => "edge policy evaluation",
             .mavlink_gateway => "MAVLink gateway",
+            .flight_safety_enforcement => "flight safety enforcement",
+            .operator_approval => "operator approval",
+            .emergency_modes => "emergency modes",
+            .audit_replay => "Edge audit/replay",
+            .safety_case_reports => "safety-case reports",
+            .evidence_bundles => "evidence bundles",
+            .redteam_fault_injection => "red-team and fault injection",
+            .data_network_guard => "Edge network telemetry data guard",
             .px4_adapter => "PX4 adapter",
             .ardupilot_adapter => "ArduPilot adapter",
             .real_flight_enforcement => "real-flight enforcement",
@@ -139,7 +161,7 @@ pub const FakeAdapter = struct {
     pub fn capabilityReports() []const CapabilityReport {
         return &.{
             .{ .capability = .fake_adapter, .status = .scaffolded, .note = "Local fake adapter placeholder only; no hardware IO." },
-        .{ .capability = .command_mediation, .status = .active, .note = "MAVLink command mediation exists for fake/in-memory gateway tests only; no real endpoints." },
+            .{ .capability = .command_mediation, .status = .active, .note = "MAVLink command mediation exists for fake/in-memory gateway tests only; no real endpoints." },
         };
     }
 
@@ -167,6 +189,14 @@ pub fn capabilityReports() []const CapabilityReport {
         .{ .capability = .fake_adapter, .status = .active, .note = "Deterministic fake MAVLink transport is available for local tests and examples only." },
         .{ .capability = .command_mediation, .status = .active, .note = "Phase 28 maps supported MAVLink commands through policy in fake gateway mode; no real endpoints." },
         .{ .capability = .mavlink_gateway, .status = .active, .note = "MAVLink v1/v2 parsing, classification, mapping, mission tracking, and gateway decisions are active for simulation/protocol mediation." },
+        .{ .capability = .flight_safety_enforcement, .status = .active, .note = "Phase 31 evaluates commands and mission plans against geofence, altitude, velocity, battery, freshness, mode, authority, and command-risk constraints for fake/SITL evidence only." },
+        .{ .capability = .operator_approval, .status = .active, .note = "Phase 32 creates and validates bounded local operator approvals for fake/SITL/bench-preparation contexts; CI and red-team modes deny ask decisions without prompting." },
+        .{ .capability = .emergency_modes, .status = .active, .note = "Phase 32 evaluates policy-controlled LAND/HOLD/RTH emergency fallback decisions in fake/SITL contexts only; it does not send real hardware commands." },
+        .{ .capability = .audit_replay, .status = .active, .note = "Phase 33 records hash-chained Edge sessions through the Aegis Core audit writer under .aegis-edge and replays them with Core verification." },
+        .{ .capability = .safety_case_reports, .status = .active, .note = "Phase 33 generates bounded JSON and Markdown safety-case reports for fake/SITL/bench-preparation evaluation evidence with explicit non-certification limitations." },
+        .{ .capability = .evidence_bundles, .status = .active, .note = "Phase 33 creates local directory evidence bundles with policy/scenario copies, reports, replay, findings, commands, limitations, hashes, and provenance." },
+        .{ .capability = .redteam_fault_injection, .status = .active, .note = "Phase 34 runs deterministic simulation-only Edge red-team fixtures and fault injections with scorecards, redacted audit/replay artifacts, and safety-case evidence; no real hardware or real-flight claims." },
+        .{ .capability = .data_network_guard, .status = .active, .note = "Phase 35 classifies Edge telemetry/data payloads and endpoints, evaluates local egress policy, redacts sensitive data before persistence, and emits audit/report evidence for fake/SITL/customer-evaluation scenarios without external network calls." },
         .{ .capability = .px4_adapter, .status = .partial, .note = "PX4 SITL adapter supports opt-in local simulation checks plus deterministic fake-PX4 scenarios; no hardware or real-flight support." },
         .{ .capability = .ardupilot_adapter, .status = .partial, .note = "ArduPilot SITL adapter supports opt-in local simulation checks plus deterministic fake-ArduPilot scenarios; Copter-oriented coverage starts Phase 30; no hardware or real-flight support." },
         .{ .capability = .real_flight_enforcement, .status = .unavailable, .note = "Real-flight behavior requires later simulation, bench, and customer safety validation phases." },
@@ -192,9 +222,15 @@ test {
     _ = core;
     _ = domain;
     _ = mavlink;
+    _ = operator;
+    _ = emergency;
+    _ = audit;
     _ = policy;
+    _ = safety;
     _ = px4;
     _ = schema;
+    _ = redteam;
+    _ = data_guard;
     _ = capabilityReports;
     _ = FakeAdapter;
     _ = evaluateVehicleStateReadThroughCore;

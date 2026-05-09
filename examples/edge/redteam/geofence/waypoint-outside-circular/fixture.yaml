@@ -1,0 +1,20 @@
+version: 1
+id: geofence-waypoint-outside-circular-denied
+name: Waypoint outside circular geofence denied
+category: geofence
+environment: fake_adapter
+description: Synthetic command requests a waypoint outside the configured circular geofence.
+policy: examples/edge/redteam/policies/redteam-envelope.yaml
+faults:
+  - waypoint_outside_geofence
+expected:
+  decision: deny
+  findings:
+    - geofence
+  events:
+    - safety.geofence_violation
+    - vehicle.command_denied
+  no_log_contains:
+    - fake-secret-value
+score:
+  points: 10
