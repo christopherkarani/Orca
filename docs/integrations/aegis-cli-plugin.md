@@ -68,29 +68,70 @@ aegis plugin install codex --path <plugin-path> --dry-run
 - Does not store credentials.
 - Does not add telemetry.
 
-### `aegis plugin mcp-server`
+### `aegis decide`
 
-Currently a documented stub. Reports the feature as planned/limited and does not start a real server.
+Exposes stable JSON decisions for commands, files, prompts, and host tool calls.
 
-When implemented, the MCP server will expose only safe Aegis CLI functions as MCP tools:
+```sh
+aegis decide command --json '{"version":1,"host":"codex","command":"git status"}'
+aegis decide command --json '{"version":1,"host":"claude","command":"git status"}'
+aegis decide file --json '{"version":1,"host":"codex","path":"/etc/passwd","operation":"write"}'
+aegis decide prompt --json '{"version":1,"host":"claude","prompt":"hello"}'
+aegis decide tool --json '{"version":1,"host":"codex","tool":"shell","command":"ls"}'
+```
 
-**Planned safe tools:**
-- `aegis_doctor`
-- `aegis_plugin_doctor`
-- `aegis_policy_check`
-- `aegis_policy_explain`
-- `aegis_redteam`
-- `aegis_replay_summary`
-- `aegis_capabilities`
-- `aegis_drone_safety_status`
+### `aegis hook`
 
-**Blocked by default (not exposed):**
-- Arbitrary shell execution
-- Arbitrary file writes
-- Raw audit log dumping without redaction
-- Credential access
-- Policy mutation without explicit approval
-- Live drone actuation commands
+Processes host plugin lifecycle hooks with JSON payloads on stdin.
+
+```sh
+echo '{"version":1,"host":"codex","event":"PreToolUse","payload":{"tool":"shell","command":"git status"}}' \
+  | aegis hook codex PreToolUse
+```
+
+## Plugin Packaging
+
+Plugin artifacts are packaged by `scripts/package-plugins.sh` (and `scripts/package-plugins.ps1` on Windows).
+
+Packaged artifacts:
+
+```text
+dist/plugins/aegis-codex-plugin-vX.Y.Z.zip
+dist/plugins/aegis-claude-code-plugin-vX.Y.Z.zip
+dist/plugins/aegis-plugin-checksums.txt
+```
+
+Artifact contents include:
+- Plugin manifest (`plugin.json`)
+- Skills directory
+- Hooks configuration (`hooks.json`)
+- README
+
+Artifacts exclude:
+- `.mcp.json`
+- Drone files
+- Build artifacts
+- Temporary files
+- Secrets
+
+## Install dry-run behavior
+
+`aegis plugin install` defaults to `--dry-run`. In dry-run mode:
+- The command previews what would be installed.
+- No host configuration is mutated.
+- The user sees the plugin path, manifest status, and host compatibility.
+
+For actual installation, use `--yes`:
+```sh
+aegis plugin install codex --yes
+```
+
+## Host limitations
+
+Plugin hooks are limited by host capabilities. Aegis cannot enforce what the host IDE does not expose.
+
+- Codex hooks: advisory; enforcement depends on Codex host support.
+- Claude Code hooks: advisory; enforcement depends on Claude Code host support.
 
 ## Architecture
 
@@ -110,7 +151,11 @@ Plugins call Aegis instead of duplicating policy logic. The strongest local prot
 aegis run -- <agent-command>
 ```
 
-Plugin hooks are limited by host capabilities. Aegis cannot enforce what the host IDE does not expose.
+## No Telemetry, No SaaS
+
+- No telemetry is collected by the plugin surface.
+- No SaaS account, dashboard, or monetization layer is required.
+- All operations are local to the machine.
 
 ## Drone Safety Reporting
 
@@ -132,23 +177,25 @@ Plugin request/response schemas live in:
 - `integrations/common/schemas/aegis-plugin-request-v1.json`
 - `integrations/common/schemas/aegis-plugin-response-v1.json`
 
-## No Telemetry, No SaaS
+Hook request/response schemas live in:
+- `integrations/common/schemas/hook-request-v1.json`
+- `integrations/common/schemas/hook-response-v1.json`
 
-- No telemetry is collected by the plugin surface.
-- No SaaS account, dashboard, or monetization layer is required.
-- All operations are local to the machine.
+## Compatibility
 
-## Future Work (P02+)
+Aegis plugins 1.x require Aegis CLI >= 1.0.0.
 
-- Actual Codex plugin package
-- Actual Claude Code plugin package
-- `aegis hook` command
-- `aegis decide` command
-- Full MCP server mode with stdio transport
+| Component | Version |
+|-----------|---------|
+| Aegis core | 1.1.0 |
+| Codex plugin | 1.1.0 |
+| Claude Code plugin | 1.1.0 |
 
 ## See Also
 
 - `docs/integrations/plugin-security-model.md`
+- `docs/integrations/plugin-troubleshooting.md`
+- `docs/integrations/plugin-compatibility.md`
 - `docs/integrations/drone-safety.md`
 - `AEGIS_CLI_PLUGIN_CONTRACT.md`
 - `PLUGIN_SECURITY_MODEL.md`
