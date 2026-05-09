@@ -32,6 +32,20 @@ pub const EventKind = enum {
     operator_approval_required,
     operator_approval_used,
     operator_approval_invalid,
+    data_payload_classified,
+    data_payload_redacted,
+    data_egress_requested,
+    data_egress_allowed,
+    data_egress_denied,
+    data_egress_observed,
+    data_exfiltration_suspected,
+    data_endpoint_classified,
+    telemetry_channel_observed,
+    telemetry_channel_allowed,
+    telemetry_channel_denied,
+    link_endpoint_unexpected,
+    link_command_control_observed,
+    link_telemetry_observed,
 
     pub fn toString(self: EventKind) []const u8 {
         return switch (self) {
@@ -61,6 +75,20 @@ pub const EventKind = enum {
             .operator_approval_required => "operator.approval_requested",
             .operator_approval_used => "operator.approval_used",
             .operator_approval_invalid => "operator.approval_invalid",
+            .data_payload_classified => "data.payload_classified",
+            .data_payload_redacted => "data.payload_redacted",
+            .data_egress_requested => "data.egress_requested",
+            .data_egress_allowed => "data.egress_allowed",
+            .data_egress_denied => "data.egress_denied",
+            .data_egress_observed => "data.egress_observed",
+            .data_exfiltration_suspected => "data.exfiltration_suspected",
+            .data_endpoint_classified => "data.endpoint_classified",
+            .telemetry_channel_observed => "telemetry.channel_observed",
+            .telemetry_channel_allowed => "telemetry.channel_allowed",
+            .telemetry_channel_denied => "telemetry.channel_denied",
+            .link_endpoint_unexpected => "link.endpoint_unexpected",
+            .link_command_control_observed => "link.command_control_observed",
+            .link_telemetry_observed => "link.telemetry_observed",
         };
     }
 
@@ -92,6 +120,20 @@ pub const EventKind = enum {
             .operator_approval_required => .operator_approval_requested,
             .operator_approval_used => .operator_approval_used,
             .operator_approval_invalid => .operator_approval_invalid,
+            .data_payload_classified => .data_payload_classified,
+            .data_payload_redacted => .data_payload_redacted,
+            .data_egress_requested => .data_egress_requested,
+            .data_egress_allowed => .data_egress_allowed,
+            .data_egress_denied => .data_egress_denied,
+            .data_egress_observed => .data_egress_observed,
+            .data_exfiltration_suspected => .data_exfiltration_suspected,
+            .data_endpoint_classified => .data_endpoint_classified,
+            .telemetry_channel_observed => .telemetry_channel_observed,
+            .telemetry_channel_allowed => .telemetry_channel_allowed,
+            .telemetry_channel_denied => .telemetry_channel_denied,
+            .link_endpoint_unexpected => .link_endpoint_unexpected,
+            .link_command_control_observed => .link_command_control_observed,
+            .link_telemetry_observed => .link_telemetry_observed,
         };
     }
 };

@@ -1,6 +1,6 @@
 # Aegis Edge
 
-Aegis Edge is the drone and robotics safety-policy and audit package for local policy evaluation. Phase 28 adds a MAVLink gateway foundation for fake/in-memory simulation and protocol mediation. Phase 29 adds PX4 SITL integration for opt-in local simulation evidence and deterministic fake-PX4 scenarios. Phase 30 adds ArduPilot SITL integration for opt-in local simulation evidence and deterministic fake-ArduPilot scenarios. Phase 31 adds reusable flight safety enforcement for fake-adapter, PX4 SITL, and ArduPilot SITL contexts. Phase 32 adds bounded operator approvals and emergency fallback decisions. Phase 33 adds Edge audit/replay, safety-case reports, evidence bundles, traceability, and scenario result classification. Phase 34 adds deterministic red-team and fault-injection evidence for fake-adapter and optional SITL contexts.
+Aegis Edge is the drone and robotics safety-policy and audit package for local policy evaluation. Phase 28 adds a MAVLink gateway foundation for fake/in-memory simulation and protocol mediation. Phase 29 adds PX4 SITL integration for opt-in local simulation evidence and deterministic fake-PX4 scenarios. Phase 30 adds ArduPilot SITL integration for opt-in local simulation evidence and deterministic fake-ArduPilot scenarios. Phase 31 adds reusable flight safety enforcement for fake-adapter, PX4 SITL, and ArduPilot SITL contexts. Phase 32 adds bounded operator approvals and emergency fallback decisions. Phase 33 adds Edge audit/replay, safety-case reports, evidence bundles, traceability, and scenario result classification. Phase 34 adds deterministic red-team and fault-injection evidence for fake-adapter and optional SITL contexts. Phase 35 adds the data guard for telemetry/data classification, endpoint classification, simulated egress policy, redaction, exfiltration findings, and data/network evidence.
 
 Fake MAVLink remains the default deterministic path. PX4 SITL and ArduPilot SITL are optional and local-only; normal tests do not require PX4 or ArduPilot. Aegis Edge does not support ROS2 control, real hardware integration, or real-flight deployment. Aegis Edge is not a flight controller, not an autopilot replacement, not detect-and-avoid, not regulatory approval or certification, and is not ready for real flight. It must not be used for real flight.
 
@@ -17,7 +17,8 @@ The package currently provides:
 - Hash-chained Edge sessions under `.aegis-edge` using the Aegis Core audit writer and replay verifier.
 - JSON and Markdown safety-case reports, evidence bundles, and traceability matrices for fake/SITL/bench-preparation evidence.
 - Deterministic Edge red-team fixtures, simulation-only fault injection, scorecards, JSON output, and red-team safety-case evidence.
-- Honest `aegis-edge doctor`, `aegis-edge schema`, `aegis-edge policy`, `aegis-edge safety`, `aegis-edge safety-case`, `aegis-edge replay`, `aegis-edge mavlink`, `aegis-edge px4`, and `aegis-edge ardupilot` commands.
+- Reusable data guard evaluation for payload classification, telemetry channel policy, endpoint policy, link classification, redaction/minimization, audit events, red-team fixtures, and safety-case reports.
+- Honest `aegis-edge doctor`, `aegis-edge schema`, `aegis-edge policy`, `aegis-edge safety`, `aegis-edge safety-case`, `aegis-edge replay`, `aegis-edge mavlink`, `aegis-edge px4`, `aegis-edge ardupilot`, `aegis-edge data`, and `aegis-edge network` commands.
 
 ## CLI
 
@@ -46,7 +47,14 @@ aegis-edge redteam validate
 aegis-edge redteam --ci
 aegis-edge redteam --json
 aegis-edge redteam --category geofence
+aegis-edge redteam --category data-guard
 aegis-edge redteam --report safety-case
+aegis-edge data doctor
+aegis-edge data classify --payload examples/edge/data-guard/payloads/mission-plan.json
+aegis-edge data evaluate --policy examples/edge/data-guard/policies/data-guard-strict.yaml --payload examples/edge/data-guard/payloads/mission-plan.json --endpoint examples/edge/data-guard/endpoints/webhook-site.json
+aegis-edge data redact --payload examples/edge/data-guard/payloads/fake-secret-payload.json
+aegis-edge data scenario run --policy examples/edge/data-guard/policies/data-guard-strict.yaml --scenario examples/edge/data-guard/scenarios/mission-plan-to-webhook-deny.yaml
+aegis-edge network explain --policy examples/edge/data-guard/policies/data-guard-strict.yaml --endpoint examples/edge/data-guard/endpoints/unknown-direct-ip.json
 ```
 
 These commands evaluate policy and simulated MAVLink/PX4/ArduPilot records. They do not send a command to a real vehicle or real flight controller. PX4 SITL checks are opt-in and must be labeled `sitl_px4`; fake-PX4 evidence remains labeled `fake_adapter`. ArduPilot SITL checks are opt-in and must be labeled `sitl_ardupilot`; fake-ArduPilot evidence remains labeled `fake_ardupilot_adapter`.
@@ -88,11 +96,19 @@ altitude, velocity, battery, state freshness, mission, MAVLink parser, MAVLink
 command, endpoint spoofing, approval bypass, emergency bypass, audit redaction,
 and safety-case scenarios without real hardware or external network dependency.
 
+Phase 35 adds data guard red-team fixtures for mission-data egress denial,
+exact geolocation redaction/denial, fake-secret redaction/denial, video/image
+egress denial, direct-IP/webhook/tunnel/paste endpoint denial, long-query and
+high-entropy endpoint findings, explicit customer safety-report allow, and
+explicit local ground-control telemetry allow.
+
 ## Audit Replay And Safety Case
 
 Phase 33 records Edge evidence under `.aegis-edge/sessions/<session-id>/`. The authoritative event log is `events.jsonl`, persisted by the Aegis Core audit writer with redaction and hash chaining. Edge replay uses Core verification and keeps fake, PX4 SITL, ArduPilot SITL, bench, and unknown provenance distinct.
 
 Safety-case generation writes `safety-report.json`, `safety-report.md`, `evidence/traceability.*`, findings, commands, approvals, limitations, policy/scenario copies, and a final hash. These artifacts are customer-evaluation engineering reports only. They do not claim real-flight readiness, certification, detect-and-avoid, autopilot replacement behavior, or real hardware approval.
+
+Phase 35 safety-case output also writes `evidence/data-network-guard.json` and a Data/Network Guard section summarizing data classes, endpoints observed, allowed/denied endpoint decisions, redactions, exfiltration findings, and telemetry guard limitations. Sensitive payloads and endpoint query values are redacted before persistence.
 
 See:
 
@@ -128,6 +144,12 @@ See:
 - `docs/edge/scenario-results.md`
 - `docs/edge/customer-safety-reports.md`
 - `docs/edge/redteam.md`
+- `docs/edge/data-guard.md`
+- `docs/edge/telemetry-policy.md`
+- `docs/edge/network-egress.md`
+- `docs/edge/data-classification.md`
+- `docs/edge/exfiltration-detection.md`
+- `docs/edge/sensitive-data-redaction.md`
 - `docs/edge/fault-injection.md`
 - `docs/edge/redteam-fixtures.md`
 - `docs/edge/redteam-scorecards.md`

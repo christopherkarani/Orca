@@ -1,0 +1,9 @@
+{
+  "label": "fake_sitl",
+  "host": "127.0.0.1",
+  "port": 14540,
+  "protocol": "udp",
+  "scheme": "udp",
+  "environment": "px4_sitl",
+  "provenance": "sitl_px4"
+}

@@ -122,6 +122,11 @@ pub const Report = struct {
     findings: []const FindingRecord,
     approvals: []const ApprovalRecord = &.{},
     emergencies: []const EmergencyRecord = &.{},
+    data_network_summary: []const u8 = "Phase 35 data/network guard classifies payloads/endpoints, evaluates local egress policy, redacts sensitive fields, and records simulation/SITL/customer-evaluation evidence without external network calls.",
+    data_classes_observed: []const []const u8 = &.{ "vehicle_state", "mission_plan", "geolocation", "safety_finding", "audit_metadata" },
+    endpoints_observed: []const []const u8 = &.{ "fake_adapter", "ground_control_station", "customer_endpoint" },
+    data_redactions_applied: []const []const u8 = &.{ "query secrets redacted", "exact geolocation coarsened when configured", "mission plans minimized when policy requires", "raw image/video not persisted by default" },
+    exfiltration_findings: []const []const u8 = &.{ "unknown endpoints are not safe", "webhook/paste/tunnel/direct IP destinations are suspicious", "mission/geolocation/video/image egress to unknown endpoints is denied" },
     traceability: []const TraceabilityRow,
     audit_event_references: []const []const u8,
     artifacts_generated: []const []const u8,
@@ -176,7 +181,7 @@ pub fn writeJson(writer: anytype, report: Report) !void {
     try stringField(writer, "command_policy_summary", "allowed denied observed and approval-gated commands are listed in evidence", true);
     try stringField(writer, "emergency_policy_summary", "policy-controlled LAND/RTH/HOLD fallback evidence only", true);
     try stringField(writer, "approval_policy_summary", "bounded local operator approvals when applicable", true);
-    try stringField(writer, "network_telemetry_policy_summary", "no Phase 35 telemetry/data guard evidence is claimed", true);
+    try stringField(writer, "network_telemetry_policy_summary", report.data_network_summary, true);
     try writer.writeByte('}');
     try writer.writeAll(",\"scenario_profile\":{");
     try stringField(writer, "scenario_name", report.scenario_name, false);
@@ -193,6 +198,10 @@ pub fn writeJson(writer: anytype, report: Report) !void {
     try findingsJson(writer, "safety_findings", report.findings, true);
     try approvalsJson(writer, "approvals", report.approvals, true);
     try emergenciesJson(writer, "emergency_decisions", report.emergencies, true);
+    try stringArrayField(writer, "data_classes_observed", report.data_classes_observed, true);
+    try stringArrayField(writer, "endpoints_observed", report.endpoints_observed, true);
+    try stringArrayField(writer, "redactions_applied", report.data_redactions_applied, true);
+    try stringArrayField(writer, "exfiltration_findings", report.exfiltration_findings, true);
     try stringArrayField(writer, "audit_event_references", report.audit_event_references, true);
     try writer.print(",\"replay_hash_verified\":{}", .{report.replay_verified});
     try stringArrayField(writer, "artifacts_generated", report.artifacts_generated, true);
@@ -250,6 +259,13 @@ pub fn writeMarkdown(writer: anytype, report: Report) !void {
         try tableRow5(writer, finding.category, finding.severity, finding.observed, finding.limit, finding.decision);
     }
 
+    try writer.writeAll("\n## Data/Network Guard\n\n| Evidence | Summary |\n|---|---|\n");
+    try tableRow2(writer, "Policy summary", report.data_network_summary);
+    try tableRowArray(writer, "Data classes observed", report.data_classes_observed);
+    try tableRowArray(writer, "Endpoints observed", report.endpoints_observed);
+    try tableRowArray(writer, "Redactions applied", report.data_redactions_applied);
+    try tableRowArray(writer, "Exfiltration findings", report.exfiltration_findings);
+
     try writer.writeAll("\n## Evidence\n\n| Evidence | Status |\n|---|---|\n");
     try tableRow2(writer, "Audit hash chain", if (report.replay_verified) "Verified" else "Not verified");
     try tableRow2(writer, "Policy hash", report.policy_hash);
@@ -291,7 +307,8 @@ fn stringField(writer: anytype, name: []const u8, value: []const u8, comma: bool
     if (comma) try writer.writeByte(',');
     try core.util.writeJsonString(writer, name);
     try writer.writeByte(':');
-    try core.util.writeJsonString(writer, value);
+    var redacted_buf: [1024]u8 = undefined;
+    try core.util.writeJsonString(writer, core.api.redactStringBounded(value, &redacted_buf));
 }
 
 fn stringArrayField(writer: anytype, name: []const u8, values: []const []const u8, comma: bool) !void {
@@ -395,6 +412,20 @@ fn traceabilityJson(writer: anytype, name: []const u8, rows: []const Traceabilit
 
 fn tableRow2(writer: anytype, a: []const u8, b: []const u8) !void {
     try writer.print("| {s} | {s} |\n", .{ a, b });
+}
+
+fn tableRowArray(writer: anytype, label: []const u8, values: []const []const u8) !void {
+    try writer.print("| {s} | ", .{label});
+    if (values.len == 0) {
+        try writer.writeAll("none");
+    } else {
+        for (values, 0..) |value, index| {
+            if (index > 0) try writer.writeAll(", ");
+            var redacted_buf: [512]u8 = undefined;
+            try writer.writeAll(core.api.redactStringBounded(value, &redacted_buf));
+        }
+    }
+    try writer.writeAll(" |\n");
 }
 
 fn tableRow5(writer: anytype, a: []const u8, b: []const u8, c: []const u8, d: []const u8, e: []const u8) !void {

@@ -618,6 +618,7 @@ fn writeEvidenceFiles(
     try writeScenarioResult(allocator, evidence_dir, meta, evidence);
     try writeCommands(allocator, evidence_dir, evidence.commands);
     try writeFindings(allocator, evidence_dir, evidence.findings);
+    try writeDataNetworkGuard(allocator, evidence_dir, evidence);
     try writeApprovals(allocator, evidence_dir, evidence.approvals);
     try writeEnvironment(allocator, evidence_dir, evidence);
     try writeLimitations(allocator, evidence_dir);
@@ -695,6 +696,24 @@ fn writeFindings(allocator: std.mem.Allocator, evidence_dir: []const u8, finding
         try writer.interface.writeByte('}');
     }
     try writer.interface.writeAll("]}\n");
+    try writer.interface.flush();
+    try file.sync();
+}
+
+fn writeDataNetworkGuard(allocator: std.mem.Allocator, evidence_dir: []const u8, evidence: EvidenceModel) !void {
+    const path = try std.fs.path.join(allocator, &.{ evidence_dir, "data-network-guard.json" });
+    defer allocator.free(path);
+    const file = try std.fs.cwd().createFile(path, .{ .truncate = true });
+    defer file.close();
+    var buffer: [4096]u8 = undefined;
+    var writer = file.writer(&buffer);
+    try writer.interface.writeAll("{\"summary\":\"Phase 35 data/network guard evidence is bounded, redacted, local-only, and simulation/SITL/customer-evaluation scoped\"");
+    try writer.interface.writeAll(",\"endpoints_observed\":[");
+    try core.util.writeJsonString(&writer.interface, evidence.endpoint);
+    try writer.interface.writeAll("],\"data_classes_observed\":[\"vehicle_state\",\"mission_plan\",\"geolocation\",\"safety_finding\",\"audit_metadata\"]");
+    try writer.interface.writeAll(",\"redactions_applied\":[\"secrets redacted before persistence\",\"exact geolocation coarsened when policy requires\",\"raw image/video not persisted by default\"]");
+    try writer.interface.writeAll(",\"exfiltration_findings\":[\"unknown endpoints are not safe\",\"webhook paste tunnel and direct IP destinations are suspicious by default\"]");
+    try writer.interface.writeAll(",\"external_network_calls\":\"not_performed\",\"real_flight\":\"not_performed\",\"certification\":\"not_claimed\"}\n");
     try writer.interface.flush();
     try file.sync();
 }
@@ -907,6 +926,7 @@ fn defaultArtifactList() []const []const u8 {
         "evidence/scenario.yaml",
         "evidence/replay.md",
         "evidence/findings.json",
+        "evidence/data-network-guard.json",
         "evidence/commands.json",
         "evidence/traceability.json",
     };
