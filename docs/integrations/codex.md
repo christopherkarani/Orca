@@ -8,6 +8,12 @@ The Aegis Codex plugin is a local integration package that adds Aegis skills and
 
 The plugin is a thin layer. All policy decisions are made by the Aegis CLI. The plugin does not duplicate policy logic.
 
+## Prerequisites
+
+- Zig 0.15.2 (to build Aegis from source)
+- Aegis CLI built and available in PATH
+- Codex host binary installed
+
 ## Install instructions
 
 ### Build Aegis
@@ -16,23 +22,43 @@ The plugin is a thin layer. All policy decisions are made by the Aegis CLI. The 
 zig build
 ```
 
-### Verify plugin status
+### Install from release artifact
 
-```bash
-./zig-out/bin/aegis plugin doctor codex
-```
+1. Download the latest plugin zip from the release page:
+   ```text
+   aegis-codex-plugin-vX.Y.Z.zip
+   ```
 
-### Load the plugin in Codex
+2. Verify the checksum:
+   ```bash
+   sha256sum -c aegis-plugin-checksums.txt
+   ```
 
-Codex plugin loading mechanisms vary by version. The plugin directory is:
+3. Extract the plugin to your preferred location:
+   ```bash
+   unzip aegis-codex-plugin-vX.Y.Z.zip -d ~/aegis-plugins/codex
+   ```
 
-```text
-integrations/codex-plugin/
-```
+4. Point Codex to the extracted plugin directory.
 
-Point Codex to this directory using its local plugin loading feature.
+### Install from local path (repo)
 
-## Local marketplace example
+1. Build Aegis:
+   ```bash
+   zig build
+   ```
+
+2. Point Codex to the plugin directory:
+   ```text
+   integrations/codex-plugin/
+   ```
+
+3. Verify the plugin is recognized:
+   ```bash
+   ./zig-out/bin/aegis plugin doctor codex
+   ```
+
+### Local marketplace install
 
 If your Codex version supports repo-local marketplace files, see:
 
@@ -41,6 +67,59 @@ integrations/codex-plugin/examples/marketplace.json
 ```
 
 This is a documented example only. The exact schema depends on your Codex version.
+
+Official Codex plugin directory distribution is not claimed here. Use the local path or release artifact install path until official distribution is available.
+
+### Manual fallback install
+
+If your Codex version does not support automatic plugin loading:
+
+1. Copy the skills from `integrations/codex-plugin/skills/` into your Codex skills directory.
+2. Copy the hooks from `integrations/codex-plugin/hooks/hooks.json` into your Codex hooks configuration.
+3. Ensure `aegis` is in PATH or use the full path to the binary.
+
+## Verify install
+
+### Plugin doctor
+
+```bash
+./zig-out/bin/aegis plugin doctor codex
+```
+
+Expected output sections:
+- Aegis version
+- Policy status (present/valid)
+- Plugin directories (codex: found)
+- Host binaries (codex: detected or not detected)
+
+### Plugin manifest
+
+```bash
+./zig-out/bin/aegis plugin manifest codex
+```
+
+This reports the expected manifest path and existence status.
+
+### Hook smoke test
+
+```bash
+cat tests/plugin-fixtures/codex/pre_tool_use_command_safe.json \
+  | ./zig-out/bin/aegis hook codex PreToolUse
+```
+
+Expected: `allow` decision in valid JSON.
+
+### Run redteam
+
+```bash
+./zig-out/bin/aegis redteam --ci
+```
+
+### Replay last session
+
+```bash
+./zig-out/bin/aegis replay --session last --verify
+```
 
 ## Skill list
 
@@ -65,33 +144,11 @@ Hooks call `aegis hook codex <event>` with a JSON payload on stdin:
 | `PostToolUse` | Post-tool acknowledgment | 10s |
 | `Stop` | Session stop notification | 10s |
 
-## Verify commands
+## Uninstall
 
-```bash
-# Check plugin structure
-./zig-out/bin/aegis plugin manifest codex
+Remove the plugin from Codex using your Codex plugin management commands. This plugin does not mutate host configuration, so uninstalling is safe.
 
-# Run plugin doctor
-./zig-out/bin/aegis plugin doctor codex
-
-# Test a hook with a fixture
-cat tests/plugin-fixtures/codex/pre_tool_use_command_safe.json \
-  | ./zig-out/bin/aegis hook codex PreToolUse
-
-# Run redteam
-./zig-out/bin/aegis redteam --ci
-
-# Replay last session
-./zig-out/bin/aegis replay --session last --verify
-```
-
-## Limitations
-
-- Hooks are advisory; enforcement depends on Codex host support.
-- The strongest protection is `aegis run -- <codex-command>`.
-- Plugin installation is a preview/dry-run by default.
-- No telemetry is collected.
-- Official marketplace availability is not yet implemented.
+If you installed from a release artifact, simply delete the extracted directory.
 
 ## Troubleshooting
 
@@ -107,6 +164,22 @@ If hooks exceed their timeout, Codex may skip them. Check that `aegis` is in PAT
 
 Run `aegis init --preset codex` to create a default policy, then validate with `aegis policy check .aegis/policy.yaml`.
 
+### Aegis binary not found
+
+Build Aegis with `zig build` or ensure `./zig-out/bin/aegis` is in your PATH.
+
+### Fake secret redaction questions
+
+The plugin uses synthetic test secrets (e.g., `fake_p05_secret_value`) in fixtures only. If you see redaction warnings about these values in test output, that is expected behavior.
+
+## Limitations
+
+- Hooks are advisory; enforcement depends on Codex host support.
+- The strongest protection is `aegis run -- <codex-command>`.
+- Plugin installation is a preview/dry-run by default.
+- No telemetry is collected.
+- Official marketplace availability is not yet implemented.
+
 ## Security model
 
 - The Aegis CLI is the source of truth.
@@ -119,3 +192,11 @@ Run `aegis init --preset codex` to create a default policy, then validate with `
 ## Separate workstream note
 
 A separate drone workstream exists in this repository under `packages/edge/`. The Aegis Codex plugin does not expose or modify drone functionality.
+
+## No MCP support
+
+This plugin does not add MCP server behavior.
+
+## No drone plugin support
+
+This plugin does not add drone-specific plugin features.

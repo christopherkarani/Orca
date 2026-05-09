@@ -1,7 +1,26 @@
 # Plugin Security Model
 
-> Scope: P01 — Trust boundaries, sandbox expectations, and permission model for Aegis plugins
+> Scope: P01–P06 — Trust boundaries, sandbox expectations, and permission model for Aegis plugins
 > Version: 1.1.0
+
+## Core Statement
+
+The strongest local protection remains:
+
+```bash
+aegis run -- <agent-command>
+```
+
+Aegis plugins are integration layers. They are not replacements for the Aegis runtime.
+
+The plugin system adds:
+- host-native skills
+- slash commands
+- lifecycle hooks
+- Aegis CLI plugin commands
+- policy explanations
+- red-team shortcuts
+- replay shortcuts
 
 ## Principles
 
@@ -18,7 +37,7 @@
 │  Host IDE (Codex, Claude Code, etc.)    │  ← Untrusted by default
 │  Runs arbitrary agent code                │
 ├─────────────────────────────────────────┤
-│  Aegis Plugin (future package)          │  ← Semi-trusted; read-only
+│  Aegis Plugin (integration package)     │  ← Semi-trusted; read-only
 │  Calls Aegis CLI for decisions            │
 ├─────────────────────────────────────────┤
 │  Aegis CLI (`aegis plugin *`)           │  ← Trusted local surface
@@ -28,6 +47,17 @@
 │  Local-only, no network dependency        │
 └─────────────────────────────────────────┘
 ```
+
+| Component | Trust Level | Notes |
+|-----------|-------------|-------|
+| Aegis core CLI | trusted | source of truth |
+| Aegis plugin commands | trusted if built from Aegis | stable integration layer |
+| Host plugin manifest | trusted if intentionally installed | should be reviewed |
+| Hook input | untrusted | comes from agent/tool context |
+| Prompt content | untrusted | may contain secrets or injection |
+| Tool call | untrusted | may be model-generated |
+| Host hook system | partial trust | only enforces what host supports |
+| Separate repo workstreams | out of scope | must not be exposed by plugins |
 
 ## Permission Levels
 
@@ -42,7 +72,6 @@
 
 - `aegis plugin install` defaults to `--dry-run`.
 - `aegis plugin doctor` does not print secrets or raw env values.
-- `aegis plugin mcp-server` is a documented stub; no real server starts.
 - Drone-related operations are default-deny.
 
 ## Credential Handling
@@ -70,6 +99,29 @@ Actual sandboxing is provided by:
 - Host IDE's own extension sandbox (if any)
 - OS-level protections
 
+## Security Invariants
+
+1. Plugins call Aegis; they do not reimplement Aegis.
+2. Raw secrets are never persisted.
+3. Hook input is bounded.
+4. Hook stdout is host-valid.
+5. Human logs go to stderr.
+6. CI mode never prompts.
+7. Deny is not silently downgraded.
+8. Separate safety-sensitive workstreams are not exposed.
+9. Plugin demos do not require real LLMs, real secrets, or external network.
+10. Docs do not overclaim.
+
+## What Plugins Do Not Do
+
+- **No MCP server behavior included.** This plugin plan does not add MCP server mode.
+- **No drone-specific plugin features included.** Drone work is a separate workstream.
+- **No telemetry by default.** The plugin surface does not phone home.
+- **No SaaS requirement.** No hosted dashboard, account, or monetization layer is required.
+- **No protection for agents not launched through Aegis** unless the host hook catches the action.
+- **No protection against root/admin/kernel compromise.**
+- **No protection against a user approving unsafe actions.**
+
 ## Rejection Criteria
 
 A plugin request is rejected if it would:
@@ -82,4 +134,6 @@ A plugin request is rejected if it would:
 ## See Also
 
 - `docs/integrations/aegis-cli-plugin.md`
-- `docs/integrations/drone-safety.md`
+- `docs/integrations/plugin-troubleshooting.md`
+- `docs/integrations/separate-workstream-guardrails.md`
+- `PLUGIN_SECURITY_MODEL.md`

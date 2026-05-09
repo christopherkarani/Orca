@@ -44,6 +44,37 @@ jobs:
       - name: Build release artifacts
         shell: bash
         run: ./scripts/build-release.sh
+      - name: Package plugins
+        shell: bash
+        run: ./scripts/package-plugins.sh
+      - name: Verify plugin artifacts
+        shell: bash
+        run: |
+          ls -la dist/plugins/
+          cat dist/plugins/aegis-plugin-checksums.txt
+      - name: Verify plugin checksums
+        shell: bash
+        run: |
+          cd dist/plugins && shasum -a 256 -c aegis-plugin-checksums.txt
+      - name: Secret scan over plugin artifacts
+        shell: bash
+        run: |
+          SCAN_ISSUES=0
+          for file in dist/plugins/*.zip; do
+            [ -f "$file" ] || continue
+            tmpdir="$(mktemp -d)"
+            unzip -q "$file" -d "$tmpdir"
+            if grep -riE "(api_key|apikey|secret|token|password|private_key|privkey)[[:space:]]*[:=][[:space:]]*[\"']?[a-zA-Z0-9_/-]{16,}" "$tmpdir" 2>/dev/null | grep -v "fake_" | grep -v "example" | grep -v "placeholder" | grep -v "your_"; then
+              echo "WARNING: Potential secret pattern in $file" >&2
+              SCAN_ISSUES=$((SCAN_ISSUES + 1))
+            fi
+            rm -rf "$tmpdir"
+          done
+          if [ "$SCAN_ISSUES" -gt 0 ]; then
+            echo "Secret scan found $SCAN_ISSUES potential issues. Review artifacts before release." >&2
+            exit 1
+          fi
+          echo "Secret scan passed."
       - name: Optional signing hook
         if: github.event.inputs.signing_enabled == '1'
         shell: bash
@@ -69,3 +100,5 @@ jobs:
             dist/aegis-v*.zip
             dist/checksums.txt
             dist/sbom.json
+            dist/plugins/*.zip
+            dist/plugins/aegis-plugin-checksums.txt
