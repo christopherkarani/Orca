@@ -1,3 +1,77 @@
+# Phase 35 Edge Network, Telemetry, and Data Guard
+
+## Assumptions
+
+- The prompt-named `README_START_HERE.md`, `CODEX_MASTER_PROMPT_EDGE.md`, `context/`, `checklists/`, and `phases/35_EDGE_NETWORK_TELEMETRY_DATA_GUARD.md` files are absent from this checkout. The active contract is the Phase 35 prompt, root Aegis contracts, current Edge docs/code, existing examples, and `tasks/lessons.md`.
+- Phase 35 is limited to deterministic Edge data classification, telemetry/network policy evaluation, redaction/minimization, offline exfiltration heuristics, audit/report integration, examples, CLI commands, and red-team fixtures for fake adapter plus PX4/ArduPilot fake/SITL contexts.
+- Phase 35 must not add Phase 36 hardware bench deployment, Phase 37 watchdog/runtime health, Phase 38 customer demo/docs package, Phase 39 customer pilot package, real drone hardware integration, real-flight deployment, customer hardware procedures, SaaS, hosted telemetry, monetization, regulatory/certification claims, detect-and-avoid, or autopilot replacement behavior.
+- Data/network guard must reuse existing Edge audit, safety-case, policy, MAVLink, PX4, ArduPilot, and red-team surfaces where practical. No duplicate audit engine, no external network calls in normal tests, and no raw secret persistence.
+- Unknown data classes and unknown endpoints are not safe. Deny wins over allow. CI mode converts ask to deny. Observe mode logs findings without claiming blocking.
+- Fake adapters, PX4 SITL, ArduPilot SITL, and customer-evaluation endpoints must preserve provenance and must not be mislabeled as real flight.
+
+## Research And False-Positive Check
+
+- [x] Read Aegis memory for phase discipline, offline red-team fixtures, existing network egress guard, redaction, smoke-gate expectations, and handoff format.
+- [x] Confirm absent prompt-named governing files instead of inventing their contents.
+- [ ] Read `tasks/lessons.md` for project-specific corrections before implementation.
+- [ ] Inspect Edge policy, schema, MAVLink, PX4, ArduPilot, audit, safety-case, red-team, and CLI modules for extension points.
+- [ ] Inspect existing root network guard/redaction behavior for reusable patterns without conflating agent-network guard with Edge telemetry/data guard.
+- [ ] Inspect docs/examples for no-real-flight, no-certification, no-detect-and-avoid, no-autopilot-replacement language.
+- [ ] Re-check docs, examples, tests, and persistent outputs for fake-secret leakage and forbidden real-flight/certification claims before handoff.
+
+## TDD / Implementation Checklist
+
+- [ ] Add failing tests for data classification: vehicle state, exact geolocation, mission plan, video/image, fake secret/credential, and unknown payloads.
+- [ ] Add failing tests for endpoint classification: localhost, private network, fake/SITL, ground-control, customer, direct IP, webhook, tunnel, paste, and unknown endpoints.
+- [ ] Add failing tests for policy evaluation: allow/ask/deny, deny beats allow, CI ask-to-deny, observe logging, sensitive data to unknown endpoint denied, and explicit safety-report/customer allow.
+- [ ] Add failing tests for redaction/minimization: fake secrets, tokens, URL query secrets, geolocation coarsening, mission-plan minimization, and raw image/video exclusion.
+- [ ] Add failing tests for exfiltration heuristics: long query, high-entropy labels/components, base64-like fragments, direct IP, webhook/paste/tunnel, repeated unknown endpoints, MAVLink-like external payloads, and secret-like payloads.
+- [ ] Add integration tests proving MAVLink fake, PX4 fake/SITL, and ArduPilot fake/SITL telemetry calls data guard before simulated egress/logging.
+- [ ] Add audit/replay and safety-case tests proving data/network decisions are audited, redacted before persistence, replay-safe, and included in reports.
+- [ ] Add Edge CLI tests/smokes for `data doctor`, `data classify`, `data evaluate`, `data redact`, `data scenario run`, and `network explain`.
+- [ ] Implement `packages/edge/src/data_guard/` modules for classification, endpoint policy, telemetry policy, egress evaluation, redaction, mission/sensor guards, link guard, findings, audit projection, scenarios, and tests.
+- [ ] Extend Edge policy schema/loading to include `data_guard` rules without breaking existing safety-policy behavior.
+- [ ] Create deterministic examples under `examples/edge/data-guard/` with fake payloads/endpoints/policies/scenarios only.
+- [ ] Extend Edge red-team fixtures with data/network guard categories and prove skipped/unsupported fixtures do not count as pass.
+- [ ] Wire safety-case report data/network summaries, limitations, endpoints observed, data classes, redactions, and evidence references without leaking sensitive payloads.
+- [ ] Update Edge docs and package README for data classes, channels, endpoint classification, policies, redaction, exfiltration detection, safety-case integration, and simulation/SITL limitations.
+
+## Verification Checklist
+
+- [ ] `zig build`
+- [ ] `zig build test`
+- [ ] `./zig-out/bin/aegis --help`
+- [ ] `./zig-out/bin/aegis version`
+- [ ] `./zig-out/bin/aegis doctor`
+- [ ] `./zig-out/bin/aegis run -- echo hello`
+- [ ] `./zig-out/bin/aegis replay --session last --verify`
+- [ ] `./zig-out/bin/aegis redteam --ci`
+- [ ] `./zig-out/bin/aegis-edge --help`
+- [ ] `./zig-out/bin/aegis-edge doctor`
+- [ ] `./zig-out/bin/aegis-edge data doctor`
+- [ ] `./zig-out/bin/aegis-edge data classify --payload examples/edge/data-guard/payloads/mission-plan.json`
+- [ ] `./zig-out/bin/aegis-edge data evaluate --policy examples/edge/data-guard/policies/data-guard-strict.yaml --payload examples/edge/data-guard/payloads/mission-plan.json --endpoint examples/edge/data-guard/endpoints/webhook-site.json`
+- [ ] `./zig-out/bin/aegis-edge data redact --payload examples/edge/data-guard/payloads/fake-secret-payload.json`
+- [ ] `./zig-out/bin/aegis-edge data scenario run --policy examples/edge/data-guard/policies/data-guard-strict.yaml --scenario examples/edge/data-guard/scenarios/mission-plan-to-webhook-deny.yaml`
+- [ ] `./zig-out/bin/aegis-edge network explain --policy examples/edge/data-guard/policies/data-guard-strict.yaml --endpoint examples/edge/data-guard/endpoints/unknown-direct-ip.json`
+- [ ] `./zig-out/bin/aegis-edge redteam --category data-guard`
+- [ ] `./zig-out/bin/aegis-edge redteam --category audit-redaction`
+- [ ] `./zig-out/bin/aegis-edge redteam --ci`
+- [ ] Manual check: mission plan to webhook is denied.
+- [ ] Manual check: exact geolocation to unknown endpoint is denied or redacted according to policy.
+- [ ] Manual check: fake secret payload is redacted/denied and absent from persistent outputs.
+- [ ] Manual check: video stream to unknown endpoint is denied.
+- [ ] Manual check: safety report to allowed customer endpoint is allowed.
+- [ ] Manual check: no external network calls are made in tests.
+- [ ] Manual check: safety-case report includes data guard findings.
+- [ ] Manual check: docs do not include real-world exfiltration instructions or real-flight/certification claims.
+- [ ] Manual check: PX4, ArduPilot, safety enforcement, operator/emergency, Edge redteam, and CLI behavior unchanged.
+- [ ] `git diff --check`
+
+## Review
+
+- Pending.
+
 # Phase 34 Edge Red-Team and Fault Injection
 
 ## Assumptions

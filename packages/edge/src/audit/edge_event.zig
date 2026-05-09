@@ -10,6 +10,20 @@ pub const all_event_types = [_][]const u8{
     "edge.scenario_exit",
     "edge.environment_detected",
     "edge.capability_reported",
+    "data.payload_classified",
+    "data.payload_redacted",
+    "data.egress_requested",
+    "data.egress_allowed",
+    "data.egress_denied",
+    "data.egress_observed",
+    "data.exfiltration_suspected",
+    "data.endpoint_classified",
+    "telemetry.channel_observed",
+    "telemetry.channel_allowed",
+    "telemetry.channel_denied",
+    "link.endpoint_unexpected",
+    "link.command_control_observed",
+    "link.telemetry_observed",
     "vehicle.state_observed",
     "vehicle.state_stale",
     "vehicle.state_invalid",
@@ -88,6 +102,20 @@ pub fn toCoreEventType(event_type: []const u8) !core.event.EventType {
     if (std.mem.eql(u8, event_type, "edge.scenario_exit")) return .edge_scenario_exit;
     if (std.mem.eql(u8, event_type, "edge.environment_detected")) return .edge_environment_detected;
     if (std.mem.eql(u8, event_type, "edge.capability_reported")) return .edge_capability_reported;
+    if (std.mem.eql(u8, event_type, "data.payload_classified")) return .data_payload_classified;
+    if (std.mem.eql(u8, event_type, "data.payload_redacted")) return .data_payload_redacted;
+    if (std.mem.eql(u8, event_type, "data.egress_requested")) return .data_egress_requested;
+    if (std.mem.eql(u8, event_type, "data.egress_allowed")) return .data_egress_allowed;
+    if (std.mem.eql(u8, event_type, "data.egress_denied")) return .data_egress_denied;
+    if (std.mem.eql(u8, event_type, "data.egress_observed")) return .data_egress_observed;
+    if (std.mem.eql(u8, event_type, "data.exfiltration_suspected")) return .data_exfiltration_suspected;
+    if (std.mem.eql(u8, event_type, "data.endpoint_classified")) return .data_endpoint_classified;
+    if (std.mem.eql(u8, event_type, "telemetry.channel_observed")) return .telemetry_channel_observed;
+    if (std.mem.eql(u8, event_type, "telemetry.channel_allowed")) return .telemetry_channel_allowed;
+    if (std.mem.eql(u8, event_type, "telemetry.channel_denied")) return .telemetry_channel_denied;
+    if (std.mem.eql(u8, event_type, "link.endpoint_unexpected")) return .link_endpoint_unexpected;
+    if (std.mem.eql(u8, event_type, "link.command_control_observed")) return .link_command_control_observed;
+    if (std.mem.eql(u8, event_type, "link.telemetry_observed")) return .link_telemetry_observed;
     if (std.mem.eql(u8, event_type, "vehicle.state_observed")) return .vehicle_state_observed;
     if (std.mem.eql(u8, event_type, "vehicle.state_stale")) return .vehicle_state_stale;
     if (std.mem.eql(u8, event_type, "vehicle.state_invalid")) return .vehicle_state_invalid;

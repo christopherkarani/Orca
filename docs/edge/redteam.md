@@ -19,6 +19,8 @@ Useful filters:
 aegis-edge redteam list
 aegis-edge redteam validate
 aegis-edge redteam --category geofence
+aegis-edge redteam --category data-guard
+aegis-edge redteam --category audit-redaction
 aegis-edge redteam --category approval-bypass
 aegis-edge redteam --category emergency-bypass
 aegis-edge redteam --fixture geofence-waypoint-outside-circular-denied
@@ -42,3 +44,13 @@ Result statuses are:
 
 Skipped, unsupported, and inconclusive results are not counted as pass. CI mode
 is noninteractive and exits non-zero if a required fixture fails.
+
+Phase 35 adds data guard fixtures under `examples/edge/redteam/data-guard`.
+They exercise mission-data egress denial, exact geolocation denial/redaction,
+fake-secret redaction/denial, video-stream denial, direct-IP denial, webhook,
+tunnel and paste endpoint denial, long-query detection, high-entropy endpoint
+label detection, unknown endpoint denial, safety-report allow to an explicit
+simulated customer endpoint, and telemetry allow to an explicit local
+ground-control endpoint. The fixtures use synthetic payloads only, make no
+external network calls, do not require real hardware, and preserve the
+simulation/SITL boundary.

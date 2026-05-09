@@ -33,6 +33,7 @@ test "edge capabilities report unsupported integrations as unavailable or not im
             .safety_case_reports,
             .evidence_bundles,
             .redteam_fault_injection,
+            .data_network_guard,
             => try std.testing.expectEqual(edge.CapabilityStatus.active, report.status),
             .real_flight_enforcement,
             .detect_and_avoid,

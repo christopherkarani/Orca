@@ -81,6 +81,7 @@ const Section = enum {
     commands,
     network,
     audit,
+    data_guard,
 };
 
 const CommandList = enum { none, allow, ask, deny, require_operator_approval };
@@ -275,6 +276,8 @@ fn parseYamlPolicy(allocator: std.mem.Allocator, text: []const u8, source_path: 
                 section = .network;
             } else if (std.mem.eql(u8, key, "audit")) {
                 section = .audit;
+            } else if (std.mem.eql(u8, key, "data_guard")) {
+                section = .data_guard;
             } else {
                 return error.InvalidPolicy;
             }
@@ -289,6 +292,7 @@ fn parseYamlPolicy(allocator: std.mem.Allocator, text: []const u8, source_path: 
             .commands => try parseYamlCommands(&command_list, key),
             .network => try parseYamlNetwork(&builder, key, value),
             .audit => try parseYamlAudit(&builder, key, value),
+            .data_guard => {},
             .root => return error.InvalidPolicy,
         }
     }
@@ -400,7 +404,7 @@ fn parseJsonPolicy(allocator: std.mem.Allocator, text: []const u8, source_path: 
     var parsed = std.json.parseFromSlice(std.json.Value, allocator, text, .{}) catch return error.InvalidPolicy;
     defer parsed.deinit();
     const object = try expectObject(parsed.value);
-    try rejectUnknownKeys(object, &.{ "version", "vehicle", "safety", "commands", "network", "audit" });
+    try rejectUnknownKeys(object, &.{ "version", "vehicle", "safety", "commands", "network", "audit", "data_guard" });
 
     var builder: PolicyBuilder = .{ .allocator = allocator, .options = options, .source_path = source_path };
     defer builder.deinit();

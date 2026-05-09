@@ -1,6 +1,6 @@
 # Edge Safety Case Reports
 
-Phase 33 safety-case reports are customer-readable engineering evidence for fake-adapter, PX4 SITL, ArduPilot SITL, and bench-preparation evaluation. They are not regulatory approval, certification, airworthiness approval, detect-and-avoid, autopilot replacement behavior, or real-flight readiness claims.
+Phase 33 safety-case reports are customer-readable engineering evidence for fake-adapter, PX4 SITL, ArduPilot SITL, and bench-preparation evaluation. Phase 35 adds data guard evidence for telemetry/data policy, endpoint classification, egress decisions, redactions, and exfiltration findings. These reports are not regulatory approval, certification, airworthiness approval, detect-and-avoid, autopilot replacement behavior, or real-flight readiness claims.
 
 Generate a report:
 
@@ -21,6 +21,8 @@ Outputs are written to `.aegis-edge/sessions/<session-id>/`:
 - `evidence/*`
 
 Reports include metadata, policy hash, provenance, vehicle/adapter profile, scenario status, command evidence, safety findings, approvals, emergency decisions, traceability, limitations, and a non-certification disclaimer.
+
+Phase 35 reports also include a Data/Network Guard section and `evidence/data-network-guard.json`. That evidence summarizes observed data classes, observed endpoint labels/kinds, allowed/denied endpoint decisions, redactions applied, telemetry guard limitations, and proof that normal evidence generation does not require external network calls. Sensitive payload values are redacted before report persistence.
 
 Fake success is not SITL success. SITL success is not real-flight success. Missing SITL is classified as skipped or unsupported, not passed.
 

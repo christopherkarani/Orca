@@ -15,6 +15,7 @@ pub const required_files = [_][]const u8{
     "evidence/scenario-result.json",
     "evidence/replay.md",
     "evidence/findings.json",
+    "evidence/data-network-guard.json",
     "evidence/commands.json",
     "evidence/environment.json",
     "evidence/limitations.md",

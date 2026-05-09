@@ -8,6 +8,7 @@ const operator = @import("../operator/mod.zig");
 const policy = @import("../policy/mod.zig");
 const safety = @import("../safety/mod.zig");
 const schema = @import("../schema/mod.zig");
+const data_guard = @import("../data_guard/mod.zig");
 const safety_report = @import("../audit/safety_report.zig");
 const fixture_mod = @import("fixture.zig");
 
@@ -90,6 +91,7 @@ pub fn run(allocator: std.mem.Allocator, fixture: fixture_mod.Fixture) !Outcome 
         return builder.finish(.inconclusive, null, "safety-case redaction evidence was not generated for this fixture", false);
     }
 
+    if (isDataGuardFault(first_fault)) return runDataGuardFault(allocator, fixture, first_fault);
     if (isMavlinkParserFault(first_fault)) return runMavlinkParserFault(allocator, first_fault);
     if (isApprovalFault(first_fault)) return runApprovalFault(allocator, fixture, first_fault);
     if (isEmergencyFault(first_fault)) return runEmergencyFault(allocator, fixture, first_fault);
@@ -138,6 +140,124 @@ fn runSafetyFault(allocator: std.mem.Allocator, fixture: fixture_mod.Fixture, fa
     };
     defer evaluation.deinit();
     return outcomeFromSafetyEvaluation(allocator, evaluation);
+}
+
+fn runDataGuardFault(allocator: std.mem.Allocator, fixture: fixture_mod.Fixture, fault: fixture_mod.FaultType) !Outcome {
+    var loaded_policy: ?data_guard.telemetry_policy.LoadedPolicy = null;
+    defer if (loaded_policy) |*value| value.deinit();
+    const guard_policy = if (fixture.policy_path) |path| blk: {
+        loaded_policy = try data_guard.telemetry_policy.loadFile(allocator, path);
+        break :blk loaded_policy.?.value;
+    } else data_guard.telemetry_policy.defaultSimulationPolicy();
+
+    const scenario = dataGuardScenario(fault);
+    var evaluation = try data_guard.evaluateEgress(allocator, guard_policy, scenario.payload, scenario.endpoint, scenario.context);
+    defer evaluation.deinit();
+
+    var builder = OutcomeBuilder.init(allocator);
+    errdefer builder.deinit();
+    for (evaluation.findings) |finding| {
+        try builder.addFinding(@tagName(finding.category));
+        try builder.addFinding(@tagName(finding.severity));
+        if (finding.data_class) |class| try builder.addFinding(@tagName(class));
+        try builder.addFinding(@tagName(finding.endpoint_kind));
+    }
+    if (evaluation.redactions_required) try builder.addFinding("redaction");
+    for (evaluation.audit_payloads) |event| try builder.addEvent(event.event_type);
+    return builder.finish(.passed, evaluation.decision.result, evaluation.explanation, true);
+}
+
+const DataGuardScenario = struct {
+    payload: data_guard.TelemetryPayload,
+    endpoint: data_guard.Endpoint,
+    context: data_guard.EvaluationContext = .{ .mode = .redteam, .ci = true, .non_interactive = true },
+};
+
+fn dataGuardScenario(fault: fixture_mod.FaultType) DataGuardScenario {
+    const vehicle_state =
+        \\{"vehicle_state":{"mode":"guided","armed":true,"battery_percent":82,"altitude_m":20},"vehicle_id":"edge-vehicle-1","provenance":"fake_adapter"}
+    ;
+    const mission_plan =
+        \\{"mission_plan":{"mission_id":"fake-mission-001","waypoints":[{"sequence":0,"latitude":37.0001,"longitude":-122.0000,"altitude_m":20},{"sequence":1,"latitude":37.0002,"longitude":-122.0001,"altitude_m":25}]},"vehicle_id":"edge-vehicle-1","provenance":"fake_adapter"}
+    ;
+    const exact_geolocation =
+        \\{"latitude":37.0001234,"longitude":-122.0009876,"altitude_m":20,"vehicle_id":"edge-vehicle-1","provenance":"fake_adapter"}
+    ;
+    const fake_secret =
+        \\{"vehicle_id":"edge-vehicle-1","api_key":"sk-fakeSyntheticOpenAIKey1234567890","token":"fake_secret_value_phase35","provenance":"fake_adapter"}
+    ;
+    const video_stream =
+        \\{"video_stream":{"codec":"h264","resolution":"1280x720","frame_metadata":"simulated metadata only, no raw frames"},"vehicle_id":"edge-vehicle-1","provenance":"fake_adapter"}
+    ;
+    const safety_report_payload =
+        \\{"safety_case":{"finding":"mission item denied by simulation policy","audit":"hash-chain verified","real_flight":"not_performed","certification":"not_claimed"},"provenance":"fake_adapter"}
+    ;
+    const long_query =
+        "capture=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA";
+
+    return switch (fault) {
+        .mission_plan_exfiltration => .{
+            .payload = .{ .channel_kind = .mission_upload, .direction = .outbound, .vehicle_id = "edge-vehicle-1", .scenario_id = "redteam-mission-exfil", .provenance = "fake_adapter", .payload = mission_plan },
+            .endpoint = .{ .host = "fake.webhook.site", .port = 443, .scheme = "https", .protocol = "https", .path = "/fake-capture", .label = "webhook", .environment = "simulated_external", .provenance = "unknown" },
+        },
+        .exact_geolocation_exfiltration => .{
+            .payload = .{ .channel_kind = .mavlink_telemetry, .direction = .outbound, .vehicle_id = "edge-vehicle-1", .scenario_id = "redteam-geolocation-exfil", .provenance = "fake_adapter", .payload = exact_geolocation },
+            .endpoint = .{ .host = "telemetry.example.invalid", .port = 443, .scheme = "https", .protocol = "https", .path = "/collect", .label = "unknown_endpoint", .environment = "unknown", .provenance = "unknown" },
+        },
+        .fake_secret_payload_exfiltration => .{
+            .payload = .{ .channel_kind = .mavlink_telemetry, .direction = .outbound, .vehicle_id = "edge-vehicle-1", .scenario_id = "redteam-fake-secret", .provenance = "fake_adapter", .payload = fake_secret },
+            .endpoint = .{ .host = "127.0.0.1", .port = 14550, .scheme = "udp", .protocol = "udp", .label = "ground_control", .environment = "fake_adapter", .provenance = "fake_adapter" },
+        },
+        .video_stream_unknown_endpoint => .{
+            .payload = .{ .channel_kind = .video_stream, .direction = .outbound, .vehicle_id = "edge-vehicle-1", .scenario_id = "redteam-video-exfil", .provenance = "fake_adapter", .payload = video_stream },
+            .endpoint = .{ .host = "telemetry.example.invalid", .port = 443, .scheme = "https", .protocol = "https", .path = "/stream", .label = "unknown_endpoint", .environment = "unknown", .provenance = "unknown" },
+        },
+        .direct_ip_egress => .{
+            .payload = .{ .channel_kind = .mavlink_telemetry, .direction = .outbound, .vehicle_id = "edge-vehicle-1", .scenario_id = "redteam-direct-ip", .provenance = "fake_adapter", .payload = vehicle_state },
+            .endpoint = .{ .host = "203.0.113.44", .port = 443, .scheme = "https", .protocol = "https", .path = "/collect", .label = "unknown_direct_ip", .environment = "unknown", .provenance = "unknown" },
+        },
+        .webhook_egress => .{
+            .payload = .{ .channel_kind = .mavlink_telemetry, .direction = .outbound, .vehicle_id = "edge-vehicle-1", .scenario_id = "redteam-webhook", .provenance = "fake_adapter", .payload = vehicle_state },
+            .endpoint = .{ .host = "fake.webhook.site", .port = 443, .scheme = "https", .protocol = "https", .path = "/fake-capture", .label = "webhook", .environment = "simulated_external", .provenance = "unknown" },
+        },
+        .tunnel_egress => .{
+            .payload = .{ .channel_kind = .mavlink_telemetry, .direction = .outbound, .vehicle_id = "edge-vehicle-1", .scenario_id = "redteam-tunnel", .provenance = "fake_adapter", .payload = vehicle_state },
+            .endpoint = .{ .host = "fake-tunnel.ngrok.io", .port = 443, .scheme = "https", .protocol = "https", .path = "/collect", .label = "tunnel", .environment = "simulated_external", .provenance = "unknown" },
+        },
+        .paste_site_egress => .{
+            .payload = .{ .channel_kind = .mission_upload, .direction = .outbound, .vehicle_id = "edge-vehicle-1", .scenario_id = "redteam-paste-site", .provenance = "fake_adapter", .payload = mission_plan },
+            .endpoint = .{ .host = "pastebin.com", .port = 443, .scheme = "https", .protocol = "https", .path = "/api/post", .label = "paste_site", .environment = "simulated_external", .provenance = "unknown" },
+        },
+        .long_query_exfiltration => .{
+            .payload = .{ .channel_kind = .mavlink_telemetry, .direction = .outbound, .vehicle_id = "edge-vehicle-1", .scenario_id = "redteam-long-query", .provenance = "fake_adapter", .payload = vehicle_state },
+            .endpoint = .{ .host = "telemetry.example.invalid", .port = 443, .scheme = "https", .protocol = "https", .path = "/collect", .query = long_query, .label = "unknown_endpoint", .environment = "unknown", .provenance = "unknown" },
+        },
+        .high_entropy_dns_label => .{
+            .payload = .{ .channel_kind = .mavlink_telemetry, .direction = .outbound, .vehicle_id = "edge-vehicle-1", .scenario_id = "redteam-high-entropy-dns", .provenance = "fake_adapter", .payload = vehicle_state },
+            .endpoint = .{ .host = "Zx9Qw7Er6Ty5Ui4Op3As2Df1.example.invalid", .port = 443, .scheme = "https", .protocol = "https", .path = "/collect", .label = "unknown_endpoint", .environment = "unknown", .provenance = "unknown" },
+        },
+        .unknown_endpoint_egress => .{
+            .payload = .{ .channel_kind = .mavlink_telemetry, .direction = .outbound, .vehicle_id = "edge-vehicle-1", .scenario_id = "redteam-unknown-endpoint", .provenance = "fake_adapter", .payload = vehicle_state },
+            .endpoint = .{ .host = "telemetry.example.invalid", .port = 443, .scheme = "https", .protocol = "https", .path = "/collect", .label = "unknown_endpoint", .environment = "unknown", .provenance = "unknown" },
+        },
+        .repeated_unknown_endpoint_egress => .{
+            .payload = .{ .channel_kind = .mavlink_telemetry, .direction = .outbound, .vehicle_id = "edge-vehicle-1", .scenario_id = "redteam-repeated-unknown", .provenance = "fake_adapter", .payload = vehicle_state },
+            .endpoint = .{ .host = "telemetry.example.invalid", .port = 443, .scheme = "https", .protocol = "https", .path = "/collect", .label = "unknown_endpoint", .environment = "unknown", .provenance = "unknown" },
+            .context = .{ .mode = .redteam, .ci = true, .non_interactive = true, .repeated_unknown_endpoint_attempts = 4 },
+        },
+        .safety_report_customer_allow => .{
+            .payload = .{ .channel_kind = .safety_case_report, .direction = .edge_to_customer_endpoint, .vehicle_id = "edge-vehicle-1", .scenario_id = "redteam-safety-report", .provenance = "fake_adapter", .payload = safety_report_payload },
+            .endpoint = .{ .host = "reports.customer.internal", .port = 443, .scheme = "https", .protocol = "https", .path = "/aegis-edge/safety-report", .label = "customer_endpoint", .environment = "customer_evaluation", .provenance = "customer_adapter" },
+        },
+        .telemetry_ground_control_allow => .{
+            .payload = .{ .channel_kind = .mavlink_telemetry, .direction = .vehicle_to_agent, .vehicle_id = "edge-vehicle-1", .scenario_id = "redteam-ground-control", .provenance = "fake_adapter", .payload = vehicle_state },
+            .endpoint = .{ .host = "127.0.0.1", .port = 14550, .scheme = "udp", .protocol = "udp", .label = "ground_control", .environment = "fake_adapter", .provenance = "fake_adapter" },
+        },
+        else => .{
+            .payload = .{ .channel_kind = .unknown, .direction = .outbound, .payload = "{\"opaque\":\"blob\"}", .provenance = "unknown" },
+            .endpoint = .{ .host = "telemetry.example.invalid", .scheme = "https", .protocol = "https", .label = "unknown_endpoint", .environment = "unknown", .provenance = "unknown" },
+        },
+    };
 }
 
 fn runMissionFault(allocator: std.mem.Allocator, fixture: fixture_mod.Fixture, fault: fixture_mod.FaultType) !Outcome {
@@ -547,6 +667,27 @@ fn isEmergencyFault(fault: fixture_mod.FaultType) bool {
         .land_on_stale_state_without_policy,
         .emergency_override_operator_attempt,
         .no_safe_fallback_available,
+        => true,
+        else => false,
+    };
+}
+
+fn isDataGuardFault(fault: fixture_mod.FaultType) bool {
+    return switch (fault) {
+        .mission_plan_exfiltration,
+        .exact_geolocation_exfiltration,
+        .fake_secret_payload_exfiltration,
+        .video_stream_unknown_endpoint,
+        .direct_ip_egress,
+        .webhook_egress,
+        .tunnel_egress,
+        .paste_site_egress,
+        .long_query_exfiltration,
+        .high_entropy_dns_label,
+        .unknown_endpoint_egress,
+        .repeated_unknown_endpoint_egress,
+        .safety_report_customer_allow,
+        .telemetry_ground_control_allow,
         => true,
         else => false,
     };

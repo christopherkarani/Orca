@@ -49,6 +49,7 @@ test "phase 23 edge placeholder never reports active command or flight enforceme
             .safety_case_reports,
             .evidence_bundles,
             .redteam_fault_injection,
+            .data_network_guard,
             .px4_adapter,
             .ardupilot_adapter,
             .real_flight_enforcement,
