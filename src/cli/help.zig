@@ -77,6 +77,15 @@ pub const commands = [_]CommandInfo{
         "Prints the current Aegis version.",
         "--json emits version, commit, target, and build_date fields for release automation.",
     } },
+    .{ .name = "plugin", .summary = "Plugin management and diagnostics", .usage = "aegis plugin <doctor|manifest|install|mcp-server> [options]", .details = &.{
+        "Subcommands:",
+        "  aegis plugin doctor [codex|claude] [--json]",
+        "  aegis plugin manifest [codex|claude|all] [--json]",
+        "  aegis plugin install [codex|claude|all] [--dry-run] [--path <path>] [--yes]",
+        "  aegis plugin mcp-server [--help]",
+        "Plugin commands are safe by default: install defaults to --dry-run, doctor does not print secrets,",
+        "and mcp-server is currently a documented stub that does not start a real server.",
+    } },
     .{ .name = "help", .summary = "Show help", .usage = "aegis help [command]", .details = &.{"Shows top-level help or command-specific help."} },
 };
 

@@ -17,6 +17,7 @@ pub const redteam = @import("redteam.zig");
 pub const completions = @import("completions.zig");
 pub const shim = @import("shim.zig");
 pub const version_command = @import("version.zig");
+pub const plugin = @import("plugin.zig");
 
 pub const version = build_options.version;
 
@@ -80,6 +81,7 @@ pub fn runWithCwd(cwd: std.fs.Dir, argv: []const []const u8, stdout: anytype, st
     if (std.mem.eql(u8, command, "redteam")) return redteam.command(argv[1..], stdout, stderr);
     if (std.mem.eql(u8, command, "completions")) return completions.command(argv[1..], stdout, stderr);
     if (std.mem.eql(u8, command, "shim")) return shim.command(argv[1..], stdout, stderr);
+    if (std.mem.eql(u8, command, "plugin")) return plugin.command(argv[1..], stdout, stderr);
     try stderr.writeAll("aegis: unknown command '");
     try stderr.writeAll(command);
     try stderr.writeAll("'. Run 'aegis help' for usage.\n");

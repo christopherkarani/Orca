@@ -1,0 +1,71 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "AegisPluginRequestV1",
+  "description": "Request schema for Aegis plugin interactions. Supports doctor, manifest, install, and MCP tool requests.",
+  "type": "object",
+  "required": ["version", "request_type"],
+  "properties": {
+    "version": {
+      "type": "string",
+      "enum": ["v1"],
+      "description": "Schema version."
+    },
+    "request_type": {
+      "type": "string",
+      "enum": [
+        "plugin_doctor",
+        "plugin_manifest",
+        "plugin_install",
+        "mcp_tool_call",
+        "policy_check",
+        "policy_explain",
+        "replay_summary",
+        "capabilities",
+        "drone_safety_status"
+      ],
+      "description": "Type of plugin request."
+    },
+    "target": {
+      "type": "string",
+      "enum": ["codex", "claude", "all"],
+      "description": "Target host plugin for the request."
+    },
+    "options": {
+      "type": "object",
+      "description": "Request-specific options.",
+      "properties": {
+        "json": {
+          "type": "boolean",
+          "description": "Request machine-readable JSON output."
+        },
+        "dry_run": {
+          "type": "boolean",
+          "description": "Preview changes without mutating state."
+        },
+        "path": {
+          "type": "string",
+          "description": "Custom plugin path."
+        },
+        "yes": {
+          "type": "boolean",
+          "description": "Skip confirmation prompts."
+        }
+      }
+    },
+    "context": {
+      "type": "object",
+      "description": "Optional request context.",
+      "properties": {
+        "workspace_root": {
+          "type": "string",
+          "description": "Workspace root path."
+        },
+        "policy_path": {
+          "type": "string",
+          "description": "Path to Aegis policy file."
+        }
+      }
+    }
+  },
+  "additionalProperties": false
+}
