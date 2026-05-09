@@ -1,0 +1,10 @@
+{
+  "version": 1,
+  "host": "claude",
+  "event": "PostToolUse",
+  "payload": {
+    "tool": "Bash",
+    "command": "git status",
+    "exit_code": 0
+  }
+}

@@ -1,0 +1,9 @@
+{
+  "version": 1,
+  "host": "codex",
+  "event": "PreToolUse",
+  "payload": {
+    "tool": "shell",
+    "command": "git status"
+  }
+}

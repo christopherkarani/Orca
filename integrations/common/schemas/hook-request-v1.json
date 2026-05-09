@@ -1,0 +1,48 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://aegis.local/schemas/hook-request-v1.json",
+  "title": "Aegis Hook Request v1",
+  "description": "JSON payload sent by host plugins to the aegis hook command via stdin.",
+  "type": "object",
+  "required": ["version", "host", "event", "payload"],
+  "properties": {
+    "version": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 1,
+      "description": "Schema version. Must be 1."
+    },
+    "host": {
+      "type": "string",
+      "enum": ["codex", "claude"],
+      "description": "Host identifier."
+    },
+    "event": {
+      "type": "string",
+      "enum": [
+        "SessionStart",
+        "UserPromptSubmit",
+        "PreToolUse",
+        "PermissionRequest",
+        "PostToolUse",
+        "SessionEnd",
+        "Stop"
+      ],
+      "description": "Host lifecycle event name."
+    },
+    "payload": {
+      "type": "object",
+      "description": "Host-specific payload. Shape varies by host and event."
+    },
+    "session_id": {
+      "type": "string",
+      "description": "Optional opaque session identifier provided by the host."
+    },
+    "timestamp": {
+      "type": "string",
+      "format": "date-time",
+      "description": "ISO 8601 timestamp of the event."
+    }
+  },
+  "additionalProperties": false
+}
