@@ -1,0 +1,9 @@
+{
+  "version": 1,
+  "host": "claude",
+  "event": "SessionStart",
+  "payload": {
+    "cwd": "/repo",
+    "workspace": "/repo"
+  }
+}
