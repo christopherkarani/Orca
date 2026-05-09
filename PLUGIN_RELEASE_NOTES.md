@@ -1,18 +1,18 @@
-# Aegis Plugin Release Notes
+# Orca Plugin Release Notes
 
 ## Version: 1.1.0
 
-Aegis 1.1.0 introduces the first native plugin release for Codex and Claude Code. The plugins add host-native commands, hooks, and diagnostics while keeping Aegis CLI as the source of truth for policy, replay, and security decisions.
+Orca 1.1.0 introduces the first native plugin release for Codex and Claude Code. The plugins add host-native commands, hooks, and diagnostics while keeping Orca CLI as the source of truth for policy, replay, and security decisions.
 
-## Aegis CLI plugin surface
+## Orca CLI plugin surface
 
 Both host integrations call into the same CLI surface:
 
-- `aegis plugin doctor` — reports Aegis version, workspace state, policy status, host binary detection, plugin directories, and platform capabilities.
-- `aegis plugin manifest` — reports the expected plugin manifest path and whether it exists.
-- `aegis plugin install` — previews or performs installation from a release artifact or local path; it defaults to `--dry-run` and requires `--yes` for a real mutation.
-- `aegis decide` — returns stable JSON decisions for commands, files, prompts, and tool calls.
-- `aegis hook` — processes host lifecycle hooks with JSON payloads on stdin.
+- `orca plugin doctor` — reports Orca version, workspace state, policy status, host binary detection, plugin directories, and platform capabilities.
+- `orca plugin manifest` — reports the expected plugin manifest path and whether it exists.
+- `orca plugin install` — previews or performs installation from a release artifact or local path; it defaults to `--dry-run` and requires `--yes` for a real mutation.
+- `orca decide` — returns stable JSON decisions for commands, files, prompts, and tool calls.
+- `orca hook` — processes host lifecycle hooks with JSON payloads on stdin.
 
 ## Codex plugin
 
@@ -32,25 +32,25 @@ The Codex plugin is a thin host integration. It does not reimplement policy logi
 - Hooks: `SessionStart`, `UserPromptSubmit`, `PreToolUse`, `PermissionRequest`, `PostToolUse`, `SessionEnd`
 - Install guide: [docs/integrations/claude-code.md](docs/integrations/claude-code.md)
 
-The Claude Code plugin is also a thin host integration. It delegates policy and replay to Aegis CLI and does not add drone-specific plugin features.
+The Claude Code plugin is also a thin host integration. It delegates policy and replay to Orca CLI and does not add drone-specific plugin features.
 
 ## Installation
 
 ### From a release artifact
 
 1. Download the release zip for your host:
-   - `aegis-codex-plugin-vX.Y.Z.zip`
-   - `aegis-claude-code-plugin-vX.Y.Z.zip`
+   - `orca-codex-plugin-vX.Y.Z.zip`
+   - `orca-claude-code-plugin-vX.Y.Z.zip`
 2. Verify the checksum file before extracting anything:
    ```sh
-   sha256sum -c aegis-plugin-checksums.txt
+   sha256sum -c orca-plugin-checksums.txt
    ```
 3. Extract the plugin to a local directory of your choice.
 4. Point Codex or Claude Code at the extracted plugin directory.
 
 ### From a local path
 
-1. Build Aegis:
+1. Build Orca:
    ```sh
    zig build
    ```
@@ -59,13 +59,13 @@ The Claude Code plugin is also a thin host integration. It delegates policy and 
    - Claude Code: `integrations/claude-code-plugin/`
 3. Confirm the plugin is visible:
    ```sh
-   ./zig-out/bin/aegis plugin doctor codex
-   ./zig-out/bin/aegis plugin doctor claude
+   ./zig-out/bin/orca plugin doctor codex
+   ./zig-out/bin/orca plugin doctor claude
    ```
 
 ### Checksum verification
 
-Always verify `aegis-plugin-checksums.txt` before installing a release zip. The checksum file is the release gate for `dist/plugins/aegis-codex-plugin-vX.Y.Z.zip` and `dist/plugins/aegis-claude-code-plugin-vX.Y.Z.zip`.
+Always verify `orca-plugin-checksums.txt` before installing a release zip. The checksum file is the release gate for `dist/plugins/orca-codex-plugin-vX.Y.Z.zip` and `dist/plugins/orca-claude-code-plugin-vX.Y.Z.zip`.
 
 ## Verification
 
@@ -74,16 +74,16 @@ Run these commands from the repository root:
 ```sh
 zig build
 zig build test
-./zig-out/bin/aegis plugin doctor codex
-./zig-out/bin/aegis plugin doctor claude
-./zig-out/bin/aegis plugin manifest codex
-./zig-out/bin/aegis plugin manifest claude
-./zig-out/bin/aegis plugin install codex --dry-run
-./zig-out/bin/aegis plugin install claude --dry-run
-cat tests/plugin-fixtures/codex/pre_tool_use_command_safe.json | ./zig-out/bin/aegis hook codex PreToolUse
-cat tests/plugin-fixtures/claude/pre_tool_use_command_safe.json | ./zig-out/bin/aegis hook claude PreToolUse
-./zig-out/bin/aegis redteam --ci
-./zig-out/bin/aegis replay --session last --verify
+./zig-out/bin/orca plugin doctor codex
+./zig-out/bin/orca plugin doctor claude
+./zig-out/bin/orca plugin manifest codex
+./zig-out/bin/orca plugin manifest claude
+./zig-out/bin/orca plugin install codex --dry-run
+./zig-out/bin/orca plugin install claude --dry-run
+cat tests/plugin-fixtures/codex/pre_tool_use_command_safe.json | ./zig-out/bin/orca hook codex PreToolUse
+cat tests/plugin-fixtures/claude/pre_tool_use_command_safe.json | ./zig-out/bin/orca hook claude PreToolUse
+./zig-out/bin/orca redteam --ci
+./zig-out/bin/orca replay --session last --verify
 ./scripts/package-plugins.sh
 ```
 
@@ -93,9 +93,9 @@ See [examples/plugin-demo/](examples/plugin-demo/) for the local demo flow.
 
 ## Security model
 
-The strongest protection remains running the agent through `aegis run`; plugins provide native commands, hooks, and guardrails inside supported agent hosts.
+The strongest protection remains running the agent through `orca run`; plugins provide native commands, hooks, and guardrails inside supported agent hosts.
 
-Aegis CLI remains the source of truth for policy decisions, replay, and audit behavior. Plugins are additive host integrations, not a replacement for supervised execution.
+Orca CLI remains the source of truth for policy decisions, replay, and audit behavior. Plugins are additive host integrations, not a replacement for supervised execution.
 
 ## Known limitations
 
@@ -103,16 +103,16 @@ Aegis CLI remains the source of truth for policy decisions, replay, and audit be
 - Official marketplace availability is not yet implemented.
 - Plugin installation is preview/dry-run by default.
 - No telemetry is collected.
-- The plugins do not protect sessions that are not launched through Aegis.
+- The plugins do not protect sessions that are not launched through Orca.
 - These plugins do not add MCP server functionality or drone-specific plugin features.
 
 ## Checksums
 
-- Release checksum file: `dist/plugins/aegis-plugin-checksums.txt`
-- Verification command: `sha256sum -c aegis-plugin-checksums.txt`
+- Release checksum file: `dist/plugins/orca-plugin-checksums.txt`
+- Verification command: `sha256sum -c orca-plugin-checksums.txt`
 - Release zips:
-  - `dist/plugins/aegis-codex-plugin-vX.Y.Z.zip`
-  - `dist/plugins/aegis-claude-code-plugin-vX.Y.Z.zip`
+  - `dist/plugins/orca-codex-plugin-vX.Y.Z.zip`
+  - `dist/plugins/orca-claude-code-plugin-vX.Y.Z.zip`
 
 ## Vulnerability reporting
 
@@ -125,7 +125,7 @@ Read [CONTRIBUTING.md](CONTRIBUTING.md), add deterministic tests or fixtures for
 ```sh
 zig build
 zig build test
-./zig-out/bin/aegis redteam --ci
+./zig-out/bin/orca redteam --ci
 ```
 
 ## Troubleshooting links

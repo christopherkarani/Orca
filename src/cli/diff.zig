@@ -18,12 +18,12 @@ pub fn command(argv: []const []const u8, stdout: anytype, stderr: anytype) !u8 {
     const workspace_root = try core.supervisor.resolveWorkspaceRoot(allocator, null, ".");
     defer allocator.free(workspace_root);
     const session_id = intercept.files.resolveSessionId(allocator, workspace_root, options.session) catch |err| {
-        try stderr.print("aegis diff: failed to resolve session '{s}': {s}\n", .{ options.session, @errorName(err) });
+        try stderr.print("orca diff: failed to resolve session '{s}': {s}\n", .{ options.session, @errorName(err) });
         return exit_codes.general;
     };
     defer allocator.free(session_id);
     const diff = intercept.files.diffStaged(allocator, workspace_root, session_id, options.file) catch |err| {
-        try stderr.print("aegis diff: failed to diff staged files: {s}\n", .{@errorName(err)});
+        try stderr.print("orca diff: failed to diff staged files: {s}\n", .{@errorName(err)});
         return exit_codes.general;
     };
     defer allocator.free(diff);
@@ -47,19 +47,19 @@ fn parseOptions(argv: []const []const u8, stdout: anytype, stderr: anytype) !Opt
         } else if (std.mem.eql(u8, arg, "--session")) {
             index += 1;
             if (index >= argv.len) {
-                try stderr.writeAll("aegis diff: --session requires an id or 'last'.\n");
+                try stderr.writeAll("orca diff: --session requires an id or 'last'.\n");
                 return error.Usage;
             }
             options.session = argv[index];
         } else if (std.mem.eql(u8, arg, "--file")) {
             index += 1;
             if (index >= argv.len) {
-                try stderr.writeAll("aegis diff: --file requires a workspace path.\n");
+                try stderr.writeAll("orca diff: --file requires a workspace path.\n");
                 return error.Usage;
             }
             options.file = argv[index];
         } else {
-            try stderr.print("aegis diff: unknown option '{s}'.\n", .{arg});
+            try stderr.print("orca diff: unknown option '{s}'.\n", .{arg});
             return error.Usage;
         }
     }

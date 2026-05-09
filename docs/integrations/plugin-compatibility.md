@@ -1,10 +1,10 @@
 # Plugin Compatibility Matrix
 
-This document describes feature compatibility across the Aegis CLI and host plugins.
+This document describes feature compatibility across the Orca CLI and host plugins.
 
 ## Feature Matrix
 
-| Feature | Aegis CLI | Codex Plugin | Claude Code Plugin |
+| Feature | Orca CLI | Codex Plugin | Claude Code Plugin |
 |---------|-----------|--------------|-------------------|
 | plugin doctor | yes | calls CLI | calls CLI |
 | manifest status | yes | yes | yes |
@@ -18,15 +18,15 @@ This document describes feature compatibility across the Aegis CLI and host plug
 
 ## Command Compatibility
 
-| Command | Aegis CLI | Codex Plugin | Claude Code Plugin |
+| Command | Orca CLI | Codex Plugin | Claude Code Plugin |
 |---------|-----------|--------------|-------------------|
-| `aegis plugin doctor` | native | calls CLI | calls CLI |
-| `aegis plugin manifest` | native | calls CLI | calls CLI |
-| `aegis plugin install --dry-run` | native | calls CLI | calls CLI |
-| `aegis decide` | native | calls CLI | calls CLI |
-| `aegis hook` | native | calls CLI | calls CLI |
-| `aegis redteam --ci` | native | calls CLI | calls CLI |
-| `aegis replay` | native | calls CLI | calls CLI |
+| `orca plugin doctor` | native | calls CLI | calls CLI |
+| `orca plugin manifest` | native | calls CLI | calls CLI |
+| `orca plugin install --dry-run` | native | calls CLI | calls CLI |
+| `orca decide` | native | calls CLI | calls CLI |
+| `orca hook` | native | calls CLI | calls CLI |
+| `orca redteam --ci` | native | calls CLI | calls CLI |
+| `orca replay` | native | calls CLI | calls CLI |
 
 ## Host Limitations
 
@@ -44,19 +44,19 @@ This document describes feature compatibility across the Aegis CLI and host plug
 
 ## Version Compatibility
 
-| Component | Version | Minimum Aegis CLI |
+| Component | Version | Minimum Orca CLI |
 |-----------|---------|-------------------|
-| Aegis core | 1.1.0 | 1.0.0 |
+| Orca core | 1.1.0 | 1.0.0 |
 | Codex plugin | 1.1.0 | 1.0.0 |
 | Claude Code plugin | 1.1.0 | 1.0.0 |
 
-Aegis plugins 1.x require Aegis CLI >= 1.0.0.
+Orca plugins 1.x require Orca CLI >= 1.0.0.
 
 ## Platform Support
 
-All plugin features work on the same platforms as the Aegis CLI:
+All plugin features work on the same platforms as the Orca CLI:
 
-| Platform | Aegis CLI | Codex Plugin | Claude Code Plugin |
+| Platform | Orca CLI | Codex Plugin | Claude Code Plugin |
 |----------|-----------|--------------|-------------------|
 | macOS (arm64) | yes | yes | yes |
 | macOS (x86_64) | yes | yes | yes |

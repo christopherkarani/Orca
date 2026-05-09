@@ -1,19 +1,19 @@
 # Plugin Troubleshooting
 
-This document covers common issues when installing, running, or uninstalling Aegis plugins.
+This document covers common issues when installing, running, or uninstalling Orca plugins.
 
-## Aegis binary not found
+## Orca binary not found
 
-**Symptom:** `aegis: command not found` or plugin doctor reports `aegis binary: not found`.
+**Symptom:** `orca: command not found` or plugin doctor reports `orca binary: not found`.
 
 **Fix:**
-1. Build Aegis from source:
+1. Build Orca from source:
    ```bash
    zig build
    ```
 2. Use the full path:
    ```bash
-   ./zig-out/bin/aegis plugin doctor codex
+   ./zig-out/bin/orca plugin doctor codex
    ```
 3. Or add to PATH:
    ```bash
@@ -22,7 +22,7 @@ This document covers common issues when installing, running, or uninstalling Aeg
 
 ## Plugin manifest missing
 
-**Symptom:** `aegis plugin manifest codex` reports `missing`.
+**Symptom:** `orca plugin manifest codex` reports `missing`.
 
 **Fix:**
 1. Ensure you are running from the repository root.
@@ -48,7 +48,7 @@ This document covers common issues when installing, running, or uninstalling Aeg
 
 ## Codex host not found
 
-**Symptom:** `aegis plugin doctor codex` reports `codex binary: not detected`.
+**Symptom:** `orca plugin doctor codex` reports `codex binary: not detected`.
 
 **Fix:**
 1. Ensure Codex is installed and in PATH.
@@ -56,7 +56,7 @@ This document covers common issues when installing, running, or uninstalling Aeg
 
 ## Claude host not found
 
-**Symptom:** `aegis plugin doctor claude` reports `claude binary: not detected`.
+**Symptom:** `orca plugin doctor claude` reports `claude binary: not detected`.
 
 **Fix:**
 1. Ensure Claude Code is installed and in PATH.
@@ -64,7 +64,7 @@ This document covers common issues when installing, running, or uninstalling Aeg
 
 ## Hooks not firing
 
-**Symptom:** No Aegis output appears when host triggers hooks.
+**Symptom:** No Orca output appears when host triggers hooks.
 
 **Fix:**
 1. Check that `aegis` is in PATH.
@@ -76,7 +76,7 @@ This document covers common issues when installing, running, or uninstalling Aeg
 3. Test manually:
    ```bash
    cat tests/plugin-fixtures/codex/pre_tool_use_command_safe.json \
-     | ./zig-out/bin/aegis hook codex PreToolUse
+     | ./zig-out/bin/orca hook codex PreToolUse
    ```
 4. Check that the host IDE's plugin system is enabled and configured to load hooks.
 
@@ -88,7 +88,7 @@ This document covers common issues when installing, running, or uninstalling Aeg
 1. Test the hook manually and inspect stdout:
    ```bash
    cat tests/plugin-fixtures/codex/pre_tool_use_command_safe.json \
-     | ./zig-out/bin/aegis hook codex PreToolUse 2>/dev/null
+     | ./zig-out/bin/orca hook codex PreToolUse 2>/dev/null
    ```
 2. Ensure stderr is separate from stdout. Human-readable logs go to stderr; only JSON goes to stdout.
 3. If stdout contains non-JSON text, check that no shell aliases or wrappers are interfering.
@@ -125,16 +125,16 @@ This document covers common issues when installing, running, or uninstalling Aeg
 **Fix:**
 1. Create a default policy:
    ```bash
-   ./zig-out/bin/aegis init --preset generic-agent
+   ./zig-out/bin/orca init --preset generic-agent
    ```
 2. Validate the policy:
    ```bash
-   ./zig-out/bin/aegis policy check .aegis/policy.yaml
+   ./zig-out/bin/orca policy check .aegis/policy.yaml
    ```
 
 ## Redteam failure
 
-**Symptom:** `aegis redteam --ci` reports failures.
+**Symptom:** `orca redteam --ci` reports failures.
 
 **Fix:**
 1. Check that all fixtures are present:
@@ -167,7 +167,7 @@ This document covers common issues when installing, running, or uninstalling Aeg
 **Reinstall:**
 1. Uninstall first.
 2. Reinstall from the release artifact or local path.
-3. Run `aegis plugin doctor <host>` to verify.
+3. Run `orca plugin doctor <host>` to verify.
 
 ## Marketplace path issues
 
@@ -183,7 +183,7 @@ This document covers common issues when installing, running, or uninstalling Aeg
 
 ## Still stuck?
 
-1. Run `aegis doctor` for a full capability report.
-2. Run `aegis plugin doctor <host> --json` for detailed plugin status.
-3. Check `docs/troubleshooting.md` for general Aegis issues.
+1. Run `orca doctor` for a full capability report.
+2. Run `orca plugin doctor <host> --json` for detailed plugin status.
+3. Check `docs/troubleshooting.md` for general Orca issues.
 4. Review the phase handoffs in `docs/integrations/` for known limitations.

@@ -18,17 +18,17 @@ pub fn command(argv: []const []const u8, stdout: anytype, stderr: anytype) !u8 {
     if (std.mem.eql(u8, argv[0], "check")) return check(argv[1..], stdout, stderr);
     if (std.mem.eql(u8, argv[0], "explain")) return explain(argv[1..], stdout, stderr);
 
-    try stderr.print("aegis policy: unknown subcommand '{s}'. Expected check or explain.\n", .{argv[0]});
+    try stderr.print("orca policy: unknown subcommand '{s}'. Expected check or explain.\n", .{argv[0]});
     return exit_codes.usage;
 }
 
 fn check(argv: []const []const u8, stdout: anytype, stderr: anytype) !u8 {
     if (argv.len == 1 and (std.mem.eql(u8, argv[0], "--help") or std.mem.eql(u8, argv[0], "-h"))) {
-        try stdout.writeAll("Usage:\n  aegis policy check [policy-path]\n");
+        try stdout.writeAll("Usage:\n  orca policy check [policy-path]\n");
         return exit_codes.success;
     }
     if (argv.len > 1) {
-        try stderr.writeAll("aegis policy check: expected at most one policy path.\n");
+        try stderr.writeAll("orca policy check: expected at most one policy path.\n");
         return exit_codes.usage;
     }
 
@@ -39,7 +39,7 @@ fn check(argv: []const []const u8, stdout: anytype, stderr: anytype) !u8 {
     const source = if (argv.len == 1) argv[0] else "builtin:strict";
     var policy_value = if (argv.len == 1)
         core_api.loadPolicyFile(allocator, argv[0]) catch |err| {
-            try stderr.print("aegis policy check: invalid policy {s}: {s}\n", .{ argv[0], @errorName(err) });
+            try stderr.print("orca policy check: invalid policy {s}: {s}\n", .{ argv[0], @errorName(err) });
             return exit_codes.general;
         }
     else
@@ -52,19 +52,19 @@ fn check(argv: []const []const u8, stdout: anytype, stderr: anytype) !u8 {
 
 fn explain(argv: []const []const u8, stdout: anytype, stderr: anytype) !u8 {
     if (argv.len == 1 and (std.mem.eql(u8, argv[0], "--help") or std.mem.eql(u8, argv[0], "-h"))) {
-        try stdout.writeAll("Usage:\n  aegis policy explain <file.read|file.write|env|command|network|mcp> <target>\n");
+        try stdout.writeAll("Usage:\n  orca policy explain <file.read|file.write|env|command|network|mcp> <target>\n");
         return exit_codes.success;
     }
     if (argv.len < 2) {
-        try stderr.writeAll("aegis policy explain: expected a type and target.\n");
+        try stderr.writeAll("orca policy explain: expected a type and target.\n");
         return exit_codes.usage;
     }
     const kind = aegis_policy.explain.ExplainKind.parse(argv[0]) orelse {
-        try stderr.print("aegis policy explain: unsupported type '{s}'.\n", .{argv[0]});
+        try stderr.print("orca policy explain: unsupported type '{s}'.\n", .{argv[0]});
         return exit_codes.usage;
     };
     if (argv.len > 2 and kind != .command) {
-        try stderr.writeAll("aegis policy explain: expected one target argument.\n");
+        try stderr.writeAll("orca policy explain: expected one target argument.\n");
         return exit_codes.usage;
     }
 
@@ -75,7 +75,7 @@ fn explain(argv: []const []const u8, stdout: anytype, stderr: anytype) !u8 {
     const root = core.supervisor.resolveWorkspaceRoot(allocator, null, ".") catch try allocator.dupe(u8, ".");
     defer allocator.free(root);
     var loaded = core_api.discoverPolicy(allocator, null, root) catch |err| {
-        try stderr.print("aegis policy explain: failed to load policy: {s}\n", .{@errorName(err)});
+        try stderr.print("orca policy explain: failed to load policy: {s}\n", .{@errorName(err)});
         return exit_codes.general;
     };
     defer loaded.deinit();
@@ -84,7 +84,7 @@ fn explain(argv: []const []const u8, stdout: anytype, stderr: anytype) !u8 {
     defer allocator.free(target);
 
     const evaluation = core_api.explainAction(allocator, &loaded.policy, kind, target) catch |err| {
-        try stderr.print("aegis policy explain: failed to evaluate action: {s}\n", .{@errorName(err)});
+        try stderr.print("orca policy explain: failed to evaluate action: {s}\n", .{@errorName(err)});
         return exit_codes.general;
     };
     defer evaluation.deinit(allocator);

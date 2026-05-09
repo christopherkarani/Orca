@@ -51,7 +51,7 @@ fn commandWithStdio(argv: []const []const u8, stdout: anytype, stderr: anytype, 
 
     const workspace_root_for_policy = core.supervisor.resolveWorkspaceRoot(allocator, options.workspace, ".") catch |err| switch (err) {
         error.FileNotFound => {
-            try stderr.print("aegis run: workspace not found: {s}\n", .{options.workspace orelse "."});
+            try stderr.print("orca run: workspace not found: {s}\n", .{options.workspace orelse "."});
             return exit_codes.general;
         },
         else => return err,
@@ -59,7 +59,7 @@ fn commandWithStdio(argv: []const []const u8, stdout: anytype, stderr: anytype, 
     defer allocator.free(workspace_root_for_policy);
 
     var loaded_policy = core_api.discoverPolicy(allocator, options.policy_path, workspace_root_for_policy) catch |err| {
-        try stderr.print("aegis run: invalid policy: {s}\n", .{@errorName(err)});
+        try stderr.print("orca run: invalid policy: {s}\n", .{@errorName(err)});
         return exit_codes.general;
     };
     defer loaded_policy.deinit();
@@ -73,11 +73,11 @@ fn commandWithStdio(argv: []const []const u8, stdout: anytype, stderr: anytype, 
         .inherit_env = options.inherit_env,
     }) catch |err| switch (err) {
         error.InheritEnvDenied => {
-            try stderr.writeAll("aegis run: --inherit-env is not allowed by the selected policy/mode.\n");
+            try stderr.writeAll("orca run: --inherit-env is not allowed by the selected policy/mode.\n");
             return exit_codes.general;
         },
         else => {
-            try stderr.print("aegis run: failed to filter environment: {s}\n", .{@errorName(err)});
+            try stderr.print("orca run: failed to filter environment: {s}\n", .{@errorName(err)});
             return exit_codes.general;
         },
     };
@@ -311,7 +311,7 @@ fn commandWithStdio(argv: []const []const u8, stdout: anytype, stderr: anytype, 
             if (self.effective_mode == .ci) return .deny;
             const stdin_file = std.fs.File.stdin();
             if (!stdin_file.isTty()) {
-                try self.stderr.writeAll("aegis run: command requires approval, but stdin is non-interactive; denying.\n");
+                try self.stderr.writeAll("orca run: command requires approval, but stdin is non-interactive; denying.\n");
                 return .deny;
             }
             var stdin_buf: [1024]u8 = undefined;
@@ -399,15 +399,15 @@ fn commandWithStdio(argv: []const []const u8, stdout: anytype, stderr: anytype, 
         .on_event = on_event,
     }) catch |err| switch (err) {
         error.CommandNotFound => {
-            try stderr.print("aegis run: command not found: {s}\n", .{options.command_argv[0]});
+            try stderr.print("orca run: command not found: {s}\n", .{options.command_argv[0]});
             return exit_codes.general;
         },
         error.InvalidCommand => {
-            try stderr.writeAll("aegis run: missing command after '--'.\n");
+            try stderr.writeAll("orca run: missing command after '--'.\n");
             return exit_codes.usage;
         },
         error.FileNotFound => {
-            try stderr.print("aegis run: workspace not found: {s}\n", .{options.workspace orelse "."});
+            try stderr.print("orca run: workspace not found: {s}\n", .{options.workspace orelse "."});
             return exit_codes.general;
         },
         error.CommandDenied => {
@@ -437,7 +437,7 @@ fn commandWithStdio(argv: []const []const u8, stdout: anytype, stderr: anytype, 
                     try writeLastPointerNoMakePath(allocator, ended.workspace_root, ended.id.slice());
                 }
             }
-            try stderr.writeAll("aegis run: command denied by command guard.\n");
+            try stderr.writeAll("orca run: command denied by command guard.\n");
             return exit_codes.denial;
         },
         error.BackendRequirementUnavailable => {
@@ -467,11 +467,11 @@ fn commandWithStdio(argv: []const []const u8, stdout: anytype, stderr: anytype, 
                     try writeLastPointerNoMakePath(allocator, ended.workspace_root, ended.id.slice());
                 }
             }
-            try stderr.writeAll("aegis run: required backend feature is unavailable.\n");
+            try stderr.writeAll("orca run: required backend feature is unavailable.\n");
             return exit_codes.unsupported;
         },
         else => {
-            try stderr.print("aegis run: failed to launch child: {s}\n", .{@errorName(err)});
+            try stderr.print("orca run: failed to launch child: {s}\n", .{@errorName(err)});
             return exit_codes.general;
         },
     };
@@ -494,15 +494,15 @@ fn commandWithStdio(argv: []const []const u8, stdout: anytype, stderr: anytype, 
     return switch (result.status) {
         .exited => |code| code,
         .signal => |signal| {
-            try stderr.print("aegis run: child terminated by signal {d}.\n", .{signal});
+            try stderr.print("orca run: child terminated by signal {d}.\n", .{signal});
             return exit_codes.child_failure;
         },
         .stopped => |signal| {
-            try stderr.print("aegis run: child stopped by signal {d}.\n", .{signal});
+            try stderr.print("orca run: child stopped by signal {d}.\n", .{signal});
             return exit_codes.child_failure;
         },
         .unknown => |status| {
-            try stderr.print("aegis run: child ended with unknown status {d}.\n", .{status});
+            try stderr.print("orca run: child ended with unknown status {d}.\n", .{status});
             return exit_codes.child_failure;
         },
     };
@@ -523,32 +523,32 @@ fn parseOptions(argv: []const []const u8, stdout: anytype, stderr: anytype) !Run
         } else if (std.mem.eql(u8, arg, "--workspace")) {
             index += 1;
             if (index >= argv.len) {
-                try stderr.writeAll("aegis run: --workspace requires a path.\n");
+                try stderr.writeAll("orca run: --workspace requires a path.\n");
                 return error.Usage;
             }
             options.workspace = argv[index];
         } else if (std.mem.eql(u8, arg, "--mode")) {
             index += 1;
             if (index >= argv.len) {
-                try stderr.writeAll("aegis run: --mode requires observe, ask, strict, or ci.\n");
+                try stderr.writeAll("orca run: --mode requires observe, ask, strict, or ci.\n");
                 return error.Usage;
             }
             options.mode = parseMode(argv[index]) orelse {
-                try stderr.print("aegis run: unsupported mode '{s}'. Expected observe, ask, strict, or ci.\n", .{argv[index]});
+                try stderr.print("orca run: unsupported mode '{s}'. Expected observe, ask, strict, or ci.\n", .{argv[index]});
                 return error.Usage;
             };
             options.mode_explicit = true;
         } else if (std.mem.eql(u8, arg, "--policy")) {
             index += 1;
             if (index >= argv.len) {
-                try stderr.writeAll("aegis run: --policy requires a path.\n");
+                try stderr.writeAll("orca run: --policy requires a path.\n");
                 return error.Usage;
             }
             options.policy_path = argv[index];
         } else if (std.mem.eql(u8, arg, "--session-name")) {
             index += 1;
             if (index >= argv.len) {
-                try stderr.writeAll("aegis run: --session-name requires a name.\n");
+                try stderr.writeAll("orca run: --session-name requires a name.\n");
                 return error.Usage;
             }
             options.session_name = argv[index];
@@ -562,11 +562,11 @@ fn parseOptions(argv: []const []const u8, stdout: anytype, stderr: anytype) !Run
         } else if (std.mem.eql(u8, arg, "--allow-network")) {
             index += 1;
             if (index >= argv.len) {
-                try stderr.writeAll("aegis run: --allow-network requires a domain or IP destination.\n");
+                try stderr.writeAll("orca run: --allow-network requires a domain or IP destination.\n");
                 return error.Usage;
             }
             if (options.allow_network_count >= options.allow_network_values.len) {
-                try stderr.writeAll("aegis run: too many --allow-network rules.\n");
+                try stderr.writeAll("orca run: too many --allow-network rules.\n");
                 return error.Usage;
             }
             options.allow_network_values[options.allow_network_count] = argv[index];
@@ -574,39 +574,39 @@ fn parseOptions(argv: []const []const u8, stdout: anytype, stderr: anytype) !Run
         } else if (std.mem.eql(u8, arg, "--network")) {
             index += 1;
             if (index >= argv.len) {
-                try stderr.writeAll("aegis run: --network requires observe, ask, allowlist, open, or off.\n");
+                try stderr.writeAll("orca run: --network requires observe, ask, allowlist, open, or off.\n");
                 return error.Usage;
             }
             options.network_mode = policy.schema.NetworkMode.parse(argv[index]) orelse {
-                try stderr.print("aegis run: unsupported network mode '{s}'. Expected observe, ask, allowlist, open, or off.\n", .{argv[index]});
+                try stderr.print("orca run: unsupported network mode '{s}'. Expected observe, ask, allowlist, open, or off.\n", .{argv[index]});
                 return error.Usage;
             };
         } else if (std.mem.eql(u8, arg, "--require-backend")) {
             index += 1;
             if (index >= argv.len) {
-                try stderr.writeAll("aegis run: --require-backend requires a capability name.\n");
+                try stderr.writeAll("orca run: --require-backend requires a capability name.\n");
                 return error.Usage;
             }
             if (options.required_backend_count >= options.required_backend_values.len) {
-                try stderr.writeAll("aegis run: too many --require-backend values.\n");
+                try stderr.writeAll("orca run: too many --require-backend values.\n");
                 return error.Usage;
             }
             options.required_backend_values[options.required_backend_count] = sandbox.backend.Feature.parse(argv[index]) orelse {
-                try stderr.print("aegis run: unsupported backend capability '{s}'.\n", .{argv[index]});
+                try stderr.print("orca run: unsupported backend capability '{s}'.\n", .{argv[index]});
                 return error.Usage;
             };
             options.required_backend_count += 1;
         } else if (std.mem.startsWith(u8, arg, "-")) {
-            try stderr.print("aegis run: unknown option '{s}'.\n", .{arg});
+            try stderr.print("orca run: unknown option '{s}'.\n", .{arg});
             return error.Usage;
         } else {
-            try stderr.writeAll("aegis run: expected '--' before child command.\n");
+            try stderr.writeAll("orca run: expected '--' before child command.\n");
             return error.Usage;
         }
     }
 
     if (options.command_argv.len == 0) {
-        try stderr.writeAll("aegis run: missing command after '--'.\n");
+        try stderr.writeAll("orca run: missing command after '--'.\n");
         return error.Usage;
     }
 
@@ -697,7 +697,7 @@ fn coreModeToPolicyMode(mode: core.types.Mode) policy.schema.Mode {
 
 fn printSessionStart(stdout: anytype, session: core.session.Session) !void {
     try stdout.print(
-        \\Aegis session started: {s}
+        \\Orca session started: {s}
         \\Workspace: {s}
         \\Mode: {s}
         \\
@@ -713,7 +713,7 @@ fn printSessionStart(stdout: anytype, session: core.session.Session) !void {
 }
 
 fn printSessionEnd(stdout: anytype, result: core.supervisor.SessionResult) !void {
-    try stdout.print("\nAegis session ended: exit code {d}\n", .{result.exitCode()});
+    try stdout.print("\nOrca session ended: exit code {d}\n", .{result.exitCode()});
 }
 
 fn flushIfSupported(writer: anytype) !void {

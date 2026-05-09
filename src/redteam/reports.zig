@@ -9,7 +9,7 @@ pub const implemented = true;
 
 pub fn writeHuman(writer: anytype, suite: runner.SuiteResult) !void {
     const totals = suite.totals();
-    try writer.writeAll("Aegis Redteam Score\n\n");
+    try writer.writeAll("Orca Redteam Score\n\n");
     for (scorecard.ordered_categories) |category| {
         const category_total = scorecard.summarizeCategory(runner.FixtureResult, category, suite.results);
         if (category_total.fixtures == 0) continue;

@@ -1,14 +1,16 @@
 ---
-name: Aegis CLI plugin bug
-about: Report a bug in the Aegis CLI plugin surface
+name: Orca CLI plugin bug
+about: Report a bug in the Orca CLI plugin surface
 title: "[CLI Plugin Bug] "
 ---
+
+Do not paste real secrets, tokens, credentials, or private keys into this issue.
 
 Remove secrets, tokens, credentials, private keys, and private paths from logs and policy files before pasting them here.
 
 ## Environment
 
-- Aegis version:
+- Orca version:
 - OS:
 - Zig version:
 
@@ -20,8 +22,8 @@ Remove secrets, tokens, credentials, private keys, and private paths from logs a
 
 ## Diagnostics
 
-- [ ] I ran `./zig-out/bin/aegis plugin doctor`
-- [ ] I ran `./zig-out/bin/aegis redteam --ci`
+- [ ] I ran `./zig-out/bin/orca plugin doctor`
+- [ ] I ran `./zig-out/bin/orca redteam --ci`
 - [ ] I removed secrets from logs and policy files before pasting them here
 
 ## Logs

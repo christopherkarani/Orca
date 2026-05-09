@@ -36,7 +36,7 @@ pub fn command(argv: []const []const u8, stdout: anytype, stderr: anytype) !u8 {
         return exit_codes.success;
     }
     if (argv.len != 1) {
-        try stderr.writeAll("aegis completions: expected one shell: bash, zsh, fish, or powershell.\n");
+        try stderr.writeAll("orca completions: expected one shell: bash, zsh, fish, or powershell.\n");
         return exit_codes.usage;
     }
 
@@ -50,7 +50,7 @@ pub fn command(argv: []const []const u8, stdout: anytype, stderr: anytype) !u8 {
     } else if (std.mem.eql(u8, shell, "powershell")) {
         try writePowerShell(stdout);
     } else {
-        try stderr.print("aegis completions: unsupported shell '{s}'. Expected bash, zsh, fish, or powershell.\n", .{shell});
+        try stderr.print("orca completions: unsupported shell '{s}'. Expected bash, zsh, fish, or powershell.\n", .{shell});
         return exit_codes.usage;
     }
     return exit_codes.success;
@@ -112,23 +112,23 @@ fn writeZsh(writer: anytype) !void {
         \\    _describe 'flag' flags
         \\  fi
         \\}
-        \\_aegis "$@"
+        \\_orca "$@"
         \\
     );
 }
 
 fn writeFish(writer: anytype) !void {
     for (commands) |cmd| {
-        try writer.print("complete -c aegis -f -n '__fish_use_subcommand' -a '{s}'\n", .{cmd});
+        try writer.print("complete -c orca -f -n '__fish_use_subcommand' -a '{s}'\n", .{cmd});
     }
     for (common_flags) |flag| {
-        try writer.print("complete -c aegis -f -l {s}\n", .{flag[2..]});
+        try writer.print("complete -c orca -f -l {s}\n", .{flag[2..]});
     }
 }
 
 fn writePowerShell(writer: anytype) !void {
     try writer.writeAll(
-        \\Register-ArgumentCompleter -Native -CommandName aegis -ScriptBlock {
+        \\Register-ArgumentCompleter -Native -CommandName orca -ScriptBlock {
         \\  param($wordToComplete, $commandAst, $cursorPosition)
         \\  $commands = @(
     );
@@ -167,7 +167,7 @@ test "completions output is non-empty for supported shells" {
 test "GitHub Actions documentation includes Aegis run and redteam commands" {
     const doc = try std.fs.cwd().readFileAlloc(std.testing.allocator, "docs/ci/github-actions.md", 32 * 1024);
     defer std.testing.allocator.free(doc);
-    try std.testing.expect(std.mem.indexOf(u8, doc, "aegis run --mode ci -- ./scripts/agent-task.sh") != null);
-    try std.testing.expect(std.mem.indexOf(u8, doc, "aegis redteam --ci") != null);
+    try std.testing.expect(std.mem.indexOf(u8, doc, "orca run --mode ci -- ./scripts/agent-task.sh") != null);
+    try std.testing.expect(std.mem.indexOf(u8, doc, "orca redteam --ci") != null);
     try std.testing.expect(std.mem.indexOf(u8, doc, "actions/upload-artifact@v4") != null);
 }

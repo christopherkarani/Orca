@@ -1,6 +1,6 @@
 ---
 name: Plugin compatibility issue
-about: Report a host or policy compatibility regression in an Aegis plugin
+about: Report a host or policy compatibility regression in an Orca plugin
 title: "[Plugin Compatibility] "
 ---
 
@@ -8,7 +8,7 @@ Remove secrets, tokens, credentials, private keys, and private paths from logs a
 
 ## Environment
 
-- Aegis version:
+- Orca version:
 - OS:
 - Host tool and version:
 - Plugin version or install source:

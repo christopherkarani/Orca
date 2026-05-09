@@ -1,7 +1,7 @@
 {
-  "name": "@aegis-runtime/aegis",
+  "name": "@orca-runtime/orca",
   "version": "1.1.0",
-  "description": "Placeholder npm launcher template for the Zig-built Aegis CLI binary.",
+  "description": "Placeholder npm launcher template for the Zig-built Orca CLI binary.",
   "license": "SEE LICENSE IN LICENSE",
   "homepage": "https://github.com/chriskarani/aegis",
   "repository": {
@@ -9,7 +9,7 @@
     "url": "git+https://github.com/chriskarani/aegis.git"
   },
   "bin": {
-    "aegis": "bin/aegis.js"
+    "orca": "bin/aegis.js"
   },
   "scripts": {
     "postinstall": "node bin/aegis.js --install",
@@ -29,7 +29,7 @@
     "README.md",
     "LICENSE"
   ],
-  "aegis": {
+  "orca": {
     "artifactBaseUrl": "https://github.com/chriskarani/aegis/releases/download/v1.1.0",
     "checksums": {
       "darwin-amd64": "PLACEHOLDER_DARWIN_AMD64_SHA256",

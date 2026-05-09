@@ -18,18 +18,18 @@ pub fn command(cwd: std.fs.Dir, argv: []const []const u8, stdout: anytype, stder
     };
 
     cwd.makePath(".aegis") catch |err| {
-        try stderr.print("aegis init: failed to create .aegis: {s}\n", .{@errorName(err)});
+        try stderr.print("orca init: failed to create .aegis: {s}\n", .{@errorName(err)});
         return exit_codes.general;
     };
 
     const flags: std.fs.File.CreateFlags = if (options.force) .{} else .{ .exclusive = true };
     const file = cwd.createFile(".aegis/policy.yaml", flags) catch |err| switch (err) {
         error.PathAlreadyExists => {
-            try stderr.writeAll("aegis init: .aegis/policy.yaml already exists; use --force to overwrite.\n");
+            try stderr.writeAll("orca init: .aegis/policy.yaml already exists; use --force to overwrite.\n");
             return exit_codes.general;
         },
         else => {
-            try stderr.print("aegis init: failed to write .aegis/policy.yaml: {s}\n", .{@errorName(err)});
+            try stderr.print("orca init: failed to write .aegis/policy.yaml: {s}\n", .{@errorName(err)});
             return exit_codes.general;
         },
     };
@@ -42,9 +42,9 @@ pub fn command(cwd: std.fs.Dir, argv: []const []const u8, stdout: anytype, stder
     if (info.experimental) try stdout.print("Warning: {s}\n", .{info.warning});
     try stdout.writeAll(
         \\Next steps:
-        \\  aegis policy check .aegis/policy.yaml
+        \\  orca policy check .aegis/policy.yaml
         \\  aegis doctor
-        \\  aegis run -- <command>
+        \\  orca run -- <command>
         \\
     );
     return exit_codes.success;
@@ -65,28 +65,28 @@ fn parseOptions(argv: []const []const u8, stdout: anytype, stderr: anytype) !Ini
         } else if (std.mem.eql(u8, arg, "--preset")) {
             index += 1;
             if (index >= argv.len) {
-                try stderr.writeAll("aegis init: --preset requires a preset name.\n");
+                try stderr.writeAll("orca init: --preset requires a preset name.\n");
                 return error.Usage;
             }
             const preset = aegis_policy.presets.AgentPreset.parse(argv[index]) orelse {
-                try stderr.print("aegis init: unsupported preset '{s}'. Run 'aegis help init' for supported presets.\n", .{argv[index]});
+                try stderr.print("orca init: unsupported preset '{s}'. Run 'orca help init' for supported presets.\n", .{argv[index]});
                 return error.Usage;
             };
             options.preset = preset;
         } else if (std.mem.eql(u8, arg, "--mode")) {
             index += 1;
             if (index >= argv.len) {
-                try stderr.writeAll("aegis init: --mode requires strict, ask, observe, ci, or trusted.\n");
+                try stderr.writeAll("orca init: --mode requires strict, ask, observe, ci, or trusted.\n");
                 return error.Usage;
             }
             const mode = argv[index];
             if (!isValidMode(mode)) {
-                try stderr.print("aegis init: unsupported mode '{s}'. Expected strict, ask, observe, ci, or trusted.\n", .{mode});
+                try stderr.print("orca init: unsupported mode '{s}'. Expected strict, ask, observe, ci, or trusted.\n", .{mode});
                 return error.Usage;
             }
             options.mode = mode;
         } else {
-            try stderr.print("aegis init: unknown option '{s}'.\n", .{arg});
+            try stderr.print("orca init: unknown option '{s}'.\n", .{arg});
             return error.Usage;
         }
     }

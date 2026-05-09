@@ -1,6 +1,6 @@
 ---
 name: Codex plugin bug
-about: Report a bug in the Aegis Codex plugin
+about: Report a bug in the Orca Codex plugin
 title: "[Codex Plugin Bug] "
 ---
 
@@ -8,7 +8,7 @@ Remove secrets, tokens, credentials, private keys, and private paths from logs a
 
 ## Environment
 
-- Aegis version:
+- Orca version:
 - Plugin version:
 - OS:
 - Codex version:
@@ -26,8 +26,8 @@ Remove secrets, tokens, credentials, private keys, and private paths from logs a
 
 ## Diagnostics
 
-- [ ] I ran `./zig-out/bin/aegis plugin doctor codex`
-- [ ] I ran `./zig-out/bin/aegis redteam --ci`
+- [ ] I ran `./zig-out/bin/orca plugin doctor codex`
+- [ ] I ran `./zig-out/bin/orca redteam --ci`
 - [ ] I reproduced the issue with fake or synthetic hook payloads
 - [ ] I removed secrets from logs and policy files before pasting them here
 
