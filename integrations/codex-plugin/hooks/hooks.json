@@ -1,0 +1,80 @@
+{
+  "SessionStart": [
+    {
+      "matcher": ".*",
+      "hooks": [
+        {
+          "type": "command",
+          "command": "aegis hook codex SessionStart",
+          "timeout": 10,
+          "statusMessage": "Checking Aegis plugin status"
+        }
+      ]
+    }
+  ],
+  "UserPromptSubmit": [
+    {
+      "matcher": ".*",
+      "hooks": [
+        {
+          "type": "command",
+          "command": "aegis hook codex UserPromptSubmit",
+          "timeout": 10,
+          "statusMessage": "Checking prompt with Aegis"
+        }
+      ]
+    }
+  ],
+  "PreToolUse": [
+    {
+      "matcher": ".*",
+      "hooks": [
+        {
+          "type": "command",
+          "command": "aegis hook codex PreToolUse",
+          "timeout": 15,
+          "statusMessage": "Checking tool use with Aegis"
+        }
+      ]
+    }
+  ],
+  "PermissionRequest": [
+    {
+      "matcher": ".*",
+      "hooks": [
+        {
+          "type": "command",
+          "command": "aegis hook codex PermissionRequest",
+          "timeout": 15,
+          "statusMessage": "Checking permission request with Aegis"
+        }
+      ]
+    }
+  ],
+  "PostToolUse": [
+    {
+      "matcher": ".*",
+      "hooks": [
+        {
+          "type": "command",
+          "command": "aegis hook codex PostToolUse",
+          "timeout": 10,
+          "statusMessage": "Acknowledging tool use to Aegis"
+        }
+      ]
+    }
+  ],
+  "Stop": [
+    {
+      "matcher": ".*",
+      "hooks": [
+        {
+          "type": "command",
+          "command": "aegis hook codex Stop",
+          "timeout": 10,
+          "statusMessage": "Notifying Aegis of session stop"
+        }
+      ]
+    }
+  ]
+}

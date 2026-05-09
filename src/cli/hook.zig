@@ -403,8 +403,20 @@ fn evaluateHook(
             const target = extractString(payload, "target") orelse extractString(payload, "resource") orelse "";
 
             // Evaluate based on permission kind
+            // Destructive file operations (delete, create, append, move, rename, remove)
+            // are classified as file_write so they are evaluated under write policy.
             const explain_kind: policy.explain.ExplainKind = if (std.mem.indexOf(u8, permission_kind, "file") != null)
-                .file_write
+                if (std.mem.indexOf(u8, permission_kind, "write") != null or
+                    std.mem.indexOf(u8, permission_kind, "edit") != null or
+                    std.mem.indexOf(u8, permission_kind, "delete") != null or
+                    std.mem.indexOf(u8, permission_kind, "create") != null or
+                    std.mem.indexOf(u8, permission_kind, "append") != null or
+                    std.mem.indexOf(u8, permission_kind, "move") != null or
+                    std.mem.indexOf(u8, permission_kind, "rename") != null or
+                    std.mem.indexOf(u8, permission_kind, "remove") != null)
+                    .file_write
+                else
+                    .file_read
             else if (std.mem.indexOf(u8, permission_kind, "command") != null or std.mem.indexOf(u8, permission_kind, "shell") != null)
                 .command
             else if (std.mem.indexOf(u8, permission_kind, "network") != null)
@@ -758,7 +770,7 @@ test "hook ci mode turns ask into block" {
     defer result.deinit(allocator);
 
     // In CI mode, unknown commands that would ask should become block
-    try std.testing.expect(result.decision == .block or result.decision == .allow);
+    try std.testing.expectEqual(PluginDecision.block, result.decision);
 }
 
 test "hook stdout does not include human logs" {
