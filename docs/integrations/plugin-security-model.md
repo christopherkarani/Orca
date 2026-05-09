@@ -1,6 +1,6 @@
 # Plugin Security Model
 
-> Scope: P01–P06 — Trust boundaries, sandbox expectations, and permission model for Aegis plugins
+> Scope: P01–P06 — Trust boundaries, sandbox expectations, and permission model for Orca plugins
 > Version: 1.1.0
 
 ## Core Statement
@@ -8,24 +8,24 @@
 The strongest local protection remains:
 
 ```bash
-aegis run -- <agent-command>
+orca run -- <agent-command>
 ```
 
-Aegis plugins are integration layers. They are not replacements for the Aegis runtime.
+Orca plugins are integration layers. They are not replacements for the Orca runtime.
 
 The plugin system adds:
 - host-native skills
 - slash commands
 - lifecycle hooks
-- Aegis CLI plugin commands
+- Orca CLI plugin commands
 - policy explanations
 - red-team shortcuts
 - replay shortcuts
 
 ## Principles
 
-1. **Aegis CLI is the source of truth.** Plugins call Aegis; they do not reimplement policy logic.
-2. **Strongest protection is `aegis run`.** Plugin hooks are additive, not a replacement for supervised execution.
+1. **Orca CLI is the source of truth.** Plugins call Orca; they do not reimplement policy logic.
+2. **Strongest protection is `orca run`.** Plugin hooks are additive, not a replacement for supervised execution.
 3. **Default deny.** If a plugin cannot verify safety, it must fail closed.
 4. **No silent mutation.** Host configs, policies, and credentials are never changed without explicit user approval.
 5. **No telemetry by default.** The plugin surface does not phone home.
@@ -37,21 +37,21 @@ The plugin system adds:
 │  Host IDE (Codex, Claude Code, etc.)    │  ← Untrusted by default
 │  Runs arbitrary agent code                │
 ├─────────────────────────────────────────┤
-│  Aegis Plugin (integration package)     │  ← Semi-trusted; read-only
-│  Calls Aegis CLI for decisions            │
+│  Orca Plugin (integration package)     │  ← Semi-trusted; read-only
+│  Calls Orca CLI for decisions            │
 ├─────────────────────────────────────────┤
-│  Aegis CLI (`aegis plugin *`)           │  ← Trusted local surface
+│  Orca CLI (`orca plugin *`)           │  ← Trusted local surface
 │  Owns policy, audit, replay               │
 ├─────────────────────────────────────────┤
-│  Aegis Core (policy engine, audit)      │  ← Trusted
+│  Orca Core (policy engine, audit)      │  ← Trusted
 │  Local-only, no network dependency        │
 └─────────────────────────────────────────┘
 ```
 
 | Component | Trust Level | Notes |
 |-----------|-------------|-------|
-| Aegis core CLI | trusted | source of truth |
-| Aegis plugin commands | trusted if built from Aegis | stable integration layer |
+| Orca core CLI | trusted | source of truth |
+| Orca plugin commands | trusted if built from Orca | stable integration layer |
 | Host plugin manifest | trusted if intentionally installed | should be reviewed |
 | Hook input | untrusted | comes from agent/tool context |
 | Prompt content | untrusted | may contain secrets or injection |
@@ -63,15 +63,15 @@ The plugin system adds:
 
 | Level | What It Can Do | Example |
 |-------|----------------|---------|
-| **Read-only** | Query status, read policy, check manifests | `aegis plugin doctor`, `aegis plugin manifest` |
-| **Preview** | Simulate changes without writing | `aegis plugin install --dry-run` |
+| **Read-only** | Query status, read policy, check manifests | `orca plugin doctor`, `orca plugin manifest` |
+| **Preview** | Simulate changes without writing | `orca plugin install --dry-run` |
 | **Mutate** | Modify host config or policy | Requires `--yes` + explicit user confirmation |
 | **Actuate** | Trigger real-world effects | **Not exposed by default** |
 
 ## Plugin Default Behavior
 
-- `aegis plugin install` defaults to `--dry-run`.
-- `aegis plugin doctor` does not print secrets or raw env values.
+- `orca plugin install` defaults to `--dry-run`.
+- `orca plugin doctor` does not print secrets or raw env values.
 - Drone-related operations are default-deny.
 
 ## Credential Handling
@@ -82,7 +82,7 @@ The plugin system adds:
 
 ## Host Config Mutations
 
-- Aegis plugin commands must not silently overwrite Codex, Claude Code, or other host configs.
+- Orca plugin commands must not silently overwrite Codex, Claude Code, or other host configs.
 - Any config change must be previewed with `--dry-run` first.
 - Any actual change requires `--yes`.
 
@@ -95,13 +95,13 @@ The plugin surface does not claim to sandbox the host IDE. It provides:
 - Safe installation previews
 
 Actual sandboxing is provided by:
-- `aegis run -- <command>` for child process supervision
+- `orca run -- <command>` for child process supervision
 - Host IDE's own extension sandbox (if any)
 - OS-level protections
 
 ## Security Invariants
 
-1. Plugins call Aegis; they do not reimplement Aegis.
+1. Plugins call Orca; they do not reimplement Orca.
 2. Raw secrets are never persisted.
 3. Hook input is bounded.
 4. Hook stdout is host-valid.
@@ -118,7 +118,7 @@ Actual sandboxing is provided by:
 - **No drone-specific plugin features included.** Drone work is a separate workstream.
 - **No telemetry by default.** The plugin surface does not phone home.
 - **No SaaS requirement.** No hosted dashboard, account, or monetization layer is required.
-- **No protection for agents not launched through Aegis** unless the host hook catches the action.
+- **No protection for agents not launched through Orca** unless the host hook catches the action.
 - **No protection against root/admin/kernel compromise.**
 - **No protection against a user approving unsafe actions.**
 

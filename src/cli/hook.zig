@@ -24,17 +24,17 @@ pub fn command(argv: []const []const u8, stdout: anytype, stderr: anytype) !u8 {
     }
 
     const host = Host.parse(argv[0]) orelse {
-        try stderr.print("aegis hook: unknown host '{s}'. Expected codex or claude.\n", .{argv[0]});
+        try stderr.print("orca hook: unknown host '{s}'. Expected codex or claude.\n", .{argv[0]});
         return exit_codes.usage;
     };
 
     if (argv.len < 2) {
-        try stderr.writeAll("aegis hook: expected event name.\n");
+        try stderr.writeAll("orca hook: expected event name.\n");
         return exit_codes.usage;
     }
 
     const event = Event.parse(argv[1]) orelse {
-        try stderr.print("aegis hook: unknown event '{s}'.\n", .{argv[1]});
+        try stderr.print("orca hook: unknown event '{s}'.\n", .{argv[1]});
         return exit_codes.usage;
     };
 
@@ -84,18 +84,18 @@ fn hookCommand(host: Host, event: Event, argv: []const []const u8, stdout: anyty
         if (std.mem.eql(u8, arg, "--help") or std.mem.eql(u8, arg, "-h")) {
             try stdout.writeAll(
                 \\Usage:
-                \\  aegis hook codex SessionStart
-                \\  aegis hook codex UserPromptSubmit
-                \\  aegis hook codex PreToolUse
-                \\  aegis hook codex PermissionRequest
-                \\  aegis hook codex PostToolUse
-                \\  aegis hook codex Stop
-                \\  aegis hook claude SessionStart
-                \\  aegis hook claude UserPromptSubmit
-                \\  aegis hook claude PreToolUse
-                \\  aegis hook claude PermissionRequest
-                \\  aegis hook claude PostToolUse
-                \\  aegis hook claude SessionEnd
+                \\  orca hook codex SessionStart
+                \\  orca hook codex UserPromptSubmit
+                \\  orca hook codex PreToolUse
+                \\  orca hook codex PermissionRequest
+                \\  orca hook codex PostToolUse
+                \\  orca hook codex Stop
+                \\  orca hook claude SessionStart
+                \\  orca hook claude UserPromptSubmit
+                \\  orca hook claude PreToolUse
+                \\  orca hook claude PermissionRequest
+                \\  orca hook claude PostToolUse
+                \\  orca hook claude SessionEnd
                 \\
                 \\Options:
                 \\  --ci     CI mode: ask decisions become block.
@@ -107,7 +107,7 @@ fn hookCommand(host: Host, event: Event, argv: []const []const u8, stdout: anyty
             ci_mode = true;
             continue;
         }
-        try stderr.print("aegis hook: unknown option '{s}'.\n", .{arg});
+        try stderr.print("orca hook: unknown option '{s}'.\n", .{arg});
         return exit_codes.usage;
     }
 
@@ -120,13 +120,13 @@ fn hookCommand(host: Host, event: Event, argv: []const []const u8, stdout: anyty
     defer allocator.free(payload_text);
 
     if (payload_text.len == 0) {
-        try stderr.writeAll("aegis hook: no JSON payload received on stdin.\n");
+        try stderr.writeAll("orca hook: no JSON payload received on stdin.\n");
         return exit_codes.usage;
     }
 
     // Parse JSON payload
     var parsed = std.json.parseFromSlice(std.json.Value, allocator, payload_text, .{}) catch |err| {
-        try stderr.print("aegis hook: invalid JSON ({s}).\n", .{@errorName(err)});
+        try stderr.print("orca hook: invalid JSON ({s}).\n", .{@errorName(err)});
         return exit_codes.general;
     };
     defer parsed.deinit();
@@ -134,21 +134,21 @@ fn hookCommand(host: Host, event: Event, argv: []const []const u8, stdout: anyty
     // Validate version
     const version_value = extractInteger(parsed.value, "version") orelse 0;
     if (version_value != 1) {
-        try stderr.print("aegis hook: unsupported schema version {d}. Expected 1.\n", .{version_value});
+        try stderr.print("orca hook: unsupported schema version {d}. Expected 1.\n", .{version_value});
         return exit_codes.general;
     }
 
     // Validate host matches
     const request_host = extractString(parsed.value, "host") orelse "";
     if (!std.mem.eql(u8, request_host, @tagName(host))) {
-        try stderr.print("aegis hook: host mismatch. Expected '{s}', got '{s}'.\n", .{ @tagName(host), request_host });
+        try stderr.print("orca hook: host mismatch. Expected '{s}', got '{s}'.\n", .{ @tagName(host), request_host });
         return exit_codes.general;
     }
 
     // Validate event matches
     const request_event = extractString(parsed.value, "event") orelse "";
     if (!std.mem.eql(u8, request_event, @tagName(event))) {
-        try stderr.print("aegis hook: event mismatch. Expected '{s}', got '{s}'.\n", .{ @tagName(event), request_event });
+        try stderr.print("orca hook: event mismatch. Expected '{s}', got '{s}'.\n", .{ @tagName(event), request_event });
         return exit_codes.general;
     }
 
@@ -156,7 +156,7 @@ fn hookCommand(host: Host, event: Event, argv: []const []const u8, stdout: anyty
     const root = core.supervisor.resolveWorkspaceRoot(allocator, null, ".") catch try allocator.dupe(u8, ".");
     defer allocator.free(root);
     var loaded = core_api.discoverPolicy(allocator, null, root) catch |err| {
-        try stderr.print("aegis hook: failed to load policy: {s}\n", .{@errorName(err)});
+        try stderr.print("orca hook: failed to load policy: {s}\n", .{@errorName(err)});
         return exit_codes.general;
     };
     defer loaded.deinit();
@@ -168,7 +168,7 @@ fn hookCommand(host: Host, event: Event, argv: []const []const u8, stdout: anyty
 
     // Evaluate via host adapter
     var result = evaluateHook(allocator, &loaded.policy, host, event, hook_payload, ci_mode) catch |err| {
-        try stderr.print("aegis hook: evaluation failed: {s}\n", .{@errorName(err)});
+        try stderr.print("orca hook: evaluation failed: {s}\n", .{@errorName(err)});
         return exit_codes.general;
     };
     defer result.deinit(allocator);
@@ -275,17 +275,17 @@ fn evaluateHook(
     var limitations: std.ArrayList([]const u8) = .empty;
 
     // Add host limitation note
-    try limitations.append(allocator, try allocator.dupe(u8, "Hook enforcement is additive; does not replace aegis run supervision."));
+    try limitations.append(allocator, try allocator.dupe(u8, "Hook enforcement is additive; does not replace orca run supervision."));
 
     switch (event) {
         .SessionStart => {
-            return try makeInformationalResponse(allocator, .allow, .low, "session", "session started", "Session start acknowledged by Aegis.", &redactions, &limitations);
+            return try makeInformationalResponse(allocator, .allow, .low, "session", "session started", "Session start acknowledged by Orca.", &redactions, &limitations);
         },
         .Stop, .SessionEnd => {
-            return try makeInformationalResponse(allocator, .allow, .low, "session", "session ended", "Session end acknowledged by Aegis.", &redactions, &limitations);
+            return try makeInformationalResponse(allocator, .allow, .low, "session", "session ended", "Session end acknowledged by Orca.", &redactions, &limitations);
         },
         .PostToolUse => {
-            return try makeInformationalResponse(allocator, .allow, .low, "tool", "tool use completed", "Post-tool-use acknowledged by Aegis.", &redactions, &limitations);
+            return try makeInformationalResponse(allocator, .allow, .low, "tool", "tool use completed", "Post-tool-use acknowledged by Orca.", &redactions, &limitations);
         },
         .UserPromptSubmit => {
             const prompt_text = extractString(payload, "prompt") orelse extractString(payload, "text") orelse "";
@@ -468,12 +468,12 @@ fn makeInformationalResponse(
 
 fn buildMessage(allocator: std.mem.Allocator, decision: PluginDecision, category: []const u8) ![]const u8 {
     return switch (decision) {
-        .allow => try std.fmt.allocPrint(allocator, "{s} allowed by Aegis policy.", .{category}),
-        .block => try std.fmt.allocPrint(allocator, "{s} blocked by Aegis policy.", .{category}),
-        .warn => try std.fmt.allocPrint(allocator, "{s} flagged by Aegis policy. Review before proceeding.", .{category}),
-        .ask => try std.fmt.allocPrint(allocator, "{s} requires user approval per Aegis policy.", .{category}),
+        .allow => try std.fmt.allocPrint(allocator, "{s} allowed by Orca policy.", .{category}),
+        .block => try std.fmt.allocPrint(allocator, "{s} blocked by Orca policy.", .{category}),
+        .warn => try std.fmt.allocPrint(allocator, "{s} flagged by Orca policy. Review before proceeding.", .{category}),
+        .ask => try std.fmt.allocPrint(allocator, "{s} requires user approval per Orca policy.", .{category}),
         .context_only => try std.fmt.allocPrint(allocator, "{s} allowed for context only. No side effects permitted.", .{category}),
-        .err => try std.fmt.allocPrint(allocator, "Aegis could not evaluate {s}. Fail closed.", .{category}),
+        .err => try std.fmt.allocPrint(allocator, "Orca could not evaluate {s}. Fail closed.", .{category}),
     };
 }
 
@@ -739,7 +739,7 @@ test "hook response JSON format is valid" {
         .category = "command",
         .reason = "matched allow rule",
         .rule = "commands.allow[0]",
-        .message = "Allowed by Aegis policy.",
+        .message = "Allowed by Orca policy.",
         .redactions = &.{},
         .host_limitations = &.{},
     };

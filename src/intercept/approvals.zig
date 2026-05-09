@@ -58,7 +58,7 @@ pub const PromptRequest = struct {
 
 pub fn prompt(reader: *std.Io.Reader, writer: anytype, request: PromptRequest) !ApprovalChoice {
     try writer.writeAll(
-        \\Aegis wants your approval
+        \\Orca wants your approval
         \\
         \\Command:
         \\

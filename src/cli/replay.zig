@@ -24,7 +24,7 @@ pub fn command(argv: []const []const u8, stdout: anytype, stderr: anytype) !u8 {
     const allocator = gpa_state.allocator();
 
     const workspace_root = core.supervisor.resolveWorkspaceRoot(allocator, null, ".") catch |err| {
-        try stderr.print("aegis replay: failed to resolve workspace: {s}\n", .{@errorName(err)});
+        try stderr.print("orca replay: failed to resolve workspace: {s}\n", .{@errorName(err)});
         return exit_codes.general;
     };
     defer allocator.free(workspace_root);
@@ -35,7 +35,7 @@ pub fn command(argv: []const []const u8, stdout: anytype, stderr: anytype) !u8 {
         .verify = options.verify,
     }) catch |err| switch (err) {
         error.FileNotFound => {
-            try stderr.writeAll("aegis replay: session not found.\n");
+            try stderr.writeAll("orca replay: session not found.\n");
             return exit_codes.general;
         },
         error.HashVerificationFailed => {
@@ -44,14 +44,14 @@ pub fn command(argv: []const []const u8, stdout: anytype, stderr: anytype) !u8 {
             const verify_result = if (session_dir_path) |path| core_api.verifyReplay(allocator, path) catch null else null;
             if (verify_result) |result| {
                 defer result.deinit(allocator);
-                if (result.reason) |reason| try stderr.print("aegis replay: hash verification failed: {s}\n", .{reason}) else try stderr.writeAll("aegis replay: hash verification failed.\n");
+                if (result.reason) |reason| try stderr.print("orca replay: hash verification failed: {s}\n", .{reason}) else try stderr.writeAll("orca replay: hash verification failed.\n");
             } else {
-                try stderr.writeAll("aegis replay: hash verification failed.\n");
+                try stderr.writeAll("orca replay: hash verification failed.\n");
             }
             return exit_codes.general;
         },
         else => {
-            try stderr.print("aegis replay: failed: {s}\n", .{@errorName(err)});
+            try stderr.print("orca replay: failed: {s}\n", .{@errorName(err)});
             return exit_codes.general;
         },
     };
@@ -76,7 +76,7 @@ fn parseOptions(argv: []const []const u8, stdout: anytype, stderr: anytype) !Rep
         } else if (std.mem.eql(u8, arg, "--session")) {
             index += 1;
             if (index >= argv.len) {
-                try stderr.writeAll("aegis replay: --session requires a session id or 'last'.\n");
+                try stderr.writeAll("orca replay: --session requires a session id or 'last'.\n");
                 return error.Usage;
             }
             options.session = argv[index];
@@ -87,12 +87,12 @@ fn parseOptions(argv: []const []const u8, stdout: anytype, stderr: anytype) !Rep
         } else if (std.mem.eql(u8, arg, "--only")) {
             index += 1;
             if (index >= argv.len or !std.mem.eql(u8, argv[index], "denied")) {
-                try stderr.writeAll("aegis replay: --only currently supports only 'denied'.\n");
+                try stderr.writeAll("orca replay: --only currently supports only 'denied'.\n");
                 return error.Usage;
             }
             options.only_denied = true;
         } else {
-            try stderr.print("aegis replay: unknown option '{s}'.\n", .{arg});
+            try stderr.print("orca replay: unknown option '{s}'.\n", .{arg});
             return error.Usage;
         }
     }

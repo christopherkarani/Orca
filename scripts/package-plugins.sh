@@ -1,12 +1,12 @@
 #!/usr/bin/env sh
 set -eu
 
-VERSION="${AEGIS_PLUGIN_VERSION:-${AEGIS_VERSION:-1.1.0}}"
-DIST_DIR="${AEGIS_DIST_DIR:-dist/plugins}"
+VERSION="${ORCA_PLUGIN_VERSION:-${ORCA_VERSION:-1.1.0}}"
+DIST_DIR="${ORCA_DIST_DIR:-dist/plugins}"
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 
-echo "Packaging Aegis plugins v${VERSION}..."
+echo "Packaging Orca plugins v${VERSION}..."
 
 rm -rf "${DIST_DIR}"
 mkdir -p "${DIST_DIR}"
@@ -14,7 +14,7 @@ mkdir -p "${DIST_DIR}"
 # Package Codex plugin
 echo "Packaging Codex plugin..."
 CODEX_PLUGIN_DIR="${REPO_ROOT}/integrations/codex-plugin"
-CODEX_ZIP="${DIST_DIR}/aegis-codex-plugin-v${VERSION}.zip"
+CODEX_ZIP="${DIST_DIR}/orca-codex-plugin-v${VERSION}.zip"
 
 if [ -d "${CODEX_PLUGIN_DIR}" ]; then
   CODEX_ZIP_ABS="${REPO_ROOT}/${CODEX_ZIP}"
@@ -38,7 +38,7 @@ fi
 # Package Claude Code plugin
 echo "Packaging Claude Code plugin..."
 CLAUDE_PLUGIN_DIR="${REPO_ROOT}/integrations/claude-code-plugin"
-CLAUDE_ZIP="${DIST_DIR}/aegis-claude-code-plugin-v${VERSION}.zip"
+CLAUDE_ZIP="${DIST_DIR}/orca-claude-code-plugin-v${VERSION}.zip"
 
 if [ -d "${CLAUDE_PLUGIN_DIR}" ]; then
   CLAUDE_ZIP_ABS="${REPO_ROOT}/${CLAUDE_ZIP}"
@@ -62,7 +62,7 @@ fi
 # Package Claude marketplace catalog
 echo "Packaging Claude marketplace catalog..."
 MARKETPLACE_DIR="${REPO_ROOT}/integrations/claude-marketplace"
-MARKETPLACE_ZIP="${DIST_DIR}/aegis-claude-marketplace-v${VERSION}.zip"
+MARKETPLACE_ZIP="${DIST_DIR}/orca-claude-marketplace-v${VERSION}.zip"
 
 if [ -d "${MARKETPLACE_DIR}" ]; then
   MARKETPLACE_ZIP_ABS="${REPO_ROOT}/${MARKETPLACE_ZIP}"
@@ -82,7 +82,7 @@ fi
 
 # Generate checksums
 echo "Generating checksums..."
-CHECKSUMS_FILE="${DIST_DIR}/aegis-plugin-checksums.txt"
+CHECKSUMS_FILE="${DIST_DIR}/orca-plugin-checksums.txt"
 
 tmp="${CHECKSUMS_FILE}.tmp"
 : > "$tmp"

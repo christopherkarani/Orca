@@ -73,7 +73,7 @@ pub fn command(argv: []const []const u8, stdout: anytype, stderr: anytype) !u8 {
             _ = try help.writeCommand(stdout, "doctor");
             return exit_codes.success;
         }
-        try stderr.print("aegis doctor: unknown option '{s}'.\n", .{arg});
+        try stderr.print("orca doctor: unknown option '{s}'.\n", .{arg});
         return exit_codes.usage;
     }
 
@@ -90,7 +90,7 @@ pub fn command(argv: []const []const u8, stdout: anytype, stderr: anytype) !u8 {
 }
 
 fn writeReport(stdout: anytype, os: core.platform.Os, backend_report: sandbox.backend.ReportSet, context: IntegrationContext) !void {
-    try stdout.writeAll("Aegis Doctor\n\n");
+    try stdout.writeAll("Orca Doctor\n\n");
     try stdout.print("OS: {s}\n", .{os.toString()});
     try stdout.print("Version: {s}\n\n", .{cli.version});
     try writeIntegrationReport(stdout, context);
@@ -123,7 +123,7 @@ fn writeReport(stdout: anytype, os: core.platform.Os, backend_report: sandbox.ba
         try writeBackendLine(stdout, backend_report, .env_filtering);
         try writeBackendLine(stdout, backend_report, .path_staging);
         if (os == .macos) {
-            try stdout.writeAll("  transparent file enforcement: limited (no transparent macOS filesystem monitor is installed; Aegis-mediated staging and protected path matching are active)\n");
+            try stdout.writeAll("  transparent file enforcement: limited (no transparent macOS filesystem monitor is installed; Orca-mediated staging and protected path matching are active)\n");
         }
         try writeBackendLine(stdout, backend_report, .shell_wrapping);
         try writeBackendLine(stdout, backend_report, .path_shims);
@@ -189,7 +189,7 @@ fn writeWindowsBackendReport(stdout: anytype, backend_report: sandbox.backend.Re
     try stdout.print("  PowerShell wrapper: partial ({s})\n", .{shell.note});
     const cleanup = backend_report.get(.process_supervision);
     try stdout.print("  process cleanup: {s} ({s})\n", .{ cleanup.level.toString(), cleanup.note });
-    try stdout.writeAll("  transparent file enforcement: limited (no transparent Windows filesystem enforcement is installed; Aegis-mediated staging and protected path matching are active)\n");
+    try stdout.writeAll("  transparent file enforcement: limited (no transparent Windows filesystem enforcement is installed; Orca-mediated staging and protected path matching are active)\n");
     try writeBackendLine(stdout, backend_report, .network_enforce);
     try writeBackendLine(stdout, backend_report, .strong_sandbox);
     try writeBackendLine(stdout, backend_report, .mcp_stdio_proxy);
@@ -205,15 +205,15 @@ fn writeBackendLine(stdout: anytype, backend_report: sandbox.backend.ReportSet, 
 fn writeRecommendations(stdout: anytype, context: IntegrationContext) !void {
     try stdout.writeAll("\nRecommended next step:\n");
     if (!context.policy_present) {
-        try stdout.writeAll("  Run `aegis init --preset generic-agent` and review .aegis/policy.yaml.\n");
+        try stdout.writeAll("  Run `orca init --preset generic-agent` and review .aegis/policy.yaml.\n");
     } else if (!context.policy_valid) {
-        try stdout.writeAll("  Fix `.aegis/policy.yaml`, then run `aegis policy check .aegis/policy.yaml`.\n");
+        try stdout.writeAll("  Fix `.aegis/policy.yaml`, then run `orca policy check .aegis/policy.yaml`.\n");
     } else if (context.mcp_manifest_invalid_count > 0) {
-        try stdout.writeAll("  Fix invalid MCP manifests with `aegis mcp manifest check <path>`.\n");
+        try stdout.writeAll("  Fix invalid MCP manifests with `orca mcp manifest check <path>`.\n");
     } else if (!context.redteam_fixtures_present) {
         try stdout.writeAll("  Add or restore local red-team fixtures before relying on CI regression checks.\n");
     } else {
-        try stdout.writeAll("  Run `aegis run -- <command>` or `aegis redteam --ci` for a local smoke test.\n");
+        try stdout.writeAll("  Run `orca run -- <command>` or `orca redteam --ci` for a local smoke test.\n");
     }
 }
 
@@ -365,7 +365,7 @@ test "doctor prints OS and planned capabilities" {
     const code = try command(&.{}, stdout_stream.writer(), stderr_stream.writer());
 
     try std.testing.expectEqual(exit_codes.success, code);
-    try std.testing.expect(std.mem.indexOf(u8, stdout_stream.getWritten(), "Aegis Doctor") != null);
+    try std.testing.expect(std.mem.indexOf(u8, stdout_stream.getWritten(), "Orca Doctor") != null);
     try std.testing.expect(std.mem.indexOf(u8, stdout_stream.getWritten(), "Integration checks:") != null);
     try std.testing.expect(std.mem.indexOf(u8, stdout_stream.getWritten(), "OS:") != null);
     try std.testing.expect(std.mem.indexOf(u8, stdout_stream.getWritten(), "process supervision:") != null);

@@ -40,11 +40,11 @@ pub fn runWithCwd(cwd: std.fs.Dir, argv: []const []const u8, stdout: anytype, st
             return exit_codes.success;
         }
         if (argv.len > 2) {
-            try stderr.writeAll("aegis help: expected at most one command.\n");
+            try stderr.writeAll("orca help: expected at most one command.\n");
             return exit_codes.usage;
         }
         if (!try help.writeCommand(stdout, argv[1])) {
-            try stderr.print("aegis help: unknown command '{s}'.\n", .{argv[1]});
+            try stderr.print("orca help: unknown command '{s}'.\n", .{argv[1]});
             return exit_codes.usage;
         }
         return exit_codes.success;
@@ -52,7 +52,7 @@ pub fn runWithCwd(cwd: std.fs.Dir, argv: []const []const u8, stdout: anytype, st
 
     if (std.mem.eql(u8, command, "version") or std.mem.eql(u8, command, "--version")) {
         if (argv.len > 2) {
-            try stderr.writeAll("aegis version: expected at most one argument. Run 'aegis help version' for usage.\n");
+            try stderr.writeAll("orca version: expected at most one argument. Run 'orca help version' for usage.\n");
             return exit_codes.usage;
         }
         if (argv.len == 2) {
@@ -64,7 +64,7 @@ pub fn runWithCwd(cwd: std.fs.Dir, argv: []const []const u8, stdout: anytype, st
                 try version_command.writeJson(stdout, version_command.current());
                 return exit_codes.success;
             }
-            try stderr.writeAll("aegis version: unsupported argument. Run 'aegis help version' for usage.\n");
+            try stderr.writeAll("orca version: unsupported argument. Run 'orca help version' for usage.\n");
             return exit_codes.usage;
         }
         try version_command.writePlain(stdout, version_command.current());
@@ -88,7 +88,7 @@ pub fn runWithCwd(cwd: std.fs.Dir, argv: []const []const u8, stdout: anytype, st
     if (std.mem.eql(u8, command, "hook")) return hook.command(argv[1..], stdout, stderr);
     try stderr.writeAll("aegis: unknown command '");
     try stderr.writeAll(command);
-    try stderr.writeAll("'. Run 'aegis help' for usage.\n");
+    try stderr.writeAll(". Run 'orca help' for usage.\n");
     return exit_codes.usage;
 }
 
@@ -101,7 +101,7 @@ test "help flag prints command summary" {
     const code = try run(&.{"--help"}, stdout_stream.writer(), stderr_stream.writer());
 
     try std.testing.expectEqual(exit_codes.success, code);
-    try std.testing.expect(std.mem.indexOf(u8, stdout_stream.getWritten(), "Aegis") != null);
+    try std.testing.expect(std.mem.indexOf(u8, stdout_stream.getWritten(), "Orca") != null);
     try std.testing.expect(std.mem.indexOf(u8, stdout_stream.getWritten(), "Commands:") != null);
     try std.testing.expectEqualStrings("", stderr_stream.getWritten());
 }
@@ -115,7 +115,7 @@ test "command-specific help works through help command and command flag" {
     const code = try run(&.{ "help", "run" }, stdout_stream.writer(), stderr_stream.writer());
 
     try std.testing.expectEqual(exit_codes.success, code);
-    try std.testing.expect(std.mem.indexOf(u8, stdout_stream.getWritten(), "aegis run") != null);
+    try std.testing.expect(std.mem.indexOf(u8, stdout_stream.getWritten(), "orca run") != null);
     try std.testing.expectEqualStrings("", stderr_stream.getWritten());
 
     stdout_stream.reset();
@@ -134,7 +134,7 @@ test "version prints development version" {
     const code = try run(&.{"version"}, stdout_stream.writer(), stderr_stream.writer());
 
     try std.testing.expectEqual(exit_codes.success, code);
-    try std.testing.expect(std.mem.startsWith(u8, stdout_stream.getWritten(), "aegis "));
+    try std.testing.expect(std.mem.startsWith(u8, stdout_stream.getWritten(), "orca "));
     try std.testing.expect(std.mem.indexOf(u8, stdout_stream.getWritten(), version) != null);
     try std.testing.expectEqualStrings("", stderr_stream.getWritten());
 }
@@ -147,7 +147,7 @@ test "version supports json, help, and rejects extra arguments" {
 
     const help_code = try run(&.{ "version", "--help" }, stdout_stream.writer(), stderr_stream.writer());
     try std.testing.expectEqual(exit_codes.success, help_code);
-    try std.testing.expect(std.mem.indexOf(u8, stdout_stream.getWritten(), "aegis version") != null);
+    try std.testing.expect(std.mem.indexOf(u8, stdout_stream.getWritten(), "orca version") != null);
     try std.testing.expectEqualStrings("", stderr_stream.getWritten());
 
     stdout_stream.reset();
@@ -246,7 +246,7 @@ test "run dispatch launches child command" {
 
     const code = try run_command.commandForTest(&.{ "--", "zig", "version" }, stdout_stream.writer(), stderr_stream.writer(), .ignore);
     try std.testing.expectEqual(exit_codes.success, code);
-    try std.testing.expect(std.mem.indexOf(u8, stdout_stream.getWritten(), "Aegis session started") != null);
-    try std.testing.expect(std.mem.indexOf(u8, stdout_stream.getWritten(), "Aegis session ended: exit code 0") != null);
+    try std.testing.expect(std.mem.indexOf(u8, stdout_stream.getWritten(), "Orca session started") != null);
+    try std.testing.expect(std.mem.indexOf(u8, stdout_stream.getWritten(), "Orca session ended: exit code 0") != null);
     try std.testing.expectEqualStrings("", stderr_stream.getWritten());
 }

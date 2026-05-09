@@ -22,7 +22,7 @@ pub fn command(argv: []const []const u8, stdout: anytype, stderr: anytype) !u8 {
     if (std.mem.eql(u8, argv[0], "list")) return list(argv[1..], stdout, stderr);
     if (std.mem.eql(u8, argv[0], "trust")) return trust(argv[1..], stdout, stderr);
     if (std.mem.eql(u8, argv[0], "manifest")) return manifestCommand(argv[1..], stdout, stderr);
-    try stderr.print("aegis mcp: unknown subcommand '{s}'.\n", .{argv[0]});
+    try stderr.print("orca mcp: unknown subcommand '{s}'.\n", .{argv[0]});
     return exit_codes.usage;
 }
 
@@ -54,7 +54,7 @@ fn parseOptions(allocator: std.mem.Allocator, argv: []const []const u8, stderr: 
             index += 1;
             if (index >= argv.len) return error.Usage;
             options.server_name = argv[index];
-            try stderr.print("aegis mcp: --server presets are not implemented in Phase 11; use --command.\n", .{});
+            try stderr.print("orca mcp: --server presets are not implemented in Phase 11; use --command.\n", .{});
             return error.Unsupported;
         } else if (std.mem.eql(u8, arg, "--name")) {
             index += 1;
@@ -76,7 +76,7 @@ fn parseOptions(allocator: std.mem.Allocator, argv: []const []const u8, stderr: 
             for (argv[index + 1 ..]) |command_arg| try command_parts.append(allocator, command_arg);
             break;
         } else {
-            try stderr.print("aegis mcp: unknown option '{s}'.\n", .{arg});
+            try stderr.print("orca mcp: unknown option '{s}'.\n", .{arg});
             return error.Usage;
         }
     }
@@ -88,7 +88,7 @@ fn parseOptions(allocator: std.mem.Allocator, argv: []const []const u8, stderr: 
 
 fn inspect(argv: []const []const u8, stdout: anytype, stderr: anytype) !u8 {
     if (argv.len > 0 and (std.mem.eql(u8, argv[0], "--help") or std.mem.eql(u8, argv[0], "-h"))) {
-        try stdout.writeAll("Usage: aegis mcp inspect --command <server> [--name <server-name>] [--policy <path>]\n");
+        try stdout.writeAll("Usage: orca mcp inspect --command <server> [--name <server-name>] [--policy <path>]\n");
         return exit_codes.success;
     }
     var gpa_state: std.heap.GeneralPurposeAllocator(.{}) = .init;
@@ -101,12 +101,12 @@ fn inspect(argv: []const []const u8, stdout: anytype, stderr: anytype) !u8 {
     defer if (loaded_policy) |*loaded| loaded.deinit();
     if (options.policy_path) |path| {
         loaded_policy = core_api.loadPolicyFile(allocator, path) catch |err| {
-            try stderr.print("aegis mcp inspect: invalid policy: {s}\n", .{@errorName(err)});
+            try stderr.print("orca mcp inspect: invalid policy: {s}\n", .{@errorName(err)});
             return exit_codes.general;
         };
     }
     var server = aegis_mcp.transport.ProcessServer.spawn(allocator, options.command_argv) catch |err| {
-        try stderr.print("aegis mcp inspect: failed to start server: {s}\n", .{@errorName(err)});
+        try stderr.print("orca mcp inspect: failed to start server: {s}\n", .{@errorName(err)});
         return exit_codes.general;
     };
     defer server.deinit();
@@ -116,26 +116,26 @@ fn inspect(argv: []const []const u8, stdout: anytype, stderr: anytype) !u8 {
     const initialized = "{\"jsonrpc\":\"2.0\",\"method\":\"notifications/initialized\",\"params\":{}}";
     const list_tools = "{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"tools/list\",\"params\":{}}";
     const init_response = aegis_mcp.transport.ProcessServer.request(&server, allocator, initialize) catch |err| {
-        try stderr.print("aegis mcp inspect: initialize failed: {s}\n", .{@errorName(err)});
+        try stderr.print("orca mcp inspect: initialize failed: {s}\n", .{@errorName(err)});
         return exit_codes.general;
     };
     allocator.free(init_response);
     aegis_mcp.transport.ProcessServer.notify(&server, initialized) catch |err| {
-        try stderr.print("aegis mcp inspect: initialized notification failed: {s}\n", .{@errorName(err)});
+        try stderr.print("orca mcp inspect: initialized notification failed: {s}\n", .{@errorName(err)});
         return exit_codes.general;
     };
     const tools_response = aegis_mcp.transport.ProcessServer.request(&server, allocator, list_tools) catch |err| {
-        try stderr.print("aegis mcp inspect: tools/list failed: {s}\n", .{@errorName(err)});
+        try stderr.print("orca mcp inspect: tools/list failed: {s}\n", .{@errorName(err)});
         return exit_codes.general;
     };
     defer allocator.free(tools_response);
     var parsed = aegis_mcp.jsonrpc.parseLine(allocator, tools_response) catch |err| {
-        try stderr.print("aegis mcp inspect: invalid tools/list response: {s}\n", .{@errorName(err)});
+        try stderr.print("orca mcp inspect: invalid tools/list response: {s}\n", .{@errorName(err)});
         return exit_codes.general;
     };
     defer parsed.deinit();
     var inventory = aegis_mcp.tools.inspectToolsListResponse(allocator, options.server_name, parsed.value()) catch |err| {
-        try stderr.print("aegis mcp inspect: could not inspect tools: {s}\n", .{@errorName(err)});
+        try stderr.print("orca mcp inspect: could not inspect tools: {s}\n", .{@errorName(err)});
         return exit_codes.general;
     };
     defer inventory.deinit(allocator);
@@ -165,7 +165,7 @@ fn inspect(argv: []const []const u8, stdout: anytype, stderr: anytype) !u8 {
 
 fn proxy(argv: []const []const u8, stdout: anytype, stderr: anytype) !u8 {
     if (argv.len > 0 and (std.mem.eql(u8, argv[0], "--help") or std.mem.eql(u8, argv[0], "-h"))) {
-        try stdout.writeAll("Usage: aegis mcp proxy --command <server> [--name <server-name>] [--policy <path>] [--manifest <path>] [--mode observe|ask|strict|ci]\n");
+        try stdout.writeAll("Usage: orca mcp proxy --command <server> [--name <server-name>] [--policy <path>] [--manifest <path>] [--mode observe|ask|strict|ci]\n");
         return exit_codes.success;
     }
     var gpa_state: std.heap.GeneralPurposeAllocator(.{}) = .init;
@@ -177,7 +177,7 @@ fn proxy(argv: []const []const u8, stdout: anytype, stderr: anytype) !u8 {
     const workspace = try core.supervisor.resolveWorkspaceRoot(allocator, null, ".");
     defer allocator.free(workspace);
     var loaded = core_api.discoverPolicy(allocator, options.policy_path, workspace) catch |err| {
-        try stderr.print("aegis mcp proxy: invalid policy: {s}\n", .{@errorName(err)});
+        try stderr.print("orca mcp proxy: invalid policy: {s}\n", .{@errorName(err)});
         return exit_codes.general;
     };
     defer loaded.deinit();
@@ -188,15 +188,15 @@ fn proxy(argv: []const []const u8, stdout: anytype, stderr: anytype) !u8 {
     defer if (bound_launch) |*binding| binding.deinit(allocator);
     if (options.manifest_path) |manifest_path| {
         loaded_manifest = aegis_mcp.manifests.loadFile(allocator, manifest_path) catch |err| {
-            try stderr.print("aegis mcp proxy: invalid manifest: {s}\n", .{@errorName(err)});
+            try stderr.print("orca mcp proxy: invalid manifest: {s}\n", .{@errorName(err)});
             return exit_codes.usage;
         };
         if (!std.mem.eql(u8, loaded_manifest.?.server.name, options.server_name)) {
-            try stderr.print("aegis mcp proxy: manifest server '{s}' does not match --name '{s}'.\n", .{ loaded_manifest.?.server.name, options.server_name });
+            try stderr.print("orca mcp proxy: manifest server '{s}' does not match --name '{s}'.\n", .{ loaded_manifest.?.server.name, options.server_name });
             return exit_codes.usage;
         }
         bound_launch = bindManifestLaunch(allocator, loaded_manifest.?, options.command_argv) catch |err| {
-            try stderr.print("aegis mcp proxy: manifest does not match launched server: {s}\n", .{@errorName(err)});
+            try stderr.print("orca mcp proxy: manifest does not match launched server: {s}\n", .{@errorName(err)});
             return exit_codes.usage;
         };
     }
@@ -205,14 +205,14 @@ fn proxy(argv: []const []const u8, stdout: anytype, stderr: anytype) !u8 {
 
     const session = try makeSession(options.command_argv, workspace, mode);
     var session_writer = core_api.createAuditWriter(allocator, session) catch |err| {
-        try stderr.print("aegis mcp proxy: audit unavailable: {s}\n", .{@errorName(err)});
+        try stderr.print("orca mcp proxy: audit unavailable: {s}\n", .{@errorName(err)});
         return exit_codes.general;
     };
     defer session_writer.deinit();
     try session_writer.writeLastPointer();
 
     var server = aegis_mcp.transport.ProcessServer.spawnWithEnvMap(allocator, spawn_argv, spawn_env) catch |err| {
-        try stderr.print("aegis mcp proxy: failed to start server: {s}\n", .{@errorName(err)});
+        try stderr.print("orca mcp proxy: failed to start server: {s}\n", .{@errorName(err)});
         return exit_codes.general;
     };
     defer server.deinit();
@@ -272,11 +272,11 @@ fn initializeRequestAlloc(allocator: std.mem.Allocator) ![]u8 {
 
 fn list(argv: []const []const u8, stdout: anytype, stderr: anytype) !u8 {
     if (argv.len > 0 and (std.mem.eql(u8, argv[0], "--help") or std.mem.eql(u8, argv[0], "-h"))) {
-        try stdout.writeAll("Usage: aegis mcp list\n");
+        try stdout.writeAll("Usage: orca mcp list\n");
         return exit_codes.success;
     }
     if (argv.len != 0) {
-        try stderr.writeAll("aegis mcp list: unexpected arguments.\n");
+        try stderr.writeAll("orca mcp list: unexpected arguments.\n");
         return exit_codes.usage;
     }
     var gpa_state: std.heap.GeneralPurposeAllocator(.{}) = .init;
@@ -308,17 +308,17 @@ fn list(argv: []const []const u8, stdout: anytype, stderr: anytype) !u8 {
 
 fn trust(argv: []const []const u8, stdout: anytype, stderr: anytype) !u8 {
     if (argv.len > 0 and (std.mem.eql(u8, argv[0], "--help") or std.mem.eql(u8, argv[0], "-h"))) {
-        try stdout.writeAll("Usage: aegis mcp trust <server> --tool <tool>\n");
+        try stdout.writeAll("Usage: orca mcp trust <server> --tool <tool>\n");
         return exit_codes.success;
     }
     if (argv.len != 3 or !std.mem.eql(u8, argv[1], "--tool")) {
-        try stderr.writeAll("aegis mcp trust: expected <server> --tool <tool>.\n");
+        try stderr.writeAll("orca mcp trust: expected <server> --tool <tool>.\n");
         return exit_codes.usage;
     }
     const server = argv[0];
     const tool = argv[2];
     if (!safeSelectorPart(server) or !safeSelectorPart(tool)) {
-        try stderr.writeAll("aegis mcp trust: server and tool must be simple selector names.\n");
+        try stderr.writeAll("orca mcp trust: server and tool must be simple selector names.\n");
         return exit_codes.usage;
     }
     try stdout.print(
@@ -337,22 +337,22 @@ fn manifestCommand(argv: []const []const u8, stdout: anytype, stderr: anytype) !
     if (argv.len == 0 or std.mem.eql(u8, argv[0], "--help") or std.mem.eql(u8, argv[0], "-h")) {
         try stdout.writeAll(
             \\Usage:
-            \\  aegis mcp manifest check <manifest.yaml>
-            \\  aegis mcp manifest generate --command <server-command> [-- <args...>]
-            \\  aegis mcp manifest generate --server <name>
+            \\  orca mcp manifest check <manifest.yaml>
+            \\  orca mcp manifest generate --command <server-command> [-- <args...>]
+            \\  orca mcp manifest generate --server <name>
             \\
         );
         return if (argv.len == 0) exit_codes.usage else exit_codes.success;
     }
     if (std.mem.eql(u8, argv[0], "check")) return manifestCheck(argv[1..], stdout, stderr);
     if (std.mem.eql(u8, argv[0], "generate")) return manifestGenerate(argv[1..], stdout, stderr);
-    try stderr.print("aegis mcp manifest: unknown subcommand '{s}'.\n", .{argv[0]});
+    try stderr.print("orca mcp manifest: unknown subcommand '{s}'.\n", .{argv[0]});
     return exit_codes.usage;
 }
 
 fn manifestCheck(argv: []const []const u8, stdout: anytype, stderr: anytype) !u8 {
     if (argv.len != 1) {
-        try stderr.writeAll("aegis mcp manifest check: expected <manifest.yaml>.\n");
+        try stderr.writeAll("orca mcp manifest check: expected <manifest.yaml>.\n");
         return exit_codes.usage;
     }
     var gpa_state: std.heap.GeneralPurposeAllocator(.{}) = .init;
@@ -390,12 +390,12 @@ fn manifestGenerate(argv: []const []const u8, stdout: anytype, stderr: anytype) 
             args_start = index + 1;
             break;
         } else {
-            try stderr.print("aegis mcp manifest generate: unknown option '{s}'.\n", .{argv[index]});
+            try stderr.print("orca mcp manifest generate: unknown option '{s}'.\n", .{argv[index]});
             return exit_codes.usage;
         }
     }
     const name = server_name orelse command_name orelse {
-        try stderr.writeAll("aegis mcp manifest generate: expected --command or --server.\n");
+        try stderr.writeAll("orca mcp manifest generate: expected --command or --server.\n");
         return exit_codes.usage;
     };
     const command_text = command_name orelse name;
@@ -505,9 +505,9 @@ fn safeEnvName(value: []const u8) bool {
 
 fn usageCode(err: anyerror, stderr: anytype) !u8 {
     switch (err) {
-        error.MissingCommand => try stderr.writeAll("aegis mcp: expected --command <server>.\n"),
+        error.MissingCommand => try stderr.writeAll("orca mcp: expected --command <server>.\n"),
         error.Unsupported => {},
-        else => try stderr.writeAll("aegis mcp: invalid arguments.\n"),
+        else => try stderr.writeAll("orca mcp: invalid arguments.\n"),
     }
     return if (err == error.Unsupported) exit_codes.unsupported else exit_codes.usage;
 }
@@ -517,7 +517,7 @@ fn makeSession(command_argv: []const []const u8, workspace: []const u8, mode: po
     return .{
         .id = try core.session.generateSessionId(now),
         .started_at = now,
-        .command = "aegis mcp proxy",
+        .command = "orca mcp proxy",
         .args = command_argv,
         .workspace_root = workspace,
         .mode = mode.toCoreMode(),
@@ -585,7 +585,7 @@ test "mcp proxy reports invalid policy as CLI error" {
     const code = try command(&.{ "proxy", "--policy", policy_path, "--command", "python3", "--", "fixtures/mcp/fake_server.py" }, stdout_stream.writer(), stderr_stream.writer());
     try std.testing.expectEqual(exit_codes.general, code);
     try std.testing.expectEqualStrings("", stdout_stream.getWritten());
-    try std.testing.expect(std.mem.indexOf(u8, stderr_stream.getWritten(), "aegis mcp proxy: invalid policy") != null);
+    try std.testing.expect(std.mem.indexOf(u8, stderr_stream.getWritten(), "orca mcp proxy: invalid policy") != null);
 }
 
 test "mcp inspect policy option reports Core policy decisions" {

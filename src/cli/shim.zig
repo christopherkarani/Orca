@@ -22,7 +22,7 @@ pub fn command(argv: []const []const u8, stdout: anytype, stderr: anytype) !u8 {
 
 fn exec(command_argv: []const []const u8, _: anytype, stderr: anytype) !u8 {
     if (command_argv.len == 0) {
-        try stderr.writeAll("aegis shim exec: missing command after '--'.\n");
+        try stderr.writeAll("orca shim exec: missing command after '--'.\n");
         return exit_codes.usage;
     }
 
@@ -37,15 +37,15 @@ fn exec(command_argv: []const []const u8, _: anytype, stderr: anytype) !u8 {
 
 fn execWithEnv(allocator: std.mem.Allocator, command_argv: []const []const u8, env_map: *std.process.EnvMap, stderr: anytype) !u8 {
     const session_id = env_map.get("AEGIS_SESSION_ID") orelse {
-        try stderr.writeAll("aegis shim exec: missing AEGIS_SESSION_ID; shims only work inside an Aegis session.\n");
+        try stderr.writeAll("orca shim exec: missing AEGIS_SESSION_ID; shims only work inside an Orca session.\n");
         return exit_codes.general;
     };
     const workspace_root = env_map.get("AEGIS_WORKSPACE_ROOT") orelse {
-        try stderr.writeAll("aegis shim exec: missing AEGIS_WORKSPACE_ROOT; shims only work inside an Aegis session.\n");
+        try stderr.writeAll("orca shim exec: missing AEGIS_WORKSPACE_ROOT; shims only work inside an Orca session.\n");
         return exit_codes.general;
     };
     const shim_dir = env_map.get("AEGIS_SHIM_DIR") orelse {
-        try stderr.writeAll("aegis shim exec: missing AEGIS_SHIM_DIR; refusing unsafe delegation.\n");
+        try stderr.writeAll("orca shim exec: missing AEGIS_SHIM_DIR; refusing unsafe delegation.\n");
         return exit_codes.general;
     };
     const path_value = env_map.get("PATH") orelse "";
@@ -54,7 +54,7 @@ fn execWithEnv(allocator: std.mem.Allocator, command_argv: []const []const u8, e
 
     const real_binary = intercept.commands.resolveRealBinaryAlloc(allocator, command_argv[0], adjusted_path, shim_dir) catch |err| switch (err) {
         error.CommandNotFound => {
-            try stderr.print("aegis shim exec: real command not found after removing shim path: {s}\n", .{command_argv[0]});
+            try stderr.print("orca shim exec: real command not found after removing shim path: {s}\n", .{command_argv[0]});
             return exit_codes.general;
         },
         else => return err,
@@ -66,7 +66,7 @@ fn execWithEnv(allocator: std.mem.Allocator, command_argv: []const []const u8, e
     const effective_mode = shimMode(&selected.policy, env_map);
 
     var writer = core_api.openAuditWriter(allocator, workspace_root, session_id) catch |err| {
-        try stderr.print("aegis shim exec: failed to open audit log: {s}\n", .{@errorName(err)});
+        try stderr.print("orca shim exec: failed to open audit log: {s}\n", .{@errorName(err)});
         return exit_codes.general;
     };
     defer writer.deinit();
@@ -89,7 +89,7 @@ fn execWithEnv(allocator: std.mem.Allocator, command_argv: []const []const u8, e
             try appendCommandEvent(&writer, session_id, .command_allowed, display, decision);
         } else {
             try appendCommandEvent(&writer, session_id, .command_denied, display, command_decision.decision);
-            try stderr.print("aegis shim exec: command denied: {s}\n", .{command_decision.decision.reason});
+            try stderr.print("orca shim exec: command denied: {s}\n", .{command_decision.decision.reason});
             return exit_codes.denial;
         }
     } else {
@@ -110,7 +110,7 @@ fn execWithEnv(allocator: std.mem.Allocator, command_argv: []const []const u8, e
     child.stderr_behavior = .Inherit;
     child.spawn() catch |err| switch (err) {
         error.FileNotFound => {
-            try stderr.print("aegis shim exec: command not found: {s}\n", .{command_argv[0]});
+            try stderr.print("orca shim exec: command not found: {s}\n", .{command_argv[0]});
             return exit_codes.general;
         },
         else => return err,
@@ -128,11 +128,11 @@ fn parseOptions(argv: []const []const u8, stdout: anytype, stderr: anytype) !Shi
         return error.HelpShown;
     }
     if (!std.mem.eql(u8, argv[0], "exec")) {
-        try stderr.writeAll("aegis shim: expected subcommand 'exec'.\n");
+        try stderr.writeAll("orca shim: expected subcommand 'exec'.\n");
         return error.Usage;
     }
     if (argv.len < 2 or !std.mem.eql(u8, argv[1], "--")) {
-        try stderr.writeAll("aegis shim exec: expected '--' before command.\n");
+        try stderr.writeAll("orca shim exec: expected '--' before command.\n");
         return error.Usage;
     }
     return .{ .command_argv = argv[2..] };

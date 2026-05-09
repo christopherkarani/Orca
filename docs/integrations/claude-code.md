@@ -1,22 +1,22 @@
-# Aegis Claude Code Plugin Integration
+# Orca Claude Code Plugin Integration
 
-This document describes the Aegis Claude Code plugin, how to install it, and how to use it.
+This document describes the Orca Claude Code plugin, how to install it, and how to use it.
 
 ## Overview
 
-The Aegis Claude Code plugin is a local integration package that adds Aegis skills and lifecycle hooks to Claude Code. It lives under `integrations/claude-code-plugin/` in the Aegis repository.
+The Orca Claude Code plugin is a local integration package that adds Orca skills and lifecycle hooks to Claude Code. It lives under `integrations/claude-code-plugin/` in the Orca repository.
 
-The plugin is a thin layer. All policy decisions are made by the Aegis CLI. The plugin does not duplicate policy logic.
+The plugin is a thin layer. All policy decisions are made by the Orca CLI. The plugin does not duplicate policy logic.
 
 ## Prerequisites
 
-- Zig 0.15.2 (to build Aegis from source)
-- Aegis CLI built and available in PATH
+- Zig 0.15.2 (to build Orca from source)
+- Orca CLI built and available in PATH
 - Claude Code host binary installed
 
 ## Install instructions
 
-### Build Aegis
+### Build Orca
 
 ```bash
 zig build
@@ -43,7 +43,7 @@ zig build
 
 ### Install from local path (repo)
 
-1. Build Aegis:
+1. Build Orca:
    ```bash
    zig build
    ```
@@ -55,12 +55,12 @@ zig build
 
 3. Verify the plugin is recognized:
    ```bash
-   ./zig-out/bin/aegis plugin doctor claude
+   ./zig-out/bin/orca plugin doctor claude
    ```
 
 ### Local marketplace install
 
-This repository includes a local Claude Code marketplace catalog for installing the Aegis plugin. It is not an official marketplace approval unless explicitly stated in release notes.
+This repository includes a local Claude Code marketplace catalog for installing the Orca plugin. It is not an official marketplace approval unless explicitly stated in release notes.
 
 If your Claude Code version supports repo-local marketplace files, see:
 
@@ -90,11 +90,11 @@ If your Claude Code version does not support automatic plugin loading:
 ### Plugin doctor
 
 ```bash
-./zig-out/bin/aegis plugin doctor claude
+./zig-out/bin/orca plugin doctor claude
 ```
 
 Expected output sections:
-- Aegis version
+- Orca version
 - Policy status (present/valid)
 - Plugin directories (claude: found)
 - Host binaries (claude: detected or not detected)
@@ -102,7 +102,7 @@ Expected output sections:
 ### Plugin manifest
 
 ```bash
-./zig-out/bin/aegis plugin manifest claude
+./zig-out/bin/orca plugin manifest claude
 ```
 
 This reports the expected manifest path and existence status.
@@ -111,7 +111,7 @@ This reports the expected manifest path and existence status.
 
 ```bash
 cat tests/plugin-fixtures/claude/pre_tool_use_command_safe.json \
-  | ./zig-out/bin/aegis hook claude PreToolUse
+  | ./zig-out/bin/orca hook claude PreToolUse
 ```
 
 Expected: `allow` decision in valid JSON.
@@ -119,13 +119,13 @@ Expected: `allow` decision in valid JSON.
 ### Run redteam
 
 ```bash
-./zig-out/bin/aegis redteam --ci
+./zig-out/bin/orca redteam --ci
 ```
 
 ### Replay last session
 
 ```bash
-./zig-out/bin/aegis replay --session last --verify
+./zig-out/bin/orca replay --session last --verify
 ```
 
 ## Skill list
@@ -142,7 +142,7 @@ Skills are invoked as `/aegis:doctor`, `/aegis:init`, `/aegis:protect`, `/aegis:
 
 ## Hook list
 
-Hooks call `aegis hook claude <event>` with a JSON payload on stdin:
+Hooks call `orca hook claude <event>` with a JSON payload on stdin:
 
 | Event | Description | Timeout |
 |-------|-------------|---------|
@@ -163,7 +163,7 @@ If you installed from a release artifact, simply delete the extracted directory.
 
 ### Plugin directory not found
 
-Ensure you run `aegis plugin doctor claude` from the repository root. The doctor looks for `integrations/claude-code-plugin/` relative to the workspace root.
+Ensure you run `orca plugin doctor claude` from the repository root. The doctor looks for `integrations/claude-code-plugin/` relative to the workspace root.
 
 ### Hooks timeout
 
@@ -171,11 +171,11 @@ If hooks exceed their timeout, Claude Code may skip them. Check that `aegis` is 
 
 ### Policy not found
 
-Run `aegis init --preset generic-agent` to create a default policy, then validate with `aegis policy check .aegis/policy.yaml`.
+Run `orca init --preset generic-agent` to create a default policy, then validate with `orca policy check .aegis/policy.yaml`.
 
-### Aegis binary not found
+### Orca binary not found
 
-Build Aegis with `zig build` or ensure `./zig-out/bin/aegis` is in your PATH.
+Build Orca with `zig build` or ensure `./zig-out/bin/aegis` is in your PATH.
 
 ### Fake secret redaction questions
 
@@ -188,14 +188,14 @@ The marketplace catalog uses a relative path (`../claude-code-plugin`). If your 
 ## Limitations
 
 - Hooks are advisory; enforcement depends on Claude Code host support.
-- The strongest protection is `aegis run -- <claude-code-command>`.
+- The strongest protection is `orca run -- <claude-code-command>`.
 - Plugin installation is a preview/dry-run by default.
 - No telemetry is collected.
 - Official marketplace availability is not yet implemented.
 
 ## Security model
 
-- The Aegis CLI is the source of truth.
+- The Orca CLI is the source of truth.
 - The plugin does not reimplement policy logic.
 - No secrets are stored in plugin files.
 - Hook stdout is host-valid JSON.
@@ -204,7 +204,7 @@ The marketplace catalog uses a relative path (`../claude-code-plugin`). If your 
 
 ## Separate workstream note
 
-A separate drone workstream exists in this repository under `packages/edge/`. The Aegis Claude Code plugin does not expose or modify drone functionality.
+A separate drone workstream exists in this repository under `packages/edge/`. The Orca Claude Code plugin does not expose or modify drone functionality.
 
 ## No MCP support
 

@@ -1,22 +1,22 @@
-# Aegis Codex Plugin Integration
+# Orca Codex Plugin Integration
 
-This document describes the Aegis Codex plugin, how to install it, and how to use it.
+This document describes the Orca Codex plugin, how to install it, and how to use it.
 
 ## Overview
 
-The Aegis Codex plugin is a local integration package that adds Aegis skills and lifecycle hooks to Codex. It lives under `integrations/codex-plugin/` in the Aegis repository.
+The Orca Codex plugin is a local integration package that adds Orca skills and lifecycle hooks to Codex. It lives under `integrations/codex-plugin/` in the Orca repository.
 
-The plugin is a thin layer. All policy decisions are made by the Aegis CLI. The plugin does not duplicate policy logic.
+The plugin is a thin layer. All policy decisions are made by the Orca CLI. The plugin does not duplicate policy logic.
 
 ## Prerequisites
 
-- Zig 0.15.2 (to build Aegis from source)
-- Aegis CLI built and available in PATH
+- Zig 0.15.2 (to build Orca from source)
+- Orca CLI built and available in PATH
 - Codex host binary installed
 
 ## Install instructions
 
-### Build Aegis
+### Build Orca
 
 ```bash
 zig build
@@ -43,7 +43,7 @@ zig build
 
 ### Install from local path (repo)
 
-1. Build Aegis:
+1. Build Orca:
    ```bash
    zig build
    ```
@@ -55,7 +55,7 @@ zig build
 
 3. Verify the plugin is recognized:
    ```bash
-   ./zig-out/bin/aegis plugin doctor codex
+   ./zig-out/bin/orca plugin doctor codex
    ```
 
 ### Local marketplace install
@@ -83,11 +83,11 @@ If your Codex version does not support automatic plugin loading:
 ### Plugin doctor
 
 ```bash
-./zig-out/bin/aegis plugin doctor codex
+./zig-out/bin/orca plugin doctor codex
 ```
 
 Expected output sections:
-- Aegis version
+- Orca version
 - Policy status (present/valid)
 - Plugin directories (codex: found)
 - Host binaries (codex: detected or not detected)
@@ -95,7 +95,7 @@ Expected output sections:
 ### Plugin manifest
 
 ```bash
-./zig-out/bin/aegis plugin manifest codex
+./zig-out/bin/orca plugin manifest codex
 ```
 
 This reports the expected manifest path and existence status.
@@ -104,7 +104,7 @@ This reports the expected manifest path and existence status.
 
 ```bash
 cat tests/plugin-fixtures/codex/pre_tool_use_command_safe.json \
-  | ./zig-out/bin/aegis hook codex PreToolUse
+  | ./zig-out/bin/orca hook codex PreToolUse
 ```
 
 Expected: `allow` decision in valid JSON.
@@ -112,13 +112,13 @@ Expected: `allow` decision in valid JSON.
 ### Run redteam
 
 ```bash
-./zig-out/bin/aegis redteam --ci
+./zig-out/bin/orca redteam --ci
 ```
 
 ### Replay last session
 
 ```bash
-./zig-out/bin/aegis replay --session last --verify
+./zig-out/bin/orca replay --session last --verify
 ```
 
 ## Skill list
@@ -133,7 +133,7 @@ Expected: `allow` decision in valid JSON.
 
 ## Hook list
 
-Hooks call `aegis hook codex <event>` with a JSON payload on stdin:
+Hooks call `orca hook codex <event>` with a JSON payload on stdin:
 
 | Event | Description | Timeout |
 |-------|-------------|---------|
@@ -154,7 +154,7 @@ If you installed from a release artifact, simply delete the extracted directory.
 
 ### Plugin directory not found
 
-Ensure you run `aegis plugin doctor codex` from the repository root. The doctor looks for `integrations/codex-plugin/` relative to the workspace root.
+Ensure you run `orca plugin doctor codex` from the repository root. The doctor looks for `integrations/codex-plugin/` relative to the workspace root.
 
 ### Hooks timeout
 
@@ -162,11 +162,11 @@ If hooks exceed their timeout, Codex may skip them. Check that `aegis` is in PAT
 
 ### Policy not found
 
-Run `aegis init --preset codex` to create a default policy, then validate with `aegis policy check .aegis/policy.yaml`.
+Run `orca init --preset codex` to create a default policy, then validate with `orca policy check .aegis/policy.yaml`.
 
-### Aegis binary not found
+### Orca binary not found
 
-Build Aegis with `zig build` or ensure `./zig-out/bin/aegis` is in your PATH.
+Build Orca with `zig build` or ensure `./zig-out/bin/aegis` is in your PATH.
 
 ### Fake secret redaction questions
 
@@ -175,14 +175,14 @@ The plugin uses synthetic test secrets (e.g., `fake_p05_secret_value`) in fixtur
 ## Limitations
 
 - Hooks are advisory; enforcement depends on Codex host support.
-- The strongest protection is `aegis run -- <codex-command>`.
+- The strongest protection is `orca run -- <codex-command>`.
 - Plugin installation is a preview/dry-run by default.
 - No telemetry is collected.
 - Official marketplace availability is not yet implemented.
 
 ## Security model
 
-- The Aegis CLI is the source of truth.
+- The Orca CLI is the source of truth.
 - The plugin does not reimplement policy logic.
 - No secrets are stored in plugin files.
 - Hook stdout is host-valid JSON.
@@ -191,7 +191,7 @@ The plugin uses synthetic test secrets (e.g., `fake_p05_secret_value`) in fixtur
 
 ## Separate workstream note
 
-A separate drone workstream exists in this repository under `packages/edge/`. The Aegis Codex plugin does not expose or modify drone functionality.
+A separate drone workstream exists in this repository under `packages/edge/`. The Orca Codex plugin does not expose or modify drone functionality.
 
 ## No MCP support
 

@@ -19,20 +19,20 @@ pub fn command(argv: []const []const u8, stdout: anytype, stderr: anytype) !u8 {
     const workspace_root = try core.supervisor.resolveWorkspaceRoot(allocator, null, ".");
     defer allocator.free(workspace_root);
     const session_id = intercept.files.resolveSessionId(allocator, workspace_root, options.session) catch |err| {
-        try stderr.print("aegis apply: failed to resolve session '{s}': {s}\n", .{ options.session, @errorName(err) });
+        try stderr.print("orca apply: failed to resolve session '{s}': {s}\n", .{ options.session, @errorName(err) });
         return exit_codes.general;
     };
     defer allocator.free(session_id);
     const audit_session = commandAuditSession(session_id, workspace_root, "aegis apply");
     var session_writer = core_api.openAuditWriter(allocator, workspace_root, session_id) catch |err| {
-        try stderr.print("aegis apply: failed to open session audit log: {s}\n", .{@errorName(err)});
+        try stderr.print("orca apply: failed to open session audit log: {s}\n", .{@errorName(err)});
         return exit_codes.general;
     };
     defer session_writer.deinit();
     const audit_context: intercept.files.AuditContext = .{ .writer = &session_writer, .session = audit_session };
 
     const result = intercept.files.applyStaged(allocator, workspace_root, session_id, options.file, audit_context) catch |err| {
-        try stderr.print("aegis apply: failed to apply staged files: {s}\n", .{@errorName(err)});
+        try stderr.print("orca apply: failed to apply staged files: {s}\n", .{@errorName(err)});
         return exit_codes.general;
     };
     if (session_writer.finalHash()) |hash| {
@@ -58,19 +58,19 @@ fn parseOptions(argv: []const []const u8, stdout: anytype, stderr: anytype) !Opt
         } else if (std.mem.eql(u8, arg, "--session")) {
             index += 1;
             if (index >= argv.len) {
-                try stderr.writeAll("aegis apply: --session requires an id or 'last'.\n");
+                try stderr.writeAll("orca apply: --session requires an id or 'last'.\n");
                 return error.Usage;
             }
             options.session = argv[index];
         } else if (std.mem.eql(u8, arg, "--file")) {
             index += 1;
             if (index >= argv.len) {
-                try stderr.writeAll("aegis apply: --file requires a workspace path.\n");
+                try stderr.writeAll("orca apply: --file requires a workspace path.\n");
                 return error.Usage;
             }
             options.file = argv[index];
         } else {
-            try stderr.print("aegis apply: unknown option '{s}'.\n", .{arg});
+            try stderr.print("orca apply: unknown option '{s}'.\n", .{arg});
             return error.Usage;
         }
     }

@@ -24,7 +24,7 @@ pub fn command(argv: []const []const u8, stdout: anytype, stderr: anytype) !u8 {
     }
 
     const kind = DecisionKind.parse(argv[0]) orelse {
-        try stderr.print("aegis decide: unknown decision kind '{s}'. Expected command, file, prompt, or tool.\n", .{argv[0]});
+        try stderr.print("orca decide: unknown decision kind '{s}'. Expected command, file, prompt, or tool.\n", .{argv[0]});
         return exit_codes.usage;
     };
 
@@ -65,13 +65,13 @@ fn decideCommand(kind: DecisionKind, argv: []const []const u8, stdout: anytype, 
         if (std.mem.eql(u8, arg, "--help") or std.mem.eql(u8, arg, "-h")) {
             try stdout.writeAll(
                 \\Usage:
-                \\  aegis decide command --json '{"command":"<cmd>"}'
-                \\  aegis decide file    --json '{"path":"<p>","operation":"read|write"}'
-                \\  aegis decide prompt  --json '{"text":"<text>"}'
-                \\  aegis decide tool    --json '{"name":"<name>"}'
-                \\  aegis decide <kind> --stdin
-                \\  aegis decide <kind> --json <payload> [--ci]
-                \\  aegis decide <kind> --stdin [--ci]
+                \\  orca decide command --json '{"command":"<cmd>"}'
+                \\  orca decide file    --json '{"path":"<p>","operation":"read|write"}'
+                \\  orca decide prompt  --json '{"text":"<text>"}'
+                \\  orca decide tool    --json '{"name":"<name>"}'
+                \\  orca decide <kind> --stdin
+                \\  orca decide <kind> --json <payload> [--ci]
+                \\  orca decide <kind> --stdin [--ci]
                 \\
                 \\Options:
                 \\  --json   Provide JSON payload inline.
@@ -83,7 +83,7 @@ fn decideCommand(kind: DecisionKind, argv: []const []const u8, stdout: anytype, 
         }
         if (std.mem.eql(u8, arg, "--json")) {
             if (index + 1 >= argv.len) {
-                try stderr.writeAll("aegis decide: --json requires a value.\n");
+                try stderr.writeAll("orca decide: --json requires a value.\n");
                 return exit_codes.usage;
             }
             json_payload = argv[index + 1];
@@ -98,12 +98,12 @@ fn decideCommand(kind: DecisionKind, argv: []const []const u8, stdout: anytype, 
             ci_mode = true;
             continue;
         }
-        try stderr.print("aegis decide: unknown option '{s}'.\n", .{arg});
+        try stderr.print("orca decide: unknown option '{s}'.\n", .{arg});
         return exit_codes.usage;
     }
 
     if (json_payload == null and !use_stdin) {
-        try stderr.writeAll("aegis decide: expected --json <payload> or --stdin.\n");
+        try stderr.writeAll("orca decide: expected --json <payload> or --stdin.\n");
         return exit_codes.usage;
     }
 
@@ -120,7 +120,7 @@ fn decideCommand(kind: DecisionKind, argv: []const []const u8, stdout: anytype, 
 
     // Parse JSON payload
     var parsed = std.json.parseFromSlice(std.json.Value, allocator, payload_text, .{}) catch |err| {
-        try stderr.print("aegis decide: invalid JSON ({s}).\n", .{@errorName(err)});
+        try stderr.print("orca decide: invalid JSON ({s}).\n", .{@errorName(err)});
         return exit_codes.general;
     };
     defer parsed.deinit();
@@ -129,14 +129,14 @@ fn decideCommand(kind: DecisionKind, argv: []const []const u8, stdout: anytype, 
     const root = core.supervisor.resolveWorkspaceRoot(allocator, null, ".") catch try allocator.dupe(u8, ".");
     defer allocator.free(root);
     var loaded = core_api.discoverPolicy(allocator, null, root) catch |err| {
-        try stderr.print("aegis decide: failed to load policy: {s}\n", .{@errorName(err)});
+        try stderr.print("orca decide: failed to load policy: {s}\n", .{@errorName(err)});
         return exit_codes.general;
     };
     defer loaded.deinit();
 
     // Evaluate decision
     var result = evaluateDecision(allocator, &loaded.policy, kind, parsed.value, ci_mode) catch |err| {
-        try stderr.print("aegis decide: evaluation failed: {s}\n", .{@errorName(err)});
+        try stderr.print("orca decide: evaluation failed: {s}\n", .{@errorName(err)});
         return exit_codes.general;
     };
     defer result.deinit(allocator);
@@ -343,12 +343,12 @@ fn evaluateDecision(
 
 fn buildMessage(allocator: std.mem.Allocator, decision: PluginDecision, category: []const u8) ![]const u8 {
     return switch (decision) {
-        .allow => try std.fmt.allocPrint(allocator, "{s} allowed by Aegis policy.", .{category}),
-        .block => try std.fmt.allocPrint(allocator, "{s} blocked by Aegis policy.", .{category}),
-        .warn => try std.fmt.allocPrint(allocator, "{s} flagged by Aegis policy. Review before proceeding.", .{category}),
-        .ask => try std.fmt.allocPrint(allocator, "{s} requires user approval per Aegis policy.", .{category}),
+        .allow => try std.fmt.allocPrint(allocator, "{s} allowed by Orca policy.", .{category}),
+        .block => try std.fmt.allocPrint(allocator, "{s} blocked by Orca policy.", .{category}),
+        .warn => try std.fmt.allocPrint(allocator, "{s} flagged by Orca policy. Review before proceeding.", .{category}),
+        .ask => try std.fmt.allocPrint(allocator, "{s} requires user approval per Orca policy.", .{category}),
         .context_only => try std.fmt.allocPrint(allocator, "{s} allowed for context only. No side effects permitted.", .{category}),
-        .err => try std.fmt.allocPrint(allocator, "Aegis could not evaluate {s}. Fail closed.", .{category}),
+        .err => try std.fmt.allocPrint(allocator, "Orca could not evaluate {s}. Fail closed.", .{category}),
     };
 }
 

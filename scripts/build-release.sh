@@ -1,18 +1,18 @@
 #!/usr/bin/env sh
 set -eu
 
-VERSION="${AEGIS_VERSION:-1.1.0}"
-COMMIT="${AEGIS_COMMIT:-$(git rev-parse --short HEAD 2>/dev/null || printf unknown)}"
-BUILD_DATE="${AEGIS_BUILD_DATE:-$(date -u +%Y-%m-%dT%H:%M:%SZ)}"
-DIST_DIR="${AEGIS_DIST_DIR:-dist}"
-ZIG_OPTIMIZE="${AEGIS_ZIG_OPTIMIZE:-ReleaseSafe}"
+VERSION="${ORCA_VERSION:-1.1.0}"
+COMMIT="${ORCA_COMMIT:-$(git rev-parse --short HEAD 2>/dev/null || printf unknown)}"
+BUILD_DATE="${ORCA_BUILD_DATE:-$(date -u +%Y-%m-%dT%H:%M:%SZ)}"
+DIST_DIR="${ORCA_DIST_DIR:-dist}"
+ZIG_OPTIMIZE="${ORCA_ZIG_OPTIMIZE:-ReleaseSafe}"
 
 TARGETS="
-darwin amd64 x86_64-macos tar.gz aegis
-darwin arm64 aarch64-macos tar.gz aegis
-linux amd64 x86_64-linux tar.gz aegis
-linux arm64 aarch64-linux tar.gz aegis
-windows amd64 x86_64-windows zip aegis.exe
+darwin amd64 x86_64-macos tar.gz orca
+darwin arm64 aarch64-macos tar.gz orca
+linux amd64 x86_64-linux tar.gz orca
+linux arm64 aarch64-linux tar.gz orca
+windows amd64 x86_64-windows zip orca.exe
 "
 
 copy_release_payload() {
@@ -29,10 +29,10 @@ build_target() {
   ext="$4"
   bin_name="$5"
 
-  artifact="aegis-v${VERSION}-${os}-${arch}.${ext}"
+  artifact="orca-v${VERSION}-${os}-${arch}.${ext}"
   work="${DIST_DIR}/work/${os}-${arch}"
   prefix="${work}/prefix"
-  root="${work}/aegis-v${VERSION}-${os}-${arch}"
+  root="${work}/orca-v${VERSION}-${os}-${arch}"
 
   rm -rf "$work"
   mkdir -p "$prefix" "$root"
@@ -48,16 +48,16 @@ build_target() {
   copy_release_payload "$root"
   mkdir -p "$root/bin"
   cp "$prefix/bin/$bin_name" "$root/bin/$bin_name"
-  edge_bin_name="aegis-edge"
+  edge_bin_name="orca-edge"
   if [ "$os" = "windows" ]; then
-    edge_bin_name="aegis-edge.exe"
+    edge_bin_name="orca-edge.exe"
   fi
   cp "$prefix/bin/$edge_bin_name" "$root/bin/$edge_bin_name"
 
   if [ "$ext" = "zip" ]; then
-    (cd "$work" && zip -qr "../../$artifact" "aegis-v${VERSION}-${os}-${arch}")
+    (cd "$work" && zip -qr "../../$artifact" "orca-v${VERSION}-${os}-${arch}")
   else
-    tar -C "$work" -czf "${DIST_DIR}/$artifact" "aegis-v${VERSION}-${os}-${arch}"
+    tar -C "$work" -czf "${DIST_DIR}/$artifact" "orca-v${VERSION}-${os}-${arch}"
   fi
   printf 'Built %s\n' "${DIST_DIR}/$artifact"
 }
@@ -73,13 +73,13 @@ done
 ./scripts/generate-checksums.sh "$DIST_DIR"
 ./scripts/generate-sbom.sh "$DIST_DIR"
 
-if [ "${AEGIS_SIGNING_ENABLED:-0}" = "1" ]; then
-  if [ -n "${AEGIS_SIGNING_COMMAND:-}" ]; then
-    sh -c "$AEGIS_SIGNING_COMMAND" sh "$DIST_DIR"
+if [ "${ORCA_SIGNING_ENABLED:-0}" = "1" ]; then
+  if [ -n "${ORCA_SIGNING_COMMAND:-}" ]; then
+    sh -c "$ORCA_SIGNING_COMMAND" sh "$DIST_DIR"
   else
-    printf 'Signing requested but AEGIS_SIGNING_COMMAND is not set.\n' >&2
+    printf 'Signing requested but ORCA_SIGNING_COMMAND is not set.\n' >&2
     exit 1
   fi
 else
-  printf 'Signing skipped; set AEGIS_SIGNING_ENABLED=1 and AEGIS_SIGNING_COMMAND in release environments.\n'
+  printf 'Signing skipped; set ORCA_SIGNING_ENABLED=1 and ORCA_SIGNING_COMMAND in release environments.\n'
 fi

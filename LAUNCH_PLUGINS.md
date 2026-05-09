@@ -1,18 +1,18 @@
-# Aegis Plugins — Launch Announcement
+# Orca Plugins — Launch Announcement
 
-Aegis 1.1.0 now ships native plugin integrations for Codex and Claude Code. The launch is deliberately small and local: the plugins add host-native skills and lifecycle hooks that call the Aegis CLI for policy decisions, red-team checks, replay, and plugin diagnostics.
+Orca 1.1.0 now ships native plugin integrations for Codex and Claude Code. The launch is deliberately small and local: the plugins add host-native skills and lifecycle hooks that call the Orca CLI for policy decisions, red-team checks, replay, and plugin diagnostics.
 
-## What Aegis plugins are
+## What Orca plugins are
 
-Aegis plugins are native integrations for supported agent hosts. They let Codex and Claude Code surface Aegis commands, hook events, and install flows without duplicating policy logic inside the host.
+Orca plugins are native integrations for supported agent hosts. They let Codex and Claude Code surface Orca commands, hook events, and install flows without duplicating policy logic inside the host.
 
 ## Why they exist
 
-Agent-host skills and lifecycle hooks call the Aegis CLI so the same policy engine can make the decision, emit the audit trail, and support replay later. That keeps the plugin layer thin and honest about its limits.
+Agent-host skills and lifecycle hooks call the Orca CLI so the same policy engine can make the decision, emit the audit trail, and support replay later. That keeps the plugin layer thin and honest about its limits.
 
 ## Suggested positioning
 
-> Aegis now has native plugin integrations for Codex and Claude Code. The plugins add agent-host skills and lifecycle hooks that call the Aegis CLI for policy decisions, red-team checks, replay, and plugin diagnostics.
+> Orca now has native plugin integrations for Codex and Claude Code. The plugins add agent-host skills and lifecycle hooks that call the Orca CLI for policy decisions, red-team checks, replay, and plugin diagnostics.
 
 ## Codex plugin summary
 
@@ -43,7 +43,7 @@ See [examples/plugin-demo/](examples/plugin-demo/) for a local demo flow. A reas
 2. Run `aegis plugin doctor <host>`.
 3. Check the manifest with `aegis plugin manifest <host>`.
 4. Run a hook smoke test.
-5. Replay the latest session with `aegis replay --session last --verify`.
+5. Replay the latest session with `orca replay --session last --verify`.
 
 ## Limitations
 
@@ -52,11 +52,11 @@ See [examples/plugin-demo/](examples/plugin-demo/) for a local demo flow. A reas
 - Plugin installation defaults to preview/dry-run.
 - No telemetry, SaaS, or remote control plane is added.
 - These plugins do not add MCP server functionality or drone-specific plugin features.
-- The plugins do not protect sessions launched outside Aegis.
+- The plugins do not protect sessions launched outside Orca.
 
 ## Security model
 
-The strongest protection remains running the agent through `aegis run`; plugins provide native commands, hooks, and guardrails inside supported agent hosts.
+The strongest protection remains running the agent through `orca run`; plugins provide native commands, hooks, and guardrails inside supported agent hosts.
 
 ## Contribution ask
 
@@ -72,16 +72,16 @@ Please try the plugins, verify the docs against real host behavior, and send fix
 
 ### GitHub release
 
-> Aegis 1.1.0 adds native plugin integrations for Codex and Claude Code. The plugins surface Aegis skills and lifecycle hooks that call the CLI for policy decisions, red-team checks, replay, and diagnostics. Installation is local and verifiable; hooks remain advisory, and the strongest protection still comes from `aegis run`.
+> Orca 1.1.0 adds native plugin integrations for Codex and Claude Code. The plugins surface Orca skills and lifecycle hooks that call the CLI for policy decisions, red-team checks, replay, and diagnostics. Installation is local and verifiable; hooks remain advisory, and the strongest protection still comes from `orca run`.
 
 ### Hacker News / Reddit
 
-> Aegis now has native plugin integrations for Codex and Claude Code. The point is not magic enforcement — it is a thin local plugin layer that calls the Aegis CLI for policy, replay, and diagnostics while staying honest about host limits.
+> Orca now has native plugin integrations for Codex and Claude Code. The point is not magic enforcement — it is a thin local plugin layer that calls the Orca CLI for policy, replay, and diagnostics while staying honest about host limits.
 
 ### X / LinkedIn
 
-> Aegis 1.1.0 ships native plugin integrations for Codex and Claude Code. The plugins add agent-host skills and lifecycle hooks that call the Aegis CLI for policy decisions, red-team checks, replay, and plugin diagnostics.
+> Orca 1.1.0 ships native plugin integrations for Codex and Claude Code. The plugins add agent-host skills and lifecycle hooks that call the Orca CLI for policy decisions, red-team checks, replay, and plugin diagnostics.
 
 ### Developer / security communities
 
-> Aegis 1.1.0 adds host-native plugin integrations for Codex and Claude Code. The plugin layer stays local, uses the Aegis CLI as the source of truth, and keeps the strongest protection rooted in `aegis run` rather than pretending the host extension layer is a sandbox.
+> Orca 1.1.0 adds host-native plugin integrations for Codex and Claude Code. The plugin layer stays local, uses the Orca CLI as the source of truth, and keeps the strongest protection rooted in `orca run` rather than pretending the host extension layer is a sandbox.

@@ -19,7 +19,7 @@ pub fn current() Metadata {
 }
 
 pub fn writePlain(writer: anytype, metadata: Metadata) !void {
-    try writer.print("aegis {s}\n", .{metadata.version});
+    try writer.print("orca {s}\n", .{metadata.version});
 }
 
 pub fn writeJson(writer: anytype, metadata: Metadata) !void {

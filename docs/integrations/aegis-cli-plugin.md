@@ -1,29 +1,29 @@
-# Aegis CLI Plugin Surface
+# Orca CLI Plugin Surface
 
-> Scope: P01 — Aegis CLI plugin namespace and safe plugin-facing surfaces
+> Scope: P01 — Orca CLI plugin namespace and safe plugin-facing surfaces
 > Version: 1.1.0
 
 ## Overview
 
-The Aegis CLI itself is now plugin-capable. This means:
+The Orca CLI itself is now plugin-capable. This means:
 
 - The `aegis` binary exposes a `plugin` command namespace.
-- Host plugins (Codex, Claude Code, and future integrations) call the Aegis CLI instead of duplicating policy logic.
-- The Aegis CLI remains the source of truth for policy, audit, replay, and capability reporting.
+- Host plugins (Codex, Claude Code, and future integrations) call the Orca CLI instead of duplicating policy logic.
+- The Orca CLI remains the source of truth for policy, audit, replay, and capability reporting.
 
 ## Commands
 
-### `aegis plugin doctor`
+### `orca plugin doctor`
 
-Reports Aegis version, workspace state, policy presence, host binary detection, plugin directory status, and platform capabilities.
+Reports Orca version, workspace state, policy presence, host binary detection, plugin directory status, and platform capabilities.
 
 ```sh
-aegis plugin doctor
-aegis plugin doctor --json
-aegis plugin doctor codex
-aegis plugin doctor claude
-aegis plugin doctor codex --json
-aegis plugin doctor claude --json
+orca plugin doctor
+orca plugin doctor --json
+orca plugin doctor codex
+orca plugin doctor claude
+orca plugin doctor codex --json
+orca plugin doctor claude --json
 ```
 
 **Security properties:**
@@ -32,15 +32,15 @@ aegis plugin doctor claude --json
 - Does not claim a host plugin is installed unless detected.
 - Does not claim a protection is active unless it is actually active.
 
-### `aegis plugin manifest`
+### `orca plugin manifest`
 
 Reports the expected plugin manifest path and existence status.
 
 ```sh
-aegis plugin manifest codex
-aegis plugin manifest claude
-aegis plugin manifest all
-aegis plugin manifest codex --json
+orca plugin manifest codex
+orca plugin manifest claude
+orca plugin manifest all
+orca plugin manifest codex --json
 ```
 
 If a manifest does not exist yet, it reports `missing` clearly — not as an error.
@@ -49,15 +49,15 @@ Expected paths:
 - Codex: `integrations/codex-plugin/.codex-plugin/plugin.json`
 - Claude Code: `integrations/claude-code-plugin/.claude-plugin/plugin.json`
 
-### `aegis plugin install`
+### `orca plugin install`
 
 Previews or performs plugin installation. Defaults to safe dry-run behavior.
 
 ```sh
-aegis plugin install codex --dry-run
-aegis plugin install claude --dry-run
-aegis plugin install all --dry-run
-aegis plugin install codex --path <plugin-path> --dry-run
+orca plugin install codex --dry-run
+orca plugin install claude --dry-run
+orca plugin install all --dry-run
+orca plugin install codex --path <plugin-path> --dry-run
 ```
 
 **Safety rules:**
@@ -68,25 +68,25 @@ aegis plugin install codex --path <plugin-path> --dry-run
 - Does not store credentials.
 - Does not add telemetry.
 
-### `aegis decide`
+### `orca decide`
 
 Exposes stable JSON decisions for commands, files, prompts, and host tool calls.
 
 ```sh
-aegis decide command --json '{"version":1,"host":"codex","command":"git status"}'
-aegis decide command --json '{"version":1,"host":"claude","command":"git status"}'
-aegis decide file --json '{"version":1,"host":"codex","path":"/etc/passwd","operation":"write"}'
-aegis decide prompt --json '{"version":1,"host":"claude","prompt":"hello"}'
-aegis decide tool --json '{"version":1,"host":"codex","tool":"shell","command":"ls"}'
+orca decide command --json '{"version":1,"host":"codex","command":"git status"}'
+orca decide command --json '{"version":1,"host":"claude","command":"git status"}'
+orca decide file --json '{"version":1,"host":"codex","path":"/etc/passwd","operation":"write"}'
+orca decide prompt --json '{"version":1,"host":"claude","prompt":"hello"}'
+orca decide tool --json '{"version":1,"host":"codex","tool":"shell","command":"ls"}'
 ```
 
-### `aegis hook`
+### `orca hook`
 
 Processes host plugin lifecycle hooks with JSON payloads on stdin.
 
 ```sh
 echo '{"version":1,"host":"codex","event":"PreToolUse","payload":{"tool":"shell","command":"git status"}}' \
-  | aegis hook codex PreToolUse
+  | orca hook codex PreToolUse
 ```
 
 ## Plugin Packaging
@@ -116,19 +116,19 @@ Artifacts exclude:
 
 ## Install dry-run behavior
 
-`aegis plugin install` defaults to `--dry-run`. In dry-run mode:
+`orca plugin install` defaults to `--dry-run`. In dry-run mode:
 - The command previews what would be installed.
 - No host configuration is mutated.
 - The user sees the plugin path, manifest status, and host compatibility.
 
 For actual installation, use `--yes`:
 ```sh
-aegis plugin install codex --yes
+orca plugin install codex --yes
 ```
 
 ## Host limitations
 
-Plugin hooks are limited by host capabilities. Aegis cannot enforce what the host IDE does not expose.
+Plugin hooks are limited by host capabilities. Orca cannot enforce what the host IDE does not expose.
 
 - Codex hooks: advisory; enforcement depends on Codex host support.
 - Claude Code hooks: advisory; enforcement depends on Claude Code host support.
@@ -139,16 +139,16 @@ Plugin hooks are limited by host capabilities. Aegis cannot enforce what the hos
 Host IDE (Codex / Claude Code / Cursor / ...)
     |
     v
-Aegis CLI plugin surface  <--  aegis plugin doctor / manifest / install
+Orca CLI plugin surface  <--  orca plugin doctor / manifest / install
     |
     v
-Aegis Core (policy, audit, replay, decision engine)
+Orca Core (policy, audit, replay, decision engine)
 ```
 
-Plugins call Aegis instead of duplicating policy logic. The strongest local protection remains:
+Plugins call Orca instead of duplicating policy logic. The strongest local protection remains:
 
 ```sh
-aegis run -- <agent-command>
+orca run -- <agent-command>
 ```
 
 ## No Telemetry, No SaaS
@@ -159,7 +159,7 @@ aegis run -- <agent-command>
 
 ## Drone Safety Reporting
 
-When the Aegis Edge workstream is detected, `aegis plugin doctor` includes a drone safety section:
+When the Orca Edge workstream is detected, `orca plugin doctor` includes a drone safety section:
 
 ```
 Drone workstream:
@@ -183,11 +183,11 @@ Hook request/response schemas live in:
 
 ## Compatibility
 
-Aegis plugins 1.x require Aegis CLI >= 1.0.0.
+Orca plugins 1.x require Orca CLI >= 1.0.0.
 
 | Component | Version |
 |-----------|---------|
-| Aegis core | 1.1.0 |
+| Orca core | 1.1.0 |
 | Codex plugin | 1.1.0 |
 | Claude Code plugin | 1.1.0 |
 

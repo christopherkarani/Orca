@@ -23,21 +23,21 @@ pub fn command(argv: []const []const u8, stdout: anytype, stderr: anytype) !u8 {
     const allocator = gpa_state.allocator();
 
     var fixture_set = redteam.fixtures.discover(allocator, options.root, options.fixture_id) catch |err| {
-        try stderr.print("aegis redteam: failed to discover fixtures: {s}\n", .{@errorName(err)});
+        try stderr.print("orca redteam: failed to discover fixtures: {s}\n", .{@errorName(err)});
         return exit_codes.general;
     };
     defer fixture_set.deinit();
     if (fixture_set.fixtures.len == 0) {
         if (options.fixture_id) |id| {
-            try stderr.print("aegis redteam: fixture not found: {s}\n", .{id});
+            try stderr.print("orca redteam: fixture not found: {s}\n", .{id});
         } else {
-            try stderr.print("aegis redteam: no fixtures found under {s}\n", .{options.root});
+            try stderr.print("orca redteam: no fixtures found under {s}\n", .{options.root});
         }
         return exit_codes.general;
     }
 
     var suite = redteam.runner.runSuite(allocator, fixture_set, .{ .ci = options.ci }) catch |err| {
-        try stderr.print("aegis redteam: fixture run failed: {s}\n", .{@errorName(err)});
+        try stderr.print("orca redteam: fixture run failed: {s}\n", .{@errorName(err)});
         return exit_codes.general;
     };
     defer suite.deinit();
@@ -68,16 +68,16 @@ fn parseOptions(argv: []const []const u8, stdout: anytype, stderr: anytype) !Opt
         } else if (std.mem.eql(u8, arg, "--fixture")) {
             index += 1;
             if (index >= argv.len) {
-                try stderr.writeAll("aegis redteam: --fixture requires a fixture id.\n");
+                try stderr.writeAll("orca redteam: --fixture requires a fixture id.\n");
                 return error.Usage;
             }
             options.fixture_id = argv[index];
         } else if (std.mem.startsWith(u8, arg, "-")) {
-            try stderr.print("aegis redteam: unknown option '{s}'.\n", .{arg});
+            try stderr.print("orca redteam: unknown option '{s}'.\n", .{arg});
             return error.Usage;
         } else {
             if (saw_path) {
-                try stderr.writeAll("aegis redteam: expected at most one fixture path.\n");
+                try stderr.writeAll("orca redteam: expected at most one fixture path.\n");
                 return error.Usage;
             }
             options.root = arg;
@@ -134,5 +134,5 @@ test "redteam ci exits nonzero on failing fixture" {
 
     const code = try command(&.{ root, "--ci" }, stdout_stream.writer(), stderr_stream.writer());
     try std.testing.expectEqual(exit_codes.redteam_failure, code);
-    try std.testing.expect(std.mem.indexOf(u8, stdout_stream.getWritten(), "Aegis Redteam Score") != null);
+    try std.testing.expect(std.mem.indexOf(u8, stdout_stream.getWritten(), "Orca Redteam Score") != null);
 }

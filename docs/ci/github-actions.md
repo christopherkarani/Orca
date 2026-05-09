@@ -1,12 +1,12 @@
 # GitHub Actions
 
-This integration is local-only. It does not assume a hosted Aegis service, policy sync, telemetry, or model-provider secrets.
+This integration is local-only. It does not assume a hosted Orca service, policy sync, telemetry, or model-provider secrets.
 
 Use a CI policy:
 
 ```bash
-aegis init --preset github-actions
-aegis policy check .aegis/policy.yaml
+orca init --preset github-actions
+orca policy check .aegis/policy.yaml
 ```
 
 Example workflow:
@@ -22,26 +22,26 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: Install Aegis
+      - name: Install Orca
         run: ./scripts/install.sh
-      - name: Check Aegis policy
-        run: aegis policy check .aegis/policy.yaml
+      - name: Check Orca policy
+        run: orca policy check .aegis/policy.yaml
       - name: Run agent safely
-        run: aegis run --mode ci -- ./scripts/agent-task.sh
+        run: orca run --mode ci -- ./scripts/agent-task.sh
       - name: Run red-team fixtures
-        run: aegis redteam --ci
-      - name: Upload Aegis audit logs
+        run: orca redteam --ci
+      - name: Upload Orca audit logs
         uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: aegis-audit
+          name: orca-audit
           path: .aegis/sessions
 ```
 
 You can also wrap a command with the repository-local composite action:
 
 ```yaml
-- uses: ./.github/actions/aegis-run
+- uses: ./.github/actions/orca-run
   with:
     command: ./scripts/agent-task.sh
 ```
@@ -50,5 +50,5 @@ Security notes:
 
 - CI mode never prompts. Ask decisions become denies unless policy explicitly allows the action.
 - Do not put tokens or secrets in policy files, workflow examples, or audit artifacts.
-- Aegis audit logs are redacted before persistence, but avoid running commands that intentionally print secrets.
-- Platform sandbox capability depends on the runner OS. Use `aegis doctor` for the actual capability report.
+- Orca audit logs are redacted before persistence, but avoid running commands that intentionally print secrets.
+- Platform sandbox capability depends on the runner OS. Use `orca doctor` for the actual capability report.

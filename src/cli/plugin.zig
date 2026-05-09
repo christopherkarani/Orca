@@ -27,7 +27,7 @@ pub fn command(argv: []const []const u8, stdout: anytype, stderr: anytype) !u8 {
     if (std.mem.eql(u8, argv[0], "install")) return installCommand(argv[1..], stdout, stderr);
     if (std.mem.eql(u8, argv[0], "mcp-server")) return mcpServerCommand(argv[1..], stdout, stderr);
 
-    try stderr.print("aegis plugin: unknown subcommand '{s}'.\n", .{argv[0]});
+    try stderr.print("orca plugin: unknown subcommand '{s}'.\n", .{argv[0]});
     return exit_codes.usage;
 }
 
@@ -45,12 +45,12 @@ fn doctorCommand(argv: []const []const u8, stdout: anytype, stderr: anytype) !u8
         if (std.mem.eql(u8, arg, "--help") or std.mem.eql(u8, arg, "-h")) {
             try stdout.writeAll(
                 \\Usage:
-                \\  aegis plugin doctor
-                \\  aegis plugin doctor [--json]
-                \\  aegis plugin doctor codex
-                \\  aegis plugin doctor claude
-                \\  aegis plugin doctor codex [--json]
-                \\  aegis plugin doctor claude [--json]
+                \\  orca plugin doctor
+                \\  orca plugin doctor [--json]
+                \\  orca plugin doctor codex
+                \\  orca plugin doctor claude
+                \\  orca plugin doctor codex [--json]
+                \\  orca plugin doctor claude [--json]
                 \\
             );
             return exit_codes.success;
@@ -67,7 +67,7 @@ fn doctorCommand(argv: []const []const u8, stdout: anytype, stderr: anytype) !u8
             target = .claude;
             continue;
         }
-        try stderr.print("aegis plugin doctor: unknown option '{s}'.\n", .{arg});
+        try stderr.print("orca plugin doctor: unknown option '{s}'.\n", .{arg});
         return exit_codes.usage;
     }
 
@@ -211,13 +211,13 @@ fn collectPluginDoctorReport(allocator: std.mem.Allocator) !PluginDoctorReport {
 // ---------------------------------------------------------------------------
 
 fn writeDoctorPlain(stdout: anytype, report: PluginDoctorReport, target: DoctorTarget) !void {
-    try stdout.writeAll("Aegis Plugin Doctor\n\n");
+    try stdout.writeAll("Orca Plugin Doctor\n\n");
 
-    try stdout.print("Aegis version: {s}\n", .{report.aegis_version});
+    try stdout.print("Orca version: {s}\n", .{report.aegis_version});
     if (report.aegis_binary_path) |path| {
-        try stdout.print("Aegis binary: {s}\n", .{path});
+        try stdout.print("Orca binary: {s}\n", .{path});
     } else {
-        try stdout.writeAll("Aegis binary: unknown\n");
+        try stdout.writeAll("Orca binary: unknown\n");
     }
     try stdout.print("Current directory: {s}\n", .{report.cwd});
     try stdout.print("Workspace root: {s}\n", .{report.workspace_root});
@@ -275,13 +275,13 @@ fn writeDoctorPlain(stdout: anytype, report: PluginDoctorReport, target: DoctorT
             try stdout.writeAll("\nCodex plugin status:\n");
             try stdout.print("  host binary: {s}\n", .{if (report.host_binaries.codex) "detected" else "not detected"});
             try stdout.print("  plugin directory: {s}\n", .{if (report.plugin_directories.codex) "present" else "not yet created"});
-            try stdout.writeAll("  install: use 'aegis plugin install codex --dry-run' to preview\n");
+            try stdout.writeAll("  install: use 'orca plugin install codex --dry-run' to preview\n");
         },
         .claude => {
             try stdout.writeAll("\nClaude Code plugin status:\n");
             try stdout.print("  host binary: {s}\n", .{if (report.host_binaries.claude) "detected" else "not detected"});
             try stdout.print("  plugin directory: {s}\n", .{if (report.plugin_directories.claude) "present" else "not yet created"});
-            try stdout.writeAll("  install: use 'aegis plugin install claude --dry-run' to preview\n");
+            try stdout.writeAll("  install: use 'orca plugin install claude --dry-run' to preview\n");
         },
     }
 
@@ -379,10 +379,10 @@ fn manifestCommand(argv: []const []const u8, stdout: anytype, stderr: anytype) !
         if (std.mem.eql(u8, arg, "--help") or std.mem.eql(u8, arg, "-h")) {
             try stdout.writeAll(
                 \\Usage:
-                \\  aegis plugin manifest codex
-                \\  aegis plugin manifest claude
-                \\  aegis plugin manifest all
-                \\  aegis plugin manifest <target> [--json]
+                \\  orca plugin manifest codex
+                \\  orca plugin manifest claude
+                \\  orca plugin manifest all
+                \\  orca plugin manifest <target> [--json]
                 \\
             );
             return exit_codes.success;
@@ -403,7 +403,7 @@ fn manifestCommand(argv: []const []const u8, stdout: anytype, stderr: anytype) !
             target = .all;
             continue;
         }
-        try stderr.print("aegis plugin manifest: unknown option '{s}'.\n", .{arg});
+        try stderr.print("orca plugin manifest: unknown option '{s}'.\n", .{arg});
         return exit_codes.usage;
     }
 
@@ -506,12 +506,12 @@ fn installCommand(argv: []const []const u8, stdout: anytype, stderr: anytype) !u
         if (std.mem.eql(u8, arg, "--help") or std.mem.eql(u8, arg, "-h")) {
             try stdout.writeAll(
                 \\Usage:
-                \\  aegis plugin install codex [--dry-run]
-                \\  aegis plugin install claude [--dry-run]
-                \\  aegis plugin install all [--dry-run]
-                \\  aegis plugin install codex --path <plugin-path> [--dry-run]
-                \\  aegis plugin install claude --path <plugin-path> [--dry-run]
-                \\  aegis plugin install <target> [--yes]
+                \\  orca plugin install codex [--dry-run]
+                \\  orca plugin install claude [--dry-run]
+                \\  orca plugin install all [--dry-run]
+                \\  orca plugin install codex --path <plugin-path> [--dry-run]
+                \\  orca plugin install claude --path <plugin-path> [--dry-run]
+                \\  orca plugin install <target> [--yes]
                 \\
                 \\Options:
                 \\  --dry-run   Preview changes without mutating host config (default)
@@ -531,7 +531,7 @@ fn installCommand(argv: []const []const u8, stdout: anytype, stderr: anytype) !u
         }
         if (std.mem.eql(u8, arg, "--path")) {
             if (index + 1 >= argv.len) {
-                try stderr.writeAll("aegis plugin install: --path requires a value.\n");
+                try stderr.writeAll("orca plugin install: --path requires a value.\n");
                 return exit_codes.usage;
             }
             custom_path = argv[index + 1];
@@ -550,16 +550,16 @@ fn installCommand(argv: []const []const u8, stdout: anytype, stderr: anytype) !u
             target = .all;
             continue;
         }
-        try stderr.print("aegis plugin install: unknown option '{s}'.\n", .{arg});
+        try stderr.print("orca plugin install: unknown option '{s}'.\n", .{arg});
         return exit_codes.usage;
     }
 
     if (!dry_run and !yes) {
-        try stderr.writeAll("aegis plugin install: actual installation requires --yes or use --dry-run to preview.\n");
+        try stderr.writeAll("orca plugin install: actual installation requires --yes or use --dry-run to preview.\n");
         return exit_codes.usage;
     }
 
-    try stdout.writeAll("Aegis Plugin Install\n\n");
+    try stdout.writeAll("Orca Plugin Install\n\n");
 
     const targets = switch (target) {
         .codex => &[_]InstallTarget{.codex},
@@ -614,11 +614,11 @@ fn mcpServerCommand(argv: []const []const u8, stdout: anytype, stderr: anytype) 
         if (std.mem.eql(u8, arg, "--help") or std.mem.eql(u8, arg, "-h")) {
             try stdout.writeAll(
                 \\Usage:
-                \\  aegis plugin mcp-server [--help]
+                \\  orca plugin mcp-server [--help]
                 \\
                 \\Status: limited / deferred
-                \\  The Aegis MCP plugin server is planned but not yet active.
-                \\  When implemented, it will expose safe read-only Aegis capabilities as MCP tools:
+                \\  The Orca MCP plugin server is planned but not yet active.
+                \\  When implemented, it will expose safe read-only Orca capabilities as MCP tools:
                 \\    - aegis_doctor
                 \\    - aegis_plugin_doctor
                 \\    - aegis_policy_check
@@ -638,13 +638,13 @@ fn mcpServerCommand(argv: []const []const u8, stdout: anytype, stderr: anytype) 
             );
             return exit_codes.success;
         }
-        try stderr.print("aegis plugin mcp-server: unknown option '{s}'.\n", .{arg});
+        try stderr.print("orca plugin mcp-server: unknown option '{s}'.\n", .{arg});
         return exit_codes.usage;
     }
 
-    try stdout.writeAll("Aegis Plugin MCP Server\n\n");
+    try stdout.writeAll("Orca Plugin MCP Server\n\n");
     try stdout.writeAll("Status: limited / deferred\n");
-    try stdout.writeAll("  The Aegis MCP plugin server is planned but not yet active.\n");
+    try stdout.writeAll("  The Orca MCP plugin server is planned but not yet active.\n");
     try stdout.writeAll("  It does not listen on any port or transport.\n\n");
     try stdout.writeAll("Planned safe tools (when implemented):\n");
     try stdout.writeAll("  - aegis_doctor\n");
@@ -662,7 +662,7 @@ fn mcpServerCommand(argv: []const []const u8, stdout: anytype, stderr: anytype) 
     try stdout.writeAll("  - credential access\n");
     try stdout.writeAll("  - policy mutation without explicit approval\n");
     try stdout.writeAll("  - live drone actuation (arming, takeoff, motor commands, etc.)\n\n");
-    try stdout.writeAll("Use 'aegis plugin mcp-server --help' for full details.\n");
+    try stdout.writeAll("Use 'orca plugin mcp-server --help' for full details.\n");
     return exit_codes.success;
 }
 
@@ -753,8 +753,8 @@ test "plugin doctor prints expected sections" {
     try std.testing.expectEqual(exit_codes.success, code);
 
     const output = stdout_stream.getWritten();
-    try std.testing.expect(std.mem.indexOf(u8, output, "Aegis Plugin Doctor") != null);
-    try std.testing.expect(std.mem.indexOf(u8, output, "Aegis version:") != null);
+    try std.testing.expect(std.mem.indexOf(u8, output, "Orca Plugin Doctor") != null);
+    try std.testing.expect(std.mem.indexOf(u8, output, "Orca version:") != null);
     try std.testing.expect(std.mem.indexOf(u8, output, "Policy:") != null);
     try std.testing.expect(std.mem.indexOf(u8, output, "Plugin directories:") != null);
     try std.testing.expect(std.mem.indexOf(u8, output, "Host binaries:") != null);

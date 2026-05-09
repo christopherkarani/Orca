@@ -92,17 +92,17 @@ test "phase 19 release files include integrity checks without obvious credential
     }
 }
 
-test "phase 19 Dockerfile references installed Aegis binary" {
+test "phase 19 Dockerfile references installed Orca binary" {
     const text = try std.fs.cwd().readFileAlloc(std.testing.allocator, "packaging/docker/Dockerfile", 64 * 1024);
     defer std.testing.allocator.free(text);
-    try std.testing.expect(std.mem.indexOf(u8, text, "COPY aegis") != null);
-    try std.testing.expect(std.mem.indexOf(u8, text, "/usr/local/bin/aegis") != null);
+    try std.testing.expect(std.mem.indexOf(u8, text, "COPY orca") != null);
+    try std.testing.expect(std.mem.indexOf(u8, text, "/usr/local/bin/orca") != null);
 }
 
-test "GitHub composite action does not shell-interpolate command input before Aegis" {
-    const text = try std.fs.cwd().readFileAlloc(std.testing.allocator, ".github/actions/aegis-run/action.yml", 64 * 1024);
+test "GitHub composite action does not shell-interpolate command input before Orca" {
+    const text = try std.fs.cwd().readFileAlloc(std.testing.allocator, ".github/actions/orca-run/action.yml", 64 * 1024);
     defer std.testing.allocator.free(text);
-    try std.testing.expect(std.mem.indexOf(u8, text, "aegis run --mode ci -- ${{ inputs.command }}") == null);
-    try std.testing.expect(std.mem.indexOf(u8, text, "AEGIS_ACTION_COMMAND: ${{ inputs.command }}") != null);
-    try std.testing.expect(std.mem.indexOf(u8, text, "aegis run --mode ci -- bash -c \"$AEGIS_ACTION_COMMAND\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, text, "orca run --mode ci -- ${{ inputs.command }}") == null);
+    try std.testing.expect(std.mem.indexOf(u8, text, "ORCA_ACTION_COMMAND: ${{ inputs.command }}") != null);
+    try std.testing.expect(std.mem.indexOf(u8, text, "orca run --mode ci -- bash -c \"$ORCA_ACTION_COMMAND\"") != null);
 }

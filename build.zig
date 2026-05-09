@@ -58,7 +58,7 @@ pub fn build(b: *std.Build) void {
     });
 
     const exe = b.addExecutable(.{
-        .name = "aegis",
+        .name = "orca",
         .root_module = b.createModule(.{
             .root_source_file = b.path("src/main.zig"),
             .target = target,
@@ -72,8 +72,13 @@ pub fn build(b: *std.Build) void {
 
     b.installArtifact(exe);
 
+    // Compatibility alias: aegis -> orca
+    const aegis_alias = b.addInstallBinFile(exe.getEmittedBin(), "aegis");
+    aegis_alias.step.dependOn(&exe.step);
+    b.getInstallStep().dependOn(&aegis_alias.step);
+
     const edge_exe = b.addExecutable(.{
-        .name = "aegis-edge",
+        .name = "orca-edge",
         .root_module = b.createModule(.{
             .root_source_file = b.path("packages/edge/src/main.zig"),
             .target = target,
@@ -87,7 +92,12 @@ pub fn build(b: *std.Build) void {
 
     b.installArtifact(edge_exe);
 
-    const run_step = b.step("run", "Run the Aegis CLI");
+    // Compatibility alias: aegis-edge -> orca-edge
+    const aegis_edge_alias = b.addInstallBinFile(edge_exe.getEmittedBin(), "aegis-edge");
+    aegis_edge_alias.step.dependOn(&edge_exe.step);
+    b.getInstallStep().dependOn(&aegis_edge_alias.step);
+
+    const run_step = b.step("run", "Run the Orca CLI");
     const run_cmd = b.addRunArtifact(exe);
     run_cmd.step.dependOn(b.getInstallStep());
     if (b.args) |args| {
@@ -398,6 +408,6 @@ pub fn build(b: *std.Build) void {
             },
         }),
     });
-    const check_windows_step = b.step("check-windows", "Compile Aegis for Windows without running it");
+    const check_windows_step = b.step("check-windows", "Compile Orca for Windows without running it");
     check_windows_step.dependOn(&windows_exe.step);
 }
