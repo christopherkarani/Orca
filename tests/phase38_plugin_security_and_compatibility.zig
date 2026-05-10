@@ -740,7 +740,7 @@ test "docs include strongest protection warning" {
         defer std.testing.allocator.free(content);
         // Docs should mention "strongest protection" and "aegis run --"
         try std.testing.expect(std.mem.indexOf(u8, content, "strongest protection") != null);
-        try std.testing.expect(std.mem.indexOf(u8, content, "aegis run --") != null);
+        try std.testing.expect(std.mem.indexOf(u8, content, "orca run --") != null);
     }
 }
 

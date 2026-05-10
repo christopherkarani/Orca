@@ -63,6 +63,6 @@ For Edge-specific operational details, see the Edge documentation in `docs/edge/
 
 ## See Also
 
-- `docs/integrations/aegis-cli-plugin.md`
+- `docs/integrations/orca-cli-plugin.md`
 - `docs/integrations/plugin-security-model.md`
 - `docs/integrations/drone-safepoint.md`

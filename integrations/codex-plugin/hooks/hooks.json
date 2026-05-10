@@ -5,9 +5,9 @@
       "hooks": [
         {
           "type": "command",
-          "command": "aegis hook codex SessionStart",
+          "command": "orca hook codex SessionStart",
           "timeout": 10,
-          "statusMessage": "Checking Aegis plugin status"
+          "statusMessage": "Checking Orca plugin status"
         }
       ]
     }
@@ -18,9 +18,9 @@
       "hooks": [
         {
           "type": "command",
-          "command": "aegis hook codex UserPromptSubmit",
+          "command": "orca hook codex UserPromptSubmit",
           "timeout": 10,
-          "statusMessage": "Checking prompt with Aegis"
+          "statusMessage": "Checking prompt with Orca"
         }
       ]
     }
@@ -31,9 +31,9 @@
       "hooks": [
         {
           "type": "command",
-          "command": "aegis hook codex PreToolUse",
+          "command": "orca hook codex PreToolUse",
           "timeout": 15,
-          "statusMessage": "Checking tool use with Aegis"
+          "statusMessage": "Checking tool use with Orca"
         }
       ]
     }
@@ -44,9 +44,9 @@
       "hooks": [
         {
           "type": "command",
-          "command": "aegis hook codex PermissionRequest",
+          "command": "orca hook codex PermissionRequest",
           "timeout": 15,
-          "statusMessage": "Checking permission request with Aegis"
+          "statusMessage": "Checking permission request with Orca"
         }
       ]
     }
@@ -57,9 +57,9 @@
       "hooks": [
         {
           "type": "command",
-          "command": "aegis hook codex PostToolUse",
+          "command": "orca hook codex PostToolUse",
           "timeout": 10,
-          "statusMessage": "Acknowledging tool use to Aegis"
+          "statusMessage": "Acknowledging tool use to Orca"
         }
       ]
     }
@@ -70,9 +70,9 @@
       "hooks": [
         {
           "type": "command",
-          "command": "aegis hook codex Stop",
+          "command": "orca hook codex Stop",
           "timeout": 10,
-          "statusMessage": "Notifying Aegis of session stop"
+          "statusMessage": "Notifying Orca of session stop"
         }
       ]
     }

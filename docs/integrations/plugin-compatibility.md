@@ -72,6 +72,19 @@ All plugin features work on the same platforms as the Orca CLI:
 | Linux (arm64) | yes | yes | yes | yes |
 | Windows (x86_64) | yes | yes | yes | yes |
 
+## Marketplace Support
+
+| Marketplace Type | Codex | Claude Code | OpenCode |
+|------------------|-------|-------------|----------|
+| Repo marketplace | `.agents/plugins/marketplace.json` | `.claude-plugin/marketplace.json` | n/a |
+| Official marketplace | not yet listed | not yet listed | n/a |
+
+Repo marketplace files point to the local plugin directories:
+- Codex: `integrations/codex-plugin/`
+- Claude Code: `integrations/claude-code-plugin/`
+
+These are repo marketplace sources, not official marketplace listings.
+
 ## What Is Not Supported
 
 | Feature | Status | Notes |
@@ -80,11 +93,11 @@ All plugin features work on the same platforms as the Orca CLI:
 | Drone plugin features | not included | Separate workstream, out of scope |
 | Telemetry | not included | No phone-home behavior |
 | SaaS requirement | not included | All operations are local |
-| Official marketplace | not yet implemented | Local install and release artifacts only |
+| Official marketplace | not yet implemented | Repo marketplace is available; official listing is separate |
 
 ## See Also
 
-- `docs/integrations/aegis-cli-plugin.md`
+- `docs/integrations/orca-cli-plugin.md`
 - `docs/integrations/codex.md`
 - `docs/integrations/claude-code.md`
 - `docs/integrations/opencode.md`

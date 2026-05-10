@@ -15,11 +15,11 @@ const readme_path = plugin_dir ++ "/README.md";
 const marketplace_example_path = plugin_dir ++ "/examples/marketplace.json";
 
 const skills = &[_][]const u8{
-    "aegis-doctor",
-    "aegis-init",
-    "aegis-protect",
-    "aegis-redteam",
-    "aegis-replay",
+    "orca-doctor",
+    "orca-init",
+    "orca-protect",
+    "orca-redteam",
+    "orca-replay",
 };
 
 // ---------------------------------------------------------------------------
@@ -84,7 +84,7 @@ test "codex plugin manifest contains expected fields" {
     try std.testing.expect(obj.get("interface") != null);
 
     const name = obj.get("name").?.string;
-    try std.testing.expectEqualStrings("aegis", name);
+    try std.testing.expectEqualStrings("orca", name);
 }
 
 test "codex plugin manifest points to skills directory" {
@@ -149,18 +149,18 @@ test "each skill references real aegis commands" {
         const content = try readFile(std.testing.allocator, skill_path);
         defer std.testing.allocator.free(content);
 
-        // Every skill should mention "aegis" at least once
-        try std.testing.expect(std.mem.indexOf(u8, content, "aegis") != null);
+        // Every skill should mention "orca" at least once
+        try std.testing.expect(std.mem.indexOf(u8, content, "orca") != null);
     }
 }
 
 test "no drone skill exists in codex plugin" {
-    const drone_skill_path = plugin_dir ++ "/skills/aegis-drone/SKILL.md";
+    const drone_skill_path = plugin_dir ++ "/skills/orca-drone/SKILL.md";
     try std.testing.expect(!fileExists(drone_skill_path));
 }
 
 test "no mcp skill exists in codex plugin" {
-    const mcp_skill_path = plugin_dir ++ "/skills/aegis-mcp/SKILL.md";
+    const mcp_skill_path = plugin_dir ++ "/skills/orca-mcp/SKILL.md";
     try std.testing.expect(!fileExists(mcp_skill_path));
 }
 
@@ -192,8 +192,8 @@ test "codex hooks config calls aegis hook codex" {
     const content = try readFile(allocator, hooks_path);
     defer allocator.free(content);
 
-    // Every hook should reference "aegis hook codex"
-    try std.testing.expect(std.mem.indexOf(u8, content, "aegis hook codex") != null);
+    // Every hook should reference "orca hook codex"
+    try std.testing.expect(std.mem.indexOf(u8, content, "orca hook codex") != null);
 }
 
 test "codex hooks config does not call nonexistent scripts" {
@@ -291,7 +291,7 @@ test "plugin README includes strongest-protection warning" {
     defer std.testing.allocator.free(content);
 
     try std.testing.expect(std.mem.indexOf(u8, content, "strongest local protection") != null);
-    try std.testing.expect(std.mem.indexOf(u8, content, "aegis run --") != null);
+    try std.testing.expect(std.mem.indexOf(u8, content, "orca run --") != null);
 }
 
 test "plugin README states no MCP server behavior" {
@@ -330,7 +330,7 @@ test "docs do not claim official marketplace availability" {
 // Hook fixture integration tests (requires built binary)
 // ---------------------------------------------------------------------------
 
-test "fake codex hook payload fixtures still work with aegis hook codex" {
+test "fake codex hook payload fixtures still work with orca hook codex" {
     // This test is a smoke test that validates fixture files are present.
     // Full integration requires the built binary and is tested manually.
     const fixture_dir = "tests/plugin-fixtures/codex";

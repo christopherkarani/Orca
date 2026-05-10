@@ -1,10 +1,10 @@
-# Aegis Claude Marketplace (Local Example)
+# Orca Claude Marketplace (Local Example)
 
-This directory contains a local marketplace catalog example for the Aegis Claude Code plugin.
+This directory contains a local marketplace catalog example for the Orca Claude Code plugin.
 
 ## What this file is
 
-The `marketplace.json` file is a documented example of how a Claude Code marketplace catalog might reference the Aegis plugin. It is not an official marketplace listing.
+The `marketplace.json` file is a documented example of how a Claude Code marketplace catalog might reference the Orca plugin. It is not an official marketplace listing.
 
 ## How to use locally
 
@@ -24,10 +24,10 @@ If your Claude Code version supports local marketplace catalogs:
 After loading the marketplace catalog, run:
 
 ```bash
-aegis plugin doctor claude
+orca plugin doctor claude
 ```
 
-This checks that the plugin directory is detected and that the Aegis CLI is available.
+This checks that the plugin directory is detected and that the Orca CLI is available.
 
 ## Known limitations
 

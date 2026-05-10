@@ -26,17 +26,17 @@ zig build
 
 1. Download the latest plugin zip from the release page:
    ```text
-   aegis-claude-code-plugin-vX.Y.Z.zip
+   orca-claude-code-plugin-vX.Y.Z.zip
    ```
 
 2. Verify the checksum:
    ```bash
-   sha256sum -c aegis-plugin-checksums.txt
+   sha256sum -c orca-plugin-checksums.txt
    ```
 
 3. Extract the plugin to your preferred location:
    ```bash
-   unzip aegis-claude-code-plugin-vX.Y.Z.zip -d ~/aegis-plugins/claude
+   unzip orca-claude-code-plugin-vX.Y.Z.zip -d ~/orca-plugins/claude
    ```
 
 4. Point Claude Code to the extracted plugin directory.
@@ -58,24 +58,39 @@ zig build
    ./zig-out/bin/orca plugin doctor claude
    ```
 
-### Local marketplace install
+### Repo marketplace install
 
-This repository includes a local Claude Code marketplace catalog for installing the Orca plugin. It is not an official marketplace approval unless explicitly stated in release notes.
+If your Claude Code version supports repo marketplace sources, add this repository:
 
-If your Claude Code version supports repo-local marketplace files, see:
+```bash
+claude plugin marketplace add chriskarani/orca
+claude plugin install orca@orca --scope user
+```
+
+Or inside Claude Code:
+```text
+/plugin marketplace add chriskarani/orca
+/plugin install orca@orca
+/reload-plugins
+```
+
+These commands add the Orca repository as a plugin marketplace source. This is not the same as being listed in the official Claude marketplace.
+
+### Local marketplace example
+
+For reference, a local marketplace catalog example is available at:
 
 ```text
 integrations/claude-marketplace/.claude-plugin/marketplace.json
 ```
 
-1. Point Claude Code to the marketplace file:
-   ```text
-   integrations/claude-marketplace/.claude-plugin/marketplace.json
-   ```
+This is a documented example only. The catalog references the plugin source at `../claude-code-plugin` (relative to that directory).
 
-2. The catalog references the plugin source at `../claude-code-plugin` (relative to this directory).
+The root-level marketplace file for repo marketplace install is:
 
-3. Install the plugin through your Claude Code plugin management UI.
+```text
+.claude-plugin/marketplace.json
+```
 
 ### Manual fallback install
 
@@ -83,7 +98,7 @@ If your Claude Code version does not support automatic plugin loading:
 
 1. Copy the skills from `integrations/claude-code-plugin/skills/` into your Claude Code skills directory.
 2. Copy the hooks from `integrations/claude-code-plugin/hooks/hooks.json` into your Claude Code hooks configuration.
-3. Ensure `aegis` is in PATH or use the full path to the binary.
+3. Ensure `orca` is in PATH or use the full path to the binary.
 
 ## Verify install
 
@@ -138,7 +153,7 @@ Expected: `allow` decision in valid JSON.
 | `redteam` | `skills/redteam/SKILL.md` | Run red-team fixtures |
 | `replay` | `skills/replay/SKILL.md` | Replay latest session |
 
-Skills are invoked as `/aegis:doctor`, `/aegis:init`, `/aegis:protect`, `/aegis:redteam`, `/aegis:replay` depending on the Claude Code plugin namespace configuration.
+Skills are invoked as `/orca:doctor`, `/orca:init`, `/orca:protect`, `/orca:redteam`, `/orca:replay` depending on the Claude Code plugin namespace configuration.
 
 ## Hook list
 
@@ -175,7 +190,7 @@ Run `orca init --preset generic-agent` to create a default policy, then validate
 
 ### Orca binary not found
 
-Build Orca with `zig build` or ensure `./zig-out/bin/aegis` is in your PATH.
+Build Orca with `zig build` or ensure `./zig-out/bin/orca` is in your PATH.
 
 ### Fake secret redaction questions
 

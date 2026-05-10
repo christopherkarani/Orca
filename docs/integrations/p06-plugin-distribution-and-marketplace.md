@@ -66,7 +66,7 @@ docs/integrations/claude-code.md
   - Added troubleshooting section
   - Added known limitations
 
-docs/integrations/aegis-cli-plugin.md
+docs/integrations/orca-cli-plugin.md
   - Added plugin packaging section
   - Added install dry-run behavior section
   - Added host limitations section
@@ -176,7 +176,7 @@ Covers:
 
 States: "This repository includes a local Claude Code marketplace catalog for installing the Aegis plugin. It is not an official marketplace approval unless explicitly stated in release notes."
 
-### Aegis CLI plugin docs (`docs/integrations/aegis-cli-plugin.md`)
+### Aegis CLI plugin docs (`docs/integrations/orca-cli-plugin.md`)
 
 Covers:
 - Plugin surface commands (`plugin doctor`, `plugin manifest`, `plugin install`, `decide`, `hook`)

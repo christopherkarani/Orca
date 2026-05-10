@@ -281,7 +281,7 @@ Claude plugin zip contents:
 - [x] `README.md` — Plugin section present, links correct
 - [x] `docs/integrations/codex.md` — Complete install/verify/uninstall docs
 - [x] `docs/integrations/claude-code.md` — Complete install/verify/uninstall docs
-- [x] `docs/integrations/aegis-cli-plugin.md` — Complete CLI surface docs
+- [x] `docs/integrations/orca-cli-plugin.md` — Complete CLI surface docs
 - [x] `docs/integrations/plugin-security-model.md` — Correct trust boundaries
 - [x] `docs/integrations/plugin-troubleshooting.md` — Comprehensive troubleshooting
 - [x] `docs/integrations/plugin-compatibility.md` — Accurate compatibility matrix

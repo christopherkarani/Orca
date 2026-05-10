@@ -58,6 +58,22 @@ The OpenCode plugin is a thin host integration. It delegates policy and replay t
 3. Extract the plugin to a local directory of your choice.
 4. Point Codex, Claude Code, or OpenCode at the extracted plugin directory.
 
+### From a repo marketplace
+
+**Codex:**
+```bash
+codex plugin marketplace add YOUR_ORG/orca
+```
+Then install Orca from Codex's plugin UI/directory after adding the marketplace.
+
+**Claude Code:**
+```bash
+claude plugin marketplace add YOUR_ORG/orca
+claude plugin install orca@orca --scope user
+```
+
+These commands add the Orca repository as a plugin marketplace source. This is not the same as being listed in the official Codex or Claude marketplace.
+
 ### From a local path
 
 1. Build Orca:

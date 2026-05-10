@@ -1,26 +1,26 @@
 {
-  "name": "aegis",
-  "version": "1.0.0",
-  "description": "Aegis safety hooks and skills for Codex.",
-  "author": {
-    "name": "Aegis"
-  },
-  "homepage": "https://github.com/OWNER/REPO",
-  "repository": "https://github.com/OWNER/REPO",
-  "license": "Apache-2.0",
-  "keywords": [
-    "security",
-    "ai-agents",
-    "policy",
-    "audit",
-    "redteam"
-  ],
-  "skills": "./skills/",
-  "hooks": "./hooks/hooks.json",
-  "interface": {
-    "displayName": "Aegis",
-    "shortDescription": "Runtime firewall helpers for Codex.",
-    "longDescription": "Run Aegis doctor, policy checks, red-team fixtures, replay, and hook-based safety checks from Codex.",
-    "developerName": "Aegis"
-  }
+    "name": "orca",
+    "version": "1.0.0",
+    "description": "Orca safety hooks and skills for Codex.",
+    "author": {
+        "name": "Orca"
+    },
+    "homepage": "https://github.com/chriskarani/orca",
+    "repository": "https://github.com/chriskarani/orca",
+    "license": "Apache-2.0",
+    "keywords": [
+        "security",
+        "ai-agents",
+        "policy",
+        "audit",
+        "redteam"
+    ],
+    "skills": "./skills/",
+    "hooks": "./hooks/hooks.json",
+    "interface": {
+        "displayName": "Orca",
+        "shortDescription": "Runtime firewall helpers for Codex.",
+        "longDescription": "Run Orca doctor, policy checks, red-team fixtures, replay, and hook-based safety checks from Codex.",
+        "developerName": "Orca"
+    }
 }

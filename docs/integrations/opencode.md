@@ -20,15 +20,37 @@ orca run -- opencode
 
 The plugin adds native hooks and guardrails inside OpenCode, but `orca run -- opencode` is the strongest protection because the agent session itself is launched as an Orca-managed child process with filtered environment variables and full policy enforcement.
 
+The strongest local protection remains running OpenCode through `orca run -- opencode`; the OpenCode plugin provides native hooks and guardrails inside OpenCode.
+
 ## Prerequisites
 
-- Orca CLI built and available in PATH
-- Zig 0.15.2 (to build Orca from source)
-- OpenCode host binary installed
+- Orca CLI built and available in PATH (run `orca doctor` to verify)
+- OpenCode host installed
+
+Orca must be installed separately. The plugin does not bundle the Orca CLI.
 
 ## Install instructions
 
+### npm install
+
+Add to your `opencode.json`:
+
+```json
+{
+  "$schema": "https://opencode.ai/config.json",
+  "plugin": ["orca-opencode-plugin"]
+}
+```
+
+Then install:
+
+```bash
+npm install orca-opencode-plugin
+```
+
 ### Build Orca
+
+If you are installing from the Orca repository:
 
 ```bash
 zig build
@@ -54,9 +76,12 @@ Install the plugin for all OpenCode sessions:
 
 OpenCode loads global plugins from `~/.config/opencode/plugins/` when no project-local plugin is present.
 
-### Optional npm distribution
+### Local fallback install
 
-Official npm distribution is not yet implemented. Use the local path or global config install paths above until a published package is available.
+```bash
+mkdir -p ~/.config/opencode/plugins
+cp integrations/opencode-plugin/orca.ts ~/.config/opencode/plugins/orca.ts
+```
 
 ### Manual fallback install
 
@@ -175,12 +200,17 @@ cat tests/plugin-fixtures/opencode/tool_execute_before_command_safe.json \
 
 Remove the plugin from your OpenCode configuration:
 
-1. Delete the local project plugin:
+1. Delete the npm package:
+   ```bash
+   npm uninstall orca-opencode-plugin
+   ```
+
+2. Or delete the local project plugin:
    ```bash
    rm .opencode/plugins/orca.ts
    ```
 
-2. Or delete the global plugin:
+3. Or delete the global plugin:
    ```bash
    rm ~/.config/opencode/plugins/orca.ts
    ```
@@ -214,7 +244,8 @@ The plugin uses synthetic test secrets (e.g., `fake_p05_secret_value`) in fixtur
 - Hooks are advisory; enforcement depends on OpenCode host support.
 - The strongest protection is `orca run -- opencode`.
 - Plugin installation is a preview/dry-run by default.
-- Official npm distribution is not yet implemented.
+- No telemetry is collected.
+- The OpenCode plugin does not add MCP server behavior or drone-specific plugin features.
 
 ## Security model
 

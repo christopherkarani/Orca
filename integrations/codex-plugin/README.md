@@ -1,22 +1,22 @@
-# Aegis Codex Plugin
+# Orca Codex Plugin
 
-Aegis safety hooks and skills for Codex.
+Orca safety hooks and skills for Codex.
 
 ## What this plugin does
 
-This plugin adds Aegis-native skills and lifecycle hooks to Codex. It lets Codex call the Aegis CLI for policy checks, red-team fixtures, session replay, and runtime safety decisions without duplicating policy logic.
+This plugin adds Orca-native skills and lifecycle hooks to Codex. It lets Codex call the Orca CLI for policy checks, red-team fixtures, session replay, and runtime safety decisions without duplicating policy logic.
 
-The plugin is a thin integration layer. The Aegis CLI remains the source of truth for all policy decisions.
+The plugin is a thin integration layer. The Orca CLI remains the source of truth for all policy decisions.
 
 ## Prerequisites
 
-- Aegis CLI built and available in PATH (or use `./zig-out/bin/aegis` from the repo)
-- Zig 0.15.2 to build Aegis from source
+- Orca CLI built and available in PATH (or use `./zig-out/bin/orca` from the repo)
+- Zig 0.15.2 to build Orca from source
 - Codex host binary installed
 
 ## Install from local path
 
-1. Build Aegis:
+1. Build Orca:
    ```bash
    zig build
    ```
@@ -25,7 +25,7 @@ The plugin is a thin integration layer. The Aegis CLI remains the source of trut
 
 3. Verify the plugin is recognized:
    ```bash
-   aegis plugin doctor codex
+   orca plugin doctor codex
    ```
 
 ## Install through repo marketplace
@@ -34,14 +34,14 @@ If your Codex version supports repo-local marketplace files, see `integrations/c
 
 ## Verify install
 
-Run the Aegis plugin doctor:
+Run the Orca plugin doctor:
 
 ```bash
-aegis plugin doctor codex
+orca plugin doctor codex
 ```
 
 Expected output sections:
-- Aegis version
+- Orca version
 - Policy status (present/valid)
 - Plugin directories (codex: found)
 - Host binaries (codex: detected or not detected)
@@ -50,15 +50,15 @@ Expected output sections:
 
 | Skill | Purpose |
 |-------|---------|
-| `aegis-doctor` | Check Aegis installation, policy, and plugin readiness |
-| `aegis-init` | Create or repair an Aegis policy for the current repo |
-| `aegis-protect` | Explain how to run Codex under Aegis protection |
-| `aegis-redteam` | Run deterministic red-team fixtures |
-| `aegis-replay` | Show and explain the latest Aegis session replay |
+| `orca-doctor` | Check Orca installation, policy, and plugin readiness |
+| `orca-init` | Create or repair an Orca policy for the current repo |
+| `orca-protect` | Explain how to run Codex under Orca protection |
+| `orca-redteam` | Run deterministic red-team fixtures |
+| `orca-replay` | Show and explain the latest Orca session replay |
 
 ## Hooks included
 
-The plugin registers lifecycle hooks that call `aegis hook codex <event>`:
+The plugin registers lifecycle hooks that call `orca hook codex <event>`:
 
 | Event | When it fires |
 |-------|---------------|
@@ -69,27 +69,27 @@ The plugin registers lifecycle hooks that call `aegis hook codex <event>`:
 | `PostToolUse` | After Codex finishes using a tool |
 | `Stop` | When the session stops |
 
-## How hooks call Aegis
+## How hooks call Orca
 
-Each hook sends a JSON payload to `aegis hook codex <event>` via stdin and reads a JSON decision from stdout. The hook stdout remains valid for Codex parsing. Human-readable logs go to stderr.
+Each hook sends a JSON payload to `orca hook codex <event>` via stdin and reads a JSON decision from stdout. The hook stdout remains valid for Codex parsing. Human-readable logs go to stderr.
 
 Example:
 
 ```bash
 echo '{"version":1,"host":"codex","event":"PreToolUse","payload":{"tool":"shell","command":"git status"}}' \
-  | aegis hook codex PreToolUse
+  | orca hook codex PreToolUse
 ```
 
 ## Run redteam
 
 ```bash
-aegis redteam --ci
+orca redteam --ci
 ```
 
 ## Replay sessions
 
 ```bash
-aegis replay --session last --verify
+orca replay --session last --verify
 ```
 
 ## Uninstall
@@ -99,13 +99,13 @@ Remove the plugin from Codex using your Codex plugin management commands. This p
 ## Known limitations
 
 - Hooks are advisory; they do not enforce policy independently of the host.
-- The strongest protection remains `aegis run -- <codex-command>`.
+- The strongest protection remains `orca run -- <codex-command>`.
 - Plugin installation preview only; actual host plugin loading depends on Codex version.
 - No telemetry is collected.
 
 ## Security model
 
-- This plugin calls the Aegis CLI; it does not reimplement policy logic.
+- This plugin calls the Orca CLI; it does not reimplement policy logic.
 - No raw secrets are persisted in plugin files.
 - Hook stdout is host-valid JSON.
 - Human logs go to stderr.
@@ -118,4 +118,4 @@ This plugin does not add MCP server behavior or drone-specific plugin features.
 
 ## Strongest protection warning
 
-> The Aegis Codex plugin adds native skills and lifecycle hooks for Codex. For the strongest local protection, run the Codex process itself through Aegis with `aegis run -- <codex-command>`.
+> The Orca Codex plugin adds native skills and lifecycle hooks for Codex. For the strongest local protection, run the Codex process itself through Orca with `orca run -- <codex-command>`.

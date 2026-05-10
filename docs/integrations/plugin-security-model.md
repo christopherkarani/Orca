@@ -133,7 +133,7 @@ A plugin request is rejected if it would:
 
 ## See Also
 
-- `docs/integrations/aegis-cli-plugin.md`
+- `docs/integrations/orca-cli-plugin.md`
 - `docs/integrations/plugin-troubleshooting.md`
 - `docs/integrations/separate-workstream-guardrails.md`
 - `PLUGIN_SECURITY_MODEL.md`

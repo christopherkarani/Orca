@@ -1,6 +1,6 @@
 # Orca OpenCode Plugin
 
-Orca safety hooks for OpenCode.
+OpenCode plugin wrapper for Orca runtime guardrails.
 
 ## What this plugin does
 
@@ -10,11 +10,33 @@ The plugin is a thin integration layer. The Orca CLI remains the source of truth
 
 ## Prerequisites
 
-- Orca CLI built and available in PATH (or use `./zig-out/bin/orca` from the repo)
-- Zig 0.15.2 to build Orca from source
+- Orca CLI built and available in PATH (run `orca doctor` to verify)
 - OpenCode host installed
 
+Orca must be installed separately. The plugin does not bundle the Orca CLI.
+
+## Install from npm
+
+Add to your `opencode.json`:
+
+```json
+{
+  "$schema": "https://opencode.ai/config.json",
+  "plugin": ["orca-opencode-plugin"]
+}
+```
+
+Then install dependencies:
+
+```bash
+npm install orca-opencode-plugin
+```
+
+The strongest local protection remains running OpenCode through `orca run -- opencode`; the OpenCode plugin provides native hooks and guardrails inside OpenCode.
+
 ## Install from local path
+
+If you prefer to use the plugin directly from the Orca repository:
 
 ### Project-local install
 
@@ -125,13 +147,16 @@ orca replay --session last --verify
 
 ## Uninstall
 
-Remove the plugin file from your OpenCode plugins directory:
+Remove the plugin from your OpenCode configuration:
 
 ```bash
-# Project-local
+# npm package
+npm uninstall orca-opencode-plugin
+
+# Project-local file
 rm .opencode/plugins/orca.ts
 
-# Global
+# Global file
 rm ~/.config/opencode/plugins/orca.ts
 ```
 
@@ -143,7 +168,7 @@ This plugin does not mutate host configuration, so uninstalling is safe.
 - The strongest protection remains `orca run -- opencode`.
 - Plugin installation depends on OpenCode version and plugin loading mechanism.
 - No telemetry is collected.
-- Official marketplace availability is not yet implemented.
+- Official npm publication is in progress; the package structure is ready for publication.
 
 ## Security model
 
@@ -157,7 +182,7 @@ This plugin does not mutate host configuration, so uninstalling is safe.
 
 ## No MCP server behavior
 
-This plugin does not add MCP server behavior or drone-specific plugin features.
+The OpenCode plugin does not add MCP server behavior or drone-specific plugin features.
 
 ## Strongest protection warning
 
