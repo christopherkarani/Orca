@@ -405,7 +405,7 @@ fn writeDoctorPlain(stdout: anytype, report: PluginDoctorReport, target: DoctorT
             try stdout.print("  package.json: {s}\n", .{if (report.openclaw_paths.package_json_exists) "exists" else "not found"});
             try stdout.print("  source (src/index.ts): {s}\n", .{if (report.openclaw_paths.source_exists) "exists" else "not found"});
             try stdout.writeAll("  install: use 'orca plugin install openclaw --dry-run' to preview\n");
-            try stdout.writeAll("  note: npm publication planned in P10; ClawHub submission planned in P11\n");
+            try stdout.writeAll("  note: npm package orca-openclaw-plugin is published; ClawHub package orca-openclaw-plugin is published\n");
         },
     }
 
@@ -868,8 +868,8 @@ fn installCommand(argv: []const []const u8, stdout: anytype, stderr: anytype) !u
                 // OpenClaw-specific install guidance
                 try stdout.writeAll("  install paths for OpenClaw:\n");
                 try stdout.writeAll("    local:   openclaw plugins install ./integrations/openclaw-plugin\n");
-                try stdout.writeAll("    npm:     openclaw plugins install npm:@orca/openclaw-plugin (planned in P10)\n");
-                try stdout.writeAll("    clawhub: openclaw plugins install clawhub:orca (planned in P11)\n");
+                try stdout.writeAll("    npm:     openclaw plugins install npm:orca-openclaw-plugin (published)\n");
+                try stdout.writeAll("    clawhub: openclaw plugins install clawhub:orca-openclaw-plugin (published)\n");
                 if (dry_run) {
                     try stdout.writeAll("  action: no changes made (dry-run)\n");
                     try stdout.writeAll("  next step: run 'openclaw plugins install ./integrations/openclaw-plugin' if OpenClaw is installed\n");

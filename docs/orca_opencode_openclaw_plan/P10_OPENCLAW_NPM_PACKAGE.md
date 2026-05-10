@@ -7,13 +7,13 @@ Package the Orca OpenClaw plugin for npm distribution.
 At the end of this phase, users should be able to install with:
 
 ```bash
-openclaw plugins install npm:@orca/openclaw-plugin
+openclaw plugins install npm:orca-openclaw-plugin
 ```
 
 or, if bare npm fallback is supported:
 
 ```bash
-openclaw plugins install @orca/openclaw-plugin
+openclaw plugins install orca-openclaw-plugin
 ```
 
 ---
@@ -33,7 +33,7 @@ Use High if OpenClaw package metadata validation is complex.
 Package:
 
 ```text
-@orca/openclaw-plugin
+orca-openclaw-plugin
 ```
 
 from:
@@ -98,7 +98,7 @@ temporary files
 
 ```json
 {
-  "name": "@orca/openclaw-plugin",
+  "name": "orca-openclaw-plugin",
   "version": "1.0.0",
   "type": "module",
   "main": "dist/index.js",
@@ -149,7 +149,7 @@ docs/integrations/openclaw.md
 Add npm install:
 
 ```bash
-openclaw plugins install npm:@orca/openclaw-plugin
+openclaw plugins install npm:orca-openclaw-plugin
 ```
 
 Also include:
@@ -195,7 +195,7 @@ or package path used by implementation.
 If OpenClaw is installed:
 
 ```bash
-openclaw plugins install npm:@orca/openclaw-plugin --dry-run
+openclaw plugins install npm:orca-openclaw-plugin --dry-run
 ```
 
 If no dry-run exists, do not install globally without explicit confirmation.

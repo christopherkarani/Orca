@@ -22,6 +22,13 @@
   - Hooks: `session.created`, `tool.execute.before`, `tool.execute.after`, `permission.asked`, `permission.replied`, `file.edited`, `command.executed`, `session.updated`, `session.idle`, `session.error`, `shell.env`
   - README with install instructions
 
+- **OpenClaw plugin** (`integrations/openclaw-plugin/`)
+  - Manifest: `openclaw.plugin.json`
+  - Package: `package.json` with `openclaw` field
+  - Hooks: `session.start`, `tool.before`, `tool.after`, `permission.before`, `permission.after`, `session.end`
+  - README with install instructions
+  - npm package `orca-openclaw-plugin` prepared for distribution
+
 - **Claude marketplace catalog** (`integrations/claude-marketplace/`)
   - Local marketplace example (`marketplace.json`)
   - README with usage instructions
@@ -29,12 +36,16 @@
 - **Plugin packaging scripts**
   - `scripts/package-plugins.sh` — creates plugin zips and checksums
   - `scripts/package-plugins.ps1` — Windows PowerShell equivalent
+  - `scripts/package-npm-plugins.sh` — creates npm tarballs and checksums
   - Produces:
     - `dist/plugins/aegis-codex-plugin-vX.Y.Z.zip`
     - `dist/plugins/aegis-claude-code-plugin-vX.Y.Z.zip`
     - `dist/plugins/aegis-opencode-plugin-vX.Y.Z.zip`
     - `dist/plugins/aegis-claude-marketplace-vX.Y.Z.zip`
     - `dist/plugins/aegis-plugin-checksums.txt`
+    - `dist/npm/orca-opencode-plugin-vX.Y.Z.tgz`
+    - `dist/npm/orca-openclaw-plugin-vX.Y.Z.tgz`
+    - `dist/npm/orca-npm-plugin-checksums.txt`
 
 - **Plugin documentation**
   - `docs/integrations/codex.md` — Codex plugin install and usage
@@ -76,6 +87,8 @@
 - Codex plugin: 1.1.0
 - Claude Code plugin: 1.1.0
 - OpenCode plugin: 1.1.0
+- OpenClaw plugin npm package: 1.1.3 (published as `orca-openclaw-plugin`)
+- OpenClaw ClawHub submission: published in P11 as `orca-openclaw-plugin@1.1.3`
 - Requires Aegis CLI >= 1.0.0
 
 ---

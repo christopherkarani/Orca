@@ -54,9 +54,10 @@ This document describes feature compatibility across the Orca CLI and host plugi
 - Hooks are advisory; enforcement depends on OpenClaw host support.
 - Actual plugin loading mechanism depends on OpenClaw version.
 - OpenClaw uses hooks, not skills.
-- Event names: `session.start`, `tool.before`, `tool.after`, `permission.before`, `permission.after`, `session.end`.
-- npm package: planned in P10
-- ClawHub submission: planned in P11
+- OpenClaw hooks: `session_start`, `before_tool_call`, `after_tool_call`, `session_end` (map to Orca CLI events `session.start`, `tool.before`, `tool.after`, `session.end`).
+- OpenClaw does not expose dedicated permission hooks; blocking is handled via `before_tool_call`.
+- npm package: published (orca-openclaw-plugin@1.1.3)
+- ClawHub submission: published (orca-openclaw-plugin@1.1.3)
 
 ## Version Compatibility
 
@@ -66,7 +67,7 @@ This document describes feature compatibility across the Orca CLI and host plugi
 | Codex plugin | 1.1.0 | 1.0.0 |
 | Claude Code plugin | 1.1.0 | 1.0.0 |
 | OpenCode plugin | 1.1.0 | 1.0.0 |
-| OpenClaw plugin | 1.0.0 | 1.0.0 |
+| OpenClaw plugin | 1.1.3 | 1.0.0 |
 
 Orca plugins 1.x require Orca CLI >= 1.0.0.
 
@@ -87,8 +88,8 @@ All plugin features work on the same platforms as the Orca CLI:
 | Marketplace Type | Codex | Claude Code | OpenCode | OpenClaw |
 |------------------|-------|-------------|----------|----------|
 | Repo marketplace | `.agents/plugins/marketplace.json` | `.claude-plugin/marketplace.json` | n/a | n/a |
-| Official marketplace | not yet listed | not yet listed | n/a | planned in P11 |
-| npm package | n/a | n/a | published | planned in P10 |
+| Official marketplace | not yet listed | not yet listed | n/a | ClawHub: published |
+| npm package | n/a | n/a | published (orca-opencode-plugin@1.1.1) | published (orca-openclaw-plugin@1.1.3) |
 
 Repo marketplace files point to the local plugin directories:
 - Codex: `integrations/codex-plugin/`
@@ -106,8 +107,8 @@ These are repo marketplace sources, not official marketplace listings.
 | Telemetry | not included | No phone-home behavior |
 | SaaS requirement | not included | All operations are local |
 | Official marketplace | not yet implemented | Repo marketplace is available; official listing is separate |
-| OpenClaw npm package | planned in P10 | Not yet published |
-| OpenClaw ClawHub submission | planned in P11 | Not yet submitted |
+| OpenClaw npm package | published | orca-openclaw-plugin@1.1.3 |
+| OpenClaw ClawHub submission | published in P11 | Published as `orca-openclaw-plugin@1.1.3` |
 
 ## See Also
 

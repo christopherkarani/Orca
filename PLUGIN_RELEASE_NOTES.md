@@ -48,10 +48,10 @@ The OpenCode plugin is a thin host integration. It delegates policy and replay t
 - Path: `integrations/openclaw-plugin/`
 - Manifest: `integrations/openclaw-plugin/openclaw.plugin.json`
 - Package: `integrations/openclaw-plugin/package.json`
-- Hooks: `session.start`, `tool.before`, `tool.after`, `permission.before`, `permission.after`, `session.end`
+- Hooks: `session_start` → `session.start`, `before_tool_call` → `tool.before`, `after_tool_call` → `tool.after`, `session_end` → `session.end`
 - Install guide: [docs/integrations/openclaw.md](docs/integrations/openclaw.md)
 
-The OpenClaw plugin is a thin host integration. It delegates policy and replay to Orca CLI and does not add drone-specific plugin features. OpenClaw uses hooks, not skills. npm publication is planned in P10; ClawHub submission is planned in P11.
+The OpenClaw plugin is a thin host integration. It delegates policy and replay to Orca CLI and does not add drone-specific plugin features. OpenClaw uses hooks, not skills. npm package `orca-openclaw-plugin@1.1.3` is published; ClawHub package `orca-openclaw-plugin@1.1.3` is published.
 
 ## Installation
 
@@ -68,6 +68,16 @@ The OpenClaw plugin is a thin host integration. It delegates policy and replay t
    ```
 3. Extract the plugin to a local directory of your choice.
 4. Point Codex, Claude Code, OpenCode, or OpenClaw at the extracted plugin directory.
+
+### From npm
+
+After npm publication, install the OpenClaw plugin with:
+
+```bash
+openclaw plugins install npm:orca-openclaw-plugin
+```
+
+For local validation before publication, use `npm pack --dry-run` in `integrations/openclaw-plugin/`.
 
 ### From a repo marketplace
 
@@ -118,18 +128,23 @@ zig build test
 ./zig-out/bin/orca plugin doctor codex
 ./zig-out/bin/orca plugin doctor claude
 ./zig-out/bin/orca plugin doctor opencode
+./zig-out/bin/orca plugin doctor openclaw
 ./zig-out/bin/orca plugin manifest codex
 ./zig-out/bin/orca plugin manifest claude
 ./zig-out/bin/orca plugin manifest opencode
+./zig-out/bin/orca plugin manifest openclaw
 ./zig-out/bin/orca plugin install codex --dry-run
 ./zig-out/bin/orca plugin install claude --dry-run
 ./zig-out/bin/orca plugin install opencode --dry-run
+./zig-out/bin/orca plugin install openclaw --dry-run
 cat tests/plugin-fixtures/codex/pre_tool_use_command_safe.json | ./zig-out/bin/orca hook codex PreToolUse
 cat tests/plugin-fixtures/claude/pre_tool_use_command_safe.json | ./zig-out/bin/orca hook claude PreToolUse
 cat tests/plugin-fixtures/opencode/tool_execute_before_safe.json | ./zig-out/bin/orca hook opencode tool.execute.before
+cat tests/plugin-fixtures/openclaw/tool_command_safe.json | ./zig-out/bin/orca hook openclaw tool.before
 ./zig-out/bin/orca redteam --ci
 ./zig-out/bin/orca replay --session last --verify
 ./scripts/package-plugins.sh
+./scripts/package-npm-plugins.sh
 ```
 
 ## Demo

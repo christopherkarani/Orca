@@ -97,7 +97,7 @@ Create `package.json` for local development:
 
 ```json
 {
-  "name": "@orca/openclaw-plugin",
+  "name": "orca-openclaw-plugin",
   "version": "1.0.0",
   "type": "module",
   "main": "dist/index.js",
@@ -138,13 +138,19 @@ Add `orca hook openclaw <event>` support for the OpenClaw events you can model s
 Start with generic event categories:
 
 ```text
-tool.before
-tool.after
-permission.before
-permission.after
-session.start
-session.end
+session_start
+before_tool_call
+after_tool_call
+session_end
 ```
+
+These map to Orca CLI events:
+- `session_start` → `orca hook openclaw session.start`
+- `before_tool_call` → `orca hook openclaw tool.before`
+- `after_tool_call` → `orca hook openclaw tool.after`
+- `session_end` → `orca hook openclaw session.end`
+
+OpenClaw does not expose dedicated permission hooks; blocking is handled via `before_tool_call`.
 
 If current OpenClaw docs expose different exact hook names, use those.
 
@@ -203,8 +209,8 @@ Include:
 
 - overview
 - local install
-- npm install planned
-- ClawHub submission planned
+- npm install published (orca-openclaw-plugin@1.1.3)
+- ClawHub submission published (orca-openclaw-plugin@1.1.3)
 - `orca run -- openclaw` strongest-protection wording
 - plugin limitations
 - no MCP behavior

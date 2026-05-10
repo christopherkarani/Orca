@@ -41,19 +41,39 @@ openclaw plugins install ./integrations/openclaw-plugin
 
 ### npm install
 
-npm publication is planned in P10. When published, add to your OpenClaw configuration and install:
+After npm publication, install with:
 
 ```bash
-openclaw plugins install npm:@orca/openclaw-plugin
+openclaw plugins install npm:orca-openclaw-plugin
 ```
 
-### ClawHub submission
-
-ClawHub submission is planned in P11. When available:
+If OpenClaw supports bare npm package installs:
 
 ```bash
-openclaw plugins install clawhub:orca
+openclaw plugins install orca-openclaw-plugin
 ```
+
+For local validation before publication, use `npm pack --dry-run`.
+
+Verify the install with:
+
+```bash
+orca plugin doctor openclaw
+openclaw plugins list --json
+openclaw plugins doctor
+```
+
+### ClawHub install
+
+The plugin is published to ClawHub as `orca-openclaw-plugin`.
+
+```bash
+openclaw plugins install clawhub:orca-openclaw-plugin
+```
+
+**Note:** The `clawhub:` install protocol requires a recent OpenClaw version. If your version does not support it, use the local path or npm install methods instead.
+
+For submission details, see [openclaw-clawhub.md](openclaw-clawhub.md). For the readiness checklist, see [openclaw-clawhub-checklist.md](openclaw-clawhub-checklist.md).
 
 ### Build Orca
 
@@ -128,14 +148,14 @@ orca replay --session last --verify
 
 Hooks call `orca hook openclaw <event>` with a JSON payload on stdin. The following OpenClaw events are supported:
 
-| Event | Description | Timeout |
-|-------|-------------|---------|
-| `session.start` | Session initialization check | 10s |
-| `tool.before` | Tool use policy evaluation before execution | 15s |
-| `tool.after` | Post-tool acknowledgment and logging | 10s |
-| `permission.before` | Permission request policy evaluation | 15s |
-| `permission.after` | Permission response logging | 10s |
-| `session.end` | Session end handling | 10s |
+| OpenClaw Hook | Orca CLI Event | Description | Timeout |
+|---------------|----------------|-------------|---------|
+| `session_start` | `session.start` | Session initialization check | 10s |
+| `before_tool_call` | `tool.before` | Tool use policy evaluation before execution | 15s |
+| `after_tool_call` | `tool.after` | Post-tool acknowledgment and logging | 10s |
+| `session_end` | `session.end` | Session end handling | 10s |
+
+**Note:** OpenClaw does not expose dedicated permission hooks. Permission-like blocking is handled through `before_tool_call`.
 
 ### How hooks call Orca
 
@@ -191,9 +211,10 @@ The plugin uses synthetic test secrets in fixtures only. If you see redaction wa
 - The strongest protection is `orca run -- openclaw`.
 - Plugin installation is a preview/dry-run by default.
 - No telemetry is collected.
-- npm publication is planned in P10.
-- ClawHub submission is planned in P11.
+- npm package `orca-openclaw-plugin@1.1.3` is published.
+- ClawHub package `orca-openclaw-plugin@1.1.3` is published.
 - The OpenClaw plugin does not add MCP server behavior or drone-specific plugin features.
+- **Plugin ID mismatch warning:** OpenClaw may warn that the plugin manifest id (`orca`) differs from the npm package name (`orca-openclaw-plugin`). This is intentional: the manifest id must remain `orca` so that `openclaw plugins install clawhub:orca` resolves correctly. The warning is harmless and does not affect functionality.
 
 ## Security model
 
