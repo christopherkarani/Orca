@@ -24,7 +24,7 @@ pub fn command(argv: []const []const u8, stdout: anytype, stderr: anytype) !u8 {
     }
 
     const host = Host.parse(argv[0]) orelse {
-        try stderr.print("orca hook: unknown host '{s}'. Expected codex or claude.\n", .{argv[0]});
+        try stderr.print("orca hook: unknown host '{s}'. Expected codex, claude, or opencode.\n", .{argv[0]});
         return exit_codes.usage;
     };
 
@@ -33,12 +33,24 @@ pub fn command(argv: []const []const u8, stdout: anytype, stderr: anytype) !u8 {
         return exit_codes.usage;
     }
 
-    const event = Event.parse(argv[1]) orelse {
-        try stderr.print("orca hook: unknown event '{s}'.\n", .{argv[1]});
-        return exit_codes.usage;
-    };
+    // For OpenCode, map dot-separated event names to internal events
+    const event_name = argv[1];
+    const event = if (host == .opencode)
+        mapOpenCodeEvent(event_name) orelse {
+            // If mapOpenCodeEvent returns null, it may be an informational event
+            if (isOpenCodeInformationalEvent(event_name)) {
+                return hookCommand(host, .SessionStart, event_name, argv[2..], stdout, stderr);
+            }
+            try stderr.print("orca hook: unknown OpenCode event '{s}'.\n", .{event_name});
+            return exit_codes.usage;
+        }
+    else
+        Event.parse(event_name) orelse {
+            try stderr.print("orca hook: unknown event '{s}'.\n", .{event_name});
+            return exit_codes.usage;
+        };
 
-    return hookCommand(host, event, argv[2..], stdout, stderr);
+    return hookCommand(host, event, event_name, argv[2..], stdout, stderr);
 }
 
 // ---------------------------------------------------------------------------
@@ -48,10 +60,12 @@ pub fn command(argv: []const []const u8, stdout: anytype, stderr: anytype) !u8 {
 const Host = enum {
     codex,
     claude,
+    opencode,
 
     pub fn parse(value: []const u8) ?Host {
         if (std.mem.eql(u8, value, "codex")) return .codex;
         if (std.mem.eql(u8, value, "claude")) return .claude;
+        if (std.mem.eql(u8, value, "opencode")) return .opencode;
         return null;
     }
 };
@@ -73,11 +87,40 @@ const Event = enum {
     }
 };
 
+// OpenCode uses dot-separated event names. Map them to internal events.
+// Some OpenCode events are purely informational and do not have a matching
+// internal evaluation path; those are handled as informational in hookCommand.
+fn mapOpenCodeEvent(event_name: []const u8) ?Event {
+    if (std.mem.eql(u8, event_name, "session.created")) return .SessionStart;
+    if (std.mem.eql(u8, event_name, "tool.execute.before")) return .PreToolUse;
+    if (std.mem.eql(u8, event_name, "tool.execute.after")) return .PostToolUse;
+    if (std.mem.eql(u8, event_name, "permission.asked")) return .PermissionRequest;
+    if (std.mem.eql(u8, event_name, "permission.replied")) return null; // informational
+    if (std.mem.eql(u8, event_name, "file.edited")) return null; // informational
+    if (std.mem.eql(u8, event_name, "command.executed")) return null; // informational
+    if (std.mem.eql(u8, event_name, "session.updated")) return null; // informational
+    if (std.mem.eql(u8, event_name, "session.idle")) return null; // informational
+    if (std.mem.eql(u8, event_name, "session.error")) return null; // informational
+    if (std.mem.eql(u8, event_name, "shell.env")) return null; // informational
+    return null;
+}
+
+// Check if an OpenCode event is purely informational (no policy evaluation needed)
+fn isOpenCodeInformationalEvent(event_name: []const u8) bool {
+    return std.mem.eql(u8, event_name, "permission.replied") or
+        std.mem.eql(u8, event_name, "file.edited") or
+        std.mem.eql(u8, event_name, "command.executed") or
+        std.mem.eql(u8, event_name, "session.updated") or
+        std.mem.eql(u8, event_name, "session.idle") or
+        std.mem.eql(u8, event_name, "session.error") or
+        std.mem.eql(u8, event_name, "shell.env");
+}
+
 // ---------------------------------------------------------------------------
 // Hook command
 // ---------------------------------------------------------------------------
 
-fn hookCommand(host: Host, event: Event, argv: []const []const u8, stdout: anytype, stderr: anytype) !u8 {
+fn hookCommand(host: Host, event: Event, original_event_name: []const u8, argv: []const []const u8, stdout: anytype, stderr: anytype) !u8 {
     var ci_mode = false;
 
     for (argv) |arg| {
@@ -96,6 +139,17 @@ fn hookCommand(host: Host, event: Event, argv: []const []const u8, stdout: anyty
                 \\  orca hook claude PermissionRequest
                 \\  orca hook claude PostToolUse
                 \\  orca hook claude SessionEnd
+                \\  orca hook opencode session.created
+                \\  orca hook opencode tool.execute.before
+                \\  orca hook opencode tool.execute.after
+                \\  orca hook opencode permission.asked
+                \\  orca hook opencode permission.replied
+                \\  orca hook opencode file.edited
+                \\  orca hook opencode command.executed
+                \\  orca hook opencode session.updated
+                \\  orca hook opencode session.idle
+                \\  orca hook opencode session.error
+                \\  orca hook opencode shell.env
                 \\
                 \\Options:
                 \\  --ci     CI mode: ask decisions become block.
@@ -145,11 +199,25 @@ fn hookCommand(host: Host, event: Event, argv: []const []const u8, stdout: anyty
         return exit_codes.general;
     }
 
-    // Validate event matches
+    // Validate event matches (for OpenCode, compare against original event name)
     const request_event = extractString(parsed.value, "event") orelse "";
-    if (!std.mem.eql(u8, request_event, @tagName(event))) {
-        try stderr.print("orca hook: event mismatch. Expected '{s}', got '{s}'.\n", .{ @tagName(event), request_event });
+    const expected_event = if (host == .opencode) original_event_name else @tagName(event);
+    if (!std.mem.eql(u8, request_event, expected_event)) {
+        try stderr.print("orca hook: event mismatch. Expected '{s}', got '{s}'.\n", .{ expected_event, request_event });
         return exit_codes.general;
+    }
+
+    // Handle informational OpenCode events that don't need policy evaluation
+    if (host == .opencode and isOpenCodeInformationalEvent(request_event)) {
+        var redactions: std.ArrayList(RedactionEntry) = .empty;
+        var limitations: std.ArrayList([]const u8) = .empty;
+        try limitations.append(allocator, try allocator.dupe(u8, "Hook enforcement is additive; does not replace orca run supervision."));
+        try limitations.append(allocator, try allocator.dupe(u8, "OpenCode informational event: no policy evaluation needed."));
+
+        var result = try makeInformationalResponse(allocator, .allow, .low, "session", "informational event", "OpenCode event acknowledged by Orca.", &redactions, &limitations);
+        defer result.deinit(allocator);
+        try writeHookResponse(stdout, result);
+        return exit_codes.success;
     }
 
     // Load policy
@@ -794,4 +862,97 @@ test "hook stdout does not include human logs" {
     // Should be valid JSON only, no human-readable prefixes
     try std.testing.expect(std.mem.startsWith(u8, output, "{"));
     try std.testing.expect(std.mem.endsWith(u8, output, "}\n"));
+}
+
+test "hook opencode session.created returns allow" {
+    var gpa_state: std.heap.GeneralPurposeAllocator(.{}) = .init;
+    defer _ = gpa_state.deinit();
+    const allocator = gpa_state.allocator();
+
+    var policy_obj = try core_api.loadPolicyPreset(allocator, .strict);
+    defer policy_obj.deinit();
+
+    var empty_obj = std.json.ObjectMap.init(allocator);
+    defer empty_obj.deinit();
+    var result = try evaluateHook(allocator, &policy_obj, .opencode, .SessionStart, std.json.Value{ .object = empty_obj }, false);
+    defer result.deinit(allocator);
+
+    try std.testing.expectEqual(PluginDecision.allow, result.decision);
+    try std.testing.expectEqual(RiskLevel.low, result.risk);
+}
+
+test "hook opencode tool.execute.before with safe command returns allow" {
+    var gpa_state: std.heap.GeneralPurposeAllocator(.{}) = .init;
+    defer _ = gpa_state.deinit();
+    const allocator = gpa_state.allocator();
+
+    var policy_obj = try core_api.loadPolicyPreset(allocator, .strict);
+    defer policy_obj.deinit();
+
+    var payload_obj = std.json.ObjectMap.init(allocator);
+    defer payload_obj.deinit();
+    try payload_obj.put("command", std.json.Value{ .string = "git status" });
+
+    var result = try evaluateHook(allocator, &policy_obj, .opencode, .PreToolUse, std.json.Value{ .object = payload_obj }, false);
+    defer result.deinit(allocator);
+
+    try std.testing.expectEqual(PluginDecision.allow, result.decision);
+    try std.testing.expect(result.risk == .low or result.risk == .unknown);
+}
+
+test "hook opencode tool.execute.before with dangerous command returns block" {
+    var gpa_state: std.heap.GeneralPurposeAllocator(.{}) = .init;
+    defer _ = gpa_state.deinit();
+    const allocator = gpa_state.allocator();
+
+    var policy_obj = try core_api.loadPolicyPreset(allocator, .strict);
+    defer policy_obj.deinit();
+
+    var payload_obj = std.json.ObjectMap.init(allocator);
+    defer payload_obj.deinit();
+    try payload_obj.put("command", std.json.Value{ .string = "rm -rf /" });
+
+    var result = try evaluateHook(allocator, &policy_obj, .opencode, .PreToolUse, std.json.Value{ .object = payload_obj }, false);
+    defer result.deinit(allocator);
+
+    try std.testing.expectEqual(PluginDecision.block, result.decision);
+}
+
+test "hook opencode informational events are allowed" {
+    var gpa_state: std.heap.GeneralPurposeAllocator(.{}) = .init;
+    defer _ = gpa_state.deinit();
+    const allocator = gpa_state.allocator();
+
+    var redactions: std.ArrayList(RedactionEntry) = .empty;
+    var limitations: std.ArrayList([]const u8) = .empty;
+    try limitations.append(allocator, try allocator.dupe(u8, "Hook enforcement is additive; does not replace orca run supervision."));
+    try limitations.append(allocator, try allocator.dupe(u8, "OpenCode informational event: no policy evaluation needed."));
+
+    var result = try makeInformationalResponse(allocator, .allow, .low, "session", "informational event", "OpenCode event acknowledged by Orca.", &redactions, &limitations);
+    defer result.deinit(allocator);
+
+    try std.testing.expectEqual(PluginDecision.allow, result.decision);
+    try std.testing.expectEqual(RiskLevel.low, result.risk);
+    try std.testing.expect(std.mem.indexOf(u8, result.message, "acknowledged") != null);
+}
+
+test "mapOpenCodeEvent maps known events correctly" {
+    try std.testing.expectEqual(Event.SessionStart, mapOpenCodeEvent("session.created").?);
+    try std.testing.expectEqual(Event.PreToolUse, mapOpenCodeEvent("tool.execute.before").?);
+    try std.testing.expectEqual(Event.PostToolUse, mapOpenCodeEvent("tool.execute.after").?);
+    try std.testing.expectEqual(Event.PermissionRequest, mapOpenCodeEvent("permission.asked").?);
+    try std.testing.expectEqual(null, mapOpenCodeEvent("permission.replied"));
+    try std.testing.expectEqual(null, mapOpenCodeEvent("unknown.event"));
+}
+
+test "isOpenCodeInformationalEvent identifies informational events" {
+    try std.testing.expect(isOpenCodeInformationalEvent("permission.replied"));
+    try std.testing.expect(isOpenCodeInformationalEvent("file.edited"));
+    try std.testing.expect(isOpenCodeInformationalEvent("command.executed"));
+    try std.testing.expect(isOpenCodeInformationalEvent("session.updated"));
+    try std.testing.expect(isOpenCodeInformationalEvent("session.idle"));
+    try std.testing.expect(isOpenCodeInformationalEvent("session.error"));
+    try std.testing.expect(isOpenCodeInformationalEvent("shell.env"));
+    try std.testing.expect(!isOpenCodeInformationalEvent("tool.execute.before"));
+    try std.testing.expect(!isOpenCodeInformationalEvent("session.created"));
 }

@@ -1,0 +1,28 @@
+{
+  "name": "orca-opencode-plugin",
+  "version": "1.0.0",
+  "description": "Orca safety hooks for OpenCode.",
+  "main": "orca.ts",
+  "types": "orca.ts",
+  "author": "Orca",
+  "license": "Apache-2.0",
+  "keywords": [
+    "security",
+    "ai-agents",
+    "policy",
+    "audit",
+    "redteam",
+    "opencode"
+  ],
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "peerDependencies": {
+    "opencode": ">=0.1.0"
+  },
+  "files": [
+    "orca.ts",
+    "README.md",
+    "examples/"
+  ]
+}

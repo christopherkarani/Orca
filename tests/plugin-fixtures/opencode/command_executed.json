@@ -1,0 +1,12 @@
+{
+  "version": 1,
+  "host": "opencode",
+  "event": "command.executed",
+  "payload": {
+    "command": "ls -la tests/plugin-fixtures/",
+    "exit_code": 0,
+    "stdout": "total 0\ndrwxr-xr-x  3 user  staff   96 Jan 15 09:20 .\ndrwxr-xr-x  3 user  staff   96 Jan 15 09:20 ..\n",
+    "stderr": "",
+    "duration_ms": 28
+  }
+}

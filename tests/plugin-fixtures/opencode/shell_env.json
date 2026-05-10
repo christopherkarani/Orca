@@ -1,0 +1,13 @@
+{
+  "version": 1,
+  "host": "opencode",
+  "event": "shell.env",
+  "payload": {
+    "PATH": "/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin:/opt/homebrew/bin",
+    "HOME": "/Users/chriskarani",
+    "SHELL": "/bin/zsh",
+    "EDITOR": "vim",
+    "LANG": "en_US.UTF-8",
+    "USER": "chriskarani"
+  }
+}

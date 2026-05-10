@@ -1,0 +1,10 @@
+{
+  "version": 1,
+  "host": "opencode",
+  "event": "file.edited",
+  "payload": {
+    "path": "tests/plugin-fixtures/opencode/session_created.json",
+    "cwd": "/Users/chriskarani/CodingProjects/aegis",
+    "diff": "+  \"timestamp\": \"2025-01-15T09:23:45.123Z\","
+  }
+}

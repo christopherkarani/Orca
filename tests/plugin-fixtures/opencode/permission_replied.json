@@ -1,0 +1,11 @@
+{
+  "version": 1,
+  "host": "opencode",
+  "event": "permission.replied",
+  "payload": {
+    "kind": "file_write",
+    "target": "/etc/passwd",
+    "granted": false,
+    "timestamp": "2025-01-15T09:24:15.789Z"
+  }
+}

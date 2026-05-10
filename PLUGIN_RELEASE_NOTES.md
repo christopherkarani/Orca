@@ -34,6 +34,15 @@ The Codex plugin is a thin host integration. It does not reimplement policy logi
 
 The Claude Code plugin is also a thin host integration. It delegates policy and replay to Orca CLI and does not add drone-specific plugin features.
 
+## OpenCode plugin
+
+- Path: `integrations/opencode-plugin/`
+- Main file: `integrations/opencode-plugin/orca.ts`
+- Hooks: `session.created`, `tool.execute.before`, `tool.execute.after`, `permission.asked`, `permission.replied`, `file.edited`, `command.executed`, `session.updated`, `session.idle`, `session.error`, `shell.env`
+- Install guide: [docs/integrations/opencode.md](docs/integrations/opencode.md)
+
+The OpenCode plugin is a thin host integration. It delegates policy and replay to Orca CLI and does not add drone-specific plugin features. OpenCode uses hooks, not skills.
+
 ## Installation
 
 ### From a release artifact
@@ -41,12 +50,13 @@ The Claude Code plugin is also a thin host integration. It delegates policy and 
 1. Download the release zip for your host:
    - `orca-codex-plugin-vX.Y.Z.zip`
    - `orca-claude-code-plugin-vX.Y.Z.zip`
+   - `orca-opencode-plugin-vX.Y.Z.zip`
 2. Verify the checksum file before extracting anything:
    ```sh
    sha256sum -c orca-plugin-checksums.txt
    ```
 3. Extract the plugin to a local directory of your choice.
-4. Point Codex or Claude Code at the extracted plugin directory.
+4. Point Codex, Claude Code, or OpenCode at the extracted plugin directory.
 
 ### From a local path
 
@@ -57,15 +67,17 @@ The Claude Code plugin is also a thin host integration. It delegates policy and 
 2. Point your host at the repository path:
    - Codex: `integrations/codex-plugin/`
    - Claude Code: `integrations/claude-code-plugin/`
+   - OpenCode: `integrations/opencode-plugin/`
 3. Confirm the plugin is visible:
    ```sh
    ./zig-out/bin/orca plugin doctor codex
    ./zig-out/bin/orca plugin doctor claude
+   ./zig-out/bin/orca plugin doctor opencode
    ```
 
 ### Checksum verification
 
-Always verify `orca-plugin-checksums.txt` before installing a release zip. The checksum file is the release gate for `dist/plugins/orca-codex-plugin-vX.Y.Z.zip` and `dist/plugins/orca-claude-code-plugin-vX.Y.Z.zip`.
+Always verify `orca-plugin-checksums.txt` before installing a release zip. The checksum file is the release gate for `dist/plugins/orca-codex-plugin-vX.Y.Z.zip`, `dist/plugins/orca-claude-code-plugin-vX.Y.Z.zip`, and `dist/plugins/orca-opencode-plugin-vX.Y.Z.zip`.
 
 ## Verification
 
@@ -76,12 +88,16 @@ zig build
 zig build test
 ./zig-out/bin/orca plugin doctor codex
 ./zig-out/bin/orca plugin doctor claude
+./zig-out/bin/orca plugin doctor opencode
 ./zig-out/bin/orca plugin manifest codex
 ./zig-out/bin/orca plugin manifest claude
+./zig-out/bin/orca plugin manifest opencode
 ./zig-out/bin/orca plugin install codex --dry-run
 ./zig-out/bin/orca plugin install claude --dry-run
+./zig-out/bin/orca plugin install opencode --dry-run
 cat tests/plugin-fixtures/codex/pre_tool_use_command_safe.json | ./zig-out/bin/orca hook codex PreToolUse
 cat tests/plugin-fixtures/claude/pre_tool_use_command_safe.json | ./zig-out/bin/orca hook claude PreToolUse
+cat tests/plugin-fixtures/opencode/tool_execute_before_safe.json | ./zig-out/bin/orca hook opencode tool.execute.before
 ./zig-out/bin/orca redteam --ci
 ./zig-out/bin/orca replay --session last --verify
 ./scripts/package-plugins.sh
@@ -113,6 +129,7 @@ Orca CLI remains the source of truth for policy decisions, replay, and audit beh
 - Release zips:
   - `dist/plugins/orca-codex-plugin-vX.Y.Z.zip`
   - `dist/plugins/orca-claude-code-plugin-vX.Y.Z.zip`
+  - `dist/plugins/orca-opencode-plugin-vX.Y.Z.zip`
 
 ## Vulnerability reporting
 
@@ -134,4 +151,5 @@ zig build test
 - [docs/troubleshooting.md](docs/troubleshooting.md)
 - [docs/integrations/codex.md](docs/integrations/codex.md)
 - [docs/integrations/claude-code.md](docs/integrations/claude-code.md)
+- [docs/integrations/opencode.md](docs/integrations/opencode.md)
 - [PLUGIN_SECURITY_MODEL.md](PLUGIN_SECURITY_MODEL.md)

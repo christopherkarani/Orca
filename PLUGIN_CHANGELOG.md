@@ -17,6 +17,11 @@
   - Hooks: `SessionStart`, `UserPromptSubmit`, `PreToolUse`, `PermissionRequest`, `PostToolUse`, `SessionEnd`
   - README with install instructions
 
+- **OpenCode plugin** (`integrations/opencode-plugin/`)
+  - Main file: `orca.ts`
+  - Hooks: `session.created`, `tool.execute.before`, `tool.execute.after`, `permission.asked`, `permission.replied`, `file.edited`, `command.executed`, `session.updated`, `session.idle`, `session.error`, `shell.env`
+  - README with install instructions
+
 - **Claude marketplace catalog** (`integrations/claude-marketplace/`)
   - Local marketplace example (`marketplace.json`)
   - README with usage instructions
@@ -27,12 +32,14 @@
   - Produces:
     - `dist/plugins/aegis-codex-plugin-vX.Y.Z.zip`
     - `dist/plugins/aegis-claude-code-plugin-vX.Y.Z.zip`
+    - `dist/plugins/aegis-opencode-plugin-vX.Y.Z.zip`
     - `dist/plugins/aegis-claude-marketplace-vX.Y.Z.zip`
     - `dist/plugins/aegis-plugin-checksums.txt`
 
 - **Plugin documentation**
   - `docs/integrations/codex.md` — Codex plugin install and usage
   - `docs/integrations/claude-code.md` — Claude Code plugin install and usage
+  - `docs/integrations/opencode.md` — OpenCode plugin install and usage
   - `docs/integrations/aegis-cli-plugin.md` — Aegis CLI plugin surface reference
   - `docs/integrations/plugin-troubleshooting.md` — Common issues and fixes
   - `docs/integrations/plugin-security-model.md` — Trust boundaries and invariants
@@ -68,6 +75,7 @@
 - Aegis core: 1.1.0
 - Codex plugin: 1.1.0
 - Claude Code plugin: 1.1.0
+- OpenCode plugin: 1.1.0
 - Requires Aegis CLI >= 1.0.0
 
 ---
@@ -84,20 +92,25 @@ zig build test
 # Verify plugin doctors
 ./zig-out/bin/aegis plugin doctor codex
 ./zig-out/bin/aegis plugin doctor claude
+./zig-out/bin/aegis plugin doctor opencode
 
 # Verify manifests
 ./zig-out/bin/aegis plugin manifest codex
 ./zig-out/bin/aegis plugin manifest claude
+./zig-out/bin/aegis plugin manifest opencode
 
 # Verify install dry-run
 ./zig-out/bin/aegis plugin install codex --dry-run
 ./zig-out/bin/aegis plugin install claude --dry-run
+./zig-out/bin/aegis plugin install opencode --dry-run
 
 # Test hooks
 cat tests/plugin-fixtures/codex/pre_tool_use_command_safe.json \
   | ./zig-out/bin/aegis hook codex PreToolUse
 cat tests/plugin-fixtures/claude/pre_tool_use_command_safe.json \
   | ./zig-out/bin/aegis hook claude PreToolUse
+cat tests/plugin-fixtures/opencode/tool_execute_before_safe.json \
+  | ./zig-out/bin/aegis hook opencode tool.execute.before
 
 # Package plugins
 ./scripts/package-plugins.sh

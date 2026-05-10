@@ -1,0 +1,13 @@
+{
+  "version": 1,
+  "host": "opencode",
+  "event": "tool.execute.after",
+  "payload": {
+    "tool": "shell",
+    "command": "git status",
+    "exit_code": 0,
+    "stdout": "On branch main\nYour branch is up to date with 'origin/main'.\n\nnothing to commit, working tree clean",
+    "stderr": "",
+    "duration_ms": 342
+  }
+}
