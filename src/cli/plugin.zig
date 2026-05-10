@@ -35,7 +35,7 @@ pub fn command(argv: []const []const u8, stdout: anytype, stderr: anytype) !u8 {
 // doctor
 // ---------------------------------------------------------------------------
 
-const DoctorTarget = enum { all, codex, claude, opencode };
+const DoctorTarget = enum { all, codex, claude, opencode, openclaw };
 
 fn doctorCommand(argv: []const []const u8, stdout: anytype, stderr: anytype) !u8 {
     var target: DoctorTarget = .all;
@@ -50,9 +50,11 @@ fn doctorCommand(argv: []const []const u8, stdout: anytype, stderr: anytype) !u8
                 \\  orca plugin doctor codex
                 \\  orca plugin doctor claude
                 \\  orca plugin doctor opencode
+                \\  orca plugin doctor openclaw
                 \\  orca plugin doctor codex [--json]
                 \\  orca plugin doctor claude [--json]
                 \\  orca plugin doctor opencode [--json]
+                \\  orca plugin doctor openclaw [--json]
                 \\
             );
             return exit_codes.success;
@@ -71,6 +73,10 @@ fn doctorCommand(argv: []const []const u8, stdout: anytype, stderr: anytype) !u8
         }
         if (std.mem.eql(u8, arg, "opencode")) {
             target = .opencode;
+            continue;
+        }
+        if (std.mem.eql(u8, arg, "openclaw")) {
+            target = .openclaw;
             continue;
         }
         try stderr.print("orca plugin doctor: unknown option '{s}'.\n", .{arg});
@@ -100,6 +106,7 @@ const PluginDirStatus = struct {
     codex: bool,
     claude: bool,
     opencode: bool,
+    openclaw: bool,
     common: bool,
 };
 
@@ -107,12 +114,19 @@ const HostBinaryStatus = struct {
     codex: bool,
     claude: bool,
     opencode: bool,
+    openclaw: bool,
 };
 
 const OpenCodePaths = struct {
     project_plugin_exists: bool,
     global_plugin_exists: bool,
     config_references_plugin: bool,
+};
+
+const OpenClawPaths = struct {
+    plugin_manifest_exists: bool,
+    package_json_exists: bool,
+    source_exists: bool,
 };
 
 const MarketplaceStatus = struct {
@@ -135,6 +149,7 @@ const PluginDoctorReport = struct {
     plugin_directories: PluginDirStatus,
     host_binaries: HostBinaryStatus,
     opencode_paths: OpenCodePaths,
+    openclaw_paths: OpenClawPaths,
     marketplace: MarketplaceStatus,
     drone_workstream_detected: bool,
     drone_safety_mode_active: bool,
@@ -183,6 +198,7 @@ fn collectPluginDoctorReport(allocator: std.mem.Allocator) !PluginDoctorReport {
         .codex = dirExists("integrations/codex-plugin"),
         .claude = dirExists("integrations/claude-code-plugin"),
         .opencode = dirExists("integrations/opencode-plugin"),
+        .openclaw = dirExists("integrations/openclaw-plugin"),
         .common = dirExists("integrations/common"),
     };
 
@@ -190,6 +206,7 @@ fn collectPluginDoctorReport(allocator: std.mem.Allocator) !PluginDoctorReport {
         .codex = binaryInPath(allocator, "codex"),
         .claude = binaryInPath(allocator, "claude"),
         .opencode = binaryInPath(allocator, "opencode"),
+        .openclaw = binaryInPath(allocator, "openclaw"),
     };
 
     // Check OpenCode-specific plugin paths
@@ -211,6 +228,22 @@ fn collectPluginDoctorReport(allocator: std.mem.Allocator) !PluginDoctorReport {
         .config_references_plugin = false, // Safe detection deferred
     };
 
+    // Check OpenClaw-specific plugin paths
+    const openclaw_manifest_path = std.fs.path.join(allocator, &.{ cwd, "integrations", "openclaw-plugin", "openclaw.plugin.json" }) catch unreachable;
+    defer allocator.free(openclaw_manifest_path);
+
+    const openclaw_package_json_path = std.fs.path.join(allocator, &.{ cwd, "integrations", "openclaw-plugin", "package.json" }) catch unreachable;
+    defer allocator.free(openclaw_package_json_path);
+
+    const openclaw_source_path = std.fs.path.join(allocator, &.{ cwd, "integrations", "openclaw-plugin", "src", "index.ts" }) catch unreachable;
+    defer allocator.free(openclaw_source_path);
+
+    const openclaw_paths = OpenClawPaths{
+        .plugin_manifest_exists = fileExistsAbsolute(openclaw_manifest_path),
+        .package_json_exists = fileExistsAbsolute(openclaw_package_json_path),
+        .source_exists = fileExistsAbsolute(openclaw_source_path),
+    };
+
     const marketplace = MarketplaceStatus{
         .codex_marketplace = fileExistsAbsolute(".agents/plugins/marketplace.json"),
         .claude_marketplace = fileExistsAbsolute(".claude-plugin/marketplace.json"),
@@ -226,9 +259,11 @@ fn collectPluginDoctorReport(allocator: std.mem.Allocator) !PluginDoctorReport {
     if (!plugin_dirs.codex) try warnings.append(allocator, try allocator.dupe(u8, "Codex plugin directory not yet created"));
     if (!plugin_dirs.claude) try warnings.append(allocator, try allocator.dupe(u8, "Claude Code plugin directory not yet created"));
     if (!plugin_dirs.opencode) try warnings.append(allocator, try allocator.dupe(u8, "OpenCode plugin directory not yet created"));
+    if (!plugin_dirs.openclaw) try warnings.append(allocator, try allocator.dupe(u8, "OpenClaw plugin directory not yet created"));
     if (!host_bins.codex) try warnings.append(allocator, try allocator.dupe(u8, "Codex host binary not found in PATH"));
     if (!host_bins.claude) try warnings.append(allocator, try allocator.dupe(u8, "Claude Code host binary not found in PATH"));
     if (!host_bins.opencode) try warnings.append(allocator, try allocator.dupe(u8, "OpenCode host binary not found in PATH"));
+    if (!host_bins.openclaw) try warnings.append(allocator, try allocator.dupe(u8, "OpenClaw host binary not found in PATH"));
 
     const os = core.platform.detectOs();
     const backend_report = sandbox.backend.detect(os);
@@ -253,6 +288,7 @@ fn collectPluginDoctorReport(allocator: std.mem.Allocator) !PluginDoctorReport {
         .plugin_directories = plugin_dirs,
         .host_binaries = host_bins,
         .opencode_paths = opencode_paths,
+        .openclaw_paths = openclaw_paths,
         .marketplace = marketplace,
         .drone_workstream_detected = drone_detected,
         .drone_safety_mode_active = drone_safety,
@@ -301,11 +337,13 @@ fn writeDoctorPlain(stdout: anytype, report: PluginDoctorReport, target: DoctorT
     try stdout.print("  integrations/codex-plugin: {s}\n", .{if (report.plugin_directories.codex) "found" else "missing"});
     try stdout.print("  integrations/claude-code-plugin: {s}\n", .{if (report.plugin_directories.claude) "found" else "missing"});
     try stdout.print("  integrations/opencode-plugin: {s}\n", .{if (report.plugin_directories.opencode) "found" else "missing"});
+    try stdout.print("  integrations/openclaw-plugin: {s}\n", .{if (report.plugin_directories.openclaw) "found" else "missing"});
 
     try stdout.writeAll("\nHost binaries:\n");
     try stdout.print("  codex: {s}\n", .{if (report.host_binaries.codex) "found in PATH" else "not found"});
     try stdout.print("  claude: {s}\n", .{if (report.host_binaries.claude) "found in PATH" else "not found"});
     try stdout.print("  opencode: {s}\n", .{if (report.host_binaries.opencode) "found in PATH" else "not found"});
+    try stdout.print("  openclaw: {s}\n", .{if (report.host_binaries.openclaw) "found in PATH" else "not found"});
 
     try stdout.writeAll("\nMarketplace files:\n");
     try stdout.print("  .agents/plugins/marketplace.json: {s}\n", .{if (report.marketplace.codex_marketplace) "present" else "missing"});
@@ -359,6 +397,16 @@ fn writeDoctorPlain(stdout: anytype, report: PluginDoctorReport, target: DoctorT
             try stdout.writeAll("  install: use 'orca plugin install opencode --dry-run' to preview\n");
             try stdout.writeAll("  note: OpenCode plugin uses TypeScript hooks, not a manifest file\n");
         },
+        .openclaw => {
+            try stdout.writeAll("\nOpenClaw plugin status:\n");
+            try stdout.print("  host binary: {s}\n", .{if (report.host_binaries.openclaw) "detected" else "not detected"});
+            try stdout.print("  plugin directory: {s}\n", .{if (report.plugin_directories.openclaw) "present" else "not yet created"});
+            try stdout.print("  plugin manifest (openclaw.plugin.json): {s}\n", .{if (report.openclaw_paths.plugin_manifest_exists) "exists" else "not found"});
+            try stdout.print("  package.json: {s}\n", .{if (report.openclaw_paths.package_json_exists) "exists" else "not found"});
+            try stdout.print("  source (src/index.ts): {s}\n", .{if (report.openclaw_paths.source_exists) "exists" else "not found"});
+            try stdout.writeAll("  install: use 'orca plugin install openclaw --dry-run' to preview\n");
+            try stdout.writeAll("  note: npm publication planned in P10; ClawHub submission planned in P11\n");
+        },
     }
 
     try stdout.writeAll("\n");
@@ -407,19 +455,27 @@ fn writeDoctorJson(stdout: anytype, report: PluginDoctorReport, target: DoctorTa
     try stdout.print("    \"codex\": {s},\n", .{if (report.plugin_directories.codex) "true" else "false"});
     try stdout.print("    \"claude\": {s},\n", .{if (report.plugin_directories.claude) "true" else "false"});
     try stdout.print("    \"opencode\": {s},\n", .{if (report.plugin_directories.opencode) "true" else "false"});
+    try stdout.print("    \"openclaw\": {s},\n", .{if (report.plugin_directories.openclaw) "true" else "false"});
     try stdout.print("    \"common\": {s}\n", .{if (report.plugin_directories.common) "true" else "false"});
     try stdout.writeAll("  },\n");
 
     try stdout.writeAll("  \"host_binaries\": {\n");
     try stdout.print("    \"codex\": {s},\n", .{if (report.host_binaries.codex) "true" else "false"});
     try stdout.print("    \"claude\": {s},\n", .{if (report.host_binaries.claude) "true" else "false"});
-    try stdout.print("    \"opencode\": {s}\n", .{if (report.host_binaries.opencode) "true" else "false"});
+    try stdout.print("    \"opencode\": {s},\n", .{if (report.host_binaries.opencode) "true" else "false"});
+    try stdout.print("    \"openclaw\": {s}\n", .{if (report.host_binaries.openclaw) "true" else "false"});
     try stdout.writeAll("  },\n");
 
     try stdout.writeAll("  \"opencode_paths\": {\n");
     try stdout.print("    \"project_plugin_exists\": {s},\n", .{if (report.opencode_paths.project_plugin_exists) "true" else "false"});
     try stdout.print("    \"global_plugin_exists\": {s},\n", .{if (report.opencode_paths.global_plugin_exists) "true" else "false"});
     try stdout.print("    \"config_references_plugin\": {s}\n", .{if (report.opencode_paths.config_references_plugin) "true" else "false"});
+    try stdout.writeAll("  },\n");
+
+    try stdout.writeAll("  \"openclaw_paths\": {\n");
+    try stdout.print("    \"plugin_manifest_exists\": {s},\n", .{if (report.openclaw_paths.plugin_manifest_exists) "true" else "false"});
+    try stdout.print("    \"package_json_exists\": {s},\n", .{if (report.openclaw_paths.package_json_exists) "true" else "false"});
+    try stdout.print("    \"source_exists\": {s}\n", .{if (report.openclaw_paths.source_exists) "true" else "false"});
     try stdout.writeAll("  },\n");
 
     try stdout.writeAll("  \"marketplace\": {\n");
@@ -460,7 +516,7 @@ fn writeDoctorJson(stdout: anytype, report: PluginDoctorReport, target: DoctorTa
 // manifest
 // ---------------------------------------------------------------------------
 
-const ManifestTarget = enum { codex, claude, opencode, all };
+const ManifestTarget = enum { codex, claude, opencode, openclaw, all };
 
 fn manifestCommand(argv: []const []const u8, stdout: anytype, stderr: anytype) !u8 {
     var target: ManifestTarget = .all;
@@ -473,6 +529,7 @@ fn manifestCommand(argv: []const []const u8, stdout: anytype, stderr: anytype) !
                 \\  orca plugin manifest codex
                 \\  orca plugin manifest claude
                 \\  orca plugin manifest opencode
+                \\  orca plugin manifest openclaw
                 \\  orca plugin manifest all
                 \\  orca plugin manifest <target> [--json]
                 \\
@@ -493,6 +550,10 @@ fn manifestCommand(argv: []const []const u8, stdout: anytype, stderr: anytype) !
         }
         if (std.mem.eql(u8, arg, "opencode")) {
             target = .opencode;
+            continue;
+        }
+        if (std.mem.eql(u8, arg, "openclaw")) {
+            target = .openclaw;
             continue;
         }
         if (std.mem.eql(u8, arg, "all")) {
@@ -547,16 +608,31 @@ fn writeManifestPlain(stdout: anytype, target: ManifestTarget) !void {
             try stdout.print("  status: {s}\n", .{if (exists) "exists" else "missing"});
             try stdout.writeAll("  note: OpenCode uses TypeScript plugins, not a JSON manifest\n");
         },
+        .openclaw => {
+            const manifest_path = "integrations/openclaw-plugin/openclaw.plugin.json";
+            const manifest_exists = fileExistsAbsolute(manifest_path);
+            const pkg_path = "integrations/openclaw-plugin/package.json";
+            const pkg_exists = fileExistsAbsolute(pkg_path);
+            try stdout.writeAll("OpenClaw plugin manifest:\n");
+            try stdout.print("  expected manifest path: {s}\n", .{manifest_path});
+            try stdout.print("  manifest status: {s}\n", .{if (manifest_exists) "exists" else "missing"});
+            try stdout.print("  package.json: {s} ({s})\n", .{ pkg_path, if (pkg_exists) "exists" else "missing" });
+            if (manifest_exists) {
+                try stdout.writeAll("  note: validation of manifest shape is deferred to host-specific checks\n");
+            }
+        },
         .all => {
             try stdout.writeAll("Plugin manifests:\n");
             const codex_path = "integrations/codex-plugin/.codex-plugin/plugin.json";
             const claude_path = "integrations/claude-code-plugin/.claude-plugin/plugin.json";
             const opencode_path = "integrations/opencode-plugin/orca.ts";
+            const openclaw_path = "integrations/openclaw-plugin/openclaw.plugin.json";
             const codex_marketplace = ".agents/plugins/marketplace.json";
             const claude_marketplace = ".claude-plugin/marketplace.json";
             try stdout.print("  codex:    {s} ({s})\n", .{ codex_path, if (fileExistsAbsolute(codex_path)) "exists" else "missing" });
             try stdout.print("  claude:   {s} ({s})\n", .{ claude_path, if (fileExistsAbsolute(claude_path)) "exists" else "missing" });
             try stdout.print("  opencode: {s} ({s})\n", .{ opencode_path, if (fileExistsAbsolute(opencode_path)) "exists" else "missing" });
+            try stdout.print("  openclaw: {s} ({s})\n", .{ openclaw_path, if (fileExistsAbsolute(openclaw_path)) "exists" else "missing" });
             try stdout.writeAll("\nMarketplace files:\n");
             try stdout.print("  codex:    {s} ({s})\n", .{ codex_marketplace, if (fileExistsAbsolute(codex_marketplace)) "exists" else "missing" });
             try stdout.print("  claude:   {s} ({s})\n", .{ claude_marketplace, if (fileExistsAbsolute(claude_marketplace)) "exists" else "missing" });
@@ -604,10 +680,25 @@ fn writeManifestJson(stdout: anytype, target: ManifestTarget) !void {
             try stdout.print("    \"status\": \"{s}\"\n", .{if (fileExistsAbsolute(path)) "exists" else "missing"});
             try stdout.writeAll("  }\n");
         },
+        .openclaw => {
+            const manifest_path = "integrations/openclaw-plugin/openclaw.plugin.json";
+            const pkg_path = "integrations/openclaw-plugin/package.json";
+            try stdout.writeAll("  \"openclaw\": {\n");
+            try stdout.print("    \"manifest_path\": ", .{});
+            try writeJsonString(stdout, manifest_path);
+            try stdout.writeAll(",\n");
+            try stdout.print("    \"manifest_status\": \"{s}\",\n", .{if (fileExistsAbsolute(manifest_path)) "exists" else "missing"});
+            try stdout.print("    \"package_path\": ", .{});
+            try writeJsonString(stdout, pkg_path);
+            try stdout.writeAll(",\n");
+            try stdout.print("    \"package_status\": \"{s}\"\n", .{if (fileExistsAbsolute(pkg_path)) "exists" else "missing"});
+            try stdout.writeAll("  }\n");
+        },
         .all => {
             const codex_path = "integrations/codex-plugin/.codex-plugin/plugin.json";
             const claude_path = "integrations/claude-code-plugin/.claude-plugin/plugin.json";
             const opencode_path = "integrations/opencode-plugin/orca.ts";
+            const openclaw_manifest_path = "integrations/openclaw-plugin/openclaw.plugin.json";
             const codex_marketplace = ".agents/plugins/marketplace.json";
             const claude_marketplace = ".claude-plugin/marketplace.json";
             try stdout.writeAll("  \"codex\": {\n");
@@ -635,6 +726,12 @@ fn writeManifestJson(stdout: anytype, target: ManifestTarget) !void {
             try writeJsonString(stdout, opencode_path);
             try stdout.writeAll(",\n");
             try stdout.print("    \"status\": \"{s}\"\n", .{if (fileExistsAbsolute(opencode_path)) "exists" else "missing"});
+            try stdout.writeAll("  },\n");
+            try stdout.writeAll("  \"openclaw\": {\n");
+            try stdout.print("    \"manifest_path\": ", .{});
+            try writeJsonString(stdout, openclaw_manifest_path);
+            try stdout.writeAll(",\n");
+            try stdout.print("    \"manifest_status\": \"{s}\"\n", .{if (fileExistsAbsolute(openclaw_manifest_path)) "exists" else "missing"});
             try stdout.writeAll("  }\n");
         },
     }
@@ -645,7 +742,7 @@ fn writeManifestJson(stdout: anytype, target: ManifestTarget) !void {
 // install
 // ---------------------------------------------------------------------------
 
-const InstallTarget = enum { codex, claude, opencode, all };
+const InstallTarget = enum { codex, claude, opencode, openclaw, all };
 
 fn installCommand(argv: []const []const u8, stdout: anytype, stderr: anytype) !u8 {
     var target: InstallTarget = .all;
@@ -662,10 +759,12 @@ fn installCommand(argv: []const []const u8, stdout: anytype, stderr: anytype) !u
                 \\  orca plugin install codex [--dry-run]
                 \\  orca plugin install claude [--dry-run]
                 \\  orca plugin install opencode [--dry-run]
+                \\  orca plugin install openclaw [--dry-run]
                 \\  orca plugin install all [--dry-run]
                 \\  orca plugin install codex --path <plugin-path> [--dry-run]
                 \\  orca plugin install claude --path <plugin-path> [--dry-run]
                 \\  orca plugin install opencode --path <plugin-path> [--dry-run]
+                \\  orca plugin install openclaw --path <plugin-path> [--dry-run]
                 \\  orca plugin install <target> [--yes]
                 \\  
                 \\Options:
@@ -705,6 +804,10 @@ fn installCommand(argv: []const []const u8, stdout: anytype, stderr: anytype) !u
             target = .opencode;
             continue;
         }
+        if (std.mem.eql(u8, arg, "openclaw")) {
+            target = .openclaw;
+            continue;
+        }
         if (std.mem.eql(u8, arg, "all")) {
             target = .all;
             continue;
@@ -724,7 +827,8 @@ fn installCommand(argv: []const []const u8, stdout: anytype, stderr: anytype) !u
         .codex => &[_]InstallTarget{.codex},
         .claude => &[_]InstallTarget{.claude},
         .opencode => &[_]InstallTarget{.opencode},
-        .all => &[_]InstallTarget{ .codex, .claude, .opencode },
+        .openclaw => &[_]InstallTarget{.openclaw},
+        .all => &[_]InstallTarget{ .codex, .claude, .opencode, .openclaw },
     };
 
     for (targets) |t| {
@@ -739,6 +843,7 @@ fn installCommand(argv: []const []const u8, stdout: anytype, stderr: anytype) !u
             .codex => custom_path orelse "integrations/codex-plugin",
             .claude => custom_path orelse "integrations/claude-code-plugin",
             .opencode => custom_path orelse "integrations/opencode-plugin",
+            .openclaw => custom_path orelse "integrations/openclaw-plugin",
             .all => unreachable,
         };
 
@@ -758,6 +863,19 @@ fn installCommand(argv: []const []const u8, stdout: anytype, stderr: anytype) !u
                     try stdout.writeAll("  next step: copy integrations/opencode-plugin/orca.ts to one of the paths above\n");
                 } else {
                     try stdout.writeAll("  action: copy plugin file to chosen OpenCode plugin path\n");
+                }
+            } else if (t == .openclaw) {
+                // OpenClaw-specific install guidance
+                try stdout.writeAll("  install paths for OpenClaw:\n");
+                try stdout.writeAll("    local:   openclaw plugins install ./integrations/openclaw-plugin\n");
+                try stdout.writeAll("    npm:     openclaw plugins install npm:@orca/openclaw-plugin (planned in P10)\n");
+                try stdout.writeAll("    clawhub: openclaw plugins install clawhub:orca (planned in P11)\n");
+                if (dry_run) {
+                    try stdout.writeAll("  action: no changes made (dry-run)\n");
+                    try stdout.writeAll("  next step: run 'openclaw plugins install ./integrations/openclaw-plugin' if OpenClaw is installed\n");
+                } else {
+                    try stdout.writeAll("  action: installation would proceed (deferred)\n");
+                    try stdout.writeAll("  note: actual host plugin installation is not yet implemented\n");
                 }
             } else {
                 if (dry_run) {
@@ -1006,6 +1124,23 @@ test "plugin doctor opencode shows opencode-specific section" {
     try std.testing.expectEqualStrings("", stderr_stream.getWritten());
 }
 
+test "plugin doctor openclaw shows openclaw-specific section" {
+    var stdout_buf: [16384]u8 = undefined;
+    var stderr_buf: [256]u8 = undefined;
+    var stdout_stream = std.io.fixedBufferStream(&stdout_buf);
+    var stderr_stream = std.io.fixedBufferStream(&stderr_buf);
+
+    const code = try doctorCommand(&.{"openclaw"}, stdout_stream.writer(), stderr_stream.writer());
+    try std.testing.expectEqual(exit_codes.success, code);
+
+    const output = stdout_stream.getWritten();
+    try std.testing.expect(std.mem.indexOf(u8, output, "OpenClaw plugin status:") != null);
+    try std.testing.expect(std.mem.indexOf(u8, output, "host binary:") != null);
+    try std.testing.expect(std.mem.indexOf(u8, output, "plugin manifest") != null);
+    try std.testing.expect(std.mem.indexOf(u8, output, "package.json") != null);
+    try std.testing.expectEqualStrings("", stderr_stream.getWritten());
+}
+
 test "plugin doctor does not print raw env values or secrets" {
     var stdout_buf: [16384]u8 = undefined;
     var stderr_buf: [256]u8 = undefined;
@@ -1069,7 +1204,22 @@ test "plugin manifest opencode reports expected path" {
     try std.testing.expectEqualStrings("", stderr_stream.getWritten());
 }
 
-test "plugin manifest all reports all three" {
+test "plugin manifest openclaw reports expected paths" {
+    var stdout_buf: [1024]u8 = undefined;
+    var stderr_buf: [256]u8 = undefined;
+    var stdout_stream = std.io.fixedBufferStream(&stdout_buf);
+    var stderr_stream = std.io.fixedBufferStream(&stderr_buf);
+
+    const code = try manifestCommand(&.{"openclaw"}, stdout_stream.writer(), stderr_stream.writer());
+    try std.testing.expectEqual(exit_codes.success, code);
+
+    const output = stdout_stream.getWritten();
+    try std.testing.expect(std.mem.indexOf(u8, output, "integrations/openclaw-plugin/openclaw.plugin.json") != null);
+    try std.testing.expect(std.mem.indexOf(u8, output, "package.json") != null);
+    try std.testing.expectEqualStrings("", stderr_stream.getWritten());
+}
+
+test "plugin manifest all reports all four" {
     var stdout_buf: [1024]u8 = undefined;
     var stderr_buf: [256]u8 = undefined;
     var stdout_stream = std.io.fixedBufferStream(&stdout_buf);
@@ -1082,6 +1232,7 @@ test "plugin manifest all reports all three" {
     try std.testing.expect(std.mem.indexOf(u8, output, "codex:") != null);
     try std.testing.expect(std.mem.indexOf(u8, output, "claude:") != null);
     try std.testing.expect(std.mem.indexOf(u8, output, "opencode:") != null);
+    try std.testing.expect(std.mem.indexOf(u8, output, "openclaw:") != null);
     try std.testing.expectEqualStrings("", stderr_stream.getWritten());
 }
 
@@ -1101,6 +1252,7 @@ test "plugin manifest --json emits valid JSON" {
     try std.testing.expect(parsed.value.object.get("codex") != null);
     try std.testing.expect(parsed.value.object.get("claude") != null);
     try std.testing.expect(parsed.value.object.get("opencode") != null);
+    try std.testing.expect(parsed.value.object.get("openclaw") != null);
     try std.testing.expectEqualStrings("", stderr_stream.getWritten());
 }
 
@@ -1152,7 +1304,23 @@ test "plugin install opencode --dry-run reports safe preview with paths" {
     try std.testing.expectEqualStrings("", stderr_stream.getWritten());
 }
 
-test "plugin install all --dry-run reports all three targets" {
+test "plugin install openclaw --dry-run reports safe preview" {
+    var stdout_buf: [4096]u8 = undefined;
+    var stderr_buf: [256]u8 = undefined;
+    var stdout_stream = std.io.fixedBufferStream(&stdout_buf);
+    var stderr_stream = std.io.fixedBufferStream(&stderr_buf);
+
+    const code = try installCommand(&.{ "openclaw", "--dry-run" }, stdout_stream.writer(), stderr_stream.writer());
+    try std.testing.expectEqual(exit_codes.success, code);
+
+    const output = stdout_stream.getWritten();
+    try std.testing.expect(std.mem.indexOf(u8, output, "dry-run") != null);
+    try std.testing.expect(std.mem.indexOf(u8, output, "no changes made") != null);
+    try std.testing.expect(std.mem.indexOf(u8, output, "Target: openclaw") != null);
+    try std.testing.expectEqualStrings("", stderr_stream.getWritten());
+}
+
+test "plugin install all --dry-run reports all four targets" {
     var stdout_buf: [4096]u8 = undefined;
     var stderr_buf: [256]u8 = undefined;
     var stdout_stream = std.io.fixedBufferStream(&stdout_buf);
@@ -1165,6 +1333,7 @@ test "plugin install all --dry-run reports all three targets" {
     try std.testing.expect(std.mem.indexOf(u8, output, "Target: codex") != null);
     try std.testing.expect(std.mem.indexOf(u8, output, "Target: claude") != null);
     try std.testing.expect(std.mem.indexOf(u8, output, "Target: opencode") != null);
+    try std.testing.expect(std.mem.indexOf(u8, output, "Target: openclaw") != null);
     try std.testing.expectEqualStrings("", stderr_stream.getWritten());
 }
 

@@ -1,0 +1,1 @@
+{"version":1,"host":"openclaw","event":"tool.before","payload":{"tool":"write","path":"/etc/passwd","content":"hacked"}}

@@ -1,0 +1,1 @@
+{"version":1,"host":"openclaw","event":"permission.before","payload":{"kind":"file_write","target":"/etc/passwd","reason":"edit system file"}}

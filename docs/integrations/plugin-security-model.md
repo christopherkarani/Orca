@@ -34,7 +34,7 @@ The plugin system adds:
 
 ```
 ┌─────────────────────────────────────────┐
-│  Host IDE (Codex, Claude Code, etc.)    │  ← Untrusted by default
+│  Host IDE (Codex, Claude Code, OpenCode, OpenClaw, etc.)  │  ← Untrusted by default
 │  Runs arbitrary agent code                │
 ├─────────────────────────────────────────┤
 │  Orca Plugin (integration package)     │  ← Semi-trusted; read-only
@@ -82,7 +82,7 @@ The plugin system adds:
 
 ## Host Config Mutations
 
-- Orca plugin commands must not silently overwrite Codex, Claude Code, or other host configs.
+- Orca plugin commands must not silently overwrite Codex, Claude Code, OpenCode, OpenClaw, or other host configs.
 - Any config change must be previewed with `--dry-run` first.
 - Any actual change requires `--yes`.
 

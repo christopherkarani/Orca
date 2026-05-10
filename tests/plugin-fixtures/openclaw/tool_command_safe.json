@@ -1,0 +1,1 @@
+{"version":1,"host":"openclaw","event":"tool.before","payload":{"tool":"shell","command":"git status","cwd":"/tmp"}}

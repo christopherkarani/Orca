@@ -24,7 +24,7 @@ pub fn command(argv: []const []const u8, stdout: anytype, stderr: anytype) !u8 {
     }
 
     const host = Host.parse(argv[0]) orelse {
-        try stderr.print("orca hook: unknown host '{s}'. Expected codex, claude, or opencode.\n", .{argv[0]});
+        try stderr.print("orca hook: unknown host '{s}'. Expected codex, claude, opencode, or openclaw.\n", .{argv[0]});
         return exit_codes.usage;
     };
 
@@ -33,7 +33,7 @@ pub fn command(argv: []const []const u8, stdout: anytype, stderr: anytype) !u8 {
         return exit_codes.usage;
     }
 
-    // For OpenCode, map dot-separated event names to internal events
+    // For OpenCode and OpenClaw, map dot-separated event names to internal events
     const event_name = argv[1];
     const event = if (host == .opencode)
         mapOpenCodeEvent(event_name) orelse {
@@ -42,6 +42,15 @@ pub fn command(argv: []const []const u8, stdout: anytype, stderr: anytype) !u8 {
                 return hookCommand(host, .SessionStart, event_name, argv[2..], stdout, stderr);
             }
             try stderr.print("orca hook: unknown OpenCode event '{s}'.\n", .{event_name});
+            return exit_codes.usage;
+        }
+    else if (host == .openclaw)
+        mapOpenClawEvent(event_name) orelse {
+            // If mapOpenClawEvent returns null, it may be an informational event
+            if (isOpenClawInformationalEvent(event_name)) {
+                return hookCommand(host, .SessionStart, event_name, argv[2..], stdout, stderr);
+            }
+            try stderr.print("orca hook: unknown OpenClaw event '{s}'.\n", .{event_name});
             return exit_codes.usage;
         }
     else
@@ -61,11 +70,13 @@ const Host = enum {
     codex,
     claude,
     opencode,
+    openclaw,
 
     pub fn parse(value: []const u8) ?Host {
         if (std.mem.eql(u8, value, "codex")) return .codex;
         if (std.mem.eql(u8, value, "claude")) return .claude;
         if (std.mem.eql(u8, value, "opencode")) return .opencode;
+        if (std.mem.eql(u8, value, "openclaw")) return .openclaw;
         return null;
     }
 };
@@ -116,6 +127,23 @@ fn isOpenCodeInformationalEvent(event_name: []const u8) bool {
         std.mem.eql(u8, event_name, "shell.env");
 }
 
+// OpenClaw uses dot-separated event names. Map them to internal events.
+fn mapOpenClawEvent(event_name: []const u8) ?Event {
+    if (std.mem.eql(u8, event_name, "session.start")) return .SessionStart;
+    if (std.mem.eql(u8, event_name, "tool.before")) return .PreToolUse;
+    if (std.mem.eql(u8, event_name, "tool.after")) return .PostToolUse;
+    if (std.mem.eql(u8, event_name, "permission.before")) return .PermissionRequest;
+    if (std.mem.eql(u8, event_name, "permission.after")) return null; // informational
+    if (std.mem.eql(u8, event_name, "session.end")) return .SessionEnd;
+    return null;
+}
+
+// Check if an OpenClaw event is purely informational (no policy evaluation needed)
+fn isOpenClawInformationalEvent(event_name: []const u8) bool {
+    return std.mem.eql(u8, event_name, "permission.after") or
+        std.mem.eql(u8, event_name, "session.end");
+}
+
 // ---------------------------------------------------------------------------
 // Hook command
 // ---------------------------------------------------------------------------
@@ -150,6 +178,12 @@ fn hookCommand(host: Host, event: Event, original_event_name: []const u8, argv: 
                 \\  orca hook opencode session.idle
                 \\  orca hook opencode session.error
                 \\  orca hook opencode shell.env
+                \\  orca hook openclaw session.start
+                \\  orca hook openclaw tool.before
+                \\  orca hook openclaw tool.after
+                \\  orca hook openclaw permission.before
+                \\  orca hook openclaw permission.after
+                \\  orca hook openclaw session.end
                 \\
                 \\Options:
                 \\  --ci     CI mode: ask decisions become block.
@@ -199,9 +233,9 @@ fn hookCommand(host: Host, event: Event, original_event_name: []const u8, argv: 
         return exit_codes.general;
     }
 
-    // Validate event matches (for OpenCode, compare against original event name)
+    // Validate event matches (for OpenCode/OpenClaw, compare against original event name)
     const request_event = extractString(parsed.value, "event") orelse "";
-    const expected_event = if (host == .opencode) original_event_name else @tagName(event);
+    const expected_event = if (host == .opencode or host == .openclaw) original_event_name else @tagName(event);
     if (!std.mem.eql(u8, request_event, expected_event)) {
         try stderr.print("orca hook: event mismatch. Expected '{s}', got '{s}'.\n", .{ expected_event, request_event });
         return exit_codes.general;
@@ -215,6 +249,19 @@ fn hookCommand(host: Host, event: Event, original_event_name: []const u8, argv: 
         try limitations.append(allocator, try allocator.dupe(u8, "OpenCode informational event: no policy evaluation needed."));
 
         var result = try makeInformationalResponse(allocator, .allow, .low, "session", "informational event", "OpenCode event acknowledged by Orca.", &redactions, &limitations);
+        defer result.deinit(allocator);
+        try writeHookResponse(stdout, result);
+        return exit_codes.success;
+    }
+
+    // Handle informational OpenClaw events that don't need policy evaluation
+    if (host == .openclaw and isOpenClawInformationalEvent(request_event)) {
+        var redactions: std.ArrayList(RedactionEntry) = .empty;
+        var limitations: std.ArrayList([]const u8) = .empty;
+        try limitations.append(allocator, try allocator.dupe(u8, "Hook enforcement is additive; does not replace orca run supervision."));
+        try limitations.append(allocator, try allocator.dupe(u8, "OpenClaw informational event: no policy evaluation needed."));
+
+        var result = try makeInformationalResponse(allocator, .allow, .low, "session", "informational event", "OpenClaw event acknowledged by Orca.", &redactions, &limitations);
         defer result.deinit(allocator);
         try writeHookResponse(stdout, result);
         return exit_codes.success;
@@ -955,4 +1002,94 @@ test "isOpenCodeInformationalEvent identifies informational events" {
     try std.testing.expect(isOpenCodeInformationalEvent("shell.env"));
     try std.testing.expect(!isOpenCodeInformationalEvent("tool.execute.before"));
     try std.testing.expect(!isOpenCodeInformationalEvent("session.created"));
+}
+
+test "hook openclaw session.start returns allow" {
+    var gpa_state: std.heap.GeneralPurposeAllocator(.{}) = .init;
+    defer _ = gpa_state.deinit();
+    const allocator = gpa_state.allocator();
+
+    var policy_obj = try core_api.loadPolicyPreset(allocator, .strict);
+    defer policy_obj.deinit();
+
+    var empty_obj = std.json.ObjectMap.init(allocator);
+    defer empty_obj.deinit();
+    var result = try evaluateHook(allocator, &policy_obj, .openclaw, .SessionStart, std.json.Value{ .object = empty_obj }, false);
+    defer result.deinit(allocator);
+
+    try std.testing.expectEqual(PluginDecision.allow, result.decision);
+    try std.testing.expectEqual(RiskLevel.low, result.risk);
+}
+
+test "hook openclaw tool.before with safe command returns allow" {
+    var gpa_state: std.heap.GeneralPurposeAllocator(.{}) = .init;
+    defer _ = gpa_state.deinit();
+    const allocator = gpa_state.allocator();
+
+    var policy_obj = try core_api.loadPolicyPreset(allocator, .strict);
+    defer policy_obj.deinit();
+
+    var payload_obj = std.json.ObjectMap.init(allocator);
+    defer payload_obj.deinit();
+    try payload_obj.put("command", std.json.Value{ .string = "git status" });
+
+    var result = try evaluateHook(allocator, &policy_obj, .openclaw, .PreToolUse, std.json.Value{ .object = payload_obj }, false);
+    defer result.deinit(allocator);
+
+    try std.testing.expectEqual(PluginDecision.allow, result.decision);
+    try std.testing.expect(result.risk == .low or result.risk == .unknown);
+}
+
+test "hook openclaw tool.before with dangerous command returns block" {
+    var gpa_state: std.heap.GeneralPurposeAllocator(.{}) = .init;
+    defer _ = gpa_state.deinit();
+    const allocator = gpa_state.allocator();
+
+    var policy_obj = try core_api.loadPolicyPreset(allocator, .strict);
+    defer policy_obj.deinit();
+
+    var payload_obj = std.json.ObjectMap.init(allocator);
+    defer payload_obj.deinit();
+    try payload_obj.put("command", std.json.Value{ .string = "rm -rf /" });
+
+    var result = try evaluateHook(allocator, &policy_obj, .openclaw, .PreToolUse, std.json.Value{ .object = payload_obj }, false);
+    defer result.deinit(allocator);
+
+    try std.testing.expectEqual(PluginDecision.block, result.decision);
+}
+
+test "hook openclaw informational events are allowed" {
+    var gpa_state: std.heap.GeneralPurposeAllocator(.{}) = .init;
+    defer _ = gpa_state.deinit();
+    const allocator = gpa_state.allocator();
+
+    var redactions: std.ArrayList(RedactionEntry) = .empty;
+    var limitations: std.ArrayList([]const u8) = .empty;
+    try limitations.append(allocator, try allocator.dupe(u8, "Hook enforcement is additive; does not replace orca run supervision."));
+    try limitations.append(allocator, try allocator.dupe(u8, "OpenClaw informational event: no policy evaluation needed."));
+
+    var result = try makeInformationalResponse(allocator, .allow, .low, "session", "informational event", "OpenClaw event acknowledged by Orca.", &redactions, &limitations);
+    defer result.deinit(allocator);
+
+    try std.testing.expectEqual(PluginDecision.allow, result.decision);
+    try std.testing.expectEqual(RiskLevel.low, result.risk);
+    try std.testing.expect(std.mem.indexOf(u8, result.message, "acknowledged") != null);
+}
+
+test "mapOpenClawEvent maps known events correctly" {
+    try std.testing.expectEqual(Event.SessionStart, mapOpenClawEvent("session.start").?);
+    try std.testing.expectEqual(Event.PreToolUse, mapOpenClawEvent("tool.before").?);
+    try std.testing.expectEqual(Event.PostToolUse, mapOpenClawEvent("tool.after").?);
+    try std.testing.expectEqual(Event.PermissionRequest, mapOpenClawEvent("permission.before").?);
+    try std.testing.expectEqual(Event.SessionEnd, mapOpenClawEvent("session.end").?);
+    try std.testing.expectEqual(null, mapOpenClawEvent("permission.after"));
+    try std.testing.expectEqual(null, mapOpenClawEvent("unknown.event"));
+}
+
+test "isOpenClawInformationalEvent identifies informational events" {
+    try std.testing.expect(isOpenClawInformationalEvent("permission.after"));
+    try std.testing.expect(isOpenClawInformationalEvent("session.end"));
+    try std.testing.expect(!isOpenClawInformationalEvent("tool.before"));
+    try std.testing.expect(!isOpenClawInformationalEvent("session.start"));
+    try std.testing.expect(!isOpenClawInformationalEvent("permission.before"));
 }
