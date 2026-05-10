@@ -2,24 +2,6 @@ import { execSync } from 'child_process';
 import { existsSync } from 'fs';
 import { join, resolve } from 'path';
 
-interface OpenClawContext {
-  hooks: {
-    on: (event: string, handler: (data: unknown) => unknown | Promise<unknown>) => void;
-  };
-  shell?: {
-    $: (strings: TemplateStringsArray, ...values: unknown[]) => Promise<{ stdout: string; stderr: string; exitCode: number }>;
-  };
-  logger?: {
-    info: (msg: string) => void;
-    warn: (msg: string) => void;
-    error: (msg: string) => void;
-  };
-  session?: {
-    id?: string;
-    cwd?: string;
-  };
-}
-
 interface OrcaResponse {
   version?: number;
   decision: 'allow' | 'block' | 'warn' | 'ask' | 'context_only' | 'error';
@@ -30,6 +12,34 @@ interface OrcaResponse {
   message?: string;
   redactions?: Array<{ field: string; reason: string }>;
   host_limitations?: string[];
+}
+
+interface PluginLogger {
+  debug?: (message: string) => void;
+  info: (message: string) => void;
+  warn: (message: string) => void;
+  error: (message: string) => void;
+}
+
+/**
+ * Minimal type for the OpenClaw Plugin API passed at runtime.
+ * Matches OpenClawPluginApi from the openclaw/plugin-sdk types.
+ */
+interface OpenClawPluginApi {
+  id: string;
+  name: string;
+  version?: string;
+  description?: string;
+  source: string;
+  config: unknown;
+  pluginConfig?: Record<string, unknown>;
+  runtime: unknown;
+  logger: PluginLogger;
+  on: <K extends string>(
+    hookName: K,
+    handler: (event: unknown, ctx: unknown) => unknown | Promise<unknown>,
+    opts?: { priority?: number }
+  ) => void;
 }
 
 const SECRET_KEYS = [
@@ -98,8 +108,7 @@ async function callOrca(
   data: unknown,
   sessionId: string | undefined,
   blocking: boolean,
-  shell: OpenClawContext['shell'],
-  logger: OpenClawContext['logger']
+  logger: PluginLogger | undefined
 ): Promise<OrcaResponse> {
   const payload = buildPayload(event, data, sessionId);
   const payloadJson = JSON.stringify(payload);
@@ -107,17 +116,12 @@ async function callOrca(
   let stdout = '';
 
   try {
-    if (shell?.$) {
-      const result = await shell.$`echo ${payloadJson} | ${orcaBin} hook openclaw ${event}`;
-      stdout = result.stdout ?? '';
-    } else {
-      stdout = execSync(`${orcaBin} hook openclaw ${event}`, {
-        input: payloadJson,
-        encoding: 'utf-8',
-        timeout: blocking ? 15000 : 10000,
-        stdio: ['pipe', 'pipe', 'pipe'],
-      });
-    }
+    stdout = execSync(`${orcaBin} hook openclaw ${event}`, {
+      input: payloadJson,
+      encoding: 'utf-8',
+      timeout: blocking ? 15000 : 10000,
+      stdio: ['pipe', 'pipe', 'pipe'],
+    });
 
     if (!stdout.trim()) {
       return { decision: 'allow' };
@@ -146,11 +150,11 @@ async function callOrca(
   }
 }
 
-export default function orcaPlugin(context: OpenClawContext): void {
-  const cwd = context.session?.cwd ?? process.cwd();
-  const sessionId = context.session?.id;
+export default function orcaPlugin(api: OpenClawPluginApi): void {
+  const cwd = process.cwd();
+  const sessionId = undefined;
   const orcaBin = findOrca(cwd);
-  const { shell, logger } = context;
+  const { logger } = api;
 
   if (!orcaBin) {
     logger?.warn?.(
@@ -160,57 +164,49 @@ export default function orcaPlugin(context: OpenClawContext): void {
     return;
   }
 
+  if (typeof api.on !== 'function') {
+    logger?.warn?.(
+      '[orca] OpenClaw plugin API does not expose hook registration (api.on). ' +
+        'Plugin will not register lifecycle hooks.'
+    );
+    return;
+  }
+
   logger?.info?.(`[orca] Plugin loaded. Binary: ${orcaBin}`);
 
-  context.hooks.on('session.start', async (session: unknown) => {
+  api.on('session_start', async (event) => {
     logger?.info?.('[orca] Plugin ready for session.');
-    await callOrca(orcaBin, 'session.start', { session_id: (session as { id?: string })?.id }, sessionId, false, shell, logger);
+    await callOrca(
+      orcaBin,
+      'session.start',
+      { session_id: (event as { sessionId?: string })?.sessionId },
+      sessionId,
+      false,
+      logger
+    );
   });
 
-  context.hooks.on('tool.before', async (toolCall: unknown) => {
-    const response = await callOrca(orcaBin, 'tool.before', toolCall, sessionId, true, shell, logger);
+  api.on('before_tool_call', async (event) => {
+    const response = await callOrca(orcaBin, 'tool.before', event, sessionId, true, logger);
 
     if (response.decision === 'block') {
       const msg = response.message || response.reason || 'Blocked by Orca policy';
       logger?.error?.(`[orca] Blocked tool execution: ${msg}`);
-      throw new Error(`Orca blocked tool execution: ${msg}`);
+      return { block: true, blockReason: msg };
     }
 
     if (response.decision === 'warn') {
       logger?.warn?.(`[orca] Warning: ${response.message || response.reason}`);
     }
 
-    return toolCall;
+    return { params: (event as { params?: Record<string, unknown> })?.params };
   });
 
-  context.hooks.on('tool.after', async (result: unknown) => {
-    await callOrca(orcaBin, 'tool.after', result, sessionId, false, shell, logger);
-    return result;
+  api.on('after_tool_call', async (event) => {
+    await callOrca(orcaBin, 'tool.after', event, sessionId, false, logger);
   });
 
-  context.hooks.on('permission.before', async (permission: unknown) => {
-    const response = await callOrca(orcaBin, 'permission.before', permission, sessionId, true, shell, logger);
-
-    if (response.decision === 'block') {
-      const msg = response.message || response.reason || 'Blocked by Orca policy';
-      logger?.error?.(`[orca] Blocked permission: ${msg}`);
-      throw new Error(`Orca blocked permission request: ${msg}`);
-    }
-
-    if (response.decision === 'warn') {
-      logger?.warn?.(`[orca] Permission warning: ${response.message || response.reason}`);
-    }
-
-    return permission;
-  });
-
-  context.hooks.on('permission.after', async (result: unknown) => {
-    await callOrca(orcaBin, 'permission.after', result, sessionId, false, shell, logger);
-    return result;
-  });
-
-  context.hooks.on('session.end', async (session: unknown) => {
-    await callOrca(orcaBin, 'session.end', session, sessionId, false, shell, logger);
-    return session;
+  api.on('session_end', async (event) => {
+    await callOrca(orcaBin, 'session.end', event, sessionId, false, logger);
   });
 }
