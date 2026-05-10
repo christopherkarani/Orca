@@ -27,11 +27,20 @@ The strongest local protection remains running OpenClaw through `orca run -- ope
 
 ## Install from npm
 
-npm publication is planned in P10. When published:
+After npm publication, install with:
 
 ```bash
-openclaw plugins install npm:@orca/openclaw-plugin
+openclaw plugins install npm:orca-openclaw-plugin
 ```
+
+If OpenClaw supports bare npm package installs:
+
+```bash
+openclaw plugins install orca-openclaw-plugin
+```
+
+For local validation before publication, use `npm pack --dry-run`.
+
 
 ## ClawHub submission
 
@@ -131,7 +140,8 @@ This plugin does not mutate host configuration, so uninstalling is safe.
 - The strongest protection remains `orca run -- openclaw`.
 - Plugin installation depends on OpenClaw version and plugin loading mechanism.
 - No telemetry is collected.
-- npm publication is planned in P10; ClawHub submission is planned in P11.
+- npm package support has been prepared for `orca-openclaw-plugin`.
+- ClawHub submission is planned in P11.
 
 ## Security model
 
