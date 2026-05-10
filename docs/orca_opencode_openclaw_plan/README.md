@@ -21,7 +21,7 @@ The goal is to make:
 
 ```text
 @orca/opencode-plugin
-@orca/openclaw-plugin
+orca-openclaw-plugin
 ```
 
 without bundling or reimplementing the Zig Orca CLI.

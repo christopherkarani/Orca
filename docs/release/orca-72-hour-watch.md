@@ -149,7 +149,7 @@ Format: `patch/v{MAJOR}.{MINOR}.{PATCH}`
 
 Examples:
 - `patch/v1.1.1`
-- `patch/v1.1.2`
+- `patch/v1.1.3`
 
 ---
 

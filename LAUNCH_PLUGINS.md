@@ -42,7 +42,7 @@ Agent-host skills and lifecycle hooks call the Orca CLI so the same policy engin
 - Path: `integrations/openclaw-plugin/`
 - Manifest: `openclaw.plugin.json`
 - Package: `package.json`
-- Hooks: `session.start`, `tool.before`, `tool.after`, `permission.before`, `permission.after`, `session.end`
+- Hooks: `session_start` → `session.start`, `before_tool_call` → `tool.before`, `after_tool_call` → `tool.after`, `session_end` → `session.end`
 - Install guide: [docs/integrations/openclaw.md](docs/integrations/openclaw.md)
 
 ## Install links
@@ -89,7 +89,7 @@ See [examples/plugin-demo/](examples/plugin-demo/) for a local demo flow. A reas
 
 - Hooks are advisory and depend on host support.
 - Official marketplace availability is not yet implemented.
-- OpenClaw npm package is planned in P10; ClawHub submission is planned in P11.
+- OpenClaw npm package `orca-openclaw-plugin@1.1.3` is published; ClawHub package `orca-openclaw-plugin@1.1.3` is published.
 - Plugin installation defaults to preview/dry-run.
 - No telemetry, SaaS, or remote control plane is added.
 - These plugins do not add MCP server functionality or drone-specific plugin features.

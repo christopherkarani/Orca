@@ -147,7 +147,95 @@ test "openclaw package.json has correct name" {
     defer parsed.deinit();
 
     const name = parsed.value.object.get("name").?.string;
-    try std.testing.expectEqualStrings("@orca/openclaw-plugin", name);
+    try std.testing.expectEqualStrings("orca-openclaw-plugin", name);
+}
+
+test "openclaw package.json main points to dist/index.js" {
+    var gpa_state: std.heap.GeneralPurposeAllocator(.{}) = .init;
+    defer _ = gpa_state.deinit();
+    const allocator = gpa_state.allocator();
+
+    const content = try readFile(allocator, package_json_path);
+    defer allocator.free(content);
+
+    var parsed = try std.json.parseFromSlice(std.json.Value, allocator, content, .{});
+    defer parsed.deinit();
+
+    const main = parsed.value.object.get("main").?.string;
+    try std.testing.expectEqualStrings("dist/index.js", main);
+}
+
+test "openclaw package.json types points to dist/index.d.ts" {
+    var gpa_state: std.heap.GeneralPurposeAllocator(.{}) = .init;
+    defer _ = gpa_state.deinit();
+    const allocator = gpa_state.allocator();
+
+    const content = try readFile(allocator, package_json_path);
+    defer allocator.free(content);
+
+    var parsed = try std.json.parseFromSlice(std.json.Value, allocator, content, .{});
+    defer parsed.deinit();
+
+    const types = parsed.value.object.get("types").?.string;
+    try std.testing.expectEqualStrings("dist/index.d.ts", types);
+}
+
+test "openclaw package.json files includes openclaw.plugin.json" {
+    var gpa_state: std.heap.GeneralPurposeAllocator(.{}) = .init;
+    defer _ = gpa_state.deinit();
+    const allocator = gpa_state.allocator();
+
+    const content = try readFile(allocator, package_json_path);
+    defer allocator.free(content);
+
+    var parsed = try std.json.parseFromSlice(std.json.Value, allocator, content, .{});
+    defer parsed.deinit();
+
+    const files = parsed.value.object.get("files").?.array;
+    var found = false;
+    for (files.items) |item| {
+        if (std.mem.eql(u8, item.string, "openclaw.plugin.json")) {
+            found = true;
+            break;
+        }
+    }
+    try std.testing.expect(found);
+}
+
+test "openclaw package.json has no install scripts" {
+    var gpa_state: std.heap.GeneralPurposeAllocator(.{}) = .init;
+    defer _ = gpa_state.deinit();
+    const allocator = gpa_state.allocator();
+
+    const content = try readFile(allocator, package_json_path);
+    defer allocator.free(content);
+
+    var parsed = try std.json.parseFromSlice(std.json.Value, allocator, content, .{});
+    defer parsed.deinit();
+
+    // Should not have scripts.preinstall, scripts.install, or scripts.postinstall
+    if (parsed.value.object.get("scripts")) |scripts| {
+        const obj = scripts.object;
+        try std.testing.expect(obj.get("preinstall") == null);
+        try std.testing.expect(obj.get("install") == null);
+        try std.testing.expect(obj.get("postinstall") == null);
+    }
+}
+
+test "openclaw package.json has no mcp or drone fields" {
+    var gpa_state: std.heap.GeneralPurposeAllocator(.{}) = .init;
+    defer _ = gpa_state.deinit();
+    const allocator = gpa_state.allocator();
+
+    const content = try readFile(allocator, package_json_path);
+    defer allocator.free(content);
+
+    var parsed = try std.json.parseFromSlice(std.json.Value, allocator, content, .{});
+    defer parsed.deinit();
+
+    const obj = parsed.value.object;
+    try std.testing.expect(obj.get("mcp") == null);
+    try std.testing.expect(obj.get("drone") == null);
 }
 
 // ---------------------------------------------------------------------------
@@ -235,6 +323,49 @@ test "openclaw plugin README states no drone plugin features" {
     defer std.testing.allocator.free(content);
 
     try std.testing.expect(std.mem.indexOf(u8, content, "drone-specific plugin features") != null);
+}
+
+test "openclaw plugin README has npm install instructions" {
+    const content = try readFile(std.testing.allocator, readme_path);
+    defer std.testing.allocator.free(content);
+
+    try std.testing.expect(std.mem.indexOf(u8, content, "openclaw plugins install npm:orca-openclaw-plugin") != null);
+}
+
+test "openclaw plugin README does not claim npm publication happened" {
+    const content = try readFile(std.testing.allocator, readme_path);
+    defer std.testing.allocator.free(content);
+
+    const lower = try std.ascii.allocLowerString(std.testing.allocator, content);
+    defer std.testing.allocator.free(lower);
+
+    // Should not claim "available on npm" or "published to npm"
+    try std.testing.expect(std.mem.indexOf(u8, lower, "available on npm") == null);
+    try std.testing.expect(std.mem.indexOf(u8, lower, "published to npm") == null);
+}
+
+// ---------------------------------------------------------------------------
+// Forbidden file tests
+// ---------------------------------------------------------------------------
+
+test "openclaw plugin directory has no .mcp.json" {
+    const mcp_path = plugin_dir ++ "/.mcp.json";
+    try std.testing.expect(!fileExists(mcp_path));
+}
+
+test "openclaw plugin directory has no drone files" {
+    // Check for common drone file names
+    const drone_files = &[_][]const u8{
+        "drone.json",
+        "drone.ts",
+        "drone.js",
+        ".drone.json",
+    };
+    for (drone_files) |f| {
+        const path = try std.fs.path.join(std.testing.allocator, &.{ plugin_dir, f });
+        defer std.testing.allocator.free(path);
+        try std.testing.expect(!fileExists(path));
+    }
 }
 
 // ---------------------------------------------------------------------------

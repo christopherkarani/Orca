@@ -52,8 +52,6 @@ orca plugin install openclaw --dry-run
 orca hook openclaw session.start
 orca hook openclaw tool.before
 orca hook openclaw tool.after
-orca hook openclaw permission.before
-orca hook openclaw permission.after
 orca hook openclaw session.end
 ```
 
@@ -63,8 +61,9 @@ orca hook openclaw session.end
 - Enforces 256 KiB max payload size.
 - Validates JSON, host, and event fields.
 - Maps OpenClaw dot-separated events to internal Orca events.
-- Handles informational events (`permission.after`, `session.end`) with `allow` responses.
-- Evaluates `tool.before` and `permission.before` through Orca policy.
+- Handles informational events (`session.end`) with `allow` responses.
+- Evaluates `tool.before` through Orca policy.
+- OpenClaw does not expose dedicated permission hooks; blocking is handled via `before_tool_call`.
 - Emits valid JSON output.
 - Debug logs go to stderr only.
 - CI mode (`--ci`) never prompts.
@@ -85,8 +84,8 @@ Not performed — OpenClaw was not installed in the test environment. The plugin
 ## Known limitations
 
 - OpenClaw host binary detection reports "not found" if OpenClaw is not installed.
-- npm publication is planned in P10.
-- ClawHub submission is planned in P11.
+- npm package `orca-openclaw-plugin@1.1.3` is published.
+- ClawHub package `orca-openclaw-plugin@1.1.3` is published.
 - The OpenClaw plugin does not add MCP server behavior or drone-specific plugin features.
 
 ## Secret-safety result
