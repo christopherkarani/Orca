@@ -59,6 +59,29 @@ else
   exit 1
 fi
 
+# Package OpenCode plugin
+echo "Packaging OpenCode plugin..."
+OPENCODE_PLUGIN_DIR="${REPO_ROOT}/integrations/opencode-plugin"
+OPENCODE_ZIP="${DIST_DIR}/orca-opencode-plugin-v${VERSION}.zip"
+
+if [ -d "${OPENCODE_PLUGIN_DIR}" ]; then
+  OPENCODE_ZIP_ABS="${REPO_ROOT}/${OPENCODE_ZIP}"
+  (cd "${OPENCODE_PLUGIN_DIR}" && zip -qr "${OPENCODE_ZIP_ABS}" \
+    orca.ts \
+    README.md \
+    package.json \
+    examples/ \
+    -x "*.DS_Store" \
+    -x "*.mcp.json" \
+    -x "*drone*" \
+    -x "*build*" \
+    -x "*tmp*" \
+    -x "*secret*")
+  echo "Created ${OPENCODE_ZIP}"
+else
+  echo "WARNING: OpenCode plugin directory not found: ${OPENCODE_PLUGIN_DIR}" >&2
+fi
+
 # Package Claude marketplace catalog
 echo "Packaging Claude marketplace catalog..."
 MARKETPLACE_DIR="${REPO_ROOT}/integrations/claude-marketplace"

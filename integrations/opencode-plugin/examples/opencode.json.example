@@ -1,0 +1,19 @@
+{
+  "plugins": [
+    {
+      "name": "orca",
+      "path": "./.opencode/plugins/orca.ts",
+      "enabled": true
+    }
+  ],
+  "settings": {
+    "orca": {
+      "binary": "orca",
+      "timeout": 15000,
+      "blocking_hooks": [
+        "tool.execute.before",
+        "permission.asked"
+      ]
+    }
+  }
+}

@@ -1,0 +1,10 @@
+{
+  "version": 1,
+  "host": "opencode",
+  "event": "tool.execute.before",
+  "payload": {
+    "tool": "shell",
+    "command": "rm -rf /",
+    "cwd": "/Users/chriskarani/CodingProjects/aegis"
+  }
+}

@@ -1,0 +1,10 @@
+{
+  "version": 1,
+  "host": "opencode",
+  "event": "tool.execute.before",
+  "payload": {
+    "tool": "file_write",
+    "path": "/etc/passwd",
+    "cwd": "/Users/chriskarani/CodingProjects/aegis"
+  }
+}

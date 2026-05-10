@@ -1,0 +1,44 @@
+# Project-Local Plugin Path
+
+This example shows how to install the Orca plugin locally within a single project.
+
+## Steps
+
+1. From your project root, create the OpenCode plugins directory:
+
+   ```bash
+   mkdir -p .opencode/plugins
+   ```
+
+2. Copy the Orca plugin file into the project-local plugins directory:
+
+   ```bash
+   # Adjust the source path to point to the Orca repository
+   cp /path/to/orca-repo/integrations/opencode-plugin/orca.ts .opencode/plugins/orca.ts
+   ```
+
+   Or create a symlink:
+
+   ```bash
+   ln -s /path/to/orca-repo/integrations/opencode-plugin/orca.ts .opencode/plugins/orca.ts
+   ```
+
+3. OpenCode will automatically discover plugins in `.opencode/plugins/` when running inside the project.
+
+## Verify
+
+Run the Orca plugin doctor from the project root:
+
+```bash
+orca plugin doctor opencode
+```
+
+Expected output includes:
+- `opencode: found` in the plugin directories section.
+- Orca binary detected in PATH or at a known build path.
+
+## Notes
+
+- Project-local plugins are scoped to the current workspace.
+- They travel with the repo if committed (the plugin file is small and contains no secrets).
+- For stronger protection, also run OpenCode through Orca: `orca run -- opencode`.

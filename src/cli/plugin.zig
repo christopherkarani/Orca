@@ -35,7 +35,7 @@ pub fn command(argv: []const []const u8, stdout: anytype, stderr: anytype) !u8 {
 // doctor
 // ---------------------------------------------------------------------------
 
-const DoctorTarget = enum { all, codex, claude };
+const DoctorTarget = enum { all, codex, claude, opencode };
 
 fn doctorCommand(argv: []const []const u8, stdout: anytype, stderr: anytype) !u8 {
     var target: DoctorTarget = .all;
@@ -49,8 +49,10 @@ fn doctorCommand(argv: []const []const u8, stdout: anytype, stderr: anytype) !u8
                 \\  orca plugin doctor [--json]
                 \\  orca plugin doctor codex
                 \\  orca plugin doctor claude
+                \\  orca plugin doctor opencode
                 \\  orca plugin doctor codex [--json]
                 \\  orca plugin doctor claude [--json]
+                \\  orca plugin doctor opencode [--json]
                 \\
             );
             return exit_codes.success;
@@ -65,6 +67,10 @@ fn doctorCommand(argv: []const []const u8, stdout: anytype, stderr: anytype) !u8
         }
         if (std.mem.eql(u8, arg, "claude")) {
             target = .claude;
+            continue;
+        }
+        if (std.mem.eql(u8, arg, "opencode")) {
+            target = .opencode;
             continue;
         }
         try stderr.print("orca plugin doctor: unknown option '{s}'.\n", .{arg});
@@ -93,12 +99,20 @@ fn doctorCommand(argv: []const []const u8, stdout: anytype, stderr: anytype) !u8
 const PluginDirStatus = struct {
     codex: bool,
     claude: bool,
+    opencode: bool,
     common: bool,
 };
 
 const HostBinaryStatus = struct {
     codex: bool,
     claude: bool,
+    opencode: bool,
+};
+
+const OpenCodePaths = struct {
+    project_plugin_exists: bool,
+    global_plugin_exists: bool,
+    config_references_plugin: bool,
 };
 
 const PluginDoctorReport = struct {
@@ -113,6 +127,7 @@ const PluginDoctorReport = struct {
     mcp_support_status: []const u8,
     plugin_directories: PluginDirStatus,
     host_binaries: HostBinaryStatus,
+    opencode_paths: OpenCodePaths,
     drone_workstream_detected: bool,
     drone_safety_mode_active: bool,
     platform_summary: []const u8,
@@ -159,12 +174,33 @@ fn collectPluginDoctorReport(allocator: std.mem.Allocator) !PluginDoctorReport {
     const plugin_dirs = PluginDirStatus{
         .codex = dirExists("integrations/codex-plugin"),
         .claude = dirExists("integrations/claude-code-plugin"),
+        .opencode = dirExists("integrations/opencode-plugin"),
         .common = dirExists("integrations/common"),
     };
 
     const host_bins = HostBinaryStatus{
         .codex = binaryInPath(allocator, "codex"),
         .claude = binaryInPath(allocator, "claude"),
+        .opencode = binaryInPath(allocator, "opencode"),
+    };
+
+    // Check OpenCode-specific plugin paths
+    const opencode_project_path = std.fs.path.join(allocator, &.{ cwd, ".opencode", "plugins", "orca.ts" }) catch unreachable;
+    defer allocator.free(opencode_project_path);
+
+    const opencode_global_path = blk: {
+        const home = std.process.getEnvVarOwned(allocator, "HOME") catch {
+            break :blk std.fs.path.join(allocator, &.{ "~", ".config", "opencode", "plugins", "orca.ts" }) catch unreachable;
+        };
+        defer allocator.free(home);
+        break :blk std.fs.path.join(allocator, &.{ home, ".config", "opencode", "plugins", "orca.ts" }) catch unreachable;
+    };
+    defer allocator.free(opencode_global_path);
+
+    const opencode_paths = OpenCodePaths{
+        .project_plugin_exists = fileExistsAbsolute(opencode_project_path),
+        .global_plugin_exists = fileExistsAbsolute(opencode_global_path),
+        .config_references_plugin = false, // Safe detection deferred
     };
 
     const drone_detected = hasPath(workspace_root, "packages/edge") or binaryInPath(allocator, "aegis-edge");
@@ -174,8 +210,10 @@ fn collectPluginDoctorReport(allocator: std.mem.Allocator) !PluginDoctorReport {
     if (!plugin_dirs.common) try warnings.append(allocator, try allocator.dupe(u8, "integrations/common directory missing"));
     if (!plugin_dirs.codex) try warnings.append(allocator, try allocator.dupe(u8, "Codex plugin directory not yet created"));
     if (!plugin_dirs.claude) try warnings.append(allocator, try allocator.dupe(u8, "Claude Code plugin directory not yet created"));
+    if (!plugin_dirs.opencode) try warnings.append(allocator, try allocator.dupe(u8, "OpenCode plugin directory not yet created"));
     if (!host_bins.codex) try warnings.append(allocator, try allocator.dupe(u8, "Codex host binary not found in PATH"));
     if (!host_bins.claude) try warnings.append(allocator, try allocator.dupe(u8, "Claude Code host binary not found in PATH"));
+    if (!host_bins.opencode) try warnings.append(allocator, try allocator.dupe(u8, "OpenCode host binary not found in PATH"));
 
     const os = core.platform.detectOs();
     const backend_report = sandbox.backend.detect(os);
@@ -199,12 +237,15 @@ fn collectPluginDoctorReport(allocator: std.mem.Allocator) !PluginDoctorReport {
         .mcp_support_status = try allocator.dupe(u8, mcp_support),
         .plugin_directories = plugin_dirs,
         .host_binaries = host_bins,
+        .opencode_paths = opencode_paths,
         .drone_workstream_detected = drone_detected,
         .drone_safety_mode_active = drone_safety,
         .platform_summary = platform_summary,
         .warnings = try warnings.toOwnedSlice(allocator),
     };
 }
+
+
 
 // ---------------------------------------------------------------------------
 // doctor plain output
@@ -243,10 +284,12 @@ fn writeDoctorPlain(stdout: anytype, report: PluginDoctorReport, target: DoctorT
     try stdout.print("  integrations/common: {s}\n", .{if (report.plugin_directories.common) "found" else "missing"});
     try stdout.print("  integrations/codex-plugin: {s}\n", .{if (report.plugin_directories.codex) "found" else "missing"});
     try stdout.print("  integrations/claude-code-plugin: {s}\n", .{if (report.plugin_directories.claude) "found" else "missing"});
+    try stdout.print("  integrations/opencode-plugin: {s}\n", .{if (report.plugin_directories.opencode) "found" else "missing"});
 
     try stdout.writeAll("\nHost binaries:\n");
     try stdout.print("  codex: {s}\n", .{if (report.host_binaries.codex) "found in PATH" else "not found"});
     try stdout.print("  claude: {s}\n", .{if (report.host_binaries.claude) "found in PATH" else "not found"});
+    try stdout.print("  opencode: {s}\n", .{if (report.host_binaries.opencode) "found in PATH" else "not found"});
 
     try stdout.writeAll("\nDrone workstream:\n");
     if (report.drone_workstream_detected) {
@@ -282,6 +325,15 @@ fn writeDoctorPlain(stdout: anytype, report: PluginDoctorReport, target: DoctorT
             try stdout.print("  host binary: {s}\n", .{if (report.host_binaries.claude) "detected" else "not detected"});
             try stdout.print("  plugin directory: {s}\n", .{if (report.plugin_directories.claude) "present" else "not yet created"});
             try stdout.writeAll("  install: use 'orca plugin install claude --dry-run' to preview\n");
+        },
+        .opencode => {
+            try stdout.writeAll("\nOpenCode plugin status:\n");
+            try stdout.print("  host binary: {s}\n", .{if (report.host_binaries.opencode) "detected" else "not detected"});
+            try stdout.print("  plugin directory: {s}\n", .{if (report.plugin_directories.opencode) "present" else "not yet created"});
+            try stdout.print("  project plugin path (.opencode/plugins/orca.ts): {s}\n", .{if (report.opencode_paths.project_plugin_exists) "exists" else "not found"});
+            try stdout.print("  global plugin path (~/.config/opencode/plugins/orca.ts): {s}\n", .{if (report.opencode_paths.global_plugin_exists) "exists" else "not found"});
+            try stdout.writeAll("  install: use 'orca plugin install opencode --dry-run' to preview\n");
+            try stdout.writeAll("  note: OpenCode plugin uses TypeScript hooks, not a manifest file\n");
         },
     }
 
@@ -330,12 +382,20 @@ fn writeDoctorJson(stdout: anytype, report: PluginDoctorReport, target: DoctorTa
     try stdout.writeAll("  \"plugin_directories\": {\n");
     try stdout.print("    \"codex\": {s},\n", .{if (report.plugin_directories.codex) "true" else "false"});
     try stdout.print("    \"claude\": {s},\n", .{if (report.plugin_directories.claude) "true" else "false"});
+    try stdout.print("    \"opencode\": {s},\n", .{if (report.plugin_directories.opencode) "true" else "false"});
     try stdout.print("    \"common\": {s}\n", .{if (report.plugin_directories.common) "true" else "false"});
     try stdout.writeAll("  },\n");
 
     try stdout.writeAll("  \"host_binaries\": {\n");
     try stdout.print("    \"codex\": {s},\n", .{if (report.host_binaries.codex) "true" else "false"});
-    try stdout.print("    \"claude\": {s}\n", .{if (report.host_binaries.claude) "true" else "false"});
+    try stdout.print("    \"claude\": {s},\n", .{if (report.host_binaries.claude) "true" else "false"});
+    try stdout.print("    \"opencode\": {s}\n", .{if (report.host_binaries.opencode) "true" else "false"});
+    try stdout.writeAll("  },\n");
+
+    try stdout.writeAll("  \"opencode_paths\": {\n");
+    try stdout.print("    \"project_plugin_exists\": {s},\n", .{if (report.opencode_paths.project_plugin_exists) "true" else "false"});
+    try stdout.print("    \"global_plugin_exists\": {s},\n", .{if (report.opencode_paths.global_plugin_exists) "true" else "false"});
+    try stdout.print("    \"config_references_plugin\": {s}\n", .{if (report.opencode_paths.config_references_plugin) "true" else "false"});
     try stdout.writeAll("  },\n");
 
     try stdout.writeAll("  \"drone\": {\n");
@@ -369,7 +429,7 @@ fn writeDoctorJson(stdout: anytype, report: PluginDoctorReport, target: DoctorTa
 // manifest
 // ---------------------------------------------------------------------------
 
-const ManifestTarget = enum { codex, claude, all };
+const ManifestTarget = enum { codex, claude, opencode, all };
 
 fn manifestCommand(argv: []const []const u8, stdout: anytype, stderr: anytype) !u8 {
     var target: ManifestTarget = .all;
@@ -381,6 +441,7 @@ fn manifestCommand(argv: []const []const u8, stdout: anytype, stderr: anytype) !
                 \\Usage:
                 \\  orca plugin manifest codex
                 \\  orca plugin manifest claude
+                \\  orca plugin manifest opencode
                 \\  orca plugin manifest all
                 \\  orca plugin manifest <target> [--json]
                 \\
@@ -397,6 +458,10 @@ fn manifestCommand(argv: []const []const u8, stdout: anytype, stderr: anytype) !
         }
         if (std.mem.eql(u8, arg, "claude")) {
             target = .claude;
+            continue;
+        }
+        if (std.mem.eql(u8, arg, "opencode")) {
+            target = .opencode;
             continue;
         }
         if (std.mem.eql(u8, arg, "all")) {
@@ -437,12 +502,22 @@ fn writeManifestPlain(stdout: anytype, target: ManifestTarget) !void {
                 try stdout.writeAll("  note: validation of manifest shape is deferred to host-specific checks\n");
             }
         },
+        .opencode => {
+            const path = "integrations/opencode-plugin/orca.ts";
+            const exists = fileExistsAbsolute(path);
+            try stdout.writeAll("OpenCode plugin manifest:\n");
+            try stdout.print("  expected path: {s}\n", .{path});
+            try stdout.print("  status: {s}\n", .{if (exists) "exists" else "missing"});
+            try stdout.writeAll("  note: OpenCode uses TypeScript plugins, not a JSON manifest\n");
+        },
         .all => {
             try stdout.writeAll("Plugin manifests:\n");
             const codex_path = "integrations/codex-plugin/.codex-plugin/plugin.json";
             const claude_path = "integrations/claude-code-plugin/.claude-plugin/plugin.json";
-            try stdout.print("  codex:   {s} ({s})\n", .{ codex_path, if (fileExistsAbsolute(codex_path)) "exists" else "missing" });
-            try stdout.print("  claude:  {s} ({s})\n", .{ claude_path, if (fileExistsAbsolute(claude_path)) "exists" else "missing" });
+            const opencode_path = "integrations/opencode-plugin/orca.ts";
+            try stdout.print("  codex:    {s} ({s})\n", .{ codex_path, if (fileExistsAbsolute(codex_path)) "exists" else "missing" });
+            try stdout.print("  claude:   {s} ({s})\n", .{ claude_path, if (fileExistsAbsolute(claude_path)) "exists" else "missing" });
+            try stdout.print("  opencode: {s} ({s})\n", .{ opencode_path, if (fileExistsAbsolute(opencode_path)) "exists" else "missing" });
         },
     }
 }
@@ -468,9 +543,19 @@ fn writeManifestJson(stdout: anytype, target: ManifestTarget) !void {
             try stdout.print("    \"status\": \"{s}\"\n", .{if (fileExistsAbsolute(path)) "exists" else "missing"});
             try stdout.writeAll("  }\n");
         },
+        .opencode => {
+            const path = "integrations/opencode-plugin/orca.ts";
+            try stdout.writeAll("  \"opencode\": {\n");
+            try stdout.print("    \"path\": ", .{});
+            try writeJsonString(stdout, path);
+            try stdout.writeAll(",\n");
+            try stdout.print("    \"status\": \"{s}\"\n", .{if (fileExistsAbsolute(path)) "exists" else "missing"});
+            try stdout.writeAll("  }\n");
+        },
         .all => {
             const codex_path = "integrations/codex-plugin/.codex-plugin/plugin.json";
             const claude_path = "integrations/claude-code-plugin/.claude-plugin/plugin.json";
+            const opencode_path = "integrations/opencode-plugin/orca.ts";
             try stdout.writeAll("  \"codex\": {\n");
             try stdout.print("    \"path\": ", .{});
             try writeJsonString(stdout, codex_path);
@@ -482,6 +567,12 @@ fn writeManifestJson(stdout: anytype, target: ManifestTarget) !void {
             try writeJsonString(stdout, claude_path);
             try stdout.writeAll(",\n");
             try stdout.print("    \"status\": \"{s}\"\n", .{if (fileExistsAbsolute(claude_path)) "exists" else "missing"});
+            try stdout.writeAll("  },\n");
+            try stdout.writeAll("  \"opencode\": {\n");
+            try stdout.print("    \"path\": ", .{});
+            try writeJsonString(stdout, opencode_path);
+            try stdout.writeAll(",\n");
+            try stdout.print("    \"status\": \"{s}\"\n", .{if (fileExistsAbsolute(opencode_path)) "exists" else "missing"});
             try stdout.writeAll("  }\n");
         },
     }
@@ -492,7 +583,7 @@ fn writeManifestJson(stdout: anytype, target: ManifestTarget) !void {
 // install
 // ---------------------------------------------------------------------------
 
-const InstallTarget = enum { codex, claude, all };
+const InstallTarget = enum { codex, claude, opencode, all };
 
 fn installCommand(argv: []const []const u8, stdout: anytype, stderr: anytype) !u8 {
     var target: InstallTarget = .all;
@@ -508,11 +599,13 @@ fn installCommand(argv: []const []const u8, stdout: anytype, stderr: anytype) !u
                 \\Usage:
                 \\  orca plugin install codex [--dry-run]
                 \\  orca plugin install claude [--dry-run]
+                \\  orca plugin install opencode [--dry-run]
                 \\  orca plugin install all [--dry-run]
                 \\  orca plugin install codex --path <plugin-path> [--dry-run]
                 \\  orca plugin install claude --path <plugin-path> [--dry-run]
+                \\  orca plugin install opencode --path <plugin-path> [--dry-run]
                 \\  orca plugin install <target> [--yes]
-                \\
+                \\  
                 \\Options:
                 \\  --dry-run   Preview changes without mutating host config (default)
                 \\  --path      Use a custom plugin path instead of the default
@@ -546,6 +639,10 @@ fn installCommand(argv: []const []const u8, stdout: anytype, stderr: anytype) !u
             target = .claude;
             continue;
         }
+        if (std.mem.eql(u8, arg, "opencode")) {
+            target = .opencode;
+            continue;
+        }
         if (std.mem.eql(u8, arg, "all")) {
             target = .all;
             continue;
@@ -564,7 +661,8 @@ fn installCommand(argv: []const []const u8, stdout: anytype, stderr: anytype) !u
     const targets = switch (target) {
         .codex => &[_]InstallTarget{.codex},
         .claude => &[_]InstallTarget{.claude},
-        .all => &[_]InstallTarget{ .codex, .claude },
+        .opencode => &[_]InstallTarget{.opencode},
+        .all => &[_]InstallTarget{ .codex, .claude, .opencode },
     };
 
     for (targets) |t| {
@@ -578,6 +676,7 @@ fn installCommand(argv: []const []const u8, stdout: anytype, stderr: anytype) !u
         const plugin_dir = switch (t) {
             .codex => custom_path orelse "integrations/codex-plugin",
             .claude => custom_path orelse "integrations/claude-code-plugin",
+            .opencode => custom_path orelse "integrations/opencode-plugin",
             .all => unreachable,
         };
 
@@ -587,12 +686,25 @@ fn installCommand(argv: []const []const u8, stdout: anytype, stderr: anytype) !u
         } else {
             try stdout.print("  plugin directory: found ({s})\n", .{plugin_dir});
 
-            if (dry_run) {
-                try stdout.writeAll("  action: no changes made (dry-run)\n");
-                try stdout.writeAll("  next step: host install command is not yet known; manual integration required\n");
+            if (t == .opencode) {
+                // OpenCode-specific install guidance
+                try stdout.writeAll("  install paths for OpenCode:\n");
+                try stdout.writeAll("    project: .opencode/plugins/orca.ts\n");
+                try stdout.writeAll("    global:  ~/.config/opencode/plugins/orca.ts\n");
+                if (dry_run) {
+                    try stdout.writeAll("  action: no changes made (dry-run)\n");
+                    try stdout.writeAll("  next step: copy integrations/opencode-plugin/orca.ts to one of the paths above\n");
+                } else {
+                    try stdout.writeAll("  action: copy plugin file to chosen OpenCode plugin path\n");
+                }
             } else {
-                try stdout.writeAll("  action: installation would proceed (deferred)\n");
-                try stdout.writeAll("  note: actual host plugin installation is not yet implemented\n");
+                if (dry_run) {
+                    try stdout.writeAll("  action: no changes made (dry-run)\n");
+                    try stdout.writeAll("  next step: host install command is not yet known; manual integration required\n");
+                } else {
+                    try stdout.writeAll("  action: installation would proceed (deferred)\n");
+                    try stdout.writeAll("  note: actual host plugin installation is not yet implemented\n");
+                }
             }
         }
 
@@ -815,6 +927,23 @@ test "plugin doctor claude shows claude-specific section" {
     try std.testing.expectEqualStrings("", stderr_stream.getWritten());
 }
 
+test "plugin doctor opencode shows opencode-specific section" {
+    var stdout_buf: [16384]u8 = undefined;
+    var stderr_buf: [256]u8 = undefined;
+    var stdout_stream = std.io.fixedBufferStream(&stdout_buf);
+    var stderr_stream = std.io.fixedBufferStream(&stderr_buf);
+
+    const code = try doctorCommand(&.{"opencode"}, stdout_stream.writer(), stderr_stream.writer());
+    try std.testing.expectEqual(exit_codes.success, code);
+
+    const output = stdout_stream.getWritten();
+    try std.testing.expect(std.mem.indexOf(u8, output, "OpenCode plugin status:") != null);
+    try std.testing.expect(std.mem.indexOf(u8, output, "host binary:") != null);
+    try std.testing.expect(std.mem.indexOf(u8, output, "project plugin path") != null);
+    try std.testing.expect(std.mem.indexOf(u8, output, "global plugin path") != null);
+    try std.testing.expectEqualStrings("", stderr_stream.getWritten());
+}
+
 test "plugin doctor does not print raw env values or secrets" {
     var stdout_buf: [16384]u8 = undefined;
     var stderr_buf: [256]u8 = undefined;
@@ -863,7 +992,22 @@ test "plugin manifest claude reports expected path" {
     try std.testing.expectEqualStrings("", stderr_stream.getWritten());
 }
 
-test "plugin manifest all reports both" {
+test "plugin manifest opencode reports expected path" {
+    var stdout_buf: [1024]u8 = undefined;
+    var stderr_buf: [256]u8 = undefined;
+    var stdout_stream = std.io.fixedBufferStream(&stdout_buf);
+    var stderr_stream = std.io.fixedBufferStream(&stderr_buf);
+
+    const code = try manifestCommand(&.{"opencode"}, stdout_stream.writer(), stderr_stream.writer());
+    try std.testing.expectEqual(exit_codes.success, code);
+
+    const output = stdout_stream.getWritten();
+    try std.testing.expect(std.mem.indexOf(u8, output, "integrations/opencode-plugin/orca.ts") != null);
+    try std.testing.expect(std.mem.indexOf(u8, output, "OpenCode uses TypeScript plugins") != null);
+    try std.testing.expectEqualStrings("", stderr_stream.getWritten());
+}
+
+test "plugin manifest all reports all three" {
     var stdout_buf: [1024]u8 = undefined;
     var stderr_buf: [256]u8 = undefined;
     var stdout_stream = std.io.fixedBufferStream(&stdout_buf);
@@ -875,6 +1019,7 @@ test "plugin manifest all reports both" {
     const output = stdout_stream.getWritten();
     try std.testing.expect(std.mem.indexOf(u8, output, "codex:") != null);
     try std.testing.expect(std.mem.indexOf(u8, output, "claude:") != null);
+    try std.testing.expect(std.mem.indexOf(u8, output, "opencode:") != null);
     try std.testing.expectEqualStrings("", stderr_stream.getWritten());
 }
 
@@ -893,6 +1038,7 @@ test "plugin manifest --json emits valid JSON" {
 
     try std.testing.expect(parsed.value.object.get("codex") != null);
     try std.testing.expect(parsed.value.object.get("claude") != null);
+    try std.testing.expect(parsed.value.object.get("opencode") != null);
     try std.testing.expectEqualStrings("", stderr_stream.getWritten());
 }
 
@@ -927,7 +1073,24 @@ test "plugin install claude --dry-run reports safe preview" {
     try std.testing.expectEqualStrings("", stderr_stream.getWritten());
 }
 
-test "plugin install all --dry-run reports both targets" {
+test "plugin install opencode --dry-run reports safe preview with paths" {
+    var stdout_buf: [4096]u8 = undefined;
+    var stderr_buf: [256]u8 = undefined;
+    var stdout_stream = std.io.fixedBufferStream(&stdout_buf);
+    var stderr_stream = std.io.fixedBufferStream(&stderr_buf);
+
+    const code = try installCommand(&.{ "opencode", "--dry-run" }, stdout_stream.writer(), stderr_stream.writer());
+    try std.testing.expectEqual(exit_codes.success, code);
+
+    const output = stdout_stream.getWritten();
+    try std.testing.expect(std.mem.indexOf(u8, output, "dry-run") != null);
+    try std.testing.expect(std.mem.indexOf(u8, output, "no changes made") != null);
+    try std.testing.expect(std.mem.indexOf(u8, output, ".opencode/plugins/orca.ts") != null);
+    try std.testing.expect(std.mem.indexOf(u8, output, "~/.config/opencode/plugins/orca.ts") != null);
+    try std.testing.expectEqualStrings("", stderr_stream.getWritten());
+}
+
+test "plugin install all --dry-run reports all three targets" {
     var stdout_buf: [4096]u8 = undefined;
     var stderr_buf: [256]u8 = undefined;
     var stdout_stream = std.io.fixedBufferStream(&stdout_buf);
@@ -939,6 +1102,7 @@ test "plugin install all --dry-run reports both targets" {
     const output = stdout_stream.getWritten();
     try std.testing.expect(std.mem.indexOf(u8, output, "Target: codex") != null);
     try std.testing.expect(std.mem.indexOf(u8, output, "Target: claude") != null);
+    try std.testing.expect(std.mem.indexOf(u8, output, "Target: opencode") != null);
     try std.testing.expectEqualStrings("", stderr_stream.getWritten());
 }
 

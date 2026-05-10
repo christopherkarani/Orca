@@ -17,6 +17,7 @@ AI coding agents, local automations, and agent-host tools can read files, run co
 - **Plugin doctor** — diagnose Orca installation, plugin status, and platform capabilities.
 - **Codex plugin** — host-native skills and hooks that call Orca CLI for policy decisions.
 - **Claude Code plugin** — host-native skills and hooks that call Orca CLI for policy decisions.
+- **OpenCode plugin** — host-native hooks that call Orca CLI for policy decisions.
 
 Orca is not a SaaS product, hosted dashboard, monetization layer, or telemetry service. It is a local CLI and library built around explicit policy, wrapper/proxy mediation, redaction, and honest platform capability reporting.
 
@@ -37,10 +38,11 @@ See [Quickstart](docs/quickstart.md) for the full first-run path.
 
 ## Agent Host Plugins
 
-Orca includes local plugin integrations for Codex and Claude Code. The plugins add host-native skills and lifecycle hooks that call the Orca CLI for policy decisions, red-team checks, replay, and plugin diagnostics.
+Orca includes local plugin integrations for Codex, Claude Code, and OpenCode. The plugins add host-native skills and lifecycle hooks that call the Orca CLI for policy decisions, red-team checks, replay, and plugin diagnostics.
 
 - [Codex plugin](docs/integrations/codex.md)
 - [Claude Code plugin](docs/integrations/claude-code.md)
+- [OpenCode plugin](docs/integrations/opencode.md)
 - [Orca CLI plugin surface](docs/integrations/aegis-cli-plugin.md)
 - [Plugin security model](docs/integrations/plugin-security-model.md)
 - [Plugin troubleshooting](docs/integrations/plugin-troubleshooting.md)
@@ -60,6 +62,7 @@ Artifacts include:
 ```text
 dist/plugins/orca-codex-plugin-vX.Y.Z.zip
 dist/plugins/orca-claude-code-plugin-vX.Y.Z.zip
+dist/plugins/orca-opencode-plugin-vX.Y.Z.zip
 dist/plugins/orca-plugin-checksums.txt
 ```
 
@@ -69,7 +72,7 @@ Always verify checksums before installing:
 sha256sum -c dist/plugins/orca-plugin-checksums.txt
 ```
 
-Then point Codex or Claude Code at the extracted plugin directory. See the per-host install guides above for details.
+Then point Codex, Claude Code, or OpenCode at the extracted plugin directory. See the per-host install guides above for details.
 
 Official marketplace availability is not yet implemented; use local path or release artifact install until distribution is available.
 
@@ -142,6 +145,7 @@ Plugin docs:
 - [Orca CLI plugin surface](docs/integrations/aegis-cli-plugin.md)
 - [Codex plugin](docs/integrations/codex.md)
 - [Claude Code plugin](docs/integrations/claude-code.md)
+- [OpenCode plugin](docs/integrations/opencode.md)
 - [Plugin security model](docs/integrations/plugin-security-model.md)
 - [Plugin troubleshooting](docs/integrations/plugin-troubleshooting.md)
 

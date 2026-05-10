@@ -1,10 +1,10 @@
 # Orca Plugins — Launch Announcement
 
-Orca 1.1.0 now ships native plugin integrations for Codex and Claude Code. The launch is deliberately small and local: the plugins add host-native skills and lifecycle hooks that call the Orca CLI for policy decisions, red-team checks, replay, and plugin diagnostics.
+Orca 1.1.0 now ships native plugin integrations for Codex, Claude Code, and OpenCode. The launch is deliberately small and local: the plugins add host-native skills and lifecycle hooks that call the Orca CLI for policy decisions, red-team checks, replay, and plugin diagnostics.
 
 ## What Orca plugins are
 
-Orca plugins are native integrations for supported agent hosts. They let Codex and Claude Code surface Orca commands, hook events, and install flows without duplicating policy logic inside the host.
+Orca plugins are native integrations for supported agent hosts. They let Codex, Claude Code, and OpenCode surface Orca commands, hook events, and install flows without duplicating policy logic inside the host.
 
 ## Why they exist
 
@@ -12,7 +12,7 @@ Agent-host skills and lifecycle hooks call the Orca CLI so the same policy engin
 
 ## Suggested positioning
 
-> Orca now has native plugin integrations for Codex and Claude Code. The plugins add agent-host skills and lifecycle hooks that call the Orca CLI for policy decisions, red-team checks, replay, and plugin diagnostics.
+> Orca now has native plugin integrations for Codex, Claude Code, and OpenCode. The plugins add agent-host skills and lifecycle hooks that call the Orca CLI for policy decisions, red-team checks, replay, and plugin diagnostics.
 
 ## Codex plugin summary
 
@@ -30,10 +30,18 @@ Agent-host skills and lifecycle hooks call the Orca CLI so the same policy engin
 - Hooks: `SessionStart`, `UserPromptSubmit`, `PreToolUse`, `PermissionRequest`, `PostToolUse`, `SessionEnd`
 - Install guide: [docs/integrations/claude-code.md](docs/integrations/claude-code.md)
 
+## OpenCode plugin summary
+
+- Path: `integrations/opencode-plugin/`
+- Main file: `orca.ts`
+- Hooks: `session.created`, `tool.execute.before`, `tool.execute.after`, `permission.asked`, `permission.replied`, `file.edited`, `command.executed`, `session.updated`, `session.idle`, `session.error`, `shell.env`
+- Install guide: [docs/integrations/opencode.md](docs/integrations/opencode.md)
+
 ## Install links
 
 - Codex: [docs/integrations/codex.md](docs/integrations/codex.md)
 - Claude Code: [docs/integrations/claude-code.md](docs/integrations/claude-code.md)
+- OpenCode: [docs/integrations/opencode.md](docs/integrations/opencode.md)
 
 ## Demo flow
 
@@ -72,16 +80,16 @@ Please try the plugins, verify the docs against real host behavior, and send fix
 
 ### GitHub release
 
-> Orca 1.1.0 adds native plugin integrations for Codex and Claude Code. The plugins surface Orca skills and lifecycle hooks that call the CLI for policy decisions, red-team checks, replay, and diagnostics. Installation is local and verifiable; hooks remain advisory, and the strongest protection still comes from `orca run`.
+> Orca 1.1.0 adds native plugin integrations for Codex, Claude Code, and OpenCode. The plugins surface Orca skills and lifecycle hooks that call the CLI for policy decisions, red-team checks, replay, and diagnostics. Installation is local and verifiable; hooks remain advisory, and the strongest protection still comes from `orca run`.
 
 ### Hacker News / Reddit
 
-> Orca now has native plugin integrations for Codex and Claude Code. The point is not magic enforcement — it is a thin local plugin layer that calls the Orca CLI for policy, replay, and diagnostics while staying honest about host limits.
+> Orca now has native plugin integrations for Codex, Claude Code, and OpenCode. The point is not magic enforcement — it is a thin local plugin layer that calls the Orca CLI for policy, replay, and diagnostics while staying honest about host limits.
 
 ### X / LinkedIn
 
-> Orca 1.1.0 ships native plugin integrations for Codex and Claude Code. The plugins add agent-host skills and lifecycle hooks that call the Orca CLI for policy decisions, red-team checks, replay, and plugin diagnostics.
+> Orca 1.1.0 ships native plugin integrations for Codex, Claude Code, and OpenCode. The plugins add agent-host skills and lifecycle hooks that call the Orca CLI for policy decisions, red-team checks, replay, and plugin diagnostics.
 
 ### Developer / security communities
 
-> Orca 1.1.0 adds host-native plugin integrations for Codex and Claude Code. The plugin layer stays local, uses the Orca CLI as the source of truth, and keeps the strongest protection rooted in `orca run` rather than pretending the host extension layer is a sandbox.
+> Orca 1.1.0 adds host-native plugin integrations for Codex, Claude Code, and OpenCode. The plugin layer stays local, uses the Orca CLI as the source of truth, and keeps the strongest protection rooted in `orca run` rather than pretending the host extension layer is a sandbox.
