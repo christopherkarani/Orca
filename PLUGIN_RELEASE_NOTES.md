@@ -43,6 +43,16 @@ The Claude Code plugin is also a thin host integration. It delegates policy and 
 
 The OpenCode plugin is a thin host integration. It delegates policy and replay to Orca CLI and does not add drone-specific plugin features. OpenCode uses hooks, not skills.
 
+## OpenClaw plugin
+
+- Path: `integrations/openclaw-plugin/`
+- Manifest: `integrations/openclaw-plugin/openclaw.plugin.json`
+- Package: `integrations/openclaw-plugin/package.json`
+- Hooks: `session.start`, `tool.before`, `tool.after`, `permission.before`, `permission.after`, `session.end`
+- Install guide: [docs/integrations/openclaw.md](docs/integrations/openclaw.md)
+
+The OpenClaw plugin is a thin host integration. It delegates policy and replay to Orca CLI and does not add drone-specific plugin features. OpenClaw uses hooks, not skills. npm publication is planned in P10; ClawHub submission is planned in P11.
+
 ## Installation
 
 ### From a release artifact
@@ -51,12 +61,13 @@ The OpenCode plugin is a thin host integration. It delegates policy and replay t
    - `orca-codex-plugin-vX.Y.Z.zip`
    - `orca-claude-code-plugin-vX.Y.Z.zip`
    - `orca-opencode-plugin-vX.Y.Z.zip`
+   - `orca-openclaw-plugin-vX.Y.Z.zip`
 2. Verify the checksum file before extracting anything:
    ```sh
    sha256sum -c orca-plugin-checksums.txt
    ```
 3. Extract the plugin to a local directory of your choice.
-4. Point Codex, Claude Code, or OpenCode at the extracted plugin directory.
+4. Point Codex, Claude Code, OpenCode, or OpenClaw at the extracted plugin directory.
 
 ### From a repo marketplace
 
@@ -84,16 +95,18 @@ These commands add the Orca repository as a plugin marketplace source. This is n
    - Codex: `integrations/codex-plugin/`
    - Claude Code: `integrations/claude-code-plugin/`
    - OpenCode: `integrations/opencode-plugin/`
-3. Confirm the plugin is visible:
-   ```sh
-   ./zig-out/bin/orca plugin doctor codex
-   ./zig-out/bin/orca plugin doctor claude
-   ./zig-out/bin/orca plugin doctor opencode
-   ```
-
-### Checksum verification
-
-Always verify `orca-plugin-checksums.txt` before installing a release zip. The checksum file is the release gate for `dist/plugins/orca-codex-plugin-vX.Y.Z.zip`, `dist/plugins/orca-claude-code-plugin-vX.Y.Z.zip`, and `dist/plugins/orca-opencode-plugin-vX.Y.Z.zip`.
+   - OpenClaw: `integrations/openclaw-plugin/`
+ 3. Confirm the plugin is visible:
+    ```sh
+    ./zig-out/bin/orca plugin doctor codex
+    ./zig-out/bin/orca plugin doctor claude
+    ./zig-out/bin/orca plugin doctor opencode
+    ./zig-out/bin/orca plugin doctor openclaw
+    ```
+ 
+ ### Checksum verification
+ 
+ Always verify `orca-plugin-checksums.txt` before installing a release zip. The checksum file is the release gate for `dist/plugins/orca-codex-plugin-vX.Y.Z.zip`, `dist/plugins/orca-claude-code-plugin-vX.Y.Z.zip`, `dist/plugins/orca-opencode-plugin-vX.Y.Z.zip`, and `dist/plugins/orca-openclaw-plugin-vX.Y.Z.zip`.
 
 ## Verification
 

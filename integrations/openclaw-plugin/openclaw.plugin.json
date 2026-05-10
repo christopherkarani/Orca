@@ -1,0 +1,11 @@
+{
+  "id": "orca",
+  "name": "Orca",
+  "version": "1.0.0",
+  "description": "Runtime guardrails for OpenClaw workflows via the Orca CLI.",
+  "configSchema": {
+    "type": "object",
+    "properties": {},
+    "additionalProperties": false
+  }
+}

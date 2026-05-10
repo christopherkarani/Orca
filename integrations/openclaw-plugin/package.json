@@ -1,0 +1,50 @@
+{
+  "name": "@orca/openclaw-plugin",
+  "version": "1.0.0",
+  "description": "OpenClaw plugin wrapper for Orca runtime guardrails.",
+  "type": "module",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "files": [
+    "dist",
+    "openclaw.plugin.json",
+    "README.md",
+    "package.json"
+  ],
+  "keywords": [
+    "openclaw",
+    "plugin",
+    "orca",
+    "ai-agents",
+    "security",
+    "guardrails"
+  ],
+  "license": "Apache-2.0",
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "pack:dry-run": "npm pack --dry-run"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/chriskarani/orca.git"
+  },
+  "homepage": "https://github.com/chriskarani/orca#readme",
+  "bugs": {
+    "url": "https://github.com/chriskarani/orca/issues"
+  },
+  "openclaw": {
+    "extensions": [
+      "./src/index.ts"
+    ],
+    "runtimeExtensions": [
+      "./dist/index.js"
+    ]
+  },
+  "devDependencies": {
+    "@types/node": "^25.6.2",
+    "typescript": "^6.0.3"
+  }
+}
