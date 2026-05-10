@@ -42,13 +42,17 @@ openclaw plugins install orca-openclaw-plugin
 For local validation before publication, use `npm pack --dry-run`.
 
 
-## ClawHub submission
+## Install from ClawHub
 
-ClawHub submission is planned in P11. When available:
+The plugin is published to ClawHub as `orca-openclaw-plugin`.
 
 ```bash
-openclaw plugins install clawhub:orca
+openclaw plugins install clawhub:orca-openclaw-plugin
 ```
+
+**Note:** The `clawhub:` install protocol requires a recent OpenClaw version. If your version does not support it, use the local path or npm install methods instead.
+
+For submission details, see `docs/integrations/openclaw-clawhub.md`.
 
 ## Verify install
 
@@ -141,7 +145,7 @@ This plugin does not mutate host configuration, so uninstalling is safe.
 - Plugin installation depends on OpenClaw version and plugin loading mechanism.
 - No telemetry is collected.
 - npm package support has been prepared for `orca-openclaw-plugin`.
-- ClawHub submission is planned in P11.
+- ClawHub submission is complete. The plugin is published as `orca-openclaw-plugin@1.1.3`.
 
 ## Security model
 
