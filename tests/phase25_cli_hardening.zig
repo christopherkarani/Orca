@@ -16,8 +16,8 @@ test "phase25 release scripts package runtime assets referenced by CLI docs" {
         try std.testing.expect(std.mem.indexOf(u8, sh, name) != null);
         try std.testing.expect(std.mem.indexOf(u8, ps1, name) != null);
     }
-    try std.testing.expect(std.mem.indexOf(u8, sh, "aegis-edge") != null);
-    try std.testing.expect(std.mem.indexOf(u8, ps1, "aegis-edge") != null);
+    try std.testing.expect(std.mem.indexOf(u8, sh, "orca-edge") != null);
+    try std.testing.expect(std.mem.indexOf(u8, ps1, "orca-edge") != null);
 }
 
 test "phase25 Windows package templates match nested zip layout" {

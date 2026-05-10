@@ -5,9 +5,9 @@
       "hooks": [
         {
           "type": "command",
-          "command": "aegis hook claude SessionStart",
+          "command": "orca hook claude SessionStart",
           "timeout": 10,
-          "statusMessage": "Checking Aegis plugin status"
+          "statusMessage": "Checking Orca plugin status"
         }
       ]
     }
@@ -18,9 +18,9 @@
       "hooks": [
         {
           "type": "command",
-          "command": "aegis hook claude UserPromptSubmit",
+          "command": "orca hook claude UserPromptSubmit",
           "timeout": 10,
-          "statusMessage": "Checking prompt with Aegis"
+          "statusMessage": "Checking prompt with Orca"
         }
       ]
     }
@@ -31,9 +31,9 @@
       "hooks": [
         {
           "type": "command",
-          "command": "aegis hook claude PreToolUse",
+          "command": "orca hook claude PreToolUse",
           "timeout": 15,
-          "statusMessage": "Checking tool use with Aegis"
+          "statusMessage": "Checking tool use with Orca"
         }
       ]
     }
@@ -44,9 +44,9 @@
       "hooks": [
         {
           "type": "command",
-          "command": "aegis hook claude PermissionRequest",
+          "command": "orca hook claude PermissionRequest",
           "timeout": 15,
-          "statusMessage": "Checking permission request with Aegis"
+          "statusMessage": "Checking permission request with Orca"
         }
       ]
     }
@@ -57,9 +57,9 @@
       "hooks": [
         {
           "type": "command",
-          "command": "aegis hook claude PostToolUse",
+          "command": "orca hook claude PostToolUse",
           "timeout": 10,
-          "statusMessage": "Acknowledging tool use to Aegis"
+          "statusMessage": "Acknowledging tool use to Orca"
         }
       ]
     }
@@ -70,9 +70,9 @@
       "hooks": [
         {
           "type": "command",
-          "command": "aegis hook claude SessionEnd",
+          "command": "orca hook claude SessionEnd",
           "timeout": 10,
-          "statusMessage": "Notifying Aegis of session end"
+          "statusMessage": "Notifying Orca of session end"
         }
       ]
     }

@@ -1,60 +1,60 @@
 # doctor
 
-Check Aegis installation, policy status, host integration status, and plugin readiness.
+Check Orca installation, policy status, host integration status, and plugin readiness.
 
 ## When to use
 
-Use this skill when you want to verify that Aegis is properly installed, that a policy exists for the current repository, and that the Claude Code plugin integration is ready.
+Use this skill when you want to verify that Orca is properly installed, that a policy exists for the current repository, and that the Claude Code plugin integration is ready.
 
 ## Commands
 
-Run the Aegis plugin doctor for Claude Code:
+Run the Orca plugin doctor for Claude Code:
 
 ```bash
-aegis plugin doctor claude
+orca plugin doctor claude
 ```
 
-Run the general Aegis doctor for platform capabilities:
+Run the general Orca doctor for platform capabilities:
 
 ```bash
-aegis doctor
+orca doctor
 ```
 
 ## Interpreting results
 
-### Missing Aegis binary
+### Missing Orca binary
 
-If `aegis` is not found in PATH, install Aegis first. Build from source with Zig 0.15.2:
+If `orca` is not found in PATH, install Orca first. Build from source with Zig 0.15.2:
 
 ```bash
 zig build
 ```
 
-The binary will be at `./zig-out/bin/aegis`.
+The binary will be at `./zig-out/bin/orca`.
 
 ### Missing policy
 
-If `.aegis/policy.yaml` is missing, initialize one:
+If `.orca/policy.yaml` is missing, initialize one:
 
 ```bash
-aegis init --preset claude-code
+orca init --preset claude-code
 ```
 
 If the `claude-code` preset is not available, use the closest plugin-safe preset:
 
 ```bash
-aegis init --preset generic-agent
+orca init --preset generic-agent
 ```
 
 Then validate it:
 
 ```bash
-aegis policy check .aegis/policy.yaml
+orca policy check .orca/policy.yaml
 ```
 
 ### Missing Claude Code plugin install
 
-If the plugin directory is not detected, ensure the Aegis repository includes `integrations/claude-code-plugin/` and that you are running from the workspace root.
+If the plugin directory is not detected, ensure the Orca repository includes `integrations/claude-code-plugin/` and that you are running from the workspace root.
 
 ### Follow-up diagnostics
 
@@ -62,8 +62,8 @@ If the doctor reports warnings:
 
 1. Read the warning message carefully.
 2. Fix missing policies or binaries.
-3. Re-run `aegis plugin doctor claude` to confirm.
-4. If issues persist, run `aegis doctor` for platform-specific capability notes.
+3. Re-run `orca plugin doctor claude` to confirm.
+4. If issues persist, run `orca doctor` for platform-specific capability notes.
 
 ## Notes
 

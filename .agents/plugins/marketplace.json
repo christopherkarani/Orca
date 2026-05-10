@@ -1,0 +1,17 @@
+{
+  "name": "orca",
+  "interface": {
+    "displayName": "Orca Plugins",
+    "shortDescription": "Runtime guardrails and hooks for AI agent workflows."
+  },
+  "plugins": [
+    {
+      "name": "orca",
+      "source": {
+        "source": "local",
+        "path": "./integrations/codex-plugin"
+      },
+      "category": "Developer Tools"
+    }
+  ]
+}

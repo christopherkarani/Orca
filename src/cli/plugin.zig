@@ -115,6 +115,13 @@ const OpenCodePaths = struct {
     config_references_plugin: bool,
 };
 
+const MarketplaceStatus = struct {
+    codex_marketplace: bool,
+    claude_marketplace: bool,
+    codex_plugin_manifest: bool,
+    claude_plugin_manifest: bool,
+};
+
 const PluginDoctorReport = struct {
     aegis_version: []const u8,
     aegis_binary_path: ?[]const u8,
@@ -128,6 +135,7 @@ const PluginDoctorReport = struct {
     plugin_directories: PluginDirStatus,
     host_binaries: HostBinaryStatus,
     opencode_paths: OpenCodePaths,
+    marketplace: MarketplaceStatus,
     drone_workstream_detected: bool,
     drone_safety_mode_active: bool,
     platform_summary: []const u8,
@@ -203,6 +211,13 @@ fn collectPluginDoctorReport(allocator: std.mem.Allocator) !PluginDoctorReport {
         .config_references_plugin = false, // Safe detection deferred
     };
 
+    const marketplace = MarketplaceStatus{
+        .codex_marketplace = fileExistsAbsolute(".agents/plugins/marketplace.json"),
+        .claude_marketplace = fileExistsAbsolute(".claude-plugin/marketplace.json"),
+        .codex_plugin_manifest = fileExistsAbsolute("integrations/codex-plugin/.codex-plugin/plugin.json"),
+        .claude_plugin_manifest = fileExistsAbsolute("integrations/claude-code-plugin/.claude-plugin/plugin.json"),
+    };
+
     const drone_detected = hasPath(workspace_root, "packages/edge") or binaryInPath(allocator, "aegis-edge");
     const drone_safety = drone_detected; // safety mode is active when workstream is detected
 
@@ -238,6 +253,7 @@ fn collectPluginDoctorReport(allocator: std.mem.Allocator) !PluginDoctorReport {
         .plugin_directories = plugin_dirs,
         .host_binaries = host_bins,
         .opencode_paths = opencode_paths,
+        .marketplace = marketplace,
         .drone_workstream_detected = drone_detected,
         .drone_safety_mode_active = drone_safety,
         .platform_summary = platform_summary,
@@ -291,6 +307,10 @@ fn writeDoctorPlain(stdout: anytype, report: PluginDoctorReport, target: DoctorT
     try stdout.print("  claude: {s}\n", .{if (report.host_binaries.claude) "found in PATH" else "not found"});
     try stdout.print("  opencode: {s}\n", .{if (report.host_binaries.opencode) "found in PATH" else "not found"});
 
+    try stdout.writeAll("\nMarketplace files:\n");
+    try stdout.print("  .agents/plugins/marketplace.json: {s}\n", .{if (report.marketplace.codex_marketplace) "present" else "missing"});
+    try stdout.print("  .claude-plugin/marketplace.json: {s}\n", .{if (report.marketplace.claude_marketplace) "present" else "missing"});
+
     try stdout.writeAll("\nDrone workstream:\n");
     if (report.drone_workstream_detected) {
         try stdout.writeAll("  detected: yes\n");
@@ -318,12 +338,16 @@ fn writeDoctorPlain(stdout: anytype, report: PluginDoctorReport, target: DoctorT
             try stdout.writeAll("\nCodex plugin status:\n");
             try stdout.print("  host binary: {s}\n", .{if (report.host_binaries.codex) "detected" else "not detected"});
             try stdout.print("  plugin directory: {s}\n", .{if (report.plugin_directories.codex) "present" else "not yet created"});
+            try stdout.print("  marketplace file: {s}\n", .{if (report.marketplace.codex_marketplace) "present" else "missing"});
+            try stdout.print("  plugin manifest: {s}\n", .{if (report.marketplace.codex_plugin_manifest) "present" else "missing"});
             try stdout.writeAll("  install: use 'orca plugin install codex --dry-run' to preview\n");
         },
         .claude => {
             try stdout.writeAll("\nClaude Code plugin status:\n");
             try stdout.print("  host binary: {s}\n", .{if (report.host_binaries.claude) "detected" else "not detected"});
             try stdout.print("  plugin directory: {s}\n", .{if (report.plugin_directories.claude) "present" else "not yet created"});
+            try stdout.print("  marketplace file: {s}\n", .{if (report.marketplace.claude_marketplace) "present" else "missing"});
+            try stdout.print("  plugin manifest: {s}\n", .{if (report.marketplace.claude_plugin_manifest) "present" else "missing"});
             try stdout.writeAll("  install: use 'orca plugin install claude --dry-run' to preview\n");
         },
         .opencode => {
@@ -396,6 +420,13 @@ fn writeDoctorJson(stdout: anytype, report: PluginDoctorReport, target: DoctorTa
     try stdout.print("    \"project_plugin_exists\": {s},\n", .{if (report.opencode_paths.project_plugin_exists) "true" else "false"});
     try stdout.print("    \"global_plugin_exists\": {s},\n", .{if (report.opencode_paths.global_plugin_exists) "true" else "false"});
     try stdout.print("    \"config_references_plugin\": {s}\n", .{if (report.opencode_paths.config_references_plugin) "true" else "false"});
+    try stdout.writeAll("  },\n");
+
+    try stdout.writeAll("  \"marketplace\": {\n");
+    try stdout.print("    \"codex_marketplace\": {s},\n", .{if (report.marketplace.codex_marketplace) "true" else "false"});
+    try stdout.print("    \"claude_marketplace\": {s},\n", .{if (report.marketplace.claude_marketplace) "true" else "false"});
+    try stdout.print("    \"codex_plugin_manifest\": {s},\n", .{if (report.marketplace.codex_plugin_manifest) "true" else "false"});
+    try stdout.print("    \"claude_plugin_manifest\": {s}\n", .{if (report.marketplace.claude_plugin_manifest) "true" else "false"});
     try stdout.writeAll("  },\n");
 
     try stdout.writeAll("  \"drone\": {\n");
@@ -485,9 +516,12 @@ fn writeManifestPlain(stdout: anytype, target: ManifestTarget) !void {
         .codex => {
             const path = "integrations/codex-plugin/.codex-plugin/plugin.json";
             const exists = fileExistsAbsolute(path);
+            const marketplace_path = ".agents/plugins/marketplace.json";
+            const marketplace_exists = fileExistsAbsolute(marketplace_path);
             try stdout.writeAll("Codex plugin manifest:\n");
             try stdout.print("  expected path: {s}\n", .{path});
             try stdout.print("  status: {s}\n", .{if (exists) "exists" else "missing"});
+            try stdout.print("  marketplace: {s} ({s})\n", .{ marketplace_path, if (marketplace_exists) "exists" else "missing" });
             if (exists) {
                 try stdout.writeAll("  note: validation of manifest shape is deferred to host-specific checks\n");
             }
@@ -495,9 +529,12 @@ fn writeManifestPlain(stdout: anytype, target: ManifestTarget) !void {
         .claude => {
             const path = "integrations/claude-code-plugin/.claude-plugin/plugin.json";
             const exists = fileExistsAbsolute(path);
+            const marketplace_path = ".claude-plugin/marketplace.json";
+            const marketplace_exists = fileExistsAbsolute(marketplace_path);
             try stdout.writeAll("Claude Code plugin manifest:\n");
             try stdout.print("  expected path: {s}\n", .{path});
             try stdout.print("  status: {s}\n", .{if (exists) "exists" else "missing"});
+            try stdout.print("  marketplace: {s} ({s})\n", .{ marketplace_path, if (marketplace_exists) "exists" else "missing" });
             if (exists) {
                 try stdout.writeAll("  note: validation of manifest shape is deferred to host-specific checks\n");
             }
@@ -515,9 +552,14 @@ fn writeManifestPlain(stdout: anytype, target: ManifestTarget) !void {
             const codex_path = "integrations/codex-plugin/.codex-plugin/plugin.json";
             const claude_path = "integrations/claude-code-plugin/.claude-plugin/plugin.json";
             const opencode_path = "integrations/opencode-plugin/orca.ts";
+            const codex_marketplace = ".agents/plugins/marketplace.json";
+            const claude_marketplace = ".claude-plugin/marketplace.json";
             try stdout.print("  codex:    {s} ({s})\n", .{ codex_path, if (fileExistsAbsolute(codex_path)) "exists" else "missing" });
             try stdout.print("  claude:   {s} ({s})\n", .{ claude_path, if (fileExistsAbsolute(claude_path)) "exists" else "missing" });
             try stdout.print("  opencode: {s} ({s})\n", .{ opencode_path, if (fileExistsAbsolute(opencode_path)) "exists" else "missing" });
+            try stdout.writeAll("\nMarketplace files:\n");
+            try stdout.print("  codex:    {s} ({s})\n", .{ codex_marketplace, if (fileExistsAbsolute(codex_marketplace)) "exists" else "missing" });
+            try stdout.print("  claude:   {s} ({s})\n", .{ claude_marketplace, if (fileExistsAbsolute(claude_marketplace)) "exists" else "missing" });
         },
     }
 }
@@ -527,20 +569,30 @@ fn writeManifestJson(stdout: anytype, target: ManifestTarget) !void {
     switch (target) {
         .codex => {
             const path = "integrations/codex-plugin/.codex-plugin/plugin.json";
+            const marketplace_path = ".agents/plugins/marketplace.json";
             try stdout.writeAll("  \"codex\": {\n");
             try stdout.print("    \"path\": ", .{});
             try writeJsonString(stdout, path);
             try stdout.writeAll(",\n");
-            try stdout.print("    \"status\": \"{s}\"\n", .{if (fileExistsAbsolute(path)) "exists" else "missing"});
+            try stdout.print("    \"status\": \"{s}\",\n", .{if (fileExistsAbsolute(path)) "exists" else "missing"});
+            try stdout.print("    \"marketplace_path\": ", .{});
+            try writeJsonString(stdout, marketplace_path);
+            try stdout.writeAll(",\n");
+            try stdout.print("    \"marketplace_status\": \"{s}\"\n", .{if (fileExistsAbsolute(marketplace_path)) "exists" else "missing"});
             try stdout.writeAll("  }\n");
         },
         .claude => {
             const path = "integrations/claude-code-plugin/.claude-plugin/plugin.json";
+            const marketplace_path = ".claude-plugin/marketplace.json";
             try stdout.writeAll("  \"claude\": {\n");
             try stdout.print("    \"path\": ", .{});
             try writeJsonString(stdout, path);
             try stdout.writeAll(",\n");
-            try stdout.print("    \"status\": \"{s}\"\n", .{if (fileExistsAbsolute(path)) "exists" else "missing"});
+            try stdout.print("    \"status\": \"{s}\",\n", .{if (fileExistsAbsolute(path)) "exists" else "missing"});
+            try stdout.print("    \"marketplace_path\": ", .{});
+            try writeJsonString(stdout, marketplace_path);
+            try stdout.writeAll(",\n");
+            try stdout.print("    \"marketplace_status\": \"{s}\"\n", .{if (fileExistsAbsolute(marketplace_path)) "exists" else "missing"});
             try stdout.writeAll("  }\n");
         },
         .opencode => {
@@ -556,17 +608,27 @@ fn writeManifestJson(stdout: anytype, target: ManifestTarget) !void {
             const codex_path = "integrations/codex-plugin/.codex-plugin/plugin.json";
             const claude_path = "integrations/claude-code-plugin/.claude-plugin/plugin.json";
             const opencode_path = "integrations/opencode-plugin/orca.ts";
+            const codex_marketplace = ".agents/plugins/marketplace.json";
+            const claude_marketplace = ".claude-plugin/marketplace.json";
             try stdout.writeAll("  \"codex\": {\n");
             try stdout.print("    \"path\": ", .{});
             try writeJsonString(stdout, codex_path);
             try stdout.writeAll(",\n");
-            try stdout.print("    \"status\": \"{s}\"\n", .{if (fileExistsAbsolute(codex_path)) "exists" else "missing"});
+            try stdout.print("    \"status\": \"{s}\",\n", .{if (fileExistsAbsolute(codex_path)) "exists" else "missing"});
+            try stdout.print("    \"marketplace_path\": ", .{});
+            try writeJsonString(stdout, codex_marketplace);
+            try stdout.writeAll(",\n");
+            try stdout.print("    \"marketplace_status\": \"{s}\"\n", .{if (fileExistsAbsolute(codex_marketplace)) "exists" else "missing"});
             try stdout.writeAll("  },\n");
             try stdout.writeAll("  \"claude\": {\n");
             try stdout.print("    \"path\": ", .{});
             try writeJsonString(stdout, claude_path);
             try stdout.writeAll(",\n");
-            try stdout.print("    \"status\": \"{s}\"\n", .{if (fileExistsAbsolute(claude_path)) "exists" else "missing"});
+            try stdout.print("    \"status\": \"{s}\",\n", .{if (fileExistsAbsolute(claude_path)) "exists" else "missing"});
+            try stdout.print("    \"marketplace_path\": ", .{});
+            try writeJsonString(stdout, claude_marketplace);
+            try stdout.writeAll(",\n");
+            try stdout.print("    \"marketplace_status\": \"{s}\"\n", .{if (fileExistsAbsolute(claude_marketplace)) "exists" else "missing"});
             try stdout.writeAll("  },\n");
             try stdout.writeAll("  \"opencode\": {\n");
             try stdout.print("    \"path\": ", .{});
@@ -1154,5 +1216,97 @@ test "plugin mcp-server does not claim to expose drone actuation" {
     try std.testing.expect(std.mem.indexOf(u8, output, "live drone actuation") != null);
     // Should NOT say it's active or available
     try std.testing.expect(std.mem.indexOf(u8, output, "MCP server is active") == null);
+    try std.testing.expectEqualStrings("", stderr_stream.getWritten());
+}
+
+test "plugin doctor reports marketplace status" {
+    var stdout_buf: [16384]u8 = undefined;
+    var stderr_buf: [256]u8 = undefined;
+    var stdout_stream = std.io.fixedBufferStream(&stdout_buf);
+    var stderr_stream = std.io.fixedBufferStream(&stderr_buf);
+
+    const code = try doctorCommand(&.{}, stdout_stream.writer(), stderr_stream.writer());
+    try std.testing.expectEqual(exit_codes.success, code);
+
+    const output = stdout_stream.getWritten();
+    try std.testing.expect(std.mem.indexOf(u8, output, "Marketplace files:") != null);
+    try std.testing.expect(std.mem.indexOf(u8, output, ".agents/plugins/marketplace.json") != null);
+    try std.testing.expect(std.mem.indexOf(u8, output, ".claude-plugin/marketplace.json") != null);
+    try std.testing.expectEqualStrings("", stderr_stream.getWritten());
+}
+
+test "plugin doctor codex reports marketplace and manifest status" {
+    var stdout_buf: [16384]u8 = undefined;
+    var stderr_buf: [256]u8 = undefined;
+    var stdout_stream = std.io.fixedBufferStream(&stdout_buf);
+    var stderr_stream = std.io.fixedBufferStream(&stderr_buf);
+
+    const code = try doctorCommand(&.{"codex"}, stdout_stream.writer(), stderr_stream.writer());
+    try std.testing.expectEqual(exit_codes.success, code);
+
+    const output = stdout_stream.getWritten();
+    try std.testing.expect(std.mem.indexOf(u8, output, "Codex plugin status:") != null);
+    try std.testing.expect(std.mem.indexOf(u8, output, "marketplace file:") != null);
+    try std.testing.expect(std.mem.indexOf(u8, output, "plugin manifest:") != null);
+    try std.testing.expectEqualStrings("", stderr_stream.getWritten());
+}
+
+test "plugin doctor claude reports marketplace and manifest status" {
+    var stdout_buf: [16384]u8 = undefined;
+    var stderr_buf: [256]u8 = undefined;
+    var stdout_stream = std.io.fixedBufferStream(&stdout_buf);
+    var stderr_stream = std.io.fixedBufferStream(&stderr_buf);
+
+    const code = try doctorCommand(&.{"claude"}, stdout_stream.writer(), stderr_stream.writer());
+    try std.testing.expectEqual(exit_codes.success, code);
+
+    const output = stdout_stream.getWritten();
+    try std.testing.expect(std.mem.indexOf(u8, output, "Claude Code plugin status:") != null);
+    try std.testing.expect(std.mem.indexOf(u8, output, "marketplace file:") != null);
+    try std.testing.expect(std.mem.indexOf(u8, output, "plugin manifest:") != null);
+    try std.testing.expectEqualStrings("", stderr_stream.getWritten());
+}
+
+test "plugin manifest codex reports marketplace path" {
+    var stdout_buf: [1024]u8 = undefined;
+    var stderr_buf: [256]u8 = undefined;
+    var stdout_stream = std.io.fixedBufferStream(&stdout_buf);
+    var stderr_stream = std.io.fixedBufferStream(&stderr_buf);
+
+    const code = try manifestCommand(&.{"codex"}, stdout_stream.writer(), stderr_stream.writer());
+    try std.testing.expectEqual(exit_codes.success, code);
+
+    const output = stdout_stream.getWritten();
+    try std.testing.expect(std.mem.indexOf(u8, output, ".agents/plugins/marketplace.json") != null);
+    try std.testing.expectEqualStrings("", stderr_stream.getWritten());
+}
+
+test "plugin manifest claude reports marketplace path" {
+    var stdout_buf: [1024]u8 = undefined;
+    var stderr_buf: [256]u8 = undefined;
+    var stdout_stream = std.io.fixedBufferStream(&stdout_buf);
+    var stderr_stream = std.io.fixedBufferStream(&stderr_buf);
+
+    const code = try manifestCommand(&.{"claude"}, stdout_stream.writer(), stderr_stream.writer());
+    try std.testing.expectEqual(exit_codes.success, code);
+
+    const output = stdout_stream.getWritten();
+    try std.testing.expect(std.mem.indexOf(u8, output, ".claude-plugin/marketplace.json") != null);
+    try std.testing.expectEqualStrings("", stderr_stream.getWritten());
+}
+
+test "plugin manifest all reports marketplace files" {
+    var stdout_buf: [2048]u8 = undefined;
+    var stderr_buf: [256]u8 = undefined;
+    var stdout_stream = std.io.fixedBufferStream(&stdout_buf);
+    var stderr_stream = std.io.fixedBufferStream(&stderr_buf);
+
+    const code = try manifestCommand(&.{"all"}, stdout_stream.writer(), stderr_stream.writer());
+    try std.testing.expectEqual(exit_codes.success, code);
+
+    const output = stdout_stream.getWritten();
+    try std.testing.expect(std.mem.indexOf(u8, output, "Marketplace files:") != null);
+    try std.testing.expect(std.mem.indexOf(u8, output, ".agents/plugins/marketplace.json") != null);
+    try std.testing.expect(std.mem.indexOf(u8, output, ".claude-plugin/marketplace.json") != null);
     try std.testing.expectEqualStrings("", stderr_stream.getWritten());
 }

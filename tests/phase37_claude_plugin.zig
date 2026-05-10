@@ -85,7 +85,7 @@ test "claude plugin manifest contains expected fields" {
     try std.testing.expect(obj.get("interface") != null);
 
     const name = obj.get("name").?.string;
-    try std.testing.expectEqualStrings("aegis", name);
+    try std.testing.expectEqualStrings("orca", name);
 }
 
 test "claude plugin manifest points to skills directory" {
@@ -150,8 +150,8 @@ test "each claude skill references real aegis commands" {
         const content = try readFile(std.testing.allocator, skill_path);
         defer std.testing.allocator.free(content);
 
-        // Every skill should mention "aegis" at least once
-        try std.testing.expect(std.mem.indexOf(u8, content, "aegis") != null);
+        // Every skill should mention "orca" at least once
+        try std.testing.expect(std.mem.indexOf(u8, content, "orca") != null);
     }
 }
 
@@ -193,8 +193,8 @@ test "claude hooks config calls aegis hook claude" {
     const content = try readFile(allocator, hooks_path);
     defer allocator.free(content);
 
-    // Every hook should reference "aegis hook claude"
-    try std.testing.expect(std.mem.indexOf(u8, content, "aegis hook claude") != null);
+    // Every hook should reference "orca hook claude"
+    try std.testing.expect(std.mem.indexOf(u8, content, "orca hook claude") != null);
 }
 
 test "claude hooks config does not call nonexistent scripts" {
@@ -315,7 +315,7 @@ test "claude plugin README includes strongest-protection warning" {
     defer std.testing.allocator.free(content);
 
     try std.testing.expect(std.mem.indexOf(u8, content, "strongest local protection") != null);
-    try std.testing.expect(std.mem.indexOf(u8, content, "aegis run --") != null);
+    try std.testing.expect(std.mem.indexOf(u8, content, "orca run --") != null);
 }
 
 test "claude plugin README states no MCP server behavior" {
@@ -378,7 +378,7 @@ test "claude docs do not claim drone plugin support" {
 // Hook fixture integration tests (requires built binary)
 // ---------------------------------------------------------------------------
 
-test "fake claude hook payload fixtures still work with aegis hook claude" {
+test "fake claude hook payload fixtures still work with orca hook claude" {
     // This test is a smoke test that validates fixture files are present.
     // Full integration requires the built binary and is tested manually.
     const fixture_dir = "tests/plugin-fixtures/claude";

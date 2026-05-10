@@ -249,6 +249,6 @@ For headless runs, Aegis should report the CI limitation directly instead of pre
 
 ## See Also
 
-- `docs/integrations/aegis-cli-plugin.md`
+- `docs/integrations/orca-cli-plugin.md`
 - `docs/integrations/plugin-security-model.md`
 - `aegis_plugin_launch_plan_v3/P02_AGENT_HOST_INTEGRATION_API.md`

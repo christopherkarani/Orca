@@ -43,6 +43,29 @@ Agent-host skills and lifecycle hooks call the Orca CLI so the same policy engin
 - Claude Code: [docs/integrations/claude-code.md](docs/integrations/claude-code.md)
 - OpenCode: [docs/integrations/opencode.md](docs/integrations/opencode.md)
 
+## Repo marketplace install
+
+**Codex:**
+```bash
+codex plugin marketplace add YOUR_ORG/orca
+```
+Then install Orca from Codex's plugin UI/directory after adding the marketplace.
+
+**Claude Code:**
+```bash
+claude plugin marketplace add YOUR_ORG/orca
+claude plugin install orca@orca --scope user
+```
+
+Or inside Claude Code:
+```text
+/plugin marketplace add YOUR_ORG/orca
+/plugin install orca@orca
+/reload-plugins
+```
+
+These commands add the Orca repository as a plugin marketplace source. This is not the same as being listed in the official Codex or Claude marketplace. Official marketplace availability is a separate process; repo marketplace support is available now.
+
 ## Demo flow
 
 See [examples/plugin-demo/](examples/plugin-demo/) for a local demo flow. A reasonable sequence is:

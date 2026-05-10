@@ -1,11 +1,11 @@
 {
-  "name": "aegis-local-plugins",
+  "name": "orca-local-plugins",
   "interface": {
-    "displayName": "Aegis Local Plugins"
+    "displayName": "Orca Local Plugins"
   },
   "plugins": [
     {
-      "name": "aegis",
+      "name": "orca",
       "source": {
         "source": "local",
         "path": "./integrations/codex-plugin"

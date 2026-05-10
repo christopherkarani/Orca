@@ -26,17 +26,17 @@ zig build
 
 1. Download the latest plugin zip from the release page:
    ```text
-   aegis-codex-plugin-vX.Y.Z.zip
+   orca-codex-plugin-vX.Y.Z.zip
    ```
 
 2. Verify the checksum:
    ```bash
-   sha256sum -c aegis-plugin-checksums.txt
+   sha256sum -c orca-plugin-checksums.txt
    ```
 
 3. Extract the plugin to your preferred location:
    ```bash
-   unzip aegis-codex-plugin-vX.Y.Z.zip -d ~/aegis-plugins/codex
+   unzip orca-codex-plugin-vX.Y.Z.zip -d ~/orca-plugins/codex
    ```
 
 4. Point Codex to the extracted plugin directory.
@@ -58,9 +58,21 @@ zig build
    ./zig-out/bin/orca plugin doctor codex
    ```
 
-### Local marketplace install
+### Repo marketplace install
 
-If your Codex version supports repo-local marketplace files, see:
+If your Codex version supports repo marketplace sources, add this repository:
+
+```bash
+codex plugin marketplace add chriskarani/orca
+```
+
+Then install Orca from Codex's plugin UI/directory after adding the marketplace.
+
+This command adds the Orca repository as a plugin marketplace source. This is not the same as being listed in the official Codex marketplace.
+
+### Local marketplace example
+
+For reference, a local marketplace example is available at:
 
 ```text
 integrations/codex-plugin/examples/marketplace.json
@@ -68,7 +80,11 @@ integrations/codex-plugin/examples/marketplace.json
 
 This is a documented example only. The exact schema depends on your Codex version.
 
-Official Codex plugin directory distribution is not claimed here. Use the local path or release artifact install path until official distribution is available.
+The root-level marketplace file for repo marketplace install is:
+
+```text
+.agents/plugins/marketplace.json
+```
 
 ### Manual fallback install
 
@@ -76,7 +92,7 @@ If your Codex version does not support automatic plugin loading:
 
 1. Copy the skills from `integrations/codex-plugin/skills/` into your Codex skills directory.
 2. Copy the hooks from `integrations/codex-plugin/hooks/hooks.json` into your Codex hooks configuration.
-3. Ensure `aegis` is in PATH or use the full path to the binary.
+3. Ensure `orca` is in PATH or use the full path to the binary.
 
 ## Verify install
 
@@ -125,11 +141,11 @@ Expected: `allow` decision in valid JSON.
 
 | Skill | File | Purpose |
 |-------|------|---------|
-| `aegis-doctor` | `skills/aegis-doctor/SKILL.md` | Check installation and readiness |
-| `aegis-init` | `skills/aegis-init/SKILL.md` | Create or repair a policy |
-| `aegis-protect` | `skills/aegis-protect/SKILL.md` | Explain strongest protection |
-| `aegis-redteam` | `skills/aegis-redteam/SKILL.md` | Run red-team fixtures |
-| `aegis-replay` | `skills/aegis-replay/SKILL.md` | Replay latest session |
+| `orca-doctor` | `skills/orca-doctor/SKILL.md` | Check installation and readiness |
+| `orca-init` | `skills/orca-init/SKILL.md` | Create or repair a policy |
+| `orca-protect` | `skills/orca-protect/SKILL.md` | Explain strongest protection |
+| `orca-redteam` | `skills/orca-redteam/SKILL.md` | Run red-team fixtures |
+| `orca-replay` | `skills/orca-replay/SKILL.md` | Replay latest session |
 
 ## Hook list
 
@@ -166,7 +182,7 @@ Run `orca init --preset codex` to create a default policy, then validate with `o
 
 ### Orca binary not found
 
-Build Orca with `zig build` or ensure `./zig-out/bin/aegis` is in your PATH.
+Build Orca with `zig build` or ensure `./zig-out/bin/orca` is in your PATH.
 
 ### Fake secret redaction questions
 

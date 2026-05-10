@@ -1,28 +1,41 @@
 {
   "name": "orca-opencode-plugin",
-  "version": "1.0.0",
-  "description": "Orca safety hooks for OpenCode.",
-  "main": "orca.ts",
-  "types": "orca.ts",
-  "author": "Orca",
-  "license": "Apache-2.0",
-  "keywords": [
-    "security",
-    "ai-agents",
-    "policy",
-    "audit",
-    "redteam",
-    "opencode"
+  "version": "1.1.1",
+  "description": "OpenCode plugin wrapper for Orca runtime guardrails.",
+  "type": "module",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "files": [
+    "dist",
+    "README.md",
+    "package.json"
   ],
+  "keywords": [
+    "opencode",
+    "plugin",
+    "orca",
+    "ai-agents",
+    "security",
+    "guardrails"
+  ],
+  "license": "Apache-2.0",
   "engines": {
     "node": ">=18.0.0"
   },
-  "peerDependencies": {
-    "opencode": ">=0.1.0"
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "pack:dry-run": "npm pack --dry-run"
   },
-  "files": [
-    "orca.ts",
-    "README.md",
-    "examples/"
-  ]
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/chriskarani/orca.git"
+  },
+  "homepage": "https://github.com/chriskarani/orca#readme",
+  "bugs": {
+    "url": "https://github.com/chriskarani/orca/issues"
+  },
+  "devDependencies": {
+    "@types/node": "^25.6.2",
+    "typescript": "^6.0.3"
+  }
 }

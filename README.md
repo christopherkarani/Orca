@@ -43,7 +43,7 @@ Orca includes local plugin integrations for Codex, Claude Code, and OpenCode. Th
 - [Codex plugin](docs/integrations/codex.md)
 - [Claude Code plugin](docs/integrations/claude-code.md)
 - [OpenCode plugin](docs/integrations/opencode.md)
-- [Orca CLI plugin surface](docs/integrations/aegis-cli-plugin.md)
+- [Orca CLI plugin surface](docs/integrations/orca-cli-plugin.md)
 - [Plugin security model](docs/integrations/plugin-security-model.md)
 - [Plugin troubleshooting](docs/integrations/plugin-troubleshooting.md)
 
@@ -74,7 +74,30 @@ sha256sum -c dist/plugins/orca-plugin-checksums.txt
 
 Then point Codex, Claude Code, or OpenCode at the extracted plugin directory. See the per-host install guides above for details.
 
-Official marketplace availability is not yet implemented; use local path or release artifact install until distribution is available.
+### Repo marketplace install
+
+You can also install Orca plugins by adding this repository as a plugin marketplace source:
+
+**Codex:**
+```bash
+codex plugin marketplace add chriskarani/orca
+```
+Then install Orca from Codex's plugin UI/directory after adding the marketplace.
+
+**Claude Code:**
+```bash
+claude plugin marketplace add chriskarani/orca
+claude plugin install orca@orca --scope user
+```
+
+Or inside Claude Code:
+```text
+/plugin marketplace add chriskarani/orca
+/plugin install orca@orca
+/reload-plugins
+```
+
+These commands add the Orca repository as a plugin marketplace source. This is not the same as being listed in the official Codex or Claude marketplace. Official marketplace availability is a separate process; repo marketplace support is available now.
 
 ## Security Model
 
@@ -142,7 +165,7 @@ Run `./zig-out/bin/orca doctor` on your machine for the authoritative local repo
 
 Plugin docs:
 
-- [Orca CLI plugin surface](docs/integrations/aegis-cli-plugin.md)
+- [Orca CLI plugin surface](docs/integrations/orca-cli-plugin.md)
 - [Codex plugin](docs/integrations/codex.md)
 - [Claude Code plugin](docs/integrations/claude-code.md)
 - [OpenCode plugin](docs/integrations/opencode.md)

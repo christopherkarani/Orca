@@ -1,29 +1,29 @@
 # replay
 
-Show and explain the latest Aegis session replay.
+Show and explain the latest Orca session replay.
 
 ## When to use
 
-Use this skill after running an Aegis-protected session to review what happened, verify the audit log, and check for any policy violations or redactions.
+Use this skill after running an Orca-protected session to review what happened, verify the audit log, and check for any policy violations or redactions.
 
 ## Commands
 
 Replay the most recent session:
 
 ```bash
-aegis replay --session last
+orca replay --session last
 ```
 
 Replay with hash-chain verification:
 
 ```bash
-aegis replay --session last --verify
+orca replay --session last --verify
 ```
 
 For machine-readable output:
 
 ```bash
-aegis replay --session last --json
+orca replay --session last --json
 ```
 
 ## No session found
@@ -31,13 +31,13 @@ aegis replay --session last --json
 If no session exists, you will see an error like:
 
 ```
-No sessions found in .aegis/sessions/
+No sessions found in .orca/sessions/
 ```
 
-To create a session, run a command through Aegis first:
+To create a session, run a command through Orca first:
 
 ```bash
-aegis run -- echo hello
+orca run -- echo hello
 ```
 
 Then retry the replay command.

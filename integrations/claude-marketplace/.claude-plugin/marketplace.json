@@ -1,14 +1,14 @@
 {
-  "name": "aegis-local-plugins",
+  "name": "orca-local-plugins",
   "version": "1.0.0",
-  "description": "Local Aegis plugins for Claude Code.",
+  "description": "Local Orca plugins for Claude Code.",
   "owner": {
-    "name": "Aegis"
+    "name": "Orca"
   },
   "plugins": [
     {
-      "name": "aegis",
-      "description": "Aegis safety hooks and skills for Claude Code.",
+      "name": "orca",
+      "description": "Orca safety hooks and skills for Claude Code.",
       "source": "../claude-code-plugin",
       "category": "developer-tools"
     }
