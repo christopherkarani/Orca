@@ -28,6 +28,7 @@ pub fn writeHuman(writer: anytype, suite: runner.SuiteResult) !void {
         \\  artifacts: {s}
         \\
     , .{ totals.passed, totals.required, totals.percent(), suite.run_id, suite.output_dir });
+    if (suite.deployment_profile) |profile| try writer.print("Deployment profile: {s}\n", .{profile});
     try writer.writeAll("Limitations: simulation/SITL/bench-preparation/customer-evaluation evidence only; no real-flight readiness, certification, detect-and-avoid, or autopilot-replacement claim.\n");
 }
 
@@ -38,6 +39,7 @@ pub fn writeJson(writer: anytype, suite: runner.SuiteResult) !void {
     try stringFieldRaw(writer, "timestamp", suite.run_id, true);
     try stringFieldRaw(writer, "audit_session_id", suite.session_id, true);
     try stringField(writer, "output_dir", suite.output_dir, true);
+    try stringField(writer, "deployment_profile", suite.deployment_profile orelse "unspecified", true);
     try writer.writeAll(",\"totals\":");
     try writeTotals(writer, totals);
     try writer.writeAll(",\"fixtures\":[");
@@ -100,6 +102,7 @@ fn writeSafetyCaseMarkdownFile(path: []const u8, suite: runner.SuiteResult) !voi
         \\|---|---|
         \\| Run ID | `{s}` |
         \\| Audit session | `{s}` |
+        \\| Deployment profile | `{s}` |
         \\| Result | `{d}/{d} required fixtures passed` |
         \\| Real flight | Not performed |
         \\| Certification | Not claimed |
@@ -108,7 +111,7 @@ fn writeSafetyCaseMarkdownFile(path: []const u8, suite: runner.SuiteResult) !voi
         \\
         \\| Fixture | Category | Environment | Result | Decision |
         \\|---|---|---|---|---|
-    , .{ safety_report.non_certification_disclaimer, suite.run_id, suite.session_id, suite.totals().passed, suite.totals().required });
+    , .{ safety_report.non_certification_disclaimer, suite.run_id, suite.session_id, suite.deployment_profile orelse "unspecified", suite.totals().passed, suite.totals().required });
     for (suite.results) |result| {
         try writer.interface.print("| {s} | {s} | {s} | {s} | {s} |\n", .{
             result.id,
@@ -142,6 +145,7 @@ fn writeSafetyCaseJsonFile(path: []const u8, suite: runner.SuiteResult) !void {
     try writer.interface.writeAll("{\"version\":1");
     try stringFieldRaw(&writer.interface, "run_id", suite.run_id, true);
     try stringFieldRaw(&writer.interface, "audit_session_id", suite.session_id, true);
+    try stringField(&writer.interface, "deployment_profile", suite.deployment_profile orelse "unspecified", true);
     try stringField(&writer.interface, "non_certification_disclaimer", safety_report.non_certification_disclaimer, true);
     try writer.interface.writeAll(",\"fixture_results\":[");
     for (suite.results, 0..) |result, index| {

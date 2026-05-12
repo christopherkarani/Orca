@@ -247,6 +247,7 @@ fn parseYamlPolicy(allocator: std.mem.Allocator, text: []const u8, source_path: 
         if (std.mem.trim(u8, line, " \t\r").len == 0) continue;
         const indent = countIndent(line);
         const trimmed = std.mem.trimLeft(u8, line, " ");
+        if (section == .data_guard and indent > 0) continue;
         if (std.mem.startsWith(u8, trimmed, "-")) {
             const value = cleanScalar(std.mem.trim(u8, trimmed[1..], " \t"));
             try builder.appendCommand(command_list, try parseCommandAction(value));

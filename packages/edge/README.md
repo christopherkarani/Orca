@@ -1,6 +1,6 @@
 # Aegis Edge
 
-Aegis Edge is the drone and robotics safety-policy and audit package for local policy evaluation. Phase 28 adds a MAVLink gateway foundation for fake/in-memory simulation and protocol mediation. Phase 29 adds PX4 SITL integration for opt-in local simulation evidence and deterministic fake-PX4 scenarios. Phase 30 adds ArduPilot SITL integration for opt-in local simulation evidence and deterministic fake-ArduPilot scenarios. Phase 31 adds reusable flight safety enforcement for fake-adapter, PX4 SITL, and ArduPilot SITL contexts. Phase 32 adds bounded operator approvals and emergency fallback decisions. Phase 33 adds Edge audit/replay, safety-case reports, evidence bundles, traceability, and scenario result classification. Phase 34 adds deterministic red-team and fault-injection evidence for fake-adapter and optional SITL contexts. Phase 35 adds the data guard for telemetry/data classification, endpoint classification, simulated egress policy, redaction, exfiltration findings, and data/network evidence.
+Aegis Edge is the drone and robotics safety-policy and audit package for local policy evaluation. Phase 28 adds a MAVLink gateway foundation for fake/in-memory simulation and protocol mediation. Phase 29 adds PX4 SITL integration for opt-in local simulation evidence and deterministic fake-PX4 scenarios. Phase 30 adds ArduPilot SITL integration for opt-in local simulation evidence and deterministic fake-ArduPilot scenarios. Phase 31 adds reusable flight safety enforcement for fake-adapter, PX4 SITL, and ArduPilot SITL contexts. Phase 32 adds bounded operator approvals and emergency fallback decisions. Phase 33 adds Edge audit/replay, safety-case reports, evidence bundles, traceability, and scenario result classification. Phase 34 adds deterministic red-team and fault-injection evidence for fake-adapter and optional SITL contexts. Phase 35 adds the data guard for telemetry/data classification, endpoint classification, simulated egress policy, redaction, exfiltration findings, and data/network evidence. Phase 36 adds deployment diagnostics, Linux ARM64 package metadata, runtime asset verification, deployment profiles, smoke scripts, and explicit no-actuation bench-readiness reports.
 
 Fake MAVLink remains the default deterministic path. PX4 SITL and ArduPilot SITL are optional and local-only; normal tests do not require PX4 or ArduPilot. Aegis Edge does not support ROS2 control, real hardware integration, or real-flight deployment. Aegis Edge is not a flight controller, not an autopilot replacement, not detect-and-avoid, not regulatory approval or certification, and is not ready for real flight. It must not be used for real flight.
 
@@ -18,7 +18,8 @@ The package currently provides:
 - JSON and Markdown safety-case reports, evidence bundles, and traceability matrices for fake/SITL/bench-preparation evidence.
 - Deterministic Edge red-team fixtures, simulation-only fault injection, scorecards, JSON output, and red-team safety-case evidence.
 - Reusable data guard evaluation for payload classification, telemetry channel policy, endpoint policy, link classification, redaction/minimization, audit events, red-team fixtures, and safety-case reports.
-- Honest `aegis-edge doctor`, `aegis-edge schema`, `aegis-edge policy`, `aegis-edge safety`, `aegis-edge safety-case`, `aegis-edge replay`, `aegis-edge mavlink`, `aegis-edge px4`, `aegis-edge ardupilot`, `aegis-edge data`, and `aegis-edge network` commands.
+- Deployment profiles, runtime asset diagnostics, package manifests, Linux amd64/arm64 artifact naming, disabled-by-default service examples, and non-privileged container examples.
+- Honest `aegis-edge doctor`, `aegis-edge deployment`, `aegis-edge bench`, `aegis-edge schema`, `aegis-edge policy`, `aegis-edge safety`, `aegis-edge safety-case`, `aegis-edge replay`, `aegis-edge mavlink`, `aegis-edge px4`, `aegis-edge ardupilot`, `aegis-edge data`, and `aegis-edge network` commands.
 
 ## CLI
 
@@ -55,6 +56,13 @@ aegis-edge data evaluate --policy examples/edge/data-guard/policies/data-guard-s
 aegis-edge data redact --payload examples/edge/data-guard/payloads/fake-secret-payload.json
 aegis-edge data scenario run --policy examples/edge/data-guard/policies/data-guard-strict.yaml --scenario examples/edge/data-guard/scenarios/mission-plan-to-webhook-deny.yaml
 aegis-edge network explain --policy examples/edge/data-guard/policies/data-guard-strict.yaml --endpoint examples/edge/data-guard/endpoints/unknown-direct-ip.json
+aegis-edge deployment doctor
+aegis-edge deployment assets
+aegis-edge deployment check --profile examples/edge/deployment/profiles/source-local-fake.yaml
+aegis-edge deployment package-info --arch linux-arm64
+aegis-edge bench doctor
+aegis-edge bench check --policy examples/edge/safety/policies/safety-strict.yaml
+aegis-edge bench report --policy examples/edge/safety/policies/safety-strict.yaml --scenario examples/edge/safety/scenarios/geofence-deny.yaml
 ```
 
 These commands evaluate policy and simulated MAVLink/PX4/ArduPilot records. They do not send a command to a real vehicle or real flight controller. PX4 SITL checks are opt-in and must be labeled `sitl_px4`; fake-PX4 evidence remains labeled `fake_adapter`. ArduPilot SITL checks are opt-in and must be labeled `sitl_ardupilot`; fake-ArduPilot evidence remains labeled `fake_ardupilot_adapter`.
@@ -110,6 +118,17 @@ Safety-case generation writes `safety-report.json`, `safety-report.md`, `evidenc
 
 Phase 35 safety-case output also writes `evidence/data-network-guard.json` and a Data/Network Guard section summarizing data classes, endpoints observed, allowed/denied endpoint decisions, redactions, exfiltration findings, and telemetry guard limitations. Sensitive payloads and endpoint query values are redacted before persistence.
 
+## Deployment And Bench
+
+Phase 36 deployment checks verify that the `aegis-edge` binary can find required schemas, policies, examples, fixtures, red-team fixtures, safety-case templates, and runtime docs from source or packaged layouts.
+
+Linux package metadata uses:
+
+- `aegis-edge-vX.Y.Z-linux-amd64.tar.gz`
+- `aegis-edge-vX.Y.Z-linux-arm64.tar.gz`
+
+Bench mode is explicitly `hardware_bench_no_actuation`. It requires an explicit policy, reports bench provenance separately from fake/PX4 SITL/ArduPilot SITL, and never claims real-flight readiness. The docs and templates intentionally avoid flight instructions, real aircraft operation steps, motor/propeller actuation procedures, autonomous flight procedures, real hardware service auto-enable, credentials, telemetry, detect-and-avoid claims, autopilot replacement claims, and regulatory/certification claims.
+
 See:
 
 - `docs/edge/policy-engine.md`
@@ -154,3 +173,11 @@ See:
 - `docs/edge/redteam-fixtures.md`
 - `docs/edge/redteam-scorecards.md`
 - `docs/edge/sitl-redteam.md`
+- `docs/edge/deployment.md`
+- `docs/edge/arm64.md`
+- `docs/edge/packaging.md`
+- `docs/edge/runtime-assets.md`
+- `docs/edge/hardware-bench.md`
+- `docs/edge/bench-safety-boundary.md`
+- `docs/edge/container.md`
+- `docs/edge/release-artifacts.md`

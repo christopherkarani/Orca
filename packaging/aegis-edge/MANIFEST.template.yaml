@@ -1,0 +1,16 @@
+package: aegis-edge
+version: X.Y.Z
+target_arch: linux-arm64
+binaries:
+  - aegis-edge
+assets:
+  - schemas/edge-policy-v1.json
+  - schemas/edge-event-v1.json
+  - schemas/safety-report-v1.json
+  - examples/edge
+  - docs/edge
+  - packages/edge/README.md
+checksums: SHA256SUMS
+limitations:
+  - simulation/SITL/bench-preparation only
+  - no real-flight readiness claim

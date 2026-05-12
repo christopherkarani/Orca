@@ -66,6 +66,7 @@ pub const SuiteResult = struct {
     session_id: []u8,
     session_dir: []u8,
     output_dir: []u8,
+    deployment_profile: ?[]u8 = null,
     results: []FixtureResult,
 
     pub fn deinit(self: *SuiteResult) void {
@@ -73,6 +74,7 @@ pub const SuiteResult = struct {
         self.allocator.free(self.session_id);
         self.allocator.free(self.session_dir);
         self.allocator.free(self.output_dir);
+        if (self.deployment_profile) |value| self.allocator.free(value);
         for (self.results) |*result| result.deinit();
         if (self.results.len > 0) self.allocator.free(self.results);
         self.* = undefined;
@@ -96,6 +98,7 @@ pub const RunOptions = struct {
     fixture_id: ?[]const u8 = null,
     environment: ?fixture_mod.Environment = null,
     output_dir: ?[]const u8 = null,
+    deployment_profile: ?[]const u8 = null,
     ci: bool = false,
     safety_case_report: bool = false,
 };
@@ -200,6 +203,7 @@ pub fn runSuite(allocator: std.mem.Allocator, fixture_set: fixture_mod.FixtureSe
         .session_id = try allocator.dupe(u8, session.id.slice()),
         .session_dir = session_dir,
         .output_dir = output_dir,
+        .deployment_profile = if (options.deployment_profile) |value| try allocator.dupe(u8, value) else null,
         .results = try results.toOwnedSlice(allocator),
     };
 }

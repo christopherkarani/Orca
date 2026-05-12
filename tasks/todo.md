@@ -1,3 +1,16 @@
+# Phase 36 Review Fixes
+
+## Checklist
+
+- [x] Make all new Phase 36 source, tests, docs, examples, scripts, and packaging templates visible in `git diff` with intent-to-add.
+- [x] Add standalone Edge package support distinction so macOS package-info returns unsupported while Linux amd64/arm64 remains supported.
+- [x] Add regression coverage for Linux-only standalone Edge package targets.
+- [x] Update lessons for the clean-checkout and release-artifact support mismatch.
+- [x] Run `zig build test --summary all`.
+- [x] Run package-info checks for default macOS failure, explicit macOS failure, and explicit Linux success.
+- [x] Run `scripts/edge-package-smoke-test.sh`.
+- [x] Run `git diff --check`.
+
 # Phase 35 Edge Network, Telemetry, and Data Guard
 
 ## Assumptions

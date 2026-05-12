@@ -130,6 +130,18 @@
         "level": { "enum": ["full", "summary"] },
         "redact_secrets": { "type": "boolean" }
       }
+    },
+    "data_guard": {
+      "type": "object",
+      "description": "Optional Phase 35 telemetry/data guard policy section for local fake/SITL/customer-evaluation egress decisions. This does not enable hosted telemetry, real hardware, real-flight readiness, or regulatory certification.",
+      "additionalProperties": true,
+      "properties": {
+        "default": { "enum": ["allow", "ask", "deny", "observe"] },
+        "telemetry": { "type": "object" },
+        "endpoints": { "type": "object" },
+        "data_classes": { "type": "object" },
+        "egress": { "type": "object" }
+      }
     }
   },
   "$defs": {

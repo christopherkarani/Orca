@@ -13,9 +13,10 @@ pub const ardupilot = @import("ardupilot/mod.zig");
 pub const schema = @import("schema/mod.zig");
 pub const redteam = @import("redteam/mod.zig");
 pub const data_guard = @import("data_guard/mod.zig");
+pub const deployment = @import("deployment/mod.zig");
 
-pub const phase = "35-edge-network-telemetry-data-guard";
-pub const installed_message = "Aegis Edge data/network guard evidence generation is installed for deterministic fake-adapter, PX4 SITL, and ArduPilot SITL evaluation evidence only; it is not ready for real flight.";
+pub const phase = "36-edge-deployment-arm64-hardware-bench";
+pub const installed_message = "Aegis Edge deployment diagnostics, ARM64 package metadata, and non-flight bench-readiness checks are installed for deterministic fake-adapter, PX4 SITL, ArduPilot SITL, and hardware-bench-no-actuation evaluation evidence only; it is not ready for real flight.";
 pub const core = aegis_core;
 
 pub const CapabilityStatus = enum {
@@ -50,6 +51,9 @@ pub const EdgeCapability = enum {
     evidence_bundles,
     redteam_fault_injection,
     data_network_guard,
+    deployment_diagnostics,
+    arm64_packaging,
+    hardware_bench_no_actuation,
     px4_adapter,
     ardupilot_adapter,
     real_flight_enforcement,
@@ -71,6 +75,9 @@ pub const EdgeCapability = enum {
             .evidence_bundles => "evidence bundles",
             .redteam_fault_injection => "red-team and fault injection",
             .data_network_guard => "Edge network telemetry data guard",
+            .deployment_diagnostics => "Edge deployment diagnostics",
+            .arm64_packaging => "ARM64 Linux packaging metadata",
+            .hardware_bench_no_actuation => "hardware bench no-actuation mode",
             .px4_adapter => "PX4 adapter",
             .ardupilot_adapter => "ArduPilot adapter",
             .real_flight_enforcement => "real-flight enforcement",
@@ -197,6 +204,9 @@ pub fn capabilityReports() []const CapabilityReport {
         .{ .capability = .evidence_bundles, .status = .active, .note = "Phase 33 creates local directory evidence bundles with policy/scenario copies, reports, replay, findings, commands, limitations, hashes, and provenance." },
         .{ .capability = .redteam_fault_injection, .status = .active, .note = "Phase 34 runs deterministic simulation-only Edge red-team fixtures and fault injections with scorecards, redacted audit/replay artifacts, and safety-case evidence; no real hardware or real-flight claims." },
         .{ .capability = .data_network_guard, .status = .active, .note = "Phase 35 classifies Edge telemetry/data payloads and endpoints, evaluates local egress policy, redacts sensitive data before persistence, and emits audit/report evidence for fake/SITL/customer-evaluation scenarios without external network calls." },
+        .{ .capability = .deployment_diagnostics, .status = .active, .note = "Phase 36 verifies runtime assets, deployment profiles, package metadata, and source/package/container/SITL/bench boundaries without real hardware dependencies." },
+        .{ .capability = .arm64_packaging, .status = .active, .note = "Phase 36 defines Linux amd64 and Linux arm64 artifact names, manifests, checksums, install scripts, and smoke tests; armv7 is unsupported unless a future release explicitly adds it." },
+        .{ .capability = .hardware_bench_no_actuation, .status = .active, .note = "Phase 36 bench mode is explicit non-flight, no-actuation, observe/simulation-oriented evidence only and never claims flight readiness." },
         .{ .capability = .px4_adapter, .status = .partial, .note = "PX4 SITL adapter supports opt-in local simulation checks plus deterministic fake-PX4 scenarios; no hardware or real-flight support." },
         .{ .capability = .ardupilot_adapter, .status = .partial, .note = "ArduPilot SITL adapter supports opt-in local simulation checks plus deterministic fake-ArduPilot scenarios; Copter-oriented coverage starts Phase 30; no hardware or real-flight support." },
         .{ .capability = .real_flight_enforcement, .status = .unavailable, .note = "Real-flight behavior requires later simulation, bench, and customer safety validation phases." },

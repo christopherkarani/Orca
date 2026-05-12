@@ -112,6 +112,11 @@ pub const Report = struct {
     vehicle_type: []const u8,
     tested_autopilot_version: []const u8,
     endpoint_config: []const u8,
+    artifact_version: []const u8 = "1.1.0",
+    target_architecture: []const u8 = "unknown",
+    deployment_profile: []const u8 = "unspecified",
+    runtime_assets_status: []const u8 = "active",
+    deployment_environment: []const u8 = "simulation/SITL/bench-preparation",
     started_at: []const u8,
     ended_at: []const u8,
     result_status: ScenarioResultStatus,
@@ -160,6 +165,14 @@ pub fn writeJson(writer: anytype, report: Report) !void {
     try stringField(writer, "environment_provenance", report.provenance.toString(), true);
     try stringField(writer, "test_environment", report.provenance.testEnvironment(), true);
     try stringField(writer, "non_certification_disclaimer", non_certification_disclaimer, true);
+    try writer.writeAll(",\"deployment_metadata\":{");
+    try stringField(writer, "artifact_version", report.artifact_version, false);
+    try stringField(writer, "target_architecture", report.target_architecture, true);
+    try stringField(writer, "deployment_profile", report.deployment_profile, true);
+    try stringField(writer, "runtime_assets_status", report.runtime_assets_status, true);
+    try stringField(writer, "environment", report.deployment_environment, true);
+    try stringField(writer, "limitations", "simulation/SITL/bench-preparation only; no real-flight readiness or certification claim", true);
+    try writer.writeByte('}');
     try writer.writeAll(",\"vehicle_profile\":{");
     try stringField(writer, "vehicle_id", report.vehicle_id, false);
     try stringField(writer, "vehicle_kind", report.vehicle_kind, true);

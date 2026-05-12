@@ -1,6 +1,7 @@
 const std = @import("std");
 const edge = @import("aegis_edge");
 const schema_documents = @import("edge_schema_documents");
+const build_options = @import("build_options");
 
 const usage =
     \\Aegis Edge policy evaluation
@@ -9,7 +10,17 @@ const usage =
     \\  aegis-edge <command> [args]
     \\
     \\Commands:
-    \\  doctor                         Show domain/schema capability status
+    \\  doctor [assets|deployment|bench|arm64]
+    \\                                 Show domain/schema/deployment capability status
+    \\  deployment doctor              Show deployment diagnostics
+    \\  deployment assets              Verify runtime assets from source/package context
+    \\  deployment check --profile <profile.yaml>
+    \\                                 Validate a bounded source/package/container/SITL/bench profile
+    \\  deployment package-info        Print Edge package artifact manifest metadata
+    \\  bench doctor                   Show non-flight bench mode diagnostics
+    \\  bench check --policy <policy>  Validate bench policy/assets without hardware
+    \\  bench report --policy <policy> --scenario <scenario>
+    \\                                 Produce a bench-readiness report with no-flight disclaimers
     \\  ardupilot doctor               Show ArduPilot SITL simulation capability status
     \\  ardupilot scenario run --policy <policy> --scenario <scenario>
     \\                                 Run a deterministic fake-ArduPilot or opt-in SITL scenario
@@ -129,14 +140,9 @@ pub fn run(argv: []const []const u8, stdout: anytype, stderr: anytype) !u8 {
         try stdout.writeAll(usage);
         return 0;
     }
-    if (std.mem.eql(u8, command, "doctor")) {
-        if (argv.len != 1) {
-            try stderr.writeAll("aegis-edge doctor: expected no arguments.\n");
-            return 64;
-        }
-        try edge.doctor(stdout);
-        return 0;
-    }
+    if (std.mem.eql(u8, command, "doctor")) return runDoctor(argv[1..], stdout, stderr);
+    if (std.mem.eql(u8, command, "deployment")) return runDeployment(argv[1..], stdout, stderr);
+    if (std.mem.eql(u8, command, "bench")) return runBench(argv[1..], stdout, stderr);
     if (std.mem.eql(u8, command, "schema")) {
         return runSchema(argv[1..], stdout, stderr);
     }
@@ -179,6 +185,238 @@ pub fn run(argv: []const []const u8, stdout: anytype, stderr: anytype) !u8 {
 
     try stderr.print("aegis-edge: unknown command '{s}'. Run 'aegis-edge --help' for usage.\n", .{command});
     return 64;
+}
+
+fn runDoctor(argv: []const []const u8, stdout: anytype, stderr: anytype) !u8 {
+    if (argv.len == 0) {
+        try edge.doctor(stdout);
+        return 0;
+    }
+    if (argv.len != 1) return usageError(stderr, "aegis-edge doctor: expected optional assets, deployment, bench, or arm64.\n");
+    if (std.mem.eql(u8, argv[0], "assets")) return runDeploymentAssets(&.{}, stdout, stderr);
+    if (std.mem.eql(u8, argv[0], "deployment")) return runDeploymentDoctor(&.{}, stdout, stderr);
+    if (std.mem.eql(u8, argv[0], "bench")) return runBenchDoctor(&.{}, stdout, stderr);
+    if (std.mem.eql(u8, argv[0], "arm64")) {
+        try writeArm64Doctor(stdout);
+        return 0;
+    }
+    try stderr.print("aegis-edge doctor: unknown doctor topic '{s}'.\n", .{argv[0]});
+    return 64;
+}
+
+fn runDeployment(argv: []const []const u8, stdout: anytype, stderr: anytype) !u8 {
+    if (argv.len == 0) return usageError(stderr, "aegis-edge deployment: expected doctor, check, package-info, or assets.\n");
+    if (std.mem.eql(u8, argv[0], "doctor")) return runDeploymentDoctor(argv[1..], stdout, stderr);
+    if (std.mem.eql(u8, argv[0], "assets")) return runDeploymentAssets(argv[1..], stdout, stderr);
+    if (std.mem.eql(u8, argv[0], "check")) return runDeploymentCheck(argv[1..], stdout, stderr);
+    if (std.mem.eql(u8, argv[0], "package-info")) return runDeploymentPackageInfo(argv[1..], stdout, stderr);
+    try stderr.print("aegis-edge deployment: unknown subcommand '{s}'.\n", .{argv[0]});
+    return 64;
+}
+
+fn runDeploymentDoctor(argv: []const []const u8, stdout: anytype, stderr: anytype) !u8 {
+    var json = false;
+    for (argv) |arg| {
+        if (std.mem.eql(u8, arg, "--json")) json = true else return usageError(stderr, "aegis-edge deployment doctor: expected optional --json.\n");
+    }
+    const arch = edge.deployment.currentTargetArch();
+    var gpa_state: std.heap.GeneralPurposeAllocator(.{}) = .init;
+    defer _ = gpa_state.deinit();
+    var assets = try edge.deployment.doctorAssets(gpa_state.allocator());
+    defer assets.deinit();
+    if (json) {
+        try stdout.print("{{\"status\":\"active\",\"phase\":", .{});
+        try edge.core.core.util.writeJsonString(stdout, edge.deployment.phase);
+        try stdout.print(",\"target_arch\":\"{s}\",\"asset_status\":\"{s}\",\"limitations\":", .{ arch.toString(), assets.overall().toString() });
+        try edge.core.core.util.writeJsonString(stdout, edge.deployment.no_flight_disclaimer);
+        try stdout.writeAll("}\n");
+        return 0;
+    }
+    try stdout.print("Deployment diagnostics: active\nPhase: {s}\nTarget architecture: {s} ({s})\nRuntime assets: {s}\n", .{ edge.deployment.phase, arch.toString(), arch.supportStatus().toString(), assets.overall().toString() });
+    try stdout.writeAll("Supported release targets: linux-amd64, linux-arm64. linux-armv7 is unsupported in this phase.\n");
+    try stdout.writeAll("Modes: source, packaged, container, simulation, bench, edge_device evaluation only.\n");
+    try stdout.print("Limitations: {s}\n", .{edge.deployment.no_flight_disclaimer});
+    return 0;
+}
+
+fn runDeploymentAssets(argv: []const []const u8, stdout: anytype, stderr: anytype) !u8 {
+    var json = false;
+    for (argv) |arg| {
+        if (std.mem.eql(u8, arg, "--json")) json = true else return usageError(stderr, "aegis-edge deployment assets: expected optional --json.\n");
+    }
+    var gpa_state: std.heap.GeneralPurposeAllocator(.{}) = .init;
+    defer _ = gpa_state.deinit();
+    var report = try edge.deployment.doctorAssets(gpa_state.allocator());
+    defer report.deinit();
+    if (json) {
+        try stdout.print("{{\"status\":\"{s}\",\"assets\":[", .{report.overall().toString()});
+        for (report.checks, 0..) |check, index| {
+            if (index > 0) try stdout.writeByte(',');
+            try stdout.print("{{\"name\":", .{});
+            try edge.core.core.util.writeJsonString(stdout, check.name);
+            try stdout.print(",\"path\":", .{});
+            try edge.core.core.util.writeJsonString(stdout, check.path);
+            try stdout.print(",\"status\":\"{s}\",\"required\":{}}}", .{ check.status.toString(), check.required });
+        }
+        try stdout.writeAll("]}\n");
+        return if (report.overall() == .missing) 65 else 0;
+    }
+    try stdout.print("Runtime assets: {s}\n", .{report.overall().toString()});
+    for (report.checks) |check| {
+        try stdout.print("  {s}: {s} - {s}\n", .{ check.status.toString(), check.name, check.path });
+    }
+    try stdout.writeAll("Asset lookup supports source-tree and packaged-release relative paths; missing required assets fail deployment checks.\n");
+    return if (report.overall() == .missing) 65 else 0;
+}
+
+fn runDeploymentCheck(argv: []const []const u8, stdout: anytype, stderr: anytype) !u8 {
+    var profile_path: ?[]const u8 = null;
+    var json = false;
+    var index: usize = 0;
+    while (index < argv.len) : (index += 1) {
+        if (std.mem.eql(u8, argv[index], "--profile")) {
+            index += 1;
+            if (index >= argv.len) return usageError(stderr, "aegis-edge deployment check: --profile requires a file.\n");
+            profile_path = argv[index];
+        } else if (std.mem.eql(u8, argv[index], "--json")) {
+            json = true;
+        } else {
+            try stderr.print("aegis-edge deployment check: unknown argument '{s}'.\n", .{argv[index]});
+            return 64;
+        }
+    }
+    const selected = profile_path orelse return usageError(stderr, "aegis-edge deployment check: missing --profile.\n");
+    var gpa_state: std.heap.GeneralPurposeAllocator(.{}) = .init;
+    defer _ = gpa_state.deinit();
+    const allocator = gpa_state.allocator();
+    var profile = edge.deployment.loadProfileFile(allocator, selected) catch |err| {
+        try stderr.print("Deployment profile invalid: {s}\n", .{@errorName(err)});
+        return 65;
+    };
+    defer profile.deinit();
+    const check = edge.deployment.checkProfile(profile);
+    const policy_status = edge.deployment.validatePolicy(profile.policy_path, allocator);
+    if (json) {
+        try stdout.print("{{\"profile_id\":", .{});
+        try edge.core.core.util.writeJsonString(stdout, profile.id);
+        try stdout.print(",\"status\":\"{s}\",\"target_arch\":\"{s}\",\"mode\":\"{s}\",\"environment\":\"{s}\",\"policy_status\":\"{s}\",\"reason\":", .{ check.status.toString(), profile.target_arch.toString(), profile.mode.toString(), profile.environment.toString(), policy_status.toString() });
+        try edge.core.core.util.writeJsonString(stdout, check.reason);
+        try stdout.writeAll("}\n");
+        return if (check.status == .active and policy_status == .active) 0 else 65;
+    }
+    try stdout.print("Deployment profile: {s}\nStatus: {s}\nReason: {s}\nTarget: {s} / {s}\nMode: {s}\nEnvironment: {s}\nPolicy: {s} ({s})\nScenario: {s}\nNetwork mode: {s}\n", .{ profile.id, check.status.toString(), check.reason, profile.os, profile.target_arch.toString(), profile.mode.toString(), profile.environment.toString(), profile.policy_path, policy_status.toString(), profile.scenario_path, profile.network_mode.toString() });
+    if (profile.mavlink_endpoint) |endpoint| try stdout.print("MAVLink endpoint: {s}\n", .{endpoint});
+    try stdout.print("Limitations: {s}\n", .{edge.deployment.no_flight_disclaimer});
+    return if (check.status == .active and policy_status == .active) 0 else 65;
+}
+
+fn runDeploymentPackageInfo(argv: []const []const u8, stdout: anytype, stderr: anytype) !u8 {
+    var arch = edge.deployment.currentTargetArch();
+    var json = false;
+    var index: usize = 0;
+    while (index < argv.len) : (index += 1) {
+        if (std.mem.eql(u8, argv[index], "--arch")) {
+            index += 1;
+            if (index >= argv.len) return usageError(stderr, "aegis-edge deployment package-info: --arch requires a value.\n");
+            arch = edge.deployment.TargetArch.parse(argv[index]);
+        } else if (std.mem.eql(u8, argv[index], "--json")) {
+            json = true;
+        } else {
+            try stderr.print("aegis-edge deployment package-info: unknown argument '{s}'.\n", .{argv[index]});
+            return 64;
+        }
+    }
+    var gpa_state: std.heap.GeneralPurposeAllocator(.{}) = .init;
+    defer _ = gpa_state.deinit();
+    const allocator = gpa_state.allocator();
+    const package_status = arch.packageStatus();
+    const info: edge.deployment.PackageInfo = .{ .version = build_options.version, .target_arch = arch };
+    const artifact = try info.artifactName(allocator);
+    defer allocator.free(artifact);
+    if (json) {
+        try stdout.print("{{\"package\":\"aegis-edge\",\"version\":", .{});
+        try edge.core.core.util.writeJsonString(stdout, build_options.version);
+        try stdout.print(",\"target_arch\":\"{s}\",\"artifact\":", .{arch.toString()});
+        try edge.core.core.util.writeJsonString(stdout, artifact);
+        try stdout.print(",\"support\":\"{s}\",\"reason\":", .{package_status.toString()});
+        try edge.core.core.util.writeJsonString(stdout, if (package_status == .active) "standalone Linux Edge package is produced by scripts/build-release.sh" else "standalone aegis-edge packages are produced only for linux-amd64 and linux-arm64 in Phase 36");
+        try stdout.writeAll("}\n");
+        return if (package_status == .unsupported) 65 else 0;
+    }
+    if (package_status == .unsupported) {
+        try stderr.print("aegis-edge deployment package-info: standalone Edge package target '{s}' is unsupported; use --arch linux-amd64 or --arch linux-arm64.\n", .{arch.toString()});
+        return 65;
+    }
+    try edge.deployment.packageManifest(stdout, build_options.version, arch);
+    return 0;
+}
+
+fn runBench(argv: []const []const u8, stdout: anytype, stderr: anytype) !u8 {
+    if (argv.len == 0) return usageError(stderr, "aegis-edge bench: expected doctor, check, or report.\n");
+    if (std.mem.eql(u8, argv[0], "doctor")) return runBenchDoctor(argv[1..], stdout, stderr);
+    if (std.mem.eql(u8, argv[0], "check")) return runBenchCheck(argv[1..], stdout, stderr);
+    if (std.mem.eql(u8, argv[0], "report")) return runBenchReport(argv[1..], stdout, stderr);
+    try stderr.print("aegis-edge bench: unknown subcommand '{s}'.\n", .{argv[0]});
+    return 64;
+}
+
+fn runBenchDoctor(argv: []const []const u8, stdout: anytype, stderr: anytype) !u8 {
+    if (argv.len != 0) return usageError(stderr, "aegis-edge bench doctor: expected no arguments.\n");
+    try stdout.writeAll("Bench mode: active\nEnvironment: hardware_bench_no_actuation\nDefault behavior: observe/simulation, no actuation, no real hardware assumption\nRequired: explicit --bench/profile, explicit policy, explicit operator acknowledgement for endpoint-like physical interfaces\n");
+    try stdout.print("Limitations: {s}\n", .{edge.deployment.no_flight_disclaimer});
+    return 0;
+}
+
+fn runBenchCheck(argv: []const []const u8, stdout: anytype, stderr: anytype) !u8 {
+    const policy_path = parsePolicyOnly(argv, stderr, "aegis-edge bench check") catch return 64;
+    var gpa_state: std.heap.GeneralPurposeAllocator(.{}) = .init;
+    defer _ = gpa_state.deinit();
+    const policy_status = edge.deployment.validatePolicy(policy_path, gpa_state.allocator());
+    const report = edge.deployment.benchReport(policy_path, null);
+    try stdout.print("Bench check: {s}\nPolicy: {s} ({s})\nRuntime assets: {s}\nEnvironment: hardware_bench_no_actuation\n", .{ if (policy_status == .active and report.asset_status == .active) "active" else "failed", policy_path, policy_status.toString(), report.asset_status.toString() });
+    try stdout.print("Limitations: {s}\n", .{edge.deployment.no_flight_disclaimer});
+    return if (policy_status == .active and report.asset_status == .active) 0 else 65;
+}
+
+fn runBenchReport(argv: []const []const u8, stdout: anytype, stderr: anytype) !u8 {
+    var policy_path: ?[]const u8 = null;
+    var scenario_path: ?[]const u8 = null;
+    var index: usize = 0;
+    while (index < argv.len) : (index += 1) {
+        if (std.mem.eql(u8, argv[index], "--policy")) {
+            index += 1;
+            if (index >= argv.len) return usageError(stderr, "aegis-edge bench report: --policy requires a file.\n");
+            policy_path = argv[index];
+        } else if (std.mem.eql(u8, argv[index], "--scenario")) {
+            index += 1;
+            if (index >= argv.len) return usageError(stderr, "aegis-edge bench report: --scenario requires a file.\n");
+            scenario_path = argv[index];
+        } else {
+            try stderr.print("aegis-edge bench report: unknown argument '{s}'.\n", .{argv[index]});
+            return 64;
+        }
+    }
+    const selected_policy = policy_path orelse return usageError(stderr, "aegis-edge bench report: missing --policy.\n");
+    const selected_scenario = scenario_path orelse return usageError(stderr, "aegis-edge bench report: missing --scenario.\n");
+    var report = edge.deployment.benchReport(selected_policy, selected_scenario);
+    var gpa_state: std.heap.GeneralPurposeAllocator(.{}) = .init;
+    defer _ = gpa_state.deinit();
+    const policy_status = edge.deployment.validatePolicy(selected_policy, gpa_state.allocator());
+    if (policy_status != .active) report.policy_status = policy_status;
+    try stdout.writeAll("Bench-readiness report\n");
+    try stdout.print("Status: {s}\nTarget architecture: {s}\nBinary version: {s}\nRuntime assets: {s}\nPolicy validation: {s}\nScenario validation: {s}\nProvenance: {s}\nMAVLink/PX4/ArduPilot support: fake/SITL only; bench is no-actuation evidence\nRed-team status: {s}\nSafety-case report status: {s}\nNetwork/data guard status: {s}\nOperator approval status: {s}\nEmergency-mode status: {s}\n", .{ report.status.toString(), report.target_arch.toString(), build_options.version, report.asset_status.toString(), report.policy_status.toString(), report.scenario_status.toString(), report.provenance.toString(), report.redteam_status.toString(), report.safety_case_status.toString(), report.network_data_guard_status.toString(), report.operator_approval_status.toString(), report.emergency_mode_status.toString() });
+    try stdout.print("Limitations: {s}\n", .{edge.deployment.no_flight_disclaimer});
+    try stdout.writeAll("No-flight disclaimer: bench readiness is not flight readiness.\nNo-certification disclaimer: this report is not regulatory approval or certification.\n");
+    return if (report.status == .active and report.policy_status == .active) 0 else 65;
+}
+
+fn writeArm64Doctor(stdout: anytype) !void {
+    try stdout.writeAll("ARM64 deployment support: active\n");
+    try stdout.writeAll("linux-arm64 artifact: aegis-edge-vX.Y.Z-linux-arm64.tar.gz\n");
+    try stdout.writeAll("linux-amd64 artifact: aegis-edge-vX.Y.Z-linux-amd64.tar.gz\n");
+    try stdout.writeAll("linux-armv7 artifact: unsupported in Phase 36 unless future release scripts add it explicitly\n");
+    try stdout.writeAll("Cross-build command: zig build -Dtarget=aarch64-linux\n");
+    try stdout.print("Limitations: {s}\n", .{edge.deployment.no_flight_disclaimer});
 }
 
 fn runPx4(argv: []const []const u8, stdout: anytype, stderr: anytype) !u8 {
@@ -1777,6 +2015,7 @@ const RedteamOptions = struct {
     fixture_id: ?[]const u8 = null,
     environment: ?edge.redteam.fixture.Environment = null,
     output_dir: ?[]const u8 = null,
+    deployment_profile: ?[]const u8 = null,
     json: bool = false,
     ci: bool = false,
     safety_case_report: bool = false,
@@ -1794,6 +2033,7 @@ fn runRedteam(argv: []const []const u8, stdout: anytype, stderr: anytype) !u8 {
         .fixture_id = options.fixture_id,
         .environment = options.environment,
         .output_dir = options.output_dir,
+        .deployment_profile = options.deployment_profile,
         .ci = options.ci,
         .safety_case_report = options.safety_case_report,
     }) catch |err| {
@@ -1830,6 +2070,7 @@ fn runRedteam(argv: []const []const u8, stdout: anytype, stderr: anytype) !u8 {
         .fixture_id = options.fixture_id,
         .environment = options.environment,
         .output_dir = options.output_dir,
+        .deployment_profile = options.deployment_profile,
         .ci = options.ci,
         .safety_case_report = options.safety_case_report,
     }) catch |err| {
@@ -1886,6 +2127,10 @@ fn parseRedteamOptions(argv: []const []const u8, stderr: anytype) !RedteamOption
             index += 1;
             if (index >= argv.len) return redteamUsage(stderr, "aegis-edge redteam: --output requires a directory.\n");
             options.output_dir = argv[index];
+        } else if (std.mem.eql(u8, arg, "--deployment-profile")) {
+            index += 1;
+            if (index >= argv.len) return redteamUsage(stderr, "aegis-edge redteam: --deployment-profile requires a file.\n");
+            options.deployment_profile = argv[index];
         } else if (std.mem.eql(u8, arg, "--report")) {
             index += 1;
             if (index >= argv.len) return redteamUsage(stderr, "aegis-edge redteam: --report requires a value.\n");
@@ -1925,6 +2170,28 @@ fn parseSessionOnly(argv: []const []const u8, stderr: anytype, command_name: []c
         }
     }
     return session;
+}
+
+fn parsePolicyOnly(argv: []const []const u8, stderr: anytype, command_name: []const u8) ![]const u8 {
+    var policy_path: ?[]const u8 = null;
+    var index: usize = 0;
+    while (index < argv.len) : (index += 1) {
+        if (std.mem.eql(u8, argv[index], "--policy")) {
+            index += 1;
+            if (index >= argv.len) {
+                try stderr.print("{s}: --policy requires a file.\n", .{command_name});
+                return error.InvalidCliArguments;
+            }
+            policy_path = argv[index];
+        } else {
+            try stderr.print("{s}: unknown argument '{s}'.\n", .{ command_name, argv[index] });
+            return error.InvalidCliArguments;
+        }
+    }
+    return policy_path orelse {
+        try stderr.print("{s}: missing --policy.\n", .{command_name});
+        return error.InvalidCliArguments;
+    };
 }
 
 fn runPolicyCheck(argv: []const []const u8, stdout: anytype, stderr: anytype) !u8 {
