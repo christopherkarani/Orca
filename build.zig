@@ -395,6 +395,15 @@ pub fn build(b: *std.Build) void {
     });
     const run_phase41_release_tests = b.addRunArtifact(phase41_release_tests);
 
+    const phase42_customer_acquisition_tests = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("tests/phase42_drone_customer_acquisition.zig"),
+            .target = target,
+            .optimize = optimize,
+        }),
+    });
+    const run_phase42_customer_acquisition_tests = b.addRunArtifact(phase42_customer_acquisition_tests);
+
     const phase36_codex_plugin_tests = b.addTest(.{
         .root_module = b.createModule(.{
             .root_source_file = b.path("tests/phase36_codex_plugin.zig"),
@@ -459,6 +468,7 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&run_phase39_customer_pilot_tests.step);
     test_step.dependOn(&run_phase40_security_safety_tests.step);
     test_step.dependOn(&run_phase41_release_tests.step);
+    test_step.dependOn(&run_phase42_customer_acquisition_tests.step);
     test_step.dependOn(&run_phase36_codex_plugin_tests.step);
     test_step.dependOn(&run_phase37_claude_plugin_tests.step);
     test_step.dependOn(&run_phase38_plugin_security_tests.step);
