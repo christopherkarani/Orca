@@ -1,0 +1,20 @@
+version: 1
+id: geofence-mission-item-outside-denied
+name: Mission item outside geofence denied
+category: geofence
+environment: fake_adapter
+description: Synthetic mission upload includes a waypoint outside the configured geofence.
+policy: examples/edge/redteam/policies/redteam-envelope.yaml
+faults:
+  - mission_item_outside_geofence
+expected:
+  decision: deny
+  findings:
+    - mission
+  events:
+    - safety.mission_item_denied
+    - vehicle.command_denied
+  no_log_contains:
+    - fake-secret-value
+score:
+  points: 10

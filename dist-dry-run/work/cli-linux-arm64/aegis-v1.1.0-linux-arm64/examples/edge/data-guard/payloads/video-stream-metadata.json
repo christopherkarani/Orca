@@ -1,0 +1,12 @@
+{
+  "channel_kind": "video_stream",
+  "direction": "outbound",
+  "vehicle_id": "edge-vehicle-1",
+  "scenario_id": "video-stream-metadata",
+  "provenance": "fake_adapter",
+  "video_stream": {
+    "codec": "h264",
+    "resolution": "1280x720",
+    "frame_metadata": "simulated metadata only, no raw frames"
+  }
+}

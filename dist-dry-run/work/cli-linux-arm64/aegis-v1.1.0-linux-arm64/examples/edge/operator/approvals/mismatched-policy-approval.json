@@ -1,0 +1,9 @@
+{
+  "example": "mismatched-policy-approval",
+  "scope": "exact_action_only",
+  "vehicle_id": "edge-vehicle-1",
+  "command_id": "operator-arm-001",
+  "command_type": "arm",
+  "policy_hash": "example-mismatch",
+  "expected": "deny"
+}

@@ -1,0 +1,11 @@
+{
+  "channel_kind": "mavlink_telemetry",
+  "direction": "outbound",
+  "vehicle_id": "edge-vehicle-1",
+  "scenario_id": "exact-geolocation",
+  "provenance": "fake_adapter",
+  "latitude": 37.0001234,
+  "longitude": -122.0009876,
+  "altitude_m": 20,
+  "note": "simulated exact geolocation only"
+}

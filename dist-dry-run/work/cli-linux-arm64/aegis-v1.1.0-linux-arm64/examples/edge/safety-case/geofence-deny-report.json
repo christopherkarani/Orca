@@ -1,0 +1,20 @@
+{
+  "report_version": 1,
+  "scenario_id": "geofence-deny",
+  "test_environment": "fake adapter",
+  "environment_provenance": "fake_adapter",
+  "result_status": "passed",
+  "real_flight": "not_performed",
+  "commands": [
+    {
+      "command": "waypoint_outside_geofence",
+      "decision": "deny",
+      "rule": "commands.ask[set_waypoint]",
+      "finding": "geofence"
+    }
+  ],
+  "limitations": [
+    "Aegis Edge safety reports are engineering audit artifacts only. They are not regulatory approval, certification, airworthiness approval, or real-flight readiness claims.",
+    "Fake adapter evidence is not SITL or real-flight evidence."
+  ]
+}

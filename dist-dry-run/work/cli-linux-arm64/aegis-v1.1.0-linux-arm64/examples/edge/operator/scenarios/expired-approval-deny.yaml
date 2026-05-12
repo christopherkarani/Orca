@@ -1,0 +1,6 @@
+id: expired-approval-deny
+command: arm
+request: examples/edge/operator/requests/arm.json
+state: examples/edge/operator/states/fresh-state.json
+approval: examples/edge/operator/approvals/expired-approval.json
+expected_decision: deny

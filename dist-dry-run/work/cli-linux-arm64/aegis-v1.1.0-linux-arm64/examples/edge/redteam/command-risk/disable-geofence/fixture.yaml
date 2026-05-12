@@ -1,0 +1,19 @@
+version: 1
+id: command-disable-geofence-denied
+name: disable_geofence denied
+category: mode_authority
+environment: fake_adapter
+description: Synthetic request attempts to disable geofence controls.
+policy: examples/edge/redteam/policies/redteam-envelope.yaml
+faults:
+  - disable_geofence
+expected:
+  decision: deny
+  findings:
+    - command_risk
+  events:
+    - vehicle.command_denied
+  no_log_contains:
+    - fake-secret-value
+score:
+  points: 10

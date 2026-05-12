@@ -1,0 +1,22 @@
+version: 1
+id: health-event-queue-depth-exceeded-degrades
+name: Event queue depth exceeded creates degraded finding
+category: health
+environment: fake_adapter
+description: Simulates excessive event queue depth and verifies a degraded resource-health finding.
+policy: examples/edge/health/policies/watchdog-strict.yaml
+faults:
+  - event_queue_depth_exceeded
+expected:
+  decision: deny
+  findings:
+    - health
+    - resource_usage
+    - deny_high_risk
+  events:
+    - health.watchdog.finding
+    - health.command_denied
+  no_log_contains:
+    - real-flight-ready
+limitations:
+  - Resource health is lightweight local evidence and does not include hosted telemetry.

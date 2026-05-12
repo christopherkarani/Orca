@@ -1,0 +1,22 @@
+version: 1
+id: health-missing-policy-fail-closed
+name: Missing policy health fails closed
+category: health
+environment: fake_adapter
+description: Simulates a policy-engine health failure and verifies fail-closed behavior.
+policy: examples/edge/health/policies/watchdog-strict.yaml
+faults:
+  - missing_policy_watchdog
+expected:
+  decision: deny
+  findings:
+    - health
+    - policy_engine
+    - fail_closed
+  events:
+    - health.watchdog.finding
+    - health.command_denied
+  no_log_contains:
+    - real-flight-ready
+limitations:
+  - The fixture simulates policy-engine unavailability without deleting local policy files.

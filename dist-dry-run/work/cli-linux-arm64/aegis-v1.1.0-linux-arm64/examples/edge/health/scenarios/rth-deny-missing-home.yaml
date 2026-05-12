@@ -1,0 +1,8 @@
+id: rth-deny-missing-home
+environment: fake_adapter
+provenance: fake_adapter
+command: return_to_home
+expected_decision: deny
+health_fault: missing_home_position
+expected_behavior: fail_closed
+note: RTH requires valid home position under degraded health.
