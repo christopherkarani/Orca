@@ -1,5 +1,16 @@
 # Phase 42 30-Day Drone Customer Acquisition
 
+## Review Fix Plan
+
+- [x] Add regressions for packaged asset lookup from an explicit package root.
+- [x] Add regressions for invalid profile policy files and unknown deployment/environment/network enum values.
+- [x] Add regression for health scenario files with an explicit but unknown command.
+- [x] Resolve deployment assets through resource roots instead of only cwd.
+- [x] Validate profile policies in the shared `checkProfile` path used by deployment, health, and red-team gating.
+- [x] Reject unknown profile enum values before a profile can report active.
+- [x] Fail health scenarios with unknown explicit commands instead of defaulting to `read_telemetry`.
+- [x] Re-run focused and product regression checks.
+
 ## Assumptions
 
 - The prompt-named `README_START_HERE.md`, `CODEX_MASTER_PROMPT_EDGE.md`, `context/`, `sales_customer/`, and `phases/42_30_DAY_DRONE_CUSTOMER_ACQUISITION.md` files are absent from this checkout by exact path. The active contract is the Phase 42 prompt, existing `customer_pilot/` and Edge customer-proof docs, Aegis memory, and `tasks/lessons.md`.
@@ -54,6 +65,14 @@
 - Added `scripts/validate-go-to-market.sh` to verify required GTM docs, secret-like markers, private contact data, banned overclaims outside negative safety context, legal-review marking, editable/internal pricing guidance, and absence of sender/scraping automation.
 - Safety boundary preserved: materials consistently scope Aegis Edge to simulation/SITL/bench-preparation customer evaluation and avoid aircraft operation, certification, regulatory approval, detect-and-avoid, replacement of customer safety systems, universal MAVLink coverage, weapons/kinetic initial targeting, private-data scraping, and bulk outreach tooling.
 - Verification complete: Phase 42 focused test, GTM validator, `zig build`, `zig build test`, required Aegis CLI commands, required Edge commands, `git diff --check`, and manual content review passed.
+
+## Review Fix Results
+
+- Fixed P1 packaged asset lookup: `doctorAssets` now checks an optional `AEGIS_EDGE_RESOURCE_ROOT`, cwd, executable directory, package root, package `share/aegis-edge`, and source-root candidate; `doctorAssetsFromRoot` covers packaged layout validation.
+- Fixed P1 shared profile validation: `checkProfile` now parses the profile policy before returning active, so `health check --profile` and red-team deployment-profile gating cannot accept malformed policy files.
+- Fixed P2 unknown profile enum handling: unknown `deployment_mode`, `environment`, and `network_mode` fail closed with explicit reasons.
+- Fixed P2 health scenario command parsing: a present but misspelled `command` returns usage error instead of silently defaulting to `read_telemetry`.
+- Verification after review fixes: `zig build`, `zig build test`, outside-cwd `aegis-edge deployment assets`, invalid-policy `health check --profile`, typoed `deployment check --profile`, invalid-command health scenario, required CLI/Edge smokes, GTM validation, and `git diff --check` passed.
 
 # Phase 41 Edge + CLI Production Release
 

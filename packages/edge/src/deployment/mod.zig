@@ -205,10 +205,24 @@ pub const required_assets = [_]AssetCheck{
 };
 
 pub fn doctorAssets(allocator: std.mem.Allocator) !AssetReport {
+    const roots = try candidateResourceRoots(allocator);
+    defer {
+        for (roots) |root| allocator.free(root);
+        allocator.free(roots);
+    }
+    for (roots) |root| {
+        var report = try doctorAssetsFromRoot(allocator, root);
+        if (report.overall() == .active) return report;
+        report.deinit();
+    }
+    return doctorAssetsFromRoot(allocator, ".");
+}
+
+pub fn doctorAssetsFromRoot(allocator: std.mem.Allocator, root: []const u8) !AssetReport {
     const checks = try allocator.alloc(AssetCheck, required_assets.len);
     for (required_assets, 0..) |asset, index| {
         checks[index] = asset;
-        checks[index].status = if (pathExists(asset.path)) .active else .missing;
+        checks[index].status = if (pathExistsAt(root, asset.path)) .active else .missing;
     }
     return .{ .allocator = allocator, .checks = checks };
 }
@@ -222,6 +236,15 @@ pub fn checkProfile(profile: DeploymentProfile) DeploymentCheck {
     if (profile.mode == .real_flight or profile.environment == .real_flight) {
         return .{ .status = .unsupported, .reason = "real-flight profiles are unsupported in Phase 36" };
     }
+    if (profile.mode == .unknown) {
+        return .{ .status = .failed, .reason = "deployment_mode is unknown or unsupported" };
+    }
+    if (profile.environment == .unknown) {
+        return .{ .status = .failed, .reason = "environment is unknown or unsupported" };
+    }
+    if (profile.network_mode == .unknown) {
+        return .{ .status = .failed, .reason = "network_mode is unknown or unsupported" };
+    }
     if (profile.target_arch.supportStatus() == .unsupported) {
         return .{ .status = .unsupported, .reason = "target architecture is unsupported by Phase 36 release checks" };
     }
@@ -230,6 +253,11 @@ pub fn checkProfile(profile: DeploymentProfile) DeploymentCheck {
     }
     if (profile.policy_path.len == 0 or !pathExists(profile.policy_path)) {
         return .{ .status = .missing, .reason = "policy path is missing or unreadable" };
+    }
+    var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
+    defer arena.deinit();
+    if (validatePolicy(profile.policy_path, arena.allocator()) != .active) {
+        return .{ .status = .failed, .reason = "policy path exists but is invalid" };
     }
     if (profile.scenario_path.len == 0 or !pathExists(profile.scenario_path)) {
         return .{ .status = .missing, .reason = "scenario path is missing or unreadable" };
@@ -413,6 +441,45 @@ fn equalsAny(value: []const u8, options: []const []const u8) bool {
 fn pathExists(path: []const u8) bool {
     std.fs.cwd().access(path, .{}) catch return false;
     return true;
+}
+
+fn pathExistsAt(root: []const u8, path: []const u8) bool {
+    if (std.fs.path.isAbsolute(path)) return pathExists(path);
+    var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
+    defer arena.deinit();
+    const joined = std.fs.path.join(arena.allocator(), &.{ root, path }) catch return false;
+    return pathExists(joined);
+}
+
+fn candidateResourceRoots(allocator: std.mem.Allocator) ![][]u8 {
+    var roots = std.ArrayList([]u8){};
+    errdefer {
+        for (roots.items) |root| allocator.free(root);
+        roots.deinit(allocator);
+    }
+
+    if (std.process.getEnvVarOwned(allocator, "AEGIS_EDGE_RESOURCE_ROOT")) |root| {
+        try roots.append(allocator, root);
+    } else |_| {}
+
+    try roots.append(allocator, try allocator.dupe(u8, "."));
+
+    if (std.fs.selfExePathAlloc(allocator)) |exe_path| {
+        defer allocator.free(exe_path);
+        if (std.fs.path.dirname(exe_path)) |exe_dir| {
+            try roots.append(allocator, try allocator.dupe(u8, exe_dir));
+            if (std.fs.path.dirname(exe_dir)) |package_root| {
+                try roots.append(allocator, try allocator.dupe(u8, package_root));
+                const share_root = try std.fs.path.join(allocator, &.{ package_root, "share", "aegis-edge" });
+                try roots.append(allocator, share_root);
+                if (std.fs.path.dirname(package_root)) |source_root| {
+                    try roots.append(allocator, try allocator.dupe(u8, source_root));
+                }
+            }
+        }
+    } else |_| {}
+
+    return roots.toOwnedSlice(allocator);
 }
 
 fn redactSecretLike(allocator: std.mem.Allocator, value: []const u8) ![]u8 {

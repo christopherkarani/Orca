@@ -52,6 +52,25 @@ test "phase 36 runtime asset doctor covers required source and package assets" {
     try expectAsset(report, "docs/edge/simulation-vs-flight.md");
 }
 
+test "phase 36 runtime asset doctor can validate packaged roots without source cwd" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const package_root = try tmp.dir.realpathAlloc(std.testing.allocator, ".");
+    defer std.testing.allocator.free(package_root);
+
+    for (edge.deployment.required_assets) |asset| {
+        const parent = std.fs.path.dirname(asset.path) orelse ".";
+        try tmp.dir.makePath(parent);
+        try tmp.dir.writeFile(.{ .sub_path = asset.path, .data = "packaged asset placeholder\n" });
+    }
+
+    var report = try edge.deployment.doctorAssetsFromRoot(std.testing.allocator, package_root);
+    defer report.deinit();
+    try std.testing.expectEqual(edge.deployment.Status.active, report.overall());
+    try expectAsset(report, "schemas/edge-policy-v1.json");
+    try expectAsset(report, "examples/edge/redteam/README.md");
+}
+
 test "phase 36 package metadata names linux amd64 and arm64 artifacts with checksums" {
     const allocator = std.testing.allocator;
     const arm64_info: edge.deployment.PackageInfo = .{ .version = "1.1.0", .target_arch = .linux_arm64 };
@@ -89,6 +108,77 @@ test "phase 36 packaged deployment profiles reject unsupported macOS package tar
     const result = edge.deployment.checkProfile(profile);
     try std.testing.expectEqual(edge.deployment.Status.unsupported, result.status);
     try std.testing.expect(std.mem.indexOf(u8, result.reason, "packaged") != null);
+}
+
+test "phase 36 deployment profiles fail closed on invalid policy and unknown enums" {
+    const allocator = std.testing.allocator;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try tmp.dir.writeFile(.{ .sub_path = "invalid-policy.yaml", .data = "not_a_valid_policy: true\n" });
+    const tmp_root = try tmp.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(tmp_root);
+    const invalid_policy_path = try std.fs.path.join(allocator, &.{ tmp_root, "invalid-policy.yaml" });
+    defer allocator.free(invalid_policy_path);
+
+    const invalid_policy_profile_text = try std.fmt.allocPrint(allocator,
+        \\id: invalid-policy
+        \\target_arch: linux-amd64
+        \\os: linux
+        \\deployment_mode: source
+        \\environment: fake_adapter
+        \\network_mode: offline
+        \\policy_path: {s}
+        \\scenario_path: examples/edge/safety/scenarios/geofence-deny.yaml
+        \\
+    , .{invalid_policy_path});
+    defer allocator.free(invalid_policy_profile_text);
+    var invalid_policy_profile = try edge.deployment.parseProfile(allocator, invalid_policy_profile_text);
+    defer invalid_policy_profile.deinit();
+    const invalid_policy_check = edge.deployment.checkProfile(invalid_policy_profile);
+    try std.testing.expectEqual(edge.deployment.Status.failed, invalid_policy_check.status);
+    try std.testing.expect(std.mem.indexOf(u8, invalid_policy_check.reason, "policy") != null);
+
+    var unknown_mode_profile = try edge.deployment.parseProfile(allocator,
+        \\id: typo-mode
+        \\target_arch: linux-amd64
+        \\os: linux
+        \\deployment_mode: packagd
+        \\environment: fake_adapter
+        \\network_mode: offline
+        \\policy_path: examples/edge/safety/policies/safety-strict.yaml
+        \\scenario_path: examples/edge/safety/scenarios/geofence-deny.yaml
+        \\
+    );
+    defer unknown_mode_profile.deinit();
+    try std.testing.expectEqual(edge.deployment.Status.failed, edge.deployment.checkProfile(unknown_mode_profile).status);
+
+    var unknown_environment_profile = try edge.deployment.parseProfile(allocator,
+        \\id: typo-environment
+        \\target_arch: linux-amd64
+        \\os: linux
+        \\deployment_mode: source
+        \\environment: fake-adapter
+        \\network_mode: offline
+        \\policy_path: examples/edge/safety/policies/safety-strict.yaml
+        \\scenario_path: examples/edge/safety/scenarios/geofence-deny.yaml
+        \\
+    );
+    defer unknown_environment_profile.deinit();
+    try std.testing.expectEqual(edge.deployment.Status.failed, edge.deployment.checkProfile(unknown_environment_profile).status);
+
+    var unknown_network_profile = try edge.deployment.parseProfile(allocator,
+        \\id: typo-network
+        \\target_arch: linux-amd64
+        \\os: linux
+        \\deployment_mode: source
+        \\environment: fake_adapter
+        \\network_mode: local
+        \\policy_path: examples/edge/safety/policies/safety-strict.yaml
+        \\scenario_path: examples/edge/safety/scenarios/geofence-deny.yaml
+        \\
+    );
+    defer unknown_network_profile.deinit();
+    try std.testing.expectEqual(edge.deployment.Status.failed, edge.deployment.checkProfile(unknown_network_profile).status);
 }
 
 test "phase 36 bench report includes no-flight and no-certification boundary" {
