@@ -1,0 +1,17 @@
+version: 1
+id: approval-reused-one-time-denied
+name: Reused one-time approval denied
+category: approval_bypass
+environment: fake_adapter
+description: Synthetic one-time approval cannot be reused.
+policy: examples/edge/operator/policies/approval-strict.yaml
+faults:
+  - reused_one_time_approval
+expected:
+  decision: deny
+  events:
+    - operator.approval_invalid
+  no_log_contains:
+    - fake-secret-value
+score:
+  points: 10

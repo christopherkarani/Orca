@@ -1,0 +1,21 @@
+version: 1
+id: data-guard-long-query-exfiltration-denied
+name: Long query egress is denied
+category: data_guard
+environment: fake_adapter
+description: Synthetic telemetry with an oversized query string is flagged as suspicious and denied.
+policy: examples/edge/data-guard/policies/data-guard-strict.yaml
+faults:
+  - long_query_exfiltration
+expected:
+  decision: deny
+  findings:
+    - exfiltration
+    - unknown
+  events:
+    - data.egress_denied
+    - data.exfiltration_suspected
+  no_log_contains:
+    - fake_secret_value_phase35
+score:
+  points: 10

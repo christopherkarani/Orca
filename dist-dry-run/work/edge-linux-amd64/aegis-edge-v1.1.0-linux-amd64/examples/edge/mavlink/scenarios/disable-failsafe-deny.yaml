@@ -1,0 +1,6 @@
+name: disable-failsafe-deny
+transport: fake_transport
+frame: ../frames/command-disable-failsafe.hex
+expected_decision: deny
+expected_forwarded: false
+notes: PARAM_SET safety-toggle detection maps to disable_failsafe and fails closed.

@@ -1,0 +1,14 @@
+{
+  "channel_kind": "mission_upload",
+  "direction": "outbound",
+  "vehicle_id": "edge-vehicle-1",
+  "scenario_id": "mission-plan",
+  "provenance": "fake_adapter",
+  "mission_plan": {
+    "mission_id": "fake-mission-001",
+    "waypoints": [
+      { "sequence": 0, "latitude": 37.0001, "longitude": -122.0000, "altitude_m": 20 },
+      { "sequence": 1, "latitude": 37.0002, "longitude": -122.0001, "altitude_m": 25 }
+    ]
+  }
+}

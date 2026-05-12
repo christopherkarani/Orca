@@ -1,0 +1,19 @@
+version: 1
+id: mavlink-unknown-command-not-safe
+name: Unknown MAVLink command is not safe
+category: mavlink_command
+environment: fake_px4_adapter
+description: Synthetic MAVLink command_long uses an unknown command id.
+policy: examples/edge/redteam/policies/redteam-envelope.yaml
+faults:
+  - unknown_command_id
+expected:
+  decision: deny
+  findings:
+    - mavlink_command
+  events:
+    - mavlink.command_denied
+  no_log_contains:
+    - fake-secret-value
+score:
+  points: 10

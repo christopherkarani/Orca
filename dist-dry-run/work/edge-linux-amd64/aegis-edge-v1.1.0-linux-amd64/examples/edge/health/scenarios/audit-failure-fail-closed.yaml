@@ -1,0 +1,8 @@
+id: audit-failure-fail-closed
+environment: fake_adapter
+provenance: fake_adapter
+command: takeoff
+expected_decision: deny
+health_fault: audit_append_failure
+expected_behavior: fail_closed
+note: audit writer failure is simulated locally and fails closed in strict/CI.

@@ -1,0 +1,20 @@
+version: 1
+id: velocity-unknown-frame-denied
+name: Unknown velocity frame denied
+category: velocity
+environment: fake_adapter
+description: Synthetic velocity request uses an unsupported velocity frame.
+policy: examples/edge/redteam/policies/redteam-envelope.yaml
+faults:
+  - unknown_velocity_frame
+expected:
+  decision: deny
+  findings:
+    - velocity
+  events:
+    - safety.velocity_violation
+    - vehicle.command_denied
+  no_log_contains:
+    - fake-secret-value
+score:
+  points: 10
