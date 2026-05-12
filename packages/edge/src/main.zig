@@ -2521,7 +2521,7 @@ fn runHealthCheck(argv: []const []const u8, stdout: anytype, stderr: anytype) !u
         };
         defer profile.deinit();
         const check = edge.deployment.checkProfile(profile);
-        try stdout.print("Health profile valid: {s} status={s} reason={s}\n", .{ selected_profile, check.status.toString(), check.reason });
+        try stdout.print("Health profile check: {s} status={s} reason={s}\n", .{ selected_profile, check.status.toString(), check.reason });
         try stdout.writeAll("Runtime health profile checks are local source/package/SITL/bench-preparation only; no hardware is opened.\n");
         return if (check.status == .failed or check.status == .missing or check.status == .unsupported) 65 else 0;
     }
@@ -2628,7 +2628,10 @@ fn runHealthScenario(argv: []const []const u8, stdout: anytype, stderr: anytype)
         edge.health.DegradedBehavior.parse(value) orelse return usageError(stderr, "aegis-edge health scenario run: invalid expected_behavior.\n")
     else
         null;
-    const command = std.meta.stringToEnum(edge.domain.commands.CommandAction, scalarField(scenario_text, "command") orelse "read_telemetry") orelse .read_telemetry;
+    const command = if (scalarField(scenario_text, "command")) |value|
+        std.meta.stringToEnum(edge.domain.commands.CommandAction, value) orelse return usageError(stderr, "aegis-edge health scenario run: invalid command.\n")
+    else
+        .read_telemetry;
     const now_ms: i128 = 1_003_000;
     var state = defaultStateForPolicy(&loaded.value, now_ms);
     if (std.mem.eql(u8, health_fault, "missing_home_position")) state.home_position = null;
@@ -4189,9 +4192,37 @@ test "aegis-edge health scenario validates expected decision and behavior" {
 
     stdout_stream.reset();
     stderr_stream.reset();
+    const invalid_command =
+        \\id: health-invalid-command
+        \\environment: fake_adapter
+        \\provenance: fake_adapter
+        \\command: read_telemtry
+        \\expected_decision: deny
+        \\health_fault: stale_position
+        \\expected_behavior: fail_closed
+        \\note: misspelled command must fail instead of defaulting.
+        \\
+    ;
+    try tmp.dir.writeFile(.{ .sub_path = "health-invalid-command.yaml", .data = invalid_command });
+    const invalid_command_path = try std.fs.path.join(std.testing.allocator, &.{ root, "health-invalid-command.yaml" });
+    defer std.testing.allocator.free(invalid_command_path);
+    const invalid_command_argv = [_][]const u8{
+        "health",
+        "scenario",
+        "run",
+        "--policy",
+        "examples/edge/health/policies/watchdog-strict.yaml",
+        "--scenario",
+        invalid_command_path,
+    };
+    try std.testing.expectEqual(@as(u8, 64), try run(invalid_command_argv[0..], stdout_stream.writer(), stderr_stream.writer()));
+    try std.testing.expect(std.mem.indexOf(u8, stderr_stream.getWritten(), "invalid command") != null);
+
+    stdout_stream.reset();
+    stderr_stream.reset();
     const profile_argv = [_][]const u8{ "health", "check", "--profile", "examples/edge/deployment/profiles/source-local-fake.yaml" };
     try std.testing.expectEqual(@as(u8, 0), try run(profile_argv[0..], stdout_stream.writer(), stderr_stream.writer()));
-    try std.testing.expect(std.mem.indexOf(u8, stdout_stream.getWritten(), "Health profile valid") != null);
+    try std.testing.expect(std.mem.indexOf(u8, stdout_stream.getWritten(), "Health profile check") != null);
 
     stdout_stream.reset();
     stderr_stream.reset();
