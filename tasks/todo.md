@@ -1,3 +1,60 @@
+# Phase 42 30-Day Drone Customer Acquisition
+
+## Assumptions
+
+- The prompt-named `README_START_HERE.md`, `CODEX_MASTER_PROMPT_EDGE.md`, `context/`, `sales_customer/`, and `phases/42_30_DAY_DRONE_CUSTOMER_ACQUISITION.md` files are absent from this checkout by exact path. The active contract is the Phase 42 prompt, existing `customer_pilot/` and Edge customer-proof docs, Aegis memory, and `tasks/lessons.md`.
+- Phase 42 is customer acquisition enablement only: go-to-market docs, outreach/call/pilot templates, CRM/metrics templates, safety-claim guidance, targeting guidance, founder execution calendar, validation checks, and output summary.
+- Phase 42 must not add SaaS, hosted dashboard, billing, license enforcement, automated outreach sending, scraping, telemetry by default, real drone hardware operation, real-flight deployment, live aircraft control, certification workflows, regulatory approval workflows, detect-and-avoid, autopilot replacement behavior, or weapons/kinetic initial targeting.
+- Positioning remains simulation/SITL/bench-preparation customer evaluation: safety-policy runtime, bounded MAVLink mediation, safety-envelope evaluator, audit/replay, red-team/fault-injection harness, safety-case evidence generator, and paid-pilot evaluation package.
+
+## Research And False-Positive Check
+
+- [x] Read Aegis memory for phase discipline, required regression lanes, and Edge no-real-flight/no-certification/no-autopilot-replacement boundaries.
+- [x] Load the TDD workflow skill and use a failing Phase 42 validation test before creating the go-to-market package.
+- [x] Confirm absent prompt-named governing files instead of inventing their contents.
+- [x] Read `tasks/lessons.md` for tracked-file hygiene, fake/SITL provenance, overclaim control, and clean-checkout review requirements.
+- [x] Inspect current `customer_pilot/` package for demo commands, pilot boundaries, legal-template markings, and customer-facing safety language to reuse.
+- [x] Inspect existing Edge demo/proof/red-team command surfaces and customer-proof artifacts for exact commands and artifact paths.
+- [x] Re-check Phase 42 materials for banned claims, private contact data, fake secrets, spam automation, legal-template markings, and internal/editable pricing language.
+
+## TDD / Implementation Checklist
+
+- [x] Add failing Phase 42 tests for required `go_to_market/` docs, outreach templates, call scripts, pilot materials, launch drafts, CRM/metrics files, safety claims guide, targeting filters, output summary, and validation script.
+- [x] Run the focused Phase 42 test and verify it fails before implementation.
+- [x] Create `go_to_market/` package with 30-day plan, ICP, target-account templates, qualification framework, checklist, optional landing-page copy, targeting guidance, and README.
+- [x] Create founder-led outreach templates that are concise, technical, manually sent, and explicitly safety-bounded.
+- [x] Create discovery/demo/technical/safety-review call scripts and objections/answers grounded in existing Edge demos and proof artifacts.
+- [x] Create paid-pilot offer, pricing guidance, close plan, mutual action plan, and success scorecard with editable/internal pricing and legal-review template markings where relevant.
+- [x] Create launch drafts, CRM templates, acquisition metrics dashboards, and strict safety-claims guidance.
+- [x] Add lightweight local validation checks for required files, banned overclaims, secrets/private contact data, legal-template labels, internal pricing labels, and absence of spam automation.
+- [x] Create `go_to_market/PHASE_42_OUTPUT_SUMMARY.md`.
+
+## Verification Checklist
+
+- [x] Focused Phase 42 test fails before implementation.
+- [x] Focused Phase 42 test passes after implementation.
+- [x] `scripts/validate-go-to-market.sh`
+- [x] `zig build`
+- [x] `zig build test`
+- [x] `./zig-out/bin/aegis --help`
+- [x] `./zig-out/bin/aegis version`
+- [x] `./zig-out/bin/aegis redteam --ci`
+- [x] `./zig-out/bin/aegis-edge --help`
+- [x] `./zig-out/bin/aegis-edge doctor`
+- [x] `./zig-out/bin/aegis-edge redteam --ci`
+- [x] `./zig-out/bin/aegis-edge docs check`
+- [x] `./zig-out/bin/aegis-edge demo run geofence-deny`
+- [x] `./zig-out/bin/aegis-edge proof generate --demo geofence-deny`
+- [x] Manual review: `go_to_market/README.md` readable, 30-day plan actionable, outreach concise, call scripts useful, pilot offer clear, safety claims strict, no real-flight/certification/autopilot/detect-and-avoid claims, no real customer data, no fake secrets, no spam automation, product behavior unchanged.
+
+## Review
+
+- Implemented Phase 42 only: created `go_to_market/` with 30-day acquisition plan, ICP, account templates, qualification framework, outreach templates, call scripts, pilot offer/pricing/close/MAP/scorecard docs, launch drafts, CRM/metrics templates, safety claims guidance, targeting guidance, customer safety filter, optional landing-page copy, checklist, and output summary.
+- Added `tests/phase42_drone_customer_acquisition.zig` and wired it into `zig build test`; the focused test failed before docs existed and passes after implementation.
+- Added `scripts/validate-go-to-market.sh` to verify required GTM docs, secret-like markers, private contact data, banned overclaims outside negative safety context, legal-review marking, editable/internal pricing guidance, and absence of sender/scraping automation.
+- Safety boundary preserved: materials consistently scope Aegis Edge to simulation/SITL/bench-preparation customer evaluation and avoid aircraft operation, certification, regulatory approval, detect-and-avoid, replacement of customer safety systems, universal MAVLink coverage, weapons/kinetic initial targeting, private-data scraping, and bulk outreach tooling.
+- Verification complete: Phase 42 focused test, GTM validator, `zig build`, `zig build test`, required Aegis CLI commands, required Edge commands, `git diff --check`, and manual content review passed.
+
 # Phase 41 Edge + CLI Production Release
 
 ## Assumptions
