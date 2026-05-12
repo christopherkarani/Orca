@@ -1,6 +1,7 @@
 # Pilot Boundaries
 
 This pilot is an engineering evaluation package. It is not a flight program.
+The allowed scope is simulation/SITL/customer-evaluation and bench-preparation only.
 
 ## Explicit Non-Goals
 

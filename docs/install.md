@@ -12,7 +12,7 @@ Use Zig `0.15.2`.
 
 ## Release Artifacts
 
-Phase 19 release helpers build archives into `dist/`:
+Phase 41 release helpers build checksum-covered Aegis CLI and Aegis Edge archives into `dist/`:
 
 ```sh
 ./scripts/build-release.sh
@@ -48,6 +48,10 @@ Templates exist under `packaging/`:
 - Docker: `packaging/docker/Dockerfile`
 
 They contain release-time placeholders until artifacts and checksums are generated.
+
+## Aegis Edge
+
+Edge install instructions live in [docs/edge/install.md](edge/install.md). Edge artifacts are Linux amd64/arm64 only in this release and must include runtime assets. Aegis Edge is fake/SITL/customer-evaluation and bench-preparation only; it is not real-flight readiness, certification, detect-and-avoid, or autopilot replacement.
 
 ## macOS Notes
 

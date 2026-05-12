@@ -1,3 +1,14 @@
+# Aegis
+
+Phase 41 prepares Aegis CLI v1.1.0 and Aegis Edge release artifacts.
+
+- `aegis version --json` reports CLI release metadata.
+- `aegis-edge version --json` reports Edge release metadata and safety boundary.
+- Release artifacts must be verified with `checksums.txt`.
+- Aegis Edge is simulation/SITL/customer-evaluation and bench-preparation only. It is not real-flight readiness, certification, detect-and-avoid, or autopilot replacement.
+
+The `orca` binary name remains available as a compatibility alias in this repo, but release-facing Aegis artifacts use `aegis-v...` and `aegis-edge-v...` names.
+
 # Orca
 
 **Local runtime guardrails and host plugins for AI agents.**

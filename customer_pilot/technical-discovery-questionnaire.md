@@ -1,6 +1,7 @@
 # Technical Discovery Questionnaire
 
 Do not provide real secrets or production credentials.
+This discovery questionnaire is for simulation/SITL/customer-evaluation and bench-preparation only.
 
 ## Protocols And Command Surface
 

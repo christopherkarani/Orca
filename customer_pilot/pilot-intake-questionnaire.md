@@ -1,6 +1,7 @@
 # Pilot Intake Questionnaire
 
 Do not include real secrets, private keys, tokens, production credentials, or real customer endpoint credentials in this questionnaire.
+This intake is for simulation/SITL/customer-evaluation and bench-preparation only.
 
 ## Company And Team
 
