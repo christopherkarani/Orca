@@ -16,7 +16,7 @@ Opening positioning: Aegis Edge is a simulation/SITL/bench-preparation safety-po
 - Command to run: `./zig-out/bin/aegis-edge demo run disable-failsafe-deny`
 - Expected output: deny.
 - What to say: Safety-critical failsafe changes are blocked by policy.
-- What not to say: Aegis replaces autopilot failsafes.
+- What not to say: Aegis takes over or substitutes for autopilot failsafes.
 - Artifact generated: demo report reference.
 - Limitation to mention: customer-specific failsafe mappings still require review.
 

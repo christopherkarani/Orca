@@ -54,7 +54,7 @@ pub fn mapFrameToCommand(allocator: std.mem.Allocator, frame: framing.Frame, con
         .mission_item => |message| try mapMissionItemFloat(allocator, &result, frame, context, message),
         .mission_item_int => |message| try mapMissionItem(allocator, &result, frame, context, message),
         else => {
-            if (class.safety_sensitive) {
+            if (!class.known or class.safety_sensitive) {
                 result.unsupported = .{ .message_id = frame.msgid, .command_id = class.command_id, .risk = .unknown, .reason = "unsupported safety-sensitive MAVLink message" };
             }
         },

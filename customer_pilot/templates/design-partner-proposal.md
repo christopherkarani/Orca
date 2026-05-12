@@ -1,5 +1,7 @@
 # Design Partner Proposal
 
+Draft template. Legal, safety, and commercial review required before external use.
+
 ## Problem Statement
 
 Drone and autonomy teams need a practical way to evaluate policy-mediated command execution, safety-envelope decisions, audit/replay evidence, red-team scenarios, and safety-case reporting before deeper integration work.

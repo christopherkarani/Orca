@@ -225,6 +225,9 @@ pub fn checkProfile(profile: DeploymentProfile) DeploymentCheck {
     if (profile.target_arch.supportStatus() == .unsupported) {
         return .{ .status = .unsupported, .reason = "target architecture is unsupported by Phase 36 release checks" };
     }
+    if (profile.mode == .packaged and profile.target_arch.packageStatus() == .unsupported) {
+        return .{ .status = .unsupported, .reason = "packaged Edge release artifacts are only produced for linux-amd64 and linux-arm64" };
+    }
     if (profile.policy_path.len == 0 or !pathExists(profile.policy_path)) {
         return .{ .status = .missing, .reason = "policy path is missing or unreadable" };
     }

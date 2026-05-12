@@ -53,6 +53,7 @@ zig build
 ./zig-out/bin/aegis-edge pilot package
 ./zig-out/bin/aegis-edge pilot demo
 ./zig-out/bin/aegis-edge docs check
+./zig-out/bin/aegis-edge review run
 ```
 
 ## Demo Commands

@@ -101,6 +101,9 @@ const usage =
     \\  pilot package                  Create a local customer pilot package index under .aegis-edge
     \\  pilot demo                     Print the customer pilot call demo script summary
     \\  docs check                    Validate required Edge docs, demos, and proof claims
+    \\  review run                    Summarize the local Phase 40 hardening review status
+    \\  review docs-check             Run the Phase 40 local docs/report overclaim scan
+    \\  review report                 Print Phase 40 review report/risk/limitations paths
     \\  safety-case generate --session last
     \\                                 Regenerate/show the latest Edge safety-case evidence when available
     \\  safety-case generate --scenario <scenario> --policy <policy>
@@ -210,6 +213,9 @@ pub fn run(argv: []const []const u8, stdout: anytype, stderr: anytype) !u8 {
     }
     if (std.mem.eql(u8, command, "docs")) {
         return runDocs(argv[1..], stdout, stderr);
+    }
+    if (std.mem.eql(u8, command, "review")) {
+        return runReview(argv[1..], stdout, stderr);
     }
     if (std.mem.eql(u8, command, "safety-case")) {
         return runSafetyCase(argv[1..], stdout, stderr);
@@ -719,6 +725,24 @@ fn runDocs(argv: []const []const u8, stdout: anytype, stderr: anytype) !u8 {
     return 64;
 }
 
+fn runReview(argv: []const []const u8, stdout: anytype, stderr: anytype) !u8 {
+    if (argv.len == 0) return usageError(stderr, "aegis-edge review: expected run, docs-check, or report.\n");
+    if (std.mem.eql(u8, argv[0], "run")) {
+        if (argv.len != 1) return usageError(stderr, "aegis-edge review run: expected no arguments.\n");
+        return runReviewRun(stdout, stderr);
+    }
+    if (std.mem.eql(u8, argv[0], "docs-check")) {
+        if (argv.len != 1) return usageError(stderr, "aegis-edge review docs-check: expected no arguments.\n");
+        return runReviewDocsCheck(stdout, stderr);
+    }
+    if (std.mem.eql(u8, argv[0], "report")) {
+        if (argv.len != 1) return usageError(stderr, "aegis-edge review report: expected no arguments.\n");
+        return runReviewReport(stdout, stderr);
+    }
+    try stderr.print("aegis-edge review: unknown subcommand '{s}'.\n", .{argv[0]});
+    return 64;
+}
+
 const phase38_required_docs = [_][]const u8{
     "packages/edge/README.md",
     "docs/edge/README.md",
@@ -761,6 +785,23 @@ const phase38_required_docs = [_][]const u8{
     "customer_pilot/examples/sample-evidence-bundle-index.md",
 };
 
+const phase40_required_docs = [_][]const u8{
+    "docs/edge/security-safety-review.md",
+    "docs/edge/risk-register.md",
+    "docs/edge/known-limitations.md",
+    "docs/edge/limitations.md",
+    "docs/edge/customer-proof/what-aegis-edge-proves.md",
+    "docs/edge/customer-proof/buyer-faq.md",
+    "docs/edge/customer-proof/aegis-edge-technical-brief.md",
+    "customer_pilot/templates/pilot-sow-template.md",
+    "customer_pilot/templates/mutual-nda-notes.md",
+    "customer_pilot/templates/design-partner-proposal.md",
+    "customer_pilot/templates/customer-email-followup.md",
+    "packaging/README.md",
+    "packaging/aegis-edge/Dockerfile",
+    "packaging/systemd/aegis-edge.service",
+};
+
 fn runDocsCheck(stdout: anytype, stderr: anytype) !u8 {
     var gpa_state: std.heap.GeneralPurposeAllocator(.{}) = .init;
     defer _ = gpa_state.deinit();
@@ -782,9 +823,81 @@ fn runDocsCheck(stdout: anytype, stderr: anytype) !u8 {
             return 65;
         }
     }
+    for (phase40_required_docs) |path| {
+        const text = std.fs.cwd().readFileAlloc(allocator, path, 512 * 1024) catch |err| {
+            try stderr.print("aegis-edge docs check: required Phase 40 file missing or unreadable: {s} ({s})\n", .{ path, @errorName(err) });
+            return 65;
+        };
+        defer allocator.free(text);
+        checked += 1;
+        if (containsForbiddenOverclaim(text)) |phrase| {
+            try stderr.print("aegis-edge docs check: suspicious overclaim outside the allowed Phase 40 boundary in {s}: {s}\n", .{ path, phrase });
+            return 65;
+        }
+        if (containsSecretPattern(text)) |phrase| {
+            try stderr.print("aegis-edge docs check: secret-like marker leaked in {s}: {s}\n", .{ path, phrase });
+            return 65;
+        }
+    }
     try stdout.print("Phase 38 docs check: passed ({d} required docs/proof/pilot files checked)\n", .{checked});
     try stdout.writeAll("manual review context: phrases such as detect-and-avoid, certification, and real flight are allowed only in explicit limitations or negative-scope text.\n");
     try stdout.writeAll("No real hardware, external network, hosted telemetry, pricing, or real-flight claim is validated by this command.\n");
+    return 0;
+}
+
+fn runReviewRun(stdout: anytype, stderr: anytype) !u8 {
+    const docs_code = try runReviewDocsCheck(stdout, stderr);
+    if (docs_code != 0) return docs_code;
+    try stdout.writeAll("Security and safety hardening review: ready for Phase 41 production release prep with documented limitations.\n");
+    try stdout.writeAll("Evidence basis: local tests, Edge red-team fixtures, audit/replay verification, safety-case reports, docs scan, risk register, and known limitations.\n");
+    try stdout.writeAll("Boundary: skipped/unsupported/inconclusive are not pass; fake adapter is not SITL; SITL is not real-flight readiness; bench is not real flight.\n");
+    try stdout.writeAll("No external network, real hardware endpoint, hosted telemetry, secrets, certification workflow, detect-and-avoid, or autopilot replacement is used by this command.\n");
+    return 0;
+}
+
+fn runReviewReport(stdout: anytype, stderr: anytype) !u8 {
+    var gpa_state: std.heap.GeneralPurposeAllocator(.{}) = .init;
+    defer _ = gpa_state.deinit();
+    const allocator = gpa_state.allocator();
+    for (phase40_required_docs[0..3]) |path| {
+        const text = std.fs.cwd().readFileAlloc(allocator, path, 512 * 1024) catch |err| {
+            try stderr.print("aegis-edge review report: required Phase 40 report missing or unreadable: {s} ({s})\n", .{ path, @errorName(err) });
+            return 65;
+        };
+        defer allocator.free(text);
+    }
+    try stdout.writeAll("Phase 40 security/safety review artifacts:\n");
+    try stdout.writeAll("- docs/edge/security-safety-review.md\n");
+    try stdout.writeAll("- docs/edge/risk-register.md\n");
+    try stdout.writeAll("- docs/edge/known-limitations.md\n");
+    try stdout.writeAll("Recommendation: Ready for Phase 41 production release prep, not real-flight readiness, not certification, and not regulatory approval.\n");
+    return 0;
+}
+
+fn runReviewDocsCheck(stdout: anytype, stderr: anytype) !u8 {
+    var gpa_state: std.heap.GeneralPurposeAllocator(.{}) = .init;
+    defer _ = gpa_state.deinit();
+    const allocator = gpa_state.allocator();
+    var checked: usize = 0;
+    for (phase40_required_docs) |path| {
+        const text = std.fs.cwd().readFileAlloc(allocator, path, 512 * 1024) catch |err| {
+            try stderr.print("aegis-edge review docs-check: required file missing or unreadable: {s} ({s})\n", .{ path, @errorName(err) });
+            return 65;
+        };
+        defer allocator.free(text);
+        checked += 1;
+        if (containsForbiddenOverclaim(text)) |phrase| {
+            try stderr.print("aegis-edge review docs-check: suspicious positive overclaim in {s}: {s}\n", .{ path, phrase });
+            return 65;
+        }
+        if (containsSecretPattern(text)) |phrase| {
+            try stderr.print("aegis-edge review docs-check: secret-like marker leaked in {s}: {s}\n", .{ path, phrase });
+            return 65;
+        }
+    }
+    try stdout.print("Phase 40 docs check: passed ({d} review/report/customer/packaging files checked)\n", .{checked});
+    try stdout.writeAll("manual review required: suspicious phrases are allowed only in explicit negative limitation contexts.\n");
+    try stdout.writeAll("No real hardware, external network, hosted telemetry, secrets, or certification claim is validated by this command.\n");
     return 0;
 }
 
@@ -794,10 +907,15 @@ fn containsForbiddenOverclaim(text: []const u8) ?[]const u8 {
         "FAA approved",
         "flight certified",
         "guarantees safety",
+        "EASA approved",
+        "replaces autopilot",
         "ready for real flight",
         "safe for BVLOS",
         "prevents all unsafe actions",
         "works with all MAVLink commands",
+        "production flight-ready",
+        "certified autonomy",
+        "approved for flight",
     };
     for (phrases) |phrase| {
         var offset: usize = 0;
@@ -832,7 +950,10 @@ fn isAllowedNegativeOverclaimContext(text: []const u8, index: usize) bool {
     return std.mem.endsWith(u8, prefix, "not ") or
         std.mem.endsWith(u8, prefix, "no ") or
         std.mem.endsWith(u8, prefix, "not a ") or
-        std.mem.endsWith(u8, prefix, "does not ");
+        std.mem.endsWith(u8, prefix, "does not ") or
+        std.mem.endsWith(u8, prefix, "must not ") or
+        std.mem.endsWith(u8, prefix, "unsupported ") or
+        std.mem.endsWith(u8, prefix, "not as ");
 }
 
 fn writeArm64Doctor(stdout: anytype) !void {

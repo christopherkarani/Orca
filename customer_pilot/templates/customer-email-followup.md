@@ -1,5 +1,7 @@
 # Customer Email Follow-up
 
+Draft template. Legal, safety, and commercial review required before external use.
+
 Subject: Aegis Edge pilot follow-up and evaluation package
 
 Hi [Name],

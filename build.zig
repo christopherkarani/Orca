@@ -369,6 +369,19 @@ pub fn build(b: *std.Build) void {
     });
     const run_phase39_customer_pilot_tests = b.addRunArtifact(phase39_customer_pilot_tests);
 
+    const phase40_security_safety_tests = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("tests/phase40_security_safety_hardening.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .name = "aegis_edge", .module = aegis_edge_mod },
+                .{ .name = "aegis_edge_main", .module = edge_exe_mod },
+            },
+        }),
+    });
+    const run_phase40_security_safety_tests = b.addRunArtifact(phase40_security_safety_tests);
+
     const phase36_codex_plugin_tests = b.addTest(.{
         .root_module = b.createModule(.{
             .root_source_file = b.path("tests/phase36_codex_plugin.zig"),
@@ -431,6 +444,7 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&run_phase37_edge_runtime_health_tests.step);
     test_step.dependOn(&run_phase38_edge_docs_customer_proof_tests.step);
     test_step.dependOn(&run_phase39_customer_pilot_tests.step);
+    test_step.dependOn(&run_phase40_security_safety_tests.step);
     test_step.dependOn(&run_phase36_codex_plugin_tests.step);
     test_step.dependOn(&run_phase37_claude_plugin_tests.step);
     test_step.dependOn(&run_phase38_plugin_security_tests.step);
