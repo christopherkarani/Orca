@@ -1,0 +1,18 @@
+package: aegis-edge
+version: 1.1.0
+target_arch: linux-amd64
+release_channel: stable
+binaries:
+  - bin/aegis-edge
+assets:
+  - schemas
+  - examples/edge
+  - docs/edge
+  - customer_pilot
+  - packages/edge/README.md
+  - packaging/aegis-edge
+  - packaging/systemd
+checksums: SHA256SUMS
+limitations:
+  - simulation/SITL/bench-preparation only
+  - no real-flight readiness claim
