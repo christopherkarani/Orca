@@ -301,6 +301,58 @@ test "phase 35 command surface and docs preserve simulation safety boundaries" {
     }
 }
 
+test "phase 35 edge policy schema and loader tolerate optional data guard section" {
+    const allocator = std.testing.allocator;
+    const schema_text = try readFile(allocator, "schemas/edge-policy-v1.json");
+    defer allocator.free(schema_text);
+    try std.testing.expect(std.mem.indexOf(u8, schema_text, "\"data_guard\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, schema_text, "does not enable hosted telemetry") != null);
+
+    var loaded = try edge.policy.loadFromSlice(allocator,
+        \\version: 1
+        \\
+        \\vehicle:
+        \\  kind: drone_multirotor
+        \\  autopilot: px4
+        \\  adapter: fake
+        \\
+        \\safety:
+        \\  geofence:
+        \\    type: circle
+        \\    center:
+        \\      latitude_deg: 37.0
+        \\      longitude_deg: -122.0
+        \\      altitude_m: 0
+        \\      altitude_reference: amsl
+        \\    max_radius_m: 500
+        \\    altitude_floor_m: 2
+        \\    altitude_ceiling_m: 120
+        \\    altitude_reference: amsl
+        \\    boundary_action: deny
+        \\  state_freshness:
+        \\    max_state_age_ms: 1000
+        \\    deny_commands_on_stale_state: true
+        \\
+        \\commands:
+        \\  allow:
+        \\    - read_telemetry
+        \\  deny:
+        \\    - disable_failsafe
+        \\
+        \\data_guard:
+        \\  default: deny
+        \\  telemetry:
+        \\    allow:
+        \\      - channel: heartbeat
+        \\  endpoints:
+        \\    deny:
+        \\      - "*.webhook.site"
+        \\
+    , "edge-policy-with-data-guard.yaml", .{});
+    defer loaded.deinit();
+    try std.testing.expectEqual(edge.domain.vehicle.VehicleKind.drone_multirotor, loaded.value.vehicle.kind);
+}
+
 fn hasAuditEvent(records: []const edge.mavlink.audit.Record, event_type: []const u8) bool {
     for (records) |record| {
         if (std.mem.eql(u8, record.event_type, event_type)) return true;

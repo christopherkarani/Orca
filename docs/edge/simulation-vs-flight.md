@@ -19,6 +19,8 @@ Aegis Edge Phase 33 safety-case reports preserve the same boundary: fake adapter
 
 Missing SITL is reported as skipped or unsupported, not passed. Generated reports and bundles include a non-certification disclaimer and a `Real flight: Not performed` evidence row.
 
+Phase 36 deployment profiles and bench-readiness reports preserve the same boundary. `hardware_bench_no_actuation` is not flight mode, not SITL, not real-flight readiness, and not certification.
+
 Phase 34 red-team evidence preserves the same boundary. Red-team fixtures are
 synthetic and deterministic. They test safety-control behavior in fake adapter
 and optional SITL contexts, but they do not prove real-world operational safety,

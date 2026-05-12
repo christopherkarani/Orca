@@ -53,6 +53,13 @@ build_target() {
     edge_bin_name="orca-edge.exe"
   fi
   cp "$prefix/bin/$edge_bin_name" "$root/bin/$edge_bin_name"
+  aegis_edge_bin_name="aegis-edge"
+  if [ "$os" = "windows" ]; then
+    aegis_edge_bin_name="aegis-edge.exe"
+  fi
+  if [ -f "$prefix/bin/$aegis_edge_bin_name" ]; then
+    cp "$prefix/bin/$aegis_edge_bin_name" "$root/bin/$aegis_edge_bin_name"
+  fi
 
   if [ "$ext" = "zip" ]; then
     (cd "$work" && zip -qr "../../$artifact" "orca-v${VERSION}-${os}-${arch}")
@@ -60,6 +67,42 @@ build_target() {
     tar -C "$work" -czf "${DIST_DIR}/$artifact" "orca-v${VERSION}-${os}-${arch}"
   fi
   printf 'Built %s\n' "${DIST_DIR}/$artifact"
+
+  if [ "$os" = "linux" ]; then
+    edge_artifact="aegis-edge-v${VERSION}-linux-${arch}.tar.gz"
+    edge_root="${work}/aegis-edge-v${VERSION}-linux-${arch}"
+    mkdir -p "$edge_root/bin" "$edge_root/schemas" "$edge_root/examples" "$edge_root/docs" "$edge_root/packages" "$edge_root/packaging"
+    if [ -f "$prefix/bin/aegis-edge" ]; then
+      cp "$prefix/bin/aegis-edge" "$edge_root/bin/aegis-edge"
+    else
+      cp "$prefix/bin/orca-edge" "$edge_root/bin/aegis-edge"
+    fi
+    cp LICENSE SECURITY.md "$edge_root/"
+    cp -R schemas/* "$edge_root/schemas/"
+    cp -R examples/edge "$edge_root/examples/edge"
+    cp -R docs/edge "$edge_root/docs/edge"
+    mkdir -p "$edge_root/packages/edge"
+    cp packages/edge/README.md "$edge_root/packages/edge/README.md"
+    cp -R packaging/aegis-edge "$edge_root/packaging/aegis-edge"
+    cat > "$edge_root/MANIFEST.yaml" <<EOF
+package: aegis-edge
+version: ${VERSION}
+target_arch: linux-${arch}
+binaries:
+  - bin/aegis-edge
+assets:
+  - schemas
+  - examples/edge
+  - docs/edge
+  - packages/edge/README.md
+limitations:
+  - simulation/SITL/bench-preparation only
+  - no real-flight readiness claim
+EOF
+    (cd "$edge_root" && find . -type f -print | sort | xargs shasum -a 256 > SHA256SUMS)
+    tar -C "$work" -czf "${DIST_DIR}/$edge_artifact" "aegis-edge-v${VERSION}-linux-${arch}"
+    printf 'Built %s\n' "${DIST_DIR}/$edge_artifact"
+  fi
 }
 
 rm -rf "$DIST_DIR"
