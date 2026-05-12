@@ -100,7 +100,11 @@
         "safety_case.generated",
         "safety_case.limitation_recorded",
         "safety_case.evidence_collected",
-        "safety_case.validation_failed"
+        "safety_case.validation_failed",
+        "health.watchdog.finding",
+        "health.heartbeat.stale",
+        "health.audit.failure",
+        "health.command_denied"
       ]
     },
     "timestamp_ms": { "type": "integer" },

@@ -136,3 +136,8 @@
 
 - Before handing off an Aegis phase patch, force every new source, test, doc, example, script, and packaging template into `git diff` with tracking or intent-to-add. A clean-checkout review cannot see untracked files even when local builds pass.
 - Package-info support must match artifacts the release script actually emits. Runtime or host support is not enough to report a standalone release package as supported.
+
+## 2026-05-12 Phase 37 Runtime Health Review
+
+- Build wiring for a new phase is not enough; every imported module, test, doc, fixture, and example must be visible to `git diff` before review handoff.
+- Release package consumers must match the actual archive layout. If the archive stores binaries under `bin/`, Dockerfiles and installers must copy from that path and place the executable at the advertised install path.

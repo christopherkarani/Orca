@@ -92,6 +92,10 @@ pub const event_types = [_][]const u8{
     "safety_case.limitation_recorded",
     "safety_case.evidence_collected",
     "safety_case.validation_failed",
+    "health.watchdog.finding",
+    "health.heartbeat.stale",
+    "health.audit.failure",
+    "health.command_denied",
 };
 
 pub const EdgeEventV1 = struct {

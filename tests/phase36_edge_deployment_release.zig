@@ -160,9 +160,18 @@ test "phase 36 scripts templates and docs avoid real hardware defaults" {
 
     const dockerfile = try readFile(allocator, "packaging/aegis-edge/Dockerfile");
     defer allocator.free(dockerfile);
+    try std.testing.expect(std.mem.indexOf(u8, dockerfile, "COPY bin/aegis-edge /usr/local/bin/aegis-edge") != null);
+    try std.testing.expect(std.mem.indexOf(u8, dockerfile, "COPY aegis-edge /usr/local/bin/aegis-edge") == null);
     try std.testing.expect(std.mem.indexOf(u8, dockerfile, "USER aegis") != null);
     try std.testing.expect(std.mem.indexOf(u8, dockerfile, "privileged") == null);
     try std.testing.expect(std.mem.indexOf(u8, dockerfile, "host network") == null);
+
+    const install_script = try readFile(allocator, "scripts/install-aegis-edge.sh");
+    defer allocator.free(install_script);
+    try std.testing.expect(std.mem.indexOf(u8, install_script, "tar -tzf") != null);
+    try std.testing.expect(std.mem.indexOf(u8, install_script, "/bin/aegis-edge") != null);
+    try std.testing.expect(std.mem.indexOf(u8, install_script, "${BIN_DIR}/aegis-edge") != null);
+    try std.testing.expect(std.mem.indexOf(u8, install_script, "install -m 0755") != null);
 
     const service = try readFile(allocator, "packaging/systemd/aegis-edge-bench.example.service");
     defer allocator.free(service);

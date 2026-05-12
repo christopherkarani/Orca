@@ -8,6 +8,7 @@ const operator = @import("../operator/mod.zig");
 const policy = @import("../policy/mod.zig");
 const px4 = @import("../px4/mod.zig");
 const safety = @import("../safety/mod.zig");
+const health = @import("../health/mod.zig");
 const mission_safety = @import("../safety/mission_safety.zig");
 const schema = @import("../schema/mod.zig");
 
@@ -58,6 +59,7 @@ const ScenarioMeta = struct {
     request_path: ?[]u8 = null,
     state_path: ?[]u8 = null,
     reason: ?[]u8 = null,
+    health_fault: ?[]u8 = null,
     approval_seed: operator.ApprovalSeedKind = .none,
     note: []u8,
 
@@ -69,6 +71,7 @@ const ScenarioMeta = struct {
         if (self.request_path) |value| self.allocator.free(value);
         if (self.state_path) |value| self.allocator.free(value);
         if (self.reason) |value| self.allocator.free(value);
+        if (self.health_fault) |value| self.allocator.free(value);
         self.allocator.free(self.note);
         self.* = undefined;
     }
@@ -326,6 +329,14 @@ fn buildSafetyEvidence(
     options: GenerateOptions,
     artifact_dir: []const u8,
 ) !EvidenceModel {
+    if (meta.health_fault) |fault| {
+        var evaluation = try evaluateSafetyMeta(allocator, selected_policy, meta);
+        defer evaluation.deinit();
+        const summary = try std.fmt.allocPrint(allocator, "runtime health scenario evaluated: {s}", .{fault});
+        defer allocator.free(summary);
+        return evidenceFromSafetyEvaluation(allocator, selected_policy, meta, evaluation, classifyScenarioResult(evaluation.decision.result, meta.expected_decision, false, false, true), .fake_adapter, summary);
+    }
+
     var scenario_result = try safety.scenario.run(allocator, .{
         .policy_path = options.policy_path,
         .scenario_path = options.scenario_path,
@@ -551,7 +562,97 @@ fn evaluateSafetyMeta(allocator: std.mem.Allocator, selected_policy: *const sche
             .status = .draft,
         }, .{ .mode = .strict, .now_ms = 1_000_500 });
     }
+    if (meta.health_fault) |_| {
+        var report = try healthReportForMeta(allocator, selected_policy.watchdog, meta, state, 1_003_000);
+        defer report.deinit();
+        return safety.evaluateSafety(allocator, selected_policy, state, requestForMeta(meta), .{
+            .mode = .strict,
+            .now_ms = 1_003_000,
+            .non_interactive = true,
+            .health_report = &report,
+        });
+    }
     return safety.evaluateSafety(allocator, selected_policy, state, requestForMeta(meta), .{ .mode = .strict, .now_ms = 1_000_500 });
+}
+
+fn healthReportForMeta(
+    allocator: std.mem.Allocator,
+    watchdog_policy: health.WatchdogPolicy,
+    meta: ScenarioMeta,
+    state: domain.state.VehicleState,
+    now_ms: i128,
+) !health.HealthReport {
+    const fault = meta.health_fault orelse return health.HealthReport.initStatic(.{ .overall_status = .healthy });
+    if (std.mem.eql(u8, fault, "none")) {
+        return health.HealthReport.initStatic(.{ .overall_status = .healthy });
+    }
+    if (std.mem.eql(u8, fault, "stale_agent_heartbeat")) {
+        const status = try health.evaluateHeartbeat(.{ .source = .agent, .source_id = "edge-agent", .timestamp_ms = now_ms - 1500, .timestamp_source = .monotonic, .provenance = .fake_adapter }, .agent, watchdog_policy, now_ms);
+        return health.heartbeat.reportFromHeartbeats(allocator, &.{status});
+    }
+    if (std.mem.eql(u8, fault, "missing_adapter_heartbeat")) {
+        const status = try health.evaluateMissingHeartbeat(.adapter, watchdog_policy, now_ms, .fake_adapter);
+        return health.heartbeat.reportFromHeartbeats(allocator, &.{status});
+    }
+    if (std.mem.eql(u8, fault, "audit_append_failure")) {
+        return health.audit_health.evaluateAuditHealth(allocator, .{
+            .writer_available = false,
+            .append_failed = true,
+            .hash_chain_verified = false,
+            .append_latency_ms = watchdog_policy.audit.max_event_append_latency_ms + 1,
+            .provenance = .fake_adapter,
+            .now_ms = now_ms,
+        }, watchdog_policy);
+    }
+    if (std.mem.eql(u8, fault, "stale_position")) {
+        return health.evaluateTelemetryFreshness(allocator, watchdog_policy, state, .{ .now_ms = now_ms, .scenario_id = meta.id });
+    }
+    if (std.mem.eql(u8, fault, "event_queue_depth_exceeded")) {
+        return health.resource_health.evaluateResourceHealth(allocator, .{
+            .event_queue_depth = watchdog_policy.resource.max_event_queue_depth + 1,
+            .memory_mb = 128,
+            .cpu_percent = 20,
+            .now_ms = now_ms,
+            .provenance = .bench,
+        }, watchdog_policy);
+    }
+
+    var builder: health.health_report.Builder = .{ .allocator = allocator };
+    errdefer builder.deinit();
+    const finding = if (std.mem.eql(u8, fault, "critical_battery"))
+        health.HealthFinding.init(.{
+            .finding_id = "health-critical-battery",
+            .domain = .battery_state,
+            .status = .critical,
+            .severity = .critical,
+            .reason = "critical battery requires policy-controlled emergency handling",
+            .observed_value = "battery_percent=10",
+            .threshold = "land_below_percent configured by policy",
+            .timestamp_ms = now_ms,
+            .provenance = .fake_adapter,
+            .matched_rule = "watchdog.degraded_mode.allow_emergency_land",
+            .recommended_behavior = .allow_policy_emergency_only,
+            .audit_event_reference = "health.watchdog.finding",
+        })
+    else if (std.mem.eql(u8, fault, "missing_home_position"))
+        health.HealthFinding.init(.{
+            .finding_id = "health-rth-missing-home",
+            .domain = .vehicle_state,
+            .status = .degraded,
+            .severity = .high,
+            .reason = "RTH denied without valid home position",
+            .observed_value = "home_position=missing",
+            .threshold = "home position required for RTH",
+            .timestamp_ms = now_ms,
+            .provenance = .fake_adapter,
+            .matched_rule = "watchdog.degraded_mode.allow_return_to_home",
+            .recommended_behavior = .allow_policy_emergency_only,
+            .audit_event_reference = "health.watchdog.finding",
+        })
+    else
+        health.policy_health.policyFailureFinding("unknown health scenario fault", now_ms, .fake_adapter);
+    try builder.addFinding(finding);
+    return builder.finish("safety-case runtime health evidence");
 }
 
 fn stateForMeta(selected_policy: *const schema.edge_policy_schema.EdgePolicyV1, meta: ScenarioMeta, timestamp_ms: i128) domain.state.VehicleState {
@@ -559,8 +660,9 @@ fn stateForMeta(selected_policy: *const schema.edge_policy_schema.EdgePolicyV1, 
         .circle => |circle| circle.center,
         .allowed_polygon => |_| domain.coordinates.GeoPoint{ .latitude_deg = 37, .longitude_deg = -122, .altitude_m = 0, .altitude_reference = .amsl },
     } else domain.coordinates.GeoPoint{ .latitude_deg = 37, .longitude_deg = -122, .altitude_m = 0, .altitude_reference = .amsl };
-    const battery_percent: f64 = if (std.mem.indexOf(u8, meta.command, "low_battery") != null) 20 else 80;
-    return .{
+    const critical_health_battery = if (meta.health_fault) |fault| std.mem.eql(u8, fault, "critical_battery") else false;
+    const battery_percent: f64 = if (critical_health_battery) 10 else if (std.mem.indexOf(u8, meta.command, "low_battery") != null) 20 else 80;
+    var state = domain.state.VehicleState{
         .vehicle_id = .{ .value = "edge-vehicle-1" },
         .vehicle_kind = selected_policy.vehicle.kind,
         .autopilot_kind = selected_policy.vehicle.autopilot,
@@ -574,6 +676,11 @@ fn stateForMeta(selected_policy: *const schema.edge_policy_schema.EdgePolicyV1, 
         .state_freshness = if (std.mem.indexOf(u8, meta.command, "stale") != null) .stale else .fresh,
         .provenance = if (selected_policy.vehicle.autopilot == .ardupilot) .fake_ardupilot_adapter else .fake_adapter,
     };
+    if (critical_health_battery) state.battery_state.?.is_critical = true;
+    if (meta.health_fault) |fault| {
+        if (std.mem.eql(u8, fault, "missing_home_position")) state.home_position = null;
+    }
+    return state;
 }
 
 fn requestForMeta(meta: ScenarioMeta) domain.commands.CommandRequest {
@@ -582,6 +689,8 @@ fn requestForMeta(meta: ScenarioMeta) domain.commands.CommandRequest {
         .{ .waypoint = .{ .latitude_deg = 37.0100, .longitude_deg = -122.0000, .altitude_m = 20, .altitude_reference = .amsl } }
     else if (action == .takeoff)
         .{ .altitude = .{ .altitude_m = 20, .altitude_reference = .amsl } }
+    else if (action == .set_waypoint)
+        .{ .waypoint = .{ .latitude_deg = 37.0001, .longitude_deg = -122.0000, .altitude_m = 20, .altitude_reference = .amsl } }
     else
         .none;
     return domain.commands.CommandRequest.init(.{
@@ -618,6 +727,7 @@ fn writeEvidenceFiles(
     try writeScenarioResult(allocator, evidence_dir, meta, evidence);
     try writeCommands(allocator, evidence_dir, evidence.commands);
     try writeFindings(allocator, evidence_dir, evidence.findings);
+    try writeRuntimeHealth(allocator, evidence_dir, evidence.findings, evidence.audit_event_refs);
     try writeDataNetworkGuard(allocator, evidence_dir, evidence);
     try writeApprovals(allocator, evidence_dir, evidence.approvals);
     try writeEnvironment(allocator, evidence_dir, evidence);
@@ -696,6 +806,38 @@ fn writeFindings(allocator: std.mem.Allocator, evidence_dir: []const u8, finding
         try writer.interface.writeByte('}');
     }
     try writer.interface.writeAll("]}\n");
+    try writer.interface.flush();
+    try file.sync();
+}
+
+fn writeRuntimeHealth(allocator: std.mem.Allocator, evidence_dir: []const u8, findings: []const safety_report.FindingRecord, audit_refs: []const []const u8) !void {
+    const path = try std.fs.path.join(allocator, &.{ evidence_dir, "runtime-health.json" });
+    defer allocator.free(path);
+    const file = try std.fs.cwd().createFile(path, .{ .truncate = true });
+    defer file.close();
+    var buffer: [4096]u8 = undefined;
+    var writer = file.writer(&buffer);
+    try writer.interface.writeAll("{\"summary\":\"Phase 37 runtime-health evidence is local fake/SITL/bench-preparation evidence only and is not certification\"");
+    try writer.interface.writeAll(",\"watchdog_findings\":[");
+    var count: usize = 0;
+    for (findings) |finding| {
+        if (!std.mem.eql(u8, finding.category, "health")) continue;
+        if (count > 0) try writer.interface.writeByte(',');
+        try writer.interface.writeByte('{');
+        try stringField(&writer.interface, "severity", finding.severity, false);
+        try stringField(&writer.interface, "observed", finding.observed, true);
+        try stringField(&writer.interface, "decision", finding.decision, true);
+        try stringField(&writer.interface, "event_id", finding.event_id, true);
+        try stringField(&writer.interface, "explanation", finding.explanation, true);
+        try writer.interface.writeByte('}');
+        count += 1;
+    }
+    try writer.interface.writeAll("],\"audit_event_references\":[");
+    for (audit_refs, 0..) |event, index| {
+        if (index > 0) try writer.interface.writeByte(',');
+        try core.util.writeJsonString(&writer.interface, event);
+    }
+    try writer.interface.writeAll("],\"real_flight\":\"not_performed\",\"certification\":\"not_claimed\",\"watchdog_replaces_autopilot_failsafes\":false}\n");
     try writer.interface.flush();
     try file.sync();
 }
@@ -849,6 +991,7 @@ fn loadScenarioMeta(allocator: std.mem.Allocator, path: []const u8) !ScenarioMet
     var request_path: ?[]const u8 = null;
     var state_path: ?[]const u8 = null;
     var reason: ?[]const u8 = null;
+    var health_fault: ?[]const u8 = null;
     var approval_seed: operator.ApprovalSeedKind = .none;
     var note: []const u8 = "";
     var lines = std.mem.splitScalar(u8, text, '\n');
@@ -859,7 +1002,7 @@ fn loadScenarioMeta(allocator: std.mem.Allocator, path: []const u8) !ScenarioMet
         const colon = std.mem.indexOfScalar(u8, line, ':') orelse continue;
         const key = std.mem.trim(u8, line[0..colon], " \t");
         const value = cleanScalar(line[colon + 1 ..]);
-        if (std.mem.eql(u8, key, "id") or std.mem.eql(u8, key, "name")) id = value else if (std.mem.eql(u8, key, "command")) command = value else if (std.mem.eql(u8, key, "environment")) environment = value else if (std.mem.eql(u8, key, "expected_decision")) expected_decision = std.meta.stringToEnum(core.decision.DecisionResult, value) orelse null else if (std.mem.eql(u8, key, "expected_command")) expected_command = value else if (std.mem.eql(u8, key, "request")) request_path = value else if (std.mem.eql(u8, key, "state")) state_path = value else if (std.mem.eql(u8, key, "reason")) reason = value else if (std.mem.eql(u8, key, "approval") or std.mem.eql(u8, key, "approval_seed")) approval_seed = operator.parseApprovalSeedKind(value) catch .none else if (std.mem.eql(u8, key, "note")) note = value;
+        if (std.mem.eql(u8, key, "id") or std.mem.eql(u8, key, "name")) id = value else if (std.mem.eql(u8, key, "command")) command = value else if (std.mem.eql(u8, key, "environment")) environment = value else if (std.mem.eql(u8, key, "expected_decision")) expected_decision = std.meta.stringToEnum(core.decision.DecisionResult, value) orelse null else if (std.mem.eql(u8, key, "expected_command")) expected_command = value else if (std.mem.eql(u8, key, "request")) request_path = value else if (std.mem.eql(u8, key, "state")) state_path = value else if (std.mem.eql(u8, key, "reason")) reason = value else if (std.mem.eql(u8, key, "health_fault")) health_fault = value else if (std.mem.eql(u8, key, "approval") or std.mem.eql(u8, key, "approval_seed")) approval_seed = operator.parseApprovalSeedKind(value) catch .none else if (std.mem.eql(u8, key, "note")) note = value;
     }
     return .{
         .allocator = allocator,
@@ -871,6 +1014,7 @@ fn loadScenarioMeta(allocator: std.mem.Allocator, path: []const u8) !ScenarioMet
         .request_path = if (request_path) |value| try allocator.dupe(u8, value) else null,
         .state_path = if (state_path) |value| try allocator.dupe(u8, value) else null,
         .reason = if (reason) |value| try allocator.dupe(u8, value) else null,
+        .health_fault = if (health_fault) |value| try allocator.dupe(u8, value) else null,
         .approval_seed = approval_seed,
         .note = try allocator.dupe(u8, note),
     };
@@ -926,6 +1070,7 @@ fn defaultArtifactList() []const []const u8 {
         "evidence/scenario.yaml",
         "evidence/replay.md",
         "evidence/findings.json",
+        "evidence/runtime-health.json",
         "evidence/data-network-guard.json",
         "evidence/commands.json",
         "evidence/traceability.json",

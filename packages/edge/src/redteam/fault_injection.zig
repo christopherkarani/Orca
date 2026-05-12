@@ -9,6 +9,7 @@ const policy = @import("../policy/mod.zig");
 const safety = @import("../safety/mod.zig");
 const schema = @import("../schema/mod.zig");
 const data_guard = @import("../data_guard/mod.zig");
+const health = @import("../health/mod.zig");
 const safety_report = @import("../audit/safety_report.zig");
 const fixture_mod = @import("fixture.zig");
 
@@ -92,6 +93,7 @@ pub fn run(allocator: std.mem.Allocator, fixture: fixture_mod.Fixture) !Outcome 
     }
 
     if (isDataGuardFault(first_fault)) return runDataGuardFault(allocator, fixture, first_fault);
+    if (isHealthFault(first_fault)) return runHealthFault(allocator, fixture, first_fault);
     if (isMavlinkParserFault(first_fault)) return runMavlinkParserFault(allocator, first_fault);
     if (isApprovalFault(first_fault)) return runApprovalFault(allocator, fixture, first_fault);
     if (isEmergencyFault(first_fault)) return runEmergencyFault(allocator, fixture, first_fault);
@@ -165,6 +167,164 @@ fn runDataGuardFault(allocator: std.mem.Allocator, fixture: fixture_mod.Fixture,
     if (evaluation.redactions_required) try builder.addFinding("redaction");
     for (evaluation.audit_payloads) |event| try builder.addEvent(event.event_type);
     return builder.finish(.passed, evaluation.decision.result, evaluation.explanation, true);
+}
+
+fn runHealthFault(allocator: std.mem.Allocator, fixture: fixture_mod.Fixture, fault: fixture_mod.FaultType) !Outcome {
+    var loaded = try loadPolicyForFixture(allocator, fixture);
+    defer loaded.deinit();
+
+    const now_ms: i128 = 1_003_000;
+    var state = baseState(&loaded.value, fixture.environment, 1_000_000);
+    if (fault == .health_missing_home_position) state.home_position = null;
+    if (fault == .health_critical_battery_land) {
+        state.battery_state = .{ .percent_remaining = 10, .voltage_v = 14.1, .current_a = 2.2, .is_low = true, .is_critical = true, .source = .monotonic };
+    }
+
+    var report = try healthReportForFault(allocator, loaded.value.watchdog, fault, state, now_ms);
+    defer report.deinit();
+
+    const action: domain.commands.CommandAction = switch (fault) {
+        .stale_telemetry_watchdog => .set_waypoint,
+        .health_missing_home_position => .return_to_home,
+        .health_critical_battery_land => .land,
+        .fake_secret_in_health_payload => .set_waypoint,
+        else => .takeoff,
+    };
+    const request = requestForActionDefault(action, state);
+    var evaluation = safety.evaluateSafety(allocator, &loaded.value, state, request, .{
+        .mode = .ci,
+        .now_ms = now_ms,
+        .non_interactive = true,
+        .health_report = &report,
+    }) catch |err| {
+        var builder = OutcomeBuilder.init(allocator);
+        errdefer builder.deinit();
+        try builder.addFinding("health");
+        return builder.finish(.inconclusive, null, @errorName(err), false);
+    };
+    defer evaluation.deinit();
+
+    var outcome = try outcomeFromSafetyEvaluation(allocator, evaluation);
+    defer outcome.deinit();
+    var builder = OutcomeBuilder.init(allocator);
+    errdefer builder.deinit();
+    for (outcome.actual_findings) |finding| try builder.addFinding(finding);
+    for (outcome.actual_events) |event| try builder.addEvent(event);
+    for (report.findings) |finding| {
+        try builder.addFinding(finding.domain.toString());
+        try builder.addFinding(finding.recommended_behavior.toString());
+        try builder.addEvent(finding.eventReference());
+    }
+    return builder.finish(outcome.status, outcome.actual_decision, outcome.summary, outcome.evidence_complete);
+}
+
+fn healthReportForFault(
+    allocator: std.mem.Allocator,
+    watchdog_policy: health.WatchdogPolicy,
+    fault: fixture_mod.FaultType,
+    state: domain.state.VehicleState,
+    now_ms: i128,
+) !health.HealthReport {
+    switch (fault) {
+        .stale_agent_heartbeat => {
+            const status = try health.evaluateHeartbeat(.{ .source = .agent, .source_id = "edge-agent", .timestamp_ms = now_ms - 1500, .timestamp_source = .monotonic, .provenance = .fake_adapter }, .agent, watchdog_policy, now_ms);
+            return health.heartbeat.reportFromHeartbeats(allocator, &.{status});
+        },
+        .stale_adapter_heartbeat => {
+            const status = try health.evaluateHeartbeat(.{ .source = .adapter, .source_id = "fake-adapter", .timestamp_ms = now_ms - 1500, .timestamp_source = .monotonic, .provenance = .fake_adapter }, .adapter, watchdog_policy, now_ms);
+            return health.heartbeat.reportFromHeartbeats(allocator, &.{status});
+        },
+        .stale_mavlink_heartbeat => {
+            const status = try health.evaluateMissingHeartbeat(.mavlink, watchdog_policy, now_ms, .fake_adapter);
+            return health.heartbeat.reportFromHeartbeats(allocator, &.{status});
+        },
+        .stale_telemetry_watchdog => {
+            return health.evaluateTelemetryFreshness(allocator, watchdog_policy, state, .{ .now_ms = now_ms, .scenario_id = "health-stale-telemetry" });
+        },
+        .audit_failure_watchdog => {
+            return health.audit_health.evaluateAuditHealth(allocator, .{
+                .writer_available = false,
+                .append_failed = true,
+                .hash_chain_verified = false,
+                .append_latency_ms = watchdog_policy.audit.max_event_append_latency_ms + 1,
+                .provenance = .fake_adapter,
+                .now_ms = now_ms,
+            }, watchdog_policy);
+        },
+        .missing_policy_watchdog => {
+            var builder: health.health_report.Builder = .{ .allocator = allocator };
+            errdefer builder.deinit();
+            try builder.addFinding(health.policy_health.policyFailureFinding("policy engine unavailable or missing policy", now_ms, .fake_adapter));
+            return builder.finish("policy health fail-closed evidence");
+        },
+        .health_missing_home_position => {
+            var builder: health.health_report.Builder = .{ .allocator = allocator };
+            errdefer builder.deinit();
+            try builder.addFinding(health.HealthFinding.init(.{
+                .finding_id = "health-rth-missing-home",
+                .domain = .vehicle_state,
+                .status = .degraded,
+                .severity = .high,
+                .reason = "RTH denied without valid home position",
+                .observed_value = "home_position=missing",
+                .threshold = "home position required for RTH",
+                .timestamp_ms = now_ms,
+                .provenance = .fake_adapter,
+                .matched_rule = "watchdog.degraded_mode.allow_return_to_home",
+                .recommended_behavior = .allow_policy_emergency_only,
+                .audit_event_reference = "health.watchdog.finding",
+            }));
+            return builder.finish("RTH health evidence requires home position");
+        },
+        .health_critical_battery_land => {
+            var builder: health.health_report.Builder = .{ .allocator = allocator };
+            errdefer builder.deinit();
+            try builder.addFinding(health.HealthFinding.init(.{
+                .finding_id = "health-critical-battery",
+                .domain = .battery_state,
+                .status = .critical,
+                .severity = .critical,
+                .reason = "critical battery requires policy-controlled emergency handling",
+                .observed_value = "battery_percent=10",
+                .threshold = "land_below_percent configured by policy",
+                .timestamp_ms = now_ms,
+                .provenance = .fake_adapter,
+                .matched_rule = "watchdog.degraded_mode.allow_emergency_land",
+                .recommended_behavior = .allow_policy_emergency_only,
+                .audit_event_reference = "health.watchdog.finding",
+            }));
+            return builder.finish("critical battery emergency LAND evidence remains policy-controlled");
+        },
+        .event_queue_depth_exceeded => {
+            return health.resource_health.evaluateResourceHealth(allocator, .{
+                .event_queue_depth = watchdog_policy.resource.max_event_queue_depth + 1,
+                .memory_mb = 128,
+                .cpu_percent = 20,
+                .now_ms = now_ms,
+                .provenance = .bench,
+            }, watchdog_policy);
+        },
+        .fake_secret_in_health_payload => {
+            var builder: health.health_report.Builder = .{ .allocator = allocator };
+            errdefer builder.deinit();
+            try builder.addFinding(health.HealthFinding.init(.{
+                .finding_id = "health-redacted-secret",
+                .domain = .configuration,
+                .status = .degraded,
+                .severity = .warning,
+                .reason = "fake secret value redacted before health persistence",
+                .observed_value = "[REDACTED]",
+                .threshold = "raw secrets must never be persisted",
+                .timestamp_ms = now_ms,
+                .provenance = .fake_adapter,
+                .matched_rule = "watchdog.health.redaction",
+                .recommended_behavior = .deny_high_risk,
+                .audit_event_reference = "health.watchdog.finding",
+            }));
+            return builder.finish("health payload redaction evidence contains no raw fake secret");
+        },
+        else => unreachable,
+    }
 }
 
 const DataGuardScenario = struct {
@@ -688,6 +848,23 @@ fn isDataGuardFault(fault: fixture_mod.FaultType) bool {
         .repeated_unknown_endpoint_egress,
         .safety_report_customer_allow,
         .telemetry_ground_control_allow,
+        => true,
+        else => false,
+    };
+}
+
+fn isHealthFault(fault: fixture_mod.FaultType) bool {
+    return switch (fault) {
+        .stale_agent_heartbeat,
+        .stale_adapter_heartbeat,
+        .stale_mavlink_heartbeat,
+        .stale_telemetry_watchdog,
+        .audit_failure_watchdog,
+        .missing_policy_watchdog,
+        .health_missing_home_position,
+        .health_critical_battery_land,
+        .event_queue_depth_exceeded,
+        .fake_secret_in_health_payload,
         => true,
         else => false,
     };

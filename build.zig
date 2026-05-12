@@ -329,6 +329,18 @@ pub fn build(b: *std.Build) void {
     });
     const run_phase36_edge_deployment_tests = b.addRunArtifact(phase36_edge_deployment_tests);
 
+    const phase37_edge_runtime_health_tests = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("tests/phase37_edge_runtime_health.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .name = "aegis_edge", .module = aegis_edge_mod },
+            },
+        }),
+    });
+    const run_phase37_edge_runtime_health_tests = b.addRunArtifact(phase37_edge_runtime_health_tests);
+
     const phase36_codex_plugin_tests = b.addTest(.{
         .root_module = b.createModule(.{
             .root_source_file = b.path("tests/phase36_codex_plugin.zig"),
@@ -388,6 +400,7 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&run_phase34_edge_redteam_tests.step);
     test_step.dependOn(&run_phase35_edge_data_guard_tests.step);
     test_step.dependOn(&run_phase36_edge_deployment_tests.step);
+    test_step.dependOn(&run_phase37_edge_runtime_health_tests.step);
     test_step.dependOn(&run_phase36_codex_plugin_tests.step);
     test_step.dependOn(&run_phase37_claude_plugin_tests.step);
     test_step.dependOn(&run_phase38_plugin_security_tests.step);

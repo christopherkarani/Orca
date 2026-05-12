@@ -330,12 +330,13 @@ fn categoryFromPolicyKind(kind: policy_mod.SafetyFindingKind) FindingCategory {
         .provenance => .unknown,
         .mission => .mission,
         .command_risk => .command_risk,
+        .health => .health,
     };
 }
 
 fn severityForCategory(category: FindingCategory) Severity {
     return switch (category) {
-        .geofence, .altitude, .velocity, .battery, .stale_state, .mode_constraint, .authority_constraint, .mission => .high,
+        .geofence, .altitude, .velocity, .battery, .stale_state, .mode_constraint, .authority_constraint, .mission, .health => .high,
         .command_risk, .unsupported => .critical,
         .endpoint => .warning,
         .unknown => .warning,
@@ -362,6 +363,7 @@ fn constraintId(category: FindingCategory) []const u8 {
         .authority_constraint => "authority.constraint",
         .command_risk => "command.risk.default",
         .mission => "mission.safety",
+        .health => "runtime.health",
         .endpoint => "endpoint.policy",
         .unsupported => "unsupported.feature",
         .unknown => "unknown.safety",
@@ -379,6 +381,7 @@ fn limitText(category: FindingCategory) ?[]const u8 {
         .authority_constraint => "agent authority required and failsafe/manual control respected",
         .command_risk => "critical and unsupported commands deny by default",
         .mission => "all mission items must pass safety envelope",
+        .health => "runtime health must permit command evaluation and forwarding",
         .endpoint => "configured endpoint policy",
         .unsupported => "unsupported safety features fail closed",
         .unknown => null,
@@ -391,6 +394,7 @@ fn unitText(category: FindingCategory) ?[]const u8 {
         .velocity => "meters_per_second/local_frame",
         .battery => "percent",
         .stale_state => "milliseconds",
+        .health => "health_status",
         else => null,
     };
 }
@@ -405,6 +409,7 @@ fn auditReference(category: FindingCategory) ?[]const u8 {
         .mode_constraint => "safety.mode_constraint",
         .authority_constraint => "safety.authority_constraint",
         .mission => "safety.mission_item_denied",
+        .health => "health.watchdog.finding",
         else => "safety.finding_created",
     };
 }
@@ -453,5 +458,9 @@ fn coreEventType(event_type: []const u8) !core.event.EventType {
     if (std.mem.eql(u8, event_type, "safety.mode_constraint")) return .safety_mode_constraint;
     if (std.mem.eql(u8, event_type, "safety.authority_constraint")) return .safety_authority_constraint;
     if (std.mem.eql(u8, event_type, "safety.mission_item_denied")) return .safety_mission_item_denied;
+    if (std.mem.eql(u8, event_type, "health.watchdog.finding")) return .health_watchdog_finding;
+    if (std.mem.eql(u8, event_type, "health.command_denied")) return .health_command_denied;
+    if (std.mem.eql(u8, event_type, "health.audit.failure")) return .health_audit_failure;
+    if (std.mem.eql(u8, event_type, "health.heartbeat.stale")) return .health_heartbeat_stale;
     return error.UnknownEdgeEventType;
 }

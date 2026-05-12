@@ -131,6 +131,72 @@
         "redact_secrets": { "type": "boolean" }
       }
     },
+    "watchdog": {
+      "type": "object",
+      "description": "Optional Phase 37 runtime health and reliability watchdog policy for fake-adapter, PX4 SITL, ArduPilot SITL, and bench-preparation evidence only. This does not replace autopilot failsafes and does not certify real flight.",
+      "additionalProperties": false,
+      "properties": {
+        "enabled": { "type": "boolean" },
+        "heartbeat": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "agent_max_age_ms": { "type": "integer", "minimum": 1 },
+            "adapter_max_age_ms": { "type": "integer", "minimum": 1 },
+            "mavlink_max_age_ms": { "type": "integer", "minimum": 1 },
+            "px4_sitl_max_age_ms": { "type": "integer", "minimum": 1 },
+            "ardupilot_sitl_max_age_ms": { "type": "integer", "minimum": 1 },
+            "runtime_max_age_ms": { "type": "integer", "minimum": 1 },
+            "audit_writer_max_age_ms": { "type": "integer", "minimum": 1 },
+            "safety_engine_max_age_ms": { "type": "integer", "minimum": 1 }
+          }
+        },
+        "telemetry": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "vehicle_state_max_age_ms": { "type": "integer", "minimum": 1 },
+            "position_max_age_ms": { "type": "integer", "minimum": 1 },
+            "battery_max_age_ms": { "type": "integer", "minimum": 1 },
+            "gps_max_age_ms": { "type": "integer", "minimum": 1 },
+            "link_max_age_ms": { "type": "integer", "minimum": 1 }
+          }
+        },
+        "audit": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "require_audit_writer": { "type": "boolean" },
+            "fail_closed_on_audit_error": { "type": "boolean" },
+            "max_event_append_latency_ms": { "type": "integer", "minimum": 1 }
+          }
+        },
+        "degraded_mode": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "on_agent_stale": { "$ref": "#/$defs/degradedBehavior" },
+            "on_adapter_stale": { "$ref": "#/$defs/degradedBehavior" },
+            "on_telemetry_stale": { "$ref": "#/$defs/degradedBehavior" },
+            "on_audit_failure": { "$ref": "#/$defs/degradedBehavior" },
+            "on_policy_error": { "$ref": "#/$defs/degradedBehavior" },
+            "on_data_guard_failure": { "$ref": "#/$defs/degradedBehavior" },
+            "allow_emergency_land": { "type": "boolean" },
+            "allow_return_to_home": { "$ref": "#/$defs/emergencyAllowance" },
+            "allow_hold": { "$ref": "#/$defs/emergencyAllowance" }
+          }
+        },
+        "resource": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "max_memory_mb": { "type": "integer", "minimum": 1 },
+            "max_cpu_percent": { "type": "integer", "minimum": 1, "maximum": 100 },
+            "max_event_queue_depth": { "type": "integer", "minimum": 1 }
+          }
+        }
+      }
+    },
     "data_guard": {
       "type": "object",
       "description": "Optional Phase 35 telemetry/data guard policy section for local fake/SITL/customer-evaluation egress decisions. This does not enable hosted telemetry, real hardware, real-flight readiness, or regulatory certification.",
@@ -193,6 +259,12 @@
         "companion_computer_reboot",
         "telemetry_stream_external"
       ]
+    },
+    "degradedBehavior": {
+      "enum": ["observe_only", "deny_high_risk", "deny_movement", "deny_external_egress", "fail_closed", "allow_emergency_land_only", "allow_policy_emergency_only", "no_safe_action"]
+    },
+    "emergencyAllowance": {
+      "enum": ["deny", "allow", "policy"]
     }
   }
 }

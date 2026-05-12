@@ -1,0 +1,23 @@
+version: 1
+id: health-fake-secret-redacted-before-persistence
+name: Fake secret in health payload is redacted
+category: health
+environment: fake_adapter
+description: Simulates a health payload containing a fake secret marker and verifies the persisted finding is redacted.
+policy: examples/edge/health/policies/watchdog-strict.yaml
+faults:
+  - fake_secret_in_health_payload
+expected:
+  decision: deny
+  findings:
+    - health
+    - configuration
+    - deny_high_risk
+  events:
+    - health.watchdog.finding
+    - health.command_denied
+  no_log_contains:
+    - fake_secret_value_phase37
+    - sk-fakeSyntheticOpenAIKey1234567890
+limitations:
+  - Uses fake secret strings only and requires redaction before persistence.

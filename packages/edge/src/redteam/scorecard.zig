@@ -50,6 +50,7 @@ pub const ordered_categories = [_]fixture.Category{
     .mode_authority,
     .telemetry_fault,
     .data_guard,
+    .health,
     .audit_redaction,
     .safety_case,
     .unsupported_feature,

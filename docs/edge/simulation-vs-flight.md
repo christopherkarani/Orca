@@ -26,3 +26,8 @@ synthetic and deterministic. They test safety-control behavior in fake adapter
 and optional SITL contexts, but they do not prove real-world operational safety,
 airworthiness, certification, detect-and-avoid, or autopilot replacement
 behavior.
+## Phase 37 Health Boundary
+
+Runtime health and watchdog checks are bounded to fake-adapter, PX4 SITL, ArduPilot SITL, and bench-preparation/customer-evaluation contexts. They provide local evidence about stale state, missing heartbeats, audit failures, and degraded modes.
+
+They are not real-flight readiness, not an autopilot replacement, not detect-and-avoid, and not regulatory certification.

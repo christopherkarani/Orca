@@ -1,3 +1,94 @@
+# Phase 37 Reliability Watchdog and Runtime Health
+
+## Review Fix Checklist
+
+- [x] Add regression coverage for Aegis Edge package Docker/install layout.
+- [x] Copy the Docker image binary from the release archive `bin/aegis-edge` path.
+- [x] Install the extracted release binary into `${PREFIX}/bin/aegis-edge`.
+- [x] Force new Phase 37 source, tests, docs, and examples into `git diff` with intent-to-add.
+- [x] Run focused and full verification after review fixes.
+- [x] Document review-fix results.
+
+## Assumptions
+
+- The prompt-named `README_START_HERE.md`, `CODEX_MASTER_PROMPT_EDGE.md`, `context/`, `checklists/`, and `phases/37_RELIABILITY_WATCHDOG_AND_RUNTIME_HEALTH.md` files are absent from this checkout. The active contract is the Phase 37 prompt, existing Edge code/docs/examples, Aegis memory, and `tasks/lessons.md`.
+- Phase 37 is limited to deterministic runtime health, heartbeat/freshness monitoring, watchdog policy, degraded-mode decisions, audit-health/resource-health checks, safety integration, red-team fixtures, safety-case evidence, CLI commands, examples, and docs for fake-adapter, PX4 SITL, ArduPilot SITL, and bench-preparation contexts.
+- Phase 37 must not add Phase 38 customer demo/docs package, Phase 39 customer pilot package, Phase 40 final safety hardening, Phase 41 release, Phase 42 acquisition, SaaS, monetization, hosted telemetry, real-flight deployment, real hardware operation, detect-and-avoid, autopilot replacement behavior, or certification claims.
+- Unknown, stale, unavailable, or missing health state is never safe. Deny beats allow. Emergency behavior still goes through policy and the safety envelope. CI/non-interactive mode never prompts.
+- Health evidence must reuse existing Edge audit/replay, safety evaluator, MAVLink/PX4/ArduPilot fake/SITL boundaries, red-team runner, data guard, and safety-case report paths where practical.
+
+## Research And False-Positive Check
+
+- [x] Read Aegis memory for phase discipline, TDD, offline fixtures, redaction, smoke-gate expectations, and handoff format.
+- [x] Load the TDD workflow skill and translate Phase 37 into test-first checkpoints.
+- [x] Confirm absent prompt-named governing files instead of inventing their contents.
+- [x] Read `tasks/lessons.md` for tracked-file hygiene, safety fail-closed patterns, fake/SITL provenance, redaction, and smoke-gate lessons.
+- [x] Inspect Edge policy/schema loading and identify the narrow watchdog-policy extension point.
+- [x] Inspect safety evaluator paths and identify where health findings can fail closed without bypassing existing policy/safety checks.
+- [x] Inspect MAVLink, PX4, and ArduPilot fake/SITL health/heartbeat surfaces.
+- [x] Inspect Edge audit/replay and safety-case report writers for health evidence insertion.
+- [x] Inspect red-team fixture parser/runner for health/watchdog categories and faults.
+- [x] Inspect CLI command routing for `health` and `watchdog` commands.
+- [x] Re-check docs/examples/tests/persistent outputs for fake-secret leakage and forbidden real-flight/certification/autopilot-replacement claims.
+
+## TDD / Implementation Checklist
+
+- [x] Add failing tests for `HealthStatus`, `HealthDomain`, `HealthFinding`, severity, provenance, and report aggregation.
+- [x] Add failing tests for watchdog policy validation, strict/CI audit defaults, invalid thresholds, and invalid degraded behavior.
+- [x] Add failing tests for heartbeat freshness: fresh, stale, expired, missing, fake, PX4 SITL, and ArduPilot SITL provenance.
+- [x] Add failing tests for telemetry freshness: stale position, stale battery, missing GPS, missing home position, and unknown telemetry not safe.
+- [x] Add failing tests for audit-health/resource-health: unavailable writer, append failure, latency, hash verification failure, queue depth, and redaction.
+- [x] Add failing tests for degraded modes: deny high risk, deny movement, deny external egress, fail closed, emergency LAND policy, RTH home-position gate, HOLD context gate, and non-overridable critical commands.
+- [x] Add integration tests proving safety evaluation consumes health reports and emits health findings/audit events.
+- [x] Add integration tests proving MAVLink/PX4/ArduPilot fake/SITL heartbeats update health without real hardware or network dependencies.
+- [x] Add CLI tests/smokes for `health`, `health --json`, `health doctor`, `health scenario run`, `watchdog doctor`, `watchdog simulate`, `watchdog status`, and `watchdog explain`.
+- [x] Implement `packages/edge/src/health/` modules for status, findings, watchdog config, heartbeat, freshness, adapter/audit/policy/resource health, degraded modes, reports, audit projections, and scenarios.
+- [x] Extend Edge policy schema/loading with `watchdog` support while preserving existing policy behavior.
+- [x] Create deterministic examples under `examples/edge/health/` with fake/SITL/bench provenance only.
+- [x] Extend Edge red-team fixtures with health/watchdog cases and ensure skipped/unsupported never count as pass.
+- [x] Update safety-case/replay outputs to include runtime health policy/status/findings, heartbeat/freshness, degraded-mode decisions, fail-closed events, and limitations.
+- [x] Update Edge docs and package README for runtime health/watchdog/degraded modes/heartbeat/audit-health/red-team/safety-case/simulation-vs-flight boundaries.
+
+## Verification Checklist
+
+- [x] `zig build`
+- [x] `zig build test`
+- [x] `./zig-out/bin/aegis --help`
+- [x] `./zig-out/bin/aegis version`
+- [x] `./zig-out/bin/aegis doctor`
+- [x] `./zig-out/bin/aegis run -- echo hello`
+- [x] `./zig-out/bin/aegis replay --session last --verify`
+- [x] `./zig-out/bin/aegis redteam --ci`
+- [x] `./zig-out/bin/aegis-edge --help`
+- [x] `./zig-out/bin/aegis-edge doctor`
+- [x] `./zig-out/bin/aegis-edge health`
+- [x] `./zig-out/bin/aegis-edge health --json`
+- [x] `./zig-out/bin/aegis-edge health doctor`
+- [x] `./zig-out/bin/aegis-edge health scenario run --policy examples/edge/health/policies/watchdog-strict.yaml --scenario examples/edge/health/scenarios/stale-agent-deny-high-risk.yaml`
+- [x] `./zig-out/bin/aegis-edge watchdog doctor`
+- [x] `./zig-out/bin/aegis-edge watchdog simulate --policy examples/edge/health/policies/watchdog-strict.yaml --scenario examples/edge/health/scenarios/audit-failure-fail-closed.yaml`
+- [x] `./zig-out/bin/aegis-edge redteam --category health`
+- [x] `./zig-out/bin/aegis-edge redteam --category stale-state`
+- [x] `./zig-out/bin/aegis-edge redteam --ci`
+- [x] Manual check: stale agent heartbeat denies high-risk command.
+- [x] Manual check: stale telemetry denies movement command.
+- [x] Manual check: audit failure fails closed in strict/ci.
+- [x] Manual check: critical battery emergency behavior follows policy.
+- [x] Manual check: RTH without home position denies/flags.
+- [x] Manual check: health findings appear in replay and safety-case report.
+- [x] Manual check: fake secrets do not appear in persistent outputs.
+- [x] Manual check: docs do not claim watchdog replaces autopilot failsafes or real-flight readiness.
+- [x] Manual check: deployment/bench, data guard, PX4, ArduPilot, safety enforcement, operator/emergency, Edge red-team, and CLI behavior unchanged.
+- [x] `git diff --check`
+
+## Review
+
+- Implemented Phase 37 runtime health/watchdog support only. No Phase 38+ customer package, pilot package, release, monetization, hosted telemetry, real hardware operation, real-flight deployment, detect-and-avoid, autopilot replacement, or certification claim was added.
+- Added health/watchdog policy parsing, health domains/findings/reports, heartbeat/freshness/audit/resource checks, degraded-mode decisions, safety evaluator integration, health audit events, CLI health/watchdog commands, deterministic health examples, health red-team fixtures, safety-case health evidence, replay-visible findings, docs, and tests.
+- Addressed initial review findings: fail-closed health now wins before emergency allowances; audit-health findings preserve `health.audit.failure`; health CLI validates `expected_decision` and command-specific `expected_behavior`; health CLI parses `health_fault` explicitly.
+- Addressed follow-up review findings: new Phase 37 files are visible in `git diff` with intent-to-add; Edge Docker package copies `bin/aegis-edge`; `install-aegis-edge.sh` extracts the package and installs the binary to `${PREFIX}/bin/aegis-edge`.
+- Verification complete: `zig build`, `zig build test`, `zig build test --summary all`, required Aegis/Aegis Edge smoke commands, package smoke, installer smoke, health/red-team/safety-case/replay manual checks, schema JSON validation, fake-secret persistent-output scan, and docs claim scan passed.
+
 # Phase 36 Review Fixes
 
 ## Checklist
