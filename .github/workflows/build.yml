@@ -21,7 +21,9 @@ jobs:
         run: zig build
       - name: Version JSON
         shell: bash
-        run: ./zig-out/bin/aegis version --json
+        run: |
+          ./zig-out/bin/aegis version --json
+          ./zig-out/bin/aegis-edge version --json
       - name: Check Windows target from Unix runners
         if: runner.os != 'Windows'
         run: zig build check-windows
@@ -29,4 +31,5 @@ jobs:
         shell: bash
         run: |
           grep -R "aegis-v.*linux-amd64" scripts packaging .github/workflows
+          grep -R "aegis-edge-v.*linux-amd64" scripts packaging .github/workflows
           grep -R "checksums.txt" scripts packaging .github/workflows

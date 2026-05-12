@@ -1,6 +1,6 @@
 # Sample Safety Report
 
-Example data only. Customer placeholder: ExampleCo Robotics. Environment: fake adapter. This is not real flight.
+Example data only. Customer placeholder: ExampleCo Robotics. Environment: fake adapter simulation. This is not real flight.
 
 ## Metadata
 

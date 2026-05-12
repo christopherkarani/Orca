@@ -45,6 +45,7 @@ Aegis Edge is not a flight controller. Aegis Edge is not an autopilot replacemen
 
 ```sh
 zig build
+./zig-out/bin/aegis-edge version --json
 ./zig-out/bin/aegis-edge doctor
 ./zig-out/bin/aegis-edge demo list
 ./zig-out/bin/aegis-edge demo run geofence-deny
@@ -55,6 +56,8 @@ zig build
 ./zig-out/bin/aegis-edge docs check
 ./zig-out/bin/aegis-edge review run
 ```
+
+Release install docs: `docs/edge/install.md` and `docs/edge/release-artifacts.md`. Verify `checksums.txt` before installing any artifact.
 
 ## Demo Commands
 

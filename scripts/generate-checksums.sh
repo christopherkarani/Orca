@@ -12,7 +12,7 @@ OUTPUT="${ARTIFACT_DIR}/checksums.txt"
 tmp="${OUTPUT}.tmp"
 : > "$tmp"
 
-for file in "$ARTIFACT_DIR"/orca-v*; do
+for file in "$ARTIFACT_DIR"/aegis-v* "$ARTIFACT_DIR"/aegis-edge-v*; do
   [ -f "$file" ] || continue
   name="$(basename "$file")"
   case "$name" in
@@ -39,3 +39,4 @@ done
 
 mv "$tmp" "$OUTPUT"
 printf 'Wrote %s\n' "$OUTPUT"
+printf 'Verify with: cd %s && sha256sum -c checksums.txt\n' "$ARTIFACT_DIR"

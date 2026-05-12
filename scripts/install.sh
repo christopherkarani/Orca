@@ -5,7 +5,7 @@ VERSION="${ORCA_VERSION:-${AEGIS_VERSION:-1.1.0}}"
 BASE_URL="${ORCA_BASE_URL:-${AEGIS_BASE_URL:-https://github.com/chriskarani/aegis/releases/download/v${VERSION}}}"
 INSTALL_DIR="${ORCA_INSTALL_DIR:-${AEGIS_INSTALL_DIR:-${HOME}/.local/bin}}"
 ARTIFACT_DIR="${ORCA_ARTIFACT_DIR:-${AEGIS_ARTIFACT_DIR:-}}"
-TMP_DIR="${TMPDIR:-/tmp}/orca-install-$$"
+TMP_DIR="${TMPDIR:-/tmp}/aegis-install-$$"
 
 cleanup() {
   rm -rf "$TMP_DIR"
@@ -13,7 +13,7 @@ cleanup() {
 trap cleanup EXIT INT TERM
 
 fail() {
-  printf 'orca install: %s\n' "$1" >&2
+  printf 'aegis install: %s\n' "$1" >&2
   exit 1
 }
 
@@ -76,7 +76,7 @@ safe_install() {
     if "$destination" version >/dev/null 2>&1; then
       :
     else
-      fail "refusing to overwrite non-Orca file at $destination; set ORCA_INSTALL_FORCE=1 to replace it"
+      fail "refusing to overwrite non-Aegis file at $destination; set AEGIS_INSTALL_FORCE=1 to replace it"
     fi
   fi
 
@@ -87,7 +87,7 @@ safe_install() {
 
 OS="$(detect_os)"
 ARCH="$(detect_arch)"
-ARTIFACT="orca-v${VERSION}-${OS}-${ARCH}.tar.gz"
+ARTIFACT="aegis-v${VERSION}-${OS}-${ARCH}.tar.gz"
 
 mkdir -p "$TMP_DIR"
 
@@ -104,19 +104,13 @@ fi
 verify_checksum "$ARTIFACT" "$TMP_DIR/$ARTIFACT" "$TMP_DIR/checksums.txt"
 tar -xzf "$TMP_DIR/$ARTIFACT" -C "$TMP_DIR"
 
-FOUND_BIN="$(find "$TMP_DIR" -type f -name orca -perm -111 | head -n 1)"
-[ -n "$FOUND_BIN" ] || fail "artifact did not contain an executable orca binary"
+FOUND_BIN="$(find "$TMP_DIR" -type f -name aegis -perm -111 | head -n 1)"
+[ -n "$FOUND_BIN" ] || fail "artifact did not contain an executable aegis binary"
 
-DESTINATION="$INSTALL_DIR/orca"
+DESTINATION="$INSTALL_DIR/aegis"
 safe_install "$FOUND_BIN" "$DESTINATION"
 
-# Install aegis compatibility alias
-AEGIS_DESTINATION="$INSTALL_DIR/aegis"
-cp "$FOUND_BIN" "$AEGIS_DESTINATION"
-chmod 0755 "$AEGIS_DESTINATION"
-
-printf 'Installed Orca to %s\n' "$DESTINATION"
-printf 'Installed aegis compatibility alias to %s\n' "$AEGIS_DESTINATION"
+printf 'Installed Aegis to %s\n' "$DESTINATION"
 printf 'Next steps:\n'
 printf '  %s version\n' "$DESTINATION"
 printf '  %s doctor\n' "$DESTINATION"

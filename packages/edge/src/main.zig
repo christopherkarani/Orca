@@ -126,6 +126,7 @@ const usage =
     \\                                 Evaluate a command request without sending it
     \\  schema list                    List versioned Edge schemas
     \\  schema print <schema-id>       Print a built-in schema document
+    \\  version [--json]               Print Edge release metadata and safety boundary
     \\  help                           Show this help
     \\
     \\MAVLink fake transport is deterministic by default. PX4 and ArduPilot SITL are opt-in local simulation only. No real hardware, ROS2, or real-flight endpoint is opened by default.
@@ -166,6 +167,7 @@ pub fn run(argv: []const []const u8, stdout: anytype, stderr: anytype) !u8 {
         try stdout.writeAll(usage);
         return 0;
     }
+    if (std.mem.eql(u8, command, "version") or std.mem.eql(u8, command, "--version")) return runVersion(argv[1..], stdout, stderr);
     if (std.mem.eql(u8, command, "doctor")) return runDoctor(argv[1..], stdout, stderr);
     if (std.mem.eql(u8, command, "deployment")) return runDeployment(argv[1..], stdout, stderr);
     if (std.mem.eql(u8, command, "bench")) return runBench(argv[1..], stdout, stderr);
@@ -232,6 +234,46 @@ pub fn run(argv: []const []const u8, stdout: anytype, stderr: anytype) !u8 {
 
     try stderr.print("aegis-edge: unknown command '{s}'. Run 'aegis-edge --help' for usage.\n", .{command});
     return 64;
+}
+
+fn runVersion(argv: []const []const u8, stdout: anytype, stderr: anytype) !u8 {
+    if (argv.len > 1) return usageError(stderr, "aegis-edge version: expected optional --json.\n");
+    const target = edgeTargetName();
+    if (argv.len == 1) {
+        if (std.mem.eql(u8, argv[0], "--help") or std.mem.eql(u8, argv[0], "-h")) {
+            try stdout.writeAll("Usage: aegis-edge version [--json]\nPrint Edge release metadata. Boundary: simulation/SITL/customer-evaluation only; not real-flight readiness.\n");
+            return 0;
+        }
+        if (!std.mem.eql(u8, argv[0], "--json")) return usageError(stderr, "aegis-edge version: expected optional --json.\n");
+        try stdout.print("{{\"product\":\"aegis-edge\",\"version\":", .{});
+        try edge.core.core.util.writeJsonString(stdout, build_options.version);
+        try stdout.print(",\"commit\":", .{});
+        try writeOptionalBuildValue(stdout, build_options.commit);
+        try stdout.print(",\"target\":", .{});
+        try edge.core.core.util.writeJsonString(stdout, target);
+        try stdout.print(",\"target_triple\":", .{});
+        try edge.core.core.util.writeJsonString(stdout, target);
+        try stdout.print(",\"build_date\":", .{});
+        try writeOptionalBuildValue(stdout, build_options.build_date);
+        try stdout.print(",\"release_channel\":\"stable\",\"safety_boundary_version\":\"simulation-sitl-customer-evaluation\",\"safety_boundary\":", .{});
+        try edge.core.core.util.writeJsonString(stdout, "Aegis Edge release artifacts are for local simulation/SITL/customer-evaluation and bench-preparation evidence only; this is not real-flight readiness, certification, detect-and-avoid, or autopilot replacement.");
+        try stdout.writeAll("}\n");
+        return 0;
+    }
+    try stdout.print("aegis-edge {s} (stable, {s})\nBoundary: simulation/SITL/customer-evaluation only; not real-flight readiness, certification, detect-and-avoid, or autopilot replacement.\n", .{ build_options.version, target });
+    return 0;
+}
+
+fn edgeTargetName() []const u8 {
+    return @tagName(@import("builtin").cpu.arch) ++ "-" ++ @tagName(@import("builtin").os.tag);
+}
+
+fn writeOptionalBuildValue(writer: anytype, value: []const u8) !void {
+    if (value.len == 0 or std.mem.eql(u8, value, "unknown")) {
+        try writer.writeAll("null");
+    } else {
+        try edge.core.core.util.writeJsonString(writer, value);
+    }
 }
 
 fn runDoctor(argv: []const []const u8, stdout: anytype, stderr: anytype) !u8 {

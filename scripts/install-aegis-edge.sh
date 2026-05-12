@@ -17,6 +17,9 @@ ARTIFACT="aegis-edge-v${VERSION}-${TARGET}.tar.gz"
 printf 'Selected artifact: %s\n' "${ARTIFACT}"
 printf 'Install path: %s/aegis-edge\n' "${BIN_DIR}"
 printf 'This script does not configure hardware, services, telemetry, or credentials.\n'
+printf 'Verify checksums.txt or SHA256SUMS before installing downloaded artifacts.\n'
+printf 'Boundary: simulation/SITL/bench-preparation only; no real-flight readiness.\n'
+printf 'Post-install check: aegis-edge version\n'
 
 if [ -f "${ARTIFACT}" ]; then
   if [ -f "SHA256SUMS" ]; then
@@ -36,6 +39,8 @@ if [ -f "${ARTIFACT}" ]; then
   fi
   install -m 0755 "${extracted_bin}" "${BIN_DIR}/aegis-edge"
 else
-  printf 'artifact not found locally; build or download it first\n' >&2
+  printf 'artifact not found locally; build or download it first and verify checksum manually\n' >&2
   exit 66
 fi
+
+"${BIN_DIR}/aegis-edge" version >/dev/null

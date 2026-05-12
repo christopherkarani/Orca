@@ -1,3 +1,82 @@
+# Phase 41 Edge + CLI Production Release
+
+## Assumptions
+
+- The prompt-named `README_START_HERE.md`, `CODEX_MASTER_PROMPT_EDGE.md`, `context/`, `checklists/`, and `phases/41_EDGE_CLI_PRODUCTION_RELEASE.md` files are absent from this checkout by exact path. The active contract is the Phase 41 prompt, existing code/docs/tests/scripts, Aegis memory, and `tasks/lessons.md`.
+- Phase 41 is release preparation only: version metadata, release artifacts, checksums, optional signing hook, SBOM hook/inventory, package manifests, install docs, release notes, release checklist, validation scripts, GitHub release copy, tagging instructions, and production-readiness reporting.
+- Phase 41 must not add Phase 42 customer acquisition execution, SaaS, hosted dashboard, billing, license enforcement, hosted telemetry, real drone hardware operation, real-flight deployment, live aircraft control, certification workflows, regulatory approval workflows, detect-and-avoid, autopilot replacement behavior, or major new product features.
+- Aegis CLI may use `v1.1.0` release metadata. Aegis Edge must be described as production-ready only for local simulation/SITL/customer evaluation, with no real-flight, certification, autopilot replacement, detect-and-avoid, or guarantee-of-safety claims.
+- Existing `orca`/`orca-edge` binary names remain compatibility implementation details; Phase 41 release-facing assets must support the requested `aegis` and `aegis-edge` surfaces.
+
+## Research And False-Positive Check
+
+- [x] Read Aegis memory for phase discipline, Edge safety boundaries, no-real-flight language, release-gate handoff expectations, and exact root/Edge smoke gates.
+- [x] Load the TDD workflow skill and use test-first checks for release metadata/artifact/docs/script behavior.
+- [x] Confirm absent prompt-named governing files instead of inventing their contents.
+- [x] Read `tasks/lessons.md` for release archive drift, tracked-file hygiene, fake/SITL provenance, docs overclaiming, and smoke-gate lessons.
+- [x] Inspect existing release scripts, package manifests, install scripts, and CI workflows for CLI-only assumptions and stale `orca` naming.
+- [x] Inspect Edge runtime asset discovery/package checks to prevent shipping artifacts with missing schemas/policies/examples/docs/customer-proof materials.
+- [x] Inspect release docs/customer pilot materials for overclaims, fake secrets, unsupported pricing/customer names, and legal-template markings.
+- [x] Re-check all assumptions after initial tests fail to avoid false positives or accidental future-phase work.
+
+## TDD / Implementation Checklist
+
+- [x] Add failing Phase 41 tests for version metadata: `aegis version`, `aegis version --json`, `aegis-edge version`, and `aegis-edge version --json` include product, release channel, target triple, commit/build date fields, and safety boundary where applicable.
+- [x] Add failing Phase 41 tests for release artifact naming, release manifest JSON, checksum coverage for both CLI and Edge artifacts, SBOM hook/inventory status, signing status honesty, and required runtime asset lists.
+- [x] Add failing Phase 41 tests for release scripts: `build-release.sh`, `build-cli-release.sh`, `build-edge-release.sh`, `verify-release.sh`, `release-dry-run.sh`, `edge-release-smoke-test.sh`, checksum/SBOM generation, no network/secrets/hardware requirements, and clear limitations output.
+- [x] Add failing Phase 41 tests for package manifests/install scripts: Homebrew, Scoop, Winget, npm wrapper if present, Docker/Edge templates if present, no auto-enabled services, checksum verification wording, no telemetry enablement, no unsafe hardware endpoints, and placeholder checksum/version fields.
+- [x] Add failing Phase 41 tests for docs/release artifacts: `RELEASE_NOTES.md`, `CHANGELOG.md`, `GITHUB_RELEASE_DRAFT.md`, `release-checklist.md`, `docs/release-tagging.md`, `reports/production-readiness-report.md`, `docs/edge/production-release-checklist.md`, known limitations, install docs, and Edge release-artifact docs.
+- [x] Add failing Phase 41 tests for customer-pilot bundle safety: index exists, legal templates marked legal-review required, no real customer names/secrets, no real-flight/certification/detect-and-avoid/autopilot replacement claims.
+- [x] Implement final version metadata and CLI/Edge `version` commands without requiring CI metadata for local builds.
+- [x] Harden release artifact generation for CLI and Edge, including required runtime assets, manifest, checksums, SBOM hook/inventory, optional signing hook, and package manifests.
+- [x] Update install docs, release notes, changelog, known limitations, GitHub release draft, tagging instructions, release checklist, and production-readiness report with prominent safety boundary language.
+- [x] Update CI workflows for build/test/red-team/docs check/release dry-run/artifact/checksum verification without hardware, secrets, hosted telemetry, or required SITL.
+- [x] Run focused Phase 41 tests and iterate until green.
+
+## Verification Checklist
+
+- [x] `zig build`
+- [x] `zig build test`
+- [x] `./zig-out/bin/aegis --help`
+- [x] `./zig-out/bin/aegis version`
+- [x] `./zig-out/bin/aegis version --json`
+- [x] `./zig-out/bin/aegis doctor`
+- [x] `./zig-out/bin/aegis run -- echo hello`
+- [x] `./zig-out/bin/aegis replay --session last --verify`
+- [x] `./zig-out/bin/aegis redteam --ci`
+- [x] `./zig-out/bin/aegis-edge --help`
+- [x] `./zig-out/bin/aegis-edge version`
+- [x] `./zig-out/bin/aegis-edge version --json`
+- [x] `./zig-out/bin/aegis-edge doctor`
+- [x] `./zig-out/bin/aegis-edge redteam --ci`
+- [x] `./zig-out/bin/aegis-edge docs check`
+- [x] `./zig-out/bin/aegis-edge demo run all`
+- [x] `./zig-out/bin/aegis-edge proof generate --demo geofence-deny`
+- [x] `./zig-out/bin/aegis-edge safety-case verify --session last`
+- [x] `./zig-out/bin/aegis-edge deployment doctor`
+- [x] `./zig-out/bin/aegis-edge deployment assets`
+- [x] `./zig-out/bin/aegis-edge bench doctor`
+- [x] `./zig-out/bin/aegis-edge health doctor`
+- [x] `./zig-out/bin/aegis-edge data doctor`
+- [x] `scripts/release-dry-run.sh`
+- [x] `scripts/build-release.sh`
+- [x] `scripts/verify-release.sh`
+- [x] `scripts/edge-release-smoke-test.sh`
+- [x] `scripts/edge-package-smoke-test.sh`
+- [x] `scripts/generate-checksums.sh`
+- [x] `scripts/generate-sbom.sh`
+- [x] Manual artifact checks: artifacts produced; required runtime assets included; checksums verify; extracted artifacts run smoke tests where host-compatible; release notes/GitHub draft accurate; limitations visible; safety boundary prominent; no unsafe overclaims; fake secrets absent; PX4/ArduPilot/safety/operator/data/health/deployment/redteam/CLI behavior unchanged.
+
+## Review
+
+- Implemented Phase 41 only: final CLI/Edge version metadata, Edge `version` command, Aegis artifact naming, release scripts, checksum/SBOM hooks, release manifest generation, optional signing status, install/package docs, release notes, changelog, GitHub release draft, tagging instructions, production readiness report, release checklists, customer pilot release aliases, CI release checks, and Phase 41 regression tests.
+- Artifact status: `dist/` contains `aegis-v1.1.0-{darwin-amd64,darwin-arm64,linux-amd64,linux-arm64}.tar.gz`, `aegis-v1.1.0-windows-amd64.zip`, `aegis-edge-v1.1.0-linux-{amd64,arm64}.tar.gz`, `checksums.txt`, `release-manifest.json`, and `sbom.json`. Checksums verify.
+- SBOM status: hook-only dependency/build-target/runtime-asset inventory, not a claimed complete third-party SBOM.
+- Signing status: optional hook available; not configured locally and not claimed as signed.
+- Safety boundary: release docs and manifests state simulation/SITL/customer-evaluation and bench-preparation only; no real-flight readiness, certification, detect-and-avoid, autopilot replacement, hosted telemetry, real hardware operation, SaaS, billing, or license enforcement was added.
+- Verification complete: `zig build`, `zig build test`, required root CLI smokes, required Edge smokes, release dry-run, artifact build, checksum/SBOM generation, release verification, Edge release/package/general smoke scripts, overclaim scan, secret scan, and `git diff --check` passed.
+- Phase 42 readiness: ready to start Phase 42 customer acquisition planning from a release-prep standpoint, but not as real-flight readiness or certification.
+
 # Phase 40 Security and Safety Hardening Review
 
 ## Review Fix Plan

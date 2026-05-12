@@ -43,7 +43,7 @@ jobs:
           ./zig-out/bin/aegis redteam --ci
       - name: Build release artifacts
         shell: bash
-        run: ./scripts/build-release.sh
+        run: AEGIS_VERSION="$AEGIS_VERSION" AEGIS_COMMIT="$AEGIS_COMMIT" AEGIS_BUILD_DATE="$AEGIS_BUILD_DATE" ./scripts/build-release.sh
       - name: Package plugins
         shell: bash
         run: ./scripts/package-plugins.sh
@@ -98,7 +98,9 @@ jobs:
           path: |
             dist/aegis-v*.tar.gz
             dist/aegis-v*.zip
+            dist/aegis-edge-v*.tar.gz
             dist/checksums.txt
             dist/sbom.json
+            dist/release-manifest.json
             dist/plugins/*.zip
             dist/plugins/aegis-plugin-checksums.txt

@@ -14,8 +14,9 @@ pub const targets = [_]ArtifactTarget{
     .{ .os = "windows", .arch = "amd64", .extension = "zip" },
 };
 
-pub fn artifactName(buffer: []u8, version: []const u8, target: ArtifactTarget) ![]const u8 {
-    return std.fmt.bufPrint(buffer, "aegis-v{s}-{s}-{s}.{s}", .{
+pub fn artifactName(buffer: []u8, product: []const u8, version: []const u8, target: ArtifactTarget) ![]const u8 {
+    return std.fmt.bufPrint(buffer, "{s}-v{s}-{s}-{s}.{s}", .{
+        product,
         version,
         target.os,
         target.arch,
@@ -34,7 +35,7 @@ test "phase 19 artifact names match release contract" {
     };
 
     for (targets, 0..) |target, index| {
-        const actual = try artifactName(&names[index], "0.19.0", target);
+        const actual = try artifactName(&names[index], "aegis", "0.19.0", target);
         try std.testing.expectEqualStrings(expected[index], actual);
     }
 }

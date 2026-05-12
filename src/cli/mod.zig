@@ -134,7 +134,7 @@ test "version prints development version" {
     const code = try run(&.{"version"}, stdout_stream.writer(), stderr_stream.writer());
 
     try std.testing.expectEqual(exit_codes.success, code);
-    try std.testing.expect(std.mem.startsWith(u8, stdout_stream.getWritten(), "orca "));
+    try std.testing.expect(std.mem.startsWith(u8, stdout_stream.getWritten(), "aegis-cli "));
     try std.testing.expect(std.mem.indexOf(u8, stdout_stream.getWritten(), version) != null);
     try std.testing.expectEqualStrings("", stderr_stream.getWritten());
 }
