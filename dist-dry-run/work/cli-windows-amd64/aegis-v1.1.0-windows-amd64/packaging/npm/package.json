@@ -1,0 +1,42 @@
+{
+  "name": "@aegis-runtime/aegis",
+  "version": "1.1.0",
+  "description": "Placeholder npm launcher template for the Zig-built Aegis CLI binary.",
+  "license": "SEE LICENSE IN LICENSE",
+  "homepage": "https://github.com/chriskarani/aegis",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/chriskarani/aegis.git"
+  },
+  "bin": {
+    "aegis": "bin/aegis.js"
+  },
+  "scripts": {
+    "postinstall": "node bin/aegis.js --install",
+    "checksum:note": "node -e \"console.log('Release automation replaces PLACEHOLDER checksums before publish')\""
+  },
+  "os": [
+    "darwin",
+    "linux",
+    "win32"
+  ],
+  "cpu": [
+    "x64",
+    "arm64"
+  ],
+  "files": [
+    "bin",
+    "README.md",
+    "LICENSE"
+  ],
+  "aegis": {
+    "artifactBaseUrl": "https://github.com/chriskarani/aegis/releases/download/v1.1.0",
+    "checksums": {
+      "darwin-amd64": "PLACEHOLDER_DARWIN_AMD64_SHA256",
+      "darwin-arm64": "PLACEHOLDER_DARWIN_ARM64_SHA256",
+      "linux-amd64": "PLACEHOLDER_LINUX_AMD64_SHA256",
+      "linux-arm64": "PLACEHOLDER_LINUX_ARM64_SHA256",
+      "windows-amd64": "PLACEHOLDER_WINDOWS_AMD64_SHA256"
+    }
+  }
+}
