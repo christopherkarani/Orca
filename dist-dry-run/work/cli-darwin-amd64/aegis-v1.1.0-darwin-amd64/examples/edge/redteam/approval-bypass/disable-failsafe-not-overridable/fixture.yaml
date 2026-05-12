@@ -1,0 +1,19 @@
+version: 1
+id: approval-cannot-disable-failsafe
+name: Approval cannot allow disable_failsafe by default
+category: approval_bypass
+environment: fake_adapter
+description: Synthetic approval cannot override a non-overridable disable_failsafe command.
+policy: examples/edge/operator/policies/approval-strict.yaml
+faults:
+  - approval_cannot_disable_failsafe
+expected:
+  decision: deny
+  findings:
+    - command_risk
+  events:
+    - operator.approval_invalid
+  no_log_contains:
+    - fake-secret-value
+score:
+  points: 10

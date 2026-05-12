@@ -1,0 +1,24 @@
+version: 1
+id: ardupilot-sitl-waypoint-outside-geofence-denied
+name: ArduPilot SITL waypoint outside geofence denied
+category: ardupilot_sitl
+environment: ardupilot_sitl
+description: Optional ArduPilot SITL red-team case; skipped unless SITL is explicitly enabled and available.
+required: false
+policy: examples/edge/ardupilot/policies/ardupilot-strict-sitl.yaml
+faults:
+  - waypoint_outside_geofence
+expected:
+  status: skipped
+  decision: deny
+  no_log_contains:
+    - fake-secret-value
+requirements:
+  ardupilot_sitl: true
+  real_hardware: false
+skip_conditions:
+  - ArduPilot SITL not explicitly enabled
+limitations:
+  - SITL success is not real-flight readiness
+score:
+  points: 1

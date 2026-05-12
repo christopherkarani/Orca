@@ -1,0 +1,8 @@
+id: health-watchdog-degraded
+environment: fake_adapter
+provenance: fake_adapter
+command: set_waypoint
+expected_decision: deny
+health_fault: stale_agent_heartbeat
+expected_behavior: deny_high_risk
+note: "Watchdog degraded behavior in fake adapter context."

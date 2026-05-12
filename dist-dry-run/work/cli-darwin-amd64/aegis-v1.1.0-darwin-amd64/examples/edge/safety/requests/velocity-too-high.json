@@ -1,0 +1,17 @@
+{
+  "command_id": "safety-velocity-too-high",
+  "vehicle_id": "edge-vehicle-1",
+  "action": "set_velocity",
+  "actor": "fake-safety-scenario",
+  "timestamp_ms": 1000100,
+  "timestamp_source": "monotonic",
+  "source": "fake_adapter",
+  "parameters": {
+    "velocity": {
+      "vx_mps": 9,
+      "vy_mps": 0,
+      "vz_mps": -3,
+      "frame": "local_ned"
+    }
+  }
+}

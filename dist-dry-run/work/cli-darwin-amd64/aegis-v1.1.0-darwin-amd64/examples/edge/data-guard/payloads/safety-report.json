@@ -1,0 +1,13 @@
+{
+  "channel_kind": "safety_case_report",
+  "direction": "edge_to_customer_endpoint",
+  "vehicle_id": "edge-vehicle-1",
+  "scenario_id": "safety-report",
+  "provenance": "fake_adapter",
+  "safety_case": {
+    "finding": "mission item denied by simulation policy",
+    "audit": "hash-chain verified",
+    "real_flight": "not_performed",
+    "certification": "not_claimed"
+  }
+}

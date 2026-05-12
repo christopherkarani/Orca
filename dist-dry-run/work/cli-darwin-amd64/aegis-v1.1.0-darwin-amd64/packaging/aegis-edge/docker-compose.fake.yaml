@@ -1,0 +1,6 @@
+services:
+  aegis-edge-fake:
+    build: .
+    command: ["deployment", "check", "--profile", "examples/edge/deployment/profiles/source-local-fake.yaml"]
+    network_mode: "none"
+    read_only: true

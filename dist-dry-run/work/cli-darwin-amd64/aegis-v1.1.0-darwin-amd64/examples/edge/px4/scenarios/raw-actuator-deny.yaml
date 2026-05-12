@@ -1,0 +1,8 @@
+id: raw-actuator-deny
+environment: fake_px4
+mode: enforce
+command: raw_actuator_output
+expected_decision: deny
+expected_forwarded: false
+timeout_ms: 1000
+note: "raw actuator-like command is denied"

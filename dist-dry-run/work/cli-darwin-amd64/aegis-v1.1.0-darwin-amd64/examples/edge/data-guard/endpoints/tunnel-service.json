@@ -1,0 +1,11 @@
+{
+  "label": "tunnel",
+  "host": "fake-tunnel.ngrok.io",
+  "port": 443,
+  "protocol": "https",
+  "scheme": "https",
+  "path": "/collect",
+  "query": "",
+  "environment": "simulated_external",
+  "provenance": "unknown"
+}

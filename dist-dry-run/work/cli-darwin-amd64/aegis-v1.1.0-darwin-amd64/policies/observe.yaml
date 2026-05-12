@@ -1,0 +1,64 @@
+version: 1
+mode: observe
+
+workspace:
+  root: "."
+  write_mode: staged
+
+env:
+  inherit: true
+  deny_patterns:
+    - "*TOKEN*"
+    - "*SECRET*"
+    - "*PASSWORD*"
+    - "*PASSWD*"
+    - "*PRIVATE*"
+    - "*KEY*"
+    - "AWS_*"
+    - "AZURE_*"
+    - "GITHUB_TOKEN"
+    - "GH_TOKEN"
+    - "OPENAI_API_KEY"
+    - "ANTHROPIC_API_KEY"
+    - "GOOGLE_API_KEY"
+    - "GOOGLE_APPLICATION_CREDENTIALS"
+    - "NPM_TOKEN"
+    - "PYPI_TOKEN"
+    - "SSH_AUTH_SOCK"
+
+files:
+  read:
+    default: observe
+    deny:
+      - "~/.ssh/**"
+      - "~/.aws/**"
+      - "./.env"
+      - "./.env.*"
+  write:
+    default: observe
+    mode: staged
+
+commands:
+  default: observe
+  deny:
+    - "rm -rf *"
+
+network:
+  mode: observe
+  default: observe
+  deny:
+    - "pastebin.com"
+    - "*.ngrok.io"
+    - "*.requestbin.net"
+  detect_exfiltration:
+    dns: true
+    long_query_strings: true
+    secret_patterns: true
+
+mcp:
+  default: observe
+
+audit:
+  level: full
+  redact_secrets: true
+  tamper_evident: true

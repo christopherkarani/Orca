@@ -1,0 +1,18 @@
+version: 1
+id: mavlink-malformed-frame-rejected
+name: Malformed MAVLink frame rejected
+category: mavlink_parser
+environment: fake_adapter
+description: Synthetic malformed MAVLink bytes are rejected by the parser.
+faults:
+  - malformed_frame
+expected:
+  decision: deny
+  findings:
+    - mavlink_parser
+  events:
+    - mavlink.frame_invalid
+  no_log_contains:
+    - fake-secret-value
+score:
+  points: 10

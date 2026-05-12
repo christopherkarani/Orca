@@ -1,0 +1,22 @@
+version: 1
+id: health-rth-denied-missing-home-position
+name: RTH denied without home position
+category: health
+environment: fake_adapter
+description: Simulates degraded health with no home position and verifies RTH is denied.
+policy: examples/edge/health/policies/watchdog-strict.yaml
+faults:
+  - health_missing_home_position
+expected:
+  decision: deny
+  findings:
+    - health
+    - vehicle_state
+    - allow_policy_emergency_only
+  events:
+    - health.watchdog.finding
+    - health.command_denied
+  no_log_contains:
+    - real-flight-ready
+limitations:
+  - Return-to-home requires valid home-position context in this simulated fixture.

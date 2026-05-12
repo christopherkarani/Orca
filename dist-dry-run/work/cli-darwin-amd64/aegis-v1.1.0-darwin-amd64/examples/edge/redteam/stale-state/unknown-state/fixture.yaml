@@ -1,0 +1,20 @@
+version: 1
+id: stale-state-unknown-denies-high-risk-command
+name: Unknown state denies high-risk command
+category: stale_state
+environment: fake_adapter
+description: Synthetic unknown mode denies high-risk movement.
+policy: examples/edge/redteam/policies/redteam-envelope.yaml
+faults:
+  - unknown_mode
+expected:
+  decision: deny
+  findings:
+    - mode_constraint
+  events:
+    - safety.mode_constraint
+    - vehicle.command_denied
+  no_log_contains:
+    - fake-secret-value
+score:
+  points: 10

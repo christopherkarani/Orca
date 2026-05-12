@@ -1,0 +1,19 @@
+version: 1
+id: mavlink-unexpected-sysid-compid-flagged
+name: Unexpected sysid or compid flagged
+category: endpoint_spoofing
+environment: fake_px4_adapter
+description: Synthetic MAVLink frame arrives from an unexpected system id.
+policy: examples/edge/redteam/policies/redteam-envelope.yaml
+faults:
+  - unexpected_sysid
+expected:
+  decision: deny
+  findings:
+    - mavlink_command
+  events:
+    - mavlink.unexpected_endpoint
+  no_log_contains:
+    - fake-secret-value
+score:
+  points: 10

@@ -1,0 +1,10 @@
+id: takeoff-low-battery-deny
+environment: fake_px4
+mode: enforce
+command: takeoff
+alt_m: 20
+battery_percent: 20
+expected_decision: deny
+expected_forwarded: false
+timeout_ms: 1000
+note: "takeoff below battery threshold is denied"

@@ -1,0 +1,33 @@
+version: 1
+vehicle:
+  kind: drone_multirotor
+  autopilot: px4
+  adapter: fake
+safety:
+  state_freshness:
+    max_state_age_ms: 1000
+    deny_commands_on_stale_state: true
+    allow_emergency_land_on_stale_state: true
+    allow_return_home_on_stale_state: false
+  emergency:
+    allow_land: true
+    allow_return_to_home: true
+    allow_hold_position: true
+commands:
+  allow:
+    - land
+    - return_to_home
+    - hold_position
+  deny:
+    - disable_failsafe
+    - raw_actuator_output
+watchdog:
+  enabled: true
+  degraded_mode:
+    on_telemetry_stale: deny_movement
+    allow_emergency_land: true
+    allow_return_to_home: policy
+    allow_hold: policy
+audit:
+  level: full
+  redact_secrets: true

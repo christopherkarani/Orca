@@ -1,0 +1,20 @@
+version: 1
+id: altitude-set-altitude-above-ceiling-denied
+name: Set altitude above ceiling denied
+category: altitude
+environment: fake_adapter
+description: Synthetic set_altitude request exceeds the configured ceiling.
+policy: examples/edge/redteam/policies/redteam-envelope.yaml
+faults:
+  - altitude_above_ceiling
+expected:
+  decision: deny
+  findings:
+    - altitude
+  events:
+    - safety.altitude_violation
+    - vehicle.command_denied
+  no_log_contains:
+    - fake-secret-value
+score:
+  points: 10
