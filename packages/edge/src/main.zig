@@ -78,6 +78,17 @@ const usage =
     \\                                 Run a deterministic local data guard scenario
     \\  network explain --policy <policy> --endpoint <endpoint.json> [--json]
     \\                                 Classify and explain one local endpoint
+    \\  health [--json]                Show runtime health/watchdog status without hardware access
+    \\  health doctor                  Show runtime-health diagnostics and limitations
+    \\  health check --policy <policy> Validate watchdog policy settings
+    \\  health scenario run --policy <policy> --scenario <scenario>
+    \\                                 Run a deterministic local health/watchdog scenario
+    \\  watchdog doctor                Show watchdog diagnostics and limitations
+    \\  watchdog simulate --policy <policy> --scenario <scenario>
+    \\                                 Simulate one deterministic watchdog scenario
+    \\  watchdog status --session last Show last local watchdog status placeholder
+    \\  watchdog explain --finding <finding-id>
+    \\                                 Explain a watchdog finding id
     \\  safety-case generate --session last
     \\                                 Regenerate/show the latest Edge safety-case evidence when available
     \\  safety-case generate --scenario <scenario> --policy <policy>
@@ -169,6 +180,12 @@ pub fn run(argv: []const []const u8, stdout: anytype, stderr: anytype) !u8 {
     }
     if (std.mem.eql(u8, command, "network")) {
         return runNetwork(argv[1..], stdout, stderr);
+    }
+    if (std.mem.eql(u8, command, "health")) {
+        return runHealth(argv[1..], stdout, stderr);
+    }
+    if (std.mem.eql(u8, command, "watchdog")) {
+        return runWatchdog(argv[1..], stdout, stderr);
     }
     if (std.mem.eql(u8, command, "safety-case")) {
         return runSafetyCase(argv[1..], stdout, stderr);
@@ -1851,6 +1868,164 @@ fn runSafetyScenario(argv: []const []const u8, stdout: anytype, stderr: anytype)
     return 0;
 }
 
+fn runHealth(argv: []const []const u8, stdout: anytype, stderr: anytype) !u8 {
+    if (argv.len == 0) {
+        try edge.health.writeDoctor(stdout);
+        return 0;
+    }
+    if (argv.len == 1 and std.mem.eql(u8, argv[0], "--json")) {
+        try edge.health.writeJsonStatus(stdout);
+        return 0;
+    }
+    if (std.mem.eql(u8, argv[0], "doctor")) {
+        if (argv.len != 1) return usageError(stderr, "aegis-edge health doctor: expected no arguments.\n");
+        try edge.health.writeDoctor(stdout);
+        return 0;
+    }
+    if (std.mem.eql(u8, argv[0], "check")) return runHealthCheck(argv[1..], stdout, stderr);
+    if (std.mem.eql(u8, argv[0], "scenario")) {
+        if (argv.len >= 2 and std.mem.eql(u8, argv[1], "run")) return runHealthScenario(argv[2..], stdout, stderr);
+        return usageError(stderr, "aegis-edge health scenario: expected run.\n");
+    }
+    try stderr.print("aegis-edge health: unknown subcommand '{s}'.\n", .{argv[0]});
+    return 64;
+}
+
+fn runWatchdog(argv: []const []const u8, stdout: anytype, stderr: anytype) !u8 {
+    if (argv.len == 0) return usageError(stderr, "aegis-edge watchdog: expected doctor, simulate, status, or explain.\n");
+    if (std.mem.eql(u8, argv[0], "doctor")) {
+        if (argv.len != 1) return usageError(stderr, "aegis-edge watchdog doctor: expected no arguments.\n");
+        try edge.health.writeDoctor(stdout);
+        return 0;
+    }
+    if (std.mem.eql(u8, argv[0], "simulate")) return runHealthScenario(argv[1..], stdout, stderr);
+    if (std.mem.eql(u8, argv[0], "status")) {
+        if (argv.len == 3 and std.mem.eql(u8, argv[1], "--session") and std.mem.eql(u8, argv[2], "last")) {
+            try stdout.writeAll("Watchdog status for session last: local health events are available in Edge replay when a health scenario writes a session. No real hardware or hosted telemetry is queried.\n");
+            return 0;
+        }
+        return usageError(stderr, "aegis-edge watchdog status: expected --session last.\n");
+    }
+    if (std.mem.eql(u8, argv[0], "explain")) {
+        if (argv.len == 3 and std.mem.eql(u8, argv[1], "--finding")) {
+            try stdout.print("Finding {s}: watchdog health finding. Stale, missing, unavailable, or critical health is conservative; degraded mode never bypasses policy or the safety envelope.\n", .{argv[2]});
+            return 0;
+        }
+        return usageError(stderr, "aegis-edge watchdog explain: expected --finding <finding-id>.\n");
+    }
+    try stderr.print("aegis-edge watchdog: unknown subcommand '{s}'.\n", .{argv[0]});
+    return 64;
+}
+
+fn runHealthCheck(argv: []const []const u8, stdout: anytype, stderr: anytype) !u8 {
+    var policy_path: ?[]const u8 = null;
+    var index: usize = 0;
+    while (index < argv.len) : (index += 1) {
+        if (std.mem.eql(u8, argv[index], "--policy")) {
+            index += 1;
+            if (index >= argv.len) return usageError(stderr, "aegis-edge health check: --policy requires a file.\n");
+            policy_path = argv[index];
+        } else {
+            try stderr.print("aegis-edge health check: unknown argument '{s}'.\n", .{argv[index]});
+            return 64;
+        }
+    }
+    const selected_policy = policy_path orelse return usageError(stderr, "aegis-edge health check: missing --policy.\n");
+    var gpa_state: std.heap.GeneralPurposeAllocator(.{}) = .init;
+    defer _ = gpa_state.deinit();
+    const allocator = gpa_state.allocator();
+    var loaded = edge.policy.loadFile(allocator, selected_policy, .{}) catch |err| {
+        try stderr.print("Health policy invalid: {s}\n", .{@errorName(err)});
+        return 65;
+    };
+    defer loaded.deinit();
+    try stdout.print("Health policy valid: watchdog_enabled={} audit_fail_closed={} provenance=fake/SITL/bench only\n", .{ loaded.value.watchdog.enabled, loaded.value.watchdog.audit.fail_closed_on_audit_error });
+    return 0;
+}
+
+fn runHealthScenario(argv: []const []const u8, stdout: anytype, stderr: anytype) !u8 {
+    var policy_path: ?[]const u8 = null;
+    var scenario_path: ?[]const u8 = null;
+    var index: usize = 0;
+    while (index < argv.len) : (index += 1) {
+        if (std.mem.eql(u8, argv[index], "--policy")) {
+            index += 1;
+            if (index >= argv.len) return usageError(stderr, "aegis-edge health scenario run: --policy requires a file.\n");
+            policy_path = argv[index];
+        } else if (std.mem.eql(u8, argv[index], "--scenario")) {
+            index += 1;
+            if (index >= argv.len) return usageError(stderr, "aegis-edge health scenario run: --scenario requires a file.\n");
+            scenario_path = argv[index];
+        } else {
+            try stderr.print("aegis-edge health scenario run: unknown argument '{s}'.\n", .{argv[index]});
+            return 64;
+        }
+    }
+    const selected_policy = policy_path orelse return usageError(stderr, "aegis-edge health scenario run: missing --policy.\n");
+    const selected_scenario = scenario_path orelse return usageError(stderr, "aegis-edge health scenario run: missing --scenario.\n");
+    var gpa_state: std.heap.GeneralPurposeAllocator(.{}) = .init;
+    defer _ = gpa_state.deinit();
+    const allocator = gpa_state.allocator();
+    var loaded = edge.policy.loadFile(allocator, selected_policy, .{}) catch |err| {
+        try stderr.print("Health scenario policy invalid: {s}\n", .{@errorName(err)});
+        return 65;
+    };
+    defer loaded.deinit();
+    const scenario_text = try std.fs.cwd().readFileAlloc(allocator, selected_scenario, 64 * 1024);
+    defer allocator.free(scenario_text);
+    const health_fault = scalarField(scenario_text, "health_fault") orelse "none";
+    if (!isKnownHealthFault(health_fault)) return usageError(stderr, "aegis-edge health scenario run: unknown health_fault.\n");
+    const expected_decision = if (scalarField(scenario_text, "expected_decision")) |value|
+        std.meta.stringToEnum(edge.core.decision.DecisionResult, value) orelse return usageError(stderr, "aegis-edge health scenario run: invalid expected_decision.\n")
+    else
+        null;
+    const expected_behavior = if (scalarField(scenario_text, "expected_behavior")) |value|
+        edge.health.DegradedBehavior.parse(value) orelse return usageError(stderr, "aegis-edge health scenario run: invalid expected_behavior.\n")
+    else
+        null;
+    const command = std.meta.stringToEnum(edge.domain.commands.CommandAction, scalarField(scenario_text, "command") orelse "read_telemetry") orelse .read_telemetry;
+    const now_ms: i128 = 1_003_000;
+    var state = defaultStateForPolicy(&loaded.value, now_ms);
+    if (std.mem.eql(u8, health_fault, "missing_home_position")) state.home_position = null;
+    if (std.mem.eql(u8, health_fault, "critical_battery")) {
+        state.battery_state = .{ .percent_remaining = 10, .voltage_v = 14.1, .current_a = 2.2, .is_low = true, .is_critical = true, .source = .monotonic };
+    }
+    const request = defaultRequestForAction(&loaded.value, command, now_ms);
+    const report = healthReportForScenario(health_fault);
+    const health_decision = edge.health.decideForCommand(&loaded.value, report, request, state, .{
+        .mode = .ci,
+        .now_ms = now_ms,
+        .non_interactive = true,
+    });
+    var evaluation = edge.safety.evaluateSafety(allocator, &loaded.value, state, request, .{
+        .mode = .ci,
+        .now_ms = now_ms,
+        .non_interactive = true,
+        .health_report = &report,
+    }) catch |err| {
+        try stderr.print("Health scenario failed: {s}\n", .{@errorName(err)});
+        return 65;
+    };
+    defer evaluation.deinit();
+    try stdout.print("Health scenario: {s}\n", .{selected_scenario});
+    try stdout.print("Decision: {s}\n", .{evaluation.decision.result.toString()});
+    try stdout.print("Runtime health: {s}; degraded_behavior={s}\n", .{ report.overall_status.toString(), health_decision.behavior.toString() });
+    try stdout.writeAll("Evidence is deterministic fake/SITL/bench-preparation only; no real hardware, real-flight readiness, or regulatory certification claim.\n");
+    if (expected_decision) |expected| {
+        if (evaluation.decision.result != expected) {
+            try stderr.print("Health scenario expected decision {s}, got {s}.\n", .{ expected.toString(), evaluation.decision.result.toString() });
+            return 65;
+        }
+    }
+    if (expected_behavior) |expected| {
+        if (health_decision.behavior != expected) {
+            try stderr.print("Health scenario expected degraded behavior {s}, got {s}.\n", .{ expected.toString(), health_decision.behavior.toString() });
+            return 65;
+        }
+    }
+    return 0;
+}
+
 fn runSafetyCase(argv: []const []const u8, stdout: anytype, stderr: anytype) !u8 {
     if (argv.len == 0) return usageError(stderr, "aegis-edge safety-case: expected generate, show, verify, or bundle.\n");
     if (std.mem.eql(u8, argv[0], "generate")) return runSafetyCaseGenerate(argv[1..], stdout, stderr);
@@ -2502,6 +2677,217 @@ fn parseMode(value: []const u8) !edge.policy.EvaluationMode {
     return std.meta.stringToEnum(edge.policy.EvaluationMode, value) orelse error.UnknownEvaluationMode;
 }
 
+fn scalarField(text: []const u8, field: []const u8) ?[]const u8 {
+    var lines = std.mem.splitScalar(u8, text, '\n');
+    while (lines.next()) |line_raw| {
+        const line = std.mem.trim(u8, line_raw, " \t\r");
+        if (line.len == 0 or line[0] == '#') continue;
+        const colon = std.mem.indexOfScalar(u8, line, ':') orelse continue;
+        const key = std.mem.trim(u8, line[0..colon], " \t");
+        if (!std.mem.eql(u8, key, field)) continue;
+        return std.mem.trim(u8, line[colon + 1 ..], " \t\r\"'");
+    }
+    return null;
+}
+
+fn healthReportForScenario(health_fault: []const u8) edge.health.HealthReport {
+    if (std.mem.eql(u8, health_fault, "audit_append_failure") or std.mem.eql(u8, health_fault, "audit_failure")) {
+        return edge.health.HealthReport.initStatic(.{
+            .overall_status = .critical,
+            .recommended_behavior = .fail_closed,
+            .safe_to_evaluate_commands = false,
+            .safe_to_forward_commands = false,
+            .findings = &.{edge.health.HealthFinding.init(.{
+                .finding_id = "health-audit-fail-closed",
+                .domain = .audit_writer,
+                .status = .critical,
+                .severity = .critical,
+                .reason = "audit append failure",
+                .observed_value = "append_failed=true",
+                .threshold = "append_failed=false",
+                .timestamp_ms = 1_003_000,
+                .provenance = .fake_adapter,
+                .recommended_behavior = .fail_closed,
+                .audit_event_reference = "health.audit.failure",
+            })},
+        });
+    }
+    if (std.mem.eql(u8, health_fault, "stale_position")) {
+        return edge.health.HealthReport.initStatic(.{
+            .overall_status = .degraded,
+            .recommended_behavior = .deny_movement,
+            .findings = &.{edge.health.HealthFinding.init(.{
+                .finding_id = "health-telemetry-stale",
+                .domain = .telemetry,
+                .status = .degraded,
+                .severity = .high,
+                .reason = "telemetry stale or missing",
+                .observed_value = "telemetry freshness degraded",
+                .threshold = "watchdog telemetry freshness",
+                .timestamp_ms = 1_003_000,
+                .provenance = .fake_adapter,
+                .recommended_behavior = .deny_movement,
+                .audit_event_reference = "health.watchdog.finding",
+            })},
+        });
+    }
+    if (std.mem.eql(u8, health_fault, "missing_home_position")) {
+        return edge.health.HealthReport.initStatic(.{
+            .overall_status = .degraded,
+            .recommended_behavior = .allow_policy_emergency_only,
+            .findings = &.{edge.health.HealthFinding.init(.{
+                .finding_id = "health-rth-missing-home",
+                .domain = .vehicle_state,
+                .status = .degraded,
+                .severity = .high,
+                .reason = "RTH denied without valid home position",
+                .observed_value = "home_position=missing",
+                .threshold = "home position required for RTH",
+                .timestamp_ms = 1_003_000,
+                .provenance = .fake_adapter,
+                .recommended_behavior = .allow_policy_emergency_only,
+                .audit_event_reference = "health.watchdog.finding",
+            })},
+        });
+    }
+    if (std.mem.eql(u8, health_fault, "critical_battery")) {
+        return edge.health.HealthReport.initStatic(.{
+            .overall_status = .critical,
+            .recommended_behavior = .allow_policy_emergency_only,
+            .safe_to_evaluate_commands = true,
+            .safe_to_forward_commands = false,
+            .findings = &.{edge.health.HealthFinding.init(.{
+                .finding_id = "health-critical-battery",
+                .domain = .battery_state,
+                .status = .critical,
+                .severity = .critical,
+                .reason = "critical battery requires policy-controlled emergency handling",
+                .observed_value = "battery_percent=10",
+                .threshold = "land_below_percent configured by policy",
+                .timestamp_ms = 1_003_000,
+                .provenance = .fake_adapter,
+                .recommended_behavior = .allow_policy_emergency_only,
+                .audit_event_reference = "health.watchdog.finding",
+            })},
+        });
+    }
+    if (std.mem.eql(u8, health_fault, "event_queue_depth_exceeded")) {
+        return edge.health.HealthReport.initStatic(.{
+            .overall_status = .degraded,
+            .recommended_behavior = .deny_high_risk,
+            .findings = &.{edge.health.HealthFinding.init(.{
+                .finding_id = "health-resource-queue-depth",
+                .domain = .resource_usage,
+                .status = .degraded,
+                .severity = .warning,
+                .reason = "event queue depth exceeded",
+                .observed_value = "event_queue_depth exceeded",
+                .threshold = "watchdog resource queue depth",
+                .timestamp_ms = 1_003_000,
+                .provenance = .bench,
+                .recommended_behavior = .deny_high_risk,
+                .audit_event_reference = "health.watchdog.finding",
+            })},
+        });
+    }
+    if (std.mem.eql(u8, health_fault, "missing_adapter_heartbeat") or std.mem.eql(u8, health_fault, "stale_adapter_heartbeat")) {
+        return edge.health.HealthReport.initStatic(.{
+            .overall_status = .critical,
+            .recommended_behavior = .deny_high_risk,
+            .safe_to_evaluate_commands = false,
+            .safe_to_forward_commands = false,
+            .findings = &.{edge.health.HealthFinding.init(.{
+                .finding_id = "health-adapter-heartbeat",
+                .domain = .adapter,
+                .status = .critical,
+                .severity = .critical,
+                .reason = "adapter heartbeat stale or missing",
+                .observed_value = "adapter heartbeat unavailable",
+                .threshold = "watchdog heartbeat max age",
+                .timestamp_ms = 1_003_000,
+                .provenance = .fake_adapter,
+                .recommended_behavior = .deny_high_risk,
+                .audit_event_reference = "health.watchdog.finding",
+            })},
+        });
+    }
+    if (std.mem.eql(u8, health_fault, "missing_mavlink_heartbeat") or std.mem.eql(u8, health_fault, "stale_mavlink_heartbeat")) {
+        return edge.health.HealthReport.initStatic(.{
+            .overall_status = .unavailable,
+            .recommended_behavior = .deny_high_risk,
+            .safe_to_evaluate_commands = false,
+            .safe_to_forward_commands = false,
+            .findings = &.{edge.health.HealthFinding.init(.{
+                .finding_id = "health-mavlink-heartbeat",
+                .domain = .mavlink,
+                .status = .unavailable,
+                .severity = .high,
+                .reason = "MAVLink heartbeat stale or missing",
+                .observed_value = "mavlink heartbeat unavailable",
+                .threshold = "watchdog heartbeat max age",
+                .timestamp_ms = 1_003_000,
+                .provenance = .fake_adapter,
+                .recommended_behavior = .deny_high_risk,
+                .audit_event_reference = "health.watchdog.finding",
+            })},
+        });
+    }
+    if (std.mem.eql(u8, health_fault, "missing_policy") or std.mem.eql(u8, health_fault, "policy_failure")) {
+        return edge.health.HealthReport.initStatic(.{
+            .overall_status = .critical,
+            .recommended_behavior = .fail_closed,
+            .safe_to_evaluate_commands = false,
+            .safe_to_forward_commands = false,
+            .findings = &.{edge.health.policy_health.policyFailureFinding("policy engine unavailable or missing policy", 1_003_000, .fake_adapter)},
+        });
+    }
+    if (std.mem.eql(u8, health_fault, "none")) {
+        return edge.health.HealthReport.initStatic(.{ .overall_status = .healthy, .recommended_behavior = .observe_only });
+    }
+    return edge.health.HealthReport.initStatic(.{
+        .overall_status = .critical,
+        .recommended_behavior = .deny_high_risk,
+        .safe_to_evaluate_commands = false,
+        .safe_to_forward_commands = false,
+        .findings = &.{edge.health.HealthFinding.init(.{
+            .finding_id = "health-agent-stale",
+            .domain = .agent,
+            .status = .critical,
+            .severity = .critical,
+            .reason = "agent or adapter heartbeat stale",
+            .observed_value = "heartbeat stale or missing",
+            .threshold = "watchdog heartbeat max age",
+            .timestamp_ms = 1_003_000,
+            .provenance = .fake_adapter,
+            .recommended_behavior = .deny_high_risk,
+            .audit_event_reference = "health.watchdog.finding",
+        })},
+    });
+}
+
+fn isKnownHealthFault(health_fault: []const u8) bool {
+    const known = [_][]const u8{
+        "none",
+        "stale_agent_heartbeat",
+        "missing_adapter_heartbeat",
+        "stale_adapter_heartbeat",
+        "missing_mavlink_heartbeat",
+        "stale_mavlink_heartbeat",
+        "stale_position",
+        "audit_append_failure",
+        "audit_failure",
+        "critical_battery",
+        "missing_home_position",
+        "event_queue_depth_exceeded",
+        "missing_policy",
+        "policy_failure",
+    };
+    for (known) |item| {
+        if (std.mem.eql(u8, item, health_fault)) return true;
+    }
+    return false;
+}
+
 fn defaultStateForPolicy(policy: *const edge.schema.edge_policy_schema.EdgePolicyV1, timestamp_ms: i128) edge.domain.state.VehicleState {
     const center = if (policy.safety.geofence) |geofence| switch (geofence.shape) {
         .circle => |circle| circle.center,
@@ -2520,6 +2906,8 @@ fn defaultStateForPolicy(policy: *const edge.schema.edge_policy_schema.EdgePolic
             .altitude_reference = center.altitude_reference,
         },
         .battery_state = .{ .percent_remaining = 80, .voltage_v = 15.2, .current_a = 2.1, .source = .monotonic },
+        .gps_state = .{ .fix_type = .three_d, .satellites_visible = 12, .hdop = 0.8, .is_valid = true, .source = .monotonic },
+        .link_state = .{ .connected = true, .last_heartbeat = .{ .value = timestamp_ms, .source = .monotonic }, .packet_loss_percent = 0.1, .source = .monotonic },
         .control_authority = .onboard_agent,
         .home_position = center,
         .timestamp = .{ .value = timestamp_ms, .source = .monotonic },
@@ -3009,6 +3397,61 @@ test "aegis-edge safety commands evaluate and scenario-run without hardware" {
     try std.testing.expect(std.mem.indexOf(u8, stdout_stream.getWritten(), "Decision: deny") != null);
     try std.testing.expect(std.mem.indexOf(u8, stdout_stream.getWritten(), "real-flight") != null);
     try std.testing.expectEqualStrings("", stderr_stream.getWritten());
+}
+
+test "aegis-edge health scenario validates expected decision and behavior" {
+    var stdout_buf: [4096]u8 = undefined;
+    var stderr_buf: [1024]u8 = undefined;
+    var stdout_stream = std.io.fixedBufferStream(&stdout_buf);
+    var stderr_stream = std.io.fixedBufferStream(&stderr_buf);
+
+    const critical_argv = [_][]const u8{
+        "health",
+        "scenario",
+        "run",
+        "--policy",
+        "examples/edge/health/policies/watchdog-emergency-policy.yaml",
+        "--scenario",
+        "examples/edge/health/scenarios/critical-battery-emergency-land.yaml",
+    };
+    try std.testing.expectEqual(@as(u8, 0), try run(critical_argv[0..], stdout_stream.writer(), stderr_stream.writer()));
+    try std.testing.expect(std.mem.indexOf(u8, stdout_stream.getWritten(), "Decision: allow") != null);
+    try std.testing.expect(std.mem.indexOf(u8, stdout_stream.getWritten(), "degraded_behavior=allow_policy_emergency_only") != null);
+    try std.testing.expectEqualStrings("", stderr_stream.getWritten());
+
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const mismatch =
+        \\id: health-mismatch
+        \\environment: fake_adapter
+        \\provenance: fake_adapter
+        \\command: land
+        \\expected_decision: allow
+        \\health_fault: audit_append_failure
+        \\expected_behavior: fail_closed
+        \\note: mismatched expected decision must fail the CLI scenario.
+        \\
+    ;
+    try tmp.dir.writeFile(.{ .sub_path = "health-mismatch.yaml", .data = mismatch });
+    const root = try tmp.dir.realpathAlloc(std.testing.allocator, ".");
+    defer std.testing.allocator.free(root);
+    const scenario_path = try std.fs.path.join(std.testing.allocator, &.{ root, "health-mismatch.yaml" });
+    defer std.testing.allocator.free(scenario_path);
+
+    stdout_stream.reset();
+    stderr_stream.reset();
+    const mismatch_argv = [_][]const u8{
+        "health",
+        "scenario",
+        "run",
+        "--policy",
+        "examples/edge/health/policies/watchdog-strict.yaml",
+        "--scenario",
+        scenario_path,
+    };
+    try std.testing.expectEqual(@as(u8, 65), try run(mismatch_argv[0..], stdout_stream.writer(), stderr_stream.writer()));
+    try std.testing.expect(std.mem.indexOf(u8, stdout_stream.getWritten(), "Decision: deny") != null);
+    try std.testing.expect(std.mem.indexOf(u8, stderr_stream.getWritten(), "expected decision allow, got deny") != null);
 }
 
 test "aegis-edge mavlink simulate reads scenario frame contents instead of filename" {

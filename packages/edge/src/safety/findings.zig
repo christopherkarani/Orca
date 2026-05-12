@@ -13,6 +13,7 @@ pub const FindingCategory = enum {
     authority_constraint,
     command_risk,
     mission,
+    health,
     endpoint,
     unsupported,
     unknown,
@@ -94,4 +95,3 @@ fn dupeOpt(allocator: std.mem.Allocator, value: ?[]const u8) !?[]u8 {
     if (value) |actual| return try allocator.dupe(u8, actual);
     return null;
 }
-

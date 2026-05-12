@@ -132,6 +132,14 @@ pub const Report = struct {
     endpoints_observed: []const []const u8 = &.{ "fake_adapter", "ground_control_station", "customer_endpoint" },
     data_redactions_applied: []const []const u8 = &.{ "query secrets redacted", "exact geolocation coarsened when configured", "mission plans minimized when policy requires", "raw image/video not persisted by default" },
     exfiltration_findings: []const []const u8 = &.{ "unknown endpoints are not safe", "webhook/paste/tunnel/direct IP destinations are suspicious", "mission/geolocation/video/image egress to unknown endpoints is denied" },
+    health_policy_summary: []const u8 = "Phase 37 watchdog health checks monitor local runtime, heartbeat, telemetry freshness, audit writer, policy/safety engine, data guard, and lightweight resource state.",
+    runtime_health_status: []const u8 = "scenario-specific; unknown, unavailable, stale, and critical health are not treated as safe",
+    heartbeat_freshness: []const u8 = "agent, adapter, MAVLink, PX4 SITL, and ArduPilot SITL heartbeats are provenance-labeled when present",
+    telemetry_freshness: []const u8 = "stale or missing telemetry degrades health and can deny movement commands",
+    audit_writer_health: []const u8 = "strict and CI evidence fail closed when required audit persistence is unavailable or broken",
+    degraded_mode_decisions: []const []const u8 = &.{ "deny_high_risk", "deny_movement", "deny_external_egress", "fail_closed", "policy-controlled emergency actions only" },
+    fail_closed_events: []const []const u8 = &.{ "health.command_denied", "health.audit.failure", "health.watchdog.finding" },
+    health_limitations: []const []const u8 = &.{ "health checks are not certification", "SITL health is not real-flight health", "fake health is not SITL health", "bench health is not flight approval", "watchdog does not replace autopilot failsafes" },
     traceability: []const TraceabilityRow,
     audit_event_references: []const []const u8,
     artifacts_generated: []const []const u8,
@@ -195,6 +203,7 @@ pub fn writeJson(writer: anytype, report: Report) !void {
     try stringField(writer, "emergency_policy_summary", "policy-controlled LAND/RTH/HOLD fallback evidence only", true);
     try stringField(writer, "approval_policy_summary", "bounded local operator approvals when applicable", true);
     try stringField(writer, "network_telemetry_policy_summary", report.data_network_summary, true);
+    try stringField(writer, "watchdog_health_policy_summary", report.health_policy_summary, true);
     try writer.writeByte('}');
     try writer.writeAll(",\"scenario_profile\":{");
     try stringField(writer, "scenario_name", report.scenario_name, false);
@@ -215,6 +224,7 @@ pub fn writeJson(writer: anytype, report: Report) !void {
     try stringArrayField(writer, "endpoints_observed", report.endpoints_observed, true);
     try stringArrayField(writer, "redactions_applied", report.data_redactions_applied, true);
     try stringArrayField(writer, "exfiltration_findings", report.exfiltration_findings, true);
+    try healthEvidenceJson(writer, report, true);
     try stringArrayField(writer, "audit_event_references", report.audit_event_references, true);
     try writer.print(",\"replay_hash_verified\":{}", .{report.replay_verified});
     try stringArrayField(writer, "artifacts_generated", report.artifacts_generated, true);
@@ -278,6 +288,25 @@ pub fn writeMarkdown(writer: anytype, report: Report) !void {
     try tableRowArray(writer, "Endpoints observed", report.endpoints_observed);
     try tableRowArray(writer, "Redactions applied", report.data_redactions_applied);
     try tableRowArray(writer, "Exfiltration findings", report.exfiltration_findings);
+
+    try writer.writeAll("\n## Runtime Health / Watchdog\n\n| Evidence | Summary |\n|---|---|\n");
+    try tableRow2(writer, "Health policy", report.health_policy_summary);
+    try tableRow2(writer, "Runtime health", report.runtime_health_status);
+    try tableRow2(writer, "Heartbeat freshness", report.heartbeat_freshness);
+    try tableRow2(writer, "Telemetry freshness", report.telemetry_freshness);
+    try tableRow2(writer, "Audit writer health", report.audit_writer_health);
+    try tableRowArray(writer, "Degraded-mode decisions", report.degraded_mode_decisions);
+    try tableRowArray(writer, "Fail-closed events", report.fail_closed_events);
+    try tableRowArray(writer, "Health limitations", report.health_limitations);
+    try writer.writeAll("\n| Watchdog Finding | Status |\n|---|---|\n");
+    var wrote_health = false;
+    for (report.findings) |finding| {
+        if (std.mem.eql(u8, finding.category, "health")) {
+            wrote_health = true;
+            try tableRow2(writer, finding.explanation, finding.decision);
+        }
+    }
+    if (!wrote_health) try tableRow2(writer, "No scenario-specific health finding", "not_triggered");
 
     try writer.writeAll("\n## Evidence\n\n| Evidence | Status |\n|---|---|\n");
     try tableRow2(writer, "Audit hash chain", if (report.replay_verified) "Verified" else "Not verified");
@@ -371,6 +400,35 @@ fn findingsJson(writer: anytype, name: []const u8, findings: []const FindingReco
         try writer.writeByte('}');
     }
     try writer.writeByte(']');
+}
+
+fn healthEvidenceJson(writer: anytype, report: Report, comma: bool) !void {
+    if (comma) try writer.writeByte(',');
+    try core.util.writeJsonString(writer, "runtime_health");
+    try writer.writeAll(":{");
+    try stringField(writer, "policy_summary", report.health_policy_summary, false);
+    try stringField(writer, "runtime_status", report.runtime_health_status, true);
+    try stringField(writer, "heartbeat_freshness", report.heartbeat_freshness, true);
+    try stringField(writer, "telemetry_freshness", report.telemetry_freshness, true);
+    try stringField(writer, "audit_writer_health", report.audit_writer_health, true);
+    try stringArrayField(writer, "degraded_mode_decisions", report.degraded_mode_decisions, true);
+    try stringArrayField(writer, "fail_closed_events", report.fail_closed_events, true);
+    try stringArrayField(writer, "limitations", report.health_limitations, true);
+    try writer.writeAll(",\"watchdog_findings\":[");
+    var count: usize = 0;
+    for (report.findings) |finding| {
+        if (!std.mem.eql(u8, finding.category, "health")) continue;
+        if (count > 0) try writer.writeByte(',');
+        try writer.writeByte('{');
+        try stringField(writer, "severity", finding.severity, false);
+        try stringField(writer, "observed", finding.observed, true);
+        try stringField(writer, "decision", finding.decision, true);
+        try stringField(writer, "event_id", finding.event_id, true);
+        try stringField(writer, "explanation", finding.explanation, true);
+        try writer.writeByte('}');
+        count += 1;
+    }
+    try writer.writeAll("]}");
 }
 
 fn approvalsJson(writer: anytype, name: []const u8, approvals: []const ApprovalRecord, comma: bool) !void {

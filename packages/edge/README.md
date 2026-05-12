@@ -181,3 +181,10 @@ See:
 - `docs/edge/bench-safety-boundary.md`
 - `docs/edge/container.md`
 - `docs/edge/release-artifacts.md`
+## Phase 37 Runtime Health
+
+Aegis Edge includes a local reliability watchdog and runtime-health layer for fake-adapter, PX4 SITL, ArduPilot SITL, and bench-preparation evidence. It monitors heartbeats, telemetry freshness, audit writer health, policy/safety engine health, data guard status, adapter/link status, and lightweight resource limits.
+
+Unknown or stale health is not safe. Degraded modes can deny high-risk commands, deny movement, deny external egress, or fail closed. Emergency behavior remains policy-controlled and does not bypass the safety envelope.
+
+This is not real-flight readiness, not an autopilot replacement, not detect-and-avoid, and not regulatory certification.

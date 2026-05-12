@@ -14,9 +14,10 @@ pub const schema = @import("schema/mod.zig");
 pub const redteam = @import("redteam/mod.zig");
 pub const data_guard = @import("data_guard/mod.zig");
 pub const deployment = @import("deployment/mod.zig");
+pub const health = @import("health/mod.zig");
 
-pub const phase = "36-edge-deployment-arm64-hardware-bench";
-pub const installed_message = "Aegis Edge deployment diagnostics, ARM64 package metadata, and non-flight bench-readiness checks are installed for deterministic fake-adapter, PX4 SITL, ArduPilot SITL, and hardware-bench-no-actuation evaluation evidence only; it is not ready for real flight.";
+pub const phase = "37-reliability-watchdog-runtime-health";
+pub const installed_message = "Aegis Edge reliability watchdog and runtime-health diagnostics are installed for deterministic fake-adapter, PX4 SITL, ArduPilot SITL, and hardware-bench-preparation evaluation evidence only; it is not ready for real flight.";
 pub const core = aegis_core;
 
 pub const CapabilityStatus = enum {
@@ -54,6 +55,8 @@ pub const EdgeCapability = enum {
     deployment_diagnostics,
     arm64_packaging,
     hardware_bench_no_actuation,
+    reliability_watchdog,
+    runtime_health,
     px4_adapter,
     ardupilot_adapter,
     real_flight_enforcement,
@@ -78,6 +81,8 @@ pub const EdgeCapability = enum {
             .deployment_diagnostics => "Edge deployment diagnostics",
             .arm64_packaging => "ARM64 Linux packaging metadata",
             .hardware_bench_no_actuation => "hardware bench no-actuation mode",
+            .reliability_watchdog => "reliability watchdog",
+            .runtime_health => "runtime health",
             .px4_adapter => "PX4 adapter",
             .ardupilot_adapter => "ArduPilot adapter",
             .real_flight_enforcement => "real-flight enforcement",
@@ -207,6 +212,8 @@ pub fn capabilityReports() []const CapabilityReport {
         .{ .capability = .deployment_diagnostics, .status = .active, .note = "Phase 36 verifies runtime assets, deployment profiles, package metadata, and source/package/container/SITL/bench boundaries without real hardware dependencies." },
         .{ .capability = .arm64_packaging, .status = .active, .note = "Phase 36 defines Linux amd64 and Linux arm64 artifact names, manifests, checksums, install scripts, and smoke tests; armv7 is unsupported unless a future release explicitly adds it." },
         .{ .capability = .hardware_bench_no_actuation, .status = .active, .note = "Phase 36 bench mode is explicit non-flight, no-actuation, observe/simulation-oriented evidence only and never claims flight readiness." },
+        .{ .capability = .reliability_watchdog, .status = .active, .note = "Phase 37 monitors runtime, heartbeat, telemetry freshness, audit writer, policy/safety engine, data guard, adapter, MAVLink, PX4 SITL, ArduPilot SITL, and resource health for fake/SITL/bench-preparation evidence only." },
+        .{ .capability = .runtime_health, .status = .active, .note = "Phase 37 aggregates health findings and degraded-mode recommendations; stale/unknown health is never treated as safe and does not replace autopilot failsafes." },
         .{ .capability = .px4_adapter, .status = .partial, .note = "PX4 SITL adapter supports opt-in local simulation checks plus deterministic fake-PX4 scenarios; no hardware or real-flight support." },
         .{ .capability = .ardupilot_adapter, .status = .partial, .note = "ArduPilot SITL adapter supports opt-in local simulation checks plus deterministic fake-ArduPilot scenarios; Copter-oriented coverage starts Phase 30; no hardware or real-flight support." },
         .{ .capability = .real_flight_enforcement, .status = .unavailable, .note = "Real-flight behavior requires later simulation, bench, and customer safety validation phases." },

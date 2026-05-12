@@ -86,6 +86,10 @@ pub const all_event_types = [_][]const u8{
     "safety_case.limitation_recorded",
     "safety_case.evidence_collected",
     "safety_case.validation_failed",
+    "health.watchdog.finding",
+    "health.heartbeat.stale",
+    "health.audit.failure",
+    "health.command_denied",
 };
 
 pub fn isKnown(event_type: []const u8) bool {
@@ -178,6 +182,10 @@ pub fn toCoreEventType(event_type: []const u8) !core.event.EventType {
     if (std.mem.eql(u8, event_type, "safety_case.limitation_recorded")) return .safety_case_limitation_recorded;
     if (std.mem.eql(u8, event_type, "safety_case.evidence_collected")) return .safety_case_evidence_collected;
     if (std.mem.eql(u8, event_type, "safety_case.validation_failed")) return .safety_case_validation_failed;
+    if (std.mem.eql(u8, event_type, "health.watchdog.finding")) return .health_watchdog_finding;
+    if (std.mem.eql(u8, event_type, "health.heartbeat.stale")) return .health_heartbeat_stale;
+    if (std.mem.eql(u8, event_type, "health.audit.failure")) return .health_audit_failure;
+    if (std.mem.eql(u8, event_type, "health.command_denied")) return .health_command_denied;
     return error.UnknownEdgeEventType;
 }
 

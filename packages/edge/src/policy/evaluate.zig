@@ -1,6 +1,7 @@
 const std = @import("std");
 
 const domain = @import("../domain/mod.zig");
+const health = @import("../health/mod.zig");
 const schema = @import("../schema/mod.zig");
 const core = @import("aegis_core");
 
@@ -18,6 +19,7 @@ pub const EvaluationContext = struct {
     mode: EvaluationMode = .strict,
     now_ms: i128,
     non_interactive: bool = false,
+    health_report: ?*const health.HealthReport = null,
 };
 
 pub const SafetyFindingKind = enum {
@@ -32,6 +34,7 @@ pub const SafetyFindingKind = enum {
     provenance,
     mission,
     command_risk,
+    health,
 };
 
 pub const SafetyConstraintKind = enum {
@@ -46,6 +49,7 @@ pub const SafetyConstraintKind = enum {
     provenance,
     mission,
     command_risk,
+    health,
 };
 
 pub const SafetyFinding = struct {
@@ -213,6 +217,10 @@ pub fn evaluateEdgeAction(
             rule_reason = "fake adapter provenance mismatch";
         }
 
+        if (try evaluateRuntimeHealth(&builder, policy, request, vehicle_state, context)) |health_result| {
+            result = health_result.result;
+            rule_reason = health_result.reason;
+        }
         if (result != .deny) {
             if (try evaluateFreshness(&builder, policy, request, vehicle_state, context)) |freshness_result| {
                 result = freshness_result.result;
@@ -434,6 +442,31 @@ fn evaluateBattery(
         try builder.addFinding(.battery, "return_to_home recommended below threshold: observed={d:.2}% threshold={d:.2}%", .{ battery.percent_remaining, battery_policy.return_home_below_percent });
         try addSafetyAudit(builder, "safety.battery_constraint", .edge_safety_envelope, "return_home threshold reached", .deny, request.action);
         return .{ .result = .deny, .reason = "battery below return_home threshold", .fallback = .return_to_home };
+    }
+    return null;
+}
+
+fn evaluateRuntimeHealth(
+    builder: *EvaluationBuilder,
+    policy: *const schema.edge_policy_schema.EdgePolicyV1,
+    request: domain.commands.CommandRequest,
+    state: domain.state.VehicleState,
+    context: EvaluationContext,
+) !?ConstraintDecision {
+    const report = context.health_report orelse return null;
+    const health_decision = health.decideForCommand(policy, report.*, request, state, context);
+    if (report.findings.len > 0) {
+        const finding = report.findings[0];
+        try builder.addFinding(.health, "runtime health {s}: {s}", .{ finding.status.toString(), finding.reason });
+        try addSafetyAudit(builder, finding.eventReference(), .edge_safety_envelope, finding.reason, .deny, request.action);
+    } else if (report.overall_status != .healthy) {
+        try builder.addFinding(.health, "runtime health {s}", .{report.overall_status.toString()});
+        try addSafetyAudit(builder, "health.watchdog.finding", .edge_safety_envelope, report.overall_status.toString(), .deny, request.action);
+    }
+    if (health_decision.decision == .deny) {
+        try builder.addViolation(.health, "watchdog degraded behavior {s}: {s}", .{ health_decision.behavior.toString(), health_decision.reason });
+        try addSafetyAudit(builder, "health.command_denied", .edge_safety_envelope, health_decision.reason, .deny, request.action);
+        return .{ .result = .deny, .reason = health_decision.reason };
     }
     return null;
 }
@@ -837,5 +870,9 @@ fn coreEventType(event_type: []const u8) !core.event.EventType {
     if (std.mem.eql(u8, event_type, "safety.mode_constraint")) return .safety_mode_constraint;
     if (std.mem.eql(u8, event_type, "safety.authority_constraint")) return .safety_authority_constraint;
     if (std.mem.eql(u8, event_type, "safety.mission_item_denied")) return .safety_mission_item_denied;
+    if (std.mem.eql(u8, event_type, "health.watchdog.finding")) return .health_watchdog_finding;
+    if (std.mem.eql(u8, event_type, "health.command_denied")) return .health_command_denied;
+    if (std.mem.eql(u8, event_type, "health.audit.failure")) return .health_audit_failure;
+    if (std.mem.eql(u8, event_type, "health.heartbeat.stale")) return .health_heartbeat_stale;
     return error.UnknownEdgeEventType;
 }

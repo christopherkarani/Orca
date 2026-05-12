@@ -37,6 +37,8 @@ test "edge capabilities report unsupported integrations as unavailable or not im
             .deployment_diagnostics,
             .arm64_packaging,
             .hardware_bench_no_actuation,
+            .reliability_watchdog,
+            .runtime_health,
             => try std.testing.expectEqual(edge.CapabilityStatus.active, report.status),
             .real_flight_enforcement,
             .detect_and_avoid,

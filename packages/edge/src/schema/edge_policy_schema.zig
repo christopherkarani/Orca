@@ -1,4 +1,5 @@
 const domain = @import("../domain/mod.zig");
+const health_watchdog = @import("../health/watchdog.zig");
 
 pub const VehicleProfile = struct {
     kind: domain.vehicle.VehicleKind,
@@ -26,12 +27,14 @@ pub const EdgePolicyV1 = struct {
     commands: domain.safety_envelope.CommandPolicy,
     network: NetworkPolicy = .{},
     audit: AuditPolicy = .{},
+    watchdog: health_watchdog.WatchdogPolicy = .{},
 
     pub fn validate(self: EdgePolicyV1) !void {
         if (self.version != 1) return error.UnsupportedSchemaVersion;
         try self.vehicle.validate();
         try self.safety.validate();
         try self.commands.validate();
+        try self.watchdog.validate();
     }
 
     pub fn example() EdgePolicyV1 {

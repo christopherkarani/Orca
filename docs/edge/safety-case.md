@@ -37,3 +37,8 @@ decisions, safety findings, audit events, limitations, provenance, and the same
 non-certification disclaimer. It links fixture outcomes to the run audit session
 and replay artifact. Skipped, unsupported, and inconclusive fixtures are reported
 honestly and never counted as passed.
+## Runtime Health Evidence
+
+Phase 37 safety-case reports include runtime health status, watchdog policy summary, domain health statuses, heartbeat freshness, telemetry freshness, audit writer health, degraded-mode decisions, fail-closed events, health event references, and limitations where available.
+
+Runtime health evidence is simulation/SITL/bench-preparation evidence only. It is not real-flight readiness, not an autopilot replacement, and not regulatory certification.

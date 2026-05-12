@@ -132,6 +132,10 @@ pub const EventType = enum {
     safety_case_limitation_recorded,
     safety_case_evidence_collected,
     safety_case_validation_failed,
+    health_watchdog_finding,
+    health_heartbeat_stale,
+    health_audit_failure,
+    health_command_denied,
 
     pub fn toString(self: EventType) []const u8 {
         return switch (self) {
@@ -221,6 +225,10 @@ pub const EventType = enum {
             .safety_case_limitation_recorded => "safety_case.limitation_recorded",
             .safety_case_evidence_collected => "safety_case.evidence_collected",
             .safety_case_validation_failed => "safety_case.validation_failed",
+            .health_watchdog_finding => "health.watchdog.finding",
+            .health_heartbeat_stale => "health.heartbeat.stale",
+            .health_audit_failure => "health.audit.failure",
+            .health_command_denied => "health.command_denied",
             else => @tagName(self),
         };
     }
