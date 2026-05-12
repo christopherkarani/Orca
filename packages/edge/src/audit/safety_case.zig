@@ -257,6 +257,7 @@ pub fn generate(allocator: std.mem.Allocator, options: GenerateOptions) !Generat
     const final_hash_path = try std.fs.path.join(allocator, &.{ session_dir, "final-hash.txt" });
     defer allocator.free(final_hash_path);
     try artifacts.writeHashFile(allocator, final_hash_path, final_hash);
+    try writeIntegrityManifest(allocator, session_dir);
 
     const summary = try std.fmt.allocPrint(
         allocator,
@@ -273,7 +274,15 @@ pub fn generate(allocator: std.mem.Allocator, options: GenerateOptions) !Generat
 }
 
 pub fn verify(allocator: std.mem.Allocator, workspace_root: []const u8, session: []const u8) !core.api.VerifyResult {
-    return edge_session.verifySession(allocator, workspace_root, session);
+    var audit_result = try edge_session.verifySession(allocator, workspace_root, session);
+    if (!audit_result.ok) return audit_result;
+    audit_result.deinit(allocator);
+
+    const session_id = try edge_session.resolveSessionId(allocator, workspace_root, session);
+    defer allocator.free(session_id);
+    const session_dir = try edge_session.sessionDirPath(allocator, workspace_root, session_id);
+    defer allocator.free(session_dir);
+    return verifyIntegrityManifest(allocator, session_dir);
 }
 
 pub fn bundle(allocator: std.mem.Allocator, workspace_root: []const u8, session: []const u8) ![]u8 {
@@ -1116,7 +1125,57 @@ fn defaultArtifactList() []const []const u8 {
         "evidence/data-network-guard.json",
         "evidence/commands.json",
         "evidence/traceability.json",
+        "final-hash.txt",
     };
+}
+
+fn writeIntegrityManifest(allocator: std.mem.Allocator, session_dir: []const u8) !void {
+    var text: std.ArrayList(u8) = .empty;
+    defer text.deinit(allocator);
+    for (defaultArtifactList()) |relative| {
+        const path = try std.fs.path.join(allocator, &.{ session_dir, relative });
+        defer allocator.free(path);
+        const hash = try artifacts.fileSha256Hex(allocator, path);
+        try text.writer(allocator).print("{s} {s}\n", .{ relative, &hash });
+    }
+    const manifest_path = try std.fs.path.join(allocator, &.{ session_dir, "safety-case-integrity.txt" });
+    defer allocator.free(manifest_path);
+    try artifacts.writeFile(manifest_path, text.items);
+}
+
+fn verifyIntegrityManifest(allocator: std.mem.Allocator, session_dir: []const u8) !core.api.VerifyResult {
+    const manifest_path = try std.fs.path.join(allocator, &.{ session_dir, "safety-case-integrity.txt" });
+    defer allocator.free(manifest_path);
+    const manifest = std.fs.cwd().readFileAlloc(allocator, manifest_path, 128 * 1024) catch |err| {
+        return .{ .ok = false, .reason = try std.fmt.allocPrint(allocator, "missing safety-case integrity manifest: {s}", .{@errorName(err)}) };
+    };
+    defer allocator.free(manifest);
+
+    var lines = std.mem.splitScalar(u8, manifest, '\n');
+    var checked: usize = 0;
+    while (lines.next()) |line| {
+        const trimmed = std.mem.trim(u8, line, " \t\r\n");
+        if (trimmed.len == 0) continue;
+        const space = std.mem.indexOfScalar(u8, trimmed, ' ') orelse {
+            return .{ .ok = false, .reason = try allocator.dupe(u8, "malformed safety-case integrity manifest") };
+        };
+        const relative = trimmed[0..space];
+        const expected = trimmed[space + 1 ..];
+        if (expected.len != 64) {
+            return .{ .ok = false, .reason = try allocator.dupe(u8, "malformed safety-case integrity hash") };
+        }
+        const path = try std.fs.path.join(allocator, &.{ session_dir, relative });
+        defer allocator.free(path);
+        const actual = artifacts.fileSha256Hex(allocator, path) catch |err| {
+            return .{ .ok = false, .reason = try std.fmt.allocPrint(allocator, "missing safety-case artifact {s}: {s}", .{ relative, @errorName(err) }) };
+        };
+        if (!std.mem.eql(u8, expected, &actual)) {
+            return .{ .ok = false, .reason = try std.fmt.allocPrint(allocator, "safety-case artifact integrity mismatch: {s}", .{relative}) };
+        }
+        checked += 1;
+    }
+    if (checked == 0) return .{ .ok = false, .reason = try allocator.dupe(u8, "empty safety-case integrity manifest") };
+    return .{ .ok = true };
 }
 
 fn stringField(writer: anytype, name: []const u8, value: []const u8, comma: bool) !void {

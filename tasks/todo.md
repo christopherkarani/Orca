@@ -1,3 +1,84 @@
+# Phase 40 Security and Safety Hardening Review
+
+## Review Fix Plan
+
+- [x] Add regression coverage for block-style `watchdog.recommended_fallback_order` YAML lists.
+- [x] Add regression coverage that `deployment_mode: packaged` rejects macOS package targets even though source macOS targets are supported.
+- [x] Implement the minimal parser/deployment hardening required by those tests.
+- [x] Re-run focused tests plus `zig build`, `zig build test`, Edge docs/review checks, and diff hygiene.
+
+## Assumptions
+
+- The prompt-named `README_START_HERE.md`, `CODEX_MASTER_PROMPT_EDGE.md`, `context/`, `checklists/`, and `phases/40_SECURITY_SAFETY_HARDENING_REVIEW.md` files are absent from this checkout by exact path. The active contract is the Phase 40 prompt, existing Edge code/docs/examples/tests, Aegis memory, and `tasks/lessons.md`.
+- Phase 40 is a final security/safety hardening review before Phase 41. It may add reports, risk/limitations docs, regression tests, red-team fixtures, docs checks, and small hardening fixes only.
+- Phase 40 must not add Phase 41 release packaging except test-required small fixes, Phase 42 customer acquisition, SaaS, hosted telemetry, billing, license enforcement, real drone hardware operation, real-flight deployment, live aircraft control, certification workflows, detect-and-avoid, or autopilot replacement behavior.
+- Safety/security posture remains fail closed: unknown command/state/frame/provenance is not safe, stale state is not safe, deny beats allow, CI never prompts, approvals cannot bypass non-overridable safety envelope defaults, emergency modes cannot bypass policy/failsafes/geofence, and skipped/unsupported/inconclusive evidence is not a pass.
+
+## Research And False-Positive Check
+
+- [x] Read Aegis memory for phase discipline, Zig verification lanes, no-real-flight language, Edge red-team/reporting expectations, and clean-checkout hygiene.
+- [x] Load the TDD skill and use red-green-refactor for any behavior changes.
+- [x] Confirm absent prompt-named governing files instead of inventing their contents.
+- [x] Read `tasks/lessons.md` for tracked-file hygiene, SITL/fake provenance, redaction, approval use, and docs-overclaim lessons.
+- [x] Inspect current safety, operator/emergency, MAVLink, PX4, ArduPilot, data guard, health/watchdog, deployment/bench, audit/replay, safety-case, customer pilot, and docs-check surfaces for Phase 40 gaps.
+- [x] Run or add an overclaim scan that surfaces suspicious phrases for manual review while allowing negative limitation contexts.
+- [x] Re-check docs/examples/customer materials/scripts for real-flight/certification/autopilot/detect-and-avoid overclaims and fake secret leakage.
+
+## TDD / Implementation Checklist
+
+- [x] Add failing Phase 40 regression tests for security/safety review report, risk register, customer-readable known limitations, docs overclaim scan output, and review CLI/docs-check behavior if implemented.
+- [x] Add failing safety invariant tests for unknown/unsupported commands, stale/unknown state, coordinate/altitude mismatch, allow-vs-envelope, deny precedence, CI no-prompt, approval limits, emergency limits, RTH/LAND policy, and fake/SITL/bench provenance.
+- [x] Add failing security invariant tests for redaction before persistence, persistent artifact fake-secret absence, audit tamper/delete/reorder/modify detection, invalid policy fail-closed, audit/data-guard fail-closed, and release/doc secret-pattern scans.
+- [x] Add deterministic MAVLink mutation/parser/gateway tests for arbitrary bytes, malformed/truncated/oversized frames, bad checksums, unknown commands/messages, unexpected sysid/compid, partial/duplicate/unsupported mission upload, bounded payload logging, and no panic/unbounded allocation.
+- [x] Add or harden PX4/ArduPilot provenance, missing-SITL skip, opt-in gate, stale telemetry, command mediation, safety/data guard/health/safety-case integration tests.
+- [x] Add or harden operator approval and emergency behavior tests for hash binding, expiry/max-use/revocation, broad-approval rejection, non-overridable commands, CI ask-to-deny, policy fallback ladder, and audit evidence.
+- [x] Add or harden data guard and runtime health tests for unknown classification, endpoint/IP/webhook/tunnel/paste/high-entropy signals, geolocation coarsening, mission/video denial, no raw payload persistence, stale/missing heartbeat, degraded fail-closed behavior, and local-only/no-hosted-telemetry assumptions.
+- [x] Add or harden deployment/bench/customer material tests for runtime asset errors, no-actuation boundary, disabled service templates, no privileged/host-network defaults except documented SITL-only cases, no hardware endpoints, legal-template disclaimers, and no real customer names/secrets/pricing overreach.
+- [x] Implement narrow hardening fixes surfaced by the failing tests without adding future-phase features.
+- [x] Create `docs/edge/security-safety-review.md`, `docs/edge/risk-register.md`, and `docs/edge/known-limitations.md` with honest status, limitations, unresolved risks, release blockers, and Phase 41 recommendation.
+- [x] Update Edge docs/customer pilot materials/red-team fixtures/safety-case evidence only where the review identifies gaps.
+
+## Verification Checklist
+
+- [x] Focused Phase 40 test fails before implementation for newly required artifacts/behavior.
+- [x] Focused Phase 40 test passes after implementation.
+- [x] `zig build`
+- [x] `zig build test`
+- [x] `./zig-out/bin/aegis --help`
+- [x] `./zig-out/bin/aegis version`
+- [x] `./zig-out/bin/aegis doctor`
+- [x] `./zig-out/bin/aegis run -- echo hello`
+- [x] `./zig-out/bin/aegis replay --session last --verify`
+- [x] `./zig-out/bin/aegis redteam --ci`
+- [x] `./zig-out/bin/aegis-edge --help`
+- [x] `./zig-out/bin/aegis-edge doctor`
+- [x] `./zig-out/bin/aegis-edge redteam --ci`
+- [x] `./zig-out/bin/aegis-edge docs check`
+- [x] `./zig-out/bin/aegis-edge demo run all`
+- [x] `./zig-out/bin/aegis-edge proof generate --demo geofence-deny`
+- [x] `./zig-out/bin/aegis-edge safety-case verify --session last`
+- [x] `./zig-out/bin/aegis-edge deployment doctor`
+- [x] `./zig-out/bin/aegis-edge bench doctor`
+- [x] `./zig-out/bin/aegis-edge health doctor`
+- [x] `./zig-out/bin/aegis-edge data doctor`
+- [x] If review commands land: `./zig-out/bin/aegis-edge review run`, `review docs-check`, and `review report`.
+- [x] Manual checks: risk register honest; limitations customer-readable; review report complete; no positive real-flight/certification claims; fake secrets absent from persistent outputs; skipped/unsupported not counted as pass; fake/SITL/bench/real-flight distinctions clear; customer pilot/SOW materials safe; regression behavior unchanged.
+
+## Review
+
+- Implemented Phase 40 only: added final security/safety review, risk register, customer-readable known limitations, review CLI commands, expanded docs/claim checks, deterministic Phase 40 regressions, safety-case artifact integrity verification, MAVLink unknown-message hardening, data-guard exfil fail-closed behavior, current-position geofence denial, and clearer fake/SITL/PX4/ArduPilot provenance.
+- Blockers fixed: current-position-outside-geofence movement was not denied; data-guard heuristic exfil findings could remain observe/allow in strict paths; safety-case verification only proved the event hash chain and did not catch tampered generated report artifacts; unknown MAVLink messages were not consistently surfaced as unsupported; customer/legal materials and stale limitations docs needed stronger boundary wording.
+- Review artifacts: `docs/edge/security-safety-review.md`, `docs/edge/risk-register.md`, and `docs/edge/known-limitations.md` are in place. The recommendation is ready for Phase 41 production release preparation, not real-flight readiness, certification, regulatory approval, detect-and-avoid, or autopilot replacement.
+- Verification complete: `zig build`, `zig build test`, root CLI smokes, root red-team, Edge doctor/red-team/docs/demo/proof/safety-case/deployment/bench/health/data commands, review commands, and `git diff --check` passed.
+- Remaining limitations and accepted risks: no real-flight validation, no certification/regulatory approval, no detect-and-avoid, no autopilot replacement, incomplete MAVLink command/message coverage, fake/SITL/bench evidence is not real-flight evidence, and PX4/ArduPilot SITL remain opt-in/skipped when unavailable.
+
+## Review Fix Results
+
+- Fixed P2 watchdog policy parsing: `watchdog.recommended_fallback_order` now accepts standard block-style YAML sequences while preserving inline list support and fallback-command validation.
+- Fixed P2 packaged deployment checks: packaged profiles now require `TargetArch.packageStatus() == active`, so macOS source targets can remain supported while unsupported macOS package profiles are rejected.
+- Added regressions in `tests/phase37_edge_runtime_health.zig` and `tests/phase36_edge_deployment_release.zig`. Both failed before the fix and pass after.
+- Verification after review fixes: `zig build`, `zig build test --summary all`, `aegis-edge docs check`, `aegis-edge review docs-check`, `aegis-edge deployment doctor`, `aegis-edge health doctor`, and `git diff --check` passed.
+
 # Phase 39 Customer Pilot Package and Safety Report
 
 ## Assumptions

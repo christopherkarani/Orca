@@ -89,6 +89,7 @@ const Section = enum {
     watchdog_audit,
     watchdog_degraded_mode,
     watchdog_resource,
+    watchdog_fallback_order,
 };
 
 const CommandList = enum { none, allow, ask, deny, require_operator_approval };
@@ -259,7 +260,11 @@ fn parseYamlPolicy(allocator: std.mem.Allocator, text: []const u8, source_path: 
         if (section == .data_guard and indent > 0) continue;
         if (std.mem.startsWith(u8, trimmed, "-")) {
             const value = cleanScalar(std.mem.trim(u8, trimmed[1..], " \t"));
-            try builder.appendCommand(command_list, try parseCommandAction(value));
+            if (section == .watchdog_fallback_order) {
+                try appendWatchdogFallbackCommand(&builder, value);
+            } else {
+                try builder.appendCommand(command_list, try parseCommandAction(value));
+            }
             continue;
         }
 
@@ -305,7 +310,7 @@ fn parseYamlPolicy(allocator: std.mem.Allocator, text: []const u8, source_path: 
             .network => try parseYamlNetwork(&builder, key, value),
             .audit => try parseYamlAudit(&builder, key, value),
             .data_guard => {},
-            .watchdog, .watchdog_heartbeat, .watchdog_telemetry, .watchdog_audit, .watchdog_degraded_mode, .watchdog_resource => try parseYamlWatchdog(&builder, &section, indent, key, value),
+            .watchdog, .watchdog_heartbeat, .watchdog_telemetry, .watchdog_audit, .watchdog_degraded_mode, .watchdog_resource, .watchdog_fallback_order => try parseYamlWatchdog(&builder, &section, indent, key, value),
             .root => return error.InvalidPolicy,
         }
     }
@@ -460,6 +465,11 @@ fn parseYamlWatchdog(builder: *PolicyBuilder, section: *Section, indent: usize, 
             return;
         }
         if (std.mem.eql(u8, key, "recommended_fallback_order")) {
+            if (std.mem.trim(u8, value, " \t\r").len == 0) {
+                builder.watchdog.recommended_fallback_order_len = 0;
+                section.* = .watchdog_fallback_order;
+                return;
+            }
             try parseWatchdogFallbackOrder(builder, value);
             return;
         }
@@ -493,16 +503,28 @@ fn parseWatchdogFallbackOrder(builder: *PolicyBuilder, value: []const u8) !void 
     var count: u8 = 0;
     var it = std.mem.splitScalar(u8, body, ',');
     while (it.next()) |part| {
-        if (count >= builder.watchdog.recommended_fallback_order.len) return error.InvalidWatchdogPolicy;
         const name = std.mem.trim(u8, part, " \t\r\"'");
         if (name.len == 0) continue;
-        const command = try parseCommandAction(name);
-        if (!health_watchdog.isValidFallbackCommand(command)) return error.InvalidWatchdogFallbackCommand;
-        builder.watchdog.recommended_fallback_order[count] = command;
+        if (count >= builder.watchdog.recommended_fallback_order.len) return error.InvalidWatchdogPolicy;
+        const command = parseCommandAction(name) catch return error.InvalidWatchdogFallbackCommand;
+        try setWatchdogFallbackCommand(builder, count, command);
         count += 1;
     }
     if (count == 0) return error.InvalidWatchdogFallbackCommand;
     builder.watchdog.recommended_fallback_order_len = count;
+}
+
+fn appendWatchdogFallbackCommand(builder: *PolicyBuilder, value: []const u8) !void {
+    const index = builder.watchdog.recommended_fallback_order_len;
+    if (index >= builder.watchdog.recommended_fallback_order.len) return error.InvalidWatchdogPolicy;
+    const command = parseCommandAction(value) catch return error.InvalidWatchdogFallbackCommand;
+    try setWatchdogFallbackCommand(builder, index, command);
+    builder.watchdog.recommended_fallback_order_len = index + 1;
+}
+
+fn setWatchdogFallbackCommand(builder: *PolicyBuilder, index: usize, command: domain.commands.CommandAction) !void {
+    if (!health_watchdog.isValidFallbackCommand(command)) return error.InvalidWatchdogFallbackCommand;
+    builder.watchdog.recommended_fallback_order[index] = command;
 }
 
 fn parseJsonPolicy(allocator: std.mem.Allocator, text: []const u8, source_path: ?[]const u8, options: LoadOptions) !LoadedPolicy {

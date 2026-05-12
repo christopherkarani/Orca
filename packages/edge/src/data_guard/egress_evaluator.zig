@@ -113,6 +113,9 @@ pub fn evaluateEgress(
     var decision_result = combine(combine(channel_decision, endpoint_decision), data_decision);
     try addPolicyFindings(allocator, &findings, channel, classes, endpoint_classification, decision_result);
     try detectHeuristics(allocator, &findings, policy, payload, endpoint, endpoint_classification, classes, context);
+    if (hasExfilFinding(findings.items) and (context.mode == .strict or context.mode == .ci or context.mode == .redteam or policy.mode == .strict or policy.mode == .ci or policy.mode == .redteam)) {
+        decision_result = .deny;
+    }
     if (link.spoofing_suspected) {
         try network_finding.appendFinding(allocator, &findings, .link_guard, .high, .deny, endpoint_classification.kind, null, "link.command_control_observed", "{s}", .{link.reason});
         decision_result = .deny;
@@ -122,7 +125,7 @@ pub fn evaluateEgress(
         try network_finding.appendFinding(allocator, &findings, .exfiltration, .high, .deny, endpoint_classification.kind, null, "data.exfiltration_suspected", "payload size {d} exceeds configured maximum {d}", .{ payload.effectiveSize(), policy.egress.max_payload_bytes });
         decision_result = .deny;
     }
-    if (policy.mode == .observe) decision_result = .observe;
+    if (policy.mode == .observe or context.mode == .observe) decision_result = .observe;
 
     const coarse_geo = shouldCoarsen(policy, classes);
     var redacted = try payload_redaction.redactPayload(allocator, payload.payload, classes, coarse_geo);
@@ -198,7 +201,7 @@ pub fn evaluateWithDefaultPolicy(
 }
 
 fn normalizeDecision(decision: core.decision.DecisionResult, mode: telemetry_policy.EvaluationMode, context: EvaluationContext) core.decision.DecisionResult {
-    if (mode == .observe) return .observe;
+    if (mode == .observe or context.mode == .observe) return .observe;
     if (decision == .ask and (mode == .ci or context.ci or context.non_interactive)) return .deny;
     return decision;
 }

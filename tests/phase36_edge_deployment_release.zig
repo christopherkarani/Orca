@@ -73,6 +73,24 @@ test "phase 36 package metadata names linux amd64 and arm64 artifacts with check
     try std.testing.expectEqual(edge.deployment.Status.unsupported, edge.deployment.TargetArch.macos_amd64.packageStatus());
 }
 
+test "phase 36 packaged deployment profiles reject unsupported macOS package targets" {
+    const allocator = std.testing.allocator;
+    var profile = try edge.deployment.parseProfile(allocator,
+        \\id: packaged-macos-arm64
+        \\target_arch: macos-arm64
+        \\os: macos
+        \\deployment_mode: packaged
+        \\environment: fake_adapter
+        \\policy_path: examples/edge/safety/policies/safety-strict.yaml
+        \\scenario_path: examples/edge/safety/scenarios/geofence-deny.yaml
+    );
+    defer profile.deinit();
+
+    const result = edge.deployment.checkProfile(profile);
+    try std.testing.expectEqual(edge.deployment.Status.unsupported, result.status);
+    try std.testing.expect(std.mem.indexOf(u8, result.reason, "packaged") != null);
+}
+
 test "phase 36 bench report includes no-flight and no-certification boundary" {
     const report = edge.deployment.benchReport(
         "examples/edge/safety/policies/safety-strict.yaml",

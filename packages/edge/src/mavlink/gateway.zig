@@ -247,9 +247,14 @@ fn endpointUnexpected(frame: framing.Frame, endpoint_policy: EndpointPolicy) boo
 }
 
 fn provenanceNote(options: ProcessOptions) []const u8 {
-    return switch (options.mode) {
-        .simulation => "provenance=fake_transport/simulation",
-        else => "provenance=fake_transport",
+    return switch (options.command_source) {
+        .fake_adapter => if (options.mode == .simulation) "provenance=fake_adapter/simulation" else "provenance=fake_adapter",
+        .fake_ardupilot_adapter => if (options.mode == .simulation) "provenance=fake_ardupilot_adapter/simulation" else "provenance=fake_ardupilot_adapter",
+        .sitl_px4 => "provenance=sitl_px4",
+        .sitl_ardupilot => "provenance=sitl_ardupilot",
+        .bench => "provenance=bench",
+        .customer_adapter => "provenance=customer_adapter",
+        .unknown => "provenance=unknown",
     };
 }
 

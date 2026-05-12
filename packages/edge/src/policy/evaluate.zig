@@ -537,6 +537,11 @@ fn evaluateGeofence(
             try builder.addFinding(.geofence, "current position altitude reference mismatch: state={s} policy={s}", .{ @tagName(position.altitude_reference), @tagName(geofence.altitude_reference) });
         } else if (!pointInsideCircle(position, geofence.shape.circle)) {
             try builder.addFinding(.geofence, "current position is outside configured geofence", .{});
+            if (requiresFreshPosition(request.action) and request.action != .return_to_home) {
+                try builder.addViolation(.geofence, "movement command denied while current position is outside geofence", .{});
+                try addSafetyAudit(builder, "safety.geofence_violation", .edge_geofence, "current position outside geofence", .deny, request.action);
+                return .{ .result = .deny, .reason = "current position outside geofence" };
+            }
         }
     } else if (requiresFreshPosition(request.action)) {
         try builder.addFinding(.geofence, "current position is unknown", .{});

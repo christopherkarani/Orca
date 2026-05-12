@@ -135,6 +135,9 @@ For design-partner evaluation, see [customer_pilot/README.md](../../customer_pil
 ## Known Limitations
 
 - [Limitations](limitations.md)
+- [Known limitations](known-limitations.md)
+- [Risk register](risk-register.md)
+- [Security and safety review](security-safety-review.md)
 - [Capability matrix](capability-matrix.md)
 - [Customer proof known limitations](../../examples/edge/customer-proof/known-limitations.md)
 

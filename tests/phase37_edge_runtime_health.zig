@@ -152,6 +152,83 @@ test "phase 37 health status model constructs structured findings" {
     try std.testing.expectEqualStrings("fake_adapter", finding.provenance.toString());
 }
 
+test "phase 37 policy loader accepts block-style watchdog fallback order" {
+    const block_style_policy =
+        \\version: 1
+        \\
+        \\vehicle:
+        \\  kind: drone_multirotor
+        \\  autopilot: px4
+        \\  adapter: fake
+        \\
+        \\safety:
+        \\  state_freshness:
+        \\    max_state_age_ms: 1000
+        \\    deny_commands_on_stale_state: true
+        \\  geofence:
+        \\    type: circle
+        \\    center:
+        \\      latitude_deg: 37.000000
+        \\      longitude_deg: -122.000000
+        \\      altitude_m: 0
+        \\      altitude_reference: amsl
+        \\    max_radius_m: 500
+        \\    altitude_floor_m: 2
+        \\    altitude_ceiling_m: 120
+        \\    altitude_reference: amsl
+        \\    boundary_action: deny
+        \\  altitude:
+        \\    min_altitude_m: 2
+        \\    max_altitude_m: 120
+        \\    altitude_reference: amsl
+        \\  velocity:
+        \\    max_horizontal_mps: 8
+        \\    max_vertical_mps: 2
+        \\  battery:
+        \\    deny_takeoff_below_percent: 35
+        \\    return_home_below_percent: 25
+        \\    land_below_percent: 15
+        \\    require_fresh_battery_state: true
+        \\
+        \\commands:
+        \\  allow:
+        \\    - read_telemetry
+        \\    - read_vehicle_state
+        \\    - land
+        \\    - return_to_home
+        \\    - hold_position
+        \\  ask:
+        \\    - set_waypoint
+        \\  deny:
+        \\    - disable_failsafe
+        \\    - disable_geofence
+        \\    - raw_actuator_output
+        \\    - override_operator
+        \\
+        \\watchdog:
+        \\  enabled: true
+        \\  recommended_fallback_order:
+        \\    - land
+        \\    - hold_position
+        \\    - return_to_home
+        \\
+        \\network:
+        \\  mode: allowlist
+        \\
+        \\audit:
+        \\  level: full
+        \\  redact_secrets: true
+    ;
+
+    var loaded = try edge.policy.loadFromSlice(std.testing.allocator, block_style_policy, "watchdog-block-list.yaml", .{});
+    defer loaded.deinit();
+
+    try std.testing.expectEqual(@as(u8, 3), loaded.value.watchdog.recommended_fallback_order_len);
+    try std.testing.expectEqual(domain.commands.CommandAction.land, loaded.value.watchdog.recommended_fallback_order[0]);
+    try std.testing.expectEqual(domain.commands.CommandAction.hold_position, loaded.value.watchdog.recommended_fallback_order[1]);
+    try std.testing.expectEqual(domain.commands.CommandAction.return_to_home, loaded.value.watchdog.recommended_fallback_order[2]);
+}
+
 test "phase 37 watchdog policy parses and rejects unsafe configuration" {
     var loaded = try edge.policy.loadFromSlice(std.testing.allocator, watchdog_policy_yaml, "phase37-watchdog.yaml", .{});
     defer loaded.deinit();

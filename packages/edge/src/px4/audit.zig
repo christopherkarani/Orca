@@ -9,6 +9,7 @@ pub const ArtifactContext = struct {
     environment: connection.Environment,
     tested_version: []const u8,
     endpoint: []const u8,
+    provenance: []const u8 = "fake_adapter",
     limitation: []const u8 = "simulation evidence only; not real-flight readiness",
 };
 
@@ -50,6 +51,8 @@ pub fn writeArtifacts(
         try writeRedactedJsonString(&writer.interface, context.environment.toString());
         try writer.interface.writeAll(",\"tested_px4_version\":");
         try writeRedactedJsonString(&writer.interface, context.tested_version);
+        try writer.interface.writeAll(",\"provenance\":");
+        try writeRedactedJsonString(&writer.interface, context.provenance);
         try writer.interface.writeAll(",\"decision\":");
         try writeRedactedJsonString(&writer.interface, if (result.decision) |decision| decision.toString() else "none");
         try writer.interface.writeAll(",\"forwarded\":");
@@ -72,6 +75,8 @@ fn writeEventJson(writer: anytype, context: ArtifactContext, record: mavlink.aud
     try writeRedactedJsonString(writer, context.environment.toString());
     try writer.writeAll(",\"tested_px4_version\":");
     try writeRedactedJsonString(writer, context.tested_version);
+    try writer.writeAll(",\"provenance\":");
+    try writeRedactedJsonString(writer, context.provenance);
     try writer.writeAll(",\"endpoint\":");
     try writeRedactedJsonString(writer, context.endpoint);
     try writer.writeAll(",\"event_type\":");

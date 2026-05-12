@@ -149,7 +149,19 @@ pub fn evaluateSafety(
     command_request: domain.commands.CommandRequest,
     context: EvaluationContext,
 ) !SafetyEvaluation {
-    var inner = try policy_mod.evaluateEdgeAction(allocator, selected_policy, command_request, vehicle_state, context);
+    var inner = policy_mod.evaluateEdgeAction(allocator, selected_policy, command_request, vehicle_state, context) catch |err| switch (err) {
+        error.UnknownStateIsUnsafe,
+        error.UnknownCoordinateFrame,
+        error.UnknownAltitudeReference,
+        error.MissingTimestamp,
+        error.MissingCommandId,
+        error.MissingActor,
+        error.MissingCommandParameters,
+        error.InvalidCommandParameters,
+        error.VehicleIdMismatch,
+        => return failClosedValidationEvaluation(allocator, vehicle_state, command_request, err),
+        else => return err,
+    };
     errdefer inner.deinit();
 
     var findings: std.ArrayList(Finding) = .empty;
@@ -244,6 +256,96 @@ pub fn evaluateSafety(
         .ci_may_proceed = inner.decision.ci_may_proceed,
         .audit_events = try audit_events.toOwnedSlice(allocator),
         .explanation = inner.explanation,
+    };
+}
+
+fn failClosedValidationEvaluation(
+    allocator: std.mem.Allocator,
+    vehicle_state: domain.state.VehicleState,
+    command_request: domain.commands.CommandRequest,
+    err: anyerror,
+) !SafetyEvaluation {
+    const explanation = try std.fmt.allocPrint(
+        allocator,
+        "edge policy decision: command={s} result=deny reason=invalid or unknown safety input failed closed: {s}; provenance={s}",
+        .{ @tagName(command_request.action), @errorName(err), @tagName(vehicle_state.provenance) },
+    );
+    var explanation_owned = true;
+    errdefer if (explanation_owned) allocator.free(explanation);
+    const audit_context = try std.fmt.allocPrint(
+        allocator,
+        "vehicle_id={s}; command={s}; result=deny; validation_error={s}",
+        .{ command_request.vehicle_id.value, @tagName(command_request.action), @errorName(err) },
+    );
+    var audit_context_owned = true;
+    errdefer if (audit_context_owned) allocator.free(audit_context);
+    const decision = core.api.makeDecision(.{
+        .result = .deny,
+        .reason = explanation,
+        .risk_score = riskScore(domain.risk.classifyCommand(command_request.action)),
+        .requires_user = false,
+        .ci_may_proceed = false,
+    });
+
+    var findings: std.ArrayList(Finding) = .empty;
+    errdefer {
+        for (findings.items) |finding| finding.deinit(allocator);
+        findings.deinit(allocator);
+    }
+    try findings.append(allocator, try findings_mod.initFinding(allocator, 1, .{
+        .category = .unknown,
+        .severity = .critical,
+        .command_id = command_request.command_id,
+        .vehicle_id = command_request.vehicle_id.value,
+        .constraint_id = "unknown.safety",
+        .observed_value = @errorName(err),
+        .limit_value = "known valid request and state required",
+        .decision = .deny,
+        .explanation = explanation,
+        .timestamp_ms = command_request.timestamp.value,
+        .provenance = vehicle_state.provenance,
+        .audit_event_reference = "safety.finding_created",
+    }));
+
+    var audit_events: std.ArrayList(AuditEventPayload) = .empty;
+    errdefer {
+        for (audit_events.items) |event| allocator.free(event.target_value);
+        audit_events.deinit(allocator);
+    }
+    try appendAuditEventCopy(allocator, &audit_events, "safety.evaluation_started", .edge_safety_envelope, "safety evaluation started", .observe);
+    try appendAuditEventCopy(allocator, &audit_events, "safety.finding_created", .edge_safety_envelope, explanation, .deny);
+    try appendAuditEventCopy(allocator, &audit_events, "vehicle.command_denied", .edge_vehicle_command, audit_context, .deny);
+    try appendAuditEventCopy(allocator, &audit_events, "safety.evaluation_completed", .edge_safety_envelope, explanation, .deny);
+
+    explanation_owned = false;
+    audit_context_owned = false;
+    var inner = policy_mod.EdgeEvaluation{
+        .allocator = allocator,
+        .decision = decision,
+        .matched_rule = null,
+        .safety_findings = &.{},
+        .violated_constraints = &.{},
+        .recommended_fallback = null,
+        .audit_events = &.{},
+        .explanation = explanation,
+        .audit_context = audit_context,
+    };
+    errdefer inner.deinit();
+
+    return .{
+        .allocator = allocator,
+        .inner = inner,
+        .decision = decision,
+        .findings = try findings.toOwnedSlice(allocator),
+        .violated_constraints = &.{},
+        .matched_rule = null,
+        .risk_score = decision.risk_score,
+        .recommended_fallback = null,
+        .operator_approval_required = false,
+        .approval_request = null,
+        .ci_may_proceed = false,
+        .audit_events = try audit_events.toOwnedSlice(allocator),
+        .explanation = explanation,
     };
 }
 
@@ -463,4 +565,15 @@ fn coreEventType(event_type: []const u8) !core.event.EventType {
     if (std.mem.eql(u8, event_type, "health.audit.failure")) return .health_audit_failure;
     if (std.mem.eql(u8, event_type, "health.heartbeat.stale")) return .health_heartbeat_stale;
     return error.UnknownEdgeEventType;
+}
+
+fn riskScore(risk: domain.commands.RiskCategory) ?u8 {
+    return switch (risk) {
+        .low => 10,
+        .medium => 45,
+        .emergency_safe => 35,
+        .high => 75,
+        .critical => 95,
+        .unknown => null,
+    };
 }
