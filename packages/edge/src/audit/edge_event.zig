@@ -87,8 +87,25 @@ pub const all_event_types = [_][]const u8{
     "safety_case.evidence_collected",
     "safety_case.validation_failed",
     "health.watchdog.finding",
+    "health.check_started",
+    "health.check_completed",
+    "health.status_changed",
+    "health.heartbeat_observed",
+    "health.heartbeat_expired",
+    "health.state_stale",
+    "health.state_expired",
+    "health.command_timeout",
+    "health.command_queue_overflow",
+    "health.adapter_degraded",
+    "health.link_degraded",
     "health.heartbeat.stale",
     "health.audit.failure",
+    "health.audit_writer_failed",
+    "health.redaction_failed",
+    "health.policy_reload_failed",
+    "health.runtime_asset_missing",
+    "health.fallback_recommended",
+    "health.no_safe_fallback",
     "health.command_denied",
 };
 
@@ -183,8 +200,25 @@ pub fn toCoreEventType(event_type: []const u8) !core.event.EventType {
     if (std.mem.eql(u8, event_type, "safety_case.evidence_collected")) return .safety_case_evidence_collected;
     if (std.mem.eql(u8, event_type, "safety_case.validation_failed")) return .safety_case_validation_failed;
     if (std.mem.eql(u8, event_type, "health.watchdog.finding")) return .health_watchdog_finding;
+    if (std.mem.eql(u8, event_type, "health.check_started")) return .health_watchdog_finding;
+    if (std.mem.eql(u8, event_type, "health.check_completed")) return .health_watchdog_finding;
+    if (std.mem.eql(u8, event_type, "health.status_changed")) return .health_watchdog_finding;
+    if (std.mem.eql(u8, event_type, "health.heartbeat_observed")) return .health_watchdog_finding;
+    if (std.mem.eql(u8, event_type, "health.heartbeat_expired")) return .health_heartbeat_stale;
+    if (std.mem.eql(u8, event_type, "health.state_stale")) return .health_watchdog_finding;
+    if (std.mem.eql(u8, event_type, "health.state_expired")) return .health_watchdog_finding;
+    if (std.mem.eql(u8, event_type, "health.command_timeout")) return .health_command_denied;
+    if (std.mem.eql(u8, event_type, "health.command_queue_overflow")) return .health_command_denied;
+    if (std.mem.eql(u8, event_type, "health.adapter_degraded")) return .health_watchdog_finding;
+    if (std.mem.eql(u8, event_type, "health.link_degraded")) return .health_watchdog_finding;
     if (std.mem.eql(u8, event_type, "health.heartbeat.stale")) return .health_heartbeat_stale;
     if (std.mem.eql(u8, event_type, "health.audit.failure")) return .health_audit_failure;
+    if (std.mem.eql(u8, event_type, "health.audit_writer_failed")) return .health_audit_failure;
+    if (std.mem.eql(u8, event_type, "health.redaction_failed")) return .health_audit_failure;
+    if (std.mem.eql(u8, event_type, "health.policy_reload_failed")) return .health_watchdog_finding;
+    if (std.mem.eql(u8, event_type, "health.runtime_asset_missing")) return .health_watchdog_finding;
+    if (std.mem.eql(u8, event_type, "health.fallback_recommended")) return .health_watchdog_finding;
+    if (std.mem.eql(u8, event_type, "health.no_safe_fallback")) return .health_command_denied;
     if (std.mem.eql(u8, event_type, "health.command_denied")) return .health_command_denied;
     return error.UnknownEdgeEventType;
 }

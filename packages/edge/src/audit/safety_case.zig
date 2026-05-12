@@ -586,7 +586,7 @@ fn healthReportForMeta(
     if (std.mem.eql(u8, fault, "none")) {
         return health.HealthReport.initStatic(.{ .overall_status = .healthy });
     }
-    if (std.mem.eql(u8, fault, "stale_agent_heartbeat")) {
+    if (std.mem.eql(u8, fault, "stale_agent_heartbeat") or std.mem.eql(u8, fault, "heartbeat_expired")) {
         const status = try health.evaluateHeartbeat(.{ .source = .agent, .source_id = "edge-agent", .timestamp_ms = now_ms - 1500, .timestamp_source = .monotonic, .provenance = .fake_adapter }, .agent, watchdog_policy, now_ms);
         return health.heartbeat.reportFromHeartbeats(allocator, &.{status});
     }
@@ -594,7 +594,7 @@ fn healthReportForMeta(
         const status = try health.evaluateMissingHeartbeat(.adapter, watchdog_policy, now_ms, .fake_adapter);
         return health.heartbeat.reportFromHeartbeats(allocator, &.{status});
     }
-    if (std.mem.eql(u8, fault, "audit_append_failure")) {
+    if (std.mem.eql(u8, fault, "audit_append_failure") or std.mem.eql(u8, fault, "audit_failure")) {
         return health.audit_health.evaluateAuditHealth(allocator, .{
             .writer_available = false,
             .append_failed = true,
@@ -604,10 +604,19 @@ fn healthReportForMeta(
             .now_ms = now_ms,
         }, watchdog_policy);
     }
-    if (std.mem.eql(u8, fault, "stale_position")) {
+    if (std.mem.eql(u8, fault, "stale_position") or std.mem.eql(u8, fault, "stale_state") or std.mem.eql(u8, fault, "expired_state") or std.mem.eql(u8, fault, "missing_gps") or std.mem.eql(u8, fault, "stale_battery")) {
         return health.evaluateTelemetryFreshness(allocator, watchdog_policy, state, .{ .now_ms = now_ms, .scenario_id = meta.id });
     }
-    if (std.mem.eql(u8, fault, "event_queue_depth_exceeded")) {
+    if (std.mem.eql(u8, fault, "event_queue_depth_exceeded") or std.mem.eql(u8, fault, "queue_overflow") or std.mem.eql(u8, fault, "command_timeout")) {
+        if (std.mem.eql(u8, fault, "queue_overflow") or std.mem.eql(u8, fault, "command_timeout")) {
+            return health.evaluateCommandQueue(allocator, .{
+                .pending_count = watchdog_policy.max_command_queue_depth + 1,
+                .queue_depth = if (std.mem.eql(u8, fault, "queue_overflow")) watchdog_policy.max_command_queue_depth + 1 else 1,
+                .oldest_pending_age_ms = if (std.mem.eql(u8, fault, "command_timeout")) watchdog_policy.command_timeout_ms + 1 else 0,
+                .now_ms = now_ms,
+                .provenance = .fake_adapter,
+            }, watchdog_policy);
+        }
         return health.resource_health.evaluateResourceHealth(allocator, .{
             .event_queue_depth = watchdog_policy.resource.max_event_queue_depth + 1,
             .memory_mb = 128,
@@ -619,7 +628,7 @@ fn healthReportForMeta(
 
     var builder: health.health_report.Builder = .{ .allocator = allocator };
     errdefer builder.deinit();
-    const finding = if (std.mem.eql(u8, fault, "critical_battery"))
+    const finding = if (std.mem.eql(u8, fault, "critical_battery") or std.mem.eql(u8, fault, "fallback_land_recommended"))
         health.HealthFinding.init(.{
             .finding_id = "health-critical-battery",
             .domain = .battery_state,
@@ -649,6 +658,36 @@ fn healthReportForMeta(
             .recommended_behavior = .allow_policy_emergency_only,
             .audit_event_reference = "health.watchdog.finding",
         })
+    else if (std.mem.eql(u8, fault, "no_safe_fallback"))
+        health.HealthFinding.init(.{
+            .finding_id = "health-no-safe-fallback",
+            .domain = .vehicle_state,
+            .status = .critical,
+            .severity = .critical,
+            .reason = "no safe fallback conditions are satisfied",
+            .observed_value = "fallback context missing",
+            .threshold = "fallback requires valid state context",
+            .timestamp_ms = now_ms,
+            .provenance = .fake_adapter,
+            .matched_rule = "watchdog.recommended_fallback_order",
+            .recommended_behavior = .no_safe_action,
+            .audit_event_reference = "health.no_safe_fallback",
+        })
+    else if (std.mem.eql(u8, fault, "missing_runtime_asset"))
+        health.HealthFinding.init(.{
+            .finding_id = "health-runtime-asset-missing",
+            .domain = .runtime_assets,
+            .status = .critical,
+            .severity = .critical,
+            .reason = "critical runtime asset missing",
+            .observed_value = "runtime asset missing",
+            .threshold = "required runtime assets present",
+            .timestamp_ms = now_ms,
+            .provenance = .fake_adapter,
+            .matched_rule = "deployment.runtime_assets",
+            .recommended_behavior = .fail_closed,
+            .audit_event_reference = "health.runtime_asset_missing",
+        })
     else
         health.policy_health.policyFailureFinding("unknown health scenario fault", now_ms, .fake_adapter);
     try builder.addFinding(finding);
@@ -660,7 +699,8 @@ fn stateForMeta(selected_policy: *const schema.edge_policy_schema.EdgePolicyV1, 
         .circle => |circle| circle.center,
         .allowed_polygon => |_| domain.coordinates.GeoPoint{ .latitude_deg = 37, .longitude_deg = -122, .altitude_m = 0, .altitude_reference = .amsl },
     } else domain.coordinates.GeoPoint{ .latitude_deg = 37, .longitude_deg = -122, .altitude_m = 0, .altitude_reference = .amsl };
-    const critical_health_battery = if (meta.health_fault) |fault| std.mem.eql(u8, fault, "critical_battery") else false;
+    const critical_health_battery = if (meta.health_fault) |fault| std.mem.eql(u8, fault, "critical_battery") or std.mem.eql(u8, fault, "fallback_land_recommended") else false;
+    const stale_health_state = if (meta.health_fault) |fault| std.mem.eql(u8, fault, "stale_state") or std.mem.eql(u8, fault, "expired_state") or std.mem.eql(u8, fault, "stale_position") else false;
     const battery_percent: f64 = if (critical_health_battery) 10 else if (std.mem.indexOf(u8, meta.command, "low_battery") != null) 20 else 80;
     var state = domain.state.VehicleState{
         .vehicle_id = .{ .value = "edge-vehicle-1" },
@@ -673,12 +713,14 @@ fn stateForMeta(selected_policy: *const schema.edge_policy_schema.EdgePolicyV1, 
         .control_authority = .onboard_agent,
         .home_position = center,
         .timestamp = .{ .value = timestamp_ms, .source = .monotonic },
-        .state_freshness = if (std.mem.indexOf(u8, meta.command, "stale") != null) .stale else .fresh,
+        .state_freshness = if (stale_health_state or std.mem.indexOf(u8, meta.command, "stale") != null) .stale else .fresh,
         .provenance = if (selected_policy.vehicle.autopilot == .ardupilot) .fake_ardupilot_adapter else .fake_adapter,
     };
     if (critical_health_battery) state.battery_state.?.is_critical = true;
     if (meta.health_fault) |fault| {
-        if (std.mem.eql(u8, fault, "missing_home_position")) state.home_position = null;
+        if (std.mem.eql(u8, fault, "missing_home_position") or std.mem.eql(u8, fault, "no_safe_fallback")) state.home_position = null;
+        if (std.mem.eql(u8, fault, "missing_gps")) state.gps_state = null;
+        if (std.mem.eql(u8, fault, "expired_state")) state.state_freshness = .expired;
     }
     return state;
 }
