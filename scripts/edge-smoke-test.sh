@@ -3,6 +3,7 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 AEGIS_EDGE="${AEGIS_EDGE:-${ROOT}/zig-out/bin/aegis-edge}"
+cd "${ROOT}"
 
 "${AEGIS_EDGE}" --help >/dev/null
 "${AEGIS_EDGE}" doctor >/dev/null

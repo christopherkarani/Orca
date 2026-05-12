@@ -77,18 +77,19 @@ pub fn build(b: *std.Build) void {
     aegis_alias.step.dependOn(&exe.step);
     b.getInstallStep().dependOn(&aegis_alias.step);
 
+    const edge_exe_mod = b.createModule(.{
+        .root_source_file = b.path("packages/edge/src/main.zig"),
+        .target = target,
+        .optimize = optimize,
+        .imports = &.{
+            .{ .name = "aegis_edge", .module = aegis_edge_mod },
+            .{ .name = "edge_schema_documents", .module = edge_schema_documents_mod },
+            .{ .name = "build_options", .module = build_options_mod },
+        },
+    });
     const edge_exe = b.addExecutable(.{
         .name = "orca-edge",
-        .root_module = b.createModule(.{
-            .root_source_file = b.path("packages/edge/src/main.zig"),
-            .target = target,
-            .optimize = optimize,
-            .imports = &.{
-                .{ .name = "aegis_edge", .module = aegis_edge_mod },
-                .{ .name = "edge_schema_documents", .module = edge_schema_documents_mod },
-                .{ .name = "build_options", .module = build_options_mod },
-            },
-        }),
+        .root_module = edge_exe_mod,
     });
 
     b.installArtifact(edge_exe);
@@ -341,6 +342,21 @@ pub fn build(b: *std.Build) void {
     });
     const run_phase37_edge_runtime_health_tests = b.addRunArtifact(phase37_edge_runtime_health_tests);
 
+    const phase38_edge_docs_customer_proof_tests = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("tests/phase38_edge_docs_demos_customer_proof.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .name = "aegis_edge", .module = aegis_edge_mod },
+                .{ .name = "aegis_edge_main", .module = edge_exe_mod },
+                .{ .name = "edge_schema_documents", .module = edge_schema_documents_mod },
+                .{ .name = "build_options", .module = build_options_mod },
+            },
+        }),
+    });
+    const run_phase38_edge_docs_customer_proof_tests = b.addRunArtifact(phase38_edge_docs_customer_proof_tests);
+
     const phase36_codex_plugin_tests = b.addTest(.{
         .root_module = b.createModule(.{
             .root_source_file = b.path("tests/phase36_codex_plugin.zig"),
@@ -401,6 +417,7 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&run_phase35_edge_data_guard_tests.step);
     test_step.dependOn(&run_phase36_edge_deployment_tests.step);
     test_step.dependOn(&run_phase37_edge_runtime_health_tests.step);
+    test_step.dependOn(&run_phase38_edge_docs_customer_proof_tests.step);
     test_step.dependOn(&run_phase36_codex_plugin_tests.step);
     test_step.dependOn(&run_phase37_claude_plugin_tests.step);
     test_step.dependOn(&run_phase38_plugin_security_tests.step);

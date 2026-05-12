@@ -1,0 +1,5 @@
+id: mission-outside-geofence
+mode: strict
+command: mission_outside_geofence
+expected_decision: deny
+note: "Fake mission scenario. No hardware, SITL endpoint, or real-flight validation."

@@ -1,3 +1,86 @@
+# Phase 38 Edge Docs, Demos, and Customer Proof
+
+## Assumptions
+
+- The prompt-named `README_START_HERE.md`, `CODEX_MASTER_PROMPT_EDGE.md`, `context/`, `checklists/`, and `phases/38_EDGE_DOCS_DEMOS_AND_CUSTOMER_PROOF.md` files are absent from this checkout by exact path. The active contract is the Phase 38 prompt, current Edge code/docs/examples, Aegis memory, and `tasks/lessons.md`.
+- Phase 38 is customer-facing documentation, deterministic fake/SITL demos, proof artifacts, docs validation, and CLI wrappers around existing Edge capabilities.
+- Phase 38 must not add Phase 39 pilot-package execution, Phase 40 final hardening, Phase 41 production release, Phase 42 acquisition, paid SaaS, hosted telemetry, real hardware operation, real-flight deployment, detect-and-avoid, autopilot replacement, or certification claims.
+- Demo and proof commands must remain offline by default, fake/SITL/bench-preparation only, non-interactive in CI, and must not persist raw fake secrets.
+
+## Research And False-Positive Check
+
+- [x] Read Aegis memory for Edge phase boundaries, audit/replay/safety-case output paths, red-team fixture locations, smoke gates, and handoff expectations.
+- [x] Load TDD and verification-before-completion skills for test-first implementation and evidence-backed handoff.
+- [x] Confirm absent prompt-named governing files instead of inventing their contents.
+- [x] Read `tasks/lessons.md` for tracked-file hygiene, fake/SITL provenance, redaction, no-overclaiming, and smoke-gate lessons.
+- [x] Inspect current Edge CLI, safety-case, red-team, data guard, health/watchdog, deployment assets, docs, and examples.
+- [x] Re-check docs/proof artifacts for banned overclaim phrases, secret leakage, fake/SITL/bench/real-flight boundary clarity, and pricing/monetization absence.
+
+## TDD / Implementation Checklist
+
+- [x] Add failing Phase 38 tests for required docs, customer-proof docs, capability matrix, FAQs, demo recording script, demo asset directories, scripts, proof artifacts, and claim validation.
+- [x] Add failing CLI tests for `aegis-edge demo list`, `demo run geofence-deny`, `demo run all`, `proof generate --demo geofence-deny`, and `docs check`.
+- [x] Create/update `packages/edge/README.md`, `docs/edge/README.md`, `docs/edge/quickstart.md`, `docs/edge/troubleshooting.md`, `docs/edge/architecture.md`, and `docs/edge/capability-matrix.md`.
+- [x] Create `docs/edge/customer-proof/` docs for proof boundaries, demo script, evidence package, safety-case/red-team examples, SITL-vs-flight, buyer/technical FAQs, technical brief, recording script, and red-team summary.
+- [x] Create deterministic demo suite under `examples/edge/demos/` with ten demo folders, policies, scenarios, expected output, scripts, sample reports/replay, and limitations.
+- [x] Add top-level demo runners `examples/edge/demos/run-all.sh` and `scripts/edge-demo.sh` with offline fake/SITL behavior and clear output paths.
+- [x] Add customer proof artifacts under `examples/edge/customer-proof/` with limitations, provenance, non-certification disclaimers, hashes/references, and no secrets.
+- [x] Add lightweight docs/demo validation implementation and CLI surface.
+- [x] Wire `aegis-edge demo`, `aegis-edge proof`, and `aegis-edge docs check` without changing real-control behavior.
+
+## Verification Checklist
+
+- [x] `zig build`
+- [x] `zig build test`
+- [x] `./zig-out/bin/aegis --help`
+- [x] `./zig-out/bin/aegis version`
+- [x] `./zig-out/bin/aegis doctor`
+- [x] `./zig-out/bin/aegis run -- echo hello`
+- [x] `./zig-out/bin/aegis replay --session last --verify`
+- [x] `./zig-out/bin/aegis redteam --ci`
+- [x] `./zig-out/bin/aegis-edge --help`
+- [x] `./zig-out/bin/aegis-edge doctor`
+- [x] `./zig-out/bin/aegis-edge redteam --ci`
+- [x] `./zig-out/bin/aegis-edge demo list`
+- [x] `./zig-out/bin/aegis-edge demo run geofence-deny`
+- [x] `./zig-out/bin/aegis-edge demo run all`
+- [x] `./zig-out/bin/aegis-edge proof generate --demo geofence-deny`
+- [x] `./zig-out/bin/aegis-edge docs check`
+- [x] `examples/edge/demos/run-all.sh`
+- [x] `scripts/edge-demo.sh`
+- [x] Manual check: customer proof docs are readable and contain no pricing.
+- [x] Manual check: demos distinguish fake adapter, PX4 SITL, ArduPilot SITL, bench, and real flight.
+- [x] Manual check: docs/proof artifacts do not claim real-flight readiness, certification, autopilot replacement, or detect-and-avoid.
+- [x] Manual check: fake secrets do not appear in persistent outputs.
+- [x] Manual check: PX4, ArduPilot, safety enforcement, operator/emergency, data guard, health/watchdog, deployment/bench, Edge red-team, and CLI behavior unchanged.
+- [x] `git diff --check`
+
+## Review
+
+- Implemented Phase 38 only: customer-facing Edge README, docs hub, quickstart, troubleshooting, architecture diagrams, capability matrix, customer-proof docs, demo recording script, red-team summary, demo suite, proof artifacts, top-level demo scripts, CLI demo/proof/docs wrappers, and regression tests.
+- Demo suite status: `aegis-edge demo run geofence-deny`, `aegis-edge demo run all`, `examples/edge/demos/run-all.sh`, and `scripts/edge-demo.sh` pass locally with fake/SITL/bench-preparation boundaries and no external network calls.
+- Customer proof artifact status: checked-in examples include provenance, limitations, non-certification disclaimers, policy hashes, and audit references where applicable.
+- Safety-case example status: `aegis-edge proof generate --demo geofence-deny` generates a hash-chained local safety-case session and points to checked-in customer proof artifacts.
+- Docs validation status: `aegis-edge docs check` passes and scanned required docs/proof files for missing assets, raw fake-secret markers, and overclaim phrases with manual-review context for negative limitation text.
+- Regression status: `zig build`, `zig build test`, root CLI smokes, Edge red-team, demo/proof/docs commands, and demo scripts passed. PX4 and ArduPilot SITL remain opt-in/skipped when not configured; fake adapter, safety enforcement, operator/emergency, data guard, health/watchdog, deployment/bench, Edge red-team, and root CLI behavior are unchanged.
+- Known limitations: Phase 38 is still simulation/SITL/bench-preparation/customer-evaluation only; real flight, real aircraft control, certification, detect-and-avoid, autopilot replacement, hosted telemetry, and future customer pilot package work remain unsupported.
+- Phase 39 readiness: ready to begin Phase 39 from a customer-proof/docs/demo standpoint, but not as real-flight or production-release readiness.
+
+## Review Fix Checklist
+
+- [x] Add regression coverage that unsupported Phase 38 proof demo IDs reject before printing success.
+- [x] Patch `aegis-edge proof generate` so non-safety demos with checked-in artifacts do not route through safety-case generation.
+- [x] Make Edge smoke/demo scripts resolve repo-relative inputs from the computed repo root when invoked from another cwd.
+- [x] Remove local Playwright capture/screenshot artifacts that are not referenced by docs, build, or tests.
+- [x] Re-run focused proof/script checks plus full build/test regression.
+
+## Review Fix Results
+
+- `aegis-edge proof generate --demo data-exfil-deny` now exits 64 before printing success and directs users to the checked-in data-exfil proof artifact/demo path.
+- `scripts/edge-package-smoke-test.sh`, `scripts/edge-smoke-test.sh`, `scripts/edge-arm64-smoke-test.sh`, `scripts/edge-demo.sh`, `examples/edge/demos/run-all.sh`, and the PX4/ArduPilot fake demo wrappers were verified from `/tmp`.
+- Removed tracked local Playwright MCP captures and root screenshot PNGs that were not referenced by docs, build, or tests.
+- Verification after the review fix: `zig build`, `zig build test --summary all`, root CLI smokes, Edge CLI smokes, docs check, proof rejection, outside-cwd demo/smoke scripts, PX4/ArduPilot fake demo scripts, and `git diff --check` passed.
+
 # Phase 37 Reliability Watchdog and Runtime Health
 
 ## Completion Pass Checklist
