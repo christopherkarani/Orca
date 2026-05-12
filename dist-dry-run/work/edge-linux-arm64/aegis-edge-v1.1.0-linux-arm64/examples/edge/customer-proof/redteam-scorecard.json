@@ -1,0 +1,8 @@
+{
+  "Provenance": "fake_adapter_with_optional_sitl_gates",
+  "policy_hash": "sha256:example-redteam-policy-hash",
+  "required_passed": true,
+  "skipped_count": 11,
+  "unsupported_count": 1,
+  "Limitations": "skipped and unsupported are not pass; non-certification simulation/SITL/bench-preparation evidence"
+}

@@ -1,0 +1,5 @@
+id: ardupilot-fake-sitl-proof
+mode: strict
+command: waypoint_outside_geofence
+expected_decision: deny
+note: "Fake-ArduPilot proof; opt-in ArduPilot SITL is separate."

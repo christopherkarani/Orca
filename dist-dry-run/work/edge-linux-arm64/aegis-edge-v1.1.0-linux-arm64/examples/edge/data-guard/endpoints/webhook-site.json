@@ -1,0 +1,11 @@
+{
+  "label": "webhook",
+  "host": "fake.webhook.site",
+  "port": 443,
+  "protocol": "https",
+  "scheme": "https",
+  "path": "/fake-capture",
+  "query": "token=fake_secret_value_phase35",
+  "environment": "simulated_external",
+  "provenance": "unknown"
+}

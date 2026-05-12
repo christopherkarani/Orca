@@ -1,0 +1,12 @@
+id: ardupilot-waypoint-outside-geofence-deny
+environment: fake_ardupilot
+vehicle: copter
+mode: enforce
+command: set_waypoint
+lat_int: 370100000
+lon_int: -1220000000
+alt_m: 25
+expected_decision: deny
+expected_forwarded: false
+timeout_ms: 2000
+note: "Synthetic note includes sk-fakeSyntheticOpenAIKey1234567890 to prove artifact redaction."

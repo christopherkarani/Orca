@@ -1,0 +1,11 @@
+{
+  "label": "ground_control",
+  "host": "127.0.0.1",
+  "port": 14550,
+  "protocol": "udp",
+  "scheme": "udp",
+  "path": "",
+  "query": "",
+  "environment": "fake_adapter",
+  "provenance": "fake_adapter"
+}

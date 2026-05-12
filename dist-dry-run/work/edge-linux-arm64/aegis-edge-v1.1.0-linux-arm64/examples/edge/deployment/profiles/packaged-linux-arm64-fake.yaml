@@ -1,0 +1,14 @@
+id: packaged-linux-arm64-fake
+target_arch: linux-arm64
+os: linux
+deployment_mode: packaged
+environment: fake_adapter
+runtime_assets: package
+policy_path: examples/edge/safety/policies/safety-strict.yaml
+scenario_path: examples/edge/safety/scenarios/geofence-deny.yaml
+audit_output_path: .aegis-edge/sessions
+log_output_path: .aegis-edge/logs
+network_mode: offline
+safety_limitations: packaged fake-adapter evaluation only; not real-flight readiness or certification
+operator_acknowledgement: false
+bench: false

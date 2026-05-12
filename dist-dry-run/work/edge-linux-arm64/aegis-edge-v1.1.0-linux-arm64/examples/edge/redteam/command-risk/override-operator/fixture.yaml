@@ -1,0 +1,19 @@
+version: 1
+id: command-override-operator-denied
+name: override_operator denied
+category: mode_authority
+environment: fake_adapter
+description: Synthetic request attempts to override operator authority.
+policy: examples/edge/redteam/policies/redteam-envelope.yaml
+faults:
+  - override_operator
+expected:
+  decision: deny
+  findings:
+    - command_risk
+  events:
+    - vehicle.command_denied
+  no_log_contains:
+    - fake-secret-value
+score:
+  points: 10
