@@ -1,3 +1,44 @@
+# Phase 39 Customer Pilot Package and Safety Report
+
+## Assumptions
+
+- The prompt-named `README_START_HERE.md`, `CODEX_MASTER_PROMPT_EDGE.md`, `context/`, `sales_customer/`, `checklists/`, and `phases/39_CUSTOMER_PILOT_PACKAGE_AND_SAFETY_REPORT.md` files are absent from this checkout by exact path. The active contract is the Phase 39 prompt, existing Edge docs/examples/tests, Aegis memory, and `tasks/lessons.md`.
+- Phase 39 is limited to a local customer pilot package, pilot templates, deterministic sample reports, customer-facing safety boundaries, optional local pilot CLI helpers, docs integration, and validation checks.
+- Phase 39 must not add Phase 40 hardening review, Phase 41 production release, Phase 42 customer acquisition execution, SaaS, hosted dashboard, enterprise control plane, billing, license enforcement, hosted telemetry, real hardware operation, real-flight deployment, certification workflows, regulatory approval workflows, detect-and-avoid, autopilot replacement behavior, or live aircraft control.
+- All pilot materials must remain fake/example data only, offline by default, no real secrets, no real customer names, no real-flight procedures, and no unsupported legal claims. SOW/MSA/security-style templates must be marked as draft templates requiring legal review.
+
+## Research And False-Positive Check
+
+- [x] Read Aegis memory for Edge phase boundaries, no-real-flight language, offline fixture expectations, and required root/Edge regression lanes.
+- [x] Load TDD, writing-plans, and verification-before-completion skills.
+- [x] Confirm absent prompt-named governing files instead of inventing their contents.
+- [x] Read `tasks/lessons.md` for tracked-file hygiene, fake/SITL provenance, docs overclaiming, and CLI proof/demo pitfalls.
+- [x] Inspect Edge CLI docs/demo/proof command patterns and docs-check implementation.
+- [x] Inspect Phase 38 customer-proof docs/examples for links and boundary wording to reuse without duplicating unsupported claims.
+- [x] Re-check all customer pilot docs/templates/examples for banned phrases, real-secret patterns, fake-vs-SITL-vs-bench provenance, legal-template disclaimers, and no pricing unless explicitly placeholder/internal.
+
+## TDD / Implementation Checklist
+
+- [x] Add failing Phase 39 tests for required `customer_pilot/` docs, templates, examples, safety/legal disclaimers, banned overclaim scans, sample-report limitations, docs links, and optional pilot CLI behavior.
+- [x] Run the focused Phase 39 test and verify it fails for missing pilot files/commands.
+- [x] Create `customer_pilot/` package docs: README, overview, boundaries, success criteria, timeline, deliverables, intake/discovery/safety questionnaires, readiness checklist, simulation/SITL plan, demo script, report/evidence/red-team/final templates, limitations, and FAQ.
+- [x] Create `customer_pilot/templates/` draft templates for SOW, mutual NDA notes, security review responses, customer follow-up email, and design partner proposal with legal-review markings where needed.
+- [x] Create deterministic fake/example outputs under `customer_pilot/examples/` for pilot, safety, red-team, and evidence-bundle reports.
+- [x] Add local-only `aegis-edge pilot checklist`, `pilot package`, and `pilot demo` helpers if the CLI extension stays small and consistent with existing architecture; otherwise document script/template-only support.
+- [x] Update `docs/edge/README.md` and `packages/edge/README.md` with customer pilot links and no-real-flight safety boundary reminders.
+- [x] Run the focused Phase 39 test and verify it passes.
+- [x] Run full required regression commands: `zig build`, `zig build test`, root CLI smokes, Edge CLI smokes, docs check, demo/proof, red-team, and pilot commands if implemented.
+- [x] Manually review customer pilot readability, boundaries, report templates, samples, legal-template markings, no hardcoded pricing, no real-flight/certification/autopilot/detect-and-avoid claims, no fake secrets in persistent outputs, and Phase 38 demo regression.
+
+## Review
+
+- Implemented Phase 39 only: added `customer_pilot/` package docs, questionnaires, readiness checklist, simulation/SITL plan, customer demo script, safety/evidence/red-team/final report templates, FAQ, limitations, legal-marked templates, deterministic sample reports, docs links, validation tests, and local-only pilot CLI helpers.
+- Pilot CLI status: `aegis-edge pilot checklist`, `aegis-edge pilot package`, `aegis-edge pilot demo`, `pilot init --customer <placeholder>`, and `pilot report --session last` are local helpers only. `pilot package` writes a local `.aegis-edge/pilot-package/index.md` index and does not require network, hardware, real secrets, or real customer names.
+- Docs validation status: `aegis-edge docs check` now includes customer pilot files, scans secret-like markers, scans banned overclaim phrases across all occurrences, and preserves the Phase 38 success banner for compatibility.
+- Verification complete: `zig build`, `zig build test --summary all`, root CLI smokes, Edge CLI smokes, Edge red-team, docs check, geofence demo/proof, pilot commands, Phase 38 `demo run all`, fake-secret persistent-output scan, pricing placeholder scan, and `git diff --check` passed.
+- Known limitations: customer pilot materials are simulation/SITL/bench-preparation/customer-evaluation only; no real flight, live aircraft control, certification, regulatory approval, detect-and-avoid, autopilot replacement, hosted telemetry, SaaS, billing, or license enforcement was added.
+- Phase 40 readiness: the repo is ready to start Phase 40 from the Phase 39 acceptance perspective, but this is not production release or real-flight readiness.
+
 # Phase 38 Edge Docs, Demos, and Customer Proof
 
 ## Assumptions

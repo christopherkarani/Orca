@@ -2,6 +2,8 @@
 
 Aegis Edge is a local policy, safety-envelope, MAVLink mediation, audit, red-team, and evidence runtime for drone autonomy evaluation in fake adapter, SITL, and bench-preparation environments.
 
+For design-partner evaluation, see [customer_pilot/README.md](../../customer_pilot/README.md). The customer pilot package keeps the same no real-flight boundary as the Edge docs and examples.
+
 Phase 28 adds a MAVLink gateway foundation for fake/in-memory simulation and protocol mediation. Later completed phases add PX4 SITL, ArduPilot SITL, safety enforcement, operator approval, audit/replay, safety-case evidence, red-team fixtures, data guard, deployment/bench diagnostics, and runtime health. Aegis Edge is not ready for real flight, provides no real-flight readiness, is not regulatory certification, and is not autopilot replacement behavior.
 
 ## What It Is
@@ -47,6 +49,9 @@ zig build
 ./zig-out/bin/aegis-edge demo list
 ./zig-out/bin/aegis-edge demo run geofence-deny
 ./zig-out/bin/aegis-edge proof generate --demo geofence-deny
+./zig-out/bin/aegis-edge pilot checklist
+./zig-out/bin/aegis-edge pilot package
+./zig-out/bin/aegis-edge pilot demo
 ./zig-out/bin/aegis-edge docs check
 ```
 
@@ -57,6 +62,9 @@ zig build
 ./zig-out/bin/aegis-edge demo run geofence-deny
 ./zig-out/bin/aegis-edge demo run all
 ./zig-out/bin/aegis-edge proof generate --demo geofence-deny
+./zig-out/bin/aegis-edge pilot checklist
+./zig-out/bin/aegis-edge pilot package
+./zig-out/bin/aegis-edge pilot demo
 examples/edge/demos/run-all.sh
 scripts/edge-demo.sh
 ```
@@ -106,4 +114,5 @@ All Phase 38 examples are customer-evaluation artifacts. They are deterministic,
 - [Architecture](../../docs/edge/architecture.md)
 - [Capability matrix](../../docs/edge/capability-matrix.md)
 - [Customer proof](../../docs/edge/customer-proof/README.md)
+- [Customer pilot package](../../customer_pilot/README.md)
 - [Troubleshooting](../../docs/edge/troubleshooting.md)

@@ -97,6 +97,9 @@ const usage =
     \\  demo run <demo-id|all>         Run a no-hardware customer-proof demo sequence
     \\  proof generate --demo <demo-id>
     \\                                 Generate local customer-proof evidence for a demo
+    \\  pilot checklist                Print the customer pilot readiness checklist path and boundary
+    \\  pilot package                  Create a local customer pilot package index under .aegis-edge
+    \\  pilot demo                     Print the customer pilot call demo script summary
     \\  docs check                    Validate required Edge docs, demos, and proof claims
     \\  safety-case generate --session last
     \\                                 Regenerate/show the latest Edge safety-case evidence when available
@@ -201,6 +204,9 @@ pub fn run(argv: []const []const u8, stdout: anytype, stderr: anytype) !u8 {
     }
     if (std.mem.eql(u8, command, "proof")) {
         return runProof(argv[1..], stdout, stderr);
+    }
+    if (std.mem.eql(u8, command, "pilot")) {
+        return runPilot(argv[1..], stdout, stderr);
     }
     if (std.mem.eql(u8, command, "docs")) {
         return runDocs(argv[1..], stdout, stderr);
@@ -588,6 +594,121 @@ fn runProofGenerate(argv: []const []const u8, stdout: anytype, stderr: anytype) 
     return 0;
 }
 
+fn runPilot(argv: []const []const u8, stdout: anytype, stderr: anytype) !u8 {
+    if (argv.len == 0) return usageError(stderr, "aegis-edge pilot: expected checklist, package, or demo.\n");
+    if (std.mem.eql(u8, argv[0], "checklist")) return runPilotChecklist(argv[1..], stdout, stderr);
+    if (std.mem.eql(u8, argv[0], "package")) return runPilotPackage(argv[1..], stdout, stderr);
+    if (std.mem.eql(u8, argv[0], "demo")) return runPilotDemo(argv[1..], stdout, stderr);
+    if (std.mem.eql(u8, argv[0], "init")) return runPilotInit(argv[1..], stdout, stderr);
+    if (std.mem.eql(u8, argv[0], "report")) return runPilotReport(argv[1..], stdout, stderr);
+    try stderr.print("aegis-edge pilot: unknown subcommand '{s}'.\n", .{argv[0]});
+    return 64;
+}
+
+fn runPilotChecklist(argv: []const []const u8, stdout: anytype, stderr: anytype) !u8 {
+    if (argv.len != 0) return usageError(stderr, "aegis-edge pilot checklist: expected no arguments.\n");
+    try stdout.writeAll("Aegis Edge customer pilot checklist\n");
+    try stdout.writeAll("Checklist: customer_pilot/integration-readiness-checklist.md\n");
+    try stdout.writeAll("Overview: customer_pilot/pilot-overview.md\n");
+    try stdout.writeAll("Boundaries: customer_pilot/pilot-boundaries.md\n");
+    try stdout.writeAll("No real hardware, no real secrets, no external network, no live aircraft control, and no real flight are required.\n");
+    return 0;
+}
+
+fn runPilotPackage(argv: []const []const u8, stdout: anytype, stderr: anytype) !u8 {
+    if (argv.len != 0) return usageError(stderr, "aegis-edge pilot package: expected no arguments.\n");
+    const out_dir = ".aegis-edge/pilot-package";
+    std.fs.cwd().makePath(out_dir) catch |err| {
+        try stderr.print("aegis-edge pilot package: unable to create output directory: {s}\n", .{@errorName(err)});
+        return 65;
+    };
+    const path = ".aegis-edge/pilot-package/index.md";
+    var file = std.fs.cwd().createFile(path, .{ .truncate = true }) catch |err| {
+        try stderr.print("aegis-edge pilot package: unable to write index: {s}\n", .{@errorName(err)});
+        return 65;
+    };
+    defer file.close();
+    var buffer: [4096]u8 = undefined;
+    var writer = file.writer(&buffer);
+    try writer.interface.writeAll(
+        \\# Aegis Edge Local Customer Pilot Package Index
+        \\
+        \\This local customer-evaluation package references checked-in pilot materials. It does not require external network access, real hardware, real secrets, or real customer names.
+        \\
+        \\## Start
+        \\
+        \\- customer_pilot/README.md
+        \\- customer_pilot/pilot-overview.md
+        \\- customer_pilot/pilot-boundaries.md
+        \\- customer_pilot/pilot-success-criteria.md
+        \\- customer_pilot/customer-demo-script.md
+        \\- customer_pilot/safety-report-template.md
+        \\- customer_pilot/examples/sample-pilot-report.md
+        \\
+        \\## Safety Boundary
+        \\
+        \\No real flight, live aircraft control, certification, regulatory approval, detect-and-avoid, or autopilot replacement is included.
+        \\
+    );
+    try writer.interface.flush();
+    try stdout.writeAll("Created local customer-evaluation package index: .aegis-edge/pilot-package/index.md\n");
+    try stdout.writeAll("Source materials: customer_pilot/README.md\n");
+    try stdout.writeAll("Boundary: no external network, no real hardware, no real secrets, no real flight.\n");
+    return 0;
+}
+
+fn runPilotDemo(argv: []const []const u8, stdout: anytype, stderr: anytype) !u8 {
+    if (argv.len != 0) return usageError(stderr, "aegis-edge pilot demo: expected no arguments.\n");
+    try stdout.writeAll("Aegis Edge customer pilot demo script summary\n");
+    try stdout.writeAll("Script: customer_pilot/customer-demo-script.md\n");
+    try stdout.writeAll("Opening: Aegis Edge is a simulation/SITL/bench-preparation policy, MAVLink mediation, audit/replay, red-team, and safety-case evidence runtime.\n");
+    try stdout.writeAll("demo 1: geofence deny\n");
+    try stdout.writeAll("demo 2: disable_failsafe deny\n");
+    try stdout.writeAll("demo 3: emergency LAND allowed/logged according to policy\n");
+    try stdout.writeAll("demo 4: stale telemetry deny\n");
+    try stdout.writeAll("demo 5: mission outside geofence deny\n");
+    try stdout.writeAll("demo 6: telemetry/data exfil deny/redact\n");
+    try stdout.writeAll("demo 7: safety-case report\n");
+    try stdout.writeAll("demo 8: red-team scorecard\n");
+    try stdout.writeAll("What not to say: do not claim real aircraft safety, certification, regulatory approval, detect-and-avoid, autopilot replacement, or not real flight scope changes.\n");
+    return 0;
+}
+
+fn runPilotInit(argv: []const []const u8, stdout: anytype, stderr: anytype) !u8 {
+    var customer: ?[]const u8 = null;
+    var index: usize = 0;
+    while (index < argv.len) : (index += 1) {
+        if (std.mem.eql(u8, argv[index], "--customer")) {
+            index += 1;
+            if (index >= argv.len) return usageError(stderr, "aegis-edge pilot init: --customer requires a placeholder name.\n");
+            customer = argv[index];
+        } else {
+            try stderr.print("aegis-edge pilot init: unknown argument '{s}'.\n", .{argv[index]});
+            return 64;
+        }
+    }
+    const name = customer orelse "customer-placeholder";
+    if (std.mem.indexOf(u8, name, "Inc.") != null or std.mem.indexOf(u8, name, "LLC") != null) {
+        try stderr.writeAll("aegis-edge pilot init: use a placeholder, not a real customer legal name.\n");
+        return 64;
+    }
+    try stdout.print("Initialized local pilot placeholder: {s}\n", .{name});
+    try stdout.writeAll("Use customer_pilot/pilot-intake-questionnaire.md and customer_pilot/technical-discovery-questionnaire.md.\n");
+    try stdout.writeAll("No real secrets, no real customer names, no external network, and no real flight.\n");
+    return 0;
+}
+
+fn runPilotReport(argv: []const []const u8, stdout: anytype, stderr: anytype) !u8 {
+    if (argv.len != 2 or !std.mem.eql(u8, argv[0], "--session") or !std.mem.eql(u8, argv[1], "last")) {
+        return usageError(stderr, "aegis-edge pilot report: expected --session last.\n");
+    }
+    try stdout.writeAll("Pilot report template: customer_pilot/pilot-final-report-template.md\n");
+    try stdout.writeAll("Safety report template: customer_pilot/safety-report-template.md\n");
+    try stdout.writeAll("Evidence bundle template: customer_pilot/evidence-bundle-template.md\n");
+    try stdout.writeAll("Use replay verification from the latest local Edge session when available. This command does not claim real flight.\n");
+    return 0;
+}
+
 fn runDocs(argv: []const []const u8, stdout: anytype, stderr: anytype) !u8 {
     if (argv.len == 0) return usageError(stderr, "aegis-edge docs: expected check.\n");
     if (std.mem.eql(u8, argv[0], "check")) {
@@ -611,6 +732,33 @@ const phase38_required_docs = [_][]const u8{
     "docs/edge/customer-proof/demo-recording-script.md",
     "examples/edge/demos/README.md",
     "examples/edge/customer-proof/geofence-deny-safety-report.md",
+    "customer_pilot/README.md",
+    "customer_pilot/pilot-overview.md",
+    "customer_pilot/pilot-boundaries.md",
+    "customer_pilot/pilot-success-criteria.md",
+    "customer_pilot/pilot-timeline.md",
+    "customer_pilot/pilot-deliverables.md",
+    "customer_pilot/pilot-intake-questionnaire.md",
+    "customer_pilot/technical-discovery-questionnaire.md",
+    "customer_pilot/safety-review-questionnaire.md",
+    "customer_pilot/integration-readiness-checklist.md",
+    "customer_pilot/simulation-sitl-evaluation-plan.md",
+    "customer_pilot/customer-demo-script.md",
+    "customer_pilot/safety-report-template.md",
+    "customer_pilot/evidence-bundle-template.md",
+    "customer_pilot/redteam-report-template.md",
+    "customer_pilot/pilot-final-report-template.md",
+    "customer_pilot/known-limitations.md",
+    "customer_pilot/faq.md",
+    "customer_pilot/templates/pilot-sow-template.md",
+    "customer_pilot/templates/mutual-nda-notes.md",
+    "customer_pilot/templates/security-review-response-template.md",
+    "customer_pilot/templates/customer-email-followup.md",
+    "customer_pilot/templates/design-partner-proposal.md",
+    "customer_pilot/examples/sample-pilot-report.md",
+    "customer_pilot/examples/sample-safety-report.md",
+    "customer_pilot/examples/sample-redteam-report.md",
+    "customer_pilot/examples/sample-evidence-bundle-index.md",
 };
 
 fn runDocsCheck(stdout: anytype, stderr: anytype) !u8 {
@@ -629,12 +777,12 @@ fn runDocsCheck(stdout: anytype, stderr: anytype) !u8 {
             try stderr.print("aegis-edge docs check: suspicious overclaim outside the allowed Phase 38 boundary in {s}: {s}\n", .{ path, phrase });
             return 65;
         }
-        if (std.mem.indexOf(u8, text, "fake_secret_value_phase35") != null) {
-            try stderr.print("aegis-edge docs check: fake secret marker leaked in {s}\n", .{path});
+        if (containsSecretPattern(text)) |phrase| {
+            try stderr.print("aegis-edge docs check: secret-like marker leaked in {s}: {s}\n", .{ path, phrase });
             return 65;
         }
     }
-    try stdout.print("Phase 38 docs check: passed ({d} required docs/proof files checked)\n", .{checked});
+    try stdout.print("Phase 38 docs check: passed ({d} required docs/proof/pilot files checked)\n", .{checked});
     try stdout.writeAll("manual review context: phrases such as detect-and-avoid, certification, and real flight are allowed only in explicit limitations or negative-scope text.\n");
     try stdout.writeAll("No real hardware, external network, hosted telemetry, pricing, or real-flight claim is validated by this command.\n");
     return 0;
@@ -652,10 +800,28 @@ fn containsForbiddenOverclaim(text: []const u8) ?[]const u8 {
         "works with all MAVLink commands",
     };
     for (phrases) |phrase| {
-        if (std.mem.indexOf(u8, text, phrase)) |index| {
+        var offset: usize = 0;
+        while (std.mem.indexOf(u8, text[offset..], phrase)) |relative_index| {
+            const index = offset + relative_index;
+            offset = index + phrase.len;
             if (isAllowedNegativeOverclaimContext(text, index)) continue;
             return phrase;
         }
+    }
+    return null;
+}
+
+fn containsSecretPattern(text: []const u8) ?[]const u8 {
+    const phrases = [_][]const u8{
+        "fake_secret_value_phase35",
+        "BEGIN PRIVATE KEY",
+        "AKIA",
+        "ghp_",
+        "xoxb-",
+        "sk_live",
+    };
+    for (phrases) |phrase| {
+        if (std.mem.indexOf(u8, text, phrase) != null) return phrase;
     }
     return null;
 }
@@ -2565,6 +2731,14 @@ fn runRedteam(argv: []const []const u8, stdout: anytype, stderr: anytype) !u8 {
         .ci = options.ci,
         .safety_case_report = options.safety_case_report,
     }) catch |err| {
+        if (err == error.DeploymentProfileInvalid) {
+            try stderr.writeAll("aegis-edge redteam: deployment profile missing, unreadable, or invalid.\n");
+            return 65;
+        }
+        if (err == error.DeploymentProfileNotActive) {
+            try stderr.writeAll("aegis-edge redteam: deployment profile check did not return active status.\n");
+            return 65;
+        }
         try stderr.print("aegis-edge redteam: run failed: {s}\n", .{@errorName(err)});
         return 65;
     };

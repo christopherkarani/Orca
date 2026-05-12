@@ -4,6 +4,7 @@ const core = @import("aegis_core");
 const edge_event = @import("../audit/edge_event.zig");
 const edge_replay = @import("../audit/edge_replay.zig");
 const edge_session = @import("../audit/edge_session.zig");
+const deployment = @import("../deployment/mod.zig");
 const safety_report = @import("../audit/safety_report.zig");
 const fixture_mod = @import("fixture.zig");
 const fault_injection = @import("fault_injection.zig");
@@ -133,6 +134,8 @@ pub fn validateFixtures(allocator: std.mem.Allocator, options: RunOptions) !fixt
 }
 
 pub fn runSuite(allocator: std.mem.Allocator, fixture_set: fixture_mod.FixtureSet, options: RunOptions) !SuiteResult {
+    try validateDeploymentProfile(allocator, options.deployment_profile);
+
     const workspace_root = try std.fs.cwd().realpathAlloc(allocator, ".");
     defer allocator.free(workspace_root);
     const now = core.core.time.Timestamp.now();
@@ -206,6 +209,14 @@ pub fn runSuite(allocator: std.mem.Allocator, fixture_set: fixture_mod.FixtureSe
         .deployment_profile = if (options.deployment_profile) |value| try allocator.dupe(u8, value) else null,
         .results = try results.toOwnedSlice(allocator),
     };
+}
+
+fn validateDeploymentProfile(allocator: std.mem.Allocator, maybe_path: ?[]const u8) !void {
+    const path = maybe_path orelse return;
+    var profile = deployment.loadProfileFile(allocator, path) catch return error.DeploymentProfileInvalid;
+    defer profile.deinit();
+    const check = deployment.checkProfile(profile);
+    if (check.status != .active) return error.DeploymentProfileNotActive;
 }
 
 pub fn runFixture(allocator: std.mem.Allocator, fixture: fixture_mod.Fixture, session_id: []const u8, options: RunOptions) !FixtureResult {
