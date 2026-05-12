@@ -198,6 +198,10 @@ pub const required_assets = [_]AssetCheck{
     .{ .name = "red-team fixtures", .path = "examples/edge/redteam/README.md", .status = .active, .required = true },
     .{ .name = "safety-case templates", .path = "examples/edge/safety-case/README.md", .status = .active, .required = true },
     .{ .name = "runtime docs", .path = "docs/edge/simulation-vs-flight.md", .status = .active, .required = true },
+    .{ .name = "runtime health docs", .path = "docs/edge/runtime-health.md", .status = .active, .required = true },
+    .{ .name = "watchdog docs", .path = "docs/edge/watchdog.md", .status = .active, .required = true },
+    .{ .name = "watchdog policy examples", .path = "examples/edge/health/policies/watchdog-strict.yaml", .status = .active, .required = true },
+    .{ .name = "watchdog scenario examples", .path = "examples/edge/health/scenarios/heartbeat-expired.yaml", .status = .active, .required = true },
 };
 
 pub fn doctorAssets(allocator: std.mem.Allocator) !AssetReport {

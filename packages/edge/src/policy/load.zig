@@ -421,6 +421,48 @@ fn parseYamlWatchdog(builder: *PolicyBuilder, section: *Section, indent: usize, 
             builder.watchdog.enabled = try parseBool(value);
             return;
         }
+        if (std.mem.eql(u8, key, "heartbeat_timeout_ms")) {
+            builder.watchdog.heartbeat_timeout_ms = try parseU64(value);
+            builder.watchdog.heartbeat.agent_max_age_ms = builder.watchdog.heartbeat_timeout_ms;
+            builder.watchdog.heartbeat.adapter_max_age_ms = builder.watchdog.heartbeat_timeout_ms;
+            builder.watchdog.heartbeat.mavlink_max_age_ms = builder.watchdog.heartbeat_timeout_ms;
+            builder.watchdog.heartbeat.runtime_max_age_ms = builder.watchdog.heartbeat_timeout_ms;
+            return;
+        }
+        if (std.mem.eql(u8, key, "state_stale_after_ms")) {
+            builder.watchdog.state_stale_after_ms = try parseU64(value);
+            builder.watchdog.telemetry.vehicle_state_max_age_ms = builder.watchdog.state_stale_after_ms;
+            builder.watchdog.telemetry.position_max_age_ms = builder.watchdog.state_stale_after_ms;
+            return;
+        }
+        if (std.mem.eql(u8, key, "command_timeout_ms")) {
+            builder.watchdog.command_timeout_ms = try parseU64(value);
+            return;
+        }
+        if (std.mem.eql(u8, key, "max_command_queue_depth")) {
+            builder.watchdog.max_command_queue_depth = try parseU64(value);
+            return;
+        }
+        if (std.mem.eql(u8, key, "max_audit_queue_depth")) {
+            builder.watchdog.max_audit_queue_depth = try parseU64(value);
+            return;
+        }
+        if (std.mem.eql(u8, key, "fail_closed_on_audit_failure")) {
+            builder.watchdog.audit.fail_closed_on_audit_error = try parseBool(value);
+            return;
+        }
+        if (std.mem.eql(u8, key, "fail_closed_on_policy_failure")) {
+            builder.watchdog.fail_closed_on_policy_failure = try parseBool(value);
+            return;
+        }
+        if (std.mem.eql(u8, key, "fail_closed_on_state_expiry")) {
+            builder.watchdog.fail_closed_on_state_expiry = try parseBool(value);
+            return;
+        }
+        if (std.mem.eql(u8, key, "recommended_fallback_order")) {
+            try parseWatchdogFallbackOrder(builder, value);
+            return;
+        }
         if (std.mem.eql(u8, key, "heartbeat")) section.* = .watchdog_heartbeat else if (std.mem.eql(u8, key, "telemetry")) section.* = .watchdog_telemetry else if (std.mem.eql(u8, key, "audit")) section.* = .watchdog_audit else if (std.mem.eql(u8, key, "degraded_mode")) section.* = .watchdog_degraded_mode else if (std.mem.eql(u8, key, "resource")) section.* = .watchdog_resource else return error.InvalidPolicy;
         return;
     }
@@ -442,6 +484,25 @@ fn parseYamlWatchdog(builder: *PolicyBuilder, section: *Section, indent: usize, 
         },
         else => return error.InvalidPolicy,
     }
+}
+
+fn parseWatchdogFallbackOrder(builder: *PolicyBuilder, value: []const u8) !void {
+    const trimmed = std.mem.trim(u8, value, " \t\r");
+    if (trimmed.len == 0) return error.InvalidWatchdogFallbackCommand;
+    const body = if (trimmed[0] == '[' and trimmed[trimmed.len - 1] == ']') trimmed[1 .. trimmed.len - 1] else trimmed;
+    var count: u8 = 0;
+    var it = std.mem.splitScalar(u8, body, ',');
+    while (it.next()) |part| {
+        if (count >= builder.watchdog.recommended_fallback_order.len) return error.InvalidWatchdogPolicy;
+        const name = std.mem.trim(u8, part, " \t\r\"'");
+        if (name.len == 0) continue;
+        const command = try parseCommandAction(name);
+        if (!health_watchdog.isValidFallbackCommand(command)) return error.InvalidWatchdogFallbackCommand;
+        builder.watchdog.recommended_fallback_order[count] = command;
+        count += 1;
+    }
+    if (count == 0) return error.InvalidWatchdogFallbackCommand;
+    builder.watchdog.recommended_fallback_order_len = count;
 }
 
 fn parseJsonPolicy(allocator: std.mem.Allocator, text: []const u8, source_path: ?[]const u8, options: LoadOptions) !LoadedPolicy {
@@ -487,8 +548,27 @@ fn parseJsonPolicy(allocator: std.mem.Allocator, text: []const u8, source_path: 
 }
 
 fn parseJsonWatchdog(builder: *PolicyBuilder, object: std.json.ObjectMap) !void {
-    try rejectUnknownKeys(object, &.{ "enabled", "heartbeat", "telemetry", "audit", "degraded_mode", "resource" });
+    try rejectUnknownKeys(object, &.{ "enabled", "heartbeat_timeout_ms", "state_stale_after_ms", "command_timeout_ms", "max_command_queue_depth", "max_audit_queue_depth", "fail_closed_on_audit_failure", "fail_closed_on_policy_failure", "fail_closed_on_state_expiry", "recommended_fallback_order", "heartbeat", "telemetry", "audit", "degraded_mode", "resource" });
     if (object.get("enabled")) |value| builder.watchdog.enabled = try expectBool(value);
+    if (object.get("heartbeat_timeout_ms")) |value| {
+        builder.watchdog.heartbeat_timeout_ms = try expectPositiveU64(value);
+        builder.watchdog.heartbeat.agent_max_age_ms = builder.watchdog.heartbeat_timeout_ms;
+        builder.watchdog.heartbeat.adapter_max_age_ms = builder.watchdog.heartbeat_timeout_ms;
+        builder.watchdog.heartbeat.mavlink_max_age_ms = builder.watchdog.heartbeat_timeout_ms;
+        builder.watchdog.heartbeat.runtime_max_age_ms = builder.watchdog.heartbeat_timeout_ms;
+    }
+    if (object.get("state_stale_after_ms")) |value| {
+        builder.watchdog.state_stale_after_ms = try expectPositiveU64(value);
+        builder.watchdog.telemetry.vehicle_state_max_age_ms = builder.watchdog.state_stale_after_ms;
+        builder.watchdog.telemetry.position_max_age_ms = builder.watchdog.state_stale_after_ms;
+    }
+    if (object.get("command_timeout_ms")) |value| builder.watchdog.command_timeout_ms = try expectPositiveU64(value);
+    if (object.get("max_command_queue_depth")) |value| builder.watchdog.max_command_queue_depth = try expectPositiveU64(value);
+    if (object.get("max_audit_queue_depth")) |value| builder.watchdog.max_audit_queue_depth = try expectPositiveU64(value);
+    if (object.get("fail_closed_on_audit_failure")) |value| builder.watchdog.audit.fail_closed_on_audit_error = try expectBool(value);
+    if (object.get("fail_closed_on_policy_failure")) |value| builder.watchdog.fail_closed_on_policy_failure = try expectBool(value);
+    if (object.get("fail_closed_on_state_expiry")) |value| builder.watchdog.fail_closed_on_state_expiry = try expectBool(value);
+    if (object.get("recommended_fallback_order")) |value| try parseJsonWatchdogFallbackOrder(builder, value);
     if (object.get("heartbeat")) |value| {
         const heartbeat = try expectObject(value);
         try rejectUnknownKeys(heartbeat, &.{ "agent_max_age_ms", "adapter_max_age_ms", "mavlink_max_age_ms", "px4_sitl_max_age_ms", "ardupilot_sitl_max_age_ms", "runtime_max_age_ms", "audit_writer_max_age_ms", "safety_engine_max_age_ms" });
@@ -537,6 +617,17 @@ fn parseJsonWatchdog(builder: *PolicyBuilder, object: std.json.ObjectMap) !void 
         if (resource.get("max_cpu_percent")) |item| builder.watchdog.resource.max_cpu_percent = try expectPositiveU8(item);
         if (resource.get("max_event_queue_depth")) |item| builder.watchdog.resource.max_event_queue_depth = try expectPositiveU64(item);
     }
+}
+
+fn parseJsonWatchdogFallbackOrder(builder: *PolicyBuilder, value: std.json.Value) !void {
+    if (value != .array) return error.InvalidWatchdogFallbackCommand;
+    if (value.array.items.len == 0 or value.array.items.len > builder.watchdog.recommended_fallback_order.len) return error.InvalidWatchdogPolicy;
+    for (value.array.items, 0..) |item, index| {
+        const command = try parseCommandAction(try expectString(item));
+        if (!health_watchdog.isValidFallbackCommand(command)) return error.InvalidWatchdogFallbackCommand;
+        builder.watchdog.recommended_fallback_order[index] = command;
+    }
+    builder.watchdog.recommended_fallback_order_len = @intCast(value.array.items.len);
 }
 
 fn parseJsonSafety(builder: *PolicyBuilder, safety: std.json.ObjectMap) !void {

@@ -9,6 +9,7 @@ pub const AuditHealthInput = struct {
     append_failed: bool = false,
     hash_chain_verified: bool = true,
     append_latency_ms: u64 = 0,
+    audit_queue_depth: u64 = 0,
     provenance: findings_mod.Provenance = .unknown,
     now_ms: i128,
 };
@@ -31,6 +32,9 @@ pub fn evaluateAuditHealth(
     }
     if (input.append_latency_ms > policy.audit.max_event_append_latency_ms) {
         try builder.addFinding(finding(.degraded, "audit append latency exceeded", "latency_ms exceeded policy", "watchdog audit max append latency", input, policy));
+    }
+    if (input.audit_queue_depth > policy.max_audit_queue_depth) {
+        try builder.addFinding(finding(.critical, "audit queue depth exceeded", "audit_queue_depth exceeded policy", "watchdog max audit queue depth", input, policy));
     }
     if (builder.findings.items.len == 0) try builder.addStatus(.audit_writer, .healthy);
     return builder.finish("audit writer health evaluated; strict/CI modes fail closed when required audit persistence is broken");

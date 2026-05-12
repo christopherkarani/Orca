@@ -4,4 +4,4 @@ The watchdog policy is a local policy section used to configure heartbeat max ag
 
 The watchdog never bypasses command policy or the safety envelope. Deny beats allow. Emergency LAND, RTH, and HOLD remain policy-controlled and require the required context such as home position or position/control state.
 
-This is no real-flight readiness, no autopilot replacement behavior, no hosted telemetry, no external network dependency, and no regulatory certification.
+This is not real-flight readiness, not autopilot replacement behavior, not hosted telemetry, not an external network dependency, and not regulatory certification.

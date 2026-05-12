@@ -120,11 +120,16 @@ const watchdog_policy_yaml =
 
 test "phase 37 health status model constructs structured findings" {
     try std.testing.expectEqualStrings("healthy", health.HealthStatus.healthy.toString());
+    try std.testing.expectEqualStrings("warning", health.HealthStatus.warning.toString());
     try std.testing.expectEqualStrings("degraded", health.HealthStatus.degraded.toString());
     try std.testing.expectEqualStrings("critical", health.HealthStatus.critical.toString());
+    try std.testing.expectEqualStrings("failed", health.HealthStatus.failed.toString());
     try std.testing.expectEqualStrings("unavailable", health.HealthStatus.unavailable.toString());
     try std.testing.expectEqualStrings("unknown", health.HealthStatus.unknown.toString());
+    try std.testing.expectEqualStrings("fail_safe_recommended", health.RuntimeStatus.fail_safe_recommended.toString());
     try std.testing.expectEqual(health.Severity.critical, health.HealthStatus.failed.defaultSeverity());
+    try std.testing.expectEqual(health.HealthDomain.policy, health.health_status.parseDomain("policy").?);
+    try std.testing.expectEqual(health.HealthDomain.runtime_assets, health.health_status.parseDomain("runtime_assets").?);
 
     const finding = health.HealthFinding.init(.{
         .finding_id = "health-agent-stale",
@@ -165,6 +170,41 @@ test "phase 37 watchdog policy parses and rejects unsafe configuration" {
     try strict_default.applyModeDefaults(.ci);
     try std.testing.expect(strict_default.audit.fail_closed_on_audit_error);
     try std.testing.expect(strict_default.audit.require_audit_writer);
+
+    const prompt_shape =
+        \\version: 1
+        \\vehicle:
+        \\  kind: drone_multirotor
+        \\  autopilot: px4
+        \\  adapter: fake
+        \\safety:
+        \\  state_freshness:
+        \\    max_state_age_ms: 1000
+        \\    deny_commands_on_stale_state: true
+        \\commands:
+        \\  allow:
+        \\    - read_telemetry
+        \\    - land
+        \\  deny:
+        \\    - disable_failsafe
+        \\watchdog:
+        \\  enabled: true
+        \\  heartbeat_timeout_ms: 2000
+        \\  state_stale_after_ms: 1000
+        \\  command_timeout_ms: 1500
+        \\  max_command_queue_depth: 100
+        \\  max_audit_queue_depth: 1000
+        \\  fail_closed_on_audit_failure: true
+        \\  fail_closed_on_policy_failure: true
+        \\  fail_closed_on_state_expiry: true
+        \\  recommended_fallback_order: [land, hold_position, return_to_home]
+    ;
+    var prompt_loaded = try edge.policy.loadFromSlice(std.testing.allocator, prompt_shape, "prompt-watchdog.yaml", .{});
+    defer prompt_loaded.deinit();
+    try std.testing.expectEqual(@as(u64, 2000), prompt_loaded.value.watchdog.heartbeat_timeout_ms);
+    try std.testing.expectEqual(@as(u64, 1500), prompt_loaded.value.watchdog.command_timeout_ms);
+    try std.testing.expectEqual(@as(u64, 100), prompt_loaded.value.watchdog.max_command_queue_depth);
+    try std.testing.expectEqual(@as(u8, 3), prompt_loaded.value.watchdog.recommended_fallback_order_len);
 }
 
 test "phase 37 heartbeat freshness preserves fake and SITL provenance" {
@@ -229,6 +269,7 @@ test "phase 37 telemetry audit and resource health produce conservative findings
         .append_failed = true,
         .hash_chain_verified = false,
         .append_latency_ms = 250,
+        .audit_queue_depth = 1001,
         .provenance = .fake_adapter,
         .now_ms = 1_000_000,
     }, loaded.value.watchdog);
@@ -247,6 +288,53 @@ test "phase 37 telemetry audit and resource health produce conservative findings
     defer resource_report.deinit();
     try std.testing.expectEqual(health.HealthStatus.degraded, resource_report.overall_status);
     try std.testing.expect(resource_report.hasDomain(.resource_usage));
+
+    var queue_report = try health.evaluateCommandQueue(std.testing.allocator, .{
+        .pending_count = 101,
+        .queue_depth = 101,
+        .oldest_pending_age_ms = 1600,
+        .now_ms = 1_003_000,
+        .provenance = .fake_adapter,
+    }, loaded.value.watchdog);
+    defer queue_report.deinit();
+    try std.testing.expectEqual(health.HealthStatus.critical, queue_report.overall_status);
+    try std.testing.expect(queue_report.hasFindingId("health-command-queue-overflow"));
+    try std.testing.expect(queue_report.hasFindingId("health-command-timeout"));
+
+    const timeout = health.evaluateCommandTimeout("cmd-1", 1600, false, 1_003_000, .fake_adapter, loaded.value.watchdog);
+    try std.testing.expect(timeout.timed_out);
+    try std.testing.expect(timeout.finding != null);
+    const acked = health.evaluateCommandTimeout("cmd-2", 1600, true, 1_003_000, .fake_adapter, loaded.value.watchdog);
+    try std.testing.expect(!acked.timed_out);
+}
+
+test "phase 37 fallback order and state expiry settings are enforced" {
+    var loaded = try edge.policy.loadFromSlice(std.testing.allocator, watchdog_policy_yaml, "phase37-watchdog.yaml", .{});
+    defer loaded.deinit();
+    const finding = health.HealthFinding.init(.{
+        .finding_id = "health-fallback",
+        .domain = .vehicle_state,
+        .status = .critical,
+        .severity = .critical,
+        .reason = "fallback needed",
+        .observed_value = "degraded",
+        .threshold = "fallback",
+        .timestamp_ms = 1_003_000,
+        .provenance = .fake_adapter,
+    });
+    var state = vehicleState(.fake_adapter, 80, .fresh, 1_000_000);
+    loaded.value.watchdog.recommended_fallback_order = .{ .return_to_home, .hold_position, .land };
+    const rth = health.fallback.recommend(loaded.value.watchdog, state, finding);
+    try std.testing.expectEqual(health.fallback.FallbackAction.return_to_home, rth.action);
+    state.home_position = null;
+    const hold = health.fallback.recommend(loaded.value.watchdog, state, finding);
+    try std.testing.expectEqual(health.fallback.FallbackAction.hold, hold.action);
+
+    state.state_freshness = .expired;
+    const report = health.HealthReport.initStatic(.{ .overall_status = .degraded, .recommended_behavior = .observe_only });
+    const decision_result = health.decideForCommand(&loaded.value, report, request(.read_telemetry), state, .{ .mode = .ci, .now_ms = 1_003_000, .non_interactive = true });
+    try std.testing.expectEqual(decision.deny, decision_result.decision);
+    try std.testing.expectEqual(health.DegradedBehavior.fail_closed, decision_result.behavior);
 }
 
 test "phase 37 degraded-mode decisions deny unsafe commands and preserve emergency policy" {
@@ -405,6 +493,10 @@ test "phase 37 examples docs and event maps expose health without real-flight cl
     }
 
     try std.testing.expect(edge.audit.edge_event.isKnown("health.watchdog.finding"));
+    try std.testing.expect(edge.audit.edge_event.isKnown("health.command_timeout"));
+    try std.testing.expect(edge.audit.edge_event.isKnown("health.command_queue_overflow"));
+    try std.testing.expect(edge.audit.edge_event.isKnown("health.runtime_asset_missing"));
+    try std.testing.expect(edge.audit.edge_event.isKnown("health.no_safe_fallback"));
     try std.testing.expect(edge.audit.edge_event.isKnown("health.command_denied"));
 }
 

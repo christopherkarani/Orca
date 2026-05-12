@@ -13,6 +13,7 @@ pub const Severity = enum {
 
 pub const HealthStatus = enum {
     healthy,
+    warning,
     degraded,
     critical,
     failed,
@@ -26,11 +27,12 @@ pub const HealthStatus = enum {
     pub fn rank(self: HealthStatus) u8 {
         return switch (self) {
             .healthy => 0,
-            .degraded => 1,
-            .unknown => 2,
-            .unavailable => 3,
-            .critical => 4,
-            .failed => 5,
+            .warning => 1,
+            .degraded => 2,
+            .unknown => 3,
+            .unavailable => 4,
+            .critical => 5,
+            .failed => 6,
         };
     }
 
@@ -41,14 +43,44 @@ pub const HealthStatus = enum {
     pub fn defaultSeverity(self: HealthStatus) Severity {
         return switch (self) {
             .healthy => .info,
-            .degraded => .warning,
+            .warning, .degraded => .warning,
             .unknown, .unavailable => .high,
             .critical, .failed => .critical,
         };
     }
 };
 
+pub const RuntimeStatus = enum {
+    starting,
+    running,
+    paused,
+    degraded,
+    fail_safe_recommended,
+    stopping,
+    stopped,
+    crashed,
+    unknown,
+
+    pub fn toString(self: RuntimeStatus) []const u8 {
+        return @tagName(self);
+    }
+};
+
 pub const HealthDomain = enum {
+    core,
+    policy,
+    audit,
+    redaction,
+    safety_evaluator,
+    mavlink_gateway,
+    px4_adapter,
+    ardupilot_adapter,
+    fake_adapter,
+    operator_approval,
+    emergency_modes,
+    redteam,
+    runtime_assets,
+    deployment_profile,
     runtime,
     agent,
     adapter,

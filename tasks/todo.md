@@ -1,5 +1,13 @@
 # Phase 37 Reliability Watchdog and Runtime Health
 
+## Completion Pass Checklist
+
+- [x] Reconcile the existing Phase 37 implementation against the current prompt without implementing future phases.
+- [x] Add prompt-compatible health states, runtime modes, health domains, watchdog config aliases, command queue health, and command timeout support.
+- [x] Add prompt-named deterministic health scenarios and CLI aliases for health watch/report/profile checks and watchdog simulate default policy behavior.
+- [x] Run focused and full verification, including Aegis CLI and Aegis Edge health/watchdog/red-team smokes.
+- [x] Update this review section with final evidence and limitations.
+
 ## Review Fix Checklist
 
 - [x] Add regression coverage for Aegis Edge package Docker/install layout.
@@ -87,6 +95,7 @@
 - Added health/watchdog policy parsing, health domains/findings/reports, heartbeat/freshness/audit/resource checks, degraded-mode decisions, safety evaluator integration, health audit events, CLI health/watchdog commands, deterministic health examples, health red-team fixtures, safety-case health evidence, replay-visible findings, docs, and tests.
 - Addressed initial review findings: fail-closed health now wins before emergency allowances; audit-health findings preserve `health.audit.failure`; health CLI validates `expected_decision` and command-specific `expected_behavior`; health CLI parses `health_fault` explicitly.
 - Addressed follow-up review findings: new Phase 37 files are visible in `git diff` with intent-to-add; Edge Docker package copies `bin/aegis-edge`; `install-aegis-edge.sh` extracts the package and installs the binary to `${PREFIX}/bin/aegis-edge`.
+- Addressed completion-pass review findings: prompt-shaped watchdog fields now parse and validate; `health watch`, `health report --session last`, `health check --profile`, and default-policy `watchdog simulate` are wired; `health report` reads runtime-health evidence or reports unknown/unavailable instead of a healthy placeholder; `health check` rejects ambiguous policy/profile input; runtime asset faults use `health.runtime_asset_missing`; queue overflow, command timeout, audit queue depth, state expiry, fallback order, and prompt-named health events are covered.
 - Verification complete: `zig build`, `zig build test`, `zig build test --summary all`, required Aegis/Aegis Edge smoke commands, package smoke, installer smoke, health/red-team/safety-case/replay manual checks, schema JSON validation, fake-secret persistent-output scan, and docs claim scan passed.
 
 # Phase 36 Review Fixes

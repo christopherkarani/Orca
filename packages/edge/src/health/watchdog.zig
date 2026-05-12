@@ -2,6 +2,7 @@ const std = @import("std");
 
 const degraded = @import("degraded_mode.zig");
 const status_mod = @import("health_status.zig");
+const domain_mod = @import("../domain/mod.zig");
 
 pub const DegradedBehavior = degraded.DegradedBehavior;
 pub const EmergencyAllowance = degraded.EmergencyAllowance;
@@ -62,6 +63,15 @@ pub const ResourcePolicy = struct {
 
 pub const WatchdogPolicy = struct {
     enabled: bool = true,
+    heartbeat_timeout_ms: u64 = 2000,
+    state_stale_after_ms: u64 = 1000,
+    command_timeout_ms: u64 = 1500,
+    max_command_queue_depth: u64 = 100,
+    max_audit_queue_depth: u64 = 1000,
+    fail_closed_on_policy_failure: bool = true,
+    fail_closed_on_state_expiry: bool = true,
+    recommended_fallback_order: [3]domain_mod.commands.CommandAction = .{ .land, .hold_position, .return_to_home },
+    recommended_fallback_order_len: u8 = 3,
     heartbeat: HeartbeatPolicy = .{},
     telemetry: TelemetryPolicy = .{},
     audit: AuditPolicy = .{},
@@ -81,6 +91,11 @@ pub const WatchdogPolicy = struct {
 
     pub fn validate(self: WatchdogPolicy) !void {
         if (!self.enabled) return;
+        try positive(self.heartbeat_timeout_ms);
+        try positive(self.state_stale_after_ms);
+        try positive(self.command_timeout_ms);
+        try positive(self.max_command_queue_depth);
+        try positive(self.max_audit_queue_depth);
         try positive(self.heartbeat.agent_max_age_ms);
         try positive(self.heartbeat.adapter_max_age_ms);
         try positive(self.heartbeat.mavlink_max_age_ms);
@@ -98,6 +113,10 @@ pub const WatchdogPolicy = struct {
         try positive(self.resource.max_memory_mb);
         try positive(self.resource.max_event_queue_depth);
         if (self.resource.max_cpu_percent == 0 or self.resource.max_cpu_percent > 100) return error.InvalidWatchdogPolicy;
+        if (self.recommended_fallback_order_len == 0 or self.recommended_fallback_order_len > self.recommended_fallback_order.len) return error.InvalidWatchdogPolicy;
+        for (self.recommended_fallback_order[0..self.recommended_fallback_order_len]) |command| {
+            if (!isValidFallbackCommand(command)) return error.InvalidWatchdogFallbackCommand;
+        }
         if (self.degraded_mode.on_agent_stale == .unknown or
             self.degraded_mode.on_adapter_stale == .unknown or
             self.degraded_mode.on_telemetry_stale == .unknown or
@@ -126,4 +145,11 @@ pub const WatchdogPolicy = struct {
 
 fn positive(value: u64) !void {
     if (value == 0) return error.InvalidWatchdogPolicy;
+}
+
+pub fn isValidFallbackCommand(command: domain_mod.commands.CommandAction) bool {
+    return switch (command) {
+        .land, .hold_position, .return_to_home => true,
+        else => false,
+    };
 }

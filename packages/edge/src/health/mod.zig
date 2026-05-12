@@ -12,6 +12,10 @@ pub const resource_health = @import("resource_health.zig");
 pub const adapter_health = @import("adapter_health.zig");
 pub const policy_health = @import("policy_health.zig");
 pub const health_audit = @import("health_audit.zig");
+pub const runtime_state = @import("runtime_state.zig");
+pub const queue_health = @import("queue_health.zig");
+pub const timeout = @import("timeout.zig");
+pub const fallback = @import("fallback.zig");
 
 const domain = @import("../domain/mod.zig");
 const schema = @import("../schema/mod.zig");
@@ -19,6 +23,7 @@ const core = @import("aegis_core");
 
 pub const HealthStatus = health_status.HealthStatus;
 pub const HealthDomain = health_status.HealthDomain;
+pub const RuntimeStatus = health_status.RuntimeStatus;
 pub const Severity = health_status.Severity;
 pub const HealthFinding = health_findings.HealthFinding;
 pub const Provenance = health_findings.Provenance;
@@ -31,11 +36,17 @@ pub const HeartbeatSource = heartbeat.HeartbeatSource;
 pub const TimestampSource = heartbeat.TimestampSource;
 pub const HeartbeatStatus = heartbeat.HeartbeatStatus;
 pub const Decision = degraded_mode.Decision;
+pub const CommandLifecycle = queue_health.CommandLifecycle;
+pub const CommandQueueSample = queue_health.CommandQueueSample;
+pub const CommandTimeoutStatus = timeout.CommandTimeoutStatus;
+pub const FallbackRecommendation = fallback.Recommendation;
 
 pub const evaluateHeartbeat = heartbeat.evaluateHeartbeat;
 pub const evaluateMissingHeartbeat = heartbeat.evaluateMissingHeartbeat;
 pub const heartbeatFromMavlinkFrame = heartbeat.heartbeatFromMavlinkFrame;
 pub const evaluateTelemetryFreshness = telemetry_freshness.evaluateTelemetryFreshness;
+pub const evaluateCommandQueue = queue_health.evaluateCommandQueue;
+pub const evaluateCommandTimeout = timeout.evaluateCommandTimeout;
 
 pub fn decideForCommand(
     policy: *const schema.edge_policy_schema.EdgePolicyV1,
@@ -48,6 +59,9 @@ pub fn decideForCommand(
     if (!policy.watchdog.enabled) return .{ .decision = .observe, .behavior = .observe_only, .reason = "watchdog disabled" };
     if (degraded_mode.isNeverSafe(request.action)) {
         return .{ .decision = .deny, .behavior = .fail_closed, .reason = "critical command remains denied under watchdog" };
+    }
+    if (policy.watchdog.fail_closed_on_state_expiry and state.state_freshness == .expired) {
+        return .{ .decision = .deny, .behavior = .fail_closed, .reason = "watchdog fail-closed on expired vehicle state" };
     }
     if (report.recommended_behavior == .fail_closed or report.recommended_behavior == .no_safe_action or report.recommended_behavior == .unknown) {
         return .{ .decision = .deny, .behavior = .fail_closed, .reason = "watchdog fail-closed" };
@@ -101,4 +115,11 @@ test {
     _ = telemetry_freshness;
     _ = audit_health;
     _ = resource_health;
+    _ = adapter_health;
+    _ = policy_health;
+    _ = health_audit;
+    _ = runtime_state;
+    _ = queue_health;
+    _ = timeout;
+    _ = fallback;
 }
