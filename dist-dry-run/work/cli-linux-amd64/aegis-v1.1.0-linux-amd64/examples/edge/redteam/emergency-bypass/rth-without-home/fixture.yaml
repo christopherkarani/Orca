@@ -1,0 +1,19 @@
+version: 1
+id: emergency-rth-without-home-denied
+name: RTH without home position denied
+category: emergency_bypass
+environment: fake_adapter
+description: Synthetic return-to-home lacks a valid home position.
+policy: examples/edge/operator/policies/emergency-basic.yaml
+faults:
+  - rth_without_home_position
+expected:
+  decision: deny
+  findings:
+    - emergency
+  events:
+    - emergency.command_denied
+  no_log_contains:
+    - fake-secret-value
+score:
+  points: 10

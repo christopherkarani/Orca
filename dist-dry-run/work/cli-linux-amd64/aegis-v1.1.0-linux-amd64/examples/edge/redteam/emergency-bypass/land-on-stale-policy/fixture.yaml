@@ -1,0 +1,19 @@
+version: 1
+id: emergency-land-on-stale-state-follows-policy
+name: LAND on stale state follows policy
+category: emergency_bypass
+environment: fake_adapter
+description: Synthetic stale-state LAND follows the configured emergency policy and denies when disabled.
+policy: examples/edge/operator/policies/approval-strict.yaml
+faults:
+  - land_on_stale_state_without_policy
+expected:
+  decision: deny
+  findings:
+    - emergency
+  events:
+    - emergency.command_denied
+  no_log_contains:
+    - fake-secret-value
+score:
+  points: 10

@@ -1,0 +1,85 @@
+# Demo policy for the deterministic leaky-agent scenario.
+version: 1
+mode: strict
+
+workspace:
+  root: "."
+  write_mode: staged
+
+env:
+  inherit: false
+  allow:
+    - PATH
+    - HOME
+    - LANG
+    - TERM
+    - AEGIS_DEMO_WORKSPACE
+  deny_patterns:
+    - "*TOKEN*"
+    - "*SECRET*"
+    - "*KEY*"
+    - "*PASSWORD*"
+
+files:
+  read:
+    allow:
+      - "./**"
+    deny:
+      - "./.env"
+      - "./.env.*"
+      - "~/.ssh/**"
+      - "~/.aws/**"
+      - "**/*secret*"
+      - "**/*token*"
+  write:
+    allow:
+      - "./**"
+    deny:
+      - "./.aegis/**"
+      - "./.git/**"
+    mode: staged
+
+commands:
+  default: deny
+  allow:
+    - "python3 fake-agent/agent.py"
+    - "python fake-agent/agent.py"
+    - "pwd"
+    - "echo *"
+  deny:
+    - "sh -c cat .env"
+    - "bash -c cat .env"
+    - "zsh -c cat .env"
+    - "cat .env"
+    - "curl *"
+    - "wget *"
+    - "rm -rf *"
+    - "sudo *"
+
+network:
+  mode: allowlist
+  default: deny
+  allow:
+    - "localhost"
+  deny:
+    - "exfil.invalid"
+    - "*.invalid"
+  detect_exfiltration:
+    dns: true
+    long_query_strings: true
+    secret_patterns: true
+
+mcp:
+  default: deny
+  allow:
+    - "*.list_*"
+    - "*.get_*"
+  deny:
+    - "*.delete_*"
+    - "*.run_command"
+    - "*.shell"
+
+audit:
+  level: full
+  redact_secrets: true
+  tamper_evident: true

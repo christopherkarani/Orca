@@ -1,0 +1,15 @@
+id: px4-sitl-local
+target_arch: linux-amd64
+os: linux
+deployment_mode: simulation
+environment: px4_sitl
+runtime_assets: source
+policy_path: examples/edge/px4/policies/px4-geofence-basic.yaml
+scenario_path: examples/edge/px4/scenarios/sitl-observe-heartbeat-skip.yaml
+audit_output_path: .aegis-edge/sessions
+log_output_path: .aegis-edge/logs
+network_mode: sitl_only
+sitl_config: local PX4 SITL only
+safety_limitations: PX4 SITL evidence is simulation evidence, not real-flight validation
+operator_acknowledgement: false
+bench: false

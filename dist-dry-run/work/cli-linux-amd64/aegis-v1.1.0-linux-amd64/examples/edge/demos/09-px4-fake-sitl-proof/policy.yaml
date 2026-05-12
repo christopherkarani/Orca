@@ -1,0 +1,9 @@
+version: 1
+vehicle: { kind: drone_multirotor, autopilot: px4, adapter: fake }
+safety:
+  state_freshness: { max_state_age_ms: 1000, deny_commands_on_stale_state: true }
+commands:
+  allow: [read_telemetry, read_vehicle_state, land]
+  ask: [set_waypoint]
+  deny: [disable_failsafe, raw_actuator_output]
+audit: { level: full, redact_secrets: true }

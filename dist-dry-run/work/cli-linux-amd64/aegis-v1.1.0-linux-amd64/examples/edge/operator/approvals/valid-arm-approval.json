@@ -1,0 +1,11 @@
+{
+  "example": "valid-arm-approval",
+  "scope": "exact_action_only",
+  "vehicle_id": "edge-vehicle-1",
+  "command_id": "operator-arm-001",
+  "command_type": "arm",
+  "max_uses": 1,
+  "expires_at_ms": 1060500,
+  "environment": "fake_px4_adapter",
+  "note": "Illustrative only. Generate real local approval records with aegis-edge operator request."
+}

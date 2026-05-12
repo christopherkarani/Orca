@@ -1,0 +1,11 @@
+{
+  "label": "paste_site",
+  "host": "pastebin.com",
+  "port": 443,
+  "protocol": "https",
+  "scheme": "https",
+  "path": "/api/post",
+  "query": "",
+  "environment": "simulated_external",
+  "provenance": "unknown"
+}

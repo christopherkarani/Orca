@@ -1,0 +1,26 @@
+{
+  "project": "Orca OpenCode/OpenClaw plugin plan",
+  "created_at": "2026-05-10T00:54:07.237837+00:00",
+  "phases": [
+    "P08B",
+    "P09",
+    "P10",
+    "P11"
+  ],
+  "files": [
+    "00_INDEX.md",
+    "CODEX_PROMPTS.md",
+    "HOST_PLUGIN_CONTRACT.md",
+    "P08B_OPENCODE_NPM_PACKAGE.md",
+    "P09_OPENCLAW_PLUGIN.md",
+    "P10_OPENCLAW_NPM_PACKAGE.md",
+    "P11_CLAWHUB_SUBMISSION.md",
+    "PLUGIN_SECURITY_INVARIANTS.md",
+    "README.md"
+  ],
+  "notes": [
+    "OpenCode plugin package targets npm distribution.",
+    "OpenClaw plugin package targets npm first, ClawHub later.",
+    "Orca CLI remains separate and must be available on PATH."
+  ]
+}

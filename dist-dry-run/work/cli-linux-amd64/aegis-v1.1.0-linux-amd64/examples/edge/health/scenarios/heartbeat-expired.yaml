@@ -1,0 +1,8 @@
+id: heartbeat-expired
+environment: fake_adapter
+provenance: fake_adapter
+command: takeoff
+expected_decision: deny
+health_fault: heartbeat_expired
+expected_behavior: deny_high_risk
+note: deterministic fake heartbeat expiration scenario; no hardware, network, real flight, or certification claim.

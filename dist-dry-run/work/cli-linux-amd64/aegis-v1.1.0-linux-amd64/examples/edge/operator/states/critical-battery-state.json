@@ -1,0 +1,30 @@
+{
+  "vehicle_id": "edge-vehicle-1",
+  "vehicle_kind": "drone_multirotor",
+  "autopilot": "px4",
+  "mode": "guided",
+  "arm_state": "armed",
+  "position": {
+    "latitude_deg": 37.000000,
+    "longitude_deg": -122.000000,
+    "altitude_m": 20,
+    "altitude_reference": "amsl"
+  },
+  "battery": {
+    "percent_remaining": 10,
+    "voltage_v": 14.1,
+    "current_a": 2.8,
+    "source": "monotonic"
+  },
+  "control_authority": "onboard_agent",
+  "home_position": {
+    "latitude_deg": 37.000000,
+    "longitude_deg": -122.000000,
+    "altitude_m": 0,
+    "altitude_reference": "amsl"
+  },
+  "timestamp_ms": 1000000,
+  "timestamp_source": "monotonic",
+  "state_freshness": "fresh",
+  "provenance": "fake_adapter"
+}

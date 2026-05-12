@@ -1,0 +1,6 @@
+name: land-allow
+transport: fake_transport
+frame: ../frames/command-land.hex
+expected_decision: allow
+expected_forwarded: true
+notes: Emergency-safe command still goes through policy and audit.

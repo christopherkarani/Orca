@@ -1,0 +1,74 @@
+version: 1
+mode: strict
+
+workspace:
+  root: "."
+  write_mode: staged
+
+env:
+  inherit: false
+  allow:
+    - PATH
+    - HOME
+    - LANG
+    - TERM
+  deny_patterns:
+    - "*TOKEN*"
+    - "*SECRET*"
+    - "*KEY*"
+    - "*PASSWORD*"
+
+files:
+  read:
+    allow:
+      - "./fixtures/mcp/**"
+      - "./examples/mcp/**"
+    deny:
+      - "./.env"
+      - "~/.ssh/**"
+  write:
+    allow:
+      - "./examples/mcp/**"
+    deny:
+      - "./.git/**"
+      - "./.aegis/**"
+    mode: staged
+
+commands:
+  default: deny
+  allow:
+    - "python3 fixtures/mcp/fake_server.py"
+    - "python fixtures/mcp/fake_server.py"
+  deny:
+    - "rm -rf *"
+    - "curl *"
+    - "wget *"
+    - "sudo *"
+
+network:
+  mode: off
+  default: deny
+  allow:
+  deny:
+    - "*"
+  detect_exfiltration:
+    dns: true
+    long_query_strings: true
+    secret_patterns: true
+
+mcp:
+  default: deny
+  allow:
+    - "demo.list_files"
+    - "demo.get_status"
+    - "*.list_*"
+    - "*.get_*"
+  deny:
+    - "*.delete_*"
+    - "*.run_command"
+    - "*.shell"
+
+audit:
+  level: full
+  redact_secrets: true
+  tamper_evident: true
