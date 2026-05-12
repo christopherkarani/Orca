@@ -1,0 +1,9 @@
+id: ardupilot-observe-heartbeat
+environment: fake_ardupilot
+vehicle: copter
+mode: observe
+command: hold
+expected_decision: observe
+expected_forwarded: true
+timeout_ms: 2000
+note: "Deterministic fake-ArduPilot observe path; not ArduPilot SITL or real flight."

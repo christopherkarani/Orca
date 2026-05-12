@@ -1,0 +1,8 @@
+id: no-safe-fallback
+environment: fake_adapter
+provenance: fake_adapter
+command: return_to_home
+expected_decision: deny
+health_fault: no_safe_fallback
+expected_behavior: fail_closed
+note: no safe fallback exists when required state context is missing.

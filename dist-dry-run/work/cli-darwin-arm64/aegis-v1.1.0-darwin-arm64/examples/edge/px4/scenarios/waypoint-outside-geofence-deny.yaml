@@ -1,0 +1,11 @@
+id: waypoint-outside-geofence-deny
+environment: fake_px4
+mode: enforce
+command: set_waypoint
+lat_int: 370100000
+lon_int: -1220000000
+alt_m: 25
+expected_decision: deny
+expected_forwarded: false
+timeout_ms: 1000
+note: "outside geofence fake-PX4 command; TOKEN=sk-fakeSyntheticOpenAIKey1234567890"

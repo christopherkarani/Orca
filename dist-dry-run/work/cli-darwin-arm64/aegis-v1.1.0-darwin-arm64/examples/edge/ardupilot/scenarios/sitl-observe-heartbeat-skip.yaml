@@ -1,0 +1,10 @@
+id: ardupilot-sitl-observe-heartbeat-skip
+environment: ardupilot_sitl
+vehicle: copter
+mode: observe
+command: hold
+requires_ardupilot_sitl: true
+expected_decision: observe
+expected_forwarded: true
+timeout_ms: 2000
+note: "This scenario requires opt-in ArduPilot SITL and must skip when SITL is unavailable."

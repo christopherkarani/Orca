@@ -1,0 +1,90 @@
+version: 1
+
+vehicle:
+  kind: drone_multirotor
+  autopilot: px4
+  adapter: fake
+
+safety:
+  state_freshness:
+    max_state_age_ms: 500
+    deny_commands_on_stale_state: true
+    allow_emergency_land_on_stale_state: false
+    allow_return_home_on_stale_state: false
+
+  geofence:
+    type: circle
+    center:
+      latitude_deg: 37.000000
+      longitude_deg: -122.000000
+      altitude_m: 0
+      altitude_reference: amsl
+    home_position:
+      latitude_deg: 37.000000
+      longitude_deg: -122.000000
+      altitude_m: 0
+      altitude_reference: amsl
+    max_radius_m: 300
+    altitude_floor_m: 2
+    altitude_ceiling_m: 80
+    altitude_reference: amsl
+    boundary_action: deny
+
+  altitude:
+    min_altitude_m: 2
+    max_altitude_m: 80
+    altitude_reference: amsl
+
+  velocity:
+    max_horizontal_mps: 6
+    max_vertical_mps: 1.5
+
+  battery:
+    deny_takeoff_below_percent: 40
+    return_home_below_percent: 30
+    land_below_percent: 18
+    require_fresh_battery_state: true
+
+  approval:
+    approval_ttl_ms: 30000
+    max_uses_default: 1
+    require_operator_identity: true
+    require_state_hash: true
+    require_safety_constraints_hash: true
+    allow_broad_scopes: false
+    allow_non_overridable_override: false
+
+  emergency:
+    allow_land: true
+    allow_return_to_home: true
+    allow_hold_position: true
+    allow_stop_or_brake: false
+    allow_disarm: false
+    fallback_order: land, hold_position, return_to_home
+
+commands:
+  allow:
+    - read_telemetry
+    - read_vehicle_state
+    - land
+    - return_to_home
+    - hold_position
+  ask:
+    - arm
+    - takeoff
+    - upload_mission
+  deny:
+    - disable_failsafe
+    - disable_geofence
+    - raw_actuator_output
+    - override_operator
+    - firmware_update
+    - payload_release
+    - companion_computer_reboot
+
+network:
+  mode: allowlist
+
+audit:
+  level: full
+  redact_secrets: true

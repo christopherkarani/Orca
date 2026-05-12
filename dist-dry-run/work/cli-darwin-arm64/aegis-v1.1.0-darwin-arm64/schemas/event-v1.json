@@ -1,0 +1,78 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/chriskarani/aegis/schemas/event-v1.json",
+  "title": "Aegis Audit Event v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "version",
+    "session_id",
+    "event_id",
+    "timestamp",
+    "type",
+    "actor",
+    "target",
+    "decision",
+    "redactions",
+    "previous_hash",
+    "event_hash"
+  ],
+  "properties": {
+    "version": { "const": 1 },
+    "session_id": { "type": "string" },
+    "event_id": { "type": "string" },
+    "timestamp": { "type": "string" },
+    "type": { "type": "string" },
+    "actor": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "id", "display"],
+      "properties": {
+        "kind": { "type": "string" },
+        "id": { "type": ["string", "null"] },
+        "display": { "type": ["string", "null"] }
+      }
+    },
+    "target": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "value"],
+      "properties": {
+        "kind": { "type": "string" },
+        "value": { "type": "string" }
+      }
+    },
+    "decision": {
+      "oneOf": [
+        { "type": "null" },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["result", "rule_id", "reason", "risk_score", "requires_user", "ci_may_proceed"],
+          "properties": {
+            "result": { "enum": ["allow", "deny", "ask", "observe"] },
+            "rule_id": { "type": ["string", "null"] },
+            "reason": { "type": "string" },
+            "risk_score": { "type": ["integer", "null"] },
+            "requires_user": { "type": "boolean" },
+            "ci_may_proceed": { "type": "boolean" }
+          }
+        }
+      ]
+    },
+    "redactions": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["count", "labels"],
+      "properties": {
+        "count": { "type": "integer", "minimum": 0 },
+        "labels": {
+          "type": "array",
+          "items": { "type": "string" }
+        }
+      }
+    },
+    "previous_hash": { "type": ["string", "null"], "pattern": "^[0-9a-f]{64}$" },
+    "event_hash": { "type": "string", "pattern": "^[0-9a-f]{64}$" }
+  }
+}

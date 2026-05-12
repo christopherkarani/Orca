@@ -1,0 +1,126 @@
+# Aegis preset: generic-agent
+# Conservative starting point for local coding agents with no proprietary assumptions.
+# Edit allowlists for your repository before switching broad actions from ask to allow.
+version: 1
+mode: ask
+
+workspace:
+  root: "."
+  write_mode: staged
+
+env:
+  inherit: false
+  allow:
+    - PATH
+    - HOME
+    - LANG
+    - TERM
+  deny_patterns:
+    - "*TOKEN*"
+    - "*SECRET*"
+    - "*PASSWORD*"
+    - "*PASSWD*"
+    - "*PRIVATE*"
+    - "*KEY*"
+    - "AWS_*"
+    - "AZURE_*"
+    - "GITHUB_TOKEN"
+    - "GH_TOKEN"
+    - "OPENAI_API_KEY"
+    - "ANTHROPIC_API_KEY"
+    - "GOOGLE_API_KEY"
+    - "GOOGLE_APPLICATION_CREDENTIALS"
+    - "NPM_TOKEN"
+    - "PYPI_TOKEN"
+    - "SSH_AUTH_SOCK"
+
+files:
+  read:
+    allow:
+      - "./**"
+    deny:
+      - "./.env"
+      - "./.env.*"
+      - "~/.ssh/**"
+      - "~/.aws/**"
+      - "~/.gcloud/**"
+      - "~/.azure/**"
+      - "~/.config/gh/**"
+      - "~/Library/Keychains/**"
+      - "~/Library/Application Support/**/Cookies*"
+      - "~/Library/Application Support/**/Login Data*"
+      - "**/id_rsa"
+      - "**/id_ed25519"
+      - "**/*credentials*"
+      - "**/*secret*"
+      - "**/*token*"
+  write:
+    allow:
+      - "./**"
+    deny:
+      - "./.git/**"
+      - "./.aegis/**"
+    mode: staged
+
+commands:
+  default: ask
+  allow:
+    - "git status"
+    - "git diff *"
+    - "ls *"
+    - "pwd"
+    - "echo *"
+    - "zig version"
+    - "zig build *"
+  deny:
+    - "rm -rf *"
+    - "find * -delete"
+    - "shred *"
+    - "curl * | sh"
+    - "wget * | bash"
+    - "sudo *"
+    - "su *"
+    - "doas *"
+    - "cat .env"
+    - "cat ~/.ssh/*"
+  ask:
+    - "git push*"
+    - "npm install*"
+    - "pnpm install*"
+    - "yarn install*"
+    - "pip install*"
+
+network:
+  mode: allowlist
+  default: ask
+  allow:
+    - "api.github.com"
+    - "*.github.com"
+    - "registry.npmjs.org"
+    - "pypi.org"
+  ask:
+    - "*.githubusercontent.com"
+  deny:
+    - "pastebin.com"
+    - "*.ngrok.io"
+    - "*.requestbin.net"
+  detect_exfiltration:
+    dns: true
+    long_query_strings: true
+    secret_patterns: true
+
+mcp:
+  default: ask
+  allow:
+    - "*.search_*"
+    - "*.list_*"
+    - "*.get_*"
+  deny:
+    - "*.delete_*"
+    - "*.shell"
+    - "*.run_command"
+
+audit:
+  level: full
+  redact_secrets: true
+  tamper_evident: true
