@@ -1,0 +1,8 @@
+id: fallback-land-recommended
+environment: fake_adapter
+provenance: fake_adapter
+command: land
+expected_decision: allow
+health_fault: fallback_land_recommended
+expected_behavior: allow_policy_emergency_only
+note: LAND is a recommendation/evaluation result only and no command is executed.

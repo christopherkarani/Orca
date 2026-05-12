@@ -1,0 +1,8 @@
+id: land-allow
+environment: fake_px4
+mode: enforce
+command: land
+expected_decision: allow
+expected_forwarded: true
+timeout_ms: 1000
+note: "land remains policy evaluated and logged"

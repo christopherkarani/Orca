@@ -1,0 +1,21 @@
+version: 1
+id: health-critical-battery-policy-land
+name: Critical battery allows policy emergency LAND only
+category: health
+environment: fake_adapter
+description: Simulates critical battery health and verifies LAND remains policy-controlled.
+policy: examples/edge/health/policies/watchdog-emergency-policy.yaml
+faults:
+  - health_critical_battery_land
+expected:
+  decision: allow
+  findings:
+    - health
+    - battery_state
+    - allow_policy_emergency_only
+  events:
+    - health.watchdog.finding
+  no_log_contains:
+    - real-flight-ready
+limitations:
+  - Emergency LAND evidence is policy-controlled simulation evidence, not flight instruction.
