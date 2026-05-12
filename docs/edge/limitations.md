@@ -12,7 +12,7 @@ Not implemented:
 - Operator approval runtime.
 - Emergency runtime behavior beyond policy decisions and fallback recommendations.
 - MAVLink signing key management or signing verification.
-- SaaS, monetization, telemetry, certification, or regulatory claims.
+- Hosted telemetry service, certification, or regulatory claims.
 
 Coordinate frames and altitude references must be explicit. Unsupported geospatial conversions fail clearly. Polygon geofences and dialect-specific fence messages are reserved but not enforced in Phase 30.
 

@@ -93,6 +93,11 @@ const usage =
     \\  watchdog status --session last Show last local watchdog status placeholder
     \\  watchdog explain --finding <finding-id>
     \\                                 Explain a watchdog finding id
+    \\  demo list                     List deterministic customer-proof demos
+    \\  demo run <demo-id|all>         Run a no-hardware customer-proof demo sequence
+    \\  proof generate --demo <demo-id>
+    \\                                 Generate local customer-proof evidence for a demo
+    \\  docs check                    Validate required Edge docs, demos, and proof claims
     \\  safety-case generate --session last
     \\                                 Regenerate/show the latest Edge safety-case evidence when available
     \\  safety-case generate --scenario <scenario> --policy <policy>
@@ -190,6 +195,15 @@ pub fn run(argv: []const []const u8, stdout: anytype, stderr: anytype) !u8 {
     }
     if (std.mem.eql(u8, command, "watchdog")) {
         return runWatchdog(argv[1..], stdout, stderr);
+    }
+    if (std.mem.eql(u8, command, "demo")) {
+        return runDemo(argv[1..], stdout, stderr);
+    }
+    if (std.mem.eql(u8, command, "proof")) {
+        return runProof(argv[1..], stdout, stderr);
+    }
+    if (std.mem.eql(u8, command, "docs")) {
+        return runDocs(argv[1..], stdout, stderr);
     }
     if (std.mem.eql(u8, command, "safety-case")) {
         return runSafetyCase(argv[1..], stdout, stderr);
@@ -429,6 +443,230 @@ fn runBenchReport(argv: []const []const u8, stdout: anytype, stderr: anytype) !u
     try stdout.print("Limitations: {s}\n", .{edge.deployment.no_flight_disclaimer});
     try stdout.writeAll("No-flight disclaimer: bench readiness is not flight readiness.\nNo-certification disclaimer: this report is not regulatory approval or certification.\n");
     return if (report.status == .active and report.policy_status == .active) 0 else 65;
+}
+
+const DemoSpec = struct {
+    id: []const u8,
+    title: []const u8,
+    environment: []const u8,
+    policy: []const u8,
+    scenario: []const u8,
+    command: []const u8,
+    expected: []const u8,
+    report: []const u8,
+    replay: []const u8,
+};
+
+const phase38_demos = [_]DemoSpec{
+    .{ .id = "geofence-deny", .title = "Waypoint outside circular geofence is denied", .environment = "fake_adapter", .policy = "examples/edge/safety/policies/safety-strict.yaml", .scenario = "examples/edge/safety/scenarios/geofence-deny.yaml", .command = "aegis-edge safety scenario run --policy examples/edge/safety/policies/safety-strict.yaml --scenario examples/edge/safety/scenarios/geofence-deny.yaml", .expected = "deny", .report = "examples/edge/customer-proof/geofence-deny-safety-report.md", .replay = "examples/edge/customer-proof/audit-replay-example.md" },
+    .{ .id = "disable-failsafe-deny", .title = "Disable failsafe request is denied", .environment = "fake_adapter", .policy = "examples/edge/safety/policies/safety-strict.yaml", .scenario = "examples/edge/demos/02-disable-failsafe-deny/scenario.yaml", .command = "aegis-edge safety scenario run --policy examples/edge/safety/policies/safety-strict.yaml --scenario examples/edge/demos/02-disable-failsafe-deny/scenario.yaml", .expected = "deny", .report = "examples/edge/customer-proof/disable-failsafe-deny-report.md", .replay = "examples/edge/customer-proof/audit-replay-example.md" },
+    .{ .id = "emergency-land", .title = "Policy-controlled LAND is allowed and logged", .environment = "fake_adapter", .policy = "examples/edge/operator/policies/emergency-basic.yaml", .scenario = "examples/edge/demos/03-emergency-land/scenario.yaml", .command = "aegis-edge emergency scenario run --policy examples/edge/operator/policies/emergency-basic.yaml --scenario examples/edge/demos/03-emergency-land/scenario.yaml", .expected = "allow", .report = "examples/edge/customer-proof/geofence-deny-safety-report.md", .replay = "examples/edge/customer-proof/audit-replay-example.md" },
+    .{ .id = "stale-telemetry-deny", .title = "Stale telemetry denies movement", .environment = "fake_adapter", .policy = "examples/edge/health/policies/watchdog-strict.yaml", .scenario = "examples/edge/health/scenarios/stale-telemetry-deny-movement.yaml", .command = "aegis-edge health scenario run --policy examples/edge/health/policies/watchdog-strict.yaml --scenario examples/edge/health/scenarios/stale-telemetry-deny-movement.yaml", .expected = "deny", .report = "examples/edge/customer-proof/geofence-deny-safety-report.md", .replay = "examples/edge/customer-proof/audit-replay-example.md" },
+    .{ .id = "data-exfil-deny", .title = "Mission data to webhook-like endpoint is denied/redacted", .environment = "fake_adapter", .policy = "examples/edge/data-guard/policies/data-guard-strict.yaml", .scenario = "examples/edge/data-guard/scenarios/mission-plan-to-webhook-deny.yaml", .command = "aegis-edge data scenario run --policy examples/edge/data-guard/policies/data-guard-strict.yaml --scenario examples/edge/data-guard/scenarios/mission-plan-to-webhook-deny.yaml", .expected = "deny", .report = "examples/edge/customer-proof/data-exfil-deny-report.md", .replay = "examples/edge/customer-proof/audit-replay-example.md" },
+};
+
+fn runDemo(argv: []const []const u8, stdout: anytype, stderr: anytype) !u8 {
+    if (argv.len == 0) return usageError(stderr, "aegis-edge demo: expected list or run.\n");
+    if (std.mem.eql(u8, argv[0], "list")) {
+        if (argv.len != 1) return usageError(stderr, "aegis-edge demo list: expected no arguments.\n");
+        try stdout.writeAll("Aegis Edge deterministic customer-proof demos\n");
+        for (phase38_demos) |demo| {
+            try stdout.print("{s}\t{s}\t{s}\texpected={s}\n", .{ demo.id, demo.environment, demo.title, demo.expected });
+        }
+        try stdout.writeAll("All demos are local fake/SITL/bench-preparation examples. No real hardware, external network, or real-flight readiness claim is involved.\n");
+        return 0;
+    }
+    if (std.mem.eql(u8, argv[0], "run")) {
+        if (argv.len != 2) return usageError(stderr, "aegis-edge demo run: expected <demo-id|all>.\n");
+        if (std.mem.eql(u8, argv[1], "all")) return runDemoAll(stdout, stderr);
+        const demo = findDemo(argv[1]) orelse {
+            try stderr.print("aegis-edge demo run: unknown demo '{s}'. Use 'aegis-edge demo list'.\n", .{argv[1]});
+            return 64;
+        };
+        return runOneDemo(stdout, stderr, demo);
+    }
+    try stderr.print("aegis-edge demo: unknown subcommand '{s}'.\n", .{argv[0]});
+    return 64;
+}
+
+fn findDemo(id: []const u8) ?DemoSpec {
+    for (phase38_demos) |demo| if (std.mem.eql(u8, demo.id, id)) return demo;
+    return null;
+}
+
+fn runOneDemo(stdout: anytype, stderr: anytype, demo: DemoSpec) !u8 {
+    try stdout.print("Demo: {s}\n", .{demo.id});
+    try stdout.print("What is being tested: {s}\n", .{demo.title});
+    try stdout.print("Environment: {s}\n", .{demo.environment});
+    try stdout.print("Expected result: {s}\n", .{demo.expected});
+    try stdout.print("Command: {s}\n", .{demo.command});
+    if (std.mem.eql(u8, demo.id, "data-exfil-deny")) {
+        const argv = [_][]const u8{ "run", "--policy", demo.policy, "--scenario", demo.scenario };
+        const code = try runDataScenario(argv[0..], stdout, stderr);
+        if (code != 0) return code;
+    } else if (std.mem.eql(u8, demo.id, "emergency-land")) {
+        const argv = [_][]const u8{ "run", "--policy", demo.policy, "--scenario", demo.scenario };
+        const code = try runEmergencyScenario(argv[0..], stdout, stderr);
+        if (code != 0) return code;
+    } else if (std.mem.eql(u8, demo.id, "stale-telemetry-deny")) {
+        const argv = [_][]const u8{ "--policy", demo.policy, "--scenario", demo.scenario };
+        const code = try runHealthScenario(argv[0..], stdout, stderr);
+        if (code != 0) return code;
+    } else {
+        const argv = [_][]const u8{ "run", "--policy", demo.policy, "--scenario", demo.scenario };
+        const code = try runSafetyScenario(argv[0..], stdout, stderr);
+        if (code != 0) return code;
+    }
+    try stdout.print("Summary result: {s}\n", .{demo.expected});
+    try stdout.print("Safety report: {s}\nReplay: {s}\n", .{ demo.report, demo.replay });
+    try stdout.writeAll("Safety boundary: this is simulation/SITL/bench-preparation evidence only, not real-flight readiness, certification, detect-and-avoid, or autopilot replacement.\n");
+    return 0;
+}
+
+fn runDemoAll(stdout: anytype, stderr: anytype) !u8 {
+    try stdout.writeAll("Aegis Edge customer-proof sequence\n");
+    try stdout.writeAll("1. Agent requests waypoint outside geofence.\n");
+    if (try runOneDemo(stdout, stderr, phase38_demos[0]) != 0) return 65;
+    try stdout.writeAll("2. Agent requests disable_failsafe.\n");
+    if (try runOneDemo(stdout, stderr, phase38_demos[1]) != 0) return 65;
+    try stdout.writeAll("3. Agent requests LAND.\n");
+    if (try runOneDemo(stdout, stderr, phase38_demos[2]) != 0) return 65;
+    try stdout.writeAll("4. Agent tries to send mission data to a webhook-like endpoint.\n");
+    if (try runOneDemo(stdout, stderr, phase38_demos[4]) != 0) return 65;
+    try stdout.writeAll("5. Runtime health scenario shows stale telemetry denying movement.\n");
+    if (try runOneDemo(stdout, stderr, phase38_demos[3]) != 0) return 65;
+    try stdout.writeAll("6. Safety-case report is generated.\n");
+    const proof_code = try runProofGenerate(&.{ "--demo", "geofence-deny" }, stdout, stderr);
+    if (proof_code != 0) return proof_code;
+    try stdout.writeAll("7. Replay verifies hash chain.\n");
+    const replay_code = try runEdgeReplay(&.{ "--session", "last", "--verify" }, stdout, stderr);
+    if (replay_code != 0) return replay_code;
+    try stdout.writeAll("Summary result: customer-proof demo sequence completed with deny/allow behavior preserved and no real hardware or external network dependency.\n");
+    return 0;
+}
+
+fn runProof(argv: []const []const u8, stdout: anytype, stderr: anytype) !u8 {
+    if (argv.len == 0) return usageError(stderr, "aegis-edge proof: expected generate.\n");
+    if (std.mem.eql(u8, argv[0], "generate")) return runProofGenerate(argv[1..], stdout, stderr);
+    if (std.mem.eql(u8, argv[0], "bundle")) return runProofGenerate(argv[1..], stdout, stderr);
+    try stderr.print("aegis-edge proof: unknown subcommand '{s}'.\n", .{argv[0]});
+    return 64;
+}
+
+fn runProofGenerate(argv: []const []const u8, stdout: anytype, stderr: anytype) !u8 {
+    var demo_id: ?[]const u8 = null;
+    var index: usize = 0;
+    while (index < argv.len) : (index += 1) {
+        if (std.mem.eql(u8, argv[index], "--demo")) {
+            index += 1;
+            if (index >= argv.len) return usageError(stderr, "aegis-edge proof generate: --demo requires a demo id.\n");
+            demo_id = argv[index];
+        } else {
+            try stderr.print("aegis-edge proof generate: unknown argument '{s}'.\n", .{argv[index]});
+            return 64;
+        }
+    }
+    const selected_id = demo_id orelse return usageError(stderr, "aegis-edge proof generate: missing --demo.\n");
+    const demo = findDemo(selected_id) orelse {
+        try stderr.print("aegis-edge proof generate: unknown demo '{s}'.\n", .{selected_id});
+        return 64;
+    };
+    if (!std.mem.eql(u8, demo.id, "geofence-deny")) {
+        try stderr.print("aegis-edge proof generate: demo '{s}' has checked-in customer-proof artifacts, but Phase 38 CLI proof generation is only supported for 'geofence-deny'. Use 'aegis-edge demo run {s}' or inspect {s}.\n", .{ demo.id, demo.id, demo.report });
+        return 64;
+    }
+    const argv_generate = [_][]const u8{ "--policy", demo.policy, "--scenario", demo.scenario };
+    const code = try runSafetyCaseGenerate(argv_generate[0..], stdout, stderr);
+    if (code != 0) return code;
+    try stdout.print("Customer proof generated for demo: {s}\n", .{demo.id});
+    try stdout.writeAll("Checked-in proof artifacts:\n");
+    try stdout.print("  - {s}\n", .{demo.report});
+    try stdout.writeAll("  - examples/edge/customer-proof/geofence-deny-safety-report.json\n");
+    try stdout.writeAll("  - examples/edge/customer-proof/traceability-matrix-example.md\n");
+    try stdout.writeAll("  - examples/edge/customer-proof/capability-matrix.md\n");
+    try stdout.writeAll("Disclaimer: non-certification customer-evaluation evidence only; no real-flight, airworthiness, detect-and-avoid, or autopilot replacement claim.\n");
+    return 0;
+}
+
+fn runDocs(argv: []const []const u8, stdout: anytype, stderr: anytype) !u8 {
+    if (argv.len == 0) return usageError(stderr, "aegis-edge docs: expected check.\n");
+    if (std.mem.eql(u8, argv[0], "check")) {
+        if (argv.len != 1) return usageError(stderr, "aegis-edge docs check: expected no arguments.\n");
+        return runDocsCheck(stdout, stderr);
+    }
+    try stderr.print("aegis-edge docs: unknown subcommand '{s}'.\n", .{argv[0]});
+    return 64;
+}
+
+const phase38_required_docs = [_][]const u8{
+    "packages/edge/README.md",
+    "docs/edge/README.md",
+    "docs/edge/quickstart.md",
+    "docs/edge/troubleshooting.md",
+    "docs/edge/architecture.md",
+    "docs/edge/capability-matrix.md",
+    "docs/edge/customer-proof/buyer-faq.md",
+    "docs/edge/customer-proof/technical-faq.md",
+    "docs/edge/customer-proof/aegis-edge-technical-brief.md",
+    "docs/edge/customer-proof/demo-recording-script.md",
+    "examples/edge/demos/README.md",
+    "examples/edge/customer-proof/geofence-deny-safety-report.md",
+};
+
+fn runDocsCheck(stdout: anytype, stderr: anytype) !u8 {
+    var gpa_state: std.heap.GeneralPurposeAllocator(.{}) = .init;
+    defer _ = gpa_state.deinit();
+    const allocator = gpa_state.allocator();
+    var checked: usize = 0;
+    for (phase38_required_docs) |path| {
+        const text = std.fs.cwd().readFileAlloc(allocator, path, 512 * 1024) catch |err| {
+            try stderr.print("aegis-edge docs check: required file missing or unreadable: {s} ({s})\n", .{ path, @errorName(err) });
+            return 65;
+        };
+        defer allocator.free(text);
+        checked += 1;
+        if (containsForbiddenOverclaim(text)) |phrase| {
+            try stderr.print("aegis-edge docs check: suspicious overclaim outside the allowed Phase 38 boundary in {s}: {s}\n", .{ path, phrase });
+            return 65;
+        }
+        if (std.mem.indexOf(u8, text, "fake_secret_value_phase35") != null) {
+            try stderr.print("aegis-edge docs check: fake secret marker leaked in {s}\n", .{path});
+            return 65;
+        }
+    }
+    try stdout.print("Phase 38 docs check: passed ({d} required docs/proof files checked)\n", .{checked});
+    try stdout.writeAll("manual review context: phrases such as detect-and-avoid, certification, and real flight are allowed only in explicit limitations or negative-scope text.\n");
+    try stdout.writeAll("No real hardware, external network, hosted telemetry, pricing, or real-flight claim is validated by this command.\n");
+    return 0;
+}
+
+fn containsForbiddenOverclaim(text: []const u8) ?[]const u8 {
+    const phrases = [_][]const u8{
+        "certified safe",
+        "FAA approved",
+        "flight certified",
+        "guarantees safety",
+        "ready for real flight",
+        "safe for BVLOS",
+        "prevents all unsafe actions",
+        "works with all MAVLink commands",
+    };
+    for (phrases) |phrase| {
+        if (std.mem.indexOf(u8, text, phrase)) |index| {
+            if (isAllowedNegativeOverclaimContext(text, index)) continue;
+            return phrase;
+        }
+    }
+    return null;
+}
+
+fn isAllowedNegativeOverclaimContext(text: []const u8, index: usize) bool {
+    const prefix_start = if (index > 40) index - 40 else 0;
+    const prefix = text[prefix_start..index];
+    return std.mem.endsWith(u8, prefix, "not ") or
+        std.mem.endsWith(u8, prefix, "no ") or
+        std.mem.endsWith(u8, prefix, "not a ") or
+        std.mem.endsWith(u8, prefix, "does not ");
 }
 
 fn writeArm64Doctor(stdout: anytype) !void {
@@ -3327,7 +3565,7 @@ fn parseScenarioBool(value: []const u8) !bool {
 }
 
 test "aegis-edge help is honest policy evaluation output" {
-    var stdout_buf: [8192]u8 = undefined;
+    var stdout_buf: [16384]u8 = undefined;
     var stderr_buf: [128]u8 = undefined;
     var stdout_stream = std.io.fixedBufferStream(&stdout_buf);
     var stderr_stream = std.io.fixedBufferStream(&stderr_buf);

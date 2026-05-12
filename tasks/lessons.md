@@ -141,3 +141,9 @@
 
 - Build wiring for a new phase is not enough; every imported module, test, doc, fixture, and example must be visible to `git diff` before review handoff.
 - Release package consumers must match the actual archive layout. If the archive stores binaries under `bin/`, Dockerfiles and installers must copy from that path and place the executable at the advertised install path.
+
+## 2026-05-12 Phase 38 Customer Proof Review
+
+- Demo/proof CLI commands must reject unsupported demo types before printing success. Do not route data-guard or health demos through safety-case-only generators just because they share a demo registry.
+- Scripts that compute a repo root must either `cd` there or prefix every repo-relative input with that root before invoking CLI commands.
+- Local Playwright captures and screenshot dumps are verification artifacts, not review artifacts, unless they are intentionally referenced from tracked docs or tests.
