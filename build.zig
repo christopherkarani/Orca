@@ -28,8 +28,47 @@ pub fn build(b: *std.Build) void {
         },
     });
 
+    const aegis_core_engine_mod = b.createModule(.{
+        .root_source_file = b.path("src/core_engine.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+
     const aegis_core_mod = b.addModule("aegis_core", .{
         .root_source_file = b.path("packages/core/src/root.zig"),
+        .target = target,
+        .optimize = optimize,
+        .imports = &.{
+            .{ .name = "core_engine", .module = aegis_core_engine_mod },
+        },
+    });
+
+    const core_compat_files = b.addWriteFiles();
+    const core_compat_root = core_compat_files.add("aegis_core_product_compat.zig",
+        \\const aegis = @import("aegis");
+        \\
+        \\pub const api = aegis.core_api;
+        \\
+        \\pub const core = aegis.core;
+        \\pub const policy = aegis.policy;
+        \\pub const audit = aegis.audit;
+        \\pub const intercept = aegis.intercept;
+        \\pub const redteam = aegis.redteam;
+        \\pub const capabilities = aegis.sandbox.backend;
+        \\
+        \\pub const actions = core.types;
+        \\pub const decision = core.decision;
+        \\pub const event = core.event;
+        \\pub const limits = core.limits;
+        \\pub const platform = core.platform;
+        \\pub const session = core.session;
+        \\pub const types = core.types;
+        \\pub const util = core.util;
+        \\
+        \\pub const phase = "core-product-compat";
+    );
+    const aegis_core_product_compat_mod = b.createModule(.{
+        .root_source_file = core_compat_root,
         .target = target,
         .optimize = optimize,
         .imports = &.{
@@ -43,7 +82,7 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
         .imports = &.{
             .{ .name = "aegis", .module = aegis_mod },
-            .{ .name = "aegis_core", .module = aegis_core_mod },
+            .{ .name = "aegis_core", .module = aegis_core_product_compat_mod },
             .{ .name = "build_options", .module = build_options_mod },
         },
     });
@@ -53,7 +92,7 @@ pub fn build(b: *std.Build) void {
         .target = target,
         .optimize = optimize,
         .imports = &.{
-            .{ .name = "aegis_core", .module = aegis_core_mod },
+            .{ .name = "aegis_core", .module = aegis_core_product_compat_mod },
         },
     });
 
@@ -179,7 +218,6 @@ pub fn build(b: *std.Build) void {
             .target = target,
             .optimize = optimize,
             .imports = &.{
-                .{ .name = "aegis_core", .module = aegis_core_mod },
                 .{ .name = "aegis_edge", .module = aegis_edge_mod },
             },
         }),

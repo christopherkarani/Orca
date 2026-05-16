@@ -1,36 +1,26 @@
-const aegis = @import("aegis");
+const engine = @import("core_engine");
 
 pub const api = @import("api.zig");
 pub const abi = @import("abi.zig");
-pub const schemas = @import("schemas.zig");
 
-pub const core = aegis.core;
-pub const policy = aegis.policy;
-pub const audit = aegis.audit;
-pub const intercept = aegis.intercept;
-pub const redteam = aegis.redteam;
-pub const capabilities = aegis.sandbox.backend;
+pub const errors = engine.core.errors;
+pub const decision = engine.core.decision;
+pub const limits = engine.core.limits;
+pub const platform = engine.core.platform;
+pub const session = engine.core.session;
+pub const time = engine.core.time;
+pub const util = engine.core.util;
 
-pub const actions = core.types;
-pub const decision = core.decision;
-pub const event = core.event;
-pub const limits = core.limits;
-pub const platform = core.platform;
-pub const session = core.session;
-pub const types = core.types;
-pub const util = core.util;
-
-pub const phase = "24-aegis-core-library-and-abi";
+pub const phase = "core-boundary-isolation";
 
 test {
     _ = api;
     _ = abi;
-    _ = schemas;
-    _ = core;
-    _ = policy;
-    _ = audit;
-    _ = intercept;
-    _ = redteam;
-    _ = capabilities;
-    _ = actions;
+    _ = errors;
+    _ = decision;
+    _ = limits;
+    _ = platform;
+    _ = session;
+    _ = time;
+    _ = util;
 }
