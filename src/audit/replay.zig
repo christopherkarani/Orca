@@ -383,7 +383,9 @@ fn loadEvents(allocator: std.mem.Allocator, session_dir_path: []const u8, only_d
         var parsed = try std.json.parseFromSlice(std.json.Value, allocator, line, .{});
         defer parsed.deinit();
         if (only_denied and !isDenied(parsed.value)) continue;
-        try list.append(allocator, try eventFromJson(allocator, line, parsed.value));
+        const event = try eventFromJson(allocator, line, parsed.value);
+        errdefer event.deinit(allocator);
+        try list.append(allocator, event);
     }
 
     return try list.toOwnedSlice(allocator);
@@ -393,15 +395,21 @@ fn eventFromJson(allocator: std.mem.Allocator, raw: []const u8, value: std.json.
     _ = raw;
     const object = try expectObject(value);
     const target = try expectObject(try requiredField(object, "target"));
-    const decision_result = decisionResultFromValue(allocator, try requiredField(object, "decision")) catch null;
+    const decision_result = try decisionResultFromValue(allocator, try requiredField(object, "decision"));
     errdefer if (decision_result) |value_text| allocator.free(value_text);
     const canonical_raw = try eventJsonLineFromValue(allocator, value);
     errdefer allocator.free(canonical_raw);
+    const timestamp = try allocator.dupe(u8, try expectString(try requiredField(object, "timestamp")));
+    errdefer allocator.free(timestamp);
+    const event_type = try allocator.dupe(u8, try expectString(try requiredField(object, "type")));
+    errdefer allocator.free(event_type);
+    const target_value = try allocator.dupe(u8, try expectString(try requiredField(target, "value")));
+    errdefer allocator.free(target_value);
     return .{
         .raw = canonical_raw,
-        .timestamp = try allocator.dupe(u8, try expectString(try requiredField(object, "timestamp"))),
-        .event_type = try allocator.dupe(u8, try expectString(try requiredField(object, "type"))),
-        .target_value = try allocator.dupe(u8, try expectString(try requiredField(target, "value"))),
+        .timestamp = timestamp,
+        .event_type = event_type,
+        .target_value = target_value,
         .decision_result = decision_result,
     };
 }
@@ -545,6 +553,33 @@ fn writeTestSummary(path: []const u8, event_count: usize, final_event_hash: []co
     const file = try std.fs.cwd().createFile(path, .{});
     defer file.close();
     try file.writeAll(text);
+}
+
+const allocation_failure_event_line =
+    "{\"version\":1,\"session_id\":\"s\",\"event_id\":\"e\",\"timestamp\":\"2026-05-05T12:12:10Z\",\"type\":\"command_denied\",\"actor\":{\"kind\":\"aegis\",\"id\":null,\"display\":\"aegis\"},\"target\":{\"kind\":\"command\",\"value\":\"rm -rf /\"},\"decision\":{\"result\":\"deny\",\"rule_id\":null,\"reason\":\"blocked\",\"risk_score\":null,\"requires_user\":false,\"ci_may_proceed\":false},\"redactions\":{\"count\":0,\"labels\":[]},\"previous_hash\":null,\"event_hash\":\"abc\"}\n";
+
+fn loadEventsAllocationFailureProbe(allocator: std.mem.Allocator, session_dir_path: []const u8) !void {
+    const events = try loadEvents(allocator, session_dir_path, false);
+    defer {
+        for (events) |ev| ev.deinit(allocator);
+        allocator.free(events);
+    }
+    try std.testing.expectEqual(@as(usize, 1), events.len);
+    try std.testing.expectEqualStrings("deny", events[0].decision_result.?);
+}
+
+test "replay event loading releases parsed events on allocation failure" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    {
+        const file = try tmp.dir.createFile("events.jsonl", .{});
+        defer file.close();
+        try file.writeAll(allocation_failure_event_line);
+    }
+    const session_dir = try tmp.dir.realpathAlloc(std.testing.allocator, ".");
+    defer std.testing.allocator.free(session_dir);
+
+    try std.testing.checkAllAllocationFailures(std.testing.allocator, loadEventsAllocationFailureProbe, .{session_dir});
 }
 
 test "verification detects modified event fields" {

@@ -165,57 +165,58 @@ const Builder = struct {
                 .root = if (self.workspace_root) |root| try self.allocator.dupe(u8, root) else try self.allocator.dupe(u8, "."),
                 .write_mode = self.workspace_write_mode,
             },
-            .env = .{
-                .inherit = self.env_inherit,
-                .allow = try self.env_allow.toOwnedSlice(self.allocator),
-                .deny_patterns = try self.env_deny.toOwnedSlice(self.allocator),
-                .ask = try self.env_ask.toOwnedSlice(self.allocator),
-                .default = self.env_default,
-            },
-            .files = .{
-                .read = .{
-                    .allow = try self.files_read_allow.toOwnedSlice(self.allocator),
-                    .deny = try self.files_read_deny.toOwnedSlice(self.allocator),
-                    .ask = try self.files_read_ask.toOwnedSlice(self.allocator),
-                    .default = self.files_read_default,
-                },
-                .write = .{
-                    .allow = try self.files_write_allow.toOwnedSlice(self.allocator),
-                    .deny = try self.files_write_deny.toOwnedSlice(self.allocator),
-                    .ask = try self.files_write_ask.toOwnedSlice(self.allocator),
-                    .default = self.files_write_default,
-                },
-                .write_mode = self.files_write_mode,
-            },
-            .commands = .{
-                .allow = try self.commands_allow.toOwnedSlice(self.allocator),
-                .deny = try self.commands_deny.toOwnedSlice(self.allocator),
-                .ask = try self.commands_ask.toOwnedSlice(self.allocator),
-                .default = self.commands_default,
-            },
-            .network = .{
-                .mode = self.network_mode,
-                .allow = try self.network_allow.toOwnedSlice(self.allocator),
-                .deny = try self.network_deny.toOwnedSlice(self.allocator),
-                .ask = try self.network_ask.toOwnedSlice(self.allocator),
-                .default = self.network_default,
-                .detect_exfiltration = self.network_detect_exfiltration,
-            },
-            .mcp = .{
-                .allow = try self.mcp_allow.toOwnedSlice(self.allocator),
-                .deny = try self.mcp_deny.toOwnedSlice(self.allocator),
-                .ask = try self.mcp_ask.toOwnedSlice(self.allocator),
-                .default = self.mcp_default,
-            },
             .audit = .{
                 .level = self.audit_level,
                 .redact_secrets = self.audit_redact_secrets,
                 .tamper_evident = self.audit_tamper_evident,
             },
-            .source_path = if (source_path) |path| try self.allocator.dupe(u8, path) else null,
             .allocator = self.allocator,
         };
         errdefer policy.deinit();
+
+        policy.env = .{
+            .inherit = self.env_inherit,
+            .allow = try self.env_allow.toOwnedSlice(self.allocator),
+            .deny_patterns = try self.env_deny.toOwnedSlice(self.allocator),
+            .ask = try self.env_ask.toOwnedSlice(self.allocator),
+            .default = self.env_default,
+        };
+        policy.files = .{
+            .read = .{
+                .allow = try self.files_read_allow.toOwnedSlice(self.allocator),
+                .deny = try self.files_read_deny.toOwnedSlice(self.allocator),
+                .ask = try self.files_read_ask.toOwnedSlice(self.allocator),
+                .default = self.files_read_default,
+            },
+            .write = .{
+                .allow = try self.files_write_allow.toOwnedSlice(self.allocator),
+                .deny = try self.files_write_deny.toOwnedSlice(self.allocator),
+                .ask = try self.files_write_ask.toOwnedSlice(self.allocator),
+                .default = self.files_write_default,
+            },
+            .write_mode = self.files_write_mode,
+        };
+        policy.commands = .{
+            .allow = try self.commands_allow.toOwnedSlice(self.allocator),
+            .deny = try self.commands_deny.toOwnedSlice(self.allocator),
+            .ask = try self.commands_ask.toOwnedSlice(self.allocator),
+            .default = self.commands_default,
+        };
+        policy.network = .{
+            .mode = self.network_mode,
+            .allow = try self.network_allow.toOwnedSlice(self.allocator),
+            .deny = try self.network_deny.toOwnedSlice(self.allocator),
+            .ask = try self.network_ask.toOwnedSlice(self.allocator),
+            .default = self.network_default,
+            .detect_exfiltration = self.network_detect_exfiltration,
+        };
+        policy.mcp = .{
+            .allow = try self.mcp_allow.toOwnedSlice(self.allocator),
+            .deny = try self.mcp_deny.toOwnedSlice(self.allocator),
+            .ask = try self.mcp_ask.toOwnedSlice(self.allocator),
+            .default = self.mcp_default,
+        };
+        policy.source_path = if (source_path) |path| try self.allocator.dupe(u8, path) else null;
         try validate.policy(&policy);
         return policy;
     }
@@ -259,22 +260,13 @@ pub fn discover(
     workspace_root: []const u8,
 ) !schema.LoadedPolicy {
     if (cli_policy_path) |path| {
-        const policy = try loadFile(allocator, path);
-        return .{
-            .policy = policy,
-            .source = .cli,
-            .path = try allocator.dupe(u8, policy.source_path orelse path),
-        };
+        return loadedPolicy(allocator, try loadFile(allocator, path), .cli, path);
     }
 
     const workspace_path = try std.fs.path.join(allocator, &.{ workspace_root, ".aegis", "policy.yaml" });
     defer allocator.free(workspace_path);
     if (loadFile(allocator, workspace_path)) |policy| {
-        return .{
-            .policy = policy,
-            .source = .workspace,
-            .path = try allocator.dupe(u8, policy.source_path orelse workspace_path),
-        };
+        return loadedPolicy(allocator, policy, .workspace, workspace_path);
     } else |err| switch (err) {
         error.FileNotFound => {},
         else => return err,
@@ -285,22 +277,28 @@ pub fn discover(
         const user_path = try std.fs.path.join(allocator, &.{ home, ".config", "aegis", "policy.yaml" });
         defer allocator.free(user_path);
         if (loadFile(allocator, user_path)) |policy| {
-            return .{
-                .policy = policy,
-                .source = .user,
-                .path = try allocator.dupe(u8, policy.source_path orelse user_path),
-            };
+            return loadedPolicy(allocator, policy, .user, user_path);
         } else |err| switch (err) {
             error.FileNotFound => {},
             else => return err,
         }
     } else |_| {}
 
-    const policy = try loadPreset(allocator, presets.defaultPreset());
+    return loadedPolicy(allocator, try loadPreset(allocator, presets.defaultPreset()), .builtin, "builtin:strict");
+}
+
+fn loadedPolicy(
+    allocator: std.mem.Allocator,
+    policy: schema.Policy,
+    source: schema.LoadSource,
+    fallback_path: []const u8,
+) !schema.LoadedPolicy {
+    var owned_policy = policy;
+    errdefer owned_policy.deinit();
     return .{
-        .policy = policy,
-        .source = .builtin,
-        .path = try allocator.dupe(u8, policy.source_path orelse "builtin:strict"),
+        .policy = owned_policy,
+        .source = source,
+        .path = try allocator.dupe(u8, owned_policy.source_path orelse fallback_path),
     };
 }
 
@@ -793,4 +791,36 @@ test "MCP server-scoped policy shape flattens to server tool selectors" {
     defer json_policy.deinit();
     try std.testing.expectEqualStrings("github.search_repositories", json_policy.mcp.allow[0]);
     try std.testing.expectEqualStrings("github.delete_repository", json_policy.mcp.deny[0]);
+}
+
+fn parsePolicyAllocationFailureProbe(allocator: std.mem.Allocator) !void {
+    var policy = try parseFromSlice(allocator, presets.text(.strict), "alloc-fail.yaml");
+    defer policy.deinit();
+    try std.testing.expectEqual(schema.Mode.strict, policy.mode);
+}
+
+test "policy parser releases owned fields on allocation failure" {
+    try std.testing.checkAllAllocationFailures(std.testing.allocator, parsePolicyAllocationFailureProbe, .{});
+}
+
+fn discoverCliAllocationFailureProbe(allocator: std.mem.Allocator, cli_path: []const u8, workspace_root: []const u8) !void {
+    var loaded = try discover(allocator, cli_path, workspace_root);
+    defer loaded.deinit();
+    try std.testing.expectEqual(schema.LoadSource.cli, loaded.source);
+}
+
+test "policy discovery releases loaded policy when path allocation fails" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    {
+        const file = try tmp.dir.createFile("strict.yaml", .{});
+        defer file.close();
+        try file.writeAll(presets.text(.strict));
+    }
+    const root = try tmp.dir.realpathAlloc(std.testing.allocator, ".");
+    defer std.testing.allocator.free(root);
+    const cli_path = try tmp.dir.realpathAlloc(std.testing.allocator, "strict.yaml");
+    defer std.testing.allocator.free(cli_path);
+
+    try std.testing.checkAllAllocationFailures(std.testing.allocator, discoverCliAllocationFailureProbe, .{ cli_path, root });
 }
