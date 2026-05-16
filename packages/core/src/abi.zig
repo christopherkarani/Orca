@@ -1,5 +1,5 @@
 const std = @import("std");
-const aegis = @import("aegis");
+const engine = @import("core_engine");
 
 pub const stability = "experimental";
 
@@ -19,10 +19,10 @@ pub export fn aegis_core_version(output_ptr: [*]u8, output_len: usize, written_p
 }
 
 pub export fn aegis_core_redact(input_ptr: [*]const u8, input_len: usize, output_ptr: [*]u8, output_len: usize, written_ptr: *usize) c_int {
-    if (input_len > aegis.core.limits.max_event_field_len) return -3;
+    if (input_len > engine.core.limits.max_event_field_len) return -3;
     const input = input_ptr[0..input_len];
     var buffer: [256]u8 = undefined;
-    const redacted = aegis.audit.redact_bridge.redactStringBounded(input, &buffer);
+    const redacted = engine.audit.redact_bridge.redactStringBounded(input, &buffer);
     return writeOutput(redacted, output_ptr, output_len, written_ptr);
 }
 
