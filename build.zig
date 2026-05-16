@@ -19,6 +19,15 @@ pub fn build(b: *std.Build) void {
     edge_schema_documents.addOption([]const u8, "safety_report_v1", @embedFile("schemas/safety-report-v1.json"));
     const edge_schema_documents_mod = edge_schema_documents.createModule();
 
+    const core_schema_documents = b.addOptions();
+    core_schema_documents.addOption([]const u8, "policy_v1", @embedFile("schemas/policy-v1.json"));
+    core_schema_documents.addOption([]const u8, "event_v1", @embedFile("schemas/event-v1.json"));
+    core_schema_documents.addOption([]const u8, "mcp_manifest_v1", @embedFile("schemas/mcp-manifest-v1.json"));
+    core_schema_documents.addOption([]const u8, "edge_policy_placeholder_v1", @embedFile("schemas/edge-policy-placeholder-v1.json"));
+    core_schema_documents.addOption([]const u8, "edge_event_placeholder_v1", @embedFile("schemas/edge-event-placeholder-v1.json"));
+    core_schema_documents.addOption([]const u8, "safety_report_placeholder_v1", @embedFile("schemas/safety-report-placeholder-v1.json"));
+    const core_schema_documents_mod = core_schema_documents.createModule();
+
     const aegis_mod = b.addModule("aegis", .{
         .root_source_file = b.path("src/root.zig"),
         .target = target,
@@ -34,6 +43,7 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
         .imports = &.{
             .{ .name = "aegis", .module = aegis_mod },
+            .{ .name = "core_schema_documents", .module = core_schema_documents_mod },
         },
     });
 
