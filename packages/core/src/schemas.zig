@@ -1,4 +1,5 @@
 const std = @import("std");
+const schema_documents = @import("core_schema_documents");
 
 pub const SchemaKind = enum {
     policy,
@@ -18,29 +19,13 @@ pub const SchemaDescriptor = struct {
     contents: []const u8,
 };
 
-const policy_schema_descriptor =
-    \\{"id":"policy-v1","version":1,"path":"schemas/policy-v1.json","status":"stable-v1"}
-;
+const policy_schema_document = schema_documents.policy_v1;
+const event_schema_document = schema_documents.event_v1;
+const mcp_manifest_schema_document = schema_documents.mcp_manifest_v1;
 
-const event_schema_descriptor =
-    \\{"id":"event-v1","version":1,"path":"schemas/event-v1.json","status":"stable-v1"}
-;
-
-const mcp_manifest_schema_descriptor =
-    \\{"id":"mcp-manifest-v1","version":1,"path":"schemas/mcp-manifest-v1.json","status":"stable-v1"}
-;
-
-const edge_policy_placeholder =
-    \\{"id":"edge-policy-placeholder-v1","version":1,"status":"placeholder"}
-;
-
-const edge_event_placeholder =
-    \\{"id":"edge-event-placeholder-v1","version":1,"status":"placeholder"}
-;
-
-const safety_report_placeholder =
-    \\{"id":"safety-report-placeholder-v1","version":1,"status":"placeholder"}
-;
+const edge_policy_placeholder_document = schema_documents.edge_policy_placeholder_v1;
+const edge_event_placeholder_document = schema_documents.edge_event_placeholder_v1;
+const safety_report_placeholder_document = schema_documents.safety_report_placeholder_v1;
 
 pub const registry = [_]SchemaDescriptor{
     .{
@@ -49,7 +34,7 @@ pub const registry = [_]SchemaDescriptor{
         .version = 1,
         .path = "schemas/policy-v1.json",
         .status = "stable-v1",
-        .contents = policy_schema_descriptor,
+        .contents = policy_schema_document,
     },
     .{
         .kind = .event,
@@ -57,7 +42,7 @@ pub const registry = [_]SchemaDescriptor{
         .version = 1,
         .path = "schemas/event-v1.json",
         .status = "stable-v1",
-        .contents = event_schema_descriptor,
+        .contents = event_schema_document,
     },
     .{
         .kind = .mcp_manifest,
@@ -65,7 +50,7 @@ pub const registry = [_]SchemaDescriptor{
         .version = 1,
         .path = "schemas/mcp-manifest-v1.json",
         .status = "stable-v1",
-        .contents = mcp_manifest_schema_descriptor,
+        .contents = mcp_manifest_schema_document,
     },
     .{
         .kind = .edge_policy,
@@ -73,7 +58,7 @@ pub const registry = [_]SchemaDescriptor{
         .version = 1,
         .path = "schemas/edge-policy-placeholder-v1.json",
         .status = "reserved-placeholder",
-        .contents = edge_policy_placeholder,
+        .contents = edge_policy_placeholder_document,
     },
     .{
         .kind = .edge_event,
@@ -81,7 +66,7 @@ pub const registry = [_]SchemaDescriptor{
         .version = 1,
         .path = "schemas/edge-event-placeholder-v1.json",
         .status = "reserved-placeholder",
-        .contents = edge_event_placeholder,
+        .contents = edge_event_placeholder_document,
     },
     .{
         .kind = .safety_report,
@@ -89,7 +74,7 @@ pub const registry = [_]SchemaDescriptor{
         .version = 1,
         .path = "schemas/safety-report-placeholder-v1.json",
         .status = "reserved-placeholder",
-        .contents = safety_report_placeholder,
+        .contents = safety_report_placeholder_document,
     },
 };
 

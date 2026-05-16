@@ -168,6 +168,18 @@ test "phase 24 schema registry exposes CLI and Edge reserved schemas" {
     try expectSchemaFileExists(safety_report_schema.path);
 }
 
+test "core schema registry embeds stable schema documents from disk" {
+    try expectStableSchemaContentsMatchFile(.policy, "policy-v1", "schemas/policy-v1.json");
+    try expectStableSchemaContentsMatchFile(.event, "event-v1", "schemas/event-v1.json");
+    try expectStableSchemaContentsMatchFile(.mcp_manifest, "mcp-manifest-v1", "schemas/mcp-manifest-v1.json");
+}
+
+test "core schema registry placeholders stay explicit schema documents" {
+    try expectPlaceholderSchemaDocument(.edge_policy, "edge-policy-placeholder-v1", "schemas/edge-policy-placeholder-v1.json");
+    try expectPlaceholderSchemaDocument(.edge_event, "edge-event-placeholder-v1", "schemas/edge-event-placeholder-v1.json");
+    try expectPlaceholderSchemaDocument(.safety_report, "safety-report-placeholder-v1", "schemas/safety-report-placeholder-v1.json");
+}
+
 test "phase 24 experimental ABI skeleton compiles and documents instability" {
     try std.testing.expectEqualStrings("experimental", aegis_core.abi.stability);
     try std.testing.expect(std.mem.indexOf(u8, aegis_core.abi.documentation, "not stable v1") != null);
@@ -183,4 +195,61 @@ test "phase 24 experimental ABI skeleton compiles and documents instability" {
 fn expectSchemaFileExists(path: []const u8) !void {
     const file = try std.fs.cwd().openFile(path, .{});
     file.close();
+}
+
+fn expectStableSchemaContentsMatchFile(kind: aegis_core.schemas.SchemaKind, id: []const u8, path: []const u8) !void {
+    const schema = aegis_core.schemas.lookup(kind) orelse return error.TestUnexpectedResult;
+    try std.testing.expectEqualStrings(id, schema.id);
+    try std.testing.expectEqualStrings(path, schema.path);
+    try std.testing.expectEqualStrings("stable-v1", schema.status);
+    try expectJsonSchemaDocument(schema.contents);
+
+    const file_contents = try std.fs.cwd().readFileAlloc(std.testing.allocator, path, 1024 * 1024);
+    defer std.testing.allocator.free(file_contents);
+    try expectJsonEquivalent(file_contents, schema.contents);
+}
+
+fn expectPlaceholderSchemaDocument(kind: aegis_core.schemas.SchemaKind, id: []const u8, path: []const u8) !void {
+    const schema = aegis_core.schemas.lookup(kind) orelse return error.TestUnexpectedResult;
+    try std.testing.expectEqualStrings(id, schema.id);
+    try std.testing.expectEqualStrings(path, schema.path);
+    try std.testing.expectEqualStrings("reserved-placeholder", schema.status);
+    try expectJsonSchemaDocument(schema.contents);
+    try std.testing.expect(std.mem.indexOf(u8, schema.contents, "\"status\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, schema.contents, "\"placeholder\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, schema.contents, "Reserved placeholder schema") != null);
+
+    const file_contents = try std.fs.cwd().readFileAlloc(std.testing.allocator, path, 1024 * 1024);
+    defer std.testing.allocator.free(file_contents);
+    try expectJsonEquivalent(file_contents, schema.contents);
+}
+
+fn expectJsonSchemaDocument(contents: []const u8) !void {
+    var parsed = try std.json.parseFromSlice(std.json.Value, std.testing.allocator, contents, .{});
+    defer parsed.deinit();
+
+    const object = parsed.value.object;
+    try std.testing.expect(object.contains("$schema"));
+    try std.testing.expect(object.contains("$id"));
+    try std.testing.expect(object.contains("title"));
+    try std.testing.expect(object.contains("type"));
+    try std.testing.expectEqualStrings("object", object.get("type").?.string);
+}
+
+fn expectJsonEquivalent(expected_contents: []const u8, actual_contents: []const u8) !void {
+    const expected = try canonicalJson(expected_contents);
+    defer std.testing.allocator.free(expected);
+    const actual = try canonicalJson(actual_contents);
+    defer std.testing.allocator.free(actual);
+    try std.testing.expectEqualStrings(expected, actual);
+}
+
+fn canonicalJson(contents: []const u8) ![]u8 {
+    var parsed = try std.json.parseFromSlice(std.json.Value, std.testing.allocator, contents, .{});
+    defer parsed.deinit();
+
+    var out: std.Io.Writer.Allocating = .init(std.testing.allocator);
+    defer out.deinit();
+    try std.json.Stringify.value(parsed.value, .{}, &out.writer);
+    return try std.testing.allocator.dupe(u8, out.written());
 }
