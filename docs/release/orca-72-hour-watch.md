@@ -7,7 +7,7 @@ Post-release monitoring checklist for the first 72 hours after the Orca v1.1.0 l
 ## Check Every Few Hours
 
 ### Hour 0–6 (Immediate)
-- [ ] GitHub release page loads correctly: https://github.com/christopherkarani/Aegis/releases/tag/v1.1.0
+- [ ] GitHub release page loads correctly: https://github.com/christopherkarani/Orca/releases/tag/v1.1.0
 - [ ] All release assets are downloadable (no 404s)
 - [ ] Checksum file (`orca-plugin-checksums.txt`) is present and valid
 - [ ] No critical issues filed in the first 30 minutes

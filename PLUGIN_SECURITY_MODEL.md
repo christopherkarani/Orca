@@ -7,8 +7,8 @@ This document defines the trust boundaries, sandbox expectations, and permission
 
 ## Principles
 
-1. **Aegis CLI is the source of truth.** Plugins call Aegis; they do not reimplement policy logic.
-2. **Strongest protection is `aegis run`.** Plugin hooks are additive, not a replacement for supervised execution.
+1. **Orca is the source of truth.** Plugins call Aegis; they do not reimplement policy logic.
+2. **Strongest protection is `orca run`.** Plugin hooks are additive, not a replacement for supervised execution.
 3. **Default deny.** If a plugin cannot verify safety, it must fail closed.
 4. **No silent mutation.** Host configs, policies, and credentials are never changed without explicit user approval.
 5. **No telemetry by default.** The plugin surface does not phone home.
@@ -21,9 +21,9 @@ This document defines the trust boundaries, sandbox expectations, and permission
 │  Runs arbitrary agent code                │
 ├─────────────────────────────────────────┤
 │  Aegis Plugin (future package)          │  ← Semi-trusted; read-only
-│  Calls Aegis CLI for decisions            │
+│  Calls Orca for decisions            │
 ├─────────────────────────────────────────┤
-│  Aegis CLI (`aegis plugin *`)           │  ← Trusted local surface
+│  Orca (`aegis plugin *`)           │  ← Trusted local surface
 │  Owns policy, audit, replay               │
 ├─────────────────────────────────────────┤
 │  Aegis Core (policy engine, audit)      │  ← Trusted
@@ -68,7 +68,7 @@ The plugin surface does not claim to sandbox the host IDE. It provides:
 - Safe installation previews
 
 Actual sandboxing is provided by:
-- `aegis run -- <command>` for child process supervision
+- `orca run -- <command>` for child process supervision
 - Host IDE's own extension sandbox (if any)
 - OS-level protections
 
@@ -83,5 +83,5 @@ A plugin request is rejected if it would:
 
 ## See Also
 
-- `docs/integrations/aegis-cli-plugin.md`
+- `docs/integrations/orca-plugin.md`
 - `docs/integrations/drone-safety.md`

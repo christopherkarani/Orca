@@ -1,4 +1,4 @@
-# Aegis Edge Watchdog
+# Edge Watchdog
 
 The watchdog policy is a local policy section used to configure heartbeat max ages, telemetry freshness, audit writer requirements, degraded-mode behavior, and lightweight resource limits. CI and strict contexts fail closed when required audit persistence or safety-policy health is unavailable.
 

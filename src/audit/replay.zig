@@ -1,6 +1,6 @@
 const std = @import("std");
 
-const core = @import("../core/mod.zig");
+const core = @import("../core/public.zig");
 const hash_chain = @import("hash_chain.zig");
 const redact_bridge = @import("redact_bridge.zig");
 const audit_summary = @import("summary.zig");
@@ -9,7 +9,7 @@ pub const ReplayOptions = struct {
     session: []const u8 = "last",
     only_denied: bool = false,
     verify: bool = false,
-    audit_dir_name: []const u8 = ".aegis",
+    audit_dir_name: []const u8 = ".orca",
 };
 
 pub const ReplayEvent = struct {
@@ -125,7 +125,7 @@ pub const VerifyResult = struct {
 pub fn verifySessionDir(allocator: std.mem.Allocator, session_dir_path: []const u8) !VerifyResult {
     const events_path = try std.fs.path.join(allocator, &.{ session_dir_path, "events.jsonl" });
     defer allocator.free(events_path);
-    const events_text = try std.fs.cwd().readFileAlloc(allocator, events_path, core.limits.max_mcp_message_len);
+    const events_text = try std.fs.cwd().readFileAlloc(allocator, events_path, core.limits.max_audit_log_len);
     defer allocator.free(events_text);
 
     var previous_hash: ?hash_chain.HashHex = null;
@@ -357,18 +357,27 @@ fn jsonNullableStringEquals(value: std.json.Value, expected: ?[]const u8) bool {
 }
 
 fn resolveSessionId(allocator: std.mem.Allocator, workspace_root: []const u8, requested: []const u8, audit_dir_name: []const u8) ![]u8 {
-    if (!std.mem.eql(u8, requested, "last")) return try allocator.dupe(u8, requested);
+    if (!std.mem.eql(u8, requested, "last")) {
+        try validateSessionId(requested);
+        return try allocator.dupe(u8, requested);
+    }
     const last_path = try std.fs.path.join(allocator, &.{ workspace_root, audit_dir_name, "last" });
     defer allocator.free(last_path);
     const text = try std.fs.cwd().readFileAlloc(allocator, last_path, core.limits.max_session_id_len + 2);
     defer allocator.free(text);
-    return try allocator.dupe(u8, std.mem.trim(u8, text, " \t\r\n"));
+    const trimmed = std.mem.trim(u8, text, " \t\r\n");
+    try validateSessionId(trimmed);
+    return try allocator.dupe(u8, trimmed);
+}
+
+fn validateSessionId(value: []const u8) !void {
+    try core.session.validateSessionIdText(value);
 }
 
 fn loadEvents(allocator: std.mem.Allocator, session_dir_path: []const u8, only_denied: bool) ![]ReplayEvent {
     const events_path = try std.fs.path.join(allocator, &.{ session_dir_path, "events.jsonl" });
     defer allocator.free(events_path);
-    const events_text = try std.fs.cwd().readFileAlloc(allocator, events_path, core.limits.max_mcp_message_len);
+    const events_text = try std.fs.cwd().readFileAlloc(allocator, events_path, core.limits.max_audit_log_len);
     defer allocator.free(events_text);
 
     var list: std.ArrayList(ReplayEvent) = .empty;
@@ -383,7 +392,11 @@ fn loadEvents(allocator: std.mem.Allocator, session_dir_path: []const u8, only_d
         var parsed = try std.json.parseFromSlice(std.json.Value, allocator, line, .{});
         defer parsed.deinit();
         if (only_denied and !isDenied(parsed.value)) continue;
-        try list.append(allocator, try eventFromJson(allocator, line, parsed.value));
+        const event = try eventFromJson(allocator, line, parsed.value);
+        list.append(allocator, event) catch |err| {
+            event.deinit(allocator);
+            return err;
+        };
     }
 
     return try list.toOwnedSlice(allocator);
@@ -393,15 +406,23 @@ fn eventFromJson(allocator: std.mem.Allocator, raw: []const u8, value: std.json.
     _ = raw;
     const object = try expectObject(value);
     const target = try expectObject(try requiredField(object, "target"));
-    const decision_result = decisionResultFromValue(allocator, try requiredField(object, "decision")) catch null;
+    const decision_result = decisionResultFromValue(allocator, try requiredField(object, "decision")) catch |err| switch (err) {
+        error.InvalidEventSchema => null,
+        else => return err,
+    };
     errdefer if (decision_result) |value_text| allocator.free(value_text);
     const canonical_raw = try eventJsonLineFromValue(allocator, value);
     errdefer allocator.free(canonical_raw);
+    const timestamp = try allocator.dupe(u8, try expectString(try requiredField(object, "timestamp")));
+    errdefer allocator.free(timestamp);
+    const event_type = try allocator.dupe(u8, try expectString(try requiredField(object, "type")));
+    errdefer allocator.free(event_type);
+    const target_value = try allocator.dupe(u8, try expectString(try requiredField(target, "value")));
     return .{
         .raw = canonical_raw,
-        .timestamp = try allocator.dupe(u8, try expectString(try requiredField(object, "timestamp"))),
-        .event_type = try allocator.dupe(u8, try expectString(try requiredField(object, "type"))),
-        .target_value = try allocator.dupe(u8, try expectString(try requiredField(target, "value"))),
+        .timestamp = timestamp,
+        .event_type = event_type,
+        .target_value = target_value,
         .decision_result = decision_result,
     };
 }
@@ -555,7 +576,7 @@ test "verification detects modified event fields" {
 
     const ts = core.time.Timestamp.fromUnixSeconds(1_777_983_130);
     const session_id = try core.session.generateSessionId(ts);
-    const session_dir = try std.fs.path.join(std.testing.allocator, &.{ root, ".aegis", "sessions", session_id.slice() });
+    const session_dir = try std.fs.path.join(std.testing.allocator, &.{ root, ".orca", "sessions", session_id.slice() });
     defer std.testing.allocator.free(session_dir);
     try std.fs.cwd().makePath(session_dir);
 
@@ -603,7 +624,7 @@ test "verification rejects event records with unauthenticated extra keys" {
     const root = try tmp.dir.realpathAlloc(std.testing.allocator, ".");
     defer std.testing.allocator.free(root);
 
-    const session_dir = try std.fs.path.join(std.testing.allocator, &.{ root, ".aegis", "sessions", "extra-key" });
+    const session_dir = try std.fs.path.join(std.testing.allocator, &.{ root, ".orca", "sessions", "extra-key" });
     defer std.testing.allocator.free(session_dir);
     try std.fs.cwd().makePath(session_dir);
 
@@ -641,7 +662,7 @@ test "verification rejects tampered summary display fields" {
     const root = try tmp.dir.realpathAlloc(std.testing.allocator, ".");
     defer std.testing.allocator.free(root);
 
-    const session_dir = try std.fs.path.join(std.testing.allocator, &.{ root, ".aegis", "sessions", "summary-tamper" });
+    const session_dir = try std.fs.path.join(std.testing.allocator, &.{ root, ".orca", "sessions", "summary-tamper" });
     defer std.testing.allocator.free(session_dir);
     try std.fs.cwd().makePath(session_dir);
 
@@ -696,7 +717,7 @@ test "verification reports malformed events instead of panicking" {
     const root = try tmp.dir.realpathAlloc(std.testing.allocator, ".");
     defer std.testing.allocator.free(root);
 
-    const session_dir = try std.fs.path.join(std.testing.allocator, &.{ root, ".aegis", "sessions", "malformed" });
+    const session_dir = try std.fs.path.join(std.testing.allocator, &.{ root, ".orca", "sessions", "malformed" });
     defer std.testing.allocator.free(session_dir);
     try std.fs.cwd().makePath(session_dir);
 
@@ -724,7 +745,7 @@ test "verification detects summary event count mismatch" {
     defer tmp.cleanup();
     const root = try tmp.dir.realpathAlloc(std.testing.allocator, ".");
     defer std.testing.allocator.free(root);
-    const session_dir = try std.fs.path.join(std.testing.allocator, &.{ root, ".aegis", "sessions", "count-mismatch" });
+    const session_dir = try std.fs.path.join(std.testing.allocator, &.{ root, ".orca", "sessions", "count-mismatch" });
     defer std.testing.allocator.free(session_dir);
     try std.fs.cwd().makePath(session_dir);
 
@@ -753,4 +774,78 @@ test "verification detects summary event count mismatch" {
     defer result.deinit(std.testing.allocator);
     try std.testing.expect(!result.ok);
     try std.testing.expectEqualStrings("summary event count mismatch", result.reason.?);
+}
+
+test "replay loading cleans up every allocation failure path" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const root = try tmp.dir.realpathAlloc(std.testing.allocator, ".");
+    defer std.testing.allocator.free(root);
+    const session_id = "alloc-failure";
+    try writeValidReplayFixture(root, session_id);
+
+    try std.testing.checkAllAllocationFailures(std.testing.allocator, loadReplayAllocationFailureProbe, .{ root, session_id });
+}
+
+test "replay rejects session ids with path traversal" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const root = try tmp.dir.realpathAlloc(std.testing.allocator, ".");
+    defer std.testing.allocator.free(root);
+
+    try std.testing.expectError(error.InvalidSessionId, load(std.testing.allocator, root, .{ .session = "../outside" }));
+    try std.testing.expectError(error.InvalidSessionId, load(std.testing.allocator, root, .{ .session = "." }));
+    try std.testing.expectError(error.InvalidSessionId, load(std.testing.allocator, root, .{ .session = ".." }));
+
+    const audit_dir = try std.fs.path.join(std.testing.allocator, &.{ root, ".orca" });
+    defer std.testing.allocator.free(audit_dir);
+    try std.fs.cwd().makePath(audit_dir);
+    const last_path = try std.fs.path.join(std.testing.allocator, &.{ audit_dir, "last" });
+    defer std.testing.allocator.free(last_path);
+    {
+        const file = try std.fs.cwd().createFile(last_path, .{});
+        defer file.close();
+        try file.writeAll("../outside\n");
+    }
+
+    try std.testing.expectError(error.InvalidSessionId, load(std.testing.allocator, root, .{ .session = "last" }));
+    {
+        const file = try std.fs.cwd().createFile(last_path, .{ .truncate = true });
+        defer file.close();
+        try file.writeAll("..\n");
+    }
+    try std.testing.expectError(error.InvalidSessionId, load(std.testing.allocator, root, .{ .session = "last" }));
+}
+
+fn loadReplayAllocationFailureProbe(allocator: std.mem.Allocator, root: []const u8, session_id: []const u8) !void {
+    var replay = try load(allocator, root, .{ .session = session_id, .verify = true });
+    defer replay.deinit();
+}
+
+fn writeValidReplayFixture(root: []const u8, session_id: []const u8) !void {
+    const session_dir = try std.fs.path.join(std.testing.allocator, &.{ root, ".orca", "sessions", session_id });
+    defer std.testing.allocator.free(session_dir);
+    try std.fs.cwd().makePath(session_dir);
+
+    const event_path = try std.fs.path.join(std.testing.allocator, &.{ session_dir, "events.jsonl" });
+    defer std.testing.allocator.free(event_path);
+    const summary_path = try std.fs.path.join(std.testing.allocator, &.{ session_dir, "summary.json" });
+    defer std.testing.allocator.free(summary_path);
+
+    const event_text =
+        "{\"version\":1,\"session_id\":\"s\",\"event_id\":\"e\",\"timestamp\":\"2026-05-05T12:12:10Z\",\"type\":\"command_denied\",\"actor\":{\"kind\":\"orca\",\"id\":null,\"display\":\"orca\"},\"target\":{\"kind\":\"command\",\"value\":\"rm -rf tmp\"},\"decision\":{\"result\":\"deny\",\"rule_id\":null,\"reason\":\"blocked\",\"risk_score\":null,\"requires_user\":false,\"ci_may_proceed\":false},\"redactions\":{\"count\":0,\"labels\":[]},\"previous_hash\":null";
+    const hash = blk: {
+        const canonical = try std.fmt.allocPrint(std.testing.allocator, "{s}}}", .{event_text});
+        defer std.testing.allocator.free(canonical);
+        break :blk hash_chain.eventHash(null, canonical);
+    };
+    {
+        const file = try std.fs.cwd().createFile(event_path, .{});
+        defer file.close();
+        var buf: [1024]u8 = undefined;
+        var file_writer = file.writer(&buf);
+        try file_writer.interface.print("{s},\"event_hash\":\"{s}\"}}\n", .{ event_text, &hash });
+        try file_writer.interface.flush();
+    }
+    try writeTestSummary(summary_path, 1, &hash, "[\"orca\",\"run\",\"--\",\"rm\",\"-rf\",\"tmp\"]");
 }

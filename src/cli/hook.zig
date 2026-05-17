@@ -1,7 +1,8 @@
 const std = @import("std");
-const core = @import("../core/mod.zig");
-const core_api = @import("../core/api.zig");
-const policy = @import("../policy/mod.zig");
+const core = @import("aegis_core").core;
+const supervisor = @import("../core/supervisor.zig");
+const core_api = @import("aegis_core").api;
+const policy = @import("aegis_core").policy;
 
 const exit_codes = @import("exit_codes.zig");
 const help = @import("help.zig");
@@ -24,7 +25,7 @@ pub fn command(argv: []const []const u8, stdout: anytype, stderr: anytype) !u8 {
     }
 
     const host = Host.parse(argv[0]) orelse {
-        try stderr.print("orca hook: unknown host '{s}'. Expected codex, claude, opencode, or openclaw.\n", .{argv[0]});
+        try stderr.print("orca hook: unknown host '{s}'. Expected codex, claude, opencode, openclaw, or hermes.\n", .{argv[0]});
         return exit_codes.usage;
     };
 
@@ -53,6 +54,14 @@ pub fn command(argv: []const []const u8, stdout: anytype, stderr: anytype) !u8 {
             try stderr.print("orca hook: unknown OpenClaw event '{s}'.\n", .{event_name});
             return exit_codes.usage;
         }
+    else if (host == .hermes)
+        mapHermesEvent(event_name) orelse {
+            if (isHermesInformationalEvent(event_name)) {
+                return hookCommand(host, .SessionStart, event_name, argv[2..], stdout, stderr);
+            }
+            try stderr.print("orca hook: unknown Hermes event '{s}'.\n", .{event_name});
+            return exit_codes.usage;
+        }
     else
         Event.parse(event_name) orelse {
             try stderr.print("orca hook: unknown event '{s}'.\n", .{event_name});
@@ -71,12 +80,14 @@ const Host = enum {
     claude,
     opencode,
     openclaw,
+    hermes,
 
     pub fn parse(value: []const u8) ?Host {
         if (std.mem.eql(u8, value, "codex")) return .codex;
         if (std.mem.eql(u8, value, "claude")) return .claude;
         if (std.mem.eql(u8, value, "opencode")) return .opencode;
         if (std.mem.eql(u8, value, "openclaw")) return .openclaw;
+        if (std.mem.eql(u8, value, "hermes") or std.mem.eql(u8, value, "hermess")) return .hermes;
         return null;
     }
 };
@@ -144,6 +155,24 @@ fn isOpenClawInformationalEvent(event_name: []const u8) bool {
         std.mem.eql(u8, event_name, "session.end");
 }
 
+fn mapHermesEvent(event_name: []const u8) ?Event {
+    if (std.mem.eql(u8, event_name, "on_session_start")) return .SessionStart;
+    if (std.mem.eql(u8, event_name, "pre_tool_call")) return .PreToolUse;
+    if (std.mem.eql(u8, event_name, "post_tool_call")) return .PostToolUse;
+    if (std.mem.eql(u8, event_name, "pre_llm_call")) return .UserPromptSubmit;
+    if (std.mem.eql(u8, event_name, "on_session_end")) return .SessionEnd;
+    if (std.mem.eql(u8, event_name, "on_session_finalize")) return .SessionEnd;
+    if (std.mem.eql(u8, event_name, "on_session_reset")) return .SessionEnd;
+    if (std.mem.eql(u8, event_name, "post_llm_call")) return null;
+    if (std.mem.eql(u8, event_name, "subagent_stop")) return null;
+    return null;
+}
+
+fn isHermesInformationalEvent(event_name: []const u8) bool {
+    return std.mem.eql(u8, event_name, "post_llm_call") or
+        std.mem.eql(u8, event_name, "subagent_stop");
+}
+
 // ---------------------------------------------------------------------------
 // Hook command
 // ---------------------------------------------------------------------------
@@ -184,6 +213,13 @@ fn hookCommand(host: Host, event: Event, original_event_name: []const u8, argv: 
                 \\  orca hook openclaw permission.before
                 \\  orca hook openclaw permission.after
                 \\  orca hook openclaw session.end
+                \\  orca hook hermes on_session_start
+                \\  orca hook hermes pre_tool_call
+                \\  orca hook hermes post_tool_call
+                \\  orca hook hermes pre_llm_call
+                \\  orca hook hermes post_llm_call
+                \\  orca hook hermes on_session_end
+                \\  orca hook hermes subagent_stop
                 \\
                 \\Options:
                 \\  --ci     CI mode: ask decisions become block.
@@ -204,7 +240,13 @@ fn hookCommand(host: Host, event: Event, original_event_name: []const u8, argv: 
     const allocator = gpa_state.allocator();
 
     // Read payload from stdin (hooks always read from stdin)
-    const payload_text = try readBoundedStdin(allocator, max_payload_len);
+    const payload_text = readBoundedStdin(allocator, max_payload_len) catch |err| {
+        if (err == error.PayloadTooLarge) {
+            try stderr.writeAll("orca hook: JSON payload exceeds maximum size.\n");
+            return exit_codes.general;
+        }
+        return err;
+    };
     defer allocator.free(payload_text);
 
     if (payload_text.len == 0) {
@@ -235,7 +277,7 @@ fn hookCommand(host: Host, event: Event, original_event_name: []const u8, argv: 
 
     // Validate event matches (for OpenCode/OpenClaw, compare against original event name)
     const request_event = extractString(parsed.value, "event") orelse "";
-    const expected_event = if (host == .opencode or host == .openclaw) original_event_name else @tagName(event);
+    const expected_event = if (host == .opencode or host == .openclaw or host == .hermes) original_event_name else @tagName(event);
     if (!std.mem.eql(u8, request_event, expected_event)) {
         try stderr.print("orca hook: event mismatch. Expected '{s}', got '{s}'.\n", .{ expected_event, request_event });
         return exit_codes.general;
@@ -267,8 +309,20 @@ fn hookCommand(host: Host, event: Event, original_event_name: []const u8, argv: 
         return exit_codes.success;
     }
 
+    if (host == .hermes and isHermesInformationalEvent(request_event)) {
+        var redactions: std.ArrayList(RedactionEntry) = .empty;
+        var limitations: std.ArrayList([]const u8) = .empty;
+        try limitations.append(allocator, try allocator.dupe(u8, "Hook enforcement is additive; does not replace orca run supervision."));
+        try limitations.append(allocator, try allocator.dupe(u8, "Hermes informational event: no policy evaluation needed."));
+
+        var result = try makeInformationalResponse(allocator, .allow, .low, "session", "informational event", "Hermes event acknowledged by Orca.", &redactions, &limitations);
+        defer result.deinit(allocator);
+        try writeHookResponse(stdout, result);
+        return exit_codes.success;
+    }
+
     // Load policy
-    const root = core.supervisor.resolveWorkspaceRoot(allocator, null, ".") catch try allocator.dupe(u8, ".");
+    const root = supervisor.resolveWorkspaceRoot(allocator, null, ".") catch try allocator.dupe(u8, ".");
     defer allocator.free(root);
     var loaded = core_api.discoverPolicy(allocator, null, root) catch |err| {
         try stderr.print("orca hook: failed to load policy: {s}\n", .{@errorName(err)});
@@ -388,6 +442,12 @@ fn evaluateHook(
 ) !HookResponse {
     var redactions: std.ArrayList(RedactionEntry) = .empty;
     var limitations: std.ArrayList([]const u8) = .empty;
+    errdefer {
+        for (redactions.items) |entry| entry.deinit(allocator);
+        redactions.deinit(allocator);
+        for (limitations.items) |item| allocator.free(item);
+        limitations.deinit(allocator);
+    }
 
     // Add host limitation note
     try limitations.append(allocator, try allocator.dupe(u8, "Hook enforcement is additive; does not replace orca run supervision."));
@@ -403,7 +463,12 @@ fn evaluateHook(
             return try makeInformationalResponse(allocator, .allow, .low, "tool", "tool use completed", "Post-tool-use acknowledged by Orca.", &redactions, &limitations);
         },
         .UserPromptSubmit => {
-            const prompt_text = extractString(payload, "prompt") orelse extractString(payload, "text") orelse "";
+            const prompt_text = extractString(payload, "prompt") orelse
+                extractString(payload, "text") orelse
+                extractString(payload, "user_message") orelse
+                extractNestedString(payload, &.{ "kwargs", "user_message" }) orelse
+                extractNestedString(payload, &.{ "extra", "user_message" }) orelse
+                "";
 
             // Redact prompt text to check for secrets
             var redact_buf: [4096]u8 = undefined;
@@ -447,8 +512,22 @@ fn evaluateHook(
         },
         .PreToolUse => {
             // Try to extract command from various payload shapes
-            const command_text = extractString(payload, "command") orelse extractNestedString(payload, &.{ "tool", "command" });
-            const tool_name = extractString(payload, "tool") orelse extractString(payload, "name") orelse "unknown";
+            const command_text = extractString(payload, "command") orelse
+                extractNestedString(payload, &.{ "tool", "command" }) orelse
+                extractNestedString(payload, &.{ "tool_input", "command" }) orelse
+                extractNestedString(payload, &.{ "args", "command" }) orelse
+                extractNestedString(payload, &.{ "params", "command" }) orelse
+                extractNestedString(payload, &.{ "input", "command" }) orelse
+                extractNestedString(payload, &.{ "data", "command" }) orelse
+                extractNestedString(payload, &.{ "data", "input", "command" }) orelse
+                extractNestedString(payload, &.{ "kwargs", "command" }) orelse
+                extractNestedString(payload, &.{ "kwargs", "args", "command" }) orelse
+                extractNestedString(payload, &.{ "kwargs", "params", "command" }) orelse
+                extractNestedString(payload, &.{ "kwargs", "tool_input", "command" });
+            const tool_name = extractString(payload, "tool") orelse
+                extractString(payload, "tool_name") orelse
+                extractString(payload, "name") orelse
+                extractNestedString(payload, &.{ "tool", "name" });
 
             if (command_text) |cmd| {
                 // Shell-like tool usage: evaluate as command
@@ -470,8 +549,19 @@ fn evaluateHook(
                 };
             } else {
                 // Check if this is a file-editing tool with a path
-                const path = extractString(payload, "path") orelse extractString(payload, "file");
-                const is_file_tool = isFileTool(tool_name);
+                const path = extractString(payload, "path") orelse
+                    extractString(payload, "file") orelse
+                    extractNestedString(payload, &.{ "tool_input", "path" }) orelse
+                    extractNestedString(payload, &.{ "args", "path" }) orelse
+                    extractNestedString(payload, &.{ "params", "path" }) orelse
+                    extractNestedString(payload, &.{ "input", "path" }) orelse
+                    extractNestedString(payload, &.{ "data", "path" }) orelse
+                    extractNestedString(payload, &.{ "data", "input", "path" }) orelse
+                    extractNestedString(payload, &.{ "kwargs", "path" }) orelse
+                    extractNestedString(payload, &.{ "kwargs", "args", "path" }) orelse
+                    extractNestedString(payload, &.{ "kwargs", "params", "path" }) orelse
+                    extractNestedString(payload, &.{ "kwargs", "tool_input", "path" });
+                const is_file_tool = if (tool_name) |name| isFileTool(name) else false;
 
                 if (path) |p| {
                     if (is_file_tool) {
@@ -495,7 +585,8 @@ fn evaluateHook(
                 }
 
                 // Generic tool: evaluate as MCP/tool
-                const evaluation = try core_api.explainAction(allocator, policy_value, .mcp, tool_name);
+                const generic_tool_name = tool_name orelse return error.MissingRequiredField;
+                const evaluation = try core_api.explainAction(allocator, policy_value, .mcp, generic_tool_name);
                 defer evaluation.deinit(allocator);
 
                 const decision = PluginDecision.fromDecisionResult(evaluation.decision.result, ci_mode);
@@ -514,8 +605,8 @@ fn evaluateHook(
             }
         },
         .PermissionRequest => {
-            const permission_kind = extractString(payload, "kind") orelse extractString(payload, "permission") orelse "unknown";
-            const target = extractString(payload, "target") orelse extractString(payload, "resource") orelse "";
+            const permission_kind = extractString(payload, "kind") orelse extractString(payload, "permission") orelse return error.MissingRequiredField;
+            const target = extractString(payload, "target") orelse extractString(payload, "resource") orelse return error.MissingRequiredField;
 
             // Evaluate based on permission kind
             // Destructive file operations (delete, create, append, move, rename, remove)
@@ -650,17 +741,18 @@ fn writeHookResponse(stdout: anytype, result: HookResponse) !void {
 
 fn readBoundedStdin(allocator: std.mem.Allocator, max_len: usize) ![]u8 {
     const stdin_file = std.fs.File.stdin();
+    return readBoundedReader(allocator, max_len, stdin_file);
+}
+
+fn readBoundedReader(allocator: std.mem.Allocator, max_len: usize, reader: anytype) ![]u8 {
     var buf: std.ArrayList(u8) = .empty;
     errdefer buf.deinit(allocator);
 
     var chunk: [4096]u8 = undefined;
     while (true) {
-        const n = try stdin_file.read(&chunk);
+        const n = try reader.read(&chunk);
         if (n == 0) break;
-        if (buf.items.len + n > max_len) {
-            try buf.appendSlice(allocator, chunk[0..@min(n, max_len - buf.items.len)]);
-            break;
-        }
+        if (buf.items.len + n > max_len) return error.PayloadTooLarge;
         try buf.appendSlice(allocator, chunk[0..n]);
     }
 
@@ -842,6 +934,22 @@ test "hook claude PreToolUse with file write to protected path returns block" {
     defer result.deinit(allocator);
 
     try std.testing.expectEqual(PluginDecision.block, result.decision);
+}
+
+test "hook rejects missing required PreToolUse and PermissionRequest fields" {
+    var gpa_state: std.heap.GeneralPurposeAllocator(.{}) = .init;
+    defer _ = gpa_state.deinit();
+    const allocator = gpa_state.allocator();
+
+    var policy_obj = try core_api.loadPolicyPreset(allocator, .strict);
+    defer policy_obj.deinit();
+
+    var empty_obj = std.json.ObjectMap.init(allocator);
+    defer empty_obj.deinit();
+    const empty_payload = std.json.Value{ .object = empty_obj };
+
+    try std.testing.expectError(error.MissingRequiredField, evaluateHook(allocator, &policy_obj, .codex, .PreToolUse, empty_payload, false));
+    try std.testing.expectError(error.MissingRequiredField, evaluateHook(allocator, &policy_obj, .claude, .PermissionRequest, empty_payload, false));
 }
 
 test "hook response JSON format is valid" {
@@ -1092,4 +1200,133 @@ test "isOpenClawInformationalEvent identifies informational events" {
     try std.testing.expect(!isOpenClawInformationalEvent("tool.before"));
     try std.testing.expect(!isOpenClawInformationalEvent("session.start"));
     try std.testing.expect(!isOpenClawInformationalEvent("permission.before"));
+}
+
+test "hook hermes on_session_start returns allow" {
+    var gpa_state: std.heap.GeneralPurposeAllocator(.{}) = .init;
+    defer _ = gpa_state.deinit();
+    const allocator = gpa_state.allocator();
+    var policy_obj = try core_api.loadPolicyPreset(allocator, .strict);
+    defer policy_obj.deinit();
+
+    var empty_obj = std.json.ObjectMap.init(allocator);
+    defer empty_obj.deinit();
+
+    var result = try evaluateHook(allocator, &policy_obj, .hermes, .SessionStart, std.json.Value{ .object = empty_obj }, false);
+    defer result.deinit(allocator);
+
+    try std.testing.expectEqual(PluginDecision.allow, result.decision);
+}
+
+test "hook hermes pre_tool_call with dangerous command returns block" {
+    var gpa_state: std.heap.GeneralPurposeAllocator(.{}) = .init;
+    defer _ = gpa_state.deinit();
+    const allocator = gpa_state.allocator();
+    var policy_obj = try core_api.loadPolicyPreset(allocator, .strict);
+    defer policy_obj.deinit();
+
+    var input_obj = std.json.ObjectMap.init(allocator);
+    defer input_obj.deinit();
+    try input_obj.put("command", std.json.Value{ .string = "rm -rf /" });
+
+    var payload_obj = std.json.ObjectMap.init(allocator);
+    defer payload_obj.deinit();
+    try payload_obj.put("tool", std.json.Value{ .string = "shell" });
+    try payload_obj.put("input", std.json.Value{ .object = input_obj });
+
+    var result = try evaluateHook(allocator, &policy_obj, .hermes, .PreToolUse, std.json.Value{ .object = payload_obj }, false);
+    defer result.deinit(allocator);
+
+    try std.testing.expectEqual(PluginDecision.block, result.decision);
+}
+
+test "hook hermes pre_tool_call with nested protected file path returns block" {
+    var gpa_state: std.heap.GeneralPurposeAllocator(.{}) = .init;
+    defer _ = gpa_state.deinit();
+    const allocator = gpa_state.allocator();
+    var policy_obj = try core_api.loadPolicyPreset(allocator, .strict);
+    defer policy_obj.deinit();
+
+    var input_obj = std.json.ObjectMap.init(allocator);
+    defer input_obj.deinit();
+    try input_obj.put("path", std.json.Value{ .string = "/etc/passwd" });
+
+    var payload_obj = std.json.ObjectMap.init(allocator);
+    defer payload_obj.deinit();
+    try payload_obj.put("tool", std.json.Value{ .string = "write" });
+    try payload_obj.put("input", std.json.Value{ .object = input_obj });
+
+    var result = try evaluateHook(allocator, &policy_obj, .hermes, .PreToolUse, std.json.Value{ .object = payload_obj }, false);
+    defer result.deinit(allocator);
+
+    try std.testing.expectEqual(PluginDecision.block, result.decision);
+}
+
+test "hook hermes pre_tool_call with canonical tool_input command returns block" {
+    var gpa_state: std.heap.GeneralPurposeAllocator(.{}) = .init;
+    defer _ = gpa_state.deinit();
+    const allocator = gpa_state.allocator();
+    var policy_obj = try core_api.loadPolicyPreset(allocator, .strict);
+    defer policy_obj.deinit();
+
+    var tool_input_obj = std.json.ObjectMap.init(allocator);
+    defer tool_input_obj.deinit();
+    try tool_input_obj.put("command", std.json.Value{ .string = "rm -rf /" });
+
+    var payload_obj = std.json.ObjectMap.init(allocator);
+    defer payload_obj.deinit();
+    try payload_obj.put("tool_name", std.json.Value{ .string = "terminal" });
+    try payload_obj.put("tool_input", std.json.Value{ .object = tool_input_obj });
+
+    var result = try evaluateHook(allocator, &policy_obj, .hermes, .PreToolUse, std.json.Value{ .object = payload_obj }, false);
+    defer result.deinit(allocator);
+
+    try std.testing.expectEqual(PluginDecision.block, result.decision);
+}
+
+test "hook hermes pre_llm_call reads canonical user_message" {
+    var gpa_state: std.heap.GeneralPurposeAllocator(.{}) = .init;
+    defer _ = gpa_state.deinit();
+    const allocator = gpa_state.allocator();
+    var policy_obj = try core_api.loadPolicyPreset(allocator, .strict);
+    defer policy_obj.deinit();
+
+    var payload_obj = std.json.ObjectMap.init(allocator);
+    defer payload_obj.deinit();
+    try payload_obj.put("user_message", std.json.Value{ .string = "my token is ghp_fake_secret_value" });
+
+    var result = try evaluateHook(allocator, &policy_obj, .hermes, .UserPromptSubmit, std.json.Value{ .object = payload_obj }, false);
+    defer result.deinit(allocator);
+
+    try std.testing.expectEqual(PluginDecision.warn, result.decision);
+    try std.testing.expect(result.redactions.len > 0);
+}
+
+test "hook bounded reader rejects oversized payload instead of truncating" {
+    var payload = try std.testing.allocator.alloc(u8, max_payload_len + 1);
+    defer std.testing.allocator.free(payload);
+    @memset(payload[0..max_payload_len], ' ');
+    payload[0] = '{';
+    payload[1] = '}';
+    payload[max_payload_len] = 'x';
+
+    var stream = std.io.fixedBufferStream(payload);
+    try std.testing.expectError(error.PayloadTooLarge, readBoundedReader(std.testing.allocator, max_payload_len, stream.reader()));
+}
+
+test "mapHermesEvent maps known events correctly" {
+    try std.testing.expectEqual(Event.SessionStart, mapHermesEvent("on_session_start").?);
+    try std.testing.expectEqual(Event.PreToolUse, mapHermesEvent("pre_tool_call").?);
+    try std.testing.expectEqual(Event.PostToolUse, mapHermesEvent("post_tool_call").?);
+    try std.testing.expectEqual(Event.UserPromptSubmit, mapHermesEvent("pre_llm_call").?);
+    try std.testing.expectEqual(Event.SessionEnd, mapHermesEvent("on_session_end").?);
+    try std.testing.expectEqual(null, mapHermesEvent("post_llm_call"));
+    try std.testing.expectEqual(null, mapHermesEvent("unknown.event"));
+}
+
+test "isHermesInformationalEvent identifies informational events" {
+    try std.testing.expect(isHermesInformationalEvent("post_llm_call"));
+    try std.testing.expect(isHermesInformationalEvent("subagent_stop"));
+    try std.testing.expect(!isHermesInformationalEvent("pre_tool_call"));
+    try std.testing.expect(!isHermesInformationalEvent("on_session_start"));
 }

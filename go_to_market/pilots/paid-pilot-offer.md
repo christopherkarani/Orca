@@ -6,7 +6,7 @@ Pricing, if shown externally, must be treated as editable/internal guidance unti
 
 ## Name
 
-Aegis Edge Simulation/SITL Safety Pilot
+Edge Simulation/SITL Safety Pilot
 
 ## Duration
 
@@ -66,7 +66,7 @@ Editable/internal guidance:
 
 ## Acceptance Criteria
 
-- Aegis Edge runs in the agreed evaluation environment.
+- Edge runs in the agreed evaluation environment.
 - At least one unsafe command scenario is evaluated.
 - Replay verification succeeds for generated evidence.
 - Safety-case report is delivered with limitations.

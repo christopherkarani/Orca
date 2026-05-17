@@ -3,7 +3,7 @@
 Run:
 
 ```sh
-./zig-out/bin/aegis-edge redteam --ci
+./zig-out/bin/edge redteam --ci
 ```
 
 ## Categories Tested

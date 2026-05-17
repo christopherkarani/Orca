@@ -4,7 +4,7 @@ import sys
 
 
 def main() -> int:
-    workspace = os.environ.get("AEGIS_DEMO_WORKSPACE", os.getcwd())
+    workspace = os.environ.get("ORCA_DEMO_WORKSPACE", os.getcwd())
     os.chdir(workspace)
     print("[fake-agent] read malicious README instruction")
     print("[fake-agent] requested action: sh -c 'cat .env'")

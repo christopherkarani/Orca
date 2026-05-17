@@ -1,6 +1,6 @@
 # Network
 
-Aegis includes a network decision engine and wrapper/proxy-mediated hooks.
+Orca includes a network decision engine and wrapper/proxy-mediated hooks.
 
 ## Modes
 
@@ -11,8 +11,8 @@ Aegis includes a network decision engine and wrapper/proxy-mediated hooks.
 - `open`: allow decisions.
 
 ```sh
-./zig-out/bin/aegis run --no-network -- <command>
-./zig-out/bin/aegis run --network allowlist --allow-network api.github.com -- <command>
+./zig-out/bin/orca run --no-network -- <command>
+./zig-out/bin/orca run --network allowlist --allow-network api.github.com -- <command>
 ```
 
 ## Policy
@@ -37,11 +37,11 @@ network:
 
 ## Exfiltration Heuristics
 
-Aegis flags long query strings, base64-like URL parts, high-entropy DNS labels, paste sites, request bins, tunneling services, direct IP destinations, secret-like values, and repeated unknown domains.
+Orca flags long query strings, base64-like URL parts, high-entropy DNS labels, paste sites, request bins, tunneling services, direct IP destinations, secret-like values, and repeated unknown domains.
 
 ## Enforcement Levels
 
-Policy decision is not the same as transparent network enforcement. `aegis doctor` distinguishes decision engine, observation, proxy-mediated enforcement, and transparent enforcement.
+Policy decision is not the same as transparent network enforcement. `orca doctor` distinguishes decision engine, observation, proxy-mediated enforcement, and transparent enforcement.
 
 ## Redaction
 

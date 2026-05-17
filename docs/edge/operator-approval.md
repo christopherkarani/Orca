@@ -1,6 +1,6 @@
 # Operator Approval
 
-Aegis Edge Phase 32 supports local, bounded operator approval records for fake-adapter, PX4 SITL, ArduPilot SITL, simulation, and bench-preparation evaluation.
+Edge Phase 32 supports local, bounded operator approval records for fake-adapter, PX4 SITL, ArduPilot SITL, simulation, and bench-preparation evaluation.
 
 An approval request binds the vehicle id, command id, command type, command request hash, policy hash, state snapshot hash, safety evaluation hash, safety constraints hash, provenance, expiry, requested scope, risk class, matched policy rule, and findings summary. The default scope is `exact_action_only` with `max_uses: 1`.
 

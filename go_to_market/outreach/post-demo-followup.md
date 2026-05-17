@@ -1,10 +1,10 @@
 # Post-Demo Follow-Up
 
-Subject: Aegis Edge demo follow-up
+Subject: Edge demo follow-up
 
 Hey {{name}},
 
-Thanks for walking through the Aegis Edge demo today.
+Thanks for walking through the Edge demo today.
 
 What we showed:
 
@@ -15,7 +15,7 @@ What we showed:
 - telemetry egress denied/redacted
 - replay and safety-case artifacts generated locally
 
-What it means: Aegis Edge can provide simulation/SITL/bench-preparation evidence for supported policy scenarios and can make unsupported or skipped cases visible.
+What it means: Edge can provide simulation/SITL/bench-preparation evidence for supported policy scenarios and can make unsupported or skipped cases visible.
 
 What it does not mean: aircraft readiness, certification, regulatory acceptance, detect-and-avoid, or complete customer-stack coverage.
 

@@ -1,13 +1,13 @@
-# Aegis
+# Orca
 
-Phase 41 prepares Aegis CLI v1.1.0 and Aegis Edge release artifacts.
+Phase 41 prepares Orca v1.1.0 and Edge release artifacts.
 
-- `aegis version --json` reports CLI release metadata.
-- `aegis-edge version --json` reports Edge release metadata and safety boundary.
+- `orca version --json` reports CLI release metadata.
+- `edge version --json` reports Edge release metadata and safety boundary.
 - Release artifacts must be verified with `checksums.txt`.
-- Aegis Edge is simulation/SITL/customer-evaluation and bench-preparation only. It is not real-flight readiness, certification, detect-and-avoid, or autopilot replacement.
+- Edge is simulation/SITL/customer-evaluation and bench-preparation only. It is not real-flight readiness, certification, detect-and-avoid, or autopilot replacement.
 
-The `orca` binary name remains available as a compatibility alias in this repo, but release-facing Aegis artifacts use `aegis-v...` and `aegis-edge-v...` names.
+The public binaries are `orca` for desktop/CI guardrails and `edge` for simulation/SITL/customer-evaluation workflows. Release artifacts use `orca-v...` and `edge-v...` names.
 
 # Orca
 
@@ -485,7 +485,7 @@ Read [SECURITY.md](SECURITY.md) for the disclosure process.
 
 ## Name Migration
 
-Orca was previously called Aegis. Some compatibility references may remain during the transition.
+Orca was previously called Aegis. Current install, package, and release surfaces use only `orca` and `edge`.
 
 New command:
 
@@ -494,11 +494,7 @@ orca doctor
 orca run -- <agent-command>
 ```
 
-Old compatibility command, where installed:
-
-```bash
-aegis doctor
-```
+Legacy compatibility commands are not installed in the hard-break release.
 
 See [Migration: Aegis to Orca](docs/migration-aegis-to-orca.md).
 

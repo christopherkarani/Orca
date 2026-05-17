@@ -1,6 +1,6 @@
 # FAQ
 
-## Is Aegis Edge a flight controller?
+## Is Edge a flight controller?
 
 No. It is a policy, mediation, audit, red-team, and evidence runtime for simulation/SITL/bench-preparation evaluation.
 

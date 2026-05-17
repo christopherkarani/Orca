@@ -13,11 +13,11 @@ jobs:
       - name: Test
         run: zig build test
       - name: Red-team
-        run: ./zig-out/bin/aegis redteam --ci --json > aegis-redteam.json
+        run: ./zig-out/bin/orca redteam --ci --json > aegis-redteam.json
       - uses: actions/upload-artifact@v4
         if: always()
         with:
           name: aegis-artifacts
           path: |
-            .aegis/**
+            .orca/**
             aegis-redteam.json

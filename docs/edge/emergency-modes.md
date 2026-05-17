@@ -1,6 +1,6 @@
 # Emergency Modes
 
-Aegis Edge Phase 32 evaluates emergency-mode decisions for fake-adapter, PX4 SITL, ArduPilot SITL, simulation, and bench-preparation contexts.
+Edge Phase 32 evaluates emergency-mode decisions for fake-adapter, PX4 SITL, ArduPilot SITL, simulation, and bench-preparation contexts.
 
 Supported emergency commands:
 
@@ -14,4 +14,4 @@ Emergency reasons include low battery, critical battery, geofence violation, los
 
 Emergency mode is not a policy bypass. LAND, HOLD, and RTH are still evaluated against policy, state freshness, available position/home context, provenance, command risk, and authority constraints. Emergency mode never allows `disable_failsafe`, `disable_geofence`, `raw_actuator_output`, or `override_operator` by default.
 
-Aegis Edge does not send real emergency commands to real hardware in this phase.
+Edge does not send real emergency commands to real hardware in this phase.

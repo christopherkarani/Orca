@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://github.com/chriskarani/aegis/schemas/mcp-manifest-v1.json",
-  "title": "Aegis MCP Manifest v1",
+  "$id": "https://github.com/christopherkarani/Orca/schemas/mcp-manifest-v1.json",
+  "title": "Orca MCP Manifest v1",
   "type": "object",
   "additionalProperties": false,
   "required": ["version", "server"],
@@ -10,10 +10,10 @@
     "server": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["name", "transport", "command"],
+      "required": ["name", "transport"],
       "properties": {
         "name": { "type": "string" },
-        "transport": { "enum": ["stdio", "http"] },
+        "transport": { "enum": ["stdio"] },
         "command": { "type": "string" },
         "args": {
           "type": "array",

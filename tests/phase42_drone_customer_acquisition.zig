@@ -119,19 +119,19 @@ test "phase 42 outreach and calls are founder-led manual and safety-bounded" {
 
     const demo = try readFile("go_to_market/calls/demo-call-script.md");
     defer std.testing.allocator.free(demo);
-    try expectContains(demo, "./zig-out/bin/aegis-edge demo run geofence-deny");
-    try expectContains(demo, "./zig-out/bin/aegis-edge demo run disable-failsafe-deny");
-    try expectContains(demo, "./zig-out/bin/aegis-edge demo run emergency-land");
-    try expectContains(demo, "./zig-out/bin/aegis-edge demo run stale-telemetry-deny");
-    try expectContains(demo, "./zig-out/bin/aegis-edge demo run data-exfil-deny");
-    try expectContains(demo, "./zig-out/bin/aegis-edge proof generate --demo geofence-deny");
-    try expectContains(demo, "./zig-out/bin/aegis-edge redteam --ci");
+    try expectContains(demo, "./zig-out/bin/edge demo run geofence-deny");
+    try expectContains(demo, "./zig-out/bin/edge demo run disable-failsafe-deny");
+    try expectContains(demo, "./zig-out/bin/edge demo run emergency-land");
+    try expectContains(demo, "./zig-out/bin/edge demo run stale-telemetry-deny");
+    try expectContains(demo, "./zig-out/bin/edge demo run data-exfil-deny");
+    try expectContains(demo, "./zig-out/bin/edge proof generate --demo geofence-deny");
+    try expectContains(demo, "./zig-out/bin/edge redteam --ci");
 }
 
 test "phase 42 pilot offer pricing and legal-ish materials are bounded" {
     const offer = try readFile("go_to_market/pilots/paid-pilot-offer.md");
     defer std.testing.allocator.free(offer);
-    try expectContains(offer, "Aegis Edge Simulation/SITL Safety Pilot");
+    try expectContains(offer, "Edge Simulation/SITL Safety Pilot");
     try expectContains(offer, "2 weeks");
     try expectContains(offer, "one autonomy workflow");
     try expectContains(offer, "command surface inventory");

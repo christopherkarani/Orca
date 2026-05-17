@@ -19,7 +19,7 @@ From the repository root:
 zig build
 cd examples/leaky-agent-demo
 ./run-demo.sh
-../../zig-out/bin/aegis replay --session last --verify
+../../zig-out/bin/orca replay --session last --verify
 ```
 
 PowerShell users can run:

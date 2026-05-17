@@ -1,6 +1,6 @@
 const std = @import("std");
 
-const core = @import("../core/mod.zig");
+const core = @import("../core/public.zig");
 const redact_bridge = @import("redact_bridge.zig");
 
 pub const hex_hash_len = 64;
@@ -145,7 +145,7 @@ test "event serialization is deterministic and excludes event_hash from hash inp
         .event_id = eid,
         .timestamp = ts,
         .event_type = .process_launch,
-        .actor = .{ .kind = .aegis, .display = "aegis" },
+        .actor = .{ .kind = .orca, .display = "orca" },
         .target = .{ .kind = .command, .value = "echo hello" },
     };
 
@@ -172,7 +172,7 @@ test "redaction labels are redacted at the audit serialization boundary" {
         .event_id = eid,
         .timestamp = ts,
         .event_type = .secret_redacted,
-        .actor = .{ .kind = .aegis, .display = "aegis" },
+        .actor = .{ .kind = .orca, .display = "orca" },
         .target = .{ .kind = .command, .value = "echo ok" },
         .redactions = .{ .count = 1, .labels = &labels },
     };

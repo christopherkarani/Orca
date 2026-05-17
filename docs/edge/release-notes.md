@@ -1,6 +1,6 @@
-# Aegis Edge v1.1.0 Release Notes
+# Edge v1.1.0 Release Notes
 
-Aegis Edge v1.1.0 packages are prepared for simulation/SITL/customer-evaluation and bench-preparation only. This is not real-flight readiness.
+Edge v1.1.0 packages are prepared for simulation/SITL/customer-evaluation and bench-preparation only. This is not real-flight readiness.
 
 Included release surfaces:
 

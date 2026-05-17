@@ -1,7 +1,8 @@
 const std = @import("std");
-const core = @import("../core/mod.zig");
-const core_api = @import("../core/api.zig");
-const policy = @import("../policy/mod.zig");
+const core = @import("aegis_core").core;
+const supervisor = @import("../core/supervisor.zig");
+const core_api = @import("aegis_core").api;
+const policy = @import("aegis_core").policy;
 
 const exit_codes = @import("exit_codes.zig");
 const help = @import("help.zig");
@@ -106,6 +107,12 @@ fn decideCommand(kind: DecisionKind, argv: []const []const u8, stdout: anytype, 
         try stderr.writeAll("orca decide: expected --json <payload> or --stdin.\n");
         return exit_codes.usage;
     }
+    if (!use_stdin) {
+        if (json_payload.?.len > max_payload_len) {
+            try stderr.writeAll("orca decide: JSON payload exceeds maximum size.\n");
+            return exit_codes.general;
+        }
+    }
 
     var gpa_state: std.heap.GeneralPurposeAllocator(.{}) = .init;
     defer _ = gpa_state.deinit();
@@ -113,7 +120,13 @@ fn decideCommand(kind: DecisionKind, argv: []const []const u8, stdout: anytype, 
 
     // Read payload
     const payload_text = if (use_stdin)
-        try readBoundedStdin(allocator, max_payload_len)
+        readBoundedStdin(allocator, max_payload_len) catch |err| {
+            if (err == error.PayloadTooLarge) {
+                try stderr.writeAll("orca decide: JSON payload exceeds maximum size.\n");
+                return exit_codes.general;
+            }
+            return err;
+        }
     else
         try allocator.dupe(u8, json_payload.?);
     defer allocator.free(payload_text);
@@ -126,7 +139,7 @@ fn decideCommand(kind: DecisionKind, argv: []const []const u8, stdout: anytype, 
     defer parsed.deinit();
 
     // Load policy
-    const root = core.supervisor.resolveWorkspaceRoot(allocator, null, ".") catch try allocator.dupe(u8, ".");
+    const root = supervisor.resolveWorkspaceRoot(allocator, null, ".") catch try allocator.dupe(u8, ".");
     defer allocator.free(root);
     var loaded = core_api.discoverPolicy(allocator, null, root) catch |err| {
         try stderr.print("orca decide: failed to load policy: {s}\n", .{@errorName(err)});
@@ -237,7 +250,7 @@ fn evaluateDecision(
 
     switch (kind) {
         .command => {
-            const command_text = extractString(payload, "command") orelse extractString(payload, "name") orelse "unknown";
+            const command_text = extractString(payload, "command") orelse extractString(payload, "name") orelse return error.MissingRequiredField;
             const evaluation = try core_api.explainAction(allocator, policy_value, .command, command_text);
             defer evaluation.deinit(allocator);
 
@@ -255,8 +268,11 @@ fn evaluateDecision(
             };
         },
         .file => {
-            const path = extractString(payload, "path") orelse "unknown";
+            const path = extractString(payload, "path") orelse return error.MissingRequiredField;
             const operation = extractString(payload, "operation") orelse "read";
+            if (!std.mem.eql(u8, operation, "read") and !std.mem.eql(u8, operation, "write")) {
+                return error.InvalidFileOperation;
+            }
 
             const explain_kind: policy.explain.ExplainKind = if (std.mem.eql(u8, operation, "write")) .file_write else .file_read;
             const category_text = if (std.mem.eql(u8, operation, "write")) "file.write" else "file.read";
@@ -321,7 +337,10 @@ fn evaluateDecision(
             };
         },
         .tool => {
-            const tool_name = extractString(payload, "name") orelse extractString(payload, "tool") orelse "unknown";
+            const tool_name = extractString(payload, "name") orelse
+                extractString(payload, "tool") orelse
+                extractNestedString(payload, &.{ "tool", "name" }) orelse
+                return error.MissingRequiredField;
             const evaluation = try core_api.explainAction(allocator, policy_value, .mcp, tool_name);
             defer evaluation.deinit(allocator);
 
@@ -400,17 +419,18 @@ fn writeDecisionJson(stdout: anytype, result: DecisionOutput) !void {
 
 fn readBoundedStdin(allocator: std.mem.Allocator, max_len: usize) ![]u8 {
     const stdin_file = std.fs.File.stdin();
+    return readBoundedReader(allocator, max_len, stdin_file);
+}
+
+fn readBoundedReader(allocator: std.mem.Allocator, max_len: usize, reader: anytype) ![]u8 {
     var buf: std.ArrayList(u8) = .empty;
     errdefer buf.deinit(allocator);
 
     var chunk: [4096]u8 = undefined;
     while (true) {
-        const n = try stdin_file.read(&chunk);
+        const n = try reader.read(&chunk);
         if (n == 0) break;
-        if (buf.items.len + n > max_len) {
-            try buf.appendSlice(allocator, chunk[0..@min(n, max_len - buf.items.len)]);
-            break;
-        }
+        if (buf.items.len + n > max_len) return error.PayloadTooLarge;
         try buf.appendSlice(allocator, chunk[0..n]);
     }
 
@@ -426,6 +446,19 @@ fn extractString(payload: std.json.Value, key: []const u8) ?[]const u8 {
         };
     }
     return null;
+}
+
+fn extractNestedString(payload: std.json.Value, keys: []const []const u8) ?[]const u8 {
+    var current = payload;
+    for (keys) |key| {
+        if (current != .object) return null;
+        const next = current.object.get(key) orelse return null;
+        current = next;
+    }
+    return switch (current) {
+        .string => |s| s,
+        else => null,
+    };
 }
 
 fn writeJsonString(writer: anytype, value: []const u8) !void {
@@ -512,6 +545,52 @@ test "decide file write to protected path returns block" {
     try std.testing.expect(std.mem.indexOf(u8, output, "\"category\": \"file.write\"") != null);
 }
 
+test "decide file rejects unknown operation instead of downgrading to read" {
+    var stdout_buf: [512]u8 = undefined;
+    var stderr_buf: [512]u8 = undefined;
+    var stdout_stream = std.io.fixedBufferStream(&stdout_buf);
+    var stderr_stream = std.io.fixedBufferStream(&stderr_buf);
+
+    const code = try decideCommand(.file, &.{
+        "--json", "{\"path\":\"./src/main.zig\",\"operation\":\"delete\"}",
+    }, stdout_stream.writer(), stderr_stream.writer());
+    try std.testing.expect(code != exit_codes.success);
+    try std.testing.expect(std.mem.indexOf(u8, stderr_stream.getWritten(), "InvalidFileOperation") != null);
+    try std.testing.expect(std.mem.indexOf(u8, stdout_stream.getWritten(), "\"category\": \"file.read\"") == null);
+}
+
+test "decide rejects missing required command and file fields" {
+    var stdout_buf: [512]u8 = undefined;
+    var stderr_buf: [512]u8 = undefined;
+    var stdout_stream = std.io.fixedBufferStream(&stdout_buf);
+    var stderr_stream = std.io.fixedBufferStream(&stderr_buf);
+
+    const missing_command = try decideCommand(.command, &.{
+        "--json", "{}",
+    }, stdout_stream.writer(), stderr_stream.writer());
+    try std.testing.expect(missing_command != exit_codes.success);
+    try std.testing.expect(std.mem.indexOf(u8, stderr_stream.getWritten(), "MissingRequiredField") != null);
+    try std.testing.expectEqualStrings("", stdout_stream.getWritten());
+
+    stdout_stream.reset();
+    stderr_stream.reset();
+    const missing_file_path = try decideCommand(.file, &.{
+        "--json", "{\"operation\":\"read\"}",
+    }, stdout_stream.writer(), stderr_stream.writer());
+    try std.testing.expect(missing_file_path != exit_codes.success);
+    try std.testing.expect(std.mem.indexOf(u8, stderr_stream.getWritten(), "MissingRequiredField") != null);
+    try std.testing.expectEqualStrings("", stdout_stream.getWritten());
+
+    stdout_stream.reset();
+    stderr_stream.reset();
+    const missing_tool_name = try decideCommand(.tool, &.{
+        "--json", "{}",
+    }, stdout_stream.writer(), stderr_stream.writer());
+    try std.testing.expect(missing_tool_name != exit_codes.success);
+    try std.testing.expect(std.mem.indexOf(u8, stderr_stream.getWritten(), "MissingRequiredField") != null);
+    try std.testing.expectEqualStrings("", stdout_stream.getWritten());
+}
+
 test "decide prompt with fake secret returns warn" {
     var stdout_buf: [2048]u8 = undefined;
     var stderr_buf: [256]u8 = undefined;
@@ -582,4 +661,34 @@ test "decide rejects invalid JSON" {
     }, stdout_stream.writer(), stderr_stream.writer());
     try std.testing.expect(code != exit_codes.success);
     try std.testing.expect(std.mem.indexOf(u8, stderr_stream.getWritten(), "invalid JSON") != null);
+}
+
+test "decide bounded reader rejects oversized payload instead of truncating" {
+    var payload = try std.testing.allocator.alloc(u8, max_payload_len + 1);
+    defer std.testing.allocator.free(payload);
+    @memset(payload[0..max_payload_len], ' ');
+    payload[0] = '{';
+    payload[1] = '}';
+    payload[max_payload_len] = 'x';
+
+    var stream = std.io.fixedBufferStream(payload);
+    try std.testing.expectError(error.PayloadTooLarge, readBoundedReader(std.testing.allocator, max_payload_len, stream.reader()));
+}
+
+test "decide rejects inline json payloads over limit" {
+    var payload: std.ArrayList(u8) = .empty;
+    defer payload.deinit(std.testing.allocator);
+    try payload.appendSlice(std.testing.allocator, "{\"text\":\"");
+    try payload.appendNTimes(std.testing.allocator, 'x', max_payload_len);
+    try payload.appendSlice(std.testing.allocator, "\"}");
+
+    var stdout_buf: [2048]u8 = undefined;
+    var stderr_buf: [2048]u8 = undefined;
+    var stdout_stream = std.io.fixedBufferStream(&stdout_buf);
+    var stderr_stream = std.io.fixedBufferStream(&stderr_buf);
+
+    const code = try decideCommand(.prompt, &.{ "--json", payload.items }, stdout_stream.writer(), stderr_stream.writer());
+    try std.testing.expectEqual(exit_codes.general, code);
+    try std.testing.expectEqualStrings("", stdout_stream.getWritten());
+    try std.testing.expect(std.mem.indexOf(u8, stderr_stream.getWritten(), "JSON payload exceeds maximum size") != null);
 }

@@ -407,7 +407,7 @@ fn dataGuardScenario(fault: fixture_mod.FaultType) DataGuardScenario {
         },
         .safety_report_customer_allow => .{
             .payload = .{ .channel_kind = .safety_case_report, .direction = .edge_to_customer_endpoint, .vehicle_id = "edge-vehicle-1", .scenario_id = "redteam-safety-report", .provenance = "fake_adapter", .payload = safety_report_payload },
-            .endpoint = .{ .host = "reports.customer.internal", .port = 443, .scheme = "https", .protocol = "https", .path = "/aegis-edge/safety-report", .label = "customer_endpoint", .environment = "customer_evaluation", .provenance = "customer_adapter" },
+            .endpoint = .{ .host = "reports.customer.internal", .port = 443, .scheme = "https", .protocol = "https", .path = "/edge/safety-report", .label = "customer_endpoint", .environment = "customer_evaluation", .provenance = "customer_adapter" },
         },
         .telemetry_ground_control_allow => .{
             .payload = .{ .channel_kind = .mavlink_telemetry, .direction = .vehicle_to_agent, .vehicle_id = "edge-vehicle-1", .scenario_id = "redteam-ground-control", .provenance = "fake_adapter", .payload = vehicle_state },
@@ -472,7 +472,7 @@ fn runApprovalFault(allocator: std.mem.Allocator, fixture: fixture_mod.Fixture, 
         .state = state,
         .evaluation = base,
         .now_ms = 1_000_500,
-        .actor_id = "aegis-edge-redteam",
+        .actor_id = "edge-redteam",
     })) orelse {
         var builder = OutcomeBuilder.init(allocator);
         errdefer builder.deinit();
@@ -663,7 +663,7 @@ fn requestForActionWithParams(action: domain.commands.CommandAction, state: doma
         .vehicle_id = state.vehicle_id,
         .action = action,
         .parameters = params,
-        .actor = "aegis-edge-redteam",
+        .actor = "edge-redteam",
         .timestamp = .{ .value = state.timestamp.value + 100, .source = .monotonic },
         .source = state.provenance,
         .mission_id = if (action == .start_mission or action == .upload_mission) "redteam-mission" else null,

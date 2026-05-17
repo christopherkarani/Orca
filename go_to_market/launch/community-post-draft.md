@@ -1,8 +1,8 @@
 # Community Post Draft
 
-I am looking for 3 drone/autonomy design partners for Aegis Edge.
+I am looking for 3 drone/autonomy design partners for Edge.
 
-Aegis Edge is a local safety-policy and audit runtime for evaluating autonomous drone agents in simulation, SITL, and bench-preparation workflows.
+Edge is a local safety-policy and audit runtime for evaluating autonomous drone agents in simulation, SITL, and bench-preparation workflows.
 
 The demo:
 

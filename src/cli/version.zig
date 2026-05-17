@@ -3,7 +3,7 @@ const builtin = @import("builtin");
 const build_options = @import("build_options");
 
 pub const Metadata = struct {
-    product: []const u8 = "aegis-cli",
+    product: []const u8 = "orca",
     version: []const u8,
     commit: ?[]const u8,
     target: []const u8,
@@ -11,7 +11,7 @@ pub const Metadata = struct {
     build_date: ?[]const u8,
     release_channel: []const u8 = "stable",
     safety_boundary_version: []const u8 = "cli-local-dev-v1",
-    safety_boundary: []const u8 = "Aegis CLI enforces local command, file, network, MCP, audit, and red-team controls; it does not provide hosted telemetry or cloud enforcement.",
+    safety_boundary: []const u8 = "Orca enforces local command, file, network, MCP, audit, and red-team controls; it does not provide hosted telemetry or cloud enforcement.",
 };
 
 pub fn current() Metadata {
@@ -98,7 +98,7 @@ test "version json writer emits valid object shape with null metadata" {
     });
 
     const json = stream.getWritten();
-    try std.testing.expect(std.mem.indexOf(u8, json, "\"product\": \"aegis-cli\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, json, "\"product\": \"orca\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, json, "\"version\": \"1.0.0\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, json, "\"commit\": null") != null);
     try std.testing.expect(std.mem.indexOf(u8, json, "\"target\": \"x86_64-linux\"") != null);

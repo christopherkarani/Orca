@@ -1,11 +1,12 @@
 const std = @import("std");
 
 const aegis_mcp = @import("../mcp/mod.zig");
-const core = @import("../core/mod.zig");
-const core_api = @import("../core/api.zig");
+const core = @import("aegis_core").core;
+const supervisor = @import("../core/supervisor.zig");
+const core_api = @import("aegis_core").api;
 const exit_codes = @import("exit_codes.zig");
 const help = @import("help.zig");
-const policy = @import("../policy/mod.zig");
+const policy = @import("aegis_core").policy;
 const version_command = @import("version.zig");
 
 pub fn command(argv: []const []const u8, stdout: anytype, stderr: anytype) !u8 {
@@ -174,7 +175,7 @@ fn proxy(argv: []const []const u8, stdout: anytype, stderr: anytype) !u8 {
 
     const options = parseOptions(allocator, argv, stderr) catch |err| return usageCode(err, stderr);
     defer options.deinit(allocator);
-    const workspace = try core.supervisor.resolveWorkspaceRoot(allocator, null, ".");
+    const workspace = try supervisor.resolveWorkspaceRoot(allocator, null, ".");
     defer allocator.free(workspace);
     var loaded = core_api.discoverPolicy(allocator, options.policy_path, workspace) catch |err| {
         try stderr.print("orca mcp proxy: invalid policy: {s}\n", .{@errorName(err)});
@@ -234,7 +235,7 @@ fn proxy(argv: []const []const u8, stdout: anytype, stderr: anytype) !u8 {
     }
     defer if (tty_file) |file| file.close();
 
-    try aegis_mcp.proxy.runWithServer(allocator, .{
+    aegis_mcp.proxy.runWithServer(allocator, .{
         .server_name = options.server_name,
         .server_command_display = options.command_argv[0],
         .policy = &loaded.policy,
@@ -248,7 +249,21 @@ fn proxy(argv: []const []const u8, stdout: anytype, stderr: anytype) !u8 {
         .request = aegis_mcp.transport.ProcessServer.request,
         .notify = aegis_mcp.transport.ProcessServer.notify,
         .read = aegis_mcp.transport.ProcessServer.read,
-    });
+    }) catch |err| {
+        if (approval_writer_storage) |*writer| writer.interface.flush() catch {};
+        var completed_session = session;
+        completed_session.ended_at = core.time.Timestamp.now();
+        try core_api.writeAuditSummary(allocator, session_writer.session_dir_path, .{
+            .session = completed_session,
+            .status = .{ .exited = exit_codes.general },
+            .event_count = session_writer.event_count,
+            .final_event_hash = session_writer.finalHash() orelse "",
+            .policy = loaded.path,
+            .product_label = "Orca",
+        });
+        try stderr.print("orca mcp proxy: protocol failed: {s}\n", .{@errorName(err)});
+        return exit_codes.general;
+    };
     if (approval_writer_storage) |*writer| writer.interface.flush() catch {};
     var completed_session = session;
     completed_session.ended_at = core.time.Timestamp.now();
@@ -258,6 +273,7 @@ fn proxy(argv: []const []const u8, stdout: anytype, stderr: anytype) !u8 {
         .event_count = session_writer.event_count,
         .final_event_hash = session_writer.finalHash() orelse "",
         .policy = loaded.path,
+        .product_label = "Orca",
     });
     return exit_codes.success;
 }
@@ -265,7 +281,7 @@ fn proxy(argv: []const []const u8, stdout: anytype, stderr: anytype) !u8 {
 fn initializeRequestAlloc(allocator: std.mem.Allocator) ![]u8 {
     return try std.fmt.allocPrint(
         allocator,
-        "{{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{{\"protocolVersion\":\"2025-03-26\",\"capabilities\":{{}},\"clientInfo\":{{\"name\":\"aegis\",\"version\":\"{s}\"}}}}}}",
+        "{{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{{\"protocolVersion\":\"2025-03-26\",\"capabilities\":{{}},\"clientInfo\":{{\"name\":\"orca\",\"version\":\"{s}\"}}}}}}",
         .{version_command.current().version},
     );
 }
@@ -284,13 +300,13 @@ fn list(argv: []const []const u8, stdout: anytype, stderr: anytype) !u8 {
     const allocator = gpa_state.allocator();
     try stdout.writeAll("Known MCP servers:\n");
     var found = false;
-    if (std.fs.cwd().openDir(".aegis/mcp", .{ .iterate = true })) |dir_value| {
+    if (std.fs.cwd().openDir(".orca/mcp", .{ .iterate = true })) |dir_value| {
         var dir = dir_value;
         defer dir.close();
         var it = dir.iterate();
         while (try it.next()) |entry| {
             if (entry.kind != .file or !(std.mem.endsWith(u8, entry.name, ".yaml") or std.mem.endsWith(u8, entry.name, ".yml"))) continue;
-            const path = try std.fs.path.join(allocator, &.{ ".aegis", "mcp", entry.name });
+            const path = try std.fs.path.join(allocator, &.{ ".orca", "mcp", entry.name });
             defer allocator.free(path);
             var manifest = aegis_mcp.manifests.loadFile(allocator, path) catch |err| {
                 try stdout.print("  invalid manifest: {s} ({s})\n", .{ path, @errorName(err) });
@@ -302,7 +318,7 @@ fn list(argv: []const []const u8, stdout: anytype, stderr: anytype) !u8 {
             found = true;
         }
     } else |_| {}
-    if (!found) try stdout.writeAll("  none configured (checked .aegis/mcp/*.yaml)\n");
+    if (!found) try stdout.writeAll("  none configured (checked .orca/mcp/*.yaml)\n");
     return exit_codes.success;
 }
 
@@ -558,7 +574,7 @@ test "mcp command parsing preserves server argv after --command" {
 test "mcp initialize request uses build version metadata" {
     const request = try initializeRequestAlloc(std.testing.allocator);
     defer std.testing.allocator.free(request);
-    try std.testing.expect(std.mem.indexOf(u8, request, "\"clientInfo\":{\"name\":\"aegis\",\"version\":\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, request, "\"clientInfo\":{\"name\":\"orca\",\"version\":\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, request, version_command.current().version) != null);
     try std.testing.expect(std.mem.indexOf(u8, request, "\"version\":\"1.0.0\"") == null or std.mem.eql(u8, version_command.current().version, "1.0.0"));
 }
@@ -696,9 +712,9 @@ test "mcp manifest check list trust and generate commands are safe" {
     try std.posix.chdir(tmp_path);
     defer std.posix.fchdir(old_cwd.fd) catch {};
 
-    try tmp.dir.makePath(".aegis/mcp");
+    try tmp.dir.makePath(".orca/mcp");
     {
-        const file = try tmp.dir.createFile(".aegis/mcp/github.yaml", .{});
+        const file = try tmp.dir.createFile(".orca/mcp/github.yaml", .{});
         defer file.close();
         try file.writeAll(
             \\version: 1
@@ -724,7 +740,7 @@ test "mcp manifest check list trust and generate commands are safe" {
     var stdout_stream = std.io.fixedBufferStream(&stdout_buf);
     var stderr_stream = std.io.fixedBufferStream(&stderr_buf);
 
-    const check_code = try command(&.{ "manifest", "check", ".aegis/mcp/github.yaml" }, stdout_stream.writer(), stderr_stream.writer());
+    const check_code = try command(&.{ "manifest", "check", ".orca/mcp/github.yaml" }, stdout_stream.writer(), stderr_stream.writer());
     try std.testing.expectEqual(exit_codes.success, check_code);
     try std.testing.expect(std.mem.indexOf(u8, stdout_stream.getWritten(), "valid MCP manifest") != null);
 

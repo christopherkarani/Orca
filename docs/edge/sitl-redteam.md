@@ -9,15 +9,15 @@ detect-and-avoid, autopilot replacement behavior, or regulatory approval.
 List SITL fixtures:
 
 ```sh
-aegis-edge redteam list --environment px4_sitl
-aegis-edge redteam list --environment ardupilot_sitl
+edge redteam list --environment px4_sitl
+edge redteam list --environment ardupilot_sitl
 ```
 
 Run a filtered view:
 
 ```sh
-aegis-edge redteam --environment px4_sitl
-aegis-edge redteam --environment ardupilot_sitl
+edge redteam --environment px4_sitl
+edge redteam --environment ardupilot_sitl
 ```
 
 If the local SITL environment is unavailable, the result is `skipped`, not

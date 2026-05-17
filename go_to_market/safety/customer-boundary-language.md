@@ -2,7 +2,7 @@
 
 ## Short Version
 
-Aegis Edge is customer-evaluation material only. It is limited to simulation/SITL/bench-preparation evaluation and does not include real flight, live aircraft control, certification, regulatory approval, detect-and-avoid, or replacement of customer safety systems.
+Edge is customer-evaluation material only. It is limited to simulation/SITL/bench-preparation evaluation and does not include real flight, live aircraft control, certification, regulatory approval, detect-and-avoid, or replacement of customer safety systems.
 
 ## Evidence Version
 

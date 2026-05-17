@@ -4,7 +4,7 @@
 
 - Customer placeholder:
 - Report date:
-- Aegis Edge version:
+- Edge version:
 - Report author:
 - Evidence source: fake adapter / PX4 SITL / ArduPilot SITL / bench-preparation.
 

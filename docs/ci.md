@@ -1,11 +1,11 @@
 # CI
 
-Aegis has no hosted service requirement.
+Orca has no hosted service requirement.
 
 ## GitHub Actions Example
 
 ```yaml
-name: aegis
+name: orca
 on: [push, pull_request]
 jobs:
   test:
@@ -19,15 +19,15 @@ jobs:
         run: zig build
       - name: Test
         run: zig build test
-      - name: Aegis red-team
-        run: ./zig-out/bin/aegis redteam --ci --json > aegis-redteam.json
+      - name: Orca red-team
+        run: ./zig-out/bin/orca redteam --ci --json > orca-redteam.json
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: aegis-audit
+          name: orca-audit
           path: |
-            .aegis/**
-            aegis-redteam.json
+            .orca/**
+            orca-redteam.json
 ```
 
 See `docs/ci/github-actions.md` and `examples/ci/github-actions.yml`.
@@ -38,4 +38,4 @@ Use `--mode ci` for commands and `--ci` for red-team. In CI, ask becomes deny.
 
 ## Audit Artifacts
 
-Upload `.aegis/sessions/**`, `events.jsonl`, `summary.json`, and `summary.md` only if they contain synthetic or approved data. Redaction is applied before persistence, but audit artifacts can still reveal file names and command shapes.
+Upload `.orca/sessions/**`, `events.jsonl`, `summary.json`, and `summary.md` only if they contain synthetic or approved data. Redaction is applied before persistence, but audit artifacts can still reveal file names and command shapes.

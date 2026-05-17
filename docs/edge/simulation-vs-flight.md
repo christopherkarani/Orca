@@ -1,6 +1,6 @@
 # Simulation Vs Flight
 
-Aegis Edge Phase 31 evidence is fake-adapter, PX4 SITL, ArduPilot SITL, or bench-preparation evidence only.
+Edge Phase 31 evidence is fake-adapter, PX4 SITL, ArduPilot SITL, or bench-preparation evidence only.
 
 `fake_adapter` means deterministic fake-PX4 or fake MAVLink input. It is useful for unit tests, policy regressions, and repeatable examples.
 
@@ -14,8 +14,8 @@ Phase 32 operator approval and emergency-mode behavior remains simulation/SITL/b
 
 None of these environments is real flight. None proves airworthiness, detect-and-avoid, operational safety, or regulatory compliance. Do not connect Phase 31 commands to real drone hardware or use these artifacts as flight approval.
 
-Aegis Edge is not a flight controller and does not replace autopilot failsafes. SITL evidence is useful for deterministic regression testing, not real-flight validation.
-Aegis Edge Phase 33 safety-case reports preserve the same boundary: fake adapter evidence, PX4 SITL evidence, ArduPilot SITL evidence, and bench-preparation evidence are reported separately and never as real-flight validation.
+Edge is not a flight controller and does not replace autopilot failsafes. SITL evidence is useful for deterministic regression testing, not real-flight validation.
+Edge Phase 33 safety-case reports preserve the same boundary: fake adapter evidence, PX4 SITL evidence, ArduPilot SITL evidence, and bench-preparation evidence are reported separately and never as real-flight validation.
 
 Missing SITL is reported as skipped or unsupported, not passed. Generated reports and bundles include a non-certification disclaimer and a `Real flight: Not performed` evidence row.
 

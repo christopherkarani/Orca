@@ -100,5 +100,6 @@ if [ "$TOTAL_ISSUES" -eq 0 ]; then
   echo "All secret scans passed."
 else
   echo ""
-  echo "WARNING: Total secret scan issues: ${TOTAL_ISSUES}. Review before release." >&2
+  echo "Total secret scan issues: ${TOTAL_ISSUES}. Failing release packaging." >&2
+  exit 1
 fi

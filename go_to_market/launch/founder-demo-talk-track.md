@@ -2,7 +2,7 @@
 
 ## 30 Seconds
 
-"Aegis Edge sits between autonomy software and a supported command bridge during evaluation. It checks commands against safety policy, records audit/replay evidence, runs red-team scenarios, and generates a safety-case report."
+"Edge sits between autonomy software and a supported command bridge during evaluation. It checks commands against safety policy, records audit/replay evidence, runs red-team scenarios, and generates a safety-case report."
 
 ## Safety Boundary
 

@@ -4,7 +4,7 @@ const builtin = @import("builtin");
 const policy = @import("../policy/mod.zig");
 
 pub const phase = "36-edge-deployment-arm64-hardware-bench";
-pub const no_flight_disclaimer = "Aegis Edge bench and deployment checks are simulation/SITL/bench-preparation evidence only; they are not real-flight readiness, airworthiness approval, regulatory certification, detect-and-avoid, or autopilot replacement.";
+pub const no_flight_disclaimer = "Edge bench and deployment checks are simulation/SITL/bench-preparation evidence only; they are not real-flight readiness, airworthiness approval, regulatory certification, detect-and-avoid, or autopilot replacement.";
 
 pub const Status = enum {
     active,
@@ -327,14 +327,14 @@ pub const PackageInfo = struct {
     target_arch: TargetArch,
 
     pub fn artifactName(self: PackageInfo, allocator: std.mem.Allocator) ![]u8 {
-        return std.fmt.allocPrint(allocator, "aegis-edge-v{s}-{s}.tar.gz", .{ self.version, self.target_arch.toString() });
+        return std.fmt.allocPrint(allocator, "edge-v{s}-{s}.tar.gz", .{ self.version, self.target_arch.toString() });
     }
 };
 
 pub fn packageManifest(writer: anytype, version: []const u8, arch: TargetArch) !void {
-    try writer.print("package: aegis-edge\nversion: {s}\ntarget_arch: {s}\n", .{ version, arch.toString() });
-    try writer.print("artifact: aegis-edge-v{s}-{s}.tar.gz\n", .{ version, arch.toString() });
-    try writer.writeAll("binaries:\n  - aegis-edge\nassets:\n");
+    try writer.print("package: edge\nversion: {s}\ntarget_arch: {s}\n", .{ version, arch.toString() });
+    try writer.print("artifact: edge-v{s}-{s}.tar.gz\n", .{ version, arch.toString() });
+    try writer.writeAll("binaries:\n  - edge\nassets:\n");
     for (required_assets) |asset| try writer.print("  - {s}\n", .{asset.path});
     try writer.writeAll("checksums: SHA256SUMS\nlimitations:\n  - simulation/SITL/bench-preparation only\n  - no real-flight readiness claim\n");
 }
@@ -354,8 +354,8 @@ pub fn parseProfile(allocator: std.mem.Allocator, text: []const u8) !DeploymentP
     var runtime_assets: []const u8 = "source";
     var profile_policy: ?[]const u8 = null;
     var scenario: ?[]const u8 = null;
-    var audit_output: []const u8 = ".aegis-edge/sessions";
-    var log_output: []const u8 = ".aegis-edge/logs";
+    var audit_output: []const u8 = ".edge/sessions";
+    var log_output: []const u8 = ".edge/logs";
     var network_mode: NetworkMode = .offline;
     var mavlink_endpoint: ?[]const u8 = null;
     var sitl_config: ?[]const u8 = null;
@@ -458,7 +458,7 @@ fn candidateResourceRoots(allocator: std.mem.Allocator) ![][]u8 {
         roots.deinit(allocator);
     }
 
-    if (std.process.getEnvVarOwned(allocator, "AEGIS_EDGE_RESOURCE_ROOT")) |root| {
+    if (std.process.getEnvVarOwned(allocator, "EDGE_BIN_RESOURCE_ROOT")) |root| {
         try roots.append(allocator, root);
     } else |_| {}
 
@@ -470,7 +470,7 @@ fn candidateResourceRoots(allocator: std.mem.Allocator) ![][]u8 {
             try roots.append(allocator, try allocator.dupe(u8, exe_dir));
             if (std.fs.path.dirname(exe_dir)) |package_root| {
                 try roots.append(allocator, try allocator.dupe(u8, package_root));
-                const share_root = try std.fs.path.join(allocator, &.{ package_root, "share", "aegis-edge" });
+                const share_root = try std.fs.path.join(allocator, &.{ package_root, "share", "edge" });
                 try roots.append(allocator, share_root);
                 if (std.fs.path.dirname(package_root)) |source_root| {
                     try roots.append(allocator, try allocator.dupe(u8, source_root));
@@ -530,7 +530,7 @@ test "runtime assets and package manifest include required release surface" {
     var stream = std.io.fixedBufferStream(&buf);
     try packageManifest(stream.writer(), "1.1.0", .linux_arm64);
     const text = stream.getWritten();
-    try std.testing.expect(std.mem.indexOf(u8, text, "aegis-edge-v1.1.0-linux-arm64.tar.gz") != null);
+    try std.testing.expect(std.mem.indexOf(u8, text, "edge-v1.1.0-linux-arm64.tar.gz") != null);
     try std.testing.expect(std.mem.indexOf(u8, text, "schemas/edge-policy-v1.json") != null);
     try std.testing.expect(std.mem.indexOf(u8, text, "examples/edge/redteam/README.md") != null);
     try std.testing.expect(std.mem.indexOf(u8, text, "no real-flight readiness claim") != null);

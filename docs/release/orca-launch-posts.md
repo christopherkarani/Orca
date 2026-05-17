@@ -47,7 +47,7 @@ Known limitations
 
 Report security issues privately through SECURITY.md.
 
-Full release notes: https://github.com/christopherkarani/Aegis/releases/tag/v1.1.0
+Full release notes: https://github.com/christopherkarani/Orca/releases/tag/v1.1.0
 
 ---
 
@@ -69,8 +69,8 @@ The strongest protection remains running the agent through `orca run`; plugins p
 
 Orca does not claim perfect sandboxing, universal file/network enforcement, or protection against agents launched outside Orca.
 
-Repo: https://github.com/christopherkarani/Aegis
-Release: https://github.com/christopherkarani/Aegis/releases/tag/v1.1.0
+Repo: https://github.com/christopherkarani/Orca
+Release: https://github.com/christopherkarani/Orca/releases/tag/v1.1.0
 
 ---
 
@@ -94,9 +94,9 @@ The strongest protection remains running the agent through `orca run`; plugins p
 Orca does not claim perfect sandboxing, universal file/network enforcement, or protection for agents launched outside Orca.
 
 Links:
-- Repo: https://github.com/christopherkarani/Aegis
-- Release: https://github.com/christopherkarani/Aegis/releases/tag/v1.1.0
-- Docs: https://github.com/christopherkarani/Aegis/tree/main/docs
+- Repo: https://github.com/christopherkarani/Orca
+- Release: https://github.com/christopherkarani/Orca/releases/tag/v1.1.0
+- Docs: https://github.com/christopherkarani/Orca/tree/main/docs
 
 ---
 
@@ -108,7 +108,7 @@ Local runtime guardrails and plugins for AI agents. Native Codex and Claude Code
 
 The strongest protection remains running the agent through `orca run`; plugins provide native commands, hooks, and guardrails inside supported agent hosts.
 
-Release: https://github.com/christopherkarani/Aegis/releases/tag/v1.1.0
+Release: https://github.com/christopherkarani/Orca/releases/tag/v1.1.0
 
 ---
 
@@ -129,7 +129,7 @@ Security model
 The strongest protection remains running the agent through `orca run`; plugins provide native commands, hooks, and guardrails inside supported agent hosts.
 
 Installation and verification
-- Release artifacts: https://github.com/christopherkarani/Aegis/releases/tag/v1.1.0
+- Release artifacts: https://github.com/christopherkarani/Orca/releases/tag/v1.1.0
 - Verify checksums before installing: `sha256sum -c orca-plugin-checksums.txt`
 - Run diagnostics: `./zig-out/bin/orca plugin doctor codex` and `./zig-out/bin/orca plugin doctor claude`
 

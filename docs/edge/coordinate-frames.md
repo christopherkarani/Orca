@@ -1,6 +1,6 @@
-# Aegis Edge Coordinate Frames
+# Edge Coordinate Frames
 
-Aegis Edge requires explicit units, coordinate frames, altitude references, and timestamp sources. It is not ready for real flight and must not be used for real flight.
+Edge requires explicit units, coordinate frames, altitude references, and timestamp sources. It is not ready for real flight and must not be used for real flight.
 
 ## Units
 

@@ -19,7 +19,7 @@
 
 - Policy discovery must fail closed when a configured policy path exists but cannot be loaded or parsed. Only a genuinely missing optional discovery location may fall through to the next source.
 - Policy parsers must reject unknown schema keys in every supported format. A misspelled deny/default key changes security meaning and should be an invalid policy, not ignored configuration.
-- Runtime audit artifacts under `.aegis/last` and `.aegis/sessions/` are local state from smoke tests. Keep them out of commits and ignore them explicitly.
+- Runtime audit artifacts under `.orca/last` and `.orca/sessions/` are local state from smoke tests. Keep them out of commits and ignore them explicitly.
 
 ## 2026-05-06 Phase 08 Secret Protection Review
 
@@ -111,7 +111,7 @@
 
 - New Phase sources, docs, examples, and tests must be visible to `git diff` before review handoff. `build.zig` wiring plus untracked files is a clean-checkout build failure even when local tests pass.
 - A configured SITL gate is not proof of live SITL. Until a real transport exchange is implemented, SITL-labeled scenarios must skip when unavailable and fail closed when merely configured, never run fake adapters as SITL evidence.
-- Release archives are part of the reviewed contract. Regenerate checked-in archives and checksums whenever new binaries such as `aegis-edge` or package resources are added.
+- Release archives are part of the reviewed contract. Regenerate checked-in archives and checksums whenever new binaries such as `edge` or package resources are added.
 - Built-in CLI schema printing must not depend on the caller's cwd. Use build-embedded schema documents or an executable/resource-prefix lookup, and regress arbitrary-cwd invocation.
 - Runtime schema descriptors, checked-in JSON schemas, and emitted audit event names must be tested together so persisted events like `mavlink.command_denied` validate.
 - If a public schema already advertises a domain-supported field such as `safety.geofence.home_position`, prefer implementing loader support and round-trip tests over silently narrowing the contract.
@@ -124,7 +124,7 @@
 
 - Before review handoff, force every new Phase source, test, doc, and example into `git diff` with tracking or intent-to-add. A clean-checkout review cannot see untracked audit/report modules even when local builds pass.
 - For allocator-owned slices that are reordered in place and later passed through evaluation paths, keep one `errdefer` owner until normal success frees or transfers ownership. Duplicate `errdefer` registrations create error-path double frees.
-- Generated `.aegis-edge` session state is local runtime output. Keep it ignored and untracked even when smoke commands produce useful approval or replay artifacts.
+- Generated `.edge` session state is local runtime output. Keep it ignored and untracked even when smoke commands produce useful approval or replay artifacts.
 
 ## 2026-05-08 Phase 34 Edge Red-Team Review
 

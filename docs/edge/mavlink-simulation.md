@@ -3,11 +3,11 @@
 MAVLink examples are deterministic and local-only.
 
 ```bash
-aegis-edge mavlink doctor
-aegis-edge mavlink inspect-frame examples/edge/mavlink/frames/command-arm.hex
-aegis-edge mavlink classify examples/edge/mavlink/frames/command-takeoff.hex
-aegis-edge mavlink simulate --policy examples/edge/mavlink/policies/geofence-mavlink-basic.yaml --scenario examples/edge/mavlink/scenarios/geofence-deny.yaml
-aegis-edge mavlink simulate --policy examples/edge/mavlink/policies/geofence-mavlink-basic.yaml --scenario examples/edge/mavlink/scenarios/disable-failsafe-deny.yaml
+edge mavlink doctor
+edge mavlink inspect-frame examples/edge/mavlink/frames/command-arm.hex
+edge mavlink classify examples/edge/mavlink/frames/command-takeoff.hex
+edge mavlink simulate --policy examples/edge/mavlink/policies/geofence-mavlink-basic.yaml --scenario examples/edge/mavlink/scenarios/geofence-deny.yaml
+edge mavlink simulate --policy examples/edge/mavlink/policies/geofence-mavlink-basic.yaml --scenario examples/edge/mavlink/scenarios/disable-failsafe-deny.yaml
 ```
 
 The simulator uses fake frame generation and in-memory gateway evaluation. It does not open a network socket, serial device, SITL process, ROS2 graph, or flight controller connection.

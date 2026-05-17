@@ -1,8 +1,8 @@
-# Aegis Edge Go-To-Market Package
+# Edge Go-To-Market Package
 
 This folder is the Phase 42 customer acquisition system for founder-led paid-pilot sales to commercial drone and autonomy teams.
 
-Aegis Edge is positioned as a local simulation/SITL/bench-preparation safety-policy runtime for drone autonomy evaluation. It can mediate a bounded MAVLink command surface, evaluate safety envelopes, record audit/replay evidence, run deterministic red-team and fault-injection scenarios, and generate customer-readable safety-case evidence.
+Edge is positioned as a local simulation/SITL/bench-preparation safety-policy runtime for drone autonomy evaluation. It can mediate a bounded MAVLink command surface, evaluate safety envelopes, record audit/replay evidence, run deterministic red-team and fault-injection scenarios, and generate customer-readable safety-case evidence.
 
 It is customer-evaluation material only. It does not include real flight, live aircraft control, certification, regulatory approval, detect-and-avoid, a replacement for PX4/ArduPilot or customer safety systems, or any guarantee of safety.
 
@@ -19,10 +19,10 @@ It is customer-evaluation material only. It does not include real flight, live a
 
 ## Core Proof Bundle
 
-- Demo: `./zig-out/bin/aegis-edge demo run geofence-deny`
-- Demo suite: `./zig-out/bin/aegis-edge demo run all`
-- Safety-case report: `./zig-out/bin/aegis-edge proof generate --demo geofence-deny`
-- Red-team scorecard: `./zig-out/bin/aegis-edge redteam --ci`
+- Demo: `./zig-out/bin/edge demo run geofence-deny`
+- Demo suite: `./zig-out/bin/edge demo run all`
+- Safety-case report: `./zig-out/bin/edge proof generate --demo geofence-deny`
+- Red-team scorecard: `./zig-out/bin/edge redteam --ci`
 - Customer pilot package: [customer_pilot](../customer_pilot/README.md)
 - Customer proof package: [docs/edge/customer-proof](../docs/edge/customer-proof/README.md)
 

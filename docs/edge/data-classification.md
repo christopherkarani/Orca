@@ -2,7 +2,7 @@
 
 The data guard classifier assigns Edge payloads to data classes and sensitivity levels before egress evaluation.
 
-Aegis Edge remains simulation/SITL/customer-evaluation software. It is not real-flight readiness, certification, detect-and-avoid, or autopilot replacement evidence.
+Edge remains simulation/SITL/customer-evaluation software. It is not real-flight readiness, certification, detect-and-avoid, or autopilot replacement evidence.
 
 Data classes are:
 

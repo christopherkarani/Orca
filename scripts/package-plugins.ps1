@@ -80,6 +80,20 @@ Package-Plugin -PluginDir $CLAUDE_PLUGIN_DIR -ZipPath $CLAUDE_ZIP -IncludeFiles 
   "README.md"
 )
 
+# Package OpenCode plugin
+$OPENCODE_PLUGIN_DIR = Join-Path $REPO_ROOT "integrations/opencode-plugin"
+$OPENCODE_ZIP = Join-Path $DIST_DIR "orca-opencode-plugin-v${VERSION}.zip"
+if (Test-Path $OPENCODE_PLUGIN_DIR) {
+  Package-Plugin -PluginDir $OPENCODE_PLUGIN_DIR -ZipPath $OPENCODE_ZIP -IncludeFiles @(
+    "orca.ts",
+    "README.md",
+    "package.json",
+    "examples"
+  )
+} else {
+  Write-Warning "OpenCode plugin directory not found: $OPENCODE_PLUGIN_DIR"
+}
+
 # Package Claude marketplace catalog
 $MARKETPLACE_DIR = Join-Path $REPO_ROOT "integrations/claude-marketplace"
 $MARKETPLACE_ZIP = Join-Path $DIST_DIR "orca-claude-marketplace-v${VERSION}.zip"
@@ -159,7 +173,7 @@ foreach ($file in Get-ChildItem -Path $DIST_DIR -Filter "*.zip") {
 if ($SCAN_ISSUES -eq 0) {
   Write-Host "Secret scan passed. No obvious secrets found in artifacts."
 } else {
-  Write-Warning "Secret scan found $SCAN_ISSUES potential issues. Review artifacts before release."
+  throw "Secret scan found $SCAN_ISSUES potential issues. Failing release packaging."
 }
 
 Write-Host ""

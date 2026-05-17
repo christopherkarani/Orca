@@ -1,18 +1,16 @@
 const std = @import("std");
 const builtin = @import("builtin");
 
-const event = @import("event.zig");
-const platform = @import("platform.zig");
-const sandbox_backend = @import("../sandbox/backend.zig");
-const session_mod = @import("session.zig");
-const time = @import("time.zig");
-const types = @import("types.zig");
-const util = @import("util.zig");
+const core = @import("aegis_core").core;
+const event = core.event;
+const platform = core.platform;
+const process = core.process;
+const session_mod = core.session;
+const time = core.time;
+const types = core.types;
+const util = core.util;
 
-pub const StdioBehavior = enum {
-    inherit,
-    ignore,
-};
+pub const StdioBehavior = process.StdioBehavior;
 
 pub const RunConfig = struct {
     command: []const u8,
@@ -30,11 +28,7 @@ pub const RunConfig = struct {
     on_event: ?EventHook = null,
 };
 
-pub const EnvRedactionRecord = struct {
-    name: []const u8,
-    labels: []const []const u8,
-    reason: []const u8,
-};
+pub const EnvRedactionRecord = process.EnvRedactionRecord;
 
 pub const StartHook = struct {
     context: *anyopaque,
@@ -46,19 +40,7 @@ pub const EventHook = struct {
     callback: *const fn (context: *anyopaque, ev: event.Event) anyerror!void,
 };
 
-pub const ChildStatus = union(enum) {
-    exited: u8,
-    signal: u32,
-    stopped: u32,
-    unknown: u32,
-
-    pub fn exitCode(self: ChildStatus) i32 {
-        return switch (self) {
-            .exited => |code| code,
-            .signal, .stopped, .unknown => 1,
-        };
-    }
-};
+pub const ChildStatus = process.ChildStatus;
 
 pub const SessionResult = struct {
     session: session_mod.Session,
@@ -149,13 +131,10 @@ pub fn run(allocator: std.mem.Allocator, config: RunConfig) !SessionResult {
     argv[0] = config.command;
     @memcpy(argv[1..], config.args);
 
-    var prepared = sandbox_backend.prepare(allocator, .{
+    var prepared = process.prepareChild(allocator, .{
         .argv = argv,
         .workspace_root = workspace_root,
-        .stdio = switch (config.stdio) {
-            .inherit => .inherit,
-            .ignore => .ignore,
-        },
+        .stdio = config.stdio,
         .env_map = config.env_map,
     });
 
@@ -290,7 +269,7 @@ fn makeEvent(
         .event_id = try event.generateEventId(timestamp),
         .timestamp = timestamp,
         .event_type = event_type,
-        .actor = .{ .kind = .aegis, .display = "aegis" },
+        .actor = .{ .kind = .orca, .display = "orca" },
         .target = .{ .kind = target_kind, .value = target_value },
     };
 }

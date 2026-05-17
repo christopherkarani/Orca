@@ -1,4 +1,4 @@
-# Aegis Edge Known Limitations
+# Edge Known Limitations
 
 This page is customer-readable and intentionally conservative.
 

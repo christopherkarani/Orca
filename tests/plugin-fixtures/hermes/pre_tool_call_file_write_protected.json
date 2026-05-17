@@ -1,0 +1,1 @@
+{"version":1,"host":"hermes","event":"pre_tool_call","payload":{"tool":"write","input":{"path":"/etc/passwd","content":"blocked test content"}}}

@@ -1,8 +1,8 @@
 const std = @import("std");
 
-const audit = @import("../audit/mod.zig");
-const core = @import("../core/mod.zig");
-const policy = @import("../policy/mod.zig");
+const audit = @import("aegis_core").audit;
+const core = @import("aegis_core").core;
+const policy = @import("aegis_core").policy;
 
 pub const implemented = true;
 
@@ -11,7 +11,7 @@ pub const Request = struct {
     inherit_env: bool = false,
 };
 
-pub const RedactionRecord = core.supervisor.EnvRedactionRecord;
+pub const RedactionRecord = core.process.EnvRedactionRecord;
 
 pub const FilteredEnv = struct {
     allocator: std.mem.Allocator,

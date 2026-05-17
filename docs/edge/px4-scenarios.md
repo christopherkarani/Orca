@@ -3,7 +3,7 @@
 PX4 scenarios are run with:
 
 ```bash
-./zig-out/bin/aegis-edge px4 scenario run --policy <policy> --scenario <scenario> [--artifacts <dir>]
+./zig-out/bin/edge px4 scenario run --policy <policy> --scenario <scenario> [--artifacts <dir>]
 ```
 
 Checked-in deterministic scenarios live under `examples/edge/px4/scenarios/`:

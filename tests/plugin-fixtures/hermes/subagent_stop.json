@@ -1,0 +1,1 @@
+{"version":1,"host":"hermes","event":"subagent_stop","payload":{"agent_id":"test-subagent-001","status":"completed"}}

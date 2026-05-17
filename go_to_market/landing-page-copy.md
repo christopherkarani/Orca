@@ -2,7 +2,7 @@
 
 ## Headline
 
-Aegis Edge
+Edge
 
 ## Subheadline
 
@@ -14,11 +14,11 @@ Autonomy teams need to know what happens when an agent or planner asks for an un
 
 ## Demo
 
-An agent attempts an unsafe command. Aegis Edge evaluates the request, denies it under policy, records replayable audit evidence, and generates a local safety-case report with limitations.
+An agent attempts an unsafe command. Edge evaluates the request, denies it under policy, records replayable audit evidence, and generates a local safety-case report with limitations.
 
 ## How It Works
 
-- Place Aegis Edge between an autonomy agent/planner and a supported command bridge.
+- Place Edge between an autonomy agent/planner and a supported command bridge.
 - Define geofence, altitude, velocity, battery, approval, data, and health policies.
 - Run fake adapter, PX4 SITL, ArduPilot SITL, or no-actuation bench scenarios.
 - Generate audit/replay, red-team, and safety-case artifacts.
@@ -65,8 +65,8 @@ Q: What if we use ROS2 or custom messages?
 A: The first call maps the command surface and decides whether a pilot can be scoped around a supported bridge or bounded adapter.
 
 Q: What if we already use PX4 or ArduPilot failsafes?
-A: Aegis Edge is an additional policy and evidence layer for planner/agent commands; it does not replace those failsafes.
+A: Edge is an additional policy and evidence layer for planner/agent commands; it does not replace those failsafes.
 
 ## Safety Boundary
 
-Aegis Edge is customer-evaluation material only. It is limited to simulation/SITL/bench-preparation evaluation and does not include real flight, live aircraft control, certification, regulatory approval, detect-and-avoid, or replacement of autopilot safety functions.
+Edge is customer-evaluation material only. It is limited to simulation/SITL/bench-preparation evaluation and does not include real flight, live aircraft control, certification, regulatory approval, detect-and-avoid, or replacement of autopilot safety functions.

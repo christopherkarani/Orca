@@ -13,7 +13,7 @@ pub const ApprovalStore = struct {
     index_path: []u8,
 
     pub fn init(allocator: std.mem.Allocator, workspace_root: []const u8, session_id: []const u8) !ApprovalStore {
-        const edge_dir = try std.fs.path.join(allocator, &.{ workspace_root, ".aegis-edge" });
+        const edge_dir = try std.fs.path.join(allocator, &.{ workspace_root, ".edge" });
         defer allocator.free(edge_dir);
         const sessions_dir = try std.fs.path.join(allocator, &.{ edge_dir, "sessions" });
         defer allocator.free(sessions_dir);
@@ -95,7 +95,7 @@ pub const ApprovalStore = struct {
     }
 
     pub fn appendUse(self: ApprovalStore, approval_id: []const u8, timestamp_ms: i128) !void {
-        try self.appendDecisionLike("operator.approval_used", approval_id, approval_id, "aegis-edge", timestamp_ms, "approval use recorded");
+        try self.appendDecisionLike("operator.approval_used", approval_id, approval_id, "edge", timestamp_ms, "approval use recorded");
     }
 
     pub fn appendCliEvent(self: ApprovalStore, event_type: []const u8, approval_id: []const u8, operator_id: []const u8, timestamp_ms: i128, note: []const u8) !void {

@@ -1,6 +1,6 @@
-# Aegis Edge Domain Model
+# Edge Domain Model
 
-Aegis Edge models vehicle state, command requests, safety envelopes, MAVLink fake-transport mappings, and audit/report schema inputs. It is not ready for real flight and must not be used for real flight.
+Edge models vehicle state, command requests, safety envelopes, MAVLink fake-transport mappings, and audit/report schema inputs. It is not ready for real flight and must not be used for real flight.
 
 ## Vehicle Profile
 

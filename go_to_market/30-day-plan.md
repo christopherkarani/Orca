@@ -19,7 +19,7 @@
 
 ## Positioning
 
-Aegis Edge is a simulation/SITL/bench-preparation safety-policy runtime, MAVLink command mediation layer, safety-envelope evaluator, audit/replay system, red-team/fault-injection harness, and safety-case evidence generator for customer evaluation.
+Edge is a simulation/SITL/bench-preparation safety-policy runtime, MAVLink command mediation layer, safety-envelope evaluator, audit/replay system, red-team/fault-injection harness, and safety-case evidence generator for customer evaluation.
 
 It is not a flight controller, approval path, airworthiness proof, live aircraft system, or replacement for the customer's safety process.
 
@@ -27,7 +27,7 @@ It is not a flight controller, approval path, airworthiness proof, live aircraft
 
 Daily actions:
 
-- Day 1: Verify `zig build`, `zig build test`, `aegis-edge docs check`, `aegis-edge demo run geofence-deny`, `aegis-edge proof generate --demo geofence-deny`, and `aegis-edge redteam --ci`.
+- Day 1: Verify `zig build`, `zig build test`, `edge docs check`, `edge demo run geofence-deny`, `edge proof generate --demo geofence-deny`, and `edge redteam --ci`.
 - Day 1: Assemble links to customer proof docs, pilot overview, known limitations, and sample reports.
 - Day 2: Build 50 target accounts from visible public signals only.
 - Day 2: Score each account for stack fit, SITL readiness, safety/evidence pain, and risk.

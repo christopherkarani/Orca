@@ -6,7 +6,11 @@ Generated: 2026-05-10
 
 ## GitHub Release Status
 
-- **Release URL**: https://github.com/christopherkarani/Aegis/releases/tag/v1.1.0
+Current as of 2026-05-17: this report is historical launch-operations evidence, not a
+current production-readiness pass. Re-run the release verifier against freshly built
+artifacts before using this release for installation guidance.
+
+- **Release URL**: https://github.com/christopherkarani/Orca/releases/tag/v1.1.0
 - **Title**: "Orca v1.1.0 — Runtime guardrails and plugins for AI agents"
 - **Tag**: `v1.1.0`
 - **Draft**: No
@@ -18,23 +22,26 @@ Generated: 2026-05-10
 ### Artifacts Verified
 - [x] `orca-v1.1.0-darwin-amd64.tar.gz`
 - [x] `orca-v1.1.0-darwin-arm64.tar.gz`
+- [ ] `orca-v1.1.0-linux-amd64.tar.gz`
+- [ ] `orca-v1.1.0-linux-arm64.tar.gz`
 - [x] `orca-v1.1.0-windows-amd64.zip`
 - [x] `orca-codex-plugin-v1.1.0.zip`
 - [x] `orca-claude-code-plugin-v1.1.0.zip`
 - [x] `orca-plugin-checksums.txt`
-- [x] `checksums.txt`
+- [ ] `checksums.txt`
 
 ### Issues Found
-- None. Release is complete and correctly branded.
+- The published release is missing Linux Orca archives required by the release checklist.
+- The published `checksums.txt` must be regenerated from the final Orca artifact names before package-manager manifests are published.
 
 ---
 
 ## Repo Metadata Status
 
-- **Repo**: https://github.com/christopherkarani/Aegis
+- **Repo**: https://github.com/christopherkarani/Orca
 - **Description**: Updated to "Local runtime guardrails and plugins for AI agents."
 - **Topics**: Updated to `ai-agents`, `agent-security`, `developer-tools`, `codex`, `claude-code`, `zig`, `security`, `runtime`, `plugins`, `redteam`
-- **Name**: "Aegis" (unchanged; renaming the repository itself is a destructive operation left for manual decision)
+- **Name**: "Orca" (unchanged; renaming the repository itself is a destructive operation left for manual decision)
 
 ### Action Taken
 - `gh repo edit --description "Local runtime guardrails and plugins for AI agents."` — applied successfully
@@ -129,7 +136,7 @@ A brand-new user can follow README instructions without needing internal plannin
 - Troubleshooting docs are linked.
 
 ### Notes
-- `.aegis/policy.yaml` is missing until `orca init` is run. This is expected and documented.
+- `.orca/policy.yaml` is missing until `orca init` is run. This is expected and documented.
 - No local sessions detected. This is expected on a fresh checkout.
 
 ---
@@ -144,7 +151,7 @@ A brand-new user can follow README instructions without needing internal plannin
 
 ## Missing Manual Actions
 
-1. **Repository rename**: The repository is still named "Aegis". Renaming to "Orca" or "orca" is a manual decision that affects all URLs, clones, and forks. If renamed, update:
+1. **Repository rename**: The repository is still named "Orca". Renaming to "Orca" or "orca" is a manual decision that affects all URLs, clones, and forks. If renamed, update:
    - All internal documentation links
    - Release URLs in launch posts
    - README badges or shields
@@ -158,9 +165,9 @@ A brand-new user can follow README instructions without needing internal plannin
 
 3. **Community monitoring**: The 72-hour watch doc is prepared but monitoring must be performed manually by the launch owner.
 
-4. **Patch branch**: No patch branch needed at this time. Create `patch/v1.1.1` only if a P0 or P1 issue is confirmed.
+4. **Release asset repair**: Publish the missing Linux Orca archives and regenerate `checksums.txt` from the final Orca artifact names before promoting this release through package managers.
 
-5. **Release checksum cross-check**: Consider manually downloading release artifacts and verifying checksums from a clean machine to rule out upload corruption.
+5. **Release checksum cross-check**: Download release artifacts and verify them from a clean machine after the asset repair.
 
 ---
 
@@ -169,12 +176,13 @@ A brand-new user can follow README instructions without needing internal plannin
 | Task | Status |
 |---|---|
 | GitHub CLI access verified | Yes |
-| Release page verified | Yes |
+| Release page verified | Blocked: missing Linux Orca archives and current checksum drift |
 | Repo metadata updated | Yes |
 | GitHub labels created | Yes |
 | Launch posts prepared | Yes |
 | 72-hour watch doc prepared | Yes |
 | Public user flow verified | Yes |
-| Final report created | Yes |
+| Final report created | Historical only |
 
-**Launch operations are COMPLETE.** All safe, non-destructive tasks that can be performed from the repository and GitHub CLI have been completed. Manual actions remain for social posting, community monitoring, and the optional repository rename.
+**Launch operations are HISTORICAL.** The current published asset set must pass
+`scripts/verify-release.sh` before the release is treated as production-ready.

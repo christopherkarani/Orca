@@ -1,6 +1,6 @@
 # Claims To Avoid
 
-Do not use these claims except in negative context as examples of what Aegis Edge does not provide.
+Do not use these claims except in negative context as examples of what Edge does not provide.
 
 - "certified safe"
 - "guarantees safety"
