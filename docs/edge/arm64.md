@@ -9,7 +9,7 @@ zig build -Dtarget=aarch64-linux
 Release artifacts use:
 
 ```text
-aegis-edge-vX.Y.Z-linux-arm64.tar.gz
+edge-vX.Y.Z-linux-arm64.tar.gz
 ```
 
 The artifact is for simulation, SITL, customer evaluation, and no-actuation bench preparation only.
@@ -19,7 +19,7 @@ Before installing from a release artifact:
 
 ```bash
 sha256sum -c checksums.txt
-./scripts/install-aegis-edge.sh
+./scripts/install-edge.sh
 ```
 
 No systemd service is enabled automatically. No telemetry or real secrets are required.

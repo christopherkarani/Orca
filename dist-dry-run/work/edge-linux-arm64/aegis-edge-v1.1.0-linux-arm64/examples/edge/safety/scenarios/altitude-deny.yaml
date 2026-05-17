@@ -1,5 +1,0 @@
-id: altitude-deny
-mode: strict
-command: altitude_above_ceiling
-expected_decision: deny
-note: "Fake safety scenario. No hardware, SITL endpoint, or real-flight validation."

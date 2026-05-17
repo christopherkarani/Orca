@@ -65,7 +65,7 @@ fn writeWords(writer: anytype, words: []const []const u8) !void {
 
 fn writeBash(writer: anytype) !void {
     try writer.writeAll(
-        \\_aegis_completions() {
+        \\_orca_completions() {
         \\  local cur prev commands flags
         \\  COMPREPLY=()
         \\  cur="${COMP_WORDS[COMP_CWORD]}"
@@ -86,15 +86,15 @@ fn writeBash(writer: anytype) !void {
         \\    COMPREPLY=( $(compgen -W "${flags}" -- "${cur}") )
         \\  fi
         \\}
-        \\complete -F _aegis_completions aegis
+        \\complete -F _orca_completions orca
         \\
     );
 }
 
 fn writeZsh(writer: anytype) !void {
     try writer.writeAll(
-        \\#compdef aegis
-        \\_aegis() {
+        \\#compdef orca
+        \\_orca() {
         \\  local -a commands flags
         \\  commands=(
     );
@@ -164,7 +164,7 @@ test "completions output is non-empty for supported shells" {
     }
 }
 
-test "GitHub Actions documentation includes Aegis run and redteam commands" {
+test "GitHub Actions documentation includes Orca run and redteam commands" {
     const doc = try std.fs.cwd().readFileAlloc(std.testing.allocator, "docs/ci/github-actions.md", 32 * 1024);
     defer std.testing.allocator.free(doc);
     try std.testing.expect(std.mem.indexOf(u8, doc, "orca run --mode ci -- ./scripts/agent-task.sh") != null);

@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://aegis.local/schemas/edge-event-placeholder-v1.json",
-  "title": "Aegis Edge event placeholder v1",
+  "title": "Edge event placeholder v1",
   "description": "Reserved placeholder schema for future Edge audit events; no real-flight behavior is represented.",
   "type": "object",
   "additionalProperties": false,

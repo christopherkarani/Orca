@@ -1,6 +1,6 @@
 # MAVLink Limitations
 
-Phase 28 is a gateway foundation, not a deployment package. Phase 29 adds PX4 SITL simulation through the `aegis-edge px4` command surface. Phase 30 adds ArduPilot SITL simulation through the `aegis-edge ardupilot` command surface.
+Phase 28 is a gateway foundation, not a deployment package. Phase 29 adds PX4 SITL simulation through the `edge px4` command surface. Phase 30 adds ArduPilot SITL simulation through the `edge ardupilot` command surface.
 
 Not implemented:
 
@@ -17,6 +17,6 @@ Not implemented:
 - Autopilot replacement behavior.
 - Regulatory approval, certification, or airworthiness claims.
 
-MAVLink2 signing detection records whether a signing block is present. Verification is reported as unavailable because Aegis Edge does not manage keys or verify signatures in Phase 30.
+MAVLink2 signing detection records whether a signing block is present. Verification is reported as unavailable because Edge does not manage keys or verify signatures in Phase 30.
 
 Mission handling is generic MAVLink transaction tracking only. It tracks count, sequence, duplicates, partial uploads, ACK, clear, set-current, completion, and denial state. It does not emulate PX4 or ArduPilot mission semantics.

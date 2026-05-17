@@ -2,7 +2,7 @@
 
 The data guard redacts and minimizes sensitive payloads before audit, replay, report, and CLI output persistence.
 
-Aegis Edge remains simulation/SITL/customer-evaluation software. It is not real-flight readiness, certification, detect-and-avoid, or autopilot replacement evidence.
+Edge remains simulation/SITL/customer-evaluation software. It is not real-flight readiness, certification, detect-and-avoid, or autopilot replacement evidence.
 
 Redaction covers:
 

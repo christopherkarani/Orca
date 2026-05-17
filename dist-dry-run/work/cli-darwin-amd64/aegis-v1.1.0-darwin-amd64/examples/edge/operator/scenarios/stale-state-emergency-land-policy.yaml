@@ -1,5 +1,0 @@
-id: stale-state-emergency-land-policy
-state: examples/edge/operator/states/stale-state.json
-reason: stale_state
-expected_command: land
-environment: fake_px4_adapter

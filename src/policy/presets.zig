@@ -98,64 +98,64 @@ pub fn defaultPreset() Preset {
 }
 
 const generic_agent_policy =
-    \\# Aegis preset: generic-agent
+    \\# Orca preset: generic-agent
     \\# Conservative starting point for local coding agents with no proprietary assumptions.
     \\# Edit allowlists for your repository before switching broad actions from ask to allow.
     \\
 ++ ask_policy;
 
 const claude_code_policy =
-    \\# Aegis preset: claude-code
+    \\# Orca preset: claude-code
     \\# Generic/experimental: assumes a normal local coding-agent workflow, not private Claude Code internals.
     \\
 ++ ask_policy;
 
 const codex_policy =
-    \\# Aegis preset: codex
+    \\# Orca preset: codex
     \\# Generic/experimental: designed for local Codex-style coding tasks without model-provider secrets.
     \\
 ++ ask_policy;
 
 const cursor_agent_policy =
-    \\# Aegis preset: cursor-agent
+    \\# Orca preset: cursor-agent
     \\# Generic/experimental: conservative local editor-agent policy, not a claim about Cursor internals.
     \\
 ++ ask_policy;
 
 const opencode_policy =
-    \\# Aegis preset: opencode
+    \\# Orca preset: opencode
     \\# Generic/experimental: tuned for local coding-agent workflows and editable allowlists.
     \\
 ++ ask_policy;
 
 const cline_roo_policy =
-    \\# Aegis preset: cline-roo
+    \\# Orca preset: cline-roo
     \\# Generic/experimental: conservative policy for local editor agents with MCP-style extensions.
     \\
 ++ ask_policy;
 
 const mcp_dev_policy =
-    \\# Aegis preset: mcp-dev
-    \\# Conservative preset for developing stdio MCP servers through Aegis.
+    \\# Orca preset: mcp-dev
+    \\# Conservative preset for developing stdio MCP servers through Orca.
     \\# Manifests still need explicit command/hash binding; this policy does not trust servers by name alone.
     \\
 ++ ask_policy;
 
 const github_actions_policy =
-    \\# Aegis preset: github-actions
+    \\# Orca preset: github-actions
     \\# CI-safe preset. CI mode never prompts; ask-class decisions are denied unless explicitly allowed.
     \\# Do not put workflow tokens or repository secrets in this policy.
     \\
 ++ ci_policy;
 
 const strict_local_policy =
-    \\# Aegis preset: strict-local
+    \\# Orca preset: strict-local
     \\# Local strict mode. Unknown actions are denied or staged; add narrow allow rules as needed.
     \\
 ++ strict_policy;
 
 const trusted_local_policy =
-    \\# Aegis preset: trusted-local
+    \\# Orca preset: trusted-local
     \\# Less restrictive local preset for trusted repositories. Secret redaction and deny rules remain enabled.
     \\
 ++ trusted_policy;
@@ -233,7 +233,7 @@ const common_strict_rules =
     \\      - "./**"
     \\    deny:
     \\      - "./.git/**"
-    \\      - "./.aegis/**"
+    \\      - "./.orca/**"
     \\    mode: staged
     \\
     \\commands:
@@ -446,7 +446,7 @@ pub const trusted_policy =
     \\      - "./**"
     \\    deny:
     \\      - "./.git/**"
-    \\      - "./.aegis/**"
+    \\      - "./.orca/**"
     \\    mode: staged
     \\
     \\commands:

@@ -1,4 +1,4 @@
-# Aegis Edge Runtime Health
+# Edge Runtime Health
 
 Phase 37 adds local runtime-health checks for fake-adapter, PX4 SITL, ArduPilot SITL, and bench-preparation evidence. It monitors runtime, agent, adapter, MAVLink, telemetry, vehicle state, battery, GPS, link, audit writer, policy engine, safety engine, data guard, storage, resource usage, clock, and configuration domains.
 

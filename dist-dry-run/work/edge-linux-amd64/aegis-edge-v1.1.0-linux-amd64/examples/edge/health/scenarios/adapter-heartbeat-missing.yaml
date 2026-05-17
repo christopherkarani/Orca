@@ -1,8 +1,0 @@
-id: adapter-heartbeat-missing
-environment: fake_adapter
-provenance: fake_adapter
-command: arm
-expected_decision: deny
-health_fault: missing_adapter_heartbeat
-expected_behavior: deny_high_risk
-note: missing adapter heartbeat is not treated as safe.

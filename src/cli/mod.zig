@@ -86,7 +86,7 @@ pub fn runWithCwd(cwd: std.fs.Dir, argv: []const []const u8, stdout: anytype, st
     if (std.mem.eql(u8, command, "plugin")) return plugin.command(argv[1..], stdout, stderr);
     if (std.mem.eql(u8, command, "decide")) return decide.command(argv[1..], stdout, stderr);
     if (std.mem.eql(u8, command, "hook")) return hook.command(argv[1..], stdout, stderr);
-    try stderr.writeAll("aegis: unknown command '");
+    try stderr.writeAll("orca: unknown command '");
     try stderr.writeAll(command);
     try stderr.writeAll(". Run 'orca help' for usage.\n");
     return exit_codes.usage;
@@ -134,7 +134,7 @@ test "version prints development version" {
     const code = try run(&.{"version"}, stdout_stream.writer(), stderr_stream.writer());
 
     try std.testing.expectEqual(exit_codes.success, code);
-    try std.testing.expect(std.mem.startsWith(u8, stdout_stream.getWritten(), "aegis-cli "));
+    try std.testing.expect(std.mem.startsWith(u8, stdout_stream.getWritten(), "orca "));
     try std.testing.expect(std.mem.indexOf(u8, stdout_stream.getWritten(), version) != null);
     try std.testing.expectEqualStrings("", stderr_stream.getWritten());
 }
@@ -196,7 +196,7 @@ test "init dispatch creates policy in provided working directory" {
     const code = try runWithCwd(tmp.dir, &.{ "init", "--mode", "strict" }, stdout_stream.writer(), stderr_stream.writer());
     try std.testing.expectEqual(exit_codes.success, code);
 
-    const policy_text = try tmp.dir.readFileAlloc(std.testing.allocator, ".aegis/policy.yaml", 4096);
+    const policy_text = try tmp.dir.readFileAlloc(std.testing.allocator, ".orca/policy.yaml", 4096);
     defer std.testing.allocator.free(policy_text);
     try std.testing.expect(std.mem.indexOf(u8, policy_text, "mode: strict") != null);
 }

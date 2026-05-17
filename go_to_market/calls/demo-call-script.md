@@ -6,13 +6,13 @@ Say: "This demo is local customer-evaluation evidence only. It uses fake adapter
 
 Do not say: "This proves aircraft readiness."
 
-## 2. Show Aegis Edge Architecture
+## 2. Show Edge Architecture
 
-Say: "Aegis Edge sits between the autonomy agent/planner and a supported command bridge. It evaluates policy, records decisions, supports replay, runs red-team scenarios, and generates safety-case evidence."
+Say: "Edge sits between the autonomy agent/planner and a supported command bridge. It evaluates policy, records decisions, supports replay, runs red-team scenarios, and generates safety-case evidence."
 
 Artifact references:
 
-- `docs/edge/customer-proof/aegis-edge-technical-brief.md`
+- `docs/edge/customer-proof/edge-technical-brief.md`
 - `customer_pilot/pilot-overview.md`
 - `examples/edge/customer-proof/capability-matrix.md`
 
@@ -21,7 +21,7 @@ Artifact references:
 Command:
 
 ```sh
-./zig-out/bin/aegis-edge demo run geofence-deny
+./zig-out/bin/edge demo run geofence-deny
 ```
 
 Expected output: denial of a waypoint outside configured geofence.
@@ -32,7 +32,7 @@ Artifact paths:
 
 - `examples/edge/demos/01-geofence-deny/sample-safety-report.md`
 - `examples/edge/demos/01-geofence-deny/sample-replay-output.md`
-- `.aegis-edge/sessions/<session-id>/`
+- `.edge/sessions/<session-id>/`
 
 Follow-up: "Do you have a similar geofence or operating-area rule independent of the planner?"
 
@@ -41,7 +41,7 @@ Follow-up: "Do you have a similar geofence or operating-area rule independent of
 Command:
 
 ```sh
-./zig-out/bin/aegis-edge demo run disable-failsafe-deny
+./zig-out/bin/edge demo run disable-failsafe-deny
 ```
 
 Expected output: denial of a safety-critical failsafe modification.
@@ -61,7 +61,7 @@ Follow-up: "Which mode or parameter changes are forbidden in your stack?"
 Command:
 
 ```sh
-./zig-out/bin/aegis-edge demo run emergency-land
+./zig-out/bin/edge demo run emergency-land
 ```
 
 Expected output: emergency LAND allowed/logged according to policy.
@@ -79,7 +79,7 @@ Follow-up: "Which emergency actions must always remain available, and what state
 Command:
 
 ```sh
-./zig-out/bin/aegis-edge demo run stale-telemetry-deny
+./zig-out/bin/edge demo run stale-telemetry-deny
 ```
 
 Expected output: movement denied because telemetry is stale.
@@ -97,7 +97,7 @@ Follow-up: "What freshness thresholds matter for position, battery, link, and ve
 Command:
 
 ```sh
-./zig-out/bin/aegis-edge demo run data-exfil-deny
+./zig-out/bin/edge demo run data-exfil-deny
 ```
 
 Expected output: telemetry or mission data egress denied/redacted by data guard.
@@ -118,7 +118,7 @@ Follow-up: "Which telemetry, video, mission, or location fields are sensitive in
 Command:
 
 ```sh
-./zig-out/bin/aegis-edge replay --session last --verify
+./zig-out/bin/edge replay --session last --verify
 ```
 
 Expected output: replay verification succeeds for the latest local session when artifacts exist.
@@ -132,7 +132,7 @@ Do not say: "Replay proves the real world matched the simulation."
 Command:
 
 ```sh
-./zig-out/bin/aegis-edge proof generate --demo geofence-deny
+./zig-out/bin/edge proof generate --demo geofence-deny
 ```
 
 Expected output: local safety-case evidence paths.
@@ -141,9 +141,9 @@ Say: "The report records provenance, policy decision, replay reference, and limi
 
 Artifact paths:
 
-- `.aegis-edge/sessions/<session-id>/safety-report.md`
-- `.aegis-edge/sessions/<session-id>/safety-report.json`
-- `.aegis-edge/sessions/<session-id>/evidence/`
+- `.edge/sessions/<session-id>/safety-report.md`
+- `.edge/sessions/<session-id>/safety-report.json`
+- `.edge/sessions/<session-id>/evidence/`
 - `examples/edge/customer-proof/geofence-deny-safety-report.md`
 
 ## 10. Show Red-Team Scorecard
@@ -151,7 +151,7 @@ Artifact paths:
 Command:
 
 ```sh
-./zig-out/bin/aegis-edge redteam --ci
+./zig-out/bin/edge redteam --ci
 ```
 
 Expected output: deterministic red-team scorecard with passed, failed, skipped, unsupported, or inconclusive results.

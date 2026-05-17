@@ -1,6 +1,6 @@
 const std = @import("std");
 
-const core = @import("../core/mod.zig");
+const core = @import("../core/public.zig");
 
 pub const version: u16 = 1;
 

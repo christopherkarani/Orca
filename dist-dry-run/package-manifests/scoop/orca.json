@@ -1,0 +1,27 @@
+{
+  "version": "1.1.0",
+  "description": "Local runtime firewall for AI agents.",
+  "homepage": "https://github.com/christopherkarani/Orca",
+  "license": "Apache-2.0",
+  "architecture": {
+    "64bit": {
+      "url": "https://github.com/christopherkarani/Orca/releases/download/v1.1.0/orca-v1.1.0-windows-amd64.zip",
+      "hash": "c90bf7514f5681f2c7604efba1162dc74e0713a550899b993c21aee88d6098a1"
+    }
+  },
+  "bin": "orca-v1.1.0-windows-amd64\\bin\\orca.exe",
+  "checkver": {
+    "github": "https://github.com/christopherkarani/Orca"
+  },
+  "autoupdate": {
+    "architecture": {
+      "64bit": {
+        "url": "https://github.com/christopherkarani/Orca/releases/download/v$version/orca-v$version-windows-amd64.zip",
+        "hash": {
+          "url": "$baseurl/checksums.txt"
+        }
+      }
+    }
+  },
+  "notes": "verify checksums.txt from the release before publishing this manifest. The zip contains a top-level orca-v<version>-windows-amd64 directory."
+}

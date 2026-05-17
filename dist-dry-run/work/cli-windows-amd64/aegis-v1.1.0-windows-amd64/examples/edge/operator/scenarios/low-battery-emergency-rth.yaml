@@ -1,5 +1,0 @@
-id: low-battery-emergency-rth
-state: examples/edge/operator/states/low-battery-state.json
-reason: low_battery
-expected_command: return_to_home
-environment: fake_px4_adapter

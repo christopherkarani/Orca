@@ -16,14 +16,14 @@ Confirm `reports/production-readiness-report.md`, `release-checklist.md`, `check
 
 ```sh
 git status --short
-git tag -a v1.1.0 -m "Aegis v1.1.0"
+git tag -a v1.1.0 -m "Orca v1.1.0"
 git push origin v1.1.0
 ```
 
 ## Build And Verify Artifacts
 
 ```sh
-AEGIS_VERSION=1.1.0 ./scripts/build-release.sh
+ORCA_VERSION=1.1.0 ./scripts/build-release.sh
 ./scripts/verify-release.sh dist
 cd dist && sha256sum -c checksums.txt
 ```
@@ -41,4 +41,4 @@ git tag -d v1.1.0
 git push origin :refs/tags/v1.1.0
 ```
 
-Do not include secret tokens in commands. Aegis Edge remains not real-flight readiness.
+Do not include secret tokens in commands. Edge remains not real-flight readiness.

@@ -1,8 +1,0 @@
-id: command-timeout
-environment: fake_adapter
-provenance: fake_adapter
-command: takeoff
-expected_decision: deny
-health_fault: command_timeout
-expected_behavior: fail_closed
-note: timed-out commands are not treated as successful.

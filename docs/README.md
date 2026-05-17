@@ -1,10 +1,10 @@
-# Aegis Documentation
+# Orca Documentation
 
 Product package docs:
 
-- `../packages/core/README.md`: Aegis Core shared policy, decision, audit, replay, redaction, fixture, schema registry, experimental ABI skeleton, and capability contract.
-- `../packages/cli/README.md`: Aegis CLI desktop and CI AI-agent runtime firewall contract.
-- `../packages/edge/README.md`: Aegis Edge domain, policy, MAVLink, and PX4 SITL simulation contract. Aegis Edge is not a flight controller, not an autopilot replacement, not detect-and-avoid, not regulatory approval or certification, and must not be used for real flight.
+- `../packages/core/README.md`: Orca Core shared policy, decision, audit, replay, redaction, fixture, schema registry, experimental ABI skeleton, and capability contract.
+- `../packages/cli/README.md`: Orca desktop and CI AI-agent runtime firewall contract.
+- `../packages/edge/README.md`: Edge domain, policy, MAVLink, and PX4 SITL simulation contract. Edge is not a flight controller, not an autopilot replacement, not detect-and-avoid, not regulatory approval or certification, and must not be used for real flight.
 - `edge/`: Edge domain model, coordinate frames, safety policy, and safety schema notes.
 
 Launch docs:
@@ -29,4 +29,4 @@ Developer docs:
 - `release/checklist.md`: Phase 19 release artifact, checksum, signing, SBOM, and install checklist.
 - `dev/`: architecture contracts, security invariants, production gates, and phase handoffs.
 
-Aegis reports platform capability limits through `aegis doctor`; docs should not claim transparent sandboxing where the backend reports wrapper-only, observe-only, limited, or unavailable.
+Orca reports platform capability limits through `orca doctor`; docs should not claim transparent sandboxing where the backend reports wrapper-only, observe-only, limited, or unavailable.

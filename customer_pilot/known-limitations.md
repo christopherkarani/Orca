@@ -1,9 +1,9 @@
 # Known Limitations
 
-- Aegis Edge is not a flight controller.
-- Aegis Edge does not replace PX4, ArduPilot, or customer autopilot failsafes.
-- Aegis Edge does not provide detect-and-avoid.
-- Aegis Edge does not provide certification, regulatory approval, BVLOS approval, or airworthiness approval.
+- Edge is not a flight controller.
+- Edge does not replace PX4, ArduPilot, or customer autopilot failsafes.
+- Edge does not provide detect-and-avoid.
+- Edge does not provide certification, regulatory approval, BVLOS approval, or airworthiness approval.
 - Fake adapter evidence is deterministic local evidence only.
 - SITL evidence is simulator evidence only.
 - Bench-preparation evidence is no-actuation review only.

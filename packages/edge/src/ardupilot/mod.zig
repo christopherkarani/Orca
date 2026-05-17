@@ -9,7 +9,7 @@ pub const telemetry_mapping = @import("telemetry_mapping.zig");
 pub const vehicle_kind = @import("vehicle_kind.zig");
 
 pub const phase = "30-ardupilot-sitl-integration";
-pub const tested_version_policy = "ArduPilot SITL integration starts with Copter-oriented MAVLink common-subset scenarios; set AEGIS_EDGE_ARDUPILOT_TESTED_VERSION to record a local ArduPilot version in artifacts.";
+pub const tested_version_policy = "ArduPilot SITL integration starts with Copter-oriented MAVLink common-subset scenarios; set EDGE_BIN_ARDUPILOT_TESTED_VERSION to record a local ArduPilot version in artifacts.";
 
 test {
     _ = audit;

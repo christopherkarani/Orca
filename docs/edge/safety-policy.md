@@ -1,6 +1,6 @@
-# Aegis Edge Safety Policy
+# Edge Safety Policy
 
-Phase 31 implements local flight safety enforcement for fake-adapter, PX4 SITL, and ArduPilot SITL evidence. It validates policy files and evaluates fake/simulation/bench command requests against vehicle state. It does not mediate real drone hardware commands or integrate ROS2, customer hardware, or real hardware. Aegis Edge is not ready for real flight and must not be used for real flight.
+Phase 31 implements local flight safety enforcement for fake-adapter, PX4 SITL, and ArduPilot SITL evidence. It validates policy files and evaluates fake/simulation/bench command requests against vehicle state. It does not mediate real drone hardware commands or integrate ROS2, customer hardware, or real hardware. Edge is not ready for real flight and must not be used for real flight.
 
 ## Safety Envelope
 

@@ -175,7 +175,7 @@ fn stateForScenario(spec: ScenarioSpec, timestamp_ms: i128) domain.state.Vehicle
 }
 
 fn defaultArtifactDir(allocator: std.mem.Allocator, id: []const u8) ![]u8 {
-    return std.fmt.allocPrint(allocator, ".aegis/edge/px4/{s}", .{id});
+    return std.fmt.allocPrint(allocator, ".orca/edge/px4/{s}", .{id});
 }
 
 fn loadScenario(allocator: std.mem.Allocator, path: []const u8) !ScenarioSpec {
@@ -257,7 +257,7 @@ fn approvalForFrame(
         .state = state,
         .evaluation = base,
         .now_ms = now_ms,
-        .actor_id = "aegis-edge-px4-scenario",
+        .actor_id = "edge-px4-scenario",
     });
 }
 

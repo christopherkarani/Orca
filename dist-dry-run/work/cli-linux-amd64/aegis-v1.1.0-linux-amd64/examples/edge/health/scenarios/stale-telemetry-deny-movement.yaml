@@ -1,8 +1,0 @@
-id: stale-telemetry-deny-movement
-environment: fake_adapter
-provenance: fake_adapter
-command: set_waypoint
-expected_decision: deny
-health_fault: stale_position
-expected_behavior: deny_movement
-note: deterministic fake telemetry freshness scenario only.

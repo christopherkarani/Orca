@@ -1,10 +1,10 @@
 # Pilot Overview
 
-Aegis Edge is a local simulation/SITL/bench-preparation safety-policy runtime for drone autonomy evaluation. It can mediate a bounded MAVLink command surface, evaluate safety envelopes, record audit/replay evidence, run deterministic red-team and fault-injection scenarios, and generate customer-readable safety-case evidence.
+Edge is a local simulation/SITL/bench-preparation safety-policy runtime for drone autonomy evaluation. It can mediate a bounded MAVLink command surface, evaluate safety envelopes, record audit/replay evidence, run deterministic red-team and fault-injection scenarios, and generate customer-readable safety-case evidence.
 
 ## What The Pilot Evaluates
 
-- Whether Aegis Edge can run in a customer-like fake adapter or SITL evaluation environment.
+- Whether Edge can run in a customer-like fake adapter or SITL evaluation environment.
 - Whether a customer baseline policy can express geofence, altitude, velocity, battery, operator approval, emergency, data guard, and runtime health expectations.
 - Whether unsafe commands are denied and emergency-safe commands are allowed/logged according to policy.
 - Whether audit/replay, red-team scorecards, and safety reports create useful engineering evidence.

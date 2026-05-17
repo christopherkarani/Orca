@@ -1,9 +1,9 @@
 # Edge Audit And Replay
 
-Aegis Edge records Phase 33 evidence under `.aegis-edge/sessions/<session-id>/`.
-The authoritative event log is `events.jsonl`, written through the Aegis Core audit writer. Edge does not maintain a second independent audit writer.
+Edge records Phase 33 evidence under `.edge/sessions/<session-id>/`.
+The authoritative event log is `events.jsonl`, written through the Orca Core audit writer. Edge does not maintain a second independent audit writer.
 
-Each event is redacted before persistence and includes Core `previous_hash` and `event_hash` fields. `aegis-edge replay --session last --verify` verifies the same hash-chain rules used by the main `aegis replay` command, but reads `.aegis-edge` instead of `.aegis`.
+Each event is redacted before persistence and includes Core `previous_hash` and `event_hash` fields. `edge replay --session last --verify` verifies the same hash-chain rules used by the main `orca replay` command, but reads `.edge` instead of `.orca`.
 
 Replay proves:
 
@@ -24,10 +24,10 @@ Replay does not prove:
 Useful commands:
 
 ```sh
-aegis-edge replay --session last --verify
-aegis-edge replay --session last --json
-aegis-edge replay --session last --findings
-aegis-edge replay --session last --commands
-aegis-edge replay --session last --approvals
-aegis-edge replay --session last --safety-case
+edge replay --session last --verify
+edge replay --session last --json
+edge replay --session last --findings
+edge replay --session last --commands
+edge replay --session last --approvals
+edge replay --session last --safety-case
 ```

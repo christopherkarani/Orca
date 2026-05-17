@@ -20,7 +20,7 @@ All release-blocking issues found during this audit have been fixed. The codebas
 
 | Check | Status | Notes |
 |-------|--------|-------|
-| Local git remote | `christopherkarani/Aegis.git` | **BLOCKER:** Must be `chriskarani/orca` |
+| Local git remote | `christopherkarani/Orca.git` | **BLOCKER:** Must be `chriskarani/orca` |
 | GitHub repo exists | `chriskarani/orca` not found | **BLOCKER:** Repo must be created/renamed and pushed |
 | Repo visibility | Unknown | Must be public |
 | Default branch | Unknown | Must be correct |
@@ -56,9 +56,9 @@ Both files use marketplace name `orca`.
 | No secrets | CONFIRMED | Clean |
 
 **Fixed during audit:**
-- Plugin manifest name changed from `aegis` to `orca`
-- Hooks changed from `aegis hook codex` to `orca hook codex`
-- Skill directories renamed from `aegis-*` to `orca-*`
+- Plugin manifest name changed from `orca` to `orca`
+- Hooks changed from `orca hook codex` to `orca hook codex`
+- Skill directories renamed from `orca-*` to `orca-*`
 - README fully rebranded
 
 ---
@@ -76,10 +76,10 @@ Both files use marketplace name `orca`.
 | No secrets | CONFIRMED | Clean |
 
 **Fixed during audit:**
-- Plugin manifest name changed from `aegis` to `orca`
-- Hooks changed from `aegis hook claude` to `orca hook claude`
+- Plugin manifest name changed from `orca` to `orca`
+- Hooks changed from `orca hook claude` to `orca hook claude`
 - README fully rebranded
-- Skill files updated from `aegis` to `orca`
+- Skill files updated from `orca` to `orca`
 
 ---
 
@@ -150,9 +150,9 @@ No fake secrets leaked. stdout is valid JSON.
 
 **Fixed during audit:**
 - `YOUR_ORG/orca` placeholders replaced with `chriskarani/orca`
-- Artifact names updated from `aegis-*` to `orca-*`
-- Binary paths updated from `./zig-out/bin/aegis` to `./zig-out/bin/orca`
-- Commands updated from `aegis *` to `orca *`
+- Artifact names updated from `orca-*` to `orca-*`
+- Binary paths updated from `./zig-out/bin/orca` to `./zig-out/bin/orca`
+- Commands updated from `orca *` to `orca *`
 
 ---
 
@@ -217,19 +217,19 @@ claude plugin install orca@orca --scope user
 
 | Blocker | Severity | Fixed | Notes |
 |---------|----------|-------|-------|
-| Git remote points to `christopherkarani/Aegis.git` | HIGH | NO | Requires manual repo rename/push |
+| Git remote points to `christopherkarani/Orca.git` | HIGH | NO | Requires manual repo rename/push |
 | GitHub repo `chriskarani/orca` does not exist | HIGH | NO | Requires manual creation |
-| Codex plugin manifest name was `aegis` | HIGH | YES | Changed to `orca` |
-| Claude plugin manifest name was `aegis` | HIGH | YES | Changed to `orca` |
-| Codex hooks called `aegis hook codex` | HIGH | YES | Changed to `orca hook codex` |
-| Claude hooks called `aegis hook claude` | HIGH | YES | Changed to `orca hook claude` |
+| Codex plugin manifest name was `orca` | HIGH | YES | Changed to `orca` |
+| Claude plugin manifest name was `orca` | HIGH | YES | Changed to `orca` |
+| Codex hooks called `orca hook codex` | HIGH | YES | Changed to `orca hook codex` |
+| Claude hooks called `orca hook claude` | HIGH | YES | Changed to `orca hook claude` |
 | Docs used `YOUR_ORG/orca` placeholder | HIGH | YES | Changed to `chriskarani/orca` |
-| Docs referenced `aegis-*` artifact names | MEDIUM | YES | Changed to `orca-*` |
-| Docs referenced `./zig-out/bin/aegis` | MEDIUM | YES | Changed to `./zig-out/bin/orca` |
-| Codex skills used `aegis-*` naming | MEDIUM | YES | Renamed to `orca-*` |
-| Test expected `aegis-edge` in build scripts | MEDIUM | YES | Updated test and ps1 script |
-| Test expected `aegis run --` in docs | MEDIUM | YES | Updated tests |
-| `aegis-cli-plugin.md` filename | LOW | YES | Renamed to `orca-cli-plugin.md` |
+| Docs referenced `orca-*` artifact names | MEDIUM | YES | Changed to `orca-*` |
+| Docs referenced `./zig-out/bin/orca` | MEDIUM | YES | Changed to `./zig-out/bin/orca` |
+| Codex skills used `orca-*` naming | MEDIUM | YES | Renamed to `orca-*` |
+| Test expected `edge` in build scripts | MEDIUM | YES | Updated test and ps1 script |
+| Test expected `orca run --` in docs | MEDIUM | YES | Updated tests |
+| `orca-plugin.md` filename | LOW | YES | Renamed to `orca-cli-plugin.md` |
 
 ---
 
@@ -255,11 +255,11 @@ All tests pass after fixes.
 - `integrations/claude-code-plugin/hooks/hooks.json`
 
 ### Codex plugin skills (renamed + updated)
-- `integrations/codex-plugin/skills/orca-doctor/SKILL.md` (was `aegis-doctor`)
-- `integrations/codex-plugin/skills/orca-init/SKILL.md` (was `aegis-init`)
-- `integrations/codex-plugin/skills/orca-protect/SKILL.md` (was `aegis-protect`)
-- `integrations/codex-plugin/skills/orca-redteam/SKILL.md` (was `aegis-redteam`)
-- `integrations/codex-plugin/skills/orca-replay/SKILL.md` (was `aegis-replay`)
+- `integrations/codex-plugin/skills/orca-doctor/SKILL.md` (was `orca-doctor`)
+- `integrations/codex-plugin/skills/orca-init/SKILL.md` (was `orca-init`)
+- `integrations/codex-plugin/skills/orca-protect/SKILL.md` (was `orca-protect`)
+- `integrations/codex-plugin/skills/orca-redteam/SKILL.md` (was `orca-redteam`)
+- `integrations/codex-plugin/skills/orca-replay/SKILL.md` (was `orca-replay`)
 
 ### Claude plugin skills (updated)
 - `integrations/claude-code-plugin/skills/doctor/SKILL.md`
@@ -277,7 +277,7 @@ All tests pass after fixes.
 - `docs/integrations/codex.md`
 - `docs/integrations/claude-code.md`
 - `docs/integrations/repo-marketplace-install.md`
-- `docs/integrations/orca-cli-plugin.md` (renamed from `aegis-cli-plugin.md`)
+- `docs/integrations/orca-cli-plugin.md` (renamed from `orca-plugin.md`)
 
 ### Example marketplace files
 - `integrations/codex-plugin/examples/marketplace.json`

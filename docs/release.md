@@ -5,25 +5,29 @@
 - Set version metadata.
 - Run `zig build`.
 - Run `zig build test`.
-- Run `./zig-out/bin/aegis redteam --ci`.
-- Run `./zig-out/bin/aegis doctor`.
-- Build artifacts with `scripts/build-release.sh` or `scripts/build-release.ps1`.
+- Run `./zig-out/bin/orca redteam --ci`.
+- Run `./zig-out/bin/orca doctor`.
+- Build production artifacts with `scripts/build-release.sh`.
 - Generate checksums with `scripts/generate-checksums.sh`.
+- Render package manifests with `scripts/render-package-manifests.sh`.
 - Generate SBOM hook output with `scripts/generate-sbom.sh`.
+- Update the Homebrew formula with `scripts/update-homebrew-formula.sh`.
 - Verify install docs and package templates.
 - Confirm no docs or artifacts contain raw synthetic secrets.
 
 ## Artifacts
 
-Release archives are expected under `dist/`. Checksums live in `dist/checksums.txt`.
+Release archives are expected under `dist/`. Checksums live in `dist/checksums.txt`. Publishable package-manager manifests are rendered under `dist/package-manifests/`.
+
+`scripts/build-release.ps1 -ArchiveOnly` is a Windows archive smoke-test helper. It is fail-closed for production because it does not emit `release-manifest.json` or rendered package manifests.
 
 ## Signing And SBOM
 
-Signing is optional through `AEGIS_SIGNING_ENABLED=1` and `AEGIS_SIGNING_COMMAND`. The SBOM hook writes `dist/sbom.json`.
+Signing is optional through `ORCA_SIGNING_ENABLED=1` and `ORCA_SIGNING_COMMAND`. The SBOM hook writes `dist/sbom.json`.
 
 ## Package Templates
 
-Update Homebrew, Scoop, WinGet, npm, and Docker templates from generated artifact names and checksums.
+Source templates remain fail-closed while they contain placeholder checksums. Render Homebrew, Scoop, WinGet, and npm manifests from generated artifact names and checksums before publishing. The Homebrew tap source is `packaging/homebrew/Formula/orca.rb`.
 
 ## Versioning
 

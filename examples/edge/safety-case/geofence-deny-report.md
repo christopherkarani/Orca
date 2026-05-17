@@ -1,6 +1,6 @@
-# Aegis Edge Safety Case: geofence-deny
+# Edge Safety Case: geofence-deny
 
-Aegis Edge safety reports are engineering audit artifacts only. They are not regulatory approval, certification, airworthiness approval, or real-flight readiness claims.
+Edge safety reports are engineering audit artifacts only. They are not regulatory approval, certification, airworthiness approval, or real-flight readiness claims.
 
 | Field | Value |
 |---|---|

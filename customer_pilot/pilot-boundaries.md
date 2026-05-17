@@ -24,9 +24,9 @@ The allowed scope is simulation/SITL/customer-evaluation and bench-preparation o
 
 ## Evidence Meaning
 
-Fake adapter evidence means Aegis Edge processed deterministic local inputs with fake vehicle state. It is useful for policy, audit/replay, report, and red-team workflow evaluation.
+Fake adapter evidence means Edge processed deterministic local inputs with fake vehicle state. It is useful for policy, audit/replay, report, and red-team workflow evaluation.
 
-SITL evidence means Aegis Edge processed local simulator inputs from PX4 SITL or ArduPilot SITL when explicitly configured. SITL evidence is simulator evidence, not real flight evidence.
+SITL evidence means Edge processed local simulator inputs from PX4 SITL or ArduPilot SITL when explicitly configured. SITL evidence is simulator evidence, not real flight evidence.
 
 Bench-preparation evidence means the team reviewed no-actuation policy, gateway, health, data guard, and audit behavior before any hardware discussion. It does not include motor or aircraft operation.
 

@@ -2,9 +2,9 @@
 
 - [ ] `zig build`
 - [ ] `zig build test`
-- [ ] `aegis redteam --ci`
-- [ ] `aegis-edge redteam --ci`
-- [ ] `aegis-edge docs check`
+- [ ] `orca redteam --ci`
+- [ ] `edge redteam --ci`
+- [ ] `edge docs check`
 - [ ] demo and proof commands pass
 - [ ] safety-case report generation passes
 - [ ] audit/replay verification passes
@@ -22,4 +22,4 @@
 - [ ] release blockers resolved or documented
 - [ ] approval to tag
 
-Boundary: Aegis Edge is not real-flight readiness, certification, detect-and-avoid, or autopilot replacement.
+Boundary: Edge is not real-flight readiness, certification, detect-and-avoid, or autopilot replacement.

@@ -12,7 +12,7 @@ The Phase 38 proof package includes:
 
 Every artifact must include provenance, limitations, a non-certification disclaimer, and no raw secrets.
 
-Generated local sessions are written under `.aegis-edge/sessions/<session-id>/` and can contain:
+Generated local sessions are written under `.edge/sessions/<session-id>/` and can contain:
 
 - `events.jsonl`
 - `summary.json`

@@ -2,11 +2,11 @@
 
 DRAFT TEMPLATE ONLY. NOT LEGAL ADVICE. REQUIRES LEGAL REVIEW.
 
-This is an editable starting point for a limited Aegis Edge customer pilot. It must be reviewed by counsel before use.
+This is an editable starting point for a limited Edge customer pilot. It must be reviewed by counsel before use.
 
 ## Scope
 
-- Simulation/SITL/bench-preparation evaluation of Aegis Edge.
+- Simulation/SITL/bench-preparation evaluation of Edge.
 - Baseline policy creation.
 - Scenario execution.
 - Audit/replay evidence review.

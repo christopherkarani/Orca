@@ -1,8 +1,8 @@
 {
   "$schema": "http://json-schema.org/draft-07/schema#",
-  "$id": "https://aegis.local/schemas/hook-response-v1.json",
-  "title": "Aegis Hook Response v1",
-  "description": "JSON response emitted by the aegis hook command to stdout.",
+  "$id": "https://orca.local/schemas/hook-response-v1.json",
+  "title": "Orca Hook Response v1",
+  "description": "JSON response emitted by the orca hook command to stdout.",
   "type": "object",
   "required": ["version", "decision", "risk", "category", "reason", "message"],
   "properties": {
@@ -20,11 +20,11 @@
     "risk": {
       "type": "string",
       "enum": ["low", "medium", "high", "critical", "unknown"],
-      "description": "Risk level assessed by Aegis."
+      "description": "Risk level assessed by Orca."
     },
     "category": {
       "type": "string",
-      "enum": ["command", "file", "prompt", "tool", "network", "mcp", "unknown"],
+      "enum": ["command", "file", "file.read", "file.write", "file_read", "file_write", "env", "prompt", "tool", "network", "mcp", "unknown"],
       "description": "Decision category."
     },
     "reason": {

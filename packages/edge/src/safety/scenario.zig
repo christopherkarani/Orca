@@ -127,7 +127,7 @@ fn evaluationForScenario(
             .state = base_state,
             .evaluation = base,
             .now_ms = context.now_ms,
-            .actor_id = "aegis-edge-safety-scenario",
+            .actor_id = "edge-safety-scenario",
         })) orelse return evaluator.evaluateSafety(allocator, selected_policy, base_state, request, context);
         defer approval.deinit(allocator);
         return evaluator.evaluateSafetyWithApproval(allocator, selected_policy, base_state, request, context, &approval);
@@ -194,7 +194,7 @@ fn requestForScenario(spec: ScenarioSpec) domain.commands.CommandRequest {
         .vehicle_id = .{ .value = "edge-vehicle-1" },
         .action = action,
         .parameters = params,
-        .actor = "aegis-edge-safety-scenario",
+        .actor = "edge-safety-scenario",
         .timestamp = .{ .value = 1_000_100, .source = .monotonic },
         .source = .fake_adapter,
         .mission_id = if (spec.command == .mission_outside_geofence) "scenario-mission-outside" else null,
@@ -327,5 +327,5 @@ fn cleanScalar(raw: []const u8) []const u8 {
 }
 
 fn defaultArtifactDir(allocator: std.mem.Allocator, id: []const u8) ![]u8 {
-    return std.fmt.allocPrint(allocator, ".aegis/edge/safety/{s}", .{id});
+    return std.fmt.allocPrint(allocator, ".orca/edge/safety/{s}", .{id});
 }

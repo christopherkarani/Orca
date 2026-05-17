@@ -1,9 +1,0 @@
-# Aegis Edge example only. Do not install, start, or enable automatically.
-# Verify the release artifact checksum before copying binaries onto a host.
-# Simulation/SITL/bench-preparation only; no real-flight or hardware endpoint.
-[Unit]
-Description=Aegis Edge example deployment diagnostics
-
-[Service]
-Type=oneshot
-ExecStart=/usr/local/bin/aegis-edge deployment doctor

@@ -2,16 +2,16 @@
 
 ## Opening Line
 
-"This is Aegis Edge, a local policy and evidence runtime for drone autonomy evaluation in fake, SITL, and bench-preparation contexts."
+"This is Edge, a local policy and evidence runtime for drone autonomy evaluation in fake, SITL, and bench-preparation contexts."
 
 ## Commands
 
 ```sh
 zig build
-./zig-out/bin/aegis-edge demo list
-./zig-out/bin/aegis-edge demo run all
-./zig-out/bin/aegis-edge proof generate --demo geofence-deny
-./zig-out/bin/aegis-edge replay --session last --verify
+./zig-out/bin/edge demo list
+./zig-out/bin/edge demo run all
+./zig-out/bin/edge proof generate --demo geofence-deny
+./zig-out/bin/edge replay --session last --verify
 ```
 
 ## Expected Terminal Summary

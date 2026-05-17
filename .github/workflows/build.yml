@@ -22,14 +22,14 @@ jobs:
       - name: Version JSON
         shell: bash
         run: |
-          ./zig-out/bin/aegis version --json
-          ./zig-out/bin/aegis-edge version --json
+          ./zig-out/bin/orca version --json
+          ./zig-out/bin/edge version --json
       - name: Check Windows target from Unix runners
         if: runner.os != 'Windows'
         run: zig build check-windows
       - name: Check release artifact naming references
         shell: bash
         run: |
-          grep -R "aegis-v.*linux-amd64" scripts packaging .github/workflows
-          grep -R "aegis-edge-v.*linux-amd64" scripts packaging .github/workflows
+          grep -R "orca-v.*linux-amd64" scripts packaging .github/workflows
+          grep -R "edge-v.*linux-amd64" scripts packaging .github/workflows
           grep -R "checksums.txt" scripts packaging .github/workflows

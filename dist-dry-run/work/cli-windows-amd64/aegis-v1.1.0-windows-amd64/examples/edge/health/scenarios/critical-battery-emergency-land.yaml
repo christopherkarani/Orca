@@ -1,8 +1,0 @@
-id: critical-battery-emergency-land
-environment: fake_adapter
-provenance: fake_adapter
-command: land
-expected_decision: allow
-health_fault: critical_battery
-expected_behavior: allow_policy_emergency_only
-note: LAND remains policy-controlled and does not bypass the safety envelope.

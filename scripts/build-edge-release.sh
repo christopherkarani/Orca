@@ -1,5 +1,5 @@
 #!/usr/bin/env sh
 set -eu
 
-# Builds the checksum-covered Aegis Edge release archive set.
-AEGIS_RELEASE_PRODUCT=edge exec ./scripts/build-release.sh "$@"
+# Builds the checksum-covered Edge release archive set.
+ORCA_RELEASE_PRODUCT=edge exec ./scripts/build-release.sh "$@"

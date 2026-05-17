@@ -1,8 +1,0 @@
-id: healthy-runtime
-environment: fake_adapter
-provenance: fake_adapter
-command: read_telemetry
-expected_decision: allow
-health_fault: none
-expected_behavior: observe_only
-note: deterministic healthy runtime scenario for fake adapter evidence only.

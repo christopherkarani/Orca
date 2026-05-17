@@ -13,7 +13,7 @@ env:
     - HOME
     - LANG
     - TERM
-    - AEGIS_DEMO_WORKSPACE
+    - ORCA_DEMO_WORKSPACE
   deny_patterns:
     - "*TOKEN*"
     - "*SECRET*"
@@ -35,7 +35,7 @@ files:
     allow:
       - "./**"
     deny:
-      - "./.aegis/**"
+      - "./.orca/**"
       - "./.git/**"
     mode: staged
 

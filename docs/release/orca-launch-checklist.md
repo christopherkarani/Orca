@@ -5,7 +5,7 @@
 - **Product**: Orca
 - **Version**: 1.1.0
 - **Tag**: `v1.1.0`
-- **GitHub Release URL**: https://github.com/christopherkarani/Aegis/releases/tag/v1.1.0
+- **GitHub Release URL**: https://github.com/christopherkarani/Orca/releases/tag/v1.1.0
 
 ## Pre-Launch
 
@@ -48,13 +48,13 @@
 Report security issues privately through [SECURITY.md](SECURITY.md).
 Do not paste real secrets, tokens, credentials, or private keys into public issues.
 
-## Migration from Aegis
+## Migration from Orca
 
-Users migrating from Aegis should:
+Users migrating from Orca should:
 1. Build Orca: `zig build`
-2. Use `orca` instead of `aegis` for new commands
-3. The `aegis` compatibility alias is available for backward compatibility
-4. Config paths (`.aegis/`) remain unchanged
+2. Use `orca` instead of `orca` for new commands
+3. Legacy command shims are not available in the hard-break release; use `orca`.
+4. Config paths (`.orca/`) remain unchanged
 
 ## Links
 

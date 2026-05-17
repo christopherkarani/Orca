@@ -131,7 +131,7 @@ pub fn integrationTestGate(env: IntegrationEnv) IntegrationGate {
             .enabled = false,
             .availability = .skipped,
             .vehicle = vehicle,
-            .reason = "AEGIS_EDGE_RUN_ARDUPILOT_SITL_TESTS is not 1; ArduPilot SITL integration tests are skipped",
+            .reason = "EDGE_BIN_RUN_ARDUPILOT_SITL_TESTS is not 1; ArduPilot SITL integration tests are skipped",
         };
     }
     if (vehicle == .unknown) {
@@ -139,7 +139,7 @@ pub fn integrationTestGate(env: IntegrationEnv) IntegrationGate {
             .enabled = true,
             .availability = .unavailable,
             .vehicle = .unknown,
-            .reason = "AEGIS_EDGE_ARDUPILOT_VEHICLE is unsupported; expected copter, plane, rover, sub, or unknown",
+            .reason = "EDGE_BIN_ARDUPILOT_VEHICLE is unsupported; expected copter, plane, rover, sub, or unknown",
         };
     }
     const endpoint_text = env.endpoint orelse {
@@ -147,7 +147,7 @@ pub fn integrationTestGate(env: IntegrationEnv) IntegrationGate {
             .enabled = true,
             .availability = .unavailable,
             .vehicle = vehicle,
-            .reason = "AEGIS_EDGE_ARDUPILOT_ENDPOINT is required when ArduPilot SITL tests are enabled",
+            .reason = "EDGE_BIN_ARDUPILOT_ENDPOINT is required when ArduPilot SITL tests are enabled",
         };
     };
     const endpoint = Endpoint.parse(endpoint_text) catch {
@@ -155,7 +155,7 @@ pub fn integrationTestGate(env: IntegrationEnv) IntegrationGate {
             .enabled = true,
             .availability = .unavailable,
             .vehicle = vehicle,
-            .reason = "AEGIS_EDGE_ARDUPILOT_ENDPOINT is invalid",
+            .reason = "EDGE_BIN_ARDUPILOT_ENDPOINT is invalid",
         };
     };
     return .{
@@ -179,17 +179,17 @@ pub fn integrationTestGateOwned(allocator: std.mem.Allocator, env: IntegrationEn
 }
 
 pub fn integrationTestGateFromEnv(allocator: std.mem.Allocator) !IntegrationGate {
-    const run = std.process.getEnvVarOwned(allocator, "AEGIS_EDGE_RUN_ARDUPILOT_SITL_TESTS") catch |err| switch (err) {
+    const run = std.process.getEnvVarOwned(allocator, "EDGE_BIN_RUN_ARDUPILOT_SITL_TESTS") catch |err| switch (err) {
         error.EnvironmentVariableNotFound => null,
         else => return err,
     };
     defer if (run) |value| allocator.free(value);
-    const endpoint = std.process.getEnvVarOwned(allocator, "AEGIS_EDGE_ARDUPILOT_ENDPOINT") catch |err| switch (err) {
+    const endpoint = std.process.getEnvVarOwned(allocator, "EDGE_BIN_ARDUPILOT_ENDPOINT") catch |err| switch (err) {
         error.EnvironmentVariableNotFound => null,
         else => return err,
     };
     defer if (endpoint) |value| allocator.free(value);
-    const vehicle = std.process.getEnvVarOwned(allocator, "AEGIS_EDGE_ARDUPILOT_VEHICLE") catch |err| switch (err) {
+    const vehicle = std.process.getEnvVarOwned(allocator, "EDGE_BIN_ARDUPILOT_VEHICLE") catch |err| switch (err) {
         error.EnvironmentVariableNotFound => null,
         else => return err,
     };
@@ -198,7 +198,7 @@ pub fn integrationTestGateFromEnv(allocator: std.mem.Allocator) !IntegrationGate
 }
 
 pub fn testedVersionFromEnv(allocator: std.mem.Allocator) ![]u8 {
-    return std.process.getEnvVarOwned(allocator, "AEGIS_EDGE_ARDUPILOT_TESTED_VERSION") catch |err| switch (err) {
+    return std.process.getEnvVarOwned(allocator, "EDGE_BIN_ARDUPILOT_TESTED_VERSION") catch |err| switch (err) {
         error.EnvironmentVariableNotFound => try allocator.dupe(u8, "documented-by-phase-30"),
         else => return err,
     };

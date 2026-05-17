@@ -1,7 +1,6 @@
 const std = @import("std");
 
-const core = @import("../core/mod.zig");
-const network_guard = @import("../intercept/network.zig");
+const core = @import("../core/public.zig");
 const matchers = @import("matchers.zig");
 const schema = @import("schema.zig");
 
@@ -28,25 +27,7 @@ pub fn action(policy: *const schema.Policy, requested: core.types.Action, ctx: s
         .network_connect => |network_action| {
             const destination_text = try networkDestinationText(allocator, network_action);
             defer allocator.free(destination_text);
-            var network_decision = try network_guard.evaluate(allocator, policy, mode, destination_text, .{ .ci_mode = mode == .ci });
-            defer network_decision.deinit(allocator);
-            const owned_rule_id = if (network_decision.decision.rule_id) |rule_id| try allocator.dupe(u8, rule_id) else null;
-            errdefer if (owned_rule_id) |rule_id| allocator.free(rule_id);
-            const explanation = try allocator.dupe(u8, network_decision.decision.reason);
-            errdefer allocator.free(explanation);
-            return .{
-                .decision = .{
-                    .result = network_decision.decision.result,
-                    .rule_id = owned_rule_id,
-                    .reason = explanation,
-                    .risk_score = network_decision.decision.risk_score,
-                    .requires_user = network_decision.decision.requires_user,
-                    .ci_may_proceed = network_decision.decision.ci_may_proceed,
-                },
-                .matched_rule = if (network_decision.matched_rule) |rule| .{ .id = owned_rule_id.?, .pattern = rule.pattern } else null,
-                .explanation = explanation,
-                .owned_rule_id = owned_rule_id,
-            };
+            return evaluateNetworkPolicy(allocator, mode, policy.network, destination_text);
         },
         .mcp_tool_call => |tool| {
             const selector = try mcpSelector(allocator, tool.server, tool.tool_name);
@@ -68,14 +49,6 @@ pub fn action(policy: *const schema.Policy, requested: core.types.Action, ctx: s
             defer allocator.free(selector);
             return evaluateRuleSet(allocator, mode, .mcp, "mcp", policy.mcp, selector);
         },
-        .edge_vehicle_state_read,
-        .edge_vehicle_command_request,
-        .edge_mission_upload_request,
-        .edge_geofence_evaluation_request,
-        .edge_telemetry_egress_request,
-        .edge_emergency_command_request,
-        .edge_safety_envelope_evaluation_request,
-        => edgePlaceholderDecision(allocator, mode, edgeActionName(requested), edgeActionTarget(requested)),
         .approval_decision, .staging_decision => defaultDecision(allocator, mode, null, "unsupported policy action surface"),
     };
 }
@@ -98,6 +71,43 @@ pub fn command(policy: *const schema.Policy, command_text: []const u8, allocator
 
 pub fn network(policy: *const schema.Policy, host: []const u8, allocator: std.mem.Allocator) !schema.Evaluation {
     return action(policy, .{ .network_connect = .{ .host = host } }, .{}, allocator);
+}
+
+fn evaluateNetworkPolicy(
+    allocator: std.mem.Allocator,
+    mode: schema.Mode,
+    network_policy: schema.NetworkPolicy,
+    destination_text: []const u8,
+) !schema.Evaluation {
+    const effective = network_policy.effectiveMode();
+    const match_text = networkPolicyMatchText(destination_text);
+    if (findMatch(.network, network_policy.deny, match_text)) |match| return explicitOwnedLabel(allocator, mode, .deny, "network.deny", match);
+    if (findMatch(.network, network_policy.allow, match_text)) |match| {
+        const decision: schema.DecisionValue = if (effective == .off) .deny else .allow;
+        return explicitOwnedLabel(allocator, mode, decision, "network.allow", match);
+    }
+    if (findMatch(.network, network_policy.ask, match_text)) |match| {
+        const decision: schema.DecisionValue = if (effective == .off) .deny else .ask;
+        return explicitOwnedLabel(allocator, mode, decision, "network.ask", match);
+    }
+
+    if (network_policy.default) |default| return defaultDecision(allocator, mode, default, "network.default");
+    const fallback: schema.DecisionValue = switch (effective) {
+        .off, .allowlist => .deny,
+        .ask => .ask,
+        .observe => .observe,
+        .open => .allow,
+    };
+    return defaultDecision(allocator, mode, fallback, "network mode default");
+}
+
+fn networkPolicyMatchText(destination_text: []const u8) []const u8 {
+    var rest = destination_text;
+    if (std.mem.indexOf(u8, rest, "://")) |scheme_end| {
+        rest = rest[scheme_end + 3 ..];
+    }
+    const authority_end = std.mem.indexOfAny(u8, rest, "/?#") orelse rest.len;
+    return rest[0..authority_end];
 }
 
 pub fn mcp(policy: *const schema.Policy, selector: []const u8, allocator: std.mem.Allocator) !schema.Evaluation {
@@ -182,6 +192,17 @@ fn explicit(
     };
 }
 
+fn explicitOwnedLabel(
+    allocator: std.mem.Allocator,
+    mode: schema.Mode,
+    decision_value: schema.DecisionValue,
+    label: []const u8,
+    match: Match,
+) !schema.Evaluation {
+    const owned_label = try allocator.dupe(u8, label);
+    return explicit(allocator, mode, decision_value, owned_label, match.index, match.pattern);
+}
+
 fn riskDecision(allocator: std.mem.Allocator, mode: schema.Mode, risk: Risk) !schema.Evaluation {
     const result: schema.DecisionValue = switch (mode) {
         .observe => .observe,
@@ -216,49 +237,6 @@ fn defaultDecision(allocator: std.mem.Allocator, mode: schema.Mode, explicit_def
     };
 }
 
-fn edgePlaceholderDecision(allocator: std.mem.Allocator, mode: schema.Mode, action_name: []const u8, target: []const u8) !schema.Evaluation {
-    _ = mode;
-    const explanation = try std.fmt.allocPrint(
-        allocator,
-        "edge.{s}: generic Core placeholder for {s}; use Aegis Edge Phase 27 policy evaluation for domain safety decisions; no real drone command enforcement",
-        .{ action_name, target },
-    );
-    return .{
-        .decision = .{
-            .result = .observe,
-            .reason = explanation,
-            .ci_may_proceed = true,
-        },
-        .explanation = explanation,
-    };
-}
-
-fn edgeActionName(requested: core.types.Action) []const u8 {
-    return switch (requested) {
-        .edge_vehicle_state_read => "vehicle_state_read",
-        .edge_vehicle_command_request => "vehicle_command_request",
-        .edge_mission_upload_request => "mission_upload_request",
-        .edge_geofence_evaluation_request => "geofence_evaluation_request",
-        .edge_telemetry_egress_request => "telemetry_egress_request",
-        .edge_emergency_command_request => "emergency_command_request",
-        .edge_safety_envelope_evaluation_request => "safety_envelope_evaluation_request",
-        else => "unknown",
-    };
-}
-
-fn edgeActionTarget(requested: core.types.Action) []const u8 {
-    return switch (requested) {
-        .edge_vehicle_state_read => |action_value| action_value.vehicle_id,
-        .edge_vehicle_command_request => |action_value| action_value.vehicle_id,
-        .edge_mission_upload_request => |action_value| action_value.vehicle_id,
-        .edge_geofence_evaluation_request => |action_value| action_value.vehicle_id,
-        .edge_telemetry_egress_request => |action_value| action_value.vehicle_id,
-        .edge_emergency_command_request => |action_value| action_value.vehicle_id,
-        .edge_safety_envelope_evaluation_request => |action_value| action_value.vehicle_id,
-        else => "edge-placeholder",
-    };
-}
-
 fn modeDefault(mode: schema.Mode) schema.DecisionValue {
     return switch (mode) {
         .observe => .observe,
@@ -275,7 +253,7 @@ const Risk = struct {
 fn riskHeuristic(surface: Surface, value: []const u8) ?Risk {
     return switch (surface) {
         .file_read => if (matchers.matchesPath("~/.ssh/**", value) or matchers.matchesPath("~/.aws/**", value) or matchers.matchesPath("./.env*", value)) .{ .score = 90, .reason = "sensitive file path" } else null,
-        .file_write => if (matchers.matchesPath("./.git/**", value) or matchers.matchesPath("./.aegis/**", value)) .{ .score = 80, .reason = "control directory write" } else null,
+        .file_write => if (matchers.matchesPath("./.git/**", value) or matchers.matchesPath("./.orca/**", value)) .{ .score = 80, .reason = "control directory write" } else null,
         .env => if (isSecretLikeEnvName(value)) .{ .score = 90, .reason = "secret-like environment variable" } else null,
         .command => commandRiskHeuristic(value),
         .network => if (std.mem.indexOf(u8, value, "localhost") != null or std.mem.startsWith(u8, value, "127.")) .{ .score = 40, .reason = "local network destination" } else null,

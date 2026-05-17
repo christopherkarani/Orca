@@ -1,7 +1,7 @@
 const std = @import("std");
 const builtin = @import("builtin");
 
-const platform = @import("../core/platform.zig");
+const platform = @import("aegis_core").platform;
 const linux_backend = @import("linux.zig");
 const macos_backend = @import("macos.zig");
 const windows_backend = @import("windows.zig");
@@ -313,7 +313,7 @@ pub fn baseReports(os: platform.Os) [feature_order.len]FeatureReport {
     setReport(&reports, .policy_engine, .active, "policy evaluation is implemented before launch");
     setReport(&reports, .audit, .active, "session audit writer records security events through redaction");
     setReport(&reports, .env_filtering, .active, "child environment is built through env filtering");
-    setReport(&reports, .path_staging, .active, "Aegis-mediated writes use staged review artifacts");
+    setReport(&reports, .path_staging, .active, "Orca-mediated writes use staged review artifacts");
     setReport(&reports, .shell_wrapping, .wrapper_only, "session shell controls are wrapper-level");
     setReport(&reports, .path_shims, .wrapper_only, "session PATH shims are wrapper-level");
     setReport(&reports, .mcp_stdio_proxy, .active, "stdio MCP proxy enforcement is implemented for mediated MCP traffic");

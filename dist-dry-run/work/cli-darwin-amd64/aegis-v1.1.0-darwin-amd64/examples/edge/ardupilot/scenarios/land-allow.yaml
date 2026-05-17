@@ -1,9 +1,0 @@
-id: ardupilot-land-allow
-environment: fake_ardupilot
-vehicle: copter
-mode: enforce
-command: land
-expected_decision: allow
-expected_forwarded: true
-timeout_ms: 2000
-note: "LAND is still policy-evaluated and logged; this is simulation-only evidence."

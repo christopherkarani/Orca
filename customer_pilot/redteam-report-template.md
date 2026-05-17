@@ -4,7 +4,7 @@
 
 - Run ID:
 - Date:
-- Aegis Edge version:
+- Edge version:
 - Environment: fake adapter / PX4 SITL / ArduPilot SITL / bench-preparation.
 - Policy hash:
 

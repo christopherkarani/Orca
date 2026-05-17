@@ -7,7 +7,7 @@ Use these notes to prepare a mutual NDA discussion. Do not treat this as an agre
 ## Topics To Review
 
 - Parties.
-- Purpose: limited Aegis Edge simulation/SITL/bench-preparation pilot evaluation.
+- Purpose: limited Edge simulation/SITL/bench-preparation pilot evaluation.
 - Confidential information definition.
 - Exclusions.
 - Term.

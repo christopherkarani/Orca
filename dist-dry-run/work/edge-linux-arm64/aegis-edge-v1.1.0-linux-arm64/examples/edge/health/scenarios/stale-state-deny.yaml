@@ -1,8 +1,0 @@
-id: stale-state-deny
-environment: fake_adapter
-provenance: fake_adapter
-command: set_waypoint
-expected_decision: deny
-health_fault: stale_state
-expected_behavior: deny_movement
-note: stale simulated vehicle state denies high-risk movement commands.

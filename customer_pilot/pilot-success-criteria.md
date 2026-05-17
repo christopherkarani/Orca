@@ -2,7 +2,7 @@
 
 ## Success Criteria
 
-- Aegis Edge runs in a customer-like simulation/SITL environment.
+- Edge runs in a customer-like simulation/SITL environment.
 - A customer policy baseline is created.
 - At least one unsafe command is denied; at least one unsafe command is denied is a required proof point.
 - At least one emergency-safe command is allowed/logged according to policy.

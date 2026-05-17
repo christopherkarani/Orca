@@ -1,9 +1,10 @@
 const std = @import("std");
 const builtin = @import("builtin");
-const core = @import("../core/mod.zig");
-const core_api = @import("../core/api.zig");
+const core = @import("aegis_core").core;
+const supervisor = @import("../core/supervisor.zig");
+const core_api = @import("aegis_core").api;
 const aegis_mcp = @import("../mcp/mod.zig");
-const aegis_policy = @import("../policy/mod.zig");
+const aegis_policy = @import("aegis_core").policy;
 const sandbox = @import("../sandbox/mod.zig");
 
 const exit_codes = @import("exit_codes.zig");
@@ -83,7 +84,10 @@ pub fn command(argv: []const []const u8, stdout: anytype, stderr: anytype) !u8 {
 
     const os = core.platform.detectOs();
     const backend_report = sandbox.backend.detect(os);
-    var context = collectIntegrationContext(allocator);
+    var context = collectIntegrationContext(allocator) catch |err| {
+        try stderr.print("orca doctor: failed to collect integration context: {s}\n", .{@errorName(err)});
+        return exit_codes.general;
+    };
     defer context.deinit();
     try writeReport(stdout, os, backend_report, context);
     return exit_codes.success;
@@ -149,12 +153,12 @@ fn writeIntegrationReport(stdout: anytype, context: IntegrationContext) !void {
     try stdout.print("  git repository: {s}\n", .{if (context.git_present) "detected" else "not detected"});
     if (context.policy_present) {
         if (context.policy_valid) {
-            try stdout.writeAll("  .aegis/policy.yaml: present and valid\n");
+            try stdout.writeAll("  .orca/policy.yaml: present and valid\n");
         } else {
-            try stdout.print("  .aegis/policy.yaml: invalid ({s})\n", .{context.policy_error orelse "validation failed"});
+            try stdout.print("  .orca/policy.yaml: invalid ({s})\n", .{context.policy_error orelse "validation failed"});
         }
     } else {
-        try stdout.writeAll("  .aegis/policy.yaml: missing\n");
+        try stdout.writeAll("  .orca/policy.yaml: missing\n");
     }
     if (context.agent_found.len == 0) {
         try stdout.writeAll("  known agent binaries: none detected in PATH\n");
@@ -167,7 +171,7 @@ fn writeIntegrationReport(stdout: anytype, context: IntegrationContext) !void {
         try stdout.writeAll(" (presence only; not a security claim)\n");
     }
     if (context.mcp_manifest_count == 0) {
-        try stdout.writeAll("  MCP manifests: none detected under .aegis/mcp\n");
+        try stdout.writeAll("  MCP manifests: none detected under .orca/mcp\n");
     } else {
         try stdout.print("  MCP manifests: {d} found, {d} invalid\n", .{ context.mcp_manifest_count, context.mcp_manifest_invalid_count });
     }
@@ -205,9 +209,9 @@ fn writeBackendLine(stdout: anytype, backend_report: sandbox.backend.ReportSet, 
 fn writeRecommendations(stdout: anytype, context: IntegrationContext) !void {
     try stdout.writeAll("\nRecommended next step:\n");
     if (!context.policy_present) {
-        try stdout.writeAll("  Run `orca init --preset generic-agent` and review .aegis/policy.yaml.\n");
+        try stdout.writeAll("  Run `orca init --preset generic-agent` and review .orca/policy.yaml.\n");
     } else if (!context.policy_valid) {
-        try stdout.writeAll("  Fix `.aegis/policy.yaml`, then run `orca policy check .aegis/policy.yaml`.\n");
+        try stdout.writeAll("  Fix `.orca/policy.yaml`, then run `orca policy check .orca/policy.yaml`.\n");
     } else if (context.mcp_manifest_invalid_count > 0) {
         try stdout.writeAll("  Fix invalid MCP manifests with `orca mcp manifest check <path>`.\n");
     } else if (!context.redteam_fixtures_present) {
@@ -217,19 +221,21 @@ fn writeRecommendations(stdout: anytype, context: IntegrationContext) !void {
     }
 }
 
-fn collectIntegrationContext(allocator: std.mem.Allocator) IntegrationContext {
-    const workspace_root = core.supervisor.resolveWorkspaceRoot(allocator, null, ".") catch allocator.dupe(u8, ".") catch unreachable;
-    return collectIntegrationContextAt(allocator, workspace_root);
+fn collectIntegrationContext(allocator: std.mem.Allocator) !IntegrationContext {
+    const workspace_root = supervisor.resolveWorkspaceRoot(allocator, null, ".") catch try allocator.dupe(u8, ".");
+    errdefer allocator.free(workspace_root);
+    return try collectIntegrationContextAt(allocator, workspace_root);
 }
 
-fn collectIntegrationContextAt(allocator: std.mem.Allocator, workspace_root: []const u8) IntegrationContext {
+fn collectIntegrationContextAt(allocator: std.mem.Allocator, workspace_root: []const u8) !IntegrationContext {
     const git_present = hasPath(workspace_root, ".git");
 
-    const policy_path = std.fs.path.join(allocator, &.{ workspace_root, ".aegis", "policy.yaml" }) catch unreachable;
+    const policy_path = try std.fs.path.join(allocator, &.{ workspace_root, ".orca", "policy.yaml" });
     defer allocator.free(policy_path);
     var policy_present = false;
     var policy_valid = false;
     var policy_error: ?[]const u8 = null;
+    errdefer if (policy_error) |value| allocator.free(value);
     if (fileExistsAbsolute(policy_path)) {
         policy_present = true;
         if (core_api.loadPolicyFile(allocator, policy_path)) |loaded_policy| {
@@ -237,11 +243,17 @@ fn collectIntegrationContextAt(allocator: std.mem.Allocator, workspace_root: []c
             loaded.deinit();
             policy_valid = true;
         } else |err| {
-            policy_error = std.fmt.allocPrint(allocator, "{s}", .{@errorName(err)}) catch null;
+            if (err == error.OutOfMemory) return err;
+            policy_error = try std.fmt.allocPrint(allocator, "{s}", .{@errorName(err)});
         }
     }
     const manifests = countMcpManifests(allocator, workspace_root);
-    const ci_status = detectCi(allocator);
+    const agents = try detectAgents(allocator);
+    errdefer if (agents.len > 0) allocator.free(agents);
+    const ci_status = try detectCi(allocator);
+    errdefer allocator.free(ci_status.provider);
+    const shell_name = try detectShell(allocator);
+    errdefer allocator.free(shell_name);
     return .{
         .allocator = allocator,
         .workspace_root = workspace_root,
@@ -249,13 +261,13 @@ fn collectIntegrationContextAt(allocator: std.mem.Allocator, workspace_root: []c
         .policy_present = policy_present,
         .policy_valid = policy_valid,
         .policy_error = policy_error,
-        .agent_found = detectAgents(allocator),
+        .agent_found = agents,
         .mcp_manifest_count = manifests.total,
         .mcp_manifest_invalid_count = manifests.invalid,
         .ci_detected = ci_status.detected,
         .ci_provider = ci_status.provider,
-        .shell_name = detectShell(allocator),
-        .audit_sessions_present = hasPath(workspace_root, ".aegis/sessions"),
+        .shell_name = shell_name,
+        .audit_sessions_present = hasPath(workspace_root, ".orca/sessions"),
         .redteam_fixtures_present = hasPath(workspace_root, "fixtures"),
     };
 }
@@ -275,7 +287,7 @@ fn fileExistsAbsolute(path: []const u8) bool {
 const ManifestCounts = struct { total: usize = 0, invalid: usize = 0 };
 
 fn countMcpManifests(allocator: std.mem.Allocator, workspace_root: []const u8) ManifestCounts {
-    const mcp_dir_path = std.fs.path.join(allocator, &.{ workspace_root, ".aegis", "mcp" }) catch return .{};
+    const mcp_dir_path = std.fs.path.join(allocator, &.{ workspace_root, ".orca", "mcp" }) catch return .{};
     defer allocator.free(mcp_dir_path);
     var dir = std.fs.cwd().openDir(mcp_dir_path, .{ .iterate = true }) catch return .{};
     defer dir.close();
@@ -300,12 +312,13 @@ fn countMcpManifests(allocator: std.mem.Allocator, workspace_root: []const u8) M
     return counts;
 }
 
-fn detectAgents(allocator: std.mem.Allocator) []const AgentBinary {
+fn detectAgents(allocator: std.mem.Allocator) ![]const AgentBinary {
     var found: std.ArrayList(AgentBinary) = .empty;
+    errdefer found.deinit(allocator);
     for (known_agent_binaries) |agent| {
-        if (binaryInPath(allocator, agent.command)) found.append(allocator, agent) catch {};
+        if (binaryInPath(allocator, agent.command)) try found.append(allocator, agent);
     }
-    return found.toOwnedSlice(allocator) catch &.{};
+    return try found.toOwnedSlice(allocator);
 }
 
 fn binaryInPath(allocator: std.mem.Allocator, binary_name: []const u8) bool {
@@ -331,10 +344,10 @@ const CiStatus = struct {
     provider: []const u8,
 };
 
-fn detectCi(allocator: std.mem.Allocator) CiStatus {
-    if (envPresent(allocator, "GITHUB_ACTIONS")) return .{ .detected = true, .provider = allocator.dupe(u8, "GitHub Actions") catch unreachable };
-    if (envPresent(allocator, "CI")) return .{ .detected = true, .provider = allocator.dupe(u8, "generic CI") catch unreachable };
-    return .{ .detected = false, .provider = allocator.dupe(u8, "none") catch unreachable };
+fn detectCi(allocator: std.mem.Allocator) !CiStatus {
+    if (envPresent(allocator, "GITHUB_ACTIONS")) return .{ .detected = true, .provider = try allocator.dupe(u8, "GitHub Actions") };
+    if (envPresent(allocator, "CI")) return .{ .detected = true, .provider = try allocator.dupe(u8, "generic CI") };
+    return .{ .detected = false, .provider = try allocator.dupe(u8, "none") };
 }
 
 fn envPresent(allocator: std.mem.Allocator, name: []const u8) bool {
@@ -343,17 +356,17 @@ fn envPresent(allocator: std.mem.Allocator, name: []const u8) bool {
     return value.len > 0;
 }
 
-fn detectShell(allocator: std.mem.Allocator) []const u8 {
+fn detectShell(allocator: std.mem.Allocator) ![]const u8 {
     if (std.process.getEnvVarOwned(allocator, "SHELL")) |value| {
         defer allocator.free(value);
-        return allocator.dupe(u8, std.fs.path.basename(value)) catch unreachable;
+        return try allocator.dupe(u8, std.fs.path.basename(value));
     } else |_| {}
     if (std.process.getEnvVarOwned(allocator, "COMSPEC")) |value| {
         defer allocator.free(value);
-        return allocator.dupe(u8, std.fs.path.basename(value)) catch unreachable;
+        return try allocator.dupe(u8, std.fs.path.basename(value));
     } else |_| {}
-    if (envPresent(allocator, "PSModulePath")) return allocator.dupe(u8, "powershell") catch unreachable;
-    return allocator.dupe(u8, "unknown") catch unreachable;
+    if (envPresent(allocator, "PSModulePath")) return try allocator.dupe(u8, "powershell");
+    return try allocator.dupe(u8, "unknown");
 }
 
 test "doctor prints OS and planned capabilities" {
@@ -450,9 +463,9 @@ test "doctor detects valid policy in current workspace" {
     const tmp_path = try tmp.dir.realpathAlloc(std.testing.allocator, ".");
 
     try tmp.dir.makePath(".git");
-    try tmp.dir.makePath(".aegis");
+    try tmp.dir.makePath(".orca");
     {
-        const file = try tmp.dir.createFile(".aegis/policy.yaml", .{});
+        const file = try tmp.dir.createFile(".orca/policy.yaml", .{});
         defer file.close();
         try file.writeAll(aegis_policy.presets.agentPresetText(.generic_agent));
     }
@@ -461,11 +474,11 @@ test "doctor detects valid policy in current workspace" {
     var stderr_buf: [512]u8 = undefined;
     var stdout_stream = std.io.fixedBufferStream(&stdout_buf);
     var stderr_stream = std.io.fixedBufferStream(&stderr_buf);
-    var context = collectIntegrationContextAt(std.testing.allocator, tmp_path);
+    var context = try collectIntegrationContextAt(std.testing.allocator, tmp_path);
     defer context.deinit();
 
     try writeReport(stdout_stream.writer(), core.platform.detectOs(), sandbox.backend.detect(core.platform.detectOs()), context);
-    try std.testing.expect(std.mem.indexOf(u8, stdout_stream.getWritten(), ".aegis/policy.yaml: present and valid") != null);
+    try std.testing.expect(std.mem.indexOf(u8, stdout_stream.getWritten(), ".orca/policy.yaml: present and valid") != null);
     try std.testing.expect(std.mem.indexOf(u8, stdout_stream.getWritten(), "git repository: detected") != null);
     try std.testing.expectEqualStrings("", stderr_stream.getWritten());
 }
@@ -475,9 +488,9 @@ test "doctor reports invalid policy clearly without printing synthetic secrets" 
     defer tmp.cleanup();
     const tmp_path = try tmp.dir.realpathAlloc(std.testing.allocator, ".");
 
-    try tmp.dir.makePath(".aegis");
+    try tmp.dir.makePath(".orca");
     {
-        const file = try tmp.dir.createFile(".aegis/policy.yaml", .{});
+        const file = try tmp.dir.createFile(".orca/policy.yaml", .{});
         defer file.close();
         try file.writeAll(
             \\version: 1
@@ -490,15 +503,20 @@ test "doctor reports invalid policy clearly without printing synthetic secrets" 
     var stderr_buf: [512]u8 = undefined;
     var stdout_stream = std.io.fixedBufferStream(&stdout_buf);
     var stderr_stream = std.io.fixedBufferStream(&stderr_buf);
-    var context = collectIntegrationContextAt(std.testing.allocator, tmp_path);
+    var context = try collectIntegrationContextAt(std.testing.allocator, tmp_path);
     defer context.deinit();
 
     try writeReport(stdout_stream.writer(), core.platform.detectOs(), sandbox.backend.detect(core.platform.detectOs()), context);
     const output = stdout_stream.getWritten();
-    try std.testing.expect(std.mem.indexOf(u8, output, ".aegis/policy.yaml: invalid") != null);
+    try std.testing.expect(std.mem.indexOf(u8, output, ".orca/policy.yaml: invalid") != null);
     try std.testing.expect(std.mem.indexOf(u8, output, "UnsupportedPolicyMode") != null);
     try std.testing.expect(std.mem.indexOf(u8, output, "ghp_fakeSecretShouldNotPrint") == null);
     try std.testing.expectEqualStrings("", stderr_stream.getWritten());
+}
+
+test "doctor integration collection returns allocator failures instead of panicking" {
+    var failing_allocator = std.testing.FailingAllocator.init(std.testing.allocator, .{ .fail_index = 0 });
+    try std.testing.expectError(error.OutOfMemory, collectIntegrationContextAt(failing_allocator.allocator(), "."));
 }
 
 const TestContextOptions = struct {

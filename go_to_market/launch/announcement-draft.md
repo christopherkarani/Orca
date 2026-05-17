@@ -1,8 +1,8 @@
 # Announcement Draft
 
-I am opening 3 design-partner slots for Aegis Edge.
+I am opening 3 design-partner slots for Edge.
 
-Aegis Edge is a safety-policy and audit runtime for autonomous drone agent evaluation in simulation, SITL, and bench-preparation workflows.
+Edge is a safety-policy and audit runtime for autonomous drone agent evaluation in simulation, SITL, and bench-preparation workflows.
 
 The core demo: an agent attempts an unsafe MAVLink-style command, Aegis denies it under policy, then replay and a safety-case report show the rule, state, decision, evidence, and limitations.
 

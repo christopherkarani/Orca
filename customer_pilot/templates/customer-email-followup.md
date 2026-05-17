@@ -2,11 +2,11 @@
 
 Draft template. Legal, safety, and commercial review required before external use.
 
-Subject: Aegis Edge pilot follow-up and evaluation package
+Subject: Edge pilot follow-up and evaluation package
 
 Hi [Name],
 
-Thanks for reviewing Aegis Edge. As discussed, the proposed pilot is limited to simulation/SITL/bench-preparation evaluation. It does not include real flight, live aircraft control, certification, regulatory approval, detect-and-avoid, or autopilot replacement.
+Thanks for reviewing Edge. As discussed, the proposed pilot is limited to simulation/SITL/bench-preparation evaluation. It does not include real flight, live aircraft control, certification, regulatory approval, detect-and-avoid, or autopilot replacement.
 
 Suggested next artifacts:
 

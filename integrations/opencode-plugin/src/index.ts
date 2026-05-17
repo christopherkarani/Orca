@@ -155,7 +155,7 @@ export default function orcaPlugin(context: OpenCodeContext): void {
   if (!orcaBin) {
     logger?.warn?.(
       '[orca] Binary not found in PATH or typical build paths. ' +
-        'Build with: zig build (produces ./zig-out/bin/orca)'
+        'Run: ./scripts/install-orca-plugin.sh opencode project (or .\\scripts\\install-orca-plugin.ps1 opencode project on Windows).'
     );
     return;
   }

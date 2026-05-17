@@ -1,5 +1,0 @@
-id: px4-fake-sitl-proof
-mode: strict
-command: waypoint_outside_geofence
-expected_decision: deny
-note: "Fake-PX4 proof; opt-in PX4 SITL is separate."

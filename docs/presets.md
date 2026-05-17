@@ -5,8 +5,8 @@ Presets live under `policies/presets/` and are plain YAML with comments. They ar
 Create a policy:
 
 ```bash
-aegis init --preset generic-agent
-aegis policy check .aegis/policy.yaml
+orca init --preset generic-agent
+orca policy check .orca/policy.yaml
 ```
 
 Available presets:
@@ -26,8 +26,8 @@ All presets preserve:
 
 - deny-priority semantics;
 - secret redaction before persistence;
-- staged writes for Aegis-mediated writes;
+- staged writes for Orca-mediated writes;
 - no real secrets in policy text;
 - no external service dependency for policy validation.
 
-Agent-specific presets are marked generic/experimental when Aegis cannot verify proprietary agent internals. Binary detection in `aegis doctor` only reports presence in PATH; it does not prove an agent is configured safely.
+Agent-specific presets are marked generic/experimental when Orca cannot verify proprietary agent internals. Binary detection in `orca doctor` only reports presence in PATH; it does not prove an agent is configured safely.

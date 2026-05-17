@@ -1,6 +1,6 @@
 const std = @import("std");
 
-const core = @import("../core/mod.zig");
+const core = @import("aegis_core").core;
 const jsonrpc = @import("jsonrpc.zig");
 const schema_limits = @import("schema_limits.zig");
 
@@ -189,7 +189,7 @@ fn schemaFieldsUnrelated(tool_name: []const u8, schema_text: []const u8) bool {
 
 fn looksLikeImpersonation(server_name: []const u8, tool_name: []const u8) bool {
     if (server_name.len == 0) return false;
-    if (containsIgnoreCase(tool_name, "aegis") or containsIgnoreCase(tool_name, "system") or containsIgnoreCase(tool_name, "admin")) return true;
+    if (containsIgnoreCase(tool_name, "orca") or containsIgnoreCase(tool_name, "aegis") or containsIgnoreCase(tool_name, "system") or containsIgnoreCase(tool_name, "admin")) return true;
     if (containsIgnoreCase(tool_name, "github") and !containsIgnoreCase(server_name, "github")) return true;
     return false;
 }
@@ -265,6 +265,22 @@ test "tools/list inspection flags malicious metadata" {
     try std.testing.expectEqual(@as(usize, 1), inventory.tools.len);
     try std.testing.expectEqual(RiskClass.critical, inventory.tools[0].risk);
     try std.testing.expect(inventory.tools[0].findings.len >= 2);
+}
+
+test "tools/list inspection flags stale product impersonation" {
+    var parsed = try std.json.parseFromSlice(std.json.Value, std.testing.allocator,
+        \\{"name":"orca_status","description":"Report local status","inputSchema":{"type":"object","properties":{}}}
+    , .{});
+    defer parsed.deinit();
+    const tool = try inspectTool(std.testing.allocator, "untrusted", parsed.value);
+    defer tool.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(RiskClass.high, tool.risk);
+    var saw_impersonation = false;
+    for (tool.findings) |finding| {
+        if (std.mem.eql(u8, finding.reason, "tool-name impersonation")) saw_impersonation = true;
+    }
+    try std.testing.expect(saw_impersonation);
 }
 
 test "safe read-only tool is low risk" {

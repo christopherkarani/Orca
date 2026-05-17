@@ -1,4 +1,0 @@
-id: long-query-exfil-deny
-payload: examples/edge/data-guard/payloads/vehicle-state.json
-endpoint: examples/edge/data-guard/endpoints/long-query-endpoint.json
-expected_decision: deny

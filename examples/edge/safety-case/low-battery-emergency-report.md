@@ -1,4 +1,4 @@
-# Aegis Edge Safety Case: low-battery-emergency
+# Edge Safety Case: low-battery-emergency
 
 Illustrative fake/simulation report. No real hardware was connected and no real flight was performed.
 

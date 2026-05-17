@@ -17,7 +17,7 @@ pub const deployment = @import("deployment/mod.zig");
 pub const health = @import("health/mod.zig");
 
 pub const phase = "37-reliability-watchdog-runtime-health";
-pub const installed_message = "Aegis Edge reliability watchdog and runtime-health diagnostics are installed for deterministic fake-adapter, PX4 SITL, ArduPilot SITL, and hardware-bench-preparation evaluation evidence only; it is not ready for real flight.";
+pub const installed_message = "Edge reliability watchdog and runtime-health diagnostics are installed for deterministic fake-adapter, PX4 SITL, ArduPilot SITL, and hardware-bench-preparation evaluation evidence only; it is not ready for real flight.";
 pub const core = aegis_core;
 
 pub const CapabilityStatus = enum {
@@ -182,18 +182,6 @@ pub const FakeAdapter = struct {
     }
 };
 
-pub fn vehicleStateReadAction(vehicle_id: []const u8) aegis_core.actions.Action {
-    return .{ .edge_vehicle_state_read = .{ .vehicle_id = vehicle_id } };
-}
-
-pub fn evaluateVehicleStateReadThroughCore(
-    allocator: std.mem.Allocator,
-    selected_policy: *const aegis_core.api.Policy,
-    vehicle_id: []const u8,
-) !aegis_core.api.Evaluation {
-    return aegis_core.api.evaluateAction(allocator, selected_policy, vehicleStateReadAction(vehicle_id), .{});
-}
-
 pub fn capabilityReports() []const CapabilityReport {
     return &.{
         .{ .capability = .policy_scaffold, .status = .scaffolded, .note = "Phase 26 domain types and versioned safety schema descriptors exist for Edge policy work." },
@@ -204,7 +192,7 @@ pub fn capabilityReports() []const CapabilityReport {
         .{ .capability = .flight_safety_enforcement, .status = .active, .note = "Phase 31 evaluates commands and mission plans against geofence, altitude, velocity, battery, freshness, mode, authority, and command-risk constraints for fake/SITL evidence only." },
         .{ .capability = .operator_approval, .status = .active, .note = "Phase 32 creates and validates bounded local operator approvals for fake/SITL/bench-preparation contexts; CI and red-team modes deny ask decisions without prompting." },
         .{ .capability = .emergency_modes, .status = .active, .note = "Phase 32 evaluates policy-controlled LAND/HOLD/RTH emergency fallback decisions in fake/SITL contexts only; it does not send real hardware commands." },
-        .{ .capability = .audit_replay, .status = .active, .note = "Phase 33 records hash-chained Edge sessions through the Aegis Core audit writer under .aegis-edge and replays them with Core verification." },
+        .{ .capability = .audit_replay, .status = .active, .note = "Phase 33 records hash-chained Edge sessions through Core audit writer under .edge and replays them with Core verification." },
         .{ .capability = .safety_case_reports, .status = .active, .note = "Phase 33 generates bounded JSON and Markdown safety-case reports for fake/SITL/bench-preparation evaluation evidence with explicit non-certification limitations." },
         .{ .capability = .evidence_bundles, .status = .active, .note = "Phase 33 creates local directory evidence bundles with policy/scenario copies, reports, replay, findings, commands, limitations, hashes, and provenance." },
         .{ .capability = .redteam_fault_injection, .status = .active, .note = "Phase 34 runs deterministic simulation-only Edge red-team fixtures and fault injections with scorecards, redacted audit/replay artifacts, and safety-case evidence; no real hardware or real-flight claims." },
@@ -217,8 +205,8 @@ pub fn capabilityReports() []const CapabilityReport {
         .{ .capability = .px4_adapter, .status = .partial, .note = "PX4 SITL adapter supports opt-in local simulation checks plus deterministic fake-PX4 scenarios; no hardware or real-flight support." },
         .{ .capability = .ardupilot_adapter, .status = .partial, .note = "ArduPilot SITL adapter supports opt-in local simulation checks plus deterministic fake-ArduPilot scenarios; Copter-oriented coverage starts Phase 30; no hardware or real-flight support." },
         .{ .capability = .real_flight_enforcement, .status = .unavailable, .note = "Real-flight behavior requires later simulation, bench, and customer safety validation phases." },
-        .{ .capability = .detect_and_avoid, .status = .unavailable, .note = "Aegis Edge is not a detect-and-avoid system." },
-        .{ .capability = .regulatory_certification, .status = .unavailable, .note = "Aegis Edge is not regulatory approval or certification." },
+        .{ .capability = .detect_and_avoid, .status = .unavailable, .note = "Edge is not a detect-and-avoid system." },
+        .{ .capability = .regulatory_certification, .status = .unavailable, .note = "Edge is not regulatory approval or certification." },
     };
 }
 
@@ -250,5 +238,4 @@ test {
     _ = data_guard;
     _ = capabilityReports;
     _ = FakeAdapter;
-    _ = evaluateVehicleStateReadThroughCore;
 }

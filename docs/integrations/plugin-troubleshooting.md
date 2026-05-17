@@ -7,15 +7,23 @@ This document covers common issues when installing, running, or uninstalling Orc
 **Symptom:** `orca: command not found` or plugin doctor reports `orca binary: not found`.
 
 **Fix:**
-1. Build Orca from source:
+1. Use the one-command bootstrap:
+   ```bash
+   ./scripts/install-orca-plugin.sh opencode project
+   # or
+   ./scripts/install-orca-plugin.sh openclaw project
+   # or
+   ./scripts/install-orca-plugin.sh hermes project
+   ```
+2. Or build Orca from source:
    ```bash
    zig build
    ```
-2. Use the full path:
+3. Use the full path:
    ```bash
    ./zig-out/bin/orca plugin doctor codex
    ```
-3. Or add to PATH:
+4. Or add to PATH:
    ```bash
    export PATH="$PWD/zig-out/bin:$PATH"
    ```
@@ -67,7 +75,7 @@ This document covers common issues when installing, running, or uninstalling Orc
 **Symptom:** No Orca output appears when host triggers hooks.
 
 **Fix:**
-1. Check that `aegis` is in PATH.
+1. Check that `orca` is in PATH.
 2. Check hook configuration exists:
    ```bash
    ls integrations/codex-plugin/hooks/hooks.json
@@ -98,19 +106,19 @@ This document covers common issues when installing, running, or uninstalling Orc
 **Symptom:** Host IDE reports hook timed out.
 
 **Fix:**
-1. Check that `.aegis/policy.yaml` is small and loads quickly.
+1. Check that `.orca/policy.yaml` is small and loads quickly.
 2. Ensure the machine is not under extreme load.
 3. The default timeouts are 10s for most hooks, 15s for PreToolUse and PermissionRequest.
 4. If policy evaluation is slow, consider simplifying the policy file.
 
 ## Permission errors
 
-**Symptom:** `Permission denied` when running `aegis` or accessing plugin files.
+**Symptom:** `Permission denied` when running `orca` or accessing plugin files.
 
 **Fix:**
-1. Ensure the `aegis` binary has execute permissions:
+1. Ensure the `orca` binary has execute permissions:
    ```bash
-   chmod +x ./zig-out/bin/aegis
+   chmod +x ./zig-out/bin/orca
    ```
 2. Ensure plugin directories are readable:
    ```bash
@@ -129,7 +137,7 @@ This document covers common issues when installing, running, or uninstalling Orc
    ```
 2. Validate the policy:
    ```bash
-   ./zig-out/bin/orca policy check .aegis/policy.yaml
+   ./zig-out/bin/orca policy check .orca/policy.yaml
    ```
 
 ## Redteam failure

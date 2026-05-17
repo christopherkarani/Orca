@@ -2,7 +2,7 @@
 
 Phase 36 packages include:
 
-- `aegis-edge`
+- `edge`
 - Edge schemas
 - Edge policies
 - Edge examples and fixtures

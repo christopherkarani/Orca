@@ -11,14 +11,14 @@ zig build
 ## Check The Runtime
 
 ```sh
-./zig-out/bin/aegis-edge doctor
-./zig-out/bin/aegis-edge docs check
+./zig-out/bin/edge doctor
+./zig-out/bin/edge docs check
 ```
 
 ## Run The Fake Geofence Demo
 
 ```sh
-./zig-out/bin/aegis-edge demo run geofence-deny
+./zig-out/bin/edge demo run geofence-deny
 ```
 
 Expected result: A waypoint outside the configured geofence is denied and the output points to sample safety-report and replay artifacts.
@@ -26,7 +26,7 @@ Expected result: A waypoint outside the configured geofence is denied and the ou
 ## Run The Red-Team Suite
 
 ```sh
-./zig-out/bin/aegis-edge redteam --ci
+./zig-out/bin/edge redteam --ci
 ```
 
 Required fake/simulation fixtures must pass. Optional SITL fixtures skip when local SITL is not explicitly enabled.
@@ -34,7 +34,7 @@ Required fake/simulation fixtures must pass. Optional SITL fixtures skip when lo
 ## Generate A Safety-Case Report
 
 ```sh
-./zig-out/bin/aegis-edge proof generate --demo geofence-deny
+./zig-out/bin/edge proof generate --demo geofence-deny
 ```
 
 The generated safety-case report includes provenance, limitations, policy hash, command decisions, findings, and hash-chain verification status.
@@ -42,7 +42,7 @@ The generated safety-case report includes provenance, limitations, policy hash, 
 ## Inspect Replay
 
 ```sh
-./zig-out/bin/aegis-edge replay --session last --verify
+./zig-out/bin/edge replay --session last --verify
 ```
 
 Replay verifies the local hash chain for the most recent Edge session.
@@ -52,7 +52,7 @@ Replay verifies the local hash chain for the most recent Edge session.
 PX4 SITL is opt-in local simulation evidence. Fake-PX4 fixtures are not PX4 SITL evidence.
 
 ```sh
-./zig-out/bin/aegis-edge px4 doctor
+./zig-out/bin/edge px4 doctor
 ```
 
 ## Optional ArduPilot SITL
@@ -60,7 +60,7 @@ PX4 SITL is opt-in local simulation evidence. Fake-PX4 fixtures are not PX4 SITL
 ArduPilot SITL is opt-in local simulation evidence. Fake-ArduPilot fixtures are not ArduPilot SITL evidence.
 
 ```sh
-./zig-out/bin/aegis-edge ardupilot doctor
+./zig-out/bin/edge ardupilot doctor
 ```
 
 ## Next Docs

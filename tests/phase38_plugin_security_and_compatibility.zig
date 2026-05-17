@@ -12,7 +12,7 @@ const std = @import("std");
 //   - Separate workstream (drone) non-regression
 // ---------------------------------------------------------------------------
 
-const aegis_bin = "./zig-out/bin/aegis";
+const aegis_bin = "./zig-out/bin/orca";
 const codex_fixture_dir = "tests/plugin-fixtures/codex";
 const claude_fixture_dir = "tests/plugin-fixtures/claude";
 
@@ -48,7 +48,10 @@ fn runAegis(allocator: std.mem.Allocator, args: []const []const u8, stdin_data: 
 
     if (stdin_data) |data| {
         if (child.stdin) |stdin| {
-            try stdin.writeAll(data);
+            stdin.writeAll(data) catch |err| switch (err) {
+                error.BrokenPipe => {},
+                else => return err,
+            };
             stdin.close();
             child.stdin = null;
         }
@@ -70,6 +73,19 @@ fn runAegis(allocator: std.mem.Allocator, args: []const []const u8, stdin_data: 
 
 fn binaryExists() bool {
     return fileExists(aegis_bin);
+}
+
+fn expectJsonStringInEnum(items: []const std.json.Value, expected: []const u8) !void {
+    for (items) |item| {
+        if (item == .string and std.mem.eql(u8, item.string, expected)) return;
+    }
+    return error.TestUnexpectedResult;
+}
+
+fn expectJsonStringNotInEnum(items: []const std.json.Value, forbidden: []const u8) !void {
+    for (items) |item| {
+        if (item == .string and std.mem.eql(u8, item.string, forbidden)) return error.TestUnexpectedResult;
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -738,7 +754,7 @@ test "docs include strongest protection warning" {
         if (!fileExists(path)) continue;
         const content = try readFile(std.testing.allocator, path);
         defer std.testing.allocator.free(content);
-        // Docs should mention "strongest protection" and "aegis run --"
+        // Docs should mention "strongest protection" and "orca run --"
         try std.testing.expect(std.mem.indexOf(u8, content, "strongest protection") != null);
         try std.testing.expect(std.mem.indexOf(u8, content, "orca run --") != null);
     }
@@ -814,6 +830,69 @@ test "plugin docs do not include drone demos" {
         try std.testing.expect(std.mem.indexOf(u8, lower, "drone demo") == null);
         try std.testing.expect(std.mem.indexOf(u8, lower, "operational drone-control") == null);
     }
+}
+
+test "common plugin schemas match current Orca host and output surfaces" {
+    const hook_request = try readFile(std.testing.allocator, "integrations/common/schemas/hook-request-v1.json");
+    defer std.testing.allocator.free(hook_request);
+    var parsed_hook_request = try std.json.parseFromSlice(std.json.Value, std.testing.allocator, hook_request, .{});
+    defer parsed_hook_request.deinit();
+    const hook_request_properties = parsed_hook_request.value.object.get("properties").?.object;
+    const host_enum = hook_request_properties.get("host").?.object.get("enum").?.array.items;
+    try expectJsonStringInEnum(host_enum, "codex");
+    try expectJsonStringInEnum(host_enum, "claude");
+    try expectJsonStringInEnum(host_enum, "opencode");
+    try expectJsonStringInEnum(host_enum, "openclaw");
+    try expectJsonStringInEnum(host_enum, "hermes");
+    try std.testing.expect(std.mem.indexOf(u8, hook_request, "Aegis") == null);
+    try std.testing.expect(std.mem.indexOf(u8, hook_request, "aegis hook") == null);
+
+    const hook_response = try readFile(std.testing.allocator, "integrations/common/schemas/hook-response-v1.json");
+    defer std.testing.allocator.free(hook_response);
+    var parsed_hook_response = try std.json.parseFromSlice(std.json.Value, std.testing.allocator, hook_response, .{});
+    defer parsed_hook_response.deinit();
+    const hook_response_properties = parsed_hook_response.value.object.get("properties").?.object;
+    const category_enum = hook_response_properties.get("category").?.object.get("enum").?.array.items;
+    try expectJsonStringInEnum(category_enum, "file.write");
+    try expectJsonStringInEnum(category_enum, "file_read");
+    try expectJsonStringInEnum(category_enum, "file_write");
+    try expectJsonStringInEnum(category_enum, "env");
+    try std.testing.expect(std.mem.indexOf(u8, hook_response, "Aegis") == null);
+
+    const plugin_request = try readFile(std.testing.allocator, "integrations/common/schemas/orca-plugin-request-v1.json");
+    defer std.testing.allocator.free(plugin_request);
+    var parsed_plugin_request = try std.json.parseFromSlice(std.json.Value, std.testing.allocator, plugin_request, .{});
+    defer parsed_plugin_request.deinit();
+    const plugin_request_properties = parsed_plugin_request.value.object.get("properties").?.object;
+    const target_enum = plugin_request_properties.get("target").?.object.get("enum").?.array.items;
+    try expectJsonStringInEnum(target_enum, "codex");
+    try expectJsonStringInEnum(target_enum, "claude");
+    try expectJsonStringInEnum(target_enum, "opencode");
+    try expectJsonStringInEnum(target_enum, "openclaw");
+    try expectJsonStringInEnum(target_enum, "hermes");
+    const request_type_enum = plugin_request_properties.get("request_type").?.object.get("enum").?.array.items;
+    try expectJsonStringNotInEnum(request_type_enum, "drone_safety_status");
+    try std.testing.expect(std.mem.indexOf(u8, plugin_request, "Aegis") == null);
+
+    const plugin_response = try readFile(std.testing.allocator, "integrations/common/schemas/orca-plugin-response-v1.json");
+    defer std.testing.allocator.free(plugin_response);
+    var parsed_plugin_response = try std.json.parseFromSlice(std.json.Value, std.testing.allocator, plugin_response, .{});
+    defer parsed_plugin_response.deinit();
+    const plugin_response_root = parsed_plugin_response.value.object;
+    if (plugin_response_root.get("required")) |required_value| {
+        const plugin_response_required = required_value.array.items;
+        try expectJsonStringNotInEnum(plugin_response_required, "version");
+        try expectJsonStringNotInEnum(plugin_response_required, "status");
+    }
+    const plugin_response_properties = plugin_response_root.get("properties").?.object;
+    try std.testing.expect(plugin_response_properties.get("cwd") != null);
+    try std.testing.expect(plugin_response_properties.get("audit_replay_available") != null);
+    try std.testing.expect(plugin_response_properties.get("mcp_support_status") != null);
+    try std.testing.expect(plugin_response_properties.get("opencode_paths") != null);
+    try std.testing.expect(plugin_response_properties.get("openclaw_paths") != null);
+    try std.testing.expect(plugin_response_properties.get("hermes_paths") != null);
+    try std.testing.expect(plugin_response_properties.get("drone") == null);
+    try std.testing.expect(std.mem.indexOf(u8, plugin_response, "Aegis") == null);
 }
 
 // ---------------------------------------------------------------------------

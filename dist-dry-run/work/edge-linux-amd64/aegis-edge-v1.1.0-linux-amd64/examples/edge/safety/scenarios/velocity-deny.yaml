@@ -1,5 +1,0 @@
-id: velocity-deny
-mode: strict
-command: velocity_too_high
-expected_decision: deny
-note: "Fake safety scenario. No hardware, SITL endpoint, or real-flight validation."

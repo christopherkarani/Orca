@@ -1,6 +1,6 @@
-# Aegis Edge Documentation
+# Edge Documentation
 
-Start with the customer proof package when evaluating Aegis Edge for an autonomy team. Start with quickstart when running commands locally.
+Start with the customer proof package when evaluating Edge for an autonomy team. Start with quickstart when running commands locally.
 
 For design-partner evaluation, see [customer_pilot/README.md](../../customer_pilot/README.md). Customer pilot materials are simulation/SITL/bench-preparation only with a no real-flight boundary.
 
@@ -127,8 +127,8 @@ For design-partner evaluation, see [customer_pilot/README.md](../../customer_pil
 
 - [Customer proof package](customer-proof/README.md)
 - [Customer pilot package](../../customer_pilot/README.md)
-- [What Aegis Edge proves](customer-proof/what-aegis-edge-proves.md)
-- [What Aegis Edge does not prove](customer-proof/what-aegis-edge-does-not-prove.md)
+- [What Edge proves](customer-proof/what-edge-proves.md)
+- [What Edge does not prove](customer-proof/what-edge-does-not-prove.md)
 - [Buyer FAQ](customer-proof/buyer-faq.md)
 - [Technical FAQ](customer-proof/technical-faq.md)
 
