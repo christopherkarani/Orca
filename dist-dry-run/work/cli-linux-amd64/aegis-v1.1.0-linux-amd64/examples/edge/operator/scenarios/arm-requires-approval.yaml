@@ -1,6 +1,0 @@
-id: arm-requires-approval
-command: arm
-request: examples/edge/operator/requests/arm.json
-state: examples/edge/operator/states/fresh-state.json
-expected_decision: ask
-note: fake adapter arm request creates an exact-action approval request

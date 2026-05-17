@@ -2,11 +2,11 @@
 
 ## Title
 
-Aegis Edge: unsafe drone-agent command denied with replayable safety evidence
+Edge: unsafe drone-agent command denied with replayable safety evidence
 
 ## Opening
 
-"This is Aegis Edge, a local safety-policy and audit runtime for autonomous drone agent evaluation in simulation, SITL, and bench-preparation workflows."
+"This is Edge, a local safety-policy and audit runtime for autonomous drone agent evaluation in simulation, SITL, and bench-preparation workflows."
 
 ## Boundary
 
@@ -14,14 +14,14 @@ Aegis Edge: unsafe drone-agent command denied with replayable safety evidence
 
 ## Scene 1: Architecture
 
-Show the agent/planner, Aegis Edge policy runtime, MAVLink-style bridge, audit/replay store, red-team harness, and safety-case report.
+Show the agent/planner, Edge policy runtime, MAVLink-style bridge, audit/replay store, red-team harness, and safety-case report.
 
 ## Scene 2: Unsafe Command
 
 Run:
 
 ```sh
-./zig-out/bin/aegis-edge demo run geofence-deny
+./zig-out/bin/edge demo run geofence-deny
 ```
 
 Say: "The agent attempts a command outside the allowed geofence. Aegis denies it."
@@ -31,7 +31,7 @@ Say: "The agent attempts a command outside the allowed geofence. Aegis denies it
 Run:
 
 ```sh
-./zig-out/bin/aegis-edge proof generate --demo geofence-deny
+./zig-out/bin/edge proof generate --demo geofence-deny
 ```
 
 Say: "The report shows provenance, policy decision, replay reference, and limitations."
@@ -41,7 +41,7 @@ Say: "The report shows provenance, policy decision, replay reference, and limita
 Run:
 
 ```sh
-./zig-out/bin/aegis-edge redteam --ci
+./zig-out/bin/edge redteam --ci
 ```
 
 Say: "The red-team scorecard makes passed, failed, skipped, unsupported, and inconclusive outcomes explicit."

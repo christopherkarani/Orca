@@ -6,7 +6,7 @@ Use a CI policy:
 
 ```bash
 orca init --preset github-actions
-orca policy check .aegis/policy.yaml
+orca policy check .orca/policy.yaml
 ```
 
 Example workflow:
@@ -25,7 +25,7 @@ jobs:
       - name: Install Orca
         run: ./scripts/install.sh
       - name: Check Orca policy
-        run: orca policy check .aegis/policy.yaml
+        run: orca policy check .orca/policy.yaml
       - name: Run agent safely
         run: orca run --mode ci -- ./scripts/agent-task.sh
       - name: Run red-team fixtures
@@ -35,7 +35,7 @@ jobs:
         if: always()
         with:
           name: orca-audit
-          path: .aegis/sessions
+          path: .orca/sessions
 ```
 
 You can also wrap a command with the repository-local composite action:

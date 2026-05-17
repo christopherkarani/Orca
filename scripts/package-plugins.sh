@@ -164,7 +164,8 @@ done
 if [ "$SCAN_ISSUES" -eq 0 ]; then
   echo "Secret scan passed. No obvious secrets found in artifacts."
 else
-  echo "WARNING: Secret scan found ${SCAN_ISSUES} potential issues. Review artifacts before release." >&2
+  echo "Secret scan found ${SCAN_ISSUES} potential issues. Failing release packaging." >&2
+  exit 1
 fi
 
 echo ""

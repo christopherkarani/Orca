@@ -2,11 +2,11 @@
 
 ## Opener
 
-"Thanks for taking the time. I want to understand your autonomy stack and whether Aegis Edge maps to a real evaluation pain. This is not a certification or aircraft-control pitch. The current scope is simulation/SITL/bench-preparation evidence."
+"Thanks for taking the time. I want to understand your autonomy stack and whether Edge maps to a real evaluation pain. This is not a certification or aircraft-control pitch. The current scope is simulation/SITL/bench-preparation evidence."
 
 ## Safety Boundary Statement
 
-"Aegis Edge evaluates supported commands and evidence workflows in fake adapter, PX4 SITL, ArduPilot SITL, or no-actuation bench-preparation contexts. It does not replace your safety process, autopilot failsafes, regulatory work, or aircraft validation."
+"Edge evaluates supported commands and evidence workflows in fake adapter, PX4 SITL, ArduPilot SITL, or no-actuation bench-preparation contexts. It does not replace your safety process, autopilot failsafes, regulatory work, or aircraft validation."
 
 ## Current Stack Questions
 

@@ -2,7 +2,9 @@
 
 ## Summary
 
-This release finalizes the Orca public release. The repository has been renamed from Aegis to Orca across user-facing strings, documentation, scripts, and build artifacts. The `orca` binary is now the primary CLI, with `aegis` maintained as a compatibility alias.
+This release finalizes the Orca/Core/Edge public release. User-facing install, package, release, and command surfaces use `orca` for desktop/CI guardrails and `edge` for Edge evaluation workflows.
+
+Status note as of the Orca/Core production-readiness audit: this report is historical release-prep evidence, not current ship approval. Current readiness is blocked until the repository includes the rendered packaging inputs/scripts, the live GitHub release checksum/artifact set is regenerated with Orca archive names, and `scripts/verify-release.sh` passes against the release directory.
 
 ## Release Version/Tag
 
@@ -67,13 +69,13 @@ This release finalizes the Orca public release. The repository has been renamed 
 
 ## Old-Name Reference Audit Result
 
-- Source code user-facing strings: updated from Aegis to Orca
-- Build system: produces `orca` and `orca-edge` binaries with `aegis` and `aegis-edge` compatibility aliases
-- Scripts: use ORCA_* env vars with AEGIS_* fallbacks where appropriate
-- Docs: public docs use Orca; migration/compatibility context mentions Aegis where relevant
-- Config paths (`.aegis/`, `AEGIS_SESSION_ID`, etc.): preserved for backward compatibility
+- Source code user-facing strings: updated from Orca to Orca
+- Build system: produces only `orca` and `edge` public binaries.
+- Scripts: use ORCA_* env vars with ORCA_* fallbacks where appropriate
+- Docs: public docs use Orca; migration/compatibility context mentions Orca where relevant
+- Config paths (`.orca/`, `ORCA_SESSION_ID`, etc.): preserved for backward compatibility
 - Internal module names (`aegis_core`, `aegis_cli`, `aegis_edge`): unchanged (internal implementation detail)
-- Plugin skill names (`aegis-doctor`, etc.): unchanged (plugin-internal names)
+- Plugin skill names (`orca-doctor`, etc.): unchanged (plugin-internal names)
 
 ## Secret Scan Result
 
@@ -109,12 +111,12 @@ This release finalizes the Orca public release. The repository has been renamed 
 - [x] Binary artifacts generated with Orca branding
 - [x] Checksums generated
 - [x] Public docs Orca-branded
-- [x] No unintended Aegis references in public-facing content
+- [x] No unintended Orca references in public-facing content
 - [x] No secrets in artifacts
 - [x] Issue templates exist and are Orca-branded
 - [x] Planning artifacts are untracked/ignored
 
-**Release is APPROVED for tagging.**
+**Release approval is revoked for the current audit state. Regenerate artifacts, rendered package manifests, and checksums, then pass `scripts/verify-release.sh` before tagging or publishing.**
 
 ## Exact Tag Command
 
@@ -134,7 +136,7 @@ gh release create v1.1.0 dist/orca-v1.1.0-*.tar.gz dist/orca-v1.1.0-*.zip dist/p
 ## Manual Release Command (if gh CLI not authenticated)
 
 If GitHub CLI is not authenticated, create the release manually at:
-https://github.com/chriskarani/aegis/releases/new
+https://github.com/chriskarani/orca/releases/new
 
 Tag: `v1.1.0`
 Title: `Orca v1.1.0 — Runtime guardrails and plugins for AI agents`

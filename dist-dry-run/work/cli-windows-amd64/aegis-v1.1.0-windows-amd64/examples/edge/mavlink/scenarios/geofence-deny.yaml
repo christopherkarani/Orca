@@ -1,6 +1,0 @@
-name: geofence-deny
-transport: fake_transport
-frame: ../frames/waypoint-outside-geofence.hex
-expected_decision: deny
-expected_forwarded: false
-notes: Local fake scenario. No real vehicle, SITL, serial, or UDP endpoint.

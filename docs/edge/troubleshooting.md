@@ -1,22 +1,22 @@
 # Edge Troubleshooting
 
-## `aegis-edge` Not Found
+## `edge` Not Found
 
-Run `zig build` and use `./zig-out/bin/aegis-edge`. Packaged installs should place the binary under the package `bin/` layout.
+Run `zig build` and use `./zig-out/bin/edge`. Packaged installs should place the binary under the package `bin/` layout.
 
 ## Runtime Assets Missing
 
 Run:
 
 ```sh
-./zig-out/bin/aegis-edge deployment assets
+./zig-out/bin/edge deployment assets
 ```
 
 Required schemas, docs, policies, examples, red-team fixtures, and safety-case templates must be present.
 
 ## Policy Validation Errors
 
-Run `aegis-edge policy check <policy>`. Unknown keys, invalid safety limits, missing vehicle binding, or invalid watchdog settings fail validation.
+Run `edge policy check <policy>`. Unknown keys, invalid safety limits, missing vehicle binding, or invalid watchdog settings fail validation.
 
 ## Scenario Validation Errors
 
@@ -39,8 +39,8 @@ ArduPilot SITL tests skip unless explicitly enabled with the expected local simu
 Run:
 
 ```sh
-./zig-out/bin/aegis-edge redteam validate
-./zig-out/bin/aegis-edge redteam --ci
+./zig-out/bin/edge redteam validate
+./zig-out/bin/edge redteam --ci
 ```
 
 Required fixture failures should be treated as product regressions. Unsupported and skipped fixtures must remain distinct from passes.
@@ -50,12 +50,12 @@ Required fixture failures should be treated as product regressions. Unsupported 
 Confirm the policy and scenario paths are readable and valid, then rerun:
 
 ```sh
-./zig-out/bin/aegis-edge safety-case generate --policy <policy> --scenario <scenario>
+./zig-out/bin/edge safety-case generate --policy <policy> --scenario <scenario>
 ```
 
 ## Hash-Chain Verification Failure
 
-Treat a replay verification failure as evidence integrity failure. Regenerate the demo evidence and inspect `.aegis-edge/sessions/<session-id>/events.jsonl`.
+Treat a replay verification failure as evidence integrity failure. Regenerate the demo evidence and inspect `.edge/sessions/<session-id>/events.jsonl`.
 
 ## Secrets And Redaction Questions
 
@@ -66,7 +66,7 @@ Raw secrets must not persist in logs, replay output, proof artifacts, or safety 
 Run:
 
 ```sh
-./zig-out/bin/aegis-edge deployment package-info --arch linux-arm64
+./zig-out/bin/edge deployment package-info --arch linux-arm64
 ```
 
 Only documented Linux package targets are supported in this phase.

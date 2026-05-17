@@ -2,7 +2,7 @@
 
 Phase 35 adds deterministic data guard findings for suspicious simulated egress. The heuristics are intended for local safety evidence and regression testing, not for real-world offensive guidance.
 
-Aegis Edge remains simulation/SITL/customer-evaluation software. It is not real-flight readiness, certification, detect-and-avoid, or autopilot replacement evidence.
+Edge remains simulation/SITL/customer-evaluation software. It is not real-flight readiness, certification, detect-and-avoid, or autopilot replacement evidence.
 
 The detector flags:
 

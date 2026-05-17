@@ -1,9 +1,0 @@
-id: ardupilot-rtl-allow
-environment: fake_ardupilot
-vehicle: copter
-mode: enforce
-command: return_to_home
-expected_decision: allow
-expected_forwarded: true
-timeout_ms: 2000
-note: "RTL/RTH is policy-evaluated and logged; ArduPilot behavior is not assumed identical to PX4."

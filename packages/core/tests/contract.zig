@@ -1,12 +1,40 @@
 const std = @import("std");
 const aegis_core = @import("aegis_core");
 
-test "core package exposes shared policy audit replay redaction and capability surfaces" {
-    try std.testing.expectEqualStrings("24-aegis-core-library-and-abi", aegis_core.phase);
+test "core package exposes engine policy audit replay redaction and schema surfaces only" {
+    try std.testing.expectEqualStrings("core-engine-hard-split", aegis_core.phase);
     try std.testing.expectEqual(aegis_core.decision.DecisionResult.deny, aegis_core.policy.schema.DecisionValue.deny.toDecisionResult());
     try std.testing.expect(aegis_core.audit.implemented);
-    try std.testing.expect(aegis_core.redteam.implemented);
-    try std.testing.expect(aegis_core.capabilities.Feature.parse("policy_engine") != null);
+    try std.testing.expect(@hasDecl(aegis_core, "api"));
+    try std.testing.expect(@hasDecl(aegis_core, "schemas"));
+    try std.testing.expect(!@hasDecl(aegis_core.core, "supervisor"));
+    try std.testing.expect(!@hasDecl(aegis_core, "cli"));
+    try std.testing.expect(!@hasDecl(aegis_core, "intercept"));
+    try std.testing.expect(!@hasDecl(aegis_core, "mcp"));
+    try std.testing.expect(!@hasDecl(aegis_core, "sandbox"));
+    try std.testing.expect(!@hasDecl(aegis_core, "redteam"));
+    try std.testing.expect(!@hasDecl(aegis_core, "capabilities"));
+    try std.testing.expect(!@hasDecl(aegis_core, "edge"));
+}
+
+test "core package sources do not depend on the monolithic product module" {
+    try expectFileNotContains("packages/core/src/root.zig", "@import(\"aegis\")");
+    try expectFileNotContains("packages/core/src/api.zig", "@import(\"aegis\")");
+    try expectFileNotContains("packages/core/src/abi.zig", "@import(\"aegis\")");
+}
+
+test "core README does not advertise removed Edge placeholder exports" {
+    try expectFileNotContains("packages/core/README.md", "Edge placeholder");
+    try expectFileNotContains("packages/core/README.md", "reserved Edge");
+    try expectFileNotContains("packages/core/README.md", "safety-report placeholders");
+}
+
+test "core audit summaries do not hard-code Orca product copy" {
+    try expectFileNotContains("src/audit/summary.zig", "Orca Session");
+}
+
+test "core supervisor does not depend on Orca sandbox backends" {
+    try expectFileNotContains("src/core/supervisor.zig", "../sandbox/");
 }
 
 test "core package redaction does not return raw synthetic fake secret values" {
@@ -37,7 +65,7 @@ test "core package preserves deny priority through policy evaluation" {
     try std.testing.expectEqual(aegis_core.decision.DecisionResult.deny, evaluation.decision.result);
 }
 
-test "phase 24 core API evaluates CLI and Edge actions through one policy path" {
+test "core API evaluates Orca actions through the shared policy path" {
     var selected = try aegis_core.api.parsePolicyFromSlice(std.testing.allocator,
         \\version: 1
         \\mode: observe
@@ -58,13 +86,24 @@ test "phase 24 core API evaluates CLI and Edge actions through one policy path" 
     try std.testing.expect(cli_eval.matched_rule != null);
     try std.testing.expect(cli_eval.decision.ci_may_proceed);
 
-    const edge_action: aegis_core.actions.Action = .{ .edge_vehicle_state_read = .{ .vehicle_id = "vehicle-1" } };
-    var edge_eval = try aegis_core.api.evaluateAction(std.testing.allocator, &selected, edge_action, .{});
-    defer edge_eval.deinit(std.testing.allocator);
-    try std.testing.expectEqual(aegis_core.decision.DecisionResult.observe, edge_eval.decision.result);
-    try std.testing.expect(edge_eval.matched_rule == null);
-    try std.testing.expect(edge_eval.decision.ci_may_proceed);
-    try std.testing.expect(std.mem.indexOf(u8, edge_eval.explanation, "edge.vehicle_state_read") != null);
+}
+
+test "core action and target types do not export Edge-only surfaces" {
+    try expectUnionFieldsDoNotStartWith(aegis_core.actions.Action, "edge_");
+    try expectEnumFieldsDoNotStartWith(aegis_core.core.types.TargetKind, "edge_");
+}
+
+test "core event types do not export Edge protocol or safety-case surfaces" {
+    try expectEnumFieldsDoNotStartWith(aegis_core.core.event.EventType, "edge_");
+    try expectEnumFieldsDoNotStartWith(aegis_core.core.event.EventType, "mavlink_");
+    try expectEnumFieldsDoNotStartWith(aegis_core.core.event.EventType, "px4_");
+    try expectEnumFieldsDoNotStartWith(aegis_core.core.event.EventType, "ardupilot_");
+    try expectEnumFieldsDoNotStartWith(aegis_core.core.event.EventType, "safety_case_");
+    try expectEnumFieldsDoNotStartWith(aegis_core.core.event.EventType, "data_");
+    try expectEnumFieldsDoNotStartWith(aegis_core.core.event.EventType, "telemetry_");
+    try expectEnumFieldsDoNotStartWith(aegis_core.core.event.EventType, "link_");
+    try expectEnumFieldsDoNotStartWith(aegis_core.core.event.EventType, "operator_");
+    try expectEnumFieldsDoNotStartWith(aegis_core.core.event.EventType, "health_");
 }
 
 test "phase 24 core API keeps CI non-interactive and deny beats allow" {
@@ -116,7 +155,7 @@ test "phase 24 core API writes redacted audit events and verifies replay hash ch
         .event_id = try aegis_core.core.event.generateEventId(ts),
         .timestamp = ts,
         .event_type = .command_attempt,
-        .actor = .{ .kind = .aegis, .display = "aegis" },
+        .actor = .{ .kind = .orca, .display = "orca" },
         .target = .{ .kind = .command, .value = "echo fake_secret_value_phase24" },
         .decision = aegis_core.api.makeDecision(.{
             .result = .deny,
@@ -137,7 +176,7 @@ test "phase 24 core API writes redacted audit events and verifies replay hash ch
     defer verify.deinit(std.testing.allocator);
     try std.testing.expect(verify.ok);
 
-    const events_path = try std.fs.path.join(std.testing.allocator, &.{ ".aegis", "sessions", session.id.slice(), "events.jsonl" });
+    const events_path = try std.fs.path.join(std.testing.allocator, &.{ ".orca", "sessions", session.id.slice(), "events.jsonl" });
     defer std.testing.allocator.free(events_path);
     const events = try tmp.dir.readFileAlloc(std.testing.allocator, events_path, 16 * 1024);
     defer std.testing.allocator.free(events);
@@ -152,20 +191,16 @@ test "phase 24 core API writes redacted audit events and verifies replay hash ch
     try std.testing.expect(std.mem.indexOf(u8, out.items, "fake_secret_value_phase24") == null);
 }
 
-test "phase 24 schema registry exposes CLI and Edge reserved schemas" {
+test "phase 24 schema registry exposes Orca Core schemas only" {
     const policy_schema = aegis_core.schemas.lookup(.policy) orelse return error.TestUnexpectedResult;
     try std.testing.expectEqualStrings("policy-v1", policy_schema.id);
-    try std.testing.expect(std.mem.indexOf(u8, policy_schema.contents, "\"version\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, policy_schema.contents, "\"$schema\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, policy_schema.contents, "\"properties\"") != null);
     try expectSchemaFileExists(policy_schema.path);
 
-    const edge_policy_schema = aegis_core.schemas.lookup(.edge_policy) orelse return error.TestUnexpectedResult;
-    try std.testing.expectEqualStrings("edge-policy-placeholder-v1", edge_policy_schema.id);
-    try std.testing.expect(std.mem.indexOf(u8, edge_policy_schema.contents, "placeholder") != null);
-    try expectSchemaFileExists(edge_policy_schema.path);
-
-    const safety_report_schema = aegis_core.schemas.lookup(.safety_report) orelse return error.TestUnexpectedResult;
-    try std.testing.expectEqualStrings("safety-report-placeholder-v1", safety_report_schema.id);
-    try expectSchemaFileExists(safety_report_schema.path);
+    try std.testing.expect(aegis_core.schemas.lookupId("edge-policy-placeholder-v1") == null);
+    try std.testing.expect(aegis_core.schemas.lookupId("edge-event-placeholder-v1") == null);
+    try std.testing.expect(aegis_core.schemas.lookupId("safety-report-placeholder-v1") == null);
 }
 
 test "phase 24 experimental ABI skeleton compiles and documents instability" {
@@ -175,7 +210,7 @@ test "phase 24 experimental ABI skeleton compiles and documents instability" {
     const raw = "OPENAI_API_KEY=fake_secret_value_phase24";
     var output: [128]u8 = undefined;
     var written: usize = 0;
-    const code = aegis_core.abi.aegis_core_redact(raw, raw.len, &output, output.len, &written);
+    const code = aegis_core.abi.core_redact(raw, raw.len, &output, output.len, &written);
     try std.testing.expectEqual(@as(c_int, 0), code);
     try std.testing.expect(std.mem.indexOf(u8, output[0..written], "fake_secret_value_phase24") == null);
 }
@@ -183,4 +218,22 @@ test "phase 24 experimental ABI skeleton compiles and documents instability" {
 fn expectSchemaFileExists(path: []const u8) !void {
     const file = try std.fs.cwd().openFile(path, .{});
     file.close();
+}
+
+fn expectFileNotContains(path: []const u8, needle: []const u8) !void {
+    const text = try std.fs.cwd().readFileAlloc(std.testing.allocator, path, 256 * 1024);
+    defer std.testing.allocator.free(text);
+    try std.testing.expect(std.mem.indexOf(u8, text, needle) == null);
+}
+
+fn expectUnionFieldsDoNotStartWith(comptime T: type, comptime prefix: []const u8) !void {
+    inline for (@typeInfo(T).@"union".fields) |field| {
+        try std.testing.expect(!std.mem.startsWith(u8, field.name, prefix));
+    }
+}
+
+fn expectEnumFieldsDoNotStartWith(comptime T: type, comptime prefix: []const u8) !void {
+    inline for (@typeInfo(T).@"enum".fields) |field| {
+        try std.testing.expect(!std.mem.startsWith(u8, field.name, prefix));
+    }
 }

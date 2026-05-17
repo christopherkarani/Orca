@@ -11,6 +11,6 @@ Supported scope concepts:
 - `vehicle_id`: broad; rejected unless policy explicitly allows broad scopes.
 - `time_window`: broad; rejected unless policy explicitly allows broad scopes.
 
-Broad approvals are dangerous because they can unintentionally cover changed command parameters, changed state, changed policy, changed safety constraints, or a changed provenance context. Aegis Edge rejects broad approval by default and still requires the safety envelope to pass.
+Broad approvals are dangerous because they can unintentionally cover changed command parameters, changed state, changed policy, changed safety constraints, or a changed provenance context. Edge rejects broad approval by default and still requires the safety envelope to pass.
 
 Approvals must expire. `max_uses` defaults to `1` unless policy says otherwise. Policy changes, state changes, command parameter changes, provenance changes, expiry, revocation, and exhausted use counts invalidate approvals.

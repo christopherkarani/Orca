@@ -34,7 +34,7 @@ Emergency LAND, RTH, and HOLD are evaluated by emergency policy and safety const
 
 ## How are audit logs hashed?
 
-Edge sessions use hash-chained event logs and replay verification under `.aegis-edge/sessions/`.
+Edge sessions use hash-chained event logs and replay verification under `.edge/sessions/`.
 
 ## How is redaction performed?
 
@@ -42,7 +42,7 @@ Sensitive payloads and endpoint query values are classified and redacted before 
 
 ## How are safety-case reports generated?
 
-`aegis-edge safety-case generate` or `aegis-edge proof generate --demo <id>` collects scenario evidence, replay status, policy hash, findings, and limitations.
+`edge safety-case generate` or `edge proof generate --demo <id>` collects scenario evidence, replay status, policy hash, findings, and limitations.
 
 ## How are PX4 SITL tests gated?
 

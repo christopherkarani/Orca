@@ -159,7 +159,7 @@ export default function orcaPlugin(api: OpenClawPluginApi): void {
   if (!orcaBin) {
     logger?.warn?.(
       '[orca] Binary not found in PATH or typical build paths. ' +
-        'Build with: zig build (produces ./zig-out/bin/orca)'
+        'Run: ./scripts/install-orca-plugin.sh openclaw project (or .\\scripts\\install-orca-plugin.ps1 openclaw project on Windows).'
     );
     return;
   }

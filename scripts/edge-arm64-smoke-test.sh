@@ -11,12 +11,12 @@ case "${ARCH}" in
 esac
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-AEGIS_EDGE="${AEGIS_EDGE:-${ROOT}/zig-out/bin/aegis-edge}"
+EDGE_BIN="${EDGE_BIN:-${ROOT}/zig-out/bin/edge}"
 cd "${ROOT}"
 
-"${AEGIS_EDGE}" --help >/dev/null
-"${AEGIS_EDGE}" doctor arm64 >/dev/null
-"${AEGIS_EDGE}" deployment check --profile examples/edge/deployment/profiles/packaged-linux-arm64-fake.yaml >/dev/null
-"${AEGIS_EDGE}" redteam --ci >/dev/null
+"${EDGE_BIN}" --help >/dev/null
+"${EDGE_BIN}" doctor arm64 >/dev/null
+"${EDGE_BIN}" deployment check --profile examples/edge/deployment/profiles/packaged-linux-arm64-fake.yaml >/dev/null
+"${EDGE_BIN}" redteam --ci >/dev/null
 
 printf 'edge arm64 smoke passed\n'

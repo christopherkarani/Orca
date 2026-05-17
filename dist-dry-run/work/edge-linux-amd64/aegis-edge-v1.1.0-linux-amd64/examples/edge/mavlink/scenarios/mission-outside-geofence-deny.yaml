@@ -1,6 +1,0 @@
-name: mission-outside-geofence-deny
-transport: fake_transport
-frame: ../frames/mission-waypoint-outside-geofence.hex
-expected_decision: deny
-expected_forwarded: false
-notes: Generic MAVLink mission item tracking only; no PX4 or ArduPilot mission behavior.

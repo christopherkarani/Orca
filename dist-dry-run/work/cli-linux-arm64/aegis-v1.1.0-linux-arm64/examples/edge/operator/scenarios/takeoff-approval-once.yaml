@@ -1,8 +1,0 @@
-id: takeoff-approval-once
-command: takeoff
-request: examples/edge/operator/requests/takeoff.json
-state: examples/edge/operator/states/fresh-state.json
-approval: valid_once
-expected_decision: allow
-approval_scope: exact_action_only
-max_uses: 1

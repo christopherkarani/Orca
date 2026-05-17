@@ -4,7 +4,7 @@ Use this checklist for hotfixes after a plugin release ships. Keep the patch loc
 
 ## First 24-hour triage process
 
-- Confirm the report with host, plugin version, Aegis version, OS, architecture, and install method.
+- Confirm the report with host, plugin version, Orca version, OS, architecture, and install method.
 - Reproduce the issue against the released artifact and, if needed, the repo checkout.
 - Decide whether the issue is security, install, host compatibility, docs, or release packaging.
 - Ask for a minimal, redacted bug report before requesting any broader logs.
@@ -54,7 +54,7 @@ Use this checklist for hotfixes after a plugin release ships. Keep the patch loc
 
 - A host version changes hook names, event payloads, install paths, or plugin loading behavior.
 - Codex and Claude behavior diverge in a way the docs do not explain.
-- The issue is a host integration mismatch, not an Aegis policy bug.
+- The issue is a host integration mismatch, not an Orca policy bug.
 - The patch can be described with a version note or a host-specific workaround.
 
 ## Release rollback notes
@@ -66,7 +66,7 @@ Use this checklist for hotfixes after a plugin release ships. Keep the patch loc
 
 ## What data to collect without telemetry
 
-- Aegis version and plugin version.
+- Orca version and plugin version.
 - Host name, host version, OS, and architecture.
 - Install method and install path.
 - Exact command or hook event.
@@ -82,7 +82,7 @@ Ask for the smallest redacted report that still reproduces the issue. Use a temp
 ```text
 Host:
 Host version:
-Aegis version:
+Orca version:
 Plugin version or artifact name:
 Install method:
 Steps to reproduce:
@@ -96,4 +96,4 @@ Tell users not to include tokens, API keys, private prompts, private file conten
 
 ## No telemetry by default
 
-Aegis plugins are local-first and do not collect telemetry by default. Support and patch triage should rely on user-provided bug reports and local environment details only.
+Orca plugins are local-first and do not collect telemetry by default. Support and patch triage should rely on user-provided bug reports and local environment details only.

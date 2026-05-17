@@ -4,20 +4,25 @@
 
 Expected artifact names:
 
-- `aegis-vX.Y.Z-darwin-amd64.tar.gz`
-- `aegis-vX.Y.Z-darwin-arm64.tar.gz`
-- `aegis-vX.Y.Z-linux-amd64.tar.gz`
-- `aegis-vX.Y.Z-linux-arm64.tar.gz`
-- `aegis-vX.Y.Z-windows-amd64.zip`
+- `orca-vX.Y.Z-darwin-amd64.tar.gz`
+- `orca-vX.Y.Z-darwin-arm64.tar.gz`
+- `orca-vX.Y.Z-linux-amd64.tar.gz`
+- `orca-vX.Y.Z-linux-arm64.tar.gz`
+- `orca-vX.Y.Z-windows-amd64.zip`
 - `checksums.txt`
 - `sbom.json`
 
 Build locally:
 
 ```bash
-AEGIS_VERSION=1.1.0 ./scripts/build-release.sh
-shasum -a 256 -c dist/checksums.txt
+ORCA_VERSION=1.1.0 ./scripts/build-cli-release.sh
+(cd dist && shasum -a 256 -c checksums.txt)
+./scripts/verify-release.sh dist
 ```
+
+`scripts/build-cli-release.sh` builds the Orca/Core CLI release set above. The broader
+`scripts/build-release.sh` defaults to all products and must include the matching Edge
+artifacts when the release manifest declares Edge in `products_included`.
 
 ## Manual Install Verification
 
@@ -25,14 +30,14 @@ Download the matching archive and `checksums.txt`, then verify before extracting
 
 ```bash
 shasum -a 256 -c checksums.txt
-tar -xzf aegis-vX.Y.Z-linux-amd64.tar.gz
-./aegis-vX.Y.Z-linux-amd64/bin/aegis version --json
+tar -xzf orca-vX.Y.Z-linux-amd64.tar.gz
+./orca-vX.Y.Z-linux-amd64/bin/orca version --json
 ```
 
 The installer scripts support verified local artifacts:
 
 ```bash
-AEGIS_VERSION=1.1.0 AEGIS_ARTIFACT_DIR=dist ./scripts/install.sh
+ORCA_VERSION=1.1.0 ORCA_ARTIFACT_DIR=dist ./scripts/install.sh
 ```
 
 Do not document blind `curl | sh` installation as the only path. Any remote installer example must also show the checksum verification alternative above.
@@ -41,13 +46,14 @@ Do not document blind `curl | sh` installation as the only path. Any remote inst
 
 - `zig build`
 - `zig build test`
-- `./zig-out/bin/aegis redteam --ci`
-- `./zig-out/bin/aegis version`
-- `./zig-out/bin/aegis version --json`
-- `for policy in policies/presets/*.yaml; do ./zig-out/bin/aegis policy check "$policy"; done`
+- `./zig-out/bin/orca redteam --ci`
+- `./zig-out/bin/orca version`
+- `./zig-out/bin/orca version --json`
+- `for policy in policies/presets/*.yaml; do ./zig-out/bin/orca policy check "$policy"; done`
 - Package metadata syntax checks from `.github/workflows/test.yml`
 - `scripts/generate-checksums.sh dist`
-- `scripts/generate-sbom.sh dist`
+- `ORCA_RELEASE_PRODUCT=cli scripts/generate-sbom.sh dist`
+- `scripts/verify-release.sh dist`
 
 ## Signing Status
 
@@ -56,8 +62,8 @@ Signing is hook-only in Phase 19. Normal development and CI must not require sig
 Release environments may set:
 
 ```bash
-AEGIS_SIGNING_ENABLED=1
-AEGIS_SIGNING_COMMAND='./your-signing-command dist'
+ORCA_SIGNING_ENABLED=1
+ORCA_SIGNING_COMMAND='./your-signing-command dist'
 ```
 
 Do not claim notarized or signed artifacts unless the release job actually signs them and publishes the evidence.

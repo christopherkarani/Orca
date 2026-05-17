@@ -1,11 +1,11 @@
-# Aegis Plugin Baseline Smoke Test
+# Orca Plugin Baseline Smoke Test
 # Safe checks only. No drone hardware. No network. No secrets.
 
 $ErrorActionPreference = "Stop"
 $SCRIPT_DIR = Split-Path -Parent $MyInvocation.MyCommand.Path
 $REPO_ROOT = Resolve-Path (Join-Path $SCRIPT_DIR "..")
-$AEGIS = Join-Path $REPO_ROOT "zig-out\bin\aegis.exe"
-$AEGIS_EDGE = Join-Path $REPO_ROOT "zig-out\bin\aegis-edge.exe"
+$ORCA_BIN = Join-Path $REPO_ROOT "zig-out\bin\orca.exe"
+$EDGE_BIN = Join-Path $REPO_ROOT "zig-out\bin\edge.exe"
 
 $ERRORS = 0
 
@@ -16,7 +16,7 @@ function Log-Fail($msg) { Write-Host "[FAIL]  $msg"; $script:ERRORS++ }
 Push-Location $REPO_ROOT
 
 try {
-    Log-Info "=== Aegis Plugin Baseline Smoke Test ==="
+    Log-Info "=== Orca Plugin Baseline Smoke Test ==="
     Log-Info "Repo: $REPO_ROOT"
     Log-Info "Date: $([DateTime]::UtcNow.ToString('yyyy-MM-ddTHH:mm:ssZ'))"
     Write-Host ""
@@ -44,25 +44,25 @@ try {
     # 3. CLI smoke tests
     Log-Info "Running CLI smoke tests..."
 
-    if (Test-Path $AEGIS) {
-        try { $null = & $AEGIS --help 2>$null; Log-Pass "aegis --help" } catch { Log-Fail "aegis --help" }
-        try { $null = & $AEGIS version 2>$null; Log-Pass "aegis version" } catch { Log-Fail "aegis version" }
-        try { $null = & $AEGIS doctor 2>$null; Log-Pass "aegis doctor" } catch { Log-Fail "aegis doctor" }
-        try { $null = & $AEGIS redteam --ci 2>$null; Log-Pass "aegis redteam --ci" } catch { Log-Fail "aegis redteam --ci" }
+    if (Test-Path $ORCA_BIN) {
+        try { $null = & $ORCA_BIN --help 2>$null; Log-Pass "orca --help" } catch { Log-Fail "orca --help" }
+        try { $null = & $ORCA_BIN version 2>$null; Log-Pass "orca version" } catch { Log-Fail "orca version" }
+        try { $null = & $ORCA_BIN doctor 2>$null; Log-Pass "orca doctor" } catch { Log-Fail "orca doctor" }
+        try { $null = & $ORCA_BIN redteam --ci 2>$null; Log-Pass "orca redteam --ci" } catch { Log-Fail "orca redteam --ci" }
     } else {
-        Log-Fail "aegis binary not found at $AEGIS"
+        Log-Fail "orca binary not found at $ORCA_BIN"
     }
     Write-Host ""
 
     # 4. Edge CLI smoke tests
     Log-Info "Running Edge CLI smoke tests..."
 
-    if (Test-Path $AEGIS_EDGE) {
-        try { $null = & $AEGIS_EDGE --help 2>$null; Log-Pass "aegis-edge --help" } catch { Log-Fail "aegis-edge --help" }
-        try { $null = & $AEGIS_EDGE doctor 2>$null; Log-Pass "aegis-edge doctor" } catch { Log-Fail "aegis-edge doctor" }
-        try { $null = & $AEGIS_EDGE redteam --ci 2>$null; Log-Pass "aegis-edge redteam --ci" } catch { Log-Fail "aegis-edge redteam --ci" }
+    if (Test-Path $EDGE_BIN) {
+        try { $null = & $EDGE_BIN --help 2>$null; Log-Pass "edge --help" } catch { Log-Fail "edge --help" }
+        try { $null = & $EDGE_BIN doctor 2>$null; Log-Pass "edge doctor" } catch { Log-Fail "edge doctor" }
+        try { $null = & $EDGE_BIN redteam --ci 2>$null; Log-Pass "edge redteam --ci" } catch { Log-Fail "edge redteam --ci" }
     } else {
-        Log-Fail "aegis-edge binary not found at $AEGIS_EDGE"
+        Log-Fail "edge binary not found at $EDGE_BIN"
     }
     Write-Host ""
 

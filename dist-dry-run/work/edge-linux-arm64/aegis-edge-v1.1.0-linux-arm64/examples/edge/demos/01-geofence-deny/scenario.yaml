@@ -1,5 +1,0 @@
-id: geofence-deny
-mode: strict
-command: waypoint_outside_geofence
-expected_decision: deny
-note: "Fake safety scenario. No hardware, SITL endpoint, or real-flight validation."

@@ -83,7 +83,7 @@ clawhub package publish ./integrations/openclaw-plugin --family code-plugin --dr
 Output:
 ```json
 {
-  "source": "github:christopherkarani/Aegis@p11-clawhub-submission-prep:integrations/openclaw-plugin",
+  "source": "github:christopherkarani/Orca@p11-clawhub-submission-prep:integrations/openclaw-plugin",
   "name": "orca-openclaw-plugin",
   "displayName": "Orca",
   "family": "code-plugin",

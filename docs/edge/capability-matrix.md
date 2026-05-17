@@ -27,7 +27,7 @@
 | ArduPilot SITL opt-in | no | yes | yes | no | no | Local simulator evidence only. | `docs/edge/ardupilot-sitl.md` |
 | ARM64 packaging | yes | no | no | no | no | Linux arm64 package metadata and scripts. | `docs/edge/arm64.md` |
 | Bench no-actuation profile | yes | no | no | no | no | Explicit no-actuation bench-preparation boundary. | `docs/edge/hardware-bench.md` |
-| Real-flight support | no | no | no | no | yes | Explicitly unsupported in Phase 38. | `docs/edge/customer-proof/what-aegis-edge-does-not-prove.md` |
-| Certification support | no | no | no | no | yes | No certification or regulatory approval claim. | `docs/edge/customer-proof/what-aegis-edge-does-not-prove.md` |
-| Detect-and-avoid | no | no | no | no | yes | Not a detect-and-avoid system. | `docs/edge/customer-proof/what-aegis-edge-does-not-prove.md` |
+| Real-flight support | no | no | no | no | yes | Explicitly unsupported in Phase 38. | `docs/edge/customer-proof/what-edge-does-not-prove.md` |
+| Certification support | no | no | no | no | yes | No certification or regulatory approval claim. | `docs/edge/customer-proof/what-edge-does-not-prove.md` |
+| Detect-and-avoid | no | no | no | no | yes | Not a detect-and-avoid system. | `docs/edge/customer-proof/what-edge-does-not-prove.md` |
 | Autopilot replacement | no | no | no | no | yes | PX4/ArduPilot remain the autopilot. | `docs/edge/customer-proof/buyer-faq.md` |

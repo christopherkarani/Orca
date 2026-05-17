@@ -1,5 +1,6 @@
 const std = @import("std");
-const core = @import("../core/mod.zig");
+const core = @import("aegis_core").core;
+const supervisor = @import("../core/supervisor.zig");
 const intercept = @import("../intercept/mod.zig");
 const exit_codes = @import("exit_codes.zig");
 const help = @import("help.zig");
@@ -15,7 +16,7 @@ pub fn command(argv: []const []const u8, stdout: anytype, stderr: anytype) !u8 {
     defer _ = gpa_state.deinit();
     const allocator = gpa_state.allocator();
 
-    const workspace_root = try core.supervisor.resolveWorkspaceRoot(allocator, null, ".");
+    const workspace_root = try supervisor.resolveWorkspaceRoot(allocator, null, ".");
     defer allocator.free(workspace_root);
     const session_id = intercept.files.resolveSessionId(allocator, workspace_root, options.session) catch |err| {
         try stderr.print("orca diff: failed to resolve session '{s}': {s}\n", .{ options.session, @errorName(err) });

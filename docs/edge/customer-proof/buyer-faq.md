@@ -2,7 +2,7 @@
 
 ## Is this a flight controller?
 
-No. Aegis Edge mediates policy and evidence around commands. It is not a flight controller.
+No. Edge mediates policy and evidence around commands. It is not a flight controller.
 
 ## Is this an autopilot?
 
@@ -10,7 +10,7 @@ No. PX4 or ArduPilot remain the autopilot in simulator contexts.
 
 ## Does this replace PX4 or ArduPilot?
 
-No. Aegis Edge sits between agents/planners and bridges; it does not replace PX4 or ArduPilot.
+No. Edge sits between agents/planners and bridges; it does not replace PX4 or ArduPilot.
 
 ## Does this provide certification?
 
@@ -30,7 +30,7 @@ SITL proves local simulator integration behavior, not real-world aircraft safety
 
 ## What does fake adapter testing prove?
 
-It proves deterministic Aegis Edge product behavior without simulator or hardware dependency.
+It proves deterministic Edge product behavior without simulator or hardware dependency.
 
 ## What does bench-preparation mean?
 

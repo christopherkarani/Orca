@@ -1,8 +1,0 @@
-id: event-queue-depth-exceeded
-environment: bench
-provenance: bench
-command: read_telemetry
-expected_decision: allow
-health_fault: event_queue_depth_exceeded
-expected_behavior: deny_high_risk
-note: lightweight resource-health scenario for bench-preparation evidence only.

@@ -6,8 +6,8 @@ environment: px4_sitl
 runtime_assets: source
 policy_path: examples/edge/px4/policies/px4-geofence-basic.yaml
 scenario_path: examples/edge/px4/scenarios/sitl-observe-heartbeat-skip.yaml
-audit_output_path: .aegis-edge/sessions
-log_output_path: .aegis-edge/logs
+audit_output_path: .edge/sessions
+log_output_path: .edge/logs
 network_mode: sitl_only
 sitl_config: local PX4 SITL only
 safety_limitations: PX4 SITL evidence is simulation evidence, not real-flight validation

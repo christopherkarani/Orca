@@ -61,7 +61,7 @@ Synthetic prompt payload:
 ### 1) Verify the plugin is visible
 
 ```bash
-./zig-out/bin/aegis plugin doctor claude
+./zig-out/bin/orca plugin doctor claude
 ```
 
 Expected output description:
@@ -73,7 +73,7 @@ Expected output description:
 ### 2) Evaluate a safe command
 
 ```bash
-cat tests/plugin-fixtures/claude/pre_tool_use_command_safe.json | ./zig-out/bin/aegis hook claude PreToolUse
+cat tests/plugin-fixtures/claude/pre_tool_use_command_safe.json | ./zig-out/bin/orca hook claude PreToolUse
 ```
 
 Expected output description:
@@ -84,7 +84,7 @@ Expected output description:
 ### 3) Evaluate a dangerous command
 
 ```bash
-cat tests/plugin-fixtures/claude/pre_tool_use_command_dangerous.json | ./zig-out/bin/aegis hook claude PreToolUse
+cat tests/plugin-fixtures/claude/pre_tool_use_command_dangerous.json | ./zig-out/bin/orca hook claude PreToolUse
 ```
 
 Expected output description:
@@ -95,7 +95,7 @@ Expected output description:
 ### 4) Run the deterministic redteam
 
 ```bash
-./zig-out/bin/aegis redteam --ci
+./zig-out/bin/orca redteam --ci
 ```
 
 Expected output description:
@@ -105,7 +105,7 @@ Expected output description:
 ### 5) Replay a prior session
 
 ```bash
-./zig-out/bin/aegis replay --session last --verify
+./zig-out/bin/orca replay --session last --verify
 ```
 
 Expected output description:

@@ -117,7 +117,7 @@ test "phase 39 customer pilot materials keep strong safety and legal boundaries"
 
     const security = try readFile(allocator, "customer_pilot/templates/security-review-response-template.md");
     defer allocator.free(security);
-    try expectContains(security, "Does Aegis Edge require cloud connectivity?");
+    try expectContains(security, "Does Edge require cloud connectivity?");
     try expectContains(security, "Does it send telemetry externally?");
     try expectContains(security, "How are secrets redacted?");
     try expectContains(security, "How are vulnerability reports handled?");
@@ -197,11 +197,11 @@ test "phase 39 pilot CLI helpers are local only and bounded" {
     stderr_stream.reset();
     const package_argv = [_][]const u8{ "pilot", "package" };
     try std.testing.expectEqual(@as(u8, 0), try edge_main.run(package_argv[0..], stdout_stream.writer(), stderr_stream.writer()));
-    try expectContains(stdout_stream.getWritten(), ".aegis-edge/pilot-package/index.md");
+    try expectContains(stdout_stream.getWritten(), ".edge/pilot-package/index.md");
     try expectContains(stdout_stream.getWritten(), "local customer-evaluation package");
     try expectContains(stdout_stream.getWritten(), "no external network");
     try std.testing.expectEqualStrings("", stderr_stream.getWritten());
-    try expectFile(".aegis-edge/pilot-package/index.md");
+    try expectFile(".edge/pilot-package/index.md");
 
     stdout_stream.reset();
     stderr_stream.reset();

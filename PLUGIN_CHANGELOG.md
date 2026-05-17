@@ -51,7 +51,7 @@
   - `docs/integrations/codex.md` — Codex plugin install and usage
   - `docs/integrations/claude-code.md` — Claude Code plugin install and usage
   - `docs/integrations/opencode.md` — OpenCode plugin install and usage
-  - `docs/integrations/aegis-cli-plugin.md` — Aegis CLI plugin surface reference
+  - `docs/integrations/orca-plugin.md` — Orca plugin surface reference
   - `docs/integrations/plugin-troubleshooting.md` — Common issues and fixes
   - `docs/integrations/plugin-security-model.md` — Trust boundaries and invariants
   - `docs/integrations/separate-workstream-guardrails.md` — Drone workstream isolation
@@ -75,7 +75,7 @@
 ### Known Limitations
 
 - Hooks are advisory; they do not enforce policy independently of the host.
-- The strongest local protection remains `aegis run -- <agent-command>`.
+- The strongest local protection remains `orca run -- <agent-command>`.
 - Official marketplace availability is not yet implemented.
 - Plugin installation is preview/dry-run by default.
 - No MCP server behavior is included.
@@ -89,7 +89,7 @@
 - OpenCode plugin: 1.1.0
 - OpenClaw plugin npm package: 1.1.3 (published as `orca-openclaw-plugin`)
 - OpenClaw ClawHub submission: published in P11 as `orca-openclaw-plugin@1.1.3`
-- Requires Aegis CLI >= 1.0.0
+- Requires Orca >= 1.0.0
 
 ---
 
@@ -103,27 +103,27 @@ zig build
 zig build test
 
 # Verify plugin doctors
-./zig-out/bin/aegis plugin doctor codex
-./zig-out/bin/aegis plugin doctor claude
-./zig-out/bin/aegis plugin doctor opencode
+./zig-out/bin/orca plugin doctor codex
+./zig-out/bin/orca plugin doctor claude
+./zig-out/bin/orca plugin doctor opencode
 
 # Verify manifests
-./zig-out/bin/aegis plugin manifest codex
-./zig-out/bin/aegis plugin manifest claude
-./zig-out/bin/aegis plugin manifest opencode
+./zig-out/bin/orca plugin manifest codex
+./zig-out/bin/orca plugin manifest claude
+./zig-out/bin/orca plugin manifest opencode
 
 # Verify install dry-run
-./zig-out/bin/aegis plugin install codex --dry-run
-./zig-out/bin/aegis plugin install claude --dry-run
-./zig-out/bin/aegis plugin install opencode --dry-run
+./zig-out/bin/orca plugin install codex --dry-run
+./zig-out/bin/orca plugin install claude --dry-run
+./zig-out/bin/orca plugin install opencode --dry-run
 
 # Test hooks
 cat tests/plugin-fixtures/codex/pre_tool_use_command_safe.json \
-  | ./zig-out/bin/aegis hook codex PreToolUse
+  | ./zig-out/bin/orca hook codex PreToolUse
 cat tests/plugin-fixtures/claude/pre_tool_use_command_safe.json \
-  | ./zig-out/bin/aegis hook claude PreToolUse
+  | ./zig-out/bin/orca hook claude PreToolUse
 cat tests/plugin-fixtures/opencode/tool_execute_before_safe.json \
-  | ./zig-out/bin/aegis hook opencode tool.execute.before
+  | ./zig-out/bin/orca hook opencode tool.execute.before
 
 # Package plugins
 ./scripts/package-plugins.sh
@@ -133,5 +133,5 @@ ls -la dist/plugins
 cat dist/plugins/aegis-plugin-checksums.txt
 
 # Run redteam
-./zig-out/bin/aegis redteam --ci
+./zig-out/bin/orca redteam --ci
 ```

@@ -125,21 +125,21 @@ pub fn integrationTestGate(env: IntegrationEnv) IntegrationGate {
         return .{
             .enabled = false,
             .availability = .skipped,
-            .reason = "AEGIS_EDGE_RUN_PX4_SITL_TESTS is not 1; PX4 SITL integration tests are skipped",
+            .reason = "EDGE_BIN_RUN_PX4_SITL_TESTS is not 1; PX4 SITL integration tests are skipped",
         };
     }
     const endpoint_text = env.endpoint orelse {
         return .{
             .enabled = true,
             .availability = .unavailable,
-            .reason = "AEGIS_EDGE_PX4_ENDPOINT is required when PX4 SITL tests are enabled",
+            .reason = "EDGE_BIN_PX4_ENDPOINT is required when PX4 SITL tests are enabled",
         };
     };
     const endpoint = Endpoint.parse(endpoint_text) catch {
         return .{
             .enabled = true,
             .availability = .unavailable,
-            .reason = "AEGIS_EDGE_PX4_ENDPOINT is invalid",
+            .reason = "EDGE_BIN_PX4_ENDPOINT is invalid",
         };
     };
     return .{
@@ -162,12 +162,12 @@ pub fn integrationTestGateOwned(allocator: std.mem.Allocator, env: IntegrationEn
 }
 
 pub fn integrationTestGateFromEnv(allocator: std.mem.Allocator) !IntegrationGate {
-    const run = std.process.getEnvVarOwned(allocator, "AEGIS_EDGE_RUN_PX4_SITL_TESTS") catch |err| switch (err) {
+    const run = std.process.getEnvVarOwned(allocator, "EDGE_BIN_RUN_PX4_SITL_TESTS") catch |err| switch (err) {
         error.EnvironmentVariableNotFound => null,
         else => return err,
     };
     defer if (run) |value| allocator.free(value);
-    const endpoint = std.process.getEnvVarOwned(allocator, "AEGIS_EDGE_PX4_ENDPOINT") catch |err| switch (err) {
+    const endpoint = std.process.getEnvVarOwned(allocator, "EDGE_BIN_PX4_ENDPOINT") catch |err| switch (err) {
         error.EnvironmentVariableNotFound => null,
         else => return err,
     };
@@ -176,7 +176,7 @@ pub fn integrationTestGateFromEnv(allocator: std.mem.Allocator) !IntegrationGate
 }
 
 pub fn testedVersionFromEnv(allocator: std.mem.Allocator) ![]u8 {
-    return std.process.getEnvVarOwned(allocator, "AEGIS_EDGE_PX4_TESTED_VERSION") catch |err| switch (err) {
+    return std.process.getEnvVarOwned(allocator, "EDGE_BIN_PX4_TESTED_VERSION") catch |err| switch (err) {
         error.EnvironmentVariableNotFound => try allocator.dupe(u8, "documented-by-phase-29"),
         else => return err,
     };

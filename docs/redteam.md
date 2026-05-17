@@ -1,6 +1,6 @@
 # Red-team
 
-Red-team fixtures are deterministic local checks for Aegis controls.
+Red-team fixtures are deterministic local checks for Orca controls.
 
 ## Categories
 
@@ -9,14 +9,14 @@ Current fixture categories include prompt injection, secret exfiltration, shell 
 ## Run
 
 ```sh
-./zig-out/bin/aegis redteam --ci
-./zig-out/bin/aegis redteam fixtures --fixture prompt-injection/readme-env-read --ci
+./zig-out/bin/orca redteam --ci
+./zig-out/bin/orca redteam fixtures --fixture prompt-injection/readme-env-read --ci
 ```
 
 ## JSON Output
 
 ```sh
-./zig-out/bin/aegis redteam --json --ci > redteam.json
+./zig-out/bin/orca redteam --json --ci > redteam.json
 ```
 
 ## CI Mode

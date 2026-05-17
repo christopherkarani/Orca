@@ -1,7 +1,7 @@
 const std = @import("std");
 const core = @import("aegis_core");
 
-pub const audit_dir_name = ".aegis-edge";
+pub const audit_dir_name = ".edge";
 
 pub fn createWriter(allocator: std.mem.Allocator, session: core.session.Session) !core.audit.writer.SessionWriter {
     return core.audit.writer.SessionWriter.initWithDirName(allocator, session, audit_dir_name);
@@ -42,8 +42,8 @@ pub fn loadReplay(allocator: std.mem.Allocator, workspace_root: []const u8, sess
     });
 }
 
-test "edge session path uses .aegis-edge namespace" {
+test "edge session path uses .edge namespace" {
     const path = try sessionDirPath(std.testing.allocator, "/tmp/aegis", "session-1");
     defer std.testing.allocator.free(path);
-    try std.testing.expect(std.mem.indexOf(u8, path, ".aegis-edge") != null);
+    try std.testing.expect(std.mem.indexOf(u8, path, ".edge") != null);
 }

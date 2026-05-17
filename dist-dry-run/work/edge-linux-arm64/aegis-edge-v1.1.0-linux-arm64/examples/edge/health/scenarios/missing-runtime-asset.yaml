@@ -1,8 +1,0 @@
-id: missing-runtime-asset
-environment: fake_adapter
-provenance: fake_adapter
-command: takeoff
-expected_decision: deny
-health_fault: missing_runtime_asset
-expected_behavior: fail_closed
-note: missing critical runtime asset is reported as health failure, not ignored.

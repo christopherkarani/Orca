@@ -1,8 +1,0 @@
-# Aegis Edge SITL example only. Do not install or enable automatically.
-# Local SITL evidence only; no real-flight readiness claim.
-[Unit]
-Description=Aegis Edge SITL example
-
-[Service]
-Type=oneshot
-ExecStart=/usr/local/bin/aegis-edge deployment check --profile /opt/aegis-edge/examples/edge/deployment/profiles/px4-sitl-local.yaml

@@ -109,7 +109,7 @@ test "phase 40 review report risk register and known limitations exist and are h
             "Safety invariants checked",
             "Release blockers",
             "Recommendation: Ready for Phase 41 production release",
-            "Aegis Edge must still not claim real-flight readiness",
+            "Edge must still not claim real-flight readiness",
         } },
         .{ .path = "docs/edge/risk-register.md", .markers = &.{
             "| Risk ID | Category | Description | Severity | Likelihood | Affected component | Mitigation | Test coverage | Status | Owner | Notes |",

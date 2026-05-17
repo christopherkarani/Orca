@@ -288,7 +288,7 @@ test "phase 34 safety-case artifacts are generated and redacted" {
 
     const safety_md = try std.fs.cwd().readFileAlloc(allocator, ".zig-cache/phase34-redteam-report-test/safety-report.md", 512 * 1024);
     defer allocator.free(safety_md);
-    try std.testing.expect(std.mem.indexOf(u8, safety_md, "Aegis Edge is not a flight controller") != null);
+    try std.testing.expect(std.mem.indexOf(u8, safety_md, "Edge is not a flight controller") != null);
     try std.testing.expect(std.mem.indexOf(u8, safety_md, "SITL success is not real-flight readiness") != null);
     try std.testing.expect(std.mem.indexOf(u8, safety_md, "Fixture Results") != null);
 }

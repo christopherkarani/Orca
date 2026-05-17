@@ -1,21 +1,21 @@
 # Replay
 
-Aegis writes per-session artifacts under `.aegis/sessions/<session-id>/`.
+Orca writes per-session artifacts under `.orca/sessions/<session-id>/`.
 
 ## Files
 
 - `events.jsonl`: deterministic security events.
 - `summary.json`: machine-readable session summary.
 - `summary.md`: human-readable summary.
-- `.aegis/last`: pointer to the last session.
+- `.orca/last`: pointer to the last session.
 
 ## Commands
 
 ```sh
-./zig-out/bin/aegis replay --session last
-./zig-out/bin/aegis replay --session last --json
-./zig-out/bin/aegis replay --session last --only denied
-./zig-out/bin/aegis replay --session last --verify
+./zig-out/bin/orca replay --session last
+./zig-out/bin/orca replay --session last --json
+./zig-out/bin/orca replay --session last --only denied
+./zig-out/bin/orca replay --session last --verify
 ```
 
 ## Hash-chain Verification

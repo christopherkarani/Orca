@@ -41,7 +41,7 @@ pub fn create(allocator: std.mem.Allocator, session_dir: []const u8) ![]u8 {
     var buffer: [8192]u8 = undefined;
     var writer = file.writer(&buffer);
     try writer.interface.writeAll("{\"schema_version\":1,\"bundle_kind\":\"directory\",\"non_certification_disclaimer\":");
-    try core.util.writeJsonString(&writer.interface, "Aegis Edge evidence bundles are engineering audit artifacts only, not regulatory approval, certification, airworthiness approval, or real-flight readiness claims.");
+    try core.util.writeJsonString(&writer.interface, "Edge evidence bundles are engineering audit artifacts only, not regulatory approval, certification, airworthiness approval, or real-flight readiness claims.");
     try writer.interface.writeAll(",\"files\":[");
     for (required_files, 0..) |relative, index| {
         if (index > 0) try writer.interface.writeByte(',');

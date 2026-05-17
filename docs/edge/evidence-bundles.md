@@ -1,9 +1,9 @@
 # Edge Evidence Bundles
 
-`aegis-edge safety-case bundle --session last` creates a local directory bundle at:
+`edge safety-case bundle --session last` creates a local directory bundle at:
 
 ```text
-.aegis-edge/sessions/<session-id>/evidence-bundle/
+.edge/sessions/<session-id>/evidence-bundle/
 ```
 
 The bundle manifest hashes required artifacts from the session:

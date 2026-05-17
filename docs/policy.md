@@ -4,11 +4,11 @@ Policies are YAML files with `version: 1`.
 
 ## Locations And Load Order
 
-Commands accept `--policy <path>`. Without it, Aegis discovers `.aegis/policy.yaml` from the workspace, then `$HOME/.config/aegis/policy.yaml`, then built-in defaults. If a discovered policy file exists but is invalid or unreadable, Aegis fails closed instead of silently falling through.
+Commands accept `--policy <path>`. Without it, Orca discovers `.orca/policy.yaml` from the workspace, then `$HOME/.config/orca/policy.yaml`, then built-in defaults. If a discovered policy file exists but is invalid or unreadable, Orca fails closed instead of silently falling through.
 
 ```sh
-./zig-out/bin/aegis init --preset generic-agent
-./zig-out/bin/aegis policy check .aegis/policy.yaml
+./zig-out/bin/orca init --preset generic-agent
+./zig-out/bin/orca policy check .orca/policy.yaml
 ```
 
 ## Modes
@@ -56,7 +56,7 @@ files:
       - "./**"
     deny:
       - "./.git/**"
-      - "./.aegis/**"
+      - "./.orca/**"
     mode: staged
 commands:
   default: deny
@@ -92,10 +92,10 @@ audit:
 Explain decisions:
 
 ```sh
-./zig-out/bin/aegis policy explain file.read ./.env
-./zig-out/bin/aegis policy explain command git status
-./zig-out/bin/aegis policy explain network https://example.invalid/path
-./zig-out/bin/aegis policy explain mcp demo.list_files
+./zig-out/bin/orca policy explain file.read ./.env
+./zig-out/bin/orca policy explain command git status
+./zig-out/bin/orca policy explain network https://example.invalid/path
+./zig-out/bin/orca policy explain mcp demo.list_files
 ```
 
 ## Invalid Policy Behavior
@@ -108,7 +108,7 @@ CI never prompts. `ask` decisions become `deny`.
 
 ## Common Workflows
 
-- Start broad: `aegis init --preset generic-agent`.
+- Start broad: `orca init --preset generic-agent`.
 - Strict local work: `--preset strict-local`.
 - MCP development: `--preset mcp-dev`.
-- CI: `--preset github-actions` and `aegis redteam --ci`.
+- CI: `--preset github-actions` and `orca redteam --ci`.

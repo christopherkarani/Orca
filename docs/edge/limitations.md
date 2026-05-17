@@ -1,6 +1,6 @@
 # Edge Limitations
 
-Aegis Edge through Phase 40 supports local policy evaluation, fake/in-memory MAVLink mediation, deterministic fake-PX4 and fake-ArduPilot scenarios, opt-in PX4/ArduPilot SITL simulation checks, safety enforcement, operator approval, emergency fallback evaluation, audit/replay, safety-case reports, red-team fixtures, data guard, runtime health/watchdog checks, deployment diagnostics, and no-actuation bench-preparation evidence.
+Edge through Phase 40 supports local policy evaluation, fake/in-memory MAVLink mediation, deterministic fake-PX4 and fake-ArduPilot scenarios, opt-in PX4/ArduPilot SITL simulation checks, safety enforcement, operator approval, emergency fallback evaluation, audit/replay, safety-case reports, red-team fixtures, data guard, runtime health/watchdog checks, deployment diagnostics, and no-actuation bench-preparation evidence.
 
 It is not command forwarding to a real flight controller and is not ready for real flight.
 

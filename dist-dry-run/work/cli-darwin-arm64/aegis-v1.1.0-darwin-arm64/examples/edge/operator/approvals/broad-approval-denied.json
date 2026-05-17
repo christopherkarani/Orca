@@ -1,8 +1,0 @@
-{
-  "example": "broad-approval-denied",
-  "scope": "command_type",
-  "vehicle_id": "edge-vehicle-1",
-  "command_type": "takeoff",
-  "max_uses": 5,
-  "expected": "deny unless policy explicitly enables broad scopes"
-}

@@ -1,6 +1,6 @@
 const std = @import("std");
 
-const core = @import("../core/mod.zig");
+const core = @import("../core/public.zig");
 const redact_bridge = @import("redact_bridge.zig");
 
 pub const summary_hash_len = 64;
@@ -8,10 +8,11 @@ pub const SummaryHashHex = [summary_hash_len]u8;
 
 pub const SummaryInput = struct {
     session: core.session.Session,
-    status: core.supervisor.ChildStatus,
+    status: core.process.ChildStatus,
     event_count: usize,
     final_event_hash: []const u8,
     policy: []const u8 = "none",
+    product_label: []const u8 = "Session",
 };
 
 pub fn summaryHash(canonical_summary_without_hash: []const u8) SummaryHashHex {
@@ -79,7 +80,8 @@ pub fn updateFinalHash(allocator: std.mem.Allocator, session_dir_path: []const u
     var md: std.ArrayList(u8) = .empty;
     defer md.deinit(allocator);
     const md_writer = md.writer(allocator);
-    try md_writer.print("# Aegis Session {s}\n\n- Command: `", .{object.get("session_id").?.string});
+    try writeMarkdownHeading(md_writer, "Session", object.get("session_id").?.string);
+    try md_writer.writeAll("\n- Command: `");
     try writeCommandDisplayFromJson(md_writer, object.get("command").?.array);
     try md_writer.print("`\n- Policy: {s}\n- Mode: {s}\n- Status: {s} {d}\n- Events: {d}\n- Final event hash: `{s}`\n", .{
         object.get("policy").?.string,
@@ -215,11 +217,11 @@ fn writeCanonicalSummaryFromJson(
 pub fn writeMarkdown(writer: anytype, input: SummaryInput) !void {
     var policy_buf: [256]u8 = undefined;
     const safe_policy = redact_bridge.redactStringBounded(input.policy, &policy_buf);
-    try writer.print(
-        \\# Aegis Session {s}
+    try writeMarkdownHeading(writer, input.product_label, input.session.id.slice());
+    try writer.writeAll(
         \\
         \\- Command: `
-    , .{input.session.id.slice()});
+    );
     try writeCommandDisplay(writer, input.session.command, input.session.args);
     try writer.print(
         \\`
@@ -238,6 +240,16 @@ pub fn writeMarkdown(writer: anytype, input: SummaryInput) !void {
     });
 }
 
+fn writeMarkdownHeading(writer: anytype, product_label: []const u8, session_id: []const u8) !void {
+    if (product_label.len == 0 or std.mem.eql(u8, product_label, "Session")) {
+        try writer.print("# Session {s}\n", .{session_id});
+        return;
+    }
+    var label_buf: [64]u8 = undefined;
+    const safe_label = redact_bridge.redactStringBounded(product_label, &label_buf);
+    try writer.print("# {s} Session {s}\n", .{ safe_label, session_id });
+}
+
 fn writeCommandArray(writer: anytype, command: []const u8, args: []const []const u8) !void {
     try writer.writeByte('[');
     var command_buf: [256]u8 = undefined;
@@ -250,7 +262,7 @@ fn writeCommandArray(writer: anytype, command: []const u8, args: []const []const
     try writer.writeByte(']');
 }
 
-fn writeStatus(writer: anytype, status: core.supervisor.ChildStatus) !void {
+fn writeStatus(writer: anytype, status: core.process.ChildStatus) !void {
     try writer.writeByte('{');
     switch (status) {
         .exited => |code| try writer.print("\"kind\":\"exit\",\"code\":{d}", .{code}),
@@ -343,7 +355,7 @@ fn writeStatusJsonValue(writer: anytype, status: std.json.ObjectMap) !void {
     try writer.writeByte('}');
 }
 
-pub fn statusText(status: core.supervisor.ChildStatus) []const u8 {
+pub fn statusText(status: core.process.ChildStatus) []const u8 {
     return switch (status) {
         .exited => |code| if (code == 0) "exit 0" else "exit nonzero",
         .signal => "signal",
@@ -410,13 +422,50 @@ test "summary redacts synthetic secret command metadata" {
     try std.testing.expect(std.mem.indexOf(u8, list.items, "[REDACTED:") != null);
 }
 
+test "summary markdown is product neutral unless caller provides label" {
+    const ts = core.time.Timestamp.fromUnixSeconds(1_777_983_130);
+    const session: core.session.Session = .{
+        .id = try core.session.generateSessionId(ts),
+        .started_at = ts,
+        .ended_at = ts,
+        .command = "echo",
+        .args = &.{"hello"},
+        .workspace_root = "/tmp/aegis",
+        .mode = .observe,
+        .platform = core.platform.detectOs(),
+    };
+    var generic: std.ArrayList(u8) = .empty;
+    defer generic.deinit(std.testing.allocator);
+    try writeMarkdown(generic.writer(std.testing.allocator), .{
+        .session = session,
+        .status = .{ .exited = 0 },
+        .event_count = 3,
+        .final_event_hash = "abc",
+    });
+    const orca_heading_text = "Orca" ++ " Session";
+    try std.testing.expect(std.mem.indexOf(u8, generic.items, orca_heading_text) == null);
+    try std.testing.expect(std.mem.indexOf(u8, generic.items, "# Session ") != null);
+
+    var orca: std.ArrayList(u8) = .empty;
+    defer orca.deinit(std.testing.allocator);
+    try writeMarkdown(orca.writer(std.testing.allocator), .{
+        .session = session,
+        .status = .{ .exited = 0 },
+        .event_count = 3,
+        .final_event_hash = "abc",
+        .product_label = "Orca",
+    });
+    const orca_heading_prefix = "# " ++ "Orca" ++ " Session ";
+    try std.testing.expect(std.mem.indexOf(u8, orca.items, orca_heading_prefix) != null);
+}
+
 test "update final hash rejects tampered summary before rewriting" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
     const root = try tmp.dir.realpathAlloc(std.testing.allocator, ".");
     defer std.testing.allocator.free(root);
 
-    const session_dir = try std.fs.path.join(std.testing.allocator, &.{ root, ".aegis", "sessions", "summary-tamper" });
+    const session_dir = try std.fs.path.join(std.testing.allocator, &.{ root, ".orca", "sessions", "summary-tamper" });
     defer std.testing.allocator.free(session_dir);
     try std.fs.cwd().makePath(session_dir);
 

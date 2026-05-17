@@ -1,8 +1,8 @@
 const std = @import("std");
 const builtin = @import("builtin");
 
-const core = @import("../core/mod.zig");
-const policy = @import("../policy/mod.zig");
+const core = @import("aegis_core").core;
+const policy = @import("aegis_core").policy;
 
 pub const implemented = true;
 
@@ -197,8 +197,8 @@ pub const shim_names = [_][]const u8{
     "cmd",
 };
 
-pub const approved_once_env = "AEGIS_APPROVED_COMMAND_ONCE";
-pub const approved_session_env = "AEGIS_APPROVED_COMMAND_SESSION";
+pub const approved_once_env = "ORCA_APPROVED_COMMAND_ONCE";
+pub const approved_session_env = "ORCA_APPROVED_COMMAND_SESSION";
 
 pub fn createShimDirectory(
     allocator: std.mem.Allocator,
@@ -206,7 +206,7 @@ pub fn createShimDirectory(
     session_id: []const u8,
     aegis_executable: []const u8,
 ) ![]u8 {
-    const shim_dir = try std.fs.path.join(allocator, &.{ workspace_root, ".aegis", "sessions", session_id, "shims" });
+    const shim_dir = try std.fs.path.join(allocator, &.{ workspace_root, ".orca", "sessions", session_id, "shims" });
     errdefer allocator.free(shim_dir);
     try std.fs.cwd().makePath(shim_dir);
     inline for (shim_names) |name| {
@@ -227,7 +227,7 @@ pub fn prependShimPath(allocator: std.mem.Allocator, env_map: *std.process.EnvMa
         try std.fmt.allocPrint(allocator, "{s}{c}{s}", .{ shim_dir, pathDelimiter(), old_path });
     defer allocator.free(joined);
     try env_map.put("PATH", joined);
-    try env_map.put("AEGIS_SHIM_DIR", shim_dir);
+    try env_map.put("ORCA_SHIM_DIR", shim_dir);
 }
 
 pub fn pathWithoutShimAlloc(allocator: std.mem.Allocator, path_value: []const u8, shim_dir: []const u8) ![]u8 {
@@ -987,7 +987,7 @@ test "command classifier catches Windows risky patterns" {
     try std.testing.expectEqual(RiskClass.destructive_filesystem, classifyArgv(&.{ "cmd", "/c", "rmdir /s /q C:\\temp\\x" }).risk_class);
     try std.testing.expectEqual(RiskClass.privilege_escalation, classifyArgv(&.{ "powershell", "-Command", "Start-Process cmd -Verb RunAs" }).risk_class);
     try std.testing.expectEqual(RiskClass.privilege_escalation, classifyArgv(&.{ "runas", "/user:Administrator", "cmd" }).risk_class);
-    try std.testing.expectEqual(RiskClass.privilege_escalation, classifyArgv(&.{ "reg", "add", "HKCU\\Software\\Aegis" }).risk_class);
+    try std.testing.expectEqual(RiskClass.privilege_escalation, classifyArgv(&.{ "reg", "add", "HKCU\\Software\\Orca" }).risk_class);
     try std.testing.expectEqual(RiskClass.credential_inspection, classifyArgv(&.{ "type", "%USERPROFILE%\\.ssh\\id_ed25519" }).risk_class);
     try std.testing.expectEqual(RiskClass.obfuscated, classifyArgv(&.{ "certutil", "-decode", "in.txt", "out.exe" }).risk_class);
 }
@@ -1134,7 +1134,7 @@ test "Windows shim directory includes executable cmd PowerShell and PATH shims" 
 }
 
 test "Windows executable shim aliases route extension-qualified invocations" {
-    try std.testing.expectEqualStrings("cmd", shimAliasFromExecutablePath("C:\\repo\\.aegis\\sessions\\id\\shims\\cmd.exe").?);
+    try std.testing.expectEqualStrings("cmd", shimAliasFromExecutablePath("C:\\repo\\.orca\\sessions\\id\\shims\\cmd.exe").?);
     try std.testing.expectEqualStrings("powershell", shimAliasFromExecutablePath("powershell.exe").?);
     try std.testing.expectEqualStrings("pwsh", shimAliasFromExecutablePath("pwsh.exe").?);
     try std.testing.expectEqualStrings("git", shimAliasFromExecutablePath("git.exe").?);

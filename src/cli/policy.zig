@@ -1,7 +1,8 @@
 const std = @import("std");
-const aegis_policy = @import("../policy/mod.zig");
-const core = @import("../core/mod.zig");
-const core_api = @import("../core/api.zig");
+const aegis_policy = @import("aegis_core").policy;
+const core = @import("aegis_core").core;
+const supervisor = @import("../core/supervisor.zig");
+const core_api = @import("aegis_core").api;
 const exit_codes = @import("exit_codes.zig");
 const help = @import("help.zig");
 
@@ -72,7 +73,7 @@ fn explain(argv: []const []const u8, stdout: anytype, stderr: anytype) !u8 {
     defer _ = gpa_state.deinit();
     const allocator = gpa_state.allocator();
 
-    const root = core.supervisor.resolveWorkspaceRoot(allocator, null, ".") catch try allocator.dupe(u8, ".");
+    const root = supervisor.resolveWorkspaceRoot(allocator, null, ".") catch try allocator.dupe(u8, ".");
     defer allocator.free(root);
     var loaded = core_api.discoverPolicy(allocator, null, root) catch |err| {
         try stderr.print("orca policy explain: failed to load policy: {s}\n", .{@errorName(err)});
@@ -123,6 +124,31 @@ test "policy check validates a file" {
     try std.testing.expectEqual(exit_codes.success, code);
     try std.testing.expect(std.mem.indexOf(u8, stdout_stream.getWritten(), "Policy OK") != null);
     try std.testing.expectEqualStrings("", stderr_stream.getWritten());
+}
+
+test "policy check rejects scalar values on object-only grouping keys" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    {
+        const file = try tmp.dir.createFile("policy.yaml", .{});
+        defer file.close();
+        try file.writeAll(
+            \\version: 1
+            \\mode: strict
+            \\commands: allow
+        );
+    }
+    const path = try tmp.dir.realpathAlloc(std.testing.allocator, "policy.yaml");
+    defer std.testing.allocator.free(path);
+
+    var stdout_buf: [512]u8 = undefined;
+    var stderr_buf: [512]u8 = undefined;
+    var stdout_stream = std.io.fixedBufferStream(&stdout_buf);
+    var stderr_stream = std.io.fixedBufferStream(&stderr_buf);
+
+    const code = try command(&.{ "check", path }, stdout_stream.writer(), stderr_stream.writer());
+    try std.testing.expectEqual(exit_codes.general, code);
+    try std.testing.expect(std.mem.indexOf(u8, stderr_stream.getWritten(), "InvalidPolicy") != null);
 }
 
 test "policy check without path validates the built-in default policy" {

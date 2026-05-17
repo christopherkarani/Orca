@@ -1,5 +1,0 @@
-id: disable-failsafe-deny
-mode: strict
-command: disable_failsafe
-expected_decision: deny
-note: "Fake command-risk scenario. No real-flight validation."

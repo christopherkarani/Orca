@@ -6,7 +6,7 @@ Confirm the customer understands the evidence boundary, non-goals, and pilot saf
 
 ## Opening
 
-"This review is about making sure the pilot evidence is useful and not overstated. Aegis Edge can support simulation/SITL/bench-preparation evaluation. It does not provide aircraft validation, approval, detect-and-avoid, or replacement of your safety process."
+"This review is about making sure the pilot evidence is useful and not overstated. Edge can support simulation/SITL/bench-preparation evaluation. It does not provide aircraft validation, approval, detect-and-avoid, or replacement of your safety process."
 
 ## Review Topics
 

@@ -1,7 +1,7 @@
-38eb5cf104a1c408f37ab602e92b8516b1d6e7667d617ed8372ccc9dedca1015  aegis-v1.1.0-darwin-amd64.tar.gz
-25e5bd06f714e8b98d5f2086ba7cd04a388d042fb6c9e3b2d8e8e19df02349b9  aegis-v1.1.0-darwin-arm64.tar.gz
-6397f5fb6b6615e9a88b43449d42c7d26115c714a51d42bbba3a8be5142ecadd  aegis-v1.1.0-linux-amd64.tar.gz
-2349ac66a2f9cc1654adee3ba6ed12cec015fba9b92a6b0b54cfc5c4e73cd623  aegis-v1.1.0-linux-arm64.tar.gz
-d0f43e4e90deee43887131e08ebade593c9ef4001eb9580a0ffe0f1e36bbd534  aegis-v1.1.0-windows-amd64.zip
-4159fb2057821d62458feac11f4c0abf2d72c227c63ee6630afe78c47174f627  aegis-edge-v1.1.0-linux-amd64.tar.gz
-12bce5bd0defccf019cf9477abcaa8885200004e88481a2fa27a22be7b79d5e0  aegis-edge-v1.1.0-linux-arm64.tar.gz
+b70e72f1102f390ebd34c22478ffbc0475db7ad23fc0137c9c070ce6cda55357  orca-v1.1.0-darwin-amd64.tar.gz
+ddea96687af3a84c1578a23d07fd5b231f237dcac50de8e9768dcb002a588681  orca-v1.1.0-darwin-arm64.tar.gz
+56b4179d30cd5d0f325cbe20ead36fedbc07a26722bc959e6b5a33c1dbf9e318  orca-v1.1.0-linux-amd64.tar.gz
+6b9e0191bff97cb3958a1ff0cc7a208b392b11319f2ac344457acb2b40491ba2  orca-v1.1.0-linux-arm64.tar.gz
+c90bf7514f5681f2c7604efba1162dc74e0713a550899b993c21aee88d6098a1  orca-v1.1.0-windows-amd64.zip
+6ca6ca7d87e06666a04bb09b797472008bae53c1026738c61525b8c0b019ef9c  edge-v1.1.0-linux-amd64.tar.gz
+86aa88ada40769be674b7d333c1a0f0db08da049e0f85eab3873e5f42b8e9c45  edge-v1.1.0-linux-arm64.tar.gz

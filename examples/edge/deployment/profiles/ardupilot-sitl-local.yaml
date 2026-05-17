@@ -6,8 +6,8 @@ environment: ardupilot_sitl
 runtime_assets: source
 policy_path: examples/edge/ardupilot/policies/ardupilot-geofence-basic.yaml
 scenario_path: examples/edge/ardupilot/scenarios/sitl-observe-heartbeat-skip.yaml
-audit_output_path: .aegis-edge/sessions
-log_output_path: .aegis-edge/logs
+audit_output_path: .edge/sessions
+log_output_path: .edge/logs
 network_mode: sitl_only
 sitl_config: local ArduPilot SITL only
 safety_limitations: ArduPilot SITL evidence is simulation evidence, not real-flight validation

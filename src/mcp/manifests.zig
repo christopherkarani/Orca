@@ -1,8 +1,8 @@
 const std = @import("std");
 
-const redact_bridge = @import("../audit/redact_bridge.zig");
-const core = @import("../core/mod.zig");
-const policy_schema = @import("../policy/schema.zig");
+const redact_bridge = @import("aegis_core").audit.redact_bridge;
+const core = @import("aegis_core").core;
+const policy_schema = @import("aegis_core").policy.schema;
 const tools = @import("tools.zig");
 
 pub const implemented = true;
@@ -20,11 +20,9 @@ pub const ManifestError = error{
 
 pub const Transport = enum {
     stdio,
-    http,
 
     pub fn parse(value: []const u8) ?Transport {
         if (std.mem.eql(u8, value, "stdio")) return .stdio;
-        if (std.mem.eql(u8, value, "http")) return .http;
         return null;
     }
 
@@ -470,6 +468,12 @@ test "valid manifest parsing covers Phase 17 schema" {
 }
 
 test "invalid manifest validation rejects unsafe or ambiguous schema" {
+    try std.testing.expectError(error.UnsupportedTransport, parseFromSlice(std.testing.allocator,
+        \\version: 1
+        \\server:
+        \\  name: github
+        \\  transport: http
+    , "bad.yaml"));
     try std.testing.expectError(error.MissingServerCommand, parseFromSlice(std.testing.allocator,
         \\version: 1
         \\server:

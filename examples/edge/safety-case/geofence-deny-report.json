@@ -14,7 +14,7 @@
     }
   ],
   "limitations": [
-    "Aegis Edge safety reports are engineering audit artifacts only. They are not regulatory approval, certification, airworthiness approval, or real-flight readiness claims.",
+    "Edge safety reports are engineering audit artifacts only. They are not regulatory approval, certification, airworthiness approval, or real-flight readiness claims.",
     "Fake adapter evidence is not SITL or real-flight evidence."
   ]
 }

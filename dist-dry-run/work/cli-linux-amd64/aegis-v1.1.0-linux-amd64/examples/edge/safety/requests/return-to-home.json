@@ -1,9 +1,0 @@
-{
-  "command_id": "safety-return-to-home",
-  "vehicle_id": "edge-vehicle-1",
-  "action": "return_to_home",
-  "actor": "fake-safety-scenario",
-  "timestamp_ms": 1000100,
-  "timestamp_source": "monotonic",
-  "source": "fake_adapter"
-}

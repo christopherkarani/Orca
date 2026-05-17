@@ -2,7 +2,7 @@
 
 ## We already have geofencing in the autopilot.
 
-Good. Aegis Edge is not trying to replace that. The pilot asks whether planner/agent commands can be independently evaluated, denied, audited, replayed, and reported before they reach the control bridge.
+Good. Edge is not trying to replace that. The pilot asks whether planner/agent commands can be independently evaluated, denied, audited, replayed, and reported before they reach the control bridge.
 
 ## SITL is not real flight.
 
@@ -10,7 +10,7 @@ Correct. SITL is simulator evidence. The value is reproducible policy and eviden
 
 ## Does this certify us?
 
-No. Aegis Edge produces customer-evaluation evidence and limitations. It does not certify, approve, or replace regulatory work.
+No. Edge produces customer-evaluation evidence and limitations. It does not certify, approve, or replace regulatory work.
 
 ## Can this replace our safety system?
 
@@ -38,7 +38,7 @@ The first pilot should prove local policy and evidence workflows before any hard
 
 ## We need BVLOS approval.
 
-Aegis Edge cannot provide that. It may help produce internal evaluation evidence, but approval work remains separate.
+Edge cannot provide that. It may help produce internal evaluation evidence, but approval work remains separate.
 
 ## We are too early.
 
@@ -50,8 +50,8 @@ Regulated teams often need better traceability, but the scope must be explicit: 
 
 ## What does this prove?
 
-It can prove how Aegis Edge behaved on supported local scenarios: input, state, rule, decision, replay integrity, red-team result, and limitations.
+It can prove how Edge behaved on supported local scenarios: input, state, rule, decision, replay integrity, red-team result, and limitations.
 
 ## Why not just use PX4/ArduPilot failsafes?
 
-You should use them. Aegis Edge focuses on the planner/agent command boundary, auditability, replay, data guard, red-team scenarios, and safety-case evidence around supported evaluation workflows.
+You should use them. Edge focuses on the planner/agent command boundary, auditability, replay, data guard, red-team scenarios, and safety-case evidence around supported evaluation workflows.

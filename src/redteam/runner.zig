@@ -1,10 +1,10 @@
 const std = @import("std");
 
-const audit = @import("../audit/mod.zig");
-const core = @import("../core/mod.zig");
+const audit = @import("aegis_core").audit;
+const core = @import("aegis_core").core;
 const intercept = @import("../intercept/mod.zig");
 const mcp = @import("../mcp/mod.zig");
-const policy = @import("../policy/mod.zig");
+const policy = @import("aegis_core").policy;
 const sandbox = @import("../sandbox/mod.zig");
 const fixtures = @import("fixtures.zig");
 const scorecard = @import("scorecard.zig");
@@ -217,6 +217,7 @@ pub fn runFixture(allocator: std.mem.Allocator, fixture: fixtures.Fixture, optio
         .event_count = writer.event_count,
         .final_event_hash = final_hash,
         .policy = "builtin:redteam",
+        .product_label = "Orca",
     });
     try writer.writeLastPointer();
 
@@ -497,7 +498,7 @@ fn appendEvent(writer: *audit.writer.SessionWriter, event_type: core.event.Event
         .event_id = try core.event.generateEventId(now),
         .timestamp = now,
         .event_type = event_type,
-        .actor = .{ .kind = .aegis, .display = "aegis" },
+        .actor = .{ .kind = .orca, .display = "orca" },
         .target = .{ .kind = target_kind, .value = target_value },
         .decision = maybe_decision,
     };
@@ -619,7 +620,7 @@ fn createLocalTempDir(allocator: std.mem.Allocator) !LocalTempDir {
     while (attempts < 32) : (attempts += 1) {
         var suffix: [16]u8 = undefined;
         _ = try core.util.randomHexSuffix(&suffix);
-        const name = try std.fmt.allocPrint(allocator, "aegis-redteam-{s}", .{&suffix});
+        const name = try std.fmt.allocPrint(allocator, "orca-redteam-{s}", .{&suffix});
         defer allocator.free(name);
         const path = try std.fs.path.join(allocator, &.{ base, name });
         errdefer allocator.free(path);
@@ -864,7 +865,7 @@ test "redteam runner temp directories use OS temp base" {
     tmp.deinit(false);
 
     try std.testing.expect(std.mem.indexOf(u8, path, ".zig-cache/tmp") == null);
-    try std.testing.expect(std.mem.indexOf(u8, path, "aegis-redteam-") != null);
+    try std.testing.expect(std.mem.indexOf(u8, path, "orca-redteam-") != null);
     std.fs.accessAbsolute(path, .{}) catch |err| switch (err) {
         error.FileNotFound => return,
         else => return err,

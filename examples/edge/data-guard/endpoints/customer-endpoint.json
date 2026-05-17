@@ -4,7 +4,7 @@
   "port": 443,
   "protocol": "https",
   "scheme": "https",
-  "path": "/aegis-edge/safety-report",
+  "path": "/edge/safety-report",
   "query": "report_id=fake-report-001",
   "environment": "customer_evaluation",
   "provenance": "customer_adapter"

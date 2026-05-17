@@ -7,7 +7,7 @@
 
 The Orca CLI itself is now plugin-capable. This means:
 
-- The `aegis` binary exposes a `plugin` command namespace.
+- The `orca` binary exposes a `plugin` command namespace.
 - Host plugins (Codex, Claude Code, and future integrations) call the Orca CLI instead of duplicating policy logic.
 - The Orca CLI remains the source of truth for policy, audit, replay, and capability reporting.
 
@@ -96,9 +96,9 @@ Plugin artifacts are packaged by `scripts/package-plugins.sh` (and `scripts/pack
 Packaged artifacts:
 
 ```text
-dist/plugins/aegis-codex-plugin-vX.Y.Z.zip
-dist/plugins/aegis-claude-code-plugin-vX.Y.Z.zip
-dist/plugins/aegis-plugin-checksums.txt
+dist/plugins/orca-codex-plugin-vX.Y.Z.zip
+dist/plugins/orca-claude-code-plugin-vX.Y.Z.zip
+dist/plugins/orca-plugin-checksums.txt
 ```
 
 Artifact contents include:
@@ -174,8 +174,8 @@ Live drone operations are classified as safety-critical and require explicit pol
 ## Schemas
 
 Plugin request/response schemas live in:
-- `integrations/common/schemas/aegis-plugin-request-v1.json`
-- `integrations/common/schemas/aegis-plugin-response-v1.json`
+- `integrations/common/schemas/orca-plugin-request-v1.json`
+- `integrations/common/schemas/orca-plugin-response-v1.json`
 
 Hook request/response schemas live in:
 - `integrations/common/schemas/hook-request-v1.json`
@@ -197,5 +197,5 @@ Orca plugins 1.x require Orca CLI >= 1.0.0.
 - `docs/integrations/plugin-troubleshooting.md`
 - `docs/integrations/plugin-compatibility.md`
 - `docs/integrations/drone-safety.md`
-- `AEGIS_CLI_PLUGIN_CONTRACT.md`
+- `ORCA_CLI_PLUGIN_CONTRACT.md`
 - `PLUGIN_SECURITY_MODEL.md`

@@ -24,6 +24,6 @@ Fixture expectations should assert blocked actions, audit/redaction behavior, sc
 Run:
 
 ```sh
-./zig-out/bin/aegis redteam --ci
+./zig-out/bin/orca redteam --ci
 ./scripts/validate-docs.sh
 ```

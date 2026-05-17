@@ -15,7 +15,7 @@
 
 ## Default Boundary Paragraph
 
-Aegis Edge is customer-evaluation material only. It is limited to simulation/SITL/bench-preparation evaluation and does not include real flight, live aircraft control, certification, regulatory approval, detect-and-avoid, or autopilot replacement.
+Edge is customer-evaluation material only. It is limited to simulation/SITL/bench-preparation evaluation and does not include real flight, live aircraft control, certification, regulatory approval, detect-and-avoid, or autopilot replacement.
 
 ## Evidence Meaning
 
@@ -30,7 +30,7 @@ Every artifact must include provenance, limitations, non-certification language,
 
 ## Use When Speaking To Customers
 
-- "This shows how Aegis Edge behaved on this supported scenario."
+- "This shows how Edge behaved on this supported scenario."
 - "This report is useful for engineering review and customer evaluation."
 - "Skipped and unsupported results are not passes."
 - "Customer-specific commands require explicit mapping."

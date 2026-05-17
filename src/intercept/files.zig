@@ -1,8 +1,8 @@
 const std = @import("std");
 
-const audit = @import("../audit/mod.zig");
-const core = @import("../core/mod.zig");
-const policy = @import("../policy/mod.zig");
+const audit = @import("aegis_core").audit;
+const core = @import("aegis_core").core;
+const policy = @import("aegis_core").policy;
 const windows_backend = @import("../sandbox/windows.zig");
 
 pub const max_staged_file_bytes: usize = 16 * 1024 * 1024;
@@ -141,7 +141,7 @@ const read_rules = [_]BuiltinRule{
 
 const write_rules = [_]BuiltinRule{
     .{ .id = "builtin.files.write.deny[0]", .pattern = "./.git/**" },
-    .{ .id = "builtin.files.write.deny[1]", .pattern = "./.aegis/**" },
+    .{ .id = "builtin.files.write.deny[1]", .pattern = "./.orca/**" },
 };
 
 pub fn normalizePath(allocator: std.mem.Allocator, workspace_root_raw: []const u8, raw_path: []const u8) !NormalizedPath {
@@ -287,7 +287,7 @@ pub fn stageDelete(
     errdefer allocator.free(original_hash);
     try writeSessionRelFile(session_dir, "original", normalized.relative_path, original_bytes);
 
-    var index = try loadIndex(allocator, session_dir);
+    var index = try loadIndex(allocator, workspace_root, session_dir);
     defer index.deinit();
     try index.upsert(.{
         .original_path = try allocator.dupe(u8, normalized.resolved_path),
@@ -297,7 +297,7 @@ pub fn stageDelete(
         .staged_hash = null,
         .operation = .delete,
         .timestamp = try timestampNowAlloc(allocator),
-        .actor = try allocator.dupe(u8, "aegis"),
+        .actor = try allocator.dupe(u8, "orca"),
     });
     try writeIndex(allocator, session_dir, session_id, index.entries.items);
     try auditFileEvent(audit_context, .file_write_staged, normalized.policy_path, .{
@@ -313,7 +313,7 @@ pub fn stageDelete(
 pub fn diffStaged(allocator: std.mem.Allocator, workspace_root: []const u8, session_id: []const u8, optional_file: ?[]const u8) ![]u8 {
     const session_dir = try sessionDirPath(allocator, workspace_root, session_id);
     defer allocator.free(session_dir);
-    var index = try loadIndex(allocator, session_dir);
+    var index = try loadIndex(allocator, workspace_root, session_dir);
     defer index.deinit();
 
     const normalized_filter = if (optional_file) |file| blk: {
@@ -343,12 +343,17 @@ pub fn discardStaged(allocator: std.mem.Allocator, workspace_root: []const u8, s
 }
 
 pub fn resolveSessionId(allocator: std.mem.Allocator, workspace_root: []const u8, requested: []const u8) ![]u8 {
-    if (!std.mem.eql(u8, requested, "last")) return try allocator.dupe(u8, requested);
-    const last_path = try std.fs.path.join(allocator, &.{ workspace_root, ".aegis", "last" });
+    if (!std.mem.eql(u8, requested, "last")) {
+        try validateSessionId(requested);
+        return try allocator.dupe(u8, requested);
+    }
+    const last_path = try std.fs.path.join(allocator, &.{ workspace_root, ".orca", "last" });
     defer allocator.free(last_path);
     const text = try std.fs.cwd().readFileAlloc(allocator, last_path, core.limits.max_session_id_len + 2);
     defer allocator.free(text);
-    return try allocator.dupe(u8, std.mem.trim(u8, text, " \t\r\n"));
+    const trimmed = std.mem.trim(u8, text, " \t\r\n");
+    try validateSessionId(trimmed);
+    return try allocator.dupe(u8, trimmed);
 }
 
 fn stageBytes(
@@ -392,7 +397,7 @@ fn stageBytes(
     const staged_path = try stagedPathForEntry(allocator, session_dir, normalized.relative_path);
     errdefer allocator.free(staged_path);
 
-    var index = try loadIndex(allocator, session_dir);
+    var index = try loadIndex(allocator, workspace_root, session_dir);
     defer index.deinit();
     try index.upsert(.{
         .original_path = try allocator.dupe(u8, normalized.resolved_path),
@@ -402,7 +407,7 @@ fn stageBytes(
         .staged_hash = staged_hash,
         .operation = if (existed) .update else .create,
         .timestamp = try timestampNowAlloc(allocator),
-        .actor = try allocator.dupe(u8, "aegis"),
+        .actor = try allocator.dupe(u8, "orca"),
     });
     original_hash = null;
     try writeIndex(allocator, session_dir, session_id, index.entries.items);
@@ -427,7 +432,7 @@ fn applyOrDiscard(
 ) !ApplyDiscardResult {
     const session_dir = try sessionDirPath(allocator, workspace_root, session_id);
     defer allocator.free(session_dir);
-    var index = try loadIndex(allocator, session_dir);
+    var index = try loadIndex(allocator, workspace_root, session_dir);
     defer index.deinit();
 
     const normalized_filter = if (optional_file) |file| blk: {
@@ -581,9 +586,12 @@ const Index = struct {
     }
 };
 
-fn loadIndex(allocator: std.mem.Allocator, session_dir: []const u8) !Index {
+fn loadIndex(allocator: std.mem.Allocator, workspace_root_raw: []const u8, session_dir: []const u8) !Index {
     var index: Index = .{ .allocator = allocator, .entries = .empty };
     errdefer index.deinit();
+
+    const workspace_root = try std.fs.cwd().realpathAlloc(allocator, workspace_root_raw);
+    defer allocator.free(workspace_root);
 
     const path = try std.fs.path.join(allocator, &.{ session_dir, "staging-index.json" });
     defer allocator.free(path);
@@ -595,6 +603,7 @@ fn loadIndex(allocator: std.mem.Allocator, session_dir: []const u8) !Index {
 
     var parsed = try std.json.parseFromSlice(std.json.Value, allocator, text, .{});
     defer parsed.deinit();
+    if (parsed.value != .object) return error.InvalidStagingIndex;
     const object = parsed.value.object;
     const entries = object.get("entries") orelse return error.InvalidStagingIndex;
     if (entries != .array) return error.InvalidStagingIndex;
@@ -602,16 +611,22 @@ fn loadIndex(allocator: std.mem.Allocator, session_dir: []const u8) !Index {
         if (item != .object) return error.InvalidStagingIndex;
         const entry_object = item.object;
         const operation_text = try jsonString(entry_object.get("operation") orelse return error.InvalidStagingIndex);
-        try index.entries.append(allocator, .{
-            .original_path = try allocator.dupe(u8, try jsonString(entry_object.get("original_path") orelse return error.InvalidStagingIndex)),
-            .normalized_path = try allocator.dupe(u8, try jsonString(entry_object.get("normalized_path") orelse return error.InvalidStagingIndex)),
-            .staged_path = try allocator.dupe(u8, try jsonString(entry_object.get("staged_path") orelse return error.InvalidStagingIndex)),
+        const original_path_text = try jsonString(entry_object.get("original_path") orelse return error.InvalidStagingIndex);
+        const normalized_path_text = try jsonString(entry_object.get("normalized_path") orelse return error.InvalidStagingIndex);
+        const staged_path_text = try jsonString(entry_object.get("staged_path") orelse return error.InvalidStagingIndex);
+        try validateLoadedIndexEntry(allocator, workspace_root, session_dir, original_path_text, normalized_path_text, staged_path_text);
+        var entry: StagedEntry = .{
+            .original_path = try allocator.dupe(u8, original_path_text),
+            .normalized_path = try allocator.dupe(u8, normalized_path_text),
+            .staged_path = try allocator.dupe(u8, staged_path_text),
             .original_hash = try jsonNullableStringAlloc(allocator, entry_object.get("original_hash") orelse return error.InvalidStagingIndex),
             .staged_hash = try jsonNullableStringAlloc(allocator, entry_object.get("staged_hash") orelse return error.InvalidStagingIndex),
             .operation = Operation.parse(operation_text) orelse return error.InvalidStagingIndex,
             .timestamp = try allocator.dupe(u8, try jsonString(entry_object.get("timestamp") orelse return error.InvalidStagingIndex)),
             .actor = try allocator.dupe(u8, try jsonString(entry_object.get("actor") orelse return error.InvalidStagingIndex)),
-        });
+        };
+        errdefer entry.deinit(allocator);
+        try index.entries.append(allocator, entry);
     }
     return index;
 }
@@ -672,6 +687,35 @@ fn jsonNullableStringAlloc(allocator: std.mem.Allocator, value: std.json.Value) 
     return try allocator.dupe(u8, try jsonString(value));
 }
 
+fn validateSessionId(session_id: []const u8) !void {
+    try core.session.validateSessionIdText(session_id);
+}
+
+fn validateIndexRelativePath(path: []const u8) !void {
+    if (path.len == 0 or std.mem.indexOfScalar(u8, path, 0) != null) return error.InvalidStagingIndex;
+    if (std.fs.path.isAbsolute(path) or isWindowsAbsolutePath(path)) return error.InvalidStagingIndex;
+    if (std.mem.indexOfScalar(u8, path, '\\') != null) return error.InvalidStagingIndex;
+    var parts = std.mem.tokenizeScalar(u8, path, '/');
+    while (parts.next()) |part| {
+        if (std.mem.eql(u8, part, ".") or std.mem.eql(u8, part, "..")) return error.InvalidStagingIndex;
+    }
+}
+
+fn validateLoadedIndexEntry(
+    allocator: std.mem.Allocator,
+    workspace_root: []const u8,
+    session_dir: []const u8,
+    original_path: []const u8,
+    normalized_path: []const u8,
+    staged_path: []const u8,
+) !void {
+    try validateIndexRelativePath(normalized_path);
+    if (!std.fs.path.isAbsolute(original_path) or !isWithin(workspace_root, original_path)) return error.InvalidStagingIndex;
+    const expected_staged_path = try stagedPathForEntry(allocator, session_dir, normalized_path);
+    defer allocator.free(expected_staged_path);
+    if (!std.mem.eql(u8, staged_path, expected_staged_path)) return error.InvalidStagingIndex;
+}
+
 fn cloneEntry(allocator: std.mem.Allocator, entry: StagedEntry) !StagedEntry {
     return .{
         .original_path = try allocator.dupe(u8, entry.original_path),
@@ -693,7 +737,7 @@ fn auditFileEvent(audit_context: ?AuditContext, event_type: core.event.EventType
         .event_id = try core.event.generateEventId(ts),
         .timestamp = ts,
         .event_type = event_type,
-        .actor = .{ .kind = .aegis, .display = "aegis" },
+        .actor = .{ .kind = .orca, .display = "orca" },
         .target = .{ .kind = .file_path, .value = target },
         .decision = decision,
     };
@@ -944,7 +988,8 @@ fn isWindowsAbsolutePath(path: []const u8) bool {
 }
 
 fn sessionDirPath(allocator: std.mem.Allocator, workspace_root: []const u8, session_id: []const u8) ![]u8 {
-    return try std.fs.path.join(allocator, &.{ workspace_root, ".aegis", "sessions", session_id });
+    try validateSessionId(session_id);
+    return try std.fs.path.join(allocator, &.{ workspace_root, ".orca", "sessions", session_id });
 }
 
 fn ensureStagingDirs(session_dir: []const u8) !void {
@@ -1292,7 +1337,7 @@ test "staged create update diff apply discard and index integrity" {
     try std.testing.expect(std.mem.indexOf(u8, diff, "-old") != null);
     try std.testing.expect(std.mem.indexOf(u8, diff, "+newer") != null);
 
-    const index_path = try std.fs.path.join(std.testing.allocator, &.{ root, ".aegis", "sessions", session_id, "staging-index.json" });
+    const index_path = try std.fs.path.join(std.testing.allocator, &.{ root, ".orca", "sessions", session_id, "staging-index.json" });
     defer std.testing.allocator.free(index_path);
     const index_text = try std.fs.cwd().readFileAlloc(std.testing.allocator, index_path, 8192);
     defer std.testing.allocator.free(index_text);
@@ -1324,6 +1369,83 @@ test "staging workflow accepts Windows-style backslash paths as workspace relati
     defer staged.deinit(std.testing.allocator);
     try std.testing.expectEqualStrings("src/created with spaces.txt", staged.entry.normalized_path);
     try std.testing.expect(std.mem.indexOf(u8, staged.entry.staged_path, "created with spaces.txt") != null);
+}
+
+test "staging commands reject non-object staging index without panicking" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try tmp.dir.makePath(".git");
+    try tmp.dir.makePath(".orca/sessions/bad-index");
+    try tmp.dir.writeFile(.{ .sub_path = ".orca/sessions/bad-index/staging-index.json", .data = "[]" });
+    const root = try tmp.dir.realpathAlloc(std.testing.allocator, ".");
+    defer std.testing.allocator.free(root);
+
+    try std.testing.expectError(error.InvalidStagingIndex, diffStaged(std.testing.allocator, root, "bad-index", null));
+    try std.testing.expectError(error.InvalidStagingIndex, applyStaged(std.testing.allocator, root, "bad-index", null, null));
+    try std.testing.expectError(error.InvalidStagingIndex, discardStaged(std.testing.allocator, root, "bad-index", null, null));
+}
+
+test "staging commands reject session ids with path traversal" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try tmp.dir.makePath(".git");
+    const root = try tmp.dir.realpathAlloc(std.testing.allocator, ".");
+    defer std.testing.allocator.free(root);
+
+    try std.testing.expectError(error.InvalidSessionId, resolveSessionId(std.testing.allocator, root, "../outside"));
+    try std.testing.expectError(error.InvalidSessionId, resolveSessionId(std.testing.allocator, root, "."));
+    try std.testing.expectError(error.InvalidSessionId, resolveSessionId(std.testing.allocator, root, ".."));
+    try std.testing.expectError(error.InvalidSessionId, diffStaged(std.testing.allocator, root, "../outside", null));
+    try std.testing.expectError(error.InvalidSessionId, diffStaged(std.testing.allocator, root, ".", null));
+    try std.testing.expectError(error.InvalidSessionId, diffStaged(std.testing.allocator, root, "..", null));
+    try std.testing.expectError(error.InvalidSessionId, applyStaged(std.testing.allocator, root, "../outside", null, null));
+    try std.testing.expectError(error.InvalidSessionId, applyStaged(std.testing.allocator, root, ".", null, null));
+    try std.testing.expectError(error.InvalidSessionId, applyStaged(std.testing.allocator, root, "..", null, null));
+    try std.testing.expectError(error.InvalidSessionId, discardStaged(std.testing.allocator, root, "../outside", null, null));
+    try std.testing.expectError(error.InvalidSessionId, discardStaged(std.testing.allocator, root, ".", null, null));
+    try std.testing.expectError(error.InvalidSessionId, discardStaged(std.testing.allocator, root, "..", null, null));
+}
+
+test "staging index rejects paths outside workspace and session" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try tmp.dir.makePath(".git");
+    try tmp.dir.makePath(".orca/sessions/evil/staged");
+    const root = try tmp.dir.realpathAlloc(std.testing.allocator, ".");
+    defer std.testing.allocator.free(root);
+    const tmp_root = try tmp.dir.realpathAlloc(std.testing.allocator, "..");
+    defer std.testing.allocator.free(tmp_root);
+
+    const outside_original = try std.fs.path.join(std.testing.allocator, &.{ tmp_root, "outside-created.txt" });
+    defer std.testing.allocator.free(outside_original);
+    const staged_path = try std.fs.path.join(std.testing.allocator, &.{ root, ".orca", "sessions", "evil", "staged", "safe.txt" });
+    defer std.testing.allocator.free(staged_path);
+    try writeAbsoluteFile(staged_path, "reviewed\n");
+    const staged_hash = try sha256HexAlloc(std.testing.allocator, "reviewed\n");
+    defer std.testing.allocator.free(staged_hash);
+
+    const index_path = try std.fs.path.join(std.testing.allocator, &.{ root, ".orca", "sessions", "evil", "staging-index.json" });
+    defer std.testing.allocator.free(index_path);
+    const index_text = try std.fmt.allocPrint(std.testing.allocator,
+        "{{\"version\":1,\"session_id\":\"evil\",\"entries\":[{{\"original_path\":\"{s}\",\"normalized_path\":\"safe.txt\",\"staged_path\":\"{s}\",\"original_hash\":null,\"staged_hash\":\"{s}\",\"operation\":\"create\",\"timestamp\":\"2026-05-17T00:00:00Z\",\"actor\":\"orca\"}}]}}",
+        .{ outside_original, staged_path, staged_hash },
+    );
+    defer std.testing.allocator.free(index_text);
+    try writeAbsoluteFile(index_path, index_text);
+
+    try std.testing.expectError(error.InvalidStagingIndex, applyStaged(std.testing.allocator, root, "evil", null, null));
+    try std.testing.expect(!fileExists(outside_original));
+
+    const outside_staged = try std.fs.path.join(std.testing.allocator, &.{ tmp_root, "outside-staged.txt" });
+    defer std.testing.allocator.free(outside_staged);
+    try writeAbsoluteFile(outside_staged, "tampered\n");
+    const index_text_staged_escape = try std.fmt.allocPrint(std.testing.allocator,
+        "{{\"version\":1,\"session_id\":\"evil\",\"entries\":[{{\"original_path\":\"{s}/safe.txt\",\"normalized_path\":\"safe.txt\",\"staged_path\":\"{s}\",\"original_hash\":null,\"staged_hash\":\"{s}\",\"operation\":\"create\",\"timestamp\":\"2026-05-17T00:00:00Z\",\"actor\":\"orca\"}}]}}",
+        .{ root, outside_staged, staged_hash },
+    );
+    defer std.testing.allocator.free(index_text_staged_escape);
+    try writeAbsoluteFile(index_path, index_text_staged_escape);
+    try std.testing.expectError(error.InvalidStagingIndex, diffStaged(std.testing.allocator, root, "evil", null));
 }
 
 test "apply rejects tampered staged blob hash" {
@@ -1393,7 +1515,7 @@ test "filesystem audit events are emitted through session writer" {
     defer staged.deinit(std.testing.allocator);
     _ = try discardStaged(std.testing.allocator, root, session.id.slice(), "created.txt", ctx);
 
-    const events_path = try std.fs.path.join(std.testing.allocator, &.{ root, ".aegis", "sessions", session.id.slice(), "events.jsonl" });
+    const events_path = try std.fs.path.join(std.testing.allocator, &.{ root, ".orca", "sessions", session.id.slice(), "events.jsonl" });
     defer std.testing.allocator.free(events_path);
     const events = try std.fs.cwd().readFileAlloc(std.testing.allocator, events_path, 8192);
     defer std.testing.allocator.free(events);

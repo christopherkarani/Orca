@@ -1,32 +1,32 @@
 # Integration API
 
-> Scope: P01, local integration contract for `aegis decide` and `aegis hook`
+> Scope: P01, local integration contract for `orca decide` and `orca hook`
 > Version: 1.0.0
 
 ## Overview
 
-Aegis exposes two local integration commands for agent hosts and wrappers:
+Orca exposes two local integration commands for agent hosts and wrappers:
 
-- `aegis decide`, a direct policy evaluation API
-- `aegis hook`, a host hook adapter for Codex and Claude Code events
+- `orca decide`, a direct policy evaluation API
+- `orca hook`, a host hook adapter for Codex and Claude Code events
 
-Both commands are local only. They read `.aegis/policy.yaml`, apply policy, and return structured JSON. They do not provide sandboxing by themselves. The strongest protection remains `aegis run -- <command>`.
+Both commands are local only. They read `.orca/policy.yaml`, apply policy, and return structured JSON. They do not provide sandboxing by themselves. The strongest protection remains `orca run -- <command>`.
 
-## `aegis decide`
+## `orca decide`
 
-`aegis decide` evaluates a single request against policy and returns a JSON decision.
+`orca decide` evaluates a single request against policy and returns a JSON decision.
 
 ### Usage
 
 ```sh
-aegis decide command --json '{"command":"<cmd>"}'
-aegis decide file    --json '{"path":"<p>","operation":"read|write"}'
-aegis decide prompt  --json '{"text":"<text>"}'
-aegis decide tool    --json '{"name":"<name>"}'
+orca decide command --json '{"command":"<cmd>"}'
+orca decide file    --json '{"path":"<p>","operation":"read|write"}'
+orca decide prompt  --json '{"text":"<text>"}'
+orca decide tool    --json '{"name":"<name>"}'
 
-aegis decide <kind> --stdin
-aegis decide <kind> --json <payload> [--ci]
-aegis decide <kind> --stdin [--ci]
+orca decide <kind> --stdin
+orca decide <kind> --json <payload> [--ci]
+orca decide <kind> --stdin [--ci]
 ```
 
 Kinds:
@@ -44,7 +44,7 @@ Options:
 
 ### Evaluation rules
 
-- The command loads `.aegis/policy.yaml`.
+- The command loads `.orca/policy.yaml`.
 - `command` checks against policy command allow and deny rules.
 - `file` checks file access rules using the supplied `operation`.
 - `prompt` checks text for policy relevant content and redaction triggers.
@@ -67,55 +67,55 @@ Options:
 Allow a command:
 
 ```sh
-aegis decide command --json '{"command":"git status"}'
+orca decide command --json '{"command":"git status"}'
 ```
 
 Check a file write:
 
 ```sh
-aegis decide file --json '{"path":"src/main.zig","operation":"write"}'
+orca decide file --json '{"path":"src/main.zig","operation":"write"}'
 ```
 
 Check a prompt:
 
 ```sh
-aegis decide prompt --json '{"text":"Do not include secrets in the response."}'
+orca decide prompt --json '{"text":"Do not include secrets in the response."}'
 ```
 
 Check a tool name from stdin:
 
 ```sh
-printf '{"name":"edit"}' | aegis decide tool --stdin
+printf '{"name":"edit"}' | orca decide tool --stdin
 ```
 
 CI mode example:
 
 ```sh
-aegis decide command --json '{"command":"git push --force"}' --ci
+orca decide command --json '{"command":"git push --force"}' --ci
 ```
 
 In CI mode, any `ask` result becomes a deny path.
 
-## `aegis hook`
+## `orca hook`
 
-`aegis hook` adapts host events to Aegis policy decisions.
+`orca hook` adapts host events to Orca policy decisions.
 
 ### Usage
 
 ```sh
-aegis hook codex SessionStart
-aegis hook codex UserPromptSubmit
-aegis hook codex PreToolUse
-aegis hook codex PermissionRequest
-aegis hook codex PostToolUse
-aegis hook codex Stop
+orca hook codex SessionStart
+orca hook codex UserPromptSubmit
+orca hook codex PreToolUse
+orca hook codex PermissionRequest
+orca hook codex PostToolUse
+orca hook codex Stop
 
-aegis hook claude SessionStart
-aegis hook claude UserPromptSubmit
-aegis hook claude PreToolUse
-aegis hook claude PermissionRequest
-aegis hook claude PostToolUse
-aegis hook claude SessionEnd
+orca hook claude SessionStart
+orca hook claude UserPromptSubmit
+orca hook claude PreToolUse
+orca hook claude PermissionRequest
+orca hook claude PostToolUse
+orca hook claude SessionEnd
 ```
 
 ### Hosts
@@ -158,9 +158,9 @@ Hooks always read a JSON request from stdin.
 
 #### Decision routing
 
-If the payload has `command`, Aegis evaluates it as a command.
+If the payload has `command`, Orca evaluates it as a command.
 
-If the tool name matches a file tool and the payload has `path`, Aegis evaluates it as a file write:
+If the tool name matches a file tool and the payload has `path`, Orca evaluates it as a file write:
 
 - `edit`
 - `write`
@@ -170,7 +170,7 @@ If the tool name matches a file tool and the payload has `path`, Aegis evaluates
 - `create_file`
 - `write_file`
 
-Otherwise, Aegis treats the event as an MCP or tool request. In strict mode, that defaults to deny when policy does not allow it.
+Otherwise, Orca treats the event as an MCP or tool request. In strict mode, that defaults to deny when policy does not allow it.
 
 ### Response schema
 
@@ -186,13 +186,13 @@ Responses are written to stdout.
   "rule": "matched rule id or null",
   "message": "human-readable message",
   "redactions": [{"field":"...","reason":"..."}],
-  "host_limitations": ["Hook enforcement is additive; does not replace aegis run supervision."]
+  "host_limitations": ["Hook enforcement is additive; does not replace orca run supervision."]
 }
 ```
 
 ### Decision mapping
 
-| Aegis decision | Hook response |
+| Orca decision | Hook response |
 |---|---|
 | `allow` | `allow` |
 | `deny` | `block` |
@@ -207,25 +207,25 @@ Responses are written to stdout.
 Session start:
 
 ```sh
-printf '{"version":1,"host":"codex","event":"SessionStart","payload":{}}' | aegis hook codex SessionStart
+printf '{"version":1,"host":"codex","event":"SessionStart","payload":{}}' | orca hook codex SessionStart
 ```
 
 Prompt submit with a secret:
 
 ```sh
-printf '{"version":1,"host":"claude","event":"UserPromptSubmit","payload":{"text":"my token is abc123"}}' | aegis hook claude UserPromptSubmit
+printf '{"version":1,"host":"claude","event":"UserPromptSubmit","payload":{"text":"my token is abc123"}}' | orca hook claude UserPromptSubmit
 ```
 
 Tool request:
 
 ```sh
-printf '{"version":1,"host":"codex","event":"PreToolUse","payload":{"name":"edit","path":"README.md"}}' | aegis hook codex PreToolUse
+printf '{"version":1,"host":"codex","event":"PreToolUse","payload":{"name":"edit","path":"README.md"}}' | orca hook codex PreToolUse
 ```
 
 CI mode:
 
 ```sh
-printf '{"version":1,"host":"claude","event":"PermissionRequest","payload":{"command":"git push --force"}}' | aegis hook claude PermissionRequest --ci
+printf '{"version":1,"host":"claude","event":"PermissionRequest","payload":{"command":"git push --force"}}' | orca hook claude PermissionRequest --ci
 ```
 
 ## JSON Schemas Reference
@@ -337,8 +337,8 @@ The schemas below are the integration contract reference. They are intentionally
 
 CI mode is fail closed for asks.
 
-- In `aegis decide`, `ask` becomes a non interactive deny path.
-- In `aegis hook`, `ask` becomes `block`.
+- In `orca decide`, `ask` becomes a non interactive deny path.
+- In `orca hook`, `ask` becomes `block`.
 - `warn` still returns warning output, but it does not become allow.
 - CI mode does not add new policy rules. It only changes the fallback behavior for undecided actions.
 
@@ -350,11 +350,11 @@ Common failures include:
 - invalid `kind`, `host`, or `event`
 - unsupported payload shapes
 - payloads over 256 KiB
-- missing `.aegis/policy.yaml`
+- missing `.orca/policy.yaml`
 - policy parse failures
 - internal evaluation errors
 
-`aegis decide` uses exit codes for command line callers. `aegis hook` always writes a JSON response and should return an `error` decision when it can parse the request but cannot complete evaluation.
+`orca decide` uses exit codes for command line callers. `orca hook` always writes a JSON response and should return an `error` decision when it can parse the request but cannot complete evaluation.
 
 When possible, error responses should be explicit about the failed stage, but they should not print secrets or raw payloads.
 
@@ -365,5 +365,5 @@ When possible, error responses should be explicit about the failed stage, but th
 - They cannot enforce actions the host never reports.
 - File tool matching is based on known tool names and path presence.
 - Network and MCP requests are only as visible as the host event stream makes them.
-- Host hook enforcement is additive. It does not replace `aegis run` supervision.
+- Host hook enforcement is additive. It does not replace `orca run` supervision.
 - `observe`, `context_only`, and similar non blocking responses are informational. A host may still choose its own final behavior.
