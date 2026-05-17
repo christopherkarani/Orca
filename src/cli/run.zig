@@ -1,10 +1,11 @@
 const std = @import("std");
 const builtin = @import("builtin");
 
-const core = @import("../core/mod.zig");
-const core_api = @import("../core/api.zig");
+const core = @import("aegis_core").core;
+const supervisor = @import("../core/supervisor.zig");
+const core_api = @import("aegis_core").api;
 const intercept = @import("../intercept/mod.zig");
-const policy = @import("../policy/mod.zig");
+const policy = @import("aegis_core").policy;
 const sandbox = @import("../sandbox/mod.zig");
 const exit_codes = @import("exit_codes.zig");
 const help = @import("help.zig");
@@ -38,7 +39,7 @@ pub fn command(argv: []const []const u8, stdout: anytype, stderr: anytype) !u8 {
     return commandWithStdio(argv, stdout, stderr, .inherit, true);
 }
 
-fn commandWithStdio(argv: []const []const u8, stdout: anytype, stderr: anytype, stdio: core.supervisor.StdioBehavior, audit_enabled: bool) !u8 {
+fn commandWithStdio(argv: []const []const u8, stdout: anytype, stderr: anytype, stdio: supervisor.StdioBehavior, audit_enabled: bool) !u8 {
     const options = parseOptions(argv, stdout, stderr) catch |err| switch (err) {
         error.HelpShown => return exit_codes.success,
         error.Usage => return exit_codes.usage,
@@ -49,7 +50,7 @@ fn commandWithStdio(argv: []const []const u8, stdout: anytype, stderr: anytype, 
     defer _ = gpa_state.deinit();
     const allocator = gpa_state.allocator();
 
-    const workspace_root_for_policy = core.supervisor.resolveWorkspaceRoot(allocator, options.workspace, ".") catch |err| switch (err) {
+    const workspace_root_for_policy = supervisor.resolveWorkspaceRoot(allocator, options.workspace, ".") catch |err| switch (err) {
         error.FileNotFound => {
             try stderr.print("orca run: workspace not found: {s}\n", .{options.workspace orelse "."});
             return exit_codes.general;
@@ -218,10 +219,10 @@ fn commandWithStdio(argv: []const []const u8, stdout: anytype, stderr: anytype, 
             const shim_dir = try intercept.commands.createShimDirectory(self.allocator, session.workspace_root, session.id.slice(), self_exe);
             defer self.allocator.free(shim_dir);
             try intercept.commands.prependShimPath(self.allocator, self.env_map, shim_dir);
-            try self.env_map.put("AEGIS_SESSION_ID", session.id.slice());
-            try self.env_map.put("AEGIS_WORKSPACE_ROOT", session.workspace_root);
-            if (self.selected_policy.source_path) |path| try self.env_map.put("AEGIS_POLICY_PATH", path);
-            try self.env_map.put("AEGIS_MODE", self.effective_mode.toString());
+            try self.env_map.put("ORCA_SESSION_ID", session.id.slice());
+            try self.env_map.put("ORCA_WORKSPACE_ROOT", session.workspace_root);
+            if (self.selected_policy.source_path) |path| try self.env_map.put("ORCA_POLICY_PATH", path);
+            try self.env_map.put("ORCA_MODE", self.effective_mode.toString());
         }
 
         fn auditBackendCapability(self: *@This(), session: core.session.Session) !void {
@@ -245,7 +246,7 @@ fn commandWithStdio(argv: []const []const u8, stdout: anytype, stderr: anytype, 
                 .event_id = try core.event.generateEventId(ts),
                 .timestamp = ts,
                 .event_type = .backend_capability,
-                .actor = .{ .kind = .aegis, .display = "aegis" },
+                .actor = .{ .kind = .orca, .display = "orca" },
                 .target = .{ .kind = .unknown, .value = target },
                 .decision = decision,
             };
@@ -269,7 +270,7 @@ fn commandWithStdio(argv: []const []const u8, stdout: anytype, stderr: anytype, 
                 .event_id = try core.event.generateEventId(ts),
                 .timestamp = ts,
                 .event_type = .backend_capability,
-                .actor = .{ .kind = .aegis, .display = "aegis" },
+                .actor = .{ .kind = .orca, .display = "orca" },
                 .target = .{ .kind = .unknown, .value = target },
                 .decision = decision,
             };
@@ -333,7 +334,7 @@ fn commandWithStdio(argv: []const []const u8, stdout: anytype, stderr: anytype, 
                 .event_id = try core.event.generateEventId(ts),
                 .timestamp = ts,
                 .event_type = event_type,
-                .actor = .{ .kind = .aegis, .display = "aegis" },
+                .actor = .{ .kind = .orca, .display = "orca" },
                 .target = .{ .kind = .command, .value = display },
                 .decision = maybe_decision,
             };
@@ -348,7 +349,7 @@ fn commandWithStdio(argv: []const []const u8, stdout: anytype, stderr: anytype, 
                 .event_id = try core.event.generateEventId(ts),
                 .timestamp = ts,
                 .event_type = event_type,
-                .actor = .{ .kind = .aegis, .display = "aegis" },
+                .actor = .{ .kind = .orca, .display = "orca" },
                 .target = .{ .kind = .network_endpoint, .value = target },
                 .decision = maybe_decision,
             };
@@ -368,16 +369,16 @@ fn commandWithStdio(argv: []const []const u8, stdout: anytype, stderr: anytype, 
         .stderr = stderr,
     };
 
-    const before_spawn = if (audit_enabled) core.supervisor.StartHook{
+    const before_spawn = if (audit_enabled) supervisor.StartHook{
         .context = &audit_context,
         .callback = AuditContext.init,
     } else null;
-    const on_event = if (audit_enabled) core.supervisor.EventHook{
+    const on_event = if (audit_enabled) supervisor.EventHook{
         .context = &audit_context,
         .callback = AuditContext.append,
     } else null;
 
-    var result = core.supervisor.run(allocator, .{
+    var result = supervisor.run(allocator, .{
         .command = options.command_argv[0],
         .args = options.command_argv[1..],
         .workspace = options.workspace,
@@ -388,7 +389,7 @@ fn commandWithStdio(argv: []const []const u8, stdout: anytype, stderr: anytype, 
         .env_map = &filtered_env.env_map,
         .env_redactions = filtered_env.redactions,
         .before_spawn = before_spawn,
-        .before_process_launch = if (audit_enabled) core.supervisor.StartHook{
+        .before_process_launch = if (audit_enabled) supervisor.StartHook{
             .context = &command_guard_context,
             .callback = CommandGuardContext.beforeProcessLaunch,
         } else null,
@@ -422,7 +423,7 @@ fn commandWithStdio(argv: []const []const u8, stdout: anytype, stderr: anytype, 
                         .event_id = try core.event.generateEventId(ts),
                         .timestamp = ts,
                         .event_type = .session_exit,
-                        .actor = .{ .kind = .aegis, .display = "aegis" },
+                        .actor = .{ .kind = .orca, .display = "orca" },
                         .target = .{ .kind = .session, .value = ended.id.slice() },
                     };
                     try core_api.appendAuditEvent(writer, ev);
@@ -433,6 +434,7 @@ fn commandWithStdio(argv: []const []const u8, stdout: anytype, stderr: anytype, 
                         .event_count = writer.event_count,
                         .final_event_hash = final_hash,
                         .policy = loaded_policy.path,
+                        .product_label = "Orca",
                     });
                     try writeLastPointerNoMakePath(allocator, ended.workspace_root, ended.id.slice());
                 }
@@ -452,7 +454,7 @@ fn commandWithStdio(argv: []const []const u8, stdout: anytype, stderr: anytype, 
                         .event_id = try core.event.generateEventId(ts),
                         .timestamp = ts,
                         .event_type = .session_exit,
-                        .actor = .{ .kind = .aegis, .display = "aegis" },
+                        .actor = .{ .kind = .orca, .display = "orca" },
                         .target = .{ .kind = .session, .value = ended.id.slice() },
                     };
                     try core_api.appendAuditEvent(writer, ev);
@@ -463,6 +465,7 @@ fn commandWithStdio(argv: []const []const u8, stdout: anytype, stderr: anytype, 
                         .event_count = writer.event_count,
                         .final_event_hash = final_hash,
                         .policy = loaded_policy.path,
+                        .product_label = "Orca",
                     });
                     try writeLastPointerNoMakePath(allocator, ended.workspace_root, ended.id.slice());
                 }
@@ -485,6 +488,7 @@ fn commandWithStdio(argv: []const []const u8, stdout: anytype, stderr: anytype, 
             .event_count = writer.event_count,
             .final_event_hash = final_hash,
             .policy = loaded_policy.path,
+            .product_label = "Orca",
         });
         try writer.writeLastPointer();
     }
@@ -643,10 +647,10 @@ fn applyNetworkOverlay(allocator: std.mem.Allocator, selected_policy: *policy.sc
 }
 
 fn installNetworkEnvironment(allocator: std.mem.Allocator, env_map: *std.process.EnvMap, network_policy: policy.schema.NetworkPolicy) !void {
-    try env_map.put("AEGIS_NETWORK_POLICY_ENGINE", "active");
-    try env_map.put("AEGIS_NETWORK_MODE", network_policy.effectiveMode().toString());
-    try env_map.put("AEGIS_TRANSPARENT_NETWORK_ENFORCEMENT", "unavailable");
-    try env_map.put("AEGIS_PROXY_MEDIATED_NETWORK_ENFORCEMENT", "unavailable");
+    try env_map.put("ORCA_NETWORK_POLICY_ENGINE", "active");
+    try env_map.put("ORCA_NETWORK_MODE", network_policy.effectiveMode().toString());
+    try env_map.put("ORCA_TRANSPARENT_NETWORK_ENFORCEMENT", "unavailable");
+    try env_map.put("ORCA_PROXY_MEDIATED_NETWORK_ENFORCEMENT", "unavailable");
     if (network_policy.allow.len > 0) {
         var list: std.ArrayList(u8) = .empty;
         defer list.deinit(allocator);
@@ -656,26 +660,26 @@ fn installNetworkEnvironment(allocator: std.mem.Allocator, env_map: *std.process
         }
         const owned = try list.toOwnedSlice(allocator);
         defer allocator.free(owned);
-        try env_map.put("AEGIS_NETWORK_ALLOW", owned);
+        try env_map.put("ORCA_NETWORK_ALLOW", owned);
     }
 }
 
 fn installBackendEnvironment(env_map: *std.process.EnvMap, report: sandbox.backend.ReportSet) !void {
-    try env_map.put("AEGIS_BACKEND", report.backend_name);
-    try env_map.put("AEGIS_BACKEND_FALLBACK", report.fallback_level.toString());
-    try env_map.put("AEGIS_BACKEND_ENV_FILTERING", report.get(.env_filtering).level.toString());
-    try env_map.put("AEGIS_BACKEND_PATH_STAGING", report.get(.path_staging).level.toString());
-    try env_map.put("AEGIS_BACKEND_SHELL_WRAPPING", report.get(.shell_wrapping).level.toString());
-    try env_map.put("AEGIS_BACKEND_PATH_SHIMS", report.get(.path_shims).level.toString());
-    try env_map.put("AEGIS_BACKEND_STRONG_SANDBOX", report.get(.strong_sandbox).level.toString());
-    try env_map.put("AEGIS_BACKEND_PROCESS_SUPERVISION", report.get(.process_supervision).level.toString());
-    try env_map.put("AEGIS_BACKEND_USER_NAMESPACES", report.get(.user_namespaces).level.toString());
-    try env_map.put("AEGIS_BACKEND_MOUNT_NAMESPACES", report.get(.mount_namespaces).level.toString());
-    try env_map.put("AEGIS_BACKEND_SECCOMP", report.get(.seccomp).level.toString());
-    try env_map.put("AEGIS_BACKEND_LANDLOCK", report.get(.landlock).level.toString());
-    try env_map.put("AEGIS_BACKEND_CGROUPS", report.get(.cgroups).level.toString());
-    try env_map.put("AEGIS_BACKEND_NETWORK_OBSERVE", report.get(.network_observe).level.toString());
-    try env_map.put("AEGIS_BACKEND_NETWORK_ENFORCEMENT", report.get(.network_enforce).level.toString());
+    try env_map.put("ORCA_BACKEND", report.backend_name);
+    try env_map.put("ORCA_BACKEND_FALLBACK", report.fallback_level.toString());
+    try env_map.put("ORCA_BACKEND_ENV_FILTERING", report.get(.env_filtering).level.toString());
+    try env_map.put("ORCA_BACKEND_PATH_STAGING", report.get(.path_staging).level.toString());
+    try env_map.put("ORCA_BACKEND_SHELL_WRAPPING", report.get(.shell_wrapping).level.toString());
+    try env_map.put("ORCA_BACKEND_PATH_SHIMS", report.get(.path_shims).level.toString());
+    try env_map.put("ORCA_BACKEND_STRONG_SANDBOX", report.get(.strong_sandbox).level.toString());
+    try env_map.put("ORCA_BACKEND_PROCESS_SUPERVISION", report.get(.process_supervision).level.toString());
+    try env_map.put("ORCA_BACKEND_USER_NAMESPACES", report.get(.user_namespaces).level.toString());
+    try env_map.put("ORCA_BACKEND_MOUNT_NAMESPACES", report.get(.mount_namespaces).level.toString());
+    try env_map.put("ORCA_BACKEND_SECCOMP", report.get(.seccomp).level.toString());
+    try env_map.put("ORCA_BACKEND_LANDLOCK", report.get(.landlock).level.toString());
+    try env_map.put("ORCA_BACKEND_CGROUPS", report.get(.cgroups).level.toString());
+    try env_map.put("ORCA_BACKEND_NETWORK_OBSERVE", report.get(.network_observe).level.toString());
+    try env_map.put("ORCA_BACKEND_NETWORK_ENFORCEMENT", report.get(.network_enforce).level.toString());
 }
 
 fn parseMode(value: []const u8) ?core.types.Mode {
@@ -712,7 +716,7 @@ fn printSessionStart(stdout: anytype, session: core.session.Session) !void {
     try stdout.writeAll("\n");
 }
 
-fn printSessionEnd(stdout: anytype, result: core.supervisor.SessionResult) !void {
+fn printSessionEnd(stdout: anytype, result: supervisor.SessionResult) !void {
     try stdout.print("\nOrca session ended: exit code {d}\n", .{result.exitCode()});
 }
 
@@ -765,7 +769,7 @@ test "run reports missing command usefully" {
     try std.testing.expect(std.mem.indexOf(u8, stderr_stream.getWritten(), "command not found") != null);
 }
 
-pub fn commandForTest(argv: []const []const u8, stdout: anytype, stderr: anytype, stdio: core.supervisor.StdioBehavior) !u8 {
+pub fn commandForTest(argv: []const []const u8, stdout: anytype, stderr: anytype, stdio: supervisor.StdioBehavior) !u8 {
     return commandWithStdio(argv, stdout, stderr, stdio, false);
 }
 
@@ -842,7 +846,7 @@ test "run command guard allows safe command and creates session shim directory" 
 
     const session_id = try readLastSessionId(std.testing.allocator, root);
     defer std.testing.allocator.free(session_id);
-    const shim_path = try std.fs.path.join(std.testing.allocator, &.{ root, ".aegis", "sessions", session_id, "shims", "git" });
+    const shim_path = try std.fs.path.join(std.testing.allocator, &.{ root, ".orca", "sessions", session_id, "shims", "git" });
     defer std.testing.allocator.free(shim_path);
     try std.fs.cwd().access(shim_path, .{});
 
@@ -928,15 +932,15 @@ test "run exports backend capability status to child environment" {
 
     const written = try tmp.dir.readFileAlloc(std.testing.allocator, "backend-env.txt", 8192);
     defer std.testing.allocator.free(written);
-    try std.testing.expect(std.mem.indexOf(u8, written, "AEGIS_BACKEND=") != null);
-    try std.testing.expect(std.mem.indexOf(u8, written, "AEGIS_BACKEND_ENV_FILTERING=") != null);
-    try std.testing.expect(std.mem.indexOf(u8, written, "AEGIS_BACKEND_PATH_STAGING=") != null);
-    try std.testing.expect(std.mem.indexOf(u8, written, "AEGIS_BACKEND_SHELL_WRAPPING=") != null);
-    try std.testing.expect(std.mem.indexOf(u8, written, "AEGIS_BACKEND_PATH_SHIMS=") != null);
-    try std.testing.expect(std.mem.indexOf(u8, written, "AEGIS_BACKEND_STRONG_SANDBOX=") != null);
-    try std.testing.expect(std.mem.indexOf(u8, written, "AEGIS_BACKEND_PROCESS_SUPERVISION=") != null);
-    try std.testing.expect(std.mem.indexOf(u8, written, "AEGIS_BACKEND_NETWORK_OBSERVE=") != null);
-    try std.testing.expect(std.mem.indexOf(u8, written, "AEGIS_BACKEND_NETWORK_ENFORCEMENT=") != null);
+    try std.testing.expect(std.mem.indexOf(u8, written, "ORCA_BACKEND=") != null);
+    try std.testing.expect(std.mem.indexOf(u8, written, "ORCA_BACKEND_ENV_FILTERING=") != null);
+    try std.testing.expect(std.mem.indexOf(u8, written, "ORCA_BACKEND_PATH_STAGING=") != null);
+    try std.testing.expect(std.mem.indexOf(u8, written, "ORCA_BACKEND_SHELL_WRAPPING=") != null);
+    try std.testing.expect(std.mem.indexOf(u8, written, "ORCA_BACKEND_PATH_SHIMS=") != null);
+    try std.testing.expect(std.mem.indexOf(u8, written, "ORCA_BACKEND_STRONG_SANDBOX=") != null);
+    try std.testing.expect(std.mem.indexOf(u8, written, "ORCA_BACKEND_PROCESS_SUPERVISION=") != null);
+    try std.testing.expect(std.mem.indexOf(u8, written, "ORCA_BACKEND_NETWORK_OBSERVE=") != null);
+    try std.testing.expect(std.mem.indexOf(u8, written, "ORCA_BACKEND_NETWORK_ENFORCEMENT=") != null);
 }
 
 test "run require-backend fails closed when requested feature is unavailable" {
@@ -961,7 +965,7 @@ test "run require-backend fails closed when requested feature is unavailable" {
 }
 
 fn readLastSessionId(allocator: std.mem.Allocator, root: []const u8) ![]u8 {
-    const last_path = try std.fs.path.join(allocator, &.{ root, ".aegis", "last" });
+    const last_path = try std.fs.path.join(allocator, &.{ root, ".orca", "last" });
     defer allocator.free(last_path);
     const text = try std.fs.cwd().readFileAlloc(allocator, last_path, core.limits.max_session_id_len + 2);
     defer allocator.free(text);
@@ -971,13 +975,13 @@ fn readLastSessionId(allocator: std.mem.Allocator, root: []const u8) ![]u8 {
 fn readLastEvents(allocator: std.mem.Allocator, root: []const u8) ![]u8 {
     const session_id = try readLastSessionId(allocator, root);
     defer allocator.free(session_id);
-    const events_path = try std.fs.path.join(allocator, &.{ root, ".aegis", "sessions", session_id, "events.jsonl" });
+    const events_path = try std.fs.path.join(allocator, &.{ root, ".orca", "sessions", session_id, "events.jsonl" });
     defer allocator.free(events_path);
     return try std.fs.cwd().readFileAlloc(allocator, events_path, 64 * 1024);
 }
 
 fn writeLastPointerNoMakePath(allocator: std.mem.Allocator, workspace_root: []const u8, session_id: []const u8) !void {
-    const last_path = try std.fs.path.join(allocator, &.{ workspace_root, ".aegis", "last" });
+    const last_path = try std.fs.path.join(allocator, &.{ workspace_root, ".orca", "last" });
     defer allocator.free(last_path);
     const file = try std.fs.cwd().createFile(last_path, .{ .truncate = true });
     defer file.close();

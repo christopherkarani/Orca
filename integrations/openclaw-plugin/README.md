@@ -13,7 +13,17 @@ The plugin is a thin integration layer. The Orca CLI remains the source of truth
 - Orca CLI built and available in PATH (run `orca doctor` to verify)
 - OpenClaw host installed
 
-Orca must be installed separately. The plugin does not bundle the Orca CLI.
+Orca is not bundled into this plugin package. Fast setup:
+
+```bash
+./scripts/install-orca-plugin.sh openclaw project
+```
+
+Windows:
+
+```powershell
+.\scripts\install-orca-plugin.ps1 openclaw project
+```
 
 ## Install from local path
 

@@ -1,4 +1,4 @@
-# Aegis Drone Plugin Safepoint — P00
+# Orca Drone Plugin Safepoint — P00
 
 > Generated: 2026-05-09  
 > Branch: `phase-35-edge-network-telemetry-data-guard`  
@@ -9,13 +9,13 @@
 
 ## 1. Detected Drone-Related Files / Modules
 
-Drone functionality is concentrated in the **Aegis Edge** product (`packages/edge/`). The main CLI (`aegis`) has **no drone commands or subcommands**.
+Drone functionality is concentrated in the **Edge** product (`packages/edge/`). The main CLI (`orca`) has **no drone commands or subcommands**.
 
 ### 1.1 Edge Source Code (`packages/edge/src/`)
 
 | Family | Files | Description |
 |--------|-------|-------------|
-| **CLI / Facade** | `main.zig`, `root.zig` | `aegis-edge` binary entrypoint and public API exports. All drone-specific commands live here. |
+| **CLI / Facade** | `main.zig`, `root.zig` | `edge` binary entrypoint and public API exports. All drone-specific commands live here. |
 | **Domain Model** | `domain/{vehicle,commands,state,mission,geofence,safety_envelope,risk,validation,coordinates,battery,link,sensors}.zig` | Vehicle kinds, command actions, mission plans, geofence/altitude/battery constraints, risk classification. |
 | **MAVLink Protocol** | `mavlink/{parser,framing,classifier,mapping,commands,messages,gateway,mission,signing,fake_transport,dialect,crc,audit}.zig` | MAVLink v1/v2 frame parsing, command mapping, fake transport, gateway mediation, signing detection. |
 | **PX4 Adapter** | `px4/{connection,health,fake_adapter,sitl_adapter,telemetry_mapping,command_mapping,scenario,audit}.zig` | Fake-PX4 scenarios + opt-in PX4 SITL configuration/health. |
@@ -164,9 +164,9 @@ The following categories are **critical risk** by default in any plugin context:
 | `tests/phase34_edge_redteam_fault_injection.zig` | Pass | Red-team / fault injection |
 | `tests/phase35_edge_data_guard.zig` | Pass | Data / network guard |
 | `packages/edge/tests/contract.zig` | Pass | Edge package contract |
-| `aegis-edge redteam --ci` | **58/58 required passed** | 5 PX4 SITL + 6 ArduPilot SITL skipped (expected) |
+| `edge redteam --ci` | **58/58 required passed** | 5 PX4 SITL + 6 ArduPilot SITL skipped (expected) |
 
-**SITL tests are skipped by design** unless `AEGIS_EDGE_RUN_PX4_SITL_TESTS` or `AEGIS_EDGE_RUN_ARDUPILOT_SITL_TESTS` are set. This is the intended safe default.
+**SITL tests are skipped by design** unless `EDGE_BIN_RUN_PX4_SITL_TESTS` or `EDGE_BIN_RUN_ARDUPILOT_SITL_TESTS` are set. This is the intended safe default.
 
 ---
 

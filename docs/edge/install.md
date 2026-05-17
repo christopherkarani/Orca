@@ -1,9 +1,9 @@
-# Aegis Edge Install
+# Edge Install
 
 ## Supported Artifacts
 
-- `aegis-edge-v1.1.0-linux-amd64.tar.gz`
-- `aegis-edge-v1.1.0-linux-arm64.tar.gz`
+- `edge-v1.1.0-linux-amd64.tar.gz`
+- `edge-v1.1.0-linux-arm64.tar.gz`
 
 `linux-armv7`, macOS standalone Edge packages, Windows standalone Edge packages, real hardware services, and auto-enabled daemons are unsupported in this release.
 
@@ -11,8 +11,8 @@
 
 ```sh
 zig build
-./zig-out/bin/aegis-edge version --json
-./zig-out/bin/aegis-edge deployment assets
+./zig-out/bin/edge version --json
+./zig-out/bin/edge deployment assets
 ```
 
 ## Install From Artifact
@@ -21,7 +21,7 @@ zig build
 ./scripts/build-release.sh
 cd dist
 sha256sum -c checksums.txt
-tar -xzf aegis-edge-v1.1.0-linux-arm64.tar.gz
+tar -xzf edge-v1.1.0-linux-arm64.tar.gz
 ```
 
 Use `shasum -a 256 -c checksums.txt` where `sha256sum` is unavailable.
@@ -32,4 +32,4 @@ Edge artifacts must include schemas, policies, examples, red-team fixtures, safe
 
 ## Safety Boundary
 
-Aegis Edge is fake/SITL/customer-evaluation and bench-preparation only. It is not real-flight readiness, not a flight controller, not detect-and-avoid, not certification, and not autopilot replacement. No telemetry is enabled by default and no real secrets are required.
+Edge is fake/SITL/customer-evaluation and bench-preparation only. It is not real-flight readiness, not a flight controller, not detect-and-avoid, not certification, and not autopilot replacement. No telemetry is enabled by default and no real secrets are required.

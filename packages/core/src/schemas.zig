@@ -4,9 +4,6 @@ pub const SchemaKind = enum {
     policy,
     event,
     mcp_manifest,
-    edge_policy,
-    edge_event,
-    safety_report,
 };
 
 pub const SchemaDescriptor = struct {
@@ -18,29 +15,11 @@ pub const SchemaDescriptor = struct {
     contents: []const u8,
 };
 
-const policy_schema_descriptor =
-    \\{"id":"policy-v1","version":1,"path":"schemas/policy-v1.json","status":"stable-v1"}
-;
+const schema_documents = @import("core_schema_documents");
 
-const event_schema_descriptor =
-    \\{"id":"event-v1","version":1,"path":"schemas/event-v1.json","status":"stable-v1"}
-;
-
-const mcp_manifest_schema_descriptor =
-    \\{"id":"mcp-manifest-v1","version":1,"path":"schemas/mcp-manifest-v1.json","status":"stable-v1"}
-;
-
-const edge_policy_placeholder =
-    \\{"id":"edge-policy-placeholder-v1","version":1,"status":"placeholder"}
-;
-
-const edge_event_placeholder =
-    \\{"id":"edge-event-placeholder-v1","version":1,"status":"placeholder"}
-;
-
-const safety_report_placeholder =
-    \\{"id":"safety-report-placeholder-v1","version":1,"status":"placeholder"}
-;
+const policy_schema_contents = schema_documents.policy_v1;
+const event_schema_contents = schema_documents.event_v1;
+const mcp_manifest_schema_contents = schema_documents.mcp_manifest_v1;
 
 pub const registry = [_]SchemaDescriptor{
     .{
@@ -49,7 +28,7 @@ pub const registry = [_]SchemaDescriptor{
         .version = 1,
         .path = "schemas/policy-v1.json",
         .status = "stable-v1",
-        .contents = policy_schema_descriptor,
+        .contents = policy_schema_contents,
     },
     .{
         .kind = .event,
@@ -57,7 +36,7 @@ pub const registry = [_]SchemaDescriptor{
         .version = 1,
         .path = "schemas/event-v1.json",
         .status = "stable-v1",
-        .contents = event_schema_descriptor,
+        .contents = event_schema_contents,
     },
     .{
         .kind = .mcp_manifest,
@@ -65,31 +44,7 @@ pub const registry = [_]SchemaDescriptor{
         .version = 1,
         .path = "schemas/mcp-manifest-v1.json",
         .status = "stable-v1",
-        .contents = mcp_manifest_schema_descriptor,
-    },
-    .{
-        .kind = .edge_policy,
-        .id = "edge-policy-placeholder-v1",
-        .version = 1,
-        .path = "schemas/edge-policy-placeholder-v1.json",
-        .status = "reserved-placeholder",
-        .contents = edge_policy_placeholder,
-    },
-    .{
-        .kind = .edge_event,
-        .id = "edge-event-placeholder-v1",
-        .version = 1,
-        .path = "schemas/edge-event-placeholder-v1.json",
-        .status = "reserved-placeholder",
-        .contents = edge_event_placeholder,
-    },
-    .{
-        .kind = .safety_report,
-        .id = "safety-report-placeholder-v1",
-        .version = 1,
-        .path = "schemas/safety-report-placeholder-v1.json",
-        .status = "reserved-placeholder",
-        .contents = safety_report_placeholder,
+        .contents = mcp_manifest_schema_contents,
     },
 };
 
@@ -107,9 +62,20 @@ pub fn lookupId(id: []const u8) ?SchemaDescriptor {
     return null;
 }
 
-test "schema registry exposes stable and placeholder descriptors" {
+test "schema registry exposes stable Core descriptors only" {
     try std.testing.expect(lookup(.policy) != null);
-    try std.testing.expect(lookup(.edge_event) != null);
+    try std.testing.expect(lookup(.event) != null);
     try std.testing.expect(lookupId("mcp-manifest-v1") != null);
+    try std.testing.expect(lookupId("edge-event-placeholder-v1") == null);
     try std.testing.expect(lookupId("missing") == null);
+}
+
+test "schema registry contents are full JSON schemas" {
+    const policy = lookup(.policy) orelse return error.TestUnexpectedResult;
+    var parsed = try std.json.parseFromSlice(std.json.Value, std.testing.allocator, policy.contents, .{});
+    defer parsed.deinit();
+    const object = parsed.value.object;
+    try std.testing.expect(object.get("$schema") != null);
+    try std.testing.expect(object.get("type") != null);
+    try std.testing.expect(object.get("properties") != null);
 }

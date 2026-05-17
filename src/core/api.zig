@@ -1,7 +1,7 @@
 const std = @import("std");
 
 const audit = @import("../audit/mod.zig");
-const core = @import("mod.zig");
+const core = @import("public.zig");
 const policy = @import("../policy/mod.zig");
 
 pub const Action = core.types.Action;

@@ -50,7 +50,7 @@ files:
       - "./**"
     deny:
       - "./.git/**"
-      - "./.aegis/**"
+      - "./.orca/**"
     mode: staged
 
 commands:

@@ -1,14 +1,13 @@
-# Aegis Core
+# Orca Core
 
-Aegis Core is the shared policy, audit, event, replay, redaction, schema, fixture, capability, and decision contract used by Aegis products.
+Core is the shared policy, audit, event, replay, redaction, schema registry, type, and decision contract used by Orca.
 
 ## What Belongs Here
 
 - Policy loading, validation, evaluation, and explanations.
 - Decision types, action types, sessions, events, and platform-independent utilities.
 - Audit event persistence, redaction before persistence, hash-chain replay, and summaries.
-- Shared fixture and red-team support that is not tied to one product UI.
-- Capability model types and honest capability-state vocabulary.
+- Shared schema registry and engine contracts that are not tied to one product UI.
 
 ## What Does Not Belong Here
 
@@ -16,17 +15,15 @@ Aegis Core is the shared policy, audit, event, replay, redaction, schema, fixtur
 - Drone hardware adapters, MAVLink, PX4, ArduPilot, or real-flight behavior.
 - SaaS, telemetry, monetization, hosted dashboards, or network services.
 
-## Phase 24 API Surface
+## Current API Surface
 
-Phase 24 hardens this package as the shared engine facade for Aegis CLI and Aegis Edge:
+Core is the engine facade for Orca:
 
 - `api`: policy parsing, validation, action evaluation, decision creation, audit event creation/writing, replay loading, replay verification, and redaction helpers.
-- `actions`: shared CLI and Edge placeholder action types.
-- `schemas`: schema registry for policy, event, MCP manifest, and reserved Edge/safety-report placeholders.
+- `actions`: shared command, file, network, MCP, prompt, environment, and extension action types.
+- `schemas`: schema registry for policy, event, and MCP manifest schemas.
 - `abi`: experimental C ABI skeleton.
-- `redteam`: shared red-team fixture and report helpers from the v1 implementation.
-
-The existing implementation remains in `src/` to preserve CLI behavior while future phases separate code physically where it is safe.
+The existing implementation remains in `src/` to preserve Orca CLI behavior while future phases separate code physically where it is safe.
 
 ## ABI Status
 
@@ -36,6 +33,6 @@ The C ABI skeleton is experimental and not stable v1. See `ABI.md` for ownership
 
 Later phases may move implementation files into this package after dependency cycles are deliberately removed and regression tests prove the CLI behavior remains unchanged.
 
-## Phase 25 CLI Contract
+## Orca CLI Contract
 
-Phase 25 keeps Core as the single engine facade for CLI policy loading, validation, evaluation, explanations, redaction, audit writing, replay verification, schema lookup, and shared red-team helpers. CLI code may keep product-specific parsing and UX, but it must not fork a second policy engine, audit writer, replay verifier, or redaction path.
+Core is the single engine facade for CLI policy loading, validation, evaluation, explanations, redaction, audit writing, replay verification, and schema lookup. CLI code may keep product-specific parsing and UX, but it must not fork a second policy engine, audit writer, replay verifier, or redaction path.

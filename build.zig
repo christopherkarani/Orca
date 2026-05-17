@@ -19,13 +19,16 @@ pub fn build(b: *std.Build) void {
     edge_schema_documents.addOption([]const u8, "safety_report_v1", @embedFile("schemas/safety-report-v1.json"));
     const edge_schema_documents_mod = edge_schema_documents.createModule();
 
-    const aegis_mod = b.addModule("aegis", .{
-        .root_source_file = b.path("src/root.zig"),
+    const core_schema_documents = b.addOptions();
+    core_schema_documents.addOption([]const u8, "policy_v1", @embedFile("schemas/policy-v1.json"));
+    core_schema_documents.addOption([]const u8, "event_v1", @embedFile("schemas/event-v1.json"));
+    core_schema_documents.addOption([]const u8, "mcp_manifest_v1", @embedFile("schemas/mcp-manifest-v1.json"));
+    const core_schema_documents_mod = core_schema_documents.createModule();
+
+    const core_impl_mod = b.addModule("aegis_core_impl", .{
+        .root_source_file = b.path("src/core_package.zig"),
         .target = target,
         .optimize = optimize,
-        .imports = &.{
-            .{ .name = "build_options", .module = build_options_mod },
-        },
     });
 
     const aegis_core_mod = b.addModule("aegis_core", .{
@@ -33,7 +36,18 @@ pub fn build(b: *std.Build) void {
         .target = target,
         .optimize = optimize,
         .imports = &.{
-            .{ .name = "aegis", .module = aegis_mod },
+            .{ .name = "core_impl", .module = core_impl_mod },
+            .{ .name = "core_schema_documents", .module = core_schema_documents_mod },
+        },
+    });
+
+    const aegis_mod = b.addModule("aegis", .{
+        .root_source_file = b.path("src/root.zig"),
+        .target = target,
+        .optimize = optimize,
+        .imports = &.{
+            .{ .name = "aegis_core", .module = aegis_core_mod },
+            .{ .name = "build_options", .module = build_options_mod },
         },
     });
 
@@ -71,11 +85,9 @@ pub fn build(b: *std.Build) void {
     });
 
     b.installArtifact(exe);
-
-    // Compatibility alias: aegis -> orca
-    const aegis_alias = b.addInstallBinFile(exe.getEmittedBin(), "aegis");
-    aegis_alias.step.dependOn(&exe.step);
-    b.getInstallStep().dependOn(&aegis_alias.step);
+    const install_orca = b.addInstallArtifact(exe, .{});
+    const install_orca_step = b.step("install-orca", "Install Orca CLI only");
+    install_orca_step.dependOn(&install_orca.step);
 
     const edge_exe_mod = b.createModule(.{
         .root_source_file = b.path("packages/edge/src/main.zig"),
@@ -88,16 +100,11 @@ pub fn build(b: *std.Build) void {
         },
     });
     const edge_exe = b.addExecutable(.{
-        .name = "orca-edge",
+        .name = "edge",
         .root_module = edge_exe_mod,
     });
 
     b.installArtifact(edge_exe);
-
-    // Compatibility alias: aegis-edge -> orca-edge
-    const aegis_edge_alias = b.addInstallBinFile(edge_exe.getEmittedBin(), "aegis-edge");
-    aegis_edge_alias.step.dependOn(&edge_exe.step);
-    b.getInstallStep().dependOn(&aegis_edge_alias.step);
 
     const run_step = b.step("run", "Run the Orca CLI");
     const run_cmd = b.addRunArtifact(exe);
@@ -440,6 +447,15 @@ pub fn build(b: *std.Build) void {
     });
     const run_phase39_openclaw_plugin_tests = b.addRunArtifact(phase39_openclaw_plugin_tests);
 
+    const phase43_hermes_plugin_tests = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("tests/phase43_hermes_plugin.zig"),
+            .target = target,
+            .optimize = optimize,
+        }),
+    });
+    const run_phase43_hermes_plugin_tests = b.addRunArtifact(phase43_hermes_plugin_tests);
+
     const test_step = b.step("test", "Run unit tests");
     test_step.dependOn(&run_lib_tests.step);
     test_step.dependOn(&run_exe_tests.step);
@@ -473,6 +489,7 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&run_phase37_claude_plugin_tests.step);
     test_step.dependOn(&run_phase38_plugin_security_tests.step);
     test_step.dependOn(&run_phase39_openclaw_plugin_tests.step);
+    test_step.dependOn(&run_phase43_hermes_plugin_tests.step);
 
     const fuzz_tests = b.addTest(.{
         .root_module = b.createModule(.{
@@ -498,6 +515,7 @@ pub fn build(b: *std.Build) void {
         .target = windows_target,
         .optimize = optimize,
         .imports = &.{
+            .{ .name = "aegis_core", .module = aegis_core_mod },
             .{ .name = "build_options", .module = build_options_mod },
         },
     });

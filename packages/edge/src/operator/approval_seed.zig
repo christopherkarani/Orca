@@ -44,7 +44,7 @@ pub fn createSeededDecision(allocator: std.mem.Allocator, kind: ApprovalSeedKind
         .requested_decision = .allow_once,
         .created_at_ms = args.now_ms,
         .expires_at_ms = args.now_ms + @as(i128, @intCast(args.policy.safety.approval.approval_ttl_ms)),
-        .actor_id = if (comptime @hasField(@TypeOf(args), "actor_id")) args.actor_id else "aegis-edge-scenario",
+        .actor_id = if (comptime @hasField(@TypeOf(args), "actor_id")) args.actor_id else "edge-scenario",
         .operator_id = null,
         .reason = "scenario-seeded bounded operator approval",
     });

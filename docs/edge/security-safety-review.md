@@ -1,11 +1,11 @@
-# Aegis Edge Security and Safety Hardening Review
+# Edge Security and Safety Hardening Review
 
 Review date: TBD
 Reviewed version: TBD
 
 ## Scope
 
-Phase 40 reviews Aegis CLI and Aegis Edge before Phase 41 production release preparation. The scope is release-blocking bugs, safety invariant violations, redaction failures, audit/replay integrity, policy bypasses, unsafe command allowance, stale-state mistakes, approval and emergency-mode bypasses, MAVLink parser/gateway hardening, PX4/ArduPilot SITL provenance, fake/SITL/bench/real-flight separation, customer pilot materials, runtime assets, and broken tests.
+Phase 40 reviews Orca and Edge before Phase 41 production release preparation. The scope is release-blocking bugs, safety invariant violations, redaction failures, audit/replay integrity, policy bypasses, unsafe command allowance, stale-state mistakes, approval and emergency-mode bypasses, MAVLink parser/gateway hardening, PX4/ArduPilot SITL provenance, fake/SITL/bench/real-flight separation, customer pilot materials, runtime assets, and broken tests.
 
 ## Out of scope
 
@@ -13,7 +13,7 @@ Phase 40 does not implement production release packaging, customer acquisition, 
 
 ## Safety boundary
 
-Aegis Edge is a local policy, mediation, audit, replay, red-team, and safety-case evidence tool for fake-adapter, PX4 SITL, ArduPilot SITL, and no-actuation bench-preparation evaluation. Aegis Edge must still not claim real-flight readiness. Aegis Edge is not a flight controller, not an autopilot replacement, not detect-and-avoid, and not regulatory approval or certification.
+Edge is a local policy, mediation, audit, replay, red-team, and safety-case evidence tool for fake-adapter, PX4 SITL, ArduPilot SITL, and no-actuation bench-preparation evaluation. Edge must still not claim real-flight readiness. Edge is not a flight controller, not an autopilot replacement, not detect-and-avoid, and not regulatory approval or certification.
 
 ## Security invariants checked
 
@@ -40,7 +40,7 @@ Aegis Edge is a local policy, mediation, audit, replay, red-team, and safety-cas
 
 ## Test suites run
 
-Required Phase 40 verification includes `zig build`, `zig build test`, root Aegis CLI smoke commands, Aegis Edge doctor/redteam/docs/demo/proof/safety-case/deployment/bench/health/data checks, and local review commands. PX4 and ArduPilot SITL paths remain opt-in and must pass or skip/unsupported honestly.
+Required Phase 40 verification includes `zig build`, `zig build test`, root Orca smoke commands, Edge doctor/redteam/docs/demo/proof/safety-case/deployment/bench/health/data checks, and local review commands. PX4 and ArduPilot SITL paths remain opt-in and must pass or skip/unsupported honestly.
 
 ## Red-team coverage
 

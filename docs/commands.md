@@ -1,6 +1,6 @@
 # Commands
 
-Aegis checks the direct command before launch and installs session PATH shims for common risky command names.
+Orca checks the direct command before launch and installs session PATH shims for common risky command names.
 
 ## Risk Classes
 
@@ -31,4 +31,4 @@ PATH shims cover shells, package managers, network tools, Python/Node, SSH/SCP/N
 
 ## Limitations
 
-Commands that bypass the Aegis session, use absolute paths outside shim coverage, or run under privileged bypasses may avoid wrapper mediation unless the platform backend provides stronger enforcement.
+Commands that bypass the Orca session, use absolute paths outside shim coverage, or run under privileged bypasses may avoid wrapper mediation unless the platform backend provides stronger enforcement.

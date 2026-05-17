@@ -1,9 +1,9 @@
 const std = @import("std");
 
-const audit_redact = @import("../audit/redact_bridge.zig");
-const core = @import("../core/mod.zig");
-const matchers = @import("../policy/matchers.zig");
-const schema = @import("../policy/schema.zig");
+const audit_redact = @import("aegis_core").audit.redact_bridge;
+const core = @import("aegis_core").core;
+const matchers = @import("aegis_core").policy.matchers;
+const schema = @import("aegis_core").policy.schema;
 
 pub const implemented = true;
 
@@ -338,7 +338,7 @@ pub fn appendProxyEnvironment(env_map: *std.process.EnvMap, proxy_url: []const u
     try env_map.put("HTTPS_PROXY", proxy_url);
     try env_map.put("ALL_PROXY", proxy_url);
     try env_map.put("NO_PROXY", no_proxy);
-    try env_map.put("AEGIS_NETWORK_ENFORCEMENT", "proxy-mediated");
+    try env_map.put("ORCA_NETWORK_ENFORCEMENT", "proxy-mediated");
 }
 
 fn buildDecision(
@@ -666,7 +666,7 @@ fn hexValue(char: u8) ?u8 {
 }
 
 test "network decision allows exact and wildcard domains" {
-    const load = @import("../policy/load.zig");
+    const load = @import("aegis_core").policy.load;
     var policy = try load.parseFromSlice(std.testing.allocator,
         \\version: 1
         \\mode: strict
@@ -690,7 +690,7 @@ test "network decision allows exact and wildcard domains" {
 }
 
 test "deny beats allow and unknown ask denies in ci" {
-    const load = @import("../policy/load.zig");
+    const load = @import("aegis_core").policy.load;
     var policy = try load.parseFromSlice(std.testing.allocator,
         \\version: 1
         \\mode: ci
@@ -716,7 +716,7 @@ test "deny beats allow and unknown ask denies in ci" {
 }
 
 test "strict defaults deny direct localhost private and metadata destinations" {
-    const load = @import("../policy/load.zig");
+    const load = @import("aegis_core").policy.load;
     var policy = try load.parseFromSlice(std.testing.allocator,
         \\version: 1
         \\mode: strict
@@ -734,7 +734,7 @@ test "strict defaults deny direct localhost private and metadata destinations" {
 }
 
 test "unknown domain denies in allowlist mode" {
-    const load = @import("../policy/load.zig");
+    const load = @import("aegis_core").policy.load;
     var policy = try load.parseFromSlice(std.testing.allocator,
         \\version: 1
         \\mode: strict
@@ -806,7 +806,7 @@ test "percent-encoded secret URL values are detected and redacted" {
 }
 
 test "many unknown domains signal only counts policy-unknown domains" {
-    const load = @import("../policy/load.zig");
+    const load = @import("aegis_core").policy.load;
     var policy = try load.parseFromSlice(std.testing.allocator,
         \\version: 1
         \\mode: strict

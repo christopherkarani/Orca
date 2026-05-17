@@ -1,6 +1,6 @@
 const std = @import("std");
 
-const aegis_policy = @import("../policy/mod.zig");
+const aegis_policy = @import("aegis_core").policy;
 const exit_codes = @import("exit_codes.zig");
 const help = @import("help.zig");
 
@@ -17,19 +17,19 @@ pub fn command(cwd: std.fs.Dir, argv: []const []const u8, stdout: anytype, stder
         else => return err,
     };
 
-    cwd.makePath(".aegis") catch |err| {
-        try stderr.print("orca init: failed to create .aegis: {s}\n", .{@errorName(err)});
+    cwd.makePath(".orca") catch |err| {
+        try stderr.print("orca init: failed to create .orca: {s}\n", .{@errorName(err)});
         return exit_codes.general;
     };
 
     const flags: std.fs.File.CreateFlags = if (options.force) .{} else .{ .exclusive = true };
-    const file = cwd.createFile(".aegis/policy.yaml", flags) catch |err| switch (err) {
+    const file = cwd.createFile(".orca/policy.yaml", flags) catch |err| switch (err) {
         error.PathAlreadyExists => {
-            try stderr.writeAll("orca init: .aegis/policy.yaml already exists; use --force to overwrite.\n");
+            try stderr.writeAll("orca init: .orca/policy.yaml already exists; use --force to overwrite.\n");
             return exit_codes.general;
         },
         else => {
-            try stderr.print("orca init: failed to write .aegis/policy.yaml: {s}\n", .{@errorName(err)});
+            try stderr.print("orca init: failed to write .orca/policy.yaml: {s}\n", .{@errorName(err)});
             return exit_codes.general;
         },
     };
@@ -38,12 +38,12 @@ pub fn command(cwd: std.fs.Dir, argv: []const []const u8, stdout: anytype, stder
     const preset_text = aegis_policy.presets.agentPresetText(options.preset);
     try writePolicy(file, preset_text, options.mode);
     const info = aegis_policy.presets.agentPresetInfo(options.preset);
-    try stdout.print("Created .aegis/policy.yaml from preset '{s}'.\n", .{info.name});
+    try stdout.print("Created .orca/policy.yaml from preset '{s}'.\n", .{info.name});
     if (info.experimental) try stdout.print("Warning: {s}\n", .{info.warning});
     try stdout.writeAll(
         \\Next steps:
-        \\  orca policy check .aegis/policy.yaml
-        \\  aegis doctor
+        \\  orca policy check .orca/policy.yaml
+        \\  orca doctor
         \\  orca run -- <command>
         \\
     );
@@ -134,7 +134,7 @@ test "init creates policy and refuses overwrite without force" {
     const code = try command(tmp.dir, &.{ "--mode", "strict" }, stdout_stream.writer(), stderr_stream.writer());
     try std.testing.expectEqual(exit_codes.success, code);
 
-    const policy = try tmp.dir.readFileAlloc(std.testing.allocator, ".aegis/policy.yaml", 4096);
+    const policy = try tmp.dir.readFileAlloc(std.testing.allocator, ".orca/policy.yaml", 4096);
     defer std.testing.allocator.free(policy);
     try std.testing.expect(std.mem.indexOf(u8, policy, "version: 1") != null);
     try std.testing.expect(std.mem.indexOf(u8, policy, "mode: strict") != null);
@@ -150,9 +150,9 @@ test "init force overwrites existing policy" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
 
-    try tmp.dir.makePath(".aegis");
+    try tmp.dir.makePath(".orca");
     {
-        const existing = try tmp.dir.createFile(".aegis/policy.yaml", .{});
+        const existing = try tmp.dir.createFile(".orca/policy.yaml", .{});
         defer existing.close();
         try existing.writeAll("old\n");
     }
@@ -166,7 +166,7 @@ test "init force overwrites existing policy" {
     try std.testing.expectEqual(exit_codes.success, code);
     try std.testing.expectEqualStrings("", stderr_stream.getWritten());
 
-    const policy = try tmp.dir.readFileAlloc(std.testing.allocator, ".aegis/policy.yaml", 4096);
+    const policy = try tmp.dir.readFileAlloc(std.testing.allocator, ".orca/policy.yaml", 4096);
     defer std.testing.allocator.free(policy);
     try std.testing.expect(std.mem.indexOf(u8, policy, "mode: observe") != null);
 }
@@ -185,7 +185,7 @@ test "init accepts generic-agent preset alias" {
     try std.testing.expect(std.mem.indexOf(u8, stdout_stream.getWritten(), "generic-agent") != null);
     try std.testing.expectEqualStrings("", stderr_stream.getWritten());
 
-    const policy = try tmp.dir.readFileAlloc(std.testing.allocator, ".aegis/policy.yaml", 4096);
+    const policy = try tmp.dir.readFileAlloc(std.testing.allocator, ".orca/policy.yaml", 4096);
     defer std.testing.allocator.free(policy);
     try std.testing.expect(std.mem.indexOf(u8, policy, "version: 1") != null);
 }
@@ -206,9 +206,9 @@ test "init writes requested phase 18 presets as valid policies" {
         try std.testing.expect(std.mem.indexOf(u8, stdout_stream.getWritten(), "Next steps:") != null);
         try std.testing.expectEqualStrings("", stderr_stream.getWritten());
 
-        const policy = try tmp.dir.readFileAlloc(std.testing.allocator, ".aegis/policy.yaml", 16 * 1024);
+        const policy = try tmp.dir.readFileAlloc(std.testing.allocator, ".orca/policy.yaml", 16 * 1024);
         defer std.testing.allocator.free(policy);
-        var loaded = try aegis_policy.load.parseFromSlice(std.testing.allocator, policy, ".aegis/policy.yaml");
+        var loaded = try aegis_policy.load.parseFromSlice(std.testing.allocator, policy, ".orca/policy.yaml");
         defer loaded.deinit();
         try aegis_policy.validate.policy(&loaded);
     }

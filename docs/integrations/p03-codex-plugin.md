@@ -8,7 +8,7 @@
 
 ## Summary
 
-Built the Aegis Codex plugin package under `integrations/codex-plugin/`. The plugin includes a manifest, five skills, a hooks configuration, README, tests, and integration documentation. All verification commands pass.
+Built the Orca Codex plugin package under `integrations/codex-plugin/`. The plugin includes a manifest, five skills, a hooks configuration, README, tests, and integration documentation. All verification commands pass.
 
 ---
 
@@ -17,11 +17,11 @@ Built the Aegis Codex plugin package under `integrations/codex-plugin/`. The plu
 ```text
 integrations/codex-plugin/
   .codex-plugin/plugin.json
-  skills/aegis-doctor/SKILL.md
-  skills/aegis-init/SKILL.md
-  skills/aegis-protect/SKILL.md
-  skills/aegis-redteam/SKILL.md
-  skills/aegis-replay/SKILL.md
+  skills/orca-doctor/SKILL.md
+  skills/orca-init/SKILL.md
+  skills/orca-protect/SKILL.md
+  skills/orca-redteam/SKILL.md
+  skills/orca-replay/SKILL.md
   hooks/hooks.json
   README.md
   examples/marketplace.json
@@ -50,11 +50,11 @@ src/cli/hook.zig
 
 | Skill | Purpose |
 |-------|---------|
-| `aegis-doctor` | Check Aegis installation, policy status, host integration status, and plugin readiness |
-| `aegis-init` | Create or repair an Aegis policy for the current repository |
-| `aegis-protect` | Explain how to run the current Codex workflow under Aegis protection |
-| `aegis-redteam` | Run Aegis red-team fixtures and summarize results |
-| `aegis-replay` | Show and explain the latest Aegis session replay |
+| `orca-doctor` | Check Orca installation, policy status, host integration status, and plugin readiness |
+| `orca-init` | Create or repair an Orca policy for the current repository |
+| `orca-protect` | Explain how to run the current Codex workflow under Orca protection |
+| `orca-redteam` | Run Orca red-team fixtures and summarize results |
+| `orca-replay` | Show and explain the latest Orca session replay |
 
 No drone skills were added.
 No MCP skills were added.
@@ -72,7 +72,7 @@ No MCP skills were added.
 - `PostToolUse`
 - `Stop`
 
-Each hook calls `aegis hook codex <event>` with a JSON payload on stdin.
+Each hook calls `orca hook codex <event>` with a JSON payload on stdin.
 
 ---
 
@@ -100,9 +100,9 @@ Result: **23/23 passed**
 
 Tests cover:
 - Manifest exists, valid JSON, expected fields
-- Skills exist, non-empty, reference real Aegis commands
+- Skills exist, non-empty, reference real Orca commands
 - No drone skill, no MCP skill
-- Hooks exist, valid JSON, call `aegis hook codex`
+- Hooks exist, valid JSON, call `orca hook codex`
 - No nonexistent scripts, no absolute paths
 - Marketplace example valid JSON
 - No fake secrets in plugin files
@@ -128,39 +128,39 @@ Result: 266/273 passed, 1 failed (pre-existing MCP proxy stdin hang), 6 skipped.
 ### Verification Commands
 
 ```bash
-./zig-out/bin/aegis plugin doctor codex
+./zig-out/bin/orca plugin doctor codex
 ```
 Result: Pass. Reports codex plugin directory as "present".
 
 ```bash
-./zig-out/bin/aegis plugin manifest codex
+./zig-out/bin/orca plugin manifest codex
 ```
 Result: Pass. Reports manifest as "exists".
 
 ```bash
 cat tests/plugin-fixtures/codex/pre_tool_use_command_safe.json \
-  | ./zig-out/bin/aegis hook codex PreToolUse
+  | ./zig-out/bin/orca hook codex PreToolUse
 ```
 Result: Pass. Returns `allow` decision.
 
 ```bash
 cat tests/plugin-fixtures/codex/user_prompt_submit_secret.json \
-  | ./zig-out/bin/aegis hook codex UserPromptSubmit
+  | ./zig-out/bin/orca hook codex UserPromptSubmit
 ```
 Result: Pass. Returns `warn` decision with redaction.
 
 ```bash
-./zig-out/bin/aegis decide command --json '{"command":"git status"}'
+./zig-out/bin/orca decide command --json '{"command":"git status"}'
 ```
 Result: Pass. Returns `allow` decision.
 
 ```bash
-./zig-out/bin/aegis redteam --ci
+./zig-out/bin/orca redteam --ci
 ```
 Result: Pass. 10/10 fixtures passed, 100%.
 
 ```bash
-./zig-out/bin/aegis doctor
+./zig-out/bin/orca doctor
 ```
 Result: Pass.
 
@@ -182,25 +182,25 @@ Result: Pass.
 - No drone demos were added.
 - No drone docs were added.
 - No drone commands were exposed.
-- The `aegis plugin doctor` command still detects the separate drone workstream and reports safety mode active.
+- The `orca plugin doctor` command still detects the separate drone workstream and reports safety mode active.
 - Existing Edge tests were not modified.
-- `aegis-edge redteam --ci` was not run because it is a separate binary and the plugin plan does not require it.
+- `edge redteam --ci` was not run because it is a separate binary and the plugin plan does not require it.
 
 ---
 
 ## Known Limitations
 
 - Hooks are advisory; enforcement depends on Codex host support.
-- The strongest protection remains `aegis run -- <codex-command>`.
+- The strongest protection remains `orca run -- <codex-command>`.
 - Plugin installation is preview/dry-run by default.
 - Official marketplace availability is not yet implemented.
-- The `aegis plugin install` command does not yet perform actual host plugin installation.
+- The `orca plugin install` command does not yet perform actual host plugin installation.
 
 ---
 
 ## Security Notes
 
-- The Aegis CLI remains the source of truth.
+- The Orca remains the source of truth.
 - The plugin does not duplicate policy logic.
 - Hook stdout is host-valid JSON.
 - Human logs go to stderr.
@@ -215,8 +215,8 @@ Result: Pass.
 **Yes.** P04 (Claude Code plugin) is safe to start.
 
 Rationale:
-- P01 commands (`aegis plugin doctor`, `aegis plugin manifest`, `aegis plugin install`) still work.
-- P02 commands (`aegis decide`, `aegis hook`) still work.
+- P01 commands (`orca plugin doctor`, `orca plugin manifest`, `orca plugin install`) still work.
+- P02 commands (`orca decide`, `orca hook`) still work.
 - The Codex plugin does not conflict with Claude Code plugin space (`integrations/claude-code-plugin/`).
 - No MCP config was added.
 - No drone features were added.

@@ -164,7 +164,7 @@ fn evaluateCommandWithOrder(
         .command_id = "emergency-evaluation-command",
         .vehicle_id = state.vehicle_id,
         .action = action,
-        .actor = "aegis-edge-emergency",
+        .actor = "edge-emergency",
         .timestamp = .{ .value = options.now_ms, .source = .monotonic },
         .source = state.provenance,
     });

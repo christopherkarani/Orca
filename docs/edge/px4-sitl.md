@@ -5,17 +5,17 @@ Phase 29 adds PX4 SITL support for local simulation evidence. It uses the Phase 
 Default commands use deterministic fake-PX4 fixtures:
 
 ```bash
-./zig-out/bin/aegis-edge px4 doctor
-./zig-out/bin/aegis-edge px4 scenario run --policy examples/edge/px4/policies/px4-geofence-basic.yaml --scenario examples/edge/px4/scenarios/waypoint-outside-geofence-deny.yaml
+./zig-out/bin/edge px4 doctor
+./zig-out/bin/edge px4 scenario run --policy examples/edge/px4/policies/px4-geofence-basic.yaml --scenario examples/edge/px4/scenarios/waypoint-outside-geofence-deny.yaml
 ```
 
 PX4 SITL checks are opt-in:
 
 ```bash
-AEGIS_EDGE_RUN_PX4_SITL_TESTS=1 AEGIS_EDGE_PX4_ENDPOINT=127.0.0.1:14540 zig build test
+EDGE_BIN_RUN_PX4_SITL_TESTS=1 EDGE_BIN_PX4_ENDPOINT=127.0.0.1:14540 zig build test
 ```
 
-The tested PX4 version is recorded as `documented-by-phase-29` unless `AEGIS_EDGE_PX4_TESTED_VERSION` is set for a local run. Normal tests do not require PX4.
+The tested PX4 version is recorded as `documented-by-phase-29` unless `EDGE_BIN_PX4_TESTED_VERSION` is set for a local run. Normal tests do not require PX4.
 
 Supported configuration fields are host, port, local bind host/port, protocol `udp` or `tcp`, sysid/compid allowlists, timeout, and mode `observe`, `enforce`, `simulation`, `ci`, or `redteam`.
 

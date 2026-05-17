@@ -4,7 +4,7 @@ Subject: Safety firewall for autonomous drone agents
 
 Hey {{name}},
 
-I'm building Aegis Edge - a policy and audit runtime that sits between autonomous agents and MAVLink/PX4/ArduPilot-style control bridges.
+I'm building Edge - a policy and audit runtime that sits between autonomous agents and MAVLink/PX4/ArduPilot-style control bridges.
 
 It helps teams test whether an agent/planner can:
 

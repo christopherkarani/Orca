@@ -23,7 +23,7 @@ Best first customers are commercial drone/autonomy teams with 10-300 employees, 
 
 ## Pilot Offer Summary
 
-The pilot is a two-week Aegis Edge Simulation/SITL Safety Pilot around one autonomy workflow. Deliverables include command surface inventory, policy baseline, scenario list, red-team run, safety-case report, audit/replay evidence, known limitations, and next-step integration plan.
+The pilot is a two-week Edge Simulation/SITL Safety Pilot around one autonomy workflow. Deliverables include command surface inventory, policy baseline, scenario list, red-team run, safety-case report, audit/replay evidence, known limitations, and next-step integration plan.
 
 ## Outreach Templates Summary
 
@@ -31,7 +31,7 @@ Templates are concise, founder-led, technical, manually sent, and centered on on
 
 ## Call Scripts Summary
 
-Scripts cover discovery, live demo, technical validation, safety review, and objection handling. The demo script uses existing Aegis Edge commands for geofence denial, failsafe denial, emergency LAND, stale telemetry denial, data egress denial, replay, proof generation, and red-team.
+Scripts cover discovery, live demo, technical validation, safety review, and objection handling. The demo script uses existing Edge commands for geofence denial, failsafe denial, emergency LAND, stale telemetry denial, data egress denial, replay, proof generation, and red-team.
 
 ## CRM/Metrics Summary
 
@@ -39,7 +39,7 @@ The CRM tracks identified through completed pilot stages, plus stack evidence, q
 
 ## Safety Claims Review
 
-The materials keep Aegis Edge scoped to simulation/SITL/bench-preparation customer evaluation. They avoid aircraft operation, approval, certification, detect-and-avoid, universal command coverage, and replacement of customer safety systems. Pricing is marked editable/internal guidance, and legal-ish pilot materials are marked template-only and legal-review required.
+The materials keep Edge scoped to simulation/SITL/bench-preparation customer evaluation. They avoid aircraft operation, approval, certification, detect-and-avoid, universal command coverage, and replacement of customer safety systems. Pricing is marked editable/internal guidance, and legal-ish pilot materials are marked template-only and legal-review required.
 
 ## Human Founder Next Actions
 

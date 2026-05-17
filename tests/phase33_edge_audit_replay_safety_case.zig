@@ -17,7 +17,7 @@ test "phase 33 safety-case generation creates hash-chained edge session and repo
     defer result.deinit();
 
     try std.testing.expectEqual(edge.audit.safety_report.ScenarioResultStatus.passed, result.status);
-    const last_path = try std.fs.path.join(allocator, &.{ root, ".aegis-edge", "last" });
+    const last_path = try std.fs.path.join(allocator, &.{ root, ".edge", "last" });
     defer allocator.free(last_path);
     const last = try std.fs.cwd().readFileAlloc(allocator, last_path, 128);
     defer allocator.free(last);
@@ -27,7 +27,7 @@ test "phase 33 safety-case generation creates hash-chained edge session and repo
     defer allocator.free(events_path);
     const events = try std.fs.cwd().readFileAlloc(allocator, events_path, 128 * 1024);
     defer allocator.free(events);
-    try std.testing.expect(std.mem.indexOf(u8, events, "\"type\":\"edge.session_start\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, events, "\"type\":\"extension.event\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, events, "\"previous_hash\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, events, "\"event_hash\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, events, "sk-fakeSyntheticOpenAIKey1234567890") == null);
@@ -48,7 +48,7 @@ test "phase 33 safety-case generation creates hash-chained edge session and repo
     defer allocator.free(report_md);
     try std.testing.expect(std.mem.indexOf(u8, report_md, "## Limitations") != null);
     try std.testing.expect(std.mem.indexOf(u8, report_md, "| Real flight | Not performed |") != null);
-    try std.testing.expect(std.mem.indexOf(u8, report_md, "Aegis Edge is not a flight controller") != null);
+    try std.testing.expect(std.mem.indexOf(u8, report_md, "Edge is not a flight controller") != null);
 
     const verify = try edge.audit.safety_case.verify(allocator, root, "last");
     defer verify.deinit(allocator);
@@ -119,7 +119,7 @@ test "phase 33 invalid approval safety-case scenario replays through Core event 
     defer allocator.free(events_path);
     const events = try std.fs.cwd().readFileAlloc(allocator, events_path, 128 * 1024);
     defer allocator.free(events);
-    try std.testing.expect(std.mem.indexOf(u8, events, "\"type\":\"operator.approval_invalid\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, events, "\"type\":\"extension.event\"") != null);
 
     const report_json_path = try std.fs.path.join(allocator, &.{ result.session_dir, "safety-report.json" });
     defer allocator.free(report_json_path);
@@ -155,7 +155,7 @@ test "phase 33 tamper delete and reorder fail Core verification" {
 
     var tampered = try allocator.dupe(u8, original);
     defer allocator.free(tampered);
-    if (std.mem.indexOf(u8, tampered, "edge.session_start")) |index| tampered[index] = 'x';
+    if (std.mem.indexOf(u8, tampered, "extension.event")) |index| tampered[index] = 'x';
     try writeFile(events_path, tampered);
     var verify_tampered = try edge.audit.safety_case.verify(allocator, root, "last");
     defer verify_tampered.deinit(allocator);

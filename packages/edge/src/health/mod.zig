@@ -95,7 +95,7 @@ pub fn decideForCommand(
 }
 
 pub fn writeDoctor(writer: anytype) !void {
-    try writer.writeAll("Aegis Edge runtime health/watchdog: active for fake-adapter, PX4 SITL, ArduPilot SITL, and bench-preparation evidence only.\n");
+    try writer.writeAll("Edge runtime health/watchdog: active for fake-adapter, PX4 SITL, ArduPilot SITL, and bench-preparation evidence only.\n");
     try writer.writeAll("No real hardware endpoint, external network, hosted telemetry, or real-flight operation is opened.\n");
     try writer.writeAll("Health status domains: runtime, agent, adapter, mavlink, px4_sitl, ardupilot_sitl, telemetry, audit_writer, policy_engine, safety_engine, data_guard, resource_usage.\n");
     try writer.writeAll("Limitations: watchdog checks do not replace autopilot failsafes, are not detect-and-avoid, and are not regulatory certification.\n");

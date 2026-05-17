@@ -1,6 +1,6 @@
 const std = @import("std");
 
-const core = @import("../core/mod.zig");
+const core = @import("../core/public.zig");
 const schema = @import("schema.zig");
 
 pub fn policy(value: *const schema.Policy) !void {

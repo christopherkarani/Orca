@@ -7,7 +7,7 @@ From a clean checkout:
 ```sh
 zig version
 zig build
-./zig-out/bin/aegis version --json
+./zig-out/bin/orca version --json
 ```
 
 The repository is pinned to Zig `0.15.2`. Release installs are covered in [install.md](install.md).
@@ -15,8 +15,8 @@ The repository is pinned to Zig `0.15.2`. Release installs are covered in [insta
 ## 2. Initialize A Policy
 
 ```sh
-./zig-out/bin/aegis init --preset generic-agent
-./zig-out/bin/aegis policy check .aegis/policy.yaml
+./zig-out/bin/orca init --preset generic-agent
+./zig-out/bin/orca policy check .orca/policy.yaml
 ```
 
 Review the generated policy before using it for real work.
@@ -24,7 +24,7 @@ Review the generated policy before using it for real work.
 ## 3. Check Local Capabilities
 
 ```sh
-./zig-out/bin/aegis doctor
+./zig-out/bin/orca doctor
 ```
 
 `doctor` is the source of truth for whether a feature is `active`, `partial`, `wrapper-only`, `observe-only`, `limited`, or `unavailable` on your platform.
@@ -32,16 +32,16 @@ Review the generated policy before using it for real work.
 ## 4. Run A Protected Command
 
 ```sh
-./zig-out/bin/aegis run -- echo hello
+./zig-out/bin/orca run -- echo hello
 ```
 
-Aegis writes audit artifacts under `.aegis/sessions/<session-id>/`.
+Orca writes audit artifacts under `.orca/sessions/<session-id>/`.
 
 ## 5. Replay The Session
 
 ```sh
-./zig-out/bin/aegis replay --session last
-./zig-out/bin/aegis replay --session last --verify
+./zig-out/bin/orca replay --session last
+./zig-out/bin/orca replay --session last --verify
 ```
 
 `--verify` checks the tamper-evident hash chain.
@@ -49,7 +49,7 @@ Aegis writes audit artifacts under `.aegis/sessions/<session-id>/`.
 ## 6. Run Red-team Fixtures
 
 ```sh
-./zig-out/bin/aegis redteam --ci
+./zig-out/bin/orca redteam --ci
 ```
 
 The suite is deterministic and uses synthetic fixtures only.

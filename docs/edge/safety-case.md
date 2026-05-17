@@ -5,12 +5,12 @@ Phase 33 safety-case reports are customer-readable engineering evidence for fake
 Generate a report:
 
 ```sh
-aegis-edge safety-case generate \
+edge safety-case generate \
   --scenario examples/edge/safety/scenarios/geofence-deny.yaml \
   --policy examples/edge/safety/policies/safety-strict.yaml
 ```
 
-Outputs are written to `.aegis-edge/sessions/<session-id>/`:
+Outputs are written to `.edge/sessions/<session-id>/`:
 
 - `events.jsonl`
 - `summary.json`
@@ -29,7 +29,7 @@ Fake success is not SITL success. SITL success is not real-flight success. Missi
 Phase 34 red-team runs can generate run-scoped safety-case evidence:
 
 ```sh
-aegis-edge redteam --report safety-case
+edge redteam --report safety-case
 ```
 
 The red-team safety report includes fixture results, expected and observed

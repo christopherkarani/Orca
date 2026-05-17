@@ -2,7 +2,7 @@
 
 ## Summary
 
-This phase validated the Aegis CLI plugin surface, Codex plugin, and Claude Code plugin for security correctness, compatibility, secret safety, documentation honesty, and separate-workstream non-regression.
+This phase validated the Orca plugin surface, Codex plugin, and Claude Code plugin for security correctness, compatibility, secret safety, documentation honesty, and separate-workstream non-regression.
 
 All plugin security tests pass. Plugin artifacts are safe to package. P06 is safe to start.
 
@@ -36,7 +36,7 @@ This file contains 39 tests across 13 categories:
    - Codex CI mode never returns ask
    - Claude CI mode never returns ask
 
-5. **aegis decide behavior** (5 tests)
+5. **orca decide behavior** (5 tests)
    - Safe command returns allow JSON
    - Dangerous command returns block JSON
    - File write to protected path returns block/ask/warn
@@ -117,7 +117,7 @@ Results:
 - 545 tests passed
 - 6 skipped (host-not-installed conditions)
 - 0 failed
-- All existing Aegis tests pass
+- All existing Orca tests pass
 - All existing Edge/drone tests pass
 
 ### Manual Hook Verification
@@ -125,63 +125,63 @@ Results:
 ```bash
 # Codex hooks
 cat tests/plugin-fixtures/codex/pre_tool_use_command_safe.json \
-  | ./zig-out/bin/aegis hook codex PreToolUse
+  | ./zig-out/bin/orca hook codex PreToolUse
   → decision: allow ✓
 
 cat tests/plugin-fixtures/codex/pre_tool_use_command_dangerous.json \
-  | ./zig-out/bin/aegis hook codex PreToolUse
+  | ./zig-out/bin/orca hook codex PreToolUse
   → decision: block ✓
 
 cat tests/plugin-fixtures/codex/user_prompt_submit_secret.json \
-  | ./zig-out/bin/aegis hook codex UserPromptSubmit
+  | ./zig-out/bin/orca hook codex UserPromptSubmit
   → decision: warn, redactions present ✓
 
 # Claude hooks
 cat tests/plugin-fixtures/claude/pre_tool_use_command_safe.json \
-  | ./zig-out/bin/aegis hook claude PreToolUse
+  | ./zig-out/bin/orca hook claude PreToolUse
   → decision: allow ✓
 
 cat tests/plugin-fixtures/claude/pre_tool_use_command_dangerous.json \
-  | ./zig-out/bin/aegis hook claude PreToolUse
+  | ./zig-out/bin/orca hook claude PreToolUse
   → decision: block ✓
 
 cat tests/plugin-fixtures/claude/user_prompt_submit_secret.json \
-  | ./zig-out/bin/aegis hook claude UserPromptSubmit
+  | ./zig-out/bin/orca hook claude UserPromptSubmit
   → decision: warn, redactions present ✓
 ```
 
-### aegis decide Verification
+### orca decide Verification
 
 ```bash
-./zig-out/bin/aegis decide command --json '{"version":1,"host":"codex","command":"git status","mode":"strict"}'
+./zig-out/bin/orca decide command --json '{"version":1,"host":"codex","command":"git status","mode":"strict"}'
   → decision: allow ✓
 
-./zig-out/bin/aegis decide command --json '{"version":1,"host":"codex","command":"rm -rf /","mode":"strict"}'
+./zig-out/bin/orca decide command --json '{"version":1,"host":"codex","command":"rm -rf /","mode":"strict"}'
   → decision: block ✓
 
-./zig-out/bin/aegis decide prompt --json '{"version":1,"host":"codex","prompt":"fake_p05_secret_value","mode":"strict"}'
+./zig-out/bin/orca decide prompt --json '{"version":1,"host":"codex","prompt":"fake_p05_secret_value","mode":"strict"}'
   → decision: block (prompt mode default-deny) ✓
 
-./zig-out/bin/aegis decide command --json '{not json'
+./zig-out/bin/orca decide command --json '{not json'
   → Exit code 1, "invalid JSON (SyntaxError)" ✓
 ```
 
 ### Plugin Doctor and Manifest
 
 ```bash
-./zig-out/bin/aegis plugin doctor codex    → plugin directory: present ✓
-./zig-out/bin/aegis plugin doctor claude   → plugin directory: present ✓
-./zig-out/bin/aegis plugin manifest codex  → manifest: exists ✓
-./zig-out/bin/aegis plugin manifest claude → manifest: exists ✓
+./zig-out/bin/orca plugin doctor codex    → plugin directory: present ✓
+./zig-out/bin/orca plugin doctor claude   → plugin directory: present ✓
+./zig-out/bin/orca plugin manifest codex  → manifest: exists ✓
+./zig-out/bin/orca plugin manifest claude → manifest: exists ✓
 ```
 
 ### Redteam and Doctor
 
 ```bash
-./zig-out/bin/aegis redteam --ci
+./zig-out/bin/orca redteam --ci
   → 10/10 fixtures passed, 100% ✓
 
-./zig-out/bin/aegis doctor
+./zig-out/bin/orca doctor
   → All capability checks report honestly (no overclaim) ✓
 ```
 
@@ -197,12 +197,12 @@ cat tests/plugin-fixtures/claude/user_prompt_submit_secret.json \
 | References `./skills/` | ✓ | ✓ |
 | References `./hooks/hooks.json` | ✓ | ✓ |
 | All 5 skills exist | ✓ | ✓ |
-| Skills reference aegis commands | ✓ | ✓ |
+| Skills reference orca commands | ✓ | ✓ |
 | No drone skill | ✓ | ✓ |
 | No MCP skill | ✓ | ✓ |
 | Hooks config exists | ✓ | ✓ |
 | Valid JSON | ✓ | ✓ |
-| Calls `aegis hook <host>` | ✓ | ✓ |
+| Calls `orca hook <host>` | ✓ | ✓ |
 | No nonexistent scripts | ✓ | ✓ |
 | No absolute paths | ✓ | ✓ |
 | README exists | ✓ | ✓ |
@@ -293,7 +293,7 @@ cat tests/plugin-fixtures/claude/user_prompt_submit_secret.json \
 
 ## Known Limitations
 
-1. **Policy not present**: `.aegis/policy.yaml` is missing in the test workspace. Hooks and decide still function using built-in default policy.
+1. **Policy not present**: `.orca/policy.yaml` is missing in the test workspace. Hooks and decide still function using built-in default policy.
 2. **Host plugin loading**: Actual Codex/Claude Code plugin installation depends on host version and is not tested here.
 3. **Marketplace**: Official marketplace availability is not yet implemented; only local example catalogs exist.
 4. **Oversized payload**: The oversized payload tests verify safe rejection but do not exhaustively test all boundary conditions.
@@ -320,7 +320,7 @@ All acceptance criteria are met:
 - [x] No drone plugin behavior was added
 - [x] No drone skills were added
 - [x] No drone demos were added
-- [x] Existing Aegis tests pass
+- [x] Existing Orca tests pass
 - [x] Existing Codex plugin tests pass
 - [x] Existing Claude plugin tests pass
 - [x] Existing drone tests pass

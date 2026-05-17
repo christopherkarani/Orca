@@ -1,6 +1,6 @@
 # Pilot Proposal Email
 
-Subject: Proposed Aegis Edge Simulation/SITL Safety Pilot
+Subject: Proposed Edge Simulation/SITL Safety Pilot
 
 Hey {{name}},
 

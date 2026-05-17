@@ -1,6 +1,6 @@
-# Aegis Edge Safety Schemas
+# Edge Safety Schemas
 
-Phase 31 uses versioned schema surfaces for Edge policy, audit events, and safety report findings. These schemas do not mean ROS2, real hardware integration, regulatory certification, or real-flight readiness exists. Aegis Edge is not ready for real flight and must not be used for real flight.
+Phase 31 uses versioned schema surfaces for Edge policy, audit events, and safety report findings. These schemas do not mean ROS2, real hardware integration, regulatory certification, or real-flight readiness exists. Edge is not ready for real flight and must not be used for real flight.
 
 ## Schemas
 

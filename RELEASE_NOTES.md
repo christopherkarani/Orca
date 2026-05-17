@@ -1,18 +1,18 @@
 # Aegis v1.1.0 Release Notes
 
-Release status: production release candidate for Aegis CLI and Aegis Edge evaluation artifacts.
+Release status: production release candidate for Orca and Edge evaluation artifacts.
 
-## Aegis CLI
+## Orca
 
-Aegis CLI v1.1.0 provides local command supervision, policy checks, redaction before persistence, audit/replay, MCP mediation, plugin helpers, and deterministic red-team checks. Install from source or from a checksum-verified release artifact.
+Orca v1.1.0 provides local command supervision, policy checks, redaction before persistence, audit/replay, MCP mediation, plugin helpers, and deterministic red-team checks. Install from source or from a checksum-verified release artifact.
 
 Security model: local-first enforcement and evidence. No hosted telemetry is enabled by default, and no secrets are required for normal install or tests.
 
-Known limitations: transparent OS-level enforcement depends on platform capability reports from `aegis doctor`; unsupported or unavailable backends must not be treated as active protection.
+Known limitations: transparent OS-level enforcement depends on platform capability reports from `orca doctor`; unsupported or unavailable backends must not be treated as active protection.
 
-## Aegis Edge
+## Edge
 
-Aegis Edge v1.1.0 release artifacts are production-prepared for simulation/SITL/customer-evaluation and bench-preparation only. Aegis Edge is not a flight controller, not an autopilot replacement, not detect-and-avoid, not regulatory approval or certification, and not real-flight readiness.
+Edge v1.1.0 release artifacts are production-prepared for simulation/SITL/customer-evaluation and bench-preparation only. Edge is not a flight controller, not an autopilot replacement, not detect-and-avoid, not regulatory approval or certification, and not real-flight readiness.
 
 Included capabilities:
 

@@ -225,11 +225,11 @@ Ensure you run `orca plugin doctor opencode` from the repository root or a proje
 
 ### Hooks timeout
 
-If hooks exceed their timeout, OpenCode may skip them. Check that `orca` is in PATH and that `.aegis/policy.yaml` loads quickly.
+If hooks exceed their timeout, OpenCode may skip them. Check that `orca` is in PATH and that `.orca/policy.yaml` loads quickly.
 
 ### Policy not found
 
-Run `orca init --preset generic-agent` to create a default policy, then validate with `orca policy check .aegis/policy.yaml`.
+Run `orca init --preset generic-agent` to create a default policy, then validate with `orca policy check .orca/policy.yaml`.
 
 ### Orca binary not found
 

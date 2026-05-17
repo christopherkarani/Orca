@@ -16,31 +16,31 @@ test "phase25 release scripts package runtime assets referenced by CLI docs" {
         try std.testing.expect(std.mem.indexOf(u8, sh, name) != null);
         try std.testing.expect(std.mem.indexOf(u8, ps1, name) != null);
     }
-    try std.testing.expect(std.mem.indexOf(u8, sh, "orca-edge") != null);
-    try std.testing.expect(std.mem.indexOf(u8, ps1, "orca-edge") != null);
+    try std.testing.expect(std.mem.indexOf(u8, sh, "edge") != null);
+    try std.testing.expect(std.mem.indexOf(u8, ps1, "edge") != null);
 }
 
 test "phase25 Windows package templates match nested zip layout" {
-    const scoop = try readFile(std.testing.allocator, "packaging/scoop/aegis.json");
+    const scoop = try readFile(std.testing.allocator, "packaging/scoop/orca.json");
     defer std.testing.allocator.free(scoop);
-    const winget = try readFile(std.testing.allocator, "packaging/winget/aegis.yaml");
+    const winget = try readFile(std.testing.allocator, "packaging/winget/orca.yaml");
     defer std.testing.allocator.free(winget);
 
-    try std.testing.expect(std.mem.indexOf(u8, scoop, "aegis-v1.1.0-windows-amd64\\\\bin\\\\aegis.exe") != null);
-    try std.testing.expect(std.mem.indexOf(u8, winget, "aegis-v1.1.0-windows-amd64\\bin\\aegis.exe") != null);
+    try std.testing.expect(std.mem.indexOf(u8, scoop, "orca-v1.1.0-windows-amd64\\\\bin\\\\orca.exe") != null);
+    try std.testing.expect(std.mem.indexOf(u8, winget, "orca-v1.1.0-windows-amd64\\bin\\orca.exe") != null);
 }
 
 test "phase25 npm package is honest while checksum placeholders remain" {
     const package_json = try readFile(std.testing.allocator, "packaging/npm/package.json");
     defer std.testing.allocator.free(package_json);
-    const wrapper = try readFile(std.testing.allocator, "packaging/npm/bin/aegis.js");
+    const wrapper = try readFile(std.testing.allocator, "packaging/npm/bin/orca.js");
     defer std.testing.allocator.free(wrapper);
     const readme = try readFile(std.testing.allocator, "packaging/npm/README.md");
     defer std.testing.allocator.free(readme);
 
-    try std.testing.expect(std.mem.indexOf(u8, package_json, "Placeholder npm launcher template") != null);
-    try std.testing.expect(std.mem.indexOf(u8, wrapper, "checksum placeholders have not been replaced") != null);
-    try std.testing.expect(std.mem.indexOf(u8, readme, "does not download a binary") != null);
+    try std.testing.expect(std.mem.indexOf(u8, package_json, "npm launcher for the Zig-built Orca binary") != null);
+    try std.testing.expect(std.mem.indexOf(u8, wrapper, "missing release checksums") != null);
+    try std.testing.expect(std.mem.indexOf(u8, readme, "fails closed") != null);
 }
 
 test "phase25 MCP docs distinguish proxy stdin and list observation" {

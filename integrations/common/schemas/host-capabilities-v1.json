@@ -1,17 +1,17 @@
 {
   "$schema": "http://json-schema.org/draft-07/schema#",
-  "$id": "https://aegis.local/schemas/host-capabilities-v1.json",
+  "$id": "https://orca.local/schemas/host-capabilities-v1.json",
   "title": "Aegis Host Capabilities v1",
   "description": "Capability report exposed to host plugins so they know what Aegis can and cannot enforce.",
   "type": "object",
-  "required": ["version", "aegis_version", "decisions", "limitations", "ci_mode"],
+  "required": ["version", "orca_version", "decisions", "limitations", "ci_mode"],
   "properties": {
     "version": {
       "type": "integer",
       "minimum": 1,
       "maximum": 1
     },
-    "aegis_version": {
+    "orca_version": {
       "type": "string"
     },
     "decisions": {

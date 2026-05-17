@@ -3,7 +3,7 @@
 Run:
 
 ```sh
-./zig-out/bin/aegis-edge proof generate --demo geofence-deny
+./zig-out/bin/edge proof generate --demo geofence-deny
 ```
 
 The generated report should show:

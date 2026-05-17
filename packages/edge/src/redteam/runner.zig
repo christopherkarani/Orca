@@ -142,14 +142,14 @@ pub fn runSuite(allocator: std.mem.Allocator, fixture_set: fixture_mod.FixtureSe
     const session_id_value = try core.session.generateSessionId(now);
     const run_id = try std.fmt.allocPrint(allocator, "redteam-{s}", .{session_id_value.slice()});
     errdefer allocator.free(run_id);
-    const output_dir = if (options.output_dir) |dir| try allocator.dupe(u8, dir) else try std.fs.path.join(allocator, &.{ ".aegis-edge", "redteam", run_id });
+    const output_dir = if (options.output_dir) |dir| try allocator.dupe(u8, dir) else try std.fs.path.join(allocator, &.{ ".edge", "redteam", run_id });
     errdefer allocator.free(output_dir);
     try std.fs.cwd().makePath(output_dir);
 
     var session: core.session.Session = .{
         .id = session_id_value,
         .started_at = now,
-        .command = "aegis-edge",
+        .command = "edge",
         .args = &.{"redteam"},
         .workspace_root = workspace_root,
         .session_name = "edge-redteam",
@@ -172,17 +172,17 @@ pub fn runSuite(allocator: std.mem.Allocator, fixture_set: fixture_mod.FixtureSe
     var fixture_options = options;
     fixture_options.output_dir = output_dir;
     for (fixture_set.fixtures) |fixture| {
-        try appendNamedEvent(allocator, &writer, &sequence, session, "edge.scenario_start", .edge_safety_envelope, fixture.id, .observe, fixture.name);
+        try appendNamedEvent(allocator, &writer, &sequence, session, "edge.scenario_start", .extension_target, fixture.id, .observe, fixture.name);
         var result = try runFixture(allocator, fixture, session.id.slice(), fixture_options);
         errdefer result.deinit();
         for (result.actual_events) |event_type| {
             const decision = result.actual_decision orelse .observe;
-            try appendNamedEvent(allocator, &writer, &sequence, session, event_type, .edge_safety_envelope, result.id, decision, result.reason orelse result.name);
+            try appendNamedEvent(allocator, &writer, &sequence, session, event_type, .extension_target, result.id, decision, result.reason orelse result.name);
         }
-        try appendNamedEvent(allocator, &writer, &sequence, session, "edge.scenario_exit", .edge_safety_envelope, result.status.toString(), .observe, result.reason orelse result.name);
+        try appendNamedEvent(allocator, &writer, &sequence, session, "edge.scenario_exit", .extension_target, result.status.toString(), .observe, result.reason orelse result.name);
         try results.append(allocator, result);
     }
-    try appendNamedEvent(allocator, &writer, &sequence, session, "safety_case.evidence_collected", .edge_safety_envelope, run_id, .observe, "red-team evidence collected");
+    try appendNamedEvent(allocator, &writer, &sequence, session, "safety_case.evidence_collected", .extension_target, run_id, .observe, "red-team evidence collected");
     try appendNamedEvent(allocator, &writer, &sequence, session, "edge.session_exit", .session, session.id.slice(), .observe, "edge red-team session completed");
 
     session.ended_at = core.core.time.Timestamp.now();
@@ -335,13 +335,13 @@ fn appendNamedEvent(
     reason: []const u8,
 ) !void {
     sequence.* += 1;
-    const core_event_type = edge_event.toCoreEventType(event_type) catch core.event.EventType.edge_capability_reported;
+    const core_event_type = edge_event.toCoreEventType(event_type) catch core.event.EventType.extension_event;
     const event = try core.api.createAuditEvent(.{
         .session_id = session.id,
         .event_id = try edge_event.eventIdFromSequence(sequence.*),
         .timestamp = core.core.time.Timestamp.now(),
         .event_type = core_event_type,
-        .actor = .{ .kind = .aegis, .display = "aegis-edge" },
+        .actor = .{ .kind = .orca, .display = "edge" },
         .target = .{ .kind = target_kind, .value = target_value },
         .decision = core.api.makeDecision(.{
             .result = decision_result,
@@ -390,7 +390,7 @@ fn containsInOutcome(outcome: fault_injection.Outcome, forbidden: []const u8) bo
 }
 
 fn safetyCasePath(allocator: std.mem.Allocator, output_dir: ?[]const u8, fixture_id: []const u8) ![]u8 {
-    const root = output_dir orelse ".aegis-edge/redteam";
+    const root = output_dir orelse ".edge/redteam";
     _ = fixture_id;
     return std.fs.path.join(allocator, &.{ root, "safety-report.md" });
 }

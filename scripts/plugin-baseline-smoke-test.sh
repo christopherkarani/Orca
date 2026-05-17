@@ -1,13 +1,13 @@
 #!/usr/bin/env bash
-# Aegis Plugin Baseline Smoke Test
+# Orca Plugin Baseline Smoke Test
 # Safe checks only. No drone hardware. No network. No secrets.
 
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
-AEGIS="${REPO_ROOT}/zig-out/bin/aegis"
-AEGIS_EDGE="${REPO_ROOT}/zig-out/bin/aegis-edge"
+ORCA_BIN="${REPO_ROOT}/zig-out/bin/orca"
+EDGE_BIN="${REPO_ROOT}/zig-out/bin/edge"
 
 ERRORS=0
 
@@ -17,7 +17,7 @@ log_fail() { echo "[FAIL]  $1"; ERRORS=$((ERRORS + 1)); }
 
 cd "${REPO_ROOT}"
 
-log_info "=== Aegis Plugin Baseline Smoke Test ==="
+log_info "=== Orca Plugin Baseline Smoke Test ==="
 log_info "Repo: ${REPO_ROOT}"
 log_info "Date: $(date -u +%Y-%m-%dT%H:%M:%SZ)"
 echo ""
@@ -43,59 +43,59 @@ echo ""
 # 3. CLI smoke tests
 log_info "Running CLI smoke tests..."
 
-if [[ -x "${AEGIS}" ]]; then
-    if "${AEGIS}" --help >/dev/null 2>&1; then
-        log_pass "aegis --help"
+if [[ -x "${ORCA_BIN}" ]]; then
+    if "${ORCA_BIN}" --help >/dev/null 2>&1; then
+        log_pass "orca --help"
     else
-        log_fail "aegis --help"
+        log_fail "orca --help"
     fi
 
-    if "${AEGIS}" version >/dev/null 2>&1; then
-        log_pass "aegis version"
+    if "${ORCA_BIN}" version >/dev/null 2>&1; then
+        log_pass "orca version"
     else
-        log_fail "aegis version"
+        log_fail "orca version"
     fi
 
-    if "${AEGIS}" doctor >/dev/null 2>&1; then
-        log_pass "aegis doctor"
+    if "${ORCA_BIN}" doctor >/dev/null 2>&1; then
+        log_pass "orca doctor"
     else
-        log_fail "aegis doctor"
+        log_fail "orca doctor"
     fi
 
-    if "${AEGIS}" redteam --ci >/dev/null 2>&1; then
-        log_pass "aegis redteam --ci"
+    if "${ORCA_BIN}" redteam --ci >/dev/null 2>&1; then
+        log_pass "orca redteam --ci"
     else
-        log_fail "aegis redteam --ci"
+        log_fail "orca redteam --ci"
     fi
 else
-    log_fail "aegis binary not found at ${AEGIS}"
+    log_fail "orca binary not found at ${ORCA_BIN}"
 fi
 echo ""
 
 # 4. Edge CLI smoke tests
 log_info "Running Edge CLI smoke tests..."
 
-if [[ -x "${AEGIS_EDGE}" ]]; then
-    if "${AEGIS_EDGE}" --help >/dev/null 2>&1; then
-        log_pass "aegis-edge --help"
+if [[ -x "${EDGE_BIN}" ]]; then
+    if "${EDGE_BIN}" --help >/dev/null 2>&1; then
+        log_pass "edge --help"
     else
-        log_fail "aegis-edge --help"
+        log_fail "edge --help"
     fi
 
-    if "${AEGIS_EDGE}" doctor >/dev/null 2>&1; then
-        log_pass "aegis-edge doctor"
+    if "${EDGE_BIN}" doctor >/dev/null 2>&1; then
+        log_pass "edge doctor"
     else
-        log_fail "aegis-edge doctor"
+        log_fail "edge doctor"
     fi
 
     # Run Edge redteam in CI mode (safe, deterministic, no hardware)
-    if "${AEGIS_EDGE}" redteam --ci >/dev/null 2>&1; then
-        log_pass "aegis-edge redteam --ci"
+    if "${EDGE_BIN}" redteam --ci >/dev/null 2>&1; then
+        log_pass "edge redteam --ci"
     else
-        log_fail "aegis-edge redteam --ci"
+        log_fail "edge redteam --ci"
     fi
 else
-    log_fail "aegis-edge binary not found at ${AEGIS_EDGE}"
+    log_fail "edge binary not found at ${EDGE_BIN}"
 fi
 echo ""
 

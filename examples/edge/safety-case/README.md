@@ -5,7 +5,7 @@ These reports are deterministic illustrative outputs from fake/simulation scenar
 Generate a fresh report:
 
 ```sh
-aegis-edge safety-case generate \
+edge safety-case generate \
   --scenario examples/edge/safety/scenarios/geofence-deny.yaml \
   --policy examples/edge/safety/policies/safety-strict.yaml
 ```

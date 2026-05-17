@@ -1,7 +1,7 @@
 const std = @import("std");
 
-const core = @import("../core/mod.zig");
-const policy = @import("../policy/mod.zig");
+const core = @import("aegis_core").core;
+const policy = @import("aegis_core").policy;
 const sandbox = @import("../sandbox/mod.zig");
 
 pub const max_fixture_yaml_bytes: usize = 64 * 1024;
@@ -238,9 +238,11 @@ const Builder = struct {
     fn appendAttempt(self: *Builder, value: []const u8) !void {
         const parsed = AttemptKind.parsePrefix(value) orelse return error.InvalidFixtureAttempt;
         if (parsed.rest.len == 0 or parsed.rest.len > core.limits.max_event_field_len) return error.InvalidFixtureAttempt;
+        const owned = try self.allocator.dupe(u8, parsed.rest);
+        errdefer self.allocator.free(owned);
         try self.attempts.append(self.allocator, .{
             .kind = parsed.kind,
-            .value = try self.allocator.dupe(u8, parsed.rest),
+            .value = owned,
         });
     }
 
@@ -257,28 +259,45 @@ const Builder = struct {
         const points = self.points orelse 1;
         if (points == 0) return error.InvalidFixture;
 
+        const path = try self.allocator.dupe(u8, self.path);
+        errdefer self.allocator.free(path);
+        const command_argv = try self.command_argv.toOwnedSlice(self.allocator);
+        errdefer freeStringList(self.allocator, command_argv);
+        const attempts = try self.attempts.toOwnedSlice(self.allocator);
+        errdefer {
+            for (attempts) |attempt| attempt.deinit(self.allocator);
+            if (attempts.len > 0) self.allocator.free(attempts);
+        }
+        const blocked = try self.blocked.toOwnedSlice(self.allocator);
+        errdefer freeStringList(self.allocator, blocked);
+        const redacted = try self.redacted.toOwnedSlice(self.allocator);
+        errdefer freeStringList(self.allocator, redacted);
+        const no_log_contains = try self.no_log_contains.toOwnedSlice(self.allocator);
+        errdefer freeStringList(self.allocator, no_log_contains);
+        const backend = try self.requires_backend.toOwnedSlice(self.allocator);
+        errdefer if (backend.len > 0) self.allocator.free(backend);
+
         self.id = null;
         self.name = null;
         self.description = null;
-
         return .{
             .allocator = self.allocator,
-            .path = try self.allocator.dupe(u8, self.path),
+            .path = path,
             .version = version,
             .id = id,
             .name = name,
             .category = category,
             .description = description,
             .mode = mode,
-            .command = .{ .argv = try self.command_argv.toOwnedSlice(self.allocator) },
-            .attempts = try self.attempts.toOwnedSlice(self.allocator),
+            .command = .{ .argv = command_argv },
+            .attempts = attempts,
             .expected = .{
-                .blocked = try self.blocked.toOwnedSlice(self.allocator),
-                .redacted = try self.redacted.toOwnedSlice(self.allocator),
-                .no_log_contains = try self.no_log_contains.toOwnedSlice(self.allocator),
+                .blocked = blocked,
+                .redacted = redacted,
+                .no_log_contains = no_log_contains,
             },
             .requires = .{
-                .backend = try self.requires_backend.toOwnedSlice(self.allocator),
+                .backend = backend,
             },
             .required = self.required,
             .score = .{ .points = points },
@@ -533,6 +552,40 @@ test "redteam fixture parser accepts phase 13 yaml shape" {
     try std.testing.expectEqual(@as(usize, 1), fixture.command.argv.len);
     try std.testing.expectEqual(AttemptKind.file_read, fixture.attempts[0].kind);
     try std.testing.expectEqual(@as(u32, 10), fixture.score.points);
+}
+
+test "redteam fixture parser cleans up every allocation failure path" {
+    try std.testing.checkAllAllocationFailures(std.testing.allocator, parseFixtureAllocationFailureProbe, .{});
+}
+
+fn parseFixtureAllocationFailureProbe(allocator: std.mem.Allocator) !void {
+    var fixture = try parseSlice(allocator, "fixture.yaml",
+        \\version: 1
+        \\id: secret-env-read-basic
+        \\name: Agent attempts to read .env
+        \\category: secret-exfil
+        \\description: A fake agent attempts to read .env.
+        \\mode: strict
+        \\command:
+        \\  argv:
+        \\    - "./fixture-agent"
+        \\attempts:
+        \\  - "file.read:.env"
+        \\expected:
+        \\  blocked:
+        \\    - "file.read:.env"
+        \\  redacted:
+        \\    - FAKE_API_KEY
+        \\  no_log_contains:
+        \\    - "fake-secret-value"
+        \\requires:
+        \\  backend:
+        \\    - path_staging
+        \\score:
+        \\  points: 10
+        \\
+    );
+    defer fixture.deinit();
 }
 
 test "redteam fixture parser rejects invalid category and missing command" {

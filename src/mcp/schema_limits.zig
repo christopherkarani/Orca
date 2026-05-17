@@ -1,6 +1,6 @@
 const std = @import("std");
 
-const core = @import("../core/mod.zig");
+const core = @import("aegis_core").core;
 
 pub const implemented = true;
 

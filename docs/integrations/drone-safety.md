@@ -1,15 +1,15 @@
 # Drone Safety for Plugins
 
-> Scope: P01 — Drone-aware safety reporting in the Aegis CLI plugin surface
+> Scope: P01 — Drone-aware safety reporting in the Orca plugin surface
 > Version: 1.1.0
 
 ## Detection
 
-The Aegis CLI plugin surface detects the drone workstream by checking for:
-- `packages/edge/` directory (Aegis Edge source)
-- `aegis-edge` binary in PATH
+The Orca plugin surface detects the drone workstream by checking for:
+- `packages/edge/` directory (Edge source)
+- `edge` binary in PATH
 
-When detected, `aegis plugin doctor` reports:
+When detected, `orca plugin doctor` reports:
 
 ```
 Drone workstream:

@@ -76,14 +76,14 @@ test "phase 36 package metadata names linux amd64 and arm64 artifacts with check
     const arm64_info: edge.deployment.PackageInfo = .{ .version = "1.1.0", .target_arch = .linux_arm64 };
     const arm64_artifact = try arm64_info.artifactName(allocator);
     defer allocator.free(arm64_artifact);
-    try std.testing.expectEqualStrings("aegis-edge-v1.1.0-linux-arm64.tar.gz", arm64_artifact);
+    try std.testing.expectEqualStrings("edge-v1.1.0-linux-arm64.tar.gz", arm64_artifact);
 
     var buf: [8192]u8 = undefined;
     var stream = std.io.fixedBufferStream(&buf);
     try edge.deployment.packageManifest(stream.writer(), "1.1.0", .linux_amd64);
     const manifest = stream.getWritten();
-    try std.testing.expect(std.mem.indexOf(u8, manifest, "aegis-edge-v1.1.0-linux-amd64.tar.gz") != null);
-    try std.testing.expect(std.mem.indexOf(u8, manifest, "binaries:\n  - aegis-edge") != null);
+    try std.testing.expect(std.mem.indexOf(u8, manifest, "edge-v1.1.0-linux-amd64.tar.gz") != null);
+    try std.testing.expect(std.mem.indexOf(u8, manifest, "binaries:\n  - edge") != null);
     try std.testing.expect(std.mem.indexOf(u8, manifest, "checksums: SHA256SUMS") != null);
     try std.testing.expect(std.mem.indexOf(u8, manifest, "examples/edge/redteam/README.md") != null);
     try std.testing.expectEqual(edge.deployment.Status.active, edge.deployment.TargetArch.linux_amd64.packageStatus());
@@ -266,22 +266,22 @@ test "phase 36 scripts templates and docs avoid real hardware defaults" {
     try std.testing.expect(std.mem.indexOf(u8, smoke, "bench report") != null);
     try std.testing.expect(std.mem.indexOf(u8, smoke, "redteam --ci") != null);
 
-    const dockerfile = try readFile(allocator, "packaging/aegis-edge/Dockerfile");
+    const dockerfile = try readFile(allocator, "packaging/edge/Dockerfile");
     defer allocator.free(dockerfile);
-    try std.testing.expect(std.mem.indexOf(u8, dockerfile, "COPY bin/aegis-edge /usr/local/bin/aegis-edge") != null);
-    try std.testing.expect(std.mem.indexOf(u8, dockerfile, "COPY aegis-edge /usr/local/bin/aegis-edge") == null);
-    try std.testing.expect(std.mem.indexOf(u8, dockerfile, "USER aegis") != null);
+    try std.testing.expect(std.mem.indexOf(u8, dockerfile, "COPY bin/edge /usr/local/bin/edge") != null);
+    try std.testing.expect(std.mem.indexOf(u8, dockerfile, "COPY edge /usr/local/bin/edge") == null);
+    try std.testing.expect(std.mem.indexOf(u8, dockerfile, "USER edge") != null);
     try std.testing.expect(std.mem.indexOf(u8, dockerfile, "privileged") == null);
     try std.testing.expect(std.mem.indexOf(u8, dockerfile, "host network") == null);
 
-    const install_script = try readFile(allocator, "scripts/install-aegis-edge.sh");
+    const install_script = try readFile(allocator, "scripts/install-edge.sh");
     defer allocator.free(install_script);
     try std.testing.expect(std.mem.indexOf(u8, install_script, "tar -tzf") != null);
-    try std.testing.expect(std.mem.indexOf(u8, install_script, "/bin/aegis-edge") != null);
-    try std.testing.expect(std.mem.indexOf(u8, install_script, "${BIN_DIR}/aegis-edge") != null);
+    try std.testing.expect(std.mem.indexOf(u8, install_script, "/bin/edge") != null);
+    try std.testing.expect(std.mem.indexOf(u8, install_script, "${BIN_DIR}/edge") != null);
     try std.testing.expect(std.mem.indexOf(u8, install_script, "install -m 0755") != null);
 
-    const service = try readFile(allocator, "packaging/systemd/aegis-edge-bench.example.service");
+    const service = try readFile(allocator, "packaging/systemd/edge-bench.example.service");
     defer allocator.free(service);
     try std.testing.expect(std.mem.indexOf(u8, service, "example only") != null);
     try std.testing.expect(std.mem.indexOf(u8, service, "WantedBy=") == null);

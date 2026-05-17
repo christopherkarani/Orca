@@ -1,14 +1,14 @@
-# Aegis Edge
+# Edge
 
-Aegis Edge is a local policy, safety-envelope, MAVLink mediation, audit, red-team, and evidence runtime for drone autonomy evaluation in fake adapter, SITL, and bench-preparation environments.
+Edge is a local policy, safety-envelope, MAVLink mediation, audit, red-team, and evidence runtime for drone autonomy evaluation in fake adapter, SITL, and bench-preparation environments.
 
 For design-partner evaluation, see [customer_pilot/README.md](../../customer_pilot/README.md). The customer pilot package keeps the same no real-flight boundary as the Edge docs and examples.
 
-Phase 28 adds a MAVLink gateway foundation for fake/in-memory simulation and protocol mediation. Later completed phases add PX4 SITL, ArduPilot SITL, safety enforcement, operator approval, audit/replay, safety-case evidence, red-team fixtures, data guard, deployment/bench diagnostics, and runtime health. Aegis Edge is not ready for real flight, provides no real-flight readiness, is not regulatory certification, and is not autopilot replacement behavior.
+Phase 28 adds a MAVLink gateway foundation for fake/in-memory simulation and protocol mediation. Later completed phases add PX4 SITL, ArduPilot SITL, safety enforcement, operator approval, audit/replay, safety-case evidence, red-team fixtures, data guard, deployment/bench diagnostics, and runtime health. Edge is not ready for real flight, provides no real-flight readiness, is not regulatory certification, and is not autopilot replacement behavior.
 
 ## What It Is
 
-Aegis Edge sits between autonomous agents or companion planners and control bridges. It evaluates command requests against policy, safety envelope constraints, operator approval rules, emergency-mode policy, telemetry freshness, data guard rules, and runtime health before a command is forwarded in simulation-oriented contexts.
+Edge sits between autonomous agents or companion planners and control bridges. It evaluates command requests against policy, safety envelope constraints, operator approval rules, emergency-mode policy, telemetry freshness, data guard rules, and runtime health before a command is forwarded in simulation-oriented contexts.
 
 Use it to demonstrate:
 
@@ -23,7 +23,7 @@ Use it to demonstrate:
 
 ## What It Is Not
 
-Aegis Edge is not a flight controller. Aegis Edge is not an autopilot replacement. It does not replace PX4 or ArduPilot. It is not detect-and-avoid. It is not regulatory approval, airworthiness approval, certification, BVLOS authorization, or proof that an aircraft is safe for flight.
+Edge is not a flight controller. Edge is not an autopilot replacement. It does not replace PX4 or ArduPilot. It is not detect-and-avoid. It is not regulatory approval, airworthiness approval, certification, BVLOS authorization, or proof that an aircraft is safe for flight.
 
 ## Supported Environments
 
@@ -45,16 +45,16 @@ Aegis Edge is not a flight controller. Aegis Edge is not an autopilot replacemen
 
 ```sh
 zig build
-./zig-out/bin/aegis-edge version --json
-./zig-out/bin/aegis-edge doctor
-./zig-out/bin/aegis-edge demo list
-./zig-out/bin/aegis-edge demo run geofence-deny
-./zig-out/bin/aegis-edge proof generate --demo geofence-deny
-./zig-out/bin/aegis-edge pilot checklist
-./zig-out/bin/aegis-edge pilot package
-./zig-out/bin/aegis-edge pilot demo
-./zig-out/bin/aegis-edge docs check
-./zig-out/bin/aegis-edge review run
+./zig-out/bin/edge version --json
+./zig-out/bin/edge doctor
+./zig-out/bin/edge demo list
+./zig-out/bin/edge demo run geofence-deny
+./zig-out/bin/edge proof generate --demo geofence-deny
+./zig-out/bin/edge pilot checklist
+./zig-out/bin/edge pilot package
+./zig-out/bin/edge pilot demo
+./zig-out/bin/edge docs check
+./zig-out/bin/edge review run
 ```
 
 Release install docs: `docs/edge/install.md` and `docs/edge/release-artifacts.md`. Verify `checksums.txt` before installing any artifact.
@@ -62,13 +62,13 @@ Release install docs: `docs/edge/install.md` and `docs/edge/release-artifacts.md
 ## Demo Commands
 
 ```sh
-./zig-out/bin/aegis-edge demo list
-./zig-out/bin/aegis-edge demo run geofence-deny
-./zig-out/bin/aegis-edge demo run all
-./zig-out/bin/aegis-edge proof generate --demo geofence-deny
-./zig-out/bin/aegis-edge pilot checklist
-./zig-out/bin/aegis-edge pilot package
-./zig-out/bin/aegis-edge pilot demo
+./zig-out/bin/edge demo list
+./zig-out/bin/edge demo run geofence-deny
+./zig-out/bin/edge demo run all
+./zig-out/bin/edge proof generate --demo geofence-deny
+./zig-out/bin/edge pilot checklist
+./zig-out/bin/edge pilot package
+./zig-out/bin/edge pilot demo
 examples/edge/demos/run-all.sh
 scripts/edge-demo.sh
 ```
@@ -78,19 +78,19 @@ The default demo sequence shows an agent requesting a waypoint outside a geofenc
 ## Red-Team Commands
 
 ```sh
-./zig-out/bin/aegis-edge redteam validate
-./zig-out/bin/aegis-edge redteam --ci
-./zig-out/bin/aegis-edge redteam --category geofence
-./zig-out/bin/aegis-edge redteam --category data-guard
-./zig-out/bin/aegis-edge redteam --report safety-case
+./zig-out/bin/edge redteam validate
+./zig-out/bin/edge redteam --ci
+./zig-out/bin/edge redteam --category geofence
+./zig-out/bin/edge redteam --category data-guard
+./zig-out/bin/edge redteam --report safety-case
 ```
 
 ## Safety-Case And Replay Commands
 
 ```sh
-./zig-out/bin/aegis-edge safety-case generate --policy examples/edge/safety/policies/safety-strict.yaml --scenario examples/edge/safety/scenarios/geofence-deny.yaml
-./zig-out/bin/aegis-edge safety-case show --session last
-./zig-out/bin/aegis-edge replay --session last --verify
+./zig-out/bin/edge safety-case generate --policy examples/edge/safety/policies/safety-strict.yaml --scenario examples/edge/safety/scenarios/geofence-deny.yaml
+./zig-out/bin/edge safety-case show --session last
+./zig-out/bin/edge replay --session last --verify
 ```
 
 ## Capability Overview
@@ -105,7 +105,7 @@ The default demo sequence shows an agent requesting a waypoint outside a geofenc
 
 ## Limitations
 
-Aegis Edge covers only supported command/message/policy surfaces. Unknown or unsupported results are not counted as passes. SITL evidence is not flight evidence. Bench-preparation evidence is no-actuation evidence. Customers must validate their own airframe, autopilot, hardware, operator procedures, communications links, and integration-specific safety analysis.
+Edge covers only supported command/message/policy surfaces. Unknown or unsupported results are not counted as passes. SITL evidence is not flight evidence. Bench-preparation evidence is no-actuation evidence. Customers must validate their own airframe, autopilot, hardware, operator procedures, communications links, and integration-specific safety analysis.
 
 ## Safety Boundary
 

@@ -2,7 +2,7 @@
 
 This is a draft technical-response template. Customer security and legal teams should review the final answers before sharing.
 
-## Does Aegis Edge require cloud connectivity?
+## Does Edge require cloud connectivity?
 
 No. Normal customer pilot evaluation is local and offline.
 
@@ -12,7 +12,7 @@ No hosted telemetry is required for the pilot. Data guard examples evaluate loca
 
 ## Where are logs stored?
 
-Local run artifacts are written under the configured local output path, commonly `.aegis-edge/`. The pilot report should list the exact path used.
+Local run artifacts are written under the configured local output path, commonly `.edge/`. The pilot report should list the exact path used.
 
 ## How are secrets redacted?
 
@@ -32,7 +32,7 @@ Normal pilot package review and fake adapter evaluation do not require privilege
 
 ## What platforms are supported?
 
-The pilot package targets local development and evaluation workflows already supported by the Aegis Edge build and CLI. Deployment targets should be confirmed with the current Edge deployment docs.
+The pilot package targets local development and evaluation workflows already supported by the Edge build and CLI. Deployment targets should be confirmed with the current Edge deployment docs.
 
 ## What are the limitations?
 

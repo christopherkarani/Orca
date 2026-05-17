@@ -3,6 +3,6 @@
 Validate every policy with:
 
 ```sh
-../../zig-out/bin/aegis policy check ./strict-no-network.yaml
-../../zig-out/bin/aegis policy check ./mcp-stdio-demo.yaml
+../../zig-out/bin/orca policy check ./strict-no-network.yaml
+../../zig-out/bin/orca policy check ./mcp-stdio-demo.yaml
 ```

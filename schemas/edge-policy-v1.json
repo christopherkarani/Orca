@@ -1,8 +1,8 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://aegis.local/schemas/edge-policy-v1.json",
-  "title": "Aegis Edge policy schema v1",
-  "description": "Versioned safety policy shape for Aegis Edge domain validation, MAVLink mediation, fake-PX4/fake-ArduPilot scenarios, and opt-in PX4/ArduPilot SITL simulation evidence. This schema does not represent real-flight readiness, real hardware, or regulatory certification.",
+  "title": "Edge policy schema v1",
+  "description": "Versioned safety policy shape for Edge domain validation, MAVLink mediation, fake-PX4/fake-ArduPilot scenarios, and opt-in PX4/ArduPilot SITL simulation evidence. This schema does not represent real-flight readiness, real hardware, or regulatory certification.",
   "type": "object",
   "additionalProperties": false,
   "required": ["version", "vehicle", "safety", "commands"],

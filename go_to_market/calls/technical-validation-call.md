@@ -2,7 +2,7 @@
 
 ## Purpose
 
-Determine whether one tightly scoped Aegis Edge pilot can run in the customer's fake adapter, PX4 SITL, ArduPilot SITL, or no-actuation bench-preparation workflow.
+Determine whether one tightly scoped Edge pilot can run in the customer's fake adapter, PX4 SITL, ArduPilot SITL, or no-actuation bench-preparation workflow.
 
 ## Stack Mapping
 

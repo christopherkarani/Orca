@@ -7,7 +7,7 @@ const safety_report = @import("../audit/safety_report.zig");
 
 pub fn writeHuman(writer: anytype, suite: runner.SuiteResult) !void {
     const totals = suite.totals();
-    try writer.writeAll("Aegis Edge Red-Team Score\n\n");
+    try writer.writeAll("Edge Red-Team Score\n\n");
     for (scorecard.ordered_categories) |category| {
         const category_total = scorecard.summarizeCategory(runner.FixtureResult, category, suite.results);
         if (category_total.fixtures == 0) continue;
@@ -48,7 +48,7 @@ pub fn writeJson(writer: anytype, suite: runner.SuiteResult) !void {
         try writeFixture(writer, result);
     }
     try writer.writeAll("],\"limitations\":[");
-    try jsonString(writer, "Aegis Edge red-team evidence is simulation, fake-adapter, SITL, bench-preparation, or customer-evaluation evidence only.");
+    try jsonString(writer, "Edge red-team evidence is simulation, fake-adapter, SITL, bench-preparation, or customer-evaluation evidence only.");
     try writer.writeByte(',');
     try jsonString(writer, "Skipped, unsupported, and inconclusive fixtures are not counted as passed.");
     try writer.writeByte(',');
@@ -92,7 +92,7 @@ fn writeSafetyCaseMarkdownFile(path: []const u8, suite: runner.SuiteResult) !voi
     var buffer: [8192]u8 = undefined;
     var writer = file.writer(&buffer);
     try writer.interface.print(
-        \\# Aegis Edge Red-Team Safety Evidence
+        \\# Edge Red-Team Safety Evidence
         \\
         \\{s}
         \\
@@ -125,7 +125,7 @@ fn writeSafetyCaseMarkdownFile(path: []const u8, suite: runner.SuiteResult) !voi
         \\
         \\## Limitations
         \\
-        \\- Aegis Edge is not a flight controller, autopilot replacement, detect-and-avoid system, regulatory approval, or safety certification.
+        \\- Edge is not a flight controller, autopilot replacement, detect-and-avoid system, regulatory approval, or safety certification.
         \\- Fake-adapter success is not PX4 or ArduPilot SITL success.
         \\- SITL success is not real-flight readiness.
         \\- Skipped, unsupported, and inconclusive fixtures are not counted as passed.
@@ -155,7 +155,7 @@ fn writeSafetyCaseJsonFile(path: []const u8, suite: runner.SuiteResult) !void {
     try writer.interface.writeAll("],\"limitations\":[");
     try jsonString(&writer.interface, "No real flight was performed or claimed.");
     try writer.interface.writeByte(',');
-    try jsonString(&writer.interface, "Aegis Edge is not a flight controller, autopilot replacement, detect-and-avoid system, regulatory approval, or certification.");
+    try jsonString(&writer.interface, "Edge is not a flight controller, autopilot replacement, detect-and-avoid system, regulatory approval, or certification.");
     try writer.interface.writeByte(',');
     try jsonString(&writer.interface, "Skipped, unsupported, and inconclusive fixtures are not counted as passed.");
     try writer.interface.writeAll("]}\n");

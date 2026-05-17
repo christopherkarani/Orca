@@ -1,7 +1,8 @@
 const std = @import("std");
 const builtin = @import("builtin");
-const core = @import("../core/mod.zig");
-const core_api = @import("../core/api.zig");
+const core = @import("aegis_core").core;
+const supervisor = @import("../core/supervisor.zig");
+const core_api = @import("aegis_core").api;
 const sandbox = @import("../sandbox/mod.zig");
 
 const exit_codes = @import("exit_codes.zig");
@@ -35,7 +36,7 @@ pub fn command(argv: []const []const u8, stdout: anytype, stderr: anytype) !u8 {
 // doctor
 // ---------------------------------------------------------------------------
 
-const DoctorTarget = enum { all, codex, claude, opencode, openclaw };
+const DoctorTarget = enum { all, codex, claude, opencode, openclaw, hermes };
 
 fn doctorCommand(argv: []const []const u8, stdout: anytype, stderr: anytype) !u8 {
     var target: DoctorTarget = .all;
@@ -51,10 +52,12 @@ fn doctorCommand(argv: []const []const u8, stdout: anytype, stderr: anytype) !u8
                 \\  orca plugin doctor claude
                 \\  orca plugin doctor opencode
                 \\  orca plugin doctor openclaw
+                \\  orca plugin doctor hermes
                 \\  orca plugin doctor codex [--json]
                 \\  orca plugin doctor claude [--json]
                 \\  orca plugin doctor opencode [--json]
                 \\  orca plugin doctor openclaw [--json]
+                \\  orca plugin doctor hermes [--json]
                 \\
             );
             return exit_codes.success;
@@ -77,6 +80,10 @@ fn doctorCommand(argv: []const []const u8, stdout: anytype, stderr: anytype) !u8
         }
         if (std.mem.eql(u8, arg, "openclaw")) {
             target = .openclaw;
+            continue;
+        }
+        if (std.mem.eql(u8, arg, "hermes") or std.mem.eql(u8, arg, "hermess")) {
+            target = .hermes;
             continue;
         }
         try stderr.print("orca plugin doctor: unknown option '{s}'.\n", .{arg});
@@ -107,6 +114,7 @@ const PluginDirStatus = struct {
     claude: bool,
     opencode: bool,
     openclaw: bool,
+    hermes: bool,
     common: bool,
 };
 
@@ -115,6 +123,7 @@ const HostBinaryStatus = struct {
     claude: bool,
     opencode: bool,
     openclaw: bool,
+    hermes: bool,
 };
 
 const OpenCodePaths = struct {
@@ -129,6 +138,14 @@ const OpenClawPaths = struct {
     source_exists: bool,
 };
 
+const HermesPaths = struct {
+    repo_manifest_exists: bool,
+    repo_source_exists: bool,
+    user_manifest_exists: bool,
+    user_source_exists: bool,
+    config_references_plugin: bool,
+};
+
 const MarketplaceStatus = struct {
     codex_marketplace: bool,
     claude_marketplace: bool,
@@ -137,8 +154,8 @@ const MarketplaceStatus = struct {
 };
 
 const PluginDoctorReport = struct {
-    aegis_version: []const u8,
-    aegis_binary_path: ?[]const u8,
+    orca_version: []const u8,
+    orca_binary_path: ?[]const u8,
     cwd: []const u8,
     workspace_root: []const u8,
     policy_present: bool,
@@ -150,9 +167,8 @@ const PluginDoctorReport = struct {
     host_binaries: HostBinaryStatus,
     opencode_paths: OpenCodePaths,
     openclaw_paths: OpenClawPaths,
+    hermes_paths: HermesPaths,
     marketplace: MarketplaceStatus,
-    drone_workstream_detected: bool,
-    drone_safety_mode_active: bool,
     platform_summary: []const u8,
     warnings: [][]const u8,
 
@@ -166,20 +182,23 @@ const PluginDoctorReport = struct {
             for (self.warnings) |w| allocator.free(w);
             allocator.free(self.warnings);
         }
-        if (self.aegis_binary_path) |p| allocator.free(p);
+        if (self.orca_binary_path) |p| allocator.free(p);
         self.* = undefined;
     }
 };
 
 fn collectPluginDoctorReport(allocator: std.mem.Allocator) !PluginDoctorReport {
     const cwd = std.fs.cwd().realpathAlloc(allocator, ".") catch try allocator.dupe(u8, ".");
-    const workspace_root = core.supervisor.resolveWorkspaceRoot(allocator, null, ".") catch try allocator.dupe(u8, cwd);
+    errdefer allocator.free(cwd);
+    const workspace_root = supervisor.resolveWorkspaceRoot(allocator, null, ".") catch try allocator.dupe(u8, cwd);
+    errdefer allocator.free(workspace_root);
 
-    const policy_path = std.fs.path.join(allocator, &.{ workspace_root, ".aegis", "policy.yaml" }) catch unreachable;
+    const policy_path = try std.fs.path.join(allocator, &.{ workspace_root, ".orca", "policy.yaml" });
     defer allocator.free(policy_path);
     var policy_present = false;
     var policy_valid = false;
     var policy_error: ?[]const u8 = null;
+    errdefer if (policy_error) |e| allocator.free(e);
     if (fileExistsAbsolute(policy_path)) {
         policy_present = true;
         if (core_api.loadPolicyFile(allocator, policy_path)) |loaded_policy| {
@@ -187,19 +206,21 @@ fn collectPluginDoctorReport(allocator: std.mem.Allocator) !PluginDoctorReport {
             loaded.deinit();
             policy_valid = true;
         } else |err| {
-            policy_error = std.fmt.allocPrint(allocator, "{s}", .{@errorName(err)}) catch null;
+            if (err == error.OutOfMemory) return err;
+            policy_error = try std.fmt.allocPrint(allocator, "{s}", .{@errorName(err)});
         }
     }
 
-    const audit_replay_available = hasPath(workspace_root, ".aegis/sessions");
+    const audit_replay_available = hasPath(workspace_root, ".orca/sessions");
     const mcp_support = "stdio proxy active; HTTP transport deferred";
 
     const plugin_dirs = PluginDirStatus{
-        .codex = dirExists("integrations/codex-plugin"),
-        .claude = dirExists("integrations/claude-code-plugin"),
-        .opencode = dirExists("integrations/opencode-plugin"),
-        .openclaw = dirExists("integrations/openclaw-plugin"),
-        .common = dirExists("integrations/common"),
+        .codex = pluginDirExists(allocator, "integrations/codex-plugin"),
+        .claude = pluginDirExists(allocator, "integrations/claude-code-plugin"),
+        .opencode = pluginDirExists(allocator, "integrations/opencode-plugin"),
+        .openclaw = pluginDirExists(allocator, "integrations/openclaw-plugin"),
+        .hermes = pluginDirExists(allocator, "integrations/hermes-plugin"),
+        .common = pluginDirExists(allocator, "integrations/common"),
     };
 
     const host_bins = HostBinaryStatus{
@@ -207,18 +228,19 @@ fn collectPluginDoctorReport(allocator: std.mem.Allocator) !PluginDoctorReport {
         .claude = binaryInPath(allocator, "claude"),
         .opencode = binaryInPath(allocator, "opencode"),
         .openclaw = binaryInPath(allocator, "openclaw"),
+        .hermes = binaryInPath(allocator, "hermes"),
     };
 
     // Check OpenCode-specific plugin paths
-    const opencode_project_path = std.fs.path.join(allocator, &.{ cwd, ".opencode", "plugins", "orca.ts" }) catch unreachable;
+    const opencode_project_path = try std.fs.path.join(allocator, &.{ cwd, ".opencode", "plugins", "orca.ts" });
     defer allocator.free(opencode_project_path);
 
     const opencode_global_path = blk: {
         const home = std.process.getEnvVarOwned(allocator, "HOME") catch {
-            break :blk std.fs.path.join(allocator, &.{ "~", ".config", "opencode", "plugins", "orca.ts" }) catch unreachable;
+            break :blk try std.fs.path.join(allocator, &.{ "~", ".config", "opencode", "plugins", "orca.ts" });
         };
         defer allocator.free(home);
-        break :blk std.fs.path.join(allocator, &.{ home, ".config", "opencode", "plugins", "orca.ts" }) catch unreachable;
+        break :blk try std.fs.path.join(allocator, &.{ home, ".config", "opencode", "plugins", "orca.ts" });
     };
     defer allocator.free(opencode_global_path);
 
@@ -229,19 +251,42 @@ fn collectPluginDoctorReport(allocator: std.mem.Allocator) !PluginDoctorReport {
     };
 
     // Check OpenClaw-specific plugin paths
-    const openclaw_manifest_path = std.fs.path.join(allocator, &.{ cwd, "integrations", "openclaw-plugin", "openclaw.plugin.json" }) catch unreachable;
+    const openclaw_manifest_path = try std.fs.path.join(allocator, &.{ cwd, "integrations", "openclaw-plugin", "openclaw.plugin.json" });
     defer allocator.free(openclaw_manifest_path);
 
-    const openclaw_package_json_path = std.fs.path.join(allocator, &.{ cwd, "integrations", "openclaw-plugin", "package.json" }) catch unreachable;
+    const openclaw_package_json_path = try std.fs.path.join(allocator, &.{ cwd, "integrations", "openclaw-plugin", "package.json" });
     defer allocator.free(openclaw_package_json_path);
 
-    const openclaw_source_path = std.fs.path.join(allocator, &.{ cwd, "integrations", "openclaw-plugin", "src", "index.ts" }) catch unreachable;
+    const openclaw_source_path = try std.fs.path.join(allocator, &.{ cwd, "integrations", "openclaw-plugin", "src", "index.ts" });
     defer allocator.free(openclaw_source_path);
 
     const openclaw_paths = OpenClawPaths{
         .plugin_manifest_exists = fileExistsAbsolute(openclaw_manifest_path),
         .package_json_exists = fileExistsAbsolute(openclaw_package_json_path),
         .source_exists = fileExistsAbsolute(openclaw_source_path),
+    };
+
+    const hermes_plugin_dir = try resolveBundledPath(allocator, "integrations/hermes-plugin");
+    defer allocator.free(hermes_plugin_dir);
+    const hermes_repo_manifest_path = try std.fs.path.join(allocator, &.{ hermes_plugin_dir, "plugin.yaml" });
+    defer allocator.free(hermes_repo_manifest_path);
+    const hermes_repo_source_path = try std.fs.path.join(allocator, &.{ hermes_plugin_dir, "__init__.py" });
+    defer allocator.free(hermes_repo_source_path);
+    const hermes_user_root = try hermesUserPluginRoot(allocator);
+    defer allocator.free(hermes_user_root);
+    const hermes_user_manifest_path = try std.fs.path.join(allocator, &.{ hermes_user_root, "plugin.yaml" });
+    defer allocator.free(hermes_user_manifest_path);
+    const hermes_user_source_path = try std.fs.path.join(allocator, &.{ hermes_user_root, "__init__.py" });
+    defer allocator.free(hermes_user_source_path);
+    const hermes_config_path = try hermesConfigPath(allocator);
+    defer allocator.free(hermes_config_path);
+
+    const hermes_paths = HermesPaths{
+        .repo_manifest_exists = fileExistsAbsolute(hermes_repo_manifest_path),
+        .repo_source_exists = fileExistsAbsolute(hermes_repo_source_path),
+        .user_manifest_exists = fileExistsAbsolute(hermes_user_manifest_path),
+        .user_source_exists = fileExistsAbsolute(hermes_user_source_path),
+        .config_references_plugin = fileContains(allocator, hermes_config_path, "orca"),
     };
 
     const marketplace = MarketplaceStatus{
@@ -251,19 +296,22 @@ fn collectPluginDoctorReport(allocator: std.mem.Allocator) !PluginDoctorReport {
         .claude_plugin_manifest = fileExistsAbsolute("integrations/claude-code-plugin/.claude-plugin/plugin.json"),
     };
 
-    const drone_detected = hasPath(workspace_root, "packages/edge") or binaryInPath(allocator, "aegis-edge");
-    const drone_safety = drone_detected; // safety mode is active when workstream is detected
-
     var warnings: std.ArrayList([]const u8) = .empty;
-    if (!plugin_dirs.common) try warnings.append(allocator, try allocator.dupe(u8, "integrations/common directory missing"));
-    if (!plugin_dirs.codex) try warnings.append(allocator, try allocator.dupe(u8, "Codex plugin directory not yet created"));
-    if (!plugin_dirs.claude) try warnings.append(allocator, try allocator.dupe(u8, "Claude Code plugin directory not yet created"));
-    if (!plugin_dirs.opencode) try warnings.append(allocator, try allocator.dupe(u8, "OpenCode plugin directory not yet created"));
-    if (!plugin_dirs.openclaw) try warnings.append(allocator, try allocator.dupe(u8, "OpenClaw plugin directory not yet created"));
-    if (!host_bins.codex) try warnings.append(allocator, try allocator.dupe(u8, "Codex host binary not found in PATH"));
-    if (!host_bins.claude) try warnings.append(allocator, try allocator.dupe(u8, "Claude Code host binary not found in PATH"));
-    if (!host_bins.opencode) try warnings.append(allocator, try allocator.dupe(u8, "OpenCode host binary not found in PATH"));
-    if (!host_bins.openclaw) try warnings.append(allocator, try allocator.dupe(u8, "OpenClaw host binary not found in PATH"));
+    defer warnings.deinit(allocator);
+    errdefer {
+        for (warnings.items) |warning| allocator.free(warning);
+    }
+    if (!plugin_dirs.common) try appendWarning(allocator, &warnings, "integrations/common directory missing");
+    if (!plugin_dirs.codex) try appendWarning(allocator, &warnings, "Codex plugin directory not yet created");
+    if (!plugin_dirs.claude) try appendWarning(allocator, &warnings, "Claude Code plugin directory not yet created");
+    if (!plugin_dirs.opencode) try appendWarning(allocator, &warnings, "OpenCode plugin directory not yet created");
+    if (!plugin_dirs.openclaw) try appendWarning(allocator, &warnings, "OpenClaw plugin directory not yet created");
+    if (!plugin_dirs.hermes) try appendWarning(allocator, &warnings, "Hermes plugin directory not yet created");
+    if (!host_bins.codex) try appendWarning(allocator, &warnings, "Codex host binary not found in PATH");
+    if (!host_bins.claude) try appendWarning(allocator, &warnings, "Claude Code host binary not found in PATH");
+    if (!host_bins.opencode) try appendWarning(allocator, &warnings, "OpenCode host binary not found in PATH");
+    if (!host_bins.openclaw) try appendWarning(allocator, &warnings, "OpenClaw host binary not found in PATH");
+    if (!host_bins.hermes) try appendWarning(allocator, &warnings, "Hermes host binary not found in PATH");
 
     const os = core.platform.detectOs();
     const backend_report = sandbox.backend.detect(os);
@@ -272,32 +320,40 @@ fn collectPluginDoctorReport(allocator: std.mem.Allocator) !PluginDoctorReport {
         backend_report.backend_name,
         backend_report.fallback_level.toString(),
     });
+    errdefer allocator.free(platform_summary);
 
     const binary_path = std.fs.selfExePathAlloc(allocator) catch null;
+    errdefer if (binary_path) |p| allocator.free(p);
+    const mcp_support_status = try allocator.dupe(u8, mcp_support);
+    errdefer allocator.free(mcp_support_status);
+    const warning_items = try warnings.toOwnedSlice(allocator);
 
     return .{
-        .aegis_version = cli.version,
-        .aegis_binary_path = binary_path,
+        .orca_version = cli.version,
+        .orca_binary_path = binary_path,
         .cwd = cwd,
         .workspace_root = workspace_root,
         .policy_present = policy_present,
         .policy_valid = policy_valid,
         .policy_error = policy_error,
         .audit_replay_available = audit_replay_available,
-        .mcp_support_status = try allocator.dupe(u8, mcp_support),
+        .mcp_support_status = mcp_support_status,
         .plugin_directories = plugin_dirs,
         .host_binaries = host_bins,
         .opencode_paths = opencode_paths,
         .openclaw_paths = openclaw_paths,
+        .hermes_paths = hermes_paths,
         .marketplace = marketplace,
-        .drone_workstream_detected = drone_detected,
-        .drone_safety_mode_active = drone_safety,
         .platform_summary = platform_summary,
-        .warnings = try warnings.toOwnedSlice(allocator),
+        .warnings = warning_items,
     };
 }
 
-
+fn appendWarning(allocator: std.mem.Allocator, warnings: *std.ArrayList([]const u8), message: []const u8) !void {
+    const owned = try allocator.dupe(u8, message);
+    errdefer allocator.free(owned);
+    try warnings.append(allocator, owned);
+}
 
 // ---------------------------------------------------------------------------
 // doctor plain output
@@ -306,8 +362,8 @@ fn collectPluginDoctorReport(allocator: std.mem.Allocator) !PluginDoctorReport {
 fn writeDoctorPlain(stdout: anytype, report: PluginDoctorReport, target: DoctorTarget) !void {
     try stdout.writeAll("Orca Plugin Doctor\n\n");
 
-    try stdout.print("Orca version: {s}\n", .{report.aegis_version});
-    if (report.aegis_binary_path) |path| {
+    try stdout.print("Orca version: {s}\n", .{report.orca_version});
+    if (report.orca_binary_path) |path| {
         try stdout.print("Orca binary: {s}\n", .{path});
     } else {
         try stdout.writeAll("Orca binary: unknown\n");
@@ -318,12 +374,12 @@ fn writeDoctorPlain(stdout: anytype, report: PluginDoctorReport, target: DoctorT
     try stdout.writeAll("\nPolicy:\n");
     if (report.policy_present) {
         if (report.policy_valid) {
-            try stdout.writeAll("  .aegis/policy.yaml: present and valid\n");
+            try stdout.writeAll("  .orca/policy.yaml: present and valid\n");
         } else {
-            try stdout.print("  .aegis/policy.yaml: invalid ({s})\n", .{report.policy_error orelse "validation failed"});
+            try stdout.print("  .orca/policy.yaml: invalid ({s})\n", .{report.policy_error orelse "validation failed"});
         }
     } else {
-        try stdout.writeAll("  .aegis/policy.yaml: missing\n");
+        try stdout.writeAll("  .orca/policy.yaml: missing\n");
     }
 
     try stdout.writeAll("\nAudit / replay:\n");
@@ -338,26 +394,18 @@ fn writeDoctorPlain(stdout: anytype, report: PluginDoctorReport, target: DoctorT
     try stdout.print("  integrations/claude-code-plugin: {s}\n", .{if (report.plugin_directories.claude) "found" else "missing"});
     try stdout.print("  integrations/opencode-plugin: {s}\n", .{if (report.plugin_directories.opencode) "found" else "missing"});
     try stdout.print("  integrations/openclaw-plugin: {s}\n", .{if (report.plugin_directories.openclaw) "found" else "missing"});
+    try stdout.print("  integrations/hermes-plugin: {s}\n", .{if (report.plugin_directories.hermes) "found" else "missing"});
 
     try stdout.writeAll("\nHost binaries:\n");
     try stdout.print("  codex: {s}\n", .{if (report.host_binaries.codex) "found in PATH" else "not found"});
     try stdout.print("  claude: {s}\n", .{if (report.host_binaries.claude) "found in PATH" else "not found"});
     try stdout.print("  opencode: {s}\n", .{if (report.host_binaries.opencode) "found in PATH" else "not found"});
     try stdout.print("  openclaw: {s}\n", .{if (report.host_binaries.openclaw) "found in PATH" else "not found"});
+    try stdout.print("  hermes: {s}\n", .{if (report.host_binaries.hermes) "found in PATH" else "not found"});
 
     try stdout.writeAll("\nMarketplace files:\n");
     try stdout.print("  .agents/plugins/marketplace.json: {s}\n", .{if (report.marketplace.codex_marketplace) "present" else "missing"});
     try stdout.print("  .claude-plugin/marketplace.json: {s}\n", .{if (report.marketplace.claude_marketplace) "present" else "missing"});
-
-    try stdout.writeAll("\nDrone workstream:\n");
-    if (report.drone_workstream_detected) {
-        try stdout.writeAll("  detected: yes\n");
-        try stdout.writeAll("  safety mode: plugin default-deny for live-control patterns\n");
-        try stdout.writeAll("  simulation demos: allowed\n");
-        try stdout.writeAll("  live control: requires explicit policy and human approval\n");
-    } else {
-        try stdout.writeAll("  detected: no\n");
-    }
 
     try stdout.writeAll("\nPlatform:\n");
     try stdout.print("  {s}\n", .{report.platform_summary});
@@ -407,6 +455,17 @@ fn writeDoctorPlain(stdout: anytype, report: PluginDoctorReport, target: DoctorT
             try stdout.writeAll("  install: use 'orca plugin install openclaw --dry-run' to preview\n");
             try stdout.writeAll("  note: npm package orca-openclaw-plugin is published; ClawHub package orca-openclaw-plugin is published\n");
         },
+        .hermes => {
+            try stdout.writeAll("\nHermes plugin status:\n");
+            try stdout.print("  host binary: {s}\n", .{if (report.host_binaries.hermes) "detected" else "not detected"});
+            try stdout.print("  plugin directory: {s}\n", .{if (report.plugin_directories.hermes) "present" else "not yet created"});
+            try stdout.print("  repo plugin.yaml: {s}\n", .{if (report.hermes_paths.repo_manifest_exists) "exists" else "not found"});
+            try stdout.print("  repo __init__.py: {s}\n", .{if (report.hermes_paths.repo_source_exists) "exists" else "not found"});
+            try stdout.print("  user plugin path (~/.hermes/plugins/orca/plugin.yaml): {s}\n", .{if (report.hermes_paths.user_manifest_exists) "exists" else "not found"});
+            try stdout.print("  config references plugin: {s}\n", .{if (report.hermes_paths.config_references_plugin) "yes" else "unknown/no"});
+            try stdout.writeAll("  install: use 'orca plugin install hermes --dry-run' to preview\n");
+            try stdout.writeAll("  note: Hermes hooks are additive; strongest protection remains 'orca run -- hermes'\n");
+        },
     }
 
     try stdout.writeAll("\n");
@@ -418,12 +477,12 @@ fn writeDoctorPlain(stdout: anytype, report: PluginDoctorReport, target: DoctorT
 
 fn writeDoctorJson(stdout: anytype, report: PluginDoctorReport, target: DoctorTarget) !void {
     try stdout.writeAll("{\n");
-    try stdout.writeAll("  \"aegis_version\": ");
-    try writeJsonString(stdout, report.aegis_version);
+    try stdout.writeAll("  \"orca_version\": ");
+    try writeJsonString(stdout, report.orca_version);
     try stdout.writeAll(",\n");
 
-    try stdout.writeAll("  \"aegis_binary_path\": ");
-    if (report.aegis_binary_path) |path| {
+    try stdout.writeAll("  \"orca_binary_path\": ");
+    if (report.orca_binary_path) |path| {
         try writeJsonString(stdout, path);
     } else {
         try stdout.writeAll("null");
@@ -456,6 +515,7 @@ fn writeDoctorJson(stdout: anytype, report: PluginDoctorReport, target: DoctorTa
     try stdout.print("    \"claude\": {s},\n", .{if (report.plugin_directories.claude) "true" else "false"});
     try stdout.print("    \"opencode\": {s},\n", .{if (report.plugin_directories.opencode) "true" else "false"});
     try stdout.print("    \"openclaw\": {s},\n", .{if (report.plugin_directories.openclaw) "true" else "false"});
+    try stdout.print("    \"hermes\": {s},\n", .{if (report.plugin_directories.hermes) "true" else "false"});
     try stdout.print("    \"common\": {s}\n", .{if (report.plugin_directories.common) "true" else "false"});
     try stdout.writeAll("  },\n");
 
@@ -463,7 +523,8 @@ fn writeDoctorJson(stdout: anytype, report: PluginDoctorReport, target: DoctorTa
     try stdout.print("    \"codex\": {s},\n", .{if (report.host_binaries.codex) "true" else "false"});
     try stdout.print("    \"claude\": {s},\n", .{if (report.host_binaries.claude) "true" else "false"});
     try stdout.print("    \"opencode\": {s},\n", .{if (report.host_binaries.opencode) "true" else "false"});
-    try stdout.print("    \"openclaw\": {s}\n", .{if (report.host_binaries.openclaw) "true" else "false"});
+    try stdout.print("    \"openclaw\": {s},\n", .{if (report.host_binaries.openclaw) "true" else "false"});
+    try stdout.print("    \"hermes\": {s}\n", .{if (report.host_binaries.hermes) "true" else "false"});
     try stdout.writeAll("  },\n");
 
     try stdout.writeAll("  \"opencode_paths\": {\n");
@@ -478,18 +539,19 @@ fn writeDoctorJson(stdout: anytype, report: PluginDoctorReport, target: DoctorTa
     try stdout.print("    \"source_exists\": {s}\n", .{if (report.openclaw_paths.source_exists) "true" else "false"});
     try stdout.writeAll("  },\n");
 
+    try stdout.writeAll("  \"hermes_paths\": {\n");
+    try stdout.print("    \"repo_manifest_exists\": {s},\n", .{if (report.hermes_paths.repo_manifest_exists) "true" else "false"});
+    try stdout.print("    \"repo_source_exists\": {s},\n", .{if (report.hermes_paths.repo_source_exists) "true" else "false"});
+    try stdout.print("    \"user_manifest_exists\": {s},\n", .{if (report.hermes_paths.user_manifest_exists) "true" else "false"});
+    try stdout.print("    \"user_source_exists\": {s},\n", .{if (report.hermes_paths.user_source_exists) "true" else "false"});
+    try stdout.print("    \"config_references_plugin\": {s}\n", .{if (report.hermes_paths.config_references_plugin) "true" else "false"});
+    try stdout.writeAll("  },\n");
+
     try stdout.writeAll("  \"marketplace\": {\n");
     try stdout.print("    \"codex_marketplace\": {s},\n", .{if (report.marketplace.codex_marketplace) "true" else "false"});
     try stdout.print("    \"claude_marketplace\": {s},\n", .{if (report.marketplace.claude_marketplace) "true" else "false"});
     try stdout.print("    \"codex_plugin_manifest\": {s},\n", .{if (report.marketplace.codex_plugin_manifest) "true" else "false"});
     try stdout.print("    \"claude_plugin_manifest\": {s}\n", .{if (report.marketplace.claude_plugin_manifest) "true" else "false"});
-    try stdout.writeAll("  },\n");
-
-    try stdout.writeAll("  \"drone\": {\n");
-    try stdout.print("    \"workstream_detected\": {s},\n", .{if (report.drone_workstream_detected) "true" else "false"});
-    try stdout.print("    \"safety_mode_active\": {s},\n", .{if (report.drone_safety_mode_active) "true" else "false"});
-    try stdout.writeAll("    \"live_control_policy\": \"default-deny\",\n");
-    try stdout.writeAll("    \"simulation_demos\": \"allowed\"\n");
     try stdout.writeAll("  },\n");
 
     try stdout.print("  \"platform_summary\": ", .{});
@@ -516,7 +578,7 @@ fn writeDoctorJson(stdout: anytype, report: PluginDoctorReport, target: DoctorTa
 // manifest
 // ---------------------------------------------------------------------------
 
-const ManifestTarget = enum { codex, claude, opencode, openclaw, all };
+const ManifestTarget = enum { codex, claude, opencode, openclaw, hermes, all };
 
 fn manifestCommand(argv: []const []const u8, stdout: anytype, stderr: anytype) !u8 {
     var target: ManifestTarget = .all;
@@ -530,6 +592,7 @@ fn manifestCommand(argv: []const []const u8, stdout: anytype, stderr: anytype) !
                 \\  orca plugin manifest claude
                 \\  orca plugin manifest opencode
                 \\  orca plugin manifest openclaw
+                \\  orca plugin manifest hermes
                 \\  orca plugin manifest all
                 \\  orca plugin manifest <target> [--json]
                 \\
@@ -554,6 +617,10 @@ fn manifestCommand(argv: []const []const u8, stdout: anytype, stderr: anytype) !
         }
         if (std.mem.eql(u8, arg, "openclaw")) {
             target = .openclaw;
+            continue;
+        }
+        if (std.mem.eql(u8, arg, "hermes") or std.mem.eql(u8, arg, "hermess")) {
+            target = .hermes;
             continue;
         }
         if (std.mem.eql(u8, arg, "all")) {
@@ -621,18 +688,31 @@ fn writeManifestPlain(stdout: anytype, target: ManifestTarget) !void {
                 try stdout.writeAll("  note: validation of manifest shape is deferred to host-specific checks\n");
             }
         },
+        .hermes => {
+            const manifest_path = "integrations/hermes-plugin/plugin.yaml";
+            const manifest_exists = fileExistsAbsolute(manifest_path);
+            const source_path = "integrations/hermes-plugin/__init__.py";
+            const source_exists = fileExistsAbsolute(source_path);
+            try stdout.writeAll("Hermes plugin manifest:\n");
+            try stdout.print("  expected manifest path: {s}\n", .{manifest_path});
+            try stdout.print("  manifest status: {s}\n", .{if (manifest_exists) "exists" else "missing"});
+            try stdout.print("  source: {s} ({s})\n", .{ source_path, if (source_exists) "exists" else "missing" });
+            try stdout.writeAll("  user install path: ~/.hermes/plugins/orca/\n");
+        },
         .all => {
             try stdout.writeAll("Plugin manifests:\n");
             const codex_path = "integrations/codex-plugin/.codex-plugin/plugin.json";
             const claude_path = "integrations/claude-code-plugin/.claude-plugin/plugin.json";
             const opencode_path = "integrations/opencode-plugin/orca.ts";
             const openclaw_path = "integrations/openclaw-plugin/openclaw.plugin.json";
+            const hermes_path = "integrations/hermes-plugin/plugin.yaml";
             const codex_marketplace = ".agents/plugins/marketplace.json";
             const claude_marketplace = ".claude-plugin/marketplace.json";
             try stdout.print("  codex:    {s} ({s})\n", .{ codex_path, if (fileExistsAbsolute(codex_path)) "exists" else "missing" });
             try stdout.print("  claude:   {s} ({s})\n", .{ claude_path, if (fileExistsAbsolute(claude_path)) "exists" else "missing" });
             try stdout.print("  opencode: {s} ({s})\n", .{ opencode_path, if (fileExistsAbsolute(opencode_path)) "exists" else "missing" });
             try stdout.print("  openclaw: {s} ({s})\n", .{ openclaw_path, if (fileExistsAbsolute(openclaw_path)) "exists" else "missing" });
+            try stdout.print("  hermes:   {s} ({s})\n", .{ hermes_path, if (fileExistsAbsolute(hermes_path)) "exists" else "missing" });
             try stdout.writeAll("\nMarketplace files:\n");
             try stdout.print("  codex:    {s} ({s})\n", .{ codex_marketplace, if (fileExistsAbsolute(codex_marketplace)) "exists" else "missing" });
             try stdout.print("  claude:   {s} ({s})\n", .{ claude_marketplace, if (fileExistsAbsolute(claude_marketplace)) "exists" else "missing" });
@@ -694,11 +774,26 @@ fn writeManifestJson(stdout: anytype, target: ManifestTarget) !void {
             try stdout.print("    \"package_status\": \"{s}\"\n", .{if (fileExistsAbsolute(pkg_path)) "exists" else "missing"});
             try stdout.writeAll("  }\n");
         },
+        .hermes => {
+            const manifest_path = "integrations/hermes-plugin/plugin.yaml";
+            const source_path = "integrations/hermes-plugin/__init__.py";
+            try stdout.writeAll("  \"hermes\": {\n");
+            try stdout.print("    \"manifest_path\": ", .{});
+            try writeJsonString(stdout, manifest_path);
+            try stdout.writeAll(",\n");
+            try stdout.print("    \"manifest_status\": \"{s}\",\n", .{if (fileExistsAbsolute(manifest_path)) "exists" else "missing"});
+            try stdout.print("    \"source_path\": ", .{});
+            try writeJsonString(stdout, source_path);
+            try stdout.writeAll(",\n");
+            try stdout.print("    \"source_status\": \"{s}\"\n", .{if (fileExistsAbsolute(source_path)) "exists" else "missing"});
+            try stdout.writeAll("  }\n");
+        },
         .all => {
             const codex_path = "integrations/codex-plugin/.codex-plugin/plugin.json";
             const claude_path = "integrations/claude-code-plugin/.claude-plugin/plugin.json";
             const opencode_path = "integrations/opencode-plugin/orca.ts";
             const openclaw_manifest_path = "integrations/openclaw-plugin/openclaw.plugin.json";
+            const hermes_manifest_path = "integrations/hermes-plugin/plugin.yaml";
             const codex_marketplace = ".agents/plugins/marketplace.json";
             const claude_marketplace = ".claude-plugin/marketplace.json";
             try stdout.writeAll("  \"codex\": {\n");
@@ -732,6 +827,12 @@ fn writeManifestJson(stdout: anytype, target: ManifestTarget) !void {
             try writeJsonString(stdout, openclaw_manifest_path);
             try stdout.writeAll(",\n");
             try stdout.print("    \"manifest_status\": \"{s}\"\n", .{if (fileExistsAbsolute(openclaw_manifest_path)) "exists" else "missing"});
+            try stdout.writeAll("  },\n");
+            try stdout.writeAll("  \"hermes\": {\n");
+            try stdout.print("    \"manifest_path\": ", .{});
+            try writeJsonString(stdout, hermes_manifest_path);
+            try stdout.writeAll(",\n");
+            try stdout.print("    \"manifest_status\": \"{s}\"\n", .{if (fileExistsAbsolute(hermes_manifest_path)) "exists" else "missing"});
             try stdout.writeAll("  }\n");
         },
     }
@@ -742,13 +843,20 @@ fn writeManifestJson(stdout: anytype, target: ManifestTarget) !void {
 // install
 // ---------------------------------------------------------------------------
 
-const InstallTarget = enum { codex, claude, opencode, openclaw, all };
+const InstallTarget = enum { codex, claude, opencode, openclaw, hermes, all };
+const InstallScope = enum { project, global };
 
 fn installCommand(argv: []const []const u8, stdout: anytype, stderr: anytype) !u8 {
     var target: InstallTarget = .all;
     var dry_run = true; // default to safe dry-run
+    var dry_run_explicit = false;
     var custom_path: ?[]const u8 = null;
     var yes = false;
+    var scope: InstallScope = .project;
+
+    var gpa_state: std.heap.GeneralPurposeAllocator(.{}) = .init;
+    defer _ = gpa_state.deinit();
+    const allocator = gpa_state.allocator();
 
     var index: usize = 0;
     while (index < argv.len) : (index += 1) {
@@ -760,16 +868,20 @@ fn installCommand(argv: []const []const u8, stdout: anytype, stderr: anytype) !u
                 \\  orca plugin install claude [--dry-run]
                 \\  orca plugin install opencode [--dry-run]
                 \\  orca plugin install openclaw [--dry-run]
+                \\  orca plugin install hermes [--dry-run]
                 \\  orca plugin install all [--dry-run]
                 \\  orca plugin install codex --path <plugin-path> [--dry-run]
                 \\  orca plugin install claude --path <plugin-path> [--dry-run]
                 \\  orca plugin install opencode --path <plugin-path> [--dry-run]
                 \\  orca plugin install openclaw --path <plugin-path> [--dry-run]
+                \\  orca plugin install hermes --path <plugin-path> [--dry-run]
+                \\  orca plugin install opencode --scope project|global [--dry-run|--yes]
                 \\  orca plugin install <target> [--yes]
                 \\  
                 \\Options:
                 \\  --dry-run   Preview changes without mutating host config (default)
                 \\  --path      Use a custom plugin path instead of the default
+                \\  --scope     OpenCode install scope: project|global (default: project)
                 \\  --yes       Skip confirmation prompt (use with care)
                 \\
             );
@@ -777,10 +889,12 @@ fn installCommand(argv: []const []const u8, stdout: anytype, stderr: anytype) !u
         }
         if (std.mem.eql(u8, arg, "--dry-run")) {
             dry_run = true;
+            dry_run_explicit = true;
             continue;
         }
         if (std.mem.eql(u8, arg, "--yes")) {
             yes = true;
+            if (!dry_run_explicit) dry_run = false;
             continue;
         }
         if (std.mem.eql(u8, arg, "--path")) {
@@ -789,6 +903,23 @@ fn installCommand(argv: []const []const u8, stdout: anytype, stderr: anytype) !u
                 return exit_codes.usage;
             }
             custom_path = argv[index + 1];
+            index += 1;
+            continue;
+        }
+        if (std.mem.eql(u8, arg, "--scope")) {
+            if (index + 1 >= argv.len) {
+                try stderr.writeAll("orca plugin install: --scope requires a value.\n");
+                return exit_codes.usage;
+            }
+            const value = argv[index + 1];
+            if (std.mem.eql(u8, value, "project")) {
+                scope = .project;
+            } else if (std.mem.eql(u8, value, "global")) {
+                scope = .global;
+            } else {
+                try stderr.print("orca plugin install: invalid --scope '{s}' (expected project|global).\n", .{value});
+                return exit_codes.usage;
+            }
             index += 1;
             continue;
         }
@@ -806,6 +937,10 @@ fn installCommand(argv: []const []const u8, stdout: anytype, stderr: anytype) !u
         }
         if (std.mem.eql(u8, arg, "openclaw")) {
             target = .openclaw;
+            continue;
+        }
+        if (std.mem.eql(u8, arg, "hermes") or std.mem.eql(u8, arg, "hermess")) {
+            target = .hermes;
             continue;
         }
         if (std.mem.eql(u8, arg, "all")) {
@@ -828,7 +963,8 @@ fn installCommand(argv: []const []const u8, stdout: anytype, stderr: anytype) !u
         .claude => &[_]InstallTarget{.claude},
         .opencode => &[_]InstallTarget{.opencode},
         .openclaw => &[_]InstallTarget{.openclaw},
-        .all => &[_]InstallTarget{ .codex, .claude, .opencode, .openclaw },
+        .hermes => &[_]InstallTarget{.hermes},
+        .all => &[_]InstallTarget{ .codex, .claude, .opencode, .openclaw, .hermes },
     };
 
     for (targets) |t| {
@@ -838,52 +974,144 @@ fn installCommand(argv: []const []const u8, stdout: anytype, stderr: anytype) !u
         if (custom_path) |p| {
             try stdout.print("  custom path: {s}\n", .{p});
         }
+        if (t == .opencode) {
+            try stdout.print("  scope: {s}\n", .{@tagName(scope)});
+        }
 
-        const plugin_dir = switch (t) {
-            .codex => custom_path orelse "integrations/codex-plugin",
-            .claude => custom_path orelse "integrations/claude-code-plugin",
-            .opencode => custom_path orelse "integrations/opencode-plugin",
-            .openclaw => custom_path orelse "integrations/openclaw-plugin",
+        const plugin_dir = if (custom_path) |path| try allocator.dupe(u8, path) else switch (t) {
+            .codex => try resolveBundledPath(allocator, "integrations/codex-plugin"),
+            .claude => try resolveBundledPath(allocator, "integrations/claude-code-plugin"),
+            .opencode => try resolveBundledPath(allocator, "integrations/opencode-plugin"),
+            .openclaw => try resolveBundledPath(allocator, "integrations/openclaw-plugin"),
+            .hermes => try resolveBundledPath(allocator, "integrations/hermes-plugin"),
             .all => unreachable,
         };
+        defer allocator.free(plugin_dir);
 
         if (!dirExists(plugin_dir)) {
             try stdout.print("  plugin directory: missing ({s})\n", .{plugin_dir});
             try stdout.writeAll("  next step: create the plugin directory and manifest before installing\n");
+            if (!dry_run) return exit_codes.general;
         } else {
             try stdout.print("  plugin directory: found ({s})\n", .{plugin_dir});
 
             if (t == .opencode) {
                 // OpenCode-specific install guidance
+                const source_path = try std.fs.path.join(allocator, &.{ plugin_dir, "orca.ts" });
+                defer allocator.free(source_path);
+                const destination_path = try resolveOpenCodeDestination(allocator, scope);
+                defer allocator.free(destination_path);
+
                 try stdout.writeAll("  install paths for OpenCode:\n");
                 try stdout.writeAll("    project: .opencode/plugins/orca.ts\n");
                 try stdout.writeAll("    global:  ~/.config/opencode/plugins/orca.ts\n");
                 if (dry_run) {
                     try stdout.writeAll("  action: no changes made (dry-run)\n");
-                    try stdout.writeAll("  next step: copy integrations/opencode-plugin/orca.ts to one of the paths above\n");
+                    try stdout.print("  next step: copy {s} to {s}\n", .{ source_path, destination_path });
                 } else {
-                    try stdout.writeAll("  action: copy plugin file to chosen OpenCode plugin path\n");
+                    if (!fileExistsAbsolute(source_path)) {
+                        try stdout.print("  action: failed (source missing: {s})\n", .{source_path});
+                        return exit_codes.general;
+                    }
+                    const installed = installFileIfSafe(allocator, source_path, destination_path) catch |err| switch (err) {
+                        error.RefusingToOverwriteDifferentFile => {
+                            try stdout.print("  action: failed (destination exists and differs: {s})\n", .{destination_path});
+                            return exit_codes.general;
+                        },
+                        else => return err,
+                    };
+                    if (installed) {
+                        try stdout.print("  action: installed to {s}\n", .{destination_path});
+                    } else {
+                        try stdout.print("  action: already up-to-date at {s}\n", .{destination_path});
+                    }
                 }
             } else if (t == .openclaw) {
                 // OpenClaw-specific install guidance
+                const install_command = try std.fmt.allocPrint(allocator, "openclaw plugins install {s}", .{plugin_dir});
+                defer allocator.free(install_command);
                 try stdout.writeAll("  install paths for OpenClaw:\n");
                 try stdout.writeAll("    local:   openclaw plugins install ./integrations/openclaw-plugin\n");
                 try stdout.writeAll("    npm:     openclaw plugins install npm:orca-openclaw-plugin (published)\n");
                 try stdout.writeAll("    clawhub: openclaw plugins install clawhub:orca-openclaw-plugin (published)\n");
                 if (dry_run) {
                     try stdout.writeAll("  action: no changes made (dry-run)\n");
-                    try stdout.writeAll("  next step: run 'openclaw plugins install ./integrations/openclaw-plugin' if OpenClaw is installed\n");
+                    try stdout.print("  next step: run '{s}' if OpenClaw is installed\n", .{install_command});
                 } else {
-                    try stdout.writeAll("  action: installation would proceed (deferred)\n");
-                    try stdout.writeAll("  note: actual host plugin installation is not yet implemented\n");
+                    if (!binaryInPath(allocator, "openclaw")) {
+                        try stdout.writeAll("  action: failed (openclaw binary not found in PATH)\n");
+                        return exit_codes.general;
+                    }
+                    const status = try runOpenClawInstall(allocator, plugin_dir);
+                    if (status == 0) {
+                        try stdout.writeAll("  action: installed via openclaw host command\n");
+                    } else {
+                        try stdout.print("  action: failed (openclaw exit code: {d})\n", .{status});
+                        return exit_codes.child_failure;
+                    }
+                }
+            } else if (t == .hermes) {
+                const destination_path = try hermesUserPluginRoot(allocator);
+                defer allocator.free(destination_path);
+                const manifest_source = try std.fs.path.join(allocator, &.{ plugin_dir, "plugin.yaml" });
+                defer allocator.free(manifest_source);
+                const source_source = try std.fs.path.join(allocator, &.{ plugin_dir, "__init__.py" });
+                defer allocator.free(source_source);
+                const manifest_destination = try std.fs.path.join(allocator, &.{ destination_path, "plugin.yaml" });
+                defer allocator.free(manifest_destination);
+                const source_destination = try std.fs.path.join(allocator, &.{ destination_path, "__init__.py" });
+                defer allocator.free(source_destination);
+
+                try stdout.writeAll("  install paths for Hermes:\n");
+                try stdout.print("    user: {s}\n", .{destination_path});
+                try stdout.writeAll("    enable: hermes plugins enable orca\n");
+                if (dry_run) {
+                    try stdout.writeAll("  action: no changes made (dry-run)\n");
+                    try stdout.print("  next step: copy {s} to {s}\n", .{ plugin_dir, destination_path });
+                } else {
+                    if (!fileExistsAbsolute(manifest_source) or !fileExistsAbsolute(source_source)) {
+                        try stdout.writeAll("  action: failed (Hermes plugin files missing)\n");
+                        return exit_codes.general;
+                    }
+                    const manifest_installed = installFileIfSafe(allocator, manifest_source, manifest_destination) catch |err| switch (err) {
+                        error.RefusingToOverwriteDifferentFile => {
+                            try stdout.print("  action: failed (destination exists and differs: {s})\n", .{manifest_destination});
+                            return exit_codes.general;
+                        },
+                        else => return err,
+                    };
+                    const source_installed = installFileIfSafe(allocator, source_source, source_destination) catch |err| switch (err) {
+                        error.RefusingToOverwriteDifferentFile => {
+                            try stdout.print("  action: failed (destination exists and differs: {s})\n", .{source_destination});
+                            return exit_codes.general;
+                        },
+                        else => return err,
+                    };
+                    if (manifest_installed or source_installed) {
+                        try stdout.print("  action: installed to {s}\n", .{destination_path});
+                    } else {
+                        try stdout.print("  action: already up-to-date at {s}\n", .{destination_path});
+                    }
+                    if (binaryInPath(allocator, "hermes")) {
+                        const status = try runHermesEnable(allocator);
+                        if (status == 0) {
+                            try stdout.writeAll("  enable: completed via hermes plugins enable orca\n");
+                        } else {
+                            try stdout.print("  enable: failed (hermes exit code: {d})\n", .{status});
+                            return exit_codes.child_failure;
+                        }
+                    } else {
+                        try stdout.writeAll("  enable: skipped (hermes binary not found); run 'hermes plugins enable orca' later\n");
+                    }
                 }
             } else {
                 if (dry_run) {
                     try stdout.writeAll("  action: no changes made (dry-run)\n");
                     try stdout.writeAll("  next step: host install command is not yet known; manual integration required\n");
                 } else {
-                    try stdout.writeAll("  action: installation would proceed (deferred)\n");
-                    try stdout.writeAll("  note: actual host plugin installation is not yet implemented\n");
+                    try stdout.writeAll("  action: failed (host plugin installation is not yet implemented)\n");
+                    try stdout.writeAll("  note: use --dry-run for integration guidance until this host installer is implemented\n");
+                    return exit_codes.unsupported;
                 }
             }
         }
@@ -911,21 +1139,19 @@ fn mcpServerCommand(argv: []const []const u8, stdout: anytype, stderr: anytype) 
                 \\Status: limited / deferred
                 \\  The Orca MCP plugin server is planned but not yet active.
                 \\  When implemented, it will expose safe read-only Orca capabilities as MCP tools:
-                \\    - aegis_doctor
-                \\    - aegis_plugin_doctor
-                \\    - aegis_policy_check
-                \\    - aegis_policy_explain
-                \\    - aegis_redteam
-                \\    - aegis_replay_summary
-                \\    - aegis_capabilities
-                \\    - aegis_drone_safety_status
+                \\    - orca_doctor
+                \\    - orca_plugin_doctor
+                \\    - orca_policy_check
+                \\    - orca_policy_explain
+                \\    - orca_redteam
+                \\    - orca_replay_summary
+                \\    - orca_capabilities
                 \\  The following will NOT be exposed by default:
                 \\    - arbitrary shell execution
                 \\    - arbitrary file writes
                 \\    - raw audit log dumping without redaction
                 \\    - credential access
                 \\    - policy mutation without explicit approval
-                \\    - live drone actuation commands
                 \\
             );
             return exit_codes.success;
@@ -939,21 +1165,20 @@ fn mcpServerCommand(argv: []const []const u8, stdout: anytype, stderr: anytype) 
     try stdout.writeAll("  The Orca MCP plugin server is planned but not yet active.\n");
     try stdout.writeAll("  It does not listen on any port or transport.\n\n");
     try stdout.writeAll("Planned safe tools (when implemented):\n");
-    try stdout.writeAll("  - aegis_doctor\n");
-    try stdout.writeAll("  - aegis_plugin_doctor\n");
-    try stdout.writeAll("  - aegis_policy_check\n");
-    try stdout.writeAll("  - aegis_policy_explain\n");
-    try stdout.writeAll("  - aegis_redteam\n");
-    try stdout.writeAll("  - aegis_replay_summary\n");
-    try stdout.writeAll("  - aegis_capabilities\n");
-    try stdout.writeAll("  - aegis_drone_safety_status\n\n");
+    try stdout.writeAll("  - orca_doctor\n");
+    try stdout.writeAll("  - orca_plugin_doctor\n");
+    try stdout.writeAll("  - orca_policy_check\n");
+    try stdout.writeAll("  - orca_policy_explain\n");
+    try stdout.writeAll("  - orca_redteam\n");
+    try stdout.writeAll("  - orca_replay_summary\n");
+    try stdout.writeAll("  - orca_capabilities\n");
+    try stdout.writeAll("\n");
     try stdout.writeAll("Blocked by default (not exposed):\n");
     try stdout.writeAll("  - arbitrary shell execution\n");
     try stdout.writeAll("  - arbitrary file writes\n");
     try stdout.writeAll("  - raw audit log dumping without redaction\n");
     try stdout.writeAll("  - credential access\n");
-    try stdout.writeAll("  - policy mutation without explicit approval\n");
-    try stdout.writeAll("  - live drone actuation (arming, takeoff, motor commands, etc.)\n\n");
+    try stdout.writeAll("  - policy mutation without explicit approval\n\n");
     try stdout.writeAll("Use 'orca plugin mcp-server --help' for full details.\n");
     return exit_codes.success;
 }
@@ -965,6 +1190,108 @@ fn mcpServerCommand(argv: []const []const u8, stdout: anytype, stderr: anytype) 
 fn fileExistsAbsolute(path: []const u8) bool {
     std.fs.cwd().access(path, .{}) catch return false;
     return true;
+}
+
+fn pluginDirExists(allocator: std.mem.Allocator, relative_path: []const u8) bool {
+    const resolved = resolveBundledPath(allocator, relative_path) catch return false;
+    defer allocator.free(resolved);
+    return dirExists(resolved);
+}
+
+fn resolveBundledPath(allocator: std.mem.Allocator, relative_path: []const u8) ![]u8 {
+    if (dirExists(relative_path) or fileExistsAbsolute(relative_path)) {
+        return allocator.dupe(u8, relative_path);
+    }
+
+    const resource_root = std.process.getEnvVarOwned(allocator, "ORCA_RESOURCE_ROOT") catch
+        std.process.getEnvVarOwned(allocator, "ORCA_RESOURCE_ROOT") catch null;
+    if (resource_root) |root| {
+        defer allocator.free(root);
+        const candidate = try std.fs.path.join(allocator, &.{ root, relative_path });
+        if (dirExists(candidate) or fileExistsAbsolute(candidate)) return candidate;
+        allocator.free(candidate);
+    }
+
+    return allocator.dupe(u8, relative_path);
+}
+
+fn resolveOpenCodeDestination(allocator: std.mem.Allocator, scope: InstallScope) ![]u8 {
+    return switch (scope) {
+        .project => std.fs.path.join(allocator, &.{ ".opencode", "plugins", "orca.ts" }),
+        .global => blk: {
+            const home = try std.process.getEnvVarOwned(allocator, "HOME");
+            defer allocator.free(home);
+            break :blk std.fs.path.join(allocator, &.{ home, ".config", "opencode", "plugins", "orca.ts" });
+        },
+    };
+}
+
+fn hermesUserPluginRoot(allocator: std.mem.Allocator) ![]u8 {
+    const home = std.process.getEnvVarOwned(allocator, "HOME") catch return std.fs.path.join(allocator, &.{ "~", ".hermes", "plugins", "orca" });
+    defer allocator.free(home);
+    return std.fs.path.join(allocator, &.{ home, ".hermes", "plugins", "orca" });
+}
+
+fn hermesConfigPath(allocator: std.mem.Allocator) ![]u8 {
+    const home = std.process.getEnvVarOwned(allocator, "HOME") catch return std.fs.path.join(allocator, &.{ "~", ".hermes", "config.yaml" });
+    defer allocator.free(home);
+    return std.fs.path.join(allocator, &.{ home, ".hermes", "config.yaml" });
+}
+
+fn installFileIfSafe(allocator: std.mem.Allocator, source_path: []const u8, destination_path: []const u8) !bool {
+    if (fileExistsAbsolute(destination_path)) {
+        const same = try filesEqual(allocator, source_path, destination_path);
+        if (same) return false;
+        return error.RefusingToOverwriteDifferentFile;
+    }
+
+    const parent = std.fs.path.dirname(destination_path) orelse return error.InvalidPath;
+    try std.fs.cwd().makePath(parent);
+
+    const source = try std.fs.cwd().readFileAlloc(allocator, source_path, 1024 * 1024);
+    defer allocator.free(source);
+    try std.fs.cwd().writeFile(.{ .sub_path = destination_path, .data = source, .flags = .{ .exclusive = true } });
+    return true;
+}
+
+fn filesEqual(allocator: std.mem.Allocator, lhs_path: []const u8, rhs_path: []const u8) !bool {
+    const lhs = try std.fs.cwd().readFileAlloc(allocator, lhs_path, 1024 * 1024);
+    defer allocator.free(lhs);
+    const rhs = try std.fs.cwd().readFileAlloc(allocator, rhs_path, 1024 * 1024);
+    defer allocator.free(rhs);
+    return std.mem.eql(u8, lhs, rhs);
+}
+
+fn runOpenClawInstall(allocator: std.mem.Allocator, plugin_dir: []const u8) !u8 {
+    const argv = [_][]const u8{ "openclaw", "plugins", "install", plugin_dir };
+    var child = std.process.Child.init(&argv, allocator);
+    child.stdin_behavior = .Ignore;
+    child.stdout_behavior = .Inherit;
+    child.stderr_behavior = .Inherit;
+    const term = try child.spawnAndWait();
+    return switch (term) {
+        .Exited => |code| @as(u8, @intCast(@min(code, 255))),
+        else => 255,
+    };
+}
+
+fn runHermesEnable(allocator: std.mem.Allocator) !u8 {
+    const argv = [_][]const u8{ "hermes", "plugins", "enable", "orca" };
+    var child = std.process.Child.init(&argv, allocator);
+    child.stdin_behavior = .Ignore;
+    child.stdout_behavior = .Inherit;
+    child.stderr_behavior = .Inherit;
+    const term = try child.spawnAndWait();
+    return switch (term) {
+        .Exited => |code| @as(u8, @intCast(@min(code, 255))),
+        else => 255,
+    };
+}
+
+fn fileContains(allocator: std.mem.Allocator, path: []const u8, needle: []const u8) bool {
+    const content = std.fs.cwd().readFileAlloc(allocator, path, 1024 * 1024) catch return false;
+    defer allocator.free(content);
+    return std.mem.indexOf(u8, content, needle) != null;
 }
 
 fn dirExists(path: []const u8) bool {
@@ -1050,9 +1377,18 @@ test "plugin doctor prints expected sections" {
     try std.testing.expect(std.mem.indexOf(u8, output, "Policy:") != null);
     try std.testing.expect(std.mem.indexOf(u8, output, "Plugin directories:") != null);
     try std.testing.expect(std.mem.indexOf(u8, output, "Host binaries:") != null);
-    try std.testing.expect(std.mem.indexOf(u8, output, "Drone workstream:") != null);
+    try std.testing.expect(std.mem.indexOf(u8, output, "Drone workstream:") == null);
     try std.testing.expect(std.mem.indexOf(u8, output, "Platform:") != null);
     try std.testing.expectEqualStrings("", stderr_stream.getWritten());
+}
+
+fn collectPluginDoctorReportFailureHarness(allocator: std.mem.Allocator) !void {
+    var report = try collectPluginDoctorReport(allocator);
+    defer report.deinit(allocator);
+}
+
+test "plugin doctor report cleans up allocation failure paths" {
+    try std.testing.checkAllAllocationFailures(std.testing.allocator, collectPluginDoctorReportFailureHarness, .{});
 }
 
 test "plugin doctor --json emits valid JSON" {
@@ -1068,12 +1404,29 @@ test "plugin doctor --json emits valid JSON" {
     var parsed = try std.json.parseFromSlice(std.json.Value, std.testing.allocator, json, .{});
     defer parsed.deinit();
 
-    try std.testing.expect(parsed.value.object.get("aegis_version") != null);
+    try std.testing.expect(parsed.value.object.get("orca_version") != null);
     try std.testing.expect(parsed.value.object.get("policy") != null);
     try std.testing.expect(parsed.value.object.get("plugin_directories") != null);
     try std.testing.expect(parsed.value.object.get("host_binaries") != null);
-    try std.testing.expect(parsed.value.object.get("drone") != null);
+    try std.testing.expect(parsed.value.object.get("hermes_paths") != null);
+    try std.testing.expect(parsed.value.object.get("drone") == null);
     try std.testing.expect(parsed.value.object.get("warnings") != null);
+    try std.testing.expectEqualStrings("", stderr_stream.getWritten());
+}
+
+test "plugin doctor plain output does not expose Edge or drone workstream state" {
+    var stdout_buf: [16384]u8 = undefined;
+    var stderr_buf: [256]u8 = undefined;
+    var stdout_stream = std.io.fixedBufferStream(&stdout_buf);
+    var stderr_stream = std.io.fixedBufferStream(&stderr_buf);
+
+    const code = try doctorCommand(&.{}, stdout_stream.writer(), stderr_stream.writer());
+    try std.testing.expectEqual(exit_codes.success, code);
+
+    const output = stdout_stream.getWritten();
+    try std.testing.expect(std.mem.indexOf(u8, output, "Drone workstream") == null);
+    try std.testing.expect(std.mem.indexOf(u8, output, "live control") == null);
+    try std.testing.expect(std.mem.indexOf(u8, output, "edge") == null);
     try std.testing.expectEqualStrings("", stderr_stream.getWritten());
 }
 
@@ -1138,6 +1491,22 @@ test "plugin doctor openclaw shows openclaw-specific section" {
     try std.testing.expect(std.mem.indexOf(u8, output, "host binary:") != null);
     try std.testing.expect(std.mem.indexOf(u8, output, "plugin manifest") != null);
     try std.testing.expect(std.mem.indexOf(u8, output, "package.json") != null);
+    try std.testing.expectEqualStrings("", stderr_stream.getWritten());
+}
+
+test "plugin doctor hermes shows hermes-specific section" {
+    var stdout_buf: [16384]u8 = undefined;
+    var stderr_buf: [256]u8 = undefined;
+    var stdout_stream = std.io.fixedBufferStream(&stdout_buf);
+    var stderr_stream = std.io.fixedBufferStream(&stderr_buf);
+
+    const code = try doctorCommand(&.{"hermes"}, stdout_stream.writer(), stderr_stream.writer());
+    try std.testing.expectEqual(exit_codes.success, code);
+
+    const output = stdout_stream.getWritten();
+    try std.testing.expect(std.mem.indexOf(u8, output, "Hermes plugin status:") != null);
+    try std.testing.expect(std.mem.indexOf(u8, output, "repo plugin.yaml") != null);
+    try std.testing.expect(std.mem.indexOf(u8, output, "~/.hermes/plugins/orca/plugin.yaml") != null);
     try std.testing.expectEqualStrings("", stderr_stream.getWritten());
 }
 
@@ -1219,7 +1588,22 @@ test "plugin manifest openclaw reports expected paths" {
     try std.testing.expectEqualStrings("", stderr_stream.getWritten());
 }
 
-test "plugin manifest all reports all four" {
+test "plugin manifest hermes reports expected paths" {
+    var stdout_buf: [1024]u8 = undefined;
+    var stderr_buf: [256]u8 = undefined;
+    var stdout_stream = std.io.fixedBufferStream(&stdout_buf);
+    var stderr_stream = std.io.fixedBufferStream(&stderr_buf);
+
+    const code = try manifestCommand(&.{"hermes"}, stdout_stream.writer(), stderr_stream.writer());
+    try std.testing.expectEqual(exit_codes.success, code);
+
+    const output = stdout_stream.getWritten();
+    try std.testing.expect(std.mem.indexOf(u8, output, "integrations/hermes-plugin/plugin.yaml") != null);
+    try std.testing.expect(std.mem.indexOf(u8, output, "integrations/hermes-plugin/__init__.py") != null);
+    try std.testing.expectEqualStrings("", stderr_stream.getWritten());
+}
+
+test "plugin manifest all reports all five" {
     var stdout_buf: [1024]u8 = undefined;
     var stderr_buf: [256]u8 = undefined;
     var stdout_stream = std.io.fixedBufferStream(&stdout_buf);
@@ -1233,6 +1617,7 @@ test "plugin manifest all reports all four" {
     try std.testing.expect(std.mem.indexOf(u8, output, "claude:") != null);
     try std.testing.expect(std.mem.indexOf(u8, output, "opencode:") != null);
     try std.testing.expect(std.mem.indexOf(u8, output, "openclaw:") != null);
+    try std.testing.expect(std.mem.indexOf(u8, output, "hermes:") != null);
     try std.testing.expectEqualStrings("", stderr_stream.getWritten());
 }
 
@@ -1253,6 +1638,7 @@ test "plugin manifest --json emits valid JSON" {
     try std.testing.expect(parsed.value.object.get("claude") != null);
     try std.testing.expect(parsed.value.object.get("opencode") != null);
     try std.testing.expect(parsed.value.object.get("openclaw") != null);
+    try std.testing.expect(parsed.value.object.get("hermes") != null);
     try std.testing.expectEqualStrings("", stderr_stream.getWritten());
 }
 
@@ -1320,7 +1706,23 @@ test "plugin install openclaw --dry-run reports safe preview" {
     try std.testing.expectEqualStrings("", stderr_stream.getWritten());
 }
 
-test "plugin install all --dry-run reports all four targets" {
+test "plugin install hermes --dry-run reports safe preview" {
+    var stdout_buf: [4096]u8 = undefined;
+    var stderr_buf: [256]u8 = undefined;
+    var stdout_stream = std.io.fixedBufferStream(&stdout_buf);
+    var stderr_stream = std.io.fixedBufferStream(&stderr_buf);
+
+    const code = try installCommand(&.{ "hermes", "--dry-run" }, stdout_stream.writer(), stderr_stream.writer());
+    try std.testing.expectEqual(exit_codes.success, code);
+
+    const output = stdout_stream.getWritten();
+    try std.testing.expect(std.mem.indexOf(u8, output, "dry-run") != null);
+    try std.testing.expect(std.mem.indexOf(u8, output, "Target: hermes") != null);
+    try std.testing.expect(std.mem.indexOf(u8, output, ".hermes/plugins/orca") != null);
+    try std.testing.expectEqualStrings("", stderr_stream.getWritten());
+}
+
+test "plugin install all --dry-run reports all five targets" {
     var stdout_buf: [4096]u8 = undefined;
     var stderr_buf: [256]u8 = undefined;
     var stdout_stream = std.io.fixedBufferStream(&stdout_buf);
@@ -1334,6 +1736,7 @@ test "plugin install all --dry-run reports all four targets" {
     try std.testing.expect(std.mem.indexOf(u8, output, "Target: claude") != null);
     try std.testing.expect(std.mem.indexOf(u8, output, "Target: opencode") != null);
     try std.testing.expect(std.mem.indexOf(u8, output, "Target: openclaw") != null);
+    try std.testing.expect(std.mem.indexOf(u8, output, "Target: hermes") != null);
     try std.testing.expectEqualStrings("", stderr_stream.getWritten());
 }
 
@@ -1353,6 +1756,74 @@ test "plugin install defaults to safe dry-run behavior" {
     try std.testing.expectEqualStrings("", stderr_stream.getWritten());
 }
 
+test "plugin install --yes switches out of dry-run when dry-run is not explicit" {
+    var stdout_buf: [2048]u8 = undefined;
+    var stderr_buf: [256]u8 = undefined;
+    var stdout_stream = std.io.fixedBufferStream(&stdout_buf);
+    var stderr_stream = std.io.fixedBufferStream(&stderr_buf);
+
+    const code = try installCommand(&.{ "codex", "--path", "does-not-exist-orca-test-plugin", "--yes" }, stdout_stream.writer(), stderr_stream.writer());
+    try std.testing.expectEqual(exit_codes.general, code);
+
+    const output = stdout_stream.getWritten();
+    try std.testing.expect(std.mem.indexOf(u8, output, "mode: install") != null);
+    try std.testing.expect(std.mem.indexOf(u8, output, "plugin directory: missing") != null);
+    try std.testing.expectEqualStrings("", stderr_stream.getWritten());
+}
+
+test "plugin install codex --yes fails instead of reporting deferred success" {
+    var stdout_buf: [4096]u8 = undefined;
+    var stderr_buf: [256]u8 = undefined;
+    var stdout_stream = std.io.fixedBufferStream(&stdout_buf);
+    var stderr_stream = std.io.fixedBufferStream(&stderr_buf);
+
+    const code = try installCommand(&.{ "codex", "--yes" }, stdout_stream.writer(), stderr_stream.writer());
+    try std.testing.expectEqual(exit_codes.unsupported, code);
+
+    const output = stdout_stream.getWritten();
+    try std.testing.expect(std.mem.indexOf(u8, output, "mode: install") != null);
+    try std.testing.expect(std.mem.indexOf(u8, output, "not yet implemented") != null);
+    try std.testing.expect(std.mem.indexOf(u8, output, "would proceed") == null);
+    try std.testing.expectEqualStrings("", stderr_stream.getWritten());
+}
+
+test "plugin install explicit dry-run wins over --yes" {
+    var stdout_buf: [2048]u8 = undefined;
+    var stderr_buf: [256]u8 = undefined;
+    var stdout_stream = std.io.fixedBufferStream(&stdout_buf);
+    var stderr_stream = std.io.fixedBufferStream(&stderr_buf);
+
+    const code = try installCommand(&.{ "codex", "--yes", "--dry-run" }, stdout_stream.writer(), stderr_stream.writer());
+    try std.testing.expectEqual(exit_codes.success, code);
+
+    const output = stdout_stream.getWritten();
+    try std.testing.expect(std.mem.indexOf(u8, output, "mode: dry-run") != null);
+    try std.testing.expectEqualStrings("", stderr_stream.getWritten());
+}
+
+test "plugin install rejects invalid scope" {
+    var stdout_buf: [256]u8 = undefined;
+    var stderr_buf: [512]u8 = undefined;
+    var stdout_stream = std.io.fixedBufferStream(&stdout_buf);
+    var stderr_stream = std.io.fixedBufferStream(&stderr_buf);
+
+    const code = try installCommand(&.{ "opencode", "--scope", "workspace" }, stdout_stream.writer(), stderr_stream.writer());
+    try std.testing.expectEqual(exit_codes.usage, code);
+    try std.testing.expect(std.mem.indexOf(u8, stderr_stream.getWritten(), "invalid --scope") != null);
+}
+
+test "plugin install opencode --scope global is accepted in dry-run" {
+    var stdout_buf: [4096]u8 = undefined;
+    var stderr_buf: [256]u8 = undefined;
+    var stdout_stream = std.io.fixedBufferStream(&stdout_buf);
+    var stderr_stream = std.io.fixedBufferStream(&stderr_buf);
+
+    const code = try installCommand(&.{ "opencode", "--scope", "global", "--dry-run" }, stdout_stream.writer(), stderr_stream.writer());
+    try std.testing.expectEqual(exit_codes.success, code);
+    try std.testing.expect(std.mem.indexOf(u8, stdout_stream.getWritten(), "scope: global") != null);
+    try std.testing.expectEqualStrings("", stderr_stream.getWritten());
+}
+
 test "plugin mcp-server reports limited status honestly" {
     var stdout_buf: [4096]u8 = undefined;
     var stderr_buf: [256]u8 = undefined;
@@ -1366,8 +1837,9 @@ test "plugin mcp-server reports limited status honestly" {
     try std.testing.expect(std.mem.indexOf(u8, output, "limited") != null);
     try std.testing.expect(std.mem.indexOf(u8, output, "deferred") != null);
     try std.testing.expect(std.mem.indexOf(u8, output, "not yet active") != null);
-    try std.testing.expect(std.mem.indexOf(u8, output, "aegis_doctor") != null);
-    try std.testing.expect(std.mem.indexOf(u8, output, "live drone actuation") != null);
+    try std.testing.expect(std.mem.indexOf(u8, output, "orca_doctor") != null);
+    try std.testing.expect(std.mem.indexOf(u8, output, "edge_safety_status") == null);
+    try std.testing.expect(std.mem.indexOf(u8, output, "live drone") == null);
     try std.testing.expectEqualStrings("", stderr_stream.getWritten());
 }
 
@@ -1381,9 +1853,7 @@ test "plugin mcp-server does not claim to expose drone actuation" {
     try std.testing.expectEqual(exit_codes.success, code);
 
     const output = stdout_stream.getWritten();
-    // Should mention that drone actuation is in the blocked list
-    try std.testing.expect(std.mem.indexOf(u8, output, "live drone actuation") != null);
-    // Should NOT say it's active or available
+    try std.testing.expect(std.mem.indexOf(u8, output, "live drone actuation") == null);
     try std.testing.expect(std.mem.indexOf(u8, output, "MCP server is active") == null);
     try std.testing.expectEqualStrings("", stderr_stream.getWritten());
 }

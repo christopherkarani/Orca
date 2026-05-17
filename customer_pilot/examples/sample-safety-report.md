@@ -4,7 +4,7 @@ Example data only. Customer placeholder: ExampleCo Robotics. Environment: fake a
 
 ## Metadata
 
-- Aegis Edge version: example-local
+- Edge version: example-local
 - Policy hash: `sha256:example-policy-hash`
 - Scenario hash: `sha256:example-scenario-hash`
 - Evidence source: fake adapter

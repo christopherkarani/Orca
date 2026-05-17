@@ -22,9 +22,9 @@ test "phase 23 docs define product split without real-flight readiness claims" {
         const text = try std.fs.cwd().readFileAlloc(std.testing.allocator, path, 128 * 1024);
         defer std.testing.allocator.free(text);
 
-        if (std.mem.indexOf(u8, text, "Aegis Core") != null) combined_has_core = true;
-        if (std.mem.indexOf(u8, text, "Aegis CLI") != null) combined_has_cli = true;
-        if (std.mem.indexOf(u8, text, "Aegis Edge") != null) combined_has_edge = true;
+        if (std.mem.indexOf(u8, text, "Core") != null) combined_has_core = true;
+        if (std.mem.indexOf(u8, text, "Orca") != null) combined_has_cli = true;
+        if (std.mem.indexOf(u8, text, "Edge") != null) combined_has_edge = true;
         if (std.mem.indexOf(u8, text, "must not be used for real flight") != null) edge_boundary_present = true;
 
         try expectNoUnsupportedReadinessClaim(text);
@@ -120,6 +120,16 @@ test "MCP manifest schema decision and risk enums match manifest parser behavior
     try expectJsonStringNotInEnum(decision_enum, "observe");
 
     const properties = root.get("properties").?.object;
+    const server_schema = properties.get("server").?.object;
+    const server_required = server_schema.get("required").?.array.items;
+    try expectJsonStringInEnum(server_required, "name");
+    try expectJsonStringInEnum(server_required, "transport");
+    try expectJsonStringNotInEnum(server_required, "command");
+    const server_properties = server_schema.get("properties").?.object;
+    const transport_enum = server_properties.get("transport").?.object.get("enum").?.array.items;
+    try expectJsonStringInEnum(transport_enum, "stdio");
+    try expectJsonStringNotInEnum(transport_enum, "http");
+
     const tools_schema = properties.get("tools").?.object.get("additionalProperties").?.object;
     const tool_properties = tools_schema.get("properties").?.object;
     const risk_enum = tool_properties.get("risk").?.object.get("enum").?.array.items;

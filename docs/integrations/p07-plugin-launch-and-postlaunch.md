@@ -2,7 +2,7 @@
 
 ## Summary
 
-This phase prepared the Aegis plugin system for public launch and post-launch triage. All launch documents, issue templates, demo instructions, triage docs, and release checklists were created or updated. The plugin artifacts were built, packaged, and verified.
+This phase prepared the Orca plugin system for public launch and post-launch triage. All launch documents, issue templates, demo instructions, triage docs, and release checklists were created or updated. The plugin artifacts were built, packaged, and verified.
 
 ---
 
@@ -14,14 +14,14 @@ This phase prepared the Aegis plugin system for public launch and post-launch tr
 
 **Contents:**
 - Version 1.1.0
-- Aegis CLI plugin surface overview
+- Orca plugin surface overview
 - Codex plugin summary
 - Claude Code plugin summary
 - Installation instructions (release artifact, local path, checksum verification)
 - Verification commands
 - Demo link
 - Security model with required wording:
-  > "The strongest protection remains running the agent through `aegis run`; plugins provide native commands, hooks, and guardrails inside supported agent hosts."
+  > "The strongest protection remains running the agent through `orca run`; plugins provide native commands, hooks, and guardrails inside supported agent hosts."
 - Known limitations
 - Checksum information
 - Vulnerability reporting (links to SECURITY.md)
@@ -42,7 +42,7 @@ This phase prepared the Aegis plugin system for public launch and post-launch tr
 
 **Contents:**
 - Short launch announcement
-- What Aegis plugins are
+- What Orca plugins are
 - Why they exist
 - Codex and Claude Code plugin summaries
 - Install links
@@ -85,7 +85,7 @@ This phase prepared the Aegis plugin system for public launch and post-launch tr
 - `plugin_compatibility.md`
 - `plugin_docs_issue.md`
 
-All templates request: Aegis version, plugin version, OS, host tool version, install method, command run, expected/actual behavior, sanitized logs, diagnostic checkboxes.
+All templates request: Orca version, plugin version, OS, host tool version, install method, command run, expected/actual behavior, sanitized logs, diagnostic checkboxes.
 
 ---
 
@@ -165,10 +165,10 @@ Includes required wording about strongest local protection.
 **Result:** Success
 
 **Artifacts produced:**
-- `dist/plugins/aegis-codex-plugin-v1.1.0.zip`
-- `dist/plugins/aegis-claude-code-plugin-v1.1.0.zip`
-- `dist/plugins/aegis-claude-marketplace-v1.1.0.zip`
-- `dist/plugins/aegis-plugin-checksums.txt`
+- `dist/plugins/orca-codex-plugin-v1.1.0.zip`
+- `dist/plugins/orca-claude-code-plugin-v1.1.0.zip`
+- `dist/plugins/orca-claude-marketplace-v1.1.0.zip`
+- `dist/plugins/orca-plugin-checksums.txt`
 
 **Secret scan:** Passed — "No obvious secrets found in artifacts."
 
@@ -176,14 +176,14 @@ Includes required wording about strongest local protection.
 
 ## Checksum Status
 
-**File:** `dist/plugins/aegis-plugin-checksums.txt`
+**File:** `dist/plugins/orca-plugin-checksums.txt`
 
 **Status:** Generated and verified
 
 ```
-57e0e44e91589376880fc56ff2319b4f2a4babec29bee58f36503312f91aa17f  aegis-claude-code-plugin-v1.1.0.zip
-5e056e7211b822a990cffb42b3e0367c3161e133bbdb5c45d7d9c4ccff921a42  aegis-claude-marketplace-v1.1.0.zip
-d9a4fbb99d3ccc22aaabc08ee1506102aa5200636d038cbf3bfe483eb8b338a2  aegis-codex-plugin-v1.1.0.zip
+57e0e44e91589376880fc56ff2319b4f2a4babec29bee58f36503312f91aa17f  orca-claude-code-plugin-v1.1.0.zip
+5e056e7211b822a990cffb42b3e0367c3161e133bbdb5c45d7d9c4ccff921a42  orca-claude-marketplace-v1.1.0.zip
+d9a4fbb99d3ccc22aaabc08ee1506102aa5200636d038cbf3bfe483eb8b338a2  orca-codex-plugin-v1.1.0.zip
 ```
 
 ---
@@ -221,7 +221,7 @@ d9a4fbb99d3ccc22aaabc08ee1506102aa5200636d038cbf3bfe483eb8b338a2  aegis-codex-pl
 - All docs include the required wording about strongest protection.
 - No claims of perfect sandboxing.
 - No claims of universal transparent file/network enforcement.
-- No claims of protection for agents not launched through Aegis.
+- No claims of protection for agents not launched through Orca.
 - No claims of protection against root/admin/kernel compromise.
 - No claims of protection against users approving unsafe actions.
 - No MCP support claims.
@@ -236,12 +236,12 @@ d9a4fbb99d3ccc22aaabc08ee1506102aa5200636d038cbf3bfe483eb8b338a2  aegis-codex-pl
 ## Optional Local Host Validation
 
 **Codex:**
-- Host binary detected in PATH by `aegis plugin doctor codex`.
+- Host binary detected in PATH by `orca plugin doctor codex`.
 - Plugin directory found.
 - Manifest exists.
 
 **Claude Code:**
-- Host binary detected in PATH by `aegis plugin doctor claude`.
+- Host binary detected in PATH by `orca plugin doctor claude`.
 - Plugin directory found.
 - Manifest exists.
 
@@ -272,16 +272,16 @@ d9a4fbb99d3ccc22aaabc08ee1506102aa5200636d038cbf3bfe483eb8b338a2  aegis-codex-pl
 | `zig build` | Pass |
 | `zig build test` | Pass |
 | `./scripts/package-plugins.sh` | Pass |
-| `./zig-out/bin/aegis plugin doctor codex` | Pass |
-| `./zig-out/bin/aegis plugin doctor claude` | Pass |
-| `./zig-out/bin/aegis plugin manifest codex` | Pass |
-| `./zig-out/bin/aegis plugin manifest claude` | Pass |
-| `./zig-out/bin/aegis plugin install codex --dry-run` | Pass |
-| `./zig-out/bin/aegis plugin install claude --dry-run` | Pass |
-| `cat tests/plugin-fixtures/codex/pre_tool_use_command_dangerous.json \| ./zig-out/bin/aegis hook codex PreToolUse` | Blocked (expected) |
-| `cat tests/plugin-fixtures/claude/pre_tool_use_command_dangerous.json \| ./zig-out/bin/aegis hook claude PreToolUse` | Blocked (expected) |
-| `./zig-out/bin/aegis redteam --ci` | 10/10 passed |
-| `./zig-out/bin/aegis doctor` | Pass |
+| `./zig-out/bin/orca plugin doctor codex` | Pass |
+| `./zig-out/bin/orca plugin doctor claude` | Pass |
+| `./zig-out/bin/orca plugin manifest codex` | Pass |
+| `./zig-out/bin/orca plugin manifest claude` | Pass |
+| `./zig-out/bin/orca plugin install codex --dry-run` | Pass |
+| `./zig-out/bin/orca plugin install claude --dry-run` | Pass |
+| `cat tests/plugin-fixtures/codex/pre_tool_use_command_dangerous.json \| ./zig-out/bin/orca hook codex PreToolUse` | Blocked (expected) |
+| `cat tests/plugin-fixtures/claude/pre_tool_use_command_dangerous.json \| ./zig-out/bin/orca hook claude PreToolUse` | Blocked (expected) |
+| `./zig-out/bin/orca redteam --ci` | 10/10 passed |
+| `./zig-out/bin/orca doctor` | Pass |
 
 ---
 
@@ -291,7 +291,7 @@ d9a4fbb99d3ccc22aaabc08ee1506102aa5200636d038cbf3bfe483eb8b338a2  aegis-codex-pl
 - Official marketplace availability is not yet implemented.
 - Plugin installation defaults to preview/dry-run.
 - No telemetry is collected.
-- The plugins do not protect sessions launched outside Aegis.
+- The plugins do not protect sessions launched outside Orca.
 - These plugins do not add MCP server functionality or drone-specific plugin features.
 
 ---
@@ -317,7 +317,7 @@ All acceptance criteria are met:
 - [x] No `.mcp.json` added
 - [x] No drone plugin behavior added
 - [x] No drone demos added
-- [x] Existing Aegis tests pass
+- [x] Existing Orca tests pass
 - [x] Existing plugin tests pass
 - [x] Redteam passes (10/10)
 - [x] Drone workstream not exposed
@@ -348,7 +348,7 @@ All acceptance criteria are met:
 - `README.md` — added Agent Host Plugins section
 
 ### Generated (not committed)
-- `dist/plugins/aegis-codex-plugin-v1.1.0.zip`
-- `dist/plugins/aegis-claude-code-plugin-v1.1.0.zip`
-- `dist/plugins/aegis-claude-marketplace-v1.1.0.zip`
-- `dist/plugins/aegis-plugin-checksums.txt`
+- `dist/plugins/orca-codex-plugin-v1.1.0.zip`
+- `dist/plugins/orca-claude-code-plugin-v1.1.0.zip`
+- `dist/plugins/orca-claude-marketplace-v1.1.0.zip`
+- `dist/plugins/orca-plugin-checksums.txt`
