@@ -6,6 +6,10 @@ test "cli package exposes existing command surface without becoming edge" {
     try std.testing.expect(aegis_cli.cli.help.findCommand("run") != null);
     try std.testing.expect(aegis_cli.cli.help.findCommand("doctor") != null);
     try std.testing.expect(aegis_cli.cli.help.findCommand("redteam") != null);
+    try std.testing.expect(aegis_cli.cli.help.findCommand("report") != null);
+    try std.testing.expect(aegis_cli.cli.help.findCommand("license") != null);
+    try std.testing.expect(aegis_cli.cli.help.findCommand("ci") != null);
+    try std.testing.expect(aegis_cli.cli.help.findCommand("demo") != null);
     try std.testing.expect(aegis_cli.cli.help.findCommand("edge") == null);
 }
 

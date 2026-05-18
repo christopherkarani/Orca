@@ -28,6 +28,7 @@ class Orca < Formula
     libexec.install "bin/orca" if File.exist?("bin/orca")
     pkgshare.install "docs" if Dir.exist?("docs")
     pkgshare.install "examples" if Dir.exist?("examples")
+    pkgshare.install "fixtures" if Dir.exist?("fixtures")
     pkgshare.install "integrations" if Dir.exist?("integrations")
     pkgshare.install "policies" if Dir.exist?("policies")
     pkgshare.install "schemas" if Dir.exist?("schemas")

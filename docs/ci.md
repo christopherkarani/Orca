@@ -19,6 +19,8 @@ jobs:
         run: zig build
       - name: Test
         run: zig build test
+      - name: Orca CI check
+        run: ./zig-out/bin/orca ci check --format markdown
       - name: Orca red-team
         run: ./zig-out/bin/orca redteam --ci --json > orca-redteam.json
       - uses: actions/upload-artifact@v4
@@ -35,6 +37,20 @@ See `docs/ci/github-actions.md` and `examples/ci/github-actions.yml`.
 ## Non-interactive Mode
 
 Use `--mode ci` for commands and `--ci` for red-team. In CI, ask becomes deny.
+
+## Orca CI Check
+
+`orca ci check` is the focused local gate for repository readiness:
+
+```sh
+orca ci check --format markdown
+orca ci check --format json
+orca ci check --github-summary "$GITHUB_STEP_SUMMARY"
+```
+
+It checks that `.orca/policy.yaml` exists and validates, rejects dangerous obvious defaults such as open command/network policy or direct writes, and invokes a focused red-team fixture in CI mode. It does not contact a hosted service.
+
+Installed/package builds can run the same check outside the repository root. Orca looks for red-team fixtures in the workspace first, then under `ORCA_RESOURCE_ROOT` when package managers install resources beside the binary.
 
 ## Audit Artifacts
 

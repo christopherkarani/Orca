@@ -124,7 +124,7 @@ function copyInstalledBinary(extractDir, platform, arch) {
   fs.copyFileSync(source, installedBinary);
   if (platform !== "windows") fs.chmodSync(installedBinary, 0o755);
   fs.mkdirSync(resourceDir, { recursive: true });
-  for (const dir of ["docs", "examples", "integrations", "policies", "schemas"]) {
+  for (const dir of ["docs", "examples", "fixtures", "integrations", "policies", "schemas"]) {
     const sourceDir = path.join(top, dir);
     if (fs.existsSync(sourceDir)) {
       fs.cpSync(sourceDir, path.join(resourceDir, dir), { recursive: true });

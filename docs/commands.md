@@ -2,6 +2,16 @@
 
 Orca checks the direct command before launch and installs session PATH shims for common risky command names.
 
+## Dashboard
+
+```sh
+orca dashboard
+```
+
+Starts the local dashboard at `http://127.0.0.1:7742` by default. The dashboard exposes health, policy, integration, session, and denied-action views over existing Orca CLI/Core behavior.
+
+The dashboard accepts only localhost bindings by default, uses a per-run browser token for mutation routes, and does not accept arbitrary shell commands from the browser.
+
 ## Risk Classes
 
 The command classifier detects credential inspection, destructive filesystem actions, network script execution, privilege escalation, obfuscation, remote access, package execution, and VCS publishing risks.

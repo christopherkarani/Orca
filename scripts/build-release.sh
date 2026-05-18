@@ -36,7 +36,7 @@ copy_cli_payload() {
     root="$1"
     mkdir -p "$root"
     cp README.md LICENSE SECURITY.md CONTRIBUTING.md "$root/"
-  cp -R docs policies schemas examples packages packaging scripts integrations "$root/"
+  cp -R docs policies schemas fixtures examples packages packaging scripts integrations "$root/"
   find "$root" -type d \( \
     -name node_modules -o \
     -name .pnpm-store -o \
@@ -227,16 +227,16 @@ write_release_manifest() {
   done
 
   products_json="[\"orca\", \"core\"]"
-  runtime_assets_json="[\"schemas\", \"policies\", \"examples\", \"integrations\", \"packaging\"]"
+  runtime_assets_json="[\"schemas\", \"policies\", \"fixtures\", \"examples\", \"integrations\", \"packaging\"]"
   schemas_json="[\"schemas/policy-v1.json\", \"schemas/event-v1.json\", \"schemas/mcp-manifest-v1.json\"]"
-  fixtures_json="[\"examples/mcp\", \"examples/network\", \"examples/policies\"]"
+  fixtures_json="[\"fixtures/shell-abuse/curl-pipe-sh\", \"examples/mcp\", \"examples/network\", \"examples/policies\"]"
   docs_json="[\"README.md\", \"docs/install.md\", \"README-release.md\"]"
   safety_summary="Orca is a local CLI/runtime firewall; Edge artifacts are not included in CLI-only releases."
   if [ "$RELEASE_PRODUCT" = "all" ]; then
     products_json="[\"orca\", \"core\", \"edge\"]"
-    runtime_assets_json="[\"schemas\", \"policies\", \"examples/edge\", \"docs/edge\", \"customer_pilot\", \"integrations\", \"packaging/edge\"]"
+    runtime_assets_json="[\"schemas\", \"policies\", \"fixtures\", \"examples/edge\", \"docs/edge\", \"customer_pilot\", \"integrations\", \"packaging/edge\"]"
     schemas_json="[\"schemas/edge-policy-v1.json\", \"schemas/edge-event-v1.json\", \"schemas/safety-report-v1.json\", \"schemas/policy-v1.json\", \"schemas/event-v1.json\"]"
-    fixtures_json="[\"examples/edge/redteam\", \"examples/edge/demos\", \"examples/edge/safety-case\"]"
+    fixtures_json="[\"fixtures/shell-abuse/curl-pipe-sh\", \"examples/edge/redteam\", \"examples/edge/demos\", \"examples/edge/safety-case\"]"
     docs_json="[\"README.md\", \"docs/install.md\", \"docs/edge\", \"README-release.md\", \"known-limitations.md\"]"
     safety_summary="Edge is simulation/SITL/customer-evaluation and bench-preparation only; it is not real-flight readiness, certification, detect-and-avoid, or autopilot replacement."
   fi
