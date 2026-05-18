@@ -38,6 +38,15 @@ Use only for code and commands you already trust:
 
 This updates Orca network policy decisions and environment metadata. It is not transparent network blocking unless `orca doctor` reports an active backend.
 
+## Secretless Runtime
+
+```sh
+./zig-out/bin/orca credentials check
+./zig-out/bin/orca run --secretless --network-backend proxy -- <agent-command>
+```
+
+This strips raw secret-like environment values from the child process and uses broker references instead. Orca records policy, redaction, and proxy request decision evidence, but it is not a vault and does not inject credentials into the child environment. Proxy mode is explicit and loopback-only; HTTPS policy is host/port-only unless a cooperative hook supplies method/path metadata.
+
 ## CI Mode
 
 ```sh

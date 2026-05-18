@@ -4,6 +4,7 @@ const build_options = @import("build_options");
 const core_api = @import("aegis_core").api;
 const core = @import("aegis_core").core;
 const policy_mod = @import("aegis_core").policy;
+const credentials_runtime = @import("../intercept/credentials.zig");
 const supervisor = @import("../core/supervisor.zig");
 const license_mod = @import("../license.zig");
 const ci_check = @import("../ci_check.zig");
@@ -28,6 +29,8 @@ pub fn writeStatusJson(allocator: std.mem.Allocator, writer: anytype, workspace_
     try core.util.writeJsonString(writer, workspace_root);
     try writer.writeAll("},\"policy\":");
     try writePolicySummaryJson(allocator, writer, workspace_root);
+    try writer.writeAll(",\"secretless_runtime\":");
+    try writeSecretlessRuntimeJson(allocator, writer, workspace_root);
     try writer.writeAll(",\"license\":");
     try writeLicenseJson(allocator, writer);
     try writer.writeAll(",\"ci_readiness\":");
@@ -45,6 +48,16 @@ pub fn writeStatusJson(allocator: std.mem.Allocator, writer: anytype, workspace_
     try writer.writeByte(',');
     try writeQuickAction(writer, "policy-check", "orca policy check .orca/policy.yaml");
     try writer.writeByte(',');
+    try writeQuickAction(writer, "credentials-check", "orca credentials check");
+    try writer.writeByte(',');
+    try writeQuickAction(writer, "credentials-check-github", "orca credentials check github_pat");
+    try writer.writeByte(',');
+    try writeQuickAction(writer, "proxy-smoke", "orca run --secretless --network-backend proxy -- /usr/bin/env");
+    try writer.writeByte(',');
+    try writeQuickAction(writer, "policy-explain-github", "orca policy explain network https://api.github.com/repos/acme/app/issues --method POST");
+    try writer.writeByte(',');
+    try writeQuickAction(writer, "replay-last", "orca replay --session last --verify");
+    try writer.writeByte(',');
     try writeQuickAction(writer, "openclaw-doctor", "orca plugin doctor openclaw");
     try writer.writeByte(',');
     try writeQuickAction(writer, "hermes-doctor", "orca plugin doctor hermes");
@@ -59,6 +72,137 @@ pub fn writeStatusJson(allocator: std.mem.Allocator, writer: anytype, workspace_
     try writer.writeByte(',');
     try writeQuickAction(writer, "license-status", "orca license status");
     try writer.writeAll("]}");
+}
+
+fn writeSecretlessRuntimeJson(allocator: std.mem.Allocator, writer: anytype, workspace_root: []const u8) !void {
+    const policy_path = try policyPath(allocator, workspace_root);
+    defer allocator.free(policy_path);
+    var loaded_policy: ?policy_mod.schema.Policy = null;
+    if (core_api.loadPolicyFile(allocator, policy_path)) |loaded| {
+        loaded_policy = loaded;
+    } else |_| {}
+    defer if (loaded_policy) |*loaded| loaded.deinit();
+
+    const active_broker_label = if (loaded_policy) |loaded|
+        loaded.credentials.default_broker orelse if (loaded.credentials.brokers.len > 0) loaded.credentials.brokers[0].name else "local-dummy"
+    else
+        "local-dummy";
+    const active_broker_kind = if (loaded_policy) |loaded|
+        if (findBrokerKind(loaded.credentials, active_broker_label)) |kind| kind.toString() else "local-dummy"
+    else
+        "local-dummy";
+    const proxy_backend = if (loaded_policy) |loaded| loaded.network.effectiveBackend() else .decision_only;
+    const service_policy_template =
+        \\credentials:
+        \\  default_broker: onepassword
+        \\  brokers:
+        \\    onepassword:
+        \\      type: 1password-cli
+        \\      account: my-team
+        \\    env_dev:
+        \\      type: env-file-dev
+        \\      path: .orca/dev-secrets.env
+        \\  refs:
+        \\    github_pat:
+        \\      broker: onepassword
+        \\      ref: "op://Engineering/GitHub PAT/token"
+        \\
+        \\network:
+        \\  mode: allowlist
+        \\  backend: proxy
+        \\
+        \\services:
+        \\  github:
+        \\    hosts:
+        \\      - "api.github.com"
+        \\    methods:
+        \\      - "GET"
+        \\      - "POST"
+        \\    paths:
+        \\      allow:
+        \\        - "/repos/*/issues"
+        \\        - "/repos/*/pulls"
+        \\      deny:
+        \\        - "/user/keys"
+        \\        - "/orgs/*/secrets/*"
+        \\    credentials:
+        \\      use: github_pat
+        \\    unmatched: deny
+    ;
+    try writer.writeAll(
+        \\{"available":true,"active_broker":{"id":
+    );
+    try core.util.writeJsonString(writer, active_broker_label);
+    try writer.writeAll(",\"label\":");
+    try core.util.writeJsonString(writer, active_broker_label);
+    try writer.writeAll(",\"kind\":");
+    try core.util.writeJsonString(writer, active_broker_kind);
+    try writer.writeAll(",\"status\":\"configured\",\"stores_raw_secrets\":false,\"injects_raw_credentials\":false,\"description\":\"Configured broker for Secretless credential references.\"},\"credential_refs\":");
+    try writeCredentialRefsJson(writer, loaded_policy);
+    try writer.writeAll(",\"broker_checks\":");
+    try writeBrokerChecksJson(allocator, writer, workspace_root, loaded_policy);
+    try writer.writeAll(",\"recent_audit_events\":");
+    try writeRecentSecretlessAuditEventsJson(allocator, writer, workspace_root, 12);
+    try writer.writeAll(",\"proxy_backend\":{");
+    try writer.writeAll("\"status\":");
+    try core.util.writeJsonString(writer, if (proxy_backend == .proxy) "limited" else "unavailable");
+    try writer.writeAll(",\"bind\":");
+    try core.util.writeJsonString(writer, if (proxy_backend == .proxy) "127.0.0.1:<allocated-per-run>" else "");
+    try writer.writeAll(",\"https_visibility\":\"host-port-only\",\"method_path_visibility\":\"http-and-cooperative-hooks\",\"backend\":");
+    try core.util.writeJsonString(writer, proxy_backend.toString());
+    try writer.writeAll("},\"supported_brokers\":[{\"id\":\"local-dummy\",\"label\":\"Local dummy broker\",\"status\":\"available\",\"stores_raw_secrets\":false,\"notes\":\"Built in. Emits non-secret orca-secret:// references for local verification.\"},{\"id\":\"env-file-dev\",\"label\":\"Env-file dev broker\",\"status\":\"available\",\"stores_raw_secrets\":false,\"notes\":\"Local development only. Reads .orca/dev-secrets.env at runtime and never writes raw values to audit.\"},{\"id\":\"1password-cli\",\"label\":\"1Password CLI\",\"status\":\"available-when-op-installed\",\"stores_raw_secrets\":false,\"notes\":\"Runs op read without shell interpolation and discards resolved values after checks.\"},{\"id\":\"macos-keychain\",\"label\":\"macOS Keychain\",\"status\":\"available-on-macos\",\"stores_raw_secrets\":false,\"notes\":\"Uses /usr/bin/security find-generic-password for configured refs.\"},{\"id\":\"infisical-agent-vault\",\"label\":\"Infisical / Agent Vault\",\"status\":\"status-boundary\",\"stores_raw_secrets\":false,\"notes\":\"Configured as an extension boundary; resolution remains disabled until exact local API or CLI behavior is verified.\"}],\"capabilities\":[{\"label\":\"Env replacement\",\"state\":\"active\",\"detail\":\"orca run --secretless strips raw secret-like env values from the child and substitutes broker references.\"},{\"label\":\"Broker checks\",\"state\":\"active\",\"detail\":\"orca credentials check verifies broker config and refs without printing raw secret values.\"},{\"label\":\"Service policy\",\"state\":\"active\",\"detail\":\"services: rules support hosts, methods, allow/deny paths, credential references, unmatched behavior, and port-scoped hosts.\"},{\"label\":\"Proxy backend\",\"state\":\"limited\",\"detail\":\"orca run --network-backend proxy injects a loopback proxy. HTTPS CONNECT enforcement is host/port only without MITM.\"},{\"label\":\"Transparent OS interception\",\"state\":\"unavailable\",\"detail\":\"Orca does not claim OS-level transparent network interception.\"}],\"guarantees\":[\"Child processes launched with --secretless do not receive raw secret-like environment values that Orca detects.\",\"Broker references and checks never print or persist raw resolved secret values.\",\"Orca remains the runtime policy and audit layer; external brokers own secret storage.\"],\"limitations\":[\"Secretless mode only protects processes launched through orca run --secretless.\",\"HTTPS path and method enforcement is unavailable in proxy mode without MITM or cooperative metadata.\",\"Infisical/Agent Vault resolution is not enabled until its local contract is verified.\"],\"run_command\":\"orca run --secretless --network-backend proxy -- <agent-command>\",\"verify_commands\":[\"orca credentials check\",\"orca credentials check github_pat\",\"orca policy check .orca/policy.yaml\",\"orca policy explain network https://api.github.com/repos/acme/app/issues --method POST\",\"orca run --secretless --network-backend proxy -- /usr/bin/env\",\"orca replay --session last --verify\"],\"service_policy_template\":");
+    try core.util.writeJsonString(writer, service_policy_template);
+    try writer.writeByte('}');
+}
+
+fn findBrokerKind(credentials: policy_mod.schema.CredentialsPolicy, name: []const u8) ?policy_mod.schema.CredentialBrokerKind {
+    for (credentials.brokers) |broker| {
+        if (std.ascii.eqlIgnoreCase(broker.name, name)) return broker.kind;
+    }
+    return null;
+}
+
+fn writeCredentialRefsJson(writer: anytype, maybe_policy: ?policy_mod.schema.Policy) !void {
+    try writer.writeByte('[');
+    if (maybe_policy) |loaded| {
+        for (loaded.credentials.refs, 0..) |credential_ref, index| {
+            if (index > 0) try writer.writeByte(',');
+            try writer.writeAll("{\"name\":");
+            try core.util.writeJsonString(writer, credential_ref.name);
+            try writer.writeAll(",\"broker\":");
+            if (credential_ref.broker) |broker| try core.util.writeJsonString(writer, broker) else try writer.writeAll("null");
+            try writer.writeAll(",\"ref\":");
+            try core.util.writeJsonString(writer, credential_ref.ref);
+            try writer.writeAll(",\"raw_value\":null}");
+        }
+    }
+    try writer.writeByte(']');
+}
+
+fn writeBrokerChecksJson(allocator: std.mem.Allocator, writer: anytype, workspace_root: []const u8, maybe_policy: ?policy_mod.schema.Policy) !void {
+    if (maybe_policy) |loaded| {
+        var report = credentials_runtime.check(allocator, &loaded, workspace_root, null) catch {
+            try writer.writeAll("[]");
+            return;
+        };
+        defer report.deinit(allocator);
+        try writer.writeByte('[');
+        for (report.statuses, 0..) |status, index| {
+            if (index > 0) try writer.writeByte(',');
+            try writer.writeAll("{\"broker\":");
+            try core.util.writeJsonString(writer, status.name);
+            try writer.writeAll(",\"kind\":");
+            try core.util.writeJsonString(writer, status.kind.toString());
+            try writer.writeAll(",\"status\":");
+            try core.util.writeJsonString(writer, status.state.toString());
+            try writer.writeAll(",\"message\":");
+            try core.util.writeJsonString(writer, status.message);
+            try writer.writeByte('}');
+        }
+        try writer.writeByte(']');
+        return;
+    }
+    try writer.writeAll("[{\"broker\":\"local-dummy\",\"kind\":\"local-dummy\",\"status\":\"available\",\"message\":\"built-in reference broker available\"}]");
 }
 
 pub fn writePolicyJson(allocator: std.mem.Allocator, writer: anytype, workspace_root: []const u8) !void {
@@ -357,6 +501,60 @@ fn writeBlockedActionJson(allocator: std.mem.Allocator, writer: anytype, session
     try writer.writeByte('}');
 }
 
+fn writeRecentSecretlessAuditEventsJson(allocator: std.mem.Allocator, writer: anytype, workspace_root: []const u8, max_count: usize) !void {
+    const sessions_root = try std.fs.path.join(allocator, &.{ workspace_root, ".orca", "sessions" });
+    defer allocator.free(sessions_root);
+    var dir = std.fs.cwd().openDir(sessions_root, .{ .iterate = true }) catch |err| switch (err) {
+        error.FileNotFound => {
+            try writer.writeAll("[]");
+            return;
+        },
+        else => return err,
+    };
+    defer dir.close();
+
+    try writer.writeByte('[');
+    var written: usize = 0;
+    var it = dir.iterate();
+    while (written < max_count) {
+        const entry = try it.next() orelse break;
+        if (entry.kind != .directory) continue;
+        if (core.session.validateSessionIdText(entry.name)) |_| {} else |_| continue;
+        var replay = core_api.loadReplay(allocator, workspace_root, .{ .session = entry.name, .only_denied = false, .verify = false }) catch continue;
+        defer replay.deinit();
+        for (replay.events) |ev| {
+            if (written >= max_count) break;
+            if (!isSecretlessEvidenceEvent(ev.event_type)) continue;
+            if (written > 0) try writer.writeByte(',');
+            try writer.writeByte('{');
+            try writer.writeAll("\"session_id\":");
+            try core.util.writeJsonString(writer, replay.session_id);
+            try writer.writeAll(",\"timestamp\":");
+            try core.util.writeJsonString(writer, ev.timestamp);
+            try writer.writeAll(",\"event_type\":");
+            try core.util.writeJsonString(writer, ev.event_type);
+            try writer.writeAll(",\"target\":");
+            try core.util.writeJsonString(writer, ev.target_value);
+            try writer.writeAll(",\"decision\":");
+            if (ev.decision_result) |result| try core.util.writeJsonString(writer, result) else try writer.writeAll("null");
+            try writer.writeAll(",\"verified\":");
+            try writer.writeAll(if (replay.verified) "true" else "false");
+            try writer.writeByte('}');
+            written += 1;
+        }
+    }
+    try writer.writeByte(']');
+}
+
+fn isSecretlessEvidenceEvent(event_type: []const u8) bool {
+    return std.mem.eql(u8, event_type, "secret_redacted") or
+        std.mem.eql(u8, event_type, "network_proxy_start") or
+        std.mem.eql(u8, event_type, "network_proxy_stop") or
+        std.mem.eql(u8, event_type, "network_connect_attempt") or
+        std.mem.eql(u8, event_type, "network_connect_allowed") or
+        std.mem.eql(u8, event_type, "network_connect_denied");
+}
+
 fn writeDecisionField(writer: anytype, parsed: ?std.json.Parsed(std.json.Value), field: []const u8) !void {
     const value = if (parsed) |p| blk: {
         if (p.value != .object) break :blk null;
@@ -446,14 +644,41 @@ test "status json includes policy and protected agent cards" {
     const root = try tmp.dir.realpathAlloc(std.testing.allocator, ".");
     defer std.testing.allocator.free(root);
     _ = try initPolicyFromPreset(std.testing.allocator, root, "generic-agent", false);
+    try writeSecretlessEvidenceFixture(std.testing.allocator, root);
 
     var out: std.ArrayList(u8) = .empty;
     defer out.deinit(std.testing.allocator);
     try writeStatusJson(std.testing.allocator, out.writer(std.testing.allocator), root);
 
     try std.testing.expect(std.mem.indexOf(u8, out.items, "\"policy\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out.items, "\"secretless_runtime\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out.items, "\"active_broker\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out.items, "\"credential_refs\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out.items, "\"broker_checks\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out.items, "\"proxy_backend\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out.items, "\"https_visibility\":\"host-port-only\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out.items, "\"recent_audit_events\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out.items, "\"network_connect_allowed\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out.items, "\"network_proxy_start\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out.items, "\"service_policy_template\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out.items, "\"verify_commands\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, out.items, "\"openclaw\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, out.items, "\"hermes\"") != null);
+}
+
+test "dashboard assets expose dedicated secretless view" {
+    const index = try std.fs.cwd().readFileAlloc(std.testing.allocator, "src/dashboard/assets/index.html", 64 * 1024);
+    defer std.testing.allocator.free(index);
+    const app = try std.fs.cwd().readFileAlloc(std.testing.allocator, "src/dashboard/assets/app.js", 64 * 1024);
+    defer std.testing.allocator.free(app);
+
+    try std.testing.expect(std.mem.indexOf(u8, index, "data-view=\"secretless\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, index, "secretlessPolicyTemplate") != null);
+    try std.testing.expect(std.mem.indexOf(u8, index, "secretlessCredentialRefs") != null);
+    try std.testing.expect(std.mem.indexOf(u8, index, "secretlessProxyMeta") != null);
+    try std.testing.expect(std.mem.indexOf(u8, index, "secretlessBrokerChecks") != null);
+    try std.testing.expect(std.mem.indexOf(u8, app, "renderSecretless") != null);
+    try std.testing.expect(std.mem.indexOf(u8, app, "insertSecretlessPolicyTemplate") != null);
 }
 
 test "sessions json filters denied replay events" {
@@ -506,4 +731,53 @@ fn writeDeniedReplayFixture(allocator: std.mem.Allocator, root: []const u8) !voi
         .product_label = "Orca",
     });
     _ = &session;
+}
+
+fn writeSecretlessEvidenceFixture(allocator: std.mem.Allocator, root: []const u8) !void {
+    const timestamp = core.time.Timestamp.fromUnixSeconds(1_777_983_131);
+    var session = core.session.Session{
+        .id = try core.session.generateSessionId(timestamp),
+        .started_at = timestamp,
+        .ended_at = timestamp,
+        .command = "orca",
+        .args = &.{ "run", "--secretless", "--network-backend", "proxy", "--", "agent" },
+        .workspace_root = root,
+        .mode = .observe,
+        .platform = core.platform.detectOs(),
+    };
+    var writer = try core_api.createAuditWriter(allocator, session);
+    defer writer.deinit();
+    try appendFixtureEvent(&writer, session, timestamp, .network_proxy_start, "http://127.0.0.1:49152", .observe);
+    try appendFixtureEvent(&writer, session, timestamp, .network_connect_attempt, "http://127.0.0.1:49153/echo", .observe);
+    try appendFixtureEvent(&writer, session, timestamp, .network_connect_allowed, "http://127.0.0.1:49153/echo", .allow);
+    try writer.writeLastPointer();
+    try core_api.writeAuditSummary(allocator, writer.sessionDirPath(), .{
+        .session = session,
+        .status = .{ .exited = 0 },
+        .event_count = writer.event_count,
+        .final_event_hash = writer.finalHash().?,
+        .policy = ".orca/policy.yaml",
+        .product_label = "Orca",
+    });
+    _ = &session;
+}
+
+fn appendFixtureEvent(
+    writer: *core_api.AuditWriter,
+    session: core.session.Session,
+    timestamp: core.time.Timestamp,
+    event_type: core.event.EventType,
+    target: []const u8,
+    result: core.decision.DecisionResult,
+) !void {
+    const event = try core_api.createAuditEvent(.{
+        .session_id = session.id,
+        .event_id = try core.event.generateEventId(timestamp),
+        .timestamp = timestamp,
+        .event_type = event_type,
+        .actor = .{ .kind = .orca, .display = "orca" },
+        .target = .{ .kind = .network_endpoint, .value = target },
+        .decision = core_api.makeDecision(.{ .result = result, .reason = "fixture evidence" }),
+    });
+    try core_api.appendAuditEvent(writer, event);
 }

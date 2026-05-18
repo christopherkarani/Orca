@@ -14,9 +14,9 @@ pub const commands = [_]CommandInfo{
         .usage = "orca run [options] -- <command> [args...]",
         .details = &.{
             "Starts a direct-child supervision session, filters the child environment through policy, checks the direct command through Command Guard, writes audit artifacts, and mirrors the child exit code.",
-            "Options: --workspace <path>, --mode observe|ask|strict|ci, --policy <path>, --session-name <name>, --no-secrets, --inherit-env, --no-network, --allow-network <domain>, --network observe|ask|allowlist|open|off, --require-backend <capability>, --help",
-            "Strict and CI modes default to no-secrets child environments. --inherit-env is allowed only when the selected policy permits inheritance.",
-            "Network flags update the run-time policy and audit network decisions. Phase 12 provides decision logic plus child environment metadata hooks, not active proxy or transparent network enforcement.",
+            "Options: --workspace <path>, --mode observe|ask|strict|ci, --policy <path>, --session-name <name>, --no-secrets, --secretless, --inherit-env, --no-network, --allow-network <domain>, --network observe|ask|allowlist|open|off, --network-backend decision-only|proxy, --require-backend <capability>, --help",
+            "Strict and CI modes default to no-secrets child environments. --secretless replaces policy-visible secret env values with broker references instead of raw values. --inherit-env is allowed only when the selected policy permits inheritance.",
+            "Network flags update the run-time policy and audit network decisions. --network-backend proxy starts an explicit localhost proxy and injects HTTP_PROXY/HTTPS_PROXY/ALL_PROXY; HTTPS CONNECT enforcement is host/port only without MITM.",
             "Linux uses backend capability detection and process-group cleanup where available. Optional kernel features are reported honestly and are not claimed active unless actually active.",
         },
     },
@@ -41,10 +41,15 @@ pub const commands = [_]CommandInfo{
     .{ .name = "policy", .summary = "Validate, explain, and apply policies", .usage = "orca policy <check|explain|packs|apply-pack> [...]", .details = &.{
         "Subcommands:",
         "  orca policy check <policy-path>",
-        "  orca policy explain <file.read|file.write|env|command|network|mcp> <target>",
+        "  orca policy explain <file.read|file.write|env|command|network|mcp> <target> [--method <HTTP_METHOD>]",
         "  orca policy packs",
         "  orca policy apply-pack <solo-dev|strict-local|team-ci|openclaw-hermes> [--force]",
         "Explanations show the decision, reason, matched rule when available, and policy mode.",
+    } },
+    .{ .name = "credentials", .summary = "Check Secretless credential brokers", .usage = "orca credentials check [credential-ref]", .details = &.{
+        "Checks configured Secretless brokers and optional credential refs without printing raw secret values.",
+        "Supported broker kinds: local-dummy, env-file-dev, 1password-cli, macos-keychain, infisical-agent-vault.",
+        "Infisical/Agent Vault is currently a status/config boundary until exact local API or CLI behavior is verified.",
     } },
     .{ .name = "report", .summary = "Export a local safety report", .usage = "orca report --session <id|last> --format markdown|json", .details = &.{
         "Loads a local session, verifies the hash chain, and exports denied actions, redactions, plugin readiness, and a plain-language prevention summary.",

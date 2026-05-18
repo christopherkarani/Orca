@@ -28,12 +28,26 @@ pub fn explain(
     kind: ExplainKind,
     target: []const u8,
 ) !schema.Evaluation {
+    return explainWithOptions(allocator, policy, kind, target, .{});
+}
+
+pub const ExplainOptions = struct {
+    network_method: ?[]const u8 = null,
+};
+
+pub fn explainWithOptions(
+    allocator: std.mem.Allocator,
+    policy: *const schema.Policy,
+    kind: ExplainKind,
+    target: []const u8,
+    options: ExplainOptions,
+) !schema.Evaluation {
     return switch (kind) {
         .file_read => evaluate.fileRead(policy, target, allocator),
         .file_write => evaluate.fileWrite(policy, target, allocator),
         .env => evaluate.env(policy, target, allocator),
         .command => evaluate.command(policy, target, allocator),
-        .network => evaluate.network(policy, target, allocator),
+        .network => if (options.network_method) |method| evaluate.networkWithMethod(policy, target, method, allocator) else evaluate.network(policy, target, allocator),
         .mcp => evaluate.mcp(policy, target, allocator),
     };
 }
@@ -64,4 +78,36 @@ test "explanation includes matched rule where possible" {
     try write(stream.writer(), &policy, result);
     try std.testing.expect(std.mem.indexOf(u8, stream.getWritten(), "Decision: deny") != null);
     try std.testing.expect(std.mem.indexOf(u8, stream.getWritten(), "Rule: files.read.deny[2]") != null);
+}
+
+test "network explanation includes service-aware path rules" {
+    const load = @import("load.zig");
+    var policy = try load.parseFromSlice(std.testing.allocator,
+        \\version: 1
+        \\mode: strict
+        \\services:
+        \\  github:
+        \\    hosts:
+        \\      - "api.github.com"
+        \\    paths:
+        \\      allow:
+        \\        - "/repos/*/issues"
+        \\      deny:
+        \\        - "/user/keys"
+        \\    credentials:
+        \\      use: github_pat
+        \\    unmatched: deny
+    , "services.yaml");
+    defer policy.deinit();
+
+    const denied = try explain(std.testing.allocator, &policy, .network, "https://api.github.com/user/keys");
+    defer denied.deinit(std.testing.allocator);
+
+    try std.testing.expectEqualStrings("services.github.unmatched", denied.matched_rule.?.id);
+    try std.testing.expectEqual(@import("../core/public.zig").decision.DecisionResult.deny, denied.decision.result);
+    try std.testing.expect(std.mem.indexOf(u8, denied.decision.reason, "method context required") != null);
+
+    const method_denied = try explainWithOptions(std.testing.allocator, &policy, .network, "https://api.github.com/user/keys", .{ .network_method = "GET" });
+    defer method_denied.deinit(std.testing.allocator);
+    try std.testing.expectEqualStrings("services.github.paths.deny[0]", method_denied.matched_rule.?.id);
 }

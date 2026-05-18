@@ -22,6 +22,7 @@ pub const loadPolicyPreset = core_api.loadPolicyPreset;
 pub const discoverPolicy = core_api.discoverPolicy;
 pub const validatePolicy = core_api.validatePolicy;
 pub const explainAction = core_api.explainAction;
+pub const explainActionWithOptions = core_api.explainActionWithOptions;
 pub const writePolicyExplanation = core_api.writePolicyExplanation;
 pub const evaluateAction = core_api.evaluateAction;
 pub const makeDecision = core_api.makeDecision;

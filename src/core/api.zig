@@ -67,6 +67,16 @@ pub fn explainAction(
     return policy.explain.explain(allocator, value, kind, target);
 }
 
+pub fn explainActionWithOptions(
+    allocator: std.mem.Allocator,
+    value: *const Policy,
+    kind: policy.explain.ExplainKind,
+    target: []const u8,
+    options: policy.explain.ExplainOptions,
+) !Evaluation {
+    return policy.explain.explainWithOptions(allocator, value, kind, target, options);
+}
+
 pub fn writePolicyExplanation(writer: anytype, value: *const Policy, evaluation: Evaluation) !void {
     try policy.explain.write(writer, value, evaluation);
 }

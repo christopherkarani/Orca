@@ -26,6 +26,7 @@ pub const RunConfig = struct {
     before_process_launch: ?StartHook = null,
     on_session_start: ?StartHook = null,
     on_event: ?EventHook = null,
+    health_monitor: ?HealthMonitor = null,
 };
 
 pub const EnvRedactionRecord = process.EnvRedactionRecord;
@@ -38,6 +39,12 @@ pub const StartHook = struct {
 pub const EventHook = struct {
     context: *anyopaque,
     callback: *const fn (context: *anyopaque, ev: event.Event) anyerror!void,
+};
+
+pub const HealthMonitor = struct {
+    context: *anyopaque,
+    callback: *const fn (context: *anyopaque) bool,
+    interval_ns: u64 = 50 * std.time.ns_per_ms,
 };
 
 pub const ChildStatus = process.ChildStatus;
@@ -63,6 +70,24 @@ pub const SessionResult = struct {
         self.* = undefined;
     }
 };
+
+const HealthMonitorThreadContext = struct {
+    prepared: *process.PreparedChild,
+    monitor: HealthMonitor,
+    stop: *std.atomic.Value(bool),
+    failed: *std.atomic.Value(bool),
+};
+
+fn healthMonitorLoop(context: *HealthMonitorThreadContext) void {
+    while (!context.stop.load(.acquire)) {
+        if (!context.monitor.callback(context.monitor.context)) {
+            context.failed.store(true, .release);
+            context.prepared.terminateForHealthFailure();
+            return;
+        }
+        std.Thread.sleep(context.monitor.interval_ns);
+    }
+}
 
 pub fn run(allocator: std.mem.Allocator, config: RunConfig) !SessionResult {
     if (config.command.len == 0) return error.InvalidCommand;
@@ -152,6 +177,24 @@ pub fn run(allocator: std.mem.Allocator, config: RunConfig) !SessionResult {
             prepared.terminateAfterParentError();
             return err;
         };
+    }
+
+    var health_stop = std.atomic.Value(bool).init(false);
+    var health_failed = std.atomic.Value(bool).init(false);
+    var health_context: HealthMonitorThreadContext = undefined;
+    var health_thread: ?std.Thread = null;
+    if (config.health_monitor) |monitor| {
+        health_context = .{
+            .prepared = &prepared,
+            .monitor = monitor,
+            .stop = &health_stop,
+            .failed = &health_failed,
+        };
+        health_thread = try std.Thread.spawn(.{}, healthMonitorLoop, .{&health_context});
+    }
+    defer {
+        health_stop.store(true, .release);
+        if (health_thread) |thread| thread.join();
     }
 
     const term = try prepared.wait();
@@ -466,4 +509,37 @@ test "session start hook failure cleans up spawned child and returns hook error"
 
     try std.testing.expectEqual(@as(usize, 1), context.calls);
     try std.testing.expect(elapsed_ms < 1_500);
+}
+
+const FailingHealthContext = struct {
+    calls: std.atomic.Value(usize) = .init(0),
+
+    fn healthy(context: *anyopaque) bool {
+        const self: *FailingHealthContext = @ptrCast(@alignCast(context));
+        _ = self.calls.fetchAdd(1, .acq_rel);
+        return false;
+    }
+};
+
+test "health monitor terminates child when required runtime dies" {
+    if (builtin.os.tag == .windows) return error.SkipZigTest;
+
+    var context: FailingHealthContext = .{};
+    const started = std.time.milliTimestamp();
+    var result = try run(std.testing.allocator, .{
+        .command = "/bin/sh",
+        .args = &.{ "-c", "sleep 2" },
+        .workspace = ".",
+        .stdio = .ignore,
+        .health_monitor = .{
+            .context = &context,
+            .callback = FailingHealthContext.healthy,
+        },
+    });
+    defer result.deinit();
+    const elapsed_ms = std.time.milliTimestamp() - started;
+
+    try std.testing.expect(result.exitCode() != 0);
+    try std.testing.expect(elapsed_ms < 1_500);
+    try std.testing.expect(context.calls.load(.acquire) > 0);
 }

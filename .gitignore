@@ -109,3 +109,7 @@ DRONE_WORKSTREAM_GUARDRAILS.md
 FINAL_PASS_REPORT.md
 REVIEW_SUMMARY.md
 SECURITY_INVARIANTS.md
+
+# --- Playwright MCP artifacts ---
+.playwright-mcp/
+

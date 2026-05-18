@@ -70,6 +70,14 @@ pub const PreparedChild = struct {
         self.spawned = false;
     }
 
+    pub fn terminateForHealthFailure(self: *PreparedChild) void {
+        if (!self.spawned) return;
+        if (self.process_group_cleanup) {
+            if (self.process_group_id) |pgid| killProcessGroup(pgid);
+        }
+        _ = self.child.kill() catch {};
+    }
+
     fn cleanupProcessGroup(self: *PreparedChild) void {
         if (!self.process_group_cleanup) return;
         if (self.process_group_id) |pgid| killProcessGroup(pgid);

@@ -8,6 +8,7 @@ pub const run_command = @import("run.zig");
 pub const init = @import("init.zig");
 pub const doctor = @import("doctor.zig");
 pub const policy = @import("policy.zig");
+pub const credentials_command = @import("credentials.zig");
 pub const replay = @import("replay.zig");
 pub const diff = @import("diff.zig");
 pub const apply = @import("apply.zig");
@@ -80,6 +81,7 @@ pub fn runWithCwd(cwd: std.fs.Dir, argv: []const []const u8, stdout: anytype, st
     if (std.mem.eql(u8, command, "init")) return init.command(cwd, argv[1..], stdout, stderr);
     if (std.mem.eql(u8, command, "doctor")) return doctor.command(argv[1..], stdout, stderr);
     if (std.mem.eql(u8, command, "policy")) return policy.command(argv[1..], stdout, stderr);
+    if (std.mem.eql(u8, command, "credentials")) return credentials_command.command(argv[1..], stdout, stderr);
     if (std.mem.eql(u8, command, "replay")) return replay.command(argv[1..], stdout, stderr);
     if (std.mem.eql(u8, command, "diff")) return diff.command(argv[1..], stdout, stderr);
     if (std.mem.eql(u8, command, "apply")) return apply.command(argv[1..], stdout, stderr);

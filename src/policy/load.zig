@@ -27,6 +27,15 @@ const Section = enum {
     commands,
     network,
     network_detect_exfiltration,
+    credentials,
+    credentials_brokers,
+    credentials_broker,
+    credentials_refs,
+    credentials_ref,
+    services,
+    service,
+    service_paths,
+    service_credentials,
     mcp,
     mcp_servers,
     mcp_server,
@@ -52,9 +61,103 @@ const ListTarget = enum {
     network_allow,
     network_deny,
     network_ask,
+    service_hosts,
+    service_methods,
+    service_path_allow,
+    service_path_deny,
     mcp_allow,
     mcp_deny,
     mcp_ask,
+};
+
+const ServiceBuilder = struct {
+    name: []const u8,
+    hosts: std.ArrayList([]const u8) = .empty,
+    methods: std.ArrayList([]const u8) = .empty,
+    path_allow: std.ArrayList([]const u8) = .empty,
+    path_deny: std.ArrayList([]const u8) = .empty,
+    credential_use: ?[]const u8 = null,
+    unmatched: ?schema.DecisionValue = null,
+
+    fn deinit(self: *ServiceBuilder, allocator: std.mem.Allocator) void {
+        allocator.free(self.name);
+        freeList(allocator, &self.hosts);
+        freeList(allocator, &self.methods);
+        freeList(allocator, &self.path_allow);
+        freeList(allocator, &self.path_deny);
+        if (self.credential_use) |value| allocator.free(value);
+        self.* = undefined;
+    }
+
+    fn append(self: *ServiceBuilder, allocator: std.mem.Allocator, target: ListTarget, value: []const u8) !void {
+        const owned = try allocator.dupe(u8, value);
+        errdefer allocator.free(owned);
+        switch (target) {
+            .service_hosts => try self.hosts.append(allocator, owned),
+            .service_methods => try self.methods.append(allocator, owned),
+            .service_path_allow => try self.path_allow.append(allocator, owned),
+            .service_path_deny => try self.path_deny.append(allocator, owned),
+            else => return error.InvalidPolicy,
+        }
+    }
+
+    fn toPolicy(self: *ServiceBuilder, allocator: std.mem.Allocator) !schema.ServicePolicy {
+        var out: schema.ServicePolicy = .{
+            .name = try allocator.dupe(u8, self.name),
+            .unmatched = self.unmatched,
+        };
+        errdefer out.deinit(allocator);
+        out.hosts = try duplicateListFromArray(allocator, self.hosts.items);
+        out.methods = try duplicateListFromArray(allocator, self.methods.items);
+        out.paths.allow = try duplicateListFromArray(allocator, self.path_allow.items);
+        out.paths.deny = try duplicateListFromArray(allocator, self.path_deny.items);
+        out.credentials.use = if (self.credential_use) |value| try allocator.dupe(u8, value) else null;
+        return out;
+    }
+};
+
+const CredentialBrokerBuilder = struct {
+    name: []const u8,
+    kind: ?schema.CredentialBrokerKind = null,
+    account: ?[]const u8 = null,
+    path: ?[]const u8 = null,
+
+    fn deinit(self: *CredentialBrokerBuilder, allocator: std.mem.Allocator) void {
+        allocator.free(self.name);
+        if (self.account) |value| allocator.free(value);
+        if (self.path) |value| allocator.free(value);
+        self.* = undefined;
+    }
+
+    fn toPolicy(self: *CredentialBrokerBuilder, allocator: std.mem.Allocator) !schema.CredentialBrokerPolicy {
+        return .{
+            .name = try allocator.dupe(u8, self.name),
+            .kind = self.kind orelse return error.InvalidPolicy,
+            .account = if (self.account) |value| try allocator.dupe(u8, value) else null,
+            .path = if (self.path) |value| try allocator.dupe(u8, value) else null,
+        };
+    }
+};
+
+const CredentialRefBuilder = struct {
+    name: []const u8,
+    broker: ?[]const u8 = null,
+    ref: ?[]const u8 = null,
+
+    fn deinit(self: *CredentialRefBuilder, allocator: std.mem.Allocator) void {
+        allocator.free(self.name);
+        if (self.broker) |value| allocator.free(value);
+        if (self.ref) |value| allocator.free(value);
+        self.* = undefined;
+    }
+
+    fn toPolicy(self: *CredentialRefBuilder, allocator: std.mem.Allocator) !schema.CredentialRefPolicy {
+        return .{
+            .name = try allocator.dupe(u8, self.name),
+            .broker = if (self.broker) |value| try allocator.dupe(u8, value) else null,
+            .ref = if (self.ref) |value| try allocator.dupe(u8, value) else return error.InvalidPolicy,
+        };
+    }
 };
 
 const Builder = struct {
@@ -87,7 +190,15 @@ const Builder = struct {
     network_ask: std.ArrayList([]const u8) = .empty,
     network_default: ?schema.DecisionValue = null,
     network_mode: ?schema.NetworkMode = null,
+    network_backend: ?schema.NetworkBackend = null,
     network_detect_exfiltration: schema.ExfiltrationDetection = .{},
+    credentials_default_broker: ?[]const u8 = null,
+    credential_brokers: std.ArrayList(CredentialBrokerBuilder) = .empty,
+    active_credential_broker_index: ?usize = null,
+    credential_refs: std.ArrayList(CredentialRefBuilder) = .empty,
+    active_credential_ref_index: ?usize = null,
+    services: std.ArrayList(ServiceBuilder) = .empty,
+    active_service_index: ?usize = null,
     mcp_allow: std.ArrayList([]const u8) = .empty,
     mcp_deny: std.ArrayList([]const u8) = .empty,
     mcp_ask: std.ArrayList([]const u8) = .empty,
@@ -118,6 +229,13 @@ const Builder = struct {
         freeList(self.allocator, &self.network_allow);
         freeList(self.allocator, &self.network_deny);
         freeList(self.allocator, &self.network_ask);
+        if (self.credentials_default_broker) |value| self.allocator.free(value);
+        for (self.credential_brokers.items) |*broker| broker.deinit(self.allocator);
+        self.credential_brokers.deinit(self.allocator);
+        for (self.credential_refs.items) |*credential_ref| credential_ref.deinit(self.allocator);
+        self.credential_refs.deinit(self.allocator);
+        for (self.services.items) |*service| service.deinit(self.allocator);
+        self.services.deinit(self.allocator);
         freeList(self.allocator, &self.mcp_allow);
         freeList(self.allocator, &self.mcp_deny);
         freeList(self.allocator, &self.mcp_ask);
@@ -125,6 +243,11 @@ const Builder = struct {
     }
 
     fn append(self: *Builder, target: ListTarget, value: []const u8) !void {
+        if (target == .service_hosts or target == .service_methods or target == .service_path_allow or target == .service_path_deny) {
+            const service = self.activeService() orelse return error.InvalidPolicy;
+            try service.append(self.allocator, target, value);
+            return;
+        }
         const owned = if ((target == .mcp_allow or target == .mcp_deny or target == .mcp_ask) and self.active_mcp_server != null)
             try std.fmt.allocPrint(self.allocator, "{s}.{s}", .{ self.active_mcp_server.?, value })
         else
@@ -146,11 +269,51 @@ const Builder = struct {
             .network_allow => try self.network_allow.append(self.allocator, owned),
             .network_deny => try self.network_deny.append(self.allocator, owned),
             .network_ask => try self.network_ask.append(self.allocator, owned),
+            .service_hosts, .service_methods, .service_path_allow, .service_path_deny => unreachable,
             .mcp_allow => try self.mcp_allow.append(self.allocator, owned),
             .mcp_deny => try self.mcp_deny.append(self.allocator, owned),
             .mcp_ask => try self.mcp_ask.append(self.allocator, owned),
             .none => return error.InvalidPolicy,
         }
+    }
+
+    fn startService(self: *Builder, name: []const u8) !void {
+        const owned = try self.allocator.dupe(u8, name);
+        errdefer self.allocator.free(owned);
+        try self.services.append(self.allocator, .{ .name = owned });
+        self.active_service_index = self.services.items.len - 1;
+    }
+
+    fn startCredentialBroker(self: *Builder, name: []const u8) !void {
+        const owned = try self.allocator.dupe(u8, name);
+        errdefer self.allocator.free(owned);
+        try self.credential_brokers.append(self.allocator, .{ .name = owned });
+        self.active_credential_broker_index = self.credential_brokers.items.len - 1;
+    }
+
+    fn activeCredentialBroker(self: *Builder) ?*CredentialBrokerBuilder {
+        const index = self.active_credential_broker_index orelse return null;
+        if (index >= self.credential_brokers.items.len) return null;
+        return &self.credential_brokers.items[index];
+    }
+
+    fn startCredentialRef(self: *Builder, name: []const u8) !void {
+        const owned = try self.allocator.dupe(u8, name);
+        errdefer self.allocator.free(owned);
+        try self.credential_refs.append(self.allocator, .{ .name = owned });
+        self.active_credential_ref_index = self.credential_refs.items.len - 1;
+    }
+
+    fn activeCredentialRef(self: *Builder) ?*CredentialRefBuilder {
+        const index = self.active_credential_ref_index orelse return null;
+        if (index >= self.credential_refs.items.len) return null;
+        return &self.credential_refs.items[index];
+    }
+
+    fn activeService(self: *Builder) ?*ServiceBuilder {
+        const index = self.active_service_index orelse return null;
+        if (index >= self.services.items.len) return null;
+        return &self.services.items[index];
     }
 
     fn toPolicy(self: *Builder, source_path: ?[]const u8) !schema.Policy {
@@ -169,7 +332,9 @@ const Builder = struct {
                 .write_mode = self.files_write_mode,
             },
             .commands = .{ .default = self.commands_default },
-            .network = .{ .mode = self.network_mode, .default = self.network_default, .detect_exfiltration = self.network_detect_exfiltration },
+            .network = .{ .mode = self.network_mode, .backend = self.network_backend, .default = self.network_default, .detect_exfiltration = self.network_detect_exfiltration },
+            .credentials = .{},
+            .services = &.{},
             .mcp = .{ .default = self.mcp_default },
             .audit = .{
                 .level = self.audit_level,
@@ -195,6 +360,10 @@ const Builder = struct {
         policy.network.allow = try self.network_allow.toOwnedSlice(self.allocator);
         policy.network.deny = try self.network_deny.toOwnedSlice(self.allocator);
         policy.network.ask = try self.network_ask.toOwnedSlice(self.allocator);
+        policy.credentials.default_broker = if (self.credentials_default_broker) |value| try self.allocator.dupe(u8, value) else null;
+        policy.credentials.brokers = try self.toOwnedCredentialBrokerPolicies();
+        policy.credentials.refs = try self.toOwnedCredentialRefPolicies();
+        policy.services = try self.toOwnedServicePolicies();
         policy.mcp.allow = try self.mcp_allow.toOwnedSlice(self.allocator);
         policy.mcp.deny = try self.mcp_deny.toOwnedSlice(self.allocator);
         policy.mcp.ask = try self.mcp_ask.toOwnedSlice(self.allocator);
@@ -202,11 +371,60 @@ const Builder = struct {
         try validate.policy(&policy);
         return policy;
     }
+
+    fn toOwnedServicePolicies(self: *Builder) ![]const schema.ServicePolicy {
+        if (self.services.items.len == 0) return &.{};
+        var out = try self.allocator.alloc(schema.ServicePolicy, self.services.items.len);
+        var initialized: usize = 0;
+        errdefer {
+            for (out[0..initialized]) |service| service.deinit(self.allocator);
+            self.allocator.free(out);
+        }
+        for (self.services.items, 0..) |*service, index| {
+            out[index] = try service.toPolicy(self.allocator);
+            initialized += 1;
+        }
+        return out;
+    }
+
+    fn toOwnedCredentialBrokerPolicies(self: *Builder) ![]const schema.CredentialBrokerPolicy {
+        if (self.credential_brokers.items.len == 0) return &.{};
+        var out = try self.allocator.alloc(schema.CredentialBrokerPolicy, self.credential_brokers.items.len);
+        var initialized: usize = 0;
+        errdefer {
+            for (out[0..initialized]) |broker| broker.deinit(self.allocator);
+            self.allocator.free(out);
+        }
+        for (self.credential_brokers.items, 0..) |*broker, index| {
+            out[index] = try broker.toPolicy(self.allocator);
+            initialized += 1;
+        }
+        return out;
+    }
+
+    fn toOwnedCredentialRefPolicies(self: *Builder) ![]const schema.CredentialRefPolicy {
+        if (self.credential_refs.items.len == 0) return &.{};
+        var out = try self.allocator.alloc(schema.CredentialRefPolicy, self.credential_refs.items.len);
+        var initialized: usize = 0;
+        errdefer {
+            for (out[0..initialized]) |credential_ref| credential_ref.deinit(self.allocator);
+            self.allocator.free(out);
+        }
+        for (self.credential_refs.items, 0..) |*credential_ref, index| {
+            out[index] = try credential_ref.toPolicy(self.allocator);
+            initialized += 1;
+        }
+        return out;
+    }
 };
 
 fn freeList(allocator: std.mem.Allocator, list: *std.ArrayList([]const u8)) void {
     for (list.items) |value| allocator.free(value);
     list.deinit(allocator);
+}
+
+fn duplicateListFromArray(allocator: std.mem.Allocator, values: []const []const u8) ![]const []const u8 {
+    return try schema.duplicateStringList(allocator, values);
 }
 
 pub fn parseFromSlice(allocator: std.mem.Allocator, text: []const u8, source_path: ?[]const u8) !schema.Policy {
@@ -332,6 +550,12 @@ fn parseYaml(allocator: std.mem.Allocator, text: []const u8, source_path: ?[]con
             } else if (std.mem.eql(u8, key, "network")) {
                 try requireEmptyGroupingValue(value);
                 section = .network;
+            } else if (std.mem.eql(u8, key, "credentials")) {
+                try requireEmptyGroupingValue(value);
+                section = .credentials;
+            } else if (std.mem.eql(u8, key, "services")) {
+                try requireEmptyGroupingValue(value);
+                section = .services;
             } else if (std.mem.eql(u8, key, "mcp")) {
                 try requireEmptyGroupingValue(value);
                 section = .mcp;
@@ -341,6 +565,114 @@ fn parseYaml(allocator: std.mem.Allocator, text: []const u8, source_path: ?[]con
             } else {
                 return error.InvalidPolicy;
             }
+            continue;
+        }
+
+        if (indent == 2 and (section == .credentials_broker or section == .credentials_ref)) {
+            section = .credentials;
+        }
+
+        if (indent == 2 and section == .credentials) {
+            if (std.mem.eql(u8, key, "default_broker")) {
+                if (builder.credentials_default_broker) |old| builder.allocator.free(old);
+                builder.credentials_default_broker = try builder.allocator.dupe(u8, try parseScalar(value));
+            } else if (std.mem.eql(u8, key, "brokers")) {
+                try requireEmptyGroupingValue(value);
+                section = .credentials_brokers;
+            } else if (std.mem.eql(u8, key, "refs")) {
+                try requireEmptyGroupingValue(value);
+                section = .credentials_refs;
+            } else return error.InvalidPolicy;
+            continue;
+        }
+
+        if (indent == 4 and section == .credentials_brokers) {
+            try requireEmptyGroupingValue(value);
+            try builder.startCredentialBroker(key);
+            section = .credentials_broker;
+            continue;
+        }
+
+        if (indent == 6 and section == .credentials_broker) {
+            const broker = builder.activeCredentialBroker() orelse return error.InvalidPolicy;
+            if (std.mem.eql(u8, key, "type")) {
+                broker.kind = schema.CredentialBrokerKind.parse(try parseScalar(value)) orelse return error.InvalidPolicy;
+            } else if (std.mem.eql(u8, key, "account")) {
+                if (broker.account) |old| builder.allocator.free(old);
+                broker.account = try builder.allocator.dupe(u8, try parseScalar(value));
+            } else if (std.mem.eql(u8, key, "path")) {
+                if (broker.path) |old| builder.allocator.free(old);
+                broker.path = try builder.allocator.dupe(u8, try parseScalar(value));
+            } else return error.InvalidPolicy;
+            continue;
+        }
+
+        if (indent == 4 and section == .credentials_refs) {
+            try requireEmptyGroupingValue(value);
+            try builder.startCredentialRef(key);
+            section = .credentials_ref;
+            continue;
+        }
+
+        if (indent == 6 and section == .credentials_ref) {
+            const credential_ref = builder.activeCredentialRef() orelse return error.InvalidPolicy;
+            if (std.mem.eql(u8, key, "broker")) {
+                if (credential_ref.broker) |old| builder.allocator.free(old);
+                credential_ref.broker = try builder.allocator.dupe(u8, try parseScalar(value));
+            } else if (std.mem.eql(u8, key, "ref")) {
+                if (credential_ref.ref) |old| builder.allocator.free(old);
+                credential_ref.ref = try builder.allocator.dupe(u8, try parseScalar(value));
+            } else return error.InvalidPolicy;
+            continue;
+        }
+
+        if (indent == 2 and (section == .services or section == .service or section == .service_paths or section == .service_credentials)) {
+            try requireEmptyGroupingValue(value);
+            try builder.startService(key);
+            section = .service;
+            continue;
+        }
+
+        if (indent == 4 and (section == .service_paths or section == .service_credentials)) {
+            section = .service;
+        }
+
+        if (indent == 4 and section == .service) {
+            if (std.mem.eql(u8, key, "hosts")) {
+                try requireEmptyGroupingValue(value);
+                list_target = .service_hosts;
+            } else if (std.mem.eql(u8, key, "methods")) {
+                try requireEmptyGroupingValue(value);
+                list_target = .service_methods;
+            } else if (std.mem.eql(u8, key, "paths")) {
+                try requireEmptyGroupingValue(value);
+                section = .service_paths;
+            } else if (std.mem.eql(u8, key, "credentials")) {
+                try requireEmptyGroupingValue(value);
+                section = .service_credentials;
+            } else if (std.mem.eql(u8, key, "unmatched")) {
+                const service = builder.activeService() orelse return error.InvalidPolicy;
+                service.unmatched = try parseDecision(try parseScalar(value));
+            } else return error.InvalidPolicy;
+            continue;
+        }
+
+        if (indent == 6 and section == .service_paths) {
+            if (std.mem.eql(u8, key, "allow")) {
+                try requireEmptyGroupingValue(value);
+                list_target = .service_path_allow;
+            } else if (std.mem.eql(u8, key, "deny")) {
+                try requireEmptyGroupingValue(value);
+                list_target = .service_path_deny;
+            } else return error.InvalidPolicy;
+            continue;
+        }
+
+        if (indent == 6 and section == .service_credentials) {
+            if (!std.mem.eql(u8, key, "use")) return error.InvalidPolicy;
+            const service = builder.activeService() orelse return error.InvalidPolicy;
+            if (service.credential_use) |old| builder.allocator.free(old);
+            service.credential_use = try builder.allocator.dupe(u8, try parseScalar(value));
             continue;
         }
 
@@ -442,6 +774,8 @@ fn applyYamlField(builder: *Builder, section: Section, key: []const u8, value: [
         .network => {
             if (std.mem.eql(u8, key, "mode")) {
                 builder.network_mode = schema.NetworkMode.parse(scalar) orelse return error.UnsupportedPolicyMode;
+            } else if (std.mem.eql(u8, key, "backend")) {
+                builder.network_backend = schema.NetworkBackend.parse(scalar) orelse return error.InvalidPolicy;
             } else if (std.mem.eql(u8, key, "detect_exfiltration")) {
                 list_target.* = .none;
             } else {
@@ -501,7 +835,7 @@ fn parseJson(allocator: std.mem.Allocator, text: []const u8, source_path: ?[]con
     defer parsed.deinit();
     if (parsed.value != .object) return error.InvalidPolicy;
     const object = parsed.value.object;
-    try rejectUnknownKeys(object, &.{ "version", "mode", "workspace", "env", "files", "commands", "network", "mcp", "audit" });
+    try rejectUnknownKeys(object, &.{ "version", "mode", "workspace", "env", "files", "commands", "network", "credentials", "services", "mcp", "audit" });
     var builder = Builder.init(allocator);
     defer builder.deinit();
 
@@ -516,6 +850,8 @@ fn parseJson(allocator: std.mem.Allocator, text: []const u8, source_path: ?[]con
     if (object.get("files")) |value| try parseJsonFiles(&builder, value);
     if (object.get("commands")) |value| try parseJsonRules(&builder, value, .commands_allow, .commands_deny, .commands_ask, &builder.commands_default);
     if (object.get("network")) |value| try parseJsonNetwork(&builder, value);
+    if (object.get("credentials")) |value| try parseJsonCredentials(&builder, value);
+    if (object.get("services")) |value| try parseJsonServices(&builder, value);
     if (object.get("mcp")) |value| try parseJsonMcp(&builder, value);
     if (object.get("audit")) |value| try parseJsonAudit(&builder, value);
     return builder.toPolicy(source_path);
@@ -568,8 +904,9 @@ fn parseJsonRulesWithKeys(builder: *Builder, value: std.json.Value, allow: ListT
 }
 
 fn parseJsonNetwork(builder: *Builder, value: std.json.Value) !void {
-    try parseJsonRulesWithKeys(builder, value, .network_allow, .network_deny, .network_ask, &builder.network_default, &.{ "allow", "deny", "ask", "default", "mode", "detect_exfiltration" });
+    try parseJsonRulesWithKeys(builder, value, .network_allow, .network_deny, .network_ask, &builder.network_default, &.{ "allow", "deny", "ask", "default", "mode", "backend", "detect_exfiltration" });
     if (value.object.get("mode")) |mode| builder.network_mode = schema.NetworkMode.parse(try expectString(mode)) orelse return error.UnsupportedPolicyMode;
+    if (value.object.get("backend")) |backend| builder.network_backend = schema.NetworkBackend.parse(try expectString(backend)) orelse return error.InvalidPolicy;
     if (value.object.get("detect_exfiltration")) |detect| {
         if (detect != .object) return error.InvalidPolicy;
         try rejectUnknownKeys(detect.object, &.{ "dns", "long_query_strings", "secret_patterns" });
@@ -577,6 +914,74 @@ fn parseJsonNetwork(builder: *Builder, value: std.json.Value) !void {
         if (detect.object.get("long_query_strings")) |item| builder.network_detect_exfiltration.long_query_strings = try expectBool(item);
         if (detect.object.get("secret_patterns")) |item| builder.network_detect_exfiltration.secret_patterns = try expectBool(item);
     }
+}
+
+fn parseJsonCredentials(builder: *Builder, value: std.json.Value) !void {
+    if (value != .object) return error.InvalidPolicy;
+    const object = value.object;
+    try rejectUnknownKeys(object, &.{ "default_broker", "brokers", "refs" });
+    if (object.get("default_broker")) |default_broker| {
+        if (builder.credentials_default_broker) |old| builder.allocator.free(old);
+        builder.credentials_default_broker = try builder.allocator.dupe(u8, try expectString(default_broker));
+    }
+    if (object.get("brokers")) |brokers| {
+        if (brokers != .object) return error.InvalidPolicy;
+        var it = brokers.object.iterator();
+        while (it.next()) |entry| {
+            if (entry.value_ptr.* != .object) return error.InvalidPolicy;
+            try rejectUnknownKeys(entry.value_ptr.*.object, &.{ "type", "account", "path" });
+            try builder.startCredentialBroker(entry.key_ptr.*);
+            const broker = builder.activeCredentialBroker() orelse return error.InvalidPolicy;
+            const type_value = entry.value_ptr.*.object.get("type") orelse return error.InvalidPolicy;
+            broker.kind = schema.CredentialBrokerKind.parse(try expectString(type_value)) orelse return error.InvalidPolicy;
+            if (entry.value_ptr.*.object.get("account")) |account| broker.account = try builder.allocator.dupe(u8, try expectString(account));
+            if (entry.value_ptr.*.object.get("path")) |path| broker.path = try builder.allocator.dupe(u8, try expectString(path));
+        }
+    }
+    if (object.get("refs")) |refs| {
+        if (refs != .object) return error.InvalidPolicy;
+        var it = refs.object.iterator();
+        while (it.next()) |entry| {
+            if (entry.value_ptr.* != .object) return error.InvalidPolicy;
+            try rejectUnknownKeys(entry.value_ptr.*.object, &.{ "broker", "ref" });
+            try builder.startCredentialRef(entry.key_ptr.*);
+            const credential_ref = builder.activeCredentialRef() orelse return error.InvalidPolicy;
+            if (entry.value_ptr.*.object.get("broker")) |broker| credential_ref.broker = try builder.allocator.dupe(u8, try expectString(broker));
+            const ref_value = entry.value_ptr.*.object.get("ref") orelse return error.InvalidPolicy;
+            credential_ref.ref = try builder.allocator.dupe(u8, try expectString(ref_value));
+        }
+    }
+}
+
+fn parseJsonServices(builder: *Builder, value: std.json.Value) !void {
+    if (value != .object) return error.InvalidPolicy;
+    var it = value.object.iterator();
+    while (it.next()) |entry| {
+        if (entry.value_ptr.* != .object) return error.InvalidPolicy;
+        try builder.startService(entry.key_ptr.*);
+        const service = builder.activeService() orelse return error.InvalidPolicy;
+        const object = entry.value_ptr.*.object;
+        try rejectUnknownKeys(object, &.{ "hosts", "methods", "paths", "credentials", "unmatched" });
+        if (object.get("hosts")) |hosts| try appendJsonListToService(builder, service, .service_hosts, hosts);
+        if (object.get("methods")) |methods| try appendJsonListToService(builder, service, .service_methods, methods);
+        if (object.get("paths")) |paths| {
+            if (paths != .object) return error.InvalidPolicy;
+            try rejectUnknownKeys(paths.object, &.{ "allow", "deny" });
+            if (paths.object.get("allow")) |allow| try appendJsonListToService(builder, service, .service_path_allow, allow);
+            if (paths.object.get("deny")) |deny| try appendJsonListToService(builder, service, .service_path_deny, deny);
+        }
+        if (object.get("credentials")) |credentials| {
+            if (credentials != .object) return error.InvalidPolicy;
+            try rejectUnknownKeys(credentials.object, &.{"use"});
+            if (credentials.object.get("use")) |use| service.credential_use = try builder.allocator.dupe(u8, try expectString(use));
+        }
+        if (object.get("unmatched")) |unmatched| service.unmatched = schema.DecisionValue.parse(try expectString(unmatched)) orelse return error.UnsupportedPolicyDecision;
+    }
+}
+
+fn appendJsonListToService(builder: *Builder, service: *ServiceBuilder, target: ListTarget, value: std.json.Value) !void {
+    if (value != .array) return error.InvalidPolicy;
+    for (value.array.items) |item| try service.append(builder.allocator, target, try expectString(item));
 }
 
 fn parseJsonMcp(builder: *Builder, value: std.json.Value) !void {
@@ -757,10 +1162,101 @@ test "JSON policies reject unknown keys instead of silently changing policy mean
     try std.testing.expectError(error.InvalidPolicy, parseFromSlice(std.testing.allocator,
         \\{"version":1,"mode":"strict","commands":{"denny":["rm -rf *"]}}
     , "bad.json"));
-
     try std.testing.expectError(error.InvalidPolicy, parseFromSlice(std.testing.allocator,
         \\{"version":1,"mode":"strict","defualt":"allow"}
     , "bad.json"));
+}
+
+test "service-aware policy parses YAML and JSON service rules" {
+    var yaml_policy = try parseFromSlice(std.testing.allocator,
+        \\version: 1
+        \\mode: strict
+        \\services:
+        \\  github:
+        \\    hosts:
+        \\      - "api.github.com"
+        \\    methods:
+        \\      - "GET"
+        \\      - "POST"
+        \\    paths:
+        \\      allow:
+        \\        - "/repos/*/issues"
+        \\        - "/repos/*/pulls"
+        \\      deny:
+        \\        - "/user/keys"
+        \\        - "/orgs/*/secrets/*"
+        \\    credentials:
+        \\      use: github_pat
+        \\    unmatched: deny
+    , "services.yaml");
+    defer yaml_policy.deinit();
+
+    try std.testing.expectEqual(@as(usize, 1), yaml_policy.services.len);
+    try std.testing.expectEqualStrings("github", yaml_policy.services[0].name);
+    try std.testing.expectEqualStrings("api.github.com", yaml_policy.services[0].hosts[0]);
+    try std.testing.expectEqualStrings("POST", yaml_policy.services[0].methods[1]);
+    try std.testing.expectEqualStrings("/repos/*/pulls", yaml_policy.services[0].paths.allow[1]);
+    try std.testing.expectEqualStrings("/orgs/*/secrets/*", yaml_policy.services[0].paths.deny[1]);
+    try std.testing.expectEqualStrings("github_pat", yaml_policy.services[0].credentials.use.?);
+    try std.testing.expectEqual(schema.DecisionValue.deny, yaml_policy.services[0].unmatched.?);
+
+    var json_policy = try parseFromSlice(std.testing.allocator,
+        \\{"version":1,"mode":"strict","services":{"github":{"hosts":["api.github.com"],"methods":["GET"],"paths":{"allow":["/repos/*/issues"],"deny":["/user/keys"]},"credentials":{"use":"github_pat"},"unmatched":"deny"}}}
+    , "services.json");
+    defer json_policy.deinit();
+
+    try std.testing.expectEqual(@as(usize, 1), json_policy.services.len);
+    try std.testing.expectEqualStrings("github", json_policy.services[0].name);
+    try std.testing.expectEqualStrings("GET", json_policy.services[0].methods[0]);
+}
+
+test "credential broker config parses YAML and JSON" {
+    var yaml_policy = try parseFromSlice(std.testing.allocator,
+        \\version: 1
+        \\mode: strict
+        \\credentials:
+        \\  default_broker: onepassword
+        \\  brokers:
+        \\    onepassword:
+        \\      type: 1password-cli
+        \\      account: my-team
+        \\    env_dev:
+        \\      type: env-file-dev
+        \\      path: .orca/dev-secrets.env
+        \\  refs:
+        \\    github_pat:
+        \\      broker: onepassword
+        \\      ref: "op://Engineering/GitHub PAT/token"
+        \\network:
+        \\  mode: allowlist
+        \\  backend: proxy
+        \\services:
+        \\  github:
+        \\    hosts:
+        \\      - "api.github.com"
+        \\    credentials:
+        \\      use: github_pat
+    , "credentials.yaml");
+    defer yaml_policy.deinit();
+
+    try std.testing.expectEqual(schema.NetworkBackend.proxy, yaml_policy.network.backend.?);
+    try std.testing.expectEqualStrings("onepassword", yaml_policy.credentials.default_broker.?);
+    try std.testing.expectEqual(@as(usize, 2), yaml_policy.credentials.brokers.len);
+    try std.testing.expectEqual(schema.CredentialBrokerKind.onepassword_cli, yaml_policy.credentials.brokers[0].kind);
+    try std.testing.expectEqualStrings("my-team", yaml_policy.credentials.brokers[0].account.?);
+    try std.testing.expectEqual(schema.CredentialBrokerKind.env_file_dev, yaml_policy.credentials.brokers[1].kind);
+    try std.testing.expectEqualStrings(".orca/dev-secrets.env", yaml_policy.credentials.brokers[1].path.?);
+    try std.testing.expectEqualStrings("github_pat", yaml_policy.credentials.refs[0].name);
+    try std.testing.expectEqualStrings("op://Engineering/GitHub PAT/token", yaml_policy.credentials.refs[0].ref);
+
+    var json_policy = try parseFromSlice(std.testing.allocator,
+        \\{"version":1,"mode":"strict","credentials":{"default_broker":"env_dev","brokers":{"env_dev":{"type":"env-file-dev","path":".orca/dev-secrets.env"}},"refs":{"github_pat":{"broker":"env_dev","ref":"GITHUB_PAT"}}},"network":{"backend":"proxy"}}
+    , "credentials.json");
+    defer json_policy.deinit();
+
+    try std.testing.expectEqual(schema.NetworkBackend.proxy, json_policy.network.backend.?);
+    try std.testing.expectEqualStrings("env_dev", json_policy.credentials.default_broker.?);
+    try std.testing.expectEqualStrings("github_pat", json_policy.credentials.refs[0].name);
 }
 
 test "YAML policies reject scalar values on object-only grouping keys" {
