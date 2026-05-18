@@ -19,8 +19,20 @@ Available presets:
 - `cline-roo`: generic/experimental local editor/MCP-agent assumptions.
 - `mcp-dev`: stdio MCP development baseline with conservative tool defaults.
 - `github-actions`: non-interactive CI baseline.
+- `solo-dev`: product policy pack for local solo development with ask-mode defaults.
 - `strict-local`: strict local baseline with denied unknown commands/network.
+- `team-ci`: product policy pack for team CI baselines.
+- `openclaw-hermes`: product policy pack for OpenClaw and Hermes hook workflows.
 - `trusted-local`: more permissive local baseline for trusted repositories; secret redaction and deny rules remain active.
+
+Productized policy packs can also be inspected and applied through the policy command:
+
+```bash
+orca policy packs
+orca policy apply-pack solo-dev
+orca policy apply-pack team-ci --force
+orca policy apply-pack openclaw-hermes --force
+```
 
 All presets preserve:
 

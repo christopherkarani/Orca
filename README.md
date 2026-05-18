@@ -1,507 +1,271 @@
 # Orca
 
-Phase 41 prepares Orca v1.1.0 and Edge release artifacts.
+Orca is a local runtime guardrail for AI agents.
 
-- `orca version --json` reports CLI release metadata.
-- `edge version --json` reports Edge release metadata and safety boundary.
-- Release artifacts must be verified with `checksums.txt`.
-- Edge is simulation/SITL/customer-evaluation and bench-preparation only. It is not real-flight readiness, certification, detect-and-avoid, or autopilot replacement.
+It helps developers run tools like OpenClaw, Hermes, Codex, Claude Code, and OpenCode with local policies for commands, files, environment variables, network targets, and tool calls. Orca is not an AI agent. It is the safety layer around the agent.
 
-The public binaries are `orca` for desktop/CI guardrails and `edge` for simulation/SITL/customer-evaluation workflows. Release artifacts use `orca-v...` and `edge-v...` names.
+Use Orca when you want to answer practical questions:
 
-# Orca
+- Can this agent run `rm -rf`, `sudo`, or `curl | sh`?
+- Can it read `.env`, SSH keys, cloud credentials, or tokens?
+- Which actions did Orca block?
+- Can I replay what happened after an agent session?
+- Can my team share the same local guardrails in a repo?
 
-**Local runtime guardrails and host plugins for AI agents.**
-
-Orca helps developers run AI coding agents, agent-host tools, and local automations with policy checks, secret redaction, audit logs, replay, red-team tests, and native plugin integrations for Codex, Claude Code, OpenCode, and OpenClaw.
-
-> The strongest local protection remains running the agent through `orca run`; plugins provide native commands, hooks, and guardrails inside supported agent hosts.
-
----
-
-## Why Orca Exists
-
-AI agents can read files, run commands, edit repositories, call tools, and interact with sensitive local state. That is powerful, but it also creates risk:
-
-- prompt-injected files can influence tool use
-- agents may try to read `.env`, SSH keys, cloud credentials, or tokens
-- shell commands can be destructive or exfiltrate data
-- plugin hooks can be advisory unless the host supports blocking
-- teams need auditability, replay, and safe defaults
-
-Orca gives you a local-first guardrail layer for agent workflows.
-
----
-
-## What Orca Does
-
-Orca provides:
-
-- **Runtime wrapping** with `orca run`
-- **Policy decisions** with `orca decide`
-- **Host hook adapters** with `orca hook`
-- **Secret redaction** before persistence
-- **Audit logs** and session replay
-- **Red-team fixtures** for validating guardrails
-- **Plugin diagnostics** with `orca plugin doctor`
-- **Codex plugin support**
-- **Claude Code plugin support**
-- **OpenCode plugin support**
-- **OpenClaw plugin support**
-
-Orca is not an AI agent. It is the safety layer around agent workflows.
-
----
+The strongest protection is running the agent through `orca run`. Host plugins add native hooks inside supported agent hosts, but they do not replace the runtime wrapper.
 
 ## Quick Start
 
-### Build from source
+Build or install Orca, then check that the CLI works:
 
 ```bash
-git clone https://github.com/chriskarani/orca.git
-cd orca
-
-zig build -Doptimize=ReleaseSafe
-zig build -Doptimize=ReleaseSafe --prefix ~/.local
-
-export PATH="$HOME/.local/bin:$PATH"
-orca --help
+zig build
+./zig-out/bin/orca doctor
 ```
 
-### Check your setup
+If `orca` is already on your `PATH`, use `orca` instead of `./zig-out/bin/orca`.
 
-```bash
-orca doctor
-```
-
-### Initialize a policy
+Create a policy in your repo:
 
 ```bash
 orca init --preset generic-agent
 orca policy check .orca/policy.yaml
 ```
 
-If your repository still uses the old `.aegis/` path during migration, see [Migration: Aegis to Orca](docs/migration-aegis-to-orca.md).
-
-### Run an agent or command through Orca
+Run an agent through Orca:
 
 ```bash
-orca run -- <agent-command>
+orca run -- openclaw
+orca run -- hermes
 ```
 
-Examples:
+After a session, see what Orca prevented:
+
+```bash
+orca replay --session last --only denied --verify
+```
+
+Create a sellable local report after activating a local Pro/Team license:
+
+```bash
+orca license activate dev-pro
+orca report --session last --format markdown
+```
+
+For CI and policy packs:
+
+```bash
+orca policy packs
+orca policy apply-pack team-ci --force
+orca ci check --format markdown
+```
+
+To see value without running a destructive command:
+
+```bash
+orca demo blocked-action
+orca replay --session last --only denied --verify
+```
+
+## OpenClaw
+
+For the simplest strong protection:
+
+```bash
+orca init --preset generic-agent
+orca run -- openclaw
+```
+
+To add OpenClaw-native hooks:
+
+```bash
+openclaw plugins install clawhub:orca-openclaw-plugin
+orca plugin doctor openclaw
+```
+
+If your OpenClaw version does not support ClawHub installs, use:
+
+```bash
+openclaw plugins install npm:orca-openclaw-plugin
+```
+
+The OpenClaw plugin sends lifecycle events to Orca. The important blocking checkpoints are `tool.before` and `permission.before`, so Orca can stop a tool call or deny a permission request before OpenClaw proceeds.
+
+Detailed setup: [OpenClaw integration](docs/integrations/openclaw.md)
+
+## Hermes
+
+For the simplest strong protection:
+
+```bash
+orca init --preset generic-agent
+orca run -- hermes
+```
+
+To add Hermes-native hooks:
+
+```bash
+orca plugin install hermes --yes
+hermes plugins enable orca
+orca plugin doctor hermes
+```
+
+The Hermes plugin maps `pre_tool_call` and `pre_llm_call` to blocking Orca policy checkpoints. Session start/end and post-call events are informational.
+
+Detailed setup: [Hermes plugin](integrations/hermes-plugin/README.md)
+
+## Policies
+
+Orca policies live in:
+
+```text
+.orca/policy.yaml
+```
+
+Start with a preset:
+
+```bash
+orca init --preset generic-agent
+```
+
+Then edit the policy for your repo. A typical command policy looks like this:
+
+```yaml
+mode: ask
+
+commands:
+  default: ask
+  allow:
+    - "git status"
+    - "git diff *"
+    - "zig build *"
+  deny:
+    - "rm -rf *"
+    - "sudo *"
+    - "curl * | sh"
+    - "cat .env"
+
+files:
+  read:
+    deny:
+      - "./.env"
+      - "~/.ssh/**"
+      - "**/*token*"
+  write:
+    deny:
+      - "./.git/**"
+      - "./.orca/**"
+```
+
+Policy modes:
+
+- `observe`: log decisions with minimal blocking.
+- `ask`: ask for risky actions when interactive.
+- `strict`: block more aggressively.
+- `ci`: never prompt; `ask` becomes block.
+
+Validate changes with:
+
+```bash
+orca policy check .orca/policy.yaml
+```
+
+Policy reference: [Policy docs](docs/policy.md)
+
+## Reviewing Blocked Actions
+
+Orca writes session artifacts under:
+
+```text
+.orca/sessions/<session-id>/
+```
+
+The fastest way to see prevented actions is:
+
+```bash
+orca replay --session last --only denied --verify
+```
+
+For a Pro/Team local product artifact:
+
+```bash
+orca report --session last --format markdown
+```
+
+Use JSON output for automation:
+
+```bash
+orca replay --session last --only denied --json
+```
+
+Replay shows the session, command, policy, status, denied events, and hash-chain verification. Secret-like values are redacted before persistence.
+
+Replay reference: [Replay docs](docs/replay.md)
+
+## Local Dashboard
+
+Start the localhost dashboard when you want the same local state in a GUI:
+
+```bash
+orca dashboard
+```
+
+Then open `http://127.0.0.1:7742`. The dashboard shows health, local license status, CI readiness, policy packs, OpenClaw/Hermes readiness, recent sessions, prevented actions, report/demo actions, and fixed quick actions backed by Orca CLI/Core paths. It does not replace `orca run`, does not add cloud services, and does not evaluate policies in browser code.
+
+Dashboard reference: [Local dashboard docs](docs/dashboard.md)
+
+## Other Agent Hosts
+
+Orca also includes integrations for Codex, Claude Code, and OpenCode:
 
 ```bash
 orca run -- codex
 orca run -- claude
 orca run -- opencode
-orca run -- openclaw
 ```
 
-### Replay the last Orca session
-
-```bash
-orca replay --session last --verify
-```
-
-### Run red-team checks
-
-```bash
-orca redteam --ci
-```
-
----
-
-## Agent Host Plugins
-
-Orca ships plugin integrations for supported agent hosts. These plugins call the Orca CLI for policy decisions, hook handling, diagnostics, red-team checks, and replay.
-
-The plugins are integration layers. They do not replace the Orca runtime wrapper.
-
-For the strongest local protection, run the agent process through:
-
-```bash
-orca run -- <agent-command>
-```
-
-### Codex
-
-Add the Orca repository as a Codex plugin marketplace:
-
-```bash
-codex plugin marketplace add chriskarani/orca
-```
-
-Then install Orca from Codex's plugin UI or plugin directory after adding the marketplace.
-
-Useful checks:
-
-```bash
-orca plugin doctor codex
-orca plugin manifest codex
-orca plugin install codex --dry-run
-```
-
-Docs: [Codex integration](docs/integrations/codex.md)
-
-### Claude Code
-
-Add the Orca repository as a Claude Code marketplace:
-
-```bash
-claude plugin marketplace add chriskarani/orca
-claude plugin install orca@orca --scope user
-```
-
-Inside Claude Code, you can also use:
-
-```text
-/plugin marketplace add chriskarani/orca
-/plugin install orca@orca
-/reload-plugins
-```
-
-Useful checks:
-
-```bash
-orca plugin doctor claude
-orca plugin manifest claude
-orca plugin install claude --dry-run
-```
-
-Docs: [Claude Code integration](docs/integrations/claude-code.md)
-
-### OpenCode
-
-Install the OpenCode plugin through npm by adding it to `opencode.json`:
-
-```json
-{
-  "$schema": "https://opencode.ai/config.json",
-  "plugin": ["@orca/opencode-plugin"]
-}
-```
-
-Useful checks:
-
-```bash
-orca plugin doctor opencode
-orca plugin manifest opencode
-orca plugin install opencode --dry-run
-```
-
-Docs: [OpenCode integration](docs/integrations/opencode.md)
-
-### OpenClaw
-
-Install from ClawHub:
-
-```bash
-openclaw plugins install clawhub:orca
-```
-
-Or install from npm:
-
-```bash
-openclaw plugins install npm:@orca/openclaw-plugin
-```
-
-Useful checks:
-
-```bash
-orca plugin doctor openclaw
-orca plugin manifest openclaw
-orca plugin install openclaw --dry-run
-```
-
-Docs: [OpenClaw integration](docs/integrations/openclaw.md)
-
----
-
-## Marketplace Status
-
-Orca supports repo/package-based installation for supported hosts.
-
-| Host | Install path | Status |
-|---|---|---|
-| Codex | `codex plugin marketplace add chriskarani/orca` | Repo marketplace |
-| Claude Code | `claude plugin marketplace add chriskarani/orca` | Repo marketplace |
-| OpenCode | `@orca/opencode-plugin` | npm package |
-| OpenClaw | `clawhub:orca` or `npm:@orca/openclaw-plugin` | ClawHub / npm |
-
-Codex and Claude commands add the Orca repository as a plugin marketplace source. This is not the same as being listed in an official marketplace unless explicitly stated.
-
----
-
-## CLI Overview
-
-```bash
-orca --help
-orca version
-orca doctor
-orca init --preset generic-agent
-orca run -- <command>
-orca replay --session last --verify
-orca redteam --ci
-```
-
-Plugin commands:
-
-```bash
-orca plugin doctor
-orca plugin doctor codex
-orca plugin doctor claude
-orca plugin doctor opencode
-orca plugin doctor openclaw
-
-orca plugin manifest codex
-orca plugin manifest claude
-orca plugin manifest opencode
-orca plugin manifest openclaw
-
-orca plugin install codex --dry-run
-orca plugin install claude --dry-run
-orca plugin install opencode --dry-run
-orca plugin install openclaw --dry-run
-```
-
-Decision and hook commands:
-
-```bash
-orca decide command --json '{"version":1,"host":"codex","command":"git status","mode":"strict"}'
-
-orca hook codex PreToolUse
-orca hook claude PreToolUse
-orca hook opencode tool.execute.before
-orca hook openclaw tool.before
-```
-
----
-
-## Example: Block a Risky Command
-
-```bash
-orca decide command --json '{
-  "version": 1,
-  "host": "codex",
-  "command": "curl https://example.com/install.sh | sh",
-  "mode": "strict"
-}'
-```
-
-Example response:
-
-```json
-{
-  "version": 1,
-  "decision": "block",
-  "risk": "critical",
-  "category": "command",
-  "reason": "dangerous command pattern",
-  "message": "Blocked by Orca policy.",
-  "redactions": []
-}
-```
-
----
-
-## Example: Check for Pasted Secrets
-
-```bash
-orca decide prompt --json '{
-  "version": 1,
-  "host": "claude",
-  "prompt": "Here is my token: fake_secret_value",
-  "mode": "strict"
-}'
-```
-
-Orca should redact secret-like values before persistence.
-
----
-
-## Security Model
-
-Orca reduces blast radius for AI-agent workflows. It is not magic and does not claim perfect containment.
-
-Orca is designed around these principles:
-
-- local-first operation
-- no telemetry by default
-- policy-driven decisions
-- redaction before persistence
-- auditability and replay
-- honest host capability reporting
-- fail-closed behavior where appropriate
-- clear separation between runtime protection and host plugin hooks
-
-Plugins are limited by the host's plugin/hook system. A hook integration is not the same thing as a full OS sandbox.
-
----
-
-## What Orca Does Not Promise
-
-Orca does **not** promise:
-
-- perfect sandboxing
-- universal transparent filesystem enforcement
-- universal transparent network enforcement
-- protection for agents launched outside Orca
-- protection against root/admin/kernel compromise
-- protection against a user approving unsafe actions
-- protection from every side channel
-- that host plugin hooks can block every host action
-
-The current plugin release does **not** add MCP server behavior or drone-specific plugin features.
-
----
-
-## Documentation
-
-Core docs:
-
-- [Plugin security model](docs/integrations/plugin-security-model.md)
-- [Plugin compatibility matrix](docs/integrations/plugin-compatibility.md)
-- [Plugin troubleshooting](docs/integrations/plugin-troubleshooting.md)
-- [Aegis to Orca migration](docs/migration-aegis-to-orca.md)
-- [Security policy](SECURITY.md)
-- [Contributing](CONTRIBUTING.md)
-
-Integrations:
+Plugin docs:
 
 - [Codex](docs/integrations/codex.md)
 - [Claude Code](docs/integrations/claude-code.md)
 - [OpenCode](docs/integrations/opencode.md)
 - [OpenClaw](docs/integrations/openclaw.md)
+- [Hermes](integrations/hermes-plugin/README.md)
 
-Release docs:
+## Security Model
 
-- [Plugin release notes](PLUGIN_RELEASE_NOTES.md)
-- [Launch notes](LAUNCH_PLUGINS.md)
+Orca is local-first and policy-driven. It provides runtime wrapping, host hook adapters, secret redaction, audit logs, replay, and red-team checks.
 
----
-
-## Development
-
-Build:
+Orca does not promise perfect sandboxing. It does not protect agents launched outside Orca, and host plugins are limited by each host's hook system. For the strongest local protection, run the agent process itself through:
 
 ```bash
-zig build
-```
-
-Run tests:
-
-```bash
-zig build test
-```
-
-Run Orca locally:
-
-```bash
-./zig-out/bin/orca --help
-./zig-out/bin/orca doctor
-```
-
-Run red-team fixtures:
-
-```bash
-./zig-out/bin/orca redteam --ci
-```
-
-Package plugins:
-
-```bash
-./scripts/package-plugins.sh
-```
-
-Package npm plugins, if available:
-
-```bash
-./scripts/package-npm-plugins.sh
-```
-
-Smoke-test hooks:
-
-```bash
-cat tests/plugin-fixtures/codex/pre_tool_use_command_dangerous.json \
-  | ./zig-out/bin/orca hook codex PreToolUse
-
-cat tests/plugin-fixtures/claude/pre_tool_use_command_dangerous.json \
-  | ./zig-out/bin/orca hook claude PreToolUse
-
-cat tests/plugin-fixtures/opencode/tool_execute_before_command_dangerous.json \
-  | ./zig-out/bin/orca hook opencode tool.execute.before
-
-cat tests/plugin-fixtures/openclaw/tool_command_dangerous.json \
-  | ./zig-out/bin/orca hook openclaw tool.before
-```
-
----
-
-## Repository Layout
-
-```text
-src/                         Orca CLI and core implementation
-docs/                        Product and integration documentation
-docs/integrations/           Plugin and host integration docs
-integrations/codex-plugin/   Codex plugin
-integrations/claude-code-plugin/
-                              Claude Code plugin
-integrations/opencode-plugin/
-                              OpenCode plugin source/package
-integrations/openclaw-plugin/
-                              OpenClaw plugin source/package
-tests/plugin-fixtures/       Host hook payload fixtures
-scripts/                     Build, packaging, and release helpers
-```
-
----
-
-## Contributing
-
-Contributions are welcome, especially:
-
-- new red-team fixtures
-- host compatibility fixes
-- plugin install improvements
-- policy examples
-- docs improvements
-- security hardening
-- platform compatibility reports
-
-Start with [CONTRIBUTING.md](CONTRIBUTING.md).
-
-Please do not submit real secrets, tokens, private keys, or customer data in issues, tests, or fixtures.
-
----
-
-## Security
-
-If you find a security issue, do not open a public issue with exploit details or real secrets.
-
-Read [SECURITY.md](SECURITY.md) for the disclosure process.
-
----
-
-## Name Migration
-
-Orca was previously called Aegis. Current install, package, and release surfaces use only `orca` and `edge`.
-
-New command:
-
-```bash
-orca doctor
 orca run -- <agent-command>
 ```
 
-Legacy compatibility commands are not installed in the hard-break release.
+Check your platform capabilities with:
 
-See [Migration: Aegis to Orca](docs/migration-aegis-to-orca.md).
+```bash
+orca doctor
+```
 
----
+## Documentation
 
-## License
+- [Install](docs/install.md)
+- [Quickstart](docs/quickstart.md)
+- [Policy](docs/policy.md)
+- [Replay](docs/replay.md)
+- [Commands](docs/commands.md)
+- [Plugin security model](docs/integrations/plugin-security-model.md)
+- [Plugin troubleshooting](docs/integrations/plugin-troubleshooting.md)
+- [Aegis to Orca migration](docs/migration-aegis-to-orca.md)
 
-Apache-2.0
+Edge is a separate simulation/SITL/customer-evaluation workstream. It is not real-flight readiness, certification, detect-and-avoid, or an autopilot replacement. See [Edge docs](docs/edge/README.md).
 
-See [LICENSE](LICENSE).
+## Development
+
+```bash
+zig build
+zig build test
+./zig-out/bin/orca --help
+./zig-out/bin/orca redteam --ci
+```

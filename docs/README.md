@@ -11,6 +11,7 @@ Launch docs:
 
 - `install.md`: source builds, scripts, artifacts, checksums, and package templates.
 - `quickstart.md`: first policy, doctor, run, replay, and red-team commands.
+- `dashboard.md`: localhost dashboard launch, fixed local actions, policy editing, sessions, and denied-action timeline.
 - `threat-model.md`: assets, actors, trust boundaries, non-goals, and limitations.
 - `policy.md`: schema, modes, priorities, examples, and CI behavior.
 - `mcp.md`: stdio MCP inspect/proxy, manifests, mediated methods, and limits.

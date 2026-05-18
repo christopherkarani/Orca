@@ -3,6 +3,7 @@ zig-cache/
 zig-out/
 dist/
 dist/work/
+dist-dry-run/
 *.o
 *.obj
 *.a
@@ -20,16 +21,20 @@ summary.json
 summary.md
 .orca/
 .edge/
+.edge/**
 .aegis/last
 .aegis/last.tmp
 .aegis/last.tmp.*
 .aegis/sessions/
 .aegis/edge/
+.aegis-edge/
+.aegis-edge/**
 .aegis-edge/last
 .aegis-edge/last.tmp
 .aegis-edge/last.tmp.*
 .aegis-edge/sessions/
-dist-dry-run/work/
+node_modules/
+**/node_modules/
 
 # --- Aegis internal planning / generated plan packs ---
 aegis_phased_project/
@@ -57,6 +62,28 @@ scratch/
 tmp/
 *.tmp
 *.bak
+
+# --- Private/customer-facing planning collateral ---
+tasks/
+reports/
+go_to_market/
+customer_pilot/
+GITHUB_RELEASE_DRAFT.md
+RELEASE_NOTES.md
+PLUGIN_RELEASE_NOTES.md
+LAUNCH_PLUGINS.md
+release-checklist.md
+docs/release.md
+docs/release-tagging.md
+docs/release/
+docs/orca_opencode_openclaw_plan/
+docs/orca_opencode_openclaw_plan.zip
+docs/integrations/p06-plugin-distribution-and-marketplace.md
+docs/integrations/p07-plugin-launch-and-postlaunch.md
+docs/integrations/repo-marketplace-readiness-audit.md
+docs/integrations/repo-marketplace-install.md
+docs/integrations/plugin-postlaunch-patch-checklist.md
+docs/integrations/plugin-release-checklist.md
 
 # --- Local agent/planning exports ---
 CODEX_MASTER_PROMPT.md

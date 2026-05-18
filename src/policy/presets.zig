@@ -25,7 +25,10 @@ pub const AgentPreset = enum {
     cline_roo,
     mcp_dev,
     github_actions,
+    solo_dev,
     strict_local,
+    team_ci,
+    openclaw_hermes,
     trusted_local,
 
     pub fn parse(value: []const u8) ?AgentPreset {
@@ -52,7 +55,10 @@ pub const agent_preset_infos = [_]AgentPresetInfo{
     .{ .preset = .cline_roo, .name = "cline-roo", .experimental = true, .warning = "cline-roo is a generic/experimental preset; review assumptions before trusting it." },
     .{ .preset = .mcp_dev, .name = "mcp-dev", .experimental = false, .warning = "" },
     .{ .preset = .github_actions, .name = "github-actions", .experimental = false, .warning = "" },
+    .{ .preset = .solo_dev, .name = "solo-dev", .experimental = false, .warning = "" },
     .{ .preset = .strict_local, .name = "strict-local", .experimental = false, .warning = "" },
+    .{ .preset = .team_ci, .name = "team-ci", .experimental = false, .warning = "" },
+    .{ .preset = .openclaw_hermes, .name = "openclaw-hermes", .experimental = false, .warning = "" },
     .{ .preset = .trusted_local, .name = "trusted-local", .experimental = false, .warning = "" },
 };
 
@@ -77,7 +83,10 @@ pub fn agentPresetText(preset: AgentPreset) []const u8 {
         .cline_roo => cline_roo_policy,
         .mcp_dev => mcp_dev_policy,
         .github_actions => github_actions_policy,
+        .solo_dev => solo_dev_policy,
         .strict_local => strict_local_policy,
+        .team_ci => team_ci_policy,
+        .openclaw_hermes => openclaw_hermes_policy,
         .trusted_local => trusted_local_policy,
     };
 }
@@ -148,11 +157,29 @@ const github_actions_policy =
     \\
 ++ ci_policy;
 
+const solo_dev_policy =
+    \\# Orca policy pack: solo-dev
+    \\# Ask-mode local development pack for one developer. Keeps secret and destructive-action denies active.
+    \\
+++ ask_policy;
+
 const strict_local_policy =
     \\# Orca preset: strict-local
     \\# Local strict mode. Unknown actions are denied or staged; add narrow allow rules as needed.
     \\
 ++ strict_policy;
+
+const team_ci_policy =
+    \\# Orca policy pack: team-ci
+    \\# CI-safe team baseline. Ask-class decisions deny in CI; core safety and redteam commands are allowed.
+    \\
+++ ci_policy;
+
+const openclaw_hermes_policy =
+    \\# Orca policy pack: openclaw-hermes
+    \\# Local plugin workflow pack for OpenClaw and Hermes hook development.
+    \\
+++ ask_policy;
 
 const trusted_local_policy =
     \\# Orca preset: trusted-local
@@ -480,10 +507,13 @@ test "built-in presets expose required phase 07 policies" {
 }
 
 test "phase 18 agent presets are exposed with stable names" {
-    try std.testing.expectEqual(@as(usize, 10), agent_preset_infos.len);
+    try std.testing.expectEqual(@as(usize, 13), agent_preset_infos.len);
     try std.testing.expectEqual(AgentPreset.generic_agent, AgentPreset.parse("generic-agent").?);
     try std.testing.expectEqual(AgentPreset.github_actions, AgentPreset.parse("github-actions").?);
+    try std.testing.expectEqual(AgentPreset.solo_dev, AgentPreset.parse("solo-dev").?);
     try std.testing.expectEqual(AgentPreset.strict_local, AgentPreset.parse("strict-local").?);
+    try std.testing.expectEqual(AgentPreset.team_ci, AgentPreset.parse("team-ci").?);
+    try std.testing.expectEqual(AgentPreset.openclaw_hermes, AgentPreset.parse("openclaw-hermes").?);
     try std.testing.expect(AgentPreset.parse("not-a-preset") == null);
     for (agent_preset_infos) |info| {
         const source = agentPresetText(info.preset);

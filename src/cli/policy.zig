@@ -18,8 +18,10 @@ pub fn command(argv: []const []const u8, stdout: anytype, stderr: anytype) !u8 {
 
     if (std.mem.eql(u8, argv[0], "check")) return check(argv[1..], stdout, stderr);
     if (std.mem.eql(u8, argv[0], "explain")) return explain(argv[1..], stdout, stderr);
+    if (std.mem.eql(u8, argv[0], "packs")) return packs(argv[1..], stdout, stderr);
+    if (std.mem.eql(u8, argv[0], "apply-pack")) return applyPack(argv[1..], stdout, stderr);
 
-    try stderr.print("orca policy: unknown subcommand '{s}'. Expected check or explain.\n", .{argv[0]});
+    try stderr.print("orca policy: unknown subcommand '{s}'. Expected check, explain, packs, or apply-pack.\n", .{argv[0]});
     return exit_codes.usage;
 }
 
@@ -92,6 +94,74 @@ fn explain(argv: []const []const u8, stdout: anytype, stderr: anytype) !u8 {
 
     try core_api.writePolicyExplanation(stdout, &loaded.policy, evaluation);
     return exit_codes.success;
+}
+
+fn packs(argv: []const []const u8, stdout: anytype, stderr: anytype) !u8 {
+    if (argv.len != 0) {
+        try stderr.writeAll("orca policy packs: expected no arguments.\n");
+        return exit_codes.usage;
+    }
+    try stdout.writeAll("Policy packs:\n");
+    for (aegis_policy.presets.agent_preset_infos) |info| {
+        const source = aegis_policy.presets.agentPresetText(info.preset);
+        if (std.mem.indexOf(u8, source, "policy pack:") == null and
+            !std.mem.eql(u8, info.name, "strict-local")) continue;
+        try stdout.print("  {s}\n", .{info.name});
+    }
+    return exit_codes.success;
+}
+
+fn applyPack(argv: []const []const u8, stdout: anytype, stderr: anytype) !u8 {
+    if (argv.len < 1 or argv.len > 2) {
+        try stderr.writeAll("orca policy apply-pack: expected <pack> [--force].\n");
+        return exit_codes.usage;
+    }
+    var force = false;
+    if (argv.len == 2) {
+        if (!std.mem.eql(u8, argv[1], "--force")) {
+            try stderr.writeAll("orca policy apply-pack: only --force is supported after the pack name.\n");
+            return exit_codes.usage;
+        }
+        force = true;
+    }
+    const pack = aegis_policy.presets.AgentPreset.parse(argv[0]) orelse {
+        try stderr.print("orca policy apply-pack: unknown policy pack '{s}'.\n", .{argv[0]});
+        return exit_codes.usage;
+    };
+    const pack_name = aegis_policy.presets.agentPresetName(pack);
+    if (!isProductPack(pack_name)) {
+        try stderr.print("orca policy apply-pack: '{s}' is an init preset, not a product policy pack.\n", .{pack_name});
+        return exit_codes.usage;
+    }
+    var gpa_state: std.heap.GeneralPurposeAllocator(.{}) = .init;
+    defer _ = gpa_state.deinit();
+    const allocator = gpa_state.allocator();
+    const root = supervisor.resolveWorkspaceRoot(allocator, null, ".") catch try std.fs.cwd().realpathAlloc(allocator, ".");
+    defer allocator.free(root);
+    const orca_dir = try std.fs.path.join(allocator, &.{ root, ".orca" });
+    defer allocator.free(orca_dir);
+    try std.fs.cwd().makePath(orca_dir);
+    const path = try std.fs.path.join(allocator, &.{ orca_dir, "policy.yaml" });
+    defer allocator.free(path);
+    const flags: std.fs.File.CreateFlags = if (force) .{} else .{ .exclusive = true };
+    const file = std.fs.cwd().createFile(path, flags) catch |err| switch (err) {
+        error.PathAlreadyExists => {
+            try stderr.writeAll("orca policy apply-pack: .orca/policy.yaml already exists; use --force to overwrite.\n");
+            return exit_codes.general;
+        },
+        else => return err,
+    };
+    defer file.close();
+    try file.writeAll(aegis_policy.presets.agentPresetText(pack));
+    try stdout.print("Applied policy pack '{s}' to .orca/policy.yaml.\n", .{pack_name});
+    return exit_codes.success;
+}
+
+fn isProductPack(name: []const u8) bool {
+    return std.mem.eql(u8, name, "solo-dev") or
+        std.mem.eql(u8, name, "strict-local") or
+        std.mem.eql(u8, name, "team-ci") or
+        std.mem.eql(u8, name, "openclaw-hermes");
 }
 
 fn joinArgs(allocator: std.mem.Allocator, args: []const []const u8) ![]u8 {
@@ -174,4 +244,16 @@ test "policy explain reports matched deny rule" {
     try std.testing.expect(std.mem.indexOf(u8, stdout_stream.getWritten(), "Decision: deny") != null);
     try std.testing.expect(std.mem.indexOf(u8, stdout_stream.getWritten(), "Rule: files.read.deny") != null);
     try std.testing.expectEqualStrings("", stderr_stream.getWritten());
+}
+
+test "policy packs list productized packs" {
+    var stdout_buf: [1024]u8 = undefined;
+    var stderr_buf: [256]u8 = undefined;
+    var stdout_stream = std.io.fixedBufferStream(&stdout_buf);
+    var stderr_stream = std.io.fixedBufferStream(&stderr_buf);
+    const code = try command(&.{"packs"}, stdout_stream.writer(), stderr_stream.writer());
+    try std.testing.expectEqual(exit_codes.success, code);
+    try std.testing.expect(std.mem.indexOf(u8, stdout_stream.getWritten(), "solo-dev") != null);
+    try std.testing.expect(std.mem.indexOf(u8, stdout_stream.getWritten(), "team-ci") != null);
+    try std.testing.expect(std.mem.indexOf(u8, stdout_stream.getWritten(), "openclaw-hermes") != null);
 }

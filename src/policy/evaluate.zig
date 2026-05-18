@@ -132,6 +132,7 @@ fn evaluateRuleSet(
     value: []const u8,
 ) !schema.Evaluation {
     if (findMatch(surface, rules.deny, value)) |match| return explicit(allocator, mode, .deny, try std.fmt.allocPrint(allocator, "{s}.deny", .{label}), match.index, match.pattern);
+    if (try builtinHardDeny(allocator, surface, value)) |evaluation| return evaluation;
     if (findMatch(surface, rules.allow, value)) |match| return explicit(allocator, mode, .allow, try std.fmt.allocPrint(allocator, "{s}.allow", .{label}), match.index, match.pattern);
     if (findMatch(surface, rules.ask, value)) |match| return explicit(allocator, mode, .ask, try std.fmt.allocPrint(allocator, "{s}.ask", .{label}), match.index, match.pattern);
     if (riskHeuristic(surface, value)) |risk| return riskDecision(allocator, mode, risk);
@@ -141,6 +142,50 @@ fn evaluateRuleSet(
         return defaultDecision(allocator, mode, default, default_label);
     }
     return defaultDecision(allocator, mode, null, "mode default");
+}
+
+fn builtinHardDeny(allocator: std.mem.Allocator, surface: Surface, value: []const u8) !?schema.Evaluation {
+    if (surface != .file_write or !isProtectedSystemWritePath(value)) return null;
+
+    const rule_id = try allocator.dupe(u8, "builtin.files.write.deny[protected_path]");
+    errdefer allocator.free(rule_id);
+    const explanation = try std.fmt.allocPrint(allocator, "built-in deny: protected system path \"{s}\"", .{value});
+    return .{
+        .decision = .{
+            .result = .deny,
+            .rule_id = rule_id,
+            .reason = explanation,
+            .risk_score = 100,
+            .requires_user = false,
+            .ci_may_proceed = false,
+        },
+        .matched_rule = .{ .id = rule_id, .pattern = "protected system path" },
+        .explanation = explanation,
+        .owned_rule_id = rule_id,
+    };
+}
+
+fn isProtectedSystemWritePath(value: []const u8) bool {
+    return asciiStartsWithIgnoreCase(value, "/etc/") or
+        asciiStartsWithIgnoreCase(value, "/private/etc/") or
+        asciiStartsWithIgnoreCase(value, "/System/") or
+        asciiStartsWithIgnoreCase(value, "/bin/") or
+        asciiStartsWithIgnoreCase(value, "/sbin/") or
+        asciiStartsWithIgnoreCase(value, "/usr/bin/") or
+        asciiStartsWithIgnoreCase(value, "/usr/sbin/") or
+        asciiStartsWithIgnoreCase(value, "/var/db/") or
+        asciiStartsWithIgnoreCase(value, "C:\\Windows\\") or
+        asciiStartsWithIgnoreCase(value, "C:/Windows/") or
+        asciiStartsWithIgnoreCase(value, "C:\\Program Files\\") or
+        asciiStartsWithIgnoreCase(value, "C:/Program Files/");
+}
+
+fn asciiStartsWithIgnoreCase(value: []const u8, prefix: []const u8) bool {
+    if (value.len < prefix.len) return false;
+    for (prefix, 0..) |expected, index| {
+        if (std.ascii.toLower(value[index]) != std.ascii.toLower(expected)) return false;
+    }
+    return true;
 }
 
 const Match = struct {

@@ -15,6 +15,14 @@ const commands = [_][]const u8{
     "mcp",
     "redteam",
     "completions",
+    "plugin",
+    "decide",
+    "hook",
+    "dashboard",
+    "report",
+    "license",
+    "ci",
+    "demo",
     "version",
     "help",
 };
@@ -28,6 +36,9 @@ const common_flags = [_][]const u8{
     "--force",
     "--ci",
     "--json",
+    "--format",
+    "--session",
+    "--github-summary",
 };
 
 pub fn command(argv: []const []const u8, stdout: anytype, stderr: anytype) !u8 {

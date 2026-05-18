@@ -656,9 +656,8 @@ fn runPilot(argv: []const []const u8, stdout: anytype, stderr: anytype) !u8 {
 fn runPilotChecklist(argv: []const []const u8, stdout: anytype, stderr: anytype) !u8 {
     if (argv.len != 0) return usageError(stderr, "edge pilot checklist: expected no arguments.\n");
     try stdout.writeAll("Edge customer pilot checklist\n");
-    try stdout.writeAll("Checklist: customer_pilot/integration-readiness-checklist.md\n");
-    try stdout.writeAll("Overview: customer_pilot/pilot-overview.md\n");
-    try stdout.writeAll("Boundaries: customer_pilot/pilot-boundaries.md\n");
+    try stdout.writeAll("Pilot collateral is local-only and is not included in the public repository.\n");
+    try stdout.writeAll("Use a private customer_pilot/ workspace for account-specific notes, SOW drafts, and outreach copy.\n");
     try stdout.writeAll("No real hardware, no real secrets, no external network, no live aircraft control, and no real flight are required.\n");
     return 0;
 }
@@ -681,17 +680,13 @@ fn runPilotPackage(argv: []const []const u8, stdout: anytype, stderr: anytype) !
     try writer.interface.writeAll(
         \\# Edge Local Customer Pilot Package Index
         \\
-        \\This local customer-evaluation package references checked-in pilot materials. It does not require external network access, real hardware, real secrets, or real customer names.
+        \\This local customer-evaluation package is intentionally local-only. It does not require external network access, real hardware, real secrets, or real customer names.
         \\
         \\## Start
         \\
-        \\- customer_pilot/README.md
-        \\- customer_pilot/pilot-overview.md
-        \\- customer_pilot/pilot-boundaries.md
-        \\- customer_pilot/pilot-success-criteria.md
-        \\- customer_pilot/customer-demo-script.md
-        \\- customer_pilot/safety-report-template.md
-        \\- customer_pilot/examples/sample-pilot-report.md
+        \\- Create private customer_pilot/ materials outside the public repository.
+        \\- Use docs/edge/customer-proof/ for public safety-boundary language.
+        \\- Use examples/edge/customer-proof/ for public fake-data evidence examples.
         \\
         \\## Safety Boundary
         \\
@@ -700,7 +695,7 @@ fn runPilotPackage(argv: []const []const u8, stdout: anytype, stderr: anytype) !
     );
     try writer.interface.flush();
     try stdout.writeAll("Created local customer-evaluation package index: .edge/pilot-package/index.md\n");
-    try stdout.writeAll("Source materials: customer_pilot/README.md\n");
+    try stdout.writeAll("Source materials: private customer_pilot/ workspace, not public repo files.\n");
     try stdout.writeAll("Boundary: no external network, no real hardware, no real secrets, no real flight.\n");
     return 0;
 }
@@ -708,7 +703,7 @@ fn runPilotPackage(argv: []const []const u8, stdout: anytype, stderr: anytype) !
 fn runPilotDemo(argv: []const []const u8, stdout: anytype, stderr: anytype) !u8 {
     if (argv.len != 0) return usageError(stderr, "edge pilot demo: expected no arguments.\n");
     try stdout.writeAll("Edge customer pilot demo script summary\n");
-    try stdout.writeAll("Script: customer_pilot/customer-demo-script.md\n");
+    try stdout.writeAll("Script: private customer_pilot/customer-demo-script.md, not tracked in the public repository.\n");
     try stdout.writeAll("Opening: Edge is a simulation/SITL/bench-preparation policy, MAVLink mediation, audit/replay, red-team, and safety-case evidence runtime.\n");
     try stdout.writeAll("demo 1: geofence deny\n");
     try stdout.writeAll("demo 2: disable_failsafe deny\n");
@@ -741,7 +736,7 @@ fn runPilotInit(argv: []const []const u8, stdout: anytype, stderr: anytype) !u8 
         return 64;
     }
     try stdout.print("Initialized local pilot placeholder: {s}\n", .{name});
-    try stdout.writeAll("Use customer_pilot/pilot-intake-questionnaire.md and customer_pilot/technical-discovery-questionnaire.md.\n");
+    try stdout.writeAll("Use private customer_pilot intake and technical-discovery notes outside the public repository.\n");
     try stdout.writeAll("No real secrets, no real customer names, no external network, and no real flight.\n");
     return 0;
 }
@@ -750,9 +745,7 @@ fn runPilotReport(argv: []const []const u8, stdout: anytype, stderr: anytype) !u
     if (argv.len != 2 or !std.mem.eql(u8, argv[0], "--session") or !std.mem.eql(u8, argv[1], "last")) {
         return usageError(stderr, "edge pilot report: expected --session last.\n");
     }
-    try stdout.writeAll("Pilot report template: customer_pilot/pilot-final-report-template.md\n");
-    try stdout.writeAll("Safety report template: customer_pilot/safety-report-template.md\n");
-    try stdout.writeAll("Evidence bundle template: customer_pilot/evidence-bundle-template.md\n");
+    try stdout.writeAll("Pilot report, safety report, and evidence bundle templates are local-only customer_pilot materials.\n");
     try stdout.writeAll("Use replay verification from the latest local Edge session when available. This command does not claim real flight.\n");
     return 0;
 }
@@ -798,33 +791,6 @@ const phase38_required_docs = [_][]const u8{
     "docs/edge/customer-proof/demo-recording-script.md",
     "examples/edge/demos/README.md",
     "examples/edge/customer-proof/geofence-deny-safety-report.md",
-    "customer_pilot/README.md",
-    "customer_pilot/pilot-overview.md",
-    "customer_pilot/pilot-boundaries.md",
-    "customer_pilot/pilot-success-criteria.md",
-    "customer_pilot/pilot-timeline.md",
-    "customer_pilot/pilot-deliverables.md",
-    "customer_pilot/pilot-intake-questionnaire.md",
-    "customer_pilot/technical-discovery-questionnaire.md",
-    "customer_pilot/safety-review-questionnaire.md",
-    "customer_pilot/integration-readiness-checklist.md",
-    "customer_pilot/simulation-sitl-evaluation-plan.md",
-    "customer_pilot/customer-demo-script.md",
-    "customer_pilot/safety-report-template.md",
-    "customer_pilot/evidence-bundle-template.md",
-    "customer_pilot/redteam-report-template.md",
-    "customer_pilot/pilot-final-report-template.md",
-    "customer_pilot/known-limitations.md",
-    "customer_pilot/faq.md",
-    "customer_pilot/templates/pilot-sow-template.md",
-    "customer_pilot/templates/mutual-nda-notes.md",
-    "customer_pilot/templates/security-review-response-template.md",
-    "customer_pilot/templates/customer-email-followup.md",
-    "customer_pilot/templates/design-partner-proposal.md",
-    "customer_pilot/examples/sample-pilot-report.md",
-    "customer_pilot/examples/sample-safety-report.md",
-    "customer_pilot/examples/sample-redteam-report.md",
-    "customer_pilot/examples/sample-evidence-bundle-index.md",
 };
 
 const phase40_required_docs = [_][]const u8{
@@ -835,10 +801,6 @@ const phase40_required_docs = [_][]const u8{
     "docs/edge/customer-proof/what-edge-proves.md",
     "docs/edge/customer-proof/buyer-faq.md",
     "docs/edge/customer-proof/edge-technical-brief.md",
-    "customer_pilot/templates/pilot-sow-template.md",
-    "customer_pilot/templates/mutual-nda-notes.md",
-    "customer_pilot/templates/design-partner-proposal.md",
-    "customer_pilot/templates/customer-email-followup.md",
     "packaging/README.md",
     "packaging/edge/Dockerfile",
     "packaging/systemd/edge.service",
@@ -881,7 +843,7 @@ fn runDocsCheck(stdout: anytype, stderr: anytype) !u8 {
             return 65;
         }
     }
-    try stdout.print("Phase 38 docs check: passed ({d} required docs/proof/pilot files checked)\n", .{checked});
+    try stdout.print("Phase 38 docs check: passed ({d} required public docs/proof files checked)\n", .{checked});
     try stdout.writeAll("manual review context: phrases such as detect-and-avoid, certification, and real flight are allowed only in explicit limitations or negative-scope text.\n");
     try stdout.writeAll("No real hardware, external network, hosted telemetry, pricing, or real-flight claim is validated by this command.\n");
     return 0;
@@ -937,7 +899,7 @@ fn runReviewDocsCheck(stdout: anytype, stderr: anytype) !u8 {
             return 65;
         }
     }
-    try stdout.print("Phase 40 docs check: passed ({d} review/report/customer/packaging files checked)\n", .{checked});
+    try stdout.print("Phase 40 docs check: passed ({d} review/report/packaging files checked)\n", .{checked});
     try stdout.writeAll("manual review required: suspicious phrases are allowed only in explicit negative limitation contexts.\n");
     try stdout.writeAll("No real hardware, external network, hosted telemetry, secrets, or certification claim is validated by this command.\n");
     return 0;
