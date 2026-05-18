@@ -294,7 +294,10 @@ fn evaluateDecision(
             };
         },
         .prompt => {
-            const text = extractString(payload, "text") orelse "";
+            const text = extractString(payload, "text") orelse
+                extractString(payload, "prompt") orelse
+                extractString(payload, "user_message") orelse
+                "";
 
             // Redact prompt text to check for secrets
             var redact_buf: [4096]u8 = undefined;
@@ -606,6 +609,24 @@ test "decide prompt with fake secret returns warn" {
     try std.testing.expect(std.mem.indexOf(u8, output, "\"decision\": \"warn\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, output, "\"category\": \"prompt\"") != null);
     // Ensure redaction is noted
+    try std.testing.expect(std.mem.indexOf(u8, output, "redactions") != null);
+}
+
+test "decide prompt accepts host prompt field and redacts fake secret" {
+    var stdout_buf: [2048]u8 = undefined;
+    var stderr_buf: [512]u8 = undefined;
+    var stdout_stream = std.io.fixedBufferStream(&stdout_buf);
+    var stderr_stream = std.io.fixedBufferStream(&stderr_buf);
+
+    const code = try decideCommand(.prompt, &.{
+        "--json", "{\"prompt\":\"fake_p05_secret_value\"}",
+    }, stdout_stream.writer(), stderr_stream.writer());
+    try std.testing.expectEqual(exit_codes.success, code);
+
+    const output = stdout_stream.getWritten();
+    try std.testing.expect(std.mem.indexOf(u8, output, "\"decision\": \"warn\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, output, "\"category\": \"prompt\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, output, "fake_p05_secret_value") == null);
     try std.testing.expect(std.mem.indexOf(u8, output, "redactions") != null);
 }
 

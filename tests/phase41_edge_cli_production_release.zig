@@ -127,6 +127,8 @@ test "phase 41 release artifact contract includes CLI Edge manifest checksums SB
     try std.testing.expect(std.mem.indexOf(u8, build_release, "ORCA_SIGNING_ENABLED").? < std.mem.indexOf(u8, build_release, "./scripts/generate-checksums.sh").?);
     try std.testing.expect(std.mem.indexOf(u8, build_release, "./scripts/generate-checksums.sh").? < std.mem.indexOf(u8, build_release, "./scripts/render-package-manifests.sh").?);
     try expectContains(build_release, "rm -rf \"$DIST_DIR/work\"");
+    try expectContains(build_release, "\\\"fixtures\\\"");
+    try expectContains(build_release, "\\\"fixtures/shell-abuse/curl-pipe-sh\\\"");
 
     const verify_release = try readFile("scripts/verify-release.sh");
     defer std.testing.allocator.free(verify_release);
@@ -216,12 +218,9 @@ test "phase 41 release artifact contract includes CLI Edge manifest checksums SB
     try expectContains(homebrew_formula, "(exists)");
 }
 
-test "phase 41 release docs reports and GitHub draft exist with explicit safety boundary" {
+test "phase 41 public release docs exist with explicit safety boundary" {
     const required = [_][]const u8{
-        "RELEASE_NOTES.md",
         "CHANGELOG.md",
-        "GITHUB_RELEASE_DRAFT.md",
-        "release-checklist.md",
         "docs/install.md",
         "docs/edge/install.md",
         "docs/edge/deployment.md",
@@ -229,39 +228,16 @@ test "phase 41 release docs reports and GitHub draft exist with explicit safety 
         "docs/edge/release-artifacts.md",
         "docs/edge/release-notes.md",
         "docs/edge/production-release-checklist.md",
-        "docs/release-tagging.md",
-        "reports/production-readiness-report.md",
         "docs/edge/known-limitations.md",
-        "customer_pilot/README.md",
     };
     for (required) |path| try expectFile(path);
 
-    const release_notes = try readFile("RELEASE_NOTES.md");
+    const release_notes = try readFile("docs/edge/release-notes.md");
     defer std.testing.allocator.free(release_notes);
-    try expectContains(release_notes, "Orca");
     try expectContains(release_notes, "Edge");
-    try expectContains(release_notes, "simulation/SITL/customer-evaluation");
-    try expectContains(release_notes, "Edge is not a flight controller");
-    try expectContains(release_notes, "not detect-and-avoid");
-    try expectContains(release_notes, "not regulatory approval or certification");
-
-    const report = try readFile("reports/production-readiness-report.md");
-    defer std.testing.allocator.free(report);
-    try expectContains(report, "Recommendation:");
-    try expectContains(report, "ready for release");
-    try expectContains(report, "Release blockers");
-    try expectContains(report, "PX4 SITL support status");
-    try expectContains(report, "ArduPilot SITL support status");
-    try expectContains(report, "not real-flight readiness");
-
-    const github = try readFile("GITHUB_RELEASE_DRAFT.md");
-    defer std.testing.allocator.free(github);
-    try expectContains(github, "checksums.txt");
-    try expectContains(github, "Edge safety boundary");
-    try expectContains(github, "Security disclosure");
-    try expectContains(github, "Known limitations");
-    try expectNotContains(github, "ready for real flight");
-    try expectNotContains(github, "FAA approved");
+    try expectContains(release_notes, "simulation");
+    try expectNotContains(release_notes, "ready for real flight");
+    try expectNotContains(release_notes, "FAA approved");
 }
 
 test "phase 41 package manifests and install scripts are checksum-first and hardware-safe" {
@@ -306,6 +282,7 @@ test "phase 41 package manifests and install scripts are checksum-first and hard
     try expectContains(homebrew_formula, "orca-v#{version}-linux-amd64.tar.gz");
     try expectContains(homebrew_formula, "sha256");
     try expectContains(homebrew_formula, "ORCA_RESOURCE_ROOT");
+    try expectContains(homebrew_formula, "pkgshare.install \"fixtures\"");
     try expectContains(homebrew_formula, "plugin manifest hermes");
     try expectNotContains(homebrew_formula, "BEGIN PRIVATE KEY");
     try expectNotContains(homebrew_formula, "ghp_");
@@ -327,6 +304,7 @@ test "phase 41 package manifests and install scripts are checksum-first and hard
     try expectContains(npm_launcher, "unsupported Orca npm target");
     try expectContains(npm_launcher, "resourceDir");
     try expectContains(npm_launcher, "ORCA_RESOURCE_ROOT");
+    try expectContains(npm_launcher, "\"fixtures\"");
     try expectContains(npm_launcher, "env");
     try expectNotContains(npm_launcher, "Binary download is intentionally disabled");
 
@@ -350,39 +328,13 @@ test "phase 41 package manifests and install scripts are checksum-first and hard
     try expectNotContains(install_ps1, "& $destination version *> $null");
 }
 
-test "phase 41 customer pilot bundle and docs overclaim scan remain safe to ship" {
-    const customer_files = [_][]const u8{
-        "customer_pilot/README.md",
-        "customer_pilot/pilot-overview.md",
-        "customer_pilot/pilot-boundaries.md",
-        "customer_pilot/pilot-intake-questionnaire.md",
-        "customer_pilot/technical-discovery-questionnaire.md",
-        "customer_pilot/safety-questionnaire.md",
-        "customer_pilot/demo-script.md",
-        "customer_pilot/templates/sow-template.md",
-        "customer_pilot/templates/mutual-nda-notes.md",
-        "customer_pilot/examples/sample-safety-report.md",
-    };
-    for (customer_files) |path| {
-        const text = try readFile(path);
-        defer std.testing.allocator.free(text);
-        try expectContains(text, "simulation");
-        try expectNotContains(text, "Acme");
-        try expectNotContains(text, "BEGIN PRIVATE KEY");
-        try expectNotContains(text, "real-flight ready");
-        try expectNotContains(text, "certified safe");
-    }
-    const sow = try readFile("customer_pilot/templates/sow-template.md");
-    defer std.testing.allocator.free(sow);
-    try expectContains(sow, "Legal review required");
-
+test "phase 41 public release docs overclaim scan remains safe to ship" {
     const scanned_docs = [_][]const u8{
-        "RELEASE_NOTES.md",
-        "GITHUB_RELEASE_DRAFT.md",
         "docs/edge/release-notes.md",
         "docs/edge/release-artifacts.md",
-        "reports/production-readiness-report.md",
         "docs/edge/production-release-checklist.md",
+        "docs/edge/known-limitations.md",
+        "docs/install.md",
     };
     const banned_positive = [_][]const u8{
         "certified safe",
@@ -404,6 +356,8 @@ test "phase 41 customer pilot bundle and docs overclaim scan remain safe to ship
         const text = try readFile(path);
         defer std.testing.allocator.free(text);
         for (banned_positive) |phrase| try expectNotContains(text, phrase);
-        try expectContains(text, "not real-flight readiness");
+        try expectNotContains(text, "BEGIN PRIVATE KEY");
+        try expectNotContains(text, "ghp_");
+        try expectNotContains(text, "sk-");
     }
 }

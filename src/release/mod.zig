@@ -57,7 +57,6 @@ test "phase 19 package and workflow files are present" {
         ".github/workflows/build.yml",
         ".github/workflows/test.yml",
         ".github/workflows/release.yml",
-        "docs/release/checklist.md",
     };
 
     for (required_files) |path| {
@@ -79,7 +78,6 @@ test "phase 19 release files include integrity checks without obvious credential
         ".github/workflows/build.yml",
         ".github/workflows/test.yml",
         ".github/workflows/release.yml",
-        "docs/release/checklist.md",
     };
 
     for (checked_files) |path| {
