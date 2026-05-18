@@ -220,6 +220,14 @@ textarea {
   font-size: 18px;
 }
 
+.section-heading {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  margin-bottom: 14px;
+}
+
 .metric-grid {
   display: grid;
   grid-template-columns: repeat(4, minmax(0, 1fr));
@@ -266,6 +274,13 @@ textarea {
   gap: 16px;
 }
 
+.secretless-grid {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 16px;
+  margin-bottom: 16px;
+}
+
 .action-grid,
 .integration-grid,
 .preset-list,
@@ -294,9 +309,18 @@ textarea {
 }
 
 .command-line {
+  display: block;
   color: var(--code);
   font-size: 13px;
   overflow-wrap: anywhere;
+}
+
+.command-preview {
+  margin-top: 12px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: #fbfaf7;
+  padding: 12px;
 }
 
 .status-pill {
@@ -405,6 +429,92 @@ textarea {
   margin-top: 8px;
 }
 
+.text-input {
+  width: 100%;
+  min-height: 44px;
+  margin-top: 8px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--surface);
+  color: var(--ink);
+  padding: 9px 12px;
+}
+
+.code-block {
+  margin: 14px 0 0;
+  max-height: 320px;
+  overflow: auto;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: #111;
+  color: #f5f1e8;
+  padding: 14px;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  font-size: 13px;
+}
+
+.capability-grid,
+.broker-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+  margin-top: 14px;
+}
+
+.capability-card,
+.broker-card {
+  min-width: 0;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: #fbfaf7;
+  padding: 12px;
+}
+
+.capability-card header,
+.broker-card header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 10px;
+}
+
+.capability-card h5,
+.broker-card h5 {
+  margin: 0;
+  font-size: 14px;
+}
+
+.table-list {
+  display: grid;
+  gap: 10px;
+}
+
+.table-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1.4fr) auto;
+  gap: 12px;
+  align-items: center;
+  padding: 12px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: #fbfaf7;
+}
+
+.table-row code {
+  overflow-wrap: anywhere;
+}
+
+.compact-list {
+  display: grid;
+  gap: 8px;
+  margin: 14px 0 0;
+  padding-left: 18px;
+  color: var(--muted);
+  font-size: 13px;
+}
+
 .output-panel {
   position: sticky;
   top: 0;
@@ -498,7 +608,11 @@ textarea {
   .metric-grid,
   .two-column,
   .policy-layout,
-  .activity-layout {
+  .activity-layout,
+  .secretless-grid,
+  .capability-grid,
+  .broker-grid,
+  .table-row {
     grid-template-columns: 1fr;
   }
 

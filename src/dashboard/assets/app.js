@@ -14,6 +14,22 @@ const els = {
   policyHelp: document.querySelector("#policyHelp"),
   presetList: document.querySelector("#presetList"),
   integrationGrid: document.querySelector("#integrationGrid"),
+  secretlessState: document.querySelector("#secretlessState"),
+  secretlessCommandInput: document.querySelector("#secretlessCommandInput"),
+  secretlessRunCommand: document.querySelector("#secretlessRunCommand"),
+  copySecretlessRunButton: document.querySelector("#copySecretlessRunButton"),
+  insertSecretlessPolicyButton: document.querySelector("#insertSecretlessPolicyButton"),
+  secretlessBrokerMeta: document.querySelector("#secretlessBrokerMeta"),
+  secretlessPolicyTemplate: document.querySelector("#secretlessPolicyTemplate"),
+  secretlessVerifyCommands: document.querySelector("#secretlessVerifyCommands"),
+  secretlessCredentialRefs: document.querySelector("#secretlessCredentialRefs"),
+  secretlessProxyMeta: document.querySelector("#secretlessProxyMeta"),
+  secretlessBrokerChecks: document.querySelector("#secretlessBrokerChecks"),
+  secretlessCapabilities: document.querySelector("#secretlessCapabilities"),
+  secretlessBrokerGrid: document.querySelector("#secretlessBrokerGrid"),
+  secretlessAuditEvents: document.querySelector("#secretlessAuditEvents"),
+  secretlessGuarantees: document.querySelector("#secretlessGuarantees"),
+  secretlessLimitations: document.querySelector("#secretlessLimitations"),
   commandOutput: document.querySelector("#commandOutput"),
   toastRegion: document.querySelector("#toastRegion"),
 };
@@ -27,6 +43,9 @@ document.querySelector("#savePolicyButton").addEventListener("click", savePolicy
 document.querySelector("#clearOutputButton").addEventListener("click", () => {
   els.commandOutput.textContent = "No command has run yet.";
 });
+els.secretlessCommandInput.addEventListener("input", updateSecretlessRunCommand);
+els.copySecretlessRunButton.addEventListener("click", copySecretlessRunCommand);
+els.insertSecretlessPolicyButton.addEventListener("click", insertSecretlessPolicyTemplate);
 
 document.body.addEventListener("click", (event) => {
   const actionButton = event.target.closest("[data-action]");
@@ -60,6 +79,7 @@ async function refresh() {
     state.status = status;
     state.policy = policy;
     renderStatus(status);
+    renderSecretless(status.secretless_runtime);
     renderPolicy(policy);
   } catch (error) {
     toast(`Refresh failed: ${error.message}`);
@@ -88,6 +108,7 @@ async function postJson(path, body) {
 
 function renderStatus(data) {
   const policy = data.policy;
+  const secretless = data.secretless_runtime;
   const license = data.license;
   const ci = data.ci_readiness;
   const blockedCount = data.blocked_actions.length;
@@ -95,6 +116,7 @@ function renderStatus(data) {
   els.summaryGrid.innerHTML = [
     metric("CLI", "Installed", `Orca ${data.orca.version}`),
     metric("Policy", policy.exists ? (policy.valid ? "Valid" : "Invalid") : "Missing", policy.exists ? policy.path : "Create one from a preset"),
+    metric("Secretless", secretless.available ? "Available" : "Unavailable", `${secretless.active_broker.label}: references only`),
     metric("License", license.tier, license.report_export ? "report export enabled" : "core safety enabled"),
     metric("CI", ci.ok ? "Ready" : "Needs work", ci.error || ci.checks.map((check) => `${check.name}: ${check.status}`).join(", ")),
     metric("Prevented", `${blockedCount}`, blockedCount === 1 ? "blocked action found" : "blocked actions found"),
@@ -112,6 +134,156 @@ function renderStatus(data) {
   renderBlockedList(els.blockedTimeline, data.blocked_actions, false);
   renderSessions(data.sessions);
   renderIntegrations(data.plugins);
+}
+
+function renderSecretless(secretless) {
+  const broker = secretless.active_broker;
+  els.secretlessState.textContent = secretless.available ? "available" : "unavailable";
+  els.secretlessState.className = `status-pill ${secretless.available ? "ok" : "bad"}`;
+  updateSecretlessRunCommand();
+
+  els.secretlessBrokerMeta.innerHTML = [
+    meta("Active broker", broker.label),
+    meta("Kind", broker.kind || broker.id),
+    meta("Mode", broker.status),
+    meta("Stores raw secrets", broker.stores_raw_secrets ? "yes" : "no"),
+    meta("Credential injection", broker.injects_raw_credentials ? "enabled" : "not enabled"),
+  ].join("");
+
+  els.secretlessPolicyTemplate.textContent = secretless.service_policy_template;
+  els.secretlessVerifyCommands.innerHTML = secretless.verify_commands.map((command) => `
+    <code class="command-line">${escapeHtml(command)}</code>
+  `).join("");
+
+  const refs = secretless.credential_refs || [];
+  els.secretlessCredentialRefs.innerHTML = refs.length ? refs.map((item) => `
+    <article class="table-row">
+      <div>
+        <strong>${escapeHtml(item.name)}</strong>
+        <span class="caption">${escapeHtml(item.broker || "default broker")}</span>
+      </div>
+      <code>${escapeHtml(item.ref)}</code>
+      <span class="status-pill ok">redacted</span>
+    </article>
+  `).join("") : `<div class="timeline-item"><h5>No refs declared</h5><p class="caption">Add credentials.refs in .orca/policy.yaml to map services to external broker refs.</p></div>`;
+
+  const proxy = secretless.proxy_backend || {};
+  els.secretlessProxyMeta.innerHTML = [
+    meta("Status", proxy.status || "unavailable"),
+    meta("Backend", proxy.backend || "decision-only"),
+    meta("Bind", proxy.bind || "allocated per run"),
+    meta("HTTPS visibility", proxy.https_visibility || "host-port-only"),
+    meta("Method/path visibility", proxy.method_path_visibility || "http-and-cooperative-hooks"),
+  ].join("");
+
+  const checks = secretless.broker_checks || [];
+  els.secretlessBrokerChecks.innerHTML = checks.length ? checks.map((item) => `
+    <article class="broker-card">
+      <header>
+        <h5>${escapeHtml(item.broker)}</h5>
+        <span class="status-pill ${item.status === "available" || item.status === "limited" ? "ok" : "warn"}">${escapeHtml(item.status)}</span>
+      </header>
+      <div class="meta-grid">
+        ${meta("Kind", item.kind)}
+      </div>
+      <p class="caption">${escapeHtml(item.message)}</p>
+    </article>
+  `).join("") : `<div class="timeline-item"><h5>No broker checks</h5><p class="caption">No configured brokers were found in the current policy.</p></div>`;
+
+  els.secretlessCapabilities.innerHTML = secretless.capabilities.map((capability) => `
+    <article class="capability-card">
+      <header>
+        <h5>${escapeHtml(capability.label)}</h5>
+        <span class="status-pill ${capability.state === "active" ? "ok" : "warn"}">${escapeHtml(capability.state)}</span>
+      </header>
+      <p class="caption">${escapeHtml(capability.detail)}</p>
+    </article>
+  `).join("");
+
+  els.secretlessBrokerGrid.innerHTML = secretless.supported_brokers.map((item) => `
+    <article class="broker-card">
+      <header>
+        <h5>${escapeHtml(item.label)}</h5>
+        <span class="status-pill ${item.status === "available" ? "ok" : "warn"}">${escapeHtml(item.status)}</span>
+      </header>
+      <div class="meta-grid">
+        ${meta("Adapter id", item.id)}
+        ${meta("Raw storage", item.stores_raw_secrets ? "yes" : "no")}
+      </div>
+      <p class="caption">${escapeHtml(item.notes)}</p>
+    </article>
+  `).join("");
+
+  const auditEvents = secretless.recent_audit_events || [];
+  els.secretlessAuditEvents.innerHTML = auditEvents.length ? auditEvents.map((item) => `
+    <article class="timeline-item">
+      <h5>${escapeHtml(item.event_type)}</h5>
+      <p class="caption">${escapeHtml(item.target)}</p>
+      <div class="meta-grid">
+        ${meta("Decision", item.decision || "recorded")}
+        ${meta("Verified", item.verified ? "yes" : "not checked")}
+      </div>
+    </article>
+  `).join("") : `<div class="timeline-item"><h5>No recent evidence</h5><p class="caption">Run a secretless proxy session to populate request-level audit events.</p></div>`;
+
+  els.secretlessGuarantees.innerHTML = secretless.guarantees.map((item) => `<li>${escapeHtml(item)}</li>`).join("");
+  els.secretlessLimitations.innerHTML = secretless.limitations.map((item) => `<li>${escapeHtml(item)}</li>`).join("");
+}
+
+function updateSecretlessRunCommand() {
+  const command = els.secretlessCommandInput.value.trim() || "<agent-command>";
+  els.secretlessRunCommand.textContent = `orca run --secretless --network-backend proxy -- ${command}`;
+}
+
+async function copySecretlessRunCommand() {
+  updateSecretlessRunCommand();
+  const value = els.secretlessRunCommand.textContent;
+  try {
+    await navigator.clipboard.writeText(value);
+    toast("Secretless run command copied");
+  } catch (_) {
+    els.commandOutput.textContent = value;
+    toast("Copy unavailable; command moved to output");
+  }
+}
+
+function insertSecretlessPolicyTemplate() {
+  if (!state.status?.secretless_runtime?.service_policy_template) return;
+  const template = state.status.secretless_runtime.service_policy_template;
+  const current = els.policyText.value.trimEnd();
+  if (hasGithubServicePolicy(current)) {
+    els.policyHelp.textContent = "Policy already contains services.github. Edit the existing service rule instead of inserting a duplicate.";
+    showView("policy");
+    els.policyText.focus();
+    toast("services.github already exists");
+    return;
+  }
+  const separator = current.length > 0 ? "\n\n" : "";
+  els.policyText.value = `${current}${separator}${template}\n`;
+  els.policyHelp.textContent = "Secretless service policy inserted. Validate and save to persist it.";
+  showView("policy");
+  els.policyText.focus();
+}
+
+function hasGithubServicePolicy(text) {
+  const lines = text.split(/\r?\n/);
+  let inServices = false;
+  let servicesIndent = -1;
+  for (const line of lines) {
+    const trimmed = line.trim();
+    if (!trimmed || trimmed.startsWith("#")) continue;
+    const indent = line.search(/\S/);
+    if (trimmed === "services:") {
+      inServices = true;
+      servicesIndent = indent;
+      continue;
+    }
+    if (inServices && indent <= servicesIndent) {
+      inServices = false;
+    }
+    if (inServices && indent > servicesIndent && trimmed === "github:") return true;
+  }
+  return false;
 }
 
 function metric(label, value, detail) {

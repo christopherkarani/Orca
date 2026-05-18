@@ -87,6 +87,7 @@ pub const NetworkAction = struct {
     host: []const u8,
     port: ?u16 = null,
     scheme: ?[]const u8 = null,
+    method: ?[]const u8 = null,
 };
 
 pub const MCPToolAction = struct {

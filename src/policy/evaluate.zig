@@ -27,7 +27,7 @@ pub fn action(policy: *const schema.Policy, requested: core.types.Action, ctx: s
         .network_connect => |network_action| {
             const destination_text = try networkDestinationText(allocator, network_action);
             defer allocator.free(destination_text);
-            return evaluateNetworkPolicy(allocator, mode, policy.network, destination_text);
+            return evaluateNetworkPolicy(allocator, mode, policy.network, policy.services, destination_text, network_action.method);
         },
         .mcp_tool_call => |tool| {
             const selector = try mcpSelector(allocator, tool.server, tool.tool_name);
@@ -73,20 +73,27 @@ pub fn network(policy: *const schema.Policy, host: []const u8, allocator: std.me
     return action(policy, .{ .network_connect = .{ .host = host } }, .{}, allocator);
 }
 
+pub fn networkWithMethod(policy: *const schema.Policy, host: []const u8, method: []const u8, allocator: std.mem.Allocator) !schema.Evaluation {
+    return action(policy, .{ .network_connect = .{ .host = host, .method = method } }, .{}, allocator);
+}
+
 fn evaluateNetworkPolicy(
     allocator: std.mem.Allocator,
     mode: schema.Mode,
     network_policy: schema.NetworkPolicy,
+    services: []const schema.ServicePolicy,
     destination_text: []const u8,
+    method: ?[]const u8,
 ) !schema.Evaluation {
     const effective = network_policy.effectiveMode();
-    const match_text = networkPolicyMatchText(destination_text);
-    if (findMatch(.network, network_policy.deny, match_text)) |match| return explicitOwnedLabel(allocator, mode, .deny, "network.deny", match);
-    if (findMatch(.network, network_policy.allow, match_text)) |match| {
+    const parts = networkParts(destination_text);
+    if (findNetworkMatch(network_policy.deny, parts)) |match| return explicitOwnedLabel(allocator, mode, .deny, "network.deny", match);
+    if (try evaluateServiceNetworkPolicy(allocator, mode, effective, services, parts, method)) |evaluation| return evaluation;
+    if (findNetworkMatch(network_policy.allow, parts)) |match| {
         const decision: schema.DecisionValue = if (effective == .off) .deny else .allow;
         return explicitOwnedLabel(allocator, mode, decision, "network.allow", match);
     }
-    if (findMatch(.network, network_policy.ask, match_text)) |match| {
+    if (findNetworkMatch(network_policy.ask, parts)) |match| {
         const decision: schema.DecisionValue = if (effective == .off) .deny else .ask;
         return explicitOwnedLabel(allocator, mode, decision, "network.ask", match);
     }
@@ -101,13 +108,243 @@ fn evaluateNetworkPolicy(
     return defaultDecision(allocator, mode, fallback, "network mode default");
 }
 
-fn networkPolicyMatchText(destination_text: []const u8) []const u8 {
-    var rest = destination_text;
-    if (std.mem.indexOf(u8, rest, "://")) |scheme_end| {
-        rest = rest[scheme_end + 3 ..];
+const NetworkParts = struct {
+    host: []const u8,
+    port: ?u16 = null,
+    path: []const u8,
+};
+
+fn evaluateServiceNetworkPolicy(
+    allocator: std.mem.Allocator,
+    mode: schema.Mode,
+    network_mode: schema.NetworkMode,
+    services: []const schema.ServicePolicy,
+    parts: NetworkParts,
+    method: ?[]const u8,
+) !?schema.Evaluation {
+    for (services) |service| {
+        if (!serviceHostMatches(service, parts)) continue;
+        const method_matches = methodMatches(service.methods, method);
+        if (!method_matches) {
+            return try serviceUnmatchedEvaluation(allocator, mode, coerceServiceDecision(.deny, network_mode, mode), service, if (method == null) "method context required" else "method not allowed");
+        }
+        if (findPathMatch(service.paths.deny, parts.path)) |match| {
+            return try serviceEvaluation(allocator, mode, coerceServiceDecision(.deny, network_mode, mode), service, "paths.deny", match.index, match.pattern, "service path deny");
+        }
+        if (findPathMatch(service.paths.allow, parts.path)) |match| {
+            return try serviceEvaluation(allocator, mode, coerceServiceDecision(.allow, network_mode, mode), service, "paths.allow", match.index, match.pattern, "service path allow");
+        }
+        if (service.unmatched) |unmatched| {
+            return try serviceUnmatchedEvaluation(allocator, mode, coerceServiceDecision(unmatched, network_mode, mode), service, "service unmatched");
+        }
+        return null;
     }
+    return null;
+}
+
+fn methodMatches(methods: []const []const u8, method: ?[]const u8) bool {
+    if (methods.len == 0) return true;
+    if (method == null) return false;
+    for (methods) |allowed| {
+        if (std.mem.eql(u8, allowed, "*") or std.ascii.eqlIgnoreCase(allowed, method.?)) return true;
+    }
+    return false;
+}
+
+fn coerceServiceDecision(value: schema.DecisionValue, network_mode: schema.NetworkMode, policy_mode: schema.Mode) schema.DecisionValue {
+    if (network_mode == .off) return .deny;
+    if (policy_mode == .ci and value == .ask) return .deny;
+    return value;
+}
+
+fn serviceUnmatchedEvaluation(
+    allocator: std.mem.Allocator,
+    mode: schema.Mode,
+    decision_value: schema.DecisionValue,
+    service: schema.ServicePolicy,
+    reason_label: []const u8,
+) !schema.Evaluation {
+    var actual_decision = decision_value;
+    if (mode == .ci and decision_value == .ask) actual_decision = .deny;
+    const rule_id = try std.fmt.allocPrint(allocator, "services.{s}.unmatched", .{service.name});
+    errdefer allocator.free(rule_id);
+    const explanation = try serviceReason(allocator, reason_label, service);
+    return .{
+        .decision = .{
+            .result = actual_decision.toDecisionResult(),
+            .rule_id = rule_id,
+            .reason = explanation,
+            .requires_user = actual_decision == .ask,
+            .ci_may_proceed = actual_decision == .allow or actual_decision == .observe,
+        },
+        .matched_rule = .{ .id = rule_id, .pattern = "unmatched" },
+        .explanation = explanation,
+        .owned_rule_id = rule_id,
+    };
+}
+
+fn networkParts(destination_text: []const u8) NetworkParts {
+    var rest = destination_text;
+    if (std.mem.indexOf(u8, rest, "://")) |scheme_end| rest = rest[scheme_end + 3 ..];
     const authority_end = std.mem.indexOfAny(u8, rest, "/?#") orelse rest.len;
-    return rest[0..authority_end];
+    var authority = rest[0..authority_end];
+    if (std.mem.lastIndexOfScalar(u8, authority, '@')) |at| authority = authority[at + 1 ..];
+    var host = authority;
+    var port: ?u16 = null;
+    if (authority.len > 0 and authority[0] == '[') {
+        if (std.mem.indexOfScalar(u8, authority, ']')) |close| {
+            host = authority[1..close];
+            if (authority.len > close + 1 and authority[close + 1] == ':') {
+                port = std.fmt.parseInt(u16, authority[close + 2 ..], 10) catch null;
+            }
+        }
+    } else if (std.mem.lastIndexOfScalar(u8, authority, ':')) |colon| {
+        if (std.mem.indexOfScalar(u8, authority[0..colon], ':') == null) {
+            host = authority[0..colon];
+            port = std.fmt.parseInt(u16, authority[colon + 1 ..], 10) catch null;
+        }
+    }
+    host = trimTrailingDot(std.mem.trim(u8, host, " \t\r\n"));
+    const tail = rest[authority_end..];
+    if (tail.len == 0) return .{ .host = host, .port = port, .path = "/" };
+    const query_start = std.mem.indexOfAny(u8, tail, "?#") orelse tail.len;
+    const path = if (query_start == 0) "/" else tail[0..query_start];
+    return .{ .host = host, .port = port, .path = path };
+}
+
+fn trimTrailingDot(value: []const u8) []const u8 {
+    if (value.len > 0 and value[value.len - 1] == '.') return value[0 .. value.len - 1];
+    return value;
+}
+
+fn serviceHostMatches(service: schema.ServicePolicy, parts: NetworkParts) bool {
+    for (service.hosts) |pattern| {
+        if (matchesNetworkPattern(pattern, parts)) return true;
+    }
+    return false;
+}
+
+fn findNetworkMatch(rules: []const []const u8, parts: NetworkParts) ?Match {
+    for (rules, 0..) |pattern, index| {
+        if (matchesNetworkPattern(pattern, parts)) return .{ .index = index, .pattern = pattern };
+    }
+    return null;
+}
+
+fn matchesNetworkPattern(pattern: []const u8, parts: NetworkParts) bool {
+    if (std.mem.lastIndexOfScalar(u8, pattern, ':')) |colon| {
+        if (std.mem.indexOfScalar(u8, pattern[0..colon], ':') == null) {
+            if (std.fmt.parseInt(u16, pattern[colon + 1 ..], 10)) |rule_port| {
+                if (parts.port == null or parts.port.? != rule_port) return false;
+                return matchers.matchesDomain(pattern[0..colon], parts.host);
+            } else |_| {}
+        }
+    }
+    return matchers.matchesDomain(pattern, parts.host);
+}
+
+fn findPathMatch(patterns: []const []const u8, path: []const u8) ?Match {
+    for (patterns, 0..) |pattern, index| {
+        if (matchers.matchesPattern(pattern, path)) return .{ .index = index, .pattern = pattern };
+    }
+    return null;
+}
+
+fn serviceEvaluation(
+    allocator: std.mem.Allocator,
+    mode: schema.Mode,
+    decision_value: schema.DecisionValue,
+    service: schema.ServicePolicy,
+    label_suffix: []const u8,
+    index: usize,
+    pattern: []const u8,
+    reason_label: []const u8,
+) !schema.Evaluation {
+    var actual_decision = decision_value;
+    if (mode == .ci and decision_value == .ask) actual_decision = .deny;
+    const rule_id = try std.fmt.allocPrint(allocator, "services.{s}.{s}[{d}]", .{ service.name, label_suffix, index });
+    errdefer allocator.free(rule_id);
+    const explanation = try serviceReason(allocator, reason_label, service);
+    return .{
+        .decision = .{
+            .result = actual_decision.toDecisionResult(),
+            .rule_id = rule_id,
+            .reason = explanation,
+            .requires_user = actual_decision == .ask,
+            .ci_may_proceed = actual_decision == .allow or actual_decision == .observe,
+        },
+        .matched_rule = .{ .id = rule_id, .pattern = pattern },
+        .explanation = explanation,
+        .owned_rule_id = rule_id,
+    };
+}
+
+fn serviceReason(allocator: std.mem.Allocator, base: []const u8, service: schema.ServicePolicy) ![]const u8 {
+    if (service.credentials.use != null) {
+        return std.fmt.allocPrint(allocator, "{s}; service={s}; credential_ref=configured", .{ base, service.name });
+    }
+    return std.fmt.allocPrint(allocator, "{s}; service={s}", .{ base, service.name });
+}
+
+test "service network evaluation strips URL ports before host matching" {
+    const load = @import("load.zig");
+    var policy = try load.parseFromSlice(std.testing.allocator,
+        \\version: 1
+        \\mode: strict
+        \\network:
+        \\  mode: open
+        \\services:
+        \\  github:
+        \\    hosts:
+        \\      - "api.github.com"
+        \\    methods:
+        \\      - "GET"
+        \\    paths:
+        \\      deny:
+        \\        - "/user/keys"
+    , "service-port.yaml");
+    defer policy.deinit();
+
+    var evaluation = try networkWithMethod(&policy, "https://api.github.com:443/user/keys", "GET", std.testing.allocator);
+    defer evaluation.deinit(std.testing.allocator);
+    try std.testing.expectEqual(core.decision.DecisionResult.deny, evaluation.decision.result);
+    try std.testing.expectEqualStrings("services.github.paths.deny[0]", evaluation.decision.rule_id.?);
+}
+
+test "network policy evaluation honors explicit port-scoped rules" {
+    const load = @import("load.zig");
+    var policy = try load.parseFromSlice(std.testing.allocator,
+        \\version: 1
+        \\mode: strict
+        \\network:
+        \\  mode: allowlist
+        \\  allow:
+        \\    - "api.github.com:443"
+        \\services:
+        \\  github:
+        \\    hosts:
+        \\      - "api.github.com:8443"
+        \\    methods:
+        \\      - "GET"
+        \\    paths:
+        \\      deny:
+        \\        - "/user/keys"
+    , "service-port-scoped.yaml");
+    defer policy.deinit();
+
+    var flat_allowed = try networkWithMethod(&policy, "https://api.github.com:443/repos", "GET", std.testing.allocator);
+    defer flat_allowed.deinit(std.testing.allocator);
+    try std.testing.expectEqual(core.decision.DecisionResult.allow, flat_allowed.decision.result);
+    try std.testing.expectEqualStrings("network.allow[0]", flat_allowed.decision.rule_id.?);
+
+    var flat_wrong_port = try networkWithMethod(&policy, "https://api.github.com:444/repos", "GET", std.testing.allocator);
+    defer flat_wrong_port.deinit(std.testing.allocator);
+    try std.testing.expectEqual(core.decision.DecisionResult.deny, flat_wrong_port.decision.result);
+
+    var service_denied = try networkWithMethod(&policy, "https://api.github.com:8443/user/keys", "GET", std.testing.allocator);
+    defer service_denied.deinit(std.testing.allocator);
+    try std.testing.expectEqual(core.decision.DecisionResult.deny, service_denied.decision.result);
+    try std.testing.expectEqualStrings("services.github.paths.deny[0]", service_denied.decision.rule_id.?);
 }
 
 pub fn mcp(policy: *const schema.Policy, selector: []const u8, allocator: std.mem.Allocator) !schema.Evaluation {

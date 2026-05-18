@@ -8,6 +8,7 @@ const commands = [_][]const u8{
     "init",
     "doctor",
     "policy",
+    "credentials",
     "replay",
     "diff",
     "apply",
@@ -38,6 +39,8 @@ const common_flags = [_][]const u8{
     "--json",
     "--format",
     "--session",
+    "--secretless",
+    "--network-backend",
     "--github-summary",
 };
 

@@ -55,7 +55,7 @@ fn check(argv: []const []const u8, stdout: anytype, stderr: anytype) !u8 {
 
 fn explain(argv: []const []const u8, stdout: anytype, stderr: anytype) !u8 {
     if (argv.len == 1 and (std.mem.eql(u8, argv[0], "--help") or std.mem.eql(u8, argv[0], "-h"))) {
-        try stdout.writeAll("Usage:\n  orca policy explain <file.read|file.write|env|command|network|mcp> <target>\n");
+        try stdout.writeAll("Usage:\n  orca policy explain <file.read|file.write|env|command|network|mcp> <target> [--method <HTTP_METHOD>]\n");
         return exit_codes.success;
     }
     if (argv.len < 2) {
@@ -66,14 +66,13 @@ fn explain(argv: []const []const u8, stdout: anytype, stderr: anytype) !u8 {
         try stderr.print("orca policy explain: unsupported type '{s}'.\n", .{argv[0]});
         return exit_codes.usage;
     };
-    if (argv.len > 2 and kind != .command) {
-        try stderr.writeAll("orca policy explain: expected one target argument.\n");
-        return exit_codes.usage;
-    }
-
     var gpa_state: std.heap.GeneralPurposeAllocator(.{}) = .init;
     defer _ = gpa_state.deinit();
     const allocator = gpa_state.allocator();
+
+    const parsed_target = try parseExplainTarget(allocator, kind, argv[1..], stderr);
+    defer parsed_target.deinit(allocator);
+    if (parsed_target.invalid) return exit_codes.usage;
 
     const root = supervisor.resolveWorkspaceRoot(allocator, null, ".") catch try allocator.dupe(u8, ".");
     defer allocator.free(root);
@@ -83,10 +82,7 @@ fn explain(argv: []const []const u8, stdout: anytype, stderr: anytype) !u8 {
     };
     defer loaded.deinit();
 
-    const target = if (kind == .command and argv.len > 2) try joinArgs(allocator, argv[1..]) else try allocator.dupe(u8, argv[1]);
-    defer allocator.free(target);
-
-    const evaluation = core_api.explainAction(allocator, &loaded.policy, kind, target) catch |err| {
+    const evaluation = core_api.explainActionWithOptions(allocator, &loaded.policy, kind, parsed_target.target, .{ .network_method = parsed_target.method }) catch |err| {
         try stderr.print("orca policy explain: failed to evaluate action: {s}\n", .{@errorName(err)});
         return exit_codes.general;
     };
@@ -94,6 +90,59 @@ fn explain(argv: []const []const u8, stdout: anytype, stderr: anytype) !u8 {
 
     try core_api.writePolicyExplanation(stdout, &loaded.policy, evaluation);
     return exit_codes.success;
+}
+
+const ExplainTarget = struct {
+    target: []const u8 = "",
+    method: ?[]const u8 = null,
+    invalid: bool = false,
+
+    fn deinit(self: ExplainTarget, allocator: std.mem.Allocator) void {
+        if (self.target.len > 0) allocator.free(self.target);
+        if (self.method) |method| allocator.free(method);
+    }
+};
+
+fn parseExplainTarget(allocator: std.mem.Allocator, kind: aegis_policy.explain.ExplainKind, args: []const []const u8, stderr: anytype) !ExplainTarget {
+    if (kind == .command) return .{ .target = try joinArgs(allocator, args) };
+    if (kind != .network) {
+        if (args.len != 1) return .{ .invalid = true };
+        return .{ .target = try allocator.dupe(u8, args[0]) };
+    }
+    var target: ?[]const u8 = null;
+    var method: ?[]const u8 = null;
+    var index: usize = 0;
+    while (index < args.len) : (index += 1) {
+        const arg = args[index];
+        if (std.mem.eql(u8, arg, "--method")) {
+            index += 1;
+            if (index >= args.len) {
+                try stderr.writeAll("orca policy explain: --method requires an HTTP method.\n");
+                return .{ .invalid = true };
+            }
+            if (method) |old| allocator.free(old);
+            method = try allocator.dupe(u8, args[index]);
+        } else if (std.mem.startsWith(u8, arg, "-")) {
+            try stderr.print("orca policy explain: unknown option '{s}'.\n", .{arg});
+            if (target) |owned| allocator.free(owned);
+            if (method) |owned| allocator.free(owned);
+            return .{ .invalid = true };
+        } else {
+            if (target != null) {
+                try stderr.writeAll("orca policy explain: expected one network target.\n");
+                if (target) |owned| allocator.free(owned);
+                if (method) |owned| allocator.free(owned);
+                return .{ .invalid = true };
+            }
+            target = try allocator.dupe(u8, arg);
+        }
+    }
+    if (target == null) {
+        try stderr.writeAll("orca policy explain: expected a network target.\n");
+        if (method) |owned| allocator.free(owned);
+        return .{ .invalid = true };
+    }
+    return .{ .target = target.?, .method = method };
 }
 
 fn packs(argv: []const []const u8, stdout: anytype, stderr: anytype) !u8 {
@@ -243,6 +292,18 @@ test "policy explain reports matched deny rule" {
     try std.testing.expectEqual(exit_codes.success, code);
     try std.testing.expect(std.mem.indexOf(u8, stdout_stream.getWritten(), "Decision: deny") != null);
     try std.testing.expect(std.mem.indexOf(u8, stdout_stream.getWritten(), "Rule: files.read.deny") != null);
+    try std.testing.expectEqualStrings("", stderr_stream.getWritten());
+}
+
+test "policy explain target parser accepts network method option" {
+    var stderr_buf: [512]u8 = undefined;
+    var stderr_stream = std.io.fixedBufferStream(&stderr_buf);
+    const parsed = try parseExplainTarget(std.testing.allocator, .network, &.{ "--method", "POST", "https://api.github.com/repos/orca/orca/issues" }, stderr_stream.writer());
+    defer parsed.deinit(std.testing.allocator);
+
+    try std.testing.expect(!parsed.invalid);
+    try std.testing.expectEqualStrings("POST", parsed.method.?);
+    try std.testing.expectEqualStrings("https://api.github.com/repos/orca/orca/issues", parsed.target);
     try std.testing.expectEqualStrings("", stderr_stream.getWritten());
 }
 

@@ -21,6 +21,7 @@
         </div>
         <nav class="nav">
           <button class="nav-item active" type="button" data-view="overview">Overview</button>
+          <button class="nav-item" type="button" data-view="secretless">Secretless</button>
           <button class="nav-item" type="button" data-view="activity">Activity</button>
           <button class="nav-item" type="button" data-view="policy">Policy</button>
           <button class="nav-item" type="button" data-view="integrations">Integrations</button>
@@ -60,6 +61,140 @@
                 <span class="caption">From replay artifacts</span>
               </div>
               <div class="timeline compact" id="blockedPreview"></div>
+            </section>
+          </div>
+        </section>
+
+        <section class="view" data-view-panel="secretless" aria-labelledby="secretless-title">
+          <div class="section-heading">
+            <div>
+              <p class="eyebrow">Secretless Agent Runtime</p>
+              <h3 id="secretless-title" class="section-title">Runtime, broker references, and service policy</h3>
+            </div>
+            <span class="status-pill ok" id="secretlessState">available</span>
+          </div>
+          <div class="secretless-grid">
+            <section class="panel command-builder" aria-labelledby="secretless-run-title">
+              <div class="panel-header">
+                <div>
+                  <h4 id="secretless-run-title">Run command</h4>
+                  <span class="caption">Generated locally; execution stays in your terminal</span>
+                </div>
+                <button class="button secondary" type="button" id="copySecretlessRunButton">Copy</button>
+              </div>
+              <label class="field-label" for="secretlessCommandInput">Agent command</label>
+              <input id="secretlessCommandInput" class="text-input" type="text" value="codex">
+              <code class="command-line command-preview" id="secretlessRunCommand">orca run --secretless -- codex</code>
+            </section>
+
+            <section class="panel" aria-labelledby="secretless-broker-title">
+              <div class="panel-header">
+                <div>
+                  <h4 id="secretless-broker-title">Broker adapter</h4>
+                  <span class="caption">References only; raw values stay out of Orca</span>
+                </div>
+              </div>
+              <div class="meta-grid" id="secretlessBrokerMeta"></div>
+            </section>
+          </div>
+
+          <div class="secretless-grid">
+            <section class="panel" aria-labelledby="secretless-policy-title">
+              <div class="panel-header">
+                <div>
+                  <h4 id="secretless-policy-title">Service policy template</h4>
+                  <span class="caption">Host, method, path, credential reference, unmatched behavior</span>
+                </div>
+                <button class="button secondary" type="button" id="insertSecretlessPolicyButton">Insert into policy editor</button>
+              </div>
+              <pre class="code-block" id="secretlessPolicyTemplate"></pre>
+            </section>
+
+            <section class="panel" aria-labelledby="secretless-verify-title">
+              <div class="panel-header">
+                <div>
+                  <h4 id="secretless-verify-title">Verification</h4>
+                  <span class="caption">Commands that prove policy, explain, and replay behavior</span>
+                </div>
+              </div>
+              <div class="action-grid" id="secretlessVerifyCommands"></div>
+            </section>
+          </div>
+
+          <div class="secretless-grid">
+            <section class="panel" aria-labelledby="secretless-refs-title">
+              <div class="panel-header">
+                <div>
+                  <h4 id="secretless-refs-title">Credential refs</h4>
+                  <span class="caption">Declared refs only; raw values are never shown</span>
+                </div>
+              </div>
+              <div class="table-list" id="secretlessCredentialRefs"></div>
+            </section>
+
+            <section class="panel" aria-labelledby="secretless-proxy-title">
+              <div class="panel-header">
+                <div>
+                  <h4 id="secretless-proxy-title">Proxy enforcement</h4>
+                  <span class="caption">Explicit loopback proxy; HTTPS is host and port only</span>
+                </div>
+              </div>
+              <div class="meta-grid" id="secretlessProxyMeta"></div>
+            </section>
+          </div>
+
+          <section class="panel" aria-labelledby="secretless-checks-title">
+            <div class="panel-header">
+              <div>
+                <h4 id="secretless-checks-title">Broker checks</h4>
+                <span class="caption">Status evidence without resolved secret values</span>
+              </div>
+            </div>
+            <div class="broker-grid" id="secretlessBrokerChecks"></div>
+          </section>
+
+          <section class="panel" aria-labelledby="secretless-capabilities-title">
+            <div class="panel-header">
+              <div>
+                <h4 id="secretless-capabilities-title">Capability matrix</h4>
+                <span class="caption">What is active now and what remains an adapter boundary</span>
+              </div>
+            </div>
+            <div class="capability-grid" id="secretlessCapabilities"></div>
+          </section>
+
+          <section class="panel" aria-labelledby="secretless-brokers-title">
+            <div class="panel-header">
+              <div>
+                <h4 id="secretless-brokers-title">Supported broker extension points</h4>
+                <span class="caption">Orca owns references and audit; external brokers own secret retrieval</span>
+              </div>
+            </div>
+            <div class="broker-grid" id="secretlessBrokerGrid"></div>
+          </section>
+
+          <section class="panel" aria-labelledby="secretless-audit-title">
+            <div class="panel-header">
+              <div>
+                <h4 id="secretless-audit-title">Recent broker and proxy events</h4>
+                <span class="caption">Redaction and proxy decisions from recent audit sessions</span>
+              </div>
+            </div>
+            <div class="timeline-list" id="secretlessAuditEvents"></div>
+          </section>
+
+          <div class="secretless-grid">
+            <section class="panel" aria-labelledby="secretless-guarantees-title">
+              <div class="panel-header">
+                <h4 id="secretless-guarantees-title">Guarantees</h4>
+              </div>
+              <ul class="compact-list" id="secretlessGuarantees"></ul>
+            </section>
+            <section class="panel" aria-labelledby="secretless-limits-title">
+              <div class="panel-header">
+                <h4 id="secretless-limits-title">Limits</h4>
+              </div>
+              <ul class="compact-list" id="secretlessLimitations"></ul>
             </section>
           </div>
         </section>

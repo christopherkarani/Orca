@@ -1,6 +1,7 @@
 const std = @import("std");
 
 const dashboard = @import("../dashboard/mod.zig");
+const credentials_cmd = @import("credentials.zig");
 const doctor = @import("doctor.zig");
 const report_cmd = @import("report.zig");
 const init = @import("init.zig");
@@ -13,6 +14,8 @@ const replay = @import("replay.zig");
 const exit_codes = @import("exit_codes.zig");
 const help = @import("help.zig");
 const core = @import("aegis_core").core;
+const core_policy = @import("aegis_core").policy;
+const intercept = @import("../intercept/mod.zig");
 
 const default_host = "127.0.0.1";
 const default_port: u16 = 7742;
@@ -318,6 +321,16 @@ fn runAllowedAction(allocator: std.mem.Allocator, action: []const u8) !CapturedA
         try doctor.command(&.{}, stdout.writer(allocator), stderr.writer(allocator))
     else if (std.mem.eql(u8, action, "policy-check"))
         try policy.command(&.{ "check", ".orca/policy.yaml" }, stdout.writer(allocator), stderr.writer(allocator))
+    else if (std.mem.eql(u8, action, "credentials-check"))
+        try credentials_cmd.command(&.{"check"}, stdout.writer(allocator), stderr.writer(allocator))
+    else if (std.mem.eql(u8, action, "credentials-check-github"))
+        try credentials_cmd.command(&.{ "check", "github_pat" }, stdout.writer(allocator), stderr.writer(allocator))
+    else if (std.mem.eql(u8, action, "proxy-smoke"))
+        try proxySmokeAction(allocator, stdout.writer(allocator), stderr.writer(allocator))
+    else if (std.mem.eql(u8, action, "policy-explain-github"))
+        try policy.command(&.{ "explain", "network", "https://api.github.com/repos/acme/app/issues", "--method", "POST" }, stdout.writer(allocator), stderr.writer(allocator))
+    else if (std.mem.eql(u8, action, "replay-last"))
+        try replay.command(&.{ "--session", "last", "--verify" }, stdout.writer(allocator), stderr.writer(allocator))
     else if (std.mem.eql(u8, action, "openclaw-doctor"))
         try plugin.command(&.{ "doctor", "openclaw" }, stdout.writer(allocator), stderr.writer(allocator))
     else if (std.mem.eql(u8, action, "hermes-doctor"))
@@ -342,6 +355,75 @@ fn runAllowedAction(allocator: std.mem.Allocator, action: []const u8) !CapturedA
         .stdout = try stdout.toOwnedSlice(allocator),
         .stderr = try stderr.toOwnedSlice(allocator),
     };
+}
+
+fn proxySmokeAction(allocator: std.mem.Allocator, stdout: anytype, _: anytype) !u8 {
+    var loaded = try core_policy.load.parseFromSlice(allocator,
+        \\version: 1
+        \\mode: observe
+        \\network:
+        \\  mode: open
+        \\  backend: proxy
+    , "dashboard-proxy-smoke.yaml");
+    defer loaded.deinit();
+
+    const upstream_address = try std.net.Address.parseIp("127.0.0.1", 0);
+    var upstream = try upstream_address.listen(.{ .reuse_address = true });
+    defer upstream.deinit();
+    const upstream_port = upstream.listen_address.in.getPort();
+    var upstream_state: ProxySmokeServerState = .{ .server = &upstream };
+    const upstream_thread = try std.Thread.spawn(.{}, proxySmokeServer, .{&upstream_state});
+    defer upstream_thread.join();
+
+    var runtime = try intercept.proxy.start(allocator, &loaded, .observe);
+    defer runtime.deinit();
+    const proxy_port = try parseBindPort(runtime.bindUrl());
+    var client = try std.net.tcpConnectToHost(allocator, "127.0.0.1", proxy_port);
+    defer client.close();
+
+    var request_buf: [256]u8 = undefined;
+    const request = try std.fmt.bufPrint(
+        &request_buf,
+        "GET http://127.0.0.1:{d}/proxy-smoke HTTP/1.1\r\nHost: 127.0.0.1:{d}\r\nConnection: close\r\n\r\n",
+        .{ upstream_port, upstream_port },
+    );
+    try client.writeAll(request);
+    var response_buf: [1024]u8 = undefined;
+    const response_len = try client.read(&response_buf);
+    if (std.mem.indexOf(u8, response_buf[0..response_len], "proxy-smoke-ok") == null) return exit_codes.general;
+
+    try runtime.waitForIdle(1 * std.time.ns_per_s);
+    const events = try runtime.snapshotAuditEvents(allocator);
+    defer runtime.freeAuditEvents(allocator, events);
+    var saw_attempt = false;
+    var saw_allowed = false;
+    for (events) |ev| {
+        if (ev.event_type == .network_connect_attempt) saw_attempt = true;
+        if (ev.event_type == .network_connect_allowed) saw_allowed = true;
+    }
+    if (!saw_attempt or !saw_allowed) return exit_codes.general;
+    try stdout.writeAll("proxy forwarding smoke ok\n");
+    return exit_codes.success;
+}
+
+const ProxySmokeServerState = struct {
+    server: *std.net.Server,
+};
+
+fn proxySmokeServer(state: *ProxySmokeServerState) void {
+    var connection = state.server.accept() catch return;
+    defer connection.stream.close();
+    var request_buf: [512]u8 = undefined;
+    _ = connection.stream.read(&request_buf) catch return;
+    const body = "proxy-smoke-ok";
+    var response_buf: [160]u8 = undefined;
+    const response = std.fmt.bufPrint(&response_buf, "HTTP/1.1 200 OK\r\nContent-Length: {d}\r\nConnection: close\r\n\r\n{s}", .{ body.len, body }) catch return;
+    connection.stream.writeAll(response) catch {};
+}
+
+fn parseBindPort(bind_url: []const u8) !u16 {
+    const colon = std.mem.lastIndexOfScalar(u8, bind_url, ':') orelse return error.InvalidBindUrl;
+    return std.fmt.parseInt(u16, bind_url[colon + 1 ..], 10);
 }
 
 fn sendText(stream: std.net.Stream, status_code: u16, reason: []const u8, content_type: []const u8, body: []const u8) !void {
@@ -386,6 +468,16 @@ test "dashboard rejects non-localhost bindings" {
 
 test "dashboard action allowlist rejects arbitrary browser commands" {
     try std.testing.expectError(error.UnsupportedDashboardAction, runAllowedAction(std.testing.allocator, "rm -rf /"));
+}
+
+test "dashboard proxy-smoke action verifies local proxy forwarding" {
+    if (@import("builtin").os.tag == .windows) return error.SkipZigTest;
+
+    const result = try runAllowedAction(std.testing.allocator, "proxy-smoke");
+    defer std.testing.allocator.free(result.stdout);
+    defer std.testing.allocator.free(result.stderr);
+    try std.testing.expectEqual(exit_codes.success, result.exit_code);
+    try std.testing.expect(std.mem.indexOf(u8, result.stdout, "proxy forwarding smoke ok") != null);
 }
 
 test "request parser handles post body and query stripping" {

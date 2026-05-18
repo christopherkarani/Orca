@@ -271,6 +271,7 @@ const common_strict_rules =
     \\    - "ls *"
     \\    - "pwd"
     \\    - "echo *"
+    \\    - "/usr/bin/env"
     \\    - "true"
     \\    - "false"
     \\    - "zig version"

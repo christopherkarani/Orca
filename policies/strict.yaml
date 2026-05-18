@@ -53,6 +53,7 @@ commands:
   allow:
     - "git status"
     - "git diff *"
+    - "/usr/bin/env"
   deny:
     - "rm -rf *"
     - "curl * | sh"

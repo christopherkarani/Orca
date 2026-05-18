@@ -154,6 +154,24 @@ pub const NetworkMode = enum {
     }
 };
 
+pub const NetworkBackend = enum {
+    decision_only,
+    proxy,
+
+    pub fn parse(value: []const u8) ?NetworkBackend {
+        if (std.mem.eql(u8, value, "decision-only") or std.mem.eql(u8, value, "decision_only")) return .decision_only;
+        if (std.mem.eql(u8, value, "proxy")) return .proxy;
+        return null;
+    }
+
+    pub fn toString(self: NetworkBackend) []const u8 {
+        return switch (self) {
+            .decision_only => "decision-only",
+            .proxy => "proxy",
+        };
+    }
+};
+
 pub const ExfiltrationDetection = struct {
     dns: bool = true,
     long_query_strings: bool = true,
@@ -162,6 +180,7 @@ pub const ExfiltrationDetection = struct {
 
 pub const NetworkPolicy = struct {
     mode: ?NetworkMode = null,
+    backend: ?NetworkBackend = null,
     allow: []const []const u8 = &.{},
     deny: []const []const u8 = &.{},
     ask: []const []const u8 = &.{},
@@ -181,6 +200,10 @@ pub const NetworkPolicy = struct {
         return .allowlist;
     }
 
+    pub fn effectiveBackend(self: NetworkPolicy) NetworkBackend {
+        return self.backend orelse .decision_only;
+    }
+
     pub fn deinit(self: NetworkPolicy, allocator: std.mem.Allocator) void {
         freeStringList(allocator, self.allow);
         freeStringList(allocator, self.deny);
@@ -188,7 +211,108 @@ pub const NetworkPolicy = struct {
     }
 };
 
+pub const ServicePathPolicy = struct {
+    allow: []const []const u8 = &.{},
+    deny: []const []const u8 = &.{},
+
+    pub fn deinit(self: ServicePathPolicy, allocator: std.mem.Allocator) void {
+        freeStringList(allocator, self.allow);
+        freeStringList(allocator, self.deny);
+    }
+};
+
+pub const ServiceCredentials = struct {
+    use: ?[]const u8 = null,
+
+    pub fn deinit(self: ServiceCredentials, allocator: std.mem.Allocator) void {
+        if (self.use) |value| allocator.free(value);
+    }
+};
+
+pub const ServicePolicy = struct {
+    name: []const u8,
+    hosts: []const []const u8 = &.{},
+    methods: []const []const u8 = &.{},
+    paths: ServicePathPolicy = .{},
+    credentials: ServiceCredentials = .{},
+    unmatched: ?DecisionValue = null,
+
+    pub fn deinit(self: ServicePolicy, allocator: std.mem.Allocator) void {
+        allocator.free(self.name);
+        freeStringList(allocator, self.hosts);
+        freeStringList(allocator, self.methods);
+        self.paths.deinit(allocator);
+        self.credentials.deinit(allocator);
+    }
+};
+
 pub const MCPPolicy = RuleSet;
+
+pub const CredentialBrokerKind = enum {
+    local_dummy,
+    env_file_dev,
+    onepassword_cli,
+    macos_keychain,
+    infisical_agent_vault,
+
+    pub fn parse(value: []const u8) ?CredentialBrokerKind {
+        if (std.mem.eql(u8, value, "local-dummy") or std.mem.eql(u8, value, "local_dummy")) return .local_dummy;
+        if (std.mem.eql(u8, value, "env-file-dev") or std.mem.eql(u8, value, "env_file_dev")) return .env_file_dev;
+        if (std.mem.eql(u8, value, "1password-cli") or std.mem.eql(u8, value, "onepassword-cli") or std.mem.eql(u8, value, "onepassword_cli")) return .onepassword_cli;
+        if (std.mem.eql(u8, value, "macos-keychain") or std.mem.eql(u8, value, "macos_keychain")) return .macos_keychain;
+        if (std.mem.eql(u8, value, "infisical-agent-vault") or std.mem.eql(u8, value, "infisical_agent_vault")) return .infisical_agent_vault;
+        return null;
+    }
+
+    pub fn toString(self: CredentialBrokerKind) []const u8 {
+        return switch (self) {
+            .local_dummy => "local-dummy",
+            .env_file_dev => "env-file-dev",
+            .onepassword_cli => "1password-cli",
+            .macos_keychain => "macos-keychain",
+            .infisical_agent_vault => "infisical-agent-vault",
+        };
+    }
+};
+
+pub const CredentialBrokerPolicy = struct {
+    name: []const u8,
+    kind: CredentialBrokerKind,
+    account: ?[]const u8 = null,
+    path: ?[]const u8 = null,
+
+    pub fn deinit(self: CredentialBrokerPolicy, allocator: std.mem.Allocator) void {
+        allocator.free(self.name);
+        if (self.account) |value| allocator.free(value);
+        if (self.path) |value| allocator.free(value);
+    }
+};
+
+pub const CredentialRefPolicy = struct {
+    name: []const u8,
+    broker: ?[]const u8 = null,
+    ref: []const u8,
+
+    pub fn deinit(self: CredentialRefPolicy, allocator: std.mem.Allocator) void {
+        allocator.free(self.name);
+        if (self.broker) |value| allocator.free(value);
+        allocator.free(self.ref);
+    }
+};
+
+pub const CredentialsPolicy = struct {
+    default_broker: ?[]const u8 = null,
+    brokers: []const CredentialBrokerPolicy = &.{},
+    refs: []const CredentialRefPolicy = &.{},
+
+    pub fn deinit(self: CredentialsPolicy, allocator: std.mem.Allocator) void {
+        if (self.default_broker) |value| allocator.free(value);
+        for (self.brokers) |broker| broker.deinit(allocator);
+        if (self.brokers.len > 0) allocator.free(self.brokers);
+        for (self.refs) |credential_ref| credential_ref.deinit(allocator);
+        if (self.refs.len > 0) allocator.free(self.refs);
+    }
+};
 
 pub const AuditPolicy = struct {
     level: AuditLevel = .full,
@@ -204,6 +328,8 @@ pub const Policy = struct {
     files: FilesPolicy = .{},
     commands: CommandsPolicy = .{},
     network: NetworkPolicy = .{},
+    credentials: CredentialsPolicy = .{},
+    services: []const ServicePolicy = &.{},
     mcp: MCPPolicy = .{},
     audit: AuditPolicy = .{},
     source_path: ?[]const u8 = null,
@@ -215,6 +341,9 @@ pub const Policy = struct {
         self.files.deinit(self.allocator);
         self.commands.deinit(self.allocator);
         self.network.deinit(self.allocator);
+        self.credentials.deinit(self.allocator);
+        for (self.services) |service| service.deinit(self.allocator);
+        if (self.services.len > 0) self.allocator.free(self.services);
         self.mcp.deinit(self.allocator);
         if (self.source_path) |path| self.allocator.free(path);
         self.* = undefined;

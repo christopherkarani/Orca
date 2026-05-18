@@ -30,6 +30,8 @@ pub const EventType = enum {
     network_connect_attempt,
     network_connect_allowed,
     network_connect_denied,
+    network_proxy_start,
+    network_proxy_stop,
     network_exfiltration_suspected,
     mcp_initialize,
     mcp_tools_list,
