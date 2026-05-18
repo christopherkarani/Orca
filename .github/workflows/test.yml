@@ -36,7 +36,7 @@ jobs:
           bash -n scripts/verify-release.sh
           bash -n scripts/release-dry-run.sh
           bash -n scripts/edge-release-smoke-test.sh
-          ruby -c packaging/homebrew/orca.rb
+          ruby -c packaging/homebrew/Formula/orca.rb
           python3 -m json.tool packaging/scoop/orca.json >/dev/null
           python3 -m json.tool packaging/npm/package.json >/dev/null
           grep -q checksum packaging/docker/Dockerfile

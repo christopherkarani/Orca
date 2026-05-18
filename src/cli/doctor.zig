@@ -6,6 +6,7 @@ const core_api = @import("aegis_core").api;
 const aegis_mcp = @import("../mcp/mod.zig");
 const aegis_policy = @import("aegis_core").policy;
 const sandbox = @import("../sandbox/mod.zig");
+const resource_root = @import("../resource_root.zig");
 
 const exit_codes = @import("exit_codes.zig");
 const help = @import("help.zig");
@@ -268,7 +269,7 @@ fn collectIntegrationContextAt(allocator: std.mem.Allocator, workspace_root: []c
         .ci_provider = ci_status.provider,
         .shell_name = shell_name,
         .audit_sessions_present = hasPath(workspace_root, ".orca/sessions"),
-        .redteam_fixtures_present = hasPath(workspace_root, "fixtures"),
+        .redteam_fixtures_present = resource_root.resourcePathExists(allocator, .{ .workspace_root = workspace_root }, "fixtures"),
     };
 }
 

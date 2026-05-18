@@ -26,7 +26,7 @@ pub const commands = [_]CommandInfo{
         .usage = "orca init [--preset <name>] [--mode strict|ask|observe|ci|trusted] [--ci] [--force]",
         .details = &.{
             "Creates .orca/policy.yaml from a practical editable preset.",
-            "Presets: generic-agent, claude-code, codex, cursor-agent, opencode, cline-roo, mcp-dev, github-actions, strict-local, trusted-local.",
+            "Presets: generic-agent, claude-code, codex, cursor-agent, opencode, cline-roo, mcp-dev, github-actions, solo-dev, strict-local, team-ci, openclaw-hermes, trusted-local.",
             "Refuses to overwrite an existing policy unless --force is provided.",
         },
     },
@@ -38,11 +38,31 @@ pub const commands = [_]CommandInfo{
             "Reports platform and planned capability status honestly.",
         },
     },
-    .{ .name = "policy", .summary = "Validate and explain policies", .usage = "orca policy <check|explain> [...]", .details = &.{
+    .{ .name = "policy", .summary = "Validate, explain, and apply policies", .usage = "orca policy <check|explain|packs|apply-pack> [...]", .details = &.{
         "Subcommands:",
         "  orca policy check <policy-path>",
         "  orca policy explain <file.read|file.write|env|command|network|mcp> <target>",
+        "  orca policy packs",
+        "  orca policy apply-pack <solo-dev|strict-local|team-ci|openclaw-hermes> [--force]",
         "Explanations show the decision, reason, matched rule when available, and policy mode.",
+    } },
+    .{ .name = "report", .summary = "Export a local safety report", .usage = "orca report --session <id|last> --format markdown|json", .details = &.{
+        "Loads a local session, verifies the hash chain, and exports denied actions, redactions, plugin readiness, and a plain-language prevention summary.",
+        "Report export is a Pro/Team local-license feature. Core safety commands remain available without a license.",
+    } },
+    .{ .name = "license", .summary = "Manage local offline licenses", .usage = "orca license <status|activate> [...]", .details = &.{
+        "Subcommands:",
+        "  orca license status [--json]",
+        "  orca license activate <key-or-file>",
+        "Development keys: dev-free, dev-pro, dev-team.",
+        "Licenses are verified offline and stored under the user config directory.",
+    } },
+    .{ .name = "ci", .summary = "Run local CI readiness checks", .usage = "orca ci check [--format markdown|json] [--github-summary <path>]", .details = &.{
+        "Validates .orca/policy.yaml, rejects dangerous obvious defaults, runs a focused CI-safe redteam fixture, and emits GitHub Actions-friendly output.",
+    } },
+    .{ .name = "demo", .summary = "Create safe local demo evidence", .usage = "orca demo blocked-action", .details = &.{
+        "Creates a harmless local session showing a destructive command denied by Orca.",
+        "The demo writes replay/report artifacts but does not execute the destructive command.",
     } },
     .{ .name = "replay", .summary = "Replay an audit session", .usage = "orca replay [--session <id|last>] [--json] [--only denied] [--verify]", .details = &.{"Reads .orca session artifacts, renders a timeline, and can verify the event hash chain."} },
     .{ .name = "diff", .summary = "Show staged writes", .usage = "orca diff [--session <id|last>] [--file <path>]", .details = &.{"Shows unified diffs for Orca-mediated staged writes. This does not claim transparent interception of arbitrary child-process file IO."} },
@@ -138,6 +158,12 @@ pub const commands = [_]CommandInfo{
         "  orca hook hermes subagent_stop",
         "  orca hook hermes on_session_end",
         "Hook responses include host_limitations to honestly report enforcement limits.",
+    } },
+    .{ .name = "dashboard", .summary = "Start the local Orca dashboard", .usage = "orca dashboard [--host 127.0.0.1] [--port 7742]", .details = &.{
+        "Starts a localhost-only web dashboard for health, policy, integrations, sessions, and denied-action replay.",
+        "The dashboard calls existing Orca CLI/Core paths and does not replace policy evaluation.",
+        "Mutation routes use a per-run browser token and only expose fixed Orca actions; arbitrary shell commands are not accepted.",
+        "Defaults to http://127.0.0.1:7742.",
     } },
     .{ .name = "help", .summary = "Show help", .usage = "orca help [command]", .details = &.{"Shows top-level help or command-specific help."} },
 };
