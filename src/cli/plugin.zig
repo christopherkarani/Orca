@@ -380,6 +380,7 @@ fn writeDoctorPlain(stdout: anytype, report: PluginDoctorReport, target: DoctorT
         }
     } else {
         try stdout.writeAll("  .orca/policy.yaml: missing\n");
+        try stdout.writeAll("    → Fix: orca init --preset generic-agent\n");
     }
 
     try stdout.writeAll("\nAudit / replay:\n");
@@ -390,22 +391,35 @@ fn writeDoctorPlain(stdout: anytype, report: PluginDoctorReport, target: DoctorT
 
     try stdout.writeAll("\nPlugin directories:\n");
     try stdout.print("  integrations/common: {s}\n", .{if (report.plugin_directories.common) "found" else "missing"});
+    if (!report.plugin_directories.common) try stdout.writeAll("    → Fix: orca plugin install all --yes\n");
     try stdout.print("  integrations/codex-plugin: {s}\n", .{if (report.plugin_directories.codex) "found" else "missing"});
+    if (!report.plugin_directories.codex) try stdout.writeAll("    → Fix: orca plugin install codex --yes\n");
     try stdout.print("  integrations/claude-code-plugin: {s}\n", .{if (report.plugin_directories.claude) "found" else "missing"});
+    if (!report.plugin_directories.claude) try stdout.writeAll("    → Fix: orca plugin install claude --yes\n");
     try stdout.print("  integrations/opencode-plugin: {s}\n", .{if (report.plugin_directories.opencode) "found" else "missing"});
+    if (!report.plugin_directories.opencode) try stdout.writeAll("    → Fix: orca plugin install opencode --yes\n");
     try stdout.print("  integrations/openclaw-plugin: {s}\n", .{if (report.plugin_directories.openclaw) "found" else "missing"});
+    if (!report.plugin_directories.openclaw) try stdout.writeAll("    → Fix: orca plugin install openclaw --yes\n");
     try stdout.print("  integrations/hermes-plugin: {s}\n", .{if (report.plugin_directories.hermes) "found" else "missing"});
+    if (!report.plugin_directories.hermes) try stdout.writeAll("    → Fix: orca plugin install hermes --yes\n");
 
     try stdout.writeAll("\nHost binaries:\n");
     try stdout.print("  codex: {s}\n", .{if (report.host_binaries.codex) "found in PATH" else "not found"});
+    if (!report.host_binaries.codex) try stdout.writeAll("    → Fix: orca plugin install codex --yes\n");
     try stdout.print("  claude: {s}\n", .{if (report.host_binaries.claude) "found in PATH" else "not found"});
+    if (!report.host_binaries.claude) try stdout.writeAll("    → Fix: orca plugin install claude --yes\n");
     try stdout.print("  opencode: {s}\n", .{if (report.host_binaries.opencode) "found in PATH" else "not found"});
+    if (!report.host_binaries.opencode) try stdout.writeAll("    → Fix: orca plugin install opencode --yes\n");
     try stdout.print("  openclaw: {s}\n", .{if (report.host_binaries.openclaw) "found in PATH" else "not found"});
+    if (!report.host_binaries.openclaw) try stdout.writeAll("    → Fix: orca plugin install openclaw --yes\n");
     try stdout.print("  hermes: {s}\n", .{if (report.host_binaries.hermes) "found in PATH" else "not found"});
+    if (!report.host_binaries.hermes) try stdout.writeAll("    → Fix: orca plugin install hermes --yes\n");
 
     try stdout.writeAll("\nMarketplace files:\n");
     try stdout.print("  .agents/plugins/marketplace.json: {s}\n", .{if (report.marketplace.codex_marketplace) "present" else "missing"});
+    if (!report.marketplace.codex_marketplace) try stdout.writeAll("    → Fix: orca plugin install codex --yes\n");
     try stdout.print("  .claude-plugin/marketplace.json: {s}\n", .{if (report.marketplace.claude_marketplace) "present" else "missing"});
+    if (!report.marketplace.claude_marketplace) try stdout.writeAll("    → Fix: orca plugin install claude --yes\n");
 
     try stdout.writeAll("\nPlatform:\n");
     try stdout.print("  {s}\n", .{report.platform_summary});
@@ -423,46 +437,69 @@ fn writeDoctorPlain(stdout: anytype, report: PluginDoctorReport, target: DoctorT
         .codex => {
             try stdout.writeAll("\nCodex plugin status:\n");
             try stdout.print("  host binary: {s}\n", .{if (report.host_binaries.codex) "detected" else "not detected"});
+            if (!report.host_binaries.codex) try stdout.writeAll("    → Fix: orca plugin install codex --yes\n");
             try stdout.print("  plugin directory: {s}\n", .{if (report.plugin_directories.codex) "present" else "not yet created"});
+            if (!report.plugin_directories.codex) try stdout.writeAll("    → Fix: orca plugin install codex --yes\n");
             try stdout.print("  marketplace file: {s}\n", .{if (report.marketplace.codex_marketplace) "present" else "missing"});
+            if (!report.marketplace.codex_marketplace) try stdout.writeAll("    → Fix: orca plugin install codex --yes\n");
             try stdout.print("  plugin manifest: {s}\n", .{if (report.marketplace.codex_plugin_manifest) "present" else "missing"});
+            if (!report.marketplace.codex_plugin_manifest) try stdout.writeAll("    → Fix: orca plugin install codex --yes\n");
             try stdout.writeAll("  install: use 'orca plugin install codex --dry-run' to preview\n");
         },
         .claude => {
             try stdout.writeAll("\nClaude Code plugin status:\n");
             try stdout.print("  host binary: {s}\n", .{if (report.host_binaries.claude) "detected" else "not detected"});
+            if (!report.host_binaries.claude) try stdout.writeAll("    → Fix: orca plugin install claude --yes\n");
             try stdout.print("  plugin directory: {s}\n", .{if (report.plugin_directories.claude) "present" else "not yet created"});
+            if (!report.plugin_directories.claude) try stdout.writeAll("    → Fix: orca plugin install claude --yes\n");
             try stdout.print("  marketplace file: {s}\n", .{if (report.marketplace.claude_marketplace) "present" else "missing"});
+            if (!report.marketplace.claude_marketplace) try stdout.writeAll("    → Fix: orca plugin install claude --yes\n");
             try stdout.print("  plugin manifest: {s}\n", .{if (report.marketplace.claude_plugin_manifest) "present" else "missing"});
+            if (!report.marketplace.claude_plugin_manifest) try stdout.writeAll("    → Fix: orca plugin install claude --yes\n");
             try stdout.writeAll("  install: use 'orca plugin install claude --dry-run' to preview\n");
         },
         .opencode => {
             try stdout.writeAll("\nOpenCode plugin status:\n");
             try stdout.print("  host binary: {s}\n", .{if (report.host_binaries.opencode) "detected" else "not detected"});
+            if (!report.host_binaries.opencode) try stdout.writeAll("    → Fix: orca plugin install opencode --yes\n");
             try stdout.print("  plugin directory: {s}\n", .{if (report.plugin_directories.opencode) "present" else "not yet created"});
+            if (!report.plugin_directories.opencode) try stdout.writeAll("    → Fix: orca plugin install opencode --yes\n");
             try stdout.print("  project plugin path (.opencode/plugins/orca.ts): {s}\n", .{if (report.opencode_paths.project_plugin_exists) "exists" else "not found"});
+            if (!report.opencode_paths.project_plugin_exists) try stdout.writeAll("    → Fix: orca plugin install opencode --yes\n");
             try stdout.print("  global plugin path (~/.config/opencode/plugins/orca.ts): {s}\n", .{if (report.opencode_paths.global_plugin_exists) "exists" else "not found"});
+            if (!report.opencode_paths.global_plugin_exists) try stdout.writeAll("    → Fix: orca plugin install opencode --yes\n");
             try stdout.writeAll("  install: use 'orca plugin install opencode --dry-run' to preview\n");
             try stdout.writeAll("  note: OpenCode plugin uses TypeScript hooks, not a manifest file\n");
         },
         .openclaw => {
             try stdout.writeAll("\nOpenClaw plugin status:\n");
             try stdout.print("  host binary: {s}\n", .{if (report.host_binaries.openclaw) "detected" else "not detected"});
+            if (!report.host_binaries.openclaw) try stdout.writeAll("    → Fix: orca plugin install openclaw --yes\n");
             try stdout.print("  plugin directory: {s}\n", .{if (report.plugin_directories.openclaw) "present" else "not yet created"});
+            if (!report.plugin_directories.openclaw) try stdout.writeAll("    → Fix: orca plugin install openclaw --yes\n");
             try stdout.print("  plugin manifest (openclaw.plugin.json): {s}\n", .{if (report.openclaw_paths.plugin_manifest_exists) "exists" else "not found"});
+            if (!report.openclaw_paths.plugin_manifest_exists) try stdout.writeAll("    → Fix: orca plugin install openclaw --yes\n");
             try stdout.print("  package.json: {s}\n", .{if (report.openclaw_paths.package_json_exists) "exists" else "not found"});
+            if (!report.openclaw_paths.package_json_exists) try stdout.writeAll("    → Fix: orca plugin install openclaw --yes\n");
             try stdout.print("  source (src/index.ts): {s}\n", .{if (report.openclaw_paths.source_exists) "exists" else "not found"});
+            if (!report.openclaw_paths.source_exists) try stdout.writeAll("    → Fix: orca plugin install openclaw --yes\n");
             try stdout.writeAll("  install: use 'orca plugin install openclaw --dry-run' to preview\n");
             try stdout.writeAll("  note: npm package orca-openclaw-plugin is published; ClawHub package orca-openclaw-plugin is published\n");
         },
         .hermes => {
             try stdout.writeAll("\nHermes plugin status:\n");
             try stdout.print("  host binary: {s}\n", .{if (report.host_binaries.hermes) "detected" else "not detected"});
+            if (!report.host_binaries.hermes) try stdout.writeAll("    → Fix: orca plugin install hermes --yes\n");
             try stdout.print("  plugin directory: {s}\n", .{if (report.plugin_directories.hermes) "present" else "not yet created"});
+            if (!report.plugin_directories.hermes) try stdout.writeAll("    → Fix: orca plugin install hermes --yes\n");
             try stdout.print("  repo plugin.yaml: {s}\n", .{if (report.hermes_paths.repo_manifest_exists) "exists" else "not found"});
+            if (!report.hermes_paths.repo_manifest_exists) try stdout.writeAll("    → Fix: orca plugin install hermes --yes\n");
             try stdout.print("  repo __init__.py: {s}\n", .{if (report.hermes_paths.repo_source_exists) "exists" else "not found"});
+            if (!report.hermes_paths.repo_source_exists) try stdout.writeAll("    → Fix: orca plugin install hermes --yes\n");
             try stdout.print("  user plugin path (~/.hermes/plugins/orca/plugin.yaml): {s}\n", .{if (report.hermes_paths.user_manifest_exists) "exists" else "not found"});
+            if (!report.hermes_paths.user_manifest_exists) try stdout.writeAll("    → Fix: orca plugin install hermes --yes\n");
             try stdout.print("  config references plugin: {s}\n", .{if (report.hermes_paths.config_references_plugin) "yes" else "unknown/no"});
+            if (!report.hermes_paths.config_references_plugin) try stdout.writeAll("    → Fix: orca plugin install hermes --yes\n");
             try stdout.writeAll("  install: use 'orca plugin install hermes --dry-run' to preview\n");
             try stdout.writeAll("  note: Hermes hooks are additive; strongest protection remains 'orca run -- hermes'\n");
         },
@@ -852,6 +889,7 @@ fn installCommand(argv: []const []const u8, stdout: anytype, stderr: anytype) !u
     var dry_run_explicit = false;
     var custom_path: ?[]const u8 = null;
     var yes = false;
+    var all_detected = false;
     var scope: InstallScope = .project;
 
     var gpa_state: std.heap.GeneralPurposeAllocator(.{}) = .init;
@@ -870,6 +908,7 @@ fn installCommand(argv: []const []const u8, stdout: anytype, stderr: anytype) !u
                 \\  orca plugin install openclaw [--dry-run]
                 \\  orca plugin install hermes [--dry-run]
                 \\  orca plugin install all [--dry-run]
+                \\  orca plugin install all --all-detected [--dry-run|--yes]
                 \\  orca plugin install codex --path <plugin-path> [--dry-run]
                 \\  orca plugin install claude --path <plugin-path> [--dry-run]
                 \\  orca plugin install opencode --path <plugin-path> [--dry-run]
@@ -879,10 +918,11 @@ fn installCommand(argv: []const []const u8, stdout: anytype, stderr: anytype) !u
                 \\  orca plugin install <target> [--yes]
                 \\  
                 \\Options:
-                \\  --dry-run   Preview changes without mutating host config (default)
-                \\  --path      Use a custom plugin path instead of the default
-                \\  --scope     OpenCode install scope: project|global (default: project)
-                \\  --yes       Skip confirmation prompt (use with care)
+                \\  --dry-run       Preview changes without mutating host config (default)
+                \\  --all-detected  Only install for hosts found in PATH
+                \\  --path          Use a custom plugin path instead of the default
+                \\  --scope         OpenCode install scope: project|global (default: project)
+                \\  --yes           Skip confirmation prompt (use with care)
                 \\
             );
             return exit_codes.success;
@@ -895,6 +935,10 @@ fn installCommand(argv: []const []const u8, stdout: anytype, stderr: anytype) !u
         if (std.mem.eql(u8, arg, "--yes")) {
             yes = true;
             if (!dry_run_explicit) dry_run = false;
+            continue;
+        }
+        if (std.mem.eql(u8, arg, "--all-detected")) {
+            all_detected = true;
             continue;
         }
         if (std.mem.eql(u8, arg, "--path")) {
@@ -951,12 +995,29 @@ fn installCommand(argv: []const []const u8, stdout: anytype, stderr: anytype) !u
         return exit_codes.usage;
     }
 
-    if (!dry_run and !yes) {
-        try stderr.writeAll("orca plugin install: actual installation requires --yes or use --dry-run to preview.\n");
-        return exit_codes.usage;
+    if (!dry_run_explicit and !yes) {
+        const stdin = std.fs.File.stdin();
+        if (stdin.isTty()) {
+            const host_label = if (target == .all and all_detected) "all detected" else if (target == .all) "all" else @tagName(target);
+            try stdout.print("Install {s} plugin? [Y/n] ", .{host_label});
+            var buf: [8]u8 = undefined;
+            const n = try stdin.read(&buf);
+            const answer = if (n > 0) std.mem.trimRight(u8, buf[0..n], "\r\n") else "";
+            if (answer.len > 0 and (answer[0] == 'n' or answer[0] == 'N')) {
+                try stdout.writeAll("canceled\n");
+                return exit_codes.success;
+            }
+            dry_run = false;
+        } else {
+            try stderr.writeAll("orca plugin install: actual installation requires --yes or --dry-run to preview.\n");
+            return exit_codes.usage;
+        }
     }
 
     try stdout.writeAll("Orca Plugin Install\n\n");
+
+    var detected_targets: [5]InstallTarget = undefined;
+    var detected_count: usize = 0;
 
     const targets = switch (target) {
         .codex => &[_]InstallTarget{.codex},
@@ -964,7 +1025,14 @@ fn installCommand(argv: []const []const u8, stdout: anytype, stderr: anytype) !u
         .opencode => &[_]InstallTarget{.opencode},
         .openclaw => &[_]InstallTarget{.openclaw},
         .hermes => &[_]InstallTarget{.hermes},
-        .all => &[_]InstallTarget{ .codex, .claude, .opencode, .openclaw, .hermes },
+        .all => if (all_detected) blk: {
+            if (binaryInPath(allocator, "codex")) { detected_targets[detected_count] = .codex; detected_count += 1; }
+            if (binaryInPath(allocator, "claude")) { detected_targets[detected_count] = .claude; detected_count += 1; }
+            if (binaryInPath(allocator, "opencode")) { detected_targets[detected_count] = .opencode; detected_count += 1; }
+            if (binaryInPath(allocator, "openclaw")) { detected_targets[detected_count] = .openclaw; detected_count += 1; }
+            if (binaryInPath(allocator, "hermes")) { detected_targets[detected_count] = .hermes; detected_count += 1; }
+            break :blk detected_targets[0..detected_count];
+        } else &[_]InstallTarget{ .codex, .claude, .opencode, .openclaw, .hermes },
     };
 
     for (targets) |t| {
@@ -1098,10 +1166,11 @@ fn installCommand(argv: []const []const u8, stdout: anytype, stderr: anytype) !u
                             try stdout.writeAll("  enable: completed via hermes plugins enable orca\n");
                         } else {
                             try stdout.print("  enable: failed (hermes exit code: {d})\n", .{status});
-                            return exit_codes.child_failure;
+                            try writeHermesEnableHelper(allocator, destination_path);
                         }
                     } else {
-                        try stdout.writeAll("  enable: skipped (hermes binary not found); run 'hermes plugins enable orca' later\n");
+                        try stdout.writeAll("  enable: hermes binary not found in PATH\n");
+                        try writeHermesEnableHelper(allocator, destination_path);
                     }
                 }
             } else {
@@ -1187,18 +1256,18 @@ fn mcpServerCommand(argv: []const []const u8, stdout: anytype, stderr: anytype) 
 // Shared helpers
 // ---------------------------------------------------------------------------
 
-fn fileExistsAbsolute(path: []const u8) bool {
+pub fn fileExistsAbsolute(path: []const u8) bool {
     std.fs.cwd().access(path, .{}) catch return false;
     return true;
 }
 
-fn pluginDirExists(allocator: std.mem.Allocator, relative_path: []const u8) bool {
+pub fn pluginDirExists(allocator: std.mem.Allocator, relative_path: []const u8) bool {
     const resolved = resolveBundledPath(allocator, relative_path) catch return false;
     defer allocator.free(resolved);
     return dirExists(resolved);
 }
 
-fn resolveBundledPath(allocator: std.mem.Allocator, relative_path: []const u8) ![]u8 {
+pub fn resolveBundledPath(allocator: std.mem.Allocator, relative_path: []const u8) ![]u8 {
     if (dirExists(relative_path) or fileExistsAbsolute(relative_path)) {
         return allocator.dupe(u8, relative_path);
     }
@@ -1215,7 +1284,7 @@ fn resolveBundledPath(allocator: std.mem.Allocator, relative_path: []const u8) !
     return allocator.dupe(u8, relative_path);
 }
 
-fn resolveOpenCodeDestination(allocator: std.mem.Allocator, scope: InstallScope) ![]u8 {
+pub fn resolveOpenCodeDestination(allocator: std.mem.Allocator, scope: InstallScope) ![]u8 {
     return switch (scope) {
         .project => std.fs.path.join(allocator, &.{ ".opencode", "plugins", "orca.ts" }),
         .global => blk: {
@@ -1226,19 +1295,19 @@ fn resolveOpenCodeDestination(allocator: std.mem.Allocator, scope: InstallScope)
     };
 }
 
-fn hermesUserPluginRoot(allocator: std.mem.Allocator) ![]u8 {
+pub fn hermesUserPluginRoot(allocator: std.mem.Allocator) ![]u8 {
     const home = std.process.getEnvVarOwned(allocator, "HOME") catch return std.fs.path.join(allocator, &.{ "~", ".hermes", "plugins", "orca" });
     defer allocator.free(home);
     return std.fs.path.join(allocator, &.{ home, ".hermes", "plugins", "orca" });
 }
 
-fn hermesConfigPath(allocator: std.mem.Allocator) ![]u8 {
+pub fn hermesConfigPath(allocator: std.mem.Allocator) ![]u8 {
     const home = std.process.getEnvVarOwned(allocator, "HOME") catch return std.fs.path.join(allocator, &.{ "~", ".hermes", "config.yaml" });
     defer allocator.free(home);
     return std.fs.path.join(allocator, &.{ home, ".hermes", "config.yaml" });
 }
 
-fn installFileIfSafe(allocator: std.mem.Allocator, source_path: []const u8, destination_path: []const u8) !bool {
+pub fn installFileIfSafe(allocator: std.mem.Allocator, source_path: []const u8, destination_path: []const u8) !bool {
     if (fileExistsAbsolute(destination_path)) {
         const same = try filesEqual(allocator, source_path, destination_path);
         if (same) return false;
@@ -1254,7 +1323,7 @@ fn installFileIfSafe(allocator: std.mem.Allocator, source_path: []const u8, dest
     return true;
 }
 
-fn filesEqual(allocator: std.mem.Allocator, lhs_path: []const u8, rhs_path: []const u8) !bool {
+pub fn filesEqual(allocator: std.mem.Allocator, lhs_path: []const u8, rhs_path: []const u8) !bool {
     const lhs = try std.fs.cwd().readFileAlloc(allocator, lhs_path, 1024 * 1024);
     defer allocator.free(lhs);
     const rhs = try std.fs.cwd().readFileAlloc(allocator, rhs_path, 1024 * 1024);
@@ -1262,7 +1331,7 @@ fn filesEqual(allocator: std.mem.Allocator, lhs_path: []const u8, rhs_path: []co
     return std.mem.eql(u8, lhs, rhs);
 }
 
-fn runOpenClawInstall(allocator: std.mem.Allocator, plugin_dir: []const u8) !u8 {
+pub fn runOpenClawInstall(allocator: std.mem.Allocator, plugin_dir: []const u8) !u8 {
     const argv = [_][]const u8{ "openclaw", "plugins", "install", plugin_dir };
     var child = std.process.Child.init(&argv, allocator);
     child.stdin_behavior = .Ignore;
@@ -1275,7 +1344,7 @@ fn runOpenClawInstall(allocator: std.mem.Allocator, plugin_dir: []const u8) !u8 
     };
 }
 
-fn runHermesEnable(allocator: std.mem.Allocator) !u8 {
+pub fn runHermesEnable(allocator: std.mem.Allocator) !u8 {
     const argv = [_][]const u8{ "hermes", "plugins", "enable", "orca" };
     var child = std.process.Child.init(&argv, allocator);
     child.stdin_behavior = .Ignore;
@@ -1288,26 +1357,26 @@ fn runHermesEnable(allocator: std.mem.Allocator) !u8 {
     };
 }
 
-fn fileContains(allocator: std.mem.Allocator, path: []const u8, needle: []const u8) bool {
+pub fn fileContains(allocator: std.mem.Allocator, path: []const u8, needle: []const u8) bool {
     const content = std.fs.cwd().readFileAlloc(allocator, path, 1024 * 1024) catch return false;
     defer allocator.free(content);
     return std.mem.indexOf(u8, content, needle) != null;
 }
 
-fn dirExists(path: []const u8) bool {
+pub fn dirExists(path: []const u8) bool {
     var dir = std.fs.cwd().openDir(path, .{}) catch return false;
     dir.close();
     return true;
 }
 
-fn hasPath(root: []const u8, relative: []const u8) bool {
+pub fn hasPath(root: []const u8, relative: []const u8) bool {
     const allocator = std.heap.page_allocator;
     const path = std.fs.path.join(allocator, &.{ root, relative }) catch return false;
     defer allocator.free(path);
     return fileExistsAbsolute(path);
 }
 
-fn binaryInPath(allocator: std.mem.Allocator, binary_name: []const u8) bool {
+pub fn binaryInPath(allocator: std.mem.Allocator, binary_name: []const u8) bool {
     const path_value = std.process.getEnvVarOwned(allocator, "PATH") catch return false;
     defer allocator.free(path_value);
     var parts = std.mem.splitScalar(u8, path_value, std.fs.path.delimiter);
@@ -1325,7 +1394,7 @@ fn binaryInPath(allocator: std.mem.Allocator, binary_name: []const u8) bool {
     return false;
 }
 
-fn writeJsonString(writer: anytype, value: []const u8) !void {
+pub fn writeJsonString(writer: anytype, value: []const u8) !void {
     try writer.writeByte('"');
     for (value) |byte| {
         switch (byte) {
@@ -1339,6 +1408,65 @@ fn writeJsonString(writer: anytype, value: []const u8) !void {
         }
     }
     try writer.writeByte('"');
+}
+
+// ---------------------------------------------------------------------------
+// Smoke test
+// ---------------------------------------------------------------------------
+
+pub const SmokeResult = struct {
+    passed: bool,
+};
+
+pub fn smokeTestHook(allocator: std.mem.Allocator, host: []const u8, event: []const u8, fixture_path: []const u8, expected_decision: []const u8) !SmokeResult {
+    const self_exe = try std.fs.selfExePathAlloc(allocator);
+    defer allocator.free(self_exe);
+    const argv = &[_][]const u8{ self_exe, "hook", host, event };
+    var child = std.process.Child.init(argv, allocator);
+    child.stdin_behavior = .Pipe;
+    child.stdout_behavior = .Pipe;
+    child.stderr_behavior = .Ignore;
+    try child.spawn();
+
+    const fixture = try std.fs.cwd().readFileAlloc(allocator, fixture_path, 256 * 1024);
+    defer allocator.free(fixture);
+    if (child.stdin) |stdin| {
+        try stdin.writeAll(fixture);
+        stdin.close();
+        child.stdin = null;
+    }
+
+    const stdout = if (child.stdout) |out| try out.readToEndAlloc(allocator, 256 * 1024) else "";
+    defer allocator.free(stdout);
+    const term = try child.wait();
+    if (term != .Exited or term.Exited != 0) return error.HookFailed;
+
+    var parsed = try std.json.parseFromSlice(std.json.Value, allocator, stdout, .{});
+    defer parsed.deinit();
+    const decision = parsed.value.object.get("decision") orelse return error.MissingDecision;
+    return .{ .passed = std.mem.eql(u8, decision.string, expected_decision) };
+}
+
+// ---------------------------------------------------------------------------
+// Hermes enable helper
+// ---------------------------------------------------------------------------
+
+fn writeHermesEnableHelper(allocator: std.mem.Allocator, plugin_dir: []const u8) !void {
+    // Guard: hermesUserPluginRoot can return a path with literal ~ if HOME is unset
+    const resolved_dir = if (std.mem.startsWith(u8, plugin_dir, "~/"))
+        try std.fs.path.join(allocator, &.{ std.process.getEnvVarOwned(allocator, "HOME") catch return, plugin_dir[2..] })
+    else
+        try allocator.dupe(u8, plugin_dir);
+    defer allocator.free(resolved_dir);
+
+    const help_path = try std.fs.path.join(allocator, &.{ resolved_dir, "ENABLE.txt" });
+    defer allocator.free(help_path);
+    if (std.fs.path.dirname(help_path)) |parent| try std.fs.cwd().makePath(parent);
+
+    try std.fs.cwd().writeFile(.{
+        .sub_path = help_path,
+        .data = "Orca plugin files are installed.\nTo enable, run:\n  hermes plugins enable orca\n",
+    });
 }
 
 // ---------------------------------------------------------------------------
@@ -1740,20 +1868,16 @@ test "plugin install all --dry-run reports all five targets" {
     try std.testing.expectEqualStrings("", stderr_stream.getWritten());
 }
 
-test "plugin install defaults to safe dry-run behavior" {
+test "plugin install without --yes or --dry-run in non-TTY returns usage" {
     var stdout_buf: [2048]u8 = undefined;
     var stderr_buf: [256]u8 = undefined;
     var stdout_stream = std.io.fixedBufferStream(&stdout_buf);
     var stderr_stream = std.io.fixedBufferStream(&stderr_buf);
 
-    // Without --dry-run or --yes, install defaults to dry-run (safe)
     const code = try installCommand(&.{"codex"}, stdout_stream.writer(), stderr_stream.writer());
-    try std.testing.expectEqual(exit_codes.success, code);
+    try std.testing.expectEqual(exit_codes.usage, code);
 
-    const output = stdout_stream.getWritten();
-    try std.testing.expect(std.mem.indexOf(u8, output, "dry-run") != null);
-    try std.testing.expect(std.mem.indexOf(u8, output, "no changes made") != null);
-    try std.testing.expectEqualStrings("", stderr_stream.getWritten());
+    try std.testing.expect(std.mem.indexOf(u8, stderr_stream.getWritten(), "--yes or --dry-run") != null);
 }
 
 test "plugin install --yes switches out of dry-run when dry-run is not explicit" {

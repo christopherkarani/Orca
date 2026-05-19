@@ -113,3 +113,11 @@ SECURITY_INVARIANTS.md
 # --- Playwright MCP artifacts ---
 .playwright-mcp/
 
+# --- Local agent runtime artifacts ---
+.Codex/
+.opencode/
+
+# --- Generated planning / UI collateral ---
+PROMPT_*.md
+orca-dashboard-ui/
+

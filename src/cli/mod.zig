@@ -19,6 +19,7 @@ pub const completions = @import("completions.zig");
 pub const shim = @import("shim.zig");
 pub const version_command = @import("version.zig");
 pub const plugin = @import("plugin.zig");
+pub const setup = @import("setup.zig");
 pub const decide = @import("decide.zig");
 pub const hook = @import("hook.zig");
 pub const dashboard_command = @import("dashboard.zig");
@@ -91,6 +92,7 @@ pub fn runWithCwd(cwd: std.fs.Dir, argv: []const []const u8, stdout: anytype, st
     if (std.mem.eql(u8, command, "completions")) return completions.command(argv[1..], stdout, stderr);
     if (std.mem.eql(u8, command, "shim")) return shim.command(argv[1..], stdout, stderr);
     if (std.mem.eql(u8, command, "plugin")) return plugin.command(argv[1..], stdout, stderr);
+    if (std.mem.eql(u8, command, "setup")) return setup.command(cwd, argv[1..], stdout, stderr);
     if (std.mem.eql(u8, command, "decide")) return decide.command(argv[1..], stdout, stderr);
     if (std.mem.eql(u8, command, "hook")) return hook.command(argv[1..], stdout, stderr);
     if (std.mem.eql(u8, command, "dashboard")) return dashboard_command.command(argv[1..], stdout, stderr);
@@ -115,6 +117,7 @@ test "help flag prints command summary" {
     try std.testing.expectEqual(exit_codes.success, code);
     try std.testing.expect(std.mem.indexOf(u8, stdout_stream.getWritten(), "Orca") != null);
     try std.testing.expect(std.mem.indexOf(u8, stdout_stream.getWritten(), "Commands:") != null);
+    try std.testing.expect(std.mem.indexOf(u8, stdout_stream.getWritten(), "Commands:\n  run") != null);
     try std.testing.expectEqualStrings("", stderr_stream.getWritten());
 }
 

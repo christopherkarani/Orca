@@ -6,6 +6,7 @@ const help = @import("help.zig");
 const commands = [_][]const u8{
     "run",
     "init",
+    "setup",
     "doctor",
     "policy",
     "credentials",
@@ -16,6 +17,7 @@ const commands = [_][]const u8{
     "mcp",
     "redteam",
     "completions",
+    "shim",
     "plugin",
     "decide",
     "hook",
@@ -39,8 +41,15 @@ const common_flags = [_][]const u8{
     "--json",
     "--format",
     "--session",
+    "--session-name",
+    "--no-secrets",
     "--secretless",
+    "--inherit-env",
+    "--no-network",
+    "--allow-network",
+    "--network",
     "--network-backend",
+    "--require-backend",
     "--github-summary",
 };
 
@@ -176,6 +185,23 @@ test "completions output is non-empty for supported shells" {
         try std.testing.expect(std.mem.indexOf(u8, stdout_stream.getWritten(), "run") != null);
         try std.testing.expectEqualStrings("", stderr_stream.getWritten());
     }
+}
+
+test "completions include public internal command and common run flags" {
+    var stdout_buf: [8192]u8 = undefined;
+    var stderr_buf: [512]u8 = undefined;
+    var stdout_stream = std.io.fixedBufferStream(&stdout_buf);
+    var stderr_stream = std.io.fixedBufferStream(&stderr_buf);
+
+    const code = try command(&.{"bash"}, stdout_stream.writer(), stderr_stream.writer());
+
+    try std.testing.expectEqual(exit_codes.success, code);
+    try std.testing.expect(std.mem.indexOf(u8, stdout_stream.getWritten(), "shim") != null);
+    try std.testing.expect(std.mem.indexOf(u8, stdout_stream.getWritten(), "--session-name") != null);
+    try std.testing.expect(std.mem.indexOf(u8, stdout_stream.getWritten(), "--no-network") != null);
+    try std.testing.expect(std.mem.indexOf(u8, stdout_stream.getWritten(), "--allow-network") != null);
+    try std.testing.expect(std.mem.indexOf(u8, stdout_stream.getWritten(), "--require-backend") != null);
+    try std.testing.expectEqualStrings("", stderr_stream.getWritten());
 }
 
 test "GitHub Actions documentation includes Orca run and redteam commands" {

@@ -1,6 +1,7 @@
 #!/usr/bin/env sh
 set -eu
 
+REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 DIST_DIR="${1:-${ORCA_DIST_DIR:-dist}}"
 
 fail() {
@@ -237,6 +238,14 @@ do
   ! grep -q 'PLACEHOLDER' "$rendered" || { printf 'release verify: placeholder left in %s\n' "$rendered" >&2; exit 1; }
 done
 require_package_hashes
+
+# Plugin version alignment check
+CLI_VERSION="$(cat "${REPO_ROOT}/VERSION" | tr -d '[:space:]')"
+HERMES_VERSION=$(grep "^version:" "${REPO_ROOT}/integrations/hermes-plugin/plugin.yaml" | sed 's/version: *//')
+OPENCLAW_VERSION=$(grep '"version"' "${REPO_ROOT}/integrations/openclaw-plugin/package.json" | head -1 | sed 's/.*"version": *"\([^"]*\)".*/\1/')
+if [ "${HERMES_VERSION}" != "${CLI_VERSION}" ] || [ "${OPENCLAW_VERSION}" != "${CLI_VERSION}" ]; then
+    echo "ERROR: plugin version mismatch" >&2; exit 1
+fi
 
 printf 'release verify: passed\n'
 if [ "$require_edge_artifacts" = "1" ]; then

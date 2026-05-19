@@ -33,6 +33,10 @@ pub fn resolveResourcePath(allocator: std.mem.Allocator, options: ResolveOptions
         const candidate = try std.fs.path.join(allocator, &.{ exe_dir, "..", relative_path });
         if (pathExists(candidate)) return candidate;
         allocator.free(candidate);
+
+        const source_build_candidate = try std.fs.path.join(allocator, &.{ exe_dir, "..", "..", relative_path });
+        if (pathExists(source_build_candidate)) return source_build_candidate;
+        allocator.free(source_build_candidate);
     }
 
     return error.ResourceNotFound;

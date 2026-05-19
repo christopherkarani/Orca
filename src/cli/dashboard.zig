@@ -19,10 +19,7 @@ const intercept = @import("../intercept/mod.zig");
 
 const default_host = "127.0.0.1";
 const default_port: u16 = 7742;
-
-const index_html = @embedFile("../dashboard/assets/index.html");
-const app_css = @embedFile("../dashboard/assets/app.css");
-const app_js = @embedFile("../dashboard/assets/app.js");
+const ui_dist_dir = "orca-dashboard-ui/dist";
 
 const DashboardOptions = struct {
     host: []const u8 = default_host,
@@ -137,18 +134,8 @@ fn handleConnection(allocator: std.mem.Allocator, stream: std.net.Stream, csrf_t
     defer body.deinit(allocator);
     const writer = body.writer(allocator);
 
-    if (std.mem.eql(u8, request.method, "GET") and (std.mem.eql(u8, request.path, "/") or std.mem.eql(u8, request.path, "/index.html"))) {
-        const html = try std.mem.replaceOwned(u8, allocator, index_html, "__ORCA_DASHBOARD_TOKEN__", csrf_token);
-        defer allocator.free(html);
-        try sendText(stream, 200, "OK", "text/html; charset=utf-8", html);
-        return;
-    }
-    if (std.mem.eql(u8, request.method, "GET") and std.mem.eql(u8, request.path, "/assets/app.css")) {
-        try sendText(stream, 200, "OK", "text/css; charset=utf-8", app_css);
-        return;
-    }
-    if (std.mem.eql(u8, request.method, "GET") and std.mem.eql(u8, request.path, "/assets/app.js")) {
-        try sendText(stream, 200, "OK", "application/javascript; charset=utf-8", app_js);
+    if (std.mem.eql(u8, request.method, "GET") and !std.mem.startsWith(u8, request.path, "/api/")) {
+        try serveStaticFile(allocator, stream, request.path, csrf_token);
         return;
     }
     if (std.mem.eql(u8, request.method, "GET") and std.mem.eql(u8, request.path, "/api/status")) {
@@ -185,6 +172,103 @@ fn handleConnection(allocator: std.mem.Allocator, stream: std.net.Stream, csrf_t
         return;
     }
     try sendText(stream, 404, "Not Found", "application/json; charset=utf-8", "{\"error\":\"not_found\"}\n");
+}
+
+fn serveStaticFile(allocator: std.mem.Allocator, stream: std.net.Stream, path: []const u8, csrf_token: []const u8) !void {
+    const rel_path = if (std.mem.eql(u8, path, "/")) "index.html" else path[1..];
+
+    const file_path = try std.fs.path.resolve(allocator, &.{ ui_dist_dir, rel_path });
+    defer allocator.free(file_path);
+
+    const file = std.fs.cwd().openFile(file_path, .{}) catch |err| switch (err) {
+        error.FileNotFound => {
+            return tryServeIndexOrFallback(allocator, stream, rel_path, csrf_token);
+        },
+        else => return sendJsonError(stream, 500, "Internal Server Error", "read_failed"),
+    };
+    defer file.close();
+
+    const stat = try file.stat();
+    if (stat.kind == .directory) {
+        return tryServeIndexOrFallback(allocator, stream, rel_path, csrf_token);
+    }
+
+    const content_type = blk: {
+        const basename = std.fs.path.basename(rel_path);
+        if (std.mem.endsWith(u8, basename, ".css"))
+            break :blk "text/css; charset=utf-8"
+        else if (std.mem.endsWith(u8, basename, ".js"))
+            break :blk "application/javascript; charset=utf-8"
+        else if (std.mem.endsWith(u8, basename, ".html"))
+            break :blk "text/html; charset=utf-8"
+        else if (std.mem.endsWith(u8, basename, ".json"))
+            break :blk "application/json; charset=utf-8"
+        else if (std.mem.endsWith(u8, basename, ".svg"))
+            break :blk "image/svg+xml"
+        else if (std.mem.endsWith(u8, basename, ".png"))
+            break :blk "image/png"
+        else
+            break :blk "application/octet-stream";
+    };
+
+    return sendFile(stream, file, content_type, allocator, csrf_token);
+}
+
+fn tryServeIndexOrFallback(allocator: std.mem.Allocator, stream: std.net.Stream, rel_path: []const u8, csrf_token: []const u8) !void {
+    if (std.mem.endsWith(u8, rel_path, "/index.html")) {
+        return sendJsonError(stream, 404, "Not Found", "not_found");
+    }
+    const index_fallback = try std.fs.path.resolve(allocator, &.{ ui_dist_dir, rel_path, "index.html" });
+    defer allocator.free(index_fallback);
+    const index_file = std.fs.cwd().openFile(index_fallback, .{}) catch |inner_err| switch (inner_err) {
+        error.FileNotFound => return serveSpaFallback(allocator, stream, csrf_token),
+        else => return sendJsonError(stream, 500, "Internal Server Error", "read_failed"),
+    };
+    defer index_file.close();
+    return sendFile(stream, index_file, "text/html; charset=utf-8", allocator, csrf_token);
+}
+
+fn serveSpaFallback(allocator: std.mem.Allocator, stream: std.net.Stream, csrf_token: []const u8) !void {
+    const index_path = try std.fs.path.resolve(allocator, &.{ ui_dist_dir, "index.html" });
+    defer allocator.free(index_path);
+    const file = std.fs.cwd().openFile(index_path, .{}) catch |err| switch (err) {
+        error.FileNotFound => return sendJsonError(stream, 404, "Not Found", "not_found"),
+        else => return sendJsonError(stream, 500, "Internal Server Error", "read_failed"),
+    };
+    defer file.close();
+    return sendFile(stream, file, "text/html; charset=utf-8", allocator, csrf_token);
+}
+
+fn sendFile(stream: std.net.Stream, file: std.fs.File, content_type: []const u8, allocator: std.mem.Allocator, csrf_token: []const u8) !void {
+    const stat = try file.stat();
+    const size = stat.size;
+
+    if (std.mem.eql(u8, content_type, "text/html; charset=utf-8")) {
+        const raw = try file.readToEndAlloc(allocator, size);
+        defer allocator.free(raw);
+        const html = try std.mem.replaceOwned(u8, allocator, raw, "__ORCA_DASHBOARD_TOKEN__", csrf_token);
+        defer allocator.free(html);
+        try sendText(stream, 200, "OK", content_type, html);
+        return;
+    }
+
+    var header_buf: [512]u8 = undefined;
+    const header = try std.fmt.bufPrint(
+        &header_buf,
+        "HTTP/1.1 200 OK\r\nContent-Type: {s}\r\nContent-Length: {d}\r\nCache-Control: public, max-age=3600\r\nConnection: close\r\n\r\n",
+        .{ content_type, size },
+    );
+    try stream.writeAll(header);
+
+    var buf: [8192]u8 = undefined;
+    var remaining = size;
+    while (remaining > 0) {
+        const to_read = @min(buf.len, remaining);
+        const n = try file.read(buf[0..to_read]);
+        if (n == 0) break;
+        try stream.writeAll(buf[0..n]);
+        remaining -= n;
+    }
 }
 
 fn readRequest(allocator: std.mem.Allocator, stream: std.net.Stream, buffer: *std.ArrayList(u8)) !void {

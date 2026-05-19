@@ -87,9 +87,9 @@ The plugin registers lifecycle hooks that call `orca hook openclaw <event>`:
 | `session.start` | At the start of an OpenClaw session | Informational (readiness log) |
 | `tool.before` | Before OpenClaw invokes a tool | **Blocking** — Orca can prevent the tool call |
 | `tool.after` | After OpenClaw finishes using a tool | Informational (audit only) |
-| `permission.before` | When OpenClaw requests user permission | **Blocking** — Orca can deny the permission |
-| `permission.after` | After a permission response | Informational (audit only) |
 | `session.end` | When the session ends | Informational (audit only) |
+
+OpenClaw does not currently expose dedicated permission lifecycle hooks to this plugin. Permission-like blocking is handled through `tool.before` before the tool call executes.
 
 ## How hooks call Orca
 

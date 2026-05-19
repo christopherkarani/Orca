@@ -164,11 +164,11 @@ export default function orcaPlugin(context: OpenCodeContext): void {
 
   context.hooks.on('session.created', async (session: any) => {
     logger?.info?.('[orca] Plugin ready for session.');
-    await callOrca(orcaBin, 'SessionStart', { session_id: session?.id }, sessionId, false, shell, logger);
+    await callOrca(orcaBin, 'session.created', { session_id: session?.id }, sessionId, false, shell, logger);
   });
 
   context.hooks.on('tool.execute.before', async (toolCall: any) => {
-    const response = await callOrca(orcaBin, 'PreToolUse', toolCall, sessionId, true, shell, logger);
+    const response = await callOrca(orcaBin, 'tool.execute.before', toolCall, sessionId, true, shell, logger);
 
     if (response.decision === 'block') {
       const msg = response.message || response.reason || 'Blocked by Orca policy';
@@ -184,12 +184,12 @@ export default function orcaPlugin(context: OpenCodeContext): void {
   });
 
   context.hooks.on('tool.execute.after', async (result: any) => {
-    await callOrca(orcaBin, 'PostToolUse', result, sessionId, false, shell, logger);
+    await callOrca(orcaBin, 'tool.execute.after', result, sessionId, false, shell, logger);
     return result;
   });
 
   context.hooks.on('permission.asked', async (permission: any) => {
-    const response = await callOrca(orcaBin, 'PermissionRequest', permission, sessionId, true, shell, logger);
+    const response = await callOrca(orcaBin, 'permission.asked', permission, sessionId, true, shell, logger);
 
     if (response.decision === 'block') {
       const msg = response.message || response.reason || 'Blocked by Orca policy';
@@ -205,22 +205,22 @@ export default function orcaPlugin(context: OpenCodeContext): void {
   });
 
   context.hooks.on('file.edited', async (edit: any) => {
-    await callOrca(orcaBin, 'FileEdit', edit, sessionId, false, shell, logger);
+    await callOrca(orcaBin, 'file.edited', edit, sessionId, false, shell, logger);
     return edit;
   });
 
   context.hooks.on('command.executed', async (command: any) => {
-    await callOrca(orcaBin, 'CommandExecuted', command, sessionId, false, shell, logger);
+    await callOrca(orcaBin, 'command.executed', command, sessionId, false, shell, logger);
     return command;
   });
 
   context.hooks.on('session.updated', async (session: any) => {
-    await callOrca(orcaBin, 'SessionUpdate', session, sessionId, false, shell, logger);
+    await callOrca(orcaBin, 'session.updated', session, sessionId, false, shell, logger);
     return session;
   });
 
   context.hooks.on('session.idle', async (session: any) => {
-    await callOrca(orcaBin, 'SessionIdle', session, sessionId, false, shell, logger);
+    await callOrca(orcaBin, 'session.idle', session, sessionId, false, shell, logger);
     return session;
   });
 
@@ -230,13 +230,13 @@ export default function orcaPlugin(context: OpenCodeContext): void {
       stack: error?.stack,
       type: error?.type,
     });
-    await callOrca(orcaBin, 'SessionError', safeError, sessionId, false, shell, logger);
+    await callOrca(orcaBin, 'session.error', safeError, sessionId, false, shell, logger);
     return error;
   });
 
   context.hooks.on('shell.env', async (env: any) => {
     const safeEnv = redactSecrets(env);
-    await callOrca(orcaBin, 'ShellEnv', safeEnv, sessionId, false, shell, logger);
+    await callOrca(orcaBin, 'shell.env', safeEnv, sessionId, false, shell, logger);
     return env;
   });
 }

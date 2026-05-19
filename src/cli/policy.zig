@@ -55,29 +55,48 @@ fn check(argv: []const []const u8, stdout: anytype, stderr: anytype) !u8 {
 
 fn explain(argv: []const []const u8, stdout: anytype, stderr: anytype) !u8 {
     if (argv.len == 1 and (std.mem.eql(u8, argv[0], "--help") or std.mem.eql(u8, argv[0], "-h"))) {
-        try stdout.writeAll("Usage:\n  orca policy explain <file.read|file.write|env|command|network|mcp> <target> [--method <HTTP_METHOD>]\n");
+        try stdout.writeAll("Usage:\n  orca policy explain [--policy <path>] <file.read|file.write|env|command|network|mcp> <target> [--method <HTTP_METHOD>]\n");
         return exit_codes.success;
     }
-    if (argv.len < 2) {
+    var policy_path: ?[]const u8 = null;
+    var start_index: usize = 0;
+    while (start_index < argv.len and std.mem.startsWith(u8, argv[start_index], "--")) : (start_index += 1) {
+        if (std.mem.eql(u8, argv[start_index], "--policy")) {
+            start_index += 1;
+            if (start_index >= argv.len) {
+                try stderr.writeAll("orca policy explain: --policy requires a path.\n");
+                return exit_codes.usage;
+            }
+            policy_path = argv[start_index];
+        } else {
+            break;
+        }
+    }
+    const positional = argv[start_index..];
+    if (positional.len < 2) {
         try stderr.writeAll("orca policy explain: expected a type and target.\n");
         return exit_codes.usage;
     }
-    const kind = aegis_policy.explain.ExplainKind.parse(argv[0]) orelse {
-        try stderr.print("orca policy explain: unsupported type '{s}'.\n", .{argv[0]});
+    const kind = aegis_policy.explain.ExplainKind.parse(positional[0]) orelse {
+        try stderr.print("orca policy explain: unsupported type '{s}'.\n", .{positional[0]});
         return exit_codes.usage;
     };
     var gpa_state: std.heap.GeneralPurposeAllocator(.{}) = .init;
     defer _ = gpa_state.deinit();
     const allocator = gpa_state.allocator();
 
-    const parsed_target = try parseExplainTarget(allocator, kind, argv[1..], stderr);
+    const parsed_target = try parseExplainTarget(allocator, kind, positional[1..], stderr);
     defer parsed_target.deinit(allocator);
     if (parsed_target.invalid) return exit_codes.usage;
 
     const root = supervisor.resolveWorkspaceRoot(allocator, null, ".") catch try allocator.dupe(u8, ".");
     defer allocator.free(root);
-    var loaded = core_api.discoverPolicy(allocator, null, root) catch |err| {
-        try stderr.print("orca policy explain: failed to load policy: {s}\n", .{@errorName(err)});
+    var loaded = core_api.discoverPolicy(allocator, policy_path, root) catch |err| {
+        if (policy_path) |path| {
+            try stderr.print("orca policy explain: failed to load policy {s}: {s}\n", .{ path, @errorName(err) });
+        } else {
+            try stderr.print("orca policy explain: failed to load policy: {s}\n", .{@errorName(err)});
+        }
         return exit_codes.general;
     };
     defer loaded.deinit();
@@ -304,6 +323,37 @@ test "policy explain target parser accepts network method option" {
     try std.testing.expect(!parsed.invalid);
     try std.testing.expectEqualStrings("POST", parsed.method.?);
     try std.testing.expectEqualStrings("https://api.github.com/repos/orca/orca/issues", parsed.target);
+    try std.testing.expectEqualStrings("", stderr_stream.getWritten());
+}
+
+test "policy explain accepts explicit policy path" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    {
+        const file = try tmp.dir.createFile("policy.yaml", .{});
+        defer file.close();
+        try file.writeAll(
+            \\version: 1
+            \\mode: strict
+            \\commands:
+            \\  default: allow
+            \\  deny:
+            \\    - "git push *"
+        );
+    }
+    const path = try tmp.dir.realpathAlloc(std.testing.allocator, "policy.yaml");
+    defer std.testing.allocator.free(path);
+
+    var stdout_buf: [1024]u8 = undefined;
+    var stderr_buf: [512]u8 = undefined;
+    var stdout_stream = std.io.fixedBufferStream(&stdout_buf);
+    var stderr_stream = std.io.fixedBufferStream(&stderr_buf);
+
+    const code = try command(&.{ "explain", "--policy", path, "command", "git", "push", "origin", "main" }, stdout_stream.writer(), stderr_stream.writer());
+
+    try std.testing.expectEqual(exit_codes.success, code);
+    try std.testing.expect(std.mem.indexOf(u8, stdout_stream.getWritten(), "Decision: deny") != null);
+    try std.testing.expect(std.mem.indexOf(u8, stdout_stream.getWritten(), "git push *") != null);
     try std.testing.expectEqualStrings("", stderr_stream.getWritten());
 }
 

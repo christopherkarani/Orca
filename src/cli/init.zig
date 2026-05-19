@@ -8,6 +8,7 @@ const InitOptions = struct {
     mode: ?[]const u8 = null,
     preset: aegis_policy.presets.AgentPreset = .generic_agent,
     force: bool = false,
+    quiet: bool = false,
 };
 
 pub fn command(cwd: std.fs.Dir, argv: []const []const u8, stdout: anytype, stderr: anytype) !u8 {
@@ -38,15 +39,17 @@ pub fn command(cwd: std.fs.Dir, argv: []const []const u8, stdout: anytype, stder
     const preset_text = aegis_policy.presets.agentPresetText(options.preset);
     try writePolicy(file, preset_text, options.mode);
     const info = aegis_policy.presets.agentPresetInfo(options.preset);
-    try stdout.print("Created .orca/policy.yaml from preset '{s}'.\n", .{info.name});
-    if (info.experimental) try stdout.print("Warning: {s}\n", .{info.warning});
-    try stdout.writeAll(
-        \\Next steps:
-        \\  orca policy check .orca/policy.yaml
-        \\  orca doctor
-        \\  orca run -- <command>
-        \\
-    );
+    if (!options.quiet) {
+        try stdout.print("Created .orca/policy.yaml from preset '{s}'.\n", .{info.name});
+        if (info.experimental) try stdout.print("Warning: {s}\n", .{info.warning});
+        try stdout.writeAll(
+            \\Next steps:
+            \\  orca policy check .orca/policy.yaml
+            \\  orca doctor
+            \\  orca run -- <command>
+            \\
+        );
+    }
     return exit_codes.success;
 }
 
@@ -62,6 +65,8 @@ fn parseOptions(argv: []const []const u8, stdout: anytype, stderr: anytype) !Ini
             options.force = true;
         } else if (std.mem.eql(u8, arg, "--ci")) {
             options.mode = "ci";
+        } else if (std.mem.eql(u8, arg, "--quiet")) {
+            options.quiet = true;
         } else if (std.mem.eql(u8, arg, "--preset")) {
             index += 1;
             if (index >= argv.len) {

@@ -31,6 +31,15 @@ pub const commands = [_]CommandInfo{
         },
     },
     .{
+        .name = "setup",
+        .summary = "Unified bootstrap: detect hosts, init policy, install plugins",
+        .usage = "orca setup [--auto] [--preset <name>]",
+        .details = &.{
+            "Detects installed agent hosts, initializes a policy if missing, installs missing plugins, and runs smoke tests.",
+            "Use --auto for non-interactive mode. Use --preset to choose a policy preset (default: generic-agent).",
+        },
+    },
+    .{
         .name = "doctor",
         .summary = "Show platform capabilities",
         .usage = "orca doctor [--help]",
@@ -41,7 +50,7 @@ pub const commands = [_]CommandInfo{
     .{ .name = "policy", .summary = "Validate, explain, and apply policies", .usage = "orca policy <check|explain|packs|apply-pack> [...]", .details = &.{
         "Subcommands:",
         "  orca policy check <policy-path>",
-        "  orca policy explain <file.read|file.write|env|command|network|mcp> <target> [--method <HTTP_METHOD>]",
+        "  orca policy explain [--policy <path>] <file.read|file.write|env|command|network|mcp> <target> [--method <HTTP_METHOD>]",
         "  orca policy packs",
         "  orca policy apply-pack <solo-dev|strict-local|team-ci|openclaw-hermes> [--force]",
         "Explanations show the decision, reason, matched rule when available, and policy mode.",
@@ -181,6 +190,7 @@ pub fn write(writer: anytype) !void {
         \\  orca <command> [options]
         \\
         \\Commands:
+        \\
     );
     for (commands) |command| {
         try writer.print("  {s:<9} {s}\n", .{ command.name, command.summary });
