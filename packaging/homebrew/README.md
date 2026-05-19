@@ -2,28 +2,29 @@
 
 This directory is the source for the `christopherkarani/homebrew-orca` tap.
 
-Release flow:
+## Release flow
 
 ```sh
 ./scripts/build-release.sh
+# Ensure release assets are uploaded to GitHub before updating the formula
 ./scripts/update-homebrew-formula.sh
 brew audit --strict --online packaging/homebrew/Formula/orca.rb
-brew install --build-from-source packaging/homebrew/Formula/orca.rb
+brew install --formula packaging/homebrew/Formula/orca.rb
 brew test packaging/homebrew/Formula/orca.rb
 ```
 
-Publish flow:
+## Publish flow
 
 1. Create or update `https://github.com/christopherkarani/homebrew-orca`.
 2. Copy `packaging/homebrew/Formula/orca.rb` to `Formula/orca.rb` in that tap.
-3. Commit the formula update after the matching GitHub Release assets are uploaded.
+3. Copy `packaging/homebrew/README.md` to `README.md` in that tap.
+4. Commit and push after the matching GitHub Release assets are uploaded.
 
-The formula uses release archive SHA-256 checksum values from `dist/checksums.txt`.
-
-User install after the tap exists:
+## User install
 
 ```sh
 brew tap christopherkarani/orca
 brew install orca
-orca plugin install hermes --yes
+orca --version
+orca doctor
 ```
