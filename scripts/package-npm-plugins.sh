@@ -4,16 +4,20 @@ set -eu
 DIST_DIR="${ORCA_DIST_DIR:-dist/npm}"
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
+case "${DIST_DIR}" in
+  /*) DIST_DIR_ABS="${DIST_DIR}" ;;
+  *) DIST_DIR_ABS="${REPO_ROOT}/${DIST_DIR}" ;;
+esac
 
 PACKAGES="
 opencode-plugin:orca-opencode-plugin
 openclaw-plugin:orca-openclaw-plugin
 "
 
-rm -rf "${DIST_DIR}"
-mkdir -p "${DIST_DIR}"
+rm -rf "${DIST_DIR_ABS}"
+mkdir -p "${DIST_DIR_ABS}"
 
-CHECKSUMS_FILE="${DIST_DIR}/orca-npm-plugin-checksums.txt"
+CHECKSUMS_FILE="${DIST_DIR_ABS}/orca-npm-plugin-checksums.txt"
 : > "${CHECKSUMS_FILE}"
 
 TOTAL_ISSUES=0
@@ -42,10 +46,10 @@ for entry in ${PACKAGES}; do
 
   (cd "${PACKAGE_DIR}" && npm pack --dry-run)
 
-  PKG_TARBALL="${DIST_DIR}/${OUTPUT_PREFIX}-v${VERSION}.tgz"
-  (cd "${PACKAGE_DIR}" && npm pack --pack-destination "${REPO_ROOT}/${DIST_DIR}")
+  PKG_TARBALL="${DIST_DIR_ABS}/${OUTPUT_PREFIX}-v${VERSION}.tgz"
+  (cd "${PACKAGE_DIR}" && npm pack --pack-destination "${DIST_DIR_ABS}")
 
-  BUILT_TARBALL="${DIST_DIR}/${OUTPUT_PREFIX}-${VERSION}.tgz"
+  BUILT_TARBALL="${DIST_DIR_ABS}/${OUTPUT_PREFIX}-${VERSION}.tgz"
   if [ -f "${BUILT_TARBALL}" ]; then
     mv "${BUILT_TARBALL}" "${PKG_TARBALL}"
   fi
@@ -88,9 +92,9 @@ done
 
 echo ""
 echo "========================================"
-echo "NPM packaging complete. Artifacts in ${DIST_DIR}:"
+echo "NPM packaging complete. Artifacts in ${DIST_DIR_ABS}:"
 echo "========================================"
-ls -la "${DIST_DIR}"
+ls -la "${DIST_DIR_ABS}"
 echo ""
 echo "Checksums:"
 cat "${CHECKSUMS_FILE}"

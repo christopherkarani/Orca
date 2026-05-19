@@ -9,7 +9,7 @@ FAILED=0
 pass() { echo "  PASS: $1"; }
 fail() { echo "  FAIL: $1"; FAILED=$((FAILED + 1)); }
 
-echo "=== P08B — @orca/opencode-plugin npm package tests ==="
+echo "=== P08B — orca-opencode-plugin npm package tests ==="
 echo ""
 
 # 1. package.json exists and is valid JSON
@@ -24,13 +24,13 @@ else
   fail "package.json does not exist"
 fi
 
-# 2. package name is @orca/opencode-plugin
+# 2. package name is orca-opencode-plugin
 echo "2. Package name"
 PKG_NAME=$(python3 -c "import json; print(json.load(open('${PACKAGE_DIR}/package.json'))['name'])")
-if [ "$PKG_NAME" = "@orca/opencode-plugin" ]; then
-  pass "Package name is @orca/opencode-plugin"
+if [ "$PKG_NAME" = "orca-opencode-plugin" ]; then
+  pass "Package name is orca-opencode-plugin"
 else
-  fail "Package name is '$PKG_NAME', expected '@orca/opencode-plugin'"
+  fail "Package name is '$PKG_NAME', expected 'orca-opencode-plugin'"
 fi
 
 # 3. no unsafe install scripts
@@ -66,10 +66,10 @@ else
   fail "README missing opencode.json reference"
 fi
 
-if grep -q '@orca/opencode-plugin' "${PACKAGE_DIR}/README.md"; then
-  pass "README mentions @orca/opencode-plugin"
+if grep -q 'orca-opencode-plugin' "${PACKAGE_DIR}/README.md"; then
+  pass "README mentions orca-opencode-plugin"
 else
-  fail "README missing @orca/opencode-plugin reference"
+  fail "README missing orca-opencode-plugin reference"
 fi
 
 # 7. Plugin source calls orca

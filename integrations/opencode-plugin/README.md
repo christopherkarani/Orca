@@ -118,7 +118,7 @@ Example payload for `tool.execute.before`:
 {
   "version": 1,
   "host": "opencode",
-  "event": "PreToolUse",
+  "event": "tool.execute.before",
   "payload": {
     "tool": "shell",
     "command": "git status"

@@ -122,6 +122,10 @@ fn discoverFocusedFixture(allocator: std.mem.Allocator, workspace_root: []const 
             const resource_parent = try std.fs.path.join(allocator, &.{ exe_dir, ".." });
             defer allocator.free(resource_parent);
             try appendExistingFixturesRoot(allocator, &roots, resource_parent);
+
+            const source_build_parent = try std.fs.path.join(allocator, &.{ exe_dir, "..", ".." });
+            defer allocator.free(source_build_parent);
+            try appendExistingFixturesRoot(allocator, &roots, source_build_parent);
         }
     }
 

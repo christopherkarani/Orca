@@ -5,20 +5,23 @@ VERSION="${ORCA_PLUGIN_VERSION:-${ORCA_VERSION:-1.1.0}}"
 DIST_DIR="${ORCA_DIST_DIR:-dist/plugins}"
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
+case "${DIST_DIR}" in
+  /*) DIST_DIR_ABS="${DIST_DIR}" ;;
+  *) DIST_DIR_ABS="${REPO_ROOT}/${DIST_DIR}" ;;
+esac
 
 echo "Packaging Orca plugins v${VERSION}..."
 
-rm -rf "${DIST_DIR}"
-mkdir -p "${DIST_DIR}"
+rm -rf "${DIST_DIR_ABS}"
+mkdir -p "${DIST_DIR_ABS}"
 
 # Package Codex plugin
 echo "Packaging Codex plugin..."
 CODEX_PLUGIN_DIR="${REPO_ROOT}/integrations/codex-plugin"
-CODEX_ZIP="${DIST_DIR}/orca-codex-plugin-v${VERSION}.zip"
+CODEX_ZIP="${DIST_DIR_ABS}/orca-codex-plugin-v${VERSION}.zip"
 
 if [ -d "${CODEX_PLUGIN_DIR}" ]; then
-  CODEX_ZIP_ABS="${REPO_ROOT}/${CODEX_ZIP}"
-  (cd "${CODEX_PLUGIN_DIR}" && zip -qr "${CODEX_ZIP_ABS}" \
+  (cd "${CODEX_PLUGIN_DIR}" && zip -qr "${CODEX_ZIP}" \
     .codex-plugin/plugin.json \
     skills/ \
     hooks/ \
@@ -38,11 +41,10 @@ fi
 # Package Claude Code plugin
 echo "Packaging Claude Code plugin..."
 CLAUDE_PLUGIN_DIR="${REPO_ROOT}/integrations/claude-code-plugin"
-CLAUDE_ZIP="${DIST_DIR}/orca-claude-code-plugin-v${VERSION}.zip"
+CLAUDE_ZIP="${DIST_DIR_ABS}/orca-claude-code-plugin-v${VERSION}.zip"
 
 if [ -d "${CLAUDE_PLUGIN_DIR}" ]; then
-  CLAUDE_ZIP_ABS="${REPO_ROOT}/${CLAUDE_ZIP}"
-  (cd "${CLAUDE_PLUGIN_DIR}" && zip -qr "${CLAUDE_ZIP_ABS}" \
+  (cd "${CLAUDE_PLUGIN_DIR}" && zip -qr "${CLAUDE_ZIP}" \
     .claude-plugin/plugin.json \
     skills/ \
     hooks/ \
@@ -62,11 +64,10 @@ fi
 # Package OpenCode plugin
 echo "Packaging OpenCode plugin..."
 OPENCODE_PLUGIN_DIR="${REPO_ROOT}/integrations/opencode-plugin"
-OPENCODE_ZIP="${DIST_DIR}/orca-opencode-plugin-v${VERSION}.zip"
+OPENCODE_ZIP="${DIST_DIR_ABS}/orca-opencode-plugin-v${VERSION}.zip"
 
 if [ -d "${OPENCODE_PLUGIN_DIR}" ]; then
-  OPENCODE_ZIP_ABS="${REPO_ROOT}/${OPENCODE_ZIP}"
-  (cd "${OPENCODE_PLUGIN_DIR}" && zip -qr "${OPENCODE_ZIP_ABS}" \
+  (cd "${OPENCODE_PLUGIN_DIR}" && zip -qr "${OPENCODE_ZIP}" \
     orca.ts \
     README.md \
     package.json \
@@ -85,11 +86,10 @@ fi
 # Package Claude marketplace catalog
 echo "Packaging Claude marketplace catalog..."
 MARKETPLACE_DIR="${REPO_ROOT}/integrations/claude-marketplace"
-MARKETPLACE_ZIP="${DIST_DIR}/orca-claude-marketplace-v${VERSION}.zip"
+MARKETPLACE_ZIP="${DIST_DIR_ABS}/orca-claude-marketplace-v${VERSION}.zip"
 
 if [ -d "${MARKETPLACE_DIR}" ]; then
-  MARKETPLACE_ZIP_ABS="${REPO_ROOT}/${MARKETPLACE_ZIP}"
-  (cd "${MARKETPLACE_DIR}" && zip -qr "${MARKETPLACE_ZIP_ABS}" \
+  (cd "${MARKETPLACE_DIR}" && zip -qr "${MARKETPLACE_ZIP}" \
     .claude-plugin/marketplace.json \
     README.md \
     -x "*.DS_Store" \
@@ -105,12 +105,12 @@ fi
 
 # Generate checksums
 echo "Generating checksums..."
-CHECKSUMS_FILE="${DIST_DIR}/orca-plugin-checksums.txt"
+CHECKSUMS_FILE="${DIST_DIR_ABS}/orca-plugin-checksums.txt"
 
 tmp="${CHECKSUMS_FILE}.tmp"
 : > "$tmp"
 
-for file in "${DIST_DIR}"/*.zip; do
+for file in "${DIST_DIR_ABS}"/*.zip; do
   [ -f "$file" ] || continue
   name="$(basename "$file")"
   if command -v sha256sum >/dev/null 2>&1; then
@@ -126,7 +126,7 @@ for file in "${DIST_DIR}"/*.zip; do
 done
 
 [ -s "$tmp" ] || {
-  echo "ERROR: no plugin artifacts found in ${DIST_DIR}" >&2
+  echo "ERROR: no plugin artifacts found in ${DIST_DIR_ABS}" >&2
   rm -f "$tmp"
   exit 1
 }
@@ -139,7 +139,7 @@ echo "Scanning artifacts for potential secrets..."
 SECRET_PATTERNS="password|secret|token|api_key|apikey|private_key|privkey|aws_access|aws_secret|github_token|gcp_key|azure_key"
 SCAN_ISSUES=0
 
-for file in "${DIST_DIR}"/*.zip; do
+for file in "${DIST_DIR_ABS}"/*.zip; do
   [ -f "$file" ] || continue
   # Use unzip -l to list contents, grep for suspicious patterns
   if unzip -l "$file" | grep -iE "${SECRET_PATTERNS}" | grep -v "fake_" | grep -v "README" | grep -v "SKILL.md" | grep -v "hooks.json" | grep -v "plugin.json" | grep -v "marketplace.json" | grep -v "secret_" | grep -v "secret-"; then
@@ -149,7 +149,7 @@ for file in "${DIST_DIR}"/*.zip; do
 done
 
 # Check actual file contents for real secrets (not fake test values)
-for file in "${DIST_DIR}"/*.zip; do
+for file in "${DIST_DIR_ABS}"/*.zip; do
   [ -f "$file" ] || continue
   # Extract and scan (to temp)
   tmpdir="$(mktemp -d)"
@@ -169,7 +169,7 @@ else
 fi
 
 echo ""
-echo "Plugin packaging complete. Artifacts in ${DIST_DIR}:"
-ls -la "${DIST_DIR}"
+echo "Plugin packaging complete. Artifacts in ${DIST_DIR_ABS}:"
+ls -la "${DIST_DIR_ABS}"
 echo ""
 cat "${CHECKSUMS_FILE}"
