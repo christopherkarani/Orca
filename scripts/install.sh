@@ -91,6 +91,45 @@ safe_install() {
   chmod 0755 "$destination"
 }
 
+rc_file_for_shell() {
+  shell_name="$1"
+  case "$shell_name" in
+    */zsh) printf '%s' "${ZDOTDIR:-$HOME}/.zshrc" ;;
+    */bash)
+      if [ -f "$HOME/.bashrc" ]; then
+        printf '%s' "$HOME/.bashrc"
+      elif [ -f "$HOME/.bash_profile" ]; then
+        printf '%s' "$HOME/.bash_profile"
+      else
+        printf '%s' "$HOME/.bashrc"
+      fi
+      ;;
+    */fish) printf '%s' "$HOME/.config/fish/config.fish" ;;
+    *) printf '%s' "$HOME/.profile" ;;
+  esac
+}
+
+ensure_path_entry() {
+  dir="$1"
+  shell_path="${SHELL:-/bin/sh}"
+  shell_name="$(basename "$shell_path")"
+  rc_file="$(rc_file_for_shell "$shell_path")"
+
+  if [ ! -d "$(dirname "$rc_file")" ] && [ "$(dirname "$rc_file")" != "$HOME" ]; then
+    mkdir -p "$(dirname "$rc_file")"
+  fi
+
+  if [ -f "$rc_file" ]; then
+    if grep -qF "export PATH=\"$dir" "$rc_file" 2>/dev/null || grep -qF "export PATH=\"\$HOME/.local/bin" "$rc_file" 2>/dev/null; then
+      return 0
+    fi
+  fi
+
+  printf '\n# Added by Orca installer\nexport PATH="%s:$PATH"\n' "$dir" >> "$rc_file"
+  printf 'Added %s to PATH in %s\n' "$dir" "$rc_file"
+  printf 'Run: source %s   (or open a new terminal)\n' "$rc_file"
+}
+
 OS="$(detect_os)"
 ARCH="$(detect_arch)"
 ARTIFACT="orca-v${VERSION}-${OS}-${ARCH}.tar.gz"
@@ -114,8 +153,11 @@ FOUND_BIN="$(find "$TMP_DIR" -type f -name orca -perm -111 | head -n 1)"
 DESTINATION="$INSTALL_DIR/orca"
 safe_install "$FOUND_BIN" "$DESTINATION"
 
-printf 'Installed Orca to %s\n' "$DESTINATION"
-printf 'Next steps:\n'
-printf '  %s version\n' "$DESTINATION"
-printf '  %s doctor\n' "$DESTINATION"
-printf '  %s init --preset generic-agent\n' "$DESTINATION"
+printf '\nInstalled Orca to %s\n' "$DESTINATION"
+
+ensure_path_entry "$INSTALL_DIR"
+
+printf '\nNext steps:\n'
+printf '  orca --version\n'
+printf '  orca doctor\n'
+printf '  orca init --preset generic-agent\n'

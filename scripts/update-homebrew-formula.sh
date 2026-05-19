@@ -1,35 +1,63 @@
 #!/usr/bin/env sh
 set -eu
 
-VERSION="${ORCA_VERSION:-1.1.0}"
-DIST_DIR="${ORCA_DIST_DIR:-dist}"
-FORMULA="${ORCA_HOMEBREW_FORMULA:-packaging/homebrew/Formula/orca.rb}"
-CHECKSUMS="${DIST_DIR}/checksums.txt"
+VERSION="${1:-${ORCA_VERSION:-}}"
+HOMEBREW_TAP_DIR="${ORCA_HOMEBREW_TAP_DIR:-${HOME}/code/homebrew-orca}"
+FORMULA_OUT="${ORCA_HOMEBREW_FORMULA:-${HOMEBREW_TAP_DIR}/Formula/orca.rb}"
+TMP_DIR="$(mktemp -d "${TMPDIR:-/tmp}/orca-homebrew.XXXXXX")"
+
+cleanup() {
+  rm -rf "$TMP_DIR"
+}
+trap cleanup EXIT INT TERM
 
 fail() {
   printf 'update-homebrew-formula: %s\n' "$1" >&2
   exit 1
 }
 
-checksum_for() {
-  name="$1"
-  awk -v name="$name" '$2 == name {print $1}' "$CHECKSUMS"
+[ -n "$VERSION" ] || fail "usage: $0 <version>  (or set ORCA_VERSION)"
+
+BASE_URL="https://github.com/christopherkarani/Orca/releases/download/v${VERSION}"
+
+printf 'Downloading release assets for Orca %s...\n' "$VERSION"
+
+for plat in darwin-arm64 darwin-amd64 linux-arm64 linux-amd64; do
+  artifact="orca-v${VERSION}-${plat}.tar.gz"
+  url="${BASE_URL}/${artifact}"
+  output="${TMP_DIR}/${artifact}"
+
+  printf '  → %s\n' "$artifact"
+  if command -v curl >/dev/null 2>&1; then
+    curl -fsSL -o "$output" "$url" || fail "failed to download $url"
+  elif command -v wget >/dev/null 2>&1; then
+    wget -q -O "$output" "$url" || fail "failed to download $url"
+  else
+    fail "curl or wget is required"
+  fi
+done
+
+sha256_file() {
+  file="$1"
+  if command -v sha256sum >/dev/null 2>&1; then
+    sha256sum "$file" | awk '{print $1}'
+  elif command -v shasum >/dev/null 2>&1; then
+    shasum -a 256 "$file" | awk '{print $1}'
+  else
+    fail "sha256sum or shasum is required"
+  fi
 }
 
-[ -f "$FORMULA" ] || fail "formula not found: $FORMULA"
-[ -f "$CHECKSUMS" ] || fail "checksums not found: $CHECKSUMS"
+darwin_arm64="$(sha256_file "${TMP_DIR}/orca-v${VERSION}-darwin-arm64.tar.gz")"
+darwin_amd64="$(sha256_file "${TMP_DIR}/orca-v${VERSION}-darwin-amd64.tar.gz")"
+linux_arm64="$(sha256_file "${TMP_DIR}/orca-v${VERSION}-linux-arm64.tar.gz")"
+linux_amd64="$(sha256_file "${TMP_DIR}/orca-v${VERSION}-linux-amd64.tar.gz")"
 
-darwin_amd64="$(checksum_for "orca-v${VERSION}-darwin-amd64.tar.gz")"
-darwin_arm64="$(checksum_for "orca-v${VERSION}-darwin-arm64.tar.gz")"
-linux_amd64="$(checksum_for "orca-v${VERSION}-linux-amd64.tar.gz")"
-linux_arm64="$(checksum_for "orca-v${VERSION}-linux-arm64.tar.gz")"
+printf 'Generating formula...\n'
 
-[ -n "$darwin_amd64" ] || fail "missing darwin amd64 checksum"
-[ -n "$darwin_arm64" ] || fail "missing darwin arm64 checksum"
-[ -n "$linux_amd64" ] || fail "missing linux amd64 checksum"
-[ -n "$linux_arm64" ] || fail "missing linux arm64 checksum"
+mkdir -p "$(dirname "$FORMULA_OUT")"
 
-cat > "$FORMULA" <<EOF
+cat > "$FORMULA_OUT" <<EOF
 class Orca < Formula
   desc "Local runtime firewall for AI agents"
   homepage "https://github.com/christopherkarani/Orca"
@@ -57,30 +85,27 @@ class Orca < Formula
   end
 
   def install
-    libexec.install "bin/orca" if File.exist?("bin/orca")
-    pkgshare.install "docs" if Dir.exist?("docs")
-    pkgshare.install "examples" if Dir.exist?("examples")
-    pkgshare.install "fixtures" if Dir.exist?("fixtures")
-    pkgshare.install "integrations" if Dir.exist?("integrations")
-    pkgshare.install "policies" if Dir.exist?("policies")
-    pkgshare.install "schemas" if Dir.exist?("schemas")
-
-    (bin/"orca").write <<~EOS
-      #!/bin/sh
-      export ORCA_RESOURCE_ROOT="#{pkgshare}"
-      exec "#{libexec}/orca" "\$@"
-    EOS
-    chmod 0755, bin/"orca"
+    bin.install "bin/orca"
   end
 
   test do
-    assert_match version.to_s, shell_output("#{bin}/orca version")
-    hermes_manifest = shell_output("#{bin}/orca plugin manifest hermes")
-    assert_match "Hermes plugin manifest", hermes_manifest
-    assert_match "manifest status: exists", hermes_manifest
-    assert_match "(exists)", hermes_manifest
+    assert_match version.to_s, shell_output("#{bin}/orca --version")
   end
 end
 EOF
 
-printf 'Updated %s for Orca %s\n' "$FORMULA" "$VERSION"
+printf 'Formula written to %s\n' "$FORMULA_OUT"
+
+# Optionally commit and push to the tap repo
+if [ -d "${HOMEBREW_TAP_DIR}/.git" ]; then
+  cd "$HOMEBREW_TAP_DIR"
+  git add Formula/orca.rb
+  if git diff --cached --quiet; then
+    printf 'No changes to commit.\n'
+  else
+    git commit -m "Update orca to ${VERSION}"
+    printf 'Committed. Run `git push` to publish.\n'
+  fi
+else
+  printf 'Note: %s is not a git repo. Skipping commit.\n' "$HOMEBREW_TAP_DIR"
+fi

@@ -1,4 +1,4 @@
-# Orca &nbsp;[![Version](https://img.shields.io/badge/version-1.1.0-blue)](https://github.com/christopherkarani/Orca/releases) [![License](https://img.shields.io/badge/license-MIT-green)](LICENSE) [![Zig](https://img.shields.io/badge/built%20with-Zig-orange)](https://ziglang.org) [![Build](https://img.shields.io/github/actions/workflow/status/christopherkarani/Orca/build.yml?branch=main&label=build)](https://github.com/christopherkarani/Orca/actions/workflows/build.yml) [![Stars](https://img.shields.io/github/stars/christopherkarani/Orca?style=social)](https://github.com/christopherkarani/Orca)
+# Orca &nbsp;[![Version](https://img.shields.io/badge/version-1.1.0-blue)](https://github.com/christopherkarani/Orca/releases) [![License](https://img.shields.io/badge/license-Apache--2.0-green)](LICENSE) [![Zig](https://img.shields.io/badge/built%20with-Zig-orange)](https://ziglang.org) [![Build](https://img.shields.io/github/actions/workflow/status/christopherkarani/Orca/build.yml?branch=main&label=build)](https://github.com/christopherkarani/Orca/actions/workflows/build.yml) [![Stars](https://img.shields.io/github/stars/christopherkarani/Orca?style=social)](https://github.com/christopherkarani/Orca)
 
 **Unleash AI agents with confidence.**
 
@@ -10,7 +10,7 @@ Orca wraps the AI tools you already use—Codex, Claude Code, OpenCode, OpenClaw
 
 ```bash
 # Install (macOS/Linux)
-brew tap christopherkarani/orca && brew install orca
+brew tap christopherkarani/orca && brew install --formula orca
 
 # Or install with the official script
 curl -fsSL https://raw.githubusercontent.com/christopherkarani/Orca/main/scripts/install.sh | sh
@@ -114,16 +114,21 @@ AI agents can run shell commands, read files, and make network requests on your 
 ```bash
 # macOS
 brew tap christopherkarani/orca
-brew install orca
+brew install --formula orca
 
 # Linux (amd64 / arm64)
 curl -fsSL https://raw.githubusercontent.com/christopherkarani/Orca/main/scripts/install.sh | sh
-
-# Verify
-orca doctor
 ```
 
+> The script installs to `~/.local/bin` and automatically adds it to your shell's `PATH`. Open a new terminal (or run `source ~/.zshrc` / `.bashrc`) to use `orca` right away.
+>
 > **Prefer to build?** See [docs/install.md](docs/install.md) for source builds, Windows installers, and Docker.
+
+After installing, verify:
+
+```bash
+orca doctor
+```
 
 ### 1. Create your first policy
 
