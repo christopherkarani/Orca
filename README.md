@@ -21,6 +21,22 @@ zig build
 
 ---
 
+## Local dashboard
+
+Start the web UI for a visual view of sessions, policy status, and prevented actions:
+
+```bash
+orca dashboard
+```
+
+Then open [http://127.0.0.1:7742](http://127.0.0.1:7742). The dashboard is entirely local—no cloud services, no browser-side policy evaluation.
+
+![Orca Dashboard Overview](https://raw.githubusercontent.com/christopherkarani/Orca/main/docs/images/dashboard-overview.png)
+
+The dashboard shows live stats (version, policy validity, secretless mode, license), quick actions, and a feed of recently prevented actions with full verification status.
+
+---
+
 ## See it in 30 seconds
 
 ```bash
@@ -229,22 +245,6 @@ orca run --secretless -- codex
 Orca filters the child environment before launch. Secret-like values are replaced with safe `orca-secret://...` references. The raw values are never written to policy, audit, or replay artifacts.
 
 Orca supports broker adapters for `env-file-dev`, `1password-cli`, and `macos-keychain`. See [docs/install.md](docs/install.md) for broker configuration.
-
----
-
-## Local dashboard
-
-Start the web UI for a visual view of sessions, policy status, and prevented actions:
-
-```bash
-orca dashboard
-```
-
-Then open [http://127.0.0.1:7742](http://127.0.0.1:7742). The dashboard is entirely local—no cloud services, no browser-side policy evaluation.
-
-![Orca Dashboard Overview](https://raw.githubusercontent.com/christopherkarani/Orca/main/docs/images/dashboard-overview.png)
-
-The dashboard shows live stats (version, policy validity, secretless mode, license), quick actions, and a feed of recently prevented actions with full verification status.
 
 ---
 
