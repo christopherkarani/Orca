@@ -1,115 +1,95 @@
-# Orca &nbsp;[![Version](https://img.shields.io/badge/version-1.1.0-blue)](https://github.com/christopherkarani/Orca/releases) [![License](https://img.shields.io/badge/license-Apache--2.0-green)](LICENSE) [![Zig](https://img.shields.io/badge/built%20with-Zig-orange)](https://ziglang.org) [![Build](https://img.shields.io/github/actions/workflow/status/christopherkarani/Orca/build.yml?branch=main&label=build)](https://github.com/christopherkarani/Orca/actions/workflows/build.yml) [![Stars](https://img.shields.io/github/stars/christopherkarani/Orca?style=social)](https://github.com/christopherkarani/Orca)
+# Orca &nbsp;[![Version](https://img.shields.io/badge/version-1.1.1-blue)](https://github.com/christopherkarani/Orca/releases) [![License](https://img.shields.io/badge/license-Apache--2.0-green)](LICENSE) [![Zig](https://img.shields.io/badge/built%20with-Zig-orange)](https://ziglang.org) [![Build](https://img.shields.io/github/actions/workflow/status/christopherkarani/Orca/build.yml?branch=main&label=build)](https://github.com/christopherkarani/Orca/actions/workflows/build.yml)
 
-**Unleash AI agents with confidence.**
+**i got tired of my AI agent trying to delete my entire repo**
 
-You type: *"Clean up my repo."*  
-Your AI agent thinks: `rm -rf *`  
-**Orca blocks it before it happens.**
+so i wrote Orca. it sits between you and your agent and says "nah" before bad stuff happens. that's it. that's the pitch.
 
-Orca wraps the AI tools you already use—Codex, Claude Code, OpenCode, OpenClaw, Hermes—and enforces local rules for commands, files, environment variables, and network calls. It is not an AI agent. It is the safety layer that lets you delegate to one.
+it wraps Codex, Claude Code, OpenCode, whatever you're using. intercepts tool calls at the MCP protocol level. stops `rm -rf`, `.env` reads, sketchy network calls. local-only, no cloud bs.
 
 ```bash
-# Install (macOS/Linux)
+# install (macOS/Linux)
 brew tap christopherkarani/orca && brew install --formula orca
 
-# Or install with the official script
+# or use the script
 curl -fsSL https://raw.githubusercontent.com/christopherkarani/Orca/main/scripts/install.sh | sh
 
-# Or build from source (Zig 0.15.2)
+# or build from source (Zig 0.15.2)
 zig build
 ```
 
 ---
 
-## Local dashboard
-
-Start the web UI for a visual view of sessions, policy status, and prevented actions:
+## quick demo
 
 ```bash
-orca dashboard
-```
-
-Then open [http://127.0.0.1:7742](http://127.0.0.1:7742). The dashboard is entirely local—no cloud services, no browser-side policy evaluation.
-
-![Orca Dashboard Overview](https://raw.githubusercontent.com/christopherkarani/Orca/main/docs/images/dashboard-overview.png)
-
-The dashboard shows live stats (version, policy validity, secretless mode, license), quick actions, and a feed of recently prevented actions with full verification status.
-
----
-
-## See it in 30 seconds
-
-```bash
-# 1. Check that Orca is ready
+# 1. check it's working
 orca doctor
 
-# 2. Initialize a policy
+# 2. make a policy
 orca init --preset generic-agent
 
-# 3. Watch Orca block a dangerous command—safely
+# 3. watch it block something bad (safely)
 orca demo blocked-action
 
-# 4. Review exactly what was prevented
+# 4. see what it caught
 orca replay --session last --only denied --verify
 ```
 
-No AI agent required for the demo. No files are harmed.
+no agent needed for the demo. nothing gets deleted.
 
 ---
 
-## Before Orca → After Orca
+## before vs after
 
-| Without Orca | With Orca |
+| without Orca | with Orca |
 |---|---|
-| You babysit every AI suggestion, afraid of `rm -rf` | You delegate. Orca intercepts and blocks the bad ones |
-| You have no idea what the agent actually did | You replay the full session—allowed, denied, and asked |
-| You copy `.env` into the agent context by accident | Orca redacts secrets before they reach the agent |
-| Your team has no shared rules | Commit `.orca/policy.yaml`—everyone runs under the same guardrails |
-| You discover damage after the fact | You see the block in real time, before anything happens |
+| sweating over every AI suggestion, scared of `rm -rf` | you delegate. Orca blocks the bad ones |
+| no idea what the agent actually did | replay the full session—allowed, denied, asked |
+| accidentally paste `.env` into agent context | secrets get redacted before the agent sees them |
+| team has zero shared rules | commit `.orca/policy.yaml`, everyone gets the same guardrails |
+| find out about damage after it happened | see the block in real time, before anything happens |
 
 ---
 
-## Three ways people use Orca
+## how people actually use it
 
-**1. Solo developer using Claude Code or Codex**
+**1. solo dev with Claude Code or Codex**
 ```bash
 orca run -- claude
-# Now code with confidence. Orca asks before risky actions.
+# code without hovering. Orca asks before sketchy actions.
 ```
 
-**2. Team lead standardizing AI tool usage**
+**2. team lead who wants consistent rules**
 ```bash
-# Commit a policy to your repo
+# commit a policy to your repo
 cat .orca/policy.yaml
-# Everyone who clones the repo runs under the same rules automatically
+# everyone who clones gets the same guardrails automatically
 ```
 
-**3. CI pipeline running autonomous benchmarks**
+**3. CI running autonomous stuff**
 ```bash
 orca run --ci -- codex --prompt "Refactor the auth module"
-# Non-interactive. No prompts. Dangerous actions are blocked, not asked.
+# non-interactive. no prompts. dangerous stuff gets blocked.
 ```
 
 ---
 
-## What Orca does
+## what it actually does
 
-AI agents can run shell commands, read files, and make network requests on your behalf. That is powerful—and risky. Orca gives you three things:
+AI agents can run shell commands, read files, make network requests. powerful. also risky. Orca gives you three things:
 
-1. **Block dangerous actions before they happen**  
-   Stop `rm -rf`, `sudo`, `curl | sh`, or reading `.env` and SSH keys.
+1. **block bad stuff before it happens**  
+   stops `rm -rf`, `sudo`, `curl | sh`, reading `.env` and SSH keys.
 
-2. **Replay and audit sessions**  
-   After an agent finishes, see exactly what it tried to do, what was allowed, and what was denied. Evidence is tamper-evident and locally stored.
+2. **replay and audit sessions**  
+   after the agent finishes, see exactly what it tried, what got allowed, what got denied. evidence is tamper-evident and stays local.
 
-3. **Share team guardrails**  
-   Commit `.orca/policy.yaml` to your repo so everyone on your team runs under the same rules.
+3. **share team guardrails**  
+   commit `.orca/policy.yaml` to your repo. everyone gets the same rules.
 
 ---
 
-## Quick Start
-
-### Already installed? Skip to step 2.
+## install
 
 ```bash
 # macOS
@@ -120,23 +100,23 @@ brew install --formula orca
 curl -fsSL https://raw.githubusercontent.com/christopherkarani/Orca/main/scripts/install.sh | sh
 ```
 
-> The script installs to `~/.local/bin` and automatically adds it to your shell's `PATH`. Open a new terminal (or run `source ~/.zshrc` / `.bashrc`) to use `orca` right away.
->
-> **Prefer to build?** See [docs/install.md](docs/install.md) for source builds, Windows installers, and Docker.
+script installs to `~/.local/bin` and adds to PATH. open a new terminal or `source ~/.zshrc`.
 
-After installing, verify:
+**want to build from source?** see [docs/install.md](docs/install.md).
+
+after installing:
 
 ```bash
 orca doctor
 ```
 
-### 1. Create your first policy
+### 1. make your first policy
 
 ```bash
 orca init --preset generic-agent
 ```
 
-This creates `.orca/policy.yaml` in the current directory:
+creates `.orca/policy.yaml`:
 
 ```yaml
 mode: ask
@@ -160,18 +140,18 @@ files:
       - "**/*token*"
 ```
 
-- `mode: ask` — Orca asks you before risky actions when you are interactive.
-- `mode: strict` — Block more aggressively.
-- `mode: observe` — Log decisions with minimal blocking.
-- `mode: ci` — Never prompt; `ask` becomes block. Ideal for automation.
+- `mode: ask` — asks before risky stuff when interactive
+- `mode: strict` — blocks more aggressively
+- `mode: observe` — logs decisions, minimal blocking
+- `mode: ci` — never prompts. `ask` becomes `block`. good for automation.
 
-Validate it:
+validate it:
 
 ```bash
 orca policy check .orca/policy.yaml
 ```
 
-### 2. Run an agent with guardrails
+### 2. run an agent with guardrails
 
 ```bash
 orca run -- codex
@@ -181,17 +161,17 @@ orca run -- openclaw
 orca run -- hermes
 ```
 
-Orca launches the agent as a child process, intercepts its tool calls, and enforces your policy in real time.
+Orca launches the agent as a child process, intercepts tool calls, enforces policy in real time.
 
-### 3. Review a session
+### 3. review a session
 
-After the agent exits:
+after the agent exits:
 
 ```bash
-# See everything that was denied
+# see everything that was denied
 orca replay --session last --only denied --verify
 
-# Export a report (requires local Pro/Team license)
+# export a report (requires local Pro/Team license)
 orca license activate dev-pro
 orca report --session last --format markdown
 
@@ -199,118 +179,117 @@ orca report --session last --format markdown
 orca replay --session last --only denied --json
 ```
 
-Session artifacts live under `.orca/sessions/<session-id>/`.
+session artifacts live under `.orca/sessions/<session-id>/`.
 
 ---
 
-## Architecture
+## architecture
 
-Orca is not a shell wrapper. It launches your agent as a child process and intercepts traffic at the **Model Context Protocol (MCP)** layer:
+Orca isn't a shell wrapper. it launches your agent as a child process and intercepts traffic at the **MCP** layer:
 
 ```
 ┌─────────────┐      ┌──────────────┐      ┌─────────────────┐
-│   You       │ ──▶  │    Orca      │ ──▶  │   AI Agent      │
-│             │      │  (wrapper)   │      │ (Codex, etc.)   │
+│   you       │ ──▶  │    Orca      │ ──▶  │   AI agent      │
 └─────────────┘      └──────────────┘      └─────────────────┘
                             │                        │
                             │                      tool call
                             │                        ▼
                      ┌──────────────┐      ┌─────────────────┐
-                     │  Policy      │ ◀──  │  MCP stdio      │
+                     │  policy      │ ◀──  │  MCP stdio      │
                      │  engine      │      │  proxy          │
                      └──────────────┘      └─────────────────┘
                             │
                     allow / deny / ask
 ```
 
-1. **MCP Stdio Proxy** — Sits between agent and MCP server, parsing JSON-RPC 2.0 messages. Every `tools/call`, `resources/read`, `prompts/get`, and `sampling/createMessage` is evaluated against policy before forwarding.
+1. **MCP stdio proxy** — sits between agent and MCP server, parses JSON-RPC 2.0 messages. every `tools/call`, `resources/read`, `prompts/get`, `sampling/createMessage` gets evaluated against policy before forwarding.
 
-2. **Command Guard** — Tokenizes and classifies shell commands by risk. `rm -rf /` is blocked; `git status` is allowed.
+2. **command guard** — tokenizes and classifies shell commands by risk. `rm -rf /` blocked. `git status` allowed.
 
-3. **Network Egress Guard** — Parses destinations and runs exfiltration heuristics (paste sites, tunneling services, base64-like URL components, high-entropy DNS labels).
+3. **network egress guard** — parses destinations, runs exfiltration heuristics (paste sites, tunneling services, base64-like URL components, high-entropy DNS labels).
 
-4. **Filesystem Staging** — Write operations are staged to `.orca/sessions/<id>/staging/` with diff review before apply.
+4. **filesystem staging** — writes get staged to `.orca/sessions/<id>/staging/` with diff review before apply.
 
-5. **Audit Hash Chain** — Every event is serialized deterministically, hashed, and chained. Replay verification detects tampering.
+5. **audit hash chain** — every event serialized deterministically, hashed, chained. replay detects tampering.
 
-6. **Honest Sandbox Backends** — The Linux backend probes for Landlock, seccomp-bpf, cgroups v2, and user namespaces. macOS/Windows use wrapper-mediated enforcement with clear capability reporting. Run `orca doctor` to see exactly what's active, partial, or unavailable on your OS.
+6. **honest sandbox backends** — Linux backend probes for Landlock, seccomp-bpf, cgroups v2, user namespaces. macOS/Windows use wrapper-mediated enforcement with clear capability reporting. `orca doctor` shows exactly what's active, partial, or unavailable on your OS. no "we secure everything" marketing bs.
 
-The strongest protection is the `orca run` wrapper, because Orca controls the agent process directly. Orca also offers host plugins for deeper integration with specific agents, but plugins are limited by each host's hook system. For maximum safety, always run the agent through `orca run`.
+strongest protection is the `orca run` wrapper. Orca controls the agent process directly. host plugins exist for deeper integration, but plugins are limited by each host's hook system. for max safety, always run through `orca run`.
 
 ---
 
-## Supported agents
+## supported agents
 
-| Agent | One-line guardrails |
-|-------|---------------------|
+| agent | one-liner |
+|-------|-----------|
 | **Codex** | `orca run -- codex` |
 | **Claude Code** | `orca run -- claude` |
 | **OpenCode** | `orca run -- opencode` |
 | **OpenClaw** | `orca run -- openclaw` |
 | **Hermes** | `orca run -- hermes` |
 
-Optional native plugins offer deeper integration. See [docs/integrations/](docs/integrations/) per agent.
+optional native plugins for deeper integration. see [docs/integrations/](docs/integrations/) per agent.
 
 ---
 
-## Secretless mode (optional)
+## secretless mode (optional)
 
-If you do not want the agent to receive raw credentials:
+don't want the agent seeing raw credentials?
 
 ```bash
 orca run --secretless -- codex
 ```
 
-Orca filters the child environment before launch. Secret-like values are replaced with safe `orca-secret://...` references. The raw values are never written to policy, audit, or replay artifacts.
+Orca filters the child environment before launch. secret-like values get replaced with safe `orca-secret://...` references. raw values never touch policy, audit, or replay artifacts.
 
-Orca supports broker adapters for `env-file-dev`, `1password-cli`, and `macos-keychain`. See [docs/install.md](docs/install.md) for broker configuration.
+broker adapters for `env-file-dev`, `1password-cli`, `macos-keychain`. see [docs/install.md](docs/install.md).
 
 ---
 
-## Policy reference
+## policy reference
 
-Policies live in `.orca/policy.yaml`. Key sections:
+policies live in `.orca/policy.yaml`:
 
-| Section | Controls |
+| section | controls |
 |---------|----------|
-| `commands` | Shell commands the agent can run |
-| `files` | File read/write access |
-| `network` | Outbound HTTP/HTTPS requests |
-| `credentials` | Secret broker configuration |
-| `services` | Service-scoped network rules (host, method, path) |
+| `commands` | shell commands the agent can run |
+| `files` | file read/write access |
+| `network` | outbound HTTP/HTTPS requests |
+| `credentials` | secret broker config |
+| `services` | service-scoped network rules |
 
-Full reference: [docs/policy.md](docs/policy.md)
-
----
-
-## Security model
-
-- **Local-first** — All policy decisions, audit logs, and replay evidence stay on your machine.
-- **Policy-driven** — You write the rules; Orca enforces them.
-- **Tamper-evident** — Session logs include hash-chain verification.
-- **Secret redaction** — Sensitive values are redacted before persistence.
-- **Fails closed** — If the network proxy fails during a run, Orca terminates the child process.
-
-Orca does not promise perfect sandboxing. It protects agents launched *through* Orca. Agents started outside the wrapper are not covered.
-
-Run `orca doctor` to check your platform capabilities.
+full ref: [docs/policy.md](docs/policy.md)
 
 ---
 
-## Documentation
+## security model
 
-- [Install](docs/install.md) — Prebuilt binaries, package managers, and build from source.
-- [Quickstart](docs/quickstart.md) — Step-by-step first session.
-- [Policy](docs/policy.md) — Full policy schema and examples.
-- [Replay](docs/replay.md) — Session review, verification, and reporting.
-- [Commands](docs/commands.md) — CLI reference.
-- [Plugin security model](docs/integrations/plugin-security-model.md)
-- [Plugin troubleshooting](docs/integrations/plugin-troubleshooting.md)
-- [Migration from Aegis to Orca](docs/migration-aegis-to-orca.md)
+- **local-first** — policy decisions, audit logs, replay evidence stay on your machine
+- **policy-driven** — you write the rules, Orca enforces them
+- **tamper-evident** — session logs with hash-chain verification
+- **secret redaction** — sensitive values redacted before persistence
+- **fails closed** — network proxy fails, Orca kills the child process
+
+Orca doesn't promise perfect sandboxing. it protects agents launched *through* Orca. agents started outside the wrapper aren't covered.
+
+run `orca doctor` to check your platform capabilities.
 
 ---
 
-## Development
+## docs
+
+- [install](docs/install.md) — binaries, package managers, source builds
+- [quickstart](docs/quickstart.md) — first session walkthrough
+- [policy](docs/policy.md) — full schema and examples
+- [replay](docs/replay.md) — session review and verification
+- [commands](docs/commands.md) — CLI reference
+- [plugin security](docs/integrations/plugin-security-model.md)
+- [plugin troubleshooting](docs/integrations/plugin-troubleshooting.md)
+- [migration from Aegis](docs/migration-aegis-to-orca.md)
+
+---
+
+## dev
 
 ```bash
 zig build
@@ -318,3 +297,5 @@ zig build test
 ./zig-out/bin/orca --help
 ./zig-out/bin/orca redteam --ci
 ```
+
+runs the built-in redteam suite. 10 deterministic fixtures against actual controls.
