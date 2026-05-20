@@ -40,11 +40,6 @@ interface OpenClawPluginApi {
     handler: (event: unknown, ctx: unknown) => unknown | Promise<unknown>,
     opts?: { priority?: number }
   ) => void;
-  registerHook?: (
-    events: string | string[],
-    handler: (event: unknown) => unknown | Promise<unknown>,
-    opts?: { hookName?: string; priority?: number; register?: boolean }
-  ) => void;
 }
 
 const SECRET_KEYS = [
@@ -163,12 +158,11 @@ async function callOrca(
 function isOnNoop(api: OpenClawPluginApi): boolean {
   if (typeof api.on !== 'function') return true;
 
-  // Heuristic: try registering a test hook. If api.on is a real typed-hook
-  // registrar, unknown hook names are silently ignored but still accepted.
-  // A no-op will also silently accept them, so this is not a definitive test.
-  // We use a secondary heuristic: check if the plugin source path suggests a
-  // bundled vs npm/global install.
-  const source = api.source || '';
+  // Heuristic: inspect the plugin source path. Bundled plugins (shipped
+  // inside OpenClaw's own /dist/extensions/) typically do not contain
+  // 'node_modules' or '.openclaw/npm'. npm/global installs do, and those
+  // are the ones where api.on is currently wired to a no-op.
+  const source = api.source;
   if (source.includes('node_modules') || source.includes('.openclaw/npm')) {
     return true;
   }
@@ -185,7 +179,7 @@ export default function orcaPlugin(api: OpenClawPluginApi): void {
   if (!orcaBin) {
     logger?.warn?.(
       '[orca] Binary not found in PATH or typical build paths. ' +
-        'Run: ./scripts/install-orca-plugin.sh openclaw project (or .\scripts\install-orca-plugin.ps1 openclaw project on Windows).'
+        'Run: ./scripts/install-orca-plugin.sh openclaw project (or .\\scripts\\install-orca-plugin.ps1 openclaw project on Windows).'
     );
     return;
   }

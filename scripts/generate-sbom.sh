@@ -2,7 +2,7 @@
 set -eu
 
 ARTIFACT_DIR="${1:-dist}"
-VERSION="${ORCA_VERSION:-1.1.0}"
+VERSION="${ORCA_VERSION:-$(cat VERSION 2>/dev/null || printf 1.1.0)}"
 RELEASE_PRODUCT="${ORCA_RELEASE_PRODUCT:-all}"
 OUTPUT="${ARTIFACT_DIR}/sbom.json"
 

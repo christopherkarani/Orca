@@ -22,30 +22,6 @@ function Copy-ReleasePayload($Root) {
     foreach ($path in @("docs", "policies", "schemas", "fixtures", "examples", "packages", "packaging", "scripts")) {
         Copy-Item $path -Destination $Root -Recurse
     }
-    $edgePaths = @(
-        "docs/edge",
-        "examples/edge",
-        "packages/edge",
-        "packaging/edge",
-        "docs/integrations/drone-safepoint.md",
-        "docs/integrations/drone-safety.md",
-        "scripts/install-edge.sh",
-        "scripts/build-edge-release.sh",
-        "scripts/edge-arm64-smoke-test.sh",
-        "scripts/edge-demo.sh",
-        "scripts/edge-package-smoke-test.sh",
-        "scripts/edge-release-smoke-test.sh",
-        "scripts/edge-smoke-test.sh"
-    )
-    foreach ($path in $edgePaths) {
-        $fullPath = Join-Path $Root $path
-        if (Test-Path -LiteralPath $fullPath) {
-            Remove-Item -LiteralPath $fullPath -Recurse -Force
-        }
-    }
-    foreach ($pattern in @("schemas/edge-*", "schemas/safety-report*", "packaging/systemd/edge*")) {
-        Remove-Item -Path (Join-Path $Root $pattern) -Recurse -Force -ErrorAction SilentlyContinue
-    }
 }
 
 if (Test-Path -LiteralPath $DistDir) { Remove-Item -LiteralPath $DistDir -Recurse -Force }
@@ -97,7 +73,7 @@ Write-Host "Wrote $checksumsPath"
 $sbomPath = Join-Path $DistDir "sbom.json"
 $sbom = [ordered]@{
     sbom_format = "placeholder"
-    name = "orca-core-edge"
+    name = "orca"
     version = $Version
     generator = "scripts/build-release.ps1"
     status = "hook-only"

@@ -1,7 +1,7 @@
 #!/usr/bin/env sh
 set -eu
 
-VERSION="${ORCA_VERSION:-1.1.0}"
+VERSION="${ORCA_VERSION:-$(cat VERSION 2>/dev/null || printf 1.1.0)}"
 DIST_DIR="${ORCA_DIST_DIR:-dist}"
 OUT_DIR="${ORCA_PACKAGE_MANIFEST_DIR:-${DIST_DIR}/package-manifests}"
 CHECKSUMS="${DIST_DIR}/checksums.txt"

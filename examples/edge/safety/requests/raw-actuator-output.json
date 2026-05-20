@@ -1,9 +1,0 @@
-{
-  "command_id": "safety-raw-actuator-output",
-  "vehicle_id": "edge-vehicle-1",
-  "action": "raw_actuator_output",
-  "actor": "fake-safety-scenario",
-  "timestamp_ms": 1000100,
-  "timestamp_source": "monotonic",
-  "source": "fake_adapter"
-}

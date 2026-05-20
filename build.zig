@@ -17,12 +17,6 @@ pub fn build(b: *std.Build) void {
     build_options.addOption([]const u8, "build_date", build_date);
     const build_options_mod = build_options.createModule();
 
-    const edge_schema_documents = b.addOptions();
-    edge_schema_documents.addOption([]const u8, "edge_policy_v1", @embedFile("schemas/edge-policy-v1.json"));
-    edge_schema_documents.addOption([]const u8, "edge_event_v1", @embedFile("schemas/edge-event-v1.json"));
-    edge_schema_documents.addOption([]const u8, "safety_report_v1", @embedFile("schemas/safety-report-v1.json"));
-    const edge_schema_documents_mod = edge_schema_documents.createModule();
-
     const core_schema_documents = b.addOptions();
     core_schema_documents.addOption([]const u8, "policy_v1", @embedFile("schemas/policy-v1.json"));
     core_schema_documents.addOption([]const u8, "event_v1", @embedFile("schemas/event-v1.json"));
@@ -66,15 +60,6 @@ pub fn build(b: *std.Build) void {
         },
     });
 
-    const orca_edge_mod = b.addModule("orca_edge", .{
-        .root_source_file = b.path("packages/edge/src/root.zig"),
-        .target = target,
-        .optimize = optimize,
-        .imports = &.{
-            .{ .name = "orca_core", .module = orca_core_mod },
-        },
-    });
-
     const exe = b.addExecutable(.{
         .name = "orca",
         .root_module = b.createModule(.{
@@ -92,23 +77,6 @@ pub fn build(b: *std.Build) void {
     const install_orca = b.addInstallArtifact(exe, .{});
     const install_orca_step = b.step("install-orca", "Install Orca CLI only");
     install_orca_step.dependOn(&install_orca.step);
-
-    const edge_exe_mod = b.createModule(.{
-        .root_source_file = b.path("packages/edge/src/main.zig"),
-        .target = target,
-        .optimize = optimize,
-        .imports = &.{
-            .{ .name = "orca_edge", .module = orca_edge_mod },
-            .{ .name = "edge_schema_documents", .module = edge_schema_documents_mod },
-            .{ .name = "build_options", .module = build_options_mod },
-        },
-    });
-    const edge_exe = b.addExecutable(.{
-        .name = "edge",
-        .root_module = edge_exe_mod,
-    });
-
-    b.installArtifact(edge_exe);
 
     const run_step = b.step("run", "Run the Orca CLI");
     const run_cmd = b.addRunArtifact(exe);
@@ -162,41 +130,6 @@ pub fn build(b: *std.Build) void {
     });
     const run_cli_contract_tests = b.addRunArtifact(cli_contract_tests);
 
-    const edge_package_tests = b.addTest(.{
-        .root_module = orca_edge_mod,
-    });
-    const run_edge_package_tests = b.addRunArtifact(edge_package_tests);
-
-    const edge_contract_tests = b.addTest(.{
-        .root_module = b.createModule(.{
-            .root_source_file = b.path("packages/edge/tests/contract.zig"),
-            .target = target,
-            .optimize = optimize,
-            .imports = &.{
-                .{ .name = "orca_edge", .module = orca_edge_mod },
-            },
-        }),
-    });
-    const run_edge_contract_tests = b.addRunArtifact(edge_contract_tests);
-
-    const edge_exe_tests = b.addTest(.{
-        .root_module = edge_exe.root_module,
-    });
-    const run_edge_exe_tests = b.addRunArtifact(edge_exe_tests);
-
-    const phase23_contract_tests = b.addTest(.{
-        .root_module = b.createModule(.{
-            .root_source_file = b.path("tests/phase23_contract.zig"),
-            .target = target,
-            .optimize = optimize,
-            .imports = &.{
-                .{ .name = "orca_core", .module = orca_core_mod },
-                .{ .name = "orca_edge", .module = orca_edge_mod },
-            },
-        }),
-    });
-    const run_phase23_contract_tests = b.addRunArtifact(phase23_contract_tests);
-
     const phase25_hardening_tests = b.addTest(.{
         .root_module = b.createModule(.{
             .root_source_file = b.path("tests/phase25_cli_hardening.zig"),
@@ -208,212 +141,6 @@ pub fn build(b: *std.Build) void {
         }),
     });
     const run_phase25_hardening_tests = b.addRunArtifact(phase25_hardening_tests);
-
-    const phase26_edge_domain_tests = b.addTest(.{
-        .root_module = b.createModule(.{
-            .root_source_file = b.path("tests/phase26_edge_domain.zig"),
-            .target = target,
-            .optimize = optimize,
-            .imports = &.{
-                .{ .name = "orca_edge", .module = orca_edge_mod },
-            },
-        }),
-    });
-    const run_phase26_edge_domain_tests = b.addRunArtifact(phase26_edge_domain_tests);
-
-    const phase27_edge_policy_engine_tests = b.addTest(.{
-        .root_module = b.createModule(.{
-            .root_source_file = b.path("tests/phase27_edge_policy_engine.zig"),
-            .target = target,
-            .optimize = optimize,
-            .imports = &.{
-                .{ .name = "orca_edge", .module = orca_edge_mod },
-            },
-        }),
-    });
-    const run_phase27_edge_policy_engine_tests = b.addRunArtifact(phase27_edge_policy_engine_tests);
-
-    const phase28_mavlink_gateway_tests = b.addTest(.{
-        .root_module = b.createModule(.{
-            .root_source_file = b.path("tests/phase28_mavlink_gateway.zig"),
-            .target = target,
-            .optimize = optimize,
-            .imports = &.{
-                .{ .name = "orca_edge", .module = orca_edge_mod },
-            },
-        }),
-    });
-    const run_phase28_mavlink_gateway_tests = b.addRunArtifact(phase28_mavlink_gateway_tests);
-
-    const phase29_px4_sitl_tests = b.addTest(.{
-        .root_module = b.createModule(.{
-            .root_source_file = b.path("tests/phase29_px4_sitl.zig"),
-            .target = target,
-            .optimize = optimize,
-            .imports = &.{
-                .{ .name = "orca_edge", .module = orca_edge_mod },
-            },
-        }),
-    });
-    const run_phase29_px4_sitl_tests = b.addRunArtifact(phase29_px4_sitl_tests);
-
-    const phase30_ardupilot_sitl_tests = b.addTest(.{
-        .root_module = b.createModule(.{
-            .root_source_file = b.path("tests/phase30_ardupilot_sitl.zig"),
-            .target = target,
-            .optimize = optimize,
-            .imports = &.{
-                .{ .name = "orca_edge", .module = orca_edge_mod },
-            },
-        }),
-    });
-    const run_phase30_ardupilot_sitl_tests = b.addRunArtifact(phase30_ardupilot_sitl_tests);
-
-    const phase31_flight_safety_tests = b.addTest(.{
-        .root_module = b.createModule(.{
-            .root_source_file = b.path("tests/phase31_flight_safety_enforcement.zig"),
-            .target = target,
-            .optimize = optimize,
-            .imports = &.{
-                .{ .name = "orca_edge", .module = orca_edge_mod },
-            },
-        }),
-    });
-    const run_phase31_flight_safety_tests = b.addRunArtifact(phase31_flight_safety_tests);
-
-    const phase32_operator_emergency_tests = b.addTest(.{
-        .root_module = b.createModule(.{
-            .root_source_file = b.path("tests/phase32_operator_emergency.zig"),
-            .target = target,
-            .optimize = optimize,
-            .imports = &.{
-                .{ .name = "orca_edge", .module = orca_edge_mod },
-            },
-        }),
-    });
-    const run_phase32_operator_emergency_tests = b.addRunArtifact(phase32_operator_emergency_tests);
-
-    const phase33_edge_audit_replay_tests = b.addTest(.{
-        .root_module = b.createModule(.{
-            .root_source_file = b.path("tests/phase33_edge_audit_replay_safety_case.zig"),
-            .target = target,
-            .optimize = optimize,
-            .imports = &.{
-                .{ .name = "orca_edge", .module = orca_edge_mod },
-            },
-        }),
-    });
-    const run_phase33_edge_audit_replay_tests = b.addRunArtifact(phase33_edge_audit_replay_tests);
-
-    const phase34_edge_redteam_tests = b.addTest(.{
-        .root_module = b.createModule(.{
-            .root_source_file = b.path("tests/phase34_edge_redteam_fault_injection.zig"),
-            .target = target,
-            .optimize = optimize,
-            .imports = &.{
-                .{ .name = "orca_edge", .module = orca_edge_mod },
-            },
-        }),
-    });
-    const run_phase34_edge_redteam_tests = b.addRunArtifact(phase34_edge_redteam_tests);
-
-    const phase35_edge_data_guard_tests = b.addTest(.{
-        .root_module = b.createModule(.{
-            .root_source_file = b.path("tests/phase35_edge_data_guard.zig"),
-            .target = target,
-            .optimize = optimize,
-            .imports = &.{
-                .{ .name = "orca_edge", .module = orca_edge_mod },
-            },
-        }),
-    });
-    const run_phase35_edge_data_guard_tests = b.addRunArtifact(phase35_edge_data_guard_tests);
-
-    const phase36_edge_deployment_tests = b.addTest(.{
-        .root_module = b.createModule(.{
-            .root_source_file = b.path("tests/phase36_edge_deployment_release.zig"),
-            .target = target,
-            .optimize = optimize,
-            .imports = &.{
-                .{ .name = "orca_edge", .module = orca_edge_mod },
-            },
-        }),
-    });
-    const run_phase36_edge_deployment_tests = b.addRunArtifact(phase36_edge_deployment_tests);
-
-    const phase37_edge_runtime_health_tests = b.addTest(.{
-        .root_module = b.createModule(.{
-            .root_source_file = b.path("tests/phase37_edge_runtime_health.zig"),
-            .target = target,
-            .optimize = optimize,
-            .imports = &.{
-                .{ .name = "orca_edge", .module = orca_edge_mod },
-            },
-        }),
-    });
-    const run_phase37_edge_runtime_health_tests = b.addRunArtifact(phase37_edge_runtime_health_tests);
-
-    const phase38_edge_docs_customer_proof_tests = b.addTest(.{
-        .root_module = b.createModule(.{
-            .root_source_file = b.path("tests/phase38_edge_docs_demos_customer_proof.zig"),
-            .target = target,
-            .optimize = optimize,
-            .imports = &.{
-                .{ .name = "orca_edge", .module = orca_edge_mod },
-                .{ .name = "orca_edge_main", .module = edge_exe_mod },
-                .{ .name = "edge_schema_documents", .module = edge_schema_documents_mod },
-                .{ .name = "build_options", .module = build_options_mod },
-            },
-        }),
-    });
-    const run_phase38_edge_docs_customer_proof_tests = b.addRunArtifact(phase38_edge_docs_customer_proof_tests);
-
-    const phase39_customer_pilot_tests = b.addTest(.{
-        .root_module = b.createModule(.{
-            .root_source_file = b.path("tests/phase39_customer_pilot_package.zig"),
-            .target = target,
-            .optimize = optimize,
-            .imports = &.{
-                .{ .name = "orca_edge_main", .module = edge_exe_mod },
-            },
-        }),
-    });
-    const run_phase39_customer_pilot_tests = b.addRunArtifact(phase39_customer_pilot_tests);
-
-    const phase40_security_safety_tests = b.addTest(.{
-        .root_module = b.createModule(.{
-            .root_source_file = b.path("tests/phase40_security_safety_hardening.zig"),
-            .target = target,
-            .optimize = optimize,
-            .imports = &.{
-                .{ .name = "orca_edge", .module = orca_edge_mod },
-                .{ .name = "orca_edge_main", .module = edge_exe_mod },
-            },
-        }),
-    });
-    const run_phase40_security_safety_tests = b.addRunArtifact(phase40_security_safety_tests);
-
-    const phase41_release_tests = b.addTest(.{
-        .root_module = b.createModule(.{
-            .root_source_file = b.path("tests/phase41_edge_cli_production_release.zig"),
-            .target = target,
-            .optimize = optimize,
-            .imports = &.{
-                .{ .name = "orca", .module = orca_mod },
-                .{ .name = "orca_edge_main", .module = edge_exe_mod },
-            },
-        }),
-    });
-    const run_phase41_release_tests = b.addRunArtifact(phase41_release_tests);
-
-    const phase42_customer_acquisition_tests = b.addTest(.{
-        .root_module = b.createModule(.{
-            .root_source_file = b.path("tests/phase42_drone_customer_acquisition.zig"),
-            .target = target,
-            .optimize = optimize,
-        }),
-    });
-    const run_phase42_customer_acquisition_tests = b.addRunArtifact(phase42_customer_acquisition_tests);
 
     const phase36_codex_plugin_tests = b.addTest(.{
         .root_module = b.createModule(.{
@@ -480,28 +207,7 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&run_core_contract_tests.step);
     test_step.dependOn(&run_cli_package_tests.step);
     test_step.dependOn(&run_cli_contract_tests.step);
-    test_step.dependOn(&run_edge_package_tests.step);
-    test_step.dependOn(&run_edge_contract_tests.step);
-    test_step.dependOn(&run_edge_exe_tests.step);
-    test_step.dependOn(&run_phase23_contract_tests.step);
     test_step.dependOn(&run_phase25_hardening_tests.step);
-    test_step.dependOn(&run_phase26_edge_domain_tests.step);
-    test_step.dependOn(&run_phase27_edge_policy_engine_tests.step);
-    test_step.dependOn(&run_phase28_mavlink_gateway_tests.step);
-    test_step.dependOn(&run_phase29_px4_sitl_tests.step);
-    test_step.dependOn(&run_phase30_ardupilot_sitl_tests.step);
-    test_step.dependOn(&run_phase31_flight_safety_tests.step);
-    test_step.dependOn(&run_phase32_operator_emergency_tests.step);
-    test_step.dependOn(&run_phase33_edge_audit_replay_tests.step);
-    test_step.dependOn(&run_phase34_edge_redteam_tests.step);
-    test_step.dependOn(&run_phase35_edge_data_guard_tests.step);
-    test_step.dependOn(&run_phase36_edge_deployment_tests.step);
-    test_step.dependOn(&run_phase37_edge_runtime_health_tests.step);
-    test_step.dependOn(&run_phase38_edge_docs_customer_proof_tests.step);
-    test_step.dependOn(&run_phase39_customer_pilot_tests.step);
-    test_step.dependOn(&run_phase40_security_safety_tests.step);
-    test_step.dependOn(&run_phase41_release_tests.step);
-    test_step.dependOn(&run_phase42_customer_acquisition_tests.step);
     test_step.dependOn(&run_phase36_codex_plugin_tests.step);
     test_step.dependOn(&run_phase37_claude_plugin_tests.step);
     test_step.dependOn(&run_phase38_plugin_security_tests.step);

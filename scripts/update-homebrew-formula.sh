@@ -18,24 +18,32 @@ fail() {
 
 [ -n "$VERSION" ] || fail "usage: $0 <version>  (or set ORCA_VERSION)"
 
-BASE_URL="https://github.com/christopherkarani/Orca/releases/download/v${VERSION}"
+DIST_DIR="${ORCA_DIST_DIR:-}"
+USE_LOCAL=0
+if [ -n "$DIST_DIR" ] && [ -f "${DIST_DIR}/checksums.txt" ]; then
+  USE_LOCAL=1
+  printf 'Using local release assets from %s\n' "$DIST_DIR"
+fi
 
-printf 'Downloading release assets for Orca %s...\n' "$VERSION"
+if [ "$USE_LOCAL" -eq 0 ]; then
+  BASE_URL="https://github.com/christopherkarani/Orca/releases/download/v${VERSION}"
+  printf 'Downloading release assets for Orca %s...\n' "$VERSION"
 
-for plat in darwin-arm64 darwin-amd64 linux-arm64 linux-amd64; do
-  artifact="orca-v${VERSION}-${plat}.tar.gz"
-  url="${BASE_URL}/${artifact}"
-  output="${TMP_DIR}/${artifact}"
+  for plat in darwin-arm64 darwin-amd64 linux-arm64 linux-amd64; do
+    artifact="orca-v${VERSION}-${plat}.tar.gz"
+    url="${BASE_URL}/${artifact}"
+    output="${TMP_DIR}/${artifact}"
 
-  printf '  → %s\n' "$artifact"
-  if command -v curl >/dev/null 2>&1; then
-    curl -fsSL -o "$output" "$url" || fail "failed to download $url"
-  elif command -v wget >/dev/null 2>&1; then
-    wget -q -O "$output" "$url" || fail "failed to download $url"
-  else
-    fail "curl or wget is required"
-  fi
-done
+    printf '  → %s\n' "$artifact"
+    if command -v curl >/dev/null 2>&1; then
+      curl -fsSL -o "$output" "$url" || fail "failed to download $url"
+    elif command -v wget >/dev/null 2>&1; then
+      wget -q -O "$output" "$url" || fail "failed to download $url"
+    else
+      fail "curl or wget is required"
+    fi
+  done
+fi
 
 sha256_file() {
   file="$1"
@@ -48,10 +56,21 @@ sha256_file() {
   fi
 }
 
-darwin_arm64="$(sha256_file "${TMP_DIR}/orca-v${VERSION}-darwin-arm64.tar.gz")"
-darwin_amd64="$(sha256_file "${TMP_DIR}/orca-v${VERSION}-darwin-amd64.tar.gz")"
-linux_arm64="$(sha256_file "${TMP_DIR}/orca-v${VERSION}-linux-arm64.tar.gz")"
-linux_amd64="$(sha256_file "${TMP_DIR}/orca-v${VERSION}-linux-amd64.tar.gz")"
+if [ "$USE_LOCAL" -eq 1 ]; then
+  checksum_for() {
+    name="$1"
+    awk -v name="$name" '$2 == name {print $1}' "${DIST_DIR}/checksums.txt"
+  }
+  darwin_arm64="$(checksum_for "orca-v${VERSION}-darwin-arm64.tar.gz")"
+  darwin_amd64="$(checksum_for "orca-v${VERSION}-darwin-amd64.tar.gz")"
+  linux_arm64="$(checksum_for "orca-v${VERSION}-linux-arm64.tar.gz")"
+  linux_amd64="$(checksum_for "orca-v${VERSION}-linux-amd64.tar.gz")"
+else
+  darwin_arm64="$(sha256_file "${TMP_DIR}/orca-v${VERSION}-darwin-arm64.tar.gz")"
+  darwin_amd64="$(sha256_file "${TMP_DIR}/orca-v${VERSION}-darwin-amd64.tar.gz")"
+  linux_arm64="$(sha256_file "${TMP_DIR}/orca-v${VERSION}-linux-arm64.tar.gz")"
+  linux_amd64="$(sha256_file "${TMP_DIR}/orca-v${VERSION}-linux-amd64.tar.gz")"
+fi
 
 printf 'Generating formula...\n'
 
