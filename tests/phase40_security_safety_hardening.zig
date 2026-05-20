@@ -1,6 +1,6 @@
 const std = @import("std");
-const edge = @import("aegis_edge");
-const edge_main = @import("aegis_edge_main");
+const edge = @import("orca_edge");
+const edge_main = @import("orca_edge_main");
 
 const domain = edge.domain;
 const safety = edge.safety;

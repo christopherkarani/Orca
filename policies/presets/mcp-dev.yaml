@@ -1,5 +1,5 @@
-# Aegis preset: mcp-dev
-# Conservative preset for developing stdio MCP servers through Aegis.
+# Orca preset: mcp-dev
+# Conservative preset for developing stdio MCP servers through Orca.
 # Manifests still need explicit command/hash binding; this policy does not trust servers by name alone.
 version: 1
 mode: ask

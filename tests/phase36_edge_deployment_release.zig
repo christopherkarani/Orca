@@ -1,5 +1,5 @@
 const std = @import("std");
-const edge = @import("aegis_edge");
+const edge = @import("orca_edge");
 
 fn readFile(allocator: std.mem.Allocator, path: []const u8) ![]u8 {
     return std.fs.cwd().readFileAlloc(allocator, path, 512 * 1024);

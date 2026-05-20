@@ -1,6 +1,6 @@
 const std = @import("std");
-const aegis = @import("aegis");
-const edge_main = @import("aegis_edge_main");
+const orca = @import("orca");
+const edge_main = @import("orca_edge_main");
 
 fn readFile(path: []const u8) ![]u8 {
     return std.fs.cwd().readFileAlloc(std.testing.allocator, path, 1024 * 1024);
@@ -33,7 +33,7 @@ test "phase 41 CLI and Edge version commands expose production release metadata"
     var stdout_stream = std.io.fixedBufferStream(&stdout_buf);
     var stderr_stream = std.io.fixedBufferStream(&stderr_buf);
 
-    try std.testing.expectEqual(@as(u8, 0), try aegis.cli.run(&.{ "version", "--json" }, stdout_stream.writer(), stderr_stream.writer()));
+    try std.testing.expectEqual(@as(u8, 0), try orca.cli.run(&.{ "version", "--json" }, stdout_stream.writer(), stderr_stream.writer()));
     try std.testing.expectEqualStrings("", stderr_stream.getWritten());
     var cli_json = try std.json.parseFromSlice(std.json.Value, std.testing.allocator, stdout_stream.getWritten(), .{});
     defer cli_json.deinit();
@@ -45,7 +45,7 @@ test "phase 41 CLI and Edge version commands expose production release metadata"
 
     stdout_stream.reset();
     stderr_stream.reset();
-    try std.testing.expectEqual(@as(u8, 0), try aegis.cli.run(&.{"version"}, stdout_stream.writer(), stderr_stream.writer()));
+    try std.testing.expectEqual(@as(u8, 0), try orca.cli.run(&.{"version"}, stdout_stream.writer(), stderr_stream.writer()));
     try expectContains(stdout_stream.getWritten(), "orca");
     try expectContains(stdout_stream.getWritten(), "stable");
 
@@ -69,9 +69,9 @@ test "phase 41 CLI and Edge version commands expose production release metadata"
 
 test "phase 41 release artifact contract includes CLI Edge manifest checksums SBOM and signing status" {
     var name_buf: [128]u8 = undefined;
-    try std.testing.expectEqualStrings("orca-v1.1.0-darwin-amd64.tar.gz", try aegis.release.artifactName(&name_buf, "orca", "1.1.0", .{ .os = "darwin", .arch = "amd64", .extension = "tar.gz" }));
-    try std.testing.expectEqualStrings("orca-v1.1.0-windows-amd64.zip", try aegis.release.artifactName(&name_buf, "orca", "1.1.0", .{ .os = "windows", .arch = "amd64", .extension = "zip" }));
-    try std.testing.expectEqualStrings("edge-v1.1.0-linux-arm64.tar.gz", try aegis.release.artifactName(&name_buf, "edge", "1.1.0", .{ .os = "linux", .arch = "arm64", .extension = "tar.gz" }));
+    try std.testing.expectEqualStrings("orca-v1.1.0-darwin-amd64.tar.gz", try orca.release.artifactName(&name_buf, "orca", "1.1.0", .{ .os = "darwin", .arch = "amd64", .extension = "tar.gz" }));
+    try std.testing.expectEqualStrings("orca-v1.1.0-windows-amd64.zip", try orca.release.artifactName(&name_buf, "orca", "1.1.0", .{ .os = "windows", .arch = "amd64", .extension = "zip" }));
+    try std.testing.expectEqualStrings("edge-v1.1.0-linux-arm64.tar.gz", try orca.release.artifactName(&name_buf, "edge", "1.1.0", .{ .os = "linux", .arch = "arm64", .extension = "tar.gz" }));
 
     const cli_names = [_][]const u8{
         "orca-v1.1.0-darwin-amd64.tar.gz",

@@ -1,7 +1,7 @@
 const std = @import("std");
 
-const core_api = @import("aegis_core").api;
-const core = @import("aegis_core").core;
+const core_api = @import("orca_core").api;
+const core = @import("orca_core").core;
 
 pub fn createBlockedActionSession(allocator: std.mem.Allocator, workspace_root: []const u8) ![]u8 {
     const now = core.time.Timestamp.now();

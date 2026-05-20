@@ -1,7 +1,7 @@
 const std = @import("std");
 const builtin = @import("builtin");
 
-const core = @import("aegis_core").core;
+const core = @import("orca_core").core;
 const event = core.event;
 const platform = core.platform;
 const process = core.process;
@@ -398,7 +398,7 @@ test "workspace detection falls back to start directory outside git" {
 
     var suffix_buf: [8]u8 = undefined;
     const suffix = try util.randomHexSuffix(&suffix_buf);
-    const relative_name = try std.fmt.allocPrint(std.testing.allocator, "aegis-non-git-{s}", .{suffix});
+    const relative_name = try std.fmt.allocPrint(std.testing.allocator, "orca-non-git-{s}", .{suffix});
     defer std.testing.allocator.free(relative_name);
     const tmp_path = try std.fs.path.join(std.testing.allocator, &.{ tmp_parent, relative_name });
     defer std.testing.allocator.free(tmp_path);
@@ -484,7 +484,7 @@ test "child non-zero exit code is propagated" {
 
 test "missing child command returns useful typed error" {
     try std.testing.expectError(error.CommandNotFound, run(std.testing.allocator, .{
-        .command = "aegis-definitely-missing-command",
+        .command = "orca-definitely-missing-command",
         .workspace = ".",
         .stdio = .ignore,
     }));

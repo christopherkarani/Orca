@@ -1,4 +1,4 @@
-# Aegis preset: claude-code
+# Orca preset: claude-code
 # Generic/experimental: this assumes a normal local coding-agent workflow, not private Claude Code internals.
 # Keep destructive commands and package installs behind ask until you tune the policy.
 version: 1

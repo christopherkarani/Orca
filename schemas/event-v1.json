@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://github.com/chriskarani/aegis/schemas/event-v1.json",
-  "title": "Aegis Audit Event v1",
+  "$id": "https://github.com/chriskarani/orca/schemas/event-v1.json",
+  "title": "Orca Audit Event v1",
   "type": "object",
   "additionalProperties": false,
   "required": [

@@ -1,10 +1,10 @@
-name: aegis
+name: orca
 on:
   push:
   pull_request:
 
 jobs:
-  aegis:
+  orca:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -13,11 +13,11 @@ jobs:
       - name: Test
         run: zig build test
       - name: Red-team
-        run: ./zig-out/bin/orca redteam --ci --json > aegis-redteam.json
+        run: ./zig-out/bin/orca redteam --ci --json > orca-redteam.json
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: aegis-artifacts
+          name: orca-artifacts
           path: |
             .orca/**
-            aegis-redteam.json
+            orca-redteam.json

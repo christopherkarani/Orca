@@ -1,10 +1,10 @@
 const std = @import("std");
 const builtin = @import("builtin");
-const core = @import("aegis_core").core;
+const core = @import("orca_core").core;
 const supervisor = @import("../core/supervisor.zig");
-const core_api = @import("aegis_core").api;
-const aegis_mcp = @import("../mcp/mod.zig");
-const aegis_policy = @import("aegis_core").policy;
+const core_api = @import("orca_core").api;
+const orca_mcp = @import("../mcp/mod.zig");
+const orca_policy = @import("orca_core").policy;
 const sandbox = @import("../sandbox/mod.zig");
 const resource_root = @import("../resource_root.zig");
 
@@ -304,7 +304,7 @@ fn countMcpManifests(allocator: std.mem.Allocator, workspace_root: []const u8) M
             continue;
         };
         defer allocator.free(manifest_path);
-        var manifest = aegis_mcp.manifests.loadFile(allocator, manifest_path) catch {
+        var manifest = orca_mcp.manifests.loadFile(allocator, manifest_path) catch {
             counts.invalid += 1;
             continue;
         };
@@ -468,7 +468,7 @@ test "doctor detects valid policy in current workspace" {
     {
         const file = try tmp.dir.createFile(".orca/policy.yaml", .{});
         defer file.close();
-        try file.writeAll(aegis_policy.presets.agentPresetText(.generic_agent));
+        try file.writeAll(orca_policy.presets.agentPresetText(.generic_agent));
     }
 
     var stdout_buf: [8192]u8 = undefined;

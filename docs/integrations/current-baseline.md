@@ -86,9 +86,9 @@ The repo is organized as a monorepo with three products:
 
 | Package | Path | Re-exports |
 |---------|------|------------|
-| `aegis_core` | `packages/core/src/root.zig` | api, actions, schemas, abi (experimental), redteam |
-| `aegis_cli` | `packages/cli/src/root.zig` | CLI surface + intercept/MCP/sandbox wrappers |
-| `aegis_edge` | `packages/edge/src/root.zig` | domain, policy, safety, audit, MAVLink, operator, emergency, data_guard |
+| `orca_core` | `packages/core/src/root.zig` | api, actions, schemas, abi (experimental), redteam |
+| `orca_cli` | `packages/cli/src/root.zig` | CLI surface + intercept/MCP/sandbox wrappers |
+| `orca_edge` | `packages/edge/src/root.zig` | domain, policy, safety, audit, MAVLink, operator, emergency, data_guard |
 
 ### Edge Modules (`packages/edge/src/`)
 

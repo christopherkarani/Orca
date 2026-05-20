@@ -1,5 +1,5 @@
 const std = @import("std");
-const core = @import("aegis_core");
+const core = @import("orca_core");
 
 const domain = @import("../domain/mod.zig");
 const emergency = @import("../emergency/mod.zig");

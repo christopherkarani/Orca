@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://aegis.local/schemas/edge-event-v1.json",
+  "$id": "https://orca.local/schemas/edge-event-v1.json",
   "title": "Edge event schema v1",
   "description": "Versioned Edge audit event surface for local policy decisions, MAVLink mediation, fake-PX4/fake-ArduPilot scenarios, and opt-in PX4/ArduPilot SITL simulation evidence. It does not represent ROS2, real hardware, or real flight.",
   "type": "object",

@@ -1,5 +1,5 @@
 const std = @import("std");
-const aegis_core = @import("aegis_core");
+const orca_core = @import("orca_core");
 
 pub const domain = @import("domain/mod.zig");
 pub const mavlink = @import("mavlink/mod.zig");
@@ -18,7 +18,7 @@ pub const health = @import("health/mod.zig");
 
 pub const phase = "37-reliability-watchdog-runtime-health";
 pub const installed_message = "Edge reliability watchdog and runtime-health diagnostics are installed for deterministic fake-adapter, PX4 SITL, ArduPilot SITL, and hardware-bench-preparation evaluation evidence only; it is not ready for real flight.";
-pub const core = aegis_core;
+pub const core = orca_core;
 
 pub const CapabilityStatus = enum {
     active,
@@ -115,7 +115,7 @@ pub const SafetyDecisionKind = enum {
     allow,
     deny,
 
-    pub fn toCoreDecision(self: SafetyDecisionKind) aegis_core.decision.DecisionResult {
+    pub fn toCoreDecision(self: SafetyDecisionKind) orca_core.decision.DecisionResult {
         return switch (self) {
             .unavailable => .observe,
             .allow => .allow,

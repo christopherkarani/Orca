@@ -1,5 +1,5 @@
 const std = @import("std");
-const edge = @import("aegis_edge");
+const edge = @import("orca_edge");
 
 test "phase 33 safety-case generation creates hash-chained edge session and reports" {
     const allocator = std.testing.allocator;

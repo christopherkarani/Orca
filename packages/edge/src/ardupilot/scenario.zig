@@ -25,7 +25,7 @@ pub const RunResult = struct {
     environment: connection.Environment,
     vehicle: vehicle_kind.VehicleKind,
     skipped: bool = false,
-    decision: ?@import("aegis_core").decision.DecisionResult = null,
+    decision: ?@import("orca_core").decision.DecisionResult = null,
     forwarded: bool = false,
     blocked: bool = false,
     artifact_dir: ?[]u8 = null,
@@ -52,7 +52,7 @@ const ScenarioSpec = struct {
     battery_percent: f64 = 80,
     state_freshness: domain.state.StateFreshness = .fresh,
     approval_seed: operator.ApprovalSeedKind = .none,
-    expected_decision: ?@import("aegis_core").decision.DecisionResult = null,
+    expected_decision: ?@import("orca_core").decision.DecisionResult = null,
     expected_forwarded: ?bool = null,
     requires_ardupilot_sitl: bool = false,
     timeout_ms: u64 = 2_000,
@@ -208,7 +208,7 @@ fn loadScenario(allocator: std.mem.Allocator, path: []const u8) !ScenarioSpec {
     var battery_percent: f64 = 80;
     var freshness: domain.state.StateFreshness = .fresh;
     var approval_seed: operator.ApprovalSeedKind = .none;
-    var expected_decision: ?@import("aegis_core").decision.DecisionResult = null;
+    var expected_decision: ?@import("orca_core").decision.DecisionResult = null;
     var expected_forwarded: ?bool = null;
     var requires_ardupilot_sitl = false;
     var timeout_ms: u64 = 2_000;
@@ -222,7 +222,7 @@ fn loadScenario(allocator: std.mem.Allocator, path: []const u8) !ScenarioSpec {
         const colon = std.mem.indexOfScalar(u8, line, ':') orelse return error.InvalidArduPilotScenario;
         const key = std.mem.trim(u8, line[0..colon], " \t");
         const value = cleanScalar(line[colon + 1 ..]);
-        if (std.mem.eql(u8, key, "id") or std.mem.eql(u8, key, "name")) id = value else if (std.mem.eql(u8, key, "environment")) environment = try connection.Environment.parse(value) else if (std.mem.eql(u8, key, "vehicle") or std.mem.eql(u8, key, "vehicle_type")) vehicle = try vehicle_kind.VehicleKind.parse(value) else if (std.mem.eql(u8, key, "mode")) mode = try connection.Mode.parse(value) else if (std.mem.eql(u8, key, "command")) command = try fake_adapter.actionFromName(value) else if (std.mem.eql(u8, key, "lat_int")) lat_int = try std.fmt.parseInt(i32, value, 10) else if (std.mem.eql(u8, key, "lon_int")) lon_int = try std.fmt.parseInt(i32, value, 10) else if (std.mem.eql(u8, key, "alt_m")) alt_m = try std.fmt.parseFloat(f32, value) else if (std.mem.eql(u8, key, "battery_percent")) battery_percent = try std.fmt.parseFloat(f64, value) else if (std.mem.eql(u8, key, "state_freshness")) freshness = std.meta.stringToEnum(domain.state.StateFreshness, value) orelse return error.InvalidArduPilotScenario else if (std.mem.eql(u8, key, "approval") or std.mem.eql(u8, key, "approval_seed")) approval_seed = try operator.parseApprovalSeedKind(value) else if (std.mem.eql(u8, key, "approval_scope")) {} else if (std.mem.eql(u8, key, "expected_decision")) expected_decision = std.meta.stringToEnum(@import("aegis_core").decision.DecisionResult, value) orelse return error.InvalidArduPilotScenario else if (std.mem.eql(u8, key, "expected_forwarded")) expected_forwarded = try parseBool(value) else if (std.mem.eql(u8, key, "requires_ardupilot_sitl")) requires_ardupilot_sitl = try parseBool(value) else if (std.mem.eql(u8, key, "timeout_ms")) timeout_ms = try std.fmt.parseInt(u64, value, 10) else if (std.mem.eql(u8, key, "note")) note = value else return error.InvalidArduPilotScenario;
+        if (std.mem.eql(u8, key, "id") or std.mem.eql(u8, key, "name")) id = value else if (std.mem.eql(u8, key, "environment")) environment = try connection.Environment.parse(value) else if (std.mem.eql(u8, key, "vehicle") or std.mem.eql(u8, key, "vehicle_type")) vehicle = try vehicle_kind.VehicleKind.parse(value) else if (std.mem.eql(u8, key, "mode")) mode = try connection.Mode.parse(value) else if (std.mem.eql(u8, key, "command")) command = try fake_adapter.actionFromName(value) else if (std.mem.eql(u8, key, "lat_int")) lat_int = try std.fmt.parseInt(i32, value, 10) else if (std.mem.eql(u8, key, "lon_int")) lon_int = try std.fmt.parseInt(i32, value, 10) else if (std.mem.eql(u8, key, "alt_m")) alt_m = try std.fmt.parseFloat(f32, value) else if (std.mem.eql(u8, key, "battery_percent")) battery_percent = try std.fmt.parseFloat(f64, value) else if (std.mem.eql(u8, key, "state_freshness")) freshness = std.meta.stringToEnum(domain.state.StateFreshness, value) orelse return error.InvalidArduPilotScenario else if (std.mem.eql(u8, key, "approval") or std.mem.eql(u8, key, "approval_seed")) approval_seed = try operator.parseApprovalSeedKind(value) else if (std.mem.eql(u8, key, "approval_scope")) {} else if (std.mem.eql(u8, key, "expected_decision")) expected_decision = std.meta.stringToEnum(@import("orca_core").decision.DecisionResult, value) orelse return error.InvalidArduPilotScenario else if (std.mem.eql(u8, key, "expected_forwarded")) expected_forwarded = try parseBool(value) else if (std.mem.eql(u8, key, "requires_ardupilot_sitl")) requires_ardupilot_sitl = try parseBool(value) else if (std.mem.eql(u8, key, "timeout_ms")) timeout_ms = try std.fmt.parseInt(u64, value, 10) else if (std.mem.eql(u8, key, "note")) note = value else return error.InvalidArduPilotScenario;
     }
 
     return .{

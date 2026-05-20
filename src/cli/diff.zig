@@ -1,5 +1,5 @@
 const std = @import("std");
-const core = @import("aegis_core").core;
+const core = @import("orca_core").core;
 const supervisor = @import("../core/supervisor.zig");
 const intercept = @import("../intercept/mod.zig");
 const exit_codes = @import("exit_codes.zig");

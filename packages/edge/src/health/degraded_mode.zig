@@ -2,7 +2,7 @@ const std = @import("std");
 
 const domain = @import("../domain/mod.zig");
 const schema = @import("../schema/mod.zig");
-const core = @import("aegis_core");
+const core = @import("orca_core");
 
 pub const DegradedBehavior = enum {
     observe_only,

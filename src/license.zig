@@ -1,6 +1,6 @@
 const std = @import("std");
 
-const core = @import("aegis_core").core;
+const core = @import("orca_core").core;
 const Ed25519 = std.crypto.sign.Ed25519;
 
 pub const Feature = enum {

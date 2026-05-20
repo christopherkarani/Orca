@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://aegis.local/schemas/edge-policy-placeholder-v1.json",
+  "$id": "https://orca.local/schemas/edge-policy-placeholder-v1.json",
   "title": "Edge policy placeholder v1",
   "description": "Reserved placeholder schema for future simulation-only Edge policy work.",
   "type": "object",

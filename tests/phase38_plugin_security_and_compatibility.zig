@@ -5,14 +5,14 @@ const std = @import("std");
 // ---------------------------------------------------------------------------
 // These tests validate:
 //   - Hook behavior with fake payloads (via built binary)
-//   - aegis decide behavior
+//   - orca decide behavior
 //   - Invalid and oversized input handling
 //   - Secret safety across plugin artifacts
 //   - Documentation overclaim checks
 //   - Separate workstream (drone) non-regression
 // ---------------------------------------------------------------------------
 
-const aegis_bin = "./zig-out/bin/orca";
+const orca_bin = "./zig-out/bin/orca";
 const codex_fixture_dir = "tests/plugin-fixtures/codex";
 const claude_fixture_dir = "tests/plugin-fixtures/claude";
 
@@ -38,7 +38,7 @@ fn readFile(allocator: std.mem.Allocator, path: []const u8) ![]u8 {
     return buf;
 }
 
-fn runAegis(allocator: std.mem.Allocator, args: []const []const u8, stdin_data: ?[]const u8) !struct { stdout: []u8, stderr: []u8, code: u8 } {
+fn runOrca(allocator: std.mem.Allocator, args: []const []const u8, stdin_data: ?[]const u8) !struct { stdout: []u8, stderr: []u8, code: u8 } {
     var child = std.process.Child.init(args, allocator);
     child.stdin_behavior = if (stdin_data != null) .Pipe else .Ignore;
     child.stdout_behavior = .Pipe;
@@ -72,7 +72,7 @@ fn runAegis(allocator: std.mem.Allocator, args: []const []const u8, stdin_data: 
 }
 
 fn binaryExists() bool {
-    return fileExists(aegis_bin);
+    return fileExists(orca_bin);
 }
 
 fn expectJsonStringInEnum(items: []const std.json.Value, expected: []const u8) !void {
@@ -141,7 +141,7 @@ test "codex SessionStart hook returns valid JSON" {
     const fixture = try readFile(allocator, fixture_path);
     defer allocator.free(fixture);
 
-    const result = try runAegis(allocator, &.{ aegis_bin, "hook", "codex", "SessionStart" }, fixture);
+    const result = try runOrca(allocator, &.{ orca_bin, "hook", "codex", "SessionStart" }, fixture);
     defer allocator.free(result.stdout);
     defer allocator.free(result.stderr);
 
@@ -162,7 +162,7 @@ test "codex UserPromptSubmit with fake secret returns warn" {
     const fixture = try readFile(allocator, fixture_path);
     defer allocator.free(fixture);
 
-    const result = try runAegis(allocator, &.{ aegis_bin, "hook", "codex", "UserPromptSubmit" }, fixture);
+    const result = try runOrca(allocator, &.{ orca_bin, "hook", "codex", "UserPromptSubmit" }, fixture);
     defer allocator.free(result.stdout);
     defer allocator.free(result.stderr);
 
@@ -189,7 +189,7 @@ test "codex PreToolUse safe command returns allow" {
     const fixture = try readFile(allocator, fixture_path);
     defer allocator.free(fixture);
 
-    const result = try runAegis(allocator, &.{ aegis_bin, "hook", "codex", "PreToolUse" }, fixture);
+    const result = try runOrca(allocator, &.{ orca_bin, "hook", "codex", "PreToolUse" }, fixture);
     defer allocator.free(result.stdout);
     defer allocator.free(result.stderr);
 
@@ -211,7 +211,7 @@ test "codex PreToolUse dangerous command returns block or warn" {
     const fixture = try readFile(allocator, fixture_path);
     defer allocator.free(fixture);
 
-    const result = try runAegis(allocator, &.{ aegis_bin, "hook", "codex", "PreToolUse" }, fixture);
+    const result = try runOrca(allocator, &.{ orca_bin, "hook", "codex", "PreToolUse" }, fixture);
     defer allocator.free(result.stdout);
     defer allocator.free(result.stderr);
 
@@ -233,7 +233,7 @@ test "codex PreToolUse protected file write returns block or ask" {
     const fixture = try readFile(allocator, fixture_path);
     defer allocator.free(fixture);
 
-    const result = try runAegis(allocator, &.{ aegis_bin, "hook", "codex", "PreToolUse" }, fixture);
+    const result = try runOrca(allocator, &.{ orca_bin, "hook", "codex", "PreToolUse" }, fixture);
     defer allocator.free(result.stdout);
     defer allocator.free(result.stderr);
 
@@ -259,7 +259,7 @@ test "claude SessionStart hook returns valid JSON" {
     const fixture = try readFile(allocator, fixture_path);
     defer allocator.free(fixture);
 
-    const result = try runAegis(allocator, &.{ aegis_bin, "hook", "claude", "SessionStart" }, fixture);
+    const result = try runOrca(allocator, &.{ orca_bin, "hook", "claude", "SessionStart" }, fixture);
     defer allocator.free(result.stdout);
     defer allocator.free(result.stderr);
 
@@ -280,7 +280,7 @@ test "claude UserPromptSubmit with fake secret returns warn" {
     const fixture = try readFile(allocator, fixture_path);
     defer allocator.free(fixture);
 
-    const result = try runAegis(allocator, &.{ aegis_bin, "hook", "claude", "UserPromptSubmit" }, fixture);
+    const result = try runOrca(allocator, &.{ orca_bin, "hook", "claude", "UserPromptSubmit" }, fixture);
     defer allocator.free(result.stdout);
     defer allocator.free(result.stderr);
 
@@ -306,7 +306,7 @@ test "claude PreToolUse safe command returns allow" {
     const fixture = try readFile(allocator, fixture_path);
     defer allocator.free(fixture);
 
-    const result = try runAegis(allocator, &.{ aegis_bin, "hook", "claude", "PreToolUse" }, fixture);
+    const result = try runOrca(allocator, &.{ orca_bin, "hook", "claude", "PreToolUse" }, fixture);
     defer allocator.free(result.stdout);
     defer allocator.free(result.stderr);
 
@@ -328,7 +328,7 @@ test "claude PreToolUse dangerous command returns block or warn" {
     const fixture = try readFile(allocator, fixture_path);
     defer allocator.free(fixture);
 
-    const result = try runAegis(allocator, &.{ aegis_bin, "hook", "claude", "PreToolUse" }, fixture);
+    const result = try runOrca(allocator, &.{ orca_bin, "hook", "claude", "PreToolUse" }, fixture);
     defer allocator.free(result.stdout);
     defer allocator.free(result.stderr);
 
@@ -350,7 +350,7 @@ test "claude PreToolUse protected file write returns block or ask" {
     const fixture = try readFile(allocator, fixture_path);
     defer allocator.free(fixture);
 
-    const result = try runAegis(allocator, &.{ aegis_bin, "hook", "claude", "PreToolUse" }, fixture);
+    const result = try runOrca(allocator, &.{ orca_bin, "hook", "claude", "PreToolUse" }, fixture);
     defer allocator.free(result.stdout);
     defer allocator.free(result.stderr);
 
@@ -377,7 +377,7 @@ test "codex hook CI mode turns ask into block" {
     const fixture = try readFile(allocator, fixture_path);
     defer allocator.free(fixture);
 
-    const result = try runAegis(allocator, &.{ aegis_bin, "hook", "codex", "PermissionRequest", "--ci" }, fixture);
+    const result = try runOrca(allocator, &.{ orca_bin, "hook", "codex", "PermissionRequest", "--ci" }, fixture);
     defer allocator.free(result.stdout);
     defer allocator.free(result.stderr);
 
@@ -400,7 +400,7 @@ test "claude hook CI mode never returns ask" {
     const fixture = try readFile(allocator, fixture_path);
     defer allocator.free(fixture);
 
-    const result = try runAegis(allocator, &.{ aegis_bin, "hook", "claude", "PermissionRequest", "--ci" }, fixture);
+    const result = try runOrca(allocator, &.{ orca_bin, "hook", "claude", "PermissionRequest", "--ci" }, fixture);
     defer allocator.free(result.stdout);
     defer allocator.free(result.stderr);
 
@@ -414,15 +414,15 @@ test "claude hook CI mode never returns ask" {
 }
 
 // ---------------------------------------------------------------------------
-// 5. aegis decide tests
+// 5. orca decide tests
 // ---------------------------------------------------------------------------
 
 test "decide command safe returns allow JSON" {
     if (!binaryExists()) return;
     const allocator = std.testing.allocator;
 
-    const result = try runAegis(allocator, &.{
-        aegis_bin, "decide", "command", "--json",
+    const result = try runOrca(allocator, &.{
+        orca_bin, "decide", "command", "--json",
         "{\"version\":1,\"host\":\"codex\",\"command\":\"git status\",\"mode\":\"strict\"}",
     }, null);
     defer allocator.free(result.stdout);
@@ -441,8 +441,8 @@ test "decide command dangerous returns block JSON" {
     if (!binaryExists()) return;
     const allocator = std.testing.allocator;
 
-    const result = try runAegis(allocator, &.{
-        aegis_bin, "decide", "command", "--json",
+    const result = try runOrca(allocator, &.{
+        orca_bin, "decide", "command", "--json",
         "{\"version\":1,\"host\":\"codex\",\"command\":\"rm -rf /\",\"mode\":\"strict\"}",
     }, null);
     defer allocator.free(result.stdout);
@@ -461,8 +461,8 @@ test "decide file write protected path returns block or ask" {
     if (!binaryExists()) return;
     const allocator = std.testing.allocator;
 
-    const result = try runAegis(allocator, &.{
-        aegis_bin, "decide", "file", "--json",
+    const result = try runOrca(allocator, &.{
+        orca_bin, "decide", "file", "--json",
         "{\"version\":1,\"host\":\"claude\",\"operation\":\"write\",\"path\":\".env\",\"mode\":\"strict\"}",
     }, null);
     defer allocator.free(result.stdout);
@@ -481,8 +481,8 @@ test "decide prompt with fake secret redacts" {
     if (!binaryExists()) return;
     const allocator = std.testing.allocator;
 
-    const result = try runAegis(allocator, &.{
-        aegis_bin, "decide", "prompt", "--json",
+    const result = try runOrca(allocator, &.{
+        orca_bin, "decide", "prompt", "--json",
         "{\"version\":1,\"host\":\"codex\",\"prompt\":\"fake_p05_secret_value\",\"mode\":\"strict\"}",
     }, null);
     defer allocator.free(result.stdout);
@@ -504,8 +504,8 @@ test "decide tool returns valid JSON" {
     if (!binaryExists()) return;
     const allocator = std.testing.allocator;
 
-    const result = try runAegis(allocator, &.{
-        aegis_bin, "decide", "tool", "--json",
+    const result = try runOrca(allocator, &.{
+        orca_bin, "decide", "tool", "--json",
         "{\"version\":1,\"host\":\"claude\",\"tool\":{\"name\":\"ExampleTool\",\"input\":{\"action\":\"example\"}},\"mode\":\"strict\"}",
     }, null);
     defer allocator.free(result.stdout);
@@ -529,8 +529,8 @@ test "decide rejects invalid JSON" {
     if (!binaryExists()) return;
     const allocator = std.testing.allocator;
 
-    const result = try runAegis(allocator, &.{
-        aegis_bin, "decide", "command", "--json", "{not json",
+    const result = try runOrca(allocator, &.{
+        orca_bin, "decide", "command", "--json", "{not json",
     }, null);
     defer allocator.free(result.stdout);
     defer allocator.free(result.stderr);
@@ -543,7 +543,7 @@ test "hook codex rejects invalid JSON" {
     if (!binaryExists()) return;
     const allocator = std.testing.allocator;
 
-    const result = try runAegis(allocator, &.{ aegis_bin, "hook", "codex", "PreToolUse" }, "{not json");
+    const result = try runOrca(allocator, &.{ orca_bin, "hook", "codex", "PreToolUse" }, "{not json");
     defer allocator.free(result.stdout);
     defer allocator.free(result.stderr);
 
@@ -555,7 +555,7 @@ test "hook claude rejects invalid JSON" {
     if (!binaryExists()) return;
     const allocator = std.testing.allocator;
 
-    const result = try runAegis(allocator, &.{ aegis_bin, "hook", "claude", "PreToolUse" }, "{not json");
+    const result = try runOrca(allocator, &.{ orca_bin, "hook", "claude", "PreToolUse" }, "{not json");
     defer allocator.free(result.stdout);
     defer allocator.free(result.stderr);
 
@@ -567,7 +567,7 @@ test "hook codex rejects unknown host in payload" {
     if (!binaryExists()) return;
     const allocator = std.testing.allocator;
 
-    const result = try runAegis(allocator, &.{ aegis_bin, "hook", "codex", "SessionStart" },
+    const result = try runOrca(allocator, &.{ orca_bin, "hook", "codex", "SessionStart" },
         "{\"version\":1,\"host\":\"unknown\",\"event\":\"SessionStart\",\"payload\":{}}");
     defer allocator.free(result.stdout);
     defer allocator.free(result.stderr);
@@ -580,7 +580,7 @@ test "hook claude rejects unknown event in payload" {
     if (!binaryExists()) return;
     const allocator = std.testing.allocator;
 
-    const result = try runAegis(allocator, &.{ aegis_bin, "hook", "claude", "SessionStart" },
+    const result = try runOrca(allocator, &.{ orca_bin, "hook", "claude", "SessionStart" },
         "{\"version\":1,\"host\":\"claude\",\"event\":\"UnknownEvent\",\"payload\":{}}");
     defer allocator.free(result.stdout);
     defer allocator.free(result.stderr);
@@ -593,8 +593,8 @@ test "decide rejects unknown decision kind" {
     if (!binaryExists()) return;
     const allocator = std.testing.allocator;
 
-    const result = try runAegis(allocator, &.{
-        aegis_bin, "decide", "unknown_kind", "--json", "{}",
+    const result = try runOrca(allocator, &.{
+        orca_bin, "decide", "unknown_kind", "--json", "{}",
     }, null);
     defer allocator.free(result.stdout);
     defer allocator.free(result.stderr);
@@ -623,7 +623,7 @@ test "hook codex rejects oversized payload safely" {
     }
     try oversized.appendSlice(allocator, "\"}}");
 
-    const result = try runAegis(allocator, &.{ aegis_bin, "hook", "codex", "SessionStart" }, oversized.items);
+    const result = try runOrca(allocator, &.{ orca_bin, "hook", "codex", "SessionStart" }, oversized.items);
     defer allocator.free(result.stdout);
     defer allocator.free(result.stderr);
 
@@ -645,7 +645,7 @@ test "hook claude rejects oversized payload safely" {
     }
     try oversized.appendSlice(allocator, "\"}}");
 
-    const result = try runAegis(allocator, &.{ aegis_bin, "hook", "claude", "SessionStart" }, oversized.items);
+    const result = try runOrca(allocator, &.{ orca_bin, "hook", "claude", "SessionStart" }, oversized.items);
     defer allocator.free(result.stdout);
     defer allocator.free(result.stderr);
 
@@ -682,7 +682,7 @@ test "no fake secret leaks into generated hook responses" {
     const fixture = try readFile(allocator, fixture_path);
     defer allocator.free(fixture);
 
-    const result = try runAegis(allocator, &.{ aegis_bin, "hook", "codex", "UserPromptSubmit" }, fixture);
+    const result = try runOrca(allocator, &.{ orca_bin, "hook", "codex", "UserPromptSubmit" }, fixture);
     defer allocator.free(result.stdout);
     defer allocator.free(result.stderr);
 
@@ -941,7 +941,7 @@ test "hook codex rejects missing version field" {
     if (!binaryExists()) return;
     const allocator = std.testing.allocator;
 
-    const result = try runAegis(allocator, &.{ aegis_bin, "hook", "codex", "SessionStart" },
+    const result = try runOrca(allocator, &.{ orca_bin, "hook", "codex", "SessionStart" },
         "{\"host\":\"codex\",\"event\":\"SessionStart\",\"payload\":{}}");
     defer allocator.free(result.stdout);
     defer allocator.free(result.stderr);
@@ -953,7 +953,7 @@ test "hook claude rejects missing host field" {
     if (!binaryExists()) return;
     const allocator = std.testing.allocator;
 
-    const result = try runAegis(allocator, &.{ aegis_bin, "hook", "claude", "SessionStart" },
+    const result = try runOrca(allocator, &.{ orca_bin, "hook", "claude", "SessionStart" },
         "{\"version\":1,\"event\":\"SessionStart\",\"payload\":{}}");
     defer allocator.free(result.stdout);
     defer allocator.free(result.stderr);
@@ -965,7 +965,7 @@ test "decide rejects missing JSON payload" {
     if (!binaryExists()) return;
     const allocator = std.testing.allocator;
 
-    const result = try runAegis(allocator, &.{ aegis_bin, "decide", "command" }, null);
+    const result = try runOrca(allocator, &.{ orca_bin, "decide", "command" }, null);
     defer allocator.free(result.stdout);
     defer allocator.free(result.stderr);
 
@@ -1024,7 +1024,7 @@ test "all codex hook responses are valid JSON" {
         else
             continue;
 
-        const result = try runAegis(allocator, &.{ aegis_bin, "hook", "codex", event }, fixture);
+        const result = try runOrca(allocator, &.{ orca_bin, "hook", "codex", event }, fixture);
         defer allocator.free(result.stdout);
         defer allocator.free(result.stderr);
 
@@ -1093,7 +1093,7 @@ test "all claude hook responses are valid JSON" {
         else
             continue;
 
-        const result = try runAegis(allocator, &.{ aegis_bin, "hook", "claude", event }, fixture);
+        const result = try runOrca(allocator, &.{ orca_bin, "hook", "claude", event }, fixture);
         defer allocator.free(result.stdout);
         defer allocator.free(result.stderr);
 

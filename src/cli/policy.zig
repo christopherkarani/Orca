@@ -1,8 +1,8 @@
 const std = @import("std");
-const aegis_policy = @import("aegis_core").policy;
-const core = @import("aegis_core").core;
+const orca_policy = @import("orca_core").policy;
+const core = @import("orca_core").core;
 const supervisor = @import("../core/supervisor.zig");
-const core_api = @import("aegis_core").api;
+const core_api = @import("orca_core").api;
 const exit_codes = @import("exit_codes.zig");
 const help = @import("help.zig");
 
@@ -46,7 +46,7 @@ fn check(argv: []const []const u8, stdout: anytype, stderr: anytype) !u8 {
             return exit_codes.general;
         }
     else
-        try core_api.loadPolicyPreset(allocator, aegis_policy.presets.defaultPreset());
+        try core_api.loadPolicyPreset(allocator, orca_policy.presets.defaultPreset());
     defer policy_value.deinit();
 
     try stdout.print("Policy OK: {s}\nMode: {s}\n", .{ source, policy_value.mode.toString() });
@@ -77,7 +77,7 @@ fn explain(argv: []const []const u8, stdout: anytype, stderr: anytype) !u8 {
         try stderr.writeAll("orca policy explain: expected a type and target.\n");
         return exit_codes.usage;
     }
-    const kind = aegis_policy.explain.ExplainKind.parse(positional[0]) orelse {
+    const kind = orca_policy.explain.ExplainKind.parse(positional[0]) orelse {
         try stderr.print("orca policy explain: unsupported type '{s}'.\n", .{positional[0]});
         return exit_codes.usage;
     };
@@ -122,7 +122,7 @@ const ExplainTarget = struct {
     }
 };
 
-fn parseExplainTarget(allocator: std.mem.Allocator, kind: aegis_policy.explain.ExplainKind, args: []const []const u8, stderr: anytype) !ExplainTarget {
+fn parseExplainTarget(allocator: std.mem.Allocator, kind: orca_policy.explain.ExplainKind, args: []const []const u8, stderr: anytype) !ExplainTarget {
     if (kind == .command) return .{ .target = try joinArgs(allocator, args) };
     if (kind != .network) {
         if (args.len != 1) return .{ .invalid = true };
@@ -170,8 +170,8 @@ fn packs(argv: []const []const u8, stdout: anytype, stderr: anytype) !u8 {
         return exit_codes.usage;
     }
     try stdout.writeAll("Policy packs:\n");
-    for (aegis_policy.presets.agent_preset_infos) |info| {
-        const source = aegis_policy.presets.agentPresetText(info.preset);
+    for (orca_policy.presets.agent_preset_infos) |info| {
+        const source = orca_policy.presets.agentPresetText(info.preset);
         if (std.mem.indexOf(u8, source, "policy pack:") == null and
             !std.mem.eql(u8, info.name, "strict-local")) continue;
         try stdout.print("  {s}\n", .{info.name});
@@ -192,11 +192,11 @@ fn applyPack(argv: []const []const u8, stdout: anytype, stderr: anytype) !u8 {
         }
         force = true;
     }
-    const pack = aegis_policy.presets.AgentPreset.parse(argv[0]) orelse {
+    const pack = orca_policy.presets.AgentPreset.parse(argv[0]) orelse {
         try stderr.print("orca policy apply-pack: unknown policy pack '{s}'.\n", .{argv[0]});
         return exit_codes.usage;
     };
-    const pack_name = aegis_policy.presets.agentPresetName(pack);
+    const pack_name = orca_policy.presets.agentPresetName(pack);
     if (!isProductPack(pack_name)) {
         try stderr.print("orca policy apply-pack: '{s}' is an init preset, not a product policy pack.\n", .{pack_name});
         return exit_codes.usage;
@@ -220,7 +220,7 @@ fn applyPack(argv: []const []const u8, stdout: anytype, stderr: anytype) !u8 {
         else => return err,
     };
     defer file.close();
-    try file.writeAll(aegis_policy.presets.agentPresetText(pack));
+    try file.writeAll(orca_policy.presets.agentPresetText(pack));
     try stdout.print("Applied policy pack '{s}' to .orca/policy.yaml.\n", .{pack_name});
     return exit_codes.success;
 }
@@ -248,7 +248,7 @@ test "policy check validates a file" {
     {
         const file = try tmp.dir.createFile("policy.yaml", .{});
         defer file.close();
-        try file.writeAll(aegis_policy.presets.text(.strict));
+        try file.writeAll(orca_policy.presets.text(.strict));
     }
     const path = try tmp.dir.realpathAlloc(std.testing.allocator, "policy.yaml");
     defer std.testing.allocator.free(path);

@@ -1,5 +1,5 @@
 const std = @import("std");
-const core = @import("aegis_core");
+const core = @import("orca_core");
 const safety_report = @import("safety_report.zig");
 
 pub fn writeJsonFile(path: []const u8, rows: []const safety_report.TraceabilityRow) !void {

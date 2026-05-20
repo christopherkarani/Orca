@@ -37,6 +37,12 @@ copy_cli_payload() {
     mkdir -p "$root"
     cp README.md LICENSE SECURITY.md CONTRIBUTING.md "$root/"
   cp -R docs policies schemas fixtures examples packages packaging scripts integrations "$root/"
+  if [ -d "orca-dashboard-ui/dist" ]; then
+    mkdir -p "$root/orca-dashboard-ui"
+    cp -R orca-dashboard-ui/dist "$root/orca-dashboard-ui/dist"
+  else
+    printf 'warning: orca-dashboard-ui/dist not found; run `npm run build` in orca-dashboard-ui/ before releasing.\n' >&2
+  fi
   find "$root" -type d \( \
     -name node_modules -o \
     -name .pnpm-store -o \
@@ -63,7 +69,8 @@ copy_cli_payload() {
     "$root/.DS_Store" \
     "$root/docs/.DS_Store" \
     "$root/packages/.DS_Store" \
-    "$root/examples/.DS_Store" 2>/dev/null || true
+    "$root/examples/.DS_Store" \
+    "$root/orca-dashboard-ui/node_modules" 2>/dev/null || true
 }
 
 write_release_readme() {

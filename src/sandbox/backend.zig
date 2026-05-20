@@ -1,7 +1,7 @@
 const std = @import("std");
 const builtin = @import("builtin");
 
-const platform = @import("aegis_core").platform;
+const platform = @import("orca_core").platform;
 const linux_backend = @import("linux.zig");
 const macos_backend = @import("macos.zig");
 const windows_backend = @import("windows.zig");

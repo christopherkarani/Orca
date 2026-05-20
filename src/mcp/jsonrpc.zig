@@ -1,6 +1,6 @@
 const std = @import("std");
 
-const core = @import("aegis_core").core;
+const core = @import("orca_core").core;
 
 pub const implemented = true;
 

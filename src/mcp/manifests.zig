@@ -1,8 +1,8 @@
 const std = @import("std");
 
-const redact_bridge = @import("aegis_core").audit.redact_bridge;
-const core = @import("aegis_core").core;
-const policy_schema = @import("aegis_core").policy.schema;
+const redact_bridge = @import("orca_core").audit.redact_bridge;
+const core = @import("orca_core").core;
+const policy_schema = @import("orca_core").policy.schema;
 const tools = @import("tools.zig");
 
 pub const implemented = true;

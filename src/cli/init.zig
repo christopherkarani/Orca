@@ -1,12 +1,12 @@
 const std = @import("std");
 
-const aegis_policy = @import("aegis_core").policy;
+const orca_policy = @import("orca_core").policy;
 const exit_codes = @import("exit_codes.zig");
 const help = @import("help.zig");
 
 const InitOptions = struct {
     mode: ?[]const u8 = null,
-    preset: aegis_policy.presets.AgentPreset = .generic_agent,
+    preset: orca_policy.presets.AgentPreset = .generic_agent,
     force: bool = false,
     quiet: bool = false,
 };
@@ -36,9 +36,9 @@ pub fn command(cwd: std.fs.Dir, argv: []const []const u8, stdout: anytype, stder
     };
     defer file.close();
 
-    const preset_text = aegis_policy.presets.agentPresetText(options.preset);
+    const preset_text = orca_policy.presets.agentPresetText(options.preset);
     try writePolicy(file, preset_text, options.mode);
-    const info = aegis_policy.presets.agentPresetInfo(options.preset);
+    const info = orca_policy.presets.agentPresetInfo(options.preset);
     if (!options.quiet) {
         try stdout.print("Created .orca/policy.yaml from preset '{s}'.\n", .{info.name});
         if (info.experimental) try stdout.print("Warning: {s}\n", .{info.warning});
@@ -73,7 +73,7 @@ fn parseOptions(argv: []const []const u8, stdout: anytype, stderr: anytype) !Ini
                 try stderr.writeAll("orca init: --preset requires a preset name.\n");
                 return error.Usage;
             }
-            const preset = aegis_policy.presets.AgentPreset.parse(argv[index]) orelse {
+            const preset = orca_policy.presets.AgentPreset.parse(argv[index]) orelse {
                 try stderr.print("orca init: unsupported preset '{s}'. Run 'orca help init' for supported presets.\n", .{argv[index]});
                 return error.Usage;
             };
@@ -213,9 +213,9 @@ test "init writes requested phase 18 presets as valid policies" {
 
         const policy = try tmp.dir.readFileAlloc(std.testing.allocator, ".orca/policy.yaml", 16 * 1024);
         defer std.testing.allocator.free(policy);
-        var loaded = try aegis_policy.load.parseFromSlice(std.testing.allocator, policy, ".orca/policy.yaml");
+        var loaded = try orca_policy.load.parseFromSlice(std.testing.allocator, policy, ".orca/policy.yaml");
         defer loaded.deinit();
-        try aegis_policy.validate.policy(&loaded);
+        try orca_policy.validate.policy(&loaded);
     }
 }
 

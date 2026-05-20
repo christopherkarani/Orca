@@ -4,7 +4,7 @@ const std = @import("std");
 // Codex Plugin Structure Tests
 // ---------------------------------------------------------------------------
 // These tests validate the P03 Codex plugin package without requiring
-// the Aegis binary to be built. They check file existence, JSON validity,
+// the Orca binary to be built. They check file existence, JSON validity,
 // and content invariants.
 // ---------------------------------------------------------------------------
 
@@ -141,7 +141,7 @@ test "each skill has non-empty SKILL.md" {
     }
 }
 
-test "each skill references real aegis commands" {
+test "each skill references real orca commands" {
     for (skills) |skill| {
         const skill_path = std.fmt.allocPrint(std.testing.allocator, "{s}/skills/{s}/SKILL.md", .{ plugin_dir, skill }) catch unreachable;
         defer std.testing.allocator.free(skill_path);
@@ -184,7 +184,7 @@ test "codex hooks config is valid JSON" {
     defer parsed.deinit();
 }
 
-test "codex hooks config calls aegis hook codex" {
+test "codex hooks config calls orca hook codex" {
     var gpa_state: std.heap.GeneralPurposeAllocator(.{}) = .init;
     defer _ = gpa_state.deinit();
     const allocator = gpa_state.allocator();

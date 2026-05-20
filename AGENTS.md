@@ -1,4 +1,4 @@
-# Aegis Agent Instructions
+# Orca Agent Instructions
 
 ## Public Repository Hygiene
 
@@ -9,7 +9,7 @@
   - `customer_pilot/`
   - `tasks/`
   - `reports/`
-  - `.aegis-edge/`
+  - `.orca-edge/`
   - `.edge/`
   - `dist/`
   - `dist-dry-run/`
@@ -17,7 +17,7 @@
   - `docs/orca_opencode_openclaw_plan/`
   - `integrations/**/node_modules/`
 - Before staging or committing, run a tracked-file hygiene check for private/public-boundary leaks:
-  - `git ls-files | rg '(^go_to_market/|^customer_pilot/|^tasks/|^reports/|^\\.aegis-edge/|^\\.edge/|^dist/|^dist-dry-run/|^docs/release/|^docs/orca_opencode_openclaw_plan/|node_modules/)'
+  - `git ls-files | rg '(^go_to_market/|^customer_pilot/|^tasks/|^reports/|^\\.orca-edge/|^\\.edge/|^dist/|^dist-dry-run/|^docs/release/|^docs/orca_opencode_openclaw_plan/|node_modules/)'
 - If that command returns any files, stop and untrack them before proceeding.
 - Never commit generated release archives, SBOMs, checksums, dry-run package output, red-team replay output, customer-pilot templates, SOW/NDA notes, target-account templates, outreach copy, pricing guidance, or task-memory logs.
 
@@ -31,6 +31,6 @@
 
 ## Product Boundary
 
-- Keep public Core/Orca surfaces separate from internal Aegis Edge, customer acquisition, and pilot-planning collateral.
+- Keep public Core/Orca surfaces separate from internal Orca Edge, customer acquisition, and pilot-planning collateral.
 - Public docs may explain supported behavior, installation, security model, and verified limitations.
 - Internal docs may plan launches, pilots, pricing, outreach, target accounts, release operations, or founder/customer strategy, but those stay untracked unless explicitly approved for publication.

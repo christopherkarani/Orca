@@ -1,6 +1,6 @@
 const std = @import("std");
-const aegis_core = @import("aegis_core");
-const aegis_edge = @import("aegis_edge");
+const orca_core = @import("orca_core");
+const orca_edge = @import("orca_edge");
 
 const fake_secret = "fake_secret_value_phase23";
 
@@ -38,7 +38,7 @@ test "phase 23 docs define product split without real-flight readiness claims" {
 }
 
 test "phase 23 edge placeholder never reports active command or flight enforcement" {
-    for (aegis_edge.capabilityReports()) |report| {
+    for (orca_edge.capabilityReports()) |report| {
         switch (report.capability) {
             .command_mediation,
             .mavlink_gateway,
@@ -71,7 +71,7 @@ test "phase 23 edge placeholder never reports active command or flight enforceme
 
 test "phase 23 fake secret guardrail covers redaction before durable strings" {
     var buffer: [256]u8 = undefined;
-    const redacted = aegis_core.audit.redact_bridge.redactStringBounded("OPENAI_API_KEY=" ++ fake_secret, &buffer);
+    const redacted = orca_core.audit.redact_bridge.redactStringBounded("OPENAI_API_KEY=" ++ fake_secret, &buffer);
 
     try std.testing.expect(std.mem.indexOf(u8, redacted, fake_secret) == null);
     try std.testing.expect(std.mem.indexOf(u8, redacted, "[REDACTED") != null);
@@ -97,11 +97,11 @@ test "policy schema matches runtime file-write and MCP server-scoped policy shap
     const server_properties = servers.get("additionalProperties").?.object.get("properties").?.object;
     try std.testing.expect(server_properties.get("tools") != null);
 
-    var policy = try aegis_core.policy.load.parseFromSlice(std.testing.allocator,
+    var policy = try orca_core.policy.load.parseFromSlice(std.testing.allocator,
         \\{"version":1,"mode":"strict","files":{"write":{"mode":"direct","allow":["docs/**"]}},"mcp":{"servers":{"github":{"tools":{"allow":["search_repositories"]}}}}}
     , "schema-alignment.json");
     defer policy.deinit();
-    try std.testing.expectEqual(aegis_core.policy.schema.WriteMode.direct, policy.files.write_mode);
+    try std.testing.expectEqual(orca_core.policy.schema.WriteMode.direct, policy.files.write_mode);
     try std.testing.expectEqualStrings("github.search_repositories", policy.mcp.allow[0]);
 }
 

@@ -1,9 +1,9 @@
 const std = @import("std");
 
-const audit = @import("aegis_core").audit;
-const core = @import("aegis_core").core;
+const audit = @import("orca_core").audit;
+const core = @import("orca_core").core;
 const intercept = @import("../intercept/mod.zig");
-const policy_mod = @import("aegis_core").policy;
+const policy_mod = @import("orca_core").policy;
 const jsonrpc = @import("jsonrpc.zig");
 const manifests = @import("manifests.zig");
 const prompts = @import("prompts.zig");

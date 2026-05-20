@@ -1,9 +1,9 @@
 const std = @import("std");
 const build_options = @import("build_options");
 
-const core_api = @import("aegis_core").api;
-const core = @import("aegis_core").core;
-const policy_mod = @import("aegis_core").policy;
+const core_api = @import("orca_core").api;
+const core = @import("orca_core").core;
+const policy_mod = @import("orca_core").policy;
 const credentials_runtime = @import("../intercept/credentials.zig");
 const supervisor = @import("../core/supervisor.zig");
 const license_mod = @import("../license.zig");

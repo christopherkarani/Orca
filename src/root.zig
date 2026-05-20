@@ -1,10 +1,10 @@
-const aegis_core = @import("aegis_core");
+const orca_core = @import("orca_core");
 
 pub const cli = @import("cli/mod.zig");
-pub const core = aegis_core.core;
-pub const core_api = aegis_core.api;
-pub const policy = aegis_core.policy;
-pub const audit = aegis_core.audit;
+pub const core = orca_core.core;
+pub const core_api = orca_core.api;
+pub const policy = orca_core.policy;
+pub const audit = orca_core.audit;
 pub const intercept = @import("intercept/mod.zig");
 pub const mcp = @import("mcp/mod.zig");
 pub const sandbox = @import("sandbox/mod.zig");

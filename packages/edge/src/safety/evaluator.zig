@@ -5,7 +5,7 @@ const policy_mod = @import("../policy/mod.zig");
 const operator = @import("../operator/mod.zig");
 const schema = @import("../schema/mod.zig");
 const findings_mod = @import("findings.zig");
-const core = @import("aegis_core");
+const core = @import("orca_core");
 
 pub const EvaluationContext = policy_mod.EvaluationContext;
 pub const EvaluationMode = policy_mod.EvaluationMode;

@@ -1,6 +1,6 @@
 const std = @import("std");
 
-const core_api = @import("aegis_core").api;
+const core_api = @import("orca_core").api;
 const supervisor = @import("../core/supervisor.zig");
 const report = @import("../report.zig");
 const license = @import("../license.zig");

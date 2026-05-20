@@ -3,7 +3,7 @@ const std = @import("std");
 const domain = @import("../domain/mod.zig");
 const health = @import("../health/mod.zig");
 const schema = @import("../schema/mod.zig");
-const core = @import("aegis_core");
+const core = @import("orca_core");
 
 pub const EvaluationMode = enum {
     observe,

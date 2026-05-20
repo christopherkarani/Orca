@@ -1,8 +1,8 @@
 const std = @import("std");
 
 const network = @import("network.zig");
-const core = @import("aegis_core").core;
-const schema = @import("aegis_core").policy.schema;
+const core = @import("orca_core").core;
+const schema = @import("orca_core").policy.schema;
 
 pub const AuditEvent = struct {
     event_type: core.event.EventType,
@@ -416,7 +416,7 @@ test "proxy parses HTTPS CONNECT as host-port only" {
 test "proxy forwards delayed HTTP request bodies and records request audit events" {
     if (@import("builtin").os.tag == .windows) return error.SkipZigTest;
 
-    var loaded = try @import("aegis_core").policy.load.parseFromSlice(std.testing.allocator,
+    var loaded = try @import("orca_core").policy.load.parseFromSlice(std.testing.allocator,
         \\version: 1
         \\mode: observe
         \\network:
@@ -458,8 +458,8 @@ test "proxy forwards delayed HTTP request bodies and records request audit event
     const events = try runtime.snapshotAuditEvents(std.testing.allocator);
     defer runtime.freeAuditEvents(std.testing.allocator, events);
     try std.testing.expect(events.len >= 2);
-    try std.testing.expectEqual(@import("aegis_core").core.event.EventType.network_connect_attempt, events[0].event_type);
-    try std.testing.expectEqual(@import("aegis_core").core.event.EventType.network_connect_allowed, events[1].event_type);
+    try std.testing.expectEqual(@import("orca_core").core.event.EventType.network_connect_attempt, events[0].event_type);
+    try std.testing.expectEqual(@import("orca_core").core.event.EventType.network_connect_allowed, events[1].event_type);
     try std.testing.expect(std.mem.indexOf(u8, events[0].target, "127.0.0.1") != null);
 }
 

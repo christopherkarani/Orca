@@ -36,19 +36,31 @@ summary.md
 node_modules/
 **/node_modules/
 
-# --- Aegis internal planning / generated plan packs ---
+# --- Orca internal planning / generated plan packs ---
 aegis_phased_project/
 aegis_phased_project_reviewed/
 aegis_phased_project_final/
 aegis_plugin_launch_plan/
 aegis_plugin_launch_plan_v2/
 aegis_plugin_launch_plan_v3/
+orca_phased_project/
+orca_phased_project_reviewed/
+orca_phased_project_final/
+orca_plugin_launch_plan/
+orca_plugin_launch_plan_v2/
+orca_plugin_launch_plan_v3/
 aegis_phased_project_markdown_files.zip
 aegis_phased_project_reviewed.zip
 aegis_phased_project_final.zip
 aegis_plugin_launch_plan.zip
 aegis_plugin_launch_plan_v2.zip
 aegis_plugin_launch_plan_v3.zip
+orca_phased_project_markdown_files.zip
+orca_phased_project_reviewed.zip
+orca_phased_project_final.zip
+orca_plugin_launch_plan.zip
+orca_plugin_launch_plan_v2.zip
+orca_plugin_launch_plan_v3.zip
 *_phase_pack*.zip
 *_plan_pack*.zip
 *_launch_plan*.zip
@@ -103,6 +115,7 @@ P07_*.md
 00_PLUGIN_LAUNCH_INDEX.md
 [0-9][0-9]_*.md
 AEGIS_CLI_PLUGIN_CONTRACT.md
+ORCA_CLI_PLUGIN_CONTRACT.md
 ARCHITECTURE_CONTRACTS.md
 CODEX_AGENT_CONTEXT.md
 DRONE_WORKSTREAM_GUARDRAILS.md

@@ -1,6 +1,6 @@
 const std = @import("std");
 
-const core = @import("aegis_core");
+const core = @import("orca_core");
 const findings_mod = @import("health_findings.zig");
 
 pub fn eventDecision(finding: findings_mod.HealthFinding) core.decision.Decision {

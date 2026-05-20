@@ -1,5 +1,5 @@
 const std = @import("std");
-const core = @import("aegis_core");
+const core = @import("orca_core");
 const artifacts = @import("edge_artifacts.zig");
 
 pub const required_files = [_][]const u8{

@@ -301,7 +301,7 @@ test "secret value detection covers synthetic examples" {
     try std.testing.expect(classifySecretValue("eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJmYWtlIn0.c2lnbmF0dXJl") != null);
     try std.testing.expect(classifySecretValue("Aa0Bb1Cc2Dd3Ee4Ff5Gg6Hh7Ii8Jj9Kk") != null);
     try std.testing.expect(classifySecretValue("{\"type\":\"service_account\",\"private_key\":\"FAKE\"}") != null);
-    try std.testing.expect(classifySecretValue("/Users/fake/aegis/path/with/mixed/Chars123") == null);
+    try std.testing.expect(classifySecretValue("/Users/fake/orca/path/with/mixed/Chars123") == null);
 }
 
 test "redaction fingerprints are stable and do not include raw value" {

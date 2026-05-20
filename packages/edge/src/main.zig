@@ -1,5 +1,5 @@
 const std = @import("std");
-const edge = @import("aegis_edge");
+const edge = @import("orca_edge");
 const schema_documents = @import("edge_schema_documents");
 const build_options = @import("build_options");
 

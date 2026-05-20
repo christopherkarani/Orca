@@ -1,8 +1,8 @@
 {
   "$schema": "http://json-schema.org/draft-07/schema#",
   "$id": "https://orca.local/schemas/host-capabilities-v1.json",
-  "title": "Aegis Host Capabilities v1",
-  "description": "Capability report exposed to host plugins so they know what Aegis can and cannot enforce.",
+  "title": "Orca Host Capabilities v1",
+  "description": "Capability report exposed to host plugins so they know what Orca can and cannot enforce.",
   "type": "object",
   "required": ["version", "orca_version", "decisions", "limitations", "ci_mode"],
   "properties": {
@@ -20,7 +20,7 @@
         "type": "string",
         "enum": ["command", "file", "prompt", "tool", "network", "mcp"]
       },
-      "description": "Decision kinds supported by this Aegis build."
+      "description": "Decision kinds supported by this Orca build."
     },
     "limitations": {
       "type": "array",
@@ -29,7 +29,7 @@
     },
     "ci_mode": {
       "type": "boolean",
-      "description": "Whether Aegis is running in CI mode (never prompts)."
+      "description": "Whether Orca is running in CI mode (never prompts)."
     },
     "sandbox_level": {
       "type": "string",

@@ -1,8 +1,8 @@
 const std = @import("std");
 
-const audit = @import("aegis_core").audit;
-const core = @import("aegis_core").core;
-const policy = @import("aegis_core").policy;
+const audit = @import("orca_core").audit;
+const core = @import("orca_core").core;
+const policy = @import("orca_core").policy;
 const windows_backend = @import("../sandbox/windows.zig");
 
 pub const max_staged_file_bytes: usize = 16 * 1024 * 1024;
@@ -1078,7 +1078,7 @@ test "absolute path normalization and workspace containment" {
     defer normalized.deinit(std.testing.allocator);
     try std.testing.expectEqualStrings("src/main.zig", normalized.relative_path);
 
-    try std.testing.expectError(error.OutsideWorkspace, normalizePath(std.testing.allocator, root, "/tmp/aegis-outside-file"));
+    try std.testing.expectError(error.OutsideWorkspace, normalizePath(std.testing.allocator, root, "/tmp/orca-outside-file"));
 }
 
 test "path traversal cannot escape workspace" {
@@ -1112,7 +1112,7 @@ test "symlink escape to protected path is blocked" {
     const root = try tmp.dir.realpathAlloc(std.testing.allocator, ".");
     defer std.testing.allocator.free(root);
 
-    const outside_dir = try std.fs.path.join(std.testing.allocator, &.{ root, "..", "aegis-secret-outside" });
+    const outside_dir = try std.fs.path.join(std.testing.allocator, &.{ root, "..", "orca-secret-outside" });
     defer std.testing.allocator.free(outside_dir);
     try std.fs.cwd().makePath(outside_dir);
     defer std.fs.cwd().deleteTree(outside_dir) catch {};
@@ -1501,7 +1501,7 @@ test "filesystem audit events are emitted through session writer" {
     const session: core.session.Session = .{
         .id = try core.session.generateSessionId(ts),
         .started_at = ts,
-        .command = "aegis",
+        .command = "orca",
         .args = &.{"stage"},
         .workspace_root = root,
         .mode = .strict,

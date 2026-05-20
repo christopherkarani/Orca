@@ -26,6 +26,7 @@ class Orca < Formula
 
   def install
     bin.install "bin/orca"
+    prefix.install "orca-dashboard-ui/dist" => "orca-dashboard-ui/dist"
   end
 
   test do

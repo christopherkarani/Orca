@@ -6,11 +6,11 @@ REPO_ROOT=$(CDPATH= cd -- "$SCRIPT_DIR/../.." && pwd)
 ORCA_BIN="$REPO_ROOT/zig-out/bin/orca"
 
 if [ ! -x "$ORCA_BIN" ]; then
-  echo "missing Aegis binary at $ORCA_BIN; run 'zig build' from the repository root" >&2
+  echo "missing Orca binary at $ORCA_BIN; run 'zig build' from the repository root" >&2
   exit 1
 fi
 
-WORKDIR=$(mktemp -d "${TMPDIR:-/tmp}/aegis-leaky-demo.XXXXXX")
+WORKDIR=$(mktemp -d "${TMPDIR:-/tmp}/orca-leaky-demo.XXXXXX")
 cleanup() {
   rm -rf "$WORKDIR"
 }
@@ -31,7 +31,7 @@ if [ -z "$secret_value" ]; then
 fi
 printf 'DEMO_ONLY_SECRET=%s\n' "$secret_value" > "$WORKDIR/.env"
 
-echo "Aegis leaky-agent demo"
+echo "Orca leaky-agent demo"
 echo "workspace: $WORKDIR"
 
 (
