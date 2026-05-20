@@ -3,11 +3,7 @@ const std = @import("std");
 pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
-    const version = blk: {
-        const version_file = std.fs.cwd().readFileAlloc(b.allocator, "VERSION", 32) catch break :blk b.option([]const u8, "version", "Orca version metadata") orelse "1.1.0";
-        defer b.allocator.free(version_file);
-        break :blk std.mem.trim(u8, version_file, " \n\r\t");
-    };
+    const version = std.mem.trim(u8, @embedFile("VERSION"), " \n\r\t");
     const commit = b.option([]const u8, "commit", "Source commit metadata") orelse "unknown";
     const build_date = b.option([]const u8, "build-date", "UTC build date metadata") orelse "unknown";
 
