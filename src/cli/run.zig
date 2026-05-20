@@ -622,6 +622,9 @@ fn parseOptions(argv: []const []const u8, stdout: anytype, stderr: anytype) !Run
         } else if (std.mem.eql(u8, arg, "--")) {
             options.command_argv = argv[index + 1 ..];
             break;
+        } else if (std.mem.eql(u8, arg, "--ci")) {
+            options.mode = .ci;
+            options.mode_explicit = true;
         } else if (std.mem.eql(u8, arg, "--workspace")) {
             index += 1;
             if (index >= argv.len) {
