@@ -40,6 +40,11 @@ interface OpenClawPluginApi {
     handler: (event: unknown, ctx: unknown) => unknown | Promise<unknown>,
     opts?: { priority?: number }
   ) => void;
+  registerHook?: (
+    events: string | string[],
+    handler: (event: unknown) => unknown | Promise<unknown>,
+    opts?: { hookName?: string; priority?: number; register?: boolean }
+  ) => void;
 }
 
 const SECRET_KEYS = [
@@ -150,6 +155,27 @@ async function callOrca(
   }
 }
 
+/**
+ * Detect whether api.on is likely a no-op.
+ * OpenClaw loads npm plugins with registrationMode "cli-metadata", where
+ * api.on is wired to a no-op function. This is a known limitation.
+ */
+function isOnNoop(api: OpenClawPluginApi): boolean {
+  if (typeof api.on !== 'function') return true;
+
+  // Heuristic: try registering a test hook. If api.on is a real typed-hook
+  // registrar, unknown hook names are silently ignored but still accepted.
+  // A no-op will also silently accept them, so this is not a definitive test.
+  // We use a secondary heuristic: check if the plugin source path suggests a
+  // bundled vs npm/global install.
+  const source = api.source || '';
+  if (source.includes('node_modules') || source.includes('.openclaw/npm')) {
+    return true;
+  }
+
+  return false;
+}
+
 export default function orcaPlugin(api: OpenClawPluginApi): void {
   const cwd = process.cwd();
   const sessionId = undefined;
@@ -159,7 +185,7 @@ export default function orcaPlugin(api: OpenClawPluginApi): void {
   if (!orcaBin) {
     logger?.warn?.(
       '[orca] Binary not found in PATH or typical build paths. ' +
-        'Run: ./scripts/install-orca-plugin.sh openclaw project (or .\\scripts\\install-orca-plugin.ps1 openclaw project on Windows).'
+        'Run: ./scripts/install-orca-plugin.sh openclaw project (or .\scripts\install-orca-plugin.ps1 openclaw project on Windows).'
     );
     return;
   }
@@ -170,6 +196,19 @@ export default function orcaPlugin(api: OpenClawPluginApi): void {
         'Plugin will not register lifecycle hooks.'
     );
     return;
+  }
+
+  const onIsNoop = isOnNoop(api);
+
+  if (onIsNoop) {
+    logger?.warn?.(
+      '[orca] Detected npm/global plugin install. ' +
+        'OpenClaw currently wires api.on to a no-op for non-bundled plugins, ' +
+        'so before_tool_call / after_tool_call hooks will NOT fire. ' +
+        'For full runtime guardrails, run OpenClaw through Orca:  ' +
+        '`orca run -- openclaw`  ' +
+        '(see https://github.com/christopherkarani/Orca#openclaw-plugin).'
+    );
   }
 
   logger?.info?.(`[orca] Plugin loaded. Binary: ${orcaBin}`);
