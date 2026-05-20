@@ -203,7 +203,9 @@ Session artifacts live under `.orca/sessions/<session-id>/`.
 
 ---
 
-## How it works
+## Architecture
+
+Orca is not a shell wrapper. It launches your agent as a child process and intercepts traffic at the **Model Context Protocol (MCP)** layer:
 
 ```
 ┌─────────────┐      ┌──────────────┐      ┌─────────────────┐
@@ -214,12 +216,24 @@ Session artifacts live under `.orca/sessions/<session-id>/`.
                             │                      tool call
                             │                        ▼
                      ┌──────────────┐      ┌─────────────────┐
-                     │  Policy      │ ◀──  │  Tool / File /  │
-                     │  engine      │      │  Network req    │
+                     │  Policy      │ ◀──  │  MCP stdio      │
+                     │  engine      │      │  proxy          │
                      └──────────────┘      └─────────────────┘
                             │
                     allow / deny / ask
 ```
+
+1. **MCP Stdio Proxy** — Sits between agent and MCP server, parsing JSON-RPC 2.0 messages. Every `tools/call`, `resources/read`, `prompts/get`, and `sampling/createMessage` is evaluated against policy before forwarding.
+
+2. **Command Guard** — Tokenizes and classifies shell commands by risk. `rm -rf /` is blocked; `git status` is allowed.
+
+3. **Network Egress Guard** — Parses destinations and runs exfiltration heuristics (paste sites, tunneling services, base64-like URL components, high-entropy DNS labels).
+
+4. **Filesystem Staging** — Write operations are staged to `.orca/sessions/<id>/staging/` with diff review before apply.
+
+5. **Audit Hash Chain** — Every event is serialized deterministically, hashed, and chained. Replay verification detects tampering.
+
+6. **Honest Sandbox Backends** — The Linux backend probes for Landlock, seccomp-bpf, cgroups v2, and user namespaces. macOS/Windows use wrapper-mediated enforcement with clear capability reporting. Run `orca doctor` to see exactly what's active, partial, or unavailable on your OS.
 
 The strongest protection is the `orca run` wrapper, because Orca controls the agent process directly. Orca also offers host plugins for deeper integration with specific agents, but plugins are limited by each host's hook system. For maximum safety, always run the agent through `orca run`.
 
