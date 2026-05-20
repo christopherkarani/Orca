@@ -43,6 +43,12 @@ After npm publication, install with:
 openclaw plugins install npm:orca-openclaw-plugin
 ```
 
+If OpenClaw's security scanner blocks the install (the plugin uses `child_process` to call the `orca` binary), use:
+
+```bash
+openclaw plugins install npm:orca-openclaw-plugin --dangerously-force-unsafe-install
+```
+
 If OpenClaw supports bare npm package installs:
 
 ```bash
@@ -58,6 +64,12 @@ The plugin is published to ClawHub as `orca-openclaw-plugin`.
 
 ```bash
 openclaw plugins install clawhub:orca-openclaw-plugin
+```
+
+If OpenClaw's security scanner blocks the install, use:
+
+```bash
+openclaw plugins install clawhub:orca-openclaw-plugin --dangerously-force-unsafe-install
 ```
 
 **Note:** The `clawhub:` install protocol requires a recent OpenClaw version. If your version does not support it, use the local path or npm install methods instead.
@@ -174,3 +186,21 @@ The OpenClaw plugin does not add MCP server behavior or drone-specific plugin fe
 ## Strongest protection warning
 
 > The Orca OpenClaw plugin adds lifecycle hooks for OpenClaw. For the strongest local protection, run the OpenClaw process itself through Orca with `orca run -- openclaw`.
+
+## OpenClaw Security Scan Notice
+
+OpenClaw's plugin security scanner blocks plugins that use `child_process`. The Orca plugin legitimately needs this to call the `orca` CLI binary for policy enforcement.
+
+If installation is blocked, use:
+
+```bash
+openclaw plugins install npm:orca-openclaw-plugin --dangerously-force-unsafe-install
+```
+
+Or for ClawHub:
+
+```bash
+openclaw plugins install clawhub:orca-openclaw-plugin --dangerously-force-unsafe-install
+```
+
+This is a known limitation. The plugin is safe — it only calls the local `orca` binary that you already installed and trust.
