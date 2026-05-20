@@ -1,8 +1,8 @@
-# Aegis Plugin Demo
+# Orca Plugin Demo
 
 ## Overview
 
-This demo shows the Aegis Codex and Claude Code plugin flows using checked-in synthetic fixtures and deterministic CLI behavior. It is meant for local validation, documentation, and regression checks only.
+This demo shows Orca Codex and Claude Code plugin flows using checked-in synthetic fixtures and deterministic CLI behavior. It is meant for local validation, documentation, and regression checks only.
 
 This deterministic demo uses fake hook payloads. It does not require real Codex, Claude Code, a real LLM, real secrets, external network access, MCP, or drone hardware.
 
@@ -11,11 +11,11 @@ See the host-specific walkthroughs in [codex-demo.md](codex-demo.md) and [claude
 ## Prerequisites
 
 - Zig 0.15.2
-- A built Aegis binary (`./zig-out/bin/orca`)
+- A built Orca binary (`./zig-out/bin/orca`)
 
 ## Demo flow
 
-1. Build Aegis:
+1. Build Orca:
    ```bash
    zig build
    ```
@@ -55,7 +55,7 @@ See the host-specific walkthroughs in [codex-demo.md](codex-demo.md) and [claude
    ./zig-out/bin/orca replay --session last --verify
    ```
 
-   This step may need a prior Aegis run session.
+   This step may need a prior Orca run session.
 
 9. Explain limitations:
    - The demo proves deterministic local policy evaluation and replay formatting.

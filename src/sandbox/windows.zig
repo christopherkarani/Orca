@@ -2,7 +2,7 @@ const std = @import("std");
 const builtin = @import("builtin");
 
 const backend = @import("backend.zig");
-const platform = @import("aegis_core").platform;
+const platform = @import("orca_core").platform;
 
 pub const implemented = true;
 

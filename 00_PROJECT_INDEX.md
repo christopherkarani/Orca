@@ -1,6 +1,6 @@
-# Aegis v1.0 Phased Project Plan
+# Orca v1.0 Phased Project Plan
 
-**Project:** Aegis — local-first runtime firewall for AI agents  
+**Project:** Orca — local-first runtime firewall for AI agents  
 **Implementation language:** Zig  
 **Execution model:** Each phase is designed to be executed by a Codex coding agent as an isolated implementation task.  
 **End state:** A complete v1.0 open-source product: local CLI, policy engine, audit/replay, secret protection, staged writes, command guard, MCP proxy, network guard, red-team suite, platform backends, installers, docs, and release readiness.
@@ -29,7 +29,7 @@ For best results, every Codex execution should include the assigned phase file p
 
 ## Product Definition
 
-Aegis is a Zig-based, local-first runtime firewall for AI agents. It launches existing agent tools inside a policy-controlled session, strips secrets, blocks dangerous file access, stages writes, mediates shell commands, controls network egress, proxies MCP servers, records tamper-evident audit logs, and ships with red-team fixtures that prove the protection works.
+Orca is a Zig-based, local-first runtime firewall for AI agents. It launches existing agent tools inside a policy-controlled session, strips secrets, blocks dangerous file access, stages writes, mediates shell commands, controls network egress, proxies MCP servers, records tamper-evident audit logs, and ships with red-team fixtures that prove the protection works.
 
 Primary promise:
 
@@ -104,18 +104,18 @@ Each phase should leave the repository in a working state.
 
 ## v1.0 Product Completion Criteria
 
-Aegis v1.0 is complete when all of the following are true:
+Orca v1.0 is complete when all of the following are true:
 
 ### Core CLI
 
-- `aegis run` launches arbitrary commands.
-- `aegis init` creates a working policy.
-- `aegis doctor` reports platform capabilities.
-- `aegis replay` replays sessions.
-- `aegis diff`, `aegis apply`, and `aegis discard` manage staged writes.
-- `aegis policy check` validates policy files.
-- `aegis mcp proxy` proxies stdio MCP servers.
-- `aegis redteam` runs security fixtures.
+- `orca run` launches arbitrary commands.
+- `orca init` creates a working policy.
+- `orca doctor` reports platform capabilities.
+- `orca replay` replays sessions.
+- `orca diff`, `orca apply`, and `orca discard` manage staged writes.
+- `orca policy check` validates policy files.
+- `orca mcp proxy` proxies stdio MCP servers.
+- `orca redteam` runs security fixtures.
 
 ### Protection
 

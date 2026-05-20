@@ -382,7 +382,7 @@ test "summary json records final hash and bounded command metadata" {
         .ended_at = ts,
         .command = "echo",
         .args = &.{"hello"},
-        .workspace_root = "/tmp/aegis",
+        .workspace_root = "/tmp/orca",
         .mode = .observe,
         .platform = core.platform.detectOs(),
     };
@@ -406,7 +406,7 @@ test "summary redacts synthetic secret command metadata" {
         .ended_at = ts,
         .command = "echo",
         .args = &.{"fake_secret_value"},
-        .workspace_root = "/tmp/aegis",
+        .workspace_root = "/tmp/orca",
         .mode = .observe,
         .platform = core.platform.detectOs(),
     };
@@ -430,7 +430,7 @@ test "summary markdown is product neutral unless caller provides label" {
         .ended_at = ts,
         .command = "echo",
         .args = &.{"hello"},
-        .workspace_root = "/tmp/aegis",
+        .workspace_root = "/tmp/orca",
         .mode = .observe,
         .platform = core.platform.detectOs(),
     };

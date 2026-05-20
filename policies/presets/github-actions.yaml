@@ -1,4 +1,4 @@
-# Aegis preset: github-actions
+# Orca preset: github-actions
 # CI-safe preset. CI mode never prompts; ask-class decisions are denied unless explicit allow rules are added.
 # Do not put workflow tokens or repository secrets in this policy.
 version: 1

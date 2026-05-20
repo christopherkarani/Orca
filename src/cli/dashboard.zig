@@ -1,6 +1,7 @@
 const std = @import("std");
 
 const dashboard = @import("../dashboard/mod.zig");
+const resource_root = @import("../resource_root.zig");
 const credentials_cmd = @import("credentials.zig");
 const doctor = @import("doctor.zig");
 const report_cmd = @import("report.zig");
@@ -13,8 +14,8 @@ const policy = @import("policy.zig");
 const replay = @import("replay.zig");
 const exit_codes = @import("exit_codes.zig");
 const help = @import("help.zig");
-const core = @import("aegis_core").core;
-const core_policy = @import("aegis_core").policy;
+const core = @import("orca_core").core;
+const core_policy = @import("orca_core").policy;
 const intercept = @import("../intercept/mod.zig");
 
 const default_host = "127.0.0.1";
@@ -130,12 +131,14 @@ fn handleConnection(allocator: std.mem.Allocator, stream: std.net.Stream, csrf_t
 
     const workspace_root = try dashboard.resolveWorkspaceRoot(allocator);
     defer allocator.free(workspace_root);
+    const dist_dir = try resource_root.resolveResourcePath(allocator, .{ .workspace_root = workspace_root }, ui_dist_dir);
+    defer allocator.free(dist_dir);
     var body: std.ArrayList(u8) = .empty;
     defer body.deinit(allocator);
     const writer = body.writer(allocator);
 
     if (std.mem.eql(u8, request.method, "GET") and !std.mem.startsWith(u8, request.path, "/api/")) {
-        try serveStaticFile(allocator, stream, request.path, csrf_token);
+        try serveStaticFile(allocator, stream, request.path, csrf_token, dist_dir);
         return;
     }
     if (std.mem.eql(u8, request.method, "GET") and std.mem.eql(u8, request.path, "/api/status")) {
@@ -174,15 +177,15 @@ fn handleConnection(allocator: std.mem.Allocator, stream: std.net.Stream, csrf_t
     try sendText(stream, 404, "Not Found", "application/json; charset=utf-8", "{\"error\":\"not_found\"}\n");
 }
 
-fn serveStaticFile(allocator: std.mem.Allocator, stream: std.net.Stream, path: []const u8, csrf_token: []const u8) !void {
+fn serveStaticFile(allocator: std.mem.Allocator, stream: std.net.Stream, path: []const u8, csrf_token: []const u8, dist_dir: []const u8) !void {
     const rel_path = if (std.mem.eql(u8, path, "/")) "index.html" else path[1..];
 
-    const file_path = try std.fs.path.resolve(allocator, &.{ ui_dist_dir, rel_path });
+    const file_path = try std.fs.path.join(allocator, &.{ dist_dir, rel_path });
     defer allocator.free(file_path);
 
     const file = std.fs.cwd().openFile(file_path, .{}) catch |err| switch (err) {
         error.FileNotFound => {
-            return tryServeIndexOrFallback(allocator, stream, rel_path, csrf_token);
+            return tryServeIndexOrFallback(allocator, stream, rel_path, csrf_token, dist_dir);
         },
         else => return sendJsonError(stream, 500, "Internal Server Error", "read_failed"),
     };
@@ -190,7 +193,7 @@ fn serveStaticFile(allocator: std.mem.Allocator, stream: std.net.Stream, path: [
 
     const stat = try file.stat();
     if (stat.kind == .directory) {
-        return tryServeIndexOrFallback(allocator, stream, rel_path, csrf_token);
+        return tryServeIndexOrFallback(allocator, stream, rel_path, csrf_token, dist_dir);
     }
 
     const content_type = blk: {
@@ -214,22 +217,22 @@ fn serveStaticFile(allocator: std.mem.Allocator, stream: std.net.Stream, path: [
     return sendFile(stream, file, content_type, allocator, csrf_token);
 }
 
-fn tryServeIndexOrFallback(allocator: std.mem.Allocator, stream: std.net.Stream, rel_path: []const u8, csrf_token: []const u8) !void {
+fn tryServeIndexOrFallback(allocator: std.mem.Allocator, stream: std.net.Stream, rel_path: []const u8, csrf_token: []const u8, dist_dir: []const u8) !void {
     if (std.mem.endsWith(u8, rel_path, "/index.html")) {
         return sendJsonError(stream, 404, "Not Found", "not_found");
     }
-    const index_fallback = try std.fs.path.resolve(allocator, &.{ ui_dist_dir, rel_path, "index.html" });
+    const index_fallback = try std.fs.path.join(allocator, &.{ dist_dir, rel_path, "index.html" });
     defer allocator.free(index_fallback);
     const index_file = std.fs.cwd().openFile(index_fallback, .{}) catch |inner_err| switch (inner_err) {
-        error.FileNotFound => return serveSpaFallback(allocator, stream, csrf_token),
+        error.FileNotFound => return serveSpaFallback(allocator, stream, csrf_token, dist_dir),
         else => return sendJsonError(stream, 500, "Internal Server Error", "read_failed"),
     };
     defer index_file.close();
     return sendFile(stream, index_file, "text/html; charset=utf-8", allocator, csrf_token);
 }
 
-fn serveSpaFallback(allocator: std.mem.Allocator, stream: std.net.Stream, csrf_token: []const u8) !void {
-    const index_path = try std.fs.path.resolve(allocator, &.{ ui_dist_dir, "index.html" });
+fn serveSpaFallback(allocator: std.mem.Allocator, stream: std.net.Stream, csrf_token: []const u8, dist_dir: []const u8) !void {
+    const index_path = try std.fs.path.join(allocator, &.{ dist_dir, "index.html" });
     defer allocator.free(index_path);
     const file = std.fs.cwd().openFile(index_path, .{}) catch |err| switch (err) {
         error.FileNotFound => return sendJsonError(stream, 404, "Not Found", "not_found"),

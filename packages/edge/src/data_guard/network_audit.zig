@@ -1,5 +1,5 @@
 const std = @import("std");
-const core = @import("aegis_core");
+const core = @import("orca_core");
 const data_classification = @import("data_classification.zig");
 const endpoint_policy = @import("endpoint_policy.zig");
 

@@ -1,5 +1,5 @@
 const std = @import("std");
-const edge = @import("aegis_edge");
+const edge = @import("orca_edge");
 
 test "edge scaffold exposes domain types without active enforcement claims" {
     const decision = edge.FakeAdapter.evaluate(

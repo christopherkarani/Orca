@@ -1,8 +1,8 @@
 const std = @import("std");
 const builtin = @import("builtin");
-const core = @import("aegis_core").core;
+const core = @import("orca_core").core;
 const supervisor = @import("../core/supervisor.zig");
-const core_api = @import("aegis_core").api;
+const core_api = @import("orca_core").api;
 const sandbox = @import("../sandbox/mod.zig");
 
 const exit_codes = @import("exit_codes.zig");

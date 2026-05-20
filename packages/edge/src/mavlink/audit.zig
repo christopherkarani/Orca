@@ -1,7 +1,7 @@
 const std = @import("std");
 
 const framing = @import("framing.zig");
-const core = @import("aegis_core");
+const core = @import("orca_core");
 
 pub const max_payload_preview_len = 48;
 

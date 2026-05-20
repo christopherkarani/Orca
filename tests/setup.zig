@@ -1,7 +1,7 @@
 const std = @import("std");
-const plugin = @import("aegis").cli.plugin;
-const init = @import("aegis").cli.init;
-const exit_codes = @import("aegis").cli.exit_codes;
+const plugin = @import("orca").cli.plugin;
+const init = @import("orca").cli.init;
+const exit_codes = @import("orca").cli.exit_codes;
 
 test "host detection finds a known binary in PATH" {
     const allocator = std.testing.allocator;

@@ -1,7 +1,7 @@
 const std = @import("std");
 
-const core_api = @import("aegis_core").api;
-const policy_mod = @import("aegis_core").policy;
+const core_api = @import("orca_core").api;
+const policy_mod = @import("orca_core").policy;
 const redteam = @import("redteam/mod.zig");
 
 const focused_fixture_id = "shell-curl-pipe-sh";
@@ -199,11 +199,11 @@ pub fn writeJson(writer: anytype, result: Result) !void {
     for (result.checks.items, 0..) |check, index| {
         if (index > 0) try writer.writeByte(',');
         try writer.writeAll("{\"name\":");
-        try @import("aegis_core").core.util.writeJsonString(writer, check.name);
+        try @import("orca_core").core.util.writeJsonString(writer, check.name);
         try writer.writeAll(",\"status\":");
-        try @import("aegis_core").core.util.writeJsonString(writer, statusText(check.status));
+        try @import("orca_core").core.util.writeJsonString(writer, statusText(check.status));
         try writer.writeAll(",\"message\":");
-        try @import("aegis_core").core.util.writeJsonString(writer, check.message);
+        try @import("orca_core").core.util.writeJsonString(writer, check.message);
         try writer.writeByte('}');
     }
     try writer.writeAll("]}\n");

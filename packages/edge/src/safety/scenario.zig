@@ -5,7 +5,7 @@ const operator = @import("../operator/mod.zig");
 const policy = @import("../policy/mod.zig");
 const schema = @import("../schema/mod.zig");
 const evaluator = @import("evaluator.zig");
-const core = @import("aegis_core");
+const core = @import("orca_core");
 
 pub const RunOptions = struct {
     policy_path: []const u8,

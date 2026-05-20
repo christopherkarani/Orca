@@ -292,7 +292,7 @@ Run `orca doctor` to check your platform capabilities.
 - [Commands](docs/commands.md) — CLI reference.
 - [Plugin security model](docs/integrations/plugin-security-model.md)
 - [Plugin troubleshooting](docs/integrations/plugin-troubleshooting.md)
-- [Aegis to Orca migration](docs/migration-aegis-to-orca.md)
+- [Migration from Aegis to Orca](docs/migration-aegis-to-orca.md)
 
 ---
 

@@ -28,16 +28,16 @@ pub const Session = struct {
     platform: platform.Os,
 };
 
-pub fn generateSessionId(now: time.Timestamp) errors.AegisError!SessionId {
+pub fn generateSessionId(now: time.Timestamp) errors.OrcaError!SessionId {
     var id: SessionId = .{
         .value = undefined,
         .len = 0,
     };
     var timestamp_buf: [32]u8 = undefined;
-    const timestamp = now.formatFilenameSafe(&timestamp_buf) catch return errors.AegisError.SessionCreateFailed;
+    const timestamp = now.formatFilenameSafe(&timestamp_buf) catch return errors.OrcaError.SessionCreateFailed;
     var suffix_buf: [4]u8 = undefined;
-    const suffix = util.randomHexSuffix(&suffix_buf) catch return errors.AegisError.SessionCreateFailed;
-    const written = std.fmt.bufPrint(&id.value, "{s}_{s}", .{ timestamp, suffix }) catch return errors.AegisError.SessionCreateFailed;
+    const suffix = util.randomHexSuffix(&suffix_buf) catch return errors.OrcaError.SessionCreateFailed;
+    const written = std.fmt.bufPrint(&id.value, "{s}_{s}", .{ timestamp, suffix }) catch return errors.OrcaError.SessionCreateFailed;
     id.len = written.len;
     return id;
 }
@@ -67,14 +67,14 @@ test "session model can be constructed from core types" {
     const session: Session = .{
         .id = id,
         .started_at = time.Timestamp.fromUnixSeconds(1_777_983_130),
-        .command = "aegis",
+        .command = "orca",
         .args = &.{"run"},
-        .workspace_root = "/tmp/aegis",
+        .workspace_root = "/tmp/orca",
         .session_name = "unit-test",
         .mode = .observe,
         .platform = platform.detectOs(),
     };
-    try std.testing.expectEqualStrings("aegis", session.command);
+    try std.testing.expectEqualStrings("orca", session.command);
     try std.testing.expectEqualStrings("unit-test", session.session_name.?);
     try std.testing.expectEqual(types.Mode.observe, session.mode);
 }

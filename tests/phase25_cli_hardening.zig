@@ -1,5 +1,5 @@
 const std = @import("std");
-const aegis = @import("aegis");
+const orca = @import("orca");
 
 fn readFile(allocator: std.mem.Allocator, path: []const u8) ![]u8 {
     return try std.fs.cwd().readFileAlloc(allocator, path, 256 * 1024);
@@ -61,9 +61,9 @@ test "phase25 docs preserve Edge no-real-flight safety boundary" {
 }
 
 test "phase25 Core facade is the shared CLI policy audit replay and redaction surface" {
-    try std.testing.expect(@hasDecl(aegis, "core_api"));
+    try std.testing.expect(@hasDecl(orca, "core_api"));
 
-    var selected = try aegis.core_api.parsePolicyFromSlice(std.testing.allocator,
+    var selected = try orca.core_api.parsePolicyFromSlice(std.testing.allocator,
         \\version: 1
         \\mode: ci
         \\commands:
@@ -72,7 +72,7 @@ test "phase25 Core facade is the shared CLI policy audit replay and redaction su
     , "phase25-core-api.yaml");
     defer selected.deinit();
 
-    var evaluation = try aegis.core_api.evaluateAction(
+    var evaluation = try orca.core_api.evaluateAction(
         std.testing.allocator,
         &selected,
         .{ .command_exec = .{ .argv = &.{ "npm", "install", "left-pad" } } },
@@ -80,7 +80,7 @@ test "phase25 Core facade is the shared CLI policy audit replay and redaction su
     );
     defer evaluation.deinit(std.testing.allocator);
 
-    try std.testing.expectEqual(aegis.core_api.DecisionResult.deny, evaluation.decision.result);
-    const redacted = aegis.core_api.redactString("OPENAI_API_KEY=sk-fakeSyntheticOpenAIKey1234567890");
+    try std.testing.expectEqual(orca.core_api.DecisionResult.deny, evaluation.decision.result);
+    const redacted = orca.core_api.redactString("OPENAI_API_KEY=sk-fakeSyntheticOpenAIKey1234567890");
     try std.testing.expect(std.mem.indexOf(u8, redacted, "sk-fakeSynthetic") == null);
 }

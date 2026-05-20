@@ -1,6 +1,6 @@
 const std = @import("std");
 
-const core = @import("aegis_core");
+const core = @import("orca_core");
 const request_mod = @import("approval_request.zig");
 const decision_mod = @import("approval_decision.zig");
 

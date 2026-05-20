@@ -1,9 +1,9 @@
 const std = @import("std");
 
-const core = @import("aegis_core").core;
-const core_api = @import("aegis_core").api;
+const core = @import("orca_core").core;
+const core_api = @import("orca_core").api;
 const intercept = @import("../intercept/mod.zig");
-const policy = @import("aegis_core").policy;
+const policy = @import("orca_core").policy;
 const exit_codes = @import("exit_codes.zig");
 const help = @import("help.zig");
 

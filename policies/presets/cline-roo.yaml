@@ -1,4 +1,4 @@
-# Aegis preset: cline-roo
+# Orca preset: cline-roo
 # Generic/experimental: conservative policy for local editor agents with MCP-style extensions.
 version: 1
 mode: ask

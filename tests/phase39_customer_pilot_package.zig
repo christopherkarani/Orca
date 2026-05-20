@@ -1,5 +1,5 @@
 const std = @import("std");
-const edge_main = @import("aegis_edge_main");
+const edge_main = @import("orca_edge_main");
 
 fn expectContains(haystack: []const u8, needle: []const u8) !void {
     if (std.mem.indexOf(u8, haystack, needle) == null) {

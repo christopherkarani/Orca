@@ -1,4 +1,4 @@
-# Aegis Plugin Changelog
+# Orca Plugin Changelog
 
 ## 1.1.0 — Plugin Distribution and Marketplace
 
@@ -6,7 +6,7 @@
 
 - **Codex plugin** (`integrations/codex-plugin/`)
   - Plugin manifest (`.codex-plugin/plugin.json`)
-  - Skills: `aegis-doctor`, `aegis-init`, `aegis-protect`, `aegis-redteam`, `aegis-replay`
+  - Skills: `orca-doctor`, `orca-init`, `orca-protect`, `orca-redteam`, `orca-replay`
   - Hooks: `SessionStart`, `UserPromptSubmit`, `PreToolUse`, `PermissionRequest`, `PostToolUse`, `Stop`
   - README with install instructions
   - Local marketplace example (`examples/marketplace.json`)
@@ -38,11 +38,11 @@
   - `scripts/package-plugins.ps1` — Windows PowerShell equivalent
   - `scripts/package-npm-plugins.sh` — creates npm tarballs and checksums
   - Produces:
-    - `dist/plugins/aegis-codex-plugin-vX.Y.Z.zip`
-    - `dist/plugins/aegis-claude-code-plugin-vX.Y.Z.zip`
-    - `dist/plugins/aegis-opencode-plugin-vX.Y.Z.zip`
-    - `dist/plugins/aegis-claude-marketplace-vX.Y.Z.zip`
-    - `dist/plugins/aegis-plugin-checksums.txt`
+    - `dist/plugins/orca-codex-plugin-vX.Y.Z.zip`
+    - `dist/plugins/orca-claude-code-plugin-vX.Y.Z.zip`
+    - `dist/plugins/orca-opencode-plugin-vX.Y.Z.zip`
+    - `dist/plugins/orca-claude-marketplace-vX.Y.Z.zip`
+    - `dist/plugins/orca-plugin-checksums.txt`
     - `dist/npm/orca-opencode-plugin-vX.Y.Z.tgz`
     - `dist/npm/orca-openclaw-plugin-vX.Y.Z.tgz`
     - `dist/npm/orca-npm-plugin-checksums.txt`
@@ -83,7 +83,7 @@
 
 ### Compatibility
 
-- Aegis core: 1.1.0
+- Orca core: 1.1.0
 - Codex plugin: 1.1.0
 - Claude Code plugin: 1.1.0
 - OpenCode plugin: 1.1.0
@@ -96,7 +96,7 @@
 ## How to Verify This Release
 
 ```bash
-# Build Aegis
+# Build Orca
 zig build
 
 # Run tests
@@ -130,7 +130,7 @@ cat tests/plugin-fixtures/opencode/tool_execute_before_safe.json \
 
 # Verify artifacts
 ls -la dist/plugins
-cat dist/plugins/aegis-plugin-checksums.txt
+cat dist/plugins/orca-plugin-checksums.txt
 
 # Run redteam
 ./zig-out/bin/orca redteam --ci

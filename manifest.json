@@ -1,5 +1,5 @@
 {
-  "project": "Aegis",
+  "project": "Orca",
   "description": "Final reviewed phased implementation plan for a Zig-based local runtime firewall for AI agents",
   "created_at": "2026-05-06T00:29:43.552300+00:00",
   "status": "final-pass-complete",

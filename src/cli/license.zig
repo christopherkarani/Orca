@@ -72,13 +72,13 @@ fn activate(argv: []const []const u8, stdout: anytype, stderr: anytype) !u8 {
 
 fn writeStatusJson(writer: anytype, current: license.License) !void {
     try writer.writeAll("{\"tier\":");
-    try @import("aegis_core").core.util.writeJsonString(writer, current.tier.label());
+    try @import("orca_core").core.util.writeJsonString(writer, current.tier.label());
     try writer.writeAll(",\"verified\":");
     try writer.writeAll(if (current.verified) "true" else "false");
     try writer.writeAll(",\"license_id\":");
-    try @import("aegis_core").core.util.writeJsonString(writer, current.license_id);
+    try @import("orca_core").core.util.writeJsonString(writer, current.license_id);
     try writer.writeAll(",\"source\":");
-    try @import("aegis_core").core.util.writeJsonString(writer, current.source);
+    try @import("orca_core").core.util.writeJsonString(writer, current.source);
     try writer.writeAll("}\n");
 }
 

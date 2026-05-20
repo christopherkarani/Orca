@@ -19,7 +19,7 @@ pub const fallback = @import("fallback.zig");
 
 const domain = @import("../domain/mod.zig");
 const schema = @import("../schema/mod.zig");
-const core = @import("aegis_core");
+const core = @import("orca_core");
 
 pub const HealthStatus = health_status.HealthStatus;
 pub const HealthDomain = health_status.HealthDomain;

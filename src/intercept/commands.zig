@@ -1,8 +1,8 @@
 const std = @import("std");
 const builtin = @import("builtin");
 
-const core = @import("aegis_core").core;
-const policy = @import("aegis_core").policy;
+const core = @import("orca_core").core;
+const policy = @import("orca_core").policy;
 
 pub const implemented = true;
 
@@ -204,16 +204,16 @@ pub fn createShimDirectory(
     allocator: std.mem.Allocator,
     workspace_root: []const u8,
     session_id: []const u8,
-    aegis_executable: []const u8,
+    orca_executable: []const u8,
 ) ![]u8 {
     const shim_dir = try std.fs.path.join(allocator, &.{ workspace_root, ".orca", "sessions", session_id, "shims" });
     errdefer allocator.free(shim_dir);
     try std.fs.cwd().makePath(shim_dir);
     inline for (shim_names) |name| {
         if (builtin.os.tag == .windows) {
-            try writeWindowsExecutableShim(allocator, shim_dir, name, aegis_executable);
+            try writeWindowsExecutableShim(allocator, shim_dir, name, orca_executable);
         } else {
-            try writePosixShim(allocator, shim_dir, name, aegis_executable);
+            try writePosixShim(allocator, shim_dir, name, orca_executable);
         }
     }
     return shim_dir;
@@ -330,7 +330,7 @@ fn approvalHashListRemoveAlloc(allocator: std.mem.Allocator, list: []const u8, h
     return try out.toOwnedSlice(allocator);
 }
 
-fn writePosixShim(allocator: std.mem.Allocator, shim_dir: []const u8, name: []const u8, aegis_executable: []const u8) !void {
+fn writePosixShim(allocator: std.mem.Allocator, shim_dir: []const u8, name: []const u8, orca_executable: []const u8) !void {
     const path = try std.fs.path.join(allocator, &.{ shim_dir, name });
     defer allocator.free(path);
     const file = try std.fs.cwd().createFile(path, .{ .truncate = true, .mode = 0o755 });
@@ -339,18 +339,18 @@ fn writePosixShim(allocator: std.mem.Allocator, shim_dir: []const u8, name: []co
         \\#!/bin/sh
         \\exec "{s}" shim exec -- "{s}" "$@"
         \\
-    , .{ aegis_executable, name });
+    , .{ orca_executable, name });
     defer allocator.free(script);
     try file.writeAll(script);
     if (builtin.os.tag != .windows) try file.chmod(0o755);
 }
 
-fn writeWindowsExecutableShim(allocator: std.mem.Allocator, shim_dir: []const u8, name: []const u8, aegis_executable: []const u8) !void {
+fn writeWindowsExecutableShim(allocator: std.mem.Allocator, shim_dir: []const u8, name: []const u8, orca_executable: []const u8) !void {
     const filename = try std.fmt.allocPrint(allocator, "{s}.exe", .{name});
     defer allocator.free(filename);
     const path = try std.fs.path.join(allocator, &.{ shim_dir, filename });
     defer allocator.free(path);
-    try std.fs.copyFileAbsolute(aegis_executable, path, .{});
+    try std.fs.copyFileAbsolute(orca_executable, path, .{});
 }
 
 pub fn shimAliasFromExecutablePath(executable_path: []const u8) ?[]const u8 {
@@ -1107,7 +1107,7 @@ test "shim directory includes sh bash and zsh wrappers" {
         try std.fs.cwd().access(shim_path, .{});
         const script = try std.fs.cwd().readFileAlloc(std.testing.allocator, shim_path, 1024);
         defer std.testing.allocator.free(script);
-        try std.testing.expect(std.mem.indexOf(u8, script, "aegis\" shim exec --") != null or std.mem.indexOf(u8, script, "true\" shim exec --") != null);
+        try std.testing.expect(std.mem.indexOf(u8, script, "orca\" shim exec --") != null or std.mem.indexOf(u8, script, "true\" shim exec --") != null);
         try std.testing.expect(std.mem.indexOf(u8, script, shell) != null);
     }
 }
@@ -1138,7 +1138,7 @@ test "Windows executable shim aliases route extension-qualified invocations" {
     try std.testing.expectEqualStrings("powershell", shimAliasFromExecutablePath("powershell.exe").?);
     try std.testing.expectEqualStrings("pwsh", shimAliasFromExecutablePath("pwsh.exe").?);
     try std.testing.expectEqualStrings("git", shimAliasFromExecutablePath("git.exe").?);
-    try std.testing.expect(shimAliasFromExecutablePath("aegis.exe") == null);
+    try std.testing.expect(shimAliasFromExecutablePath("orca.exe") == null);
 }
 
 test "approval hashes are bounded and consumable without raw command persistence" {

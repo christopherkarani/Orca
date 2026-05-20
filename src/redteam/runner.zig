@@ -1,10 +1,10 @@
 const std = @import("std");
 
-const audit = @import("aegis_core").audit;
-const core = @import("aegis_core").core;
+const audit = @import("orca_core").audit;
+const core = @import("orca_core").core;
 const intercept = @import("../intercept/mod.zig");
 const mcp = @import("../mcp/mod.zig");
-const policy = @import("aegis_core").policy;
+const policy = @import("orca_core").policy;
 const sandbox = @import("../sandbox/mod.zig");
 const fixtures = @import("fixtures.zig");
 const scorecard = @import("scorecard.zig");

@@ -1,4 +1,4 @@
-# Aegis preset: codex
+# Orca preset: codex
 # Generic/experimental: designed for local Codex-style coding tasks without assuming model-provider secrets.
 # Network and writes stay reviewable by default.
 version: 1

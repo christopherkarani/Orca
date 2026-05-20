@@ -1,5 +1,5 @@
 const std = @import("std");
-const core = @import("aegis_core");
+const core = @import("orca_core");
 
 pub const audit_dir_name = ".edge";
 
@@ -43,7 +43,7 @@ pub fn loadReplay(allocator: std.mem.Allocator, workspace_root: []const u8, sess
 }
 
 test "edge session path uses .edge namespace" {
-    const path = try sessionDirPath(std.testing.allocator, "/tmp/aegis", "session-1");
+    const path = try sessionDirPath(std.testing.allocator, "/tmp/orca", "session-1");
     defer std.testing.allocator.free(path);
     try std.testing.expect(std.mem.indexOf(u8, path, ".edge") != null);
 }

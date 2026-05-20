@@ -1,7 +1,7 @@
 const std = @import("std");
 
-const core_api = @import("aegis_core").api;
-const core = @import("aegis_core").core;
+const core_api = @import("orca_core").api;
+const core = @import("orca_core").core;
 
 pub const PluginReadiness = struct {
     id: []const u8,

@@ -1,5 +1,5 @@
 const std = @import("std");
-const core = @import("aegis_core");
+const core = @import("orca_core");
 
 const edge_event = @import("../audit/edge_event.zig");
 const edge_replay = @import("../audit/edge_replay.zig");

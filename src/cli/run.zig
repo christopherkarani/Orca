@@ -1,11 +1,11 @@
 const std = @import("std");
 const builtin = @import("builtin");
 
-const core = @import("aegis_core").core;
+const core = @import("orca_core").core;
 const supervisor = @import("../core/supervisor.zig");
-const core_api = @import("aegis_core").api;
+const core_api = @import("orca_core").api;
 const intercept = @import("../intercept/mod.zig");
-const policy = @import("aegis_core").policy;
+const policy = @import("orca_core").policy;
 const sandbox = @import("../sandbox/mod.zig");
 const exit_codes = @import("exit_codes.zig");
 const help = @import("help.zig");
@@ -882,7 +882,7 @@ test "run reports missing command usefully" {
     var stdout_stream = std.io.fixedBufferStream(&stdout_buf);
     var stderr_stream = std.io.fixedBufferStream(&stderr_buf);
 
-    const code = try commandForTest(&.{ "--", "aegis-definitely-missing-command" }, stdout_stream.writer(), stderr_stream.writer(), .ignore);
+    const code = try commandForTest(&.{ "--", "orca-definitely-missing-command" }, stdout_stream.writer(), stderr_stream.writer(), .ignore);
     try std.testing.expectEqual(exit_codes.general, code);
     try std.testing.expect(std.mem.indexOf(u8, stderr_stream.getWritten(), "command not found") != null);
 }

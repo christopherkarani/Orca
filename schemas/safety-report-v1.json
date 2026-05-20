@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://aegis.local/schemas/safety-report-v1.json",
-  "title": "Aegis safety report schema v1",
+  "$id": "https://orca.local/schemas/safety-report-v1.json",
+  "title": "Orca safety report schema v1",
   "description": "Placeholder schema for future customer safety reports. Reports are engineering audit artifacts and are not regulatory approval, certification, airworthiness approval, or real-flight readiness claims.",
   "type": "object",
   "additionalProperties": true,

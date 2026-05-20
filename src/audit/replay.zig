@@ -552,7 +552,7 @@ fn eventTime(timestamp: []const u8) []const u8 {
 fn testSummaryJsonAlloc(allocator: std.mem.Allocator, event_count: usize, final_event_hash: []const u8, command_json: []const u8) ![]u8 {
     const canonical = try std.fmt.allocPrint(
         allocator,
-        "{{\"version\":1,\"session_id\":\"s\",\"started_at\":\"2026-05-05T12:12:10Z\",\"ended_at\":\"2026-05-05T12:12:11Z\",\"workspace_root\":\"/tmp/aegis\",\"mode\":\"strict\",\"policy\":\"policy.yaml\",\"command\":{s},\"status\":{{\"kind\":\"exit\",\"code\":0}},\"event_count\":{d},\"final_event_hash\":\"{s}\"}}",
+        "{{\"version\":1,\"session_id\":\"s\",\"started_at\":\"2026-05-05T12:12:10Z\",\"ended_at\":\"2026-05-05T12:12:11Z\",\"workspace_root\":\"/tmp/orca\",\"mode\":\"strict\",\"policy\":\"policy.yaml\",\"command\":{s},\"status\":{{\"kind\":\"exit\",\"code\":0}},\"event_count\":{d},\"final_event_hash\":\"{s}\"}}",
         .{ command_json, event_count, final_event_hash },
     );
     defer allocator.free(canonical);
@@ -586,7 +586,7 @@ test "verification detects modified event fields" {
     defer std.testing.allocator.free(summary_path);
 
     const event_text =
-        "{\"version\":1,\"session_id\":\"s\",\"event_id\":\"e\",\"timestamp\":\"2026-05-05T12:12:10Z\",\"type\":\"session_start\",\"actor\":{\"kind\":\"aegis\",\"id\":null,\"display\":\"aegis\"},\"target\":{\"kind\":\"session\",\"value\":\"s\"},\"decision\":null,\"redactions\":{\"count\":0,\"labels\":[]},\"previous_hash\":null";
+        "{\"version\":1,\"session_id\":\"s\",\"event_id\":\"e\",\"timestamp\":\"2026-05-05T12:12:10Z\",\"type\":\"session_start\",\"actor\":{\"kind\":\"orca\",\"id\":null,\"display\":\"orca\"},\"target\":{\"kind\":\"session\",\"value\":\"s\"},\"decision\":null,\"redactions\":{\"count\":0,\"labels\":[]},\"previous_hash\":null";
     const hash = blk: {
         const canonical = try std.fmt.allocPrint(std.testing.allocator, "{s}}}", .{event_text});
         defer std.testing.allocator.free(canonical);
@@ -610,7 +610,7 @@ test "verification detects modified event fields" {
         defer file.close();
         var buf: [1024]u8 = undefined;
         var file_writer = file.writer(&buf);
-        try file_writer.interface.print("{s},\"event_hash\":\"{s}\"}}\n", .{ "{\"version\":1,\"session_id\":\"tampered\",\"event_id\":\"e\",\"timestamp\":\"2026-05-05T12:12:10Z\",\"type\":\"session_start\",\"actor\":{\"kind\":\"aegis\",\"id\":null,\"display\":\"aegis\"},\"target\":{\"kind\":\"session\",\"value\":\"s\"},\"decision\":null,\"redactions\":{\"count\":0,\"labels\":[]},\"previous_hash\":null", &hash });
+        try file_writer.interface.print("{s},\"event_hash\":\"{s}\"}}\n", .{ "{\"version\":1,\"session_id\":\"tampered\",\"event_id\":\"e\",\"timestamp\":\"2026-05-05T12:12:10Z\",\"type\":\"session_start\",\"actor\":{\"kind\":\"orca\",\"id\":null,\"display\":\"orca\"},\"target\":{\"kind\":\"session\",\"value\":\"s\"},\"decision\":null,\"redactions\":{\"count\":0,\"labels\":[]},\"previous_hash\":null", &hash });
         try file_writer.interface.flush();
     }
     var bad = try verifySessionDir(std.testing.allocator, session_dir);
@@ -634,7 +634,7 @@ test "verification rejects event records with unauthenticated extra keys" {
     defer std.testing.allocator.free(summary_path);
 
     const event_text =
-        "{\"version\":1,\"session_id\":\"s\",\"event_id\":\"e\",\"timestamp\":\"2026-05-05T12:12:10Z\",\"type\":\"session_start\",\"actor\":{\"kind\":\"aegis\",\"id\":null,\"display\":\"aegis\"},\"target\":{\"kind\":\"session\",\"value\":\"s\"},\"decision\":null,\"redactions\":{\"count\":0,\"labels\":[]},\"previous_hash\":null";
+        "{\"version\":1,\"session_id\":\"s\",\"event_id\":\"e\",\"timestamp\":\"2026-05-05T12:12:10Z\",\"type\":\"session_start\",\"actor\":{\"kind\":\"orca\",\"id\":null,\"display\":\"orca\"},\"target\":{\"kind\":\"session\",\"value\":\"s\"},\"decision\":null,\"redactions\":{\"count\":0,\"labels\":[]},\"previous_hash\":null";
     const hash = blk: {
         const canonical = try std.fmt.allocPrint(std.testing.allocator, "{s}}}", .{event_text});
         defer std.testing.allocator.free(canonical);
@@ -672,7 +672,7 @@ test "verification rejects tampered summary display fields" {
     defer std.testing.allocator.free(summary_path);
 
     const event_text =
-        "{\"version\":1,\"session_id\":\"s\",\"event_id\":\"e\",\"timestamp\":\"2026-05-05T12:12:10Z\",\"type\":\"session_start\",\"actor\":{\"kind\":\"aegis\",\"id\":null,\"display\":\"aegis\"},\"target\":{\"kind\":\"session\",\"value\":\"s\"},\"decision\":null,\"redactions\":{\"count\":0,\"labels\":[]},\"previous_hash\":null";
+        "{\"version\":1,\"session_id\":\"s\",\"event_id\":\"e\",\"timestamp\":\"2026-05-05T12:12:10Z\",\"type\":\"session_start\",\"actor\":{\"kind\":\"orca\",\"id\":null,\"display\":\"orca\"},\"target\":{\"kind\":\"session\",\"value\":\"s\"},\"decision\":null,\"redactions\":{\"count\":0,\"labels\":[]},\"previous_hash\":null";
     const hash = blk: {
         const canonical = try std.fmt.allocPrint(std.testing.allocator, "{s}}}", .{event_text});
         defer std.testing.allocator.free(canonical);
@@ -754,7 +754,7 @@ test "verification detects summary event count mismatch" {
     const summary_path = try std.fs.path.join(std.testing.allocator, &.{ session_dir, "summary.json" });
     defer std.testing.allocator.free(summary_path);
     const event_text =
-        "{\"version\":1,\"session_id\":\"s\",\"event_id\":\"e\",\"timestamp\":\"2026-05-05T12:12:10Z\",\"type\":\"session_start\",\"actor\":{\"kind\":\"aegis\",\"id\":null,\"display\":\"aegis\"},\"target\":{\"kind\":\"session\",\"value\":\"s\"},\"decision\":null,\"redactions\":{\"count\":0,\"labels\":[]},\"previous_hash\":null";
+        "{\"version\":1,\"session_id\":\"s\",\"event_id\":\"e\",\"timestamp\":\"2026-05-05T12:12:10Z\",\"type\":\"session_start\",\"actor\":{\"kind\":\"orca\",\"id\":null,\"display\":\"orca\"},\"target\":{\"kind\":\"session\",\"value\":\"s\"},\"decision\":null,\"redactions\":{\"count\":0,\"labels\":[]},\"previous_hash\":null";
     const hash = blk: {
         const canonical = try std.fmt.allocPrint(std.testing.allocator, "{s}}}", .{event_text});
         defer std.testing.allocator.free(canonical);

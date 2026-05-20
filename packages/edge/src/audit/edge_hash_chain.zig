@@ -1,4 +1,4 @@
-const core = @import("aegis_core");
+const core = @import("orca_core");
 
 pub const HashHex = core.audit.hash_chain.HashHex;
 pub const eventHash = core.audit.hash_chain.eventHash;

@@ -65,7 +65,7 @@ Synthetic prompt payload:
 ```
 
 Expected output description:
-- Aegis version is reported.
+- Orca version is reported.
 - Policy status is reported as present/valid when the repo is configured.
 - Plugin directories show `claude` as found.
 - Host binary detection is reported if Claude Code is installed.
@@ -109,7 +109,7 @@ Expected output description:
 ```
 
 Expected output description:
-- Aegis prints the latest session summary when one exists.
+- Orca prints the latest session summary when one exists.
 - Verification checks the recorded session data.
 
 ## Notes

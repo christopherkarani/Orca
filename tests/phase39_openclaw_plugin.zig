@@ -4,7 +4,7 @@ const std = @import("std");
 // OpenClaw Plugin Structure Tests
 // ---------------------------------------------------------------------------
 // These tests validate the P09 OpenClaw plugin package without requiring
-// the Aegis binary to be built. They check file existence, JSON validity,
+// the Orca binary to be built. They check file existence, JSON validity,
 // and content invariants.
 // ---------------------------------------------------------------------------
 

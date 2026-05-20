@@ -1,5 +1,5 @@
 const std = @import("std");
-const core = @import("aegis_core");
+const core = @import("orca_core");
 
 pub const max_artifact_bytes: usize = 128 * 1024;
 

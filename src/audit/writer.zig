@@ -19,9 +19,9 @@ pub const SessionWriter = struct {
     }
 
     pub fn initWithDirName(allocator: std.mem.Allocator, session: core.session.Session, audit_dir_name: []const u8) !SessionWriter {
-        const aegis_dir = try std.fs.path.join(allocator, &.{ session.workspace_root, audit_dir_name });
-        defer allocator.free(aegis_dir);
-        const sessions_dir = try std.fs.path.join(allocator, &.{ aegis_dir, "sessions" });
+        const orca_dir = try std.fs.path.join(allocator, &.{ session.workspace_root, audit_dir_name });
+        defer allocator.free(orca_dir);
+        const sessions_dir = try std.fs.path.join(allocator, &.{ orca_dir, "sessions" });
         defer allocator.free(sessions_dir);
         const session_dir_path = try std.fs.path.join(allocator, &.{ sessions_dir, session.id.slice() });
         errdefer allocator.free(session_dir_path);
@@ -48,9 +48,9 @@ pub const SessionWriter = struct {
 
     pub fn openExistingWithDirName(allocator: std.mem.Allocator, workspace_root: []const u8, session_id_text: []const u8, audit_dir_name: []const u8) !SessionWriter {
         try core.session.validateSessionIdText(session_id_text);
-        const aegis_dir = try std.fs.path.join(allocator, &.{ workspace_root, audit_dir_name });
-        defer allocator.free(aegis_dir);
-        const sessions_dir = try std.fs.path.join(allocator, &.{ aegis_dir, "sessions" });
+        const orca_dir = try std.fs.path.join(allocator, &.{ workspace_root, audit_dir_name });
+        defer allocator.free(orca_dir);
+        const sessions_dir = try std.fs.path.join(allocator, &.{ orca_dir, "sessions" });
         defer allocator.free(sessions_dir);
         const session_dir_path = try std.fs.path.join(allocator, &.{ sessions_dir, session_id_text });
         errdefer allocator.free(session_dir_path);
@@ -113,15 +113,15 @@ pub const SessionWriter = struct {
     }
 
     pub fn writeLastPointer(self: *const SessionWriter) !void {
-        const aegis_dir = try std.fs.path.join(self.allocator, &.{ self.workspace_root, self.audit_dir_name });
-        defer self.allocator.free(aegis_dir);
-        try std.fs.cwd().makePath(aegis_dir);
+        const orca_dir = try std.fs.path.join(self.allocator, &.{ self.workspace_root, self.audit_dir_name });
+        defer self.allocator.free(orca_dir);
+        try std.fs.cwd().makePath(orca_dir);
 
         const tmp_name = try std.fmt.allocPrint(self.allocator, "last.tmp.{s}", .{self.session_id.slice()});
         defer self.allocator.free(tmp_name);
-        const tmp_path = try std.fs.path.join(self.allocator, &.{ aegis_dir, tmp_name });
+        const tmp_path = try std.fs.path.join(self.allocator, &.{ orca_dir, tmp_name });
         defer self.allocator.free(tmp_path);
-        const last_path = try std.fs.path.join(self.allocator, &.{ aegis_dir, "last" });
+        const last_path = try std.fs.path.join(self.allocator, &.{ orca_dir, "last" });
         defer self.allocator.free(last_path);
 
         {

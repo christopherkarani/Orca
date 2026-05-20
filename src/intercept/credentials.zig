@@ -1,7 +1,7 @@
 const std = @import("std");
 
-const audit = @import("aegis_core").audit.redact_bridge;
-const policy_schema = @import("aegis_core").policy.schema;
+const audit = @import("orca_core").audit.redact_bridge;
+const policy_schema = @import("orca_core").policy.schema;
 
 pub const BrokerKind = policy_schema.CredentialBrokerKind;
 
@@ -496,7 +496,7 @@ test "env-file dev broker resolves and redacts check output" {
     const root = try tmp.dir.realpathAlloc(std.testing.allocator, ".");
     defer std.testing.allocator.free(root);
 
-    var loaded = try @import("aegis_core").policy.load.parseFromSlice(std.testing.allocator,
+    var loaded = try @import("orca_core").policy.load.parseFromSlice(std.testing.allocator,
         \\version: 1
         \\mode: strict
         \\credentials:

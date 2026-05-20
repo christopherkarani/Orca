@@ -4,7 +4,7 @@ const std = @import("std");
 // Claude Code Plugin Structure Tests
 // ---------------------------------------------------------------------------
 // These tests validate the P04 Claude Code plugin package without requiring
-// the Aegis binary to be built. They check file existence, JSON validity,
+// the Orca binary to be built. They check file existence, JSON validity,
 // and content invariants.
 // ---------------------------------------------------------------------------
 
@@ -142,7 +142,7 @@ test "each claude skill has non-empty SKILL.md" {
     }
 }
 
-test "each claude skill references real aegis commands" {
+test "each claude skill references real orca commands" {
     for (skills) |skill| {
         const skill_path = std.fmt.allocPrint(std.testing.allocator, "{s}/skills/{s}/SKILL.md", .{ plugin_dir, skill }) catch unreachable;
         defer std.testing.allocator.free(skill_path);
@@ -185,7 +185,7 @@ test "claude hooks config is valid JSON" {
     defer parsed.deinit();
 }
 
-test "claude hooks config calls aegis hook claude" {
+test "claude hooks config calls orca hook claude" {
     var gpa_state: std.heap.GeneralPurposeAllocator(.{}) = .init;
     defer _ = gpa_state.deinit();
     const allocator = gpa_state.allocator();
