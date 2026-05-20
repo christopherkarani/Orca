@@ -239,6 +239,61 @@ Optional native plugins offer deeper integration. See [docs/integrations/](docs/
 
 ---
 
+## Native plugin install
+
+### Hermes (copy-paste)
+
+Copy and paste this prompt into Hermes to install the Orca plugin:
+
+```
+Install the Orca plugin for runtime guardrails. Run: orca plugin install hermes --yes
+```
+
+Or install manually:
+
+```bash
+# From the Orca repo root
+./scripts/install-orca-plugin.sh hermes project
+
+# Or directly
+orca plugin install hermes --yes
+hermes plugins enable orca
+orca plugin doctor hermes
+```
+
+The Hermes plugin is a Python bridge that calls the Orca CLI via `subprocess`. It does not trigger any security scanners and installs cleanly.
+
+### OpenClaw (copy-paste)
+
+Copy and paste this prompt into OpenClaw to install the Orca plugin:
+
+```
+Install the Orca OpenClaw plugin with the security scan override: openclaw plugins install npm:orca-openclaw-plugin --dangerously-force-unsafe-install
+```
+
+#### Why the override is needed
+
+OpenClaw's security scanner blocks any plugin that uses `child_process` (e.g., `execSync`, `spawn`). The Orca plugin legitimately needs this to call the `orca` CLI binary for policy enforcement. There is currently no way to declare this permission in the plugin manifest.
+
+**Install commands:**
+
+```bash
+# npm (recommended)
+openclaw plugins install npm:orca-openclaw-plugin --dangerously-force-unsafe-install
+
+# Or from ClawHub
+openclaw plugins install clawhub:orca-openclaw-plugin --dangerously-force-unsafe-install
+
+# Or local path (if you have the Orca repo cloned)
+openclaw plugins install ./integrations/openclaw-plugin --dangerously-force-unsafe-install
+```
+
+> **Note:** The `--dangerously-force-unsafe-install` flag is required because OpenClaw's heuristic scanner cannot distinguish legitimate process spawning from malicious code. The Orca plugin only calls the local `orca` binary that you already trust.
+
+For a deep analysis of this issue and long-term fix options, see [docs/integrations/openclaw-security-scan-analysis.md](docs/integrations/openclaw-security-scan-analysis.md).
+
+---
+
 ## Secretless mode (optional)
 
 If you do not want the agent to receive raw credentials:
