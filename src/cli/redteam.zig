@@ -3,9 +3,10 @@ const std = @import("std");
 const redteam = @import("../redteam/mod.zig");
 const exit_codes = @import("exit_codes.zig");
 const help = @import("help.zig");
+const resource_root = @import("../resource_root.zig");
 
 const Options = struct {
-    root: []const u8 = "fixtures",
+    root: []const u8 = "",
     json: bool = false,
     ci: bool = false,
     fixture_id: ?[]const u8 = null,
@@ -22,7 +23,25 @@ pub fn command(argv: []const []const u8, stdout: anytype, stderr: anytype) !u8 {
     defer _ = gpa_state.deinit();
     const allocator = gpa_state.allocator();
 
-    var fixture_set = redteam.fixtures.discover(allocator, options.root, options.fixture_id) catch |err| {
+    const fixture_root = blk: {
+        if (options.root.len > 0) break :blk options.root;
+        const workspace_root = std.process.getEnvVarOwned(allocator, "ORCA_WORKSPACE_ROOT") catch ".";
+        defer if (workspace_root.ptr != ".".ptr) allocator.free(workspace_root);
+        const resolved = resource_root.resolveResourcePath(allocator, .{
+            .workspace_root = if (workspace_root.ptr != ".".ptr) workspace_root else ".",
+        }, "fixtures") catch |err| switch (err) {
+            error.ResourceNotFound => {
+                try stderr.writeAll("orca redteam: no fixtures directory found. Run from the Orca source tree, set ORCA_RESOURCE_ROOT, or pass a fixture path.\n");
+                return exit_codes.general;
+            },
+            else => return err,
+        };
+        defer allocator.free(resolved);
+        break :blk try allocator.dupe(u8, resolved);
+    };
+    defer allocator.free(fixture_root);
+
+    var fixture_set = redteam.fixtures.discover(allocator, fixture_root, options.fixture_id) catch |err| {
         try stderr.print("orca redteam: failed to discover fixtures: {s}\n", .{@errorName(err)});
         return exit_codes.general;
     };
@@ -31,7 +50,7 @@ pub fn command(argv: []const []const u8, stdout: anytype, stderr: anytype) !u8 {
         if (options.fixture_id) |id| {
             try stderr.print("orca redteam: fixture not found: {s}\n", .{id});
         } else {
-            try stderr.print("orca redteam: no fixtures found under {s}\n", .{options.root});
+            try stderr.print("orca redteam: no fixtures found under {s}\n", .{fixture_root});
         }
         return exit_codes.general;
     }
