@@ -129,6 +129,11 @@ SECURITY_INVARIANTS.md
 # --- Local agent runtime artifacts ---
 .Codex/
 .opencode/
+.pi/
+scripts/orchestrator.sh
+
+# --- Internal integration analysis docs ---
+docs/integrations/openclaw-security-scan-analysis.md
 
 # --- Generated planning / UI collateral ---
 PROMPT_*.md
