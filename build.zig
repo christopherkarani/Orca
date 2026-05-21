@@ -5,8 +5,10 @@ pub fn build(b: *std.Build) void {
     const optimize = b.standardOptimizeOption(.{});
     const version = blk: {
         const version_file = std.fs.cwd().readFileAlloc(b.allocator, "VERSION", 32) catch break :blk b.option([]const u8, "version", "Orca version metadata") orelse "1.1.0";
-        defer b.allocator.free(version_file);
-        break :blk std.mem.trim(u8, version_file, " \n\r\t");
+        const trimmed = std.mem.trim(u8, version_file, " \n\r\t");
+        const result = b.allocator.dupe(u8, trimmed) catch break :blk "1.1.0";
+        b.allocator.free(version_file);
+        break :blk result;
     };
     const commit = b.option([]const u8, "commit", "Source commit metadata") orelse "unknown";
     const build_date = b.option([]const u8, "build-date", "UTC build date metadata") orelse "unknown";

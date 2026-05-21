@@ -173,7 +173,7 @@ This plugin does not mutate host configuration, so uninstalling is safe.
 - Plugin installation depends on OpenClaw version and plugin loading mechanism.
 - No telemetry is collected.
 - npm package support has been prepared for `orca-openclaw-plugin`.
-- ClawHub submission is complete. The plugin is published as `orca-openclaw-plugin@1.1.3`.
+- ClawHub submission is complete. The plugin is published as `orca-openclaw-plugin@1.1.4`.
 
 ## Security model
 
