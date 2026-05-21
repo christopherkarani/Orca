@@ -63,7 +63,7 @@ No AI agent required for the demo. No files are harmed.
 |---|---|
 | You babysit every AI suggestion, afraid of `rm -rf` | You delegate. Orca intercepts and blocks the bad ones |
 | You have no idea what the agent actually did | You replay the full session—allowed, denied, and asked |
-| You copy `.env` into the agent context by accident | Orca redacts secrets before they reach the agent |
+| You copy `.env` into the agent context by accident | [Orca redacts secrets](#credential-guardrails) before they reach the agent |
 | Your team has no shared rules | Commit `.orca/policy.yaml`—everyone runs under the same guardrails |
 | You discover damage after the fact | You see the block in real time, before anything happens |
 
@@ -294,17 +294,65 @@ For a deep analysis of this issue and long-term fix options, see [docs/integrati
 
 ---
 
-## Secretless mode (optional)
+## Credential Guardrails
 
-If you do not want the agent to receive raw credentials:
+Orca protects your credentials, API keys, and secrets through **eight layers of defense**:
+
+1. **Secret Detection Engine** — Pattern matching for API keys, tokens, JWTs, and passwords
+2. **Environment Filtering** — Strips secrets before they reach the agent process
+3. **Credential Brokers** — Secure resolution via 1Password, macOS Keychain, or env files
+4. **Policy Validation** — Rejects unsafe credential configurations
+5. **Network Scanning** — Blocks secrets in URLs and detects exfiltration attempts
+6. **Command Classification** — Denies `cat .env`, `cat ~/.ssh/id_ed25519`, and similar
+7. **File System Guards** — Blocks access to `.env`, SSH keys, and credential stores
+8. **Audit Redaction** — Secrets are redacted before any log is written to disk
+
+### What is detected
+
+Orca automatically detects and protects:
+
+- **GitHub tokens** (`ghp_`, `github_pat_`)
+- **OpenAI API keys** (`sk-`)
+- **Anthropic API keys** (`sk-ant-`)
+- **AWS access keys** (`AKIA...`, `ASIA...`)
+- **JWTs** (three-part base64 tokens)
+- **PEM/SSH private keys**
+- **High-entropy strings** (generic API keys)
+- **Cloud credential JSON** (Google service accounts)
+
+### Secretless mode
+
+Run with `--secretless` to replace secret values with broker references:
 
 ```bash
 orca run --secretless -- codex
 ```
 
-Orca filters the child environment before launch. Secret-like values are replaced with safe `orca-secret://...` references. The raw values are never written to policy, audit, or replay artifacts.
+In this mode, `GITHUB_TOKEN=ghp_xxx` becomes `GITHUB_TOKEN=orca-secret://local-dummy/env/GITHUB_TOKEN/a1b2c3d4`. The agent sees the reference, not the raw value.
 
-Orca supports broker adapters for `env-file-dev`, `1password-cli`, and `macos-keychain`. See [docs/install.md](docs/install.md) for broker configuration.
+### Credential brokers
+
+Orca supports secure credential resolution without exposing raw values:
+
+```yaml
+credentials:
+  default_broker: onepassword
+  brokers:
+    onepassword:
+      type: 1password-cli
+      account: my-team
+    env_dev:
+      type: env-file-dev
+      path: .orca/dev-secrets.env
+  refs:
+    github_pat:
+      broker: onepassword
+      ref: "op://Engineering/GitHub PAT/token"
+```
+
+Supported brokers: `local-dummy`, `env-file-dev`, `1password-cli`, `macos-keychain`, `infisical-agent-vault`.
+
+**Full details**: [docs/credentials.md](docs/credentials.md)
 
 ---
 
@@ -329,7 +377,7 @@ Full reference: [docs/policy.md](docs/policy.md)
 - **Local-first** — All policy decisions, audit logs, and replay evidence stay on your machine.
 - **Policy-driven** — You write the rules; Orca enforces them.
 - **Tamper-evident** — Session logs include hash-chain verification.
-- **Secret redaction** — Sensitive values are redacted before persistence.
+- **Secret redaction** — Sensitive values are redacted before persistence. See [Credential Guardrails](#credential-guardrails) for details.
 - **Fails closed** — If the network proxy fails during a run, Orca terminates the child process.
 
 Orca does not promise perfect sandboxing. It protects agents launched *through* Orca. Agents started outside the wrapper are not covered.
@@ -343,6 +391,7 @@ Run `orca doctor` to check your platform capabilities.
 - [Install](docs/install.md) — Prebuilt binaries, package managers, and build from source.
 - [Quickstart](docs/quickstart.md) — Step-by-step first session.
 - [Policy](docs/policy.md) — Full policy schema and examples.
+- [Credentials](docs/credentials.md) — How Orca protects API keys, tokens, and secrets.
 - [Replay](docs/replay.md) — Session review, verification, and reporting.
 - [Commands](docs/commands.md) — CLI reference.
 - [Plugin security model](docs/integrations/plugin-security-model.md)
