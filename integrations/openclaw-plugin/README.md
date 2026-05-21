@@ -55,7 +55,7 @@ If OpenClaw supports bare npm package installs:
 openclaw plugins install orca-openclaw-plugin
 ```
 
-For local validation before publication, use `npm pack --dry-run`.
+**Important:** When installed via npm, OpenClaw currently loads the plugin in `cli-metadata` mode, which wires `api.on` to a no-op. This means `before_tool_call` hooks **will not fire** and the plugin cannot block destructive commands. For full protection, run OpenClaw through Orca (`orca run -- openclaw`) or install the plugin as a local path / bundled extension.
 
 
 ## Install from ClawHub
@@ -162,6 +162,12 @@ This plugin does not mutate host configuration, so uninstalling is safe.
 
 ## Known limitations
 
+- **npm/global installs: `api.on` is a no-op in current OpenClaw versions.**  
+  OpenClaw loads npm-installed plugins with `registrationMode: "cli-metadata"`, where `api.on` is wired to a no-op function. This means `before_tool_call` and `after_tool_call` hooks **never fire** for npm/ClawHub/global installs, so the plugin cannot block destructive tool calls.  
+  **Workaround:** For full runtime guardrails, run OpenClaw through Orca:  
+  `orca run -- openclaw`  
+  The plugin will still log a prominent warning when it detects this situation.  
+  **Fix needed in OpenClaw:** `api.on` (or an equivalent typed-hook API) must be exposed for npm plugins with explicit user opt-in.
 - Hooks are advisory for informational events; blocking hooks depend on OpenClaw honoring thrown errors.
 - The strongest protection remains `orca run -- openclaw`.
 - Plugin installation depends on OpenClaw version and plugin loading mechanism.
