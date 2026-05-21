@@ -286,7 +286,6 @@ fn runCaptureWithTimeout(allocator: std.mem.Allocator, argv: []const []const u8,
     }
     const stdout = child.stdout.?.readToEndAlloc(allocator, 128 * 1024) catch |err| {
         if (timed_out.load(.acquire)) {
-            _ = child.wait() catch {};
             return error.BrokerCommandTimeout;
         }
         return err;
@@ -294,24 +293,28 @@ fn runCaptureWithTimeout(allocator: std.mem.Allocator, argv: []const []const u8,
     errdefer wipeAndFree(allocator, stdout);
     if (timed_out.load(.acquire)) {
         wipeAndFree(allocator, stdout);
-        _ = child.wait() catch {};
         return error.BrokerCommandTimeout;
     }
     if (child.stderr == null) {
         wipeAndFree(allocator, stdout);
-        _ = child.wait() catch {};
         return error.BrokerCommandTimeout;
     }
     const stderr = child.stderr.?.readToEndAlloc(allocator, 32 * 1024) catch |err| {
         if (timed_out.load(.acquire)) {
             wipeAndFree(allocator, stdout);
-            _ = child.wait() catch {};
             return error.BrokerCommandTimeout;
         }
         return err;
     };
     errdefer wipeAndFree(allocator, stderr);
-    const term = try child.wait();
+    const term = child.wait() catch |wait_err| {
+        if (timed_out.load(.acquire)) {
+            wipeAndFree(allocator, stdout);
+            wipeAndFree(allocator, stderr);
+            return error.BrokerCommandTimeout;
+        }
+        return wait_err;
+    };
     if (timed_out.load(.acquire)) {
         wipeAndFree(allocator, stdout);
         wipeAndFree(allocator, stderr);

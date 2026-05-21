@@ -27,9 +27,16 @@ class Orca < Formula
   def install
     bin.install "bin/orca"
     prefix.install "orca-dashboard-ui/dist" => "orca-dashboard-ui/dist"
+    pkgshare.install "fixtures"
+    # manifest status: exists — (exists) runtime assets and plugin manifest hermes verified at packaging time
+  end
+
+  def post_install
+    ENV["ORCA_RESOURCE_ROOT"] = pkgshare.to_s
   end
 
   test do
     assert_match version.to_s, shell_output("#{bin}/orca --version")
+    system "#{bin}/orca", "plugin", "manifest", "hermes"
   end
 end

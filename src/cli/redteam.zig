@@ -24,7 +24,7 @@ pub fn command(argv: []const []const u8, stdout: anytype, stderr: anytype) !u8 {
     const allocator = gpa_state.allocator();
 
     const fixture_root = blk: {
-        if (options.root.len > 0) break :blk options.root;
+        if (options.root.len > 0) break :blk try allocator.dupe(u8, options.root);
         const workspace_root = std.process.getEnvVarOwned(allocator, "ORCA_WORKSPACE_ROOT") catch ".";
         defer if (workspace_root.ptr != ".".ptr) allocator.free(workspace_root);
         const resolved = resource_root.resolveResourcePath(allocator, .{

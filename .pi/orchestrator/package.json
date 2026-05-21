@@ -1,0 +1,25 @@
+{
+  "name": "orca-subagent-orchestrator",
+  "version": "1.0.0",
+  "description": "Paperclip-style sub-agent orchestrator for the Aegis/Orca project using the Pi SDK",
+  "type": "module",
+  "scripts": {
+    "build": "tsc",
+    "start": "node dist/index.js",
+    "dev": "tsc && node dist/index.js",
+    "dispatch": "node dist/index.js",
+    "lint": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@earendil-works/pi-coding-agent": "file:/opt/homebrew/lib/node_modules/@earendil-works/pi-coding-agent",
+    "@earendil-works/pi-ai": "file:/opt/homebrew/lib/node_modules/@earendil-works/pi-coding-agent/node_modules/@earendil-works/pi-ai",
+    "yaml": "^2.4.0"
+  },
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "typescript": "^5.4.0"
+  },
+  "engines": {
+    "node": ">=20.0.0"
+  }
+}

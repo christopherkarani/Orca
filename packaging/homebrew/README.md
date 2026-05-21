@@ -19,6 +19,7 @@ brew test packaging/homebrew/Formula/orca.rb
 2. Copy `packaging/homebrew/Formula/orca.rb` to `Formula/orca.rb` in that tap.
 3. Copy `packaging/homebrew/README.md` to `README.md` in that tap.
 4. Commit and push after the matching GitHub Release assets are uploaded.
+5. Verify the formula sha256 values match `checksums.txt`.
 
 ## User install
 
