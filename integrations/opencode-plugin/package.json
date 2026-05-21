@@ -1,6 +1,6 @@
 {
   "name": "orca-opencode-plugin",
-  "version": "1.1.1",
+  "version": "1.1.4",
   "description": "OpenCode plugin wrapper for Orca runtime guardrails.",
   "type": "module",
   "main": "dist/index.js",

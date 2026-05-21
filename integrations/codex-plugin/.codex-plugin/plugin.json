@@ -1,6 +1,6 @@
 {
     "name": "orca",
-    "version": "1.0.0",
+    "version": "1.1.4",
     "description": "Orca safety hooks and skills for Codex.",
     "author": {
         "name": "Orca"

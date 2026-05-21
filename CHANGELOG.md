@@ -1,5 +1,15 @@
 # Changelog
 
+## v1.1.4 - 2026-05-21
+
+### Fixed
+- **OpenClaw plugin:** Detect and warn when `api.on` is a no-op for npm installs, preventing silent hook bypass.
+- **Core stability:** Fix invalid free in redteam fixture root handling; prevent waitpid panic after watchdog kill in credentials broker.
+- **CLI:** Add `--ci` shorthand for `orca run --ci`; auto-resolve fixture root via `resource_root` in `orca redteam`.
+
+### Changed
+- **Unified versioning:** All components — core, OpenClaw, OpenCode, Hermes, Codex, and Claude Code plugins — now share version 1.1.4.
+
 ## v1.1.0 - 2026-05-12
 
 - Prepared Orca production release metadata and artifact contract.

@@ -1,5 +1,19 @@
 # Orca Plugin Changelog
 
+## 1.1.4 — Unified Version Release
+
+### Fixed
+- **OpenClaw plugin:** Detect and warn when `api.on` is a no-op for npm installs. Hooks silently failed when OpenClaw loaded the plugin via `registrationMode: "cli-metadata"`.
+- Added unit tests for the `isOnNoop()` heuristic using Node's built-in test runner.
+
+### Changed
+- All plugins and core unified to version **1.1.4**.
+- OpenClaw plugin: version aligned across `package.json`, `package-lock.json`, and `openclaw.plugin.json`.
+- OpenCode plugin: version bumped to 1.1.4.
+- Hermes plugin: version bumped to 1.1.4.
+- Codex plugin: version bumped to 1.1.4.
+- Claude Code plugin: version bumped to 1.1.4.
+
 ## 1.1.0 — Plugin Distribution and Marketplace
 
 ### Added
@@ -83,12 +97,12 @@
 
 ### Compatibility
 
-- Orca core: 1.1.0
-- Codex plugin: 1.1.0
-- Claude Code plugin: 1.1.0
-- OpenCode plugin: 1.1.0
-- OpenClaw plugin npm package: 1.1.3 (published as `orca-openclaw-plugin`)
-- OpenClaw ClawHub submission: published in P11 as `orca-openclaw-plugin@1.1.3`
+- Orca core: 1.1.4
+- Codex plugin: 1.1.4
+- Claude Code plugin: 1.1.4
+- OpenCode plugin: 1.1.4
+- OpenClaw plugin npm package: 1.1.4 (published as `orca-openclaw-plugin`)
+- OpenClaw ClawHub submission: published as `orca-openclaw-plugin@1.1.4`
 - Requires Orca >= 1.0.0
 
 ---
