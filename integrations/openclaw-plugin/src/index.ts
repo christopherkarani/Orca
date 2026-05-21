@@ -150,6 +150,25 @@ async function callOrca(
   }
 }
 
+/**
+ * Detect whether api.on is likely a no-op.
+ * OpenClaw loads npm plugins with registrationMode "cli-metadata", where
+ * api.on is wired to a no-op function. This is a known limitation.
+ *
+ * We use a path heuristic: if the plugin source contains "node_modules" or
+ * ".openclaw/npm", it was installed via npm/ClawHub and hooks will not fire.
+ */
+export function isOnNoop(api: OpenClawPluginApi): boolean {
+  if (typeof api.on !== 'function') return true;
+
+  const source = api.source || '';
+  if (source.includes('node_modules') || source.includes('.openclaw/npm')) {
+    return true;
+  }
+
+  return false;
+}
+
 export default function orcaPlugin(api: OpenClawPluginApi): void {
   const cwd = process.cwd();
   const sessionId = undefined;
@@ -170,6 +189,19 @@ export default function orcaPlugin(api: OpenClawPluginApi): void {
         'Plugin will not register lifecycle hooks.'
     );
     return;
+  }
+
+  const onIsNoop = isOnNoop(api);
+
+  if (onIsNoop) {
+    logger?.warn?.(
+      '[orca] Detected npm/global plugin install. ' +
+        'OpenClaw currently wires api.on to a no-op for non-bundled plugins, ' +
+        'so before_tool_call / after_tool_call hooks will NOT fire. ' +
+        'For full runtime guardrails, run OpenClaw through Orca:  ' +
+        '`orca run -- openclaw`  ' +
+        '(see https://github.com/christopherkarani/Orca#openclaw-plugin).'
+    );
   }
 
   logger?.info?.(`[orca] Plugin loaded. Binary: ${orcaBin}`);
