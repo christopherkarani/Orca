@@ -113,6 +113,8 @@ P05_*.md
 P06_*.md
 P07_*.md
 00_PLUGIN_LAUNCH_INDEX.md
+00_PROJECT_INDEX.md
+manifest.json
 [0-9][0-9]_*.md
 AEGIS_CLI_PLUGIN_CONTRACT.md
 ORCA_CLI_PLUGIN_CONTRACT.md
@@ -131,6 +133,7 @@ SECURITY_INVARIANTS.md
 .opencode/
 .pi/
 scripts/orchestrator.sh
+scripts/validate-go-to-market.sh
 
 # --- Internal integration analysis docs ---
 docs/integrations/openclaw-security-scan-analysis.md
