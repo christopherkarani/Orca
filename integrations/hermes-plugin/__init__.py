@@ -42,6 +42,11 @@ EVENTS = (
     "subagent_stop",
 )
 
+_HERMES_HOST_MISMATCH_MARKERS = (
+    "unknown host 'hermes'",
+    "Expected codex or claude.",
+)
+
 
 def _redact(value: Any) -> Any:
     if isinstance(value, dict):
@@ -57,24 +62,74 @@ def _redact(value: Any) -> Any:
     return value
 
 
-def _find_orca() -> str | None:
+def _supports_hermes_host(orca: str) -> bool:
+    payload = json.dumps(
+        {
+            "version": 1,
+            "host": "hermes",
+            "event": "pre_tool_call",
+            "payload": {"command": "git status"},
+            "timestamp": "1970-01-01T00:00:00Z",
+        },
+        separators=(",", ":"),
+    )
+    completed = subprocess.run(
+        [orca, "hook", "hermes", "pre_tool_call"],
+        input=payload,
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        timeout=10,
+        check=False,
+    )
+    return completed.returncode == 0
+
+
+def _is_hermes_host_mismatch(error: BaseException) -> bool:
+    message = str(error)
+    return any(marker in message for marker in _HERMES_HOST_MISMATCH_MARKERS)
+
+
+def _orca_candidates() -> list[str]:
+    candidates: list[str] = []
     configured = os.environ.get("ORCA_BIN")
     if configured:
-        return configured
+        candidates.append(configured)
 
-    found = shutil.which("orca")
-    if found:
-        return found
+    home = Path.home()
+    for path in (
+        home / ".local" / "bin" / "orca",
+        home / ".orca" / "bin" / "orca",
+    ):
+        if path.exists():
+            candidates.append(str(path))
 
     cwd = Path.cwd()
-    for candidate in (
+    for path in (
         cwd / "zig-out" / "bin" / "orca",
         cwd.parent / "zig-out" / "bin" / "orca",
         cwd.parent.parent / "zig-out" / "bin" / "orca",
     ):
-        if candidate.exists():
-            return str(candidate)
+        if path.exists():
+            candidates.append(str(path))
 
+    found = shutil.which("orca")
+    if found:
+        candidates.append(found)
+
+    deduped: list[str] = []
+    seen: set[str] = set()
+    for candidate in candidates:
+        if candidate not in seen:
+            seen.add(candidate)
+            deduped.append(candidate)
+    return deduped
+
+
+def _find_orca() -> str | None:
+    for candidate in _orca_candidates():
+        if _supports_hermes_host(candidate):
+            return candidate
     return None
 
 
@@ -126,7 +181,8 @@ def _call_orca(event: str, data: Any) -> dict[str, Any]:
     orca = _find_orca()
     if not orca:
         raise RuntimeError(
-            "Orca binary not found. Run ./scripts/install-orca-plugin.sh hermes project."
+            "Orca binary not found or too old for Hermes hooks. "
+            "Run ./scripts/install-orca-plugin.sh hermes project or set ORCA_BIN."
         )
 
     completed = subprocess.run(
@@ -151,12 +207,23 @@ def _register(ctx: Any, event: str) -> None:
         try:
             response = _call_orca(event, payload)
         except Exception as exc:
+            logger = getattr(ctx, "logger", None)
+            if _is_hermes_host_mismatch(exc):
+                message = (
+                    "Orca is too old for Hermes hooks; upgrade Orca or set ORCA_BIN. "
+                    "Allowing tool call without Orca guardrails."
+                )
+                if logger and hasattr(logger, "warning"):
+                    logger.warning(message)
+                elif event in POLICY_EVENTS:
+                    print(f"warning: {message}", flush=True)
+                return None
+
             if event == "pre_tool_call":
                 return {
                     "action": "block",
                     "message": f"Orca unavailable for Hermes pre_tool_call: {exc}",
                 }
-            logger = getattr(ctx, "logger", None)
             if logger and hasattr(logger, "warning"):
                 logger.warning("Orca Hermes hook failed for %s: %s", event, exc)
             return None

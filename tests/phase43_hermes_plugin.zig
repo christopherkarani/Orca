@@ -54,6 +54,16 @@ test "hermes plugin source does not duplicate policy logic or store secrets" {
     try std.testing.expect(std.mem.indexOf(u8, content, "password123") == null);
 }
 
+
+test "hermes plugin source detects stale Orca binaries and version mismatch" {
+    const content = try readFile(std.testing.allocator, source_path);
+    defer std.testing.allocator.free(content);
+
+    try std.testing.expect(std.mem.indexOf(u8, content, "unknown host 'hermes'") != null);
+    try std.testing.expect(std.mem.indexOf(u8, content, "_supports_hermes_host") != null);
+    try std.testing.expect(std.mem.indexOf(u8, content, "Allowing tool call without Orca guardrails") != null);
+}
+
 test "hermes plugin readme documents install and limits" {
     try std.testing.expect(fileExists(readme_path));
     const content = try readFile(std.testing.allocator, readme_path);
