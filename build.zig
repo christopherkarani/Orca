@@ -3,8 +3,10 @@ const std = @import("std");
 pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
+    const version_override = b.option([]const u8, "version", "Orca version metadata");
     const version = blk: {
-        const version_file = std.fs.cwd().readFileAlloc(b.allocator, "VERSION", 32) catch break :blk b.option([]const u8, "version", "Orca version metadata") orelse "1.1.0";
+        if (version_override) |v| break :blk v;
+        const version_file = std.fs.cwd().readFileAlloc(b.allocator, "VERSION", 32) catch break :blk "1.1.0";
         const trimmed = std.mem.trim(u8, version_file, " \n\r\t");
         const result = b.allocator.dupe(u8, trimmed) catch break :blk "1.1.0";
         b.allocator.free(version_file);

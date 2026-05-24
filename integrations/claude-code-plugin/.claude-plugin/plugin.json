@@ -1,6 +1,6 @@
 {
     "name": "orca",
-    "version": "1.1.4",
+    "version": "1.1.5",
     "description": "Orca safety hooks and skills for Claude Code.",
     "author": {
         "name": "Orca"
