@@ -27,6 +27,8 @@ pub const report = @import("report.zig");
 pub const license_command = @import("license.zig");
 pub const ci = @import("ci.zig");
 pub const demo = @import("demo.zig");
+pub const disable = @import("disable.zig");
+pub const uninstall = @import("uninstall.zig");
 
 pub const version = build_options.version;
 
@@ -100,6 +102,8 @@ pub fn runWithCwd(cwd: std.fs.Dir, argv: []const []const u8, stdout: anytype, st
     if (std.mem.eql(u8, command, "license")) return license_command.command(argv[1..], stdout, stderr);
     if (std.mem.eql(u8, command, "ci")) return ci.command(argv[1..], stdout, stderr);
     if (std.mem.eql(u8, command, "demo")) return demo.command(argv[1..], stdout, stderr);
+    if (std.mem.eql(u8, command, "disable")) return disable.command(argv[1..], stdout, stderr);
+    if (std.mem.eql(u8, command, "uninstall")) return uninstall.command(argv[1..], stdout, stderr);
     try stderr.writeAll("orca: unknown command '");
     try stderr.writeAll(command);
     try stderr.writeAll(". Run 'orca help' for usage.\n");
