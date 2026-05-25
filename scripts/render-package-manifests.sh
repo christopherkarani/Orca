@@ -1,7 +1,8 @@
 #!/usr/bin/env sh
 set -eu
 
-VERSION="${ORCA_VERSION:-1.1.0}"
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+VERSION="${ORCA_VERSION:-$(tr -d '[:space:]' < "${SCRIPT_DIR}/../VERSION")}"
 DIST_DIR="${ORCA_DIST_DIR:-dist}"
 OUT_DIR="${ORCA_PACKAGE_MANIFEST_DIR:-${DIST_DIR}/package-manifests}"
 CHECKSUMS="${DIST_DIR}/checksums.txt"

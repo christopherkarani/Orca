@@ -7,14 +7,14 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 
 if [ -z "$HOST" ]; then
-  echo "Usage: $0 <opencode|openclaw|hermes> [project|global]" >&2
+  echo "Usage: $0 <opencode|openclaw|hermes|codex|claude> [project|global]" >&2
   exit 2
 fi
 
 case "$HOST" in
-  opencode|openclaw|hermes|hermess) ;;
+  opencode|openclaw|hermes|hermess|codex|claude) ;;
   *)
-    echo "unsupported host: $HOST (expected opencode|openclaw|hermes)" >&2
+    echo "unsupported host: $HOST (expected opencode|openclaw|hermes|codex|claude)" >&2
     exit 2
     ;;
 esac
@@ -45,10 +45,10 @@ fi
 
 if [ "$HOST" = "opencode" ]; then
   "$ORCA_BIN" plugin install opencode --scope "$SCOPE" --yes
-elif [ "$HOST" = "hermes" ]; then
-  "$ORCA_BIN" plugin install hermes --yes
-else
+elif [ "$HOST" = "openclaw" ]; then
   "$ORCA_BIN" plugin install openclaw --yes
+else
+  "$ORCA_BIN" plugin install "$HOST" --yes
 fi
 
 "$ORCA_BIN" plugin doctor "$HOST"

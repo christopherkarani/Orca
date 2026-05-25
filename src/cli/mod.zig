@@ -19,6 +19,7 @@ pub const completions = @import("completions.zig");
 pub const shim = @import("shim.zig");
 pub const version_command = @import("version.zig");
 pub const plugin = @import("plugin.zig");
+pub const plugin_install = @import("plugin_install.zig");
 pub const setup = @import("setup.zig");
 pub const decide = @import("decide.zig");
 pub const hook = @import("hook.zig");

@@ -1,11 +1,17 @@
 #!/usr/bin/env sh
 set -eu
 
-VERSION="${ORCA_VERSION:-1.1.0}"
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+DEFAULT_VERSION="$(tr -d '[:space:]' < "${SCRIPT_DIR}/../VERSION" 2>/dev/null || printf '1.1.5')"
+VERSION="${ORCA_VERSION:-${DEFAULT_VERSION}}"
 BASE_URL="${ORCA_BASE_URL:-https://github.com/christopherkarani/Orca/releases/download/v${VERSION}}"
 INSTALL_DIR="${ORCA_INSTALL_DIR:-${HOME}/.local/bin}"
+SHARE_DIR="${ORCA_SHARE_DIR:-${HOME}/.local/share/orca}"
+RESOURCE_ROOT="${ORCA_RESOURCE_ROOT:-${SHARE_DIR}/${VERSION}}"
+CURRENT_LINK="${SHARE_DIR}/current"
 ARTIFACT_DIR="${ORCA_ARTIFACT_DIR:-}"
 TMP_DIR="$(mktemp -d "${TMPDIR:-/tmp}/orca-install.XXXXXX")"
+RUNTIME_DIRS="integrations fixtures schemas policies"
 
 cleanup() {
   rm -rf "$TMP_DIR"
@@ -91,6 +97,21 @@ safe_install() {
   chmod 0755 "$destination"
 }
 
+install_runtime_assets() {
+  extract_root="$1"
+  mkdir -p "$RESOURCE_ROOT"
+  for dir in $RUNTIME_DIRS; do
+    if [ -d "$extract_root/$dir" ]; then
+      rm -rf "$RESOURCE_ROOT/$dir"
+      cp -R "$extract_root/$dir" "$RESOURCE_ROOT/"
+    else
+      fail "release archive missing runtime directory: $dir"
+    fi
+  done
+  mkdir -p "$SHARE_DIR"
+  ln -sfn "$RESOURCE_ROOT" "$CURRENT_LINK"
+}
+
 rc_file_for_shell() {
   shell_name="$1"
   case "$shell_name" in
@@ -130,6 +151,35 @@ ensure_path_entry() {
   printf 'Run: source %s   (or open a new terminal)\n' "$rc_file"
 }
 
+ensure_resource_root_entry() {
+  shell_path="${SHELL:-/bin/sh}"
+  rc_file="$(rc_file_for_shell "$shell_path")"
+  marker="# Orca runtime assets"
+
+  if [ ! -d "$(dirname "$rc_file")" ] && [ "$(dirname "$rc_file")" != "$HOME" ]; then
+    mkdir -p "$(dirname "$rc_file")"
+  fi
+
+  if [ -f "$rc_file" ] && grep -qF "$marker" "$rc_file" 2>/dev/null; then
+    tmp="$(mktemp)"
+    awk -v marker="$marker" -v new_line="export ORCA_RESOURCE_ROOT=\"${CURRENT_LINK}\"" '
+      $0 == marker { print; print new_line; skip=1; next }
+      skip && /^export ORCA_RESOURCE_ROOT=/ { next }
+      skip && $0 == "" { skip=0 }
+      { print }
+    ' "$rc_file" > "$tmp"
+    mv "$tmp" "$rc_file"
+    printf 'Updated ORCA_RESOURCE_ROOT=%s in %s\n' "$CURRENT_LINK" "$rc_file"
+    return 0
+  fi
+
+  {
+    printf '\n%s\n' "$marker"
+    printf 'export ORCA_RESOURCE_ROOT="%s"\n' "$CURRENT_LINK"
+  } >> "$rc_file"
+  printf 'Added ORCA_RESOURCE_ROOT=%s to %s\n' "$CURRENT_LINK" "$rc_file"
+}
+
 OS="$(detect_os)"
 ARCH="$(detect_arch)"
 ARTIFACT="orca-v${VERSION}-${OS}-${ARCH}.tar.gz"
@@ -147,17 +197,26 @@ fi
 verify_checksum "$ARTIFACT" "$TMP_DIR/$ARTIFACT" "$TMP_DIR/checksums.txt"
 tar -xzf "$TMP_DIR/$ARTIFACT" -C "$TMP_DIR"
 
-FOUND_BIN="$(find "$TMP_DIR" -type f -name orca -perm -111 | head -n 1)"
+EXTRACT_ROOT="$(find "$TMP_DIR" -mindepth 1 -maxdepth 1 -type d | head -n 1)"
+[ -n "$EXTRACT_ROOT" ] || fail "artifact did not contain an extracted release root"
+
+FOUND_BIN="$(find "$EXTRACT_ROOT" -type f -name orca -perm -111 | head -n 1)"
 [ -n "$FOUND_BIN" ] || fail "artifact did not contain an executable orca binary"
 
 DESTINATION="$INSTALL_DIR/orca"
 safe_install "$FOUND_BIN" "$DESTINATION"
+install_runtime_assets "$EXTRACT_ROOT"
 
 printf '\nInstalled Orca to %s\n' "$DESTINATION"
+printf 'Installed runtime assets to %s\n' "$RESOURCE_ROOT"
+printf 'Current runtime symlink: %s -> %s\n' "$CURRENT_LINK" "$RESOURCE_ROOT"
+printf 'ORCA_RESOURCE_ROOT=%s\n' "$CURRENT_LINK"
 
 ensure_path_entry "$INSTALL_DIR"
+ensure_resource_root_entry "$CURRENT_LINK"
 
 printf '\nNext steps:\n'
 printf '  orca --version\n'
 printf '  orca doctor\n'
 printf '  orca init --preset generic-agent\n'
+printf '  orca plugin install hermes --yes\n'

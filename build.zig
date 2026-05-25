@@ -464,6 +464,39 @@ pub fn build(b: *std.Build) void {
     });
     const run_phase43_hermes_plugin_tests = b.addRunArtifact(phase43_hermes_plugin_tests);
 
+    const phase44_version_drift_tests = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("tests/phase44_version_drift.zig"),
+            .target = target,
+            .optimize = optimize,
+        }),
+    });
+    const run_phase44_version_drift_tests = b.addRunArtifact(phase44_version_drift_tests);
+
+    const phase44_setup_opencode_tests = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("tests/phase44_setup_opencode_detection.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .name = "orca", .module = orca_mod },
+            },
+        }),
+    });
+    const run_phase44_setup_opencode_tests = b.addRunArtifact(phase44_setup_opencode_tests);
+
+    const phase44_install_workspace_paths_tests = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("tests/phase44_install_workspace_paths.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .name = "orca", .module = orca_mod },
+            },
+        }),
+    });
+    const run_phase44_install_workspace_paths_tests = b.addRunArtifact(phase44_install_workspace_paths_tests);
+
     const setup_tests = b.addTest(.{
         .root_module = b.createModule(.{
             .root_source_file = b.path("tests/setup.zig"),
@@ -511,6 +544,9 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&run_phase38_plugin_security_tests.step);
     test_step.dependOn(&run_phase39_openclaw_plugin_tests.step);
     test_step.dependOn(&run_phase43_hermes_plugin_tests.step);
+    test_step.dependOn(&run_phase44_version_drift_tests.step);
+    test_step.dependOn(&run_phase44_setup_opencode_tests.step);
+    test_step.dependOn(&run_phase44_install_workspace_paths_tests.step);
     test_step.dependOn(&run_setup_tests.step);
 
     const fuzz_tests = b.addTest(.{

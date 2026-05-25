@@ -115,6 +115,19 @@ else
 fi
 echo ""
 
+# 6. Packaged install DX smoke
+log_info "Running install DX smoke test..."
+if [[ -x "${REPO_ROOT}/scripts/install-dx-smoke-test.sh" ]]; then
+    if "${REPO_ROOT}/scripts/install-dx-smoke-test.sh"; then
+        log_pass "install-dx-smoke-test.sh"
+    else
+        log_fail "install-dx-smoke-test.sh"
+    fi
+else
+    log_fail "scripts/install-dx-smoke-test.sh missing"
+fi
+echo ""
+
 # Summary
 log_info "=== Smoke Test Summary ==="
 if [[ ${ERRORS} -eq 0 ]]; then

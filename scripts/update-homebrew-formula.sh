@@ -4,6 +4,7 @@ set -eu
 VERSION="${1:-${ORCA_VERSION:-}}"
 HOMEBREW_TAP_DIR="${ORCA_HOMEBREW_TAP_DIR:-${HOME}/code/homebrew-orca}"
 FORMULA_OUT="${ORCA_HOMEBREW_FORMULA:-${HOMEBREW_TAP_DIR}/Formula/orca.rb}"
+TEMPLATE="${ORCA_HOMEBREW_TEMPLATE:-packaging/homebrew/Formula/orca.rb}"
 TMP_DIR="$(mktemp -d "${TMPDIR:-/tmp}/orca-homebrew.XXXXXX")"
 
 cleanup() {
@@ -17,6 +18,7 @@ fail() {
 }
 
 [ -n "$VERSION" ] || fail "usage: $0 <version>  (or set ORCA_VERSION)"
+[ -f "$TEMPLATE" ] || fail "homebrew template not found: $TEMPLATE"
 
 BASE_URL="https://github.com/christopherkarani/Orca/releases/download/v${VERSION}"
 
@@ -53,51 +55,22 @@ darwin_amd64="$(sha256_file "${TMP_DIR}/orca-v${VERSION}-darwin-amd64.tar.gz")"
 linux_arm64="$(sha256_file "${TMP_DIR}/orca-v${VERSION}-linux-arm64.tar.gz")"
 linux_amd64="$(sha256_file "${TMP_DIR}/orca-v${VERSION}-linux-amd64.tar.gz")"
 
-printf 'Generating formula...\n'
+printf 'Merging version and checksums into formula template...\n'
 
 mkdir -p "$(dirname "$FORMULA_OUT")"
+cp "$TEMPLATE" "$FORMULA_OUT"
 
-cat > "$FORMULA_OUT" <<EOF
-class Orca < Formula
-  desc "Local runtime firewall for AI agents"
-  homepage "https://github.com/christopherkarani/Orca"
-  version "${VERSION}"
-  license "Apache-2.0"
-
-  on_macos do
-    if Hardware::CPU.arm?
-      url "https://github.com/christopherkarani/Orca/releases/download/v#{version}/orca-v#{version}-darwin-arm64.tar.gz"
-      sha256 "${darwin_arm64}"
-    else
-      url "https://github.com/christopherkarani/Orca/releases/download/v#{version}/orca-v#{version}-darwin-amd64.tar.gz"
-      sha256 "${darwin_amd64}"
-    end
-  end
-
-  on_linux do
-    if Hardware::CPU.arm?
-      url "https://github.com/christopherkarani/Orca/releases/download/v#{version}/orca-v#{version}-linux-arm64.tar.gz"
-      sha256 "${linux_arm64}"
-    else
-      url "https://github.com/christopherkarani/Orca/releases/download/v#{version}/orca-v#{version}-linux-amd64.tar.gz"
-      sha256 "${linux_amd64}"
-    end
-  end
-
-  def install
-    bin.install "bin/orca"
-    prefix.install "orca-dashboard-ui/dist" => "orca-dashboard-ui/dist"
-  end
-
-  test do
-    assert_match version.to_s, shell_output("#{bin}/orca --version")
-  end
-end
-EOF
+sed \
+  -e "s/^  version \".*\"/  version \"${VERSION}\"/" \
+  -e "s/{{DARWIN_ARM64_SHA256}}/${darwin_arm64}/" \
+  -e "s/{{DARWIN_AMD64_SHA256}}/${darwin_amd64}/" \
+  -e "s/{{LINUX_ARM64_SHA256}}/${linux_arm64}/" \
+  -e "s/{{LINUX_AMD64_SHA256}}/${linux_amd64}/" \
+  "$FORMULA_OUT" > "${FORMULA_OUT}.tmp"
+mv "${FORMULA_OUT}.tmp" "$FORMULA_OUT"
 
 printf 'Formula written to %s\n' "$FORMULA_OUT"
 
-# Optionally commit and push to the tap repo
 if [ -d "${HOMEBREW_TAP_DIR}/.git" ]; then
   cd "$HOMEBREW_TAP_DIR"
   git add Formula/orca.rb

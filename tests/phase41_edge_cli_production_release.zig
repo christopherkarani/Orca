@@ -218,6 +218,16 @@ test "phase 41 release artifact contract includes CLI Edge manifest checksums SB
     try expectContains(homebrew_formula, "(exists)");
 }
 
+test "phase 41 update-homebrew-formula preserves runtime install blocks" {
+    const updater = try readFile("scripts/update-homebrew-formula.sh");
+    defer std.testing.allocator.free(updater);
+    try expectContains(updater, "cp \"$TEMPLATE\" \"$FORMULA_OUT\"");
+    try expectContains(updater, "ORCA_HOMEBREW_TEMPLATE");
+    try expectContains(updater, "{{DARWIN_ARM64_SHA256}}");
+    try expectContains(updater, "{{LINUX_AMD64_SHA256}}");
+    try expectNotContains(updater, "cat > \"$FORMULA_OUT\" <<EOF");
+}
+
 test "phase 41 public release docs exist with explicit safety boundary" {
     const required = [_][]const u8{
         "CHANGELOG.md",
@@ -280,9 +290,14 @@ test "phase 41 package manifests and install scripts are checksum-first and hard
     try expectContains(homebrew_formula, "christopherkarani/Orca");
     try expectContains(homebrew_formula, "orca-v#{version}-darwin-arm64.tar.gz");
     try expectContains(homebrew_formula, "orca-v#{version}-linux-amd64.tar.gz");
-    try expectContains(homebrew_formula, "sha256");
+    try expectContains(homebrew_formula, "{{DARWIN_ARM64_SHA256}}");
+    try expectContains(homebrew_formula, "{{LINUX_AMD64_SHA256}}");
     try expectContains(homebrew_formula, "ORCA_RESOURCE_ROOT");
     try expectContains(homebrew_formula, "pkgshare.install \"fixtures\"");
+    try expectContains(homebrew_formula, "pkgshare.install \"integrations\"");
+    try expectContains(homebrew_formula, "pkgshare.install \"schemas\"");
+    try expectContains(homebrew_formula, "pkgshare.install \"policies\"");
+    try expectContains(homebrew_formula, "def caveats");
     try expectContains(homebrew_formula, "plugin manifest hermes");
     try expectNotContains(homebrew_formula, "BEGIN PRIVATE KEY");
     try expectNotContains(homebrew_formula, "ghp_");
