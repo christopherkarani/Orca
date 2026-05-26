@@ -17,8 +17,31 @@ test "core package root does not expose product facade modules" {
 
 test "core package sources do not import the monolithic product facade" {
     try expectFileDoesNotContain("packages/core/src/root.zig", "@import(\"aegis\")");
-    try expectFileDoesNotContain("packages/core/src/api.zig", "@import(\"aegis\")");
     try expectFileDoesNotContain("packages/core/src/abi.zig", "@import(\"aegis\")");
+}
+
+test "core engine module graph stays within core policy and audit" {
+    try expectFileDoesNotContain("src/core_engine.zig", "intercept");
+    try expectFileDoesNotContain("src/core_engine.zig", "redteam");
+    try expectFileDoesNotContain("src/policy/evaluate.zig", "../intercept/");
+    try expectFileDoesNotContain("src/core/boundary_api.zig", "@import(\"aegis\")");
+}
+
+test "public Policy handle is opaque and does not expose storage pointers" {
+    try std.testing.expect(@typeInfo(aegis_core.api.Policy) == .@"opaque");
+}
+
+test "extension audit targets preserve extension kind in core events" {
+    const ts = aegis_core.api.Timestamp.fromUnixSeconds(1_777_983_130);
+    const event = try aegis_core.api.createAuditEvent(.{
+        .session_id = try aegis_core.api.generateSessionId(ts),
+        .event_id = try aegis_core.api.generateEventId(ts),
+        .timestamp = ts,
+        .event_type = .command_attempt,
+        .actor = .{ .kind = .core, .display = "aegis-core" },
+        .target = .{ .kind = .extension, .value = "edge.vehicle_state_read/vehicle-1" },
+    });
+    try std.testing.expectEqualStrings("extension", @tagName(event.target.kind));
 }
 
 test "core public actions are product neutral" {
@@ -88,7 +111,7 @@ test "core API evaluates generic command and extension actions" {
 
     var command_eval = try aegis_core.api.evaluateAction(
         std.testing.allocator,
-        &selected,
+        selected,
         .{ .command_exec = .{ .argv = &.{ "echo", "hello" } } },
         .{},
     );
@@ -97,7 +120,7 @@ test "core API evaluates generic command and extension actions" {
 
     var extension_eval = try aegis_core.api.evaluateAction(
         std.testing.allocator,
-        &selected,
+        selected,
         .{ .extension = .{ .domain = "edge", .operation = "vehicle_state_read", .target = "vehicle-1" } },
         .{},
     );
@@ -166,6 +189,13 @@ test "core API writes redacted audit events and verifies replay hash chain" {
     defer out.deinit(std.testing.allocator);
     try aegis_core.api.writeReplayJson(out.writer(std.testing.allocator), replay);
     try std.testing.expect(std.mem.indexOf(u8, out.items, "fake_secret_value_phase24") == null);
+}
+
+test "cli and edge compat facade still exposes full product core surface" {
+    const compat_source = try std.fs.cwd().readFileAlloc(std.testing.allocator, "build.zig", 256 * 1024);
+    defer std.testing.allocator.free(compat_source);
+    try std.testing.expect(std.mem.indexOf(u8, compat_source, "aegis_core_product_compat_mod") != null);
+    try std.testing.expect(std.mem.indexOf(u8, compat_source, "pub const actions = core.types") != null);
 }
 
 test "phase 24 experimental ABI skeleton compiles and documents instability" {

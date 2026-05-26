@@ -1,15 +1,14 @@
 const std = @import("std");
 
-const engine = @import("core_engine");
-const audit = engine.audit;
-const core_mod = engine.core;
-const policy = engine.policy;
+const audit = @import("../audit/mod.zig");
+const core_mod = @import("mod.zig");
+const policy_engine = @import("../policy/mod.zig");
 
 pub const Decision = core_mod.decision.Decision;
 pub const DecisionResult = core_mod.decision.DecisionResult;
-pub const Evaluation = policy.schema.Evaluation;
-pub const EvaluationContext = policy.schema.EvaluationContext;
-pub const Preset = policy.presets.Preset;
+pub const Evaluation = policy_engine.schema.Evaluation;
+pub const EvaluationContext = policy_engine.schema.EvaluationContext;
+pub const Preset = policy_engine.presets.Preset;
 pub const ReplayOptions = audit.replay.ReplayOptions;
 pub const ReplaySession = audit.replay.ReplaySession;
 pub const VerifyResult = audit.replay.VerifyResult;
@@ -23,30 +22,35 @@ pub const Session = core_mod.session.Session;
 pub const SessionId = core_mod.session.SessionId;
 pub const EventId = core_mod.event.EventId;
 
-pub const Policy = struct {
-    raw: *anyopaque,
+const PolicyInner = struct {
+    value: policy_engine.schema.Policy,
     allocator: std.mem.Allocator,
 
-    pub fn deinit(self: *Policy) void {
-        const inner_policy = self.innerMut();
-        inner_policy.deinit();
-        self.allocator.destroy(inner_policy);
-        self.* = undefined;
-    }
-
-    fn inner(self: *const Policy) *const policy.schema.Policy {
-        return @ptrCast(@alignCast(self.raw));
-    }
-
-    fn innerMut(self: *Policy) *policy.schema.Policy {
-        return @ptrCast(@alignCast(self.raw));
+    fn deinit(self: *PolicyInner) void {
+        self.value.deinit();
+        self.allocator.destroy(self);
     }
 };
 
-pub const LoadSource = policy.schema.LoadSource;
+/// Opaque policy handle; storage is not accessible outside this module.
+pub const Policy = opaque {
+    pub fn deinit(self: *Policy) void {
+        policyInnerMut(self).deinit();
+    }
+};
+
+fn policyInner(policy: *const Policy) *const policy_engine.schema.Policy {
+    return &policyInnerMut(@constCast(policy)).value;
+}
+
+fn policyInnerMut(policy: *Policy) *PolicyInner {
+    return @ptrCast(@alignCast(policy));
+}
+
+pub const LoadSource = policy_engine.schema.LoadSource;
 
 pub const LoadedPolicy = struct {
-    policy: Policy,
+    policy: *Policy,
     source: LoadSource,
     path: []const u8,
     allocator: std.mem.Allocator,
@@ -62,6 +66,7 @@ pub const ActorKind = enum {
     user,
     agent,
     process,
+    /// Maps to core `ActorKind.aegis` in audit events.
     core,
     unknown,
 };
@@ -116,6 +121,7 @@ pub const StagingAction = struct {
     path: Path,
 };
 
+/// Product-neutral extension hook. Evaluation uses policy mode defaults only.
 pub const ExtensionAction = struct {
     domain: []const u8,
     operation: []const u8,
@@ -204,26 +210,26 @@ pub fn detectOs() core_mod.platform.Os {
     return core_mod.platform.detectOs();
 }
 
-pub fn parsePolicyFromSlice(allocator: std.mem.Allocator, text: []const u8, source_path: ?[]const u8) !Policy {
-    var parsed = try policy.load.parseFromSlice(allocator, text, source_path);
+pub fn parsePolicyFromSlice(allocator: std.mem.Allocator, text: []const u8, source_path: ?[]const u8) !*Policy {
+    var parsed = try policy_engine.load.parseFromSlice(allocator, text, source_path);
     errdefer parsed.deinit();
     return wrapPolicy(allocator, parsed);
 }
 
-pub fn loadPolicyFile(allocator: std.mem.Allocator, path: []const u8) !Policy {
-    var loaded = try policy.load.loadFile(allocator, path);
+pub fn loadPolicyFile(allocator: std.mem.Allocator, path: []const u8) !*Policy {
+    var loaded = try policy_engine.load.loadFile(allocator, path);
     errdefer loaded.deinit();
     return wrapPolicy(allocator, loaded);
 }
 
-pub fn loadPolicyPreset(allocator: std.mem.Allocator, preset: Preset) !Policy {
-    var loaded = try policy.load.loadPreset(allocator, preset);
+pub fn loadPolicyPreset(allocator: std.mem.Allocator, preset: Preset) !*Policy {
+    var loaded = try policy_engine.load.loadPreset(allocator, preset);
     errdefer loaded.deinit();
     return wrapPolicy(allocator, loaded);
 }
 
 pub fn discoverPolicy(allocator: std.mem.Allocator, explicit_path: ?[]const u8, workspace_root: []const u8) !LoadedPolicy {
-    var loaded = try policy.load.discover(allocator, explicit_path, workspace_root);
+    var loaded = try policy_engine.load.discover(allocator, explicit_path, workspace_root);
     errdefer loaded.deinit();
     const wrapped = try wrapPolicy(allocator, loaded.policy);
     return .{
@@ -235,26 +241,27 @@ pub fn discoverPolicy(allocator: std.mem.Allocator, explicit_path: ?[]const u8, 
 }
 
 pub fn validatePolicy(value: *const Policy) !void {
-    return policy.validate.policy(value.inner());
+    return policy_engine.validate.policy(policyInner(value));
 }
 
 pub fn evaluateAction(allocator: std.mem.Allocator, value: *const Policy, requested: Action, context: EvaluationContext) !Evaluation {
+    const inner = policyInner(value);
     return switch (requested) {
-        .env_read => |env_action| policy.evaluate.action(value.inner(), .{ .env_read = .{ .name = env_action.name } }, context, allocator),
-        .file_read => |file| policy.evaluate.action(value.inner(), .{ .file_read = .{ .path = file.path } }, context, allocator),
-        .file_write => |file| policy.evaluate.action(value.inner(), .{ .file_write = .{ .path = file.path } }, context, allocator),
-        .command_exec => |command_action| policy.evaluate.action(value.inner(), .{ .command_exec = .{ .argv = command_action.argv } }, context, allocator),
-        .network_connect => |network_action| policy.evaluate.action(value.inner(), .{ .network_connect = .{
+        .env_read => |env_action| policy_engine.evaluate.action(inner, .{ .env_read = .{ .name = env_action.name } }, context, allocator),
+        .file_read => |file| policy_engine.evaluate.action(inner, .{ .file_read = .{ .path = file.path } }, context, allocator),
+        .file_write => |file| policy_engine.evaluate.action(inner, .{ .file_write = .{ .path = file.path } }, context, allocator),
+        .command_exec => |command_action| policy_engine.evaluate.action(inner, .{ .command_exec = .{ .argv = command_action.argv } }, context, allocator),
+        .network_connect => |network_action| policy_engine.evaluate.action(inner, .{ .network_connect = .{
             .host = network_action.host,
             .port = network_action.port,
             .scheme = network_action.scheme,
         } }, context, allocator),
-        .approval_decision => |approval| policy.evaluate.action(value.inner(), .{ .approval_decision = .{
+        .approval_decision => |approval| policy_engine.evaluate.action(inner, .{ .approval_decision = .{
             .target = toCoreTarget(approval.target),
             .requested_scope = approval.requested_scope,
         } }, context, allocator),
-        .staging_decision => |staging| policy.evaluate.action(value.inner(), .{ .staging_decision = .{ .path = staging.path } }, context, allocator),
-        .extension => |extension| evaluateExtensionAction(allocator, value, extension, context),
+        .staging_decision => |staging| policy_engine.evaluate.action(inner, .{ .staging_decision = .{ .path = staging.path } }, context, allocator),
+        .extension => |extension| evaluateExtensionAction(allocator, inner, extension, context),
     };
 }
 
@@ -332,13 +339,13 @@ pub fn writeReplayHuman(writer: anytype, replay: ReplaySession, show_verify: boo
 
 fn evaluateExtensionAction(
     allocator: std.mem.Allocator,
-    value: *const Policy,
+    value: *const policy_engine.schema.Policy,
     extension: ExtensionAction,
     context: EvaluationContext,
 ) !Evaluation {
-    const mode = context.mode orelse value.inner().mode;
+    const mode = context.mode orelse value.mode;
     const decision_value = modeDefault(mode);
-    const actual = if (mode == .ci and decision_value == .ask) policy.schema.DecisionValue.deny else decision_value;
+    const actual = if (mode == .ci and decision_value == .ask) policy_engine.schema.DecisionValue.deny else decision_value;
     const explanation = try std.fmt.allocPrint(
         allocator,
         "extension {s}.{s} on {s}: {s}",
@@ -355,7 +362,7 @@ fn evaluateExtensionAction(
     };
 }
 
-fn modeDefault(mode: policy.schema.Mode) policy.schema.DecisionValue {
+fn modeDefault(mode: policy_engine.schema.Mode) policy_engine.schema.DecisionValue {
     return switch (mode) {
         .observe => .observe,
         .ask, .trusted => .ask,
@@ -363,10 +370,10 @@ fn modeDefault(mode: policy.schema.Mode) policy.schema.DecisionValue {
     };
 }
 
-fn wrapPolicy(allocator: std.mem.Allocator, value: policy.schema.Policy) !Policy {
-    const boxed = try allocator.create(policy.schema.Policy);
-    boxed.* = value;
-    return .{ .raw = boxed, .allocator = allocator };
+fn wrapPolicy(allocator: std.mem.Allocator, value: policy_engine.schema.Policy) !*Policy {
+    const boxed = try allocator.create(PolicyInner);
+    boxed.* = .{ .value = value, .allocator = allocator };
+    return @ptrCast(@alignCast(boxed));
 }
 
 fn toCoreActor(actor: Actor) core_mod.types.Actor {
@@ -392,7 +399,7 @@ fn toCoreTarget(target: Target) core_mod.types.Target {
             .network_endpoint => .network_endpoint,
             .approval => .approval,
             .staging_area => .staging_area,
-            .extension => .unknown,
+            .extension => .extension,
             .session => .session,
             .unknown => .unknown,
         },
@@ -439,7 +446,7 @@ test "core API evaluates generic policy actions and redacts strings" {
     , "core-api-test.yaml");
     defer selected.deinit();
 
-    var evaluation = try evaluateAction(std.testing.allocator, &selected, .{ .command_exec = .{ .argv = &.{ "echo", "ok" } } }, .{});
+    var evaluation = try evaluateAction(std.testing.allocator, selected, .{ .command_exec = .{ .argv = &.{ "echo", "ok" } } }, .{});
     defer evaluation.deinit(std.testing.allocator);
     try std.testing.expectEqual(DecisionResult.allow, evaluation.decision.result);
 

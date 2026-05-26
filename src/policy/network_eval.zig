@@ -2,8 +2,8 @@ const std = @import("std");
 
 const audit_redact = @import("../audit/redact_bridge.zig");
 const core = @import("../core/mod.zig");
-const matchers = @import("../policy/matchers.zig");
-const schema = @import("../policy/schema.zig");
+const matchers = @import("matchers.zig");
+const schema = @import("schema.zig");
 
 pub const implemented = true;
 
@@ -666,7 +666,7 @@ fn hexValue(char: u8) ?u8 {
 }
 
 test "network decision allows exact and wildcard domains" {
-    const load = @import("../policy/load.zig");
+    const load = @import("load.zig");
     var policy = try load.parseFromSlice(std.testing.allocator,
         \\version: 1
         \\mode: strict
@@ -690,7 +690,7 @@ test "network decision allows exact and wildcard domains" {
 }
 
 test "deny beats allow and unknown ask denies in ci" {
-    const load = @import("../policy/load.zig");
+    const load = @import("load.zig");
     var policy = try load.parseFromSlice(std.testing.allocator,
         \\version: 1
         \\mode: ci
@@ -716,7 +716,7 @@ test "deny beats allow and unknown ask denies in ci" {
 }
 
 test "strict defaults deny direct localhost private and metadata destinations" {
-    const load = @import("../policy/load.zig");
+    const load = @import("load.zig");
     var policy = try load.parseFromSlice(std.testing.allocator,
         \\version: 1
         \\mode: strict
@@ -734,7 +734,7 @@ test "strict defaults deny direct localhost private and metadata destinations" {
 }
 
 test "unknown domain denies in allowlist mode" {
-    const load = @import("../policy/load.zig");
+    const load = @import("load.zig");
     var policy = try load.parseFromSlice(std.testing.allocator,
         \\version: 1
         \\mode: strict
@@ -806,7 +806,7 @@ test "percent-encoded secret URL values are detected and redacted" {
 }
 
 test "many unknown domains signal only counts policy-unknown domains" {
-    const load = @import("../policy/load.zig");
+    const load = @import("load.zig");
     var policy = try load.parseFromSlice(std.testing.allocator,
         \\version: 1
         \\mode: strict

@@ -1,6 +1,6 @@
 const engine = @import("core_engine");
 
-pub const api = @import("api.zig");
+pub const api = engine.boundary_api;
 pub const abi = @import("abi.zig");
 
 pub const errors = engine.core.errors;

@@ -48,6 +48,7 @@ pub const TargetKind = enum {
     edge_telemetry,
     edge_emergency,
     edge_safety_envelope,
+    extension,
     unknown,
 };
 

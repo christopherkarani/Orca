@@ -1,7 +1,7 @@
 const std = @import("std");
 
 const core = @import("../core/mod.zig");
-const network_guard = @import("../intercept/network.zig");
+const network_guard = @import("network_eval.zig");
 const matchers = @import("matchers.zig");
 const schema = @import("schema.zig");
 
