@@ -1,7 +1,11 @@
 param(
-    [string]$Version = $(if ($env:ORCA_VERSION) { $env:ORCA_VERSION } else { "1.1.0" }),
+    [string]$Version = $(if ($env:ORCA_VERSION) { $env:ORCA_VERSION } else {
+        $versionFile = Join-Path (Split-Path -Parent $MyInvocation.MyCommand.Definition) "..\VERSION"
+        if (Test-Path -LiteralPath $versionFile) { (Get-Content -LiteralPath $versionFile -Raw).Trim() } else { "1.1.5" }
+    }),
     [string]$BaseUrl = $env:ORCA_BASE_URL,
     [string]$InstallDir = $(if ($env:ORCA_INSTALL_DIR) { $env:ORCA_INSTALL_DIR } else { Join-Path $HOME ".orca\bin" }),
+    [string]$ShareDir = $(if ($env:ORCA_SHARE_DIR) { $env:ORCA_SHARE_DIR } else { Join-Path $HOME ".orca\share" }),
     [string]$ArtifactDir = $env:ORCA_ARTIFACT_DIR
 )
 
@@ -9,6 +13,10 @@ $ErrorActionPreference = "Stop"
 if (-not $BaseUrl) {
     $BaseUrl = "https://github.com/christopherkarani/Orca/releases/download/v$Version"
 }
+
+$ResourceRoot = if ($env:ORCA_RESOURCE_ROOT) { $env:ORCA_RESOURCE_ROOT } else { Join-Path $ShareDir $Version }
+$CurrentLink = Join-Path $ShareDir "current"
+$RuntimeDirs = @("integrations", "fixtures", "schemas", "policies")
 
 function Fail($Message) {
     Write-Error "orca install: $Message"
@@ -60,6 +68,69 @@ function Test-ExistingOrca($Path) {
     return [bool]($output -match '"product"\s*:\s*"orca"|^orca(\s|$)')
 }
 
+function Install-RuntimeAssets($ExtractRoot) {
+    New-Item -ItemType Directory -Force -Path $ResourceRoot | Out-Null
+    foreach ($dir in $RuntimeDirs) {
+        $source = Join-Path $ExtractRoot $dir
+        if (-not (Test-Path -LiteralPath $source)) {
+            Fail "release archive missing runtime directory: $dir"
+        }
+        $dest = Join-Path $ResourceRoot $dir
+        if (Test-Path -LiteralPath $dest) {
+            Remove-Item -LiteralPath $dest -Recurse -Force
+        }
+        Copy-Item -LiteralPath $source -Destination $dest -Recurse -Force
+    }
+    New-Item -ItemType Directory -Force -Path $ShareDir | Out-Null
+    if (Test-Path -LiteralPath $CurrentLink) {
+        Remove-Item -LiteralPath $CurrentLink -Recurse -Force -ErrorAction SilentlyContinue
+    }
+    cmd /c mklink /J "$CurrentLink" "$ResourceRoot"
+    if ($LASTEXITCODE -ne 0) {
+        Fail "failed to create junction $CurrentLink -> $ResourceRoot (mklink exit code $LASTEXITCODE)"
+    }
+}
+
+function Ensure-ResourceRootEntry($TargetRoot) {
+    $profilePath = if ($PROFILE) { $PROFILE } else { Join-Path $HOME "Documents\PowerShell\Microsoft.PowerShell_profile.ps1" }
+    $marker = "# Orca runtime assets"
+    $profileDir = Split-Path -Parent $profilePath
+    if ($profileDir -and -not (Test-Path -LiteralPath $profileDir)) {
+        New-Item -ItemType Directory -Force -Path $profileDir | Out-Null
+    }
+
+    if ((Test-Path -LiteralPath $profilePath) -and (Select-String -LiteralPath $profilePath -Pattern [regex]::Escape($marker) -Quiet)) {
+        $lines = Get-Content -LiteralPath $profilePath
+        $updated = New-Object System.Collections.Generic.List[string]
+        $skipNextResourceRoot = $false
+        foreach ($line in $lines) {
+            if ($line -eq $marker) {
+                [void]$updated.Add($line)
+                [void]$updated.Add("`$env:ORCA_RESOURCE_ROOT = `"$TargetRoot`"")
+                $skipNextResourceRoot = $true
+                continue
+            }
+            if ($skipNextResourceRoot -and $line -match '^\$env:ORCA_RESOURCE_ROOT\s*=') {
+                continue
+            }
+            if ($skipNextResourceRoot -and [string]::IsNullOrWhiteSpace($line)) {
+                $skipNextResourceRoot = $false
+            }
+            [void]$updated.Add($line)
+        }
+        Set-Content -LiteralPath $profilePath -Value $updated
+        Write-Host "Updated ORCA_RESOURCE_ROOT=$TargetRoot in $profilePath"
+        return
+    }
+
+    @(
+        "",
+        $marker,
+        "`$env:ORCA_RESOURCE_ROOT = `"$TargetRoot`""
+    ) | Add-Content -LiteralPath $profilePath
+    Write-Host "Added ORCA_RESOURCE_ROOT=$TargetRoot to $profilePath"
+}
+
 $os = Detect-OS
 $arch = Detect-Arch
 if ($os -ne "windows") { Fail "unsupported operating system: $os" }
@@ -86,7 +157,9 @@ try {
 
     Verify-Checksum $artifactPath $checksumsPath $artifact
     Expand-Archive -LiteralPath $artifactPath -DestinationPath $tempDir -Force
-    $binary = Get-ChildItem -LiteralPath $tempDir -Recurse -File -Filter "orca.exe" | Select-Object -First 1
+    $extractRoot = Get-ChildItem -LiteralPath $tempDir -Directory | Where-Object { $_.Name -like "orca-v*" } | Select-Object -First 1
+    if (-not $extractRoot) { Fail "artifact did not contain an extracted release root" }
+    $binary = Get-ChildItem -LiteralPath $extractRoot.FullName -Recurse -File -Filter "orca.exe" | Select-Object -First 1
     if (-not $binary) { Fail "artifact did not contain orca.exe" }
 
     New-Item -ItemType Directory -Force -Path $InstallDir | Out-Null
@@ -98,11 +171,18 @@ try {
     }
 
     Copy-Item -LiteralPath $binary.FullName -Destination $destination -Force
+    Install-RuntimeAssets $extractRoot.FullName
+
     Write-Host "Installed Orca to $destination"
+    Write-Host "Installed runtime assets to $ResourceRoot"
+    Write-Host "Current runtime link: $CurrentLink -> $ResourceRoot"
+    Write-Host "ORCA_RESOURCE_ROOT=$CurrentLink"
+    Ensure-ResourceRootEntry $CurrentLink
     Write-Host "Next steps:"
     Write-Host "  $destination version"
     Write-Host "  $destination doctor"
     Write-Host "  $destination init --preset generic-agent"
+    Write-Host "  $destination plugin install hermes --yes"
 } finally {
     Remove-Item -LiteralPath $tempDir -Recurse -Force -ErrorAction SilentlyContinue
 }

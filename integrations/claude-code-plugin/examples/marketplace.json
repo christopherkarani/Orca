@@ -9,7 +9,7 @@
     {
       "name": "orca",
       "description": "Orca safety hooks and skills for Claude Code.",
-      "source": "../.claude/plugins/orca",
+      "source": "./integrations/claude-code-plugin",
       "category": "developer-tools"
     }
   ]

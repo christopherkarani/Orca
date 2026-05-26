@@ -265,8 +265,10 @@ pub fn resolveWorkspaceRoot(
     while (true) {
         const git_path = try std.fs.path.join(allocator, &.{ current, ".git" });
         defer allocator.free(git_path);
+        const orca_policy_path = try std.fs.path.join(allocator, &.{ current, ".orca", "policy.yaml" });
+        defer allocator.free(orca_policy_path);
 
-        if (hasGitMarker(git_path)) {
+        if (hasGitMarker(git_path) or hasWorkspaceMarker(orca_policy_path)) {
             allocator.free(fallback);
             return current;
         }
@@ -287,6 +289,11 @@ pub fn resolveWorkspaceRoot(
 }
 
 fn hasGitMarker(path: []const u8) bool {
+    std.fs.cwd().access(path, .{}) catch return false;
+    return true;
+}
+
+fn hasWorkspaceMarker(path: []const u8) bool {
     std.fs.cwd().access(path, .{}) catch return false;
     return true;
 }
@@ -379,6 +386,25 @@ test "workspace detection finds nearest git parent" {
     defer tmp.cleanup();
 
     try tmp.dir.makePath(".git");
+    try tmp.dir.makePath("child/grandchild");
+
+    const root = try tmp.dir.realpathAlloc(std.testing.allocator, ".");
+    defer std.testing.allocator.free(root);
+    const child = try tmp.dir.realpathAlloc(std.testing.allocator, "child/grandchild");
+    defer std.testing.allocator.free(child);
+
+    const resolved = try resolveWorkspaceRoot(std.testing.allocator, null, child);
+    defer std.testing.allocator.free(resolved);
+
+    try std.testing.expectEqualStrings(root, resolved);
+}
+
+test "workspace detection finds nearest orca policy parent" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    try tmp.dir.makePath(".orca");
+    try tmp.dir.writeFile(.{ .sub_path = ".orca/policy.yaml", .data = "mode: observe\n" });
     try tmp.dir.makePath("child/grandchild");
 
     const root = try tmp.dir.realpathAlloc(std.testing.allocator, ".");

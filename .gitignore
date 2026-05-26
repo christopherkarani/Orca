@@ -132,6 +132,9 @@ SECURITY_INVARIANTS.md
 .Codex/
 .opencode/
 .pi/
+.agents/plugins/orca/
+.claude/plugins/
+.claude/
 scripts/orchestrator.sh
 scripts/validate-go-to-market.sh
 

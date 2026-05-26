@@ -75,49 +75,20 @@ pub fn command(cwd: std.fs.Dir, argv: []const []const u8, stdout: anytype, stder
         try stdout.writeAll("Policy already exists.\n");
     }
 
-    // 2. Detect hosts
+    // 2. Detect hosts — collect doctor report once, reuse per host
     const hosts = &[_][]const u8{ "codex", "claude", "opencode", "openclaw", "hermes" };
+    var doctor_report = try plugin.collectPluginDoctorReport(allocator);
+    defer plugin.deinitPluginDoctorReport(&doctor_report, allocator);
+
     var any_detected = false;
+    var failure_count: usize = 0;
 
     for (hosts) |host_name| {
         if (!plugin.binaryInPath(allocator, host_name)) continue;
         any_detected = true;
         try stdout.print("\nDetected host: {s}\n", .{host_name});
 
-        // plugin doctor <host> --json
-        const doctor_argv = &[_][]const u8{ self_exe, "plugin", "doctor", host_name, "--json" };
-        const doctor_output = runChildOutput(allocator, doctor_argv) catch |err| {
-            try stdout.print("  {s}: doctor failed ({s})\n", .{ host_name, @errorName(err) });
-            continue;
-        };
-        defer allocator.free(doctor_output);
-
-        var parsed = std.json.parseFromSlice(std.json.Value, allocator, doctor_output, .{}) catch {
-            try stdout.print("  {s}: failed to parse doctor JSON\n", .{host_name});
-            continue;
-        };
-        defer parsed.deinit();
-
-        // Determine if plugin is installed using heuristics from JSON
-        const installed = blk: {
-            if (std.mem.eql(u8, host_name, "hermes")) {
-                const paths = parsed.value.object.get("hermes_paths") orelse break :blk false;
-                const user_manifest = paths.object.get("user_manifest_exists") orelse break :blk false;
-                break :blk user_manifest.bool;
-            } else if (std.mem.eql(u8, host_name, "openclaw")) {
-                const paths = parsed.value.object.get("openclaw_paths") orelse break :blk false;
-                const manifest = paths.object.get("plugin_manifest_exists") orelse break :blk false;
-                break :blk manifest.bool;
-            } else if (std.mem.eql(u8, host_name, "opencode")) {
-                const paths = parsed.value.object.get("opencode_paths") orelse break :blk false;
-                const global = paths.object.get("global_plugin_exists") orelse break :blk false;
-                break :blk global.bool;
-            } else {
-                const dirs = parsed.value.object.get("plugin_directories") orelse break :blk false;
-                const field = dirs.object.get(host_name) orelse break :blk false;
-                break :blk field.bool;
-            }
-        };
+        const installed = plugin.hostPluginInstalledFromReport(host_name, doctor_report);
 
         if (installed) {
             try stdout.print("  {s}: plugin already installed\n", .{host_name});
@@ -128,13 +99,19 @@ pub fn command(cwd: std.fs.Dir, argv: []const []const u8, stdout: anytype, stder
             if (install_code) |code| {
                 if (code != 0) {
                     try stdout.print("  {s}: install failed (exit code {d})\n", .{ host_name, code });
+                    failure_count += 1;
                     continue;
                 }
                 try stdout.print("  {s}: install succeeded\n", .{host_name});
             } else |err| {
                 try stdout.print("  {s}: install error ({s})\n", .{ host_name, @errorName(err) });
+                failure_count += 1;
                 continue;
             }
+
+            const refreshed_report = try plugin.collectPluginDoctorReport(allocator);
+            plugin.deinitPluginDoctorReport(&doctor_report, allocator);
+            doctor_report = refreshed_report;
         }
 
         // Smoke test (Hermes only for now using bundled fixtures)
@@ -149,6 +126,7 @@ pub fn command(cwd: std.fs.Dir, argv: []const []const u8, stdout: anytype, stder
                 try stdout.print("  {s}: smoke test PASSED\n", .{host_name});
             } else {
                 try stdout.print("  {s}: smoke test FAILED (safe={s}, danger={s})\n", .{ host_name, if (safe_ok) "pass" else "fail", if (danger_ok) "pass" else "fail" });
+                failure_count += 1;
             }
         } else {
             try stdout.print("  {s}: smoke test skipped\n", .{host_name});
@@ -160,22 +138,15 @@ pub fn command(cwd: std.fs.Dir, argv: []const []const u8, stdout: anytype, stder
         try stdout.writeAll("Install a supported host and run 'orca setup --auto' again.\n");
     }
 
+    if (failure_count > 0) {
+        try stdout.print("\nSetup finished with {d} failure(s).\n", .{failure_count});
+        try stdout.writeAll("Review the messages above and re-run 'orca setup --auto' after fixing blockers.\n");
+        return exit_codes.general;
+    }
+
     try stdout.writeAll("\nSetup complete.\n");
     try stdout.writeAll("Run 'orca run -- <command>' to start a protected session.\n");
     return exit_codes.success;
-}
-
-fn runChildOutput(allocator: std.mem.Allocator, argv: []const []const u8) ![]u8 {
-    var child = std.process.Child.init(argv, allocator);
-    child.stdin_behavior = .Ignore;
-    child.stdout_behavior = .Pipe;
-    child.stderr_behavior = .Ignore;
-    try child.spawn();
-    const stdout_data = if (child.stdout) |out| try out.readToEndAlloc(allocator, 256 * 1024) else try allocator.alloc(u8, 0);
-    errdefer allocator.free(stdout_data);
-    const term = try child.wait();
-    if (term != .Exited or term.Exited != 0) return error.ChildFailed;
-    return stdout_data;
 }
 
 fn runChild(allocator: std.mem.Allocator, argv: []const []const u8) !u8 {

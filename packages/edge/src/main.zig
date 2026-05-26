@@ -2601,7 +2601,8 @@ fn runHealthScenario(argv: []const []const u8, stdout: anytype, stderr: anytype)
         state.battery_state = .{ .percent_remaining = 10, .voltage_v = 14.1, .current_a = 2.2, .is_low = true, .is_critical = true, .source = .monotonic };
     }
     const request = defaultRequestForAction(&loaded.value, command, now_ms);
-    const report = healthReportForScenario(health_fault);
+    var finding_storage: [1]edge.health.HealthFinding = undefined;
+    const report = healthReportForScenario(health_fault, &finding_storage);
     const health_decision = edge.health.decideForCommand(&loaded.value, report, request, state, .{
         .mode = .ci,
         .now_ms = now_ms,
@@ -3308,14 +3309,20 @@ fn scalarField(text: []const u8, field: []const u8) ?[]const u8 {
     return null;
 }
 
-fn healthReportForScenario(health_fault: []const u8) edge.health.HealthReport {
+
+fn storeHealthFinding(finding_storage: *[1]edge.health.HealthFinding, finding: edge.health.HealthFinding) []const edge.health.HealthFinding {
+    finding_storage[0] = finding;
+    return finding_storage[0..1];
+}
+
+fn healthReportForScenario(health_fault: []const u8, finding_storage: *[1]edge.health.HealthFinding) edge.health.HealthReport {
     if (std.mem.eql(u8, health_fault, "audit_append_failure") or std.mem.eql(u8, health_fault, "audit_failure")) {
         return edge.health.HealthReport.initStatic(.{
             .overall_status = .critical,
             .recommended_behavior = .fail_closed,
             .safe_to_evaluate_commands = false,
             .safe_to_forward_commands = false,
-            .findings = &.{edge.health.HealthFinding.init(.{
+            .findings = storeHealthFinding(finding_storage, edge.health.HealthFinding.init(.{
                 .finding_id = "health-audit-fail-closed",
                 .domain = .audit_writer,
                 .status = .critical,
@@ -3327,14 +3334,14 @@ fn healthReportForScenario(health_fault: []const u8) edge.health.HealthReport {
                 .provenance = .fake_adapter,
                 .recommended_behavior = .fail_closed,
                 .audit_event_reference = "health.audit.failure",
-            })},
+            })),
         });
     }
     if (std.mem.eql(u8, health_fault, "stale_position") or std.mem.eql(u8, health_fault, "stale_state") or std.mem.eql(u8, health_fault, "expired_state") or std.mem.eql(u8, health_fault, "missing_gps") or std.mem.eql(u8, health_fault, "stale_battery")) {
         return edge.health.HealthReport.initStatic(.{
             .overall_status = if (std.mem.eql(u8, health_fault, "expired_state")) .critical else .degraded,
             .recommended_behavior = .deny_movement,
-            .findings = &.{edge.health.HealthFinding.init(.{
+            .findings = storeHealthFinding(finding_storage, edge.health.HealthFinding.init(.{
                 .finding_id = "health-telemetry-stale",
                 .domain = .telemetry,
                 .status = if (std.mem.eql(u8, health_fault, "expired_state")) .critical else .degraded,
@@ -3346,14 +3353,14 @@ fn healthReportForScenario(health_fault: []const u8) edge.health.HealthReport {
                 .provenance = .fake_adapter,
                 .recommended_behavior = .deny_movement,
                 .audit_event_reference = "health.watchdog.finding",
-            })},
+            })),
         });
     }
     if (std.mem.eql(u8, health_fault, "missing_home_position")) {
         return edge.health.HealthReport.initStatic(.{
             .overall_status = .degraded,
             .recommended_behavior = .allow_policy_emergency_only,
-            .findings = &.{edge.health.HealthFinding.init(.{
+            .findings = storeHealthFinding(finding_storage, edge.health.HealthFinding.init(.{
                 .finding_id = "health-rth-missing-home",
                 .domain = .vehicle_state,
                 .status = .degraded,
@@ -3365,7 +3372,7 @@ fn healthReportForScenario(health_fault: []const u8) edge.health.HealthReport {
                 .provenance = .fake_adapter,
                 .recommended_behavior = .allow_policy_emergency_only,
                 .audit_event_reference = "health.watchdog.finding",
-            })},
+            })),
         });
     }
     if (std.mem.eql(u8, health_fault, "critical_battery") or std.mem.eql(u8, health_fault, "fallback_land_recommended")) {
@@ -3374,7 +3381,7 @@ fn healthReportForScenario(health_fault: []const u8) edge.health.HealthReport {
             .recommended_behavior = .allow_policy_emergency_only,
             .safe_to_evaluate_commands = true,
             .safe_to_forward_commands = false,
-            .findings = &.{edge.health.HealthFinding.init(.{
+            .findings = storeHealthFinding(finding_storage, edge.health.HealthFinding.init(.{
                 .finding_id = "health-critical-battery",
                 .domain = .battery_state,
                 .status = .critical,
@@ -3386,7 +3393,7 @@ fn healthReportForScenario(health_fault: []const u8) edge.health.HealthReport {
                 .provenance = .fake_adapter,
                 .recommended_behavior = .allow_policy_emergency_only,
                 .audit_event_reference = "health.watchdog.finding",
-            })},
+            })),
         });
     }
     if (std.mem.eql(u8, health_fault, "event_queue_depth_exceeded") or std.mem.eql(u8, health_fault, "queue_overflow")) {
@@ -3395,7 +3402,7 @@ fn healthReportForScenario(health_fault: []const u8) edge.health.HealthReport {
             .recommended_behavior = if (std.mem.eql(u8, health_fault, "queue_overflow")) .fail_closed else .deny_high_risk,
             .safe_to_evaluate_commands = !std.mem.eql(u8, health_fault, "queue_overflow"),
             .safe_to_forward_commands = false,
-            .findings = &.{edge.health.HealthFinding.init(.{
+            .findings = storeHealthFinding(finding_storage, edge.health.HealthFinding.init(.{
                 .finding_id = if (std.mem.eql(u8, health_fault, "queue_overflow")) "health-command-queue-overflow" else "health-resource-queue-depth",
                 .domain = .resource_usage,
                 .status = if (std.mem.eql(u8, health_fault, "queue_overflow")) .critical else .degraded,
@@ -3407,7 +3414,7 @@ fn healthReportForScenario(health_fault: []const u8) edge.health.HealthReport {
                 .provenance = .bench,
                 .recommended_behavior = if (std.mem.eql(u8, health_fault, "queue_overflow")) .fail_closed else .deny_high_risk,
                 .audit_event_reference = if (std.mem.eql(u8, health_fault, "queue_overflow")) "health.command_queue_overflow" else "health.watchdog.finding",
-            })},
+            })),
         });
     }
     if (std.mem.eql(u8, health_fault, "command_timeout")) {
@@ -3416,7 +3423,7 @@ fn healthReportForScenario(health_fault: []const u8) edge.health.HealthReport {
             .recommended_behavior = .fail_closed,
             .safe_to_evaluate_commands = false,
             .safe_to_forward_commands = false,
-            .findings = &.{edge.health.HealthFinding.init(.{
+            .findings = storeHealthFinding(finding_storage, edge.health.HealthFinding.init(.{
                 .finding_id = "health-command-timeout",
                 .domain = .core,
                 .status = .critical,
@@ -3428,7 +3435,7 @@ fn healthReportForScenario(health_fault: []const u8) edge.health.HealthReport {
                 .provenance = .fake_adapter,
                 .recommended_behavior = .fail_closed,
                 .audit_event_reference = "health.command_timeout",
-            })},
+            })),
         });
     }
     if (std.mem.eql(u8, health_fault, "missing_adapter_heartbeat") or std.mem.eql(u8, health_fault, "stale_adapter_heartbeat")) {
@@ -3437,7 +3444,7 @@ fn healthReportForScenario(health_fault: []const u8) edge.health.HealthReport {
             .recommended_behavior = .deny_high_risk,
             .safe_to_evaluate_commands = false,
             .safe_to_forward_commands = false,
-            .findings = &.{edge.health.HealthFinding.init(.{
+            .findings = storeHealthFinding(finding_storage, edge.health.HealthFinding.init(.{
                 .finding_id = "health-adapter-heartbeat",
                 .domain = .adapter,
                 .status = .critical,
@@ -3449,7 +3456,7 @@ fn healthReportForScenario(health_fault: []const u8) edge.health.HealthReport {
                 .provenance = .fake_adapter,
                 .recommended_behavior = .deny_high_risk,
                 .audit_event_reference = "health.watchdog.finding",
-            })},
+            })),
         });
     }
     if (std.mem.eql(u8, health_fault, "missing_mavlink_heartbeat") or std.mem.eql(u8, health_fault, "stale_mavlink_heartbeat")) {
@@ -3458,7 +3465,7 @@ fn healthReportForScenario(health_fault: []const u8) edge.health.HealthReport {
             .recommended_behavior = .deny_high_risk,
             .safe_to_evaluate_commands = false,
             .safe_to_forward_commands = false,
-            .findings = &.{edge.health.HealthFinding.init(.{
+            .findings = storeHealthFinding(finding_storage, edge.health.HealthFinding.init(.{
                 .finding_id = "health-mavlink-heartbeat",
                 .domain = .mavlink,
                 .status = .unavailable,
@@ -3470,7 +3477,7 @@ fn healthReportForScenario(health_fault: []const u8) edge.health.HealthReport {
                 .provenance = .fake_adapter,
                 .recommended_behavior = .deny_high_risk,
                 .audit_event_reference = "health.watchdog.finding",
-            })},
+            })),
         });
     }
     if (std.mem.eql(u8, health_fault, "missing_runtime_asset")) {
@@ -3479,7 +3486,7 @@ fn healthReportForScenario(health_fault: []const u8) edge.health.HealthReport {
             .recommended_behavior = .fail_closed,
             .safe_to_evaluate_commands = false,
             .safe_to_forward_commands = false,
-            .findings = &.{edge.health.HealthFinding.init(.{
+            .findings = storeHealthFinding(finding_storage, edge.health.HealthFinding.init(.{
                 .finding_id = "health-runtime-asset-missing",
                 .domain = .runtime_assets,
                 .status = .critical,
@@ -3491,7 +3498,7 @@ fn healthReportForScenario(health_fault: []const u8) edge.health.HealthReport {
                 .provenance = .fake_adapter,
                 .recommended_behavior = .fail_closed,
                 .audit_event_reference = "health.runtime_asset_missing",
-            })},
+            })),
         });
     }
     if (std.mem.eql(u8, health_fault, "missing_policy") or std.mem.eql(u8, health_fault, "policy_failure")) {
@@ -3500,7 +3507,7 @@ fn healthReportForScenario(health_fault: []const u8) edge.health.HealthReport {
             .recommended_behavior = .fail_closed,
             .safe_to_evaluate_commands = false,
             .safe_to_forward_commands = false,
-            .findings = &.{edge.health.policy_health.policyFailureFinding("policy engine unavailable or missing policy", 1_003_000, .fake_adapter)},
+            .findings = storeHealthFinding(finding_storage, edge.health.policy_health.policyFailureFinding("policy engine unavailable or missing policy", 1_003_000, .fake_adapter)),
         });
     }
     if (std.mem.eql(u8, health_fault, "no_safe_fallback")) {
@@ -3509,7 +3516,7 @@ fn healthReportForScenario(health_fault: []const u8) edge.health.HealthReport {
             .recommended_behavior = .no_safe_action,
             .safe_to_evaluate_commands = false,
             .safe_to_forward_commands = false,
-            .findings = &.{edge.health.HealthFinding.init(.{
+            .findings = storeHealthFinding(finding_storage, edge.health.HealthFinding.init(.{
                 .finding_id = "health-no-safe-fallback",
                 .domain = .vehicle_state,
                 .status = .critical,
@@ -3521,7 +3528,7 @@ fn healthReportForScenario(health_fault: []const u8) edge.health.HealthReport {
                 .provenance = .fake_adapter,
                 .recommended_behavior = .no_safe_action,
                 .audit_event_reference = "health.no_safe_fallback",
-            })},
+            })),
         });
     }
     if (std.mem.eql(u8, health_fault, "none")) {
@@ -3532,7 +3539,7 @@ fn healthReportForScenario(health_fault: []const u8) edge.health.HealthReport {
         .recommended_behavior = .deny_high_risk,
         .safe_to_evaluate_commands = false,
         .safe_to_forward_commands = false,
-        .findings = &.{edge.health.HealthFinding.init(.{
+        .findings = storeHealthFinding(finding_storage, edge.health.HealthFinding.init(.{
             .finding_id = "health-agent-stale",
             .domain = .agent,
             .status = .critical,
@@ -3544,7 +3551,7 @@ fn healthReportForScenario(health_fault: []const u8) edge.health.HealthReport {
             .provenance = .fake_adapter,
             .recommended_behavior = .deny_high_risk,
             .audit_event_reference = "health.watchdog.finding",
-        })},
+        })),
     });
 }
 
