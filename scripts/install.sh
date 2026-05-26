@@ -1,9 +1,9 @@
 #!/usr/bin/env sh
 set -eu
 
-SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-DEFAULT_VERSION="$(tr -d '[:space:]' < "${SCRIPT_DIR}/../VERSION" 2>/dev/null || printf '1.1.5')"
-VERSION="${ORCA_VERSION:-${DEFAULT_VERSION}}"
+SCRIPT_DIR="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)"
+DEFAULT_VERSION="$(tr -d '[:space:]' < "${SCRIPT_DIR}/../VERSION" 2>/dev/null || true)"
+VERSION="${ORCA_VERSION:-${DEFAULT_VERSION:-1.1.5}}"
 BASE_URL="${ORCA_BASE_URL:-https://github.com/christopherkarani/Orca/releases/download/v${VERSION}}"
 INSTALL_DIR="${ORCA_INSTALL_DIR:-${HOME}/.local/bin}"
 SHARE_DIR="${ORCA_SHARE_DIR:-${HOME}/.local/share/orca}"

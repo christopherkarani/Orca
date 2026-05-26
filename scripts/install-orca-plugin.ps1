@@ -9,14 +9,76 @@ param(
 $ErrorActionPreference = "Stop"
 $scriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 $repoRoot = Resolve-Path (Join-Path $scriptDir "..")
+$doctorHost = if ($Host -eq "hermess") { "hermes" } else { $Host }
 
-$orcaBin = if ($env:ORCA_BIN) { $env:ORCA_BIN } else { "orca" }
+function Get-RepoVersion {
+    $versionPath = Join-Path $repoRoot "VERSION"
+    if (Test-Path -LiteralPath $versionPath) {
+        return (Get-Content -LiteralPath $versionPath -TotalCount 1).Trim()
+    }
+    return "1.1.4"
+}
 
-if (-not (Get-Command $orcaBin -ErrorAction SilentlyContinue)) {
+function Resolve-OrcaExecutable([string]$Candidate) {
+    if (-not $Candidate) { return $null }
+    if (Test-Path -LiteralPath $Candidate) { return (Resolve-Path -LiteralPath $Candidate).Path }
+    $command = Get-Command $Candidate -ErrorAction SilentlyContinue
+    if ($command) { return $command.Source }
+    return $null
+}
+
+function Test-OrcaSupportsHermes([string]$OrcaBin) {
+    $payload = Get-Content -Raw (Join-Path $repoRoot "tests/fixtures/hook-safe.json")
+    $output = $payload | & $OrcaBin hook hermes pre_tool_call 2>$null
+    if ($LASTEXITCODE -ne 0) { return $false }
+    if (-not $output) { return $true }
+    try {
+        $parsed = $output | ConvertFrom-Json
+        return $parsed.decision -ne 'block'
+    } catch {
+        return $output -notmatch '"decision"\s*:\s*"block"'
+    }
+}
+
+function Test-OrcaCandidate([string]$Candidate) {
+    $resolved = Resolve-OrcaExecutable $Candidate
+    if (-not $resolved) { return $null }
+    if ($doctorHost -eq "hermes") {
+        if (Test-OrcaSupportsHermes $resolved) { return $resolved }
+        return $null
+    }
+    return $resolved
+}
+
+function Resolve-OrcaBin {
+    $candidates = @(
+        $env:ORCA_BIN,
+        (Join-Path $repoRoot "zig-out/bin/orca.exe"),
+        (Join-Path $repoRoot "zig-out/bin/orca"),
+        (Join-Path $HOME ".local/bin/orca.exe"),
+        (Join-Path $HOME ".local/bin/orca"),
+        (Join-Path $HOME ".orca/bin/orca.exe"),
+        (Join-Path $HOME ".orca/bin/orca")
+    )
+    $pathOrca = Get-Command "orca" -ErrorAction SilentlyContinue
+    if ($pathOrca) { $candidates += $pathOrca.Source }
+
+    foreach ($candidate in $candidates) {
+        $resolved = Test-OrcaCandidate $candidate
+        if ($resolved) { return $resolved }
+    }
+    return $null
+}
+
+$orcaBin = Resolve-OrcaBin
+if (-not $orcaBin) {
+    $env:ORCA_VERSION = Get-RepoVersion
+    $distDir = Join-Path $repoRoot "dist"
+    if (Test-Path -LiteralPath $distDir) {
+        $env:ORCA_ARTIFACT_DIR = $distDir
+    }
     & (Join-Path $repoRoot "scripts/install.ps1")
     $installDir = if ($env:ORCA_INSTALL_DIR) {
-        $env:ORCA_INSTALL_DIR
-    } elseif ($env:ORCA_INSTALL_DIR) {
         $env:ORCA_INSTALL_DIR
     } else {
         Join-Path $HOME ".orca\bin"
@@ -24,11 +86,15 @@ if (-not (Get-Command $orcaBin -ErrorAction SilentlyContinue)) {
     $orcaBin = Join-Path $installDir "orca.exe"
 }
 
-if (-not (Test-Path -LiteralPath $orcaBin) -and -not (Get-Command $orcaBin -ErrorAction SilentlyContinue)) {
+$resolvedOrca = Resolve-OrcaExecutable $orcaBin
+if (-not $resolvedOrca) {
     throw "orca binary not found after install attempt"
 }
+$orcaBin = $resolvedOrca
 
-$doctorHost = if ($Host -eq "hermess") { "hermes" } else { $Host }
+if ($doctorHost -eq "hermes" -and -not (Test-OrcaSupportsHermes $orcaBin)) {
+    throw "orca at $orcaBin does not support Hermes hooks (upgrade required)"
+}
 
 if ($doctorHost -eq "opencode") {
     & $orcaBin plugin install opencode --scope $Scope --yes

@@ -173,6 +173,7 @@ pub const PluginDoctorReport = struct {
     opencode_paths: OpenCodePaths,
     openclaw_paths: OpenClawHostInstall,
     hermes_paths: HermesPaths,
+    hermes_hook_smoke_passed: bool,
     marketplace: MarketplaceStatus,
     platform_summary: []const u8,
     warnings: [][]const u8,
@@ -319,6 +320,14 @@ pub fn collectPluginDoctorReport(allocator: std.mem.Allocator) !PluginDoctorRepo
     if (!host_bins.openclaw) try appendWarning(allocator, &warnings, "OpenClaw host binary not found in PATH");
     if (!host_bins.hermes) try appendWarning(allocator, &warnings, "Hermes host binary not found in PATH");
 
+    const hermes_hook_smoke_passed = blk: {
+        const result = smokeTestHook(allocator, "hermes", "pre_tool_call", "tests/fixtures/hook-safe.json", "allow") catch break :blk false;
+        break :blk result.passed;
+    };
+    if (!hermes_hook_smoke_passed) {
+        try appendWarning(allocator, &warnings, "Hermes hook smoke test failed: Orca may be too old for Hermes hooks (upgrade via ./scripts/install-orca-plugin.sh hermes)");
+    }
+
     const os = core.platform.detectOs();
     const backend_report = sandbox.backend.detect(os);
     const platform_summary = try std.fmt.allocPrint(allocator, "{s} / {s} / fallback: {s}", .{
@@ -349,6 +358,7 @@ pub fn collectPluginDoctorReport(allocator: std.mem.Allocator) !PluginDoctorRepo
         .opencode_paths = opencode_paths,
         .openclaw_paths = openclaw_paths,
         .hermes_paths = hermes_paths,
+        .hermes_hook_smoke_passed = hermes_hook_smoke_passed,
         .marketplace = marketplace,
         .platform_summary = platform_summary,
         .warnings = warning_items,
@@ -511,6 +521,8 @@ fn writeDoctorPlain(stdout: anytype, report: PluginDoctorReport, target: DoctorT
             if (!report.hermes_paths.user_manifest_exists) try stdout.writeAll("    → Fix: orca plugin install hermes --yes\n");
             try stdout.print("  config references plugin: {s}\n", .{if (report.hermes_paths.config_references_plugin) "yes" else "unknown/no"});
             if (!report.hermes_paths.config_references_plugin) try stdout.writeAll("    → Fix: orca plugin install hermes --yes\n");
+            try stdout.print("  hook smoke test (pre_tool_call): {s}\n", .{if (report.hermes_hook_smoke_passed) "passed" else "FAILED"});
+            if (!report.hermes_hook_smoke_passed) try stdout.writeAll("    → Fix: upgrade Orca (./scripts/install-orca-plugin.sh hermes) or set ORCA_BIN to a build with Hermes host support\n");
             try stdout.writeAll("  install: use 'orca plugin install hermes --dry-run' to preview\n");
             try stdout.writeAll("  note: Hermes hooks are additive; strongest protection remains 'orca run -- hermes'\n");
         },
@@ -598,6 +610,10 @@ fn writeDoctorJson(stdout: anytype, report: PluginDoctorReport, target: DoctorTa
     try stdout.print("    \"user_source_exists\": {s},\n", .{if (report.hermes_paths.user_source_exists) "true" else "false"});
     try stdout.print("    \"config_references_plugin\": {s}\n", .{if (report.hermes_paths.config_references_plugin) "true" else "false"});
     try stdout.writeAll("  },\n");
+
+    try stdout.writeAll("  \"hermes_hook_smoke_passed\": ");
+    try stdout.writeAll(if (report.hermes_hook_smoke_passed) "true" else "false");
+    try stdout.writeAll(",\n");
 
     try stdout.writeAll("  \"marketplace\": {\n");
     try stdout.print("    \"codex_marketplace\": {s},\n", .{if (report.marketplace.codex_marketplace) "true" else "false"});
@@ -1764,6 +1780,8 @@ test "plugin doctor --json emits valid JSON" {
     try std.testing.expect(parsed.value.object.get("plugin_directories") != null);
     try std.testing.expect(parsed.value.object.get("host_binaries") != null);
     try std.testing.expect(parsed.value.object.get("hermes_paths") != null);
+    try std.testing.expect(parsed.value.object.get("hermes_hook_smoke_passed") != null);
+    try std.testing.expect(parsed.value.object.get("hermes_hook_smoke_passed").? == .bool);
     try std.testing.expect(parsed.value.object.get("drone") == null);
     try std.testing.expect(parsed.value.object.get("warnings") != null);
     try std.testing.expectEqualStrings("", stderr_stream.getWritten());
@@ -1862,6 +1880,7 @@ test "plugin doctor hermes shows hermes-specific section" {
     try std.testing.expect(std.mem.indexOf(u8, output, "Hermes plugin status:") != null);
     try std.testing.expect(std.mem.indexOf(u8, output, "repo plugin.yaml") != null);
     try std.testing.expect(std.mem.indexOf(u8, output, "~/.hermes/plugins/orca/plugin.yaml") != null);
+    try std.testing.expect(std.mem.indexOf(u8, output, "hook smoke test (pre_tool_call):") != null);
     try std.testing.expectEqualStrings("", stderr_stream.getWritten());
 }
 

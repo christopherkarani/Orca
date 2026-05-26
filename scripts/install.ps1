@@ -1,8 +1,5 @@
 param(
-    [string]$Version = $(if ($env:ORCA_VERSION) { $env:ORCA_VERSION } else {
-        $versionFile = Join-Path (Split-Path -Parent $MyInvocation.MyCommand.Definition) "..\VERSION"
-        if (Test-Path -LiteralPath $versionFile) { (Get-Content -LiteralPath $versionFile -Raw).Trim() } else { "1.1.5" }
-    }),
+    [string]$Version,
     [string]$BaseUrl = $env:ORCA_BASE_URL,
     [string]$InstallDir = $(if ($env:ORCA_INSTALL_DIR) { $env:ORCA_INSTALL_DIR } else { Join-Path $HOME ".orca\bin" }),
     [string]$ShareDir = $(if ($env:ORCA_SHARE_DIR) { $env:ORCA_SHARE_DIR } else { Join-Path $HOME ".orca\share" }),
@@ -10,6 +7,20 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
+
+$scriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
+if (-not $Version) {
+    if ($env:ORCA_VERSION) {
+        $Version = $env:ORCA_VERSION
+    } else {
+        $defaultVersionPath = Join-Path (Resolve-Path (Join-Path $scriptDir "..")) "VERSION"
+        if (Test-Path -LiteralPath $defaultVersionPath) {
+            $Version = (Get-Content -LiteralPath $defaultVersionPath -TotalCount 1).Trim()
+        } else {
+            $Version = "1.1.5"
+        }
+    }
+}
 if (-not $BaseUrl) {
     $BaseUrl = "https://github.com/christopherkarani/Orca/releases/download/v$Version"
 }
