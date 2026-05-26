@@ -54,8 +54,16 @@ orca_executable() {
 
 orca_supports_hermes() {
   orca_bin="$1"
-  printf '%s' '{"version":1,"host":"hermes","event":"pre_tool_call","payload":{"command":"git status"},"timestamp":"1970-01-01T00:00:00Z"}' \
-    | "$orca_bin" hook hermes pre_tool_call >/dev/null 2>&1
+  smoke_fixture="${REPO_ROOT}/tests/fixtures/hook-safe.json"
+  output=$(cat "${smoke_fixture}" | "$orca_bin" hook hermes pre_tool_call 2>/dev/null) || return 1
+  if command -v python3 >/dev/null 2>&1; then
+    printf '%s' "$output" | python3 -c 'import json,sys; d=json.load(sys.stdin); raise SystemExit(1 if d.get("decision") == "block" else 0)' 2>/dev/null
+    return $?
+  fi
+  case "$output" in
+    *'"decision":"block"'*|*'"decision": "block"'*) return 1 ;;
+    *) return 0 ;;
+  esac
 }
 
 orca_candidate_ok() {
@@ -72,6 +80,7 @@ resolve_orca_bin() {
     "${ORCA_BIN:-}" \
     "${REPO_ROOT}/zig-out/bin/orca" \
     "${HOME}/.local/bin/orca" \
+    "${HOME}/.orca/bin/orca" \
     "$(command -v orca 2>/dev/null || true)"
   do
     [ -n "$candidate" ] || continue

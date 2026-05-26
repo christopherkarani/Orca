@@ -311,9 +311,9 @@ Orca protects your credentials, API keys, and secrets through **eight layers of 
 
 Orca automatically detects and protects:
 
-- **GitHub tokens** (`ghp_`, `github_pat_`)
-- **OpenAI API keys** (`sk-`)
-- **Anthropic API keys** (`sk-ant-`)
+- **GitHub tokens** (PAT prefixes such as `github_pat_`)
+- **OpenAI API keys** (keys with an `sk` prefix)
+- **Anthropic API keys** (vendor-specific Anthropic prefixes)
 - **AWS access keys** (`AKIA...`, `ASIA...`)
 - **JWTs** (three-part base64 tokens)
 - **PEM/SSH private keys**
@@ -328,7 +328,7 @@ Run with `--secretless` to replace secret values with broker references:
 orca run --secretless -- codex
 ```
 
-In this mode, `GITHUB_TOKEN=ghp_xxx` becomes `GITHUB_TOKEN=orca-secret://local-dummy/env/GITHUB_TOKEN/a1b2c3d4`. The agent sees the reference, not the raw value.
+In this mode, `GITHUB_TOKEN=<github-pat>` becomes `GITHUB_TOKEN=orca-secret://local-dummy/env/GITHUB_TOKEN/a1b2c3d4`. The agent sees the reference, not the raw value.
 
 ### Credential brokers
 

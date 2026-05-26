@@ -1553,6 +1553,8 @@ test "plugin doctor --json emits valid JSON" {
     try std.testing.expect(parsed.value.object.get("plugin_directories") != null);
     try std.testing.expect(parsed.value.object.get("host_binaries") != null);
     try std.testing.expect(parsed.value.object.get("hermes_paths") != null);
+    try std.testing.expect(parsed.value.object.get("hermes_hook_smoke_passed") != null);
+    try std.testing.expect(parsed.value.object.get("hermes_hook_smoke_passed").? == .bool);
     try std.testing.expect(parsed.value.object.get("drone") == null);
     try std.testing.expect(parsed.value.object.get("warnings") != null);
     try std.testing.expectEqualStrings("", stderr_stream.getWritten());
@@ -1651,6 +1653,7 @@ test "plugin doctor hermes shows hermes-specific section" {
     try std.testing.expect(std.mem.indexOf(u8, output, "Hermes plugin status:") != null);
     try std.testing.expect(std.mem.indexOf(u8, output, "repo plugin.yaml") != null);
     try std.testing.expect(std.mem.indexOf(u8, output, "~/.hermes/plugins/orca/plugin.yaml") != null);
+    try std.testing.expect(std.mem.indexOf(u8, output, "hook smoke test (pre_tool_call):") != null);
     try std.testing.expectEqualStrings("", stderr_stream.getWritten());
 }
 

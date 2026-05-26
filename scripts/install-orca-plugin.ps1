@@ -28,9 +28,16 @@ function Resolve-OrcaExecutable([string]$Candidate) {
 }
 
 function Test-OrcaSupportsHermes([string]$OrcaBin) {
-    $payload = '{"version":1,"host":"hermes","event":"pre_tool_call","payload":{"command":"git status"},"timestamp":"1970-01-01T00:00:00Z"}'
-    $null = $payload | & $OrcaBin hook hermes pre_tool_call 2>$null
-    return $LASTEXITCODE -eq 0
+    $payload = Get-Content -Raw (Join-Path $repoRoot "tests/fixtures/hook-safe.json")
+    $output = $payload | & $OrcaBin hook hermes pre_tool_call 2>$null
+    if ($LASTEXITCODE -ne 0) { return $false }
+    if (-not $output) { return $true }
+    try {
+        $parsed = $output | ConvertFrom-Json
+        return $parsed.decision -ne 'block'
+    } catch {
+        return $output -notmatch '"decision"\s*:\s*"block"'
+    }
 }
 
 function Test-OrcaCandidate([string]$Candidate) {
@@ -49,7 +56,9 @@ function Resolve-OrcaBin {
         (Join-Path $repoRoot "zig-out/bin/orca.exe"),
         (Join-Path $repoRoot "zig-out/bin/orca"),
         (Join-Path $HOME ".local/bin/orca.exe"),
-        (Join-Path $HOME ".local/bin/orca")
+        (Join-Path $HOME ".local/bin/orca"),
+        (Join-Path $HOME ".orca/bin/orca.exe"),
+        (Join-Path $HOME ".orca/bin/orca")
     )
     $pathOrca = Get-Command "orca" -ErrorAction SilentlyContinue
     if ($pathOrca) { $candidates += $pathOrca.Source }
