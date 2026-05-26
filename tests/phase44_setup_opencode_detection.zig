@@ -87,6 +87,7 @@ test "phase 44 hostPluginInstalledFromReport matches doctor JSON semantics" {
         .opencode_paths = .{ .project_plugin_exists = false, .global_plugin_exists = false, .config_references_plugin = false },
         .openclaw_paths = .{ .host_plugin_installed = false, .plugin_manifest_exists = false, .package_json_exists = false, .source_exists = false, .detection_note = "" },
         .hermes_paths = .{ .repo_manifest_exists = false, .repo_source_exists = false, .user_manifest_exists = false, .user_source_exists = false, .config_references_plugin = false },
+        .hermes_hook_smoke_passed = false,
         .marketplace = .{
             .codex_marketplace = true,
             .claude_marketplace = true,
