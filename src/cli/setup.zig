@@ -109,8 +109,9 @@ pub fn command(cwd: std.fs.Dir, argv: []const []const u8, stdout: anytype, stder
                 continue;
             }
 
+            const refreshed_report = try plugin.collectPluginDoctorReport(allocator);
             plugin.deinitPluginDoctorReport(&doctor_report, allocator);
-            doctor_report = try plugin.collectPluginDoctorReport(allocator);
+            doctor_report = refreshed_report;
         }
 
         // Smoke test (Hermes only for now using bundled fixtures)

@@ -237,7 +237,7 @@ pub fn collectPluginDoctorReport(allocator: std.mem.Allocator) !PluginDoctorRepo
     };
 
     // Check OpenCode-specific plugin paths
-    const opencode_project_path = try std.fs.path.join(allocator, &.{ cwd, ".opencode", "plugins", "orca.ts" });
+    const opencode_project_path = try std.fs.path.join(allocator, &.{ workspace_root, ".opencode", "plugins", "orca.ts" });
     defer allocator.free(opencode_project_path);
 
     const opencode_global_path = blk: {
@@ -685,20 +685,31 @@ fn manifestCommand(argv: []const []const u8, stdout: anytype, stderr: anytype) !
         return exit_codes.usage;
     }
 
+    var gpa_state: std.heap.GeneralPurposeAllocator(.{}) = .init;
+    defer _ = gpa_state.deinit();
+    const manifest_allocator = gpa_state.allocator();
+    const workspace_root = try plugin_install.resolveWorkspaceInstallRoot(manifest_allocator);
+    defer manifest_allocator.free(workspace_root);
+
     if (json_mode) {
-        try writeManifestJson(stdout, target);
+        try writeManifestJson(manifest_allocator, workspace_root, stdout, target);
     } else {
-        try writeManifestPlain(stdout, target);
+        try writeManifestPlain(manifest_allocator, workspace_root, stdout, target);
     }
     return exit_codes.success;
 }
 
-fn writeManifestPlain(stdout: anytype, target: ManifestTarget) !void {
+fn writeManifestPlain(allocator: std.mem.Allocator, workspace_root: []const u8, stdout: anytype, target: ManifestTarget) !void {
+    const codex_marketplace_path = try std.fs.path.join(allocator, &.{ workspace_root, ".agents", "plugins", "marketplace.json" });
+    defer allocator.free(codex_marketplace_path);
+    const claude_marketplace_path = try std.fs.path.join(allocator, &.{ workspace_root, ".claude-plugin", "marketplace.json" });
+    defer allocator.free(claude_marketplace_path);
+
     switch (target) {
         .codex => {
             const path = "integrations/codex-plugin/.codex-plugin/plugin.json";
             const exists = fileExistsAbsolute(path);
-            const marketplace_path = ".agents/plugins/marketplace.json";
+            const marketplace_path = codex_marketplace_path;
             const marketplace_exists = fileExistsAbsolute(marketplace_path);
             try stdout.writeAll("Codex plugin manifest:\n");
             try stdout.print("  expected path: {s}\n", .{path});
@@ -711,7 +722,7 @@ fn writeManifestPlain(stdout: anytype, target: ManifestTarget) !void {
         .claude => {
             const path = "integrations/claude-code-plugin/.claude-plugin/plugin.json";
             const exists = fileExistsAbsolute(path);
-            const marketplace_path = ".claude-plugin/marketplace.json";
+            const marketplace_path = claude_marketplace_path;
             const marketplace_exists = fileExistsAbsolute(marketplace_path);
             try stdout.writeAll("Claude Code plugin manifest:\n");
             try stdout.print("  expected path: {s}\n", .{path});
@@ -760,26 +771,29 @@ fn writeManifestPlain(stdout: anytype, target: ManifestTarget) !void {
             const opencode_path = "integrations/opencode-plugin/orca.ts";
             const openclaw_path = "integrations/openclaw-plugin/openclaw.plugin.json";
             const hermes_path = "integrations/hermes-plugin/plugin.yaml";
-            const codex_marketplace = ".agents/plugins/marketplace.json";
-            const claude_marketplace = ".claude-plugin/marketplace.json";
             try stdout.print("  codex:    {s} ({s})\n", .{ codex_path, if (fileExistsAbsolute(codex_path)) "exists" else "missing" });
             try stdout.print("  claude:   {s} ({s})\n", .{ claude_path, if (fileExistsAbsolute(claude_path)) "exists" else "missing" });
             try stdout.print("  opencode: {s} ({s})\n", .{ opencode_path, if (fileExistsAbsolute(opencode_path)) "exists" else "missing" });
             try stdout.print("  openclaw: {s} ({s})\n", .{ openclaw_path, if (fileExistsAbsolute(openclaw_path)) "exists" else "missing" });
             try stdout.print("  hermes:   {s} ({s})\n", .{ hermes_path, if (fileExistsAbsolute(hermes_path)) "exists" else "missing" });
             try stdout.writeAll("\nMarketplace files:\n");
-            try stdout.print("  codex:    {s} ({s})\n", .{ codex_marketplace, if (fileExistsAbsolute(codex_marketplace)) "exists" else "missing" });
-            try stdout.print("  claude:   {s} ({s})\n", .{ claude_marketplace, if (fileExistsAbsolute(claude_marketplace)) "exists" else "missing" });
+            try stdout.print("  codex:    {s} ({s})\n", .{ codex_marketplace_path, if (fileExistsAbsolute(codex_marketplace_path)) "exists" else "missing" });
+            try stdout.print("  claude:   {s} ({s})\n", .{ claude_marketplace_path, if (fileExistsAbsolute(claude_marketplace_path)) "exists" else "missing" });
         },
     }
 }
 
-fn writeManifestJson(stdout: anytype, target: ManifestTarget) !void {
+fn writeManifestJson(allocator: std.mem.Allocator, workspace_root: []const u8, stdout: anytype, target: ManifestTarget) !void {
+    const codex_marketplace_path = try std.fs.path.join(allocator, &.{ workspace_root, ".agents", "plugins", "marketplace.json" });
+    defer allocator.free(codex_marketplace_path);
+    const claude_marketplace_path = try std.fs.path.join(allocator, &.{ workspace_root, ".claude-plugin", "marketplace.json" });
+    defer allocator.free(claude_marketplace_path);
+
     try stdout.writeAll("{\n");
     switch (target) {
         .codex => {
             const path = "integrations/codex-plugin/.codex-plugin/plugin.json";
-            const marketplace_path = ".agents/plugins/marketplace.json";
+            const marketplace_path = codex_marketplace_path;
             try stdout.writeAll("  \"codex\": {\n");
             try stdout.print("    \"path\": ", .{});
             try writeJsonString(stdout, path);
@@ -793,7 +807,7 @@ fn writeManifestJson(stdout: anytype, target: ManifestTarget) !void {
         },
         .claude => {
             const path = "integrations/claude-code-plugin/.claude-plugin/plugin.json";
-            const marketplace_path = ".claude-plugin/marketplace.json";
+            const marketplace_path = claude_marketplace_path;
             try stdout.writeAll("  \"claude\": {\n");
             try stdout.print("    \"path\": ", .{});
             try writeJsonString(stdout, path);
@@ -848,8 +862,8 @@ fn writeManifestJson(stdout: anytype, target: ManifestTarget) !void {
             const opencode_path = "integrations/opencode-plugin/orca.ts";
             const openclaw_manifest_path = "integrations/openclaw-plugin/openclaw.plugin.json";
             const hermes_manifest_path = "integrations/hermes-plugin/plugin.yaml";
-            const codex_marketplace = ".agents/plugins/marketplace.json";
-            const claude_marketplace = ".claude-plugin/marketplace.json";
+            const codex_marketplace = codex_marketplace_path;
+            const claude_marketplace = claude_marketplace_path;
             try stdout.writeAll("  \"codex\": {\n");
             try stdout.print("    \"path\": ", .{});
             try writeJsonString(stdout, codex_path);
@@ -1087,7 +1101,7 @@ fn installCommand(argv: []const []const u8, stdout: anytype, stderr: anytype) !u
                 // OpenCode-specific install guidance
                 const source_path = try std.fs.path.join(allocator, &.{ plugin_dir, "orca.ts" });
                 defer allocator.free(source_path);
-                const destination_path = try resolveOpenCodeDestination(allocator, scope);
+                const destination_path = try resolveOpenCodeDestination(allocator, workspace_root, scope);
                 defer allocator.free(destination_path);
 
                 try stdout.writeAll("  install paths for OpenCode:\n");
@@ -1467,36 +1481,39 @@ pub fn hostPluginInstalledFromReport(host_name: []const u8, report: PluginDoctor
 pub fn hostPluginInstalledFromDoctorJson(host_name: []const u8, root: std.json.Value) bool {
     if (std.mem.eql(u8, host_name, "hermes")) {
         const paths = root.object.get("hermes_paths") orelse return false;
-        const user_manifest = paths.object.get("user_manifest_exists") orelse return false;
-        return user_manifest.bool;
+        return jsonBoolField(paths.object, "user_manifest_exists");
     }
     if (std.mem.eql(u8, host_name, "openclaw")) {
         const paths = root.object.get("openclaw_paths") orelse return false;
-        const installed = paths.object.get("host_plugin_installed") orelse return false;
-        return installed.bool;
+        return jsonBoolField(paths.object, "host_plugin_installed");
     }
     if (std.mem.eql(u8, host_name, "opencode")) {
         const paths = root.object.get("opencode_paths") orelse return false;
-        const project = paths.object.get("project_plugin_exists") orelse return false;
-        const global = paths.object.get("global_plugin_exists") orelse return false;
-        return project.bool or global.bool;
+        return jsonBoolField(paths.object, "project_plugin_exists") or
+            jsonBoolField(paths.object, "global_plugin_exists");
     }
     if (std.mem.eql(u8, host_name, "codex")) {
         const marketplace = root.object.get("marketplace") orelse return false;
-        const user_plugin = marketplace.object.get("codex_user_plugin") orelse return false;
-        return user_plugin.bool;
+        return jsonBoolField(marketplace.object, "codex_user_plugin");
     }
     if (std.mem.eql(u8, host_name, "claude")) {
         const marketplace = root.object.get("marketplace") orelse return false;
-        const user_plugin = marketplace.object.get("claude_user_plugin") orelse return false;
-        return user_plugin.bool;
+        return jsonBoolField(marketplace.object, "claude_user_plugin");
     }
     return false;
 }
 
-pub fn resolveOpenCodeDestination(allocator: std.mem.Allocator, scope: InstallScope) ![]u8 {
+fn jsonBoolField(object: std.json.ObjectMap, key: []const u8) bool {
+    const value = object.get(key) orelse return false;
+    return switch (value) {
+        .bool => |enabled| enabled,
+        else => false,
+    };
+}
+
+pub fn resolveOpenCodeDestination(allocator: std.mem.Allocator, workspace_root: []const u8, scope: InstallScope) ![]u8 {
     return switch (scope) {
-        .project => std.fs.path.join(allocator, &.{ ".opencode", "plugins", "orca.ts" }),
+        .project => std.fs.path.join(allocator, &.{ workspace_root, ".opencode", "plugins", "orca.ts" }),
         .global => blk: {
             const home = try std.process.getEnvVarOwned(allocator, "HOME");
             defer allocator.free(home);
