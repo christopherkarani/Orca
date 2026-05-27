@@ -1,17 +1,19 @@
 const std = @import("std");
 
-const audit = @import("../audit/mod.zig");
-const core = @import("../core/mod.zig");
-const policy = @import("../policy/mod.zig");
+const audit = @import("orca_core").audit;
+const core = @import("orca_core").core;
+const policy = @import("orca_core").policy;
+const credentials = @import("credentials.zig");
 
 pub const implemented = true;
 
 pub const Request = struct {
     no_secrets: bool = false,
+    secretless: bool = false,
     inherit_env: bool = false,
 };
 
-pub const RedactionRecord = core.supervisor.EnvRedactionRecord;
+pub const RedactionRecord = core.process.EnvRedactionRecord;
 
 pub const FilteredEnv = struct {
     allocator: std.mem.Allocator,
@@ -65,7 +67,8 @@ pub fn filterMap(
 
     const inherit_source = selected_policy.env.inherit or request.inherit_env;
     const minimal = !inherit_source or isEnforcingNoSecretsMode(effective_mode);
-    const force_no_secrets = request.no_secrets or isEnforcingNoSecretsMode(effective_mode);
+    const force_no_secrets = request.no_secrets or (isEnforcingNoSecretsMode(effective_mode) and !request.secretless);
+    const broker = credentials.localDummyBroker();
 
     var it = current.iterator();
     while (it.next()) |entry| {
@@ -79,8 +82,15 @@ pub fn filterMap(
             try appendValueRedaction(allocator, &redactions, name, match, "environment variable value matches secret pattern");
         }
 
+        const secret_like = name_secret or value_match != null;
         if (try shouldInclude(allocator, selected_policy, effective_mode, minimal, force_no_secrets, name, name_secret, value_match != null)) {
-            try env_map.put(name, value);
+            if (request.secretless and secret_like) {
+                const ref = try broker.envReference(allocator, name, value);
+                defer ref.deinit(allocator);
+                try env_map.put(name, ref.value);
+            } else {
+                try env_map.put(name, value);
+            }
         }
     }
 
@@ -268,6 +278,26 @@ test "no-secrets strips secret-like values even when inheriting" {
 
     try std.testing.expect(filtered.env_map.get("NORMAL_VALUE") == null);
     try std.testing.expectEqualStrings("ok", filtered.env_map.get("SAFE_VALUE").?);
+}
+
+test "secretless replaces inherited secret-like env with local broker references" {
+    var selected = try policy.load.loadPreset(std.testing.allocator, .observe);
+    defer selected.deinit();
+
+    var current = std.process.EnvMap.init(std.testing.allocator);
+    defer current.deinit();
+    try current.put("GITHUB_TOKEN", "ghp_fakeSyntheticTokenValue1234567890");
+    try current.put("SAFE_VALUE", "ok");
+
+    var filtered = try filterMap(std.testing.allocator, &current, &selected, .observe, .{ .secretless = true });
+    defer filtered.deinit();
+
+    const token_value = filtered.env_map.get("GITHUB_TOKEN").?;
+    try std.testing.expect(std.mem.startsWith(u8, token_value, "orca-secret://local-dummy/env/GITHUB_TOKEN/"));
+    try std.testing.expect(std.mem.indexOf(u8, token_value, "ghp_fakeSyntheticTokenValue") == null);
+    try std.testing.expectEqualStrings("ok", filtered.env_map.get("SAFE_VALUE").?);
+    try std.testing.expectEqual(@as(usize, 1), filtered.redactions.len);
+    try std.testing.expect(std.mem.indexOf(u8, filtered.redactions[0].labels[0], "ghp_fakeSyntheticTokenValue") == null);
 }
 
 test "observe mode override still honors env inherit false" {

@@ -22,7 +22,7 @@ jobs:
   release:
     runs-on: macos-14
     env:
-      AEGIS_VERSION: ${{ github.event.inputs.version || github.ref_name }}
+      ORCA_VERSION: ${{ github.event.inputs.version || github.ref_name }}
     steps:
       - uses: actions/checkout@v4
       - uses: mlugg/setup-zig@v2
@@ -31,19 +31,22 @@ jobs:
       - name: Normalize version
         shell: bash
         run: |
-          AEGIS_VERSION="${AEGIS_VERSION#v}"
-          echo "AEGIS_VERSION=$AEGIS_VERSION" >> "$GITHUB_ENV"
-          echo "AEGIS_COMMIT=${GITHUB_SHA::12}" >> "$GITHUB_ENV"
-          echo "AEGIS_BUILD_DATE=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$GITHUB_ENV"
+          ORCA_VERSION="${ORCA_VERSION#v}"
+          echo "ORCA_VERSION=$ORCA_VERSION" >> "$GITHUB_ENV"
+          echo "ORCA_COMMIT=${GITHUB_SHA::12}" >> "$GITHUB_ENV"
+          echo "ORCA_BUILD_DATE=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$GITHUB_ENV"
       - name: Test before release
         run: zig build test
       - name: Red-team CI
         run: |
-          zig build -Dversion="$AEGIS_VERSION" -Dcommit="$AEGIS_COMMIT" -Dbuild-date="$AEGIS_BUILD_DATE"
-          ./zig-out/bin/aegis redteam --ci
+          zig build -Dversion="$ORCA_VERSION" -Dcommit="$ORCA_COMMIT" -Dbuild-date="$ORCA_BUILD_DATE"
+          ./zig-out/bin/orca redteam --ci
       - name: Build release artifacts
         shell: bash
-        run: AEGIS_VERSION="$AEGIS_VERSION" AEGIS_COMMIT="$AEGIS_COMMIT" AEGIS_BUILD_DATE="$AEGIS_BUILD_DATE" ./scripts/build-release.sh
+        env:
+          ORCA_SIGNING_ENABLED: ${{ github.event.inputs.signing_enabled || '0' }}
+          ORCA_SIGNING_COMMAND: ${{ secrets.ORCA_SIGNING_COMMAND }}
+        run: ORCA_VERSION="$ORCA_VERSION" ORCA_COMMIT="$ORCA_COMMIT" ORCA_BUILD_DATE="$ORCA_BUILD_DATE" ./scripts/build-release.sh
       - name: Package plugins
         shell: bash
         run: ./scripts/package-plugins.sh
@@ -51,11 +54,11 @@ jobs:
         shell: bash
         run: |
           ls -la dist/plugins/
-          cat dist/plugins/aegis-plugin-checksums.txt
+          cat dist/plugins/orca-plugin-checksums.txt
       - name: Verify plugin checksums
         shell: bash
         run: |
-          cd dist/plugins && shasum -a 256 -c aegis-plugin-checksums.txt
+          cd dist/plugins && shasum -a 256 -c orca-plugin-checksums.txt
       - name: Secret scan over plugin artifacts
         shell: bash
         run: |
@@ -75,32 +78,23 @@ jobs:
             exit 1
           fi
           echo "Secret scan passed."
-      - name: Optional signing hook
-        if: github.event.inputs.signing_enabled == '1'
-        shell: bash
-        run: |
-          if [ -z "${AEGIS_SIGNING_COMMAND:-}" ]; then
-            echo "AEGIS_SIGNING_COMMAND is required when signing is enabled." >&2
-            exit 1
-          fi
-          sh -c "$AEGIS_SIGNING_COMMAND" sh dist
       - name: Verify checksums
         shell: bash
         run: |
-          cd dist
-          shasum -a 256 -c checksums.txt
+          ./scripts/verify-release.sh dist
       - name: Ensure SBOM hook output exists
         run: test -s dist/sbom.json
       - name: Upload release artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: aegis-release-${{ env.AEGIS_VERSION }}
+          name: orca-release-${{ env.ORCA_VERSION }}
           path: |
-            dist/aegis-v*.tar.gz
-            dist/aegis-v*.zip
-            dist/aegis-edge-v*.tar.gz
+            dist/orca-v*.tar.gz
+            dist/orca-v*.zip
+            dist/edge-v*.tar.gz
             dist/checksums.txt
             dist/sbom.json
             dist/release-manifest.json
+            dist/package-manifests/**
             dist/plugins/*.zip
-            dist/plugins/aegis-plugin-checksums.txt
+            dist/plugins/orca-plugin-checksums.txt

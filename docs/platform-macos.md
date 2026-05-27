@@ -3,7 +3,7 @@
 Run:
 
 ```sh
-./zig-out/bin/aegis doctor
+./zig-out/bin/orca doctor
 ```
 
 Current macOS local output reports process supervision, env filtering, staged writes, MCP stdio proxy, network decision engine, and audit/replay as active.
@@ -29,4 +29,4 @@ Policies deny common secret paths such as `.env`, `~/.ssh/**`, cloud credential 
 
 ## Limitations
 
-Aegis does not install a macOS Sandbox profile, Endpoint Security extension, kernel extension, or admin-only network filter by default. Wrapper-level protections are not transparent OS enforcement.
+Orca does not install a macOS Sandbox profile, Endpoint Security extension, kernel extension, or admin-only network filter by default. Wrapper-level protections are not transparent OS enforcement.

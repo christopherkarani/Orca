@@ -149,6 +149,7 @@ pub const Options = struct {
     ci_mode: bool = false,
     enforcement_mode: EnforcementMode = .direct,
     unknown_tracker: ?*UnknownDomainTracker = null,
+    method: ?[]const u8 = null,
 };
 
 const Match = struct {
@@ -245,12 +246,13 @@ pub fn evaluate(
     const mode = policy.network.effectiveMode();
     const enforcement_mode = if (mode == .observe) EnforcementMode.observe_only else options.enforcement_mode;
     const deny_match = findMatch("network.deny", destination, policy.network.deny);
-    const allow_match = findMatch("network.allow", destination, policy.network.allow);
-    const ask_match = findMatch("network.ask", destination, policy.network.ask);
     var findings = try detectExfiltration(allocator, destination, policy.network.detect_exfiltration);
     errdefer if (findings.len > 0) allocator.free(findings);
     if (options.unknown_tracker) |tracker| {
-        const policy_unknown_domain = destination.host_class == .domain and deny_match == null and allow_match == null and ask_match == null;
+        const allow_match_for_unknown = findMatch("network.allow", destination, policy.network.allow);
+        const ask_match_for_unknown = findMatch("network.ask", destination, policy.network.ask);
+        const service_match_for_unknown = serviceHostMatchesAny(policy.services, destination);
+        const policy_unknown_domain = destination.host_class == .domain and deny_match == null and allow_match_for_unknown == null and ask_match_for_unknown == null and !service_match_for_unknown;
         if (policy_unknown_domain) {
             if (try tracker.record(destination.host)) {
                 const old_len = findings.len;
@@ -266,6 +268,11 @@ pub fn evaluate(
     if (deny_match) |matched| {
         return buildDecision(allocator, destination, .deny, matched, "explicit network deny", enforcement_mode, findings, target, true, options.ci_mode);
     }
+    if (try evaluateServices(allocator, policy.services, mode, destination, options.method, enforcement_mode, findings, target, options.ci_mode)) |service_decision| {
+        return service_decision;
+    }
+    const allow_match = findMatch("network.allow", destination, policy.network.allow);
+    const ask_match = findMatch("network.ask", destination, policy.network.ask);
     if (allow_match) |matched| {
         const base = if (mode == .off) schema.DecisionValue.deny else schema.DecisionValue.allow;
         return buildDecision(allocator, destination, base, matched, if (mode == .off) "network mode off" else "explicit network allow", enforcement_mode, findings, target, true, options.ci_mode);
@@ -297,6 +304,120 @@ pub fn evaluate(
         .open => .allow,
     };
     return buildDecision(allocator, destination, fallback, null, "network mode default", enforcement_mode, findings, target, true, options.ci_mode);
+}
+
+fn evaluateServices(
+    allocator: std.mem.Allocator,
+    services: []const schema.ServicePolicy,
+    mode: schema.NetworkMode,
+    destination: Destination,
+    method: ?[]const u8,
+    enforcement_mode: EnforcementMode,
+    findings: []ExfilFinding,
+    redacted_target: []u8,
+    ci_mode: bool,
+) !?Decision {
+    for (services) |service| {
+        if (!serviceHostMatches(service, destination)) continue;
+        const method_matches = methodMatches(service.methods, method);
+        if (!method_matches and service.unmatched == null) {
+            return try buildServiceUnmatchedDecision(allocator, destination, .deny, service, "method not allowed", enforcement_mode, findings, redacted_target, ci_mode);
+        }
+        if (method_matches) {
+            if (findPathMatch(service.paths.deny, destination.path)) |matched| {
+                return try buildServiceDecision(allocator, destination, coerceServiceDecision(.deny, mode, ci_mode), service, "paths.deny", matched, "service path deny", enforcement_mode, findings, redacted_target, ci_mode);
+            }
+            if (findPathMatch(service.paths.allow, destination.path)) |matched| {
+                return try buildServiceDecision(allocator, destination, coerceServiceDecision(.allow, mode, ci_mode), service, "paths.allow", matched, "service path allow", enforcement_mode, findings, redacted_target, ci_mode);
+            }
+        }
+        if (service.unmatched) |unmatched| {
+            return try buildServiceUnmatchedDecision(allocator, destination, coerceServiceDecision(unmatched, mode, ci_mode), service, if (method_matches) "service unmatched" else "method not allowed", enforcement_mode, findings, redacted_target, ci_mode);
+        }
+        return null;
+    }
+    return null;
+}
+
+fn serviceHostMatches(service: schema.ServicePolicy, destination: Destination) bool {
+    for (service.hosts) |host| {
+        if (matchesNetworkRule(host, destination)) return true;
+    }
+    return false;
+}
+
+fn serviceHostMatchesAny(services: []const schema.ServicePolicy, destination: Destination) bool {
+    for (services) |service| {
+        if (serviceHostMatches(service, destination)) return true;
+    }
+    return false;
+}
+
+fn methodMatches(methods: []const []const u8, method: ?[]const u8) bool {
+    if (methods.len == 0) return true;
+    if (method == null) return false;
+    for (methods) |allowed| {
+        if (std.mem.eql(u8, allowed, "*") or std.ascii.eqlIgnoreCase(allowed, method.?)) return true;
+    }
+    return false;
+}
+
+fn coerceServiceDecision(value: schema.DecisionValue, mode: schema.NetworkMode, ci_mode: bool) schema.DecisionValue {
+    if (mode == .off) return .deny;
+    if (ci_mode and value == .ask) return .deny;
+    return value;
+}
+
+fn buildServiceUnmatchedDecision(
+    allocator: std.mem.Allocator,
+    destination: Destination,
+    value: schema.DecisionValue,
+    service: schema.ServicePolicy,
+    reason_base: []const u8,
+    enforcement_mode: EnforcementMode,
+    findings: []ExfilFinding,
+    redacted_target: []u8,
+    ci_mode: bool,
+) !Decision {
+    const rule_id = try std.fmt.allocPrint(allocator, "services.{s}.unmatched", .{service.name});
+    const reason_label = try serviceReasonLabel(allocator, reason_base, service);
+    defer allocator.free(reason_label);
+    return try buildDecisionWithRuleId(allocator, destination, value, rule_id, "unmatched", reason_label, enforcement_mode, findings, redacted_target, true, ci_mode);
+}
+
+fn findPathMatch(patterns: []const []const u8, raw_path: []const u8) ?Match {
+    const path = if (raw_path.len == 0) "/" else raw_path;
+    for (patterns, 0..) |pattern, index| {
+        if (matchers.matchesPattern(pattern, path)) return .{ .label = "", .index = index, .pattern = pattern };
+    }
+    return null;
+}
+
+fn buildServiceDecision(
+    allocator: std.mem.Allocator,
+    destination: Destination,
+    value: schema.DecisionValue,
+    service: schema.ServicePolicy,
+    label_suffix: []const u8,
+    matched: Match,
+    reason_label: []const u8,
+    enforcement_mode: EnforcementMode,
+    findings: []ExfilFinding,
+    redacted_target: []u8,
+    ci_mode: bool,
+) !Decision {
+    const label = try std.fmt.allocPrint(allocator, "services.{s}.{s}", .{ service.name, label_suffix });
+    defer allocator.free(label);
+    const reason = try serviceReasonLabel(allocator, reason_label, service);
+    defer allocator.free(reason);
+    return buildDecision(allocator, destination, value, .{ .label = label, .index = matched.index, .pattern = matched.pattern }, reason, enforcement_mode, findings, redacted_target, true, ci_mode);
+}
+
+fn serviceReasonLabel(allocator: std.mem.Allocator, base: []const u8, service: schema.ServicePolicy) ![]u8 {
+    if (service.credentials.use != null) {
+        return std.fmt.allocPrint(allocator, "{s}; service={s}; credential_ref=configured", .{ base, service.name });
+    }
+    return std.fmt.allocPrint(allocator, "{s}; service={s}", .{ base, service.name });
 }
 
 pub fn detectExfiltration(allocator: std.mem.Allocator, destination: Destination, config: schema.ExfiltrationDetection) ![]ExfilFinding {
@@ -338,7 +459,7 @@ pub fn appendProxyEnvironment(env_map: *std.process.EnvMap, proxy_url: []const u
     try env_map.put("HTTPS_PROXY", proxy_url);
     try env_map.put("ALL_PROXY", proxy_url);
     try env_map.put("NO_PROXY", no_proxy);
-    try env_map.put("AEGIS_NETWORK_ENFORCEMENT", "proxy-mediated");
+    try env_map.put("ORCA_NETWORK_ENFORCEMENT", "proxy-mediated");
 }
 
 fn buildDecision(
@@ -380,6 +501,43 @@ fn buildDecision(
         .redacted_target = redacted_target,
         .owned_reason = reason,
         .owned_rule_id = rule_id,
+        .owned_findings = owns_findings,
+    };
+}
+
+fn buildDecisionWithRuleId(
+    allocator: std.mem.Allocator,
+    destination: Destination,
+    value: schema.DecisionValue,
+    owned_rule_id: []u8,
+    pattern: []const u8,
+    reason_label: []const u8,
+    enforcement_mode: EnforcementMode,
+    findings: []ExfilFinding,
+    redacted_target: []u8,
+    owns_findings: bool,
+    ci_mode: bool,
+) !Decision {
+    errdefer allocator.free(owned_rule_id);
+    const result = value.toDecisionResult();
+    const reason = try formatReason(allocator, reason_label, destination, enforcement_mode, findings);
+    errdefer allocator.free(reason);
+    return .{
+        .destination = destination,
+        .decision = .{
+            .result = result,
+            .rule_id = owned_rule_id,
+            .reason = reason,
+            .risk_score = maxRisk(findings),
+            .requires_user = result == .ask,
+            .ci_may_proceed = if (ci_mode) (result == .allow or result == .observe) else (result != .deny),
+        },
+        .matched_rule = .{ .id = owned_rule_id, .pattern = pattern },
+        .enforcement_mode = enforcement_mode,
+        .exfil_findings = findings,
+        .redacted_target = redacted_target,
+        .owned_reason = reason,
+        .owned_rule_id = owned_rule_id,
         .owned_findings = owns_findings,
     };
 }
@@ -750,6 +908,113 @@ test "unknown domain denies in allowlist mode" {
     try std.testing.expectEqual(core.decision.DecisionResult.deny, result.decision.result);
 }
 
+test "service-aware network policy allows scoped github issue and pull requests" {
+    const load = @import("load.zig");
+    var policy = try load.parseFromSlice(std.testing.allocator,
+        \\version: 1
+        \\mode: strict
+        \\services:
+        \\  github:
+        \\    hosts:
+        \\      - "api.github.com"
+        \\    methods:
+        \\      - "GET"
+        \\      - "POST"
+        \\    paths:
+        \\      allow:
+        \\        - "/repos/*/issues"
+        \\        - "/repos/*/pulls"
+        \\      deny:
+        \\        - "/user/keys"
+        \\        - "/orgs/*/secrets/*"
+        \\    credentials:
+        \\      use: github_pat
+        \\    unmatched: deny
+    , "network-services.yaml");
+    defer policy.deinit();
+
+    var allowed = try evaluate(std.testing.allocator, &policy, .strict, "https://api.github.com/repos/orca/orca/issues", .{ .method = "POST" });
+    defer allowed.deinit(std.testing.allocator);
+    try std.testing.expectEqual(core.decision.DecisionResult.allow, allowed.decision.result);
+    try std.testing.expectEqualStrings("services.github.paths.allow[0]", allowed.decision.rule_id.?);
+    try std.testing.expect(std.mem.indexOf(u8, allowed.decision.reason, "credential_ref=configured") != null);
+
+    var denied = try evaluate(std.testing.allocator, &policy, .strict, "https://api.github.com/user/keys", .{ .method = "GET" });
+    defer denied.deinit(std.testing.allocator);
+    try std.testing.expectEqual(core.decision.DecisionResult.deny, denied.decision.result);
+    try std.testing.expectEqualStrings("services.github.paths.deny[0]", denied.decision.rule_id.?);
+
+    var unmatched = try evaluate(std.testing.allocator, &policy, .strict, "https://api.github.com/repos/orca/orca/actions/secrets", .{ .method = "GET" });
+    defer unmatched.deinit(std.testing.allocator);
+    try std.testing.expectEqual(core.decision.DecisionResult.deny, unmatched.decision.result);
+    try std.testing.expectEqualStrings("services.github.unmatched", unmatched.decision.rule_id.?);
+}
+
+test "service-aware network policy honors network off ci ask conversion and method scope" {
+    const load = @import("load.zig");
+    var off_policy = try load.parseFromSlice(std.testing.allocator,
+        \\version: 1
+        \\mode: strict
+        \\network:
+        \\  mode: off
+        \\services:
+        \\  github:
+        \\    hosts:
+        \\      - "api.github.com"
+        \\    paths:
+        \\      allow:
+        \\        - "/repos/*/issues"
+    , "network-off-services.yaml");
+    defer off_policy.deinit();
+
+    var off = try evaluate(std.testing.allocator, &off_policy, .strict, "https://api.github.com/repos/orca/orca/issues", .{});
+    defer off.deinit(std.testing.allocator);
+    try std.testing.expectEqual(core.decision.DecisionResult.deny, off.decision.result);
+
+    var ci_policy = try load.parseFromSlice(std.testing.allocator,
+        \\version: 1
+        \\mode: ci
+        \\services:
+        \\  github:
+        \\    hosts:
+        \\      - "*.known-service.example"
+        \\    paths:
+        \\      allow:
+        \\        - "/repos/*/issues"
+        \\    unmatched: ask
+    , "network-ci-services.yaml");
+    defer ci_policy.deinit();
+
+    var ci_unmatched = try evaluate(std.testing.allocator, &ci_policy, .ci, "https://api.github.com/user/keys", .{ .ci_mode = true });
+    defer ci_unmatched.deinit(std.testing.allocator);
+    try std.testing.expectEqual(core.decision.DecisionResult.deny, ci_unmatched.decision.result);
+    try std.testing.expect(!ci_unmatched.decision.requires_user);
+
+    var method_policy = try load.parseFromSlice(std.testing.allocator,
+        \\version: 1
+        \\mode: strict
+        \\services:
+        \\  github:
+        \\    hosts:
+        \\      - "api.github.com"
+        \\    methods:
+        \\      - "GET"
+        \\    paths:
+        \\      allow:
+        \\        - "/repos/*/issues"
+        \\    unmatched: deny
+    , "network-method-services.yaml");
+    defer method_policy.deinit();
+
+    var missing_method = try evaluate(std.testing.allocator, &method_policy, .strict, "https://api.github.com/repos/orca/orca/issues", .{});
+    defer missing_method.deinit(std.testing.allocator);
+    try std.testing.expectEqual(core.decision.DecisionResult.deny, missing_method.decision.result);
+
+    var post_method = try evaluate(std.testing.allocator, &method_policy, .strict, "https://api.github.com/repos/orca/orca/issues", .{ .method = "POST" });
+    defer post_method.deinit(std.testing.allocator);
+    try std.testing.expectEqual(core.decision.DecisionResult.deny, post_method.decision.result);
+}
+
 test "exfiltration heuristics flag required URL and host patterns" {
     const config: schema.ExfiltrationDetection = .{};
     var long_query_buf: [180]u8 = undefined;
@@ -835,6 +1100,36 @@ test "many unknown domains signal only counts policy-unknown domains" {
             }
             try std.testing.expect(found);
         }
+    }
+}
+
+test "service hosts are not counted as policy-unknown domains" {
+    const load = @import("load.zig");
+    var policy = try load.parseFromSlice(std.testing.allocator,
+        \\version: 1
+        \\mode: strict
+        \\services:
+        \\  github:
+        \\    hosts:
+        \\      - "*.known-service.example"
+        \\    paths:
+        \\      allow:
+        \\        - "/repos/*/issues"
+    , "network-service-known.yaml");
+    defer policy.deinit();
+
+    var tracker = UnknownDomainTracker.init(std.testing.allocator);
+    defer tracker.deinit();
+    for ([_][]const u8{
+        "https://one.known-service.example/repos/app/issues",
+        "https://two.known-service.example/repos/app/issues",
+        "https://three.known-service.example/repos/app/issues",
+        "https://four.known-service.example/repos/app/issues",
+        "https://five.known-service.example/repos/app/issues",
+    }) |target| {
+        var decision = try evaluate(std.testing.allocator, &policy, .strict, target, .{ .unknown_tracker = &tracker });
+        defer decision.deinit(std.testing.allocator);
+        for (decision.exfil_findings) |finding| try std.testing.expect(finding.signal != .many_unknown_domains);
     }
 }
 

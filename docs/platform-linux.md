@@ -3,7 +3,7 @@
 Run:
 
 ```sh
-./zig-out/bin/aegis doctor
+./zig-out/bin/orca doctor
 ```
 
 ## Capability Matrix
@@ -26,7 +26,7 @@ Doctor may report user namespaces, mount namespaces, seccomp, Landlock, cgroups,
 
 ## Fallback
 
-If kernel features are unavailable, Aegis falls back to wrapper/proxy, staged-write, policy, and audit controls. Required backend features fail closed when requested with `--require-backend`.
+If kernel features are unavailable, Orca falls back to wrapper/proxy, staged-write, policy, and audit controls. Required backend features fail closed when requested with `--require-backend`.
 
 ## Limitations
 

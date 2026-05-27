@@ -14,9 +14,9 @@ pub const commands = [_]CommandInfo{
         .usage = "orca run [options] -- <command> [args...]",
         .details = &.{
             "Starts a direct-child supervision session, filters the child environment through policy, checks the direct command through Command Guard, writes audit artifacts, and mirrors the child exit code.",
-            "Options: --workspace <path>, --mode observe|ask|strict|ci, --policy <path>, --session-name <name>, --no-secrets, --inherit-env, --no-network, --allow-network <domain>, --network observe|ask|allowlist|open|off, --require-backend <capability>, --help",
-            "Strict and CI modes default to no-secrets child environments. --inherit-env is allowed only when the selected policy permits inheritance.",
-            "Network flags update the run-time policy and audit network decisions. Phase 12 provides decision logic plus child environment metadata hooks, not active proxy or transparent network enforcement.",
+            "Options: --workspace <path>, --mode observe|ask|strict|ci, --policy <path>, --session-name <name>, --no-secrets, --secretless, --inherit-env, --no-network, --allow-network <domain>, --network observe|ask|allowlist|open|off, --network-backend decision-only|proxy, --require-backend <capability>, --help",
+            "Strict and CI modes default to no-secrets child environments. --secretless replaces policy-visible secret env values with broker references instead of raw values. --inherit-env is allowed only when the selected policy permits inheritance.",
+            "Network flags update the run-time policy and audit network decisions. --network-backend proxy starts an explicit localhost proxy and injects HTTP_PROXY/HTTPS_PROXY/ALL_PROXY; HTTPS CONNECT enforcement is host/port only without MITM.",
             "Linux uses backend capability detection and process-group cleanup where available. Optional kernel features are reported honestly and are not claimed active unless actually active.",
         },
     },
@@ -25,9 +25,18 @@ pub const commands = [_]CommandInfo{
         .summary = "Create an Orca policy",
         .usage = "orca init [--preset <name>] [--mode strict|ask|observe|ci|trusted] [--ci] [--force]",
         .details = &.{
-            "Creates .aegis/policy.yaml from a practical editable preset.",
-            "Presets: generic-agent, claude-code, codex, cursor-agent, opencode, cline-roo, mcp-dev, github-actions, strict-local, trusted-local.",
+            "Creates .orca/policy.yaml from a practical editable preset.",
+            "Presets: generic-agent, claude-code, codex, cursor-agent, opencode, cline-roo, mcp-dev, github-actions, solo-dev, strict-local, team-ci, openclaw-hermes, trusted-local.",
             "Refuses to overwrite an existing policy unless --force is provided.",
+        },
+    },
+    .{
+        .name = "setup",
+        .summary = "Unified bootstrap: detect hosts, init policy, install plugins",
+        .usage = "orca setup [--auto] [--preset <name>]",
+        .details = &.{
+            "Detects installed agent hosts, initializes a policy if missing, installs missing plugins, and runs smoke tests.",
+            "Use --auto for non-interactive mode. Use --preset to choose a policy preset (default: generic-agent).",
         },
     },
     .{
@@ -38,13 +47,60 @@ pub const commands = [_]CommandInfo{
             "Reports platform and planned capability status honestly.",
         },
     },
-    .{ .name = "policy", .summary = "Validate and explain policies", .usage = "orca policy <check|explain> [...]", .details = &.{
+    .{ .name = "policy", .summary = "Validate, explain, and apply policies", .usage = "orca policy <check|explain|packs|apply-pack> [...]", .details = &.{
         "Subcommands:",
         "  orca policy check <policy-path>",
-        "  orca policy explain <file.read|file.write|env|command|network|mcp> <target>",
+        "  orca policy explain [--policy <path>] <file.read|file.write|env|command|network|mcp> <target> [--method <HTTP_METHOD>]",
+        "  orca policy packs",
+        "  orca policy apply-pack <solo-dev|strict-local|team-ci|openclaw-hermes> [--force]",
         "Explanations show the decision, reason, matched rule when available, and policy mode.",
     } },
-    .{ .name = "replay", .summary = "Replay an audit session", .usage = "orca replay [--session <id|last>] [--json] [--only denied] [--verify]", .details = &.{"Reads .aegis session artifacts, renders a timeline, and can verify the event hash chain."} },
+    .{ .name = "credentials", .summary = "Check Secretless credential brokers", .usage = "orca credentials check [credential-ref]", .details = &.{
+        "Checks configured Secretless brokers and optional credential refs without printing raw secret values.",
+        "Supported broker kinds: local-dummy, env-file-dev, 1password-cli, macos-keychain, infisical-agent-vault.",
+        "Infisical/Agent Vault is currently a status/config boundary until exact local API or CLI behavior is verified.",
+    } },
+    .{ .name = "report", .summary = "Export a local safety report", .usage = "orca report --session <id|last> --format markdown|json", .details = &.{
+        "Loads a local session, verifies the hash chain, and exports denied actions, redactions, plugin readiness, and a plain-language prevention summary.",
+        "Report export is a Pro/Team local-license feature. Core safety commands remain available without a license.",
+    } },
+    .{ .name = "license", .summary = "Manage local offline licenses", .usage = "orca license <status|activate> [...]", .details = &.{
+        "Subcommands:",
+        "  orca license status [--json]",
+        "  orca license activate <key-or-file>",
+        "Development keys: dev-free, dev-pro, dev-team.",
+        "Licenses are verified offline and stored under the user config directory.",
+    } },
+    .{ .name = "ci", .summary = "Run local CI readiness checks", .usage = "orca ci check [--format markdown|json] [--github-summary <path>]", .details = &.{
+        "Validates .orca/policy.yaml, rejects dangerous obvious defaults, runs a focused CI-safe redteam fixture, and emits GitHub Actions-friendly output.",
+    } },
+    .{ .name = "demo", .summary = "Create safe local demo evidence", .usage = "orca demo blocked-action", .details = &.{
+        "Creates a harmless local session showing a destructive command denied by Orca.",
+        "The demo writes replay/report artifacts but does not execute the destructive command.",
+    } },
+    .{ .name = "disable", .summary = "Disable Orca plugins from host agents", .usage = "orca disable [codex|claude|opencode|openclaw|hermes|all] [--yes]", .details = &.{
+        "Removes Orca plugin registrations from host agents without removing the Orca binary or policy files.",
+        "Hosts: codex, claude, opencode, openclaw, hermes. Defaults to all if no host is specified.",
+        "OpenCode: removes .opencode/plugins/orca.ts and ~/.config/opencode/plugins/orca.ts",
+        "OpenClaw: runs 'openclaw plugins uninstall orca-openclaw-plugin'",
+        "Hermes: runs 'hermes plugins disable orca' and removes ~/.hermes/plugins/orca/",
+        "Codex / Claude: removes known plugin paths (host-managed install locations).",
+        "Re-enable later with: orca plugin install <host> --yes",
+    } },
+    .{ .name = "uninstall", .summary = "Uninstall Orca from this machine", .usage = "orca uninstall [--plugins-only] [--keep-config] [--yes]", .details = &.{
+        "Completely removes Orca and its integrations from the machine.",
+        "Steps:",
+        "  1. Removes all plugins from host agents (same as 'orca disable').",
+        "  2. Removes the Orca binary from known locations (~/.local/bin/orca, PATH).",
+        "  3. Removes user config and data (~/.config/orca/, ~/.orca).",
+        "Options:",
+        "  --plugins-only   Only remove plugins; keep binary and config.",
+        "  --keep-config    Remove plugins and binary but keep ~/.config/orca/.",
+        "  --yes            Skip confirmation prompt.",
+        "Local workspace .orca/ directories are not removed automatically;",
+        "run 'find . -type d -name .orca' to locate them manually.",
+    } },
+    .{ .name = "replay", .summary = "Replay an audit session", .usage = "orca replay [--session <id|last>] [--json] [--only denied] [--verify]", .details = &.{"Reads .orca session artifacts, renders a timeline, and can verify the event hash chain."} },
     .{ .name = "diff", .summary = "Show staged writes", .usage = "orca diff [--session <id|last>] [--file <path>]", .details = &.{"Shows unified diffs for Orca-mediated staged writes. This does not claim transparent interception of arbitrary child-process file IO."} },
     .{ .name = "apply", .summary = "Apply staged writes", .usage = "orca apply [--session <id|last>] [--file <path>]", .details = &.{"Applies reviewed staged writes after original-state checks where feasible."} },
     .{ .name = "discard", .summary = "Discard staged writes", .usage = "orca discard [--session <id|last>] [--file <path>]", .details = &.{"Removes staged writes without changing workspace files."} },
@@ -60,7 +116,7 @@ pub const commands = [_]CommandInfo{
         "Remote HTTP MCP, OAuth, and hosted gateway behavior are limited/deferred in Phase 17.",
     } },
     .{ .name = "redteam", .summary = "Run red-team fixtures", .usage = "orca redteam [path] [--json] [--ci] [--fixture <id>]", .details = &.{
-        "Discovers deterministic local fixtures, runs them against implemented Aegis controls, and reports a scorecard.",
+        "Discovers deterministic local fixtures, runs them against implemented Orca controls, and reports a scorecard.",
         "When no path is provided, fixtures are discovered under ./fixtures.",
         "--json emits a machine-readable report. --ci never prompts and exits non-zero if any required fixture fails or is unsupported.",
     } },
@@ -69,7 +125,7 @@ pub const commands = [_]CommandInfo{
         "The generated completions include top-level commands and common flags.",
     } },
     .{ .name = "shim", .summary = "Internal PATH shim callback", .usage = "orca shim exec -- <command> [args...]", .details = &.{
-        "Internal callback used by session-local PATH shims under .aegis/sessions/<id>/shims/.",
+        "Internal callback used by session-local PATH shims under .orca/sessions/<id>/shims/.",
         "The shim removes the session shim directory from PATH before resolving the real binary to avoid recursive invocation.",
         "This is wrapper-level coverage only and does not claim transparent OS-level interception.",
     } },
@@ -79,9 +135,9 @@ pub const commands = [_]CommandInfo{
     } },
     .{ .name = "plugin", .summary = "Plugin management and diagnostics", .usage = "orca plugin <doctor|manifest|install|mcp-server> [options]", .details = &.{
         "Subcommands:",
-        "  orca plugin doctor [codex|claude|opencode|openclaw] [--json]",
-        "  orca plugin manifest [codex|claude|opencode|openclaw|all] [--json]",
-        "  orca plugin install [codex|claude|opencode|openclaw|all] [--dry-run] [--path <path>] [--yes]",
+        "  orca plugin doctor [codex|claude|opencode|openclaw|hermes] [--json]",
+        "  orca plugin manifest [codex|claude|opencode|openclaw|hermes|all] [--json]",
+        "  orca plugin install [codex|claude|opencode|openclaw|hermes|all] [--dry-run] [--path <path>] [--yes]",
         "  orca plugin mcp-server [--help]",
         "Plugin commands are safe by default: install defaults to --dry-run, doctor does not print secrets,",
         "and mcp-server is currently a documented stub that does not start a real server.",
@@ -97,7 +153,7 @@ pub const commands = [_]CommandInfo{
         "  orca decide <kind> --json <payload> [--ci]",
         "Output is JSON to stdout; debug logs go to stderr only.",
     } },
-    .{ .name = "hook", .summary = "Host-specific hook adapter for Codex, Claude Code, OpenCode, and OpenClaw", .usage = "orca hook <codex|claude|opencode|openclaw> <event> [--ci]", .details = &.{
+    .{ .name = "hook", .summary = "Host-specific hook adapter for Codex, Claude Code, OpenCode, OpenClaw, and Hermes", .usage = "orca hook <codex|claude|opencode|openclaw|hermes> <event> [--ci]", .details = &.{
         "Reads a JSON payload from stdin, normalizes host-specific events to Orca decisions,",
         "and emits a host-valid JSON response to stdout. Debug logs go to stderr only.",
         "Events:",
@@ -130,7 +186,20 @@ pub const commands = [_]CommandInfo{
         "  orca hook openclaw permission.before",
         "  orca hook openclaw permission.after",
         "  orca hook openclaw session.end",
+        "  orca hook hermes on_session_start",
+        "  orca hook hermes pre_tool_call",
+        "  orca hook hermes post_tool_call",
+        "  orca hook hermes pre_llm_call",
+        "  orca hook hermes post_llm_call",
+        "  orca hook hermes subagent_stop",
+        "  orca hook hermes on_session_end",
         "Hook responses include host_limitations to honestly report enforcement limits.",
+    } },
+    .{ .name = "dashboard", .summary = "Start the local Orca dashboard", .usage = "orca dashboard [--host 127.0.0.1] [--port 7742]", .details = &.{
+        "Starts a localhost-only web dashboard for health, policy, integrations, sessions, and denied-action replay.",
+        "The dashboard calls existing Orca CLI/Core paths and does not replace policy evaluation.",
+        "Mutation routes use a per-run browser token and only expose fixed Orca actions; arbitrary shell commands are not accepted.",
+        "Defaults to http://127.0.0.1:7742.",
     } },
     .{ .name = "help", .summary = "Show help", .usage = "orca help [command]", .details = &.{"Shows top-level help or command-specific help."} },
 };
@@ -143,6 +212,7 @@ pub fn write(writer: anytype) !void {
         \\  orca <command> [options]
         \\
         \\Commands:
+        \\
     );
     for (commands) |command| {
         try writer.print("  {s:<9} {s}\n", .{ command.name, command.summary });

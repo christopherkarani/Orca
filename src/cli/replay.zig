@@ -1,7 +1,8 @@
 const std = @import("std");
 
-const core = @import("../core/mod.zig");
-const core_api = @import("../core/api.zig");
+const core = @import("orca_core").core;
+const supervisor = core.supervisor;
+const core_api = @import("orca_core").api;
 const exit_codes = @import("exit_codes.zig");
 const help = @import("help.zig");
 
@@ -23,7 +24,7 @@ pub fn command(argv: []const []const u8, stdout: anytype, stderr: anytype) !u8 {
     defer _ = gpa_state.deinit();
     const allocator = gpa_state.allocator();
 
-    const workspace_root = core.supervisor.resolveWorkspaceRoot(allocator, null, ".") catch |err| {
+    const workspace_root = supervisor.resolveWorkspaceRoot(allocator, null, ".") catch |err| {
         try stderr.print("orca replay: failed to resolve workspace: {s}\n", .{@errorName(err)});
         return exit_codes.general;
     };
@@ -101,14 +102,14 @@ fn parseOptions(argv: []const []const u8, stdout: anytype, stderr: anytype) !Rep
 
 fn sessionDirPathForError(allocator: std.mem.Allocator, workspace_root: []const u8, requested: []const u8) ![]u8 {
     const session_id = if (std.mem.eql(u8, requested, "last")) blk: {
-        const last_path = try std.fs.path.join(allocator, &.{ workspace_root, ".aegis", "last" });
+        const last_path = try std.fs.path.join(allocator, &.{ workspace_root, ".orca", "last" });
         defer allocator.free(last_path);
         const text = try std.fs.cwd().readFileAlloc(allocator, last_path, core.limits.max_session_id_len + 2);
         defer allocator.free(text);
         break :blk try allocator.dupe(u8, std.mem.trim(u8, text, " \t\r\n"));
     } else try allocator.dupe(u8, requested);
     defer allocator.free(session_id);
-    return try std.fs.path.join(allocator, &.{ workspace_root, ".aegis", "sessions", session_id });
+    return try std.fs.path.join(allocator, &.{ workspace_root, ".orca", "sessions", session_id });
 }
 
 test "replay rejects invalid --only value" {

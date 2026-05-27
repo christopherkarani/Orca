@@ -1,5 +1,5 @@
 const std = @import("std");
-const core = @import("aegis_core");
+const core = @import("orca_core");
 
 const ardupilot = @import("../ardupilot/mod.zig");
 const domain = @import("../domain/mod.zig");
@@ -136,7 +136,7 @@ pub fn generate(allocator: std.mem.Allocator, options: GenerateOptions) !Generat
     var session: core.session.Session = .{
         .id = try core.session.generateSessionId(now),
         .started_at = now,
-        .command = "aegis-edge",
+        .command = "edge",
         .args = &.{ "safety-case", "generate" },
         .workspace_root = workspace_root,
         .session_name = "edge-safety-case",
@@ -163,7 +163,7 @@ pub fn generate(allocator: std.mem.Allocator, options: GenerateOptions) !Generat
     }
 
     _ = try appendEvent(allocator, &writer, &sequence, &event_refs, session, now, "edge.session_start", .session, session.id.slice(), .observe, "edge safety-case session started");
-    _ = try appendEvent(allocator, &writer, &sequence, &event_refs, session, now, "edge.scenario_start", .edge_safety_envelope, options.scenario_path, .observe, "scenario evidence collection started");
+    _ = try appendEvent(allocator, &writer, &sequence, &event_refs, session, now, "edge.scenario_start", .extension_target, options.scenario_path, .observe, "scenario evidence collection started");
 
     var loaded = try policy.loadFile(allocator, options.policy_path, .{});
     defer loaded.deinit();
@@ -175,14 +175,14 @@ pub fn generate(allocator: std.mem.Allocator, options: GenerateOptions) !Generat
     var evidence = try buildEvidence(allocator, kind, &loaded.value, meta, options, artifacts_dir);
     defer evidence.deinit();
 
-    _ = try appendEvent(allocator, &writer, &sequence, &event_refs, session, now, "edge.environment_detected", .edge_safety_envelope, evidence.provenance.toString(), .observe, "scenario provenance detected");
+    _ = try appendEvent(allocator, &writer, &sequence, &event_refs, session, now, "edge.environment_detected", .extension_target, evidence.provenance.toString(), .observe, "scenario provenance detected");
     for (evidence.audit_event_refs) |event_type| {
         const decision = if (std.mem.eql(u8, evidence.decision, "deny")) core.decision.DecisionResult.deny else if (std.mem.eql(u8, evidence.decision, "allow")) core.decision.DecisionResult.allow else .observe;
-        _ = try appendEvent(allocator, &writer, &sequence, &event_refs, session, now, event_type, .edge_safety_envelope, evidence.reason, decision, evidence.reason);
+        _ = try appendEvent(allocator, &writer, &sequence, &event_refs, session, now, event_type, .extension_target, evidence.reason, decision, evidence.reason);
     }
-    _ = try appendEvent(allocator, &writer, &sequence, &event_refs, session, now, "safety_case.evidence_collected", .edge_safety_envelope, options.scenario_path, .observe, "safety-case evidence collected");
-    _ = try appendEvent(allocator, &writer, &sequence, &event_refs, session, now, "safety_case.generated", .edge_safety_envelope, meta.id, .observe, "safety-case report generated");
-    _ = try appendEvent(allocator, &writer, &sequence, &event_refs, session, now, "edge.scenario_exit", .edge_safety_envelope, evidence.status.toString(), .observe, "scenario evidence collection completed");
+    _ = try appendEvent(allocator, &writer, &sequence, &event_refs, session, now, "safety_case.evidence_collected", .extension_target, options.scenario_path, .observe, "safety-case evidence collected");
+    _ = try appendEvent(allocator, &writer, &sequence, &event_refs, session, now, "safety_case.generated", .extension_target, meta.id, .observe, "safety-case report generated");
+    _ = try appendEvent(allocator, &writer, &sequence, &event_refs, session, now, "edge.scenario_exit", .extension_target, evidence.status.toString(), .observe, "scenario evidence collection completed");
     _ = try appendEvent(allocator, &writer, &sequence, &event_refs, session, now, "edge.session_exit", .session, session.id.slice(), .observe, "edge safety-case session completed");
     try assignActualEventIds(allocator, &evidence, event_refs.items);
 
@@ -205,7 +205,7 @@ pub fn generate(allocator: std.mem.Allocator, options: GenerateOptions) !Generat
     defer allocator.free(replay_md_path);
     try writeReplayMarkdown(allocator, workspace_root, session.id.slice(), replay_md_path);
 
-    const report_id = try std.fmt.allocPrint(allocator, "aegis-edge-report-{s}", .{session.id.slice()});
+    const report_id = try std.fmt.allocPrint(allocator, "edge-report-{s}", .{session.id.slice()});
     defer allocator.free(report_id);
     const generated_at = try isoAlloc(allocator, now);
     defer allocator.free(generated_at);
@@ -401,7 +401,7 @@ fn buildApprovalEvidence(allocator: std.mem.Allocator, selected_policy: *const s
         .state = parsed_state.value,
         .evaluation = base,
         .now_ms = parsed_state.value.timestamp.value + 500,
-        .actor_id = "aegis-edge-safety-case",
+        .actor_id = "edge-safety-case",
     })) orelse return evidenceFromSafetyEvaluation(allocator, selected_policy, meta, base, classifyScenarioResult(base.decision.result, meta.expected_decision, false, false, true), provenanceFromState(parsed_state.value.provenance), "operator approval was required but not supplied");
     defer approval_decision.deinit(allocator);
     var final = try safety.evaluateSafetyWithApproval(allocator, selected_policy, parsed_state.value, parsed_request.value, .{ .mode = .ask, .now_ms = parsed_state.value.timestamp.value + 500 }, &approval_decision);
@@ -749,7 +749,7 @@ fn requestForMeta(meta: ScenarioMeta) domain.commands.CommandRequest {
         .vehicle_id = .{ .value = "edge-vehicle-1" },
         .action = action,
         .parameters = params,
-        .actor = "aegis-edge-safety-case",
+        .actor = "edge-safety-case",
         .timestamp = .{ .value = 1_000_100, .source = .monotonic },
         .source = .fake_adapter,
         .mission_id = if (std.mem.eql(u8, meta.command, "mission_outside_geofence")) "scenario-mission-outside" else null,
@@ -972,7 +972,7 @@ fn appendEvent(
     session: core.session.Session,
     timestamp: core.core.time.Timestamp,
     event_type: []const u8,
-    target_kind: core.types.TargetKind,
+    target_kind: core.api.TargetKind,
     target_value: []const u8,
     result: core.decision.DecisionResult,
     reason: []const u8,
@@ -983,8 +983,8 @@ fn appendEvent(
         .session_id = session.id,
         .event_id = event_id,
         .timestamp = timestamp,
-        .event_type = try edge_event.toCoreEventType(event_type),
-        .actor = .{ .kind = .aegis, .display = "aegis-edge" },
+        .event_type = core.api.fromCoreEventType(try edge_event.toCoreEventType(event_type)),
+        .actor = .{ .kind = .orca, .display = "edge" },
         .target = .{ .kind = target_kind, .value = target_value },
         .decision = core.api.makeDecision(.{
             .result = result,
@@ -1101,7 +1101,7 @@ fn isoAlloc(allocator: std.mem.Allocator, timestamp: core.core.time.Timestamp) !
 fn defaultLimitations() []const []const u8 {
     return &.{
         safety_report.non_certification_disclaimer,
-        "Aegis Edge is not a flight controller, autopilot replacement, detect-and-avoid system, or regulatory approval.",
+        "Edge is not a flight controller, autopilot replacement, detect-and-avoid system, or regulatory approval.",
         "Fake adapter evidence is not PX4 SITL, ArduPilot SITL, bench, hardware, or real-flight evidence.",
         "SITL evidence, when present, is local simulation evidence and is not real-flight validation.",
         "Missing SITL is classified as skipped or unsupported, never passed.",

@@ -74,8 +74,9 @@ pub fn defaultCapabilityState(os: Os, capability: Capability) CapabilityState {
         => .partial,
         .shell_wrapping,
         .network_proxy_enforce,
-        .network_enforce,
         .strong_sandbox,
+        => .limited,
+        .network_enforce,
         => .unavailable,
     };
 }
@@ -90,7 +91,7 @@ pub fn reportCapability(os: Os, capability: Capability) CapabilityReport {
         .mcp_stdio_proxy => .active,
         .network_policy_engine => .active,
         .network_observe => .partial,
-        .network_proxy_enforce => .unavailable,
+        .network_proxy_enforce => .limited,
         .network_enforce => .unavailable,
         else => defaultCapabilityState(os, capability),
     };
@@ -114,11 +115,11 @@ pub fn reportCapability(os: Os, capability: Capability) CapabilityReport {
             .limited => switch (capability) {
                 .shell_wrapping => "shell controls are wrapper-level",
                 .path_shims => "PATH shims are wrapper-level",
+                .network_proxy_enforce => "explicit loopback proxy backend is available when requested; HTTPS visibility is host/port only",
                 else => "limited backend support",
             },
             .unknown => "backend state is unknown",
             .unavailable => switch (capability) {
-                .network_proxy_enforce => "no managed network proxy is started in Phase 12",
                 .network_enforce => "transparent OS-level network enforcement is not implemented in Phase 12",
                 .strong_sandbox => "strong OS-level sandboxing is backend-specific and not universally available",
                 else => "not available on this platform",

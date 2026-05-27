@@ -3,16 +3,13 @@ const builtin = @import("builtin");
 
 const event = @import("event.zig");
 const platform = @import("platform.zig");
-const sandbox_backend = @import("../sandbox/backend.zig");
+const process = @import("process.zig");
 const session_mod = @import("session.zig");
 const time = @import("time.zig");
 const types = @import("types.zig");
 const util = @import("util.zig");
 
-pub const StdioBehavior = enum {
-    inherit,
-    ignore,
-};
+pub const StdioBehavior = process.StdioBehavior;
 
 pub const RunConfig = struct {
     command: []const u8,
@@ -28,13 +25,10 @@ pub const RunConfig = struct {
     before_process_launch: ?StartHook = null,
     on_session_start: ?StartHook = null,
     on_event: ?EventHook = null,
+    health_monitor: ?HealthMonitor = null,
 };
 
-pub const EnvRedactionRecord = struct {
-    name: []const u8,
-    labels: []const []const u8,
-    reason: []const u8,
-};
+pub const EnvRedactionRecord = process.EnvRedactionRecord;
 
 pub const StartHook = struct {
     context: *anyopaque,
@@ -46,19 +40,13 @@ pub const EventHook = struct {
     callback: *const fn (context: *anyopaque, ev: event.Event) anyerror!void,
 };
 
-pub const ChildStatus = union(enum) {
-    exited: u8,
-    signal: u32,
-    stopped: u32,
-    unknown: u32,
-
-    pub fn exitCode(self: ChildStatus) i32 {
-        return switch (self) {
-            .exited => |code| code,
-            .signal, .stopped, .unknown => 1,
-        };
-    }
+pub const HealthMonitor = struct {
+    context: *anyopaque,
+    callback: *const fn (context: *anyopaque) bool,
+    interval_ns: u64 = 50 * std.time.ns_per_ms,
 };
+
+pub const ChildStatus = process.ChildStatus;
 
 pub const SessionResult = struct {
     session: session_mod.Session,
@@ -81,6 +69,24 @@ pub const SessionResult = struct {
         self.* = undefined;
     }
 };
+
+const HealthMonitorThreadContext = struct {
+    prepared: *process.PreparedChild,
+    monitor: HealthMonitor,
+    stop: *std.atomic.Value(bool),
+    failed: *std.atomic.Value(bool),
+};
+
+fn healthMonitorLoop(context: *HealthMonitorThreadContext) void {
+    while (!context.stop.load(.acquire)) {
+        if (!context.monitor.callback(context.monitor.context)) {
+            context.failed.store(true, .release);
+            context.prepared.terminateForHealthFailure();
+            return;
+        }
+        std.Thread.sleep(context.monitor.interval_ns);
+    }
+}
 
 pub fn run(allocator: std.mem.Allocator, config: RunConfig) !SessionResult {
     if (config.command.len == 0) return error.InvalidCommand;
@@ -149,13 +155,10 @@ pub fn run(allocator: std.mem.Allocator, config: RunConfig) !SessionResult {
     argv[0] = config.command;
     @memcpy(argv[1..], config.args);
 
-    var prepared = sandbox_backend.prepare(allocator, .{
+    var prepared = process.prepareChild(allocator, .{
         .argv = argv,
         .workspace_root = workspace_root,
-        .stdio = switch (config.stdio) {
-            .inherit => .inherit,
-            .ignore => .ignore,
-        },
+        .stdio = config.stdio,
         .env_map = config.env_map,
     });
 
@@ -173,6 +176,24 @@ pub fn run(allocator: std.mem.Allocator, config: RunConfig) !SessionResult {
             prepared.terminateAfterParentError();
             return err;
         };
+    }
+
+    var health_stop = std.atomic.Value(bool).init(false);
+    var health_failed = std.atomic.Value(bool).init(false);
+    var health_context: HealthMonitorThreadContext = undefined;
+    var health_thread: ?std.Thread = null;
+    if (config.health_monitor) |monitor| {
+        health_context = .{
+            .prepared = &prepared,
+            .monitor = monitor,
+            .stop = &health_stop,
+            .failed = &health_failed,
+        };
+        health_thread = try std.Thread.spawn(.{}, healthMonitorLoop, .{&health_context});
+    }
+    defer {
+        health_stop.store(true, .release);
+        if (health_thread) |thread| thread.join();
     }
 
     const term = try prepared.wait();
@@ -243,8 +264,10 @@ pub fn resolveWorkspaceRoot(
     while (true) {
         const git_path = try std.fs.path.join(allocator, &.{ current, ".git" });
         defer allocator.free(git_path);
+        const orca_policy_path = try std.fs.path.join(allocator, &.{ current, ".orca", "policy.yaml" });
+        defer allocator.free(orca_policy_path);
 
-        if (hasGitMarker(git_path)) {
+        if (hasGitMarker(git_path) or hasWorkspaceMarker(orca_policy_path)) {
             allocator.free(fallback);
             return current;
         }
@@ -265,6 +288,11 @@ pub fn resolveWorkspaceRoot(
 }
 
 fn hasGitMarker(path: []const u8) bool {
+    std.fs.cwd().access(path, .{}) catch return false;
+    return true;
+}
+
+fn hasWorkspaceMarker(path: []const u8) bool {
     std.fs.cwd().access(path, .{}) catch return false;
     return true;
 }
@@ -290,7 +318,7 @@ fn makeEvent(
         .event_id = try event.generateEventId(timestamp),
         .timestamp = timestamp,
         .event_type = event_type,
-        .actor = .{ .kind = .aegis, .display = "aegis" },
+        .actor = .{ .kind = .orca, .display = "orca" },
         .target = .{ .kind = target_kind, .value = target_value },
     };
 }
@@ -370,13 +398,32 @@ test "workspace detection finds nearest git parent" {
     try std.testing.expectEqualStrings(root, resolved);
 }
 
+test "workspace detection finds nearest orca policy parent" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    try tmp.dir.makePath(".orca");
+    try tmp.dir.writeFile(.{ .sub_path = ".orca/policy.yaml", .data = "mode: observe\n" });
+    try tmp.dir.makePath("child/grandchild");
+
+    const root = try tmp.dir.realpathAlloc(std.testing.allocator, ".");
+    defer std.testing.allocator.free(root);
+    const child = try tmp.dir.realpathAlloc(std.testing.allocator, "child/grandchild");
+    defer std.testing.allocator.free(child);
+
+    const resolved = try resolveWorkspaceRoot(std.testing.allocator, null, child);
+    defer std.testing.allocator.free(resolved);
+
+    try std.testing.expectEqualStrings(root, resolved);
+}
+
 test "workspace detection falls back to start directory outside git" {
     const tmp_parent = if (std.process.getEnvVarOwned(std.testing.allocator, "TMPDIR")) |value| value else |_| try std.testing.allocator.dupe(u8, "/tmp");
     defer std.testing.allocator.free(tmp_parent);
 
     var suffix_buf: [8]u8 = undefined;
     const suffix = try util.randomHexSuffix(&suffix_buf);
-    const relative_name = try std.fmt.allocPrint(std.testing.allocator, "aegis-non-git-{s}", .{suffix});
+    const relative_name = try std.fmt.allocPrint(std.testing.allocator, "orca-non-git-{s}", .{suffix});
     defer std.testing.allocator.free(relative_name);
     const tmp_path = try std.fs.path.join(std.testing.allocator, &.{ tmp_parent, relative_name });
     defer std.testing.allocator.free(tmp_path);
@@ -462,7 +509,7 @@ test "child non-zero exit code is propagated" {
 
 test "missing child command returns useful typed error" {
     try std.testing.expectError(error.CommandNotFound, run(std.testing.allocator, .{
-        .command = "aegis-definitely-missing-command",
+        .command = "orca-definitely-missing-command",
         .workspace = ".",
         .stdio = .ignore,
     }));
@@ -487,4 +534,37 @@ test "session start hook failure cleans up spawned child and returns hook error"
 
     try std.testing.expectEqual(@as(usize, 1), context.calls);
     try std.testing.expect(elapsed_ms < 1_500);
+}
+
+const FailingHealthContext = struct {
+    calls: std.atomic.Value(usize) = .init(0),
+
+    fn healthy(context: *anyopaque) bool {
+        const self: *FailingHealthContext = @ptrCast(@alignCast(context));
+        _ = self.calls.fetchAdd(1, .acq_rel);
+        return false;
+    }
+};
+
+test "health monitor terminates child when required runtime dies" {
+    if (builtin.os.tag == .windows) return error.SkipZigTest;
+
+    var context: FailingHealthContext = .{};
+    const started = std.time.milliTimestamp();
+    var result = try run(std.testing.allocator, .{
+        .command = "/bin/sh",
+        .args = &.{ "-c", "sleep 2" },
+        .workspace = ".",
+        .stdio = .ignore,
+        .health_monitor = .{
+            .context = &context,
+            .callback = FailingHealthContext.healthy,
+        },
+    });
+    defer result.deinit();
+    const elapsed_ms = std.time.milliTimestamp() - started;
+
+    try std.testing.expect(result.exitCode() != 0);
+    try std.testing.expect(elapsed_ms < 1_500);
+    try std.testing.expect(context.calls.load(.acquire) > 0);
 }

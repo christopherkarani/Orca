@@ -1,7 +1,7 @@
 const std = @import("std");
 
-const audit = @import("../audit/mod.zig");
-const core = @import("../core/mod.zig");
+const audit = @import("orca_core").audit;
+const core = @import("orca_core").core;
 const runner = @import("runner.zig");
 const scorecard = @import("scorecard.zig");
 

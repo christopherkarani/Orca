@@ -13,21 +13,21 @@ pub const edge_policy_v1 = SchemaDescriptor{
     .id = "edge-policy-v1",
     .version = 1,
     .path = "schemas/edge-policy-v1.json",
-    .title = "Aegis Edge policy schema v1",
+    .title = "Edge policy schema v1",
 };
 
 pub const edge_event_v1 = SchemaDescriptor{
     .id = "edge-event-v1",
     .version = 1,
     .path = "schemas/edge-event-v1.json",
-    .title = "Aegis Edge event schema v1",
+    .title = "Edge event schema v1",
 };
 
 pub const safety_report_v1 = SchemaDescriptor{
     .id = "safety-report-v1",
     .version = 1,
     .path = "schemas/safety-report-v1.json",
-    .title = "Aegis safety report schema v1",
+    .title = "Edge safety report schema v1",
 };
 
 pub const registry = [_]SchemaDescriptor{

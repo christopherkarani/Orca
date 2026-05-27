@@ -1,6 +1,6 @@
-# Aegis Edge Red-Team Fixtures
+# Edge Red-Team Fixtures
 
-These fixtures are deterministic simulation inputs for `aegis-edge redteam`.
+These fixtures are deterministic simulation inputs for `edge redteam`.
 They do not target real vehicles, do not require network access, and do not
 claim real-flight readiness or certification.
 

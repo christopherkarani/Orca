@@ -1,0 +1,8 @@
+{
+  "version": 1,
+  "host": "hermes",
+  "event": "pre_tool_call",
+  "payload": {
+    "command": "git status"
+  }
+}

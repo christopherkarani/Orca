@@ -8,6 +8,7 @@ pub const run_command = @import("run.zig");
 pub const init = @import("init.zig");
 pub const doctor = @import("doctor.zig");
 pub const policy = @import("policy.zig");
+pub const credentials_command = @import("credentials.zig");
 pub const replay = @import("replay.zig");
 pub const diff = @import("diff.zig");
 pub const apply = @import("apply.zig");
@@ -18,8 +19,17 @@ pub const completions = @import("completions.zig");
 pub const shim = @import("shim.zig");
 pub const version_command = @import("version.zig");
 pub const plugin = @import("plugin.zig");
+pub const plugin_install = @import("plugin_install.zig");
+pub const setup = @import("setup.zig");
 pub const decide = @import("decide.zig");
 pub const hook = @import("hook.zig");
+pub const dashboard_command = @import("dashboard.zig");
+pub const report = @import("report.zig");
+pub const license_command = @import("license.zig");
+pub const ci = @import("ci.zig");
+pub const demo = @import("demo.zig");
+pub const disable = @import("disable.zig");
+pub const uninstall = @import("uninstall.zig");
 
 pub const version = build_options.version;
 
@@ -75,6 +85,7 @@ pub fn runWithCwd(cwd: std.fs.Dir, argv: []const []const u8, stdout: anytype, st
     if (std.mem.eql(u8, command, "init")) return init.command(cwd, argv[1..], stdout, stderr);
     if (std.mem.eql(u8, command, "doctor")) return doctor.command(argv[1..], stdout, stderr);
     if (std.mem.eql(u8, command, "policy")) return policy.command(argv[1..], stdout, stderr);
+    if (std.mem.eql(u8, command, "credentials")) return credentials_command.command(argv[1..], stdout, stderr);
     if (std.mem.eql(u8, command, "replay")) return replay.command(argv[1..], stdout, stderr);
     if (std.mem.eql(u8, command, "diff")) return diff.command(argv[1..], stdout, stderr);
     if (std.mem.eql(u8, command, "apply")) return apply.command(argv[1..], stdout, stderr);
@@ -84,9 +95,17 @@ pub fn runWithCwd(cwd: std.fs.Dir, argv: []const []const u8, stdout: anytype, st
     if (std.mem.eql(u8, command, "completions")) return completions.command(argv[1..], stdout, stderr);
     if (std.mem.eql(u8, command, "shim")) return shim.command(argv[1..], stdout, stderr);
     if (std.mem.eql(u8, command, "plugin")) return plugin.command(argv[1..], stdout, stderr);
+    if (std.mem.eql(u8, command, "setup")) return setup.command(cwd, argv[1..], stdout, stderr);
     if (std.mem.eql(u8, command, "decide")) return decide.command(argv[1..], stdout, stderr);
     if (std.mem.eql(u8, command, "hook")) return hook.command(argv[1..], stdout, stderr);
-    try stderr.writeAll("aegis: unknown command '");
+    if (std.mem.eql(u8, command, "dashboard")) return dashboard_command.command(argv[1..], stdout, stderr);
+    if (std.mem.eql(u8, command, "report")) return report.command(argv[1..], stdout, stderr);
+    if (std.mem.eql(u8, command, "license")) return license_command.command(argv[1..], stdout, stderr);
+    if (std.mem.eql(u8, command, "ci")) return ci.command(argv[1..], stdout, stderr);
+    if (std.mem.eql(u8, command, "demo")) return demo.command(argv[1..], stdout, stderr);
+    if (std.mem.eql(u8, command, "disable")) return disable.command(argv[1..], stdout, stderr);
+    if (std.mem.eql(u8, command, "uninstall")) return uninstall.command(argv[1..], stdout, stderr);
+    try stderr.writeAll("orca: unknown command '");
     try stderr.writeAll(command);
     try stderr.writeAll(". Run 'orca help' for usage.\n");
     return exit_codes.usage;
@@ -103,6 +122,7 @@ test "help flag prints command summary" {
     try std.testing.expectEqual(exit_codes.success, code);
     try std.testing.expect(std.mem.indexOf(u8, stdout_stream.getWritten(), "Orca") != null);
     try std.testing.expect(std.mem.indexOf(u8, stdout_stream.getWritten(), "Commands:") != null);
+    try std.testing.expect(std.mem.indexOf(u8, stdout_stream.getWritten(), "Commands:\n  run") != null);
     try std.testing.expectEqualStrings("", stderr_stream.getWritten());
 }
 
@@ -134,7 +154,7 @@ test "version prints development version" {
     const code = try run(&.{"version"}, stdout_stream.writer(), stderr_stream.writer());
 
     try std.testing.expectEqual(exit_codes.success, code);
-    try std.testing.expect(std.mem.startsWith(u8, stdout_stream.getWritten(), "aegis-cli "));
+    try std.testing.expect(std.mem.startsWith(u8, stdout_stream.getWritten(), "orca "));
     try std.testing.expect(std.mem.indexOf(u8, stdout_stream.getWritten(), version) != null);
     try std.testing.expectEqualStrings("", stderr_stream.getWritten());
 }
@@ -196,7 +216,7 @@ test "init dispatch creates policy in provided working directory" {
     const code = try runWithCwd(tmp.dir, &.{ "init", "--mode", "strict" }, stdout_stream.writer(), stderr_stream.writer());
     try std.testing.expectEqual(exit_codes.success, code);
 
-    const policy_text = try tmp.dir.readFileAlloc(std.testing.allocator, ".aegis/policy.yaml", 4096);
+    const policy_text = try tmp.dir.readFileAlloc(std.testing.allocator, ".orca/policy.yaml", 4096);
     defer std.testing.allocator.free(policy_text);
     try std.testing.expect(std.mem.indexOf(u8, policy_text, "mode: strict") != null);
 }

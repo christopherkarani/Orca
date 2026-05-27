@@ -3,12 +3,12 @@
 > Version: 1.1.0
 > Status: Active
 
-This document defines the trust boundaries, sandbox expectations, and permission model for Aegis plugins.
+This document defines the trust boundaries, sandbox expectations, and permission model for Orca plugins.
 
 ## Principles
 
-1. **Aegis CLI is the source of truth.** Plugins call Aegis; they do not reimplement policy logic.
-2. **Strongest protection is `aegis run`.** Plugin hooks are additive, not a replacement for supervised execution.
+1. **Orca is the source of truth.** Plugins call Orca; they do not reimplement policy logic.
+2. **Strongest protection is `orca run`.** Plugin hooks are additive, not a replacement for supervised execution.
 3. **Default deny.** If a plugin cannot verify safety, it must fail closed.
 4. **No silent mutation.** Host configs, policies, and credentials are never changed without explicit user approval.
 5. **No telemetry by default.** The plugin surface does not phone home.
@@ -20,13 +20,13 @@ This document defines the trust boundaries, sandbox expectations, and permission
 │  Host IDE (Codex, Claude Code, etc.)    │  ← Untrusted by default
 │  Runs arbitrary agent code                │
 ├─────────────────────────────────────────┤
-│  Aegis Plugin (future package)          │  ← Semi-trusted; read-only
-│  Calls Aegis CLI for decisions            │
+│  Orca Plugin (future package)          │  ← Semi-trusted; read-only
+│  Calls Orca for decisions            │
 ├─────────────────────────────────────────┤
-│  Aegis CLI (`aegis plugin *`)           │  ← Trusted local surface
+│  Orca (`orca plugin *`)           │  ← Trusted local surface
 │  Owns policy, audit, replay               │
 ├─────────────────────────────────────────┤
-│  Aegis Core (policy engine, audit)      │  ← Trusted
+│  Orca Core (policy engine, audit)      │  ← Trusted
 │  Local-only, no network dependency        │
 └─────────────────────────────────────────┘
 ```
@@ -35,16 +35,16 @@ This document defines the trust boundaries, sandbox expectations, and permission
 
 | Level | What It Can Do | Example |
 |-------|----------------|---------|
-| **Read-only** | Query status, read policy, check manifests | `aegis plugin doctor`, `aegis plugin manifest` |
-| **Preview** | Simulate changes without writing | `aegis plugin install --dry-run` |
+| **Read-only** | Query status, read policy, check manifests | `orca plugin doctor`, `orca plugin manifest` |
+| **Preview** | Simulate changes without writing | `orca plugin install --dry-run` |
 | **Mutate** | Modify host config or policy | Requires `--yes` + explicit user confirmation |
 | **Actuate** | Trigger real-world effects | **Not exposed by default** |
 
 ## Plugin Default Behavior
 
-- `aegis plugin install` defaults to `--dry-run`.
-- `aegis plugin doctor` does not print secrets or raw env values.
-- `aegis plugin mcp-server` is a documented stub; no real server starts.
+- `orca plugin install` defaults to `--dry-run`.
+- `orca plugin doctor` does not print secrets or raw env values.
+- `orca plugin mcp-server` is a documented stub; no real server starts.
 - Drone-related operations are default-deny.
 
 ## Credential Handling
@@ -55,7 +55,7 @@ This document defines the trust boundaries, sandbox expectations, and permission
 
 ## Host Config Mutations
 
-- Aegis plugin commands must not silently overwrite Codex, Claude Code, or other host configs.
+- Orca plugin commands must not silently overwrite Codex, Claude Code, or other host configs.
 - Any config change must be previewed with `--dry-run` first.
 - Any actual change requires `--yes`.
 
@@ -68,7 +68,7 @@ The plugin surface does not claim to sandbox the host IDE. It provides:
 - Safe installation previews
 
 Actual sandboxing is provided by:
-- `aegis run -- <command>` for child process supervision
+- `orca run -- <command>` for child process supervision
 - Host IDE's own extension sandbox (if any)
 - OS-level protections
 
@@ -83,5 +83,5 @@ A plugin request is rejected if it would:
 
 ## See Also
 
-- `docs/integrations/aegis-cli-plugin.md`
+- `docs/integrations/orca-plugin.md`
 - `docs/integrations/drone-safety.md`

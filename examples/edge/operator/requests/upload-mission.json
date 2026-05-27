@@ -2,7 +2,7 @@
   "command_id": "operator-upload-mission-001",
   "vehicle_id": "edge-vehicle-1",
   "action": "upload_mission",
-  "actor": "aegis-edge-example-agent",
+  "actor": "edge-example-agent",
   "timestamp_ms": 1000100,
   "timestamp_source": "monotonic",
   "source": "fake_adapter",

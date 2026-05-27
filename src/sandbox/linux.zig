@@ -1,7 +1,7 @@
 const std = @import("std");
 const builtin = @import("builtin");
 
-const platform = @import("../core/platform.zig");
+const platform = @import("orca_core").platform;
 const backend = @import("backend.zig");
 
 pub const implemented = true;
@@ -117,7 +117,7 @@ fn detectCgroups() Probe {
     if (!pathExists("/sys/fs/cgroup/cgroup.controllers")) {
         return .{ .level = .unavailable, .note = "cgroup v2 controllers file is absent" };
     }
-    return .{ .level = .partial, .note = "cgroup v2 is visible; Aegis does not create or manage a cleanup cgroup in this phase" };
+    return .{ .level = .partial, .note = "cgroup v2 is visible; Orca does not create or manage a cleanup cgroup in this phase" };
 }
 
 fn pathExists(path: []const u8) bool {

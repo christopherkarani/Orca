@@ -3,7 +3,15 @@ const std = @import("std");
 pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
-    const version = b.option([]const u8, "version", "Aegis version metadata") orelse "1.1.0";
+    const version_override = b.option([]const u8, "version", "Orca version metadata");
+    const version = blk: {
+        if (version_override) |v| break :blk v;
+        const version_file = std.fs.cwd().readFileAlloc(b.allocator, "VERSION", 32) catch break :blk "1.1.0";
+        const trimmed = std.mem.trim(u8, version_file, " \n\r\t");
+        const result = b.allocator.dupe(u8, trimmed) catch break :blk "1.1.0";
+        b.allocator.free(version_file);
+        break :blk result;
+    };
     const commit = b.option([]const u8, "commit", "Source commit metadata") orelse "unknown";
     const build_date = b.option([]const u8, "build-date", "UTC build date metadata") orelse "unknown";
 
@@ -19,80 +27,56 @@ pub fn build(b: *std.Build) void {
     edge_schema_documents.addOption([]const u8, "safety_report_v1", @embedFile("schemas/safety-report-v1.json"));
     const edge_schema_documents_mod = edge_schema_documents.createModule();
 
-    const aegis_mod = b.addModule("aegis", .{
-        .root_source_file = b.path("src/root.zig"),
-        .target = target,
-        .optimize = optimize,
-        .imports = &.{
-            .{ .name = "build_options", .module = build_options_mod },
-        },
-    });
+    const core_schema_documents = b.addOptions();
+    core_schema_documents.addOption([]const u8, "policy_v1", @embedFile("schemas/policy-v1.json"));
+    core_schema_documents.addOption([]const u8, "event_v1", @embedFile("schemas/event-v1.json"));
+    core_schema_documents.addOption([]const u8, "mcp_manifest_v1", @embedFile("schemas/mcp-manifest-v1.json"));
+    const core_schema_documents_mod = core_schema_documents.createModule();
+    _ = &core_schema_documents_mod;
 
-    const aegis_core_engine_mod = b.createModule(.{
+    const orca_core_engine_mod = b.createModule(.{
         .root_source_file = b.path("src/core_engine.zig"),
         .target = target,
         .optimize = optimize,
     });
 
-    const aegis_core_mod = b.addModule("aegis_core", .{
+    const orca_core_mod = b.addModule("orca_core", .{
         .root_source_file = b.path("packages/core/src/root.zig"),
         .target = target,
         .optimize = optimize,
         .imports = &.{
-            .{ .name = "core_engine", .module = aegis_core_engine_mod },
+            .{ .name = "core_engine", .module = orca_core_engine_mod },
         },
     });
 
-    const core_compat_files = b.addWriteFiles();
-    const core_compat_root = core_compat_files.add("aegis_core_product_compat.zig",
-        \\const aegis = @import("aegis");
-        \\
-        \\pub const api = aegis.core_api;
-        \\
-        \\pub const core = aegis.core;
-        \\pub const policy = aegis.policy;
-        \\pub const audit = aegis.audit;
-        \\pub const intercept = aegis.intercept;
-        \\pub const redteam = aegis.redteam;
-        \\pub const capabilities = aegis.sandbox.backend;
-        \\
-        \\pub const actions = core.types;
-        \\pub const decision = core.decision;
-        \\pub const event = core.event;
-        \\pub const limits = core.limits;
-        \\pub const platform = core.platform;
-        \\pub const session = core.session;
-        \\pub const types = core.types;
-        \\pub const util = core.util;
-        \\
-        \\pub const phase = "core-product-compat";
-    );
-    const aegis_core_product_compat_mod = b.createModule(.{
-        .root_source_file = core_compat_root,
+    const orca_mod = b.addModule("orca", .{
+        .root_source_file = b.path("src/root.zig"),
         .target = target,
         .optimize = optimize,
         .imports = &.{
-            .{ .name = "aegis", .module = aegis_mod },
+            .{ .name = "orca_core", .module = orca_core_mod },
+            .{ .name = "build_options", .module = build_options_mod },
         },
     });
+    orca_mod.addImport("build_options", build_options_mod);
 
-    const aegis_cli_mod = b.addModule("aegis_cli", .{
+    const orca_cli_mod = b.addModule("orca_cli", .{
         .root_source_file = b.path("packages/cli/src/root.zig"),
         .target = target,
         .optimize = optimize,
         .imports = &.{
-            .{ .name = "aegis", .module = aegis_mod },
-            .{ .name = "aegis_core", .module = aegis_core_product_compat_mod },
+            .{ .name = "orca", .module = orca_mod },
+            .{ .name = "orca_core", .module = orca_core_mod },
             .{ .name = "build_options", .module = build_options_mod },
         },
     });
 
-    const aegis_edge_mod = b.addModule("aegis_edge", .{
+    const orca_edge_mod = b.addModule("orca_edge", .{
         .root_source_file = b.path("packages/edge/src/root.zig"),
         .target = target,
         .optimize = optimize,
         .imports = &.{
-            .{ .name = "aegis_core", .module = aegis_core_product_compat_mod },
+            .{ .name = "orca_core", .module = orca_core_mod },
         },
     });
 
@@ -103,40 +87,33 @@ pub fn build(b: *std.Build) void {
             .target = target,
             .optimize = optimize,
             .imports = &.{
-                .{ .name = "aegis", .module = aegis_mod },
+                .{ .name = "orca", .module = orca_mod },
                 .{ .name = "build_options", .module = build_options_mod },
             },
         }),
     });
 
     b.installArtifact(exe);
-
-    // Compatibility alias: aegis -> orca
-    const aegis_alias = b.addInstallBinFile(exe.getEmittedBin(), "aegis");
-    aegis_alias.step.dependOn(&exe.step);
-    b.getInstallStep().dependOn(&aegis_alias.step);
+    const install_orca = b.addInstallArtifact(exe, .{});
+    const install_orca_step = b.step("install-orca", "Install Orca CLI only");
+    install_orca_step.dependOn(&install_orca.step);
 
     const edge_exe_mod = b.createModule(.{
         .root_source_file = b.path("packages/edge/src/main.zig"),
         .target = target,
         .optimize = optimize,
         .imports = &.{
-            .{ .name = "aegis_edge", .module = aegis_edge_mod },
+            .{ .name = "orca_edge", .module = orca_edge_mod },
             .{ .name = "edge_schema_documents", .module = edge_schema_documents_mod },
             .{ .name = "build_options", .module = build_options_mod },
         },
     });
     const edge_exe = b.addExecutable(.{
-        .name = "orca-edge",
+        .name = "edge",
         .root_module = edge_exe_mod,
     });
 
     b.installArtifact(edge_exe);
-
-    // Compatibility alias: aegis-edge -> orca-edge
-    const aegis_edge_alias = b.addInstallBinFile(edge_exe.getEmittedBin(), "aegis-edge");
-    aegis_edge_alias.step.dependOn(&edge_exe.step);
-    b.getInstallStep().dependOn(&aegis_edge_alias.step);
 
     const run_step = b.step("run", "Run the Orca CLI");
     const run_cmd = b.addRunArtifact(exe);
@@ -147,7 +124,7 @@ pub fn build(b: *std.Build) void {
     run_step.dependOn(&run_cmd.step);
 
     const lib_tests = b.addTest(.{
-        .root_module = aegis_mod,
+        .root_module = orca_mod,
     });
     const run_lib_tests = b.addRunArtifact(lib_tests);
 
@@ -157,7 +134,7 @@ pub fn build(b: *std.Build) void {
     const run_exe_tests = b.addRunArtifact(exe_tests);
 
     const core_package_tests = b.addTest(.{
-        .root_module = aegis_core_mod,
+        .root_module = orca_core_mod,
     });
     const run_core_package_tests = b.addRunArtifact(core_package_tests);
 
@@ -167,14 +144,14 @@ pub fn build(b: *std.Build) void {
             .target = target,
             .optimize = optimize,
             .imports = &.{
-                .{ .name = "aegis_core", .module = aegis_core_mod },
+                .{ .name = "orca_core", .module = orca_core_mod },
             },
         }),
     });
     const run_core_contract_tests = b.addRunArtifact(core_contract_tests);
 
     const cli_package_tests = b.addTest(.{
-        .root_module = aegis_cli_mod,
+        .root_module = orca_cli_mod,
     });
     const run_cli_package_tests = b.addRunArtifact(cli_package_tests);
 
@@ -184,14 +161,14 @@ pub fn build(b: *std.Build) void {
             .target = target,
             .optimize = optimize,
             .imports = &.{
-                .{ .name = "aegis_cli", .module = aegis_cli_mod },
+                .{ .name = "orca_cli", .module = orca_cli_mod },
             },
         }),
     });
     const run_cli_contract_tests = b.addRunArtifact(cli_contract_tests);
 
     const edge_package_tests = b.addTest(.{
-        .root_module = aegis_edge_mod,
+        .root_module = orca_edge_mod,
     });
     const run_edge_package_tests = b.addRunArtifact(edge_package_tests);
 
@@ -201,7 +178,7 @@ pub fn build(b: *std.Build) void {
             .target = target,
             .optimize = optimize,
             .imports = &.{
-                .{ .name = "aegis_edge", .module = aegis_edge_mod },
+                .{ .name = "orca_edge", .module = orca_edge_mod },
             },
         }),
     });
@@ -218,7 +195,8 @@ pub fn build(b: *std.Build) void {
             .target = target,
             .optimize = optimize,
             .imports = &.{
-                .{ .name = "aegis_edge", .module = aegis_edge_mod },
+                .{ .name = "orca_core", .module = orca_core_mod },
+                .{ .name = "orca_edge", .module = orca_edge_mod },
             },
         }),
     });
@@ -230,7 +208,7 @@ pub fn build(b: *std.Build) void {
             .target = target,
             .optimize = optimize,
             .imports = &.{
-                .{ .name = "aegis", .module = aegis_mod },
+                .{ .name = "orca", .module = orca_mod },
             },
         }),
     });
@@ -242,7 +220,7 @@ pub fn build(b: *std.Build) void {
             .target = target,
             .optimize = optimize,
             .imports = &.{
-                .{ .name = "aegis_edge", .module = aegis_edge_mod },
+                .{ .name = "orca_edge", .module = orca_edge_mod },
             },
         }),
     });
@@ -254,7 +232,7 @@ pub fn build(b: *std.Build) void {
             .target = target,
             .optimize = optimize,
             .imports = &.{
-                .{ .name = "aegis_edge", .module = aegis_edge_mod },
+                .{ .name = "orca_edge", .module = orca_edge_mod },
             },
         }),
     });
@@ -266,7 +244,7 @@ pub fn build(b: *std.Build) void {
             .target = target,
             .optimize = optimize,
             .imports = &.{
-                .{ .name = "aegis_edge", .module = aegis_edge_mod },
+                .{ .name = "orca_edge", .module = orca_edge_mod },
             },
         }),
     });
@@ -278,7 +256,7 @@ pub fn build(b: *std.Build) void {
             .target = target,
             .optimize = optimize,
             .imports = &.{
-                .{ .name = "aegis_edge", .module = aegis_edge_mod },
+                .{ .name = "orca_edge", .module = orca_edge_mod },
             },
         }),
     });
@@ -290,7 +268,7 @@ pub fn build(b: *std.Build) void {
             .target = target,
             .optimize = optimize,
             .imports = &.{
-                .{ .name = "aegis_edge", .module = aegis_edge_mod },
+                .{ .name = "orca_edge", .module = orca_edge_mod },
             },
         }),
     });
@@ -302,7 +280,7 @@ pub fn build(b: *std.Build) void {
             .target = target,
             .optimize = optimize,
             .imports = &.{
-                .{ .name = "aegis_edge", .module = aegis_edge_mod },
+                .{ .name = "orca_edge", .module = orca_edge_mod },
             },
         }),
     });
@@ -314,7 +292,7 @@ pub fn build(b: *std.Build) void {
             .target = target,
             .optimize = optimize,
             .imports = &.{
-                .{ .name = "aegis_edge", .module = aegis_edge_mod },
+                .{ .name = "orca_edge", .module = orca_edge_mod },
             },
         }),
     });
@@ -326,7 +304,7 @@ pub fn build(b: *std.Build) void {
             .target = target,
             .optimize = optimize,
             .imports = &.{
-                .{ .name = "aegis_edge", .module = aegis_edge_mod },
+                .{ .name = "orca_edge", .module = orca_edge_mod },
             },
         }),
     });
@@ -338,7 +316,7 @@ pub fn build(b: *std.Build) void {
             .target = target,
             .optimize = optimize,
             .imports = &.{
-                .{ .name = "aegis_edge", .module = aegis_edge_mod },
+                .{ .name = "orca_edge", .module = orca_edge_mod },
             },
         }),
     });
@@ -350,7 +328,7 @@ pub fn build(b: *std.Build) void {
             .target = target,
             .optimize = optimize,
             .imports = &.{
-                .{ .name = "aegis_edge", .module = aegis_edge_mod },
+                .{ .name = "orca_edge", .module = orca_edge_mod },
             },
         }),
     });
@@ -362,7 +340,7 @@ pub fn build(b: *std.Build) void {
             .target = target,
             .optimize = optimize,
             .imports = &.{
-                .{ .name = "aegis_edge", .module = aegis_edge_mod },
+                .{ .name = "orca_edge", .module = orca_edge_mod },
             },
         }),
     });
@@ -374,7 +352,7 @@ pub fn build(b: *std.Build) void {
             .target = target,
             .optimize = optimize,
             .imports = &.{
-                .{ .name = "aegis_edge", .module = aegis_edge_mod },
+                .{ .name = "orca_edge", .module = orca_edge_mod },
             },
         }),
     });
@@ -386,8 +364,8 @@ pub fn build(b: *std.Build) void {
             .target = target,
             .optimize = optimize,
             .imports = &.{
-                .{ .name = "aegis_edge", .module = aegis_edge_mod },
-                .{ .name = "aegis_edge_main", .module = edge_exe_mod },
+                .{ .name = "orca_edge", .module = orca_edge_mod },
+                .{ .name = "orca_edge_main", .module = edge_exe_mod },
                 .{ .name = "edge_schema_documents", .module = edge_schema_documents_mod },
                 .{ .name = "build_options", .module = build_options_mod },
             },
@@ -401,7 +379,7 @@ pub fn build(b: *std.Build) void {
             .target = target,
             .optimize = optimize,
             .imports = &.{
-                .{ .name = "aegis_edge_main", .module = edge_exe_mod },
+                .{ .name = "orca_edge_main", .module = edge_exe_mod },
             },
         }),
     });
@@ -413,8 +391,8 @@ pub fn build(b: *std.Build) void {
             .target = target,
             .optimize = optimize,
             .imports = &.{
-                .{ .name = "aegis_edge", .module = aegis_edge_mod },
-                .{ .name = "aegis_edge_main", .module = edge_exe_mod },
+                .{ .name = "orca_edge", .module = orca_edge_mod },
+                .{ .name = "orca_edge_main", .module = edge_exe_mod },
             },
         }),
     });
@@ -426,8 +404,8 @@ pub fn build(b: *std.Build) void {
             .target = target,
             .optimize = optimize,
             .imports = &.{
-                .{ .name = "aegis", .module = aegis_mod },
-                .{ .name = "aegis_edge_main", .module = edge_exe_mod },
+                .{ .name = "orca", .module = orca_mod },
+                .{ .name = "orca_edge_main", .module = edge_exe_mod },
             },
         }),
     });
@@ -478,6 +456,61 @@ pub fn build(b: *std.Build) void {
     });
     const run_phase39_openclaw_plugin_tests = b.addRunArtifact(phase39_openclaw_plugin_tests);
 
+    const phase43_hermes_plugin_tests = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("tests/phase43_hermes_plugin.zig"),
+            .target = target,
+            .optimize = optimize,
+        }),
+    });
+    const run_phase43_hermes_plugin_tests = b.addRunArtifact(phase43_hermes_plugin_tests);
+
+    const phase44_version_drift_tests = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("tests/phase44_version_drift.zig"),
+            .target = target,
+            .optimize = optimize,
+        }),
+    });
+    const run_phase44_version_drift_tests = b.addRunArtifact(phase44_version_drift_tests);
+
+    const phase44_setup_opencode_tests = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("tests/phase44_setup_opencode_detection.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .name = "orca", .module = orca_mod },
+            },
+        }),
+    });
+    const run_phase44_setup_opencode_tests = b.addRunArtifact(phase44_setup_opencode_tests);
+
+    const phase44_install_workspace_paths_tests = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("tests/phase44_install_workspace_paths.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .name = "orca", .module = orca_mod },
+            },
+        }),
+    });
+    const run_phase44_install_workspace_paths_tests = b.addRunArtifact(phase44_install_workspace_paths_tests);
+
+    const setup_tests = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("tests/setup.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .name = "orca", .module = orca_mod },
+                .{ .name = "orca_core", .module = orca_core_mod },
+            },
+        }),
+    });
+    const run_setup_tests = b.addRunArtifact(setup_tests);
+
     const test_step = b.step("test", "Run unit tests");
     test_step.dependOn(&run_lib_tests.step);
     test_step.dependOn(&run_exe_tests.step);
@@ -511,6 +544,11 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&run_phase37_claude_plugin_tests.step);
     test_step.dependOn(&run_phase38_plugin_security_tests.step);
     test_step.dependOn(&run_phase39_openclaw_plugin_tests.step);
+    test_step.dependOn(&run_phase43_hermes_plugin_tests.step);
+    test_step.dependOn(&run_phase44_version_drift_tests.step);
+    test_step.dependOn(&run_phase44_setup_opencode_tests.step);
+    test_step.dependOn(&run_phase44_install_workspace_paths_tests.step);
+    test_step.dependOn(&run_setup_tests.step);
 
     const fuzz_tests = b.addTest(.{
         .root_module = b.createModule(.{
@@ -518,7 +556,7 @@ pub fn build(b: *std.Build) void {
             .target = target,
             .optimize = optimize,
             .imports = &.{
-                .{ .name = "aegis", .module = aegis_mod },
+                .{ .name = "orca", .module = orca_mod },
             },
         }),
     });
@@ -531,22 +569,23 @@ pub fn build(b: *std.Build) void {
         .cpu_arch = .x86_64,
         .os_tag = .windows,
     });
-    const windows_mod = b.addModule("aegis-windows-check", .{
+    const windows_mod = b.addModule("orca-windows-check", .{
         .root_source_file = b.path("src/root.zig"),
         .target = windows_target,
         .optimize = optimize,
         .imports = &.{
+            .{ .name = "orca_core", .module = orca_core_mod },
             .{ .name = "build_options", .module = build_options_mod },
         },
     });
     const windows_exe = b.addExecutable(.{
-        .name = "aegis-windows-check",
+        .name = "orca-windows-check",
         .root_module = b.createModule(.{
             .root_source_file = b.path("src/main.zig"),
             .target = windows_target,
             .optimize = optimize,
             .imports = &.{
-                .{ .name = "aegis", .module = windows_mod },
+                .{ .name = "orca", .module = windows_mod },
                 .{ .name = "build_options", .module = build_options_mod },
             },
         }),

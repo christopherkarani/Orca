@@ -6,8 +6,10 @@ const help = @import("help.zig");
 const commands = [_][]const u8{
     "run",
     "init",
+    "setup",
     "doctor",
     "policy",
+    "credentials",
     "replay",
     "diff",
     "apply",
@@ -15,6 +17,15 @@ const commands = [_][]const u8{
     "mcp",
     "redteam",
     "completions",
+    "shim",
+    "plugin",
+    "decide",
+    "hook",
+    "dashboard",
+    "report",
+    "license",
+    "ci",
+    "demo",
     "version",
     "help",
 };
@@ -28,6 +39,18 @@ const common_flags = [_][]const u8{
     "--force",
     "--ci",
     "--json",
+    "--format",
+    "--session",
+    "--session-name",
+    "--no-secrets",
+    "--secretless",
+    "--inherit-env",
+    "--no-network",
+    "--allow-network",
+    "--network",
+    "--network-backend",
+    "--require-backend",
+    "--github-summary",
 };
 
 pub fn command(argv: []const []const u8, stdout: anytype, stderr: anytype) !u8 {
@@ -65,7 +88,7 @@ fn writeWords(writer: anytype, words: []const []const u8) !void {
 
 fn writeBash(writer: anytype) !void {
     try writer.writeAll(
-        \\_aegis_completions() {
+        \\_orca_completions() {
         \\  local cur prev commands flags
         \\  COMPREPLY=()
         \\  cur="${COMP_WORDS[COMP_CWORD]}"
@@ -86,15 +109,15 @@ fn writeBash(writer: anytype) !void {
         \\    COMPREPLY=( $(compgen -W "${flags}" -- "${cur}") )
         \\  fi
         \\}
-        \\complete -F _aegis_completions aegis
+        \\complete -F _orca_completions orca
         \\
     );
 }
 
 fn writeZsh(writer: anytype) !void {
     try writer.writeAll(
-        \\#compdef aegis
-        \\_aegis() {
+        \\#compdef orca
+        \\_orca() {
         \\  local -a commands flags
         \\  commands=(
     );
@@ -164,7 +187,24 @@ test "completions output is non-empty for supported shells" {
     }
 }
 
-test "GitHub Actions documentation includes Aegis run and redteam commands" {
+test "completions include public internal command and common run flags" {
+    var stdout_buf: [8192]u8 = undefined;
+    var stderr_buf: [512]u8 = undefined;
+    var stdout_stream = std.io.fixedBufferStream(&stdout_buf);
+    var stderr_stream = std.io.fixedBufferStream(&stderr_buf);
+
+    const code = try command(&.{"bash"}, stdout_stream.writer(), stderr_stream.writer());
+
+    try std.testing.expectEqual(exit_codes.success, code);
+    try std.testing.expect(std.mem.indexOf(u8, stdout_stream.getWritten(), "shim") != null);
+    try std.testing.expect(std.mem.indexOf(u8, stdout_stream.getWritten(), "--session-name") != null);
+    try std.testing.expect(std.mem.indexOf(u8, stdout_stream.getWritten(), "--no-network") != null);
+    try std.testing.expect(std.mem.indexOf(u8, stdout_stream.getWritten(), "--allow-network") != null);
+    try std.testing.expect(std.mem.indexOf(u8, stdout_stream.getWritten(), "--require-backend") != null);
+    try std.testing.expectEqualStrings("", stderr_stream.getWritten());
+}
+
+test "GitHub Actions documentation includes Orca run and redteam commands" {
     const doc = try std.fs.cwd().readFileAlloc(std.testing.allocator, "docs/ci/github-actions.md", 32 * 1024);
     defer std.testing.allocator.free(doc);
     try std.testing.expect(std.mem.indexOf(u8, doc, "orca run --mode ci -- ./scripts/agent-task.sh") != null);

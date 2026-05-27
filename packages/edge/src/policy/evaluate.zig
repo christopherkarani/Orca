@@ -3,7 +3,7 @@ const std = @import("std");
 const domain = @import("../domain/mod.zig");
 const health = @import("../health/mod.zig");
 const schema = @import("../schema/mod.zig");
-const core = @import("aegis_core");
+const core = @import("orca_core");
 
 pub const EvaluationMode = enum {
     observe,
@@ -204,7 +204,7 @@ pub fn evaluateEdgeAction(
 
     const requested_target = try auditTarget(allocator, request, vehicle_state);
     defer allocator.free(requested_target);
-    try builder.addAuditEvent("vehicle.command_requested", .edge_vehicle_command, requested_target, decision);
+    try builder.addAuditEvent("vehicle.command_requested", .extension_target, requested_target, decision);
 
     if (disposition == .deny or isNeverSafeDefault(request.action)) {
         result = .deny;
@@ -304,7 +304,7 @@ pub fn evaluateEdgeAction(
         .deny => "vehicle.command_denied",
         else => "vehicle.command_denied",
     };
-    try builder.addAuditEvent(final_event_type, .edge_vehicle_command, requested_target, decision);
+    try builder.addAuditEvent(final_event_type, .extension_target, requested_target, decision);
 
     return .{
         .allocator = allocator,
@@ -332,9 +332,9 @@ pub fn appendPreparedAuditEvents(
             .session_id = session_id,
             .event_id = try core.event.generateEventId(timestamp),
             .timestamp = timestamp,
-            .event_type = try coreEventType(payload.event_type),
-            .actor = .{ .kind = .aegis, .display = "aegis-edge" },
-            .target = .{ .kind = payload.target_kind, .value = payload.target_value },
+            .event_type = core.api.fromCoreEventType(try coreEventType(payload.event_type)),
+            .actor = .{ .kind = .orca, .display = "edge" },
+            .target = .{ .kind = core.api.fromCoreTargetKind(payload.target_kind), .value = payload.target_value },
             .decision = payload.decision,
         });
         try core.api.appendAuditEvent(writer, event);
@@ -364,7 +364,7 @@ fn evaluateFreshness(
         if (!freshness.allow_emergency_land_on_stale_state or !policy.safety.emergency.allow_land) {
             try builder.addFinding(.state_freshness, "land denied on stale state because emergency landing is disabled age_ms={d}", .{age_ms});
             try builder.addViolation(.state_freshness, "emergency land on stale state disabled by policy", .{});
-            try addSafetyAudit(builder, "safety.stale_state_denied", .edge_safety_envelope, "land stale state emergency action disabled", .deny, request.action);
+            try addSafetyAudit(builder, "safety.stale_state_denied", .extension_target, "land stale state emergency action disabled", .deny, request.action);
             return .{ .result = .deny, .reason = "stale land disabled by emergency policy" };
         }
         if (policy.commands.resolve(.land) != .deny) {
@@ -375,13 +375,13 @@ fn evaluateFreshness(
     if (request.action == .return_to_home and (!freshness.allow_return_home_on_stale_state or !policy.safety.emergency.allow_return_to_home)) {
         try builder.addFinding(.state_freshness, "return_to_home denied on stale state because emergency return is disabled age_ms={d}", .{age_ms});
         try builder.addViolation(.state_freshness, "emergency return_to_home on stale state disabled by policy", .{});
-        try addSafetyAudit(builder, "safety.stale_state_denied", .edge_safety_envelope, "return_to_home stale state emergency action disabled", .deny, request.action);
+        try addSafetyAudit(builder, "safety.stale_state_denied", .extension_target, "return_to_home stale state emergency action disabled", .deny, request.action);
         return .{ .result = .deny, .reason = "stale return_to_home disabled by emergency policy" };
     }
     if (request.action == .return_to_home and state.home_position == null) {
         try builder.addFinding(.state_freshness, "return_to_home denied on stale state without valid home position age_ms={d}", .{age_ms});
         try builder.addViolation(.state_freshness, "return_to_home on stale state requires known home position", .{});
-        try addSafetyAudit(builder, "safety.stale_state_denied", .edge_safety_envelope, "return_to_home stale state without home position", .deny, request.action);
+        try addSafetyAudit(builder, "safety.stale_state_denied", .extension_target, "return_to_home stale state without home position", .deny, request.action);
         return .{ .result = .deny, .reason = "stale return_to_home missing home position" };
     }
     if (request.action == .return_to_home and state.home_position != null and policy.commands.resolve(.return_to_home) != .deny) {
@@ -394,7 +394,7 @@ fn evaluateFreshness(
         const deny_decision = core.api.makeDecision(.{ .result = .deny, .reason = "stale state denied", .risk_score = riskScore(domain.risk.classifyCommand(request.action)) });
         const target = try std.fmt.allocPrint(builder.allocator, "fake_adapter vehicle={s} command={s} state_age_ms={d}", .{ state.vehicle_id.value, @tagName(request.action), age_ms });
         defer builder.allocator.free(target);
-        try builder.addAuditEvent("safety.stale_state_denied", .edge_safety_envelope, target, deny_decision);
+        try builder.addAuditEvent("safety.stale_state_denied", .extension_target, target, deny_decision);
         return .{ .result = .deny, .reason = "stale state denied" };
     }
     return null;
@@ -411,36 +411,36 @@ fn evaluateBattery(
     if (battery_policy.require_fresh_battery_state and maybe_battery == null and isHighRiskMovement(request.action)) {
         try builder.addFinding(.battery, "battery state is required but unavailable", .{});
         try builder.addViolation(.battery, "missing battery state for {s}", .{@tagName(request.action)});
-        try addSafetyAudit(builder, "safety.battery_constraint", .edge_safety_envelope, "battery missing", .deny, request.action);
+        try addSafetyAudit(builder, "safety.battery_constraint", .extension_target, "battery missing", .deny, request.action);
         return .{ .result = .deny, .reason = "required battery state missing" };
     }
     const battery = maybe_battery orelse return null;
     if (battery_policy.require_fresh_battery_state and battery.source == .unknown and isHighRiskMovement(request.action)) {
         try builder.addFinding(.battery, "battery state source is unknown", .{});
         try builder.addViolation(.battery, "unknown battery timestamp source", .{});
-        try addSafetyAudit(builder, "safety.battery_constraint", .edge_safety_envelope, "battery source unknown", .deny, request.action);
+        try addSafetyAudit(builder, "safety.battery_constraint", .extension_target, "battery source unknown", .deny, request.action);
         return .{ .result = .deny, .reason = "required battery state unknown" };
     }
     if (request.action == .takeoff and battery.percent_remaining < battery_policy.deny_takeoff_below_percent) {
         try builder.addFinding(.battery, "takeoff denied below threshold: observed={d:.2}% threshold={d:.2}%", .{ battery.percent_remaining, battery_policy.deny_takeoff_below_percent });
         try builder.addViolation(.battery, "takeoff battery threshold violated", .{});
-        try addSafetyAudit(builder, "safety.battery_constraint", .edge_safety_envelope, "takeoff below battery threshold", .deny, request.action);
+        try addSafetyAudit(builder, "safety.battery_constraint", .extension_target, "takeoff below battery threshold", .deny, request.action);
         return .{ .result = .deny, .reason = "battery below takeoff threshold", .fallback = if (battery.percent_remaining <= battery_policy.land_below_percent) .land else .return_to_home };
     }
     if (battery.percent_remaining <= battery_policy.land_below_percent and request.action == .land and !policy.safety.emergency.allow_land) {
         try builder.addFinding(.battery, "land denied below critical battery because emergency landing is disabled: observed={d:.2}% threshold={d:.2}%", .{ battery.percent_remaining, battery_policy.land_below_percent });
         try builder.addViolation(.battery, "emergency land disabled by policy", .{});
-        try addSafetyAudit(builder, "safety.battery_constraint", .edge_safety_envelope, "critical battery land disabled", .deny, request.action);
+        try addSafetyAudit(builder, "safety.battery_constraint", .extension_target, "critical battery land disabled", .deny, request.action);
         return .{ .result = .deny, .reason = "emergency land disabled" };
     }
     if (battery.percent_remaining <= battery_policy.land_below_percent and request.action != .land) {
         try builder.addFinding(.battery, "land recommended below threshold: observed={d:.2}% threshold={d:.2}%", .{ battery.percent_remaining, battery_policy.land_below_percent });
-        try addSafetyAudit(builder, "safety.battery_constraint", .edge_safety_envelope, "land threshold reached", .deny, request.action);
+        try addSafetyAudit(builder, "safety.battery_constraint", .extension_target, "land threshold reached", .deny, request.action);
         return .{ .result = .deny, .reason = "battery below land threshold", .fallback = .land };
     }
     if (battery.percent_remaining <= battery_policy.return_home_below_percent and isMovementCommand(request.action) and request.action != .return_to_home and request.action != .land) {
         try builder.addFinding(.battery, "return_to_home recommended below threshold: observed={d:.2}% threshold={d:.2}%", .{ battery.percent_remaining, battery_policy.return_home_below_percent });
-        try addSafetyAudit(builder, "safety.battery_constraint", .edge_safety_envelope, "return_home threshold reached", .deny, request.action);
+        try addSafetyAudit(builder, "safety.battery_constraint", .extension_target, "return_home threshold reached", .deny, request.action);
         return .{ .result = .deny, .reason = "battery below return_home threshold", .fallback = .return_to_home };
     }
     return null;
@@ -458,14 +458,14 @@ fn evaluateRuntimeHealth(
     if (report.findings.len > 0) {
         const finding = report.findings[0];
         try builder.addFinding(.health, "runtime health {s}: {s}", .{ finding.status.toString(), finding.reason });
-        try addSafetyAudit(builder, finding.eventReference(), .edge_safety_envelope, finding.reason, .deny, request.action);
+        try addSafetyAudit(builder, finding.eventReference(), .extension_target, finding.reason, .deny, request.action);
     } else if (report.overall_status != .healthy) {
         try builder.addFinding(.health, "runtime health {s}", .{report.overall_status.toString()});
-        try addSafetyAudit(builder, "health.watchdog.finding", .edge_safety_envelope, report.overall_status.toString(), .deny, request.action);
+        try addSafetyAudit(builder, "health.watchdog.finding", .extension_target, report.overall_status.toString(), .deny, request.action);
     }
     if (health_decision.decision == .deny) {
         try builder.addViolation(.health, "watchdog degraded behavior {s}: {s}", .{ health_decision.behavior.toString(), health_decision.reason });
-        try addSafetyAudit(builder, "health.command_denied", .edge_safety_envelope, health_decision.reason, .deny, request.action);
+        try addSafetyAudit(builder, "health.command_denied", .extension_target, health_decision.reason, .deny, request.action);
         return .{ .result = .deny, .reason = health_decision.reason };
     }
     return null;
@@ -480,7 +480,7 @@ fn evaluateMissionCommand(
     if (request.action != .start_mission) return null;
     try builder.addFinding(.mission, "mission start denied because no prior safe mission status is attached to this request", .{});
     try builder.addViolation(.mission, "mission start requires auditable mission safety status", .{});
-    try addSafetyAudit(builder, "safety.mission_item_denied", .edge_mission, "mission start missing safe mission status", .deny, request.action);
+    try addSafetyAudit(builder, "safety.mission_item_denied", .extension_target, "mission start missing safe mission status", .deny, request.action);
     return .{ .result = .deny, .reason = "mission safety status required" };
 }
 
@@ -493,27 +493,27 @@ fn evaluateModeAndAuthority(
     if (request.action == .override_operator) {
         try builder.addFinding(.authority, "override_operator is denied by default", .{});
         try builder.addViolation(.authority, "operator authority cannot be overridden by agent policy", .{});
-        try addSafetyAudit(builder, "safety.authority_constraint", .edge_vehicle_command, "override_operator denied", .deny, request.action);
+        try addSafetyAudit(builder, "safety.authority_constraint", .extension_target, "override_operator denied", .deny, request.action);
         return .{ .result = .deny, .reason = "operator override denied" };
     }
     if (!requiresAutonomousControl(request.action)) return null;
     if (state.control_authority == .failsafe) {
         try builder.addFinding(.authority, "failsafe authority is active", .{});
         try builder.addViolation(.authority, "agent policy cannot override failsafe authority", .{});
-        try addSafetyAudit(builder, "safety.authority_constraint", .edge_vehicle_command, "failsafe authority active", .deny, request.action);
+        try addSafetyAudit(builder, "safety.authority_constraint", .extension_target, "failsafe authority active", .deny, request.action);
         return .{ .result = .deny, .reason = "failsafe authority active" };
     }
     if (state.control_authority == .human_operator or state.mode == .manual) {
         const result: core.decision.DecisionResult = if (context.mode == .ask or context.mode == .simulation or context.mode == .bench) .ask else .deny;
         try builder.addFinding(.authority, "manual or human control is active: mode={s} authority={s}", .{ @tagName(state.mode), @tagName(state.control_authority) });
         try builder.addViolation(.authority, "autonomous command incompatible with current control authority", .{});
-        try addSafetyAudit(builder, "safety.authority_constraint", .edge_vehicle_command, "manual or human authority active", result, request.action);
+        try addSafetyAudit(builder, "safety.authority_constraint", .extension_target, "manual or human authority active", result, request.action);
         return .{ .result = result, .reason = "manual or human authority active" };
     }
     if (state.control_authority == .unknown or state.mode == .unknown) {
         try builder.addFinding(.mode, "mode or authority is unknown", .{});
         try builder.addViolation(.mode, "unknown mode/control authority is unsafe", .{});
-        try addSafetyAudit(builder, "safety.mode_constraint", .edge_vehicle_command, "unknown mode or authority", .deny, request.action);
+        try addSafetyAudit(builder, "safety.mode_constraint", .extension_target, "unknown mode or authority", .deny, request.action);
         return .{ .result = .deny, .reason = "unknown mode or authority" };
     }
     return null;
@@ -539,14 +539,14 @@ fn evaluateGeofence(
             try builder.addFinding(.geofence, "current position is outside configured geofence", .{});
             if (requiresFreshPosition(request.action) and request.action != .return_to_home) {
                 try builder.addViolation(.geofence, "movement command denied while current position is outside geofence", .{});
-                try addSafetyAudit(builder, "safety.geofence_violation", .edge_geofence, "current position outside geofence", .deny, request.action);
+                try addSafetyAudit(builder, "safety.geofence_violation", .extension_target, "current position outside geofence", .deny, request.action);
                 return .{ .result = .deny, .reason = "current position outside geofence" };
             }
         }
     } else if (requiresFreshPosition(request.action)) {
         try builder.addFinding(.geofence, "current position is unknown", .{});
         try builder.addViolation(.geofence, "movement command requires known current position", .{});
-        try addSafetyAudit(builder, "safety.geofence_violation", .edge_geofence, "current position unknown", .deny, request.action);
+        try addSafetyAudit(builder, "safety.geofence_violation", .extension_target, "current position unknown", .deny, request.action);
         return .{ .result = .deny, .reason = "current position unknown" };
     }
 
@@ -555,7 +555,7 @@ fn evaluateGeofence(
     if (waypoint.altitude_reference != geofence.altitude_reference) {
         try builder.addFinding(.geofence, "waypoint altitude reference mismatch: waypoint={s} policy={s}", .{ @tagName(waypoint.altitude_reference), @tagName(geofence.altitude_reference) });
         try builder.addViolation(.geofence, "altitude reference conversion is unsupported", .{});
-        try addSafetyAudit(builder, "safety.geofence_violation", .edge_geofence, "altitude reference mismatch", .deny, request.action);
+        try addSafetyAudit(builder, "safety.geofence_violation", .extension_target, "altitude reference mismatch", .deny, request.action);
         return .{ .result = .deny, .reason = "unsupported altitude reference conversion" };
     }
     if (!pointInsideCircle(waypoint, geofence.shape.circle)) {
@@ -565,7 +565,7 @@ fn evaluateGeofence(
         };
         try builder.addFinding(.geofence, "waypoint outside circular geofence radius_m={d:.2}", .{geofence.shape.circle.max_radius_m});
         try builder.addViolation(.geofence, "waypoint outside horizontal geofence", .{});
-        try addSafetyAudit(builder, "safety.geofence_violation", .edge_geofence, "waypoint outside geofence", result, request.action);
+        try addSafetyAudit(builder, "safety.geofence_violation", .extension_target, "waypoint outside geofence", result, request.action);
         const fallback: ?domain.commands.CommandAction = switch (geofence.boundary_action) {
             .return_to_home => .return_to_home,
             .land => .land,
@@ -595,19 +595,19 @@ fn evaluateAltitude(
     if (actual_target.reference != limits.altitude_reference) {
         try builder.addFinding(.altitude, "target altitude reference mismatch: target={s} policy={s}", .{ @tagName(actual_target.reference), @tagName(limits.altitude_reference) });
         try builder.addViolation(.altitude, "altitude reference conversion is unsupported", .{});
-        try addSafetyAudit(builder, "safety.altitude_violation", .edge_safety_envelope, "altitude reference mismatch", .deny, request.action);
+        try addSafetyAudit(builder, "safety.altitude_violation", .extension_target, "altitude reference mismatch", .deny, request.action);
         return .{ .result = .deny, .reason = "unsupported altitude reference conversion" };
     }
     if (actual_target.value > limits.max_altitude_m) {
         try builder.addFinding(.altitude, "target altitude above ceiling: observed={d:.2} ceiling={d:.2}", .{ actual_target.value, limits.max_altitude_m });
         try builder.addViolation(.altitude, "altitude ceiling violated", .{});
-        try addSafetyAudit(builder, "safety.altitude_violation", .edge_safety_envelope, "altitude ceiling violated", .deny, request.action);
+        try addSafetyAudit(builder, "safety.altitude_violation", .extension_target, "altitude ceiling violated", .deny, request.action);
         return .{ .result = .deny, .reason = "altitude above ceiling" };
     }
     if (actual_target.value < limits.min_altitude_m and request.action != .land) {
         try builder.addFinding(.altitude, "target altitude below floor: observed={d:.2} floor={d:.2}", .{ actual_target.value, limits.min_altitude_m });
         try builder.addViolation(.altitude, "altitude floor violated", .{});
-        try addSafetyAudit(builder, "safety.altitude_violation", .edge_safety_envelope, "altitude floor violated", .deny, request.action);
+        try addSafetyAudit(builder, "safety.altitude_violation", .extension_target, "altitude floor violated", .deny, request.action);
         return .{ .result = .deny, .reason = "altitude below floor" };
     }
     return null;
@@ -624,7 +624,7 @@ fn evaluateVelocity(
     if (velocity.frame == .unknown or velocity.frame == .wgs84) {
         try builder.addFinding(.velocity, "velocity frame is invalid: {s}", .{@tagName(velocity.frame)});
         try builder.addViolation(.velocity, "unknown velocity frame is unsafe", .{});
-        try addSafetyAudit(builder, "safety.velocity_violation", .edge_safety_envelope, "unknown velocity frame", .deny, request.action);
+        try addSafetyAudit(builder, "safety.velocity_violation", .extension_target, "unknown velocity frame", .deny, request.action);
         return .{ .result = .deny, .reason = "unknown velocity frame" };
     }
     const horizontal = std.math.sqrt(velocity.vx_mps * velocity.vx_mps + velocity.vy_mps * velocity.vy_mps);
@@ -632,13 +632,13 @@ fn evaluateVelocity(
     if (horizontal > limits.max_horizontal_mps) {
         try builder.addFinding(.velocity, "horizontal velocity above limit: observed={d:.2} limit={d:.2}", .{ horizontal, limits.max_horizontal_mps });
         try builder.addViolation(.velocity, "horizontal velocity limit violated", .{});
-        try addSafetyAudit(builder, "safety.velocity_violation", .edge_safety_envelope, "horizontal velocity limit violated", .deny, request.action);
+        try addSafetyAudit(builder, "safety.velocity_violation", .extension_target, "horizontal velocity limit violated", .deny, request.action);
         return .{ .result = .deny, .reason = "horizontal velocity above limit" };
     }
     if (vertical > limits.max_vertical_mps) {
         try builder.addFinding(.velocity, "vertical velocity above limit: observed={d:.2} limit={d:.2}", .{ vertical, limits.max_vertical_mps });
         try builder.addViolation(.velocity, "vertical velocity limit violated", .{});
-        try addSafetyAudit(builder, "safety.velocity_violation", .edge_safety_envelope, "vertical velocity limit violated", .deny, request.action);
+        try addSafetyAudit(builder, "safety.velocity_violation", .extension_target, "vertical velocity limit violated", .deny, request.action);
         return .{ .result = .deny, .reason = "vertical velocity above limit" };
     }
     return null;
@@ -863,21 +863,11 @@ fn auditTarget(allocator: std.mem.Allocator, request: domain.commands.CommandReq
 }
 
 fn coreEventType(event_type: []const u8) !core.event.EventType {
-    if (std.mem.eql(u8, event_type, "vehicle.command_requested")) return .vehicle_command_requested;
-    if (std.mem.eql(u8, event_type, "vehicle.command_allowed")) return .vehicle_command_allowed;
-    if (std.mem.eql(u8, event_type, "vehicle.command_denied")) return .vehicle_command_denied;
-    if (std.mem.eql(u8, event_type, "vehicle.command_approval_required")) return .vehicle_command_approval_required;
-    if (std.mem.eql(u8, event_type, "safety.geofence_violation")) return .safety_geofence_violation;
-    if (std.mem.eql(u8, event_type, "safety.altitude_violation")) return .safety_altitude_violation;
-    if (std.mem.eql(u8, event_type, "safety.velocity_violation")) return .safety_velocity_violation;
-    if (std.mem.eql(u8, event_type, "safety.stale_state_denied")) return .safety_stale_state_denied;
-    if (std.mem.eql(u8, event_type, "safety.battery_constraint")) return .safety_battery_constraint;
-    if (std.mem.eql(u8, event_type, "safety.mode_constraint")) return .safety_mode_constraint;
-    if (std.mem.eql(u8, event_type, "safety.authority_constraint")) return .safety_authority_constraint;
-    if (std.mem.eql(u8, event_type, "safety.mission_item_denied")) return .safety_mission_item_denied;
-    if (std.mem.eql(u8, event_type, "health.watchdog.finding")) return .health_watchdog_finding;
-    if (std.mem.eql(u8, event_type, "health.command_denied")) return .health_command_denied;
-    if (std.mem.eql(u8, event_type, "health.audit.failure")) return .health_audit_failure;
-    if (std.mem.eql(u8, event_type, "health.heartbeat.stale")) return .health_heartbeat_stale;
+    if (std.mem.startsWith(u8, event_type, "vehicle.") or
+        std.mem.startsWith(u8, event_type, "safety.") or
+        std.mem.startsWith(u8, event_type, "health."))
+    {
+        return .extension_event;
+    }
     return error.UnknownEdgeEventType;
 }

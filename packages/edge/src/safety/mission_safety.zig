@@ -135,8 +135,8 @@ pub fn evaluateMissionSafety(
         upload.decision.reason = "mission safety denied";
         upload.decision.ci_may_proceed = false;
         upload.ci_may_proceed = false;
-        try upload.addAuditEvent("safety.mission_item_denied", .edge_mission, mission.mission_id.value, .deny);
-        try upload.addAuditEvent("vehicle.command_denied", .edge_mission, mission.mission_id.value, .deny);
+        try upload.addAuditEvent("safety.mission_item_denied", .extension_target, mission.mission_id.value, .deny);
+        try upload.addAuditEvent("vehicle.command_denied", .extension_target, mission.mission_id.value, .deny);
     }
     return upload;
 }

@@ -3,7 +3,7 @@ const std = @import("std");
 const domain = @import("../domain/mod.zig");
 const policy_mod = @import("../policy/mod.zig");
 const schema = @import("../schema/mod.zig");
-const core = @import("aegis_core");
+const core = @import("orca_core");
 
 pub const EmergencyCommand = enum {
     land,
@@ -164,7 +164,7 @@ fn evaluateCommandWithOrder(
         .command_id = "emergency-evaluation-command",
         .vehicle_id = state.vehicle_id,
         .action = action,
-        .actor = "aegis-edge-emergency",
+        .actor = "edge-emergency",
         .timestamp = .{ .value = options.now_ms, .source = .monotonic },
         .source = state.provenance,
     });

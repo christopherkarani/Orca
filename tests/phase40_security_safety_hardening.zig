@@ -1,6 +1,6 @@
 const std = @import("std");
-const edge = @import("aegis_edge");
-const edge_main = @import("aegis_edge_main");
+const edge = @import("orca_edge");
+const edge_main = @import("orca_edge_main");
 
 const domain = edge.domain;
 const safety = edge.safety;
@@ -109,7 +109,7 @@ test "phase 40 review report risk register and known limitations exist and are h
             "Safety invariants checked",
             "Release blockers",
             "Recommendation: Ready for Phase 41 production release",
-            "Aegis Edge must still not claim real-flight readiness",
+            "Edge must still not claim real-flight readiness",
         } },
         .{ .path = "docs/edge/risk-register.md", .markers = &.{
             "| Risk ID | Category | Description | Severity | Likelihood | Affected component | Mitigation | Test coverage | Status | Owner | Notes |",

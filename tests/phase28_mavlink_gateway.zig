@@ -1,5 +1,5 @@
 const std = @import("std");
-const edge = @import("aegis_edge");
+const edge = @import("orca_edge");
 
 const mavlink = edge.mavlink;
 const domain = edge.domain;

@@ -1,7 +1,7 @@
 const std = @import("std");
 
 pub const non_certification_disclaimer =
-    "Aegis Edge safety reports are engineering audit artifacts only. They are not regulatory approval, certification, airworthiness approval, or real-flight readiness claims.";
+    "Edge safety reports are engineering audit artifacts only. They are not regulatory approval, certification, airworthiness approval, or real-flight readiness claims.";
 
 pub const environments = [_][]const u8{
     "fake adapter",

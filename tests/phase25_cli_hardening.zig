@@ -1,5 +1,5 @@
 const std = @import("std");
-const aegis = @import("aegis");
+const orca = @import("orca");
 
 fn readFile(allocator: std.mem.Allocator, path: []const u8) ![]u8 {
     return try std.fs.cwd().readFileAlloc(allocator, path, 256 * 1024);
@@ -16,31 +16,31 @@ test "phase25 release scripts package runtime assets referenced by CLI docs" {
         try std.testing.expect(std.mem.indexOf(u8, sh, name) != null);
         try std.testing.expect(std.mem.indexOf(u8, ps1, name) != null);
     }
-    try std.testing.expect(std.mem.indexOf(u8, sh, "orca-edge") != null);
-    try std.testing.expect(std.mem.indexOf(u8, ps1, "orca-edge") != null);
+    try std.testing.expect(std.mem.indexOf(u8, sh, "edge") != null);
+    try std.testing.expect(std.mem.indexOf(u8, ps1, "edge") != null);
 }
 
 test "phase25 Windows package templates match nested zip layout" {
-    const scoop = try readFile(std.testing.allocator, "packaging/scoop/aegis.json");
+    const scoop = try readFile(std.testing.allocator, "packaging/scoop/orca.json");
     defer std.testing.allocator.free(scoop);
-    const winget = try readFile(std.testing.allocator, "packaging/winget/aegis.yaml");
+    const winget = try readFile(std.testing.allocator, "packaging/winget/orca.yaml");
     defer std.testing.allocator.free(winget);
 
-    try std.testing.expect(std.mem.indexOf(u8, scoop, "aegis-v1.1.0-windows-amd64\\\\bin\\\\aegis.exe") != null);
-    try std.testing.expect(std.mem.indexOf(u8, winget, "aegis-v1.1.0-windows-amd64\\bin\\aegis.exe") != null);
+    try std.testing.expect(std.mem.indexOf(u8, scoop, "orca-v1.1.0-windows-amd64\\\\bin\\\\orca.exe") != null);
+    try std.testing.expect(std.mem.indexOf(u8, winget, "orca-v1.1.0-windows-amd64\\bin\\orca.exe") != null);
 }
 
 test "phase25 npm package is honest while checksum placeholders remain" {
     const package_json = try readFile(std.testing.allocator, "packaging/npm/package.json");
     defer std.testing.allocator.free(package_json);
-    const wrapper = try readFile(std.testing.allocator, "packaging/npm/bin/aegis.js");
+    const wrapper = try readFile(std.testing.allocator, "packaging/npm/bin/orca.js");
     defer std.testing.allocator.free(wrapper);
     const readme = try readFile(std.testing.allocator, "packaging/npm/README.md");
     defer std.testing.allocator.free(readme);
 
-    try std.testing.expect(std.mem.indexOf(u8, package_json, "Placeholder npm launcher template") != null);
-    try std.testing.expect(std.mem.indexOf(u8, wrapper, "checksum placeholders have not been replaced") != null);
-    try std.testing.expect(std.mem.indexOf(u8, readme, "does not download a binary") != null);
+    try std.testing.expect(std.mem.indexOf(u8, package_json, "npm launcher for the Zig-built Orca binary") != null);
+    try std.testing.expect(std.mem.indexOf(u8, wrapper, "missing release checksums") != null);
+    try std.testing.expect(std.mem.indexOf(u8, readme, "fails closed") != null);
 }
 
 test "phase25 MCP docs distinguish proxy stdin and list observation" {
@@ -61,9 +61,9 @@ test "phase25 docs preserve Edge no-real-flight safety boundary" {
 }
 
 test "phase25 Core facade is the shared CLI policy audit replay and redaction surface" {
-    try std.testing.expect(@hasDecl(aegis, "core_api"));
+    try std.testing.expect(@hasDecl(orca, "core_api"));
 
-    var selected = try aegis.core_api.parsePolicyFromSlice(std.testing.allocator,
+    var selected = try orca.core_api.parsePolicyFromSlice(std.testing.allocator,
         \\version: 1
         \\mode: ci
         \\commands:
@@ -72,15 +72,15 @@ test "phase25 Core facade is the shared CLI policy audit replay and redaction su
     , "phase25-core-api.yaml");
     defer selected.deinit();
 
-    var evaluation = try aegis.core_api.evaluateAction(
+    var evaluation = try orca.core_api.evaluateAction(
         std.testing.allocator,
-        &selected,
+        selected,
         .{ .command_exec = .{ .argv = &.{ "npm", "install", "left-pad" } } },
         .{},
     );
     defer evaluation.deinit(std.testing.allocator);
 
-    try std.testing.expectEqual(aegis.core_api.DecisionResult.deny, evaluation.decision.result);
-    const redacted = aegis.core_api.redactString("OPENAI_API_KEY=sk-fakeSyntheticOpenAIKey1234567890");
+    try std.testing.expectEqual(orca.core_api.DecisionResult.deny, evaluation.decision.result);
+    const redacted = orca.core_api.redactString("OPENAI_API_KEY=sk-fakeSyntheticOpenAIKey1234567890");
     try std.testing.expect(std.mem.indexOf(u8, redacted, "sk-fakeSynthetic") == null);
 }

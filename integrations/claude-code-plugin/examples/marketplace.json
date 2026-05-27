@@ -1,0 +1,16 @@
+{
+  "name": "orca-local-plugins",
+  "version": "1.0.0",
+  "description": "Local Orca plugins for Claude Code.",
+  "owner": {
+    "name": "Orca"
+  },
+  "plugins": [
+    {
+      "name": "orca",
+      "description": "Orca safety hooks and skills for Claude Code.",
+      "source": "./integrations/claude-code-plugin",
+      "category": "developer-tools"
+    }
+  ]
+}

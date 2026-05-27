@@ -1,11 +1,12 @@
 const std = @import("std");
 
-const aegis_mcp = @import("../mcp/mod.zig");
-const core = @import("../core/mod.zig");
-const core_api = @import("../core/api.zig");
+const orca_mcp = @import("../mcp/mod.zig");
+const core = @import("orca_core").core;
+const supervisor = core.supervisor;
+const core_api = @import("orca_core").api;
 const exit_codes = @import("exit_codes.zig");
 const help = @import("help.zig");
-const policy = @import("../policy/mod.zig");
+const policy = @import("orca_core").policy;
 const version_command = @import("version.zig");
 
 pub fn command(argv: []const []const u8, stdout: anytype, stderr: anytype) !u8 {
@@ -97,15 +98,15 @@ fn inspect(argv: []const []const u8, stdout: anytype, stderr: anytype) !u8 {
 
     const options = parseOptions(allocator, argv, stderr) catch |err| return usageCode(err, stderr);
     defer options.deinit(allocator);
-    var loaded_policy: ?core_api.Policy = null;
-    defer if (loaded_policy) |*loaded| loaded.deinit();
+    var loaded_policy: ?*core_api.Policy = null;
+    defer if (loaded_policy) |loaded| loaded.deinit();
     if (options.policy_path) |path| {
         loaded_policy = core_api.loadPolicyFile(allocator, path) catch |err| {
             try stderr.print("orca mcp inspect: invalid policy: {s}\n", .{@errorName(err)});
             return exit_codes.general;
         };
     }
-    var server = aegis_mcp.transport.ProcessServer.spawn(allocator, options.command_argv) catch |err| {
+    var server = orca_mcp.transport.ProcessServer.spawn(allocator, options.command_argv) catch |err| {
         try stderr.print("orca mcp inspect: failed to start server: {s}\n", .{@errorName(err)});
         return exit_codes.general;
     };
@@ -115,26 +116,26 @@ fn inspect(argv: []const []const u8, stdout: anytype, stderr: anytype) !u8 {
     defer allocator.free(initialize);
     const initialized = "{\"jsonrpc\":\"2.0\",\"method\":\"notifications/initialized\",\"params\":{}}";
     const list_tools = "{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"tools/list\",\"params\":{}}";
-    const init_response = aegis_mcp.transport.ProcessServer.request(&server, allocator, initialize) catch |err| {
+    const init_response = orca_mcp.transport.ProcessServer.request(&server, allocator, initialize) catch |err| {
         try stderr.print("orca mcp inspect: initialize failed: {s}\n", .{@errorName(err)});
         return exit_codes.general;
     };
     allocator.free(init_response);
-    aegis_mcp.transport.ProcessServer.notify(&server, initialized) catch |err| {
+    orca_mcp.transport.ProcessServer.notify(&server, initialized) catch |err| {
         try stderr.print("orca mcp inspect: initialized notification failed: {s}\n", .{@errorName(err)});
         return exit_codes.general;
     };
-    const tools_response = aegis_mcp.transport.ProcessServer.request(&server, allocator, list_tools) catch |err| {
+    const tools_response = orca_mcp.transport.ProcessServer.request(&server, allocator, list_tools) catch |err| {
         try stderr.print("orca mcp inspect: tools/list failed: {s}\n", .{@errorName(err)});
         return exit_codes.general;
     };
     defer allocator.free(tools_response);
-    var parsed = aegis_mcp.jsonrpc.parseLine(allocator, tools_response) catch |err| {
+    var parsed = orca_mcp.jsonrpc.parseLine(allocator, tools_response) catch |err| {
         try stderr.print("orca mcp inspect: invalid tools/list response: {s}\n", .{@errorName(err)});
         return exit_codes.general;
     };
     defer parsed.deinit();
-    var inventory = aegis_mcp.tools.inspectToolsListResponse(allocator, options.server_name, parsed.value()) catch |err| {
+    var inventory = orca_mcp.tools.inspectToolsListResponse(allocator, options.server_name, parsed.value()) catch |err| {
         try stderr.print("orca mcp inspect: could not inspect tools: {s}\n", .{@errorName(err)});
         return exit_codes.general;
     };
@@ -142,8 +143,8 @@ fn inspect(argv: []const []const u8, stdout: anytype, stderr: anytype) !u8 {
 
     try stdout.print("MCP Server: {s}\nTransport: stdio\nTools:\n", .{options.server_name});
     for (inventory.tools) |tool| {
-        try stdout.print("  {s:<24} risk: {s:<8} default: {s}", .{ tool.name, tool.risk.toString(), aegis_mcp.tools.defaultDecisionForRisk(tool.risk) });
-        if (loaded_policy) |*selected| {
+        try stdout.print("  {s:<24} risk: {s:<8} default: {s}", .{ tool.name, tool.risk.toString(), orca_mcp.tools.defaultDecisionForRisk(tool.risk) });
+        if (loaded_policy) |selected| {
             var evaluation = try core_api.evaluateAction(allocator, selected, .{ .mcp_tool_call = .{ .server = options.server_name, .tool_name = tool.name } }, .{});
             defer evaluation.deinit(allocator);
             try stdout.print(" policy: {s}", .{evaluation.decision.result.toString()});
@@ -174,20 +175,20 @@ fn proxy(argv: []const []const u8, stdout: anytype, stderr: anytype) !u8 {
 
     const options = parseOptions(allocator, argv, stderr) catch |err| return usageCode(err, stderr);
     defer options.deinit(allocator);
-    const workspace = try core.supervisor.resolveWorkspaceRoot(allocator, null, ".");
+    const workspace = try supervisor.resolveWorkspaceRoot(allocator, null, ".");
     defer allocator.free(workspace);
     var loaded = core_api.discoverPolicy(allocator, options.policy_path, workspace) catch |err| {
         try stderr.print("orca mcp proxy: invalid policy: {s}\n", .{@errorName(err)});
         return exit_codes.general;
     };
     defer loaded.deinit();
-    const mode = options.mode orelse loaded.policy.mode;
-    var loaded_manifest: ?aegis_mcp.manifests.Manifest = null;
+    const mode = options.mode orelse loaded.policy.mode();
+    var loaded_manifest: ?orca_mcp.manifests.Manifest = null;
     defer if (loaded_manifest) |*manifest| manifest.deinit(allocator);
     var bound_launch: ?BoundManifestLaunch = null;
     defer if (bound_launch) |*binding| binding.deinit(allocator);
     if (options.manifest_path) |manifest_path| {
-        loaded_manifest = aegis_mcp.manifests.loadFile(allocator, manifest_path) catch |err| {
+        loaded_manifest = orca_mcp.manifests.loadFile(allocator, manifest_path) catch |err| {
             try stderr.print("orca mcp proxy: invalid manifest: {s}\n", .{@errorName(err)});
             return exit_codes.usage;
         };
@@ -211,7 +212,7 @@ fn proxy(argv: []const []const u8, stdout: anytype, stderr: anytype) !u8 {
     defer session_writer.deinit();
     try session_writer.writeLastPointer();
 
-    var server = aegis_mcp.transport.ProcessServer.spawnWithEnvMap(allocator, spawn_argv, spawn_env) catch |err| {
+    var server = orca_mcp.transport.ProcessServer.spawnWithEnvMap(allocator, spawn_argv, spawn_env) catch |err| {
         try stderr.print("orca mcp proxy: failed to start server: {s}\n", .{@errorName(err)});
         return exit_codes.general;
     };
@@ -234,10 +235,10 @@ fn proxy(argv: []const []const u8, stdout: anytype, stderr: anytype) !u8 {
     }
     defer if (tty_file) |file| file.close();
 
-    try aegis_mcp.proxy.runWithServer(allocator, .{
+    orca_mcp.proxy.runWithServer(allocator, .{
         .server_name = options.server_name,
         .server_command_display = options.command_argv[0],
-        .policy = &loaded.policy,
+        .policy = loaded.innerPtr(),
         .mode = mode,
         .audit_writer = &session_writer,
         .approval_reader = if (approval_reader_storage) |*reader| &reader.interface else null,
@@ -245,10 +246,24 @@ fn proxy(argv: []const []const u8, stdout: anytype, stderr: anytype) !u8 {
         .manifest = if (loaded_manifest) |*manifest| manifest else null,
     }, &stdin_reader.interface, stdout, .{
         .context = &server,
-        .request = aegis_mcp.transport.ProcessServer.request,
-        .notify = aegis_mcp.transport.ProcessServer.notify,
-        .read = aegis_mcp.transport.ProcessServer.read,
-    });
+        .request = orca_mcp.transport.ProcessServer.request,
+        .notify = orca_mcp.transport.ProcessServer.notify,
+        .read = orca_mcp.transport.ProcessServer.read,
+    }) catch |err| {
+        if (approval_writer_storage) |*writer| writer.interface.flush() catch {};
+        var completed_session = session;
+        completed_session.ended_at = core.time.Timestamp.now();
+        try core_api.writeAuditSummary(allocator, session_writer.session_dir_path, .{
+            .session = completed_session,
+            .status = .{ .exited = exit_codes.general },
+            .event_count = session_writer.event_count,
+            .final_event_hash = session_writer.finalHash() orelse "",
+            .policy = loaded.path,
+            .product_label = "Orca",
+        });
+        try stderr.print("orca mcp proxy: protocol failed: {s}\n", .{@errorName(err)});
+        return exit_codes.general;
+    };
     if (approval_writer_storage) |*writer| writer.interface.flush() catch {};
     var completed_session = session;
     completed_session.ended_at = core.time.Timestamp.now();
@@ -258,6 +273,7 @@ fn proxy(argv: []const []const u8, stdout: anytype, stderr: anytype) !u8 {
         .event_count = session_writer.event_count,
         .final_event_hash = session_writer.finalHash() orelse "",
         .policy = loaded.path,
+        .product_label = "Orca",
     });
     return exit_codes.success;
 }
@@ -265,7 +281,7 @@ fn proxy(argv: []const []const u8, stdout: anytype, stderr: anytype) !u8 {
 fn initializeRequestAlloc(allocator: std.mem.Allocator) ![]u8 {
     return try std.fmt.allocPrint(
         allocator,
-        "{{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{{\"protocolVersion\":\"2025-03-26\",\"capabilities\":{{}},\"clientInfo\":{{\"name\":\"aegis\",\"version\":\"{s}\"}}}}}}",
+        "{{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{{\"protocolVersion\":\"2025-03-26\",\"capabilities\":{{}},\"clientInfo\":{{\"name\":\"orca\",\"version\":\"{s}\"}}}}}}",
         .{version_command.current().version},
     );
 }
@@ -284,15 +300,15 @@ fn list(argv: []const []const u8, stdout: anytype, stderr: anytype) !u8 {
     const allocator = gpa_state.allocator();
     try stdout.writeAll("Known MCP servers:\n");
     var found = false;
-    if (std.fs.cwd().openDir(".aegis/mcp", .{ .iterate = true })) |dir_value| {
+    if (std.fs.cwd().openDir(".orca/mcp", .{ .iterate = true })) |dir_value| {
         var dir = dir_value;
         defer dir.close();
         var it = dir.iterate();
         while (try it.next()) |entry| {
             if (entry.kind != .file or !(std.mem.endsWith(u8, entry.name, ".yaml") or std.mem.endsWith(u8, entry.name, ".yml"))) continue;
-            const path = try std.fs.path.join(allocator, &.{ ".aegis", "mcp", entry.name });
+            const path = try std.fs.path.join(allocator, &.{ ".orca", "mcp", entry.name });
             defer allocator.free(path);
-            var manifest = aegis_mcp.manifests.loadFile(allocator, path) catch |err| {
+            var manifest = orca_mcp.manifests.loadFile(allocator, path) catch |err| {
                 try stdout.print("  invalid manifest: {s} ({s})\n", .{ path, @errorName(err) });
                 found = true;
                 continue;
@@ -302,7 +318,7 @@ fn list(argv: []const []const u8, stdout: anytype, stderr: anytype) !u8 {
             found = true;
         }
     } else |_| {}
-    if (!found) try stdout.writeAll("  none configured (checked .aegis/mcp/*.yaml)\n");
+    if (!found) try stdout.writeAll("  none configured (checked .orca/mcp/*.yaml)\n");
     return exit_codes.success;
 }
 
@@ -358,7 +374,7 @@ fn manifestCheck(argv: []const []const u8, stdout: anytype, stderr: anytype) !u8
     var gpa_state: std.heap.GeneralPurposeAllocator(.{}) = .init;
     defer _ = gpa_state.deinit();
     const allocator = gpa_state.allocator();
-    var manifest = aegis_mcp.manifests.loadFile(allocator, argv[0]) catch |err| {
+    var manifest = orca_mcp.manifests.loadFile(allocator, argv[0]) catch |err| {
         try stderr.print("invalid MCP manifest: {s}\n", .{@errorName(err)});
         return exit_codes.usage;
     };
@@ -400,7 +416,7 @@ fn manifestGenerate(argv: []const []const u8, stdout: anytype, stderr: anytype) 
     };
     const command_text = command_name orelse name;
     const extra_args = if (args_start) |start| argv[start..] else &.{};
-    try aegis_mcp.manifests.writeStarterManifest(stdout, name, command_text, extra_args);
+    try orca_mcp.manifests.writeStarterManifest(stdout, name, command_text, extra_args);
     return exit_codes.success;
 }
 
@@ -426,7 +442,7 @@ const BoundManifestLaunch = struct {
 
 fn bindManifestLaunch(
     allocator: std.mem.Allocator,
-    manifest: aegis_mcp.manifests.Manifest,
+    manifest: orca_mcp.manifests.Manifest,
     requested_argv: []const []const u8,
 ) !BoundManifestLaunch {
     if (manifest.server.transport != .stdio) return error.UnsupportedManifestTransport;
@@ -558,7 +574,7 @@ test "mcp command parsing preserves server argv after --command" {
 test "mcp initialize request uses build version metadata" {
     const request = try initializeRequestAlloc(std.testing.allocator);
     defer std.testing.allocator.free(request);
-    try std.testing.expect(std.mem.indexOf(u8, request, "\"clientInfo\":{\"name\":\"aegis\",\"version\":\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, request, "\"clientInfo\":{\"name\":\"orca\",\"version\":\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, request, version_command.current().version) != null);
     try std.testing.expect(std.mem.indexOf(u8, request, "\"version\":\"1.0.0\"") == null or std.mem.eql(u8, version_command.current().version, "1.0.0"));
 }
@@ -659,7 +675,7 @@ test "manifest binding requires exact argv hash and env allowlist" {
         \\  default: deny
     , .{ server_path, &hex });
     defer std.testing.allocator.free(manifest_text);
-    var manifest = try aegis_mcp.manifests.parseFromSlice(std.testing.allocator, manifest_text, "test.yaml");
+    var manifest = try orca_mcp.manifests.parseFromSlice(std.testing.allocator, manifest_text, "test.yaml");
     defer manifest.deinit(std.testing.allocator);
 
     var binding = try bindManifestLaunch(std.testing.allocator, manifest, &.{ server_path, "--stdio" });
@@ -681,7 +697,7 @@ test "manifest binding requires exact argv hash and env allowlist" {
         \\tools:
     , .{ server_path, "0000000000000000000000000000000000000000000000000000000000000000" });
     defer std.testing.allocator.free(bad_manifest_text);
-    var bad_manifest = try aegis_mcp.manifests.parseFromSlice(std.testing.allocator, bad_manifest_text, "bad.yaml");
+    var bad_manifest = try orca_mcp.manifests.parseFromSlice(std.testing.allocator, bad_manifest_text, "bad.yaml");
     defer bad_manifest.deinit(std.testing.allocator);
     try std.testing.expectError(error.ManifestExpectedHashMismatch, bindManifestLaunch(std.testing.allocator, bad_manifest, &.{server_path}));
 }
@@ -696,9 +712,9 @@ test "mcp manifest check list trust and generate commands are safe" {
     try std.posix.chdir(tmp_path);
     defer std.posix.fchdir(old_cwd.fd) catch {};
 
-    try tmp.dir.makePath(".aegis/mcp");
+    try tmp.dir.makePath(".orca/mcp");
     {
-        const file = try tmp.dir.createFile(".aegis/mcp/github.yaml", .{});
+        const file = try tmp.dir.createFile(".orca/mcp/github.yaml", .{});
         defer file.close();
         try file.writeAll(
             \\version: 1
@@ -724,7 +740,7 @@ test "mcp manifest check list trust and generate commands are safe" {
     var stdout_stream = std.io.fixedBufferStream(&stdout_buf);
     var stderr_stream = std.io.fixedBufferStream(&stderr_buf);
 
-    const check_code = try command(&.{ "manifest", "check", ".aegis/mcp/github.yaml" }, stdout_stream.writer(), stderr_stream.writer());
+    const check_code = try command(&.{ "manifest", "check", ".orca/mcp/github.yaml" }, stdout_stream.writer(), stderr_stream.writer());
     try std.testing.expectEqual(exit_codes.success, check_code);
     try std.testing.expect(std.mem.indexOf(u8, stdout_stream.getWritten(), "valid MCP manifest") != null);
 

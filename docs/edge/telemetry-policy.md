@@ -2,7 +2,7 @@
 
 The data guard policy model separates telemetry channel decisions from endpoint and data-class decisions. A telemetry allow is not enough by itself: endpoint policy and data classification must also allow the egress request.
 
-Aegis Edge remains simulation/SITL/customer-evaluation software. It is not real-flight readiness, certification, detect-and-avoid, or autopilot replacement evidence.
+Edge remains simulation/SITL/customer-evaluation software. It is not real-flight readiness, certification, detect-and-avoid, or autopilot replacement evidence.
 
 Supported channel kinds include `mavlink_telemetry`, `command_control`, `mission_upload`, `mission_download`, `video_stream`, `image_snapshot`, `sensor_metadata`, `audit_report`, `safety_case_report`, `operator_approval`, `emergency_status`, `heartbeat`, `health_status`, and `unknown`.
 

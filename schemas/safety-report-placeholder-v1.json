@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://aegis.local/schemas/safety-report-placeholder-v1.json",
-  "title": "Aegis safety report placeholder v1",
+  "$id": "https://orca.local/schemas/safety-report-placeholder-v1.json",
+  "title": "Orca safety report placeholder v1",
   "description": "Reserved placeholder schema for future safety reports; not a regulatory or real-flight readiness claim.",
   "type": "object",
   "additionalProperties": false,

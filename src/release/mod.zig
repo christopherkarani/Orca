@@ -27,15 +27,15 @@ pub fn artifactName(buffer: []u8, product: []const u8, version: []const u8, targ
 test "phase 19 artifact names match release contract" {
     var names: [targets.len][96]u8 = undefined;
     const expected = [_][]const u8{
-        "aegis-v0.19.0-darwin-amd64.tar.gz",
-        "aegis-v0.19.0-darwin-arm64.tar.gz",
-        "aegis-v0.19.0-linux-amd64.tar.gz",
-        "aegis-v0.19.0-linux-arm64.tar.gz",
-        "aegis-v0.19.0-windows-amd64.zip",
+        "orca-v0.19.0-darwin-amd64.tar.gz",
+        "orca-v0.19.0-darwin-arm64.tar.gz",
+        "orca-v0.19.0-linux-amd64.tar.gz",
+        "orca-v0.19.0-linux-arm64.tar.gz",
+        "orca-v0.19.0-windows-amd64.zip",
     };
 
     for (targets, 0..) |target, index| {
-        const actual = try artifactName(&names[index], "aegis", "0.19.0", target);
+        const actual = try artifactName(&names[index], "orca", "0.19.0", target);
         try std.testing.expectEqualStrings(expected[index], actual);
     }
 }
@@ -48,16 +48,15 @@ test "phase 19 package and workflow files are present" {
         "scripts/build-release.ps1",
         "scripts/generate-checksums.sh",
         "scripts/generate-sbom.sh",
-        "packaging/homebrew/aegis.rb",
-        "packaging/scoop/aegis.json",
-        "packaging/winget/aegis.yaml",
+        "packaging/homebrew/Formula/orca.rb",
+        "packaging/scoop/orca.json",
+        "packaging/winget/orca.yaml",
         "packaging/npm/package.json",
-        "packaging/npm/bin/aegis.js",
+        "packaging/npm/bin/orca.js",
         "packaging/docker/Dockerfile",
         ".github/workflows/build.yml",
         ".github/workflows/test.yml",
         ".github/workflows/release.yml",
-        "docs/release/checklist.md",
     };
 
     for (required_files) |path| {
@@ -70,16 +69,15 @@ test "phase 19 release files include integrity checks without obvious credential
     const checked_files = [_][]const u8{
         "scripts/install.sh",
         "scripts/install.ps1",
-        "packaging/homebrew/aegis.rb",
-        "packaging/scoop/aegis.json",
-        "packaging/winget/aegis.yaml",
+        "packaging/homebrew/Formula/orca.rb",
+        "packaging/scoop/orca.json",
+        "packaging/winget/orca.yaml",
         "packaging/npm/package.json",
-        "packaging/npm/bin/aegis.js",
+        "packaging/npm/bin/orca.js",
         "packaging/docker/Dockerfile",
         ".github/workflows/build.yml",
         ".github/workflows/test.yml",
         ".github/workflows/release.yml",
-        "docs/release/checklist.md",
     };
 
     for (checked_files) |path| {
@@ -97,7 +95,18 @@ test "phase 19 Dockerfile references installed Orca binary" {
     const text = try std.fs.cwd().readFileAlloc(std.testing.allocator, "packaging/docker/Dockerfile", 64 * 1024);
     defer std.testing.allocator.free(text);
     try std.testing.expect(std.mem.indexOf(u8, text, "COPY orca") != null);
+    try std.testing.expectEqual(@as(usize, 1), countOccurrences(text, "COPY orca /usr/local/bin/orca"));
     try std.testing.expect(std.mem.indexOf(u8, text, "/usr/local/bin/orca") != null);
+}
+
+fn countOccurrences(haystack: []const u8, needle: []const u8) usize {
+    var count: usize = 0;
+    var index: usize = 0;
+    while (std.mem.indexOf(u8, haystack[index..], needle)) |match| {
+        count += 1;
+        index += match + needle.len;
+    }
+    return count;
 }
 
 test "GitHub composite action does not shell-interpolate command input before Orca" {

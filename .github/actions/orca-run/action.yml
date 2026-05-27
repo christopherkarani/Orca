@@ -7,7 +7,7 @@ inputs:
   policy:
     description: Optional policy path.
     required: false
-    default: .aegis/policy.yaml
+    default: .orca/policy.yaml
 runs:
   using: composite
   steps:

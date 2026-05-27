@@ -1,6 +1,16 @@
 # Commands
 
-Aegis checks the direct command before launch and installs session PATH shims for common risky command names.
+Orca checks the direct command before launch and installs session PATH shims for common risky command names.
+
+## Dashboard
+
+```sh
+orca dashboard
+```
+
+Starts the local dashboard at `http://127.0.0.1:7742` by default. The dashboard exposes health, policy, integration, session, and denied-action views over existing Orca CLI/Core behavior.
+
+The dashboard accepts only localhost bindings by default, uses a per-run browser token for mutation routes, and does not accept arbitrary shell commands from the browser.
 
 ## Risk Classes
 
@@ -31,4 +41,4 @@ PATH shims cover shells, package managers, network tools, Python/Node, SSH/SCP/N
 
 ## Limitations
 
-Commands that bypass the Aegis session, use absolute paths outside shim coverage, or run under privileged bypasses may avoid wrapper mediation unless the platform backend provides stronger enforcement.
+Commands that bypass the Orca session, use absolute paths outside shim coverage, or run under privileged bypasses may avoid wrapper mediation unless the platform backend provides stronger enforcement.

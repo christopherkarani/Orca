@@ -4,7 +4,7 @@
 
 New dependency: none.
 
-Aegis currently uses only the Zig standard library. Future dependencies must document:
+Orca currently uses only the Zig standard library. Future dependencies must document:
 
 - name and version/source;
 - license;
@@ -17,4 +17,4 @@ Aegis currently uses only the Zig standard library. Future dependencies must doc
 
 New dependency: none.
 
-Aegis Core facade, schema registry, and experimental ABI skeleton use only the Zig standard library and existing in-repo modules. No new parser, security-critical dependency, external network dependency, or hardware dependency was added.
+Orca Core facade, schema registry, and experimental ABI skeleton use only the Zig standard library and existing in-repo modules. No new parser, security-critical dependency, external network dependency, or hardware dependency was added.

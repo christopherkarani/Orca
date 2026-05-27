@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://github.com/chriskarani/aegis/schemas/policy-v1.json",
-  "title": "Aegis Policy v1",
+  "$id": "https://github.com/chriskarani/orca/schemas/policy-v1.json",
+  "title": "Orca Policy v1",
   "type": "object",
   "additionalProperties": false,
   "required": ["version", "mode"],
@@ -41,6 +41,7 @@
       "additionalProperties": false,
       "properties": {
         "mode": { "enum": ["off", "ask", "allowlist", "observe", "open"] },
+        "backend": { "enum": ["decision-only", "proxy"] },
         "allow": { "$ref": "#/$defs/stringList" },
         "deny": { "$ref": "#/$defs/stringList" },
         "ask": { "$ref": "#/$defs/stringList" },
@@ -55,6 +56,25 @@
           }
         }
       }
+    },
+    "credentials": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "default_broker": { "type": "string" },
+        "brokers": {
+          "type": "object",
+          "additionalProperties": { "$ref": "#/$defs/credentialBroker" }
+        },
+        "refs": {
+          "type": "object",
+          "additionalProperties": { "$ref": "#/$defs/credentialRef" }
+        }
+      }
+    },
+    "services": {
+      "type": "object",
+      "additionalProperties": { "$ref": "#/$defs/servicePolicy" }
     },
     "mcp": { "$ref": "#/$defs/mcpPolicy" },
     "audit": {
@@ -92,6 +112,50 @@
         "ask": { "$ref": "#/$defs/stringList" },
         "default": { "$ref": "#/$defs/decision" },
         "mode": { "enum": ["staged", "direct"] }
+      }
+    },
+    "servicePolicy": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["hosts"],
+      "properties": {
+        "hosts": { "$ref": "#/$defs/stringList" },
+        "methods": { "$ref": "#/$defs/stringList" },
+        "paths": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "allow": { "$ref": "#/$defs/stringList" },
+            "deny": { "$ref": "#/$defs/stringList" }
+          }
+        },
+        "credentials": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "use": { "type": "string" }
+          }
+        },
+        "unmatched": { "$ref": "#/$defs/decision" }
+      }
+    },
+    "credentialBroker": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type"],
+      "properties": {
+        "type": { "enum": ["local-dummy", "env-file-dev", "1password-cli", "macos-keychain", "infisical-agent-vault"] },
+        "account": { "type": "string" },
+        "path": { "type": "string" }
+      }
+    },
+    "credentialRef": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["ref"],
+      "properties": {
+        "broker": { "type": "string" },
+        "ref": { "type": "string" }
       }
     },
     "mcpPolicy": {

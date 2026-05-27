@@ -1,4 +1,4 @@
-const core = @import("aegis_core");
+const core = @import("orca_core");
 
 pub const SummaryInput = core.api.SummaryInput;
 pub const writeFiles = core.audit.summary.writeFiles;

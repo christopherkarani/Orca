@@ -1,6 +1,6 @@
 # MAVLink Gateway
 
-Phase 28 implements the Aegis Edge MAVLink gateway foundation for fake/in-memory protocol mediation. Phase 29 reuses this gateway for PX4 SITL simulation scenarios. Phase 30 reuses it for ArduPilot SITL simulation scenarios. It parses MAVLink frames, classifies supported messages, maps supported commands into Edge `CommandRequest` values, evaluates those requests through the Phase 27 policy engine, and records bounded audit events.
+Phase 28 implements the Edge MAVLink gateway foundation for fake/in-memory protocol mediation. Phase 29 reuses this gateway for PX4 SITL simulation scenarios. Phase 30 reuses it for ArduPilot SITL simulation scenarios. It parses MAVLink frames, classifies supported messages, maps supported commands into Edge `CommandRequest` values, evaluates those requests through the Phase 27 policy engine, and records bounded audit events.
 
 This is not real-flight readiness. The gateway does not open serial ports, ROS2 endpoints, or customer hardware. PX4 and ArduPilot SITL use is opt-in local simulation only. The default path is deterministic fake transport for simulation, bench-oriented protocol review, and local tests.
 

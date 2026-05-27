@@ -1,13 +1,13 @@
 const std = @import("std");
 
-const core = @import("../core/mod.zig");
+const core = @import("../core/public.zig");
 const hash_chain = @import("hash_chain.zig");
 const replay = @import("replay.zig");
 
 pub const SessionWriter = struct {
     allocator: std.mem.Allocator,
     workspace_root: []const u8,
-    audit_dir_name: []const u8 = ".aegis",
+    audit_dir_name: []const u8 = ".orca",
     session_id: core.session.SessionId,
     session_dir_path: []u8,
     events_file: std.fs.File,
@@ -15,13 +15,13 @@ pub const SessionWriter = struct {
     event_count: usize = 0,
 
     pub fn init(allocator: std.mem.Allocator, session: core.session.Session) !SessionWriter {
-        return initWithDirName(allocator, session, ".aegis");
+        return initWithDirName(allocator, session, ".orca");
     }
 
     pub fn initWithDirName(allocator: std.mem.Allocator, session: core.session.Session, audit_dir_name: []const u8) !SessionWriter {
-        const aegis_dir = try std.fs.path.join(allocator, &.{ session.workspace_root, audit_dir_name });
-        defer allocator.free(aegis_dir);
-        const sessions_dir = try std.fs.path.join(allocator, &.{ aegis_dir, "sessions" });
+        const orca_dir = try std.fs.path.join(allocator, &.{ session.workspace_root, audit_dir_name });
+        defer allocator.free(orca_dir);
+        const sessions_dir = try std.fs.path.join(allocator, &.{ orca_dir, "sessions" });
         defer allocator.free(sessions_dir);
         const session_dir_path = try std.fs.path.join(allocator, &.{ sessions_dir, session.id.slice() });
         errdefer allocator.free(session_dir_path);
@@ -43,13 +43,14 @@ pub const SessionWriter = struct {
     }
 
     pub fn openExisting(allocator: std.mem.Allocator, workspace_root: []const u8, session_id_text: []const u8) !SessionWriter {
-        return openExistingWithDirName(allocator, workspace_root, session_id_text, ".aegis");
+        return openExistingWithDirName(allocator, workspace_root, session_id_text, ".orca");
     }
 
     pub fn openExistingWithDirName(allocator: std.mem.Allocator, workspace_root: []const u8, session_id_text: []const u8, audit_dir_name: []const u8) !SessionWriter {
-        const aegis_dir = try std.fs.path.join(allocator, &.{ workspace_root, audit_dir_name });
-        defer allocator.free(aegis_dir);
-        const sessions_dir = try std.fs.path.join(allocator, &.{ aegis_dir, "sessions" });
+        try core.session.validateSessionIdText(session_id_text);
+        const orca_dir = try std.fs.path.join(allocator, &.{ workspace_root, audit_dir_name });
+        defer allocator.free(orca_dir);
+        const sessions_dir = try std.fs.path.join(allocator, &.{ orca_dir, "sessions" });
         defer allocator.free(sessions_dir);
         const session_dir_path = try std.fs.path.join(allocator, &.{ sessions_dir, session_id_text });
         errdefer allocator.free(session_dir_path);
@@ -112,15 +113,15 @@ pub const SessionWriter = struct {
     }
 
     pub fn writeLastPointer(self: *const SessionWriter) !void {
-        const aegis_dir = try std.fs.path.join(self.allocator, &.{ self.workspace_root, self.audit_dir_name });
-        defer self.allocator.free(aegis_dir);
-        try std.fs.cwd().makePath(aegis_dir);
+        const orca_dir = try std.fs.path.join(self.allocator, &.{ self.workspace_root, self.audit_dir_name });
+        defer self.allocator.free(orca_dir);
+        try std.fs.cwd().makePath(orca_dir);
 
         const tmp_name = try std.fmt.allocPrint(self.allocator, "last.tmp.{s}", .{self.session_id.slice()});
         defer self.allocator.free(tmp_name);
-        const tmp_path = try std.fs.path.join(self.allocator, &.{ aegis_dir, tmp_name });
+        const tmp_path = try std.fs.path.join(self.allocator, &.{ orca_dir, tmp_name });
         defer self.allocator.free(tmp_path);
-        const last_path = try std.fs.path.join(self.allocator, &.{ aegis_dir, "last" });
+        const last_path = try std.fs.path.join(self.allocator, &.{ orca_dir, "last" });
         defer self.allocator.free(last_path);
 
         {
@@ -146,7 +147,7 @@ const ExistingState = struct {
 };
 
 fn readExistingState(allocator: std.mem.Allocator, events_path: []const u8) !ExistingState {
-    const text = try std.fs.cwd().readFileAlloc(allocator, events_path, core.limits.max_mcp_message_len);
+    const text = try std.fs.cwd().readFileAlloc(allocator, events_path, core.limits.max_audit_log_len);
     defer allocator.free(text);
     var previous_hash: ?hash_chain.HashHex = null;
     var event_count: usize = 0;
@@ -204,7 +205,7 @@ test "session writer creates directory and writes deterministic JSONL" {
         .event_id = event_id,
         .timestamp = ts,
         .event_type = .session_start,
-        .actor = .{ .kind = .aegis, .display = "aegis" },
+        .actor = .{ .kind = .orca, .display = "orca" },
         .target = .{ .kind = .session, .value = session.id.slice() },
     };
 
@@ -212,7 +213,7 @@ test "session writer creates directory and writes deterministic JSONL" {
     defer session_writer.deinit();
     try session_writer.appendEvent(ev);
 
-    const rel_events_path = try std.fs.path.join(std.testing.allocator, &.{ ".aegis", "sessions", session.id.slice(), "events.jsonl" });
+    const rel_events_path = try std.fs.path.join(std.testing.allocator, &.{ ".orca", "sessions", session.id.slice(), "events.jsonl" });
     defer std.testing.allocator.free(rel_events_path);
     const events = try tmp.dir.readFileAlloc(std.testing.allocator, rel_events_path, 4096);
     defer std.testing.allocator.free(events);
@@ -246,7 +247,7 @@ test "session writer persists redacted synthetic secrets before JSONL write" {
         .event_id = event_id,
         .timestamp = ts,
         .event_type = .process_launch,
-        .actor = .{ .kind = .aegis, .display = "aegis" },
+        .actor = .{ .kind = .orca, .display = "orca" },
         .target = .{ .kind = .command, .value = "echo fake_secret_value" },
     };
 
@@ -254,7 +255,7 @@ test "session writer persists redacted synthetic secrets before JSONL write" {
     defer session_writer.deinit();
     try session_writer.appendEvent(ev);
 
-    const rel_events_path = try std.fs.path.join(std.testing.allocator, &.{ ".aegis", "sessions", session.id.slice(), "events.jsonl" });
+    const rel_events_path = try std.fs.path.join(std.testing.allocator, &.{ ".orca", "sessions", session.id.slice(), "events.jsonl" });
     defer std.testing.allocator.free(rel_events_path);
     const events = try tmp.dir.readFileAlloc(std.testing.allocator, rel_events_path, 4096);
     defer std.testing.allocator.free(events);
@@ -287,7 +288,7 @@ test "session writer redacts embedded secret assignments in command targets" {
         .event_id = event_id,
         .timestamp = ts,
         .event_type = .process_launch,
-        .actor = .{ .kind = .aegis, .display = "aegis" },
+        .actor = .{ .kind = .orca, .display = "orca" },
         .target = .{ .kind = .command, .value = "/bin/echo OPENAI_API_KEY=sk-fakeSyntheticOpenAIKey1234567890" },
     };
 
@@ -295,7 +296,7 @@ test "session writer redacts embedded secret assignments in command targets" {
     defer session_writer.deinit();
     try session_writer.appendEvent(ev);
 
-    const rel_events_path = try std.fs.path.join(std.testing.allocator, &.{ ".aegis", "sessions", session.id.slice(), "events.jsonl" });
+    const rel_events_path = try std.fs.path.join(std.testing.allocator, &.{ ".orca", "sessions", session.id.slice(), "events.jsonl" });
     defer std.testing.allocator.free(rel_events_path);
     const events = try tmp.dir.readFileAlloc(std.testing.allocator, rel_events_path, 4096);
     defer std.testing.allocator.free(events);
@@ -328,7 +329,7 @@ test "openExisting fails closed on tampered existing event chain" {
         .event_id = event_id,
         .timestamp = ts,
         .event_type = .session_start,
-        .actor = .{ .kind = .aegis, .display = "aegis" },
+        .actor = .{ .kind = .orca, .display = "orca" },
         .target = .{ .kind = .session, .value = session.id.slice() },
     };
 
@@ -338,7 +339,7 @@ test "openExisting fails closed on tampered existing event chain" {
         try session_writer.appendEvent(ev);
     }
 
-    const rel_events_path = try std.fs.path.join(std.testing.allocator, &.{ ".aegis", "sessions", session.id.slice(), "events.jsonl" });
+    const rel_events_path = try std.fs.path.join(std.testing.allocator, &.{ ".orca", "sessions", session.id.slice(), "events.jsonl" });
     defer std.testing.allocator.free(rel_events_path);
     var events = try tmp.dir.readFileAlloc(std.testing.allocator, rel_events_path, 4096);
     defer std.testing.allocator.free(events);
@@ -351,4 +352,124 @@ test "openExisting fails closed on tampered existing event chain" {
     }
 
     try std.testing.expectError(error.InvalidEventSchema, SessionWriter.openExisting(std.testing.allocator, root, session.id.slice()));
+}
+
+test "openExisting rejects dot segment session ids before resolving paths" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const root = try tmp.dir.realpathAlloc(std.testing.allocator, ".");
+    defer std.testing.allocator.free(root);
+
+    try std.testing.expectError(error.InvalidSessionId, SessionWriter.openExisting(std.testing.allocator, root, "."));
+    try std.testing.expectError(error.InvalidSessionId, SessionWriter.openExisting(std.testing.allocator, root, ".."));
+}
+
+test "openExisting accepts valid audit logs larger than one MCP message" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const root = try tmp.dir.realpathAlloc(std.testing.allocator, ".");
+    defer std.testing.allocator.free(root);
+    const ts = core.time.Timestamp.fromUnixSeconds(1_777_983_130);
+    const session: core.session.Session = .{
+        .id = try core.session.generateSessionId(ts),
+        .started_at = ts,
+        .command = "echo",
+        .args = &.{"large"},
+        .workspace_root = root,
+        .mode = .observe,
+        .platform = core.platform.detectOs(),
+    };
+
+    const large_target = try std.testing.allocator.alloc(u8, core.limits.max_event_field_len - 1024);
+    defer std.testing.allocator.free(large_target);
+    @memset(large_target, 'x');
+
+    {
+        var session_writer = try SessionWriter.init(std.testing.allocator, session);
+        defer session_writer.deinit();
+
+        var index: usize = 0;
+        while (index < 18) : (index += 1) {
+            var event_id: core.event.EventId = .{ .value = undefined, .len = 0 };
+            const event_id_text = try std.fmt.bufPrint(&event_id.value, "evt_{d}", .{index});
+            event_id.len = event_id_text.len;
+            const ev: core.event.Event = .{
+                .session_id = session.id,
+                .event_id = event_id,
+                .timestamp = ts,
+                .event_type = .process_launch,
+                .actor = .{ .kind = .orca, .display = "orca" },
+                .target = .{ .kind = .command, .value = large_target },
+            };
+            try session_writer.appendEvent(ev);
+        }
+    }
+
+    var resumed = try SessionWriter.openExisting(std.testing.allocator, root, session.id.slice());
+    defer resumed.deinit();
+    try std.testing.expectEqual(@as(usize, 18), resumed.event_count);
+}
+
+test "session writer preserves interleaved parent and shim appends" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const root = try tmp.dir.realpathAlloc(std.testing.allocator, ".");
+    defer std.testing.allocator.free(root);
+    const ts = core.time.Timestamp.fromUnixSeconds(1_777_983_130);
+    const session: core.session.Session = .{
+        .id = try core.session.generateSessionId(ts),
+        .started_at = ts,
+        .command = "orca",
+        .args = &.{"run"},
+        .workspace_root = root,
+        .mode = .strict,
+        .platform = core.platform.detectOs(),
+    };
+
+    var parent = try SessionWriter.init(std.testing.allocator, session);
+    defer parent.deinit();
+    try parent.appendEvent(try testEvent(session.id, ts, "evt_parent_1", .session_start, .session, session.id.slice()));
+
+    {
+        var shim = try SessionWriter.openExisting(std.testing.allocator, root, session.id.slice());
+        defer shim.deinit();
+        try shim.appendEvent(try testEvent(session.id, ts, "evt_shim_2", .command_allowed, .command, "git status with a longer shim-side target value"));
+    }
+
+    try parent.appendEvent(try testEvent(session.id, ts, "evt_parent_3", .session_exit, .session, session.id.slice()));
+
+    var resumed = try SessionWriter.openExisting(std.testing.allocator, root, session.id.slice());
+    defer resumed.deinit();
+    try std.testing.expectEqual(@as(usize, 3), resumed.event_count);
+
+    const rel_events_path = try std.fs.path.join(std.testing.allocator, &.{ ".orca", "sessions", session.id.slice(), "events.jsonl" });
+    defer std.testing.allocator.free(rel_events_path);
+    const events = try tmp.dir.readFileAlloc(std.testing.allocator, rel_events_path, 8192);
+    defer std.testing.allocator.free(events);
+    try std.testing.expect(std.mem.indexOf(u8, events, "evt_shim_2") != null);
+    try std.testing.expect(std.mem.indexOf(u8, events, "evt_parent_3") != null);
+}
+
+fn testEvent(
+    session_id: core.session.SessionId,
+    timestamp: core.time.Timestamp,
+    event_id_text: []const u8,
+    event_type: core.event.EventType,
+    target_kind: core.types.TargetKind,
+    target_value: []const u8,
+) !core.event.Event {
+    var event_id: core.event.EventId = .{ .value = undefined, .len = 0 };
+    if (event_id_text.len > event_id.value.len) return error.InvalidEventId;
+    @memcpy(event_id.value[0..event_id_text.len], event_id_text);
+    event_id.len = event_id_text.len;
+    return .{
+        .session_id = session_id,
+        .event_id = event_id,
+        .timestamp = timestamp,
+        .event_type = event_type,
+        .actor = .{ .kind = .orca, .display = "orca" },
+        .target = .{ .kind = target_kind, .value = target_value },
+    };
 }

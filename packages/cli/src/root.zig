@@ -1,13 +1,13 @@
-const aegis = @import("aegis");
-const aegis_core = @import("aegis_core");
+const orca = @import("orca");
+const orca_core = @import("orca_core");
 
-pub const cli = aegis.cli;
+pub const cli = orca.cli;
 pub const desktop = struct {
-    pub const intercept = aegis.intercept;
-    pub const mcp = aegis.mcp;
-    pub const sandbox = aegis.sandbox;
+    pub const intercept = orca.intercept;
+    pub const mcp = orca.mcp;
+    pub const sandbox = orca.sandbox;
 };
-pub const core = aegis_core;
+pub const core = orca_core;
 
 pub const phase = "23-product-split-cli-contract";
 

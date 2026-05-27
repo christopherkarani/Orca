@@ -1,4 +1,4 @@
-# Aegis Integration Baseline — P00
+# Orca Integration Baseline — P00
 
 > Generated: 2026-05-09  
 > Branch: `phase-35-edge-network-telemetry-data-guard`  
@@ -10,27 +10,27 @@
 
 ## 1. Repo Summary
 
-Aegis is a local, policy-driven runtime firewall for AI agents, written in Zig.
+Orca is a local, policy-driven runtime firewall for AI agents, written in Zig.
 It is **not** a SaaS product, hosted dashboard, monetization layer, or telemetry service.
 
 The repo is organized as a monorepo with three products:
 
 | Product | Path | Binary | Role |
 |---------|------|--------|------|
-| Aegis Core | `packages/core/` | (library) | Shared policy, audit, replay, redaction, schema, decision engine |
-| Aegis CLI | `packages/cli/` + `src/cli/` | `aegis` | Desktop / CI AI-agent runtime firewall |
-| Aegis Edge | `packages/edge/` | `aegis-edge` | Drone / robotics safety-policy and audit runtime (simulation-only) |
+| Orca Core | `packages/core/` | (library) | Shared policy, audit, replay, redaction, schema, decision engine |
+| Orca | `packages/cli/` + `src/cli/` | `orca` | Desktop / CI AI-agent runtime firewall |
+| Edge | `packages/edge/` | `edge` | Drone / robotics safety-policy and audit runtime (simulation-only) |
 
 ---
 
-## 2. Current CLI Map (`aegis` binary)
+## 2. Current CLI Map (`orca` binary)
 
 ### Top-Level Commands
 
 | Command | Namespace | File | Status | Notes |
 |---------|-----------|------|--------|-------|
 | `run` | — | `src/cli/run.zig` | Complete | Direct-child supervision, env filtering, command guard, audit |
-| `init` | — | `src/cli/init.zig` | Complete | Creates `.aegis/policy.yaml` from presets |
+| `init` | — | `src/cli/init.zig` | Complete | Creates `.orca/policy.yaml` from presets |
 | `doctor` | — | `src/cli/doctor.zig` | Complete | Platform capability report |
 | `policy` | `check` | `src/cli/policy.zig` | Complete | Validate policy file |
 | `policy` | `explain` | `src/cli/policy.zig` | Complete | Explain decision for action/target |
@@ -54,15 +54,15 @@ The repo is organized as a monorepo with three products:
 
 | Missing Command | Implication |
 |-----------------|-------------|
-| `aegis plugin` | No plugin namespace exists |
-| `aegis decide` | No decide command exists |
-| `aegis hook` | No hook command exists |
-| `aegis mcp` (server mode) | No persistent MCP server mode for plugin tools |
+| `orca plugin` | No plugin namespace exists |
+| `orca decide` | No decide command exists |
+| `orca hook` | No hook command exists |
+| `orca mcp` (server mode) | No persistent MCP server mode for plugin tools |
 
 ### Incomplete / Stubbed Areas
 
-- `aegis mcp --server <preset>` → explicitly unsupported (error: "Phase 11; use --command")
-- `aegis mcp trust` → guidance-only; does not write policy
+- `orca mcp --server <preset>` → explicitly unsupported (error: "Phase 11; use --command")
+- `orca mcp trust` → guidance-only; does not write policy
 - `src/cli/args.zig` → placeholder/skeleton; not wired into dispatch
 
 ---
@@ -86,9 +86,9 @@ The repo is organized as a monorepo with three products:
 
 | Package | Path | Re-exports |
 |---------|------|------------|
-| `aegis_core` | `packages/core/src/root.zig` | api, actions, schemas, abi (experimental), redteam |
-| `aegis_cli` | `packages/cli/src/root.zig` | CLI surface + intercept/MCP/sandbox wrappers |
-| `aegis_edge` | `packages/edge/src/root.zig` | domain, policy, safety, audit, MAVLink, operator, emergency, data_guard |
+| `orca_core` | `packages/core/src/root.zig` | api, actions, schemas, abi (experimental), redteam |
+| `orca_cli` | `packages/cli/src/root.zig` | CLI surface + intercept/MCP/sandbox wrappers |
+| `orca_edge` | `packages/edge/src/root.zig` | domain, policy, safety, audit, MAVLink, operator, emergency, data_guard |
 
 ### Edge Modules (`packages/edge/src/`)
 
@@ -141,14 +141,14 @@ The repo is organized as a monorepo with three products:
 |-------|--------|
 | `zig build` | Pass (no errors) |
 | `zig build test` | Pass |
-| `aegis --help` | Pass |
-| `aegis version` | Pass (`1.1.0`) |
-| `aegis version --json` | Pass |
-| `aegis doctor` | Pass |
-| `aegis redteam --ci` | **10/10 passed, 100%** |
-| `aegis-edge --help` | Pass |
-| `aegis-edge doctor` | Pass |
-| `aegis-edge redteam --ci` | **58/58 required passed, 100%** (5 PX4 SITL skipped, 6 ArduPilot SITL skipped) |
+| `orca --help` | Pass |
+| `orca version` | Pass (`1.1.0`) |
+| `orca version --json` | Pass |
+| `orca doctor` | Pass |
+| `orca redteam --ci` | **10/10 passed, 100%** |
+| `edge --help` | Pass |
+| `edge doctor` | Pass |
+| `edge redteam --ci` | **58/58 required passed, 100%** (5 PX4 SITL skipped, 6 ArduPilot SITL skipped) |
 
 ---
 
@@ -170,16 +170,16 @@ The repo is organized as a monorepo with three products:
 
 | Item | Why Needed | Risk if Missing |
 |------|------------|-----------------|
-| `aegis plugin` command namespace | Entry point for plugin management | No user-facing plugin surface |
+| `orca plugin` command namespace | Entry point for plugin management | No user-facing plugin surface |
 | Plugin manifest schema | Validate plugin metadata before load | Cannot safely load third-party plugins |
 | Hook schema / registry | Define plugin hook points | No structured extension mechanism |
 | `integrations/` directory | Home for plugin code, manifests, docs | Ad-hoc plugin layout |
 | Codex plugin directory | Codex-specific plugin implementation | No Codex integration |
 | Claude Code plugin directory | Claude Code-specific plugin implementation | No Claude Code integration |
-| MCP server mode for Aegis tools | Expose Aegis capabilities as MCP tools | Plugins cannot use Aegis as MCP backend |
+| MCP server mode for Orca tools | Expose Orca capabilities as MCP tools | Plugins cannot use Orca as MCP backend |
 | Plugin tests | Validate plugin loading, isolation, teardown | Silent breakage on plugin changes |
 | Plugin security model doc | Define trust boundaries, sandbox expectations | Unsafe plugin defaults |
-| Aegis CLI plugin contract doc | Define what the CLI promises to plugins | Plugin compatibility drift |
+| Orca plugin contract doc | Define what the CLI promises to plugins | Plugin compatibility drift |
 
 ---
 
@@ -187,10 +187,10 @@ The repo is organized as a monorepo with three products:
 
 1. **Plugin infrastructure directory** — Create `integrations/` or `plugins/` with clear subdirectories per target (codex, claude-code, generic-mcp).
 2. **Plugin manifest schema** — JSON/YAML schema for plugin metadata (name, version, hooks, permissions, sandbox requirements).
-3. **`aegis plugin` CLI namespace** — Minimum viable: `list`, `install`, `uninstall`, `doctor`.
+3. **`orca plugin` CLI namespace** — Minimum viable: `list`, `install`, `uninstall`, `doctor`.
 4. **Hook registry** — Define hook points in the CLI lifecycle where plugins can register callbacks.
 5. **Security model documentation** — Before any plugin loads code, document the trust model, permission levels, and isolation expectations.
-6. **MCP server mode** — Allow Aegis to expose its own capabilities (policy check, audit query, redteam) as MCP tools.
+6. **MCP server mode** — Allow Orca to expose its own capabilities (policy check, audit query, redteam) as MCP tools.
 7. **Plugin test harness** — A way to load a plugin in a test and verify it does not crash or corrupt state.
 
 ---
@@ -198,13 +198,13 @@ The repo is organized as a monorepo with three products:
 ## 7. Recommended Next Steps
 
 1. **Create `docs/integrations/` directory** (done as part of P00).
-2. **Write `AEGIS_CLI_PLUGIN_CONTRACT.md`** — Define the CLI-to-plugin contract.
+2. **Write `ORCA_CLI_PLUGIN_CONTRACT.md`** — Define the CLI-to-plugin contract.
 3. **Write `PLUGIN_SECURITY_MODEL.md`** — Define trust boundaries, sandbox levels, permission model.
 4. **Create `integrations/` directory** with subdirs: `codex/`, `claude-code/`, `generic-mcp/`, `schemas/`.
 5. **Design plugin manifest schema** — Start with a minimal JSON schema.
-6. **Stub `aegis plugin` command** — Add namespace + help text; defer implementation.
+6. **Stub `orca plugin` command** — Add namespace + help text; defer implementation.
 7. **Stub hook registry** — Define hook types without wiring them.
-8. **Add plugin baseline smoke tests** — Verify `aegis plugin --help` etc.
+8. **Add plugin baseline smoke tests** — Verify `orca plugin --help` etc.
 
 ---
 
@@ -213,7 +213,7 @@ The repo is organized as a monorepo with three products:
 | Blocker | Severity | Mitigation |
 |---------|----------|------------|
 | No plugin directory or schema | Medium | Create in P01; not blocking P00 |
-| No `aegis plugin` command | Medium | Stub in P01; not blocking P00 |
+| No `orca plugin` command | Medium | Stub in P01; not blocking P00 |
 | Experimental C ABI | Low | Not required for plugin work; use Zig modules |
 | `src/` vs `packages/` split incomplete | Low | Continue using `src/` for CLI; packages are facades |
 

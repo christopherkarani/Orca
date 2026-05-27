@@ -1,5 +1,6 @@
 const std = @import("std");
-const aegis_edge = @import("aegis_edge");
+const orca_core = @import("orca_core");
+const orca_edge = @import("orca_edge");
 
 const fake_secret = "fake_secret_value_phase23";
 
@@ -21,9 +22,9 @@ test "phase 23 docs define product split without real-flight readiness claims" {
         const text = try std.fs.cwd().readFileAlloc(std.testing.allocator, path, 128 * 1024);
         defer std.testing.allocator.free(text);
 
-        if (std.mem.indexOf(u8, text, "Aegis Core") != null) combined_has_core = true;
-        if (std.mem.indexOf(u8, text, "Aegis CLI") != null) combined_has_cli = true;
-        if (std.mem.indexOf(u8, text, "Aegis Edge") != null) combined_has_edge = true;
+        if (std.mem.indexOf(u8, text, "Core") != null) combined_has_core = true;
+        if (std.mem.indexOf(u8, text, "Orca") != null) combined_has_cli = true;
+        if (std.mem.indexOf(u8, text, "Edge") != null) combined_has_edge = true;
         if (std.mem.indexOf(u8, text, "must not be used for real flight") != null) edge_boundary_present = true;
 
         try expectNoUnsupportedReadinessClaim(text);
@@ -37,7 +38,7 @@ test "phase 23 docs define product split without real-flight readiness claims" {
 }
 
 test "phase 23 edge placeholder never reports active command or flight enforcement" {
-    for (aegis_edge.capabilityReports()) |report| {
+    for (orca_edge.capabilityReports()) |report| {
         switch (report.capability) {
             .command_mediation,
             .mavlink_gateway,
@@ -70,7 +71,7 @@ test "phase 23 edge placeholder never reports active command or flight enforceme
 
 test "phase 23 fake secret guardrail covers redaction before durable strings" {
     var buffer: [256]u8 = undefined;
-    const redacted = aegis_edge.core.audit.redact_bridge.redactStringBounded("OPENAI_API_KEY=" ++ fake_secret, &buffer);
+    const redacted = orca_core.api.redactStringBounded("OPENAI_API_KEY=" ++ fake_secret, &buffer);
 
     try std.testing.expect(std.mem.indexOf(u8, redacted, fake_secret) == null);
     try std.testing.expect(std.mem.indexOf(u8, redacted, "[REDACTED") != null);
@@ -96,11 +97,13 @@ test "policy schema matches runtime file-write and MCP server-scoped policy shap
     const server_properties = servers.get("additionalProperties").?.object.get("properties").?.object;
     try std.testing.expect(server_properties.get("tools") != null);
 
-    var policy = try aegis_edge.core.policy.load.parseFromSlice(std.testing.allocator,
+    const policy_load = orca_core.policy.load;
+    const policy_schema = orca_core.policy.schema;
+    var policy = try policy_load.parseFromSlice(std.testing.allocator,
         \\{"version":1,"mode":"strict","files":{"write":{"mode":"direct","allow":["docs/**"]}},"mcp":{"servers":{"github":{"tools":{"allow":["search_repositories"]}}}}}
     , "schema-alignment.json");
     defer policy.deinit();
-    try std.testing.expectEqual(aegis_edge.core.policy.schema.WriteMode.direct, policy.files.write_mode);
+    try std.testing.expectEqual(policy_schema.WriteMode.direct, policy.files.write_mode);
     try std.testing.expectEqualStrings("github.search_repositories", policy.mcp.allow[0]);
 }
 
@@ -119,6 +122,16 @@ test "MCP manifest schema decision and risk enums match manifest parser behavior
     try expectJsonStringNotInEnum(decision_enum, "observe");
 
     const properties = root.get("properties").?.object;
+    const server_schema = properties.get("server").?.object;
+    const server_required = server_schema.get("required").?.array.items;
+    try expectJsonStringInEnum(server_required, "name");
+    try expectJsonStringInEnum(server_required, "transport");
+    try expectJsonStringNotInEnum(server_required, "command");
+    const server_properties = server_schema.get("properties").?.object;
+    const transport_enum = server_properties.get("transport").?.object.get("enum").?.array.items;
+    try expectJsonStringInEnum(transport_enum, "stdio");
+    try expectJsonStringNotInEnum(transport_enum, "http");
+
     const tools_schema = properties.get("tools").?.object.get("additionalProperties").?.object;
     const tool_properties = tools_schema.get("properties").?.object;
     const risk_enum = tool_properties.get("risk").?.object.get("enum").?.array.items;

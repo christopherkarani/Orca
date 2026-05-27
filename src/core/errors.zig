@@ -1,4 +1,4 @@
-pub const AegisError = error{
+pub const OrcaError = error{
     PolicyParseFailed,
     PolicyValidationFailed,
     PolicyNotFound,
@@ -18,6 +18,6 @@ pub const AegisError = error{
 };
 
 test "core error set imports security errors" {
-    const err: AegisError = error.PermissionDenied;
+    const err: OrcaError = error.PermissionDenied;
     try @import("std").testing.expectEqual(error.PermissionDenied, err);
 }

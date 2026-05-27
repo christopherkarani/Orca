@@ -1,6 +1,6 @@
 const std = @import("std");
 
-const core = @import("../core/mod.zig");
+const core = @import("orca_core").core;
 const jsonrpc = @import("jsonrpc.zig");
 const stdio = @import("stdio.zig");
 
@@ -55,6 +55,7 @@ pub const ProcessServer = struct {
         child.stderr_behavior = .Inherit;
         try child.spawn();
         try child.waitForSpawn();
+        errdefer _ = child.kill() catch child.wait() catch {};
 
         const stdin_buffer = try allocator.alloc(u8, 16 * 1024);
         errdefer allocator.free(stdin_buffer);
@@ -80,6 +81,7 @@ pub const ProcessServer = struct {
         child.env_map = env_map;
         try child.spawn();
         try child.waitForSpawn();
+        errdefer _ = child.kill() catch child.wait() catch {};
 
         const stdin_buffer = try allocator.alloc(u8, 16 * 1024);
         errdefer allocator.free(stdin_buffer);
@@ -138,4 +140,10 @@ test "transport descriptors preserve stdio and honestly defer http" {
     try std.testing.expectEqual(Kind.http, http_desc.kind);
     var http = HttpTransport{};
     try std.testing.expectError(error.HttpMcpTransportDeferred, http.request(std.testing.allocator, "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\"}"));
+}
+
+test "process transport cleans up child after post-spawn allocation failures" {
+    const source = try std.fs.cwd().readFileAlloc(std.testing.allocator, "src/mcp/transport.zig", 64 * 1024);
+    defer std.testing.allocator.free(source);
+    try std.testing.expect(std.mem.count(u8, source, "errdefer _ = child.kill() catch child.wait() catch {};") >= 2);
 }

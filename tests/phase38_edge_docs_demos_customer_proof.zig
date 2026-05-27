@@ -1,5 +1,5 @@
 const std = @import("std");
-const edge_main = @import("aegis_edge_main");
+const edge_main = @import("orca_edge_main");
 
 fn readFile(allocator: std.mem.Allocator, path: []const u8) ![]u8 {
     return std.fs.cwd().readFileAlloc(allocator, path, 1024 * 1024);
@@ -36,8 +36,8 @@ test "phase 38 customer-facing docs and proof files exist with bounded claims" {
         "docs/edge/architecture.md",
         "docs/edge/capability-matrix.md",
         "docs/edge/customer-proof/README.md",
-        "docs/edge/customer-proof/what-aegis-edge-proves.md",
-        "docs/edge/customer-proof/what-aegis-edge-does-not-prove.md",
+        "docs/edge/customer-proof/what-edge-proves.md",
+        "docs/edge/customer-proof/what-edge-does-not-prove.md",
         "docs/edge/customer-proof/demo-script.md",
         "docs/edge/customer-proof/evidence-package.md",
         "docs/edge/customer-proof/safety-case-example.md",
@@ -45,7 +45,7 @@ test "phase 38 customer-facing docs and proof files exist with bounded claims" {
         "docs/edge/customer-proof/sitl-vs-flight.md",
         "docs/edge/customer-proof/buyer-faq.md",
         "docs/edge/customer-proof/technical-faq.md",
-        "docs/edge/customer-proof/aegis-edge-technical-brief.md",
+        "docs/edge/customer-proof/edge-technical-brief.md",
         "docs/edge/customer-proof/demo-recording-script.md",
         "docs/edge/customer-proof/redteam-summary.md",
     };
@@ -53,16 +53,16 @@ test "phase 38 customer-facing docs and proof files exist with bounded claims" {
 
     const readme = try readFile(allocator, "packages/edge/README.md");
     defer allocator.free(readme);
-    try expectContains(readme, "Aegis Edge is not a flight controller");
+    try expectContains(readme, "Edge is not a flight controller");
     try expectContains(readme, "simulation/SITL/bench-preparation");
     try expectContains(readme, "fake adapter");
     try expectContains(readme, "PX4 SITL");
     try expectContains(readme, "ArduPilot SITL");
     try expectContains(readme, "customer-proof");
-    try expectContains(readme, "aegis-edge demo run geofence-deny");
-    try expectContains(readme, "aegis-edge docs check");
+    try expectContains(readme, "edge demo run geofence-deny");
+    try expectContains(readme, "edge docs check");
 
-    const does_not = try readFile(allocator, "docs/edge/customer-proof/what-aegis-edge-does-not-prove.md");
+    const does_not = try readFile(allocator, "docs/edge/customer-proof/what-edge-does-not-prove.md");
     defer allocator.free(does_not);
     try expectContains(does_not, "does not prove the aircraft is safe for flight");
     try expectContains(does_not, "does not prove compliance with FAA/EASA/CAA rules");

@@ -1,4 +1,4 @@
-# Aegis preset: cursor-agent
+# Orca preset: cursor-agent
 # Generic/experimental: this is a conservative local editor-agent policy, not a claim about Cursor internals.
 version: 1
 mode: ask
@@ -48,7 +48,7 @@ files:
       - "./**"
     deny:
       - "./.git/**"
-      - "./.aegis/**"
+      - "./.orca/**"
     mode: staged
 
 commands:

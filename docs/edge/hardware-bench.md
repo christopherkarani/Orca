@@ -6,9 +6,9 @@ It is a bounded `hardware_bench_no_actuation` environment for no-actuation prepa
 Use:
 
 ```bash
-aegis-edge bench doctor
-aegis-edge bench check --policy examples/edge/safety/policies/safety-strict.yaml
-aegis-edge bench report --policy examples/edge/safety/policies/safety-strict.yaml --scenario examples/edge/safety/scenarios/geofence-deny.yaml
+edge bench doctor
+edge bench check --policy examples/edge/safety/policies/safety-strict.yaml
+edge bench report --policy examples/edge/safety/policies/safety-strict.yaml --scenario examples/edge/safety/scenarios/geofence-deny.yaml
 ```
 
 This document intentionally does not provide flight instructions, real aircraft operation steps, motor/propeller actuation procedures, autonomous flight procedures, or customer hardware procedures.

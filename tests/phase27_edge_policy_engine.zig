@@ -1,5 +1,5 @@
 const std = @import("std");
-const edge = @import("aegis_edge");
+const edge = @import("orca_edge");
 
 const domain = edge.domain;
 const policy = edge.policy;
@@ -444,7 +444,7 @@ test "phase 27 audit events pass through Core redaction and replay safely" {
         .id = try edge.core.core.session.generateSessionId(ts),
         .started_at = ts,
         .ended_at = ts,
-        .command = "aegis-edge",
+        .command = "edge",
         .args = &.{ "policy", "evaluate" },
         .workspace_root = root,
         .mode = .strict,

@@ -8,13 +8,14 @@ pub const Decision = core_mod.decision.Decision;
 pub const DecisionResult = core_mod.decision.DecisionResult;
 pub const Evaluation = policy_engine.schema.Evaluation;
 pub const EvaluationContext = policy_engine.schema.EvaluationContext;
+pub const ExplainKind = policy_engine.explain.ExplainKind;
 pub const Preset = policy_engine.presets.Preset;
 pub const ReplayOptions = audit.replay.ReplayOptions;
 pub const ReplaySession = audit.replay.ReplaySession;
 pub const VerifyResult = audit.replay.VerifyResult;
 pub const AuditWriter = audit.writer.SessionWriter;
 pub const SummaryInput = audit.summary.SummaryInput;
-pub const Mode = core_mod.types.Mode;
+pub const Mode = policy_engine.schema.Mode;
 pub const Path = core_mod.types.Path;
 pub const PathKind = core_mod.types.PathKind;
 pub const Timestamp = core_mod.time.Timestamp;
@@ -33,14 +34,21 @@ const PolicyInner = struct {
 };
 
 /// Opaque policy handle; storage is not accessible outside this module.
+/// The caller owns the handle and must call `deinit()` to free all associated memory.
+/// Created by `parsePolicyFromSlice`, `loadPolicyFile`, or `loadPolicyPreset`.
 pub const Policy = opaque {
     pub fn deinit(self: *Policy) void {
         policyInnerMut(self).deinit();
     }
+
+    pub fn mode(self: *const Policy) Mode {
+        return policyInner(self).mode;
+    }
 };
 
 fn policyInner(policy: *const Policy) *const policy_engine.schema.Policy {
-    return &policyInnerMut(@constCast(policy)).value;
+    const inner: *const PolicyInner = @ptrCast(@alignCast(policy));
+    return &inner.value;
 }
 
 fn policyInnerMut(policy: *Policy) *PolicyInner {
@@ -49,6 +57,9 @@ fn policyInnerMut(policy: *Policy) *PolicyInner {
 
 pub const LoadSource = policy_engine.schema.LoadSource;
 
+/// A policy loaded with its source metadata (file path, load source).
+/// The caller owns this value and must call `deinit()` to free the policy and path.
+/// The `path` is freed on `deinit()`; do not use after calling `deinit()`.
 pub const LoadedPolicy = struct {
     policy: *Policy,
     source: LoadSource,
@@ -60,14 +71,27 @@ pub const LoadedPolicy = struct {
         self.allocator.free(self.path);
         self.* = undefined;
     }
+
+    pub fn mode(self: *const LoadedPolicy) Mode {
+        return policyInner(self.policy).mode;
+    }
+
+    pub fn innerPtr(self: *const LoadedPolicy) *const policy_engine.schema.Policy {
+        return policyInner(self.policy);
+    }
+
+    pub fn innerMutPtr(self: *LoadedPolicy) *policy_engine.schema.Policy {
+        return &policyInnerMut(self.policy).value;
+    }
 };
 
 pub const ActorKind = enum {
     user,
     agent,
     process,
-    /// Maps to core `ActorKind.aegis` in audit events.
+    /// Maps to core `ActorKind.orca` in audit events. Prefer `.orca`.
     core,
+    orca,
     unknown,
 };
 
@@ -86,6 +110,11 @@ pub const TargetKind = enum {
     staging_area,
     extension,
     session,
+    mcp_tool,
+    mcp_resource,
+    mcp_prompt,
+    mcp_sampling,
+    extension_target,
     unknown,
 };
 
@@ -128,6 +157,11 @@ pub const ExtensionAction = struct {
     target: []const u8,
 };
 
+pub const McpToolCall = struct {
+    server: []const u8,
+    tool_name: []const u8,
+};
+
 pub const Action = union(enum) {
     env_read: EnvAction,
     file_read: FileAction,
@@ -137,6 +171,7 @@ pub const Action = union(enum) {
     approval_decision: ApprovalAction,
     staging_decision: StagingAction,
     extension: ExtensionAction,
+    mcp_tool_call: McpToolCall,
 
     pub fn targetKind(self: Action) TargetKind {
         return switch (self) {
@@ -147,11 +182,13 @@ pub const Action = union(enum) {
             .approval_decision => .approval,
             .staging_decision => .staging_area,
             .extension => .extension,
+            .mcp_tool_call => .extension_target,
         };
     }
 };
 
 pub const EventType = enum {
+    extension_event,
     session_start,
     session_exit,
     policy_loaded,
@@ -172,7 +209,22 @@ pub const EventType = enum {
     network_connect_attempt,
     network_connect_allowed,
     network_connect_denied,
+    network_proxy_start,
+    network_proxy_stop,
     network_exfiltration_suspected,
+    mcp_initialize,
+    mcp_tools_list,
+    mcp_tool_metadata_flagged,
+    mcp_tool_call,
+    mcp_tool_call_allowed,
+    mcp_tool_call_denied,
+    mcp_tool_call_approval_requested,
+    mcp_resources_list,
+    mcp_resource_read,
+    mcp_prompts_list,
+    mcp_prompt_get,
+    mcp_sampling_request,
+    mcp_unknown_method,
     secret_redacted,
     user_approval,
     user_denial,
@@ -210,24 +262,33 @@ pub fn detectOs() core_mod.platform.Os {
     return core_mod.platform.detectOs();
 }
 
+/// Parse a YAML policy from an in-memory string and return an opaque `Policy` handle.
+/// The caller owns the returned pointer and must call `deinit()` on it.
+/// The `source_path` is used for error diagnostics only and is not retained.
 pub fn parsePolicyFromSlice(allocator: std.mem.Allocator, text: []const u8, source_path: ?[]const u8) !*Policy {
     var parsed = try policy_engine.load.parseFromSlice(allocator, text, source_path);
     errdefer parsed.deinit();
     return wrapPolicy(allocator, parsed);
 }
 
+/// Load a policy from a file on disk and return an opaque `Policy` handle.
+/// The caller owns the returned pointer and must call `deinit()` on it.
 pub fn loadPolicyFile(allocator: std.mem.Allocator, path: []const u8) !*Policy {
     var loaded = try policy_engine.load.loadFile(allocator, path);
     errdefer loaded.deinit();
     return wrapPolicy(allocator, loaded);
 }
 
+/// Load a built-in policy preset and return an opaque `Policy` handle.
+/// The caller owns the returned pointer and must call `deinit()` on it.
 pub fn loadPolicyPreset(allocator: std.mem.Allocator, preset: Preset) !*Policy {
     var loaded = try policy_engine.load.loadPreset(allocator, preset);
     errdefer loaded.deinit();
     return wrapPolicy(allocator, loaded);
 }
 
+/// Discover a policy file by searching well-known paths, returning a `LoadedPolicy`.
+/// The caller owns the result and must call `deinit()` on it.
 pub fn discoverPolicy(allocator: std.mem.Allocator, explicit_path: ?[]const u8, workspace_root: []const u8) !LoadedPolicy {
     var loaded = try policy_engine.load.discover(allocator, explicit_path, workspace_root);
     errdefer loaded.deinit();
@@ -262,7 +323,20 @@ pub fn evaluateAction(allocator: std.mem.Allocator, value: *const Policy, reques
         } }, context, allocator),
         .staging_decision => |staging| policy_engine.evaluate.action(inner, .{ .staging_decision = .{ .path = staging.path } }, context, allocator),
         .extension => |extension| evaluateExtensionAction(allocator, inner, extension, context),
+        .mcp_tool_call => |mcp| policy_engine.evaluate.action(inner, .{ .mcp_tool_call = .{ .server = mcp.server, .tool_name = mcp.tool_name } }, context, allocator),
     };
+}
+
+pub fn explainAction(allocator: std.mem.Allocator, policy: *const Policy, kind: policy_engine.explain.ExplainKind, target: []const u8) !Evaluation {
+    return policy_engine.explain.explain(allocator, policyInner(policy), kind, target);
+}
+
+pub fn explainActionWithOptions(allocator: std.mem.Allocator, policy: *const Policy, kind: policy_engine.explain.ExplainKind, target: []const u8, options: policy_engine.explain.ExplainOptions) !Evaluation {
+    return policy_engine.explain.explainWithOptions(allocator, policyInner(policy), kind, target, options);
+}
+
+pub fn writePolicyExplanation(writer: anytype, value: *const Policy, evaluation: Evaluation) !void {
+    try policy_engine.explain.write(writer, policyInner(value), evaluation);
 }
 
 pub fn makeDecision(input: DecisionInput) Decision {
@@ -382,7 +456,8 @@ fn toCoreActor(actor: Actor) core_mod.types.Actor {
             .user => .user,
             .agent => .agent,
             .process => .process,
-            .core => .aegis,
+            .core => .orca,
+            .orca => .orca,
             .unknown => .unknown,
         },
         .id = actor.id,
@@ -401,14 +476,39 @@ fn toCoreTarget(target: Target) core_mod.types.Target {
             .staging_area => .staging_area,
             .extension => .extension,
             .session => .session,
+            .mcp_tool => .mcp_tool,
+            .mcp_resource => .mcp_resource,
+            .mcp_prompt => .mcp_prompt,
+            .mcp_sampling => .mcp_sampling,
+            .extension_target => .extension_target,
             .unknown => .unknown,
         },
         .value = target.value,
     };
 }
 
+pub fn fromCoreTargetKind(value: core_mod.types.TargetKind) TargetKind {
+    return switch (value) {
+        .env_var => .env_var,
+        .file_path => .file_path,
+        .command => .command,
+        .network_endpoint => .network_endpoint,
+        .approval => .approval,
+        .staging_area => .staging_area,
+        .extension => .extension,
+        .session => .session,
+        .mcp_tool => .mcp_tool,
+        .mcp_resource => .mcp_resource,
+        .mcp_prompt => .mcp_prompt,
+        .mcp_sampling => .mcp_sampling,
+        .extension_target => .extension_target,
+        .unknown => .unknown,
+    };
+}
+
 fn toCoreEventType(value: EventType) core_mod.event.EventType {
     return switch (value) {
+        .extension_event => .extension_event,
         .session_start => .session_start,
         .session_exit => .session_exit,
         .policy_loaded => .policy_loaded,
@@ -429,7 +529,67 @@ fn toCoreEventType(value: EventType) core_mod.event.EventType {
         .network_connect_attempt => .network_connect_attempt,
         .network_connect_allowed => .network_connect_allowed,
         .network_connect_denied => .network_connect_denied,
+        .network_proxy_start => .network_proxy_start,
+        .network_proxy_stop => .network_proxy_stop,
         .network_exfiltration_suspected => .network_exfiltration_suspected,
+        .mcp_initialize => .mcp_initialize,
+        .mcp_tools_list => .mcp_tools_list,
+        .mcp_tool_metadata_flagged => .mcp_tool_metadata_flagged,
+        .mcp_tool_call => .mcp_tool_call,
+        .mcp_tool_call_allowed => .mcp_tool_call_allowed,
+        .mcp_tool_call_denied => .mcp_tool_call_denied,
+        .mcp_tool_call_approval_requested => .mcp_tool_call_approval_requested,
+        .mcp_resources_list => .mcp_resources_list,
+        .mcp_resource_read => .mcp_resource_read,
+        .mcp_prompts_list => .mcp_prompts_list,
+        .mcp_prompt_get => .mcp_prompt_get,
+        .mcp_sampling_request => .mcp_sampling_request,
+        .mcp_unknown_method => .mcp_unknown_method,
+        .secret_redacted => .secret_redacted,
+        .user_approval => .user_approval,
+        .user_denial => .user_denial,
+    };
+}
+
+pub fn fromCoreEventType(value: core_mod.event.EventType) EventType {
+    return switch (value) {
+        .extension_event => .extension_event,
+        .session_start => .session_start,
+        .session_exit => .session_exit,
+        .policy_loaded => .policy_loaded,
+        .backend_capability => .backend_capability,
+        .process_launch => .process_launch,
+        .file_read_attempt => .file_read_attempt,
+        .file_read_allowed => .file_read_allowed,
+        .file_read_denied => .file_read_denied,
+        .file_write_attempt => .file_write_attempt,
+        .file_write_staged => .file_write_staged,
+        .file_write_denied => .file_write_denied,
+        .file_apply => .file_apply,
+        .file_discard => .file_discard,
+        .command_attempt => .command_attempt,
+        .command_approval_requested => .command_approval_requested,
+        .command_allowed => .command_allowed,
+        .command_denied => .command_denied,
+        .network_connect_attempt => .network_connect_attempt,
+        .network_connect_allowed => .network_connect_allowed,
+        .network_connect_denied => .network_connect_denied,
+        .network_proxy_start => .network_proxy_start,
+        .network_proxy_stop => .network_proxy_stop,
+        .network_exfiltration_suspected => .network_exfiltration_suspected,
+        .mcp_initialize => .mcp_initialize,
+        .mcp_tools_list => .mcp_tools_list,
+        .mcp_tool_metadata_flagged => .mcp_tool_metadata_flagged,
+        .mcp_tool_call => .mcp_tool_call,
+        .mcp_tool_call_allowed => .mcp_tool_call_allowed,
+        .mcp_tool_call_denied => .mcp_tool_call_denied,
+        .mcp_tool_call_approval_requested => .mcp_tool_call_approval_requested,
+        .mcp_resources_list => .mcp_resources_list,
+        .mcp_resource_read => .mcp_resource_read,
+        .mcp_prompts_list => .mcp_prompts_list,
+        .mcp_prompt_get => .mcp_prompt_get,
+        .mcp_sampling_request => .mcp_sampling_request,
+        .mcp_unknown_method => .mcp_unknown_method,
         .secret_redacted => .secret_redacted,
         .user_approval => .user_approval,
         .user_denial => .user_denial,

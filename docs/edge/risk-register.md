@@ -1,4 +1,4 @@
-# Aegis Edge Risk Register
+# Edge Risk Register
 
 Owner placeholder: TBD
 

@@ -1,0 +1,8 @@
+# Edge example only. Do not install or enable automatically.
+# Simulation/SITL/bench-preparation only; no real-flight or hardware endpoint.
+[Unit]
+Description=Edge example deployment diagnostics
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/edge deployment doctor

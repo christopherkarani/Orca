@@ -1,4 +1,4 @@
-# Aegis Edge Safety Case: mission-outside-geofence
+# Edge Safety Case: mission-outside-geofence
 
 Illustrative fake/simulation report. No real hardware was connected and no real flight was performed.
 

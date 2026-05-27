@@ -1,6 +1,6 @@
 # Compatibility Matrix
 
-Use `aegis doctor` for the authoritative report on a specific machine. This matrix uses Aegis capability vocabulary: `active`, `partial`, `wrapper-only`, `observe-only`, `limited`, `unavailable`, and `unsupported`.
+Use `orca doctor` for the authoritative report on a specific machine. This matrix uses Orca capability vocabulary: `active`, `partial`, `wrapper-only`, `observe-only`, `limited`, `unavailable`, and `unsupported`.
 
 | Feature | Linux | macOS | Windows |
 |---|---|---|---|
@@ -22,4 +22,4 @@ Use `aegis doctor` for the authoritative report on a specific machine. This matr
 | Process cleanup | active or partial | active | partial |
 | Red-team suite | active | active | active |
 
-`wrapper-only` means Aegis-mediated command paths are protected by shims or wrappers. It is not transparent OS enforcement.
+`wrapper-only` means Orca-mediated command paths are protected by shims or wrappers. It is not transparent OS enforcement.

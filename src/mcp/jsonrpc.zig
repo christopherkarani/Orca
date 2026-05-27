@@ -1,6 +1,6 @@
 const std = @import("std");
 
-const core = @import("../core/mod.zig");
+const core = @import("orca_core").core;
 
 pub const implemented = true;
 
@@ -53,10 +53,14 @@ pub fn validateJsonRpc(value: std.json.Value) !void {
     if (object.get("id")) |id_value| try validateId(id_value);
     if (object.get("method")) |method| {
         if (method != .string or method.string.len == 0) return error.InvalidJsonRpc;
+        if (object.get("result") != null or object.get("error") != null) return error.InvalidJsonRpc;
         return;
     }
-    if (object.get("result") != null or object.get("error") != null) {
+    const has_result = object.get("result") != null;
+    const has_error = object.get("error") != null;
+    if (has_result or has_error) {
         if (object.get("id") == null) return error.InvalidJsonRpc;
+        if (has_result and has_error) return error.InvalidJsonRpc;
         return;
     }
     return error.InvalidJsonRpc;
@@ -192,4 +196,9 @@ test "parser rejects malformed json-rpc ids" {
     try std.testing.expectError(error.InvalidJsonRpc, parseLine(std.testing.allocator, "{\"jsonrpc\":\"2.0\",\"id\":true,\"method\":\"tools/list\"}"));
     try std.testing.expectError(error.InvalidJsonRpc, parseLine(std.testing.allocator, "{\"jsonrpc\":\"2.0\",\"id\":1.5,\"method\":\"tools/list\"}"));
     try std.testing.expectError(error.InvalidJsonRpc, parseLine(std.testing.allocator, "{\"jsonrpc\":\"2.0\",\"result\":{}}"));
+}
+
+test "parser rejects mixed request and response shapes" {
+    try std.testing.expectError(error.InvalidJsonRpc, parseLine(std.testing.allocator, "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"tools/list\",\"result\":{}}"));
+    try std.testing.expectError(error.InvalidJsonRpc, parseLine(std.testing.allocator, "{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{},\"error\":{\"code\":-1,\"message\":\"x\"}}"));
 }

@@ -6,8 +6,8 @@ environment: fake_adapter
 runtime_assets: source
 policy_path: examples/edge/safety/policies/safety-strict.yaml
 scenario_path: examples/edge/safety/scenarios/geofence-deny.yaml
-audit_output_path: .aegis-edge/sessions
-log_output_path: .aegis-edge/logs
+audit_output_path: .edge/sessions
+log_output_path: .edge/logs
 network_mode: offline
 safety_limitations: simulation only; not real-flight readiness or certification
 operator_acknowledgement: false

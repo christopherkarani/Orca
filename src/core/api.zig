@@ -1,7 +1,7 @@
 const std = @import("std");
 
 const audit = @import("../audit/mod.zig");
-const core = @import("mod.zig");
+const core = @import("public.zig");
 const policy = @import("../policy/mod.zig");
 
 pub const Action = core.types.Action;
@@ -65,6 +65,16 @@ pub fn explainAction(
     target: []const u8,
 ) !Evaluation {
     return policy.explain.explain(allocator, value, kind, target);
+}
+
+pub fn explainActionWithOptions(
+    allocator: std.mem.Allocator,
+    value: *const Policy,
+    kind: policy.explain.ExplainKind,
+    target: []const u8,
+    options: policy.explain.ExplainOptions,
+) !Evaluation {
+    return policy.explain.explainWithOptions(allocator, value, kind, target, options);
 }
 
 pub fn writePolicyExplanation(writer: anytype, value: *const Policy, evaluation: Evaluation) !void {

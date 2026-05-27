@@ -1,6 +1,6 @@
 # Edge Red-Team Runner
 
-Phase 34 adds a deterministic red-team and fault-injection suite for Aegis Edge.
+Phase 34 adds a deterministic red-team and fault-injection suite for Edge.
 It is simulation, fake-adapter, SITL, bench-preparation, and customer-evaluation
 evidence only. It is not real-flight readiness, certification, detect-and-avoid,
 or autopilot replacement evidence.
@@ -8,25 +8,25 @@ or autopilot replacement evidence.
 Run the default fake/simulation suite:
 
 ```sh
-aegis-edge redteam
-aegis-edge redteam --ci
-aegis-edge redteam --json
+edge redteam
+edge redteam --ci
+edge redteam --json
 ```
 
 Useful filters:
 
 ```sh
-aegis-edge redteam list
-aegis-edge redteam validate
-aegis-edge redteam --category geofence
-aegis-edge redteam --category data-guard
-aegis-edge redteam --category audit-redaction
-aegis-edge redteam --category approval-bypass
-aegis-edge redteam --category emergency-bypass
-aegis-edge redteam --fixture geofence-waypoint-outside-circular-denied
-aegis-edge redteam --environment fake_adapter
-aegis-edge redteam --report safety-case
-aegis-edge redteam --output .aegis-edge/redteam/manual-run
+edge redteam list
+edge redteam validate
+edge redteam --category geofence
+edge redteam --category data-guard
+edge redteam --category audit-redaction
+edge redteam --category approval-bypass
+edge redteam --category emergency-bypass
+edge redteam --fixture geofence-waypoint-outside-circular-denied
+edge redteam --environment fake_adapter
+edge redteam --report safety-case
+edge redteam --output .edge/redteam/manual-run
 ```
 
 Normal runs discover fixtures under `examples/edge/redteam`. Required fake and

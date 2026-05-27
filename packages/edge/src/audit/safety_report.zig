@@ -1,5 +1,5 @@
 const std = @import("std");
-const core = @import("aegis_core");
+const core = @import("orca_core");
 const schema = @import("../schema/mod.zig");
 const artifacts = @import("edge_artifacts.zig");
 
@@ -96,7 +96,7 @@ pub const Report = struct {
     report_id: []const u8,
     report_version: u32 = 1,
     generated_at: []const u8,
-    generated_by: []const u8 = "Aegis Edge",
+    generated_by: []const u8 = "Edge",
     scenario_id: []const u8,
     scenario_name: []const u8,
     scenario_source: []const u8,
@@ -242,7 +242,7 @@ pub fn writeJson(writer: anytype, report: Report) !void {
 
 pub fn writeMarkdown(writer: anytype, report: Report) !void {
     try writer.print(
-        \\# Aegis Edge Safety Case: {s}
+        \\# Edge Safety Case: {s}
         \\
         \\{s}
         \\

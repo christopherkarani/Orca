@@ -1,6 +1,6 @@
 const std = @import("std");
 
-const core = @import("../core/mod.zig");
+const core = @import("orca_core").core;
 const jsonrpc = @import("jsonrpc.zig");
 
 pub const implemented = true;

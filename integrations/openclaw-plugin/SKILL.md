@@ -5,7 +5,6 @@ Orca adds runtime guardrails to OpenClaw workflows via the Orca CLI. Use it when
 - You want policy-based command blocking before tool execution
 - You need audit logging for agent sessions
 - You want secret redaction in tool payloads
-- You need permission request evaluation before user approval
 
 ## When to use Orca
 
@@ -21,11 +20,10 @@ Orca adds runtime guardrails to OpenClaw workflows via the Orca CLI. Use it when
 Orca registers lifecycle hooks that call the Orca CLI for policy decisions:
 
 - `tool.before` — evaluates tool calls against policy before execution
-- `permission.before` — evaluates permission requests before user approval
 - `session.start`, `session.end` — informational logging
-- `tool.after`, `permission.after` — audit logging
+- `tool.after` — audit logging
 
-If a tool or permission is blocked, Orca throws an error that prevents execution.
+If a tool is blocked, Orca throws an error that prevents execution. OpenClaw does not currently expose dedicated permission lifecycle hooks to this plugin; permission-like blocking is handled through `tool.before` before the tool call executes.
 
 ## Prerequisites
 

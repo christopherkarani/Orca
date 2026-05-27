@@ -1,6 +1,7 @@
 const std = @import("std");
 
-const core = @import("../core/mod.zig");
+const audit_redact = @import("../audit/redact_bridge.zig");
+const core = @import("../core/public.zig");
 const schema = @import("schema.zig");
 
 pub fn policy(value: *const schema.Policy) !void {
@@ -11,6 +12,8 @@ pub fn policy(value: *const schema.Policy) !void {
     try validateRuleSet("files.write", value.files.write, core.limits.max_path_len);
     try validateRuleSet("commands", value.commands, core.limits.max_command_len);
     try validateNetwork(value.network);
+    try validateCredentials(value.credentials);
+    try validateServices(value.services, value.credentials);
     try validateRuleSet("mcp", value.mcp, core.limits.max_event_field_len);
 }
 
@@ -30,6 +33,100 @@ fn validateNetwork(network: schema.NetworkPolicy) !void {
     for (network.allow) |rule| try validatePatternString("network.allow", rule, core.limits.max_url_len);
     for (network.deny) |rule| try validatePatternString("network.deny", rule, core.limits.max_url_len);
     for (network.ask) |rule| try validatePatternString("network.ask", rule, core.limits.max_url_len);
+}
+
+fn validateCredentials(credentials: schema.CredentialsPolicy) !void {
+    if (credentials.default_broker) |default_broker| {
+        try validateCredentialReference(default_broker);
+        if (credentials.brokers.len > 0 and !hasBroker(credentials, default_broker)) return error.InvalidPolicy;
+    }
+    for (credentials.brokers, 0..) |broker, index| {
+        try validateCredentialReference(broker.name);
+        for (credentials.brokers[0..index]) |previous| {
+            if (std.ascii.eqlIgnoreCase(previous.name, broker.name)) return error.InvalidPolicy;
+        }
+        if (broker.account) |account| try validateSafePolicyValue("credentials.brokers.account", account, core.limits.max_event_field_len);
+        if (broker.path) |path| {
+            try validateSafePolicyValue("credentials.brokers.path", path, core.limits.max_path_len);
+            if (broker.kind == .env_file_dev) try validateDevEnvFilePath(path);
+        } else if (broker.kind == .env_file_dev) {
+            return error.InvalidPolicy;
+        }
+    }
+    for (credentials.refs, 0..) |credential_ref, index| {
+        try validateCredentialReference(credential_ref.name);
+        for (credentials.refs[0..index]) |previous| {
+            if (std.ascii.eqlIgnoreCase(previous.name, credential_ref.name)) return error.InvalidPolicy;
+        }
+        if (credential_ref.broker) |broker_name| {
+            try validateCredentialReference(broker_name);
+            if (credentials.brokers.len > 0 and !hasBroker(credentials, broker_name)) return error.InvalidPolicy;
+        } else if (credentials.default_broker == null and credentials.brokers.len > 0) {
+            return error.InvalidPolicy;
+        }
+        try validateSafePolicyValue("credentials.refs.ref", credential_ref.ref, core.limits.max_event_field_len);
+    }
+}
+
+fn validateServices(services: []const schema.ServicePolicy, credentials: schema.CredentialsPolicy) !void {
+    for (services, 0..) |service, index| {
+        try validatePatternString("services.name", service.name, core.limits.max_event_field_len);
+        for (services[0..index]) |previous| {
+            if (std.ascii.eqlIgnoreCase(previous.name, service.name)) return error.InvalidPolicy;
+        }
+        if (service.hosts.len == 0) return error.InvalidPolicy;
+        for (service.hosts) |host| try validatePatternString("services.hosts", host, core.limits.max_url_len);
+        for (service.methods) |method| {
+            try validatePatternString("services.methods", method, 16);
+            for (method) |char| {
+                if (!(std.ascii.isUpper(char) or char == '*')) return error.InvalidPolicy;
+            }
+        }
+        for (service.paths.allow) |path| try validatePatternString("services.paths.allow", path, core.limits.max_url_len);
+        for (service.paths.deny) |path| try validatePatternString("services.paths.deny", path, core.limits.max_url_len);
+        if (service.credentials.use) |credential| {
+            try validateCredentialReference(credential);
+            if (credentials.refs.len > 0 and !hasCredentialRef(credentials, credential)) return error.InvalidPolicy;
+        }
+    }
+}
+
+fn hasBroker(credentials: schema.CredentialsPolicy, name: []const u8) bool {
+    for (credentials.brokers) |broker| {
+        if (std.ascii.eqlIgnoreCase(broker.name, name)) return true;
+    }
+    return false;
+}
+
+fn hasCredentialRef(credentials: schema.CredentialsPolicy, name: []const u8) bool {
+    for (credentials.refs) |credential_ref| {
+        if (std.ascii.eqlIgnoreCase(credential_ref.name, name)) return true;
+    }
+    return false;
+}
+
+fn validateCredentialReference(value: []const u8) !void {
+    try validateString("services.credentials.use", value, core.limits.max_event_field_len);
+    if (audit_redact.classifyString(value) != null) return error.InvalidPolicy;
+    for (value) |char| {
+        if (std.ascii.isAlphanumeric(char)) continue;
+        switch (char) {
+            '_', '-', '.', ':', '@' => continue,
+            else => return error.InvalidPolicy,
+        }
+    }
+}
+
+fn validateSafePolicyValue(label: []const u8, value: []const u8, max_len: usize) !void {
+    try validatePatternString(label, value, max_len);
+    if (audit_redact.classifyString(value) != null) return error.InvalidPolicy;
+}
+
+fn validateDevEnvFilePath(path: []const u8) !void {
+    if (std.fs.path.isAbsolute(path)) return error.InvalidPolicy;
+    if (std.mem.indexOf(u8, path, "..") != null) return error.InvalidPolicy;
+    if (!(std.mem.startsWith(u8, path, ".orca/") or std.mem.startsWith(u8, path, ".orca\\"))) return error.InvalidPolicy;
+    if (std.mem.indexOf(u8, path, "dev") == null or !std.mem.endsWith(u8, path, ".env")) return error.InvalidPolicy;
 }
 
 fn validateString(_: []const u8, value: []const u8, max_len: usize) !void {
@@ -75,6 +172,105 @@ test "policy patterns with unsafe control characters are rejected" {
     const load = @import("load.zig");
     const bad = "version: 1\nmode: strict\nfiles:\n  read:\n    deny:\n      - \"./bad\x1bpath\"\n";
     try std.testing.expectError(error.InvalidPolicy, load.parseFromSlice(std.testing.allocator, bad, "bad.yaml"));
+}
+
+test "service credential use rejects secret-like values" {
+    const load = @import("load.zig");
+    const bad =
+        \\version: 1
+        \\mode: strict
+        \\services:
+        \\  github:
+        \\    hosts:
+        \\      - "api.github.com"
+        \\    credentials:
+        \\      use: "ghp_fakeSyntheticTokenValue1234567890"
+    ;
+    try std.testing.expectError(error.InvalidPolicy, load.parseFromSlice(std.testing.allocator, bad, "bad-credential.yaml"));
+}
+
+test "duplicate service names are rejected" {
+    const load = @import("load.zig");
+    const bad =
+        \\version: 1
+        \\mode: strict
+        \\services:
+        \\  github:
+        \\    hosts:
+        \\      - "api.github.com"
+        \\  GitHub:
+        \\    hosts:
+        \\      - "uploads.github.com"
+    ;
+    try std.testing.expectError(error.InvalidPolicy, load.parseFromSlice(std.testing.allocator, bad, "duplicate-services.yaml"));
+}
+
+test "credential config rejects unsafe refs and env-file paths" {
+    const load = @import("load.zig");
+    const missing_ref =
+        \\version: 1
+        \\mode: strict
+        \\credentials:
+        \\  refs:
+        \\    github_pat:
+        \\      ref: "GITHUB_PAT"
+        \\services:
+        \\  github:
+        \\    hosts:
+        \\      - "api.github.com"
+        \\    credentials:
+        \\      use: missing_ref
+    ;
+    try std.testing.expectError(error.InvalidPolicy, load.parseFromSlice(std.testing.allocator, missing_ref, "missing-ref.yaml"));
+
+    const unsafe_path =
+        \\version: 1
+        \\mode: strict
+        \\credentials:
+        \\  brokers:
+        \\    env_dev:
+        \\      type: env-file-dev
+        \\      path: /tmp/secrets.env
+    ;
+    try std.testing.expectError(error.InvalidPolicy, load.parseFromSlice(std.testing.allocator, unsafe_path, "unsafe-env-path.yaml"));
+
+    const raw_secret =
+        \\version: 1
+        \\mode: strict
+        \\credentials:
+        \\  refs:
+        \\    github_pat:
+        \\      ref: "ghp_fakeSyntheticTokenValue1234567890"
+    ;
+    try std.testing.expectError(error.InvalidPolicy, load.parseFromSlice(std.testing.allocator, raw_secret, "raw-secret-ref.yaml"));
+}
+
+test "duplicate credential brokers and refs are rejected" {
+    const load = @import("load.zig");
+    const duplicate_brokers =
+        \\version: 1
+        \\mode: strict
+        \\credentials:
+        \\  brokers:
+        \\    env_dev:
+        \\      type: env-file-dev
+        \\      path: .orca/dev-secrets.env
+        \\    ENV_DEV:
+        \\      type: local-dummy
+    ;
+    try std.testing.expectError(error.InvalidPolicy, load.parseFromSlice(std.testing.allocator, duplicate_brokers, "duplicate-brokers.yaml"));
+
+    const duplicate_refs =
+        \\version: 1
+        \\mode: strict
+        \\credentials:
+        \\  refs:
+        \\    github_pat:
+        \\      ref: "GITHUB_PAT"
+        \\    GITHUB_PAT:
+        \\      ref: "OTHER_PAT"
+    ;
+    try std.testing.expectError(error.InvalidPolicy, load.parseFromSlice(std.testing.allocator, duplicate_refs, "duplicate-refs.yaml"));
 }
 
 test "literal bracketed policy paths validate and match literally" {

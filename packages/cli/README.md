@@ -1,11 +1,11 @@
-# Aegis CLI
+# Orca
 
-Aegis CLI is the desktop and CI AI-agent runtime firewall product from Aegis v1.1.
+Orca is the desktop and CI AI-agent runtime firewall product.
 
 ## What Belongs Here
 
-- `aegis` command parsing, help, version, doctor, policy, replay, run, MCP, red-team, and staging commands.
-- Desktop and CI process supervision behavior for Aegis-managed child sessions.
+- `orca` command parsing, help, version, doctor, policy, replay, run, MCP, red-team, and staging commands.
+- Desktop and CI process supervision behavior for Orca-managed child sessions.
 - Desktop file, network, command, MCP, installer, release, and CLI documentation surfaces.
 - CLI examples and CI recipes.
 
@@ -17,8 +17,8 @@ Aegis CLI is the desktop and CI AI-agent runtime firewall product from Aegis v1.
 
 ## Current Status
 
-Phase 25 keeps the existing `aegis` binary and CLI behavior intact while hardening command UX, Core integration, redaction, audit/replay, red-team, MCP, docs, and packaging behavior after the Core/CLI/Edge split.
+Phase 25 keeps the existing `orca` binary and CLI behavior intact while hardening command UX, Core integration, redaction, audit/replay, red-team, MCP, docs, and packaging behavior after the Core/CLI/Edge split.
 
 ## Future Phases
 
-Future phases can continue to improve CLI packaging and desktop/CI behavior without coupling those changes to Aegis Edge runtime work.
+Future phases can continue to improve CLI packaging and desktop/CI behavior without coupling those changes to Edge runtime work.

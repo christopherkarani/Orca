@@ -182,11 +182,11 @@ Ensure you run `orca plugin doctor claude` from the repository root. The doctor 
 
 ### Hooks timeout
 
-If hooks exceed their timeout, Claude Code may skip them. Check that `aegis` is in PATH and that `.aegis/policy.yaml` loads quickly.
+If hooks exceed their timeout, Claude Code may skip them. Check that `orca` is in PATH and that `.orca/policy.yaml` loads quickly.
 
 ### Policy not found
 
-Run `orca init --preset generic-agent` to create a default policy, then validate with `orca policy check .aegis/policy.yaml`.
+Run `orca init --preset generic-agent` to create a default policy, then validate with `orca policy check .orca/policy.yaml`.
 
 ### Orca binary not found
 

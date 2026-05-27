@@ -3,6 +3,7 @@ zig-cache/
 zig-out/
 dist/
 dist/work/
+dist-dry-run/
 *.o
 *.obj
 *.a
@@ -13,32 +14,53 @@ dist/work/
 *.pdb
 *.dSYM/
 .DS_Store
+__pycache__/
+*.pyc
 events.jsonl
 summary.json
 summary.md
+.orca/
+.edge/
+.edge/**
 .aegis/last
 .aegis/last.tmp
 .aegis/last.tmp.*
 .aegis/sessions/
 .aegis/edge/
+.aegis-edge/
+.aegis-edge/**
 .aegis-edge/last
 .aegis-edge/last.tmp
 .aegis-edge/last.tmp.*
 .aegis-edge/sessions/
+node_modules/
+**/node_modules/
 
-# --- Aegis internal planning / generated plan packs ---
+# --- Orca internal planning / generated plan packs ---
 aegis_phased_project/
 aegis_phased_project_reviewed/
 aegis_phased_project_final/
 aegis_plugin_launch_plan/
 aegis_plugin_launch_plan_v2/
 aegis_plugin_launch_plan_v3/
+orca_phased_project/
+orca_phased_project_reviewed/
+orca_phased_project_final/
+orca_plugin_launch_plan/
+orca_plugin_launch_plan_v2/
+orca_plugin_launch_plan_v3/
 aegis_phased_project_markdown_files.zip
 aegis_phased_project_reviewed.zip
 aegis_phased_project_final.zip
 aegis_plugin_launch_plan.zip
 aegis_plugin_launch_plan_v2.zip
 aegis_plugin_launch_plan_v3.zip
+orca_phased_project_markdown_files.zip
+orca_phased_project_reviewed.zip
+orca_phased_project_final.zip
+orca_plugin_launch_plan.zip
+orca_plugin_launch_plan_v2.zip
+orca_plugin_launch_plan_v3.zip
 *_phase_pack*.zip
 *_plan_pack*.zip
 *_launch_plan*.zip
@@ -52,6 +74,28 @@ scratch/
 tmp/
 *.tmp
 *.bak
+
+# --- Private/customer-facing planning collateral ---
+tasks/
+reports/
+go_to_market/
+customer_pilot/
+GITHUB_RELEASE_DRAFT.md
+RELEASE_NOTES.md
+PLUGIN_RELEASE_NOTES.md
+LAUNCH_PLUGINS.md
+release-checklist.md
+docs/release.md
+docs/release-tagging.md
+docs/release/
+docs/orca_opencode_openclaw_plan/
+docs/orca_opencode_openclaw_plan.zip
+docs/integrations/p06-plugin-distribution-and-marketplace.md
+docs/integrations/p07-plugin-launch-and-postlaunch.md
+docs/integrations/repo-marketplace-readiness-audit.md
+docs/integrations/repo-marketplace-install.md
+docs/integrations/plugin-postlaunch-patch-checklist.md
+docs/integrations/plugin-release-checklist.md
 
 # --- Local agent/planning exports ---
 CODEX_MASTER_PROMPT.md
@@ -69,11 +113,35 @@ P05_*.md
 P06_*.md
 P07_*.md
 00_PLUGIN_LAUNCH_INDEX.md
+00_PROJECT_INDEX.md
+manifest.json
 [0-9][0-9]_*.md
 AEGIS_CLI_PLUGIN_CONTRACT.md
+ORCA_CLI_PLUGIN_CONTRACT.md
 ARCHITECTURE_CONTRACTS.md
 CODEX_AGENT_CONTEXT.md
 DRONE_WORKSTREAM_GUARDRAILS.md
 FINAL_PASS_REPORT.md
 REVIEW_SUMMARY.md
 SECURITY_INVARIANTS.md
+
+# --- Playwright MCP artifacts ---
+.playwright-mcp/
+
+# --- Local agent runtime artifacts ---
+.Codex/
+.opencode/
+.pi/
+.agents/plugins/orca/
+.claude/plugins/
+.claude/
+scripts/orchestrator.sh
+scripts/validate-go-to-market.sh
+
+# --- Internal integration analysis docs ---
+docs/integrations/openclaw-security-scan-analysis.md
+
+# --- Generated planning / UI collateral ---
+PROMPT_*.md
+orca-dashboard-ui/
+

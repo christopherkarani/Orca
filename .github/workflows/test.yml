@@ -17,12 +17,12 @@ jobs:
       - name: Red-team CI
         run: |
           zig build
-          ./zig-out/bin/aegis redteam --ci
+          ./zig-out/bin/orca redteam --ci
       - name: Validate presets
         shell: bash
         run: |
           for policy in policies/presets/*.yaml; do
-            ./zig-out/bin/aegis policy check "$policy"
+            ./zig-out/bin/orca policy check "$policy"
           done
       - name: Package metadata syntax
         shell: bash
@@ -36,16 +36,16 @@ jobs:
           bash -n scripts/verify-release.sh
           bash -n scripts/release-dry-run.sh
           bash -n scripts/edge-release-smoke-test.sh
-          ruby -c packaging/homebrew/aegis.rb
-          python3 -m json.tool packaging/scoop/aegis.json >/dev/null
+          ruby -c packaging/homebrew/Formula/orca.rb
+          python3 -m json.tool packaging/scoop/orca.json >/dev/null
           python3 -m json.tool packaging/npm/package.json >/dev/null
           grep -q checksum packaging/docker/Dockerfile
       - name: Edge docs check
         shell: bash
         run: |
           zig build
-          ./zig-out/bin/aegis-edge docs check
-          ./zig-out/bin/aegis-edge deployment assets
+          ./zig-out/bin/edge docs check
+          ./zig-out/bin/edge deployment assets
       - name: Release dry-run
         shell: bash
         run: ./scripts/release-dry-run.sh

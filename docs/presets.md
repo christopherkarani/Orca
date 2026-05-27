@@ -5,8 +5,8 @@ Presets live under `policies/presets/` and are plain YAML with comments. They ar
 Create a policy:
 
 ```bash
-aegis init --preset generic-agent
-aegis policy check .aegis/policy.yaml
+orca init --preset generic-agent
+orca policy check .orca/policy.yaml
 ```
 
 Available presets:
@@ -19,15 +19,27 @@ Available presets:
 - `cline-roo`: generic/experimental local editor/MCP-agent assumptions.
 - `mcp-dev`: stdio MCP development baseline with conservative tool defaults.
 - `github-actions`: non-interactive CI baseline.
+- `solo-dev`: product policy pack for local solo development with ask-mode defaults.
 - `strict-local`: strict local baseline with denied unknown commands/network.
+- `team-ci`: product policy pack for team CI baselines.
+- `openclaw-hermes`: product policy pack for OpenClaw and Hermes hook workflows.
 - `trusted-local`: more permissive local baseline for trusted repositories; secret redaction and deny rules remain active.
+
+Productized policy packs can also be inspected and applied through the policy command:
+
+```bash
+orca policy packs
+orca policy apply-pack solo-dev
+orca policy apply-pack team-ci --force
+orca policy apply-pack openclaw-hermes --force
+```
 
 All presets preserve:
 
 - deny-priority semantics;
 - secret redaction before persistence;
-- staged writes for Aegis-mediated writes;
+- staged writes for Orca-mediated writes;
 - no real secrets in policy text;
 - no external service dependency for policy validation.
 
-Agent-specific presets are marked generic/experimental when Aegis cannot verify proprietary agent internals. Binary detection in `aegis doctor` only reports presence in PATH; it does not prove an agent is configured safely.
+Agent-specific presets are marked generic/experimental when Orca cannot verify proprietary agent internals. Binary detection in `orca doctor` only reports presence in PATH; it does not prove an agent is configured safely.

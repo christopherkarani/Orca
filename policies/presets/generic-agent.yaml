@@ -1,4 +1,4 @@
-# Aegis preset: generic-agent
+# Orca preset: generic-agent
 # Conservative starting point for local coding agents with no proprietary assumptions.
 # Edit allowlists for your repository before switching broad actions from ask to allow.
 version: 1
@@ -59,7 +59,7 @@ files:
       - "./**"
     deny:
       - "./.git/**"
-      - "./.aegis/**"
+      - "./.orca/**"
     mode: staged
 
 commands:

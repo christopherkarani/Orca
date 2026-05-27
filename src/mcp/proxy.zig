@@ -1,9 +1,9 @@
 const std = @import("std");
 
-const audit = @import("../audit/mod.zig");
-const core = @import("../core/mod.zig");
+const audit = @import("orca_core").audit;
+const core = @import("orca_core").core;
 const intercept = @import("../intercept/mod.zig");
-const policy_mod = @import("../policy/mod.zig");
+const policy_mod = @import("orca_core").policy;
 const jsonrpc = @import("jsonrpc.zig");
 const manifests = @import("manifests.zig");
 const prompts = @import("prompts.zig");
@@ -74,7 +74,7 @@ pub fn runWithServer(
     while (true) {
         const line = @import("stdio.zig").readMessageLine(client_reader, allocator) catch |err| {
             try jsonrpc.writeErrorResponse(client_writer, null, errorCodeForParseError(err), "invalid MCP JSON-RPC message");
-            return;
+            return err;
         };
         const owned_line = line orelse return;
         defer allocator.free(owned_line);
@@ -91,6 +91,15 @@ pub fn runWithServer(
         };
 
         if (message.id() == null) {
+            if (isPolicyCoveredMethod(method)) {
+                try jsonrpc.writeErrorResponse(client_writer, null, .invalid_request, "policy-covered MCP methods must be requests with an id");
+                try appendAudit(config.audit_writer, .mcp_unknown_method, .unknown, method, .{
+                    .result = .deny,
+                    .reason = "rejected policy-covered MCP notification without request id",
+                    .ci_may_proceed = false,
+                });
+                continue;
+            }
             try server.notify(server.context, owned_line);
             if (!std.mem.eql(u8, method, "notifications/initialized")) {
                 try appendAudit(config.audit_writer, .mcp_unknown_method, .unknown, method, .{
@@ -168,6 +177,13 @@ pub fn runWithServer(
             }
         }
     }
+}
+
+fn isPolicyCoveredMethod(method: []const u8) bool {
+    return std.mem.eql(u8, method, "tools/call") or
+        std.mem.eql(u8, method, "resources/read") or
+        std.mem.eql(u8, method, "prompts/get") or
+        sampling.isSamplingMethod(method);
 }
 
 fn handleToolsCall(
@@ -460,6 +476,10 @@ fn handleServerOriginatedSampling(
     defer parsed_client_response.deinit();
     if (parsed_client_response.method() != null) {
         try sendServerSamplingError(allocator, server, request_value, "MCP sampling client response must be a JSON-RPC response");
+        return;
+    }
+    if (!jsonrpc.idEquals(parsed_client_response.id(), jsonrpc.idOf(request_value))) {
+        try sendServerSamplingError(allocator, server, request_value, "MCP sampling client response id mismatch");
         return;
     }
     try server.notify(server.context, client_response);
@@ -792,7 +812,7 @@ fn appendAudit(
         .event_id = try core.event.generateEventId(now),
         .timestamp = now,
         .event_type = event_type,
-        .actor = .{ .kind = .aegis, .display = "aegis" },
+        .actor = .{ .kind = .orca, .display = "orca" },
         .target = .{ .kind = target_kind, .value = target_value },
         .decision = decision,
         .redactions = .{ .count = @intCast(label_slice.len), .labels = label_slice },
@@ -830,6 +850,7 @@ const FakeServer = struct {
     saw_initialize: bool = false,
     saw_safe_call: bool = false,
     saw_notification: bool = false,
+    saw_policy_notification: bool = false,
     saw_resource_read: bool = false,
     saw_prompt_get: bool = false,
     saw_sampling: bool = false,
@@ -876,6 +897,11 @@ const FakeServer = struct {
         if (std.mem.indexOf(u8, line, "notifications/initialized") != null) {
             self.saw_notification = true;
         }
+        if (std.mem.indexOf(u8, line, "\"tools/call\"") != null or
+            std.mem.indexOf(u8, line, "delete_repository") != null)
+        {
+            self.saw_policy_notification = true;
+        }
     }
 };
 
@@ -907,7 +933,7 @@ fn testSession(workspace_root: []const u8) !core.session.Session {
     return .{
         .id = try core.session.generateSessionId(ts),
         .started_at = ts,
-        .command = "aegis mcp proxy",
+        .command = "orca mcp proxy",
         .args = &.{"fake"},
         .workspace_root = workspace_root,
         .mode = .strict,
@@ -1336,6 +1362,41 @@ test "server-originated sampling allow forwards request and relays client respon
     try std.testing.expect(try @import("stdio.zig").isProtocolCleanOutput(output.getWritten(), std.testing.allocator));
 }
 
+test "server-originated sampling rejects mismatched client response id" {
+    const load = policy_mod.load;
+    var policy = try load.parseFromSlice(std.testing.allocator,
+        \\version: 1
+        \\mode: strict
+        \\mcp:
+        \\  allow:
+        \\    - "fake.local"
+    , "test.yaml");
+    defer policy.deinit();
+
+    var server = ServerSamplingFirstServer{};
+    var input: std.Io.Reader = .fixed("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"tools/list\"}\n" ++
+        "{\"jsonrpc\":\"2.0\",\"id\":\"wrong\",\"result\":{\"role\":\"assistant\",\"content\":{\"type\":\"text\",\"text\":\"ok\"}}}\n");
+    var output_buf: [4096]u8 = undefined;
+    var output = std.io.fixedBufferStream(&output_buf);
+    try runWithServer(std.testing.allocator, .{
+        .server_name = "fake",
+        .server_command_display = "fake",
+        .policy = &policy,
+        .mode = .strict,
+    }, &input, output.writer(), .{
+        .context = &server,
+        .request = ServerSamplingFirstServer.request,
+        .notify = ServerSamplingFirstServer.notify,
+        .read = ServerSamplingFirstServer.read,
+    });
+
+    try std.testing.expect(server.saw_sampling_error);
+    try std.testing.expect(!server.saw_sampling_client_response);
+    try std.testing.expect(std.mem.indexOf(u8, output.getWritten(), "sampling/createMessage") != null);
+    try std.testing.expect(std.mem.indexOf(u8, output.getWritten(), "\"tools\"") != null);
+    try std.testing.expect(try @import("stdio.zig").isProtocolCleanOutput(output.getWritten(), std.testing.allocator));
+}
+
 test "invalid json-rpc fails safely with protocol error response" {
     const load = policy_mod.load;
     var policy = try load.loadPreset(std.testing.allocator, .strict);
@@ -1350,6 +1411,24 @@ test "invalid json-rpc fails safely with protocol error response" {
         .policy = &policy,
         .mode = .strict,
     }, &input, output.writer(), .{ .context = &server, .request = FakeServer.request, .notify = FakeServer.notify });
+    try std.testing.expect(std.mem.indexOf(u8, output.getWritten(), "\"error\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, output.getWritten(), "\"id\":null") != null);
+}
+
+test "malformed MCP transport input reports protocol error and fails proxy run" {
+    const load = policy_mod.load;
+    var policy = try load.loadPreset(std.testing.allocator, .strict);
+    defer policy.deinit();
+    var server = FakeServer{ .allocator = std.testing.allocator };
+    var input: std.Io.Reader = .fixed("\xff\n");
+    var output_buf: [512]u8 = undefined;
+    var output = std.io.fixedBufferStream(&output_buf);
+    try std.testing.expectError(error.InvalidUtf8, runWithServer(std.testing.allocator, .{
+        .server_name = "fake",
+        .server_command_display = "fake",
+        .policy = &policy,
+        .mode = .strict,
+    }, &input, output.writer(), .{ .context = &server, .request = FakeServer.request, .notify = FakeServer.notify }));
     try std.testing.expect(std.mem.indexOf(u8, output.getWritten(), "\"error\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, output.getWritten(), "\"id\":null") != null);
 }
@@ -1372,6 +1451,34 @@ test "proxy forwards notifications without waiting for responses" {
     try std.testing.expect(server.saw_notification);
     try std.testing.expect(server.saw_initialize);
     try std.testing.expectEqual(@as(usize, 1), std.mem.count(u8, output.getWritten(), "\n"));
+}
+
+test "proxy rejects policy-covered notifications instead of forwarding" {
+    const load = policy_mod.load;
+    var policy = try load.parseFromSlice(std.testing.allocator,
+        \\version: 1
+        \\mode: strict
+        \\mcp:
+        \\  deny:
+        \\    - "fake.delete_repository"
+    , "test.yaml");
+    defer policy.deinit();
+    var server = FakeServer{ .allocator = std.testing.allocator };
+    var input: std.Io.Reader = .fixed("{\"jsonrpc\":\"2.0\",\"method\":\"tools/call\",\"params\":{\"name\":\"delete_repository\",\"arguments\":{\"repo\":\"x\"}}}\n" ++
+        "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\"}\n");
+    var output_buf: [2048]u8 = undefined;
+    var output = std.io.fixedBufferStream(&output_buf);
+    try runWithServer(std.testing.allocator, .{
+        .server_name = "fake",
+        .server_command_display = "fake",
+        .policy = &policy,
+        .mode = .strict,
+    }, &input, output.writer(), .{ .context = &server, .request = FakeServer.request, .notify = FakeServer.notify });
+    try std.testing.expect(!server.saw_policy_notification);
+    try std.testing.expect(server.saw_initialize);
+    try std.testing.expect(std.mem.indexOf(u8, output.getWritten(), "\"error\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, output.getWritten(), "policy-covered") != null);
+    try std.testing.expect(try @import("stdio.zig").isProtocolCleanOutput(output.getWritten(), std.testing.allocator));
 }
 
 const MaliciousSearchServer = struct {

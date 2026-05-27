@@ -3,7 +3,7 @@
 ArduPilot scenarios are run with:
 
 ```bash
-./zig-out/bin/aegis-edge ardupilot scenario run --policy <policy> --scenario <scenario> [--artifacts <dir>]
+./zig-out/bin/edge ardupilot scenario run --policy <policy> --scenario <scenario> [--artifacts <dir>]
 ```
 
 Checked-in deterministic scenarios live under `examples/edge/ardupilot/scenarios/`:

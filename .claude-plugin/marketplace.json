@@ -1,15 +1,15 @@
 {
-  "name": "orca",
+  "name": "orca-local-plugins",
   "version": "1.0.0",
-  "description": "Orca plugins for Claude Code.",
+  "description": "Local Orca plugins for Claude Code.",
   "owner": {
     "name": "Orca"
   },
   "plugins": [
     {
       "name": "orca",
-      "description": "Runtime guardrails and hooks for AI agent workflows.",
-      "source": "./integrations/claude-code-plugin",
+      "description": "Orca safety hooks and skills for Claude Code.",
+      "source": "../.claude/plugins/orca",
       "category": "developer-tools"
     }
   ]

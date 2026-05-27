@@ -1,0 +1,1 @@
+{"version":1,"host":"hermes","event":"pre_llm_call","payload":{"prompt":"Summarize the current repository status without exposing credentials."}}

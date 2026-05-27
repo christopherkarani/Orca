@@ -1,0 +1,264 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="orca-dashboard-token" content="__ORCA_DASHBOARD_TOKEN__">
+    <title>Orca Dashboard</title>
+    <link rel="icon" href="data:,">
+    <link rel="stylesheet" href="/assets/app.css">
+  </head>
+  <body>
+    <a class="skip-link" href="#main">Skip to dashboard</a>
+    <div class="shell">
+      <aside class="rail" aria-label="Dashboard navigation">
+        <div class="brand">
+          <span class="brand-mark" aria-hidden="true">O</span>
+          <div>
+            <h1>Orca</h1>
+            <p>Local guardrail dashboard</p>
+          </div>
+        </div>
+        <nav class="nav">
+          <button class="nav-item active" type="button" data-view="overview">Overview</button>
+          <button class="nav-item" type="button" data-view="secretless">Secretless</button>
+          <button class="nav-item" type="button" data-view="activity">Activity</button>
+          <button class="nav-item" type="button" data-view="policy">Policy</button>
+          <button class="nav-item" type="button" data-view="integrations">Integrations</button>
+        </nav>
+        <div class="rail-footer">
+          <span class="label">Bound to</span>
+          <code>127.0.0.1:7742</code>
+        </div>
+      </aside>
+
+      <main id="main" class="main">
+        <header class="topbar">
+          <div>
+            <p class="eyebrow">Local runtime status</p>
+            <h2>Orca Dashboard</h2>
+          </div>
+          <div class="topbar-actions">
+            <button class="button secondary" type="button" id="refreshButton">Refresh</button>
+            <button class="button primary" type="button" data-action="doctor">Run doctor</button>
+          </div>
+        </header>
+
+        <section class="view active" data-view-panel="overview" aria-labelledby="overview-title">
+          <h3 id="overview-title" class="section-title">Overview</h3>
+          <div class="metric-grid" id="summaryGrid" aria-live="polite"></div>
+          <div class="two-column">
+            <section class="panel" aria-labelledby="quick-actions-title">
+              <div class="panel-header">
+                <h4 id="quick-actions-title">Quick actions</h4>
+                <span class="caption">Fixed Orca commands only</span>
+              </div>
+              <div class="action-grid" id="quickActions"></div>
+            </section>
+            <section class="panel" aria-labelledby="blocked-title">
+              <div class="panel-header">
+                <h4 id="blocked-title">Recently prevented</h4>
+                <span class="caption">From replay artifacts</span>
+              </div>
+              <div class="timeline compact" id="blockedPreview"></div>
+            </section>
+          </div>
+        </section>
+
+        <section class="view" data-view-panel="secretless" aria-labelledby="secretless-title">
+          <div class="section-heading">
+            <div>
+              <p class="eyebrow">Secretless Agent Runtime</p>
+              <h3 id="secretless-title" class="section-title">Runtime, broker references, and service policy</h3>
+            </div>
+            <span class="status-pill ok" id="secretlessState">available</span>
+          </div>
+          <div class="secretless-grid">
+            <section class="panel command-builder" aria-labelledby="secretless-run-title">
+              <div class="panel-header">
+                <div>
+                  <h4 id="secretless-run-title">Run command</h4>
+                  <span class="caption">Generated locally; execution stays in your terminal</span>
+                </div>
+                <button class="button secondary" type="button" id="copySecretlessRunButton">Copy</button>
+              </div>
+              <label class="field-label" for="secretlessCommandInput">Agent command</label>
+              <input id="secretlessCommandInput" class="text-input" type="text" value="codex">
+              <code class="command-line command-preview" id="secretlessRunCommand">orca run --secretless -- codex</code>
+            </section>
+
+            <section class="panel" aria-labelledby="secretless-broker-title">
+              <div class="panel-header">
+                <div>
+                  <h4 id="secretless-broker-title">Broker adapter</h4>
+                  <span class="caption">References only; raw values stay out of Orca</span>
+                </div>
+              </div>
+              <div class="meta-grid" id="secretlessBrokerMeta"></div>
+            </section>
+          </div>
+
+          <div class="secretless-grid">
+            <section class="panel" aria-labelledby="secretless-policy-title">
+              <div class="panel-header">
+                <div>
+                  <h4 id="secretless-policy-title">Service policy template</h4>
+                  <span class="caption">Host, method, path, credential reference, unmatched behavior</span>
+                </div>
+                <button class="button secondary" type="button" id="insertSecretlessPolicyButton">Insert into policy editor</button>
+              </div>
+              <pre class="code-block" id="secretlessPolicyTemplate"></pre>
+            </section>
+
+            <section class="panel" aria-labelledby="secretless-verify-title">
+              <div class="panel-header">
+                <div>
+                  <h4 id="secretless-verify-title">Verification</h4>
+                  <span class="caption">Commands that prove policy, explain, and replay behavior</span>
+                </div>
+              </div>
+              <div class="action-grid" id="secretlessVerifyCommands"></div>
+            </section>
+          </div>
+
+          <div class="secretless-grid">
+            <section class="panel" aria-labelledby="secretless-refs-title">
+              <div class="panel-header">
+                <div>
+                  <h4 id="secretless-refs-title">Credential refs</h4>
+                  <span class="caption">Declared refs only; raw values are never shown</span>
+                </div>
+              </div>
+              <div class="table-list" id="secretlessCredentialRefs"></div>
+            </section>
+
+            <section class="panel" aria-labelledby="secretless-proxy-title">
+              <div class="panel-header">
+                <div>
+                  <h4 id="secretless-proxy-title">Proxy enforcement</h4>
+                  <span class="caption">Explicit loopback proxy; HTTPS is host and port only</span>
+                </div>
+              </div>
+              <div class="meta-grid" id="secretlessProxyMeta"></div>
+            </section>
+          </div>
+
+          <section class="panel" aria-labelledby="secretless-checks-title">
+            <div class="panel-header">
+              <div>
+                <h4 id="secretless-checks-title">Broker checks</h4>
+                <span class="caption">Status evidence without resolved secret values</span>
+              </div>
+            </div>
+            <div class="broker-grid" id="secretlessBrokerChecks"></div>
+          </section>
+
+          <section class="panel" aria-labelledby="secretless-capabilities-title">
+            <div class="panel-header">
+              <div>
+                <h4 id="secretless-capabilities-title">Capability matrix</h4>
+                <span class="caption">What is active now and what remains an adapter boundary</span>
+              </div>
+            </div>
+            <div class="capability-grid" id="secretlessCapabilities"></div>
+          </section>
+
+          <section class="panel" aria-labelledby="secretless-brokers-title">
+            <div class="panel-header">
+              <div>
+                <h4 id="secretless-brokers-title">Supported broker extension points</h4>
+                <span class="caption">Orca owns references and audit; external brokers own secret retrieval</span>
+              </div>
+            </div>
+            <div class="broker-grid" id="secretlessBrokerGrid"></div>
+          </section>
+
+          <section class="panel" aria-labelledby="secretless-audit-title">
+            <div class="panel-header">
+              <div>
+                <h4 id="secretless-audit-title">Recent broker and proxy events</h4>
+                <span class="caption">Redaction and proxy decisions from recent audit sessions</span>
+              </div>
+            </div>
+            <div class="timeline-list" id="secretlessAuditEvents"></div>
+          </section>
+
+          <div class="secretless-grid">
+            <section class="panel" aria-labelledby="secretless-guarantees-title">
+              <div class="panel-header">
+                <h4 id="secretless-guarantees-title">Guarantees</h4>
+              </div>
+              <ul class="compact-list" id="secretlessGuarantees"></ul>
+            </section>
+            <section class="panel" aria-labelledby="secretless-limits-title">
+              <div class="panel-header">
+                <h4 id="secretless-limits-title">Limits</h4>
+              </div>
+              <ul class="compact-list" id="secretlessLimitations"></ul>
+            </section>
+          </div>
+        </section>
+
+        <section class="view" data-view-panel="activity" aria-labelledby="activity-title">
+          <h3 id="activity-title" class="section-title">Activity</h3>
+          <div class="two-column activity-layout">
+            <section class="panel" aria-labelledby="sessions-title">
+              <div class="panel-header">
+                <h4 id="sessions-title">Sessions</h4>
+                <span class="caption">.orca/sessions</span>
+              </div>
+              <div id="sessionList" class="session-list"></div>
+            </section>
+            <section class="panel" aria-labelledby="timeline-title">
+              <div class="panel-header">
+                <h4 id="timeline-title">Denied timeline</h4>
+                <span class="caption">Target, rule, reason, verification</span>
+              </div>
+              <div class="timeline" id="blockedTimeline"></div>
+            </section>
+          </div>
+        </section>
+
+        <section class="view" data-view-panel="policy" aria-labelledby="policy-title">
+          <h3 id="policy-title" class="section-title">Policy</h3>
+          <div class="policy-layout">
+            <section class="panel policy-editor" aria-labelledby="policy-editor-title">
+              <div class="panel-header">
+                <div>
+                  <h4 id="policy-editor-title">.orca/policy.yaml</h4>
+                  <span class="caption">Saved only after Orca validates it</span>
+                </div>
+                <button class="button secondary" type="button" id="savePolicyButton">Validate and save</button>
+              </div>
+              <label class="field-label" for="policyText">Policy source</label>
+              <textarea id="policyText" spellcheck="false"></textarea>
+              <p class="form-help" id="policyHelp">Use presets to create a policy, then keep detailed edits in source form.</p>
+            </section>
+            <section class="panel" aria-labelledby="presets-title">
+              <div class="panel-header">
+                <h4 id="presets-title">Presets</h4>
+                <span class="caption">Initialize locally</span>
+              </div>
+              <div id="presetList" class="preset-list"></div>
+            </section>
+          </div>
+        </section>
+
+        <section class="view" data-view-panel="integrations" aria-labelledby="integrations-title">
+          <h3 id="integrations-title" class="section-title">Integrations</h3>
+          <div class="integration-grid" id="integrationGrid"></div>
+        </section>
+      </main>
+
+      <aside class="output-panel" aria-labelledby="output-title">
+        <div class="panel-header">
+          <h4 id="output-title">Command output</h4>
+          <button class="icon-button" type="button" id="clearOutputButton" aria-label="Clear command output">Clear</button>
+        </div>
+        <pre id="commandOutput" tabindex="0">No command has run yet.</pre>
+      </aside>
+    </div>
+    <div class="toast-region" id="toastRegion" aria-live="polite" aria-atomic="true"></div>
+    <script src="/assets/app.js" defer></script>
+  </body>
+</html>

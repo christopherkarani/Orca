@@ -2,10 +2,10 @@
 set -eu
 
 ROOT=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
-AEGIS_BIN="$ROOT/zig-out/bin/aegis"
+ORCA_BIN="$ROOT/zig-out/bin/orca"
 
-if [ ! -x "$AEGIS_BIN" ]; then
-  echo "missing Aegis binary at $AEGIS_BIN; run zig build first" >&2
+if [ ! -x "$ORCA_BIN" ]; then
+  echo "missing Orca binary at $ORCA_BIN; run zig build first" >&2
   exit 1
 fi
 
@@ -40,12 +40,12 @@ if missing:
 PY
 
 find "$ROOT/examples/policies" "$ROOT/policies" -name '*.yaml' -print | while IFS= read -r policy; do
-  "$AEGIS_BIN" policy check "$policy" >/dev/null
+  "$ORCA_BIN" policy check "$policy" >/dev/null
 done
-"$AEGIS_BIN" policy check "$ROOT/examples/leaky-agent-demo/policy.yaml" >/dev/null
-"$AEGIS_BIN" mcp manifest check "$ROOT/examples/mcp/demo-manifest.yaml" >/dev/null
+"$ORCA_BIN" policy check "$ROOT/examples/leaky-agent-demo/policy.yaml" >/dev/null
+"$ORCA_BIN" mcp manifest check "$ROOT/examples/mcp/demo-manifest.yaml" >/dev/null
 
-"$ROOT/examples/leaky-agent-demo/run-demo.sh" >/tmp/aegis-doc-demo.out
+"$ROOT/examples/leaky-agent-demo/run-demo.sh" >/tmp/orca-doc-demo.out
 
 grep -R "generatedSyntheticDemoValue" "$ROOT/README.md" "$ROOT/docs" "$ROOT/examples" >/dev/null 2>&1 && {
   echo "found forbidden demo fallback value in docs/examples" >&2

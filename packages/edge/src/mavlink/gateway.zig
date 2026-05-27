@@ -13,7 +13,7 @@ const mapping = @import("mapping.zig");
 const messages = @import("messages.zig");
 const mission = @import("mission.zig");
 const signing = @import("signing.zig");
-const core = @import("aegis_core");
+const core = @import("orca_core");
 
 pub const GatewayMode = enum {
     observe,

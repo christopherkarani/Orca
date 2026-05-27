@@ -20,4 +20,4 @@
 - [ ] release blockers listed
 - [ ] approval to tag
 
-Aegis Edge remains not real-flight readiness, not certification, not detect-and-avoid, and not autopilot replacement.
+Edge remains not real-flight readiness, not certification, not detect-and-avoid, and not autopilot replacement.

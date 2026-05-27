@@ -4,11 +4,11 @@ Policies are YAML files with `version: 1`.
 
 ## Locations And Load Order
 
-Commands accept `--policy <path>`. Without it, Aegis discovers `.aegis/policy.yaml` from the workspace, then `$HOME/.config/aegis/policy.yaml`, then built-in defaults. If a discovered policy file exists but is invalid or unreadable, Aegis fails closed instead of silently falling through.
+Commands accept `--policy <path>`. Without it, Orca discovers `.orca/policy.yaml` from the workspace, then `$HOME/.config/orca/policy.yaml`, then built-in defaults. If a discovered policy file exists but is invalid or unreadable, Orca fails closed instead of silently falling through.
 
 ```sh
-./zig-out/bin/aegis init --preset generic-agent
-./zig-out/bin/aegis policy check .aegis/policy.yaml
+./zig-out/bin/orca init --preset generic-agent
+./zig-out/bin/orca policy check .orca/policy.yaml
 ```
 
 ## Modes
@@ -56,7 +56,7 @@ files:
       - "./**"
     deny:
       - "./.git/**"
-      - "./.aegis/**"
+      - "./.orca/**"
     mode: staged
 commands:
   default: deny
@@ -75,6 +75,23 @@ network:
   deny:
     - "pastebin.com"
     - "*.ngrok.io"
+services:
+  github:
+    hosts:
+      - "api.github.com"
+    methods:
+      - "GET"
+      - "POST"
+    paths:
+      allow:
+        - "/repos/*/issues"
+        - "/repos/*/pulls"
+      deny:
+        - "/user/keys"
+        - "/orgs/*/secrets/*"
+    credentials:
+      use: github_pat
+    unmatched: deny
 mcp:
   default: deny
   allow:
@@ -92,10 +109,11 @@ audit:
 Explain decisions:
 
 ```sh
-./zig-out/bin/aegis policy explain file.read ./.env
-./zig-out/bin/aegis policy explain command git status
-./zig-out/bin/aegis policy explain network https://example.invalid/path
-./zig-out/bin/aegis policy explain mcp demo.list_files
+./zig-out/bin/orca policy explain file.read ./.env
+./zig-out/bin/orca policy explain command git status
+./zig-out/bin/orca policy explain network https://example.invalid/path
+./zig-out/bin/orca policy explain network https://api.github.com/repos/acme/app/issues --method POST
+./zig-out/bin/orca policy explain mcp demo.list_files
 ```
 
 ## Invalid Policy Behavior
@@ -108,7 +126,40 @@ CI never prompts. `ask` decisions become `deny`.
 
 ## Common Workflows
 
-- Start broad: `aegis init --preset generic-agent`.
+- Start broad: `orca init --preset generic-agent`.
 - Strict local work: `--preset strict-local`.
 - MCP development: `--preset mcp-dev`.
-- CI: `--preset github-actions` and `aegis redteam --ci`.
+- CI: `--preset github-actions` and `orca redteam --ci`.
+
+## Secretless Runtime
+
+`orca run --secretless -- <agent-command>` removes raw secret-like environment values from the child process and replaces policy-visible secret env entries with `orca-secret://...` broker references. Orca does not store raw secrets and does not inject raw secrets into the child environment.
+
+```yaml
+credentials:
+  default_broker: onepassword
+  brokers:
+    onepassword:
+      type: 1password-cli
+      account: my-team
+    env_dev:
+      type: env-file-dev
+      path: .orca/dev-secrets.env
+    macos:
+      type: macos-keychain
+  refs:
+    github_pat:
+      broker: onepassword
+      ref: "op://Engineering/GitHub PAT/token"
+```
+
+Supported broker kinds are `local-dummy`, `env-file-dev`, `1password-cli`, `macos-keychain`, and `infisical-agent-vault`. `env-file-dev` is local-development only. `1password-cli` and `macos-keychain` resolve through their CLIs at check/runtime boundaries with bounded execution time and redacted timeout/login/missing-ref error classes. Infisical / Agent Vault is currently a status/config boundary only.
+
+Use:
+
+```bash
+orca credentials check
+orca credentials check github_pat
+```
+
+When `credentials.refs` are declared, `services.*.credentials.use` must point to one of those refs.

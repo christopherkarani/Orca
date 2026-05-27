@@ -1,8 +1,8 @@
 {
   "$schema": "http://json-schema.org/draft-07/schema#",
-  "$id": "https://aegis.local/schemas/hook-request-v1.json",
-  "title": "Aegis Hook Request v1",
-  "description": "JSON payload sent by host plugins to the aegis hook command via stdin.",
+  "$id": "https://orca.local/schemas/hook-request-v1.json",
+  "title": "Orca Hook Request v1",
+  "description": "JSON payload sent by host plugins to the orca hook command via stdin.",
   "type": "object",
   "required": ["version", "host", "event", "payload"],
   "properties": {
@@ -14,7 +14,7 @@
     },
     "host": {
       "type": "string",
-      "enum": ["codex", "claude"],
+      "enum": ["codex", "claude", "opencode", "openclaw", "hermes"],
       "description": "Host identifier."
     },
     "event": {
@@ -26,7 +26,33 @@
         "PermissionRequest",
         "PostToolUse",
         "SessionEnd",
-        "Stop"
+        "Stop",
+        "session.created",
+        "tool.execute.before",
+        "tool.execute.after",
+        "permission.asked",
+        "permission.replied",
+        "file.edited",
+        "command.executed",
+        "session.updated",
+        "session.idle",
+        "session.error",
+        "shell.env",
+        "session.start",
+        "tool.before",
+        "tool.after",
+        "permission.before",
+        "permission.after",
+        "session.end",
+        "on_session_start",
+        "pre_tool_call",
+        "post_tool_call",
+        "pre_llm_call",
+        "post_llm_call",
+        "on_session_end",
+        "on_session_finalize",
+        "on_session_reset",
+        "subagent_stop"
       ],
       "description": "Host lifecycle event name."
     },

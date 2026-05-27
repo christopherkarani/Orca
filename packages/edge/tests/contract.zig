@@ -1,5 +1,5 @@
 const std = @import("std");
-const edge = @import("aegis_edge");
+const edge = @import("orca_edge");
 
 test "edge scaffold exposes domain types without active enforcement claims" {
     const decision = edge.FakeAdapter.evaluate(
@@ -67,17 +67,20 @@ test "edge doctor output names scaffold and not implemented states" {
     try std.testing.expect(std.mem.indexOf(u8, written, "regulatory certification: unavailable") != null);
 }
 
-test "edge package calls Core policy audit and redaction APIs for placeholder actions" {
+test "edge package calls Core policy audit and redaction APIs without Edge-specific Core actions" {
     var selected = try edge.core.api.parsePolicyFromSlice(std.testing.allocator,
         \\version: 1
         \\mode: observe
+        \\commands:
+        \\  allow:
+        \\    - "edge-check *"
     , "edge-core-import.yaml");
     defer selected.deinit();
 
-    var evaluation = try edge.evaluateVehicleStateReadThroughCore(std.testing.allocator, &selected, "vehicle-1");
+    var evaluation = try edge.core.api.evaluateAction(std.testing.allocator, selected, .{ .command_exec = .{ .argv = &.{ "edge-check", "vehicle-1" } } }, .{});
     defer evaluation.deinit(std.testing.allocator);
-    try std.testing.expectEqual(edge.core.decision.DecisionResult.observe, evaluation.decision.result);
-    try std.testing.expect(std.mem.indexOf(u8, evaluation.explanation, "edge.vehicle_state_read") != null);
+    try std.testing.expectEqual(edge.core.decision.DecisionResult.allow, evaluation.decision.result);
+    try std.testing.expect(std.mem.indexOf(u8, evaluation.explanation, "commands.allow") != null);
 
     var redaction_buffer: [128]u8 = undefined;
     const redacted = edge.core.api.redactStringBounded("EDGE_FAKE_TOKEN=fake_secret_value_phase24", &redaction_buffer);
@@ -90,9 +93,9 @@ test "edge package calls Core policy audit and redaction APIs for placeholder ac
         .event_id = try edge.core.core.event.generateEventId(ts),
         .timestamp = ts,
         .event_type = .mcp_tool_call,
-        .actor = .{ .kind = .aegis, .display = "aegis-edge" },
-        .target = .{ .kind = .edge_vehicle_state, .value = "vehicle-1" },
+        .actor = .{ .kind = .orca, .display = "edge" },
+        .target = .{ .kind = .extension_target, .value = "vehicle-1" },
         .decision = evaluation.decision,
     });
-    try std.testing.expectEqual(edge.core.core.types.TargetKind.edge_vehicle_state, event.target.kind);
+    try std.testing.expectEqual(edge.core.core.types.TargetKind.extension_target, event.target.kind);
 }
