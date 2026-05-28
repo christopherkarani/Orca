@@ -379,8 +379,8 @@ fn writePluginCardJson(
     } else {
         try writeStringArray(writer, &.{
             "orca init --preset generic-agent",
-            "orca plugin install hermes --yes",
-            "hermes plugins enable orca",
+            "orca setup",
+            "orca plugin doctor hermes",
             "orca plugin doctor hermes",
             "orca run -- hermes",
         });
