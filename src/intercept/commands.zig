@@ -1078,6 +1078,71 @@ test "command policy evaluation covers phase 10 requested command decisions" {
     try std.testing.expectEqual(core.decision.DecisionResult.deny, sudo.decision.result);
 }
 
+test "generic agent preset allows common inspection and verification commands" {
+    var selected = try policy.load.parseFromSlice(std.testing.allocator, policy.presets.agentPresetText(.generic_agent), "generic-agent.yaml");
+    defer selected.deinit();
+
+    const allowed_commands = [_][]const []const u8{
+        &.{ "git", "diff" },
+        &.{ "git", "log" },
+        &.{ "git", "log", "--oneline" },
+        &.{ "git", "branch" },
+        &.{ "git", "branch", "--show-current" },
+        &.{ "git", "ls-files" },
+        &.{"ls"},
+        &.{ "rg", "TODO" },
+        &.{ "npm", "test" },
+        &.{ "pnpm", "test", "--", "--runInBand" },
+        &.{ "go", "test" },
+        &.{ "go", "test", "./..." },
+        &.{ "cargo", "test" },
+        &.{ "cargo", "test", "--all" },
+        &.{ "swift", "test" },
+        &.{ "python", "-m", "pytest", "tests" },
+        &.{"pytest"},
+        &.{ "pytest", "tests" },
+    };
+
+    for (allowed_commands) |argv| {
+        var decision = try evaluate(std.testing.allocator, &selected, .ask, argv);
+        defer decision.deinit(std.testing.allocator);
+        try std.testing.expectEqual(core.decision.DecisionResult.allow, decision.decision.result);
+    }
+}
+
+test "generic agent preset keeps installs remote writes and dangerous commands gated" {
+    var selected = try policy.load.parseFromSlice(std.testing.allocator, policy.presets.agentPresetText(.generic_agent), "generic-agent.yaml");
+    defer selected.deinit();
+
+    var npm_install = try evaluate(std.testing.allocator, &selected, .ask, &.{ "npm", "install" });
+    defer npm_install.deinit(std.testing.allocator);
+    try std.testing.expectEqual(core.decision.DecisionResult.ask, npm_install.decision.result);
+
+    var git_push = try evaluate(std.testing.allocator, &selected, .ask, &.{ "git", "push" });
+    defer git_push.deinit(std.testing.allocator);
+    try std.testing.expectEqual(core.decision.DecisionResult.ask, git_push.decision.result);
+
+    var rm_rf = try evaluate(std.testing.allocator, &selected, .ask, &.{ "rm", "-rf", "/" });
+    defer rm_rf.deinit(std.testing.allocator);
+    try std.testing.expectEqual(core.decision.DecisionResult.deny, rm_rf.decision.result);
+
+    var sudo = try evaluate(std.testing.allocator, &selected, .ask, &.{ "sudo", "ls" });
+    defer sudo.deinit(std.testing.allocator);
+    try std.testing.expectEqual(core.decision.DecisionResult.deny, sudo.decision.result);
+
+    var cat_env = try evaluate(std.testing.allocator, &selected, .ask, &.{ "cat", ".env" });
+    defer cat_env.deinit(std.testing.allocator);
+    try std.testing.expectEqual(core.decision.DecisionResult.deny, cat_env.decision.result);
+
+    var mkdir_tmp = try evaluate(std.testing.allocator, &selected, .ask, &.{ "mkdir", "-p", "./tmp/orca" });
+    defer mkdir_tmp.deinit(std.testing.allocator);
+    try std.testing.expectEqual(core.decision.DecisionResult.ask, mkdir_tmp.decision.result);
+
+    var mkdir_git_hooks = try evaluate(std.testing.allocator, &selected, .ask, &.{ "mkdir", "-p", ".git/hooks" });
+    defer mkdir_git_hooks.deinit(std.testing.allocator);
+    try std.testing.expectEqual(core.decision.DecisionResult.ask, mkdir_git_hooks.decision.result);
+}
+
 test "shim list covers risky aliases recognized by classifier" {
     const required = [_][]const u8{ "pip3", "python3", "ssh", "scp", "nc", "netcat", "powershell", "pwsh" };
     for (required) |name| {
