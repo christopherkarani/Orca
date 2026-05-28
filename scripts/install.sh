@@ -2,7 +2,38 @@
 set -eu
 
 SCRIPT_DIR="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)"
-DEFAULT_VERSION="$(tr -d '[:space:]' < "${SCRIPT_DIR}/../VERSION" 2>/dev/null || true)"
+
+# Robust VERSION resolution:
+# - Local checkout / developer runs: read the repo VERSION file when present.
+# - Piped public install (curl | sh, the primary documented path): the relative
+#   VERSION file is never available, so query the latest published release tag
+#   via the GitHub API (using only curl/wget that the script already requires).
+# - ORCA_VERSION always wins. Hardcoded value is only the final safety net.
+DEFAULT_VERSION=""
+if [ -r "${SCRIPT_DIR}/../VERSION" ]; then
+    DEFAULT_VERSION="$(tr -d '[:space:]' < "${SCRIPT_DIR}/../VERSION" 2>/dev/null || true)"
+fi
+
+if [ -z "${DEFAULT_VERSION}" ] && [ -z "${ORCA_VERSION:-}" ]; then
+    # Piped / non-filesystem execution path. Best-effort latest release.
+    for _url in "https://api.github.com/repos/christopherkarani/Orca/releases/latest"; do
+        _resp=""
+        if command -v curl >/dev/null 2>&1; then
+            _resp="$(curl -fsSL --max-time 8 "$_url" 2>/dev/null || true)"
+        elif command -v wget >/dev/null 2>&1; then
+            _resp="$(wget -qO- --timeout=8 "$_url" 2>/dev/null || true)"
+        fi
+        if [ -n "${_resp:-}" ]; then
+            _tag="$(printf '%s' "$_resp" | grep -o '"tag_name"[[:space:]]*:[[:space:]]*"[vV]*[^"]*"' | head -n1 | \
+                sed -E 's/.*"tag_name"[[:space:]]*:[[:space:]]*"[vV]?([^"]*)".*/\1/' || true)"
+            if [ -n "${_tag:-}" ]; then
+                DEFAULT_VERSION="$_tag"
+                break
+            fi
+        fi
+    done
+fi
+
 VERSION="${ORCA_VERSION:-${DEFAULT_VERSION:-1.1.5}}"
 BASE_URL="${ORCA_BASE_URL:-https://github.com/christopherkarani/Orca/releases/download/v${VERSION}}"
 INSTALL_DIR="${ORCA_INSTALL_DIR:-${HOME}/.local/bin}"
