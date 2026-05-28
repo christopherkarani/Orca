@@ -31,12 +31,29 @@ pub fn runMultiSelect(
     stdin: anytype,
 ) !MultiSelectResult {
     const owned = try allocator.alloc(SelectionItem, items.len);
+    errdefer allocator.free(owned);
+
+    var initialized: usize = 0;
+    errdefer {
+        for (owned[0..initialized]) |*it| {
+            allocator.free(it.label);
+            if (it.id) |id| allocator.free(id);
+        }
+    }
+
     for (items, 0..) |item, i| {
+        const label = try allocator.dupe(u8, item.label);
+        errdefer allocator.free(label);
+
+        const maybe_id = if (item.id) |id_str| try allocator.dupe(u8, id_str) else null;
+        errdefer if (maybe_id) |id_str| allocator.free(id_str);
+
         owned[i] = .{
-            .label = try allocator.dupe(u8, item.label),
+            .label = label,
             .checked = item.checked,
-            .id = if (item.id) |id| try allocator.dupe(u8, id) else null,
+            .id = maybe_id,
         };
+        initialized = i + 1;
     }
 
     const stdin_file = std.fs.File.stdin();
@@ -185,4 +202,32 @@ test "interactive: deinitMultiSelectResult frees memory cleanly" {
 
     // Reaching here without leaks (under testing allocator) means deinit works.
     try std.testing.expect(true);
+}
+
+// TDD test for allocator safety on error paths (was RED, now GREEN after errdefer).
+// Uses an isolated GPA + FailingAllocator so we can directly assert zero leaked bytes
+// even when runMultiSelect returns an error after partial initialization.
+test "interactive: runMultiSelect never leaks on allocation failure during item construction" {
+    var gpa: std.heap.GeneralPurposeAllocator(.{}) = .init;
+    defer _ = gpa.deinit(); // will assert no leaks at test end
+
+    var failing_state = std.testing.FailingAllocator.init(gpa.allocator(), .{ .fail_index = 2 });
+    const allocator = failing_state.allocator();
+
+    const input = [_]SelectionItem{
+        .{ .label = "Hermes", .id = "hermes" },
+        .{ .label = "Claude Code", .id = "claude" },
+    };
+
+    var in_buf: [64]u8 = undefined;
+    var in_ = std.io.fixedBufferStream(&in_buf);
+    var out_buf: [256]u8 = undefined;
+    var out = std.io.fixedBufferStream(&out_buf);
+
+    const result = runMultiSelect(allocator, &input, out.writer(), in_.reader());
+    try std.testing.expectError(error.OutOfMemory, result);
+
+    // The errdefer in runMultiSelect must have released every partial dupe + the owned slice.
+    // If any bytes remain live in the GPA, the defer _ = gpa.deinit() below will panic
+    // (and the test will fail). Reaching here with no panic = GREEN.
 }

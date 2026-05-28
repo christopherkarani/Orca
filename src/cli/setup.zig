@@ -224,52 +224,11 @@ fn runGuidedSetup(cwd: std.fs.Dir, stdout: anytype, stderr: anytype) !u8 {
 
     const stdin_file = std.fs.File.stdin();
 
-    // Simple direct-file interactive loop (consistent with other CLI interactive code)
-    // using the types from interactive module for result modeling.
-    var result_items = try allocator.alloc(interactive.SelectionItem, selection_items.len);
-    for (selection_items, 0..) |item, i| {
-        result_items[i] = .{
-            .label = try allocator.dupe(u8, item.label),
-            .checked = item.checked,
-            .id = if (item.id) |id| try allocator.dupe(u8, id) else null,
-        };
-    }
-
-    var result = interactive.MultiSelectResult{
-        .items = result_items,
-        .confirmed = false,
-    };
-
-    // Interactive toggle loop (direct file read, like plugin.zig / disable.zig patterns)
-    while (true) {
-        try stdout.writeAll("\nSelect hosts to integrate (enter number to toggle, 'c' to confirm, 'q' to cancel):\n\n");
-        for (result.items, 0..) |item, i| {
-            const mark = if (item.checked) "[x]" else "[ ]";
-            try stdout.print("  {d}. {s} {s}\n", .{ i + 1, mark, item.label });
-        }
-        try stdout.writeAll("\n> ");
-
-        var buf: [128]u8 = undefined;
-        const n = try stdin_file.read(&buf);
-        const input = std.mem.trimRight(u8, buf[0..n], "\r\n ");
-
-        if (input.len == 0) continue;
-        if (std.mem.eql(u8, input, "c") or std.mem.eql(u8, input, "C")) {
-            result.confirmed = true;
-            break;
-        }
-        if (std.mem.eql(u8, input, "q") or std.mem.eql(u8, input, "Q")) {
-            break;
-        }
-
-        const num = std.fmt.parseInt(usize, input, 10) catch {
-            try stdout.writeAll("  (invalid — number, c, or q)\n");
-            continue;
-        };
-        if (num >= 1 and num <= result.items.len) {
-            result.items[num-1].checked = !result.items[num-1].checked;
-        }
-    }
+    // Delegate to the shared interactive module. Pass the raw File for the
+    // stdin parameter (the module performs its own TTY check on global stdin
+    // and expects a type with a .read method, as used in its existing tests).
+    var result = try interactive.runMultiSelect(allocator, selection_items, stdout, stdin_file);
+    defer interactive.deinitMultiSelectResult(&result, allocator);
 
     if (!result.confirmed) {
         try stdout.writeAll("\nSetup canceled by user.\n");

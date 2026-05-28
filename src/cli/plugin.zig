@@ -1077,11 +1077,26 @@ fn installCommand(argv: []const []const u8, stdout: anytype, stderr: anytype) !u
         .openclaw => &[_]InstallTarget{.openclaw},
         .hermes => &[_]InstallTarget{.hermes},
         .all => if (all_detected) blk: {
-            if (binaryInPath(allocator, "codex")) { detected_targets[detected_count] = .codex; detected_count += 1; }
-            if (binaryInPath(allocator, "claude")) { detected_targets[detected_count] = .claude; detected_count += 1; }
-            if (binaryInPath(allocator, "opencode")) { detected_targets[detected_count] = .opencode; detected_count += 1; }
-            if (binaryInPath(allocator, "openclaw")) { detected_targets[detected_count] = .openclaw; detected_count += 1; }
-            if (binaryInPath(allocator, "hermes")) { detected_targets[detected_count] = .hermes; detected_count += 1; }
+            if (binaryInPath(allocator, "codex")) {
+                detected_targets[detected_count] = .codex;
+                detected_count += 1;
+            }
+            if (binaryInPath(allocator, "claude")) {
+                detected_targets[detected_count] = .claude;
+                detected_count += 1;
+            }
+            if (binaryInPath(allocator, "opencode")) {
+                detected_targets[detected_count] = .opencode;
+                detected_count += 1;
+            }
+            if (binaryInPath(allocator, "openclaw")) {
+                detected_targets[detected_count] = .openclaw;
+                detected_count += 1;
+            }
+            if (binaryInPath(allocator, "hermes")) {
+                detected_targets[detected_count] = .hermes;
+                detected_count += 1;
+            }
             break :blk detected_targets[0..detected_count];
         } else &[_]InstallTarget{ .codex, .claude, .opencode, .openclaw, .hermes },
     };
