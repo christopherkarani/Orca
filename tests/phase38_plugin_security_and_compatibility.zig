@@ -464,8 +464,8 @@ test "decide file write protected path returns block or ask" {
     const allocator = std.testing.allocator;
 
     const result = try runOrca(allocator, &.{
-        orca_bin,                                                                                            "decide", "file", "--json",
-        "{\"version\":1,\"host\":\"claude\",\"operation\":\"write\",\"path\":\".env\",\"mode\":\"strict\"}",
+        orca_bin,                                                                                                   "decide", "file", "--json",
+        "{\"version\":1,\"host\":\"claude\",\"operation\":\"write\",\"path\":\".git/config\",\"mode\":\"strict\"}",
     }, null);
     defer allocator.free(result.stdout);
     defer allocator.free(result.stderr);

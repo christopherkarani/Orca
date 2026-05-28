@@ -4,6 +4,6 @@
   "event": "PreToolUse",
   "payload": {
     "tool": "Edit",
-    "path": ".env"
+    "path": ".git/config"
   }
 }
