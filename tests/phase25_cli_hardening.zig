@@ -74,7 +74,7 @@ test "phase25 Core facade is the shared CLI policy audit replay and redaction su
 
     var evaluation = try orca.core_api.evaluateAction(
         std.testing.allocator,
-        &selected,
+        selected,
         .{ .command_exec = .{ .argv = &.{ "npm", "install", "left-pad" } } },
         .{},
     );

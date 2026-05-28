@@ -1,7 +1,7 @@
 const std = @import("std");
 const orca_policy = @import("orca_core").policy;
 const core = @import("orca_core").core;
-const supervisor = @import("../core/supervisor.zig");
+const supervisor = core.supervisor;
 const core_api = @import("orca_core").api;
 const exit_codes = @import("exit_codes.zig");
 const help = @import("help.zig");
@@ -49,7 +49,7 @@ fn check(argv: []const []const u8, stdout: anytype, stderr: anytype) !u8 {
         try core_api.loadPolicyPreset(allocator, orca_policy.presets.defaultPreset());
     defer policy_value.deinit();
 
-    try stdout.print("Policy OK: {s}\nMode: {s}\n", .{ source, policy_value.mode.toString() });
+    try stdout.print("Policy OK: {s}\nMode: {s}\n", .{ source, policy_value.mode().toString() });
     return exit_codes.success;
 }
 
@@ -101,13 +101,13 @@ fn explain(argv: []const []const u8, stdout: anytype, stderr: anytype) !u8 {
     };
     defer loaded.deinit();
 
-    const evaluation = core_api.explainActionWithOptions(allocator, &loaded.policy, kind, parsed_target.target, .{ .network_method = parsed_target.method }) catch |err| {
+    const evaluation = core_api.explainActionWithOptions(allocator, loaded.policy, kind, parsed_target.target, .{ .network_method = parsed_target.method }) catch |err| {
         try stderr.print("orca policy explain: failed to evaluate action: {s}\n", .{@errorName(err)});
         return exit_codes.general;
     };
     defer evaluation.deinit(allocator);
 
-    try core_api.writePolicyExplanation(stdout, &loaded.policy, evaluation);
+    try core_api.writePolicyExplanation(stdout, loaded.policy, evaluation);
     return exit_codes.success;
 }
 

@@ -1,6 +1,6 @@
 const std = @import("std");
 
-const network = @import("network.zig");
+const network = @import("orca_core").policy.network_eval;
 const core = @import("orca_core").core;
 const schema = @import("orca_core").policy.schema;
 

@@ -1,7 +1,7 @@
 const std = @import("std");
 const builtin = @import("builtin");
 const core = @import("orca_core").core;
-const supervisor = @import("../core/supervisor.zig");
+const supervisor = core.supervisor;
 const core_api = @import("orca_core").api;
 const sandbox = @import("../sandbox/mod.zig");
 

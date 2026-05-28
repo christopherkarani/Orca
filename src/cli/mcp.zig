@@ -2,7 +2,7 @@ const std = @import("std");
 
 const orca_mcp = @import("../mcp/mod.zig");
 const core = @import("orca_core").core;
-const supervisor = @import("../core/supervisor.zig");
+const supervisor = core.supervisor;
 const core_api = @import("orca_core").api;
 const exit_codes = @import("exit_codes.zig");
 const help = @import("help.zig");
@@ -98,8 +98,8 @@ fn inspect(argv: []const []const u8, stdout: anytype, stderr: anytype) !u8 {
 
     const options = parseOptions(allocator, argv, stderr) catch |err| return usageCode(err, stderr);
     defer options.deinit(allocator);
-    var loaded_policy: ?core_api.Policy = null;
-    defer if (loaded_policy) |*loaded| loaded.deinit();
+    var loaded_policy: ?*core_api.Policy = null;
+    defer if (loaded_policy) |loaded| loaded.deinit();
     if (options.policy_path) |path| {
         loaded_policy = core_api.loadPolicyFile(allocator, path) catch |err| {
             try stderr.print("orca mcp inspect: invalid policy: {s}\n", .{@errorName(err)});
@@ -144,7 +144,7 @@ fn inspect(argv: []const []const u8, stdout: anytype, stderr: anytype) !u8 {
     try stdout.print("MCP Server: {s}\nTransport: stdio\nTools:\n", .{options.server_name});
     for (inventory.tools) |tool| {
         try stdout.print("  {s:<24} risk: {s:<8} default: {s}", .{ tool.name, tool.risk.toString(), orca_mcp.tools.defaultDecisionForRisk(tool.risk) });
-        if (loaded_policy) |*selected| {
+        if (loaded_policy) |selected| {
             var evaluation = try core_api.evaluateAction(allocator, selected, .{ .mcp_tool_call = .{ .server = options.server_name, .tool_name = tool.name } }, .{});
             defer evaluation.deinit(allocator);
             try stdout.print(" policy: {s}", .{evaluation.decision.result.toString()});
@@ -182,7 +182,7 @@ fn proxy(argv: []const []const u8, stdout: anytype, stderr: anytype) !u8 {
         return exit_codes.general;
     };
     defer loaded.deinit();
-    const mode = options.mode orelse loaded.policy.mode;
+    const mode = options.mode orelse loaded.policy.mode();
     var loaded_manifest: ?orca_mcp.manifests.Manifest = null;
     defer if (loaded_manifest) |*manifest| manifest.deinit(allocator);
     var bound_launch: ?BoundManifestLaunch = null;
@@ -238,7 +238,7 @@ fn proxy(argv: []const []const u8, stdout: anytype, stderr: anytype) !u8 {
     orca_mcp.proxy.runWithServer(allocator, .{
         .server_name = options.server_name,
         .server_command_display = options.command_argv[0],
-        .policy = &loaded.policy,
+        .policy = loaded.innerPtr(),
         .mode = mode,
         .audit_writer = &session_writer,
         .approval_reader = if (approval_reader_storage) |*reader| &reader.interface else null,

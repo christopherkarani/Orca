@@ -77,7 +77,7 @@ test "edge package calls Core policy audit and redaction APIs without Edge-speci
     , "edge-core-import.yaml");
     defer selected.deinit();
 
-    var evaluation = try edge.core.api.evaluateAction(std.testing.allocator, &selected, .{ .command_exec = .{ .argv = &.{ "edge-check", "vehicle-1" } } }, .{});
+    var evaluation = try edge.core.api.evaluateAction(std.testing.allocator, selected, .{ .command_exec = .{ .argv = &.{ "edge-check", "vehicle-1" } } }, .{});
     defer evaluation.deinit(std.testing.allocator);
     try std.testing.expectEqual(edge.core.decision.DecisionResult.allow, evaluation.decision.result);
     try std.testing.expect(std.mem.indexOf(u8, evaluation.explanation, "commands.allow") != null);

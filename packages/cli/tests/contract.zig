@@ -37,7 +37,7 @@ test "cli package can evaluate CLI actions through Core facade" {
 
     var evaluation = try orca_cli.core.api.evaluateAction(
         std.testing.allocator,
-        &selected,
+        selected,
         .{ .command_exec = .{ .argv = &.{ "echo", "hello" } } },
         .{},
     );

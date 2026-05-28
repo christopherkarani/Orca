@@ -1,7 +1,5 @@
 const std = @import("std");
-const core_impl = @import("core_impl");
-const limits = core_impl.limits;
-const redact_bridge = core_impl.audit.redact_bridge;
+const engine = @import("core_engine");
 
 pub const stability = "experimental";
 
@@ -21,11 +19,11 @@ pub export fn core_version(output_ptr: ?[*]u8, output_len: usize, written_ptr: ?
 }
 
 pub export fn core_redact(input_ptr: ?[*]const u8, input_len: usize, output_ptr: ?[*]u8, output_len: usize, written_ptr: ?*usize) c_int {
-    if (input_len > limits.max_event_field_len) return -3;
+    if (input_len > engine.core.limits.max_event_field_len) return -3;
     if (input_len > 0 and input_ptr == null) return -1;
     const input = if (input_len == 0) "" else input_ptr.?[0..input_len];
     var buffer: [256]u8 = undefined;
-    const redacted = redact_bridge.redactStringBounded(input, &buffer);
+    const redacted = engine.audit.redact_bridge.redactStringBounded(input, &buffer);
     return writeOutput(redacted, output_ptr, output_len, written_ptr);
 }
 

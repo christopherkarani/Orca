@@ -1,6 +1,6 @@
 const std = @import("std");
 const core = @import("orca_core").core;
-const supervisor = @import("../core/supervisor.zig");
+const supervisor = core.supervisor;
 const core_api = @import("orca_core").api;
 const policy = @import("orca_core").policy;
 
@@ -148,7 +148,7 @@ fn decideCommand(kind: DecisionKind, argv: []const []const u8, stdout: anytype, 
     defer loaded.deinit();
 
     // Evaluate decision
-    var result = evaluateDecision(allocator, &loaded.policy, kind, parsed.value, ci_mode) catch |err| {
+    var result = evaluateDecision(allocator, loaded.innerPtr(), kind, parsed.value, ci_mode) catch |err| {
         try stderr.print("orca decide: evaluation failed: {s}\n", .{@errorName(err)});
         return exit_codes.general;
     };
@@ -261,7 +261,7 @@ fn evaluateDecision(
     switch (kind) {
         .command => {
             const command_text = extractString(payload, "command") orelse extractString(payload, "name") orelse return error.MissingRequiredField;
-            const evaluation = try core_api.explainAction(allocator, policy_value, .command, command_text);
+            const evaluation = try core_api.explainAction(allocator, @ptrCast(policy_value), .command, command_text);
             defer evaluation.deinit(allocator);
 
             const decision = PluginDecision.fromDecisionResult(evaluation.decision.result, ci_mode);
@@ -287,7 +287,7 @@ fn evaluateDecision(
             const explain_kind: policy.explain.ExplainKind = if (std.mem.eql(u8, operation, "write")) .file_write else .file_read;
             const category_text = if (std.mem.eql(u8, operation, "write")) "file.write" else "file.read";
 
-            const evaluation = try core_api.explainAction(allocator, policy_value, explain_kind, path);
+            const evaluation = try core_api.explainAction(allocator, @ptrCast(policy_value), explain_kind, path);
             defer evaluation.deinit(allocator);
 
             const decision = PluginDecision.fromDecisionResult(evaluation.decision.result, ci_mode);
@@ -322,7 +322,7 @@ fn evaluateDecision(
             }
 
             // Prompt decisions use policy env evaluation as a proxy for sensitivity
-            const evaluation = try core_api.explainAction(allocator, policy_value, .env, "USER_PROMPT");
+            const evaluation = try core_api.explainAction(allocator, @ptrCast(policy_value), .env, "USER_PROMPT");
             defer evaluation.deinit(allocator);
 
             // Override decision if secrets detected
@@ -354,7 +354,7 @@ fn evaluateDecision(
                 extractString(payload, "tool") orelse
                 extractNestedString(payload, &.{ "tool", "name" }) orelse
                 return error.MissingRequiredField;
-            const evaluation = try core_api.explainAction(allocator, policy_value, .mcp, tool_name);
+            const evaluation = try core_api.explainAction(allocator, @ptrCast(policy_value), .mcp, tool_name);
             defer evaluation.deinit(allocator);
 
             const decision = PluginDecision.fromDecisionResult(evaluation.decision.result, ci_mode);

@@ -329,7 +329,7 @@ fn appendNamedEvent(
     sequence: *usize,
     session: core.session.Session,
     event_type: []const u8,
-    target_kind: core.types.TargetKind,
+    target_kind: core.api.TargetKind,
     target_value: []const u8,
     decision_result: core.decision.DecisionResult,
     reason: []const u8,
@@ -340,7 +340,7 @@ fn appendNamedEvent(
         .session_id = session.id,
         .event_id = try edge_event.eventIdFromSequence(sequence.*),
         .timestamp = core.core.time.Timestamp.now(),
-        .event_type = core_event_type,
+        .event_type = core.api.fromCoreEventType(core_event_type),
         .actor = .{ .kind = .orca, .display = "edge" },
         .target = .{ .kind = target_kind, .value = target_value },
         .decision = core.api.makeDecision(.{

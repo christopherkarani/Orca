@@ -1,9 +1,9 @@
 const std = @import("std");
 
-const audit_redact = @import("orca_core").audit.redact_bridge;
-const core = @import("orca_core").core;
-const matchers = @import("orca_core").policy.matchers;
-const schema = @import("orca_core").policy.schema;
+const audit_redact = @import("../audit/redact_bridge.zig");
+const core = @import("../core/mod.zig");
+const matchers = @import("matchers.zig");
+const schema = @import("schema.zig");
 
 pub const implemented = true;
 
@@ -824,7 +824,7 @@ fn hexValue(char: u8) ?u8 {
 }
 
 test "network decision allows exact and wildcard domains" {
-    const load = @import("orca_core").policy.load;
+    const load = @import("load.zig");
     var policy = try load.parseFromSlice(std.testing.allocator,
         \\version: 1
         \\mode: strict
@@ -848,7 +848,7 @@ test "network decision allows exact and wildcard domains" {
 }
 
 test "deny beats allow and unknown ask denies in ci" {
-    const load = @import("orca_core").policy.load;
+    const load = @import("load.zig");
     var policy = try load.parseFromSlice(std.testing.allocator,
         \\version: 1
         \\mode: ci
@@ -874,7 +874,7 @@ test "deny beats allow and unknown ask denies in ci" {
 }
 
 test "strict defaults deny direct localhost private and metadata destinations" {
-    const load = @import("orca_core").policy.load;
+    const load = @import("load.zig");
     var policy = try load.parseFromSlice(std.testing.allocator,
         \\version: 1
         \\mode: strict
@@ -892,7 +892,7 @@ test "strict defaults deny direct localhost private and metadata destinations" {
 }
 
 test "unknown domain denies in allowlist mode" {
-    const load = @import("orca_core").policy.load;
+    const load = @import("load.zig");
     var policy = try load.parseFromSlice(std.testing.allocator,
         \\version: 1
         \\mode: strict
@@ -909,7 +909,7 @@ test "unknown domain denies in allowlist mode" {
 }
 
 test "service-aware network policy allows scoped github issue and pull requests" {
-    const load = @import("orca_core").policy.load;
+    const load = @import("load.zig");
     var policy = try load.parseFromSlice(std.testing.allocator,
         \\version: 1
         \\mode: strict
@@ -951,7 +951,7 @@ test "service-aware network policy allows scoped github issue and pull requests"
 }
 
 test "service-aware network policy honors network off ci ask conversion and method scope" {
-    const load = @import("orca_core").policy.load;
+    const load = @import("load.zig");
     var off_policy = try load.parseFromSlice(std.testing.allocator,
         \\version: 1
         \\mode: strict
@@ -1071,7 +1071,7 @@ test "percent-encoded secret URL values are detected and redacted" {
 }
 
 test "many unknown domains signal only counts policy-unknown domains" {
-    const load = @import("orca_core").policy.load;
+    const load = @import("load.zig");
     var policy = try load.parseFromSlice(std.testing.allocator,
         \\version: 1
         \\mode: strict
@@ -1104,7 +1104,7 @@ test "many unknown domains signal only counts policy-unknown domains" {
 }
 
 test "service hosts are not counted as policy-unknown domains" {
-    const load = @import("orca_core").policy.load;
+    const load = @import("load.zig");
     var policy = try load.parseFromSlice(std.testing.allocator,
         \\version: 1
         \\mode: strict

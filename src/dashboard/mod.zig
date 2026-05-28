@@ -5,7 +5,7 @@ const core_api = @import("orca_core").api;
 const core = @import("orca_core").core;
 const policy_mod = @import("orca_core").policy;
 const credentials_runtime = @import("../intercept/credentials.zig");
-const supervisor = @import("../core/supervisor.zig");
+const supervisor = core.supervisor;
 const license_mod = @import("../license.zig");
 const ci_check = @import("../ci_check.zig");
 
@@ -78,10 +78,12 @@ fn writeSecretlessRuntimeJson(allocator: std.mem.Allocator, writer: anytype, wor
     const policy_path = try policyPath(allocator, workspace_root);
     defer allocator.free(policy_path);
     var loaded_policy: ?policy_mod.schema.Policy = null;
-    if (core_api.loadPolicyFile(allocator, policy_path)) |loaded| {
-        loaded_policy = loaded;
+    var loaded_policy_handle: ?policy_mod.schema.LoadedPolicy = null;
+    if (policy_mod.load.discover(allocator, policy_path, workspace_root)) |loaded| {
+        loaded_policy_handle = loaded;
+        loaded_policy = loaded.policy;
     } else |_| {}
-    defer if (loaded_policy) |*loaded| loaded.deinit();
+    defer if (loaded_policy_handle) |*handle| handle.deinit();
 
     const active_broker_label = if (loaded_policy) |loaded|
         loaded.credentials.default_broker orelse if (loaded.credentials.brokers.len > 0) loaded.credentials.brokers[0].name else "local-dummy"
@@ -239,7 +241,7 @@ pub fn savePolicyText(allocator: std.mem.Allocator, workspace_root: []const u8, 
         return .{ .ok = false, .error_name = @errorName(err) };
     };
     defer parsed.deinit();
-    core_api.validatePolicy(&parsed) catch |err| {
+    core_api.validatePolicy(parsed) catch |err| {
         return .{ .ok = false, .error_name = @errorName(err) };
     };
 
@@ -287,7 +289,7 @@ fn writePolicySummaryJson(allocator: std.mem.Allocator, writer: anytype, workspa
         var loaded = loaded_policy;
         defer loaded.deinit();
         try writer.writeAll("\"valid\":true,\"mode\":");
-        try core.util.writeJsonString(writer, loaded.mode.toString());
+        try core.util.writeJsonString(writer, loaded.mode().toString());
         try writer.writeAll(",\"error\":null");
     } else |err| {
         if (err == error.OutOfMemory) return err;
@@ -774,7 +776,7 @@ fn appendFixtureEvent(
         .session_id = session.id,
         .event_id = try core.event.generateEventId(timestamp),
         .timestamp = timestamp,
-        .event_type = event_type,
+        .event_type = core_api.fromCoreEventType(event_type),
         .actor = .{ .kind = .orca, .display = "orca" },
         .target = .{ .kind = .network_endpoint, .value = target },
         .decision = core_api.makeDecision(.{ .result = result, .reason = "fixture evidence" }),

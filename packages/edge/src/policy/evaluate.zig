@@ -332,9 +332,9 @@ pub fn appendPreparedAuditEvents(
             .session_id = session_id,
             .event_id = try core.event.generateEventId(timestamp),
             .timestamp = timestamp,
-            .event_type = try coreEventType(payload.event_type),
+            .event_type = core.api.fromCoreEventType(try coreEventType(payload.event_type)),
             .actor = .{ .kind = .orca, .display = "edge" },
-            .target = .{ .kind = payload.target_kind, .value = payload.target_value },
+            .target = .{ .kind = core.api.fromCoreTargetKind(payload.target_kind), .value = payload.target_value },
             .decision = payload.decision,
         });
         try core.api.appendAuditEvent(writer, event);

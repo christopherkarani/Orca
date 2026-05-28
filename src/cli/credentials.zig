@@ -1,10 +1,11 @@
 const std = @import("std");
 
+const core = @import("orca_core").core;
 const core_api = @import("orca_core").api;
 const credentials = @import("../intercept/credentials.zig");
 const exit_codes = @import("exit_codes.zig");
 const help = @import("help.zig");
-const supervisor = @import("../core/supervisor.zig");
+const supervisor = core.supervisor;
 
 pub fn command(argv: []const []const u8, stdout: anytype, stderr: anytype) !u8 {
     if (argv.len == 0 or std.mem.eql(u8, argv[0], "--help") or std.mem.eql(u8, argv[0], "-h")) {
@@ -36,7 +37,7 @@ fn checkCommand(argv: []const []const u8, stdout: anytype, stderr: anytype) !u8 
     defer loaded_policy.deinit();
 
     const ref_name = if (argv.len == 1) argv[0] else null;
-    var report = credentials.check(allocator, &loaded_policy.policy, workspace_root, ref_name) catch |err| switch (err) {
+    var report = credentials.check(allocator, loaded_policy.innerPtr(), workspace_root, ref_name) catch |err| switch (err) {
         error.UnknownCredentialRef => {
             try stderr.writeAll("orca credentials check: unknown credential ref.\n");
             return exit_codes.general;

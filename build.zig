@@ -32,9 +32,10 @@ pub fn build(b: *std.Build) void {
     core_schema_documents.addOption([]const u8, "event_v1", @embedFile("schemas/event-v1.json"));
     core_schema_documents.addOption([]const u8, "mcp_manifest_v1", @embedFile("schemas/mcp-manifest-v1.json"));
     const core_schema_documents_mod = core_schema_documents.createModule();
+    _ = &core_schema_documents_mod;
 
-    const core_impl_mod = b.addModule("orca_core_impl", .{
-        .root_source_file = b.path("src/core_package.zig"),
+    const orca_core_engine_mod = b.createModule(.{
+        .root_source_file = b.path("src/core_engine.zig"),
         .target = target,
         .optimize = optimize,
     });
@@ -44,8 +45,7 @@ pub fn build(b: *std.Build) void {
         .target = target,
         .optimize = optimize,
         .imports = &.{
-            .{ .name = "core_impl", .module = core_impl_mod },
-            .{ .name = "core_schema_documents", .module = core_schema_documents_mod },
+            .{ .name = "core_engine", .module = orca_core_engine_mod },
         },
     });
 
@@ -58,6 +58,7 @@ pub fn build(b: *std.Build) void {
             .{ .name = "build_options", .module = build_options_mod },
         },
     });
+    orca_mod.addImport("build_options", build_options_mod);
 
     const orca_cli_mod = b.addModule("orca_cli", .{
         .root_source_file = b.path("packages/cli/src/root.zig"),

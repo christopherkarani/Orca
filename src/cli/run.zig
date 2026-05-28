@@ -2,7 +2,7 @@ const std = @import("std");
 const builtin = @import("builtin");
 
 const core = @import("orca_core").core;
-const supervisor = @import("../core/supervisor.zig");
+const supervisor = core.supervisor;
 const core_api = @import("orca_core").api;
 const intercept = @import("../intercept/mod.zig");
 const policy = @import("orca_core").policy;
@@ -70,10 +70,10 @@ fn commandWithStdioAndEnv(argv: []const []const u8, stdout: anytype, stderr: any
         return exit_codes.general;
     };
     defer loaded_policy.deinit();
-    const effective_policy_mode = if (options.mode_explicit) coreModeToPolicyMode(options.mode) else loaded_policy.policy.mode;
+    const effective_policy_mode = if (options.mode_explicit) coreModeToPolicyMode(options.mode) else loaded_policy.policy.mode();
     const session_mode = effective_policy_mode.toCoreMode();
 
-    try applyNetworkOverlay(allocator, &loaded_policy.policy, options);
+    try applyNetworkOverlay(allocator, loaded_policy.innerMutPtr(), options);
 
     const env_request: intercept.env.Request = .{
         .no_secrets = options.no_secrets,
@@ -81,9 +81,9 @@ fn commandWithStdioAndEnv(argv: []const []const u8, stdout: anytype, stderr: any
         .inherit_env = options.inherit_env,
     };
     var filtered_env = (if (current_env_override) |current_env|
-        intercept.env.filterMap(allocator, current_env, &loaded_policy.policy, effective_policy_mode, env_request)
+        intercept.env.filterMap(allocator, current_env, loaded_policy.innerPtr(), effective_policy_mode, env_request)
     else
-        intercept.env.filterCurrent(allocator, &loaded_policy.policy, effective_policy_mode, env_request)) catch |err| switch (err) {
+        intercept.env.filterCurrent(allocator, loaded_policy.innerPtr(), effective_policy_mode, env_request)) catch |err| switch (err) {
         error.InheritEnvDenied => {
             try stderr.writeAll("orca run: --inherit-env is not allowed by the selected policy/mode.\n");
             return exit_codes.general;
@@ -94,12 +94,12 @@ fn commandWithStdioAndEnv(argv: []const []const u8, stdout: anytype, stderr: any
         },
     };
     defer filtered_env.deinit();
-    try installNetworkEnvironment(allocator, &filtered_env.env_map, loaded_policy.policy.network);
+    try installNetworkEnvironment(allocator, &filtered_env.env_map, loaded_policy.innerPtr().network);
     var proxy_runtime: ?intercept.proxy.Runtime = null;
     defer if (proxy_runtime) |*runtime| runtime.deinit();
-    const proxy_required_by_backend = loaded_policy.policy.network.effectiveBackend() == .proxy;
+    const proxy_required_by_backend = loaded_policy.innerPtr().network.effectiveBackend() == .proxy;
     if (proxy_required_by_backend) {
-        proxy_runtime = intercept.proxy.start(allocator, &loaded_policy.policy, effective_policy_mode) catch |err| blk: {
+        proxy_runtime = intercept.proxy.start(allocator, loaded_policy.innerPtr(), effective_policy_mode) catch |err| blk: {
             if (effective_policy_mode == .strict or effective_policy_mode == .ci or requiresBackend(options, .network_enforce)) {
                 try stderr.print("orca run: proxy network backend unavailable: {s}\n", .{@errorName(err)});
                 return exit_codes.unsupported;
@@ -402,7 +402,7 @@ fn commandWithStdioAndEnv(argv: []const []const u8, stdout: anytype, stderr: any
     };
     var command_guard_context: CommandGuardContext = .{
         .allocator = allocator,
-        .selected_policy = &loaded_policy.policy,
+        .selected_policy = loaded_policy.innerPtr(),
         .effective_mode = effective_policy_mode,
         .command_argv = options.command_argv,
         .env_map = &filtered_env.env_map,

@@ -61,13 +61,13 @@ pub fn runWithOptions(allocator: std.mem.Allocator, workspace_root: []const u8, 
     defer if (maybe_policy) |*policy| policy.deinit();
 
     if (std.fs.cwd().access(policy_path, .{})) |_| {
-        var loaded = core_api.loadPolicyFile(allocator, policy_path) catch |err| {
+        const loaded = policy_mod.load.loadFile(allocator, policy_path) catch |err| {
             const message = try std.fmt.allocPrint(allocator, ".orca/policy.yaml exists but is invalid: {s}", .{@errorName(err)});
             defer allocator.free(message);
             try result.add("policy", .fail, message);
             return result;
         };
-        try core_api.validatePolicy(&loaded);
+        try core_api.validatePolicy(@ptrCast(&loaded));
         try result.add("policy", .pass, ".orca/policy.yaml exists and validates");
         maybe_policy = loaded;
     } else |_| {

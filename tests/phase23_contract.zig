@@ -71,7 +71,7 @@ test "phase 23 edge placeholder never reports active command or flight enforceme
 
 test "phase 23 fake secret guardrail covers redaction before durable strings" {
     var buffer: [256]u8 = undefined;
-    const redacted = orca_core.audit.redact_bridge.redactStringBounded("OPENAI_API_KEY=" ++ fake_secret, &buffer);
+    const redacted = orca_core.api.redactStringBounded("OPENAI_API_KEY=" ++ fake_secret, &buffer);
 
     try std.testing.expect(std.mem.indexOf(u8, redacted, fake_secret) == null);
     try std.testing.expect(std.mem.indexOf(u8, redacted, "[REDACTED") != null);
@@ -97,11 +97,13 @@ test "policy schema matches runtime file-write and MCP server-scoped policy shap
     const server_properties = servers.get("additionalProperties").?.object.get("properties").?.object;
     try std.testing.expect(server_properties.get("tools") != null);
 
-    var policy = try orca_core.policy.load.parseFromSlice(std.testing.allocator,
+    const policy_load = orca_core.policy.load;
+    const policy_schema = orca_core.policy.schema;
+    var policy = try policy_load.parseFromSlice(std.testing.allocator,
         \\{"version":1,"mode":"strict","files":{"write":{"mode":"direct","allow":["docs/**"]}},"mcp":{"servers":{"github":{"tools":{"allow":["search_repositories"]}}}}}
     , "schema-alignment.json");
     defer policy.deinit();
-    try std.testing.expectEqual(orca_core.policy.schema.WriteMode.direct, policy.files.write_mode);
+    try std.testing.expectEqual(policy_schema.WriteMode.direct, policy.files.write_mode);
     try std.testing.expectEqualStrings("github.search_repositories", policy.mcp.allow[0]);
 }
 

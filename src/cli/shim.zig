@@ -156,7 +156,7 @@ fn loadPolicyForShim(allocator: std.mem.Allocator, workspace_root: []const u8, s
         if (!try policyPathRecordedForSession(allocator, workspace_root, session_id, path)) return error.UntrustedPolicyPath;
         return loadRecordedPolicySource(allocator, path, workspace_root);
     }
-    return core_api.discoverPolicy(allocator, null, workspace_root);
+    return policy.load.discover(allocator, null, workspace_root);
 }
 
 fn loadRecordedPolicySource(allocator: std.mem.Allocator, source: []const u8, workspace_root: []const u8) !policy.schema.LoadedPolicy {
@@ -172,7 +172,7 @@ fn loadRecordedPolicySource(allocator: std.mem.Allocator, source: []const u8, wo
             .path = try allocator.dupe(u8, source),
         };
     }
-    return core_api.discoverPolicy(allocator, source, workspace_root);
+    return policy.load.discover(allocator, source, workspace_root);
 }
 
 fn shimMode(selected: *const policy.schema.Policy, env_map: *const std.process.EnvMap) policy.schema.Mode {

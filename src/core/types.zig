@@ -41,6 +41,7 @@ pub const TargetKind = enum {
     approval,
     staging_area,
     session,
+    extension,
     extension_target,
     unknown,
 };

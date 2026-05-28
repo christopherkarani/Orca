@@ -1,14 +1,13 @@
 const std = @import("std");
 const builtin = @import("builtin");
 
-const core = @import("orca_core").core;
-const event = core.event;
-const platform = core.platform;
-const process = core.process;
-const session_mod = core.session;
-const time = core.time;
-const types = core.types;
-const util = core.util;
+const event = @import("event.zig");
+const platform = @import("platform.zig");
+const process = @import("process.zig");
+const session_mod = @import("session.zig");
+const time = @import("time.zig");
+const types = @import("types.zig");
+const util = @import("util.zig");
 
 pub const StdioBehavior = process.StdioBehavior;
 

@@ -1,5 +1,6 @@
 const std = @import("std");
-const supervisor = @import("../core/supervisor.zig");
+const core = @import("orca_core").core;
+const supervisor = core.supervisor;
 
 pub const MarketplaceHost = enum { codex, claude };
 

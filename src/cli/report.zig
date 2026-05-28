@@ -1,7 +1,8 @@
 const std = @import("std");
 
+const core = @import("orca_core").core;
 const core_api = @import("orca_core").api;
-const supervisor = @import("../core/supervisor.zig");
+const supervisor = core.supervisor;
 const report = @import("../report.zig");
 const license = @import("../license.zig");
 const exit_codes = @import("exit_codes.zig");
