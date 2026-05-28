@@ -494,6 +494,20 @@ fn writeJsonString(writer: anytype, value: []const u8) !void {
 // Tests
 // ---------------------------------------------------------------------------
 
+test "PluginDecision exitCode mapping" {
+    const cases = [_]struct { PluginDecision, u8 }{
+        .{ .allow, exit_codes.success },
+        .{ .context_only, exit_codes.success },
+        .{ .block, exit_codes.denial },
+        .{ .ask, exit_codes.ask },
+        .{ .warn, exit_codes.warn },
+        .{ .err, exit_codes.general },
+    };
+    for (cases) |entry| {
+        try std.testing.expectEqual(entry[1], entry[0].exitCode());
+    }
+}
+
 test "decide command help and invalid kind" {
     var stdout_buf: [2048]u8 = undefined;
     var stderr_buf: [256]u8 = undefined;
@@ -649,17 +663,39 @@ test "decide tool returns valid JSON" {
     const code = try decideCommand(.tool, &.{
         "--json", "{\"name\":\"read_file\"}",
     }, stdout_stream.writer(), stderr_stream.writer());
-    try std.testing.expect(code == exit_codes.success or code == exit_codes.ask);
-
     const output = stdout_stream.getWritten();
     var parsed = try std.json.parseFromSlice(std.json.Value, std.testing.allocator, output, .{});
     defer parsed.deinit();
+
+    const decision = parsed.value.object.get("decision").?.string;
+    if (std.mem.eql(u8, decision, "allow")) {
+        try std.testing.expectEqual(exit_codes.success, code);
+    } else if (std.mem.eql(u8, decision, "ask")) {
+        try std.testing.expectEqual(exit_codes.ask, code);
+    } else {
+        try std.testing.expect(false);
+    }
 
     try std.testing.expect(parsed.value.object.get("decision") != null);
     try std.testing.expect(parsed.value.object.get("risk") != null);
     try std.testing.expect(parsed.value.object.get("category") != null);
     try std.testing.expect(parsed.value.object.get("reason") != null);
     try std.testing.expect(parsed.value.object.get("message") != null);
+}
+
+test "decide non-ci mode returns ask exit code for unknown command" {
+    var stdout_buf: [2048]u8 = undefined;
+    var stderr_buf: [256]u8 = undefined;
+    var stdout_stream = std.io.fixedBufferStream(&stdout_buf);
+    var stderr_stream = std.io.fixedBufferStream(&stderr_buf);
+
+    const code = try decideCommand(.command, &.{
+        "--json", "{\"command\":\"unknown-tool --help\"}",
+    }, stdout_stream.writer(), stderr_stream.writer());
+    try std.testing.expectEqual(exit_codes.ask, code);
+
+    const output = stdout_stream.getWritten();
+    try std.testing.expect(std.mem.indexOf(u8, output, "\"decision\": \"ask\"") != null);
 }
 
 test "decide ci mode turns ask into block" {

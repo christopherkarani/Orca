@@ -16,7 +16,7 @@ This phase does not add a new enforcement boundary. Hook enforcement is additive
   - Supports four decision kinds: `command`, `file`, `prompt`, and `tool`.
   - Accepts input with `--json` or `--stdin`.
   - Supports `--ci`, which converts `ask` to `block`.
-  - Uses exit codes `0` allow, `1` error, `2` usage, `3` deny, `4` ask, `5` warn.
+  - Uses semantic exit codes on policy outcomes: `0` allow/context_only, `3` block, `7` ask, `8` warn; `1` general error and `2` usage for failures before JSON is emitted. See `docs/integrations/integration-api.md` for the full table.
   - Reads `.orca/policy.yaml` during evaluation.
 
 - `src/cli/hook.zig`
