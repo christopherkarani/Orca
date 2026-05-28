@@ -37,6 +37,18 @@ pub fn resolveResourcePath(allocator: std.mem.Allocator, options: ResolveOptions
         const source_build_candidate = try std.fs.path.join(allocator, &.{ exe_dir, "..", "..", relative_path });
         if (pathExists(source_build_candidate)) return source_build_candidate;
         allocator.free(source_build_candidate);
+
+        // Strong improvement for non-interactive / container / CI usage:
+        // The standard layout produced by our curl|sh installer (and recommended
+        // by doctor/Homebrew) places the binary at $PREFIX/bin/orca and assets at
+        // $PREFIX/share/orca/current. Auto-discover this when no explicit
+        // ORCA_RESOURCE_ROOT is set. This makes `sh -c 'orca redteam --ci'` work
+        // out of the box after a fresh install in many environments.
+        if (std.fs.path.dirname(exe_dir)) |prefix_dir| {
+            const packaged = try std.fs.path.join(allocator, &.{ prefix_dir, "share", "orca", "current", relative_path });
+            if (pathExists(packaged)) return packaged;
+            allocator.free(packaged);
+        }
     }
 
     return error.ResourceNotFound;
