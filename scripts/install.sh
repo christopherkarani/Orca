@@ -19,9 +19,9 @@ if [ -z "${DEFAULT_VERSION}" ] && [ -z "${ORCA_VERSION:-}" ]; then
     for _url in "https://api.github.com/repos/christopherkarani/Orca/releases/latest"; do
         _resp=""
         if command -v curl >/dev/null 2>&1; then
-            _resp="$(curl -fsSL --max-time 8 "$_url" 2>/dev/null || true)"
+            _resp="$(curl -fsSL --max-time 8 -H "User-Agent: orca-install-script/1.0 (github.com/christopherkarani/Orca)" "$_url" 2>/dev/null || true)"
         elif command -v wget >/dev/null 2>&1; then
-            _resp="$(wget -qO- --timeout=8 "$_url" 2>/dev/null || true)"
+            _resp="$(wget -qO- --timeout=8 --user-agent="orca-install-script/1.0 (github.com/christopherkarani/Orca)" "$_url" 2>/dev/null || true)"
         fi
         if [ -n "${_resp:-}" ]; then
             _tag="$(printf '%s' "$_resp" | grep -o '"tag_name"[[:space:]]*:[[:space:]]*"[vV]*[^"]*"' | head -n1 | \

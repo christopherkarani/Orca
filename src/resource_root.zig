@@ -106,3 +106,30 @@ test "resource resolver prefers workspace resources" {
 
     try std.testing.expect(std.mem.indexOf(u8, resolved, "workspace") != null);
 }
+
+// Test for the packaged ~/.local layout recommendation (Tier-0 DX).
+// Simulates ORCA_RESOURCE_ROOT or the auto-discovered $PREFIX/share/orca/current
+// that install.sh, doctor, and Homebrew all converge on. This path must resolve
+// fixtures/integrations for non-interactive `sh -c 'orca redteam --ci'` flows.
+test "resource resolver supports packaged share/orca/current layout via override" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    // Simulate $PREFIX/share/orca/current/fixtures (the exact layout from improved install.sh)
+    try tmp.dir.makePath("share/orca/current/fixtures/redteam");
+    try tmp.dir.writeFile(.{ .sub_path = "share/orca/current/fixtures/redteam/sample.txt", .data = "test" });
+
+    const packaged_root = try tmp.dir.realpathAlloc(std.testing.allocator, "share/orca/current");
+    defer std.testing.allocator.free(packaged_root);
+
+    // No workspace, no explicit override in options (simulates clean env after install)
+    // but we use override here to stand in for the auto-discovered sibling from exe_dir
+    const resolved = try resolveResourcePath(std.testing.allocator, .{
+        .workspace_root = "/nonexistent/workspace",
+        .resource_root_override = packaged_root,
+    }, "fixtures/redteam/sample.txt");
+    defer std.testing.allocator.free(resolved);
+
+    try std.testing.expect(std.mem.indexOf(u8, resolved, "share/orca/current") != null);
+    try std.testing.expect(std.mem.endsWith(u8, resolved, "sample.txt"));
+}
