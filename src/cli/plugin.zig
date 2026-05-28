@@ -723,56 +723,60 @@ fn writeManifestPlain(allocator: std.mem.Allocator, workspace_root: []const u8, 
 
     switch (target) {
         .codex => {
-            const path = "integrations/codex-plugin/.codex-plugin/plugin.json";
-            const exists = fileExistsAbsolute(path);
+            const path = try resolveBundledPath(allocator, "integrations/codex-plugin/.codex-plugin/plugin.json");
+            defer allocator.free(path);
             const marketplace_path = codex_marketplace_path;
             const marketplace_exists = fileExistsAbsolute(marketplace_path);
             try stdout.writeAll("Codex plugin manifest:\n");
             try stdout.print("  expected path: {s}\n", .{path});
-            try stdout.print("  status: {s}\n", .{if (exists) "exists" else "missing"});
+            try stdout.print("  status: {s}\n", .{if (fileExistsAbsolute(path)) "exists" else "missing"});
             try stdout.print("  marketplace: {s} ({s})\n", .{ marketplace_path, if (marketplace_exists) "exists" else "missing" });
-            if (exists) {
+            if (fileExistsAbsolute(path)) {
                 try stdout.writeAll("  note: validation of manifest shape is deferred to host-specific checks\n");
             }
         },
         .claude => {
-            const path = "integrations/claude-code-plugin/.claude-plugin/plugin.json";
-            const exists = fileExistsAbsolute(path);
+            const path = try resolveBundledPath(allocator, "integrations/claude-code-plugin/.claude-plugin/plugin.json");
+            defer allocator.free(path);
             const marketplace_path = claude_marketplace_path;
             const marketplace_exists = fileExistsAbsolute(marketplace_path);
             try stdout.writeAll("Claude Code plugin manifest:\n");
             try stdout.print("  expected path: {s}\n", .{path});
-            try stdout.print("  status: {s}\n", .{if (exists) "exists" else "missing"});
+            try stdout.print("  status: {s}\n", .{if (fileExistsAbsolute(path)) "exists" else "missing"});
             try stdout.print("  marketplace: {s} ({s})\n", .{ marketplace_path, if (marketplace_exists) "exists" else "missing" });
-            if (exists) {
+            if (fileExistsAbsolute(path)) {
                 try stdout.writeAll("  note: validation of manifest shape is deferred to host-specific checks\n");
             }
         },
         .opencode => {
-            const path = "integrations/opencode-plugin/orca.ts";
-            const exists = fileExistsAbsolute(path);
+            const path = try resolveBundledPath(allocator, "integrations/opencode-plugin/orca.ts");
+            defer allocator.free(path);
             try stdout.writeAll("OpenCode plugin manifest:\n");
             try stdout.print("  expected path: {s}\n", .{path});
-            try stdout.print("  status: {s}\n", .{if (exists) "exists" else "missing"});
+            try stdout.print("  status: {s}\n", .{if (fileExistsAbsolute(path)) "exists" else "missing"});
             try stdout.writeAll("  note: OpenCode uses TypeScript plugins, not a JSON manifest\n");
         },
         .openclaw => {
-            const manifest_path = "integrations/openclaw-plugin/openclaw.plugin.json";
-            const manifest_exists = fileExistsAbsolute(manifest_path);
-            const pkg_path = "integrations/openclaw-plugin/package.json";
-            const pkg_exists = fileExistsAbsolute(pkg_path);
+            const manifest_path = try resolveBundledPath(allocator, "integrations/openclaw-plugin/openclaw.plugin.json");
+            defer allocator.free(manifest_path);
+            const pkg_path = try resolveBundledPath(allocator, "integrations/openclaw-plugin/package.json");
+            defer allocator.free(pkg_path);
             try stdout.writeAll("OpenClaw plugin manifest:\n");
             try stdout.print("  expected manifest path: {s}\n", .{manifest_path});
-            try stdout.print("  manifest status: {s}\n", .{if (manifest_exists) "exists" else "missing"});
-            try stdout.print("  package.json: {s} ({s})\n", .{ pkg_path, if (pkg_exists) "exists" else "missing" });
-            if (manifest_exists) {
+            try stdout.print("  manifest status: {s}\n", .{if (fileExistsAbsolute(manifest_path)) "exists" else "missing"});
+            try stdout.print("  package.json: {s} ({s})\n", .{ pkg_path, if (fileExistsAbsolute(pkg_path)) "exists" else "missing" });
+            if (fileExistsAbsolute(manifest_path)) {
                 try stdout.writeAll("  note: validation of manifest shape is deferred to host-specific checks\n");
             }
         },
         .hermes => {
-            const manifest_path = "integrations/hermes-plugin/plugin.yaml";
+            // Use resolveBundledPath so this works for both source trees and packaged installs
+            // (where ORCA_RESOURCE_ROOT points at the installed runtime assets).
+            const manifest_path = try resolveBundledPath(allocator, "integrations/hermes-plugin/plugin.yaml");
+            defer allocator.free(manifest_path);
+            const source_path = try resolveBundledPath(allocator, "integrations/hermes-plugin/__init__.py");
+            defer allocator.free(source_path);
             const manifest_exists = fileExistsAbsolute(manifest_path);
-            const source_path = "integrations/hermes-plugin/__init__.py";
             const source_exists = fileExistsAbsolute(source_path);
             try stdout.writeAll("Hermes plugin manifest:\n");
             try stdout.print("  expected manifest path: {s}\n", .{manifest_path});
@@ -782,11 +786,17 @@ fn writeManifestPlain(allocator: std.mem.Allocator, workspace_root: []const u8, 
         },
         .all => {
             try stdout.writeAll("Plugin manifests:\n");
-            const codex_path = "integrations/codex-plugin/.codex-plugin/plugin.json";
-            const claude_path = "integrations/claude-code-plugin/.claude-plugin/plugin.json";
-            const opencode_path = "integrations/opencode-plugin/orca.ts";
-            const openclaw_path = "integrations/openclaw-plugin/openclaw.plugin.json";
-            const hermes_path = "integrations/hermes-plugin/plugin.yaml";
+            // Bundled plugin manifests must go through resolveBundledPath for packaged installs.
+            const codex_path = try resolveBundledPath(allocator, "integrations/codex-plugin/.codex-plugin/plugin.json");
+            defer allocator.free(codex_path);
+            const claude_path = try resolveBundledPath(allocator, "integrations/claude-code-plugin/.claude-plugin/plugin.json");
+            defer allocator.free(claude_path);
+            const opencode_path = try resolveBundledPath(allocator, "integrations/opencode-plugin/orca.ts");
+            defer allocator.free(opencode_path);
+            const openclaw_path = try resolveBundledPath(allocator, "integrations/openclaw-plugin/openclaw.plugin.json");
+            defer allocator.free(openclaw_path);
+            const hermes_path = try resolveBundledPath(allocator, "integrations/hermes-plugin/plugin.yaml");
+            defer allocator.free(hermes_path);
             try stdout.print("  codex:    {s} ({s})\n", .{ codex_path, if (fileExistsAbsolute(codex_path)) "exists" else "missing" });
             try stdout.print("  claude:   {s} ({s})\n", .{ claude_path, if (fileExistsAbsolute(claude_path)) "exists" else "missing" });
             try stdout.print("  opencode: {s} ({s})\n", .{ opencode_path, if (fileExistsAbsolute(opencode_path)) "exists" else "missing" });
@@ -859,8 +869,11 @@ fn writeManifestJson(allocator: std.mem.Allocator, workspace_root: []const u8, s
             try stdout.writeAll("  }\n");
         },
         .hermes => {
-            const manifest_path = "integrations/hermes-plugin/plugin.yaml";
-            const source_path = "integrations/hermes-plugin/__init__.py";
+            // Use resolveBundledPath so --json output is truthful for packaged installs.
+            const manifest_path = try resolveBundledPath(allocator, "integrations/hermes-plugin/plugin.yaml");
+            defer allocator.free(manifest_path);
+            const source_path = try resolveBundledPath(allocator, "integrations/hermes-plugin/__init__.py");
+            defer allocator.free(source_path);
             try stdout.writeAll("  \"hermes\": {\n");
             try stdout.print("    \"manifest_path\": ", .{});
             try writeJsonString(stdout, manifest_path);
@@ -873,11 +886,17 @@ fn writeManifestJson(allocator: std.mem.Allocator, workspace_root: []const u8, s
             try stdout.writeAll("  }\n");
         },
         .all => {
-            const codex_path = "integrations/codex-plugin/.codex-plugin/plugin.json";
-            const claude_path = "integrations/claude-code-plugin/.claude-plugin/plugin.json";
-            const opencode_path = "integrations/opencode-plugin/orca.ts";
-            const openclaw_manifest_path = "integrations/openclaw-plugin/openclaw.plugin.json";
-            const hermes_manifest_path = "integrations/hermes-plugin/plugin.yaml";
+            // Bundled paths must resolve via ORCA_RESOURCE_ROOT for packaged installs.
+            const codex_path = try resolveBundledPath(allocator, "integrations/codex-plugin/.codex-plugin/plugin.json");
+            defer allocator.free(codex_path);
+            const claude_path = try resolveBundledPath(allocator, "integrations/claude-code-plugin/.claude-plugin/plugin.json");
+            defer allocator.free(claude_path);
+            const opencode_path = try resolveBundledPath(allocator, "integrations/opencode-plugin/orca.ts");
+            defer allocator.free(opencode_path);
+            const openclaw_manifest_path = try resolveBundledPath(allocator, "integrations/openclaw-plugin/openclaw.plugin.json");
+            defer allocator.free(openclaw_manifest_path);
+            const hermes_manifest_path = try resolveBundledPath(allocator, "integrations/hermes-plugin/plugin.yaml");
+            defer allocator.free(hermes_manifest_path);
             const codex_marketplace = codex_marketplace_path;
             const claude_marketplace = claude_marketplace_path;
             try stdout.writeAll("  \"codex\": {\n");
