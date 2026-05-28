@@ -190,10 +190,9 @@ try {
     Write-Host "ORCA_RESOURCE_ROOT=$CurrentLink"
     Ensure-ResourceRootEntry $CurrentLink
     Write-Host "Next steps:"
-    Write-Host "  $destination version"
-    Write-Host "  $destination doctor"
-    Write-Host "  $destination init --preset generic-agent"
-    Write-Host "  $destination plugin install hermes --yes"
+    Write-Host "  $destination setup"
+    Write-Host ""
+    Write-Host "  (Guided interactive host selection is now the default on interactive terminals)"
 } finally {
     Remove-Item -LiteralPath $tempDir -Recurse -Force -ErrorAction SilentlyContinue
 }

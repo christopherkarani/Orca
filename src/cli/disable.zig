@@ -109,7 +109,7 @@ pub fn command(argv: []const []const u8, stdout: anytype, stderr: anytype) !u8 {
     if (any_action) {
         try stdout.writeAll("Orca plugins have been disabled.\n");
         try stdout.writeAll("Orca binary and policy files remain in place.\n");
-        try stdout.writeAll("Re-enable with: orca plugin install <host> --yes\n");
+        try stdout.writeAll("Re-enable with: orca setup (guided) or orca plugin install <host>\n");
     } else {
         try stdout.writeAll("No Orca plugins were found to disable.\n");
     }

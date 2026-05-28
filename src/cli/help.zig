@@ -32,11 +32,14 @@ pub const commands = [_]CommandInfo{
     },
     .{
         .name = "setup",
-        .summary = "Unified bootstrap: detect hosts, init policy, install plugins",
+        .summary = "Guided post-install setup for agent host integrations",
         .usage = "orca setup [--auto] [--preset <name>]",
         .details = &.{
-            "Detects installed agent hosts, initializes a policy if missing, installs missing plugins, and runs smoke tests.",
-            "Use --auto for non-interactive mode. Use --preset to choose a policy preset (default: generic-agent).",
+            "On interactive terminals (TTY), `orca setup` with no flags launches guided host selection: a simple numbered list of detected agents. Toggle choices, confirm with 'c' — no `--yes` needed for the happy path.",
+            "The selector is line-based for broad terminal compatibility. Full arrow+spacebar support is planned for a future phase.",
+            "Use --auto (or --yes alias) for fully automatic non-interactive mode (scripts, CI, headless). This path is 100% unchanged in behavior.",
+            "Use --preset to choose a policy preset (default: generic-agent).",
+            "After setup, run 'orca run -- <your-command>' for immediate protection.",
         },
     },
     .{
@@ -85,7 +88,7 @@ pub const commands = [_]CommandInfo{
         "OpenClaw: runs 'openclaw plugins uninstall orca-openclaw-plugin'",
         "Hermes: runs 'hermes plugins disable orca' and removes ~/.hermes/plugins/orca/",
         "Codex / Claude: removes known plugin paths (host-managed install locations).",
-        "Re-enable later with: orca plugin install <host> --yes",
+        "Re-enable later with: orca setup (guided) or orca plugin install <host>",
     } },
     .{ .name = "uninstall", .summary = "Uninstall Orca from this machine", .usage = "orca uninstall [--plugins-only] [--keep-config] [--yes]", .details = &.{
         "Completely removes Orca and its integrations from the machine.",
@@ -139,6 +142,8 @@ pub const commands = [_]CommandInfo{
         "  orca plugin manifest [codex|claude|opencode|openclaw|hermes|all] [--json]",
         "  orca plugin install [codex|claude|opencode|openclaw|hermes|all] [--dry-run] [--path <path>] [--yes]",
         "  orca plugin mcp-server [--help]",
+        "Primary onboarding path: run `orca setup` (guided interactive selection on TTY terminals).",
+        "`plugin install --yes` is retained for scripting, CI, and non-interactive use cases.",
         "Plugin commands are safe by default: install defaults to --dry-run, doctor does not print secrets,",
         "and mcp-server is currently a documented stub that does not start a real server.",
     } },

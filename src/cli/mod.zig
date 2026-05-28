@@ -30,6 +30,7 @@ pub const ci = @import("ci.zig");
 pub const demo = @import("demo.zig");
 pub const disable = @import("disable.zig");
 pub const uninstall = @import("uninstall.zig");
+pub const interactive = @import("interactive.zig");
 
 pub const version = build_options.version;
 
@@ -268,5 +269,45 @@ test "run dispatch launches child command" {
     try std.testing.expectEqual(exit_codes.success, code);
     try std.testing.expect(std.mem.indexOf(u8, stdout_stream.getWritten(), "Orca session started") != null);
     try std.testing.expect(std.mem.indexOf(u8, stdout_stream.getWritten(), "Orca session ended: exit code 0") != null);
+    try std.testing.expectEqualStrings("", stderr_stream.getWritten());
+}
+
+// ---------------------------------------------------------------------------
+// Phase 3 TDD tests: messaging and help text updates for guided onboarding
+// These tests are written FIRST (RED). They will fail until help text is updated
+// to describe the new default guided behavior and de-emphasize --yes.
+// ---------------------------------------------------------------------------
+
+test "setup help describes guided interactive default on TTY and de-emphasizes --auto for primary path" {
+    var stdout_buf: [2048]u8 = undefined;
+    var stderr_buf: [256]u8 = undefined;
+    var stdout_stream = std.io.fixedBufferStream(&stdout_buf);
+    var stderr_stream = std.io.fixedBufferStream(&stderr_buf);
+
+    const code = try run(&.{ "help", "setup" }, stdout_stream.writer(), stderr_stream.writer());
+    try std.testing.expectEqual(exit_codes.success, code);
+
+    const output = stdout_stream.getWritten();
+    // New Phase 3 messaging: guided is default on interactive terminals
+    try std.testing.expect(std.mem.indexOf(u8, output, "guided") != null);
+    try std.testing.expect(std.mem.indexOf(u8, output, "interactive") != null or std.mem.indexOf(u8, output, "TTY") != null or std.mem.indexOf(u8, output, "terminal") != null);
+    // Still documents the non-interactive escape hatch
+    try std.testing.expect(std.mem.indexOf(u8, output, "--auto") != null or std.mem.indexOf(u8, output, "non-interactive") != null);
+    try std.testing.expectEqualStrings("", stderr_stream.getWritten());
+}
+
+test "plugin help and disable re-enable messaging de-emphasize --yes in favor of setup" {
+    var stdout_buf: [2048]u8 = undefined;
+    var stderr_buf: [256]u8 = undefined;
+    var stdout_stream = std.io.fixedBufferStream(&stdout_buf);
+    var stderr_stream = std.io.fixedBufferStream(&stderr_buf);
+
+    const code = try run(&.{ "help", "plugin" }, stdout_stream.writer(), stderr_stream.writer());
+    try std.testing.expectEqual(exit_codes.success, code);
+
+    const output = stdout_stream.getWritten();
+    // Phase 3: primary onboarding path is `orca setup`; --yes remains for scripts
+    try std.testing.expect(std.mem.indexOf(u8, output, "setup") != null);
+    try std.testing.expect(std.mem.indexOf(u8, output, "guided") != null or std.mem.indexOf(u8, output, "interactive") != null);
     try std.testing.expectEqualStrings("", stderr_stream.getWritten());
 }
