@@ -30,6 +30,7 @@ pub const ci = @import("ci.zig");
 pub const demo = @import("demo.zig");
 pub const disable = @import("disable.zig");
 pub const uninstall = @import("uninstall.zig");
+pub const interactive = @import("interactive.zig");
 
 pub const version = build_options.version;
 
