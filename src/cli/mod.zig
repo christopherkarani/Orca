@@ -82,6 +82,14 @@ pub fn runWithCwd(cwd: std.fs.Dir, argv: []const []const u8, stdout: anytype, st
         return exit_codes.success;
     }
 
+    // Highest-value DX helper for installers, Homebrew post-install hooks, npm wrapper,
+    // and users who want a reliable way to get the activation exports (see install.sh + doctor).
+    if (std.mem.eql(u8, command, "--print-install-env")) {
+        try stdout.writeAll("export PATH=\"$HOME/.local/bin:$PATH\"\n");
+        try stdout.writeAll("export ORCA_RESOURCE_ROOT=\"$HOME/.local/share/orca/current\"\n");
+        return exit_codes.success;
+    }
+
     if (std.mem.eql(u8, command, "run")) return run_command.command(argv[1..], stdout, stderr);
     if (std.mem.eql(u8, command, "init")) return init.command(cwd, argv[1..], stdout, stderr);
     if (std.mem.eql(u8, command, "doctor")) return doctor.command(argv[1..], stdout, stderr);
