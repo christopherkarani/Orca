@@ -226,7 +226,17 @@ else
 fi
 
 verify_checksum "$ARTIFACT" "$TMP_DIR/$ARTIFACT" "$TMP_DIR/checksums.txt"
-tar -xzf "$TMP_DIR/$ARTIFACT" -C "$TMP_DIR"
+
+# Extract while suppressing only the harmless macOS provenance xattr noise that appears
+# when Linux extracts tarballs produced on macOS (or that carry extended attributes).
+# Real tar failures still cause the script to abort via the subsequent checks.
+tar -xzf "$TMP_DIR/$ARTIFACT" -C "$TMP_DIR" 2>"$TMP_DIR/.tar.err" || {
+  grep -v 'LIBARCHIVE.xattr.com.apple.provenance' "$TMP_DIR/.tar.err" | \
+    grep -v 'Ignoring unknown extended header keyword' >&2 || true
+  rm -f "$TMP_DIR/.tar.err"
+  fail "tar extraction failed"
+}
+rm -f "$TMP_DIR/.tar.err"
 
 EXTRACT_ROOT="$(find "$TMP_DIR" -mindepth 1 -maxdepth 1 -type d | head -n 1)"
 [ -n "$EXTRACT_ROOT" ] || fail "artifact did not contain an extracted release root"
