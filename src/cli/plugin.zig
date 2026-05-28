@@ -407,35 +407,35 @@ fn writeDoctorPlain(stdout: anytype, report: PluginDoctorReport, target: DoctorT
 
     try stdout.writeAll("\nPlugin directories:\n");
     try stdout.print("  integrations/common: {s}\n", .{if (report.plugin_directories.common) "found" else "missing"});
-    if (!report.plugin_directories.common) try stdout.writeAll("    → Fix: orca plugin install all --yes\n");
+    if (!report.plugin_directories.common) try stdout.writeAll("    → Fix: orca setup or orca plugin install all\n");
     try stdout.print("  integrations/codex-plugin: {s}\n", .{if (report.plugin_directories.codex) "found" else "missing"});
-    if (!report.plugin_directories.codex) try stdout.writeAll("    → Fix: orca plugin install codex --yes\n");
+    if (!report.plugin_directories.codex) try stdout.writeAll("    → Fix: orca setup or orca plugin install codex\n");
     try stdout.print("  integrations/claude-code-plugin: {s}\n", .{if (report.plugin_directories.claude) "found" else "missing"});
-    if (!report.plugin_directories.claude) try stdout.writeAll("    → Fix: orca plugin install claude --yes\n");
+    if (!report.plugin_directories.claude) try stdout.writeAll("    → Fix: orca setup or orca plugin install claude\n");
     try stdout.print("  integrations/opencode-plugin: {s}\n", .{if (report.plugin_directories.opencode) "found" else "missing"});
-    if (!report.plugin_directories.opencode) try stdout.writeAll("    → Fix: orca plugin install opencode --yes\n");
+    if (!report.plugin_directories.opencode) try stdout.writeAll("    → Fix: orca setup or orca plugin install opencode\n");
     try stdout.print("  integrations/openclaw-plugin: {s}\n", .{if (report.plugin_directories.openclaw) "found" else "missing"});
-    if (!report.plugin_directories.openclaw) try stdout.writeAll("    → Fix: orca plugin install openclaw --yes\n");
+    if (!report.plugin_directories.openclaw) try stdout.writeAll("    → Fix: orca setup or orca plugin install openclaw\n");
     try stdout.print("  integrations/hermes-plugin: {s}\n", .{if (report.plugin_directories.hermes) "found" else "missing"});
-    if (!report.plugin_directories.hermes) try stdout.writeAll("    → Fix: orca plugin install hermes --yes\n");
+    if (!report.plugin_directories.hermes) try stdout.writeAll("    → Fix: orca setup or orca plugin install hermes\n");
 
     try stdout.writeAll("\nHost binaries:\n");
     try stdout.print("  codex: {s}\n", .{if (report.host_binaries.codex) "found in PATH" else "not found"});
-    if (!report.host_binaries.codex) try stdout.writeAll("    → Fix: orca plugin install codex --yes\n");
+    if (!report.host_binaries.codex) try stdout.writeAll("    → Fix: orca setup or orca plugin install codex\n");
     try stdout.print("  claude: {s}\n", .{if (report.host_binaries.claude) "found in PATH" else "not found"});
-    if (!report.host_binaries.claude) try stdout.writeAll("    → Fix: orca plugin install claude --yes\n");
+    if (!report.host_binaries.claude) try stdout.writeAll("    → Fix: orca setup or orca plugin install claude\n");
     try stdout.print("  opencode: {s}\n", .{if (report.host_binaries.opencode) "found in PATH" else "not found"});
-    if (!report.host_binaries.opencode) try stdout.writeAll("    → Fix: orca plugin install opencode --yes\n");
+    if (!report.host_binaries.opencode) try stdout.writeAll("    → Fix: orca setup or orca plugin install opencode\n");
     try stdout.print("  openclaw: {s}\n", .{if (report.host_binaries.openclaw) "found in PATH" else "not found"});
-    if (!report.host_binaries.openclaw) try stdout.writeAll("    → Fix: orca plugin install openclaw --yes\n");
+    if (!report.host_binaries.openclaw) try stdout.writeAll("    → Fix: orca setup or orca plugin install openclaw\n");
     try stdout.print("  hermes: {s}\n", .{if (report.host_binaries.hermes) "found in PATH" else "not found"});
-    if (!report.host_binaries.hermes) try stdout.writeAll("    → Fix: orca plugin install hermes --yes\n");
+    if (!report.host_binaries.hermes) try stdout.writeAll("    → Fix: orca setup or orca plugin install hermes\n");
 
     try stdout.writeAll("\nMarketplace files:\n");
     try stdout.print("  .agents/plugins/marketplace.json: {s}\n", .{if (report.marketplace.codex_marketplace) "present" else "missing"});
-    if (!report.marketplace.codex_marketplace) try stdout.writeAll("    → Fix: orca plugin install codex --yes\n");
+    if (!report.marketplace.codex_marketplace) try stdout.writeAll("    → Fix: orca setup or orca plugin install codex\n");
     try stdout.print("  .claude-plugin/marketplace.json: {s}\n", .{if (report.marketplace.claude_marketplace) "present" else "missing"});
-    if (!report.marketplace.claude_marketplace) try stdout.writeAll("    → Fix: orca plugin install claude --yes\n");
+    if (!report.marketplace.claude_marketplace) try stdout.writeAll("    → Fix: orca setup or orca plugin install claude\n");
 
     try stdout.writeAll("\nPlatform:\n");
     try stdout.print("  {s}\n", .{report.platform_summary});
@@ -453,13 +453,13 @@ fn writeDoctorPlain(stdout: anytype, report: PluginDoctorReport, target: DoctorT
         .codex => {
             try stdout.writeAll("\nCodex plugin status:\n");
             try stdout.print("  host binary: {s}\n", .{if (report.host_binaries.codex) "detected" else "not detected"});
-            if (!report.host_binaries.codex) try stdout.writeAll("    → Fix: install Codex and re-run orca plugin install codex --yes\n");
+            if (!report.host_binaries.codex) try stdout.writeAll("    → Fix: install Codex and re-run orca setup or orca plugin install codex\n");
             try stdout.print("  bundled plugin directory: {s}\n", .{if (report.plugin_directories.codex) "present" else "missing"});
             if (!report.plugin_directories.codex) try stdout.writeAll("    → Fix: install Orca runtime assets or set ORCA_RESOURCE_ROOT\n");
             try stdout.print("  user plugin registration: {s}\n", .{if (report.marketplace.codex_user_plugin) "installed" else "missing"});
-            if (!report.marketplace.codex_user_plugin) try stdout.writeAll("    → Fix: orca plugin install codex --yes\n");
+            if (!report.marketplace.codex_user_plugin) try stdout.writeAll("    → Fix: orca setup or orca plugin install codex\n");
             try stdout.print("  marketplace file: {s}\n", .{if (report.marketplace.codex_marketplace) "present" else "missing"});
-            if (!report.marketplace.codex_marketplace) try stdout.writeAll("    → Fix: orca plugin install codex --yes\n");
+            if (!report.marketplace.codex_marketplace) try stdout.writeAll("    → Fix: orca setup or orca plugin install codex\n");
             try stdout.print("  bundled plugin manifest: {s}\n", .{if (report.marketplace.codex_plugin_manifest) "present" else "missing"});
             if (!report.marketplace.codex_plugin_manifest) try stdout.writeAll("    → Fix: install Orca runtime assets or set ORCA_RESOURCE_ROOT\n");
             try stdout.writeAll("  install: use 'orca plugin install codex --dry-run' to preview\n");
@@ -467,13 +467,13 @@ fn writeDoctorPlain(stdout: anytype, report: PluginDoctorReport, target: DoctorT
         .claude => {
             try stdout.writeAll("\nClaude Code plugin status:\n");
             try stdout.print("  host binary: {s}\n", .{if (report.host_binaries.claude) "detected" else "not detected"});
-            if (!report.host_binaries.claude) try stdout.writeAll("    → Fix: install Claude Code and re-run orca plugin install claude --yes\n");
+            if (!report.host_binaries.claude) try stdout.writeAll("    → Fix: install Claude Code and re-run orca setup or orca plugin install claude\n");
             try stdout.print("  bundled plugin directory: {s}\n", .{if (report.plugin_directories.claude) "present" else "missing"});
             if (!report.plugin_directories.claude) try stdout.writeAll("    → Fix: install Orca runtime assets or set ORCA_RESOURCE_ROOT\n");
             try stdout.print("  user plugin registration: {s}\n", .{if (report.marketplace.claude_user_plugin) "installed" else "missing"});
-            if (!report.marketplace.claude_user_plugin) try stdout.writeAll("    → Fix: orca plugin install claude --yes\n");
+            if (!report.marketplace.claude_user_plugin) try stdout.writeAll("    → Fix: orca setup or orca plugin install claude\n");
             try stdout.print("  marketplace file: {s}\n", .{if (report.marketplace.claude_marketplace) "present" else "missing"});
-            if (!report.marketplace.claude_marketplace) try stdout.writeAll("    → Fix: orca plugin install claude --yes\n");
+            if (!report.marketplace.claude_marketplace) try stdout.writeAll("    → Fix: orca setup or orca plugin install claude\n");
             try stdout.print("  bundled plugin manifest: {s}\n", .{if (report.marketplace.claude_plugin_manifest) "present" else "missing"});
             if (!report.marketplace.claude_plugin_manifest) try stdout.writeAll("    → Fix: install Orca runtime assets or set ORCA_RESOURCE_ROOT\n");
             try stdout.writeAll("  install: use 'orca plugin install claude --dry-run' to preview\n");
@@ -481,26 +481,26 @@ fn writeDoctorPlain(stdout: anytype, report: PluginDoctorReport, target: DoctorT
         .opencode => {
             try stdout.writeAll("\nOpenCode plugin status:\n");
             try stdout.print("  host binary: {s}\n", .{if (report.host_binaries.opencode) "detected" else "not detected"});
-            if (!report.host_binaries.opencode) try stdout.writeAll("    → Fix: orca plugin install opencode --yes\n");
+            if (!report.host_binaries.opencode) try stdout.writeAll("    → Fix: orca setup or orca plugin install opencode\n");
             try stdout.print("  plugin directory: {s}\n", .{if (report.plugin_directories.opencode) "present" else "not yet created"});
-            if (!report.plugin_directories.opencode) try stdout.writeAll("    → Fix: orca plugin install opencode --yes\n");
+            if (!report.plugin_directories.opencode) try stdout.writeAll("    → Fix: orca setup or orca plugin install opencode\n");
             try stdout.print("  project plugin path (.opencode/plugins/orca.ts): {s}\n", .{if (report.opencode_paths.project_plugin_exists) "exists" else "not found"});
-            if (!report.opencode_paths.project_plugin_exists) try stdout.writeAll("    → Fix: orca plugin install opencode --yes\n");
+            if (!report.opencode_paths.project_plugin_exists) try stdout.writeAll("    → Fix: orca setup or orca plugin install opencode\n");
             try stdout.print("  global plugin path (~/.config/opencode/plugins/orca.ts): {s}\n", .{if (report.opencode_paths.global_plugin_exists) "exists" else "not found"});
-            if (!report.opencode_paths.global_plugin_exists) try stdout.writeAll("    → Fix: orca plugin install opencode --yes\n");
+            if (!report.opencode_paths.global_plugin_exists) try stdout.writeAll("    → Fix: orca setup or orca plugin install opencode\n");
             try stdout.writeAll("  install: use 'orca plugin install opencode --dry-run' to preview\n");
             try stdout.writeAll("  note: OpenCode plugin uses TypeScript hooks, not a manifest file\n");
         },
         .openclaw => {
             try stdout.writeAll("\nOpenClaw plugin status:\n");
             try stdout.print("  host binary: {s}\n", .{if (report.host_binaries.openclaw) "detected" else "not detected"});
-            if (!report.host_binaries.openclaw) try stdout.writeAll("    → Fix: install OpenClaw and re-run orca plugin install openclaw --yes\n");
+            if (!report.host_binaries.openclaw) try stdout.writeAll("    → Fix: install OpenClaw and re-run orca setup or orca plugin install openclaw\n");
             try stdout.print("  bundled plugin directory: {s}\n", .{if (report.plugin_directories.openclaw) "present" else "missing"});
             if (!report.plugin_directories.openclaw) try stdout.writeAll("    → Fix: install Orca runtime assets or set ORCA_RESOURCE_ROOT\n");
             try stdout.print("  host plugin installed: {s}\n", .{if (report.openclaw_paths.host_plugin_installed) "yes" else "no"});
-            if (!report.openclaw_paths.host_plugin_installed) try stdout.writeAll("    → Fix: orca plugin install openclaw --yes\n");
+            if (!report.openclaw_paths.host_plugin_installed) try stdout.writeAll("    → Fix: orca setup or orca plugin install openclaw\n");
             try stdout.print("  host plugin manifest (openclaw.plugin.json): {s}\n", .{if (report.openclaw_paths.plugin_manifest_exists) "exists" else "not found"});
-            if (!report.openclaw_paths.plugin_manifest_exists) try stdout.writeAll("    → Fix: orca plugin install openclaw --yes\n");
+            if (!report.openclaw_paths.plugin_manifest_exists) try stdout.writeAll("    → Fix: orca setup or orca plugin install openclaw\n");
             try stdout.print("  host package.json: {s}\n", .{if (report.openclaw_paths.package_json_exists) "exists" else "not found"});
             try stdout.print("  host source (src/index.ts): {s}\n", .{if (report.openclaw_paths.source_exists) "exists" else "not found"});
             try stdout.print("  detection note: {s}\n", .{report.openclaw_paths.detection_note});
@@ -510,17 +510,17 @@ fn writeDoctorPlain(stdout: anytype, report: PluginDoctorReport, target: DoctorT
         .hermes => {
             try stdout.writeAll("\nHermes plugin status:\n");
             try stdout.print("  host binary: {s}\n", .{if (report.host_binaries.hermes) "detected" else "not detected"});
-            if (!report.host_binaries.hermes) try stdout.writeAll("    → Fix: orca plugin install hermes --yes\n");
+            if (!report.host_binaries.hermes) try stdout.writeAll("    → Fix: orca setup or orca plugin install hermes\n");
             try stdout.print("  plugin directory: {s}\n", .{if (report.plugin_directories.hermes) "present" else "not yet created"});
-            if (!report.plugin_directories.hermes) try stdout.writeAll("    → Fix: orca plugin install hermes --yes\n");
+            if (!report.plugin_directories.hermes) try stdout.writeAll("    → Fix: orca setup or orca plugin install hermes\n");
             try stdout.print("  repo plugin.yaml: {s}\n", .{if (report.hermes_paths.repo_manifest_exists) "exists" else "not found"});
-            if (!report.hermes_paths.repo_manifest_exists) try stdout.writeAll("    → Fix: orca plugin install hermes --yes\n");
+            if (!report.hermes_paths.repo_manifest_exists) try stdout.writeAll("    → Fix: orca setup or orca plugin install hermes\n");
             try stdout.print("  repo __init__.py: {s}\n", .{if (report.hermes_paths.repo_source_exists) "exists" else "not found"});
-            if (!report.hermes_paths.repo_source_exists) try stdout.writeAll("    → Fix: orca plugin install hermes --yes\n");
+            if (!report.hermes_paths.repo_source_exists) try stdout.writeAll("    → Fix: orca setup or orca plugin install hermes\n");
             try stdout.print("  user plugin path (~/.hermes/plugins/orca/plugin.yaml): {s}\n", .{if (report.hermes_paths.user_manifest_exists) "exists" else "not found"});
-            if (!report.hermes_paths.user_manifest_exists) try stdout.writeAll("    → Fix: orca plugin install hermes --yes\n");
+            if (!report.hermes_paths.user_manifest_exists) try stdout.writeAll("    → Fix: orca setup or orca plugin install hermes\n");
             try stdout.print("  config references plugin: {s}\n", .{if (report.hermes_paths.config_references_plugin) "yes" else "unknown/no"});
-            if (!report.hermes_paths.config_references_plugin) try stdout.writeAll("    → Fix: orca plugin install hermes --yes\n");
+            if (!report.hermes_paths.config_references_plugin) try stdout.writeAll("    → Fix: orca setup or orca plugin install hermes\n");
             try stdout.print("  hook smoke test (pre_tool_call): {s}\n", .{if (report.hermes_hook_smoke_passed) "passed" else "FAILED"});
             if (!report.hermes_hook_smoke_passed) try stdout.writeAll("    → Fix: upgrade Orca (./scripts/install-orca-plugin.sh hermes) or set ORCA_BIN to a build with Hermes host support\n");
             try stdout.writeAll("  install: use 'orca plugin install hermes --dry-run' to preview\n");
@@ -723,56 +723,60 @@ fn writeManifestPlain(allocator: std.mem.Allocator, workspace_root: []const u8, 
 
     switch (target) {
         .codex => {
-            const path = "integrations/codex-plugin/.codex-plugin/plugin.json";
-            const exists = fileExistsAbsolute(path);
+            const path = try resolveBundledPath(allocator, "integrations/codex-plugin/.codex-plugin/plugin.json");
+            defer allocator.free(path);
             const marketplace_path = codex_marketplace_path;
             const marketplace_exists = fileExistsAbsolute(marketplace_path);
             try stdout.writeAll("Codex plugin manifest:\n");
             try stdout.print("  expected path: {s}\n", .{path});
-            try stdout.print("  status: {s}\n", .{if (exists) "exists" else "missing"});
+            try stdout.print("  status: {s}\n", .{if (fileExistsAbsolute(path)) "exists" else "missing"});
             try stdout.print("  marketplace: {s} ({s})\n", .{ marketplace_path, if (marketplace_exists) "exists" else "missing" });
-            if (exists) {
+            if (fileExistsAbsolute(path)) {
                 try stdout.writeAll("  note: validation of manifest shape is deferred to host-specific checks\n");
             }
         },
         .claude => {
-            const path = "integrations/claude-code-plugin/.claude-plugin/plugin.json";
-            const exists = fileExistsAbsolute(path);
+            const path = try resolveBundledPath(allocator, "integrations/claude-code-plugin/.claude-plugin/plugin.json");
+            defer allocator.free(path);
             const marketplace_path = claude_marketplace_path;
             const marketplace_exists = fileExistsAbsolute(marketplace_path);
             try stdout.writeAll("Claude Code plugin manifest:\n");
             try stdout.print("  expected path: {s}\n", .{path});
-            try stdout.print("  status: {s}\n", .{if (exists) "exists" else "missing"});
+            try stdout.print("  status: {s}\n", .{if (fileExistsAbsolute(path)) "exists" else "missing"});
             try stdout.print("  marketplace: {s} ({s})\n", .{ marketplace_path, if (marketplace_exists) "exists" else "missing" });
-            if (exists) {
+            if (fileExistsAbsolute(path)) {
                 try stdout.writeAll("  note: validation of manifest shape is deferred to host-specific checks\n");
             }
         },
         .opencode => {
-            const path = "integrations/opencode-plugin/orca.ts";
-            const exists = fileExistsAbsolute(path);
+            const path = try resolveBundledPath(allocator, "integrations/opencode-plugin/orca.ts");
+            defer allocator.free(path);
             try stdout.writeAll("OpenCode plugin manifest:\n");
             try stdout.print("  expected path: {s}\n", .{path});
-            try stdout.print("  status: {s}\n", .{if (exists) "exists" else "missing"});
+            try stdout.print("  status: {s}\n", .{if (fileExistsAbsolute(path)) "exists" else "missing"});
             try stdout.writeAll("  note: OpenCode uses TypeScript plugins, not a JSON manifest\n");
         },
         .openclaw => {
-            const manifest_path = "integrations/openclaw-plugin/openclaw.plugin.json";
-            const manifest_exists = fileExistsAbsolute(manifest_path);
-            const pkg_path = "integrations/openclaw-plugin/package.json";
-            const pkg_exists = fileExistsAbsolute(pkg_path);
+            const manifest_path = try resolveBundledPath(allocator, "integrations/openclaw-plugin/openclaw.plugin.json");
+            defer allocator.free(manifest_path);
+            const pkg_path = try resolveBundledPath(allocator, "integrations/openclaw-plugin/package.json");
+            defer allocator.free(pkg_path);
             try stdout.writeAll("OpenClaw plugin manifest:\n");
             try stdout.print("  expected manifest path: {s}\n", .{manifest_path});
-            try stdout.print("  manifest status: {s}\n", .{if (manifest_exists) "exists" else "missing"});
-            try stdout.print("  package.json: {s} ({s})\n", .{ pkg_path, if (pkg_exists) "exists" else "missing" });
-            if (manifest_exists) {
+            try stdout.print("  manifest status: {s}\n", .{if (fileExistsAbsolute(manifest_path)) "exists" else "missing"});
+            try stdout.print("  package.json: {s} ({s})\n", .{ pkg_path, if (fileExistsAbsolute(pkg_path)) "exists" else "missing" });
+            if (fileExistsAbsolute(manifest_path)) {
                 try stdout.writeAll("  note: validation of manifest shape is deferred to host-specific checks\n");
             }
         },
         .hermes => {
-            const manifest_path = "integrations/hermes-plugin/plugin.yaml";
+            // Use resolveBundledPath so this works for both source trees and packaged installs
+            // (where ORCA_RESOURCE_ROOT points at the installed runtime assets).
+            const manifest_path = try resolveBundledPath(allocator, "integrations/hermes-plugin/plugin.yaml");
+            defer allocator.free(manifest_path);
+            const source_path = try resolveBundledPath(allocator, "integrations/hermes-plugin/__init__.py");
+            defer allocator.free(source_path);
             const manifest_exists = fileExistsAbsolute(manifest_path);
-            const source_path = "integrations/hermes-plugin/__init__.py";
             const source_exists = fileExistsAbsolute(source_path);
             try stdout.writeAll("Hermes plugin manifest:\n");
             try stdout.print("  expected manifest path: {s}\n", .{manifest_path});
@@ -782,11 +786,17 @@ fn writeManifestPlain(allocator: std.mem.Allocator, workspace_root: []const u8, 
         },
         .all => {
             try stdout.writeAll("Plugin manifests:\n");
-            const codex_path = "integrations/codex-plugin/.codex-plugin/plugin.json";
-            const claude_path = "integrations/claude-code-plugin/.claude-plugin/plugin.json";
-            const opencode_path = "integrations/opencode-plugin/orca.ts";
-            const openclaw_path = "integrations/openclaw-plugin/openclaw.plugin.json";
-            const hermes_path = "integrations/hermes-plugin/plugin.yaml";
+            // Bundled plugin manifests must go through resolveBundledPath for packaged installs.
+            const codex_path = try resolveBundledPath(allocator, "integrations/codex-plugin/.codex-plugin/plugin.json");
+            defer allocator.free(codex_path);
+            const claude_path = try resolveBundledPath(allocator, "integrations/claude-code-plugin/.claude-plugin/plugin.json");
+            defer allocator.free(claude_path);
+            const opencode_path = try resolveBundledPath(allocator, "integrations/opencode-plugin/orca.ts");
+            defer allocator.free(opencode_path);
+            const openclaw_path = try resolveBundledPath(allocator, "integrations/openclaw-plugin/openclaw.plugin.json");
+            defer allocator.free(openclaw_path);
+            const hermes_path = try resolveBundledPath(allocator, "integrations/hermes-plugin/plugin.yaml");
+            defer allocator.free(hermes_path);
             try stdout.print("  codex:    {s} ({s})\n", .{ codex_path, if (fileExistsAbsolute(codex_path)) "exists" else "missing" });
             try stdout.print("  claude:   {s} ({s})\n", .{ claude_path, if (fileExistsAbsolute(claude_path)) "exists" else "missing" });
             try stdout.print("  opencode: {s} ({s})\n", .{ opencode_path, if (fileExistsAbsolute(opencode_path)) "exists" else "missing" });
@@ -859,8 +869,11 @@ fn writeManifestJson(allocator: std.mem.Allocator, workspace_root: []const u8, s
             try stdout.writeAll("  }\n");
         },
         .hermes => {
-            const manifest_path = "integrations/hermes-plugin/plugin.yaml";
-            const source_path = "integrations/hermes-plugin/__init__.py";
+            // Use resolveBundledPath so --json output is truthful for packaged installs.
+            const manifest_path = try resolveBundledPath(allocator, "integrations/hermes-plugin/plugin.yaml");
+            defer allocator.free(manifest_path);
+            const source_path = try resolveBundledPath(allocator, "integrations/hermes-plugin/__init__.py");
+            defer allocator.free(source_path);
             try stdout.writeAll("  \"hermes\": {\n");
             try stdout.print("    \"manifest_path\": ", .{});
             try writeJsonString(stdout, manifest_path);
@@ -873,11 +886,17 @@ fn writeManifestJson(allocator: std.mem.Allocator, workspace_root: []const u8, s
             try stdout.writeAll("  }\n");
         },
         .all => {
-            const codex_path = "integrations/codex-plugin/.codex-plugin/plugin.json";
-            const claude_path = "integrations/claude-code-plugin/.claude-plugin/plugin.json";
-            const opencode_path = "integrations/opencode-plugin/orca.ts";
-            const openclaw_manifest_path = "integrations/openclaw-plugin/openclaw.plugin.json";
-            const hermes_manifest_path = "integrations/hermes-plugin/plugin.yaml";
+            // Bundled paths must resolve via ORCA_RESOURCE_ROOT for packaged installs.
+            const codex_path = try resolveBundledPath(allocator, "integrations/codex-plugin/.codex-plugin/plugin.json");
+            defer allocator.free(codex_path);
+            const claude_path = try resolveBundledPath(allocator, "integrations/claude-code-plugin/.claude-plugin/plugin.json");
+            defer allocator.free(claude_path);
+            const opencode_path = try resolveBundledPath(allocator, "integrations/opencode-plugin/orca.ts");
+            defer allocator.free(opencode_path);
+            const openclaw_manifest_path = try resolveBundledPath(allocator, "integrations/openclaw-plugin/openclaw.plugin.json");
+            defer allocator.free(openclaw_manifest_path);
+            const hermes_manifest_path = try resolveBundledPath(allocator, "integrations/hermes-plugin/plugin.yaml");
+            defer allocator.free(hermes_manifest_path);
             const codex_marketplace = codex_marketplace_path;
             const claude_marketplace = claude_marketplace_path;
             try stdout.writeAll("  \"codex\": {\n");
@@ -964,12 +983,13 @@ fn installCommand(argv: []const []const u8, stdout: anytype, stderr: anytype) !u
                 \\  orca plugin install opencode --scope project|global [--dry-run|--yes]
                 \\  orca plugin install <target> [--yes]
                 \\  
+                \\Primary flow: `orca setup` (guided, interactive on TTY). --yes for scripts/CI only.
                 \\Options:
                 \\  --dry-run       Preview changes without mutating host config (default)
                 \\  --all-detected  Only install for hosts found in PATH
                 \\  --path          Use a custom plugin path instead of the default
                 \\  --scope         OpenCode install scope: project|global (default: project)
-                \\  --yes           Skip confirmation prompt (use with care)
+                \\  --yes           Skip confirmation prompt (use with care for non-TTY)
                 \\
             );
             return exit_codes.success;
@@ -1076,11 +1096,26 @@ fn installCommand(argv: []const []const u8, stdout: anytype, stderr: anytype) !u
         .openclaw => &[_]InstallTarget{.openclaw},
         .hermes => &[_]InstallTarget{.hermes},
         .all => if (all_detected) blk: {
-            if (binaryInPath(allocator, "codex")) { detected_targets[detected_count] = .codex; detected_count += 1; }
-            if (binaryInPath(allocator, "claude")) { detected_targets[detected_count] = .claude; detected_count += 1; }
-            if (binaryInPath(allocator, "opencode")) { detected_targets[detected_count] = .opencode; detected_count += 1; }
-            if (binaryInPath(allocator, "openclaw")) { detected_targets[detected_count] = .openclaw; detected_count += 1; }
-            if (binaryInPath(allocator, "hermes")) { detected_targets[detected_count] = .hermes; detected_count += 1; }
+            if (binaryInPath(allocator, "codex")) {
+                detected_targets[detected_count] = .codex;
+                detected_count += 1;
+            }
+            if (binaryInPath(allocator, "claude")) {
+                detected_targets[detected_count] = .claude;
+                detected_count += 1;
+            }
+            if (binaryInPath(allocator, "opencode")) {
+                detected_targets[detected_count] = .opencode;
+                detected_count += 1;
+            }
+            if (binaryInPath(allocator, "openclaw")) {
+                detected_targets[detected_count] = .openclaw;
+                detected_count += 1;
+            }
+            if (binaryInPath(allocator, "hermes")) {
+                detected_targets[detected_count] = .hermes;
+                detected_count += 1;
+            }
             break :blk detected_targets[0..detected_count];
         } else &[_]InstallTarget{ .codex, .claude, .opencode, .openclaw, .hermes },
     };

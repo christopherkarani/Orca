@@ -6,6 +6,7 @@ const exit_codes = @import("exit_codes.zig");
 const help = @import("help.zig");
 const init = @import("init.zig");
 const plugin = @import("plugin.zig");
+const interactive = @import("interactive.zig");
 
 pub fn command(cwd: std.fs.Dir, argv: []const []const u8, stdout: anytype, stderr: anytype) !u8 {
     var auto = false;
@@ -45,6 +46,11 @@ pub fn command(cwd: std.fs.Dir, argv: []const []const u8, stdout: anytype, stder
     }
 
     if (!auto) {
+        // New guided path: on TTY, offer interactive host selection
+        const stdin_file = std.fs.File.stdin();
+        if (stdin_file.isTty()) {
+            return runGuidedSetup(cwd, stdout, stderr);
+        }
         _ = try help.writeCommand(stdout, "setup");
         return exit_codes.success;
     }
@@ -136,12 +142,12 @@ pub fn command(cwd: std.fs.Dir, argv: []const []const u8, stdout: anytype, stder
 
     if (!any_detected) {
         try stdout.writeAll("\nNo agent hosts detected in PATH.\n");
-        try stdout.writeAll("Install a supported host and run 'orca setup --auto' again.\n");
+        try stdout.writeAll("Install a supported host and run 'orca setup --auto' (non-interactive) again.\n");
     }
 
     if (failure_count > 0) {
         try stdout.print("\nSetup finished with {d} failure(s).\n", .{failure_count});
-        try stdout.writeAll("Review the messages above and re-run 'orca setup --auto' after fixing blockers.\n");
+        try stdout.writeAll("Review the messages above and re-run 'orca setup --auto' (non-interactive) after fixing blockers.\n");
         return exit_codes.general;
     }
 
@@ -160,4 +166,95 @@ fn runChild(allocator: std.mem.Allocator, argv: []const []const u8) !u8 {
         .Exited => |code| @as(u8, @intCast(@min(code, 255))),
         else => 255,
     };
+}
+
+/// Guided / interactive setup path (new default on TTY when no --auto).
+/// Uses the new interactive multi-select for host choice.
+fn runGuidedSetup(cwd: std.fs.Dir, stdout: anytype, stderr: anytype) !u8 {
+    var gpa_state: std.heap.GeneralPurposeAllocator(.{}) = .init;
+    defer _ = gpa_state.deinit();
+    const allocator = gpa_state.allocator();
+
+    try stdout.writeAll("Orca Guided Setup\n\n");
+    try stdout.writeAll("Detecting installed agent hosts...\n");
+
+    const workspace_root = supervisor.resolveWorkspaceRoot(allocator, null, ".") catch try allocator.dupe(u8, ".");
+    defer allocator.free(workspace_root);
+
+    // Policy init first (quiet)
+    const policy_path = try std.fs.path.join(allocator, &.{ workspace_root, ".orca", "policy.yaml" });
+    defer allocator.free(policy_path);
+
+    if (!plugin.fileExistsAbsolute(policy_path)) {
+        try stdout.writeAll("No policy found. Creating with generic-agent preset...\n");
+        const init_argv = &[_][]const u8{ "--preset", "generic-agent", "--quiet" };
+        _ = try init.command(cwd, init_argv, stdout, stderr);
+    }
+
+    // Detect hosts using existing infrastructure
+    const hosts = &[_][]const u8{ "codex", "claude", "opencode", "openclaw", "hermes" };
+    var doctor_report = try plugin.collectPluginDoctorReport(allocator);
+    defer plugin.deinitPluginDoctorReport(&doctor_report, allocator);
+
+    var detected_list: std.ArrayList([]const u8) = .empty;
+    defer detected_list.deinit(allocator);
+
+    for (hosts) |h| {
+        if (plugin.binaryInPath(allocator, h)) {
+            try detected_list.append(allocator, h);
+        }
+    }
+
+    if (detected_list.items.len == 0) {
+        try stdout.writeAll("\nNo supported agent hosts detected in PATH.\n");
+        try stdout.writeAll("You can still use `orca run -- <your-command>` for protection.\n");
+        return exit_codes.success;
+    }
+
+    // Build selection items for the interactive module
+    var selection_items = try allocator.alloc(interactive.SelectionItem, detected_list.items.len);
+    defer allocator.free(selection_items);
+
+    for (detected_list.items, 0..) |h, i| {
+        selection_items[i] = .{
+            .label = h,
+            .checked = true, // default: wire everything
+            .id = h,
+        };
+    }
+
+    const stdin_file = std.fs.File.stdin();
+
+    // Delegate to the shared interactive module. Pass the raw File for the
+    // stdin parameter (the module performs its own TTY check on global stdin
+    // and expects a type with a .read method, as used in its existing tests).
+    var result = try interactive.runMultiSelect(allocator, selection_items, stdout, stdin_file);
+    defer interactive.deinitMultiSelectResult(&result, allocator);
+
+    if (!result.confirmed) {
+        try stdout.writeAll("\nSetup canceled by user.\n");
+        return exit_codes.success;
+    }
+
+    // Perform installs for selected hosts using existing logic
+    var any_installed = false;
+    for (result.items) |item| {
+        if (!item.checked) continue;
+
+        try stdout.print("\nIntegrating with {s}...\n", .{item.label});
+        const install_argv = &[_][]const u8{ "plugin", "install", item.label, "--yes" };
+        const code = try runChild(allocator, install_argv);
+        if (code == 0) {
+            any_installed = true;
+        }
+    }
+
+    if (any_installed) {
+        try stdout.writeAll("\nGuided setup complete.\n");
+    } else {
+        try stdout.writeAll("\nNo new integrations were added.\n");
+    }
+
+    try stdout.writeAll("Run 'orca doctor' or 'orca run -- <command>' to get started.\n");
+    return exit_codes.success;
 }

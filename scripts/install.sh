@@ -2,7 +2,38 @@
 set -eu
 
 SCRIPT_DIR="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)"
-DEFAULT_VERSION="$(tr -d '[:space:]' < "${SCRIPT_DIR}/../VERSION" 2>/dev/null || true)"
+
+# Robust VERSION resolution:
+# - Local checkout / developer runs: read the repo VERSION file when present.
+# - Piped public install (curl | sh, the primary documented path): the relative
+#   VERSION file is never available, so query the latest published release tag
+#   via the GitHub API (using only curl/wget that the script already requires).
+# - ORCA_VERSION always wins. Hardcoded value is only the final safety net.
+DEFAULT_VERSION=""
+if [ -r "${SCRIPT_DIR}/../VERSION" ]; then
+    DEFAULT_VERSION="$(tr -d '[:space:]' < "${SCRIPT_DIR}/../VERSION" 2>/dev/null || true)"
+fi
+
+if [ -z "${DEFAULT_VERSION}" ] && [ -z "${ORCA_VERSION:-}" ]; then
+    # Piped / non-filesystem execution path. Best-effort latest release.
+    for _url in "https://api.github.com/repos/christopherkarani/Orca/releases/latest"; do
+        _resp=""
+        if command -v curl >/dev/null 2>&1; then
+            _resp="$(curl -fsSL --max-time 8 -H "User-Agent: orca-install-script/1.0 (github.com/christopherkarani/Orca)" "$_url" 2>/dev/null || true)"
+        elif command -v wget >/dev/null 2>&1; then
+            _resp="$(wget -qO- --timeout=8 --user-agent="orca-install-script/1.0 (github.com/christopherkarani/Orca)" "$_url" 2>/dev/null || true)"
+        fi
+        if [ -n "${_resp:-}" ]; then
+            _tag="$(printf '%s' "$_resp" | grep -o '"tag_name"[[:space:]]*:[[:space:]]*"[vV]*[^"]*"' | head -n1 | \
+                sed -E 's/.*"tag_name"[[:space:]]*:[[:space:]]*"[vV]?([^"]*)".*/\1/' || true)"
+            if [ -n "${_tag:-}" ]; then
+                DEFAULT_VERSION="$_tag"
+                break
+            fi
+        fi
+    done
+fi
+
 VERSION="${ORCA_VERSION:-${DEFAULT_VERSION:-1.1.5}}"
 BASE_URL="${ORCA_BASE_URL:-https://github.com/christopherkarani/Orca/releases/download/v${VERSION}}"
 INSTALL_DIR="${ORCA_INSTALL_DIR:-${HOME}/.local/bin}"
@@ -195,7 +226,17 @@ else
 fi
 
 verify_checksum "$ARTIFACT" "$TMP_DIR/$ARTIFACT" "$TMP_DIR/checksums.txt"
-tar -xzf "$TMP_DIR/$ARTIFACT" -C "$TMP_DIR"
+
+# Extract while suppressing only the harmless macOS provenance xattr noise that appears
+# when Linux extracts tarballs produced on macOS (or that carry extended attributes).
+# Real tar failures still cause the script to abort via the subsequent checks.
+tar -xzf "$TMP_DIR/$ARTIFACT" -C "$TMP_DIR" 2>"$TMP_DIR/.tar.err" || {
+  grep -v 'LIBARCHIVE.xattr.com.apple.provenance' "$TMP_DIR/.tar.err" | \
+    grep -v 'Ignoring unknown extended header keyword' >&2 || true
+  rm -f "$TMP_DIR/.tar.err"
+  fail "tar extraction failed"
+}
+rm -f "$TMP_DIR/.tar.err"
 
 EXTRACT_ROOT="$(find "$TMP_DIR" -mindepth 1 -maxdepth 1 -type d | head -n 1)"
 [ -n "$EXTRACT_ROOT" ] || fail "artifact did not contain an extracted release root"
@@ -214,6 +255,13 @@ printf 'ORCA_RESOURCE_ROOT=%s\n' "$CURRENT_LINK"
 
 ensure_path_entry "$INSTALL_DIR"
 ensure_resource_root_entry "$CURRENT_LINK"
+
+# Highest-value DX improvement: give users an immediate activation block they can paste
+# in the *current* shell. This directly attacks the #1 source of "30 seconds" being false.
+printf '\nTo use orca in *this* terminal right now (without opening a new one), run:\n'
+printf '\n    export PATH="%s:$PATH"\n' "$INSTALL_DIR"
+printf '    export ORCA_RESOURCE_ROOT="%s"\n' "$CURRENT_LINK"
+printf '\n(These two lines were also added to your shell profile for future terminals.)\n'
 
 printf '\nNext steps:\n'
 printf '  orca --version\n'
