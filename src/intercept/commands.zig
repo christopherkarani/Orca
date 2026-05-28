@@ -1084,18 +1084,22 @@ test "generic agent preset allows common inspection and verification commands" {
 
     const allowed_commands = [_][]const []const u8{
         &.{ "git", "diff" },
+        &.{ "git", "log" },
         &.{ "git", "log", "--oneline" },
+        &.{ "git", "branch" },
         &.{ "git", "branch", "--show-current" },
         &.{ "git", "ls-files" },
-        &.{ "ls" },
+        &.{"ls"},
         &.{ "rg", "TODO" },
-        &.{ "mkdir", "-p", "./tmp/orca" },
         &.{ "npm", "test" },
         &.{ "pnpm", "test", "--", "--runInBand" },
+        &.{ "go", "test" },
         &.{ "go", "test", "./..." },
+        &.{ "cargo", "test" },
         &.{ "cargo", "test", "--all" },
         &.{ "swift", "test" },
         &.{ "python", "-m", "pytest", "tests" },
+        &.{"pytest"},
         &.{ "pytest", "tests" },
     };
 
@@ -1129,6 +1133,14 @@ test "generic agent preset keeps installs remote writes and dangerous commands g
     var cat_env = try evaluate(std.testing.allocator, &selected, .ask, &.{ "cat", ".env" });
     defer cat_env.deinit(std.testing.allocator);
     try std.testing.expectEqual(core.decision.DecisionResult.deny, cat_env.decision.result);
+
+    var mkdir_tmp = try evaluate(std.testing.allocator, &selected, .ask, &.{ "mkdir", "-p", "./tmp/orca" });
+    defer mkdir_tmp.deinit(std.testing.allocator);
+    try std.testing.expectEqual(core.decision.DecisionResult.ask, mkdir_tmp.decision.result);
+
+    var mkdir_git_hooks = try evaluate(std.testing.allocator, &selected, .ask, &.{ "mkdir", "-p", ".git/hooks" });
+    defer mkdir_git_hooks.deinit(std.testing.allocator);
+    try std.testing.expectEqual(core.decision.DecisionResult.ask, mkdir_git_hooks.decision.result);
 }
 
 test "shim list covers risky aliases recognized by classifier" {
