@@ -21,31 +21,77 @@ pub const MultiSelectResult = struct {
 };
 
 /// High-level entry point for a checkbox-style multi-select.
-/// In Phase 0 this is a stub that returns all items checked + confirmed=true.
-/// Real terminal handling (raw mode, arrows, spacebar) is added in Phase 1.
+/// Phase 1 implementation: line-based interactive selector (works in all terminals).
+/// User can type numbers to toggle items, then 'c' to confirm or 'q' to cancel.
+/// Full raw-mode (arrows + spacebar) can be layered on top later.
 pub fn runMultiSelect(
     allocator: std.mem.Allocator,
     items: []const SelectionItem,
-    /// For future: injected stdout/stdin for testing and TTY detection.
     stdout: anytype,
     stdin: anytype,
 ) !MultiSelectResult {
-    _ = stdout;
-    _ = stdin;
-
     const owned = try allocator.alloc(SelectionItem, items.len);
     for (items, 0..) |item, i| {
         owned[i] = .{
             .label = try allocator.dupe(u8, item.label),
-            .checked = true, // Phase 0 default: everything selected
+            .checked = item.checked,
             .id = if (item.id) |id| try allocator.dupe(u8, id) else null,
         };
     }
 
-    return .{
-        .items = owned,
-        .confirmed = true,
-    };
+    const stdin_file = std.fs.File.stdin();
+    const is_interactive = stdin_file.isTty();
+
+    if (!is_interactive) {
+        // Non-interactive: return current state as confirmed (safe default for scripts)
+        return .{
+            .items = owned,
+            .confirmed = true,
+        };
+    }
+
+    // Simple line-based interactive loop
+    while (true) {
+        try stdout.writeAll("\nSelect hosts to integrate with Orca (toggle by number, c=confirm, q=cancel):\n\n");
+
+        for (owned, 0..) |item, i| {
+            const checkbox = if (item.checked) "[x]" else "[ ]";
+            try stdout.print("  {d}. {s} {s}\n", .{ i + 1, checkbox, item.label });
+        }
+
+        try stdout.writeAll("\n> ");
+
+        var buf: [128]u8 = undefined;
+        const n = try stdin.read(&buf);
+        const input = std.mem.trimRight(u8, buf[0..n], "\r\n ");
+
+        if (input.len == 0) continue;
+
+        if (std.mem.eql(u8, input, "c") or std.mem.eql(u8, input, "C")) {
+            return .{
+                .items = owned,
+                .confirmed = true,
+            };
+        }
+        if (std.mem.eql(u8, input, "q") or std.mem.eql(u8, input, "Q")) {
+            return .{
+                .items = owned,
+                .confirmed = false,
+            };
+        }
+
+        // Try to parse as number to toggle
+        const num = std.fmt.parseInt(usize, input, 10) catch {
+            try stdout.writeAll("  (invalid input — enter a number, 'c', or 'q')\n");
+            continue;
+        };
+
+        if (num >= 1 and num <= owned.len) {
+            owned[num - 1].checked = !owned[num - 1].checked;
+        } else {
+            try stdout.writeAll("  (number out of range)\n");
+        }
+    }
 }
 
 /// Frees memory owned by a MultiSelectResult.
@@ -95,8 +141,9 @@ test "interactive: runMultiSelect Phase 0 stub returns all items checked and con
 
     try std.testing.expectEqual(true, result.confirmed);
     try std.testing.expectEqual(@as(usize, 2), result.items.len);
-    try std.testing.expectEqual(true, result.items[0].checked);
-    try std.testing.expectEqual(true, result.items[1].checked);
+    // In non-TTY path we now respect the input checked state (better semantics)
+    try std.testing.expectEqual(false, result.items[0].checked); // input had default false
+    try std.testing.expectEqual(false, result.items[1].checked);
     try std.testing.expectEqualStrings("Hermes", result.items[0].label);
 }
 
