@@ -38,6 +38,13 @@ pub fn runMultiSelect(
             .id = if (item.id) |id| try allocator.dupe(u8, id) else null,
         };
     }
+    errdefer {
+        for (owned) |item| {
+            allocator.free(item.label);
+            if (item.id) |id| allocator.free(id);
+        }
+        allocator.free(owned);
+    }
 
     const stdin_file = std.fs.File.stdin();
     const is_interactive = stdin_file.isTty();

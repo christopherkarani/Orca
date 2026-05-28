@@ -189,7 +189,8 @@ fn runGuidedSetup(cwd: std.fs.Dir, stdout: anytype, stderr: anytype, preset: []c
     if (!plugin.fileExistsAbsolute(policy_path)) {
         try stdout.print("No policy found. Creating with {s} preset...\n", .{preset});
         const init_argv = &[_][]const u8{ "--preset", preset, "--quiet" };
-        _ = try init.command(cwd, init_argv, stdout, stderr);
+        const code = try init.command(cwd, init_argv, stdout, stderr);
+        if (code != exit_codes.success) return code;
     }
 
     // Detect hosts using existing infrastructure (reused from plugin/doctor)
@@ -245,16 +246,30 @@ fn runGuidedSetup(cwd: std.fs.Dir, stdout: anytype, stderr: anytype, preset: []c
 
     // Perform installs for selected hosts using existing logic (now with correct argv).
     var any_installed = false;
+    var failure_count: usize = 0;
     for (result.items) |item| {
         if (!item.checked) continue;
 
         try stdout.print("\nIntegrating with {s}...\n", .{item.label});
         const host_id = item.id orelse item.label;
         const install_argv = &[_][]const u8{ self_exe, "plugin", "install", host_id, "--yes" };
-        const code = try runChild(allocator, install_argv);
+        const code = runChild(allocator, install_argv) catch |err| {
+            try stdout.print("  {s}: install error ({s})\n", .{ item.label, @errorName(err) });
+            failure_count += 1;
+            continue;
+        };
         if (code == 0) {
             any_installed = true;
+        } else {
+            try stdout.print("  {s}: install failed (exit code {d})\n", .{ item.label, code });
+            failure_count += 1;
         }
+    }
+
+    if (failure_count > 0) {
+        try stdout.print("\nGuided setup finished with {d} failure(s).\n", .{failure_count});
+        try stdout.writeAll("Review the messages above.\n");
+        return exit_codes.general;
     }
 
     if (any_installed) {
