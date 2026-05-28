@@ -448,13 +448,13 @@ test "decide command dangerous returns block JSON" {
     defer allocator.free(result.stdout);
     defer allocator.free(result.stderr);
 
-    try std.testing.expectEqual(@as(u8, 0), result.code);
+    try std.testing.expectEqual(@as(u8, 3), result.code);
 
     var parsed = try std.json.parseFromSlice(std.json.Value, allocator, result.stdout, .{});
     defer parsed.deinit();
 
     const decision = parsed.value.object.get("decision").?.string;
-    try std.testing.expect(std.mem.eql(u8, decision, "block") or std.mem.eql(u8, decision, "warn"));
+    try std.testing.expect(std.mem.eql(u8, decision, "block"));
 }
 
 test "decide file write protected path returns block or ask" {
@@ -468,13 +468,19 @@ test "decide file write protected path returns block or ask" {
     defer allocator.free(result.stdout);
     defer allocator.free(result.stderr);
 
-    try std.testing.expectEqual(@as(u8, 0), result.code);
-
     var parsed = try std.json.parseFromSlice(std.json.Value, allocator, result.stdout, .{});
     defer parsed.deinit();
 
     const decision = parsed.value.object.get("decision").?.string;
     try std.testing.expect(std.mem.eql(u8, decision, "block") or std.mem.eql(u8, decision, "ask") or std.mem.eql(u8, decision, "warn"));
+
+    const expected_code: u8 = if (std.mem.eql(u8, decision, "block"))
+        3
+    else if (std.mem.eql(u8, decision, "ask"))
+        7
+    else
+        8;
+    try std.testing.expectEqual(expected_code, result.code);
 }
 
 test "decide prompt with fake secret redacts" {
@@ -488,13 +494,14 @@ test "decide prompt with fake secret redacts" {
     defer allocator.free(result.stdout);
     defer allocator.free(result.stderr);
 
-    try std.testing.expectEqual(@as(u8, 0), result.code);
-
     var parsed = try std.json.parseFromSlice(std.json.Value, allocator, result.stdout, .{});
     defer parsed.deinit();
 
     const decision = parsed.value.object.get("decision").?.string;
     try std.testing.expect(std.mem.eql(u8, decision, "warn") or std.mem.eql(u8, decision, "block"));
+
+    const expected_code: u8 = if (std.mem.eql(u8, decision, "warn")) 8 else 3;
+    try std.testing.expectEqual(expected_code, result.code);
 
     // Fake secret should not appear in output
     try std.testing.expect(std.mem.indexOf(u8, result.stdout, "fake_p05_secret_value") == null);
@@ -511,7 +518,7 @@ test "decide tool returns valid JSON" {
     defer allocator.free(result.stdout);
     defer allocator.free(result.stderr);
 
-    try std.testing.expectEqual(@as(u8, 0), result.code);
+    try std.testing.expect(result.code == 0 or result.code == 7);
 
     var parsed = try std.json.parseFromSlice(std.json.Value, allocator, result.stdout, .{});
     defer parsed.deinit();

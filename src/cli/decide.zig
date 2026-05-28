@@ -162,7 +162,7 @@ fn decideCommand(kind: DecisionKind, argv: []const []const u8, stdout: anytype, 
         try stderr.print("[decide] matched rule: {s}\n", .{rule});
     }
 
-    return exit_codes.success;
+    return result.decision.exitCode();
 }
 
 // ---------------------------------------------------------------------------
@@ -193,6 +193,16 @@ const PluginDecision = enum {
         return switch (self) {
             .err => "error",
             else => @tagName(self),
+        };
+    }
+
+    pub fn exitCode(self: PluginDecision) u8 {
+        return switch (self) {
+            .allow, .context_only => exit_codes.success,
+            .block => exit_codes.denial,
+            .ask => exit_codes.ask,
+            .warn => exit_codes.warn,
+            .err => exit_codes.general,
         };
     }
 };
@@ -525,7 +535,7 @@ test "decide command with dangerous command returns block" {
     const code = try decideCommand(.command, &.{
         "--json", "{\"command\":\"rm -rf /\"}",
     }, stdout_stream.writer(), stderr_stream.writer());
-    try std.testing.expectEqual(exit_codes.success, code);
+    try std.testing.expectEqual(exit_codes.denial, code);
 
     const output = stdout_stream.getWritten();
     try std.testing.expect(std.mem.indexOf(u8, output, "\"decision\": \"block\"") != null);
@@ -541,7 +551,7 @@ test "decide file write to protected path returns block" {
     const code = try decideCommand(.file, &.{
         "--json", "{\"path\":\"/etc/passwd\",\"operation\":\"write\"}",
     }, stdout_stream.writer(), stderr_stream.writer());
-    try std.testing.expectEqual(exit_codes.success, code);
+    try std.testing.expectEqual(exit_codes.denial, code);
 
     const output = stdout_stream.getWritten();
     try std.testing.expect(std.mem.indexOf(u8, output, "\"decision\": \"block\"") != null);
@@ -603,7 +613,7 @@ test "decide prompt with fake secret returns warn" {
     const code = try decideCommand(.prompt, &.{
         "--json", "{\"text\":\"my token is ghp_fake_secret_value\"}",
     }, stdout_stream.writer(), stderr_stream.writer());
-    try std.testing.expectEqual(exit_codes.success, code);
+    try std.testing.expectEqual(exit_codes.warn, code);
 
     const output = stdout_stream.getWritten();
     try std.testing.expect(std.mem.indexOf(u8, output, "\"decision\": \"warn\"") != null);
@@ -621,7 +631,7 @@ test "decide prompt accepts host prompt field and redacts fake secret" {
     const code = try decideCommand(.prompt, &.{
         "--json", "{\"prompt\":\"fake_p05_secret_value\"}",
     }, stdout_stream.writer(), stderr_stream.writer());
-    try std.testing.expectEqual(exit_codes.success, code);
+    try std.testing.expectEqual(exit_codes.warn, code);
 
     const output = stdout_stream.getWritten();
     try std.testing.expect(std.mem.indexOf(u8, output, "\"decision\": \"warn\"") != null);
@@ -639,7 +649,7 @@ test "decide tool returns valid JSON" {
     const code = try decideCommand(.tool, &.{
         "--json", "{\"name\":\"read_file\"}",
     }, stdout_stream.writer(), stderr_stream.writer());
-    try std.testing.expectEqual(exit_codes.success, code);
+    try std.testing.expect(code == exit_codes.success or code == exit_codes.ask);
 
     const output = stdout_stream.getWritten();
     var parsed = try std.json.parseFromSlice(std.json.Value, std.testing.allocator, output, .{});
@@ -663,7 +673,7 @@ test "decide ci mode turns ask into block" {
         "--json", "{\"command\":\"unknown-tool --help\"}",
         "--ci",
     }, stdout_stream.writer(), stderr_stream.writer());
-    try std.testing.expectEqual(exit_codes.success, code);
+    try std.testing.expectEqual(exit_codes.denial, code);
 
     const output = stdout_stream.getWritten();
     // In CI mode, ask should become block
