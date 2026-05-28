@@ -21,6 +21,8 @@ The repository is pinned to Zig `0.15.2`. Release installs are covered in [insta
 
 Review the generated policy before using it for real work.
 
+The policy created by `init --preset generic-agent` (and `setup --auto`) uses Orca's conservative quick-install defaults: network egress defaults to `deny` (with a small curated allow/ask list), broad read protections for shell histories/browser data/macOS Library paths, staged writes, and explicit deny for `.git/**` and `.orca/**` (in both bare and `./` forms). This is intentional and safe. Edit `.orca/policy.yaml` freely for your workflow. Use `orca policy explain command 'your cmd'` and `orca policy explain file.write .git/config` (with and without `./`) to explore decisions.
+
 ## 3. Check Local Capabilities
 
 ```sh

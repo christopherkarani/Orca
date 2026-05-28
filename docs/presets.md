@@ -11,7 +11,7 @@ orca policy check .orca/policy.yaml
 
 Available presets:
 
-- `generic-agent`: conservative local coding-agent baseline.
+- `generic-agent`: conservative local coding-agent baseline (the default for `orca init --preset` and `setup --auto`). The on-disk YAML documents the structure; the generated policy uses the stricter embedded variant (network default deny + expanded secret protections — see the file header and `src/policy/presets.zig`).
 - `claude-code`: generic/experimental local coding-agent assumptions for Claude Code-style use.
 - `codex`: generic/experimental local coding-agent assumptions for Codex-style use.
 - `cursor-agent`: generic/experimental local editor-agent assumptions.
