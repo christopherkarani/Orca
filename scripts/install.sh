@@ -215,6 +215,13 @@ printf 'ORCA_RESOURCE_ROOT=%s\n' "$CURRENT_LINK"
 ensure_path_entry "$INSTALL_DIR"
 ensure_resource_root_entry "$CURRENT_LINK"
 
+# Highest-value DX improvement: give users an immediate activation block they can paste
+# in the *current* shell. This directly attacks the #1 source of "30 seconds" being false.
+printf '\nTo use orca in *this* terminal right now (without opening a new one), run:\n'
+printf '\n    export PATH="%s:$PATH"\n' "$INSTALL_DIR"
+printf '    export ORCA_RESOURCE_ROOT="%s"\n' "$CURRENT_LINK"
+printf '\n(These two lines were also added to your shell profile for future terminals.)\n'
+
 printf '\nNext steps:\n'
 printf '  orca --version\n'
 printf '  orca doctor\n'
