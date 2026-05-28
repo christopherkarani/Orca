@@ -442,6 +442,9 @@ pub fn build(b: *std.Build) void {
             .root_source_file = b.path("tests/phase38_plugin_security_and_compatibility.zig"),
             .target = target,
             .optimize = optimize,
+            .imports = &.{
+                .{ .name = "orca", .module = orca_mod },
+            },
         }),
     });
     const run_phase38_plugin_security_tests = b.addRunArtifact(phase38_plugin_security_tests);

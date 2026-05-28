@@ -1,5 +1,7 @@
 const std = @import("std");
 
+const exit_codes = @import("orca").cli.exit_codes;
+
 // ---------------------------------------------------------------------------
 // P05 — Plugin Security and Compatibility Tests
 // ---------------------------------------------------------------------------
@@ -422,7 +424,7 @@ test "decide command safe returns allow JSON" {
     const allocator = std.testing.allocator;
 
     const result = try runOrca(allocator, &.{
-        orca_bin, "decide", "command", "--json",
+        orca_bin,                                                                            "decide", "command", "--json",
         "{\"version\":1,\"host\":\"codex\",\"command\":\"git status\",\"mode\":\"strict\"}",
     }, null);
     defer allocator.free(result.stdout);
@@ -442,19 +444,19 @@ test "decide command dangerous returns block JSON" {
     const allocator = std.testing.allocator;
 
     const result = try runOrca(allocator, &.{
-        orca_bin, "decide", "command", "--json",
+        orca_bin,                                                                          "decide", "command", "--json",
         "{\"version\":1,\"host\":\"codex\",\"command\":\"rm -rf /\",\"mode\":\"strict\"}",
     }, null);
     defer allocator.free(result.stdout);
     defer allocator.free(result.stderr);
 
-    try std.testing.expectEqual(@as(u8, 0), result.code);
+    try std.testing.expectEqual(exit_codes.denial, result.code);
 
     var parsed = try std.json.parseFromSlice(std.json.Value, allocator, result.stdout, .{});
     defer parsed.deinit();
 
     const decision = parsed.value.object.get("decision").?.string;
-    try std.testing.expect(std.mem.eql(u8, decision, "block") or std.mem.eql(u8, decision, "warn"));
+    try std.testing.expect(std.mem.eql(u8, decision, "block"));
 }
 
 test "decide file write protected path returns block or ask" {
@@ -462,19 +464,25 @@ test "decide file write protected path returns block or ask" {
     const allocator = std.testing.allocator;
 
     const result = try runOrca(allocator, &.{
-        orca_bin, "decide", "file", "--json",
+        orca_bin,                                                                                            "decide", "file", "--json",
         "{\"version\":1,\"host\":\"claude\",\"operation\":\"write\",\"path\":\".env\",\"mode\":\"strict\"}",
     }, null);
     defer allocator.free(result.stdout);
     defer allocator.free(result.stderr);
-
-    try std.testing.expectEqual(@as(u8, 0), result.code);
 
     var parsed = try std.json.parseFromSlice(std.json.Value, allocator, result.stdout, .{});
     defer parsed.deinit();
 
     const decision = parsed.value.object.get("decision").?.string;
     try std.testing.expect(std.mem.eql(u8, decision, "block") or std.mem.eql(u8, decision, "ask") or std.mem.eql(u8, decision, "warn"));
+
+    const expected_code: u8 = if (std.mem.eql(u8, decision, "block"))
+        exit_codes.denial
+    else if (std.mem.eql(u8, decision, "ask"))
+        exit_codes.ask
+    else
+        exit_codes.warn;
+    try std.testing.expectEqual(expected_code, result.code);
 }
 
 test "decide prompt with fake secret redacts" {
@@ -482,19 +490,20 @@ test "decide prompt with fake secret redacts" {
     const allocator = std.testing.allocator;
 
     const result = try runOrca(allocator, &.{
-        orca_bin, "decide", "prompt", "--json",
+        orca_bin,                                                                                      "decide", "prompt", "--json",
         "{\"version\":1,\"host\":\"codex\",\"prompt\":\"fake_p05_secret_value\",\"mode\":\"strict\"}",
     }, null);
     defer allocator.free(result.stdout);
     defer allocator.free(result.stderr);
-
-    try std.testing.expectEqual(@as(u8, 0), result.code);
 
     var parsed = try std.json.parseFromSlice(std.json.Value, allocator, result.stdout, .{});
     defer parsed.deinit();
 
     const decision = parsed.value.object.get("decision").?.string;
     try std.testing.expect(std.mem.eql(u8, decision, "warn") or std.mem.eql(u8, decision, "block"));
+
+    const expected_code: u8 = if (std.mem.eql(u8, decision, "warn")) exit_codes.warn else exit_codes.denial;
+    try std.testing.expectEqual(expected_code, result.code);
 
     // Fake secret should not appear in output
     try std.testing.expect(std.mem.indexOf(u8, result.stdout, "fake_p05_secret_value") == null);
@@ -505,16 +514,23 @@ test "decide tool returns valid JSON" {
     const allocator = std.testing.allocator;
 
     const result = try runOrca(allocator, &.{
-        orca_bin, "decide", "tool", "--json",
+        orca_bin,                                                                                                                         "decide", "tool", "--json",
         "{\"version\":1,\"host\":\"claude\",\"tool\":{\"name\":\"ExampleTool\",\"input\":{\"action\":\"example\"}},\"mode\":\"strict\"}",
     }, null);
     defer allocator.free(result.stdout);
     defer allocator.free(result.stderr);
 
-    try std.testing.expectEqual(@as(u8, 0), result.code);
-
     var parsed = try std.json.parseFromSlice(std.json.Value, allocator, result.stdout, .{});
     defer parsed.deinit();
+
+    const decision = parsed.value.object.get("decision").?.string;
+    if (std.mem.eql(u8, decision, "allow")) {
+        try std.testing.expectEqual(exit_codes.success, result.code);
+    } else if (std.mem.eql(u8, decision, "ask")) {
+        try std.testing.expectEqual(exit_codes.ask, result.code);
+    } else {
+        try std.testing.expect(false);
+    }
 
     try std.testing.expect(parsed.value.object.get("decision") != null);
     try std.testing.expect(parsed.value.object.get("risk") != null);
@@ -567,8 +583,7 @@ test "hook codex rejects unknown host in payload" {
     if (!binaryExists()) return;
     const allocator = std.testing.allocator;
 
-    const result = try runOrca(allocator, &.{ orca_bin, "hook", "codex", "SessionStart" },
-        "{\"version\":1,\"host\":\"unknown\",\"event\":\"SessionStart\",\"payload\":{}}");
+    const result = try runOrca(allocator, &.{ orca_bin, "hook", "codex", "SessionStart" }, "{\"version\":1,\"host\":\"unknown\",\"event\":\"SessionStart\",\"payload\":{}}");
     defer allocator.free(result.stdout);
     defer allocator.free(result.stderr);
 
@@ -580,8 +595,7 @@ test "hook claude rejects unknown event in payload" {
     if (!binaryExists()) return;
     const allocator = std.testing.allocator;
 
-    const result = try runOrca(allocator, &.{ orca_bin, "hook", "claude", "SessionStart" },
-        "{\"version\":1,\"host\":\"claude\",\"event\":\"UnknownEvent\",\"payload\":{}}");
+    const result = try runOrca(allocator, &.{ orca_bin, "hook", "claude", "SessionStart" }, "{\"version\":1,\"host\":\"claude\",\"event\":\"UnknownEvent\",\"payload\":{}}");
     defer allocator.free(result.stdout);
     defer allocator.free(result.stderr);
 
@@ -941,8 +955,7 @@ test "hook codex rejects missing version field" {
     if (!binaryExists()) return;
     const allocator = std.testing.allocator;
 
-    const result = try runOrca(allocator, &.{ orca_bin, "hook", "codex", "SessionStart" },
-        "{\"host\":\"codex\",\"event\":\"SessionStart\",\"payload\":{}}");
+    const result = try runOrca(allocator, &.{ orca_bin, "hook", "codex", "SessionStart" }, "{\"host\":\"codex\",\"event\":\"SessionStart\",\"payload\":{}}");
     defer allocator.free(result.stdout);
     defer allocator.free(result.stderr);
 
@@ -953,8 +966,7 @@ test "hook claude rejects missing host field" {
     if (!binaryExists()) return;
     const allocator = std.testing.allocator;
 
-    const result = try runOrca(allocator, &.{ orca_bin, "hook", "claude", "SessionStart" },
-        "{\"version\":1,\"event\":\"SessionStart\",\"payload\":{}}");
+    const result = try runOrca(allocator, &.{ orca_bin, "hook", "claude", "SessionStart" }, "{\"version\":1,\"event\":\"SessionStart\",\"payload\":{}}");
     defer allocator.free(result.stdout);
     defer allocator.free(result.stderr);
 

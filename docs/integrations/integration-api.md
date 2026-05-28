@@ -53,14 +53,25 @@ Options:
 
 ### Exit codes
 
+Policy outcomes for successful evaluation (JSON on stdout):
+
+| Code | Decision | Meaning |
+|------|----------|---------|
+| `0` | `allow`, `context_only` | Permitted |
+| `3` | `block` | Policy denied |
+| `7` | `ask` | Approval required (non-interactive callers should read JSON) |
+| `8` | `warn` | Redact or warn |
+
+Failures before a decision is emitted:
+
 | Code | Meaning |
-|---|---|
-| `0` | Allow or success |
-| `1` | General error |
+|------|---------|
+| `1` | General error (evaluation, parse, or internal failure) |
 | `2` | Usage error |
-| `3` | Policy denied |
-| `4` | Ask, in non CI mode |
-| `5` | Redact or warn |
+
+Other Orca CLI commands also use `4` (`unsupported`), `5` (`child_failure`), and `6` (`redteam_failure`). Those codes are not returned for policy decisions above.
+
+In `--ci` mode, `ask` is converted to `block` and exits with `3`.
 
 ### Examples
 
@@ -354,7 +365,7 @@ Common failures include:
 - policy parse failures
 - internal evaluation errors
 
-`orca decide` uses exit codes for command line callers. `orca hook` always writes a JSON response and should return an `error` decision when it can parse the request but cannot complete evaluation.
+`orca decide` uses the exit codes above so shell scripts and CI can gate on `$?` without parsing JSON. `orca hook` writes JSON to stdout and returns exit `0` for successful evaluation (including `block`, `ask`, and `warn`); hosts must read the JSON `decision` field. Hook returns non-zero only for usage, parse, or internal failures.
 
 When possible, error responses should be explicit about the failed stage, but they should not print secrets or raw payloads.
 
