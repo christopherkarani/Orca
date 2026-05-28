@@ -164,11 +164,11 @@ test "quick install protected path variants (.git and .orca, with and without ./
     // Current patterns in quick-install presets use "./.git/**" and "./.orca/**".
     // Bare forms (no leading ./) must also be denied for real-world DX.
     try std.testing.expect(matchesPath("./.git/**", "./.git/config"));
-    try std.testing.expect(matchesPath("./.git/**", ".git/config")); // bare form (currently fails — RED for DX fix)
+    try std.testing.expect(matchesPath("./.git/**", ".git/config")); // bare form now works (Phase 2 DX fix)
     try std.testing.expect(matchesPath("./.git/**", ".git/hooks/pre-commit"));
 
     try std.testing.expect(matchesPath("./.orca/**", "./.orca/policy.yaml"));
-    try std.testing.expect(matchesPath("./.orca/**", ".orca/secret")); // bare form (currently fails — RED)
+    try std.testing.expect(matchesPath("./.orca/**", ".orca/secret")); // bare form now works (Phase 2 DX fix)
 
     // Existing ./ forms continue to work (no regression)
     try std.testing.expect(matchesPath("./.git/**", "./.git/HEAD"));
