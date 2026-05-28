@@ -259,8 +259,11 @@ const common_strict_rules =
     \\    allow:
     \\      - "./**"
     \\    deny:
+    \\      # Dual patterns for robustness across hook/plugin path normalizations.
     \\      - "./.git/**"
+    \\      - ".git/**"
     \\      - "./.orca/**"
+    \\      - ".orca/**"
     \\    mode: staged
     \\
     \\commands:
@@ -275,7 +278,12 @@ const common_strict_rules =
     \\    - "true"
     \\    - "false"
     \\    - "zig version"
+    \\    - "zig build"
     \\    - "zig build *"
+    \\    # Narrow, high-value, zero-risk build entrypoints (see Phase 2 plan).
+    \\    - "make test*"
+    \\    - "make build*"
+    \\    - "make check*"
     \\  deny:
     \\    - "rm -rf *"
     \\    - "find * -delete"
@@ -473,8 +481,11 @@ pub const trusted_policy =
     \\    allow:
     \\      - "./**"
     \\    deny:
+    \\      # Dual patterns for robustness across hook/plugin path normalizations.
     \\      - "./.git/**"
+    \\      - ".git/**"
     \\      - "./.orca/**"
+    \\      - ".orca/**"
     \\    mode: staged
     \\
     \\commands:

@@ -50,8 +50,11 @@ files:
     allow:
       - "./**"
     deny:
+      # Dual patterns (see generic-agent.yaml for rationale).
       - "./.git/**"
+      - ".git/**"
       - "./.orca/**"
+      - ".orca/**"
     mode: staged
 
 commands:
@@ -80,7 +83,9 @@ commands:
 
 network:
   mode: allowlist
-  default: ask
+  # default: deny for the conservative quick-install experience
+  # (see generic-agent.yaml and src/policy/presets.zig for details).
+  default: deny
   allow:
     - "api.github.com"
     - "*.github.com"
@@ -88,6 +93,8 @@ network:
     - "pypi.org"
   ask:
     - "*.githubusercontent.com"
+    - "objects.githubusercontent.com"
+    - "codeload.github.com"
   deny:
     - "pastebin.com"
     - "*.ngrok.io"

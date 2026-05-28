@@ -7,6 +7,18 @@ pub fn matchesPattern(pattern: []const u8, value: []const u8) bool {
 
 pub fn matchesPath(pattern: []const u8, path: []const u8) bool {
     if (matchesPattern(pattern, path)) return true;
+
+    // Quick-install DX robustness for .git/.orca (and future user rules).
+    // Try combinations of original + stripped forms for both pattern and value.
+    // This ensures "./.git/**" matches ".git/config" (and vice-versa) even
+    // without dual patterns in every policy.
+    const stripped_pattern = stripLeadingDotSlash(pattern);
+    const stripped_path = stripLeadingDotSlash(path);
+
+    if (stripped_pattern.ptr != pattern.ptr and matchesPattern(stripped_pattern, path)) return true;
+    if (stripped_path.ptr != path.ptr and matchesPattern(pattern, stripped_path)) return true;
+    if (stripped_pattern.ptr != pattern.ptr and stripped_path.ptr != path.ptr and matchesPattern(stripped_pattern, stripped_path)) return true;
+
     if (std.mem.startsWith(u8, pattern, "~/") and std.mem.startsWith(u8, path, "~/")) {
         return globMatch(pattern, path);
     }
@@ -52,6 +64,16 @@ pub fn matchesMcpSelector(pattern: []const u8, selector: []const u8) bool {
 fn trimTrailingDot(value: []const u8) []const u8 {
     if (value.len > 0 and value[value.len - 1] == '.') return value[0 .. value.len - 1];
     return value;
+}
+
+/// Strip optional leading "./" or ".\" (Windows) for robust matching of
+/// workspace-relative paths. This fixes the quick-install DX fragility where
+/// hook/plugin callers (Hermes, OpenClaw, raw CLI) pass bare ".git/..." forms
+/// while policy rules use "./.git/**".
+pub fn stripLeadingDotSlash(p: []const u8) []const u8 {
+    if (std.mem.startsWith(u8, p, "./")) return p[2..];
+    if (std.mem.startsWith(u8, p, ".\\")) return p[2..];
+    return p;
 }
 
 fn globMatch(pattern: []const u8, value: []const u8) bool {
@@ -142,11 +164,11 @@ test "quick install protected path variants (.git and .orca, with and without ./
     // Current patterns in quick-install presets use "./.git/**" and "./.orca/**".
     // Bare forms (no leading ./) must also be denied for real-world DX.
     try std.testing.expect(matchesPath("./.git/**", "./.git/config"));
-    try std.testing.expect(matchesPath("./.git/**", ".git/config"));   // bare form (currently fails — RED for DX fix)
+    try std.testing.expect(matchesPath("./.git/**", ".git/config")); // bare form (currently fails — RED for DX fix)
     try std.testing.expect(matchesPath("./.git/**", ".git/hooks/pre-commit"));
 
     try std.testing.expect(matchesPath("./.orca/**", "./.orca/policy.yaml"));
-    try std.testing.expect(matchesPath("./.orca/**", ".orca/secret"));  // bare form (currently fails — RED)
+    try std.testing.expect(matchesPath("./.orca/**", ".orca/secret")); // bare form (currently fails — RED)
 
     // Existing ./ forms continue to work (no regression)
     try std.testing.expect(matchesPath("./.git/**", "./.git/HEAD"));
