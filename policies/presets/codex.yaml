@@ -82,7 +82,12 @@ commands:
     - "uniq *"
     - "sed -n *"
     - "zig version"
+    - "zig build"
     - "zig build *"
+    # Narrow, high-value, zero-risk build entrypoints (Phase 2 quick-install DX).
+    - "make test*"
+    - "make build*"
+    - "make check*"
     - "npm test*"
     - "pnpm test*"
     - "yarn test*"
