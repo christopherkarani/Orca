@@ -48,7 +48,8 @@ User install after the tap repository is published:
 ```sh
 brew tap christopherkarani/orca
 brew install orca
-orca plugin install hermes --yes
+orca setup   # guided interactive host selection on TTY (recommended)
+# or: orca plugin install hermes --yes  (for scripts / non-interactive)
 ```
 
 ## Manual Artifact Install
@@ -58,6 +59,7 @@ orca plugin install hermes --yes
 3. Extract the archive, or run `scripts/install.sh` / `scripts/install.ps1` to install the binary and runtime assets together.
 4. Ensure `orca` is on `PATH` and `ORCA_RESOURCE_ROOT` points at the installed runtime tree (`~/.local/share/orca/current` on Unix, `%USERPROFILE%\.orca\share\current` on Windows).
 5. Run `orca doctor`.
+6. Run `orca setup` (guided host integration on interactive terminals; `--auto` for scripts).
 
 ## Package Templates
 

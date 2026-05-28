@@ -130,7 +130,15 @@ After installing, verify:
 orca doctor
 ```
 
-### 1. Create your first policy
+### 1. Guided host setup (recommended first step)
+
+```bash
+orca setup
+```
+
+On TTY terminals this starts an interactive selector for your detected agents (number to toggle, `c` to confirm). The `--auto` flag remains available for CI/scripts. This is the primary post-install experience — no `--yes` incantations needed for humans.
+
+### 2. Create your first policy (or let `setup` handle basics)
 
 ```bash
 orca init --preset generic-agent

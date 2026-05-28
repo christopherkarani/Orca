@@ -45,10 +45,10 @@ pub fn command(cwd: std.fs.Dir, argv: []const []const u8, stdout: anytype, stder
     }
 
     if (!auto) {
-        // New guided path: on TTY, offer interactive host selection
+        // New guided path: on TTY, offer interactive host selection (Phase 4: wired to shared module)
         const stdin_file = std.fs.File.stdin();
         if (stdin_file.isTty()) {
-            return runGuidedSetup(cwd, stdout, stderr);
+            return runGuidedSetup(cwd, stdout, stderr, preset);
         }
         _ = try help.writeCommand(stdout, "setup");
         return exit_codes.success;
@@ -168,8 +168,10 @@ fn runChild(allocator: std.mem.Allocator, argv: []const []const u8) !u8 {
 }
 
 /// Guided / interactive setup path (new default on TTY when no --auto).
-/// Uses the new interactive multi-select for host choice.
-fn runGuidedSetup(cwd: std.fs.Dir, stdout: anytype, stderr: anytype) !u8 {
+/// Phase 4: delegates to the shared interactive.runMultiSelect (removes duplication),
+/// uses full self_exe for child invokes (fixes prior exec bug), respects --preset,
+/// and keeps line-based selector (maximum compatibility; raw arrows+space deferred).
+fn runGuidedSetup(cwd: std.fs.Dir, stdout: anytype, stderr: anytype, preset: []const u8) !u8 {
     var gpa_state: std.heap.GeneralPurposeAllocator(.{}) = .init;
     defer _ = gpa_state.deinit();
     const allocator = gpa_state.allocator();
@@ -180,17 +182,17 @@ fn runGuidedSetup(cwd: std.fs.Dir, stdout: anytype, stderr: anytype) !u8 {
     const workspace_root = supervisor.resolveWorkspaceRoot(allocator, null, ".") catch try allocator.dupe(u8, ".");
     defer allocator.free(workspace_root);
 
-    // Policy init first (quiet)
+    // Policy init first (quiet) — now respects --preset from caller
     const policy_path = try std.fs.path.join(allocator, &.{ workspace_root, ".orca", "policy.yaml" });
     defer allocator.free(policy_path);
 
     if (!plugin.fileExistsAbsolute(policy_path)) {
-        try stdout.writeAll("No policy found. Creating with generic-agent preset...\n");
-        const init_argv = &[_][]const u8{ "--preset", "generic-agent", "--quiet" };
+        try stdout.print("No policy found. Creating with {s} preset...\n", .{preset});
+        const init_argv = &[_][]const u8{ "--preset", preset, "--quiet" };
         _ = try init.command(cwd, init_argv, stdout, stderr);
     }
 
-    // Detect hosts using existing infrastructure
+    // Detect hosts using existing infrastructure (reused from plugin/doctor)
     const hosts = &[_][]const u8{ "codex", "claude", "opencode", "openclaw", "hermes" };
     var doctor_report = try plugin.collectPluginDoctorReport(allocator);
     defer plugin.deinitPluginDoctorReport(&doctor_report, allocator);
@@ -210,79 +212,45 @@ fn runGuidedSetup(cwd: std.fs.Dir, stdout: anytype, stderr: anytype) !u8 {
         return exit_codes.success;
     }
 
-    // Build selection items for the interactive module
+    // Build selection items (pre-ticked). Labels/ids are stable string literals.
     var selection_items = try allocator.alloc(interactive.SelectionItem, detected_list.items.len);
     defer allocator.free(selection_items);
 
     for (detected_list.items, 0..) |h, i| {
         selection_items[i] = .{
             .label = h,
-            .checked = true, // default: wire everything
+            .checked = true, // default: wire everything detected
             .id = h,
         };
     }
 
-    const stdin_file = std.fs.File.stdin();
-
-    // Simple direct-file interactive loop (consistent with other CLI interactive code)
-    // using the types from interactive module for result modeling.
-    var result_items = try allocator.alloc(interactive.SelectionItem, selection_items.len);
-    for (selection_items, 0..) |item, i| {
-        result_items[i] = .{
-            .label = try allocator.dupe(u8, item.label),
-            .checked = item.checked,
-            .id = if (item.id) |id| try allocator.dupe(u8, id) else null,
-        };
-    }
-
-    var result = interactive.MultiSelectResult{
-        .items = result_items,
-        .confirmed = false,
-    };
-
-    // Interactive toggle loop (direct file read, like plugin.zig / disable.zig patterns)
-    while (true) {
-        try stdout.writeAll("\nSelect hosts to integrate (enter number to toggle, 'c' to confirm, 'q' to cancel):\n\n");
-        for (result.items, 0..) |item, i| {
-            const mark = if (item.checked) "[x]" else "[ ]";
-            try stdout.print("  {d}. {s} {s}\n", .{ i + 1, mark, item.label });
-        }
-        try stdout.writeAll("\n> ");
-
-        var buf: [128]u8 = undefined;
-        const n = try stdin_file.read(&buf);
-        const input = std.mem.trimRight(u8, buf[0..n], "\r\n ");
-
-        if (input.len == 0) continue;
-        if (std.mem.eql(u8, input, "c") or std.mem.eql(u8, input, "C")) {
-            result.confirmed = true;
-            break;
-        }
-        if (std.mem.eql(u8, input, "q") or std.mem.eql(u8, input, "Q")) {
-            break;
-        }
-
-        const num = std.fmt.parseInt(usize, input, 10) catch {
-            try stdout.writeAll("  (invalid — number, c, or q)\n");
-            continue;
-        };
-        if (num >= 1 and num <= result.items.len) {
-            result.items[num-1].checked = !result.items[num-1].checked;
-        }
-    }
+    // Phase 4: delegate to the canonical line-based multi-select (no more duplicated loop).
+    // The module handles TTY detection + prompt + toggle/confirm/cancel.
+    // Line-based chosen for Phase 4 for broadest terminal compatibility (raw mode future).
+    // Pass a dummy reader (never used in real tty path; module uses direct File.stdin() read when interactive).
+    var dummy_in_buf: [1]u8 = undefined;
+    var dummy_stream = std.io.fixedBufferStream(&dummy_in_buf);
+    const dummy_reader = dummy_stream.reader();
+    var result = try interactive.runMultiSelect(allocator, selection_items, stdout, dummy_reader);
+    defer interactive.deinitMultiSelectResult(&result, allocator);
 
     if (!result.confirmed) {
         try stdout.writeAll("\nSetup canceled by user.\n");
         return exit_codes.success;
     }
 
-    // Perform installs for selected hosts using existing logic
+    // Compute self_exe once for reliable subcommand invocation in packaged installs.
+    const self_exe = try std.fs.selfExePathAlloc(allocator);
+    defer allocator.free(self_exe);
+
+    // Perform installs for selected hosts using existing logic (now with correct argv).
     var any_installed = false;
     for (result.items) |item| {
         if (!item.checked) continue;
 
         try stdout.print("\nIntegrating with {s}...\n", .{item.label});
-        const install_argv = &[_][]const u8{ "plugin", "install", item.label, "--yes" };
+        const host_id = item.id orelse item.label;
+        const install_argv = &[_][]const u8{ self_exe, "plugin", "install", host_id, "--yes" };
         const code = try runChild(allocator, install_argv);
         if (code == 0) {
             any_installed = true;

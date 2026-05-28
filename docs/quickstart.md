@@ -12,7 +12,17 @@ zig build
 
 The repository is pinned to Zig `0.15.2`. Release installs are covered in [install.md](install.md).
 
-## 2. Initialize A Policy
+## 2. Post-Install Setup (Guided)
+
+After the one-line install (or build), run:
+
+```sh
+orca setup
+```
+
+On interactive terminals this launches a simple line-based host selector (toggle by number, `c` to confirm). No `--yes` required for the happy path. Use `orca setup --auto` for scripts/CI.
+
+## 3. Initialize A Policy (or let setup do it)
 
 ```sh
 ./zig-out/bin/orca init --preset generic-agent
@@ -21,7 +31,7 @@ The repository is pinned to Zig `0.15.2`. Release installs are covered in [insta
 
 Review the generated policy before using it for real work.
 
-## 3. Check Local Capabilities
+## 4. Check Local Capabilities
 
 ```sh
 ./zig-out/bin/orca doctor
@@ -29,7 +39,7 @@ Review the generated policy before using it for real work.
 
 `doctor` is the source of truth for whether a feature is `active`, `partial`, `wrapper-only`, `observe-only`, `limited`, or `unavailable` on your platform.
 
-## 4. Run A Protected Command
+## 5. Run A Protected Command
 
 ```sh
 ./zig-out/bin/orca run -- echo hello
@@ -37,7 +47,7 @@ Review the generated policy before using it for real work.
 
 Orca writes audit artifacts under `.orca/sessions/<session-id>/`.
 
-## 5. Replay The Session
+## 6. Replay The Session
 
 ```sh
 ./zig-out/bin/orca replay --session last
@@ -47,7 +57,7 @@ Orca writes audit artifacts under `.orca/sessions/<session-id>/`.
 
 `--verify` checks the tamper-evident hash chain.
 
-## 6. Export A Local Safety Report
+## 7. Export A Local Safety Report
 
 Report export is gated to a local Pro/Team license. Development builds include offline test licenses so the product gate can be exercised without a hosted service:
 
@@ -59,7 +69,7 @@ Report export is gated to a local Pro/Team license. Development builds include o
 
 Free mode still allows `orca run`, policy checks, and basic replay.
 
-## 7. Check CI Readiness
+## 8. Check CI Readiness
 
 ```sh
 ./zig-out/bin/orca policy packs
@@ -70,7 +80,7 @@ Free mode still allows `orca run`, policy checks, and basic replay.
 `orca ci check` validates `.orca/policy.yaml`, rejects dangerous obvious defaults, and runs a focused CI-safe red-team fixture.
 Packaged installs use `ORCA_RESOURCE_ROOT` to find those fixtures when the command runs outside the source checkout.
 
-## 8. Try Demo Mode
+## 9. Try Demo Mode
 
 ```sh
 ./zig-out/bin/orca demo blocked-action

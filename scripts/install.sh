@@ -218,5 +218,5 @@ ensure_resource_root_entry "$CURRENT_LINK"
 printf '\nNext steps:\n'
 printf '  orca --version\n'
 printf '  orca doctor\n'
-printf '  orca init --preset generic-agent\n'
-printf '  orca plugin install hermes --yes\n'
+printf '  orca setup\n'
+printf '\n(orca setup launches guided interactive host selection on TTY terminals — no --yes needed for the happy path.)\n'
