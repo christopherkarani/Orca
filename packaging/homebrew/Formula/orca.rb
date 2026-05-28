@@ -39,14 +39,21 @@ class Orca < Formula
       Orca runtime assets are installed at:
         #{pkgshare}
 
-      Add to your shell profile:
-        export ORCA_RESOURCE_ROOT="#{pkgshare}"
+      To use orca in this terminal right now, run:
+
+          export PATH="#{bin}:$PATH"
+          export ORCA_RESOURCE_ROOT="#{pkgshare}"
+
+      (These two lines are the same contract used by the curl|sh installer.)
     EOS
   end
 
   test do
     ENV["ORCA_RESOURCE_ROOT"] = pkgshare
     assert_match version.to_s, shell_output("#{bin}/orca --version")
-    system "#{bin}/orca", "plugin", "manifest", "hermes"
+    # Exercise the full runtime contract (matching install.sh + DX smoke tests)
+    system "#{bin}/orca", "doctor"
+    system "#{bin}/orca", "plugin", "doctor", "hermes", "--json"
+    system "#{bin}/orca", "redteam", "--ci"
   end
 end
