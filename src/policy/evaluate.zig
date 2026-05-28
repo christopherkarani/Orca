@@ -712,3 +712,26 @@ test "ci mode converts ask to deny without prompting" {
     try std.testing.expect(!result.decision.requires_user);
     try std.testing.expect(!result.decision.ci_may_proceed);
 }
+
+// Quick-install DX: bare "zig build" (no args) against the actual generic-agent preset
+// currently falls to commands.default: ask (the glob "zig build *" does not match because of
+// the required space + suffix). Adding the explicit bare form in the preset is the DX fix.
+// This is the policy-level RED test (higher than raw matcher).
+test "quick install bare zig build asks today under generic-agent preset (gap)" {
+    const presets = @import("presets.zig");
+    const load = @import("load.zig");
+
+    var policy = try load.parseFromSlice(std.testing.allocator, presets.agentPresetText(.generic_agent), "generic-agent.yaml");
+    defer policy.deinit();
+
+    // Bare form — the documented DX gap (currently ask via default).
+    const bare = try command(&policy, "zig build", std.testing.allocator);
+    defer bare.deinit(std.testing.allocator);
+    try std.testing.expectEqual(core.decision.DecisionResult.ask, bare.decision.result);
+    try std.testing.expect(bare.decision.requires_user);
+
+    // Suffixed form already allows (proves the existing rule works for "zig build .").
+    const suffixed = try command(&policy, "zig build .", std.testing.allocator);
+    defer suffixed.deinit(std.testing.allocator);
+    try std.testing.expectEqual(core.decision.DecisionResult.allow, suffixed.decision.result);
+}

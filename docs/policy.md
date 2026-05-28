@@ -9,6 +9,8 @@ Commands accept `--policy <path>`. Without it, Orca discovers `.orca/policy.yaml
 ```sh
 ./zig-out/bin/orca init --preset generic-agent
 ./zig-out/bin/orca policy check .orca/policy.yaml
+
+> **Quick-install note**: The generated policy is the conservative embedded variant (network `default: deny`, broad secret read denys, dual-path .git/.orca protection). It is designed to be edited after init. See the "What to expect" guidance in quickstart.md.
 ```
 
 ## Modes

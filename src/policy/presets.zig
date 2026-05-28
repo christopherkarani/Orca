@@ -259,8 +259,11 @@ const common_strict_rules =
     \\    allow:
     \\      - "./**"
     \\    deny:
+    \\      # Dual patterns for robustness across hook/plugin path normalizations.
     \\      - "./.git/**"
+    \\      - ".git/**"
     \\      - "./.orca/**"
+    \\      - ".orca/**"
     \\    mode: staged
     \\
     \\commands:
@@ -288,6 +291,7 @@ const common_strict_rules =
     \\    - "uniq *"
     \\    - "sed -n *"
     \\    - "zig version"
+    \\    - "zig build"
     \\    - "zig build *"
     \\    - "npm test*"
     \\    - "pnpm test*"
@@ -300,6 +304,10 @@ const common_strict_rules =
     \\    - "python -m pytest*"
     \\    - "pytest"
     \\    - "pytest *"
+    \\    # Narrow, high-value, zero-risk build entrypoints (see Phase 2 / PR #17 DX work).
+    \\    - "make test*"
+    \\    - "make build*"
+    \\    - "make check*"
     \\  deny:
     \\    - "rm -rf *"
     \\    - "find * -delete"
@@ -497,8 +505,11 @@ pub const trusted_policy =
     \\    allow:
     \\      - "./**"
     \\    deny:
+    \\      # Dual patterns for robustness across hook/plugin path normalizations.
     \\      - "./.git/**"
+    \\      - ".git/**"
     \\      - "./.orca/**"
+    \\      - ".orca/**"
     \\    mode: staged
     \\
     \\commands:
@@ -545,4 +556,32 @@ test "phase 18 agent presets are exposed with stable names" {
         try std.testing.expect(std.mem.indexOf(u8, source, "version: 1") != null);
         try std.testing.expect(std.mem.indexOf(u8, source, "redact_secrets: true") != null);
     }
+}
+
+// Quick-install DX invariants: the presets used by `orca init --preset` and `setup --auto`
+// (generic-agent and friends via common_strict_rules) must remain conservative.
+// These properties are the "source of truth" for the generated .orca/policy.yaml.
+// A future semantic sync test will also load the on-disk YAMLs in policies/presets/ and assert parity.
+test "quick install agent presets have conservative defaults (network deny + broad secret protection)" {
+    const generic = agentPresetText(.generic_agent);
+    const codex = agentPresetText(.codex);
+    const openclaw = agentPresetText(.openclaw_hermes);
+
+    // Network: default deny is the deliberate quick-install conservative choice (not ask).
+    try std.testing.expect(std.mem.indexOf(u8, generic, "default: deny") != null);
+    try std.testing.expect(std.mem.indexOf(u8, codex, "default: deny") != null);
+
+    // Broad secret read protections that distinguish the embedded quick-install variant
+    // (histories + macOS Library paths + expanded credential patterns).
+    try std.testing.expect(std.mem.indexOf(u8, generic, "~/.zsh_history") != null);
+    try std.testing.expect(std.mem.indexOf(u8, generic, "~/Library/Application Support/**/Login Data*") != null);
+    try std.testing.expect(std.mem.indexOf(u8, generic, "**/*credential*") != null);
+
+    // Protected write directories present (the DX fix will make these robust to bare paths too).
+    try std.testing.expect(std.mem.indexOf(u8, generic, "./.git/**") != null);
+    try std.testing.expect(std.mem.indexOf(u8, generic, "./.orca/**") != null);
+
+    // Same invariants for other quick-install used presets that inherit common_strict_rules.
+    try std.testing.expect(std.mem.indexOf(u8, openclaw, "default: deny") != null);
+    try std.testing.expect(std.mem.indexOf(u8, openclaw, "~/.zsh_history") != null);
 }
