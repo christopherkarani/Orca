@@ -9,6 +9,7 @@ const exit_codes = @import("exit_codes.zig");
 const help = @import("help.zig");
 const cli = @import("mod.zig");
 const plugin_install = @import("plugin_install.zig");
+const resource_root = @import("../resource_root.zig");
 
 // ---------------------------------------------------------------------------
 // Top-level dispatch
@@ -818,7 +819,10 @@ fn writeManifestJson(allocator: std.mem.Allocator, workspace_root: []const u8, s
     try stdout.writeAll("{\n");
     switch (target) {
         .codex => {
-            const path = "integrations/codex-plugin/.codex-plugin/plugin.json";
+            // Use resolve (now robust) so JSON output is truthful for packaged installs
+            // (matches the hermes case and the plain writer).
+            const path = try resolveBundledPath(allocator, "integrations/codex-plugin/.codex-plugin/plugin.json");
+            defer allocator.free(path);
             const marketplace_path = codex_marketplace_path;
             try stdout.writeAll("  \"codex\": {\n");
             try stdout.print("    \"path\": ", .{});
@@ -832,7 +836,8 @@ fn writeManifestJson(allocator: std.mem.Allocator, workspace_root: []const u8, s
             try stdout.writeAll("  }\n");
         },
         .claude => {
-            const path = "integrations/claude-code-plugin/.claude-plugin/plugin.json";
+            const path = try resolveBundledPath(allocator, "integrations/claude-code-plugin/.claude-plugin/plugin.json");
+            defer allocator.free(path);
             const marketplace_path = claude_marketplace_path;
             try stdout.writeAll("  \"claude\": {\n");
             try stdout.print("    \"path\": ", .{});
@@ -846,7 +851,8 @@ fn writeManifestJson(allocator: std.mem.Allocator, workspace_root: []const u8, s
             try stdout.writeAll("  }\n");
         },
         .opencode => {
-            const path = "integrations/opencode-plugin/orca.ts";
+            const path = try resolveBundledPath(allocator, "integrations/opencode-plugin/orca.ts");
+            defer allocator.free(path);
             try stdout.writeAll("  \"opencode\": {\n");
             try stdout.print("    \"path\": ", .{});
             try writeJsonString(stdout, path);
@@ -855,8 +861,10 @@ fn writeManifestJson(allocator: std.mem.Allocator, workspace_root: []const u8, s
             try stdout.writeAll("  }\n");
         },
         .openclaw => {
-            const manifest_path = "integrations/openclaw-plugin/openclaw.plugin.json";
-            const pkg_path = "integrations/openclaw-plugin/package.json";
+            const manifest_path = try resolveBundledPath(allocator, "integrations/openclaw-plugin/openclaw.plugin.json");
+            defer allocator.free(manifest_path);
+            const pkg_path = try resolveBundledPath(allocator, "integrations/openclaw-plugin/package.json");
+            defer allocator.free(pkg_path);
             try stdout.writeAll("  \"openclaw\": {\n");
             try stdout.print("    \"manifest_path\": ", .{});
             try writeJsonString(stdout, manifest_path);
@@ -1401,19 +1409,21 @@ pub fn pluginDirExists(allocator: std.mem.Allocator, relative_path: []const u8) 
 }
 
 pub fn resolveBundledPath(allocator: std.mem.Allocator, relative_path: []const u8) ![]u8 {
-    if (dirExists(relative_path) or fileExistsAbsolute(relative_path)) {
-        return allocator.dupe(u8, relative_path);
-    }
+    // Delegate to the robust resolver used by redteam/doctor (workspace → ORCA_RESOURCE_ROOT
+    // env → self-exe fallbacks including $PREFIX/share/orca/current). This fixes the
+    // long-standing inconsistency where `plugin manifest` reported "missing" for hermes
+    // (and peers) after a correct install even when the assets were present and doctor/redteam
+    // worked. We preserve the old contract: on total failure we still return the relative
+    // string so callers can print a sensible "expected path" + "missing" status.
+    const workspace_root = std.fs.cwd().realpathAlloc(allocator, ".") catch try allocator.dupe(u8, ".");
+    defer allocator.free(workspace_root);
 
-    const resource_root = std.process.getEnvVarOwned(allocator, "ORCA_RESOURCE_ROOT") catch null;
-    if (resource_root) |root| {
-        defer allocator.free(root);
-        const candidate = try std.fs.path.join(allocator, &.{ root, relative_path });
-        if (dirExists(candidate) or fileExistsAbsolute(candidate)) return candidate;
-        allocator.free(candidate);
+    if (resource_root.resolveResourcePath(allocator, .{ .workspace_root = workspace_root }, relative_path)) |resolved| {
+        return resolved;
+    } else |err| switch (err) {
+        error.ResourceNotFound => return allocator.dupe(u8, relative_path),
+        else => return err,
     }
-
-    return allocator.dupe(u8, relative_path);
 }
 
 pub fn openClawPluginListedInJson(allocator: std.mem.Allocator, output: []const u8) bool {

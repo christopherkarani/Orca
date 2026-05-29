@@ -1,16 +1,19 @@
 #!/usr/bin/env sh
 set -eu
 
-SCRIPT_DIR="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)"
-
-# Robust VERSION resolution:
-# - Local checkout / developer runs: read the repo VERSION file when present.
-# - Piped public install (curl | sh, the primary documented path): the relative
-#   VERSION file is never available, so query the latest published release tag
-#   via the GitHub API (using only curl/wget that the script already requires).
+# Robust VERSION resolution (piped-safe):
+# - File execution (dev, local checkout): read ../VERSION when present.
+# - Piped public install (curl | sh — the primary documented path): $0 is not a
+#   regular file, so we skip the local read entirely (no redirection noise) and
+#   fall through to the GitHub API query (or ORCA_VERSION / hardcoded 1.1.5).
 # - ORCA_VERSION always wins. Hardcoded value is only the final safety net.
+SCRIPT_DIR=""
+if [ -f "$0" ] 2>/dev/null; then
+    SCRIPT_DIR="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)"
+fi
+
 DEFAULT_VERSION=""
-if [ -r "${SCRIPT_DIR}/../VERSION" ]; then
+if [ -n "$SCRIPT_DIR" ] && [ -r "${SCRIPT_DIR}/../VERSION" ]; then
     DEFAULT_VERSION="$(tr -d '[:space:]' < "${SCRIPT_DIR}/../VERSION" 2>/dev/null || true)"
 fi
 
@@ -258,13 +261,14 @@ ensure_resource_root_entry "$CURRENT_LINK"
 
 # Highest-value DX improvement: give users an immediate activation block they can paste
 # in the *current* shell. This directly attacks the #1 source of "30 seconds" being false.
+# Uses the new `orca env` (or --print-install-env for compat) so the paths are always
+# correct for the actual install layout (including custom prefixes and Windows).
 printf '\nTo use orca in *this* terminal right now (without opening a new one), run:\n'
-printf '\n    export PATH="%s:$PATH"\n' "$INSTALL_DIR"
-printf '    export ORCA_RESOURCE_ROOT="%s"\n' "$CURRENT_LINK"
-printf '\n(These two lines were also added to your shell profile for future terminals.)\n'
+printf '\n    eval "$(orca env 2>/dev/null || orca --print-install-env)"\n'
+printf '\n(These exports were also added to your shell profile for future terminals.)\n'
 
 printf '\nNext steps:\n'
 printf '  orca --version\n'
 printf '  orca doctor\n'
-printf '  orca init --preset generic-agent\n'
-printf '  orca plugin install hermes --yes\n'
+printf '  orca setup          # guided interactive host selection (TTY); --auto for CI\n'
+printf '  (optional) orca plugin list\n'

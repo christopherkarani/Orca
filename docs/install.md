@@ -56,8 +56,7 @@ orca plugin install hermes --yes
 1. Download or build the archive for your OS and CPU.
 2. Verify its SHA-256 digest against `dist/checksums.txt`.
 3. Extract the archive, or run `scripts/install.sh` / `scripts/install.ps1` to install the binary and runtime assets together.
-4. Ensure `orca` is on `PATH` and `ORCA_RESOURCE_ROOT` points at the installed runtime tree (`~/.local/share/orca/current` on Unix, `%USERPROFILE%\.orca\share\current` on Windows).
-5. Run `orca doctor`.
+4. Ensure `orca` is on `PATH` and `ORCA_RESOURCE_ROOT` points at the installed runtime tree. The easiest way: `eval "$(orca env 2>/dev/null || orca --print-install-env)"` (works for custom prefixes, Homebrew, containers, and Windows). Then run `orca doctor`.
 
 ## Package Templates
 

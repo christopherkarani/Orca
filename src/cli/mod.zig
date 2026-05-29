@@ -1,4 +1,5 @@
 const std = @import("std");
+const builtin = @import("builtin");
 const build_options = @import("build_options");
 
 pub const args = @import("args.zig");
@@ -31,6 +32,12 @@ pub const demo = @import("demo.zig");
 pub const disable = @import("disable.zig");
 pub const uninstall = @import("uninstall.zig");
 pub const interactive = @import("interactive.zig");
+pub const child_process = @import("child_process.zig");
+
+test {
+    // Ensure the child_process module (and its tests) are pulled into the test binary.
+    _ = child_process;
+}
 
 pub const version = build_options.version;
 
@@ -83,10 +90,15 @@ pub fn runWithCwd(cwd: std.fs.Dir, argv: []const []const u8, stdout: anytype, st
     }
 
     // Highest-value DX helper for installers, Homebrew post-install hooks, npm wrapper,
-    // and users who want a reliable way to get the activation exports (see install.sh + doctor).
+    // power users, and immediate shell activation. Now layout-aware (selfExePath) and
+    // platform-correct. `orca env` is the discoverable alias; the flag is kept for
+    // backward compat with any scripts that invoke it directly.
     if (std.mem.eql(u8, command, "--print-install-env")) {
-        try stdout.writeAll("export PATH=\"$HOME/.local/bin:$PATH\"\n");
-        try stdout.writeAll("export ORCA_RESOURCE_ROOT=\"$HOME/.local/share/orca/current\"\n");
+        try writeInstallEnv(stdout);
+        return exit_codes.success;
+    }
+    if (std.mem.eql(u8, command, "env")) {
+        try writeInstallEnv(stdout);
         return exit_codes.success;
     }
 
@@ -318,4 +330,64 @@ test "plugin help and disable re-enable messaging de-emphasize --yes in favor of
     try std.testing.expect(std.mem.indexOf(u8, output, "setup") != null);
     try std.testing.expect(std.mem.indexOf(u8, output, "guided") != null or std.mem.indexOf(u8, output, "interactive") != null);
     try std.testing.expectEqualStrings("", stderr_stream.getWritten());
+}
+
+// writeInstallEnv — the trustworthy, layout-aware activation printer for installers,
+// Homebrew post-install, npm wrappers, power users, and `eval "$(orca env)"`.
+// Uses the running binary's actual location (selfExePath) so custom prefixes
+// (Homebrew, containers, non-~ installs) produce correct exports. Falls back to
+// documented platform defaults. Windows uses cmd.exe set syntax; Unix uses sh export.
+// Concrete absolute paths (not $HOME) guarantee "actual install layout" fidelity.
+fn writeInstallEnv(stdout: anytype) !void {
+    const allocator = std.heap.page_allocator;
+    const exe_path = std.fs.selfExePathAlloc(allocator) catch {
+        // Fallback (static or exotic exe path): documented defaults per platform.
+        if (builtin.os.tag == .windows) {
+            try stdout.writeAll("set \"PATH=%USERPROFILE%\\.orca\\bin;%PATH%\"\n");
+            try stdout.writeAll("set \"ORCA_RESOURCE_ROOT=%USERPROFILE%\\.orca\\share\\current\"\n");
+        } else {
+            try stdout.writeAll("export PATH=\"$HOME/.local/bin:$PATH\"\n");
+            try stdout.writeAll("export ORCA_RESOURCE_ROOT=\"$HOME/.local/share/orca/current\"\n");
+        }
+        return;
+    };
+    defer allocator.free(exe_path);
+
+    const bin_dir = std.fs.path.dirname(exe_path) orelse {
+        // Same fallback as above.
+        if (builtin.os.tag == .windows) {
+            try stdout.writeAll("set \"PATH=%USERPROFILE%\\.orca\\bin;%PATH%\"\n");
+            try stdout.writeAll("set \"ORCA_RESOURCE_ROOT=%USERPROFILE%\\.orca\\share\\current\"\n");
+        } else {
+            try stdout.writeAll("export PATH=\"$HOME/.local/bin:$PATH\"\n");
+            try stdout.writeAll("export ORCA_RESOURCE_ROOT=\"$HOME/.local/share/orca/current\"\n");
+        }
+        return;
+    };
+
+    const prefix_dir = std.fs.path.dirname(bin_dir) orelse bin_dir;
+
+    const is_win = builtin.os.tag == .windows;
+    const resource_root = if (is_win)
+        std.fs.path.join(allocator, &.{ prefix_dir, "share", "current" }) catch {
+            // Fallback on join failure (extremely rare).
+            try stdout.writeAll("set \"PATH=%USERPROFILE%\\.orca\\bin;%PATH%\"\n");
+            try stdout.writeAll("set \"ORCA_RESOURCE_ROOT=%USERPROFILE%\\.orca\\share\\current\"\n");
+            return;
+        }
+    else
+        std.fs.path.join(allocator, &.{ prefix_dir, "share", "orca", "current" }) catch {
+            try stdout.writeAll("export PATH=\"$HOME/.local/bin:$PATH\"\n");
+            try stdout.writeAll("export ORCA_RESOURCE_ROOT=\"$HOME/.local/share/orca/current\"\n");
+            return;
+        };
+    defer allocator.free(resource_root);
+
+    if (is_win) {
+        try stdout.print("set \"PATH={s};%PATH%\"\n", .{bin_dir});
+        try stdout.print("set \"ORCA_RESOURCE_ROOT={s}\"\n", .{resource_root});
+    } else {
+        try stdout.print("export PATH=\"{s}:$PATH\"\n", .{bin_dir});
+        try stdout.print("export ORCA_RESOURCE_ROOT=\"{s}\"\n", .{resource_root});
+    }
 }

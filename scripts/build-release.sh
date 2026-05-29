@@ -149,7 +149,11 @@ build_cli_target() {
   if [ "$ext" = "zip" ]; then
     (cd "$work" && zip -qr "../../$artifact" "orca-v${VERSION}-${os}-${arch}")
   else
-    tar -C "$work" -czf "${DIST_DIR}/$artifact" "orca-v${VERSION}-${os}-${arch}"
+    # COPYFILE_DISABLE=1 prevents macOS bsdtar from embedding extended attributes
+    # (LIBARCHIVE.xattr.com.apple.provenance etc.) as PAX headers. This eliminates
+    # the 80–120+ "Ignoring unknown extended header keyword" lines on Linux extracts
+    # of mac-built release tarballs (Ubuntu 24.04 + Alpine curl|sh flow).
+    COPYFILE_DISABLE=1 tar -C "$work" -czf "${DIST_DIR}/$artifact" "orca-v${VERSION}-${os}-${arch}"
   fi
   printf 'Built %s\n' "${DIST_DIR}/$artifact"
 }
@@ -211,7 +215,9 @@ limitations:
 EOF
   find "$root" -name .DS_Store -delete
   (cd "$root" && find . -type f -print | sort | xargs shasum -a 256 > SHA256SUMS)
-  tar -C "$work" -czf "${DIST_DIR}/$artifact" "edge-v${VERSION}-${os}-${arch}"
+  # COPYFILE_DISABLE=1 (see build_cli_target for rationale) — keeps Edge linux tarballs
+  # free of macOS xattr spam on Ubuntu/Alpine extracts.
+  COPYFILE_DISABLE=1 tar -C "$work" -czf "${DIST_DIR}/$artifact" "edge-v${VERSION}-${os}-${arch}"
   printf 'Built %s\n' "${DIST_DIR}/$artifact"
 }
 
