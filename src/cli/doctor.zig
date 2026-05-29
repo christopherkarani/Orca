@@ -216,7 +216,12 @@ fn writeRecommendations(stdout: anytype, context: IntegrationContext) !void {
     } else if (context.mcp_manifest_invalid_count > 0) {
         try stdout.writeAll("  Fix invalid MCP manifests with `orca mcp manifest check <path>`.\n");
     } else if (!context.redteam_fixtures_present) {
-        try stdout.writeAll("  Add or restore local red-team fixtures before relying on CI regression checks.\n");
+        try stdout.writeAll("  Runtime assets (fixtures, integrations) not found.\n");
+        try stdout.writeAll("  This is common after a fresh packaged install (curl|sh, Homebrew, npm).\n\n");
+        try stdout.writeAll("  Paste these two lines in your current terminal (then re-run `orca doctor`):\n\n");
+        try stdout.writeAll("      export PATH=\"$HOME/.local/bin:$PATH\"\n");
+        try stdout.writeAll("      export ORCA_RESOURCE_ROOT=\"$HOME/.local/share/orca/current\"\n\n");
+        try stdout.writeAll("  (Use the exact paths printed by your installer if they differ.)\n");
     } else {
         try stdout.writeAll("  Run `orca run -- <command>` or `orca redteam --ci` for a local smoke test.\n");
     }

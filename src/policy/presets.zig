@@ -584,4 +584,16 @@ test "quick install agent presets have conservative defaults (network deny + bro
     // Same invariants for other quick-install used presets that inherit common_strict_rules.
     try std.testing.expect(std.mem.indexOf(u8, openclaw, "default: deny") != null);
     try std.testing.expect(std.mem.indexOf(u8, openclaw, "~/.zsh_history") != null);
+
+    // Phase 2 DX guards (explicit regression protection for the surgical changes in PR #18).
+    // These assert the narrow command allows and dual bare paths are present in the
+    // authoritative embedded common_strict_rules (used by quick-install flows).
+    // NOTE: Full on-disk YAML parity is still manual (see comment above); a future
+    // generator or stricter embed-based test can enforce it when package path rules allow.
+    try std.testing.expect(std.mem.indexOf(u8, generic, ".git/**") != null);
+    try std.testing.expect(std.mem.indexOf(u8, generic, ".orca/**") != null);
+    try std.testing.expect(std.mem.indexOf(u8, generic, "    - \"zig build\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, generic, "    - \"make test*\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, generic, "    - \"make build*\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, generic, "    - \"make check*\"") != null);
 }

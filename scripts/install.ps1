@@ -189,10 +189,15 @@ try {
     Write-Host "Current runtime link: $CurrentLink -> $ResourceRoot"
     Write-Host "ORCA_RESOURCE_ROOT=$CurrentLink"
     Ensure-ResourceRootEntry $CurrentLink
-    Write-Host "Next steps:"
-    Write-Host "  $destination setup"
     Write-Host ""
-    Write-Host "  (Guided interactive host selection is now the default on interactive terminals)"
+    Write-Host "To use orca in this PowerShell session (before restarting or reloading `$PROFILE), run:"
+    Write-Host "  orca env   # then evaluate the set commands (or copy them for cmd.exe)"
+    Write-Host ""
+    Write-Host "Next steps:"
+    Write-Host "  orca --version"
+    Write-Host "  orca doctor"
+    Write-Host "  orca setup          # guided interactive host selection (default on interactive terminals)"
+    Write-Host "  (optional) orca plugin list"
 } finally {
     Remove-Item -LiteralPath $tempDir -Recurse -Force -ErrorAction SilentlyContinue
 }

@@ -158,15 +158,20 @@ pub fn disableOpenCode(allocator: std.mem.Allocator, stdout: anytype) !bool {
 
 pub fn disableOpenClaw(allocator: std.mem.Allocator, stdout: anytype) !bool {
     if (plugin.binaryInPath(allocator, "openclaw")) {
+        try stdout.writeAll("  openclaw: running 'openclaw plugins uninstall orca-openclaw-plugin' (10s timeout)...\n");
+
         const status = runOpenClawUninstall(allocator) catch |err| blk: {
             try stdout.print("  host uninstall: failed ({s})\n", .{@errorName(err)});
-            break :blk 1;
+            try stdout.writeAll("    → Will fall back to direct file cleanup where possible.\n");
+            break :blk 255;
         };
+
         if (status == 0) {
             try stdout.writeAll("  host uninstall: removed via openclaw plugins uninstall\n");
             return true;
         } else {
-            try stdout.print("  host uninstall: openclaw exited with code {d}\n", .{status});
+            try stdout.print("  host uninstall: openclaw exited with code {d} (or timed out)\n", .{status});
+            try stdout.writeAll("    → Attempting direct cleanup of known Orca plugin files for OpenClaw...\n");
             return false;
         }
     }
@@ -177,15 +182,19 @@ pub fn disableOpenClaw(allocator: std.mem.Allocator, stdout: anytype) !bool {
 pub fn disableHermes(allocator: std.mem.Allocator, stdout: anytype) !bool {
     var disabled = false;
     if (plugin.binaryInPath(allocator, "hermes")) {
+        try stdout.writeAll("  hermes: running 'hermes plugins disable orca' (10s timeout)...\n");
+
         const status = runHermesDisable(allocator) catch |err| blk: {
             try stdout.print("  host disable: failed ({s})\n", .{@errorName(err)});
-            break :blk 1;
+            try stdout.writeAll("    → Will perform direct file cleanup of ~/.hermes/plugins/orca/\n");
+            break :blk 255;
         };
         if (status == 0) {
             try stdout.writeAll("  host disable: hermes plugins disable orca\n");
             disabled = true;
         } else {
-            try stdout.print("  host disable: hermes exited with code {d}\n", .{status});
+            try stdout.print("  host disable: hermes exited with code {d} (or timed out)\n", .{status});
+            try stdout.writeAll("    → Ensuring ~/.hermes/plugins/orca/ is removed directly...\n");
         }
     }
     const user_root = try plugin.hermesUserPluginRoot(allocator);
@@ -221,29 +230,32 @@ pub fn disableClaude(allocator: std.mem.Allocator, stdout: anytype) !bool {
 // ---------------------------------------------------------------------------
 
 pub fn runOpenClawUninstall(allocator: std.mem.Allocator) !u8 {
+    const child_process = @import("child_process.zig");
     const argv = [_][]const u8{ "openclaw", "plugins", "uninstall", "orca-openclaw-plugin" };
-    var child = std.process.Child.init(&argv, allocator);
-    child.stdin_behavior = .Ignore;
-    child.stdout_behavior = .Inherit;
-    child.stderr_behavior = .Inherit;
-    const term = try child.spawnAndWait();
-    return switch (term) {
-        .Exited => |code| @as(u8, @intCast(@min(code, 255))),
-        else => 255,
-    };
+
+    // Use the robust timed runner (10s) so a stuck/broken/misbehaving openclaw
+    // cannot hang `orca uninstall` or `orca disable` forever.
+    const res = try child_process.runHostCommandTimed(allocator, &argv, 10_000, null, null);
+    defer child_process.deinitHostCommandResult(res, allocator);
+
+    if (res.timed_out) {
+        // The caller (disableOpenClaw / uninstall) can decide to do direct fallback.
+        return 255;
+    }
+    return res.exit_code;
 }
 
 pub fn runHermesDisable(allocator: std.mem.Allocator) !u8 {
+    const child_process = @import("child_process.zig");
     const argv = [_][]const u8{ "hermes", "plugins", "disable", "orca" };
-    var child = std.process.Child.init(&argv, allocator);
-    child.stdin_behavior = .Ignore;
-    child.stdout_behavior = .Inherit;
-    child.stderr_behavior = .Inherit;
-    const term = try child.spawnAndWait();
-    return switch (term) {
-        .Exited => |code| @as(u8, @intCast(@min(code, 255))),
-        else => 255,
-    };
+
+    const res = try child_process.runHostCommandTimed(allocator, &argv, 10_000, null, null);
+    defer child_process.deinitHostCommandResult(res, allocator);
+
+    if (res.timed_out) {
+        return 255;
+    }
+    return res.exit_code;
 }
 
 pub fn removeKnownPluginPaths(allocator: std.mem.Allocator, stdout: anytype, host_name: []const u8, paths: []const []const u8) !bool {

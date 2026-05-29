@@ -31,7 +31,16 @@ pub fn command(argv: []const []const u8, stdout: anytype, stderr: anytype) !u8 {
             .workspace_root = if (workspace_root.ptr != ".".ptr) workspace_root else ".",
         }, "fixtures") catch |err| switch (err) {
             error.ResourceNotFound => {
-                try stderr.writeAll("orca redteam: no fixtures directory found. Run from the Orca source tree, set ORCA_RESOURCE_ROOT, or pass a fixture path.\n");
+                // Improved for packaged installs in non-interactive / CI / docker sh -c contexts
+                // where the login-time ORCA_RESOURCE_ROOT export from install.sh is not active.
+                // Points users at the reliable `orca env` activation primitive (post-audit DX win)
+                // while still offering the previous escape hatches.
+                try stderr.writeAll(
+                    "orca redteam: no fixtures directory found.\n\n" ++
+                        "Fixtures are part of the Orca runtime assets. After a normal install, activate them in the current shell with:\n" ++
+                        "    eval \"$(orca env 2>/dev/null || orca --print-install-env)\"\n\n" ++
+                        "Then retry. Or set ORCA_RESOURCE_ROOT explicitly to the installed share/orca/current directory, pass an explicit fixture path, or run from a source checkout.\n",
+                );
                 return exit_codes.general;
             },
             else => return err,

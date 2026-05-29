@@ -68,6 +68,7 @@ pub fn command(argv: []const []const u8, stdout: anytype, stderr: anytype) !u8 {
 
     // 1. Disable / remove all plugins
     try stdout.writeAll("Step 1: Removing plugins\n");
+    try stdout.writeAll("(OpenClaw and Hermes use host CLIs with 10s timeout + direct fallback)\n");
     const all_disabled = try disablePlugins(allocator, stdout);
 
     if (plugins_only) {
