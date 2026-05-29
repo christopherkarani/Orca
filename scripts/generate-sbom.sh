@@ -9,58 +9,28 @@ OUTPUT="${ARTIFACT_DIR}/sbom.json"
 # SBOM inventory is emitted alongside checksum-verified release artifacts.
 mkdir -p "$ARTIFACT_DIR"
 
-if [ "$RELEASE_PRODUCT" = "cli" ]; then
-  sbom_name="orca-core"
-  sbom_format="orca-core-release-inventory"
-  components='[
-    {"name": "orca", "type": "application", "language": "zig", "dependencies": []},
-    {"name": "core", "type": "library", "language": "zig", "dependencies": []}
-  ]'
-  build_targets='[
-    "darwin-amd64",
-    "darwin-arm64",
-    "linux-amd64",
-    "linux-arm64",
-    "windows-amd64"
-  ]'
-  runtime_assets='[
-    "schemas",
-    "policies",
-    "examples",
-    "integrations",
-    "packaging"
-  ]'
-  safety_boundary="Orca assets cover local CLI/runtime guardrails only; no hosted telemetry or cloud enforcement is included."
-elif [ "$RELEASE_PRODUCT" = "all" ]; then
-  sbom_name="orca-core-edge"
-  sbom_format="orca-core-edge-release-inventory"
-  components='[
-    {"name": "orca", "type": "application", "language": "zig", "dependencies": []},
-    {"name": "core", "type": "library", "language": "zig", "dependencies": []},
-    {"name": "edge", "type": "application", "language": "zig", "dependencies": []}
-  ]'
-  build_targets='[
-    "darwin-amd64",
-    "darwin-arm64",
-    "linux-amd64",
-    "linux-arm64",
-    "windows-amd64",
-    "edge-linux-amd64",
-    "edge-linux-arm64"
-  ]'
-  runtime_assets='[
-    "schemas",
-    "policies",
-    "examples/edge",
-    "docs/edge",
-    "customer_pilot",
-    "packaging/edge"
-  ]'
-  safety_boundary="Edge assets are for simulation/SITL/customer-evaluation and bench-preparation only; not real-flight readiness, certification, detect-and-avoid, or autopilot replacement."
-else
-  printf 'generate-sbom: unsupported ORCA_RELEASE_PRODUCT=%s\n' "$RELEASE_PRODUCT" >&2
-  exit 1
-fi
+# Always orca-core now (edge runtime removed)
+sbom_name="orca-core"
+sbom_format="orca-core-release-inventory"
+components='[
+  {"name": "orca", "type": "application", "language": "zig", "dependencies": []},
+  {"name": "core", "type": "library", "language": "zig", "dependencies": []}
+]'
+build_targets='[
+  "darwin-amd64",
+  "darwin-arm64",
+  "linux-amd64",
+  "linux-arm64",
+  "windows-amd64"
+]'
+runtime_assets='[
+  "schemas",
+  "policies",
+  "examples",
+  "integrations",
+  "packaging"
+]'
+safety_boundary="Orca assets cover local CLI/runtime guardrails only; no hosted telemetry or cloud enforcement is included."
 
 cat > "$OUTPUT" <<EOF
 {

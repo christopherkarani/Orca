@@ -51,7 +51,7 @@ test "extension audit targets preserve extension kind in core events" {
         .timestamp = ts,
         .event_type = .command_attempt,
         .actor = .{ .kind = .core, .display = "orca-core" },
-        .target = .{ .kind = .extension, .value = "edge.vehicle_state_read/vehicle-1" },
+        .target = .{ .kind = .extension, .value = "custom.vehicle_state_read/vehicle-1" },
     });
     try std.testing.expectEqualStrings("extension", @tagName(event.target.kind));
 }
@@ -133,12 +133,12 @@ test "core API evaluates generic command and extension actions" {
     var extension_eval = try orca_core.api.evaluateAction(
         std.testing.allocator,
         selected,
-        .{ .extension = .{ .domain = "edge", .operation = "vehicle_state_read", .target = "vehicle-1" } },
+        .{ .extension = .{ .domain = "custom", .operation = "vehicle_state_read", .target = "vehicle-1" } },
         .{},
     );
     defer extension_eval.deinit(std.testing.allocator);
     try std.testing.expectEqual(orca_core.api.DecisionResult.observe, extension_eval.decision.result);
-    try std.testing.expect(std.mem.indexOf(u8, extension_eval.explanation, "extension edge.vehicle_state_read") != null);
+    try std.testing.expect(std.mem.indexOf(u8, extension_eval.explanation, "extension custom.vehicle_state_read") != null);
     try std.testing.expect(std.mem.indexOf(u8, extension_eval.explanation, "drone") == null);
     try std.testing.expect(std.mem.indexOf(u8, extension_eval.explanation, "SITL") == null);
 }
@@ -300,4 +300,89 @@ fn expectFileNotContains(path: []const u8, needle: []const u8) !void {
     const text = try std.fs.cwd().readFileAlloc(std.testing.allocator, path, 256 * 1024);
     defer std.testing.allocator.free(text);
     try std.testing.expect(std.mem.indexOf(u8, text, needle) == null);
+}
+
+const fake_secret = "fake_secret_value_phase23";
+
+test "phase 23 fake secret guardrail covers redaction before durable strings" {
+    var buffer: [256]u8 = undefined;
+    const redacted = orca_core.api.redactStringBounded("OPENAI_API_KEY=" ++ fake_secret, &buffer);
+
+    try std.testing.expect(std.mem.indexOf(u8, redacted, fake_secret) == null);
+    try std.testing.expect(std.mem.indexOf(u8, redacted, "[REDACTED") != null);
+}
+
+test "policy schema matches runtime file-write and MCP server-scoped policy shapes" {
+    const text = try std.fs.cwd().readFileAlloc(std.testing.allocator, "schemas/policy-v1.json", 128 * 1024);
+    defer std.testing.allocator.free(text);
+    var parsed = try std.json.parseFromSlice(std.json.Value, std.testing.allocator, text, .{});
+    defer parsed.deinit();
+
+    const root = parsed.value.object;
+    const properties = root.get("properties").?.object;
+    const files_properties = properties.get("files").?.object.get("properties").?.object;
+    try std.testing.expect(files_properties.get("write_mode") == null);
+
+    const defs = root.get("$defs").?.object;
+    const file_write_properties = defs.get("fileWriteRuleSet").?.object.get("properties").?.object;
+    try std.testing.expect(file_write_properties.get("mode") != null);
+
+    const mcp_properties = defs.get("mcpPolicy").?.object.get("properties").?.object;
+    const servers = mcp_properties.get("servers").?.object;
+    const server_properties = servers.get("additionalProperties").?.object.get("properties").?.object;
+    try std.testing.expect(server_properties.get("tools") != null);
+
+    const policy_load = orca_core.policy.load;
+    const policy_schema = orca_core.policy.schema;
+    var policy = try policy_load.parseFromSlice(std.testing.allocator,
+        \\{"version":1,"mode":"strict","files":{"write":{"mode":"direct","allow":["docs/**"]}},"mcp":{"servers":{"github":{"tools":{"allow":["search_repositories"]}}}}}
+    , "schema-alignment.json");
+    defer policy.deinit();
+    try std.testing.expectEqual(policy_schema.WriteMode.direct, policy.files.write_mode);
+    try std.testing.expectEqualStrings("github.search_repositories", policy.mcp.allow[0]);
+}
+
+test "MCP manifest schema decision and risk enums match manifest parser behavior" {
+    const text = try std.fs.cwd().readFileAlloc(std.testing.allocator, "schemas/mcp-manifest-v1.json", 128 * 1024);
+    defer std.testing.allocator.free(text);
+    var parsed = try std.json.parseFromSlice(std.json.Value, std.testing.allocator, text, .{});
+    defer parsed.deinit();
+
+    const root = parsed.value.object;
+    const defs = root.get("$defs").?.object;
+    const decision_enum = defs.get("enforcingDecision").?.object.get("enum").?.array.items;
+    try expectJsonStringInEnum(decision_enum, "allow");
+    try expectJsonStringInEnum(decision_enum, "deny");
+    try expectJsonStringInEnum(decision_enum, "ask");
+    try expectJsonStringNotInEnum(decision_enum, "observe");
+
+    const properties = root.get("properties").?.object;
+    const server_schema = properties.get("server").?.object;
+    const server_required = server_schema.get("required").?.array.items;
+    try expectJsonStringInEnum(server_required, "name");
+    try expectJsonStringInEnum(server_required, "transport");
+    try expectJsonStringNotInEnum(server_required, "command");
+    const server_properties = server_schema.get("properties").?.object;
+    const transport_enum = server_properties.get("transport").?.object.get("enum").?.array.items;
+    try expectJsonStringInEnum(transport_enum, "stdio");
+    try expectJsonStringNotInEnum(transport_enum, "http");
+
+    const tools_schema = properties.get("tools").?.object.get("additionalProperties").?.object;
+    const tool_properties = tools_schema.get("properties").?.object;
+    const risk_enum = tool_properties.get("risk").?.object.get("enum").?.array.items;
+    try expectJsonStringInEnum(risk_enum, "unknown");
+    try std.testing.expectEqualStrings("#/$defs/enforcingDecision", tool_properties.get("default").?.object.get("$ref").?.string);
+}
+
+fn expectJsonStringInEnum(items: []const std.json.Value, expected: []const u8) !void {
+    for (items) |item| {
+        if (item == .string and std.mem.eql(u8, item.string, expected)) return;
+    }
+    return error.TestUnexpectedResult;
+}
+
+fn expectJsonStringNotInEnum(items: []const std.json.Value, forbidden: []const u8) !void {
+    for (items) |item| {
+        if (item == .string and std.mem.eql(u8, item.string, forbidden)) return error.TestUnexpectedResult;
+    }
 }

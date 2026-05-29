@@ -12,7 +12,7 @@ OUTPUT="${ARTIFACT_DIR}/checksums.txt"
 tmp="${OUTPUT}.tmp"
 : > "$tmp"
 
-for file in "$ARTIFACT_DIR"/orca-v* "$ARTIFACT_DIR"/edge-v*; do
+for file in "$ARTIFACT_DIR"/orca-v*; do
   [ -f "$file" ] || continue
   name="$(basename "$file")"
   case "$name" in

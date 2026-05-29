@@ -15,9 +15,7 @@ SIGNING_STATUS="not_configured"
 # - orca-v1.1.0-linux-amd64.tar.gz
 # - orca-v1.1.0-linux-arm64.tar.gz
 # - orca-v1.1.0-windows-amd64.zip
-# - edge-v1.1.0-linux-amd64.tar.gz
-# - edge-v1.1.0-linux-arm64.tar.gz
-# Release archive names and installed binaries use Orca/Core/Edge names only.
+# Release archive names and installed binaries use Orca/Core names only.
 
 CLI_TARGETS="
 darwin amd64 x86_64-macos tar.gz orca
@@ -25,11 +23,6 @@ darwin arm64 aarch64-macos tar.gz orca
 linux amd64 x86_64-linux tar.gz orca
 linux arm64 aarch64-linux tar.gz orca
 windows amd64 x86_64-windows zip orca.exe
-"
-
-EDGE_TARGETS="
-linux amd64 x86_64-linux tar.gz edge
-linux arm64 aarch64-linux tar.gz edge
 "
 
 copy_cli_payload() {
@@ -51,20 +44,8 @@ copy_cli_payload() {
     -name .cache \
   \) -prune -exec rm -rf {} +
   rm -rf \
-    "$root/docs/edge" \
     "$root/docs/integrations/drone-safepoint.md" \
     "$root/docs/integrations/drone-safety.md" \
-    "$root/examples/edge" \
-    "$root/packages/edge" \
-    "$root/packaging/edge" \
-    "$root/packaging/systemd/edge"* \
-    "$root/scripts/build-edge-release.sh" \
-    "$root/scripts/edge-"* \
-    "$root/scripts/edge_"* \
-    "$root/scripts/edge-demo.sh" \
-    "$root/scripts/edge-smoke-test.sh" \
-    "$root/scripts/install-edge.sh" \
-    "$root/schemas/edge-"* \
     "$root/schemas/safety-report"* \
     "$root/.DS_Store" \
     "$root/docs/.DS_Store" \
@@ -75,14 +56,8 @@ copy_cli_payload() {
 
 write_release_readme() {
   root="$1"
-  product="$2"
-  if [ "$product" = "orca" ]; then
-    title="Orca/Core ${VERSION} Release Artifact"
-    boundary="This archive contains the Orca CLI plus Core policy, audit, replay, redaction, schema, integration, and packaging resources needed by Orca. Edge runtime, drone, SITL, and customer-pilot materials are intentionally excluded."
-  else
-    title="Edge ${VERSION} Release Artifact"
-    boundary="Edge materials in this release are for simulation/SITL/customer-evaluation and bench-preparation only. They are not real-flight readiness, certification, detect-and-avoid, or autopilot replacement."
-  fi
+  title="Orca/Core ${VERSION} Release Artifact"
+  boundary="This archive contains the Orca CLI plus Core policy, audit, replay, redaction, schema, integration, and packaging resources needed by Orca. Edge runtime, drone, SITL, and customer-pilot materials are intentionally excluded."
   cat > "$root/README-release.md" <<EOF
 # ${title}
 
@@ -96,11 +71,6 @@ sha256sum -c checksums.txt
 
 ${boundary}
 EOF
-}
-
-write_known_limitations() {
-  root="$1"
-  cp docs/edge/known-limitations.md "$root/known-limitations.md"
 }
 
 build_cli_target() {
@@ -158,74 +128,11 @@ build_cli_target() {
   printf 'Built %s\n' "${DIST_DIR}/$artifact"
 }
 
-build_edge_target() {
-  os="$1"
-  arch="$2"
-  zig_target="$3"
-  ext="$4"
-  bin_name="$5"
-
-  artifact="edge-v${VERSION}-${os}-${arch}.${ext}"
-  work="${DIST_DIR}/work/edge-${os}-${arch}"
-  prefix="${work}/prefix"
-  root="${work}/edge-v${VERSION}-${os}-${arch}"
-
-  rm -rf "$work"
-  mkdir -p "$prefix" "$root/bin"
-
-  zig build \
-    -Dtarget="$zig_target" \
-    -Doptimize="$ZIG_OPTIMIZE" \
-    -Dversion="$VERSION" \
-    -Dcommit="$COMMIT" \
-    -Dbuild-date="$BUILD_DATE" \
-    --prefix "$prefix"
-
-  cp "$prefix/bin/$bin_name" "$root/bin/edge"
-  cp LICENSE SECURITY.md "$root/"
-  mkdir -p "$root/schemas" "$root/examples" "$root/docs" "$root/packages/edge" "$root/packaging"
-  cp -R schemas/* "$root/schemas/"
-  cp -R examples/edge "$root/examples/edge"
-  cp -R docs/edge "$root/docs/edge"
-  cp -R customer_pilot "$root/customer_pilot"
-  cp packages/edge/README.md "$root/packages/edge/README.md"
-  cp -R packaging/edge "$root/packaging/edge"
-  cp -R packaging/systemd "$root/packaging/systemd"
-  write_release_readme "$root" "edge"
-  write_known_limitations "$root"
-  cat > "$root/package-manifest.yaml" <<EOF
-package: edge
-version: ${VERSION}
-target_arch: ${os}-${arch}
-release_channel: stable
-binaries:
-  - bin/edge
-assets:
-  - schemas
-  - examples/edge
-  - docs/edge
-  - customer_pilot
-  - packages/edge/README.md
-  - packaging/edge
-  - packaging/systemd
-checksums: SHA256SUMS
-limitations:
-  - simulation/SITL/bench-preparation only
-  - no real-flight readiness claim
-EOF
-  find "$root" -name .DS_Store -delete
-  (cd "$root" && find . -type f -print | sort | xargs shasum -a 256 > SHA256SUMS)
-  # COPYFILE_DISABLE=1 (see build_cli_target for rationale) — keeps Edge linux tarballs
-  # free of macOS xattr spam on Ubuntu/Alpine extracts.
-  COPYFILE_DISABLE=1 tar -C "$work" -czf "${DIST_DIR}/$artifact" "edge-v${VERSION}-${os}-${arch}"
-  printf 'Built %s\n' "${DIST_DIR}/$artifact"
-}
-
 write_release_manifest() {
   output="${DIST_DIR}/release-manifest.json"
   artifact_entries=""
   first=1
-  for file in "${DIST_DIR}"/orca-v* "${DIST_DIR}"/edge-v*; do
+  for file in "${DIST_DIR}"/orca-v*; do
     [ -f "$file" ] || continue
     name="$(basename "$file")"
     hash="$(awk -v name="$name" '$2 == name {print $1}' "${DIST_DIR}/checksums.txt")"
@@ -245,14 +152,6 @@ write_release_manifest() {
   fixtures_json="[\"fixtures/shell-abuse/curl-pipe-sh\", \"examples/mcp\", \"examples/network\", \"examples/policies\"]"
   docs_json="[\"README.md\", \"docs/install.md\", \"README-release.md\"]"
   safety_summary="Orca is a local CLI/runtime firewall; Edge artifacts are not included in CLI-only releases."
-  if [ "$RELEASE_PRODUCT" = "all" ]; then
-    products_json="[\"orca\", \"core\", \"edge\"]"
-    runtime_assets_json="[\"schemas\", \"policies\", \"fixtures\", \"examples/edge\", \"docs/edge\", \"customer_pilot\", \"integrations\", \"packaging/edge\"]"
-    schemas_json="[\"schemas/edge-policy-v1.json\", \"schemas/edge-event-v1.json\", \"schemas/safety-report-v1.json\", \"schemas/policy-v1.json\", \"schemas/event-v1.json\"]"
-    fixtures_json="[\"fixtures/shell-abuse/curl-pipe-sh\", \"examples/edge/redteam\", \"examples/edge/demos\", \"examples/edge/safety-case\"]"
-    docs_json="[\"README.md\", \"docs/install.md\", \"docs/edge\", \"README-release.md\", \"known-limitations.md\"]"
-    safety_summary="Edge is simulation/SITL/customer-evaluation and bench-preparation only; it is not real-flight readiness, certification, detect-and-avoid, or autopilot replacement."
-  fi
 
   cat > "$output" <<EOF
 {
@@ -293,16 +192,6 @@ printf '%s\n' "$CLI_TARGETS" | while read -r os arch zig_target ext bin_name; do
   [ -n "${os:-}" ] || continue
   build_cli_target "$os" "$arch" "$zig_target" "$ext" "$bin_name"
 done
-
-if [ "$RELEASE_PRODUCT" = "all" ]; then
-  printf '%s\n' "$EDGE_TARGETS" | while read -r os arch zig_target ext bin_name; do
-    [ -n "${os:-}" ] || continue
-    build_edge_target "$os" "$arch" "$zig_target" "$ext" "$bin_name"
-  done
-elif [ "$RELEASE_PRODUCT" != "cli" ]; then
-  printf 'unsupported ORCA_RELEASE_PRODUCT=%s\n' "$RELEASE_PRODUCT" >&2
-  exit 1
-fi
 
 if [ "${ORCA_SIGNING_ENABLED:-0}" = "1" ]; then
   if [ -n "${ORCA_SIGNING_COMMAND:-}" ]; then

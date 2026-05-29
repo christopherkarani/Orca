@@ -1,8 +1,0 @@
-id: stale-agent-deny-high-risk
-environment: fake_adapter
-provenance: fake_adapter
-command: takeoff
-expected_decision: deny
-health_fault: stale_agent_heartbeat
-expected_behavior: deny_high_risk
-note: deterministic fake health scenario; no real hardware, external network, real flight, or certification claim.

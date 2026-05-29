@@ -7,7 +7,6 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 ORCA_BIN="${REPO_ROOT}/zig-out/bin/orca"
-EDGE_BIN="${REPO_ROOT}/zig-out/bin/edge"
 
 ERRORS=0
 
@@ -72,33 +71,6 @@ else
 fi
 echo ""
 
-# 4. Edge CLI smoke tests
-log_info "Running Edge CLI smoke tests..."
-
-if [[ -x "${EDGE_BIN}" ]]; then
-    if "${EDGE_BIN}" --help >/dev/null 2>&1; then
-        log_pass "edge --help"
-    else
-        log_fail "edge --help"
-    fi
-
-    if "${EDGE_BIN}" doctor >/dev/null 2>&1; then
-        log_pass "edge doctor"
-    else
-        log_fail "edge doctor"
-    fi
-
-    # Run Edge redteam in CI mode (safe, deterministic, no hardware)
-    if "${EDGE_BIN}" redteam --ci >/dev/null 2>&1; then
-        log_pass "edge redteam --ci"
-    else
-        log_fail "edge redteam --ci"
-    fi
-else
-    log_fail "edge binary not found at ${EDGE_BIN}"
-fi
-echo ""
-
 # 5. Check baseline docs exist
 log_info "Checking baseline docs..."
 
@@ -106,12 +78,6 @@ if [[ -f "${REPO_ROOT}/docs/integrations/current-baseline.md" ]]; then
     log_pass "docs/integrations/current-baseline.md exists"
 else
     log_fail "docs/integrations/current-baseline.md missing"
-fi
-
-if [[ -f "${REPO_ROOT}/docs/integrations/drone-safepoint.md" ]]; then
-    log_pass "docs/integrations/drone-safepoint.md exists"
-else
-    log_fail "docs/integrations/drone-safepoint.md missing"
 fi
 echo ""
 

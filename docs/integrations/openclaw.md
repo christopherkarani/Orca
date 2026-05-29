@@ -235,4 +235,4 @@ This plugin does not add MCP server behavior.
 
 ## No drone features
 
-This plugin does not add drone-specific plugin features. A separate drone workstream exists in this repository under `packages/edge/`. The Orca OpenClaw plugin does not expose or modify drone functionality.
+This plugin does not add drone-specific plugin features. The Orca OpenClaw plugin does not expose or modify drone functionality.

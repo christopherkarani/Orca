@@ -1,9 +1,0 @@
-id: sitl-observe-heartbeat-skip
-environment: px4_sitl
-mode: observe
-command: unknown
-requires_px4_sitl: true
-expected_decision: observe
-expected_forwarded: true
-timeout_ms: 1000
-note: "PX4 SITL opt-in scenario; should skip when EDGE_BIN_RUN_PX4_SITL_TESTS is unset"

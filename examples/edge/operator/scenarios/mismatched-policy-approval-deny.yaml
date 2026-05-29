@@ -1,7 +1,0 @@
-id: mismatched-policy-approval-deny
-command: arm
-request: examples/edge/operator/requests/arm.json
-state: examples/edge/operator/states/fresh-state.json
-approval: mismatched_policy
-expected_decision: deny
-note: policy-bound approval cannot be reused after the policy hash changes

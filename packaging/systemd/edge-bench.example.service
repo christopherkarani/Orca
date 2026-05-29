@@ -1,8 +1,0 @@
-# Edge bench example only. Do not install or enable automatically.
-# hardware_bench_no_actuation only; no real-flight readiness claim.
-[Unit]
-Description=Edge bench example
-
-[Service]
-Type=oneshot
-ExecStart=/usr/local/bin/edge bench doctor

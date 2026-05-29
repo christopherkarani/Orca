@@ -270,7 +270,6 @@ cat tests/plugin-fixtures/claude/user_prompt_submit_secret.json \
 
 ## Separate Workstream/Drone Non-regression Result
 
-- Drone workstream detected in repository (packages/edge/)
 - Plugin files do NOT expose drone commands ✓
 - Plugin docs do NOT include drone demos ✓
 - Plugin docs do NOT include operational drone-control instructions ✓

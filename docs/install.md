@@ -70,10 +70,6 @@ Templates exist under `packaging/`:
 
 They contain release-time placeholders until artifacts and checksums are generated.
 
-## Edge
-
-Edge install instructions live in [docs/edge/install.md](edge/install.md). Edge artifacts are Linux amd64/arm64 only in this release and must include runtime assets. Edge is fake/SITL/customer-evaluation and bench-preparation only; it is not real-flight readiness, certification, detect-and-avoid, or autopilot replacement.
-
 ## macOS Notes
 
 macOS builds provide process supervision, environment filtering, staged writes, PATH/shell shims, MCP stdio proxying, audit/replay, and network policy decisions. Transparent filesystem and transparent network enforcement are limited unless `orca doctor` says otherwise.

@@ -16,8 +16,6 @@ test "phase25 release scripts package runtime assets referenced by CLI docs" {
         try std.testing.expect(std.mem.indexOf(u8, sh, name) != null);
         try std.testing.expect(std.mem.indexOf(u8, ps1, name) != null);
     }
-    try std.testing.expect(std.mem.indexOf(u8, sh, "edge") != null);
-    try std.testing.expect(std.mem.indexOf(u8, ps1, "edge") != null);
 }
 
 test "phase25 Windows package templates match nested zip layout" {
@@ -52,13 +50,7 @@ test "phase25 MCP docs distinguish proxy stdin and list observation" {
     try std.testing.expect(std.mem.indexOf(u8, mcp_doc, "observes and audits `tools/list`, `resources/list`, and `prompts/list`") != null);
 }
 
-test "phase25 docs preserve Edge no-real-flight safety boundary" {
-    const edge_readme = try readFile(std.testing.allocator, "packages/edge/README.md");
-    defer std.testing.allocator.free(edge_readme);
 
-    try std.testing.expect(std.mem.indexOf(u8, edge_readme, "Phase 28 adds a MAVLink gateway foundation") != null);
-    try std.testing.expect(std.mem.indexOf(u8, edge_readme, "flight-ready") == null);
-}
 
 test "phase25 Core facade is the shared CLI policy audit replay and redaction surface" {
     try std.testing.expect(@hasDecl(orca, "core_api"));
