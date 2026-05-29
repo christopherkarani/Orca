@@ -188,7 +188,11 @@ fn runGuidedSetup(cwd: std.fs.Dir, stdout: anytype, stderr: anytype) !u8 {
     if (!plugin.fileExistsAbsolute(policy_path)) {
         try stdout.writeAll("No policy found. Creating with generic-agent preset...\n");
         const init_argv = &[_][]const u8{ "--preset", "generic-agent", "--quiet" };
-        _ = try init.command(cwd, init_argv, stdout, stderr);
+        const init_code = try init.command(cwd, init_argv, stdout, stderr);
+        if (init_code != exit_codes.success) {
+            try stderr.print("orca setup: policy init returned non-success code {d}\n", .{init_code});
+            return init_code;
+        }
     }
 
     // Detect hosts using existing infrastructure

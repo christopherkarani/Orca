@@ -50,8 +50,6 @@ test "phase25 MCP docs distinguish proxy stdin and list observation" {
     try std.testing.expect(std.mem.indexOf(u8, mcp_doc, "observes and audits `tools/list`, `resources/list`, and `prompts/list`") != null);
 }
 
-
-
 test "phase25 Core facade is the shared CLI policy audit replay and redaction surface" {
     try std.testing.expect(@hasDecl(orca, "core_api"));
 

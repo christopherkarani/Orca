@@ -35,9 +35,9 @@ pub const commands = [_]CommandInfo{
         .summary = "Guided post-install setup for agent host integrations",
         .usage = "orca setup [--auto] [--preset <name>]",
         .details = &.{
-            "On interactive terminals (TTY), `orca setup` with no flags launches guided host selection: a simple numbered list of detected agents. Toggle choices, confirm with 'c' — no `--yes` needed for the happy path.",
-            "The selector is line-based for broad terminal compatibility. Full arrow+spacebar support is planned for a future phase.",
-            "Use --auto (or --yes alias) for fully automatic non-interactive mode (scripts, CI, headless). This path is 100% unchanged in behavior.",
+            "On interactive terminals (TTY), `orca setup` (no flags) enters guided mode and auto-selects all detected agent hosts for integration (Phase 0 stub behavior).",
+            "A full interactive selector (numbered list, toggle with keys, confirm with 'c') is planned for a future phase. Current guided path requires no user input.",
+            "Use --auto (or --yes alias) for the fully automatic non-interactive path used by scripts/CI. Behavior is stable and unchanged.",
             "Use --preset to choose a policy preset (default: generic-agent).",
             "After setup, run 'orca run -- <your-command>' for immediate protection.",
         },

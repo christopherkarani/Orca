@@ -33,14 +33,33 @@ pub fn runMultiSelect(
     _ = stdout;
     _ = stdin;
 
-    const owned = try allocator.alloc(SelectionItem, items.len);
-    for (items, 0..) |item, i| {
-        owned[i] = .{
-            .label = try allocator.dupe(u8, item.label),
-            .checked = true, // Phase 0 default: everything selected
-            .id = if (item.id) |id| try allocator.dupe(u8, id) else null,
-        };
+    // Use ArrayList + errdefer for safe partial-init cleanup on dupe failure.
+    // This guarantees zero leaks even if the Nth dupe fails after earlier successes.
+    var list: std.ArrayList(SelectionItem) = .empty;
+    errdefer {
+        for (list.items) |item| {
+            allocator.free(item.label);
+            if (item.id) |id| allocator.free(id);
+        }
+        list.deinit(allocator);
     }
+
+    for (items) |item| {
+        const owned_label = try allocator.dupe(u8, item.label);
+        errdefer allocator.free(owned_label);
+        const owned_id = if (item.id) |id| try allocator.dupe(u8, id) else null;
+        errdefer if (owned_id) |id| allocator.free(id);
+
+        try list.append(allocator, .{
+            .label = owned_label,
+            .checked = true, // Phase 0 default: everything selected
+            .id = owned_id,
+        });
+    }
+
+    const owned = try list.toOwnedSlice(allocator);
+    // list is now empty (toOwnedSlice takes ownership); the errdefer above will not run on success.
+    list = .empty; // prevent double-free in errdefer if somehow reached
 
     return .{
         .items = owned,
@@ -138,4 +157,31 @@ test "interactive: deinitMultiSelectResult frees memory cleanly" {
 
     // Reaching here without leaks (under testing allocator) means deinit works.
     try std.testing.expect(true);
+}
+
+test "interactive: runMultiSelect does not leak on allocation failure mid-initialization (RED->GREEN safety test)" {
+    // Use Zig's standard FailingAllocator to force OOM after a small number of allocations.
+    // This exercises the error path in runMultiSelect where a dupe can fail after the slice alloc succeeded.
+    var failing_inst = std.testing.FailingAllocator.init(std.testing.allocator, .{ .fail_index = 1 });
+    const failing_alloc = failing_inst.allocator();
+
+    const input = [_]SelectionItem{
+        .{ .label = "HostOne", .id = "one" },
+        .{ .label = "HostTwo", .id = "two" },
+    };
+
+    var out_buf: [64]u8 = undefined;
+    var in_buf: [64]u8 = undefined;
+    var out = std.io.fixedBufferStream(&out_buf);
+    var in_ = std.io.fixedBufferStream(&in_buf);
+
+    const result = runMultiSelect(failing_alloc, &input, out.writer(), in_.reader());
+    try std.testing.expectError(error.OutOfMemory, result);
+
+    // RED: With current implementation, the slice for `owned` is allocated (alloc_index
+    // advances), then the first dupe succeeds, second dupe triggers failure (fail_index hit),
+    // but the already-allocated owned slice and first label are never freed -> leak.
+    // The test asserts that on OOM path, everything that was allocated must have been freed.
+    try std.testing.expect(failing_inst.has_induced_failure);
+    try std.testing.expectEqual(failing_inst.allocated_bytes, failing_inst.freed_bytes);
 }

@@ -308,11 +308,10 @@ test "setup help describes guided interactive default on TTY and de-emphasizes -
     try std.testing.expectEqual(exit_codes.success, code);
 
     const output = stdout_stream.getWritten();
-    // New Phase 3 messaging: guided is default on interactive terminals
+    // Accurate for current Phase 0 guided stub: mentions guided and the TTY/auto distinction.
+    // Full interactive toggle UI is future work; help text reflects stub reality.
     try std.testing.expect(std.mem.indexOf(u8, output, "guided") != null);
-    try std.testing.expect(std.mem.indexOf(u8, output, "interactive") != null or std.mem.indexOf(u8, output, "TTY") != null or std.mem.indexOf(u8, output, "terminal") != null);
-    // Still documents the non-interactive escape hatch
-    try std.testing.expect(std.mem.indexOf(u8, output, "--auto") != null or std.mem.indexOf(u8, output, "non-interactive") != null);
+    try std.testing.expect(std.mem.indexOf(u8, output, "auto-selects") != null or std.mem.indexOf(u8, output, "--auto") != null);
     try std.testing.expectEqualStrings("", stderr_stream.getWritten());
 }
 
@@ -326,9 +325,9 @@ test "plugin help and disable re-enable messaging de-emphasize --yes in favor of
     try std.testing.expectEqual(exit_codes.success, code);
 
     const output = stdout_stream.getWritten();
-    // Phase 3: primary onboarding path is `orca setup`; --yes remains for scripts
+    // Primary path is `orca setup` (guided on TTY); messaging updated for Phase 0 stub.
     try std.testing.expect(std.mem.indexOf(u8, output, "setup") != null);
-    try std.testing.expect(std.mem.indexOf(u8, output, "guided") != null or std.mem.indexOf(u8, output, "interactive") != null);
+    try std.testing.expect(std.mem.indexOf(u8, output, "guided") != null);
     try std.testing.expectEqualStrings("", stderr_stream.getWritten());
 }
 
