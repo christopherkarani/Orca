@@ -145,3 +145,5 @@ docs/integrations/openclaw-security-scan-analysis.md
 PROMPT_*.md
 orca-dashboard-ui/
 
+.skynex/production-gate.json
+.skynex/audit.log

@@ -23,7 +23,6 @@ jobs:
         shell: bash
         run: |
           ./zig-out/bin/orca version --json
-          ./zig-out/bin/edge version --json
       - name: Check Windows target from Unix runners
         if: runner.os != 'Windows'
         run: zig build check-windows
@@ -31,5 +30,4 @@ jobs:
         shell: bash
         run: |
           grep -R "orca-v.*linux-amd64" scripts packaging .github/workflows
-          grep -R "edge-v.*linux-amd64" scripts packaging .github/workflows
           grep -R "checksums.txt" scripts packaging .github/workflows

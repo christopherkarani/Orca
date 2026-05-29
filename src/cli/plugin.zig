@@ -991,7 +991,7 @@ fn installCommand(argv: []const []const u8, stdout: anytype, stderr: anytype) !u
                 \\  orca plugin install opencode --scope project|global [--dry-run|--yes]
                 \\  orca plugin install <target> [--yes]
                 \\  
-                \\Primary flow: `orca setup` (guided, interactive on TTY). --yes for scripts/CI only.
+                \\Primary flow: `orca setup` (guided auto-select on TTY, Phase 0). --yes / --auto for scripts/CI. Full selector UI planned later.
                 \\Options:
                 \\  --dry-run       Preview changes without mutating host config (default)
                 \\  --all-detected  Only install for hosts found in PATH

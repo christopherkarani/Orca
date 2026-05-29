@@ -91,7 +91,6 @@ jobs:
           path: |
             dist/orca-v*.tar.gz
             dist/orca-v*.zip
-            dist/edge-v*.tar.gz
             dist/checksums.txt
             dist/sbom.json
             dist/release-manifest.json

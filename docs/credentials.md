@@ -447,4 +447,3 @@ These are detected and redacted exactly like real secrets.
 - [Network](network.md) — Network exfiltration detection and proxy configuration
 - [Commands](commands.md) — Command risk classification and approvals
 - [Threat Model](threat-model.md) — Security assumptions and trust boundaries
-- [Edge Sensitive Data Redaction](edge/sensitive-data-redaction.md) — Edge-specific redaction rules

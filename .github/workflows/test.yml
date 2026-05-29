@@ -30,22 +30,14 @@ jobs:
           bash -n scripts/install.sh
           bash -n scripts/build-release.sh
           bash -n scripts/build-cli-release.sh
-          bash -n scripts/build-edge-release.sh
           bash -n scripts/generate-checksums.sh
           bash -n scripts/generate-sbom.sh
           bash -n scripts/verify-release.sh
           bash -n scripts/release-dry-run.sh
-          bash -n scripts/edge-release-smoke-test.sh
           ruby -c packaging/homebrew/Formula/orca.rb
           python3 -m json.tool packaging/scoop/orca.json >/dev/null
           python3 -m json.tool packaging/npm/package.json >/dev/null
           grep -q checksum packaging/docker/Dockerfile
-      - name: Edge docs check
-        shell: bash
-        run: |
-          zig build
-          ./zig-out/bin/edge docs check
-          ./zig-out/bin/edge deployment assets
       - name: Release dry-run
         shell: bash
         run: ./scripts/release-dry-run.sh

@@ -56,12 +56,6 @@ require_orca_archive_binary() {
 
 disallowed_orca_archive_path() {
   case "$1" in
-    */bin/edge|\
-    */docs/edge/*|\
-    */examples/edge/*|\
-    */packages/edge/*|\
-    */packaging/edge/*|\
-    */schemas/edge-*|\
     */schemas/safety-report*|\
     */customer_pilot/*)
       return 0
@@ -181,8 +175,6 @@ require_package_hashes() {
   done
 }
 
-require_edge_artifacts=0
-
 [ -d "$DIST_DIR" ] || fail "missing dist dir: $DIST_DIR"
 [ -s "$DIST_DIR/checksums.txt" ] || fail "missing checksums.txt"
 [ -s "$DIST_DIR/release-manifest.json" ] || fail "missing release-manifest.json"
@@ -194,9 +186,6 @@ require_edge_artifacts=0
 [ -s "$DIST_DIR/package-manifests/winget/orca.yaml" ] || fail "missing rendered WinGet manifest"
 grep -q '"products_included"' "$DIST_DIR/release-manifest.json" || fail "release-manifest.json missing products_included"
 grep -q '"orca"' "$DIST_DIR/release-manifest.json" || fail "release-manifest.json missing Orca product"
-if grep -q '"products_included"[[:space:]]*:[^]]*"edge"' "$DIST_DIR/release-manifest.json"; then
-  require_edge_artifacts=1
-fi
 
 if command -v sha256sum >/dev/null 2>&1; then
   (cd "$DIST_DIR" && sha256sum -c checksums.txt)
@@ -219,14 +208,6 @@ require_orca_archive_excludes "$DIST_DIR/orca-v*-darwin-arm64.tar.gz"
 require_orca_archive_excludes "$DIST_DIR/orca-v*-linux-amd64.tar.gz"
 require_orca_archive_excludes "$DIST_DIR/orca-v*-linux-arm64.tar.gz"
 require_orca_archive_excludes "$DIST_DIR/orca-v*-windows-amd64.zip"
-if [ "$require_edge_artifacts" = "1" ]; then
-  require_artifact "$DIST_DIR/edge-v*-linux-amd64.tar.gz"
-  require_artifact "$DIST_DIR/edge-v*-linux-arm64.tar.gz"
-fi
-
-if [ "$require_edge_artifacts" = "1" ]; then
-  grep -q "not real-flight readiness" "$DIST_DIR/release-manifest.json"
-fi
 grep -q '"signing_status"' "$DIST_DIR/release-manifest.json"
 grep -q '"sbom_status"' "$DIST_DIR/release-manifest.json"
 for rendered in \
@@ -248,8 +229,4 @@ if [ "${HERMES_VERSION}" != "${CLI_VERSION}" ] || [ "${OPENCLAW_VERSION}" != "${
 fi
 
 printf 'release verify: passed\n'
-if [ "$require_edge_artifacts" = "1" ]; then
-  printf 'Limitations: Edge release assets are simulation/SITL/customer-evaluation and bench-preparation only; no real hardware, hosted telemetry, certification, detect-and-avoid, or autopilot replacement.\n'
-else
-  printf 'Limitations: Orca release assets cover local CLI/runtime guardrails only; no hosted telemetry or cloud enforcement is included.\n'
-fi
+printf 'Limitations: Orca release assets cover local CLI/runtime guardrails only; no hosted telemetry or cloud enforcement is included.\n'

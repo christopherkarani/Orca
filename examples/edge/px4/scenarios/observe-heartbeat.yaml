@@ -1,8 +1,0 @@
-id: observe-heartbeat
-environment: fake_px4
-mode: observe
-command: unknown
-expected_decision: observe
-expected_forwarded: true
-timeout_ms: 1000
-note: "fake heartbeat observation; TOKEN=sk-fakeSyntheticOpenAIKey1234567890"

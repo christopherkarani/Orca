@@ -13,13 +13,12 @@
 Orca is a local, policy-driven runtime firewall for AI agents, written in Zig.
 It is **not** a SaaS product, hosted dashboard, monetization layer, or telemetry service.
 
-The repo is organized as a monorepo with three products:
+The repo is organized as a monorepo with two products:
 
 | Product | Path | Binary | Role |
 |---------|------|--------|------|
 | Orca Core | `packages/core/` | (library) | Shared policy, audit, replay, redaction, schema, decision engine |
 | Orca | `packages/cli/` + `src/cli/` | `orca` | Desktop / CI AI-agent runtime firewall |
-| Edge | `packages/edge/` | `edge` | Drone / robotics safety-policy and audit runtime (simulation-only) |
 
 ---
 
@@ -88,24 +87,6 @@ The repo is organized as a monorepo with three products:
 |---------|------|------------|
 | `orca_core` | `packages/core/src/root.zig` | api, actions, schemas, abi (experimental), redteam |
 | `orca_cli` | `packages/cli/src/root.zig` | CLI surface + intercept/MCP/sandbox wrappers |
-| `orca_edge` | `packages/edge/src/root.zig` | domain, policy, safety, audit, MAVLink, operator, emergency, data_guard |
-
-### Edge Modules (`packages/edge/src/`)
-
-| Module | Path | Description |
-|--------|------|-------------|
-| Domain | `domain/` | vehicle, commands, coordinates, geofence, mission, state, sensors, battery, risk, safety_envelope |
-| Policy | `policy/` | Edge policy load, evaluate |
-| Safety | `safety/` | evaluator, envelope, geofence, altitude, velocity, battery, freshness, mode_authority, mission_safety, command_limits |
-| Operator | `operator/` | approval_request, approval_decision, approval_validation, approval_store, approval_token, approval_audit |
-| Emergency | `emergency/` | emergency fallback evaluation |
-| MAVLink | `mavlink/` | framing, parser, classifier, gateway, fake_transport, commands, dialect, signing, crc, messages, mission, audit |
-| PX4 | `px4/` | fake_adapter, sitl_adapter, scenario, command_mapping, telemetry_mapping, health, connection, audit |
-| ArduPilot | `ardupilot/` | fake_adapter, sitl_adapter, scenario, command_mapping, telemetry_mapping, health, connection, audit |
-| Data Guard | `data_guard/` | data_classification, egress_evaluator, endpoint_policy, link_guard, mission_data_guard, network_audit, network_finding, payload_redaction, sensor_data_guard, telemetry_policy |
-| Audit | `audit/` | edge_event, edge_hash_chain, edge_replay, edge_session, edge_summary, evidence_bundle, safety_case, safety_report, traceability |
-| Redteam | `redteam/` | fixture, runner, scorecard, report, fault_injection, safety_attacks, mavlink_attacks, mission_attacks, approval_attacks, emergency_attacks |
-| Schema | `schema/` | edge_policy_schema, edge_event_schema, safety_report_schema |
 
 ---
 
@@ -116,24 +97,14 @@ The repo is organized as a monorepo with three products:
 | Layer | Location | Description |
 |-------|----------|-------------|
 | Inline tests | `src/**/*.zig` | Behavioral tests embedded in source |
-| Package contracts | `packages/*/tests/contract.zig` | Core, CLI, Edge package API contracts |
+| Package contracts | `packages/*/tests/contract.zig` | Core, CLI package API contracts |
 | Phase integration | `tests/phase{23..35}_*.zig` | Feature-phase integration tests |
 | Fuzz regression | `tests/fuzz/security_mutation.zig` | Deterministic mutation tests |
 
 ### Test Files
 
-- `tests/phase23_contract.zig` — Core/Edge contract tests
+- `tests/phase23_contract.zig` — Core contract tests
 - `tests/phase25_cli_hardening.zig` — CLI hardening
-- `tests/phase26_edge_domain.zig` — Edge domain model
-- `tests/phase27_edge_policy_engine.zig` — Edge policy engine
-- `tests/phase28_mavlink_gateway.zig` — MAVLink gateway
-- `tests/phase29_px4_sitl.zig` — PX4 SITL
-- `tests/phase30_ardupilot_sitl.zig` — ArduPilot SITL
-- `tests/phase31_flight_safety_enforcement.zig` — Flight safety enforcement
-- `tests/phase32_operator_emergency.zig` — Operator approvals / emergency
-- `tests/phase33_edge_audit_replay_safety_case.zig` — Edge audit/replay/safety-case
-- `tests/phase34_edge_redteam_fault_injection.zig` — Edge red-team / fault injection
-- `tests/phase35_edge_data_guard.zig` — Edge data/network guard
 
 ### Test Results (P00 Run)
 
@@ -146,9 +117,6 @@ The repo is organized as a monorepo with three products:
 | `orca version --json` | Pass |
 | `orca doctor` | Pass |
 | `orca redteam --ci` | **10/10 passed, 100%** |
-| `edge --help` | Pass |
-| `edge doctor` | Pass |
-| `edge redteam --ci` | **58/58 required passed, 100%** (5 PX4 SITL skipped, 6 ArduPilot SITL skipped) |
 
 ---
 
@@ -230,4 +198,4 @@ The repo is organized as a monorepo with three products:
 
 ---
 
-*End of P00 baseline. No plugin implementation has started. No drone functionality has been weakened.*
+*End of P00 baseline. No plugin implementation has started.*
