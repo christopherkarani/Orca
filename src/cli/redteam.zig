@@ -37,9 +37,9 @@ pub fn command(argv: []const []const u8, stdout: anytype, stderr: anytype) !u8 {
                 // while still offering the previous escape hatches.
                 try stderr.writeAll(
                     "orca redteam: no fixtures directory found.\n\n" ++
-                    "Fixtures are part of the Orca runtime assets. After a normal install, activate them in the current shell with:\n" ++
-                    "    eval \"$(orca env 2>/dev/null || orca --print-install-env)\"\n\n" ++
-                    "Then retry. Or set ORCA_RESOURCE_ROOT explicitly to the installed share/orca/current directory, pass an explicit fixture path, or run from a source checkout.\n",
+                        "Fixtures are part of the Orca runtime assets. After a normal install, activate them in the current shell with:\n" ++
+                        "    eval \"$(orca env 2>/dev/null || orca --print-install-env)\"\n\n" ++
+                        "Then retry. Or set ORCA_RESOURCE_ROOT explicitly to the installed share/orca/current directory, pass an explicit fixture path, or run from a source checkout.\n",
                 );
                 return exit_codes.general;
             },

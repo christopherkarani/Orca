@@ -236,7 +236,7 @@ pub fn runOpenClawUninstall(allocator: std.mem.Allocator) !u8 {
     // Use the robust timed runner (10s) so a stuck/broken/misbehaving openclaw
     // cannot hang `orca uninstall` or `orca disable` forever.
     const res = try child_process.runHostCommandTimed(allocator, &argv, 10_000, null, null);
-    defer child_process.deinitHostCommandResult(@constCast(&res), allocator);
+    defer child_process.deinitHostCommandResult(res, allocator);
 
     if (res.timed_out) {
         // The caller (disableOpenClaw / uninstall) can decide to do direct fallback.
@@ -250,7 +250,7 @@ pub fn runHermesDisable(allocator: std.mem.Allocator) !u8 {
     const argv = [_][]const u8{ "hermes", "plugins", "disable", "orca" };
 
     const res = try child_process.runHostCommandTimed(allocator, &argv, 10_000, null, null);
-    defer child_process.deinitHostCommandResult(@constCast(&res), allocator);
+    defer child_process.deinitHostCommandResult(res, allocator);
 
     if (res.timed_out) {
         return 255;
