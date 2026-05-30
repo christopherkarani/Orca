@@ -4,6 +4,7 @@ const core = @import("orca_core").core;
 const supervisor = core.supervisor;
 const exit_codes = @import("exit_codes.zig");
 const help = @import("help.zig");
+const style = @import("style.zig");
 const init = @import("init.zig");
 const plugin = @import("plugin.zig");
 const interactive = @import("interactive.zig");
@@ -151,8 +152,11 @@ pub fn command(cwd: std.fs.Dir, argv: []const []const u8, stdout: anytype, stder
         return exit_codes.general;
     }
 
-    try stdout.writeAll("\nSetup complete.\n");
-    try stdout.writeAll("Run 'orca run -- <command>' to start a protected session.\n");
+    try stdout.writeAll("\n");
+    // Warm success (static) routed through maybeColor + Glyph — demonstrates the
+    // color helper in a key onboarding path (review gap).
+    try style.maybeColor(stdout, style.Style.green, style.Glyph.party ++ " Setup complete!");
+    try stdout.writeAll("\nRun 'orca run -- <command>' to start a protected session.\n");
     return exit_codes.success;
 }
 
@@ -254,7 +258,9 @@ fn runGuidedSetup(cwd: std.fs.Dir, stdout: anytype, stderr: anytype) !u8 {
     }
 
     if (any_installed) {
-        try stdout.writeAll("\nGuided setup complete.\n");
+        try stdout.writeAll("\n");
+        try style.maybeColor(stdout, style.Style.green, style.Glyph.party ++ " Guided setup complete!");
+        try stdout.writeAll("\n");
     } else {
         try stdout.writeAll("\nNo new integrations were added.\n");
     }

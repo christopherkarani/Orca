@@ -33,19 +33,80 @@ pub const disable = @import("disable.zig");
 pub const uninstall = @import("uninstall.zig");
 pub const interactive = @import("interactive.zig");
 pub const child_process = @import("child_process.zig");
+pub const style = @import("style.zig");
 
 test {
     // Ensure the child_process module (and its tests) are pulled into the test binary.
     _ = child_process;
+    // Pull style tests (TDD for color/TTY/NO_COLOR handling).
+    _ = style;
 }
 
 pub const version = build_options.version;
+
+/// Minimal allocation-free Levenshtein distance for short ASCII strings (command names).
+fn levenshteinDistance(a: []const u8, b: []const u8) usize {
+    if (a.len == 0) return b.len;
+    if (b.len == 0) return a.len;
+
+    var prev_row: [64]usize = undefined;
+    var curr_row: [64]usize = undefined;
+
+    const m = @min(a.len, 63);
+    const n = @min(b.len, 63);
+
+    for (0..n + 1) |j| prev_row[j] = j;
+
+    for (0..m) |i| {
+        curr_row[0] = i + 1;
+        for (0..n) |j| {
+            const cost: usize = if (a[i] == b[j]) 0 else 1;
+            const del = prev_row[j + 1] + 1;
+            const ins = curr_row[j] + 1;
+            const sub = prev_row[j] + cost;
+            curr_row[j + 1] = @min(@min(del, ins), sub);
+        }
+        const tmp = prev_row;
+        prev_row = curr_row;
+        curr_row = tmp;
+    }
+    return prev_row[n];
+}
+
+/// Suggests a close command name for typos / prefixes. Returns null for no good match.
+fn suggestCommand(unknown: []const u8) ?[]const u8 {
+    // 1. Prefix match (fast, intuitive for partial typing like "do")
+    for (help.commands) |cmd| {
+        if (std.mem.startsWith(u8, cmd.name, unknown)) return cmd.name;
+    }
+
+    // 2. Best edit distance <= 2
+    var best: ?[]const u8 = null;
+    var best_dist: usize = 3;
+    for (help.commands) |cmd| {
+        const dist = levenshteinDistance(unknown, cmd.name);
+        if (dist < best_dist) {
+            best = cmd.name;
+            best_dist = dist;
+        }
+    }
+    if (best_dist <= 2) return best;
+    return null;
+}
 
 pub fn run(argv: []const []const u8, stdout: anytype, stderr: anytype) !u8 {
     return runWithCwd(std.fs.cwd(), argv, stdout, stderr);
 }
 
 pub fn runWithCwd(cwd: std.fs.Dir, argv: []const []const u8, stdout: anytype, stderr: anytype) !u8 {
+    // Fallback / safety-net color decision prime for direct and library callers.
+    // The true one-time early prime now lives in main() (real CLI startup path).
+    // This call remains so that code paths that enter through runWithCwd directly
+    // (tests, library consumers, or future embedding) still get a cached decision
+    // before any warm output. If the cache is already populated by main(), this
+    // is a fast O(1) cache hit with no side effects.
+    _ = style.useColor(stdout);
+
     if (argv.len == 0 or std.mem.eql(u8, argv[0], "--help") or std.mem.eql(u8, argv[0], "-h")) {
         try help.write(stdout);
         return exit_codes.success;
@@ -126,9 +187,13 @@ pub fn runWithCwd(cwd: std.fs.Dir, argv: []const []const u8, stdout: anytype, st
     if (std.mem.eql(u8, command, "demo")) return demo.command(argv[1..], stdout, stderr);
     if (std.mem.eql(u8, command, "disable")) return disable.command(argv[1..], stdout, stderr);
     if (std.mem.eql(u8, command, "uninstall")) return uninstall.command(argv[1..], stdout, stderr);
-    try stderr.writeAll("orca: unknown command '");
-    try stderr.writeAll(command);
-    try stderr.writeAll(". Run 'orca help' for usage.\n");
+
+    // Warm "did you mean?" suggestions for unknown commands (foundation UX).
+    if (suggestCommand(command)) |suggestion| {
+        try stderr.print("orca: unknown command '{s}'. Did you mean '{s}'?\nRun 'orca help' for usage.\n", .{ command, suggestion });
+    } else {
+        try stderr.print("orca: unknown command '{s}'.\nRun 'orca help' for usage.\n", .{command});
+    }
     return exit_codes.usage;
 }
 
@@ -225,6 +290,30 @@ test "unknown command returns non-zero with useful message" {
     try std.testing.expect(std.mem.indexOf(u8, stderr_stream.getWritten(), "unknown command") != null);
 }
 
+// ---------------------------------------------------------------------------
+// TDD tests for "Did you mean?" suggestions (written FIRST — RED, foundation work)
+// ---------------------------------------------------------------------------
+
+test "unknown command suggests typo correction" {
+    // "docter" should suggest "doctor" via Levenshtein distance
+    const suggestion = suggestCommand("docter");
+    try std.testing.expect(suggestion != null);
+    try std.testing.expectEqualStrings("doctor", suggestion.?);
+}
+
+test "unknown command suggests prefix match" {
+    // Prefix match takes priority
+    const suggestion = suggestCommand("do");
+    try std.testing.expect(suggestion != null);
+    // "doctor" or "disable" etc. are valid; just ensure something returned
+    try std.testing.expect(suggestion.?.len > 0);
+}
+
+test "completely unknown command has no suggestion" {
+    const suggestion = suggestCommand("xyz123neveracmd");
+    try std.testing.expect(suggestion == null);
+}
+
 test "init dispatch creates policy in provided working directory" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
@@ -287,8 +376,9 @@ test "run dispatch launches child command" {
 
     const code = try run_command.commandForTest(&.{ "--", "zig", "version" }, stdout_stream.writer(), stderr_stream.writer(), .ignore);
     try std.testing.expectEqual(exit_codes.success, code);
-    try std.testing.expect(std.mem.indexOf(u8, stdout_stream.getWritten(), "Orca session started") != null);
-    try std.testing.expect(std.mem.indexOf(u8, stdout_stream.getWritten(), "Orca session ended: exit code 0") != null);
+    // TDD: new framed output with shield + separators + status glyphs (foundation work)
+    try std.testing.expect(std.mem.indexOf(u8, stdout_stream.getWritten(), "Orca is watching this session") != null);
+    try std.testing.expect(std.mem.indexOf(u8, stdout_stream.getWritten(), "Session ended cleanly") != null);
     try std.testing.expectEqualStrings("", stderr_stream.getWritten());
 }
 

@@ -9,6 +9,7 @@ const policy = @import("orca_core").policy;
 const sandbox = @import("../sandbox/mod.zig");
 const exit_codes = @import("exit_codes.zig");
 const help = @import("help.zig");
+const style = @import("style.zig");
 
 const RunOptions = struct {
     workspace: ?[]const u8 = null,
@@ -72,6 +73,10 @@ fn commandWithStdioAndEnv(argv: []const []const u8, stdout: anytype, stderr: any
     defer loaded_policy.deinit();
     const effective_policy_mode = if (options.mode_explicit) coreModeToPolicyMode(options.mode) else loaded_policy.policy.mode();
     const session_mode = effective_policy_mode.toCoreMode();
+
+    // Detect first session *before* any .orca/sessions/ creation so the warm welcome
+    // celebration can be emitted exactly once for a brand-new user/workspace.
+    const is_first_session = isFirstSession(allocator, workspace_root_for_policy);
 
     try applyNetworkOverlay(allocator, loaded_policy.innerMutPtr(), options);
 
@@ -586,7 +591,7 @@ fn commandWithStdioAndEnv(argv: []const []const u8, stdout: anytype, stderr: any
         try writer.writeLastPointer();
     }
 
-    try printSessionEnd(stdout, result);
+    try printSessionEnd(stdout, result, is_first_session);
 
     if (required_proxy_failed) {
         try stderr.writeAll("orca run: required proxy backend failed during child run; child was terminated.\n");
@@ -717,13 +722,26 @@ fn parseOptions(argv: []const []const u8, stdout: anytype, stderr: anytype) !Run
             try stderr.print("orca run: unknown option '{s}'.\n", .{arg});
             return error.Usage;
         } else {
-            try stderr.writeAll("orca run: expected '--' before child command.\n");
+            try stderr.writeAll(
+                "orca run: expected '--' before the command you want to run.\n" ++
+                "\n" ++
+                "Example:\n" ++
+                "  orca run -- codex\n" ++
+                "  orca run --mode strict -- npm install\n" ++
+                "\n" ++
+                "Run 'orca help run' for more examples.\n"
+            );
             return error.Usage;
         }
     }
 
     if (options.command_argv.len == 0) {
-        try stderr.writeAll("orca run: missing command after '--'.\n");
+        try stderr.writeAll(
+            "orca run: missing command after '--'.\n" ++
+            "\n" ++
+            "Example:\n" ++
+            "  orca run -- echo 'hello world'\n"
+        );
         return error.Usage;
     }
 
@@ -821,24 +839,48 @@ fn coreModeToPolicyMode(mode: core.types.Mode) policy.schema.Mode {
 }
 
 fn printSessionStart(stdout: anytype, session: core.session.Session) !void {
-    try stdout.print(
-        \\Orca session started: {s}
-        \\Workspace: {s}
-        \\Mode: {s}
-        \\
-    , .{
-        session.id.slice(),
-        session.workspace_root,
-        session.mode.toString(),
-    });
+    try stdout.writeAll("─────────────────────────────────────\n");
+    // Warm framing header routed through the color gate (maybeColor) + Glyph.
+    // On real TTY: bold shield line. On NO_COLOR/piped/test: identical plain bytes.
+    try style.maybeColor(stdout, style.Style.bold, style.Glyph.shield ++ "  Orca is watching this session");
+    try stdout.writeAll("\n─────────────────────────────────────\n");
+    try stdout.print("Session:   {s}\n", .{session.id.slice()});
+    try stdout.print("Workspace: {s}\n", .{session.workspace_root});
+    try stdout.print("Mode:      {s}\n", .{session.mode.toString()});
     if (session.session_name) |name| {
-        try stdout.print("Session: {s}\n", .{name});
+        try stdout.print("Name:      {s}\n", .{name});
     }
-    try stdout.writeAll("\n");
+    try stdout.writeAll("─────────────────────────────────────\n\n");
 }
 
-fn printSessionEnd(stdout: anytype, result: supervisor.SessionResult) !void {
-    try stdout.print("\nOrca session ended: exit code {d}\n", .{result.exitCode()});
+fn printSessionEnd(stdout: anytype, result: supervisor.SessionResult, is_first_session: bool) !void {
+    const code = result.exitCode();
+    if (code == 0) {
+        // Dynamic success line: explicit gated pattern (no alloc, respects useColor).
+        // Uses Glyph for the checkmark (eliminates prior duplication).
+        try stdout.writeAll("\n");
+        if (style.useColor(stdout)) {
+            try stdout.writeAll(style.Style.green);
+            try stdout.print("{s} Session ended cleanly (exit {d})\n", .{ style.Glyph.check, code });
+            try stdout.writeAll(style.Style.reset);
+        } else {
+            try stdout.print("{s} Session ended cleanly (exit {d})\n", .{ style.Glyph.check, code });
+        }
+    } else {
+        try stdout.print("\n{s} Session ended with exit code {d}\n", .{ style.Glyph.cross, code });
+    }
+    if (is_first_session and code == 0) {
+        // First-run celebration (static emotional text) routed through maybeColor + Glyph.
+        // Demonstrates the warm path using the color helper (review gap closure).
+        try stdout.writeAll("\n");
+        try style.maybeColor(
+            stdout,
+            style.Style.green,
+            style.Glyph.party ++ " Welcome to Orca! Your first protected session completed successfully.\n" ++
+                "   Next: run `orca replay --session last` to review what happened.",
+        );
+        try stdout.writeAll("\n");
+    }
 }
 
 fn flushIfSupported(writer: anytype) !void {
@@ -857,6 +899,31 @@ fn flushIfSupported(writer: anytype) !void {
     }
 }
 
+/// Returns true if the workspace has no prior .orca/sessions/ entries.
+/// Checked *before* the current session creates its directory so the first-run
+/// celebration can be emitted exactly once.
+///
+/// NOTE: This is best-effort. A concurrent process may create a session dir
+/// between the check and the current session's creation, or the user may have
+/// manually cleaned sessions while keeping the workspace. The celebration is
+/// a warm UX nicety — occasional false positives are acceptable.
+fn isFirstSession(allocator: std.mem.Allocator, workspace_root: []const u8) bool {
+    const sessions_dir = std.fs.path.join(allocator, &.{ workspace_root, ".orca", "sessions" }) catch return true;
+    defer allocator.free(sessions_dir);
+
+    var dir = std.fs.cwd().openDir(sessions_dir, .{ .iterate = true }) catch return true;
+    defer dir.close();
+
+    var it = dir.iterate();
+    while (it.next() catch return true) |entry| {
+        if (entry.kind == .directory) {
+            // Any real session dir means this is not the user's first
+            return false;
+        }
+    }
+    return true;
+}
+
 test "run rejects missing child command" {
     var stdout_buf: [512]u8 = undefined;
     var stderr_buf: [512]u8 = undefined;
@@ -866,6 +933,9 @@ test "run rejects missing child command" {
     const code = try command(&.{"--"}, stdout_stream.writer(), stderr_stream.writer());
     try std.testing.expectEqual(exit_codes.usage, code);
     try std.testing.expect(std.mem.indexOf(u8, stderr_stream.getWritten(), "missing command") != null);
+    // TDD: warm multi-line error message with examples (foundation UX)
+    try std.testing.expect(std.mem.indexOf(u8, stderr_stream.getWritten(), "Example:") != null);
+    try std.testing.expect(std.mem.indexOf(u8, stderr_stream.getWritten(), "orca run -- echo") != null);
 }
 
 test "run rejects child command without separator" {
@@ -877,6 +947,9 @@ test "run rejects child command without separator" {
     const code = try command(&.{"echo"}, stdout_stream.writer(), stderr_stream.writer());
     try std.testing.expectEqual(exit_codes.usage, code);
     try std.testing.expect(std.mem.indexOf(u8, stderr_stream.getWritten(), "expected '--'") != null);
+    // TDD: warm multi-line error message with examples + help pointer (foundation UX)
+    try std.testing.expect(std.mem.indexOf(u8, stderr_stream.getWritten(), "Example:") != null);
+    try std.testing.expect(std.mem.indexOf(u8, stderr_stream.getWritten(), "orca help run") != null);
 }
 
 test "run reports missing command usefully" {
@@ -1237,4 +1310,50 @@ fn writeLastPointerNoMakePath(allocator: std.mem.Allocator, workspace_root: []co
     try file.writeAll(session_id);
     try file.writeAll("\n");
     try file.sync();
+}
+
+// ---------------------------------------------------------------------------
+// TDD: first successful run celebration (written FIRST — RED, foundation work)
+// These exercise isFirstSession + the celebration branch in printSessionEnd.
+// ---------------------------------------------------------------------------
+
+test "first successful run prints celebration" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const root = try tmp.dir.realpathAlloc(std.testing.allocator, ".");
+    defer std.testing.allocator.free(root);
+
+    // Fresh workspace: no .orca/sessions yet → should be first
+    var stdout_buf: [1024]u8 = undefined;
+    var stderr_buf: [512]u8 = undefined;
+    var stdout_stream = std.io.fixedBufferStream(&stdout_buf);
+    var stderr_stream = std.io.fixedBufferStream(&stderr_buf);
+
+    const code = try commandForTest(&.{ "--workspace", root, "--", "echo", "hi-from-first" }, stdout_stream.writer(), stderr_stream.writer(), .inherit);
+    try std.testing.expectEqual(exit_codes.success, code);
+    const out = stdout_stream.getWritten();
+    try std.testing.expect(std.mem.indexOf(u8, out, "Welcome to Orca!") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "replay --session last") != null);
+    try std.testing.expectEqualStrings("", stderr_stream.getWritten());
+}
+
+test "subsequent runs do not print celebration" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const root = try tmp.dir.realpathAlloc(std.testing.allocator, ".");
+    defer std.testing.allocator.free(root);
+
+    // Pre-create a fake prior session dir inside the temp workspace
+    try tmp.dir.makePath(".orca/sessions/2026-01-01T00-00-00Z_aaaa");
+
+    var stdout_buf: [1024]u8 = undefined;
+    var stderr_buf: [512]u8 = undefined;
+    var stdout_stream = std.io.fixedBufferStream(&stdout_buf);
+    var stderr_stream = std.io.fixedBufferStream(&stderr_buf);
+
+    const code = try commandForTest(&.{ "--workspace", root, "--", "echo", "hi-from-second" }, stdout_stream.writer(), stderr_stream.writer(), .inherit);
+    try std.testing.expectEqual(exit_codes.success, code);
+    const out = stdout_stream.getWritten();
+    try std.testing.expect(std.mem.indexOf(u8, out, "Welcome to Orca!") == null);
+    try std.testing.expectEqualStrings("", stderr_stream.getWritten());
 }
