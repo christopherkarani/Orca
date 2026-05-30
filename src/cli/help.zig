@@ -290,16 +290,14 @@ pub const commands = [_]CommandInfo{
 };
 
 pub fn write(writer: anytype) !void {
-    try writer.writeAll(
-        "Orca — local runtime firewall for AI agents\n" ++
+    try writer.writeAll("Orca — local runtime firewall for AI agents\n" ++
         "\n" ++
         "Usage:\n" ++
         "  orca <command> [options]\n" ++
-        "\n"
-    );
+        "\n");
 
     const categories = comptime std.enums.values(Category);
-    inline for (categories) |cat| {
+    for (categories) |cat| {
         var any = false;
         for (commands) |cmd| {
             if (cmd.hidden or cmd.category != cat) continue;
