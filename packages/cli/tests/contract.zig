@@ -21,7 +21,7 @@ test "cli package help still renders Orca CLI command summary" {
     const written = stream.getWritten();
 
     try std.testing.expect(std.mem.indexOf(u8, written, "Orca") != null);
-    try std.testing.expect(std.mem.indexOf(u8, written, "Commands:") != null);
+    try std.testing.expect(std.mem.indexOf(u8, written, "Getting Started") != null);
     try std.testing.expect(std.mem.indexOf(u8, written, "redteam") != null);
 }
 

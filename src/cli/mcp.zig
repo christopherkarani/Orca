@@ -549,7 +549,7 @@ test "mcp command help and invalid subcommands are stable" {
 
     const help_code = try command(&.{"--help"}, stdout_stream.writer(), stderr_stream.writer());
     try std.testing.expectEqual(exit_codes.success, help_code);
-    try std.testing.expect(std.mem.indexOf(u8, stdout_stream.getWritten(), "MCP proxy") != null);
+    try std.testing.expect(std.mem.indexOf(u8, stdout_stream.getWritten(), "Inspect and proxy MCP servers") != null);
 
     stdout_stream.reset();
     stderr_stream.reset();
