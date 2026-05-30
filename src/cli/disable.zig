@@ -3,6 +3,8 @@ const std = @import("std");
 const exit_codes = @import("exit_codes.zig");
 const help = @import("help.zig");
 const plugin = @import("plugin.zig");
+const interactive = @import("interactive.zig");
+
 
 // ---------------------------------------------------------------------------
 // Top-level dispatch
@@ -61,11 +63,14 @@ pub fn command(argv: []const []const u8, stdout: anytype, stderr: anytype) !u8 {
         const stdin = std.fs.File.stdin();
         if (stdin.isTty()) {
             const host_label = if (target == .all) "all" else @tagName(target);
-            try stdout.print("Disable Orca for {s}? This removes plugin registrations from host agents. [Y/n] ", .{host_label});
-            var buf: [8]u8 = undefined;
-            const n = try stdin.read(&buf);
-            const answer = if (n > 0) std.mem.trimRight(u8, buf[0..n], "\r\n") else "";
-            if (answer.len > 0 and (answer[0] == 'n' or answer[0] == 'N')) {
+            var prompt_buf: [128]u8 = undefined;
+            const prompt = std.fmt.bufPrint(&prompt_buf, "Disable Orca for {s}? This removes plugin registrations from host agents.", .{host_label}) catch "Disable Orca?";
+
+            const confirmed = interactive.askConfirmInteractive(stdout, prompt, false) catch |err| {
+                try stderr.print("orca disable: confirmation failed: {s}\n", .{@errorName(err)});
+                return exit_codes.general;
+            };
+            if (!confirmed) {
                 try stdout.writeAll("canceled\n");
                 return exit_codes.success;
             }

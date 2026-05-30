@@ -3,6 +3,7 @@ const std = @import("std");
 const orca_policy = @import("orca_core").policy;
 const exit_codes = @import("exit_codes.zig");
 const help = @import("help.zig");
+const style = @import("style.zig");
 
 const InitOptions = struct {
     mode: ?[]const u8 = null,
@@ -40,14 +41,33 @@ pub fn command(cwd: std.fs.Dir, argv: []const []const u8, stdout: anytype, stder
     try writePolicy(file, preset_text, options.mode);
     const info = orca_policy.presets.agentPresetInfo(options.preset);
     if (!options.quiet) {
-        try stdout.print("Created .orca/policy.yaml from preset '{s}'.\n", .{info.name});
+        // Warm success message: format into a buffer so it can route through
+        // maybeColor, matching the style of setup.zig and run.zig warm paths.
+        try stdout.writeAll("\n");
+        var msg_buf: [256]u8 = undefined;
+        const msg = std.fmt.bufPrint(&msg_buf, "{s} Created .orca/policy.yaml from preset '{s}'.\n", .{ style.Glyph.check, info.name }) catch null;
+        if (msg) |m| {
+            try style.maybeColor(stdout, style.Style.green, m);
+        } else {
+            // Buffer too small (should never happen): fall back to manual gating.
+            if (style.useColor(stdout)) {
+                try stdout.writeAll(style.Style.green);
+                try stdout.print("{s} Created .orca/policy.yaml from preset '{s}'.\n", .{ style.Glyph.check, info.name });
+                try stdout.writeAll(style.Style.reset);
+            } else {
+                try stdout.print("{s} Created .orca/policy.yaml from preset '{s}'.\n", .{ style.Glyph.check, info.name });
+            }
+        }
         if (info.experimental) try stdout.print("Warning: {s}\n", .{info.warning});
         try stdout.writeAll(
-            \\Next steps:
-            \\  orca policy check .orca/policy.yaml
-            \\  orca doctor
-            \\  orca run -- <command>
-            \\
+            "\n" ++
+            "Your policy is ready.\n" ++
+            "\n" ++
+            "Next steps:\n" ++
+            "  orca policy check .orca/policy.yaml\n" ++
+            "  orca doctor\n" ++
+            "  orca run -- <command>\n" ++
+            "\n"
         );
     }
     return exit_codes.success;
@@ -209,6 +229,9 @@ test "init writes requested phase 18 presets as valid policies" {
         const code = try command(tmp.dir, &.{ "--preset", preset_name, "--force" }, stdout_stream.writer(), stderr_stream.writer());
         try std.testing.expectEqual(exit_codes.success, code);
         try std.testing.expect(std.mem.indexOf(u8, stdout_stream.getWritten(), "Next steps:") != null);
+        // Warm success path (checkmark + "Your policy is ready")
+        try std.testing.expect(std.mem.indexOf(u8, stdout_stream.getWritten(), style.Glyph.check ++ " Created") != null);
+        try std.testing.expect(std.mem.indexOf(u8, stdout_stream.getWritten(), "Your policy is ready") != null);
         try std.testing.expectEqualStrings("", stderr_stream.getWritten());
 
         const policy = try tmp.dir.readFileAlloc(std.testing.allocator, ".orca/policy.yaml", 16 * 1024);

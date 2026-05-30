@@ -26,6 +26,9 @@ const commands = [_][]const u8{
     "license",
     "ci",
     "demo",
+    "disable",
+    "uninstall",
+    "env",
     "version",
     "help",
 };
@@ -202,6 +205,30 @@ test "completions include public internal command and common run flags" {
     try std.testing.expect(std.mem.indexOf(u8, stdout_stream.getWritten(), "--allow-network") != null);
     try std.testing.expect(std.mem.indexOf(u8, stdout_stream.getWritten(), "--require-backend") != null);
     try std.testing.expectEqualStrings("", stderr_stream.getWritten());
+}
+
+// ---------------------------------------------------------------------------
+// Phase 1 TDD: completions must stay in sync with help.commands (written FIRST)
+// ---------------------------------------------------------------------------
+
+test "completions includes all commands" {
+    // This will fail until the hardcoded list is updated with disable/uninstall/env
+    const shells = [_][]const u8{ "bash", "zsh", "fish", "powershell" };
+    for (shells) |shell| {
+        var stdout_buf: [8192]u8 = undefined;
+        var stderr_buf: [512]u8 = undefined;
+        var stdout_stream = std.io.fixedBufferStream(&stdout_buf);
+        var stderr_stream = std.io.fixedBufferStream(&stderr_buf);
+
+        const code = try command(&.{shell}, stdout_stream.writer(), stderr_stream.writer());
+        try std.testing.expectEqual(exit_codes.success, code);
+
+        for (help.commands) |cmd| {
+            // env is intentionally added to completions even if not (yet) in help list
+            if (std.mem.eql(u8, cmd.name, "env")) continue;
+            try std.testing.expect(std.mem.indexOf(u8, stdout_stream.getWritten(), cmd.name) != null);
+        }
+    }
 }
 
 test "GitHub Actions documentation includes Orca run and redteam commands" {

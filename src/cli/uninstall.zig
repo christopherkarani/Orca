@@ -4,6 +4,8 @@ const exit_codes = @import("exit_codes.zig");
 const help = @import("help.zig");
 const plugin = @import("plugin.zig");
 const disable = @import("disable.zig");
+const interactive = @import("interactive.zig");
+
 
 // ---------------------------------------------------------------------------
 // Top-level dispatch
@@ -44,17 +46,18 @@ pub fn command(argv: []const []const u8, stdout: anytype, stderr: anytype) !u8 {
     if (!yes) {
         const stdin = std.fs.File.stdin();
         if (stdin.isTty()) {
-            if (plugins_only) {
-                try stdout.writeAll("Remove all Orca plugins from host agents? [Y/n] ");
-            } else if (keep_config) {
-                try stdout.writeAll("Uninstall Orca (keep config files)? This removes plugins and the binary. [Y/n] ");
-            } else {
-                try stdout.writeAll("Fully uninstall Orca (plugins, binary, and config)? [Y/n] ");
-            }
-            var buf: [8]u8 = undefined;
-            const n = try stdin.read(&buf);
-            const answer = if (n > 0) std.mem.trimRight(u8, buf[0..n], "\r\n") else "";
-            if (answer.len > 0 and (answer[0] == 'n' or answer[0] == 'N')) {
+            const prompt = if (plugins_only)
+                "Remove all Orca plugins from host agents?"
+            else if (keep_config)
+                "Uninstall Orca (keep config files)? This removes plugins and the binary."
+            else
+                "Fully uninstall Orca (plugins, binary, and config)?";
+
+            const confirmed = interactive.askConfirmInteractive(stdout, prompt, false) catch |err| {
+                try stderr.print("orca uninstall: confirmation failed: {s}\n", .{@errorName(err)});
+                return exit_codes.general;
+            };
+            if (!confirmed) {
                 try stdout.writeAll("canceled\n");
                 return exit_codes.success;
             }
