@@ -32,6 +32,7 @@ pub const demo = @import("demo.zig");
 pub const disable = @import("disable.zig");
 pub const uninstall = @import("uninstall.zig");
 pub const interactive = @import("interactive.zig");
+pub const quickstart = @import("quickstart.zig");
 pub const child_process = @import("child_process.zig");
 pub const style = @import("style.zig");
 
@@ -177,6 +178,7 @@ pub fn runWithCwd(cwd: std.fs.Dir, argv: []const []const u8, stdout: anytype, st
     if (std.mem.eql(u8, command, "completions")) return completions.command(argv[1..], stdout, stderr);
     if (std.mem.eql(u8, command, "shim")) return shim.command(argv[1..], stdout, stderr);
     if (std.mem.eql(u8, command, "plugin")) return plugin.command(argv[1..], stdout, stderr);
+    if (std.mem.eql(u8, command, "quickstart")) return quickstart.command(cwd, argv[1..], stdout, stderr);
     if (std.mem.eql(u8, command, "setup")) return setup.command(cwd, argv[1..], stdout, stderr);
     if (std.mem.eql(u8, command, "decide")) return decide.command(argv[1..], stdout, stderr);
     if (std.mem.eql(u8, command, "hook")) return hook.command(argv[1..], stdout, stderr);
@@ -484,6 +486,50 @@ test "plugin help and disable re-enable messaging de-emphasize --yes in favor of
     try std.testing.expect(std.mem.indexOf(u8, output, "setup") != null);
     try std.testing.expect(std.mem.indexOf(u8, output, "guided") != null);
     try std.testing.expectEqualStrings("", stderr_stream.getWritten());
+}
+
+test "quickstart dispatch runs and prints steps" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const stdout_buf: [4096]u8 = undefined;
+    const stderr_buf: [256]u8 = undefined;
+    var stdout_stream = std.io.fixedBufferStream(&stdout_buf);
+    var stderr_stream = std.io.fixedBufferStream(&stderr_buf);
+
+    const code = try runWithCwd(tmp.dir, &.{"quickstart"}, stdout_stream.writer(), stderr_stream.writer());
+    try std.testing.expectEqual(exit_codes.success, code);
+
+    const output = stdout_stream.getWritten();
+    try std.testing.expect(std.mem.indexOf(u8, output, "Orca Quickstart") != null);
+    try std.testing.expect(std.mem.indexOf(u8, output, "Step 1: Checking your system") != null);
+    try std.testing.expect(std.mem.indexOf(u8, output, "Step 2: Creating your first policy") != null or std.mem.indexOf(u8, output, "Policy already exists") != null);
+    try std.testing.expect(std.mem.indexOf(u8, output, "Step 3: Setting up") != null);
+    try std.testing.expect(std.mem.indexOf(u8, output, "You're all set!") != null);
+}
+
+test "quickstart skips init when policy exists" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    try tmp.dir.makePath(".orca");
+    {
+        const f = try tmp.dir.createFile(".orca/policy.yaml", .{});
+        defer f.close();
+        try f.writeAll("version: 1\nmode: ask\n");
+    }
+
+    const stdout_buf: [4096]u8 = undefined;
+    const stderr_buf: [256]u8 = undefined;
+    var stdout_stream = std.io.fixedBufferStream(&stdout_buf);
+    var stderr_stream = std.io.fixedBufferStream(&stderr_buf);
+
+    const code = try runWithCwd(tmp.dir, &.{"quickstart"}, stdout_stream.writer(), stderr_stream.writer());
+    try std.testing.expectEqual(exit_codes.success, code);
+
+    const output = stdout_stream.getWritten();
+    try std.testing.expect(std.mem.indexOf(u8, output, "Policy already exists. Skipping init") != null);
+    try std.testing.expect(std.mem.indexOf(u8, output, "You're all set!") != null);
 }
 
 // writeInstallEnv — the trustworthy, layout-aware activation printer for installers,

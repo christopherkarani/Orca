@@ -8,7 +8,7 @@ zig build
 ./zig-out/bin/orca version --json
 ```
 
-Use Zig `0.15.2`.
+Use Zig `0.16.0` (the current star / minimum supported version). Older 0.15.x may still work for a transition period but is no longer the target.
 
 ## Release Artifacts
 

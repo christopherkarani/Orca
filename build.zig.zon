@@ -2,7 +2,7 @@
     .name = .orca,
     .version = "1.1.4",
     .fingerprint = 0x6111eddd14dbd5f4, // Changing this has security and trust implications.
-    .minimum_zig_version = "0.15.2",
+    .minimum_zig_version = "0.16.0",
     .dependencies = .{},
     .paths = .{
         "build.zig",

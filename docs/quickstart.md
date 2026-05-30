@@ -10,7 +10,7 @@ zig build
 ./zig-out/bin/orca version --json
 ```
 
-The repository is pinned to Zig `0.15.2`. Release installs are covered in [install.md](install.md).
+The repository is pinned to Zig `0.16.0` (the new star version). Release installs are covered in [install.md](install.md).
 
 ## 2. Initialize A Policy
 

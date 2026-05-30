@@ -147,3 +147,4 @@ orca-dashboard-ui/
 
 .skynex/production-gate.json
 .skynex/audit.log
+.orchestrator/

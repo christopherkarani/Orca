@@ -75,6 +75,23 @@ pub const commands = [_]CommandInfo{
         },
     },
     .{
+        .name = "quickstart",
+        .summary = "One-command onboarding: doctor, init, setup",
+        .usage = "orca quickstart [--auto] [--preset <name>]",
+        .category = .getting_started,
+        .examples = &.{
+            "orca quickstart",
+            "orca quickstart --auto",
+            "orca quickstart --preset strict-local",
+        },
+        .details = &.{
+            "Runs doctor → init (if needed) → setup in one command.",
+            "On interactive terminals, setup runs in guided mode.",
+            "Use --auto for non-interactive environments (CI, scripts).",
+            "Use --preset to choose a policy preset (default: generic-agent).",
+        },
+    },
+    .{
         .name = "env",
         .summary = "Print shell environment for Orca",
         .usage = "orca env",
@@ -153,10 +170,11 @@ pub const commands = [_]CommandInfo{
         "Local workspace .orca/ directories are not removed automatically;",
         "run 'find . -type d -name .orca' to locate them manually.",
     } },
-    .{ .name = "replay", .summary = "Replay an audit session", .usage = "orca replay [--session <id|last>] [--json] [--only denied] [--verify]", .category = .core_workflow, .examples = &.{
+    .{ .name = "replay", .summary = "Replay an audit session", .usage = "orca replay [--list] [--session <id|last>] [--json] [--only denied] [--verify]", .category = .core_workflow, .examples = &.{
+        "orca replay --list",
         "orca replay --session last",
         "orca replay --session 2026-05-29-abc123",
-    }, .details = &.{"Reads .orca session artifacts, renders a timeline, and can verify the event hash chain."} },
+    }, .details = &.{"Reads .orca session artifacts, renders a timeline, and can verify the event hash chain. Use --list to enumerate past sessions (or run bare `orca replay` with none)."} },
     .{
         .name = "diff",
         .summary = "Show pending file changes",

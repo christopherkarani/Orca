@@ -11,6 +11,7 @@ const ReplayCliOptions = struct {
     json: bool = false,
     only_denied: bool = false,
     verify: bool = false,
+    list: bool = false,
 };
 
 pub fn command(argv: []const []const u8, stdout: anytype, stderr: anytype) !u8 {
@@ -19,6 +20,10 @@ pub fn command(argv: []const []const u8, stdout: anytype, stderr: anytype) !u8 {
         error.Usage => return exit_codes.usage,
         else => return err,
     };
+
+    if (options.list) {
+        return listSessions(stdout, stderr);
+    }
 
     var gpa_state: std.heap.GeneralPurposeAllocator(.{}) = .init;
     defer _ = gpa_state.deinit();
@@ -36,8 +41,8 @@ pub fn command(argv: []const []const u8, stdout: anytype, stderr: anytype) !u8 {
         .verify = options.verify,
     }) catch |err| switch (err) {
         error.FileNotFound => {
-            try stderr.writeAll("orca replay: session not found.\n");
-            return exit_codes.general;
+            // Phase 3: graceful fallback to listing instead of hard error
+            return listSessions(stdout, stderr);
         },
         error.HashVerificationFailed => {
             const session_dir_path = sessionDirPathForError(allocator, workspace_root, options.session) catch null;
@@ -92,6 +97,8 @@ fn parseOptions(argv: []const []const u8, stdout: anytype, stderr: anytype) !Rep
                 return error.Usage;
             }
             options.only_denied = true;
+        } else if (std.mem.eql(u8, arg, "--list")) {
+            options.list = true;
         } else {
             try stderr.print("orca replay: unknown option '{s}'.\n", .{arg});
             return error.Usage;
@@ -112,6 +119,47 @@ fn sessionDirPathForError(allocator: std.mem.Allocator, workspace_root: []const 
     return try std.fs.path.join(allocator, &.{ workspace_root, ".orca", "sessions", session_id });
 }
 
+fn listSessions(stdout: anytype, stderr: anytype) !u8 {
+    _ = stderr;
+    var gpa_state: std.heap.GeneralPurposeAllocator(.{}) = .init;
+    defer _ = gpa_state.deinit();
+    const allocator = gpa_state.allocator();
+
+    const workspace_root = try std.process.getCwdAlloc(allocator);
+    defer allocator.free(workspace_root);
+
+    const sessions_dir = try std.fs.path.join(allocator, &.{ workspace_root, ".orca", "sessions" });
+    defer allocator.free(sessions_dir);
+
+    var dir = std.fs.cwd().openDir(sessions_dir, .{ .iterate = true }) catch |err| switch (err) {
+        error.FileNotFound => {
+            try stdout.writeAll("No sessions found. Run `orca run -- <command>` to create one.\n");
+            return exit_codes.success;
+        },
+        else => return err,
+    };
+    defer dir.close();
+
+    try stdout.writeAll("SESSION ID\n");
+
+    var count: usize = 0;
+    var iter = dir.iterate();
+    while (try iter.next()) |entry| {
+        if (entry.kind != .directory) continue;
+        try stdout.print("{s}\n", .{entry.name});
+        count += 1;
+    }
+
+    if (count == 0) {
+        try stdout.writeAll("\nNo sessions found. Run `orca run -- <command>` to create one.\n");
+    } else {
+        try stdout.print("\n{d} session(s) found.\n", .{count});
+        try stdout.writeAll("Run `orca replay --session <id>` to view a session.\n");
+    }
+
+    return exit_codes.success;
+}
+
 test "replay rejects invalid --only value" {
     var stdout_buf: [512]u8 = undefined;
     var stderr_buf: [512]u8 = undefined;
@@ -121,4 +169,38 @@ test "replay rejects invalid --only value" {
     const code = try command(&.{ "--only", "allowed" }, stdout_stream.writer(), stderr_stream.writer());
     try std.testing.expectEqual(exit_codes.usage, code);
     try std.testing.expect(std.mem.indexOf(u8, stderr_stream.getWritten(), "--only") != null);
+}
+
+// ---------------------------------------------------------------------------
+// Phase 3: --list and graceful no-sessions fallback for bare "orca replay"
+// (TDD tests written FIRST)
+// ---------------------------------------------------------------------------
+
+test "replay --list succeeds (empty or populated)" {
+    var stdout_buf: [1024]u8 = undefined;
+    var stderr_buf: [256]u8 = undefined;
+    var stdout_stream = std.io.fixedBufferStream(&stdout_buf);
+    var stderr_stream = std.io.fixedBufferStream(&stderr_buf);
+
+    const code = try command(&.{ "--list" }, stdout_stream.writer(), stderr_stream.writer());
+    try std.testing.expectEqual(exit_codes.success, code);
+    // Either lists sessions or prints the friendly empty message — both OK
+    const out = stdout_stream.getWritten();
+    try std.testing.expect(std.mem.indexOf(u8, out, "No sessions") != null or std.mem.indexOf(u8, out, "SESSION") != null or out.len > 0);
+}
+
+test "replay with no args and no sessions lists instead of erroring" {
+    var stdout_buf: [1024]u8 = undefined;
+    var stderr_buf: [256]u8 = undefined;
+    var stdout_stream = std.io.fixedBufferStream(&stdout_buf);
+    var stderr_stream = std.io.fixedBufferStream(&stderr_buf);
+
+    // In a clean test env there is no .orca/sessions in cwd
+    const code = try command(&.{}, stdout_stream.writer(), stderr_stream.writer());
+    try std.testing.expectEqual(exit_codes.success, code);
+
+    const output = stdout_stream.getWritten();
+    try std.testing.expect(std.mem.indexOf(u8, output, "No sessions found") != null or std.mem.indexOf(u8, output, "orca run") != null);
+    // Friendly message must be on stdout (not the old hard error on stderr)
+    try std.testing.expect(std.mem.indexOf(u8, stderr_stream.getWritten(), "not found") == null);
 }
