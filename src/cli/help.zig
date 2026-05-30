@@ -1,10 +1,24 @@
 const std = @import("std");
+const style = @import("style.zig");
+
+pub const Category = enum {
+    getting_started,
+    core_workflow,
+    staged_changes,
+    diagnostics,
+    integrations,
+    advanced,
+    internal,
+};
 
 pub const CommandInfo = struct {
     name: []const u8,
     summary: []const u8,
     usage: []const u8,
     details: []const []const u8,
+    examples: []const []const u8 = &.{},
+    category: Category = .advanced,
+    hidden: bool = false,
 };
 
 pub const commands = [_]CommandInfo{
@@ -12,8 +26,14 @@ pub const commands = [_]CommandInfo{
         .name = "run",
         .summary = "Run a command under Orca",
         .usage = "orca run [options] -- <command> [args...]",
+        .category = .core_workflow,
+        .examples = &.{
+            "orca run -- echo 'hello world'",
+            "orca run --mode strict -- codex",
+            "orca run --no-network --no-secrets -- claude",
+        },
         .details = &.{
-            "Starts a direct-child supervision session, filters the child environment through policy, checks the direct command through Command Guard, writes audit artifacts, and mirrors the child exit code.",
+            "Starts a protected session, filters the child environment through policy, checks the direct command through a command safety check, writes audit artifacts, and mirrors the child exit code.",
             "Options: --workspace <path>, --mode observe|ask|strict|ci, --policy <path>, --session-name <name>, --no-secrets, --secretless, --inherit-env, --no-network, --allow-network <domain>, --network observe|ask|allowlist|open|off, --network-backend decision-only|proxy, --require-backend <capability>, --help",
             "Strict and CI modes default to no-secrets child environments. --secretless replaces policy-visible secret env values with broker references instead of raw values. --inherit-env is allowed only when the selected policy permits inheritance.",
             "Network flags update the run-time policy and audit network decisions. --network-backend proxy starts an explicit localhost proxy and injects HTTP_PROXY/HTTPS_PROXY/ALL_PROXY; HTTPS CONNECT enforcement is host/port only without MITM.",
@@ -24,6 +44,12 @@ pub const commands = [_]CommandInfo{
         .name = "init",
         .summary = "Create an Orca policy",
         .usage = "orca init [--preset <name>] [--mode strict|ask|observe|ci|trusted] [--ci] [--force]",
+        .category = .getting_started,
+        .examples = &.{
+            "orca init --preset generic-agent",
+            "orca init --mode strict --force",
+            "orca init --preset claude-code",
+        },
         .details = &.{
             "Creates .orca/policy.yaml from a practical editable preset.",
             "Presets: generic-agent, claude-code, codex, cursor-agent, opencode, cline-roo, mcp-dev, github-actions, solo-dev, strict-local, team-ci, openclaw-hermes, trusted-local.",
@@ -34,6 +60,12 @@ pub const commands = [_]CommandInfo{
         .name = "setup",
         .summary = "Guided post-install setup for agent host integrations",
         .usage = "orca setup [--auto] [--preset <name>]",
+        .category = .getting_started,
+        .examples = &.{
+            "orca setup",
+            "orca setup --auto",
+            "orca setup --preset strict-local",
+        },
         .details = &.{
             "On interactive terminals (TTY), `orca setup` (no flags) enters guided mode and auto-selects all detected agent hosts for integration (Phase 0 stub behavior).",
             "A full interactive selector (numbered list, toggle with keys, confirm with 'c') is planned for a future phase. Current guided path requires no user input.",
@@ -43,14 +75,32 @@ pub const commands = [_]CommandInfo{
         },
     },
     .{
+        .name = "env",
+        .summary = "Print shell environment for Orca",
+        .usage = "orca env",
+        .category = .getting_started,
+        .details = &.{
+            "Prints export statements for PATH and ORCA_RESOURCE_ROOT.",
+            "Use with eval: eval \"$(orca env)\"",
+        },
+    },
+    .{
         .name = "doctor",
         .summary = "Show platform capabilities",
         .usage = "orca doctor [--help]",
+        .category = .getting_started,
+        .examples = &.{
+            "orca doctor",
+            "orca doctor --verbose",
+        },
         .details = &.{
             "Reports platform and planned capability status honestly.",
         },
     },
-    .{ .name = "policy", .summary = "Validate, explain, and apply policies", .usage = "orca policy <check|explain|packs|apply-pack> [...]", .details = &.{
+    .{ .name = "policy", .summary = "Validate, explain, and apply policies", .usage = "orca policy <check|explain|packs|apply-pack> [...]", .category = .core_workflow, .examples = &.{
+        "orca policy check .orca/policy.yaml",
+        "orca policy explain file.read /etc/passwd",
+    }, .details = &.{
         "Subcommands:",
         "  orca policy check <policy-path>",
         "  orca policy explain [--policy <path>] <file.read|file.write|env|command|network|mcp> <target> [--method <HTTP_METHOD>]",
@@ -58,30 +108,30 @@ pub const commands = [_]CommandInfo{
         "  orca policy apply-pack <solo-dev|strict-local|team-ci|openclaw-hermes> [--force]",
         "Explanations show the decision, reason, matched rule when available, and policy mode.",
     } },
-    .{ .name = "credentials", .summary = "Check Secretless credential brokers", .usage = "orca credentials check [credential-ref]", .details = &.{
+    .{ .name = "credentials", .summary = "Verify credential brokers without exposing secrets", .usage = "orca credentials check [credential-ref]", .category = .advanced, .details = &.{
         "Checks configured Secretless brokers and optional credential refs without printing raw secret values.",
         "Supported broker kinds: local-dummy, env-file-dev, 1password-cli, macos-keychain, infisical-agent-vault.",
         "Infisical/Agent Vault is currently a status/config boundary until exact local API or CLI behavior is verified.",
     } },
-    .{ .name = "report", .summary = "Export a local safety report", .usage = "orca report --session <id|last> --format markdown|json", .details = &.{
+    .{ .name = "report", .summary = "Export a safety report for a session", .usage = "orca report --session <id|last> --format markdown|json", .category = .diagnostics, .details = &.{
         "Loads a local session, verifies the hash chain, and exports denied actions, redactions, plugin readiness, and a plain-language prevention summary.",
         "Report export is a Pro/Team local-license feature. Core safety commands remain available without a license.",
     } },
-    .{ .name = "license", .summary = "Manage local offline licenses", .usage = "orca license <status|activate> [...]", .details = &.{
+    .{ .name = "license", .summary = "Manage local offline licenses", .usage = "orca license <status|activate> [...]", .category = .advanced, .details = &.{
         "Subcommands:",
         "  orca license status [--json]",
         "  orca license activate <key-or-file>",
         "Development keys: dev-free, dev-pro, dev-team.",
         "Licenses are verified offline and stored under the user config directory.",
     } },
-    .{ .name = "ci", .summary = "Run local CI readiness checks", .usage = "orca ci check [--format markdown|json] [--github-summary <path>]", .details = &.{
+    .{ .name = "ci", .summary = "Run local CI readiness checks", .usage = "orca ci check [--format markdown|json] [--github-summary <path>]", .category = .advanced, .details = &.{
         "Validates .orca/policy.yaml, rejects dangerous obvious defaults, runs a focused CI-safe redteam fixture, and emits GitHub Actions-friendly output.",
     } },
-    .{ .name = "demo", .summary = "Create safe local demo evidence", .usage = "orca demo blocked-action", .details = &.{
+    .{ .name = "demo", .summary = "Create safe local demo evidence", .usage = "orca demo blocked-action", .category = .getting_started, .details = &.{
         "Creates a harmless local session showing a destructive command denied by Orca.",
         "The demo writes replay/report artifacts but does not execute the destructive command.",
     } },
-    .{ .name = "disable", .summary = "Disable Orca plugins from host agents", .usage = "orca disable [codex|claude|opencode|openclaw|hermes|all] [--yes]", .details = &.{
+    .{ .name = "disable", .summary = "Disable Orca plugins from host agents", .usage = "orca disable [codex|claude|opencode|openclaw|hermes|all] [--yes]", .category = .integrations, .details = &.{
         "Removes Orca plugin registrations from host agents without removing the Orca binary or policy files.",
         "Hosts: codex, claude, opencode, openclaw, hermes. Defaults to all if no host is specified.",
         "OpenCode: removes .opencode/plugins/orca.ts and ~/.config/opencode/plugins/orca.ts",
@@ -90,7 +140,7 @@ pub const commands = [_]CommandInfo{
         "Codex / Claude: removes known plugin paths (host-managed install locations).",
         "Re-enable later with: orca setup (guided) or orca plugin install <host>",
     } },
-    .{ .name = "uninstall", .summary = "Uninstall Orca from this machine", .usage = "orca uninstall [--plugins-only] [--keep-config] [--yes]", .details = &.{
+    .{ .name = "uninstall", .summary = "Uninstall Orca from this machine", .usage = "orca uninstall [--plugins-only] [--keep-config] [--yes]", .category = .integrations, .details = &.{
         "Completely removes Orca and its integrations from the machine.",
         "Steps:",
         "  1. Removes all plugins from host agents (same as 'orca disable').",
@@ -103,11 +153,41 @@ pub const commands = [_]CommandInfo{
         "Local workspace .orca/ directories are not removed automatically;",
         "run 'find . -type d -name .orca' to locate them manually.",
     } },
-    .{ .name = "replay", .summary = "Replay an audit session", .usage = "orca replay [--session <id|last>] [--json] [--only denied] [--verify]", .details = &.{"Reads .orca session artifacts, renders a timeline, and can verify the event hash chain."} },
-    .{ .name = "diff", .summary = "Show staged writes", .usage = "orca diff [--session <id|last>] [--file <path>]", .details = &.{"Shows unified diffs for Orca-mediated staged writes. This does not claim transparent interception of arbitrary child-process file IO."} },
-    .{ .name = "apply", .summary = "Apply staged writes", .usage = "orca apply [--session <id|last>] [--file <path>]", .details = &.{"Applies reviewed staged writes after original-state checks where feasible."} },
-    .{ .name = "discard", .summary = "Discard staged writes", .usage = "orca discard [--session <id|last>] [--file <path>]", .details = &.{"Removes staged writes without changing workspace files."} },
-    .{ .name = "mcp", .summary = "MCP proxy and inspection commands", .usage = "orca mcp <inspect|proxy|list|trust|manifest> [options]", .details = &.{
+    .{ .name = "replay", .summary = "Replay an audit session", .usage = "orca replay [--session <id|last>] [--json] [--only denied] [--verify]", .category = .core_workflow, .examples = &.{
+        "orca replay --session last",
+        "orca replay --session 2026-05-29-abc123",
+    }, .details = &.{"Reads .orca session artifacts, renders a timeline, and can verify the event hash chain."} },
+    .{
+        .name = "diff",
+        .summary = "Show pending file changes",
+        .usage = "orca diff [--session <id|last>] [--file <path>]",
+        .category = .staged_changes,
+        .details = &.{
+            "Shows unified diffs for Orca-mediated staged writes.",
+            "Use 'orca apply' to commit changes or 'orca discard' to cancel them.",
+        },
+    },
+    .{
+        .name = "apply",
+        .summary = "Commit pending file changes",
+        .usage = "orca apply [--session <id|last>] [--file <path>]",
+        .category = .staged_changes,
+        .details = &.{
+            "Applies reviewed staged writes after original-state checks where feasible.",
+            "See 'orca diff' to review changes and 'orca discard' to cancel them.",
+        },
+    },
+    .{
+        .name = "discard",
+        .summary = "Reject pending file changes",
+        .usage = "orca discard [--session <id|last>] [--file <path>]",
+        .category = .staged_changes,
+        .details = &.{
+            "Removes staged writes without changing workspace files.",
+            "See 'orca diff' to review changes and 'orca apply' to commit them.",
+        },
+    },
+    .{ .name = "mcp", .summary = "Inspect and proxy MCP servers", .usage = "orca mcp <inspect|proxy|list|trust|manifest> [options]", .category = .advanced, .details = &.{
         "Subcommands:",
         "  orca mcp inspect --command <server> [--name <server-name>] [--policy <path>]",
         "  orca mcp proxy --command <server> [--name <server-name>] [--policy <path>] [--manifest <path>] [--mode observe|ask|strict|ci]",
@@ -118,25 +198,25 @@ pub const commands = [_]CommandInfo{
         "The proxy speaks newline-delimited stdio JSON-RPC and writes only MCP protocol messages to stdout while proxying.",
         "Remote HTTP MCP, OAuth, and hosted gateway behavior are limited/deferred in Phase 17.",
     } },
-    .{ .name = "redteam", .summary = "Run red-team fixtures", .usage = "orca redteam [path] [--json] [--ci] [--fixture <id>]", .details = &.{
+    .{ .name = "redteam", .summary = "Run built-in safety tests against current policy", .usage = "orca redteam [path] [--json] [--ci] [--fixture <id>]", .category = .advanced, .details = &.{
         "Discovers deterministic local fixtures, runs them against implemented Orca controls, and reports a scorecard.",
         "When no path is provided, fixtures are discovered under ./fixtures.",
         "--json emits a machine-readable report. --ci never prompts and exits non-zero if any required fixture fails or is unsupported.",
     } },
-    .{ .name = "completions", .summary = "Generate shell completions", .usage = "orca completions <bash|zsh|fish|powershell>", .details = &.{
+    .{ .name = "completions", .summary = "Generate shell completions", .usage = "orca completions <bash|zsh|fish|powershell>", .category = .getting_started, .details = &.{
         "Prints a completion script to stdout for the requested shell.",
         "The generated completions include top-level commands and common flags.",
     } },
-    .{ .name = "shim", .summary = "Internal PATH shim callback", .usage = "orca shim exec -- <command> [args...]", .details = &.{
+    .{ .name = "shim", .summary = "Internal callback for session-local PATH shims", .usage = "orca shim exec -- <command> [args...]", .category = .internal, .hidden = true, .details = &.{
         "Internal callback used by session-local PATH shims under .orca/sessions/<id>/shims/.",
         "The shim removes the session shim directory from PATH before resolving the real binary to avoid recursive invocation.",
         "This is wrapper-level coverage only and does not claim transparent OS-level interception.",
     } },
-    .{ .name = "version", .summary = "Print version", .usage = "orca version [--json] [--help]", .details = &.{
+    .{ .name = "version", .summary = "Print version", .usage = "orca version [--json] [--help]", .category = .diagnostics, .details = &.{
         "Prints the current Orca version.",
         "--json emits version, commit, target, and build_date fields for release automation.",
     } },
-    .{ .name = "plugin", .summary = "Plugin management and diagnostics", .usage = "orca plugin <doctor|manifest|install|mcp-server> [options]", .details = &.{
+    .{ .name = "plugin", .summary = "Plugin management and diagnostics", .usage = "orca plugin <doctor|manifest|install|mcp-server> [options]", .category = .integrations, .details = &.{
         "Subcommands:",
         "  orca plugin doctor [codex|claude|opencode|openclaw|hermes] [--json]",
         "  orca plugin manifest [codex|claude|opencode|openclaw|hermes|all] [--json]",
@@ -147,7 +227,7 @@ pub const commands = [_]CommandInfo{
         "Plugin commands are safe by default: install defaults to --dry-run, doctor does not print secrets,",
         "and mcp-server is currently a documented stub that does not start a real server.",
     } },
-    .{ .name = "decide", .summary = "Evaluate a policy decision for host plugins", .usage = "orca decide <command|file|prompt|tool> --json <payload>|--stdin [--ci]", .details = &.{
+    .{ .name = "decide", .summary = "Ask Orca whether an action is allowed by policy", .usage = "orca decide <command|file|prompt|tool> --json <payload>|--stdin [--ci]", .category = .advanced, .details = &.{
         "Evaluates a policy decision for host plugins (Codex, Claude Code, OpenCode, etc.).",
         "Subcommands:",
         "  orca decide command --json '{\"command\":\"<cmd>\"}'",
@@ -158,7 +238,7 @@ pub const commands = [_]CommandInfo{
         "  orca decide <kind> --json <payload> [--ci]",
         "Output is JSON to stdout; debug logs go to stderr only.",
     } },
-    .{ .name = "hook", .summary = "Host-specific hook adapter for Codex, Claude Code, OpenCode, OpenClaw, and Hermes", .usage = "orca hook <codex|claude|opencode|openclaw|hermes> <event> [--ci]", .details = &.{
+    .{ .name = "hook", .summary = "Receive events from AI agent hosts", .usage = "orca hook <codex|claude|opencode|openclaw|hermes> <event> [--ci]", .category = .advanced, .details = &.{
         "Reads a JSON payload from stdin, normalizes host-specific events to Orca decisions,",
         "and emits a host-valid JSON response to stdout. Debug logs go to stderr only.",
         "Events:",
@@ -200,38 +280,66 @@ pub const commands = [_]CommandInfo{
         "  orca hook hermes on_session_end",
         "Hook responses include host_limitations to honestly report enforcement limits.",
     } },
-    .{ .name = "dashboard", .summary = "Start the local Orca dashboard", .usage = "orca dashboard [--host 127.0.0.1] [--port 7742]", .details = &.{
+    .{ .name = "dashboard", .summary = "Start the local Orca dashboard", .usage = "orca dashboard [--host 127.0.0.1] [--port 7742]", .category = .diagnostics, .details = &.{
         "Starts a localhost-only web dashboard for health, policy, integrations, sessions, and denied-action replay.",
         "The dashboard calls existing Orca CLI/Core paths and does not replace policy evaluation.",
         "Mutation routes use a per-run browser token and only expose fixed Orca actions; arbitrary shell commands are not accepted.",
         "Defaults to http://127.0.0.1:7742.",
     } },
-    .{ .name = "help", .summary = "Show help", .usage = "orca help [command]", .details = &.{"Shows top-level help or command-specific help."} },
+    .{ .name = "help", .summary = "Show help", .usage = "orca help [command]", .category = .getting_started, .details = &.{"Shows top-level help or command-specific help."} },
 };
 
 pub fn write(writer: anytype) !void {
     try writer.writeAll(
-        \\Orca — local runtime firewall for AI agents
-        \\
-        \\Usage:
-        \\  orca <command> [options]
-        \\
-        \\Commands:
-        \\
+        "Orca — local runtime firewall for AI agents\n" ++
+        "\n" ++
+        "Usage:\n" ++
+        "  orca <command> [options]\n" ++
+        "\n"
     );
-    for (commands) |command| {
-        try writer.print("  {s:<9} {s}\n", .{ command.name, command.summary });
+
+    const categories = comptime std.enums.values(Category);
+    inline for (categories) |cat| {
+        var any = false;
+        for (commands) |cmd| {
+            if (cmd.hidden or cmd.category != cat) continue;
+            if (!any) {
+                try style.maybeColor(writer, style.Style.bold, categoryTitle(cat));
+                try writer.writeAll(":\n");
+                any = true;
+            }
+            try writer.print("  {s:<13} {s}\n", .{ cmd.name, cmd.summary });
+        }
+        if (any) try writer.writeAll("\n");
     }
-    try writer.writeAll(
-        \\
-        \\Use 'orca help <command>' for command-specific help.
-        \\
-    );
+
+    try writer.writeAll("Use 'orca help <command>' for command-specific help.\n");
+}
+
+fn categoryTitle(cat: Category) []const u8 {
+    return switch (cat) {
+        .getting_started => "Getting Started",
+        .core_workflow => "Core Workflow",
+        .staged_changes => "Staged Changes",
+        .diagnostics => "Diagnostics & Reporting",
+        .integrations => "Integrations",
+        .advanced => "Advanced",
+        .internal => "Internal",
+    };
 }
 
 pub fn writeCommand(writer: anytype, name: []const u8) !bool {
     const command = findCommand(name) orelse return false;
     try writer.print("{s}\n\nUsage:\n  {s}\n\n", .{ command.summary, command.usage });
+
+    if (command.examples.len > 0) {
+        try writer.writeAll("Examples:\n");
+        for (command.examples) |example| {
+            try writer.print("  {s}\n", .{example});
+        }
+        try writer.writeAll("\n");
+    }
+
     for (command.details) |line| {
         try writer.print("{s}\n", .{line});
     }

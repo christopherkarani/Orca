@@ -197,18 +197,66 @@ pub fn runWithCwd(cwd: std.fs.Dir, argv: []const []const u8, stdout: anytype, st
     return exit_codes.usage;
 }
 
-test "help flag prints command summary" {
+test "help output is grouped, complete, and excludes hidden commands" {
     var stdout_buf: [8192]u8 = undefined;
     var stderr_buf: [256]u8 = undefined;
     var stdout_stream = std.io.fixedBufferStream(&stdout_buf);
     var stderr_stream = std.io.fixedBufferStream(&stderr_buf);
 
     const code = try run(&.{"--help"}, stdout_stream.writer(), stderr_stream.writer());
-
     try std.testing.expectEqual(exit_codes.success, code);
-    try std.testing.expect(std.mem.indexOf(u8, stdout_stream.getWritten(), "Orca") != null);
-    try std.testing.expect(std.mem.indexOf(u8, stdout_stream.getWritten(), "Commands:") != null);
-    try std.testing.expect(std.mem.indexOf(u8, stdout_stream.getWritten(), "Commands:\n  run") != null);
+
+    const output = stdout_stream.getWritten();
+    // Title and category headers present
+    try std.testing.expect(std.mem.indexOf(u8, output, "Orca") != null);
+    try std.testing.expect(std.mem.indexOf(u8, output, "Getting Started") != null);
+    try std.testing.expect(std.mem.indexOf(u8, output, "Core Workflow") != null);
+    try std.testing.expect(std.mem.indexOf(u8, output, "Diagnostics & Reporting") != null);
+    // Visible commands present
+    try std.testing.expect(std.mem.indexOf(u8, output, "run") != null);
+    try std.testing.expect(std.mem.indexOf(u8, output, "env") != null);
+    // Hidden internal command absent
+    try std.testing.expect(std.mem.indexOf(u8, output, "shim") == null);
+    try std.testing.expectEqualStrings("", stderr_stream.getWritten());
+}
+
+test "help output uses human-friendly summaries" {
+    var stdout_buf: [4096]u8 = undefined;
+    var stdout_stream = std.io.fixedBufferStream(&stdout_buf);
+    var empty_buf: [0]u8 = undefined;
+    var stderr_stream = std.io.fixedBufferStream(&empty_buf);
+
+    _ = try run(&.{"--help"}, stdout_stream.writer(), stderr_stream.writer());
+    const output = stdout_stream.getWritten();
+
+    // Old jargon should be gone from summaries
+    try std.testing.expect(std.mem.indexOf(u8, output, "Secretless") == null);
+    try std.testing.expect(std.mem.indexOf(u8, output, "hook adapter") == null);
+    try std.testing.expect(std.mem.indexOf(u8, output, "red-team fixtures") == null);
+
+    // New friendly text should be present
+    try std.testing.expect(std.mem.indexOf(u8, output, "Verify credential brokers") != null);
+    try std.testing.expect(std.mem.indexOf(u8, output, "Receive events from AI agent hosts") != null);
+}
+
+test "env command appears in help and dispatches correctly" {
+    var stdout_buf: [4096]u8 = undefined;
+    var stderr_buf: [256]u8 = undefined;
+    var stdout_stream = std.io.fixedBufferStream(&stdout_buf);
+    var stderr_stream = std.io.fixedBufferStream(&stderr_buf);
+
+    // env appears in grouped help
+    const help_code = try run(&.{"--help"}, stdout_stream.writer(), stderr_stream.writer());
+    try std.testing.expectEqual(exit_codes.success, help_code);
+    try std.testing.expect(std.mem.indexOf(u8, stdout_stream.getWritten(), "env") != null);
+    try std.testing.expect(std.mem.indexOf(u8, stdout_stream.getWritten(), "Print shell environment") != null);
+
+    // env command dispatches
+    stdout_stream.reset();
+    stderr_stream.reset();
+    const env_code = try run(&.{"env"}, stdout_stream.writer(), stderr_stream.writer());
+    try std.testing.expectEqual(exit_codes.success, env_code);
+    try std.testing.expect(std.mem.indexOf(u8, stdout_stream.getWritten(), "PATH") != null);
     try std.testing.expectEqualStrings("", stderr_stream.getWritten());
 }
 
@@ -222,13 +270,30 @@ test "command-specific help works through help command and command flag" {
 
     try std.testing.expectEqual(exit_codes.success, code);
     try std.testing.expect(std.mem.indexOf(u8, stdout_stream.getWritten(), "orca run") != null);
+    try std.testing.expect(std.mem.indexOf(u8, stdout_stream.getWritten(), "Examples:") != null);
+    try std.testing.expect(std.mem.indexOf(u8, stdout_stream.getWritten(), "orca run -- echo") != null);
     try std.testing.expectEqualStrings("", stderr_stream.getWritten());
 
     stdout_stream.reset();
     stderr_stream.reset();
     const flag_code = try run(&.{ "run", "--help" }, stdout_stream.writer(), stderr_stream.writer());
     try std.testing.expectEqual(exit_codes.success, flag_code);
-    try std.testing.expect(std.mem.indexOf(u8, stdout_stream.getWritten(), "direct-child supervision") != null);
+    try std.testing.expect(std.mem.indexOf(u8, stdout_stream.getWritten(), "protected session") != null);
+}
+
+test "help run includes examples section" {
+    var stdout_buf: [2048]u8 = undefined;
+    var stderr_buf: [256]u8 = undefined;
+    var stdout_stream = std.io.fixedBufferStream(&stdout_buf);
+    var stderr_stream = std.io.fixedBufferStream(&stderr_buf);
+
+    const code = try run(&.{ "help", "run" }, stdout_stream.writer(), stderr_stream.writer());
+    try std.testing.expectEqual(exit_codes.success, code);
+
+    const output = stdout_stream.getWritten();
+    try std.testing.expect(std.mem.indexOf(u8, output, "Examples:") != null);
+    try std.testing.expect(std.mem.indexOf(u8, output, "orca run -- echo") != null);
+    try std.testing.expectEqualStrings("", stderr_stream.getWritten());
 }
 
 test "version prints development version" {
