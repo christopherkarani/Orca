@@ -94,7 +94,7 @@ orca run --ci -- codex --prompt "Refactor the auth module"
 
 ## What Orca does
 
-AI agents can run shell commands, read files, and make network requests on your behalf. That is powerful—and risky. Orca gives you three things:
+AI agents can run shell commands, read files, and make network requests on your behalf. That is powerful—and risky. Orca gives you four things:
 
 1. **Block dangerous actions before they happen**  
    Stop `rm -rf`, `sudo`, `curl | sh`, or reading `.env` and SSH keys.
@@ -104,6 +104,8 @@ AI agents can run shell commands, read files, and make network requests on your 
 
 3. **Share team guardrails**  
    Commit `.orca/policy.yaml` to your repo so everyone on your team runs under the same rules.
+
+4. **Protect API Keys and Env Variables**
 
 ---
 
