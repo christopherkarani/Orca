@@ -22,6 +22,8 @@ pub const version_command = @import("version.zig");
 pub const plugin = @import("plugin.zig");
 pub const plugin_install = @import("plugin_install.zig");
 pub const setup = @import("setup.zig");
+pub const onboarding = @import("onboarding.zig");
+pub const quickstart = @import("quickstart.zig");
 pub const decide = @import("decide.zig");
 pub const hook = @import("hook.zig");
 pub const dashboard_command = @import("dashboard.zig");
@@ -40,6 +42,8 @@ test {
     _ = child_process;
     // Pull style tests (TDD for color/TTY/NO_COLOR handling).
     _ = style;
+    _ = onboarding;
+    _ = quickstart;
 }
 
 pub const version = build_options.version;
@@ -164,6 +168,7 @@ pub fn runWithCwd(cwd: std.fs.Dir, argv: []const []const u8, stdout: anytype, st
     }
 
     if (std.mem.eql(u8, command, "run")) return run_command.command(argv[1..], stdout, stderr);
+    if (std.mem.eql(u8, command, "quickstart")) return quickstart.command(cwd, argv[1..], stdout, stderr);
     if (std.mem.eql(u8, command, "init")) return init.command(cwd, argv[1..], stdout, stderr);
     if (std.mem.eql(u8, command, "doctor")) return doctor.command(argv[1..], stdout, stderr);
     if (std.mem.eql(u8, command, "policy")) return policy.command(argv[1..], stdout, stderr);
@@ -396,7 +401,7 @@ test "init dispatch creates policy in provided working directory" {
     try std.testing.expect(std.mem.indexOf(u8, policy_text, "mode: strict") != null);
 }
 
-test "doctor dispatch prints platform capabilities" {
+test "doctor dispatch prints summary by default" {
     var stdout_buf: [8192]u8 = undefined;
     var stderr_buf: [256]u8 = undefined;
     var stdout_stream = std.io.fixedBufferStream(&stdout_buf);
@@ -404,9 +409,67 @@ test "doctor dispatch prints platform capabilities" {
 
     const code = try run(&.{"doctor"}, stdout_stream.writer(), stderr_stream.writer());
     try std.testing.expectEqual(exit_codes.success, code);
+    const output = stdout_stream.getWritten();
+    try std.testing.expect(std.mem.indexOf(u8, output, "Summary:") != null);
+    try std.testing.expect(std.mem.indexOf(u8, output, "Capabilities:") == null);
+    try std.testing.expectEqualStrings("", stderr_stream.getWritten());
+}
+
+test "doctor dispatch --verbose prints platform capabilities" {
+    var stdout_buf: [8192]u8 = undefined;
+    var stderr_buf: [256]u8 = undefined;
+    var stdout_stream = std.io.fixedBufferStream(&stdout_buf);
+    var stderr_stream = std.io.fixedBufferStream(&stderr_buf);
+
+    const code = try run(&.{ "doctor", "--verbose" }, stdout_stream.writer(), stderr_stream.writer());
+    try std.testing.expectEqual(exit_codes.success, code);
     try std.testing.expect(std.mem.indexOf(u8, stdout_stream.getWritten(), "Capabilities:") != null);
     try std.testing.expect(std.mem.indexOf(u8, stdout_stream.getWritten(), "network policy engine: active") != null);
     try std.testing.expectEqualStrings("", stderr_stream.getWritten());
+}
+
+test "quickstart dispatch runs and prints steps" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    var stdout_buf: [8192]u8 = undefined;
+    var stderr_buf: [1024]u8 = undefined;
+    var stdout_stream = std.io.fixedBufferStream(&stdout_buf);
+    var stderr_stream = std.io.fixedBufferStream(&stderr_buf);
+
+    const code = try runWithCwd(tmp.dir, &.{"quickstart"}, stdout_stream.writer(), stderr_stream.writer());
+    try std.testing.expectEqual(exit_codes.success, code);
+
+    const output = stdout_stream.getWritten();
+    try std.testing.expect(std.mem.indexOf(u8, output, "Orca Quickstart") != null);
+    try std.testing.expect(std.mem.indexOf(u8, output, "Step 1: Checking your system") != null);
+    try std.testing.expect(std.mem.indexOf(u8, output, "Step 2: Creating your first policy") != null);
+    try std.testing.expect(std.mem.indexOf(u8, output, "Step 3: Setting up") != null);
+    try std.testing.expect(std.mem.indexOf(u8, output, "You're all set!") != null);
+}
+
+test "quickstart skips init when policy exists" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    try tmp.dir.makePath(".orca");
+    {
+        const file = try tmp.dir.createFile(".orca/policy.yaml", .{});
+        defer file.close();
+        try file.writeAll("version: 1\nmode: observe\n");
+    }
+
+    var stdout_buf: [4096]u8 = undefined;
+    var stderr_buf: [1024]u8 = undefined;
+    var stdout_stream = std.io.fixedBufferStream(&stdout_buf);
+    var stderr_stream = std.io.fixedBufferStream(&stderr_buf);
+
+    const code = try runWithCwd(tmp.dir, &.{"quickstart"}, stdout_stream.writer(), stderr_stream.writer());
+    try std.testing.expectEqual(exit_codes.success, code);
+
+    const output = stdout_stream.getWritten();
+    try std.testing.expect(std.mem.indexOf(u8, output, "Policy already exists") != null);
+    try std.testing.expect(std.mem.indexOf(u8, output, "Skipping init") != null);
 }
 
 test "completions dispatch prints shell script" {

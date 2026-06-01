@@ -70,10 +70,15 @@ const IntegrationContext = struct {
 };
 
 pub fn command(argv: []const []const u8, stdout: anytype, stderr: anytype) !u8 {
+    var verbose = false;
     for (argv) |arg| {
         if (std.mem.eql(u8, arg, "--help") or std.mem.eql(u8, arg, "-h")) {
             _ = try help.writeCommand(stdout, "doctor");
             return exit_codes.success;
+        }
+        if (std.mem.eql(u8, arg, "-v") or std.mem.eql(u8, arg, "--verbose")) {
+            verbose = true;
+            continue;
         }
         try stderr.print("orca doctor: unknown option '{s}'.\n", .{arg});
         return exit_codes.usage;
@@ -90,12 +95,58 @@ pub fn command(argv: []const []const u8, stdout: anytype, stderr: anytype) !u8 {
         return exit_codes.general;
     };
     defer context.deinit();
-    try writeReport(stdout, os, backend_report, context);
+    try writeReport(stdout, os, backend_report, context, verbose);
     return exit_codes.success;
 }
 
-fn writeReport(stdout: anytype, os: core.platform.Os, backend_report: sandbox.backend.ReportSet, context: IntegrationContext) !void {
+fn countCapabilitySummary(os: core.platform.Os, backend_report: sandbox.backend.ReportSet) struct { active: usize, limited: usize, unavailable: usize } {
+    var active_count: usize = 0;
+    var limited_count: usize = 0;
+    var unavailable_count: usize = 0;
+
+    for (doctor_capabilities) |item| {
+        if (item.feature) |feature| {
+            switch (backend_report.get(feature).level) {
+                .active => active_count += 1,
+                .partial, .limited, .observe_only, .wrapper_only => limited_count += 1,
+                .unavailable, .unsupported, .failed => unavailable_count += 1,
+            }
+        } else if (item.capability) |capability| {
+            switch (core.platform.reportCapability(os, capability).state) {
+                .active => active_count += 1,
+                .partial, .limited, .observe => limited_count += 1,
+                .unavailable, .unknown => unavailable_count += 1,
+            }
+        }
+    }
+
+    return .{ .active = active_count, .limited = limited_count, .unavailable = unavailable_count };
+}
+
+fn writeReport(stdout: anytype, os: core.platform.Os, backend_report: sandbox.backend.ReportSet, context: IntegrationContext, verbose: bool) !void {
     try stdout.writeAll("Orca Doctor\n\n");
+
+    const counts = countCapabilitySummary(os, backend_report);
+    const policy_status = if (!context.policy_present)
+        "no policy"
+    else if (!context.policy_valid)
+        "policy invalid"
+    else
+        "policy valid";
+
+    try stdout.print("Summary: {s} · {d} active · {d} limited · {d} unavailable · {s}\n\n", .{
+        os.toString(),
+        counts.active,
+        counts.limited,
+        counts.unavailable,
+        policy_status,
+    });
+
+    if (!verbose) {
+        try writeRecommendations(stdout, context);
+        return;
+    }
+
     try stdout.print("OS: {s}\n", .{os.toString()});
     try stdout.print("Version: {s}\n\n", .{cli.version});
     try writeIntegrationReport(stdout, context);
@@ -381,7 +432,7 @@ test "doctor prints OS and planned capabilities" {
     var stdout_stream = std.io.fixedBufferStream(&stdout_buf);
     var stderr_stream = std.io.fixedBufferStream(&stderr_buf);
 
-    const code = try command(&.{}, stdout_stream.writer(), stderr_stream.writer());
+    const code = try command(&.{"--verbose"}, stdout_stream.writer(), stderr_stream.writer());
 
     try std.testing.expectEqual(exit_codes.success, code);
     try std.testing.expect(std.mem.indexOf(u8, stdout_stream.getWritten(), "Orca Doctor") != null);
@@ -404,7 +455,7 @@ test "doctor can render Linux backend details from an injected report" {
     var context = try testContext(std.testing.allocator, .{});
     defer context.deinit();
 
-    try writeReport(stdout_stream.writer(), .linux, report, context);
+    try writeReport(stdout_stream.writer(), .linux, report, context, true);
 
     const written = stdout_stream.getWritten();
     try std.testing.expect(std.mem.indexOf(u8, written, "Linux backend:") != null);
@@ -422,7 +473,7 @@ test "doctor can render macOS backend details from an injected report" {
     var context = try testContext(std.testing.allocator, .{});
     defer context.deinit();
 
-    try writeReport(stdout_stream.writer(), .macos, report, context);
+    try writeReport(stdout_stream.writer(), .macos, report, context, true);
 
     const written = stdout_stream.getWritten();
     try std.testing.expect(std.mem.indexOf(u8, written, "macOS backend:") != null);
@@ -445,7 +496,7 @@ test "doctor can render Windows backend details from an injected report" {
     var context = try testContext(std.testing.allocator, .{});
     defer context.deinit();
 
-    try writeReport(stdout_stream.writer(), .windows, report, context);
+    try writeReport(stdout_stream.writer(), .windows, report, context, true);
 
     const written = stdout_stream.getWritten();
     try std.testing.expect(std.mem.indexOf(u8, written, "Windows backend:") != null);
@@ -483,7 +534,7 @@ test "doctor detects valid policy in current workspace" {
     var context = try collectIntegrationContextAt(std.testing.allocator, tmp_path);
     defer context.deinit();
 
-    try writeReport(stdout_stream.writer(), core.platform.detectOs(), sandbox.backend.detect(core.platform.detectOs()), context);
+    try writeReport(stdout_stream.writer(), core.platform.detectOs(), sandbox.backend.detect(core.platform.detectOs()), context, true);
     try std.testing.expect(std.mem.indexOf(u8, stdout_stream.getWritten(), ".orca/policy.yaml: present and valid") != null);
     try std.testing.expect(std.mem.indexOf(u8, stdout_stream.getWritten(), "git repository: detected") != null);
     try std.testing.expectEqualStrings("", stderr_stream.getWritten());
@@ -512,11 +563,43 @@ test "doctor reports invalid policy clearly without printing synthetic secrets" 
     var context = try collectIntegrationContextAt(std.testing.allocator, tmp_path);
     defer context.deinit();
 
-    try writeReport(stdout_stream.writer(), core.platform.detectOs(), sandbox.backend.detect(core.platform.detectOs()), context);
+    try writeReport(stdout_stream.writer(), core.platform.detectOs(), sandbox.backend.detect(core.platform.detectOs()), context, true);
     const output = stdout_stream.getWritten();
     try std.testing.expect(std.mem.indexOf(u8, output, ".orca/policy.yaml: invalid") != null);
     try std.testing.expect(std.mem.indexOf(u8, output, "UnsupportedPolicyMode") != null);
     try std.testing.expect(std.mem.indexOf(u8, output, "ghp_fakeSecretShouldNotPrint") == null);
+    try std.testing.expectEqualStrings("", stderr_stream.getWritten());
+}
+
+test "doctor prints summary line" {
+    var stdout_buf: [8192]u8 = undefined;
+    var stderr_buf: [256]u8 = undefined;
+    var stdout_stream = std.io.fixedBufferStream(&stdout_buf);
+    var stderr_stream = std.io.fixedBufferStream(&stderr_buf);
+
+    const code = try command(&.{}, stdout_stream.writer(), stderr_stream.writer());
+    try std.testing.expectEqual(exit_codes.success, code);
+
+    const output = stdout_stream.getWritten();
+    try std.testing.expect(std.mem.indexOf(u8, output, "Summary:") != null);
+    try std.testing.expect(std.mem.indexOf(u8, output, "active") != null);
+    try std.testing.expect(std.mem.indexOf(u8, output, "Recommended next step:") != null);
+    try std.testing.expect(std.mem.indexOf(u8, output, "Capabilities:") == null);
+    try std.testing.expectEqualStrings("", stderr_stream.getWritten());
+}
+
+test "doctor --verbose prints full report" {
+    var stdout_buf: [8192]u8 = undefined;
+    var stderr_buf: [256]u8 = undefined;
+    var stdout_stream = std.io.fixedBufferStream(&stdout_buf);
+    var stderr_stream = std.io.fixedBufferStream(&stderr_buf);
+
+    const code = try command(&.{"--verbose"}, stdout_stream.writer(), stderr_stream.writer());
+    try std.testing.expectEqual(exit_codes.success, code);
+
+    const output = stdout_stream.getWritten();
+    try std.testing.expect(std.mem.indexOf(u8, output, "Summary:") != null);
+    try std.testing.expect(std.mem.indexOf(u8, output, "Capabilities:") != null);
     try std.testing.expectEqualStrings("", stderr_stream.getWritten());
 }
 
