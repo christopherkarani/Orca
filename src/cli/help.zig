@@ -57,6 +57,23 @@ pub const commands = [_]CommandInfo{
         },
     },
     .{
+        .name = "quickstart",
+        .summary = "One-command onboarding: doctor, init, setup",
+        .usage = "orca quickstart [--auto] [--preset <name>]",
+        .category = .getting_started,
+        .examples = &.{
+            "orca quickstart",
+            "orca quickstart --auto",
+            "orca quickstart --preset strict-local",
+        },
+        .details = &.{
+            "Runs doctor -> init (if needed) -> setup in one command.",
+            "On interactive terminals, setup runs in guided mode.",
+            "Use --auto for non-interactive environments (CI, scripts).",
+            "Use --preset to choose a policy preset (default: generic-agent).",
+        },
+    },
+    .{
         .name = "setup",
         .summary = "Guided post-install setup for agent host integrations",
         .usage = "orca setup [--auto] [--preset <name>]",
@@ -67,9 +84,9 @@ pub const commands = [_]CommandInfo{
             "orca setup --preset strict-local",
         },
         .details = &.{
-            "On interactive terminals (TTY), `orca setup` (no flags) enters guided mode and auto-selects all detected agent hosts for integration (Phase 0 stub behavior).",
-            "A full interactive selector (numbered list, toggle with keys, confirm with 'c') is planned for a future phase. Current guided path requires no user input.",
-            "Use --auto (or --yes alias) for the fully automatic non-interactive path used by scripts/CI. Behavior is stable and unchanged.",
+            "On interactive terminals (TTY), `orca setup` (no flags) enters guided mode with a numbered host selector.",
+            "Enter space-separated numbers (e.g. 1 3), 'all', 'none', or press Enter to accept defaults.",
+            "Use --auto (or --yes alias) for the fully automatic non-interactive path used by scripts/CI.",
             "Use --preset to choose a policy preset (default: generic-agent).",
             "After setup, run 'orca run -- <your-command>' for immediate protection.",
         },
@@ -87,14 +104,15 @@ pub const commands = [_]CommandInfo{
     .{
         .name = "doctor",
         .summary = "Show platform capabilities",
-        .usage = "orca doctor [--help]",
+        .usage = "orca doctor [-v|--verbose]",
         .category = .getting_started,
         .examples = &.{
             "orca doctor",
             "orca doctor --verbose",
         },
         .details = &.{
-            "Reports platform and planned capability status honestly.",
+            "Default output is a one-line summary plus recommended next steps.",
+            "Use --verbose for the full platform, integration, and capability report.",
         },
     },
     .{ .name = "policy", .summary = "Validate, explain, and apply policies", .usage = "orca policy <check|explain|packs|apply-pack> [...]", .category = .core_workflow, .examples = &.{
@@ -153,10 +171,16 @@ pub const commands = [_]CommandInfo{
         "Local workspace .orca/ directories are not removed automatically;",
         "run 'find . -type d -name .orca' to locate them manually.",
     } },
-    .{ .name = "replay", .summary = "Replay an audit session", .usage = "orca replay [--session <id|last>] [--json] [--only denied] [--verify]", .category = .core_workflow, .examples = &.{
+    .{ .name = "replay", .summary = "Replay an audit session", .usage = "orca replay [--list] [--session <id|last>] [--json] [--only denied] [--verify]", .category = .core_workflow, .examples = &.{
+        "orca replay",
+        "orca replay --list",
         "orca replay --session last",
         "orca replay --session 2026-05-29-abc123",
-    }, .details = &.{"Reads .orca session artifacts, renders a timeline, and can verify the event hash chain."} },
+    }, .details = &.{
+        "Reads .orca session artifacts, renders a timeline, and can verify the event hash chain.",
+        "With no args and no sessions, lists available sessions instead of erroring.",
+        "Use --list to print all session IDs under .orca/sessions/.",
+    } },
     .{
         .name = "diff",
         .summary = "Show pending file changes",

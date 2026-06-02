@@ -6,7 +6,7 @@ pub fn build(b: *std.Build) void {
     const version_override = b.option([]const u8, "version", "Orca version metadata");
     const version = blk: {
         if (version_override) |v| break :blk v;
-        const version_file = std.fs.cwd().readFileAlloc(b.allocator, "VERSION", 32) catch break :blk "1.1.0";
+        const version_file = std.Io.Dir.cwd().readFileAlloc(b.graph.io, "VERSION", b.allocator, .limited(32)) catch break :blk "1.1.0";
         const trimmed = std.mem.trim(u8, version_file, " \n\r\t");
         const result = b.allocator.dupe(u8, trimmed) catch break :blk "1.1.0";
         b.allocator.free(version_file);

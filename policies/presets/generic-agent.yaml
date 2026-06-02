@@ -39,8 +39,6 @@ files:
     allow:
       - "./**"
     deny:
-      # Expanded secret protections (kept in sync with the authoritative
-      # embedded common_strict_rules used by quick-install presets).
       - "./.env"
       - "./.env.*"
       - "~/.ssh/**"
@@ -77,9 +75,6 @@ files:
     allow:
       - "./**"
     deny:
-      # Dual patterns for robustness across hook/plugin callers (Hermes,
-      # OpenClaw, raw CLI) that may normalize paths without leading "./".
-      # See matchesPath + stripLeadingDotSlash in src/policy/matchers.zig.
       - "./.git/**"
       - ".git/**"
       - "./.orca/**"
@@ -89,7 +84,23 @@ files:
 commands:
   default: ask
   allow:
-    - "git status"
+    - "mkdir *"
+    - "touch *"
+    - "cp *"
+    - "mv *"
+    - "rmdir *"
+    - "cat *"
+    - "grep *"
+    - "find *"
+    - "head *"
+    - "tail *"
+    - "file *"
+    - "stat *"
+    - "which *"
+    - "whoami"
+    - "id"
+    - "uname *"
+    - "git status*"
     - "git diff"
     - "git diff *"
     - "git log"
@@ -98,6 +109,18 @@ commands:
     - "git branch *"
     - "git ls-files"
     - "git ls-files *"
+    - "git add *"
+    - "git commit *"
+    - "git show *"
+    - "git stash *"
+    - "git fetch *"
+    - "git pull *"
+    - "git merge *"
+    - "git remote *"
+    - "git tag *"
+    - "git cherry-pick *"
+    - "git init"
+    - "git clone *"
     - "ls"
     - "ls *"
     - "pwd"
@@ -110,22 +133,65 @@ commands:
     - "sort *"
     - "uniq *"
     - "sed -n *"
+    - "curl *"
+    - "wget *"
+    - "tar *"
+    - "zip *"
+    - "unzip *"
+    - "gzip *"
+    - "gunzip *"
+    - "xargs *"
     - "zig version"
     - "zig build"
     - "zig build *"
-    # Narrow, high-value, zero-risk build entrypoints (Phase 2 quick-install DX).
+    - "zig fmt"
+    - "npm test*"
+    - "npm run *"
+    - "pnpm test*"
+    - "pnpm run *"
+    - "yarn test*"
+    - "yarn run *"
+    - "go test"
+    - "go test *"
+    - "go build"
+    - "go build *"
+    - "go run"
+    - "go run *"
+    - "go fmt"
+    - "go fmt *"
+    - "cargo test"
+    - "cargo test *"
+    - "cargo build"
+    - "cargo build *"
+    - "cargo run"
+    - "cargo run *"
+    - "cargo fmt"
+    - "cargo check"
+    - "cargo clippy"
+    - "swift test*"
+    - "swift build"
+    - "swift build *"
+    - "tsc"
+    - "tsc *"
+    - "cmake *"
+    - "ninja *"
+    - "make"
+    - "make all"
+    - "make clean"
     - "make test*"
     - "make build*"
     - "make check*"
-    - "npm test*"
-    - "pnpm test*"
-    - "yarn test*"
-    - "go test"
-    - "go test *"
-    - "cargo test"
-    - "cargo test *"
-    - "swift test*"
+    - "prettier *"
+    - "eslint *"
+    - "black *"
+    - "isort *"
+    - "gofmt *"
+    - "rustfmt *"
+    - "clang-format *"
     - "python -m pytest*"
+    - "python -m venv *"
+    - "python -m pip list*"
+    - "python -m pip show*"
     - "pytest"
     - "pytest *"
   deny:
@@ -142,6 +208,12 @@ commands:
     - "cat .env"
     - "cat ~/.ssh/*"
   ask:
+    - "rm *"
+    - "go mod *"
+    - "make install*"
+    - "git checkout *"
+    - "git reset *"
+    - "git rebase *"
     - "git push*"
     - "npm install*"
     - "pnpm install*"
@@ -150,11 +222,7 @@ commands:
 
 network:
   mode: allowlist
-  # default: deny is the deliberate conservative choice for the quick-install
-  # experience (used by `orca init --preset generic-agent` and `setup --auto`).
-  # Most egress remains reviewable. See embedded common_strict_rules in
-  # src/policy/presets.zig for the authoritative version shipped in the binary.
-  default: deny
+  default: ask
   allow:
     - "api.github.com"
     - "*.github.com"
@@ -162,11 +230,11 @@ network:
     - "pypi.org"
   ask:
     - "*.githubusercontent.com"
-    # Curated low-risk GitHub CDNs (release artifacts + source tarballs) added
-    # to reduce unnecessary friction for common legitimate agent fetches
-    # while keeping the conservative default: deny posture.
     - "objects.githubusercontent.com"
     - "codeload.github.com"
+    - "api.openai.com"
+    - "api.anthropic.com"
+    - "generativelanguage.googleapis.com"
   deny:
     - "pastebin.com"
     - "*.ngrok.io"
