@@ -72,7 +72,7 @@ pub fn command(cwd: std.fs.Dir, argv: []const []const u8, stdout: anytype, stder
 
     if (!plugin.fileExistsAbsolute(policy_path)) {
         try stdout.writeAll("Policy not found. Initializing...\n");
-        const init_argv = &[_][]const u8{ "--preset", preset, "--quiet" };
+        const init_argv = &[_][]const u8{ "--preset", preset };
         const code = init.command(cwd, init_argv, stdout, stderr) catch |err| {
             try stderr.print("orca setup: policy init failed: {s}\n", .{@errorName(err)});
             return exit_codes.general;
@@ -191,7 +191,7 @@ fn runGuidedSetup(cwd: std.fs.Dir, stdout: anytype, stderr: anytype) !u8 {
 
     if (!plugin.fileExistsAbsolute(policy_path)) {
         try stdout.writeAll("No policy found. Creating with generic-agent preset...\n");
-        const init_argv = &[_][]const u8{ "--preset", "generic-agent", "--quiet" };
+        const init_argv = &[_][]const u8{ "--preset", "generic-agent" };
         const init_code = try init.command(cwd, init_argv, stdout, stderr);
         if (init_code != exit_codes.success) {
             try stderr.print("orca setup: policy init returned non-success code {d}\n", .{init_code});

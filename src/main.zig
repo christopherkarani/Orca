@@ -2,6 +2,16 @@ const std = @import("std");
 const builtin = @import("builtin");
 const orca = @import("orca");
 
+// ==============================================================================
+// Zig 0.16.0 Star Migration Status
+// ==============================================================================
+// - build.zig.zon now declares .minimum_zig_version = "0.16.0"
+// - 0.16 is the new star / primary supported version.
+// - The classic `pub fn main() !void` is kept below for buildability during
+//   the transition. The target 0.16 form (using std.process.Init + std.Io)
+//   is documented in the 0.16 evolution plan.
+// ==============================================================================
+
 pub fn main() !void {
     if (builtin.os.tag == .windows) {
         setupWindowsConsole();
@@ -19,11 +29,7 @@ pub fn main() !void {
     var stdout_writer = std.fs.File.stdout().writer(&stdout_buffer);
     var stderr_writer = std.fs.File.stderr().writer(&stderr_buffer);
 
-    // Prime the color decision once at true CLI startup, before any command
-    // dispatch or warm output. The module-level cache in style.zig is populated
-    // as a side-effect; all subsequent maybeColor/useColor calls hit the fast
-    // cached path. The existing call in cli.runWithCwd remains as a fallback
-    // for library/direct usage.
+    // Prime the color decision once at true CLI startup.
     _ = orca.cli.style.useColor(stdout_writer);
 
     const shim_alias = if (builtin.os.tag == .windows) orca.intercept.commands.shimAliasFromExecutablePath(argv[0]) else null;

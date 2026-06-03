@@ -3,7 +3,7 @@
 > Generated: 2026-05-09  
 > Branch: `phase-35-edge-network-telemetry-data-guard`  
 > Commit: `5b271b9` (Phase 35 committed)  
-> Zig version: 0.15.2  
+> Zig version: 0.16.0 (star) 
 > Version: 1.1.0
 
 ---
