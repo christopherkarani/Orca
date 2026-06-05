@@ -201,6 +201,7 @@ pub const approved_once_env = "ORCA_APPROVED_COMMAND_ONCE";
 pub const approved_session_env = "ORCA_APPROVED_COMMAND_SESSION";
 
 pub fn createShimDirectory(
+    io: std.Io,
     allocator: std.mem.Allocator,
     workspace_root: []const u8,
     session_id: []const u8,
@@ -208,18 +209,18 @@ pub fn createShimDirectory(
 ) ![]u8 {
     const shim_dir = try std.fs.path.join(allocator, &.{ workspace_root, ".orca", "sessions", session_id, "shims" });
     errdefer allocator.free(shim_dir);
-    try std.fs.cwd().makePath(shim_dir);
+    try std.Io.Dir.cwd().createDirPath(io, shim_dir);
     inline for (shim_names) |name| {
         if (builtin.os.tag == .windows) {
             try writeWindowsExecutableShim(allocator, shim_dir, name, orca_executable);
         } else {
-            try writePosixShim(allocator, shim_dir, name, orca_executable);
+            try writePosixShim(io, allocator, shim_dir, name, orca_executable);
         }
     }
     return shim_dir;
 }
 
-pub fn prependShimPath(allocator: std.mem.Allocator, env_map: *std.process.EnvMap, shim_dir: []const u8) !void {
+pub fn prependShimPath(allocator: std.mem.Allocator, env_map: *std.process.Environ.Map, shim_dir: []const u8) !void {
     const old_path = env_map.get("PATH") orelse "";
     const joined = if (old_path.len == 0)
         try allocator.dupe(u8, shim_dir)
@@ -245,19 +246,20 @@ pub fn pathWithoutShimAlloc(allocator: std.mem.Allocator, path_value: []const u8
 }
 
 pub fn resolveRealBinaryAlloc(
+    io: std.Io,
     allocator: std.mem.Allocator,
     command_name: []const u8,
     path_value: []const u8,
     shim_dir: []const u8,
 ) ![]u8 {
     if (isAbsoluteOrExplicitPath(command_name)) {
-        if (isExecutable(command_name) and !isWithinDir(command_name, shim_dir)) return allocator.dupe(u8, command_name);
+        if (isExecutable(io, command_name) and !isWithinDir(command_name, shim_dir)) return allocator.dupe(u8, command_name);
         return error.CommandNotFound;
     }
     var parts = std.mem.splitScalar(u8, path_value, pathDelimiter());
     while (parts.next()) |part| {
         if (part.len == 0 or pathPartEquals(part, shim_dir)) continue;
-        if (try resolveCandidateInDir(allocator, part, command_name, shim_dir)) |candidate| return candidate;
+        if (try resolveCandidateInDir(io, allocator, part, command_name, shim_dir)) |candidate| return candidate;
     }
     return error.CommandNotFound;
 }
@@ -270,7 +272,7 @@ pub fn approvalHash(command_display: []const u8) [64]u8 {
 
 pub fn appendApprovalHashEnv(
     allocator: std.mem.Allocator,
-    env_map: *std.process.EnvMap,
+    env_map: *std.process.Environ.Map,
     env_name: []const u8,
     command_display: []const u8,
 ) !void {
@@ -285,15 +287,20 @@ pub fn appendApprovalHashEnv(
     try env_map.put(env_name, next);
 }
 
-pub fn approvalEnvMatches(env_map: *const std.process.EnvMap, command_display: []const u8) bool {
+pub fn approvalEnvMatches(env_map: *const std.process.Environ.Map, command_display: []const u8) bool {
     const hash = approvalHash(command_display);
     return approvalHashListContains(env_map.get(approved_once_env) orelse "", &hash) or
         approvalHashListContains(env_map.get(approved_session_env) orelse "", &hash);
 }
 
+pub fn onceApprovalEnvMatches(env_map: *const std.process.Environ.Map, command_display: []const u8) bool {
+    const hash = approvalHash(command_display);
+    return approvalHashListContains(env_map.get(approved_once_env) orelse "", &hash);
+}
+
 pub fn consumeOnceApproval(
     allocator: std.mem.Allocator,
-    env_map: *std.process.EnvMap,
+    env_map: *std.process.Environ.Map,
     command_display: []const u8,
 ) !void {
     const current = env_map.get(approved_once_env) orelse return;
@@ -301,7 +308,7 @@ pub fn consumeOnceApproval(
     const next = try approvalHashListRemoveAlloc(allocator, current, &hash);
     defer allocator.free(next);
     if (next.len == 0) {
-        env_map.remove(approved_once_env);
+        _ = env_map.swapRemove(approved_once_env);
     } else {
         try env_map.put(approved_once_env, next);
     }
@@ -330,19 +337,19 @@ fn approvalHashListRemoveAlloc(allocator: std.mem.Allocator, list: []const u8, h
     return try out.toOwnedSlice(allocator);
 }
 
-fn writePosixShim(allocator: std.mem.Allocator, shim_dir: []const u8, name: []const u8, orca_executable: []const u8) !void {
+fn writePosixShim(io: std.Io, allocator: std.mem.Allocator, shim_dir: []const u8, name: []const u8, orca_executable: []const u8) !void {
     const path = try std.fs.path.join(allocator, &.{ shim_dir, name });
     defer allocator.free(path);
-    const file = try std.fs.cwd().createFile(path, .{ .truncate = true, .mode = 0o755 });
-    defer file.close();
+    const file = try std.Io.Dir.cwd().createFile(io, path, .{ .truncate = true });
+    defer file.close(io);
     const script = try std.fmt.allocPrint(allocator,
         \\#!/bin/sh
         \\exec "{s}" shim exec -- "{s}" "$@"
         \\
     , .{ orca_executable, name });
     defer allocator.free(script);
-    try file.writeAll(script);
-    if (builtin.os.tag != .windows) try file.chmod(0o755);
+    try file.writeStreamingAll(io, script);
+    if (builtin.os.tag != .windows) try file.setPermissions(io, .executable_file);
 }
 
 fn writeWindowsExecutableShim(allocator: std.mem.Allocator, shim_dir: []const u8, name: []const u8, orca_executable: []const u8) !void {
@@ -362,12 +369,23 @@ pub fn shimAliasFromExecutablePath(executable_path: []const u8) ?[]const u8 {
     return null;
 }
 
-fn isExecutable(path: []const u8) bool {
-    const file = std.fs.cwd().openFile(path, .{}) catch return false;
-    defer file.close();
-    const stat = file.stat() catch return false;
+fn isExecutable(io: std.Io, path: []const u8) bool {
+    if (std.fs.path.isAbsolute(path)) {
+        const parent = std.fs.path.dirname(path) orelse return false;
+        const base = std.fs.path.basename(path);
+        var dir = std.Io.Dir.openDirAbsolute(io, parent, .{}) catch return false;
+        defer dir.close(io);
+        const file = dir.openFile(io, base, .{}) catch return false;
+        defer file.close(io);
+        const stat = file.stat(io) catch return false;
+        if (builtin.os.tag == .windows) return stat.kind == .file;
+        return stat.kind == .file and (stat.permissions.toMode() & 0o111) != 0;
+    }
+    const file = std.Io.Dir.cwd().openFile(io, path, .{}) catch return false;
+    defer file.close(io);
+    const stat = file.stat(io) catch return false;
     if (builtin.os.tag == .windows) return stat.kind == .file;
-    return stat.kind == .file and (stat.mode & 0o111) != 0;
+    return stat.kind == .file and (stat.permissions.toMode() & 0o111) != 0;
 }
 
 fn isWithinDir(path: []const u8, dir: []const u8) bool {
@@ -389,10 +407,10 @@ fn isAbsoluteOrExplicitPath(command_name: []const u8) bool {
         (command_name.len >= 2 and std.ascii.isAlphabetic(command_name[0]) and command_name[1] == ':');
 }
 
-fn resolveCandidateInDir(allocator: std.mem.Allocator, dir: []const u8, command_name: []const u8, shim_dir: []const u8) !?[]u8 {
+fn resolveCandidateInDir(io: std.Io, allocator: std.mem.Allocator, dir: []const u8, command_name: []const u8, shim_dir: []const u8) !?[]u8 {
     const direct = try std.fs.path.join(allocator, &.{ dir, command_name });
     errdefer allocator.free(direct);
-    if (isExecutable(direct) and !isWithinDir(direct, shim_dir)) return direct;
+    if (isExecutable(io, direct) and !isWithinDir(direct, shim_dir)) return direct;
     allocator.free(direct);
 
     if (builtin.os.tag != .windows or hasKnownWindowsExtension(command_name)) return null;
@@ -402,7 +420,7 @@ fn resolveCandidateInDir(allocator: std.mem.Allocator, dir: []const u8, command_
         defer allocator.free(candidate_name);
         const candidate = try std.fs.path.join(allocator, &.{ dir, candidate_name });
         errdefer allocator.free(candidate);
-        if (isExecutable(candidate) and !isWithinDir(candidate, shim_dir)) return candidate;
+        if (isExecutable(io, candidate) and !isWithinDir(candidate, shim_dir)) return candidate;
         allocator.free(candidate);
     }
     return null;
@@ -1159,18 +1177,18 @@ test "shim directory includes sh bash and zsh wrappers" {
 
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
-    const root = try tmp.dir.realpathAlloc(std.testing.allocator, ".");
+    const root = try tmp.dir.realPathFileAlloc(std.testing.io, ".", std.testing.allocator);
     defer std.testing.allocator.free(root);
 
-    const shim_dir = try createShimDirectory(std.testing.allocator, root, "shell-wrapper-test", "/usr/bin/true");
+    const shim_dir = try createShimDirectory(std.testing.io, std.testing.allocator, root, "shell-wrapper-test", "/usr/bin/true");
     defer std.testing.allocator.free(shim_dir);
 
     const shells = [_][]const u8{ "sh", "bash", "zsh" };
     for (shells) |shell| {
         const shim_path = try std.fs.path.join(std.testing.allocator, &.{ shim_dir, shell });
         defer std.testing.allocator.free(shim_path);
-        try std.fs.cwd().access(shim_path, .{});
-        const script = try std.fs.cwd().readFileAlloc(std.testing.allocator, shim_path, 1024);
+        try std.Io.Dir.cwd().access(std.testing.io, shim_path, .{});
+        const script = try std.Io.Dir.cwd().readFileAlloc(std.testing.io, shim_path, std.testing.allocator, .limited(1024));
         defer std.testing.allocator.free(script);
         try std.testing.expect(std.mem.indexOf(u8, script, "orca\" shim exec --") != null or std.mem.indexOf(u8, script, "true\" shim exec --") != null);
         try std.testing.expect(std.mem.indexOf(u8, script, shell) != null);
@@ -1182,19 +1200,19 @@ test "Windows shim directory includes executable cmd PowerShell and PATH shims" 
 
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
-    const root = try tmp.dir.realpathAlloc(std.testing.allocator, ".");
+    const root = try tmp.dir.realPathFileAlloc(std.testing.io, ".", std.testing.allocator);
     defer std.testing.allocator.free(root);
 
     const self_exe = try std.fs.selfExePathAlloc(std.testing.allocator);
     defer std.testing.allocator.free(self_exe);
-    const shim_dir = try createShimDirectory(std.testing.allocator, root, "windows-wrapper-test", self_exe);
+    const shim_dir = try createShimDirectory(std.testing.io, std.testing.allocator, root, "windows-wrapper-test", self_exe);
     defer std.testing.allocator.free(shim_dir);
 
     const wrappers = [_][]const u8{ "cmd.exe", "powershell.exe", "pwsh.exe", "git.exe" };
     for (wrappers) |wrapper| {
         const shim_path = try std.fs.path.join(std.testing.allocator, &.{ shim_dir, wrapper });
         defer std.testing.allocator.free(shim_path);
-        try std.fs.cwd().access(shim_path, .{});
+        try std.Io.Dir.cwd().access(std.testing.io, shim_path, .{});
     }
 }
 
@@ -1207,7 +1225,7 @@ test "Windows executable shim aliases route extension-qualified invocations" {
 }
 
 test "approval hashes are bounded and consumable without raw command persistence" {
-    var env_map = std.process.EnvMap.init(std.testing.allocator);
+    var env_map = std.process.Environ.Map.init(std.testing.allocator);
     defer env_map.deinit();
 
     const command = "npm install OPENAI_API_KEY=sk-fakeSyntheticOpenAIKey1234567890";

@@ -22,6 +22,8 @@ pub const version_command = @import("version.zig");
 pub const plugin = @import("plugin.zig");
 pub const plugin_install = @import("plugin_install.zig");
 pub const setup = @import("setup.zig");
+pub const onboarding = @import("onboarding.zig");
+pub const quickstart = @import("quickstart.zig");
 pub const decide = @import("decide.zig");
 pub const hook = @import("hook.zig");
 pub const dashboard_command = @import("dashboard.zig");
@@ -40,6 +42,8 @@ test {
     _ = child_process;
     // Pull style tests (TDD for color/TTY/NO_COLOR handling).
     _ = style;
+    _ = onboarding;
+    _ = quickstart;
 }
 
 pub const version = build_options.version;
@@ -94,35 +98,35 @@ fn suggestCommand(unknown: []const u8) ?[]const u8 {
     return null;
 }
 
-pub fn run(argv: []const []const u8, stdout: anytype, stderr: anytype) !u8 {
-    return runWithCwd(std.fs.cwd(), argv, stdout, stderr);
+pub fn run(io: std.Io, environ_map: *const std.process.Environ.Map, argv: []const []const u8, stdout: anytype, stderr: anytype) !u8 {
+    return runWithCwd(io, environ_map, std.Io.Dir.cwd(), argv, stdout, stderr);
 }
 
-pub fn runWithCwd(cwd: std.fs.Dir, argv: []const []const u8, stdout: anytype, stderr: anytype) !u8 {
+pub fn runWithCwd(io: std.Io, environ_map: *const std.process.Environ.Map, cwd: std.Io.Dir, argv: []const []const u8, stdout: anytype, stderr: anytype) !u8 {
     // Fallback / safety-net color decision prime for direct and library callers.
     // The true one-time early prime now lives in main() (real CLI startup path).
     // This call remains so that code paths that enter through runWithCwd directly
     // (tests, library consumers, or future embedding) still get a cached decision
     // before any warm output. If the cache is already populated by main(), this
     // is a fast O(1) cache hit with no side effects.
-    _ = style.useColor(stdout);
+    _ = style.useColor(io, stdout);
 
     if (argv.len == 0 or std.mem.eql(u8, argv[0], "--help") or std.mem.eql(u8, argv[0], "-h")) {
-        try help.write(stdout);
+        try help.write(io, stdout);
         return exit_codes.success;
     }
 
     const command = argv[0];
     if (std.mem.eql(u8, command, "help")) {
         if (argv.len == 1) {
-            try help.write(stdout);
+            try help.write(io, stdout);
             return exit_codes.success;
         }
         if (argv.len > 2) {
             try stderr.writeAll("orca help: expected at most one command.\n");
             return exit_codes.usage;
         }
-        if (!try help.writeCommand(stdout, argv[1])) {
+        if (!try help.writeCommand(io, stdout, argv[1])) {
             try stderr.print("orca help: unknown command '{s}'.\n", .{argv[1]});
             return exit_codes.usage;
         }
@@ -136,7 +140,7 @@ pub fn runWithCwd(cwd: std.fs.Dir, argv: []const []const u8, stdout: anytype, st
         }
         if (argv.len == 2) {
             if (std.mem.eql(u8, argv[1], "--help") or std.mem.eql(u8, argv[1], "-h")) {
-                _ = try help.writeCommand(stdout, "version");
+                _ = try help.writeCommand(io, stdout, "version");
                 return exit_codes.success;
             }
             if (std.mem.eql(u8, argv[1], "--json")) {
@@ -155,38 +159,39 @@ pub fn runWithCwd(cwd: std.fs.Dir, argv: []const []const u8, stdout: anytype, st
     // platform-correct. `orca env` is the discoverable alias; the flag is kept for
     // backward compat with any scripts that invoke it directly.
     if (std.mem.eql(u8, command, "--print-install-env")) {
-        try writeInstallEnv(stdout);
+        try writeInstallEnv(io, stdout);
         return exit_codes.success;
     }
     if (std.mem.eql(u8, command, "env")) {
-        try writeInstallEnv(stdout);
+        try writeInstallEnv(io, stdout);
         return exit_codes.success;
     }
 
-    if (std.mem.eql(u8, command, "run")) return run_command.command(argv[1..], stdout, stderr);
-    if (std.mem.eql(u8, command, "init")) return init.command(cwd, argv[1..], stdout, stderr);
-    if (std.mem.eql(u8, command, "doctor")) return doctor.command(argv[1..], stdout, stderr);
-    if (std.mem.eql(u8, command, "policy")) return policy.command(argv[1..], stdout, stderr);
-    if (std.mem.eql(u8, command, "credentials")) return credentials_command.command(argv[1..], stdout, stderr);
-    if (std.mem.eql(u8, command, "replay")) return replay.command(argv[1..], stdout, stderr);
-    if (std.mem.eql(u8, command, "diff")) return diff.command(argv[1..], stdout, stderr);
-    if (std.mem.eql(u8, command, "apply")) return apply.command(argv[1..], stdout, stderr);
-    if (std.mem.eql(u8, command, "discard")) return discard.command(argv[1..], stdout, stderr);
-    if (std.mem.eql(u8, command, "mcp")) return mcp.command(argv[1..], stdout, stderr);
-    if (std.mem.eql(u8, command, "redteam")) return redteam.command(argv[1..], stdout, stderr);
-    if (std.mem.eql(u8, command, "completions")) return completions.command(argv[1..], stdout, stderr);
-    if (std.mem.eql(u8, command, "shim")) return shim.command(argv[1..], stdout, stderr);
-    if (std.mem.eql(u8, command, "plugin")) return plugin.command(argv[1..], stdout, stderr);
-    if (std.mem.eql(u8, command, "setup")) return setup.command(cwd, argv[1..], stdout, stderr);
-    if (std.mem.eql(u8, command, "decide")) return decide.command(argv[1..], stdout, stderr);
-    if (std.mem.eql(u8, command, "hook")) return hook.command(argv[1..], stdout, stderr);
-    if (std.mem.eql(u8, command, "dashboard")) return dashboard_command.command(argv[1..], stdout, stderr);
-    if (std.mem.eql(u8, command, "report")) return report.command(argv[1..], stdout, stderr);
-    if (std.mem.eql(u8, command, "license")) return license_command.command(argv[1..], stdout, stderr);
-    if (std.mem.eql(u8, command, "ci")) return ci.command(argv[1..], stdout, stderr);
-    if (std.mem.eql(u8, command, "demo")) return demo.command(argv[1..], stdout, stderr);
-    if (std.mem.eql(u8, command, "disable")) return disable.command(argv[1..], stdout, stderr);
-    if (std.mem.eql(u8, command, "uninstall")) return uninstall.command(argv[1..], stdout, stderr);
+    if (std.mem.eql(u8, command, "run")) return run_command.command(io, argv[1..], stdout, stderr);
+    if (std.mem.eql(u8, command, "quickstart")) return quickstart.command(io, cwd, argv[1..], stdout, stderr);
+    if (std.mem.eql(u8, command, "init")) return init.command(io, cwd, argv[1..], stdout, stderr);
+    if (std.mem.eql(u8, command, "doctor")) return doctor.command(io, argv[1..], stdout, stderr);
+    if (std.mem.eql(u8, command, "policy")) return policy.command(io, argv[1..], stdout, stderr);
+    if (std.mem.eql(u8, command, "credentials")) return credentials_command.command(io, argv[1..], stdout, stderr);
+    if (std.mem.eql(u8, command, "replay")) return replay.command(io, argv[1..], stdout, stderr);
+    if (std.mem.eql(u8, command, "diff")) return diff.command(io, argv[1..], stdout, stderr);
+    if (std.mem.eql(u8, command, "apply")) return apply.command(io, argv[1..], stdout, stderr);
+    if (std.mem.eql(u8, command, "discard")) return discard.command(io, argv[1..], stdout, stderr);
+    if (std.mem.eql(u8, command, "mcp")) return mcp.command(io, argv[1..], stdout, stderr);
+    if (std.mem.eql(u8, command, "redteam")) return redteam.command(io, argv[1..], stdout, stderr);
+    if (std.mem.eql(u8, command, "completions")) return completions.command(io, argv[1..], stdout, stderr);
+    if (std.mem.eql(u8, command, "shim")) return shim.command(io, environ_map, argv[1..], stdout, stderr);
+    if (std.mem.eql(u8, command, "plugin")) return plugin.command(io, argv[1..], stdout, stderr);
+    if (std.mem.eql(u8, command, "setup")) return setup.command(io, cwd, argv[1..], stdout, stderr);
+    if (std.mem.eql(u8, command, "decide")) return decide.command(io, argv[1..], stdout, stderr);
+    if (std.mem.eql(u8, command, "hook")) return hook.command(io, argv[1..], stdout, stderr);
+    if (std.mem.eql(u8, command, "dashboard")) return dashboard_command.command(io, argv[1..], stdout, stderr);
+    if (std.mem.eql(u8, command, "report")) return report.command(io, argv[1..], stdout, stderr);
+    if (std.mem.eql(u8, command, "license")) return license_command.command(io, argv[1..], stdout, stderr);
+    if (std.mem.eql(u8, command, "ci")) return ci.command(io, argv[1..], stdout, stderr);
+    if (std.mem.eql(u8, command, "demo")) return demo.command(io, argv[1..], stdout, stderr);
+    if (std.mem.eql(u8, command, "disable")) return disable.command(io, argv[1..], stdout, stderr);
+    if (std.mem.eql(u8, command, "uninstall")) return uninstall.command(io, argv[1..], stdout, stderr);
 
     // Warm "did you mean?" suggestions for unknown commands (foundation UX).
     if (suggestCommand(command)) |suggestion| {
@@ -197,16 +202,28 @@ pub fn runWithCwd(cwd: std.fs.Dir, argv: []const []const u8, stdout: anytype, st
     return exit_codes.usage;
 }
 
+fn testRun(argv: []const []const u8, stdout: anytype, stderr: anytype) !u8 {
+    var env_map = try std.process.Environ.createMap(std.process.Environ.empty, std.testing.allocator);
+    defer env_map.deinit();
+    return run(std.testing.io, &env_map, argv, stdout, stderr);
+}
+
+fn testRunWithCwd(cwd: std.Io.Dir, argv: []const []const u8, stdout: anytype, stderr: anytype) !u8 {
+    var env_map = try std.process.Environ.createMap(std.process.Environ.empty, std.testing.allocator);
+    defer env_map.deinit();
+    return runWithCwd(std.testing.io, &env_map, cwd, argv, stdout, stderr);
+}
+
 test "help output is grouped, complete, and excludes hidden commands" {
     var stdout_buf: [8192]u8 = undefined;
     var stderr_buf: [256]u8 = undefined;
-    var stdout_stream = std.io.fixedBufferStream(&stdout_buf);
-    var stderr_stream = std.io.fixedBufferStream(&stderr_buf);
+    var stdout_writer: std.Io.Writer = .fixed(&stdout_buf);
+    var stderr_writer: std.Io.Writer = .fixed(&stderr_buf);
 
-    const code = try run(&.{"--help"}, stdout_stream.writer(), stderr_stream.writer());
+    const code = try testRun(&.{"--help"}, &stdout_writer, &stderr_writer);
     try std.testing.expectEqual(exit_codes.success, code);
 
-    const output = stdout_stream.getWritten();
+    const output = stdout_writer.buffered();
     // Title and category headers present
     try std.testing.expect(std.mem.indexOf(u8, output, "Orca") != null);
     try std.testing.expect(std.mem.indexOf(u8, output, "Getting Started") != null);
@@ -217,17 +234,17 @@ test "help output is grouped, complete, and excludes hidden commands" {
     try std.testing.expect(std.mem.indexOf(u8, output, "env") != null);
     // Hidden internal command absent
     try std.testing.expect(std.mem.indexOf(u8, output, "shim") == null);
-    try std.testing.expectEqualStrings("", stderr_stream.getWritten());
+    try std.testing.expectEqualStrings("", stderr_writer.buffered());
 }
 
 test "help output uses human-friendly summaries" {
     var stdout_buf: [4096]u8 = undefined;
-    var stdout_stream = std.io.fixedBufferStream(&stdout_buf);
+    var stdout_writer: std.Io.Writer = .fixed(&stdout_buf);
     var empty_buf: [0]u8 = undefined;
-    var stderr_stream = std.io.fixedBufferStream(&empty_buf);
+    var stderr_writer: std.Io.Writer = .fixed(&empty_buf);
 
-    _ = try run(&.{"--help"}, stdout_stream.writer(), stderr_stream.writer());
-    const output = stdout_stream.getWritten();
+    _ = try testRun(&.{"--help"}, &stdout_writer, &stderr_writer);
+    const output = stdout_writer.buffered();
 
     // Old jargon should be gone from summaries
     try std.testing.expect(std.mem.indexOf(u8, output, "Secretless") == null);
@@ -242,117 +259,117 @@ test "help output uses human-friendly summaries" {
 test "env command appears in help and dispatches correctly" {
     var stdout_buf: [4096]u8 = undefined;
     var stderr_buf: [256]u8 = undefined;
-    var stdout_stream = std.io.fixedBufferStream(&stdout_buf);
-    var stderr_stream = std.io.fixedBufferStream(&stderr_buf);
+    var stdout_writer: std.Io.Writer = .fixed(&stdout_buf);
+    var stderr_writer: std.Io.Writer = .fixed(&stderr_buf);
 
     // env appears in grouped help
-    const help_code = try run(&.{"--help"}, stdout_stream.writer(), stderr_stream.writer());
+    const help_code = try testRun(&.{"--help"}, &stdout_writer, &stderr_writer);
     try std.testing.expectEqual(exit_codes.success, help_code);
-    try std.testing.expect(std.mem.indexOf(u8, stdout_stream.getWritten(), "env") != null);
-    try std.testing.expect(std.mem.indexOf(u8, stdout_stream.getWritten(), "Print shell environment") != null);
+    try std.testing.expect(std.mem.indexOf(u8, stdout_writer.buffered(), "env") != null);
+    try std.testing.expect(std.mem.indexOf(u8, stdout_writer.buffered(), "Print shell environment") != null);
 
     // env command dispatches
-    stdout_stream.reset();
-    stderr_stream.reset();
-    const env_code = try run(&.{"env"}, stdout_stream.writer(), stderr_stream.writer());
+    stdout_writer = .fixed(&stdout_buf);
+    stderr_writer = .fixed(&stderr_buf);
+    const env_code = try testRun(&.{"env"}, &stdout_writer, &stderr_writer);
     try std.testing.expectEqual(exit_codes.success, env_code);
-    try std.testing.expect(std.mem.indexOf(u8, stdout_stream.getWritten(), "PATH") != null);
-    try std.testing.expectEqualStrings("", stderr_stream.getWritten());
+    try std.testing.expect(std.mem.indexOf(u8, stdout_writer.buffered(), "PATH") != null);
+    try std.testing.expectEqualStrings("", stderr_writer.buffered());
 }
 
 test "command-specific help works through help command and command flag" {
     var stdout_buf: [2048]u8 = undefined;
     var stderr_buf: [256]u8 = undefined;
-    var stdout_stream = std.io.fixedBufferStream(&stdout_buf);
-    var stderr_stream = std.io.fixedBufferStream(&stderr_buf);
+    var stdout_writer: std.Io.Writer = .fixed(&stdout_buf);
+    var stderr_writer: std.Io.Writer = .fixed(&stderr_buf);
 
-    const code = try run(&.{ "help", "run" }, stdout_stream.writer(), stderr_stream.writer());
+    const code = try testRun(&.{ "help", "run" }, &stdout_writer, &stderr_writer);
 
     try std.testing.expectEqual(exit_codes.success, code);
-    try std.testing.expect(std.mem.indexOf(u8, stdout_stream.getWritten(), "orca run") != null);
-    try std.testing.expect(std.mem.indexOf(u8, stdout_stream.getWritten(), "Examples:") != null);
-    try std.testing.expect(std.mem.indexOf(u8, stdout_stream.getWritten(), "orca run -- echo") != null);
-    try std.testing.expectEqualStrings("", stderr_stream.getWritten());
+    try std.testing.expect(std.mem.indexOf(u8, stdout_writer.buffered(), "orca run") != null);
+    try std.testing.expect(std.mem.indexOf(u8, stdout_writer.buffered(), "Examples:") != null);
+    try std.testing.expect(std.mem.indexOf(u8, stdout_writer.buffered(), "orca run -- echo") != null);
+    try std.testing.expectEqualStrings("", stderr_writer.buffered());
 
-    stdout_stream.reset();
-    stderr_stream.reset();
-    const flag_code = try run(&.{ "run", "--help" }, stdout_stream.writer(), stderr_stream.writer());
+    stdout_writer = .fixed(&stdout_buf);
+    stderr_writer = .fixed(&stderr_buf);
+    const flag_code = try testRun(&.{ "run", "--help" }, &stdout_writer, &stderr_writer);
     try std.testing.expectEqual(exit_codes.success, flag_code);
-    try std.testing.expect(std.mem.indexOf(u8, stdout_stream.getWritten(), "protected session") != null);
+    try std.testing.expect(std.mem.indexOf(u8, stdout_writer.buffered(), "protected session") != null);
 }
 
 test "help run includes examples section" {
     var stdout_buf: [2048]u8 = undefined;
     var stderr_buf: [256]u8 = undefined;
-    var stdout_stream = std.io.fixedBufferStream(&stdout_buf);
-    var stderr_stream = std.io.fixedBufferStream(&stderr_buf);
+    var stdout_writer: std.Io.Writer = .fixed(&stdout_buf);
+    var stderr_writer: std.Io.Writer = .fixed(&stderr_buf);
 
-    const code = try run(&.{ "help", "run" }, stdout_stream.writer(), stderr_stream.writer());
+    const code = try testRun(&.{ "help", "run" }, &stdout_writer, &stderr_writer);
     try std.testing.expectEqual(exit_codes.success, code);
 
-    const output = stdout_stream.getWritten();
+    const output = stdout_writer.buffered();
     try std.testing.expect(std.mem.indexOf(u8, output, "Examples:") != null);
     try std.testing.expect(std.mem.indexOf(u8, output, "orca run -- echo") != null);
-    try std.testing.expectEqualStrings("", stderr_stream.getWritten());
+    try std.testing.expectEqualStrings("", stderr_writer.buffered());
 }
 
 test "version prints development version" {
     var stdout_buf: [128]u8 = undefined;
     var stderr_buf: [128]u8 = undefined;
-    var stdout_stream = std.io.fixedBufferStream(&stdout_buf);
-    var stderr_stream = std.io.fixedBufferStream(&stderr_buf);
+    var stdout_writer: std.Io.Writer = .fixed(&stdout_buf);
+    var stderr_writer: std.Io.Writer = .fixed(&stderr_buf);
 
-    const code = try run(&.{"version"}, stdout_stream.writer(), stderr_stream.writer());
+    const code = try testRun(&.{"version"}, &stdout_writer, &stderr_writer);
 
     try std.testing.expectEqual(exit_codes.success, code);
-    try std.testing.expect(std.mem.startsWith(u8, stdout_stream.getWritten(), "orca "));
-    try std.testing.expect(std.mem.indexOf(u8, stdout_stream.getWritten(), version) != null);
-    try std.testing.expectEqualStrings("", stderr_stream.getWritten());
+    try std.testing.expect(std.mem.startsWith(u8, stdout_writer.buffered(), "orca "));
+    try std.testing.expect(std.mem.indexOf(u8, stdout_writer.buffered(), version) != null);
+    try std.testing.expectEqualStrings("", stderr_writer.buffered());
 }
 
 test "version supports json, help, and rejects extra arguments" {
     var stdout_buf: [1024]u8 = undefined;
     var stderr_buf: [256]u8 = undefined;
-    var stdout_stream = std.io.fixedBufferStream(&stdout_buf);
-    var stderr_stream = std.io.fixedBufferStream(&stderr_buf);
+    var stdout_writer: std.Io.Writer = .fixed(&stdout_buf);
+    var stderr_writer: std.Io.Writer = .fixed(&stderr_buf);
 
-    const help_code = try run(&.{ "version", "--help" }, stdout_stream.writer(), stderr_stream.writer());
+    const help_code = try testRun(&.{ "version", "--help" }, &stdout_writer, &stderr_writer);
     try std.testing.expectEqual(exit_codes.success, help_code);
-    try std.testing.expect(std.mem.indexOf(u8, stdout_stream.getWritten(), "orca version") != null);
-    try std.testing.expectEqualStrings("", stderr_stream.getWritten());
+    try std.testing.expect(std.mem.indexOf(u8, stdout_writer.buffered(), "orca version") != null);
+    try std.testing.expectEqualStrings("", stderr_writer.buffered());
 
-    stdout_stream.reset();
-    stderr_stream.reset();
-    const json_code = try run(&.{ "version", "--json" }, stdout_stream.writer(), stderr_stream.writer());
+    stdout_writer = .fixed(&stdout_buf);
+    stderr_writer = .fixed(&stderr_buf);
+    const json_code = try testRun(&.{ "version", "--json" }, &stdout_writer, &stderr_writer);
     try std.testing.expectEqual(exit_codes.success, json_code);
-    try std.testing.expectEqualStrings("", stderr_stream.getWritten());
-    var parsed = try std.json.parseFromSlice(std.json.Value, std.testing.allocator, stdout_stream.getWritten(), .{});
+    try std.testing.expectEqualStrings("", stderr_writer.buffered());
+    var parsed = try std.json.parseFromSlice(std.json.Value, std.testing.allocator, stdout_writer.buffered(), .{});
     defer parsed.deinit();
     try std.testing.expectEqualStrings(version, parsed.value.object.get("version").?.string);
     try std.testing.expect(parsed.value.object.get("commit") != null);
     try std.testing.expect(parsed.value.object.get("target") != null);
     try std.testing.expect(parsed.value.object.get("build_date") != null);
 
-    stdout_stream.reset();
-    stderr_stream.reset();
-    const invalid_code = try run(&.{ "version", "typo" }, stdout_stream.writer(), stderr_stream.writer());
+    stdout_writer = .fixed(&stdout_buf);
+    stderr_writer = .fixed(&stderr_buf);
+    const invalid_code = try testRun(&.{ "version", "typo" }, &stdout_writer, &stderr_writer);
     try std.testing.expectEqual(exit_codes.usage, invalid_code);
-    try std.testing.expectEqualStrings("", stdout_stream.getWritten());
-    try std.testing.expect(std.mem.indexOf(u8, stderr_stream.getWritten(), "unsupported argument") != null);
+    try std.testing.expectEqualStrings("", stdout_writer.buffered());
+    try std.testing.expect(std.mem.indexOf(u8, stderr_writer.buffered(), "unsupported argument") != null);
 }
 
 test "unknown command returns non-zero with useful message" {
     var stdout_buf: [128]u8 = undefined;
     var stderr_buf: [256]u8 = undefined;
-    var stdout_stream = std.io.fixedBufferStream(&stdout_buf);
-    var stderr_stream = std.io.fixedBufferStream(&stderr_buf);
+    var stdout_writer: std.Io.Writer = .fixed(&stdout_buf);
+    var stderr_writer: std.Io.Writer = .fixed(&stderr_buf);
 
-    const code = try run(&.{"not-a-command"}, stdout_stream.writer(), stderr_stream.writer());
+    const code = try testRun(&.{"not-a-command"}, &stdout_writer, &stderr_writer);
 
     try std.testing.expect(code != exit_codes.success);
     try std.testing.expectEqual(exit_codes.usage, code);
-    try std.testing.expectEqualStrings("", stdout_stream.getWritten());
-    try std.testing.expect(std.mem.indexOf(u8, stderr_stream.getWritten(), "unknown command") != null);
+    try std.testing.expectEqualStrings("", stdout_writer.buffered());
+    try std.testing.expect(std.mem.indexOf(u8, stderr_writer.buffered(), "unknown command") != null);
 }
 
 // ---------------------------------------------------------------------------
@@ -385,66 +402,124 @@ test "init dispatch creates policy in provided working directory" {
 
     var stdout_buf: [512]u8 = undefined;
     var stderr_buf: [512]u8 = undefined;
-    var stdout_stream = std.io.fixedBufferStream(&stdout_buf);
-    var stderr_stream = std.io.fixedBufferStream(&stderr_buf);
+    var stdout_writer: std.Io.Writer = .fixed(&stdout_buf);
+    var stderr_writer: std.Io.Writer = .fixed(&stderr_buf);
 
-    const code = try runWithCwd(tmp.dir, &.{ "init", "--mode", "strict" }, stdout_stream.writer(), stderr_stream.writer());
+    const code = try testRunWithCwd(tmp.dir, &.{ "init", "--mode", "strict" }, &stdout_writer, &stderr_writer);
     try std.testing.expectEqual(exit_codes.success, code);
 
-    const policy_text = try tmp.dir.readFileAlloc(std.testing.allocator, ".orca/policy.yaml", 4096);
+    const policy_text = try tmp.dir.readFileAlloc(std.testing.io, ".orca/policy.yaml", std.testing.allocator, .limited(4096));
     defer std.testing.allocator.free(policy_text);
     try std.testing.expect(std.mem.indexOf(u8, policy_text, "mode: strict") != null);
 }
 
-test "doctor dispatch prints platform capabilities" {
+test "doctor dispatch prints summary by default" {
     var stdout_buf: [8192]u8 = undefined;
     var stderr_buf: [256]u8 = undefined;
-    var stdout_stream = std.io.fixedBufferStream(&stdout_buf);
-    var stderr_stream = std.io.fixedBufferStream(&stderr_buf);
+    var stdout_writer: std.Io.Writer = .fixed(&stdout_buf);
+    var stderr_writer: std.Io.Writer = .fixed(&stderr_buf);
 
-    const code = try run(&.{"doctor"}, stdout_stream.writer(), stderr_stream.writer());
+    const code = try testRun(&.{"doctor"}, &stdout_writer, &stderr_writer);
     try std.testing.expectEqual(exit_codes.success, code);
-    try std.testing.expect(std.mem.indexOf(u8, stdout_stream.getWritten(), "Capabilities:") != null);
-    try std.testing.expect(std.mem.indexOf(u8, stdout_stream.getWritten(), "network policy engine: active") != null);
-    try std.testing.expectEqualStrings("", stderr_stream.getWritten());
+    const output = stdout_writer.buffered();
+    try std.testing.expect(std.mem.indexOf(u8, output, "Summary:") != null);
+    try std.testing.expect(std.mem.indexOf(u8, output, "Capabilities:") == null);
+    try std.testing.expectEqualStrings("", stderr_writer.buffered());
+}
+
+test "doctor dispatch --verbose prints platform capabilities" {
+    var stdout_buf: [8192]u8 = undefined;
+    var stderr_buf: [256]u8 = undefined;
+    var stdout_writer: std.Io.Writer = .fixed(&stdout_buf);
+    var stderr_writer: std.Io.Writer = .fixed(&stderr_buf);
+
+    const code = try testRun(&.{ "doctor", "--verbose" }, &stdout_writer, &stderr_writer);
+    try std.testing.expectEqual(exit_codes.success, code);
+    try std.testing.expect(std.mem.indexOf(u8, stdout_writer.buffered(), "Capabilities:") != null);
+    try std.testing.expect(std.mem.indexOf(u8, stdout_writer.buffered(), "network policy engine: active") != null);
+    try std.testing.expectEqualStrings("", stderr_writer.buffered());
+}
+
+test "quickstart dispatch runs and prints steps" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    var stdout_buf: [8192]u8 = undefined;
+    var stderr_buf: [1024]u8 = undefined;
+    var stdout_writer: std.Io.Writer = .fixed(&stdout_buf);
+    var stderr_writer: std.Io.Writer = .fixed(&stderr_buf);
+
+    const code = try testRunWithCwd(tmp.dir, &.{"quickstart"}, &stdout_writer, &stderr_writer);
+    try std.testing.expectEqual(exit_codes.success, code);
+
+    const output = stdout_writer.buffered();
+    try std.testing.expect(std.mem.indexOf(u8, output, "Orca Quickstart") != null);
+    try std.testing.expect(std.mem.indexOf(u8, output, "Step 1: Checking your system") != null);
+    try std.testing.expect(std.mem.indexOf(u8, output, "Step 2: Creating your first policy") != null);
+    try std.testing.expect(std.mem.indexOf(u8, output, "Step 3: Setting up") != null);
+    try std.testing.expect(std.mem.indexOf(u8, output, "You're all set!") != null);
+}
+
+test "quickstart skips init when policy exists" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    try tmp.dir.createDirPath(std.testing.io, ".orca");
+    {
+        const file = try tmp.dir.createFile(std.testing.io, ".orca/policy.yaml", .{});
+        defer file.close(std.testing.io);
+        try file.writeStreamingAll(std.testing.io, "version: 1\nmode: observe\n");
+    }
+
+    var stdout_buf: [4096]u8 = undefined;
+    var stderr_buf: [1024]u8 = undefined;
+    var stdout_writer: std.Io.Writer = .fixed(&stdout_buf);
+    var stderr_writer: std.Io.Writer = .fixed(&stderr_buf);
+
+    const code = try testRunWithCwd(tmp.dir, &.{"quickstart"}, &stdout_writer, &stderr_writer);
+    try std.testing.expectEqual(exit_codes.success, code);
+
+    const output = stdout_writer.buffered();
+    try std.testing.expect(std.mem.indexOf(u8, output, "Policy already exists") != null);
+    try std.testing.expect(std.mem.indexOf(u8, output, "Skipping init") != null);
 }
 
 test "completions dispatch prints shell script" {
     var stdout_buf: [4096]u8 = undefined;
     var stderr_buf: [256]u8 = undefined;
-    var stdout_stream = std.io.fixedBufferStream(&stdout_buf);
-    var stderr_stream = std.io.fixedBufferStream(&stderr_buf);
+    var stdout_writer: std.Io.Writer = .fixed(&stdout_buf);
+    var stderr_writer: std.Io.Writer = .fixed(&stderr_buf);
 
-    const code = try run(&.{ "completions", "bash" }, stdout_stream.writer(), stderr_stream.writer());
+    const code = try testRun(&.{ "completions", "bash" }, &stdout_writer, &stderr_writer);
     try std.testing.expectEqual(exit_codes.success, code);
-    try std.testing.expect(std.mem.indexOf(u8, stdout_stream.getWritten(), "complete -F") != null);
-    try std.testing.expectEqualStrings("", stderr_stream.getWritten());
+    try std.testing.expect(std.mem.indexOf(u8, stdout_writer.buffered(), "complete -F") != null);
+    try std.testing.expectEqualStrings("", stderr_writer.buffered());
 }
 
 test "policy command rejects unknown subcommands" {
     var stdout_buf: [256]u8 = undefined;
     var stderr_buf: [256]u8 = undefined;
-    var stdout_stream = std.io.fixedBufferStream(&stdout_buf);
-    var stderr_stream = std.io.fixedBufferStream(&stderr_buf);
+    var stdout_writer: std.Io.Writer = .fixed(&stdout_buf);
+    var stderr_writer: std.Io.Writer = .fixed(&stderr_buf);
 
-    const code = try run(&.{ "policy", "--bad" }, stdout_stream.writer(), stderr_stream.writer());
+    const code = try testRun(&.{ "policy", "--bad" }, &stdout_writer, &stderr_writer);
     try std.testing.expectEqual(exit_codes.usage, code);
-    try std.testing.expectEqualStrings("", stdout_stream.getWritten());
-    try std.testing.expect(std.mem.indexOf(u8, stderr_stream.getWritten(), "unknown subcommand") != null);
+    try std.testing.expectEqualStrings("", stdout_writer.buffered());
+    try std.testing.expect(std.mem.indexOf(u8, stderr_writer.buffered(), "unknown subcommand") != null);
 }
 
 test "run dispatch launches child command" {
-    var stdout_buf: [256]u8 = undefined;
-    var stderr_buf: [256]u8 = undefined;
-    var stdout_stream = std.io.fixedBufferStream(&stdout_buf);
-    var stderr_stream = std.io.fixedBufferStream(&stderr_buf);
+    var stdout_buf: [4096]u8 = undefined;
+    var stderr_buf: [512]u8 = undefined;
+    var stdout_writer: std.Io.Writer = .fixed(&stdout_buf);
+    var stderr_writer: std.Io.Writer = .fixed(&stderr_buf);
 
-    const code = try run_command.commandForTest(&.{ "--", "zig", "version" }, stdout_stream.writer(), stderr_stream.writer(), .ignore);
+    const code = try run_command.commandForTest(&.{ "--", "zig", "version" }, &stdout_writer, &stderr_writer, .ignore);
     try std.testing.expectEqual(exit_codes.success, code);
     // TDD: new framed output with shield + separators + status glyphs (foundation work)
-    try std.testing.expect(std.mem.indexOf(u8, stdout_stream.getWritten(), "Orca is watching this session") != null);
-    try std.testing.expect(std.mem.indexOf(u8, stdout_stream.getWritten(), "Session ended cleanly") != null);
-    try std.testing.expectEqualStrings("", stderr_stream.getWritten());
+    try std.testing.expect(std.mem.indexOf(u8, stdout_writer.buffered(), "Orca is watching this session") != null);
+    try std.testing.expect(std.mem.indexOf(u8, stdout_writer.buffered(), "Session ended cleanly") != null);
+    try std.testing.expectEqualStrings("", stderr_writer.buffered());
 }
 
 // ---------------------------------------------------------------------------
@@ -456,34 +531,34 @@ test "run dispatch launches child command" {
 test "setup help describes guided interactive default on TTY and de-emphasizes --auto for primary path" {
     var stdout_buf: [2048]u8 = undefined;
     var stderr_buf: [256]u8 = undefined;
-    var stdout_stream = std.io.fixedBufferStream(&stdout_buf);
-    var stderr_stream = std.io.fixedBufferStream(&stderr_buf);
+    var stdout_writer: std.Io.Writer = .fixed(&stdout_buf);
+    var stderr_writer: std.Io.Writer = .fixed(&stderr_buf);
 
-    const code = try run(&.{ "help", "setup" }, stdout_stream.writer(), stderr_stream.writer());
+    const code = try testRun(&.{ "help", "setup" }, &stdout_writer, &stderr_writer);
     try std.testing.expectEqual(exit_codes.success, code);
 
-    const output = stdout_stream.getWritten();
+    const output = stdout_writer.buffered();
     // Accurate for current Phase 0 guided stub: mentions guided and the TTY/auto distinction.
     // Full interactive toggle UI is future work; help text reflects stub reality.
     try std.testing.expect(std.mem.indexOf(u8, output, "guided") != null);
     try std.testing.expect(std.mem.indexOf(u8, output, "auto-selects") != null or std.mem.indexOf(u8, output, "--auto") != null);
-    try std.testing.expectEqualStrings("", stderr_stream.getWritten());
+    try std.testing.expectEqualStrings("", stderr_writer.buffered());
 }
 
 test "plugin help and disable re-enable messaging de-emphasize --yes in favor of setup" {
     var stdout_buf: [2048]u8 = undefined;
     var stderr_buf: [256]u8 = undefined;
-    var stdout_stream = std.io.fixedBufferStream(&stdout_buf);
-    var stderr_stream = std.io.fixedBufferStream(&stderr_buf);
+    var stdout_writer: std.Io.Writer = .fixed(&stdout_buf);
+    var stderr_writer: std.Io.Writer = .fixed(&stderr_buf);
 
-    const code = try run(&.{ "help", "plugin" }, stdout_stream.writer(), stderr_stream.writer());
+    const code = try testRun(&.{ "help", "plugin" }, &stdout_writer, &stderr_writer);
     try std.testing.expectEqual(exit_codes.success, code);
 
-    const output = stdout_stream.getWritten();
+    const output = stdout_writer.buffered();
     // Primary path is `orca setup` (guided on TTY); messaging updated for Phase 0 stub.
     try std.testing.expect(std.mem.indexOf(u8, output, "setup") != null);
     try std.testing.expect(std.mem.indexOf(u8, output, "guided") != null);
-    try std.testing.expectEqualStrings("", stderr_stream.getWritten());
+    try std.testing.expectEqualStrings("", stderr_writer.buffered());
 }
 
 // writeInstallEnv — the trustworthy, layout-aware activation printer for installers,
@@ -492,9 +567,9 @@ test "plugin help and disable re-enable messaging de-emphasize --yes in favor of
 // (Homebrew, containers, non-~ installs) produce correct exports. Falls back to
 // documented platform defaults. Windows uses cmd.exe set syntax; Unix uses sh export.
 // Concrete absolute paths (not $HOME) guarantee "actual install layout" fidelity.
-fn writeInstallEnv(stdout: anytype) !void {
+fn writeInstallEnv(io: std.Io, stdout: anytype) !void {
     const allocator = std.heap.page_allocator;
-    const exe_path = std.fs.selfExePathAlloc(allocator) catch {
+    const exe_path = std.process.executablePathAlloc(io, allocator) catch {
         // Fallback (static or exotic exe path): documented defaults per platform.
         if (builtin.os.tag == .windows) {
             try stdout.writeAll("set \"PATH=%USERPROFILE%\\.orca\\bin;%PATH%\"\n");

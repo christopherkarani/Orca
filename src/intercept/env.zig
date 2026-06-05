@@ -1,5 +1,6 @@
 const std = @import("std");
 
+const env_util = @import("../env_util.zig");
 const audit = @import("orca_core").audit;
 const core = @import("orca_core").core;
 const policy = @import("orca_core").policy;
@@ -17,7 +18,7 @@ pub const RedactionRecord = core.process.EnvRedactionRecord;
 
 pub const FilteredEnv = struct {
     allocator: std.mem.Allocator,
-    env_map: std.process.EnvMap,
+    env_map: std.process.Environ.Map,
     use_custom_env: bool,
     redactions: []RedactionRecord,
 
@@ -39,21 +40,21 @@ pub fn filterCurrent(
     effective_mode: policy.schema.Mode,
     request: Request,
 ) !FilteredEnv {
-    var current = try std.process.getEnvMap(allocator);
+    var current = try env_util.createProcessMap(allocator);
     defer current.deinit();
     return filterMap(allocator, &current, selected_policy, effective_mode, request);
 }
 
 pub fn filterMap(
     allocator: std.mem.Allocator,
-    current: *const std.process.EnvMap,
+    current: *const std.process.Environ.Map,
     selected_policy: *const policy.schema.Policy,
     effective_mode: policy.schema.Mode,
     request: Request,
 ) !FilteredEnv {
     if (request.inherit_env and !selected_policy.env.inherit) return error.InheritEnvDenied;
 
-    var env_map = std.process.EnvMap.init(allocator);
+    var env_map = std.process.Environ.Map.init(allocator);
     errdefer env_map.deinit();
     var redactions: std.ArrayList(RedactionRecord) = .empty;
     errdefer {
@@ -196,7 +197,7 @@ test "strict env filtering keeps allowlist and strips synthetic secret names" {
     , "test.yaml");
     defer selected.deinit();
 
-    var current = std.process.EnvMap.init(std.testing.allocator);
+    var current = std.process.Environ.Map.init(std.testing.allocator);
     defer current.deinit();
     try current.put("PATH", "/usr/bin");
     try current.put("SAFE_FAKE", "ok");
@@ -227,7 +228,7 @@ test "env deny pattern beats allow during filtering" {
     , "test.yaml");
     defer selected.deinit();
 
-    var current = std.process.EnvMap.init(std.testing.allocator);
+    var current = std.process.Environ.Map.init(std.testing.allocator);
     defer current.deinit();
     try current.put("FAKE_ALLOWED", "ok");
 
@@ -241,7 +242,7 @@ test "inherit-env fails closed when policy disallows inheritance" {
     var selected = try policy.load.loadPreset(std.testing.allocator, .strict);
     defer selected.deinit();
 
-    var current = std.process.EnvMap.init(std.testing.allocator);
+    var current = std.process.Environ.Map.init(std.testing.allocator);
     defer current.deinit();
     try current.put("PATH", "/usr/bin");
 
@@ -252,7 +253,7 @@ test "observe mode inherits but records redactions for audit" {
     var selected = try policy.load.loadPreset(std.testing.allocator, .observe);
     defer selected.deinit();
 
-    var current = std.process.EnvMap.init(std.testing.allocator);
+    var current = std.process.Environ.Map.init(std.testing.allocator);
     defer current.deinit();
     try current.put("FAKE_GITHUB_TOKEN", "fake_secret_value");
 
@@ -268,7 +269,7 @@ test "no-secrets strips secret-like values even when inheriting" {
     var selected = try policy.load.loadPreset(std.testing.allocator, .observe);
     defer selected.deinit();
 
-    var current = std.process.EnvMap.init(std.testing.allocator);
+    var current = std.process.Environ.Map.init(std.testing.allocator);
     defer current.deinit();
     try current.put("NORMAL_VALUE", "fake_secret_value");
     try current.put("SAFE_VALUE", "ok");
@@ -284,7 +285,7 @@ test "secretless replaces inherited secret-like env with local broker references
     var selected = try policy.load.loadPreset(std.testing.allocator, .observe);
     defer selected.deinit();
 
-    var current = std.process.EnvMap.init(std.testing.allocator);
+    var current = std.process.Environ.Map.init(std.testing.allocator);
     defer current.deinit();
     try current.put("GITHUB_TOKEN", "ghp_fakeSyntheticTokenValue1234567890");
     try current.put("SAFE_VALUE", "ok");
@@ -304,7 +305,7 @@ test "observe mode override still honors env inherit false" {
     var selected = try policy.load.loadPreset(std.testing.allocator, .strict);
     defer selected.deinit();
 
-    var current = std.process.EnvMap.init(std.testing.allocator);
+    var current = std.process.Environ.Map.init(std.testing.allocator);
     defer current.deinit();
     try current.put("PATH", "/usr/bin");
     try current.put("UNIQUE_SAFE_PHASE08", "visible");

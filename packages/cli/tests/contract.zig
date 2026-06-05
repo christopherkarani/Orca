@@ -15,10 +15,10 @@ test "cli package exposes existing command surface without becoming edge" {
 
 test "cli package help still renders Orca CLI command summary" {
     var buffer: [8192]u8 = undefined;
-    var stream = std.io.fixedBufferStream(&buffer);
+    var writer: std.Io.Writer = .fixed(&buffer);
 
-    try orca_cli.cli.help.write(stream.writer());
-    const written = stream.getWritten();
+    try orca_cli.cli.help.write(std.testing.io, &writer);
+    const written = writer.buffered();
 
     try std.testing.expect(std.mem.indexOf(u8, written, "Orca") != null);
     try std.testing.expect(std.mem.indexOf(u8, written, "Getting Started") != null);

@@ -435,8 +435,8 @@ pub fn parseFromSlice(allocator: std.mem.Allocator, text: []const u8, source_pat
     return parseYaml(allocator, trimmed, source_path);
 }
 
-pub fn loadFile(allocator: std.mem.Allocator, path: []const u8) !schema.Policy {
-    const text = try std.fs.cwd().readFileAlloc(allocator, path, core.limits.max_policy_file_len + 1);
+pub fn loadFile(io: std.Io, allocator: std.mem.Allocator, path: []const u8) !schema.Policy {
+    const text = try std.Io.Dir.cwd().readFileAlloc(io, path, allocator, std.Io.Limit.limited(core.limits.max_policy_file_len + 1));
     defer allocator.free(text);
     if (text.len > core.limits.max_policy_file_len) return error.PolicyFileTooLarge;
     return parseFromSlice(allocator, text, path);
@@ -455,35 +455,36 @@ pub fn loadAgentPreset(allocator: std.mem.Allocator, preset: presets.AgentPreset
 }
 
 pub fn discover(
+    io: std.Io,
     allocator: std.mem.Allocator,
     cli_policy_path: ?[]const u8,
     workspace_root: []const u8,
 ) !schema.LoadedPolicy {
     if (cli_policy_path) |path| {
-        const policy = try loadFile(allocator, path);
+        const policy = try loadFile(io, allocator, path);
         return loadedPolicyWithPath(allocator, policy, .cli, path);
     }
 
     const workspace_path = try std.fs.path.join(allocator, &.{ workspace_root, ".orca", "policy.yaml" });
     defer allocator.free(workspace_path);
-    if (loadFile(allocator, workspace_path)) |policy| {
+    if (loadFile(io, allocator, workspace_path)) |policy| {
         return loadedPolicyWithPath(allocator, policy, .workspace, workspace_path);
     } else |err| switch (err) {
         error.FileNotFound => {},
         else => return err,
     }
 
-    if (std.process.getEnvVarOwned(allocator, "HOME")) |home| {
-        defer allocator.free(home);
+    if (std.c.getenv("HOME")) |home_c| {
+        const home = std.mem.sliceTo(home_c, 0);
         const user_path = try std.fs.path.join(allocator, &.{ home, ".config", "orca", "policy.yaml" });
         defer allocator.free(user_path);
-        if (loadFile(allocator, user_path)) |policy| {
+        if (loadFile(io, allocator, user_path)) |policy| {
             return loadedPolicyWithPath(allocator, policy, .user, user_path);
         } else |err| switch (err) {
             error.FileNotFound => {},
             else => return err,
         }
-    } else |_| {}
+    }
 
     const policy = try loadPreset(allocator, presets.defaultPreset());
     return loadedPolicyWithPath(allocator, policy, .builtin, "builtin:strict");
@@ -512,7 +513,7 @@ fn parseYaml(allocator: std.mem.Allocator, text: []const u8, source_path: ?[]con
     var list_target: ListTarget = .none;
     var lines = std.mem.splitScalar(u8, text, '\n');
     while (lines.next()) |raw_line| {
-        const cleaned = stripComment(std.mem.trimRight(u8, raw_line, " \t\r"));
+        const cleaned = stripComment(std.mem.trimEnd(u8, raw_line, " \t\r"));
         if (std.mem.trim(u8, cleaned, " \t").len == 0) continue;
         const indent = countIndent(cleaned);
         if (indent % 2 != 0) return error.InvalidPolicy;
@@ -1121,20 +1122,20 @@ test "invalid policies fail closed with clear parser errors" {
 test "policy discovery honors CLI path before workspace policy" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
-    try tmp.dir.makePath(".orca");
+    try tmp.dir.createDirPath(std.testing.io, ".orca");
     {
-        const file = try tmp.dir.createFile(".orca/policy.yaml", .{});
-        defer file.close();
-        try file.writeAll(presets.text(.observe));
+        const file = try tmp.dir.createFile(std.testing.io, ".orca/policy.yaml", .{});
+        defer file.close(std.testing.io);
+        try file.writeStreamingAll(std.testing.io, presets.text(.observe));
     }
     {
-        const file = try tmp.dir.createFile("strict.yaml", .{});
-        defer file.close();
-        try file.writeAll(presets.text(.strict));
+        const file = try tmp.dir.createFile(std.testing.io, "strict.yaml", .{});
+        defer file.close(std.testing.io);
+        try file.writeStreamingAll(std.testing.io, presets.text(.strict));
     }
-    const root = try tmp.dir.realpathAlloc(std.testing.allocator, ".");
+    const root = try tmp.dir.realPathFileAlloc(std.testing.io, ".", std.testing.allocator);
     defer std.testing.allocator.free(root);
-    const cli_path = try tmp.dir.realpathAlloc(std.testing.allocator, "strict.yaml");
+    const cli_path = try tmp.dir.realPathFileAlloc(std.testing.io, "strict.yaml", std.testing.allocator);
     defer std.testing.allocator.free(cli_path);
 
     var loaded = try discover(std.testing.allocator, cli_path, root);
@@ -1146,13 +1147,13 @@ test "policy discovery honors CLI path before workspace policy" {
 test "workspace policy discovery falls back only when missing" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
-    try tmp.dir.makePath(".orca");
+    try tmp.dir.createDirPath(std.testing.io, ".orca");
     {
-        const file = try tmp.dir.createFile(".orca/policy.yaml", .{});
-        defer file.close();
-        try file.writeAll("version: 1\nmode: loose\n");
+        const file = try tmp.dir.createFile(std.testing.io, ".orca/policy.yaml", .{});
+        defer file.close(std.testing.io);
+        try file.writeStreamingAll(std.testing.io, "version: 1\nmode: loose\n");
     }
-    const root = try tmp.dir.realpathAlloc(std.testing.allocator, ".");
+    const root = try tmp.dir.realPathFileAlloc(std.testing.io, ".", std.testing.allocator);
     defer std.testing.allocator.free(root);
 
     try std.testing.expectError(error.UnsupportedPolicyMode, discover(std.testing.allocator, null, root));
@@ -1333,7 +1334,7 @@ test "policy parsing cleans up every allocation failure path" {
 test "policy discovery cleans up every allocation failure path" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
-    try tmp.dir.writeFile(.{
+    try tmp.dir.writeFile(std.testing.io, .{
         .sub_path = "policy.yaml",
         .data =
         \\version: 1
@@ -1343,7 +1344,7 @@ test "policy discovery cleans up every allocation failure path" {
         \\  write_mode: staged
         ,
     });
-    const root = try tmp.dir.realpathAlloc(std.testing.allocator, ".");
+    const root = try tmp.dir.realPathFileAlloc(std.testing.io, ".", std.testing.allocator);
     defer std.testing.allocator.free(root);
     const policy_path = try std.fs.path.join(std.testing.allocator, &.{ root, "policy.yaml" });
     defer std.testing.allocator.free(policy_path);

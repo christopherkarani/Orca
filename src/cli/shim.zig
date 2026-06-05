@@ -11,31 +11,29 @@ const ShimOptions = struct {
     command_argv: []const []const u8 = &.{},
 };
 
-pub fn command(argv: []const []const u8, stdout: anytype, stderr: anytype) !u8 {
-    const options = parseOptions(argv, stdout, stderr) catch |err| switch (err) {
+pub fn command(io: std.Io, environ_map: *const std.process.Environ.Map, argv: []const []const u8, stdout: anytype, stderr: anytype) !u8 {
+    const options = parseOptions(io, argv, stdout, stderr) catch |err| switch (err) {
         error.HelpShown => return exit_codes.success,
         error.Usage => return exit_codes.usage,
         else => return err,
     };
-    return exec(options.command_argv, stdout, stderr);
+    return exec(io, environ_map, options.command_argv, stdout, stderr);
 }
 
-fn exec(command_argv: []const []const u8, _: anytype, stderr: anytype) !u8 {
+fn exec(io: std.Io, environ_map: *const std.process.Environ.Map, command_argv: []const []const u8, _: anytype, stderr: anytype) !u8 {
     if (command_argv.len == 0) {
         try stderr.writeAll("orca shim exec: missing command after '--'.\n");
         return exit_codes.usage;
     }
 
-    var gpa_state: std.heap.GeneralPurposeAllocator(.{}) = .init;
+    var gpa_state: std.heap.DebugAllocator(.{}) = .init;
     defer _ = gpa_state.deinit();
     const allocator = gpa_state.allocator();
 
-    var env_map = try std.process.getEnvMap(allocator);
-    defer env_map.deinit();
-    return execWithEnv(allocator, command_argv, &env_map, stderr);
+    return execWithEnv(io, allocator, command_argv, environ_map, stderr);
 }
 
-fn execWithEnv(allocator: std.mem.Allocator, command_argv: []const []const u8, env_map: *std.process.EnvMap, stderr: anytype) !u8 {
+fn execWithEnv(io: std.Io, allocator: std.mem.Allocator, command_argv: []const []const u8, env_map: *const std.process.Environ.Map, stderr: anytype) !u8 {
     const session_id = env_map.get("ORCA_SESSION_ID") orelse {
         try stderr.writeAll("orca shim exec: missing ORCA_SESSION_ID; shims only work inside an Orca session.\n");
         return exit_codes.general;
@@ -52,26 +50,10 @@ fn execWithEnv(allocator: std.mem.Allocator, command_argv: []const []const u8, e
     const adjusted_path = try intercept.commands.pathWithoutShimAlloc(allocator, path_value, shim_dir);
     defer allocator.free(adjusted_path);
 
-    const real_binary = intercept.commands.resolveRealBinaryAlloc(allocator, command_argv[0], adjusted_path, shim_dir) catch |err| switch (err) {
-        error.CommandNotFound => {
-            try stderr.print("orca shim exec: real command not found after removing shim path: {s}\n", .{command_argv[0]});
-            return exit_codes.general;
-        },
-        else => return err,
-    };
-    defer allocator.free(real_binary);
-
-    var writer = core_api.openAuditWriter(allocator, workspace_root, session_id) catch |err| {
-        try stderr.print("orca shim exec: failed to open audit log: {s}\n", .{@errorName(err)});
-        return exit_codes.general;
-    };
-    defer writer.deinit();
-
     const display = try intercept.commands.displayArgvAlloc(allocator, command_argv);
     defer allocator.free(display);
-    try appendCommandEvent(&writer, session_id, .command_attempt, display, null);
 
-    var selected = loadPolicyForShim(allocator, workspace_root, session_id, env_map) catch |err| switch (err) {
+    var selected = loadPolicyForShim(io, allocator, workspace_root, session_id, env_map) catch |err| switch (err) {
         error.UntrustedPolicyPath => {
             const decision: core.decision.Decision = .{
                 .result = .deny,
@@ -79,7 +61,13 @@ fn execWithEnv(allocator: std.mem.Allocator, command_argv: []const []const u8, e
                 .risk_score = 90,
                 .ci_may_proceed = false,
             };
-            try appendCommandEvent(&writer, session_id, .command_denied, display, decision);
+            var writer = core_api.openAuditWriter(io, allocator, workspace_root, session_id) catch |open_err| {
+                try stderr.print("orca shim exec: failed to open audit log: {s}\n", .{@errorName(open_err)});
+                return exit_codes.general;
+            };
+            defer writer.deinit();
+            try appendCommandEvent(io, &writer, session_id, .command_attempt, display, null);
+            try appendCommandEvent(io, &writer, session_id, .command_denied, display, decision);
             try stderr.writeAll("orca shim exec: untrusted ORCA_POLICY_PATH; refusing child-controlled policy override.\n");
             return exit_codes.denial;
         },
@@ -90,54 +78,82 @@ fn execWithEnv(allocator: std.mem.Allocator, command_argv: []const []const u8, e
 
     var command_decision = try intercept.commands.evaluate(allocator, &selected.policy, effective_mode, command_argv);
     defer command_decision.deinit(allocator);
+
+    var final_decision = command_decision.decision;
     if (command_decision.decision.result != .allow and command_decision.decision.result != .observe) {
-        if (intercept.commands.approvalEnvMatches(env_map, display) and try approvalRecordedForCommand(allocator, workspace_root, session_id, display)) {
-            try intercept.commands.consumeOnceApproval(allocator, env_map, display);
-            const decision: core.decision.Decision = .{
+        // Child can forge ORCA_APPROVED_COMMAND_SESSION; durable audit record is required for
+        // session-scoped approval. ORCA_APPROVED_COMMAND_ONCE is parent-set immediately before spawn.
+        const parent_approved = try approvalRecordedForCommand(io, allocator, workspace_root, session_id, display) or
+            intercept.commands.onceApprovalEnvMatches(env_map, display);
+        if (parent_approved) {
+            try intercept.commands.consumeOnceApproval(allocator, @constCast(env_map), display);
+            final_decision = .{
                 .result = .allow,
                 .reason = "parent approval matched command hash",
                 .risk_score = command_decision.decision.risk_score,
                 .ci_may_proceed = true,
             };
-            try appendCommandEvent(&writer, session_id, .command_allowed, display, decision);
         } else {
-            try appendCommandEvent(&writer, session_id, .command_denied, display, command_decision.decision);
+            var writer = core_api.openAuditWriter(io, allocator, workspace_root, session_id) catch |open_err| {
+                try stderr.print("orca shim exec: failed to open audit log: {s}\n", .{@errorName(open_err)});
+                return exit_codes.general;
+            };
+            defer writer.deinit();
+            try appendCommandEvent(io, &writer, session_id, .command_attempt, display, null);
+            try appendCommandEvent(io, &writer, session_id, .command_denied, display, command_decision.decision);
             try stderr.print("orca shim exec: command denied: {s}\n", .{command_decision.decision.reason});
             return exit_codes.denial;
         }
-    } else {
-        try appendCommandEvent(&writer, session_id, .command_allowed, display, command_decision.decision);
     }
+
+    const real_binary = intercept.commands.resolveRealBinaryAlloc(io, allocator, command_argv[0], adjusted_path, shim_dir) catch |err| switch (err) {
+        error.CommandNotFound => {
+            try stderr.print("orca shim exec: real command not found after removing shim path: {s}\n", .{command_argv[0]});
+            return exit_codes.general;
+        },
+        else => return err,
+    };
+    defer allocator.free(real_binary);
+
+    var writer = core_api.openAuditWriter(io, allocator, workspace_root, session_id) catch |open_err| {
+        try stderr.print("orca shim exec: failed to open audit log: {s}\n", .{@errorName(open_err)});
+        return exit_codes.general;
+    };
+    defer writer.deinit();
+    try appendCommandEvent(io, &writer, session_id, .command_attempt, display, null);
+    try appendCommandEvent(io, &writer, session_id, .command_allowed, display, final_decision);
 
     var child_argv = try allocator.alloc([]const u8, command_argv.len);
     defer allocator.free(child_argv);
     child_argv[0] = real_binary;
     if (command_argv.len > 1) @memcpy(child_argv[1..], command_argv[1..]);
 
-    try env_map.put("PATH", adjusted_path);
+    const mutable_env = @constCast(env_map);
+    try mutable_env.put("PATH", adjusted_path);
 
-    var child = std.process.Child.init(child_argv, allocator);
-    child.env_map = env_map;
-    child.stdin_behavior = .Inherit;
-    child.stdout_behavior = .Inherit;
-    child.stderr_behavior = .Inherit;
-    child.spawn() catch |err| switch (err) {
+    var child = std.process.spawn(io, .{
+        .argv = child_argv,
+        .environ_map = mutable_env,
+        .stdin = .inherit,
+        .stdout = .inherit,
+        .stderr = .inherit,
+    }) catch |err| switch (err) {
         error.FileNotFound => {
             try stderr.print("orca shim exec: command not found: {s}\n", .{command_argv[0]});
             return exit_codes.general;
         },
         else => return err,
     };
-    const term = try child.wait();
+    const term = try child.wait(io);
     return switch (term) {
-        .Exited => |code| code,
-        .Signal, .Stopped, .Unknown => exit_codes.child_failure,
+        .exited => |code| code,
+        .signal, .stopped, .unknown => exit_codes.child_failure,
     };
 }
 
-fn parseOptions(argv: []const []const u8, stdout: anytype, stderr: anytype) !ShimOptions {
+fn parseOptions(io: std.Io, argv: []const []const u8, stdout: anytype, stderr: anytype) !ShimOptions {
     if (argv.len == 0 or std.mem.eql(u8, argv[0], "--help") or std.mem.eql(u8, argv[0], "-h")) {
-        _ = try help.writeCommand(stdout, "shim");
+        _ = try help.writeCommand(io, stdout, "shim");
         return error.HelpShown;
     }
     if (!std.mem.eql(u8, argv[0], "exec")) {
@@ -151,15 +167,15 @@ fn parseOptions(argv: []const []const u8, stdout: anytype, stderr: anytype) !Shi
     return .{ .command_argv = argv[2..] };
 }
 
-fn loadPolicyForShim(allocator: std.mem.Allocator, workspace_root: []const u8, session_id: []const u8, env_map: *const std.process.EnvMap) !policy.schema.LoadedPolicy {
+fn loadPolicyForShim(io: std.Io, allocator: std.mem.Allocator, workspace_root: []const u8, session_id: []const u8, env_map: *const std.process.Environ.Map) !policy.schema.LoadedPolicy {
     if (env_map.get("ORCA_POLICY_PATH")) |path| {
-        if (!try policyPathRecordedForSession(allocator, workspace_root, session_id, path)) return error.UntrustedPolicyPath;
-        return loadRecordedPolicySource(allocator, path, workspace_root);
+        if (!try policyPathRecordedForSession(io, allocator, workspace_root, session_id, path)) return error.UntrustedPolicyPath;
+        return loadRecordedPolicySource(io, allocator, path, workspace_root);
     }
-    return policy.load.discover(allocator, null, workspace_root);
+    return policy.load.discover(io, allocator, null, workspace_root);
 }
 
-fn loadRecordedPolicySource(allocator: std.mem.Allocator, source: []const u8, workspace_root: []const u8) !policy.schema.LoadedPolicy {
+fn loadRecordedPolicySource(io: std.Io, allocator: std.mem.Allocator, source: []const u8, workspace_root: []const u8) !policy.schema.LoadedPolicy {
     const builtin_prefix = "builtin:";
     if (std.mem.startsWith(u8, source, builtin_prefix)) {
         const preset_name = source[builtin_prefix.len..];
@@ -172,28 +188,30 @@ fn loadRecordedPolicySource(allocator: std.mem.Allocator, source: []const u8, wo
             .path = try allocator.dupe(u8, source),
         };
     }
-    return policy.load.discover(allocator, source, workspace_root);
+    return policy.load.discover(io, allocator, source, workspace_root);
 }
 
-fn shimMode(selected: *const policy.schema.Policy, env_map: *const std.process.EnvMap) policy.schema.Mode {
+fn shimMode(selected: *const policy.schema.Policy, env_map: *const std.process.Environ.Map) policy.schema.Mode {
     if (env_map.get("ORCA_MODE")) |mode_text| {
         return policy.schema.Mode.parse(mode_text) orelse selected.mode;
     }
     return selected.mode;
 }
 
-fn approvalRecordedForCommand(allocator: std.mem.Allocator, workspace_root: []const u8, session_id: []const u8, command_display: []const u8) !bool {
-    const events_path = try std.fs.path.join(allocator, &.{ workspace_root, ".orca", "sessions", session_id, "events.jsonl" });
-    defer allocator.free(events_path);
-    const events_text = std.fs.cwd().readFileAlloc(allocator, events_path, core.limits.max_audit_log_len) catch return false;
+fn approvalRecordedForCommand(io: std.Io, allocator: std.mem.Allocator, workspace_root: []const u8, session_id: []const u8, command_display: []const u8) !bool {
+    const events_rel = try std.fs.path.join(allocator, &.{ ".orca", "sessions", session_id, "events.jsonl" });
+    defer allocator.free(events_rel);
+    var workspace_dir = std.Io.Dir.openDirAbsolute(io, workspace_root, .{}) catch return false;
+    defer workspace_dir.close(io);
+    const events_text = workspace_dir.readFileAlloc(io, events_rel, allocator, .limited(core.limits.max_audit_log_len)) catch return false;
     defer allocator.free(events_text);
 
     var lines = std.mem.splitScalar(u8, events_text, '\n');
     while (lines.next()) |line| {
         if (line.len == 0) continue;
-        var parsed = std.json.parseFromSlice(std.json.Value, allocator, line, .{}) catch return false;
+        var parsed = std.json.parseFromSlice(std.json.Value, allocator, line, .{}) catch continue;
         defer parsed.deinit();
-        if (parsed.value != .object) return false;
+        if (parsed.value != .object) continue;
         const object = parsed.value.object;
         const event_type = object.get("type") orelse continue;
         if (event_type != .string or !std.mem.eql(u8, event_type.string, "user_approval")) continue;
@@ -209,18 +227,20 @@ fn approvalRecordedForCommand(allocator: std.mem.Allocator, workspace_root: []co
     return false;
 }
 
-fn policyPathRecordedForSession(allocator: std.mem.Allocator, workspace_root: []const u8, session_id: []const u8, policy_source: []const u8) !bool {
-    const events_path = try std.fs.path.join(allocator, &.{ workspace_root, ".orca", "sessions", session_id, "events.jsonl" });
-    defer allocator.free(events_path);
-    const events_text = std.fs.cwd().readFileAlloc(allocator, events_path, core.limits.max_audit_log_len) catch return false;
+fn policyPathRecordedForSession(io: std.Io, allocator: std.mem.Allocator, workspace_root: []const u8, session_id: []const u8, policy_source: []const u8) !bool {
+    const events_rel = try std.fs.path.join(allocator, &.{ ".orca", "sessions", session_id, "events.jsonl" });
+    defer allocator.free(events_rel);
+    var workspace_dir = std.Io.Dir.openDirAbsolute(io, workspace_root, .{}) catch return false;
+    defer workspace_dir.close(io);
+    const events_text = workspace_dir.readFileAlloc(io, events_rel, allocator, .limited(core.limits.max_audit_log_len)) catch return false;
     defer allocator.free(events_text);
 
     var lines = std.mem.splitScalar(u8, events_text, '\n');
     while (lines.next()) |line| {
         if (line.len == 0) continue;
-        var parsed = std.json.parseFromSlice(std.json.Value, allocator, line, .{}) catch return false;
+        var parsed = std.json.parseFromSlice(std.json.Value, allocator, line, .{}) catch continue;
         defer parsed.deinit();
-        if (parsed.value != .object) return false;
+        if (parsed.value != .object) continue;
         const object = parsed.value.object;
         const event_type = object.get("type") orelse continue;
         if (event_type != .string or !std.mem.eql(u8, event_type.string, "policy_loaded")) continue;
@@ -232,12 +252,12 @@ fn policyPathRecordedForSession(allocator: std.mem.Allocator, workspace_root: []
     return false;
 }
 
-fn appendCommandEvent(writer: *core_api.AuditWriter, session_id_text: []const u8, event_type: core.event.EventType, display: []const u8, decision: ?core.decision.Decision) !void {
+fn appendCommandEvent(io: std.Io, writer: *core_api.AuditWriter, session_id_text: []const u8, event_type: core.event.EventType, display: []const u8, decision: ?core.decision.Decision) !void {
     var session_id: core.session.SessionId = .{ .value = undefined, .len = 0 };
     if (session_id_text.len > session_id.value.len) return error.InvalidSessionId;
     @memcpy(session_id.value[0..session_id_text.len], session_id_text);
     session_id.len = session_id_text.len;
-    const ts = core.time.Timestamp.now();
+    const ts = core.time.Timestamp.now(io);
     const ev: core.event.Event = .{
         .session_id = session_id,
         .event_id = try core.event.generateEventId(ts),
@@ -254,7 +274,7 @@ fn appendCommandEvent(writer: *core_api.AuditWriter, session_id_text: []const u8
 fn updateSummaryIfPresent(writer: *core_api.AuditWriter) !void {
     const summary_path = try std.fs.path.join(writer.allocator, &.{ writer.session_dir_path, "summary.json" });
     defer writer.allocator.free(summary_path);
-    std.fs.cwd().access(summary_path, .{}) catch return;
+    std.Io.Dir.cwd().access(writer.io, summary_path, .{}) catch return;
     const final_hash = writer.finalHash() orelse return;
     try core_api.updateAuditSummaryFinalHash(writer.allocator, writer.session_dir_path, writer.event_count, final_hash);
 }
@@ -262,31 +282,34 @@ fn updateSummaryIfPresent(writer: *core_api.AuditWriter) !void {
 test "shim parser rejects missing separator" {
     var stdout_buf: [512]u8 = undefined;
     var stderr_buf: [512]u8 = undefined;
-    var stdout_stream = std.io.fixedBufferStream(&stdout_buf);
-    var stderr_stream = std.io.fixedBufferStream(&stderr_buf);
-    const code = try command(&.{ "exec", "git", "status" }, stdout_stream.writer(), stderr_stream.writer());
+    var stdout_writer: std.Io.Writer = .fixed(&stdout_buf);
+    var stderr_writer: std.Io.Writer = .fixed(&stderr_buf);
+    var env_map = try std.process.Environ.createMap(std.process.Environ.empty, std.testing.allocator);
+    defer env_map.deinit();
+    const code = try command(std.testing.io, &env_map, &.{ "exec", "git", "status" }, &stdout_writer, &stderr_writer);
     try std.testing.expectEqual(exit_codes.usage, code);
-    try std.testing.expect(std.mem.indexOf(u8, stderr_stream.getWritten(), "expected '--'") != null);
+    try std.testing.expect(std.mem.indexOf(u8, stderr_writer.buffered(), "expected '--'") != null);
 }
 
 test "shim callback delegates allowed commands and removes shim path" {
     if (@import("builtin").os.tag == .windows) return error.SkipZigTest;
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
-    const root = try tmp.dir.realpathAlloc(std.testing.allocator, ".");
+    try writeTestWorkspacePolicy(tmp.dir);
+    const root = try testRealPath(std.testing.allocator, tmp.dir, ".");
     defer std.testing.allocator.free(root);
-    try tmp.dir.makePath("real");
-    try tmp.dir.makePath("shim");
+    try tmp.dir.createDirPath(std.testing.io, "real");
+    try tmp.dir.createDirPath(std.testing.io, "shim");
     try writeTestScript(tmp.dir, "real/true", "exit 0\n");
     try writeTestScript(tmp.dir, "shim/true", "exit 9\n");
-    const real_dir = try tmp.dir.realpathAlloc(std.testing.allocator, "real");
+    const real_dir = try testRealPath(std.testing.allocator, tmp.dir, "real");
     defer std.testing.allocator.free(real_dir);
-    const shim_dir = try tmp.dir.realpathAlloc(std.testing.allocator, "shim");
+    const shim_dir = try testRealPath(std.testing.allocator, tmp.dir, "shim");
     defer std.testing.allocator.free(shim_dir);
     const session_id = try prepareShimSession(std.testing.allocator, root);
     defer std.testing.allocator.free(session_id);
 
-    var env_map = std.process.EnvMap.init(std.testing.allocator);
+    var env_map = std.process.Environ.Map.init(std.testing.allocator);
     defer env_map.deinit();
     const path_value = try std.fmt.allocPrint(std.testing.allocator, "{s}:{s}", .{ shim_dir, real_dir });
     defer std.testing.allocator.free(path_value);
@@ -294,11 +317,11 @@ test "shim callback delegates allowed commands and removes shim path" {
     try env_map.put("ORCA_SESSION_ID", session_id);
     try env_map.put("ORCA_WORKSPACE_ROOT", root);
     try env_map.put("ORCA_SHIM_DIR", shim_dir);
-    try env_map.put("ORCA_MODE", "strict");
+    try env_map.put("ORCA_MODE", "observe");
 
     var stderr_buf: [1024]u8 = undefined;
-    var stderr_stream = std.io.fixedBufferStream(&stderr_buf);
-    const code = try execWithEnv(std.testing.allocator, &.{"true"}, &env_map, stderr_stream.writer());
+    var stderr_writer: std.Io.Writer = .fixed(&stderr_buf);
+    const code = try execWithEnv(std.testing.io, std.testing.allocator, &.{"true"}, &env_map, &stderr_writer);
     try std.testing.expectEqual(exit_codes.success, code);
 }
 
@@ -306,19 +329,20 @@ test "shim callback blocks denied commands before delegation" {
     if (@import("builtin").os.tag == .windows) return error.SkipZigTest;
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
-    const root = try tmp.dir.realpathAlloc(std.testing.allocator, ".");
+    try writeTestWorkspacePolicy(tmp.dir);
+    const root = try testRealPath(std.testing.allocator, tmp.dir, ".");
     defer std.testing.allocator.free(root);
-    try tmp.dir.makePath("real");
-    try tmp.dir.makePath("shim");
+    try tmp.dir.createDirPath(std.testing.io, "real");
+    try tmp.dir.createDirPath(std.testing.io, "shim");
     try writeTestScript(tmp.dir, "real/rm", "exit 42\n");
-    const real_dir = try tmp.dir.realpathAlloc(std.testing.allocator, "real");
+    const real_dir = try testRealPath(std.testing.allocator, tmp.dir, "real");
     defer std.testing.allocator.free(real_dir);
-    const shim_dir = try tmp.dir.realpathAlloc(std.testing.allocator, "shim");
+    const shim_dir = try testRealPath(std.testing.allocator, tmp.dir, "shim");
     defer std.testing.allocator.free(shim_dir);
     const session_id = try prepareShimSession(std.testing.allocator, root);
     defer std.testing.allocator.free(session_id);
 
-    var env_map = std.process.EnvMap.init(std.testing.allocator);
+    var env_map = std.process.Environ.Map.init(std.testing.allocator);
     defer env_map.deinit();
     const path_value = try std.fmt.allocPrint(std.testing.allocator, "{s}:{s}", .{ shim_dir, real_dir });
     defer std.testing.allocator.free(path_value);
@@ -327,10 +351,12 @@ test "shim callback blocks denied commands before delegation" {
     try env_map.put("ORCA_WORKSPACE_ROOT", root);
     try env_map.put("ORCA_SHIM_DIR", shim_dir);
     try env_map.put("ORCA_MODE", "strict");
+    try recordShimPolicyLoaded(std.testing.allocator, root, session_id, "builtin:strict");
+    try env_map.put("ORCA_POLICY_PATH", "builtin:strict");
 
     var stderr_buf: [1024]u8 = undefined;
-    var stderr_stream = std.io.fixedBufferStream(&stderr_buf);
-    const code = try execWithEnv(std.testing.allocator, &.{ "rm", "-rf", "/" }, &env_map, stderr_stream.writer());
+    var stderr_writer: std.Io.Writer = .fixed(&stderr_buf);
+    const code = try execWithEnv(std.testing.io, std.testing.allocator, &.{ "rm", "-rf", "/" }, &env_map, &stderr_writer);
     try std.testing.expectEqual(exit_codes.denial, code);
 
     const events = try readSessionEvents(std.testing.allocator, root, session_id);
@@ -342,19 +368,33 @@ test "shim callback preserves parent approval for ask-class command" {
     if (@import("builtin").os.tag == .windows) return error.SkipZigTest;
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
-    const root = try tmp.dir.realpathAlloc(std.testing.allocator, ".");
+    try writeTestWorkspacePolicy(tmp.dir);
+    // Strict + ask so npm install requires a recorded parent approval.
+    {
+        const policy_file = try tmp.dir.createFile(std.testing.io, ".orca/policy.yaml", .{});
+        defer policy_file.close(std.testing.io);
+        try policy_file.writeStreamingAll(std.testing.io,
+            \\version: 1
+            \\mode: strict
+            \\commands:
+            \\  ask:
+            \\    - "npm install*"
+            \\  default: ask
+        );
+    }
+    const root = try testRealPath(std.testing.allocator, tmp.dir, ".");
     defer std.testing.allocator.free(root);
-    try tmp.dir.makePath("real");
-    try tmp.dir.makePath("shim");
+    try tmp.dir.createDirPath(std.testing.io, "real");
+    try tmp.dir.createDirPath(std.testing.io, "shim");
     try writeTestScript(tmp.dir, "real/npm", "exit 0\n");
-    const real_dir = try tmp.dir.realpathAlloc(std.testing.allocator, "real");
+    const real_dir = try testRealPath(std.testing.allocator, tmp.dir, "real");
     defer std.testing.allocator.free(real_dir);
-    const shim_dir = try tmp.dir.realpathAlloc(std.testing.allocator, "shim");
+    const shim_dir = try testRealPath(std.testing.allocator, tmp.dir, "shim");
     defer std.testing.allocator.free(shim_dir);
     const session_id = try prepareShimSession(std.testing.allocator, root);
     defer std.testing.allocator.free(session_id);
 
-    var env_map = std.process.EnvMap.init(std.testing.allocator);
+    var env_map = std.process.Environ.Map.init(std.testing.allocator);
     defer env_map.deinit();
     const path_value = try std.fmt.allocPrint(std.testing.allocator, "{s}:{s}", .{ shim_dir, real_dir });
     defer std.testing.allocator.free(path_value);
@@ -362,15 +402,20 @@ test "shim callback preserves parent approval for ask-class command" {
     try env_map.put("ORCA_SESSION_ID", session_id);
     try env_map.put("ORCA_WORKSPACE_ROOT", root);
     try env_map.put("ORCA_SHIM_DIR", shim_dir);
-    try env_map.put("ORCA_MODE", "strict");
+    try env_map.put("ORCA_MODE", "ask");
     const display = try intercept.commands.displayArgvAlloc(std.testing.allocator, &.{ "npm", "install" });
     defer std.testing.allocator.free(display);
     try recordShimApproval(std.testing.allocator, root, session_id, display);
     try intercept.commands.appendApprovalHashEnv(std.testing.allocator, &env_map, intercept.commands.approved_once_env, display);
+    try std.testing.expect(intercept.commands.approvalEnvMatches(&env_map, display));
+    try std.testing.expect(try approvalRecordedForCommand(std.testing.io, std.testing.allocator, root, session_id, display));
 
     var stderr_buf: [1024]u8 = undefined;
-    var stderr_stream = std.io.fixedBufferStream(&stderr_buf);
-    const code = try execWithEnv(std.testing.allocator, &.{ "npm", "install" }, &env_map, stderr_stream.writer());
+    var stderr_writer: std.Io.Writer = .fixed(&stderr_buf);
+    const code = try execWithEnv(std.testing.io, std.testing.allocator, &.{ "npm", "install" }, &env_map, &stderr_writer);
+    if (code != exit_codes.success) {
+        std.debug.print("npm approval shim stderr: {s}\n", .{stderr_writer.buffered()});
+    }
     try std.testing.expectEqual(exit_codes.success, code);
     try std.testing.expect(env_map.get(intercept.commands.approved_once_env) == null);
 
@@ -384,19 +429,20 @@ test "shim callback rejects forged approval hash from child environment" {
     if (@import("builtin").os.tag == .windows) return error.SkipZigTest;
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
-    const root = try tmp.dir.realpathAlloc(std.testing.allocator, ".");
+    try writeTestWorkspacePolicy(tmp.dir);
+    const root = try testRealPath(std.testing.allocator, tmp.dir, ".");
     defer std.testing.allocator.free(root);
-    try tmp.dir.makePath("real");
-    try tmp.dir.makePath("shim");
+    try tmp.dir.createDirPath(std.testing.io, "real");
+    try tmp.dir.createDirPath(std.testing.io, "shim");
     try writeTestScript(tmp.dir, "real/git", "exit 0\n");
-    const real_dir = try tmp.dir.realpathAlloc(std.testing.allocator, "real");
+    const real_dir = try testRealPath(std.testing.allocator, tmp.dir, "real");
     defer std.testing.allocator.free(real_dir);
-    const shim_dir = try tmp.dir.realpathAlloc(std.testing.allocator, "shim");
+    const shim_dir = try testRealPath(std.testing.allocator, tmp.dir, "shim");
     defer std.testing.allocator.free(shim_dir);
     const session_id = try prepareShimSession(std.testing.allocator, root);
     defer std.testing.allocator.free(session_id);
 
-    var env_map = std.process.EnvMap.init(std.testing.allocator);
+    var env_map = std.process.Environ.Map.init(std.testing.allocator);
     defer env_map.deinit();
     const path_value = try std.fmt.allocPrint(std.testing.allocator, "{s}:{s}", .{ shim_dir, real_dir });
     defer std.testing.allocator.free(path_value);
@@ -410,8 +456,8 @@ test "shim callback rejects forged approval hash from child environment" {
     try intercept.commands.appendApprovalHashEnv(std.testing.allocator, &env_map, intercept.commands.approved_session_env, display);
 
     var stderr_buf: [1024]u8 = undefined;
-    var stderr_stream = std.io.fixedBufferStream(&stderr_buf);
-    const code = try execWithEnv(std.testing.allocator, &.{ "git", "push" }, &env_map, stderr_stream.writer());
+    var stderr_writer: std.Io.Writer = .fixed(&stderr_buf);
+    const code = try execWithEnv(std.testing.io, std.testing.allocator, &.{ "git", "push" }, &env_map, &stderr_writer);
     try std.testing.expectEqual(exit_codes.denial, code);
 
     const events = try readSessionEvents(std.testing.allocator, root, session_id);
@@ -423,15 +469,16 @@ test "shim callback rejects forged policy path from child environment" {
     if (@import("builtin").os.tag == .windows) return error.SkipZigTest;
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
-    const root = try tmp.dir.realpathAlloc(std.testing.allocator, ".");
+    try writeTestWorkspacePolicy(tmp.dir);
+    const root = try testRealPath(std.testing.allocator, tmp.dir, ".");
     defer std.testing.allocator.free(root);
-    try tmp.dir.makePath("real");
-    try tmp.dir.makePath("shim");
+    try tmp.dir.createDirPath(std.testing.io, "real");
+    try tmp.dir.createDirPath(std.testing.io, "shim");
     try writeTestScript(tmp.dir, "real/git", "exit 0\n");
     {
-        const file = try tmp.dir.createFile("permissive.yaml", .{});
-        defer file.close();
-        try file.writeAll(
+        const file = try tmp.dir.createFile(std.testing.io, "permissive.yaml", .{});
+        defer file.close(std.testing.io);
+        try file.writeStreamingAll(std.testing.io,
             \\version: 1
             \\mode: strict
             \\commands:
@@ -440,16 +487,16 @@ test "shim callback rejects forged policy path from child environment" {
             \\
         );
     }
-    const real_dir = try tmp.dir.realpathAlloc(std.testing.allocator, "real");
+    const real_dir = try testRealPath(std.testing.allocator, tmp.dir, "real");
     defer std.testing.allocator.free(real_dir);
-    const shim_dir = try tmp.dir.realpathAlloc(std.testing.allocator, "shim");
+    const shim_dir = try testRealPath(std.testing.allocator, tmp.dir, "shim");
     defer std.testing.allocator.free(shim_dir);
-    const policy_path = try tmp.dir.realpathAlloc(std.testing.allocator, "permissive.yaml");
+    const policy_path = try testRealPath(std.testing.allocator, tmp.dir, "permissive.yaml");
     defer std.testing.allocator.free(policy_path);
     const session_id = try prepareShimSession(std.testing.allocator, root);
     defer std.testing.allocator.free(session_id);
 
-    var env_map = std.process.EnvMap.init(std.testing.allocator);
+    var env_map = std.process.Environ.Map.init(std.testing.allocator);
     defer env_map.deinit();
     const path_value = try std.fmt.allocPrint(std.testing.allocator, "{s}:{s}", .{ shim_dir, real_dir });
     defer std.testing.allocator.free(path_value);
@@ -461,8 +508,8 @@ test "shim callback rejects forged policy path from child environment" {
     try env_map.put("ORCA_POLICY_PATH", policy_path);
 
     var stderr_buf: [1024]u8 = undefined;
-    var stderr_stream = std.io.fixedBufferStream(&stderr_buf);
-    const code = try execWithEnv(std.testing.allocator, &.{ "git", "push" }, &env_map, stderr_stream.writer());
+    var stderr_writer: std.Io.Writer = .fixed(&stderr_buf);
+    const code = try execWithEnv(std.testing.io, std.testing.allocator, &.{ "git", "push" }, &env_map, &stderr_writer);
     try std.testing.expectEqual(exit_codes.denial, code);
 
     const events = try readSessionEvents(std.testing.allocator, root, session_id);
@@ -474,20 +521,23 @@ test "shim callback accepts recorded builtin policy source" {
     if (@import("builtin").os.tag == .windows) return error.SkipZigTest;
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
-    const root = try tmp.dir.realpathAlloc(std.testing.allocator, ".");
+    try writeTestWorkspacePolicy(tmp.dir);
+    const root = try testRealPath(std.testing.allocator, tmp.dir, ".");
     defer std.testing.allocator.free(root);
-    try tmp.dir.makePath("real");
-    try tmp.dir.makePath("shim");
-    try writeTestScript(tmp.dir, "real/git", "exit 0\n");
-    const real_dir = try tmp.dir.realpathAlloc(std.testing.allocator, "real");
+    try tmp.dir.createDirPath(std.testing.io, "real");
+    try tmp.dir.createDirPath(std.testing.io, "shim");
+    try writeTestScript(tmp.dir, "real/true", "exit 0\n");
+    try writeTestScript(tmp.dir, "shim/true", "exit 9\n");
+    const real_dir = try testRealPath(std.testing.allocator, tmp.dir, "real");
     defer std.testing.allocator.free(real_dir);
-    const shim_dir = try tmp.dir.realpathAlloc(std.testing.allocator, "shim");
+    const shim_dir = try testRealPath(std.testing.allocator, tmp.dir, "shim");
     defer std.testing.allocator.free(shim_dir);
     const session_id = try prepareShimSession(std.testing.allocator, root);
     defer std.testing.allocator.free(session_id);
     try recordShimPolicyLoaded(std.testing.allocator, root, session_id, "builtin:strict");
+    try std.testing.expect(try policyPathRecordedForSession(std.testing.io, std.testing.allocator, root, session_id, "builtin:strict"));
 
-    var env_map = std.process.EnvMap.init(std.testing.allocator);
+    var env_map = std.process.Environ.Map.init(std.testing.allocator);
     defer env_map.deinit();
     const path_value = try std.fmt.allocPrint(std.testing.allocator, "{s}:{s}", .{ shim_dir, real_dir });
     defer std.testing.allocator.free(path_value);
@@ -495,21 +545,40 @@ test "shim callback accepts recorded builtin policy source" {
     try env_map.put("ORCA_SESSION_ID", session_id);
     try env_map.put("ORCA_WORKSPACE_ROOT", root);
     try env_map.put("ORCA_SHIM_DIR", shim_dir);
-    try env_map.put("ORCA_MODE", "strict");
+    try env_map.put("ORCA_MODE", "observe");
     try env_map.put("ORCA_POLICY_PATH", "builtin:strict");
 
     var stderr_buf: [1024]u8 = undefined;
-    var stderr_stream = std.io.fixedBufferStream(&stderr_buf);
-    const code = try execWithEnv(std.testing.allocator, &.{ "git", "status" }, &env_map, stderr_stream.writer());
+    var stderr_writer: std.Io.Writer = .fixed(&stderr_buf);
+    const code = try execWithEnv(std.testing.io, std.testing.allocator, &.{"true"}, &env_map, &stderr_writer);
+    if (code != exit_codes.success) {
+        std.debug.print("builtin policy shim stderr: {s}\n", .{stderr_writer.buffered()});
+    }
     try std.testing.expectEqual(exit_codes.success, code);
 }
 
-fn writeTestScript(dir: std.fs.Dir, path: []const u8, body: []const u8) !void {
-    const file = try dir.createFile(path, .{ .mode = 0o755 });
-    defer file.close();
-    try file.writeAll("#!/bin/sh\n");
-    try file.writeAll(body);
-    try file.chmod(0o755);
+fn testRealPath(allocator: std.mem.Allocator, dir: std.Io.Dir, subpath: []const u8) ![]u8 {
+    var buffer: [std.fs.max_path_bytes]u8 = undefined;
+    const n = try dir.realPathFile(std.testing.io, subpath, &buffer);
+    return try allocator.dupe(u8, buffer[0..n]);
+}
+
+fn writeTestWorkspacePolicy(dir: std.Io.Dir) !void {
+    try dir.createDirPath(std.testing.io, ".orca");
+    const file = try dir.createFile(std.testing.io, ".orca/policy.yaml", .{});
+    defer file.close(std.testing.io);
+    try file.writeStreamingAll(std.testing.io,
+        \\version: 1
+        \\mode: observe
+    );
+}
+
+fn writeTestScript(dir: std.Io.Dir, path: []const u8, body: []const u8) !void {
+    const file = try dir.createFile(std.testing.io, path, .{});
+    defer file.close(std.testing.io);
+    try file.writeStreamingAll(std.testing.io, "#!/bin/sh\n");
+    try file.writeStreamingAll(std.testing.io, body);
+    try dir.setFilePermissions(std.testing.io, path, @enumFromInt(0o755), .{});
 }
 
 fn prepareShimSession(allocator: std.mem.Allocator, root: []const u8) ![]u8 {
@@ -523,13 +592,13 @@ fn prepareShimSession(allocator: std.mem.Allocator, root: []const u8) ![]u8 {
         .mode = .strict,
         .platform = core.platform.detectOs(),
     };
-    var writer = try core_api.createAuditWriter(allocator, session);
+    var writer = try core_api.createAuditWriter(std.testing.io, allocator, session);
     defer writer.deinit();
     return try allocator.dupe(u8, session.id.slice());
 }
 
 fn recordShimApproval(allocator: std.mem.Allocator, root: []const u8, session_id: []const u8, display: []const u8) !void {
-    var writer = try core_api.openAuditWriter(allocator, root, session_id);
+    var writer = try core_api.openAuditWriter(std.testing.io, allocator, root, session_id);
     defer writer.deinit();
     const decision: core.decision.Decision = .{
         .result = .allow,
@@ -537,17 +606,17 @@ fn recordShimApproval(allocator: std.mem.Allocator, root: []const u8, session_id
         .risk_score = 70,
         .ci_may_proceed = true,
     };
-    try appendCommandEvent(&writer, session_id, .user_approval, display, decision);
+    try appendCommandEvent(std.testing.io, &writer, session_id, .user_approval, display, decision);
 }
 
 fn recordShimPolicyLoaded(allocator: std.mem.Allocator, root: []const u8, session_id_text: []const u8, policy_source: []const u8) !void {
-    var writer = try core_api.openAuditWriter(allocator, root, session_id_text);
+    var writer = try core_api.openAuditWriter(std.testing.io, allocator, root, session_id_text);
     defer writer.deinit();
     var session_id: core.session.SessionId = .{ .value = undefined, .len = 0 };
     if (session_id_text.len > session_id.value.len) return error.InvalidSessionId;
     @memcpy(session_id.value[0..session_id_text.len], session_id_text);
     session_id.len = session_id_text.len;
-    const ts = core.time.Timestamp.now();
+    const ts = core.time.Timestamp.now(std.testing.io);
     const ev: core.event.Event = .{
         .session_id = session_id,
         .event_id = try core.event.generateEventId(ts),
@@ -562,5 +631,5 @@ fn recordShimPolicyLoaded(allocator: std.mem.Allocator, root: []const u8, sessio
 fn readSessionEvents(allocator: std.mem.Allocator, root: []const u8, session_id: []const u8) ![]u8 {
     const events_path = try std.fs.path.join(allocator, &.{ root, ".orca", "sessions", session_id, "events.jsonl" });
     defer allocator.free(events_path);
-    return try std.fs.cwd().readFileAlloc(allocator, events_path, 64 * 1024);
+    return try std.Io.Dir.cwd().readFileAlloc(std.testing.io, events_path, allocator, .limited(64 * 1024));
 }

@@ -1,5 +1,6 @@
 const std = @import("std");
 
+const env_util = @import("../env_util.zig");
 const audit = @import("orca_core").audit.redact_bridge;
 const policy_schema = @import("orca_core").policy.schema;
 
@@ -100,6 +101,7 @@ pub fn configuredBrokerCount(credentials: policy_schema.CredentialsPolicy) usize
 }
 
 pub fn check(
+    io: std.Io,
     allocator: std.mem.Allocator,
     selected_policy: *const policy_schema.Policy,
     workspace_root: []const u8,
@@ -119,7 +121,7 @@ pub fn check(
         try statuses.append(allocator, try makeStatus(allocator, "local-dummy", .local_dummy, .available, "built-in reference broker available"));
     } else {
         for (selected_policy.credentials.brokers) |broker| {
-            try statuses.append(allocator, try checkBroker(allocator, broker, workspace_root));
+            try statuses.append(allocator, try checkBroker(io, allocator, broker, workspace_root));
         }
     }
 
@@ -146,20 +148,20 @@ pub fn resolveCredential(
     };
 }
 
-fn checkBroker(allocator: std.mem.Allocator, broker: policy_schema.CredentialBrokerPolicy, workspace_root: []const u8) !BrokerStatus {
+fn checkBroker(io: std.Io, allocator: std.mem.Allocator, broker: policy_schema.CredentialBrokerPolicy, workspace_root: []const u8) !BrokerStatus {
     return switch (broker.kind) {
         .local_dummy => makeStatus(allocator, broker.name, broker.kind, .available, "reference-only broker available"),
         .env_file_dev => blk: {
             const path = try envFilePath(allocator, workspace_root, broker);
             defer allocator.free(path);
-            std.fs.cwd().access(path, .{}) catch |err| {
+            std.Io.Dir.cwd().access(io, path, .{}) catch |err| {
                 const message = try std.fmt.allocPrint(allocator, "env file unavailable: {s}", .{@errorName(err)});
                 defer allocator.free(message);
                 break :blk try makeStatus(allocator, broker.name, broker.kind, .unavailable, message);
             };
             break :blk try makeStatus(allocator, broker.name, broker.kind, .available, "dev env file readable");
         },
-        .onepassword_cli => if (try executableInPath(allocator, "op"))
+        .onepassword_cli => if (try executableInPath(io, allocator, "op"))
             makeStatus(allocator, broker.name, broker.kind, .limited, "op CLI found; ref checks use op read without printing values")
         else
             makeStatus(allocator, broker.name, broker.kind, .unavailable, "op CLI not found"),
@@ -216,9 +218,11 @@ fn resolveEnvFileDev(
     workspace_root: []const u8,
     key: []const u8,
 ) !ResolvedSecret {
+    var threaded: std.Io.Threaded = .init_single_threaded;
+    const io = threaded.io();
     const path = try envFilePath(allocator, workspace_root, broker);
     defer allocator.free(path);
-    const text = try std.fs.cwd().readFileAlloc(allocator, path, 128 * 1024);
+    const text = try std.Io.Dir.cwd().readFileAlloc(io, path, allocator, .limited(128 * 1024));
     defer wipeAndFree(allocator, text);
     var lines = std.mem.splitScalar(u8, text, '\n');
     while (lines.next()) |line_raw| {
@@ -266,65 +270,34 @@ fn runCapture(allocator: std.mem.Allocator, argv: []const []const u8) !CommandRe
 }
 
 fn runCaptureWithTimeout(allocator: std.mem.Allocator, argv: []const []const u8, timeout_ns: u64) !CommandResult {
-    var child = std.process.Child.init(argv, allocator);
-    child.stdin_behavior = .Ignore;
-    child.stdout_behavior = .Pipe;
-    child.stderr_behavior = .Pipe;
-    try child.spawn();
-    var done = std.atomic.Value(bool).init(false);
-    var timed_out = std.atomic.Value(bool).init(false);
-    var watchdog_context: CommandWatchdogContext = .{
-        .child = &child,
-        .done = &done,
-        .timed_out = &timed_out,
-        .timeout_ns = timeout_ns,
+    var threaded = std.Io.Threaded.init(allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+    const run_result = std.process.run(allocator, io, .{
+        .argv = argv,
+        .stdout_limit = .limited(128 * 1024),
+        .stderr_limit = .limited(32 * 1024),
+        .timeout = .{ .duration = .{
+            .raw = .fromNanoseconds(@intCast(timeout_ns)),
+            .clock = .awake,
+        } },
+    }) catch |err| switch (err) {
+        error.Timeout => return error.BrokerCommandTimeout,
+        else => return err,
     };
-    const watchdog = try std.Thread.spawn(.{}, commandWatchdog, .{&watchdog_context});
-    defer {
-        done.store(true, .release);
-        watchdog.join();
+    errdefer {
+        allocator.free(run_result.stdout);
+        allocator.free(run_result.stderr);
     }
-    const stdout = child.stdout.?.readToEndAlloc(allocator, 128 * 1024) catch |err| {
-        if (timed_out.load(.acquire)) {
-            return error.BrokerCommandTimeout;
-        }
-        return err;
-    };
-    errdefer wipeAndFree(allocator, stdout);
-    if (timed_out.load(.acquire)) {
-        wipeAndFree(allocator, stdout);
-        return error.BrokerCommandTimeout;
-    }
-    if (child.stderr == null) {
-        wipeAndFree(allocator, stdout);
-        return error.BrokerCommandTimeout;
-    }
-    const stderr = child.stderr.?.readToEndAlloc(allocator, 32 * 1024) catch |err| {
-        if (timed_out.load(.acquire)) {
-            wipeAndFree(allocator, stdout);
-            return error.BrokerCommandTimeout;
-        }
-        return err;
-    };
-    errdefer wipeAndFree(allocator, stderr);
-    const term = child.wait() catch |wait_err| {
-        if (timed_out.load(.acquire)) {
-            wipeAndFree(allocator, stdout);
-            wipeAndFree(allocator, stderr);
-            return error.BrokerCommandTimeout;
-        }
-        return wait_err;
-    };
-    if (timed_out.load(.acquire)) {
-        wipeAndFree(allocator, stdout);
-        wipeAndFree(allocator, stderr);
-        return error.BrokerCommandTimeout;
-    }
-    const code: u8 = switch (term) {
-        .Exited => |value| @intCast(@min(value, 255)),
+    const code: u8 = switch (run_result.term) {
+        .exited => |value| @intCast(@min(value, 255)),
         else => 255,
     };
-    return .{ .stdout = stdout, .stderr = stderr, .code = code };
+    return .{
+        .stdout = run_result.stdout,
+        .stderr = run_result.stderr,
+        .code = code,
+    };
 }
 
 const CommandWatchdogContext = struct {
@@ -447,8 +420,12 @@ fn safeErrorClass(err: anyerror) []const u8 {
     };
 }
 
-fn executableInPath(allocator: std.mem.Allocator, name: []const u8) !bool {
-    const path = std.process.getEnvVarOwned(allocator, "PATH") catch return false;
+fn executableInPath(io: std.Io, allocator: std.mem.Allocator, name: []const u8) !bool {
+    _ = io;
+    var env_map = env_util.createProcessMap(allocator) catch return false;
+    defer env_map.deinit();
+    const path_owned = env_util.getOwned(&env_map, allocator, "PATH") catch return false;
+    const path = path_owned orelse return false;
     defer allocator.free(path);
     const separator: u8 = if (@import("builtin").os.tag == .windows) ';' else ':';
     var parts = std.mem.splitScalar(u8, path, separator);
@@ -472,8 +449,10 @@ fn containsInsensitive(haystack: []const u8, needle: []const u8) bool {
 }
 
 fn fileExists(path: []const u8) bool {
-    const file = std.fs.cwd().openFile(path, .{}) catch return false;
-    file.close();
+    var threaded: std.Io.Threaded = .init_single_threaded;
+    const io = threaded.io();
+    const file = std.Io.Dir.cwd().openFile(io, path, .{}) catch return false;
+    file.close(io);
     return true;
 }
 
@@ -494,9 +473,9 @@ test "local dummy broker creates raw-secret-free env references" {
 test "env-file dev broker resolves and redacts check output" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
-    try tmp.dir.makePath(".orca");
-    try tmp.dir.writeFile(.{ .sub_path = ".orca/dev-secrets.env", .data = "GITHUB_PAT=ghp_fakeSyntheticTokenValue1234567890\n" });
-    const root = try tmp.dir.realpathAlloc(std.testing.allocator, ".");
+    try tmp.dir.createDirPath(std.testing.io, ".orca");
+    try tmp.dir.writeFile(std.testing.io, .{ .sub_path = ".orca/dev-secrets.env", .data = "GITHUB_PAT=ghp_fakeSyntheticTokenValue1234567890\n" });
+    const root = try tmp.dir.realPathFileAlloc(std.testing.io, ".", std.testing.allocator);
     defer std.testing.allocator.free(root);
 
     var loaded = try @import("orca_core").policy.load.parseFromSlice(std.testing.allocator,
@@ -519,7 +498,7 @@ test "env-file dev broker resolves and redacts check output" {
     defer secret.deinit(std.testing.allocator);
     try std.testing.expectEqualStrings("ghp_fakeSyntheticTokenValue1234567890", secret.value);
 
-    var report = try check(std.testing.allocator, &loaded, root, "github_pat");
+    var report = try check(std.testing.io, std.testing.allocator, &loaded, root, "github_pat");
     defer report.deinit(std.testing.allocator);
     try std.testing.expect(report.ok());
     try std.testing.expect(std.mem.indexOf(u8, report.statuses[0].message, "ghp_fake") == null);
@@ -533,10 +512,10 @@ test "env-file dev broker rejects unsafe paths at runtime" {
 test "broker command capture times out hung CLIs without leaking output" {
     if (@import("builtin").os.tag == .windows) return error.SkipZigTest;
 
-    const started = std.time.milliTimestamp();
+    const started = std.Io.Clock.Timestamp.now(std.testing.io, .awake);
     try std.testing.expectError(error.BrokerCommandTimeout, runCaptureWithTimeout(std.testing.allocator, &.{ "/bin/sh", "-c", "sleep 2" }, 75 * std.time.ns_per_ms));
-    const elapsed = std.time.milliTimestamp() - started;
-    try std.testing.expect(elapsed < 1000);
+    const elapsed_ms = started.untilNow(std.testing.io).raw.toMilliseconds();
+    try std.testing.expect(elapsed_ms < 1000);
 }
 
 test "broker command error classes are redacted and specific" {

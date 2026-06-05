@@ -2,7 +2,7 @@ const std = @import("std");
 const orca = @import("orca");
 
 fn readFile(allocator: std.mem.Allocator, path: []const u8) ![]u8 {
-    return try std.fs.cwd().readFileAlloc(allocator, path, 256 * 1024);
+    return try std.Io.Dir.cwd().readFileAlloc(std.testing.io, path, allocator, .limited(256 * 1024));
 }
 
 test "phase25 release scripts package runtime assets referenced by CLI docs" {

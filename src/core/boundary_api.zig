@@ -273,8 +273,8 @@ pub fn parsePolicyFromSlice(allocator: std.mem.Allocator, text: []const u8, sour
 
 /// Load a policy from a file on disk and return an opaque `Policy` handle.
 /// The caller owns the returned pointer and must call `deinit()` on it.
-pub fn loadPolicyFile(allocator: std.mem.Allocator, path: []const u8) !*Policy {
-    var loaded = try policy_engine.load.loadFile(allocator, path);
+pub fn loadPolicyFile(io: std.Io, allocator: std.mem.Allocator, path: []const u8) !*Policy {
+    var loaded = try policy_engine.load.loadFile(io, allocator, path);
     errdefer loaded.deinit();
     return wrapPolicy(allocator, loaded);
 }
@@ -289,8 +289,8 @@ pub fn loadPolicyPreset(allocator: std.mem.Allocator, preset: Preset) !*Policy {
 
 /// Discover a policy file by searching well-known paths, returning a `LoadedPolicy`.
 /// The caller owns the result and must call `deinit()` on it.
-pub fn discoverPolicy(allocator: std.mem.Allocator, explicit_path: ?[]const u8, workspace_root: []const u8) !LoadedPolicy {
-    var loaded = try policy_engine.load.discover(allocator, explicit_path, workspace_root);
+pub fn discoverPolicy(io: std.Io, allocator: std.mem.Allocator, explicit_path: ?[]const u8, workspace_root: []const u8) !LoadedPolicy {
+    var loaded = try policy_engine.load.discover(io, allocator, explicit_path, workspace_root);
     errdefer loaded.deinit();
     const wrapped = try wrapPolicy(allocator, loaded.policy);
     return .{
@@ -363,12 +363,12 @@ pub fn createAuditEvent(input: AuditEventInput) !core_mod.event.Event {
     };
 }
 
-pub fn createAuditWriter(allocator: std.mem.Allocator, session: Session) !AuditWriter {
-    return AuditWriter.init(allocator, session);
+pub fn createAuditWriter(io: std.Io, allocator: std.mem.Allocator, session: Session) !AuditWriter {
+    return AuditWriter.init(io, allocator, session);
 }
 
-pub fn openAuditWriter(allocator: std.mem.Allocator, workspace_root: []const u8, session_id: []const u8) !AuditWriter {
-    return AuditWriter.openExisting(allocator, workspace_root, session_id);
+pub fn openAuditWriter(io: std.Io, allocator: std.mem.Allocator, workspace_root: []const u8, session_id: []const u8) !AuditWriter {
+    return AuditWriter.openExisting(io, allocator, workspace_root, session_id);
 }
 
 pub fn appendAuditEvent(writer: *AuditWriter, event: core_mod.event.Event) !void {
@@ -395,12 +395,12 @@ pub fn redactTargetValueBounded(kind_name: []const u8, value: []const u8, buffer
     return audit.redact_bridge.redactTargetValueBounded(kind_name, value, buffer);
 }
 
-pub fn verifyReplay(allocator: std.mem.Allocator, session_dir_path: []const u8) !VerifyResult {
-    return audit.replay.verifySessionDir(allocator, session_dir_path);
+pub fn verifyReplay(io: std.Io, allocator: std.mem.Allocator, session_dir_path: []const u8) !VerifyResult {
+    return audit.replay.verifySessionDir(io, allocator, session_dir_path);
 }
 
-pub fn loadReplay(allocator: std.mem.Allocator, workspace_root: []const u8, options: ReplayOptions) !ReplaySession {
-    return audit.replay.load(allocator, workspace_root, options);
+pub fn loadReplay(io: std.Io, allocator: std.mem.Allocator, workspace_root: []const u8, options: ReplayOptions) !ReplaySession {
+    return audit.replay.load(io, allocator, workspace_root, options);
 }
 
 pub fn writeReplayJson(writer: anytype, replay: ReplaySession) !void {

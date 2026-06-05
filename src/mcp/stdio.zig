@@ -44,8 +44,8 @@ test "stdio reader returns bounded newline-delimited messages" {
 
 test "stdio writer rejects protocol-corrupting embedded newlines" {
     var buf: [128]u8 = undefined;
-    var stream = std.io.fixedBufferStream(&buf);
-    try std.testing.expectError(error.EmbeddedNewline, writeRawMessage(stream.writer(), "{\"jsonrpc\":\"2.0\"}\n{}"));
+    var writer: std.Io.Writer = .fixed(&buf);
+    try std.testing.expectError(error.EmbeddedNewline, writeRawMessage(&writer, "{\"jsonrpc\":\"2.0\"}\n{}"));
 }
 
 test "protocol clean output rejects human logs on stdout" {

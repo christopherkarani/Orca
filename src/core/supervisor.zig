@@ -19,7 +19,7 @@ pub const RunConfig = struct {
     session_name: ?[]const u8 = null,
     policy_source: ?[]const u8 = null,
     stdio: StdioBehavior = .inherit,
-    env_map: ?*const std.process.EnvMap = null,
+    env_map: ?*const std.process.Environ.Map = null,
     env_redactions: []const EnvRedactionRecord = &.{},
     before_spawn: ?StartHook = null,
     before_process_launch: ?StartHook = null,
@@ -84,17 +84,18 @@ fn healthMonitorLoop(context: *HealthMonitorThreadContext) void {
             context.prepared.terminateForHealthFailure();
             return;
         }
-        std.Thread.sleep(context.monitor.interval_ns);
+        const duration = std.Io.Duration.fromNanoseconds(context.monitor.interval_ns);
+        std.Io.sleep(context.prepared.io, duration, .awake) catch {};
     }
 }
 
-pub fn run(allocator: std.mem.Allocator, config: RunConfig) !SessionResult {
+pub fn run(io: std.Io, allocator: std.mem.Allocator, config: RunConfig) !SessionResult {
     if (config.command.len == 0) return error.InvalidCommand;
 
-    const workspace_root = try resolveWorkspaceRoot(allocator, config.workspace, ".");
+    const workspace_root = try resolveWorkspaceRoot(io, allocator, config.workspace, ".");
     errdefer allocator.free(workspace_root);
 
-    const started_at = time.Timestamp.now();
+    const started_at = time.Timestamp.now(io);
     var session: session_mod.Session = .{
         .id = try session_mod.generateSessionId(started_at),
         .started_at = started_at,
@@ -155,7 +156,8 @@ pub fn run(allocator: std.mem.Allocator, config: RunConfig) !SessionResult {
     argv[0] = config.command;
     @memcpy(argv[1..], config.args);
 
-    var prepared = process.prepareChild(allocator, .{
+    var prepared = process.prepareChild(io, allocator, .{
+        .io = io,
         .argv = argv,
         .workspace_root = workspace_root,
         .stdio = config.stdio,
@@ -198,7 +200,7 @@ pub fn run(allocator: std.mem.Allocator, config: RunConfig) !SessionResult {
 
     const term = try prepared.wait();
 
-    const ended_at = time.Timestamp.now();
+    const ended_at = time.Timestamp.now(io);
     session.ended_at = ended_at;
     const status = childStatusFromTerm(term);
     events[next_event_index] = try makeOwnedTargetEvent(allocator, &event_target_values, &owned_targets, session, ended_at, .session_exit, .session, session.id.slice());
@@ -248,15 +250,23 @@ fn commandDisplay(allocator: std.mem.Allocator, command: []const u8, args: []con
 }
 
 pub fn resolveWorkspaceRoot(
+    io: std.Io,
     allocator: std.mem.Allocator,
     explicit_workspace: ?[]const u8,
     start_path: []const u8,
 ) ![]u8 {
+    const cwd = std.Io.Dir.cwd();
     if (explicit_workspace) |workspace| {
-        return try std.fs.cwd().realpathAlloc(allocator, workspace);
+        const resolved_z = try cwd.realPathFileAlloc(io, workspace, allocator);
+        defer allocator.free(resolved_z);
+        return try allocator.dupe(u8, resolved_z);
     }
 
-    const fallback = try std.fs.cwd().realpathAlloc(allocator, start_path);
+    const fallback = blk: {
+        const fallback_z = try cwd.realPathFileAlloc(io, start_path, allocator);
+        defer allocator.free(fallback_z);
+        break :blk try allocator.dupe(u8, fallback_z);
+    };
     errdefer allocator.free(fallback);
     var current = try allocator.dupe(u8, fallback);
     errdefer allocator.free(current);
@@ -267,7 +277,7 @@ pub fn resolveWorkspaceRoot(
         const orca_policy_path = try std.fs.path.join(allocator, &.{ current, ".orca", "policy.yaml" });
         defer allocator.free(orca_policy_path);
 
-        if (hasGitMarker(git_path) or hasWorkspaceMarker(orca_policy_path)) {
+        if (hasGitMarker(io, git_path) or hasWorkspaceMarker(io, orca_policy_path)) {
             allocator.free(fallback);
             return current;
         }
@@ -287,22 +297,22 @@ pub fn resolveWorkspaceRoot(
     }
 }
 
-fn hasGitMarker(path: []const u8) bool {
-    std.fs.cwd().access(path, .{}) catch return false;
+fn hasGitMarker(io: std.Io, path: []const u8) bool {
+    std.Io.Dir.accessAbsolute(io, path, .{}) catch return false;
     return true;
 }
 
-fn hasWorkspaceMarker(path: []const u8) bool {
-    std.fs.cwd().access(path, .{}) catch return false;
+fn hasWorkspaceMarker(io: std.Io, path: []const u8) bool {
+    std.Io.Dir.accessAbsolute(io, path, .{}) catch return false;
     return true;
 }
 
 fn childStatusFromTerm(term: std.process.Child.Term) ChildStatus {
     return switch (term) {
-        .Exited => |code| .{ .exited = code },
-        .Signal => |signal| .{ .signal = signal },
-        .Stopped => |signal| .{ .stopped = signal },
-        .Unknown => |status| .{ .unknown = status },
+        .exited => |code| .{ .exited = code },
+        .signal => |signal| .{ .signal = @intFromEnum(signal) },
+        .stopped => |signal| .{ .stopped = @intFromEnum(signal) },
+        .unknown => |status| .{ .unknown = status },
     };
 }
 
@@ -371,10 +381,10 @@ test "workspace detection honors explicit workspace" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
 
-    const explicit = try tmp.dir.realpathAlloc(std.testing.allocator, ".");
+    const explicit = try tmp.dir.realPathFileAlloc(std.testing.io, ".", std.testing.allocator);
     defer std.testing.allocator.free(explicit);
 
-    const resolved = try resolveWorkspaceRoot(std.testing.allocator, explicit, "/");
+    const resolved = try resolveWorkspaceRoot(std.testing.io, std.testing.allocator, explicit, "/");
     defer std.testing.allocator.free(resolved);
 
     try std.testing.expectEqualStrings(explicit, resolved);
@@ -384,15 +394,15 @@ test "workspace detection finds nearest git parent" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
 
-    try tmp.dir.makePath(".git");
-    try tmp.dir.makePath("child/grandchild");
+    try tmp.dir.createDirPath(std.testing.io, ".git");
+    try tmp.dir.createDirPath(std.testing.io, "child/grandchild");
 
-    const root = try tmp.dir.realpathAlloc(std.testing.allocator, ".");
+    const root = try tmp.dir.realPathFileAlloc(std.testing.io, ".", std.testing.allocator);
     defer std.testing.allocator.free(root);
-    const child = try tmp.dir.realpathAlloc(std.testing.allocator, "child/grandchild");
+    const child = try tmp.dir.realPathFileAlloc(std.testing.io, "child/grandchild", std.testing.allocator);
     defer std.testing.allocator.free(child);
 
-    const resolved = try resolveWorkspaceRoot(std.testing.allocator, null, child);
+    const resolved = try resolveWorkspaceRoot(std.testing.io, std.testing.allocator, null, child);
     defer std.testing.allocator.free(resolved);
 
     try std.testing.expectEqualStrings(root, resolved);
@@ -402,16 +412,16 @@ test "workspace detection finds nearest orca policy parent" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
 
-    try tmp.dir.makePath(".orca");
-    try tmp.dir.writeFile(.{ .sub_path = ".orca/policy.yaml", .data = "mode: observe\n" });
-    try tmp.dir.makePath("child/grandchild");
+    try tmp.dir.createDirPath(std.testing.io, ".orca");
+    try tmp.dir.writeFile(std.testing.io, .{ .sub_path = ".orca/policy.yaml", .data = "mode: observe\n" });
+    try tmp.dir.createDirPath(std.testing.io, "child/grandchild");
 
-    const root = try tmp.dir.realpathAlloc(std.testing.allocator, ".");
+    const root = try tmp.dir.realPathFileAlloc(std.testing.io, ".", std.testing.allocator);
     defer std.testing.allocator.free(root);
-    const child = try tmp.dir.realpathAlloc(std.testing.allocator, "child/grandchild");
+    const child = try tmp.dir.realPathFileAlloc(std.testing.io, "child/grandchild", std.testing.allocator);
     defer std.testing.allocator.free(child);
 
-    const resolved = try resolveWorkspaceRoot(std.testing.allocator, null, child);
+    const resolved = try resolveWorkspaceRoot(std.testing.io, std.testing.allocator, null, child);
     defer std.testing.allocator.free(resolved);
 
     try std.testing.expectEqualStrings(root, resolved);
@@ -422,26 +432,26 @@ test "workspace detection falls back to start directory outside git" {
     defer std.testing.allocator.free(tmp_parent);
 
     var suffix_buf: [8]u8 = undefined;
-    const suffix = try util.randomHexSuffix(&suffix_buf);
+    const suffix = try util.randomHexSuffix(std.testing.io, &suffix_buf);
     const relative_name = try std.fmt.allocPrint(std.testing.allocator, "orca-non-git-{s}", .{suffix});
     defer std.testing.allocator.free(relative_name);
     const tmp_path = try std.fs.path.join(std.testing.allocator, &.{ tmp_parent, relative_name });
     defer std.testing.allocator.free(tmp_path);
 
-    try std.fs.cwd().makePath(tmp_path);
-    defer std.fs.cwd().deleteTree(tmp_path) catch {};
+    try std.Io.Dir.cwd().makePath(std.testing.io, tmp_path);
+    defer std.Io.Dir.cwd().deleteTree(std.testing.io, tmp_path) catch {};
 
-    const root = try std.fs.cwd().realpathAlloc(std.testing.allocator, tmp_path);
+    const root = try std.Io.Dir.cwd().realPathFileAlloc(std.testing.io, tmp_path, std.testing.allocator);
     defer std.testing.allocator.free(root);
 
-    const resolved = try resolveWorkspaceRoot(std.testing.allocator, null, root);
+    const resolved = try resolveWorkspaceRoot(std.testing.io, std.testing.allocator, null, root);
     defer std.testing.allocator.free(resolved);
 
     try std.testing.expectEqualStrings(root, resolved);
 }
 
 test "running a simple child populates session metadata and events" {
-    var result = try run(std.testing.allocator, .{
+    var result = try run(std.testing.io, std.testing.allocator, .{
         .command = "zig",
         .args = &.{"version"},
         .workspace = ".",
@@ -472,15 +482,15 @@ test "filtered child environment receives allowed vars and not denied vars" {
 
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
-    const root = try tmp.dir.realpathAlloc(std.testing.allocator, ".");
+    const root = try tmp.dir.realPathFileAlloc(std.testing.io, ".", std.testing.allocator);
     defer std.testing.allocator.free(root);
 
-    var env_map = std.process.EnvMap.init(std.testing.allocator);
+    var env_map = std.process.Environ.Map.init(std.testing.allocator);
     defer env_map.deinit();
     try env_map.put("PATH", "/usr/bin:/bin");
     try env_map.put("SAFE_FAKE", "visible");
 
-    var result = try run(std.testing.allocator, .{
+    var result = try run(std.testing.io, std.testing.allocator, .{
         .command = "/bin/sh",
         .args = &.{ "-c", "env > child-env.txt" },
         .workspace = root,
@@ -489,14 +499,14 @@ test "filtered child environment receives allowed vars and not denied vars" {
     });
     defer result.deinit();
 
-    const written = try tmp.dir.readFileAlloc(std.testing.allocator, "child-env.txt", 4096);
+    const written = try tmp.dir.readFileAlloc(std.testing.io, "child-env.txt", std.testing.allocator, .limited(4096));
     defer std.testing.allocator.free(written);
     try std.testing.expect(std.mem.indexOf(u8, written, "SAFE_FAKE=visible") != null);
     try std.testing.expect(std.mem.indexOf(u8, written, "FAKE_GITHUB_TOKEN") == null);
 }
 
 test "child non-zero exit code is propagated" {
-    var result = try run(std.testing.allocator, .{
+    var result = try run(std.testing.io, std.testing.allocator, .{
         .command = "zig",
         .args = &.{"definitely-not-a-zig-command"},
         .workspace = ".",
@@ -522,7 +532,7 @@ test "session start hook failure cleans up spawned child and returns hook error"
     const started = std.time.milliTimestamp();
     try std.testing.expectError(error.IntentionalHookFailure, run(std.testing.allocator, .{
         .command = "/bin/sh",
-        .args = &.{ "-c", "sleep 2" },
+        .args = &.{ "-c", "sleep 0.1" },
         .workspace = ".",
         .stdio = .ignore,
         .on_session_start = .{
@@ -551,9 +561,9 @@ test "health monitor terminates child when required runtime dies" {
 
     var context: FailingHealthContext = .{};
     const started = std.time.milliTimestamp();
-    var result = try run(std.testing.allocator, .{
+    var result = try run(std.testing.io, std.testing.allocator, .{
         .command = "/bin/sh",
-        .args = &.{ "-c", "sleep 2" },
+        .args = &.{ "-c", "sleep 0.1" },
         .workspace = ".",
         .stdio = .ignore,
         .health_monitor = .{

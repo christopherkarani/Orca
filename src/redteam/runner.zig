@@ -97,11 +97,17 @@ pub const RunOptions = struct {
 const LocalTempDir = struct {
     allocator: std.mem.Allocator,
     path: []u8,
-    dir: std.fs.Dir,
+    dir: std.Io.Dir,
 
-    fn deinit(self: *LocalTempDir, keep: bool) void {
-        self.dir.close();
-        if (!keep) std.fs.deleteTreeAbsolute(self.path) catch {};
+    fn deinit(self: *LocalTempDir, io: std.Io, keep: bool) void {
+        self.dir.close(io);
+        if (!keep) {
+            const parent = std.fs.path.dirname(self.path) orelse return;
+            const base = std.fs.path.basename(self.path);
+            var parent_dir = std.Io.Dir.openDirAbsolute(io, parent, .{}) catch return;
+            defer parent_dir.close(io);
+            parent_dir.deleteTree(io, base) catch {};
+        }
         self.allocator.free(self.path);
         self.* = undefined;
     }
@@ -120,17 +126,19 @@ pub fn runSuite(allocator: std.mem.Allocator, fixture_set: fixtures.FixtureSet, 
 }
 
 pub fn runFixture(allocator: std.mem.Allocator, fixture: fixtures.Fixture, options: RunOptions) !FixtureResult {
+    var threaded: std.Io.Threaded = .init_single_threaded;
+    const io = threaded.io();
     if (try missingBackendCapabilities(allocator, fixture.requires.backend)) |missing| {
         return skippedForMissingBackend(allocator, fixture, missing);
     }
 
-    var tmp = try createLocalTempDir(allocator);
-    defer tmp.deinit(options.keep_workspaces);
-    try tmp.dir.makePath("workspace");
-    try tmp.dir.makePath("protected");
-    const temp_root = try tmp.dir.realpathAlloc(allocator, ".");
+    var tmp = try createLocalTempDir(io, allocator);
+    defer tmp.deinit(io, options.keep_workspaces);
+    try tmp.dir.createDirPath(io, "workspace");
+    try tmp.dir.createDirPath(io, "protected");
+    const temp_root = try tmp.dir.realPathFileAlloc(io, ".", allocator);
     defer allocator.free(temp_root);
-    const workspace_root = try tmp.dir.realpathAlloc(allocator, "workspace");
+    const workspace_root = try tmp.dir.realPathFileAlloc(io, "workspace", allocator);
     defer allocator.free(workspace_root);
 
     try copyInputDirectory(allocator, fixture.path, workspace_root);
@@ -140,7 +148,7 @@ pub fn runFixture(allocator: std.mem.Allocator, fixture: fixtures.Fixture, optio
     const effective_mode: policy.schema.Mode = if (options.ci) .ci else fixture.mode;
     selected_policy.mode = effective_mode;
 
-    const now = core.time.Timestamp.now();
+    const now = core.time.Timestamp.now(io);
     const session_id = try core.session.generateSessionId(now);
     const command_name = fixture.command.argv[0];
     const session: core.session.Session = .{
@@ -154,7 +162,7 @@ pub fn runFixture(allocator: std.mem.Allocator, fixture: fixtures.Fixture, optio
         .platform = core.platform.detectOs(),
     };
 
-    var writer = try audit.writer.SessionWriter.init(allocator, session);
+    var writer = try audit.writer.SessionWriter.init(io, allocator, session);
     defer writer.deinit();
 
     var checks: std.ArrayList(CheckResult) = .empty;
@@ -201,7 +209,7 @@ pub fn runFixture(allocator: std.mem.Allocator, fixture: fixtures.Fixture, optio
     const ended: core.session.Session = .{
         .id = session.id,
         .started_at = session.started_at,
-        .ended_at = core.time.Timestamp.now(),
+        .ended_at = core.time.Timestamp.now(io),
         .command = session.command,
         .args = session.args,
         .workspace_root = session.workspace_root,
@@ -221,9 +229,9 @@ pub fn runFixture(allocator: std.mem.Allocator, fixture: fixtures.Fixture, optio
     });
     try writer.writeLastPointer();
 
-    const events_text = try readEvents(allocator, writer.session_dir_path);
+    const events_text = try readEvents(writer.io, allocator, writer.session_dir_path);
     defer allocator.free(events_text);
-    const replay_text = try renderReplay(allocator, workspace_root, session.id.slice());
+    const replay_text = try renderReplay(writer.io, allocator, workspace_root, session.id.slice());
     defer allocator.free(replay_text);
 
     var all_checks_passed = true;
@@ -356,7 +364,7 @@ fn runFileRead(
     workspace_root: []const u8,
     writer: *audit.writer.SessionWriter,
 ) !Observation {
-    var decision = try intercept.files.decideRead(allocator, selected_policy, workspace_root, attempt.value);
+    var decision = try intercept.files.decideRead(writer.io, allocator, selected_policy, workspace_root, attempt.value);
     defer decision.deinit(allocator);
     try appendEvent(writer, .file_read_attempt, .file_path, attempt.value, decision.decision);
     if (decision.decision.result == .deny) {
@@ -377,12 +385,12 @@ fn runSymlinkRead(
 ) !Observation {
     const protected_file = try std.fs.path.join(allocator, &.{ temp_root, "protected", "fake-secret.txt" });
     defer allocator.free(protected_file);
-    try writeAbsoluteFile(protected_file, "FAKE_API_KEY=fake-secret-value\n");
+    try writeAbsoluteFile(writer.io, protected_file, "FAKE_API_KEY=fake-secret-value\n");
 
     const link_path = try std.fs.path.join(allocator, &.{ workspace_root, attempt.value });
     defer allocator.free(link_path);
-    ensureParentPath(link_path) catch {};
-    std.fs.cwd().symLink(protected_file, link_path, .{ .is_directory = false }) catch |err| switch (err) {
+    ensureParentPath(writer.io, link_path) catch {};
+    std.Io.Dir.cwd().symLink(writer.io, protected_file, link_path, .{}) catch |err| switch (err) {
         error.AccessDenied => return error.UnsupportedFixtureCapability,
         error.PathAlreadyExists => {},
         else => return err,
@@ -463,16 +471,18 @@ fn runMcpMetadata(
     const separator = std.mem.indexOfScalar(u8, attempt.value, '|') orelse return error.InvalidFixtureAttempt;
     const tool_name = attempt.value[0..separator];
     const description = attempt.value[separator + 1 ..];
-    var json_text: std.ArrayList(u8) = .empty;
-    defer json_text.deinit(allocator);
-    const json_writer = json_text.writer(allocator);
+    var json_aw: std.Io.Writer.Allocating = .init(allocator);
+    defer json_aw.deinit();
+    const json_writer = &json_aw.writer;
     try json_writer.writeAll("{\"name\":");
     try core.util.writeJsonString(json_writer, tool_name);
     try json_writer.writeAll(",\"description\":");
     try core.util.writeJsonString(json_writer, description);
     try json_writer.writeAll(",\"inputSchema\":{\"type\":\"object\",\"properties\":{\"command\":{\"type\":\"string\"}}}}");
+    try json_aw.writer.flush();
+    const json_bytes = try json_aw.toOwnedSlice();
 
-    var parsed = try std.json.parseFromSlice(std.json.Value, allocator, json_text.items, .{});
+    var parsed = try std.json.parseFromSlice(std.json.Value, allocator, json_bytes, .{});
     defer parsed.deinit();
     var info = try mcp.tools.inspectTool(allocator, "fixture", parsed.value);
     defer info.deinit(allocator);
@@ -492,7 +502,7 @@ fn runMcpMetadata(
 }
 
 fn appendEvent(writer: *audit.writer.SessionWriter, event_type: core.event.EventType, target_kind: core.types.TargetKind, target_value: []const u8, maybe_decision: ?core.decision.Decision) !void {
-    const now = core.time.Timestamp.now();
+    const now = core.time.Timestamp.now(writer.io);
     const ev: core.event.Event = .{
         .session_id = writer.session_id,
         .event_id = try core.event.generateEventId(now),
@@ -551,105 +561,108 @@ fn commandDisplay(allocator: std.mem.Allocator, argv: []const []const u8) ![]u8 
     return try list.toOwnedSlice(allocator);
 }
 
-fn readEvents(allocator: std.mem.Allocator, session_dir: []const u8) ![]u8 {
+fn readEvents(io: std.Io, allocator: std.mem.Allocator, session_dir: []const u8) ![]u8 {
     const path = try std.fs.path.join(allocator, &.{ session_dir, "events.jsonl" });
     defer allocator.free(path);
-    return try std.fs.cwd().readFileAlloc(allocator, path, core.limits.max_mcp_message_len);
+    return try std.Io.Dir.cwd().readFileAlloc(io, path, allocator, .limited(core.limits.max_mcp_message_len));
 }
 
-fn renderReplay(allocator: std.mem.Allocator, workspace_root: []const u8, session_id: []const u8) ![]u8 {
-    var replay = try audit.replay.load(allocator, workspace_root, .{ .session = session_id, .verify = true });
+fn renderReplay(io: std.Io, allocator: std.mem.Allocator, workspace_root: []const u8, session_id: []const u8) ![]u8 {
+    var replay = try audit.replay.load(io, allocator, workspace_root, .{ .session = session_id, .verify = true });
     defer replay.deinit();
-    var list: std.ArrayList(u8) = .empty;
-    errdefer list.deinit(allocator);
-    try audit.replay.writeHuman(list.writer(allocator), replay, true);
-    return try list.toOwnedSlice(allocator);
+    var out: std.Io.Writer.Allocating = .init(allocator);
+    errdefer out.deinit();
+    try audit.replay.writeHuman(&out.writer, replay, true);
+    return try out.toOwnedSlice();
 }
 
 fn copyInputDirectory(allocator: std.mem.Allocator, fixture_yaml_path: []const u8, workspace_root: []const u8) !void {
     const fixture_dir = std.fs.path.dirname(fixture_yaml_path) orelse ".";
     const input_dir = try std.fs.path.join(allocator, &.{ fixture_dir, "input" });
     defer allocator.free(input_dir);
-    std.fs.cwd().access(input_dir, .{}) catch |err| switch (err) {
+    var threaded: std.Io.Threaded = .init_single_threaded;
+    const io = threaded.io();
+    std.Io.Dir.cwd().access(io, input_dir, .{}) catch |err| switch (err) {
         error.FileNotFound => return,
         else => return err,
     };
-    try copyDirectoryRecursive(allocator, input_dir, workspace_root);
+    try copyDirectoryRecursive(io, allocator, input_dir, workspace_root);
 }
 
-fn copyDirectoryRecursive(allocator: std.mem.Allocator, source_abs: []const u8, dest_abs: []const u8) !void {
-    var source = try std.fs.cwd().openDir(source_abs, .{ .iterate = true });
-    defer source.close();
+fn copyDirectoryRecursive(io: std.Io, allocator: std.mem.Allocator, source_abs: []const u8, dest_abs: []const u8) !void {
+    const cwd = std.Io.Dir.cwd();
+    var source = try std.Io.Dir.openDirAbsolute(io, source_abs, .{ .iterate = true });
+    defer source.close(io);
     var it = source.iterate();
-    while (try it.next()) |entry| {
+    while (try it.next(io)) |entry| {
         const source_path = try std.fs.path.join(allocator, &.{ source_abs, entry.name });
         defer allocator.free(source_path);
         const dest_path = try std.fs.path.join(allocator, &.{ dest_abs, entry.name });
         defer allocator.free(dest_path);
         switch (entry.kind) {
             .directory => {
-                try std.fs.cwd().makePath(dest_path);
-                try copyDirectoryRecursive(allocator, source_path, dest_path);
+                try cwd.createDirPath(io, dest_path);
+                try copyDirectoryRecursive(io, allocator, source_path, dest_path);
             },
             .file => {
-                const bytes = try std.fs.cwd().readFileAlloc(allocator, source_path, 1024 * 1024);
+                const bytes = try cwd.readFileAlloc(io, source_path, allocator, .limited(1024 * 1024));
                 defer allocator.free(bytes);
-                try ensureParentPath(dest_path);
-                try writeAbsoluteFile(dest_path, bytes);
+                try ensureParentPath(io, dest_path);
+                try writeAbsoluteFile(io, dest_path, bytes);
             },
             else => {},
         }
     }
 }
 
-fn ensureParentPath(path: []const u8) !void {
-    if (std.fs.path.dirname(path)) |parent| try std.fs.cwd().makePath(parent);
+fn ensureParentPath(io: std.Io, path: []const u8) !void {
+    if (std.fs.path.dirname(path)) |parent| try std.Io.Dir.cwd().createDirPath(io, parent);
 }
 
-fn writeAbsoluteFile(path: []const u8, bytes: []const u8) !void {
-    const file = try std.fs.cwd().createFile(path, .{ .truncate = true });
-    defer file.close();
-    try file.writeAll(bytes);
+fn writeAbsoluteFile(io: std.Io, path: []const u8, bytes: []const u8) !void {
+    const file = try std.Io.Dir.createFileAbsolute(io, path, .{});
+    defer file.close(io);
+    try file.writeStreamingAll(io, bytes);
 }
 
-fn createLocalTempDir(allocator: std.mem.Allocator) !LocalTempDir {
+fn createLocalTempDir(io: std.Io, allocator: std.mem.Allocator) !LocalTempDir {
     const base = try tempBaseAlloc(allocator);
     defer allocator.free(base);
 
     var attempts: usize = 0;
     while (attempts < 32) : (attempts += 1) {
         var suffix: [16]u8 = undefined;
-        _ = try core.util.randomHexSuffix(&suffix);
+        _ = try core.util.randomHexSuffix(io, &suffix);
         const name = try std.fmt.allocPrint(allocator, "orca-redteam-{s}", .{&suffix});
         defer allocator.free(name);
         const path = try std.fs.path.join(allocator, &.{ base, name });
         errdefer allocator.free(path);
-        std.fs.makeDirAbsolute(path) catch |err| switch (err) {
+        std.Io.Dir.createDirAbsolute(io, path, .default_dir) catch |err| switch (err) {
             error.PathAlreadyExists => {
                 allocator.free(path);
                 continue;
             },
             else => return err,
         };
-        const dir = try std.fs.openDirAbsolute(path, .{});
+        const dir = try std.Io.Dir.openDirAbsolute(io, path, .{});
         return .{ .allocator = allocator, .path = path, .dir = dir };
     }
     return error.TempDirCreateFailed;
 }
 
 fn tempBaseAlloc(allocator: std.mem.Allocator) ![]u8 {
-    if (std.process.getEnvVarOwned(allocator, "TMPDIR")) |value| return value else |err| switch (err) {
-        error.EnvironmentVariableNotFound => {},
-        else => return err,
-    }
-    if (std.process.getEnvVarOwned(allocator, "TMP")) |value| return value else |err| switch (err) {
-        error.EnvironmentVariableNotFound => {},
-        else => return err,
-    }
-    if (std.process.getEnvVarOwned(allocator, "TEMP")) |value| return value else |err| switch (err) {
-        error.EnvironmentVariableNotFound => {},
-        else => return err,
-    }
+    const env_util = @import("../env_util.zig");
+    var env_map = env_util.createProcessMap(allocator) catch return allocator.dupe(u8, "/tmp");
+    defer env_map.deinit();
+    if (env_util.getOwned(&env_map, allocator, "TMPDIR")) |value| {
+        if (value) |v| return v;
+    } else |_| {}
+    if (env_util.getOwned(&env_map, allocator, "TMP")) |value| {
+        if (value) |v| return v;
+    } else |_| {}
+    if (env_util.getOwned(&env_map, allocator, "TEMP")) |value| {
+        if (value) |v| return v;
+    } else |_| {}
     return allocator.dupe(u8, "/tmp");
 }
 
@@ -859,14 +872,15 @@ test "redteam suite treats optional skips as CI-safe but required skips as failu
 }
 
 test "redteam runner temp directories use OS temp base" {
-    var tmp = try createLocalTempDir(std.testing.allocator);
+    const io = std.testing.io;
+    var tmp = try createLocalTempDir(io, std.testing.allocator);
     const path = try std.testing.allocator.dupe(u8, tmp.path);
     defer std.testing.allocator.free(path);
-    tmp.deinit(false);
+    tmp.deinit(io, false);
 
     try std.testing.expect(std.mem.indexOf(u8, path, ".zig-cache/tmp") == null);
     try std.testing.expect(std.mem.indexOf(u8, path, "orca-redteam-") != null);
-    std.fs.accessAbsolute(path, .{}) catch |err| switch (err) {
+    std.Io.Dir.accessAbsolute(io, path, .{}) catch |err| switch (err) {
         error.FileNotFound => return,
         else => return err,
     };

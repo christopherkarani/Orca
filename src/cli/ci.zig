@@ -9,9 +9,9 @@ const help = @import("help.zig");
 const Format = enum { text, markdown, json };
 const Options = struct { format: Format = .text, github_summary: ?[]const u8 = null };
 
-pub fn command(argv: []const []const u8, stdout: anytype, stderr: anytype) !u8 {
+pub fn command(io: std.Io, argv: []const []const u8, stdout: anytype, stderr: anytype) !u8 {
     if (argv.len == 0 or std.mem.eql(u8, argv[0], "--help") or std.mem.eql(u8, argv[0], "-h")) {
-        _ = try help.writeCommand(stdout, "ci");
+        _ = try help.writeCommand(io, stdout, "ci");
         return if (argv.len == 0) exit_codes.usage else exit_codes.success;
     }
     if (!std.mem.eql(u8, argv[0], "check")) {
@@ -22,26 +22,33 @@ pub fn command(argv: []const []const u8, stdout: anytype, stderr: anytype) !u8 {
         error.Usage => return exit_codes.usage,
         else => return err,
     };
-    var gpa_state: std.heap.GeneralPurposeAllocator(.{}) = .init;
+    var gpa_state: std.heap.DebugAllocator(.{}) = .init;
     defer _ = gpa_state.deinit();
     const allocator = gpa_state.allocator();
-    const workspace_root = supervisor.resolveWorkspaceRoot(allocator, null, ".") catch try std.fs.cwd().realpathAlloc(allocator, ".");
+    const workspace_root = supervisor.resolveWorkspaceRoot(io, allocator, null, ".") catch try std.Io.Dir.cwd().realPathFileAlloc(io, ".", allocator);
     defer allocator.free(workspace_root);
-    var result = try ci_check.run(allocator, workspace_root);
+    var result = try ci_check.run(io, allocator, workspace_root);
     defer result.deinit();
     switch (options.format) {
         .text, .markdown => try ci_check.writeMarkdown(stdout, result),
         .json => try ci_check.writeJson(stdout, result),
     }
-    if (options.github_summary orelse std.process.getEnvVarOwned(allocator, "GITHUB_STEP_SUMMARY") catch null) |summary_path| {
+    const github_summary_path = options.github_summary orelse blk: {
+        if (std.c.getenv("GITHUB_STEP_SUMMARY")) |p| break :blk try allocator.dupe(u8, std.mem.span(p));
+        break :blk null;
+    };
+    if (github_summary_path) |summary_path| {
         defer if (options.github_summary == null) allocator.free(summary_path);
-        const file = try std.fs.cwd().createFile(summary_path, .{ .truncate = false });
-        defer file.close();
-        try file.seekFromEnd(0);
-        var buf: [4096]u8 = undefined;
-        var file_writer = file.writer(&buf);
-        try ci_check.writeMarkdown(&file_writer.interface, result);
-        try file_writer.interface.flush();
+        const file = try std.Io.Dir.createFileAbsolute(io, summary_path, .{});
+        defer file.close(io);
+        const offset = file.length(io) catch 0;
+        var markdown_aw: std.Io.Writer.Allocating = .init(allocator);
+        defer markdown_aw.deinit();
+        try ci_check.writeMarkdown(&markdown_aw.writer, result);
+        try markdown_aw.writer.flush();
+        const markdown = try markdown_aw.toOwnedSlice();
+        defer allocator.free(markdown);
+        try file.writePositionalAll(io, markdown, offset);
     }
     return if (result.ok()) exit_codes.success else exit_codes.general;
 }
@@ -79,8 +86,8 @@ fn parseOptions(argv: []const []const u8, stderr: anytype) !Options {
 test "ci command rejects unknown subcommands" {
     var stdout_buf: [256]u8 = undefined;
     var stderr_buf: [256]u8 = undefined;
-    var stdout_stream = std.io.fixedBufferStream(&stdout_buf);
-    var stderr_stream = std.io.fixedBufferStream(&stderr_buf);
-    const code = try command(&.{"bad"}, stdout_stream.writer(), stderr_stream.writer());
+    var stdout_writer: std.Io.Writer = .fixed(&stdout_buf);
+    var stderr_writer: std.Io.Writer = .fixed(&stderr_buf);
+    const code = try command(std.testing.io, &.{"bad"}, &stdout_writer, &stderr_writer);
     try std.testing.expectEqual(exit_codes.usage, code);
 }

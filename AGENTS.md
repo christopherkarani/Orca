@@ -21,6 +21,28 @@
 - If that command returns any files, stop and untrack them before proceeding.
 - Never commit generated release archives, SBOMs, checksums, dry-run package output, red-team replay output, customer-pilot templates, SOW/NDA notes, target-account templates, outreach copy, pricing guidance, or task-memory logs.
 
+## Zig toolchain (mandatory)
+
+- **Pinned version:** Zig **0.16.0** (see `.zigversion`, `build.zig.zon`, and CI).
+- **Never run bare `zig build` / `zig build test` in this repo** unless `zig version` is already `0.16.0`. Prefer **`./scripts/zig`** (always uses the pinned toolchain). Optional: `direnv allow` (`.envrc`) or `eval "$(./scripts/ensure-zig-toolchain.sh --export)"` in your shell.
+- If `zig build` fails and `zig version` is not `0.16.0`, **stop and fix the toolchain** (`./scripts/ensure-zig-toolchain.sh --install`) before treating failures as source bugs.
+- **Ignore stale local scratch:** `.orchestrator/` is gitignored; do not commit migration plans or agent session artifacts from there.
+
+## Fast iteration (local verify)
+
+Use the narrowest gate that matches the change; reserve the full suite for pre-merge/CI.
+
+| Tier | Command | When |
+|------|---------|------|
+| 1 | `./scripts/zig build` | After compile-touching edits |
+| 2 | `./scripts/zig build test-fast` | Default unit gate (orca lib + `orca_core`; ~minutes → often ~10s warm) |
+| 3 | `./scripts/quick-install-dx-verify.sh` | Preset / quick-install / `generic-agent` policy |
+| 4 | `./scripts/test-fast.sh` | Tiers 1–3 in one script |
+| 5 | `./scripts/zig build test` | Pre-merge / CI (all plugin/phase/setup/fuzz suites) |
+| 6 | `./scripts/verify-pre-merge.sh` | Tiers 1–4 + full `build test` in one script |
+
+**Agents and automation:** Do not pipe long builds to `tail` (output buffers until completion). Do not background full `zig build test` unless you will poll to completion. Do not prefix commands with system `zig version`—use `./scripts/zig version` only.
+
 ## Workflow
 
 - Preserve user-owned dirty changes. Do not revert unrelated edits.

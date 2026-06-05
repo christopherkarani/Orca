@@ -38,26 +38,26 @@ const RunOptions = struct {
     }
 };
 
-pub fn command(argv: []const []const u8, stdout: anytype, stderr: anytype) !u8 {
-    return commandWithStdio(argv, stdout, stderr, .inherit, true);
+pub fn command(io: std.Io, argv: []const []const u8, stdout: anytype, stderr: anytype) !u8 {
+    return commandWithStdio(io, argv, stdout, stderr, .inherit, true);
 }
 
-fn commandWithStdio(argv: []const []const u8, stdout: anytype, stderr: anytype, stdio: supervisor.StdioBehavior, audit_enabled: bool) !u8 {
-    return commandWithStdioAndEnv(argv, stdout, stderr, stdio, audit_enabled, null);
+fn commandWithStdio(io: std.Io, argv: []const []const u8, stdout: anytype, stderr: anytype, stdio: supervisor.StdioBehavior, audit_enabled: bool) !u8 {
+    return commandWithStdioAndEnv(io, argv, stdout, stderr, stdio, audit_enabled, null);
 }
 
-fn commandWithStdioAndEnv(argv: []const []const u8, stdout: anytype, stderr: anytype, stdio: supervisor.StdioBehavior, audit_enabled: bool, current_env_override: ?*const std.process.EnvMap) !u8 {
-    const options = parseOptions(argv, stdout, stderr) catch |err| switch (err) {
+fn commandWithStdioAndEnv(io: std.Io, argv: []const []const u8, stdout: anytype, stderr: anytype, stdio: supervisor.StdioBehavior, audit_enabled: bool, current_env_override: ?*const std.process.Environ.Map) !u8 {
+    const options = parseOptions(io, argv, stdout, stderr) catch |err| switch (err) {
         error.HelpShown => return exit_codes.success,
         error.Usage => return exit_codes.usage,
         else => return err,
     };
 
-    var gpa_state: std.heap.GeneralPurposeAllocator(.{}) = .init;
+    var gpa_state: std.heap.DebugAllocator(.{}) = .init;
     defer _ = gpa_state.deinit();
     const allocator = gpa_state.allocator();
 
-    const workspace_root_for_policy = supervisor.resolveWorkspaceRoot(allocator, options.workspace, ".") catch |err| switch (err) {
+    const workspace_root_for_policy = supervisor.resolveWorkspaceRoot(io, allocator, options.workspace, ".") catch |err| switch (err) {
         error.FileNotFound => {
             try stderr.print("orca run: workspace not found: {s}\n", .{options.workspace orelse "."});
             return exit_codes.general;
@@ -66,7 +66,7 @@ fn commandWithStdioAndEnv(argv: []const []const u8, stdout: anytype, stderr: any
     };
     defer allocator.free(workspace_root_for_policy);
 
-    var loaded_policy = core_api.discoverPolicy(allocator, options.policy_path, workspace_root_for_policy) catch |err| {
+    var loaded_policy = core_api.discoverPolicy(io, allocator, options.policy_path, workspace_root_for_policy) catch |err| {
         try stderr.print("orca run: invalid policy: {s}\n", .{@errorName(err)});
         return exit_codes.general;
     };
@@ -76,7 +76,7 @@ fn commandWithStdioAndEnv(argv: []const []const u8, stdout: anytype, stderr: any
 
     // Detect first session *before* any .orca/sessions/ creation so the warm welcome
     // celebration can be emitted exactly once for a brand-new user/workspace.
-    const is_first_session = isFirstSession(allocator, workspace_root_for_policy);
+    const is_first_session = isFirstSession(io, allocator, workspace_root_for_policy);
 
     try applyNetworkOverlay(allocator, loaded_policy.innerMutPtr(), options);
 
@@ -124,11 +124,12 @@ fn commandWithStdioAndEnv(argv: []const []const u8, stdout: anytype, stderr: any
     try installBackendEnvironment(&filtered_env.env_map, backend_report);
 
     const StartPrinter = struct {
+        io: std.Io,
         writer: @TypeOf(stdout),
 
         pub fn print(context: *anyopaque, session: core.session.Session) !void {
             const self: *@This() = @ptrCast(@alignCast(context));
-            try printSessionStart(self.writer, session);
+            try printSessionStart(self.io, self.writer, session);
             try flushIfSupported(self.writer);
         }
     };
@@ -142,8 +143,9 @@ fn commandWithStdioAndEnv(argv: []const []const u8, stdout: anytype, stderr: any
         }
     };
 
-    var start_printer: StartPrinter = .{ .writer = stdout };
+    var start_printer: StartPrinter = .{ .io = io, .writer = stdout };
     const AuditContext = struct {
+        io: std.Io,
         allocator: std.mem.Allocator,
         writer: ?core_api.AuditWriter = null,
         session: ?core.session.Session = null,
@@ -153,7 +155,7 @@ fn commandWithStdioAndEnv(argv: []const []const u8, stdout: anytype, stderr: any
             const self: *@This() = @ptrCast(@alignCast(context));
             self.session = session;
             self.workspace_root_owned = try self.allocator.dupe(u8, session.workspace_root);
-            self.writer = try core_api.createAuditWriter(self.allocator, session);
+            self.writer = try core_api.createAuditWriter(self.io, self.allocator, session);
         }
 
         pub fn append(context: *anyopaque, ev: core.event.Event) !void {
@@ -169,18 +171,19 @@ fn commandWithStdioAndEnv(argv: []const []const u8, stdout: anytype, stderr: any
             self.workspace_root_owned = null;
         }
     };
-    var audit_context: AuditContext = .{ .allocator = allocator };
+    var audit_context: AuditContext = .{ .io = io, .allocator = allocator };
     defer audit_context.deinit();
 
     var session_approvals = intercept.approvals.SessionApprovals.init(allocator);
     defer session_approvals.deinit();
 
     const CommandGuardContext = struct {
+        io: std.Io,
         allocator: std.mem.Allocator,
         selected_policy: *const policy.schema.Policy,
         effective_mode: policy.schema.Mode,
         command_argv: []const []const u8,
-        env_map: *std.process.EnvMap,
+        env_map: *std.process.Environ.Map,
         audit_context: *AuditContext,
         approvals: *intercept.approvals.SessionApprovals,
         backend_report: sandbox.backend.ReportSet,
@@ -263,9 +266,9 @@ fn commandWithStdioAndEnv(argv: []const []const u8, stdout: anytype, stderr: any
         }
 
         fn installShims(self: *@This(), session: core.session.Session) !void {
-            const self_exe = try std.fs.selfExePathAlloc(self.allocator);
+            const self_exe = try std.process.executablePathAlloc(self.audit_context.io, self.allocator);
             defer self.allocator.free(self_exe);
-            const shim_dir = try intercept.commands.createShimDirectory(self.allocator, session.workspace_root, session.id.slice(), self_exe);
+            const shim_dir = try intercept.commands.createShimDirectory(self.audit_context.io, self.allocator, session.workspace_root, session.id.slice(), self_exe);
             defer self.allocator.free(shim_dir);
             try intercept.commands.prependShimPath(self.allocator, self.env_map, shim_dir);
             try self.env_map.put("ORCA_SESSION_ID", session.id.slice());
@@ -289,7 +292,7 @@ fn commandWithStdioAndEnv(argv: []const []const u8, stdout: anytype, stderr: any
                 .reason = reason,
                 .ci_may_proceed = true,
             };
-            const ts = core.time.Timestamp.now();
+            const ts = core.time.Timestamp.now(self.audit_context.io);
             const ev: core.event.Event = .{
                 .session_id = session.id,
                 .event_id = try core.event.generateEventId(ts),
@@ -313,7 +316,7 @@ fn commandWithStdioAndEnv(argv: []const []const u8, stdout: anytype, stderr: any
                 .reason = reason,
                 .ci_may_proceed = false,
             };
-            const ts = core.time.Timestamp.now();
+            const ts = core.time.Timestamp.now(self.audit_context.io);
             const ev: core.event.Event = .{
                 .session_id = session.id,
                 .event_id = try core.event.generateEventId(ts),
@@ -359,13 +362,13 @@ fn commandWithStdioAndEnv(argv: []const []const u8, stdout: anytype, stderr: any
 
         fn resolveApproval(self: *@This(), command_decision: intercept.commands.CommandDecision, display: []const u8) !intercept.approvals.ApprovalChoice {
             if (self.effective_mode == .ci) return .deny;
-            const stdin_file = std.fs.File.stdin();
-            if (!stdin_file.isTty()) {
+            const stdin_file = std.Io.File.stdin();
+            if (!(try stdin_file.isTty(self.io))) {
                 try self.stderr.writeAll("orca run: command requires approval, but stdin is non-interactive; denying.\n");
                 return .deny;
             }
             var stdin_buf: [1024]u8 = undefined;
-            var stdin_reader = stdin_file.readerStreaming(&stdin_buf);
+            var stdin_reader = stdin_file.readerStreaming(self.io, &stdin_buf);
             return intercept.approvals.prompt(&stdin_reader.interface, self.stderr, .{
                 .command = display,
                 .risk_class = command_decision.classification.risk_class.toString(),
@@ -377,7 +380,7 @@ fn commandWithStdioAndEnv(argv: []const []const u8, stdout: anytype, stderr: any
 
         fn auditCommandEvent(self: *@This(), session: core.session.Session, event_type: core.event.EventType, display: []const u8, maybe_decision: ?core.decision.Decision) !void {
             if (self.audit_context.writer == null) return;
-            const ts = core.time.Timestamp.now();
+            const ts = core.time.Timestamp.now(self.audit_context.io);
             const ev: core.event.Event = .{
                 .session_id = session.id,
                 .event_id = try core.event.generateEventId(ts),
@@ -392,7 +395,7 @@ fn commandWithStdioAndEnv(argv: []const []const u8, stdout: anytype, stderr: any
 
         fn auditNetworkDecision(self: *@This(), session: core.session.Session, target: []const u8, event_type: core.event.EventType, maybe_decision: ?core.decision.Decision) !void {
             if (self.audit_context.writer == null) return;
-            const ts = core.time.Timestamp.now();
+            const ts = core.time.Timestamp.now(self.audit_context.io);
             const ev: core.event.Event = .{
                 .session_id = session.id,
                 .event_id = try core.event.generateEventId(ts),
@@ -406,6 +409,7 @@ fn commandWithStdioAndEnv(argv: []const []const u8, stdout: anytype, stderr: any
         }
     };
     var command_guard_context: CommandGuardContext = .{
+        .io = io,
         .allocator = allocator,
         .selected_policy = loaded_policy.innerPtr(),
         .effective_mode = effective_policy_mode,
@@ -437,7 +441,7 @@ fn commandWithStdioAndEnv(argv: []const []const u8, stdout: anytype, stderr: any
         .callback = AuditContext.append,
     } else null;
 
-    var result = supervisor.run(allocator, .{
+    var result = supervisor.run(io, allocator, .{
         .command = options.command_argv[0],
         .args = options.command_argv[1..],
         .workspace = options.workspace,
@@ -476,7 +480,7 @@ fn commandWithStdioAndEnv(argv: []const []const u8, stdout: anytype, stderr: any
                 if (audit_context.session) |session| {
                     var ended = session;
                     if (audit_context.workspace_root_owned) |root| ended.workspace_root = root;
-                    ended.ended_at = core.time.Timestamp.now();
+                    ended.ended_at = core.time.Timestamp.now(audit_context.io);
                     const ts = ended.ended_at.?;
                     const ev: core.event.Event = .{
                         .session_id = ended.id,
@@ -507,7 +511,7 @@ fn commandWithStdioAndEnv(argv: []const []const u8, stdout: anytype, stderr: any
                 if (audit_context.session) |session| {
                     var ended = session;
                     if (audit_context.workspace_root_owned) |root| ended.workspace_root = root;
-                    ended.ended_at = core.time.Timestamp.now();
+                    ended.ended_at = core.time.Timestamp.now(audit_context.io);
                     const ts = ended.ended_at.?;
                     const ev: core.event.Event = .{
                         .session_id = ended.id,
@@ -550,7 +554,7 @@ fn commandWithStdioAndEnv(argv: []const []const u8, stdout: anytype, stderr: any
                 const proxy_events = try runtime.snapshotAuditEvents(allocator);
                 defer runtime.freeAuditEvents(allocator, proxy_events);
                 for (proxy_events) |proxy_event| {
-                    const event_ts = core.time.Timestamp.now();
+                    const event_ts = core.time.Timestamp.now(audit_context.io);
                     const ev: core.event.Event = .{
                         .session_id = session.id,
                         .event_id = try core.event.generateEventId(event_ts),
@@ -566,7 +570,7 @@ fn commandWithStdioAndEnv(argv: []const []const u8, stdout: anytype, stderr: any
                     };
                     try core_api.appendAuditEvent(writer, ev);
                 }
-                const ts = core.time.Timestamp.now();
+                const ts = core.time.Timestamp.now(audit_context.io);
                 const ev: core.event.Event = .{
                     .session_id = session.id,
                     .event_id = try core.event.generateEventId(ts),
@@ -591,7 +595,7 @@ fn commandWithStdioAndEnv(argv: []const []const u8, stdout: anytype, stderr: any
         try writer.writeLastPointer();
     }
 
-    try printSessionEnd(stdout, result, is_first_session);
+    try printSessionEnd(io, stdout, result, is_first_session);
 
     if (required_proxy_failed) {
         try stderr.writeAll("orca run: required proxy backend failed during child run; child was terminated.\n");
@@ -615,14 +619,14 @@ fn commandWithStdioAndEnv(argv: []const []const u8, stdout: anytype, stderr: any
     };
 }
 
-fn parseOptions(argv: []const []const u8, stdout: anytype, stderr: anytype) !RunOptions {
+fn parseOptions(io: std.Io, argv: []const []const u8, stdout: anytype, stderr: anytype) !RunOptions {
     var options: RunOptions = .{};
     var index: usize = 0;
 
     while (index < argv.len) : (index += 1) {
         const arg = argv[index];
         if (std.mem.eql(u8, arg, "--help") or std.mem.eql(u8, arg, "-h")) {
-            _ = try help.writeCommand(stdout, "run");
+            _ = try help.writeCommand(io, stdout, "run");
             return error.HelpShown;
         } else if (std.mem.eql(u8, arg, "--")) {
             options.command_argv = argv[index + 1 ..];
@@ -722,26 +726,22 @@ fn parseOptions(argv: []const []const u8, stdout: anytype, stderr: anytype) !Run
             try stderr.print("orca run: unknown option '{s}'.\n", .{arg});
             return error.Usage;
         } else {
-            try stderr.writeAll(
-                "orca run: expected '--' before the command you want to run.\n" ++
+            try stderr.writeAll("orca run: expected '--' before the command you want to run.\n" ++
                 "\n" ++
                 "Example:\n" ++
                 "  orca run -- codex\n" ++
                 "  orca run --mode strict -- npm install\n" ++
                 "\n" ++
-                "Run 'orca help run' for more examples.\n"
-            );
+                "Run 'orca help run' for more examples.\n");
             return error.Usage;
         }
     }
 
     if (options.command_argv.len == 0) {
-        try stderr.writeAll(
-            "orca run: missing command after '--'.\n" ++
+        try stderr.writeAll("orca run: missing command after '--'.\n" ++
             "\n" ++
             "Example:\n" ++
-            "  orca run -- echo 'hello world'\n"
-        );
+            "  orca run -- echo 'hello world'\n");
         return error.Usage;
     }
 
@@ -785,7 +785,7 @@ fn requiresBackend(options: RunOptions, feature: sandbox.backend.Feature) bool {
     return false;
 }
 
-fn installNetworkEnvironment(allocator: std.mem.Allocator, env_map: *std.process.EnvMap, network_policy: policy.schema.NetworkPolicy) !void {
+fn installNetworkEnvironment(allocator: std.mem.Allocator, env_map: *std.process.Environ.Map, network_policy: policy.schema.NetworkPolicy) !void {
     try env_map.put("ORCA_NETWORK_POLICY_ENGINE", "active");
     try env_map.put("ORCA_NETWORK_MODE", network_policy.effectiveMode().toString());
     try env_map.put("ORCA_TRANSPARENT_NETWORK_ENFORCEMENT", "unavailable");
@@ -803,7 +803,7 @@ fn installNetworkEnvironment(allocator: std.mem.Allocator, env_map: *std.process
     }
 }
 
-fn installBackendEnvironment(env_map: *std.process.EnvMap, report: sandbox.backend.ReportSet) !void {
+fn installBackendEnvironment(env_map: *std.process.Environ.Map, report: sandbox.backend.ReportSet) !void {
     try env_map.put("ORCA_BACKEND", report.backend_name);
     try env_map.put("ORCA_BACKEND_FALLBACK", report.fallback_level.toString());
     try env_map.put("ORCA_BACKEND_ENV_FILTERING", report.get(.env_filtering).level.toString());
@@ -838,11 +838,11 @@ fn coreModeToPolicyMode(mode: core.types.Mode) policy.schema.Mode {
     };
 }
 
-fn printSessionStart(stdout: anytype, session: core.session.Session) !void {
+fn printSessionStart(io: std.Io, stdout: anytype, session: core.session.Session) !void {
     try stdout.writeAll("─────────────────────────────────────\n");
     // Warm framing header routed through the color gate (maybeColor) + Glyph.
     // On real TTY: bold shield line. On NO_COLOR/piped/test: identical plain bytes.
-    try style.maybeColor(stdout, style.Style.bold, style.Glyph.shield ++ "  Orca is watching this session");
+    try style.maybeColor(io, stdout, style.Style.bold, style.Glyph.shield ++ "  Orca is watching this session");
     try stdout.writeAll("\n─────────────────────────────────────\n");
     try stdout.print("Session:   {s}\n", .{session.id.slice()});
     try stdout.print("Workspace: {s}\n", .{session.workspace_root});
@@ -853,13 +853,13 @@ fn printSessionStart(stdout: anytype, session: core.session.Session) !void {
     try stdout.writeAll("─────────────────────────────────────\n\n");
 }
 
-fn printSessionEnd(stdout: anytype, result: supervisor.SessionResult, is_first_session: bool) !void {
+fn printSessionEnd(io: std.Io, stdout: anytype, result: supervisor.SessionResult, is_first_session: bool) !void {
     const code = result.exitCode();
     if (code == 0) {
         // Dynamic success line: explicit gated pattern (no alloc, respects useColor).
         // Uses Glyph for the checkmark (eliminates prior duplication).
         try stdout.writeAll("\n");
-        if (style.useColor(stdout)) {
+        if (style.useColor(io, stdout)) {
             try stdout.writeAll(style.Style.green);
             try stdout.print("{s} Session ended cleanly (exit {d})\n", .{ style.Glyph.check, code });
             try stdout.writeAll(style.Style.reset);
@@ -874,6 +874,7 @@ fn printSessionEnd(stdout: anytype, result: supervisor.SessionResult, is_first_s
         // Demonstrates the warm path using the color helper (review gap closure).
         try stdout.writeAll("\n");
         try style.maybeColor(
+            io,
             stdout,
             style.Style.green,
             style.Glyph.party ++ " Welcome to Orca! Your first protected session completed successfully.\n" ++
@@ -907,15 +908,15 @@ fn flushIfSupported(writer: anytype) !void {
 /// between the check and the current session's creation, or the user may have
 /// manually cleaned sessions while keeping the workspace. The celebration is
 /// a warm UX nicety — occasional false positives are acceptable.
-fn isFirstSession(allocator: std.mem.Allocator, workspace_root: []const u8) bool {
+fn isFirstSession(io: std.Io, allocator: std.mem.Allocator, workspace_root: []const u8) bool {
     const sessions_dir = std.fs.path.join(allocator, &.{ workspace_root, ".orca", "sessions" }) catch return true;
     defer allocator.free(sessions_dir);
 
-    var dir = std.fs.cwd().openDir(sessions_dir, .{ .iterate = true }) catch return true;
-    defer dir.close();
+    var dir = std.Io.Dir.cwd().openDir(io, sessions_dir, .{ .iterate = true }) catch return true;
+    defer dir.close(io);
 
     var it = dir.iterate();
-    while (it.next() catch return true) |entry| {
+    while (it.next(io) catch return true) |entry| {
         if (entry.kind == .directory) {
             // Any real session dir means this is not the user's first
             return false;
@@ -927,136 +928,137 @@ fn isFirstSession(allocator: std.mem.Allocator, workspace_root: []const u8) bool
 test "run rejects missing child command" {
     var stdout_buf: [512]u8 = undefined;
     var stderr_buf: [512]u8 = undefined;
-    var stdout_stream = std.io.fixedBufferStream(&stdout_buf);
-    var stderr_stream = std.io.fixedBufferStream(&stderr_buf);
+    var stdout_writer: std.Io.Writer = .fixed(&stdout_buf);
+    var stderr_writer: std.Io.Writer = .fixed(&stderr_buf);
 
-    const code = try command(&.{"--"}, stdout_stream.writer(), stderr_stream.writer());
+    const code = try command(std.testing.io, &.{"--"}, &stdout_writer, &stderr_writer);
     try std.testing.expectEqual(exit_codes.usage, code);
-    try std.testing.expect(std.mem.indexOf(u8, stderr_stream.getWritten(), "missing command") != null);
+    try std.testing.expect(std.mem.indexOf(u8, stderr_writer.buffered(), "missing command") != null);
     // TDD: warm multi-line error message with examples (foundation UX)
-    try std.testing.expect(std.mem.indexOf(u8, stderr_stream.getWritten(), "Example:") != null);
-    try std.testing.expect(std.mem.indexOf(u8, stderr_stream.getWritten(), "orca run -- echo") != null);
+    try std.testing.expect(std.mem.indexOf(u8, stderr_writer.buffered(), "Example:") != null);
+    try std.testing.expect(std.mem.indexOf(u8, stderr_writer.buffered(), "orca run -- echo") != null);
 }
 
 test "run rejects child command without separator" {
     var stdout_buf: [512]u8 = undefined;
     var stderr_buf: [512]u8 = undefined;
-    var stdout_stream = std.io.fixedBufferStream(&stdout_buf);
-    var stderr_stream = std.io.fixedBufferStream(&stderr_buf);
+    var stdout_writer: std.Io.Writer = .fixed(&stdout_buf);
+    var stderr_writer: std.Io.Writer = .fixed(&stderr_buf);
 
-    const code = try command(&.{"echo"}, stdout_stream.writer(), stderr_stream.writer());
+    const code = try command(std.testing.io, &.{"echo"}, &stdout_writer, &stderr_writer);
     try std.testing.expectEqual(exit_codes.usage, code);
-    try std.testing.expect(std.mem.indexOf(u8, stderr_stream.getWritten(), "expected '--'") != null);
+    try std.testing.expect(std.mem.indexOf(u8, stderr_writer.buffered(), "expected '--'") != null);
     // TDD: warm multi-line error message with examples + help pointer (foundation UX)
-    try std.testing.expect(std.mem.indexOf(u8, stderr_stream.getWritten(), "Example:") != null);
-    try std.testing.expect(std.mem.indexOf(u8, stderr_stream.getWritten(), "orca help run") != null);
+    try std.testing.expect(std.mem.indexOf(u8, stderr_writer.buffered(), "Example:") != null);
+    try std.testing.expect(std.mem.indexOf(u8, stderr_writer.buffered(), "orca help run") != null);
 }
 
 test "run reports missing command usefully" {
     var stdout_buf: [512]u8 = undefined;
     var stderr_buf: [512]u8 = undefined;
-    var stdout_stream = std.io.fixedBufferStream(&stdout_buf);
-    var stderr_stream = std.io.fixedBufferStream(&stderr_buf);
+    var stdout_writer: std.Io.Writer = .fixed(&stdout_buf);
+    var stderr_writer: std.Io.Writer = .fixed(&stderr_buf);
 
-    const code = try commandForTest(&.{ "--", "orca-definitely-missing-command" }, stdout_stream.writer(), stderr_stream.writer(), .ignore);
+    const code = try commandForTest(&.{ "--", "orca-definitely-missing-command" }, &stdout_writer, &stderr_writer, .ignore);
     try std.testing.expectEqual(exit_codes.general, code);
-    try std.testing.expect(std.mem.indexOf(u8, stderr_stream.getWritten(), "command not found") != null);
+    try std.testing.expect(std.mem.indexOf(u8, stderr_writer.buffered(), "command not found") != null);
 }
 
 pub fn commandForTest(argv: []const []const u8, stdout: anytype, stderr: anytype, stdio: supervisor.StdioBehavior) !u8 {
-    return commandWithStdio(argv, stdout, stderr, stdio, false);
+    return commandWithStdio(std.testing.io, argv, stdout, stderr, stdio, false);
 }
 
-fn commandForTestWithEnv(argv: []const []const u8, stdout: anytype, stderr: anytype, stdio: supervisor.StdioBehavior, current_env: *const std.process.EnvMap) !u8 {
-    return commandWithStdioAndEnv(argv, stdout, stderr, stdio, true, current_env);
+fn commandForTestWithEnv(argv: []const []const u8, stdout: anytype, stderr: anytype, stdio: supervisor.StdioBehavior, current_env: *const std.process.Environ.Map) !u8 {
+    return commandWithStdioAndEnv(std.testing.io, argv, stdout, stderr, stdio, true, current_env);
 }
 
 test "run accepts policy path and uses policy mode when mode is not explicit" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
     {
-        const file = try tmp.dir.createFile("strict.yaml", .{});
-        defer file.close();
-        try file.writeAll(policy.presets.text(.strict));
+        const file = try tmp.dir.createFile(std.testing.io, "strict.yaml", .{});
+        defer file.close(std.testing.io);
+        try file.writeStreamingAll(std.testing.io, policy.presets.text(.strict));
     }
-    const path = try tmp.dir.realpathAlloc(std.testing.allocator, "strict.yaml");
+    const path = try tmp.dir.realPathFileAlloc(std.testing.io, "strict.yaml", std.testing.allocator);
     defer std.testing.allocator.free(path);
 
-    var stdout_buf: [1024]u8 = undefined;
+    var stdout_buf: [4096]u8 = undefined;
     var stderr_buf: [512]u8 = undefined;
-    var stdout_stream = std.io.fixedBufferStream(&stdout_buf);
-    var stderr_stream = std.io.fixedBufferStream(&stderr_buf);
+    var stdout_writer: std.Io.Writer = .fixed(&stdout_buf);
+    var stderr_writer: std.Io.Writer = .fixed(&stderr_buf);
 
-    const code = try commandForTest(&.{ "--policy", path, "--", "zig", "version" }, stdout_stream.writer(), stderr_stream.writer(), .ignore);
+    const code = try commandForTest(&.{ "--policy", path, "--", "zig", "version" }, &stdout_writer, &stderr_writer, .ignore);
     try std.testing.expectEqual(exit_codes.success, code);
-    try std.testing.expect(std.mem.indexOf(u8, stdout_stream.getWritten(), "Mode: strict") != null);
-    try std.testing.expectEqualStrings("", stderr_stream.getWritten());
+    try std.testing.expect(std.mem.indexOf(u8, stdout_writer.buffered(), "Mode:      strict") != null);
+    try std.testing.expectEqualStrings("", stderr_writer.buffered());
 }
 
 test "run rejects inherit-env when selected policy disallows it" {
     var stdout_buf: [512]u8 = undefined;
     var stderr_buf: [512]u8 = undefined;
-    var stdout_stream = std.io.fixedBufferStream(&stdout_buf);
-    var stderr_stream = std.io.fixedBufferStream(&stderr_buf);
+    var stdout_writer: std.Io.Writer = .fixed(&stdout_buf);
+    var stderr_writer: std.Io.Writer = .fixed(&stderr_buf);
 
-    const code = try commandForTest(&.{ "--policy", "policies/strict.yaml", "--inherit-env", "--", "zig", "version" }, stdout_stream.writer(), stderr_stream.writer(), .ignore);
+    const code = try commandForTest(&.{ "--policy", "policies/strict.yaml", "--inherit-env", "--", "zig", "version" }, &stdout_writer, &stderr_writer, .ignore);
     try std.testing.expectEqual(exit_codes.general, code);
-    try std.testing.expect(std.mem.indexOf(u8, stderr_stream.getWritten(), "--inherit-env is not allowed") != null);
+    try std.testing.expect(std.mem.indexOf(u8, stderr_writer.buffered(), "--inherit-env is not allowed") != null);
 }
 
 test "run accepts secretless option" {
     var stdout_buf: [1024]u8 = undefined;
     var stderr_buf: [512]u8 = undefined;
-    var stdout_stream = std.io.fixedBufferStream(&stdout_buf);
-    var stderr_stream = std.io.fixedBufferStream(&stderr_buf);
+    var stdout_writer: std.Io.Writer = .fixed(&stdout_buf);
+    var stderr_writer: std.Io.Writer = .fixed(&stderr_buf);
 
-    const code = try commandForTest(&.{ "--secretless", "--", "true" }, stdout_stream.writer(), stderr_stream.writer(), .ignore);
+    const code = try commandForTest(&.{ "--secretless", "--", "true" }, &stdout_writer, &stderr_writer, .ignore);
     try std.testing.expectEqual(exit_codes.success, code);
-    try std.testing.expectEqualStrings("", stderr_stream.getWritten());
+    try std.testing.expectEqualStrings("", stderr_writer.buffered());
 }
 
 test "run secretless replaces child env and keeps raw secret out of audit artifacts" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
-    const root = try tmp.dir.realpathAlloc(std.testing.allocator, ".");
+    const root = try tmp.dir.realPathFileAlloc(std.testing.io, ".", std.testing.allocator);
     defer std.testing.allocator.free(root);
     {
-        const policy_file = try tmp.dir.createFile("policy.yaml", .{});
-        defer policy_file.close();
-        try policy_file.writeAll(
+        const policy_file = try tmp.dir.createFile(std.testing.io, "policy.yaml", .{});
+        defer policy_file.close(std.testing.io);
+        try policy_file.writeStreamingAll(std.testing.io,
             \\version: 1
             \\mode: observe
             \\env:
             \\  inherit: true
         );
     }
-    const policy_path = try tmp.dir.realpathAlloc(std.testing.allocator, "policy.yaml");
+    const policy_path = try tmp.dir.realPathFileAlloc(std.testing.io, "policy.yaml", std.testing.allocator);
     defer std.testing.allocator.free(policy_path);
     {
-        const script = try tmp.dir.createFile("dump-env.sh", .{ .mode = 0o755 });
-        defer script.close();
-        try script.writeAll(
+        const script = try tmp.dir.createFile(std.testing.io, "dump-env.sh", .{});
+        defer script.close(std.testing.io);
+        try script.writeStreamingAll(std.testing.io,
             \\#!/bin/sh
             \\printf '%s' "$GITHUB_TOKEN" > child-env.txt
             \\
         );
-        try script.chmod(0o755);
+        try tmp.dir.setFilePermissions(std.testing.io, "dump-env.sh", @enumFromInt(0o755), .{});
     }
 
-    var current = std.process.EnvMap.init(std.testing.allocator);
+    var current = std.process.Environ.Map.init(std.testing.allocator);
     defer current.deinit();
-    try current.put("PATH", std.posix.getenv("PATH") orelse "/usr/bin:/bin:/usr/sbin:/sbin");
+    const path_env = if (std.c.getenv("PATH")) |path| std.mem.span(path) else "/usr/bin:/bin:/usr/sbin:/sbin";
+    try current.put("PATH", path_env);
     try current.put("GITHUB_TOKEN", "ghp_fakeSyntheticTokenValue1234567890");
 
     var stdout_buf: [2048]u8 = undefined;
     var stderr_buf: [2048]u8 = undefined;
-    var stdout_stream = std.io.fixedBufferStream(&stdout_buf);
-    var stderr_stream = std.io.fixedBufferStream(&stderr_buf);
+    var stdout_writer: std.Io.Writer = .fixed(&stdout_buf);
+    var stderr_writer: std.Io.Writer = .fixed(&stderr_buf);
 
-    const code = try commandForTestWithEnv(&.{ "--workspace", root, "--policy", policy_path, "--secretless", "--inherit-env", "--", "./dump-env.sh" }, stdout_stream.writer(), stderr_stream.writer(), .ignore, &current);
+    const code = try commandForTestWithEnv(&.{ "--workspace", root, "--policy", policy_path, "--secretless", "--inherit-env", "--", "./dump-env.sh" }, &stdout_writer, &stderr_writer, .ignore, &current);
     try std.testing.expectEqual(exit_codes.success, code);
 
-    const child_env = try tmp.dir.readFileAlloc(std.testing.allocator, "child-env.txt", 512);
+    const child_env = try tmp.dir.readFileAlloc(std.testing.io, "child-env.txt", std.testing.allocator, .limited(512));
     defer std.testing.allocator.free(child_env);
     try std.testing.expect(std.mem.startsWith(u8, child_env, "orca-secret://local-dummy/env/GITHUB_TOKEN/"));
     try std.testing.expect(std.mem.indexOf(u8, child_env, "ghp_fakeSyntheticTokenValue") == null);
@@ -1070,17 +1072,17 @@ test "run secretless replaces child env and keeps raw secret out of audit artifa
 test "run command guard denies ci ask without prompting and audits command events" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
-    const root = try tmp.dir.realpathAlloc(std.testing.allocator, ".");
+    const root = try tmp.dir.realPathFileAlloc(std.testing.io, ".", std.testing.allocator);
     defer std.testing.allocator.free(root);
 
     var stdout_buf: [2048]u8 = undefined;
     var stderr_buf: [2048]u8 = undefined;
-    var stdout_stream = std.io.fixedBufferStream(&stdout_buf);
-    var stderr_stream = std.io.fixedBufferStream(&stderr_buf);
+    var stdout_writer: std.Io.Writer = .fixed(&stdout_buf);
+    var stderr_writer: std.Io.Writer = .fixed(&stderr_buf);
 
-    const code = try command(&.{ "--workspace", root, "--mode", "ci", "--", "npm", "install", "OPENAI_API_KEY=sk-fakeSyntheticOpenAIKey1234567890" }, stdout_stream.writer(), stderr_stream.writer());
+    const code = try command(std.testing.io, &.{ "--workspace", root, "--mode", "ci", "--", "npm", "install", "OPENAI_API_KEY=sk-fakeSyntheticOpenAIKey1234567890" }, &stdout_writer, &stderr_writer);
     try std.testing.expectEqual(exit_codes.denial, code);
-    try std.testing.expect(std.mem.indexOf(u8, stderr_stream.getWritten(), "command denied") != null);
+    try std.testing.expect(std.mem.indexOf(u8, stderr_writer.buffered(), "command denied") != null);
 
     const events = try readLastEvents(std.testing.allocator, root);
     defer std.testing.allocator.free(events);
@@ -1093,23 +1095,23 @@ test "run command guard denies ci ask without prompting and audits command event
 test "run command guard allows safe command and creates session shim directory" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
-    const root = try tmp.dir.realpathAlloc(std.testing.allocator, ".");
+    const root = try tmp.dir.realPathFileAlloc(std.testing.io, ".", std.testing.allocator);
     defer std.testing.allocator.free(root);
 
     var stdout_buf: [2048]u8 = undefined;
     var stderr_buf: [2048]u8 = undefined;
-    var stdout_stream = std.io.fixedBufferStream(&stdout_buf);
-    var stderr_stream = std.io.fixedBufferStream(&stderr_buf);
+    var stdout_writer: std.Io.Writer = .fixed(&stdout_buf);
+    var stderr_writer: std.Io.Writer = .fixed(&stderr_buf);
 
-    const code = try command(&.{ "--workspace", root, "--", "true" }, stdout_stream.writer(), stderr_stream.writer());
+    const code = try command(std.testing.io, &.{ "--workspace", root, "--", "true" }, &stdout_writer, &stderr_writer);
     try std.testing.expectEqual(exit_codes.success, code);
-    try std.testing.expectEqualStrings("", stderr_stream.getWritten());
+    try std.testing.expectEqualStrings("", stderr_writer.buffered());
 
     const session_id = try readLastSessionId(std.testing.allocator, root);
     defer std.testing.allocator.free(session_id);
     const shim_path = try std.fs.path.join(std.testing.allocator, &.{ root, ".orca", "sessions", session_id, "shims", "git" });
     defer std.testing.allocator.free(shim_path);
-    try std.fs.cwd().access(shim_path, .{});
+    try std.Io.Dir.cwd().access(std.testing.io, shim_path, .{});
 
     const events = try readLastEvents(std.testing.allocator, root);
     defer std.testing.allocator.free(events);
@@ -1119,15 +1121,15 @@ test "run command guard allows safe command and creates session shim directory" 
 test "run command guard denies destructive command before spawn" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
-    const root = try tmp.dir.realpathAlloc(std.testing.allocator, ".");
+    const root = try tmp.dir.realPathFileAlloc(std.testing.io, ".", std.testing.allocator);
     defer std.testing.allocator.free(root);
 
     var stdout_buf: [2048]u8 = undefined;
     var stderr_buf: [2048]u8 = undefined;
-    var stdout_stream = std.io.fixedBufferStream(&stdout_buf);
-    var stderr_stream = std.io.fixedBufferStream(&stderr_buf);
+    var stdout_writer: std.Io.Writer = .fixed(&stdout_buf);
+    var stderr_writer: std.Io.Writer = .fixed(&stderr_buf);
 
-    const code = try command(&.{ "--workspace", root, "--", "rm", "-rf", "/" }, stdout_stream.writer(), stderr_stream.writer());
+    const code = try command(std.testing.io, &.{ "--workspace", root, "--", "rm", "-rf", "/" }, &stdout_writer, &stderr_writer);
     try std.testing.expectEqual(exit_codes.denial, code);
     const events = try readLastEvents(std.testing.allocator, root);
     defer std.testing.allocator.free(events);
@@ -1137,15 +1139,15 @@ test "run command guard denies destructive command before spawn" {
 test "run no-network sets network mode off and audits denied network state" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
-    const root = try tmp.dir.realpathAlloc(std.testing.allocator, ".");
+    const root = try tmp.dir.realPathFileAlloc(std.testing.io, ".", std.testing.allocator);
     defer std.testing.allocator.free(root);
 
     var stdout_buf: [2048]u8 = undefined;
     var stderr_buf: [2048]u8 = undefined;
-    var stdout_stream = std.io.fixedBufferStream(&stdout_buf);
-    var stderr_stream = std.io.fixedBufferStream(&stderr_buf);
+    var stdout_writer: std.Io.Writer = .fixed(&stdout_buf);
+    var stderr_writer: std.Io.Writer = .fixed(&stderr_buf);
 
-    const code = try command(&.{ "--workspace", root, "--no-network", "--", "true" }, stdout_stream.writer(), stderr_stream.writer());
+    const code = try command(std.testing.io, &.{ "--workspace", root, "--no-network", "--", "true" }, &stdout_writer, &stderr_writer);
     try std.testing.expectEqual(exit_codes.success, code);
     const events = try readLastEvents(std.testing.allocator, root);
     defer std.testing.allocator.free(events);
@@ -1157,15 +1159,15 @@ test "run no-network sets network mode off and audits denied network state" {
 test "run allow-network adds temporary allow rule and redacts URL secrets in audit" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
-    const root = try tmp.dir.realpathAlloc(std.testing.allocator, ".");
+    const root = try tmp.dir.realPathFileAlloc(std.testing.io, ".", std.testing.allocator);
     defer std.testing.allocator.free(root);
 
     var stdout_buf: [2048]u8 = undefined;
     var stderr_buf: [2048]u8 = undefined;
-    var stdout_stream = std.io.fixedBufferStream(&stdout_buf);
-    var stderr_stream = std.io.fixedBufferStream(&stderr_buf);
+    var stdout_writer: std.Io.Writer = .fixed(&stdout_buf);
+    var stderr_writer: std.Io.Writer = .fixed(&stderr_buf);
 
-    const code = try command(&.{ "--workspace", root, "--allow-network", "https://api.github.com/repos?token=sk-fakeSyntheticOpenAIKey1234567890", "--", "true" }, stdout_stream.writer(), stderr_stream.writer());
+    const code = try command(std.testing.io, &.{ "--workspace", root, "--allow-network", "https://api.github.com/repos?token=sk-fakeSyntheticOpenAIKey1234567890", "--", "true" }, &stdout_writer, &stderr_writer);
     try std.testing.expectEqual(exit_codes.success, code);
     const events = try readLastEvents(std.testing.allocator, root);
     defer std.testing.allocator.free(events);
@@ -1179,19 +1181,19 @@ test "run exports backend capability status to child environment" {
 
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
-    const root = try tmp.dir.realpathAlloc(std.testing.allocator, ".");
+    const root = try tmp.dir.realPathFileAlloc(std.testing.io, ".", std.testing.allocator);
     defer std.testing.allocator.free(root);
 
     var stdout_buf: [2048]u8 = undefined;
     var stderr_buf: [2048]u8 = undefined;
-    var stdout_stream = std.io.fixedBufferStream(&stdout_buf);
-    var stderr_stream = std.io.fixedBufferStream(&stderr_buf);
+    var stdout_writer: std.Io.Writer = .fixed(&stdout_buf);
+    var stderr_writer: std.Io.Writer = .fixed(&stderr_buf);
 
-    const code = try commandForTest(&.{ "--workspace", root, "--", "/bin/sh", "-c", "env > backend-env.txt" }, stdout_stream.writer(), stderr_stream.writer(), .ignore);
+    const code = try commandForTest(&.{ "--workspace", root, "--", "/bin/sh", "-c", "env > backend-env.txt" }, &stdout_writer, &stderr_writer, .ignore);
     try std.testing.expectEqual(exit_codes.success, code);
-    try std.testing.expectEqualStrings("", stderr_stream.getWritten());
+    try std.testing.expectEqualStrings("", stderr_writer.buffered());
 
-    const written = try tmp.dir.readFileAlloc(std.testing.allocator, "backend-env.txt", 8192);
+    const written = try tmp.dir.readFileAlloc(std.testing.io, "backend-env.txt", std.testing.allocator, .limited(8192));
     defer std.testing.allocator.free(written);
     try std.testing.expect(std.mem.indexOf(u8, written, "ORCA_BACKEND=") != null);
     try std.testing.expect(std.mem.indexOf(u8, written, "ORCA_BACKEND_ENV_FILTERING=") != null);
@@ -1209,12 +1211,12 @@ test "run proxy backend injects proxy environment and satisfies network enforcem
 
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
-    const root = try tmp.dir.realpathAlloc(std.testing.allocator, ".");
+    const root = try tmp.dir.realPathFileAlloc(std.testing.io, ".", std.testing.allocator);
     defer std.testing.allocator.free(root);
     {
-        const policy_file = try tmp.dir.createFile("policy.yaml", .{});
-        defer policy_file.close();
-        try policy_file.writeAll(
+        const policy_file = try tmp.dir.createFile(std.testing.io, "policy.yaml", .{});
+        defer policy_file.close(std.testing.io);
+        try policy_file.writeStreamingAll(std.testing.io,
             \\version: 1
             \\mode: observe
             \\env:
@@ -1224,23 +1226,24 @@ test "run proxy backend injects proxy environment and satisfies network enforcem
             \\    - "/bin/sh *"
         );
     }
-    const policy_path = try tmp.dir.realpathAlloc(std.testing.allocator, "policy.yaml");
+    const policy_path = try tmp.dir.realPathFileAlloc(std.testing.io, "policy.yaml", std.testing.allocator);
     defer std.testing.allocator.free(policy_path);
 
-    var current = std.process.EnvMap.init(std.testing.allocator);
+    var current = std.process.Environ.Map.init(std.testing.allocator);
     defer current.deinit();
-    try current.put("PATH", std.posix.getenv("PATH") orelse "/usr/bin:/bin:/usr/sbin:/sbin");
+    const path_env = if (std.c.getenv("PATH")) |path| std.mem.span(path) else "/usr/bin:/bin:/usr/sbin:/sbin";
+    try current.put("PATH", path_env);
 
     var stdout_buf: [2048]u8 = undefined;
     var stderr_buf: [2048]u8 = undefined;
-    var stdout_stream = std.io.fixedBufferStream(&stdout_buf);
-    var stderr_stream = std.io.fixedBufferStream(&stderr_buf);
+    var stdout_writer: std.Io.Writer = .fixed(&stdout_buf);
+    var stderr_writer: std.Io.Writer = .fixed(&stderr_buf);
 
-    const code = try commandForTestWithEnv(&.{ "--workspace", root, "--policy", policy_path, "--network-backend", "proxy", "--require-backend", "network_enforce", "--", "/bin/sh", "-c", "env > proxy-env.txt" }, stdout_stream.writer(), stderr_stream.writer(), .ignore, &current);
+    const code = try commandForTestWithEnv(&.{ "--workspace", root, "--policy", policy_path, "--network-backend", "proxy", "--require-backend", "network_enforce", "--", "/bin/sh", "-c", "env > proxy-env.txt" }, &stdout_writer, &stderr_writer, .ignore, &current);
     try std.testing.expectEqual(exit_codes.success, code);
-    try std.testing.expectEqualStrings("", stderr_stream.getWritten());
+    try std.testing.expectEqualStrings("", stderr_writer.buffered());
 
-    const written = try tmp.dir.readFileAlloc(std.testing.allocator, "proxy-env.txt", 8192);
+    const written = try tmp.dir.readFileAlloc(std.testing.io, "proxy-env.txt", std.testing.allocator, .limited(8192));
     defer std.testing.allocator.free(written);
     try std.testing.expect(std.mem.indexOf(u8, written, "HTTP_PROXY=http://127.0.0.1:") != null);
     try std.testing.expect(std.mem.indexOf(u8, written, "HTTPS_PROXY=http://127.0.0.1:") != null);
@@ -1257,28 +1260,28 @@ test "run proxy backend injects proxy environment and satisfies network enforcem
 test "run rejects unknown network backend" {
     var stdout_buf: [512]u8 = undefined;
     var stderr_buf: [512]u8 = undefined;
-    var stdout_stream = std.io.fixedBufferStream(&stdout_buf);
-    var stderr_stream = std.io.fixedBufferStream(&stderr_buf);
+    var stdout_writer: std.Io.Writer = .fixed(&stdout_buf);
+    var stderr_writer: std.Io.Writer = .fixed(&stderr_buf);
 
-    const code = try command(&.{ "--network-backend", "magic", "--", "true" }, stdout_stream.writer(), stderr_stream.writer());
+    const code = try command(std.testing.io, &.{ "--network-backend", "magic", "--", "true" }, &stdout_writer, &stderr_writer);
     try std.testing.expectEqual(exit_codes.usage, code);
-    try std.testing.expect(std.mem.indexOf(u8, stderr_stream.getWritten(), "unsupported network backend") != null);
+    try std.testing.expect(std.mem.indexOf(u8, stderr_writer.buffered(), "unsupported network backend") != null);
 }
 
 test "run require-backend fails closed when requested feature is unavailable" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
-    const root = try tmp.dir.realpathAlloc(std.testing.allocator, ".");
+    const root = try tmp.dir.realPathFileAlloc(std.testing.io, ".", std.testing.allocator);
     defer std.testing.allocator.free(root);
 
     var stdout_buf: [2048]u8 = undefined;
     var stderr_buf: [2048]u8 = undefined;
-    var stdout_stream = std.io.fixedBufferStream(&stdout_buf);
-    var stderr_stream = std.io.fixedBufferStream(&stderr_buf);
+    var stdout_writer: std.Io.Writer = .fixed(&stdout_buf);
+    var stderr_writer: std.Io.Writer = .fixed(&stderr_buf);
 
-    const code = try command(&.{ "--workspace", root, "--mode", "ci", "--require-backend", "network_enforce", "--", "true" }, stdout_stream.writer(), stderr_stream.writer());
+    const code = try command(std.testing.io, &.{ "--workspace", root, "--mode", "ci", "--require-backend", "network_enforce", "--", "true" }, &stdout_writer, &stderr_writer);
     try std.testing.expectEqual(exit_codes.unsupported, code);
-    try std.testing.expect(std.mem.indexOf(u8, stderr_stream.getWritten(), "required backend feature is unavailable") != null);
+    try std.testing.expect(std.mem.indexOf(u8, stderr_writer.buffered(), "required backend feature is unavailable") != null);
 
     const events = try readLastEvents(std.testing.allocator, root);
     defer std.testing.allocator.free(events);
@@ -1289,7 +1292,7 @@ test "run require-backend fails closed when requested feature is unavailable" {
 fn readLastSessionId(allocator: std.mem.Allocator, root: []const u8) ![]u8 {
     const last_path = try std.fs.path.join(allocator, &.{ root, ".orca", "last" });
     defer allocator.free(last_path);
-    const text = try std.fs.cwd().readFileAlloc(allocator, last_path, core.limits.max_session_id_len + 2);
+    const text = try std.Io.Dir.cwd().readFileAlloc(std.testing.io, last_path, allocator, .limited(core.limits.max_session_id_len + 2));
     defer allocator.free(text);
     return try allocator.dupe(u8, std.mem.trim(u8, text, " \t\r\n"));
 }
@@ -1299,17 +1302,19 @@ fn readLastEvents(allocator: std.mem.Allocator, root: []const u8) ![]u8 {
     defer allocator.free(session_id);
     const events_path = try std.fs.path.join(allocator, &.{ root, ".orca", "sessions", session_id, "events.jsonl" });
     defer allocator.free(events_path);
-    return try std.fs.cwd().readFileAlloc(allocator, events_path, 64 * 1024);
+    return try std.Io.Dir.cwd().readFileAlloc(std.testing.io, events_path, allocator, .limited(64 * 1024));
 }
 
 fn writeLastPointerNoMakePath(allocator: std.mem.Allocator, workspace_root: []const u8, session_id: []const u8) !void {
+    var threaded: std.Io.Threaded = .init_single_threaded;
+    const io = threaded.io();
     const last_path = try std.fs.path.join(allocator, &.{ workspace_root, ".orca", "last" });
     defer allocator.free(last_path);
-    const file = try std.fs.cwd().createFile(last_path, .{ .truncate = true });
-    defer file.close();
-    try file.writeAll(session_id);
-    try file.writeAll("\n");
-    try file.sync();
+    const file = try std.Io.Dir.cwd().createFile(io, last_path, .{ .truncate = true });
+    defer file.close(io);
+    try file.writeStreamingAll(io, session_id);
+    try file.writeStreamingAll(io, "\n");
+    try file.sync(io);
 }
 
 // ---------------------------------------------------------------------------
@@ -1320,40 +1325,40 @@ fn writeLastPointerNoMakePath(allocator: std.mem.Allocator, workspace_root: []co
 test "first successful run prints celebration" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
-    const root = try tmp.dir.realpathAlloc(std.testing.allocator, ".");
+    const root = try tmp.dir.realPathFileAlloc(std.testing.io, ".", std.testing.allocator);
     defer std.testing.allocator.free(root);
 
     // Fresh workspace: no .orca/sessions yet → should be first
     var stdout_buf: [1024]u8 = undefined;
     var stderr_buf: [512]u8 = undefined;
-    var stdout_stream = std.io.fixedBufferStream(&stdout_buf);
-    var stderr_stream = std.io.fixedBufferStream(&stderr_buf);
+    var stdout_writer: std.Io.Writer = .fixed(&stdout_buf);
+    var stderr_writer: std.Io.Writer = .fixed(&stderr_buf);
 
-    const code = try commandForTest(&.{ "--workspace", root, "--", "echo", "hi-from-first" }, stdout_stream.writer(), stderr_stream.writer(), .inherit);
+    const code = try commandForTest(&.{ "--workspace", root, "--", "echo", "hi-from-first" }, &stdout_writer, &stderr_writer, .inherit);
     try std.testing.expectEqual(exit_codes.success, code);
-    const out = stdout_stream.getWritten();
+    const out = stdout_writer.buffered();
     try std.testing.expect(std.mem.indexOf(u8, out, "Welcome to Orca!") != null);
     try std.testing.expect(std.mem.indexOf(u8, out, "replay --session last") != null);
-    try std.testing.expectEqualStrings("", stderr_stream.getWritten());
+    try std.testing.expectEqualStrings("", stderr_writer.buffered());
 }
 
 test "subsequent runs do not print celebration" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
-    const root = try tmp.dir.realpathAlloc(std.testing.allocator, ".");
+    const root = try tmp.dir.realPathFileAlloc(std.testing.io, ".", std.testing.allocator);
     defer std.testing.allocator.free(root);
 
     // Pre-create a fake prior session dir inside the temp workspace
-    try tmp.dir.makePath(".orca/sessions/2026-01-01T00-00-00Z_aaaa");
+    try tmp.dir.createDirPath(std.testing.io, ".orca/sessions/2026-01-01T00-00-00Z_aaaa");
 
     var stdout_buf: [1024]u8 = undefined;
     var stderr_buf: [512]u8 = undefined;
-    var stdout_stream = std.io.fixedBufferStream(&stdout_buf);
-    var stderr_stream = std.io.fixedBufferStream(&stderr_buf);
+    var stdout_writer: std.Io.Writer = .fixed(&stdout_buf);
+    var stderr_writer: std.Io.Writer = .fixed(&stderr_buf);
 
-    const code = try commandForTest(&.{ "--workspace", root, "--", "echo", "hi-from-second" }, stdout_stream.writer(), stderr_stream.writer(), .inherit);
+    const code = try commandForTest(&.{ "--workspace", root, "--", "echo", "hi-from-second" }, &stdout_writer, &stderr_writer, .inherit);
     try std.testing.expectEqual(exit_codes.success, code);
-    const out = stdout_stream.getWritten();
+    const out = stdout_writer.buffered();
     try std.testing.expect(std.mem.indexOf(u8, out, "Welcome to Orca!") == null);
-    try std.testing.expectEqualStrings("", stderr_stream.getWritten());
+    try std.testing.expectEqualStrings("", stderr_writer.buffered());
 }

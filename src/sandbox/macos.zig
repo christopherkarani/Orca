@@ -32,7 +32,7 @@ pub fn detect() backend.ReportSet {
 pub fn prepare(allocator: std.mem.Allocator, request: backend.PrepareRequest, report: backend.ReportSet) backend.PreparedSandbox {
     var prepared = backend.prepareFallback(allocator, request, report);
     if (builtin.os.tag == .macos) {
-        prepared.child.pgid = 0;
+        prepared.use_process_group = true;
         prepared.process_group_cleanup = true;
     }
     return prepared;
@@ -57,6 +57,7 @@ test "macOS launch can run a simple command" {
 
     var argv = [_][]const u8{"true"};
     var prepared = prepare(std.testing.allocator, .{
+        .io = std.testing.io,
         .argv = &argv,
         .workspace_root = ".",
         .stdio = .ignore,
@@ -64,7 +65,7 @@ test "macOS launch can run a simple command" {
     try prepared.spawn();
     try prepared.waitForSpawn();
     const term = try prepared.wait();
-    try std.testing.expectEqual(std.process.Child.Term{ .Exited = 0 }, term);
+    try std.testing.expectEqual(std.process.Child.Term{ .exited = 0 }, term);
 }
 
 test "macOS process supervision uses process group cleanup" {
@@ -72,6 +73,7 @@ test "macOS process supervision uses process group cleanup" {
 
     var argv = [_][]const u8{"true"};
     const prepared = prepare(std.testing.allocator, .{
+        .io = std.testing.io,
         .argv = &argv,
         .workspace_root = ".",
         .stdio = .ignore,
@@ -84,11 +86,12 @@ test "macOS process supervision cleans up same-process-group descendants" {
 
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
-    const root = try tmp.dir.realpathAlloc(std.testing.allocator, ".");
+    const root = try tmp.dir.realPathFileAlloc(std.testing.io, ".", std.testing.allocator);
     defer std.testing.allocator.free(root);
 
     var argv = [_][]const u8{ "/bin/sh", "-c", "sleep 30 & echo $! > child.pid" };
     var prepared = prepare(std.testing.allocator, .{
+        .io = std.testing.io,
         .argv = &argv,
         .workspace_root = root,
         .stdio = .ignore,
@@ -96,15 +99,15 @@ test "macOS process supervision cleans up same-process-group descendants" {
     try prepared.spawn();
     try prepared.waitForSpawn();
     const term = try prepared.wait();
-    try std.testing.expectEqual(std.process.Child.Term{ .Exited = 0 }, term);
+    try std.testing.expectEqual(std.process.Child.Term{ .exited = 0 }, term);
 
-    const pid_text = try tmp.dir.readFileAlloc(std.testing.allocator, "child.pid", 64);
+    const pid_text = try tmp.dir.readFileAlloc(std.testing.io, "child.pid", std.testing.allocator, .limited(64));
     defer std.testing.allocator.free(pid_text);
     const pid = try std.fmt.parseInt(std.posix.pid_t, std.mem.trim(u8, pid_text, " \t\r\n"), 10);
     var attempts: usize = 0;
     while (attempts < 20) : (attempts += 1) {
-        std.Thread.sleep(50 * std.time.ns_per_ms);
-        std.posix.kill(pid, 0) catch |err| switch (err) {
+        std.Io.sleep(std.testing.io, std.Io.Duration.fromNanoseconds(50 * std.time.ns_per_ms), .awake) catch {};
+        std.posix.kill(pid, @enumFromInt(0)) catch |err| switch (err) {
             error.ProcessNotFound => return,
             else => return err,
         };

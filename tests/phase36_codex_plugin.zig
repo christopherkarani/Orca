@@ -27,21 +27,12 @@ const skills = &[_][]const u8{
 // ---------------------------------------------------------------------------
 
 fn fileExists(path: []const u8) bool {
-    std.fs.cwd().access(path, .{}) catch return false;
+    std.Io.Dir.cwd().access(std.testing.io, path, .{}) catch return false;
     return true;
 }
 
 fn readFile(allocator: std.mem.Allocator, path: []const u8) ![]u8 {
-    const file = try std.fs.cwd().openFile(path, .{});
-    defer file.close();
-    const stat = try file.stat();
-    const size = stat.size;
-    if (size > 1024 * 1024) return error.FileTooLarge;
-    const buf = try allocator.alloc(u8, @intCast(size));
-    errdefer allocator.free(buf);
-    const n = try file.readAll(buf);
-    if (n != size) return error.ShortRead;
-    return buf;
+    return try std.Io.Dir.cwd().readFileAlloc(std.testing.io, path, allocator, .limited(1024 * 1024));
 }
 
 // ---------------------------------------------------------------------------
@@ -53,9 +44,9 @@ test "codex plugin manifest exists" {
 }
 
 test "codex plugin manifest is valid JSON" {
-    var gpa_state: std.heap.GeneralPurposeAllocator(.{}) = .init;
-    defer _ = gpa_state.deinit();
-    const allocator = gpa_state.allocator();
+    var dbg_state: std.heap.DebugAllocator(.{}) = .init;
+    defer _ = dbg_state.deinit();
+    const allocator = dbg_state.allocator();
 
     const content = try readFile(allocator, manifest_path);
     defer allocator.free(content);
@@ -65,9 +56,9 @@ test "codex plugin manifest is valid JSON" {
 }
 
 test "codex plugin manifest contains expected fields" {
-    var gpa_state: std.heap.GeneralPurposeAllocator(.{}) = .init;
-    defer _ = gpa_state.deinit();
-    const allocator = gpa_state.allocator();
+    var dbg_state: std.heap.DebugAllocator(.{}) = .init;
+    defer _ = dbg_state.deinit();
+    const allocator = dbg_state.allocator();
 
     const content = try readFile(allocator, manifest_path);
     defer allocator.free(content);
@@ -88,9 +79,9 @@ test "codex plugin manifest contains expected fields" {
 }
 
 test "codex plugin manifest points to skills directory" {
-    var gpa_state: std.heap.GeneralPurposeAllocator(.{}) = .init;
-    defer _ = gpa_state.deinit();
-    const allocator = gpa_state.allocator();
+    var dbg_state: std.heap.DebugAllocator(.{}) = .init;
+    defer _ = dbg_state.deinit();
+    const allocator = dbg_state.allocator();
 
     const content = try readFile(allocator, manifest_path);
     defer allocator.free(content);
@@ -103,9 +94,9 @@ test "codex plugin manifest points to skills directory" {
 }
 
 test "codex plugin manifest points to hooks file" {
-    var gpa_state: std.heap.GeneralPurposeAllocator(.{}) = .init;
-    defer _ = gpa_state.deinit();
-    const allocator = gpa_state.allocator();
+    var dbg_state: std.heap.DebugAllocator(.{}) = .init;
+    defer _ = dbg_state.deinit();
+    const allocator = dbg_state.allocator();
 
     const content = try readFile(allocator, manifest_path);
     defer allocator.free(content);
@@ -173,9 +164,9 @@ test "codex hooks config exists" {
 }
 
 test "codex hooks config is valid JSON" {
-    var gpa_state: std.heap.GeneralPurposeAllocator(.{}) = .init;
-    defer _ = gpa_state.deinit();
-    const allocator = gpa_state.allocator();
+    var dbg_state: std.heap.DebugAllocator(.{}) = .init;
+    defer _ = dbg_state.deinit();
+    const allocator = dbg_state.allocator();
 
     const content = try readFile(allocator, hooks_path);
     defer allocator.free(content);
@@ -185,9 +176,9 @@ test "codex hooks config is valid JSON" {
 }
 
 test "codex hooks config calls orca hook codex" {
-    var gpa_state: std.heap.GeneralPurposeAllocator(.{}) = .init;
-    defer _ = gpa_state.deinit();
-    const allocator = gpa_state.allocator();
+    var dbg_state: std.heap.DebugAllocator(.{}) = .init;
+    defer _ = dbg_state.deinit();
+    const allocator = dbg_state.allocator();
 
     const content = try readFile(allocator, hooks_path);
     defer allocator.free(content);
@@ -197,9 +188,9 @@ test "codex hooks config calls orca hook codex" {
 }
 
 test "codex hooks config does not call nonexistent scripts" {
-    var gpa_state: std.heap.GeneralPurposeAllocator(.{}) = .init;
-    defer _ = gpa_state.deinit();
-    const allocator = gpa_state.allocator();
+    var dbg_state: std.heap.DebugAllocator(.{}) = .init;
+    defer _ = dbg_state.deinit();
+    const allocator = dbg_state.allocator();
 
     const content = try readFile(allocator, hooks_path);
     defer allocator.free(content);
@@ -210,9 +201,9 @@ test "codex hooks config does not call nonexistent scripts" {
 }
 
 test "codex hooks config does not include absolute local paths" {
-    var gpa_state: std.heap.GeneralPurposeAllocator(.{}) = .init;
-    defer _ = gpa_state.deinit();
-    const allocator = gpa_state.allocator();
+    var dbg_state: std.heap.DebugAllocator(.{}) = .init;
+    defer _ = dbg_state.deinit();
+    const allocator = dbg_state.allocator();
 
     const content = try readFile(allocator, hooks_path);
     defer allocator.free(content);
@@ -230,9 +221,9 @@ test "codex hooks config does not include absolute local paths" {
 test "marketplace example is valid JSON if present" {
     if (!fileExists(marketplace_example_path)) return;
 
-    var gpa_state: std.heap.GeneralPurposeAllocator(.{}) = .init;
-    defer _ = gpa_state.deinit();
-    const allocator = gpa_state.allocator();
+    var dbg_state: std.heap.DebugAllocator(.{}) = .init;
+    defer _ = dbg_state.deinit();
+    const allocator = dbg_state.allocator();
 
     const content = try readFile(allocator, marketplace_example_path);
     defer allocator.free(content);

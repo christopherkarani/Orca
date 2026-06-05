@@ -50,22 +50,22 @@ pub const ReplaySession = struct {
     }
 };
 
-pub fn load(allocator: std.mem.Allocator, workspace_root: []const u8, options: ReplayOptions) !ReplaySession {
-    const session_id = try resolveSessionId(allocator, workspace_root, options.session, options.audit_dir_name);
+pub fn load(io: std.Io, allocator: std.mem.Allocator, workspace_root: []const u8, options: ReplayOptions) !ReplaySession {
+    const session_id = try resolveSessionId(io, allocator, workspace_root, options.session, options.audit_dir_name);
     errdefer allocator.free(session_id);
     const session_dir_path = try std.fs.path.join(allocator, &.{ workspace_root, options.audit_dir_name, "sessions", session_id });
     errdefer allocator.free(session_dir_path);
 
-    const verify_result = try verifySessionDir(allocator, session_dir_path);
+    const verify_result = try verifySessionDir(io, allocator, session_dir_path);
     defer verify_result.deinit(allocator);
     if (options.verify and !verify_result.ok) return error.HashVerificationFailed;
 
-    const events = try loadEvents(allocator, session_dir_path, options.only_denied);
+    const events = try loadEvents(io, allocator, session_dir_path, options.only_denied);
     errdefer {
         for (events) |ev| ev.deinit(allocator);
         allocator.free(events);
     }
-    const summary = try readSummaryFields(allocator, session_dir_path);
+    const summary = try readSummaryFields(io, allocator, session_dir_path);
     errdefer summary.deinit(allocator);
 
     return .{
@@ -122,10 +122,10 @@ pub const VerifyResult = struct {
     }
 };
 
-pub fn verifySessionDir(allocator: std.mem.Allocator, session_dir_path: []const u8) !VerifyResult {
+pub fn verifySessionDir(io: std.Io, allocator: std.mem.Allocator, session_dir_path: []const u8) !VerifyResult {
     const events_path = try std.fs.path.join(allocator, &.{ session_dir_path, "events.jsonl" });
     defer allocator.free(events_path);
-    const events_text = try std.fs.cwd().readFileAlloc(allocator, events_path, core.limits.max_audit_log_len);
+    const events_text = try std.Io.Dir.cwd().readFileAlloc(io, events_path, allocator, std.Io.Limit.limited(core.limits.max_audit_log_len));
     defer allocator.free(events_text);
 
     var previous_hash: ?hash_chain.HashHex = null;
@@ -163,7 +163,7 @@ pub fn verifySessionDir(allocator: std.mem.Allocator, session_dir_path: []const 
         event_count += 1;
     }
 
-    const summary_integrity = readSummaryIntegrity(allocator, session_dir_path) catch |err| switch (err) {
+    const summary_integrity = readSummaryIntegrity(io, allocator, session_dir_path) catch |err| switch (err) {
         error.FileNotFound => return fail(allocator, "missing summary.json"),
         error.InvalidEventSchema => return fail(allocator, "malformed summary.json"),
         else => return err,
@@ -184,9 +184,9 @@ fn fail(allocator: std.mem.Allocator, reason: []const u8) !VerifyResult {
 }
 
 pub fn canonicalFromJsonValue(allocator: std.mem.Allocator, value: std.json.Value) ![]u8 {
-    var list: std.ArrayList(u8) = .empty;
-    errdefer list.deinit(allocator);
-    const writer = list.writer(allocator);
+    var out: std.Io.Writer.Allocating = .init(allocator);
+    errdefer out.deinit();
+    const writer = &out.writer;
     const object = try expectObject(value);
     try rejectUnknownKeys(object, &.{
         "version",
@@ -220,7 +220,7 @@ pub fn canonicalFromJsonValue(allocator: std.mem.Allocator, value: std.json.Valu
     try writer.writeAll(",\"previous_hash\":");
     try writeNullableValue(writer, try requiredField(object, "previous_hash"));
     try writer.writeByte('}');
-    return try list.toOwnedSlice(allocator);
+    return try out.toOwnedSlice();
 }
 
 fn writeStringField(writer: anytype, name: []const u8, value: std.json.Value) !void {
@@ -356,14 +356,14 @@ fn jsonNullableStringEquals(value: std.json.Value, expected: ?[]const u8) bool {
     return value == .null;
 }
 
-fn resolveSessionId(allocator: std.mem.Allocator, workspace_root: []const u8, requested: []const u8, audit_dir_name: []const u8) ![]u8 {
+fn resolveSessionId(io: std.Io, allocator: std.mem.Allocator, workspace_root: []const u8, requested: []const u8, audit_dir_name: []const u8) ![]u8 {
     if (!std.mem.eql(u8, requested, "last")) {
         try validateSessionId(requested);
         return try allocator.dupe(u8, requested);
     }
     const last_path = try std.fs.path.join(allocator, &.{ workspace_root, audit_dir_name, "last" });
     defer allocator.free(last_path);
-    const text = try std.fs.cwd().readFileAlloc(allocator, last_path, core.limits.max_session_id_len + 2);
+    const text = try std.Io.Dir.cwd().readFileAlloc(io, last_path, allocator, std.Io.Limit.limited(core.limits.max_session_id_len + 2));
     defer allocator.free(text);
     const trimmed = std.mem.trim(u8, text, " \t\r\n");
     try validateSessionId(trimmed);
@@ -374,10 +374,10 @@ fn validateSessionId(value: []const u8) !void {
     try core.session.validateSessionIdText(value);
 }
 
-fn loadEvents(allocator: std.mem.Allocator, session_dir_path: []const u8, only_denied: bool) ![]ReplayEvent {
+fn loadEvents(io: std.Io, allocator: std.mem.Allocator, session_dir_path: []const u8, only_denied: bool) ![]ReplayEvent {
     const events_path = try std.fs.path.join(allocator, &.{ session_dir_path, "events.jsonl" });
     defer allocator.free(events_path);
-    const events_text = try std.fs.cwd().readFileAlloc(allocator, events_path, core.limits.max_audit_log_len);
+    const events_text = try std.Io.Dir.cwd().readFileAlloc(io, events_path, allocator, std.Io.Limit.limited(core.limits.max_audit_log_len));
     defer allocator.free(events_text);
 
     var list: std.ArrayList(ReplayEvent) = .empty;
@@ -452,15 +452,15 @@ fn eventJsonLineFromValue(allocator: std.mem.Allocator, value: std.json.Value) !
     const canonical = try canonicalFromJsonValue(allocator, value);
     defer allocator.free(canonical);
 
-    var list: std.ArrayList(u8) = .empty;
-    errdefer list.deinit(allocator);
-    const writer = list.writer(allocator);
+    var out: std.Io.Writer.Allocating = .init(allocator);
+    errdefer out.deinit();
+    const writer = &out.writer;
     if (canonical.len == 0 or canonical[canonical.len - 1] != '}') return error.InvalidEventSchema;
     try writer.writeAll(canonical[0 .. canonical.len - 1]);
     try writer.writeAll(",\"event_hash\":");
     try core.util.writeJsonString(writer, event_hash);
     try writer.writeByte('}');
-    return try list.toOwnedSlice(allocator);
+    return try out.toOwnedSlice();
 }
 
 const SummaryFields = struct {
@@ -475,10 +475,10 @@ const SummaryFields = struct {
     }
 };
 
-fn readSummaryFields(allocator: std.mem.Allocator, session_dir_path: []const u8) !SummaryFields {
+fn readSummaryFields(io: std.Io, allocator: std.mem.Allocator, session_dir_path: []const u8) !SummaryFields {
     const summary_path = try std.fs.path.join(allocator, &.{ session_dir_path, "summary.json" });
     defer allocator.free(summary_path);
-    const text = try std.fs.cwd().readFileAlloc(allocator, summary_path, core.limits.max_event_field_len);
+    const text = try std.Io.Dir.cwd().readFileAlloc(io, summary_path, allocator, std.Io.Limit.limited(core.limits.max_event_field_len));
     defer allocator.free(text);
     var parsed = try std.json.parseFromSlice(std.json.Value, allocator, text, .{});
     defer parsed.deinit();
@@ -505,10 +505,10 @@ const SummaryIntegrity = struct {
     }
 };
 
-fn readSummaryIntegrity(allocator: std.mem.Allocator, session_dir_path: []const u8) !SummaryIntegrity {
+fn readSummaryIntegrity(io: std.Io, allocator: std.mem.Allocator, session_dir_path: []const u8) !SummaryIntegrity {
     const summary_path = try std.fs.path.join(allocator, &.{ session_dir_path, "summary.json" });
     defer allocator.free(summary_path);
-    const text = try std.fs.cwd().readFileAlloc(allocator, summary_path, core.limits.max_event_field_len);
+    const text = try std.Io.Dir.cwd().readFileAlloc(io, summary_path, allocator, std.Io.Limit.limited(core.limits.max_event_field_len));
     defer allocator.free(text);
     var parsed = try std.json.parseFromSlice(std.json.Value, allocator, text, .{});
     defer parsed.deinit();
@@ -563,22 +563,22 @@ fn testSummaryJsonAlloc(allocator: std.mem.Allocator, event_count: usize, final_
 fn writeTestSummary(path: []const u8, event_count: usize, final_event_hash: []const u8, command_json: []const u8) !void {
     const text = try testSummaryJsonAlloc(std.testing.allocator, event_count, final_event_hash, command_json);
     defer std.testing.allocator.free(text);
-    const file = try std.fs.cwd().createFile(path, .{});
-    defer file.close();
-    try file.writeAll(text);
+    const file = try std.Io.Dir.cwd().createFile(std.testing.io, path, .{});
+    defer file.close(std.testing.io);
+    try file.writeStreamingAll(std.testing.io, text);
 }
 
 test "verification detects modified event fields" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
-    const root = try tmp.dir.realpathAlloc(std.testing.allocator, ".");
+    const root = try tmp.dir.realPathFileAlloc(std.testing.io, ".", std.testing.allocator);
     defer std.testing.allocator.free(root);
 
     const ts = core.time.Timestamp.fromUnixSeconds(1_777_983_130);
     const session_id = try core.session.generateSessionId(ts);
     const session_dir = try std.fs.path.join(std.testing.allocator, &.{ root, ".orca", "sessions", session_id.slice() });
     defer std.testing.allocator.free(session_dir);
-    try std.fs.cwd().makePath(session_dir);
+    try std.Io.Dir.cwd().makePath(std.testing.io, session_dir);
 
     const event_path = try std.fs.path.join(std.testing.allocator, &.{ session_dir, "events.jsonl" });
     defer std.testing.allocator.free(event_path);
@@ -593,27 +593,27 @@ test "verification detects modified event fields" {
         break :blk hash_chain.eventHash(null, canonical);
     };
     {
-        const file = try std.fs.cwd().createFile(event_path, .{});
-        defer file.close();
+        const file = try std.Io.Dir.cwd().createFile(std.testing.io, event_path, .{});
+        defer file.close(std.testing.io);
         var buf: [1024]u8 = undefined;
         var file_writer = file.writer(&buf);
         try file_writer.interface.print("{s},\"event_hash\":\"{s}\"}}\n", .{ event_text, &hash });
         try file_writer.interface.flush();
     }
     try writeTestSummary(summary_path, 1, &hash, "[\"echo\",\"hello\"]");
-    var ok = try verifySessionDir(std.testing.allocator, session_dir);
+    var ok = try verifySessionDir(std.testing.io, std.testing.allocator, session_dir);
     defer ok.deinit(std.testing.allocator);
     try std.testing.expect(ok.ok);
 
     {
-        const file = try std.fs.cwd().createFile(event_path, .{});
-        defer file.close();
+        const file = try std.Io.Dir.cwd().createFile(std.testing.io, event_path, .{});
+        defer file.close(std.testing.io);
         var buf: [1024]u8 = undefined;
         var file_writer = file.writer(&buf);
         try file_writer.interface.print("{s},\"event_hash\":\"{s}\"}}\n", .{ "{\"version\":1,\"session_id\":\"tampered\",\"event_id\":\"e\",\"timestamp\":\"2026-05-05T12:12:10Z\",\"type\":\"session_start\",\"actor\":{\"kind\":\"orca\",\"id\":null,\"display\":\"orca\"},\"target\":{\"kind\":\"session\",\"value\":\"s\"},\"decision\":null,\"redactions\":{\"count\":0,\"labels\":[]},\"previous_hash\":null", &hash });
         try file_writer.interface.flush();
     }
-    var bad = try verifySessionDir(std.testing.allocator, session_dir);
+    var bad = try verifySessionDir(std.testing.io, std.testing.allocator, session_dir);
     defer bad.deinit(std.testing.allocator);
     try std.testing.expect(!bad.ok);
 }
@@ -621,12 +621,12 @@ test "verification detects modified event fields" {
 test "verification rejects event records with unauthenticated extra keys" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
-    const root = try tmp.dir.realpathAlloc(std.testing.allocator, ".");
+    const root = try tmp.dir.realPathFileAlloc(std.testing.io, ".", std.testing.allocator);
     defer std.testing.allocator.free(root);
 
     const session_dir = try std.fs.path.join(std.testing.allocator, &.{ root, ".orca", "sessions", "extra-key" });
     defer std.testing.allocator.free(session_dir);
-    try std.fs.cwd().makePath(session_dir);
+    try std.Io.Dir.cwd().makePath(std.testing.io, session_dir);
 
     const event_path = try std.fs.path.join(std.testing.allocator, &.{ session_dir, "events.jsonl" });
     defer std.testing.allocator.free(event_path);
@@ -641,8 +641,8 @@ test "verification rejects event records with unauthenticated extra keys" {
         break :blk hash_chain.eventHash(null, canonical);
     };
     {
-        const file = try std.fs.cwd().createFile(event_path, .{});
-        defer file.close();
+        const file = try std.Io.Dir.cwd().createFile(std.testing.io, event_path, .{});
+        defer file.close(std.testing.io);
         var buf: [1024]u8 = undefined;
         var file_writer = file.writer(&buf);
         try file_writer.interface.print("{s},\"extra\":\"fake_secret_value\",\"event_hash\":\"{s}\"}}\n", .{ event_text, &hash });
@@ -650,7 +650,7 @@ test "verification rejects event records with unauthenticated extra keys" {
     }
     try writeTestSummary(summary_path, 1, &hash, "[\"echo\",\"hello\"]");
 
-    var result = try verifySessionDir(std.testing.allocator, session_dir);
+    var result = try verifySessionDir(std.testing.io, std.testing.allocator, session_dir);
     defer result.deinit(std.testing.allocator);
     try std.testing.expect(!result.ok);
     try std.testing.expectEqualStrings("malformed event", result.reason.?);
@@ -659,12 +659,12 @@ test "verification rejects event records with unauthenticated extra keys" {
 test "verification rejects tampered summary display fields" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
-    const root = try tmp.dir.realpathAlloc(std.testing.allocator, ".");
+    const root = try tmp.dir.realPathFileAlloc(std.testing.io, ".", std.testing.allocator);
     defer std.testing.allocator.free(root);
 
     const session_dir = try std.fs.path.join(std.testing.allocator, &.{ root, ".orca", "sessions", "summary-tamper" });
     defer std.testing.allocator.free(session_dir);
-    try std.fs.cwd().makePath(session_dir);
+    try std.Io.Dir.cwd().makePath(std.testing.io, session_dir);
 
     const event_path = try std.fs.path.join(std.testing.allocator, &.{ session_dir, "events.jsonl" });
     defer std.testing.allocator.free(event_path);
@@ -679,8 +679,8 @@ test "verification rejects tampered summary display fields" {
         break :blk hash_chain.eventHash(null, canonical);
     };
     {
-        const file = try std.fs.cwd().createFile(event_path, .{});
-        defer file.close();
+        const file = try std.Io.Dir.cwd().createFile(std.testing.io, event_path, .{});
+        defer file.close(std.testing.io);
         var buf: [1024]u8 = undefined;
         var file_writer = file.writer(&buf);
         try file_writer.interface.print("{s},\"event_hash\":\"{s}\"}}\n", .{ event_text, &hash });
@@ -689,23 +689,23 @@ test "verification rejects tampered summary display fields" {
     const valid_summary = try testSummaryJsonAlloc(std.testing.allocator, 1, &hash, "[\"echo\",\"hello\"]");
     defer std.testing.allocator.free(valid_summary);
     {
-        const file = try std.fs.cwd().createFile(summary_path, .{});
-        defer file.close();
-        try file.writeAll(valid_summary);
+        const file = try std.Io.Dir.cwd().createFile(std.testing.io, summary_path, .{});
+        defer file.close(std.testing.io);
+        try file.writeStreamingAll(std.testing.io, valid_summary);
     }
-    var ok = try verifySessionDir(std.testing.allocator, session_dir);
+    var ok = try verifySessionDir(std.testing.io, std.testing.allocator, session_dir);
     defer ok.deinit(std.testing.allocator);
     try std.testing.expect(ok.ok);
 
     const tampered_summary = try std.mem.replaceOwned(u8, std.testing.allocator, valid_summary, "echo", "fake_secret_value");
     defer std.testing.allocator.free(tampered_summary);
     {
-        const file = try std.fs.cwd().createFile(summary_path, .{});
-        defer file.close();
-        try file.writeAll(tampered_summary);
+        const file = try std.Io.Dir.cwd().createFile(std.testing.io, summary_path, .{});
+        defer file.close(std.testing.io);
+        try file.writeStreamingAll(std.testing.io, tampered_summary);
     }
 
-    var bad = try verifySessionDir(std.testing.allocator, session_dir);
+    var bad = try verifySessionDir(std.testing.io, std.testing.allocator, session_dir);
     defer bad.deinit(std.testing.allocator);
     try std.testing.expect(!bad.ok);
     try std.testing.expectEqualStrings("malformed summary.json", bad.reason.?);
@@ -714,12 +714,12 @@ test "verification rejects tampered summary display fields" {
 test "verification reports malformed events instead of panicking" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
-    const root = try tmp.dir.realpathAlloc(std.testing.allocator, ".");
+    const root = try tmp.dir.realPathFileAlloc(std.testing.io, ".", std.testing.allocator);
     defer std.testing.allocator.free(root);
 
     const session_dir = try std.fs.path.join(std.testing.allocator, &.{ root, ".orca", "sessions", "malformed" });
     defer std.testing.allocator.free(session_dir);
-    try std.fs.cwd().makePath(session_dir);
+    try std.Io.Dir.cwd().makePath(std.testing.io, session_dir);
 
     const event_path = try std.fs.path.join(std.testing.allocator, &.{ session_dir, "events.jsonl" });
     defer std.testing.allocator.free(event_path);
@@ -727,13 +727,13 @@ test "verification reports malformed events instead of panicking" {
     defer std.testing.allocator.free(summary_path);
 
     {
-        const file = try std.fs.cwd().createFile(event_path, .{});
-        defer file.close();
-        try file.writeAll("{\"version\":1,\"previous_hash\":null,\"event_hash\":\"abc\"}\n");
+        const file = try std.Io.Dir.cwd().createFile(std.testing.io, event_path, .{});
+        defer file.close(std.testing.io);
+        try file.writeStreamingAll(std.testing.io, "{\"version\":1,\"previous_hash\":null,\"event_hash\":\"abc\"}\n");
     }
     try writeTestSummary(summary_path, 1, "abc", "[\"echo\",\"hello\"]");
 
-    var result = try verifySessionDir(std.testing.allocator, session_dir);
+    var result = try verifySessionDir(std.testing.io, std.testing.allocator, session_dir);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.ok);
@@ -743,11 +743,11 @@ test "verification reports malformed events instead of panicking" {
 test "verification detects summary event count mismatch" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
-    const root = try tmp.dir.realpathAlloc(std.testing.allocator, ".");
+    const root = try tmp.dir.realPathFileAlloc(std.testing.io, ".", std.testing.allocator);
     defer std.testing.allocator.free(root);
     const session_dir = try std.fs.path.join(std.testing.allocator, &.{ root, ".orca", "sessions", "count-mismatch" });
     defer std.testing.allocator.free(session_dir);
-    try std.fs.cwd().makePath(session_dir);
+    try std.Io.Dir.cwd().makePath(std.testing.io, session_dir);
 
     const event_path = try std.fs.path.join(std.testing.allocator, &.{ session_dir, "events.jsonl" });
     defer std.testing.allocator.free(event_path);
@@ -761,8 +761,8 @@ test "verification detects summary event count mismatch" {
         break :blk hash_chain.eventHash(null, canonical);
     };
     {
-        const file = try std.fs.cwd().createFile(event_path, .{});
-        defer file.close();
+        const file = try std.Io.Dir.cwd().createFile(std.testing.io, event_path, .{});
+        defer file.close(std.testing.io);
         var buf: [1024]u8 = undefined;
         var file_writer = file.writer(&buf);
         try file_writer.interface.print("{s},\"event_hash\":\"{s}\"}}\n", .{ event_text, &hash });
@@ -770,7 +770,7 @@ test "verification detects summary event count mismatch" {
     }
     try writeTestSummary(summary_path, 2, &hash, "[\"echo\",\"hello\"]");
 
-    var result = try verifySessionDir(std.testing.allocator, session_dir);
+    var result = try verifySessionDir(std.testing.io, std.testing.allocator, session_dir);
     defer result.deinit(std.testing.allocator);
     try std.testing.expect(!result.ok);
     try std.testing.expectEqualStrings("summary event count mismatch", result.reason.?);
@@ -779,7 +779,7 @@ test "verification detects summary event count mismatch" {
 test "replay loading cleans up every allocation failure path" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
-    const root = try tmp.dir.realpathAlloc(std.testing.allocator, ".");
+    const root = try tmp.dir.realPathFileAlloc(std.testing.io, ".", std.testing.allocator);
     defer std.testing.allocator.free(root);
     const session_id = "alloc-failure";
     try writeValidReplayFixture(root, session_id);
@@ -790,42 +790,42 @@ test "replay loading cleans up every allocation failure path" {
 test "replay rejects session ids with path traversal" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
-    const root = try tmp.dir.realpathAlloc(std.testing.allocator, ".");
+    const root = try tmp.dir.realPathFileAlloc(std.testing.io, ".", std.testing.allocator);
     defer std.testing.allocator.free(root);
 
-    try std.testing.expectError(error.InvalidSessionId, load(std.testing.allocator, root, .{ .session = "../outside" }));
-    try std.testing.expectError(error.InvalidSessionId, load(std.testing.allocator, root, .{ .session = "." }));
-    try std.testing.expectError(error.InvalidSessionId, load(std.testing.allocator, root, .{ .session = ".." }));
+    try std.testing.expectError(error.InvalidSessionId, load(std.testing.io, std.testing.allocator, root, .{ .session = "../outside" }));
+    try std.testing.expectError(error.InvalidSessionId, load(std.testing.io, std.testing.allocator, root, .{ .session = "." }));
+    try std.testing.expectError(error.InvalidSessionId, load(std.testing.io, std.testing.allocator, root, .{ .session = ".." }));
 
     const audit_dir = try std.fs.path.join(std.testing.allocator, &.{ root, ".orca" });
     defer std.testing.allocator.free(audit_dir);
-    try std.fs.cwd().makePath(audit_dir);
+    try std.Io.Dir.cwd().makePath(std.testing.io, audit_dir);
     const last_path = try std.fs.path.join(std.testing.allocator, &.{ audit_dir, "last" });
     defer std.testing.allocator.free(last_path);
     {
-        const file = try std.fs.cwd().createFile(last_path, .{});
-        defer file.close();
-        try file.writeAll("../outside\n");
+        const file = try std.Io.Dir.cwd().createFile(std.testing.io, last_path, .{});
+        defer file.close(std.testing.io);
+        try file.writeStreamingAll(std.testing.io, "../outside\n");
     }
 
-    try std.testing.expectError(error.InvalidSessionId, load(std.testing.allocator, root, .{ .session = "last" }));
+    try std.testing.expectError(error.InvalidSessionId, load(std.testing.io, std.testing.allocator, root, .{ .session = "last" }));
     {
-        const file = try std.fs.cwd().createFile(last_path, .{ .truncate = true });
-        defer file.close();
-        try file.writeAll("..\n");
+        const file = try std.Io.Dir.cwd().createFile(std.testing.io, last_path, .{ .truncate = true });
+        defer file.close(std.testing.io);
+        try file.writeStreamingAll(std.testing.io, "..\n");
     }
-    try std.testing.expectError(error.InvalidSessionId, load(std.testing.allocator, root, .{ .session = "last" }));
+    try std.testing.expectError(error.InvalidSessionId, load(std.testing.io, std.testing.allocator, root, .{ .session = "last" }));
 }
 
 fn loadReplayAllocationFailureProbe(allocator: std.mem.Allocator, root: []const u8, session_id: []const u8) !void {
-    var replay = try load(allocator, root, .{ .session = session_id, .verify = true });
+    var replay = try load(std.testing.io, allocator, root, .{ .session = session_id, .verify = true });
     defer replay.deinit();
 }
 
 fn writeValidReplayFixture(root: []const u8, session_id: []const u8) !void {
     const session_dir = try std.fs.path.join(std.testing.allocator, &.{ root, ".orca", "sessions", session_id });
     defer std.testing.allocator.free(session_dir);
-    try std.fs.cwd().makePath(session_dir);
+    try std.Io.Dir.cwd().makePath(std.testing.io, session_dir);
 
     const event_path = try std.fs.path.join(std.testing.allocator, &.{ session_dir, "events.jsonl" });
     defer std.testing.allocator.free(event_path);
@@ -840,8 +840,8 @@ fn writeValidReplayFixture(root: []const u8, session_id: []const u8) !void {
         break :blk hash_chain.eventHash(null, canonical);
     };
     {
-        const file = try std.fs.cwd().createFile(event_path, .{});
-        defer file.close();
+        const file = try std.Io.Dir.cwd().createFile(std.testing.io, event_path, .{});
+        defer file.close(std.testing.io);
         var buf: [1024]u8 = undefined;
         var file_writer = file.writer(&buf);
         try file_writer.interface.print("{s},\"event_hash\":\"{s}\"}}\n", .{ event_text, &hash });

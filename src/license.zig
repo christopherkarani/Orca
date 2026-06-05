@@ -93,14 +93,14 @@ const dev_pro_signature = "fab43b7785c49e822b3f1de319c5011a797fbb283927689a78b74
 const dev_team_payload = "{\"version\":1,\"license_id\":\"dev-team\",\"tier\":\"Team\",\"subject\":\"local development\",\"issued_at\":\"2026-01-01\",\"expires_at\":null}";
 const dev_team_signature = "f939c13580a836f1d4481dfd6790dba890c9242ed762565e715d07225c01e0aa18dc09d2aeedaae31a33bbe79ed6a314a6dbe6b23a628b32325befe2e3e0b701";
 
-pub fn status(allocator: std.mem.Allocator) !License {
+pub fn status(io: std.Io, allocator: std.mem.Allocator) !License {
     const path = try defaultLicensePath(allocator);
     defer allocator.free(path);
-    return statusFromPath(allocator, path);
+    return statusFromPath(io, allocator, path);
 }
 
-pub fn statusFromPath(allocator: std.mem.Allocator, path: []const u8) !License {
-    const text = std.fs.cwd().readFileAlloc(allocator, path, core.limits.max_policy_file_len) catch |err| switch (err) {
+pub fn statusFromPath(io: std.Io, allocator: std.mem.Allocator, path: []const u8) !License {
+    const text = std.Io.Dir.cwd().readFileAlloc(io, path, allocator, .limited(core.limits.max_policy_file_len)) catch |err| switch (err) {
         error.FileNotFound => return License.free(allocator, "not found"),
         else => return err,
     };
@@ -108,26 +108,26 @@ pub fn statusFromPath(allocator: std.mem.Allocator, path: []const u8) !License {
     return parseSignedLicense(allocator, text, path);
 }
 
-pub fn activate(allocator: std.mem.Allocator, key_or_file: []const u8) !ActivationResult {
+pub fn activate(io: std.Io, allocator: std.mem.Allocator, key_or_file: []const u8) !ActivationResult {
     const path = try defaultLicensePath(allocator);
     errdefer allocator.free(path);
-    const result = try activateToPath(allocator, key_or_file, path);
+    const result = try activateToPath(io, allocator, key_or_file, path);
     allocator.free(path);
     return result;
 }
 
-pub fn activateToPath(allocator: std.mem.Allocator, key_or_file: []const u8, destination_path: []const u8) !ActivationResult {
-    const signed_text = try signedTextForActivationInput(allocator, key_or_file);
+pub fn activateToPath(io: std.Io, allocator: std.mem.Allocator, key_or_file: []const u8, destination_path: []const u8) !ActivationResult {
+    const signed_text = try signedTextForActivationInput(io, allocator, key_or_file);
     defer allocator.free(signed_text);
     var parsed = try parseSignedLicense(allocator, signed_text, destination_path);
     errdefer parsed.deinit();
 
-    if (std.fs.path.dirname(destination_path)) |parent| try std.fs.cwd().makePath(parent);
-    const file = try std.fs.cwd().createFile(destination_path, .{});
-    defer file.close();
-    try file.writeAll(signed_text);
-    try file.writeAll("\n");
-    try file.sync();
+    if (std.fs.path.dirname(destination_path)) |parent| try std.Io.Dir.cwd().createDirPath(io, parent);
+    const file = try std.Io.Dir.cwd().createFile(io, destination_path, .{});
+    defer file.close(io);
+    try file.writeStreamingAll(io, signed_text);
+    try file.writeStreamingAll(io, "\n");
+    try file.sync(io);
 
     return .{
         .license = parsed,
@@ -136,20 +136,18 @@ pub fn activateToPath(allocator: std.mem.Allocator, key_or_file: []const u8, des
 }
 
 pub fn defaultLicensePath(allocator: std.mem.Allocator) ![]u8 {
-    if (std.process.getEnvVarOwned(allocator, "XDG_CONFIG_HOME")) |xdg| {
-        defer allocator.free(xdg);
-        return std.fs.path.join(allocator, &.{ xdg, "orca", "license.json" });
-    } else |_| {}
-    const home = try std.process.getEnvVarOwned(allocator, "HOME");
-    defer allocator.free(home);
-    return licensePathFromHome(allocator, home);
+    if (std.c.getenv("XDG_CONFIG_HOME")) |xdg| {
+        return std.fs.path.join(allocator, &.{ std.mem.sliceTo(xdg, 0), "orca", "license.json" });
+    }
+    const home = std.c.getenv("HOME") orelse return error.EnvironmentVariableMissing;
+    return licensePathFromHome(allocator, std.mem.sliceTo(home, 0));
 }
 
 pub fn licensePathFromHome(allocator: std.mem.Allocator, home: []const u8) ![]u8 {
     return std.fs.path.join(allocator, &.{ home, ".config", "orca", "license.json" });
 }
 
-fn signedTextForActivationInput(allocator: std.mem.Allocator, key_or_file: []const u8) ![]u8 {
+fn signedTextForActivationInput(io: std.Io, allocator: std.mem.Allocator, key_or_file: []const u8) ![]u8 {
     if (std.mem.eql(u8, key_or_file, "dev-free") or std.mem.eql(u8, key_or_file, "orca-dev-free")) {
         return writeDevSignedText(allocator, dev_free_payload, dev_free_signature);
     }
@@ -159,13 +157,13 @@ fn signedTextForActivationInput(allocator: std.mem.Allocator, key_or_file: []con
     if (std.mem.eql(u8, key_or_file, "dev-team") or std.mem.eql(u8, key_or_file, "orca-dev-team")) {
         return writeDevSignedText(allocator, dev_team_payload, dev_team_signature);
     }
-    return try std.fs.cwd().readFileAlloc(allocator, key_or_file, core.limits.max_policy_file_len);
+    return try std.Io.Dir.cwd().readFileAlloc(io, key_or_file, allocator, .limited(core.limits.max_policy_file_len));
 }
 
 fn writeDevSignedText(allocator: std.mem.Allocator, payload: []const u8, signature: []const u8) ![]u8 {
-    var list: std.ArrayList(u8) = .empty;
-    errdefer list.deinit(allocator);
-    const writer = list.writer(allocator);
+    var out: std.Io.Writer.Allocating = .init(allocator);
+    errdefer out.deinit();
+    const writer = &out.writer;
     try writer.writeAll("{\"version\":1,\"issuer\":");
     try core.util.writeJsonString(writer, dev_issuer);
     try writer.writeAll(",\"payload\":");
@@ -173,7 +171,7 @@ fn writeDevSignedText(allocator: std.mem.Allocator, payload: []const u8, signatu
     try writer.writeAll(",\"signature\":");
     try core.util.writeJsonString(writer, signature);
     try writer.writeByte('}');
-    return list.toOwnedSlice(allocator);
+    return try out.toOwnedSlice();
 }
 
 pub fn parseSignedLicense(allocator: std.mem.Allocator, text: []const u8, source: []const u8) !License {
@@ -285,16 +283,16 @@ test "tampered license signature fails closed" {
 test "activation writes signed license to requested config path" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
-    const root = try tmp.dir.realpathAlloc(std.testing.allocator, ".");
+    const root = try tmp.dir.realPathFileAlloc(std.testing.io, ".", std.testing.allocator);
     defer std.testing.allocator.free(root);
     const path = try std.fs.path.join(std.testing.allocator, &.{ root, ".config", "orca", "license.json" });
     defer std.testing.allocator.free(path);
 
-    var activated = try activateToPath(std.testing.allocator, "dev-team", path);
+    var activated = try activateToPath(std.testing.io, std.testing.allocator, "dev-team", path);
     defer activated.deinit();
     try std.testing.expectEqual(Tier.team, activated.license.tier);
-    try tmp.dir.access(".config/orca/license.json", .{});
-    var current = try statusFromPath(std.testing.allocator, path);
+    try tmp.dir.access(std.testing.io, ".config/orca/license.json", .{});
+    var current = try statusFromPath(std.testing.io, std.testing.allocator, path);
     defer current.deinit();
     try std.testing.expectEqual(Tier.team, current.tier);
 }

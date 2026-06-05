@@ -86,9 +86,9 @@ test "core public event names exclude MCP Edge drone and SITL domains" {
     try std.testing.expect(@hasDecl(orca_core.api, "EventType"));
     const fields = @typeInfo(orca_core.api.EventType).@"enum".fields;
 
-    try expectEnumField(fields, "session_start");
-    try expectEnumField(fields, "command_attempt");
-    try expectEnumField(fields, "network_connect_denied");
+    try expectEnumField(orca_core.api.EventType, "session_start");
+    try expectEnumField(orca_core.api.EventType, "command_attempt");
+    try expectEnumField(orca_core.api.EventType, "network_connect_denied");
 
     inline for (fields) |field| {
         try std.testing.expect(std.mem.indexOf(u8, field.name, "edge") == null);
@@ -191,7 +191,7 @@ test "core API writes redacted audit events and verifies replay hash chain" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
 
-    const root = try tmp.dir.realpathAlloc(std.testing.allocator, ".");
+    const root = try tmp.dir.realPathFileAlloc(std.testing.io, ".", std.testing.allocator);
     defer std.testing.allocator.free(root);
     const ts = orca_core.api.Timestamp.fromUnixSeconds(1_777_983_130);
     const session: orca_core.api.Session = .{
@@ -204,7 +204,7 @@ test "core API writes redacted audit events and verifies replay hash chain" {
         .platform = orca_core.api.detectOs(),
     };
 
-    var writer = try orca_core.api.createAuditWriter(std.testing.allocator, session);
+    var writer = try orca_core.api.createAuditWriter(std.testing.io, std.testing.allocator, session);
     defer writer.deinit();
     const ev = try orca_core.api.createAuditEvent(.{
         .session_id = session.id,
@@ -228,27 +228,29 @@ test "core API writes redacted audit events and verifies replay hash chain" {
         .policy = "phase24 fake_secret_value_phase24 policy",
     });
 
-    var verify = try orca_core.api.verifyReplay(std.testing.allocator, writer.sessionDirPath());
+    var verify = try orca_core.api.verifyReplay(std.testing.io, std.testing.allocator, writer.sessionDirPath());
     defer verify.deinit(std.testing.allocator);
     try std.testing.expect(verify.ok);
 
     const events_path = try std.fs.path.join(std.testing.allocator, &.{ ".orca", "sessions", session.id.slice(), "events.jsonl" });
     defer std.testing.allocator.free(events_path);
-    const events = try tmp.dir.readFileAlloc(std.testing.allocator, events_path, 16 * 1024);
+    const events = try tmp.dir.readFileAlloc(std.testing.io, events_path, std.testing.allocator, .limited(16 * 1024));
     defer std.testing.allocator.free(events);
     try std.testing.expect(std.mem.indexOf(u8, events, "fake_secret_value_phase24") == null);
     try std.testing.expect(std.mem.indexOf(u8, events, "[REDACTED:") != null);
 
-    var replay = try orca_core.api.loadReplay(std.testing.allocator, root, .{ .session = session.id.slice(), .verify = true });
+    var replay = try orca_core.api.loadReplay(std.testing.io, std.testing.allocator, root, .{ .session = session.id.slice(), .verify = true });
     defer replay.deinit();
     var out: std.ArrayList(u8) = .empty;
     defer out.deinit(std.testing.allocator);
-    try orca_core.api.writeReplayJson(out.writer(std.testing.allocator), replay);
+    var aw: std.Io.Writer.Allocating = .init(std.testing.allocator);
+    defer aw.deinit();
+    try orca_core.api.writeReplayJson(&aw.writer, replay);
     try std.testing.expect(std.mem.indexOf(u8, out.items, "fake_secret_value_phase24") == null);
 }
 
 test "cli and edge compat facade dead code has been removed" {
-    const compat_source = try std.fs.cwd().readFileAlloc(std.testing.allocator, "build.zig", 256 * 1024);
+    const compat_source = try std.Io.Dir.cwd().readFileAlloc(std.testing.io, "build.zig", std.testing.allocator, .limited(256 * 1024));
     defer std.testing.allocator.free(compat_source);
     try std.testing.expect(std.mem.indexOf(u8, compat_source, "aegis_core_product_compat_mod") == null);
     try std.testing.expect(std.mem.indexOf(u8, compat_source, "pub const actions = core.types") == null);
@@ -271,7 +273,7 @@ fn expectNoDecl(comptime namespace: type, comptime name: []const u8) !void {
 }
 
 fn expectFileDoesNotContain(path: []const u8, needle: []const u8) !void {
-    const text = try std.fs.cwd().readFileAlloc(std.testing.allocator, path, 128 * 1024);
+    const text = try std.Io.Dir.cwd().readFileAlloc(std.testing.io, path, std.testing.allocator, .limited(128 * 1024));
     defer std.testing.allocator.free(text);
     try std.testing.expect(std.mem.indexOf(u8, text, needle) == null);
 }
@@ -289,7 +291,8 @@ fn expectNoUnionField(info: std.builtin.Type.Union, comptime name: []const u8) !
     }
 }
 
-fn expectEnumField(fields: []const std.builtin.Type.EnumField, comptime name: []const u8) !void {
+fn expectEnumField(comptime Enum: type, comptime name: []const u8) !void {
+    const fields = @typeInfo(Enum).@"enum".fields;
     inline for (fields) |field| {
         if (std.mem.eql(u8, field.name, name)) return;
     }
@@ -297,7 +300,7 @@ fn expectEnumField(fields: []const std.builtin.Type.EnumField, comptime name: []
 }
 
 fn expectFileNotContains(path: []const u8, needle: []const u8) !void {
-    const text = try std.fs.cwd().readFileAlloc(std.testing.allocator, path, 256 * 1024);
+    const text = try std.Io.Dir.cwd().readFileAlloc(std.testing.io, path, std.testing.allocator, .limited(256 * 1024));
     defer std.testing.allocator.free(text);
     try std.testing.expect(std.mem.indexOf(u8, text, needle) == null);
 }
@@ -313,7 +316,7 @@ test "phase 23 fake secret guardrail covers redaction before durable strings" {
 }
 
 test "policy schema matches runtime file-write and MCP server-scoped policy shapes" {
-    const text = try std.fs.cwd().readFileAlloc(std.testing.allocator, "schemas/policy-v1.json", 128 * 1024);
+    const text = try std.Io.Dir.cwd().readFileAlloc(std.testing.io, "schemas/policy-v1.json", std.testing.allocator, .limited(128 * 1024));
     defer std.testing.allocator.free(text);
     var parsed = try std.json.parseFromSlice(std.json.Value, std.testing.allocator, text, .{});
     defer parsed.deinit();
@@ -343,7 +346,7 @@ test "policy schema matches runtime file-write and MCP server-scoped policy shap
 }
 
 test "MCP manifest schema decision and risk enums match manifest parser behavior" {
-    const text = try std.fs.cwd().readFileAlloc(std.testing.allocator, "schemas/mcp-manifest-v1.json", 128 * 1024);
+    const text = try std.Io.Dir.cwd().readFileAlloc(std.testing.io, "schemas/mcp-manifest-v1.json", std.testing.allocator, .limited(128 * 1024));
     defer std.testing.allocator.free(text);
     var parsed = try std.json.parseFromSlice(std.json.Value, std.testing.allocator, text, .{});
     defer parsed.deinit();

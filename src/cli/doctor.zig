@@ -1,5 +1,6 @@
 const std = @import("std");
 const builtin = @import("builtin");
+const env_util = @import("../env_util.zig");
 const core = @import("orca_core").core;
 const supervisor = core.supervisor;
 const core_api = @import("orca_core").api;
@@ -69,33 +70,84 @@ const IntegrationContext = struct {
     }
 };
 
-pub fn command(argv: []const []const u8, stdout: anytype, stderr: anytype) !u8 {
+pub fn command(io: std.Io, argv: []const []const u8, stdout: anytype, stderr: anytype) !u8 {
+    var verbose = false;
     for (argv) |arg| {
         if (std.mem.eql(u8, arg, "--help") or std.mem.eql(u8, arg, "-h")) {
-            _ = try help.writeCommand(stdout, "doctor");
+            _ = try help.writeCommand(io, stdout, "doctor");
             return exit_codes.success;
+        }
+        if (std.mem.eql(u8, arg, "-v") or std.mem.eql(u8, arg, "--verbose")) {
+            verbose = true;
+            continue;
         }
         try stderr.print("orca doctor: unknown option '{s}'.\n", .{arg});
         return exit_codes.usage;
     }
 
-    var gpa_state: std.heap.GeneralPurposeAllocator(.{}) = .init;
+    var gpa_state: std.heap.DebugAllocator(.{}) = .init;
     defer _ = gpa_state.deinit();
     const allocator = gpa_state.allocator();
 
     const os = core.platform.detectOs();
     const backend_report = sandbox.backend.detect(os);
-    var context = collectIntegrationContext(allocator) catch |err| {
+    var context = collectIntegrationContext(io, allocator) catch |err| {
         try stderr.print("orca doctor: failed to collect integration context: {s}\n", .{@errorName(err)});
         return exit_codes.general;
     };
     defer context.deinit();
-    try writeReport(stdout, os, backend_report, context);
+    try writeReport(stdout, os, backend_report, context, verbose);
     return exit_codes.success;
 }
 
-fn writeReport(stdout: anytype, os: core.platform.Os, backend_report: sandbox.backend.ReportSet, context: IntegrationContext) !void {
+fn countCapabilitySummary(os: core.platform.Os, backend_report: sandbox.backend.ReportSet) struct { active: usize, limited: usize, unavailable: usize } {
+    var active_count: usize = 0;
+    var limited_count: usize = 0;
+    var unavailable_count: usize = 0;
+
+    for (doctor_capabilities) |item| {
+        if (item.feature) |feature| {
+            switch (backend_report.get(feature).level) {
+                .active => active_count += 1,
+                .partial, .limited, .observe_only, .wrapper_only => limited_count += 1,
+                .unavailable, .unsupported, .failed => unavailable_count += 1,
+            }
+        } else if (item.capability) |capability| {
+            switch (core.platform.reportCapability(os, capability).state) {
+                .active => active_count += 1,
+                .partial, .limited, .observe => limited_count += 1,
+                .unavailable, .unknown => unavailable_count += 1,
+            }
+        }
+    }
+
+    return .{ .active = active_count, .limited = limited_count, .unavailable = unavailable_count };
+}
+
+fn writeReport(stdout: anytype, os: core.platform.Os, backend_report: sandbox.backend.ReportSet, context: IntegrationContext, verbose: bool) !void {
     try stdout.writeAll("Orca Doctor\n\n");
+
+    const counts = countCapabilitySummary(os, backend_report);
+    const policy_status = if (!context.policy_present)
+        "no policy"
+    else if (!context.policy_valid)
+        "policy invalid"
+    else
+        "policy valid";
+
+    try stdout.print("Summary: {s} · {d} active · {d} limited · {d} unavailable · {s}\n\n", .{
+        os.toString(),
+        counts.active,
+        counts.limited,
+        counts.unavailable,
+        policy_status,
+    });
+
+    if (!verbose) {
+        try writeRecommendations(stdout, context);
+        return;
+    }
+
     try stdout.print("OS: {s}\n", .{os.toString()});
     try stdout.print("Version: {s}\n\n", .{cli.version});
     try writeIntegrationReport(stdout, context);
@@ -227,14 +279,14 @@ fn writeRecommendations(stdout: anytype, context: IntegrationContext) !void {
     }
 }
 
-fn collectIntegrationContext(allocator: std.mem.Allocator) !IntegrationContext {
-    const workspace_root = supervisor.resolveWorkspaceRoot(allocator, null, ".") catch try allocator.dupe(u8, ".");
+fn collectIntegrationContext(io: std.Io, allocator: std.mem.Allocator) !IntegrationContext {
+    const workspace_root = supervisor.resolveWorkspaceRoot(io, allocator, null, ".") catch try allocator.dupe(u8, ".");
     errdefer allocator.free(workspace_root);
-    return try collectIntegrationContextAt(allocator, workspace_root);
+    return try collectIntegrationContextAt(io, allocator, workspace_root);
 }
 
-fn collectIntegrationContextAt(allocator: std.mem.Allocator, workspace_root: []const u8) !IntegrationContext {
-    const git_present = hasPath(workspace_root, ".git");
+fn collectIntegrationContextAt(io: std.Io, allocator: std.mem.Allocator, workspace_root: []const u8) !IntegrationContext {
+    const git_present = hasPath(io, workspace_root, ".git");
 
     const policy_path = try std.fs.path.join(allocator, &.{ workspace_root, ".orca", "policy.yaml" });
     defer allocator.free(policy_path);
@@ -242,9 +294,9 @@ fn collectIntegrationContextAt(allocator: std.mem.Allocator, workspace_root: []c
     var policy_valid = false;
     var policy_error: ?[]const u8 = null;
     errdefer if (policy_error) |value| allocator.free(value);
-    if (fileExistsAbsolute(policy_path)) {
+    if (fileExistsAbsolute(io, policy_path)) {
         policy_present = true;
-        if (core_api.loadPolicyFile(allocator, policy_path)) |loaded_policy| {
+        if (core_api.loadPolicyFile(io, allocator, policy_path)) |loaded_policy| {
             var loaded = loaded_policy;
             loaded.deinit();
             policy_valid = true;
@@ -253,8 +305,8 @@ fn collectIntegrationContextAt(allocator: std.mem.Allocator, workspace_root: []c
             policy_error = try std.fmt.allocPrint(allocator, "{s}", .{@errorName(err)});
         }
     }
-    const manifests = countMcpManifests(allocator, workspace_root);
-    const agents = try detectAgents(allocator);
+    const manifests = countMcpManifests(io, allocator, workspace_root);
+    const agents = try detectAgents(io, allocator);
     errdefer if (agents.len > 0) allocator.free(agents);
     const ci_status = try detectCi(allocator);
     errdefer allocator.free(ci_status.provider);
@@ -273,34 +325,38 @@ fn collectIntegrationContextAt(allocator: std.mem.Allocator, workspace_root: []c
         .ci_detected = ci_status.detected,
         .ci_provider = ci_status.provider,
         .shell_name = shell_name,
-        .audit_sessions_present = hasPath(workspace_root, ".orca/sessions"),
-        .redteam_fixtures_present = resource_root.resourcePathExists(allocator, .{ .workspace_root = workspace_root }, "fixtures"),
+        .audit_sessions_present = hasPath(io, workspace_root, ".orca/sessions"),
+        .redteam_fixtures_present = resource_root.resourcePathExists(io, allocator, .{ .workspace_root = workspace_root }, "fixtures"),
     };
 }
 
-fn hasPath(root: []const u8, relative: []const u8) bool {
+fn hasPath(io: std.Io, root: []const u8, relative: []const u8) bool {
     const allocator = std.heap.page_allocator;
     const path = std.fs.path.join(allocator, &.{ root, relative }) catch return false;
     defer allocator.free(path);
-    return fileExistsAbsolute(path);
+    return fileExistsAbsolute(io, path);
 }
 
-fn fileExistsAbsolute(path: []const u8) bool {
-    std.fs.cwd().access(path, .{}) catch return false;
+fn fileExistsAbsolute(io: std.Io, path: []const u8) bool {
+    if (std.fs.path.isAbsolute(path)) {
+        std.Io.Dir.accessAbsolute(io, path, .{}) catch return false;
+    } else {
+        std.Io.Dir.cwd().access(io, path, .{}) catch return false;
+    }
     return true;
 }
 
 const ManifestCounts = struct { total: usize = 0, invalid: usize = 0 };
 
-fn countMcpManifests(allocator: std.mem.Allocator, workspace_root: []const u8) ManifestCounts {
+fn countMcpManifests(io: std.Io, allocator: std.mem.Allocator, workspace_root: []const u8) ManifestCounts {
     const mcp_dir_path = std.fs.path.join(allocator, &.{ workspace_root, ".orca", "mcp" }) catch return .{};
     defer allocator.free(mcp_dir_path);
-    var dir = std.fs.cwd().openDir(mcp_dir_path, .{ .iterate = true }) catch return .{};
-    defer dir.close();
+    var dir = std.Io.Dir.cwd().openDir(io, mcp_dir_path, .{ .iterate = true }) catch return .{};
+    defer dir.close(io);
 
     var counts: ManifestCounts = .{};
     var iterator = dir.iterate();
-    while (iterator.next() catch null) |entry| {
+    while (iterator.next(io) catch null) |entry| {
         if (entry.kind != .file) continue;
         if (!std.mem.endsWith(u8, entry.name, ".yaml") and !std.mem.endsWith(u8, entry.name, ".yml")) continue;
         counts.total += 1;
@@ -309,7 +365,7 @@ fn countMcpManifests(allocator: std.mem.Allocator, workspace_root: []const u8) M
             continue;
         };
         defer allocator.free(manifest_path);
-        var manifest = orca_mcp.manifests.loadFile(allocator, manifest_path) catch {
+        var manifest = orca_mcp.manifests.loadFile(io, allocator, manifest_path) catch {
             counts.invalid += 1;
             continue;
         };
@@ -318,28 +374,31 @@ fn countMcpManifests(allocator: std.mem.Allocator, workspace_root: []const u8) M
     return counts;
 }
 
-fn detectAgents(allocator: std.mem.Allocator) ![]const AgentBinary {
+fn detectAgents(io: std.Io, allocator: std.mem.Allocator) ![]const AgentBinary {
     var found: std.ArrayList(AgentBinary) = .empty;
     errdefer found.deinit(allocator);
     for (known_agent_binaries) |agent| {
-        if (binaryInPath(allocator, agent.command)) try found.append(allocator, agent);
+        if (binaryInPath(io, allocator, agent.command)) try found.append(allocator, agent);
     }
     return try found.toOwnedSlice(allocator);
 }
 
-fn binaryInPath(allocator: std.mem.Allocator, binary_name: []const u8) bool {
-    const path_value = std.process.getEnvVarOwned(allocator, "PATH") catch return false;
+fn binaryInPath(io: std.Io, allocator: std.mem.Allocator, binary_name: []const u8) bool {
+    var env_map = env_util.createProcessMap(allocator) catch return false;
+    defer env_map.deinit();
+    const path_owned = env_util.getOwned(&env_map, allocator, "PATH") catch return false;
+    const path_value = path_owned orelse return false;
     defer allocator.free(path_value);
     var parts = std.mem.splitScalar(u8, path_value, std.fs.path.delimiter);
     while (parts.next()) |dir| {
         if (dir.len == 0) continue;
         const candidate = std.fs.path.join(allocator, &.{ dir, binary_name }) catch continue;
         defer allocator.free(candidate);
-        if (fileExistsAbsolute(candidate)) return true;
+        if (fileExistsAbsolute(io, candidate)) return true;
         if (builtin.os.tag == .windows) {
             const exe_candidate = std.fmt.allocPrint(allocator, "{s}.exe", .{candidate}) catch continue;
             defer allocator.free(exe_candidate);
-            if (fileExistsAbsolute(exe_candidate)) return true;
+            if (fileExistsAbsolute(io, exe_candidate)) return true;
         }
     }
     return false;
@@ -351,62 +410,65 @@ const CiStatus = struct {
 };
 
 fn detectCi(allocator: std.mem.Allocator) !CiStatus {
-    if (envPresent(allocator, "GITHUB_ACTIONS")) return .{ .detected = true, .provider = try allocator.dupe(u8, "GitHub Actions") };
-    if (envPresent(allocator, "CI")) return .{ .detected = true, .provider = try allocator.dupe(u8, "generic CI") };
+    var env_map = try env_util.createProcessMap(allocator);
+    defer env_map.deinit();
+    if (envPresent(&env_map, "GITHUB_ACTIONS")) return .{ .detected = true, .provider = try allocator.dupe(u8, "GitHub Actions") };
+    if (envPresent(&env_map, "CI")) return .{ .detected = true, .provider = try allocator.dupe(u8, "generic CI") };
     return .{ .detected = false, .provider = try allocator.dupe(u8, "none") };
 }
 
-fn envPresent(allocator: std.mem.Allocator, name: []const u8) bool {
-    const value = std.process.getEnvVarOwned(allocator, name) catch return false;
-    defer allocator.free(value);
+fn envPresent(env_map: *const std.process.Environ.Map, name: []const u8) bool {
+    const value = env_map.get(name) orelse return false;
     return value.len > 0;
 }
 
 fn detectShell(allocator: std.mem.Allocator) ![]const u8 {
-    if (std.process.getEnvVarOwned(allocator, "SHELL")) |value| {
+    var env_map = try env_util.createProcessMap(allocator);
+    defer env_map.deinit();
+    if (try env_util.getOwned(&env_map, allocator, "SHELL")) |value| {
         defer allocator.free(value);
         return try allocator.dupe(u8, std.fs.path.basename(value));
-    } else |_| {}
-    if (std.process.getEnvVarOwned(allocator, "COMSPEC")) |value| {
+    }
+    if (env_util.getOwned(&env_map, allocator, "COMSPEC") catch null) |value| {
         defer allocator.free(value);
         return try allocator.dupe(u8, std.fs.path.basename(value));
-    } else |_| {}
-    if (envPresent(allocator, "PSModulePath")) return try allocator.dupe(u8, "powershell");
+    }
+    if (envPresent(&env_map, "PSModulePath")) return try allocator.dupe(u8, "powershell");
     return try allocator.dupe(u8, "unknown");
 }
 
 test "doctor prints OS and planned capabilities" {
     var stdout_buf: [8192]u8 = undefined;
     var stderr_buf: [256]u8 = undefined;
-    var stdout_stream = std.io.fixedBufferStream(&stdout_buf);
-    var stderr_stream = std.io.fixedBufferStream(&stderr_buf);
+    var stdout_writer: std.Io.Writer = .fixed(&stdout_buf);
+    var stderr_writer: std.Io.Writer = .fixed(&stderr_buf);
 
-    const code = try command(&.{}, stdout_stream.writer(), stderr_stream.writer());
+    const code = try command(std.testing.io, &.{"--verbose"}, &stdout_writer, &stderr_writer);
 
     try std.testing.expectEqual(exit_codes.success, code);
-    try std.testing.expect(std.mem.indexOf(u8, stdout_stream.getWritten(), "Orca Doctor") != null);
-    try std.testing.expect(std.mem.indexOf(u8, stdout_stream.getWritten(), "Integration checks:") != null);
-    try std.testing.expect(std.mem.indexOf(u8, stdout_stream.getWritten(), "OS:") != null);
-    try std.testing.expect(std.mem.indexOf(u8, stdout_stream.getWritten(), "process supervision:") != null);
-    try std.testing.expect(std.mem.indexOf(u8, stdout_stream.getWritten(), "network policy engine: active") != null);
-    try std.testing.expect(std.mem.indexOf(u8, stdout_stream.getWritten(), "transparent network enforcement: unavailable") != null or std.mem.indexOf(u8, stdout_stream.getWritten(), "transparent network enforcement: limited") != null or std.mem.indexOf(u8, stdout_stream.getWritten(), "transparent network enforcement: observe-only") != null);
-    try std.testing.expect(std.mem.indexOf(u8, stdout_stream.getWritten(), "proxy-mediated enforcement: limited") != null);
-    try std.testing.expect(std.mem.indexOf(u8, stdout_stream.getWritten(), "Backend:") != null or std.mem.indexOf(u8, stdout_stream.getWritten(), "Linux backend:") != null or std.mem.indexOf(u8, stdout_stream.getWritten(), "macOS backend:") != null);
-    try std.testing.expect(std.mem.indexOf(u8, stdout_stream.getWritten(), "env filtering: active") != null);
-    try std.testing.expect(std.mem.indexOf(u8, stdout_stream.getWritten(), "strong sandbox:") != null);
-    try std.testing.expectEqualStrings("", stderr_stream.getWritten());
+    try std.testing.expect(std.mem.indexOf(u8, stdout_writer.buffered(), "Orca Doctor") != null);
+    try std.testing.expect(std.mem.indexOf(u8, stdout_writer.buffered(), "Integration checks:") != null);
+    try std.testing.expect(std.mem.indexOf(u8, stdout_writer.buffered(), "OS:") != null);
+    try std.testing.expect(std.mem.indexOf(u8, stdout_writer.buffered(), "process supervision:") != null);
+    try std.testing.expect(std.mem.indexOf(u8, stdout_writer.buffered(), "network policy engine: active") != null);
+    try std.testing.expect(std.mem.indexOf(u8, stdout_writer.buffered(), "transparent network enforcement: unavailable") != null or std.mem.indexOf(u8, stdout_writer.buffered(), "transparent network enforcement: limited") != null or std.mem.indexOf(u8, stdout_writer.buffered(), "transparent network enforcement: observe-only") != null);
+    try std.testing.expect(std.mem.indexOf(u8, stdout_writer.buffered(), "proxy-mediated enforcement: limited") != null);
+    try std.testing.expect(std.mem.indexOf(u8, stdout_writer.buffered(), "Backend:") != null or std.mem.indexOf(u8, stdout_writer.buffered(), "Linux backend:") != null or std.mem.indexOf(u8, stdout_writer.buffered(), "macOS backend:") != null);
+    try std.testing.expect(std.mem.indexOf(u8, stdout_writer.buffered(), "env filtering: active") != null);
+    try std.testing.expect(std.mem.indexOf(u8, stdout_writer.buffered(), "strong sandbox:") != null);
+    try std.testing.expectEqualStrings("", stderr_writer.buffered());
 }
 
 test "doctor can render Linux backend details from an injected report" {
     var stdout_buf: [8192]u8 = undefined;
-    var stdout_stream = std.io.fixedBufferStream(&stdout_buf);
+    var stdout_writer: std.Io.Writer = .fixed(&stdout_buf);
     const report = sandbox.backend.detect(.linux);
     var context = try testContext(std.testing.allocator, .{});
     defer context.deinit();
 
-    try writeReport(stdout_stream.writer(), .linux, report, context);
+    try writeReport(&stdout_writer, .linux, report, context, true);
 
-    const written = stdout_stream.getWritten();
+    const written = stdout_writer.buffered();
     try std.testing.expect(std.mem.indexOf(u8, written, "Linux backend:") != null);
     try std.testing.expect(std.mem.indexOf(u8, written, "user namespace:") != null);
     try std.testing.expect(std.mem.indexOf(u8, written, "mount namespace:") != null);
@@ -417,14 +479,14 @@ test "doctor can render Linux backend details from an injected report" {
 
 test "doctor can render macOS backend details from an injected report" {
     var stdout_buf: [8192]u8 = undefined;
-    var stdout_stream = std.io.fixedBufferStream(&stdout_buf);
+    var stdout_writer: std.Io.Writer = .fixed(&stdout_buf);
     const report = sandbox.backend.detect(.macos);
     var context = try testContext(std.testing.allocator, .{});
     defer context.deinit();
 
-    try writeReport(stdout_stream.writer(), .macos, report, context);
+    try writeReport(&stdout_writer, .macos, report, context, true);
 
-    const written = stdout_stream.getWritten();
+    const written = stdout_writer.buffered();
     try std.testing.expect(std.mem.indexOf(u8, written, "macOS backend:") != null);
     try std.testing.expect(std.mem.indexOf(u8, written, "selected: macos") != null);
     try std.testing.expect(std.mem.indexOf(u8, written, "env filtering: active") != null);
@@ -440,14 +502,14 @@ test "doctor can render macOS backend details from an injected report" {
 
 test "doctor can render Windows backend details from an injected report" {
     var stdout_buf: [8192]u8 = undefined;
-    var stdout_stream = std.io.fixedBufferStream(&stdout_buf);
+    var stdout_writer: std.Io.Writer = .fixed(&stdout_buf);
     const report = sandbox.backend.detect(.windows);
     var context = try testContext(std.testing.allocator, .{});
     defer context.deinit();
 
-    try writeReport(stdout_stream.writer(), .windows, report, context);
+    try writeReport(&stdout_writer, .windows, report, context, true);
 
-    const written = stdout_stream.getWritten();
+    const written = stdout_writer.buffered();
     try std.testing.expect(std.mem.indexOf(u8, written, "Windows backend:") != null);
     try std.testing.expect(std.mem.indexOf(u8, written, "selected: windows") != null);
     try std.testing.expect(std.mem.indexOf(u8, written, "env filtering: active") != null);
@@ -466,39 +528,43 @@ test "doctor can render Windows backend details from an injected report" {
 test "doctor detects valid policy in current workspace" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
-    const tmp_path = try tmp.dir.realpathAlloc(std.testing.allocator, ".");
+    const tmp_path_z = try tmp.dir.realPathFileAlloc(std.testing.io, ".", std.testing.allocator);
+    defer std.testing.allocator.free(tmp_path_z);
+    const tmp_path = try std.testing.allocator.dupe(u8, tmp_path_z);
 
-    try tmp.dir.makePath(".git");
-    try tmp.dir.makePath(".orca");
+    try tmp.dir.createDirPath(std.testing.io, ".git");
+    try tmp.dir.createDirPath(std.testing.io, ".orca");
     {
-        const file = try tmp.dir.createFile(".orca/policy.yaml", .{});
-        defer file.close();
-        try file.writeAll(orca_policy.presets.agentPresetText(.generic_agent));
+        const file = try tmp.dir.createFile(std.testing.io, ".orca/policy.yaml", .{});
+        defer file.close(std.testing.io);
+        try file.writeStreamingAll(std.testing.io, orca_policy.presets.agentPresetText(.generic_agent));
     }
 
     var stdout_buf: [8192]u8 = undefined;
     var stderr_buf: [512]u8 = undefined;
-    var stdout_stream = std.io.fixedBufferStream(&stdout_buf);
-    var stderr_stream = std.io.fixedBufferStream(&stderr_buf);
-    var context = try collectIntegrationContextAt(std.testing.allocator, tmp_path);
+    var stdout_writer: std.Io.Writer = .fixed(&stdout_buf);
+    var stderr_writer: std.Io.Writer = .fixed(&stderr_buf);
+    var context = try collectIntegrationContextAt(std.testing.io, std.testing.allocator, tmp_path);
     defer context.deinit();
 
-    try writeReport(stdout_stream.writer(), core.platform.detectOs(), sandbox.backend.detect(core.platform.detectOs()), context);
-    try std.testing.expect(std.mem.indexOf(u8, stdout_stream.getWritten(), ".orca/policy.yaml: present and valid") != null);
-    try std.testing.expect(std.mem.indexOf(u8, stdout_stream.getWritten(), "git repository: detected") != null);
-    try std.testing.expectEqualStrings("", stderr_stream.getWritten());
+    try writeReport(&stdout_writer, core.platform.detectOs(), sandbox.backend.detect(core.platform.detectOs()), context, true);
+    try std.testing.expect(std.mem.indexOf(u8, stdout_writer.buffered(), ".orca/policy.yaml: present and valid") != null);
+    try std.testing.expect(std.mem.indexOf(u8, stdout_writer.buffered(), "git repository: detected") != null);
+    try std.testing.expectEqualStrings("", stderr_writer.buffered());
 }
 
 test "doctor reports invalid policy clearly without printing synthetic secrets" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
-    const tmp_path = try tmp.dir.realpathAlloc(std.testing.allocator, ".");
+    const tmp_path_z = try tmp.dir.realPathFileAlloc(std.testing.io, ".", std.testing.allocator);
+    defer std.testing.allocator.free(tmp_path_z);
+    const tmp_path = try std.testing.allocator.dupe(u8, tmp_path_z);
 
-    try tmp.dir.makePath(".orca");
+    try tmp.dir.createDirPath(std.testing.io, ".orca");
     {
-        const file = try tmp.dir.createFile(".orca/policy.yaml", .{});
-        defer file.close();
-        try file.writeAll(
+        const file = try tmp.dir.createFile(std.testing.io, ".orca/policy.yaml", .{});
+        defer file.close(std.testing.io);
+        try file.writeStreamingAll(std.testing.io,
             \\version: 1
             \\mode: loose
             \\# synthetic secret should not appear in doctor output: ghp_fakeSecretShouldNotPrint
@@ -507,22 +573,54 @@ test "doctor reports invalid policy clearly without printing synthetic secrets" 
 
     var stdout_buf: [8192]u8 = undefined;
     var stderr_buf: [512]u8 = undefined;
-    var stdout_stream = std.io.fixedBufferStream(&stdout_buf);
-    var stderr_stream = std.io.fixedBufferStream(&stderr_buf);
-    var context = try collectIntegrationContextAt(std.testing.allocator, tmp_path);
+    var stdout_writer: std.Io.Writer = .fixed(&stdout_buf);
+    var stderr_writer: std.Io.Writer = .fixed(&stderr_buf);
+    var context = try collectIntegrationContextAt(std.testing.io, std.testing.allocator, tmp_path);
     defer context.deinit();
 
-    try writeReport(stdout_stream.writer(), core.platform.detectOs(), sandbox.backend.detect(core.platform.detectOs()), context);
-    const output = stdout_stream.getWritten();
+    try writeReport(&stdout_writer, core.platform.detectOs(), sandbox.backend.detect(core.platform.detectOs()), context, true);
+    const output = stdout_writer.buffered();
     try std.testing.expect(std.mem.indexOf(u8, output, ".orca/policy.yaml: invalid") != null);
     try std.testing.expect(std.mem.indexOf(u8, output, "UnsupportedPolicyMode") != null);
     try std.testing.expect(std.mem.indexOf(u8, output, "ghp_fakeSecretShouldNotPrint") == null);
-    try std.testing.expectEqualStrings("", stderr_stream.getWritten());
+    try std.testing.expectEqualStrings("", stderr_writer.buffered());
+}
+
+test "doctor prints summary line" {
+    var stdout_buf: [8192]u8 = undefined;
+    var stderr_buf: [256]u8 = undefined;
+    var stdout_writer: std.Io.Writer = .fixed(&stdout_buf);
+    var stderr_writer: std.Io.Writer = .fixed(&stderr_buf);
+
+    const code = try command(std.testing.io, &.{}, &stdout_writer, &stderr_writer);
+    try std.testing.expectEqual(exit_codes.success, code);
+
+    const output = stdout_writer.buffered();
+    try std.testing.expect(std.mem.indexOf(u8, output, "Summary:") != null);
+    try std.testing.expect(std.mem.indexOf(u8, output, "active") != null);
+    try std.testing.expect(std.mem.indexOf(u8, output, "Recommended next step:") != null);
+    try std.testing.expect(std.mem.indexOf(u8, output, "Capabilities:") == null);
+    try std.testing.expectEqualStrings("", stderr_writer.buffered());
+}
+
+test "doctor --verbose prints full report" {
+    var stdout_buf: [8192]u8 = undefined;
+    var stderr_buf: [256]u8 = undefined;
+    var stdout_writer: std.Io.Writer = .fixed(&stdout_buf);
+    var stderr_writer: std.Io.Writer = .fixed(&stderr_buf);
+
+    const code = try command(std.testing.io, &.{"--verbose"}, &stdout_writer, &stderr_writer);
+    try std.testing.expectEqual(exit_codes.success, code);
+
+    const output = stdout_writer.buffered();
+    try std.testing.expect(std.mem.indexOf(u8, output, "Summary:") != null);
+    try std.testing.expect(std.mem.indexOf(u8, output, "Capabilities:") != null);
+    try std.testing.expectEqualStrings("", stderr_writer.buffered());
 }
 
 test "doctor integration collection returns allocator failures instead of panicking" {
     var failing_allocator = std.testing.FailingAllocator.init(std.testing.allocator, .{ .fail_index = 0 });
-    try std.testing.expectError(error.OutOfMemory, collectIntegrationContextAt(failing_allocator.allocator(), "."));
+    try std.testing.expectError(error.OutOfMemory, collectIntegrationContextAt(std.testing.io, failing_allocator.allocator(), "."));
 }
 
 const TestContextOptions = struct {

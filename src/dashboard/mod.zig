@@ -16,11 +16,11 @@ pub const PolicySaveResult = struct {
     error_name: ?[]const u8 = null,
 };
 
-pub fn resolveWorkspaceRoot(allocator: std.mem.Allocator) ![]u8 {
-    return supervisor.resolveWorkspaceRoot(allocator, null, ".") catch try std.fs.cwd().realpathAlloc(allocator, ".");
+pub fn resolveWorkspaceRoot(io: std.Io, allocator: std.mem.Allocator) ![]u8 {
+    return supervisor.resolveWorkspaceRoot(io, allocator, null, ".") catch try std.Io.Dir.cwd().realPathFileAlloc(io, ".", allocator);
 }
 
-pub fn writeStatusJson(allocator: std.mem.Allocator, writer: anytype, workspace_root: []const u8) !void {
+pub fn writeStatusJson(io: std.Io, allocator: std.mem.Allocator, writer: anytype, workspace_root: []const u8) !void {
     try writer.writeByte('{');
     try writer.writeAll("\"orca\":{");
     try writer.writeAll("\"installed\":true,\"version\":");
@@ -28,21 +28,21 @@ pub fn writeStatusJson(allocator: std.mem.Allocator, writer: anytype, workspace_
     try writer.writeAll(",\"workspace_root\":");
     try core.util.writeJsonString(writer, workspace_root);
     try writer.writeAll("},\"policy\":");
-    try writePolicySummaryJson(allocator, writer, workspace_root);
+    try writePolicySummaryJson(io, allocator, writer, workspace_root);
     try writer.writeAll(",\"secretless_runtime\":");
-    try writeSecretlessRuntimeJson(allocator, writer, workspace_root);
+    try writeSecretlessRuntimeJson(io, allocator, writer, workspace_root);
     try writer.writeAll(",\"license\":");
-    try writeLicenseJson(allocator, writer);
+    try writeLicenseJson(io, allocator, writer);
     try writer.writeAll(",\"ci_readiness\":");
-    try writeCiReadinessJson(allocator, writer, workspace_root);
+    try writeCiReadinessJson(io, allocator, writer, workspace_root);
     try writer.writeAll(",\"plugins\":[");
-    try writePluginCardJson(allocator, writer, workspace_root, "openclaw", "OpenClaw", "openclaw", "integrations/openclaw-plugin", "orca plugin doctor openclaw");
+    try writePluginCardJson(io, allocator, writer, workspace_root, "openclaw", "OpenClaw", "openclaw", "integrations/openclaw-plugin", "orca plugin doctor openclaw");
     try writer.writeByte(',');
-    try writePluginCardJson(allocator, writer, workspace_root, "hermes", "Hermes", "hermes", "integrations/hermes-plugin", "orca plugin doctor hermes");
+    try writePluginCardJson(io, allocator, writer, workspace_root, "hermes", "Hermes", "hermes", "integrations/hermes-plugin", "orca plugin doctor hermes");
     try writer.writeAll("],\"sessions\":");
-    try writeSessionsArrayJson(allocator, writer, workspace_root, 6);
+    try writeSessionsArrayJson(io, allocator, writer, workspace_root, 6);
     try writer.writeAll(",\"blocked_actions\":");
-    try writeBlockedActionsArrayJson(allocator, writer, workspace_root, 8);
+    try writeBlockedActionsArrayJson(io, allocator, writer, workspace_root, 8);
     try writer.writeAll(",\"quick_actions\":[");
     try writeQuickAction(writer, "doctor", "orca doctor");
     try writer.writeByte(',');
@@ -74,12 +74,12 @@ pub fn writeStatusJson(allocator: std.mem.Allocator, writer: anytype, workspace_
     try writer.writeAll("]}");
 }
 
-fn writeSecretlessRuntimeJson(allocator: std.mem.Allocator, writer: anytype, workspace_root: []const u8) !void {
+fn writeSecretlessRuntimeJson(io: std.Io, allocator: std.mem.Allocator, writer: anytype, workspace_root: []const u8) !void {
     const policy_path = try policyPath(allocator, workspace_root);
     defer allocator.free(policy_path);
     var loaded_policy: ?policy_mod.schema.Policy = null;
     var loaded_policy_handle: ?policy_mod.schema.LoadedPolicy = null;
-    if (policy_mod.load.discover(allocator, policy_path, workspace_root)) |loaded| {
+    if (policy_mod.load.discover(io, allocator, policy_path, workspace_root)) |loaded| {
         loaded_policy_handle = loaded;
         loaded_policy = loaded.policy;
     } else |_| {}
@@ -142,9 +142,9 @@ fn writeSecretlessRuntimeJson(allocator: std.mem.Allocator, writer: anytype, wor
     try writer.writeAll(",\"status\":\"configured\",\"stores_raw_secrets\":false,\"injects_raw_credentials\":false,\"description\":\"Configured broker for Secretless credential references.\"},\"credential_refs\":");
     try writeCredentialRefsJson(writer, loaded_policy);
     try writer.writeAll(",\"broker_checks\":");
-    try writeBrokerChecksJson(allocator, writer, workspace_root, loaded_policy);
+    try writeBrokerChecksJson(io, allocator, writer, workspace_root, loaded_policy);
     try writer.writeAll(",\"recent_audit_events\":");
-    try writeRecentSecretlessAuditEventsJson(allocator, writer, workspace_root, 12);
+    try writeRecentSecretlessAuditEventsJson(io, allocator, writer, workspace_root, 12);
     try writer.writeAll(",\"proxy_backend\":{");
     try writer.writeAll("\"status\":");
     try core.util.writeJsonString(writer, if (proxy_backend == .proxy) "limited" else "unavailable");
@@ -181,9 +181,9 @@ fn writeCredentialRefsJson(writer: anytype, maybe_policy: ?policy_mod.schema.Pol
     try writer.writeByte(']');
 }
 
-fn writeBrokerChecksJson(allocator: std.mem.Allocator, writer: anytype, workspace_root: []const u8, maybe_policy: ?policy_mod.schema.Policy) !void {
+fn writeBrokerChecksJson(io: std.Io, allocator: std.mem.Allocator, writer: anytype, workspace_root: []const u8, maybe_policy: ?policy_mod.schema.Policy) !void {
     if (maybe_policy) |loaded| {
-        var report = credentials_runtime.check(allocator, &loaded, workspace_root, null) catch {
+        var report = credentials_runtime.check(io, allocator, &loaded, workspace_root, null) catch {
             try writer.writeAll("[]");
             return;
         };
@@ -207,10 +207,10 @@ fn writeBrokerChecksJson(allocator: std.mem.Allocator, writer: anytype, workspac
     try writer.writeAll("[{\"broker\":\"local-dummy\",\"kind\":\"local-dummy\",\"status\":\"available\",\"message\":\"built-in reference broker available\"}]");
 }
 
-pub fn writePolicyJson(allocator: std.mem.Allocator, writer: anytype, workspace_root: []const u8) !void {
+pub fn writePolicyJson(io: std.Io, allocator: std.mem.Allocator, writer: anytype, workspace_root: []const u8) !void {
     try writer.writeByte('{');
     try writer.writeAll("\"summary\":");
-    try writePolicySummaryJson(allocator, writer, workspace_root);
+    try writePolicySummaryJson(io, allocator, writer, workspace_root);
     try writer.writeAll(",\"presets\":[");
     for (policy_mod.presets.agent_preset_infos, 0..) |info, index| {
         if (index > 0) try writer.writeByte(',');
@@ -226,7 +226,7 @@ pub fn writePolicyJson(allocator: std.mem.Allocator, writer: anytype, workspace_
     try writer.writeAll("],\"text\":");
     const policy_path = try policyPath(allocator, workspace_root);
     defer allocator.free(policy_path);
-    if (readFileIfExists(allocator, policy_path, core.limits.max_policy_file_len + 1)) |text| {
+    if (readFileIfExists(io, allocator, policy_path, core.limits.max_policy_file_len + 1)) |text| {
         defer allocator.free(text);
         try core.util.writeJsonString(writer, text);
     } else |_| {
@@ -235,7 +235,7 @@ pub fn writePolicyJson(allocator: std.mem.Allocator, writer: anytype, workspace_
     try writer.writeByte('}');
 }
 
-pub fn savePolicyText(allocator: std.mem.Allocator, workspace_root: []const u8, text: []const u8) !PolicySaveResult {
+pub fn savePolicyText(io: std.Io, allocator: std.mem.Allocator, workspace_root: []const u8, text: []const u8) !PolicySaveResult {
     if (text.len > core.limits.max_policy_file_len) return .{ .ok = false, .error_name = "PolicyFileTooLarge" };
     var parsed = core_api.parsePolicyFromSlice(allocator, text, ".orca/policy.yaml") catch |err| {
         return .{ .ok = false, .error_name = @errorName(err) };
@@ -247,45 +247,45 @@ pub fn savePolicyText(allocator: std.mem.Allocator, workspace_root: []const u8, 
 
     const orca_dir = try std.fs.path.join(allocator, &.{ workspace_root, ".orca" });
     defer allocator.free(orca_dir);
-    try std.fs.cwd().makePath(orca_dir);
+    try std.Io.Dir.cwd().createDirPath(io, orca_dir);
     const path = try policyPath(allocator, workspace_root);
     defer allocator.free(path);
-    const file = try std.fs.cwd().createFile(path, .{});
-    defer file.close();
-    try file.writeAll(text);
-    try file.sync();
+    const file = try std.Io.Dir.createFileAbsolute(io, path, .{});
+    defer file.close(io);
+    try file.writeStreamingAll(io, text);
+    try file.sync(io);
     return .{ .ok = true };
 }
 
-pub fn initPolicyFromPreset(allocator: std.mem.Allocator, workspace_root: []const u8, preset_name: []const u8, force: bool) !PolicySaveResult {
+pub fn initPolicyFromPreset(io: std.Io, allocator: std.mem.Allocator, workspace_root: []const u8, preset_name: []const u8, force: bool) !PolicySaveResult {
     const preset = policy_mod.presets.AgentPreset.parse(preset_name) orelse return .{ .ok = false, .error_name = "UnsupportedPreset" };
     const path = try policyPath(allocator, workspace_root);
     defer allocator.free(path);
-    if (!force and fileExistsAbsolute(path)) return .{ .ok = false, .error_name = "PolicyAlreadyExists" };
-    return savePolicyText(allocator, workspace_root, policy_mod.presets.agentPresetText(preset));
+    if (!force and fileExistsAbsolute(io, path)) return .{ .ok = false, .error_name = "PolicyAlreadyExists" };
+    return savePolicyText(io, allocator, workspace_root, policy_mod.presets.agentPresetText(preset));
 }
 
-pub fn writeSessionsJson(allocator: std.mem.Allocator, writer: anytype, workspace_root: []const u8) !void {
+pub fn writeSessionsJson(io: std.Io, allocator: std.mem.Allocator, writer: anytype, workspace_root: []const u8) !void {
     try writer.writeByte('{');
     try writer.writeAll("\"sessions\":");
-    try writeSessionsArrayJson(allocator, writer, workspace_root, 20);
+    try writeSessionsArrayJson(io, allocator, writer, workspace_root, 20);
     try writer.writeAll(",\"blocked_actions\":");
-    try writeBlockedActionsArrayJson(allocator, writer, workspace_root, 50);
+    try writeBlockedActionsArrayJson(io, allocator, writer, workspace_root, 50);
     try writer.writeByte('}');
 }
 
-fn writePolicySummaryJson(allocator: std.mem.Allocator, writer: anytype, workspace_root: []const u8) !void {
+fn writePolicySummaryJson(io: std.Io, allocator: std.mem.Allocator, writer: anytype, workspace_root: []const u8) !void {
     const path = try policyPath(allocator, workspace_root);
     defer allocator.free(path);
     try writer.writeByte('{');
     try writer.writeAll("\"path\":\".orca/policy.yaml\",");
-    if (!fileExistsAbsolute(path)) {
+    if (!fileExistsAbsolute(io, path)) {
         try writer.writeAll("\"exists\":false,\"valid\":false,\"mode\":null,\"error\":null");
         try writer.writeByte('}');
         return;
     }
     try writer.writeAll("\"exists\":true,");
-    if (core_api.loadPolicyFile(allocator, path)) |loaded_policy| {
+    if (core_api.loadPolicyFile(io, allocator, path)) |loaded_policy| {
         var loaded = loaded_policy;
         defer loaded.deinit();
         try writer.writeAll("\"valid\":true,\"mode\":");
@@ -299,8 +299,8 @@ fn writePolicySummaryJson(allocator: std.mem.Allocator, writer: anytype, workspa
     try writer.writeByte('}');
 }
 
-fn writeLicenseJson(allocator: std.mem.Allocator, writer: anytype) !void {
-    var current = license_mod.status(allocator) catch |err| switch (err) {
+fn writeLicenseJson(io: std.Io, allocator: std.mem.Allocator, writer: anytype) !void {
+    var current = license_mod.status(io, allocator) catch |err| switch (err) {
         error.InvalidLicense, error.InvalidLicenseSignature, error.UnsupportedLicenseIssuer, error.UnsupportedLicenseTier => {
             try writer.writeAll("{\"tier\":\"Free\",\"verified\":false,\"error\":");
             try core.util.writeJsonString(writer, @errorName(err));
@@ -320,8 +320,8 @@ fn writeLicenseJson(allocator: std.mem.Allocator, writer: anytype) !void {
     try writer.writeAll(",\"error\":null}");
 }
 
-fn writeCiReadinessJson(allocator: std.mem.Allocator, writer: anytype, workspace_root: []const u8) !void {
-    var result = ci_check.run(allocator, workspace_root) catch |err| {
+fn writeCiReadinessJson(io: std.Io, allocator: std.mem.Allocator, writer: anytype, workspace_root: []const u8) !void {
+    var result = ci_check.run(io, allocator, workspace_root) catch |err| {
         try writer.writeAll("{\"ok\":false,\"error\":");
         try core.util.writeJsonString(writer, @errorName(err));
         try writer.writeAll(",\"checks\":[]}");
@@ -346,6 +346,7 @@ fn writeCiReadinessJson(allocator: std.mem.Allocator, writer: anytype, workspace
 }
 
 fn writePluginCardJson(
+    io: std.Io,
     allocator: std.mem.Allocator,
     writer: anytype,
     workspace_root: []const u8,
@@ -357,8 +358,8 @@ fn writePluginCardJson(
 ) !void {
     const integration_abs = try std.fs.path.join(allocator, &.{ workspace_root, integration_path });
     defer allocator.free(integration_abs);
-    const host_found = try executableInPath(allocator, binary_name);
-    const integration_present = pathExistsAbsolute(integration_abs);
+    const host_found = try executableInPath(io, allocator, binary_name);
+    const integration_present = pathExistsAbsolute(io, integration_abs);
     try writer.writeByte('{');
     try writer.writeAll("\"id\":");
     try core.util.writeJsonString(writer, id);
@@ -399,37 +400,37 @@ fn writeQuickAction(writer: anytype, id: []const u8, command: []const u8) !void 
     try writer.writeByte('}');
 }
 
-fn writeSessionsArrayJson(allocator: std.mem.Allocator, writer: anytype, workspace_root: []const u8, max_count: usize) !void {
+fn writeSessionsArrayJson(io: std.Io, allocator: std.mem.Allocator, writer: anytype, workspace_root: []const u8, max_count: usize) !void {
     const sessions_root = try std.fs.path.join(allocator, &.{ workspace_root, ".orca", "sessions" });
     defer allocator.free(sessions_root);
-    var dir = std.fs.cwd().openDir(sessions_root, .{ .iterate = true }) catch |err| switch (err) {
+    var dir = std.Io.Dir.cwd().openDir(io, sessions_root, .{ .iterate = true }) catch |err| switch (err) {
         error.FileNotFound => {
             try writer.writeAll("[]");
             return;
         },
         else => return err,
     };
-    defer dir.close();
+    defer dir.close(io);
 
     try writer.writeByte('[');
     var it = dir.iterate();
     var count: usize = 0;
     while (count < max_count) {
-        const entry = try it.next() orelse break;
+        const entry = try it.next(io) orelse break;
         if (entry.kind != .directory) continue;
         if (core.session.validateSessionIdText(entry.name)) |_| {} else |_| continue;
         if (count > 0) try writer.writeByte(',');
-        try writeSessionSummaryJson(allocator, writer, workspace_root, entry.name);
+        try writeSessionSummaryJson(io, allocator, writer, workspace_root, entry.name);
         count += 1;
     }
     try writer.writeByte(']');
 }
 
-fn writeSessionSummaryJson(allocator: std.mem.Allocator, writer: anytype, workspace_root: []const u8, session_id: []const u8) !void {
+fn writeSessionSummaryJson(io: std.Io, allocator: std.mem.Allocator, writer: anytype, workspace_root: []const u8, session_id: []const u8) !void {
     try writer.writeByte('{');
     try writer.writeAll("\"id\":");
     try core.util.writeJsonString(writer, session_id);
-    if (core_api.loadReplay(allocator, workspace_root, .{ .session = session_id, .only_denied = true, .verify = false })) |loaded_replay| {
+    if (core_api.loadReplay(io, allocator, workspace_root, .{ .session = session_id, .only_denied = true, .verify = false })) |loaded_replay| {
         var replay = loaded_replay;
         defer replay.deinit();
         try writer.writeAll(",\"command\":");
@@ -447,26 +448,26 @@ fn writeSessionSummaryJson(allocator: std.mem.Allocator, writer: anytype, worksp
     try writer.writeByte('}');
 }
 
-fn writeBlockedActionsArrayJson(allocator: std.mem.Allocator, writer: anytype, workspace_root: []const u8, max_count: usize) !void {
+fn writeBlockedActionsArrayJson(io: std.Io, allocator: std.mem.Allocator, writer: anytype, workspace_root: []const u8, max_count: usize) !void {
     const sessions_root = try std.fs.path.join(allocator, &.{ workspace_root, ".orca", "sessions" });
     defer allocator.free(sessions_root);
-    var dir = std.fs.cwd().openDir(sessions_root, .{ .iterate = true }) catch |err| switch (err) {
+    var dir = std.Io.Dir.cwd().openDir(io, sessions_root, .{ .iterate = true }) catch |err| switch (err) {
         error.FileNotFound => {
             try writer.writeAll("[]");
             return;
         },
         else => return err,
     };
-    defer dir.close();
+    defer dir.close(io);
 
     try writer.writeByte('[');
     var written: usize = 0;
     var it = dir.iterate();
     while (written < max_count) {
-        const entry = try it.next() orelse break;
+        const entry = try it.next(io) orelse break;
         if (entry.kind != .directory) continue;
         if (core.session.validateSessionIdText(entry.name)) |_| {} else |_| continue;
-        var replay = core_api.loadReplay(allocator, workspace_root, .{ .session = entry.name, .only_denied = true, .verify = false }) catch continue;
+        var replay = core_api.loadReplay(io, allocator, workspace_root, .{ .session = entry.name, .only_denied = true, .verify = false }) catch continue;
         defer replay.deinit();
         for (replay.events) |ev| {
             if (written >= max_count) break;
@@ -503,26 +504,26 @@ fn writeBlockedActionJson(allocator: std.mem.Allocator, writer: anytype, session
     try writer.writeByte('}');
 }
 
-fn writeRecentSecretlessAuditEventsJson(allocator: std.mem.Allocator, writer: anytype, workspace_root: []const u8, max_count: usize) !void {
+fn writeRecentSecretlessAuditEventsJson(io: std.Io, allocator: std.mem.Allocator, writer: anytype, workspace_root: []const u8, max_count: usize) !void {
     const sessions_root = try std.fs.path.join(allocator, &.{ workspace_root, ".orca", "sessions" });
     defer allocator.free(sessions_root);
-    var dir = std.fs.cwd().openDir(sessions_root, .{ .iterate = true }) catch |err| switch (err) {
+    var dir = std.Io.Dir.cwd().openDir(io, sessions_root, .{ .iterate = true }) catch |err| switch (err) {
         error.FileNotFound => {
             try writer.writeAll("[]");
             return;
         },
         else => return err,
     };
-    defer dir.close();
+    defer dir.close(io);
 
     try writer.writeByte('[');
     var written: usize = 0;
     var it = dir.iterate();
     while (written < max_count) {
-        const entry = try it.next() orelse break;
+        const entry = try it.next(io) orelse break;
         if (entry.kind != .directory) continue;
         if (core.session.validateSessionIdText(entry.name)) |_| {} else |_| continue;
-        var replay = core_api.loadReplay(allocator, workspace_root, .{ .session = entry.name, .only_denied = false, .verify = false }) catch continue;
+        var replay = core_api.loadReplay(io, allocator, workspace_root, .{ .session = entry.name, .only_denied = false, .verify = false }) catch continue;
         defer replay.deinit();
         for (replay.events) |ev| {
             if (written >= max_count) break;
@@ -580,31 +581,32 @@ fn policyPath(allocator: std.mem.Allocator, workspace_root: []const u8) ![]u8 {
     return std.fs.path.join(allocator, &.{ workspace_root, ".orca", "policy.yaml" });
 }
 
-fn fileExistsAbsolute(path: []const u8) bool {
-    const file = std.fs.cwd().openFile(path, .{}) catch return false;
-    file.close();
+fn fileExistsAbsolute(io: std.Io, path: []const u8) bool {
+    std.Io.Dir.cwd().access(io, path, .{}) catch return false;
     return true;
 }
 
-fn pathExistsAbsolute(path: []const u8) bool {
-    std.fs.cwd().access(path, .{}) catch return false;
+fn pathExistsAbsolute(io: std.Io, path: []const u8) bool {
+    std.Io.Dir.cwd().access(io, path, .{}) catch return false;
     return true;
 }
 
-fn readFileIfExists(allocator: std.mem.Allocator, path: []const u8, max_bytes: usize) ![]u8 {
-    return std.fs.cwd().readFileAlloc(allocator, path, max_bytes);
+fn readFileIfExists(io: std.Io, allocator: std.mem.Allocator, path: []const u8, max_bytes: usize) ![]u8 {
+    return std.Io.Dir.cwd().readFileAlloc(io, path, allocator, .limited(max_bytes));
 }
 
-fn executableInPath(allocator: std.mem.Allocator, name: []const u8) !bool {
-    const path = std.process.getEnvVarOwned(allocator, "PATH") catch return false;
-    defer allocator.free(path);
+fn executableInPath(io: std.Io, allocator: std.mem.Allocator, name: []const u8) !bool {
+    const env_util = @import("../env_util.zig");
+    var env_map = try env_util.createProcessMap(allocator);
+    defer env_map.deinit();
+    const path = env_map.get("PATH") orelse return false;
     const separator: u8 = if (@import("builtin").os.tag == .windows) ';' else ':';
     var parts = std.mem.splitScalar(u8, path, separator);
     while (parts.next()) |part| {
         if (part.len == 0) continue;
         const candidate = try std.fs.path.join(allocator, &.{ part, name });
         defer allocator.free(candidate);
-        if (fileExistsAbsolute(candidate)) return true;
+        if (fileExistsAbsolute(io, candidate)) return true;
     }
     return false;
 }
@@ -612,45 +614,49 @@ fn executableInPath(allocator: std.mem.Allocator, name: []const u8) !bool {
 test "policy save validates before writing" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
-    const root = try tmp.dir.realpathAlloc(std.testing.allocator, ".");
+    const root = try tmp.dir.realPathFileAlloc(std.testing.io, ".", std.testing.allocator);
     defer std.testing.allocator.free(root);
 
-    const bad = try savePolicyText(std.testing.allocator, root, "version: 1\nmode: strict\ncommands: allow\n");
+    const io = std.testing.io;
+    const bad = try savePolicyText(io, std.testing.allocator, root, "version: 1\nmode: strict\ncommands: allow\n");
     try std.testing.expect(!bad.ok);
     try std.testing.expectEqualStrings("InvalidPolicy", bad.error_name.?);
-    try std.testing.expectError(error.FileNotFound, tmp.dir.access(".orca/policy.yaml", .{}));
+    try std.testing.expectError(error.FileNotFound, tmp.dir.access(io, ".orca/policy.yaml", .{}));
 
-    const ok = try savePolicyText(std.testing.allocator, root, policy_mod.presets.agentPresetText(.generic_agent));
+    const ok = try savePolicyText(io, std.testing.allocator, root, policy_mod.presets.agentPresetText(.generic_agent));
     try std.testing.expect(ok.ok);
-    try tmp.dir.access(".orca/policy.yaml", .{});
+    try tmp.dir.access(io, ".orca/policy.yaml", .{});
 }
 
 test "init policy refuses overwrite unless forced" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
-    const root = try tmp.dir.realpathAlloc(std.testing.allocator, ".");
+    const root = try tmp.dir.realPathFileAlloc(std.testing.io, ".", std.testing.allocator);
     defer std.testing.allocator.free(root);
 
-    const first = try initPolicyFromPreset(std.testing.allocator, root, "generic-agent", false);
+    const io = std.testing.io;
+    const first = try initPolicyFromPreset(io, std.testing.allocator, root, "generic-agent", false);
     try std.testing.expect(first.ok);
-    const second = try initPolicyFromPreset(std.testing.allocator, root, "strict-local", false);
+    const second = try initPolicyFromPreset(io, std.testing.allocator, root, "strict-local", false);
     try std.testing.expect(!second.ok);
     try std.testing.expectEqualStrings("PolicyAlreadyExists", second.error_name.?);
-    const forced = try initPolicyFromPreset(std.testing.allocator, root, "strict-local", true);
+    const forced = try initPolicyFromPreset(io, std.testing.allocator, root, "strict-local", true);
     try std.testing.expect(forced.ok);
 }
 
 test "status json includes policy and protected agent cards" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
-    const root = try tmp.dir.realpathAlloc(std.testing.allocator, ".");
+    const root = try tmp.dir.realPathFileAlloc(std.testing.io, ".", std.testing.allocator);
     defer std.testing.allocator.free(root);
-    _ = try initPolicyFromPreset(std.testing.allocator, root, "generic-agent", false);
+    const io = std.testing.io;
+    _ = try initPolicyFromPreset(io, std.testing.allocator, root, "generic-agent", false);
     try writeSecretlessEvidenceFixture(std.testing.allocator, root);
 
-    var out: std.ArrayList(u8) = .empty;
+    var aw: std.Io.Writer.Allocating = .init(std.testing.allocator);
+    try writeStatusJson(io, std.testing.allocator, &aw.writer, root);
+    var out = aw.toArrayList();
     defer out.deinit(std.testing.allocator);
-    try writeStatusJson(std.testing.allocator, out.writer(std.testing.allocator), root);
 
     try std.testing.expect(std.mem.indexOf(u8, out.items, "\"policy\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, out.items, "\"secretless_runtime\"") != null);
@@ -669,9 +675,10 @@ test "status json includes policy and protected agent cards" {
 }
 
 test "dashboard assets expose dedicated secretless view" {
-    const index = try std.fs.cwd().readFileAlloc(std.testing.allocator, "src/dashboard/assets/index.html", 64 * 1024);
+    const io = std.testing.io;
+    const index = try std.Io.Dir.cwd().readFileAlloc(io, "src/dashboard/assets/index.html", std.testing.allocator, .limited(64 * 1024));
     defer std.testing.allocator.free(index);
-    const app = try std.fs.cwd().readFileAlloc(std.testing.allocator, "src/dashboard/assets/app.js", 64 * 1024);
+    const app = try std.Io.Dir.cwd().readFileAlloc(io, "src/dashboard/assets/app.js", std.testing.allocator, .limited(64 * 1024));
     defer std.testing.allocator.free(app);
 
     try std.testing.expect(std.mem.indexOf(u8, index, "data-view=\"secretless\"") != null);
@@ -686,13 +693,14 @@ test "dashboard assets expose dedicated secretless view" {
 test "sessions json filters denied replay events" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
-    const root = try tmp.dir.realpathAlloc(std.testing.allocator, ".");
+    const root = try tmp.dir.realPathFileAlloc(std.testing.io, ".", std.testing.allocator);
     defer std.testing.allocator.free(root);
     try writeDeniedReplayFixture(std.testing.allocator, root);
 
-    var out: std.ArrayList(u8) = .empty;
+    var aw: std.Io.Writer.Allocating = .init(std.testing.allocator);
+    try writeSessionsJson(std.testing.io, std.testing.allocator, &aw.writer, root);
+    var out = aw.toArrayList();
     defer out.deinit(std.testing.allocator);
-    try writeSessionsJson(std.testing.allocator, out.writer(std.testing.allocator), root);
 
     try std.testing.expect(std.mem.indexOf(u8, out.items, "\"blocked_actions\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, out.items, "rm -rf tmp") != null);
@@ -711,7 +719,7 @@ fn writeDeniedReplayFixture(allocator: std.mem.Allocator, root: []const u8) !voi
         .mode = .strict,
         .platform = core.platform.detectOs(),
     };
-    var writer = try core_api.createAuditWriter(allocator, session);
+    var writer = try core_api.createAuditWriter(std.testing.io, allocator, session);
     defer writer.deinit();
     const event = try core_api.createAuditEvent(.{
         .session_id = session.id,
@@ -747,7 +755,7 @@ fn writeSecretlessEvidenceFixture(allocator: std.mem.Allocator, root: []const u8
         .mode = .observe,
         .platform = core.platform.detectOs(),
     };
-    var writer = try core_api.createAuditWriter(allocator, session);
+    var writer = try core_api.createAuditWriter(std.testing.io, allocator, session);
     defer writer.deinit();
     try appendFixtureEvent(&writer, session, timestamp, .network_proxy_start, "http://127.0.0.1:49152", .observe);
     try appendFixtureEvent(&writer, session, timestamp, .network_connect_attempt, "http://127.0.0.1:49153/echo", .observe);

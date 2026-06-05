@@ -11,16 +11,16 @@ const help = @import("help.zig");
 const Format = enum { markdown, json };
 const Options = struct { session: []const u8 = "last", format: Format = .markdown };
 
-pub fn command(argv: []const []const u8, stdout: anytype, stderr: anytype) !u8 {
-    const options = parseOptions(argv, stdout, stderr) catch |err| switch (err) {
+pub fn command(io: std.Io, argv: []const []const u8, stdout: anytype, stderr: anytype) !u8 {
+    const options = parseOptions(io, argv, stdout, stderr) catch |err| switch (err) {
         error.HelpShown => return exit_codes.success,
         error.Usage => return exit_codes.usage,
         else => return err,
     };
-    var gpa_state: std.heap.GeneralPurposeAllocator(.{}) = .init;
+    var gpa_state: std.heap.DebugAllocator(.{}) = .init;
     defer _ = gpa_state.deinit();
     const allocator = gpa_state.allocator();
-    var current = license.status(allocator) catch |err| switch (err) {
+    var current = license.status(io, allocator) catch |err| switch (err) {
         error.InvalidLicense, error.InvalidLicenseSignature, error.UnsupportedLicenseIssuer, error.UnsupportedLicenseTier => {
             try stderr.print("orca report: stored license is invalid: {s}\n", .{@errorName(err)});
             return exit_codes.general;
@@ -33,13 +33,13 @@ pub fn command(argv: []const []const u8, stdout: anytype, stderr: anytype) !u8 {
         return exit_codes.unsupported;
     }
 
-    const workspace_root = supervisor.resolveWorkspaceRoot(allocator, null, ".") catch |err| {
+    const workspace_root = supervisor.resolveWorkspaceRoot(io, allocator, null, ".") catch |err| {
         try stderr.print("orca report: failed to resolve workspace: {s}\n", .{@errorName(err)});
         return exit_codes.general;
     };
     defer allocator.free(workspace_root);
 
-    var replay = core_api.loadReplay(allocator, workspace_root, .{ .session = options.session, .only_denied = true, .verify = true }) catch |err| switch (err) {
+    var replay = core_api.loadReplay(io, allocator, workspace_root, .{ .session = options.session, .only_denied = true, .verify = true }) catch |err| switch (err) {
         error.FileNotFound => {
             try stderr.writeAll("orca report: session not found.\n");
             return exit_codes.general;
@@ -56,19 +56,19 @@ pub fn command(argv: []const []const u8, stdout: anytype, stderr: anytype) !u8 {
     defer replay.deinit();
 
     switch (options.format) {
-        .markdown => try report.writeMarkdown(allocator, stdout, workspace_root, replay),
-        .json => try report.writeJson(allocator, stdout, workspace_root, replay),
+        .markdown => try report.writeMarkdown(io, allocator, stdout, workspace_root, replay),
+        .json => try report.writeJson(io, allocator, stdout, workspace_root, replay),
     }
     return exit_codes.success;
 }
 
-fn parseOptions(argv: []const []const u8, stdout: anytype, stderr: anytype) !Options {
+fn parseOptions(io: std.Io, argv: []const []const u8, stdout: anytype, stderr: anytype) !Options {
     var options: Options = .{};
     var index: usize = 0;
     while (index < argv.len) : (index += 1) {
         const arg = argv[index];
         if (std.mem.eql(u8, arg, "--help") or std.mem.eql(u8, arg, "-h")) {
-            _ = try help.writeCommand(stdout, "report");
+            _ = try help.writeCommand(io, stdout, "report");
             return error.HelpShown;
         } else if (std.mem.eql(u8, arg, "--session")) {
             index += 1;
@@ -98,9 +98,9 @@ fn parseOptions(argv: []const []const u8, stdout: anytype, stderr: anytype) !Opt
 test "report rejects unsupported format" {
     var stdout_buf: [512]u8 = undefined;
     var stderr_buf: [512]u8 = undefined;
-    var stdout_stream = std.io.fixedBufferStream(&stdout_buf);
-    var stderr_stream = std.io.fixedBufferStream(&stderr_buf);
-    const code = try command(&.{ "--format", "html" }, stdout_stream.writer(), stderr_stream.writer());
+    var stdout_writer: std.Io.Writer = .fixed(&stdout_buf);
+    var stderr_writer: std.Io.Writer = .fixed(&stderr_buf);
+    const code = try command(std.testing.io, &.{ "--format", "html" }, &stdout_writer, &stderr_writer);
     try std.testing.expectEqual(exit_codes.usage, code);
-    try std.testing.expect(std.mem.indexOf(u8, stderr_stream.getWritten(), "--format") != null);
+    try std.testing.expect(std.mem.indexOf(u8, stderr_writer.buffered(), "--format") != null);
 }

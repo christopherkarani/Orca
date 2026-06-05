@@ -27,35 +27,49 @@ pub const StdioBehavior = enum {
 };
 
 pub const PrepareRequest = struct {
+    io: std.Io,
     argv: []const []const u8,
     workspace_root: []const u8,
     stdio: StdioBehavior = .inherit,
-    env_map: ?*const std.process.EnvMap = null,
+    env_map: ?*const std.process.Environ.Map = null,
 };
 
 pub const PreparedChild = struct {
-    child: std.process.Child,
+    io: std.Io,
+    allocator: std.mem.Allocator,
+    argv: []const []const u8,
+    workspace_root: []const u8,
+    env_map: ?*const std.process.Environ.Map,
+    stdio: StdioBehavior,
+    child: ?std.process.Child = null,
     process_group_cleanup: bool = false,
     process_group_id: ?std.posix.pid_t = null,
     spawned: bool = false,
 
     pub fn spawn(self: *PreparedChild) !void {
-        try self.child.spawn();
+        const child = try std.process.spawn(self.io, .{
+            .argv = self.argv,
+            .cwd = .{ .path = self.workspace_root },
+            .environ_map = self.env_map,
+            .stdin = mapStdio(self.stdio),
+            .stdout = mapStdio(self.stdio),
+            .stderr = mapStdio(self.stdio),
+        });
+        self.child = child;
         switch (builtin.os.tag) {
-            .windows, .wasi => {},
-            else => if (self.process_group_cleanup) {
-                self.process_group_id = @intCast(self.child.id);
+            .linux, .macos => {
+                if (child.id) |pid| self.process_group_id = pid;
             },
+            else => {},
         }
         self.spawned = true;
     }
 
-    pub fn waitForSpawn(self: *PreparedChild) !void {
-        try self.child.waitForSpawn();
-    }
+    pub fn waitForSpawn(_: *PreparedChild) !void {}
 
     pub fn wait(self: *PreparedChild) !std.process.Child.Term {
-        const term = try self.child.wait();
+        const child = &(self.child orelse return error.InvalidState);
+        const term = try child.wait(self.io);
         self.spawned = false;
         self.cleanupProcessGroup();
         return term;
@@ -63,19 +77,21 @@ pub const PreparedChild = struct {
 
     pub fn terminateAfterParentError(self: *PreparedChild) void {
         if (!self.spawned) return;
+        const child = &(self.child orelse return);
         if (self.process_group_cleanup) {
             if (self.process_group_id) |pgid| killProcessGroup(pgid);
         }
-        _ = self.child.kill() catch self.child.wait() catch {};
+        child.kill(self.io);
         self.spawned = false;
     }
 
     pub fn terminateForHealthFailure(self: *PreparedChild) void {
         if (!self.spawned) return;
+        const child = &(self.child orelse return);
         if (self.process_group_cleanup) {
             if (self.process_group_id) |pgid| killProcessGroup(pgid);
         }
-        _ = self.child.kill() catch {};
+        child.kill(self.io);
     }
 
     fn cleanupProcessGroup(self: *PreparedChild) void {
@@ -84,50 +100,39 @@ pub const PreparedChild = struct {
     }
 };
 
-pub fn prepareChild(allocator: std.mem.Allocator, request: PrepareRequest) PreparedChild {
-    var child = std.process.Child.init(request.argv, allocator);
-    child.cwd = request.workspace_root;
-    child.env_map = request.env_map;
-    configureStdio(&child, request.stdio);
-    var prepared: PreparedChild = .{ .child = child };
+pub fn prepareChild(io: std.Io, allocator: std.mem.Allocator, request: PrepareRequest) PreparedChild {
+    var prepared: PreparedChild = .{
+        .io = io,
+        .allocator = allocator,
+        .argv = request.argv,
+        .workspace_root = request.workspace_root,
+        .env_map = request.env_map,
+        .stdio = request.stdio,
+    };
     switch (builtin.os.tag) {
-        .linux, .macos => {
-            prepared.child.pgid = 0;
-            prepared.process_group_cleanup = true;
-        },
+        .linux, .macos => prepared.process_group_cleanup = true,
         else => {},
     }
     return prepared;
 }
 
-fn configureStdio(child: *std.process.Child, stdio: StdioBehavior) void {
-    switch (stdio) {
-        .inherit => {
-            child.stdin_behavior = .Inherit;
-            child.stdout_behavior = .Inherit;
-            child.stderr_behavior = .Inherit;
-        },
-        .ignore => {
-            child.stdin_behavior = .Ignore;
-            child.stdout_behavior = .Ignore;
-            child.stderr_behavior = .Ignore;
-        },
-    }
+fn mapStdio(behavior: StdioBehavior) std.process.SpawnOptions.StdIo {
+    return switch (behavior) {
+        .inherit => .inherit,
+        .ignore => .ignore,
+    };
 }
 
 fn killProcessGroup(pgid: std.posix.pid_t) void {
     switch (builtin.os.tag) {
         .windows, .wasi => return,
         else => {
-            if (pgid <= 0) return;
-            std.posix.kill(-pgid, std.posix.SIG.TERM) catch {};
-            std.Thread.sleep(50 * std.time.ns_per_ms);
             std.posix.kill(-pgid, std.posix.SIG.KILL) catch {};
         },
     }
 }
 
-test "child status maps non-exit outcomes to failure" {
+test "child status exit code mapping" {
     try std.testing.expectEqual(@as(i32, 0), (ChildStatus{ .exited = 0 }).exitCode());
     try std.testing.expectEqual(@as(i32, 7), (ChildStatus{ .exited = 7 }).exitCode());
     try std.testing.expectEqual(@as(i32, 1), (ChildStatus{ .signal = 9 }).exitCode());

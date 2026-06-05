@@ -1,7 +1,7 @@
 const std = @import("std");
 
 fn readFile(path: []const u8) ![]u8 {
-    return std.fs.cwd().readFileAlloc(std.testing.allocator, path, 1024 * 1024);
+    return std.Io.Dir.cwd().readFileAlloc(std.testing.io, path, std.testing.allocator, .limited(1024 * 1024));
 }
 
 fn trimVersion(text: []const u8) []const u8 {

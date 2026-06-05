@@ -42,16 +42,16 @@ pub fn parsePolicyFromSlice(allocator: std.mem.Allocator, text: []const u8, sour
     return policy.load.parseFromSlice(allocator, text, source_path);
 }
 
-pub fn loadPolicyFile(allocator: std.mem.Allocator, path: []const u8) !Policy {
-    return policy.load.loadFile(allocator, path);
+pub fn loadPolicyFile(io: std.Io, allocator: std.mem.Allocator, path: []const u8) !Policy {
+    return policy.load.loadFile(io, allocator, path);
 }
 
 pub fn loadPolicyPreset(allocator: std.mem.Allocator, preset: Preset) !Policy {
     return policy.load.loadPreset(allocator, preset);
 }
 
-pub fn discoverPolicy(allocator: std.mem.Allocator, explicit_path: ?[]const u8, workspace_root: []const u8) !LoadedPolicy {
-    return policy.load.discover(allocator, explicit_path, workspace_root);
+pub fn discoverPolicy(io: std.Io, allocator: std.mem.Allocator, explicit_path: ?[]const u8, workspace_root: []const u8) !LoadedPolicy {
+    return policy.load.discover(io, allocator, explicit_path, workspace_root);
 }
 
 pub fn validatePolicy(value: *const Policy) !void {
@@ -109,12 +109,12 @@ pub fn createAuditEvent(input: AuditEventInput) !core.event.Event {
     };
 }
 
-pub fn createAuditWriter(allocator: std.mem.Allocator, session: core.session.Session) !AuditWriter {
-    return AuditWriter.init(allocator, session);
+pub fn createAuditWriter(io: std.Io, allocator: std.mem.Allocator, session: core.session.Session) !AuditWriter {
+    return AuditWriter.init(io, allocator, session);
 }
 
-pub fn openAuditWriter(allocator: std.mem.Allocator, workspace_root: []const u8, session_id: []const u8) !AuditWriter {
-    return AuditWriter.openExisting(allocator, workspace_root, session_id);
+pub fn openAuditWriter(io: std.Io, allocator: std.mem.Allocator, workspace_root: []const u8, session_id: []const u8) !AuditWriter {
+    return AuditWriter.openExisting(io, allocator, workspace_root, session_id);
 }
 
 pub fn appendAuditEvent(writer: *AuditWriter, event: core.event.Event) !void {
@@ -141,12 +141,12 @@ pub fn redactTargetValueBounded(kind_name: []const u8, value: []const u8, buffer
     return audit.redact_bridge.redactTargetValueBounded(kind_name, value, buffer);
 }
 
-pub fn verifyReplay(allocator: std.mem.Allocator, session_dir_path: []const u8) !VerifyResult {
-    return audit.replay.verifySessionDir(allocator, session_dir_path);
+pub fn verifyReplay(io: std.Io, allocator: std.mem.Allocator, session_dir_path: []const u8) !VerifyResult {
+    return audit.replay.verifySessionDir(io, allocator, session_dir_path);
 }
 
-pub fn loadReplay(allocator: std.mem.Allocator, workspace_root: []const u8, options: ReplayOptions) !ReplaySession {
-    return audit.replay.load(allocator, workspace_root, options);
+pub fn loadReplay(io: std.Io, allocator: std.mem.Allocator, workspace_root: []const u8, options: ReplayOptions) !ReplaySession {
+    return audit.replay.load(io, allocator, workspace_root, options);
 }
 
 pub fn writeReplayJson(writer: anytype, replay: ReplaySession) !void {

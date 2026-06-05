@@ -2,43 +2,35 @@ const std = @import("std");
 const builtin = @import("builtin");
 const orca = @import("orca");
 
-pub fn main() !void {
+pub fn main(init: std.process.Init) !u8 {
     if (builtin.os.tag == .windows) {
         setupWindowsConsole();
     }
 
-    var gpa_state: std.heap.GeneralPurposeAllocator(.{}) = .init;
-    defer _ = gpa_state.deinit();
-    const allocator = gpa_state.allocator();
+    var dbg: std.heap.DebugAllocator(.{}) = .init;
+    defer _ = dbg.deinit();
+    const allocator = dbg.allocator();
 
-    const argv = try std.process.argsAlloc(allocator);
-    defer std.process.argsFree(allocator, argv);
+    const io = init.io;
+    const argv = try init.minimal.args.toSlice(init.arena.allocator());
 
     var stdout_buffer: [4096]u8 = undefined;
     var stderr_buffer: [4096]u8 = undefined;
-    var stdout_writer = std.fs.File.stdout().writer(&stdout_buffer);
-    var stderr_writer = std.fs.File.stderr().writer(&stderr_buffer);
+    var stdout_writer = std.Io.File.stdout().writer(io, &stdout_buffer);
+    var stderr_writer = std.Io.File.stderr().writer(io, &stderr_buffer);
 
-    // Prime the color decision once at true CLI startup, before any command
-    // dispatch or warm output. The module-level cache in style.zig is populated
-    // as a side-effect; all subsequent maybeColor/useColor calls hit the fast
-    // cached path. The existing call in cli.runWithCwd remains as a fallback
-    // for library/direct usage.
-    _ = orca.cli.style.useColor(stdout_writer);
+    _ = orca.cli.style.useColor(io, &stdout_writer.interface);
 
     const shim_alias = if (builtin.os.tag == .windows) orca.intercept.commands.shimAliasFromExecutablePath(argv[0]) else null;
     const code = if (shim_alias) |alias|
-        try runWindowsExecutableShim(allocator, alias, argv[1..], &stdout_writer.interface, &stderr_writer.interface)
+        try runWindowsExecutableShim(io, init.environ_map, allocator, alias, argv[1..], &stdout_writer.interface, &stderr_writer.interface)
     else
-        try orca.cli.run(argv[1..], &stdout_writer.interface, &stderr_writer.interface);
+        try orca.cli.run(io, init.environ_map, argv[1..], &stdout_writer.interface, &stderr_writer.interface);
     try stdout_writer.interface.flush();
     try stderr_writer.interface.flush();
-    std.process.exit(code);
+    return code;
 }
 
-/// On legacy Windows consoles, enable UTF-8 output (code page 65001) and virtual
-/// terminal processing so emoji and ANSI escape codes render correctly.
-/// Errors are silently ignored — the console may already support these features.
 fn setupWindowsConsole() void {
     if (builtin.os.tag != .windows) return;
 
@@ -46,7 +38,7 @@ fn setupWindowsConsole() void {
     const DWORD = std.os.windows.DWORD;
     const HANDLE = std.os.windows.HANDLE;
 
-    const STD_OUTPUT_HANDLE: DWORD = 0xFFFFFFF5; // -11 as DWORD
+    const STD_OUTPUT_HANDLE: DWORD = 0xFFFFFFF5;
     const ENABLE_VIRTUAL_TERMINAL_PROCESSING: DWORD = 0x0004;
 
     _ = kernel32.SetConsoleOutputCP(65001);
@@ -60,14 +52,14 @@ fn setupWindowsConsole() void {
     }
 }
 
-fn runWindowsExecutableShim(allocator: std.mem.Allocator, alias: []const u8, args: []const []const u8, stdout: anytype, stderr: anytype) !u8 {
+fn runWindowsExecutableShim(io: std.Io, environ_map: *const std.process.Environ.Map, allocator: std.mem.Allocator, alias: []const u8, args: []const []const u8, stdout: anytype, stderr: anytype) !u8 {
     var shim_argv = try allocator.alloc([]const u8, args.len + 3);
     defer allocator.free(shim_argv);
     shim_argv[0] = "exec";
     shim_argv[1] = "--";
     shim_argv[2] = alias;
     if (args.len > 0) @memcpy(shim_argv[3..], args);
-    return orca.cli.shim.command(shim_argv, stdout, stderr);
+    return orca.cli.shim.command(io, environ_map, shim_argv, stdout, stderr);
 }
 
 test {

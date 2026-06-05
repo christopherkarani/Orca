@@ -23,8 +23,8 @@ pub fn matchesPath(pattern: []const u8, path: []const u8) bool {
         return globMatch(pattern, path);
     }
     if (std.mem.startsWith(u8, pattern, "~/")) {
-        const home = std.process.getEnvVarOwned(std.heap.page_allocator, "HOME") catch return false;
-        defer std.heap.page_allocator.free(home);
+        const home_c = std.c.getenv("HOME") orelse return false;
+        const home = std.mem.sliceTo(home_c, 0);
         if (std.mem.startsWith(u8, path, home)) {
             const suffix = path[home.len..];
             if (suffix.len == 0) return globMatch(pattern, "~");

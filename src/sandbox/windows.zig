@@ -50,14 +50,17 @@ pub fn prepare(allocator: std.mem.Allocator, request: backend.PrepareRequest, re
 }
 
 pub fn processEnvRoots(allocator: std.mem.Allocator) !?EnvRoots {
-    const user_profile = std.process.getEnvVarOwned(allocator, "USERPROFILE") catch return null;
+    const env_util = @import("../env_util.zig");
+    var env_map = try env_util.createProcessMap(allocator);
+    defer env_map.deinit();
+    const user_profile = if (env_map.get("USERPROFILE")) |v| try allocator.dupe(u8, v) else return null;
     errdefer allocator.free(user_profile);
-    const app_data = std.process.getEnvVarOwned(allocator, "APPDATA") catch {
+    const app_data = if (env_map.get("APPDATA")) |v| try allocator.dupe(u8, v) else {
         allocator.free(user_profile);
         return null;
     };
     errdefer allocator.free(app_data);
-    const local_app_data = std.process.getEnvVarOwned(allocator, "LOCALAPPDATA") catch {
+    const local_app_data = if (env_map.get("LOCALAPPDATA")) |v| try allocator.dupe(u8, v) else {
         allocator.free(user_profile);
         allocator.free(app_data);
         return null;
@@ -249,6 +252,7 @@ test "Windows backend launch can run a simple command" {
 
     var argv = [_][]const u8{ "cmd.exe", "/c", "exit", "0" };
     var prepared = prepare(std.testing.allocator, .{
+        .io = std.testing.io,
         .argv = &argv,
         .workspace_root = ".",
         .stdio = .ignore,
@@ -256,7 +260,7 @@ test "Windows backend launch can run a simple command" {
     try prepared.spawn();
     try prepared.waitForSpawn();
     const term = try prepared.wait();
-    try std.testing.expectEqual(std.process.Child.Term{ .Exited = 0 }, term);
+    try std.testing.expectEqual(std.process.Child.Term{ .exited = 0 }, term);
 }
 
 test "Windows process cleanup status is partial until Job Objects are installed" {

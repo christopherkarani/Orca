@@ -10,25 +10,26 @@ const help = @import("help.zig");
 const cli = @import("mod.zig");
 const plugin_install = @import("plugin_install.zig");
 const resource_root = @import("../resource_root.zig");
+const env_util = @import("../env_util.zig");
 
 // ---------------------------------------------------------------------------
 // Top-level dispatch
 // ---------------------------------------------------------------------------
 
-pub fn command(argv: []const []const u8, stdout: anytype, stderr: anytype) !u8 {
+pub fn command(io: std.Io, argv: []const []const u8, stdout: anytype, stderr: anytype) !u8 {
     if (argv.len > 0 and (std.mem.eql(u8, argv[0], "--help") or std.mem.eql(u8, argv[0], "-h"))) {
-        _ = try help.writeCommand(stdout, "plugin");
+        _ = try help.writeCommand(io, stdout, "plugin");
         return exit_codes.success;
     }
     if (argv.len == 0) {
-        _ = try help.writeCommand(stderr, "plugin");
+        _ = try help.writeCommand(io, stderr, "plugin");
         return exit_codes.usage;
     }
 
-    if (std.mem.eql(u8, argv[0], "doctor")) return doctorCommand(argv[1..], stdout, stderr);
-    if (std.mem.eql(u8, argv[0], "manifest")) return manifestCommand(argv[1..], stdout, stderr);
-    if (std.mem.eql(u8, argv[0], "install")) return installCommand(argv[1..], stdout, stderr);
-    if (std.mem.eql(u8, argv[0], "mcp-server")) return mcpServerCommand(argv[1..], stdout, stderr);
+    if (std.mem.eql(u8, argv[0], "doctor")) return doctorCommand(io, argv[1..], stdout, stderr);
+    if (std.mem.eql(u8, argv[0], "manifest")) return manifestCommand(io, argv[1..], stdout, stderr);
+    if (std.mem.eql(u8, argv[0], "install")) return installCommand(io, argv[1..], stdout, stderr);
+    if (std.mem.eql(u8, argv[0], "mcp-server")) return mcpServerCommand(io, argv[1..], stdout, stderr);
 
     try stderr.print("orca plugin: unknown subcommand '{s}'.\n", .{argv[0]});
     return exit_codes.usage;
@@ -40,7 +41,7 @@ pub fn command(argv: []const []const u8, stdout: anytype, stderr: anytype) !u8 {
 
 const DoctorTarget = enum { all, codex, claude, opencode, openclaw, hermes };
 
-fn doctorCommand(argv: []const []const u8, stdout: anytype, stderr: anytype) !u8 {
+fn doctorCommand(io: std.Io, argv: []const []const u8, stdout: anytype, stderr: anytype) !u8 {
     var target: DoctorTarget = .all;
     var json_mode = false;
 
@@ -92,11 +93,11 @@ fn doctorCommand(argv: []const []const u8, stdout: anytype, stderr: anytype) !u8
         return exit_codes.usage;
     }
 
-    var gpa_state: std.heap.GeneralPurposeAllocator(.{}) = .init;
+    var gpa_state: std.heap.DebugAllocator(.{}) = .init;
     defer _ = gpa_state.deinit();
     const allocator = gpa_state.allocator();
 
-    var report = try collectPluginDoctorReport(allocator);
+    var report = try collectPluginDoctorReport(io, allocator);
     defer deinitPluginDoctorReport(&report, allocator);
 
     if (json_mode) {
@@ -161,8 +162,8 @@ pub const MarketplaceStatus = struct {
 
 pub const PluginDoctorReport = struct {
     orca_version: []const u8,
-    orca_binary_path: ?[]const u8,
-    cwd: []const u8,
+    orca_binary_path: ?[:0]u8,
+    cwd: [:0]u8,
     workspace_root: []const u8,
     policy_present: bool,
     policy_valid: bool,
@@ -194,10 +195,10 @@ pub fn deinitPluginDoctorReport(report: *PluginDoctorReport, allocator: std.mem.
     report.* = undefined;
 }
 
-pub fn collectPluginDoctorReport(allocator: std.mem.Allocator) !PluginDoctorReport {
-    const cwd = std.fs.cwd().realpathAlloc(allocator, ".") catch try allocator.dupe(u8, ".");
+pub fn collectPluginDoctorReport(io: std.Io, allocator: std.mem.Allocator) !PluginDoctorReport {
+    const cwd: [:0]u8 = std.Io.Dir.cwd().realPathFileAlloc(io, ".", allocator) catch try allocator.dupeZ(u8, ".");
     errdefer allocator.free(cwd);
-    const workspace_root = supervisor.resolveWorkspaceRoot(allocator, null, ".") catch try allocator.dupe(u8, cwd);
+    const workspace_root = supervisor.resolveWorkspaceRoot(io, allocator, null, ".") catch try allocator.dupe(u8, cwd);
     errdefer allocator.free(workspace_root);
 
     const policy_path = try std.fs.path.join(allocator, &.{ workspace_root, ".orca", "policy.yaml" });
@@ -206,9 +207,9 @@ pub fn collectPluginDoctorReport(allocator: std.mem.Allocator) !PluginDoctorRepo
     var policy_valid = false;
     var policy_error: ?[]const u8 = null;
     errdefer if (policy_error) |e| allocator.free(e);
-    if (fileExistsAbsolute(policy_path)) {
+    if (fileExistsAbsolute(io, policy_path)) {
         policy_present = true;
-        if (core_api.loadPolicyFile(allocator, policy_path)) |loaded_policy| {
+        if (core_api.loadPolicyFile(io, allocator, policy_path)) |loaded_policy| {
             var loaded = loaded_policy;
             loaded.deinit();
             policy_valid = true;
@@ -222,20 +223,20 @@ pub fn collectPluginDoctorReport(allocator: std.mem.Allocator) !PluginDoctorRepo
     const mcp_support = "stdio proxy active; HTTP transport deferred";
 
     const plugin_dirs = PluginDirStatus{
-        .codex = pluginDirExists(allocator, "integrations/codex-plugin"),
-        .claude = pluginDirExists(allocator, "integrations/claude-code-plugin"),
-        .opencode = pluginDirExists(allocator, "integrations/opencode-plugin"),
-        .openclaw = pluginDirExists(allocator, "integrations/openclaw-plugin"),
-        .hermes = pluginDirExists(allocator, "integrations/hermes-plugin"),
-        .common = pluginDirExists(allocator, "integrations/common"),
+        .codex = pluginDirExists(io, allocator, "integrations/codex-plugin"),
+        .claude = pluginDirExists(io, allocator, "integrations/claude-code-plugin"),
+        .opencode = pluginDirExists(io, allocator, "integrations/opencode-plugin"),
+        .openclaw = pluginDirExists(io, allocator, "integrations/openclaw-plugin"),
+        .hermes = pluginDirExists(io, allocator, "integrations/hermes-plugin"),
+        .common = pluginDirExists(io, allocator, "integrations/common"),
     };
 
     const host_bins = HostBinaryStatus{
-        .codex = binaryInPath(allocator, "codex"),
-        .claude = binaryInPath(allocator, "claude"),
-        .opencode = binaryInPath(allocator, "opencode"),
-        .openclaw = binaryInPath(allocator, "openclaw"),
-        .hermes = binaryInPath(allocator, "hermes"),
+        .codex = binaryInPath(io, allocator, "codex"),
+        .claude = binaryInPath(io, allocator, "claude"),
+        .opencode = binaryInPath(io, allocator, "opencode"),
+        .openclaw = binaryInPath(io, allocator, "openclaw"),
+        .hermes = binaryInPath(io, allocator, "hermes"),
     };
 
     // Check OpenCode-specific plugin paths
@@ -243,23 +244,28 @@ pub fn collectPluginDoctorReport(allocator: std.mem.Allocator) !PluginDoctorRepo
     defer allocator.free(opencode_project_path);
 
     const opencode_global_path = blk: {
-        const home = std.process.getEnvVarOwned(allocator, "HOME") catch {
+        var env_map = env_util.createProcessMap(allocator) catch {
             break :blk try std.fs.path.join(allocator, &.{ "~", ".config", "opencode", "plugins", "orca.ts" });
         };
+        defer env_map.deinit();
+        const home_owned = env_util.getOwned(&env_map, allocator, "HOME") catch {
+            break :blk try std.fs.path.join(allocator, &.{ "~", ".config", "opencode", "plugins", "orca.ts" });
+        };
+        const home = home_owned orelse break :blk try std.fs.path.join(allocator, &.{ "~", ".config", "opencode", "plugins", "orca.ts" });
         defer allocator.free(home);
         break :blk try std.fs.path.join(allocator, &.{ home, ".config", "opencode", "plugins", "orca.ts" });
     };
     defer allocator.free(opencode_global_path);
 
     const opencode_paths = OpenCodePaths{
-        .project_plugin_exists = fileExistsAbsolute(opencode_project_path),
-        .global_plugin_exists = fileExistsAbsolute(opencode_global_path),
+        .project_plugin_exists = fileExistsAbsolute(io, opencode_project_path),
+        .global_plugin_exists = fileExistsAbsolute(io, opencode_global_path),
         .config_references_plugin = false, // Safe detection deferred
     };
 
-    const openclaw_paths = try detectOpenClawHostInstall(allocator, host_bins.openclaw);
+    const openclaw_paths = try detectOpenClawHostInstall(io, allocator, host_bins.openclaw);
 
-    const hermes_plugin_dir = try resolveBundledPath(allocator, "integrations/hermes-plugin");
+    const hermes_plugin_dir = try resolveBundledPath(io, allocator, "integrations/hermes-plugin");
     defer allocator.free(hermes_plugin_dir);
     const hermes_repo_manifest_path = try std.fs.path.join(allocator, &.{ hermes_plugin_dir, "plugin.yaml" });
     defer allocator.free(hermes_repo_manifest_path);
@@ -275,10 +281,10 @@ pub fn collectPluginDoctorReport(allocator: std.mem.Allocator) !PluginDoctorRepo
     defer allocator.free(hermes_config_path);
 
     const hermes_paths = HermesPaths{
-        .repo_manifest_exists = fileExistsAbsolute(hermes_repo_manifest_path),
-        .repo_source_exists = fileExistsAbsolute(hermes_repo_source_path),
-        .user_manifest_exists = fileExistsAbsolute(hermes_user_manifest_path),
-        .user_source_exists = fileExistsAbsolute(hermes_user_source_path),
+        .repo_manifest_exists = fileExistsAbsolute(io, hermes_repo_manifest_path),
+        .repo_source_exists = fileExistsAbsolute(io, hermes_repo_source_path),
+        .user_manifest_exists = fileExistsAbsolute(io, hermes_user_manifest_path),
+        .user_source_exists = fileExistsAbsolute(io, hermes_user_source_path),
         .config_references_plugin = fileContains(allocator, hermes_config_path, "orca"),
     };
 
@@ -290,18 +296,18 @@ pub fn collectPluginDoctorReport(allocator: std.mem.Allocator) !PluginDoctorRepo
     defer allocator.free(codex_user_plugin_path);
     const claude_user_plugin_path = try std.fs.path.join(allocator, &.{ workspace_root, ".claude", "plugins", "orca", ".claude-plugin", "plugin.json" });
     defer allocator.free(claude_user_plugin_path);
-    const codex_bundled_manifest = try resolveBundledPath(allocator, "integrations/codex-plugin/.codex-plugin/plugin.json");
+    const codex_bundled_manifest = try resolveBundledPath(io, allocator, "integrations/codex-plugin/.codex-plugin/plugin.json");
     defer allocator.free(codex_bundled_manifest);
-    const claude_bundled_manifest = try resolveBundledPath(allocator, "integrations/claude-code-plugin/.claude-plugin/plugin.json");
+    const claude_bundled_manifest = try resolveBundledPath(io, allocator, "integrations/claude-code-plugin/.claude-plugin/plugin.json");
     defer allocator.free(claude_bundled_manifest);
 
     const marketplace = MarketplaceStatus{
-        .codex_marketplace = fileExistsAbsolute(codex_marketplace_path),
-        .claude_marketplace = fileExistsAbsolute(claude_marketplace_path),
-        .codex_plugin_manifest = fileExistsAbsolute(codex_bundled_manifest),
-        .claude_plugin_manifest = fileExistsAbsolute(claude_bundled_manifest),
-        .codex_user_plugin = fileExistsAbsolute(codex_user_plugin_path),
-        .claude_user_plugin = fileExistsAbsolute(claude_user_plugin_path),
+        .codex_marketplace = fileExistsAbsolute(io, codex_marketplace_path),
+        .claude_marketplace = fileExistsAbsolute(io, claude_marketplace_path),
+        .codex_plugin_manifest = fileExistsAbsolute(io, codex_bundled_manifest),
+        .claude_plugin_manifest = fileExistsAbsolute(io, claude_bundled_manifest),
+        .codex_user_plugin = fileExistsAbsolute(io, codex_user_plugin_path),
+        .claude_user_plugin = fileExistsAbsolute(io, claude_user_plugin_path),
     };
 
     var warnings: std.ArrayList([]const u8) = .empty;
@@ -338,7 +344,8 @@ pub fn collectPluginDoctorReport(allocator: std.mem.Allocator) !PluginDoctorRepo
     });
     errdefer allocator.free(platform_summary);
 
-    const binary_path = std.fs.selfExePathAlloc(allocator) catch null;
+    var threaded: std.Io.Threaded = .init_single_threaded;
+    const binary_path = std.process.executablePathAlloc(threaded.io(), allocator) catch null;
     errdefer if (binary_path) |p| allocator.free(p);
     const mcp_support_status = try allocator.dupe(u8, mcp_support);
     errdefer allocator.free(mcp_support_status);
@@ -651,7 +658,7 @@ fn writeDoctorJson(stdout: anytype, report: PluginDoctorReport, target: DoctorTa
 
 const ManifestTarget = enum { codex, claude, opencode, openclaw, hermes, all };
 
-fn manifestCommand(argv: []const []const u8, stdout: anytype, stderr: anytype) !u8 {
+fn manifestCommand(io: std.Io, argv: []const []const u8, stdout: anytype, stderr: anytype) !u8 {
     var target: ManifestTarget = .all;
     var json_mode = false;
 
@@ -702,21 +709,21 @@ fn manifestCommand(argv: []const []const u8, stdout: anytype, stderr: anytype) !
         return exit_codes.usage;
     }
 
-    var gpa_state: std.heap.GeneralPurposeAllocator(.{}) = .init;
+    var gpa_state: std.heap.DebugAllocator(.{}) = .init;
     defer _ = gpa_state.deinit();
     const manifest_allocator = gpa_state.allocator();
-    const workspace_root = try plugin_install.resolveWorkspaceInstallRoot(manifest_allocator);
+    const workspace_root = try plugin_install.resolveWorkspaceInstallRoot(io, manifest_allocator);
     defer manifest_allocator.free(workspace_root);
 
     if (json_mode) {
-        try writeManifestJson(manifest_allocator, workspace_root, stdout, target);
+        try writeManifestJson(io, manifest_allocator, workspace_root, stdout, target);
     } else {
-        try writeManifestPlain(manifest_allocator, workspace_root, stdout, target);
+        try writeManifestPlain(io, manifest_allocator, workspace_root, stdout, target);
     }
     return exit_codes.success;
 }
 
-fn writeManifestPlain(allocator: std.mem.Allocator, workspace_root: []const u8, stdout: anytype, target: ManifestTarget) !void {
+fn writeManifestPlain(io: std.Io, allocator: std.mem.Allocator, workspace_root: []const u8, stdout: anytype, target: ManifestTarget) !void {
     const codex_marketplace_path = try std.fs.path.join(allocator, &.{ workspace_root, ".agents", "plugins", "marketplace.json" });
     defer allocator.free(codex_marketplace_path);
     const claude_marketplace_path = try std.fs.path.join(allocator, &.{ workspace_root, ".claude-plugin", "marketplace.json" });
@@ -724,61 +731,61 @@ fn writeManifestPlain(allocator: std.mem.Allocator, workspace_root: []const u8, 
 
     switch (target) {
         .codex => {
-            const path = try resolveBundledPath(allocator, "integrations/codex-plugin/.codex-plugin/plugin.json");
+            const path = try resolveBundledPath(io, allocator, "integrations/codex-plugin/.codex-plugin/plugin.json");
             defer allocator.free(path);
             const marketplace_path = codex_marketplace_path;
-            const marketplace_exists = fileExistsAbsolute(marketplace_path);
+            const marketplace_exists = fileExistsAbsolute(io, marketplace_path);
             try stdout.writeAll("Codex plugin manifest:\n");
             try stdout.print("  expected path: {s}\n", .{path});
-            try stdout.print("  status: {s}\n", .{if (fileExistsAbsolute(path)) "exists" else "missing"});
+            try stdout.print("  status: {s}\n", .{if (fileExistsAbsolute(io, path)) "exists" else "missing"});
             try stdout.print("  marketplace: {s} ({s})\n", .{ marketplace_path, if (marketplace_exists) "exists" else "missing" });
-            if (fileExistsAbsolute(path)) {
+            if (fileExistsAbsolute(io, path)) {
                 try stdout.writeAll("  note: validation of manifest shape is deferred to host-specific checks\n");
             }
         },
         .claude => {
-            const path = try resolveBundledPath(allocator, "integrations/claude-code-plugin/.claude-plugin/plugin.json");
+            const path = try resolveBundledPath(io, allocator, "integrations/claude-code-plugin/.claude-plugin/plugin.json");
             defer allocator.free(path);
             const marketplace_path = claude_marketplace_path;
-            const marketplace_exists = fileExistsAbsolute(marketplace_path);
+            const marketplace_exists = fileExistsAbsolute(io, marketplace_path);
             try stdout.writeAll("Claude Code plugin manifest:\n");
             try stdout.print("  expected path: {s}\n", .{path});
-            try stdout.print("  status: {s}\n", .{if (fileExistsAbsolute(path)) "exists" else "missing"});
+            try stdout.print("  status: {s}\n", .{if (fileExistsAbsolute(io, path)) "exists" else "missing"});
             try stdout.print("  marketplace: {s} ({s})\n", .{ marketplace_path, if (marketplace_exists) "exists" else "missing" });
-            if (fileExistsAbsolute(path)) {
+            if (fileExistsAbsolute(io, path)) {
                 try stdout.writeAll("  note: validation of manifest shape is deferred to host-specific checks\n");
             }
         },
         .opencode => {
-            const path = try resolveBundledPath(allocator, "integrations/opencode-plugin/orca.ts");
+            const path = try resolveBundledPath(io, allocator, "integrations/opencode-plugin/orca.ts");
             defer allocator.free(path);
             try stdout.writeAll("OpenCode plugin manifest:\n");
             try stdout.print("  expected path: {s}\n", .{path});
-            try stdout.print("  status: {s}\n", .{if (fileExistsAbsolute(path)) "exists" else "missing"});
+            try stdout.print("  status: {s}\n", .{if (fileExistsAbsolute(io, path)) "exists" else "missing"});
             try stdout.writeAll("  note: OpenCode uses TypeScript plugins, not a JSON manifest\n");
         },
         .openclaw => {
-            const manifest_path = try resolveBundledPath(allocator, "integrations/openclaw-plugin/openclaw.plugin.json");
+            const manifest_path = try resolveBundledPath(io, allocator, "integrations/openclaw-plugin/openclaw.plugin.json");
             defer allocator.free(manifest_path);
-            const pkg_path = try resolveBundledPath(allocator, "integrations/openclaw-plugin/package.json");
+            const pkg_path = try resolveBundledPath(io, allocator, "integrations/openclaw-plugin/package.json");
             defer allocator.free(pkg_path);
             try stdout.writeAll("OpenClaw plugin manifest:\n");
             try stdout.print("  expected manifest path: {s}\n", .{manifest_path});
-            try stdout.print("  manifest status: {s}\n", .{if (fileExistsAbsolute(manifest_path)) "exists" else "missing"});
-            try stdout.print("  package.json: {s} ({s})\n", .{ pkg_path, if (fileExistsAbsolute(pkg_path)) "exists" else "missing" });
-            if (fileExistsAbsolute(manifest_path)) {
+            try stdout.print("  manifest status: {s}\n", .{if (fileExistsAbsolute(io, manifest_path)) "exists" else "missing"});
+            try stdout.print("  package.json: {s} ({s})\n", .{ pkg_path, if (fileExistsAbsolute(io, pkg_path)) "exists" else "missing" });
+            if (fileExistsAbsolute(io, manifest_path)) {
                 try stdout.writeAll("  note: validation of manifest shape is deferred to host-specific checks\n");
             }
         },
         .hermes => {
             // Use resolveBundledPath so this works for both source trees and packaged installs
             // (where ORCA_RESOURCE_ROOT points at the installed runtime assets).
-            const manifest_path = try resolveBundledPath(allocator, "integrations/hermes-plugin/plugin.yaml");
+            const manifest_path = try resolveBundledPath(io, allocator, "integrations/hermes-plugin/plugin.yaml");
             defer allocator.free(manifest_path);
-            const source_path = try resolveBundledPath(allocator, "integrations/hermes-plugin/__init__.py");
+            const source_path = try resolveBundledPath(io, allocator, "integrations/hermes-plugin/__init__.py");
             defer allocator.free(source_path);
-            const manifest_exists = fileExistsAbsolute(manifest_path);
-            const source_exists = fileExistsAbsolute(source_path);
+            const manifest_exists = fileExistsAbsolute(io, manifest_path);
+            const source_exists = fileExistsAbsolute(io, source_path);
             try stdout.writeAll("Hermes plugin manifest:\n");
             try stdout.print("  expected manifest path: {s}\n", .{manifest_path});
             try stdout.print("  manifest status: {s}\n", .{if (manifest_exists) "exists" else "missing"});
@@ -788,29 +795,29 @@ fn writeManifestPlain(allocator: std.mem.Allocator, workspace_root: []const u8, 
         .all => {
             try stdout.writeAll("Plugin manifests:\n");
             // Bundled plugin manifests must go through resolveBundledPath for packaged installs.
-            const codex_path = try resolveBundledPath(allocator, "integrations/codex-plugin/.codex-plugin/plugin.json");
+            const codex_path = try resolveBundledPath(io, allocator, "integrations/codex-plugin/.codex-plugin/plugin.json");
             defer allocator.free(codex_path);
-            const claude_path = try resolveBundledPath(allocator, "integrations/claude-code-plugin/.claude-plugin/plugin.json");
+            const claude_path = try resolveBundledPath(io, allocator, "integrations/claude-code-plugin/.claude-plugin/plugin.json");
             defer allocator.free(claude_path);
-            const opencode_path = try resolveBundledPath(allocator, "integrations/opencode-plugin/orca.ts");
+            const opencode_path = try resolveBundledPath(io, allocator, "integrations/opencode-plugin/orca.ts");
             defer allocator.free(opencode_path);
-            const openclaw_path = try resolveBundledPath(allocator, "integrations/openclaw-plugin/openclaw.plugin.json");
+            const openclaw_path = try resolveBundledPath(io, allocator, "integrations/openclaw-plugin/openclaw.plugin.json");
             defer allocator.free(openclaw_path);
-            const hermes_path = try resolveBundledPath(allocator, "integrations/hermes-plugin/plugin.yaml");
+            const hermes_path = try resolveBundledPath(io, allocator, "integrations/hermes-plugin/plugin.yaml");
             defer allocator.free(hermes_path);
-            try stdout.print("  codex:    {s} ({s})\n", .{ codex_path, if (fileExistsAbsolute(codex_path)) "exists" else "missing" });
-            try stdout.print("  claude:   {s} ({s})\n", .{ claude_path, if (fileExistsAbsolute(claude_path)) "exists" else "missing" });
-            try stdout.print("  opencode: {s} ({s})\n", .{ opencode_path, if (fileExistsAbsolute(opencode_path)) "exists" else "missing" });
-            try stdout.print("  openclaw: {s} ({s})\n", .{ openclaw_path, if (fileExistsAbsolute(openclaw_path)) "exists" else "missing" });
-            try stdout.print("  hermes:   {s} ({s})\n", .{ hermes_path, if (fileExistsAbsolute(hermes_path)) "exists" else "missing" });
+            try stdout.print("  codex:    {s} ({s})\n", .{ codex_path, if (fileExistsAbsolute(io, codex_path)) "exists" else "missing" });
+            try stdout.print("  claude:   {s} ({s})\n", .{ claude_path, if (fileExistsAbsolute(io, claude_path)) "exists" else "missing" });
+            try stdout.print("  opencode: {s} ({s})\n", .{ opencode_path, if (fileExistsAbsolute(io, opencode_path)) "exists" else "missing" });
+            try stdout.print("  openclaw: {s} ({s})\n", .{ openclaw_path, if (fileExistsAbsolute(io, openclaw_path)) "exists" else "missing" });
+            try stdout.print("  hermes:   {s} ({s})\n", .{ hermes_path, if (fileExistsAbsolute(io, hermes_path)) "exists" else "missing" });
             try stdout.writeAll("\nMarketplace files:\n");
-            try stdout.print("  codex:    {s} ({s})\n", .{ codex_marketplace_path, if (fileExistsAbsolute(codex_marketplace_path)) "exists" else "missing" });
-            try stdout.print("  claude:   {s} ({s})\n", .{ claude_marketplace_path, if (fileExistsAbsolute(claude_marketplace_path)) "exists" else "missing" });
+            try stdout.print("  codex:    {s} ({s})\n", .{ codex_marketplace_path, if (fileExistsAbsolute(io, codex_marketplace_path)) "exists" else "missing" });
+            try stdout.print("  claude:   {s} ({s})\n", .{ claude_marketplace_path, if (fileExistsAbsolute(io, claude_marketplace_path)) "exists" else "missing" });
         },
     }
 }
 
-fn writeManifestJson(allocator: std.mem.Allocator, workspace_root: []const u8, stdout: anytype, target: ManifestTarget) !void {
+fn writeManifestJson(io: std.Io, allocator: std.mem.Allocator, workspace_root: []const u8, stdout: anytype, target: ManifestTarget) !void {
     const codex_marketplace_path = try std.fs.path.join(allocator, &.{ workspace_root, ".agents", "plugins", "marketplace.json" });
     defer allocator.free(codex_marketplace_path);
     const claude_marketplace_path = try std.fs.path.join(allocator, &.{ workspace_root, ".claude-plugin", "marketplace.json" });
@@ -821,89 +828,89 @@ fn writeManifestJson(allocator: std.mem.Allocator, workspace_root: []const u8, s
         .codex => {
             // Use resolve (now robust) so JSON output is truthful for packaged installs
             // (matches the hermes case and the plain writer).
-            const path = try resolveBundledPath(allocator, "integrations/codex-plugin/.codex-plugin/plugin.json");
+            const path = try resolveBundledPath(io, allocator, "integrations/codex-plugin/.codex-plugin/plugin.json");
             defer allocator.free(path);
             const marketplace_path = codex_marketplace_path;
             try stdout.writeAll("  \"codex\": {\n");
             try stdout.print("    \"path\": ", .{});
             try writeJsonString(stdout, path);
             try stdout.writeAll(",\n");
-            try stdout.print("    \"status\": \"{s}\",\n", .{if (fileExistsAbsolute(path)) "exists" else "missing"});
+            try stdout.print("    \"status\": \"{s}\",\n", .{if (fileExistsAbsolute(io, path)) "exists" else "missing"});
             try stdout.print("    \"marketplace_path\": ", .{});
             try writeJsonString(stdout, marketplace_path);
             try stdout.writeAll(",\n");
-            try stdout.print("    \"marketplace_status\": \"{s}\"\n", .{if (fileExistsAbsolute(marketplace_path)) "exists" else "missing"});
+            try stdout.print("    \"marketplace_status\": \"{s}\"\n", .{if (fileExistsAbsolute(io, marketplace_path)) "exists" else "missing"});
             try stdout.writeAll("  }\n");
         },
         .claude => {
-            const path = try resolveBundledPath(allocator, "integrations/claude-code-plugin/.claude-plugin/plugin.json");
+            const path = try resolveBundledPath(io, allocator, "integrations/claude-code-plugin/.claude-plugin/plugin.json");
             defer allocator.free(path);
             const marketplace_path = claude_marketplace_path;
             try stdout.writeAll("  \"claude\": {\n");
             try stdout.print("    \"path\": ", .{});
             try writeJsonString(stdout, path);
             try stdout.writeAll(",\n");
-            try stdout.print("    \"status\": \"{s}\",\n", .{if (fileExistsAbsolute(path)) "exists" else "missing"});
+            try stdout.print("    \"status\": \"{s}\",\n", .{if (fileExistsAbsolute(io, path)) "exists" else "missing"});
             try stdout.print("    \"marketplace_path\": ", .{});
             try writeJsonString(stdout, marketplace_path);
             try stdout.writeAll(",\n");
-            try stdout.print("    \"marketplace_status\": \"{s}\"\n", .{if (fileExistsAbsolute(marketplace_path)) "exists" else "missing"});
+            try stdout.print("    \"marketplace_status\": \"{s}\"\n", .{if (fileExistsAbsolute(io, marketplace_path)) "exists" else "missing"});
             try stdout.writeAll("  }\n");
         },
         .opencode => {
-            const path = try resolveBundledPath(allocator, "integrations/opencode-plugin/orca.ts");
+            const path = try resolveBundledPath(io, allocator, "integrations/opencode-plugin/orca.ts");
             defer allocator.free(path);
             try stdout.writeAll("  \"opencode\": {\n");
             try stdout.print("    \"path\": ", .{});
             try writeJsonString(stdout, path);
             try stdout.writeAll(",\n");
-            try stdout.print("    \"status\": \"{s}\"\n", .{if (fileExistsAbsolute(path)) "exists" else "missing"});
+            try stdout.print("    \"status\": \"{s}\"\n", .{if (fileExistsAbsolute(io, path)) "exists" else "missing"});
             try stdout.writeAll("  }\n");
         },
         .openclaw => {
-            const manifest_path = try resolveBundledPath(allocator, "integrations/openclaw-plugin/openclaw.plugin.json");
+            const manifest_path = try resolveBundledPath(io, allocator, "integrations/openclaw-plugin/openclaw.plugin.json");
             defer allocator.free(manifest_path);
-            const pkg_path = try resolveBundledPath(allocator, "integrations/openclaw-plugin/package.json");
+            const pkg_path = try resolveBundledPath(io, allocator, "integrations/openclaw-plugin/package.json");
             defer allocator.free(pkg_path);
             try stdout.writeAll("  \"openclaw\": {\n");
             try stdout.print("    \"manifest_path\": ", .{});
             try writeJsonString(stdout, manifest_path);
             try stdout.writeAll(",\n");
-            try stdout.print("    \"manifest_status\": \"{s}\",\n", .{if (fileExistsAbsolute(manifest_path)) "exists" else "missing"});
+            try stdout.print("    \"manifest_status\": \"{s}\",\n", .{if (fileExistsAbsolute(io, manifest_path)) "exists" else "missing"});
             try stdout.print("    \"package_path\": ", .{});
             try writeJsonString(stdout, pkg_path);
             try stdout.writeAll(",\n");
-            try stdout.print("    \"package_status\": \"{s}\"\n", .{if (fileExistsAbsolute(pkg_path)) "exists" else "missing"});
+            try stdout.print("    \"package_status\": \"{s}\"\n", .{if (fileExistsAbsolute(io, pkg_path)) "exists" else "missing"});
             try stdout.writeAll("  }\n");
         },
         .hermes => {
             // Use resolveBundledPath so --json output is truthful for packaged installs.
-            const manifest_path = try resolveBundledPath(allocator, "integrations/hermes-plugin/plugin.yaml");
+            const manifest_path = try resolveBundledPath(io, allocator, "integrations/hermes-plugin/plugin.yaml");
             defer allocator.free(manifest_path);
-            const source_path = try resolveBundledPath(allocator, "integrations/hermes-plugin/__init__.py");
+            const source_path = try resolveBundledPath(io, allocator, "integrations/hermes-plugin/__init__.py");
             defer allocator.free(source_path);
             try stdout.writeAll("  \"hermes\": {\n");
             try stdout.print("    \"manifest_path\": ", .{});
             try writeJsonString(stdout, manifest_path);
             try stdout.writeAll(",\n");
-            try stdout.print("    \"manifest_status\": \"{s}\",\n", .{if (fileExistsAbsolute(manifest_path)) "exists" else "missing"});
+            try stdout.print("    \"manifest_status\": \"{s}\",\n", .{if (fileExistsAbsolute(io, manifest_path)) "exists" else "missing"});
             try stdout.print("    \"source_path\": ", .{});
             try writeJsonString(stdout, source_path);
             try stdout.writeAll(",\n");
-            try stdout.print("    \"source_status\": \"{s}\"\n", .{if (fileExistsAbsolute(source_path)) "exists" else "missing"});
+            try stdout.print("    \"source_status\": \"{s}\"\n", .{if (fileExistsAbsolute(io, source_path)) "exists" else "missing"});
             try stdout.writeAll("  }\n");
         },
         .all => {
             // Bundled paths must resolve via ORCA_RESOURCE_ROOT for packaged installs.
-            const codex_path = try resolveBundledPath(allocator, "integrations/codex-plugin/.codex-plugin/plugin.json");
+            const codex_path = try resolveBundledPath(io, allocator, "integrations/codex-plugin/.codex-plugin/plugin.json");
             defer allocator.free(codex_path);
-            const claude_path = try resolveBundledPath(allocator, "integrations/claude-code-plugin/.claude-plugin/plugin.json");
+            const claude_path = try resolveBundledPath(io, allocator, "integrations/claude-code-plugin/.claude-plugin/plugin.json");
             defer allocator.free(claude_path);
-            const opencode_path = try resolveBundledPath(allocator, "integrations/opencode-plugin/orca.ts");
+            const opencode_path = try resolveBundledPath(io, allocator, "integrations/opencode-plugin/orca.ts");
             defer allocator.free(opencode_path);
-            const openclaw_manifest_path = try resolveBundledPath(allocator, "integrations/openclaw-plugin/openclaw.plugin.json");
+            const openclaw_manifest_path = try resolveBundledPath(io, allocator, "integrations/openclaw-plugin/openclaw.plugin.json");
             defer allocator.free(openclaw_manifest_path);
-            const hermes_manifest_path = try resolveBundledPath(allocator, "integrations/hermes-plugin/plugin.yaml");
+            const hermes_manifest_path = try resolveBundledPath(io, allocator, "integrations/hermes-plugin/plugin.yaml");
             defer allocator.free(hermes_manifest_path);
             const codex_marketplace = codex_marketplace_path;
             const claude_marketplace = claude_marketplace_path;
@@ -911,39 +918,39 @@ fn writeManifestJson(allocator: std.mem.Allocator, workspace_root: []const u8, s
             try stdout.print("    \"path\": ", .{});
             try writeJsonString(stdout, codex_path);
             try stdout.writeAll(",\n");
-            try stdout.print("    \"status\": \"{s}\",\n", .{if (fileExistsAbsolute(codex_path)) "exists" else "missing"});
+            try stdout.print("    \"status\": \"{s}\",\n", .{if (fileExistsAbsolute(io, codex_path)) "exists" else "missing"});
             try stdout.print("    \"marketplace_path\": ", .{});
             try writeJsonString(stdout, codex_marketplace);
             try stdout.writeAll(",\n");
-            try stdout.print("    \"marketplace_status\": \"{s}\"\n", .{if (fileExistsAbsolute(codex_marketplace)) "exists" else "missing"});
+            try stdout.print("    \"marketplace_status\": \"{s}\"\n", .{if (fileExistsAbsolute(io, codex_marketplace)) "exists" else "missing"});
             try stdout.writeAll("  },\n");
             try stdout.writeAll("  \"claude\": {\n");
             try stdout.print("    \"path\": ", .{});
             try writeJsonString(stdout, claude_path);
             try stdout.writeAll(",\n");
-            try stdout.print("    \"status\": \"{s}\",\n", .{if (fileExistsAbsolute(claude_path)) "exists" else "missing"});
+            try stdout.print("    \"status\": \"{s}\",\n", .{if (fileExistsAbsolute(io, claude_path)) "exists" else "missing"});
             try stdout.print("    \"marketplace_path\": ", .{});
             try writeJsonString(stdout, claude_marketplace);
             try stdout.writeAll(",\n");
-            try stdout.print("    \"marketplace_status\": \"{s}\"\n", .{if (fileExistsAbsolute(claude_marketplace)) "exists" else "missing"});
+            try stdout.print("    \"marketplace_status\": \"{s}\"\n", .{if (fileExistsAbsolute(io, claude_marketplace)) "exists" else "missing"});
             try stdout.writeAll("  },\n");
             try stdout.writeAll("  \"opencode\": {\n");
             try stdout.print("    \"path\": ", .{});
             try writeJsonString(stdout, opencode_path);
             try stdout.writeAll(",\n");
-            try stdout.print("    \"status\": \"{s}\"\n", .{if (fileExistsAbsolute(opencode_path)) "exists" else "missing"});
+            try stdout.print("    \"status\": \"{s}\"\n", .{if (fileExistsAbsolute(io, opencode_path)) "exists" else "missing"});
             try stdout.writeAll("  },\n");
             try stdout.writeAll("  \"openclaw\": {\n");
             try stdout.print("    \"manifest_path\": ", .{});
             try writeJsonString(stdout, openclaw_manifest_path);
             try stdout.writeAll(",\n");
-            try stdout.print("    \"manifest_status\": \"{s}\"\n", .{if (fileExistsAbsolute(openclaw_manifest_path)) "exists" else "missing"});
+            try stdout.print("    \"manifest_status\": \"{s}\"\n", .{if (fileExistsAbsolute(io, openclaw_manifest_path)) "exists" else "missing"});
             try stdout.writeAll("  },\n");
             try stdout.writeAll("  \"hermes\": {\n");
             try stdout.print("    \"manifest_path\": ", .{});
             try writeJsonString(stdout, hermes_manifest_path);
             try stdout.writeAll(",\n");
-            try stdout.print("    \"manifest_status\": \"{s}\"\n", .{if (fileExistsAbsolute(hermes_manifest_path)) "exists" else "missing"});
+            try stdout.print("    \"manifest_status\": \"{s}\"\n", .{if (fileExistsAbsolute(io, hermes_manifest_path)) "exists" else "missing"});
             try stdout.writeAll("  }\n");
         },
     }
@@ -957,7 +964,7 @@ fn writeManifestJson(allocator: std.mem.Allocator, workspace_root: []const u8, s
 const InstallTarget = enum { codex, claude, opencode, openclaw, hermes, all };
 const InstallScope = enum { project, global };
 
-fn installCommand(argv: []const []const u8, stdout: anytype, stderr: anytype) !u8 {
+fn installCommand(io: std.Io, argv: []const []const u8, stdout: anytype, stderr: anytype) !u8 {
     var target: InstallTarget = .all;
     var dry_run = true; // default to safe dry-run
     var dry_run_explicit = false;
@@ -966,7 +973,7 @@ fn installCommand(argv: []const []const u8, stdout: anytype, stderr: anytype) !u
     var all_detected = false;
     var scope: InstallScope = .project;
 
-    var gpa_state: std.heap.GeneralPurposeAllocator(.{}) = .init;
+    var gpa_state: std.heap.DebugAllocator(.{}) = .init;
     defer _ = gpa_state.deinit();
     const allocator = gpa_state.allocator();
 
@@ -1071,13 +1078,13 @@ fn installCommand(argv: []const []const u8, stdout: anytype, stderr: anytype) !u
     }
 
     if (!dry_run_explicit and !yes) {
-        const stdin = std.fs.File.stdin();
-        if (stdin.isTty()) {
+        const stdin = std.Io.File.stdin();
+        if ((stdin.isTty(io) catch false)) {
             const host_label = if (target == .all and all_detected) "all detected" else if (target == .all) "all" else @tagName(target);
             try stdout.print("Install {s} plugin? [Y/n] ", .{host_label});
             var buf: [8]u8 = undefined;
-            const n = try stdin.read(&buf);
-            const answer = if (n > 0) std.mem.trimRight(u8, buf[0..n], "\r\n") else "";
+            const n = try stdin.readStreaming(io, &.{&buf});
+            const answer = if (n > 0) std.mem.trimEnd(u8, buf[0..n], "\r\n") else "";
             if (answer.len > 0 and (answer[0] == 'n' or answer[0] == 'N')) {
                 try stdout.writeAll("canceled\n");
                 return exit_codes.success;
@@ -1091,7 +1098,7 @@ fn installCommand(argv: []const []const u8, stdout: anytype, stderr: anytype) !u
 
     try stdout.writeAll("Orca Plugin Install\n\n");
 
-    const workspace_root = try plugin_install.resolveWorkspaceInstallRoot(allocator);
+    const workspace_root = try plugin_install.resolveWorkspaceInstallRoot(io, allocator);
     defer allocator.free(workspace_root);
 
     var detected_targets: [5]InstallTarget = undefined;
@@ -1104,23 +1111,23 @@ fn installCommand(argv: []const []const u8, stdout: anytype, stderr: anytype) !u
         .openclaw => &[_]InstallTarget{.openclaw},
         .hermes => &[_]InstallTarget{.hermes},
         .all => if (all_detected) blk: {
-            if (binaryInPath(allocator, "codex")) {
+            if (binaryInPath(io, allocator, "codex")) {
                 detected_targets[detected_count] = .codex;
                 detected_count += 1;
             }
-            if (binaryInPath(allocator, "claude")) {
+            if (binaryInPath(io, allocator, "claude")) {
                 detected_targets[detected_count] = .claude;
                 detected_count += 1;
             }
-            if (binaryInPath(allocator, "opencode")) {
+            if (binaryInPath(io, allocator, "opencode")) {
                 detected_targets[detected_count] = .opencode;
                 detected_count += 1;
             }
-            if (binaryInPath(allocator, "openclaw")) {
+            if (binaryInPath(io, allocator, "openclaw")) {
                 detected_targets[detected_count] = .openclaw;
                 detected_count += 1;
             }
-            if (binaryInPath(allocator, "hermes")) {
+            if (binaryInPath(io, allocator, "hermes")) {
                 detected_targets[detected_count] = .hermes;
                 detected_count += 1;
             }
@@ -1140,11 +1147,11 @@ fn installCommand(argv: []const []const u8, stdout: anytype, stderr: anytype) !u
         }
 
         const plugin_dir = if (custom_path) |path| try allocator.dupe(u8, path) else switch (t) {
-            .codex => try resolveBundledPath(allocator, "integrations/codex-plugin"),
-            .claude => try resolveBundledPath(allocator, "integrations/claude-code-plugin"),
-            .opencode => try resolveBundledPath(allocator, "integrations/opencode-plugin"),
-            .openclaw => try resolveBundledPath(allocator, "integrations/openclaw-plugin"),
-            .hermes => try resolveBundledPath(allocator, "integrations/hermes-plugin"),
+            .codex => try resolveBundledPath(io, allocator, "integrations/codex-plugin"),
+            .claude => try resolveBundledPath(io, allocator, "integrations/claude-code-plugin"),
+            .opencode => try resolveBundledPath(io, allocator, "integrations/opencode-plugin"),
+            .openclaw => try resolveBundledPath(io, allocator, "integrations/openclaw-plugin"),
+            .hermes => try resolveBundledPath(io, allocator, "integrations/hermes-plugin"),
             .all => unreachable,
         };
         defer allocator.free(plugin_dir);
@@ -1170,7 +1177,7 @@ fn installCommand(argv: []const []const u8, stdout: anytype, stderr: anytype) !u
                     try stdout.writeAll("  action: no changes made (dry-run)\n");
                     try stdout.print("  next step: copy {s} to {s}\n", .{ source_path, destination_path });
                 } else {
-                    if (!fileExistsAbsolute(source_path)) {
+                    if (!fileExistsAbsolute(io, source_path)) {
                         try stdout.print("  action: failed (source missing: {s})\n", .{source_path});
                         return exit_codes.general;
                     }
@@ -1199,7 +1206,7 @@ fn installCommand(argv: []const []const u8, stdout: anytype, stderr: anytype) !u
                     try stdout.writeAll("  action: no changes made (dry-run)\n");
                     try stdout.print("  next step: run '{s}' if OpenClaw is installed\n", .{install_command});
                 } else {
-                    if (!binaryInPath(allocator, "openclaw")) {
+                    if (!binaryInPath(io, allocator, "openclaw")) {
                         try stdout.writeAll("  action: failed (openclaw binary not found in PATH)\n");
                         return exit_codes.general;
                     }
@@ -1230,7 +1237,7 @@ fn installCommand(argv: []const []const u8, stdout: anytype, stderr: anytype) !u
                     try stdout.writeAll("  action: no changes made (dry-run)\n");
                     try stdout.print("  next step: copy {s} to {s}\n", .{ plugin_dir, destination_path });
                 } else {
-                    if (!fileExistsAbsolute(manifest_source) or !fileExistsAbsolute(source_source)) {
+                    if (!fileExistsAbsolute(io, manifest_source) or !fileExistsAbsolute(io, source_source)) {
                         try stdout.writeAll("  action: failed (Hermes plugin files missing)\n");
                         return exit_codes.general;
                     }
@@ -1253,7 +1260,7 @@ fn installCommand(argv: []const []const u8, stdout: anytype, stderr: anytype) !u
                     } else {
                         try stdout.print("  action: already up-to-date at {s}\n", .{destination_path});
                     }
-                    if (binaryInPath(allocator, "hermes")) {
+                    if (binaryInPath(io, allocator, "hermes")) {
                         const status = try runHermesEnable(allocator);
                         if (status == 0) {
                             try stdout.writeAll("  enable: completed via hermes plugins enable orca\n");
@@ -1277,9 +1284,10 @@ fn installCommand(argv: []const []const u8, stdout: anytype, stderr: anytype) !u
                 else
                     "./integrations/claude-code-plugin";
                 const install_source = if (t == .codex) "./orca" else "../.claude/plugins/orca";
-                const template_path = try resolveBundledPath(allocator, template_rel);
+                const template_path = try resolveBundledPath(io, allocator, template_rel);
                 defer allocator.free(template_path);
                 const marketplace_json = try plugin_install.loadMarketplaceTemplate(
+                    io,
                     allocator,
                     template_path,
                     bundled_source,
@@ -1296,7 +1304,7 @@ fn installCommand(argv: []const []const u8, stdout: anytype, stderr: anytype) !u
                     try plugin_install.printMarketplaceHostInstallPlan(stdout, spec, plugin_dir);
                     try stdout.writeAll("  action: no changes made (dry-run)\n");
                 } else if (t == .codex) {
-                    plugin_install.installCodexPlugin(allocator, plugin_dir, workspace_root, marketplace_json, stdout) catch |err| switch (err) {
+                    plugin_install.installCodexPlugin(io, allocator, plugin_dir, workspace_root, marketplace_json, stdout) catch |err| switch (err) {
                         error.RefusingToOverwriteDifferentFile => {
                             try stdout.writeAll("  action: failed (destination exists and differs)\n");
                             return exit_codes.general;
@@ -1305,7 +1313,7 @@ fn installCommand(argv: []const []const u8, stdout: anytype, stderr: anytype) !u
                     };
                     try stdout.writeAll("  action: installed Codex plugin and marketplace registration\n");
                 } else {
-                    plugin_install.installClaudePlugin(allocator, plugin_dir, workspace_root, marketplace_json, stdout) catch |err| switch (err) {
+                    plugin_install.installClaudePlugin(io, allocator, plugin_dir, workspace_root, marketplace_json, stdout) catch |err| switch (err) {
                         error.RefusingToOverwriteDifferentFile => {
                             try stdout.writeAll("  action: failed (destination exists and differs)\n");
                             return exit_codes.general;
@@ -1339,7 +1347,7 @@ fn installCommand(argv: []const []const u8, stdout: anytype, stderr: anytype) !u
 // mcp-server
 // ---------------------------------------------------------------------------
 
-fn mcpServerCommand(argv: []const []const u8, stdout: anytype, stderr: anytype) !u8 {
+fn mcpServerCommand(_: std.Io, argv: []const []const u8, stdout: anytype, stderr: anytype) !u8 {
     for (argv) |arg| {
         if (std.mem.eql(u8, arg, "--help") or std.mem.eql(u8, arg, "-h")) {
             try stdout.writeAll(
@@ -1397,28 +1405,28 @@ fn mcpServerCommand(argv: []const []const u8, stdout: anytype, stderr: anytype) 
 // Shared helpers
 // ---------------------------------------------------------------------------
 
-pub fn fileExistsAbsolute(path: []const u8) bool {
-    std.fs.cwd().access(path, .{}) catch return false;
+pub fn fileExistsAbsolute(io: std.Io, path: []const u8) bool {
+    std.Io.Dir.cwd().access(io, path, .{}) catch return false;
     return true;
 }
 
-pub fn pluginDirExists(allocator: std.mem.Allocator, relative_path: []const u8) bool {
-    const resolved = resolveBundledPath(allocator, relative_path) catch return false;
+pub fn pluginDirExists(io: std.Io, allocator: std.mem.Allocator, relative_path: []const u8) bool {
+    const resolved = resolveBundledPath(io, allocator, relative_path) catch return false;
     defer allocator.free(resolved);
     return dirExists(resolved);
 }
 
-pub fn resolveBundledPath(allocator: std.mem.Allocator, relative_path: []const u8) ![]u8 {
+pub fn resolveBundledPath(io: std.Io, allocator: std.mem.Allocator, relative_path: []const u8) ![]u8 {
     // Delegate to the robust resolver used by redteam/doctor (workspace → ORCA_RESOURCE_ROOT
     // env → self-exe fallbacks including $PREFIX/share/orca/current). This fixes the
     // long-standing inconsistency where `plugin manifest` reported "missing" for hermes
     // (and peers) after a correct install even when the assets were present and doctor/redteam
     // worked. We preserve the old contract: on total failure we still return the relative
     // string so callers can print a sensible "expected path" + "missing" status.
-    const workspace_root = std.fs.cwd().realpathAlloc(allocator, ".") catch try allocator.dupe(u8, ".");
+    const workspace_root: [:0]u8 = std.Io.Dir.cwd().realPathFileAlloc(io, ".", allocator) catch try allocator.dupeZ(u8, ".");
     defer allocator.free(workspace_root);
 
-    if (resource_root.resolveResourcePath(allocator, .{ .workspace_root = workspace_root }, relative_path)) |resolved| {
+    if (resource_root.resolveResourcePath(io, allocator, .{ .workspace_root = workspace_root }, relative_path)) |resolved| {
         return resolved;
     } else |err| switch (err) {
         error.ResourceNotFound => return allocator.dupe(u8, relative_path),
@@ -1466,8 +1474,8 @@ fn openClawPluginEntryMatches(value: std.json.Value) bool {
     return false;
 }
 
-pub fn detectOpenClawHostInstall(allocator: std.mem.Allocator, openclaw_in_path: bool) !OpenClawHostInstall {
-    const home = std.process.getEnvVarOwned(allocator, "HOME") catch {
+pub fn detectOpenClawHostInstall(io: std.Io, allocator: std.mem.Allocator, openclaw_in_path: bool) !OpenClawHostInstall {
+    var env_map = env_util.createProcessMap(allocator) catch {
         return .{
             .host_plugin_installed = false,
             .plugin_manifest_exists = false,
@@ -1475,6 +1483,15 @@ pub fn detectOpenClawHostInstall(allocator: std.mem.Allocator, openclaw_in_path:
             .source_exists = false,
             .detection_note = "HOME not set; host install unknown",
         };
+    };
+    defer env_map.deinit();
+    const home_owned = try env_util.getOwned(&env_map, allocator, "HOME");
+    const home = home_owned orelse return .{
+        .host_plugin_installed = false,
+        .plugin_manifest_exists = false,
+        .package_json_exists = false,
+        .source_exists = false,
+        .detection_note = "HOME not set; host install unknown",
     };
     defer allocator.free(home);
 
@@ -1487,9 +1504,9 @@ pub fn detectOpenClawHostInstall(allocator: std.mem.Allocator, openclaw_in_path:
     const source_path = try std.fs.path.join(allocator, &.{ extension_root, "src", "index.ts" });
     defer allocator.free(source_path);
 
-    const manifest_exists = fileExistsAbsolute(manifest_path);
-    const package_exists = fileExistsAbsolute(package_json_path);
-    const source_exists = fileExistsAbsolute(source_path);
+    const manifest_exists = fileExistsAbsolute(io, manifest_path);
+    const package_exists = fileExistsAbsolute(io, package_json_path);
+    const source_exists = fileExistsAbsolute(io, source_path);
     var host_plugin_installed = manifest_exists or package_exists or source_exists;
     var detection_note: []const u8 = "checked host extension directory";
 
@@ -1516,16 +1533,17 @@ pub fn detectOpenClawHostInstall(allocator: std.mem.Allocator, openclaw_in_path:
 }
 
 pub fn captureChildOutput(allocator: std.mem.Allocator, argv: []const []const u8) ![]u8 {
-    var child = std.process.Child.init(argv, allocator);
-    child.stdin_behavior = .Ignore;
-    child.stdout_behavior = .Pipe;
-    child.stderr_behavior = .Ignore;
-    try child.spawn();
-    const stdout_data = if (child.stdout) |out| try out.readToEndAlloc(allocator, 256 * 1024) else try allocator.alloc(u8, 0);
-    errdefer allocator.free(stdout_data);
-    const term = try child.wait();
-    if (term != .Exited or term.Exited != 0) return error.ChildFailed;
-    return stdout_data;
+    var threaded: std.Io.Threaded = .init_single_threaded;
+    const io = threaded.io();
+    const run_result = try std.process.run(allocator, io, .{
+        .argv = argv,
+        .stdout_limit = .limited(256 * 1024),
+        .stderr_limit = .limited(0),
+    });
+    defer allocator.free(run_result.stderr);
+    const term = run_result.term;
+    if (term != .exited or term.exited != 0) return error.ChildFailed;
+    return run_result.stdout;
 }
 
 pub fn hostPluginInstalledFromReport(host_name: []const u8, report: PluginDoctorReport) bool {
@@ -1576,107 +1594,140 @@ pub fn resolveOpenCodeDestination(allocator: std.mem.Allocator, workspace_root: 
     return switch (scope) {
         .project => std.fs.path.join(allocator, &.{ workspace_root, ".opencode", "plugins", "orca.ts" }),
         .global => blk: {
-            const home = try std.process.getEnvVarOwned(allocator, "HOME");
-            defer allocator.free(home);
-            break :blk std.fs.path.join(allocator, &.{ home, ".config", "opencode", "plugins", "orca.ts" });
+            var env_map = env_util.createProcessMap(allocator) catch return std.fs.path.join(allocator, &.{ "~", ".config", "opencode", "plugins", "orca.ts" });
+            defer env_map.deinit();
+            const home = env_util.getOwned(&env_map, allocator, "HOME") catch return std.fs.path.join(allocator, &.{ "~", ".config", "opencode", "plugins", "orca.ts" });
+            const home_owned = home orelse return std.fs.path.join(allocator, &.{ "~", ".config", "opencode", "plugins", "orca.ts" });
+            defer allocator.free(home_owned);
+            break :blk std.fs.path.join(allocator, &.{ home_owned, ".config", "opencode", "plugins", "orca.ts" });
         },
     };
 }
 
 pub fn hermesUserPluginRoot(allocator: std.mem.Allocator) ![]u8 {
-    const home = std.process.getEnvVarOwned(allocator, "HOME") catch return std.fs.path.join(allocator, &.{ "~", ".hermes", "plugins", "orca" });
-    defer allocator.free(home);
-    return std.fs.path.join(allocator, &.{ home, ".hermes", "plugins", "orca" });
+    var env_map = env_util.createProcessMap(allocator) catch return std.fs.path.join(allocator, &.{ "~", ".hermes", "plugins", "orca" });
+    defer env_map.deinit();
+    const home = env_util.getOwned(&env_map, allocator, "HOME") catch return std.fs.path.join(allocator, &.{ "~", ".hermes", "plugins", "orca" });
+    const home_owned = home orelse return std.fs.path.join(allocator, &.{ "~", ".hermes", "plugins", "orca" });
+    defer allocator.free(home_owned);
+    return std.fs.path.join(allocator, &.{ home_owned, ".hermes", "plugins", "orca" });
 }
 
 pub fn hermesConfigPath(allocator: std.mem.Allocator) ![]u8 {
-    const home = std.process.getEnvVarOwned(allocator, "HOME") catch return std.fs.path.join(allocator, &.{ "~", ".hermes", "config.yaml" });
-    defer allocator.free(home);
-    return std.fs.path.join(allocator, &.{ home, ".hermes", "config.yaml" });
+    var env_map = env_util.createProcessMap(allocator) catch return std.fs.path.join(allocator, &.{ "~", ".hermes", "config.yaml" });
+    defer env_map.deinit();
+    const home = env_util.getOwned(&env_map, allocator, "HOME") catch return std.fs.path.join(allocator, &.{ "~", ".hermes", "config.yaml" });
+    const home_owned = home orelse return std.fs.path.join(allocator, &.{ "~", ".hermes", "config.yaml" });
+    defer allocator.free(home_owned);
+    return std.fs.path.join(allocator, &.{ home_owned, ".hermes", "config.yaml" });
 }
 
 pub fn installFileIfSafe(allocator: std.mem.Allocator, source_path: []const u8, destination_path: []const u8) !bool {
-    if (fileExistsAbsolute(destination_path)) {
+    var threaded: std.Io.Threaded = .init_single_threaded;
+    const io = threaded.io();
+    if (fileExistsAbsolute(io, destination_path)) {
         const same = try filesEqual(allocator, source_path, destination_path);
         if (same) return false;
         return error.RefusingToOverwriteDifferentFile;
     }
 
     const parent = std.fs.path.dirname(destination_path) orelse return error.InvalidPath;
-    try std.fs.cwd().makePath(parent);
+    try std.Io.Dir.cwd().createDirPath(io, parent);
 
-    const source = try std.fs.cwd().readFileAlloc(allocator, source_path, 1024 * 1024);
+    const source = try std.Io.Dir.cwd().readFileAlloc(io, source_path, allocator, .limited(1024 * 1024));
     defer allocator.free(source);
-    try std.fs.cwd().writeFile(.{ .sub_path = destination_path, .data = source, .flags = .{ .exclusive = true } });
+    const dest_file = try std.Io.Dir.cwd().createFile(io, destination_path, .{ .exclusive = true });
+    defer dest_file.close(io);
+    try dest_file.writeStreamingAll(io, source);
+    try dest_file.sync(io);
     return true;
 }
 
 pub fn filesEqual(allocator: std.mem.Allocator, lhs_path: []const u8, rhs_path: []const u8) !bool {
-    const lhs = try std.fs.cwd().readFileAlloc(allocator, lhs_path, 1024 * 1024);
+    var threaded: std.Io.Threaded = .init_single_threaded;
+    const io = threaded.io();
+    const lhs = try std.Io.Dir.cwd().readFileAlloc(io, lhs_path, allocator, .limited(1024 * 1024));
     defer allocator.free(lhs);
-    const rhs = try std.fs.cwd().readFileAlloc(allocator, rhs_path, 1024 * 1024);
+    const rhs = try std.Io.Dir.cwd().readFileAlloc(io, rhs_path, allocator, .limited(1024 * 1024));
     defer allocator.free(rhs);
     return std.mem.eql(u8, lhs, rhs);
 }
 
-pub fn runOpenClawInstall(allocator: std.mem.Allocator, plugin_dir: []const u8) !u8 {
+pub fn runOpenClawInstall(_: std.mem.Allocator, plugin_dir: []const u8) !u8 {
+    var threaded: std.Io.Threaded = .init_single_threaded;
+    const io = threaded.io();
     const argv = [_][]const u8{ "openclaw", "plugins", "install", plugin_dir };
-    var child = std.process.Child.init(&argv, allocator);
-    child.stdin_behavior = .Ignore;
-    child.stdout_behavior = .Inherit;
-    child.stderr_behavior = .Inherit;
-    const term = try child.spawnAndWait();
+    var child = try std.process.spawn(io, .{
+        .argv = &argv,
+        .stdin = .ignore,
+        .stdout = .inherit,
+        .stderr = .inherit,
+    });
+    const term = try child.wait(io);
     return switch (term) {
-        .Exited => |code| @as(u8, @intCast(@min(code, 255))),
+        .exited => |code| @as(u8, @intCast(@min(code, 255))),
         else => 255,
     };
 }
 
-pub fn runHermesEnable(allocator: std.mem.Allocator) !u8 {
+pub fn runHermesEnable(_: std.mem.Allocator) !u8 {
+    var threaded: std.Io.Threaded = .init_single_threaded;
+    const io = threaded.io();
     const argv = [_][]const u8{ "hermes", "plugins", "enable", "orca" };
-    var child = std.process.Child.init(&argv, allocator);
-    child.stdin_behavior = .Ignore;
-    child.stdout_behavior = .Inherit;
-    child.stderr_behavior = .Inherit;
-    const term = try child.spawnAndWait();
+    var child = try std.process.spawn(io, .{
+        .argv = &argv,
+        .stdin = .ignore,
+        .stdout = .inherit,
+        .stderr = .inherit,
+    });
+    const term = try child.wait(io);
     return switch (term) {
-        .Exited => |code| @as(u8, @intCast(@min(code, 255))),
+        .exited => |code| @as(u8, @intCast(@min(code, 255))),
         else => 255,
     };
 }
 
 pub fn fileContains(allocator: std.mem.Allocator, path: []const u8, needle: []const u8) bool {
-    const content = std.fs.cwd().readFileAlloc(allocator, path, 1024 * 1024) catch return false;
+    var threaded: std.Io.Threaded = .init_single_threaded;
+    const io = threaded.io();
+    const content = std.Io.Dir.cwd().readFileAlloc(io, path, allocator, .limited(1024 * 1024)) catch return false;
     defer allocator.free(content);
     return std.mem.indexOf(u8, content, needle) != null;
 }
 
 pub fn dirExists(path: []const u8) bool {
-    var dir = std.fs.cwd().openDir(path, .{}) catch return false;
-    dir.close();
+    var threaded: std.Io.Threaded = .init_single_threaded;
+    const io = threaded.io();
+    var dir = std.Io.Dir.cwd().openDir(io, path, .{}) catch return false;
+    defer dir.close(io);
     return true;
 }
 
 pub fn hasPath(root: []const u8, relative: []const u8) bool {
+    var threaded: std.Io.Threaded = .init_single_threaded;
+    const io = threaded.io();
     const allocator = std.heap.page_allocator;
     const path = std.fs.path.join(allocator, &.{ root, relative }) catch return false;
     defer allocator.free(path);
-    return fileExistsAbsolute(path);
+    return fileExistsAbsolute(io, path);
 }
 
-pub fn binaryInPath(allocator: std.mem.Allocator, binary_name: []const u8) bool {
-    const path_value = std.process.getEnvVarOwned(allocator, "PATH") catch return false;
+pub fn binaryInPath(io: std.Io, allocator: std.mem.Allocator, binary_name: []const u8) bool {
+    var env_map = env_util.createProcessMap(allocator) catch return false;
+    defer env_map.deinit();
+    const path_owned = env_util.getOwned(&env_map, allocator, "PATH") catch return false;
+    const path_value = path_owned orelse return false;
     defer allocator.free(path_value);
     var parts = std.mem.splitScalar(u8, path_value, std.fs.path.delimiter);
     while (parts.next()) |dir| {
         if (dir.len == 0) continue;
         const candidate = std.fs.path.join(allocator, &.{ dir, binary_name }) catch continue;
         defer allocator.free(candidate);
-        if (fileExistsAbsolute(candidate)) return true;
+        if (fileExistsAbsolute(io, candidate)) return true;
         if (builtin.os.tag == .windows) {
             const exe_candidate = std.fmt.allocPrint(allocator, "{s}.exe", .{candidate}) catch continue;
             defer allocator.free(exe_candidate);
-            if (fileExistsAbsolute(exe_candidate)) return true;
+            if (fileExistsAbsolute(io, exe_candidate)) return true;
         }
     }
     return false;
@@ -1707,27 +1758,41 @@ pub const SmokeResult = struct {
 };
 
 pub fn smokeTestHook(allocator: std.mem.Allocator, host: []const u8, event: []const u8, fixture_path: []const u8, expected_decision: []const u8) !SmokeResult {
-    const self_exe = try std.fs.selfExePathAlloc(allocator);
+    var threaded: std.Io.Threaded = .init_single_threaded;
+    const io = threaded.io();
+    const self_exe = try std.process.executablePathAlloc(io, allocator);
     defer allocator.free(self_exe);
     const argv = &[_][]const u8{ self_exe, "hook", host, event };
-    var child = std.process.Child.init(argv, allocator);
-    child.stdin_behavior = .Pipe;
-    child.stdout_behavior = .Pipe;
-    child.stderr_behavior = .Ignore;
-    try child.spawn();
+    var child = try std.process.spawn(io, .{
+        .argv = argv,
+        .stdin = .pipe,
+        .stdout = .pipe,
+        .stderr = .ignore,
+    });
 
-    const fixture = try std.fs.cwd().readFileAlloc(allocator, fixture_path, 256 * 1024);
+    const fixture = try std.Io.Dir.cwd().readFileAlloc(io, fixture_path, allocator, .limited(256 * 1024));
     defer allocator.free(fixture);
     if (child.stdin) |stdin| {
-        try stdin.writeAll(fixture);
-        stdin.close();
+        try stdin.writeStreamingAll(io, fixture);
+        stdin.close(io);
         child.stdin = null;
     }
 
-    const stdout = if (child.stdout) |out| try out.readToEndAlloc(allocator, 256 * 1024) else "";
+    const stdout = if (child.stdout) |out| blk: {
+        var list: std.ArrayList(u8) = .empty;
+        errdefer list.deinit(allocator);
+        var buf: [4096]u8 = undefined;
+        var reader = out.reader(io, &buf);
+        while (list.items.len < 256 * 1024) {
+            const n = reader.interface.readSliceShort(buf[0..@min(buf.len, 256 * 1024 - list.items.len)]) catch break;
+            if (n == 0) break;
+            try list.appendSlice(allocator, buf[0..n]);
+        }
+        break :blk try list.toOwnedSlice(allocator);
+    } else "";
     defer allocator.free(stdout);
-    const term = try child.wait();
-    if (term != .Exited or term.Exited != 0) return error.HookFailed;
+    const term = try child.wait(io);
+    if (term != .exited or term.exited != 0) return error.HookFailed;
 
     var parsed = try std.json.parseFromSlice(std.json.Value, allocator, stdout, .{});
     defer parsed.deinit();
@@ -1740,21 +1805,27 @@ pub fn smokeTestHook(allocator: std.mem.Allocator, host: []const u8, event: []co
 // ---------------------------------------------------------------------------
 
 fn writeHermesEnableHelper(allocator: std.mem.Allocator, plugin_dir: []const u8) !void {
+    var threaded: std.Io.Threaded = .init_single_threaded;
+    const io = threaded.io();
     // Guard: hermesUserPluginRoot can return a path with literal ~ if HOME is unset
-    const resolved_dir = if (std.mem.startsWith(u8, plugin_dir, "~/"))
-        try std.fs.path.join(allocator, &.{ std.process.getEnvVarOwned(allocator, "HOME") catch return, plugin_dir[2..] })
-    else
-        try allocator.dupe(u8, plugin_dir);
+    const resolved_dir = if (std.mem.startsWith(u8, plugin_dir, "~/")) blk: {
+        var env_map = env_util.createProcessMap(allocator) catch return;
+        defer env_map.deinit();
+        const home = env_util.getOwned(&env_map, allocator, "HOME") catch return;
+        const home_owned = home orelse return;
+        defer allocator.free(home_owned);
+        break :blk try std.fs.path.join(allocator, &.{ home_owned, plugin_dir[2..] });
+    } else try allocator.dupe(u8, plugin_dir);
     defer allocator.free(resolved_dir);
 
     const help_path = try std.fs.path.join(allocator, &.{ resolved_dir, "ENABLE.txt" });
     defer allocator.free(help_path);
-    if (std.fs.path.dirname(help_path)) |parent| try std.fs.cwd().makePath(parent);
+    if (std.fs.path.dirname(help_path)) |parent| try std.Io.Dir.cwd().createDirPath(io, parent);
 
-    try std.fs.cwd().writeFile(.{
-        .sub_path = help_path,
-        .data = "Orca plugin files are installed.\nTo enable, run:\n  hermes plugins enable orca\n",
-    });
+    const file = try std.Io.Dir.cwd().createFile(io, help_path, .{ .truncate = true });
+    defer file.close(io);
+    try file.writeStreamingAll(io, "Orca plugin files are installed.\nTo enable, run:\n  hermes plugins enable orca\n");
+    try file.sync(io);
 }
 
 // ---------------------------------------------------------------------------
@@ -1764,30 +1835,30 @@ fn writeHermesEnableHelper(allocator: std.mem.Allocator, plugin_dir: []const u8)
 test "plugin command help and invalid subcommands are stable" {
     var stdout_buf: [2048]u8 = undefined;
     var stderr_buf: [256]u8 = undefined;
-    var stdout_stream = std.io.fixedBufferStream(&stdout_buf);
-    var stderr_stream = std.io.fixedBufferStream(&stderr_buf);
+    var stdout_writer: std.Io.Writer = .fixed(&stdout_buf);
+    var stderr_writer: std.Io.Writer = .fixed(&stderr_buf);
 
-    const help_code = try command(&.{"--help"}, stdout_stream.writer(), stderr_stream.writer());
+    const help_code = try command(std.testing.io, &.{"--help"}, &stdout_writer, &stderr_writer);
     try std.testing.expectEqual(exit_codes.success, help_code);
-    try std.testing.expect(std.mem.indexOf(u8, stdout_stream.getWritten(), "plugin") != null);
+    try std.testing.expect(std.mem.indexOf(u8, stdout_writer.buffered(), "plugin") != null);
 
-    stdout_stream.reset();
-    stderr_stream.reset();
-    const bad_code = try command(&.{"unknown"}, stdout_stream.writer(), stderr_stream.writer());
+    stdout_writer = .fixed(&stdout_buf);
+    stderr_writer = .fixed(&stderr_buf);
+    const bad_code = try command(std.testing.io, &.{"unknown"}, &stdout_writer, &stderr_writer);
     try std.testing.expectEqual(exit_codes.usage, bad_code);
-    try std.testing.expect(std.mem.indexOf(u8, stderr_stream.getWritten(), "unknown subcommand") != null);
+    try std.testing.expect(std.mem.indexOf(u8, stderr_writer.buffered(), "unknown subcommand") != null);
 }
 
 test "plugin doctor prints expected sections" {
     var stdout_buf: [16384]u8 = undefined;
     var stderr_buf: [256]u8 = undefined;
-    var stdout_stream = std.io.fixedBufferStream(&stdout_buf);
-    var stderr_stream = std.io.fixedBufferStream(&stderr_buf);
+    var stdout_writer: std.Io.Writer = .fixed(&stdout_buf);
+    var stderr_writer: std.Io.Writer = .fixed(&stderr_buf);
 
-    const code = try doctorCommand(&.{}, stdout_stream.writer(), stderr_stream.writer());
+    const code = try doctorCommand(std.testing.io, &.{}, &stdout_writer, &stderr_writer);
     try std.testing.expectEqual(exit_codes.success, code);
 
-    const output = stdout_stream.getWritten();
+    const output = stdout_writer.buffered();
     try std.testing.expect(std.mem.indexOf(u8, output, "Orca Plugin Doctor") != null);
     try std.testing.expect(std.mem.indexOf(u8, output, "Orca version:") != null);
     try std.testing.expect(std.mem.indexOf(u8, output, "Policy:") != null);
@@ -1795,11 +1866,11 @@ test "plugin doctor prints expected sections" {
     try std.testing.expect(std.mem.indexOf(u8, output, "Host binaries:") != null);
     try std.testing.expect(std.mem.indexOf(u8, output, "Drone workstream:") == null);
     try std.testing.expect(std.mem.indexOf(u8, output, "Platform:") != null);
-    try std.testing.expectEqualStrings("", stderr_stream.getWritten());
+    try std.testing.expectEqualStrings("", stderr_writer.buffered());
 }
 
 fn collectPluginDoctorReportFailureHarness(allocator: std.mem.Allocator) !void {
-    var report = try collectPluginDoctorReport(allocator);
+    var report = try collectPluginDoctorReport(std.testing.io, allocator);
     defer deinitPluginDoctorReport(&report, allocator);
 }
 
@@ -1810,13 +1881,13 @@ test "plugin doctor report cleans up allocation failure paths" {
 test "plugin doctor --json emits valid JSON" {
     var stdout_buf: [16384]u8 = undefined;
     var stderr_buf: [256]u8 = undefined;
-    var stdout_stream = std.io.fixedBufferStream(&stdout_buf);
-    var stderr_stream = std.io.fixedBufferStream(&stderr_buf);
+    var stdout_writer: std.Io.Writer = .fixed(&stdout_buf);
+    var stderr_writer: std.Io.Writer = .fixed(&stderr_buf);
 
-    const code = try doctorCommand(&.{"--json"}, stdout_stream.writer(), stderr_stream.writer());
+    const code = try doctorCommand(std.testing.io, &.{"--json"}, &stdout_writer, &stderr_writer);
     try std.testing.expectEqual(exit_codes.success, code);
 
-    const json = stdout_stream.getWritten();
+    const json = stdout_writer.buffered();
     var parsed = try std.json.parseFromSlice(std.json.Value, std.testing.allocator, json, .{});
     defer parsed.deinit();
 
@@ -1829,227 +1900,227 @@ test "plugin doctor --json emits valid JSON" {
     try std.testing.expect(parsed.value.object.get("hermes_hook_smoke_passed").? == .bool);
     try std.testing.expect(parsed.value.object.get("drone") == null);
     try std.testing.expect(parsed.value.object.get("warnings") != null);
-    try std.testing.expectEqualStrings("", stderr_stream.getWritten());
+    try std.testing.expectEqualStrings("", stderr_writer.buffered());
 }
 
 test "plugin doctor plain output does not expose Edge or drone workstream state" {
     var stdout_buf: [16384]u8 = undefined;
     var stderr_buf: [256]u8 = undefined;
-    var stdout_stream = std.io.fixedBufferStream(&stdout_buf);
-    var stderr_stream = std.io.fixedBufferStream(&stderr_buf);
+    var stdout_writer: std.Io.Writer = .fixed(&stdout_buf);
+    var stderr_writer: std.Io.Writer = .fixed(&stderr_buf);
 
-    const code = try doctorCommand(&.{}, stdout_stream.writer(), stderr_stream.writer());
+    const code = try doctorCommand(std.testing.io, &.{}, &stdout_writer, &stderr_writer);
     try std.testing.expectEqual(exit_codes.success, code);
 
-    const output = stdout_stream.getWritten();
+    const output = stdout_writer.buffered();
     try std.testing.expect(std.mem.indexOf(u8, output, "Drone workstream") == null);
     try std.testing.expect(std.mem.indexOf(u8, output, "live control") == null);
     try std.testing.expect(std.mem.indexOf(u8, output, "edge") == null);
-    try std.testing.expectEqualStrings("", stderr_stream.getWritten());
+    try std.testing.expectEqualStrings("", stderr_writer.buffered());
 }
 
 test "plugin doctor codex shows codex-specific section" {
     var stdout_buf: [16384]u8 = undefined;
     var stderr_buf: [256]u8 = undefined;
-    var stdout_stream = std.io.fixedBufferStream(&stdout_buf);
-    var stderr_stream = std.io.fixedBufferStream(&stderr_buf);
+    var stdout_writer: std.Io.Writer = .fixed(&stdout_buf);
+    var stderr_writer: std.Io.Writer = .fixed(&stderr_buf);
 
-    const code = try doctorCommand(&.{"codex"}, stdout_stream.writer(), stderr_stream.writer());
+    const code = try doctorCommand(std.testing.io, &.{"codex"}, &stdout_writer, &stderr_writer);
     try std.testing.expectEqual(exit_codes.success, code);
 
-    const output = stdout_stream.getWritten();
+    const output = stdout_writer.buffered();
     try std.testing.expect(std.mem.indexOf(u8, output, "Codex plugin status:") != null);
     try std.testing.expect(std.mem.indexOf(u8, output, "host binary:") != null);
-    try std.testing.expectEqualStrings("", stderr_stream.getWritten());
+    try std.testing.expectEqualStrings("", stderr_writer.buffered());
 }
 
 test "plugin doctor claude shows claude-specific section" {
     var stdout_buf: [16384]u8 = undefined;
     var stderr_buf: [256]u8 = undefined;
-    var stdout_stream = std.io.fixedBufferStream(&stdout_buf);
-    var stderr_stream = std.io.fixedBufferStream(&stderr_buf);
+    var stdout_writer: std.Io.Writer = .fixed(&stdout_buf);
+    var stderr_writer: std.Io.Writer = .fixed(&stderr_buf);
 
-    const code = try doctorCommand(&.{"claude"}, stdout_stream.writer(), stderr_stream.writer());
+    const code = try doctorCommand(std.testing.io, &.{"claude"}, &stdout_writer, &stderr_writer);
     try std.testing.expectEqual(exit_codes.success, code);
 
-    const output = stdout_stream.getWritten();
+    const output = stdout_writer.buffered();
     try std.testing.expect(std.mem.indexOf(u8, output, "Claude Code plugin status:") != null);
     try std.testing.expect(std.mem.indexOf(u8, output, "host binary:") != null);
-    try std.testing.expectEqualStrings("", stderr_stream.getWritten());
+    try std.testing.expectEqualStrings("", stderr_writer.buffered());
 }
 
 test "plugin doctor opencode shows opencode-specific section" {
     var stdout_buf: [16384]u8 = undefined;
     var stderr_buf: [256]u8 = undefined;
-    var stdout_stream = std.io.fixedBufferStream(&stdout_buf);
-    var stderr_stream = std.io.fixedBufferStream(&stderr_buf);
+    var stdout_writer: std.Io.Writer = .fixed(&stdout_buf);
+    var stderr_writer: std.Io.Writer = .fixed(&stderr_buf);
 
-    const code = try doctorCommand(&.{"opencode"}, stdout_stream.writer(), stderr_stream.writer());
+    const code = try doctorCommand(std.testing.io, &.{"opencode"}, &stdout_writer, &stderr_writer);
     try std.testing.expectEqual(exit_codes.success, code);
 
-    const output = stdout_stream.getWritten();
+    const output = stdout_writer.buffered();
     try std.testing.expect(std.mem.indexOf(u8, output, "OpenCode plugin status:") != null);
     try std.testing.expect(std.mem.indexOf(u8, output, "host binary:") != null);
     try std.testing.expect(std.mem.indexOf(u8, output, "project plugin path") != null);
     try std.testing.expect(std.mem.indexOf(u8, output, "global plugin path") != null);
-    try std.testing.expectEqualStrings("", stderr_stream.getWritten());
+    try std.testing.expectEqualStrings("", stderr_writer.buffered());
 }
 
 test "plugin doctor openclaw shows openclaw-specific section" {
     var stdout_buf: [16384]u8 = undefined;
     var stderr_buf: [256]u8 = undefined;
-    var stdout_stream = std.io.fixedBufferStream(&stdout_buf);
-    var stderr_stream = std.io.fixedBufferStream(&stderr_buf);
+    var stdout_writer: std.Io.Writer = .fixed(&stdout_buf);
+    var stderr_writer: std.Io.Writer = .fixed(&stderr_buf);
 
-    const code = try doctorCommand(&.{"openclaw"}, stdout_stream.writer(), stderr_stream.writer());
+    const code = try doctorCommand(std.testing.io, &.{"openclaw"}, &stdout_writer, &stderr_writer);
     try std.testing.expectEqual(exit_codes.success, code);
 
-    const output = stdout_stream.getWritten();
+    const output = stdout_writer.buffered();
     try std.testing.expect(std.mem.indexOf(u8, output, "OpenClaw plugin status:") != null);
     try std.testing.expect(std.mem.indexOf(u8, output, "host binary:") != null);
     try std.testing.expect(std.mem.indexOf(u8, output, "plugin manifest") != null);
     try std.testing.expect(std.mem.indexOf(u8, output, "package.json") != null);
-    try std.testing.expectEqualStrings("", stderr_stream.getWritten());
+    try std.testing.expectEqualStrings("", stderr_writer.buffered());
 }
 
 test "plugin doctor hermes shows hermes-specific section" {
     var stdout_buf: [16384]u8 = undefined;
     var stderr_buf: [256]u8 = undefined;
-    var stdout_stream = std.io.fixedBufferStream(&stdout_buf);
-    var stderr_stream = std.io.fixedBufferStream(&stderr_buf);
+    var stdout_writer: std.Io.Writer = .fixed(&stdout_buf);
+    var stderr_writer: std.Io.Writer = .fixed(&stderr_buf);
 
-    const code = try doctorCommand(&.{"hermes"}, stdout_stream.writer(), stderr_stream.writer());
+    const code = try doctorCommand(std.testing.io, &.{"hermes"}, &stdout_writer, &stderr_writer);
     try std.testing.expectEqual(exit_codes.success, code);
 
-    const output = stdout_stream.getWritten();
+    const output = stdout_writer.buffered();
     try std.testing.expect(std.mem.indexOf(u8, output, "Hermes plugin status:") != null);
     try std.testing.expect(std.mem.indexOf(u8, output, "repo plugin.yaml") != null);
     try std.testing.expect(std.mem.indexOf(u8, output, "~/.hermes/plugins/orca/plugin.yaml") != null);
     try std.testing.expect(std.mem.indexOf(u8, output, "hook smoke test (pre_tool_call):") != null);
-    try std.testing.expectEqualStrings("", stderr_stream.getWritten());
+    try std.testing.expectEqualStrings("", stderr_writer.buffered());
 }
 
 test "plugin doctor does not print raw env values or secrets" {
     var stdout_buf: [16384]u8 = undefined;
     var stderr_buf: [256]u8 = undefined;
-    var stdout_stream = std.io.fixedBufferStream(&stdout_buf);
-    var stderr_stream = std.io.fixedBufferStream(&stderr_buf);
+    var stdout_writer: std.Io.Writer = .fixed(&stdout_buf);
+    var stderr_writer: std.Io.Writer = .fixed(&stderr_buf);
 
-    const code = try doctorCommand(&.{"--json"}, stdout_stream.writer(), stderr_stream.writer());
+    const code = try doctorCommand(std.testing.io, &.{"--json"}, &stdout_writer, &stderr_writer);
     try std.testing.expectEqual(exit_codes.success, code);
 
-    const output = stdout_stream.getWritten();
+    const output = stdout_writer.buffered();
     // Should not contain any obviously secret-looking values
     try std.testing.expect(std.mem.indexOf(u8, output, "ghp_") == null);
     try std.testing.expect(std.mem.indexOf(u8, output, "sk-") == null);
     try std.testing.expect(std.mem.indexOf(u8, output, "password") == null);
     try std.testing.expect(std.mem.indexOf(u8, output, "secret") == null);
-    try std.testing.expectEqualStrings("", stderr_stream.getWritten());
+    try std.testing.expectEqualStrings("", stderr_writer.buffered());
 }
 
 test "plugin manifest codex reports expected path" {
     var stdout_buf: [1024]u8 = undefined;
     var stderr_buf: [256]u8 = undefined;
-    var stdout_stream = std.io.fixedBufferStream(&stdout_buf);
-    var stderr_stream = std.io.fixedBufferStream(&stderr_buf);
+    var stdout_writer: std.Io.Writer = .fixed(&stdout_buf);
+    var stderr_writer: std.Io.Writer = .fixed(&stderr_buf);
 
-    const code = try manifestCommand(&.{"codex"}, stdout_stream.writer(), stderr_stream.writer());
+    const code = try manifestCommand(std.testing.io, &.{"codex"}, &stdout_writer, &stderr_writer);
     try std.testing.expectEqual(exit_codes.success, code);
 
-    const output = stdout_stream.getWritten();
+    const output = stdout_writer.buffered();
     try std.testing.expect(std.mem.indexOf(u8, output, "integrations/codex-plugin/.codex-plugin/plugin.json") != null);
     try std.testing.expect(std.mem.indexOf(u8, output, "exists") != null);
-    try std.testing.expectEqualStrings("", stderr_stream.getWritten());
+    try std.testing.expectEqualStrings("", stderr_writer.buffered());
 }
 
 test "plugin manifest claude reports expected path" {
     var stdout_buf: [1024]u8 = undefined;
     var stderr_buf: [256]u8 = undefined;
-    var stdout_stream = std.io.fixedBufferStream(&stdout_buf);
-    var stderr_stream = std.io.fixedBufferStream(&stderr_buf);
+    var stdout_writer: std.Io.Writer = .fixed(&stdout_buf);
+    var stderr_writer: std.Io.Writer = .fixed(&stderr_buf);
 
-    const code = try manifestCommand(&.{"claude"}, stdout_stream.writer(), stderr_stream.writer());
+    const code = try manifestCommand(std.testing.io, &.{"claude"}, &stdout_writer, &stderr_writer);
     try std.testing.expectEqual(exit_codes.success, code);
 
-    const output = stdout_stream.getWritten();
+    const output = stdout_writer.buffered();
     try std.testing.expect(std.mem.indexOf(u8, output, "integrations/claude-code-plugin/.claude-plugin/plugin.json") != null);
     try std.testing.expect(std.mem.indexOf(u8, output, "exists") != null);
-    try std.testing.expectEqualStrings("", stderr_stream.getWritten());
+    try std.testing.expectEqualStrings("", stderr_writer.buffered());
 }
 
 test "plugin manifest opencode reports expected path" {
     var stdout_buf: [1024]u8 = undefined;
     var stderr_buf: [256]u8 = undefined;
-    var stdout_stream = std.io.fixedBufferStream(&stdout_buf);
-    var stderr_stream = std.io.fixedBufferStream(&stderr_buf);
+    var stdout_writer: std.Io.Writer = .fixed(&stdout_buf);
+    var stderr_writer: std.Io.Writer = .fixed(&stderr_buf);
 
-    const code = try manifestCommand(&.{"opencode"}, stdout_stream.writer(), stderr_stream.writer());
+    const code = try manifestCommand(std.testing.io, &.{"opencode"}, &stdout_writer, &stderr_writer);
     try std.testing.expectEqual(exit_codes.success, code);
 
-    const output = stdout_stream.getWritten();
+    const output = stdout_writer.buffered();
     try std.testing.expect(std.mem.indexOf(u8, output, "integrations/opencode-plugin/orca.ts") != null);
     try std.testing.expect(std.mem.indexOf(u8, output, "OpenCode uses TypeScript plugins") != null);
-    try std.testing.expectEqualStrings("", stderr_stream.getWritten());
+    try std.testing.expectEqualStrings("", stderr_writer.buffered());
 }
 
 test "plugin manifest openclaw reports expected paths" {
     var stdout_buf: [1024]u8 = undefined;
     var stderr_buf: [256]u8 = undefined;
-    var stdout_stream = std.io.fixedBufferStream(&stdout_buf);
-    var stderr_stream = std.io.fixedBufferStream(&stderr_buf);
+    var stdout_writer: std.Io.Writer = .fixed(&stdout_buf);
+    var stderr_writer: std.Io.Writer = .fixed(&stderr_buf);
 
-    const code = try manifestCommand(&.{"openclaw"}, stdout_stream.writer(), stderr_stream.writer());
+    const code = try manifestCommand(std.testing.io, &.{"openclaw"}, &stdout_writer, &stderr_writer);
     try std.testing.expectEqual(exit_codes.success, code);
 
-    const output = stdout_stream.getWritten();
+    const output = stdout_writer.buffered();
     try std.testing.expect(std.mem.indexOf(u8, output, "integrations/openclaw-plugin/openclaw.plugin.json") != null);
     try std.testing.expect(std.mem.indexOf(u8, output, "package.json") != null);
-    try std.testing.expectEqualStrings("", stderr_stream.getWritten());
+    try std.testing.expectEqualStrings("", stderr_writer.buffered());
 }
 
 test "plugin manifest hermes reports expected paths" {
     var stdout_buf: [1024]u8 = undefined;
     var stderr_buf: [256]u8 = undefined;
-    var stdout_stream = std.io.fixedBufferStream(&stdout_buf);
-    var stderr_stream = std.io.fixedBufferStream(&stderr_buf);
+    var stdout_writer: std.Io.Writer = .fixed(&stdout_buf);
+    var stderr_writer: std.Io.Writer = .fixed(&stderr_buf);
 
-    const code = try manifestCommand(&.{"hermes"}, stdout_stream.writer(), stderr_stream.writer());
+    const code = try manifestCommand(std.testing.io, &.{"hermes"}, &stdout_writer, &stderr_writer);
     try std.testing.expectEqual(exit_codes.success, code);
 
-    const output = stdout_stream.getWritten();
+    const output = stdout_writer.buffered();
     try std.testing.expect(std.mem.indexOf(u8, output, "integrations/hermes-plugin/plugin.yaml") != null);
     try std.testing.expect(std.mem.indexOf(u8, output, "integrations/hermes-plugin/__init__.py") != null);
-    try std.testing.expectEqualStrings("", stderr_stream.getWritten());
+    try std.testing.expectEqualStrings("", stderr_writer.buffered());
 }
 
 test "plugin manifest all reports all five" {
     var stdout_buf: [1024]u8 = undefined;
     var stderr_buf: [256]u8 = undefined;
-    var stdout_stream = std.io.fixedBufferStream(&stdout_buf);
-    var stderr_stream = std.io.fixedBufferStream(&stderr_buf);
+    var stdout_writer: std.Io.Writer = .fixed(&stdout_buf);
+    var stderr_writer: std.Io.Writer = .fixed(&stderr_buf);
 
-    const code = try manifestCommand(&.{"all"}, stdout_stream.writer(), stderr_stream.writer());
+    const code = try manifestCommand(std.testing.io, &.{"all"}, &stdout_writer, &stderr_writer);
     try std.testing.expectEqual(exit_codes.success, code);
 
-    const output = stdout_stream.getWritten();
+    const output = stdout_writer.buffered();
     try std.testing.expect(std.mem.indexOf(u8, output, "codex:") != null);
     try std.testing.expect(std.mem.indexOf(u8, output, "claude:") != null);
     try std.testing.expect(std.mem.indexOf(u8, output, "opencode:") != null);
     try std.testing.expect(std.mem.indexOf(u8, output, "openclaw:") != null);
     try std.testing.expect(std.mem.indexOf(u8, output, "hermes:") != null);
-    try std.testing.expectEqualStrings("", stderr_stream.getWritten());
+    try std.testing.expectEqualStrings("", stderr_writer.buffered());
 }
 
 test "plugin manifest --json emits valid JSON" {
     var stdout_buf: [2048]u8 = undefined;
     var stderr_buf: [256]u8 = undefined;
-    var stdout_stream = std.io.fixedBufferStream(&stdout_buf);
-    var stderr_stream = std.io.fixedBufferStream(&stderr_buf);
+    var stdout_writer: std.Io.Writer = .fixed(&stdout_buf);
+    var stderr_writer: std.Io.Writer = .fixed(&stderr_buf);
 
-    const code = try manifestCommand(&.{ "all", "--json" }, stdout_stream.writer(), stderr_stream.writer());
+    const code = try manifestCommand(std.testing.io, &.{ "all", "--json" }, &stdout_writer, &stderr_writer);
     try std.testing.expectEqual(exit_codes.success, code);
 
-    const json = stdout_stream.getWritten();
+    const json = stdout_writer.buffered();
     var parsed = try std.json.parseFromSlice(std.json.Value, std.testing.allocator, json, .{});
     defer parsed.deinit();
 
@@ -2058,324 +2129,324 @@ test "plugin manifest --json emits valid JSON" {
     try std.testing.expect(parsed.value.object.get("opencode") != null);
     try std.testing.expect(parsed.value.object.get("openclaw") != null);
     try std.testing.expect(parsed.value.object.get("hermes") != null);
-    try std.testing.expectEqualStrings("", stderr_stream.getWritten());
+    try std.testing.expectEqualStrings("", stderr_writer.buffered());
 }
 
 test "plugin install codex --dry-run reports safe preview" {
     var stdout_buf: [2048]u8 = undefined;
     var stderr_buf: [256]u8 = undefined;
-    var stdout_stream = std.io.fixedBufferStream(&stdout_buf);
-    var stderr_stream = std.io.fixedBufferStream(&stderr_buf);
+    var stdout_writer: std.Io.Writer = .fixed(&stdout_buf);
+    var stderr_writer: std.Io.Writer = .fixed(&stderr_buf);
 
-    const code = try installCommand(&.{ "codex", "--dry-run" }, stdout_stream.writer(), stderr_stream.writer());
+    const code = try installCommand(std.testing.io, &.{ "codex", "--dry-run" }, &stdout_writer, &stderr_writer);
     try std.testing.expectEqual(exit_codes.success, code);
 
-    const output = stdout_stream.getWritten();
+    const output = stdout_writer.buffered();
     try std.testing.expect(std.mem.indexOf(u8, output, "dry-run") != null);
     try std.testing.expect(std.mem.indexOf(u8, output, "no changes made") != null);
     try std.testing.expect(std.mem.indexOf(u8, output, "safety:") != null);
-    try std.testing.expectEqualStrings("", stderr_stream.getWritten());
+    try std.testing.expectEqualStrings("", stderr_writer.buffered());
 }
 
 test "plugin install claude --dry-run reports safe preview" {
     var stdout_buf: [2048]u8 = undefined;
     var stderr_buf: [256]u8 = undefined;
-    var stdout_stream = std.io.fixedBufferStream(&stdout_buf);
-    var stderr_stream = std.io.fixedBufferStream(&stderr_buf);
+    var stdout_writer: std.Io.Writer = .fixed(&stdout_buf);
+    var stderr_writer: std.Io.Writer = .fixed(&stderr_buf);
 
-    const code = try installCommand(&.{ "claude", "--dry-run" }, stdout_stream.writer(), stderr_stream.writer());
+    const code = try installCommand(std.testing.io, &.{ "claude", "--dry-run" }, &stdout_writer, &stderr_writer);
     try std.testing.expectEqual(exit_codes.success, code);
 
-    const output = stdout_stream.getWritten();
+    const output = stdout_writer.buffered();
     try std.testing.expect(std.mem.indexOf(u8, output, "dry-run") != null);
     try std.testing.expect(std.mem.indexOf(u8, output, "no changes made") != null);
-    try std.testing.expectEqualStrings("", stderr_stream.getWritten());
+    try std.testing.expectEqualStrings("", stderr_writer.buffered());
 }
 
 test "plugin install opencode --dry-run reports safe preview with paths" {
     var stdout_buf: [4096]u8 = undefined;
     var stderr_buf: [256]u8 = undefined;
-    var stdout_stream = std.io.fixedBufferStream(&stdout_buf);
-    var stderr_stream = std.io.fixedBufferStream(&stderr_buf);
+    var stdout_writer: std.Io.Writer = .fixed(&stdout_buf);
+    var stderr_writer: std.Io.Writer = .fixed(&stderr_buf);
 
-    const code = try installCommand(&.{ "opencode", "--dry-run" }, stdout_stream.writer(), stderr_stream.writer());
+    const code = try installCommand(std.testing.io, &.{ "opencode", "--dry-run" }, &stdout_writer, &stderr_writer);
     try std.testing.expectEqual(exit_codes.success, code);
 
-    const output = stdout_stream.getWritten();
+    const output = stdout_writer.buffered();
     try std.testing.expect(std.mem.indexOf(u8, output, "dry-run") != null);
     try std.testing.expect(std.mem.indexOf(u8, output, "no changes made") != null);
     try std.testing.expect(std.mem.indexOf(u8, output, ".opencode/plugins/orca.ts") != null);
     try std.testing.expect(std.mem.indexOf(u8, output, "~/.config/opencode/plugins/orca.ts") != null);
-    try std.testing.expectEqualStrings("", stderr_stream.getWritten());
+    try std.testing.expectEqualStrings("", stderr_writer.buffered());
 }
 
 test "plugin install openclaw --dry-run reports safe preview" {
     var stdout_buf: [4096]u8 = undefined;
     var stderr_buf: [256]u8 = undefined;
-    var stdout_stream = std.io.fixedBufferStream(&stdout_buf);
-    var stderr_stream = std.io.fixedBufferStream(&stderr_buf);
+    var stdout_writer: std.Io.Writer = .fixed(&stdout_buf);
+    var stderr_writer: std.Io.Writer = .fixed(&stderr_buf);
 
-    const code = try installCommand(&.{ "openclaw", "--dry-run" }, stdout_stream.writer(), stderr_stream.writer());
+    const code = try installCommand(std.testing.io, &.{ "openclaw", "--dry-run" }, &stdout_writer, &stderr_writer);
     try std.testing.expectEqual(exit_codes.success, code);
 
-    const output = stdout_stream.getWritten();
+    const output = stdout_writer.buffered();
     try std.testing.expect(std.mem.indexOf(u8, output, "dry-run") != null);
     try std.testing.expect(std.mem.indexOf(u8, output, "no changes made") != null);
     try std.testing.expect(std.mem.indexOf(u8, output, "Target: openclaw") != null);
-    try std.testing.expectEqualStrings("", stderr_stream.getWritten());
+    try std.testing.expectEqualStrings("", stderr_writer.buffered());
 }
 
 test "plugin install hermes --dry-run reports safe preview" {
     var stdout_buf: [4096]u8 = undefined;
     var stderr_buf: [256]u8 = undefined;
-    var stdout_stream = std.io.fixedBufferStream(&stdout_buf);
-    var stderr_stream = std.io.fixedBufferStream(&stderr_buf);
+    var stdout_writer: std.Io.Writer = .fixed(&stdout_buf);
+    var stderr_writer: std.Io.Writer = .fixed(&stderr_buf);
 
-    const code = try installCommand(&.{ "hermes", "--dry-run" }, stdout_stream.writer(), stderr_stream.writer());
+    const code = try installCommand(std.testing.io, &.{ "hermes", "--dry-run" }, &stdout_writer, &stderr_writer);
     try std.testing.expectEqual(exit_codes.success, code);
 
-    const output = stdout_stream.getWritten();
+    const output = stdout_writer.buffered();
     try std.testing.expect(std.mem.indexOf(u8, output, "dry-run") != null);
     try std.testing.expect(std.mem.indexOf(u8, output, "Target: hermes") != null);
     try std.testing.expect(std.mem.indexOf(u8, output, ".hermes/plugins/orca") != null);
-    try std.testing.expectEqualStrings("", stderr_stream.getWritten());
+    try std.testing.expectEqualStrings("", stderr_writer.buffered());
 }
 
 test "plugin install all --dry-run reports all five targets" {
     var stdout_buf: [4096]u8 = undefined;
     var stderr_buf: [256]u8 = undefined;
-    var stdout_stream = std.io.fixedBufferStream(&stdout_buf);
-    var stderr_stream = std.io.fixedBufferStream(&stderr_buf);
+    var stdout_writer: std.Io.Writer = .fixed(&stdout_buf);
+    var stderr_writer: std.Io.Writer = .fixed(&stderr_buf);
 
-    const code = try installCommand(&.{ "all", "--dry-run" }, stdout_stream.writer(), stderr_stream.writer());
+    const code = try installCommand(std.testing.io, &.{ "all", "--dry-run" }, &stdout_writer, &stderr_writer);
     try std.testing.expectEqual(exit_codes.success, code);
 
-    const output = stdout_stream.getWritten();
+    const output = stdout_writer.buffered();
     try std.testing.expect(std.mem.indexOf(u8, output, "Target: codex") != null);
     try std.testing.expect(std.mem.indexOf(u8, output, "Target: claude") != null);
     try std.testing.expect(std.mem.indexOf(u8, output, "Target: opencode") != null);
     try std.testing.expect(std.mem.indexOf(u8, output, "Target: openclaw") != null);
     try std.testing.expect(std.mem.indexOf(u8, output, "Target: hermes") != null);
-    try std.testing.expectEqualStrings("", stderr_stream.getWritten());
+    try std.testing.expectEqualStrings("", stderr_writer.buffered());
 }
 
 test "plugin install without --yes or --dry-run in non-TTY returns usage" {
     var stdout_buf: [2048]u8 = undefined;
     var stderr_buf: [256]u8 = undefined;
-    var stdout_stream = std.io.fixedBufferStream(&stdout_buf);
-    var stderr_stream = std.io.fixedBufferStream(&stderr_buf);
+    var stdout_writer: std.Io.Writer = .fixed(&stdout_buf);
+    var stderr_writer: std.Io.Writer = .fixed(&stderr_buf);
 
-    const code = try installCommand(&.{"codex"}, stdout_stream.writer(), stderr_stream.writer());
+    const code = try installCommand(std.testing.io, &.{"codex"}, &stdout_writer, &stderr_writer);
     try std.testing.expectEqual(exit_codes.usage, code);
 
-    try std.testing.expect(std.mem.indexOf(u8, stderr_stream.getWritten(), "--yes or --dry-run") != null);
+    try std.testing.expect(std.mem.indexOf(u8, stderr_writer.buffered(), "--yes or --dry-run") != null);
 }
 
 test "plugin install --yes switches out of dry-run when dry-run is not explicit" {
     var stdout_buf: [2048]u8 = undefined;
     var stderr_buf: [256]u8 = undefined;
-    var stdout_stream = std.io.fixedBufferStream(&stdout_buf);
-    var stderr_stream = std.io.fixedBufferStream(&stderr_buf);
+    var stdout_writer: std.Io.Writer = .fixed(&stdout_buf);
+    var stderr_writer: std.Io.Writer = .fixed(&stderr_buf);
 
-    const code = try installCommand(&.{ "codex", "--path", "does-not-exist-orca-test-plugin", "--yes" }, stdout_stream.writer(), stderr_stream.writer());
+    const code = try installCommand(std.testing.io, &.{ "codex", "--path", "does-not-exist-orca-test-plugin", "--yes" }, &stdout_writer, &stderr_writer);
     try std.testing.expectEqual(exit_codes.general, code);
 
-    const output = stdout_stream.getWritten();
+    const output = stdout_writer.buffered();
     try std.testing.expect(std.mem.indexOf(u8, output, "mode: install") != null);
     try std.testing.expect(std.mem.indexOf(u8, output, "plugin directory: missing") != null);
-    try std.testing.expectEqualStrings("", stderr_stream.getWritten());
+    try std.testing.expectEqualStrings("", stderr_writer.buffered());
 }
 
 test "plugin install codex --yes installs plugin and marketplace" {
     var stdout_buf: [8192]u8 = undefined;
     var stderr_buf: [256]u8 = undefined;
-    var stdout_stream = std.io.fixedBufferStream(&stdout_buf);
-    var stderr_stream = std.io.fixedBufferStream(&stderr_buf);
+    var stdout_writer: std.Io.Writer = .fixed(&stdout_buf);
+    var stderr_writer: std.Io.Writer = .fixed(&stderr_buf);
 
-    const code = try installCommand(&.{ "codex", "--yes" }, stdout_stream.writer(), stderr_stream.writer());
+    const code = try installCommand(std.testing.io, &.{ "codex", "--yes" }, &stdout_writer, &stderr_writer);
     try std.testing.expectEqual(exit_codes.success, code);
 
-    const output = stdout_stream.getWritten();
+    const output = stdout_writer.buffered();
     try std.testing.expect(std.mem.indexOf(u8, output, "mode: install") != null);
     try std.testing.expect(std.mem.indexOf(u8, output, "installed Codex plugin") != null);
     try std.testing.expect(std.mem.indexOf(u8, output, "not yet implemented") == null);
-    try std.testing.expectEqualStrings("", stderr_stream.getWritten());
+    try std.testing.expectEqualStrings("", stderr_writer.buffered());
 }
 
 test "plugin install claude --yes installs plugin and marketplace" {
     var stdout_buf: [8192]u8 = undefined;
     var stderr_buf: [256]u8 = undefined;
-    var stdout_stream = std.io.fixedBufferStream(&stdout_buf);
-    var stderr_stream = std.io.fixedBufferStream(&stderr_buf);
+    var stdout_writer: std.Io.Writer = .fixed(&stdout_buf);
+    var stderr_writer: std.Io.Writer = .fixed(&stderr_buf);
 
-    const code = try installCommand(&.{ "claude", "--yes" }, stdout_stream.writer(), stderr_stream.writer());
+    const code = try installCommand(std.testing.io, &.{ "claude", "--yes" }, &stdout_writer, &stderr_writer);
     try std.testing.expectEqual(exit_codes.success, code);
 
-    const output = stdout_stream.getWritten();
+    const output = stdout_writer.buffered();
     try std.testing.expect(std.mem.indexOf(u8, output, "mode: install") != null);
     try std.testing.expect(std.mem.indexOf(u8, output, "installed Claude Code plugin") != null);
-    try std.testing.expectEqualStrings("", stderr_stream.getWritten());
+    try std.testing.expectEqualStrings("", stderr_writer.buffered());
 }
 
 test "plugin install explicit dry-run wins over --yes" {
     var stdout_buf: [2048]u8 = undefined;
     var stderr_buf: [256]u8 = undefined;
-    var stdout_stream = std.io.fixedBufferStream(&stdout_buf);
-    var stderr_stream = std.io.fixedBufferStream(&stderr_buf);
+    var stdout_writer: std.Io.Writer = .fixed(&stdout_buf);
+    var stderr_writer: std.Io.Writer = .fixed(&stderr_buf);
 
-    const code = try installCommand(&.{ "codex", "--yes", "--dry-run" }, stdout_stream.writer(), stderr_stream.writer());
+    const code = try installCommand(std.testing.io, &.{ "codex", "--yes", "--dry-run" }, &stdout_writer, &stderr_writer);
     try std.testing.expectEqual(exit_codes.success, code);
 
-    const output = stdout_stream.getWritten();
+    const output = stdout_writer.buffered();
     try std.testing.expect(std.mem.indexOf(u8, output, "mode: dry-run") != null);
-    try std.testing.expectEqualStrings("", stderr_stream.getWritten());
+    try std.testing.expectEqualStrings("", stderr_writer.buffered());
 }
 
 test "plugin install rejects invalid scope" {
     var stdout_buf: [256]u8 = undefined;
     var stderr_buf: [512]u8 = undefined;
-    var stdout_stream = std.io.fixedBufferStream(&stdout_buf);
-    var stderr_stream = std.io.fixedBufferStream(&stderr_buf);
+    var stdout_writer: std.Io.Writer = .fixed(&stdout_buf);
+    var stderr_writer: std.Io.Writer = .fixed(&stderr_buf);
 
-    const code = try installCommand(&.{ "opencode", "--scope", "workspace" }, stdout_stream.writer(), stderr_stream.writer());
+    const code = try installCommand(std.testing.io, &.{ "opencode", "--scope", "workspace" }, &stdout_writer, &stderr_writer);
     try std.testing.expectEqual(exit_codes.usage, code);
-    try std.testing.expect(std.mem.indexOf(u8, stderr_stream.getWritten(), "invalid --scope") != null);
+    try std.testing.expect(std.mem.indexOf(u8, stderr_writer.buffered(), "invalid --scope") != null);
 }
 
 test "plugin install opencode --scope global is accepted in dry-run" {
     var stdout_buf: [4096]u8 = undefined;
     var stderr_buf: [256]u8 = undefined;
-    var stdout_stream = std.io.fixedBufferStream(&stdout_buf);
-    var stderr_stream = std.io.fixedBufferStream(&stderr_buf);
+    var stdout_writer: std.Io.Writer = .fixed(&stdout_buf);
+    var stderr_writer: std.Io.Writer = .fixed(&stderr_buf);
 
-    const code = try installCommand(&.{ "opencode", "--scope", "global", "--dry-run" }, stdout_stream.writer(), stderr_stream.writer());
+    const code = try installCommand(std.testing.io, &.{ "opencode", "--scope", "global", "--dry-run" }, &stdout_writer, &stderr_writer);
     try std.testing.expectEqual(exit_codes.success, code);
-    try std.testing.expect(std.mem.indexOf(u8, stdout_stream.getWritten(), "scope: global") != null);
-    try std.testing.expectEqualStrings("", stderr_stream.getWritten());
+    try std.testing.expect(std.mem.indexOf(u8, stdout_writer.buffered(), "scope: global") != null);
+    try std.testing.expectEqualStrings("", stderr_writer.buffered());
 }
 
 test "plugin mcp-server reports limited status honestly" {
     var stdout_buf: [4096]u8 = undefined;
     var stderr_buf: [256]u8 = undefined;
-    var stdout_stream = std.io.fixedBufferStream(&stdout_buf);
-    var stderr_stream = std.io.fixedBufferStream(&stderr_buf);
+    var stdout_writer: std.Io.Writer = .fixed(&stdout_buf);
+    var stderr_writer: std.Io.Writer = .fixed(&stderr_buf);
 
-    const code = try mcpServerCommand(&.{}, stdout_stream.writer(), stderr_stream.writer());
+    const code = try mcpServerCommand(std.testing.io, &.{}, &stdout_writer, &stderr_writer);
     try std.testing.expectEqual(exit_codes.success, code);
 
-    const output = stdout_stream.getWritten();
+    const output = stdout_writer.buffered();
     try std.testing.expect(std.mem.indexOf(u8, output, "limited") != null);
     try std.testing.expect(std.mem.indexOf(u8, output, "deferred") != null);
     try std.testing.expect(std.mem.indexOf(u8, output, "not yet active") != null);
     try std.testing.expect(std.mem.indexOf(u8, output, "orca_doctor") != null);
     try std.testing.expect(std.mem.indexOf(u8, output, "edge_safety_status") == null);
     try std.testing.expect(std.mem.indexOf(u8, output, "live drone") == null);
-    try std.testing.expectEqualStrings("", stderr_stream.getWritten());
+    try std.testing.expectEqualStrings("", stderr_writer.buffered());
 }
 
 test "plugin mcp-server does not claim to expose drone actuation" {
     var stdout_buf: [4096]u8 = undefined;
     var stderr_buf: [256]u8 = undefined;
-    var stdout_stream = std.io.fixedBufferStream(&stdout_buf);
-    var stderr_stream = std.io.fixedBufferStream(&stderr_buf);
+    var stdout_writer: std.Io.Writer = .fixed(&stdout_buf);
+    var stderr_writer: std.Io.Writer = .fixed(&stderr_buf);
 
-    const code = try mcpServerCommand(&.{}, stdout_stream.writer(), stderr_stream.writer());
+    const code = try mcpServerCommand(std.testing.io, &.{}, &stdout_writer, &stderr_writer);
     try std.testing.expectEqual(exit_codes.success, code);
 
-    const output = stdout_stream.getWritten();
+    const output = stdout_writer.buffered();
     try std.testing.expect(std.mem.indexOf(u8, output, "live drone actuation") == null);
     try std.testing.expect(std.mem.indexOf(u8, output, "MCP server is active") == null);
-    try std.testing.expectEqualStrings("", stderr_stream.getWritten());
+    try std.testing.expectEqualStrings("", stderr_writer.buffered());
 }
 
 test "plugin doctor reports marketplace status" {
     var stdout_buf: [16384]u8 = undefined;
     var stderr_buf: [256]u8 = undefined;
-    var stdout_stream = std.io.fixedBufferStream(&stdout_buf);
-    var stderr_stream = std.io.fixedBufferStream(&stderr_buf);
+    var stdout_writer: std.Io.Writer = .fixed(&stdout_buf);
+    var stderr_writer: std.Io.Writer = .fixed(&stderr_buf);
 
-    const code = try doctorCommand(&.{}, stdout_stream.writer(), stderr_stream.writer());
+    const code = try doctorCommand(std.testing.io, &.{}, &stdout_writer, &stderr_writer);
     try std.testing.expectEqual(exit_codes.success, code);
 
-    const output = stdout_stream.getWritten();
+    const output = stdout_writer.buffered();
     try std.testing.expect(std.mem.indexOf(u8, output, "Marketplace files:") != null);
     try std.testing.expect(std.mem.indexOf(u8, output, ".agents/plugins/marketplace.json") != null);
     try std.testing.expect(std.mem.indexOf(u8, output, ".claude-plugin/marketplace.json") != null);
-    try std.testing.expectEqualStrings("", stderr_stream.getWritten());
+    try std.testing.expectEqualStrings("", stderr_writer.buffered());
 }
 
 test "plugin doctor codex reports marketplace and manifest status" {
     var stdout_buf: [16384]u8 = undefined;
     var stderr_buf: [256]u8 = undefined;
-    var stdout_stream = std.io.fixedBufferStream(&stdout_buf);
-    var stderr_stream = std.io.fixedBufferStream(&stderr_buf);
+    var stdout_writer: std.Io.Writer = .fixed(&stdout_buf);
+    var stderr_writer: std.Io.Writer = .fixed(&stderr_buf);
 
-    const code = try doctorCommand(&.{"codex"}, stdout_stream.writer(), stderr_stream.writer());
+    const code = try doctorCommand(std.testing.io, &.{"codex"}, &stdout_writer, &stderr_writer);
     try std.testing.expectEqual(exit_codes.success, code);
 
-    const output = stdout_stream.getWritten();
+    const output = stdout_writer.buffered();
     try std.testing.expect(std.mem.indexOf(u8, output, "Codex plugin status:") != null);
     try std.testing.expect(std.mem.indexOf(u8, output, "marketplace file:") != null);
     try std.testing.expect(std.mem.indexOf(u8, output, "plugin manifest:") != null);
-    try std.testing.expectEqualStrings("", stderr_stream.getWritten());
+    try std.testing.expectEqualStrings("", stderr_writer.buffered());
 }
 
 test "plugin doctor claude reports marketplace and manifest status" {
     var stdout_buf: [16384]u8 = undefined;
     var stderr_buf: [256]u8 = undefined;
-    var stdout_stream = std.io.fixedBufferStream(&stdout_buf);
-    var stderr_stream = std.io.fixedBufferStream(&stderr_buf);
+    var stdout_writer: std.Io.Writer = .fixed(&stdout_buf);
+    var stderr_writer: std.Io.Writer = .fixed(&stderr_buf);
 
-    const code = try doctorCommand(&.{"claude"}, stdout_stream.writer(), stderr_stream.writer());
+    const code = try doctorCommand(std.testing.io, &.{"claude"}, &stdout_writer, &stderr_writer);
     try std.testing.expectEqual(exit_codes.success, code);
 
-    const output = stdout_stream.getWritten();
+    const output = stdout_writer.buffered();
     try std.testing.expect(std.mem.indexOf(u8, output, "Claude Code plugin status:") != null);
     try std.testing.expect(std.mem.indexOf(u8, output, "marketplace file:") != null);
     try std.testing.expect(std.mem.indexOf(u8, output, "plugin manifest:") != null);
-    try std.testing.expectEqualStrings("", stderr_stream.getWritten());
+    try std.testing.expectEqualStrings("", stderr_writer.buffered());
 }
 
 test "plugin manifest codex reports marketplace path" {
     var stdout_buf: [1024]u8 = undefined;
     var stderr_buf: [256]u8 = undefined;
-    var stdout_stream = std.io.fixedBufferStream(&stdout_buf);
-    var stderr_stream = std.io.fixedBufferStream(&stderr_buf);
+    var stdout_writer: std.Io.Writer = .fixed(&stdout_buf);
+    var stderr_writer: std.Io.Writer = .fixed(&stderr_buf);
 
-    const code = try manifestCommand(&.{"codex"}, stdout_stream.writer(), stderr_stream.writer());
+    const code = try manifestCommand(std.testing.io, &.{"codex"}, &stdout_writer, &stderr_writer);
     try std.testing.expectEqual(exit_codes.success, code);
 
-    const output = stdout_stream.getWritten();
+    const output = stdout_writer.buffered();
     try std.testing.expect(std.mem.indexOf(u8, output, ".agents/plugins/marketplace.json") != null);
-    try std.testing.expectEqualStrings("", stderr_stream.getWritten());
+    try std.testing.expectEqualStrings("", stderr_writer.buffered());
 }
 
 test "plugin manifest claude reports marketplace path" {
     var stdout_buf: [1024]u8 = undefined;
     var stderr_buf: [256]u8 = undefined;
-    var stdout_stream = std.io.fixedBufferStream(&stdout_buf);
-    var stderr_stream = std.io.fixedBufferStream(&stderr_buf);
+    var stdout_writer: std.Io.Writer = .fixed(&stdout_buf);
+    var stderr_writer: std.Io.Writer = .fixed(&stderr_buf);
 
-    const code = try manifestCommand(&.{"claude"}, stdout_stream.writer(), stderr_stream.writer());
+    const code = try manifestCommand(std.testing.io, &.{"claude"}, &stdout_writer, &stderr_writer);
     try std.testing.expectEqual(exit_codes.success, code);
 
-    const output = stdout_stream.getWritten();
+    const output = stdout_writer.buffered();
     try std.testing.expect(std.mem.indexOf(u8, output, ".claude-plugin/marketplace.json") != null);
-    try std.testing.expectEqualStrings("", stderr_stream.getWritten());
+    try std.testing.expectEqualStrings("", stderr_writer.buffered());
 }
 
 test "plugin manifest all reports marketplace files" {
     var stdout_buf: [2048]u8 = undefined;
     var stderr_buf: [256]u8 = undefined;
-    var stdout_stream = std.io.fixedBufferStream(&stdout_buf);
-    var stderr_stream = std.io.fixedBufferStream(&stderr_buf);
+    var stdout_writer: std.Io.Writer = .fixed(&stdout_buf);
+    var stderr_writer: std.Io.Writer = .fixed(&stderr_buf);
 
-    const code = try manifestCommand(&.{"all"}, stdout_stream.writer(), stderr_stream.writer());
+    const code = try manifestCommand(std.testing.io, &.{"all"}, &stdout_writer, &stderr_writer);
     try std.testing.expectEqual(exit_codes.success, code);
 
-    const output = stdout_stream.getWritten();
+    const output = stdout_writer.buffered();
     try std.testing.expect(std.mem.indexOf(u8, output, "Marketplace files:") != null);
     try std.testing.expect(std.mem.indexOf(u8, output, ".agents/plugins/marketplace.json") != null);
     try std.testing.expect(std.mem.indexOf(u8, output, ".claude-plugin/marketplace.json") != null);
-    try std.testing.expectEqualStrings("", stderr_stream.getWritten());
+    try std.testing.expectEqualStrings("", stderr_writer.buffered());
 }

@@ -7,20 +7,12 @@ const readme_path = plugin_dir ++ "/README.md";
 const fixture_dir = "tests/plugin-fixtures/hermes";
 
 fn fileExists(path: []const u8) bool {
-    std.fs.cwd().access(path, .{}) catch return false;
+    std.Io.Dir.cwd().access(std.testing.io, path, .{}) catch return false;
     return true;
 }
 
 fn readFile(allocator: std.mem.Allocator, path: []const u8) ![]u8 {
-    const file = try std.fs.cwd().openFile(path, .{});
-    defer file.close();
-    const stat = try file.stat();
-    if (stat.size > 1024 * 1024) return error.FileTooLarge;
-    const buf = try allocator.alloc(u8, @intCast(stat.size));
-    errdefer allocator.free(buf);
-    const n = try file.readAll(buf);
-    if (n != stat.size) return error.ShortRead;
-    return buf;
+    return try std.Io.Dir.cwd().readFileAlloc(std.testing.io, path, allocator, .limited(1024 * 1024));
 }
 
 test "hermes plugin manifest exists and names orca" {
@@ -116,9 +108,9 @@ test "hermes fixtures are valid JSON with hermes host" {
         "subagent_stop.json",
     };
 
-    var gpa_state: std.heap.GeneralPurposeAllocator(.{}) = .init;
-    defer _ = gpa_state.deinit();
-    const allocator = gpa_state.allocator();
+    var dbg_state: std.heap.DebugAllocator(.{}) = .init;
+    defer _ = dbg_state.deinit();
+    const allocator = dbg_state.allocator();
 
     for (fixtures) |fixture| {
         const path = try std.fs.path.join(allocator, &.{ fixture_dir, fixture });
@@ -147,9 +139,9 @@ test "hermes fixtures do not contain real secrets" {
         "subagent_stop.json",
     };
 
-    var gpa_state: std.heap.GeneralPurposeAllocator(.{}) = .init;
-    defer _ = gpa_state.deinit();
-    const allocator = gpa_state.allocator();
+    var dbg_state: std.heap.DebugAllocator(.{}) = .init;
+    defer _ = dbg_state.deinit();
+    const allocator = dbg_state.allocator();
 
     for (fixtures) |fixture| {
         const path = try std.fs.path.join(allocator, &.{ fixture_dir, fixture });

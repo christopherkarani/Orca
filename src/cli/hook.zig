@@ -14,13 +14,13 @@ const max_payload_len = 256 * 1024; // 256 KiB
 // Top-level dispatch
 // ---------------------------------------------------------------------------
 
-pub fn command(argv: []const []const u8, stdout: anytype, stderr: anytype) !u8 {
+pub fn command(io: std.Io, argv: []const []const u8, stdout: anytype, stderr: anytype) !u8 {
     if (argv.len > 0 and (std.mem.eql(u8, argv[0], "--help") or std.mem.eql(u8, argv[0], "-h"))) {
-        _ = try help.writeCommand(stdout, "hook");
+        _ = try help.writeCommand(io, stdout, "hook");
         return exit_codes.success;
     }
     if (argv.len == 0) {
-        _ = try help.writeCommand(stdout, "hook");
+        _ = try help.writeCommand(io, stdout, "hook");
         return exit_codes.usage;
     }
 
@@ -40,7 +40,7 @@ pub fn command(argv: []const []const u8, stdout: anytype, stderr: anytype) !u8 {
         mapOpenCodeEvent(event_name) orelse {
             // If mapOpenCodeEvent returns null, it may be an informational event
             if (isOpenCodeInformationalEvent(event_name)) {
-                return hookCommand(host, .SessionStart, event_name, argv[2..], stdout, stderr);
+                return hookCommand(io, host, .SessionStart, event_name, argv[2..], stdout, stderr);
             }
             try stderr.print("orca hook: unknown OpenCode event '{s}'.\n", .{event_name});
             return exit_codes.usage;
@@ -49,7 +49,7 @@ pub fn command(argv: []const []const u8, stdout: anytype, stderr: anytype) !u8 {
         mapOpenClawEvent(event_name) orelse {
             // If mapOpenClawEvent returns null, it may be an informational event
             if (isOpenClawInformationalEvent(event_name)) {
-                return hookCommand(host, .SessionStart, event_name, argv[2..], stdout, stderr);
+                return hookCommand(io, host, .SessionStart, event_name, argv[2..], stdout, stderr);
             }
             try stderr.print("orca hook: unknown OpenClaw event '{s}'.\n", .{event_name});
             return exit_codes.usage;
@@ -57,7 +57,7 @@ pub fn command(argv: []const []const u8, stdout: anytype, stderr: anytype) !u8 {
     else if (host == .hermes)
         mapHermesEvent(event_name) orelse {
             if (isHermesInformationalEvent(event_name)) {
-                return hookCommand(host, .SessionStart, event_name, argv[2..], stdout, stderr);
+                return hookCommand(io, host, .SessionStart, event_name, argv[2..], stdout, stderr);
             }
             try stderr.print("orca hook: unknown Hermes event '{s}'.\n", .{event_name});
             return exit_codes.usage;
@@ -68,7 +68,7 @@ pub fn command(argv: []const []const u8, stdout: anytype, stderr: anytype) !u8 {
             return exit_codes.usage;
         };
 
-    return hookCommand(host, event, event_name, argv[2..], stdout, stderr);
+    return hookCommand(io, host, event, event_name, argv[2..], stdout, stderr);
 }
 
 // ---------------------------------------------------------------------------
@@ -177,7 +177,7 @@ fn isHermesInformationalEvent(event_name: []const u8) bool {
 // Hook command
 // ---------------------------------------------------------------------------
 
-fn hookCommand(host: Host, event: Event, original_event_name: []const u8, argv: []const []const u8, stdout: anytype, stderr: anytype) !u8 {
+fn hookCommand(io: std.Io, host: Host, event: Event, original_event_name: []const u8, argv: []const []const u8, stdout: anytype, stderr: anytype) !u8 {
     var ci_mode = false;
 
     for (argv) |arg| {
@@ -235,12 +235,12 @@ fn hookCommand(host: Host, event: Event, original_event_name: []const u8, argv: 
         return exit_codes.usage;
     }
 
-    var gpa_state: std.heap.GeneralPurposeAllocator(.{}) = .init;
+    var gpa_state: std.heap.DebugAllocator(.{}) = .init;
     defer _ = gpa_state.deinit();
     const allocator = gpa_state.allocator();
 
     // Read payload from stdin (hooks always read from stdin)
-    const payload_text = readBoundedStdin(allocator, max_payload_len) catch |err| {
+    const payload_text = readBoundedStdin(io, allocator, max_payload_len) catch |err| {
         if (err == error.PayloadTooLarge) {
             try stderr.writeAll("orca hook: JSON payload exceeds maximum size.\n");
             return exit_codes.general;
@@ -322,17 +322,17 @@ fn hookCommand(host: Host, event: Event, original_event_name: []const u8, argv: 
     }
 
     // Load policy
-    const root = supervisor.resolveWorkspaceRoot(allocator, null, ".") catch try allocator.dupe(u8, ".");
+    const root = supervisor.resolveWorkspaceRoot(io, allocator, null, ".") catch try allocator.dupe(u8, ".");
     defer allocator.free(root);
-    var loaded = core_api.discoverPolicy(allocator, null, root) catch |err| {
+    var loaded = core_api.discoverPolicy(io, allocator, null, root) catch |err| {
         try stderr.print("orca hook: failed to load policy: {s}\n", .{@errorName(err)});
         return exit_codes.general;
     };
     defer loaded.deinit();
 
     // Extract payload object
-    var empty_payload = std.json.ObjectMap.init(allocator);
-    defer empty_payload.deinit();
+    var empty_payload: std.json.ObjectMap = .empty;
+    defer empty_payload.deinit(allocator);
     const hook_payload = parsed.value.object.get("payload") orelse std.json.Value{ .object = empty_payload };
 
     // Evaluate via host adapter
@@ -739,23 +739,44 @@ fn writeHookResponse(stdout: anytype, result: HookResponse) !void {
 // Helpers
 // ---------------------------------------------------------------------------
 
-fn readBoundedStdin(allocator: std.mem.Allocator, max_len: usize) ![]u8 {
-    const stdin_file = std.fs.File.stdin();
-    return readBoundedReader(allocator, max_len, stdin_file);
+fn readBoundedStdin(io: std.Io, allocator: std.mem.Allocator, max_len: usize) ![]u8 {
+    return readBoundedFile(io, allocator, max_len, std.Io.File.stdin());
 }
 
-fn readBoundedReader(allocator: std.mem.Allocator, max_len: usize, reader: anytype) ![]u8 {
+fn readBoundedFile(io: std.Io, allocator: std.mem.Allocator, max_len: usize, file: std.Io.File) ![]u8 {
     var buf: std.ArrayList(u8) = .empty;
     errdefer buf.deinit(allocator);
 
     var chunk: [4096]u8 = undefined;
     while (true) {
-        const n = try reader.read(&chunk);
+        const n = file.readStreaming(io, &.{chunk[0..]}) catch |err| switch (err) {
+            error.EndOfStream => break,
+            else => return err,
+        };
         if (n == 0) break;
         if (buf.items.len + n > max_len) return error.PayloadTooLarge;
         try buf.appendSlice(allocator, chunk[0..n]);
     }
 
+    return try buf.toOwnedSlice(allocator);
+}
+
+fn readBoundedIoReader(allocator: std.mem.Allocator, max_len: usize, reader: *std.Io.Reader) ![]u8 {
+    var buf: std.ArrayList(u8) = .empty;
+    errdefer buf.deinit(allocator);
+    while (buf.items.len < max_len) {
+        const chunk = reader.take(@min(4096, max_len - buf.items.len)) catch |err| switch (err) {
+            error.EndOfStream => break,
+            else => return err,
+        };
+        if (chunk.len == 0) break;
+        try buf.appendSlice(allocator, chunk);
+    }
+    const extra = reader.take(1) catch |err| switch (err) {
+        error.EndOfStream => return try buf.toOwnedSlice(allocator),
+        else => return err,
+    };
+    if (extra.len > 0) return error.PayloadTooLarge;
     return try buf.toOwnedSlice(allocator);
 }
 
@@ -825,32 +846,32 @@ fn writeJsonString(writer: anytype, value: []const u8) !void {
 test "hook command help and invalid host" {
     var stdout_buf: [2048]u8 = undefined;
     var stderr_buf: [256]u8 = undefined;
-    var stdout_stream = std.io.fixedBufferStream(&stdout_buf);
-    var stderr_stream = std.io.fixedBufferStream(&stderr_buf);
+    var stdout_writer: std.Io.Writer = .fixed(&stdout_buf);
+    var stderr_writer: std.Io.Writer = .fixed(&stderr_buf);
 
-    const help_code = try command(&.{"--help"}, stdout_stream.writer(), stderr_stream.writer());
+    const help_code = try command(std.testing.io, &.{"--help"}, &stdout_writer, &stderr_writer);
     try std.testing.expectEqual(exit_codes.success, help_code);
-    try std.testing.expect(std.mem.indexOf(u8, stdout_stream.getWritten(), "hook") != null);
+    try std.testing.expect(std.mem.indexOf(u8, stdout_writer.buffered(), "hook") != null);
 
-    stdout_stream.reset();
-    stderr_stream.reset();
-    const bad_code = try command(&.{"unknown"}, stdout_stream.writer(), stderr_stream.writer());
+    stdout_writer = .fixed(&stdout_buf);
+    stderr_writer = .fixed(&stderr_buf);
+    const bad_code = try command(std.testing.io, &.{"unknown"}, &stdout_writer, &stderr_writer);
     try std.testing.expectEqual(exit_codes.usage, bad_code);
-    try std.testing.expect(std.mem.indexOf(u8, stderr_stream.getWritten(), "unknown host") != null);
+    try std.testing.expect(std.mem.indexOf(u8, stderr_writer.buffered(), "unknown host") != null);
 }
 
 test "hook codex SessionStart returns allow" {
     // Note: Testing stdin-based commands in Zig inline tests is limited.
     // We test the evaluation logic directly instead.
-    var gpa_state: std.heap.GeneralPurposeAllocator(.{}) = .init;
+    var gpa_state: std.heap.DebugAllocator(.{}) = .init;
     defer _ = gpa_state.deinit();
     const allocator = gpa_state.allocator();
 
     var policy_obj = try core_api.loadPolicyPreset(allocator, .strict);
     defer policy_obj.deinit();
 
-    var empty_obj = std.json.ObjectMap.init(allocator);
-    defer empty_obj.deinit();
+    var empty_obj = try std.json.ObjectMap.init(allocator, &.{}, &.{});
+    defer empty_obj.deinit(allocator);
     var result = try evaluateHook(allocator, @ptrCast(@alignCast(policy_obj)), .codex, .SessionStart, std.json.Value{ .object = empty_obj }, false);
     defer result.deinit(allocator);
 
@@ -859,16 +880,16 @@ test "hook codex SessionStart returns allow" {
 }
 
 test "hook claude UserPromptSubmit with fake secret returns warn" {
-    var gpa_state: std.heap.GeneralPurposeAllocator(.{}) = .init;
+    var gpa_state: std.heap.DebugAllocator(.{}) = .init;
     defer _ = gpa_state.deinit();
     const allocator = gpa_state.allocator();
 
     var policy_obj = try core_api.loadPolicyPreset(allocator, .strict);
     defer policy_obj.deinit();
 
-    var payload_obj = std.json.ObjectMap.init(allocator);
-    defer payload_obj.deinit();
-    try payload_obj.put("prompt", std.json.Value{ .string = "my token is ghp_fake_secret_value" });
+    var payload_obj = try std.json.ObjectMap.init(allocator, &.{}, &.{});
+    defer payload_obj.deinit(allocator);
+    try payload_obj.put(allocator, "prompt", std.json.Value{ .string = "my token is ghp_fake_secret_value" });
 
     var result = try evaluateHook(allocator, @ptrCast(@alignCast(policy_obj)), .claude, .UserPromptSubmit, std.json.Value{ .object = payload_obj }, false);
     defer result.deinit(allocator);
@@ -880,16 +901,16 @@ test "hook claude UserPromptSubmit with fake secret returns warn" {
 }
 
 test "hook codex PreToolUse with safe command returns allow" {
-    var gpa_state: std.heap.GeneralPurposeAllocator(.{}) = .init;
+    var gpa_state: std.heap.DebugAllocator(.{}) = .init;
     defer _ = gpa_state.deinit();
     const allocator = gpa_state.allocator();
 
     var policy_obj = try core_api.loadPolicyPreset(allocator, .strict);
     defer policy_obj.deinit();
 
-    var payload_obj = std.json.ObjectMap.init(allocator);
-    defer payload_obj.deinit();
-    try payload_obj.put("command", std.json.Value{ .string = "git status" });
+    var payload_obj = try std.json.ObjectMap.init(allocator, &.{}, &.{});
+    defer payload_obj.deinit(allocator);
+    try payload_obj.put(allocator, "command", std.json.Value{ .string = "git status" });
 
     var result = try evaluateHook(allocator, @ptrCast(@alignCast(policy_obj)), .codex, .PreToolUse, std.json.Value{ .object = payload_obj }, false);
     defer result.deinit(allocator);
@@ -900,16 +921,16 @@ test "hook codex PreToolUse with safe command returns allow" {
 }
 
 test "hook codex PreToolUse with dangerous command returns block" {
-    var gpa_state: std.heap.GeneralPurposeAllocator(.{}) = .init;
+    var gpa_state: std.heap.DebugAllocator(.{}) = .init;
     defer _ = gpa_state.deinit();
     const allocator = gpa_state.allocator();
 
     var policy_obj = try core_api.loadPolicyPreset(allocator, .strict);
     defer policy_obj.deinit();
 
-    var payload_obj = std.json.ObjectMap.init(allocator);
-    defer payload_obj.deinit();
-    try payload_obj.put("command", std.json.Value{ .string = "rm -rf /" });
+    var payload_obj = try std.json.ObjectMap.init(allocator, &.{}, &.{});
+    defer payload_obj.deinit(allocator);
+    try payload_obj.put(allocator, "command", std.json.Value{ .string = "rm -rf /" });
 
     var result = try evaluateHook(allocator, @ptrCast(@alignCast(policy_obj)), .codex, .PreToolUse, std.json.Value{ .object = payload_obj }, false);
     defer result.deinit(allocator);
@@ -918,17 +939,17 @@ test "hook codex PreToolUse with dangerous command returns block" {
 }
 
 test "hook claude PreToolUse with file write to protected path returns block" {
-    var gpa_state: std.heap.GeneralPurposeAllocator(.{}) = .init;
+    var gpa_state: std.heap.DebugAllocator(.{}) = .init;
     defer _ = gpa_state.deinit();
     const allocator = gpa_state.allocator();
 
     var policy_obj = try core_api.loadPolicyPreset(allocator, .strict);
     defer policy_obj.deinit();
 
-    var payload_obj = std.json.ObjectMap.init(allocator);
-    defer payload_obj.deinit();
-    try payload_obj.put("tool", std.json.Value{ .string = "edit" });
-    try payload_obj.put("path", std.json.Value{ .string = "/etc/passwd" });
+    var payload_obj = try std.json.ObjectMap.init(allocator, &.{}, &.{});
+    defer payload_obj.deinit(allocator);
+    try payload_obj.put(allocator, "tool", std.json.Value{ .string = "edit" });
+    try payload_obj.put(allocator, "path", std.json.Value{ .string = "/etc/passwd" });
 
     var result = try evaluateHook(allocator, @ptrCast(@alignCast(policy_obj)), .claude, .PreToolUse, std.json.Value{ .object = payload_obj }, false);
     defer result.deinit(allocator);
@@ -937,15 +958,15 @@ test "hook claude PreToolUse with file write to protected path returns block" {
 }
 
 test "hook rejects missing required PreToolUse and PermissionRequest fields" {
-    var gpa_state: std.heap.GeneralPurposeAllocator(.{}) = .init;
+    var gpa_state: std.heap.DebugAllocator(.{}) = .init;
     defer _ = gpa_state.deinit();
     const allocator = gpa_state.allocator();
 
     var policy_obj = try core_api.loadPolicyPreset(allocator, .strict);
     defer policy_obj.deinit();
 
-    var empty_obj = std.json.ObjectMap.init(allocator);
-    defer empty_obj.deinit();
+    var empty_obj = try std.json.ObjectMap.init(allocator, &.{}, &.{});
+    defer empty_obj.deinit(allocator);
     const empty_payload = std.json.Value{ .object = empty_obj };
 
     try std.testing.expectError(error.MissingRequiredField, evaluateHook(allocator, @ptrCast(@alignCast(policy_obj)), .codex, .PreToolUse, empty_payload, false));
@@ -954,7 +975,7 @@ test "hook rejects missing required PreToolUse and PermissionRequest fields" {
 
 test "hook response JSON format is valid" {
     var stdout_buf: [4096]u8 = undefined;
-    var stdout_stream = std.io.fixedBufferStream(&stdout_buf);
+    var stdout_writer: std.Io.Writer = .fixed(&stdout_buf);
 
     const response = HookResponse{
         .decision = .allow,
@@ -967,9 +988,9 @@ test "hook response JSON format is valid" {
         .host_limitations = &.{},
     };
 
-    try writeHookResponse(stdout_stream.writer(), response);
+    try writeHookResponse(&stdout_writer, response);
 
-    const output = stdout_stream.getWritten();
+    const output = stdout_writer.buffered();
     var parsed = try std.json.parseFromSlice(std.json.Value, std.testing.allocator, output, .{});
     defer parsed.deinit();
 
@@ -978,16 +999,16 @@ test "hook response JSON format is valid" {
 }
 
 test "hook ci mode turns ask into block" {
-    var gpa_state: std.heap.GeneralPurposeAllocator(.{}) = .init;
+    var gpa_state: std.heap.DebugAllocator(.{}) = .init;
     defer _ = gpa_state.deinit();
     const allocator = gpa_state.allocator();
 
     var policy_obj = try core_api.loadPolicyPreset(allocator, .strict);
     defer policy_obj.deinit();
 
-    var payload_obj = std.json.ObjectMap.init(allocator);
-    defer payload_obj.deinit();
-    try payload_obj.put("command", std.json.Value{ .string = "unknown-tool --help" });
+    var payload_obj = try std.json.ObjectMap.init(allocator, &.{}, &.{});
+    defer payload_obj.deinit(allocator);
+    try payload_obj.put(allocator, "command", std.json.Value{ .string = "unknown-tool --help" });
 
     var result = try evaluateHook(allocator, @ptrCast(@alignCast(policy_obj)), .codex, .PreToolUse, std.json.Value{ .object = payload_obj }, true);
     defer result.deinit(allocator);
@@ -998,7 +1019,7 @@ test "hook ci mode turns ask into block" {
 
 test "hook stdout does not include human logs" {
     var stdout_buf: [4096]u8 = undefined;
-    var stdout_stream = std.io.fixedBufferStream(&stdout_buf);
+    var stdout_writer: std.Io.Writer = .fixed(&stdout_buf);
 
     const response = HookResponse{
         .decision = .allow,
@@ -1011,24 +1032,24 @@ test "hook stdout does not include human logs" {
         .host_limitations = &.{},
     };
 
-    try writeHookResponse(stdout_stream.writer(), response);
+    try writeHookResponse(&stdout_writer, response);
 
-    const output = stdout_stream.getWritten();
+    const output = stdout_writer.buffered();
     // Should be valid JSON only, no human-readable prefixes
     try std.testing.expect(std.mem.startsWith(u8, output, "{"));
     try std.testing.expect(std.mem.endsWith(u8, output, "}\n"));
 }
 
 test "hook opencode session.created returns allow" {
-    var gpa_state: std.heap.GeneralPurposeAllocator(.{}) = .init;
+    var gpa_state: std.heap.DebugAllocator(.{}) = .init;
     defer _ = gpa_state.deinit();
     const allocator = gpa_state.allocator();
 
     var policy_obj = try core_api.loadPolicyPreset(allocator, .strict);
     defer policy_obj.deinit();
 
-    var empty_obj = std.json.ObjectMap.init(allocator);
-    defer empty_obj.deinit();
+    var empty_obj = try std.json.ObjectMap.init(allocator, &.{}, &.{});
+    defer empty_obj.deinit(allocator);
     var result = try evaluateHook(allocator, @ptrCast(@alignCast(policy_obj)), .opencode, .SessionStart, std.json.Value{ .object = empty_obj }, false);
     defer result.deinit(allocator);
 
@@ -1037,16 +1058,16 @@ test "hook opencode session.created returns allow" {
 }
 
 test "hook opencode tool.execute.before with safe command returns allow" {
-    var gpa_state: std.heap.GeneralPurposeAllocator(.{}) = .init;
+    var gpa_state: std.heap.DebugAllocator(.{}) = .init;
     defer _ = gpa_state.deinit();
     const allocator = gpa_state.allocator();
 
     var policy_obj = try core_api.loadPolicyPreset(allocator, .strict);
     defer policy_obj.deinit();
 
-    var payload_obj = std.json.ObjectMap.init(allocator);
-    defer payload_obj.deinit();
-    try payload_obj.put("command", std.json.Value{ .string = "git status" });
+    var payload_obj = try std.json.ObjectMap.init(allocator, &.{}, &.{});
+    defer payload_obj.deinit(allocator);
+    try payload_obj.put(allocator, "command", std.json.Value{ .string = "git status" });
 
     var result = try evaluateHook(allocator, @ptrCast(@alignCast(policy_obj)), .opencode, .PreToolUse, std.json.Value{ .object = payload_obj }, false);
     defer result.deinit(allocator);
@@ -1056,16 +1077,16 @@ test "hook opencode tool.execute.before with safe command returns allow" {
 }
 
 test "hook opencode tool.execute.before with dangerous command returns block" {
-    var gpa_state: std.heap.GeneralPurposeAllocator(.{}) = .init;
+    var gpa_state: std.heap.DebugAllocator(.{}) = .init;
     defer _ = gpa_state.deinit();
     const allocator = gpa_state.allocator();
 
     var policy_obj = try core_api.loadPolicyPreset(allocator, .strict);
     defer policy_obj.deinit();
 
-    var payload_obj = std.json.ObjectMap.init(allocator);
-    defer payload_obj.deinit();
-    try payload_obj.put("command", std.json.Value{ .string = "rm -rf /" });
+    var payload_obj = try std.json.ObjectMap.init(allocator, &.{}, &.{});
+    defer payload_obj.deinit(allocator);
+    try payload_obj.put(allocator, "command", std.json.Value{ .string = "rm -rf /" });
 
     var result = try evaluateHook(allocator, @ptrCast(@alignCast(policy_obj)), .opencode, .PreToolUse, std.json.Value{ .object = payload_obj }, false);
     defer result.deinit(allocator);
@@ -1074,7 +1095,7 @@ test "hook opencode tool.execute.before with dangerous command returns block" {
 }
 
 test "hook opencode informational events are allowed" {
-    var gpa_state: std.heap.GeneralPurposeAllocator(.{}) = .init;
+    var gpa_state: std.heap.DebugAllocator(.{}) = .init;
     defer _ = gpa_state.deinit();
     const allocator = gpa_state.allocator();
 
@@ -1113,15 +1134,15 @@ test "isOpenCodeInformationalEvent identifies informational events" {
 }
 
 test "hook openclaw session.start returns allow" {
-    var gpa_state: std.heap.GeneralPurposeAllocator(.{}) = .init;
+    var gpa_state: std.heap.DebugAllocator(.{}) = .init;
     defer _ = gpa_state.deinit();
     const allocator = gpa_state.allocator();
 
     var policy_obj = try core_api.loadPolicyPreset(allocator, .strict);
     defer policy_obj.deinit();
 
-    var empty_obj = std.json.ObjectMap.init(allocator);
-    defer empty_obj.deinit();
+    var empty_obj = try std.json.ObjectMap.init(allocator, &.{}, &.{});
+    defer empty_obj.deinit(allocator);
     var result = try evaluateHook(allocator, @ptrCast(@alignCast(policy_obj)), .openclaw, .SessionStart, std.json.Value{ .object = empty_obj }, false);
     defer result.deinit(allocator);
 
@@ -1130,16 +1151,16 @@ test "hook openclaw session.start returns allow" {
 }
 
 test "hook openclaw tool.before with safe command returns allow" {
-    var gpa_state: std.heap.GeneralPurposeAllocator(.{}) = .init;
+    var gpa_state: std.heap.DebugAllocator(.{}) = .init;
     defer _ = gpa_state.deinit();
     const allocator = gpa_state.allocator();
 
     var policy_obj = try core_api.loadPolicyPreset(allocator, .strict);
     defer policy_obj.deinit();
 
-    var payload_obj = std.json.ObjectMap.init(allocator);
-    defer payload_obj.deinit();
-    try payload_obj.put("command", std.json.Value{ .string = "git status" });
+    var payload_obj = try std.json.ObjectMap.init(allocator, &.{}, &.{});
+    defer payload_obj.deinit(allocator);
+    try payload_obj.put(allocator, "command", std.json.Value{ .string = "git status" });
 
     var result = try evaluateHook(allocator, @ptrCast(@alignCast(policy_obj)), .openclaw, .PreToolUse, std.json.Value{ .object = payload_obj }, false);
     defer result.deinit(allocator);
@@ -1149,16 +1170,16 @@ test "hook openclaw tool.before with safe command returns allow" {
 }
 
 test "hook openclaw tool.before with dangerous command returns block" {
-    var gpa_state: std.heap.GeneralPurposeAllocator(.{}) = .init;
+    var gpa_state: std.heap.DebugAllocator(.{}) = .init;
     defer _ = gpa_state.deinit();
     const allocator = gpa_state.allocator();
 
     var policy_obj = try core_api.loadPolicyPreset(allocator, .strict);
     defer policy_obj.deinit();
 
-    var payload_obj = std.json.ObjectMap.init(allocator);
-    defer payload_obj.deinit();
-    try payload_obj.put("command", std.json.Value{ .string = "rm -rf /" });
+    var payload_obj = try std.json.ObjectMap.init(allocator, &.{}, &.{});
+    defer payload_obj.deinit(allocator);
+    try payload_obj.put(allocator, "command", std.json.Value{ .string = "rm -rf /" });
 
     var result = try evaluateHook(allocator, @ptrCast(@alignCast(policy_obj)), .openclaw, .PreToolUse, std.json.Value{ .object = payload_obj }, false);
     defer result.deinit(allocator);
@@ -1167,7 +1188,7 @@ test "hook openclaw tool.before with dangerous command returns block" {
 }
 
 test "hook openclaw informational events are allowed" {
-    var gpa_state: std.heap.GeneralPurposeAllocator(.{}) = .init;
+    var gpa_state: std.heap.DebugAllocator(.{}) = .init;
     defer _ = gpa_state.deinit();
     const allocator = gpa_state.allocator();
 
@@ -1203,14 +1224,14 @@ test "isOpenClawInformationalEvent identifies informational events" {
 }
 
 test "hook hermes on_session_start returns allow" {
-    var gpa_state: std.heap.GeneralPurposeAllocator(.{}) = .init;
+    var gpa_state: std.heap.DebugAllocator(.{}) = .init;
     defer _ = gpa_state.deinit();
     const allocator = gpa_state.allocator();
     var policy_obj = try core_api.loadPolicyPreset(allocator, .strict);
     defer policy_obj.deinit();
 
-    var empty_obj = std.json.ObjectMap.init(allocator);
-    defer empty_obj.deinit();
+    var empty_obj = try std.json.ObjectMap.init(allocator, &.{}, &.{});
+    defer empty_obj.deinit(allocator);
 
     var result = try evaluateHook(allocator, @ptrCast(@alignCast(policy_obj)), .hermes, .SessionStart, std.json.Value{ .object = empty_obj }, false);
     defer result.deinit(allocator);
@@ -1219,20 +1240,20 @@ test "hook hermes on_session_start returns allow" {
 }
 
 test "hook hermes pre_tool_call with dangerous command returns block" {
-    var gpa_state: std.heap.GeneralPurposeAllocator(.{}) = .init;
+    var gpa_state: std.heap.DebugAllocator(.{}) = .init;
     defer _ = gpa_state.deinit();
     const allocator = gpa_state.allocator();
     var policy_obj = try core_api.loadPolicyPreset(allocator, .strict);
     defer policy_obj.deinit();
 
-    var input_obj = std.json.ObjectMap.init(allocator);
-    defer input_obj.deinit();
-    try input_obj.put("command", std.json.Value{ .string = "rm -rf /" });
+    var input_obj = try std.json.ObjectMap.init(allocator, &.{}, &.{});
+    defer input_obj.deinit(allocator);
+    try input_obj.put(allocator, "command", std.json.Value{ .string = "rm -rf /" });
 
-    var payload_obj = std.json.ObjectMap.init(allocator);
-    defer payload_obj.deinit();
-    try payload_obj.put("tool", std.json.Value{ .string = "shell" });
-    try payload_obj.put("input", std.json.Value{ .object = input_obj });
+    var payload_obj = try std.json.ObjectMap.init(allocator, &.{}, &.{});
+    defer payload_obj.deinit(allocator);
+    try payload_obj.put(allocator, "tool", std.json.Value{ .string = "shell" });
+    try payload_obj.put(allocator, "input", std.json.Value{ .object = input_obj });
 
     var result = try evaluateHook(allocator, @ptrCast(@alignCast(policy_obj)), .hermes, .PreToolUse, std.json.Value{ .object = payload_obj }, false);
     defer result.deinit(allocator);
@@ -1241,20 +1262,20 @@ test "hook hermes pre_tool_call with dangerous command returns block" {
 }
 
 test "hook hermes pre_tool_call with nested protected file path returns block" {
-    var gpa_state: std.heap.GeneralPurposeAllocator(.{}) = .init;
+    var gpa_state: std.heap.DebugAllocator(.{}) = .init;
     defer _ = gpa_state.deinit();
     const allocator = gpa_state.allocator();
     var policy_obj = try core_api.loadPolicyPreset(allocator, .strict);
     defer policy_obj.deinit();
 
-    var input_obj = std.json.ObjectMap.init(allocator);
-    defer input_obj.deinit();
-    try input_obj.put("path", std.json.Value{ .string = "/etc/passwd" });
+    var input_obj = try std.json.ObjectMap.init(allocator, &.{}, &.{});
+    defer input_obj.deinit(allocator);
+    try input_obj.put(allocator, "path", std.json.Value{ .string = "/etc/passwd" });
 
-    var payload_obj = std.json.ObjectMap.init(allocator);
-    defer payload_obj.deinit();
-    try payload_obj.put("tool", std.json.Value{ .string = "write" });
-    try payload_obj.put("input", std.json.Value{ .object = input_obj });
+    var payload_obj = try std.json.ObjectMap.init(allocator, &.{}, &.{});
+    defer payload_obj.deinit(allocator);
+    try payload_obj.put(allocator, "tool", std.json.Value{ .string = "write" });
+    try payload_obj.put(allocator, "input", std.json.Value{ .object = input_obj });
 
     var result = try evaluateHook(allocator, @ptrCast(@alignCast(policy_obj)), .hermes, .PreToolUse, std.json.Value{ .object = payload_obj }, false);
     defer result.deinit(allocator);
@@ -1263,20 +1284,20 @@ test "hook hermes pre_tool_call with nested protected file path returns block" {
 }
 
 test "hook hermes pre_tool_call with canonical tool_input command returns block" {
-    var gpa_state: std.heap.GeneralPurposeAllocator(.{}) = .init;
+    var gpa_state: std.heap.DebugAllocator(.{}) = .init;
     defer _ = gpa_state.deinit();
     const allocator = gpa_state.allocator();
     var policy_obj = try core_api.loadPolicyPreset(allocator, .strict);
     defer policy_obj.deinit();
 
-    var tool_input_obj = std.json.ObjectMap.init(allocator);
-    defer tool_input_obj.deinit();
-    try tool_input_obj.put("command", std.json.Value{ .string = "rm -rf /" });
+    var tool_input_obj = try std.json.ObjectMap.init(allocator, &.{}, &.{});
+    defer tool_input_obj.deinit(allocator);
+    try tool_input_obj.put(allocator, "command", std.json.Value{ .string = "rm -rf /" });
 
-    var payload_obj = std.json.ObjectMap.init(allocator);
-    defer payload_obj.deinit();
-    try payload_obj.put("tool_name", std.json.Value{ .string = "terminal" });
-    try payload_obj.put("tool_input", std.json.Value{ .object = tool_input_obj });
+    var payload_obj = try std.json.ObjectMap.init(allocator, &.{}, &.{});
+    defer payload_obj.deinit(allocator);
+    try payload_obj.put(allocator, "tool_name", std.json.Value{ .string = "terminal" });
+    try payload_obj.put(allocator, "tool_input", std.json.Value{ .object = tool_input_obj });
 
     var result = try evaluateHook(allocator, @ptrCast(@alignCast(policy_obj)), .hermes, .PreToolUse, std.json.Value{ .object = payload_obj }, false);
     defer result.deinit(allocator);
@@ -1285,15 +1306,15 @@ test "hook hermes pre_tool_call with canonical tool_input command returns block"
 }
 
 test "hook hermes pre_llm_call reads canonical user_message" {
-    var gpa_state: std.heap.GeneralPurposeAllocator(.{}) = .init;
+    var gpa_state: std.heap.DebugAllocator(.{}) = .init;
     defer _ = gpa_state.deinit();
     const allocator = gpa_state.allocator();
     var policy_obj = try core_api.loadPolicyPreset(allocator, .strict);
     defer policy_obj.deinit();
 
-    var payload_obj = std.json.ObjectMap.init(allocator);
-    defer payload_obj.deinit();
-    try payload_obj.put("user_message", std.json.Value{ .string = "my token is ghp_fake_secret_value" });
+    var payload_obj = try std.json.ObjectMap.init(allocator, &.{}, &.{});
+    defer payload_obj.deinit(allocator);
+    try payload_obj.put(allocator, "user_message", std.json.Value{ .string = "my token is ghp_fake_secret_value" });
 
     var result = try evaluateHook(allocator, @ptrCast(@alignCast(policy_obj)), .hermes, .UserPromptSubmit, std.json.Value{ .object = payload_obj }, false);
     defer result.deinit(allocator);
@@ -1310,8 +1331,8 @@ test "hook bounded reader rejects oversized payload instead of truncating" {
     payload[1] = '}';
     payload[max_payload_len] = 'x';
 
-    var stream = std.io.fixedBufferStream(payload);
-    try std.testing.expectError(error.PayloadTooLarge, readBoundedReader(std.testing.allocator, max_payload_len, stream.reader()));
+    var reader: std.Io.Reader = .fixed(payload);
+    try std.testing.expectError(error.PayloadTooLarge, readBoundedIoReader(std.testing.allocator, max_payload_len, &reader));
 }
 
 test "mapHermesEvent maps known events correctly" {

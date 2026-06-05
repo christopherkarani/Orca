@@ -87,9 +87,9 @@ fn writeJsonString(writer: anytype, value: []const u8) !void {
 
 test "version json writer emits valid object shape with null metadata" {
     var buffer: [512]u8 = undefined;
-    var stream = std.io.fixedBufferStream(&buffer);
+    var stream_writer: std.Io.Writer = .fixed(&buffer);
 
-    try writeJson(stream.writer(), .{
+    try writeJson(&stream_writer, .{
         .version = "1.0.0",
         .commit = null,
         .target = "x86_64-linux",
@@ -97,7 +97,7 @@ test "version json writer emits valid object shape with null metadata" {
         .build_date = null,
     });
 
-    const json = stream.getWritten();
+    const json = stream_writer.buffered();
     try std.testing.expect(std.mem.indexOf(u8, json, "\"product\": \"orca\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, json, "\"version\": \"1.0.0\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, json, "\"commit\": null") != null);

@@ -74,10 +74,10 @@ test "explanation includes matched rule where possible" {
 
     try std.testing.expectEqualStrings("files.read.deny[2]", result.matched_rule.?.id);
     var buf: [512]u8 = undefined;
-    var stream = std.io.fixedBufferStream(&buf);
-    try write(stream.writer(), &policy, result);
-    try std.testing.expect(std.mem.indexOf(u8, stream.getWritten(), "Decision: deny") != null);
-    try std.testing.expect(std.mem.indexOf(u8, stream.getWritten(), "Rule: files.read.deny[2]") != null);
+    var writer: std.Io.Writer = .fixed(&buf);
+    try write(&writer.interface, &policy, result);
+    try std.testing.expect(std.mem.indexOf(u8, writer.buffered(), "Decision: deny") != null);
+    try std.testing.expect(std.mem.indexOf(u8, writer.buffered(), "Rule: files.read.deny[2]") != null);
 }
 
 test "network explanation includes service-aware path rules" {

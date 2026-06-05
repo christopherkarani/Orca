@@ -20,12 +20,12 @@ pub fn hexLower(bytes: []const u8, out: []u8) ![]const u8 {
     return out[0 .. bytes.len * 2];
 }
 
-pub fn randomHexSuffix(out: []u8) ![]const u8 {
+pub fn randomHexSuffix(io: std.Io, out: []u8) ![]const u8 {
     if (out.len == 0 or out.len % 2 != 0) return error.InvalidLength;
     var random_bytes: [@import("limits.zig").max_short_suffix_bytes]u8 = undefined;
     const needed = out.len / 2;
     if (needed > random_bytes.len) return error.NoSpaceLeft;
-    std.crypto.random.bytes(random_bytes[0..needed]);
+    try io.randomSecure(random_bytes[0..needed]);
     return hexLower(random_bytes[0..needed], out);
 }
 
@@ -77,7 +77,7 @@ test "hex and random suffix helpers produce lowercase hex" {
     try std.testing.expectEqualStrings("00abff", try hexLower(&.{ 0x00, 0xab, 0xff }, &hex_buf));
 
     var suffix: [8]u8 = undefined;
-    const written = try randomHexSuffix(&suffix);
+    const written = try randomHexSuffix(std.testing.io, &suffix);
     try std.testing.expectEqual(@as(usize, 8), written.len);
     for (written) |byte| {
         try std.testing.expect(std.ascii.isHex(byte));
@@ -96,7 +96,7 @@ test "bounded utf8 duplication rejects oversized or invalid input" {
 
 test "json string writer escapes bounded values" {
     var buf: [64]u8 = undefined;
-    var stream = std.io.fixedBufferStream(&buf);
-    try writeJsonString(stream.writer(), "a\"b\\c\n");
-    try std.testing.expectEqualStrings("\"a\\\"b\\\\c\\n\"", stream.getWritten());
+    var writer: std.Io.Writer = .fixed(&buf);
+    try writeJsonString(&writer.interface, "a\"b\\c\n");
+    try std.testing.expectEqualStrings("\"a\\\"b\\\\c\\n\"", writer.buffered());
 }

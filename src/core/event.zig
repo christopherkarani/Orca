@@ -91,6 +91,8 @@ pub const Event = struct {
 };
 
 pub fn generateEventId(now: time.Timestamp) !EventId {
+    var threaded: std.Io.Threaded = .init_single_threaded;
+    const io = threaded.io();
     var id: EventId = .{
         .value = undefined,
         .len = 0,
@@ -98,7 +100,7 @@ pub fn generateEventId(now: time.Timestamp) !EventId {
     var timestamp_buf: [32]u8 = undefined;
     const timestamp = try now.formatFilenameSafe(&timestamp_buf);
     var suffix_buf: [8]u8 = undefined;
-    const suffix = try util.randomHexSuffix(&suffix_buf);
+    const suffix = try util.randomHexSuffix(io, &suffix_buf);
     const written = try std.fmt.bufPrint(&id.value, "evt_{s}_{s}", .{ timestamp, suffix });
     id.len = written.len;
     return id;

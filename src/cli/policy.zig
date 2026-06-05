@@ -6,26 +6,26 @@ const core_api = @import("orca_core").api;
 const exit_codes = @import("exit_codes.zig");
 const help = @import("help.zig");
 
-pub fn command(argv: []const []const u8, stdout: anytype, stderr: anytype) !u8 {
+pub fn command(io: std.Io, argv: []const []const u8, stdout: anytype, stderr: anytype) !u8 {
     if (argv.len > 0 and (std.mem.eql(u8, argv[0], "--help") or std.mem.eql(u8, argv[0], "-h"))) {
-        _ = try help.writeCommand(stdout, "policy");
+        _ = try help.writeCommand(io, stdout, "policy");
         return exit_codes.success;
     }
     if (argv.len == 0) {
-        _ = try help.writeCommand(stdout, "policy");
+        _ = try help.writeCommand(io, stdout, "policy");
         return exit_codes.success;
     }
 
-    if (std.mem.eql(u8, argv[0], "check")) return check(argv[1..], stdout, stderr);
-    if (std.mem.eql(u8, argv[0], "explain")) return explain(argv[1..], stdout, stderr);
+    if (std.mem.eql(u8, argv[0], "check")) return check(io, argv[1..], stdout, stderr);
+    if (std.mem.eql(u8, argv[0], "explain")) return explain(io, argv[1..], stdout, stderr);
     if (std.mem.eql(u8, argv[0], "packs")) return packs(argv[1..], stdout, stderr);
-    if (std.mem.eql(u8, argv[0], "apply-pack")) return applyPack(argv[1..], stdout, stderr);
+    if (std.mem.eql(u8, argv[0], "apply-pack")) return applyPack(io, argv[1..], stdout, stderr);
 
     try stderr.print("orca policy: unknown subcommand '{s}'. Expected check, explain, packs, or apply-pack.\n", .{argv[0]});
     return exit_codes.usage;
 }
 
-fn check(argv: []const []const u8, stdout: anytype, stderr: anytype) !u8 {
+fn check(io: std.Io, argv: []const []const u8, stdout: anytype, stderr: anytype) !u8 {
     if (argv.len == 1 and (std.mem.eql(u8, argv[0], "--help") or std.mem.eql(u8, argv[0], "-h"))) {
         try stdout.writeAll("Usage:\n  orca policy check [policy-path]\n");
         return exit_codes.success;
@@ -35,13 +35,13 @@ fn check(argv: []const []const u8, stdout: anytype, stderr: anytype) !u8 {
         return exit_codes.usage;
     }
 
-    var gpa_state: std.heap.GeneralPurposeAllocator(.{}) = .init;
+    var gpa_state: std.heap.DebugAllocator(.{}) = .init;
     defer _ = gpa_state.deinit();
     const allocator = gpa_state.allocator();
 
     const source = if (argv.len == 1) argv[0] else "builtin:strict";
     var policy_value = if (argv.len == 1)
-        core_api.loadPolicyFile(allocator, argv[0]) catch |err| {
+        core_api.loadPolicyFile(io, allocator, argv[0]) catch |err| {
             try stderr.print("orca policy check: invalid policy {s}: {s}\n", .{ argv[0], @errorName(err) });
             return exit_codes.general;
         }
@@ -53,7 +53,7 @@ fn check(argv: []const []const u8, stdout: anytype, stderr: anytype) !u8 {
     return exit_codes.success;
 }
 
-fn explain(argv: []const []const u8, stdout: anytype, stderr: anytype) !u8 {
+fn explain(io: std.Io, argv: []const []const u8, stdout: anytype, stderr: anytype) !u8 {
     if (argv.len == 1 and (std.mem.eql(u8, argv[0], "--help") or std.mem.eql(u8, argv[0], "-h"))) {
         try stdout.writeAll("Usage:\n  orca policy explain [--policy <path>] <file.read|file.write|env|command|network|mcp> <target> [--method <HTTP_METHOD>]\n");
         return exit_codes.success;
@@ -81,7 +81,7 @@ fn explain(argv: []const []const u8, stdout: anytype, stderr: anytype) !u8 {
         try stderr.print("orca policy explain: unsupported type '{s}'.\n", .{positional[0]});
         return exit_codes.usage;
     };
-    var gpa_state: std.heap.GeneralPurposeAllocator(.{}) = .init;
+    var gpa_state: std.heap.DebugAllocator(.{}) = .init;
     defer _ = gpa_state.deinit();
     const allocator = gpa_state.allocator();
 
@@ -89,9 +89,9 @@ fn explain(argv: []const []const u8, stdout: anytype, stderr: anytype) !u8 {
     defer parsed_target.deinit(allocator);
     if (parsed_target.invalid) return exit_codes.usage;
 
-    const root = supervisor.resolveWorkspaceRoot(allocator, null, ".") catch try allocator.dupe(u8, ".");
+    const root = supervisor.resolveWorkspaceRoot(io, allocator, null, ".") catch try allocator.dupe(u8, ".");
     defer allocator.free(root);
-    var loaded = core_api.discoverPolicy(allocator, policy_path, root) catch |err| {
+    var loaded = core_api.discoverPolicy(io, allocator, policy_path, root) catch |err| {
         if (policy_path) |path| {
             try stderr.print("orca policy explain: failed to load policy {s}: {s}\n", .{ path, @errorName(err) });
         } else {
@@ -179,7 +179,7 @@ fn packs(argv: []const []const u8, stdout: anytype, stderr: anytype) !u8 {
     return exit_codes.success;
 }
 
-fn applyPack(argv: []const []const u8, stdout: anytype, stderr: anytype) !u8 {
+fn applyPack(io: std.Io, argv: []const []const u8, stdout: anytype, stderr: anytype) !u8 {
     if (argv.len < 1 or argv.len > 2) {
         try stderr.writeAll("orca policy apply-pack: expected <pack> [--force].\n");
         return exit_codes.usage;
@@ -201,26 +201,27 @@ fn applyPack(argv: []const []const u8, stdout: anytype, stderr: anytype) !u8 {
         try stderr.print("orca policy apply-pack: '{s}' is an init preset, not a product policy pack.\n", .{pack_name});
         return exit_codes.usage;
     }
-    var gpa_state: std.heap.GeneralPurposeAllocator(.{}) = .init;
+    var gpa_state: std.heap.DebugAllocator(.{}) = .init;
     defer _ = gpa_state.deinit();
     const allocator = gpa_state.allocator();
-    const root = supervisor.resolveWorkspaceRoot(allocator, null, ".") catch try std.fs.cwd().realpathAlloc(allocator, ".");
+    const cwd = std.Io.Dir.cwd();
+    const root = supervisor.resolveWorkspaceRoot(io, allocator, null, ".") catch try cwd.realPathFileAlloc(io, ".", allocator);
     defer allocator.free(root);
     const orca_dir = try std.fs.path.join(allocator, &.{ root, ".orca" });
     defer allocator.free(orca_dir);
-    try std.fs.cwd().makePath(orca_dir);
+    try cwd.createDirPath(io, orca_dir);
     const path = try std.fs.path.join(allocator, &.{ orca_dir, "policy.yaml" });
     defer allocator.free(path);
-    const flags: std.fs.File.CreateFlags = if (force) .{} else .{ .exclusive = true };
-    const file = std.fs.cwd().createFile(path, flags) catch |err| switch (err) {
+    const flags: std.Io.File.CreateFlags = if (force) .{} else .{ .exclusive = true };
+    const file = cwd.createFile(io, path, flags) catch |err| switch (err) {
         error.PathAlreadyExists => {
             try stderr.writeAll("orca policy apply-pack: .orca/policy.yaml already exists; use --force to overwrite.\n");
             return exit_codes.general;
         },
         else => return err,
     };
-    defer file.close();
-    try file.writeAll(orca_policy.presets.agentPresetText(pack));
+    defer file.close(io);
+    try file.writeStreamingAll(io, orca_policy.presets.agentPresetText(pack));
     try stdout.print("Applied policy pack '{s}' to .orca/policy.yaml.\n", .{pack_name});
     return exit_codes.success;
 }
@@ -246,93 +247,93 @@ test "policy check validates a file" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
     {
-        const file = try tmp.dir.createFile("policy.yaml", .{});
-        defer file.close();
-        try file.writeAll(orca_policy.presets.text(.strict));
+        const file = try tmp.dir.createFile(std.testing.io, "policy.yaml", .{});
+        defer file.close(std.testing.io);
+        try file.writeStreamingAll(std.testing.io, orca_policy.presets.text(.strict));
     }
-    const path = try tmp.dir.realpathAlloc(std.testing.allocator, "policy.yaml");
+    const path = try tmp.dir.realPathFileAlloc(std.testing.io, "policy.yaml", std.testing.allocator);
     defer std.testing.allocator.free(path);
 
     var stdout_buf: [512]u8 = undefined;
     var stderr_buf: [512]u8 = undefined;
-    var stdout_stream = std.io.fixedBufferStream(&stdout_buf);
-    var stderr_stream = std.io.fixedBufferStream(&stderr_buf);
+    var stdout_writer: std.Io.Writer = .fixed(&stdout_buf);
+    var stderr_writer: std.Io.Writer = .fixed(&stderr_buf);
 
-    const code = try command(&.{ "check", path }, stdout_stream.writer(), stderr_stream.writer());
+    const code = try command(std.testing.io, &.{ "check", path }, &stdout_writer, &stderr_writer);
     try std.testing.expectEqual(exit_codes.success, code);
-    try std.testing.expect(std.mem.indexOf(u8, stdout_stream.getWritten(), "Policy OK") != null);
-    try std.testing.expectEqualStrings("", stderr_stream.getWritten());
+    try std.testing.expect(std.mem.indexOf(u8, stdout_writer.buffered(), "Policy OK") != null);
+    try std.testing.expectEqualStrings("", stderr_writer.buffered());
 }
 
 test "policy check rejects scalar values on object-only grouping keys" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
     {
-        const file = try tmp.dir.createFile("policy.yaml", .{});
-        defer file.close();
-        try file.writeAll(
+        const file = try tmp.dir.createFile(std.testing.io, "policy.yaml", .{});
+        defer file.close(std.testing.io);
+        try file.writeStreamingAll(std.testing.io,
             \\version: 1
             \\mode: strict
             \\commands: allow
         );
     }
-    const path = try tmp.dir.realpathAlloc(std.testing.allocator, "policy.yaml");
+    const path = try tmp.dir.realPathFileAlloc(std.testing.io, "policy.yaml", std.testing.allocator);
     defer std.testing.allocator.free(path);
 
     var stdout_buf: [512]u8 = undefined;
     var stderr_buf: [512]u8 = undefined;
-    var stdout_stream = std.io.fixedBufferStream(&stdout_buf);
-    var stderr_stream = std.io.fixedBufferStream(&stderr_buf);
+    var stdout_writer: std.Io.Writer = .fixed(&stdout_buf);
+    var stderr_writer: std.Io.Writer = .fixed(&stderr_buf);
 
-    const code = try command(&.{ "check", path }, stdout_stream.writer(), stderr_stream.writer());
+    const code = try command(std.testing.io, &.{ "check", path }, &stdout_writer, &stderr_writer);
     try std.testing.expectEqual(exit_codes.general, code);
-    try std.testing.expect(std.mem.indexOf(u8, stderr_stream.getWritten(), "InvalidPolicy") != null);
+    try std.testing.expect(std.mem.indexOf(u8, stderr_writer.buffered(), "InvalidPolicy") != null);
 }
 
 test "policy check without path validates the built-in default policy" {
     var stdout_buf: [512]u8 = undefined;
     var stderr_buf: [512]u8 = undefined;
-    var stdout_stream = std.io.fixedBufferStream(&stdout_buf);
-    var stderr_stream = std.io.fixedBufferStream(&stderr_buf);
+    var stdout_writer: std.Io.Writer = .fixed(&stdout_buf);
+    var stderr_writer: std.Io.Writer = .fixed(&stderr_buf);
 
-    const code = try command(&.{"check"}, stdout_stream.writer(), stderr_stream.writer());
+    const code = try command(std.testing.io, &.{"check"}, &stdout_writer, &stderr_writer);
     try std.testing.expectEqual(exit_codes.success, code);
-    try std.testing.expect(std.mem.indexOf(u8, stdout_stream.getWritten(), "Policy OK: builtin:strict") != null);
-    try std.testing.expectEqualStrings("", stderr_stream.getWritten());
+    try std.testing.expect(std.mem.indexOf(u8, stdout_writer.buffered(), "Policy OK: builtin:strict") != null);
+    try std.testing.expectEqualStrings("", stderr_writer.buffered());
 }
 
 test "policy explain reports matched deny rule" {
     var stdout_buf: [1024]u8 = undefined;
     var stderr_buf: [512]u8 = undefined;
-    var stdout_stream = std.io.fixedBufferStream(&stdout_buf);
-    var stderr_stream = std.io.fixedBufferStream(&stderr_buf);
+    var stdout_writer: std.Io.Writer = .fixed(&stdout_buf);
+    var stderr_writer: std.Io.Writer = .fixed(&stderr_buf);
 
-    const code = try command(&.{ "explain", "file.read", "~/.ssh/id_ed25519" }, stdout_stream.writer(), stderr_stream.writer());
+    const code = try command(std.testing.io, &.{ "explain", "file.read", "~/.ssh/id_ed25519" }, &stdout_writer, &stderr_writer);
     try std.testing.expectEqual(exit_codes.success, code);
-    try std.testing.expect(std.mem.indexOf(u8, stdout_stream.getWritten(), "Decision: deny") != null);
-    try std.testing.expect(std.mem.indexOf(u8, stdout_stream.getWritten(), "Rule: files.read.deny") != null);
-    try std.testing.expectEqualStrings("", stderr_stream.getWritten());
+    try std.testing.expect(std.mem.indexOf(u8, stdout_writer.buffered(), "Decision: deny") != null);
+    try std.testing.expect(std.mem.indexOf(u8, stdout_writer.buffered(), "Rule: files.read.deny") != null);
+    try std.testing.expectEqualStrings("", stderr_writer.buffered());
 }
 
 test "policy explain target parser accepts network method option" {
     var stderr_buf: [512]u8 = undefined;
-    var stderr_stream = std.io.fixedBufferStream(&stderr_buf);
-    const parsed = try parseExplainTarget(std.testing.allocator, .network, &.{ "--method", "POST", "https://api.github.com/repos/orca/orca/issues" }, stderr_stream.writer());
+    var stderr_writer: std.Io.Writer = .fixed(&stderr_buf);
+    const parsed = try parseExplainTarget(std.testing.allocator, .network, &.{ "--method", "POST", "https://api.github.com/repos/orca/orca/issues" }, &stderr_writer);
     defer parsed.deinit(std.testing.allocator);
 
     try std.testing.expect(!parsed.invalid);
     try std.testing.expectEqualStrings("POST", parsed.method.?);
     try std.testing.expectEqualStrings("https://api.github.com/repos/orca/orca/issues", parsed.target);
-    try std.testing.expectEqualStrings("", stderr_stream.getWritten());
+    try std.testing.expectEqualStrings("", stderr_writer.buffered());
 }
 
 test "policy explain accepts explicit policy path" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
     {
-        const file = try tmp.dir.createFile("policy.yaml", .{});
-        defer file.close();
-        try file.writeAll(
+        const file = try tmp.dir.createFile(std.testing.io, "policy.yaml", .{});
+        defer file.close(std.testing.io);
+        try file.writeStreamingAll(std.testing.io,
             \\version: 1
             \\mode: strict
             \\commands:
@@ -341,30 +342,30 @@ test "policy explain accepts explicit policy path" {
             \\    - "git push *"
         );
     }
-    const path = try tmp.dir.realpathAlloc(std.testing.allocator, "policy.yaml");
+    const path = try tmp.dir.realPathFileAlloc(std.testing.io, "policy.yaml", std.testing.allocator);
     defer std.testing.allocator.free(path);
 
     var stdout_buf: [1024]u8 = undefined;
     var stderr_buf: [512]u8 = undefined;
-    var stdout_stream = std.io.fixedBufferStream(&stdout_buf);
-    var stderr_stream = std.io.fixedBufferStream(&stderr_buf);
+    var stdout_writer: std.Io.Writer = .fixed(&stdout_buf);
+    var stderr_writer: std.Io.Writer = .fixed(&stderr_buf);
 
-    const code = try command(&.{ "explain", "--policy", path, "command", "git", "push", "origin", "main" }, stdout_stream.writer(), stderr_stream.writer());
+    const code = try command(std.testing.io, &.{ "explain", "--policy", path, "command", "git", "push", "origin", "main" }, &stdout_writer, &stderr_writer);
 
     try std.testing.expectEqual(exit_codes.success, code);
-    try std.testing.expect(std.mem.indexOf(u8, stdout_stream.getWritten(), "Decision: deny") != null);
-    try std.testing.expect(std.mem.indexOf(u8, stdout_stream.getWritten(), "git push *") != null);
-    try std.testing.expectEqualStrings("", stderr_stream.getWritten());
+    try std.testing.expect(std.mem.indexOf(u8, stdout_writer.buffered(), "Decision: deny") != null);
+    try std.testing.expect(std.mem.indexOf(u8, stdout_writer.buffered(), "git push *") != null);
+    try std.testing.expectEqualStrings("", stderr_writer.buffered());
 }
 
 test "policy packs list productized packs" {
     var stdout_buf: [1024]u8 = undefined;
     var stderr_buf: [256]u8 = undefined;
-    var stdout_stream = std.io.fixedBufferStream(&stdout_buf);
-    var stderr_stream = std.io.fixedBufferStream(&stderr_buf);
-    const code = try command(&.{"packs"}, stdout_stream.writer(), stderr_stream.writer());
+    var stdout_writer: std.Io.Writer = .fixed(&stdout_buf);
+    var stderr_writer: std.Io.Writer = .fixed(&stderr_buf);
+    const code = try command(std.testing.io, &.{"packs"}, &stdout_writer, &stderr_writer);
     try std.testing.expectEqual(exit_codes.success, code);
-    try std.testing.expect(std.mem.indexOf(u8, stdout_stream.getWritten(), "solo-dev") != null);
-    try std.testing.expect(std.mem.indexOf(u8, stdout_stream.getWritten(), "team-ci") != null);
-    try std.testing.expect(std.mem.indexOf(u8, stdout_stream.getWritten(), "openclaw-hermes") != null);
+    try std.testing.expect(std.mem.indexOf(u8, stdout_writer.buffered(), "solo-dev") != null);
+    try std.testing.expect(std.mem.indexOf(u8, stdout_writer.buffered(), "team-ci") != null);
+    try std.testing.expect(std.mem.indexOf(u8, stdout_writer.buffered(), "openclaw-hermes") != null);
 }

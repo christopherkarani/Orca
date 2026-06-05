@@ -14,13 +14,13 @@ const max_payload_len = 256 * 1024; // 256 KiB
 // Top-level dispatch
 // ---------------------------------------------------------------------------
 
-pub fn command(argv: []const []const u8, stdout: anytype, stderr: anytype) !u8 {
+pub fn command(io: std.Io, argv: []const []const u8, stdout: anytype, stderr: anytype) !u8 {
     if (argv.len > 0 and (std.mem.eql(u8, argv[0], "--help") or std.mem.eql(u8, argv[0], "-h"))) {
-        _ = try help.writeCommand(stdout, "decide");
+        _ = try help.writeCommand(io, stdout, "decide");
         return exit_codes.success;
     }
     if (argv.len == 0) {
-        _ = try help.writeCommand(stdout, "decide");
+        _ = try help.writeCommand(io, stdout, "decide");
         return exit_codes.usage;
     }
 
@@ -29,7 +29,7 @@ pub fn command(argv: []const []const u8, stdout: anytype, stderr: anytype) !u8 {
         return exit_codes.usage;
     };
 
-    return decideCommand(kind, argv[1..], stdout, stderr);
+    return decideCommand(io, kind, argv[1..], stdout, stderr);
 }
 
 // ---------------------------------------------------------------------------
@@ -55,7 +55,7 @@ const DecisionKind = enum {
 // CLI decision command
 // ---------------------------------------------------------------------------
 
-fn decideCommand(kind: DecisionKind, argv: []const []const u8, stdout: anytype, stderr: anytype) !u8 {
+fn decideCommand(io: std.Io, kind: DecisionKind, argv: []const []const u8, stdout: anytype, stderr: anytype) !u8 {
     var json_payload: ?[]const u8 = null;
     var use_stdin = false;
     var ci_mode = false;
@@ -114,13 +114,13 @@ fn decideCommand(kind: DecisionKind, argv: []const []const u8, stdout: anytype, 
         }
     }
 
-    var gpa_state: std.heap.GeneralPurposeAllocator(.{}) = .init;
+    var gpa_state: std.heap.DebugAllocator(.{}) = .init;
     defer _ = gpa_state.deinit();
     const allocator = gpa_state.allocator();
 
     // Read payload
     const payload_text = if (use_stdin)
-        readBoundedStdin(allocator, max_payload_len) catch |err| {
+        readBoundedStdin(io, allocator, max_payload_len) catch |err| {
             if (err == error.PayloadTooLarge) {
                 try stderr.writeAll("orca decide: JSON payload exceeds maximum size.\n");
                 return exit_codes.general;
@@ -139,9 +139,9 @@ fn decideCommand(kind: DecisionKind, argv: []const []const u8, stdout: anytype, 
     defer parsed.deinit();
 
     // Load policy
-    const root = supervisor.resolveWorkspaceRoot(allocator, null, ".") catch try allocator.dupe(u8, ".");
+    const root = supervisor.resolveWorkspaceRoot(io, allocator, null, ".") catch try allocator.dupe(u8, ".");
     defer allocator.free(root);
-    var loaded = core_api.discoverPolicy(allocator, null, root) catch |err| {
+    var loaded = core_api.discoverPolicy(io, allocator, null, root) catch |err| {
         try stderr.print("orca decide: failed to load policy: {s}\n", .{@errorName(err)});
         return exit_codes.general;
     };
@@ -430,23 +430,41 @@ fn writeDecisionJson(stdout: anytype, result: DecisionOutput) !void {
 // Helpers
 // ---------------------------------------------------------------------------
 
-fn readBoundedStdin(allocator: std.mem.Allocator, max_len: usize) ![]u8 {
-    const stdin_file = std.fs.File.stdin();
-    return readBoundedReader(allocator, max_len, stdin_file);
+fn readBoundedStdin(io: std.Io, allocator: std.mem.Allocator, max_len: usize) ![]u8 {
+    return readBoundedFile(io, allocator, max_len, std.Io.File.stdin());
 }
 
-fn readBoundedReader(allocator: std.mem.Allocator, max_len: usize, reader: anytype) ![]u8 {
+fn readBoundedFile(io: std.Io, allocator: std.mem.Allocator, max_len: usize, file: std.Io.File) ![]u8 {
     var buf: std.ArrayList(u8) = .empty;
     errdefer buf.deinit(allocator);
 
     var chunk: [4096]u8 = undefined;
     while (true) {
-        const n = try reader.read(&chunk);
+        const n = try file.readStreaming(io, &.{chunk[0..]});
         if (n == 0) break;
         if (buf.items.len + n > max_len) return error.PayloadTooLarge;
         try buf.appendSlice(allocator, chunk[0..n]);
     }
 
+    return try buf.toOwnedSlice(allocator);
+}
+
+fn readBoundedIoReader(allocator: std.mem.Allocator, max_len: usize, reader: *std.Io.Reader) ![]u8 {
+    var buf: std.ArrayList(u8) = .empty;
+    errdefer buf.deinit(allocator);
+    while (buf.items.len < max_len) {
+        const chunk = reader.take(@min(4096, max_len - buf.items.len)) catch |err| switch (err) {
+            error.EndOfStream => break,
+            else => return err,
+        };
+        if (chunk.len == 0) break;
+        try buf.appendSlice(allocator, chunk);
+    }
+    const extra = reader.take(1) catch |err| switch (err) {
+        error.EndOfStream => return try buf.toOwnedSlice(allocator),
+        else => return err,
+    };
+    if (extra.len > 0) return error.PayloadTooLarge;
     return try buf.toOwnedSlice(allocator);
 }
 
@@ -511,47 +529,47 @@ test "PluginDecision exitCode mapping" {
 test "decide command help and invalid kind" {
     var stdout_buf: [2048]u8 = undefined;
     var stderr_buf: [256]u8 = undefined;
-    var stdout_stream = std.io.fixedBufferStream(&stdout_buf);
-    var stderr_stream = std.io.fixedBufferStream(&stderr_buf);
+    var stdout_writer: std.Io.Writer = .fixed(&stdout_buf);
+    var stderr_writer: std.Io.Writer = .fixed(&stderr_buf);
 
-    const help_code = try command(&.{"--help"}, stdout_stream.writer(), stderr_stream.writer());
+    const help_code = try command(std.testing.io, &.{"--help"}, &stdout_writer, &stderr_writer);
     try std.testing.expectEqual(exit_codes.success, help_code);
-    try std.testing.expect(std.mem.indexOf(u8, stdout_stream.getWritten(), "decide") != null);
+    try std.testing.expect(std.mem.indexOf(u8, stdout_writer.buffered(), "decide") != null);
 
-    stdout_stream.reset();
-    stderr_stream.reset();
-    const bad_code = try command(&.{"unknown"}, stdout_stream.writer(), stderr_stream.writer());
+    stdout_writer = .fixed(&stdout_buf);
+    stderr_writer = .fixed(&stderr_buf);
+    const bad_code = try command(std.testing.io, &.{"unknown"}, &stdout_writer, &stderr_writer);
     try std.testing.expectEqual(exit_codes.usage, bad_code);
-    try std.testing.expect(std.mem.indexOf(u8, stderr_stream.getWritten(), "unknown decision kind") != null);
+    try std.testing.expect(std.mem.indexOf(u8, stderr_writer.buffered(), "unknown decision kind") != null);
 }
 
 test "decide command with safe command returns allow" {
     var stdout_buf: [2048]u8 = undefined;
     var stderr_buf: [256]u8 = undefined;
-    var stdout_stream = std.io.fixedBufferStream(&stdout_buf);
-    var stderr_stream = std.io.fixedBufferStream(&stderr_buf);
+    var stdout_writer: std.Io.Writer = .fixed(&stdout_buf);
+    var stderr_writer: std.Io.Writer = .fixed(&stderr_buf);
 
-    const code = try decideCommand(.command, &.{
+    const code = try decideCommand(std.testing.io, .command, &.{
         "--json", "{\"command\":\"echo hello\"}",
-    }, stdout_stream.writer(), stderr_stream.writer());
+    }, &stdout_writer, &stderr_writer);
     try std.testing.expectEqual(exit_codes.success, code);
 
-    const output = stdout_stream.getWritten();
+    const output = stdout_writer.buffered();
     try std.testing.expect(std.mem.indexOf(u8, output, "\"decision\": \"allow\"") != null);
 }
 
 test "decide command with dangerous command returns block" {
     var stdout_buf: [2048]u8 = undefined;
     var stderr_buf: [256]u8 = undefined;
-    var stdout_stream = std.io.fixedBufferStream(&stdout_buf);
-    var stderr_stream = std.io.fixedBufferStream(&stderr_buf);
+    var stdout_writer: std.Io.Writer = .fixed(&stdout_buf);
+    var stderr_writer: std.Io.Writer = .fixed(&stderr_buf);
 
-    const code = try decideCommand(.command, &.{
+    const code = try decideCommand(std.testing.io, .command, &.{
         "--json", "{\"command\":\"rm -rf /\"}",
-    }, stdout_stream.writer(), stderr_stream.writer());
+    }, &stdout_writer, &stderr_writer);
     try std.testing.expectEqual(exit_codes.denial, code);
 
-    const output = stdout_stream.getWritten();
+    const output = stdout_writer.buffered();
     try std.testing.expect(std.mem.indexOf(u8, output, "\"decision\": \"block\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, output, "\"category\": \"command\"") != null);
 }
@@ -559,15 +577,15 @@ test "decide command with dangerous command returns block" {
 test "decide file write to protected path returns block" {
     var stdout_buf: [2048]u8 = undefined;
     var stderr_buf: [256]u8 = undefined;
-    var stdout_stream = std.io.fixedBufferStream(&stdout_buf);
-    var stderr_stream = std.io.fixedBufferStream(&stderr_buf);
+    var stdout_writer: std.Io.Writer = .fixed(&stdout_buf);
+    var stderr_writer: std.Io.Writer = .fixed(&stderr_buf);
 
-    const code = try decideCommand(.file, &.{
+    const code = try decideCommand(std.testing.io, .file, &.{
         "--json", "{\"path\":\"/etc/passwd\",\"operation\":\"write\"}",
-    }, stdout_stream.writer(), stderr_stream.writer());
+    }, &stdout_writer, &stderr_writer);
     try std.testing.expectEqual(exit_codes.denial, code);
 
-    const output = stdout_stream.getWritten();
+    const output = stdout_writer.buffered();
     try std.testing.expect(std.mem.indexOf(u8, output, "\"decision\": \"block\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, output, "\"category\": \"file.write\"") != null);
 }
@@ -575,61 +593,61 @@ test "decide file write to protected path returns block" {
 test "decide file rejects unknown operation instead of downgrading to read" {
     var stdout_buf: [512]u8 = undefined;
     var stderr_buf: [512]u8 = undefined;
-    var stdout_stream = std.io.fixedBufferStream(&stdout_buf);
-    var stderr_stream = std.io.fixedBufferStream(&stderr_buf);
+    var stdout_writer: std.Io.Writer = .fixed(&stdout_buf);
+    var stderr_writer: std.Io.Writer = .fixed(&stderr_buf);
 
-    const code = try decideCommand(.file, &.{
+    const code = try decideCommand(std.testing.io, .file, &.{
         "--json", "{\"path\":\"./src/main.zig\",\"operation\":\"delete\"}",
-    }, stdout_stream.writer(), stderr_stream.writer());
+    }, &stdout_writer, &stderr_writer);
     try std.testing.expect(code != exit_codes.success);
-    try std.testing.expect(std.mem.indexOf(u8, stderr_stream.getWritten(), "InvalidFileOperation") != null);
-    try std.testing.expect(std.mem.indexOf(u8, stdout_stream.getWritten(), "\"category\": \"file.read\"") == null);
+    try std.testing.expect(std.mem.indexOf(u8, stderr_writer.buffered(), "InvalidFileOperation") != null);
+    try std.testing.expect(std.mem.indexOf(u8, stdout_writer.buffered(), "\"category\": \"file.read\"") == null);
 }
 
 test "decide rejects missing required command and file fields" {
     var stdout_buf: [512]u8 = undefined;
     var stderr_buf: [512]u8 = undefined;
-    var stdout_stream = std.io.fixedBufferStream(&stdout_buf);
-    var stderr_stream = std.io.fixedBufferStream(&stderr_buf);
+    var stdout_writer: std.Io.Writer = .fixed(&stdout_buf);
+    var stderr_writer: std.Io.Writer = .fixed(&stderr_buf);
 
-    const missing_command = try decideCommand(.command, &.{
+    const missing_command = try decideCommand(std.testing.io, .command, &.{
         "--json", "{}",
-    }, stdout_stream.writer(), stderr_stream.writer());
+    }, &stdout_writer, &stderr_writer);
     try std.testing.expect(missing_command != exit_codes.success);
-    try std.testing.expect(std.mem.indexOf(u8, stderr_stream.getWritten(), "MissingRequiredField") != null);
-    try std.testing.expectEqualStrings("", stdout_stream.getWritten());
+    try std.testing.expect(std.mem.indexOf(u8, stderr_writer.buffered(), "MissingRequiredField") != null);
+    try std.testing.expectEqualStrings("", stdout_writer.buffered());
 
-    stdout_stream.reset();
-    stderr_stream.reset();
-    const missing_file_path = try decideCommand(.file, &.{
+    stdout_writer = .fixed(&stdout_buf);
+    stderr_writer = .fixed(&stderr_buf);
+    const missing_file_path = try decideCommand(std.testing.io, .file, &.{
         "--json", "{\"operation\":\"read\"}",
-    }, stdout_stream.writer(), stderr_stream.writer());
+    }, &stdout_writer, &stderr_writer);
     try std.testing.expect(missing_file_path != exit_codes.success);
-    try std.testing.expect(std.mem.indexOf(u8, stderr_stream.getWritten(), "MissingRequiredField") != null);
-    try std.testing.expectEqualStrings("", stdout_stream.getWritten());
+    try std.testing.expect(std.mem.indexOf(u8, stderr_writer.buffered(), "MissingRequiredField") != null);
+    try std.testing.expectEqualStrings("", stdout_writer.buffered());
 
-    stdout_stream.reset();
-    stderr_stream.reset();
-    const missing_tool_name = try decideCommand(.tool, &.{
+    stdout_writer = .fixed(&stdout_buf);
+    stderr_writer = .fixed(&stderr_buf);
+    const missing_tool_name = try decideCommand(std.testing.io, .tool, &.{
         "--json", "{}",
-    }, stdout_stream.writer(), stderr_stream.writer());
+    }, &stdout_writer, &stderr_writer);
     try std.testing.expect(missing_tool_name != exit_codes.success);
-    try std.testing.expect(std.mem.indexOf(u8, stderr_stream.getWritten(), "MissingRequiredField") != null);
-    try std.testing.expectEqualStrings("", stdout_stream.getWritten());
+    try std.testing.expect(std.mem.indexOf(u8, stderr_writer.buffered(), "MissingRequiredField") != null);
+    try std.testing.expectEqualStrings("", stdout_writer.buffered());
 }
 
 test "decide prompt with fake secret returns warn" {
     var stdout_buf: [2048]u8 = undefined;
     var stderr_buf: [256]u8 = undefined;
-    var stdout_stream = std.io.fixedBufferStream(&stdout_buf);
-    var stderr_stream = std.io.fixedBufferStream(&stderr_buf);
+    var stdout_writer: std.Io.Writer = .fixed(&stdout_buf);
+    var stderr_writer: std.Io.Writer = .fixed(&stderr_buf);
 
-    const code = try decideCommand(.prompt, &.{
+    const code = try decideCommand(std.testing.io, .prompt, &.{
         "--json", "{\"text\":\"my token is ghp_fake_secret_value\"}",
-    }, stdout_stream.writer(), stderr_stream.writer());
+    }, &stdout_writer, &stderr_writer);
     try std.testing.expectEqual(exit_codes.warn, code);
 
-    const output = stdout_stream.getWritten();
+    const output = stdout_writer.buffered();
     try std.testing.expect(std.mem.indexOf(u8, output, "\"decision\": \"warn\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, output, "\"category\": \"prompt\"") != null);
     // Ensure redaction is noted
@@ -639,15 +657,15 @@ test "decide prompt with fake secret returns warn" {
 test "decide prompt accepts host prompt field and redacts fake secret" {
     var stdout_buf: [2048]u8 = undefined;
     var stderr_buf: [512]u8 = undefined;
-    var stdout_stream = std.io.fixedBufferStream(&stdout_buf);
-    var stderr_stream = std.io.fixedBufferStream(&stderr_buf);
+    var stdout_writer: std.Io.Writer = .fixed(&stdout_buf);
+    var stderr_writer: std.Io.Writer = .fixed(&stderr_buf);
 
-    const code = try decideCommand(.prompt, &.{
+    const code = try decideCommand(std.testing.io, .prompt, &.{
         "--json", "{\"prompt\":\"fake_p05_secret_value\"}",
-    }, stdout_stream.writer(), stderr_stream.writer());
+    }, &stdout_writer, &stderr_writer);
     try std.testing.expectEqual(exit_codes.warn, code);
 
-    const output = stdout_stream.getWritten();
+    const output = stdout_writer.buffered();
     try std.testing.expect(std.mem.indexOf(u8, output, "\"decision\": \"warn\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, output, "\"category\": \"prompt\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, output, "fake_p05_secret_value") == null);
@@ -657,13 +675,13 @@ test "decide prompt accepts host prompt field and redacts fake secret" {
 test "decide tool returns valid JSON" {
     var stdout_buf: [2048]u8 = undefined;
     var stderr_buf: [256]u8 = undefined;
-    var stdout_stream = std.io.fixedBufferStream(&stdout_buf);
-    var stderr_stream = std.io.fixedBufferStream(&stderr_buf);
+    var stdout_writer: std.Io.Writer = .fixed(&stdout_buf);
+    var stderr_writer: std.Io.Writer = .fixed(&stderr_buf);
 
-    const code = try decideCommand(.tool, &.{
+    const code = try decideCommand(std.testing.io, .tool, &.{
         "--json", "{\"name\":\"read_file\"}",
-    }, stdout_stream.writer(), stderr_stream.writer());
-    const output = stdout_stream.getWritten();
+    }, &stdout_writer, &stderr_writer);
+    const output = stdout_writer.buffered();
     var parsed = try std.json.parseFromSlice(std.json.Value, std.testing.allocator, output, .{});
     defer parsed.deinit();
 
@@ -686,32 +704,32 @@ test "decide tool returns valid JSON" {
 test "decide non-ci mode returns ask exit code for unknown command" {
     var stdout_buf: [2048]u8 = undefined;
     var stderr_buf: [256]u8 = undefined;
-    var stdout_stream = std.io.fixedBufferStream(&stdout_buf);
-    var stderr_stream = std.io.fixedBufferStream(&stderr_buf);
+    var stdout_writer: std.Io.Writer = .fixed(&stdout_buf);
+    var stderr_writer: std.Io.Writer = .fixed(&stderr_buf);
 
-    const code = try decideCommand(.command, &.{
+    const code = try decideCommand(std.testing.io, .command, &.{
         "--json", "{\"command\":\"unknown-tool --help\"}",
-    }, stdout_stream.writer(), stderr_stream.writer());
+    }, &stdout_writer, &stderr_writer);
     try std.testing.expectEqual(exit_codes.ask, code);
 
-    const output = stdout_stream.getWritten();
+    const output = stdout_writer.buffered();
     try std.testing.expect(std.mem.indexOf(u8, output, "\"decision\": \"ask\"") != null);
 }
 
 test "decide ci mode turns ask into block" {
     var stdout_buf: [2048]u8 = undefined;
     var stderr_buf: [256]u8 = undefined;
-    var stdout_stream = std.io.fixedBufferStream(&stdout_buf);
-    var stderr_stream = std.io.fixedBufferStream(&stderr_buf);
+    var stdout_writer: std.Io.Writer = .fixed(&stdout_buf);
+    var stderr_writer: std.Io.Writer = .fixed(&stderr_buf);
 
     // Use a command that typically asks; in CI it should block
-    const code = try decideCommand(.command, &.{
+    const code = try decideCommand(std.testing.io, .command, &.{
         "--json", "{\"command\":\"unknown-tool --help\"}",
         "--ci",
-    }, stdout_stream.writer(), stderr_stream.writer());
+    }, &stdout_writer, &stderr_writer);
     try std.testing.expectEqual(exit_codes.denial, code);
 
-    const output = stdout_stream.getWritten();
+    const output = stdout_writer.buffered();
     // In CI mode, ask should become block
     // Note: the exact decision depends on policy; we just verify JSON validity
     try std.testing.expect(std.mem.indexOf(u8, output, "\"decision\"") != null);
@@ -720,14 +738,14 @@ test "decide ci mode turns ask into block" {
 test "decide rejects invalid JSON" {
     var stdout_buf: [256]u8 = undefined;
     var stderr_buf: [256]u8 = undefined;
-    var stdout_stream = std.io.fixedBufferStream(&stdout_buf);
-    var stderr_stream = std.io.fixedBufferStream(&stderr_buf);
+    var stdout_writer: std.Io.Writer = .fixed(&stdout_buf);
+    var stderr_writer: std.Io.Writer = .fixed(&stderr_buf);
 
-    const code = try decideCommand(.command, &.{
+    const code = try decideCommand(std.testing.io, .command, &.{
         "--json", "{not json",
-    }, stdout_stream.writer(), stderr_stream.writer());
+    }, &stdout_writer, &stderr_writer);
     try std.testing.expect(code != exit_codes.success);
-    try std.testing.expect(std.mem.indexOf(u8, stderr_stream.getWritten(), "invalid JSON") != null);
+    try std.testing.expect(std.mem.indexOf(u8, stderr_writer.buffered(), "invalid JSON") != null);
 }
 
 test "decide bounded reader rejects oversized payload instead of truncating" {
@@ -738,8 +756,8 @@ test "decide bounded reader rejects oversized payload instead of truncating" {
     payload[1] = '}';
     payload[max_payload_len] = 'x';
 
-    var stream = std.io.fixedBufferStream(payload);
-    try std.testing.expectError(error.PayloadTooLarge, readBoundedReader(std.testing.allocator, max_payload_len, stream.reader()));
+    var reader: std.Io.Reader = .fixed(payload);
+    try std.testing.expectError(error.PayloadTooLarge, readBoundedIoReader(std.testing.allocator, max_payload_len, &reader));
 }
 
 test "decide rejects inline json payloads over limit" {
@@ -751,11 +769,11 @@ test "decide rejects inline json payloads over limit" {
 
     var stdout_buf: [2048]u8 = undefined;
     var stderr_buf: [2048]u8 = undefined;
-    var stdout_stream = std.io.fixedBufferStream(&stdout_buf);
-    var stderr_stream = std.io.fixedBufferStream(&stderr_buf);
+    var stdout_writer: std.Io.Writer = .fixed(&stdout_buf);
+    var stderr_writer: std.Io.Writer = .fixed(&stderr_buf);
 
-    const code = try decideCommand(.prompt, &.{ "--json", payload.items }, stdout_stream.writer(), stderr_stream.writer());
+    const code = try decideCommand(std.testing.io, .prompt, &.{ "--json", payload.items }, &stdout_writer, &stderr_writer);
     try std.testing.expectEqual(exit_codes.general, code);
-    try std.testing.expectEqualStrings("", stdout_stream.getWritten());
-    try std.testing.expect(std.mem.indexOf(u8, stderr_stream.getWritten(), "JSON payload exceeds maximum size") != null);
+    try std.testing.expectEqualStrings("", stdout_writer.buffered());
+    try std.testing.expect(std.mem.indexOf(u8, stderr_writer.buffered(), "JSON payload exceeds maximum size") != null);
 }

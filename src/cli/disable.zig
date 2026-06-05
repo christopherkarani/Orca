@@ -1,10 +1,10 @@
 const std = @import("std");
 
+const env_util = @import("../env_util.zig");
 const exit_codes = @import("exit_codes.zig");
 const help = @import("help.zig");
 const plugin = @import("plugin.zig");
 const interactive = @import("interactive.zig");
-
 
 // ---------------------------------------------------------------------------
 // Top-level dispatch
@@ -12,11 +12,11 @@ const interactive = @import("interactive.zig");
 
 const DisableTarget = enum { codex, claude, opencode, openclaw, hermes, all };
 
-pub fn command(argv: []const []const u8, stdout: anytype, stderr: anytype) !u8 {
+pub fn command(io: std.Io, argv: []const []const u8, stdout: anytype, stderr: anytype) !u8 {
     var target: DisableTarget = .all;
     var yes = false;
 
-    var gpa_state: std.heap.GeneralPurposeAllocator(.{}) = .init;
+    var gpa_state: std.heap.DebugAllocator(.{}) = .init;
     defer _ = gpa_state.deinit();
     const allocator = gpa_state.allocator();
 
@@ -24,7 +24,7 @@ pub fn command(argv: []const []const u8, stdout: anytype, stderr: anytype) !u8 {
     while (index < argv.len) : (index += 1) {
         const arg = argv[index];
         if (std.mem.eql(u8, arg, "--help") or std.mem.eql(u8, arg, "-h")) {
-            _ = try help.writeCommand(stdout, "disable");
+            _ = try help.writeCommand(io, stdout, "disable");
             return exit_codes.success;
         }
         if (std.mem.eql(u8, arg, "--yes")) {
@@ -60,13 +60,13 @@ pub fn command(argv: []const []const u8, stdout: anytype, stderr: anytype) !u8 {
     }
 
     if (!yes) {
-        const stdin = std.fs.File.stdin();
-        if (stdin.isTty()) {
+        const stdin = std.Io.File.stdin();
+        if (try stdin.isTty(io)) {
             const host_label = if (target == .all) "all" else @tagName(target);
             var prompt_buf: [128]u8 = undefined;
             const prompt = std.fmt.bufPrint(&prompt_buf, "Disable Orca for {s}? This removes plugin registrations from host agents.", .{host_label}) catch "Disable Orca?";
 
-            const confirmed = interactive.askConfirmInteractive(stdout, prompt, false) catch |err| {
+            const confirmed = interactive.askConfirmInteractive(io, stdout, prompt, false) catch |err| {
                 try stderr.print("orca disable: confirmation failed: {s}\n", .{@errorName(err)});
                 return exit_codes.general;
             };
@@ -95,11 +95,11 @@ pub fn command(argv: []const []const u8, stdout: anytype, stderr: anytype) !u8 {
     for (targets) |t| {
         try stdout.print("Host: {s}\n", .{@tagName(t)});
         const did_disable = switch (t) {
-            .opencode => try disableOpenCode(allocator, stdout),
-            .openclaw => try disableOpenClaw(allocator, stdout),
-            .hermes => try disableHermes(allocator, stdout),
-            .codex => try disableCodex(allocator, stdout),
-            .claude => try disableClaude(allocator, stdout),
+            .opencode => try disableOpenCode(io, allocator, stdout),
+            .openclaw => try disableOpenClaw(io, allocator, stdout),
+            .hermes => try disableHermes(io, allocator, stdout),
+            .codex => try disableCodex(io, allocator, stdout),
+            .claude => try disableClaude(io, allocator, stdout),
             .all => unreachable,
         };
         if (did_disable) {
@@ -125,20 +125,23 @@ pub fn command(argv: []const []const u8, stdout: anytype, stderr: anytype) !u8 {
 // Per-host disable functions (pub so uninstall.zig can delegate)
 // ---------------------------------------------------------------------------
 
-pub fn disableOpenCode(allocator: std.mem.Allocator, stdout: anytype) !bool {
+pub fn disableOpenCode(io: std.Io, allocator: std.mem.Allocator, stdout: anytype) !bool {
     var removed = false;
     const project_path = try std.fs.path.join(allocator, &.{ ".opencode", "plugins", "orca.ts" });
     defer allocator.free(project_path);
     const global_path = blk: {
-        const home = std.process.getEnvVarOwned(allocator, "HOME") catch break :blk null;
-        defer allocator.free(home);
-        break :blk try std.fs.path.join(allocator, &.{ home, ".config", "opencode", "plugins", "orca.ts" });
+        var env_map = env_util.createProcessMap(allocator) catch break :blk null;
+        defer env_map.deinit();
+        const home = env_util.getOwned(&env_map, allocator, "HOME") catch break :blk null;
+        const home_owned = home orelse break :blk null;
+        defer allocator.free(home_owned);
+        break :blk try std.fs.path.join(allocator, &.{ home_owned, ".config", "opencode", "plugins", "orca.ts" });
     };
     defer if (global_path) |p| allocator.free(p);
 
-    if (plugin.fileExistsAbsolute(project_path)) {
+    if (plugin.fileExistsAbsolute(io, project_path)) {
         blk: {
-            std.fs.cwd().deleteFile(project_path) catch |err| {
+            std.Io.Dir.cwd().deleteFile(io, project_path) catch |err| {
                 try stdout.print("  project plugin: failed to remove ({s})\n", .{@errorName(err)});
                 break :blk;
             };
@@ -147,9 +150,9 @@ pub fn disableOpenCode(allocator: std.mem.Allocator, stdout: anytype) !bool {
         }
     }
     if (global_path) |gp| {
-        if (plugin.fileExistsAbsolute(gp)) {
+        if (plugin.fileExistsAbsolute(io, gp)) {
             blk: {
-                std.fs.cwd().deleteFile(gp) catch |err| {
+                std.Io.Dir.cwd().deleteFile(io, gp) catch |err| {
                     try stdout.print("  global plugin: failed to remove ({s})\n", .{@errorName(err)});
                     break :blk;
                 };
@@ -161,8 +164,8 @@ pub fn disableOpenCode(allocator: std.mem.Allocator, stdout: anytype) !bool {
     return removed;
 }
 
-pub fn disableOpenClaw(allocator: std.mem.Allocator, stdout: anytype) !bool {
-    if (plugin.binaryInPath(allocator, "openclaw")) {
+pub fn disableOpenClaw(io: std.Io, allocator: std.mem.Allocator, stdout: anytype) !bool {
+    if (plugin.binaryInPath(io, allocator, "openclaw")) {
         try stdout.writeAll("  openclaw: running 'openclaw plugins uninstall orca-openclaw-plugin' (10s timeout)...\n");
 
         const status = runOpenClawUninstall(allocator) catch |err| blk: {
@@ -184,9 +187,9 @@ pub fn disableOpenClaw(allocator: std.mem.Allocator, stdout: anytype) !bool {
     return false;
 }
 
-pub fn disableHermes(allocator: std.mem.Allocator, stdout: anytype) !bool {
+pub fn disableHermes(io: std.Io, allocator: std.mem.Allocator, stdout: anytype) !bool {
     var disabled = false;
-    if (plugin.binaryInPath(allocator, "hermes")) {
+    if (plugin.binaryInPath(io, allocator, "hermes")) {
         try stdout.writeAll("  hermes: running 'hermes plugins disable orca' (10s timeout)...\n");
 
         const status = runHermesDisable(allocator) catch |err| blk: {
@@ -206,7 +209,7 @@ pub fn disableHermes(allocator: std.mem.Allocator, stdout: anytype) !bool {
     defer allocator.free(user_root);
     if (plugin.dirExists(user_root)) {
         blk: {
-            std.fs.cwd().deleteTree(user_root) catch |err| {
+            std.Io.Dir.cwd().deleteTree(io, user_root) catch |err| {
                 try stdout.print("  plugin files: failed to remove ({s})\n", .{@errorName(err)});
                 break :blk;
             };
@@ -217,15 +220,15 @@ pub fn disableHermes(allocator: std.mem.Allocator, stdout: anytype) !bool {
     return disabled;
 }
 
-pub fn disableCodex(allocator: std.mem.Allocator, stdout: anytype) !bool {
-    return try removeKnownPluginPaths(allocator, stdout, "codex", &[_][]const u8{
+pub fn disableCodex(io: std.Io, allocator: std.mem.Allocator, stdout: anytype) !bool {
+    return try removeKnownPluginPaths(io, allocator, stdout, "codex", &[_][]const u8{
         ".agents/plugins/orca",
         ".codex/plugins/orca",
     });
 }
 
-pub fn disableClaude(allocator: std.mem.Allocator, stdout: anytype) !bool {
-    return try removeKnownPluginPaths(allocator, stdout, "claude", &[_][]const u8{
+pub fn disableClaude(io: std.Io, allocator: std.mem.Allocator, stdout: anytype) !bool {
+    return try removeKnownPluginPaths(io, allocator, stdout, "claude", &[_][]const u8{
         ".claude/plugins/orca",
     });
 }
@@ -263,11 +266,11 @@ pub fn runHermesDisable(allocator: std.mem.Allocator) !u8 {
     return res.exit_code;
 }
 
-pub fn removeKnownPluginPaths(allocator: std.mem.Allocator, stdout: anytype, host_name: []const u8, paths: []const []const u8) !bool {
+pub fn removeKnownPluginPaths(io: std.Io, allocator: std.mem.Allocator, stdout: anytype, host_name: []const u8, paths: []const []const u8) !bool {
     var removed_any = false;
     for (paths) |rel_path| {
-        if (plugin.fileExistsAbsolute(rel_path)) {
-            std.fs.cwd().deleteFile(rel_path) catch |err| {
+        if (plugin.fileExistsAbsolute(io, rel_path)) {
+            std.Io.Dir.cwd().deleteFile(io, rel_path) catch |err| {
                 try stdout.print("  {s} plugin: failed to remove {s} ({s})\n", .{ host_name, rel_path, @errorName(err) });
                 continue;
             };
@@ -275,7 +278,7 @@ pub fn removeKnownPluginPaths(allocator: std.mem.Allocator, stdout: anytype, hos
             removed_any = true;
         }
         if (plugin.dirExists(rel_path)) {
-            std.fs.cwd().deleteTree(rel_path) catch |err| {
+            std.Io.Dir.cwd().deleteTree(io, rel_path) catch |err| {
                 try stdout.print("  {s} plugin: failed to remove {s} ({s})\n", .{ host_name, rel_path, @errorName(err) });
                 continue;
             };
@@ -294,27 +297,27 @@ pub fn removeKnownPluginPaths(allocator: std.mem.Allocator, stdout: anytype, hos
 test "disable command help and invalid args" {
     var stdout_buf: [2048]u8 = undefined;
     var stderr_buf: [256]u8 = undefined;
-    var stdout_stream = std.io.fixedBufferStream(&stdout_buf);
-    var stderr_stream = std.io.fixedBufferStream(&stderr_buf);
+    var stdout_writer: std.Io.Writer = .fixed(&stdout_buf);
+    var stderr_writer: std.Io.Writer = .fixed(&stderr_buf);
 
-    const help_code = try command(&.{"--help"}, stdout_stream.writer(), stderr_stream.writer());
+    const help_code = try command(std.testing.io, &.{"--help"}, &stdout_writer, &stderr_writer);
     try std.testing.expectEqual(exit_codes.success, help_code);
-    try std.testing.expect(std.mem.indexOf(u8, stdout_stream.getWritten(), "disable") != null);
+    try std.testing.expect(std.mem.indexOf(u8, stdout_writer.buffered(), "disable") != null);
 
-    stdout_stream.reset();
-    stderr_stream.reset();
-    const bad_code = try command(&.{"--unknown"}, stdout_stream.writer(), stderr_stream.writer());
+    stdout_writer = .fixed(&stdout_buf);
+    stderr_writer = .fixed(&stderr_buf);
+    const bad_code = try command(std.testing.io, &.{"--unknown"}, &stdout_writer, &stderr_writer);
     try std.testing.expectEqual(exit_codes.usage, bad_code);
-    try std.testing.expect(std.mem.indexOf(u8, stderr_stream.getWritten(), "unknown option") != null);
+    try std.testing.expect(std.mem.indexOf(u8, stderr_writer.buffered(), "unknown option") != null);
 }
 
 test "disable without --yes in non-TTY returns usage" {
     var stdout_buf: [2048]u8 = undefined;
     var stderr_buf: [256]u8 = undefined;
-    var stdout_stream = std.io.fixedBufferStream(&stdout_buf);
-    var stderr_stream = std.io.fixedBufferStream(&stderr_buf);
+    var stdout_writer: std.Io.Writer = .fixed(&stdout_buf);
+    var stderr_writer: std.Io.Writer = .fixed(&stderr_buf);
 
-    const code = try command(&.{"all"}, stdout_stream.writer(), stderr_stream.writer());
+    const code = try command(std.testing.io, &.{"all"}, &stdout_writer, &stderr_writer);
     try std.testing.expectEqual(exit_codes.usage, code);
-    try std.testing.expect(std.mem.indexOf(u8, stderr_stream.getWritten(), "--yes") != null);
+    try std.testing.expect(std.mem.indexOf(u8, stderr_writer.buffered(), "--yes") != null);
 }

@@ -1,41 +1,43 @@
 const std = @import("std");
+const env_util = @import("env_util.zig");
 
 pub const ResolveOptions = struct {
     workspace_root: []const u8,
     resource_root_override: ?[]const u8 = null,
 };
 
-pub fn resolveResourcePath(allocator: std.mem.Allocator, options: ResolveOptions, relative_path: []const u8) ![]u8 {
+pub fn resolveResourcePath(io: std.Io, allocator: std.mem.Allocator, options: ResolveOptions, relative_path: []const u8) ![]u8 {
     const workspace_candidate = try std.fs.path.join(allocator, &.{ options.workspace_root, relative_path });
-    if (pathExists(workspace_candidate)) return workspace_candidate;
+    if (pathExists(io, workspace_candidate)) return workspace_candidate;
     allocator.free(workspace_candidate);
 
     if (options.resource_root_override) |resource_root| {
         const candidate = try std.fs.path.join(allocator, &.{ resource_root, relative_path });
-        if (pathExists(candidate)) return candidate;
+        if (pathExists(io, candidate)) return candidate;
         allocator.free(candidate);
-    } else if (std.process.getEnvVarOwned(allocator, "ORCA_RESOURCE_ROOT")) |resource_root| {
-        defer allocator.free(resource_root);
-        const candidate = try std.fs.path.join(allocator, &.{ resource_root, relative_path });
-        if (pathExists(candidate)) return candidate;
-        allocator.free(candidate);
-    } else |err| switch (err) {
-        error.EnvironmentVariableNotFound => {},
-        else => return err,
+    } else {
+        var env_map = env_util.createProcessMap(allocator) catch return error.ResourceNotFound;
+        defer env_map.deinit();
+        if (try env_util.getOwned(&env_map, allocator, "ORCA_RESOURCE_ROOT")) |resource_root| {
+            defer allocator.free(resource_root);
+            const candidate = try std.fs.path.join(allocator, &.{ resource_root, relative_path });
+            if (pathExists(io, candidate)) return candidate;
+            allocator.free(candidate);
+        }
     }
 
-    const exe_path = std.fs.selfExePathAlloc(allocator) catch |err| switch (err) {
-        error.FileNotFound, error.NameTooLong, error.AccessDenied => return error.ResourceNotFound,
+    const exe_path = std.process.executablePathAlloc(io, allocator) catch |err| switch (err) {
+        error.FileNotFound, error.AccessDenied => return error.ResourceNotFound,
         else => return err,
     };
     defer allocator.free(exe_path);
     if (std.fs.path.dirname(exe_path)) |exe_dir| {
         const candidate = try std.fs.path.join(allocator, &.{ exe_dir, "..", relative_path });
-        if (pathExists(candidate)) return candidate;
+        if (pathExists(io, candidate)) return candidate;
         allocator.free(candidate);
 
         const source_build_candidate = try std.fs.path.join(allocator, &.{ exe_dir, "..", "..", relative_path });
-        if (pathExists(source_build_candidate)) return source_build_candidate;
+        if (pathExists(io, source_build_candidate)) return source_build_candidate;
         allocator.free(source_build_candidate);
 
         // Strong improvement for non-interactive / container / CI usage:
@@ -46,7 +48,7 @@ pub fn resolveResourcePath(allocator: std.mem.Allocator, options: ResolveOptions
         // out of the box after a fresh install in many environments.
         if (std.fs.path.dirname(exe_dir)) |prefix_dir| {
             const packaged = try std.fs.path.join(allocator, &.{ prefix_dir, "share", "orca", "current", relative_path });
-            if (pathExists(packaged)) return packaged;
+            if (pathExists(io, packaged)) return packaged;
             allocator.free(packaged);
         }
     }
@@ -54,30 +56,32 @@ pub fn resolveResourcePath(allocator: std.mem.Allocator, options: ResolveOptions
     return error.ResourceNotFound;
 }
 
-pub fn resourcePathExists(allocator: std.mem.Allocator, options: ResolveOptions, relative_path: []const u8) bool {
-    const resolved = resolveResourcePath(allocator, options, relative_path) catch return false;
+pub fn resourcePathExists(io: std.Io, allocator: std.mem.Allocator, options: ResolveOptions, relative_path: []const u8) bool {
+    const resolved = resolveResourcePath(io, allocator, options, relative_path) catch return false;
     allocator.free(resolved);
     return true;
 }
 
-fn pathExists(path: []const u8) bool {
-    std.fs.cwd().access(path, .{}) catch return false;
+fn pathExists(io: std.Io, path: []const u8) bool {
+    std.Io.Dir.cwd().access(io, path, .{}) catch return false;
     return true;
 }
 
 test "resource resolver falls back to explicit resource root" {
+    var threaded: std.Io.Threaded = .init_single_threaded;
+    const io = threaded.io();
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
 
-    try tmp.dir.makePath("workspace");
-    try tmp.dir.makePath("resources/fixtures");
+    try tmp.dir.createDirPath(std.testing.io, "workspace");
+    try tmp.dir.createDirPath(std.testing.io, "resources/fixtures");
 
-    const workspace_root = try tmp.dir.realpathAlloc(std.testing.allocator, "workspace");
+    const workspace_root = try tmp.dir.realPathFileAlloc(std.testing.io, "workspace", std.testing.allocator);
     defer std.testing.allocator.free(workspace_root);
-    const resource_root = try tmp.dir.realpathAlloc(std.testing.allocator, "resources");
+    const resource_root = try tmp.dir.realPathFileAlloc(std.testing.io, "resources", std.testing.allocator);
     defer std.testing.allocator.free(resource_root);
 
-    const resolved = try resolveResourcePath(std.testing.allocator, .{
+    const resolved = try resolveResourcePath(io, std.testing.allocator, .{
         .workspace_root = workspace_root,
         .resource_root_override = resource_root,
     }, "fixtures");
@@ -87,18 +91,20 @@ test "resource resolver falls back to explicit resource root" {
 }
 
 test "resource resolver prefers workspace resources" {
+    var threaded: std.Io.Threaded = .init_single_threaded;
+    const io = threaded.io();
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
 
-    try tmp.dir.makePath("workspace/fixtures");
-    try tmp.dir.makePath("resources/fixtures");
+    try tmp.dir.createDirPath(std.testing.io, "workspace/fixtures");
+    try tmp.dir.createDirPath(std.testing.io, "resources/fixtures");
 
-    const workspace_root = try tmp.dir.realpathAlloc(std.testing.allocator, "workspace");
+    const workspace_root = try tmp.dir.realPathFileAlloc(std.testing.io, "workspace", std.testing.allocator);
     defer std.testing.allocator.free(workspace_root);
-    const resource_root = try tmp.dir.realpathAlloc(std.testing.allocator, "resources");
+    const resource_root = try tmp.dir.realPathFileAlloc(std.testing.io, "resources", std.testing.allocator);
     defer std.testing.allocator.free(resource_root);
 
-    const resolved = try resolveResourcePath(std.testing.allocator, .{
+    const resolved = try resolveResourcePath(io, std.testing.allocator, .{
         .workspace_root = workspace_root,
         .resource_root_override = resource_root,
     }, "fixtures");
@@ -112,19 +118,21 @@ test "resource resolver prefers workspace resources" {
 // that install.sh, doctor, and Homebrew all converge on. This path must resolve
 // fixtures/integrations for non-interactive `sh -c 'orca redteam --ci'` flows.
 test "resource resolver supports packaged share/orca/current layout via override" {
+    var threaded: std.Io.Threaded = .init_single_threaded;
+    const io = threaded.io();
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
 
     // Simulate $PREFIX/share/orca/current/fixtures (the exact layout from improved install.sh)
-    try tmp.dir.makePath("share/orca/current/fixtures/redteam");
-    try tmp.dir.writeFile(.{ .sub_path = "share/orca/current/fixtures/redteam/sample.txt", .data = "test" });
+    try tmp.dir.createDirPath(std.testing.io, "share/orca/current/fixtures/redteam");
+    try tmp.dir.writeFile(std.testing.io, .{ .sub_path = "share/orca/current/fixtures/redteam/sample.txt", .data = "test" });
 
-    const packaged_root = try tmp.dir.realpathAlloc(std.testing.allocator, "share/orca/current");
+    const packaged_root = try tmp.dir.realPathFileAlloc(std.testing.io, "share/orca/current", std.testing.allocator);
     defer std.testing.allocator.free(packaged_root);
 
     // No workspace, no explicit override in options (simulates clean env after install)
     // but we use override here to stand in for the auto-discovered sibling from exe_dir
-    const resolved = try resolveResourcePath(std.testing.allocator, .{
+    const resolved = try resolveResourcePath(io, std.testing.allocator, .{
         .workspace_root = "/nonexistent/workspace",
         .resource_root_override = packaged_root,
     }, "fixtures/redteam/sample.txt");

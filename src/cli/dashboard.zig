@@ -35,26 +35,26 @@ const Request = struct {
     csrf_token: ?[]const u8,
 };
 
-pub fn command(argv: []const []const u8, stdout: anytype, stderr: anytype) !u8 {
-    const options = parseOptions(argv, stdout, stderr) catch |err| switch (err) {
+pub fn command(io: std.Io, argv: []const []const u8, stdout: anytype, stderr: anytype) !u8 {
+    const options = parseOptions(io, argv, stdout, stderr) catch |err| switch (err) {
         error.HelpShown => return exit_codes.success,
         error.Usage => return exit_codes.usage,
         else => return err,
     };
-    return serve(options, stdout, stderr);
+    return serve(io, options, stdout, stderr);
 }
 
 pub fn commandForTest(argv: []const []const u8, stdout: anytype, stderr: anytype) !u8 {
-    return command(argv, stdout, stderr);
+    return command(std.testing.io, argv, stdout, stderr);
 }
 
-fn parseOptions(argv: []const []const u8, stdout: anytype, stderr: anytype) !DashboardOptions {
+fn parseOptions(io: std.Io, argv: []const []const u8, stdout: anytype, stderr: anytype) !DashboardOptions {
     var options: DashboardOptions = .{};
     var index: usize = 0;
     while (index < argv.len) : (index += 1) {
         const arg = argv[index];
         if (std.mem.eql(u8, arg, "--help") or std.mem.eql(u8, arg, "-h")) {
-            _ = try help.writeCommand(stdout, "dashboard");
+            _ = try help.writeCommand(io, stdout, "dashboard");
             return error.HelpShown;
         } else if (std.mem.eql(u8, arg, "--host")) {
             index += 1;
@@ -87,32 +87,32 @@ fn parseOptions(argv: []const []const u8, stdout: anytype, stderr: anytype) !Das
     return options;
 }
 
-fn serve(options: DashboardOptions, stdout: anytype, stderr: anytype) !u8 {
-    const address = std.net.Address.parseIp(options.host, options.port) catch |err| {
+fn serve(io: std.Io, options: DashboardOptions, stdout: anytype, stderr: anytype) !u8 {
+    const address = std.Io.net.IpAddress.parse(options.host, options.port) catch |err| {
         try stderr.print("orca dashboard: invalid bind address: {s}\n", .{@errorName(err)});
         return exit_codes.usage;
     };
-    var server = address.listen(.{ .reuse_address = true }) catch |err| {
+    var server = address.listen(io, .{ .reuse_address = true }) catch |err| {
         try stderr.print("orca dashboard: failed to listen on {s}:{d}: {s}\n", .{ options.host, options.port, @errorName(err) });
         return exit_codes.general;
     };
-    defer server.deinit();
+    defer server.deinit(io);
     try stdout.print("Orca dashboard listening at http://{s}:{d}\n", .{ options.host, options.port });
     try flushIfSupported(stdout);
 
-    var gpa_state: std.heap.GeneralPurposeAllocator(.{}) = .init;
+    var gpa_state: std.heap.DebugAllocator(.{}) = .init;
     defer _ = gpa_state.deinit();
     const allocator = gpa_state.allocator();
-    const csrf_token = try makeCsrfToken(allocator);
+    const csrf_token = try makeCsrfToken(io, allocator);
     defer allocator.free(csrf_token);
 
     while (true) {
-        var connection = server.accept() catch |err| {
+        var stream = server.accept(io) catch |err| {
             try stderr.print("orca dashboard: accept failed: {s}\n", .{@errorName(err)});
             continue;
         };
-        defer connection.stream.close();
-        handleConnection(allocator, connection.stream, csrf_token) catch |err| {
+        defer stream.close(io);
+        handleConnection(io, allocator, stream, csrf_token) catch |err| {
             try stderr.print("orca dashboard: request failed: {s}\n", .{@errorName(err)});
         };
         if (options.once) break;
@@ -120,80 +120,98 @@ fn serve(options: DashboardOptions, stdout: anytype, stderr: anytype) !u8 {
     return exit_codes.success;
 }
 
-fn handleConnection(allocator: std.mem.Allocator, stream: std.net.Stream, csrf_token: []const u8) !void {
+fn handleConnection(io: std.Io, allocator: std.mem.Allocator, stream: std.Io.net.Stream, csrf_token: []const u8) !void {
     var request_buffer: std.ArrayList(u8) = .empty;
     defer request_buffer.deinit(allocator);
-    try readRequest(allocator, stream, &request_buffer);
+    try readRequest(io, allocator, stream, &request_buffer);
     const request = parseRequest(request_buffer.items) catch {
-        try sendText(stream, 400, "Bad Request", "text/plain; charset=utf-8", "bad request\n");
+        try sendText(io, stream, 400, "Bad Request", "text/plain; charset=utf-8", "bad request\n");
         return;
     };
 
-    const workspace_root = try dashboard.resolveWorkspaceRoot(allocator);
+    const workspace_root = try dashboard.resolveWorkspaceRoot(io, allocator);
     defer allocator.free(workspace_root);
-    const dist_dir = try resource_root.resolveResourcePath(allocator, .{ .workspace_root = workspace_root }, ui_dist_dir);
+    const dist_dir = try resource_root.resolveResourcePath(io, allocator, .{ .workspace_root = workspace_root }, ui_dist_dir);
     defer allocator.free(dist_dir);
-    var body: std.ArrayList(u8) = .empty;
-    defer body.deinit(allocator);
-    const writer = body.writer(allocator);
+    var body_aw: std.Io.Writer.Allocating = .init(allocator);
+    errdefer body_aw.deinit();
+    const writer = &body_aw.writer;
 
     if (std.mem.eql(u8, request.method, "GET") and !std.mem.startsWith(u8, request.path, "/api/")) {
-        try serveStaticFile(allocator, stream, request.path, csrf_token, dist_dir);
+        try serveStaticFile(io, allocator, stream, request.path, csrf_token, dist_dir);
         return;
     }
     if (std.mem.eql(u8, request.method, "GET") and std.mem.eql(u8, request.path, "/api/status")) {
-        try dashboard.writeStatusJson(allocator, writer, workspace_root);
-        try sendText(stream, 200, "OK", "application/json; charset=utf-8", body.items);
+        try dashboard.writeStatusJson(io, allocator, writer, workspace_root);
+        try body_aw.writer.flush();
+        const response_body = try body_aw.toOwnedSlice();
+        defer allocator.free(response_body);
+        try sendText(io, stream, 200, "OK", "application/json; charset=utf-8", response_body);
         return;
     }
     if (std.mem.eql(u8, request.method, "GET") and std.mem.eql(u8, request.path, "/api/policy")) {
-        try dashboard.writePolicyJson(allocator, writer, workspace_root);
-        try sendText(stream, 200, "OK", "application/json; charset=utf-8", body.items);
+        try dashboard.writePolicyJson(io, allocator, writer, workspace_root);
+        try body_aw.writer.flush();
+        const response_body = try body_aw.toOwnedSlice();
+        defer allocator.free(response_body);
+        try sendText(io, stream, 200, "OK", "application/json; charset=utf-8", response_body);
         return;
     }
     if (std.mem.eql(u8, request.method, "GET") and std.mem.eql(u8, request.path, "/api/sessions")) {
-        try dashboard.writeSessionsJson(allocator, writer, workspace_root);
-        try sendText(stream, 200, "OK", "application/json; charset=utf-8", body.items);
+        try dashboard.writeSessionsJson(io, allocator, writer, workspace_root);
+        try body_aw.writer.flush();
+        const response_body = try body_aw.toOwnedSlice();
+        defer allocator.free(response_body);
+        try sendText(io, stream, 200, "OK", "application/json; charset=utf-8", response_body);
         return;
     }
     if (std.mem.eql(u8, request.method, "POST") and std.mem.eql(u8, request.path, "/api/policy")) {
-        if (!tokenMatches(request.csrf_token, csrf_token)) return sendJsonError(stream, 403, "Forbidden", "csrf");
-        try handlePolicySave(allocator, writer, workspace_root, request.body);
-        try sendText(stream, 200, "OK", "application/json; charset=utf-8", body.items);
+        if (!tokenMatches(request.csrf_token, csrf_token)) return sendJsonError(io, stream, 403, "Forbidden", "csrf");
+        try handlePolicySave(io, allocator, writer, workspace_root, request.body);
+        try body_aw.writer.flush();
+        const response_body = try body_aw.toOwnedSlice();
+        defer allocator.free(response_body);
+        try sendText(io, stream, 200, "OK", "application/json; charset=utf-8", response_body);
         return;
     }
     if (std.mem.eql(u8, request.method, "POST") and std.mem.eql(u8, request.path, "/api/policy/init")) {
-        if (!tokenMatches(request.csrf_token, csrf_token)) return sendJsonError(stream, 403, "Forbidden", "csrf");
-        try handlePolicyInit(allocator, writer, workspace_root, request.body);
-        try sendText(stream, 200, "OK", "application/json; charset=utf-8", body.items);
+        if (!tokenMatches(request.csrf_token, csrf_token)) return sendJsonError(io, stream, 403, "Forbidden", "csrf");
+        try handlePolicyInit(io, allocator, writer, workspace_root, request.body);
+        try body_aw.writer.flush();
+        const response_body = try body_aw.toOwnedSlice();
+        defer allocator.free(response_body);
+        try sendText(io, stream, 200, "OK", "application/json; charset=utf-8", response_body);
         return;
     }
     if (std.mem.eql(u8, request.method, "POST") and std.mem.eql(u8, request.path, "/api/actions")) {
-        if (!tokenMatches(request.csrf_token, csrf_token)) return sendJsonError(stream, 403, "Forbidden", "csrf");
-        try handleAction(allocator, writer, request.body);
-        try sendText(stream, 200, "OK", "application/json; charset=utf-8", body.items);
+        if (!tokenMatches(request.csrf_token, csrf_token)) return sendJsonError(io, stream, 403, "Forbidden", "csrf");
+        try handleAction(io, allocator, writer, request.body);
+        try body_aw.writer.flush();
+        const response_body = try body_aw.toOwnedSlice();
+        defer allocator.free(response_body);
+        try sendText(io, stream, 200, "OK", "application/json; charset=utf-8", response_body);
         return;
     }
-    try sendText(stream, 404, "Not Found", "application/json; charset=utf-8", "{\"error\":\"not_found\"}\n");
+    try sendText(io, stream, 404, "Not Found", "application/json; charset=utf-8", "{\"error\":\"not_found\"}\n");
 }
 
-fn serveStaticFile(allocator: std.mem.Allocator, stream: std.net.Stream, path: []const u8, csrf_token: []const u8, dist_dir: []const u8) !void {
+fn serveStaticFile(io: std.Io, allocator: std.mem.Allocator, stream: std.Io.net.Stream, path: []const u8, csrf_token: []const u8, dist_dir: []const u8) !void {
     const rel_path = if (std.mem.eql(u8, path, "/")) "index.html" else path[1..];
 
     const file_path = try std.fs.path.join(allocator, &.{ dist_dir, rel_path });
     defer allocator.free(file_path);
 
-    const file = std.fs.cwd().openFile(file_path, .{}) catch |err| switch (err) {
+    const file = std.Io.Dir.cwd().openFile(io, file_path, .{}) catch |err| switch (err) {
         error.FileNotFound => {
-            return tryServeIndexOrFallback(allocator, stream, rel_path, csrf_token, dist_dir);
+            return tryServeIndexOrFallback(io, allocator, stream, rel_path, csrf_token, dist_dir);
         },
-        else => return sendJsonError(stream, 500, "Internal Server Error", "read_failed"),
+        else => return sendJsonError(io, stream, 500, "Internal Server Error", "read_failed"),
     };
-    defer file.close();
+    defer file.close(io);
 
-    const stat = try file.stat();
+    const stat = try file.stat(io);
     if (stat.kind == .directory) {
-        return tryServeIndexOrFallback(allocator, stream, rel_path, csrf_token, dist_dir);
+        return tryServeIndexOrFallback(io, allocator, stream, rel_path, csrf_token, dist_dir);
     }
 
     const content_type = blk: {
@@ -214,44 +232,53 @@ fn serveStaticFile(allocator: std.mem.Allocator, stream: std.net.Stream, path: [
             break :blk "application/octet-stream";
     };
 
-    return sendFile(stream, file, content_type, allocator, csrf_token);
+    return sendFile(io, stream, file, content_type, allocator, csrf_token);
 }
 
-fn tryServeIndexOrFallback(allocator: std.mem.Allocator, stream: std.net.Stream, rel_path: []const u8, csrf_token: []const u8, dist_dir: []const u8) !void {
+fn tryServeIndexOrFallback(io: std.Io, allocator: std.mem.Allocator, stream: std.Io.net.Stream, rel_path: []const u8, csrf_token: []const u8, dist_dir: []const u8) !void {
     if (std.mem.endsWith(u8, rel_path, "/index.html")) {
-        return sendJsonError(stream, 404, "Not Found", "not_found");
+        return sendJsonError(io, stream, 404, "Not Found", "not_found");
     }
     const index_fallback = try std.fs.path.join(allocator, &.{ dist_dir, rel_path, "index.html" });
     defer allocator.free(index_fallback);
-    const index_file = std.fs.cwd().openFile(index_fallback, .{}) catch |inner_err| switch (inner_err) {
-        error.FileNotFound => return serveSpaFallback(allocator, stream, csrf_token, dist_dir),
-        else => return sendJsonError(stream, 500, "Internal Server Error", "read_failed"),
+    const index_file = std.Io.Dir.cwd().openFile(io, index_fallback, .{}) catch |inner_err| switch (inner_err) {
+        error.FileNotFound => return serveSpaFallback(io, allocator, stream, csrf_token, dist_dir),
+        else => return sendJsonError(io, stream, 500, "Internal Server Error", "read_failed"),
     };
-    defer index_file.close();
-    return sendFile(stream, index_file, "text/html; charset=utf-8", allocator, csrf_token);
+    defer index_file.close(io);
+    return sendFile(io, stream, index_file, "text/html; charset=utf-8", allocator, csrf_token);
 }
 
-fn serveSpaFallback(allocator: std.mem.Allocator, stream: std.net.Stream, csrf_token: []const u8, dist_dir: []const u8) !void {
+fn serveSpaFallback(io: std.Io, allocator: std.mem.Allocator, stream: std.Io.net.Stream, csrf_token: []const u8, dist_dir: []const u8) !void {
     const index_path = try std.fs.path.join(allocator, &.{ dist_dir, "index.html" });
     defer allocator.free(index_path);
-    const file = std.fs.cwd().openFile(index_path, .{}) catch |err| switch (err) {
-        error.FileNotFound => return sendJsonError(stream, 404, "Not Found", "not_found"),
-        else => return sendJsonError(stream, 500, "Internal Server Error", "read_failed"),
+    const file = std.Io.Dir.cwd().openFile(io, index_path, .{}) catch |err| switch (err) {
+        error.FileNotFound => return sendJsonError(io, stream, 404, "Not Found", "not_found"),
+        else => return sendJsonError(io, stream, 500, "Internal Server Error", "read_failed"),
     };
-    defer file.close();
-    return sendFile(stream, file, "text/html; charset=utf-8", allocator, csrf_token);
+    defer file.close(io);
+    return sendFile(io, stream, file, "text/html; charset=utf-8", allocator, csrf_token);
 }
 
-fn sendFile(stream: std.net.Stream, file: std.fs.File, content_type: []const u8, allocator: std.mem.Allocator, csrf_token: []const u8) !void {
-    const stat = try file.stat();
+fn sendFile(io: std.Io, stream: std.Io.net.Stream, file: std.Io.File, content_type: []const u8, allocator: std.mem.Allocator, csrf_token: []const u8) !void {
+    const stat = try file.stat(io);
     const size = stat.size;
 
     if (std.mem.eql(u8, content_type, "text/html; charset=utf-8")) {
-        const raw = try file.readToEndAlloc(allocator, size);
+        var raw_list: std.ArrayList(u8) = .empty;
+        defer raw_list.deinit(allocator);
+        var read_buf: [8192]u8 = undefined;
+        var file_reader = file.reader(io, &read_buf);
+        while (raw_list.items.len < size) {
+            const n = try file_reader.interface.readSliceShort(read_buf[0..@min(read_buf.len, size - raw_list.items.len)]);
+            if (n == 0) break;
+            try raw_list.appendSlice(allocator, read_buf[0..n]);
+        }
+        const raw = try raw_list.toOwnedSlice(allocator);
         defer allocator.free(raw);
         const html = try std.mem.replaceOwned(u8, allocator, raw, "__ORCA_DASHBOARD_TOKEN__", csrf_token);
         defer allocator.free(html);
-        try sendText(stream, 200, "OK", content_type, html);
+        try sendText(io, stream, 200, "OK", content_type, html);
         return;
     }
 
@@ -261,23 +288,29 @@ fn sendFile(stream: std.net.Stream, file: std.fs.File, content_type: []const u8,
         "HTTP/1.1 200 OK\r\nContent-Type: {s}\r\nContent-Length: {d}\r\nCache-Control: public, max-age=3600\r\nConnection: close\r\n\r\n",
         .{ content_type, size },
     );
-    try stream.writeAll(header);
+    var stream_buf: [8192]u8 = undefined;
+    var stream_writer = stream.writer(io, &stream_buf);
+    try stream_writer.interface.writeAll(header);
+    try stream_writer.interface.flush();
 
-    var buf: [8192]u8 = undefined;
+    var read_buf: [8192]u8 = undefined;
+    var file_reader = file.reader(io, &read_buf);
     var remaining = size;
     while (remaining > 0) {
-        const to_read = @min(buf.len, remaining);
-        const n = try file.read(buf[0..to_read]);
+        const to_read = @min(read_buf.len, remaining);
+        const n = try file_reader.interface.readSliceShort(read_buf[0..to_read]);
         if (n == 0) break;
-        try stream.writeAll(buf[0..n]);
+        try stream_writer.interface.writeAll(read_buf[0..n]);
         remaining -= n;
     }
+    try stream_writer.interface.flush();
 }
 
-fn readRequest(allocator: std.mem.Allocator, stream: std.net.Stream, buffer: *std.ArrayList(u8)) !void {
+fn readRequest(io: std.Io, allocator: std.mem.Allocator, stream: std.Io.net.Stream, buffer: *std.ArrayList(u8)) !void {
     var temp: [8192]u8 = undefined;
     while (buffer.items.len < dashboard.max_request_body_len + 8192) {
-        const n = try stream.read(&temp);
+        var reader = stream.reader(io, &temp);
+        const n = try reader.interface.readSliceShort(&temp);
         if (n == 0) break;
         try buffer.appendSlice(allocator, temp[0..n]);
         if (requestComplete(buffer.items)) break;
@@ -339,31 +372,31 @@ fn tokenMatches(value: ?[]const u8, expected: []const u8) bool {
     return value != null and std.mem.eql(u8, value.?, expected);
 }
 
-fn makeCsrfToken(allocator: std.mem.Allocator) ![]u8 {
+fn makeCsrfToken(io: std.Io, allocator: std.mem.Allocator) ![]u8 {
     var bytes: [16]u8 = undefined;
-    std.crypto.random.bytes(&bytes);
+    try io.randomSecure(&bytes);
     const hex = std.fmt.bytesToHex(bytes, .lower);
     return try allocator.dupe(u8, &hex);
 }
 
-fn handlePolicySave(allocator: std.mem.Allocator, writer: anytype, workspace_root: []const u8, body: []const u8) !void {
+fn handlePolicySave(io: std.Io, allocator: std.mem.Allocator, writer: anytype, workspace_root: []const u8, body: []const u8) !void {
     var parsed = try std.json.parseFromSlice(std.json.Value, allocator, body, .{});
     defer parsed.deinit();
     const object = if (parsed.value == .object) parsed.value.object else return error.BadRequest;
     const text_value = object.get("text") orelse return error.BadRequest;
     if (text_value != .string) return error.BadRequest;
-    const result = try dashboard.savePolicyText(allocator, workspace_root, text_value.string);
+    const result = try dashboard.savePolicyText(io, allocator, workspace_root, text_value.string);
     try writePolicyMutationResult(writer, result);
 }
 
-fn handlePolicyInit(allocator: std.mem.Allocator, writer: anytype, workspace_root: []const u8, body: []const u8) !void {
+fn handlePolicyInit(io: std.Io, allocator: std.mem.Allocator, writer: anytype, workspace_root: []const u8, body: []const u8) !void {
     var parsed = try std.json.parseFromSlice(std.json.Value, allocator, body, .{});
     defer parsed.deinit();
     const object = if (parsed.value == .object) parsed.value.object else return error.BadRequest;
     const preset_value = object.get("preset") orelse return error.BadRequest;
     if (preset_value != .string) return error.BadRequest;
     const force = if (object.get("force")) |value| value == .bool and value.bool else false;
-    const result = try dashboard.initPolicyFromPreset(allocator, workspace_root, preset_value.string, force);
+    const result = try dashboard.initPolicyFromPreset(io, allocator, workspace_root, preset_value.string, force);
     try writePolicyMutationResult(writer, result);
 }
 
@@ -376,13 +409,13 @@ fn writePolicyMutationResult(writer: anytype, result: dashboard.PolicySaveResult
     try writer.writeByte('}');
 }
 
-fn handleAction(allocator: std.mem.Allocator, writer: anytype, body: []const u8) !void {
+fn handleAction(io: std.Io, allocator: std.mem.Allocator, writer: anytype, body: []const u8) !void {
     var parsed = try std.json.parseFromSlice(std.json.Value, allocator, body, .{});
     defer parsed.deinit();
     const object = if (parsed.value == .object) parsed.value.object else return error.BadRequest;
     const action_value = object.get("action") orelse return error.BadRequest;
     if (action_value != .string) return error.BadRequest;
-    const result = try runAllowedAction(allocator, action_value.string);
+    const result = try runAllowedAction(io, allocator, action_value.string);
     defer allocator.free(result.stdout);
     defer allocator.free(result.stderr);
     try writer.print("{{\"ok\":{},\"exit_code\":{d},\"stdout\":", .{ result.exit_code == exit_codes.success, result.exit_code });
@@ -398,53 +431,55 @@ const CapturedAction = struct {
     stderr: []u8,
 };
 
-fn runAllowedAction(allocator: std.mem.Allocator, action: []const u8) !CapturedAction {
-    var stdout: std.ArrayList(u8) = .empty;
-    errdefer stdout.deinit(allocator);
-    var stderr: std.ArrayList(u8) = .empty;
-    errdefer stderr.deinit(allocator);
+fn runAllowedAction(io: std.Io, allocator: std.mem.Allocator, action: []const u8) !CapturedAction {
+    var stdout_aw: std.Io.Writer.Allocating = .init(allocator);
+    errdefer stdout_aw.deinit();
+    var stderr_aw: std.Io.Writer.Allocating = .init(allocator);
+    errdefer stderr_aw.deinit();
+    const stdout = &stdout_aw.writer;
+    const stderr = &stderr_aw.writer;
 
     const code = if (std.mem.eql(u8, action, "doctor"))
-        try doctor.command(&.{}, stdout.writer(allocator), stderr.writer(allocator))
+        try doctor.command(io, &.{}, stdout, stderr)
     else if (std.mem.eql(u8, action, "policy-check"))
-        try policy.command(&.{ "check", ".orca/policy.yaml" }, stdout.writer(allocator), stderr.writer(allocator))
+        try policy.command(io, &.{ "check", ".orca/policy.yaml" }, stdout, stderr)
     else if (std.mem.eql(u8, action, "credentials-check"))
-        try credentials_cmd.command(&.{"check"}, stdout.writer(allocator), stderr.writer(allocator))
+        try credentials_cmd.command(io, &.{"check"}, stdout, stderr)
     else if (std.mem.eql(u8, action, "credentials-check-github"))
-        try credentials_cmd.command(&.{ "check", "github_pat" }, stdout.writer(allocator), stderr.writer(allocator))
+        try credentials_cmd.command(io, &.{ "check", "github_pat" }, stdout, stderr)
     else if (std.mem.eql(u8, action, "proxy-smoke"))
-        try proxySmokeAction(allocator, stdout.writer(allocator), stderr.writer(allocator))
+        try proxySmokeAction(io, allocator, stdout, stderr)
     else if (std.mem.eql(u8, action, "policy-explain-github"))
-        try policy.command(&.{ "explain", "network", "https://api.github.com/repos/acme/app/issues", "--method", "POST" }, stdout.writer(allocator), stderr.writer(allocator))
+        try policy.command(io, &.{ "explain", "network", "https://api.github.com/repos/acme/app/issues", "--method", "POST" }, stdout, stderr)
     else if (std.mem.eql(u8, action, "replay-last"))
-        try replay.command(&.{ "--session", "last", "--verify" }, stdout.writer(allocator), stderr.writer(allocator))
+        try replay.command(io, &.{ "--session", "last", "--verify" }, stdout, stderr)
     else if (std.mem.eql(u8, action, "openclaw-doctor"))
-        try plugin.command(&.{ "doctor", "openclaw" }, stdout.writer(allocator), stderr.writer(allocator))
+        try plugin.command(io, &.{ "doctor", "openclaw" }, stdout, stderr)
     else if (std.mem.eql(u8, action, "hermes-doctor"))
-        try plugin.command(&.{ "doctor", "hermes" }, stdout.writer(allocator), stderr.writer(allocator))
+        try plugin.command(io, &.{ "doctor", "hermes" }, stdout, stderr)
     else if (std.mem.eql(u8, action, "replay-denied"))
-        try replay.command(&.{ "--session", "last", "--only", "denied", "--verify" }, stdout.writer(allocator), stderr.writer(allocator))
+        try replay.command(io, &.{ "--session", "last", "--only", "denied", "--verify" }, stdout, stderr)
     else if (std.mem.eql(u8, action, "init-generic-agent"))
-        try init.command(std.fs.cwd(), &.{ "--preset", "generic-agent" }, stdout.writer(allocator), stderr.writer(allocator))
+        try init.command(io, std.Io.Dir.cwd(), &.{ "--preset", "generic-agent" }, stdout, stderr)
     else if (std.mem.eql(u8, action, "report-last"))
-        try report_cmd.command(&.{ "--session", "last", "--format", "markdown" }, stdout.writer(allocator), stderr.writer(allocator))
+        try report_cmd.command(io, &.{ "--session", "last", "--format", "markdown" }, stdout, stderr)
     else if (std.mem.eql(u8, action, "ci-check"))
-        try ci_cmd.command(&.{ "check", "--format", "markdown" }, stdout.writer(allocator), stderr.writer(allocator))
+        try ci_cmd.command(io, &.{ "check", "--format", "markdown" }, stdout, stderr)
     else if (std.mem.eql(u8, action, "demo-blocked-action"))
-        try demo_cmd.command(&.{"blocked-action"}, stdout.writer(allocator), stderr.writer(allocator))
+        try demo_cmd.command(io, &.{"blocked-action"}, stdout, stderr)
     else if (std.mem.eql(u8, action, "license-status"))
-        try license_cmd.command(&.{"status"}, stdout.writer(allocator), stderr.writer(allocator))
+        try license_cmd.command(io, &.{"status"}, stdout, stderr)
     else
         return error.UnsupportedDashboardAction;
 
     return .{
         .exit_code = code,
-        .stdout = try stdout.toOwnedSlice(allocator),
-        .stderr = try stderr.toOwnedSlice(allocator),
+        .stdout = try stdout_aw.toOwnedSlice(),
+        .stderr = try stderr_aw.toOwnedSlice(),
     };
 }
 
-fn proxySmokeAction(allocator: std.mem.Allocator, stdout: anytype, _: anytype) !u8 {
+fn proxySmokeAction(io: std.Io, allocator: std.mem.Allocator, stdout: anytype, _: anytype) !u8 {
     var loaded = try core_policy.load.parseFromSlice(allocator,
         \\version: 1
         \\mode: observe
@@ -454,19 +489,22 @@ fn proxySmokeAction(allocator: std.mem.Allocator, stdout: anytype, _: anytype) !
     , "dashboard-proxy-smoke.yaml");
     defer loaded.deinit();
 
-    const upstream_address = try std.net.Address.parseIp("127.0.0.1", 0);
-    var upstream = try upstream_address.listen(.{ .reuse_address = true });
-    defer upstream.deinit();
-    const upstream_port = upstream.listen_address.in.getPort();
-    var upstream_state: ProxySmokeServerState = .{ .server = &upstream };
+    const upstream_address = try std.Io.net.IpAddress.parse("127.0.0.1", 0);
+    var upstream = try upstream_address.listen(io, .{ .reuse_address = true });
+    defer upstream.deinit(io);
+    const upstream_port = upstream.socket.address.getPort();
+    var upstream_state: ProxySmokeServerState = .{ .server = &upstream, .io = io };
     const upstream_thread = try std.Thread.spawn(.{}, proxySmokeServer, .{&upstream_state});
     defer upstream_thread.join();
+    std.Io.sleep(io, std.Io.Duration.fromNanoseconds(50 * std.time.ns_per_ms), .awake) catch {};
 
     var runtime = try intercept.proxy.start(allocator, &loaded, .observe);
+    std.Io.sleep(io, std.Io.Duration.fromNanoseconds(50 * std.time.ns_per_ms), .awake) catch {};
     defer runtime.deinit();
     const proxy_port = try parseBindPort(runtime.bindUrl());
-    var client = try std.net.tcpConnectToHost(allocator, "127.0.0.1", proxy_port);
-    defer client.close();
+    const proxy_addr = try std.Io.net.IpAddress.parse("127.0.0.1", proxy_port);
+    var client = try std.Io.net.IpAddress.connect(&proxy_addr, io, .{ .mode = .stream });
+    defer client.close(io);
 
     var request_buf: [256]u8 = undefined;
     const request = try std.fmt.bufPrint(
@@ -474,12 +512,15 @@ fn proxySmokeAction(allocator: std.mem.Allocator, stdout: anytype, _: anytype) !
         "GET http://127.0.0.1:{d}/proxy-smoke HTTP/1.1\r\nHost: 127.0.0.1:{d}\r\nConnection: close\r\n\r\n",
         .{ upstream_port, upstream_port },
     );
-    try client.writeAll(request);
+    var client_write_buf: [512]u8 = undefined;
+    var client_writer = client.writer(io, &client_write_buf);
+    try client_writer.interface.writeAll(request);
+    try client_writer.interface.flush();
     var response_buf: [1024]u8 = undefined;
-    const response_len = try client.read(&response_buf);
+    const response_len = try readHttpResponse(io, client, &response_buf);
     if (std.mem.indexOf(u8, response_buf[0..response_len], "proxy-smoke-ok") == null) return exit_codes.general;
 
-    try runtime.waitForIdle(1 * std.time.ns_per_s);
+    try runtime.waitForIdle(std.time.ns_per_s);
     const events = try runtime.snapshotAuditEvents(allocator);
     defer runtime.freeAuditEvents(allocator, events);
     var saw_attempt = false;
@@ -494,18 +535,74 @@ fn proxySmokeAction(allocator: std.mem.Allocator, stdout: anytype, _: anytype) !
 }
 
 const ProxySmokeServerState = struct {
-    server: *std.net.Server,
+    server: *std.Io.net.Server,
+    io: std.Io,
 };
 
 fn proxySmokeServer(state: *ProxySmokeServerState) void {
-    var connection = state.server.accept() catch return;
-    defer connection.stream.close();
+    var listen_fd = [_]std.posix.pollfd{.{
+        .fd = state.server.socket.handle,
+        .events = std.posix.POLL.IN,
+        .revents = 0,
+    }};
+    _ = std.posix.poll(&listen_fd, 5_000) catch return;
+    var stream = state.server.accept(state.io) catch return;
+    defer stream.close(state.io);
     var request_buf: [512]u8 = undefined;
-    _ = connection.stream.read(&request_buf) catch return;
+    _ = readAvailableHttpRequest(state.io, stream, &request_buf) catch return;
     const body = "proxy-smoke-ok";
     var response_buf: [160]u8 = undefined;
     const response = std.fmt.bufPrint(&response_buf, "HTTP/1.1 200 OK\r\nContent-Length: {d}\r\nConnection: close\r\n\r\n{s}", .{ body.len, body }) catch return;
-    connection.stream.writeAll(response) catch {};
+    var write_buf: [256]u8 = undefined;
+    var writer = stream.writer(state.io, &write_buf);
+    writer.interface.writeAll(response) catch {};
+    writer.interface.flush() catch {};
+}
+
+fn readAvailableHttpRequest(io: std.Io, stream: std.Io.net.Stream, buffer: []u8) !usize {
+    var total: usize = 0;
+    const started = std.Io.Clock.Timestamp.now(io, .awake);
+    const deadline_ns: i96 = 2 * std.time.ns_per_s;
+    while (total < buffer.len and started.durationFromNow(io).raw.nanoseconds < deadline_ns) {
+        var fds = [_]std.posix.pollfd{.{
+            .fd = stream.socket.handle,
+            .events = std.posix.POLL.IN,
+            .revents = 0,
+        }};
+        const ready = std.posix.poll(&fds, 100) catch break;
+        if (ready == 0) continue;
+        const n = std.posix.read(stream.socket.handle, buffer[total..]) catch |err| switch (err) {
+            error.WouldBlock => continue,
+            else => return err,
+        };
+        if (n == 0) break;
+        total += n;
+        if (std.mem.indexOf(u8, buffer[0..total], "\r\n\r\n") != null) break;
+    }
+    return total;
+}
+
+fn readHttpResponse(io: std.Io, stream: std.Io.net.Stream, buffer: []u8) !usize {
+    var total: usize = 0;
+    const started = std.Io.Clock.Timestamp.now(io, .awake);
+    const deadline_ns: i96 = 2 * std.time.ns_per_s;
+    while (total < buffer.len and started.durationFromNow(io).raw.nanoseconds < deadline_ns) {
+        var fds = [_]std.posix.pollfd{.{
+            .fd = stream.socket.handle,
+            .events = std.posix.POLL.IN,
+            .revents = 0,
+        }};
+        const ready = std.posix.poll(&fds, 100) catch break;
+        if (ready == 0) continue;
+        const n = std.posix.read(stream.socket.handle, buffer[total..]) catch |err| switch (err) {
+            error.WouldBlock => continue,
+            else => return err,
+        };
+        if (n == 0) break;
+        total += n;
+        if (std.mem.indexOf(u8, buffer[0..total], "\r\n\r\n") != null) break;
+    }
+    return total;
 }
 
 fn parseBindPort(bind_url: []const u8) !u16 {
@@ -513,21 +610,24 @@ fn parseBindPort(bind_url: []const u8) !u16 {
     return std.fmt.parseInt(u16, bind_url[colon + 1 ..], 10);
 }
 
-fn sendText(stream: std.net.Stream, status_code: u16, reason: []const u8, content_type: []const u8, body: []const u8) !void {
+fn sendText(io: std.Io, stream: std.Io.net.Stream, status_code: u16, reason: []const u8, content_type: []const u8, body: []const u8) !void {
     var header_buf: [512]u8 = undefined;
     const header = try std.fmt.bufPrint(
         &header_buf,
         "HTTP/1.1 {d} {s}\r\nContent-Type: {s}\r\nContent-Length: {d}\r\nCache-Control: no-store\r\nConnection: close\r\n\r\n",
         .{ status_code, reason, content_type, body.len },
     );
-    try stream.writeAll(header);
-    try stream.writeAll(body);
+    var buf: [1024]u8 = undefined;
+    var writer = stream.writer(io, &buf);
+    try writer.interface.writeAll(header);
+    try writer.interface.writeAll(body);
+    try writer.interface.flush();
 }
 
-fn sendJsonError(stream: std.net.Stream, status_code: u16, reason: []const u8, message: []const u8) !void {
+fn sendJsonError(io: std.Io, stream: std.Io.net.Stream, status_code: u16, reason: []const u8, message: []const u8) !void {
     var body_buf: [128]u8 = undefined;
     const body = try std.fmt.bufPrint(&body_buf, "{{\"error\":\"{s}\"}}\n", .{message});
-    try sendText(stream, status_code, reason, "application/json; charset=utf-8", body);
+    try sendText(io, stream, status_code, reason, "application/json; charset=utf-8", body);
 }
 
 fn flushIfSupported(writer: anytype) !void {
@@ -545,22 +645,22 @@ fn flushIfSupported(writer: anytype) !void {
 test "dashboard rejects non-localhost bindings" {
     var stdout_buf: [256]u8 = undefined;
     var stderr_buf: [256]u8 = undefined;
-    var stdout_stream = std.io.fixedBufferStream(&stdout_buf);
-    var stderr_stream = std.io.fixedBufferStream(&stderr_buf);
+    var stdout_writer: std.Io.Writer = .fixed(&stdout_buf);
+    var stderr_writer: std.Io.Writer = .fixed(&stderr_buf);
 
-    const code = try commandForTest(&.{ "--host", "0.0.0.0" }, stdout_stream.writer(), stderr_stream.writer());
+    const code = try commandForTest(&.{ "--host", "0.0.0.0" }, &stdout_writer, &stderr_writer);
     try std.testing.expectEqual(exit_codes.usage, code);
-    try std.testing.expect(std.mem.indexOf(u8, stderr_stream.getWritten(), "localhost") != null);
+    try std.testing.expect(std.mem.indexOf(u8, stderr_writer.buffered(), "localhost") != null);
 }
 
 test "dashboard action allowlist rejects arbitrary browser commands" {
-    try std.testing.expectError(error.UnsupportedDashboardAction, runAllowedAction(std.testing.allocator, "rm -rf /"));
+    try std.testing.expectError(error.UnsupportedDashboardAction, runAllowedAction(std.testing.io, std.testing.allocator, "rm -rf /"));
 }
 
 test "dashboard proxy-smoke action verifies local proxy forwarding" {
     if (@import("builtin").os.tag == .windows) return error.SkipZigTest;
 
-    const result = try runAllowedAction(std.testing.allocator, "proxy-smoke");
+    const result = try runAllowedAction(std.testing.io, std.testing.allocator, "proxy-smoke");
     defer std.testing.allocator.free(result.stdout);
     defer std.testing.allocator.free(result.stderr);
     try std.testing.expectEqual(exit_codes.success, result.exit_code);
