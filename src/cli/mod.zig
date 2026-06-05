@@ -44,6 +44,7 @@ test {
     _ = style;
     _ = onboarding;
     _ = quickstart;
+    _ = @import("spinner.zig");
 }
 
 pub const version = build_options.version;
