@@ -271,7 +271,7 @@ test "policy check rejects scalar values on object-only grouping keys" {
     {
         const file = try tmp.dir.createFile(std.testing.io, "policy.yaml", .{});
         defer file.close(std.testing.io);
-        try file.writeStreamingAll(std.testing.io, 
+        try file.writeStreamingAll(std.testing.io,
             \\version: 1
             \\mode: strict
             \\commands: allow
@@ -333,7 +333,7 @@ test "policy explain accepts explicit policy path" {
     {
         const file = try tmp.dir.createFile(std.testing.io, "policy.yaml", .{});
         defer file.close(std.testing.io);
-        try file.writeStreamingAll(std.testing.io, 
+        try file.writeStreamingAll(std.testing.io,
             \\version: 1
             \\mode: strict
             \\commands:

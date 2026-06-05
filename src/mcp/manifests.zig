@@ -504,7 +504,7 @@ test "invalid manifest validation rejects unsafe or ambiguous schema" {
 test "starter manifest omits raw secret values" {
     var out_writer: std.Io.Writer.Allocating = .init(std.testing.allocator);
     defer out_writer.deinit();
-    try writeStarterManifest(&out_writer.writer, "github", "github-mcp-server", &.{"--token", "ghp_fakeSecretShouldNotBeHere"});
+    try writeStarterManifest(&out_writer.writer, "github", "github-mcp-server", &.{ "--token", "ghp_fakeSecretShouldNotBeHere" });
     const out = try out_writer.toOwnedSlice();
     defer std.testing.allocator.free(out);
     try std.testing.expect(std.mem.indexOf(u8, out, "ghp_fakeSecretShouldNotBeHere") == null);

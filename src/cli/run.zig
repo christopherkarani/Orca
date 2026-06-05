@@ -726,26 +726,22 @@ fn parseOptions(io: std.Io, argv: []const []const u8, stdout: anytype, stderr: a
             try stderr.print("orca run: unknown option '{s}'.\n", .{arg});
             return error.Usage;
         } else {
-            try stderr.writeAll(
-                "orca run: expected '--' before the command you want to run.\n" ++
+            try stderr.writeAll("orca run: expected '--' before the command you want to run.\n" ++
                 "\n" ++
                 "Example:\n" ++
                 "  orca run -- codex\n" ++
                 "  orca run --mode strict -- npm install\n" ++
                 "\n" ++
-                "Run 'orca help run' for more examples.\n"
-            );
+                "Run 'orca help run' for more examples.\n");
             return error.Usage;
         }
     }
 
     if (options.command_argv.len == 0) {
-        try stderr.writeAll(
-            "orca run: missing command after '--'.\n" ++
+        try stderr.writeAll("orca run: missing command after '--'.\n" ++
             "\n" ++
             "Example:\n" ++
-            "  orca run -- echo 'hello world'\n"
-        );
+            "  orca run -- echo 'hello world'\n");
         return error.Usage;
     }
 
@@ -1028,7 +1024,7 @@ test "run secretless replaces child env and keeps raw secret out of audit artifa
     {
         const policy_file = try tmp.dir.createFile(std.testing.io, "policy.yaml", .{});
         defer policy_file.close(std.testing.io);
-        try policy_file.writeStreamingAll(std.testing.io, 
+        try policy_file.writeStreamingAll(std.testing.io,
             \\version: 1
             \\mode: observe
             \\env:
@@ -1040,7 +1036,7 @@ test "run secretless replaces child env and keeps raw secret out of audit artifa
     {
         const script = try tmp.dir.createFile(std.testing.io, "dump-env.sh", .{});
         defer script.close(std.testing.io);
-        try script.writeStreamingAll(std.testing.io, 
+        try script.writeStreamingAll(std.testing.io,
             \\#!/bin/sh
             \\printf '%s' "$GITHUB_TOKEN" > child-env.txt
             \\
@@ -1220,7 +1216,7 @@ test "run proxy backend injects proxy environment and satisfies network enforcem
     {
         const policy_file = try tmp.dir.createFile(std.testing.io, "policy.yaml", .{});
         defer policy_file.close(std.testing.io);
-        try policy_file.writeStreamingAll(std.testing.io, 
+        try policy_file.writeStreamingAll(std.testing.io,
             \\version: 1
             \\mode: observe
             \\env:

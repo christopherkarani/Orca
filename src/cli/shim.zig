@@ -478,7 +478,7 @@ test "shim callback rejects forged policy path from child environment" {
     {
         const file = try tmp.dir.createFile(std.testing.io, "permissive.yaml", .{});
         defer file.close(std.testing.io);
-        try file.writeStreamingAll(std.testing.io, 
+        try file.writeStreamingAll(std.testing.io,
             \\version: 1
             \\mode: strict
             \\commands:

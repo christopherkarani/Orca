@@ -1815,8 +1815,7 @@ fn writeHermesEnableHelper(allocator: std.mem.Allocator, plugin_dir: []const u8)
         const home_owned = home orelse return;
         defer allocator.free(home_owned);
         break :blk try std.fs.path.join(allocator, &.{ home_owned, plugin_dir[2..] });
-    } else
-        try allocator.dupe(u8, plugin_dir);
+    } else try allocator.dupe(u8, plugin_dir);
     defer allocator.free(resolved_dir);
 
     const help_path = try std.fs.path.join(allocator, &.{ resolved_dir, "ENABLE.txt" });

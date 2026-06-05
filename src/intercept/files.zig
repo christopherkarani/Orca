@@ -1495,7 +1495,8 @@ test "staging index rejects paths outside workspace and session" {
 
     const index_path = try std.fs.path.join(std.testing.allocator, &.{ root, ".orca", "sessions", "evil", "staging-index.json" });
     defer std.testing.allocator.free(index_path);
-    const index_text = try std.fmt.allocPrint(std.testing.allocator,
+    const index_text = try std.fmt.allocPrint(
+        std.testing.allocator,
         "{{\"version\":1,\"session_id\":\"evil\",\"entries\":[{{\"original_path\":\"{s}\",\"normalized_path\":\"safe.txt\",\"staged_path\":\"{s}\",\"original_hash\":null,\"staged_hash\":\"{s}\",\"operation\":\"create\",\"timestamp\":\"2026-05-17T00:00:00Z\",\"actor\":\"orca\"}}]}}",
         .{ outside_original, staged_path, staged_hash },
     );
@@ -1508,7 +1509,8 @@ test "staging index rejects paths outside workspace and session" {
     const outside_staged = try std.fs.path.join(std.testing.allocator, &.{ tmp_root, "outside-staged.txt" });
     defer std.testing.allocator.free(outside_staged);
     try writeAbsoluteFile(outside_staged, "tampered\n");
-    const index_text_staged_escape = try std.fmt.allocPrint(std.testing.allocator,
+    const index_text_staged_escape = try std.fmt.allocPrint(
+        std.testing.allocator,
         "{{\"version\":1,\"session_id\":\"evil\",\"entries\":[{{\"original_path\":\"{s}/safe.txt\",\"normalized_path\":\"safe.txt\",\"staged_path\":\"{s}\",\"original_hash\":null,\"staged_hash\":\"{s}\",\"operation\":\"create\",\"timestamp\":\"2026-05-17T00:00:00Z\",\"actor\":\"orca\"}}]}}",
         .{ root, outside_staged, staged_hash },
     );

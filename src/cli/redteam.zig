@@ -137,7 +137,7 @@ test "redteam ci exits nonzero on failing fixture" {
     {
         const file = try tmp.dir.createFile(std.testing.io, "fixtures/secret-exfil/fail/fixture.yaml", .{});
         defer file.close(std.testing.io);
-        try file.writeStreamingAll(std.testing.io, 
+        try file.writeStreamingAll(std.testing.io,
             \\version: 1
             \\id: failing
             \\name: Failing fixture

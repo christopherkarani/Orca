@@ -111,7 +111,7 @@ pub const ProcessServer = struct {
 };
 
 test "transport descriptors preserve stdio and honestly defer http" {
-    const stdio_desc = Descriptor.stdio(&.{"node", "server.js"});
+    const stdio_desc = Descriptor.stdio(&.{ "node", "server.js" });
     try std.testing.expectEqual(Kind.stdio, stdio_desc.kind);
     try std.testing.expectEqualStrings("node", stdio_desc.command[0]);
 

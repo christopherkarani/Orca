@@ -119,8 +119,6 @@ pub fn runHostCommandTimed(
         break :blk data;
     } else null;
 
-    errdefer if (stdout_data) |d| allocator.free(d);
-
     const stderr_data = if (child.stderr) |err_pipe| blk: {
         const data = readPipeToAlloc(io, allocator, err_pipe, 1 * 1024 * 1024) catch null;
         if (stderr_writer) |w| {
@@ -130,8 +128,6 @@ pub fn runHostCommandTimed(
         }
         break :blk data;
     } else null;
-
-    errdefer if (stderr_data) |d| allocator.free(d);
 
     return HostCommandResult{
         .exit_code = exit_code,

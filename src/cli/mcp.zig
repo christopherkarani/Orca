@@ -598,7 +598,7 @@ test "mcp proxy reports invalid policy as CLI error" {
     {
         const file = try tmp.dir.createFile(std.testing.io, "bad-policy.yaml", .{});
         defer file.close(std.testing.io);
-        try file.writeStreamingAll(std.testing.io, 
+        try file.writeStreamingAll(std.testing.io,
             \\version: 1
             \\mode: not-a-mode
         );
@@ -623,7 +623,7 @@ test "mcp inspect policy option reports Core policy decisions" {
     {
         const file = try tmp.dir.createFile(std.testing.io, "mcp-policy.yaml", .{});
         defer file.close(std.testing.io);
-        try file.writeStreamingAll(std.testing.io, 
+        try file.writeStreamingAll(std.testing.io,
             \\version: 1
             \\mode: strict
             \\mcp:
@@ -727,7 +727,7 @@ test "mcp manifest check list trust and generate commands are safe" {
     {
         const file = try tmp.dir.createFile(std.testing.io, ".orca/mcp/github.yaml", .{});
         defer file.close(std.testing.io);
-        try file.writeStreamingAll(std.testing.io, 
+        try file.writeStreamingAll(std.testing.io,
             \\version: 1
             \\server:
             \\  name: github

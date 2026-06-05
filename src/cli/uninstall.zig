@@ -6,7 +6,6 @@ const plugin = @import("plugin.zig");
 const disable = @import("disable.zig");
 const interactive = @import("interactive.zig");
 
-
 // ---------------------------------------------------------------------------
 // Top-level dispatch
 // ---------------------------------------------------------------------------

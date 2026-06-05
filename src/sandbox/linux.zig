@@ -151,7 +151,7 @@ test "Linux capability detector is target-gated and honest" {
 test "Linux fallback launch can run a simple command" {
     if (builtin.os.tag != .linux) return error.SkipZigTest;
 
-    var argv = [_][]const u8{ "true" };
+    var argv = [_][]const u8{"true"};
     var prepared = prepare(std.testing.allocator, .{
         .io = std.testing.io,
         .argv = &argv,
@@ -167,7 +167,7 @@ test "Linux fallback launch can run a simple command" {
 test "Linux process supervision uses process group cleanup" {
     if (builtin.os.tag != .linux) return error.SkipZigTest;
 
-    var argv = [_][]const u8{ "true" };
+    var argv = [_][]const u8{"true"};
     const prepared = prepare(std.testing.allocator, .{
         .io = std.testing.io,
         .argv = &argv,

@@ -9,7 +9,7 @@ pub fn getOwned(map: *const std.process.Environ.Map, allocator: std.mem.Allocato
 /// Read the process environment block (POSIX libc `environ`).
 pub fn processEnviron() std.process.Environ {
     return .{ .block = std.process.Environ.PosixBlock{
-        .slice = @ptrCast(std.c.environ[0 .. countCEnviron() :null]),
+        .slice = @ptrCast(std.c.environ[0..countCEnviron() :null]),
     } };
 }
 

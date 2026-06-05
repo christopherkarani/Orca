@@ -210,6 +210,9 @@ pub const PreparedSandbox = struct {
         self.spawned = true;
     }
 
+    /// In Zig 0.16 `std.process.spawn` is synchronous; the child is fully
+    /// spawned when it returns. This no-op preserves the API surface for
+    /// callers that previously needed to wait for the spawn to complete.
     pub fn waitForSpawn(_: *PreparedSandbox) !void {}
 
     pub fn wait(self: *PreparedSandbox) !std.process.Child.Term {

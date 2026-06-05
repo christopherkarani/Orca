@@ -564,7 +564,7 @@ test "doctor reports invalid policy clearly without printing synthetic secrets" 
     {
         const file = try tmp.dir.createFile(std.testing.io, ".orca/policy.yaml", .{});
         defer file.close(std.testing.io);
-        try file.writeStreamingAll(std.testing.io, 
+        try file.writeStreamingAll(std.testing.io,
             \\version: 1
             \\mode: loose
             \\# synthetic secret should not appear in doctor output: ghp_fakeSecretShouldNotPrint
