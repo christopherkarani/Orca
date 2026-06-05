@@ -3,7 +3,7 @@ const style = @import("style.zig");
 
 pub fn Spinner(comptime Writer: type) type {
     return struct {
-        frames: []const u8 = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏",
+        frames: []const []const u8 = &.{ "⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏" },
         frame_index: usize = 0,
         label: []const u8,
         io: std.Io,
@@ -18,7 +18,7 @@ pub fn Spinner(comptime Writer: type) type {
         pub fn tick(self: *@This()) !void {
             if (!style.useColor(self.io, self.stdout)) return;
             const frame = self.frames[self.frame_index % self.frames.len];
-            try self.stdout.print("\r  {c} {s}...", .{ frame, self.label });
+            try self.stdout.print("\r  {s} {s}...", .{ frame, self.label });
             try flush(self.stdout);
             self.frame_index += 1;
         }
@@ -78,6 +78,20 @@ test "Spinner stop prints static checkmark on non-color stdout" {
     };
     try spinner.stop(true);
     try std.testing.expect(std.mem.indexOf(u8, writer.buffered(), "✓") != null);
+}
+
+test "Spinner frames are array of single-codepoint strings" {
+    var buf: [256]u8 = undefined;
+    var writer: std.Io.Writer = .fixed(&buf);
+    const spinner = Spinner(*std.Io.Writer){
+        .label = "test",
+        .io = std.testing.io,
+        .stdout = &writer,
+    };
+    try std.testing.expectEqual(@as(usize, 10), spinner.frames.len);
+    for (spinner.frames) |frame| {
+        try std.testing.expectEqual(@as(usize, 3), frame.len);
+    }
 }
 
 test "Spinner stop prints static cross on failure in non-color mode" {
