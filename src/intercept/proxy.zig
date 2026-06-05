@@ -33,16 +33,21 @@ pub const Runtime = struct {
     }
 
     pub fn waitForIdle(self: Runtime, timeout_ns: u64) !void {
-        const started = std.time.nanoTimestamp();
+        var threaded: std.Io.Threaded = .init_single_threaded;
+        const io = threaded.io();
+        const started = std.Io.Clock.Timestamp.now(io, .awake);
         while (self.state.active_connections.load(.acquire) > 0) {
-            if (std.time.nanoTimestamp() - started > timeout_ns) return error.ProxyConnectionsActive;
-            std.Thread.sleep(10 * std.time.ns_per_ms);
+            const elapsed = started.durationFromNow(io).raw.nanoseconds;
+            if (elapsed > timeout_ns) return error.ProxyConnectionsActive;
+            const duration = std.Io.Duration.fromNanoseconds(10 * std.time.ns_per_ms);
+            std.Io.sleep(io, duration, .awake) catch {};
         }
     }
 
     pub fn snapshotAuditEvents(self: Runtime, allocator: std.mem.Allocator) ![]AuditEvent {
-        self.state.audit_mutex.lock();
-        defer self.state.audit_mutex.unlock();
+        const io = self.state.threaded.io();
+        try self.state.audit_mutex.lock(io);
+        defer self.state.audit_mutex.unlock(io);
         const out = try allocator.alloc(AuditEvent, self.state.audit_events.items.len);
         var copied: usize = 0;
         errdefer {
@@ -73,10 +78,10 @@ pub const Runtime = struct {
 
     pub fn deinit(self: *Runtime) void {
         self.state.stop.store(true, .release);
-        wake(self.state.bind_port);
+        wake(self.state.threaded.io(), self.state.bind_port);
         self.state.thread.join();
         self.waitForIdle(2 * std.time.ns_per_s) catch {};
-        self.state.server.deinit();
+        self.state.server.deinit(self.state.threaded.io());
         for (self.state.audit_events.items) |ev| ev.deinit(self.state.allocator);
         self.state.audit_events.deinit(self.state.allocator);
         self.state.allocator.free(self.state.bind_url);
@@ -87,7 +92,7 @@ pub const Runtime = struct {
 
 const State = struct {
     allocator: std.mem.Allocator,
-    server: std.net.Server,
+    server: std.Io.net.Server,
     bind_port: u16,
     bind_url: []u8,
     selected_policy: *const schema.Policy,
@@ -95,8 +100,9 @@ const State = struct {
     stop: std.atomic.Value(bool) = .init(false),
     failed: std.atomic.Value(bool) = .init(false),
     active_connections: std.atomic.Value(usize) = .init(0),
-    audit_mutex: std.Thread.Mutex = .{},
+    audit_mutex: std.Io.Mutex = .init,
     audit_events: std.ArrayList(AuditEvent) = .empty,
+    threaded: std.Io.Threaded = undefined,
     thread: std.Thread = undefined,
 
     fn record(self: *State, event_type: core.event.EventType, target: []const u8, maybe_decision: ?core.decision.Decision) !void {
@@ -104,8 +110,9 @@ const State = struct {
         errdefer self.allocator.free(owned_target);
         const owned_reason = if (maybe_decision) |decision| try self.allocator.dupe(u8, decision.reason) else null;
         errdefer if (owned_reason) |reason| self.allocator.free(reason);
-        self.audit_mutex.lock();
-        defer self.audit_mutex.unlock();
+        const io = self.threaded.io();
+        try self.audit_mutex.lock(io);
+        defer self.audit_mutex.unlock(io);
         try self.audit_events.append(self.allocator, .{
             .event_type = event_type,
             .target = owned_target,
@@ -133,10 +140,12 @@ pub fn start(
     selected_policy: *const schema.Policy,
     effective_mode: schema.Mode,
 ) !Runtime {
-    const address = try std.net.Address.parseIp("127.0.0.1", 0);
-    var server = try address.listen(.{ .reuse_address = true });
-    errdefer server.deinit();
-    const port = server.listen_address.in.getPort();
+    var threaded: std.Io.Threaded = .init_single_threaded;
+    const io = threaded.io();
+    const address = try std.Io.net.IpAddress.parse("127.0.0.1", 0);
+    var server = try address.listen(io, .{ .reuse_address = true });
+    errdefer server.deinit(io);
+    const port = server.socket.address.getPort();
     const bind_url = try std.fmt.allocPrint(allocator, "http://127.0.0.1:{d}", .{port});
     errdefer allocator.free(bind_url);
 
@@ -149,30 +158,32 @@ pub fn start(
         .bind_url = bind_url,
         .selected_policy = selected_policy,
         .effective_mode = effective_mode,
+        .threaded = threaded,
     };
     state.thread = try std.Thread.spawn(.{}, serverLoop, .{state});
     return .{ .state = state };
 }
 
 fn serverLoop(state: *State) void {
+    const io = state.threaded.io();
     while (!state.stop.load(.acquire)) {
-        var connection = state.server.accept() catch {
+        var stream = state.server.accept(io) catch {
             if (!state.stop.load(.acquire)) state.failed.store(true, .release);
             break;
         };
         if (state.stop.load(.acquire)) {
-            connection.stream.close();
+            stream.close(io);
             break;
         }
         const context = state.allocator.create(ConnectionContext) catch {
-            connection.stream.close();
+            stream.close(io);
             continue;
         };
-        context.* = .{ .state = state, .client = connection.stream };
+        context.* = .{ .state = state, .client = stream };
         _ = state.active_connections.fetchAdd(1, .acq_rel);
         const thread = std.Thread.spawn(.{}, connectionLoop, .{context}) catch {
             _ = state.active_connections.fetchSub(1, .acq_rel);
-            connection.stream.close();
+            stream.close(io);
             state.allocator.destroy(context);
             continue;
         };
@@ -182,21 +193,22 @@ fn serverLoop(state: *State) void {
 
 const ConnectionContext = struct {
     state: *State,
-    client: std.net.Stream,
+    client: std.Io.net.Stream,
 };
 
 fn connectionLoop(context: *ConnectionContext) void {
+    const io = context.state.threaded.io();
     defer {
         _ = context.state.active_connections.fetchSub(1, .acq_rel);
         context.state.allocator.destroy(context);
     }
-    handleConnection(context.state, context.client) catch {};
+    handleConnection(context.state, io, context.client) catch {};
 }
 
-fn handleConnection(state: *State, client: std.net.Stream) !void {
-    defer client.close();
+fn handleConnection(state: *State, io: std.Io, client: std.Io.net.Stream) !void {
+    defer client.close(io);
     var buffer: [64 * 1024]u8 = undefined;
-    const read_len = try readHeaders(client, &buffer);
+    const read_len = try readHeaders(io, client, &buffer);
     if (read_len == 0) return;
     const request = try parseRequest(buffer[0..read_len]);
     var decision = try network.evaluate(state.allocator, state.selected_policy, state.effective_mode, request.destination, .{
@@ -209,27 +221,39 @@ fn handleConnection(state: *State, client: std.net.Stream) !void {
 
     if (!(decision.decision.result == .allow or decision.decision.result == .observe)) {
         state.record(.network_connect_denied, decision.redacted_target, decision.decision) catch {};
-        try writeProxyError(client, 403, "Forbidden");
+        try writeProxyError(io, client, 403, "Forbidden");
         return;
     }
     state.record(.network_connect_allowed, decision.redacted_target, decision.decision) catch {};
 
     if (request.https_connect) {
-        try tunnelConnect(state.allocator, client, request.host, request.port orelse 443);
+        try tunnelConnect(state.allocator, io, client, request.host, request.port orelse 443);
         return;
     }
-    try forwardHttp(state.allocator, client, request, buffer[0..read_len]);
+    try forwardHttp(state.allocator, io, client, request, buffer[0..read_len]);
 }
 
-fn readHeaders(stream: std.net.Stream, buffer: []u8) !usize {
+fn readHeaders(io: std.Io, stream: std.Io.net.Stream, buffer: []u8) !usize {
     var total: usize = 0;
-    while (total < buffer.len) {
-        const n = try stream.read(buffer[total..]);
-        if (n == 0) return total;
+    const started = std.Io.Clock.Timestamp.now(io, .awake);
+    const deadline_ns: i96 = 5 * std.time.ns_per_s;
+    while (total < buffer.len and started.durationFromNow(io).raw.nanoseconds < deadline_ns) {
+        var fds = [_]std.posix.pollfd{.{
+            .fd = stream.socket.handle,
+            .events = std.posix.POLL.IN,
+            .revents = 0,
+        }};
+        const ready = std.posix.poll(&fds, 100) catch break;
+        if (ready == 0) continue;
+        const n = std.posix.read(stream.socket.handle, buffer[total..]) catch |err| switch (err) {
+            error.WouldBlock => continue,
+            else => return err,
+        };
+        if (n == 0) return if (total == 0) error.InvalidProxyRequest else total;
         total += n;
         if (std.mem.indexOf(u8, buffer[0..total], "\r\n\r\n") != null) return total;
     }
-    return error.RequestTooLarge;
+    return if (total == 0) error.InvalidProxyRequest else error.RequestTooLarge;
 }
 
 pub fn parseRequest(bytes: []const u8) !ParsedRequest {
@@ -278,44 +302,72 @@ pub fn parseRequest(bytes: []const u8) !ParsedRequest {
     };
 }
 
-fn forwardHttp(allocator: std.mem.Allocator, client: std.net.Stream, request: ParsedRequest, first_read: []const u8) !void {
-    var upstream = try std.net.tcpConnectToHost(allocator, request.host, request.port orelse 80);
-    defer upstream.close();
+fn forwardHttp(allocator: std.mem.Allocator, io: std.Io, client: std.Io.net.Stream, request: ParsedRequest, first_read: []const u8) !void {
+    const address = std.Io.net.IpAddress.parse(request.host, request.port orelse 80) catch
+        try std.Io.net.IpAddress.resolve(io, request.host, request.port orelse 80);
+    var upstream = try address.connect(io, .{ .mode = .stream });
+    defer upstream.close(io);
+    var upstream_buf: [64 * 1024]u8 = undefined;
+    var upstream_writer = upstream.writer(io, &upstream_buf);
     if (std.mem.indexOf(u8, request.target, "://")) |_| {
         const rewritten = try rewriteAbsoluteRequest(allocator, request, first_read);
         defer allocator.free(rewritten);
-        try upstream.writeAll(rewritten);
+        try upstream_writer.interface.writeAll(rewritten);
     } else {
-        try upstream.writeAll(first_read);
+        try upstream_writer.interface.writeAll(first_read);
     }
-    try tunnel(client, upstream);
+    try upstream_writer.interface.flush();
+    try tunnel(io, client, upstream);
 }
 
-fn tunnelConnect(allocator: std.mem.Allocator, client: std.net.Stream, host: []const u8, port: u16) !void {
-    var upstream = try std.net.tcpConnectToHost(allocator, host, port);
-    defer upstream.close();
-    try client.writeAll("HTTP/1.1 200 Connection Established\r\nProxy-Agent: Orca\r\n\r\n");
-    try tunnel(client, upstream);
+fn tunnelConnect(allocator: std.mem.Allocator, io: std.Io, client: std.Io.net.Stream, host: []const u8, port: u16) !void {
+    _ = allocator;
+    const address = try std.Io.net.IpAddress.resolve(io, host, port);
+    var upstream = try address.connect(io, .{ .mode = .stream });
+    defer upstream.close(io);
+    var client_buf: [256]u8 = undefined;
+    var client_writer = client.writer(io, &client_buf);
+    try client_writer.interface.writeAll("HTTP/1.1 200 Connection Established\r\nProxy-Agent: Orca\r\n\r\n");
+    try client_writer.interface.flush();
+    try tunnel(io, client, upstream);
 }
 
-fn tunnel(a: std.net.Stream, b: std.net.Stream) !void {
+fn tunnel(io: std.Io, a: std.Io.net.Stream, b: std.Io.net.Stream) !void {
     var fds = [_]std.posix.pollfd{
-        .{ .fd = a.handle, .events = std.posix.POLL.IN, .revents = 0 },
-        .{ .fd = b.handle, .events = std.posix.POLL.IN, .revents = 0 },
+        .{ .fd = a.socket.handle, .events = std.posix.POLL.IN, .revents = 0 },
+        .{ .fd = b.socket.handle, .events = std.posix.POLL.IN, .revents = 0 },
     };
     var buf: [16 * 1024]u8 = undefined;
+    var b_buf: [16 * 1024]u8 = undefined;
+    var a_buf: [16 * 1024]u8 = undefined;
+    var b_writer = b.writer(io, &b_buf);
+    var a_writer = a.writer(io, &a_buf);
+    var idle_ms: usize = 0;
     while (true) {
-        const ready = try std.posix.poll(&fds, 30_000);
-        if (ready == 0) return;
+        const ready = try std.posix.poll(&fds, 200);
+        if (ready == 0) {
+            idle_ms += 200;
+            if (idle_ms >= 3000) return;
+            continue;
+        }
+        idle_ms = 0;
         if ((fds[0].revents & std.posix.POLL.IN) != 0) {
-            const n = try a.read(&buf);
+            const n = std.posix.read(a.socket.handle, &buf) catch |err| switch (err) {
+                error.WouldBlock => continue,
+                else => return err,
+            };
             if (n == 0) return;
-            try b.writeAll(buf[0..n]);
+            try b_writer.interface.writeAll(buf[0..n]);
+            try b_writer.interface.flush();
         }
         if ((fds[1].revents & std.posix.POLL.IN) != 0) {
-            const n = try b.read(&buf);
+            const n = std.posix.read(b.socket.handle, &buf) catch |err| switch (err) {
+                error.WouldBlock => continue,
+                else => return err,
+            };
             if (n == 0) return;
-            try a.writeAll(buf[0..n]);
+            try a_writer.interface.writeAll(buf[0..n]);
+            try a_writer.interface.flush();
         }
         if ((fds[0].revents & (std.posix.POLL.HUP | std.posix.POLL.ERR)) != 0) return;
         if ((fds[1].revents & (std.posix.POLL.HUP | std.posix.POLL.ERR)) != 0) return;
@@ -326,20 +378,24 @@ fn tunnel(a: std.net.Stream, b: std.net.Stream) !void {
 
 fn rewriteAbsoluteRequest(allocator: std.mem.Allocator, request: ParsedRequest, first_read: []const u8) ![]u8 {
     const line_end = std.mem.indexOf(u8, first_read, "\r\n") orelse return error.InvalidProxyRequest;
-    var out: std.ArrayList(u8) = .empty;
-    errdefer out.deinit(allocator);
-    try out.writer(allocator).print("{s} {s} {s}\r\n", .{ request.method, request.path, request.version });
-    try out.appendSlice(allocator, first_read[line_end + 2 ..]);
-    return out.toOwnedSlice(allocator);
+    var out_aw: std.Io.Writer.Allocating = .init(allocator);
+    errdefer out_aw.deinit();
+    try out_aw.writer.print("{s} {s} {s}\r\n", .{ request.method, request.path, request.version });
+    try out_aw.writer.writeAll(first_read[line_end + 2 ..]);
+    try out_aw.writer.flush();
+    return try out_aw.toOwnedSlice();
 }
 
-fn writeProxyError(stream: std.net.Stream, code: u16, label: []const u8) !void {
+fn writeProxyError(io: std.Io, stream: std.Io.net.Stream, code: u16, label: []const u8) !void {
     var body_buf: [128]u8 = undefined;
     const body = try std.fmt.bufPrint(&body_buf, "{s}\n", .{label});
     var header_buf: [256]u8 = undefined;
     const header = try std.fmt.bufPrint(&header_buf, "HTTP/1.1 {d} {s}\r\nContent-Length: {d}\r\nConnection: close\r\n\r\n", .{ code, label, body.len });
-    try stream.writeAll(header);
-    try stream.writeAll(body);
+    var stream_buf: [512]u8 = undefined;
+    var stream_writer = stream.writer(io, &stream_buf);
+    try stream_writer.interface.writeAll(header);
+    try stream_writer.interface.writeAll(body);
+    try stream_writer.interface.flush();
 }
 
 fn headerValue(headers: []const u8, wanted: []const u8) ?[]const u8 {
@@ -385,9 +441,10 @@ fn parsePort(value: []const u8) !u16 {
     return std.fmt.parseInt(u16, value, 10) catch return error.InvalidProxyRequest;
 }
 
-fn wake(port: u16) void {
-    var stream = std.net.tcpConnectToHost(std.heap.page_allocator, "127.0.0.1", port) catch return;
-    stream.close();
+fn wake(io: std.Io, port: u16) void {
+    const address = std.Io.net.IpAddress.parse("127.0.0.1", port) catch return;
+    var stream = address.connect(io, .{ .mode = .stream }) catch return;
+    stream.close(io);
 }
 
 test "proxy parses HTTP requests with method and path visibility" {
@@ -425,36 +482,43 @@ test "proxy forwards delayed HTTP request bodies and records request audit event
     , "proxy-test.yaml");
     defer loaded.deinit();
 
-    const upstream_address = try std.net.Address.parseIp("127.0.0.1", 0);
-    var upstream = try upstream_address.listen(.{ .reuse_address = true });
-    defer upstream.deinit();
-    const upstream_port = upstream.listen_address.in.getPort();
-    var upstream_state: TestHttpServerState = .{ .server = &upstream, .expected_body = "delayed-body" };
+    const io = std.testing.io;
+    const upstream_address = try std.Io.net.IpAddress.parse("127.0.0.1", 0);
+    var upstream = try upstream_address.listen(io, .{ .reuse_address = true });
+    defer upstream.deinit(io);
+    const upstream_port = upstream.socket.address.getPort();
+    var upstream_state: TestHttpServerState = .{ .server = &upstream, .io = io, .expected_body = "delayed-body" };
     const upstream_thread = try std.Thread.spawn(.{}, testHttpServer, .{&upstream_state});
     defer upstream_thread.join();
+    std.Io.sleep(io, std.Io.Duration.fromNanoseconds(50 * std.time.ns_per_ms), .awake) catch {};
 
     var runtime = try start(std.testing.allocator, &loaded, .observe);
     defer runtime.deinit();
+    std.Io.sleep(io, std.Io.Duration.fromNanoseconds(50 * std.time.ns_per_ms), .awake) catch {};
     const proxy_port = try bindPort(runtime.bindUrl());
-
-    var client = try std.net.tcpConnectToHost(std.testing.allocator, "127.0.0.1", proxy_port);
-    defer client.close();
+    const proxy_addr = try std.Io.net.IpAddress.parse("127.0.0.1", proxy_port);
+    var client = try std.Io.net.IpAddress.connect(&proxy_addr, io, .{ .mode = .stream });
+    defer client.close(io);
     var request_buf: [256]u8 = undefined;
     const head = try std.fmt.bufPrint(
         &request_buf,
         "POST http://127.0.0.1:{d}/echo HTTP/1.1\r\nHost: 127.0.0.1:{d}\r\nContent-Length: 12\r\nConnection: close\r\n\r\n",
         .{ upstream_port, upstream_port },
     );
-    try client.writeAll(head);
-    std.Thread.sleep(40 * std.time.ns_per_ms);
-    try client.writeAll("delayed-body");
+    var client_write_buf: [512]u8 = undefined;
+    var client_writer = client.writer(io, &client_write_buf);
+    try client_writer.interface.writeAll(head);
+    try client_writer.interface.flush();
+    std.Io.sleep(io, std.Io.Duration.fromNanoseconds(250 * std.time.ns_per_ms), .awake) catch {};
+    try client_writer.interface.writeAll("delayed-body");
+    try client_writer.interface.flush();
 
     var response_buf: [512]u8 = undefined;
-    const response_len = try client.read(&response_buf);
+    const response_len = try readHttpResponse(io, client, &response_buf);
     try std.testing.expect(std.mem.indexOf(u8, response_buf[0..response_len], "200 OK") != null);
     try std.testing.expect(std.mem.indexOf(u8, response_buf[0..response_len], "proxied") != null);
 
-    try runtime.waitForIdle(1 * std.time.ns_per_s);
+    try runtime.waitForIdle(2 * std.time.ns_per_s);
     const events = try runtime.snapshotAuditEvents(std.testing.allocator);
     defer runtime.freeAuditEvents(std.testing.allocator, events);
     try std.testing.expect(events.len >= 2);
@@ -464,21 +528,36 @@ test "proxy forwards delayed HTTP request bodies and records request audit event
 }
 
 const TestHttpServerState = struct {
-    server: *std.net.Server,
+    server: *std.Io.net.Server,
+    io: std.Io,
     expected_body: []const u8,
 };
 
 fn testHttpServer(state: *TestHttpServerState) void {
-    var connection = state.server.accept() catch return;
-    defer connection.stream.close();
+    var listen_fd = [_]std.posix.pollfd{.{
+        .fd = state.server.socket.handle,
+        .events = std.posix.POLL.IN,
+        .revents = 0,
+    }};
+    _ = std.posix.poll(&listen_fd, 5_000) catch return;
+    var stream = state.server.accept(state.io) catch return;
+    defer stream.close(state.io);
     var buffer: [1024]u8 = undefined;
     var total: usize = 0;
-    const deadline = std.time.nanoTimestamp() + 750 * std.time.ns_per_ms;
-    while (total < buffer.len and std.time.nanoTimestamp() < deadline) {
-        var fds = [_]std.posix.pollfd{.{ .fd = connection.stream.handle, .events = std.posix.POLL.IN, .revents = 0 }};
-        const ready = std.posix.poll(&fds, 50) catch return;
+    const started = std.Io.Clock.Timestamp.now(state.io, .awake);
+    const deadline_ns: i96 = 750 * std.time.ns_per_ms;
+    while (total < buffer.len and started.durationFromNow(state.io).raw.nanoseconds < deadline_ns) {
+        var fds = [_]std.posix.pollfd{.{
+            .fd = stream.socket.handle,
+            .events = std.posix.POLL.IN,
+            .revents = 0,
+        }};
+        const ready = std.posix.poll(&fds, 50) catch break;
         if (ready == 0) continue;
-        const n = connection.stream.read(buffer[total..]) catch return;
+        const n = std.posix.read(stream.socket.handle, buffer[total..]) catch |err| switch (err) {
+            error.WouldBlock => continue,
+            else => break,
+        };
         if (n == 0) break;
         total += n;
         if (std.mem.indexOf(u8, buffer[0..total], state.expected_body) != null) break;
@@ -492,7 +571,33 @@ fn testHttpServer(state: *TestHttpServerState) void {
         body.len,
         body,
     }) catch return;
-    connection.stream.writeAll(text) catch {};
+    var write_buf: [256]u8 = undefined;
+    var writer = stream.writer(state.io, &write_buf);
+    writer.interface.writeAll(text) catch {};
+    writer.interface.flush() catch {};
+}
+
+fn readHttpResponse(io: std.Io, stream: std.Io.net.Stream, buffer: []u8) !usize {
+    var total: usize = 0;
+    const started = std.Io.Clock.Timestamp.now(io, .awake);
+    const deadline_ns: i96 = 2 * std.time.ns_per_s;
+    while (total < buffer.len and started.durationFromNow(io).raw.nanoseconds < deadline_ns) {
+        var fds = [_]std.posix.pollfd{.{
+            .fd = stream.socket.handle,
+            .events = std.posix.POLL.IN,
+            .revents = 0,
+        }};
+        const ready = std.posix.poll(&fds, 100) catch break;
+        if (ready == 0) continue;
+        const n = std.posix.read(stream.socket.handle, buffer[total..]) catch |err| switch (err) {
+            error.WouldBlock => continue,
+            else => return err,
+        };
+        if (n == 0) break;
+        total += n;
+        if (std.mem.indexOf(u8, buffer[0..total], "\r\n\r\n") != null) break;
+    }
+    return total;
 }
 
 fn bindPort(bind_url: []const u8) !u16 {

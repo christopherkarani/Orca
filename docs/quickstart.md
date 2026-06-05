@@ -5,12 +5,12 @@
 From a clean checkout:
 
 ```sh
-zig version
-zig build
+./scripts/zig version   # must show 0.16.0
+./scripts/zig build
 ./zig-out/bin/orca version --json
 ```
 
-The repository is pinned to Zig `0.15.2`. Release installs are covered in [install.md](install.md).
+The repository is pinned to Zig `0.16.0` (use `./scripts/zig` or `direnv allow` if system `zig` differs). After policy or CLI changes, run `./scripts/test-fast.sh`; run `./scripts/zig build test` before opening a PR. Release installs are covered in [install.md](install.md).
 
 ## 2. Initialize A Policy
 
@@ -21,7 +21,7 @@ The repository is pinned to Zig `0.15.2`. Release installs are covered in [insta
 
 Review the generated policy before using it for real work.
 
-The policy created by `init --preset generic-agent` (and `setup --auto`) uses Orca's conservative quick-install defaults: network egress defaults to `deny` (with a small curated allow/ask list), broad read protections for shell histories/browser data/macOS Library paths, staged writes, and explicit deny for `.git/**` and `.orca/**` (in both bare and `./` forms). This is intentional and safe. Edit `.orca/policy.yaml` freely for your workflow. Use `orca policy explain command 'your cmd'` and `orca policy explain file.write .git/config` (with and without `./`) to explore decisions.
+The policy created by `init --preset generic-agent` (and `setup --auto`) is tuned for local coding agents: common dev commands (including plain `curl`, not `curl | sh`) are allowed, pipe-to-shell and `rm -rf` stay denied, and network egress defaults to `ask` with curated allow/ask hosts. Broad read protections for shell histories/browser data/macOS Library paths, staged writes, and explicit deny for `.git/**` and `.orca/**` (bare and `./` forms) remain. Edit `.orca/policy.yaml` for your workflow. Use `orca policy explain command 'your cmd'` and `orca policy explain network api.openai.com` to explore decisions.
 
 ## 3. Check Local Capabilities
 

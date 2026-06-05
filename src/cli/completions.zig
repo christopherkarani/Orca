@@ -57,9 +57,9 @@ const common_flags = [_][]const u8{
     "--github-summary",
 };
 
-pub fn command(argv: []const []const u8, stdout: anytype, stderr: anytype) !u8 {
+pub fn command(io: std.Io, argv: []const []const u8, stdout: anytype, stderr: anytype) !u8 {
     if (argv.len == 1 and (std.mem.eql(u8, argv[0], "--help") or std.mem.eql(u8, argv[0], "-h"))) {
-        _ = try help.writeCommand(stdout, "completions");
+        _ = try help.writeCommand(io, stdout, "completions");
         return exit_codes.success;
     }
     if (argv.len != 1) {
@@ -180,32 +180,32 @@ test "completions output is non-empty for supported shells" {
     for (shells) |shell| {
         var stdout_buf: [8192]u8 = undefined;
         var stderr_buf: [512]u8 = undefined;
-        var stdout_stream = std.io.fixedBufferStream(&stdout_buf);
-        var stderr_stream = std.io.fixedBufferStream(&stderr_buf);
+        var stdout_writer: std.Io.Writer = .fixed(&stdout_buf);
+        var stderr_writer: std.Io.Writer = .fixed(&stderr_buf);
 
-        const code = try command(&.{shell}, stdout_stream.writer(), stderr_stream.writer());
+        const code = try command(std.testing.io, &.{shell}, &stdout_writer, &stderr_writer);
         try std.testing.expectEqual(exit_codes.success, code);
-        try std.testing.expect(stdout_stream.getWritten().len > 0);
-        try std.testing.expect(std.mem.indexOf(u8, stdout_stream.getWritten(), "run") != null);
-        try std.testing.expectEqualStrings("", stderr_stream.getWritten());
+        try std.testing.expect(stdout_writer.buffered().len > 0);
+        try std.testing.expect(std.mem.indexOf(u8, stdout_writer.buffered(), "run") != null);
+        try std.testing.expectEqualStrings("", stderr_writer.buffered());
     }
 }
 
 test "completions include public internal command and common run flags" {
     var stdout_buf: [8192]u8 = undefined;
     var stderr_buf: [512]u8 = undefined;
-    var stdout_stream = std.io.fixedBufferStream(&stdout_buf);
-    var stderr_stream = std.io.fixedBufferStream(&stderr_buf);
+    var stdout_writer: std.Io.Writer = .fixed(&stdout_buf);
+    var stderr_writer: std.Io.Writer = .fixed(&stderr_buf);
 
-    const code = try command(&.{"bash"}, stdout_stream.writer(), stderr_stream.writer());
+    const code = try command(std.testing.io, &.{"bash"}, &stdout_writer, &stderr_writer);
 
     try std.testing.expectEqual(exit_codes.success, code);
-    try std.testing.expect(std.mem.indexOf(u8, stdout_stream.getWritten(), "shim") != null);
-    try std.testing.expect(std.mem.indexOf(u8, stdout_stream.getWritten(), "--session-name") != null);
-    try std.testing.expect(std.mem.indexOf(u8, stdout_stream.getWritten(), "--no-network") != null);
-    try std.testing.expect(std.mem.indexOf(u8, stdout_stream.getWritten(), "--allow-network") != null);
-    try std.testing.expect(std.mem.indexOf(u8, stdout_stream.getWritten(), "--require-backend") != null);
-    try std.testing.expectEqualStrings("", stderr_stream.getWritten());
+    try std.testing.expect(std.mem.indexOf(u8, stdout_writer.buffered(), "shim") != null);
+    try std.testing.expect(std.mem.indexOf(u8, stdout_writer.buffered(), "--session-name") != null);
+    try std.testing.expect(std.mem.indexOf(u8, stdout_writer.buffered(), "--no-network") != null);
+    try std.testing.expect(std.mem.indexOf(u8, stdout_writer.buffered(), "--allow-network") != null);
+    try std.testing.expect(std.mem.indexOf(u8, stdout_writer.buffered(), "--require-backend") != null);
+    try std.testing.expectEqualStrings("", stderr_writer.buffered());
 }
 
 // ---------------------------------------------------------------------------
@@ -218,22 +218,22 @@ test "completions includes all commands" {
     for (shells) |shell| {
         var stdout_buf: [8192]u8 = undefined;
         var stderr_buf: [512]u8 = undefined;
-        var stdout_stream = std.io.fixedBufferStream(&stdout_buf);
-        var stderr_stream = std.io.fixedBufferStream(&stderr_buf);
+        var stdout_writer: std.Io.Writer = .fixed(&stdout_buf);
+        var stderr_writer: std.Io.Writer = .fixed(&stderr_buf);
 
-        const code = try command(&.{shell}, stdout_stream.writer(), stderr_stream.writer());
+        const code = try command(std.testing.io, &.{shell}, &stdout_writer, &stderr_writer);
         try std.testing.expectEqual(exit_codes.success, code);
 
         for (help.commands) |cmd| {
             // env is intentionally added to completions even if not (yet) in help list
             if (std.mem.eql(u8, cmd.name, "env")) continue;
-            try std.testing.expect(std.mem.indexOf(u8, stdout_stream.getWritten(), cmd.name) != null);
+            try std.testing.expect(std.mem.indexOf(u8, stdout_writer.buffered(), cmd.name) != null);
         }
     }
 }
 
 test "GitHub Actions documentation includes Orca run and redteam commands" {
-    const doc = try std.fs.cwd().readFileAlloc(std.testing.allocator, "docs/ci/github-actions.md", 32 * 1024);
+    const doc = try std.Io.Dir.cwd().readFileAlloc(std.testing.io, "docs/ci/github-actions.md", std.testing.allocator, .limited(32 * 1024));
     defer std.testing.allocator.free(doc);
     try std.testing.expect(std.mem.indexOf(u8, doc, "orca run --mode ci -- ./scripts/agent-task.sh") != null);
     try std.testing.expect(std.mem.indexOf(u8, doc, "orca redteam --ci") != null);

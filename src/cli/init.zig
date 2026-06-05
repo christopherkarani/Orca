@@ -12,20 +12,20 @@ const InitOptions = struct {
     quiet: bool = false,
 };
 
-pub fn command(cwd: std.fs.Dir, argv: []const []const u8, stdout: anytype, stderr: anytype) !u8 {
-    const options = parseOptions(argv, stdout, stderr) catch |err| switch (err) {
+pub fn command(io: std.Io, cwd: std.Io.Dir, argv: []const []const u8, stdout: anytype, stderr: anytype) !u8 {
+    const options = parseOptions(io, argv, stdout, stderr) catch |err| switch (err) {
         error.HelpShown => return exit_codes.success,
         error.Usage => return exit_codes.usage,
         else => return err,
     };
 
-    cwd.makePath(".orca") catch |err| {
+    cwd.createDirPath(io, ".orca") catch |err| {
         try stderr.print("orca init: failed to create .orca: {s}\n", .{@errorName(err)});
         return exit_codes.general;
     };
 
-    const flags: std.fs.File.CreateFlags = if (options.force) .{} else .{ .exclusive = true };
-    const file = cwd.createFile(".orca/policy.yaml", flags) catch |err| switch (err) {
+    const flags: std.Io.Dir.CreateFileOptions = if (options.force) .{} else .{ .exclusive = true };
+    const file = cwd.createFile(io, ".orca/policy.yaml", flags) catch |err| switch (err) {
         error.PathAlreadyExists => {
             try stderr.writeAll("orca init: .orca/policy.yaml already exists; use --force to overwrite.\n");
             return exit_codes.general;
@@ -35,10 +35,10 @@ pub fn command(cwd: std.fs.Dir, argv: []const []const u8, stdout: anytype, stder
             return exit_codes.general;
         },
     };
-    defer file.close();
+    defer file.close(io);
 
     const preset_text = orca_policy.presets.agentPresetText(options.preset);
-    try writePolicy(file, preset_text, options.mode);
+    try writePolicy(io, file, preset_text, options.mode);
     const info = orca_policy.presets.agentPresetInfo(options.preset);
     if (!options.quiet) {
         // Warm success message: format into a buffer so it can route through
@@ -47,10 +47,10 @@ pub fn command(cwd: std.fs.Dir, argv: []const []const u8, stdout: anytype, stder
         var msg_buf: [256]u8 = undefined;
         const msg = std.fmt.bufPrint(&msg_buf, "{s} Created .orca/policy.yaml from preset '{s}'.\n", .{ style.Glyph.check, info.name }) catch null;
         if (msg) |m| {
-            try style.maybeColor(stdout, style.Style.green, m);
+            try style.maybeColor(io, stdout, style.Style.green, m);
         } else {
             // Buffer too small (should never happen): fall back to manual gating.
-            if (style.useColor(stdout)) {
+            if (style.useColor(io, stdout)) {
                 try stdout.writeAll(style.Style.green);
                 try stdout.print("{s} Created .orca/policy.yaml from preset '{s}'.\n", .{ style.Glyph.check, info.name });
                 try stdout.writeAll(style.Style.reset);
@@ -73,13 +73,13 @@ pub fn command(cwd: std.fs.Dir, argv: []const []const u8, stdout: anytype, stder
     return exit_codes.success;
 }
 
-fn parseOptions(argv: []const []const u8, stdout: anytype, stderr: anytype) !InitOptions {
+fn parseOptions(io: std.Io, argv: []const []const u8, stdout: anytype, stderr: anytype) !InitOptions {
     var options: InitOptions = .{};
     var index: usize = 0;
     while (index < argv.len) : (index += 1) {
         const arg = argv[index];
         if (std.mem.eql(u8, arg, "--help") or std.mem.eql(u8, arg, "-h")) {
-            _ = try help.writeCommand(stdout, "init");
+            _ = try help.writeCommand(io, stdout, "init");
             return error.HelpShown;
         } else if (std.mem.eql(u8, arg, "--force")) {
             options.force = true;
@@ -126,13 +126,13 @@ fn isValidMode(mode: []const u8) bool {
         std.mem.eql(u8, mode, "trusted");
 }
 
-fn writePolicy(file: std.fs.File, preset_text: []const u8, mode_override: ?[]const u8) !void {
+fn writePolicy(io: std.Io, file: std.Io.File, preset_text: []const u8, mode_override: ?[]const u8) !void {
     var buffer: [1024]u8 = undefined;
-    var writer = file.writer(&buffer);
+    var writer = file.writer(io, &buffer);
     if (mode_override) |mode| {
         var lines = std.mem.splitScalar(u8, preset_text, '\n');
         while (lines.next()) |line| {
-            const trimmed = std.mem.trimLeft(u8, line, " \t");
+            const trimmed = std.mem.trimStart(u8, line, " \t");
             if (std.mem.startsWith(u8, trimmed, "mode:")) {
                 try writer.interface.print("mode: {s}\n", .{mode});
             } else {
@@ -153,45 +153,45 @@ test "init creates policy and refuses overwrite without force" {
 
     var stdout_buf: [512]u8 = undefined;
     var stderr_buf: [512]u8 = undefined;
-    var stdout_stream = std.io.fixedBufferStream(&stdout_buf);
-    var stderr_stream = std.io.fixedBufferStream(&stderr_buf);
+    var stdout_writer: std.Io.Writer = .fixed(&stdout_buf);
+    var stderr_writer: std.Io.Writer = .fixed(&stderr_buf);
 
-    const code = try command(tmp.dir, &.{ "--mode", "strict" }, stdout_stream.writer(), stderr_stream.writer());
+    const code = try command(std.testing.io, tmp.dir, &.{ "--mode", "strict" }, &stdout_writer, &stderr_writer);
     try std.testing.expectEqual(exit_codes.success, code);
 
-    const policy = try tmp.dir.readFileAlloc(std.testing.allocator, ".orca/policy.yaml", 4096);
+    const policy = try tmp.dir.readFileAlloc(std.testing.io,  ".orca/policy.yaml", std.testing.allocator, .limited(4096));
     defer std.testing.allocator.free(policy);
     try std.testing.expect(std.mem.indexOf(u8, policy, "version: 1") != null);
     try std.testing.expect(std.mem.indexOf(u8, policy, "mode: strict") != null);
 
-    stdout_stream.reset();
-    stderr_stream.reset();
-    const second_code = try command(tmp.dir, &.{}, stdout_stream.writer(), stderr_stream.writer());
+    stdout_writer = .fixed(&stdout_buf);
+    stderr_writer = .fixed(&stderr_buf);
+    const second_code = try command(std.testing.io, tmp.dir, &.{}, &stdout_writer, &stderr_writer);
     try std.testing.expectEqual(exit_codes.general, second_code);
-    try std.testing.expect(std.mem.indexOf(u8, stderr_stream.getWritten(), "already exists") != null);
+    try std.testing.expect(std.mem.indexOf(u8, stderr_writer.buffered(), "already exists") != null);
 }
 
 test "init force overwrites existing policy" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
 
-    try tmp.dir.makePath(".orca");
+    try tmp.dir.createDirPath(std.testing.io, ".orca");
     {
-        const existing = try tmp.dir.createFile(".orca/policy.yaml", .{});
-        defer existing.close();
-        try existing.writeAll("old\n");
+        const existing = try tmp.dir.createFile(std.testing.io, ".orca/policy.yaml", .{});
+        defer existing.close(std.testing.io);
+        try existing.writeStreamingAll(std.testing.io, "old\n");
     }
 
     var stdout_buf: [512]u8 = undefined;
     var stderr_buf: [512]u8 = undefined;
-    var stdout_stream = std.io.fixedBufferStream(&stdout_buf);
-    var stderr_stream = std.io.fixedBufferStream(&stderr_buf);
+    var stdout_writer: std.Io.Writer = .fixed(&stdout_buf);
+    var stderr_writer: std.Io.Writer = .fixed(&stderr_buf);
 
-    const code = try command(tmp.dir, &.{ "--mode", "observe", "--force" }, stdout_stream.writer(), stderr_stream.writer());
+    const code = try command(std.testing.io, tmp.dir, &.{ "--mode", "observe", "--force" }, &stdout_writer, &stderr_writer);
     try std.testing.expectEqual(exit_codes.success, code);
-    try std.testing.expectEqualStrings("", stderr_stream.getWritten());
+    try std.testing.expectEqualStrings("", stderr_writer.buffered());
 
-    const policy = try tmp.dir.readFileAlloc(std.testing.allocator, ".orca/policy.yaml", 4096);
+    const policy = try tmp.dir.readFileAlloc(std.testing.io,  ".orca/policy.yaml", std.testing.allocator, .limited(4096));
     defer std.testing.allocator.free(policy);
     try std.testing.expect(std.mem.indexOf(u8, policy, "mode: observe") != null);
 }
@@ -202,15 +202,15 @@ test "init accepts generic-agent preset alias" {
 
     var stdout_buf: [512]u8 = undefined;
     var stderr_buf: [512]u8 = undefined;
-    var stdout_stream = std.io.fixedBufferStream(&stdout_buf);
-    var stderr_stream = std.io.fixedBufferStream(&stderr_buf);
+    var stdout_writer: std.Io.Writer = .fixed(&stdout_buf);
+    var stderr_writer: std.Io.Writer = .fixed(&stderr_buf);
 
-    const code = try command(tmp.dir, &.{ "--preset", "generic-agent", "--force" }, stdout_stream.writer(), stderr_stream.writer());
+    const code = try command(std.testing.io, tmp.dir, &.{ "--preset", "generic-agent", "--force" }, &stdout_writer, &stderr_writer);
     try std.testing.expectEqual(exit_codes.success, code);
-    try std.testing.expect(std.mem.indexOf(u8, stdout_stream.getWritten(), "generic-agent") != null);
-    try std.testing.expectEqualStrings("", stderr_stream.getWritten());
+    try std.testing.expect(std.mem.indexOf(u8, stdout_writer.buffered(), "generic-agent") != null);
+    try std.testing.expectEqualStrings("", stderr_writer.buffered());
 
-    const policy = try tmp.dir.readFileAlloc(std.testing.allocator, ".orca/policy.yaml", 4096);
+    const policy = try tmp.dir.readFileAlloc(std.testing.io,  ".orca/policy.yaml", std.testing.allocator, .limited(4096));
     defer std.testing.allocator.free(policy);
     try std.testing.expect(std.mem.indexOf(u8, policy, "version: 1") != null);
 }
@@ -223,18 +223,18 @@ test "init writes requested phase 18 presets as valid policies" {
 
         var stdout_buf: [2048]u8 = undefined;
         var stderr_buf: [512]u8 = undefined;
-        var stdout_stream = std.io.fixedBufferStream(&stdout_buf);
-        var stderr_stream = std.io.fixedBufferStream(&stderr_buf);
+        var stdout_writer: std.Io.Writer = .fixed(&stdout_buf);
+        var stderr_writer: std.Io.Writer = .fixed(&stderr_buf);
 
-        const code = try command(tmp.dir, &.{ "--preset", preset_name, "--force" }, stdout_stream.writer(), stderr_stream.writer());
+        const code = try command(std.testing.io, tmp.dir, &.{ "--preset", preset_name, "--force" }, &stdout_writer, &stderr_writer);
         try std.testing.expectEqual(exit_codes.success, code);
-        try std.testing.expect(std.mem.indexOf(u8, stdout_stream.getWritten(), "Next steps:") != null);
+        try std.testing.expect(std.mem.indexOf(u8, stdout_writer.buffered(), "Next steps:") != null);
         // Warm success path (checkmark + "Your policy is ready")
-        try std.testing.expect(std.mem.indexOf(u8, stdout_stream.getWritten(), style.Glyph.check ++ " Created") != null);
-        try std.testing.expect(std.mem.indexOf(u8, stdout_stream.getWritten(), "Your policy is ready") != null);
-        try std.testing.expectEqualStrings("", stderr_stream.getWritten());
+        try std.testing.expect(std.mem.indexOf(u8, stdout_writer.buffered(), style.Glyph.check ++ " Created") != null);
+        try std.testing.expect(std.mem.indexOf(u8, stdout_writer.buffered(), "Your policy is ready") != null);
+        try std.testing.expectEqualStrings("", stderr_writer.buffered());
 
-        const policy = try tmp.dir.readFileAlloc(std.testing.allocator, ".orca/policy.yaml", 16 * 1024);
+        const policy = try tmp.dir.readFileAlloc(std.testing.io,  ".orca/policy.yaml", std.testing.allocator, .limited(16 * 1024));
         defer std.testing.allocator.free(policy);
         var loaded = try orca_policy.load.parseFromSlice(std.testing.allocator, policy, ".orca/policy.yaml");
         defer loaded.deinit();
@@ -247,10 +247,10 @@ test "init rejects invalid preset names clearly" {
     defer tmp.cleanup();
     var stdout_buf: [512]u8 = undefined;
     var stderr_buf: [512]u8 = undefined;
-    var stdout_stream = std.io.fixedBufferStream(&stdout_buf);
-    var stderr_stream = std.io.fixedBufferStream(&stderr_buf);
+    var stdout_writer: std.Io.Writer = .fixed(&stdout_buf);
+    var stderr_writer: std.Io.Writer = .fixed(&stderr_buf);
 
-    const code = try command(tmp.dir, &.{ "--preset", "not-real" }, stdout_stream.writer(), stderr_stream.writer());
+    const code = try command(std.testing.io, tmp.dir, &.{ "--preset", "not-real" }, &stdout_writer, &stderr_writer);
     try std.testing.expectEqual(exit_codes.usage, code);
-    try std.testing.expect(std.mem.indexOf(u8, stderr_stream.getWritten(), "unsupported preset 'not-real'") != null);
+    try std.testing.expect(std.mem.indexOf(u8, stderr_writer.buffered(), "unsupported preset 'not-real'") != null);
 }

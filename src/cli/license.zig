@@ -4,18 +4,18 @@ const license = @import("../license.zig");
 const exit_codes = @import("exit_codes.zig");
 const help = @import("help.zig");
 
-pub fn command(argv: []const []const u8, stdout: anytype, stderr: anytype) !u8 {
+pub fn command(io: std.Io, argv: []const []const u8, stdout: anytype, stderr: anytype) !u8 {
     if (argv.len == 0 or std.mem.eql(u8, argv[0], "--help") or std.mem.eql(u8, argv[0], "-h")) {
-        _ = try help.writeCommand(stdout, "license");
+        _ = try help.writeCommand(io, stdout, "license");
         return if (argv.len == 0) exit_codes.usage else exit_codes.success;
     }
-    if (std.mem.eql(u8, argv[0], "status")) return status(argv[1..], stdout, stderr);
-    if (std.mem.eql(u8, argv[0], "activate")) return activate(argv[1..], stdout, stderr);
+    if (std.mem.eql(u8, argv[0], "status")) return status(io, argv[1..], stdout, stderr);
+    if (std.mem.eql(u8, argv[0], "activate")) return activate(io, argv[1..], stdout, stderr);
     try stderr.print("orca license: unknown subcommand '{s}'. Expected status or activate.\n", .{argv[0]});
     return exit_codes.usage;
 }
 
-fn status(argv: []const []const u8, stdout: anytype, stderr: anytype) !u8 {
+fn status(io: std.Io, argv: []const []const u8, stdout: anytype, stderr: anytype) !u8 {
     var json = false;
     for (argv) |arg| {
         if (std.mem.eql(u8, arg, "--json")) json = true else {
@@ -23,10 +23,10 @@ fn status(argv: []const []const u8, stdout: anytype, stderr: anytype) !u8 {
             return exit_codes.usage;
         }
     }
-    var gpa_state: std.heap.GeneralPurposeAllocator(.{}) = .init;
+    var gpa_state: std.heap.DebugAllocator(.{}) = .init;
     defer _ = gpa_state.deinit();
     const allocator = gpa_state.allocator();
-    var current = license.status(allocator) catch |err| switch (err) {
+    var current = license.status(io, allocator) catch |err| switch (err) {
         error.InvalidLicense, error.InvalidLicenseSignature, error.UnsupportedLicenseIssuer, error.UnsupportedLicenseTier => {
             try stderr.print("orca license status: stored license is invalid: {s}\n", .{@errorName(err)});
             return exit_codes.general;
@@ -46,15 +46,15 @@ fn status(argv: []const []const u8, stdout: anytype, stderr: anytype) !u8 {
     return exit_codes.success;
 }
 
-fn activate(argv: []const []const u8, stdout: anytype, stderr: anytype) !u8 {
+fn activate(io: std.Io, argv: []const []const u8, stdout: anytype, stderr: anytype) !u8 {
     if (argv.len != 1) {
         try stderr.writeAll("orca license activate: expected a development key or license file path.\n");
         return exit_codes.usage;
     }
-    var gpa_state: std.heap.GeneralPurposeAllocator(.{}) = .init;
+    var gpa_state: std.heap.DebugAllocator(.{}) = .init;
     defer _ = gpa_state.deinit();
     const allocator = gpa_state.allocator();
-    var result = license.activate(allocator, argv[0]) catch |err| switch (err) {
+    var result = license.activate(io, allocator, argv[0]) catch |err| switch (err) {
         error.FileNotFound => {
             try stderr.writeAll("orca license activate: key is not a known development key and file was not found.\n");
             return exit_codes.general;
@@ -85,11 +85,11 @@ fn writeStatusJson(writer: anytype, current: license.License) !void {
 test "license status reports free when path is missing" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
-    const root = try tmp.dir.realpathAlloc(std.testing.allocator, ".");
+    const root = try tmp.dir.realPathFileAlloc(std.testing.io, ".", std.testing.allocator);
     defer std.testing.allocator.free(root);
     const path = try std.fs.path.join(std.testing.allocator, &.{ root, "missing-license.json" });
     defer std.testing.allocator.free(path);
-    var current = try license.statusFromPath(std.testing.allocator, path);
+    var current = try license.statusFromPath(std.testing.io, std.testing.allocator, path);
     defer current.deinit();
     try std.testing.expectEqual(license.Tier.free, current.tier);
 }
@@ -97,9 +97,9 @@ test "license status reports free when path is missing" {
 test "license command rejects unknown subcommands" {
     var stdout_buf: [256]u8 = undefined;
     var stderr_buf: [256]u8 = undefined;
-    var stdout_stream = std.io.fixedBufferStream(&stdout_buf);
-    var stderr_stream = std.io.fixedBufferStream(&stderr_buf);
-    const code = try command(&.{"bad"}, stdout_stream.writer(), stderr_stream.writer());
+    var stdout_writer: std.Io.Writer = .fixed(&stdout_buf);
+    var stderr_writer: std.Io.Writer = .fixed(&stderr_buf);
+    const code = try command(std.testing.io, &.{"bad"}, &stdout_writer, &stderr_writer);
     try std.testing.expectEqual(exit_codes.usage, code);
-    try std.testing.expect(std.mem.indexOf(u8, stderr_stream.getWritten(), "unknown subcommand") != null);
+    try std.testing.expect(std.mem.indexOf(u8, stderr_writer.buffered(), "unknown subcommand") != null);
 }

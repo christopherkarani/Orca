@@ -445,7 +445,15 @@ pub fn redactedDestinationAlloc(allocator: std.mem.Allocator, destination: Desti
         try list.appendSlice(allocator, "://");
     }
     try list.appendSlice(allocator, destination.host);
-    if (destination.port) |port| try list.writer(allocator).print(":{d}", .{port});
+    if (destination.port) |port| {
+        var list_aw: std.Io.Writer.Allocating = .init(allocator);
+        errdefer list_aw.deinit();
+        try list_aw.writer.print(":{d}", .{port});
+        try list_aw.writer.flush();
+        var port_suffix = list_aw.toArrayList();
+        defer port_suffix.deinit(allocator);
+        try list.appendSlice(allocator, port_suffix.items);
+    }
     if (destination.path.len > 0) try appendRedactedUrlPart(allocator, &list, destination.path, false);
     if (destination.query.len > 0) {
         try list.append(allocator, '?');
@@ -454,7 +462,7 @@ pub fn redactedDestinationAlloc(allocator: std.mem.Allocator, destination: Desti
     return try list.toOwnedSlice(allocator);
 }
 
-pub fn appendProxyEnvironment(env_map: *std.process.EnvMap, proxy_url: []const u8, no_proxy: []const u8) !void {
+pub fn appendProxyEnvironment(env_map: *std.process.Environ.Map, proxy_url: []const u8, no_proxy: []const u8) !void {
     try env_map.put("HTTP_PROXY", proxy_url);
     try env_map.put("HTTPS_PROXY", proxy_url);
     try env_map.put("ALL_PROXY", proxy_url);

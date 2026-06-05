@@ -313,7 +313,7 @@ pub const commands = [_]CommandInfo{
     .{ .name = "help", .summary = "Show help", .usage = "orca help [command]", .category = .getting_started, .details = &.{"Shows top-level help or command-specific help."} },
 };
 
-pub fn write(writer: anytype) !void {
+pub fn write(io: std.Io, writer: anytype) !void {
     try writer.writeAll("Orca — local runtime firewall for AI agents\n" ++
         "\n" ++
         "Usage:\n" ++
@@ -326,7 +326,7 @@ pub fn write(writer: anytype) !void {
         for (commands) |cmd| {
             if (cmd.hidden or cmd.category != cat) continue;
             if (!any) {
-                try style.maybeColor(writer, style.Style.bold, categoryTitle(cat));
+                try style.maybeColor(io, writer, style.Style.bold, categoryTitle(cat));
                 try writer.writeAll(":\n");
                 any = true;
             }
@@ -350,7 +350,8 @@ fn categoryTitle(cat: Category) []const u8 {
     };
 }
 
-pub fn writeCommand(writer: anytype, name: []const u8) !bool {
+pub fn writeCommand(io: std.Io, writer: anytype, name: []const u8) !bool {
+    _ = io;
     const command = findCommand(name) orelse return false;
     try writer.print("{s}\n\nUsage:\n  {s}\n\n", .{ command.summary, command.usage });
 

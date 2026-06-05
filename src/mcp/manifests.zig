@@ -185,8 +185,8 @@ const Builder = struct {
     }
 };
 
-pub fn loadFile(allocator: std.mem.Allocator, path: []const u8) !Manifest {
-    const text = try std.fs.cwd().readFileAlloc(allocator, path, core.limits.max_policy_file_len + 1);
+pub fn loadFile(io: std.Io, allocator: std.mem.Allocator, path: []const u8) !Manifest {
+    const text = try std.Io.Dir.cwd().readFileAlloc(io, path, allocator, .limited(core.limits.max_policy_file_len + 1));
     defer allocator.free(text);
     if (text.len > core.limits.max_policy_file_len) return error.ManifestFileTooLarge;
     return parseFromSlice(allocator, text, path);
@@ -204,7 +204,7 @@ pub fn parseFromSlice(allocator: std.mem.Allocator, text: []const u8, source_pat
     var list_target: ListTarget = .none;
     var lines = std.mem.splitScalar(u8, trimmed, '\n');
     while (lines.next()) |raw_line| {
-        const cleaned = stripComment(std.mem.trimRight(u8, raw_line, " \t\r"));
+        const cleaned = stripComment(std.mem.trimEnd(u8, raw_line, " \t\r"));
         if (std.mem.trim(u8, cleaned, " \t").len == 0) continue;
         const indent = countIndent(cleaned);
         if (indent % 2 != 0 or indent > 8) return error.InvalidManifest;
@@ -502,8 +502,10 @@ test "invalid manifest validation rejects unsafe or ambiguous schema" {
 }
 
 test "starter manifest omits raw secret values" {
-    var out: std.ArrayList(u8) = .empty;
-    defer out.deinit(std.testing.allocator);
-    try writeStarterManifest(out.writer(std.testing.allocator), "github", "github-mcp-server", &.{"--token", "ghp_fakeSecretShouldNotBeHere"});
-    try std.testing.expect(std.mem.indexOf(u8, out.items, "ghp_fakeSecretShouldNotBeHere") == null);
+    var out_writer: std.Io.Writer.Allocating = .init(std.testing.allocator);
+    defer out_writer.deinit();
+    try writeStarterManifest(&out_writer.writer, "github", "github-mcp-server", &.{"--token", "ghp_fakeSecretShouldNotBeHere"});
+    const out = try out_writer.toOwnedSlice();
+    defer std.testing.allocator.free(out);
+    try std.testing.expect(std.mem.indexOf(u8, out, "ghp_fakeSecretShouldNotBeHere") == null);
 }

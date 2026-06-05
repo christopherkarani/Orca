@@ -15,7 +15,7 @@ brew tap christopherkarani/orca && brew install --formula orca
 # Or install with the official script
 curl -fsSL https://raw.githubusercontent.com/christopherkarani/Orca/main/scripts/install.sh | sh
 
-# Or build from source (Zig 0.15.2)
+# Or build from source (Zig 0.16.0)
 zig build
 ```
 

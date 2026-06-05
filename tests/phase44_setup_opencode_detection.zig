@@ -72,10 +72,12 @@ test "phase 44 hostPluginInstalledFromDoctorJson ignores claude marketplace-only
 }
 
 test "phase 44 hostPluginInstalledFromReport matches doctor JSON semantics" {
+    const cwd = try std.testing.allocator.dupeZ(u8, "");
+    defer std.testing.allocator.free(cwd);
     const report = plugin.PluginDoctorReport{
         .orca_version = "test",
         .orca_binary_path = null,
-        .cwd = "",
+        .cwd = cwd,
         .workspace_root = "",
         .policy_present = false,
         .policy_valid = false,

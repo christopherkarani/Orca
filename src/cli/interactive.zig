@@ -25,7 +25,7 @@ pub fn runMultiSelect(
     allocator: std.mem.Allocator,
     items: []const SelectionItem,
     stdout: anytype,
-    stdin_reader: *std.io.Reader,
+    stdin_reader: *std.Io.Reader,
 ) !MultiSelectResult {
     // Use ArrayList + errdefer for safe partial-init cleanup on dupe failure.
     var list: std.ArrayList(SelectionItem) = .empty;
@@ -78,9 +78,18 @@ pub fn runMultiSelect(
 }
 
 fn flushIfSupported(writer: anytype) !void {
-    const W = @TypeOf(writer);
-    if (@hasDecl(W, "flush")) {
-        try writer.flush();
+    const Writer = @TypeOf(writer);
+    switch (@typeInfo(Writer)) {
+        .pointer => |pointer| {
+            if (@hasDecl(pointer.child, "flush")) {
+                try writer.flush();
+            }
+        },
+        else => {
+            if (@hasDecl(Writer, "flush")) {
+                try writer.flush();
+            }
+        },
     }
 }
 
@@ -147,10 +156,10 @@ test "interactive: runMultiSelect renders list and parses selection" {
     };
 
     var stdout_buf: [1024]u8 = undefined;
-    var stdout_stream = std.io.fixedBufferStream(&stdout_buf);
-    var in_reader = std.io.Reader.fixed("1 3\n");
+    var stdout_writer: std.Io.Writer = .fixed(&stdout_buf);
+    var in_reader = std.Io.Reader.fixed("1 3\n");
 
-    var result = try runMultiSelect(allocator, &items, stdout_stream.writer(), &in_reader);
+    var result = try runMultiSelect(allocator, &items, &stdout_writer, &in_reader);
     defer deinitMultiSelectResult(&result, allocator);
 
     try std.testing.expect(result.confirmed);
@@ -158,7 +167,7 @@ test "interactive: runMultiSelect renders list and parses selection" {
     try std.testing.expect(!result.items[1].checked);
     try std.testing.expect(result.items[2].checked);
 
-    const output = stdout_stream.getWritten();
+    const output = stdout_writer.buffered();
     try std.testing.expect(std.mem.indexOf(u8, output, "Detected agent hosts:") != null);
     try std.testing.expect(std.mem.indexOf(u8, output, "1) claude") != null);
 }
@@ -170,10 +179,10 @@ test "interactive: runMultiSelect all selects everything" {
         .{ .label = "b", .checked = false },
     };
     var stdout_buf: [512]u8 = undefined;
-    var stdout_stream = std.io.fixedBufferStream(&stdout_buf);
-    var in_reader = std.io.Reader.fixed("all\n");
+    var stdout_writer: std.Io.Writer = .fixed(&stdout_buf);
+    var in_reader = std.Io.Reader.fixed("all\n");
 
-    var result = try runMultiSelect(allocator, &items, stdout_stream.writer(), &in_reader);
+    var result = try runMultiSelect(allocator, &items, &stdout_writer, &in_reader);
     defer deinitMultiSelectResult(&result, allocator);
 
     try std.testing.expect(result.items[0].checked);
@@ -187,10 +196,10 @@ test "interactive: runMultiSelect none clears defaults" {
         .{ .label = "b", .checked = true },
     };
     var stdout_buf: [512]u8 = undefined;
-    var stdout_stream = std.io.fixedBufferStream(&stdout_buf);
-    var in_reader = std.io.Reader.fixed("none\n");
+    var stdout_writer: std.Io.Writer = .fixed(&stdout_buf);
+    var in_reader = std.Io.Reader.fixed("none\n");
 
-    var result = try runMultiSelect(allocator, &items, stdout_stream.writer(), &in_reader);
+    var result = try runMultiSelect(allocator, &items, &stdout_writer, &in_reader);
     defer deinitMultiSelectResult(&result, allocator);
 
     try std.testing.expect(!result.items[0].checked);
@@ -204,10 +213,10 @@ test "interactive: runMultiSelect empty input keeps defaults" {
         .{ .label = "b", .checked = false },
     };
     var stdout_buf: [512]u8 = undefined;
-    var stdout_stream = std.io.fixedBufferStream(&stdout_buf);
-    var in_reader = std.io.Reader.fixed("\n");
+    var stdout_writer: std.Io.Writer = .fixed(&stdout_buf);
+    var in_reader = std.Io.Reader.fixed("\n");
 
-    var result = try runMultiSelect(allocator, &items, stdout_stream.writer(), &in_reader);
+    var result = try runMultiSelect(allocator, &items, &stdout_writer, &in_reader);
     defer deinitMultiSelectResult(&result, allocator);
 
     try std.testing.expect(result.items[0].checked);
@@ -221,10 +230,10 @@ test "interactive: runMultiSelect garbage input falls back to defaults" {
         .{ .label = "b", .checked = false },
     };
     var stdout_buf: [512]u8 = undefined;
-    var stdout_stream = std.io.fixedBufferStream(&stdout_buf);
-    var in_reader = std.io.Reader.fixed("xyz\n");
+    var stdout_writer: std.Io.Writer = .fixed(&stdout_buf);
+    var in_reader = std.Io.Reader.fixed("xyz\n");
 
-    var result = try runMultiSelect(allocator, &items, stdout_stream.writer(), &in_reader);
+    var result = try runMultiSelect(allocator, &items, &stdout_writer, &in_reader);
     defer deinitMultiSelectResult(&result, allocator);
 
     try std.testing.expect(result.items[0].checked);
@@ -260,10 +269,10 @@ test "interactive: deinitMultiSelectResult frees memory cleanly" {
 
     // Use simple fixed buffers instead of null_* (Zig 0.15 Io model)
     var out_buf: [512]u8 = undefined;
-    var out = std.io.fixedBufferStream(&out_buf);
-    var in_reader = std.io.Reader.fixed("\n");
+    var out_writer: std.Io.Writer = .fixed(&out_buf);
+    var in_reader = std.Io.Reader.fixed("\n");
 
-    var result = try runMultiSelect(allocator, &input, out.writer(), &in_reader);
+    var result = try runMultiSelect(allocator, &input, &out_writer, &in_reader);
     deinitMultiSelectResult(&result, allocator);
 
     // Reaching here without leaks (under testing allocator) means deinit works.
@@ -282,10 +291,10 @@ test "interactive: runMultiSelect does not leak on allocation failure mid-initia
     };
 
     var out_buf: [512]u8 = undefined;
-    var out = std.io.fixedBufferStream(&out_buf);
-    var in_reader = std.io.Reader.fixed("\n");
+    var out_writer: std.Io.Writer = .fixed(&out_buf);
+    var in_reader = std.Io.Reader.fixed("\n");
 
-    const result = runMultiSelect(failing_alloc, &input, out.writer(), &in_reader);
+    const result = runMultiSelect(failing_alloc, &input, &out_writer, &in_reader);
     try std.testing.expectError(error.OutOfMemory, result);
 
     // RED: With current implementation, the slice for `owned` is allocated (alloc_index
@@ -309,7 +318,7 @@ test "interactive: runMultiSelect does not leak on allocation failure mid-initia
 /// On invalid input, prints guidance and loops.
 pub fn askConfirm(
     stdout: anytype,
-    stdin_reader: *std.io.Reader,
+    stdin_reader: *std.Io.Reader,
     prompt: []const u8,
     default_yes: bool,
 ) !bool {
@@ -326,7 +335,7 @@ pub fn askConfirm(
             },
             error.ReadFailed => return error.ReadFailed,
         };
-        const answer = std.mem.trimRight(u8, raw, "\r");
+        const answer = std.mem.trim(u8, raw, "\r");
         // Use a separate buffer for lowercase to avoid aliasing issues
         var lower_buf: [128]u8 = undefined;
         const lowered = std.ascii.lowerString(&lower_buf, answer);
@@ -349,58 +358,58 @@ pub fn askConfirm(
 }
 
 /// Convenience wrapper that uses real stdin (for production call sites).
-pub fn askConfirmInteractive(stdout: anytype, prompt: []const u8, default_yes: bool) !bool {
-    const stdin = std.fs.File.stdin();
+pub fn askConfirmInteractive(io: std.Io, stdout: anytype, prompt: []const u8, default_yes: bool) !bool {
+    const stdin = std.Io.File.stdin();
     var reader_buf: [256]u8 = undefined;
-    var reader = stdin.reader(&reader_buf);
+    var reader = stdin.reader(io, &reader_buf);
     return askConfirm(stdout, &reader.interface, prompt, default_yes);
 }
 
 // TDD tests for askConfirm (use buffer streams to simulate user input exactly)
 test "askConfirm rejects garbage and re-prompts" {
     var out_buf: [256]u8 = undefined;
-    var out = std.io.fixedBufferStream(&out_buf);
+    var out: std.Io.Writer = .fixed(&out_buf);
 
     const input = "what\nn\n";
-    var in_reader = std.io.Reader.fixed(input);
+    var in_reader = std.Io.Reader.fixed(input);
 
-    const result = try askConfirm(out.writer(), &in_reader, "Fully uninstall Orca?", false);
+    const result = try askConfirm(&out, &in_reader, "Fully uninstall Orca?", false);
     try std.testing.expectEqual(false, result);
 
-    const written = out.getWritten();
+    const written = out_buf[0..out.end];
     try std.testing.expect(std.mem.indexOf(u8, written, "Please answer 'y' or 'n'.") != null);
     try std.testing.expect(std.mem.indexOf(u8, written, "canceled") == null); // caller prints canceled
 }
 
 test "askConfirm accepts yes and proceeds" {
     var out_buf: [128]u8 = undefined;
-    var out = std.io.fixedBufferStream(&out_buf);
+    var out: std.Io.Writer = .fixed(&out_buf);
 
     const input = "yes\n";
-    var in_reader = std.io.Reader.fixed(input);
+    var in_reader = std.Io.Reader.fixed(input);
 
-    const result = try askConfirm(out.writer(), &in_reader, "Disable for all?", false);
+    const result = try askConfirm(&out, &in_reader, "Disable for all?", false);
     try std.testing.expectEqual(true, result);
 }
 
 test "askConfirm accepts empty as default (no)" {
     var out_buf: [64]u8 = undefined;
-    var out = std.io.fixedBufferStream(&out_buf);
+    var out: std.Io.Writer = .fixed(&out_buf);
 
     const input = "\n"; // empty line
-    var in_reader = std.io.Reader.fixed(input);
+    var in_reader = std.Io.Reader.fixed(input);
 
-    const result = try askConfirm(out.writer(), &in_reader, "Proceed?", false);
+    const result = try askConfirm(&out, &in_reader, "Proceed?", false);
     try std.testing.expectEqual(false, result);
 }
 
 test "askConfirm accepts Y/YES case variations" {
     var out_buf: [64]u8 = undefined;
-    var out = std.io.fixedBufferStream(&out_buf);
+    var out: std.Io.Writer = .fixed(&out_buf);
 
     const input = "Y\n";
-    var in_reader = std.io.Reader.fixed(input);
+    var in_reader = std.Io.Reader.fixed(input);
 
-    const result = try askConfirm(out.writer(), &in_reader, "Test?", false);
+    const result = try askConfirm(&out, &in_reader, "Test?", false);
     try std.testing.expectEqual(true, result);
 }

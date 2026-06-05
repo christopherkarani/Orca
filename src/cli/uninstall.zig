@@ -11,12 +11,12 @@ const interactive = @import("interactive.zig");
 // Top-level dispatch
 // ---------------------------------------------------------------------------
 
-pub fn command(argv: []const []const u8, stdout: anytype, stderr: anytype) !u8 {
+pub fn command(io: std.Io, argv: []const []const u8, stdout: anytype, stderr: anytype) !u8 {
     var yes = false;
     var plugins_only = false;
     var keep_config = false;
 
-    var gpa_state: std.heap.GeneralPurposeAllocator(.{}) = .init;
+    var gpa_state: std.heap.DebugAllocator(.{}) = .init;
     defer _ = gpa_state.deinit();
     const allocator = gpa_state.allocator();
 
@@ -24,7 +24,7 @@ pub fn command(argv: []const []const u8, stdout: anytype, stderr: anytype) !u8 {
     while (index < argv.len) : (index += 1) {
         const arg = argv[index];
         if (std.mem.eql(u8, arg, "--help") or std.mem.eql(u8, arg, "-h")) {
-            _ = try help.writeCommand(stdout, "uninstall");
+            _ = try help.writeCommand(io, stdout, "uninstall");
             return exit_codes.success;
         }
         if (std.mem.eql(u8, arg, "--yes")) {
@@ -44,8 +44,8 @@ pub fn command(argv: []const []const u8, stdout: anytype, stderr: anytype) !u8 {
     }
 
     if (!yes) {
-        const stdin = std.fs.File.stdin();
-        if (stdin.isTty()) {
+        const stdin = std.Io.File.stdin();
+        if (try stdin.isTty(io)) {
             const prompt = if (plugins_only)
                 "Remove all Orca plugins from host agents?"
             else if (keep_config)
@@ -53,7 +53,7 @@ pub fn command(argv: []const []const u8, stdout: anytype, stderr: anytype) !u8 {
             else
                 "Fully uninstall Orca (plugins, binary, and config)?";
 
-            const confirmed = interactive.askConfirmInteractive(stdout, prompt, false) catch |err| {
+            const confirmed = interactive.askConfirmInteractive(io, stdout, prompt, false) catch |err| {
                 try stderr.print("orca uninstall: confirmation failed: {s}\n", .{@errorName(err)});
                 return exit_codes.general;
             };
@@ -72,7 +72,7 @@ pub fn command(argv: []const []const u8, stdout: anytype, stderr: anytype) !u8 {
     // 1. Disable / remove all plugins
     try stdout.writeAll("Step 1: Removing plugins\n");
     try stdout.writeAll("(OpenClaw and Hermes use host CLIs with 10s timeout + direct fallback)\n");
-    const all_disabled = try disablePlugins(allocator, stdout);
+    const all_disabled = try disablePlugins(io, allocator, stdout);
 
     if (plugins_only) {
         try stdout.writeAll("\nPlugins removed. Orca binary and config remain in place.\n");
@@ -82,12 +82,12 @@ pub fn command(argv: []const []const u8, stdout: anytype, stderr: anytype) !u8 {
 
     // 2. Remove binary
     try stdout.writeAll("\nStep 2: Removing Orca binary\n");
-    const binary_removed = try removeBinary(allocator, stdout);
+    const binary_removed = try removeBinary(io, allocator, stdout);
 
     // 3. Remove config and data directories
     if (!keep_config) {
         try stdout.writeAll("\nStep 3: Removing config and data\n");
-        try removeConfigAndData(allocator, stdout);
+        try removeConfigAndData(io, allocator, stdout);
     } else {
         try stdout.writeAll("\nStep 3: Skipping config removal (--keep-config)\n");
     }
@@ -115,14 +115,14 @@ pub fn command(argv: []const []const u8, stdout: anytype, stderr: anytype) !u8 {
 // Plugin removal (delegates to disable.zig)
 // ---------------------------------------------------------------------------
 
-fn disablePlugins(allocator: std.mem.Allocator, stdout: anytype) !bool {
+fn disablePlugins(io: std.Io, allocator: std.mem.Allocator, stdout: anytype) !bool {
     var any_action = false;
 
-    any_action = try disable.disableOpenCode(allocator, stdout) or any_action;
-    any_action = try disable.disableOpenClaw(allocator, stdout) or any_action;
-    any_action = try disable.disableHermes(allocator, stdout) or any_action;
-    any_action = try disable.disableCodex(allocator, stdout) or any_action;
-    any_action = try disable.disableClaude(allocator, stdout) or any_action;
+    any_action = try disable.disableOpenCode(io, allocator, stdout) or any_action;
+    any_action = try disable.disableOpenClaw(io, allocator, stdout) or any_action;
+    any_action = try disable.disableHermes(io, allocator, stdout) or any_action;
+    any_action = try disable.disableCodex(io, allocator, stdout) or any_action;
+    any_action = try disable.disableClaude(io, allocator, stdout) or any_action;
 
     return any_action;
 }
@@ -131,8 +131,8 @@ fn disablePlugins(allocator: std.mem.Allocator, stdout: anytype) !bool {
 // Binary removal — only known safe locations, no PATH traversal
 // ---------------------------------------------------------------------------
 
-fn removeBinary(allocator: std.mem.Allocator, stdout: anytype) !bool {
-    const self_exe = std.fs.selfExePathAlloc(allocator) catch |err| {
+fn removeBinary(io: std.Io, allocator: std.mem.Allocator, stdout: anytype) !bool {
+    const self_exe = std.process.executablePathAlloc(io, allocator) catch |err| {
         try stdout.print("  could not determine self path: {s}\n", .{@errorName(err)});
         return false;
     };
@@ -140,9 +140,9 @@ fn removeBinary(allocator: std.mem.Allocator, stdout: anytype) !bool {
 
     var removed_any = false;
 
-    if (plugin.fileExistsAbsolute(self_exe)) {
+    if (plugin.fileExistsAbsolute(io, self_exe)) {
         blk: {
-            std.fs.cwd().deleteFile(self_exe) catch |err| {
+            std.Io.Dir.cwd().deleteFile(io, self_exe) catch |err| {
                 try stdout.print("  binary: failed to remove {s}: {s}\n", .{ self_exe, @errorName(err) });
                 break :blk;
             };
@@ -151,14 +151,12 @@ fn removeBinary(allocator: std.mem.Allocator, stdout: anytype) !bool {
         }
     }
 
-    const home = std.process.getEnvVarOwned(allocator, "HOME") catch null;
-    if (home) |h| {
-        defer allocator.free(h);
-        const local_bin = try std.fs.path.join(allocator, &.{ h, ".local", "bin", "orca" });
+    if (std.c.getenv("HOME")) |h| {
+        const local_bin = try std.fs.path.join(allocator, &.{ std.mem.span(h), ".local", "bin", "orca" });
         defer allocator.free(local_bin);
-        if (!std.mem.eql(u8, self_exe, local_bin) and plugin.fileExistsAbsolute(local_bin)) {
+        if (!std.mem.eql(u8, self_exe, local_bin) and plugin.fileExistsAbsolute(io, local_bin)) {
             blk: {
-                std.fs.cwd().deleteFile(local_bin) catch |err| {
+                std.Io.Dir.cwd().deleteFile(io, local_bin) catch |err| {
                     try stdout.print("  binary: failed to remove {s}: {s}\n", .{ local_bin, @errorName(err) });
                     break :blk;
                 };
@@ -178,23 +176,21 @@ fn removeBinary(allocator: std.mem.Allocator, stdout: anytype) !bool {
 // Config and data removal
 // ---------------------------------------------------------------------------
 
-fn removeConfigAndData(allocator: std.mem.Allocator, stdout: anytype) !void {
+fn removeConfigAndData(io: std.Io, allocator: std.mem.Allocator, stdout: anytype) !void {
     // User config dir: ~/.config/orca/ or $XDG_CONFIG_HOME/orca/
     const config_dir = blk: {
-        if (std.process.getEnvVarOwned(allocator, "XDG_CONFIG_HOME")) |xdg| {
-            defer allocator.free(xdg);
-            break :blk std.fs.path.join(allocator, &.{ xdg, "orca" }) catch null;
-        } else |_| {}
-        const home = std.process.getEnvVarOwned(allocator, "HOME") catch break :blk null;
-        defer allocator.free(home);
-        break :blk std.fs.path.join(allocator, &.{ home, ".config", "orca" }) catch null;
+        if (std.c.getenv("XDG_CONFIG_HOME")) |xdg| {
+            break :blk std.fs.path.join(allocator, &.{ std.mem.span(xdg), "orca" }) catch null;
+        }
+        const home = std.c.getenv("HOME") orelse break :blk null;
+        break :blk std.fs.path.join(allocator, &.{ std.mem.span(home), ".config", "orca" }) catch null;
     };
     defer if (config_dir) |p| allocator.free(p);
 
     if (config_dir) |cd| {
         if (plugin.dirExists(cd)) {
             blk: {
-                std.fs.cwd().deleteTree(cd) catch |err| {
+                std.Io.Dir.cwd().deleteTree(io, cd) catch |err| {
                     try stdout.print("  failed to remove config dir {s}: {s}\n", .{ cd, @errorName(err) });
                     break :blk;
                 };
@@ -205,16 +201,15 @@ fn removeConfigAndData(allocator: std.mem.Allocator, stdout: anytype) !void {
 
     // Legacy user data dir ~/.orca
     const legacy_dir = blk: {
-        const home = std.process.getEnvVarOwned(allocator, "HOME") catch break :blk null;
-        defer allocator.free(home);
-        break :blk std.fs.path.join(allocator, &.{ home, ".orca" }) catch null;
+        const home = std.c.getenv("HOME") orelse break :blk null;
+        break :blk std.fs.path.join(allocator, &.{ std.mem.span(home), ".orca" }) catch null;
     };
     defer if (legacy_dir) |p| allocator.free(p);
 
     if (legacy_dir) |ld| {
         if (plugin.dirExists(ld)) {
             blk: {
-                std.fs.cwd().deleteTree(ld) catch |err| {
+                std.Io.Dir.cwd().deleteTree(io, ld) catch |err| {
                     try stdout.print("  failed to remove legacy dir {s}: {s}\n", .{ ld, @errorName(err) });
                     break :blk;
                 };
@@ -234,38 +229,38 @@ fn removeConfigAndData(allocator: std.mem.Allocator, stdout: anytype) !void {
 test "uninstall command help and invalid args" {
     var stdout_buf: [2048]u8 = undefined;
     var stderr_buf: [256]u8 = undefined;
-    var stdout_stream = std.io.fixedBufferStream(&stdout_buf);
-    var stderr_stream = std.io.fixedBufferStream(&stderr_buf);
+    var stdout_writer: std.Io.Writer = .fixed(&stdout_buf);
+    var stderr_writer: std.Io.Writer = .fixed(&stderr_buf);
 
-    const help_code = try command(&.{"--help"}, stdout_stream.writer(), stderr_stream.writer());
+    const help_code = try command(std.testing.io, &.{"--help"}, &stdout_writer, &stderr_writer);
     try std.testing.expectEqual(exit_codes.success, help_code);
-    try std.testing.expect(std.mem.indexOf(u8, stdout_stream.getWritten(), "uninstall") != null);
+    try std.testing.expect(std.mem.indexOf(u8, stdout_writer.buffered(), "uninstall") != null);
 
-    stdout_stream.reset();
-    stderr_stream.reset();
-    const bad_code = try command(&.{"--unknown"}, stdout_stream.writer(), stderr_stream.writer());
+    stdout_writer = .fixed(&stdout_buf);
+    stderr_writer = .fixed(&stderr_buf);
+    const bad_code = try command(std.testing.io, &.{"--unknown"}, &stdout_writer, &stderr_writer);
     try std.testing.expectEqual(exit_codes.usage, bad_code);
-    try std.testing.expect(std.mem.indexOf(u8, stderr_stream.getWritten(), "unknown option") != null);
+    try std.testing.expect(std.mem.indexOf(u8, stderr_writer.buffered(), "unknown option") != null);
 }
 
 test "uninstall without --yes in non-TTY returns usage" {
     var stdout_buf: [2048]u8 = undefined;
     var stderr_buf: [256]u8 = undefined;
-    var stdout_stream = std.io.fixedBufferStream(&stdout_buf);
-    var stderr_stream = std.io.fixedBufferStream(&stderr_buf);
+    var stdout_writer: std.Io.Writer = .fixed(&stdout_buf);
+    var stderr_writer: std.Io.Writer = .fixed(&stderr_buf);
 
-    const code = try command(&.{}, stdout_stream.writer(), stderr_stream.writer());
+    const code = try command(std.testing.io, &.{}, &stdout_writer, &stderr_writer);
     try std.testing.expectEqual(exit_codes.usage, code);
-    try std.testing.expect(std.mem.indexOf(u8, stderr_stream.getWritten(), "--yes") != null);
+    try std.testing.expect(std.mem.indexOf(u8, stderr_writer.buffered(), "--yes") != null);
 }
 
 test "uninstall --plugins-only requires --yes in non-TTY" {
     var stdout_buf: [2048]u8 = undefined;
     var stderr_buf: [256]u8 = undefined;
-    var stdout_stream = std.io.fixedBufferStream(&stdout_buf);
-    var stderr_stream = std.io.fixedBufferStream(&stderr_buf);
+    var stdout_writer: std.Io.Writer = .fixed(&stdout_buf);
+    var stderr_writer: std.Io.Writer = .fixed(&stderr_buf);
 
-    const code = try command(&.{"--plugins-only"}, stdout_stream.writer(), stderr_stream.writer());
+    const code = try command(std.testing.io, &.{"--plugins-only"}, &stdout_writer, &stderr_writer);
     try std.testing.expectEqual(exit_codes.usage, code);
-    try std.testing.expect(std.mem.indexOf(u8, stderr_stream.getWritten(), "--yes") != null);
+    try std.testing.expect(std.mem.indexOf(u8, stderr_writer.buffered(), "--yes") != null);
 }

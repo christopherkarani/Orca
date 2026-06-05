@@ -1,11 +1,18 @@
 const std = @import("std");
 
+const env_util = @import("../env_util.zig");
 const audit = @import("orca_core").audit;
 const core = @import("orca_core").core;
 const policy = @import("orca_core").policy;
 const windows_backend = @import("../sandbox/windows.zig");
 
 pub const max_staged_file_bytes: usize = 16 * 1024 * 1024;
+
+fn realPathOwned(io: std.Io, allocator: std.mem.Allocator, path: []const u8) ![]u8 {
+    var buffer: [std.fs.max_path_bytes]u8 = undefined;
+    const len = try std.Io.Dir.cwd().realPathFile(io, path, &buffer);
+    return try allocator.dupe(u8, buffer[0..len]);
+}
 
 pub const Operation = enum {
     create,
@@ -144,12 +151,12 @@ const write_rules = [_]BuiltinRule{
     .{ .id = "builtin.files.write.deny[1]", .pattern = "./.orca/**" },
 };
 
-pub fn normalizePath(allocator: std.mem.Allocator, workspace_root_raw: []const u8, raw_path: []const u8) !NormalizedPath {
+pub fn normalizePath(io: std.Io, allocator: std.mem.Allocator, workspace_root_raw: []const u8, raw_path: []const u8) !NormalizedPath {
     if (raw_path.len == 0 or std.mem.indexOfScalar(u8, raw_path, 0) != null) return error.InvalidPath;
     if (!std.unicode.utf8ValidateSlice(raw_path)) return error.InvalidUtf8;
     if (isWindowsAbsolutePath(raw_path)) return error.OutsideWorkspace;
 
-    const workspace_root = try std.fs.cwd().realpathAlloc(allocator, workspace_root_raw);
+    const workspace_root = try realPathOwned(io, allocator, workspace_root_raw);
     errdefer allocator.free(workspace_root);
 
     const expanded = try expandHome(allocator, raw_path);
@@ -158,7 +165,7 @@ pub fn normalizePath(allocator: std.mem.Allocator, workspace_root_raw: []const u
     const absolute_path = try lexicalAbsolute(allocator, workspace_root, expanded);
     errdefer allocator.free(absolute_path);
 
-    const resolved_path = try resolveExistingPrefix(allocator, absolute_path);
+    const resolved_path = try resolveExistingPrefix(io, allocator, absolute_path);
     errdefer allocator.free(resolved_path);
 
     if (!isWithin(workspace_root, absolute_path)) return error.OutsideWorkspace;
@@ -180,8 +187,8 @@ pub fn normalizePath(allocator: std.mem.Allocator, workspace_root_raw: []const u
     };
 }
 
-pub fn decideRead(allocator: std.mem.Allocator, loaded_policy: *const policy.schema.Policy, workspace_root: []const u8, raw_path: []const u8) !FileDecision {
-    var normalized = normalizePath(allocator, workspace_root, raw_path) catch {
+pub fn decideRead(io: std.Io, allocator: std.mem.Allocator, loaded_policy: *const policy.schema.Policy, workspace_root: []const u8, raw_path: []const u8) !FileDecision {
+    var normalized = normalizePath(io, allocator, workspace_root, raw_path) catch {
         if (rawBuiltinReadRule(raw_path)) |rule| {
             const reason = try std.fmt.allocPrint(allocator, "matched {s} rule \"{s}\"", .{ rule.id, rule.pattern });
             return denyWithReasonOnly(allocator, rule.id, reason);
@@ -200,8 +207,8 @@ pub fn decideRead(allocator: std.mem.Allocator, loaded_policy: *const policy.sch
     return decisionFromEvaluation(allocator, normalized, evaluation);
 }
 
-pub fn decideWrite(allocator: std.mem.Allocator, loaded_policy: *const policy.schema.Policy, workspace_root: []const u8, raw_path: []const u8) !FileDecision {
-    var normalized = normalizePath(allocator, workspace_root, raw_path) catch {
+pub fn decideWrite(io: std.Io, allocator: std.mem.Allocator, loaded_policy: *const policy.schema.Policy, workspace_root: []const u8, raw_path: []const u8) !FileDecision {
+    var normalized = normalizePath(io, allocator, workspace_root, raw_path) catch {
         return deniedDecision(allocator, null, "builtin.files.write.deny[outside_workspace]", "file write denied: path resolves outside workspace or through a symlink escape");
     };
     errdefer normalized.deinit(allocator);
@@ -217,6 +224,7 @@ pub fn decideWrite(allocator: std.mem.Allocator, loaded_policy: *const policy.sc
 }
 
 pub fn stageCreate(
+    io: std.Io,
     allocator: std.mem.Allocator,
     loaded_policy: *const policy.schema.Policy,
     workspace_root: []const u8,
@@ -225,13 +233,14 @@ pub fn stageCreate(
     bytes: []const u8,
     audit_context: ?AuditContext,
 ) !StageResult {
-    var normalized = try normalizePath(allocator, workspace_root, raw_path);
+    var normalized = try normalizePath(io, allocator, workspace_root, raw_path);
     defer normalized.deinit(allocator);
-    if (fileExists(normalized.resolved_path)) return error.PathAlreadyExists;
-    return stageBytes(allocator, loaded_policy, workspace_root, session_id, raw_path, bytes, audit_context);
+    if (fileExists(io, normalized.resolved_path)) return error.PathAlreadyExists;
+    return stageBytes(io, allocator, loaded_policy, workspace_root, session_id, raw_path, bytes, audit_context);
 }
 
 pub fn stageUpdate(
+    io: std.Io,
     allocator: std.mem.Allocator,
     loaded_policy: *const policy.schema.Policy,
     workspace_root: []const u8,
@@ -240,13 +249,14 @@ pub fn stageUpdate(
     bytes: []const u8,
     audit_context: ?AuditContext,
 ) !StageResult {
-    var normalized = try normalizePath(allocator, workspace_root, raw_path);
+    var normalized = try normalizePath(io, allocator, workspace_root, raw_path);
     defer normalized.deinit(allocator);
-    if (!fileExists(normalized.resolved_path)) return error.FileNotFound;
-    return stageBytes(allocator, loaded_policy, workspace_root, session_id, raw_path, bytes, audit_context);
+    if (!fileExists(io, normalized.resolved_path)) return error.FileNotFound;
+    return stageBytes(io, allocator, loaded_policy, workspace_root, session_id, raw_path, bytes, audit_context);
 }
 
 pub fn stageWrite(
+    io: std.Io,
     allocator: std.mem.Allocator,
     loaded_policy: *const policy.schema.Policy,
     workspace_root: []const u8,
@@ -255,10 +265,11 @@ pub fn stageWrite(
     bytes: []const u8,
     audit_context: ?AuditContext,
 ) !StageResult {
-    return stageBytes(allocator, loaded_policy, workspace_root, session_id, raw_path, bytes, audit_context);
+    return stageBytes(io, allocator, loaded_policy, workspace_root, session_id, raw_path, bytes, audit_context);
 }
 
 pub fn stageDelete(
+    io: std.Io,
     allocator: std.mem.Allocator,
     loaded_policy: *const policy.schema.Policy,
     workspace_root: []const u8,
@@ -266,7 +277,7 @@ pub fn stageDelete(
     raw_path: []const u8,
     audit_context: ?AuditContext,
 ) !StageResult {
-    var decision = try decideWrite(allocator, loaded_policy, workspace_root, raw_path);
+    var decision = try decideWrite(io, allocator, loaded_policy, workspace_root, raw_path);
     defer decision.deinit(allocator);
     try auditFileEvent(audit_context, .file_write_attempt, raw_path, decision.decision);
     if (!isWriteAllowed(decision.decision.result)) {
@@ -275,19 +286,19 @@ pub fn stageDelete(
     }
 
     const normalized = decision.normalized.?;
-    if (!fileExists(normalized.resolved_path)) return error.FileNotFound;
+    if (!fileExists(io, normalized.resolved_path)) return error.FileNotFound;
 
     const session_dir = try sessionDirPath(allocator, workspace_root, session_id);
     errdefer allocator.free(session_dir);
-    try ensureStagingDirs(session_dir);
+    try ensureStagingDirs(io, session_dir);
 
-    const original_bytes = try std.fs.cwd().readFileAlloc(allocator, normalized.resolved_path, max_staged_file_bytes);
+    const original_bytes = try std.Io.Dir.cwd().readFileAlloc(io, normalized.resolved_path, allocator, .limited(max_staged_file_bytes));
     defer allocator.free(original_bytes);
     const original_hash = try sha256HexAlloc(allocator, original_bytes);
     errdefer allocator.free(original_hash);
     try writeSessionRelFile(session_dir, "original", normalized.relative_path, original_bytes);
 
-    var index = try loadIndex(allocator, workspace_root, session_dir);
+    var index = try loadIndex(io, allocator, workspace_root, session_dir);
     defer index.deinit();
     try index.upsert(.{
         .original_path = try allocator.dupe(u8, normalized.resolved_path),
@@ -296,10 +307,10 @@ pub fn stageDelete(
         .original_hash = original_hash,
         .staged_hash = null,
         .operation = .delete,
-        .timestamp = try timestampNowAlloc(allocator),
+        .timestamp = try timestampNowAlloc(io, allocator),
         .actor = try allocator.dupe(u8, "orca"),
     });
-    try writeIndex(allocator, session_dir, session_id, index.entries.items);
+    try writeIndex(io, allocator, session_dir, session_id, index.entries.items);
     try auditFileEvent(audit_context, .file_write_staged, normalized.policy_path, .{
         .result = .stage,
         .rule_id = decision.decision.rule_id,
@@ -310,14 +321,14 @@ pub fn stageDelete(
     return .{ .entry = try cloneEntry(allocator, index.find(normalized.relative_path).?), .session_dir = session_dir };
 }
 
-pub fn diffStaged(allocator: std.mem.Allocator, workspace_root: []const u8, session_id: []const u8, optional_file: ?[]const u8) ![]u8 {
+pub fn diffStaged(io: std.Io, allocator: std.mem.Allocator, workspace_root: []const u8, session_id: []const u8, optional_file: ?[]const u8) ![]u8 {
     const session_dir = try sessionDirPath(allocator, workspace_root, session_id);
     defer allocator.free(session_dir);
-    var index = try loadIndex(allocator, workspace_root, session_dir);
+    var index = try loadIndex(io, allocator, workspace_root, session_dir);
     defer index.deinit();
 
     const normalized_filter = if (optional_file) |file| blk: {
-        var normalized = try normalizePath(allocator, workspace_root, file);
+        var normalized = try normalizePath(io, allocator, workspace_root, file);
         defer normalized.deinit(allocator);
         break :blk try allocator.dupe(u8, normalized.relative_path);
     } else null;
@@ -329,27 +340,27 @@ pub fn diffStaged(allocator: std.mem.Allocator, workspace_root: []const u8, sess
         if (normalized_filter) |filter| {
             if (!std.mem.eql(u8, filter, entry.normalized_path)) continue;
         }
-        try appendEntryDiff(allocator, &out, session_dir, entry);
+        try appendEntryDiff(io, allocator, &out, session_dir, entry);
     }
     return try out.toOwnedSlice(allocator);
 }
 
-pub fn applyStaged(allocator: std.mem.Allocator, workspace_root: []const u8, session_id: []const u8, optional_file: ?[]const u8, audit_context: ?AuditContext) !ApplyDiscardResult {
-    return applyOrDiscard(allocator, workspace_root, session_id, optional_file, true, audit_context);
+pub fn applyStaged(io: std.Io, allocator: std.mem.Allocator, workspace_root: []const u8, session_id: []const u8, optional_file: ?[]const u8, audit_context: ?AuditContext) !ApplyDiscardResult {
+    return applyOrDiscard(io, allocator, workspace_root, session_id, optional_file, true, audit_context);
 }
 
-pub fn discardStaged(allocator: std.mem.Allocator, workspace_root: []const u8, session_id: []const u8, optional_file: ?[]const u8, audit_context: ?AuditContext) !ApplyDiscardResult {
-    return applyOrDiscard(allocator, workspace_root, session_id, optional_file, false, audit_context);
+pub fn discardStaged(io: std.Io, allocator: std.mem.Allocator, workspace_root: []const u8, session_id: []const u8, optional_file: ?[]const u8, audit_context: ?AuditContext) !ApplyDiscardResult {
+    return applyOrDiscard(io, allocator, workspace_root, session_id, optional_file, false, audit_context);
 }
 
-pub fn resolveSessionId(allocator: std.mem.Allocator, workspace_root: []const u8, requested: []const u8) ![]u8 {
+pub fn resolveSessionId(io: std.Io, allocator: std.mem.Allocator, workspace_root: []const u8, requested: []const u8) ![]u8 {
     if (!std.mem.eql(u8, requested, "last")) {
         try validateSessionId(requested);
         return try allocator.dupe(u8, requested);
     }
     const last_path = try std.fs.path.join(allocator, &.{ workspace_root, ".orca", "last" });
     defer allocator.free(last_path);
-    const text = try std.fs.cwd().readFileAlloc(allocator, last_path, core.limits.max_session_id_len + 2);
+    const text = try std.Io.Dir.cwd().readFileAlloc(io, last_path, allocator, std.Io.Limit.limited(core.limits.max_session_id_len + 2));
     defer allocator.free(text);
     const trimmed = std.mem.trim(u8, text, " \t\r\n");
     try validateSessionId(trimmed);
@@ -357,6 +368,7 @@ pub fn resolveSessionId(allocator: std.mem.Allocator, workspace_root: []const u8
 }
 
 fn stageBytes(
+    io: std.Io,
     allocator: std.mem.Allocator,
     loaded_policy: *const policy.schema.Policy,
     workspace_root: []const u8,
@@ -367,7 +379,7 @@ fn stageBytes(
 ) !StageResult {
     if (bytes.len > max_staged_file_bytes) return error.FileTooLarge;
 
-    var decision = try decideWrite(allocator, loaded_policy, workspace_root, raw_path);
+    var decision = try decideWrite(io, allocator, loaded_policy, workspace_root, raw_path);
     defer decision.deinit(allocator);
     try auditFileEvent(audit_context, .file_write_attempt, raw_path, decision.decision);
     if (!isWriteAllowed(decision.decision.result)) {
@@ -378,13 +390,13 @@ fn stageBytes(
     const normalized = decision.normalized.?;
     const session_dir = try sessionDirPath(allocator, workspace_root, session_id);
     errdefer allocator.free(session_dir);
-    try ensureStagingDirs(session_dir);
+    try ensureStagingDirs(io, session_dir);
 
-    const existed = fileExists(normalized.resolved_path);
+    const existed = fileExists(io, normalized.resolved_path);
     var original_hash: ?[]u8 = null;
     errdefer if (original_hash) |hash| allocator.free(hash);
     if (existed) {
-        const original_bytes = try std.fs.cwd().readFileAlloc(allocator, normalized.resolved_path, max_staged_file_bytes);
+        const original_bytes = try std.Io.Dir.cwd().readFileAlloc(io, normalized.resolved_path, allocator, .limited(max_staged_file_bytes));
         defer allocator.free(original_bytes);
         original_hash = try sha256HexAlloc(allocator, original_bytes);
         try writeSessionRelFile(session_dir, "original", normalized.relative_path, original_bytes);
@@ -397,7 +409,7 @@ fn stageBytes(
     const staged_path = try stagedPathForEntry(allocator, session_dir, normalized.relative_path);
     errdefer allocator.free(staged_path);
 
-    var index = try loadIndex(allocator, workspace_root, session_dir);
+    var index = try loadIndex(io, allocator, workspace_root, session_dir);
     defer index.deinit();
     try index.upsert(.{
         .original_path = try allocator.dupe(u8, normalized.resolved_path),
@@ -406,11 +418,11 @@ fn stageBytes(
         .original_hash = original_hash,
         .staged_hash = staged_hash,
         .operation = if (existed) .update else .create,
-        .timestamp = try timestampNowAlloc(allocator),
+        .timestamp = try timestampNowAlloc(io, allocator),
         .actor = try allocator.dupe(u8, "orca"),
     });
     original_hash = null;
-    try writeIndex(allocator, session_dir, session_id, index.entries.items);
+    try writeIndex(io, allocator, session_dir, session_id, index.entries.items);
 
     try auditFileEvent(audit_context, .file_write_staged, normalized.policy_path, .{
         .result = .stage,
@@ -423,6 +435,7 @@ fn stageBytes(
 }
 
 fn applyOrDiscard(
+    io: std.Io,
     allocator: std.mem.Allocator,
     workspace_root: []const u8,
     session_id: []const u8,
@@ -432,11 +445,11 @@ fn applyOrDiscard(
 ) !ApplyDiscardResult {
     const session_dir = try sessionDirPath(allocator, workspace_root, session_id);
     defer allocator.free(session_dir);
-    var index = try loadIndex(allocator, workspace_root, session_dir);
+    var index = try loadIndex(io, allocator, workspace_root, session_dir);
     defer index.deinit();
 
     const normalized_filter = if (optional_file) |file| blk: {
-        var normalized = try normalizePath(allocator, workspace_root, file);
+        var normalized = try normalizePath(io, allocator, workspace_root, file);
         defer normalized.deinit(allocator);
         break :blk try allocator.dupe(u8, normalized.relative_path);
     } else null;
@@ -457,15 +470,15 @@ fn applyOrDiscard(
         }
 
         if (apply) {
-            try verifyOriginalState(allocator, entry);
+            try verifyOriginalState(io, allocator, entry);
             switch (entry.operation) {
                 .create, .update => {
-                    const staged_bytes = try readVerifiedStagedBytes(allocator, entry);
+                    const staged_bytes = try readVerifiedStagedBytes(io, allocator, entry);
                     defer allocator.free(staged_bytes);
                     try ensureParentPath(entry.original_path);
                     try writeAbsoluteFile(entry.original_path, staged_bytes);
                 },
-                .delete => std.fs.cwd().deleteFile(entry.original_path) catch |err| switch (err) {
+                .delete => std.Io.Dir.cwd().deleteFile(io, entry.original_path) catch |err| switch (err) {
                     error.FileNotFound => {},
                     else => return err,
                 },
@@ -475,15 +488,15 @@ fn applyOrDiscard(
             try auditFileEvent(audit_context, .file_discard, entry.normalized_path, .{ .result = .allow, .reason = "staged file discarded", .ci_may_proceed = true });
         }
 
-        cleanupEntryFiles(session_dir, entry.normalized_path);
+        cleanupEntryFiles(io, session_dir, entry.normalized_path);
         count += 1;
     }
 
-    try writeIndex(allocator, session_dir, session_id, remaining.items);
+    try writeIndex(io, allocator, session_dir, session_id, remaining.items);
     return .{ .count = count };
 }
 
-fn appendEntryDiff(allocator: std.mem.Allocator, out: *std.ArrayList(u8), session_dir: []const u8, entry: StagedEntry) !void {
+fn appendEntryDiff(io: std.Io, allocator: std.mem.Allocator, out: *std.ArrayList(u8), session_dir: []const u8, entry: StagedEntry) !void {
     var old_bytes_owned = false;
     const old_bytes = switch (entry.operation) {
         .create => "",
@@ -491,23 +504,23 @@ fn appendEntryDiff(allocator: std.mem.Allocator, out: *std.ArrayList(u8), sessio
             const original_capture = try originalPathForEntry(allocator, session_dir, entry.normalized_path);
             defer allocator.free(original_capture);
             old_bytes_owned = true;
-            break :blk try std.fs.cwd().readFileAlloc(allocator, original_capture, max_staged_file_bytes);
+            break :blk try std.Io.Dir.cwd().readFileAlloc(io, original_capture, allocator, .limited(max_staged_file_bytes));
         },
     };
     defer if (old_bytes_owned) allocator.free(old_bytes);
 
     const new_bytes = switch (entry.operation) {
         .delete => "",
-        .create, .update => try std.fs.cwd().readFileAlloc(allocator, entry.staged_path, max_staged_file_bytes),
+        .create, .update => try std.Io.Dir.cwd().readFileAlloc(io, entry.staged_path, allocator, .limited(max_staged_file_bytes)),
     };
     defer if (entry.operation != .delete) allocator.free(new_bytes);
 
     if (entry.operation == .create) {
-        try out.writer(allocator).print("--- /dev/null\n+++ b/{s}\n", .{entry.normalized_path});
+        try out.print(allocator, "--- /dev/null\n+++ b/{s}\n", .{entry.normalized_path});
     } else if (entry.operation == .delete) {
-        try out.writer(allocator).print("--- a/{s}\n+++ /dev/null\n", .{entry.normalized_path});
+        try out.print(allocator, "--- a/{s}\n+++ /dev/null\n", .{entry.normalized_path});
     } else {
-        try out.writer(allocator).print("--- a/{s}\n+++ b/{s}\n", .{ entry.normalized_path, entry.normalized_path });
+        try out.print(allocator, "--- a/{s}\n+++ b/{s}\n", .{ entry.normalized_path, entry.normalized_path });
     }
     try out.appendSlice(allocator, "@@\n");
     try appendPrefixedLines(allocator, out, '-', old_bytes);
@@ -525,21 +538,21 @@ fn appendPrefixedLines(allocator: std.mem.Allocator, out: *std.ArrayList(u8), pr
     }
 }
 
-fn verifyOriginalState(allocator: std.mem.Allocator, entry: StagedEntry) !void {
+fn verifyOriginalState(io: std.Io, allocator: std.mem.Allocator, entry: StagedEntry) !void {
     if (entry.original_hash) |expected| {
-        const bytes = try std.fs.cwd().readFileAlloc(allocator, entry.original_path, max_staged_file_bytes);
+        const bytes = try std.Io.Dir.cwd().readFileAlloc(io, entry.original_path, allocator, .limited(max_staged_file_bytes));
         defer allocator.free(bytes);
         const actual = try sha256HexAlloc(allocator, bytes);
         defer allocator.free(actual);
         if (!std.mem.eql(u8, expected, actual)) return error.OriginalChanged;
-    } else if (fileExists(entry.original_path)) {
+    } else if (fileExists(io, entry.original_path)) {
         return error.OriginalChanged;
     }
 }
 
-fn readVerifiedStagedBytes(allocator: std.mem.Allocator, entry: StagedEntry) ![]u8 {
+fn readVerifiedStagedBytes(io: std.Io, allocator: std.mem.Allocator, entry: StagedEntry) ![]u8 {
     const expected = entry.staged_hash orelse return error.StagedChanged;
-    const bytes = try std.fs.cwd().readFileAlloc(allocator, entry.staged_path, max_staged_file_bytes);
+    const bytes = try std.Io.Dir.cwd().readFileAlloc(io, entry.staged_path, allocator, .limited(max_staged_file_bytes));
     errdefer allocator.free(bytes);
     const actual = try sha256HexAlloc(allocator, bytes);
     defer allocator.free(actual);
@@ -547,14 +560,14 @@ fn readVerifiedStagedBytes(allocator: std.mem.Allocator, entry: StagedEntry) ![]
     return bytes;
 }
 
-fn cleanupEntryFiles(session_dir: []const u8, relative_path: []const u8) void {
+fn cleanupEntryFiles(io: std.Io, session_dir: []const u8, relative_path: []const u8) void {
     const allocator = std.heap.page_allocator;
     const staged_path = std.fs.path.join(allocator, &.{ session_dir, "staged", relative_path }) catch return;
     defer allocator.free(staged_path);
-    std.fs.cwd().deleteFile(staged_path) catch {};
+    std.Io.Dir.cwd().deleteFile(io, staged_path) catch {};
     const original_path = std.fs.path.join(allocator, &.{ session_dir, "original", relative_path }) catch return;
     defer allocator.free(original_path);
-    std.fs.cwd().deleteFile(original_path) catch {};
+    std.Io.Dir.cwd().deleteFile(io, original_path) catch {};
 }
 
 const Index = struct {
@@ -586,16 +599,16 @@ const Index = struct {
     }
 };
 
-fn loadIndex(allocator: std.mem.Allocator, workspace_root_raw: []const u8, session_dir: []const u8) !Index {
+fn loadIndex(io: std.Io, allocator: std.mem.Allocator, workspace_root_raw: []const u8, session_dir: []const u8) !Index {
     var index: Index = .{ .allocator = allocator, .entries = .empty };
     errdefer index.deinit();
 
-    const workspace_root = try std.fs.cwd().realpathAlloc(allocator, workspace_root_raw);
+    const workspace_root = try realPathOwned(io, allocator, workspace_root_raw);
     defer allocator.free(workspace_root);
 
     const path = try std.fs.path.join(allocator, &.{ session_dir, "staging-index.json" });
     defer allocator.free(path);
-    const text = std.fs.cwd().readFileAlloc(allocator, path, core.limits.max_mcp_message_len) catch |err| switch (err) {
+    const text = std.Io.Dir.cwd().readFileAlloc(io, path, allocator, .limited(core.limits.max_mcp_message_len)) catch |err| switch (err) {
         error.FileNotFound => return index,
         else => return err,
     };
@@ -631,44 +644,47 @@ fn loadIndex(allocator: std.mem.Allocator, workspace_root_raw: []const u8, sessi
     return index;
 }
 
-fn writeIndex(allocator: std.mem.Allocator, session_dir: []const u8, session_id: []const u8, entries: []const StagedEntry) !void {
-    try ensureStagingDirs(session_dir);
+fn writeIndex(io: std.Io, allocator: std.mem.Allocator, session_dir: []const u8, session_id: []const u8, entries: []const StagedEntry) !void {
+    try ensureStagingDirs(io, session_dir);
     const path = try std.fs.path.join(allocator, &.{ session_dir, "staging-index.json" });
     defer allocator.free(path);
 
     var list: std.ArrayList(u8) = .empty;
-    defer list.deinit(allocator);
-    const writer = list.writer(allocator);
-    try writer.print("{{\"version\":1,\"session_id\":", .{});
-    try core.util.writeJsonString(writer, session_id);
-    try writer.writeAll(",\"entries\":[");
+    var list_aw: std.Io.Writer.Allocating = .init(allocator);
+    errdefer list_aw.deinit();
+    try list_aw.writer.print("{{\"version\":1,\"session_id\":", .{});
+    try core.util.writeJsonString(&list_aw.writer, session_id);
+    try list_aw.writer.writeAll(",\"entries\":[");
     for (entries, 0..) |entry, index| {
-        if (index > 0) try writer.writeByte(',');
-        try writer.writeAll("{\"original_path\":");
-        try core.util.writeJsonString(writer, entry.original_path);
-        try writer.writeAll(",\"normalized_path\":");
-        try core.util.writeJsonString(writer, entry.normalized_path);
-        try writer.writeAll(",\"staged_path\":");
-        try core.util.writeJsonString(writer, entry.staged_path);
-        try writer.writeAll(",\"original_hash\":");
-        try writeNullableJsonString(writer, entry.original_hash);
-        try writer.writeAll(",\"staged_hash\":");
-        try writeNullableJsonString(writer, entry.staged_hash);
-        try writer.writeAll(",\"operation\":");
-        try core.util.writeJsonString(writer, entry.operation.toString());
-        try writer.writeAll(",\"timestamp\":");
-        try core.util.writeJsonString(writer, entry.timestamp);
-        try writer.writeAll(",\"actor\":");
-        try core.util.writeJsonString(writer, entry.actor);
-        try writer.writeByte('}');
+        if (index > 0) try list_aw.writer.writeByte(',');
+        try list_aw.writer.writeAll("{\"original_path\":");
+        try core.util.writeJsonString(&list_aw.writer, entry.original_path);
+        try list_aw.writer.writeAll(",\"normalized_path\":");
+        try core.util.writeJsonString(&list_aw.writer, entry.normalized_path);
+        try list_aw.writer.writeAll(",\"staged_path\":");
+        try core.util.writeJsonString(&list_aw.writer, entry.staged_path);
+        try list_aw.writer.writeAll(",\"original_hash\":");
+        try writeNullableJsonString(&list_aw.writer, entry.original_hash);
+        try list_aw.writer.writeAll(",\"staged_hash\":");
+        try writeNullableJsonString(&list_aw.writer, entry.staged_hash);
+        try list_aw.writer.writeAll(",\"operation\":");
+        try core.util.writeJsonString(&list_aw.writer, entry.operation.toString());
+        try list_aw.writer.writeAll(",\"timestamp\":");
+        try core.util.writeJsonString(&list_aw.writer, entry.timestamp);
+        try list_aw.writer.writeAll(",\"actor\":");
+        try core.util.writeJsonString(&list_aw.writer, entry.actor);
+        try list_aw.writer.writeByte('}');
     }
-    try writer.writeAll("]}");
+    try list_aw.writer.writeAll("]}");
+    try list_aw.writer.flush();
+    list = list_aw.toArrayList();
+    defer list.deinit(allocator);
 
-    const file = try std.fs.cwd().createFile(path, .{});
-    defer file.close();
-    try file.writeAll(list.items);
-    try file.writeAll("\n");
-    try file.sync();
+    const file = try std.Io.Dir.cwd().createFile(io, path, .{});
+    defer file.close(io);
+    try file.writeStreamingAll(io, list.items);
+    try file.writeStreamingAll(io, "\n");
+    try file.sync(io);
 }
 
 fn writeNullableJsonString(writer: anytype, value: ?[]const u8) !void {
@@ -731,7 +747,7 @@ fn cloneEntry(allocator: std.mem.Allocator, entry: StagedEntry) !StagedEntry {
 
 fn auditFileEvent(audit_context: ?AuditContext, event_type: core.event.EventType, target: []const u8, decision: core.decision.Decision) !void {
     const ctx = audit_context orelse return;
-    const ts = core.time.Timestamp.now();
+    const ts = core.time.Timestamp.now(ctx.writer.io);
     const ev: core.event.Event = .{
         .session_id = ctx.session.id,
         .event_id = try core.event.generateEventId(ts),
@@ -864,10 +880,12 @@ fn simpleGlobAt(pattern: []const u8, pattern_index: usize, value: []const u8, va
 
 fn homeRuleMatches(pattern: []const u8, path: []const u8) bool {
     if (!std.mem.startsWith(u8, pattern, "~/")) return false;
-    const home = std.process.getEnvVarOwned(std.heap.page_allocator, "HOME") catch return false;
-    defer std.heap.page_allocator.free(home);
+    const home_ptr = std.c.getenv("HOME") orelse return false;
+    const home = std.mem.span(home_ptr);
     if (homeRuleMatchesRoot(pattern, path, home)) return true;
-    const real_home = std.fs.cwd().realpathAlloc(std.heap.page_allocator, home) catch return false;
+    var threaded: std.Io.Threaded = .init_single_threaded;
+    const io = threaded.io();
+    const real_home = realPathOwned(io, std.heap.page_allocator, home) catch return false;
     defer std.heap.page_allocator.free(real_home);
     return homeRuleMatchesRoot(pattern, path, real_home);
 }
@@ -885,7 +903,10 @@ fn isWriteAllowed(result: core.decision.DecisionResult) bool {
 
 fn expandHome(allocator: std.mem.Allocator, raw_path: []const u8) ![]u8 {
     if (std.mem.eql(u8, raw_path, "~") or std.mem.startsWith(u8, raw_path, "~/")) {
-        const home = std.process.getEnvVarOwned(allocator, "HOME") catch return try allocator.dupe(u8, raw_path);
+        var env_map = env_util.createProcessMap(allocator) catch return try allocator.dupe(u8, raw_path);
+        defer env_map.deinit();
+        const home_owned = try env_util.getOwned(&env_map, allocator, "HOME");
+        const home = home_owned orelse return try allocator.dupe(u8, raw_path);
         defer allocator.free(home);
         if (std.mem.eql(u8, raw_path, "~")) return try allocator.dupe(u8, home);
         return try std.fs.path.join(allocator, &.{ home, raw_path[2..] });
@@ -926,7 +947,7 @@ fn appendComponents(allocator: std.mem.Allocator, components: *std.ArrayList([]u
     }
 }
 
-fn resolveExistingPrefix(allocator: std.mem.Allocator, absolute_path: []const u8) ![]u8 {
+fn resolveExistingPrefix(io: std.Io, allocator: std.mem.Allocator, absolute_path: []const u8) ![]u8 {
     var current = try allocator.dupe(u8, absolute_path);
     defer allocator.free(current);
     var suffix: std.ArrayList([]u8) = .empty;
@@ -936,19 +957,20 @@ fn resolveExistingPrefix(allocator: std.mem.Allocator, absolute_path: []const u8
     }
 
     while (true) {
-        const resolved = std.fs.cwd().realpathAlloc(allocator, current) catch |err| switch (err) {
+        const prefix = realPathOwned(io, allocator, current) catch |err| switch (err) {
             error.FileNotFound => null,
             error.NotDir => null,
             else => return err,
         };
-        if (resolved) |prefix| {
-            if (suffix.items.len == 0) return prefix;
+        if (prefix) |resolved_prefix| {
+            if (suffix.items.len == 0) return resolved_prefix;
             var parts = try allocator.alloc([]const u8, suffix.items.len + 1);
             defer allocator.free(parts);
-            parts[0] = prefix;
+            parts[0] = resolved_prefix;
             for (suffix.items, 0..) |part, index| parts[suffix.items.len - index] = part;
-            defer allocator.free(prefix);
-            return try std.fs.path.join(allocator, parts);
+            const joined = try std.fs.path.join(allocator, parts);
+            allocator.free(resolved_prefix);
+            return joined;
         }
 
         const parent = std.fs.path.dirname(current) orelse return error.FileNotFound;
@@ -992,15 +1014,16 @@ fn sessionDirPath(allocator: std.mem.Allocator, workspace_root: []const u8, sess
     return try std.fs.path.join(allocator, &.{ workspace_root, ".orca", "sessions", session_id });
 }
 
-fn ensureStagingDirs(session_dir: []const u8) !void {
-    try std.fs.cwd().makePath(session_dir);
+fn ensureStagingDirs(io: std.Io, session_dir: []const u8) !void {
+    const cwd = std.Io.Dir.cwd();
+    try cwd.createDirPath(io, session_dir);
     const allocator = std.heap.page_allocator;
     const staged = try std.fs.path.join(allocator, &.{ session_dir, "staged" });
     defer allocator.free(staged);
-    try std.fs.cwd().makePath(staged);
+    try cwd.createDirPath(io, staged);
     const original = try std.fs.path.join(allocator, &.{ session_dir, "original" });
     defer allocator.free(original);
-    try std.fs.cwd().makePath(original);
+    try cwd.createDirPath(io, original);
 }
 
 fn stagedPathForEntry(allocator: std.mem.Allocator, session_dir: []const u8, relative_path: []const u8) ![]u8 {
@@ -1020,19 +1043,23 @@ fn writeSessionRelFile(session_dir: []const u8, bucket: []const u8, relative_pat
 }
 
 fn ensureParentPath(path: []const u8) !void {
+    var threaded: std.Io.Threaded = .init_single_threaded;
+    const io = threaded.io();
     const parent = std.fs.path.dirname(path) orelse return;
-    try std.fs.cwd().makePath(parent);
+    try std.Io.Dir.cwd().createDirPath(io, parent);
 }
 
 fn writeAbsoluteFile(path: []const u8, bytes: []const u8) !void {
-    const file = try std.fs.cwd().createFile(path, .{});
-    defer file.close();
-    try file.writeAll(bytes);
-    try file.sync();
+    var threaded: std.Io.Threaded = .init_single_threaded;
+    const io = threaded.io();
+    const file = try std.Io.Dir.cwd().createFile(io, path, .{});
+    defer file.close(io);
+    try file.writeStreamingAll(io, bytes);
+    try file.sync(io);
 }
 
-fn fileExists(path: []const u8) bool {
-    std.fs.cwd().access(path, .{}) catch return false;
+fn fileExists(io: std.Io, path: []const u8) bool {
+    std.Io.Dir.cwd().access(io, path, .{}) catch return false;
     return true;
 }
 
@@ -1046,59 +1073,69 @@ fn sha256HexAlloc(allocator: std.mem.Allocator, bytes: []const u8) ![]u8 {
     return out;
 }
 
-fn timestampNowAlloc(allocator: std.mem.Allocator) ![]u8 {
+fn timestampNowAlloc(io: std.Io, allocator: std.mem.Allocator) ![]u8 {
     var buf: [32]u8 = undefined;
-    return try allocator.dupe(u8, try core.time.Timestamp.now().formatIso(&buf));
+    return try allocator.dupe(u8, try core.time.Timestamp.now(io).formatIso(&buf));
+}
+
+fn testAllocRealPath(io: std.Io, dir: std.Io.Dir, sub_path: []const u8, allocator: std.mem.Allocator) ![]u8 {
+    var buf: [std.fs.max_path_bytes]u8 = undefined;
+    const n = try dir.realPathFile(io, sub_path, &buf);
+    return try allocator.dupe(u8, buf[0..n]);
 }
 
 test "relative path normalization returns workspace relative policy path" {
+    const io = std.testing.io;
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
-    try tmp.dir.makePath("src");
-    const root = try tmp.dir.realpathAlloc(std.testing.allocator, ".");
+    try tmp.dir.createDirPath(std.testing.io, "src");
+    const root = try testAllocRealPath(std.testing.io, tmp.dir, ".", std.testing.allocator);
     defer std.testing.allocator.free(root);
 
-    var normalized = try normalizePath(std.testing.allocator, root, "src/../src/main.zig");
+    var normalized = try normalizePath(io, std.testing.allocator, root, "src/../src/main.zig");
     defer normalized.deinit(std.testing.allocator);
     try std.testing.expectEqualStrings("src/main.zig", normalized.relative_path);
     try std.testing.expectEqualStrings("./src/main.zig", normalized.policy_path);
 }
 
 test "absolute path normalization and workspace containment" {
+    const io = std.testing.io;
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
-    try tmp.dir.makePath("src");
-    try tmp.dir.writeFile(.{ .sub_path = "src/main.zig", .data = "pub fn main() void {}\n" });
-    const root = try tmp.dir.realpathAlloc(std.testing.allocator, ".");
+    try tmp.dir.createDirPath(std.testing.io, "src");
+    try tmp.dir.writeFile(std.testing.io, .{ .sub_path = "src/main.zig", .data = "pub fn main() void {}\n" });
+    const root = try testAllocRealPath(std.testing.io, tmp.dir, ".", std.testing.allocator);
     defer std.testing.allocator.free(root);
-    const absolute = try tmp.dir.realpathAlloc(std.testing.allocator, "src/main.zig");
+    const absolute = try testAllocRealPath(std.testing.io, tmp.dir, "src/main.zig", std.testing.allocator);
     defer std.testing.allocator.free(absolute);
 
-    var normalized = try normalizePath(std.testing.allocator, root, absolute);
+    var normalized = try normalizePath(io, std.testing.allocator, root, absolute);
     defer normalized.deinit(std.testing.allocator);
     try std.testing.expectEqualStrings("src/main.zig", normalized.relative_path);
 
-    try std.testing.expectError(error.OutsideWorkspace, normalizePath(std.testing.allocator, root, "/tmp/orca-outside-file"));
+    try std.testing.expectError(error.OutsideWorkspace, normalizePath(io, std.testing.allocator, root, "/tmp/orca-outside-file"));
 }
 
 test "path traversal cannot escape workspace" {
+    const io = std.testing.io;
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
-    const root = try tmp.dir.realpathAlloc(std.testing.allocator, ".");
+    const root = try testAllocRealPath(std.testing.io, tmp.dir, ".", std.testing.allocator);
     defer std.testing.allocator.free(root);
 
-    try std.testing.expectError(error.OutsideWorkspace, normalizePath(std.testing.allocator, root, "../outside.txt"));
+    try std.testing.expectError(error.OutsideWorkspace, normalizePath(io, std.testing.allocator, root, "../outside.txt"));
 }
 
 test "backslash path normalization supports Windows-style relative traversal" {
+    const io = std.testing.io;
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
-    try tmp.dir.makePath("src");
-    try tmp.dir.writeFile(.{ .sub_path = "src/main.zig", .data = "pub fn main() void {}\n" });
-    const root = try tmp.dir.realpathAlloc(std.testing.allocator, ".");
+    try tmp.dir.createDirPath(std.testing.io, "src");
+    try tmp.dir.writeFile(std.testing.io, .{ .sub_path = "src/main.zig", .data = "pub fn main() void {}\n" });
+    const root = try testAllocRealPath(std.testing.io, tmp.dir, ".", std.testing.allocator);
     defer std.testing.allocator.free(root);
 
-    var normalized = try normalizePath(std.testing.allocator, root, "src\\..\\src\\main.zig");
+    var normalized = try normalizePath(io, std.testing.allocator, root, "src\\..\\src\\main.zig");
     defer normalized.deinit(std.testing.allocator);
     try std.testing.expectEqualStrings("src/main.zig", normalized.relative_path);
     try std.testing.expectEqualStrings("./src/main.zig", normalized.policy_path);
@@ -1106,45 +1143,49 @@ test "backslash path normalization supports Windows-style relative traversal" {
 
 test "symlink escape to protected path is blocked" {
     if (@import("builtin").os.tag == .windows or @import("builtin").os.tag == .wasi) return error.SkipZigTest;
-    if (std.process.getEnvVarOwned(std.testing.allocator, "CI_NO_SYMLINKS")) |_| return error.SkipZigTest else |_| {}
+    var env_map = try env_util.createProcessMap(std.testing.allocator);
+    defer env_map.deinit();
+    if ((try env_util.getOwned(&env_map, std.testing.allocator, "CI_NO_SYMLINKS")) != null) return error.SkipZigTest;
+    const io = std.testing.io;
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
-    const root = try tmp.dir.realpathAlloc(std.testing.allocator, ".");
+    const root = try testAllocRealPath(std.testing.io, tmp.dir, ".", std.testing.allocator);
     defer std.testing.allocator.free(root);
 
     const outside_dir = try std.fs.path.join(std.testing.allocator, &.{ root, "..", "orca-secret-outside" });
     defer std.testing.allocator.free(outside_dir);
-    try std.fs.cwd().makePath(outside_dir);
-    defer std.fs.cwd().deleteTree(outside_dir) catch {};
+    try std.Io.Dir.cwd().createDirPath(io, outside_dir);
+    defer std.Io.Dir.cwd().deleteTree(io, outside_dir) catch {};
     const outside_file = try std.fs.path.join(std.testing.allocator, &.{ outside_dir, "id_ed25519" });
     defer std.testing.allocator.free(outside_file);
     try writeAbsoluteFile(outside_file, "fake-private-key");
 
     const link_path = try std.fs.path.join(std.testing.allocator, &.{ root, "linked_key" });
     defer std.testing.allocator.free(link_path);
-    std.posix.symlink(outside_file, link_path) catch |err| switch (err) {
+    std.Io.Dir.cwd().symLink(io, outside_file, link_path, .{}) catch |err| switch (err) {
         error.PermissionDenied => return error.SkipZigTest,
         else => return err,
     };
 
-    try std.testing.expectError(error.SymlinkEscapesWorkspace, normalizePath(std.testing.allocator, root, "linked_key"));
+    try std.testing.expectError(error.SymlinkEscapesWorkspace, normalizePath(io, std.testing.allocator, root, "linked_key"));
 }
 
 test "default sensitive read decisions deny env and fake ssh key" {
+    const io = std.testing.io;
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
-    try tmp.dir.writeFile(.{ .sub_path = ".env", .data = "TOKEN=fake_secret_value\n" });
-    const root = try tmp.dir.realpathAlloc(std.testing.allocator, ".");
+    try tmp.dir.writeFile(std.testing.io, .{ .sub_path = ".env", .data = "TOKEN=fake_secret_value\n" });
+    const root = try testAllocRealPath(std.testing.io, tmp.dir, ".", std.testing.allocator);
     defer std.testing.allocator.free(root);
     var loaded = try policy.load.loadPreset(std.testing.allocator, .strict);
     defer loaded.deinit();
 
-    var env_decision = try decideRead(std.testing.allocator, &loaded, root, ".env");
+    var env_decision = try decideRead(io, std.testing.allocator, &loaded, root, ".env");
     defer env_decision.deinit(std.testing.allocator);
     try std.testing.expectEqual(core.decision.DecisionResult.deny, env_decision.decision.result);
     try std.testing.expect(std.mem.indexOf(u8, env_decision.decision.reason, "builtin.files.read.deny") != null);
 
-    var ssh_decision = try decideRead(std.testing.allocator, &loaded, root, "~/.ssh/id_ed25519");
+    var ssh_decision = try decideRead(io, std.testing.allocator, &loaded, root, "~/.ssh/id_ed25519");
     defer ssh_decision.deinit(std.testing.allocator);
     try std.testing.expectEqual(core.decision.DecisionResult.deny, ssh_decision.decision.result);
     try std.testing.expectEqualStrings("builtin.files.read.deny[2]", ssh_decision.decision.rule_id.?);
@@ -1164,17 +1205,18 @@ test "Windows simulated protected paths are denied by helper without reading rea
 }
 
 test "Windows drive and UNC paths cannot become workspace-relative escapes" {
+    const io = std.testing.io;
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
-    const root = try tmp.dir.realpathAlloc(std.testing.allocator, ".");
+    const root = try testAllocRealPath(std.testing.io, tmp.dir, ".", std.testing.allocator);
     defer std.testing.allocator.free(root);
     var loaded = try policy.load.loadPreset(std.testing.allocator, .strict);
     defer loaded.deinit();
 
-    try std.testing.expectError(error.OutsideWorkspace, normalizePath(std.testing.allocator, root, "C:\\Users\\Fake Dev\\project\\file.txt"));
-    try std.testing.expectError(error.OutsideWorkspace, normalizePath(std.testing.allocator, root, "\\\\Server\\Share\\repo\\.ssh\\config"));
+    try std.testing.expectError(error.OutsideWorkspace, normalizePath(io, std.testing.allocator, root, "C:\\Users\\Fake Dev\\project\\file.txt"));
+    try std.testing.expectError(error.OutsideWorkspace, normalizePath(io, std.testing.allocator, root, "\\\\Server\\Share\\repo\\.ssh\\config"));
 
-    var github_hosts = try decideRead(std.testing.allocator, &loaded, root, "C:\\Users\\Fake Dev\\AppData\\Roaming\\GitHub CLI\\hosts.yml");
+    var github_hosts = try decideRead(io, std.testing.allocator, &loaded, root, "C:\\Users\\Fake Dev\\AppData\\Roaming\\GitHub CLI\\hosts.yml");
     defer github_hosts.deinit(std.testing.allocator);
     try std.testing.expectEqual(core.decision.DecisionResult.deny, github_hosts.decision.result);
 }
@@ -1182,56 +1224,78 @@ test "Windows drive and UNC paths cannot become workspace-relative escapes" {
 test "hardlink path coverage denies protected hardlink names where supported" {
     if (@import("builtin").os.tag == .windows or @import("builtin").os.tag == .wasi) return error.SkipZigTest;
 
+    const io = std.testing.io;
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
-    try tmp.dir.makePath("outside");
-    try tmp.dir.makePath("workspace/.ssh");
-    try tmp.dir.writeFile(.{ .sub_path = "outside/id_ed25519", .data = "fake-secret-value\n" });
-    const root = try tmp.dir.realpathAlloc(std.testing.allocator, "workspace");
+    try tmp.dir.createDirPath(std.testing.io, "outside");
+    try tmp.dir.createDirPath(std.testing.io, "workspace/.ssh");
+    try tmp.dir.writeFile(std.testing.io, .{ .sub_path = "outside/id_ed25519", .data = "fake-secret-value\n" });
+    const root = try testAllocRealPath(std.testing.io, tmp.dir, "workspace", std.testing.allocator);
     defer std.testing.allocator.free(root);
-    const outside = try tmp.dir.realpathAlloc(std.testing.allocator, "outside/id_ed25519");
+    const outside = try testAllocRealPath(std.testing.io, tmp.dir, "outside/id_ed25519", std.testing.allocator);
     defer std.testing.allocator.free(outside);
     const link_path = try std.fs.path.join(std.testing.allocator, &.{ root, ".ssh", "id_ed25519" });
     defer std.testing.allocator.free(link_path);
-    std.posix.link(outside, link_path) catch |err| switch (err) {
-        error.PermissionDenied, error.AccessDenied, error.NotSameFileSystem => return error.SkipZigTest,
-        else => return err,
-    };
+    {
+        const old_parent = std.fs.path.dirname(outside) orelse return error.FileNotFound;
+        const old_name = std.fs.path.basename(outside);
+        const new_parent = std.fs.path.dirname(link_path) orelse return error.FileNotFound;
+        const new_name = std.fs.path.basename(link_path);
+        var old_dir = std.Io.Dir.openDirAbsolute(io, old_parent, .{}) catch |err| switch (err) {
+            error.PermissionDenied, error.AccessDenied => return error.SkipZigTest,
+            else => return err,
+        };
+        defer old_dir.close(io);
+        var new_dir = std.Io.Dir.openDirAbsolute(io, new_parent, .{}) catch |err| switch (err) {
+            error.PermissionDenied, error.AccessDenied => return error.SkipZigTest,
+            else => return err,
+        };
+        defer new_dir.close(io);
+        old_dir.hardLink(old_name, new_dir, new_name, io, .{}) catch |err| switch (err) {
+            error.PermissionDenied, error.AccessDenied, error.CrossDevice => return error.SkipZigTest,
+            else => return err,
+        };
+    }
 
     var loaded = try policy.load.loadPreset(std.testing.allocator, .strict);
     defer loaded.deinit();
-    var decision = try decideRead(std.testing.allocator, &loaded, root, ".ssh/id_ed25519");
+    var decision = try decideRead(io, std.testing.allocator, &loaded, root, ".ssh/id_ed25519");
     defer decision.deinit(std.testing.allocator);
     try std.testing.expectEqual(core.decision.DecisionResult.deny, decision.decision.result);
 }
 
 test "path normalization covers spaces shell-sensitive chars and unicode variants" {
+    const io = std.testing.io;
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
-    try tmp.dir.makePath("safe dir");
-    try tmp.dir.writeFile(.{ .sub_path = "safe dir/file;$(echo).txt", .data = "ok\n" });
-    try tmp.dir.writeFile(.{ .sub_path = "safe dir/cafe\u{301}.txt", .data = "ok\n" });
-    const root = try tmp.dir.realpathAlloc(std.testing.allocator, ".");
+    try tmp.dir.createDirPath(std.testing.io, "safe dir");
+    try tmp.dir.writeFile(std.testing.io, .{ .sub_path = "safe dir/file;$(echo).txt", .data = "ok\n" });
+    try tmp.dir.writeFile(std.testing.io, .{ .sub_path = "safe dir/cafe\u{301}.txt", .data = "ok\n" });
+    const root = try testAllocRealPath(std.testing.io, tmp.dir, ".", std.testing.allocator);
     defer std.testing.allocator.free(root);
 
-    var shell_sensitive = try normalizePath(std.testing.allocator, root, "safe dir/file;$(echo).txt");
+    var shell_sensitive = try normalizePath(io, std.testing.allocator, root, "safe dir/file;$(echo).txt");
     defer shell_sensitive.deinit(std.testing.allocator);
     try std.testing.expectEqualStrings("safe dir/file;$(echo).txt", shell_sensitive.relative_path);
 
-    var unicode = try normalizePath(std.testing.allocator, root, "safe dir/cafe\u{301}.txt");
+    var unicode = try normalizePath(io, std.testing.allocator, root, "safe dir/cafe\u{301}.txt");
     defer unicode.deinit(std.testing.allocator);
     try std.testing.expectEqualStrings("safe dir/cafe\u{301}.txt", unicode.relative_path);
 }
 
 test "home workspace still denies protected home credential directories" {
-    const home = std.process.getEnvVarOwned(std.testing.allocator, "HOME") catch return error.SkipZigTest;
+    const io = std.testing.io;
+    var env_map = env_util.createProcessMap(std.testing.allocator) catch return error.SkipZigTest;
+    defer env_map.deinit();
+    const home_owned = env_util.getOwned(&env_map, std.testing.allocator, "HOME") catch return error.SkipZigTest;
+    const home = home_owned orelse return error.SkipZigTest;
     defer std.testing.allocator.free(home);
-    const home_root = try std.fs.cwd().realpathAlloc(std.testing.allocator, home);
+    const home_root = try testAllocRealPath(std.testing.io, std.Io.Dir.cwd(), home, std.testing.allocator);
     defer std.testing.allocator.free(home_root);
     var loaded = try policy.load.loadPreset(std.testing.allocator, .strict);
     defer loaded.deinit();
 
-    var ssh_decision = try decideRead(std.testing.allocator, &loaded, home_root, ".ssh/config");
+    var ssh_decision = try decideRead(io, std.testing.allocator, &loaded, home_root, ".ssh/config");
     defer ssh_decision.deinit(std.testing.allocator);
     try std.testing.expectEqual(core.decision.DecisionResult.deny, ssh_decision.decision.result);
     try std.testing.expectEqualStrings("builtin.files.read.deny[2]", ssh_decision.decision.rule_id.?);
@@ -1240,18 +1304,19 @@ test "home workspace still denies protected home credential directories" {
 test "macOS simulated Library protected paths are denied without reading real secrets" {
     if (@import("builtin").os.tag != .macos) return error.SkipZigTest;
 
+    const io = std.testing.io;
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
-    try tmp.dir.makePath("Library/Keychains");
-    try tmp.dir.makePath("Library/Application Support/Google/Chrome/Default");
-    try tmp.dir.makePath("Library/Application Support/BraveSoftware/Brave-Browser/Default");
-    try tmp.dir.makePath("Library/Application Support/Firefox/Profiles/fake.default");
-    try tmp.dir.writeFile(.{ .sub_path = "Library/Keychains/login.keychain-db", .data = "fake_secret_value\n" });
-    try tmp.dir.writeFile(.{ .sub_path = "Library/Application Support/Google/Chrome/Default/Cookies", .data = "fake_secret_value\n" });
-    try tmp.dir.writeFile(.{ .sub_path = "Library/Application Support/Google/Chrome/Default/Login Data", .data = "fake_secret_value\n" });
-    try tmp.dir.writeFile(.{ .sub_path = "Library/Application Support/BraveSoftware/Brave-Browser/Default/Cookies", .data = "fake_secret_value\n" });
-    try tmp.dir.writeFile(.{ .sub_path = "Library/Application Support/Firefox/Profiles/fake.default/cookies.sqlite", .data = "fake_secret_value\n" });
-    const root = try tmp.dir.realpathAlloc(std.testing.allocator, ".");
+    try tmp.dir.createDirPath(std.testing.io, "Library/Keychains");
+    try tmp.dir.createDirPath(std.testing.io, "Library/Application Support/Google/Chrome/Default");
+    try tmp.dir.createDirPath(std.testing.io, "Library/Application Support/BraveSoftware/Brave-Browser/Default");
+    try tmp.dir.createDirPath(std.testing.io, "Library/Application Support/Firefox/Profiles/fake.default");
+    try tmp.dir.writeFile(std.testing.io, .{ .sub_path = "Library/Keychains/login.keychain-db", .data = "fake_secret_value\n" });
+    try tmp.dir.writeFile(std.testing.io, .{ .sub_path = "Library/Application Support/Google/Chrome/Default/Cookies", .data = "fake_secret_value\n" });
+    try tmp.dir.writeFile(std.testing.io, .{ .sub_path = "Library/Application Support/Google/Chrome/Default/Login Data", .data = "fake_secret_value\n" });
+    try tmp.dir.writeFile(std.testing.io, .{ .sub_path = "Library/Application Support/BraveSoftware/Brave-Browser/Default/Cookies", .data = "fake_secret_value\n" });
+    try tmp.dir.writeFile(std.testing.io, .{ .sub_path = "Library/Application Support/Firefox/Profiles/fake.default/cookies.sqlite", .data = "fake_secret_value\n" });
+    const root = try testAllocRealPath(std.testing.io, tmp.dir, ".", std.testing.allocator);
     defer std.testing.allocator.free(root);
     var loaded = try policy.load.loadPreset(std.testing.allocator, .strict);
     defer loaded.deinit();
@@ -1264,7 +1329,7 @@ test "macOS simulated Library protected paths are denied without reading real se
         "Library/Application Support/Firefox/Profiles/fake.default/cookies.sqlite",
     };
     for (paths) |path| {
-        var decision = try decideRead(std.testing.allocator, &loaded, root, path);
+        var decision = try decideRead(io, std.testing.allocator, &loaded, root, path);
         defer decision.deinit(std.testing.allocator);
         try std.testing.expectEqual(core.decision.DecisionResult.deny, decision.decision.result);
         try std.testing.expect(std.mem.indexOf(u8, decision.decision.reason, "builtin.files.read.deny") != null);
@@ -1274,16 +1339,17 @@ test "macOS simulated Library protected paths are denied without reading real se
 test "macOS protected path matching is ASCII case-insensitive for simulated home paths" {
     if (@import("builtin").os.tag != .macos) return error.SkipZigTest;
 
+    const io = std.testing.io;
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
-    try tmp.dir.makePath("library/keychains");
-    try tmp.dir.writeFile(.{ .sub_path = "library/keychains/LOGIN.KEYCHAIN-DB", .data = "fake_secret_value\n" });
-    const root = try tmp.dir.realpathAlloc(std.testing.allocator, ".");
+    try tmp.dir.createDirPath(std.testing.io, "library/keychains");
+    try tmp.dir.writeFile(std.testing.io, .{ .sub_path = "library/keychains/LOGIN.KEYCHAIN-DB", .data = "fake_secret_value\n" });
+    const root = try testAllocRealPath(std.testing.io, tmp.dir, ".", std.testing.allocator);
     defer std.testing.allocator.free(root);
     var loaded = try policy.load.loadPreset(std.testing.allocator, .strict);
     defer loaded.deinit();
 
-    var decision = try decideRead(std.testing.allocator, &loaded, root, "library/keychains/LOGIN.KEYCHAIN-DB");
+    var decision = try decideRead(io, std.testing.allocator, &loaded, root, "library/keychains/LOGIN.KEYCHAIN-DB");
     defer decision.deinit(std.testing.allocator);
     try std.testing.expectEqual(core.decision.DecisionResult.deny, decision.decision.result);
     try std.testing.expect(std.mem.indexOf(u8, decision.decision.reason, "builtin.files.read.deny") != null);
@@ -1292,46 +1358,48 @@ test "macOS protected path matching is ASCII case-insensitive for simulated home
 test "macOS symlink escape into simulated Keychains path is rejected" {
     if (@import("builtin").os.tag != .macos) return error.SkipZigTest;
 
+    const io = std.testing.io;
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
-    try tmp.dir.makePath("workspace");
-    try tmp.dir.makePath("fake-home/Library/Keychains");
-    try tmp.dir.writeFile(.{ .sub_path = "fake-home/Library/Keychains/login.keychain-db", .data = "fake_secret_value\n" });
-    const workspace = try tmp.dir.realpathAlloc(std.testing.allocator, "workspace");
+    try tmp.dir.createDirPath(std.testing.io, "workspace");
+    try tmp.dir.createDirPath(std.testing.io, "fake-home/Library/Keychains");
+    try tmp.dir.writeFile(std.testing.io, .{ .sub_path = "fake-home/Library/Keychains/login.keychain-db", .data = "fake_secret_value\n" });
+    const workspace = try testAllocRealPath(std.testing.io, tmp.dir, "workspace", std.testing.allocator);
     defer std.testing.allocator.free(workspace);
-    const protected_file = try tmp.dir.realpathAlloc(std.testing.allocator, "fake-home/Library/Keychains/login.keychain-db");
+    const protected_file = try testAllocRealPath(std.testing.io, tmp.dir, "fake-home/Library/Keychains/login.keychain-db", std.testing.allocator);
     defer std.testing.allocator.free(protected_file);
     const link_path = try std.fs.path.join(std.testing.allocator, &.{ workspace, "linked-keychain" });
     defer std.testing.allocator.free(link_path);
-    std.posix.symlink(protected_file, link_path) catch |err| switch (err) {
+    std.Io.Dir.cwd().symLink(io, protected_file, link_path, .{}) catch |err| switch (err) {
         error.PermissionDenied => return error.SkipZigTest,
         else => return err,
     };
 
-    try std.testing.expectError(error.SymlinkEscapesWorkspace, normalizePath(std.testing.allocator, workspace, "linked-keychain"));
+    try std.testing.expectError(error.SymlinkEscapesWorkspace, normalizePath(io, std.testing.allocator, workspace, "linked-keychain"));
 }
 
 test "staged create update diff apply discard and index integrity" {
+    const io = std.testing.io;
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
-    try tmp.dir.makePath(".git");
-    try tmp.dir.makePath("src");
-    try tmp.dir.writeFile(.{ .sub_path = "src/existing.txt", .data = "old\n" });
-    const root = try tmp.dir.realpathAlloc(std.testing.allocator, ".");
+    try tmp.dir.createDirPath(std.testing.io, ".git");
+    try tmp.dir.createDirPath(std.testing.io, "src");
+    try tmp.dir.writeFile(std.testing.io, .{ .sub_path = "src/existing.txt", .data = "old\n" });
+    const root = try testAllocRealPath(std.testing.io, tmp.dir, ".", std.testing.allocator);
     defer std.testing.allocator.free(root);
     var loaded = try policy.load.loadPreset(std.testing.allocator, .strict);
     defer loaded.deinit();
     const session_id = "phase09-test";
 
-    var created = try stageCreate(std.testing.allocator, &loaded, root, session_id, "src/new.txt", "new\n", null);
+    var created = try stageCreate(io, std.testing.allocator, &loaded, root, session_id, "src/new.txt", "new\n", null);
     defer created.deinit(std.testing.allocator);
     try std.testing.expectEqual(Operation.create, created.entry.operation);
 
-    var updated = try stageUpdate(std.testing.allocator, &loaded, root, session_id, "src/existing.txt", "newer\n", null);
+    var updated = try stageUpdate(io, std.testing.allocator, &loaded, root, session_id, "src/existing.txt", "newer\n", null);
     defer updated.deinit(std.testing.allocator);
     try std.testing.expectEqual(Operation.update, updated.entry.operation);
 
-    const diff = try diffStaged(std.testing.allocator, root, session_id, "src/existing.txt");
+    const diff = try diffStaged(std.testing.io, std.testing.allocator, root, session_id, "src/existing.txt");
     defer std.testing.allocator.free(diff);
     try std.testing.expect(std.mem.indexOf(u8, diff, "--- a/src/existing.txt") != null);
     try std.testing.expect(std.mem.indexOf(u8, diff, "-old") != null);
@@ -1339,33 +1407,34 @@ test "staged create update diff apply discard and index integrity" {
 
     const index_path = try std.fs.path.join(std.testing.allocator, &.{ root, ".orca", "sessions", session_id, "staging-index.json" });
     defer std.testing.allocator.free(index_path);
-    const index_text = try std.fs.cwd().readFileAlloc(std.testing.allocator, index_path, 8192);
+    const index_text = try std.Io.Dir.cwd().readFileAlloc(std.testing.io, index_path, std.testing.allocator, .limited(8192));
     defer std.testing.allocator.free(index_text);
     try std.testing.expect(std.mem.indexOf(u8, index_text, "\"normalized_path\":\"src/new.txt\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, index_text, "\"operation\":\"update\"") != null);
 
-    const applied = try applyStaged(std.testing.allocator, root, session_id, "src/existing.txt", null);
+    const applied = try applyStaged(std.testing.io, std.testing.allocator, root, session_id, "src/existing.txt", null);
     try std.testing.expectEqual(@as(usize, 1), applied.count);
-    const applied_text = try tmp.dir.readFileAlloc(std.testing.allocator, "src/existing.txt", 1024);
+    const applied_text = try tmp.dir.readFileAlloc(std.testing.io, "src/existing.txt", std.testing.allocator, .limited(1024));
     defer std.testing.allocator.free(applied_text);
     try std.testing.expectEqualStrings("newer\n", applied_text);
 
-    const discarded = try discardStaged(std.testing.allocator, root, session_id, "src/new.txt", null);
+    const discarded = try discardStaged(std.testing.io, std.testing.allocator, root, session_id, "src/new.txt", null);
     try std.testing.expectEqual(@as(usize, 1), discarded.count);
-    try std.testing.expectError(error.FileNotFound, tmp.dir.access("src/new.txt", .{}));
+    try std.testing.expectError(error.FileNotFound, tmp.dir.access(std.testing.io, "src/new.txt", .{}));
 }
 
 test "staging workflow accepts Windows-style backslash paths as workspace relative paths" {
+    const io = std.testing.io;
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
-    try tmp.dir.makePath(".git");
-    try tmp.dir.makePath("src");
-    const root = try tmp.dir.realpathAlloc(std.testing.allocator, ".");
+    try tmp.dir.createDirPath(std.testing.io, ".git");
+    try tmp.dir.createDirPath(std.testing.io, "src");
+    const root = try testAllocRealPath(std.testing.io, tmp.dir, ".", std.testing.allocator);
     defer std.testing.allocator.free(root);
     var loaded = try policy.load.loadPreset(std.testing.allocator, .strict);
     defer loaded.deinit();
 
-    var staged = try stageWrite(std.testing.allocator, &loaded, root, "windows-stage-test", "src\\created with spaces.txt", "hello\n", null);
+    var staged = try stageWrite(io, std.testing.allocator, &loaded, root, "windows-stage-test", "src\\created with spaces.txt", "hello\n", null);
     defer staged.deinit(std.testing.allocator);
     try std.testing.expectEqualStrings("src/created with spaces.txt", staged.entry.normalized_path);
     try std.testing.expect(std.mem.indexOf(u8, staged.entry.staged_path, "created with spaces.txt") != null);
@@ -1374,46 +1443,46 @@ test "staging workflow accepts Windows-style backslash paths as workspace relati
 test "staging commands reject non-object staging index without panicking" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
-    try tmp.dir.makePath(".git");
-    try tmp.dir.makePath(".orca/sessions/bad-index");
-    try tmp.dir.writeFile(.{ .sub_path = ".orca/sessions/bad-index/staging-index.json", .data = "[]" });
-    const root = try tmp.dir.realpathAlloc(std.testing.allocator, ".");
+    try tmp.dir.createDirPath(std.testing.io, ".git");
+    try tmp.dir.createDirPath(std.testing.io, ".orca/sessions/bad-index");
+    try tmp.dir.writeFile(std.testing.io, .{ .sub_path = ".orca/sessions/bad-index/staging-index.json", .data = "[]" });
+    const root = try testAllocRealPath(std.testing.io, tmp.dir, ".", std.testing.allocator);
     defer std.testing.allocator.free(root);
 
-    try std.testing.expectError(error.InvalidStagingIndex, diffStaged(std.testing.allocator, root, "bad-index", null));
-    try std.testing.expectError(error.InvalidStagingIndex, applyStaged(std.testing.allocator, root, "bad-index", null, null));
-    try std.testing.expectError(error.InvalidStagingIndex, discardStaged(std.testing.allocator, root, "bad-index", null, null));
+    try std.testing.expectError(error.InvalidStagingIndex, diffStaged(std.testing.io, std.testing.allocator, root, "bad-index", null));
+    try std.testing.expectError(error.InvalidStagingIndex, applyStaged(std.testing.io, std.testing.allocator, root, "bad-index", null, null));
+    try std.testing.expectError(error.InvalidStagingIndex, discardStaged(std.testing.io, std.testing.allocator, root, "bad-index", null, null));
 }
 
 test "staging commands reject session ids with path traversal" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
-    try tmp.dir.makePath(".git");
-    const root = try tmp.dir.realpathAlloc(std.testing.allocator, ".");
+    try tmp.dir.createDirPath(std.testing.io, ".git");
+    const root = try testAllocRealPath(std.testing.io, tmp.dir, ".", std.testing.allocator);
     defer std.testing.allocator.free(root);
 
-    try std.testing.expectError(error.InvalidSessionId, resolveSessionId(std.testing.allocator, root, "../outside"));
-    try std.testing.expectError(error.InvalidSessionId, resolveSessionId(std.testing.allocator, root, "."));
-    try std.testing.expectError(error.InvalidSessionId, resolveSessionId(std.testing.allocator, root, ".."));
-    try std.testing.expectError(error.InvalidSessionId, diffStaged(std.testing.allocator, root, "../outside", null));
-    try std.testing.expectError(error.InvalidSessionId, diffStaged(std.testing.allocator, root, ".", null));
-    try std.testing.expectError(error.InvalidSessionId, diffStaged(std.testing.allocator, root, "..", null));
-    try std.testing.expectError(error.InvalidSessionId, applyStaged(std.testing.allocator, root, "../outside", null, null));
-    try std.testing.expectError(error.InvalidSessionId, applyStaged(std.testing.allocator, root, ".", null, null));
-    try std.testing.expectError(error.InvalidSessionId, applyStaged(std.testing.allocator, root, "..", null, null));
-    try std.testing.expectError(error.InvalidSessionId, discardStaged(std.testing.allocator, root, "../outside", null, null));
-    try std.testing.expectError(error.InvalidSessionId, discardStaged(std.testing.allocator, root, ".", null, null));
-    try std.testing.expectError(error.InvalidSessionId, discardStaged(std.testing.allocator, root, "..", null, null));
+    try std.testing.expectError(error.InvalidSessionId, resolveSessionId(std.testing.io, std.testing.allocator, root, "../outside"));
+    try std.testing.expectError(error.InvalidSessionId, resolveSessionId(std.testing.io, std.testing.allocator, root, "."));
+    try std.testing.expectError(error.InvalidSessionId, resolveSessionId(std.testing.io, std.testing.allocator, root, ".."));
+    try std.testing.expectError(error.InvalidSessionId, diffStaged(std.testing.io, std.testing.allocator, root, "../outside", null));
+    try std.testing.expectError(error.InvalidSessionId, diffStaged(std.testing.io, std.testing.allocator, root, ".", null));
+    try std.testing.expectError(error.InvalidSessionId, diffStaged(std.testing.io, std.testing.allocator, root, "..", null));
+    try std.testing.expectError(error.InvalidSessionId, applyStaged(std.testing.io, std.testing.allocator, root, "../outside", null, null));
+    try std.testing.expectError(error.InvalidSessionId, applyStaged(std.testing.io, std.testing.allocator, root, ".", null, null));
+    try std.testing.expectError(error.InvalidSessionId, applyStaged(std.testing.io, std.testing.allocator, root, "..", null, null));
+    try std.testing.expectError(error.InvalidSessionId, discardStaged(std.testing.io, std.testing.allocator, root, "../outside", null, null));
+    try std.testing.expectError(error.InvalidSessionId, discardStaged(std.testing.io, std.testing.allocator, root, ".", null, null));
+    try std.testing.expectError(error.InvalidSessionId, discardStaged(std.testing.io, std.testing.allocator, root, "..", null, null));
 }
 
 test "staging index rejects paths outside workspace and session" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
-    try tmp.dir.makePath(".git");
-    try tmp.dir.makePath(".orca/sessions/evil/staged");
-    const root = try tmp.dir.realpathAlloc(std.testing.allocator, ".");
+    try tmp.dir.createDirPath(std.testing.io, ".git");
+    try tmp.dir.createDirPath(std.testing.io, ".orca/sessions/evil/staged");
+    const root = try testAllocRealPath(std.testing.io, tmp.dir, ".", std.testing.allocator);
     defer std.testing.allocator.free(root);
-    const tmp_root = try tmp.dir.realpathAlloc(std.testing.allocator, "..");
+    const tmp_root = try testAllocRealPath(std.testing.io, tmp.dir, "..", std.testing.allocator);
     defer std.testing.allocator.free(tmp_root);
 
     const outside_original = try std.fs.path.join(std.testing.allocator, &.{ tmp_root, "outside-created.txt" });
@@ -1433,8 +1502,8 @@ test "staging index rejects paths outside workspace and session" {
     defer std.testing.allocator.free(index_text);
     try writeAbsoluteFile(index_path, index_text);
 
-    try std.testing.expectError(error.InvalidStagingIndex, applyStaged(std.testing.allocator, root, "evil", null, null));
-    try std.testing.expect(!fileExists(outside_original));
+    try std.testing.expectError(error.InvalidStagingIndex, applyStaged(std.testing.io, std.testing.allocator, root, "evil", null, null));
+    try std.testing.expect(!fileExists(std.testing.io, outside_original));
 
     const outside_staged = try std.fs.path.join(std.testing.allocator, &.{ tmp_root, "outside-staged.txt" });
     defer std.testing.allocator.free(outside_staged);
@@ -1445,43 +1514,45 @@ test "staging index rejects paths outside workspace and session" {
     );
     defer std.testing.allocator.free(index_text_staged_escape);
     try writeAbsoluteFile(index_path, index_text_staged_escape);
-    try std.testing.expectError(error.InvalidStagingIndex, diffStaged(std.testing.allocator, root, "evil", null));
+    try std.testing.expectError(error.InvalidStagingIndex, diffStaged(std.testing.io, std.testing.allocator, root, "evil", null));
 }
 
 test "apply rejects tampered staged blob hash" {
+    const io = std.testing.io;
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
-    try tmp.dir.makePath(".git");
-    const root = try tmp.dir.realpathAlloc(std.testing.allocator, ".");
+    try tmp.dir.createDirPath(std.testing.io, ".git");
+    const root = try testAllocRealPath(std.testing.io, tmp.dir, ".", std.testing.allocator);
     defer std.testing.allocator.free(root);
     var loaded = try policy.load.loadPreset(std.testing.allocator, .strict);
     defer loaded.deinit();
 
-    var staged = try stageCreate(std.testing.allocator, &loaded, root, "tamper-test", "created.txt", "reviewed\n", null);
+    var staged = try stageCreate(io, std.testing.allocator, &loaded, root, "tamper-test", "created.txt", "reviewed\n", null);
     defer staged.deinit(std.testing.allocator);
     try writeAbsoluteFile(staged.entry.staged_path, "tampered\n");
 
-    try std.testing.expectError(error.StagedChanged, applyStaged(std.testing.allocator, root, "tamper-test", "created.txt", null));
+    try std.testing.expectError(error.StagedChanged, applyStaged(std.testing.io, std.testing.allocator, root, "tamper-test", "created.txt", null));
     const live_path = try std.fs.path.join(std.testing.allocator, &.{ root, "created.txt" });
     defer std.testing.allocator.free(live_path);
-    try std.testing.expect(!fileExists(live_path));
+    try std.testing.expect(!fileExists(std.testing.io, live_path));
 }
 
 test "diff uses captured original after workspace drift" {
+    const io = std.testing.io;
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
-    try tmp.dir.makePath(".git");
-    try tmp.dir.writeFile(.{ .sub_path = "tracked.txt", .data = "old\n" });
-    const root = try tmp.dir.realpathAlloc(std.testing.allocator, ".");
+    try tmp.dir.createDirPath(std.testing.io, ".git");
+    try tmp.dir.writeFile(std.testing.io, .{ .sub_path = "tracked.txt", .data = "old\n" });
+    const root = try testAllocRealPath(std.testing.io, tmp.dir, ".", std.testing.allocator);
     defer std.testing.allocator.free(root);
     var loaded = try policy.load.loadPreset(std.testing.allocator, .strict);
     defer loaded.deinit();
 
-    var staged = try stageUpdate(std.testing.allocator, &loaded, root, "diff-drift-test", "tracked.txt", "new\n", null);
+    var staged = try stageUpdate(io, std.testing.allocator, &loaded, root, "diff-drift-test", "tracked.txt", "new\n", null);
     defer staged.deinit(std.testing.allocator);
-    try tmp.dir.writeFile(.{ .sub_path = "tracked.txt", .data = "drift\n" });
+    try tmp.dir.writeFile(std.testing.io, .{ .sub_path = "tracked.txt", .data = "drift\n" });
 
-    const diff = try diffStaged(std.testing.allocator, root, "diff-drift-test", "tracked.txt");
+    const diff = try diffStaged(std.testing.io, std.testing.allocator, root, "diff-drift-test", "tracked.txt");
     defer std.testing.allocator.free(diff);
     try std.testing.expect(std.mem.indexOf(u8, diff, "-old") != null);
     try std.testing.expect(std.mem.indexOf(u8, diff, "-drift") == null);
@@ -1489,10 +1560,11 @@ test "diff uses captured original after workspace drift" {
 }
 
 test "filesystem audit events are emitted through session writer" {
+    const io = std.testing.io;
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
-    try tmp.dir.makePath(".git");
-    const root = try tmp.dir.realpathAlloc(std.testing.allocator, ".");
+    try tmp.dir.createDirPath(std.testing.io, ".git");
+    const root = try testAllocRealPath(std.testing.io, tmp.dir, ".", std.testing.allocator);
     defer std.testing.allocator.free(root);
     var loaded = try policy.load.loadPreset(std.testing.allocator, .strict);
     defer loaded.deinit();
@@ -1507,17 +1579,17 @@ test "filesystem audit events are emitted through session writer" {
         .mode = .strict,
         .platform = core.platform.detectOs(),
     };
-    var writer = try audit.writer.SessionWriter.init(std.testing.allocator, session);
+    var writer = try audit.writer.SessionWriter.init(std.testing.io, std.testing.allocator, session);
     defer writer.deinit();
     const ctx: AuditContext = .{ .writer = &writer, .session = session };
 
-    var staged = try stageWrite(std.testing.allocator, &loaded, root, session.id.slice(), "created.txt", "hello\n", ctx);
+    var staged = try stageWrite(io, std.testing.allocator, &loaded, root, session.id.slice(), "created.txt", "hello\n", ctx);
     defer staged.deinit(std.testing.allocator);
-    _ = try discardStaged(std.testing.allocator, root, session.id.slice(), "created.txt", ctx);
+    _ = try discardStaged(io, std.testing.allocator, root, session.id.slice(), "created.txt", ctx);
 
     const events_path = try std.fs.path.join(std.testing.allocator, &.{ root, ".orca", "sessions", session.id.slice(), "events.jsonl" });
     defer std.testing.allocator.free(events_path);
-    const events = try std.fs.cwd().readFileAlloc(std.testing.allocator, events_path, 8192);
+    const events = try std.Io.Dir.cwd().readFileAlloc(std.testing.io, events_path, std.testing.allocator, .limited(8192));
     defer std.testing.allocator.free(events);
     try std.testing.expect(std.mem.indexOf(u8, events, "file_write_attempt") != null);
     try std.testing.expect(std.mem.indexOf(u8, events, "file_write_staged") != null);

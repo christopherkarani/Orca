@@ -44,7 +44,7 @@ pub fn detect() backend.ReportSet {
 pub fn prepare(allocator: std.mem.Allocator, request: backend.PrepareRequest, report: backend.ReportSet) backend.PreparedSandbox {
     var prepared = backend.prepareFallback(allocator, request, report);
     if (builtin.os.tag == .linux) {
-        prepared.child.pgid = 0;
+        prepared.use_process_group = true;
         prepared.process_group_cleanup = true;
     }
     return prepared;
@@ -121,14 +121,14 @@ fn detectCgroups() Probe {
 }
 
 fn pathExists(path: []const u8) bool {
-    std.fs.accessAbsolute(path, .{}) catch return false;
+    std.Io.Dir.accessAbsolute(std.testing.io, path, .{}) catch return false;
     return true;
 }
 
 fn readProcToggle(path: []const u8) ?bool {
     var buf: [8]u8 = undefined;
     const file = std.fs.openFileAbsolute(path, .{}) catch return null;
-    defer file.close();
+    defer file.close(std.testing.io);
     const len = file.readAll(&buf) catch return null;
     const trimmed = std.mem.trim(u8, buf[0..len], " \t\r\n");
     if (std.mem.eql(u8, trimmed, "1")) return true;
@@ -153,6 +153,7 @@ test "Linux fallback launch can run a simple command" {
 
     var argv = [_][]const u8{ "true" };
     var prepared = prepare(std.testing.allocator, .{
+        .io = std.testing.io,
         .argv = &argv,
         .workspace_root = ".",
         .stdio = .ignore,
@@ -160,7 +161,7 @@ test "Linux fallback launch can run a simple command" {
     try prepared.spawn();
     try prepared.waitForSpawn();
     const term = try prepared.wait();
-    try std.testing.expectEqual(std.process.Child.Term{ .Exited = 0 }, term);
+    try std.testing.expectEqual(std.process.Child.Term{ .exited = 0 }, term);
 }
 
 test "Linux process supervision uses process group cleanup" {
@@ -168,6 +169,7 @@ test "Linux process supervision uses process group cleanup" {
 
     var argv = [_][]const u8{ "true" };
     const prepared = prepare(std.testing.allocator, .{
+        .io = std.testing.io,
         .argv = &argv,
         .workspace_root = ".",
         .stdio = .ignore,
@@ -180,11 +182,12 @@ test "Linux process supervision cleans up same-process-group descendants" {
 
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
-    const root = try tmp.dir.realpathAlloc(std.testing.allocator, ".");
+    const root = try tmp.dir.realPathFileAlloc(std.testing.io, ".", std.testing.allocator);
     defer std.testing.allocator.free(root);
 
     var argv = [_][]const u8{ "/bin/sh", "-c", "sleep 30 & echo $! > child.pid" };
     var prepared = prepare(std.testing.allocator, .{
+        .io = std.testing.io,
         .argv = &argv,
         .workspace_root = root,
         .stdio = .ignore,
@@ -192,13 +195,13 @@ test "Linux process supervision cleans up same-process-group descendants" {
     try prepared.spawn();
     try prepared.waitForSpawn();
     const term = try prepared.wait();
-    try std.testing.expectEqual(std.process.Child.Term{ .Exited = 0 }, term);
+    try std.testing.expectEqual(std.process.Child.Term{ .exited = 0 }, term);
 
-    const pid_text = try tmp.dir.readFileAlloc(std.testing.allocator, "child.pid", 64);
+    const pid_text = try tmp.dir.readFileAlloc(std.testing.io, "child.pid", std.testing.allocator, .limited(64));
     defer std.testing.allocator.free(pid_text);
     const pid = try std.fmt.parseInt(std.posix.pid_t, std.mem.trim(u8, pid_text, " \t\r\n"), 10);
-    std.Thread.sleep(100 * std.time.ns_per_ms);
-    std.posix.kill(pid, 0) catch |err| switch (err) {
+    std.Io.sleep(std.testing.io, std.Io.Duration.fromNanoseconds(100 * std.time.ns_per_ms), .awake) catch {};
+    std.posix.kill(pid, @enumFromInt(0)) catch |err| switch (err) {
         error.ProcessNotFound => return,
         else => return err,
     };

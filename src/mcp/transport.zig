@@ -42,20 +42,25 @@ pub const HttpTransport = struct {
 pub const ProcessServer = struct {
     allocator: std.mem.Allocator,
     child: std.process.Child,
-    stdin_writer: std.fs.File.Writer,
-    stdout_reader: std.fs.File.Reader,
+    stdin_writer: std.Io.File.Writer,
+    stdout_reader: std.Io.File.Reader,
     stdin_buffer: []u8,
     stdout_buffer: []u8,
 
-    pub fn spawn(allocator: std.mem.Allocator, argv: []const []const u8) !ProcessServer {
+    pub fn spawn(io: std.Io, allocator: std.mem.Allocator, argv: []const []const u8) !ProcessServer {
+        return spawnWithEnvMap(io, allocator, argv, null);
+    }
+
+    pub fn spawnWithEnvMap(io: std.Io, allocator: std.mem.Allocator, argv: []const []const u8, env_map: ?*const std.process.Environ.Map) !ProcessServer {
         if (argv.len == 0) return error.InvalidCommand;
-        var child = std.process.Child.init(argv, allocator);
-        child.stdin_behavior = .Pipe;
-        child.stdout_behavior = .Pipe;
-        child.stderr_behavior = .Inherit;
-        try child.spawn();
-        try child.waitForSpawn();
-        errdefer _ = child.kill() catch child.wait() catch {};
+        var child = try std.process.spawn(io, .{
+            .argv = argv,
+            .environ_map = env_map,
+            .stdin = .pipe,
+            .stdout = .pipe,
+            .stderr = .inherit,
+        });
+        errdefer child.kill(io);
 
         const stdin_buffer = try allocator.alloc(u8, 16 * 1024);
         errdefer allocator.free(stdin_buffer);
@@ -65,42 +70,16 @@ pub const ProcessServer = struct {
         return .{
             .allocator = allocator,
             .child = child,
-            .stdin_writer = child.stdin.?.writer(stdin_buffer),
-            .stdout_reader = child.stdout.?.reader(stdout_buffer),
+            .stdin_writer = child.stdin.?.writer(io, stdin_buffer),
+            .stdout_reader = child.stdout.?.reader(io, stdout_buffer),
             .stdin_buffer = stdin_buffer,
             .stdout_buffer = stdout_buffer,
         };
     }
 
-    pub fn spawnWithEnvMap(allocator: std.mem.Allocator, argv: []const []const u8, env_map: ?*const std.process.EnvMap) !ProcessServer {
-        if (argv.len == 0) return error.InvalidCommand;
-        var child = std.process.Child.init(argv, allocator);
-        child.stdin_behavior = .Pipe;
-        child.stdout_behavior = .Pipe;
-        child.stderr_behavior = .Inherit;
-        child.env_map = env_map;
-        try child.spawn();
-        try child.waitForSpawn();
-        errdefer _ = child.kill() catch child.wait() catch {};
-
-        const stdin_buffer = try allocator.alloc(u8, 16 * 1024);
-        errdefer allocator.free(stdin_buffer);
-        const stdout_buffer = try allocator.alloc(u8, core.limits.max_mcp_message_len + 1);
-        errdefer allocator.free(stdout_buffer);
-
-        return .{
-            .allocator = allocator,
-            .child = child,
-            .stdin_writer = child.stdin.?.writer(stdin_buffer),
-            .stdout_reader = child.stdout.?.reader(stdout_buffer),
-            .stdin_buffer = stdin_buffer,
-            .stdout_buffer = stdout_buffer,
-        };
-    }
-
-    pub fn deinit(self: *ProcessServer) void {
+    pub fn deinit(self: *ProcessServer, io: std.Io) void {
         self.stdin_writer.interface.flush() catch {};
-        _ = self.child.kill() catch self.child.wait() catch {};
+        self.child.kill(io);
         self.allocator.free(self.stdin_buffer);
         self.allocator.free(self.stdout_buffer);
         self.* = undefined;
@@ -143,7 +122,9 @@ test "transport descriptors preserve stdio and honestly defer http" {
 }
 
 test "process transport cleans up child after post-spawn allocation failures" {
-    const source = try std.fs.cwd().readFileAlloc(std.testing.allocator, "src/mcp/transport.zig", 64 * 1024);
+    var threaded: std.Io.Threaded = .init_single_threaded;
+    const io = threaded.io();
+    const source = try std.Io.Dir.cwd().readFileAlloc(io, "src/mcp/transport.zig", std.testing.allocator, .limited(64 * 1024));
     defer std.testing.allocator.free(source);
-    try std.testing.expect(std.mem.count(u8, source, "errdefer _ = child.kill() catch child.wait() catch {};") >= 2);
+    try std.testing.expect(std.mem.count(u8, source, "errdefer child.kill(io);") >= 1);
 }

@@ -7,15 +7,15 @@ const plugin = @import("plugin.zig");
 const interactive = @import("interactive.zig");
 const onboarding = @import("onboarding.zig");
 
-pub fn command(cwd: std.fs.Dir, argv: []const []const u8, stdout: anytype, stderr: anytype) !u8 {
+pub fn command(io: std.Io, cwd: std.Io.Dir, argv: []const []const u8, stdout: anytype, stderr: anytype) !u8 {
     if (argv.len == 0) {
-        _ = try help.writeCommand(stdout, "setup");
+        _ = try help.writeCommand(io, stdout, "setup");
         return exit_codes.success;
     }
 
     for (argv) |arg| {
         if (std.mem.eql(u8, arg, "--help") or std.mem.eql(u8, arg, "-h")) {
-            _ = try help.writeCommand(stdout, "setup");
+            _ = try help.writeCommand(io, stdout, "setup");
             return exit_codes.success;
         }
     }
@@ -26,41 +26,41 @@ pub fn command(cwd: std.fs.Dir, argv: []const []const u8, stdout: anytype, stder
     };
 
     if (!flags.auto) {
-        if (onboarding.interactiveSetupDesired()) {
-            return runGuidedSetup(cwd, flags.preset, stdout, stderr);
+        if (onboarding.interactiveSetupDesired(io)) {
+            return runGuidedSetup(io, cwd, flags.preset, stdout, stderr);
         }
-        _ = try help.writeCommand(stdout, "setup");
+        _ = try help.writeCommand(io, stdout, "setup");
         return exit_codes.success;
     }
 
-    return runAutoSetup(cwd, flags.preset, stdout, stderr);
+    return runAutoSetup(io, cwd, flags.preset, stdout, stderr);
 }
 
-fn runAutoSetup(cwd: std.fs.Dir, preset: []const u8, stdout: anytype, stderr: anytype) !u8 {
-    var gpa_state: std.heap.GeneralPurposeAllocator(.{}) = .init;
+fn runAutoSetup(io: std.Io, cwd: std.Io.Dir, preset: []const u8, stdout: anytype, stderr: anytype) !u8 {
+    var gpa_state: std.heap.DebugAllocator(.{}) = .init;
     defer _ = gpa_state.deinit();
     const allocator = gpa_state.allocator();
 
-    const self_exe = try std.fs.selfExePathAlloc(allocator);
+    const self_exe = try std.process.executablePathAlloc(io, allocator);
     defer allocator.free(self_exe);
 
-    const workspace_root = try onboarding.resolveWorkspaceRootFromCwd(allocator, cwd);
+    const workspace_root = try onboarding.resolveWorkspaceRootFromCwd(io, allocator, cwd);
     defer allocator.free(workspace_root);
 
-    const policy_code = try onboarding.ensurePolicy(cwd, workspace_root, preset, stdout, stderr, .{
+    const policy_code = try onboarding.ensurePolicy(io, cwd, workspace_root, preset, stdout, stderr, .{
         .missing = "Policy not found. Initializing...\n",
         .exists = "Policy already exists.\n",
     });
     if (policy_code != exit_codes.success) return policy_code;
 
-    var doctor_report = try plugin.collectPluginDoctorReport(allocator);
+    var doctor_report = try plugin.collectPluginDoctorReport(io, allocator);
     defer plugin.deinitPluginDoctorReport(&doctor_report, allocator);
 
     var any_detected = false;
     var failure_count: usize = 0;
 
     for (onboarding.supported_hosts) |host_name| {
-        if (!plugin.binaryInPath(allocator, host_name)) continue;
+        if (!plugin.binaryInPath(io, allocator, host_name)) continue;
         any_detected = true;
         try stdout.print("\nDetected host: {s}\n", .{host_name});
 
@@ -71,7 +71,7 @@ fn runAutoSetup(cwd: std.fs.Dir, preset: []const u8, stdout: anytype, stderr: an
         } else {
             try stdout.print("  {s}: plugin not installed. Installing...\n", .{host_name});
             const install_argv = &[_][]const u8{ self_exe, "plugin", "install", host_name, "--yes" };
-            const install_code = runChild(allocator, install_argv);
+            const install_code = runChild(io, install_argv);
             if (install_code) |code| {
                 if (code != 0) {
                     try stdout.print("  {s}: install failed (exit code {d})\n", .{ host_name, code });
@@ -85,7 +85,7 @@ fn runAutoSetup(cwd: std.fs.Dir, preset: []const u8, stdout: anytype, stderr: an
                 continue;
             }
 
-            const refreshed_report = try plugin.collectPluginDoctorReport(allocator);
+            const refreshed_report = try plugin.collectPluginDoctorReport(io, allocator);
             plugin.deinitPluginDoctorReport(&doctor_report, allocator);
             doctor_report = refreshed_report;
         }
@@ -120,35 +120,37 @@ fn runAutoSetup(cwd: std.fs.Dir, preset: []const u8, stdout: anytype, stderr: an
     }
 
     try stdout.writeAll("\n");
-    try style.maybeColor(stdout, style.Style.green, style.Glyph.party ++ " Setup complete!");
+    try style.maybeColor(io, stdout, style.Style.green, style.Glyph.party ++ " Setup complete!");
     try stdout.writeAll("\nRun 'orca run -- <command>' to start a protected session.\n");
     return exit_codes.success;
 }
 
-fn runChild(allocator: std.mem.Allocator, argv: []const []const u8) !u8 {
-    var child = std.process.Child.init(argv, allocator);
-    child.stdin_behavior = .Ignore;
-    child.stdout_behavior = .Ignore;
-    child.stderr_behavior = .Ignore;
-    const term = try child.spawnAndWait();
+fn runChild(io: std.Io, argv: []const []const u8) !u8 {
+    var child = try std.process.spawn(io, .{
+        .argv = argv,
+        .stdin = .ignore,
+        .stdout = .ignore,
+        .stderr = .ignore,
+    });
+    const term = try child.wait(io);
     return switch (term) {
-        .Exited => |code| @as(u8, @intCast(@min(code, 255))),
+        .exited => |code| @as(u8, @intCast(@min(code, 255))),
         else => 255,
     };
 }
 
-fn runGuidedSetup(cwd: std.fs.Dir, preset: []const u8, stdout: anytype, stderr: anytype) !u8 {
-    var gpa_state: std.heap.GeneralPurposeAllocator(.{}) = .init;
+fn runGuidedSetup(io: std.Io, cwd: std.Io.Dir, preset: []const u8, stdout: anytype, stderr: anytype) !u8 {
+    var gpa_state: std.heap.DebugAllocator(.{}) = .init;
     defer _ = gpa_state.deinit();
     const allocator = gpa_state.allocator();
 
     try stdout.writeAll("Orca Guided Setup\n\n");
     try stdout.writeAll("Detecting installed agent hosts...\n");
 
-    const workspace_root = try onboarding.resolveWorkspaceRootFromCwd(allocator, cwd);
+    const workspace_root = try onboarding.resolveWorkspaceRootFromCwd(io, allocator, cwd);
     defer allocator.free(workspace_root);
 
-    const policy_code = try onboarding.ensurePolicy(cwd, workspace_root, preset, stdout, stderr, .{
+    const policy_code = try onboarding.ensurePolicy(io, cwd, workspace_root, preset, stdout, stderr, .{
         .missing = "No policy found. Creating policy...\n",
     });
     if (policy_code != exit_codes.success) {
@@ -156,14 +158,14 @@ fn runGuidedSetup(cwd: std.fs.Dir, preset: []const u8, stdout: anytype, stderr: 
         return policy_code;
     }
 
-    var doctor_report = try plugin.collectPluginDoctorReport(allocator);
+    var doctor_report = try plugin.collectPluginDoctorReport(io, allocator);
     defer plugin.deinitPluginDoctorReport(&doctor_report, allocator);
 
     var detected_list: std.ArrayList([]const u8) = .empty;
     defer detected_list.deinit(allocator);
 
     for (onboarding.supported_hosts) |h| {
-        if (plugin.binaryInPath(allocator, h)) {
+        if (plugin.binaryInPath(io, allocator, h)) {
             try detected_list.append(allocator, h);
         }
     }
@@ -185,9 +187,9 @@ fn runGuidedSetup(cwd: std.fs.Dir, preset: []const u8, stdout: anytype, stderr: 
         };
     }
 
-    const stdin_file = std.fs.File.stdin();
+    const stdin_file = std.Io.File.stdin();
     var stdin_reader_buf: [256]u8 = undefined;
-    var stdin_reader = stdin_file.reader(&stdin_reader_buf);
+    var stdin_reader = stdin_file.reader(io, &stdin_reader_buf);
 
     var result = try interactive.runMultiSelect(allocator, selection_items, stdout, &stdin_reader.interface);
     defer interactive.deinitMultiSelectResult(&result, allocator);
@@ -198,7 +200,7 @@ fn runGuidedSetup(cwd: std.fs.Dir, preset: []const u8, stdout: anytype, stderr: 
 
         try stdout.print("\nIntegrating with {s}...\n", .{item.label});
         const install_argv = &[_][]const u8{ "plugin", "install", item.label, "--yes" };
-        const code = try runChild(allocator, install_argv);
+        const code = try runChild(io, install_argv);
         if (code == 0) {
             any_installed = true;
         }
@@ -206,7 +208,7 @@ fn runGuidedSetup(cwd: std.fs.Dir, preset: []const u8, stdout: anytype, stderr: 
 
     if (any_installed) {
         try stdout.writeAll("\n");
-        try style.maybeColor(stdout, style.Style.green, style.Glyph.party ++ " Guided setup complete!");
+        try style.maybeColor(io, stdout, style.Style.green, style.Glyph.party ++ " Guided setup complete!");
         try stdout.writeAll("\n");
     } else {
         try stdout.writeAll("\nNo new integrations were added.\n");

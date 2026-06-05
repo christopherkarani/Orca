@@ -43,15 +43,15 @@ pub const Result = struct {
     }
 };
 
-pub fn run(allocator: std.mem.Allocator, workspace_root: []const u8) !Result {
-    return runWithOptions(allocator, workspace_root, .{});
+pub fn run(io: std.Io, allocator: std.mem.Allocator, workspace_root: []const u8) !Result {
+    return runWithOptions(io, allocator, workspace_root, .{});
 }
 
 pub const RunOptions = struct {
     resource_root_override: ?[]const u8 = null,
 };
 
-pub fn runWithOptions(allocator: std.mem.Allocator, workspace_root: []const u8, options: RunOptions) !Result {
+pub fn runWithOptions(io: std.Io, allocator: std.mem.Allocator, workspace_root: []const u8, options: RunOptions) !Result {
     var result = Result{ .allocator = allocator };
     errdefer result.deinit();
 
@@ -60,8 +60,8 @@ pub fn runWithOptions(allocator: std.mem.Allocator, workspace_root: []const u8, 
     var maybe_policy: ?policy_mod.schema.Policy = null;
     defer if (maybe_policy) |*policy| policy.deinit();
 
-    if (std.fs.cwd().access(policy_path, .{})) |_| {
-        const loaded = policy_mod.load.loadFile(allocator, policy_path) catch |err| {
+    if (std.Io.Dir.cwd().access(io, policy_path, .{})) |_| {
+        const loaded = policy_mod.load.loadFile(io, allocator, policy_path) catch |err| {
             const message = try std.fmt.allocPrint(allocator, ".orca/policy.yaml exists but is invalid: {s}", .{@errorName(err)});
             defer allocator.free(message);
             try result.add("policy", .fail, message);
@@ -79,7 +79,7 @@ pub fn runWithOptions(allocator: std.mem.Allocator, workspace_root: []const u8, 
         try checkDangerousDefaults(&result, policy);
     }
 
-    var fixture_set = discoverFocusedFixture(allocator, workspace_root, options) catch |err| {
+    var fixture_set = discoverFocusedFixture(io, allocator, workspace_root, options) catch |err| {
         const message = try std.fmt.allocPrint(allocator, "focused redteam fixture {s} was not found as a canonical packaged fixture: {s}", .{ focused_fixture_id, @errorName(err) });
         defer allocator.free(message);
         try result.add("redteam", .fail, message);
@@ -97,41 +97,43 @@ pub fn runWithOptions(allocator: std.mem.Allocator, workspace_root: []const u8, 
     return result;
 }
 
-fn discoverFocusedFixture(allocator: std.mem.Allocator, workspace_root: []const u8, options: RunOptions) !redteam.fixtures.FixtureSet {
+fn discoverFocusedFixture(io: std.Io, allocator: std.mem.Allocator, workspace_root: []const u8, options: RunOptions) !redteam.fixtures.FixtureSet {
     var roots: std.ArrayList([]u8) = .empty;
     defer {
         for (roots.items) |root| allocator.free(root);
         roots.deinit(allocator);
     }
 
-    try appendExistingFixturesRoot(allocator, &roots, workspace_root);
+    try appendExistingFixturesRoot(io, allocator, &roots, workspace_root);
     if (options.resource_root_override) |override_root| {
-        try appendExistingFixturesRoot(allocator, &roots, override_root);
-    } else if (std.process.getEnvVarOwned(allocator, "ORCA_RESOURCE_ROOT")) |env_root| {
-        defer allocator.free(env_root);
-        try appendExistingFixturesRoot(allocator, &roots, env_root);
-    } else |err| switch (err) {
-        error.EnvironmentVariableNotFound => {},
-        else => return err,
+        try appendExistingFixturesRoot(io, allocator, &roots, override_root);
+    } else {
+        const env_util = @import("env_util.zig");
+        var env_map = env_util.createProcessMap(allocator) catch return error.ResourceNotFound;
+        defer env_map.deinit();
+        if (try env_util.getOwned(&env_map, allocator, "ORCA_RESOURCE_ROOT")) |env_root| {
+            defer allocator.free(env_root);
+            try appendExistingFixturesRoot(io, allocator, &roots, env_root);
+        }
     }
 
-    const exe_path = std.fs.selfExePathAlloc(allocator) catch null;
+    const exe_path = std.process.executablePathAlloc(io, allocator) catch null;
     if (exe_path) |path| {
         defer allocator.free(path);
         if (std.fs.path.dirname(path)) |exe_dir| {
             const resource_parent = try std.fs.path.join(allocator, &.{ exe_dir, ".." });
             defer allocator.free(resource_parent);
-            try appendExistingFixturesRoot(allocator, &roots, resource_parent);
+            try appendExistingFixturesRoot(io, allocator, &roots, resource_parent);
 
             const source_build_parent = try std.fs.path.join(allocator, &.{ exe_dir, "..", ".." });
             defer allocator.free(source_build_parent);
-            try appendExistingFixturesRoot(allocator, &roots, source_build_parent);
+            try appendExistingFixturesRoot(io, allocator, &roots, source_build_parent);
         }
     }
 
     var saw_candidate = false;
     for (roots.items) |root| {
-        var fixture_set = redteam.fixtures.discover(allocator, root, focused_fixture_id) catch continue;
+        var fixture_set = redteam.fixtures.discover(io, allocator, root, focused_fixture_id) catch continue;
         errdefer fixture_set.deinit();
         saw_candidate = true;
         if (isCanonicalFocusedFixture(fixture_set)) return fixture_set;
@@ -141,10 +143,10 @@ fn discoverFocusedFixture(allocator: std.mem.Allocator, workspace_root: []const 
     return if (saw_candidate) error.InvalidFocusedFixture else error.ResourceNotFound;
 }
 
-fn appendExistingFixturesRoot(allocator: std.mem.Allocator, roots: *std.ArrayList([]u8), root: []const u8) !void {
+fn appendExistingFixturesRoot(io: std.Io, allocator: std.mem.Allocator, roots: *std.ArrayList([]u8), root: []const u8) !void {
     const fixtures_root = try std.fs.path.join(allocator, &.{ root, "fixtures" });
     errdefer allocator.free(fixtures_root);
-    std.fs.cwd().access(fixtures_root, .{}) catch {
+    std.Io.Dir.accessAbsolute(io, fixtures_root, .{}) catch {
         allocator.free(fixtures_root);
         return;
     };
@@ -220,9 +222,9 @@ fn statusText(status: Status) []const u8 {
 test "ci check fails clearly when policy is missing" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
-    const root = try tmp.dir.realpathAlloc(std.testing.allocator, ".");
+    const root = try tmp.dir.realPathFileAlloc(std.testing.io, ".", std.testing.allocator);
     defer std.testing.allocator.free(root);
-    var result = try run(std.testing.allocator, root);
+    var result = try run(std.testing.io, std.testing.allocator, root);
     defer result.deinit();
     try std.testing.expect(!result.ok());
     try std.testing.expect(std.mem.indexOf(u8, result.checks.items[0].message, "orca init --preset team-ci") != null);
@@ -232,13 +234,13 @@ test "ci check resolves focused redteam fixtures from resource root" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
 
-    try tmp.dir.makePath("workspace/.orca");
-    try tmp.dir.makePath("resources/fixtures/shell-abuse/curl-pipe-sh");
-    try tmp.dir.writeFile(.{
+    try tmp.dir.createDirPath(std.testing.io, "workspace/.orca");
+    try tmp.dir.createDirPath(std.testing.io, "resources/fixtures/shell-abuse/curl-pipe-sh");
+    try tmp.dir.writeFile(std.testing.io, .{
         .sub_path = "workspace/.orca/policy.yaml",
         .data = policy_mod.presets.agentPresetText(.team_ci),
     });
-    try tmp.dir.writeFile(.{
+    try tmp.dir.writeFile(std.testing.io, .{
         .sub_path = "resources/fixtures/shell-abuse/curl-pipe-sh/fixture.yaml",
         .data =
         \\version: 1
@@ -261,12 +263,12 @@ test "ci check resolves focused redteam fixtures from resource root" {
         ,
     });
 
-    const workspace_root = try tmp.dir.realpathAlloc(std.testing.allocator, "workspace");
+    const workspace_root = try tmp.dir.realPathFileAlloc(std.testing.io, "workspace", std.testing.allocator);
     defer std.testing.allocator.free(workspace_root);
-    const resources_root = try tmp.dir.realpathAlloc(std.testing.allocator, "resources");
+    const resources_root = try tmp.dir.realPathFileAlloc(std.testing.io, "resources", std.testing.allocator);
     defer std.testing.allocator.free(resources_root);
 
-    var result = try runWithOptions(std.testing.allocator, workspace_root, .{ .resource_root_override = resources_root });
+    var result = try runWithOptions(std.testing.io, std.testing.allocator, workspace_root, .{ .resource_root_override = resources_root });
     defer result.deinit();
 
     try std.testing.expect(result.ok());
@@ -276,14 +278,14 @@ test "ci check does not accept weak workspace fixture shadowing packaged fixture
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
 
-    try tmp.dir.makePath("workspace/.orca");
-    try tmp.dir.makePath("workspace/fixtures/shell-abuse/curl-pipe-sh");
-    try tmp.dir.makePath("resources/fixtures/shell-abuse/curl-pipe-sh");
-    try tmp.dir.writeFile(.{
+    try tmp.dir.createDirPath(std.testing.io, "workspace/.orca");
+    try tmp.dir.createDirPath(std.testing.io, "workspace/fixtures/shell-abuse/curl-pipe-sh");
+    try tmp.dir.createDirPath(std.testing.io, "resources/fixtures/shell-abuse/curl-pipe-sh");
+    try tmp.dir.writeFile(std.testing.io, .{
         .sub_path = "workspace/.orca/policy.yaml",
         .data = policy_mod.presets.agentPresetText(.team_ci),
     });
-    try tmp.dir.writeFile(.{
+    try tmp.dir.writeFile(std.testing.io, .{
         .sub_path = "workspace/fixtures/shell-abuse/curl-pipe-sh/fixture.yaml",
         .data =
         \\version: 1
@@ -305,7 +307,7 @@ test "ci check does not accept weak workspace fixture shadowing packaged fixture
         \\
         ,
     });
-    try tmp.dir.writeFile(.{
+    try tmp.dir.writeFile(std.testing.io, .{
         .sub_path = "resources/fixtures/shell-abuse/curl-pipe-sh/fixture.yaml",
         .data =
         \\version: 1
@@ -328,12 +330,12 @@ test "ci check does not accept weak workspace fixture shadowing packaged fixture
         ,
     });
 
-    const workspace_root = try tmp.dir.realpathAlloc(std.testing.allocator, "workspace");
+    const workspace_root = try tmp.dir.realPathFileAlloc(std.testing.io, "workspace", std.testing.allocator);
     defer std.testing.allocator.free(workspace_root);
-    const resources_root = try tmp.dir.realpathAlloc(std.testing.allocator, "resources");
+    const resources_root = try tmp.dir.realPathFileAlloc(std.testing.io, "resources", std.testing.allocator);
     defer std.testing.allocator.free(resources_root);
 
-    var result = try runWithOptions(std.testing.allocator, workspace_root, .{ .resource_root_override = resources_root });
+    var result = try runWithOptions(std.testing.io, std.testing.allocator, workspace_root, .{ .resource_root_override = resources_root });
     defer result.deinit();
 
     try std.testing.expect(result.ok());

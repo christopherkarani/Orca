@@ -2,6 +2,7 @@ const std = @import("std");
 
 const core_api = @import("orca_core").api;
 const core = @import("orca_core").core;
+const env_util = @import("env_util.zig");
 
 pub const PluginReadiness = struct {
     id: []const u8,
@@ -10,10 +11,10 @@ pub const PluginReadiness = struct {
     integration_present: bool,
 };
 
-pub fn writeMarkdown(allocator: std.mem.Allocator, writer: anytype, workspace_root: []const u8, session: core_api.ReplaySession) !void {
+pub fn writeMarkdown(io: std.Io, allocator: std.mem.Allocator, writer: anytype, workspace_root: []const u8, session: core_api.ReplaySession) !void {
     var redactions = try summarizeRedactions(allocator, session);
     defer redactions.deinit(allocator);
-    const plugins = try pluginReadiness(allocator, workspace_root);
+    const plugins = try pluginReadiness(io, allocator, workspace_root);
 
     try writer.print("# Orca Safety Report: {s}\n\n", .{session.session_id});
     try writer.print("- Session id: `{s}`\n", .{session.session_id});
@@ -56,10 +57,10 @@ pub fn writeMarkdown(allocator: std.mem.Allocator, writer: anytype, workspace_ro
     }
 }
 
-pub fn writeJson(allocator: std.mem.Allocator, writer: anytype, workspace_root: []const u8, session: core_api.ReplaySession) !void {
+pub fn writeJson(io: std.Io, allocator: std.mem.Allocator, writer: anytype, workspace_root: []const u8, session: core_api.ReplaySession) !void {
     var redactions = try summarizeRedactions(allocator, session);
     defer redactions.deinit(allocator);
-    const plugins = try pluginReadiness(allocator, workspace_root);
+    const plugins = try pluginReadiness(io, allocator, workspace_root);
 
     try writer.writeByte('{');
     try writer.writeAll("\"session_id\":");
@@ -156,32 +157,35 @@ fn decisionReason(allocator: std.mem.Allocator, raw: []const u8) ![]u8 {
     return allocator.dupe(u8, reason.string);
 }
 
-pub fn pluginReadiness(allocator: std.mem.Allocator, workspace_root: []const u8) ![2]PluginReadiness {
+pub fn pluginReadiness(io: std.Io, allocator: std.mem.Allocator, workspace_root: []const u8) ![2]PluginReadiness {
     return .{
         .{
             .id = "openclaw",
             .label = "OpenClaw",
-            .host_detected = try executableInPath(allocator, "openclaw"),
-            .integration_present = try pathExists(allocator, workspace_root, "integrations/openclaw-plugin"),
+            .host_detected = try executableInPath(io, allocator, "openclaw"),
+            .integration_present = try pathExists(io, allocator, workspace_root, "integrations/openclaw-plugin"),
         },
         .{
             .id = "hermes",
             .label = "Hermes",
-            .host_detected = try executableInPath(allocator, "hermes"),
-            .integration_present = try pathExists(allocator, workspace_root, "integrations/hermes-plugin"),
+            .host_detected = try executableInPath(io, allocator, "hermes"),
+            .integration_present = try pathExists(io, allocator, workspace_root, "integrations/hermes-plugin"),
         },
     };
 }
 
-fn pathExists(allocator: std.mem.Allocator, root: []const u8, rel: []const u8) !bool {
+fn pathExists(io: std.Io, allocator: std.mem.Allocator, root: []const u8, rel: []const u8) !bool {
     const path = try std.fs.path.join(allocator, &.{ root, rel });
     defer allocator.free(path);
-    std.fs.cwd().access(path, .{}) catch return false;
+    std.Io.Dir.cwd().access(io, path, .{}) catch return false;
     return true;
 }
 
-fn executableInPath(allocator: std.mem.Allocator, name: []const u8) !bool {
-    const path = std.process.getEnvVarOwned(allocator, "PATH") catch return false;
+fn executableInPath(io: std.Io, allocator: std.mem.Allocator, name: []const u8) !bool {
+    var env_map = env_util.createProcessMap(allocator) catch return false;
+    defer env_map.deinit();
+    const path_owned = env_util.getOwned(&env_map, allocator, "PATH") catch return false;
+    const path = path_owned orelse return false;
     defer allocator.free(path);
     const separator: u8 = if (@import("builtin").os.tag == .windows) ';' else ':';
     var parts = std.mem.splitScalar(u8, path, separator);
@@ -189,7 +193,7 @@ fn executableInPath(allocator: std.mem.Allocator, name: []const u8) !bool {
         if (part.len == 0) continue;
         const candidate = try std.fs.path.join(allocator, &.{ part, name });
         defer allocator.free(candidate);
-        if (std.fs.cwd().access(candidate, .{})) |_| return true else |_| {}
+        if (std.Io.Dir.cwd().access(io, candidate, .{})) |_| return true else |_| {}
     }
     return false;
 }
@@ -197,16 +201,18 @@ fn executableInPath(allocator: std.mem.Allocator, name: []const u8) !bool {
 test "report renders denied action and redaction summary" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
-    const root = try tmp.dir.realpathAlloc(std.testing.allocator, ".");
+    const root = try tmp.dir.realPathFileAlloc(std.testing.io, ".", std.testing.allocator);
     defer std.testing.allocator.free(root);
-    const session_id = try @import("demo.zig").createBlockedActionSession(std.testing.allocator, root);
+    const session_id = try @import("demo.zig").createBlockedActionSession(std.testing.io, std.testing.allocator, root);
     defer std.testing.allocator.free(session_id);
-    var replay = try core_api.loadReplay(std.testing.allocator, root, .{ .session = "last", .only_denied = true, .verify = true });
+    var replay = try core_api.loadReplay(std.testing.io, std.testing.allocator, root, .{ .session = "last", .only_denied = true, .verify = true });
     defer replay.deinit();
-    var out: std.ArrayList(u8) = .empty;
-    defer out.deinit(std.testing.allocator);
-    try writeMarkdown(std.testing.allocator, out.writer(std.testing.allocator), root, replay);
-    try std.testing.expect(std.mem.indexOf(u8, out.items, "Orca Safety Report") != null);
-    try std.testing.expect(std.mem.indexOf(u8, out.items, "blocked") != null);
-    try std.testing.expect(std.mem.indexOf(u8, out.items, "Hash-chain verification: verified") != null);
+    var aw: std.Io.Writer.Allocating = .init(std.testing.allocator);
+    defer aw.deinit();
+    try writeMarkdown(std.testing.io, std.testing.allocator, &aw.writer, root, replay);
+    const out = try aw.toOwnedSlice();
+    defer std.testing.allocator.free(out);
+    try std.testing.expect(std.mem.indexOf(u8, out, "Orca Safety Report") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "blocked") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "Hash-chain verification: verified") != null);
 }

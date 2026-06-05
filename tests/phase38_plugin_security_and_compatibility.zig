@@ -23,51 +23,56 @@ const claude_fixture_dir = "tests/plugin-fixtures/claude";
 // ---------------------------------------------------------------------------
 
 fn fileExists(path: []const u8) bool {
-    std.fs.cwd().access(path, .{}) catch return false;
+    std.Io.Dir.cwd().access(std.testing.io, path, .{}) catch return false;
     return true;
 }
 
 fn readFile(allocator: std.mem.Allocator, path: []const u8) ![]u8 {
-    const file = try std.fs.cwd().openFile(path, .{});
-    defer file.close();
-    const stat = try file.stat();
-    const size = stat.size;
-    if (size > 1024 * 1024) return error.FileTooLarge;
-    const buf = try allocator.alloc(u8, @intCast(size));
-    errdefer allocator.free(buf);
-    const n = try file.readAll(buf);
-    if (n != size) return error.ShortRead;
-    return buf;
+    return try std.Io.Dir.cwd().readFileAlloc(std.testing.io, path, allocator, .limited(1024 * 1024));
+}
+
+fn readPipeToAlloc(io: std.Io, allocator: std.mem.Allocator, file: std.Io.File, limit: usize) ![]u8 {
+    var list: std.ArrayList(u8) = .empty;
+    errdefer list.deinit(allocator);
+    var buf: [4096]u8 = undefined;
+    var reader = file.reader(io, &buf);
+    while (list.items.len < limit) {
+        const n = reader.interface.readSliceShort(buf[0..@min(buf.len, limit - list.items.len)]) catch break;
+        if (n == 0) break;
+        try list.appendSlice(allocator, buf[0..n]);
+    }
+    return try list.toOwnedSlice(allocator);
 }
 
 fn runOrca(allocator: std.mem.Allocator, args: []const []const u8, stdin_data: ?[]const u8) !struct { stdout: []u8, stderr: []u8, code: u8 } {
-    var child = std.process.Child.init(args, allocator);
-    child.stdin_behavior = if (stdin_data != null) .Pipe else .Ignore;
-    child.stdout_behavior = .Pipe;
-    child.stderr_behavior = .Pipe;
-
-    try child.spawn();
+    const io = std.testing.io;
+    var child = try std.process.spawn(io, .{
+        .argv = args,
+        .stdin = if (stdin_data != null) .pipe else .ignore,
+        .stdout = .pipe,
+        .stderr = .pipe,
+    });
 
     if (stdin_data) |data| {
         if (child.stdin) |stdin| {
-            stdin.writeAll(data) catch |err| switch (err) {
+            stdin.writeStreamingAll(io, data) catch |err| switch (err) {
                 error.BrokenPipe => {},
                 else => return err,
             };
-            stdin.close();
+            stdin.close(io);
             child.stdin = null;
         }
     }
 
-    const stdout = try child.stdout.?.readToEndAlloc(allocator, 1024 * 1024);
+    const stdout = try readPipeToAlloc(io, allocator, child.stdout.?, 1024 * 1024);
     errdefer allocator.free(stdout);
-    const stderr = try child.stderr.?.readToEndAlloc(allocator, 1024 * 1024);
+    const stderr = try readPipeToAlloc(io, allocator, child.stderr.?, 1024 * 1024);
     errdefer allocator.free(stderr);
 
-    const term = try child.wait();
+    const term = try child.wait(io);
     const code: u8 = switch (term) {
-        .Exited => |c| @intCast(c),
-        else => 1,
+        .exited => |c| @intCast(@min(c, 255)),
+        .signal, .stopped, .unknown => 255,
     };
 
     return .{ .stdout = stdout, .stderr = stderr, .code = code };
@@ -673,10 +678,10 @@ test "hook claude rejects oversized payload safely" {
 test "no fake secret in any plugin fixture" {
     const fixture_dirs = &[_][]const u8{ codex_fixture_dir, claude_fixture_dir };
     for (fixture_dirs) |dir| {
-        var d = try std.fs.cwd().openDir(dir, .{ .iterate = true });
-        defer d.close();
+        var d = try std.Io.Dir.cwd().openDir(std.testing.io, dir, .{ .iterate = true });
+        defer d.close(std.testing.io);
         var it = d.iterate();
-        while (try it.next()) |entry| {
+        while (try it.next(std.testing.io)) |entry| {
             if (entry.kind != .file) continue;
             const path = try std.fs.path.join(std.testing.allocator, &.{ dir, entry.name });
             defer std.testing.allocator.free(path);

@@ -1,6 +1,8 @@
 .zig-cache/
 zig-cache/
 zig-out/
+.direnv/
+.envrc.local
 dist/
 dist/work/
 dist-dry-run/
@@ -132,6 +134,7 @@ SECURITY_INVARIANTS.md
 .Codex/
 .opencode/
 .pi/
+.orchestrator/
 .agents/plugins/orca/
 .claude/plugins/
 .claude/
@@ -147,3 +150,10 @@ orca-dashboard-ui/
 
 .skynex/production-gate.json
 .skynex/audit.log
+
+/.crew/
+/.crew
+!.crew/artifacts/
+!.crew/graphs/
+!.crew/artifacts/.gitkeep
+!.crew/graphs/.gitkeep

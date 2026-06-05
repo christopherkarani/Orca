@@ -2,12 +2,30 @@
 
 ## Build Issues
 
-Confirm Zig `0.15.2`:
+Confirm Zig **0.16.0** (this repo pins that version):
 
 ```sh
-zig version
-zig build
+./scripts/zig version   # must show 0.16.0
+./scripts/zig build
 ```
+
+If `./scripts/zig version` is not `0.16.0`, the failure is usually a **toolchain mismatch**, not a source bug.
+
+```sh
+./scripts/ensure-zig-toolchain.sh --install
+eval "$(./scripts/ensure-zig-toolchain.sh --export)"   # or: direnv allow
+./scripts/zig version
+./scripts/zig build
+```
+
+Day-to-day verification after policy/CLI changes:
+
+```sh
+./scripts/test-fast.sh          # build + test-fast + quick-install matrix
+./scripts/zig build test        # full suite before merge/CI
+```
+
+Coding agents must follow `AGENTS.md` → **Zig toolchain** and **Fast iteration**.
 
 ## Command Not Found
 

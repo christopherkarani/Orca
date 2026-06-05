@@ -22,21 +22,12 @@ const readme_path = plugin_dir ++ "/README.md";
 // ---------------------------------------------------------------------------
 
 fn fileExists(path: []const u8) bool {
-    std.fs.cwd().access(path, .{}) catch return false;
+    std.Io.Dir.cwd().access(std.testing.io, path, .{}) catch return false;
     return true;
 }
 
 fn readFile(allocator: std.mem.Allocator, path: []const u8) ![]u8 {
-    const file = try std.fs.cwd().openFile(path, .{});
-    defer file.close();
-    const stat = try file.stat();
-    const size = stat.size;
-    if (size > 1024 * 1024) return error.FileTooLarge;
-    const buf = try allocator.alloc(u8, @intCast(size));
-    errdefer allocator.free(buf);
-    const n = try file.readAll(buf);
-    if (n != size) return error.ShortRead;
-    return buf;
+    return try std.Io.Dir.cwd().readFileAlloc(std.testing.io, path, allocator, .limited(1024 * 1024));
 }
 
 // ---------------------------------------------------------------------------
@@ -48,9 +39,9 @@ test "openclaw plugin manifest exists" {
 }
 
 test "openclaw plugin manifest is valid JSON" {
-    var gpa_state: std.heap.GeneralPurposeAllocator(.{}) = .init;
-    defer _ = gpa_state.deinit();
-    const allocator = gpa_state.allocator();
+    var dbg_state: std.heap.DebugAllocator(.{}) = .init;
+    defer _ = dbg_state.deinit();
+    const allocator = dbg_state.allocator();
 
     const content = try readFile(allocator, manifest_path);
     defer allocator.free(content);
@@ -60,9 +51,9 @@ test "openclaw plugin manifest is valid JSON" {
 }
 
 test "openclaw plugin manifest contains expected fields" {
-    var gpa_state: std.heap.GeneralPurposeAllocator(.{}) = .init;
-    defer _ = gpa_state.deinit();
-    const allocator = gpa_state.allocator();
+    var dbg_state: std.heap.DebugAllocator(.{}) = .init;
+    defer _ = dbg_state.deinit();
+    const allocator = dbg_state.allocator();
 
     const content = try readFile(allocator, manifest_path);
     defer allocator.free(content);
@@ -82,9 +73,9 @@ test "openclaw plugin manifest contains expected fields" {
 }
 
 test "openclaw plugin manifest has configSchema" {
-    var gpa_state: std.heap.GeneralPurposeAllocator(.{}) = .init;
-    defer _ = gpa_state.deinit();
-    const allocator = gpa_state.allocator();
+    var dbg_state: std.heap.DebugAllocator(.{}) = .init;
+    defer _ = dbg_state.deinit();
+    const allocator = dbg_state.allocator();
 
     const content = try readFile(allocator, manifest_path);
     defer allocator.free(content);
@@ -105,9 +96,9 @@ test "openclaw package.json exists" {
 }
 
 test "openclaw package.json is valid JSON" {
-    var gpa_state: std.heap.GeneralPurposeAllocator(.{}) = .init;
-    defer _ = gpa_state.deinit();
-    const allocator = gpa_state.allocator();
+    var dbg_state: std.heap.DebugAllocator(.{}) = .init;
+    defer _ = dbg_state.deinit();
+    const allocator = dbg_state.allocator();
 
     const content = try readFile(allocator, package_json_path);
     defer allocator.free(content);
@@ -117,9 +108,9 @@ test "openclaw package.json is valid JSON" {
 }
 
 test "openclaw package.json has openclaw field" {
-    var gpa_state: std.heap.GeneralPurposeAllocator(.{}) = .init;
-    defer _ = gpa_state.deinit();
-    const allocator = gpa_state.allocator();
+    var dbg_state: std.heap.DebugAllocator(.{}) = .init;
+    defer _ = dbg_state.deinit();
+    const allocator = dbg_state.allocator();
 
     const content = try readFile(allocator, package_json_path);
     defer allocator.free(content);
@@ -136,9 +127,9 @@ test "openclaw package.json has openclaw field" {
 }
 
 test "openclaw package.json has correct name" {
-    var gpa_state: std.heap.GeneralPurposeAllocator(.{}) = .init;
-    defer _ = gpa_state.deinit();
-    const allocator = gpa_state.allocator();
+    var dbg_state: std.heap.DebugAllocator(.{}) = .init;
+    defer _ = dbg_state.deinit();
+    const allocator = dbg_state.allocator();
 
     const content = try readFile(allocator, package_json_path);
     defer allocator.free(content);
@@ -151,9 +142,9 @@ test "openclaw package.json has correct name" {
 }
 
 test "openclaw package.json main points to dist/index.js" {
-    var gpa_state: std.heap.GeneralPurposeAllocator(.{}) = .init;
-    defer _ = gpa_state.deinit();
-    const allocator = gpa_state.allocator();
+    var dbg_state: std.heap.DebugAllocator(.{}) = .init;
+    defer _ = dbg_state.deinit();
+    const allocator = dbg_state.allocator();
 
     const content = try readFile(allocator, package_json_path);
     defer allocator.free(content);
@@ -166,9 +157,9 @@ test "openclaw package.json main points to dist/index.js" {
 }
 
 test "openclaw package.json types points to dist/index.d.ts" {
-    var gpa_state: std.heap.GeneralPurposeAllocator(.{}) = .init;
-    defer _ = gpa_state.deinit();
-    const allocator = gpa_state.allocator();
+    var dbg_state: std.heap.DebugAllocator(.{}) = .init;
+    defer _ = dbg_state.deinit();
+    const allocator = dbg_state.allocator();
 
     const content = try readFile(allocator, package_json_path);
     defer allocator.free(content);
@@ -181,9 +172,9 @@ test "openclaw package.json types points to dist/index.d.ts" {
 }
 
 test "openclaw package.json files includes openclaw.plugin.json" {
-    var gpa_state: std.heap.GeneralPurposeAllocator(.{}) = .init;
-    defer _ = gpa_state.deinit();
-    const allocator = gpa_state.allocator();
+    var dbg_state: std.heap.DebugAllocator(.{}) = .init;
+    defer _ = dbg_state.deinit();
+    const allocator = dbg_state.allocator();
 
     const content = try readFile(allocator, package_json_path);
     defer allocator.free(content);
@@ -203,9 +194,9 @@ test "openclaw package.json files includes openclaw.plugin.json" {
 }
 
 test "openclaw package.json has no install scripts" {
-    var gpa_state: std.heap.GeneralPurposeAllocator(.{}) = .init;
-    defer _ = gpa_state.deinit();
-    const allocator = gpa_state.allocator();
+    var dbg_state: std.heap.DebugAllocator(.{}) = .init;
+    defer _ = dbg_state.deinit();
+    const allocator = dbg_state.allocator();
 
     const content = try readFile(allocator, package_json_path);
     defer allocator.free(content);
@@ -223,9 +214,9 @@ test "openclaw package.json has no install scripts" {
 }
 
 test "openclaw package.json has no mcp or drone fields" {
-    var gpa_state: std.heap.GeneralPurposeAllocator(.{}) = .init;
-    defer _ = gpa_state.deinit();
-    const allocator = gpa_state.allocator();
+    var dbg_state: std.heap.DebugAllocator(.{}) = .init;
+    defer _ = dbg_state.deinit();
+    const allocator = dbg_state.allocator();
 
     const content = try readFile(allocator, package_json_path);
     defer allocator.free(content);
@@ -442,9 +433,9 @@ test "openclaw fixtures are valid JSON" {
         "session_end.json",
     };
 
-    var gpa_state: std.heap.GeneralPurposeAllocator(.{}) = .init;
-    defer _ = gpa_state.deinit();
-    const allocator = gpa_state.allocator();
+    var dbg_state: std.heap.DebugAllocator(.{}) = .init;
+    defer _ = dbg_state.deinit();
+    const allocator = dbg_state.allocator();
 
     for (fixtures) |f| {
         const path = try std.fs.path.join(allocator, &.{ fixture_dir, f });
@@ -475,9 +466,9 @@ test "openclaw fixtures do not contain real secrets" {
         "session_end.json",
     };
 
-    var gpa_state: std.heap.GeneralPurposeAllocator(.{}) = .init;
-    defer _ = gpa_state.deinit();
-    const allocator = gpa_state.allocator();
+    var dbg_state: std.heap.DebugAllocator(.{}) = .init;
+    defer _ = dbg_state.deinit();
+    const allocator = dbg_state.allocator();
 
     for (fixtures) |f| {
         const path = try std.fs.path.join(allocator, &.{ fixture_dir, f });

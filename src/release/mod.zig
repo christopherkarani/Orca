@@ -60,8 +60,8 @@ test "phase 19 package and workflow files are present" {
     };
 
     for (required_files) |path| {
-        var file = try std.fs.cwd().openFile(path, .{});
-        file.close();
+        var file = try std.Io.Dir.cwd().openFile(std.testing.io, path, .{});
+        file.close(std.testing.io);
     }
 }
 
@@ -81,7 +81,7 @@ test "phase 19 release files include integrity checks without obvious credential
     };
 
     for (checked_files) |path| {
-        const text = try std.fs.cwd().readFileAlloc(std.testing.allocator, path, 256 * 1024);
+        const text = try std.Io.Dir.cwd().readFileAlloc(std.testing.io, path, std.testing.allocator, .limited(256 * 1024));
         defer std.testing.allocator.free(text);
         try std.testing.expect(std.mem.indexOf(u8, text, "checksum") != null or std.mem.indexOf(u8, text, "Checksum") != null or std.mem.indexOf(u8, text, "sha256") != null);
         try std.testing.expect(std.mem.indexOf(u8, text, "BEGIN PRIVATE KEY") == null);
@@ -92,7 +92,7 @@ test "phase 19 release files include integrity checks without obvious credential
 }
 
 test "phase 19 Dockerfile references installed Orca binary" {
-    const text = try std.fs.cwd().readFileAlloc(std.testing.allocator, "packaging/docker/Dockerfile", 64 * 1024);
+    const text = try std.Io.Dir.cwd().readFileAlloc(std.testing.io, "packaging/docker/Dockerfile", std.testing.allocator, .limited(64 * 1024));
     defer std.testing.allocator.free(text);
     try std.testing.expect(std.mem.indexOf(u8, text, "COPY orca") != null);
     try std.testing.expectEqual(@as(usize, 1), countOccurrences(text, "COPY orca /usr/local/bin/orca"));
@@ -110,7 +110,7 @@ fn countOccurrences(haystack: []const u8, needle: []const u8) usize {
 }
 
 test "GitHub composite action does not shell-interpolate command input before Orca" {
-    const text = try std.fs.cwd().readFileAlloc(std.testing.allocator, ".github/actions/orca-run/action.yml", 64 * 1024);
+    const text = try std.Io.Dir.cwd().readFileAlloc(std.testing.io, ".github/actions/orca-run/action.yml", std.testing.allocator, .limited(64 * 1024));
     defer std.testing.allocator.free(text);
     try std.testing.expect(std.mem.indexOf(u8, text, "orca run --mode ci -- ${{ inputs.command }}") == null);
     try std.testing.expect(std.mem.indexOf(u8, text, "ORCA_ACTION_COMMAND: ${{ inputs.command }}") != null);

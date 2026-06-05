@@ -134,13 +134,13 @@ test "session approval stores exact command for session scope" {
 test "approval prompt supports explain and session allow" {
     var input: std.Io.Reader = .fixed("?\nA\n");
     var output_buf: [1024]u8 = undefined;
-    var output = std.io.fixedBufferStream(&output_buf);
-    const choice = try prompt(&input, output.writer(), .{
+    var output_writer: std.Io.Writer = .fixed(&output_buf);
+    const choice = try prompt(&input, &output_writer, .{
         .command = "npm install",
         .risk_class = "package_install",
         .risk_reason = "package install can run scripts",
         .policy_reason = "commands.default: ask",
     });
     try std.testing.expectEqual(ApprovalChoice.allow_session, choice);
-    try std.testing.expect(std.mem.indexOf(u8, output.getWritten(), "Risk explanation") != null);
+    try std.testing.expect(std.mem.indexOf(u8, output_writer.buffered(), "Risk explanation") != null);
 }

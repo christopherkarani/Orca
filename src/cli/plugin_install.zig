@@ -11,8 +11,8 @@ pub const MarketplaceHostInstall = struct {
     marketplace_json: []const u8,
 };
 
-pub fn resolveWorkspaceInstallRoot(allocator: std.mem.Allocator) ![]u8 {
-    return supervisor.resolveWorkspaceRoot(allocator, null, ".") catch try std.fs.cwd().realpathAlloc(allocator, ".");
+pub fn resolveWorkspaceInstallRoot(io: std.Io, allocator: std.mem.Allocator) ![]u8 {
+    return supervisor.resolveWorkspaceRoot(io, allocator, null, ".") catch try std.Io.Dir.cwd().realPathFileAlloc(io, ".", allocator);
 }
 
 pub fn marketplaceHostInstallSpec(
@@ -38,12 +38,13 @@ pub fn marketplaceHostInstallSpec(
 }
 
 pub fn loadMarketplaceTemplate(
+    io: std.Io,
     allocator: std.mem.Allocator,
     template_path: []const u8,
     bundled_source_path: []const u8,
     install_source_path: []const u8,
 ) ![]u8 {
-    const template = try std.fs.cwd().readFileAlloc(allocator, template_path, 64 * 1024);
+    const template = try std.Io.Dir.cwd().readFileAlloc(io, template_path, allocator, .limited(64 * 1024));
     errdefer allocator.free(template);
     if (std.mem.indexOf(u8, template, bundled_source_path) == null) return error.TemplatePathMissing;
     const rewritten = try std.mem.replaceOwned(u8, allocator, template, bundled_source_path, install_source_path);
@@ -51,85 +52,88 @@ pub fn loadMarketplaceTemplate(
     return rewritten;
 }
 
-pub fn installTextIfSafe(allocator: std.mem.Allocator, content: []const u8, destination_path: []const u8, allow_upgrade: bool) !bool {
-    if (fileExistsAbsolute(destination_path)) {
-        const same = try filesEqualText(allocator, content, destination_path);
+pub fn installTextIfSafe(io: std.Io, allocator: std.mem.Allocator, content: []const u8, destination_path: []const u8, allow_upgrade: bool) !bool {
+    if (fileExistsAbsolute(io, destination_path)) {
+        const same = try filesEqualText(io, allocator, content, destination_path);
         if (same) return false;
         if (!allow_upgrade) return error.RefusingToOverwriteDifferentFile;
-        try std.fs.cwd().deleteFile(destination_path);
+        try std.Io.Dir.deleteFileAbsolute(io, destination_path);
     }
-    const parent = std.fs.path.dirname(destination_path) orelse return error.InvalidPath;
-    try std.fs.cwd().makePath(parent);
-    try std.fs.cwd().writeFile(.{ .sub_path = destination_path, .data = content, .flags = .{ .exclusive = true } });
+    if (std.fs.path.dirname(destination_path)) |parent| try std.Io.Dir.cwd().createDirPath(io, parent);
+    const file = try std.Io.Dir.createFileAbsolute(io, destination_path, .{});
+    defer file.close(io);
+    try file.writeStreamingAll(io, content);
     return true;
 }
 
-pub fn filesEqualText(allocator: std.mem.Allocator, expected: []const u8, path: []const u8) !bool {
-    const actual = try std.fs.cwd().readFileAlloc(allocator, path, 1024 * 1024);
+pub fn filesEqualText(io: std.Io, allocator: std.mem.Allocator, expected: []const u8, path: []const u8) !bool {
+    const actual = try std.Io.Dir.cwd().readFileAlloc(io, path, allocator, .limited(1024 * 1024));
     defer allocator.free(actual);
     return std.mem.eql(u8, expected, actual);
 }
 
-pub fn installDirectoryIfSafe(allocator: std.mem.Allocator, source_dir: []const u8, destination_dir: []const u8, allow_upgrade: bool) !void {
-    if (dirExists(destination_dir)) {
-        const same = directoriesEquivalent(allocator, source_dir, destination_dir) catch |err| switch (err) {
+pub fn installDirectoryIfSafe(io: std.Io, allocator: std.mem.Allocator, source_dir: []const u8, destination_dir: []const u8, allow_upgrade: bool) !void {
+    if (dirExists(io, destination_dir)) {
+        const same = directoriesEquivalent(io, allocator, source_dir, destination_dir) catch |err| switch (err) {
             error.OutOfMemory => return err,
             else => false,
         };
         if (same) return;
         if (!allow_upgrade) return error.RefusingToOverwriteDifferentFile;
-        try std.fs.cwd().deleteTree(destination_dir);
+        try std.Io.Dir.cwd().deleteTree(io, destination_dir);
     }
-    try copyDirectoryRecursive(allocator, source_dir, destination_dir);
+    try copyDirectoryRecursive(io, allocator, source_dir, destination_dir);
 }
 
-pub fn copyDirectoryRecursive(allocator: std.mem.Allocator, source_dir: []const u8, destination_dir: []const u8) !void {
-    try std.fs.cwd().makePath(destination_dir);
-    var source = try std.fs.cwd().openDir(source_dir, .{ .iterate = true });
-    defer source.close();
+pub fn copyDirectoryRecursive(io: std.Io, allocator: std.mem.Allocator, source_dir: []const u8, destination_dir: []const u8) !void {
+    try std.Io.Dir.cwd().createDirPath(io, destination_dir);
+    var source = try std.Io.Dir.cwd().openDir(io, source_dir, .{ .iterate = true });
+    defer source.close(io);
     var it = source.iterate();
-    while (try it.next()) |entry| {
+    while (try it.next(io)) |entry| {
         const source_path = try std.fs.path.join(allocator, &.{ source_dir, entry.name });
         defer allocator.free(source_path);
         const dest_path = try std.fs.path.join(allocator, &.{ destination_dir, entry.name });
         defer allocator.free(dest_path);
         switch (entry.kind) {
-            .directory => try copyDirectoryRecursive(allocator, source_path, dest_path),
+            .directory => try copyDirectoryRecursive(io, allocator, source_path, dest_path),
             .file => {
-                const bytes = try std.fs.cwd().readFileAlloc(allocator, source_path, 8 * 1024 * 1024);
+                const bytes = try std.Io.Dir.cwd().readFileAlloc(io, source_path, allocator, .limited(8 * 1024 * 1024));
                 defer allocator.free(bytes);
-                try std.fs.cwd().writeFile(.{ .sub_path = dest_path, .data = bytes, .flags = .{ .truncate = true } });
+                const file = try std.Io.Dir.createFileAbsolute(io, dest_path, .{});
+                defer file.close(io);
+                try file.writeStreamingAll(io, bytes);
             },
             else => {},
         }
     }
 }
 
-pub fn directoriesEquivalent(allocator: std.mem.Allocator, lhs_dir: []const u8, rhs_dir: []const u8) !bool {
-    if (!try directoryTreeEquivalent(allocator, lhs_dir, rhs_dir)) return false;
-    return directoryTreeEquivalent(allocator, rhs_dir, lhs_dir);
+pub fn directoriesEquivalent(io: std.Io, allocator: std.mem.Allocator, lhs_dir: []const u8, rhs_dir: []const u8) !bool {
+    if (!try directoryTreeEquivalent(io, allocator, lhs_dir, rhs_dir)) return false;
+    return directoryTreeEquivalent(io, allocator, rhs_dir, lhs_dir);
 }
 
-fn directoryTreeEquivalent(allocator: std.mem.Allocator, lhs_dir: []const u8, rhs_dir: []const u8) !bool {
-    var lhs = try std.fs.cwd().openDir(lhs_dir, .{ .iterate = true });
-    defer lhs.close();
-    var rhs = try std.fs.cwd().openDir(rhs_dir, .{ .iterate = true });
-    defer rhs.close();
+fn directoryTreeEquivalent(io: std.Io, allocator: std.mem.Allocator, lhs_dir: []const u8, rhs_dir: []const u8) !bool {
+    var lhs = try std.Io.Dir.cwd().openDir(io, lhs_dir, .{ .iterate = true });
+    defer lhs.close(io);
+    var rhs = try std.Io.Dir.cwd().openDir(io, rhs_dir, .{ .iterate = true });
+    defer rhs.close(io);
 
     var lhs_it = lhs.iterate();
-    while (try lhs_it.next()) |entry| {
+    while (try lhs_it.next(io)) |entry| {
         const lhs_path = try std.fs.path.join(allocator, &.{ lhs_dir, entry.name });
         defer allocator.free(lhs_path);
         const rhs_path = try std.fs.path.join(allocator, &.{ rhs_dir, entry.name });
         defer allocator.free(rhs_path);
         switch (entry.kind) {
             .directory => {
-                if (!dirExists(rhs_path)) return false;
-                if (!try directoryTreeEquivalent(allocator, lhs_path, rhs_path)) return false;
+                if (!dirExists(io, rhs_path)) return false;
+                if (!try directoryTreeEquivalent(io, allocator, lhs_path, rhs_path)) return false;
             },
             .file => {
-                if (!fileExistsAbsolute(rhs_path)) return false;
-                if (!try filesEqual(allocator, lhs_path, rhs_path)) return false;
+                if (!fileExistsAbsolute(io, rhs_path)) return false;
+                if (!try filesEqual(io, allocator, lhs_path, rhs_path)) return false;
             },
             else => {},
         }
@@ -137,17 +141,17 @@ fn directoryTreeEquivalent(allocator: std.mem.Allocator, lhs_dir: []const u8, rh
     return true;
 }
 
-pub fn filesEqual(allocator: std.mem.Allocator, lhs_path: []const u8, rhs_path: []const u8) !bool {
-    const lhs = try std.fs.cwd().readFileAlloc(allocator, lhs_path, 1024 * 1024);
+pub fn filesEqual(io: std.Io, allocator: std.mem.Allocator, lhs_path: []const u8, rhs_path: []const u8) !bool {
+    const lhs = try std.Io.Dir.cwd().readFileAlloc(io, lhs_path, allocator, .limited(1024 * 1024));
     defer allocator.free(lhs);
-    const rhs = try std.fs.cwd().readFileAlloc(allocator, rhs_path, 1024 * 1024);
+    const rhs = try std.Io.Dir.cwd().readFileAlloc(io, rhs_path, allocator, .limited(1024 * 1024));
     defer allocator.free(rhs);
     return std.mem.eql(u8, lhs, rhs);
 }
 
-pub fn installMarketplaceHostPlugin(allocator: std.mem.Allocator, plugin_dir: []const u8, spec: MarketplaceHostInstall, stdout: anytype) !void {
-    try installDirectoryIfSafe(allocator, plugin_dir, spec.plugin_dest, true);
-    const installed_marketplace = try installTextIfSafe(allocator, spec.marketplace_json, spec.marketplace_path, true);
+pub fn installMarketplaceHostPlugin(io: std.Io, allocator: std.mem.Allocator, plugin_dir: []const u8, spec: MarketplaceHostInstall, stdout: anytype) !void {
+    try installDirectoryIfSafe(io, allocator, plugin_dir, spec.plugin_dest, true);
+    const installed_marketplace = try installTextIfSafe(io, allocator, spec.marketplace_json, spec.marketplace_path, true);
     if (installed_marketplace) {
         try stdout.print("  marketplace: wrote {s}\n", .{spec.marketplace_path});
     } else {
@@ -157,6 +161,7 @@ pub fn installMarketplaceHostPlugin(allocator: std.mem.Allocator, plugin_dir: []
 }
 
 pub fn installCodexPlugin(
+    io: std.Io,
     allocator: std.mem.Allocator,
     plugin_dir: []const u8,
     workspace_root: []const u8,
@@ -168,10 +173,11 @@ pub fn installCodexPlugin(
         allocator.free(spec.plugin_dest);
         allocator.free(spec.marketplace_path);
     }
-    try installMarketplaceHostPlugin(allocator, plugin_dir, spec, stdout);
+    try installMarketplaceHostPlugin(io, allocator, plugin_dir, spec, stdout);
 }
 
 pub fn installClaudePlugin(
+    io: std.Io,
     allocator: std.mem.Allocator,
     plugin_dir: []const u8,
     workspace_root: []const u8,
@@ -183,7 +189,7 @@ pub fn installClaudePlugin(
         allocator.free(spec.plugin_dest);
         allocator.free(spec.marketplace_path);
     }
-    try installMarketplaceHostPlugin(allocator, plugin_dir, spec, stdout);
+    try installMarketplaceHostPlugin(io, allocator, plugin_dir, spec, stdout);
 }
 
 pub fn printMarketplaceHostInstallPlan(stdout: anytype, spec: MarketplaceHostInstall, plugin_dir: []const u8) !void {
@@ -193,14 +199,14 @@ pub fn printMarketplaceHostInstallPlan(stdout: anytype, spec: MarketplaceHostIns
     try stdout.print("  next step: copy {s} to {s} and write marketplace file\n", .{ plugin_dir, spec.plugin_dest });
 }
 
-fn fileExistsAbsolute(path: []const u8) bool {
-    std.fs.cwd().access(path, .{}) catch return false;
+fn fileExistsAbsolute(io: std.Io, path: []const u8) bool {
+    std.Io.Dir.accessAbsolute(io, path, .{}) catch return false;
     return true;
 }
 
-fn dirExists(path: []const u8) bool {
-    var dir = std.fs.cwd().openDir(path, .{}) catch return false;
-    dir.close();
+fn dirExists(io: std.Io, path: []const u8) bool {
+    var dir = std.Io.Dir.openDirAbsolute(io, path, .{}) catch return false;
+    dir.close(io);
     return true;
 }
 
@@ -208,23 +214,24 @@ test "directoriesEquivalent rejects destination with extra stale file" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
 
-    try tmp.dir.makePath("src");
-    try tmp.dir.writeFile(.{ .sub_path = "src/a.txt", .data = "same" });
-    try tmp.dir.makePath("dst");
-    try tmp.dir.writeFile(.{ .sub_path = "dst/a.txt", .data = "same" });
-    try tmp.dir.writeFile(.{ .sub_path = "dst/stale.txt", .data = "old" });
+    try tmp.dir.createDirPath(std.testing.io, "src");
+    try tmp.dir.writeFile(std.testing.io, .{ .sub_path = "src/a.txt", .data = "same" });
+    try tmp.dir.createDirPath(std.testing.io, "dst");
+    try tmp.dir.writeFile(std.testing.io, .{ .sub_path = "dst/a.txt", .data = "same" });
+    try tmp.dir.writeFile(std.testing.io, .{ .sub_path = "dst/stale.txt", .data = "old" });
 
-    const src = try tmp.dir.realpathAlloc(std.testing.allocator, "src");
+    const src = try tmp.dir.realPathFileAlloc(std.testing.io, "src", std.testing.allocator);
     defer std.testing.allocator.free(src);
-    const dst = try tmp.dir.realpathAlloc(std.testing.allocator, "dst");
+    const dst = try tmp.dir.realPathFileAlloc(std.testing.io, "dst", std.testing.allocator);
     defer std.testing.allocator.free(dst);
 
-    try std.testing.expect(!try directoriesEquivalent(std.testing.allocator, src, dst));
+    try std.testing.expect(!try directoriesEquivalent(std.testing.io, std.testing.allocator, src, dst));
 }
 
 test "loadMarketplaceTemplate rewrites bundled source path" {
     const template_path = "integrations/codex-plugin/examples/marketplace.json";
     const json = try loadMarketplaceTemplate(
+        std.testing.io,
         std.testing.allocator,
         template_path,
         "./integrations/codex-plugin",

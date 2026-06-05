@@ -15,7 +15,7 @@ fn expectNotContains(haystack: []const u8, needle: []const u8) !void {
 }
 
 fn expectMissing(path: []const u8) !void {
-    try std.testing.expectError(error.FileNotFound, std.fs.cwd().access(path, .{}));
+    try std.testing.expectError(error.FileNotFound, std.Io.Dir.cwd().access(std.testing.io, path, .{}));
 }
 
 test "phase 42 go-to-market package is excluded from the public repository" {
@@ -56,14 +56,14 @@ test "phase 42 public docs keep customer acquisition claims out of release surfa
     };
 
     for (public_files) |path| {
-        const text = try std.fs.cwd().readFileAlloc(allocator, path, 512 * 1024);
+        const text = try std.Io.Dir.cwd().readFileAlloc(std.testing.io, path, allocator, .limited(512 * 1024));
         defer allocator.free(text);
         for (forbidden) |phrase| try expectNotContains(text, phrase);
     }
 }
 
 test "phase 42 public README stays product-focused and safety-bounded" {
-    const text = try std.fs.cwd().readFileAlloc(std.testing.allocator, "README.md", 512 * 1024);
+    const text = try std.Io.Dir.cwd().readFileAlloc(std.testing.io, "README.md", std.testing.allocator, .limited(512 * 1024));
     defer std.testing.allocator.free(text);
     try expectContains(text, "Orca");
     try expectContains(text, "local");

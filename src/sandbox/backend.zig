@@ -167,36 +167,54 @@ pub const StdioBehavior = enum {
 };
 
 pub const PrepareRequest = struct {
+    io: std.Io,
     argv: []const []const u8,
     workspace_root: []const u8,
     stdio: StdioBehavior = .inherit,
-    env_map: ?*const std.process.EnvMap = null,
+    env_map: ?*const std.process.Environ.Map = null,
 };
 
 pub const PreparedSandbox = struct {
-    child: std.process.Child,
+    io: std.Io,
+    argv: []const []const u8,
+    workspace_root: []const u8,
+    env_map: ?*const std.process.Environ.Map,
+    stdio: StdioBehavior,
+    child: ?std.process.Child = null,
     report: ReportSet,
     process_group_cleanup: bool = false,
     process_group_id: ?std.posix.pid_t = null,
+    use_process_group: bool = false,
     spawned: bool = false,
 
     pub fn spawn(self: *PreparedSandbox) !void {
-        try self.child.spawn();
+        var options: std.process.SpawnOptions = .{
+            .argv = self.argv,
+            .cwd = .{ .path = self.workspace_root },
+            .environ_map = self.env_map,
+            .stdin = mapStdio(self.stdio),
+            .stdout = mapStdio(self.stdio),
+            .stderr = mapStdio(self.stdio),
+        };
+        if (self.use_process_group) options.pgid = 0;
+        const child = try std.process.spawn(self.io, options);
+        self.child = child;
         switch (builtin.os.tag) {
-            .windows, .wasi => {},
-            else => if (self.process_group_cleanup) {
-                self.process_group_id = @intCast(self.child.id);
+            .linux, .macos => {
+                if (self.process_group_cleanup) {
+                    if (child.id) |pid| self.process_group_id = pid;
+                }
             },
+            else => {},
         }
         self.spawned = true;
     }
 
-    pub fn waitForSpawn(self: *PreparedSandbox) !void {
-        try self.child.waitForSpawn();
-    }
+    pub fn waitForSpawn(_: *PreparedSandbox) !void {}
 
     pub fn wait(self: *PreparedSandbox) !std.process.Child.Term {
-        const term = try self.child.wait();
+        const child = &(self.child orelse return error.InvalidState);
+        const term = try child.wait(self.io);
         self.spawned = false;
         self.cleanupProcessGroup();
         return term;
@@ -205,15 +223,16 @@ pub const PreparedSandbox = struct {
     pub fn terminateAfterParentError(self: *PreparedSandbox) void {
         if (!self.spawned) return;
         if (self.process_group_cleanup) {
-            if (self.process_group_id) |pgid| killProcessGroup(pgid);
+            if (self.process_group_id) |pgid| killProcessGroup(self.io, pgid);
         }
-        _ = self.child.kill() catch self.child.wait() catch {};
+        const child = &(self.child orelse return);
+        child.kill(self.io);
         self.spawned = false;
     }
 
     fn cleanupProcessGroup(self: *PreparedSandbox) void {
         if (!self.process_group_cleanup) return;
-        if (self.process_group_id) |pgid| killProcessGroup(pgid);
+        if (self.process_group_id) |pgid| killProcessGroup(self.io, pgid);
     }
 };
 
@@ -240,13 +259,13 @@ pub fn prepare(allocator: std.mem.Allocator, request: PrepareRequest) PreparedSa
     return prepareFallback(allocator, request, report);
 }
 
-pub fn killProcessGroup(pgid: std.posix.pid_t) void {
+pub fn killProcessGroup(io: std.Io, pgid: std.posix.pid_t) void {
     switch (builtin.os.tag) {
         .windows, .wasi => return,
         else => {
             if (pgid <= 0) return;
             std.posix.kill(-pgid, std.posix.SIG.TERM) catch {};
-            std.Thread.sleep(50 * std.time.ns_per_ms);
+            std.Io.sleep(io, std.Io.Duration.fromNanoseconds(50 * std.time.ns_per_ms), .awake) catch {};
             std.posix.kill(-pgid, std.posix.SIG.KILL) catch {};
         },
     }
@@ -259,27 +278,23 @@ fn supportsPosixProcessGroups() bool {
     };
 }
 
-pub fn prepareFallback(allocator: std.mem.Allocator, request: PrepareRequest, report: ReportSet) PreparedSandbox {
-    var child = std.process.Child.init(request.argv, allocator);
-    child.cwd = request.workspace_root;
-    child.env_map = request.env_map;
-    configureStdio(&child, request.stdio);
-    return .{ .child = child, .report = report };
+pub fn prepareFallback(_: std.mem.Allocator, request: PrepareRequest, report: ReportSet) PreparedSandbox {
+    return .{
+        .io = request.io,
+        .argv = request.argv,
+        .workspace_root = request.workspace_root,
+        .env_map = request.env_map,
+        .stdio = request.stdio,
+        .report = report,
+        .process_group_cleanup = supportsPosixProcessGroups(),
+    };
 }
 
-pub fn configureStdio(child: *std.process.Child, stdio: StdioBehavior) void {
-    switch (stdio) {
-        .inherit => {
-            child.stdin_behavior = .Inherit;
-            child.stdout_behavior = .Inherit;
-            child.stderr_behavior = .Inherit;
-        },
-        .ignore => {
-            child.stdin_behavior = .Ignore;
-            child.stdout_behavior = .Ignore;
-            child.stderr_behavior = .Ignore;
-        },
-    }
+fn mapStdio(behavior: StdioBehavior) std.process.SpawnOptions.StdIo {
+    return switch (behavior) {
+        .inherit => .inherit,
+        .ignore => .ignore,
+    };
 }
 
 pub fn fallbackReport(os: platform.Os) ReportSet {

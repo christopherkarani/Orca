@@ -19,8 +19,8 @@ test "mutation policy parser fails safely on malformed inputs" {
 test "mutation path normalizer handles malformed and edge path inputs" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
-    try tmp.dir.makePath("workspace");
-    const root = try tmp.dir.realpathAlloc(std.testing.allocator, "workspace");
+    try tmp.dir.createDirPath(std.testing.io, "workspace");
+    const root = try tmp.dir.realPathFileAlloc(std.testing.io, "workspace", std.testing.allocator);
     defer std.testing.allocator.free(root);
     const invalid_utf8 = [_]u8{ 0xff, 0xfe, 0xfd };
     const cases = [_][]const u8{
@@ -32,7 +32,7 @@ test "mutation path normalizer handles malformed and edge path inputs" {
         "safe dir/$(echo).txt",
     };
     for (cases) |case| {
-        var normalized = orca.intercept.files.normalizePath(std.testing.allocator, root, case) catch continue;
+        var normalized = orca.intercept.files.normalizePath(std.testing.io, std.testing.allocator, root, case) catch continue;
         normalized.deinit(std.testing.allocator);
     }
 }

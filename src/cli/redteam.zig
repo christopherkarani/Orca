@@ -1,5 +1,6 @@
 const std = @import("std");
 
+const env_util = @import("../env_util.zig");
 const redteam = @import("../redteam/mod.zig");
 const exit_codes = @import("exit_codes.zig");
 const help = @import("help.zig");
@@ -12,22 +13,25 @@ const Options = struct {
     fixture_id: ?[]const u8 = null,
 };
 
-pub fn command(argv: []const []const u8, stdout: anytype, stderr: anytype) !u8 {
-    const options = parseOptions(argv, stdout, stderr) catch |err| switch (err) {
+pub fn command(io: std.Io, argv: []const []const u8, stdout: anytype, stderr: anytype) !u8 {
+    const options = parseOptions(io, argv, stdout, stderr) catch |err| switch (err) {
         error.HelpShown => return exit_codes.success,
         error.Usage => return exit_codes.usage,
         else => return err,
     };
 
-    var gpa_state: std.heap.GeneralPurposeAllocator(.{}) = .init;
+    var gpa_state: std.heap.DebugAllocator(.{}) = .init;
     defer _ = gpa_state.deinit();
     const allocator = gpa_state.allocator();
 
     const fixture_root = blk: {
         if (options.root.len > 0) break :blk try allocator.dupe(u8, options.root);
-        const workspace_root = std.process.getEnvVarOwned(allocator, "ORCA_WORKSPACE_ROOT") catch ".";
-        defer if (workspace_root.ptr != ".".ptr) allocator.free(workspace_root);
-        const resolved = resource_root.resolveResourcePath(allocator, .{
+        var env_map = try env_util.createProcessMap(allocator);
+        defer env_map.deinit();
+        const workspace_owned = try env_util.getOwned(&env_map, allocator, "ORCA_WORKSPACE_ROOT");
+        defer if (workspace_owned) |owned| allocator.free(owned);
+        const workspace_root = workspace_owned orelse ".";
+        const resolved = resource_root.resolveResourcePath(io, allocator, .{
             .workspace_root = if (workspace_root.ptr != ".".ptr) workspace_root else ".",
         }, "fixtures") catch |err| switch (err) {
             error.ResourceNotFound => {
@@ -50,7 +54,7 @@ pub fn command(argv: []const []const u8, stdout: anytype, stderr: anytype) !u8 {
     };
     defer allocator.free(fixture_root);
 
-    var fixture_set = redteam.fixtures.discover(allocator, fixture_root, options.fixture_id) catch |err| {
+    var fixture_set = redteam.fixtures.discover(io, allocator, fixture_root, options.fixture_id) catch |err| {
         try stderr.print("orca redteam: failed to discover fixtures: {s}\n", .{@errorName(err)});
         return exit_codes.general;
     };
@@ -80,14 +84,14 @@ pub fn command(argv: []const []const u8, stdout: anytype, stderr: anytype) !u8 {
     return exit_codes.success;
 }
 
-fn parseOptions(argv: []const []const u8, stdout: anytype, stderr: anytype) !Options {
+fn parseOptions(io: std.Io, argv: []const []const u8, stdout: anytype, stderr: anytype) !Options {
     var options: Options = .{};
     var saw_path = false;
     var index: usize = 0;
     while (index < argv.len) : (index += 1) {
         const arg = argv[index];
         if (std.mem.eql(u8, arg, "--help") or std.mem.eql(u8, arg, "-h")) {
-            _ = try help.writeCommand(stdout, "redteam");
+            _ = try help.writeCommand(io, stdout, "redteam");
             return error.HelpShown;
         } else if (std.mem.eql(u8, arg, "--json")) {
             options.json = true;
@@ -118,22 +122,22 @@ fn parseOptions(argv: []const []const u8, stdout: anytype, stderr: anytype) !Opt
 test "redteam command rejects unknown options" {
     var stdout_buf: [512]u8 = undefined;
     var stderr_buf: [512]u8 = undefined;
-    var stdout_stream = std.io.fixedBufferStream(&stdout_buf);
-    var stderr_stream = std.io.fixedBufferStream(&stderr_buf);
+    var stdout_writer: std.Io.Writer = .fixed(&stdout_buf);
+    var stderr_writer: std.Io.Writer = .fixed(&stderr_buf);
 
-    const code = try command(&.{"--bad"}, stdout_stream.writer(), stderr_stream.writer());
+    const code = try command(std.testing.io, &.{"--bad"}, &stdout_writer, &stderr_writer);
     try std.testing.expectEqual(exit_codes.usage, code);
-    try std.testing.expect(std.mem.indexOf(u8, stderr_stream.getWritten(), "unknown option") != null);
+    try std.testing.expect(std.mem.indexOf(u8, stderr_writer.buffered(), "unknown option") != null);
 }
 
 test "redteam ci exits nonzero on failing fixture" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
-    try tmp.dir.makePath("fixtures/secret-exfil/fail");
+    try tmp.dir.createDirPath(std.testing.io, "fixtures/secret-exfil/fail");
     {
-        const file = try tmp.dir.createFile("fixtures/secret-exfil/fail/fixture.yaml", .{});
-        defer file.close();
-        try file.writeAll(
+        const file = try tmp.dir.createFile(std.testing.io, "fixtures/secret-exfil/fail/fixture.yaml", .{});
+        defer file.close(std.testing.io);
+        try file.writeStreamingAll(std.testing.io, 
             \\version: 1
             \\id: failing
             \\name: Failing fixture
@@ -153,14 +157,14 @@ test "redteam ci exits nonzero on failing fixture" {
             \\
         );
     }
-    const root = try tmp.dir.realpathAlloc(std.testing.allocator, "fixtures");
+    const root = try tmp.dir.realPathFileAlloc(std.testing.io, "fixtures", std.testing.allocator);
     defer std.testing.allocator.free(root);
     var stdout_buf: [4096]u8 = undefined;
     var stderr_buf: [512]u8 = undefined;
-    var stdout_stream = std.io.fixedBufferStream(&stdout_buf);
-    var stderr_stream = std.io.fixedBufferStream(&stderr_buf);
+    var stdout_writer: std.Io.Writer = .fixed(&stdout_buf);
+    var stderr_writer: std.Io.Writer = .fixed(&stderr_buf);
 
-    const code = try command(&.{ root, "--ci" }, stdout_stream.writer(), stderr_stream.writer());
+    const code = try command(std.testing.io, &.{ root, "--ci" }, &stdout_writer, &stderr_writer);
     try std.testing.expectEqual(exit_codes.redteam_failure, code);
-    try std.testing.expect(std.mem.indexOf(u8, stdout_stream.getWritten(), "Orca Redteam Score") != null);
+    try std.testing.expect(std.mem.indexOf(u8, stdout_writer.buffered(), "Orca Redteam Score") != null);
 }

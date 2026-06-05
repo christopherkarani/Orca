@@ -3,8 +3,9 @@ const std = @import("std");
 pub const Timestamp = struct {
     unix_seconds: i64,
 
-    pub fn now() Timestamp {
-        return .{ .unix_seconds = std.time.timestamp() };
+    pub fn now(io: std.Io) Timestamp {
+        const ts = std.Io.Timestamp.now(io, .real);
+        return .{ .unix_seconds = ts.toSeconds() };
     }
 
     pub fn fromUnixSeconds(seconds: i64) Timestamp {

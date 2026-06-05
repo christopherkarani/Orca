@@ -25,65 +25,78 @@ pub fn summaryHash(canonical_summary_without_hash: []const u8) SummaryHashHex {
 }
 
 pub fn writeFiles(allocator: std.mem.Allocator, session_dir_path: []const u8, input: SummaryInput) !void {
+    var threaded: std.Io.Threaded = .init_single_threaded;
+    const io = threaded.io();
     const json_path = try std.fs.path.join(allocator, &.{ session_dir_path, "summary.json" });
     defer allocator.free(json_path);
     const md_path = try std.fs.path.join(allocator, &.{ session_dir_path, "summary.md" });
     defer allocator.free(md_path);
+    const cwd = std.Io.Dir.cwd();
 
     {
-        const file = try std.fs.cwd().createFile(json_path, .{});
-        defer file.close();
-        var list: std.ArrayList(u8) = .empty;
+        var json_aw: std.Io.Writer.Allocating = .init(allocator);
+        errdefer json_aw.deinit();
+        try writeJsonAlloc(allocator, &json_aw.writer, input);
+        try json_aw.writer.writeByte('\n');
+        try json_aw.writer.flush();
+        var list = json_aw.toArrayList();
         defer list.deinit(allocator);
-        try writeJsonAlloc(allocator, list.writer(allocator), input);
-        try file.writeAll(list.items);
-        try file.writeAll("\n");
-        try file.sync();
+        const file = try cwd.createFile(io, json_path, .{});
+        defer file.close(io);
+        try file.writeStreamingAll(io, list.items);
+        try file.sync(io);
     }
     {
-        const file = try std.fs.cwd().createFile(md_path, .{});
-        defer file.close();
-        var list: std.ArrayList(u8) = .empty;
+        var md_aw: std.Io.Writer.Allocating = .init(allocator);
+        errdefer md_aw.deinit();
+        try writeMarkdown(&md_aw.writer, input);
+        try md_aw.writer.flush();
+        var list = md_aw.toArrayList();
         defer list.deinit(allocator);
-        try writeMarkdown(list.writer(allocator), input);
-        try file.writeAll(list.items);
-        try file.sync();
+        const file = try cwd.createFile(io, md_path, .{});
+        defer file.close(io);
+        try file.writeStreamingAll(io, list.items);
+        try file.sync(io);
     }
 }
 
 pub fn updateFinalHash(allocator: std.mem.Allocator, session_dir_path: []const u8, event_count: usize, final_event_hash: []const u8) !void {
+    var threaded: std.Io.Threaded = .init_single_threaded;
+    const io = threaded.io();
     const json_path = try std.fs.path.join(allocator, &.{ session_dir_path, "summary.json" });
     defer allocator.free(json_path);
     const md_path = try std.fs.path.join(allocator, &.{ session_dir_path, "summary.md" });
     defer allocator.free(md_path);
-    const text = try std.fs.cwd().readFileAlloc(allocator, json_path, core.limits.max_event_field_len);
+    const cwd = std.Io.Dir.cwd();
+    const text = try cwd.readFileAlloc(io, json_path, allocator, .limited(core.limits.max_event_field_len));
     defer allocator.free(text);
     var parsed = try std.json.parseFromSlice(std.json.Value, allocator, text, .{});
     defer parsed.deinit();
     const object = try expectObject(parsed.value);
     try verifyStoredSummaryHash(allocator, parsed.value);
 
-    var canonical: std.ArrayList(u8) = .empty;
+    var canonical_aw: std.Io.Writer.Allocating = .init(allocator);
+    errdefer canonical_aw.deinit();
+    try writeCanonicalSummaryFromJson(&canonical_aw.writer, object, event_count, final_event_hash);
+    var canonical = canonical_aw.toArrayList();
     defer canonical.deinit(allocator);
-    try writeCanonicalSummaryFromJson(canonical.writer(allocator), object, event_count, final_event_hash);
     const computed_summary_hash = summaryHash(canonical.items);
 
-    const file = try std.fs.cwd().createFile(json_path, .{});
-    defer file.close();
+    const file = try cwd.createFile(io, json_path, .{});
+    defer file.close(io);
     var file_buf: [4096]u8 = undefined;
-    var file_writer = file.writer(&file_buf);
+    var file_writer = file.writer(io, &file_buf);
     try writeSummaryWithHash(&file_writer.interface, canonical.items, &computed_summary_hash);
     try file_writer.interface.writeByte('\n');
     try file_writer.interface.flush();
-    try file.sync();
+    try file.sync(io);
 
-    var md: std.ArrayList(u8) = .empty;
-    defer md.deinit(allocator);
-    const md_writer = md.writer(allocator);
-    try writeMarkdownHeading(md_writer, "Session", object.get("session_id").?.string);
-    try md_writer.writeAll("\n- Command: `");
-    try writeCommandDisplayFromJson(md_writer, object.get("command").?.array);
-    try md_writer.print("`\n- Policy: {s}\n- Mode: {s}\n- Status: {s} {d}\n- Events: {d}\n- Final event hash: `{s}`\n", .{
+    var md_aw: std.Io.Writer.Allocating = .init(allocator);
+    errdefer md_aw.deinit();
+    try writeMarkdownHeading(&md_aw.writer, "Session", object.get("session_id").?.string);
+    try md_aw.writer.writeAll("\n- Command: `");
+    try writeCommandDisplayFromJson(&md_aw.writer, object.get("command").?.array);
+    try md_aw.writer.print("`\n- Policy: {s}\n- Mode: {s}\n- Status: {s} {d}\n- Events: {d}\n- Final event hash: `{s}`\n", .{
         object.get("policy").?.string,
         object.get("mode").?.string,
         object.get("status").?.object.get("kind").?.string,
@@ -91,11 +104,14 @@ pub fn updateFinalHash(allocator: std.mem.Allocator, session_dir_path: []const u
         event_count,
         final_event_hash,
     });
+    try md_aw.writer.flush();
+    var md = md_aw.toArrayList();
+    defer md.deinit(allocator);
     {
-        const md_file = try std.fs.cwd().createFile(md_path, .{});
-        defer md_file.close();
-        try md_file.writeAll(md.items);
-        try md_file.sync();
+        const md_file = try cwd.createFile(io, md_path, .{});
+        defer md_file.close(io);
+        try md_file.writeStreamingAll(io, md.items);
+        try md_file.sync(io);
     }
 }
 
@@ -104,9 +120,11 @@ pub fn writeJson(writer: anytype, input: SummaryInput) !void {
 }
 
 pub fn writeJsonAlloc(allocator: std.mem.Allocator, writer: anytype, input: SummaryInput) !void {
-    var canonical: std.ArrayList(u8) = .empty;
+    var canonical_aw: std.Io.Writer.Allocating = .init(allocator);
+    errdefer canonical_aw.deinit();
+    try writeCanonicalSummaryInput(&canonical_aw.writer, input);
+    var canonical = canonical_aw.toArrayList();
     defer canonical.deinit(allocator);
-    try writeCanonicalSummaryInput(canonical.writer(allocator), input);
     const computed_summary_hash = summaryHash(canonical.items);
     try writeSummaryWithHash(writer, canonical.items, &computed_summary_hash);
 }
@@ -149,11 +167,11 @@ fn writeSummaryWithHash(writer: anytype, canonical: []const u8, computed_summary
 }
 
 pub fn canonicalFromJsonValue(allocator: std.mem.Allocator, value: std.json.Value) ![]u8 {
-    var list: std.ArrayList(u8) = .empty;
-    errdefer list.deinit(allocator);
+    var out: std.Io.Writer.Allocating = .init(allocator);
+    errdefer out.deinit();
     const object = try expectObject(value);
-    try writeCanonicalSummaryFromJson(list.writer(allocator), object, null, null);
-    return try list.toOwnedSlice(allocator);
+    try writeCanonicalSummaryFromJson(&out.writer, object, null, null);
+    return try out.toOwnedSlice();
 }
 
 fn verifyStoredSummaryHash(allocator: std.mem.Allocator, value: std.json.Value) !void {
@@ -462,12 +480,12 @@ test "summary markdown is product neutral unless caller provides label" {
 test "update final hash rejects tampered summary before rewriting" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
-    const root = try tmp.dir.realpathAlloc(std.testing.allocator, ".");
+    const root = try tmp.dir.realPathFileAlloc(std.testing.io, ".", std.testing.allocator);
     defer std.testing.allocator.free(root);
 
     const session_dir = try std.fs.path.join(std.testing.allocator, &.{ root, ".orca", "sessions", "summary-tamper" });
     defer std.testing.allocator.free(session_dir);
-    try std.fs.cwd().makePath(session_dir);
+    try std.Io.Dir.cwd().makePath(std.testing.io, session_dir);
 
     const ts = core.time.Timestamp.fromUnixSeconds(1_777_983_130);
     const session: core.session.Session = .{
@@ -489,19 +507,19 @@ test "update final hash rejects tampered summary before rewriting" {
 
     const summary_path = try std.fs.path.join(std.testing.allocator, &.{ session_dir, "summary.json" });
     defer std.testing.allocator.free(summary_path);
-    const original = try std.fs.cwd().readFileAlloc(std.testing.allocator, summary_path, core.limits.max_event_field_len);
+    const original = try std.Io.Dir.cwd().readFileAlloc(std.testing.io, summary_path, core.limits.max_event_field_len);
     defer std.testing.allocator.free(original);
     const tampered = try std.mem.replaceOwned(u8, std.testing.allocator, original, "hello", "changed");
     defer std.testing.allocator.free(tampered);
     {
-        const file = try std.fs.cwd().createFile(summary_path, .{});
-        defer file.close();
-        try file.writeAll(tampered);
+        const file = try std.Io.Dir.cwd().createFile(std.testing.io, summary_path, .{});
+        defer file.close(std.testing.io);
+        try file.writeStreamingAll(std.testing.io, tampered);
     }
 
     try std.testing.expectError(error.InvalidEventSchema, updateFinalHash(std.testing.allocator, session_dir, 4, "def"));
 
-    const after = try std.fs.cwd().readFileAlloc(std.testing.allocator, summary_path, core.limits.max_event_field_len);
+    const after = try std.Io.Dir.cwd().readFileAlloc(std.testing.io, summary_path, core.limits.max_event_field_len);
     defer std.testing.allocator.free(after);
     try std.testing.expect(std.mem.indexOf(u8, after, "changed") != null);
     try std.testing.expect(std.mem.indexOf(u8, after, "\"final_event_hash\":\"def\"") == null);

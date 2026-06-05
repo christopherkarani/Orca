@@ -6,8 +6,8 @@ const exit_codes = @import("orca").cli.exit_codes;
 test "host detection finds a known binary in PATH" {
     const allocator = std.testing.allocator;
     // zig is expected to be on PATH in the dev environment
-    try std.testing.expect(plugin.binaryInPath(allocator, "zig"));
-    try std.testing.expect(!plugin.binaryInPath(allocator, "definitely-not-a-real-binary-12345"));
+    try std.testing.expect(plugin.binaryInPath(std.testing.io, allocator, "zig"));
+    try std.testing.expect(!plugin.binaryInPath(std.testing.io, allocator, "definitely-not-a-real-binary-12345"));
 }
 
 test "policy init creates file when missing" {
@@ -16,13 +16,13 @@ test "policy init creates file when missing" {
 
     var stdout_buf: [512]u8 = undefined;
     var stderr_buf: [512]u8 = undefined;
-    var stdout_stream = std.io.fixedBufferStream(&stdout_buf);
-    var stderr_stream = std.io.fixedBufferStream(&stderr_buf);
+    var stdout_writer: std.Io.Writer = .fixed(&stdout_buf);
+    var stderr_writer: std.Io.Writer = .fixed(&stderr_buf);
 
-    const code = try init.command(tmp.dir, &.{ "--preset", "generic-agent", "--force", "--quiet" }, stdout_stream.writer(), stderr_stream.writer());
+    const code = try init.command(std.testing.io, tmp.dir, &.{ "--preset", "generic-agent", "--force", "--quiet" }, &stdout_writer, &stderr_writer);
     try std.testing.expectEqual(exit_codes.success, code);
 
-    tmp.dir.access(".orca/policy.yaml", .{}) catch {
+    tmp.dir.access(std.testing.io, ".orca/policy.yaml", .{}) catch {
         std.debug.panic("policy file was not created", .{});
     };
 }

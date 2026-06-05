@@ -128,10 +128,10 @@ fn writeNullableRawString(writer: anytype, value: ?[]const u8) !void {
 }
 
 pub fn canonicalEventAlloc(allocator: std.mem.Allocator, ev: core.event.Event, previous_hash: ?[]const u8) ![]u8 {
-    var list: std.ArrayList(u8) = .empty;
-    errdefer list.deinit(allocator);
-    try writeCanonicalEventWithoutHash(list.writer(allocator), ev, previous_hash);
-    return try list.toOwnedSlice(allocator);
+    var out: std.Io.Writer.Allocating = .init(allocator);
+    defer out.deinit();
+    try writeCanonicalEventWithoutHash(&out.writer, ev, previous_hash);
+    return try out.toOwnedSlice();
 }
 
 test "event serialization is deterministic and excludes event_hash from hash input" {

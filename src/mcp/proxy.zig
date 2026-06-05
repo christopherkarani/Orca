@@ -493,7 +493,7 @@ fn sendServerSamplingError(
 ) !void {
     const response = try jsonrpc.errorResponseAlloc(allocator, jsonrpc.idOf(request_value), .policy_denied, message);
     defer allocator.free(response);
-    const line = std.mem.trimRight(u8, response, "\n");
+    const line = std.mem.trimEnd(u8, response, "\n");
     try server.notify(server.context, line);
 }
 
@@ -799,7 +799,8 @@ fn appendAudit(
     decision: ?core.decision.Decision,
 ) !void {
     const writer = maybe_writer orelse return;
-    const now = core.time.Timestamp.now();
+    var threaded: std.Io.Threaded = .init_single_threaded;
+    const now = core.time.Timestamp.now(threaded.io());
     var label_buf: [256]u8 = undefined;
     const redacted = audit.redact_bridge.redactStringBounded(target_value, &label_buf);
     var labels: [1][]const u8 = undefined;
@@ -956,16 +957,16 @@ test "proxy forwards initialize and tools/list" {
     var input: std.Io.Reader = .fixed("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\"}\n" ++
         "{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"tools/list\"}\n");
     var output_buf: [2048]u8 = undefined;
-    var output = std.io.fixedBufferStream(&output_buf);
+    var output_writer: std.Io.Writer = .fixed(&output_buf);
     try runWithServer(std.testing.allocator, .{
         .server_name = "fake",
         .server_command_display = "fake",
         .policy = &policy,
         .mode = .strict,
-    }, &input, output.writer(), .{ .context = &server, .request = FakeServer.request, .notify = FakeServer.notify });
+    }, &input, &output_writer, .{ .context = &server, .request = FakeServer.request, .notify = FakeServer.notify });
     try std.testing.expect(server.saw_initialize);
-    try std.testing.expect(std.mem.indexOf(u8, output.getWritten(), "\"protocolVersion\"") != null);
-    try std.testing.expect(std.mem.indexOf(u8, output.getWritten(), "\"tools\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, output_writer.buffered(), "\"protocolVersion\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, output_writer.buffered(), "\"tools\"") != null);
 }
 
 test "proxy allows safe tool and blocks denied tool with json-rpc error" {
@@ -985,17 +986,17 @@ test "proxy allows safe tool and blocks denied tool with json-rpc error" {
     var input: std.Io.Reader = .fixed("{\"jsonrpc\":\"2.0\",\"id\":3,\"method\":\"tools/call\",\"params\":{\"name\":\"search_issues\",\"arguments\":{\"q\":\"hi\"}}}\n" ++
         "{\"jsonrpc\":\"2.0\",\"id\":4,\"method\":\"tools/call\",\"params\":{\"name\":\"delete_repository\",\"arguments\":{\"repo\":\"x\"}}}\n");
     var output_buf: [2048]u8 = undefined;
-    var output = std.io.fixedBufferStream(&output_buf);
+    var output_writer: std.Io.Writer = .fixed(&output_buf);
     try runWithServer(std.testing.allocator, .{
         .server_name = "fake",
         .server_command_display = "fake",
         .policy = &policy,
         .mode = .strict,
-    }, &input, output.writer(), .{ .context = &server, .request = FakeServer.request, .notify = FakeServer.notify });
+    }, &input, &output_writer, .{ .context = &server, .request = FakeServer.request, .notify = FakeServer.notify });
     try std.testing.expect(server.saw_safe_call);
-    try std.testing.expect(std.mem.indexOf(u8, output.getWritten(), "\"result\"") != null);
-    try std.testing.expect(std.mem.indexOf(u8, output.getWritten(), "\"error\"") != null);
-    try std.testing.expect(try @import("stdio.zig").isProtocolCleanOutput(output.getWritten(), std.testing.allocator));
+    try std.testing.expect(std.mem.indexOf(u8, output_writer.buffered(), "\"result\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, output_writer.buffered(), "\"error\"") != null);
+    try std.testing.expect(try @import("stdio.zig").isProtocolCleanOutput(output_writer.buffered(), std.testing.allocator));
 }
 
 test "ask tool denies in ci mode without approval prompt" {
@@ -1010,15 +1011,15 @@ test "ask tool denies in ci mode without approval prompt" {
     var server = FakeServer{ .allocator = std.testing.allocator };
     var input: std.Io.Reader = .fixed("{\"jsonrpc\":\"2.0\",\"id\":5,\"method\":\"tools/call\",\"params\":{\"name\":\"create_issue\"}}\n");
     var output_buf: [1024]u8 = undefined;
-    var output = std.io.fixedBufferStream(&output_buf);
+    var output_writer: std.Io.Writer = .fixed(&output_buf);
     try runWithServer(std.testing.allocator, .{
         .server_name = "fake",
         .server_command_display = "fake",
         .policy = &policy,
         .mode = .ci,
-    }, &input, output.writer(), .{ .context = &server, .request = FakeServer.request, .notify = FakeServer.notify });
+    }, &input, &output_writer, .{ .context = &server, .request = FakeServer.request, .notify = FakeServer.notify });
     try std.testing.expect(!server.saw_safe_call);
-    try std.testing.expect(std.mem.indexOf(u8, output.getWritten(), "\"error\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, output_writer.buffered(), "\"error\"") != null);
 }
 
 test "manifest tool default influences decision and explicit policy deny wins" {
@@ -1051,16 +1052,16 @@ test "manifest tool default influences decision and explicit policy deny wins" {
     var server = FakeServer{ .allocator = std.testing.allocator };
     var input: std.Io.Reader = .fixed("{\"jsonrpc\":\"2.0\",\"id\":3,\"method\":\"tools/call\",\"params\":{\"name\":\"search_issues\",\"arguments\":{\"q\":\"hi\"}}}\n");
     var output_buf: [1024]u8 = undefined;
-    var output = std.io.fixedBufferStream(&output_buf);
+    var output_writer: std.Io.Writer = .fixed(&output_buf);
     try runWithServer(std.testing.allocator, .{
         .server_name = "fake",
         .server_command_display = "fake",
         .policy = &allow_policy,
         .mode = .strict,
         .manifest = &manifest,
-    }, &input, output.writer(), .{ .context = &server, .request = FakeServer.request, .notify = FakeServer.notify });
+    }, &input, &output_writer, .{ .context = &server, .request = FakeServer.request, .notify = FakeServer.notify });
     try std.testing.expect(server.saw_safe_call);
-    try std.testing.expect(std.mem.indexOf(u8, output.getWritten(), "\"result\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, output_writer.buffered(), "\"result\"") != null);
 
     var deny_policy = try load.parseFromSlice(std.testing.allocator,
         \\version: 1
@@ -1073,16 +1074,16 @@ test "manifest tool default influences decision and explicit policy deny wins" {
     var denied_server = FakeServer{ .allocator = std.testing.allocator };
     var denied_input: std.Io.Reader = .fixed("{\"jsonrpc\":\"2.0\",\"id\":4,\"method\":\"tools/call\",\"params\":{\"name\":\"search_issues\"}}\n");
     var denied_output_buf: [1024]u8 = undefined;
-    var denied_output = std.io.fixedBufferStream(&denied_output_buf);
+    var denied_output_writer: std.Io.Writer = .fixed(&denied_output_buf);
     try runWithServer(std.testing.allocator, .{
         .server_name = "fake",
         .server_command_display = "fake",
         .policy = &deny_policy,
         .mode = .strict,
         .manifest = &manifest,
-    }, &denied_input, denied_output.writer(), .{ .context = &denied_server, .request = FakeServer.request, .notify = FakeServer.notify });
+    }, &denied_input, &denied_output_writer, .{ .context = &denied_server, .request = FakeServer.request, .notify = FakeServer.notify });
     try std.testing.expect(!denied_server.saw_safe_call);
-    try std.testing.expect(std.mem.indexOf(u8, denied_output.getWritten(), "\"error\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, denied_output_writer.buffered(), "\"error\"") != null);
 }
 
 test "resources and prompts list are logged while read/get are mediated" {
@@ -1099,10 +1100,10 @@ test "resources and prompts list are logged while read/get are mediated" {
 
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
-    const root = try tmp.dir.realpathAlloc(std.testing.allocator, ".");
+    const root = try tmp.dir.realPathFileAlloc(std.testing.io, ".", std.testing.allocator);
     defer std.testing.allocator.free(root);
     const session = try testSession(root);
-    var writer = try audit.writer.SessionWriter.init(std.testing.allocator, session);
+    var writer = try audit.writer.SessionWriter.init(std.testing.io, std.testing.allocator, session);
     defer writer.deinit();
 
     var server = FakeServer{ .allocator = std.testing.allocator };
@@ -1111,21 +1112,21 @@ test "resources and prompts list are logged while read/get are mediated" {
         "{\"jsonrpc\":\"2.0\",\"id\":8,\"method\":\"prompts/list\"}\n" ++
         "{\"jsonrpc\":\"2.0\",\"id\":9,\"method\":\"prompts/get\",\"params\":{\"name\":\"review\",\"arguments\":{\"token\":\"fake_secret_value\"}}}\n");
     var output_buf: [4096]u8 = undefined;
-    var output = std.io.fixedBufferStream(&output_buf);
+    var output_writer: std.Io.Writer = .fixed(&output_buf);
     try runWithServer(std.testing.allocator, .{
         .server_name = "fake",
         .server_command_display = "fake",
         .policy = &policy,
         .mode = .strict,
         .audit_writer = &writer,
-    }, &input, output.writer(), .{ .context = &server, .request = FakeServer.request, .notify = FakeServer.notify });
+    }, &input, &output_writer, .{ .context = &server, .request = FakeServer.request, .notify = FakeServer.notify });
     try std.testing.expect(server.saw_resource_read);
     try std.testing.expect(server.saw_prompt_get);
-    try std.testing.expect(std.mem.indexOf(u8, output.getWritten(), "\"result\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, output_writer.buffered(), "\"result\"") != null);
 
     const events_path = try std.fs.path.join(std.testing.allocator, &.{ writer.session_dir_path, "events.jsonl" });
     defer std.testing.allocator.free(events_path);
-    const events = try std.fs.cwd().readFileAlloc(std.testing.allocator, events_path, 64 * 1024);
+    const events = try std.Io.Dir.cwd().readFileAlloc(std.testing.io, events_path, std.testing.allocator, .limited(64 * 1024));
     defer std.testing.allocator.free(events);
     try std.testing.expect(std.mem.indexOf(u8, events, "\"type\":\"mcp_resources_list\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, events, "\"type\":\"mcp_prompts_list\"") != null);
@@ -1146,15 +1147,15 @@ test "prompts get deny returns json-rpc error without forwarding" {
     var server = FakeServer{ .allocator = std.testing.allocator };
     var input: std.Io.Reader = .fixed("{\"jsonrpc\":\"2.0\",\"id\":9,\"method\":\"prompts/get\",\"params\":{\"name\":\"review\"}}\n");
     var output_buf: [1024]u8 = undefined;
-    var output = std.io.fixedBufferStream(&output_buf);
+    var output_writer: std.Io.Writer = .fixed(&output_buf);
     try runWithServer(std.testing.allocator, .{
         .server_name = "fake",
         .server_command_display = "fake",
         .policy = &policy,
         .mode = .strict,
-    }, &input, output.writer(), .{ .context = &server, .request = FakeServer.request, .notify = FakeServer.notify });
+    }, &input, &output_writer, .{ .context = &server, .request = FakeServer.request, .notify = FakeServer.notify });
     try std.testing.expect(!server.saw_prompt_get);
-    try std.testing.expect(std.mem.indexOf(u8, output.getWritten(), "\"error\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, output_writer.buffered(), "\"error\"") != null);
 }
 
 test "tool argument redaction reaches MCP audit events" {
@@ -1170,28 +1171,28 @@ test "tool argument redaction reaches MCP audit events" {
 
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
-    const root = try tmp.dir.realpathAlloc(std.testing.allocator, ".");
+    const root = try tmp.dir.realPathFileAlloc(std.testing.io, ".", std.testing.allocator);
     defer std.testing.allocator.free(root);
     const session = try testSession(root);
-    var writer = try audit.writer.SessionWriter.init(std.testing.allocator, session);
+    var writer = try audit.writer.SessionWriter.init(std.testing.io, std.testing.allocator, session);
     defer writer.deinit();
 
     var server = FakeServer{ .allocator = std.testing.allocator };
     var input: std.Io.Reader = .fixed("{\"jsonrpc\":\"2.0\",\"id\":3,\"method\":\"tools/call\",\"params\":{\"name\":\"search_issues\",\"arguments\":{\"OPENAI_API_KEY\":\"sk-fakeSyntheticOpenAIKey1234567890\"}}}\n");
     var output_buf: [2048]u8 = undefined;
-    var output = std.io.fixedBufferStream(&output_buf);
+    var output_writer: std.Io.Writer = .fixed(&output_buf);
     try runWithServer(std.testing.allocator, .{
         .server_name = "fake",
         .server_command_display = "fake",
         .policy = &policy,
         .mode = .strict,
         .audit_writer = &writer,
-    }, &input, output.writer(), .{ .context = &server, .request = FakeServer.request, .notify = FakeServer.notify });
+    }, &input, &output_writer, .{ .context = &server, .request = FakeServer.request, .notify = FakeServer.notify });
     try std.testing.expect(server.saw_safe_call);
 
     const events_path = try std.fs.path.join(std.testing.allocator, &.{ writer.session_dir_path, "events.jsonl" });
     defer std.testing.allocator.free(events_path);
-    const events = try std.fs.cwd().readFileAlloc(std.testing.allocator, events_path, 64 * 1024);
+    const events = try std.Io.Dir.cwd().readFileAlloc(std.testing.io, events_path, std.testing.allocator, .limited(64 * 1024));
     defer std.testing.allocator.free(events);
     try std.testing.expect(std.mem.indexOf(u8, events, "sk-fakeSyntheticOpenAIKey") == null);
     try std.testing.expect(std.mem.indexOf(u8, events, "[REDACTED:") != null);
@@ -1209,15 +1210,15 @@ test "sensitive resource uri asks by default and denies without approval" {
     var server = FakeServer{ .allocator = std.testing.allocator };
     var input: std.Io.Reader = .fixed("{\"jsonrpc\":\"2.0\",\"id\":7,\"method\":\"resources/read\",\"params\":{\"uri\":\"file:///Users/alice/.ssh/id_rsa\"}}\n");
     var output_buf: [1024]u8 = undefined;
-    var output = std.io.fixedBufferStream(&output_buf);
+    var output_writer: std.Io.Writer = .fixed(&output_buf);
     try runWithServer(std.testing.allocator, .{
         .server_name = "fake",
         .server_command_display = "fake",
         .policy = &policy,
         .mode = .strict,
-    }, &input, output.writer(), .{ .context = &server, .request = FakeServer.request, .notify = FakeServer.notify });
+    }, &input, &output_writer, .{ .context = &server, .request = FakeServer.request, .notify = FakeServer.notify });
     try std.testing.expect(!server.saw_resource_read);
-    try std.testing.expect(std.mem.indexOf(u8, output.getWritten(), "\"error\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, output_writer.buffered(), "\"error\"") != null);
 }
 
 test "sampling default deny ci ask deny and explicit allow" {
@@ -1230,15 +1231,15 @@ test "sampling default deny ci ask deny and explicit allow" {
     var default_server = FakeServer{ .allocator = std.testing.allocator };
     var default_input: std.Io.Reader = .fixed("{\"jsonrpc\":\"2.0\",\"id\":10,\"method\":\"sampling/createMessage\",\"params\":{\"model\":\"local\",\"messages\":[{\"role\":\"user\",\"content\":{\"type\":\"text\",\"text\":\"fake_secret_value\"}}]}}\n");
     var default_output_buf: [1024]u8 = undefined;
-    var default_output = std.io.fixedBufferStream(&default_output_buf);
+    var default_output_writer: std.Io.Writer = .fixed(&default_output_buf);
     try runWithServer(std.testing.allocator, .{
         .server_name = "fake",
         .server_command_display = "fake",
         .policy = &default_policy,
         .mode = .strict,
-    }, &default_input, default_output.writer(), .{ .context = &default_server, .request = FakeServer.request, .notify = FakeServer.notify });
+    }, &default_input, &default_output_writer, .{ .context = &default_server, .request = FakeServer.request, .notify = FakeServer.notify });
     try std.testing.expect(!default_server.saw_sampling);
-    try std.testing.expect(std.mem.indexOf(u8, default_output.getWritten(), "\"error\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, default_output_writer.buffered(), "\"error\"") != null);
 
     var ask_policy = try load.parseFromSlice(std.testing.allocator,
         \\version: 1
@@ -1251,15 +1252,15 @@ test "sampling default deny ci ask deny and explicit allow" {
     var ask_server = FakeServer{ .allocator = std.testing.allocator };
     var ask_input: std.Io.Reader = .fixed("{\"jsonrpc\":\"2.0\",\"id\":11,\"method\":\"sampling/createMessage\",\"params\":{\"model\":\"local\"}}\n");
     var ask_output_buf: [1024]u8 = undefined;
-    var ask_output = std.io.fixedBufferStream(&ask_output_buf);
+    var ask_output_writer: std.Io.Writer = .fixed(&ask_output_buf);
     try runWithServer(std.testing.allocator, .{
         .server_name = "fake",
         .server_command_display = "fake",
         .policy = &ask_policy,
         .mode = .ci,
-    }, &ask_input, ask_output.writer(), .{ .context = &ask_server, .request = FakeServer.request, .notify = FakeServer.notify });
+    }, &ask_input, &ask_output_writer, .{ .context = &ask_server, .request = FakeServer.request, .notify = FakeServer.notify });
     try std.testing.expect(!ask_server.saw_sampling);
-    try std.testing.expect(std.mem.indexOf(u8, ask_output.getWritten(), "\"error\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, ask_output_writer.buffered(), "\"error\"") != null);
 
     var allow_policy = try load.parseFromSlice(std.testing.allocator,
         \\version: 1
@@ -1272,15 +1273,15 @@ test "sampling default deny ci ask deny and explicit allow" {
     var allow_server = FakeServer{ .allocator = std.testing.allocator };
     var allow_input: std.Io.Reader = .fixed("{\"jsonrpc\":\"2.0\",\"id\":10,\"method\":\"sampling/createMessage\",\"params\":{\"model\":\"local\"}}\n");
     var allow_output_buf: [1024]u8 = undefined;
-    var allow_output = std.io.fixedBufferStream(&allow_output_buf);
+    var allow_output_writer: std.Io.Writer = .fixed(&allow_output_buf);
     try runWithServer(std.testing.allocator, .{
         .server_name = "fake",
         .server_command_display = "fake",
         .policy = &allow_policy,
         .mode = .strict,
-    }, &allow_input, allow_output.writer(), .{ .context = &allow_server, .request = FakeServer.request, .notify = FakeServer.notify });
+    }, &allow_input, &allow_output_writer, .{ .context = &allow_server, .request = FakeServer.request, .notify = FakeServer.notify });
     try std.testing.expect(allow_server.saw_sampling);
-    try std.testing.expect(std.mem.indexOf(u8, allow_output.getWritten(), "\"result\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, allow_output_writer.buffered(), "\"result\"") != null);
 }
 
 test "server-originated sampling is denied by default before reaching client" {
@@ -1293,23 +1294,23 @@ test "server-originated sampling is denied by default before reaching client" {
 
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
-    const root = try tmp.dir.realpathAlloc(std.testing.allocator, ".");
+    const root = try tmp.dir.realPathFileAlloc(std.testing.io, ".", std.testing.allocator);
     defer std.testing.allocator.free(root);
     const session = try testSession(root);
-    var writer = try audit.writer.SessionWriter.init(std.testing.allocator, session);
+    var writer = try audit.writer.SessionWriter.init(std.testing.io, std.testing.allocator, session);
     defer writer.deinit();
 
     var server = ServerSamplingFirstServer{};
     var input: std.Io.Reader = .fixed("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"tools/list\"}\n");
     var output_buf: [2048]u8 = undefined;
-    var output = std.io.fixedBufferStream(&output_buf);
+    var output_writer: std.Io.Writer = .fixed(&output_buf);
     try runWithServer(std.testing.allocator, .{
         .server_name = "fake",
         .server_command_display = "fake",
         .policy = &policy,
         .mode = .strict,
         .audit_writer = &writer,
-    }, &input, output.writer(), .{
+    }, &input, &output_writer, .{
         .context = &server,
         .request = ServerSamplingFirstServer.request,
         .notify = ServerSamplingFirstServer.notify,
@@ -1317,12 +1318,12 @@ test "server-originated sampling is denied by default before reaching client" {
     });
 
     try std.testing.expect(server.saw_sampling_error);
-    try std.testing.expect(std.mem.indexOf(u8, output.getWritten(), "sampling/createMessage") == null);
-    try std.testing.expect(std.mem.indexOf(u8, output.getWritten(), "\"tools\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, output_writer.buffered(), "sampling/createMessage") == null);
+    try std.testing.expect(std.mem.indexOf(u8, output_writer.buffered(), "\"tools\"") != null);
 
     const events_path = try std.fs.path.join(std.testing.allocator, &.{ writer.session_dir_path, "events.jsonl" });
     defer std.testing.allocator.free(events_path);
-    const events = try std.fs.cwd().readFileAlloc(std.testing.allocator, events_path, 64 * 1024);
+    const events = try std.Io.Dir.cwd().readFileAlloc(std.testing.io, events_path, std.testing.allocator, .limited(64 * 1024));
     defer std.testing.allocator.free(events);
     try std.testing.expect(std.mem.indexOf(u8, events, "\"type\":\"mcp_sampling_request\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, events, "fake_secret_value") == null);
@@ -1343,13 +1344,13 @@ test "server-originated sampling allow forwards request and relays client respon
     var input: std.Io.Reader = .fixed("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"tools/list\"}\n" ++
         "{\"jsonrpc\":\"2.0\",\"id\":\"srv-1\",\"result\":{\"role\":\"assistant\",\"content\":{\"type\":\"text\",\"text\":\"ok\"}}}\n");
     var output_buf: [4096]u8 = undefined;
-    var output = std.io.fixedBufferStream(&output_buf);
+    var output_writer: std.Io.Writer = .fixed(&output_buf);
     try runWithServer(std.testing.allocator, .{
         .server_name = "fake",
         .server_command_display = "fake",
         .policy = &policy,
         .mode = .strict,
-    }, &input, output.writer(), .{
+    }, &input, &output_writer, .{
         .context = &server,
         .request = ServerSamplingFirstServer.request,
         .notify = ServerSamplingFirstServer.notify,
@@ -1357,9 +1358,9 @@ test "server-originated sampling allow forwards request and relays client respon
     });
 
     try std.testing.expect(server.saw_sampling_client_response);
-    try std.testing.expect(std.mem.indexOf(u8, output.getWritten(), "sampling/createMessage") != null);
-    try std.testing.expect(std.mem.indexOf(u8, output.getWritten(), "\"tools\"") != null);
-    try std.testing.expect(try @import("stdio.zig").isProtocolCleanOutput(output.getWritten(), std.testing.allocator));
+    try std.testing.expect(std.mem.indexOf(u8, output_writer.buffered(), "sampling/createMessage") != null);
+    try std.testing.expect(std.mem.indexOf(u8, output_writer.buffered(), "\"tools\"") != null);
+    try std.testing.expect(try @import("stdio.zig").isProtocolCleanOutput(output_writer.buffered(), std.testing.allocator));
 }
 
 test "server-originated sampling rejects mismatched client response id" {
@@ -1377,13 +1378,13 @@ test "server-originated sampling rejects mismatched client response id" {
     var input: std.Io.Reader = .fixed("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"tools/list\"}\n" ++
         "{\"jsonrpc\":\"2.0\",\"id\":\"wrong\",\"result\":{\"role\":\"assistant\",\"content\":{\"type\":\"text\",\"text\":\"ok\"}}}\n");
     var output_buf: [4096]u8 = undefined;
-    var output = std.io.fixedBufferStream(&output_buf);
+    var output_writer: std.Io.Writer = .fixed(&output_buf);
     try runWithServer(std.testing.allocator, .{
         .server_name = "fake",
         .server_command_display = "fake",
         .policy = &policy,
         .mode = .strict,
-    }, &input, output.writer(), .{
+    }, &input, &output_writer, .{
         .context = &server,
         .request = ServerSamplingFirstServer.request,
         .notify = ServerSamplingFirstServer.notify,
@@ -1392,9 +1393,9 @@ test "server-originated sampling rejects mismatched client response id" {
 
     try std.testing.expect(server.saw_sampling_error);
     try std.testing.expect(!server.saw_sampling_client_response);
-    try std.testing.expect(std.mem.indexOf(u8, output.getWritten(), "sampling/createMessage") != null);
-    try std.testing.expect(std.mem.indexOf(u8, output.getWritten(), "\"tools\"") != null);
-    try std.testing.expect(try @import("stdio.zig").isProtocolCleanOutput(output.getWritten(), std.testing.allocator));
+    try std.testing.expect(std.mem.indexOf(u8, output_writer.buffered(), "sampling/createMessage") != null);
+    try std.testing.expect(std.mem.indexOf(u8, output_writer.buffered(), "\"tools\"") != null);
+    try std.testing.expect(try @import("stdio.zig").isProtocolCleanOutput(output_writer.buffered(), std.testing.allocator));
 }
 
 test "invalid json-rpc fails safely with protocol error response" {
@@ -1404,15 +1405,15 @@ test "invalid json-rpc fails safely with protocol error response" {
     var server = FakeServer{ .allocator = std.testing.allocator };
     var input: std.Io.Reader = .fixed("{bad json}\n");
     var output_buf: [512]u8 = undefined;
-    var output = std.io.fixedBufferStream(&output_buf);
+    var output_writer: std.Io.Writer = .fixed(&output_buf);
     try runWithServer(std.testing.allocator, .{
         .server_name = "fake",
         .server_command_display = "fake",
         .policy = &policy,
         .mode = .strict,
-    }, &input, output.writer(), .{ .context = &server, .request = FakeServer.request, .notify = FakeServer.notify });
-    try std.testing.expect(std.mem.indexOf(u8, output.getWritten(), "\"error\"") != null);
-    try std.testing.expect(std.mem.indexOf(u8, output.getWritten(), "\"id\":null") != null);
+    }, &input, &output_writer, .{ .context = &server, .request = FakeServer.request, .notify = FakeServer.notify });
+    try std.testing.expect(std.mem.indexOf(u8, output_writer.buffered(), "\"error\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, output_writer.buffered(), "\"id\":null") != null);
 }
 
 test "malformed MCP transport input reports protocol error and fails proxy run" {
@@ -1422,15 +1423,15 @@ test "malformed MCP transport input reports protocol error and fails proxy run" 
     var server = FakeServer{ .allocator = std.testing.allocator };
     var input: std.Io.Reader = .fixed("\xff\n");
     var output_buf: [512]u8 = undefined;
-    var output = std.io.fixedBufferStream(&output_buf);
+    var output_writer: std.Io.Writer = .fixed(&output_buf);
     try std.testing.expectError(error.InvalidUtf8, runWithServer(std.testing.allocator, .{
         .server_name = "fake",
         .server_command_display = "fake",
         .policy = &policy,
         .mode = .strict,
-    }, &input, output.writer(), .{ .context = &server, .request = FakeServer.request, .notify = FakeServer.notify }));
-    try std.testing.expect(std.mem.indexOf(u8, output.getWritten(), "\"error\"") != null);
-    try std.testing.expect(std.mem.indexOf(u8, output.getWritten(), "\"id\":null") != null);
+    }, &input, &output_writer, .{ .context = &server, .request = FakeServer.request, .notify = FakeServer.notify }));
+    try std.testing.expect(std.mem.indexOf(u8, output_writer.buffered(), "\"error\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, output_writer.buffered(), "\"id\":null") != null);
 }
 
 test "proxy forwards notifications without waiting for responses" {
@@ -1441,16 +1442,16 @@ test "proxy forwards notifications without waiting for responses" {
     var input: std.Io.Reader = .fixed("{\"jsonrpc\":\"2.0\",\"method\":\"notifications/initialized\",\"params\":{}}\n" ++
         "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\"}\n");
     var output_buf: [1024]u8 = undefined;
-    var output = std.io.fixedBufferStream(&output_buf);
+    var output_writer: std.Io.Writer = .fixed(&output_buf);
     try runWithServer(std.testing.allocator, .{
         .server_name = "fake",
         .server_command_display = "fake",
         .policy = &policy,
         .mode = .strict,
-    }, &input, output.writer(), .{ .context = &server, .request = FakeServer.request, .notify = FakeServer.notify });
+    }, &input, &output_writer, .{ .context = &server, .request = FakeServer.request, .notify = FakeServer.notify });
     try std.testing.expect(server.saw_notification);
     try std.testing.expect(server.saw_initialize);
-    try std.testing.expectEqual(@as(usize, 1), std.mem.count(u8, output.getWritten(), "\n"));
+    try std.testing.expectEqual(@as(usize, 1), std.mem.count(u8, output_writer.buffered(), "\n"));
 }
 
 test "proxy rejects policy-covered notifications instead of forwarding" {
@@ -1467,18 +1468,18 @@ test "proxy rejects policy-covered notifications instead of forwarding" {
     var input: std.Io.Reader = .fixed("{\"jsonrpc\":\"2.0\",\"method\":\"tools/call\",\"params\":{\"name\":\"delete_repository\",\"arguments\":{\"repo\":\"x\"}}}\n" ++
         "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\"}\n");
     var output_buf: [2048]u8 = undefined;
-    var output = std.io.fixedBufferStream(&output_buf);
+    var output_writer: std.Io.Writer = .fixed(&output_buf);
     try runWithServer(std.testing.allocator, .{
         .server_name = "fake",
         .server_command_display = "fake",
         .policy = &policy,
         .mode = .strict,
-    }, &input, output.writer(), .{ .context = &server, .request = FakeServer.request, .notify = FakeServer.notify });
+    }, &input, &output_writer, .{ .context = &server, .request = FakeServer.request, .notify = FakeServer.notify });
     try std.testing.expect(!server.saw_policy_notification);
     try std.testing.expect(server.saw_initialize);
-    try std.testing.expect(std.mem.indexOf(u8, output.getWritten(), "\"error\"") != null);
-    try std.testing.expect(std.mem.indexOf(u8, output.getWritten(), "policy-covered") != null);
-    try std.testing.expect(try @import("stdio.zig").isProtocolCleanOutput(output.getWritten(), std.testing.allocator));
+    try std.testing.expect(std.mem.indexOf(u8, output_writer.buffered(), "\"error\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, output_writer.buffered(), "policy-covered") != null);
+    try std.testing.expect(try @import("stdio.zig").isProtocolCleanOutput(output_writer.buffered(), std.testing.allocator));
 }
 
 const MaliciousSearchServer = struct {
@@ -1524,9 +1525,9 @@ const TooManyToolsServer = struct {
         var parsed = try jsonrpc.parseLine(allocator, line);
         defer parsed.deinit();
         const id = parsed.id().?;
-        var out: std.ArrayList(u8) = .empty;
-        errdefer out.deinit(allocator);
-        const writer = out.writer(allocator);
+        var out_writer: std.Io.Writer.Allocating = .init(allocator);
+        errdefer out_writer.deinit();
+        const writer = &out_writer.writer;
         try writer.writeAll("{\"jsonrpc\":\"2.0\",\"id\":");
         switch (id) {
             .integer => |integer| try writer.print("{d}", .{integer}),
@@ -1540,7 +1541,7 @@ const TooManyToolsServer = struct {
             try writer.print("{{\"name\":\"tool_{d}\",\"description\":\"ok\",\"inputSchema\":{{\"type\":\"object\"}}}}", .{index});
         }
         try writer.writeAll("]}}}");
-        return try out.toOwnedSlice(allocator);
+        return try out_writer.toOwnedSlice();
     }
 
     fn notify(_: *anyopaque, _: []const u8) !void {}
@@ -1561,16 +1562,16 @@ test "critical metadata blocks later safe-looking allowed tool call" {
     var input: std.Io.Reader = .fixed("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"tools/list\"}\n" ++
         "{\"jsonrpc\":\"2.0\",\"id\":3,\"method\":\"tools/call\",\"params\":{\"name\":\"search_issues\",\"arguments\":{\"q\":\"hi\"}}}\n");
     var output_buf: [2048]u8 = undefined;
-    var output = std.io.fixedBufferStream(&output_buf);
+    var output_writer: std.Io.Writer = .fixed(&output_buf);
     try runWithServer(std.testing.allocator, .{
         .server_name = "fake",
         .server_command_display = "fake",
         .policy = &policy,
         .mode = .strict,
-    }, &input, output.writer(), .{ .context = &server, .request = MaliciousSearchServer.request, .notify = MaliciousSearchServer.notify });
+    }, &input, &output_writer, .{ .context = &server, .request = MaliciousSearchServer.request, .notify = MaliciousSearchServer.notify });
     try std.testing.expect(!server.saw_call);
-    try std.testing.expect(std.mem.indexOf(u8, output.getWritten(), "\"error\"") != null);
-    try std.testing.expect(std.mem.indexOf(u8, output.getWritten(), "flagged metadata") != null);
+    try std.testing.expect(std.mem.indexOf(u8, output_writer.buffered(), "\"error\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, output_writer.buffered(), "flagged metadata") != null);
 }
 
 test "proxy rejects mismatched server response ids" {
@@ -1586,17 +1587,17 @@ test "proxy rejects mismatched server response ids" {
     var server = MismatchedIdServer{};
     var input: std.Io.Reader = .fixed("{\"jsonrpc\":\"2.0\",\"id\":3,\"method\":\"tools/call\",\"params\":{\"name\":\"search_issues\"}}\n");
     var output_buf: [1024]u8 = undefined;
-    var output = std.io.fixedBufferStream(&output_buf);
+    var output_writer: std.Io.Writer = .fixed(&output_buf);
     try runWithServer(std.testing.allocator, .{
         .server_name = "fake",
         .server_command_display = "fake",
         .policy = &policy,
         .mode = .strict,
-    }, &input, output.writer(), .{ .context = &server, .request = MismatchedIdServer.request, .notify = MismatchedIdServer.notify });
+    }, &input, &output_writer, .{ .context = &server, .request = MismatchedIdServer.request, .notify = MismatchedIdServer.notify });
     try std.testing.expect(server.saw_call);
-    try std.testing.expect(std.mem.indexOf(u8, output.getWritten(), "\"error\"") != null);
-    try std.testing.expect(std.mem.indexOf(u8, output.getWritten(), "\"id\":3") != null);
-    try std.testing.expect(std.mem.indexOf(u8, output.getWritten(), "\"result\"") == null);
+    try std.testing.expect(std.mem.indexOf(u8, output_writer.buffered(), "\"error\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, output_writer.buffered(), "\"id\":3") != null);
+    try std.testing.expect(std.mem.indexOf(u8, output_writer.buffered(), "\"result\"") == null);
 }
 
 test "proxy fails closed for high-volume tools/list responses" {
@@ -1606,14 +1607,14 @@ test "proxy fails closed for high-volume tools/list responses" {
     var server = TooManyToolsServer{};
     var input: std.Io.Reader = .fixed("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"tools/list\"}\n");
     var output_buf: [4096]u8 = undefined;
-    var output = std.io.fixedBufferStream(&output_buf);
+    var output_writer: std.Io.Writer = .fixed(&output_buf);
     try runWithServer(std.testing.allocator, .{
         .server_name = "fake",
         .server_command_display = "fake",
         .policy = &policy,
         .mode = .strict,
-    }, &input, output.writer(), .{ .context = &server, .request = TooManyToolsServer.request, .notify = TooManyToolsServer.notify });
-    const written = output.getWritten();
+    }, &input, &output_writer, .{ .context = &server, .request = TooManyToolsServer.request, .notify = TooManyToolsServer.notify });
+    const written = output_writer.buffered();
     try std.testing.expect(std.mem.indexOf(u8, written, "\"error\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, written, "\"tools\"") == null);
 }

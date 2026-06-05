@@ -294,15 +294,15 @@ test "literal bracketed policy paths validate and match literally" {
 
 test "all policy preset files under policies/presets validate" {
     const load = @import("load.zig");
-    var dir = try std.fs.cwd().openDir("policies/presets", .{ .iterate = true });
-    defer dir.close();
+    var dir = try std.Io.Dir.cwd().openDir(std.testing.io, "policies/presets", .{ .iterate = true });
+    defer dir.close(std.testing.io);
     var count: usize = 0;
     var it = dir.iterate();
     while (try it.next()) |entry| {
         if (entry.kind != .file or !std.mem.endsWith(u8, entry.name, ".yaml")) continue;
         const path = try std.fs.path.join(std.testing.allocator, &.{ "policies/presets", entry.name });
         defer std.testing.allocator.free(path);
-        var loaded = try load.loadFile(std.testing.allocator, path);
+        var loaded = try load.loadFile(std.testing.io, std.testing.allocator, path);
         defer loaded.deinit();
         try policy(&loaded);
         count += 1;

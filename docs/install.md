@@ -8,7 +8,7 @@ zig build
 ./zig-out/bin/orca version --json
 ```
 
-Use Zig `0.15.2`.
+Use Zig `0.16.0` (see `.zigversion`; prefer `./scripts/zig`).
 
 ## Release Artifacts
 

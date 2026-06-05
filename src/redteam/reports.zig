@@ -167,11 +167,13 @@ test "redteam json output is machine readable" {
     var suite: runner.SuiteResult = .{ .allocator = allocator, .results = results };
     defer suite.deinit();
 
-    var out: std.ArrayList(u8) = .empty;
-    defer out.deinit(allocator);
-    try writeJson(out.writer(allocator), suite);
-    var parsed = try std.json.parseFromSlice(std.json.Value, allocator, out.items, .{});
+    var out_writer: std.Io.Writer.Allocating = .init(allocator);
+    defer out_writer.deinit();
+    try writeJson(&out_writer.writer, suite);
+    const out = try out_writer.toOwnedSlice();
+    defer allocator.free(out);
+    var parsed = try std.json.parseFromSlice(std.json.Value, allocator, out, .{});
     defer parsed.deinit();
     try std.testing.expect(parsed.value.object.get("fixtures") != null);
-    try std.testing.expect(std.mem.indexOf(u8, out.items, "\"points_earned\":10") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "\"points_earned\":10") != null);
 }

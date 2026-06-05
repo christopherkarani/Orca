@@ -1,0 +1,6 @@
+#!/usr/bin/env bash
+# Run the Zig toolchain pinned by .zigversion (delegates to scripts/ensure-zig-toolchain.sh).
+set -euo pipefail
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+eval "$("${ROOT}/scripts/ensure-zig-toolchain.sh" --export)"
+exec zig "$@"

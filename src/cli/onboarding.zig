@@ -22,50 +22,51 @@ pub const EnsurePolicyMessages = struct {
     exists: ?[]const u8 = null,
 };
 
-pub fn resolveWorkspaceRoot(allocator: std.mem.Allocator) ![]u8 {
-    return resolveWorkspaceRootFromCwd(allocator, std.fs.cwd());
+pub fn resolveWorkspaceRoot(io: std.Io, allocator: std.mem.Allocator) ![]u8 {
+    return resolveWorkspaceRootFromCwd(io, allocator, std.Io.Dir.cwd());
 }
 
 /// Resolves the Orca workspace root starting from a caller-provided working directory.
-pub fn resolveWorkspaceRootFromCwd(allocator: std.mem.Allocator, cwd: std.fs.Dir) ![]u8 {
-    const cwd_path = try cwd.realpathAlloc(allocator, ".");
+pub fn resolveWorkspaceRootFromCwd(io: std.Io, allocator: std.mem.Allocator, cwd: std.Io.Dir) ![]u8 {
+    const cwd_path = try cwd.realPathFileAlloc(io, ".", allocator);
     defer allocator.free(cwd_path);
-    return supervisor.resolveWorkspaceRoot(allocator, null, cwd_path) catch try allocator.dupe(u8, cwd_path);
+    return supervisor.resolveWorkspaceRoot(io, allocator, null, cwd_path) catch try allocator.dupe(u8, cwd_path);
 }
 
 pub fn policyPath(allocator: std.mem.Allocator, workspace_root: []const u8) ![]u8 {
     return std.fs.path.join(allocator, &.{ workspace_root, ".orca", "policy.yaml" });
 }
 
-pub fn policyExists(workspace_root: []const u8) bool {
+pub fn policyExists(io: std.Io, workspace_root: []const u8) bool {
     const page_alloc = std.heap.page_allocator;
     const path = policyPath(page_alloc, workspace_root) catch return false;
     defer page_alloc.free(path);
-    return plugin.fileExistsAbsolute(path);
+    return plugin.fileExistsAbsolute(io, path);
 }
 
 /// Creates `.orca/policy.yaml` when missing. Never passes `--quiet` so init prints next steps.
 pub fn ensurePolicy(
-    cwd: std.fs.Dir,
+    io: std.Io,
+    cwd: std.Io.Dir,
     workspace_root: []const u8,
     preset: []const u8,
     stdout: anytype,
     stderr: anytype,
     messages: EnsurePolicyMessages,
 ) !u8 {
-    if (policyExists(workspace_root)) {
+    if (policyExists(io, workspace_root)) {
         if (messages.exists) |text| try stdout.writeAll(text);
         return exit_codes.success;
     }
 
     try stdout.writeAll(messages.missing);
     const init_argv = &[_][]const u8{ "--preset", preset };
-    return init.command(cwd, init_argv, stdout, stderr);
+    return init.command(io, cwd, init_argv, stdout, stderr);
 }
 
 /// Guided setup when both stdin and stdout are TTYs (matches quickstart auto-setup gate).
-pub fn interactiveSetupDesired() bool {
-    return std.fs.File.stdin().isTty() and std.fs.File.stdout().isTty();
+pub fn interactiveSetupDesired(io: std.Io) bool {
+    return (std.Io.File.stdin().isTty(io) catch false) and (std.Io.File.stdout().isTty(io) catch false);
 }
 
 /// Parses `--auto`, `--yes` (optional alias), and `--preset` for setup-like commands.
@@ -101,32 +102,32 @@ test "onboarding policyPath and policyExists" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
 
-    const root = try tmp.dir.realpathAlloc(std.testing.allocator, ".");
+    const root = try tmp.dir.realPathFileAlloc(std.testing.io, ".", std.testing.allocator);
     defer std.testing.allocator.free(root);
 
-    try std.testing.expect(!policyExists(root));
+    try std.testing.expect(!policyExists(std.testing.io, root));
 
     const path = try policyPath(std.testing.allocator, root);
     defer std.testing.allocator.free(path);
     try std.testing.expect(std.mem.endsWith(u8, path, ".orca/policy.yaml"));
 
-    try tmp.dir.makePath(".orca");
+    try tmp.dir.createDirPath(std.testing.io, ".orca");
     {
-        const file = try tmp.dir.createFile(".orca/policy.yaml", .{});
-        defer file.close();
-        try file.writeAll("version: 1\nmode: observe\n");
+        const file = try tmp.dir.createFile(std.testing.io, ".orca/policy.yaml", .{});
+        defer file.close(std.testing.io);
+        try file.writeStreamingAll(std.testing.io, "version: 1\nmode: observe\n");
     }
 
-    try std.testing.expect(policyExists(root));
+    try std.testing.expect(policyExists(std.testing.io, root));
 }
 
 test "onboarding parseFlags accepts preset and auto" {
     var stderr_buf: [256]u8 = undefined;
-    var stderr_stream = std.io.fixedBufferStream(&stderr_buf);
+    var stderr_writer: std.Io.Writer = .fixed(&stderr_buf);
 
     const flags = try parseFlags(
         &.{ "--auto", "--preset", "strict-local" },
-        stderr_stream.writer(),
+        &stderr_writer,
         "orca setup",
         true,
     );
