@@ -33,11 +33,11 @@ pub const commands = [_]CommandInfo{
             "orca run --no-network --no-secrets -- claude",
         },
         .details = &.{
-            "Starts a protected session, filters the child environment through policy, checks the direct command through a command safety check, writes audit artifacts, and mirrors the child exit code.",
+            "Starts a protected session, filters the child environment through policy, checks the command through a command safety check, writes audit artifacts, and mirrors the child exit code.",
             "Options: --workspace <path>, --mode observe|ask|strict|ci, --policy <path>, --session-name <name>, --no-secrets, --secretless, --inherit-env, --no-network, --allow-network <domain>, --network observe|ask|allowlist|open|off, --network-backend decision-only|proxy, --require-backend <capability>, --help",
-            "Strict and CI modes default to no-secrets child environments. --secretless replaces policy-visible secret env values with broker references instead of raw values. --inherit-env is allowed only when the selected policy permits inheritance.",
-            "Network flags update the run-time policy and audit network decisions. --network-backend proxy starts an explicit localhost proxy and injects HTTP_PROXY/HTTPS_PROXY/ALL_PROXY; HTTPS CONNECT enforcement is host/port only without MITM.",
-            "Linux uses backend capability detection and process-group cleanup where available. Optional kernel features are reported honestly and are not claimed active unless actually active.",
+            "Strict and CI modes default to environments without secret access. --secretless replaces policy-visible secret env values with credential references instead of raw values. --inherit-env is allowed only when the selected policy permits inheritance.",
+            "Network flags update the run-time policy and audit network decisions. --network-backend proxy starts an explicit localhost proxy and injects HTTP_PROXY/HTTPS_PROXY/ALL_PROXY; HTTPS CONNECT is host/port only without interception.",
+            "Linux uses platform feature detection where available. Optional kernel features are reported honestly and are not claimed active unless actually active.",
         },
     },
     .{
@@ -127,12 +127,12 @@ pub const commands = [_]CommandInfo{
         "Explanations show the decision, reason, matched rule when available, and policy mode.",
     } },
     .{ .name = "credentials", .summary = "Verify credential brokers without exposing secrets", .usage = "orca credentials check [credential-ref]", .category = .advanced, .details = &.{
-        "Checks configured Secretless brokers and optional credential refs without printing raw secret values.",
+        "Checks configured credential brokers and optional credential refs without printing raw secret values.",
         "Supported broker kinds: local-dummy, env-file-dev, 1password-cli, macos-keychain, infisical-agent-vault.",
         "Infisical/Agent Vault is currently a status/config boundary until exact local API or CLI behavior is verified.",
     } },
     .{ .name = "report", .summary = "Export a safety report for a session", .usage = "orca report --session <id|last> --format markdown|json", .category = .diagnostics, .details = &.{
-        "Loads a local session, verifies the hash chain, and exports denied actions, redactions, plugin readiness, and a plain-language prevention summary.",
+        "Loads a local session, verifies session integrity, and exports denied actions, redactions, plugin readiness, and a plain-language prevention summary.",
         "Report export is a Pro/Team local-license feature. Core safety commands remain available without a license.",
     } },
     .{ .name = "license", .summary = "Manage local offline licenses", .usage = "orca license <status|activate> [...]", .category = .advanced, .details = &.{
@@ -177,7 +177,7 @@ pub const commands = [_]CommandInfo{
         "orca replay --session last",
         "orca replay --session 2026-05-29-abc123",
     }, .details = &.{
-        "Reads .orca session artifacts, renders a timeline, and can verify the event hash chain.",
+        "Reads .orca session artifacts, renders a timeline, and can verify session integrity.",
         "With no args and no sessions, lists available sessions instead of erroring.",
         "Use --list to print all session IDs under .orca/sessions/.",
     } },
@@ -187,7 +187,7 @@ pub const commands = [_]CommandInfo{
         .usage = "orca diff [--session <id|last>] [--file <path>]",
         .category = .staged_changes,
         .details = &.{
-            "Shows unified diffs for Orca-mediated staged writes.",
+            "Shows unified diffs for Orca-mediated pending file changes.",
             "Use 'orca apply' to commit changes or 'orca discard' to cancel them.",
         },
     },
@@ -197,7 +197,7 @@ pub const commands = [_]CommandInfo{
         .usage = "orca apply [--session <id|last>] [--file <path>]",
         .category = .staged_changes,
         .details = &.{
-            "Applies reviewed staged writes after original-state checks where feasible.",
+            "Applies reviewed pending file changes after original-state checks where feasible.",
             "See 'orca diff' to review changes and 'orca discard' to cancel them.",
         },
     },
@@ -207,7 +207,7 @@ pub const commands = [_]CommandInfo{
         .usage = "orca discard [--session <id|last>] [--file <path>]",
         .category = .staged_changes,
         .details = &.{
-            "Removes staged writes without changing workspace files.",
+            "Removes pending file changes without changing workspace files.",
             "See 'orca diff' to review changes and 'orca apply' to commit them.",
         },
     },
@@ -219,7 +219,7 @@ pub const commands = [_]CommandInfo{
         "  orca mcp trust <server> --tool <tool>",
         "  orca mcp manifest check <manifest.yaml>",
         "  orca mcp manifest generate --command <server-command> | --server <name>",
-        "The proxy speaks newline-delimited stdio JSON-RPC and writes only MCP protocol messages to stdout while proxying.",
+        "The proxy handles MCP server communication over stdio and forwards messages transparently.",
         "Remote HTTP MCP, OAuth, and hosted gateway behavior are limited/deferred in Phase 17.",
     } },
     .{ .name = "redteam", .summary = "Run built-in safety tests against current policy", .usage = "orca redteam [path] [--json] [--ci] [--fixture <id>]", .category = .advanced, .details = &.{

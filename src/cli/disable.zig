@@ -91,9 +91,11 @@ pub fn command(io: std.Io, argv: []const []const u8, stdout: anytype, stderr: an
         .all => &[_]DisableTarget{ .codex, .claude, .opencode, .openclaw, .hermes },
     };
 
-    var any_action = false;
+    var success_count: usize = 0;
+    var fail_count: usize = 0;
+
     for (targets) |t| {
-        try stdout.print("Host: {s}\n", .{@tagName(t)});
+        try stdout.print("→ Disabling {s}...\n", .{@tagName(t)});
         const did_disable = switch (t) {
             .opencode => try disableOpenCode(io, allocator, stdout),
             .openclaw => try disableOpenClaw(io, allocator, stdout),
@@ -103,21 +105,24 @@ pub fn command(io: std.Io, argv: []const []const u8, stdout: anytype, stderr: an
             .all => unreachable,
         };
         if (did_disable) {
-            any_action = true;
-        } else if (t != .openclaw) {
-            // openclaw already prints its own status
-            try stdout.print("  status: no {s} Orca plugin found\n", .{@tagName(t)});
+            try stdout.print("  ✓ {s} disabled\n", .{@tagName(t)});
+            success_count += 1;
+        } else {
+            try stdout.print("  ✗ {s} not found or failed\n", .{@tagName(t)});
+            fail_count += 1;
         }
     }
 
     try stdout.writeAll("\n");
-    if (any_action) {
-        try stdout.writeAll("Orca plugins have been disabled.\n");
-        try stdout.writeAll("Orca binary and policy files remain in place.\n");
-        try stdout.writeAll("Re-enable with: orca setup (guided) or orca plugin install <host>\n");
-    } else {
+    if (success_count == 0 and fail_count == 0) {
         try stdout.writeAll("No Orca plugins were found to disable.\n");
+    } else if (fail_count == 0) {
+        try stdout.writeAll("✅ All Orca plugins have been disabled.\n");
+    } else {
+        try stdout.print("⚠️  Disabled {d} plugin(s), {d} failed.\n", .{ success_count, fail_count });
     }
+    try stdout.writeAll("Orca binary and policy files remain in place.\n");
+    try stdout.writeAll("Re-enable with: orca setup (guided) or orca plugin install <host>\n");
     return exit_codes.success;
 }
 
