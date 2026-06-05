@@ -69,29 +69,33 @@ pub fn command(io: std.Io, argv: []const []const u8, stdout: anytype, stderr: an
     try stdout.writeAll("Orca Uninstall\n\n");
 
     // 1. Disable / remove all plugins
-    try stdout.writeAll("Step 1: Removing plugins\n");
+    try stdout.writeAll("→ Step 1 of 3: Removing plugins...\n");
     try stdout.writeAll("(OpenClaw and Hermes use host CLIs with 10s timeout + direct fallback)\n");
     const all_disabled = try disablePlugins(io, allocator, stdout);
+    try stdout.writeAll("  ✓ Step 1 done\n");
 
     if (plugins_only) {
-        try stdout.writeAll("\nPlugins removed. Orca binary and config remain in place.\n");
+        try stdout.writeAll("\n✅ Plugins removed. Orca binary and config remain in place.\n");
         try stdout.writeAll("To fully uninstall later, run: orca uninstall --yes\n");
         return exit_codes.success;
     }
 
     // 2. Remove binary
-    try stdout.writeAll("\nStep 2: Removing Orca binary\n");
+    try stdout.writeAll("\n→ Step 2 of 3: Removing Orca binary...\n");
     const binary_removed = try removeBinary(io, allocator, stdout);
+    try stdout.writeAll("  ✓ Step 2 done\n");
 
     // 3. Remove config and data directories
     if (!keep_config) {
-        try stdout.writeAll("\nStep 3: Removing config and data\n");
+        try stdout.writeAll("\n→ Step 3 of 3: Removing config and data...\n");
         try removeConfigAndData(io, allocator, stdout);
+        try stdout.writeAll("  ✓ Step 3 done\n");
     } else {
-        try stdout.writeAll("\nStep 3: Skipping config removal (--keep-config)\n");
+        try stdout.writeAll("\n→ Step 3 of 3: Skipping config removal (--keep-config)\n");
+        try stdout.writeAll("  ✓ Step 3 done\n");
     }
 
-    try stdout.writeAll("\nUninstall complete.\n");
+    try stdout.writeAll("\n✅ Uninstall complete.\n");
     if (!keep_config) {
         try stdout.writeAll("User config removed: ~/.config/orca/\n");
     }

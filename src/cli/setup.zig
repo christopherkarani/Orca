@@ -6,6 +6,7 @@ const style = @import("style.zig");
 const plugin = @import("plugin.zig");
 const interactive = @import("interactive.zig");
 const onboarding = @import("onboarding.zig");
+const spinner_pkg = @import("spinner.zig");
 
 pub fn command(io: std.Io, cwd: std.Io.Dir, argv: []const []const u8, stdout: anytype, stderr: anytype) !u8 {
     if (argv.len == 0) {
@@ -67,20 +68,32 @@ fn runAutoSetup(io: std.Io, cwd: std.Io.Dir, preset: []const u8, stdout: anytype
         const installed = plugin.hostPluginInstalledFromReport(host_name, doctor_report);
 
         if (installed) {
-            try stdout.print("  {s}: plugin already installed\n", .{host_name});
+            try stdout.print("  ✓ {s}: already installed\n", .{host_name});
         } else {
-            try stdout.print("  {s}: plugin not installed. Installing...\n", .{host_name});
+            try stdout.print("  → {s}: Installing...", .{host_name});
+            try flushIfSupported(stdout);
+
+            var spinner = spinner_pkg.Spinner(@TypeOf(stdout)){
+                .label = host_name,
+                .io = io,
+                .stdout = stdout,
+            };
+            try spinner.start();
+
             const install_argv = &[_][]const u8{ self_exe, "plugin", "install", host_name, "--yes" };
             const install_code = runChild(io, install_argv);
             if (install_code) |code| {
                 if (code != 0) {
-                    try stdout.print("  {s}: install failed (exit code {d})\n", .{ host_name, code });
+                    try spinner.stop(false);
+                    try stdout.print(" (exit code {d})\n", .{code});
                     failure_count += 1;
                     continue;
                 }
-                try stdout.print("  {s}: install succeeded\n", .{host_name});
+                try spinner.stop(true);
+                try stdout.writeAll("\n");
             } else |err| {
-                try stdout.print("  {s}: install error ({s})\n", .{ host_name, @errorName(err) });
+                try spinner.stop(false);
+                try stdout.print(" ({s})\n", .{@errorName(err)});
                 failure_count += 1;
                 continue;
             }
@@ -123,6 +136,18 @@ fn runAutoSetup(io: std.Io, cwd: std.Io.Dir, preset: []const u8, stdout: anytype
     try style.maybeColor(io, stdout, style.Style.green, style.Glyph.party ++ " Setup complete!");
     try stdout.writeAll("\nRun 'orca run -- <command>' to start a protected session.\n");
     return exit_codes.success;
+}
+
+fn flushIfSupported(writer: anytype) !void {
+    const Writer = @TypeOf(writer);
+    switch (@typeInfo(Writer)) {
+        .pointer => |pointer| {
+            if (@hasDecl(pointer.child, "flush")) try writer.flush();
+        },
+        else => {
+            if (@hasDecl(Writer, "flush")) try writer.flush();
+        },
+    }
 }
 
 fn runChild(io: std.Io, argv: []const []const u8) !u8 {
@@ -198,11 +223,29 @@ fn runGuidedSetup(io: std.Io, cwd: std.Io.Dir, preset: []const u8, stdout: anyty
     for (result.items) |item| {
         if (!item.checked) continue;
 
-        try stdout.print("\nIntegrating with {s}...\n", .{item.label});
+        try stdout.print("\nIntegrating with {s}...", .{item.label});
+        try flushIfSupported(stdout);
+
+        var spinner = spinner_pkg.Spinner(@TypeOf(stdout)){
+            .label = item.label,
+            .io = io,
+            .stdout = stdout,
+        };
+        try spinner.start();
+
         const install_argv = &[_][]const u8{ "plugin", "install", item.label, "--yes" };
-        const code = try runChild(io, install_argv);
+        const code = runChild(io, install_argv) catch |err| {
+            try spinner.stop(false);
+            try stdout.print(" ({s})\n", .{@errorName(err)});
+            continue;
+        };
         if (code == 0) {
+            try spinner.stop(true);
+            try stdout.writeAll("\n");
             any_installed = true;
+        } else {
+            try spinner.stop(false);
+            try stdout.print(" (exit code {d})\n", .{code});
         }
     }
 

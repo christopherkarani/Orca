@@ -8,6 +8,7 @@ const orca_mcp = @import("../mcp/mod.zig");
 const orca_policy = @import("orca_core").policy;
 const sandbox = @import("../sandbox/mod.zig");
 const resource_root = @import("../resource_root.zig");
+const style = @import("style.zig");
 
 const exit_codes = @import("exit_codes.zig");
 const help = @import("help.zig");
@@ -96,7 +97,7 @@ pub fn command(io: std.Io, argv: []const []const u8, stdout: anytype, stderr: an
         return exit_codes.general;
     };
     defer context.deinit();
-    try writeReport(stdout, os, backend_report, context, verbose);
+    try writeReport(io, stdout, os, backend_report, context, verbose);
     return exit_codes.success;
 }
 
@@ -124,7 +125,7 @@ fn countCapabilitySummary(os: core.platform.Os, backend_report: sandbox.backend.
     return .{ .active = active_count, .limited = limited_count, .unavailable = unavailable_count };
 }
 
-fn writeReport(stdout: anytype, os: core.platform.Os, backend_report: sandbox.backend.ReportSet, context: IntegrationContext, verbose: bool) !void {
+fn writeReport(io: std.Io, stdout: anytype, os: core.platform.Os, backend_report: sandbox.backend.ReportSet, context: IntegrationContext, verbose: bool) !void {
     try stdout.writeAll("Orca Doctor\n\n");
 
     const counts = countCapabilitySummary(os, backend_report);
@@ -135,13 +136,29 @@ fn writeReport(stdout: anytype, os: core.platform.Os, backend_report: sandbox.ba
     else
         "policy valid";
 
-    try stdout.print("Summary: {s} · {d} active · {d} limited · {d} unavailable · {s}\n\n", .{
-        os.toString(),
-        counts.active,
-        counts.limited,
-        counts.unavailable,
-        policy_status,
-    });
+    if (style.useColor(io, stdout)) {
+        try stdout.print("Summary: {s} · {s}{d} active{s} · {s}{d} limited{s} · {s}{d} unavailable{s} · {s}\n\n", .{
+            os.toString(),
+            style.Style.green,
+            counts.active,
+            style.Style.reset,
+            style.Style.yellow,
+            counts.limited,
+            style.Style.reset,
+            style.Style.red,
+            counts.unavailable,
+            style.Style.reset,
+            policy_status,
+        });
+    } else {
+        try stdout.print("Summary: {s} · {d} active · {d} limited · {d} unavailable · {s}\n\n", .{
+            os.toString(),
+            counts.active,
+            counts.limited,
+            counts.unavailable,
+            policy_status,
+        });
+    }
 
     if (!verbose) {
         try writeRecommendations(stdout, context);
@@ -155,10 +172,20 @@ fn writeReport(stdout: anytype, os: core.platform.Os, backend_report: sandbox.ba
     for (doctor_capabilities) |item| {
         if (item.feature) |feature| {
             const report = backend_report.get(feature);
-            try stdout.print("  {s}: {s} ({s})\n", .{ item.label, report.level.toString(), report.note });
+            const cg = levelColorAndGlyph(report.level);
+            if (style.useColor(io, stdout)) {
+                try stdout.print("  {s} {s}: {s}{s}{s} ({s})\n", .{ cg.glyph, item.label, cg.color, report.level.toString(), style.Style.reset, report.note });
+            } else {
+                try stdout.print("  {s} {s}: {s} ({s})\n", .{ cg.glyph, item.label, report.level.toString(), report.note });
+            }
         } else if (item.capability) |capability| {
             const report = core.platform.reportCapability(os, capability);
-            try stdout.print("  {s}: {s} ({s})\n", .{ item.label, report.state.toString(), report.note });
+            const cg = stateColorAndGlyph(report.state);
+            if (style.useColor(io, stdout)) {
+                try stdout.print("  {s} {s}: {s}{s}{s} ({s})\n", .{ cg.glyph, item.label, cg.color, report.state.toString(), style.Style.reset, report.note });
+            } else {
+                try stdout.print("  {s} {s}: {s} ({s})\n", .{ cg.glyph, item.label, report.state.toString(), report.note });
+            }
         }
     }
     try stdout.writeByte('\n');
@@ -174,28 +201,28 @@ fn writeReport(stdout: anytype, os: core.platform.Os, backend_report: sandbox.ba
     try stdout.print("  selected: {s}\n", .{backend_report.backend_name});
     try stdout.print("  fallback mode: {s} ({s})\n", .{ backend_report.fallback_level.toString(), backend_report.fallback_note });
     if (os == .windows) {
-        try writeWindowsBackendReport(stdout, backend_report);
+        try writeWindowsBackendReport(io, stdout, backend_report);
     } else {
-        try writeBackendLine(stdout, backend_report, .policy_engine);
-        try writeBackendLine(stdout, backend_report, .env_filtering);
-        try writeBackendLine(stdout, backend_report, .path_staging);
+        try writeBackendLine(io, stdout, backend_report, .policy_engine);
+        try writeBackendLine(io, stdout, backend_report, .env_filtering);
+        try writeBackendLine(io, stdout, backend_report, .path_staging);
         if (os == .macos) {
             try stdout.writeAll("  transparent file enforcement: limited (no transparent macOS filesystem monitor is installed; Orca-mediated staging and protected path matching are active)\n");
         }
-        try writeBackendLine(stdout, backend_report, .shell_wrapping);
-        try writeBackendLine(stdout, backend_report, .path_shims);
-        try writeBackendLine(stdout, backend_report, .process_supervision);
+        try writeBackendLine(io, stdout, backend_report, .shell_wrapping);
+        try writeBackendLine(io, stdout, backend_report, .path_shims);
+        try writeBackendLine(io, stdout, backend_report, .process_supervision);
         if (os == .linux) {
-            try writeBackendLine(stdout, backend_report, .user_namespaces);
-            try writeBackendLine(stdout, backend_report, .mount_namespaces);
-            try writeBackendLine(stdout, backend_report, .seccomp);
-            try writeBackendLine(stdout, backend_report, .landlock);
-            try writeBackendLine(stdout, backend_report, .cgroups);
+            try writeBackendLine(io, stdout, backend_report, .user_namespaces);
+            try writeBackendLine(io, stdout, backend_report, .mount_namespaces);
+            try writeBackendLine(io, stdout, backend_report, .seccomp);
+            try writeBackendLine(io, stdout, backend_report, .landlock);
+            try writeBackendLine(io, stdout, backend_report, .cgroups);
         }
-        try writeBackendLine(stdout, backend_report, .network_enforce);
-        try writeBackendLine(stdout, backend_report, .mcp_stdio_proxy);
-        try writeBackendLine(stdout, backend_report, .strong_sandbox);
-        try writeBackendLine(stdout, backend_report, .audit);
+        try writeBackendLine(io, stdout, backend_report, .network_enforce);
+        try writeBackendLine(io, stdout, backend_report, .mcp_stdio_proxy);
+        try writeBackendLine(io, stdout, backend_report, .strong_sandbox);
+        try writeBackendLine(io, stdout, backend_report, .audit);
     }
     try writeRecommendations(stdout, context);
 }
@@ -236,27 +263,59 @@ fn writeIntegrationReport(stdout: anytype, context: IntegrationContext) !void {
     try stdout.print("  red-team fixtures: {s}\n\n", .{if (context.redteam_fixtures_present) "available" else "not found"});
 }
 
-fn writeWindowsBackendReport(stdout: anytype, backend_report: sandbox.backend.ReportSet) !void {
-    try writeBackendLine(stdout, backend_report, .policy_engine);
-    try writeBackendLine(stdout, backend_report, .env_filtering);
-    try writeBackendLine(stdout, backend_report, .path_staging);
-    try writeBackendLine(stdout, backend_report, .path_shims);
+fn writeWindowsBackendReport(io: std.Io, stdout: anytype, backend_report: sandbox.backend.ReportSet) !void {
+    try writeBackendLine(io, stdout, backend_report, .policy_engine);
+    try writeBackendLine(io, stdout, backend_report, .env_filtering);
+    try writeBackendLine(io, stdout, backend_report, .path_staging);
+    try writeBackendLine(io, stdout, backend_report, .path_shims);
     const shell = backend_report.get(.shell_wrapping);
-    try stdout.print("  cmd wrapper: partial ({s})\n", .{shell.note});
-    try stdout.print("  PowerShell wrapper: partial ({s})\n", .{shell.note});
+    const shell_cg = levelColorAndGlyph(shell.level);
+    if (style.useColor(io, stdout)) {
+        try stdout.print("  {s} cmd wrapper: {s}partial{s} ({s})\n", .{ shell_cg.glyph, style.Style.yellow, style.Style.reset, shell.note });
+        try stdout.print("  {s} PowerShell wrapper: {s}partial{s} ({s})\n", .{ shell_cg.glyph, style.Style.yellow, style.Style.reset, shell.note });
+    } else {
+        try stdout.print("  cmd wrapper: partial ({s})\n", .{shell.note});
+        try stdout.print("  PowerShell wrapper: partial ({s})\n", .{shell.note});
+    }
     const cleanup = backend_report.get(.process_supervision);
-    try stdout.print("  process cleanup: {s} ({s})\n", .{ cleanup.level.toString(), cleanup.note });
+    const cleanup_cg = levelColorAndGlyph(cleanup.level);
+    if (style.useColor(io, stdout)) {
+        try stdout.print("  {s} process cleanup: {s}{s}{s} ({s})\n", .{ cleanup_cg.glyph, cleanup_cg.color, cleanup.level.toString(), style.Style.reset, cleanup.note });
+    } else {
+        try stdout.print("  process cleanup: {s} ({s})\n", .{ cleanup.level.toString(), cleanup.note });
+    }
     try stdout.writeAll("  transparent file enforcement: limited (no transparent Windows filesystem enforcement is installed; Orca-mediated staging and protected path matching are active)\n");
-    try writeBackendLine(stdout, backend_report, .network_enforce);
-    try writeBackendLine(stdout, backend_report, .strong_sandbox);
-    try writeBackendLine(stdout, backend_report, .mcp_stdio_proxy);
-    try writeBackendLine(stdout, backend_report, .audit);
+    try writeBackendLine(io, stdout, backend_report, .network_enforce);
+    try writeBackendLine(io, stdout, backend_report, .strong_sandbox);
+    try writeBackendLine(io, stdout, backend_report, .mcp_stdio_proxy);
+    try writeBackendLine(io, stdout, backend_report, .audit);
     try stdout.writeByte('\n');
 }
 
-fn writeBackendLine(stdout: anytype, backend_report: sandbox.backend.ReportSet, feature: sandbox.backend.Feature) !void {
+fn levelColorAndGlyph(level: sandbox.backend.Level) struct { color: []const u8, glyph: []const u8 } {
+    return switch (level) {
+        .active => .{ .color = style.Style.green, .glyph = "✓" },
+        .partial, .limited, .observe_only, .wrapper_only => .{ .color = style.Style.yellow, .glyph = "◌" },
+        .unavailable, .unsupported, .failed => .{ .color = style.Style.red, .glyph = "✗" },
+    };
+}
+
+fn stateColorAndGlyph(state: core.platform.CapabilityState) struct { color: []const u8, glyph: []const u8 } {
+    return switch (state) {
+        .active => .{ .color = style.Style.green, .glyph = "✓" },
+        .partial, .limited, .observe => .{ .color = style.Style.yellow, .glyph = "◌" },
+        .unavailable, .unknown => .{ .color = style.Style.red, .glyph = "✗" },
+    };
+}
+
+fn writeBackendLine(io: std.Io, stdout: anytype, backend_report: sandbox.backend.ReportSet, feature: sandbox.backend.Feature) !void {
     const report = backend_report.get(feature);
-    try stdout.print("  {s}: {s} ({s})\n", .{ report.feature.label(), report.level.toString(), report.note });
+    const cg = levelColorAndGlyph(report.level);
+    if (style.useColor(io, stdout)) {
+        try stdout.print("  {s} {s}: {s}{s}{s} ({s})\n", .{ cg.glyph, report.feature.label(), cg.color, report.level.toString(), style.Style.reset, report.note });
+    } else {
+        try stdout.print("  {s} {s}: {s} ({s})\n", .{ cg.glyph, report.feature.label(), report.level.toString(), report.note });
+    }
 }
 
 fn writeRecommendations(stdout: anytype, context: IntegrationContext) !void {
@@ -466,7 +525,7 @@ test "doctor can render Linux backend details from an injected report" {
     var context = try testContext(std.testing.allocator, .{});
     defer context.deinit();
 
-    try writeReport(&stdout_writer, .linux, report, context, true);
+    try writeReport(std.testing.io, &stdout_writer, .linux, report, context, true);
 
     const written = stdout_writer.buffered();
     try std.testing.expect(std.mem.indexOf(u8, written, "Linux backend:") != null);
@@ -484,7 +543,7 @@ test "doctor can render macOS backend details from an injected report" {
     var context = try testContext(std.testing.allocator, .{});
     defer context.deinit();
 
-    try writeReport(&stdout_writer, .macos, report, context, true);
+    try writeReport(std.testing.io, &stdout_writer, .macos, report, context, true);
 
     const written = stdout_writer.buffered();
     try std.testing.expect(std.mem.indexOf(u8, written, "macOS backend:") != null);
@@ -507,7 +566,7 @@ test "doctor can render Windows backend details from an injected report" {
     var context = try testContext(std.testing.allocator, .{});
     defer context.deinit();
 
-    try writeReport(&stdout_writer, .windows, report, context, true);
+    try writeReport(std.testing.io, &stdout_writer, .windows, report, context, true);
 
     const written = stdout_writer.buffered();
     try std.testing.expect(std.mem.indexOf(u8, written, "Windows backend:") != null);
@@ -547,7 +606,7 @@ test "doctor detects valid policy in current workspace" {
     var context = try collectIntegrationContextAt(std.testing.io, std.testing.allocator, tmp_path);
     defer context.deinit();
 
-    try writeReport(&stdout_writer, core.platform.detectOs(), sandbox.backend.detect(core.platform.detectOs()), context, true);
+    try writeReport(std.testing.io, &stdout_writer, core.platform.detectOs(), sandbox.backend.detect(core.platform.detectOs()), context, true);
     try std.testing.expect(std.mem.indexOf(u8, stdout_writer.buffered(), ".orca/policy.yaml: present and valid") != null);
     try std.testing.expect(std.mem.indexOf(u8, stdout_writer.buffered(), "git repository: detected") != null);
     try std.testing.expectEqualStrings("", stderr_writer.buffered());
@@ -578,7 +637,7 @@ test "doctor reports invalid policy clearly without printing synthetic secrets" 
     var context = try collectIntegrationContextAt(std.testing.io, std.testing.allocator, tmp_path);
     defer context.deinit();
 
-    try writeReport(&stdout_writer, core.platform.detectOs(), sandbox.backend.detect(core.platform.detectOs()), context, true);
+    try writeReport(std.testing.io, &stdout_writer, core.platform.detectOs(), sandbox.backend.detect(core.platform.detectOs()), context, true);
     const output = stdout_writer.buffered();
     try std.testing.expect(std.mem.indexOf(u8, output, ".orca/policy.yaml: invalid") != null);
     try std.testing.expect(std.mem.indexOf(u8, output, "UnsupportedPolicyMode") != null);
@@ -621,6 +680,33 @@ test "doctor --verbose prints full report" {
 test "doctor integration collection returns allocator failures instead of panicking" {
     var failing_allocator = std.testing.FailingAllocator.init(std.testing.allocator, .{ .fail_index = 0 });
     try std.testing.expectError(error.OutOfMemory, collectIntegrationContextAt(std.testing.io, failing_allocator.allocator(), "."));
+}
+
+test "doctor output contains status glyphs in plain text mode" {
+    var stdout_buf: [8192]u8 = undefined;
+    var stdout_writer: std.Io.Writer = .fixed(&stdout_buf);
+    const report = sandbox.backend.detect(.linux);
+    var context = try testContext(std.testing.allocator, .{});
+    defer context.deinit();
+
+    try writeReport(std.testing.io, &stdout_writer, .linux, report, context, true);
+    const written = stdout_writer.buffered();
+    const has_check = std.mem.indexOf(u8, written, "✓") != null;
+    const has_diamond = std.mem.indexOf(u8, written, "◌") != null;
+    const has_cross = std.mem.indexOf(u8, written, "✗") != null;
+    try std.testing.expect(has_check or has_diamond or has_cross);
+}
+
+test "doctor output has no ANSI codes in non-TTY mode" {
+    var stdout_buf: [8192]u8 = undefined;
+    var stdout_writer: std.Io.Writer = .fixed(&stdout_buf);
+    const report = sandbox.backend.detect(.linux);
+    var context = try testContext(std.testing.allocator, .{});
+    defer context.deinit();
+
+    try writeReport(std.testing.io, &stdout_writer, .linux, report, context, true);
+    const written = stdout_writer.buffered();
+    try std.testing.expect(std.mem.indexOf(u8, written, "\x1b[") == null);
 }
 
 const TestContextOptions = struct {
