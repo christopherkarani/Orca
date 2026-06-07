@@ -1,3 +1,7 @@
+> **⚠️ Historical Baseline:** This document captures the state at Phase 35 (2026-05-09). The CLI surface has since evolved significantly (`orca hook`, `orca plugin`, `orca decide` now exist; the C ABI skeleton was never used). See the current command map in `src/cli/mod.zig` and `docs/commands.md`. For merge architecture, see `../plans/MERGE_ORCA_RS_INTO_ORCA_CLI_v2.md`.
+
+---
+
 # Orca Integration Baseline — P00
 
 > Generated: 2026-05-09  
