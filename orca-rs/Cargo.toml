@@ -61,7 +61,13 @@ rust-mcp-sdk = { version = "0.9.0", default-features = false, features = [
   "stdio",
   "macros",
 ] }
-tokio = { version = "1.52", features = ["rt-multi-thread"] }
+tokio = { version = "1.52", features = [
+  "rt-multi-thread",
+  "macros",
+  "signal",
+  "time",
+  "sync",
+] }
 rayon = { version = "1.11", optional = true }
 
 # AST-based pattern matching for heredoc/inline-script content

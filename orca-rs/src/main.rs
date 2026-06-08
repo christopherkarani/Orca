@@ -50,7 +50,6 @@ use std::borrow::Cow;
 use std::collections::HashSet;
 use std::io::{self, IsTerminal};
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
 // Build metadata from vergen (set by build.rs)
@@ -177,30 +176,29 @@ fn run_shutdown_actions() {
     }
 }
 
-/// Process-wide flag set by the SIGINT handler to request graceful shutdown.
+/// Install a cross-platform signal handler that sends `true` on the returned
+/// watch channel when SIGINT (Ctrl-C) is received.
 ///
-/// In CLI mode `main()` polls this flag and returns exit code 130.
-/// In daemon mode (future) the UDS listener loop will drain in-flight
-/// requests before returning.
-static SHUTDOWN_REQUESTED: AtomicBool = AtomicBool::new(false);
-
-fn install_signal_shutdown_handler() {
-    // Idempotent: ctrlc::set_handler returns Err on duplicate install. The
-    // handler sets SHUTDOWN_REQUESTED instead of calling process::exit so
-    // that daemon mode can perform graceful shutdown. CLI mode polls the
-    // flag and exits with code 130 (128 + SIGINT(2)).
-    let _ = ctrlc::set_handler(|| {
+/// The handler flushes registered shutdown actions before signalling, so
+/// buffered state (history writer, etc.) is persisted before the process
+/// exits.  In daemon mode the receiver is polled in the main loop; in CLI
+/// mode the receiver can be checked at well-defined yield points.
+fn install_signal_shutdown_handler() -> tokio::sync::watch::Receiver<bool> {
+    let (tx, rx) = tokio::sync::watch::channel(false);
+    // Idempotent: ctrlc::set_handler returns Err on duplicate install.
+    let _ = ctrlc::set_handler(move || {
         eprintln!("[orca] Flushing on signal...");
         run_shutdown_actions();
-        SHUTDOWN_REQUESTED.store(true, Ordering::SeqCst);
+        let _ = tx.send(true);
     });
+    rx
 }
 
 fn install_history_shutdown_handler(handle: orca_rs::history::HistoryFlushHandle) {
     register_shutdown_action(move || {
         handle.flush_sync();
     });
-    install_signal_shutdown_handler();
+    let _shutdown_rx = install_signal_shutdown_handler();
 }
 
 fn is_top_level_global_flag(arg: &str) -> bool {
@@ -365,17 +363,25 @@ fn command_output_exit_code(output: cli::CommandOutput) -> i32 {
         cli::CommandOutput::TestResult { blocked: true } => EXIT_DENIED,
         cli::CommandOutput::TestResult { blocked: false } => 0,
         cli::CommandOutput::ClassifyResult { exit_code } => exit_code,
-        cli::CommandOutput::ValidateResult { exit_error: true, .. } => 1,
-        cli::CommandOutput::ValidateResult { exit_error: false, .. } => 0,
-        cli::CommandOutput::ScanResult { should_fail: true, .. } => 1,
-        cli::CommandOutput::ScanResult { should_fail: false, .. } => 0,
+        cli::CommandOutput::ValidateResult {
+            exit_error: true, ..
+        } => 1,
+        cli::CommandOutput::ValidateResult {
+            exit_error: false, ..
+        } => 0,
+        cli::CommandOutput::ScanResult {
+            should_fail: true, ..
+        } => 1,
+        cli::CommandOutput::ScanResult {
+            should_fail: false, ..
+        } => 0,
         cli::CommandOutput::HistoryResult { strict_ok: false } => 1,
         cli::CommandOutput::HistoryResult { strict_ok: true } => 0,
     }
 }
 
 #[allow(clippy::too_many_lines)]
-fn run_orca() -> Result<i32, Box<dyn std::error::Error>> {
+async fn run_orca() -> Result<i32, Box<dyn std::error::Error + Send + Sync>> {
     // Configure colors based on TTY detection
     configure_colors();
 
@@ -398,9 +404,13 @@ fn run_orca() -> Result<i32, Box<dyn std::error::Error>> {
     let cli = match Cli::try_parse() {
         Ok(cli) => cli,
         Err(e) => {
+            if args.iter().any(|a| a == "--daemon-mode") {
+                tracing::error!(error = %e, "Daemon mode argument parse error");
+                return Ok(0);
+            }
             let exit_code = e.exit_code();
             eprintln!("{e}");
-            return Ok(exit_code);
+            std::process::exit(exit_code);
         }
     };
 
@@ -418,21 +428,21 @@ fn run_orca() -> Result<i32, Box<dyn std::error::Error>> {
         colored::control::set_override(false);
     }
 
-    // Daemon mode stub: log and return cleanly.
+    // Daemon mode: keep process alive and exit cleanly on shutdown signal.
     // Full daemon implementation (UDS server, NDJSON IPC) is Phase 0.5.
     if cli.daemon_mode {
-        tracing::info!("orca-daemon started in daemon mode (stub)");
-        eprintln!("[orca-daemon] Daemon mode stub — exiting 0");
+        let shutdown_rx = install_signal_shutdown_handler();
+        run_daemon_mode(shutdown_rx).await?;
         return Ok(0);
     }
 
     // If there's a subcommand, handle it and return its exit code.
     if cli.command.is_some() {
         match cli::run_command(cli) {
-            Ok(output) => return Ok(command_output_exit_code(output)),
+            Ok(output) => std::process::exit(command_output_exit_code(output)),
             Err(e) => {
                 eprintln!("Error: {e}");
-                return Err(e);
+                std::process::exit(1);
             }
         }
     }
@@ -857,6 +867,10 @@ fn run_orca() -> Result<i32, Box<dyn std::error::Error>> {
                 if let Some(writer) = history_writer.as_ref() {
                     writer.flush_sync();
                 }
+                // Defensive: daemon mode never reaches hook evaluation.
+                if cli.daemon_mode {
+                    unreachable!("hook-mode deny path reached in daemon mode");
+                }
                 return Ok(2);
             }
         }
@@ -881,8 +895,53 @@ fn run_orca() -> Result<i32, Box<dyn std::error::Error>> {
     Ok(0)
 }
 
-fn main() {
-    match run_orca() {
+/// Daemon-mode entry point: keeps the process alive, logs startup,
+/// and exits cleanly when the shutdown channel fires (SIGINT) or when
+/// SIGTERM is received (Unix only).
+///
+/// Never calls `process::exit` — returns `Ok(())` so the caller
+/// (async `main`) can shut down the tokio runtime gracefully.
+async fn run_daemon_mode(
+    mut shutdown_rx: tokio::sync::watch::Receiver<bool>,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    tracing::info!("orca-daemon started in daemon mode");
+
+    #[cfg(unix)]
+    let mut sigterm = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
+        .expect("failed to install SIGTERM handler");
+
+    loop {
+        #[cfg(unix)]
+        {
+            tokio::select! {
+                () = tokio::time::sleep(Duration::from_secs(1)) => {
+                    if *shutdown_rx.borrow_and_update() {
+                        break;
+                    }
+                }
+                _ = sigterm.recv() => {
+                    eprintln!("[orca] Flushing on SIGTERM...");
+                    run_shutdown_actions();
+                    break;
+                }
+            }
+        }
+        #[cfg(not(unix))]
+        {
+            tokio::time::sleep(Duration::from_secs(1)).await;
+            if *shutdown_rx.borrow_and_update() {
+                break;
+            }
+        }
+    }
+
+    tracing::info!("orca-daemon shutting down gracefully");
+    Ok(())
+}
+
+#[tokio::main]
+async fn main() {
+    match run_orca().await {
         Ok(exit_code) => std::process::exit(exit_code),
         Err(e) => {
             eprintln!("Error: {e}");
@@ -1868,6 +1927,39 @@ mod tests {
                 after > before,
                 "panicking action must not block subsequent ones; before={before} after={after}"
             );
+        }
+    }
+
+    mod daemon_mode_tests {
+        use super::*;
+
+        #[tokio::test]
+        async fn run_daemon_mode_exits_cleanly_on_shutdown_signal() {
+            let (tx, rx) = tokio::sync::watch::channel(false);
+
+            let daemon_task = tokio::spawn(async move {
+                run_daemon_mode(rx).await
+            });
+
+            // Give the daemon a moment to start
+            tokio::time::sleep(Duration::from_millis(100)).await;
+
+            // Signal shutdown
+            let _ = tx.send(true);
+
+            // Should complete cleanly within a reasonable time
+            let result = tokio::time::timeout(Duration::from_secs(5), daemon_task).await;
+            assert!(result.is_ok(), "daemon should complete within timeout");
+            assert!(result.unwrap().is_ok(), "daemon should return Ok");
+        }
+
+        #[test]
+        fn signal_handler_returns_receiver() {
+            // install_signal_shutdown_handler should return a receiver without panicking.
+            // ctrlc::set_handler is idempotent — subsequent calls return Err but do not panic.
+            let rx = install_signal_shutdown_handler();
+            // Initial value should be false
+            assert!(!*rx.borrow());
         }
     }
 }
