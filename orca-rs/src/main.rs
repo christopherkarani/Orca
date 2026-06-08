@@ -19,18 +19,18 @@
 
 use clap::Parser;
 use colored::Colorize;
-use orca_rs::agent::{detect_agent, Agent};
+use orca_rs::agent::{Agent, detect_agent};
 use orca_rs::allowlist::LayeredAllowlist;
 use orca_rs::cli::{self, Cli};
 // Exit codes are used by cli.rs for robot mode; main.rs uses them for hook mode errors
 use orca_rs::config::Config;
 use orca_rs::evaluator::{
-    evaluate_command_with_pack_order_deadline_at_path, EvaluationDecision, MatchSource,
+    EvaluationDecision, MatchSource, evaluate_command_with_pack_order_deadline_at_path,
 };
 #[allow(unused_imports)]
 use orca_rs::exit_codes::{EXIT_DENIED, EXIT_PARSE_ERROR, EXIT_SUCCESS};
 use orca_rs::history::{
-    CommandEntry, HistoryWriter, Outcome as HistoryOutcome, ENV_HISTORY_DB_PATH,
+    CommandEntry, ENV_HISTORY_DB_PATH, HistoryWriter, Outcome as HistoryOutcome,
 };
 use orca_rs::hook;
 use orca_rs::load_default_allowlists;
@@ -39,7 +39,7 @@ use orca_rs::packs::load_external_packs;
 #[cfg(test)]
 use orca_rs::packs::pack_aware_quick_reject;
 use orca_rs::packs::{DecisionMode, REGISTRY};
-use orca_rs::pending_exceptions::{log_maintenance, PendingExceptionStore};
+use orca_rs::pending_exceptions::{PendingExceptionStore, log_maintenance};
 use orca_rs::perf::{Deadline, HOOK_EVALUATION_BUDGET};
 use orca_rs::sanitize_for_pattern_matching;
 // Import HookInput for parsing stdin JSON in hook mode
@@ -50,6 +50,7 @@ use std::borrow::Cow;
 use std::collections::HashSet;
 use std::io::{self, IsTerminal};
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
 // Build metadata from vergen (set by build.rs)
@@ -142,6 +143,11 @@ fn effective_agent_for_hook_protocol(
 /// call — do not add ad-hoc flush logic to the SIGINT handler itself.
 type ShutdownAction = Box<dyn Fn() + Send + Sync>;
 
+/// Set to `true` when the process is running in daemon mode. The SIGINT
+/// handler uses this to decide whether to send a graceful-shutdown signal
+/// (daemon) or to exit immediately (CLI / hook mode).
+static DAEMON_MODE_ACTIVE: AtomicBool = AtomicBool::new(false);
+
 static SHUTDOWN_ACTIONS: std::sync::OnceLock<std::sync::Mutex<Vec<ShutdownAction>>> =
     std::sync::OnceLock::new();
 
@@ -189,7 +195,11 @@ fn install_signal_shutdown_handler() -> tokio::sync::watch::Receiver<bool> {
     let _ = ctrlc::set_handler(move || {
         eprintln!("[orca] Flushing on signal...");
         run_shutdown_actions();
-        let _ = tx.send(true);
+        if DAEMON_MODE_ACTIVE.load(Ordering::SeqCst) {
+            let _ = tx.send(true);
+        } else {
+            std::process::exit(130);
+        }
     });
     rx
 }
@@ -404,11 +414,11 @@ async fn run_orca() -> Result<i32, Box<dyn std::error::Error + Send + Sync>> {
     let cli = match Cli::try_parse() {
         Ok(cli) => cli,
         Err(e) => {
+            let exit_code = e.exit_code();
             if args.iter().any(|a| a == "--daemon-mode") {
                 tracing::error!(error = %e, "Daemon mode argument parse error");
-                return Ok(0);
+                return Ok(exit_code);
             }
-            let exit_code = e.exit_code();
             eprintln!("{e}");
             std::process::exit(exit_code);
         }
@@ -904,6 +914,7 @@ async fn run_orca() -> Result<i32, Box<dyn std::error::Error + Send + Sync>> {
 async fn run_daemon_mode(
     mut shutdown_rx: tokio::sync::watch::Receiver<bool>,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    DAEMON_MODE_ACTIVE.store(true, Ordering::SeqCst);
     tracing::info!("orca-daemon started in daemon mode");
 
     #[cfg(unix)]
@@ -1407,14 +1418,18 @@ mod tests {
 
             assert_eq!(parsed["hookSpecificOutput"]["hookEventName"], "PreToolUse");
             assert_eq!(parsed["hookSpecificOutput"]["permissionDecision"], "deny");
-            assert!(parsed["hookSpecificOutput"]["permissionDecisionReason"]
-                .as_str()
-                .unwrap()
-                .contains("git reset --hard"));
-            assert!(parsed["hookSpecificOutput"]["permissionDecisionReason"]
-                .as_str()
-                .unwrap()
-                .contains("test reason"));
+            assert!(
+                parsed["hookSpecificOutput"]["permissionDecisionReason"]
+                    .as_str()
+                    .unwrap()
+                    .contains("git reset --hard")
+            );
+            assert!(
+                parsed["hookSpecificOutput"]["permissionDecisionReason"]
+                    .as_str()
+                    .unwrap()
+                    .contains("test reason")
+            );
         }
 
         #[test]
@@ -1872,8 +1887,8 @@ mod tests {
 
     mod shutdown_registry_tests {
         use super::*;
-        use std::sync::atomic::{AtomicUsize, Ordering};
         use std::sync::Arc;
+        use std::sync::atomic::{AtomicUsize, Ordering};
 
         #[test]
         fn registered_actions_all_run_on_shutdown_invocation() {
@@ -1937,9 +1952,7 @@ mod tests {
         async fn run_daemon_mode_exits_cleanly_on_shutdown_signal() {
             let (tx, rx) = tokio::sync::watch::channel(false);
 
-            let daemon_task = tokio::spawn(async move {
-                run_daemon_mode(rx).await
-            });
+            let daemon_task = tokio::spawn(async move { run_daemon_mode(rx).await });
 
             // Give the daemon a moment to start
             tokio::time::sleep(Duration::from_millis(100)).await;
