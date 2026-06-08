@@ -1,0 +1,5 @@
+# Minimal ORCA Configuration
+# Bare minimum for ORCA to function - only core packs enabled
+
+[packs]
+enabled = ["core.git", "core.filesystem"]

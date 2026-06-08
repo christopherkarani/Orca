@@ -1,0 +1,101 @@
+# Git Awareness ORCA Configuration
+# For testing branch-aware strictness (Epic 8)
+
+[packs]
+enabled = ["core.git", "core.filesystem"]
+
+[policy]
+default_mode = "deny"
+
+[git]
+# Enable branch-specific rule evaluation
+enable_branch_awareness = true
+
+# Protected branches (always critical strictness)
+protected_branches = [
+    "main",
+    "master",
+    "production",
+    "release/*",
+    "hotfix/*",
+]
+
+# Default branch strictness (used when branch doesn't match any rule)
+default_strictness = "medium"
+
+# Auto-detect branch type from naming convention
+auto_detect_branch_type = true
+
+# Branch type detection patterns
+[git.branch_patterns]
+feature = "feature/*"
+bugfix = "bugfix/*"
+hotfix = "hotfix/*"
+release = "release/*"
+develop = "develop"
+
+# Protected branch rules (highest strictness)
+[git.branch_rules.main]
+strictness = "critical"
+block_force_push = true
+block_reset_hard = true
+block_clean_force = true
+require_pr = true
+require_review = true
+log_all_commands = true
+
+[git.branch_rules.master]
+strictness = "critical"
+block_force_push = true
+block_reset_hard = true
+block_clean_force = true
+require_pr = true
+require_review = true
+log_all_commands = true
+
+[git.branch_rules.production]
+strictness = "critical"
+block_force_push = true
+block_reset_hard = true
+block_clean_force = true
+require_pr = true
+require_review = true
+log_all_commands = true
+
+# Release branch rules
+[git.branch_rules."release/*"]
+strictness = "high"
+block_force_push = true
+block_reset_hard = true
+allow_clean_force = true
+log_all_commands = true
+
+# Feature branch rules (more permissive)
+[git.branch_rules."feature/*"]
+strictness = "low"
+allow_force_push = true
+allow_reset_hard = true
+allow_clean_force = true
+log_warnings_only = true
+
+# Bugfix branch rules
+[git.branch_rules."bugfix/*"]
+strictness = "medium"
+allow_force_push = false
+allow_reset_hard = true
+allow_clean_force = true
+
+# Hotfix branch rules (more restricted than feature)
+[git.branch_rules."hotfix/*"]
+strictness = "high"
+allow_force_push = false
+block_reset_hard = true
+allow_clean_force = true
+log_all_commands = true
+
+# Develop branch rules
+[git.branch_rules.develop]
+strictness = "medium"
+allow_force_push = false
+allow_reset_hard = true
+allow_clean_force = true

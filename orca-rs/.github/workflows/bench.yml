@@ -1,0 +1,144 @@
+name: bench
+
+# Benchmark enforcement for performance regressions
+#
+# This workflow:
+# 1. Runs criterion benchmarks on PRs and pushes to main
+# 2. Compares results against baseline (when available)
+# 3. Fails on significant regressions
+# 4. Uploads benchmark results as artifacts
+#
+# Performance budgets are defined in src/perf.rs
+
+on:
+  pull_request:
+    paths:
+      - 'src/**'
+      - 'benches/**'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+  push:
+    branches: [main]
+    paths:
+      - 'src/**'
+      - 'benches/**'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+  # Allow manual trigger
+  workflow_dispatch:
+  # Run on schedule for baseline tracking
+  schedule:
+    - cron: '0 6 * * 1'  # Weekly on Monday at 6am UTC
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+
+jobs:
+  benchmark:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: dtolnay/rust-toolchain@nightly
+
+      - name: Cache cargo registry and target
+        uses: actions/cache@v5
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-bench-${{ hashFiles('**/Cargo.lock', '**/Cargo.toml') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-bench-
+
+      - name: Cache benchmark baseline
+        uses: actions/cache@v5
+        with:
+          path: target/criterion
+          key: ${{ runner.os }}-criterion-baseline-${{ github.ref_name }}
+          restore-keys: |
+            ${{ runner.os }}-criterion-baseline-main
+            ${{ runner.os }}-criterion-baseline-
+
+      - name: Build benchmarks
+        run: cargo build --release --benches
+
+      - name: Run benchmarks
+        run: |
+          # Run benchmarks and capture output
+          cargo bench --bench heredoc_perf -- --noplot 2>&1 | tee bench-output.txt
+          cargo bench --bench codex_deny -- --noplot 2>&1 | tee -a bench-output.txt
+
+          # Extract timing summary for CI
+          echo "## Benchmark Results" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "Performance budgets are defined in \`src/perf.rs\`" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
+          grep -E '(time:|change:|Performance)' bench-output.txt | head -50 >> $GITHUB_STEP_SUMMARY || true
+          echo '```' >> $GITHUB_STEP_SUMMARY
+
+      - name: Check for regressions
+        run: |
+          # Check for significant regressions (>20% slower)
+          if grep -q "Performance has regressed" bench-output.txt; then
+            echo "::warning::Performance regression detected"
+            # Extract regression details
+            grep -A5 "Performance has regressed" bench-output.txt || true
+          fi
+
+          # Check for large regressions that should fail CI (>50% slower)
+          if grep -E "change:.*\+[5-9][0-9]\." bench-output.txt; then
+            echo "::error::Significant performance regression (>50%) detected"
+            echo "See benchmark output for details"
+            exit 1
+          fi
+
+          # Also fail if any benchmark shows >100% regression
+          if grep -E "change:.*\+[0-9]{3,}\." bench-output.txt; then
+            echo "::error::Critical performance regression (>100%) detected"
+            exit 1
+          fi
+
+      - name: Upload benchmark results
+        uses: actions/upload-artifact@v7
+        with:
+          name: benchmark-results
+          path: |
+            bench-output.txt
+            target/criterion
+          retention-days: 30
+
+      - name: Save baseline (main branch only)
+        if: github.ref == 'refs/heads/main'
+        run: |
+          echo "Saving benchmark baseline for future comparisons"
+          # The criterion cache will be saved automatically
+
+  # Optional: Compare PR benchmarks against main
+  compare:
+    runs-on: ubuntu-latest
+    if: github.event_name == 'pull_request'
+    needs: benchmark
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Download PR benchmark results
+        uses: actions/download-artifact@v8
+        with:
+          name: benchmark-results
+          path: pr-results
+
+      - name: Generate comparison summary
+        run: |
+          echo "## PR Benchmark Comparison" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "Benchmarks ran successfully. Check the benchmark job for detailed results." >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "Key performance budgets:" >> $GITHUB_STEP_SUMMARY
+          echo "- Quick reject: < 50μs (panic threshold)" >> $GITHUB_STEP_SUMMARY
+          echo "- Fast path: < 500μs (panic threshold)" >> $GITHUB_STEP_SUMMARY
+          echo "- Full heredoc pipeline: < 20ms (panic threshold)" >> $GITHUB_STEP_SUMMARY
+          echo "- Hook fail-open deadline: 200ms" >> $GITHUB_STEP_SUMMARY

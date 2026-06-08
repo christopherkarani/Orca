@@ -1,0 +1,22 @@
+# UBS ignore file for DCG
+# Exclude test, benchmark, and generated code
+
+# Test code
+tests/
+*_test.rs
+*_tests.rs
+
+# Benchmarks
+benches/
+
+# Fuzz targets
+fuzz/
+
+# Build artifacts
+target/
+
+# Generated files
+*.generated.rs
+
+# Vendored dependencies
+vendor/

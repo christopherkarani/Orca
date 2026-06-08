@@ -1,0 +1,89 @@
+name: False Negative Report
+description: A dangerous command is NOT being blocked when it should be
+title: "[False Negative] "
+labels: ["false-negative", "security"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for helping improve orca's coverage! Security gaps are our top priority.
+
+        **Before submitting:**
+        - Run `orca test '<your-command>'` to verify it's not being blocked
+        - Check if the relevant pack is enabled in your config
+
+  - type: input
+    id: command
+    attributes:
+      label: Dangerous Command
+      description: The exact command that should be blocked but isn't
+      placeholder: "e.g., rm -rf /var/log/*"
+    validations:
+      required: true
+
+  - type: textarea
+    id: why-dangerous
+    attributes:
+      label: Why is this dangerous?
+      description: Explain what damage this command could cause
+      placeholder: |
+        This command could...
+        - Delete critical system logs
+        - Cause data loss
+        - Break the system in irreversible ways
+    validations:
+      required: true
+
+  - type: textarea
+    id: test-output
+    attributes:
+      label: Output of `orca test`
+      description: Paste the output of `orca test '<your-command>'`
+      render: shell
+    validations:
+      required: true
+
+  - type: dropdown
+    id: category
+    attributes:
+      label: Category
+      description: What category does this command fall under?
+      options:
+        - Git
+        - Filesystem (rm, mv, etc.)
+        - Database (SQL, Redis, etc.)
+        - Kubernetes/Docker
+        - Cloud (AWS, GCP, Azure)
+        - CI/CD
+        - Other
+    validations:
+      required: true
+
+  - type: input
+    id: suggested-pack
+    attributes:
+      label: Suggested Pack
+      description: Which pack should cover this? (if known)
+      placeholder: "e.g., core.filesystem, database.postgresql"
+
+  - type: textarea
+    id: context
+    attributes:
+      label: Additional Context
+      description: Any other information (related commands, attack scenarios, etc.)
+
+  - type: input
+    id: version
+    attributes:
+      label: orca Version
+      description: Output of `orca --version`
+      placeholder: "orca 0.2.0 (abc1234)"
+    validations:
+      required: true
+
+  - type: textarea
+    id: config
+    attributes:
+      label: Enabled Packs
+      description: Output of `orca packs --enabled`
+      render: shell

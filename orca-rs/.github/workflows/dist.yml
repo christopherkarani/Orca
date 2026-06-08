@@ -1,0 +1,328 @@
+name: dist
+
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - 'v*'
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: dtolnay/rust-toolchain@nightly
+        with:
+          components: rustfmt, clippy
+
+      - name: Check formatting
+        run: cargo fmt -- --check
+
+      - name: Run clippy
+        run: cargo clippy --all-targets -- -D warnings
+
+      - name: Run tests
+        run: cargo test --lib
+
+  build:
+    needs: test
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # Linux x86_64 — musl for portability. The previous gnu target
+          # linked against the build runner's glibc, which on
+          # ubuntu-latest is currently 2.39+ and rejects any host with
+          # glibc < 2.39 (Ubuntu 22.04 LTS, RHEL 8/9, etc.). See #114.
+          # `self_update`'s `rustls` feature avoids the OpenSSL link that
+          # would normally make musl builds painful — orca has no other
+          # C-using deps, so musl-tools + the static target are
+          # sufficient.
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-musl
+            artifact_name: orca
+            apt_install: musl-tools
+          # Linux ARM64 — gnu stays. musl on ARM has its own packaging
+          # ecosystem we don't currently support, and the gnu build
+          # runs on the native ubuntu-24.04-arm runner which keeps the
+          # binary kernel-compatible with every aarch64 distro we ship
+          # to. See #112 for the v0.5.1 release where the aarch64 asset
+          # was actually an x86-64 binary — fixed by the native ARM
+          # runner already in this matrix.
+          - os: ubuntu-24.04-arm
+            target: aarch64-unknown-linux-gnu
+            artifact_name: orca
+          # macOS Intel
+          - os: macos-15-intel
+            target: x86_64-apple-darwin
+            artifact_name: orca
+          # macOS Apple Silicon
+          - os: macos-14
+            target: aarch64-apple-darwin
+            artifact_name: orca
+          # Windows
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+            artifact_name: orca.exe
+
+    runs-on: ${{ matrix.os }}
+    permissions:
+      contents: write
+
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Install Rust nightly
+        uses: dtolnay/rust-toolchain@nightly
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Install apt build deps (Linux)
+        if: matrix.apt_install != ''
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends ${{ matrix.apt_install }}
+
+      - name: Build release binary
+        run: cargo build --release --target ${{ matrix.target }}
+
+      - name: Verify Linux x86_64 musl binary has no glibc symbols
+        if: matrix.target == 'x86_64-unknown-linux-musl'
+        run: |
+          set -euo pipefail
+          # Catch a future regression where the musl matrix entry
+          # silently links against glibc anyway. `objdump -T` on a
+          # static musl binary prints "no dynamic symbol table" to
+          # stderr and exits 0; the grep against `GLIBC_` is the
+          # actual gate. Any GLIBC_* symbol surfacing here is a
+          # release-blocker (see #114 for the original regression).
+          # We pipe stderr to stdout so the dump-failure case (missing
+          # binary, unreadable file) shows up in the job log instead
+          # of getting silently swallowed.
+          binary="target/${{ matrix.target }}/release/${{ matrix.artifact_name }}"
+          # Explicit existence check: without it, a missing binary
+          # would make `objdump -T <missing> | grep -q GLIBC_` return
+          # exit 1 (no match), the `if` would evaluate to false, and
+          # we'd echo "verified" against a binary that doesn't exist.
+          # That false negative is a release-engineering footgun
+          # (cargo could legitimately skip the build under caching
+          # weirdness), so guard the gate against it directly.
+          if [ ! -f "$binary" ]; then
+            echo "::error::expected built binary not found at $binary"
+            exit 1
+          fi
+          if objdump -T "$binary" 2>&1 | grep -q "GLIBC_"; then
+            echo "::error::musl binary unexpectedly contains GLIBC symbols — release would re-introduce #114"
+            objdump -T "$binary" | grep "GLIBC_" || true
+            exit 1
+          fi
+          echo "musl binary verified: no GLIBC_* symbols present"
+
+      - name: Verify Linux aarch64 binary is actually aarch64
+        if: matrix.target == 'aarch64-unknown-linux-gnu'
+        run: |
+          set -euo pipefail
+          # Pin against the v0.5.1 regression (#112): the published
+          # aarch64 tarball contained an x86-64 ELF. Native ARM
+          # runners in this matrix make that impossible by
+          # construction, but the file-type check is cheap insurance.
+          binary="target/${{ matrix.target }}/release/${{ matrix.artifact_name }}"
+          if [ ! -f "$binary" ]; then
+            echo "::error::expected built binary not found at $binary"
+            exit 1
+          fi
+          arch_str="$(file "$binary")"
+          if ! echo "$arch_str" | grep -q "aarch64"; then
+            echo "::error::aarch64 build produced a non-aarch64 binary — release would re-introduce #112"
+            echo "$arch_str"
+            exit 1
+          fi
+          echo "aarch64 binary verified: $arch_str"
+
+      - name: Create tarball (Unix)
+        if: runner.os != 'Windows'
+        run: |
+          mkdir -p dist
+          TARBALL="orca-${{ matrix.target }}.tar.xz"
+          cd target/${{ matrix.target }}/release
+          tar -cJf "../../../dist/$TARBALL" ${{ matrix.artifact_name }}
+          cd ../../../dist
+          shasum -a 256 "$TARBALL" > "$TARBALL.sha256"
+
+      - name: Verify Windows binary is actually PE32+
+        if: matrix.target == 'x86_64-pc-windows-msvc'
+        shell: pwsh
+        run: |
+          # Pin against the v0.5.1 regression (#115): the published Windows
+          # assets were Linux ELF binaries renamed to `orca.exe`. The GH
+          # Actions test job had failed and a fallback build path
+          # (cross-compile on a non-Windows host) silently produced ELF
+          # output and packaged it as Windows. windows-latest runs natively
+          # so cargo cannot produce ELF here by construction, but checking
+          # the magic bytes is cheap insurance against a future regression
+          # (e.g. a cached target/ leaking the wrong artifact).
+          $binary = "target/${{ matrix.target }}/release/${{ matrix.artifact_name }}"
+          if (-not (Test-Path $binary)) {
+            Write-Output "::error::expected built binary not found at $binary"
+            exit 1
+          }
+          $magic = [System.IO.File]::ReadAllBytes($binary)[0..1]
+          $mz = [BitConverter]::ToString($magic)
+          if ($mz -ne "4D-5A") {
+            Write-Output "::error::Windows build produced a non-PE32+ binary (magic=$mz, expected 4D-5A 'MZ') — release would re-introduce #115"
+            exit 1
+          }
+          Write-Output "Windows binary verified: PE32+ magic 'MZ' present"
+
+      - name: Create zip (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path dist | Out-Null
+          $zipName = "orca-${{ matrix.target }}.zip"
+          Compress-Archive -Path "target/${{ matrix.target }}/release/${{ matrix.artifact_name }}" -DestinationPath "dist/$zipName"
+          cd dist
+          $hash = (Get-FileHash -Algorithm SHA256 $zipName).Hash.ToLower()
+          "$hash  $zipName" | Out-File -Encoding ASCII "$zipName.sha256"
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: ${{ matrix.target }}
+          path: dist/*
+
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      id-token: write
+
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Download all artifacts
+        uses: actions/download-artifact@v8
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: List artifacts
+        run: ls -laR dist
+
+      - name: Install cosign
+        uses: sigstore/cosign-installer@v4.1.2
+
+      - name: Sign release artifacts (sigstore bundle)
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          cd dist
+          for f in orca-*.tar.xz orca-*.zip; do
+            cosign sign-blob --yes --bundle "${f}.sigstore.json" "$f"
+          done
+
+      - name: Copy install scripts to dist
+        run: |
+          cp install.sh dist/ 2>/dev/null || echo "No install.sh found"
+          cp install.ps1 dist/ 2>/dev/null || echo "No install.ps1 found"
+
+      - name: Checksum + sign install scripts (git_safety_guard-ythp)
+        # Publishes install.sh.sha256 / install.ps1.sha256 (with the
+        # `<sha>  <basename>` format `shasum -a 256 -c` understands) plus
+        # cosign sigstore bundles. `orca update` downloads the script to a
+        # tempfile, fetches the sha256, verifies, and only then exec's it.
+        # Without this the installer-fetch step is a supply-chain trust
+        # window even when pinned to a tag.
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          cd dist
+          for script in install.sh install.ps1; do
+            [ -f "$script" ] || continue
+            shasum -a 256 "$script" > "$script.sha256"
+            cosign sign-blob --yes --bundle "$script.sigstore.json" "$script"
+          done
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v3
+        with:
+          name: ${{ github.ref_name }}
+          draft: false
+          prerelease: false
+          generate_release_notes: true
+          files: |
+            dist/*
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  notify-homebrew-tap:
+    name: Notify Homebrew Tap
+    runs-on: ubuntu-latest
+    needs: release
+    timeout-minutes: 5
+    continue-on-error: true
+    env:
+      HAS_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN != '' }}
+    steps:
+      - name: Check for token
+        id: check
+        run: |
+          if [[ "${{ env.HAS_TOKEN }}" != "true" ]]; then
+            echo "::warning::HOMEBREW_TAP_TOKEN not configured, skipping notification"
+            echo "skip=true" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Extract version from tag
+        if: steps.check.outputs.skip != 'true'
+        id: version
+        run: echo "version=${GITHUB_REF_NAME#v}" >> $GITHUB_OUTPUT
+
+      - name: Trigger formula update
+        if: steps.check.outputs.skip != 'true'
+        uses: peter-evans/repository-dispatch@28959ce8df70de7be546dd1250a005dd32156697 # v4.0.1
+        with:
+          token: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+          repository: christopherkarani/homebrew-tap
+          event-type: formula-update
+          client-payload: |
+            {
+              "tool": "orca",
+              "version": "${{ steps.version.outputs.version }}"
+            }
+
+  notify-scoop-bucket:
+    name: Notify Scoop Bucket
+    runs-on: ubuntu-latest
+    needs: release
+    timeout-minutes: 5
+    continue-on-error: true
+    env:
+      HAS_TOKEN: ${{ secrets.SCOOP_BUCKET_TOKEN != '' }}
+    steps:
+      - name: Check for token
+        id: check
+        run: |
+          if [[ "${{ env.HAS_TOKEN }}" != "true" ]]; then
+            echo "::warning::SCOOP_BUCKET_TOKEN not configured, skipping notification"
+            echo "skip=true" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Extract version from tag
+        if: steps.check.outputs.skip != 'true'
+        id: version
+        run: echo "version=${GITHUB_REF_NAME#v}" >> $GITHUB_OUTPUT
+
+      - name: Trigger manifest update
+        if: steps.check.outputs.skip != 'true'
+        uses: peter-evans/repository-dispatch@28959ce8df70de7be546dd1250a005dd32156697 # v4.0.1
+        with:
+          token: ${{ secrets.SCOOP_BUCKET_TOKEN }}
+          repository: christopherkarani/scoop-bucket
+          event-type: manifest-update
+          client-payload: |
+            {
+              "tool": "orca",
+              "version": "${{ steps.version.outputs.version }}"
+            }

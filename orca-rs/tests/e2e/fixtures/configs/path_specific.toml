@@ -1,0 +1,47 @@
+# Path-Specific ORCA Configuration
+# For testing context-aware allowlisting (Epic 5)
+
+[packs]
+enabled = ["core.git", "core.filesystem"]
+
+[policy]
+default_mode = "deny"
+enable_path_allowlist = true
+
+# Path-specific allowlist rules
+[[allowlist.paths]]
+pattern = "**/build/**"
+rules = ["core.filesystem:rm-recursive-force"]
+reason = "Build directories can be cleaned"
+expires_at = "2099-12-31"
+
+[[allowlist.paths]]
+pattern = "**/node_modules/**"
+rules = ["core.filesystem:rm-recursive-force"]
+reason = "Node modules can be removed for reinstall"
+
+[[allowlist.paths]]
+pattern = "**/target/**"
+rules = ["core.filesystem:rm-recursive-force"]
+reason = "Rust target directories can be cleaned"
+
+[[allowlist.paths]]
+pattern = "**/dist/**"
+rules = ["core.filesystem:rm-recursive-force"]
+reason = "Distribution directories can be cleaned"
+
+[[allowlist.paths]]
+pattern = "**/.cache/**"
+rules = ["core.filesystem:rm-recursive-force"]
+reason = "Cache directories can be cleaned"
+
+[[allowlist.paths]]
+pattern = "**/tmp/**"
+rules = ["core.filesystem:rm-recursive-force"]
+reason = "Temporary directories can be cleaned"
+
+# Git operations allowed in feature branches
+[[allowlist.paths]]
+pattern = "**/feature/**"
+rules = ["core.git:force-push"]
+reason = "Force push allowed on feature branches"

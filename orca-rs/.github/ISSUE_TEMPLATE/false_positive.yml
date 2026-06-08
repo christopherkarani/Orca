@@ -1,0 +1,76 @@
+name: False Positive Report
+description: A legitimate command is being incorrectly blocked by orca
+title: "[False Positive] "
+labels: ["false-positive", "bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for helping improve orca! False positives are frustrating - let's fix them.
+
+        **Before submitting:**
+        - Run `orca explain '<your-command>'` to get the full decision trace
+        - Make sure you're on the latest version (`orca --version`)
+
+  - type: input
+    id: command
+    attributes:
+      label: Blocked Command
+      description: The exact command that was incorrectly blocked
+      placeholder: "e.g., git reset --soft HEAD~1"
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected Behavior
+      description: Why should this command be allowed?
+      placeholder: |
+        This command is safe because...
+        Unlike `git reset --hard`, `--soft` preserves changes in the working directory.
+    validations:
+      required: true
+
+  - type: textarea
+    id: explain-output
+    attributes:
+      label: Output of `orca explain`
+      description: Paste the full output of `orca explain '<your-command>'`
+      render: shell
+    validations:
+      required: true
+
+  - type: input
+    id: rule-id
+    attributes:
+      label: Rule ID
+      description: The pack:pattern ID shown in the block message
+      placeholder: "e.g., core.git:reset-hard"
+    validations:
+      required: true
+
+  - type: textarea
+    id: context
+    attributes:
+      label: Additional Context
+      description: Any other information that might help (use case, environment, etc.)
+
+  - type: input
+    id: version
+    attributes:
+      label: orca Version
+      description: Output of `orca --version`
+      placeholder: "orca 0.2.0 (abc1234)"
+    validations:
+      required: true
+
+  - type: checkboxes
+    id: workaround
+    attributes:
+      label: Workaround
+      description: Have you found a workaround?
+      options:
+        - label: I am using `orca allow-once` as a temporary bypass
+        - label: I have added this to my project allowlist
+        - label: No workaround found

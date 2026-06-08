@@ -1,0 +1,87 @@
+# Rust build artifacts (including symlinks to shared target dirs)
+/target
+/target/
+**/*.rs.bk
+# Note: Cargo.lock is committed for binary crates per Rust best practices
+
+# Stray compiler output
+a.out
+*.o
+rustc-ice-*.txt
+
+# Editor/IDE artifacts
+.DS_Store
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# Distribution artifacts
+/dist/
+
+# AI coding tool artifacts
+.aider.chat.history.md
+.aider.input.history
+.aider.tags.cache.v3/
+.claude/
+
+# bv (beads viewer) local config and caches
+.bv/
+
+# Temporary files
+temp_*.rs
+*.tmp
+
+# Local backup directories
+.local_backup_*/
+
+# Environment files
+.env
+.env.local
+
+# Coverage artifacts
+lcov.info
+coverage-summary.txt
+tarpaulin-report.html
+
+# Test artifacts
+test-artifacts/
+junit.xml
+proptest-regressions/
+
+# Ephemeral/temporary files (agent workflow artifacts)
+RESEARCH_FINDINGS.md
+TOON_INTEGRATION_BRIEF.md
+cov_*.out
+*.snap.new
+sweep_*.png
+test_screenshot.png
+target-*/
+
+# Runtime SQLite databases
+storage.sqlite3
+storage.sqlite3-*
+*.sqlite3.bak
+
+# Remote compilation helper artifacts
+.rch-target/
+.rch-deploy-root/
+rch-bin/
+rch-install/
+
+# Test artifacts
+hello_write.txt
+
+# Agent mail project identity
+.agent-mail-project-id
+
+# Beads viewer local config, caches, and runtime state
+.beads/
+
+# E2E test run logs
+e2e_*.log
+
+# NTM / Skynex agent coordination runtime state
+.ntm/
+.skynex/

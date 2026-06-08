@@ -1,0 +1,80 @@
+name: New Pack Request
+description: Request a new security pack for a tool or category not currently covered
+title: "[Pack Request] "
+labels: ["pack-request", "enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for suggesting a new pack! We're always looking to expand coverage.
+
+        See the [pack expansion guide](../../docs/pack-expansion-guide.md) for our pack development process.
+
+  - type: input
+    id: tool
+    attributes:
+      label: Tool/Category Name
+      description: What tool or category should be covered?
+      placeholder: "e.g., Terraform, Ansible, Redis, Cloudflare"
+    validations:
+      required: true
+
+  - type: textarea
+    id: destructive-commands
+    attributes:
+      label: Destructive Commands
+      description: List the dangerous commands that should be blocked
+      placeholder: |
+        - `terraform destroy` - destroys all managed infrastructure
+        - `terraform apply -auto-approve` - applies changes without confirmation
+        - `terraform state rm` - removes resources from state (orphans them)
+    validations:
+      required: true
+
+  - type: textarea
+    id: safe-commands
+    attributes:
+      label: Safe Commands (Whitelist)
+      description: List commands that look similar but are safe
+      placeholder: |
+        - `terraform plan` - just shows what would change
+        - `terraform state list` - read-only listing
+        - `terraform validate` - syntax check only
+
+  - type: dropdown
+    id: priority
+    attributes:
+      label: Impact/Priority
+      description: How critical is this coverage?
+      options:
+        - Critical - Production systems at risk
+        - High - Significant data loss potential
+        - Medium - Useful but workarounds exist
+        - Low - Nice to have
+    validations:
+      required: true
+
+  - type: textarea
+    id: use-case
+    attributes:
+      label: Use Case
+      description: How do you use this tool with AI coding agents?
+      placeholder: |
+        I use Claude/GPT to help manage my infrastructure...
+        The AI sometimes suggests running dangerous commands like...
+
+  - type: checkboxes
+    id: contribution
+    attributes:
+      label: Contribution
+      description: Would you be willing to help?
+      options:
+        - label: I can help test the pack once implemented
+        - label: I can contribute the pack implementation
+        - label: I can provide more example commands
+
+  - type: textarea
+    id: docs
+    attributes:
+      label: Documentation Links
+      description: Links to official docs about these commands

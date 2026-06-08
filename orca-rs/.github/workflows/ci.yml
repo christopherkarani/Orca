@@ -1,0 +1,1113 @@
+name: ci
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  schedule:
+    # Run deep suite daily at 3am UTC
+    - cron: '0 3 * * *'
+  workflow_dispatch:
+    # Allow manual triggering for deep suite
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Validate Dependabot config
+        run: |
+          ruby -e 'require "yaml"; config = YAML.load_file(".github/dependabot.yml"); puts "Dependabot config:"; puts config.inspect'
+
+      - uses: dtolnay/rust-toolchain@nightly
+        with:
+          components: rustfmt, clippy
+
+      - name: Install cargo-nextest
+        uses: taiki-e/install-action@nextest
+
+      - name: Cache cargo registry and target
+        uses: actions/cache@v5
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock', '**/Cargo.toml') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-
+
+      - name: Check formatting
+        run: cargo fmt -- --check
+
+      - name: Run clippy
+        run: cargo clippy --all-targets -- -D warnings
+
+      - name: Install UBS
+        run: |
+          curl -fsSL "https://raw.githubusercontent.com/Dicklesworthstone/ultimate_bug_scanner/main/install.sh" \
+            | bash -s -- --easy-mode
+          # Add UBS to PATH for this job
+          echo "$HOME/.ubs" >> $GITHUB_PATH
+
+      - name: Run UBS on changed files
+        if: always()
+        run: |
+          echo "=== UBS Static Analysis ===" | tee -a ubs-output.log
+          echo "Timestamp: $(date -Iseconds)" | tee -a ubs-output.log
+          echo "" | tee -a ubs-output.log
+
+          echo "=== UBS Smoke Test ===" | tee -a ubs-output.log
+          cat > /tmp/ubs_smoke.rs <<'EOF'
+          fn main() {
+              println!("ubs smoke test");
+          }
+          EOF
+          if ubs --verbose /tmp/ubs_smoke.rs 2>&1 | tee -a ubs-output.log; then
+            echo "UBS Smoke Test: PASSED" | tee -a ubs-output.log
+          else
+            echo "UBS Smoke Test: WARNINGS (non-blocking)" | tee -a ubs-output.log
+            echo "::warning::UBS smoke test reported issues"
+          fi
+          echo "" | tee -a ubs-output.log
+
+          # Get changed Rust files
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            CHANGED=$(git diff --name-only origin/${{ github.base_ref }}...HEAD -- "*.rs" | tr "\n" " ")
+            echo "Mode: Pull Request (base: ${{ github.base_ref }})" | tee -a ubs-output.log
+          else
+            CHANGED=$(git diff --name-only HEAD~1 -- "*.rs" | tr "\n" " ")
+            echo "Mode: Push (comparing to HEAD~1)" | tee -a ubs-output.log
+          fi
+
+          echo "Changed files: ${CHANGED:-none}" | tee -a ubs-output.log
+          echo "" | tee -a ubs-output.log
+
+          if [ -n "$CHANGED" ]; then
+            echo "Running UBS analysis..." | tee -a ubs-output.log
+            if ubs --verbose $CHANGED 2>&1 | tee -a ubs-output.log; then
+              echo "" | tee -a ubs-output.log
+              echo "UBS Result: PASSED (no issues found)" | tee -a ubs-output.log
+            else
+              echo "" | tee -a ubs-output.log
+              echo "UBS Result: WARNINGS (issues found - non-blocking)" | tee -a ubs-output.log
+              echo "::warning::UBS found potential issues in changed files"
+            fi
+          else
+            echo "UBS Result: SKIPPED (no Rust files changed)" | tee -a ubs-output.log
+          fi
+
+          echo "" | tee -a ubs-output.log
+          echo "=== End UBS Analysis ===" | tee -a ubs-output.log
+
+      - name: UBS summary
+        if: always()
+        run: |
+          echo "## UBS Static Analysis" >> $GITHUB_STEP_SUMMARY
+          echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
+          cat ubs-output.log >> $GITHUB_STEP_SUMMARY 2>/dev/null || echo "No UBS output" >> $GITHUB_STEP_SUMMARY
+          echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
+
+      - name: Upload UBS output
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: ubs-output
+          path: ubs-output.log
+          retention-days: 7
+
+      - name: Check compilation
+        run: cargo check --all-targets
+
+      - name: Check lean build without rich output
+        run: cargo check --all-targets --no-default-features
+
+      - name: Build release binary for tests
+        run: cargo build --release
+
+      - name: Run tests (with JUnit XML report)
+        run: |
+          cargo nextest run --profile ci --no-fail-fast
+
+      - name: Generate test summary
+        if: always()
+        run: |
+          echo "## Test Summary" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+
+          # Count pack tests
+          PACK_TESTS=$(cargo test packs:: -- --list 2>/dev/null | grep -c "test$" || echo "0")
+          TOTAL_TESTS=$(cargo test -- --list 2>/dev/null | grep -c "test$" || echo "0")
+
+          echo "| Category | Count |" >> $GITHUB_STEP_SUMMARY
+          echo "|----------|-------|" >> $GITHUB_STEP_SUMMARY
+          echo "| Total Tests | $TOTAL_TESTS |" >> $GITHUB_STEP_SUMMARY
+          echo "| Pack Tests | $PACK_TESTS |" >> $GITHUB_STEP_SUMMARY
+
+      - name: Test count sentinel
+        run: |
+          TOTAL_TESTS=$(cargo test -- --list 2>/dev/null | grep -c "test$" || echo "0")
+          MIN_TESTS=3700
+          if [ "$TOTAL_TESTS" -lt "$MIN_TESTS" ]; then
+            echo "::error::Test count dropped to $TOTAL_TESTS (minimum $MIN_TESTS). If tests were intentionally removed, update MIN_TESTS in ci.yml."
+            exit 1
+          fi
+          echo "Test count sentinel: $TOTAL_TESTS >= $MIN_TESTS"
+
+      - name: Upload test results
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: test-results-check
+          path: target/nextest/ci/junit.xml
+          retention-days: 14
+          if-no-files-found: ignore
+
+  fuzz-smoke:
+    runs-on: ubuntu-latest
+    needs: check
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: dtolnay/rust-toolchain@nightly
+        with:
+          # cargo-fuzz defaults to building under x86_64-unknown-linux-musl
+          # because libFuzzer + AddressSanitizer require statically-linked
+          # libc; without this target installed, the build fails with
+          # "sanitizer is incompatible with statically linked libc" and
+          # "can't find crate for `core`".
+          targets: x86_64-unknown-linux-musl
+
+      - name: Install cargo-fuzz
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-fuzz
+
+      - name: Cache cargo registry and fuzz target
+        uses: actions/cache@v5
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            fuzz/target
+          key: ${{ runner.os }}-fuzz-smoke-${{ hashFiles('**/Cargo.lock', '**/Cargo.toml', 'fuzz/**') }}
+          restore-keys: |
+            ${{ runner.os }}-fuzz-smoke-
+
+      - name: Run heredoc fuzz smoke
+        run: |
+          cd fuzz
+          # Build/run the fuzzer for the gnu host target. AddressSanitizer is
+          # incompatible with musl's statically-linked libc (crt-static) and
+          # fails with "sanitizer is incompatible with statically linked libc";
+          # the default x86_64-unknown-linux-gnu (dynamic glibc) is the
+          # supported ASan target.
+          cargo fuzz run heredoc_fuzz --target x86_64-unknown-linux-gnu -- -max_total_time=30
+
+  coverage:
+    runs-on: ubuntu-latest
+    needs: check
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: dtolnay/rust-toolchain@nightly
+        with:
+          components: llvm-tools-preview
+
+      - name: Install cargo-llvm-cov
+        uses: taiki-e/install-action@cargo-llvm-cov
+
+      - name: Cache cargo registry and target
+        uses: actions/cache@v5
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-cov-${{ hashFiles('**/Cargo.lock', '**/Cargo.toml') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-cov-
+
+      - name: Run tests with coverage
+        run: |
+          cargo llvm-cov --all-features --workspace \
+            --ignore-filename-regex='(tests/|benches/|\.cargo/)' \
+            --no-report
+
+      - name: Generate coverage reports
+        run: |
+          # Generate LCOV from collected data (no re-running tests)
+          # Note: report subcommand doesn't accept --all-features/--workspace
+          cargo llvm-cov report \
+            --ignore-filename-regex='(tests/|benches/|\.cargo/)' \
+            --lcov --output-path lcov.info
+          # Generate JSON for programmatic threshold checking
+          cargo llvm-cov report \
+            --ignore-filename-regex='(tests/|benches/|\.cargo/)' \
+            --json --output-path coverage.json
+          # Create human-readable summary from JSON
+          jq -r '
+            "Coverage Summary:",
+            "  Overall: \(.data[0].totals.lines.percent | . * 100 | round / 100)% lines covered",
+            "  Functions: \(.data[0].totals.functions.percent | . * 100 | round / 100)% covered",
+            "",
+            "File coverage (lines):",
+            (.data[0].files | sort_by(-.summary.lines.percent) | .[:10][] |
+              "  \(.filename | split("/") | .[-1]): \(.summary.lines.percent | . * 100 | round / 100)%")
+          ' coverage.json > coverage-summary.txt
+          echo "## Coverage Summary" >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
+          cat coverage-summary.txt >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
+
+      - name: Upload coverage to Codecov
+        uses: codecov/codecov-action@v6
+        with:
+          files: lcov.info
+          fail_ci_if_error: false
+          verbose: true
+          name: orca-coverage
+          flags: unittests
+        env:
+          CODECOV_TOKEN: ${{ secrets.CODECOV_TOKEN }}
+
+      - name: Codecov upload status
+        if: always()
+        run: |
+          echo "## Codecov Upload" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          if [ -f lcov.info ]; then
+            lines=$(wc -l < lcov.info)
+            echo "- Coverage file: lcov.info ($lines lines)" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "- Warning: Coverage file not found" >> $GITHUB_STEP_SUMMARY
+          fi
+          echo "- Upload: Attempted (check Codecov dashboard for status)" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "Dashboard: https://codecov.io/gh/christopherkarani/Orca" >> $GITHUB_STEP_SUMMARY
+
+      - name: Upload coverage artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: coverage-report
+          path: |
+            lcov.info
+            coverage.json
+            coverage-summary.txt
+          retention-days: 30
+
+      - name: Check coverage thresholds (enforced)
+        run: |
+          set -euo pipefail
+
+          # Keep in sync with AGENTS.md "Coverage Job"; the
+          # coverage_threshold_docs test checks these values.
+          OVERALL_MIN="70.0"
+          EVALUATOR_MIN="65.0"
+          HOOK_MIN="70.0"
+
+          # Parse coverage from JSON using jq (more reliable than text parsing)
+          overall=$(jq -r '.data[0].totals.lines.percent' coverage.json)
+          evaluator=$(jq -r '.data[0].files[] | select(.filename | endswith("evaluator.rs")) | .summary.lines.percent' coverage.json)
+          hook=$(jq -r '.data[0].files[] | select(.filename | endswith("hook.rs")) | .summary.lines.percent' coverage.json)
+
+          echo "Coverage thresholds:"
+          echo "  overall >= ${OVERALL_MIN}%"
+          echo "  src/evaluator.rs >= ${EVALUATOR_MIN}%"
+          echo "  src/hook.rs >= ${HOOK_MIN}%"
+          echo ""
+          echo "Observed coverage:"
+          printf "  overall=%.2f%%\n" "$overall"
+          printf "  src/evaluator.rs=%.2f%%\n" "$evaluator"
+          printf "  src/hook.rs=%.2f%%\n" "$hook"
+
+          echo "coverage_overall=${overall}" >> "$GITHUB_OUTPUT"
+          echo "coverage_evaluator=${evaluator}" >> "$GITHUB_OUTPUT"
+          echo "coverage_hook=${hook}" >> "$GITHUB_OUTPUT"
+
+          failures=0
+          if [ -z "$overall" ] || [ "$overall" = "null" ]; then
+            echo "::error::Failed to parse overall coverage from coverage.json"
+            failures=$((failures + 1))
+          elif awk -v v="$overall" -v min="$OVERALL_MIN" 'BEGIN{exit !(v+0 < min+0)}'; then
+            printf "::error::Overall coverage %.2f%% is below ${OVERALL_MIN}%%\n" "$overall"
+            failures=$((failures + 1))
+          fi
+
+          if [ -z "$evaluator" ] || [ "$evaluator" = "null" ]; then
+            echo "::error::Failed to parse src/evaluator.rs coverage from coverage.json"
+            failures=$((failures + 1))
+          elif awk -v v="$evaluator" -v min="$EVALUATOR_MIN" 'BEGIN{exit !(v+0 < min+0)}'; then
+            printf "::error::src/evaluator.rs coverage %.2f%% is below ${EVALUATOR_MIN}%%\n" "$evaluator"
+            failures=$((failures + 1))
+          fi
+
+          if [ -z "$hook" ] || [ "$hook" = "null" ]; then
+            echo "::error::Failed to parse src/hook.rs coverage from coverage.json"
+            failures=$((failures + 1))
+          elif awk -v v="$hook" -v min="$HOOK_MIN" 'BEGIN{exit !(v+0 < min+0)}'; then
+            printf "::error::src/hook.rs coverage %.2f%% is below ${HOOK_MIN}%%\n" "$hook"
+            failures=$((failures + 1))
+          fi
+
+          if [ "$failures" -gt 0 ]; then
+            echo "::error::Coverage thresholds not met (${failures} failure(s))"
+            exit 1
+          fi
+
+          echo "Coverage thresholds satisfied."
+
+  # Memory leak detection tests
+  memory-tests:
+    runs-on: ubuntu-latest
+    needs: check
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: dtolnay/rust-toolchain@nightly
+
+      - name: Cache cargo registry and target
+        uses: actions/cache@v5
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-memory-${{ hashFiles('**/Cargo.lock', '**/Cargo.toml') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-memory-
+
+      - name: Run memory tests
+        id: memory_tests
+        run: |
+          echo "=== Orca Memory Leak Tests ===" | tee memory-output.log
+          echo "Timestamp: $(date -Iseconds)" | tee -a memory-output.log
+          echo "Runner: ${{ runner.os }}" | tee -a memory-output.log
+          echo "Rust: $(rustc --version)" | tee -a memory-output.log
+          echo "" | tee -a memory-output.log
+
+          # Get baseline system memory
+          echo "=== System Memory Baseline ===" | tee -a memory-output.log
+          free -h | tee -a memory-output.log
+          echo "" | tee -a memory-output.log
+
+          echo "=== Running Memory Tests ===" | tee -a memory-output.log
+          # Memory tests must run sequentially for accurate measurements
+          # Release mode for realistic performance characteristics
+          if cargo test --test memory_tests --release -- --nocapture --test-threads=1 2>&1 | tee -a memory-output.log; then
+            echo "" | tee -a memory-output.log
+            echo "=== Memory Tests: ALL PASSED ===" | tee -a memory-output.log
+            echo "memory_tests_result=passed" >> $GITHUB_OUTPUT
+          else
+            echo "" | tee -a memory-output.log
+            echo "=== Memory Tests: FAILED ===" | tee -a memory-output.log
+            echo "memory_tests_result=failed" >> $GITHUB_OUTPUT
+            exit 1
+          fi
+
+      - name: Parse memory metrics
+        if: always()
+        run: |
+          echo "=== Memory Test Metrics ===" | tee -a memory-metrics.log
+          echo "" | tee -a memory-metrics.log
+
+          # Extract metrics from test output
+          echo "Test Results:" | tee -a memory-metrics.log
+          grep -E "^memory_" memory-output.log | tee -a memory-metrics.log || echo "No metrics found" | tee -a memory-metrics.log
+
+          echo "" | tee -a memory-metrics.log
+          echo "Growth Summary:" | tee -a memory-metrics.log
+          grep -E "final.*growth" memory-output.log | tee -a memory-metrics.log || echo "No growth data" | tee -a memory-metrics.log
+
+          echo "" | tee -a memory-metrics.log
+          echo "Pass/Fail:" | tee -a memory-metrics.log
+          grep -E "(PASSED|FAILED|panicked)" memory-output.log | tee -a memory-metrics.log || echo "No status found" | tee -a memory-metrics.log
+
+      - name: Memory test summary
+        if: always()
+        run: |
+          echo "## Memory Leak Tests" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+
+          # Result badge
+          if grep -q "ALL PASSED" memory-output.log; then
+            echo "**Result:** ✅ All tests passed" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "**Result:** ❌ Tests failed" >> $GITHUB_STEP_SUMMARY
+          fi
+          echo "" >> $GITHUB_STEP_SUMMARY
+
+          # Metrics table
+          echo "### Memory Growth by Test" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "| Test | Final Growth | Limit | Status |" >> $GITHUB_STEP_SUMMARY
+          echo "|------|--------------|-------|--------|" >> $GITHUB_STEP_SUMMARY
+
+          # Parse and format metrics
+          grep -E "final.*growth" memory-output.log | while read line; do
+            test_name=$(echo "$line" | grep -oP "^[^:]+")
+            growth=$(echo "$line" | grep -oP "growth: \\K[0-9]+ KB" || echo "?")
+            limit=$(echo "$line" | grep -oP "limit: \\K[0-9]+ KB" || echo "?")
+            if echo "$line" | grep -q "PASSED"; then
+              status="✅"
+            else
+              status="❌"
+            fi
+            echo "| $test_name | $growth | $limit | $status |" >> $GITHUB_STEP_SUMMARY
+          done
+
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### Full Output" >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
+          tail -50 memory-output.log >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
+
+      - name: Upload memory test artifacts
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: memory-test-output
+          path: |
+            memory-output.log
+            memory-metrics.log
+          retention-days: 14
+
+  # Performance benchmark enforcement (push to main only)
+  # Runs benchmarks and checks against performance budgets defined in src/perf.rs
+  benchmarks:
+    runs-on: ubuntu-latest
+    needs: check
+    # Only run on push to main, not on PRs (benchmarks are noisy)
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: dtolnay/rust-toolchain@nightly
+
+      - name: Cache cargo registry and target
+        uses: actions/cache@v5
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-bench-${{ hashFiles('**/Cargo.lock', '**/Cargo.toml') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-bench-
+
+      - name: Run benchmarks
+        run: |
+          # Run benchmarks and capture output
+          cargo bench --bench heredoc_perf -- --noplot 2>&1 | tee benchmark_output.txt
+          cargo bench --bench codex_deny -- --noplot 2>&1 | tee -a benchmark_output.txt
+          echo "## Benchmark Results" >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
+          grep -E "^(tier|pack|core|shell|language|full|hook)" benchmark_output.txt | head -50 >> $GITHUB_STEP_SUMMARY || true
+          echo '```' >> $GITHUB_STEP_SUMMARY
+
+      - name: Check performance budgets
+        run: |
+          # Extract timing summaries and check against budgets
+          # Budgets from src/perf.rs:
+          # - Quick reject: 50μs panic
+          # - Fast path: 500μs panic
+          # - Pattern match: 1ms panic
+          # - Heredoc extract: 2ms panic
+          # - Full heredoc pipeline: 20ms panic
+          # - Hook fail-open deadline: 200ms
+          echo "## Performance Budget Check" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+
+          PANIC_VIOLATIONS=0
+
+          # Check for any results exceeding 1s (major benchmark sanity cap)
+          if grep -E "time:.*\[.*[0-9]+\.[0-9]+ s" benchmark_output.txt; then
+            echo "::error::Some benchmarks exceeded 1 second - major regression detected"
+            PANIC_VIOLATIONS=$((PANIC_VIOLATIONS + 1))
+          fi
+
+          # Check full_pipeline benchmarks (budget: 20ms panic)
+          if grep -A1 "full_pipeline" benchmark_output.txt | grep -E "time:.*\[.*([2-9][0-9]\.[0-9]+ ms|[0-9]{3,}\.[0-9]+ ms)"; then
+            echo "::warning::Full heredoc pipeline benchmark exceeds 20ms budget"
+            PANIC_VIOLATIONS=$((PANIC_VIOLATIONS + 1))
+          fi
+
+          if [ $PANIC_VIOLATIONS -gt 0 ]; then
+            echo "::error::$PANIC_VIOLATIONS performance budget violations detected"
+            echo "Budget violations: $PANIC_VIOLATIONS" >> $GITHUB_STEP_SUMMARY
+            # For now, warn but don't fail (benchmarks can be noisy in CI)
+            # exit 1
+          else
+            echo "All benchmarks within budget" >> $GITHUB_STEP_SUMMARY
+          fi
+
+      - name: Upload benchmark results
+        uses: actions/upload-artifact@v7
+        with:
+          name: benchmark-results
+          path: benchmark_output.txt
+          retention-days: 30
+
+  # End-to-end shell script tests
+  e2e:
+    runs-on: ubuntu-latest
+    needs: check
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: dtolnay/rust-toolchain@nightly
+
+      - name: Cache cargo registry and target
+        uses: actions/cache@v5
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock', '**/Cargo.toml') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-
+
+      - name: Build release binary
+        run: cargo build --release
+
+      - name: Run E2E tests
+        id: e2e
+        run: |
+          set +e
+          set -o pipefail
+
+          mkdir -p e2e-artifacts
+          ./scripts/e2e_test.sh --verbose --binary target/release/orca --json --artifacts e2e-artifacts | tee e2e_output.json >/dev/null
+          EXIT_CODE=${PIPESTATUS[0]}
+          echo "exit_code=$EXIT_CODE" >> $GITHUB_OUTPUT
+
+          echo "## E2E Test Results" >> $GITHUB_STEP_SUMMARY
+          # Extract summary from JSON output
+          if jq -e '.summary' e2e_output.json >/dev/null 2>&1; then
+            echo '```json' >> $GITHUB_STEP_SUMMARY
+            jq '.summary' e2e_output.json >> $GITHUB_STEP_SUMMARY
+            echo '```' >> $GITHUB_STEP_SUMMARY
+
+            FAILED=$(jq -r '.summary.failed // 0' e2e_output.json 2>/dev/null || echo "0")
+            if [ "$FAILED" != "0" ]; then
+              echo "" >> $GITHUB_STEP_SUMMARY
+              echo "### First Failure" >> $GITHUB_STEP_SUMMARY
+              echo "" >> $GITHUB_STEP_SUMMARY
+              echo '```' >> $GITHUB_STEP_SUMMARY
+              jq -r '.tests[] | select(.result == "fail") | "\(.id): \(.name)\n\n\(.output // "")"' e2e_output.json | head -n 40 >> $GITHUB_STEP_SUMMARY || true
+              echo '```' >> $GITHUB_STEP_SUMMARY
+            fi
+          else
+            echo '```' >> $GITHUB_STEP_SUMMARY
+            tail -20 e2e_output.json >> $GITHUB_STEP_SUMMARY
+            echo '```' >> $GITHUB_STEP_SUMMARY
+          fi
+          exit 0
+
+      - name: Upload E2E artifacts
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: e2e-artifacts
+          path: |
+            e2e_output.json
+            e2e-artifacts/
+          retention-days: 14
+          if-no-files-found: ignore
+
+      - name: Check E2E result
+        if: steps.e2e.outputs.exit_code != '0'
+        run: |
+          echo "::error::E2E suite failed (exit code ${{ steps.e2e.outputs.exit_code }}). See the 'e2e-artifacts' artifact and the step summary for the first failure."
+          exit 1
+
+  # Bats install/uninstall/agent-config tests
+  bats:
+    runs-on: ubuntu-latest
+    needs: check
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: dtolnay/rust-toolchain@nightly
+
+      - name: Cache cargo registry and target
+        uses: actions/cache@v5
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock', '**/Cargo.toml') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-
+
+      - name: Install bats-core
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq bats
+
+      - name: Build release binary
+        run: cargo build --release
+
+      - name: Run bats tests
+        id: bats
+        run: |
+          set +e
+          bats --tap tests/install/*.bats 2>&1 | tee bats-output.log
+          EXIT_CODE=${PIPESTATUS[0]}
+          echo "exit_code=$EXIT_CODE" >> "$GITHUB_OUTPUT"
+
+          echo "## Bats Install Tests" >> "$GITHUB_STEP_SUMMARY"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+          tail -30 bats-output.log >> "$GITHUB_STEP_SUMMARY"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+          exit 0
+
+      - name: Upload bats output
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: bats-output
+          path: bats-output.log
+          retention-days: 14
+          if-no-files-found: ignore
+
+      - name: Check bats result
+        if: steps.bats.outputs.exit_code != '0'
+        run: |
+          echo "::error::Bats tests failed (exit code ${{ steps.bats.outputs.exit_code }}). See 'bats-output' artifact."
+          exit 1
+
+  # Real Codex CLI smoke tests. This runs only on pushes to main because it
+  # requires networked Codex API calls and consumes quota.
+  codex-e2e:
+    runs-on: ubuntu-latest
+    needs: check
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: dtolnay/rust-toolchain@nightly
+
+      - name: Cache cargo registry and target
+        uses: actions/cache@v5
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-codex-e2e-${{ hashFiles('**/Cargo.lock', '**/Cargo.toml') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-
+
+      - name: Build release binary
+        run: cargo build --release --bin orca
+
+      - name: Install orca on PATH
+        run: |
+          mkdir -p "$HOME/.local/bin"
+          cp target/release/orca "$HOME/.local/bin/orca"
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+
+      - name: Check Codex API key secret
+        id: codex_secret
+        env:
+          OPENAI_API_KEY: ${{ secrets.CODEX_API_KEY }}
+        run: |
+          if [ -z "${OPENAI_API_KEY}" ]; then
+            echo "available=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::Skipping Codex CLI install because CODEX_API_KEY is not configured."
+            echo "## Codex E2E" >> "$GITHUB_STEP_SUMMARY"
+            echo "CODEX_API_KEY is not configured; the harness will self-skip." >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "available=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Install Codex CLI
+        id: codex_install
+        if: steps.codex_secret.outputs.available == 'true'
+        run: |
+          set +e
+          npm i -g @openai/codex@latest
+          status=$?
+          set -e
+          if [ "$status" -eq 0 ]; then
+            echo "installed=true" >> "$GITHUB_OUTPUT"
+            codex --version
+          else
+            echo "installed=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::Codex CLI install failed; the harness will self-skip if codex is unavailable."
+          fi
+
+      - name: Authenticate Codex CLI
+        if: steps.codex_secret.outputs.available == 'true' && steps.codex_install.outputs.installed == 'true'
+        env:
+          OPENAI_API_KEY: ${{ secrets.CODEX_API_KEY }}
+        run: |
+          set +e
+          printenv OPENAI_API_KEY | codex login --with-api-key
+          auth_status=$?
+          set -e
+          if [ "$auth_status" -ne 0 ]; then
+            echo "::notice::Codex CLI authentication failed; the harness will self-skip if login status is unavailable."
+          fi
+          codex login status || true
+
+      - name: Run Codex E2E harness
+        id: codex_e2e
+        run: |
+          set +e
+          set -o pipefail
+
+          mkdir -p /tmp/codex_e2e_artifacts
+          ./scripts/e2e_codex.sh --verbose --json --artifacts /tmp/codex_e2e_artifacts --orca-binary "$HOME/.local/bin/orca" \
+            2>&1 | tee codex_e2e_output.jsonl
+          EXIT_CODE=${PIPESTATUS[0]}
+
+          SKIP_REASON=""
+          if [ "$EXIT_CODE" -ne 0 ]; then
+            if grep -Eiq "quota|rate limit|429" codex_e2e_output.jsonl /tmp/codex_e2e_artifacts/trace.jsonl 2>/dev/null; then
+              SKIP_REASON="codex API quota exhausted"
+            elif grep -Eiq "not authenticated|authentication|unauthorized|expired" codex_e2e_output.jsonl /tmp/codex_e2e_artifacts/trace.jsonl 2>/dev/null; then
+              SKIP_REASON="codex authentication unavailable or expired"
+            elif grep -Eiq "network|timed out|timeout" codex_e2e_output.jsonl /tmp/codex_e2e_artifacts/trace.jsonl 2>/dev/null; then
+              SKIP_REASON="codex network unavailable"
+            fi
+
+            if [ -n "$SKIP_REASON" ]; then
+              echo "::notice::Codex E2E treated as transient skip: $SKIP_REASON"
+              EXIT_CODE=0
+            fi
+          fi
+
+          echo "exit_code=$EXIT_CODE" >> "$GITHUB_OUTPUT"
+          echo "skip_reason=$SKIP_REASON" >> "$GITHUB_OUTPUT"
+
+          echo "## Codex E2E" >> "$GITHUB_STEP_SUMMARY"
+          if [ -n "$SKIP_REASON" ]; then
+            echo "Transient skip: $SKIP_REASON" >> "$GITHUB_STEP_SUMMARY"
+          fi
+          summary_line="$(grep '"type":"summary"' codex_e2e_output.jsonl | tail -n 1 || true)"
+          if [ -n "$summary_line" ]; then
+            echo '```json' >> "$GITHUB_STEP_SUMMARY"
+            echo "$summary_line" | jq . >> "$GITHUB_STEP_SUMMARY" 2>/dev/null || echo "$summary_line" >> "$GITHUB_STEP_SUMMARY"
+            echo '```' >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo '```' >> "$GITHUB_STEP_SUMMARY"
+            tail -40 codex_e2e_output.jsonl >> "$GITHUB_STEP_SUMMARY" || true
+            echo '```' >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+          exit 0
+
+      - name: Upload Codex E2E artifacts
+        if: steps.codex_e2e.outputs.exit_code != '0'
+        uses: actions/upload-artifact@v7
+        with:
+          name: codex-e2e-artifacts
+          path: |
+            codex_e2e_output.jsonl
+            /tmp/codex_e2e_artifacts/
+          retention-days: 14
+          if-no-files-found: ignore
+
+      - name: Check Codex E2E result
+        if: steps.codex_e2e.outputs.exit_code != '0'
+        run: |
+          echo "::error::Codex E2E failed (exit code ${{ steps.codex_e2e.outputs.exit_code }}). See the 'codex-e2e-artifacts' artifact and the step summary for details."
+          exit 1
+
+  # Scan-mode regression fixtures (ensures scan output stays stable)
+  scan-regression:
+    runs-on: ubuntu-latest
+    needs: check
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: dtolnay/rust-toolchain@nightly
+
+      - name: Cache cargo registry and target
+        uses: actions/cache@v5
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-scan-regression-${{ hashFiles('**/Cargo.lock', '**/Cargo.toml') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-
+
+      - name: Build release binary
+        run: cargo build --release
+
+      - name: Run scan regression fixtures
+        id: scan_regression
+        run: |
+          set +e
+          set -o pipefail
+
+          ./scripts/scan_regression.sh 2>&1 | tee scan_regression.log
+          EXIT_CODE=${PIPESTATUS[0]}
+          echo "exit_code=$EXIT_CODE" >> $GITHUB_OUTPUT
+
+          if [ -f /tmp/orca_scan_regression_actual.json ]; then
+            cp /tmp/orca_scan_regression_actual.json scan_regression_actual.json
+          fi
+
+          echo "## Scan Regression (fixtures)" >> $GITHUB_STEP_SUMMARY
+          if [ -f scan_regression_actual.json ] && jq -e '.summary' scan_regression_actual.json >/dev/null 2>&1; then
+            echo '```json' >> $GITHUB_STEP_SUMMARY
+            jq '.summary' scan_regression_actual.json >> $GITHUB_STEP_SUMMARY
+            echo '```' >> $GITHUB_STEP_SUMMARY
+          else
+            echo '```' >> $GITHUB_STEP_SUMMARY
+            tail -40 scan_regression.log >> $GITHUB_STEP_SUMMARY || true
+            echo '```' >> $GITHUB_STEP_SUMMARY
+          fi
+
+          if [ "$EXIT_CODE" != "0" ]; then
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "### Failure Details" >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo '```' >> $GITHUB_STEP_SUMMARY
+            tail -80 scan_regression.log >> $GITHUB_STEP_SUMMARY || true
+            echo '```' >> $GITHUB_STEP_SUMMARY
+          fi
+
+          exit 0
+
+      - name: Upload scan regression artifacts
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: scan-regression-artifacts
+          path: |
+            scan_regression.log
+            scan_regression_actual.json
+          retention-days: 14
+          if-no-files-found: ignore
+
+      - name: Check scan regression result
+        if: steps.scan_regression.outputs.exit_code != '0'
+        run: |
+          echo "::error::Scan regression mismatch (exit code ${{ steps.scan_regression.outputs.exit_code }}). See the 'scan-regression-artifacts' artifact and the step summary for details."
+          exit 1
+
+  # Process-per-invocation perf regression gate (compares against committed baseline JSON)
+  perf-regression:
+    runs-on: ubuntu-latest
+    needs: check
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: dtolnay/rust-toolchain@nightly
+
+      - name: Cache cargo registry and target
+        uses: actions/cache@v5
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-perf-regression-${{ hashFiles('**/Cargo.lock', '**/Cargo.toml') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-
+
+      - name: Build release binary
+        run: cargo build --release
+
+      - name: Run perf baseline + compare to repo baseline
+        id: perf
+        run: |
+          set +e
+
+          BASELINE_JSON="perf/baselines/2026-01-11-after-lazy.json"
+          CURRENT_JSON="perf-current.json"
+          REPORT_MD="perf-regression-report.md"
+
+          python3 scripts/perf_baseline.py \
+            --bin target/release/orca \
+            --output "$CURRENT_JSON" \
+            --warmup 10 \
+            --runs 80 \
+            --skip-trace
+          GEN_EXIT=$?
+          if [ "$GEN_EXIT" -ne 0 ]; then
+            echo "exit_code=$GEN_EXIT" >> $GITHUB_OUTPUT
+            echo "::error::perf baseline generation failed (exit code $GEN_EXIT)"
+            exit 0
+          fi
+
+          python3 - "$BASELINE_JSON" "$CURRENT_JSON" "$REPORT_MD" <<'PY'
+          import json
+          import sys
+
+          baseline_path = sys.argv[1]
+          current_path = sys.argv[2]
+          report_path = sys.argv[3]
+
+          mult = 2.5
+          slack_ms = 5.0
+          rss_slack_kb = 8192
+
+          with open(baseline_path, "r", encoding="utf-8") as handle:
+              baseline = json.load(handle)
+          with open(current_path, "r", encoding="utf-8") as handle:
+              current = json.load(handle)
+
+          baseline_cases = {c["id"]: c for c in baseline.get("cases", [])}
+          current_cases = {c["id"]: c for c in current.get("cases", [])}
+
+          violations = []
+          rows = []
+
+          for case_id in sorted(baseline_cases.keys()):
+              if case_id not in current_cases:
+                  violations.append(f"missing case in current run: {case_id}")
+                  continue
+
+              b = baseline_cases[case_id].get("metrics", {})
+              c = current_cases[case_id].get("metrics", {})
+
+              b_p50 = float(b.get("p50_ms", 0.0))
+              c_p50 = float(c.get("p50_ms", 0.0))
+
+              limit_p50 = b_p50 * mult + slack_ms
+              status = "OK" if c_p50 <= limit_p50 else "REGRESSED"
+              rows.append((case_id, b_p50, c_p50, limit_p50, status))
+
+              if c_p50 > limit_p50:
+                  violations.append(
+                      f"{case_id} p50_ms {c_p50:.2f} > {limit_p50:.2f} (baseline {b_p50:.2f}, mult {mult}x + {slack_ms}ms)"
+                  )
+
+              b_rss = b.get("max_rss_kb")
+              c_rss = c.get("max_rss_kb")
+              if isinstance(b_rss, int) and isinstance(c_rss, int):
+                  rss_limit = max(int(b_rss * 2.0), b_rss + rss_slack_kb)
+                  if c_rss > rss_limit:
+                      violations.append(
+                          f"{case_id} max_rss_kb {c_rss} > {rss_limit} (baseline {b_rss})"
+                      )
+
+          # Also fail if new unexpected cases are added (keeps the harness stable)
+          extra_cases = sorted(set(current_cases.keys()) - set(baseline_cases.keys()))
+          if extra_cases:
+              violations.append(f"unexpected new cases in current run: {', '.join(extra_cases)}")
+
+          # Write report (Markdown for GHA summary + artifacts)
+          lines = []
+          lines.append("## Perf Regression Gate")
+          lines.append("")
+          lines.append(f"- Baseline: `{baseline_path}`")
+          lines.append(f"- Threshold: `current_p50_ms <= baseline_p50_ms * {mult} + {slack_ms}ms`")
+          lines.append(f"- RSS slack: `max(baseline*2, baseline+{rss_slack_kb}KB)` (when available)")
+          lines.append("")
+          lines.append("| Case | Baseline p50 (ms) | Current p50 (ms) | Limit (ms) | Status |")
+          lines.append("|------|-------------------|-----------------|-----------|--------|")
+          for case_id, b_p50, c_p50, limit_p50, status in rows:
+              lines.append(f"| `{case_id}` | {b_p50:.2f} | {c_p50:.2f} | {limit_p50:.2f} | {status} |")
+          lines.append("")
+
+          if violations:
+              lines.append("### Violations")
+              lines.append("")
+              for v in violations[:10]:
+                  lines.append(f"- {v}")
+              if len(violations) > 10:
+                  lines.append(f"- ... and {len(violations) - 10} more")
+              lines.append("")
+
+          with open(report_path, "w", encoding="utf-8") as handle:
+              handle.write("\n".join(lines))
+              handle.write("\n")
+
+          if violations:
+              for v in violations[:5]:
+                  print(f"::error::{v}")
+              sys.exit(1)
+          sys.exit(0)
+          PY
+
+          CHECK_EXIT=$?
+          echo "exit_code=$CHECK_EXIT" >> $GITHUB_OUTPUT
+
+          echo "## Perf Regression" >> $GITHUB_STEP_SUMMARY
+          cat "$REPORT_MD" >> $GITHUB_STEP_SUMMARY 2>/dev/null || true
+
+          exit 0
+
+      - name: Upload perf regression artifacts
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: perf-regression-artifacts
+          path: |
+            perf-current.json
+            perf-regression-report.md
+          retention-days: 14
+          if-no-files-found: ignore
+
+      - name: Check perf regression result
+        if: steps.perf.outputs.exit_code != '0'
+        run: |
+          echo "::error::Perf regression gate failed (exit code ${{ steps.perf.outputs.exit_code }}). See 'perf-regression-artifacts' and the step summary."
+          exit 1
+
+  # Deep suite: fuzzing (scheduled or manual only)
+  fuzz:
+    runs-on: ubuntu-latest
+    # Only run on schedule or manual trigger, not on every PR
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: dtolnay/rust-toolchain@nightly
+        with:
+          components: llvm-tools-preview
+          # See fuzz-smoke job above — cargo-fuzz needs the musl target to
+          # link libFuzzer + AddressSanitizer with a statically-linked libc.
+          targets: x86_64-unknown-linux-musl
+
+      - name: Install cargo-fuzz
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-fuzz
+
+      - name: Cache cargo registry and fuzz corpus
+        uses: actions/cache@v5
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            fuzz/corpus
+            fuzz/artifacts
+          key: ${{ runner.os }}-fuzz-${{ hashFiles('**/Cargo.lock', '**/Cargo.toml', 'fuzz/**') }}
+          restore-keys: |
+            ${{ runner.os }}-fuzz-
+
+      - name: Run fuzz tests (time-limited)
+        run: |
+          cd fuzz
+          echo "## Fuzzing Results" >> $GITHUB_STEP_SUMMARY
+          for target in fuzz_context fuzz_evaluate fuzz_hook_input fuzz_normalize fuzz_heredoc_trigger fuzz_heredoc_extract fuzz_heredoc_language fuzz_shell_extract heredoc_fuzz ast_matcher_fuzz; do
+            echo "Fuzzing $target (~60s runtime + build)..."
+            timeout 10m cargo fuzz run "$target" -- -max_total_time=60 || true
+            echo "- $target: completed" >> $GITHUB_STEP_SUMMARY
+          done
+
+      - name: Upload fuzz artifacts
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: fuzz-artifacts
+          path: fuzz/artifacts/
+          retention-days: 30
+          if-no-files-found: ignore

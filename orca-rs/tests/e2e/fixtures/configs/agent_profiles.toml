@@ -1,0 +1,78 @@
+# Agent Profiles ORCA Configuration
+# For testing agent-specific settings (Epic 9)
+
+[packs]
+enabled = ["core.git", "core.filesystem", "containers.docker", "kubernetes.kubectl"]
+
+[policy]
+default_mode = "deny"
+agent_specific = true
+
+# Default agent settings (applied when no specific profile matches)
+[agents.default]
+strictness = "medium"
+enabled_packs = ["core.git", "core.filesystem"]
+max_warnings_per_session = 10
+require_confirmation = true
+
+# Claude Code agent profile
+[agents.claude_code]
+strictness = "high"
+enabled_packs = ["core.git", "core.filesystem", "containers.docker"]
+# High strictness: always deny destructive commands
+default_mode = "deny"
+# Log all decisions for audit
+log_all_decisions = true
+# Require explicit user confirmation for any bypasses
+require_bypass_confirmation = true
+max_warnings_per_session = 5
+# Trust level (1-10, higher = more trusted)
+trust_level = 8
+
+# OpenAI Codex agent profile
+[agents.codex]
+strictness = "medium"
+enabled_packs = ["core.git"]
+# Medium strictness: warn on most, deny critical
+default_mode = "warn"
+log_all_decisions = true
+max_warnings_per_session = 15
+trust_level = 6
+
+# Cursor agent profile
+[agents.cursor]
+strictness = "low"
+enabled_packs = ["core.git"]
+# Low strictness: log most, warn on critical
+default_mode = "log"
+log_all_decisions = false
+max_warnings_per_session = 30
+trust_level = 5
+
+# GitHub Copilot agent profile
+[agents.copilot]
+strictness = "medium"
+enabled_packs = ["core.git", "core.filesystem"]
+default_mode = "warn"
+log_all_decisions = true
+max_warnings_per_session = 20
+trust_level = 7
+
+# Continue.dev agent profile
+[agents.continue]
+strictness = "high"
+enabled_packs = ["core.git", "core.filesystem"]
+default_mode = "deny"
+log_all_decisions = true
+require_bypass_confirmation = true
+max_warnings_per_session = 5
+trust_level = 6
+
+# Aider agent profile
+[agents.aider]
+strictness = "medium"
+enabled_packs = ["core.git"]
+default_mode = "warn"
+log_all_decisions = true
+max_warnings_per_session = 15
+trust_level = 5

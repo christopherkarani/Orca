@@ -1,0 +1,12 @@
+{
+  "exit_code": 0,
+  "stdout": "<package_version>\n",
+  "stderr_facts": {
+    "title": "Orca-rs",
+    "binary_version": "orca v<package_version>",
+    "built": "<build_date>",
+    "rustc": "<rustc_version>",
+    "target": "<target_triple>",
+    "tagline": "Protecting your code from destructive ops"
+  }
+}

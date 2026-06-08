@@ -1,0 +1,49 @@
+# Temporary Rules ORCA Configuration
+# For testing expiring allowlist entries (Epic 6)
+
+[packs]
+enabled = ["core.git", "core.filesystem"]
+
+[policy]
+default_mode = "deny"
+
+[temporary]
+# Default TTL for temporary rules (24 hours)
+default_ttl_hours = 24
+
+# Maximum allowed TTL (7 days)
+max_ttl_hours = 168
+
+# Allow session-scoped rules (expire when session ends)
+session_scope = true
+
+# Auto-cleanup expired rules on startup
+auto_cleanup = true
+
+# Require confirmation for rules > 24 hours
+confirm_long_ttl = true
+
+[session]
+# Session identifier strategy: "pid" | "uuid" | "user"
+identifier = "pid"
+
+# Session rules file location
+rules_file = ".orca/session_rules.toml"
+
+# Max session rules per session
+max_rules = 50
+
+[[temporary_rules]]
+rule = "core.git:reset-hard"
+reason = "One-time cleanup during migration"
+ttl_hours = 4
+added_by = "developer@example.com"
+added_at = "2026-01-19T00:00:00Z"
+
+[[temporary_rules]]
+rule = "core.filesystem:rm-recursive-force"
+reason = "Cleaning up old build artifacts"
+ttl_hours = 1
+session_scope = true
+added_by = "ci-system"
+added_at = "2026-01-19T00:00:00Z"

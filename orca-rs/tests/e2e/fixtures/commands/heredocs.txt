@@ -1,0 +1,70 @@
+# Heredoc Commands - Testing heredoc/inline script detection
+# Format: EXPECT:command
+# Multi-line heredocs use \n for line breaks in this file.
+# Lines starting with # are comments.
+
+# === Python heredocs (BLOCK if destructive) ===
+BLOCK:python3 <<EOF\nimport shutil\nshutil.rmtree("/tmp/test")\nEOF
+BLOCK:python3 <<EOF\nimport os\nos.remove("/etc/passwd")\nEOF
+BLOCK:python3 <<EOF\nimport subprocess\nsubprocess.run(["rm", "-rf", "/"])\nEOF
+ALLOW:python3 <<EOF\nprint("hello world")\nEOF
+ALLOW:python3 <<EOF\nimport json\nprint(json.dumps({"key": "value"}))\nEOF
+
+# === Node.js heredocs (BLOCK if destructive) ===
+BLOCK:node <<EOF\nconst fs = require('fs');\nfs.rmSync('/etc', { recursive: true });\nEOF
+BLOCK:node <<EOF\nrequire('child_process').execSync('rm -rf /');\nEOF
+ALLOW:node <<EOF\nconsole.log("hello world");\nEOF
+ALLOW:node <<EOF\nconst x = 1 + 2;\nconsole.log(x);\nEOF
+
+# === Ruby heredocs (BLOCK if destructive) ===
+BLOCK:ruby <<EOF\nrequire "fileutils"\nFileUtils.rm_rf("/")\nEOF
+BLOCK:ruby <<EOF\nsystem("rm -rf /")\nEOF
+ALLOW:ruby <<EOF\nputs "hello world"\nEOF
+
+# === Perl heredocs (BLOCK if destructive) ===
+BLOCK:perl <<EOF\nsystem("rm -rf /");\nEOF
+BLOCK:perl <<EOF\nunlink glob("/etc/*");\nEOF
+ALLOW:perl <<EOF\nprint "hello world\\n";\nEOF
+
+# === Bash heredocs (BLOCK if destructive) ===
+BLOCK:bash <<EOF\nrm -rf /etc\nEOF
+BLOCK:bash <<EOF\ngit reset --hard\nEOF
+ALLOW:bash <<EOF\necho "hello"\nEOF
+
+# === Shell heredocs (BLOCK if destructive) ===
+BLOCK:sh <<EOF\nrm -rf /\nEOF
+ALLOW:sh <<EOF\necho "hello"\nEOF
+
+# === Heredocs with indentation (<<- syntax) ===
+BLOCK:bash <<-EOF\n\trm -rf /etc\nEOF
+ALLOW:bash <<-EOF\n\techo "hello"\nEOF
+
+# === Heredocs with quoted delimiters (no variable expansion) ===
+BLOCK:bash <<'EOF'\nrm -rf /\nEOF
+BLOCK:bash <<"EOF"\nrm -rf /\nEOF
+ALLOW:bash <<'EOF'\necho "hello"\nEOF
+
+# === Heredocs with spaced delimiters ===
+BLOCK:python3 << "EOF SPACE"\nimport shutil\nshutil.rmtree('/tmp/test')\nEOF SPACE
+ALLOW:python3 << "EOF SPACE"\nprint("hello")\nEOF SPACE
+
+# === Nested heredocs (complex case) ===
+ALLOW:cat <<OUTER\ncat <<INNER\nhello\nINNER\nOUTER
+
+# === Inline script execution variants ===
+BLOCK:python3 -c "import shutil; shutil.rmtree('/')"
+BLOCK:node -e "require('fs').rmSync('/', {recursive:true})"
+BLOCK:ruby -e "FileUtils.rm_rf('/')"
+BLOCK:perl -e "system('rm -rf /')"
+ALLOW:python3 -c "print('hello')"
+ALLOW:node -e "console.log('hello')"
+ALLOW:ruby -e "puts 'hello'"
+ALLOW:perl -e "print 'hello'"
+
+# === Process substitution (bash-specific) ===
+ALLOW:diff <(ls) <(ls -la)
+BLOCK:bash -c "$(cat <<EOF\nrm -rf /\nEOF)"
+
+# === Here-strings ===
+ALLOW:cat <<< "hello world"
+BLOCK:bash <<< "rm -rf /"

@@ -1,0 +1,43 @@
+# codecov.yml - Codecov configuration for Orca
+# Docs: https://docs.codecov.com/docs/codecov-yaml
+
+codecov:
+  require_ci_to_pass: true
+
+coverage:
+  precision: 2
+  round: down
+  range: "60...100"
+
+  status:
+    project:
+      default:
+        # Match our CI-enforced threshold
+        target: 70%
+        threshold: 2%  # Allow 2% fluctuation without failing
+
+    patch:
+      default:
+        # New code should have high coverage
+        target: 80%
+        threshold: 5%
+
+comment:
+  layout: "reach,diff,flags,tree,betaprofiling"
+  behavior: default
+  require_changes: true
+  require_base: false
+  require_head: true
+
+ignore:
+  - "tests/**"
+  - "benches/**"
+  - "fuzz/**"
+  - "*.md"
+  - "scripts/**"
+
+flags:
+  unittests:
+    paths:
+      - src/
+    carryforward: true

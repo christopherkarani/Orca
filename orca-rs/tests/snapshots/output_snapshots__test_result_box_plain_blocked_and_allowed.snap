@@ -1,0 +1,18 @@
+---
+source: tests/output_snapshots.rs
+expression: "normalize_snapshot(format!(\"{}\\n---\\n{}\", blocked.render_plain(),\nallowed.render_plain()))"
+---
+WOULD BE BLOCKED
+
+  Command:    git push --force
+  Pattern:    force-push
+  Pack:       core.git (severity: high)
+  Confidence: 0.93
+  Reason:     Force push can overwrite remote history
+
+---
+WOULD BE ALLOWED
+
+  Command:    git status
+  Reason:     Allowlist match: "project allowlist rule"
+  Layer:      Project

@@ -1,0 +1,60 @@
+{
+  "exit_code": 1,
+  "stdout_json": {
+    "schema_version": 1,
+    "summary": {
+      "files_scanned": 2,
+      "files_skipped": 0,
+      "commands_extracted": 7,
+      "findings_total": 3,
+      "decisions": {
+        "allow": 0,
+        "warn": 0,
+        "deny": 3
+      },
+      "severities": {
+        "info": 0,
+        "warning": 0,
+        "error": 3
+      },
+      "max_findings_reached": false,
+      "elapsed_ms": "<elapsed_ms>"
+    },
+    "findings": [
+      {
+        "file": "Makefile",
+        "line": 4,
+        "extractor_id": "makefile.recipe",
+        "extracted_command": "git push --force origin main",
+        "decision": "deny",
+        "severity": "error",
+        "rule_id": "core.git:push-force-long",
+        "reason": "Force push can destroy remote history. Use --force-with-lease if necessary.",
+        "suggestion": "Use `git push --force-with-lease` to prevent overwriting others' work"
+      },
+      {
+        "file": "representative.sh",
+        "line": 5,
+        "extractor_id": "shell.script",
+        "extracted_command": "git reset --hard HEAD~1",
+        "decision": "deny",
+        "severity": "error",
+        "rule_id": "core.git:reset-hard",
+        "reason": "git reset --hard destroys uncommitted changes. Use 'git stash' first.",
+        "suggestion": "Use `git reset --soft` or `--mixed` to preserve changes"
+      },
+      {
+        "file": "representative.sh",
+        "line": 7,
+        "extractor_id": "shell.script",
+        "extracted_command": "rm -rf /home/example/project",
+        "decision": "deny",
+        "severity": "error",
+        "rule_id": "core.filesystem:rm-rf-root-home",
+        "reason": "rm -rf on root or home paths is EXTREMELY DANGEROUS. This command will NOT be executed. Ask the user to run it manually if truly needed.",
+        "suggestion": "Use `rm -ri` for interactive confirmation of each file"
+      }
+    ]
+  },
+  "stderr": ""
+}

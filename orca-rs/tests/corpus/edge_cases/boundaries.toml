@@ -1,0 +1,68 @@
+# Edge cases: boundary conditions
+#
+# These test boundary conditions and shouldn't crash.
+
+[[case]]
+description = "single character command"
+command = "a"
+expected = "allow"
+
+[[case]]
+description = "just git (no subcommand)"
+command = "git"
+expected = "allow"
+
+[[case]]
+description = "just rm (no arguments)"
+command = "rm"
+expected = "allow"
+
+[[case]]
+description = "git with only flags"
+command = "git --version"
+expected = "allow"
+
+[[case]]
+description = "command with many flags"
+command = "ls -l -a -h -r -t -S"
+expected = "allow"
+
+[[case]]
+description = "nested quotes"
+command = "echo \"hello 'world' test\""
+expected = "allow"
+
+[[case]]
+description = "escaped quotes"
+command = "echo \\\"quoted\\\""
+expected = "allow"
+
+[[case]]
+description = "command with semicolon"
+command = "echo hello; echo world"
+expected = "allow"
+
+[[case]]
+description = "command with pipe"
+command = "ls | grep test"
+expected = "allow"
+
+[[case]]
+description = "command with redirect"
+command = "echo hello > file.txt"
+expected = "allow"
+
+[[case]]
+description = "command with background"
+command = "sleep 1 &"
+expected = "allow"
+
+[[case]]
+description = "subshell command"
+command = "$(echo hello)"
+expected = "allow"
+
+[[case]]
+description = "backtick command substitution"
+command = "`echo hello`"
+expected = "allow"

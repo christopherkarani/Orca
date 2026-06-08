@@ -1,0 +1,21 @@
+---
+source: tests/output_snapshots.rs
+expression: normalize_snapshot(denial.render_plain())
+---
+BLOCKED: Destructive Command Detected
+
+  Command: rm -rf /prod
+           ^^^^^^
+           └── Matched: rm -rf
+
+
+  Explanation:
+  This recursively removes protected production data.
+
+  Pattern: rm-rf-general
+  Pack: core.filesystem (severity: CRITICAL)
+  Regex: ^rm\s+-rf
+
+  Safe alternatives:
+    - mv /prod /tmp/prod.backup
+    - Ask the user to run the command manually
