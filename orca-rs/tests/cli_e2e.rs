@@ -1644,7 +1644,13 @@ mod hook_mode_tests {
     ) {
         let now = fixed_timestamp();
         let redaction = redaction_config();
-        let cwd_str = cwd.to_string_lossy().into_owned();
+        // Canonicalize the cwd so the scope path matches what std::env::current_dir()
+        // returns inside the spawned binary. On macOS, temp directories live under
+        // /var/folders which is a symlink to /private/var/folders; without
+        // canonicalizing here, the scope comparison in matches_scope() can fail
+        // non-deterministically under parallel test execution.
+        let cwd_canon = cwd.canonicalize().unwrap_or_else(|_| cwd.to_path_buf());
+        let cwd_str = cwd_canon.to_string_lossy().into_owned();
 
         let pending = PendingExceptionRecord::new(
             now,
