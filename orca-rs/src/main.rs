@@ -19,18 +19,18 @@
 
 use clap::Parser;
 use colored::Colorize;
-use orca_rs::agent::{Agent, detect_agent};
+use orca_rs::agent::{detect_agent, Agent};
 use orca_rs::allowlist::LayeredAllowlist;
 use orca_rs::cli::{self, Cli};
 // Exit codes are used by cli.rs for robot mode; main.rs uses them for hook mode errors
 use orca_rs::config::Config;
 use orca_rs::evaluator::{
-    EvaluationDecision, MatchSource, evaluate_command_with_pack_order_deadline_at_path,
+    evaluate_command_with_pack_order_deadline_at_path, EvaluationDecision, MatchSource,
 };
 #[allow(unused_imports)]
 use orca_rs::exit_codes::{EXIT_DENIED, EXIT_PARSE_ERROR, EXIT_SUCCESS};
 use orca_rs::history::{
-    CommandEntry, ENV_HISTORY_DB_PATH, HistoryWriter, Outcome as HistoryOutcome,
+    CommandEntry, HistoryWriter, Outcome as HistoryOutcome, ENV_HISTORY_DB_PATH,
 };
 use orca_rs::hook;
 use orca_rs::load_default_allowlists;
@@ -39,7 +39,7 @@ use orca_rs::packs::load_external_packs;
 #[cfg(test)]
 use orca_rs::packs::pack_aware_quick_reject;
 use orca_rs::packs::{DecisionMode, REGISTRY};
-use orca_rs::pending_exceptions::{PendingExceptionStore, log_maintenance};
+use orca_rs::pending_exceptions::{log_maintenance, PendingExceptionStore};
 use orca_rs::perf::{Deadline, HOOK_EVALUATION_BUDGET};
 use orca_rs::sanitize_for_pattern_matching;
 // Import HookInput for parsing stdin JSON in hook mode
@@ -388,6 +388,14 @@ fn main() {
     // In robot mode, also disable colors completely
     if robot_mode {
         colored::control::set_override(false);
+    }
+
+    // Daemon mode stub: log and exit cleanly.
+    // Full daemon implementation (UDS server, NDJSON IPC) is Phase 0.5.
+    if cli.daemon_mode {
+        tracing::info!("orca-daemon started in daemon mode (stub)");
+        eprintln!("[orca-daemon] Daemon mode stub — exiting 0");
+        return;
     }
 
     // If there's a subcommand, handle it and exit.
@@ -1298,18 +1306,14 @@ mod tests {
 
             assert_eq!(parsed["hookSpecificOutput"]["hookEventName"], "PreToolUse");
             assert_eq!(parsed["hookSpecificOutput"]["permissionDecision"], "deny");
-            assert!(
-                parsed["hookSpecificOutput"]["permissionDecisionReason"]
-                    .as_str()
-                    .unwrap()
-                    .contains("git reset --hard")
-            );
-            assert!(
-                parsed["hookSpecificOutput"]["permissionDecisionReason"]
-                    .as_str()
-                    .unwrap()
-                    .contains("test reason")
-            );
+            assert!(parsed["hookSpecificOutput"]["permissionDecisionReason"]
+                .as_str()
+                .unwrap()
+                .contains("git reset --hard"));
+            assert!(parsed["hookSpecificOutput"]["permissionDecisionReason"]
+                .as_str()
+                .unwrap()
+                .contains("test reason"));
         }
 
         #[test]
@@ -1767,8 +1771,8 @@ mod tests {
 
     mod shutdown_registry_tests {
         use super::*;
-        use std::sync::Arc;
         use std::sync::atomic::{AtomicUsize, Ordering};
+        use std::sync::Arc;
 
         #[test]
         fn registered_actions_all_run_on_shutdown_invocation() {

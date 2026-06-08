@@ -8,35 +8,35 @@ use clap::{Args, CommandFactory, Parser, Subcommand};
 use clap_complete::generate;
 use inquire::{Select, Text};
 
-use crate::agent::{DetectionMethod, detect_agent_with_details};
+use crate::agent::{detect_agent_with_details, DetectionMethod};
 use crate::config::Config;
 use crate::evaluator::{
-    DEFAULT_WINDOW_WIDTH, EvaluationDecision, EvaluationResult, MatchSource,
     evaluate_command_with_pack_order, evaluate_command_with_pack_order_deadline_at_path,
+    EvaluationDecision, EvaluationResult, MatchSource, DEFAULT_WINDOW_WIDTH,
 };
 use crate::exit_codes::{EXIT_DENIED, EXIT_WARNING};
-use crate::highlight::{HighlightSpan, format_highlighted_command, should_use_color};
+use crate::highlight::{format_highlighted_command, should_use_color, HighlightSpan};
 use crate::history::{
     ExportOptions, HistoryDb, HistoryStats, InteractiveAllowlistAuditEntry,
     InteractiveAllowlistOptionType, Outcome, SuggestionAction, SuggestionAuditEntry,
 };
 use crate::interactive::{
-    AllowlistScope, InteractiveConfig, InteractiveResult, check_interactive_available,
-    print_not_available_message, run_interactive_prompt,
+    check_interactive_available, print_not_available_message, run_interactive_prompt,
+    AllowlistScope, InteractiveConfig, InteractiveResult,
 };
 use crate::load_default_allowlists;
 use crate::output::robot_mode_enabled;
 use crate::packs::{
-    DecisionMode, ExternalPackStore, REGISTRY, Severity as PackSeverity, get_external_packs,
-    load_external_packs,
+    get_external_packs, load_external_packs, DecisionMode, ExternalPackStore,
+    Severity as PackSeverity, REGISTRY,
 };
 use crate::pending_exceptions::{
     AllowOnceEntry, AllowOnceScopeKind, AllowOnceStore, PendingExceptionRecord,
     PendingExceptionStore,
 };
 use crate::suggest::{
-    AllowlistSuggestion, CommandEntryInfo, ConfidenceTier, RiskLevel, filter_by_confidence,
-    filter_by_risk, generate_enhanced_suggestions,
+    filter_by_confidence, filter_by_risk, generate_enhanced_suggestions, AllowlistSuggestion,
+    CommandEntryInfo, ConfidenceTier, RiskLevel,
 };
 use std::io::IsTerminal;
 
@@ -182,6 +182,11 @@ pub struct Cli {
     /// In robot mode: always outputs JSON, silent stderr, standardized exit codes.
     #[arg(long, global = true)]
     pub robot: bool,
+
+    /// Run as a background daemon (used by the Orca monorepo IPC bridge).
+    /// Hidden from help output; not intended for direct user invocation.
+    #[arg(long, global = true, hide = true)]
+    pub daemon_mode: bool,
 
     /// Override automatic agent detection for agent-specific profiles
     #[arg(long, global = true, value_name = "AGENT")]
@@ -1900,7 +1905,11 @@ impl Verbosity {
     }
 
     const fn level(self) -> u8 {
-        if self.quiet { 0 } else { self.level }
+        if self.quiet {
+            0
+        } else {
+            self.level
+        }
     }
 
     const fn is_verbose(self) -> bool {
@@ -2963,8 +2972,8 @@ fn pack_validate(
     format: PackValidateFormat,
 ) -> Result<(), Box<dyn std::error::Error>> {
     use crate::packs::external::{
-        CURRENT_SCHEMA_VERSION, ExternalPack, RegexEngineType, analyze_pack_engines,
-        check_builtin_collision, summarize_pack_engines,
+        analyze_pack_engines, check_builtin_collision, summarize_pack_engines, ExternalPack,
+        RegexEngineType, CURRENT_SCHEMA_VERSION,
     };
     use std::path::Path;
 
@@ -5554,8 +5563,8 @@ fn handle_simulate_command(
     verbosity: Verbosity,
 ) -> Result<(), Box<dyn std::error::Error>> {
     use crate::simulate::{
-        SimulateLimits, SimulateOutputConfig, SimulationConfig, format_json_output,
-        format_pretty_output, run_simulation_from_reader,
+        format_json_output, format_pretty_output, run_simulation_from_reader, SimulateLimits,
+        SimulateOutputConfig, SimulationConfig,
     };
     use std::fs::File;
     use std::io::{self, BufReader};
@@ -5729,7 +5738,7 @@ fn handle_scan(
     top: usize,
 ) -> Result<(), Box<dyn std::error::Error>> {
     use crate::output::progress::MaybeProgress;
-    use crate::scan::{ScanEvalContext, ScanOptions, scan_paths_with_progress, should_fail};
+    use crate::scan::{scan_paths_with_progress, should_fail, ScanEvalContext, ScanOptions};
 
     // Validate file selection mode - at least one must be specified
     let file_sources = [staged, paths.is_some(), git_diff.is_some()]
@@ -6032,7 +6041,7 @@ fn print_scan_pretty(report: &crate::scan::ScanReport, verbose: bool, top: usize
 }
 
 fn print_scan_pretty_plain(report: &crate::scan::ScanReport, verbose: bool, top: usize) {
-    use crate::output::{ScanResultRow, ScanResultsTable, TableStyle, auto_theme};
+    use crate::output::{auto_theme, ScanResultRow, ScanResultsTable, TableStyle};
     use colored::Colorize;
 
     if report.findings.is_empty() {
@@ -6146,7 +6155,7 @@ fn print_scan_pretty_plain(report: &crate::scan::ScanReport, verbose: bool, top:
 #[cfg(feature = "rich-output")]
 fn print_scan_pretty_rich(report: &crate::scan::ScanReport, verbose: bool, top: usize) {
     use crate::output::console::console;
-    use crate::output::{ScanResultRow, ScanResultsTable, auto_theme};
+    use crate::output::{auto_theme, ScanResultRow, ScanResultsTable};
 
     let con = console();
 
@@ -8365,8 +8374,8 @@ fn history_export(
     compress: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
     use chrono::DateTime;
-    use flate2::Compression;
     use flate2::write::GzEncoder;
+    use flate2::Compression;
     use std::fs::File;
     use std::io::{self, BufWriter, Write};
 
@@ -10956,7 +10965,11 @@ fn which_orca() -> Option<std::path::PathBuf> {
     std::env::var_os("PATH").and_then(|paths| {
         std::env::split_paths(&paths).find_map(|dir| {
             let path = dir.join("orca");
-            if path.is_file() { Some(path) } else { None }
+            if path.is_file() {
+                Some(path)
+            } else {
+                None
+            }
         })
     })
 }
@@ -11614,7 +11627,7 @@ fn handle_rebase_recover(
     robot_mode: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
     use crate::rebase_recovery::{
-        DEFAULT_PERMIT_TTL_SECS, MAX_PERMIT_TTL_SECS, is_rebase_in_progress, set_permit,
+        is_rebase_in_progress, set_permit, DEFAULT_PERMIT_TTL_SECS, MAX_PERMIT_TTL_SECS,
     };
 
     let cwd = std::env::current_dir().map_err(|e| format!("Cannot read current directory: {e}"))?;
@@ -14705,13 +14718,11 @@ mod tests {
 
         assert_eq!(results.len(), 2);
         assert_eq!(results[0].decision, "error");
-        assert!(
-            results[0]
-                .error
-                .as_deref()
-                .unwrap_or("")
-                .contains("JSON parse error")
-        );
+        assert!(results[0]
+            .error
+            .as_deref()
+            .unwrap_or("")
+            .contains("JSON parse error"));
         assert_eq!(results[1].decision, "allow");
     }
 
@@ -14722,13 +14733,11 @@ mod tests {
 
         assert_eq!(results.len(), 1);
         assert_eq!(results[0].decision, "skip");
-        assert!(
-            results[0]
-                .error
-                .as_deref()
-                .unwrap_or("")
-                .contains("supported shell tool")
-        );
+        assert!(results[0]
+            .error
+            .as_deref()
+            .unwrap_or("")
+            .contains("supported shell tool"));
     }
 
     #[test]
@@ -15230,7 +15239,7 @@ mod tests {
 
     #[test]
     fn allowlist_expired_entries_are_skipped_in_matching() {
-        use crate::allowlist::{AllowlistLayer, is_expired, parse_allowlist_toml};
+        use crate::allowlist::{is_expired, parse_allowlist_toml, AllowlistLayer};
         use std::path::Path;
 
         let toml = r#"
@@ -15257,7 +15266,7 @@ mod tests {
 
     #[test]
     fn allowlist_regex_without_ack_is_invalid_for_matching() {
-        use crate::allowlist::{AllowlistLayer, has_required_risk_ack, parse_allowlist_toml};
+        use crate::allowlist::{has_required_risk_ack, parse_allowlist_toml, AllowlistLayer};
         use std::path::Path;
 
         let toml = r#"

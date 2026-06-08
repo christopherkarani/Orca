@@ -36,6 +36,7 @@ pub const uninstall = @import("uninstall.zig");
 pub const interactive = @import("interactive.zig");
 pub const child_process = @import("child_process.zig");
 pub const style = @import("style.zig");
+pub const daemon = @import("daemon.zig");
 
 test {
     // Ensure the child_process module (and its tests) are pulled into the test binary.

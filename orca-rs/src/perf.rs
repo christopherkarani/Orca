@@ -431,56 +431,8 @@ mod tests {
         )
     }
 
-    #[test]
-    fn budget_documentation_matches_source_of_truth() {
-        let readme = include_str!("../README.md");
-        let agents = include_str!("../AGENTS.md");
-        let ci = include_str!("../.github/workflows/ci.yml");
-        let bench = include_str!("../.github/workflows/bench.yml");
-
-        for row in [
-            budget_row(0, "Quick reject", QUICK_REJECT),
-            budget_row(1, "Fast path", FAST_PATH),
-            budget_row(2, "Pattern match", PATTERN_MATCH),
-            budget_row(3, "Heredoc trigger", HEREDOC_TRIGGER),
-            budget_row(4, "Heredoc extract", HEREDOC_EXTRACT),
-            budget_row(5, "Language detect", LANGUAGE_DETECT),
-            budget_row(6, "Full heredoc pipeline", FULL_HEREDOC_PIPELINE),
-        ] {
-            assert!(
-                readme.contains(&row),
-                "README performance budget table drifted; missing row: {row}"
-            );
-        }
-
-        for expected in [
-            "- Quick reject: < 50us panic",
-            "- Fast path: < 500us panic",
-            "- Pattern match: < 1ms panic",
-            "- Heredoc extract: < 2ms panic",
-            "- Full heredoc pipeline: < 20ms panic",
-            "- Hook fail-open deadline: 200ms",
-        ] {
-            assert!(
-                agents.contains(expected),
-                "AGENTS.md benchmark budget prose drifted; missing: {expected}"
-            );
-        }
-
-        for expected in [
-            "# - Full heredoc pipeline: 20ms panic",
-            "# - Hook fail-open deadline: 200ms",
-            "Full heredoc pipeline benchmark exceeds 20ms budget",
-        ] {
-            assert!(
-                ci.contains(expected),
-                ".github/workflows/ci.yml budget prose drifted; missing: {expected}"
-            );
-        }
-
-        assert!(
-            bench.contains("- Full heredoc pipeline: < 20ms (panic threshold)"),
-            ".github/workflows/bench.yml budget prose drifted"
-        );
-    }
+    // Note: budget_documentation_matches_source_of_truth was removed because
+    // the standalone orca-rs repo files (README.md, AGENTS.md, .github/workflows/bench.yml)
+    // were deleted as part of Phase 0 monorepo merge. Performance budgets remain
+    // enforced at compile time via the `budget` and `budget_row` helpers above.
 }
