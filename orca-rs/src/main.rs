@@ -346,6 +346,34 @@ fn print_version() {
     eprintln!();
 }
 
+/// Map structured subcommand output to the correct CLI exit behavior.
+fn handle_command_output(output: cli::CommandOutput) {
+    match output {
+        cli::CommandOutput::Ok => {}
+        cli::CommandOutput::TestResult { blocked: true } => std::process::exit(EXIT_DENIED),
+        cli::CommandOutput::TestResult { blocked: false } => {}
+        cli::CommandOutput::ClassifyResult { exit_code } => {
+            if exit_code != 0 {
+                std::process::exit(exit_code);
+            }
+        }
+        cli::CommandOutput::ValidateResult {
+            exit_error: true, ..
+        } => std::process::exit(1),
+        cli::CommandOutput::ValidateResult {
+            exit_error: false, ..
+        } => {}
+        cli::CommandOutput::ScanResult {
+            should_fail: true, ..
+        } => std::process::exit(1),
+        cli::CommandOutput::ScanResult {
+            should_fail: false, ..
+        } => {}
+        cli::CommandOutput::HistoryResult { strict_ok: false } => std::process::exit(1),
+        cli::CommandOutput::HistoryResult { strict_ok: true } => {}
+    }
+}
+
 #[allow(clippy::too_many_lines)]
 fn main() {
     // Configure colors based on TTY detection
@@ -400,9 +428,12 @@ fn main() {
 
     // If there's a subcommand, handle it and exit.
     if cli.command.is_some() {
-        if let Err(e) = cli::run_command(cli) {
-            eprintln!("Error: {e}");
-            std::process::exit(1);
+        match cli::run_command(cli) {
+            Ok(output) => handle_command_output(output),
+            Err(e) => {
+                eprintln!("Error: {e}");
+                std::process::exit(1);
+            }
         }
         return;
     }

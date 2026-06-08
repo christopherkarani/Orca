@@ -1955,12 +1955,37 @@ fn maybe_show_update_notice(cli: &Cli, config: &Config, verbosity: Verbosity) {
     }
 }
 
+/// Structured output from a CLI subcommand, allowing the caller
+/// (interactive CLI or daemon request handler) to decide how to
+/// render the result and whether to exit the process.
+#[derive(Debug)]
+pub enum CommandOutput {
+    /// Success with no special exit code.
+    Ok,
+    /// Result from the `test` subcommand.
+    TestResult { blocked: bool },
+    /// Result from the `classify` subcommand.
+    ClassifyResult { exit_code: i32 },
+    /// Result from the `validate` subcommand.
+    ValidateResult {
+        exit_error: bool,
+        reports: Vec<String>,
+    },
+    /// Result from the `scan` subcommand.
+    ScanResult {
+        report: crate::scan::ScanReport,
+        should_fail: bool,
+    },
+    /// Result from the `history check --strict` subcommand.
+    HistoryResult { strict_ok: bool },
+}
+
 /// # Errors
 ///
 /// Returns an error when no subcommand is provided (hook mode) or when a
 /// subcommand that performs I/O fails.
 #[allow(clippy::too_many_lines)]
-pub fn run_command(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
+pub fn run_command(cli: Cli) -> Result<CommandOutput, Box<dyn std::error::Error>> {
     let config = Config::load();
     let verbosity = Verbosity::from_cli(&cli);
     maybe_show_update_notice(&cli, &config, verbosity);
@@ -2027,6 +2052,20 @@ pub fn run_command(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
                 max_patterns,
             );
         }
+        Some(Command::Pack {
+            action:
+                PackAction::Validate {
+                    file_path,
+                    strict,
+                    format,
+                },
+        }) => {
+            let exit_error = pack_validate(&file_path, strict, format)?;
+            return Ok(CommandOutput::ValidateResult {
+                exit_error,
+                reports: vec![file_path],
+            });
+        }
         Some(Command::Pack { action }) => {
             handle_pack_command(&config, action)?;
         }
@@ -2081,9 +2120,9 @@ pub fn run_command(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
                     force,
                 );
                 // Exit with code 1 if command would be blocked (for CI/robot mode scripting)
-                if was_blocked {
-                    std::process::exit(EXIT_DENIED);
-                }
+                return Ok(CommandOutput::TestResult {
+                    blocked: was_blocked,
+                });
             }
         }
         Some(Command::Init {
@@ -2178,7 +2217,12 @@ pub fn run_command(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
             handle_rebase_recover(ttl, robot_mode_enabled(cli.robot))?;
         }
         Some(Command::Scan(scan)) => {
-            handle_scan_command(&config, scan, verbosity)?;
+            if let Some((report, should_fail)) = handle_scan_command(&config, scan, verbosity)? {
+                return Ok(CommandOutput::ScanResult {
+                    report,
+                    should_fail,
+                });
+            }
         }
         Some(Command::Simulate(sim)) => {
             handle_simulate_command(sim, &config, verbosity)?;
@@ -2206,6 +2250,20 @@ pub fn run_command(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
         Some(Command::Stats(stats)) => {
             handle_stats_command(&config, &stats, verbosity.quiet)?;
         }
+        Some(Command::History {
+            action: HistoryAction::Check { json, strict },
+        }) => {
+            let db_path = config.history.expanded_database_path();
+            let db = match HistoryDb::open(db_path) {
+                Ok(db) => db,
+                Err(err) => {
+                    println!("Error opening history database: {err}");
+                    return Ok(CommandOutput::Ok);
+                }
+            };
+            let strict_ok = history_check(&db, json, strict)?;
+            return Ok(CommandOutput::HistoryResult { strict_ok });
+        }
         Some(Command::History { action }) => {
             handle_history_command(&config, action)?;
         }
@@ -2223,9 +2281,7 @@ pub fn run_command(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
         }) => {
             let robot_mode = robot_mode_enabled(cli.robot);
             let exit_code = classify_command(&config, &command, format, no_color || robot_mode);
-            if exit_code != 0 {
-                std::process::exit(exit_code);
-            }
+            return Ok(CommandOutput::ClassifyResult { exit_code });
         }
         Some(Command::McpServer) => {
             crate::mcp::run_mcp_server()?;
@@ -2237,7 +2293,7 @@ pub fn run_command(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
         }
     }
 
-    Ok(())
+    Ok(CommandOutput::Ok)
 }
 
 fn write_completions(shell: CompletionShell) -> Result<(), Box<dyn std::error::Error>> {
@@ -2958,7 +3014,7 @@ fn handle_pack_command(
             strict,
             format,
         } => {
-            pack_validate(&file_path, strict, format)?;
+            let _ = pack_validate(&file_path, strict, format)?;
         }
     }
     Ok(())
@@ -2970,7 +3026,7 @@ fn pack_validate(
     file_path: &str,
     strict: bool,
     format: PackValidateFormat,
-) -> Result<(), Box<dyn std::error::Error>> {
+) -> Result<bool, Box<dyn std::error::Error>> {
     use crate::packs::external::{
         analyze_pack_engines, check_builtin_collision, summarize_pack_engines, ExternalPack,
         RegexEngineType, CURRENT_SCHEMA_VERSION,
@@ -3283,7 +3339,7 @@ fn output_pack_validation(
     result: &PackValidationOutput,
     format: PackValidateFormat,
     strict: bool,
-) -> Result<(), Box<dyn std::error::Error>> {
+) -> Result<bool, Box<dyn std::error::Error>> {
     use colored::Colorize;
 
     let has_warnings = !result.warnings.is_empty();
@@ -3380,10 +3436,7 @@ fn output_pack_validation(
         }
     }
 
-    if exit_error {
-        std::process::exit(1);
-    }
-    Ok(())
+    Ok(exit_error)
 }
 
 // Type alias for validation output to avoid repeating the struct definition
@@ -5641,7 +5694,7 @@ fn handle_scan_command(
     config: &Config,
     scan: ScanCommand,
     verbosity: Verbosity,
-) -> Result<(), Box<dyn std::error::Error>> {
+) -> Result<Option<(crate::scan::ScanReport, bool)>, Box<dyn std::error::Error>> {
     let ScanCommand {
         staged,
         paths,
@@ -5665,9 +5718,11 @@ fn handle_scan_command(
     match action {
         Some(ScanAction::InstallPreCommit) => {
             install_scan_pre_commit_hook()?;
+            Ok(None)
         }
         Some(ScanAction::UninstallPreCommit) => {
             uninstall_scan_pre_commit_hook()?;
+            Ok(None)
         }
         None => {
             let cwd = std::env::current_dir()?;
@@ -5690,7 +5745,7 @@ fn handle_scan_command(
             }
             .resolve(hooks.as_ref().map(|h| &h.cfg));
 
-            handle_scan(
+            let result = handle_scan(
                 config,
                 staged,
                 paths,
@@ -5709,10 +5764,9 @@ fn handle_scan_command(
                 trace,
                 top,
             )?;
+            Ok(Some(result))
         }
     }
-
-    Ok(())
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -5736,7 +5790,7 @@ fn handle_scan(
     debug: bool,
     trace: bool,
     top: usize,
-) -> Result<(), Box<dyn std::error::Error>> {
+) -> Result<(crate::scan::ScanReport, bool), Box<dyn std::error::Error>> {
     use crate::output::progress::MaybeProgress;
     use crate::scan::{scan_paths_with_progress, should_fail, ScanEvalContext, ScanOptions};
 
@@ -5747,13 +5801,7 @@ fn handle_scan(
         .count();
 
     if file_sources == 0 {
-        eprintln!("Error: No file selection mode specified.");
-        eprintln!();
-        eprintln!("Use one of:");
-        eprintln!("  --staged         Scan files staged for commit");
-        eprintln!("  --paths <paths>  Scan explicit file paths");
-        eprintln!("  --git-diff <rev> Scan files changed in a git diff range");
-        std::process::exit(1);
+        return Err("No file selection mode specified".into());
     }
 
     // Build scan options
@@ -5858,11 +5906,9 @@ fn handle_scan(
     }
 
     // Exit with appropriate code based on fail-on policy
-    if should_fail(&report, fail_on) {
-        std::process::exit(1);
-    }
+    let should_fail = should_fail(&report, fail_on);
 
-    Ok(())
+    Ok((report, should_fail))
 }
 
 /// Get list of files staged for commit (git index).
@@ -8303,7 +8349,7 @@ fn handle_history_command(
             history_analyze(&db, days, json, recommendations_only, false_positives, gaps)?;
         }
         HistoryAction::Check { json, strict } => {
-            history_check(&db, json, strict)?;
+            let _ = history_check(&db, json, strict)?;
         }
         HistoryAction::Backup { output, compress } => {
             history_backup(&db, &output, compress)?;
@@ -8656,7 +8702,7 @@ fn history_check(
     db: &HistoryDb,
     json: bool,
     strict: bool,
-) -> Result<(), Box<dyn std::error::Error>> {
+) -> Result<bool, Box<dyn std::error::Error>> {
     use colored::Colorize;
 
     let result = db.check_health()?;
@@ -8723,11 +8769,7 @@ fn history_check(
         println!("  Page size: {} bytes", result.page_size);
     }
 
-    if strict && !result.integrity_ok {
-        std::process::exit(1);
-    }
-
-    Ok(())
+    Ok(!strict || result.integrity_ok)
 }
 
 fn history_backup(
@@ -17239,6 +17281,30 @@ exclude = ["target/**"]
         assert!(
             settings.get("permissions").is_some(),
             "existing keys should be preserved"
+        );
+    }
+
+    #[test]
+    fn run_command_returns_ok_for_doctor() {
+        let cli = Cli {
+            verbose: 0,
+            quiet: true,
+            legacy_output: false,
+            no_color: true,
+            no_suggestions: false,
+            robot: false,
+            daemon_mode: false,
+            agent: None,
+            command: Some(Command::Doctor {
+                fix: false,
+                format: DoctorFormat::Pretty,
+            }),
+        };
+        let result = run_command(cli);
+        assert!(result.is_ok(), "run_command should succeed: {:?}", result);
+        assert!(
+            matches!(result.unwrap(), CommandOutput::Ok),
+            "run_command should return CommandOutput::Ok"
         );
     }
 }
