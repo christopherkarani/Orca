@@ -6,7 +6,7 @@ You type: *"Clean up my repo."*
 Your AI agent thinks: `rm -rf *`  
 **Orca blocks it before it happens.**
 
-Orca wraps the AI tools you already use—Codex, Claude Code, OpenCode, OpenClaw, Hermes—and enforces local rules for commands, files, environment variables, and network calls. It is not an AI agent. It is the safety layer that lets you delegate to one.
+Orca wraps the AI tools you already use—Codex, Claude Code, OpenCode, OpenClaw, Hermes—and enforces local rules for commands, files, environment variables, and network calls. It is not an AI agent. It is the safety layer that lets you delegate to one
 
 ```bash
 # Install (macOS/Linux)
