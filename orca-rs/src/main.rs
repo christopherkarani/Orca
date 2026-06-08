@@ -50,6 +50,7 @@ use std::borrow::Cow;
 use std::collections::HashSet;
 use std::io::{self, IsTerminal};
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
 // Build metadata from vergen (set by build.rs)
@@ -176,15 +177,22 @@ fn run_shutdown_actions() {
     }
 }
 
+/// Process-wide flag set by the SIGINT handler to request graceful shutdown.
+///
+/// In CLI mode `main()` polls this flag and returns exit code 130.
+/// In daemon mode (future) the UDS listener loop will drain in-flight
+/// requests before returning.
+static SHUTDOWN_REQUESTED: AtomicBool = AtomicBool::new(false);
+
 fn install_signal_shutdown_handler() {
     // Idempotent: ctrlc::set_handler returns Err on duplicate install. The
-    // handler itself runs every action in the registry deterministically
-    // (in registration order), then exits 130. Code 130 is the canonical
-    // "interrupted by SIGINT" status (128 + SIGINT(2)).
+    // handler sets SHUTDOWN_REQUESTED instead of calling process::exit so
+    // that daemon mode can perform graceful shutdown. CLI mode polls the
+    // flag and exits with code 130 (128 + SIGINT(2)).
     let _ = ctrlc::set_handler(|| {
         eprintln!("[orca] Flushing on signal...");
         run_shutdown_actions();
-        std::process::exit(130);
+        SHUTDOWN_REQUESTED.store(true, Ordering::SeqCst);
     });
 }
 
@@ -346,36 +354,28 @@ fn print_version() {
     eprintln!();
 }
 
-/// Map structured subcommand output to the correct CLI exit behavior.
-fn handle_command_output(output: cli::CommandOutput) {
+/// Map structured subcommand output to the CLI exit code that should be used.
+///
+/// Returns 0 for success, or the appropriate non-zero exit code for the
+/// subcommand.  This function never calls `process::exit`; the caller
+/// (CLI `main()`) applies the code.
+fn command_output_exit_code(output: cli::CommandOutput) -> i32 {
     match output {
-        cli::CommandOutput::Ok => {}
-        cli::CommandOutput::TestResult { blocked: true } => std::process::exit(EXIT_DENIED),
-        cli::CommandOutput::TestResult { blocked: false } => {}
-        cli::CommandOutput::ClassifyResult { exit_code } => {
-            if exit_code != 0 {
-                std::process::exit(exit_code);
-            }
-        }
-        cli::CommandOutput::ValidateResult {
-            exit_error: true, ..
-        } => std::process::exit(1),
-        cli::CommandOutput::ValidateResult {
-            exit_error: false, ..
-        } => {}
-        cli::CommandOutput::ScanResult {
-            should_fail: true, ..
-        } => std::process::exit(1),
-        cli::CommandOutput::ScanResult {
-            should_fail: false, ..
-        } => {}
-        cli::CommandOutput::HistoryResult { strict_ok: false } => std::process::exit(1),
-        cli::CommandOutput::HistoryResult { strict_ok: true } => {}
+        cli::CommandOutput::Ok => 0,
+        cli::CommandOutput::TestResult { blocked: true } => EXIT_DENIED,
+        cli::CommandOutput::TestResult { blocked: false } => 0,
+        cli::CommandOutput::ClassifyResult { exit_code } => exit_code,
+        cli::CommandOutput::ValidateResult { exit_error: true, .. } => 1,
+        cli::CommandOutput::ValidateResult { exit_error: false, .. } => 0,
+        cli::CommandOutput::ScanResult { should_fail: true, .. } => 1,
+        cli::CommandOutput::ScanResult { should_fail: false, .. } => 0,
+        cli::CommandOutput::HistoryResult { strict_ok: false } => 1,
+        cli::CommandOutput::HistoryResult { strict_ok: true } => 0,
     }
 }
 
 #[allow(clippy::too_many_lines)]
-fn main() {
+fn run_orca() -> Result<i32, Box<dyn std::error::Error>> {
     // Configure colors based on TTY detection
     configure_colors();
 
@@ -383,24 +383,24 @@ fn main() {
     let args: Vec<String> = std::env::args().collect();
     if top_level_flag_requested(&args, "--version", "-V") {
         print_version();
-        return;
+        return Ok(0);
     }
 
     // Check for --help flag
     if top_level_flag_requested(&args, "--help", "-h") {
         print_help();
-        return;
+        return Ok(0);
     }
 
     // Parse CLI arguments (subcommands). If parsing fails (e.g., unknown flags),
-    // print the clap error and exit instead of falling into hook mode and
-    // blocking on stdin.
+    // print the clap error and return the exit code instead of falling into hook
+    // mode and blocking on stdin.
     let cli = match Cli::try_parse() {
         Ok(cli) => cli,
         Err(e) => {
             let exit_code = e.exit_code();
             eprintln!("{e}");
-            std::process::exit(exit_code);
+            return Ok(exit_code);
         }
     };
 
@@ -418,24 +418,23 @@ fn main() {
         colored::control::set_override(false);
     }
 
-    // Daemon mode stub: log and exit cleanly.
+    // Daemon mode stub: log and return cleanly.
     // Full daemon implementation (UDS server, NDJSON IPC) is Phase 0.5.
     if cli.daemon_mode {
         tracing::info!("orca-daemon started in daemon mode (stub)");
         eprintln!("[orca-daemon] Daemon mode stub — exiting 0");
-        return;
+        return Ok(0);
     }
 
-    // If there's a subcommand, handle it and exit.
+    // If there's a subcommand, handle it and return its exit code.
     if cli.command.is_some() {
         match cli::run_command(cli) {
-            Ok(output) => handle_command_output(output),
+            Ok(output) => return Ok(command_output_exit_code(output)),
             Err(e) => {
                 eprintln!("Error: {e}");
-                std::process::exit(1);
+                return Err(e);
             }
         }
-        return;
     }
 
     // Load configuration
@@ -444,7 +443,7 @@ fn main() {
 
     // Check if bypass is requested (escape hatch)
     if Config::is_bypassed() {
-        return;
+        return Ok(0);
     }
 
     // Self-heal: verify the Orca hook is still registered in settings.json.
@@ -480,9 +479,9 @@ fn main() {
             eprintln!(
                 "[orca] Warning: stdin input ({len} bytes) exceeds limit ({max_input_bytes} bytes); allowing command (fail-open)"
             );
-            return;
+            return Ok(0);
         }
-        Err(_) => return, // Fail open on IO or JSON errors
+        Err(_) => return Ok(0), // Fail open on IO or JSON errors
     };
 
     // Start evaluation deadline after input size checks (includes evaluation).
@@ -498,7 +497,7 @@ fn main() {
     );
 
     let Some((command, hook_protocol)) = hook::extract_command_with_protocol(&hook_input) else {
-        return;
+        return Ok(0);
     };
     let history_agent_type = history_agent_type_for_protocol(hook_protocol, &detected_agent);
     let effective_agent = effective_agent_for_hook_protocol(hook_protocol, &detected_agent);
@@ -511,7 +510,7 @@ fn main() {
             command.len(),
             max_command_bytes
         );
-        return;
+        return Ok(0);
     }
 
     // Load layered allowlists (project/user/system). Missing/invalid files are treated
@@ -583,7 +582,7 @@ fn main() {
                 HOOK_EVALUATION_BUDGET,
             );
         }
-        return;
+        return Ok(0);
     }
 
     // Use the shared evaluator for hook mode parity with `orca test`.
@@ -629,7 +628,7 @@ fn main() {
                 HOOK_EVALUATION_BUDGET,
             );
         }
-        return;
+        return Ok(0);
     }
 
     if result.decision != EvaluationDecision::Deny {
@@ -656,7 +655,7 @@ fn main() {
             );
             writer.log(entry);
         }
-        return;
+        return Ok(0);
     }
 
     let Some(ref info) = result.pattern_info else {
@@ -674,7 +673,7 @@ fn main() {
             );
             writer.log(entry);
         }
-        return;
+        return Ok(0);
     };
 
     let pack = info.pack_id.as_deref();
@@ -764,7 +763,7 @@ fn main() {
                     );
                     writer.log(entry);
                 }
-                return;
+                return Ok(0);
             }
         }
     }
@@ -858,7 +857,7 @@ fn main() {
                 if let Some(writer) = history_writer.as_ref() {
                     writer.flush_sync();
                 }
-                std::process::exit(2);
+                return Ok(2);
             }
         }
         DecisionMode::Warn => {
@@ -876,6 +875,18 @@ fn main() {
             if let Some(log_file) = &config.general.log_file {
                 let _ = hook::log_blocked_command(log_file, &command, &info.reason, pack);
             }
+        }
+    }
+
+    Ok(0)
+}
+
+fn main() {
+    match run_orca() {
+        Ok(exit_code) => std::process::exit(exit_code),
+        Err(e) => {
+            eprintln!("Error: {e}");
+            std::process::exit(1);
         }
     }
 }
