@@ -1,0 +1,122 @@
+# Safe Commands - Should be ALLOWED by ORCA
+# Each line is a command that should pass through without blocking.
+# Lines starting with # are comments.
+
+# Git - Status and info
+git status
+git log
+git log --oneline -10
+git diff
+git diff HEAD
+git diff --cached
+git show HEAD
+git branch -a
+git branch -v
+git remote -v
+
+# Git - Staging and committing
+git add .
+git add -A
+git add file.txt
+git commit -m 'test message'
+git commit -am 'test message'
+
+# Git - Safe push/pull
+git push
+git push origin main
+git push --force-with-lease
+git push -u origin feature
+git pull
+git pull --rebase
+git fetch
+git fetch --all
+
+# Git - Branch operations (safe)
+git checkout main
+git checkout master
+git checkout -b feature
+git checkout --orphan gh-pages
+git branch -d feature
+git branch feature
+git switch main
+git switch -c feature
+
+# Git - Restore (safe - staged only)
+git restore --staged file.txt
+git restore -S file.txt
+git restore --staged .
+
+# Git - Clean (safe - dry run)
+git clean -n
+git clean --dry-run
+git clean -dn
+
+# Git - Stash (safe operations)
+git stash
+git stash push
+git stash pop
+git stash apply
+git stash list
+git stash show
+
+# Git - Merge and rebase
+git merge feature
+git merge --no-ff feature
+git rebase main
+git rebase -i HEAD~3
+git cherry-pick abc123
+
+# Git - Reset (safe variants)
+git reset --soft HEAD~1
+git reset --mixed HEAD
+git reset HEAD
+git reset HEAD file.txt
+
+# Filesystem - Safe operations
+ls -la
+cat file.txt
+head file.txt
+tail file.txt
+less file.txt
+mkdir newdir
+touch newfile
+cp source dest
+mv source dest
+
+# Filesystem - Safe rm operations
+rm file.txt
+rm -f file.txt
+rm -r directory
+rm -i file.txt
+
+# Filesystem - Safe temp directory operations
+rm -rf /tmp/build
+rm -rf /tmp/test-dir
+rm -rf /tmp/foo..bar
+rm -rf /var/tmp/cache
+rm -fr /tmp/stuff
+rm -Rf /tmp/more
+rm -r -f /tmp/test
+rm --recursive --force /tmp/test
+rm -rf $TMPDIR/test
+rm -rf ${TMPDIR}/test
+rm -rf "$TMPDIR/test"
+
+# General safe commands
+echo 'hello world'
+cargo build
+cargo test
+cargo run
+npm install
+npm test
+yarn install
+python script.py
+node app.js
+docker ps
+docker images
+docker logs
+kubectl get pods
+kubectl describe pod
+make all
+curl https://example.com
+wget https://example.com/file

@@ -1,0 +1,288 @@
+# Canonical command corpus for golden tests and the shared e2e harness.
+# Schema version 1.
+schema_version = 1
+
+# Notes:
+# - expected_log fields are the stable, required log/assertion fields for a case.
+# - For allow cases, expected_log may be minimal (decision only).
+# - For deny cases, include pack_id + pattern_name + rule_id + reason substring.
+
+[[case]]
+id = "git.safe.status"
+category = "git.safe"
+input_kind = "command"
+command = "git status"
+expected_decision = "allow"
+expected_log = { decision = "allow" }
+
+[[case]]
+id = "git.safe.checkout-new-branch"
+category = "git.safe"
+input_kind = "command"
+command = "git checkout -b feature/one"
+expected_decision = "allow"
+expected_log = { decision = "allow" }
+
+[[case]]
+id = "git.safe.restore-staged"
+category = "git.safe"
+input_kind = "command"
+command = "git restore --staged file.txt"
+expected_decision = "allow"
+expected_log = { decision = "allow" }
+
+[[case]]
+id = "git.destructive.reset-hard"
+category = "git.destructive"
+input_kind = "command"
+command = "git reset --hard"
+expected_decision = "deny"
+expected_log = { decision = "deny", mode = "deny", pack_id = "core.git", pattern_name = "reset-hard", rule_id = "core.git:reset-hard", source = "pack", reason_contains = "destroys uncommitted changes" }
+
+[[case]]
+id = "git.destructive.clean-force"
+category = "git.destructive"
+input_kind = "command"
+command = "git clean -fd"
+expected_decision = "deny"
+expected_log = { decision = "deny", mode = "deny", pack_id = "core.git", pattern_name = "clean-force", rule_id = "core.git:clean-force", source = "pack", reason_contains = "removes untracked files" }
+
+[[case]]
+id = "git.destructive.push-force"
+category = "git.destructive"
+input_kind = "command"
+command = "git push --force origin main"
+expected_decision = "deny"
+expected_log = { decision = "deny", mode = "deny", pack_id = "core.git", pattern_name = "push-force-long", rule_id = "core.git:push-force-long", source = "pack", reason_contains = "Force push" }
+
+[[case]]
+id = "rm.safe.tmp"
+category = "rm.safe.tmp"
+input_kind = "command"
+command = "rm -rf /tmp/build"
+expected_decision = "allow"
+expected_log = { decision = "allow" }
+
+[[case]]
+id = "rm.safe.tmpdir-brace"
+category = "rm.safe.tmp"
+input_kind = "command"
+command = "rm -rf ${TMPDIR}/build"
+expected_decision = "allow"
+expected_log = { decision = "allow" }
+
+[[case]]
+id = "rm.safe.var-tmp"
+category = "rm.safe.tmp"
+input_kind = "command"
+command = "rm -rf /var/tmp/build"
+expected_decision = "allow"
+expected_log = { decision = "allow" }
+
+[[case]]
+id = "rm.destructive.root"
+category = "rm.destructive"
+input_kind = "command"
+command = "rm -rf /"
+expected_decision = "deny"
+expected_log = { decision = "deny", mode = "deny", pack_id = "core.filesystem", pattern_name = "rm-rf-root-home", rule_id = "core.filesystem:rm-rf-root-home", source = "pack", reason_contains = "EXTREMELY DANGEROUS" }
+
+[[case]]
+id = "rm.destructive.general"
+category = "rm.destructive"
+input_kind = "command"
+command = "rm -rf /var/log"
+expected_decision = "deny"
+expected_log = { decision = "deny", mode = "deny", pack_id = "core.filesystem", pattern_name = "rm-rf-general", rule_id = "core.filesystem:rm-rf-general", source = "pack", reason_contains = "rm -rf is destructive" }
+
+[[case]]
+id = "wrapper.sudo.git-reset-hard"
+category = "wrappers.sudo"
+input_kind = "command"
+command = "sudo git reset --hard"
+expected_decision = "deny"
+expected_log = { decision = "deny", mode = "deny", pack_id = "core.git", pattern_name = "reset-hard", rule_id = "core.git:reset-hard", source = "pack", reason_contains = "destroys uncommitted changes" }
+
+[[case]]
+id = "wrapper.env.git-reset-hard"
+category = "wrappers.env"
+input_kind = "command"
+command = "env GIT_DIR=.git git reset --hard"
+expected_decision = "deny"
+expected_log = { decision = "deny", mode = "deny", pack_id = "core.git", pattern_name = "reset-hard", rule_id = "core.git:reset-hard", source = "pack", reason_contains = "destroys uncommitted changes" }
+
+[[case]]
+id = "wrapper.command.git-reset-hard"
+category = "wrappers.command"
+input_kind = "command"
+command = "command git reset --hard"
+expected_decision = "deny"
+expected_log = { decision = "deny", mode = "deny", pack_id = "core.git", pattern_name = "reset-hard", rule_id = "core.git:reset-hard", source = "pack", reason_contains = "destroys uncommitted changes" }
+
+[[case]]
+id = "wrapper.command-query"
+category = "wrappers.command"
+input_kind = "command"
+command = "command -v git"
+expected_decision = "allow"
+expected_log = { decision = "allow" }
+
+[[case]]
+id = "wrapper.command-query-version"
+category = "wrappers.command"
+input_kind = "command"
+command = "command -V git"
+expected_decision = "allow"
+expected_log = { decision = "allow" }
+
+[[case]]
+id = "wrapper.backslash.git-reset-hard"
+category = "wrappers.backslash"
+input_kind = "command"
+command = "\\git reset --hard"
+expected_decision = "deny"
+expected_log = { decision = "deny", mode = "deny", pack_id = "core.git", pattern_name = "reset-hard", rule_id = "core.git:reset-hard", source = "pack", reason_contains = "destroys uncommitted changes" }
+
+[[case]]
+id = "quoted.command-word.safe"
+category = "quoted.command-word"
+input_kind = "command"
+command = "\"git\" status"
+expected_decision = "allow"
+expected_log = { decision = "allow" }
+
+[[case]]
+id = "quoted.command-word.destructive"
+category = "quoted.command-word"
+input_kind = "command"
+command = "\"git\" reset --hard"
+expected_decision = "deny"
+expected_log = { decision = "deny", mode = "deny", pack_id = "core.git", pattern_name = "reset-hard", rule_id = "core.git:reset-hard", source = "pack", reason_contains = "destroys uncommitted changes" }
+
+[[case]]
+id = "substring.false-positive.echo"
+category = "substring.false-positives"
+input_kind = "command"
+command = "echo \"git reset --hard\""
+expected_decision = "allow"
+expected_log = { decision = "allow" }
+
+[[case]]
+id = "substring.false-positive.search"
+category = "substring.false-positives"
+input_kind = "command"
+command = "rg -n \"rm -rf\" README.md"
+expected_decision = "allow"
+expected_log = { decision = "allow" }
+
+[[case]]
+id = "substring.false-positive.git-commit"
+category = "substring.false-positives"
+input_kind = "command"
+command = "git commit -m \"fix rm -rf detection\""
+expected_decision = "allow"
+expected_log = { decision = "allow" }
+
+[[case]]
+id = "multi-segment.and"
+category = "multi-segment"
+input_kind = "command"
+command = "git status && git reset --hard"
+expected_decision = "deny"
+expected_log = { decision = "deny", mode = "deny", pack_id = "core.git", pattern_name = "reset-hard", rule_id = "core.git:reset-hard", source = "pack", reason_contains = "destroys uncommitted changes" }
+
+[[case]]
+id = "multi-segment.or"
+category = "multi-segment"
+input_kind = "command"
+command = "test -f marker || git reset --hard"
+expected_decision = "deny"
+expected_log = { decision = "deny", mode = "deny", pack_id = "core.git", pattern_name = "reset-hard", rule_id = "core.git:reset-hard", source = "pack", reason_contains = "destroys uncommitted changes" }
+
+[[case]]
+id = "multi-segment.semicolon"
+category = "multi-segment"
+input_kind = "command"
+command = "echo ok; git reset --hard"
+expected_decision = "deny"
+expected_log = { decision = "deny", pack_id = "core.git", pattern_name = "reset-hard", rule_id = "core.git:reset-hard", decision_mode = "deny", source = "pack", reason_contains = "destroys uncommitted changes" }
+
+[[case]]
+id = "multi-segment.pipe"
+category = "multi-segment"
+input_kind = "command"
+command = "echo ok | git reset --hard"
+expected_decision = "deny"
+expected_log = { decision = "deny", pack_id = "core.git", pattern_name = "reset-hard", rule_id = "core.git:reset-hard", decision_mode = "deny", source = "pack", reason_contains = "destroys uncommitted changes" }
+
+[[case]]
+id = "command-substitution"
+category = "command-substitution"
+input_kind = "command"
+command = "echo $(git reset --hard)"
+expected_decision = "deny"
+expected_log = { decision = "deny", pack_id = "core.git", pattern_name = "reset-hard", rule_id = "core.git:reset-hard", decision_mode = "deny", source = "pack", reason_contains = "destroys uncommitted changes" }
+
+[[case]]
+id = "command-substitution.backticks"
+category = "command-substitution"
+input_kind = "command"
+command = "echo `git reset --hard`"
+expected_decision = "deny"
+expected_log = { decision = "deny", pack_id = "core.git", pattern_name = "reset-hard", rule_id = "core.git:reset-hard", decision_mode = "deny", source = "pack", reason_contains = "destroys uncommitted changes" }
+
+[[case]]
+id = "heredoc.inline.python"
+category = "heredoc.inline"
+input_kind = "command"
+command = "python -c \"import shutil; shutil.rmtree('/tmp/demo')\""
+expected_decision = "deny"
+expected_log = { decision = "deny", mode = "deny", pack_id = "heredoc.python", pattern_name = "shutil_rmtree", rule_id = "heredoc.python:shutil_rmtree", source = "heredoc_ast", reason_contains = "shutil.rmtree() recursively deletes directories" }
+
+[[case]]
+id = "heredoc.inline.python.mixed-quotes"
+category = "heredoc.inline"
+input_kind = "command"
+command = "python -c 'import shutil; shutil.rmtree(\"/tmp/demo\")'"
+expected_decision = "deny"
+expected_log = { decision = "deny", mode = "deny", pack_id = "heredoc.python", pattern_name = "shutil_rmtree", rule_id = "heredoc.python:shutil_rmtree", source = "heredoc_ast", reason_contains = "shutil.rmtree() recursively deletes directories" }
+
+[[case]]
+id = "heredoc.inline.bash"
+category = "heredoc.inline"
+input_kind = "command"
+command = "bash -c \"rm -rf /etc/demo\""
+expected_decision = "deny"
+expected_log = { decision = "deny", mode = "deny", pack_id = "heredoc.bash", pattern_name = "rm_rf", rule_id = "heredoc.bash:rm_rf", source = "heredoc_ast", reason_contains = "rm -rf recursively deletes files" }
+
+[[case]]
+id = "hook.malformed.empty"
+category = "hook.malformed"
+input_kind = "hook_json"
+raw_input = ""
+expected_decision = "allow"
+expected_log = { decision = "allow" }
+
+[[case]]
+id = "hook.malformed.invalid-json"
+category = "hook.malformed"
+input_kind = "hook_json"
+raw_input = "{not json"
+expected_decision = "allow"
+expected_log = { decision = "allow" }
+
+[[case]]
+id = "hook.malformed.nonstring-command"
+category = "hook.malformed"
+input_kind = "hook_json"
+raw_input = "{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":123}}"
+expected_decision = "allow"
+expected_log = { decision = "allow" }
+
+[[case]]
+id = "hook.non-bash"
+category = "hook.malformed"
+input_kind = "hook_json"
+raw_input = "{\"tool_name\":\"Read\",\"tool_input\":{\"command\":\"git reset --hard\"}}"
+expected_decision = "allow"
+expected_log = { decision = "allow" }

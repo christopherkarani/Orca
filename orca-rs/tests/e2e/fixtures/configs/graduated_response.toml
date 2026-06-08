@@ -1,0 +1,77 @@
+# Graduated Response ORCA Configuration
+# For testing response graduation system (Epic 10)
+
+[packs]
+enabled = ["core.git", "core.filesystem"]
+
+[policy]
+default_mode = "warn"
+
+[response]
+# Enable graduated response system
+enable_graduation = true
+
+# Initial response mode for new/unknown commands
+initial_mode = "warn"
+
+# Escalation settings
+escalation_threshold = 3           # Number of warnings before escalation
+escalation_window_hours = 24       # Time window for counting warnings
+escalation_mode = "deny"           # Mode after escalation
+
+# De-escalation settings (after good behavior)
+deescalation_threshold = 10        # Good commands before de-escalation
+deescalation_window_hours = 168    # Time window (7 days)
+deescalation_mode = "log"          # Mode after de-escalation
+
+# Per-severity escalation thresholds
+[response.severity_thresholds]
+critical = 1                       # Critical commands: 1 warning then deny
+high = 2                           # High severity: 2 warnings then deny
+medium = 3                         # Medium severity: 3 warnings then deny
+low = 5                            # Low severity: 5 warnings then deny
+
+# Command-specific graduation overrides
+[[response.command_overrides]]
+pattern = "git reset --hard"
+initial_mode = "deny"              # Always deny, no graduation
+severity = "critical"
+
+[[response.command_overrides]]
+pattern = "git push --force"
+initial_mode = "warn"
+escalation_threshold = 2           # Escalate faster
+severity = "high"
+
+[[response.command_overrides]]
+pattern = "rm -rf"
+initial_mode = "warn"
+escalation_threshold = 2
+severity = "high"
+
+[[response.command_overrides]]
+pattern = "git stash drop"
+initial_mode = "log"               # Start with log for less dangerous
+escalation_threshold = 5
+severity = "medium"
+
+[[response.command_overrides]]
+pattern = "git branch -D"
+initial_mode = "log"
+escalation_threshold = 5
+severity = "medium"
+
+# Agent-specific graduation
+[response.agent_graduation]
+claude_code = { initial_mode = "warn", escalation_threshold = 2 }
+codex = { initial_mode = "log", escalation_threshold = 4 }
+cursor = { initial_mode = "log", escalation_threshold = 5 }
+
+# Session persistence
+[response.persistence]
+# Store graduation state in database
+persist_state = true
+# Reset graduation state on session end
+reset_on_session_end = false
+# Database path for state
+state_db = ".orca/graduation_state.db"

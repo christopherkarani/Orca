@@ -1,0 +1,98 @@
+{
+  "schema_version": 2,
+  "command": "python3 <<'PY'\nimport shutil\nshutil.rmtree('/home/example/project')\nPY",
+  "decision": "deny",
+  "total_duration_us": "<duration_us>",
+  "steps": [
+    {
+      "name": "full_evaluation",
+      "duration_us": "<duration_us>",
+      "details": {
+        "type": "keyword_gating",
+        "quick_rejected": false,
+        "keywords_checked": [
+          "&>",
+          "/cp",
+          "/dd",
+          "/find",
+          "/ln",
+          "/mv",
+          "/rm",
+          "/rsync",
+          "/shred",
+          "/tar",
+          "/truncate",
+          "/unlink",
+          "1>",
+          "2>",
+          "> \"",
+          "> $",
+          "> '",
+          "> /",
+          "> ~",
+          ">\"",
+          ">$",
+          ">&",
+          ">'",
+          ">/",
+          ">|",
+          ">~",
+          "btrfs",
+          "cp",
+          "dd",
+          "dmsetup",
+          "fdisk",
+          "find",
+          "git",
+          "ln",
+          "lvconvert",
+          "lvreduce",
+          "lvremove",
+          "lvresize",
+          "mdadm",
+          "mkfs",
+          "mkswap",
+          "mv",
+          "nbd-client",
+          "parted",
+          "pvmove",
+          "pvremove",
+          "rm",
+          "rsync",
+          "shred",
+          "tar",
+          "truncate",
+          "unlink",
+          "vgreduce",
+          "vgremove",
+          "wipefs"
+        ],
+        "first_match": "heredoc.python"
+      }
+    }
+  ],
+  "match": {
+    "rule_id": "heredoc.python:shutil_rmtree",
+    "pack_id": "heredoc.python",
+    "pattern_name": "shutil_rmtree",
+    "severity": "critical",
+    "reason": "Embedded python code blocked: shutil.rmtree() recursively deletes directories (rule heredoc.python:shutil_rmtree, line 2, matched: shutil.rmtree('/home/example/project'))",
+    "source": "heredoc_ast",
+    "matched_span": {
+      "start": 29,
+      "end": 67
+    },
+    "matched_text_preview": "shutil.rmtree('/home/example/project')",
+    "explanation": "Matched destructive pattern heredoc.python:shutil_rmtree. No additional explanation is available yet. See pack documentation for details."
+  },
+  "suggestions": [
+    {
+      "kind": "Preview first",
+      "text": "List directory contents with `os.listdir()` before removal"
+    },
+    {
+      "kind": "Safer alternative",
+      "text": "Use `shutil.move()` to archive instead of delete"
+    }
+  ]
+}

@@ -1,0 +1,53 @@
+# Full-Featured ORCA Configuration
+# All features enabled for comprehensive testing
+
+[packs]
+enabled = [
+    "core.git",
+    "core.filesystem",
+    "containers.docker",
+    "kubernetes.kubectl",
+    "database.postgresql",
+    "database.mysql",
+    "database.redis",
+    "database.sqlite",
+    "infrastructure.terraform",
+    "remote.rsync",
+    "remote.scp",
+    "storage.s3",
+    "cdn.cloudfront",
+    "email.ses",
+    "email.sendgrid",
+    "apigateway.kong",
+    "apigateway.apigee",
+    "dns.cloudflare",
+    "dns.route53",
+    "dns.generic",
+    "cicd.github_actions",
+    "platform.gitlab",
+]
+
+[policy]
+default_mode = "deny"
+enable_explanations = true
+enable_suggestions = true
+enable_history = true
+
+[history]
+enabled = true
+max_entries = 10000
+redact_secrets = true
+retention_days = 90
+
+[telemetry]
+enabled = true
+anonymous = true
+
+[logging]
+level = "debug"
+file = "orca.log"
+
+[scan]
+enabled = true
+include_hidden = false
+max_file_size_kb = 1024

@@ -1,0 +1,72 @@
+# True positives: git commands that MUST be blocked
+#
+# These commands are genuinely destructive and orca should deny them.
+
+[[case]]
+description = "git reset --hard discards uncommitted changes"
+command = "git reset --hard"
+expected = "deny"
+rule_id = "core.git:reset-hard"
+[case.log]
+decision = "deny"
+mode = "deny"
+pack_id = "core.git"
+pattern_name = "reset-hard"
+rule_id = "core.git:reset-hard"
+reason_contains = "destroys uncommitted changes"
+
+[[case]]
+description = "git reset --hard with ref"
+command = "git reset --hard HEAD~5"
+expected = "deny"
+rule_id = "core.git:reset-hard"
+
+[[case]]
+description = "git clean with force"
+command = "git clean -fd"
+expected = "deny"
+rule_id = "core.git:clean-force"
+
+[[case]]
+description = "git clean -fdx removes ignored files"
+command = "git clean -fdx"
+expected = "deny"
+rule_id = "core.git:clean-force"
+
+# NOTE: git checkout -f is not currently blocked.
+# Tracked in: tests/corpus/README.md (future enhancement)
+# [[case]]
+# description = "git checkout with force overwrites"
+# command = "git checkout -f main"
+# expected = "deny"
+# rule_id = "core.git:checkout-force"
+
+[[case]]
+description = "git stash drop discards stash"
+command = "git stash drop"
+expected = "deny"
+rule_id = "core.git:stash-drop"
+
+[[case]]
+description = "git stash clear drops all stashes"
+command = "git stash clear"
+expected = "deny"
+rule_id = "core.git:stash-clear"
+
+[[case]]
+description = "git branch -D force deletes"
+command = "git branch -D feature-branch"
+expected = "deny"
+rule_id = "core.git:branch-force-delete"
+
+[[case]]
+description = "git push --force"
+command = "git push --force origin main"
+expected = "deny"
+rule_id = "core.git:push-force-long"
+
+[[case]]
+description = "git push -f (short form)"
+command = "git push -f origin main"
+expected = "deny"
+rule_id = "core.git:push-force-short"

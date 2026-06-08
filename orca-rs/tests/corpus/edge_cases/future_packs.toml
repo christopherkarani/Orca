@@ -1,0 +1,27 @@
+# Edge cases: Commands for packs not yet implemented
+#
+# These commands would ideally be blocked by future packs (containers, kubernetes).
+# They are included here to ensure they don't cause crashes and to document
+# intended future behavior.
+#
+# When packs are implemented, move these to true_positives with appropriate rule_ids.
+
+[[case]]
+description = "docker system prune (future: containers.docker)"
+command = "docker system prune"
+expected = "allow"  # Currently allowed - no docker pack yet
+
+[[case]]
+description = "docker system prune -a (future: containers.docker)"
+command = "docker system prune -a"
+expected = "allow"  # Currently allowed - no docker pack yet
+
+[[case]]
+description = "kubectl delete namespace (future: kubernetes.kubectl)"
+command = "kubectl delete namespace prod"
+expected = "allow"  # Currently allowed - no kubernetes pack yet
+
+[[case]]
+description = "kubectl delete all (future: kubernetes.kubectl)"
+command = "kubectl delete all --all"
+expected = "allow"  # Currently allowed - no kubernetes pack yet

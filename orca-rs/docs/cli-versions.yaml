@@ -1,0 +1,20 @@
+# CLI version tracking for pack maintenance.
+# Keep this file updated after quarterly audits.
+
+secrets.vault:
+  tool: vault
+  tested_versions: ["1.15.x", "1.16.x"]
+  last_verified: 2026-01-10
+  changelog_url: https://github.com/hashicorp/vault/releases
+
+backup.rclone:
+  tool: rclone
+  tested_versions: ["1.65.x", "1.66.x"]
+  last_verified: 2026-01-10
+  changelog_url: https://rclone.org/changelog/
+
+cicd.github_actions:
+  tool: gh
+  tested_versions: ["2.44.x", "2.45.x"]
+  last_verified: 2026-01-10
+  changelog_url: https://github.com/cli/cli/releases

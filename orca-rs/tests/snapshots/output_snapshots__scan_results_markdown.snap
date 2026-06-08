@@ -1,0 +1,8 @@
+---
+source: tests/output_snapshots.rs
+expression: normalize_snapshot(table.render())
+---
+| File              | Line | Severity | Pattern                      | Command                     |
+| ----------------- | ---: | :------: | ---------------------------- | --------------------------- |
+| scripts/deploy.sh |   17 |   HIGH   | core.git:force-push          | git push --force origin ... |
+| ops/cleanup.sh    |   42 |   CRIT   | core.filesystem:rm-rf-gen... | sudo rm -rf /var/lib/app    |

@@ -1,0 +1,111 @@
+{
+  "binary": {
+    "git_sha": "5b9256cfe078169564a29e708de0af1d68b55b6c",
+    "path": "./target/release/orca",
+    "version_output": "\u256d\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u256e\n  \u2502  \ud83d\udee1  Orca               \u2502\n  \u2502     orca v0.2.0                           \u2502\n  \u2502                                         \u2502\n  \u2502  Built: 2026-01-11                   \u2502\n  \u2502  Rustc: 1.94.0-nightly                      \u2502\n  \u2502  Target: x86_64-unknown-linux-gnu         \u2502\n  \u2502                                         \u2502\n  \u2502  Protecting your code from destructive ops  \u2502\n  \u2570\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u256f"
+  },
+  "cases": [
+    {
+      "command": "ls -la",
+      "description": "No pack keywords (fast allow)",
+      "env": {},
+      "id": "quick_reject",
+      "metrics": {
+        "max_rss_kb": 5776,
+        "mean_ms": 3.11789458,
+        "p50_ms": 3.0320135,
+        "p95_ms": 3.891883,
+        "p99_ms": 4.344687,
+        "sample_count": 300,
+        "throughput_per_s": 320.72925313594146
+      },
+      "trace": null
+    },
+    {
+      "command": "git status",
+      "description": "Keyword present, safe path",
+      "env": {},
+      "id": "safe_keyword",
+      "metrics": {
+        "max_rss_kb": 6372,
+        "mean_ms": 16.72119671,
+        "p50_ms": 16.0069965,
+        "p95_ms": 21.132379,
+        "p99_ms": 28.533014,
+        "sample_count": 300,
+        "throughput_per_s": 59.8043320309698
+      },
+      "trace": null
+    },
+    {
+      "command": "git reset --hard",
+      "description": "Keyword present, destructive match",
+      "env": {},
+      "id": "destructive_keyword",
+      "metrics": {
+        "max_rss_kb": 7352,
+        "mean_ms": 17.6091975,
+        "p50_ms": 17.47067,
+        "p95_ms": 19.109959,
+        "p99_ms": 20.224259,
+        "sample_count": 300,
+        "throughput_per_s": 56.78850498439807
+      },
+      "trace": null
+    },
+    {
+      "command": "python -c \"import os; os.system('rm -rf /')\"",
+      "description": "Inline script trigger",
+      "env": {},
+      "id": "heredoc_inline",
+      "metrics": {
+        "max_rss_kb": 15528,
+        "mean_ms": 63.84286925999999,
+        "p50_ms": 63.434754999999996,
+        "p95_ms": 66.959672,
+        "p99_ms": 69.774827,
+        "sample_count": 300,
+        "throughput_per_s": 15.663456414020201
+      },
+      "trace": null
+    },
+    {
+      "command": "git reset --hard",
+      "description": "Bypass hook via ORCA_BYPASS",
+      "env": {
+        "ORCA_BYPASS": "1"
+      },
+      "id": "bypass",
+      "metrics": {
+        "max_rss_kb": 5348,
+        "mean_ms": 1.72304188,
+        "p50_ms": 1.687945,
+        "p95_ms": 2.209243,
+        "p99_ms": 2.525639,
+        "sample_count": 300,
+        "throughput_per_s": 580.3689461105844
+      },
+      "trace": null
+    }
+  ],
+  "errors": [],
+  "generated_at": "2026-01-11T10:06:37Z",
+  "host": {
+    "arch": "x86_64",
+    "os": "Linux",
+    "release": "6.17.0-8-generic"
+  },
+  "method": {
+    "mode": "process",
+    "notes": "Process-per-invocation timing. max_rss_kb measured via /usr/bin/time -v.",
+    "rss_method": "/usr/bin/time -v",
+    "runs": 300,
+    "timer": "perf_counter_ns",
+    "warmup": 30
+  },
+  "rustc": {
+    "host": "x86_64-unknown-linux-gnu",
+    "version_output": "rustc 1.94.0-nightly (fecb335cb 2026-01-07)\nbinary: rustc\ncommit-hash: fecb335cbad3d84ef3da39191ba094e6c726a5b4\ncommit-date: 2026-01-07\nhost: x86_64-unknown-linux-gnu\nrelease: 1.94.0-nightly\nLLVM version: 21.1.8"
+  },
+  "schema_version": 1
+}

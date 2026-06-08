@@ -1,0 +1,68 @@
+# Bypass attempts: obfuscated destructive commands that MUST be blocked
+#
+# These are attempts to evade detection through various tricks.
+
+[[case]]
+description = "git reset with full path"
+command = "/usr/bin/git reset --hard"
+expected = "deny"
+rule_id = "core.git:reset-hard"
+
+[[case]]
+description = "git with env prefix"
+command = "env git reset --hard"
+expected = "deny"
+rule_id = "core.git:reset-hard"
+
+[[case]]
+description = "rm -rf with extra spaces"
+command = "rm   -rf   /"
+expected = "deny"
+
+[[case]]
+description = "rm with flags in different order"
+command = "rm -f -r /"
+expected = "deny"
+
+[[case]]
+description = "rm with combined flags different order"
+command = "rm -fr /"
+expected = "deny"
+
+[[case]]
+description = "git push force with equals"
+command = "git push --force=true origin main"
+expected = "deny"
+
+[[case]]
+description = "command with leading whitespace"
+command = "  git reset --hard"
+expected = "deny"
+
+[[case]]
+description = "command with trailing whitespace"
+command = "git reset --hard  "
+expected = "deny"
+
+[[case]]
+description = "sudo git reset"
+command = "sudo git reset --hard"
+expected = "deny"
+
+[[case]]
+description = "sudo rm -rf"
+command = "sudo rm -rf /"
+expected = "deny"
+
+# NOTE: git clean -d -f (flags separated) is not currently detected.
+# The pattern expects -fd or -df combined. This is a gap.
+# Tracked in: tests/corpus/README.md (future enhancement)
+# [[case]]
+# description = "git clean variations"
+# command = "git clean -d -f"
+# expected = "deny"
+
+[[case]]
+description = "backslash escaped git"
+command = "\\git reset --hard"
+expected = "deny"

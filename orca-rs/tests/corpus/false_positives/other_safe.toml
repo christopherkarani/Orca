@@ -1,0 +1,83 @@
+# False positives: non-git safe commands that MUST be allowed
+#
+# These commands should pass through without blocking.
+
+[[case]]
+description = "ls is safe"
+command = "ls -la"
+expected = "allow"
+
+[[case]]
+description = "cat is safe"
+command = "cat file.txt"
+expected = "allow"
+
+[[case]]
+description = "echo is safe"
+command = "echo hello"
+expected = "allow"
+
+[[case]]
+description = "pwd is safe"
+command = "pwd"
+expected = "allow"
+
+[[case]]
+description = "mkdir is safe"
+command = "mkdir -p new_dir"
+expected = "allow"
+
+[[case]]
+description = "cp is safe"
+command = "cp file.txt backup.txt"
+expected = "allow"
+
+[[case]]
+description = "mv is safe"
+command = "mv old.txt new.txt"
+expected = "allow"
+
+[[case]]
+description = "touch is safe"
+command = "touch newfile.txt"
+expected = "allow"
+
+[[case]]
+description = "grep is safe"
+command = "grep -r 'pattern' ."
+expected = "allow"
+
+[[case]]
+description = "find is safe"
+command = "find . -name '*.rs'"
+expected = "allow"
+
+[[case]]
+description = "cargo build is safe"
+command = "cargo build --release"
+expected = "allow"
+
+[[case]]
+description = "cargo test is safe"
+command = "cargo test"
+expected = "allow"
+
+[[case]]
+description = "cargo run is safe"
+command = "cargo run"
+expected = "allow"
+
+[[case]]
+description = "npm install is safe"
+command = "npm install"
+expected = "allow"
+
+[[case]]
+description = "python script is safe"
+command = "python script.py"
+expected = "allow"
+
+[[case]]
+description = "make is safe"
+command = "make all"
+expected = "allow"
