@@ -1,6 +1,25 @@
 use std::path::{Path, PathBuf};
 use std::process;
 
+/// Check whether a process with the given PID is currently alive.
+///
+/// Uses `kill -0` which returns success iff the process exists and the
+/// caller has permission to signal it.  If the check itself fails we
+/// conservatively assume the process is alive so that a live daemon's
+/// socket is never stolen.
+fn is_process_alive(pid: u32) -> bool {
+    match std::process::Command::new("kill")
+        .arg("-0")
+        .arg(pid.to_string())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+    {
+        Ok(status) => status.success(),
+        Err(_) => true, // fail-closed: assume alive if we can't check
+    }
+}
+
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::{UnixListener, UnixStream};
 use tokio::sync::watch;
@@ -29,15 +48,32 @@ pub async fn run_daemon(
     }
 
     // Attempt to bind the socket. If a stale file exists from a previous
-    // unclean exit, bind may fail with AddrInUse; in that case we remove
-    // the stale file and retry once. We never steal a socket from a live
-    // daemon — if bind fails for any other reason we propagate the error.
+    // unclean exit, bind may fail with AddrInUse.  Before removing the
+    // file we read the PID file and verify the previous process is dead
+    // so that we never steal a socket from a live daemon.
     let listener = match UnixListener::bind(socket_path) {
         Ok(l) => l,
         Err(e) if e.kind() == std::io::ErrorKind::AddrInUse => {
-            tracing::warn!(path = %socket_path.display(), "removing stale socket and retrying bind");
-            tokio::fs::remove_file(socket_path).await?;
-            UnixListener::bind(socket_path)?
+            let is_stale = match tokio::fs::read_to_string(pid_path).await {
+                Ok(content) => match content.trim().parse::<u32>() {
+                    Ok(pid) => !is_process_alive(pid),
+                    Err(_) => true, // invalid PID → treat as stale
+                },
+                Err(_) => true, // missing/unreadable PID file → best effort
+            };
+
+            if is_stale {
+                tracing::warn!(path = %socket_path.display(), "removing stale socket and retrying bind");
+                tokio::fs::remove_file(socket_path).await?;
+                UnixListener::bind(socket_path)?
+            } else {
+                return Err(format!(
+                    "socket {} is in use by a live daemon (pid file: {})",
+                    socket_path.display(),
+                    pid_path.display()
+                )
+                .into());
+            }
         }
         Err(e) => return Err(Box::new(e)),
     };
