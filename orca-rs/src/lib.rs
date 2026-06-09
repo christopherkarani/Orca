@@ -67,6 +67,8 @@ pub mod branding;
 pub mod cli;
 pub mod confidence;
 pub mod config;
+pub mod daemon;
+pub mod daemon_protocol;
 pub mod context;
 pub mod error_codes;
 pub mod evaluator;

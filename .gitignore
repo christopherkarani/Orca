@@ -69,7 +69,7 @@ orca_plugin_launch_plan_v3.zip
 
 # --- Local planning scratch ---
 planning/
-plans/
+/plans/
 .plan/
 .local-plans/
 scratch/

@@ -439,10 +439,14 @@ async fn run_orca() -> Result<i32, Box<dyn std::error::Error + Send + Sync>> {
     }
 
     // Daemon mode: keep process alive and exit cleanly on shutdown signal.
-    // Full daemon implementation (UDS server, NDJSON IPC) is Phase 0.5.
+    // UDS server and NDJSON IPC are implemented in Phase 0.5.
     if cli.daemon_mode {
         let shutdown_rx = install_signal_shutdown_handler();
-        run_daemon_mode(shutdown_rx).await?;
+        let home_dir = dirs::home_dir().ok_or("unable to determine home directory")?;
+        let runtime_dir = home_dir.join(".orca");
+        let socket_path = runtime_dir.join("daemon.sock");
+        let pid_path = runtime_dir.join("daemon.pid");
+        orca_rs::daemon::run_daemon(&socket_path, &pid_path, shutdown_rx).await?;
         return Ok(0);
     }
 
@@ -903,51 +907,6 @@ async fn run_orca() -> Result<i32, Box<dyn std::error::Error + Send + Sync>> {
     }
 
     Ok(0)
-}
-
-/// Daemon-mode entry point: keeps the process alive, logs startup,
-/// and exits cleanly when the shutdown channel fires (SIGINT) or when
-/// SIGTERM is received (Unix only).
-///
-/// Never calls `process::exit` — returns `Ok(())` so the caller
-/// (async `main`) can shut down the tokio runtime gracefully.
-async fn run_daemon_mode(
-    mut shutdown_rx: tokio::sync::watch::Receiver<bool>,
-) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    DAEMON_MODE_ACTIVE.store(true, Ordering::SeqCst);
-    tracing::info!("orca-daemon started in daemon mode");
-
-    #[cfg(unix)]
-    let mut sigterm = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
-        .expect("failed to install SIGTERM handler");
-
-    loop {
-        #[cfg(unix)]
-        {
-            tokio::select! {
-                () = tokio::time::sleep(Duration::from_secs(1)) => {
-                    if *shutdown_rx.borrow_and_update() {
-                        break;
-                    }
-                }
-                _ = sigterm.recv() => {
-                    eprintln!("[orca] Flushing on SIGTERM...");
-                    run_shutdown_actions();
-                    break;
-                }
-            }
-        }
-        #[cfg(not(unix))]
-        {
-            tokio::time::sleep(Duration::from_secs(1)).await;
-            if *shutdown_rx.borrow_and_update() {
-                break;
-            }
-        }
-    }
-
-    tracing::info!("orca-daemon shutting down gracefully");
-    Ok(())
 }
 
 #[tokio::main]
@@ -1950,12 +1909,24 @@ mod tests {
 
         #[tokio::test]
         async fn run_daemon_mode_exits_cleanly_on_shutdown_signal() {
+            let temp_dir = tempfile::tempdir().unwrap();
+            let socket_path = temp_dir.path().join("daemon.sock");
+            let pid_path = temp_dir.path().join("daemon.pid");
             let (tx, rx) = tokio::sync::watch::channel(false);
 
-            let daemon_task = tokio::spawn(async move { run_daemon_mode(rx).await });
+            let socket = socket_path.clone();
+            let pid = pid_path.clone();
+            let daemon_task =
+                tokio::spawn(async move { orca_rs::daemon::run_daemon(&socket, &pid, rx).await });
 
-            // Give the daemon a moment to start
-            tokio::time::sleep(Duration::from_millis(100)).await;
+            // Wait for the socket to be bound.
+            let mut attempts = 0;
+            while !socket_path.exists() && attempts < 50 {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+                attempts += 1;
+            }
+            assert!(socket_path.exists(), "daemon should have bound the socket");
+            assert!(pid_path.exists(), "daemon should have written the pid file");
 
             // Signal shutdown
             let _ = tx.send(true);
@@ -1964,6 +1935,48 @@ mod tests {
             let result = tokio::time::timeout(Duration::from_secs(5), daemon_task).await;
             assert!(result.is_ok(), "daemon should complete within timeout");
             assert!(result.unwrap().is_ok(), "daemon should return Ok");
+
+            // Artifacts should be removed on clean shutdown.
+            assert!(!socket_path.exists(), "socket should be removed on shutdown");
+            assert!(!pid_path.exists(), "pid file should be removed on shutdown");
+        }
+
+        #[tokio::test]
+        async fn daemon_responds_to_ping() {
+            use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+            use tokio::net::UnixStream;
+
+            let temp_dir = tempfile::tempdir().unwrap();
+            let socket_path = temp_dir.path().join("daemon.sock");
+            let pid_path = temp_dir.path().join("daemon.pid");
+            let (tx, rx) = tokio::sync::watch::channel(false);
+
+            let socket = socket_path.clone();
+            let pid = pid_path.clone();
+            let daemon_task =
+                tokio::spawn(async move { orca_rs::daemon::run_daemon(&socket, &pid, rx).await });
+
+            // Wait for the socket to be bound.
+            let mut attempts = 0;
+            while !socket_path.exists() && attempts < 50 {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+                attempts += 1;
+            }
+
+            let mut stream = UnixStream::connect(&socket_path).await.unwrap();
+            stream.write_all(b"{\"id\":1,\"method\":\"Ping\"}\n").await.unwrap();
+
+            let mut buf = String::new();
+            let (read_half, _write_half) = stream.into_split();
+            let mut reader = BufReader::new(read_half);
+            reader.read_line(&mut buf).await.unwrap();
+
+            let response: serde_json::Value = serde_json::from_str(&buf).unwrap();
+            assert_eq!(response["id"], 1);
+            assert_eq!(response["result"]["status"], "Pong");
+
+            let _ = tx.send(true);
+            let _ = tokio::time::timeout(Duration::from_secs(5), daemon_task).await;
         }
 
         #[test]

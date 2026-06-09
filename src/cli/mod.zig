@@ -46,6 +46,8 @@ test {
     _ = onboarding;
     _ = quickstart;
     _ = @import("spinner.zig");
+    // Pull daemon UDS/IPC tests into the test binary.
+    _ = daemon;
 }
 
 pub const version = build_options.version;
