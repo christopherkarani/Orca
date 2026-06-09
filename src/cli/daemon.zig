@@ -162,8 +162,10 @@ pub fn sendRequest(
     const newline = "\n";
     const nl_n = std.c.write(fd, newline.ptr, newline.len);
     if (nl_n < 0) return error.SocketWriteFailed;
+    if (nl_n == 0) return error.SocketWriteFailed;
 
     // Read one line.
+    // TODO(perf): switch to a buffered read instead of byte-by-byte.
     var read_buf: std.ArrayList(u8) = .empty;
     defer read_buf.deinit(allocator);
 

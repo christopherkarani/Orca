@@ -48,3 +48,24 @@ pub enum ResultPayload {
     Deny { reason: String },
     Error { message: String },
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn deserializes_ping_with_null_params() {
+        let envelope: ClientEnvelope =
+            serde_json::from_str(r#"{"id":1,"method":"Ping","params":null}"#).unwrap();
+        assert_eq!(envelope.id, 1);
+        assert!(matches!(envelope.body, DaemonRequest::Ping));
+    }
+
+    #[test]
+    fn deserializes_shutdown_with_null_params() {
+        let envelope: ClientEnvelope =
+            serde_json::from_str(r#"{"id":2,"method":"Shutdown","params":null}"#).unwrap();
+        assert_eq!(envelope.id, 2);
+        assert!(matches!(envelope.body, DaemonRequest::Shutdown));
+    }
+}

@@ -441,6 +441,7 @@ async fn run_orca() -> Result<i32, Box<dyn std::error::Error + Send + Sync>> {
     // Daemon mode: keep process alive and exit cleanly on shutdown signal.
     // UDS server and NDJSON IPC are implemented in Phase 0.5.
     if cli.daemon_mode {
+        DAEMON_MODE_ACTIVE.store(true, Ordering::SeqCst);
         let shutdown_rx = install_signal_shutdown_handler();
         let home_dir = dirs::home_dir().ok_or("unable to determine home directory")?;
         let runtime_dir = home_dir.join(".orca");
@@ -1976,7 +1977,135 @@ mod tests {
             assert_eq!(response["result"]["status"], "Pong");
 
             let _ = tx.send(true);
-            let _ = tokio::time::timeout(Duration::from_secs(5), daemon_task).await;
+            let result = tokio::time::timeout(Duration::from_secs(5), daemon_task).await;
+            assert!(result.is_ok(), "daemon should complete within timeout");
+            assert!(result.unwrap().is_ok(), "daemon should return Ok");
+        }
+
+        #[tokio::test]
+        async fn daemon_responds_to_evaluate_allow() {
+            use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+            use tokio::net::UnixStream;
+
+            let temp_dir = tempfile::tempdir().unwrap();
+            let socket_path = temp_dir.path().join("daemon.sock");
+            let pid_path = temp_dir.path().join("daemon.pid");
+            let (tx, rx) = tokio::sync::watch::channel(false);
+
+            let socket = socket_path.clone();
+            let pid = pid_path.clone();
+            let daemon_task =
+                tokio::spawn(async move { orca_rs::daemon::run_daemon(&socket, &pid, rx).await });
+
+            let mut attempts = 0;
+            while !socket_path.exists() && attempts < 50 {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+                attempts += 1;
+            }
+
+            let mut stream = UnixStream::connect(&socket_path).await.unwrap();
+            stream
+                .write_all(b"{\"id\":2,\"method\":\"Evaluate\",\"params\":{\"command\":\"ls -la\",\"cwd\":null}}\n")
+                .await
+                .unwrap();
+
+            let mut buf = String::new();
+            let (read_half, _write_half) = stream.into_split();
+            let mut reader = BufReader::new(read_half);
+            reader.read_line(&mut buf).await.unwrap();
+
+            let response: serde_json::Value = serde_json::from_str(&buf).unwrap();
+            assert_eq!(response["id"], 2);
+            assert_eq!(response["result"]["status"], "Allow");
+
+            let _ = tx.send(true);
+            let result = tokio::time::timeout(Duration::from_secs(5), daemon_task).await;
+            assert!(result.is_ok(), "daemon should complete within timeout");
+            assert!(result.unwrap().is_ok(), "daemon should return Ok");
+        }
+
+        #[tokio::test]
+        async fn daemon_responds_to_evaluate_deny() {
+            use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+            use tokio::net::UnixStream;
+
+            let temp_dir = tempfile::tempdir().unwrap();
+            let socket_path = temp_dir.path().join("daemon.sock");
+            let pid_path = temp_dir.path().join("daemon.pid");
+            let (tx, rx) = tokio::sync::watch::channel(false);
+
+            let socket = socket_path.clone();
+            let pid = pid_path.clone();
+            let daemon_task =
+                tokio::spawn(async move { orca_rs::daemon::run_daemon(&socket, &pid, rx).await });
+
+            let mut attempts = 0;
+            while !socket_path.exists() && attempts < 50 {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+                attempts += 1;
+            }
+
+            let mut stream = UnixStream::connect(&socket_path).await.unwrap();
+            stream
+                .write_all(b"{\"id\":3,\"method\":\"Evaluate\",\"params\":{\"command\":\"rm -rf /\",\"cwd\":null}}\n")
+                .await
+                .unwrap();
+
+            let mut buf = String::new();
+            let (read_half, _write_half) = stream.into_split();
+            let mut reader = BufReader::new(read_half);
+            reader.read_line(&mut buf).await.unwrap();
+
+            let response: serde_json::Value = serde_json::from_str(&buf).unwrap();
+            assert_eq!(response["id"], 3);
+            assert_eq!(response["result"]["status"], "Deny");
+
+            let _ = tx.send(true);
+            let result = tokio::time::timeout(Duration::from_secs(5), daemon_task).await;
+            assert!(result.is_ok(), "daemon should complete within timeout");
+            assert!(result.unwrap().is_ok(), "daemon should return Ok");
+        }
+
+        #[tokio::test]
+        async fn daemon_responds_to_shutdown_request() {
+            use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+            use tokio::net::UnixStream;
+
+            let temp_dir = tempfile::tempdir().unwrap();
+            let socket_path = temp_dir.path().join("daemon.sock");
+            let pid_path = temp_dir.path().join("daemon.pid");
+            let (tx, rx) = tokio::sync::watch::channel(false);
+
+            let socket = socket_path.clone();
+            let pid = pid_path.clone();
+            let daemon_task =
+                tokio::spawn(async move { orca_rs::daemon::run_daemon(&socket, &pid, rx).await });
+
+            let mut attempts = 0;
+            while !socket_path.exists() && attempts < 50 {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+                attempts += 1;
+            }
+
+            let mut stream = UnixStream::connect(&socket_path).await.unwrap();
+            stream
+                .write_all(b"{\"id\":4,\"method\":\"Shutdown\",\"params\":null}\n")
+                .await
+                .unwrap();
+
+            let mut buf = String::new();
+            let (read_half, _write_half) = stream.into_split();
+            let mut reader = BufReader::new(read_half);
+            reader.read_line(&mut buf).await.unwrap();
+
+            let response: serde_json::Value = serde_json::from_str(&buf).unwrap();
+            assert_eq!(response["id"], 4);
+            assert_eq!(response["result"]["status"], "Pong");
+
+            let _ = tx.send(true);
+            let result = tokio::time::timeout(Duration::from_secs(5), daemon_task).await;
+            assert!(result.is_ok(), "daemon should complete within timeout");
+            assert!(result.unwrap().is_ok(), "daemon should return Ok");
         }
 
         #[test]

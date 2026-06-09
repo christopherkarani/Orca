@@ -76,7 +76,7 @@ No parameters. Signals the daemon to initiate graceful shutdown.
 
 ## Error Handling Rules
 
-1. **Parse errors:** If a request line cannot be parsed as valid JSON or is missing required fields, the daemon responds with a JSON `Error` payload and keeps the connection open for the next line.
+1. **Parse errors:** If a request line cannot be parsed as valid JSON or is missing required fields, the daemon responds with a JSON `Error` payload with `id: 0` (the correlation id is unavailable until parsing succeeds) and keeps the connection open for the next line.
 2. **Unknown methods:** Treated as an `Error` response with a descriptive `message`.
 3. **Connection errors:** If the client disconnects mid-request, the daemon drops the connection and continues accepting new ones.
 4. **Daemon unavailable:** If the socket does not exist or the daemon is not listening, the Zig client must treat this as a hard failure (fail-closed). No fallback to Zig-native evaluation is permitted.
@@ -85,9 +85,10 @@ No parameters. Signals the daemon to initiate graceful shutdown.
 
 When the daemon receives `Shutdown` (or `SIGTERM` / `SIGINT`):
 1. Stop accepting new connections.
-2. Wait for in-flight requests to complete (with a timeout).
-3. Remove `$HOME/.orca/daemon.sock` and `$HOME/.orca/daemon.pid`.
-4. Exit with code `0`.
+2. Remove `$HOME/.orca/daemon.sock` and `$HOME/.orca/daemon.pid`.
+3. Exit with code `0`.
+
+> **Phase 0.5 note:** In-flight requests are not drained with a timeout; the runtime shuts down immediately after closing the accept loop. Full graceful draining is planned for a later phase.
 
 ## Security Notes
 

@@ -28,12 +28,19 @@ pub async fn run_daemon(
         tokio::fs::create_dir_all(parent).await?;
     }
 
-    // Remove stale socket from a previous unclean exit.
-    if socket_path.exists() {
-        tokio::fs::remove_file(socket_path).await?;
-    }
-
-    let listener = UnixListener::bind(socket_path)?;
+    // Attempt to bind the socket. If a stale file exists from a previous
+    // unclean exit, bind may fail with AddrInUse; in that case we remove
+    // the stale file and retry once. We never steal a socket from a live
+    // daemon — if bind fails for any other reason we propagate the error.
+    let listener = match UnixListener::bind(socket_path) {
+        Ok(l) => l,
+        Err(e) if e.kind() == std::io::ErrorKind::AddrInUse => {
+            tracing::warn!(path = %socket_path.display(), "removing stale socket and retrying bind");
+            tokio::fs::remove_file(socket_path).await?;
+            UnixListener::bind(socket_path)?
+        }
+        Err(e) => return Err(Box::new(e)),
+    };
     tracing::info!(path = %socket_path.display(), "orca-daemon bound UDS socket");
 
     // Write PID file so the Zig client can check for a running daemon.
