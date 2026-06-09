@@ -1,5 +1,5 @@
 // Forbid unsafe code in production, but allow in tests for env var manipulation
-#![cfg_attr(not(test), forbid(unsafe_code))]
+#![cfg_attr(not(test), deny(unsafe_code))]
 //! Orca-rs library.
 //!
 //! This library provides the core functionality for blocking destructive commands

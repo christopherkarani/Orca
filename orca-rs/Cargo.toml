@@ -88,6 +88,7 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 sha2 = "0.11"
 hmac = "0.13" # HMAC for optional short-code hardening (ksk.1.10)
 fs2 = "0.4"
+libc = "0.2"
 fsqlite = { version = "0.1.4", features = [
   "fts5",
 ] } # FrankenSQLite (FTS5 delete-all fix shipped in 0.1.4, frankensqlite#94)
