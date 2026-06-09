@@ -1,13 +1,20 @@
 #!/usr/bin/env sh
 set -eu
 
-VERSION="${ORCA_VERSION:-$(tr -d '[:space:]' < "$(dirname "$0")/../VERSION" 2>/dev/null || printf '1.1.5')}"
+VERSION="${ORCA_VERSION:-$(tr -d '[:space:]' <"$(dirname "$0")/../VERSION" 2>/dev/null || printf '1.1.5')}"
 COMMIT="${ORCA_COMMIT:-$(git rev-parse --short HEAD 2>/dev/null || printf unknown)}"
 BUILD_DATE="${ORCA_BUILD_DATE:-$(date -u +%Y-%m-%dT%H:%M:%SZ)}"
 DIST_DIR="${ORCA_DIST_DIR:-dist}"
 ZIG_OPTIMIZE="${ORCA_ZIG_OPTIMIZE:-ReleaseSafe}"
 RELEASE_PRODUCT="${ORCA_RELEASE_PRODUCT:-all}"
 SIGNING_STATUS="not_configured"
+
+HOST_OS="$(uname -s | tr '[:upper:]' '[:lower:]')"
+HOST_ARCH="$(uname -m)"
+case "$HOST_ARCH" in
+x86_64) HOST_ARCH="amd64" ;;
+aarch64 | arm64) HOST_ARCH="arm64" ;;
+esac
 
 # Phase 41 artifact contract:
 # - orca-v1.1.0-darwin-amd64.tar.gz
@@ -26,9 +33,9 @@ windows amd64 x86_64-windows zip orca.exe
 "
 
 copy_cli_payload() {
-    root="$1"
-    mkdir -p "$root"
-    cp README.md LICENSE SECURITY.md CONTRIBUTING.md "$root/"
+  root="$1"
+  mkdir -p "$root"
+  cp README.md LICENSE SECURITY.md CONTRIBUTING.md "$root/"
   cp -R docs policies schemas fixtures examples packages packaging scripts integrations "$root/"
   if [ -d "orca-dashboard-ui/dist" ]; then
     mkdir -p "$root/orca-dashboard-ui"
@@ -42,7 +49,7 @@ copy_cli_payload() {
     -name .yarn -o \
     -name .turbo -o \
     -name .cache \
-  \) -prune -exec rm -rf {} +
+    \) -prune -exec rm -rf {} +
   rm -rf \
     "$root/docs/integrations/drone-safepoint.md" \
     "$root/docs/integrations/drone-safety.md" \
@@ -58,7 +65,7 @@ write_release_readme() {
   root="$1"
   title="Orca/Core ${VERSION} Release Artifact"
   boundary="This archive contains the Orca CLI plus Core policy, audit, replay, redaction, schema, integration, and packaging resources needed by Orca. Edge runtime, drone, SITL, and customer-pilot materials are intentionally excluded."
-  cat > "$root/README-release.md" <<EOF
+  cat >"$root/README-release.md" <<EOF
 # ${title}
 
 This artifact is built from commit ${COMMIT} at ${BUILD_DATE}.
@@ -71,6 +78,11 @@ sha256sum -c checksums.txt
 
 ${boundary}
 EOF
+}
+
+build_rust_daemon() {
+  (cd orca-rs && cargo build --release)
+  printf 'Built Rust daemon (orca-daemon)\n'
 }
 
 build_cli_target() {
@@ -114,6 +126,13 @@ build_cli_target() {
   if [ "$os" = "windows" ] && [ -f "$prefix/bin/orca.exe" ]; then
     cp "$prefix/bin/orca.exe" "$root/bin/orca.exe"
   fi
+  if [ "$os" != "windows" ] && [ "$os" = "$HOST_OS" ] && [ "$arch" = "$HOST_ARCH" ]; then
+    if [ -f "orca-rs/target/release/orca-daemon" ]; then
+      cp "orca-rs/target/release/orca-daemon" "$root/bin/orca-daemon"
+    else
+      printf 'warning: orca-daemon binary not found; skipping daemon copy for %s-%s\n' "$os" "$arch" >&2
+    fi
+  fi
   find "$root" -name .DS_Store -delete
 
   if [ "$ext" = "zip" ]; then
@@ -136,7 +155,10 @@ write_release_manifest() {
     [ -f "$file" ] || continue
     name="$(basename "$file")"
     hash="$(awk -v name="$name" '$2 == name {print $1}' "${DIST_DIR}/checksums.txt")"
-    [ -n "$hash" ] || { printf 'missing checksum for %s\n' "$name" >&2; exit 1; }
+    [ -n "$hash" ] || {
+      printf 'missing checksum for %s\n' "$name" >&2
+      exit 1
+    }
     if [ "$first" = "1" ]; then
       first=0
     else
@@ -153,7 +175,7 @@ write_release_manifest() {
   docs_json="[\"README.md\", \"docs/install.md\", \"README-release.md\"]"
   safety_summary="Orca is a local CLI/runtime firewall; Edge artifacts are not included in CLI-only releases."
 
-  cat > "$output" <<EOF
+  cat >"$output" <<EOF
 {
   "release_version": "${VERSION}",
   "commit": "${COMMIT}",
@@ -185,8 +207,13 @@ while [ -d "$DIST_DIR" ] && [ "$cleanup_attempts" -lt 5 ]; do
   cleanup_attempts=$((cleanup_attempts + 1))
   [ ! -d "$DIST_DIR" ] || sleep 1
 done
-[ ! -d "$DIST_DIR" ] || { printf 'could not clean release directory: %s\n' "$DIST_DIR" >&2; exit 1; }
+[ ! -d "$DIST_DIR" ] || {
+  printf 'could not clean release directory: %s\n' "$DIST_DIR" >&2
+  exit 1
+}
 mkdir -p "$DIST_DIR"
+
+build_rust_daemon
 
 printf '%s\n' "$CLI_TARGETS" | while read -r os arch zig_target ext bin_name; do
   [ -n "${os:-}" ] || continue
