@@ -126,11 +126,11 @@ build_cli_target() {
   if [ "$os" = "windows" ] && [ -f "$prefix/bin/orca.exe" ]; then
     cp "$prefix/bin/orca.exe" "$root/bin/orca.exe"
   fi
-  if [ "$os" != "windows" ] && [ "$os" = "$HOST_OS" ] && [ "$arch" = "$HOST_ARCH" ]; then
+  if [ "$os" != "windows" ] && [ ! -f "$root/bin/orca-daemon" ]; then
     if [ -f "orca-rs/target/release/orca-daemon" ]; then
-      cp "orca-rs/target/release/orca-daemon" "$root/bin/orca-daemon"
+      cp -p "orca-rs/target/release/orca-daemon" "$root/bin/orca-daemon"
     else
-      printf 'warning: orca-daemon binary not found; skipping daemon copy for %s-%s\n' "$os" "$arch" >&2
+      printf 'warning: orca-daemon binary not found; skipping daemon inclusion\n' >&2
     fi
   fi
   find "$root" -name .DS_Store -delete
