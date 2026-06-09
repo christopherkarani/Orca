@@ -73,6 +73,13 @@ ${boundary}
 EOF
 }
 
+build_rust_daemon() {
+  cd orca-rs
+  cargo build --release
+  cd ..
+  printf 'Built Rust daemon (orca-daemon)\n'
+}
+
 build_cli_target() {
   os="$1"
   arch="$2"
@@ -113,6 +120,13 @@ build_cli_target() {
   fi
   if [ "$os" = "windows" ] && [ -f "$prefix/bin/orca.exe" ]; then
     cp "$prefix/bin/orca.exe" "$root/bin/orca.exe"
+  fi
+  if [ "$os" != "windows" ]; then
+    if [ -f "orca-rs/target/release/orca-daemon" ]; then
+      cp "orca-rs/target/release/orca-daemon" "$root/bin/orca-daemon"
+    else
+      printf 'warning: orca-daemon binary not found; skipping daemon copy for %s-%s\n' "$os" "$arch" >&2
+    fi
   fi
   find "$root" -name .DS_Store -delete
 
@@ -187,6 +201,8 @@ while [ -d "$DIST_DIR" ] && [ "$cleanup_attempts" -lt 5 ]; do
 done
 [ ! -d "$DIST_DIR" ] || { printf 'could not clean release directory: %s\n' "$DIST_DIR" >&2; exit 1; }
 mkdir -p "$DIST_DIR"
+
+build_rust_daemon
 
 printf '%s\n' "$CLI_TARGETS" | while read -r os arch zig_target ext bin_name; do
   [ -n "${os:-}" ] || continue
