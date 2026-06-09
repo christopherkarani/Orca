@@ -1,22 +1,33 @@
+#![cfg_attr(not(test), allow(unsafe_code))]
+
 use std::path::{Path, PathBuf};
 use std::process;
 
 /// Check whether a process with the given PID is currently alive.
 ///
-/// Uses `kill -0` which returns success iff the process exists and the
-/// caller has permission to signal it.  If the check itself fails we
-/// conservatively assume the process is alive so that a live daemon's
-/// socket is never stolen.
+/// Uses `libc::kill(pid, 0)` which returns success iff the process exists
+/// and the caller has permission to signal it.  EPERM means the process
+/// is alive (we just lack permission to signal it); ESRCH means it is
+/// dead.  EINVAL means the PID was invalid.  Any other error is treated
+/// conservatively as alive (fail-closed) so that a live daemon's socket
+/// is never stolen.
 fn is_process_alive(pid: u32) -> bool {
-    match std::process::Command::new("kill")
-        .arg("-0")
-        .arg(pid.to_string())
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .status()
-    {
-        Ok(status) => status.success(),
-        Err(_) => true, // fail-closed: assume alive if we can't check
+    if pid == 0 {
+        return false;
+    }
+    let pid_t: libc::pid_t = match i32::try_from(pid) {
+        Ok(p) => p,
+        Err(_) => return false,
+    };
+    let result = unsafe { libc::kill(pid_t, 0) };
+    if result == 0 {
+        return true;
+    }
+    match std::io::Error::last_os_error().raw_os_error().unwrap_or(0) {
+        libc::ESRCH => false,
+        libc::EPERM => true,
+        libc::EINVAL => false,
+        _ => true,
     }
 }
 
@@ -47,40 +58,77 @@ pub async fn run_daemon(
         tokio::fs::create_dir_all(parent).await?;
     }
 
-    // Attempt to bind the socket. If a stale file exists from a previous
-    // unclean exit, bind may fail with AddrInUse.  Before removing the
-    // file we read the PID file and verify the previous process is dead
-    // so that we never steal a socket from a live daemon.
+    // If a socket file already exists, decide whether it is stale before
+    // we write our own PID file.  This preserves the live daemon's PID
+    // file when we fail with "socket in use".
+    if socket_path.exists() {
+        let is_stale = match tokio::fs::read_to_string(pid_path).await {
+            Ok(content) => match content.trim().parse::<u32>() {
+                Ok(pid) => !is_process_alive(pid),
+                Err(_) => true, // invalid PID → treat as stale
+            },
+            Err(_) => true, // missing/unreadable PID file → best effort
+        };
+
+        if is_stale {
+            tracing::warn!(
+                path = %socket_path.display(),
+                "removing stale socket from previous daemon"
+            );
+            if let Err(e) = tokio::fs::remove_file(socket_path).await {
+                // Ignore "not found" — it may have raced away.
+                if e.kind() != std::io::ErrorKind::NotFound {
+                    return Err(Box::new(e));
+                }
+            }
+        } else {
+            return Err(format!(
+                "socket {} is in use by a live daemon (pid file: {})",
+                socket_path.display(),
+                pid_path.display()
+            )
+            .into());
+        }
+    }
+
+    // Write PID file early so external observers know a daemon is
+    // starting, then bind the socket.  If binding fails we must remove
+    // the PID file so we don't leave a stale claim behind.
+    tokio::fs::write(pid_path, process::id().to_string()).await?;
+
     let listener = match UnixListener::bind(socket_path) {
         Ok(l) => l,
         Err(e) if e.kind() == std::io::ErrorKind::AddrInUse => {
-            let is_stale = match tokio::fs::read_to_string(pid_path).await {
-                Ok(content) => match content.trim().parse::<u32>() {
-                    Ok(pid) => !is_process_alive(pid),
-                    Err(_) => true, // invalid PID → treat as stale
-                },
-                Err(_) => true, // missing/unreadable PID file → best effort
-            };
-
-            if is_stale {
-                tracing::warn!(path = %socket_path.display(), "removing stale socket and retrying bind");
-                tokio::fs::remove_file(socket_path).await?;
-                UnixListener::bind(socket_path)?
-            } else {
-                return Err(format!(
-                    "socket {} is in use by a live daemon (pid file: {})",
-                    socket_path.display(),
-                    pid_path.display()
-                )
-                .into());
+            // Someone else bound between our existence check and bind.
+            tracing::warn!(
+                path = %socket_path.display(),
+                "socket contention detected; cleaning up PID file"
+            );
+            if let Err(cleanup_err) = tokio::fs::remove_file(pid_path).await {
+                tracing::warn!(
+                    path = %pid_path.display(),
+                    error = %cleanup_err,
+                    "failed to remove PID file after bind collision"
+                );
             }
+            return Err(format!(
+                "socket {} is already bound by another daemon",
+                socket_path.display()
+            )
+            .into());
         }
-        Err(e) => return Err(Box::new(e)),
+        Err(e) => {
+            if let Err(cleanup_err) = tokio::fs::remove_file(pid_path).await {
+                tracing::warn!(
+                    path = %pid_path.display(),
+                    error = %cleanup_err,
+                    "failed to remove PID file after failed bind"
+                );
+            }
+            return Err(Box::new(e));
+        }
     };
     tracing::info!(path = %socket_path.display(), "orca-daemon bound UDS socket");
-
-    // Write PID file so the Zig client can check for a running daemon.
-    tokio::fs::write(pid_path, process::id().to_string()).await?;
 
     let socket_path_buf: PathBuf = socket_path.to_path_buf();
     let pid_path_buf: PathBuf = pid_path.to_path_buf();
@@ -232,7 +280,6 @@ async fn write_response(
     write_half.write_all(&json).await?;
     write_half.flush().await
 }
-
 
 fn regex_check(command: &str) -> bool {
     // Simple literal substring check for the Phase 0.5 smoke test.
