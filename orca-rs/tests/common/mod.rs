@@ -1,3 +1,4 @@
+#![allow(dead_code)]
 //! Common test utilities for ORCA history E2E tests.
 //!
 //! This module provides shared infrastructure for testing history functionality:
@@ -48,9 +49,11 @@ pub fn spawn_daemon(home_dir: &Path) -> Child {
 pub fn wait_for_socket(socket_path: &Path, timeout: Duration) {
     let start = std::time::Instant::now();
     while !socket_path.exists() {
-        if start.elapsed() > timeout {
-            panic!("timed out waiting for socket at {}", socket_path.display());
-        }
+        assert!(
+            start.elapsed() <= timeout,
+            "timed out waiting for socket at {}",
+            socket_path.display()
+        );
         thread::sleep(Duration::from_millis(50));
     }
 }
@@ -63,12 +66,11 @@ pub fn wait_for_socket(socket_path: &Path, timeout: Duration) {
 pub fn wait_for_daemon_ready(socket_path: &Path, timeout: Duration) {
     let start = std::time::Instant::now();
     loop {
-        if start.elapsed() > timeout {
-            panic!(
-                "timed out waiting for daemon to accept connections at {}",
-                socket_path.display()
-            );
-        }
+        assert!(
+            start.elapsed() <= timeout,
+            "timed out waiting for daemon to accept connections at {}",
+            socket_path.display()
+        );
         if let Ok(mut stream) = std::os::unix::net::UnixStream::connect(socket_path) {
             stream.set_write_timeout(Some(Duration::from_secs(1))).ok();
             let req = r#"{"id":0,"method":"Ping"}"#;

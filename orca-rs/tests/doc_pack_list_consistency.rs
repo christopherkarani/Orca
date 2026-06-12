@@ -190,9 +190,9 @@ fn docs_total_pack_count_matches_registry() -> std::io::Result<()> {
 }
 
 #[test]
-fn readme_lists_all_registry_pack_ids() -> std::io::Result<()> {
+fn docs_packs_readme_lists_all_registry_pack_ids() -> std::io::Result<()> {
     let expected = registry_pack_ids();
-    let readme = read_repo_file("README.md")?;
+    let readme = read_repo_file("docs/packs/README.md")?;
 
     let missing: Vec<String> = expected
         .iter()
@@ -202,7 +202,7 @@ fn readme_lists_all_registry_pack_ids() -> std::io::Result<()> {
 
     assert!(
         missing.is_empty(),
-        "README.md is missing pack ids:\n{}",
+        "docs/packs/README.md is missing pack ids:\n{}",
         missing.join("\n")
     );
 
