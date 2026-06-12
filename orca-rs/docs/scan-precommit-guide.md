@@ -12,11 +12,14 @@ This guide covers how to integrate `orca scan` into your pre-commit workflow saf
 
 **orca scan** analyzes files for destructive commands in *executable contexts*:
 
-- GitHub Actions workflows (`.github/workflows/*.yml`)
-- Dockerfiles (`RUN` commands)
+- GitHub Actions (`.github/workflows/*.yml`)
+- Dockerfile (`RUN` commands)
 - Shell scripts (`*.sh`, `*.bash`)
-- Makefiles (recipe lines)
+- Makefile (`recipe lines`)
 - GitLab CI (`.gitlab-ci.yml`)
+- Azure Pipelines (`azure-pipelines.yml`)
+- CircleCI (`.circleci/config.yml`)
+- `package.json` (`scripts` entries)
 - Docker Compose (`command:` fields)
 - Terraform (`local-exec` provisioners)
 

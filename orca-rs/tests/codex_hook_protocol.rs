@@ -199,8 +199,9 @@ pub fn run_hook_raw(json_bytes: &[u8], extra_env: &[(&str, &str)]) -> HookOutcom
     let system_path = std::env::var("PATH").unwrap_or_default();
 
     eprintln!(
-        "[TEST DEBUG] xdg_config_path={xdg_config_path:?} home={:?}",
-        home.path()
+        "[TEST DEBUG] xdg_config_path={} home={}",
+        xdg_config_path.display(),
+        home.path().display()
     );
     let mut cmd = Command::new(orca_binary());
     cmd.env_clear()

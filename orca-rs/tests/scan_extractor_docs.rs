@@ -7,7 +7,7 @@ fn read_repo_file(path: &str) -> std::io::Result<String> {
 
 fn expected_detector_docs() -> BTreeMap<&'static str, &'static str> {
     BTreeMap::from([
-        ("is_shell", "Shell Scripts"),
+        ("is_shell", "Shell scripts"),
         ("is_docker", "Dockerfile"),
         ("is_actions", "GitHub Actions"),
         ("is_gitlab", "GitLab CI"),
@@ -40,38 +40,39 @@ fn scan_loop_detectors(scan_rs: &str) -> BTreeSet<String> {
         .collect()
 }
 
-fn readme_supported_file_types(readme: &str) -> BTreeSet<String> {
-    let start = readme
-        .find("### Supported File Formats")
-        .expect("README.md must document supported scan file formats");
-    let section = &readme[start..];
-    let table_start = section
-        .find("| File Type | Detection | Executable Contexts |")
-        .expect("README.md must include the supported scan format table");
+fn scan_guide_supported_file_types(guide: &str) -> BTreeSet<String> {
+    let start = guide
+        .find("**orca scan** analyzes files")
+        .expect("scan guide must document supported scan file formats");
+    let section = &guide[start..];
+    let end = section
+        .find("The key difference")
+        .expect("scan guide must end supported scan file format list");
 
-    section[table_start..]
+    section[..end]
         .lines()
-        .skip(2)
-        .take_while(|line| line.trim_start().starts_with('|'))
         .filter_map(|line| {
-            let first_cell = line.split('|').nth(1)?.trim();
-            first_cell
-                .strip_prefix("**")
-                .and_then(|cell| cell.strip_suffix("**"))
-                .map(ToString::to_string)
+            let item = line.trim_start().strip_prefix("- ")?;
+            Some(
+                item.split(" (`")
+                    .next()
+                    .unwrap_or(item)
+                    .trim_matches('`')
+                    .to_string(),
+            )
         })
         .collect()
 }
 
 #[test]
-fn readme_scan_format_table_matches_wired_extractors() -> std::io::Result<()> {
+fn scan_guide_format_list_matches_wired_extractors() -> std::io::Result<()> {
     let scan_rs = read_repo_file("src/scan.rs")?;
-    let readme = read_repo_file("README.md")?;
+    let guide = read_repo_file("docs/scan-precommit-guide.md")?;
 
     let expected = expected_detector_docs();
     let wired_detectors = scan_loop_detectors(&scan_rs);
     let expected_detectors: BTreeSet<String> = expected.keys().map(ToString::to_string).collect();
-    let documented_formats = readme_supported_file_types(&readme);
+    let documented_formats = scan_guide_supported_file_types(&guide);
     let expected_formats: BTreeSet<String> = expected.values().map(ToString::to_string).collect();
 
     assert_eq!(
@@ -80,13 +81,13 @@ fn readme_scan_format_table_matches_wired_extractors() -> std::io::Result<()> {
     );
     assert_eq!(
         documented_formats, expected_formats,
-        "README.md supported scan file formats must match wired extractors"
+        "docs/scan-precommit-guide.md supported scan file formats must match wired extractors"
     );
     assert!(
-        readme.contains("Azure Pipelines")
-            && readme.contains("CircleCI")
-            && readme.contains("package.json"),
-        "README.md should name the extractors that previously drifted out of the supported-format table"
+        guide.contains("Azure Pipelines")
+            && guide.contains("CircleCI")
+            && guide.contains("package.json"),
+        "scan guide should name the extractors that previously drifted out of the supported-format list"
     );
 
     Ok(())

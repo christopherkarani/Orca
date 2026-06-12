@@ -65,7 +65,7 @@ pub type PackId = String;
 /// - **High**: Block by default, but allowlistable by rule ID.
 /// - **Medium**: Warn by default (log + continue), blockable via config.
 /// - **Low**: Log only (for history/learning), warneable/blockable via config.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, serde::Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Severity {
     /// Always block. Irreversible operations with high confidence.

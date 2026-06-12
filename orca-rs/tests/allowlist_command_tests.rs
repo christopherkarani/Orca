@@ -26,7 +26,7 @@ fn run_hook_with_allowlist(command: &str, allowlist_content: &str) -> String {
 
     let mut child = Command::new(orca_binary())
         .env("HOME", &home_dir)
-        .env("XDG_CONFIG_HOME", &home_dir.join(".config"))
+        .env("XDG_CONFIG_HOME", home_dir.join(".config"))
         // Ensure system allowlist doesn't interfere
         .env("ORCA_ALLOWLIST_SYSTEM_PATH", "/nonexistent")
         .stdin(std::process::Stdio::piped())

@@ -888,7 +888,8 @@ impl EvaluationResult {
 }
 
 /// Response level from the graduation system.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+#[serde(tag = "type")]
 pub enum GraduatedResponse {
     /// Command seen before but below block threshold.
     Warning { occurrence: u32 },

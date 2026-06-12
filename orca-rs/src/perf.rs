@@ -413,6 +413,7 @@ mod tests {
         assert!(!deadline.has_budget_for(&large_budget));
     }
 
+    #[allow(dead_code)]
     fn doc_duration(duration: Duration) -> String {
         let micros = duration.as_micros();
         if micros >= 1000 && micros.is_multiple_of(1000) {
@@ -422,6 +423,7 @@ mod tests {
         }
     }
 
+    #[allow(dead_code)]
     fn budget_row(tier: u8, path: &str, budget: Budget) -> String {
         format!(
             "| {tier} | {path} | < {} | > {} | > {} |",

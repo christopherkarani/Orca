@@ -39,14 +39,57 @@ pub struct DaemonResponse {
     pub result: ResultPayload,
 }
 
+/// Suggestion alternative for a destructive pattern.
+#[derive(Debug, Serialize, Deserialize)]
+pub struct SuggestionPayload {
+    pub command: String,
+    pub description: String,
+    pub platform: String,
+}
+
+/// Allowlist override information.
+#[derive(Debug, Serialize, Deserialize)]
+pub struct AllowlistOverridePayload {
+    pub layer: String,
+    pub reason: String,
+}
+
 /// Result payload for a daemon response.
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(tag = "status")]
 pub enum ResultPayload {
     Pong,
-    Allow { reason: String },
-    Deny { reason: String },
-    Error { message: String },
+    Allow {
+        reason: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        allowlist_override: Option<AllowlistOverridePayload>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        graduated_response: Option<serde_json::Value>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        session_occurrence: Option<u32>,
+    },
+    Deny {
+        reason: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        pack_id: Option<String>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        pattern_name: Option<String>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        severity: Option<crate::packs::Severity>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        matched_text_preview: Option<String>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        explanation: Option<String>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        suggestions: Option<Vec<SuggestionPayload>>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        graduated_response: Option<serde_json::Value>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        session_occurrence: Option<u32>,
+    },
+    Error {
+        message: String,
+    },
 }
 
 #[cfg(test)]
@@ -67,5 +110,61 @@ mod tests {
             serde_json::from_str(r#"{"id":2,"method":"Shutdown","params":null}"#).unwrap();
         assert_eq!(envelope.id, 2);
         assert!(matches!(envelope.body, DaemonRequest::Shutdown));
+    }
+
+    #[test]
+    fn allow_payload_omits_absent_optional_metadata() {
+        let response = DaemonResponse {
+            id: 7,
+            result: ResultPayload::Allow {
+                reason: "Command allowed by evaluator".to_string(),
+                allowlist_override: None,
+                graduated_response: None,
+                session_occurrence: None,
+            },
+        };
+
+        let value = serde_json::to_value(response).unwrap();
+        let result = value.get("result").unwrap();
+        assert_eq!(
+            result.get("status").and_then(serde_json::Value::as_str),
+            Some("Allow")
+        );
+        assert!(result.get("allowlist_override").is_none());
+        assert!(result.get("graduated_response").is_none());
+        assert!(result.get("session_occurrence").is_none());
+    }
+
+    #[test]
+    fn deny_payload_omits_absent_optional_metadata() {
+        let response = DaemonResponse {
+            id: 8,
+            result: ResultPayload::Deny {
+                reason: "Command denied by evaluator".to_string(),
+                pack_id: None,
+                pattern_name: None,
+                severity: None,
+                matched_text_preview: None,
+                explanation: None,
+                suggestions: None,
+                graduated_response: None,
+                session_occurrence: None,
+            },
+        };
+
+        let value = serde_json::to_value(response).unwrap();
+        let result = value.get("result").unwrap();
+        assert_eq!(
+            result.get("status").and_then(serde_json::Value::as_str),
+            Some("Deny")
+        );
+        assert!(result.get("pack_id").is_none());
+        assert!(result.get("pattern_name").is_none());
+        assert!(result.get("severity").is_none());
+        assert!(result.get("matched_text_preview").is_none());
+        assert!(result.get("explanation").is_none());
+        assert!(result.get("suggestions").is_none());
+        assert!(result.get("graduated_response").is_none());
+        assert!(result.get("session_occurrence").is_none());
     }
 }
