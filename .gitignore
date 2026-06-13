@@ -76,6 +76,8 @@ scratch/
 tmp/
 *.tmp
 *.bak
+EOF
+node
 
 # --- Private/customer-facing planning collateral ---
 tasks/
@@ -90,6 +92,8 @@ release-checklist.md
 docs/release.md
 docs/release-tagging.md
 docs/release/
+docs/SDK_FEATURES.md
+docs/plans/
 docs/orca_opencode_openclaw_plan/
 docs/orca_opencode_openclaw_plan.zip
 docs/integrations/p06-plugin-distribution-and-marketplace.md
@@ -106,6 +110,22 @@ CANONICAL_IMPLEMENTATION_DECISIONS.md
 PHASE_DEPENDENCY_MATRIX.md
 PRODUCTION_READINESS_GATES.md
 PLAN_REVIEW_NOTES.md
+HANDOFF_*.md
+PR*_REVIEW_TODO.md
+agent-plan-*.md
+agent-prompt-*.md
+build-packaging-comparison.md
+command-comparison.md
+cross-references.md
+handoff-*.md
+hook-protocol-comparison.md
+mcp-protocol-comparison.md
+pr-review-todo.md
+prompt-*.md
+prompts/
+rust-core-evaluator-deep.md
+zig-cli-exploration.md
+zig-extension-points-deep.md
 P00_*.md
 P01_*.md
 P02_*.md
@@ -132,6 +152,7 @@ SECURITY_INVARIANTS.md
 
 # --- Local agent runtime artifacts ---
 .Codex/
+.omo/
 .opencode/
 .pi/
 .orchestrator/
