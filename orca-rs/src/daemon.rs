@@ -492,8 +492,7 @@ mod tests {
 
         let socket = socket_path.clone();
         let pid = pid_path.clone();
-        let daemon_task =
-            tokio::spawn(async move { run_daemon(&socket, &pid, rx).await });
+        let daemon_task = tokio::spawn(async move { run_daemon(&socket, &pid, rx).await });
 
         wait_for_socket(&socket_path).await;
 
@@ -529,14 +528,13 @@ mod tests {
 
         let socket = socket_path.clone();
         let pid = pid_path.clone();
-        let daemon_task =
-            tokio::spawn(async move { run_daemon(&socket, &pid, rx).await });
+        let daemon_task = tokio::spawn(async move { run_daemon(&socket, &pid, rx).await });
 
         wait_for_socket(&socket_path).await;
 
         let mut stream = UnixStream::connect(&socket_path).await.unwrap();
         stream
-            .write_all(b"{\"id\":6,\"method\":\"ExecuteCli\",\"params\":{\"argv\":[\"scan\"]}}\n")
+            .write_all(b"{\"id\":6,\"method\":\"ExecuteCli\",\"params\":{\"argv\":[\"stats\"]}}\n")
             .await
             .unwrap();
 
@@ -548,7 +546,7 @@ mod tests {
             response["result"]["stderr"]
                 .as_str()
                 .unwrap()
-                .contains("unsupported daemon CLI command: scan")
+                .contains("unsupported daemon CLI command: stats")
         );
         assert_eq!(response["result"]["stdout"].as_str().unwrap(), "");
 
@@ -567,8 +565,7 @@ mod tests {
 
         let socket = socket_path.clone();
         let pid = pid_path.clone();
-        let daemon_task =
-            tokio::spawn(async move { run_daemon(&socket, &pid, rx).await });
+        let daemon_task = tokio::spawn(async move { run_daemon(&socket, &pid, rx).await });
 
         wait_for_socket(&socket_path).await;
 
@@ -585,7 +582,7 @@ mod tests {
 
         let mut stream = UnixStream::connect(&socket_path).await.unwrap();
         stream
-            .write_all(b"{\"id\":8,\"method\":\"ExecuteCli\",\"params\":{\"argv\":[\"scan\"]}}\n")
+            .write_all(b"{\"id\":8,\"method\":\"ExecuteCli\",\"params\":{\"argv\":[\"stats\"]}}\n")
             .await
             .unwrap();
         let error_response = read_daemon_response(stream).await;

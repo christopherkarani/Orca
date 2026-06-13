@@ -10,6 +10,7 @@
 
 const std = @import("std");
 const builtin = @import("builtin");
+const env_util = @import("../env_util.zig");
 
 /// Name of the Rust daemon binary.
 const daemon_binary_name = "orca-daemon";
@@ -393,8 +394,11 @@ pub fn cleanupStaleArtifacts(io: std.Io, paths: RuntimePaths) void {
 }
 
 /// Spawn `orca-daemon --daemon-mode` without waiting for readiness.
-pub fn startDaemon(_: std.mem.Allocator, daemon_binary: []const u8) DaemonError!void {
-    var threaded: std.Io.Threaded = .init_single_threaded;
+pub fn startDaemon(allocator: std.mem.Allocator, daemon_binary: []const u8) DaemonError!void {
+    var threaded = std.Io.Threaded.init(allocator, .{
+        .environ = env_util.processEnviron(),
+    });
+    defer threaded.deinit();
     const io = threaded.io();
 
     const argv = [_][]const u8{ daemon_binary, "--daemon-mode" };
@@ -493,11 +497,11 @@ fn pollTimeoutMs(timeout_ms: u64) i32 {
 }
 
 fn waitForPoll(fd: std.posix.fd_t, events: i16, timeout_ms: u64) DaemonError!void {
-    var fds = [_]std.posix.pollfd{ .{
+    var fds = [_]std.posix.pollfd{.{
         .fd = fd,
         .events = events,
         .revents = 0,
-    } };
+    }};
     const rc = std.posix.poll(fds[0..], pollTimeoutMs(timeout_ms)) catch {
         return error.SocketReadFailed;
     };

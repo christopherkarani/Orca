@@ -157,6 +157,10 @@ pub fn runWithCwd(io: std.Io, environ_map: *const std.process.Environ.Map, cwd: 
         return proxyVersionCommand(realDaemonExecuteCli, io, stdout, stderr);
     }
 
+    if (isPhase1ProxyCommand(command)) {
+        return proxyPhase1Command(realDaemonExecuteCli, command, argv[1..], io, stdout, stderr);
+    }
+
     // Highest-value DX helper for installers, Homebrew post-install hooks, npm wrapper,
     // power users, and immediate shell activation. Now layout-aware (selfExePath) and
     // platform-correct. `orca env` is the discoverable alias; the flag is kept for
@@ -208,6 +212,28 @@ pub fn runWithCwd(io: std.Io, environ_map: *const std.process.Environ.Map, cwd: 
 fn proxyVersionCommand(comptime execute_cli: anytype, io: std.Io, stdout: anytype, stderr: anytype) !u8 {
     return execute_cli(io, &.{"version"}, stdout, stderr) catch |err| {
         try stderr.print("orca version: {s}: {s}\n", .{ daemonErrorLabel(err), @errorName(err) });
+        return exit_codes.general;
+    };
+}
+
+fn isPhase1ProxyCommand(command: []const u8) bool {
+    return std.mem.eql(u8, command, "test") or
+        std.mem.eql(u8, command, "scan") or
+        std.mem.eql(u8, command, "history") or
+        std.mem.eql(u8, command, "precommit") or
+        std.mem.eql(u8, command, "packs");
+}
+
+fn proxyPhase1Command(comptime execute_cli: anytype, command: []const u8, command_args: []const []const u8, io: std.Io, stdout: anytype, stderr: anytype) !u8 {
+    const allocator = std.heap.smp_allocator;
+    const daemon_argv = try allocator.alloc([]const u8, command_args.len + 1);
+    defer allocator.free(daemon_argv);
+
+    daemon_argv[0] = command;
+    if (command_args.len > 0) @memcpy(daemon_argv[1..], command_args);
+
+    return execute_cli(io, daemon_argv, stdout, stderr) catch |err| {
+        try stderr.print("orca {s}: {s}: {s}\n", .{ command, daemonErrorLabel(err), @errorName(err) });
         return exit_codes.general;
     };
 }
@@ -384,6 +410,52 @@ fn fakeVersionUnavailable(_: std.Io, argv: []const []const u8, _: anytype, _: an
     return error.DaemonBinaryNotFound;
 }
 
+fn fakeTestProxySuccess(_: std.Io, argv: []const []const u8, stdout: anytype, _: anytype) !u8 {
+    try std.testing.expectEqual(@as(usize, 2), argv.len);
+    try std.testing.expectEqualStrings("test", argv[0]);
+    try std.testing.expectEqualStrings("git status", argv[1]);
+    try stdout.writeAll("test ok\n");
+    return exit_codes.success;
+}
+
+fn fakeScanProxySuccess(_: std.Io, argv: []const []const u8, stdout: anytype, _: anytype) !u8 {
+    try std.testing.expectEqual(@as(usize, 2), argv.len);
+    try std.testing.expectEqualStrings("scan", argv[0]);
+    try std.testing.expectEqualStrings("--help", argv[1]);
+    try stdout.writeAll("scan ok\n");
+    return exit_codes.success;
+}
+
+fn fakeHistoryProxySuccess(_: std.Io, argv: []const []const u8, stdout: anytype, _: anytype) !u8 {
+    try std.testing.expectEqual(@as(usize, 2), argv.len);
+    try std.testing.expectEqualStrings("history", argv[0]);
+    try std.testing.expectEqualStrings("--help", argv[1]);
+    try stdout.writeAll("history ok\n");
+    return exit_codes.success;
+}
+
+fn fakePrecommitProxySuccess(_: std.Io, argv: []const []const u8, stdout: anytype, _: anytype) !u8 {
+    try std.testing.expectEqual(@as(usize, 1), argv.len);
+    try std.testing.expectEqualStrings("precommit", argv[0]);
+    try stdout.writeAll("precommit ok\n");
+    return exit_codes.success;
+}
+
+fn fakePacksProxySuccess(_: std.Io, argv: []const []const u8, stdout: anytype, _: anytype) !u8 {
+    try std.testing.expectEqual(@as(usize, 3), argv.len);
+    try std.testing.expectEqualStrings("packs", argv[0]);
+    try std.testing.expectEqualStrings("--format", argv[1]);
+    try std.testing.expectEqualStrings("json", argv[2]);
+    try stdout.writeAll("packs ok\n");
+    return exit_codes.success;
+}
+
+fn fakePhase1ProxyUnavailable(_: std.Io, argv: []const []const u8, _: anytype, _: anytype) !u8 {
+    try std.testing.expectEqual(@as(usize, 1), argv.len);
+    try std.testing.expectEqualStrings("packs", argv[0]);
+    return error.DaemonBinaryNotFound;
+}
+
 test "version proxy routes version argv and renders success" {
     var stdout_buf: [128]u8 = undefined;
     var stderr_buf: [128]u8 = undefined;
@@ -421,6 +493,60 @@ test "version proxy reports daemon unavailable explicitly" {
     try std.testing.expectEqual(exit_codes.general, code);
     try std.testing.expectEqualStrings("", stdout_writer.buffered());
     try std.testing.expect(std.mem.indexOf(u8, stderr_writer.buffered(), "daemon unavailable") != null);
+    try std.testing.expect(std.mem.indexOf(u8, stderr_writer.buffered(), "DaemonBinaryNotFound") != null);
+}
+
+test "phase 1 proxy commands construct daemon argv and render success" {
+    var stdout_buf: [128]u8 = undefined;
+    var stderr_buf: [128]u8 = undefined;
+    var stdout_writer: std.Io.Writer = .fixed(&stdout_buf);
+    var stderr_writer: std.Io.Writer = .fixed(&stderr_buf);
+
+    const test_code = try proxyPhase1Command(fakeTestProxySuccess, "test", &.{"git status"}, std.testing.io, &stdout_writer, &stderr_writer);
+    try std.testing.expectEqual(exit_codes.success, test_code);
+    try std.testing.expectEqualStrings("test ok\n", stdout_writer.buffered());
+    try std.testing.expectEqualStrings("", stderr_writer.buffered());
+
+    stdout_writer = .fixed(&stdout_buf);
+    stderr_writer = .fixed(&stderr_buf);
+    const scan_code = try proxyPhase1Command(fakeScanProxySuccess, "scan", &.{"--help"}, std.testing.io, &stdout_writer, &stderr_writer);
+    try std.testing.expectEqual(exit_codes.success, scan_code);
+    try std.testing.expectEqualStrings("scan ok\n", stdout_writer.buffered());
+    try std.testing.expectEqualStrings("", stderr_writer.buffered());
+
+    stdout_writer = .fixed(&stdout_buf);
+    stderr_writer = .fixed(&stderr_buf);
+    const history_code = try proxyPhase1Command(fakeHistoryProxySuccess, "history", &.{"--help"}, std.testing.io, &stdout_writer, &stderr_writer);
+    try std.testing.expectEqual(exit_codes.success, history_code);
+    try std.testing.expectEqualStrings("history ok\n", stdout_writer.buffered());
+    try std.testing.expectEqualStrings("", stderr_writer.buffered());
+
+    stdout_writer = .fixed(&stdout_buf);
+    stderr_writer = .fixed(&stderr_buf);
+    const precommit_code = try proxyPhase1Command(fakePrecommitProxySuccess, "precommit", &.{}, std.testing.io, &stdout_writer, &stderr_writer);
+    try std.testing.expectEqual(exit_codes.success, precommit_code);
+    try std.testing.expectEqualStrings("precommit ok\n", stdout_writer.buffered());
+    try std.testing.expectEqualStrings("", stderr_writer.buffered());
+
+    stdout_writer = .fixed(&stdout_buf);
+    stderr_writer = .fixed(&stderr_buf);
+    const packs_code = try proxyPhase1Command(fakePacksProxySuccess, "packs", &.{ "--format", "json" }, std.testing.io, &stdout_writer, &stderr_writer);
+    try std.testing.expectEqual(exit_codes.success, packs_code);
+    try std.testing.expectEqualStrings("packs ok\n", stdout_writer.buffered());
+    try std.testing.expectEqualStrings("", stderr_writer.buffered());
+}
+
+test "phase 1 proxy reports daemon unavailable explicitly" {
+    var stdout_buf: [128]u8 = undefined;
+    var stderr_buf: [128]u8 = undefined;
+    var stdout_writer: std.Io.Writer = .fixed(&stdout_buf);
+    var stderr_writer: std.Io.Writer = .fixed(&stderr_buf);
+
+    const code = try proxyPhase1Command(fakePhase1ProxyUnavailable, "packs", &.{}, std.testing.io, &stdout_writer, &stderr_writer);
+
+    try std.testing.expectEqual(exit_codes.general, code);
+    try std.testing.expectEqualStrings("", stdout_writer.buffered());
+    try std.testing.expect(std.mem.indexOf(u8, stderr_writer.buffered(), "orca packs: daemon unavailable") != null);
     try std.testing.expect(std.mem.indexOf(u8, stderr_writer.buffered(), "DaemonBinaryNotFound") != null);
 }
 

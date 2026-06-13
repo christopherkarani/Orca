@@ -41,11 +41,63 @@ mod tests {
     }
 
     #[test]
-    fn unsupported_command_is_structured_error() {
-        let result = execute_cli(&["scan".to_string()]);
+    fn phase1_test_command_is_supported() {
+        let result = execute_cli(&["test".to_string(), "--help".to_string()]);
+        assert_eq!(result.exit_code, EXIT_SUCCESS);
+        assert!(result.stderr.is_empty());
+        assert!(
+            result
+                .stdout
+                .contains("Test a command against enabled packs")
+        );
+    }
+
+    #[test]
+    fn phase1_scan_command_is_supported() {
+        let result = execute_cli(&["scan".to_string(), "--help".to_string()]);
+        assert_eq!(result.exit_code, EXIT_SUCCESS);
+        assert!(result.stderr.is_empty());
+        assert!(
+            result
+                .stdout
+                .contains("Scan files for destructive commands")
+        );
+    }
+
+    #[test]
+    fn phase1_history_command_is_supported() {
+        let result = execute_cli(&["history".to_string(), "--help".to_string()]);
+        assert_eq!(result.exit_code, EXIT_SUCCESS);
+        assert!(result.stderr.is_empty());
+        assert!(result.stdout.contains("Query command history database"));
+    }
+
+    #[test]
+    fn phase1_packs_command_is_supported() {
+        let result = execute_cli(&["packs".to_string(), "--help".to_string()]);
+        assert_eq!(result.exit_code, EXIT_SUCCESS);
+        assert!(result.stderr.is_empty());
+        assert!(result.stdout.contains("List all available packs"));
+    }
+
+    #[test]
+    fn phase1_precommit_alias_is_supported() {
+        let result = execute_cli(&["precommit".to_string(), "--help".to_string()]);
+        assert_eq!(result.exit_code, EXIT_SUCCESS);
+        assert!(result.stderr.is_empty());
+        assert!(result.stdout.contains("pre-commit"));
+    }
+
+    #[test]
+    fn phase4_command_is_still_deferred() {
+        let result = execute_cli(&["stats".to_string()]);
         assert_eq!(result.exit_code, EXIT_PARSE_ERROR);
         assert!(result.stdout.is_empty());
-        assert!(result.stderr.contains("unsupported daemon CLI command: scan"));
+        assert!(
+            result
+                .stderr
+                .contains("unsupported daemon CLI command: stats")
+        );
     }
 
     #[test]

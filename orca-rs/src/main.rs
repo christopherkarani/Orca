@@ -48,8 +48,9 @@ use orca_rs::hook::HookInput;
 #[cfg(test)]
 use std::borrow::Cow;
 use std::collections::HashSet;
+use std::ffi::OsString;
 use std::io::{self, IsTerminal};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
@@ -75,6 +76,25 @@ fn configure_colors() {
     if !io::stderr().is_terminal() {
         colored::control::set_override(false);
     }
+}
+
+fn daemon_home_dir() -> Option<PathBuf> {
+    daemon_home_dir_from(std::env::var_os("HOME"), dirs::home_dir())
+}
+
+fn daemon_home_dir_from(home_env: Option<OsString>, fallback: Option<PathBuf>) -> Option<PathBuf> {
+    home_env
+        .filter(|home| !home.is_empty())
+        .map(PathBuf::from)
+        .or(fallback)
+}
+
+fn daemon_runtime_paths(home_dir: &Path) -> (PathBuf, PathBuf) {
+    let runtime_dir = home_dir.join(".orca");
+    (
+        runtime_dir.join("daemon.sock"),
+        runtime_dir.join("daemon.pid"),
+    )
 }
 
 fn history_db_path(config: &orca_rs::config::HistoryConfig) -> Option<PathBuf> {
@@ -443,10 +463,8 @@ async fn run_orca() -> Result<i32, Box<dyn std::error::Error + Send + Sync>> {
     if cli.daemon_mode {
         DAEMON_MODE_ACTIVE.store(true, Ordering::SeqCst);
         let shutdown_rx = install_signal_shutdown_handler();
-        let home_dir = dirs::home_dir().ok_or("unable to determine home directory")?;
-        let runtime_dir = home_dir.join(".orca");
-        let socket_path = runtime_dir.join("daemon.sock");
-        let pid_path = runtime_dir.join("daemon.pid");
+        let home_dir = daemon_home_dir().ok_or("unable to determine home directory")?;
+        let (socket_path, pid_path) = daemon_runtime_paths(&home_dir);
         orca_rs::daemon::run_daemon(&socket_path, &pid_path, shutdown_rx).await?;
         return Ok(0);
     }
@@ -1908,6 +1926,20 @@ mod tests {
     mod daemon_mode_tests {
         use super::*;
 
+        #[test]
+        fn daemon_runtime_paths_prefer_home_env_for_zig_client_compatibility() {
+            let home = PathBuf::from("/tmp/orca-phase1-home");
+            let fallback = PathBuf::from("/Users/example");
+
+            let resolved =
+                daemon_home_dir_from(Some(home.clone().into_os_string()), Some(fallback));
+            assert_eq!(resolved.as_deref(), Some(home.as_path()));
+
+            let (socket_path, pid_path) = daemon_runtime_paths(&home);
+            assert_eq!(socket_path, home.join(".orca/daemon.sock"));
+            assert_eq!(pid_path, home.join(".orca/daemon.pid"));
+        }
+
         #[tokio::test]
         async fn run_daemon_mode_exits_cleanly_on_shutdown_signal() {
             let temp_dir = tempfile::tempdir().unwrap();
@@ -1938,7 +1970,10 @@ mod tests {
             assert!(result.unwrap().is_ok(), "daemon should return Ok");
 
             // Artifacts should be removed on clean shutdown.
-            assert!(!socket_path.exists(), "socket should be removed on shutdown");
+            assert!(
+                !socket_path.exists(),
+                "socket should be removed on shutdown"
+            );
             assert!(!pid_path.exists(), "pid file should be removed on shutdown");
         }
 
@@ -1965,7 +2000,10 @@ mod tests {
             }
 
             let mut stream = UnixStream::connect(&socket_path).await.unwrap();
-            stream.write_all(b"{\"id\":1,\"method\":\"Ping\"}\n").await.unwrap();
+            stream
+                .write_all(b"{\"id\":1,\"method\":\"Ping\"}\n")
+                .await
+                .unwrap();
 
             let mut buf = String::new();
             let (read_half, _write_half) = stream.into_split();

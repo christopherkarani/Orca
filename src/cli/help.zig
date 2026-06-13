@@ -115,6 +115,76 @@ pub const commands = [_]CommandInfo{
             "Use --verbose for the full platform, integration, and capability report.",
         },
     },
+    .{
+        .name = "test",
+        .summary = "Test a shell command with Rust safety packs",
+        .usage = "orca test <command> [options]",
+        .category = .core_workflow,
+        .examples = &.{
+            "orca test \"git status\"",
+            "orca test \"rm -rf /\" --format json",
+        },
+        .details = &.{
+            "Proxies to the Rust daemon and evaluates the command with the Rust pack engine.",
+            "The daemon response preserves the Rust CLI stdout, stderr, and exit code.",
+        },
+    },
+    .{
+        .name = "scan",
+        .summary = "Scan files for destructive commands",
+        .usage = "orca scan [--staged|--paths <path>...] [options]",
+        .category = .core_workflow,
+        .examples = &.{
+            "orca scan --staged",
+            "orca scan --paths scripts/deploy.sh --format json",
+        },
+        .details = &.{
+            "Proxies to the Rust daemon for CI and pre-commit scanning.",
+            "Use 'orca scan --help' for the full Rust-backed option set.",
+        },
+    },
+    .{
+        .name = "history",
+        .summary = "Query Rust command history",
+        .usage = "orca history <action> [options]",
+        .category = .diagnostics,
+        .examples = &.{
+            "orca history stats --days 7",
+            "orca history check --strict",
+        },
+        .details = &.{
+            "Proxies to the Rust daemon so history queries use the Rust SQLite-backed history store.",
+            "Use 'orca history --help' for the full Rust-backed action list.",
+        },
+    },
+    .{
+        .name = "precommit",
+        .summary = "Run the Rust pre-commit safety scan",
+        .usage = "orca precommit [options]",
+        .category = .core_workflow,
+        .examples = &.{
+            "orca precommit",
+            "orca precommit --format json",
+        },
+        .details = &.{
+            "Proxies to the Rust daemon and runs the staged-file pre-commit scan path.",
+            "This is the Phase 1 user-facing alias for the Rust scan pre-commit workflow.",
+        },
+    },
+    .{
+        .name = "packs",
+        .summary = "List Rust safety packs",
+        .usage = "orca packs [--enabled] [--format pretty|json]",
+        .category = .diagnostics,
+        .examples = &.{
+            "orca packs",
+            "orca packs --format json",
+        },
+        .details = &.{
+            "Proxies to the Rust daemon and lists built-in and configured external safety packs.",
+            "Use 'orca packs --help' for the full Rust-backed option set.",
+        },
+    },
     .{ .name = "policy", .summary = "Validate, explain, and apply policies", .usage = "orca policy <check|explain|packs|apply-pack> [...]", .category = .core_workflow, .examples = &.{
         "orca policy check .orca/policy.yaml",
         "orca policy explain file.read /etc/passwd",
