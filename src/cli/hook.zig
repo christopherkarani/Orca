@@ -432,6 +432,33 @@ const HookResponse = struct {
     }
 };
 
+const ShellCommandEvent = struct {
+    command: []const u8,
+    cwd: ?[]const u8 = null,
+};
+
+const NonShellHookEvent = enum {
+    file_write,
+    generic_tool,
+    prompt,
+    permission,
+    informational,
+};
+
+const HookEventClassification = union(enum) {
+    shell_command: ShellCommandEvent,
+    non_shell: NonShellHookEvent,
+    malformed: []const u8,
+    unknown_unsupported: []const u8,
+    ambiguous: []const u8,
+};
+
+const PreToolUseRoute = union(enum) {
+    shell_command: ShellCommandEvent,
+    zig_native: NonShellHookEvent,
+    fail_closed: []const u8,
+};
+
 fn evaluateHook(
     allocator: std.mem.Allocator,
     policy_value: *const policy.schema.Policy,
@@ -511,98 +538,7 @@ fn evaluateHook(
             };
         },
         .PreToolUse => {
-            // Try to extract command from various payload shapes
-            const command_text = extractString(payload, "command") orelse
-                extractNestedString(payload, &.{ "tool", "command" }) orelse
-                extractNestedString(payload, &.{ "tool_input", "command" }) orelse
-                extractNestedString(payload, &.{ "args", "command" }) orelse
-                extractNestedString(payload, &.{ "params", "command" }) orelse
-                extractNestedString(payload, &.{ "input", "command" }) orelse
-                extractNestedString(payload, &.{ "data", "command" }) orelse
-                extractNestedString(payload, &.{ "data", "input", "command" }) orelse
-                extractNestedString(payload, &.{ "kwargs", "command" }) orelse
-                extractNestedString(payload, &.{ "kwargs", "args", "command" }) orelse
-                extractNestedString(payload, &.{ "kwargs", "params", "command" }) orelse
-                extractNestedString(payload, &.{ "kwargs", "tool_input", "command" });
-            const tool_name = extractString(payload, "tool") orelse
-                extractString(payload, "tool_name") orelse
-                extractString(payload, "name") orelse
-                extractNestedString(payload, &.{ "tool", "name" });
-
-            if (command_text) |cmd| {
-                // Shell-like tool usage: evaluate as command
-                const evaluation = try core_api.explainAction(allocator, @ptrCast(policy_value), .command, cmd);
-                defer evaluation.deinit(allocator);
-
-                const decision = PluginDecision.fromDecisionResult(evaluation.decision.result, ci_mode);
-                const risk = RiskLevel.fromScore(evaluation.decision.risk_score);
-
-                return .{
-                    .decision = decision,
-                    .risk = risk,
-                    .category = try allocator.dupe(u8, "command"),
-                    .reason = try allocator.dupe(u8, evaluation.decision.reason),
-                    .rule = if (evaluation.matched_rule) |rule| try allocator.dupe(u8, rule.id) else null,
-                    .message = try buildMessage(allocator, decision, "command"),
-                    .redactions = try redactions.toOwnedSlice(allocator),
-                    .host_limitations = try limitations.toOwnedSlice(allocator),
-                };
-            } else {
-                // Check if this is a file-editing tool with a path
-                const path = extractString(payload, "path") orelse
-                    extractString(payload, "file") orelse
-                    extractNestedString(payload, &.{ "tool_input", "path" }) orelse
-                    extractNestedString(payload, &.{ "args", "path" }) orelse
-                    extractNestedString(payload, &.{ "params", "path" }) orelse
-                    extractNestedString(payload, &.{ "input", "path" }) orelse
-                    extractNestedString(payload, &.{ "data", "path" }) orelse
-                    extractNestedString(payload, &.{ "data", "input", "path" }) orelse
-                    extractNestedString(payload, &.{ "kwargs", "path" }) orelse
-                    extractNestedString(payload, &.{ "kwargs", "args", "path" }) orelse
-                    extractNestedString(payload, &.{ "kwargs", "params", "path" }) orelse
-                    extractNestedString(payload, &.{ "kwargs", "tool_input", "path" });
-                const is_file_tool = if (tool_name) |name| isFileTool(name) else false;
-
-                if (path) |p| {
-                    if (is_file_tool) {
-                        const evaluation = try core_api.explainAction(allocator, @ptrCast(policy_value), .file_write, p);
-                        defer evaluation.deinit(allocator);
-
-                        const decision = PluginDecision.fromDecisionResult(evaluation.decision.result, ci_mode);
-                        const risk = RiskLevel.fromScore(evaluation.decision.risk_score);
-
-                        return .{
-                            .decision = decision,
-                            .risk = risk,
-                            .category = try allocator.dupe(u8, "file.write"),
-                            .reason = try allocator.dupe(u8, evaluation.decision.reason),
-                            .rule = if (evaluation.matched_rule) |rule| try allocator.dupe(u8, rule.id) else null,
-                            .message = try buildMessage(allocator, decision, "file.write"),
-                            .redactions = try redactions.toOwnedSlice(allocator),
-                            .host_limitations = try limitations.toOwnedSlice(allocator),
-                        };
-                    }
-                }
-
-                // Generic tool: evaluate as MCP/tool
-                const generic_tool_name = tool_name orelse return error.MissingRequiredField;
-                const evaluation = try core_api.explainAction(allocator, @ptrCast(policy_value), .mcp, generic_tool_name);
-                defer evaluation.deinit(allocator);
-
-                const decision = PluginDecision.fromDecisionResult(evaluation.decision.result, ci_mode);
-                const risk = RiskLevel.fromScore(evaluation.decision.risk_score);
-
-                return .{
-                    .decision = decision,
-                    .risk = risk,
-                    .category = try allocator.dupe(u8, "tool"),
-                    .reason = try allocator.dupe(u8, evaluation.decision.reason),
-                    .rule = if (evaluation.matched_rule) |rule| try allocator.dupe(u8, rule.id) else null,
-                    .message = try buildMessage(allocator, decision, "tool"),
-                    .redactions = try redactions.toOwnedSlice(allocator),
-                    .host_limitations = try limitations.toOwnedSlice(allocator),
-                };
-            }
+            return try evaluatePreToolUse(allocator, policy_value, payload, ci_mode, &redactions, &limitations);
         },
         .PermissionRequest => {
             const permission_kind = extractString(payload, "kind") orelse extractString(payload, "permission") orelse return error.MissingRequiredField;
@@ -680,6 +616,144 @@ fn buildMessage(allocator: std.mem.Allocator, decision: PluginDecision, category
         .ask => try std.fmt.allocPrint(allocator, "{s} requires user approval per Orca policy.", .{category}),
         .context_only => try std.fmt.allocPrint(allocator, "{s} allowed for context only. No side effects permitted.", .{category}),
         .err => try std.fmt.allocPrint(allocator, "Orca could not evaluate {s}. Fail closed.", .{category}),
+    };
+}
+
+fn evaluatePreToolUse(
+    allocator: std.mem.Allocator,
+    policy_value: *const policy.schema.Policy,
+    payload: std.json.Value,
+    ci_mode: bool,
+    redactions: *std.ArrayList(RedactionEntry),
+    limitations: *std.ArrayList([]const u8),
+) !HookResponse {
+    return switch (preToolUseRoute(payload)) {
+        .shell_command => |shell_event| evaluateShellCommandRoute(
+            allocator,
+            policy_value,
+            shell_event,
+            ci_mode,
+            redactions,
+            limitations,
+        ),
+        .zig_native => |native_event| evaluateNativePreToolUseRoute(
+            allocator,
+            policy_value,
+            payload,
+            native_event,
+            ci_mode,
+            redactions,
+            limitations,
+        ),
+        .fail_closed => |reason| makeFailClosedHookResponse(
+            allocator,
+            "command",
+            reason,
+            "Shell command hook payload is malformed. Orca blocked it before evaluation.",
+            redactions,
+            limitations,
+        ),
+    };
+}
+
+fn evaluateShellCommandRoute(
+    allocator: std.mem.Allocator,
+    policy_value: *const policy.schema.Policy,
+    shell_event: ShellCommandEvent,
+    ci_mode: bool,
+    redactions: *std.ArrayList(RedactionEntry),
+    limitations: *std.ArrayList([]const u8),
+) !HookResponse {
+    _ = shell_event.cwd;
+    // Phase 2C replaces this isolated branch with daemon Evaluate over UDS.
+    // The command string and optional cwd are the only daemon-bound fields today.
+    const evaluation = try core_api.explainAction(allocator, @ptrCast(policy_value), .command, shell_event.command);
+    defer evaluation.deinit(allocator);
+
+    const decision = PluginDecision.fromDecisionResult(evaluation.decision.result, ci_mode);
+    const risk = RiskLevel.fromScore(evaluation.decision.risk_score);
+
+    return .{
+        .decision = decision,
+        .risk = risk,
+        .category = try allocator.dupe(u8, "command"),
+        .reason = try allocator.dupe(u8, evaluation.decision.reason),
+        .rule = if (evaluation.matched_rule) |rule| try allocator.dupe(u8, rule.id) else null,
+        .message = try buildMessage(allocator, decision, "command"),
+        .redactions = try redactions.toOwnedSlice(allocator),
+        .host_limitations = try limitations.toOwnedSlice(allocator),
+    };
+}
+
+fn evaluateNativePreToolUseRoute(
+    allocator: std.mem.Allocator,
+    policy_value: *const policy.schema.Policy,
+    payload: std.json.Value,
+    native_event: NonShellHookEvent,
+    ci_mode: bool,
+    redactions: *std.ArrayList(RedactionEntry),
+    limitations: *std.ArrayList([]const u8),
+) !HookResponse {
+    switch (native_event) {
+        .file_write => {
+            const path = extractFilePath(payload) orelse return error.MissingRequiredField;
+            const evaluation = try core_api.explainAction(allocator, @ptrCast(policy_value), .file_write, path);
+            defer evaluation.deinit(allocator);
+
+            const decision = PluginDecision.fromDecisionResult(evaluation.decision.result, ci_mode);
+            const risk = RiskLevel.fromScore(evaluation.decision.risk_score);
+
+            return .{
+                .decision = decision,
+                .risk = risk,
+                .category = try allocator.dupe(u8, "file.write"),
+                .reason = try allocator.dupe(u8, evaluation.decision.reason),
+                .rule = if (evaluation.matched_rule) |rule| try allocator.dupe(u8, rule.id) else null,
+                .message = try buildMessage(allocator, decision, "file.write"),
+                .redactions = try redactions.toOwnedSlice(allocator),
+                .host_limitations = try limitations.toOwnedSlice(allocator),
+            };
+        },
+        .generic_tool => {
+            const generic_tool_name = extractToolName(payload) orelse return error.MissingRequiredField;
+            const evaluation = try core_api.explainAction(allocator, @ptrCast(policy_value), .mcp, generic_tool_name);
+            defer evaluation.deinit(allocator);
+
+            const decision = PluginDecision.fromDecisionResult(evaluation.decision.result, ci_mode);
+            const risk = RiskLevel.fromScore(evaluation.decision.risk_score);
+
+            return .{
+                .decision = decision,
+                .risk = risk,
+                .category = try allocator.dupe(u8, "tool"),
+                .reason = try allocator.dupe(u8, evaluation.decision.reason),
+                .rule = if (evaluation.matched_rule) |rule| try allocator.dupe(u8, rule.id) else null,
+                .message = try buildMessage(allocator, decision, "tool"),
+                .redactions = try redactions.toOwnedSlice(allocator),
+                .host_limitations = try limitations.toOwnedSlice(allocator),
+            };
+        },
+        else => return error.MissingRequiredField,
+    }
+}
+
+fn makeFailClosedHookResponse(
+    allocator: std.mem.Allocator,
+    category: []const u8,
+    reason: []const u8,
+    message: []const u8,
+    redactions: *std.ArrayList(RedactionEntry),
+    limitations: *std.ArrayList([]const u8),
+) !HookResponse {
+    return .{
+        .decision = .block,
+        .risk = .high,
+        .category = try allocator.dupe(u8, category),
+        .reason = try allocator.dupe(u8, reason),
+        .rule = null,
+        .message = try allocator.dupe(u8, message),
+        .redactions = try redactions.toOwnedSlice(allocator),
+        .host_limitations = try limitations.toOwnedSlice(allocator),
     };
 }
 
@@ -815,6 +889,115 @@ fn extractNestedString(payload: std.json.Value, keys: []const []const u8) ?[]con
     };
 }
 
+fn classifyHookEvent(event: Event, payload: std.json.Value) HookEventClassification {
+    return switch (event) {
+        .PreToolUse => classifyPreToolUse(payload),
+        .UserPromptSubmit => .{ .non_shell = .prompt },
+        .PermissionRequest => .{ .non_shell = .permission },
+        .SessionStart, .PostToolUse, .Stop, .SessionEnd => .{ .non_shell = .informational },
+    };
+}
+
+fn classifyPreToolUse(payload: std.json.Value) HookEventClassification {
+    const command_state = extractShellCommand(payload);
+    const tool_name = extractToolName(payload);
+
+    switch (command_state) {
+        .found => |shell_event| return .{ .shell_command = shell_event },
+        .invalid => return .{ .malformed = "shell command field must be a non-empty string" },
+        .missing => {},
+    }
+
+    if (tool_name) |name| {
+        if (isShellTool(name)) return .{ .malformed = "shell command missing command field" };
+
+        if (extractFilePath(payload) != null and isFileTool(name)) {
+            return .{ .non_shell = .file_write };
+        }
+
+        return .{ .non_shell = .generic_tool };
+    }
+
+    if (extractFilePath(payload) != null) {
+        return .{ .ambiguous = "file path present without file tool name" };
+    }
+
+    return .{ .unknown_unsupported = "PreToolUse payload does not identify a supported tool action" };
+}
+
+fn preToolUseRoute(payload: std.json.Value) PreToolUseRoute {
+    return switch (classifyPreToolUse(payload)) {
+        .shell_command => |shell_event| .{ .shell_command = shell_event },
+        .non_shell => |native_event| .{ .zig_native = native_event },
+        .malformed => |reason| .{ .fail_closed = reason },
+        .ambiguous => |reason| .{ .fail_closed = reason },
+        .unknown_unsupported => |reason| .{ .fail_closed = reason },
+    };
+}
+
+const CommandFieldState = union(enum) {
+    found: ShellCommandEvent,
+    invalid,
+    missing,
+};
+
+fn extractShellCommand(payload: std.json.Value) CommandFieldState {
+    inline for (command_field_paths) |path| {
+        if (extractNestedValue(payload, path)) |value| {
+            return switch (value) {
+                .string => |command_text| {
+                    const trimmed = std.mem.trim(u8, command_text, " \t\r\n");
+                    if (trimmed.len == 0) return .invalid;
+                    return .{ .found = .{ .command = command_text, .cwd = extractCwd(payload) } };
+                },
+                else => .invalid,
+            };
+        }
+    }
+    return .missing;
+}
+
+fn extractToolName(payload: std.json.Value) ?[]const u8 {
+    return extractString(payload, "tool") orelse
+        extractString(payload, "tool_name") orelse
+        extractString(payload, "name") orelse
+        extractNestedString(payload, &.{ "tool", "name" });
+}
+
+fn extractFilePath(payload: std.json.Value) ?[]const u8 {
+    return extractString(payload, "path") orelse
+        extractString(payload, "file") orelse
+        extractNestedString(payload, &.{ "tool_input", "path" }) orelse
+        extractNestedString(payload, &.{ "args", "path" }) orelse
+        extractNestedString(payload, &.{ "params", "path" }) orelse
+        extractNestedString(payload, &.{ "input", "path" }) orelse
+        extractNestedString(payload, &.{ "data", "path" }) orelse
+        extractNestedString(payload, &.{ "data", "input", "path" }) orelse
+        extractNestedString(payload, &.{ "kwargs", "path" }) orelse
+        extractNestedString(payload, &.{ "kwargs", "args", "path" }) orelse
+        extractNestedString(payload, &.{ "kwargs", "params", "path" }) orelse
+        extractNestedString(payload, &.{ "kwargs", "tool_input", "path" });
+}
+
+fn extractCwd(payload: std.json.Value) ?[]const u8 {
+    return extractString(payload, "cwd") orelse
+        extractString(payload, "workdir") orelse
+        extractString(payload, "current_working_directory") orelse
+        extractNestedString(payload, &.{ "tool_input", "cwd" }) orelse
+        extractNestedString(payload, &.{ "input", "cwd" }) orelse
+        extractNestedString(payload, &.{ "params", "cwd" }) orelse
+        extractNestedString(payload, &.{ "kwargs", "cwd" });
+}
+
+fn extractNestedValue(payload: std.json.Value, keys: []const []const u8) ?std.json.Value {
+    var current = payload;
+    for (keys) |key| {
+        if (current != .object) return null;
+        current = current.object.get(key) orelse return null;
+    }
+    return current;
+}
+
 fn isFileTool(tool_name: []const u8) bool {
     const file_tools = &[_][]const u8{ "edit", "write", "file_write", "file_edit", "apply", "create_file", "write_file" };
     for (file_tools) |ft| {
@@ -822,6 +1005,40 @@ fn isFileTool(tool_name: []const u8) bool {
     }
     return false;
 }
+
+fn isShellTool(tool_name: []const u8) bool {
+    const shell_tools = &[_][]const u8{
+        "bash",
+        "shell",
+        "sh",
+        "zsh",
+        "terminal",
+        "run_shell_command",
+        "run_terminal_cmd",
+        "powershell",
+        "pwsh",
+        "launch-process",
+    };
+    for (shell_tools) |st| {
+        if (std.ascii.eqlIgnoreCase(tool_name, st)) return true;
+    }
+    return false;
+}
+
+const command_field_paths = [_][]const []const u8{
+    &.{"command"},
+    &.{ "tool", "command" },
+    &.{ "tool_input", "command" },
+    &.{ "args", "command" },
+    &.{ "params", "command" },
+    &.{ "input", "command" },
+    &.{ "data", "command" },
+    &.{ "data", "input", "command" },
+    &.{ "kwargs", "command" },
+    &.{ "kwargs", "args", "command" },
+    &.{ "kwargs", "params", "command" },
+    &.{ "kwargs", "tool_input", "command" },
+};
 
 fn writeJsonString(writer: anytype, value: []const u8) !void {
     try writer.writeByte('"');
@@ -957,7 +1174,126 @@ test "hook claude PreToolUse with file write to protected path returns block" {
     try std.testing.expectEqual(PluginDecision.block, result.decision);
 }
 
-test "hook rejects missing required PreToolUse and PermissionRequest fields" {
+test "hook classifies PreToolUse command payload as shell command" {
+    var gpa_state: std.heap.DebugAllocator(.{}) = .init;
+    defer _ = gpa_state.deinit();
+    const allocator = gpa_state.allocator();
+
+    var payload_obj = try std.json.ObjectMap.init(allocator, &.{}, &.{});
+    defer payload_obj.deinit(allocator);
+    try payload_obj.put(allocator, "tool", std.json.Value{ .string = "Bash" });
+    try payload_obj.put(allocator, "command", std.json.Value{ .string = "git status" });
+
+    const classification = classifyHookEvent(.PreToolUse, std.json.Value{ .object = payload_obj });
+    try std.testing.expectEqual(HookEventClassification.shell_command, std.meta.activeTag(classification));
+    try std.testing.expectEqualStrings("git status", classification.shell_command.command);
+
+    const route = preToolUseRoute(std.json.Value{ .object = payload_obj });
+    try std.testing.expectEqual(PreToolUseRoute.shell_command, std.meta.activeTag(route));
+}
+
+test "hook classifies file PreToolUse payload as non-shell native route" {
+    var gpa_state: std.heap.DebugAllocator(.{}) = .init;
+    defer _ = gpa_state.deinit();
+    const allocator = gpa_state.allocator();
+
+    var payload_obj = try std.json.ObjectMap.init(allocator, &.{}, &.{});
+    defer payload_obj.deinit(allocator);
+    try payload_obj.put(allocator, "tool", std.json.Value{ .string = "edit" });
+    try payload_obj.put(allocator, "path", std.json.Value{ .string = "/tmp/example.txt" });
+
+    const classification = classifyHookEvent(.PreToolUse, std.json.Value{ .object = payload_obj });
+    try std.testing.expectEqual(HookEventClassification.non_shell, std.meta.activeTag(classification));
+    try std.testing.expectEqual(NonShellHookEvent.file_write, classification.non_shell);
+
+    const route = preToolUseRoute(std.json.Value{ .object = payload_obj });
+    try std.testing.expectEqual(PreToolUseRoute.zig_native, std.meta.activeTag(route));
+}
+
+test "hook classifies shell-like missing command as malformed and fail-closed route" {
+    var gpa_state: std.heap.DebugAllocator(.{}) = .init;
+    defer _ = gpa_state.deinit();
+    const allocator = gpa_state.allocator();
+
+    var payload_obj = try std.json.ObjectMap.init(allocator, &.{}, &.{});
+    defer payload_obj.deinit(allocator);
+    try payload_obj.put(allocator, "tool", std.json.Value{ .string = "run_shell_command" });
+
+    const classification = classifyHookEvent(.PreToolUse, std.json.Value{ .object = payload_obj });
+    try std.testing.expectEqual(HookEventClassification.malformed, std.meta.activeTag(classification));
+
+    const route = preToolUseRoute(std.json.Value{ .object = payload_obj });
+    try std.testing.expectEqual(PreToolUseRoute.fail_closed, std.meta.activeTag(route));
+}
+
+test "hook classifies shell-like non-string command as malformed" {
+    var gpa_state: std.heap.DebugAllocator(.{}) = .init;
+    defer _ = gpa_state.deinit();
+    const allocator = gpa_state.allocator();
+
+    var payload_obj = try std.json.ObjectMap.init(allocator, &.{}, &.{});
+    defer payload_obj.deinit(allocator);
+    try payload_obj.put(allocator, "tool", std.json.Value{ .string = "shell" });
+    try payload_obj.put(allocator, "command", std.json.Value{ .integer = 123 });
+
+    const classification = classifyHookEvent(.PreToolUse, std.json.Value{ .object = payload_obj });
+    try std.testing.expectEqual(HookEventClassification.malformed, std.meta.activeTag(classification));
+}
+
+test "hook classifies empty shell command strings as malformed" {
+    var gpa_state: std.heap.DebugAllocator(.{}) = .init;
+    defer _ = gpa_state.deinit();
+    const allocator = gpa_state.allocator();
+
+    var payload_obj = try std.json.ObjectMap.init(allocator, &.{}, &.{});
+    defer payload_obj.deinit(allocator);
+    try payload_obj.put(allocator, "tool", std.json.Value{ .string = "bash" });
+    try payload_obj.put(allocator, "command", std.json.Value{ .string = "" });
+
+    const classification = classifyHookEvent(.PreToolUse, std.json.Value{ .object = payload_obj });
+    try std.testing.expectEqual(HookEventClassification.malformed, std.meta.activeTag(classification));
+
+    const route = preToolUseRoute(std.json.Value{ .object = payload_obj });
+    try std.testing.expectEqual(PreToolUseRoute.fail_closed, std.meta.activeTag(route));
+}
+
+test "hook classifies whitespace-only shell command strings as malformed" {
+    var gpa_state: std.heap.DebugAllocator(.{}) = .init;
+    defer _ = gpa_state.deinit();
+    const allocator = gpa_state.allocator();
+
+    var payload_obj = try std.json.ObjectMap.init(allocator, &.{}, &.{});
+    defer payload_obj.deinit(allocator);
+    try payload_obj.put(allocator, "tool", std.json.Value{ .string = "shell" });
+    try payload_obj.put(allocator, "command", std.json.Value{ .string = "   \n\t" });
+
+    const classification = classifyHookEvent(.PreToolUse, std.json.Value{ .object = payload_obj });
+    try std.testing.expectEqual(HookEventClassification.malformed, std.meta.activeTag(classification));
+
+    const route = preToolUseRoute(std.json.Value{ .object = payload_obj });
+    try std.testing.expectEqual(PreToolUseRoute.fail_closed, std.meta.activeTag(route));
+}
+
+test "hook classifies unsupported PreToolUse payload explicitly" {
+    var gpa_state: std.heap.DebugAllocator(.{}) = .init;
+    defer _ = gpa_state.deinit();
+    const allocator = gpa_state.allocator();
+
+    var payload_obj = try std.json.ObjectMap.init(allocator, &.{}, &.{});
+    defer payload_obj.deinit(allocator);
+
+    const classification = classifyHookEvent(.PreToolUse, std.json.Value{ .object = payload_obj });
+    try std.testing.expectEqual(HookEventClassification.unknown_unsupported, std.meta.activeTag(classification));
+}
+
+test "hook malformed JSON keeps existing parse error behavior" {
+    if (std.json.parseFromSlice(std.json.Value, std.testing.allocator, "{\"version\":1", .{})) |parsed| {
+        defer parsed.deinit();
+        return error.TestExpectedError;
+    } else |_| {}
+}
+
+test "hook fail-closes unsupported PreToolUse and rejects missing PermissionRequest fields" {
     var gpa_state: std.heap.DebugAllocator(.{}) = .init;
     defer _ = gpa_state.deinit();
     const allocator = gpa_state.allocator();
@@ -969,7 +1305,10 @@ test "hook rejects missing required PreToolUse and PermissionRequest fields" {
     defer empty_obj.deinit(allocator);
     const empty_payload = std.json.Value{ .object = empty_obj };
 
-    try std.testing.expectError(error.MissingRequiredField, evaluateHook(allocator, @ptrCast(@alignCast(policy_obj)), .codex, .PreToolUse, empty_payload, false));
+    var result = try evaluateHook(allocator, @ptrCast(@alignCast(policy_obj)), .codex, .PreToolUse, empty_payload, false);
+    defer result.deinit(allocator);
+    try std.testing.expectEqual(PluginDecision.block, result.decision);
+    try std.testing.expectEqualStrings("command", result.category);
     try std.testing.expectError(error.MissingRequiredField, evaluateHook(allocator, @ptrCast(@alignCast(policy_obj)), .claude, .PermissionRequest, empty_payload, false));
 }
 
