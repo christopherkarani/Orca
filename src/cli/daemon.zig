@@ -35,6 +35,9 @@ const readiness_poll_ms: u64 = 50;
 /// Per-request UDS timeout for Ping and other daemon IPC.
 const default_request_timeout_ms: u64 = 500;
 
+/// Maximum NDJSON response line accepted from the daemon.
+const max_response_line_bytes: usize = 1024 * 1024;
+
 /// Short Ping timeout used when deciding whether socket artifacts are stale.
 const stale_artifact_ping_timeout_ms: u64 = 200;
 
@@ -55,6 +58,21 @@ pub const DaemonRequest = struct {
 pub const DaemonResponse = struct {
     id: u64,
     result: std.json.Value,
+};
+
+/// Structured result returned by the Rust daemon for ExecuteCli requests.
+pub const CliExecution = struct {
+    stdout: []const u8,
+    stderr: []const u8,
+    exit_code: u8,
+};
+
+const ExecuteCliRequest = struct {
+    id: u64,
+    method: []const u8 = "ExecuteCli",
+    params: struct {
+        argv: []const []const u8,
+    },
 };
 
 /// High-level status tag from a daemon `result` object.
@@ -178,6 +196,52 @@ pub fn responseErrorMessage(result: std.json.Value) ?[]const u8 {
     };
 }
 
+/// Build the JSON request envelope for the Rust daemon ExecuteCli method.
+///
+/// Caller owns the returned slice.
+pub fn buildExecuteCliRequestJson(allocator: std.mem.Allocator, id: u64, argv: []const []const u8) DaemonError![]u8 {
+    return std.json.Stringify.valueAlloc(allocator, ExecuteCliRequest{
+        .id = id,
+        .params = .{ .argv = argv },
+    }, .{}) catch error.RequestSerializationFailed;
+}
+
+/// Parse a daemon CliExecution result object.
+pub fn parseCliExecution(result: std.json.Value) DaemonError!CliExecution {
+    if (responseStatus(result) != .cli_execution) return error.DaemonProtocolError;
+    const object = switch (result) {
+        .object => |map| map,
+        else => return error.DaemonProtocolError,
+    };
+
+    const stdout = jsonStringField(object, "stdout") orelse return error.DaemonProtocolError;
+    const stderr = jsonStringField(object, "stderr") orelse "";
+    const exit_code_int = jsonIntegerField(object, "exit_code") orelse return error.DaemonProtocolError;
+    if (exit_code_int < 0 or exit_code_int > std.math.maxInt(u8)) return error.DaemonProtocolError;
+
+    return .{
+        .stdout = stdout,
+        .stderr = stderr,
+        .exit_code = @intCast(exit_code_int),
+    };
+}
+
+fn jsonStringField(object: std.json.ObjectMap, name: []const u8) ?[]const u8 {
+    const value = object.get(name) orelse return null;
+    return switch (value) {
+        .string => |s| s,
+        else => null,
+    };
+}
+
+fn jsonIntegerField(object: std.json.ObjectMap, name: []const u8) ?i64 {
+    const value = object.get(name) orelse return null;
+    return switch (value) {
+        .integer => |i| i,
+        else => null,
+    };
+}
+
 /// Parse a daemon response line from JSON.
 ///
 /// The caller must invoke `deinit()` on the returned value.
@@ -252,10 +316,40 @@ pub fn sendRequest(
     return sendRequestWithTimeout(allocator, socket_path, request, default_request_timeout_ms);
 }
 
+/// Ensure the daemon is running and send ExecuteCli.
+///
+/// Callers inspect the returned result before deinitializing the Parsed response.
+pub fn executeCli(allocator: std.mem.Allocator, argv: []const []const u8) DaemonError!std.json.Parsed(DaemonResponse) {
+    try ensureDaemonRunning(allocator);
+    const path = try socketPath(allocator);
+    defer allocator.free(path);
+
+    const json_str = try buildExecuteCliRequestJson(allocator, 1, argv);
+    defer allocator.free(json_str);
+
+    var parsed = try sendRawRequestWithTimeout(allocator, path, json_str, default_request_timeout_ms);
+    errdefer parsed.deinit();
+    if (parsed.value.id != 1) return error.DaemonProtocolError;
+    return parsed;
+}
+
 fn sendRequestWithTimeout(
     allocator: std.mem.Allocator,
     socket_path: []const u8,
     request: DaemonRequest,
+    timeout_ms: u64,
+) DaemonError!std.json.Parsed(DaemonResponse) {
+    const json_str = std.json.Stringify.valueAlloc(allocator, request, .{}) catch {
+        return error.RequestSerializationFailed;
+    };
+    defer allocator.free(json_str);
+    return sendRawRequestWithTimeout(allocator, socket_path, json_str, timeout_ms);
+}
+
+fn sendRawRequestWithTimeout(
+    allocator: std.mem.Allocator,
+    socket_path: []const u8,
+    json_str: []const u8,
     timeout_ms: u64,
 ) DaemonError!std.json.Parsed(DaemonResponse) {
     var threaded: std.Io.Threaded = .init_single_threaded;
@@ -263,11 +357,6 @@ fn sendRequestWithTimeout(
 
     const fd = connectUnixSocket(socket_path) catch return error.SocketConnectFailed;
     defer _ = std.c.close(fd);
-
-    const json_str = std.json.Stringify.valueAlloc(allocator, request, .{}) catch {
-        return error.RequestSerializationFailed;
-    };
-    defer allocator.free(json_str);
 
     try writeAllFdWithTimeout(io, fd, json_str, timeout_ms);
     try writeAllFdWithTimeout(io, fd, "\n", timeout_ms);
@@ -454,6 +543,7 @@ fn readLineFdWithTimeout(io: std.Io, allocator: std.mem.Allocator, fd: std.posix
         const n = std.c.read(fd, &byte, 1);
         if (n < 0) return error.SocketReadFailed;
         if (n == 0) return error.SocketReadFailed;
+        if (read_buf.items.len >= max_response_line_bytes) return error.SocketReadFailed;
         read_buf.append(allocator, byte[0]) catch return error.SocketReadFailed;
         if (byte[0] == '\n') break;
     }
@@ -554,6 +644,51 @@ test "parseResponse accepts pong payload" {
     defer parsed.deinit();
     try std.testing.expectEqual(@as(u64, 1), parsed.value.id);
     try std.testing.expect(responseStatus(parsed.value.result) == .pong);
+}
+
+test "buildExecuteCliRequestJson serializes expected argv" {
+    const json_str = try buildExecuteCliRequestJson(std.testing.allocator, 7, &.{"version"});
+    defer std.testing.allocator.free(json_str);
+
+    try std.testing.expectEqualStrings("{\"id\":7,\"method\":\"ExecuteCli\",\"params\":{\"argv\":[\"version\"]}}", json_str);
+}
+
+test "parseCliExecution reads stdout stderr and exit code" {
+    const line = "{\"id\":7,\"result\":{\"status\":\"CliExecution\",\"stdout\":\"orca 1.2.3\\n\",\"stderr\":\"warn\\n\",\"exit_code\":5}}";
+    var parsed = try parseResponse(std.testing.allocator, line);
+    defer parsed.deinit();
+
+    const execution = try parseCliExecution(parsed.value.result);
+    try std.testing.expectEqualStrings("orca 1.2.3\n", execution.stdout);
+    try std.testing.expectEqualStrings("warn\n", execution.stderr);
+    try std.testing.expectEqual(@as(u8, 5), execution.exit_code);
+}
+
+test "parseCliExecution accepts missing stderr as empty" {
+    const line = "{\"id\":8,\"result\":{\"status\":\"CliExecution\",\"stdout\":\"orca 1.2.3\\n\",\"exit_code\":0}}";
+    var parsed = try parseResponse(std.testing.allocator, line);
+    defer parsed.deinit();
+
+    const execution = try parseCliExecution(parsed.value.result);
+    try std.testing.expectEqualStrings("orca 1.2.3\n", execution.stdout);
+    try std.testing.expectEqualStrings("", execution.stderr);
+    try std.testing.expectEqual(@as(u8, 0), execution.exit_code);
+}
+
+test "parseCliExecution rejects daemon Error status" {
+    const line = "{\"id\":9,\"result\":{\"status\":\"Error\",\"message\":\"unsupported command\"}}";
+    var parsed = try parseResponse(std.testing.allocator, line);
+    defer parsed.deinit();
+
+    try std.testing.expectError(error.DaemonProtocolError, parseCliExecution(parsed.value.result));
+}
+
+test "parseCliExecution rejects out of range exit code" {
+    const line = "{\"id\":10,\"result\":{\"status\":\"CliExecution\",\"stdout\":\"\",\"stderr\":\"\",\"exit_code\":999}}";
+    var parsed = try parseResponse(std.testing.allocator, line);
+    defer parsed.deinit();
+
+    try std.testing.expectError(error.DaemonProtocolError, parseCliExecution(parsed.value.result));
 }
 
 test "parseResponse accepts deny payload" {
