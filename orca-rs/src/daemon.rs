@@ -33,6 +33,7 @@ fn is_process_alive(pid: u32) -> bool {
 
 use crate::allowlist::{LayeredAllowlist, load_default_allowlists};
 use crate::config::{CompiledOverrides, Config, HeredocSettings};
+use crate::daemon_cli::execute_cli;
 use crate::daemon_protocol::{
     AllowlistOverridePayload, ClientEnvelope, DaemonRequest, DaemonResponse, ResultPayload,
     SuggestionPayload,
@@ -322,6 +323,17 @@ async fn handle_connection(stream: UnixStream, state: Arc<AppState>) {
                     result: result_payload_from_evaluation(eval_result),
                 }
             }
+            DaemonRequest::ExecuteCli { argv } => {
+                let cli_result = execute_cli(&argv);
+                DaemonResponse {
+                    id,
+                    result: ResultPayload::CliExecution {
+                        stdout: cli_result.stdout,
+                        stderr: cli_result.stderr,
+                        exit_code: cli_result.exit_code,
+                    },
+                }
+            }
             DaemonRequest::Shutdown => DaemonResponse {
                 id,
                 result: ResultPayload::Pong,
@@ -453,5 +465,145 @@ mod tests {
             }
             other => panic!("expected daemon budget skip to deny, got {other:?}"),
         }
+    }
+
+    async fn wait_for_socket(socket_path: &std::path::Path) {
+        let mut attempts = 0;
+        while !socket_path.exists() && attempts < 50 {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+            attempts += 1;
+        }
+    }
+
+    async fn read_daemon_response(stream: UnixStream) -> serde_json::Value {
+        let (read_half, _write_half) = stream.into_split();
+        let mut reader = BufReader::new(read_half);
+        let mut buf = String::new();
+        reader.read_line(&mut buf).await.unwrap();
+        serde_json::from_str(&buf).unwrap()
+    }
+
+    #[tokio::test]
+    async fn daemon_execute_cli_version_returns_structured_response() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let socket_path = temp_dir.path().join("daemon.sock");
+        let pid_path = temp_dir.path().join("daemon.pid");
+        let (tx, rx) = tokio::sync::watch::channel(false);
+
+        let socket = socket_path.clone();
+        let pid = pid_path.clone();
+        let daemon_task =
+            tokio::spawn(async move { run_daemon(&socket, &pid, rx).await });
+
+        wait_for_socket(&socket_path).await;
+
+        let mut stream = UnixStream::connect(&socket_path).await.unwrap();
+        stream
+            .write_all(
+                b"{\"id\":5,\"method\":\"ExecuteCli\",\"params\":{\"argv\":[\"version\"]}}\n",
+            )
+            .await
+            .unwrap();
+
+        let response = read_daemon_response(stream).await;
+        assert_eq!(response["id"], 5);
+        assert_eq!(response["result"]["status"], "CliExecution");
+        assert_eq!(response["result"]["exit_code"], 0);
+        assert_eq!(
+            response["result"]["stdout"].as_str().unwrap().trim(),
+            env!("CARGO_PKG_VERSION")
+        );
+
+        let _ = tx.send(true);
+        let result = tokio::time::timeout(Duration::from_secs(5), daemon_task).await;
+        assert!(result.is_ok(), "daemon should complete within timeout");
+        assert!(result.unwrap().is_ok(), "daemon should return Ok");
+    }
+
+    #[tokio::test]
+    async fn daemon_execute_cli_unsupported_returns_structured_error() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let socket_path = temp_dir.path().join("daemon.sock");
+        let pid_path = temp_dir.path().join("daemon.pid");
+        let (tx, rx) = tokio::sync::watch::channel(false);
+
+        let socket = socket_path.clone();
+        let pid = pid_path.clone();
+        let daemon_task =
+            tokio::spawn(async move { run_daemon(&socket, &pid, rx).await });
+
+        wait_for_socket(&socket_path).await;
+
+        let mut stream = UnixStream::connect(&socket_path).await.unwrap();
+        stream
+            .write_all(b"{\"id\":6,\"method\":\"ExecuteCli\",\"params\":{\"argv\":[\"scan\"]}}\n")
+            .await
+            .unwrap();
+
+        let response = read_daemon_response(stream).await;
+        assert_eq!(response["id"], 6);
+        assert_eq!(response["result"]["status"], "CliExecution");
+        assert_eq!(response["result"]["exit_code"], 4);
+        assert!(
+            response["result"]["stderr"]
+                .as_str()
+                .unwrap()
+                .contains("unsupported daemon CLI command: scan")
+        );
+        assert_eq!(response["result"]["stdout"].as_str().unwrap(), "");
+
+        let _ = tx.send(true);
+        let result = tokio::time::timeout(Duration::from_secs(5), daemon_task).await;
+        assert!(result.is_ok(), "daemon should complete within timeout");
+        assert!(result.unwrap().is_ok(), "daemon should return Ok");
+    }
+
+    #[tokio::test]
+    async fn daemon_stays_alive_after_execute_cli_success_and_error() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let socket_path = temp_dir.path().join("daemon.sock");
+        let pid_path = temp_dir.path().join("daemon.pid");
+        let (tx, rx) = tokio::sync::watch::channel(false);
+
+        let socket = socket_path.clone();
+        let pid = pid_path.clone();
+        let daemon_task =
+            tokio::spawn(async move { run_daemon(&socket, &pid, rx).await });
+
+        wait_for_socket(&socket_path).await;
+
+        let mut stream = UnixStream::connect(&socket_path).await.unwrap();
+        stream
+            .write_all(
+                b"{\"id\":7,\"method\":\"ExecuteCli\",\"params\":{\"argv\":[\"version\"]}}\n",
+            )
+            .await
+            .unwrap();
+        let version_response = read_daemon_response(stream).await;
+        assert_eq!(version_response["result"]["status"], "CliExecution");
+        assert_eq!(version_response["result"]["exit_code"], 0);
+
+        let mut stream = UnixStream::connect(&socket_path).await.unwrap();
+        stream
+            .write_all(b"{\"id\":8,\"method\":\"ExecuteCli\",\"params\":{\"argv\":[\"scan\"]}}\n")
+            .await
+            .unwrap();
+        let error_response = read_daemon_response(stream).await;
+        assert_eq!(error_response["result"]["status"], "CliExecution");
+        assert_eq!(error_response["result"]["exit_code"], 4);
+
+        let mut stream = UnixStream::connect(&socket_path).await.unwrap();
+        stream
+            .write_all(b"{\"id\":9,\"method\":\"Ping\"}\n")
+            .await
+            .unwrap();
+        let ping_response = read_daemon_response(stream).await;
+        assert_eq!(ping_response["id"], 9);
+        assert_eq!(ping_response["result"]["status"], "Pong");
+
+        let _ = tx.send(true);
+        let result = tokio::time::timeout(Duration::from_secs(5), daemon_task).await;
+        assert!(result.is_ok(), "daemon should complete within timeout");
+        assert!(result.unwrap().is_ok(), "daemon should return Ok");
     }
 }

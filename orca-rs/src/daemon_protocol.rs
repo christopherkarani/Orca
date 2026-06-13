@@ -13,6 +13,10 @@ pub enum DaemonRequest {
         command: String,
         cwd: Option<String>,
     },
+    /// Execute a supported Rust CLI operation without terminating the daemon.
+    ExecuteCli {
+        argv: Vec<String>,
+    },
     Shutdown,
 }
 
@@ -90,6 +94,13 @@ pub enum ResultPayload {
     Error {
         message: String,
     },
+    /// Result from a daemon-side CLI invocation (`ExecuteCli` request).
+    CliExecution {
+        stdout: String,
+        #[serde(skip_serializing_if = "String::is_empty")]
+        stderr: String,
+        exit_code: i32,
+    },
 }
 
 #[cfg(test)]
@@ -133,6 +144,66 @@ mod tests {
         assert!(result.get("allowlist_override").is_none());
         assert!(result.get("graduated_response").is_none());
         assert!(result.get("session_occurrence").is_none());
+    }
+
+    #[test]
+    fn deserializes_execute_cli_with_argv() {
+        let envelope: ClientEnvelope = serde_json::from_str(
+            r#"{"id":3,"method":"ExecuteCli","params":{"argv":["version"]}}"#,
+        )
+        .unwrap();
+        assert_eq!(envelope.id, 3);
+        match envelope.body {
+            DaemonRequest::ExecuteCli { argv } => {
+                assert_eq!(argv, vec!["version".to_string()]);
+            }
+            other => panic!("expected ExecuteCli, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn serializes_cli_execution_response() {
+        let response = DaemonResponse {
+            id: 9,
+            result: ResultPayload::CliExecution {
+                stdout: "0.6.0\n".to_string(),
+                stderr: String::new(),
+                exit_code: 0,
+            },
+        };
+
+        let value = serde_json::to_value(response).unwrap();
+        assert_eq!(value["id"], 9);
+        let result = value.get("result").unwrap();
+        assert_eq!(
+            result.get("status").and_then(serde_json::Value::as_str),
+            Some("CliExecution")
+        );
+        assert_eq!(
+            result.get("stdout").and_then(serde_json::Value::as_str),
+            Some("0.6.0\n")
+        );
+        assert!(result.get("stderr").is_none());
+        assert_eq!(result.get("exit_code").and_then(serde_json::Value::as_i64), Some(0));
+    }
+
+    #[test]
+    fn cli_execution_includes_stderr_when_present() {
+        let response = DaemonResponse {
+            id: 10,
+            result: ResultPayload::CliExecution {
+                stdout: String::new(),
+                stderr: "unsupported daemon CLI command: scan".to_string(),
+                exit_code: 4,
+            },
+        };
+
+        let value = serde_json::to_value(response).unwrap();
+        let result = value.get("result").unwrap();
+        assert_eq!(
+            result.get("stderr").and_then(serde_json::Value::as_str),
+            Some("unsupported daemon CLI command: scan")
+        );
     }
 
     #[test]

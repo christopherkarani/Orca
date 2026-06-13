@@ -68,6 +68,7 @@ pub mod cli;
 pub mod confidence;
 pub mod config;
 pub mod daemon;
+pub mod daemon_cli;
 pub mod daemon_protocol;
 pub mod context;
 pub mod error_codes;
