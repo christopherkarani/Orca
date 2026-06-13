@@ -160,6 +160,7 @@ orca-dashboard-ui/
 # --- Merged from orca-rs/.gitignore ---
 /target
 /target/
+orca-rs/target/
 **/*.rs.bk
 a.out
 rustc-ice-*.txt
