@@ -287,7 +287,7 @@ fn load_effective_allowlists_for_agent(config: &Config, agent: &Agent) -> Layere
 /// Print version information and exit.
 fn print_version() {
     // Machine-readable version on stdout (for scripts, installers, etc.)
-    println!("{PKG_VERSION}");
+    print!("{}", cli::version_stdout_line());
 
     // ASCII art logo - compact shield design
     eprintln!();

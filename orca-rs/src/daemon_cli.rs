@@ -1,54 +1,21 @@
 //! Daemon-safe dispatch for a narrow whitelist of Rust CLI operations.
 //!
-//! Commands routed here must never call [`std::process::exit`]. Later phases
-//! can extend the whitelist or add stdout/stderr capture for richer commands.
+//! Delegates to [`crate::cli::execute_daemon_cli`], which returns structured
+//! results instead of calling [`std::process::exit`].
 
-use crate::exit_codes::{EXIT_PARSE_ERROR, EXIT_SUCCESS};
-use crate::update::current_version;
+pub use crate::cli::{CliExecutionResult, execute_daemon_cli};
 
-/// Captured output from a daemon-side CLI invocation.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct CliExecutionResult {
-    pub stdout: String,
-    pub stderr: String,
-    pub exit_code: i32,
-}
-
-/// Execute a whitelisted CLI operation for daemon `ExecuteCli` requests.
+/// Daemon-side entry point for `ExecuteCli` requests.
 ///
-/// # Errors
-///
-/// Does not return `Result`; unsupported commands are reported via
-/// [`CliExecutionResult::exit_code`] and [`CliExecutionResult::stderr`].
-#[must_use]
-pub fn execute_cli(argv: &[String]) -> CliExecutionResult {
-    if argv.is_empty() {
-        return CliExecutionResult {
-            stdout: String::new(),
-            stderr: "ExecuteCli requires at least one argument (subcommand)".to_string(),
-            exit_code: EXIT_PARSE_ERROR,
-        };
-    }
-
-    match argv[0].as_str() {
-        "version" | "--version" | "-V" => CliExecutionResult {
-            stdout: format!("{}\n", current_version()),
-            stderr: String::new(),
-            exit_code: EXIT_SUCCESS,
-        },
-        other => CliExecutionResult {
-            stdout: String::new(),
-            stderr: format!(
-                "unsupported daemon CLI command: {other} (Phase 1B supports: version)"
-            ),
-            exit_code: EXIT_PARSE_ERROR,
-        },
-    }
-}
+/// Alias kept for call sites (`daemon.rs`, tests) that predate the
+/// `execute_daemon_cli` name.
+pub use execute_daemon_cli as execute_cli;
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::exit_codes::{EXIT_PARSE_ERROR, EXIT_SUCCESS};
+    use crate::update::current_version;
 
     #[test]
     fn version_subcommand_returns_pkg_version_on_stdout() {
@@ -79,5 +46,12 @@ mod tests {
         assert_eq!(result.exit_code, EXIT_PARSE_ERROR);
         assert!(result.stdout.is_empty());
         assert!(result.stderr.contains("unsupported daemon CLI command: scan"));
+    }
+
+    #[test]
+    fn daemon_cli_matches_cli_version_stdout_line() {
+        use crate::cli::version_stdout_line;
+        let result = execute_cli(&["version".to_string()]);
+        assert_eq!(result.stdout, version_stdout_line());
     }
 }

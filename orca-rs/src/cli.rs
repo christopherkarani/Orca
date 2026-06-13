@@ -14,7 +14,7 @@ use crate::evaluator::{
     evaluate_command_with_pack_order, evaluate_command_with_pack_order_deadline_at_path,
     EvaluationDecision, EvaluationResult, MatchSource, DEFAULT_WINDOW_WIDTH,
 };
-use crate::exit_codes::{EXIT_DENIED, EXIT_WARNING};
+use crate::exit_codes::{EXIT_DENIED, EXIT_PARSE_ERROR, EXIT_SUCCESS, EXIT_WARNING};
 use crate::highlight::{format_highlighted_command, should_use_color, HighlightSpan};
 use crate::history::{
     ExportOptions, HistoryDb, HistoryStats, InteractiveAllowlistAuditEntry,
@@ -1979,6 +1979,54 @@ pub enum CommandOutput {
     /// Result from the `history check --strict` subcommand.
     HistoryResult { strict_ok: bool },
 }
+/// Captured stdout/stderr/exit code from a daemon-safe CLI invocation.
+///
+/// Used by [`execute_daemon_cli`] and serialized into daemon protocol
+/// `CliExecution` responses.  Handlers must never call [`std::process::exit`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CliExecutionResult {
+    pub stdout: String,
+    pub stderr: String,
+    pub exit_code: i32,
+}
+
+/// Machine-readable version line written to stdout by `orca --version`.
+#[must_use]
+pub fn version_stdout_line() -> String {
+    format!("{}\n", env!("CARGO_PKG_VERSION"))
+}
+
+/// Execute a whitelisted CLI operation for daemon `ExecuteCli` requests.
+///
+/// Routes through the same version formatting as standalone `orca --version`
+/// stdout output.  Unsupported commands return structured errors instead of
+/// terminating the process.
+#[must_use]
+pub fn execute_daemon_cli(argv: &[String]) -> CliExecutionResult {
+    if argv.is_empty() {
+        return CliExecutionResult {
+            stdout: String::new(),
+            stderr: "ExecuteCli requires at least one argument (subcommand)".to_string(),
+            exit_code: EXIT_PARSE_ERROR,
+        };
+    }
+
+    match argv[0].as_str() {
+        "version" | "--version" | "-V" => CliExecutionResult {
+            stdout: version_stdout_line(),
+            stderr: String::new(),
+            exit_code: EXIT_SUCCESS,
+        },
+        other => CliExecutionResult {
+            stdout: String::new(),
+            stderr: format!(
+                "unsupported daemon CLI command: {other} (Phase 1B supports: version)"
+            ),
+            exit_code: EXIT_PARSE_ERROR,
+        },
+    }
+}
+
 
 /// # Errors
 ///
