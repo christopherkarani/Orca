@@ -154,8 +154,7 @@ pub fn runWithCwd(io: std.Io, environ_map: *const std.process.Environ.Map, cwd: 
             try stderr.writeAll("orca version: unsupported argument. Run 'orca help version' for usage.\n");
             return exit_codes.usage;
         }
-        try version_command.writePlain(stdout, version_command.current());
-        return exit_codes.success;
+        return proxyVersionCommand(realDaemonExecuteCli, io, stdout, stderr);
     }
 
     // Highest-value DX helper for installers, Homebrew post-install hooks, npm wrapper,
@@ -204,6 +203,54 @@ pub fn runWithCwd(io: std.Io, environ_map: *const std.process.Environ.Map, cwd: 
         try stderr.print("orca: unknown command '{s}'.\nRun 'orca help' for usage.\n", .{command});
     }
     return exit_codes.usage;
+}
+
+fn proxyVersionCommand(comptime execute_cli: anytype, io: std.Io, stdout: anytype, stderr: anytype) !u8 {
+    return execute_cli(io, &.{"version"}, stdout, stderr) catch |err| {
+        try stderr.print("orca version: {s}: {s}\n", .{ daemonErrorLabel(err), @errorName(err) });
+        return exit_codes.general;
+    };
+}
+
+fn daemonErrorLabel(err: anyerror) []const u8 {
+    return switch (err) {
+        error.HomeDirectoryNotFound,
+        error.DaemonBinaryNotFound,
+        error.DaemonSpawnFailed,
+        error.DaemonStartTimeout,
+        error.DaemonNotReady,
+        error.StaleSocket,
+        error.SocketConnectFailed,
+        => "daemon unavailable",
+        error.SocketReadFailed,
+        error.SocketWriteFailed,
+        => "daemon communication failed",
+        error.RequestSerializationFailed,
+        error.ResponseParseFailed,
+        error.DaemonProtocolError,
+        => "daemon protocol error",
+        error.OutOfMemory => "out of memory",
+        else => "daemon proxy failed",
+    };
+}
+
+fn realDaemonExecuteCli(_: std.Io, argv: []const []const u8, stdout: anytype, stderr: anytype) daemon.DaemonError!u8 {
+    var parsed = try daemon.executeCli(std.heap.smp_allocator, argv);
+    defer parsed.deinit();
+
+    if (daemon.responseStatus(parsed.value.result) == .error_status) {
+        if (daemon.responseErrorMessage(parsed.value.result)) |message| {
+            stderr.print("orca daemon: {s}\n", .{message}) catch return error.SocketWriteFailed;
+        } else {
+            stderr.writeAll("orca daemon: protocol error\n") catch return error.SocketWriteFailed;
+        }
+        return exit_codes.general;
+    }
+
+    const execution = try daemon.parseCliExecution(parsed.value.result);
+    stdout.writeAll(execution.stdout) catch return error.SocketWriteFailed;
+    if (execution.stderr.len > 0) stderr.writeAll(execution.stderr) catch return error.SocketWriteFailed;
+    return execution.exit_code;
 }
 
 fn testRun(argv: []const []const u8, stdout: anytype, stderr: anytype) !u8 {
@@ -317,18 +364,64 @@ test "help run includes examples section" {
     try std.testing.expectEqualStrings("", stderr_writer.buffered());
 }
 
-test "version prints development version" {
+fn fakeVersionSuccess(_: std.Io, argv: []const []const u8, stdout: anytype, _: anytype) !u8 {
+    try std.testing.expectEqual(@as(usize, 1), argv.len);
+    try std.testing.expectEqualStrings("version", argv[0]);
+    try stdout.writeAll("orca-rs 1.2.3\n");
+    return exit_codes.success;
+}
+
+fn fakeVersionError(_: std.Io, argv: []const []const u8, _: anytype, stderr: anytype) !u8 {
+    try std.testing.expectEqual(@as(usize, 1), argv.len);
+    try std.testing.expectEqualStrings("version", argv[0]);
+    try stderr.writeAll("unsupported command\n");
+    return exit_codes.general;
+}
+
+fn fakeVersionUnavailable(_: std.Io, argv: []const []const u8, _: anytype, _: anytype) !u8 {
+    try std.testing.expectEqual(@as(usize, 1), argv.len);
+    try std.testing.expectEqualStrings("version", argv[0]);
+    return error.DaemonBinaryNotFound;
+}
+
+test "version proxy routes version argv and renders success" {
     var stdout_buf: [128]u8 = undefined;
     var stderr_buf: [128]u8 = undefined;
     var stdout_writer: std.Io.Writer = .fixed(&stdout_buf);
     var stderr_writer: std.Io.Writer = .fixed(&stderr_buf);
 
-    const code = try testRun(&.{"version"}, &stdout_writer, &stderr_writer);
+    const code = try proxyVersionCommand(fakeVersionSuccess, std.testing.io, &stdout_writer, &stderr_writer);
 
     try std.testing.expectEqual(exit_codes.success, code);
-    try std.testing.expect(std.mem.startsWith(u8, stdout_writer.buffered(), "orca "));
-    try std.testing.expect(std.mem.indexOf(u8, stdout_writer.buffered(), version) != null);
+    try std.testing.expectEqualStrings("orca-rs 1.2.3\n", stdout_writer.buffered());
     try std.testing.expectEqualStrings("", stderr_writer.buffered());
+}
+
+test "version proxy propagates daemon error output and exit code" {
+    var stdout_buf: [128]u8 = undefined;
+    var stderr_buf: [128]u8 = undefined;
+    var stdout_writer: std.Io.Writer = .fixed(&stdout_buf);
+    var stderr_writer: std.Io.Writer = .fixed(&stderr_buf);
+
+    const code = try proxyVersionCommand(fakeVersionError, std.testing.io, &stdout_writer, &stderr_writer);
+
+    try std.testing.expectEqual(exit_codes.general, code);
+    try std.testing.expectEqualStrings("", stdout_writer.buffered());
+    try std.testing.expectEqualStrings("unsupported command\n", stderr_writer.buffered());
+}
+
+test "version proxy reports daemon unavailable explicitly" {
+    var stdout_buf: [128]u8 = undefined;
+    var stderr_buf: [128]u8 = undefined;
+    var stdout_writer: std.Io.Writer = .fixed(&stdout_buf);
+    var stderr_writer: std.Io.Writer = .fixed(&stderr_buf);
+
+    const code = try proxyVersionCommand(fakeVersionUnavailable, std.testing.io, &stdout_writer, &stderr_writer);
+
+    try std.testing.expectEqual(exit_codes.general, code);
+    try std.testing.expectEqualStrings("", stdout_writer.buffered());
+    try std.testing.expect(std.mem.indexOf(u8, stderr_writer.buffered(), "daemon unavailable") != null);
+    try std.testing.expect(std.mem.indexOf(u8, stderr_writer.buffered(), "DaemonBinaryNotFound") != null);
 }
 
 test "version supports json, help, and rejects extra arguments" {
