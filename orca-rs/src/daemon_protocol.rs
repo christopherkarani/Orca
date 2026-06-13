@@ -97,7 +97,7 @@ pub enum ResultPayload {
     /// Result from a daemon-side CLI invocation (`ExecuteCli` request).
     CliExecution {
         stdout: String,
-        #[serde(skip_serializing_if = "String::is_empty")]
+        #[serde(default, skip_serializing_if = "String::is_empty")]
         stderr: String,
         exit_code: i32,
     },
@@ -185,6 +185,27 @@ mod tests {
         );
         assert!(result.get("stderr").is_none());
         assert_eq!(result.get("exit_code").and_then(serde_json::Value::as_i64), Some(0));
+    }
+
+    #[test]
+    fn deserializes_cli_execution_without_stderr_field() {
+        let response: DaemonResponse = serde_json::from_str(
+            r#"{"id":11,"result":{"status":"CliExecution","stdout":"0.6.0\n","exit_code":0}}"#,
+        )
+        .unwrap();
+        assert_eq!(response.id, 11);
+        match response.result {
+            ResultPayload::CliExecution {
+                stdout,
+                stderr,
+                exit_code,
+            } => {
+                assert_eq!(stdout, "0.6.0\n");
+                assert!(stderr.is_empty());
+                assert_eq!(exit_code, 0);
+            }
+            other => panic!("expected CliExecution, got {other:?}"),
+        }
     }
 
     #[test]
