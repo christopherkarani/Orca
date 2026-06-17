@@ -76,6 +76,15 @@ const ExecuteCliRequest = struct {
     },
 };
 
+const EvaluateRequest = struct {
+    id: u64,
+    method: []const u8 = "Evaluate",
+    params: struct {
+        command: []const u8,
+        cwd: ?[]const u8 = null,
+    },
+};
+
 /// High-level status tag from a daemon `result` object.
 pub const ResponseStatus = enum {
     pong,
@@ -186,15 +195,31 @@ pub fn responseStatus(result: std.json.Value) ResponseStatus {
 /// Return the daemon error message when `result.status == "Error"`.
 pub fn responseErrorMessage(result: std.json.Value) ?[]const u8 {
     if (responseStatus(result) != .error_status) return null;
+    return responseStringField(result, "message");
+}
+
+/// Return a string field from a daemon result object when present.
+pub fn responseStringField(result: std.json.Value, field_name: []const u8) ?[]const u8 {
     const object = switch (result) {
         .object => |map| map,
         else => return null,
     };
-    const message_val = object.get("message") orelse return null;
-    return switch (message_val) {
+    const value = object.get(field_name) orelse return null;
+    return switch (value) {
         .string => |s| s,
         else => null,
     };
+}
+
+/// Return the best hook `rule` identifier from a daemon Deny payload.
+pub fn responseDenyRule(result: std.json.Value) ?[]const u8 {
+    if (responseStatus(result) != .deny) return null;
+    return responseStringField(result, "pattern_name") orelse responseStringField(result, "pack_id");
+}
+
+/// Return the daemon Allow/Deny reason string when present.
+pub fn responseReason(result: std.json.Value) ?[]const u8 {
+    return responseStringField(result, "reason");
 }
 
 /// Build the JSON request envelope for the Rust daemon ExecuteCli method.
@@ -204,6 +229,21 @@ pub fn buildExecuteCliRequestJson(allocator: std.mem.Allocator, id: u64, argv: [
     return std.json.Stringify.valueAlloc(allocator, ExecuteCliRequest{
         .id = id,
         .params = .{ .argv = argv },
+    }, .{}) catch error.RequestSerializationFailed;
+}
+
+/// Build the JSON request envelope for the Rust daemon Evaluate method.
+///
+/// Caller owns the returned slice.
+pub fn buildEvaluateRequestJson(
+    allocator: std.mem.Allocator,
+    id: u64,
+    command: []const u8,
+    cwd: ?[]const u8,
+) DaemonError![]u8 {
+    return std.json.Stringify.valueAlloc(allocator, EvaluateRequest{
+        .id = id,
+        .params = .{ .command = command, .cwd = cwd },
     }, .{}) catch error.RequestSerializationFailed;
 }
 
@@ -315,6 +355,27 @@ pub fn sendRequest(
     request: DaemonRequest,
 ) DaemonError!std.json.Parsed(DaemonResponse) {
     return sendRequestWithTimeout(allocator, socket_path, request, default_request_timeout_ms);
+}
+
+/// Ensure the daemon is running and evaluate a shell command.
+///
+/// Callers inspect the returned result before deinitializing the Parsed response.
+pub fn evaluate(
+    allocator: std.mem.Allocator,
+    command: []const u8,
+    cwd: ?[]const u8,
+) DaemonError!std.json.Parsed(DaemonResponse) {
+    try ensureDaemonRunning(allocator);
+    const path = try socketPath(allocator);
+    defer allocator.free(path);
+
+    const json_str = try buildEvaluateRequestJson(allocator, 1, command, cwd);
+    defer allocator.free(json_str);
+
+    var parsed = try sendRawRequestWithTimeout(allocator, path, json_str, default_request_timeout_ms);
+    errdefer parsed.deinit();
+    if (parsed.value.id != 1) return error.DaemonProtocolError;
+    return parsed;
 }
 
 /// Ensure the daemon is running and send ExecuteCli.
@@ -655,6 +716,41 @@ test "buildExecuteCliRequestJson serializes expected argv" {
     defer std.testing.allocator.free(json_str);
 
     try std.testing.expectEqualStrings("{\"id\":7,\"method\":\"ExecuteCli\",\"params\":{\"argv\":[\"version\"]}}", json_str);
+}
+
+test "buildEvaluateRequestJson serializes command and cwd" {
+    const json_str = try buildEvaluateRequestJson(std.testing.allocator, 3, "git status", "/tmp/work");
+    defer std.testing.allocator.free(json_str);
+
+    try std.testing.expectEqualStrings(
+        "{\"id\":3,\"method\":\"Evaluate\",\"params\":{\"command\":\"git status\",\"cwd\":\"/tmp/work\"}}",
+        json_str,
+    );
+}
+
+test "buildEvaluateRequestJson serializes null cwd" {
+    const json_str = try buildEvaluateRequestJson(std.testing.allocator, 4, "echo hi", null);
+    defer std.testing.allocator.free(json_str);
+
+    try std.testing.expectEqualStrings(
+        "{\"id\":4,\"method\":\"Evaluate\",\"params\":{\"command\":\"echo hi\",\"cwd\":null}}",
+        json_str,
+    );
+}
+
+test "parseResponse accepts allow payload with reason" {
+    const line = "{\"id\":5,\"result\":{\"status\":\"Allow\",\"reason\":\"Command allowed by evaluator\"}}";
+    var parsed = try parseResponse(std.testing.allocator, line);
+    defer parsed.deinit();
+    try std.testing.expect(responseStatus(parsed.value.result) == .allow);
+    try std.testing.expectEqualStrings("Command allowed by evaluator", responseReason(parsed.value.result).?);
+}
+
+test "responseDenyRule prefers pattern_name over pack_id" {
+    const line = "{\"id\":6,\"result\":{\"status\":\"Deny\",\"reason\":\"blocked\",\"pack_id\":\"git\",\"pattern_name\":\"force_push\"}}";
+    var parsed = try parseResponse(std.testing.allocator, line);
+    defer parsed.deinit();
+    try std.testing.expectEqualStrings("force_push", responseDenyRule(parsed.value.result).?);
 }
 
 test "parseCliExecution reads stdout stderr and exit code" {
