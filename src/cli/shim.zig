@@ -6,6 +6,7 @@ const intercept = @import("../intercept/mod.zig");
 const policy = @import("orca_core").policy;
 const exit_codes = @import("exit_codes.zig");
 const help = @import("help.zig");
+const shell_eval = @import("shell_eval.zig");
 
 const ShimOptions = struct {
     command_argv: []const []const u8 = &.{},
@@ -30,10 +31,10 @@ fn exec(io: std.Io, environ_map: *const std.process.Environ.Map, command_argv: [
     defer _ = gpa_state.deinit();
     const allocator = gpa_state.allocator();
 
-    return execWithEnv(io, allocator, command_argv, environ_map, stderr);
+    return execWithEnv(io, allocator, command_argv, environ_map, stderr, null);
 }
 
-fn execWithEnv(io: std.Io, allocator: std.mem.Allocator, command_argv: []const []const u8, env_map: *const std.process.Environ.Map, stderr: anytype) !u8 {
+fn execWithEnv(io: std.Io, allocator: std.mem.Allocator, command_argv: []const []const u8, env_map: *const std.process.Environ.Map, stderr: anytype, shell_evaluator: ?shell_eval.ShellCommandEvaluatorFn) !u8 {
     const session_id = env_map.get("ORCA_SESSION_ID") orelse {
         try stderr.writeAll("orca shim exec: missing ORCA_SESSION_ID; shims only work inside an Orca session.\n");
         return exit_codes.general;
@@ -76,7 +77,7 @@ fn execWithEnv(io: std.Io, allocator: std.mem.Allocator, command_argv: []const [
     defer selected.deinit();
     const effective_mode = shimMode(&selected.policy, env_map);
 
-    var command_decision = try intercept.commands.evaluate(allocator, &selected.policy, effective_mode, command_argv);
+    var command_decision = try shell_eval.evaluateCommand(allocator, effective_mode, command_argv, workspace_root, shell_evaluator);
     defer command_decision.deinit(allocator);
 
     var final_decision = command_decision.decision;
@@ -321,7 +322,7 @@ test "shim callback delegates allowed commands and removes shim path" {
 
     var stderr_buf: [1024]u8 = undefined;
     var stderr_writer: std.Io.Writer = .fixed(&stderr_buf);
-    const code = try execWithEnv(std.testing.io, std.testing.allocator, &.{"true"}, &env_map, &stderr_writer);
+    const code = try execWithEnv(std.testing.io, std.testing.allocator, &.{"true"}, &env_map, &stderr_writer, shell_eval.mockDaemonAllowEvaluator);
     try std.testing.expectEqual(exit_codes.success, code);
 }
 
@@ -356,7 +357,7 @@ test "shim callback blocks denied commands before delegation" {
 
     var stderr_buf: [1024]u8 = undefined;
     var stderr_writer: std.Io.Writer = .fixed(&stderr_buf);
-    const code = try execWithEnv(std.testing.io, std.testing.allocator, &.{ "rm", "-rf", "/" }, &env_map, &stderr_writer);
+    const code = try execWithEnv(std.testing.io, std.testing.allocator, &.{ "rm", "-rf", "/" }, &env_map, &stderr_writer, shell_eval.mockDaemonDenyEvaluator);
     try std.testing.expectEqual(exit_codes.denial, code);
 
     const events = try readSessionEvents(std.testing.allocator, root, session_id);
@@ -412,7 +413,7 @@ test "shim callback preserves parent approval for ask-class command" {
 
     var stderr_buf: [1024]u8 = undefined;
     var stderr_writer: std.Io.Writer = .fixed(&stderr_buf);
-    const code = try execWithEnv(std.testing.io, std.testing.allocator, &.{ "npm", "install" }, &env_map, &stderr_writer);
+    const code = try execWithEnv(std.testing.io, std.testing.allocator, &.{ "npm", "install" }, &env_map, &stderr_writer, shell_eval.mockDaemonSoftBlockAllowEvaluator);
     if (code != exit_codes.success) {
         std.debug.print("npm approval shim stderr: {s}\n", .{stderr_writer.buffered()});
     }
@@ -457,7 +458,7 @@ test "shim callback rejects forged approval hash from child environment" {
 
     var stderr_buf: [1024]u8 = undefined;
     var stderr_writer: std.Io.Writer = .fixed(&stderr_buf);
-    const code = try execWithEnv(std.testing.io, std.testing.allocator, &.{ "git", "push" }, &env_map, &stderr_writer);
+    const code = try execWithEnv(std.testing.io, std.testing.allocator, &.{ "git", "push" }, &env_map, &stderr_writer, shell_eval.mockDaemonDenyEvaluator);
     try std.testing.expectEqual(exit_codes.denial, code);
 
     const events = try readSessionEvents(std.testing.allocator, root, session_id);
@@ -509,7 +510,7 @@ test "shim callback rejects forged policy path from child environment" {
 
     var stderr_buf: [1024]u8 = undefined;
     var stderr_writer: std.Io.Writer = .fixed(&stderr_buf);
-    const code = try execWithEnv(std.testing.io, std.testing.allocator, &.{ "git", "push" }, &env_map, &stderr_writer);
+    const code = try execWithEnv(std.testing.io, std.testing.allocator, &.{ "git", "push" }, &env_map, &stderr_writer, shell_eval.mockDaemonDenyEvaluator);
     try std.testing.expectEqual(exit_codes.denial, code);
 
     const events = try readSessionEvents(std.testing.allocator, root, session_id);
@@ -550,7 +551,7 @@ test "shim callback accepts recorded builtin policy source" {
 
     var stderr_buf: [1024]u8 = undefined;
     var stderr_writer: std.Io.Writer = .fixed(&stderr_buf);
-    const code = try execWithEnv(std.testing.io, std.testing.allocator, &.{"true"}, &env_map, &stderr_writer);
+    const code = try execWithEnv(std.testing.io, std.testing.allocator, &.{"true"}, &env_map, &stderr_writer, shell_eval.mockDaemonAllowEvaluator);
     if (code != exit_codes.success) {
         std.debug.print("builtin policy shim stderr: {s}\n", .{stderr_writer.buffered()});
     }

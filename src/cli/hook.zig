@@ -7,6 +7,7 @@ const policy = @import("orca_core").policy;
 const exit_codes = @import("exit_codes.zig");
 const help = @import("help.zig");
 const daemon = @import("daemon.zig");
+const shell_eval = @import("shell_eval.zig");
 
 // Maximum JSON payload size to prevent memory exhaustion from hostile hosts.
 const max_payload_len = 256 * 1024; // 256 KiB
@@ -464,10 +465,7 @@ const HookResponse = struct {
     }
 };
 
-const ShellCommandEvent = struct {
-    command: []const u8,
-    cwd: ?[]const u8 = null,
-};
+const ShellCommandEvent = shell_eval.ShellCommandEvent;
 
 const NonShellHookEvent = enum {
     file_write,
@@ -491,13 +489,10 @@ const PreToolUseRoute = union(enum) {
     fail_closed: []const u8,
 };
 
-const ShellCommandEvaluatorFn = *const fn (
-    std.mem.Allocator,
-    ShellCommandEvent,
-) daemon.DaemonError!std.json.Parsed(daemon.DaemonResponse);
+const ShellCommandEvaluatorFn = shell_eval.ShellCommandEvaluatorFn;
 
 fn defaultShellCommandEvaluator(allocator: std.mem.Allocator, shell_event: ShellCommandEvent) daemon.DaemonError!std.json.Parsed(daemon.DaemonResponse) {
-    return daemon.evaluate(allocator, shell_event.command, shell_event.cwd);
+    return shell_eval.defaultEvaluator(allocator, shell_event);
 }
 
 fn evaluateHook(
@@ -729,20 +724,15 @@ fn evaluateShellCommandRoute(
 }
 
 fn daemonUnavailableReason(err: daemon.DaemonError) []const u8 {
-    return switch (err) {
-        error.HomeDirectoryNotFound => "daemon unavailable: HOME not set",
-        error.DaemonBinaryNotFound => "daemon unavailable: orca-daemon binary not found",
-        error.DaemonSpawnFailed => "daemon unavailable: failed to spawn orca-daemon",
-        error.DaemonStartTimeout => "daemon unavailable: startup timed out",
-        error.DaemonNotReady => "daemon unavailable: daemon not ready",
-        error.StaleSocket => "daemon unavailable: stale socket artifact",
-        error.SocketConnectFailed => "daemon unavailable: socket connect failed",
-        error.SocketWriteFailed => "daemon unavailable: socket write failed",
-        error.SocketReadFailed => "daemon unavailable: socket read failed",
-        error.RequestSerializationFailed => "daemon unavailable: request serialization failed",
-        error.ResponseParseFailed => "daemon unavailable: malformed daemon response",
-        error.DaemonProtocolError => "daemon unavailable: protocol error",
-        error.OutOfMemory => "daemon unavailable: out of memory",
+    return shell_eval.daemonUnavailableReason(err);
+}
+
+fn shellEvalPluginDecisionToHook(decision: shell_eval.PluginDecision) PluginDecision {
+    return switch (decision) {
+        .allow => .allow,
+        .block => .block,
+        .warn => .warn,
+        .ask => .ask,
     };
 }
 
@@ -754,36 +744,17 @@ fn applyCiModeToShellDecision(decision: PluginDecision, ci_mode: bool) PluginDec
 }
 
 fn pluginDecisionFromDaemonAllow(result: std.json.Value) PluginDecision {
-    const object = switch (result) {
-        .object => |map| map,
-        else => return .allow,
-    };
-    const graduated = object.get("graduated_response") orelse return .allow;
-    const grad_type = switch (graduated) {
-        .object => |map| map.get("type"),
-        else => null,
-    };
-    const type_name = switch (grad_type orelse return .allow) {
-        .string => |s| s,
-        else => return .allow,
-    };
-    if (std.mem.eql(u8, type_name, "Warning")) return .warn;
-    if (std.mem.eql(u8, type_name, "SoftBlock")) return .ask;
-    if (std.mem.eql(u8, type_name, "HardBlock")) return .block;
-    return .allow;
+    return shellEvalPluginDecisionToHook(shell_eval.pluginDecisionFromDaemonAllow(result));
 }
 
 fn riskFromDaemonSeverity(severity: ?[]const u8) RiskLevel {
-    const value = severity orelse return .high;
-    if (severityEquals(value, "critical")) return .critical;
-    if (severityEquals(value, "high")) return .high;
-    if (severityEquals(value, "medium")) return .medium;
-    if (severityEquals(value, "low")) return .low;
-    return .unknown;
-}
-
-fn severityEquals(severity: []const u8, expected: []const u8) bool {
-    return std.ascii.eqlIgnoreCase(severity, expected);
+    return switch (shell_eval.riskLevelFromDaemonSeverity(severity)) {
+        .low => .low,
+        .medium => .medium,
+        .high => .high,
+        .critical => .critical,
+        .unknown => .unknown,
+    };
 }
 
 fn recordDaemonMetadataRedaction(
@@ -815,12 +786,7 @@ fn buildAgentVisibleDaemonDeny(
 
     const decision = applyCiModeToShellDecision(.block, ci_mode);
     const risk = riskFromDaemonSeverity(daemon.responseStringField(result, "severity"));
-    const rule = if (daemon.responseDenyRule(result)) |rule_name| try allocator.dupe(u8, rule_name) else null;
-
-    const reason = if (rule) |rule_name|
-        try std.fmt.allocPrint(allocator, "blocked by Orca policy rule: {s}", .{rule_name})
-    else
-        try allocator.dupe(u8, "command denied by Orca policy");
+    const deny = try shell_eval.buildDaemonDenyReason(allocator, result);
 
     const message = if (daemon.responseStringField(result, "explanation")) |explanation|
         try std.fmt.allocPrint(allocator, "command blocked by Orca policy: {s}", .{explanation})
@@ -830,8 +796,8 @@ fn buildAgentVisibleDaemonDeny(
     return .{
         .decision = decision,
         .risk = risk,
-        .reason = reason,
-        .rule = rule,
+        .reason = deny.reason,
+        .rule = deny.rule,
         .message = message,
     };
 }
@@ -1271,38 +1237,25 @@ fn writeJsonString(writer: anytype, value: []const u8) !void {
 // Daemon evaluation test helpers
 // ---------------------------------------------------------------------------
 
-var test_last_evaluate_command: ?[]const u8 = null;
-var test_last_evaluate_cwd: ?[]const u8 = null;
-
-fn mockDaemonResponse(allocator: std.mem.Allocator, line: []const u8) daemon.DaemonError!std.json.Parsed(daemon.DaemonResponse) {
-    return daemon.parseResponse(allocator, line);
-}
-
 fn mockDaemonAllowEvaluator(allocator: std.mem.Allocator, shell_event: ShellCommandEvent) daemon.DaemonError!std.json.Parsed(daemon.DaemonResponse) {
-    test_last_evaluate_command = shell_event.command;
-    test_last_evaluate_cwd = shell_event.cwd;
-    return mockDaemonResponse(allocator, "{\"id\":1,\"result\":{\"status\":\"Allow\",\"reason\":\"Command allowed by evaluator\"}}");
+    return shell_eval.mockDaemonAllowEvaluator(allocator, shell_event);
 }
 
 fn mockDaemonDenyEvaluator(allocator: std.mem.Allocator, shell_event: ShellCommandEvent) daemon.DaemonError!std.json.Parsed(daemon.DaemonResponse) {
-    test_last_evaluate_command = shell_event.command;
-    test_last_evaluate_cwd = shell_event.cwd;
-    return mockDaemonResponse(allocator, "{\"id\":1,\"result\":{\"status\":\"Deny\",\"reason\":\"Command denied by evaluator\",\"pack_id\":\"git\",\"pattern_name\":\"destructive_rm\",\"severity\":\"critical\",\"explanation\":\"recursive delete of root\"}}");
+    return shell_eval.mockDaemonDenyEvaluator(allocator, shell_event);
 }
 
 fn mockDaemonWarnAllowEvaluator(allocator: std.mem.Allocator, shell_event: ShellCommandEvent) daemon.DaemonError!std.json.Parsed(daemon.DaemonResponse) {
-    _ = shell_event;
-    return mockDaemonResponse(allocator, "{\"id\":1,\"result\":{\"status\":\"Allow\",\"reason\":\"Command allowed with warning\",\"graduated_response\":{\"type\":\"Warning\",\"occurrence\":2}}}");
+    return shell_eval.mockDaemonWarnAllowEvaluator(allocator, shell_event);
 }
 
 fn mockDaemonErrorEvaluator(allocator: std.mem.Allocator, shell_event: ShellCommandEvent) daemon.DaemonError!std.json.Parsed(daemon.DaemonResponse) {
-    _ = shell_event;
-    return mockDaemonResponse(allocator, "{\"id\":1,\"result\":{\"status\":\"Error\",\"message\":\"evaluator failure\"}}");
+    return shell_eval.mockDaemonErrorEvaluator(allocator, shell_event);
 }
 
 fn mockDaemonDenyWithPreviewEvaluator(allocator: std.mem.Allocator, shell_event: ShellCommandEvent) daemon.DaemonError!std.json.Parsed(daemon.DaemonResponse) {
     _ = shell_event;
-    return mockDaemonResponse(allocator, "{\"id\":1,\"result\":{\"status\":\"Deny\",\"reason\":\"matched rm -rf / in command\",\"pack_id\":\"git\",\"pattern_name\":\"destructive_rm\",\"severity\":\"Critical\",\"explanation\":\"recursive delete of root\",\"matched_text_preview\":\"rm -rf /\"}}");
+    return shell_eval.mockDaemonResponse(allocator, "{\"id\":1,\"result\":{\"status\":\"Deny\",\"reason\":\"matched rm -rf / in command\",\"pack_id\":\"git\",\"pattern_name\":\"destructive_rm\",\"severity\":\"Critical\",\"explanation\":\"recursive delete of root\",\"matched_text_preview\":\"rm -rf /\"}}");
 }
 
 fn mockDaemonMalformedEvaluator(allocator: std.mem.Allocator, shell_event: ShellCommandEvent) daemon.DaemonError!std.json.Parsed(daemon.DaemonResponse) {
@@ -1311,9 +1264,7 @@ fn mockDaemonMalformedEvaluator(allocator: std.mem.Allocator, shell_event: Shell
 }
 
 fn mockDaemonUnavailableEvaluator(allocator: std.mem.Allocator, shell_event: ShellCommandEvent) daemon.DaemonError!std.json.Parsed(daemon.DaemonResponse) {
-    _ = allocator;
-    _ = shell_event;
-    return error.SocketConnectFailed;
+    return shell_eval.mockDaemonUnavailableEvaluator(allocator, shell_event);
 }
 
 fn mockDaemonTimeoutEvaluator(allocator: std.mem.Allocator, shell_event: ShellCommandEvent) daemon.DaemonError!std.json.Parsed(daemon.DaemonResponse) {
@@ -1903,14 +1854,14 @@ test "hook shell command forwards command and cwd to daemon Evaluate" {
     defer _ = gpa_state.deinit();
     const allocator = gpa_state.allocator();
 
-    test_last_evaluate_command = null;
-    test_last_evaluate_cwd = null;
+    shell_eval.test_last_evaluate_command = null;
+    shell_eval.test_last_evaluate_cwd = null;
 
     var result = try runShellRoute(allocator, "git status", "/tmp/repo", false, mockDaemonAllowEvaluator);
     defer result.deinit(allocator);
 
-    try std.testing.expectEqualStrings("git status", test_last_evaluate_command.?);
-    try std.testing.expectEqualStrings("/tmp/repo", test_last_evaluate_cwd.?);
+    try std.testing.expectEqualStrings("git status", shell_eval.test_last_evaluate_command.?);
+    try std.testing.expectEqualStrings("/tmp/repo", shell_eval.test_last_evaluate_cwd.?);
     try std.testing.expectEqual(PluginDecision.allow, result.decision);
 }
 
@@ -2088,8 +2039,8 @@ test "hook evaluatePreToolUse routes shell PreToolUse through daemon evaluator" 
     var limitations: std.ArrayList([]const u8) = .empty;
     try shellRouteSetup(allocator, &redactions, &limitations);
 
-    test_last_evaluate_command = null;
-    test_last_evaluate_cwd = null;
+    shell_eval.test_last_evaluate_command = null;
+    shell_eval.test_last_evaluate_cwd = null;
 
     var result = try evaluatePreToolUse(
         allocator,
@@ -2102,7 +2053,7 @@ test "hook evaluatePreToolUse routes shell PreToolUse through daemon evaluator" 
     );
     defer result.deinit(allocator);
 
-    try std.testing.expectEqualStrings("git status", test_last_evaluate_command.?);
+    try std.testing.expectEqualStrings("git status", shell_eval.test_last_evaluate_command.?);
     try std.testing.expectEqual(PluginDecision.allow, result.decision);
     try std.testing.expectEqualStrings("command", result.category);
 }
@@ -2182,7 +2133,7 @@ test "hook evaluatePreToolUse fail-closes malformed shell payload before daemon 
     var limitations: std.ArrayList([]const u8) = .empty;
     try shellRouteSetup(allocator, &redactions, &limitations);
 
-    test_last_evaluate_command = null;
+    shell_eval.test_last_evaluate_command = null;
 
     var result = try evaluatePreToolUse(
         allocator,
@@ -2195,6 +2146,6 @@ test "hook evaluatePreToolUse fail-closes malformed shell payload before daemon 
     );
     defer result.deinit(allocator);
 
-    try std.testing.expect(test_last_evaluate_command == null);
+    try std.testing.expect(shell_eval.test_last_evaluate_command == null);
     try std.testing.expectEqual(PluginDecision.block, result.decision);
 }

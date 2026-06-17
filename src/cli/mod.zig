@@ -37,6 +37,7 @@ pub const interactive = @import("interactive.zig");
 pub const child_process = @import("child_process.zig");
 pub const style = @import("style.zig");
 pub const daemon = @import("daemon.zig");
+pub const shell_eval = @import("shell_eval.zig");
 
 test {
     // Ensure the child_process module (and its tests) are pulled into the test binary.
@@ -48,6 +49,7 @@ test {
     _ = @import("spinner.zig");
     // Pull daemon UDS/IPC tests into the test binary.
     _ = daemon;
+    _ = shell_eval;
 }
 
 pub const version = build_options.version;

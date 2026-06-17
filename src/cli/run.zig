@@ -10,6 +10,7 @@ const sandbox = @import("../sandbox/mod.zig");
 const exit_codes = @import("exit_codes.zig");
 const help = @import("help.zig");
 const style = @import("style.zig");
+const shell_eval = @import("shell_eval.zig");
 
 const RunOptions = struct {
     workspace: ?[]const u8 = null,
@@ -43,10 +44,10 @@ pub fn command(io: std.Io, argv: []const []const u8, stdout: anytype, stderr: an
 }
 
 fn commandWithStdio(io: std.Io, argv: []const []const u8, stdout: anytype, stderr: anytype, stdio: supervisor.StdioBehavior, audit_enabled: bool) !u8 {
-    return commandWithStdioAndEnv(io, argv, stdout, stderr, stdio, audit_enabled, null);
+    return commandWithStdioAndEnv(io, argv, stdout, stderr, stdio, audit_enabled, null, null);
 }
 
-fn commandWithStdioAndEnv(io: std.Io, argv: []const []const u8, stdout: anytype, stderr: anytype, stdio: supervisor.StdioBehavior, audit_enabled: bool, current_env_override: ?*const std.process.Environ.Map) !u8 {
+fn commandWithStdioAndEnv(io: std.Io, argv: []const []const u8, stdout: anytype, stderr: anytype, stdio: supervisor.StdioBehavior, audit_enabled: bool, current_env_override: ?*const std.process.Environ.Map, shell_evaluator: ?shell_eval.ShellCommandEvaluatorFn) !u8 {
     const options = parseOptions(io, argv, stdout, stderr) catch |err| switch (err) {
         error.HelpShown => return exit_codes.success,
         error.Usage => return exit_codes.usage,
@@ -190,6 +191,8 @@ fn commandWithStdioAndEnv(io: std.Io, argv: []const []const u8, stdout: anytype,
         required_backend_features: []const sandbox.backend.Feature,
         proxy_bind: ?[]const u8,
         stderr: @TypeOf(stderr),
+        shell_evaluator: ?shell_eval.ShellCommandEvaluatorFn = null,
+        workspace_root: []const u8,
 
         pub fn beforeProcessLaunch(context: *anyopaque, session: core.session.Session) !void {
             const self: *@This() = @ptrCast(@alignCast(context));
@@ -208,7 +211,7 @@ fn commandWithStdioAndEnv(io: std.Io, argv: []const []const u8, stdout: anytype,
 
             try self.auditCommandEvent(session, .command_attempt, display, null);
 
-            var command_decision = try intercept.commands.evaluate(self.allocator, self.selected_policy, self.effective_mode, self.command_argv);
+            var command_decision = try shell_eval.evaluateCommand(self.allocator, self.effective_mode, self.command_argv, self.workspace_root, self.shell_evaluator);
             defer command_decision.deinit(self.allocator);
 
             var final_decision = command_decision.decision;
@@ -421,6 +424,8 @@ fn commandWithStdioAndEnv(io: std.Io, argv: []const []const u8, stdout: anytype,
         .required_backend_features = options.requiredBackendFeatures(),
         .proxy_bind = if (proxy_runtime) |runtime| runtime.bindUrl() else null,
         .stderr = stderr,
+        .workspace_root = workspace_root_for_policy,
+        .shell_evaluator = shell_evaluator,
     };
     const proxy_fail_closed = proxy_runtime != null and proxy_required_by_backend and (effective_policy_mode == .strict or effective_policy_mode == .ci or requiresBackend(options, .network_enforce));
     var proxy_health_context: ProxyHealthContext = undefined;
@@ -965,11 +970,23 @@ test "run reports missing command usefully" {
 }
 
 pub fn commandForTest(argv: []const []const u8, stdout: anytype, stderr: anytype, stdio: supervisor.StdioBehavior) !u8 {
-    return commandWithStdio(std.testing.io, argv, stdout, stderr, stdio, false);
+    return commandForTestWithShellEvaluator(argv, stdout, stderr, stdio, null);
+}
+
+pub fn commandForTestWithShellEvaluator(argv: []const []const u8, stdout: anytype, stderr: anytype, stdio: supervisor.StdioBehavior, shell_evaluator: ?shell_eval.ShellCommandEvaluatorFn) !u8 {
+    return commandWithStdioAndEnv(std.testing.io, argv, stdout, stderr, stdio, false, null, shell_evaluator);
+}
+
+pub fn commandForGuardTestWithShellEvaluator(argv: []const []const u8, stdout: anytype, stderr: anytype, stdio: supervisor.StdioBehavior, shell_evaluator: ?shell_eval.ShellCommandEvaluatorFn) !u8 {
+    return commandWithStdioAndEnv(std.testing.io, argv, stdout, stderr, stdio, true, null, shell_evaluator);
 }
 
 fn commandForTestWithEnv(argv: []const []const u8, stdout: anytype, stderr: anytype, stdio: supervisor.StdioBehavior, current_env: *const std.process.Environ.Map) !u8 {
-    return commandWithStdioAndEnv(std.testing.io, argv, stdout, stderr, stdio, true, current_env);
+    return commandForTestWithEnvAndShellEvaluator(argv, stdout, stderr, stdio, current_env, shell_eval.mockDaemonAllowEvaluator);
+}
+
+fn commandForTestWithEnvAndShellEvaluator(argv: []const []const u8, stdout: anytype, stderr: anytype, stdio: supervisor.StdioBehavior, current_env: *const std.process.Environ.Map, shell_evaluator: ?shell_eval.ShellCommandEvaluatorFn) !u8 {
+    return commandWithStdioAndEnv(std.testing.io, argv, stdout, stderr, stdio, true, current_env, shell_evaluator);
 }
 
 test "run accepts policy path and uses policy mode when mode is not explicit" {
@@ -988,7 +1005,7 @@ test "run accepts policy path and uses policy mode when mode is not explicit" {
     var stdout_writer: std.Io.Writer = .fixed(&stdout_buf);
     var stderr_writer: std.Io.Writer = .fixed(&stderr_buf);
 
-    const code = try commandForTest(&.{ "--policy", path, "--", "zig", "version" }, &stdout_writer, &stderr_writer, .ignore);
+    const code = try commandForTestWithShellEvaluator(&.{ "--policy", path, "--", "zig", "version" }, &stdout_writer, &stderr_writer, .ignore, shell_eval.mockDaemonAllowEvaluator);
     try std.testing.expectEqual(exit_codes.success, code);
     try std.testing.expect(std.mem.indexOf(u8, stdout_writer.buffered(), "Mode:      strict") != null);
     try std.testing.expectEqualStrings("", stderr_writer.buffered());
@@ -1011,7 +1028,7 @@ test "run accepts secretless option" {
     var stdout_writer: std.Io.Writer = .fixed(&stdout_buf);
     var stderr_writer: std.Io.Writer = .fixed(&stderr_buf);
 
-    const code = try commandForTest(&.{ "--secretless", "--", "true" }, &stdout_writer, &stderr_writer, .ignore);
+    const code = try commandForTestWithShellEvaluator(&.{ "--secretless", "--", "true" }, &stdout_writer, &stderr_writer, .ignore, shell_eval.mockDaemonAllowEvaluator);
     try std.testing.expectEqual(exit_codes.success, code);
     try std.testing.expectEqualStrings("", stderr_writer.buffered());
 }
@@ -1080,7 +1097,7 @@ test "run command guard denies ci ask without prompting and audits command event
     var stdout_writer: std.Io.Writer = .fixed(&stdout_buf);
     var stderr_writer: std.Io.Writer = .fixed(&stderr_buf);
 
-    const code = try command(std.testing.io, &.{ "--workspace", root, "--mode", "ci", "--", "npm", "install", "OPENAI_API_KEY=sk-fakeSyntheticOpenAIKey1234567890" }, &stdout_writer, &stderr_writer);
+    const code = try commandForGuardTestWithShellEvaluator(&.{ "--workspace", root, "--mode", "ci", "--", "npm", "install", "OPENAI_API_KEY=sk-fakeSyntheticOpenAIKey1234567890" }, &stdout_writer, &stderr_writer, .inherit, shell_eval.mockDaemonDenyEvaluator);
     try std.testing.expectEqual(exit_codes.denial, code);
     try std.testing.expect(std.mem.indexOf(u8, stderr_writer.buffered(), "command denied") != null);
 
@@ -1103,7 +1120,7 @@ test "run command guard allows safe command and creates session shim directory" 
     var stdout_writer: std.Io.Writer = .fixed(&stdout_buf);
     var stderr_writer: std.Io.Writer = .fixed(&stderr_buf);
 
-    const code = try command(std.testing.io, &.{ "--workspace", root, "--", "true" }, &stdout_writer, &stderr_writer);
+    const code = try commandForGuardTestWithShellEvaluator(&.{ "--workspace", root, "--", "true" }, &stdout_writer, &stderr_writer, .inherit, shell_eval.mockDaemonAllowEvaluator);
     try std.testing.expectEqual(exit_codes.success, code);
     try std.testing.expectEqualStrings("", stderr_writer.buffered());
 
@@ -1129,7 +1146,7 @@ test "run command guard denies destructive command before spawn" {
     var stdout_writer: std.Io.Writer = .fixed(&stdout_buf);
     var stderr_writer: std.Io.Writer = .fixed(&stderr_buf);
 
-    const code = try command(std.testing.io, &.{ "--workspace", root, "--", "rm", "-rf", "/" }, &stdout_writer, &stderr_writer);
+    const code = try commandForGuardTestWithShellEvaluator(&.{ "--workspace", root, "--", "rm", "-rf", "/" }, &stdout_writer, &stderr_writer, .inherit, shell_eval.mockDaemonDenyEvaluator);
     try std.testing.expectEqual(exit_codes.denial, code);
     const events = try readLastEvents(std.testing.allocator, root);
     defer std.testing.allocator.free(events);
@@ -1147,7 +1164,7 @@ test "run no-network sets network mode off and audits denied network state" {
     var stdout_writer: std.Io.Writer = .fixed(&stdout_buf);
     var stderr_writer: std.Io.Writer = .fixed(&stderr_buf);
 
-    const code = try command(std.testing.io, &.{ "--workspace", root, "--no-network", "--", "true" }, &stdout_writer, &stderr_writer);
+    const code = try commandForGuardTestWithShellEvaluator(&.{ "--workspace", root, "--no-network", "--", "true" }, &stdout_writer, &stderr_writer, .inherit, shell_eval.mockDaemonAllowEvaluator);
     try std.testing.expectEqual(exit_codes.success, code);
     const events = try readLastEvents(std.testing.allocator, root);
     defer std.testing.allocator.free(events);
@@ -1167,7 +1184,7 @@ test "run allow-network adds temporary allow rule and redacts URL secrets in aud
     var stdout_writer: std.Io.Writer = .fixed(&stdout_buf);
     var stderr_writer: std.Io.Writer = .fixed(&stderr_buf);
 
-    const code = try command(std.testing.io, &.{ "--workspace", root, "--allow-network", "https://api.github.com/repos?token=sk-fakeSyntheticOpenAIKey1234567890", "--", "true" }, &stdout_writer, &stderr_writer);
+    const code = try commandForGuardTestWithShellEvaluator(&.{ "--workspace", root, "--allow-network", "https://api.github.com/repos?token=sk-fakeSyntheticOpenAIKey1234567890", "--", "true" }, &stdout_writer, &stderr_writer, .inherit, shell_eval.mockDaemonAllowEvaluator);
     try std.testing.expectEqual(exit_codes.success, code);
     const events = try readLastEvents(std.testing.allocator, root);
     defer std.testing.allocator.free(events);
@@ -1189,7 +1206,7 @@ test "run exports backend capability status to child environment" {
     var stdout_writer: std.Io.Writer = .fixed(&stdout_buf);
     var stderr_writer: std.Io.Writer = .fixed(&stderr_buf);
 
-    const code = try commandForTest(&.{ "--workspace", root, "--", "/bin/sh", "-c", "env > backend-env.txt" }, &stdout_writer, &stderr_writer, .ignore);
+    const code = try commandForTestWithShellEvaluator(&.{ "--workspace", root, "--", "/bin/sh", "-c", "env > backend-env.txt" }, &stdout_writer, &stderr_writer, .ignore, shell_eval.mockDaemonAllowEvaluator);
     try std.testing.expectEqual(exit_codes.success, code);
     try std.testing.expectEqualStrings("", stderr_writer.buffered());
 
@@ -1239,7 +1256,7 @@ test "run proxy backend injects proxy environment and satisfies network enforcem
     var stdout_writer: std.Io.Writer = .fixed(&stdout_buf);
     var stderr_writer: std.Io.Writer = .fixed(&stderr_buf);
 
-    const code = try commandForTestWithEnv(&.{ "--workspace", root, "--policy", policy_path, "--network-backend", "proxy", "--require-backend", "network_enforce", "--", "/bin/sh", "-c", "env > proxy-env.txt" }, &stdout_writer, &stderr_writer, .ignore, &current);
+    const code = try commandForTestWithEnvAndShellEvaluator(&.{ "--workspace", root, "--policy", policy_path, "--network-backend", "proxy", "--require-backend", "network_enforce", "--", "/bin/sh", "-c", "env > proxy-env.txt" }, &stdout_writer, &stderr_writer, .ignore, &current, shell_eval.mockDaemonAllowEvaluator);
     try std.testing.expectEqual(exit_codes.success, code);
     try std.testing.expectEqualStrings("", stderr_writer.buffered());
 
@@ -1289,6 +1306,42 @@ test "run require-backend fails closed when requested feature is unavailable" {
     try std.testing.expect(std.mem.indexOf(u8, events, "required backend feature unavailable") != null);
 }
 
+test "run shell evaluation forwards command and cwd to daemon Evaluate" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const root = try tmp.dir.realPathFileAlloc(std.testing.io, ".", std.testing.allocator);
+    defer std.testing.allocator.free(root);
+
+    shell_eval.test_last_evaluate_command = null;
+    shell_eval.test_last_evaluate_cwd = null;
+
+    var stdout_buf: [2048]u8 = undefined;
+    var stderr_buf: [2048]u8 = undefined;
+    var stdout_writer: std.Io.Writer = .fixed(&stdout_buf);
+    var stderr_writer: std.Io.Writer = .fixed(&stderr_buf);
+
+    const code = try commandForGuardTestWithShellEvaluator(&.{ "--workspace", root, "--", "git", "status" }, &stdout_writer, &stderr_writer, .ignore, shell_eval.mockDaemonAllowEvaluator);
+    try std.testing.expectEqual(exit_codes.success, code);
+    try std.testing.expectEqualStrings("git status", shell_eval.test_last_evaluate_command.?);
+    try std.testing.expectEqualStrings(root, shell_eval.test_last_evaluate_cwd.?);
+}
+
+test "run daemon unavailable denies shell command" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const root = try tmp.dir.realPathFileAlloc(std.testing.io, ".", std.testing.allocator);
+    defer std.testing.allocator.free(root);
+
+    var stdout_buf: [2048]u8 = undefined;
+    var stderr_buf: [2048]u8 = undefined;
+    var stdout_writer: std.Io.Writer = .fixed(&stdout_buf);
+    var stderr_writer: std.Io.Writer = .fixed(&stderr_buf);
+
+    const code = try commandForGuardTestWithShellEvaluator(&.{ "--workspace", root, "--", "git", "status" }, &stdout_writer, &stderr_writer, .ignore, shell_eval.mockDaemonUnavailableEvaluator);
+    try std.testing.expectEqual(exit_codes.denial, code);
+    try std.testing.expect(std.mem.indexOf(u8, stderr_writer.buffered(), "command denied") != null);
+}
+
 fn readLastSessionId(allocator: std.mem.Allocator, root: []const u8) ![]u8 {
     const last_path = try std.fs.path.join(allocator, &.{ root, ".orca", "last" });
     defer allocator.free(last_path);
@@ -1334,7 +1387,7 @@ test "first successful run prints celebration" {
     var stdout_writer: std.Io.Writer = .fixed(&stdout_buf);
     var stderr_writer: std.Io.Writer = .fixed(&stderr_buf);
 
-    const code = try commandForTest(&.{ "--workspace", root, "--", "echo", "hi-from-first" }, &stdout_writer, &stderr_writer, .inherit);
+    const code = try commandForTestWithShellEvaluator(&.{ "--workspace", root, "--", "echo", "hi-from-first" }, &stdout_writer, &stderr_writer, .inherit, shell_eval.mockDaemonAllowEvaluator);
     try std.testing.expectEqual(exit_codes.success, code);
     const out = stdout_writer.buffered();
     try std.testing.expect(std.mem.indexOf(u8, out, "Welcome to Orca!") != null);
@@ -1356,7 +1409,7 @@ test "subsequent runs do not print celebration" {
     var stdout_writer: std.Io.Writer = .fixed(&stdout_buf);
     var stderr_writer: std.Io.Writer = .fixed(&stderr_buf);
 
-    const code = try commandForTest(&.{ "--workspace", root, "--", "echo", "hi-from-second" }, &stdout_writer, &stderr_writer, .inherit);
+    const code = try commandForTestWithShellEvaluator(&.{ "--workspace", root, "--", "echo", "hi-from-second" }, &stdout_writer, &stderr_writer, .inherit, shell_eval.mockDaemonAllowEvaluator);
     try std.testing.expectEqual(exit_codes.success, code);
     const out = stdout_writer.buffered();
     try std.testing.expect(std.mem.indexOf(u8, out, "Welcome to Orca!") == null);
