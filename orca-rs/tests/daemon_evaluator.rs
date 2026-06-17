@@ -86,3 +86,85 @@ fn daemon_evaluate_commands() {
         "PID file should be removed after shutdown"
     );
 }
+
+fn init_git_repo(path: &std::path::Path) {
+    std::fs::create_dir_all(path).expect("failed to create repo dir");
+    std::process::Command::new("git")
+        .args(["init", "-q"])
+        .current_dir(path)
+        .output()
+        .expect("git init should succeed");
+}
+
+fn write_project_allowlist(repo_root: &std::path::Path, exact_command: &str) {
+    let orca_dir = repo_root.join(".orca");
+    std::fs::create_dir_all(&orca_dir).expect("failed to create .orca dir");
+    let allowlist = format!(
+        r#"
+[[allow]]
+exact_command = "{exact_command}"
+reason = "integration test allowlist"
+"#
+    );
+    std::fs::write(orca_dir.join("allowlist.toml"), allowlist).expect("failed to write allowlist");
+}
+
+#[test]
+#[cfg(unix)]
+fn daemon_evaluate_multi_repo_allowlists() {
+    let home_dir = tempfile::tempdir().expect("failed to create temp dir");
+    let workspace = home_dir.path().join("workspace");
+    std::fs::create_dir_all(&workspace).expect("failed to create workspace");
+
+    let repo_allowed = workspace.join("repo-a");
+    let repo_denied = workspace.join("repo-b");
+    init_git_repo(&repo_allowed);
+    init_git_repo(&repo_denied);
+
+    let cmd = "git reset --hard";
+    write_project_allowlist(&repo_allowed, cmd);
+
+    let (socket_path, pid_path) = common::socket_and_pid_paths(home_dir.path());
+    let child = common::spawn_daemon(home_dir.path());
+    common::wait_for_daemon_ready(&socket_path, Duration::from_secs(5));
+
+    let allowed_cwd = repo_allowed.canonicalize().expect("canonicalize repo-a");
+    let denied_cwd = repo_denied.canonicalize().expect("canonicalize repo-b");
+
+    let allow_req = format!(
+        r#"{{"id":10,"method":"Evaluate","params":{{"command":"{cmd}","cwd":"{}"}}}}
+"#,
+        allowed_cwd.display()
+    );
+    let allow_response = common::send_request(&socket_path, &allow_req);
+    let parsed_allow: serde_json::Value =
+        serde_json::from_str(&allow_response).expect("allow response should be valid JSON");
+    assert_eq!(parsed_allow["id"], 10);
+    assert_eq!(
+        parsed_allow["result"]["status"].as_str(),
+        Some("Allow"),
+        "repo-a allowlist should allow command, got: {allow_response}"
+    );
+
+    let deny_req = format!(
+        r#"{{"id":11,"method":"Evaluate","params":{{"command":"{cmd}","cwd":"{}"}}}}
+"#,
+        denied_cwd.display()
+    );
+    let deny_response = common::send_request(&socket_path, &deny_req);
+    let parsed_deny: serde_json::Value =
+        serde_json::from_str(&deny_response).expect("deny response should be valid JSON");
+    assert_eq!(parsed_deny["id"], 11);
+    assert_eq!(
+        parsed_deny["result"]["status"].as_str(),
+        Some("Deny"),
+        "repo-b without allowlist should deny command, got: {deny_response}"
+    );
+
+    let _ = common::send_shutdown(&socket_path);
+    common::term_and_wait(child, Duration::from_secs(5));
+
+    assert!(!socket_path.exists(), "socket should be removed after shutdown");
+    assert!(!pid_path.exists(), "PID file should be removed after shutdown");
+}
+

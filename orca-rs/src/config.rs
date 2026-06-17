@@ -2948,6 +2948,16 @@ pub struct ProjectConfig {
 impl Config {
     /// Load configuration from all sources, merging them in priority order.
     ///
+    /// Uses the process current working directory for project config and
+    /// `ORCA_CONFIG` path resolution.
+    #[must_use]
+    pub fn load() -> Self {
+        Self::load_from(env::current_dir().ok().as_deref())
+    }
+
+    /// Load configuration from all sources, using `start_dir` for project config
+    /// and `ORCA_CONFIG` path resolution.
+    ///
     /// Priority (highest to lowest):
     /// 1. Environment variables (settings overrides)
     /// 2. Explicit config file (`ORCA_CONFIG=/path/to/config.toml`)
@@ -2957,16 +2967,15 @@ impl Config {
     /// 5. System config (`/etc/orca/config.toml`)
     /// 6. Compiled defaults
     #[must_use]
-    pub fn load() -> Self {
+    pub fn load_from(start_dir: Option<&Path>) -> Self {
         // Start with truly empty defaults - packs must be explicitly enabled.
         // generate_default() is for sample configs shown to users, not runtime defaults.
         let mut config = Self::default();
-        let cwd = env::current_dir().ok();
 
         // Optional explicit config path override (highest-priority file config).
         let explicit_layer = env::var(ENV_CONFIG_PATH)
             .ok()
-            .and_then(|value| resolve_config_path_value(&value, cwd.as_deref()))
+            .and_then(|value| resolve_config_path_value(&value, start_dir))
             .and_then(|path| Self::load_layer_from_file(&path));
 
         // Load system config (lowest priority of file configs)
@@ -2986,7 +2995,7 @@ impl Config {
         }
 
         // Load project config (if in a git repo)
-        if let Some(project_config) = Self::load_project_config_layer_from(cwd.as_deref()) {
+        if let Some(project_config) = Self::load_project_config_layer_from(start_dir) {
             config.merge_layer(project_config);
         }
 

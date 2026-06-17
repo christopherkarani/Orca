@@ -31,7 +31,7 @@ fn is_process_alive(pid: u32) -> bool {
     }
 }
 
-use crate::allowlist::{LayeredAllowlist, load_default_allowlists};
+use crate::allowlist::{LayeredAllowlist, load_allowlists_from};
 use crate::config::{CompiledOverrides, Config, HeredocSettings};
 use crate::daemon_cli::execute_cli;
 use crate::daemon_protocol::{
@@ -44,7 +44,6 @@ use crate::evaluator::{
 };
 use crate::packs::{REGISTRY, load_external_packs};
 use crate::perf::Deadline;
-use std::sync::Arc;
 use std::time::Duration;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::{UnixListener, UnixStream};
@@ -52,7 +51,7 @@ use tokio::sync::watch;
 
 const DAEMON_EVALUATION_DEADLINE: Duration = Duration::from_millis(100);
 
-struct AppState {
+struct EvaluationContext {
     allowlists: LayeredAllowlist,
     compiled_overrides: CompiledOverrides,
     heredoc_settings: HeredocSettings,
@@ -61,16 +60,14 @@ struct AppState {
     keyword_index: Option<crate::packs::EnabledKeywordIndex>,
 }
 
-impl AppState {
-    fn load() -> Self {
-        // TODO(phase1a): Config::load() is CWD-dependent. Daemon mode loads
-        // it once at startup; per-request CWD-aware reloads are out of scope.
-        let config = Config::load();
-        let allowlists = load_default_allowlists();
+impl EvaluationContext {
+    fn load_at(cwd: &Path) -> Self {
+        let config = Config::load_from(Some(cwd));
+        let allowlists = load_allowlists_from(Some(cwd));
         let compiled_overrides = config.overrides.compile();
         let heredoc_settings = config.heredoc_settings();
 
-        let external_paths = config.packs.expand_custom_paths();
+        let external_paths = config.packs.expand_custom_paths_from(Some(cwd));
         let external_store = load_external_packs(&external_paths);
 
         let mut enabled_pack_ids = config.enabled_pack_ids();
@@ -87,8 +84,8 @@ impl AppState {
         let mut enabled_keywords = REGISTRY.collect_enabled_keywords(&enabled_pack_ids);
         enabled_keywords.extend(external_store.keywords().iter().copied());
 
-        // TODO(phase1a): External packs are not represented in the keyword
-        // index yet, so disable the fast-path index when any are configured.
+        // External packs are not represented in the keyword index yet, so
+        // disable the fast-path index when any are configured.
         let keyword_index = if has_external_packs {
             None
         } else {
@@ -105,7 +102,7 @@ impl AppState {
         }
     }
 
-    fn evaluate(&self, command: &str) -> EvaluationResult {
+    fn evaluate(&self, command: &str, cwd: &Path) -> EvaluationResult {
         let deadline = Deadline::new(DAEMON_EVALUATION_DEADLINE);
         evaluate_command_with_pack_order_deadline_at_path(
             command,
@@ -116,12 +113,41 @@ impl AppState {
             &self.allowlists,
             &self.heredoc_settings,
             None,
-            // TODO(phase1a): The Zig client sends cwd, but Phase 1A keeps
-            // daemon evaluation bound to startup state and ignores request cwd.
-            None,
+            Some(cwd),
             Some(&deadline),
         )
     }
+}
+
+/// Resolve the evaluation working directory from a daemon request.
+///
+/// The client must send an absolute path. Relative values are rejected because
+/// they would resolve against the daemon process working directory, not the
+/// hook/run client workspace.
+///
+/// Returns an error when `cwd` is missing, relative, does not exist, or is not a directory.
+fn resolve_evaluation_cwd(request_cwd: Option<&str>) -> Result<PathBuf, String> {
+    let Some(cwd_str) = request_cwd else {
+        return Err("missing cwd in Evaluate request".to_string());
+    };
+
+    if cwd_str.trim().is_empty() {
+        return Err("missing cwd in Evaluate request".to_string());
+    }
+
+    let path = PathBuf::from(cwd_str);
+    if !path.is_absolute() {
+        return Err(format!("invalid cwd: path must be absolute: {cwd_str}"));
+    }
+    if !path.exists() {
+        return Err(format!("invalid cwd: path does not exist: {cwd_str}"));
+    }
+    if !path.is_dir() {
+        return Err(format!("invalid cwd: not a directory: {cwd_str}"));
+    }
+
+    path.canonicalize()
+        .map_err(|e| format!("invalid cwd: cannot canonicalize {cwd_str}: {e}"))
 }
 
 /// Run the NDJSON-over-UDS daemon until `shutdown` signals `true`.
@@ -144,8 +170,6 @@ pub async fn run_daemon(
     if let Some(parent) = socket_path.parent() {
         tokio::fs::create_dir_all(parent).await?;
     }
-
-    let app_state = Arc::new(AppState::load());
 
     // If a socket file already exists, decide whether it is stale before
     // we write our own PID file.  This preserves the live daemon's PID
@@ -232,8 +256,7 @@ pub async fn run_daemon(
             accept_result = listener.accept() => {
                 match accept_result {
                     Ok((stream, _addr)) => {
-                        let state = Arc::clone(&app_state);
-                        tokio::spawn(handle_connection(stream, state));
+                        tokio::spawn(handle_connection(stream));
                     }
                     Err(e) => {
                         tracing::warn!(error = %e, "UDS accept failed");
@@ -258,8 +281,7 @@ pub async fn run_daemon(
             accept_result = listener.accept() => {
                 match accept_result {
                     Ok((stream, _addr)) => {
-                        let state = Arc::clone(&app_state);
-                        tokio::spawn(handle_connection(stream, state));
+                        tokio::spawn(handle_connection(stream));
                     }
                     Err(e) => {
                         tracing::warn!(error = %e, "UDS accept failed");
@@ -286,7 +308,7 @@ pub async fn run_daemon(
     Ok(())
 }
 
-async fn handle_connection(stream: UnixStream, state: Arc<AppState>) {
+async fn handle_connection(stream: UnixStream) {
     let (read_half, mut write_half) = stream.into_split();
     let reader = BufReader::new(read_half);
     let mut lines = reader.lines();
@@ -316,11 +338,20 @@ async fn handle_connection(stream: UnixStream, state: Arc<AppState>) {
                 id,
                 result: ResultPayload::Pong,
             },
-            DaemonRequest::Evaluate { command, cwd: _cwd } => {
-                let eval_result = state.evaluate(&command);
-                DaemonResponse {
-                    id,
-                    result: result_payload_from_evaluation(eval_result),
+            DaemonRequest::Evaluate { command, cwd } => {
+                match resolve_evaluation_cwd(cwd.as_deref()) {
+                    Ok(eval_cwd) => {
+                        let ctx = EvaluationContext::load_at(&eval_cwd);
+                        let eval_result = ctx.evaluate(&command, &eval_cwd);
+                        DaemonResponse {
+                            id,
+                            result: result_payload_from_evaluation(eval_result),
+                        }
+                    }
+                    Err(message) => DaemonResponse {
+                        id,
+                        result: ResultPayload::Error { message },
+                    },
                 }
             }
             DaemonRequest::ExecuteCli { argv } => {
@@ -603,4 +634,188 @@ mod tests {
         assert!(result.is_ok(), "daemon should complete within timeout");
         assert!(result.unwrap().is_ok(), "daemon should return Ok");
     }
+    fn init_git_repo(path: &std::path::Path) {
+        std::fs::create_dir_all(path).unwrap();
+        std::process::Command::new("git")
+            .args(["init", "-q"])
+            .current_dir(path)
+            .output()
+            .expect("git init should succeed");
+    }
+
+    fn write_project_allowlist(repo_root: &std::path::Path, exact_command: &str) {
+        let orca_dir = repo_root.join(".orca");
+        std::fs::create_dir_all(&orca_dir).unwrap();
+        let allowlist = format!(
+            r#"
+[[allow]]
+exact_command = "{exact_command}"
+reason = "test allowlist"
+"#
+        );
+        std::fs::write(orca_dir.join("allowlist.toml"), allowlist).unwrap();
+    }
+
+    #[test]
+    fn resolve_evaluation_cwd_rejects_missing_cwd() {
+        let err = resolve_evaluation_cwd(None).unwrap_err();
+        assert!(err.contains("missing cwd"), "unexpected error: {err}");
+    }
+
+    #[test]
+    fn resolve_evaluation_cwd_rejects_empty_cwd() {
+        let err = resolve_evaluation_cwd(Some("   ")).unwrap_err();
+        assert!(err.contains("missing cwd"), "unexpected error: {err}");
+    }
+
+    #[test]
+    fn resolve_evaluation_cwd_rejects_nonexistent_path() {
+        let err = resolve_evaluation_cwd(Some("/nonexistent/orca/cwd/test/path"))
+            .unwrap_err();
+        assert!(err.contains("invalid cwd"), "unexpected error: {err}");
+        assert!(err.contains("does not exist"), "unexpected error: {err}");
+    }
+
+    #[test]
+    fn resolve_evaluation_cwd_rejects_relative_path() {
+        let err = resolve_evaluation_cwd(Some(".")).unwrap_err();
+        assert!(err.contains("must be absolute"), "unexpected error: {err}");
+        let err = resolve_evaluation_cwd(Some("subdir")).unwrap_err();
+        assert!(err.contains("must be absolute"), "unexpected error: {err}");
+    }
+
+    #[test]
+    fn resolve_evaluation_cwd_rejects_file_path() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let file_path = temp_dir.path().join("not-a-dir");
+        std::fs::write(&file_path, b"x").unwrap();
+        let err = resolve_evaluation_cwd(Some(&file_path.to_string_lossy())).unwrap_err();
+        assert!(err.contains("invalid cwd"), "unexpected error: {err}");
+        assert!(err.contains("not a directory"), "unexpected error: {err}");
+    }
+
+    #[tokio::test]
+    async fn daemon_evaluate_missing_cwd_returns_error() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let socket_path = temp_dir.path().join("daemon.sock");
+        let pid_path = temp_dir.path().join("daemon.pid");
+        let (tx, rx) = tokio::sync::watch::channel(false);
+
+        let socket = socket_path.clone();
+        let pid = pid_path.clone();
+        let daemon_task = tokio::spawn(async move { run_daemon(&socket, &pid, rx).await });
+
+        wait_for_socket(&socket_path).await;
+
+        let mut stream = UnixStream::connect(&socket_path).await.unwrap();
+        stream
+            .write_all(
+                br#"{"id":10,"method":"Evaluate","params":{"command":"git status","cwd":null}}"#,
+            )
+            .await
+            .unwrap();
+        stream.write_all(b"\n").await.unwrap();
+
+        let response = read_daemon_response(stream).await;
+        assert_eq!(response["id"], 10);
+        assert_eq!(response["result"]["status"], "Error");
+        assert!(
+            response["result"]["message"]
+                .as_str()
+                .unwrap()
+                .contains("missing cwd")
+        );
+
+        let _ = tx.send(true);
+        let _ = tokio::time::timeout(Duration::from_secs(5), daemon_task).await;
+    }
+
+    #[tokio::test]
+    async fn daemon_evaluate_invalid_cwd_returns_error() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let socket_path = temp_dir.path().join("daemon.sock");
+        let pid_path = temp_dir.path().join("daemon.pid");
+        let (tx, rx) = tokio::sync::watch::channel(false);
+
+        let socket = socket_path.clone();
+        let pid = pid_path.clone();
+        let daemon_task = tokio::spawn(async move { run_daemon(&socket, &pid, rx).await });
+
+        wait_for_socket(&socket_path).await;
+
+        let mut stream = UnixStream::connect(&socket_path).await.unwrap();
+        stream
+            .write_all(
+                br#"{"id":11,"method":"Evaluate","params":{"command":"git status","cwd":"/nonexistent/orca/cwd"}}"#,
+            )
+            .await
+            .unwrap();
+        stream.write_all(b"\n").await.unwrap();
+
+        let response = read_daemon_response(stream).await;
+        assert_eq!(response["id"], 11);
+        assert_eq!(response["result"]["status"], "Error");
+        assert!(
+            response["result"]["message"]
+                .as_str()
+                .unwrap()
+                .contains("invalid cwd")
+        );
+
+        let _ = tx.send(true);
+        let _ = tokio::time::timeout(Duration::from_secs(5), daemon_task).await;
+    }
+
+    #[tokio::test]
+    async fn daemon_evaluate_uses_per_request_project_allowlist() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let repo_allowed = temp_dir.path().join("repo-a");
+        let repo_denied = temp_dir.path().join("repo-b");
+        init_git_repo(&repo_allowed);
+        init_git_repo(&repo_denied);
+
+        let cmd = "git reset --hard";
+        write_project_allowlist(&repo_allowed, cmd);
+
+        let socket_path = temp_dir.path().join("daemon.sock");
+        let pid_path = temp_dir.path().join("daemon.pid");
+        let (tx, rx) = tokio::sync::watch::channel(false);
+
+        let socket = socket_path.clone();
+        let pid = pid_path.clone();
+        let daemon_task = tokio::spawn(async move { run_daemon(&socket, &pid, rx).await });
+
+        wait_for_socket(&socket_path).await;
+
+        let allowed_cwd = repo_allowed.canonicalize().unwrap();
+        let denied_cwd = repo_denied.canonicalize().unwrap();
+
+        let allow_req = format!(
+            r#"{{"id":12,"method":"Evaluate","params":{{"command":"{cmd}","cwd":"{}"}}}}
+"#,
+            allowed_cwd.display()
+        );
+        let mut stream = UnixStream::connect(&socket_path).await.unwrap();
+        stream.write_all(allow_req.as_bytes()).await.unwrap();
+        let allow_response = read_daemon_response(stream).await;
+        assert_eq!(allow_response["id"], 12);
+        assert_eq!(allow_response["result"]["status"], "Allow");
+
+        let deny_req = format!(
+            r#"{{"id":13,"method":"Evaluate","params":{{"command":"{cmd}","cwd":"{}"}}}}
+"#,
+            denied_cwd.display()
+        );
+        let mut stream = UnixStream::connect(&socket_path).await.unwrap();
+        stream.write_all(deny_req.as_bytes()).await.unwrap();
+        let deny_response = read_daemon_response(stream).await;
+        assert_eq!(deny_response["id"], 13);
+        assert_eq!(deny_response["result"]["status"], "Deny");
+
+        let _ = tx.send(true);
+        let result = tokio::time::timeout(Duration::from_secs(5), daemon_task).await;
+        assert!(result.is_ok(), "daemon should complete within timeout");
+        assert!(result.unwrap().is_ok(), "daemon should return Ok");
+    }
+
 }

@@ -1400,8 +1400,11 @@ fn resolve_project_path(
 fn allow_once_match(
     command: &str,
     allow_once_audit: Option<&crate::pending_exceptions::AllowOnceAuditConfig<'_>>,
+    project_path: Option<&Path>,
 ) -> Option<crate::pending_exceptions::AllowOnceEntry> {
-    let cwd = std::env::current_dir().ok()?;
+    let cwd = project_path
+        .map(std::path::Path::to_path_buf)
+        .or_else(|| std::env::current_dir().ok())?;
     let store = AllowOnceStore::new(AllowOnceStore::default_path(Some(&cwd)));
     match store.match_command(command, &cwd, Utc::now(), allow_once_audit) {
         Ok(Some(entry)) => Some(entry),
@@ -1413,8 +1416,11 @@ fn allow_once_match(
 fn allow_once_match_force_config(
     command: &str,
     allow_once_audit: Option<&crate::pending_exceptions::AllowOnceAuditConfig<'_>>,
+    project_path: Option<&Path>,
 ) -> Option<crate::pending_exceptions::AllowOnceEntry> {
-    let cwd = std::env::current_dir().ok()?;
+    let cwd = project_path
+        .map(std::path::Path::to_path_buf)
+        .or_else(|| std::env::current_dir().ok())?;
     let store = AllowOnceStore::new(AllowOnceStore::default_path(Some(&cwd)));
     match store.match_command_force_config(command, &cwd, Utc::now(), allow_once_audit) {
         Ok(Some(entry)) => Some(entry),
@@ -1589,7 +1595,7 @@ pub fn evaluate_command_with_pack_order_deadline_at_path(
     // allow/block override patterns overlap; only a force allow-once exception
     // may intentionally bypass an explicit config block.
     if let Some(reason) = compiled_overrides.check_block(command) {
-        if allow_once_match_force_config(command, allow_once_audit).is_some() {
+        if allow_once_match_force_config(command, allow_once_audit, project_path).is_some() {
             return EvaluationResult::allowed();
         }
         return EvaluationResult::denied_by_config(reason.to_string());
@@ -1709,7 +1715,7 @@ pub fn evaluate_command_with_pack_order_deadline_at_path(
     // Allow-once entries only exist for previously blocked commands, which must
     // have matched keywords — so deferring past quick-reject is safe and avoids
     // ~65µs of filesystem I/O on every unrelated command.
-    if allow_once_match(command, allow_once_audit).is_some() {
+    if allow_once_match(command, allow_once_audit, project_path).is_some() {
         return EvaluationResult::allowed();
     }
 
@@ -2492,7 +2498,7 @@ where
     }
 
     // Step 1: Check allow-once overrides (may be superseded by config blocklist).
-    let allow_once = allow_once_match(command, None);
+    let allow_once = allow_once_match(command, None, None);
 
     // Step 2: Check precompiled block overrides before allow overrides. Deny
     // wins on overlapping config overrides unless allow-once was granted with

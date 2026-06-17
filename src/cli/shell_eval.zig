@@ -21,11 +21,20 @@ pub const ShellCommandEvaluatorFn = *const fn (
     ShellCommandEvent,
 ) daemon.DaemonError!std.json.Parsed(daemon.DaemonResponse);
 
+fn resolveEffectiveCwd(allocator: std.mem.Allocator, cwd: ?[]const u8) daemon.DaemonError![]const u8 {
+    const path = cwd orelse ".";
+    var threaded: std.Io.Threaded = .init_single_threaded;
+    const io = threaded.io();
+    return std.Io.Dir.cwd().realPathFileAlloc(io, path, allocator) catch error.RequestSerializationFailed;
+}
+
 pub fn defaultEvaluator(
     allocator: std.mem.Allocator,
     shell_event: ShellCommandEvent,
 ) daemon.DaemonError!std.json.Parsed(daemon.DaemonResponse) {
-    return daemon.evaluate(allocator, shell_event.command, shell_event.cwd);
+    const absolute_cwd = try resolveEffectiveCwd(allocator, shell_event.cwd);
+    defer allocator.free(absolute_cwd);
+    return daemon.evaluate(allocator, shell_event.command, absolute_cwd);
 }
 
 pub fn daemonUnavailableReason(err: daemon.DaemonError) []const u8 {
@@ -349,6 +358,7 @@ pub fn mockDaemonUnavailableEvaluator(allocator: std.mem.Allocator, shell_event:
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
+
 
 test "shell_eval allows safe command via mock daemon" {
     const allocator = std.testing.allocator;

@@ -101,7 +101,7 @@ pub mod update;
 // Re-export commonly used types
 pub use allowlist::{
     AllowEntry, AllowSelector, AllowlistError, AllowlistFile, AllowlistLayer, LayeredAllowlist,
-    LoadedAllowlistLayer, RuleId, load_default_allowlists,
+    LoadedAllowlistLayer, RuleId, load_allowlists_from, load_default_allowlists,
 };
 pub use branding::{
     CLI_NAME, CONFIG_DIR, ENV_PREFIX, GITHUB_OWNER, GITHUB_REPO, GITHUB_REPO_URL, PRODUCT_NAME,

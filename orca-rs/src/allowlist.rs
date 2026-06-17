@@ -1276,9 +1276,17 @@ pub fn resolve_path_for_matching(
 /// Invalid TOML is treated as empty for that layer and reported in `errors`.
 #[must_use]
 pub fn load_default_allowlists() -> LayeredAllowlist {
-    let project = std::env::current_dir()
-        .ok()
-        .and_then(|cwd| find_repo_root(&cwd))
+    load_allowlists_from(std::env::current_dir().ok().as_deref())
+}
+
+/// Load allowlist files using project config rooted at `start_dir`.
+///
+/// Missing files are treated as empty allowlists.
+/// Invalid TOML is treated as empty for that layer and reported in `errors`.
+#[must_use]
+pub fn load_allowlists_from(start_dir: Option<&Path>) -> LayeredAllowlist {
+    let project = start_dir
+        .and_then(find_repo_root)
         .map(|root| root.join(PROJECT_DATA_DIR).join("allowlist.toml"));
 
     // Check XDG-style path first (~/.config/orca/), then platform-native

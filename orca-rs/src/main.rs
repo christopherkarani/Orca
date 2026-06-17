@@ -2041,9 +2041,16 @@ mod tests {
                 attempts += 1;
             }
 
+            let eval_cwd = temp_dir.path().canonicalize().unwrap();
+            let allow_req = format!(
+                r#"{{"id":2,"method":"Evaluate","params":{{"command":"ls -la","cwd":"{}"}}}}
+"#,
+                eval_cwd.display()
+            );
+
             let mut stream = UnixStream::connect(&socket_path).await.unwrap();
             stream
-                .write_all(b"{\"id\":2,\"method\":\"Evaluate\",\"params\":{\"command\":\"ls -la\",\"cwd\":null}}\n")
+                .write_all(allow_req.as_bytes())
                 .await
                 .unwrap();
 
@@ -2083,9 +2090,16 @@ mod tests {
                 attempts += 1;
             }
 
+            let eval_cwd = temp_dir.path().canonicalize().unwrap();
+            let deny_req = format!(
+                r#"{{"id":3,"method":"Evaluate","params":{{"command":"rm -rf /","cwd":"{}"}}}}
+"#,
+                eval_cwd.display()
+            );
+
             let mut stream = UnixStream::connect(&socket_path).await.unwrap();
             stream
-                .write_all(b"{\"id\":3,\"method\":\"Evaluate\",\"params\":{\"command\":\"rm -rf /\",\"cwd\":null}}\n")
+                .write_all(deny_req.as_bytes())
                 .await
                 .unwrap();
 
