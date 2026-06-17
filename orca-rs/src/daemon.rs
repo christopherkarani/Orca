@@ -1,5 +1,11 @@
 #![cfg_attr(not(test), allow(unsafe_code))]
 
+#[cfg(unix)]
+use std::io::{BufRead, BufReader as StdBufReader, Write};
+#[cfg(unix)]
+use std::os::unix::fs::{FileTypeExt, MetadataExt, PermissionsExt};
+#[cfg(unix)]
+use std::os::unix::net::UnixStream as StdUnixStream;
 use std::path::{Path, PathBuf};
 use std::process;
 
@@ -31,6 +37,214 @@ fn is_process_alive(pid: u32) -> bool {
     }
 }
 
+#[cfg(unix)]
+fn current_uid() -> u32 {
+    // Safe because `geteuid` has no preconditions.
+    unsafe { libc::geteuid() }
+}
+
+#[cfg(unix)]
+fn ensure_owned_by_current_user(
+    path: &Path,
+    metadata: &std::fs::Metadata,
+    label: &str,
+) -> std::io::Result<()> {
+    if metadata.uid() != current_uid() {
+        return Err(std::io::Error::other(format!(
+            "unsafe {label}: {} is not owned by the current user",
+            path.display()
+        )));
+    }
+    Ok(())
+}
+
+#[cfg(unix)]
+fn ensure_runtime_dir_secure(path: &Path) -> std::io::Result<()> {
+    match std::fs::symlink_metadata(path) {
+        Ok(metadata) => {
+            if metadata.file_type().is_symlink() {
+                return Err(std::io::Error::other(format!(
+                    "unsafe daemon runtime directory: {} is a symlink",
+                    path.display()
+                )));
+            }
+            if !metadata.is_dir() {
+                return Err(std::io::Error::other(format!(
+                    "unsafe daemon runtime directory: {} is not a directory",
+                    path.display()
+                )));
+            }
+            ensure_owned_by_current_user(path, &metadata, "daemon runtime directory")?;
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            std::fs::create_dir_all(path).map_err(|err| {
+                std::io::Error::other(format!(
+                    "failed to create daemon runtime directory {}: {err}",
+                    path.display()
+                ))
+            })?;
+        }
+        Err(error) => {
+            return Err(std::io::Error::other(format!(
+                "failed to inspect daemon runtime directory {}: {error}",
+                path.display()
+            )));
+        }
+    }
+
+    std::fs::set_permissions(path, std::fs::Permissions::from_mode(RUNTIME_DIR_MODE))
+        .map_err(|err| {
+            std::io::Error::other(format!(
+                "failed to secure daemon runtime directory {}: {err}",
+                path.display()
+            ))
+        })?;
+
+    let metadata = std::fs::symlink_metadata(path).map_err(|err| {
+        std::io::Error::other(format!(
+            "failed to restat daemon runtime directory {}: {err}",
+            path.display()
+        ))
+    })?;
+    ensure_owned_by_current_user(path, &metadata, "daemon runtime directory")?;
+    Ok(())
+}
+
+#[cfg(unix)]
+fn probe_existing_daemon(socket_path: &Path) -> bool {
+    let Ok(mut stream) = StdUnixStream::connect(socket_path) else {
+        return false;
+    };
+    let _ = stream.set_read_timeout(Some(LIVENESS_PROBE_TIMEOUT));
+    let _ = stream.set_write_timeout(Some(LIVENESS_PROBE_TIMEOUT));
+    if stream
+        .write_all(br#"{"id":0,"method":"Ping","params":null}"#)
+        .is_err()
+        || stream.write_all(b"\n").is_err()
+        || stream.flush().is_err()
+    {
+        return false;
+    }
+
+    let mut line = String::new();
+    let mut reader = StdBufReader::new(stream);
+    if reader.read_line(&mut line).is_err() {
+        return false;
+    }
+
+    matches!(
+        serde_json::from_str::<DaemonResponse>(&line),
+        Ok(DaemonResponse {
+            result: ResultPayload::Pong { .. },
+            ..
+        })
+    )
+}
+
+#[cfg(unix)]
+enum PidFileState {
+    Missing,
+    Live(u32),
+    Dead,
+    Invalid,
+}
+
+#[cfg(unix)]
+fn pid_file_state(pid_path: &Path) -> std::io::Result<PidFileState> {
+    let metadata = match std::fs::symlink_metadata(pid_path) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            return Ok(PidFileState::Missing);
+        }
+        Err(error) => {
+            return Err(std::io::Error::other(format!(
+                "failed to inspect daemon pid artifact {}: {error}",
+                pid_path.display()
+            )));
+        }
+    };
+
+    if metadata.file_type().is_symlink() || !metadata.is_file() {
+        return Ok(PidFileState::Invalid);
+    }
+    ensure_owned_by_current_user(pid_path, &metadata, "daemon pid artifact")?;
+
+    let content = match std::fs::read_to_string(pid_path) {
+        Ok(content) => content,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            return Ok(PidFileState::Missing);
+        }
+        Err(error) => {
+            return Err(std::io::Error::other(format!(
+                "failed to read daemon pid file {}: {error}",
+                pid_path.display()
+            )));
+        }
+    };
+
+    let Ok(pid) = content.trim().parse::<u32>() else {
+        return Ok(PidFileState::Invalid);
+    };
+    if is_process_alive(pid) {
+        Ok(PidFileState::Live(pid))
+    } else {
+        Ok(PidFileState::Dead)
+    }
+}
+
+#[cfg(unix)]
+fn socket_is_probeable(socket_path: &Path) -> std::io::Result<bool> {
+    let metadata = match std::fs::symlink_metadata(socket_path) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+        Err(error) => {
+            return Err(std::io::Error::other(format!(
+                "failed to inspect daemon socket artifact {}: {error}",
+                socket_path.display()
+            )));
+        }
+    };
+
+    if metadata.file_type().is_symlink() || !metadata.file_type().is_socket() {
+        return Ok(false);
+    }
+    ensure_owned_by_current_user(socket_path, &metadata, "daemon socket artifact")?;
+    Ok(true)
+}
+
+#[cfg(unix)]
+fn ensure_removable_stale_artifact(path: &Path, kind: &str) -> std::io::Result<()> {
+    let metadata = std::fs::symlink_metadata(path).map_err(|err| {
+        std::io::Error::other(format!("failed to inspect stale {kind} {}: {err}", path.display()))
+    })?;
+    ensure_owned_by_current_user(path, &metadata, kind)
+}
+
+#[cfg(unix)]
+fn secure_write_pid_file(pid_path: &Path) -> std::io::Result<()> {
+    use std::fs::OpenOptions;
+
+    let mut file = OpenOptions::new()
+        .create(true)
+        .truncate(true)
+        .write(true)
+        .open(pid_path)
+        .map_err(|err| std::io::Error::other(format!("failed to open daemon pid file {}: {err}", pid_path.display())))?;
+    file.write_all(process::id().to_string().as_bytes())
+        .map_err(|err| std::io::Error::other(format!("failed to write daemon pid file {}: {err}", pid_path.display())))?;
+    file.sync_all()
+        .map_err(|err| std::io::Error::other(format!("failed to sync daemon pid file {}: {err}", pid_path.display())))?;
+    std::fs::set_permissions(pid_path, std::fs::Permissions::from_mode(PID_FILE_MODE))
+        .map_err(|err| std::io::Error::other(format!("failed to secure daemon pid file {}: {err}", pid_path.display())))?;
+    Ok(())
+}
+
+#[cfg(unix)]
+fn secure_socket_permissions(socket_path: &Path) -> std::io::Result<()> {
+    std::fs::set_permissions(socket_path, std::fs::Permissions::from_mode(SOCKET_FILE_MODE))
+        .map_err(|err| std::io::Error::other(format!("failed to secure daemon socket {}: {err}", socket_path.display())))
+}
+
 use crate::allowlist::{AllowlistLayer, LayeredAllowlist, load_allowlists_from};
 use crate::branding::{CONFIG_DIR, PROJECT_CONFIG_FILE, PROJECT_DATA_DIR};
 use crate::config::{
@@ -55,6 +269,14 @@ use tokio::net::{UnixListener, UnixStream};
 use tokio::sync::watch;
 
 const DAEMON_EVALUATION_DEADLINE: Duration = Duration::from_millis(100);
+#[cfg(unix)]
+const RUNTIME_DIR_MODE: u32 = 0o700;
+#[cfg(unix)]
+const SOCKET_FILE_MODE: u32 = 0o600;
+#[cfg(unix)]
+const PID_FILE_MODE: u32 = 0o600;
+#[cfg(unix)]
+const LIVENESS_PROBE_TIMEOUT: Duration = Duration::from_millis(200);
 
 /// File metadata and env snapshot for deterministic cwd-scoped cache invalidation.
 #[derive(Clone, PartialEq, Eq)]
@@ -336,47 +558,97 @@ pub async fn run_daemon(
     shutdown_tx: watch::Sender<bool>,
     mut shutdown_rx: watch::Receiver<bool>,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    // Ensure parent directory exists.
     if let Some(parent) = socket_path.parent() {
+        #[cfg(unix)]
+        ensure_runtime_dir_secure(parent)?;
+        #[cfg(not(unix))]
         tokio::fs::create_dir_all(parent).await?;
     }
 
-    // If a socket file already exists, decide whether it is stale before
-    // we write our own PID file.  This preserves the live daemon's PID
-    // file when we fail with "socket in use".
-    if socket_path.exists() {
+    #[cfg(unix)]
+    let socket_present = std::fs::symlink_metadata(socket_path).is_ok();
+    #[cfg(not(unix))]
+    let socket_present = socket_path.exists();
+
+    if socket_present {
+        #[cfg(unix)]
+        let pid_state = pid_file_state(pid_path)?;
+        #[cfg(unix)]
+        let live_socket =
+            socket_is_probeable(socket_path)? && probe_existing_daemon(socket_path);
+
+        #[cfg(unix)]
+        if live_socket {
+            return Err(std::io::Error::other(format!(
+                "socket {} is already serving a live daemon",
+                socket_path.display()
+            ))
+            .into());
+        }
+
+        #[cfg(unix)]
+        match pid_state {
+            PidFileState::Live(pid) => {
+                return Err(std::io::Error::other(format!(
+                    "socket {} is paired with a live process in {} (pid {pid}); refusing to remove artifacts",
+                    socket_path.display(),
+                    pid_path.display()
+                ))
+                .into());
+            }
+            PidFileState::Dead | PidFileState::Invalid | PidFileState::Missing => {}
+        }
+
+        #[cfg(not(unix))]
         let is_stale = match tokio::fs::read_to_string(pid_path).await {
             Ok(content) => match content.trim().parse::<u32>() {
                 Ok(pid) => !is_process_alive(pid),
-                Err(_) => true, // invalid PID → treat as stale
+                Err(_) => true,
             },
-            Err(_) => true, // missing/unreadable PID file → best effort
+            Err(_) => true,
         };
 
+        #[cfg(unix)]
+        let is_stale = true;
+
         if is_stale {
+            #[cfg(unix)]
+            ensure_removable_stale_artifact(socket_path, "daemon socket artifact")?;
             tracing::warn!(
                 path = %socket_path.display(),
                 "removing stale socket from previous daemon"
             );
             if let Err(e) = tokio::fs::remove_file(socket_path).await {
-                // Ignore "not found" — it may have raced away.
                 if e.kind() != std::io::ErrorKind::NotFound {
                     return Err(Box::new(e));
                 }
             }
-        } else {
-            return Err(format!(
-                "socket {} is in use by a live daemon (pid file: {})",
-                socket_path.display(),
-                pid_path.display()
-            )
-            .into());
+            if pid_path.exists() {
+                let _ = tokio::fs::remove_file(pid_path).await;
+            }
         }
     }
 
-    // Write PID file early so external observers know a daemon is
-    // starting, then bind the socket.  If binding fails we must remove
-    // the PID file so we don't leave a stale claim behind.
+    if !socket_path.exists() && pid_path.exists() {
+        #[cfg(unix)]
+        match pid_file_state(pid_path)? {
+            PidFileState::Live(pid) => {
+                return Err(std::io::Error::other(format!(
+                    "daemon pid file {} points to live process {pid} but socket is missing; refusing to overwrite",
+                    pid_path.display()
+                ))
+                .into());
+            }
+            PidFileState::Dead | PidFileState::Invalid => {
+                let _ = tokio::fs::remove_file(pid_path).await;
+            }
+            PidFileState::Missing => {}
+        }
+    }
+
+    #[cfg(unix)]
+    secure_write_pid_file(pid_path)?;
+    #[cfg(not(unix))]
     tokio::fs::write(pid_path, process::id().to_string()).await?;
 
     let listener = match UnixListener::bind(socket_path) {
@@ -411,6 +683,8 @@ pub async fn run_daemon(
             return Err(Box::new(e));
         }
     };
+    #[cfg(unix)]
+    secure_socket_permissions(socket_path)?;
     tracing::info!(path = %socket_path.display(), "orca-daemon bound UDS socket");
 
     let socket_path_buf: PathBuf = socket_path.to_path_buf();
@@ -507,7 +781,7 @@ async fn handle_connection(stream: UnixStream, shutdown_tx: Arc<watch::Sender<bo
         let response = match envelope.body {
             DaemonRequest::Ping => DaemonResponse {
                 id,
-                result: ResultPayload::Pong,
+                result: ResultPayload::pong(),
             },
             DaemonRequest::Evaluate { command, cwd } => {
                 match resolve_evaluation_cwd(cwd.as_deref()) {
@@ -543,7 +817,7 @@ async fn handle_connection(stream: UnixStream, shutdown_tx: Arc<watch::Sender<bo
             }
             DaemonRequest::Shutdown => DaemonResponse {
                 id,
-                result: ResultPayload::Pong,
+                result: ResultPayload::pong(),
             },
         };
 
@@ -673,6 +947,24 @@ mod tests {
             tokio::time::sleep(Duration::from_millis(10)).await;
             attempts += 1;
         }
+    }
+
+    #[cfg(unix)]
+    async fn wait_for_bound_socket(socket_path: &std::path::Path) {
+        let mut attempts = 0;
+        while attempts < 50 {
+            if let Ok(metadata) = std::fs::symlink_metadata(socket_path) {
+                if metadata.file_type().is_socket() {
+                    return;
+                }
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+            attempts += 1;
+        }
+        panic!(
+            "timed out waiting for bound socket at {}",
+            socket_path.display()
+        );
     }
 
     async fn read_daemon_response(stream: UnixStream) -> serde_json::Value {
@@ -1002,7 +1294,6 @@ reason = "test allowlist"
 
         let socket = socket_path.clone();
         let pid = pid_path.clone();
-        let shutdown_tx = tx.clone();
         let daemon_task = tokio::spawn(async move { run_daemon(&socket, &pid, tx, rx).await });
 
         wait_for_socket(&socket_path).await;
@@ -1035,7 +1326,6 @@ reason = "test allowlist"
 
         let socket = socket_path.clone();
         let pid = pid_path.clone();
-        let shutdown_tx = tx.clone();
         let daemon_task = tokio::spawn(async move { run_daemon(&socket, &pid, tx, rx).await });
 
         wait_for_socket(&socket_path).await;
@@ -1103,7 +1393,6 @@ reason = "test allowlist"
 
         let socket = socket_path.clone();
         let pid = pid_path.clone();
-        let shutdown_tx = tx.clone();
         let daemon_task = tokio::spawn(async move { run_daemon(&socket, &pid, tx, rx).await });
 
         wait_for_socket(&socket_path).await;
@@ -1163,6 +1452,203 @@ reason = "test allowlist"
         ping_stream.write_all(b"\n").await.unwrap();
         let ping_response = read_daemon_response(ping_stream).await;
         assert_eq!(ping_response["result"]["status"], "Pong");
+
+        let _ = shutdown_tx.send(true);
+        let _ = tokio::time::timeout(Duration::from_secs(5), daemon_task).await;
+    }
+
+    #[cfg(unix)]
+    fn create_stale_socket(path: &std::path::Path) {
+        let listener = std::os::unix::net::UnixListener::bind(path).unwrap();
+        drop(listener);
+    }
+
+    #[tokio::test]
+    #[cfg(unix)]
+    async fn daemon_ping_reports_handshake_metadata() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let socket_path = temp_dir.path().join("daemon.sock");
+        let pid_path = temp_dir.path().join("daemon.pid");
+        let (tx, rx) = tokio::sync::watch::channel(false);
+
+        let socket = socket_path.clone();
+        let pid = pid_path.clone();
+        let shutdown_tx = tx.clone();
+        let daemon_task = tokio::spawn(async move { run_daemon(&socket, &pid, tx, rx).await });
+
+        wait_for_socket(&socket_path).await;
+
+        let mut stream = UnixStream::connect(&socket_path).await.unwrap();
+        stream
+            .write_all(br#"{"id":61,"method":"Ping","params":null}"#)
+            .await
+            .unwrap();
+        stream.write_all(b"\n").await.unwrap();
+        let response = read_daemon_response(stream).await;
+        assert_eq!(response["result"]["status"], "Pong");
+        assert_eq!(
+            response["result"]["protocol_version"].as_u64(),
+            Some(u64::from(crate::daemon_protocol::DAEMON_PROTOCOL_VERSION))
+        );
+        assert_eq!(
+            response["result"]["protocol_label"].as_str(),
+            Some(crate::daemon_protocol::DAEMON_PROTOCOL_LABEL)
+        );
+        assert!(
+            response["result"]["capabilities"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|value| value.as_str() == Some("Evaluate"))
+        );
+
+        let _ = shutdown_tx.send(true);
+        let _ = tokio::time::timeout(Duration::from_secs(5), daemon_task).await;
+    }
+
+    #[tokio::test]
+    #[cfg(unix)]
+    async fn daemon_secures_runtime_directory_and_artifacts() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let runtime_dir = temp_dir.path().join(".orca");
+        let socket_path = runtime_dir.join("daemon.sock");
+        let pid_path = runtime_dir.join("daemon.pid");
+        let (tx, rx) = tokio::sync::watch::channel(false);
+
+        let socket = socket_path.clone();
+        let pid = pid_path.clone();
+        let shutdown_tx = tx.clone();
+        let daemon_task = tokio::spawn(async move { run_daemon(&socket, &pid, tx, rx).await });
+
+        wait_for_socket(&socket_path).await;
+
+        let dir_meta = std::fs::metadata(&runtime_dir).unwrap();
+        assert_eq!(dir_meta.permissions().mode() & 0o777, RUNTIME_DIR_MODE);
+
+        let socket_meta = std::fs::metadata(&socket_path).unwrap();
+        assert_eq!(socket_meta.permissions().mode() & 0o777, SOCKET_FILE_MODE);
+
+        let pid_meta = std::fs::metadata(&pid_path).unwrap();
+        assert_eq!(pid_meta.permissions().mode() & 0o777, PID_FILE_MODE);
+
+        let _ = shutdown_tx.send(true);
+        let _ = tokio::time::timeout(Duration::from_secs(5), daemon_task).await;
+    }
+
+    #[tokio::test]
+    #[cfg(unix)]
+    async fn daemon_rejects_symlink_runtime_directory() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let real_runtime = temp_dir.path().join("real-runtime");
+        std::fs::create_dir(&real_runtime).unwrap();
+        let symlink_runtime = temp_dir.path().join(".orca");
+        std::os::unix::fs::symlink(&real_runtime, &symlink_runtime).unwrap();
+
+        let socket_path = symlink_runtime.join("daemon.sock");
+        let pid_path = symlink_runtime.join("daemon.pid");
+        let (tx, rx) = tokio::sync::watch::channel(false);
+
+        let result = run_daemon(&socket_path, &pid_path, tx, rx).await;
+        assert!(result.is_err());
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("runtime directory")
+        );
+    }
+
+    #[tokio::test]
+    #[cfg(unix)]
+    async fn daemon_replaces_stale_socket_symlink() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let runtime_dir = temp_dir.path().join(".orca");
+        std::fs::create_dir(&runtime_dir).unwrap();
+
+        let socket_path = runtime_dir.join("daemon.sock");
+        let pid_path = runtime_dir.join("daemon.pid");
+        let target = temp_dir.path().join("elsewhere.sock");
+        std::fs::write(&target, b"not-a-socket").unwrap();
+        std::os::unix::fs::symlink(&target, &socket_path).unwrap();
+        let (tx, rx) = tokio::sync::watch::channel(false);
+
+        let socket = socket_path.clone();
+        let pid = pid_path.clone();
+        let shutdown_tx = tx.clone();
+        let daemon_task = tokio::spawn(async move { run_daemon(&socket, &pid, tx, rx).await });
+
+        wait_for_bound_socket(&socket_path).await;
+        let socket_meta = std::fs::symlink_metadata(&socket_path).unwrap();
+        assert!(socket_meta.file_type().is_socket());
+
+        let _ = shutdown_tx.send(true);
+        let _ = tokio::time::timeout(Duration::from_secs(5), daemon_task).await;
+    }
+
+    #[tokio::test]
+    #[cfg(unix)]
+    async fn daemon_replaces_stale_regular_file_at_socket_path() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let runtime_dir = temp_dir.path().join(".orca");
+        std::fs::create_dir(&runtime_dir).unwrap();
+
+        let socket_path = runtime_dir.join("daemon.sock");
+        let pid_path = runtime_dir.join("daemon.pid");
+        std::fs::write(&socket_path, b"not-a-socket").unwrap();
+        let (tx, rx) = tokio::sync::watch::channel(false);
+
+        let socket = socket_path.clone();
+        let pid = pid_path.clone();
+        let shutdown_tx = tx.clone();
+        let daemon_task = tokio::spawn(async move { run_daemon(&socket, &pid, tx, rx).await });
+
+        wait_for_bound_socket(&socket_path).await;
+        let socket_meta = std::fs::symlink_metadata(&socket_path).unwrap();
+        assert!(socket_meta.file_type().is_socket());
+
+        let _ = shutdown_tx.send(true);
+        let _ = tokio::time::timeout(Duration::from_secs(5), daemon_task).await;
+    }
+
+    #[tokio::test]
+    #[cfg(unix)]
+    async fn daemon_rejects_live_pid_without_socket() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let runtime_dir = temp_dir.path().join(".orca");
+        std::fs::create_dir(&runtime_dir).unwrap();
+
+        let socket_path = runtime_dir.join("daemon.sock");
+        let pid_path = runtime_dir.join("daemon.pid");
+        std::fs::write(&pid_path, process::id().to_string()).unwrap();
+        let (tx, rx) = tokio::sync::watch::channel(false);
+
+        let result = run_daemon(&socket_path, &pid_path, tx, rx).await;
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("refusing to overwrite"));
+        assert!(pid_path.exists(), "live pid artifact must remain in place");
+    }
+
+    #[tokio::test]
+    #[cfg(unix)]
+    async fn daemon_replaces_stale_socket_for_dead_pid() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let runtime_dir = temp_dir.path().join(".orca");
+        std::fs::create_dir(&runtime_dir).unwrap();
+
+        let socket_path = runtime_dir.join("daemon.sock");
+        let pid_path = runtime_dir.join("daemon.pid");
+        create_stale_socket(&socket_path);
+        std::fs::write(&pid_path, "999999").unwrap();
+
+        let (tx, rx) = tokio::sync::watch::channel(false);
+        let socket = socket_path.clone();
+        let pid = pid_path.clone();
+        let shutdown_tx = tx.clone();
+        let daemon_task = tokio::spawn(async move { run_daemon(&socket, &pid, tx, rx).await });
+
+        wait_for_socket(&socket_path).await;
+        assert!(socket_path.exists());
+        assert!(pid_path.exists());
 
         let _ = shutdown_tx.send(true);
         let _ = tokio::time::timeout(Duration::from_secs(5), daemon_task).await;

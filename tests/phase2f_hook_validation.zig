@@ -3,6 +3,7 @@ const exit_codes = @import("orca").cli.exit_codes;
 
 const orca_bin = "./zig-out/bin/orca";
 const fake_daemon_script = "tests/fixtures/fake-daemon-exit.sh";
+const fake_mismatch_daemon_script = "tests/fixtures/fake-daemon-protocol-mismatch.sh";
 const codex_deny_exit_code: u8 = 2;
 
 const HookRunResult = struct {
@@ -116,6 +117,10 @@ fn fileExists(path: []const u8) bool {
 
 fn requireFakeDaemonFixture() !void {
     try std.testing.expect(fileExists(fake_daemon_script));
+}
+
+fn requireMismatchDaemonFixture() !void {
+    try std.testing.expect(fileExists(fake_mismatch_daemon_script));
 }
 
 fn daemonBinaryAvailable() bool {
@@ -235,6 +240,22 @@ fn makeIsolatedFailClosedEnv(allocator: std.mem.Allocator) !struct {
 
     try env_map.put("HOME", home);
     try env_map.put("ORCA_DAEMON", fake_daemon_script);
+
+    return .{ .env_map = env_map, .home = home };
+}
+
+fn makeIsolatedMismatchEnv(allocator: std.mem.Allocator) !struct {
+    env_map: std.process.Environ.Map,
+    home: []const u8,
+} {
+    const home = try isolatedHomePath(allocator, "mismatch");
+    errdefer allocator.free(home);
+
+    var env_map = try createProcessEnvMap(allocator);
+    errdefer env_map.deinit();
+
+    try env_map.put("HOME", home);
+    try env_map.put("ORCA_DAEMON", fake_mismatch_daemon_script);
 
     return .{ .env_map = env_map, .home = home };
 }
@@ -364,6 +385,77 @@ test "phase2f shell hooks fail closed when daemon cannot start" {
         defer allocator.free(combined);
         try std.testing.expect(std.mem.indexOf(u8, combined, "daemon") != null or std.mem.indexOf(u8, combined, "unavailable") != null or std.mem.indexOf(u8, combined, "blocked") != null);
     }
+}
+
+test "phase2f shell hooks fail closed on protocol mismatch" {
+    if (!fileExists(orca_bin)) return;
+    try requireMismatchDaemonFixture();
+
+    const allocator = std.testing.allocator;
+    const fixture = try readFile(allocator, "tests/plugin-fixtures/claude/pre_tool_use_command_safe.json");
+    defer allocator.free(fixture);
+
+    var isolated = try makeIsolatedMismatchEnv(allocator);
+    defer allocator.free(isolated.home);
+    defer isolated.env_map.deinit();
+
+    const result = try runOrca(allocator, &.{ orca_bin, "hook", "claude", "PreToolUse" }, fixture, &isolated.env_map);
+    defer allocator.free(result.stdout);
+    defer allocator.free(result.stderr);
+
+    try expectHookDecision(allocator, "claude", "block", result);
+    const combined = try std.fmt.allocPrint(allocator, "{s}{s}", .{ result.stdout, result.stderr });
+    defer allocator.free(combined);
+    try std.testing.expect(std.mem.indexOf(u8, combined, "incompatible daemon protocol") != null);
+}
+
+test "phase2f version still works when daemon is unavailable" {
+    if (!fileExists(orca_bin)) return;
+
+    const allocator = std.testing.allocator;
+    var isolated = try makeIsolatedFailClosedEnv(allocator);
+    defer allocator.free(isolated.home);
+    defer isolated.env_map.deinit();
+
+    const result = try runOrca(allocator, &.{ orca_bin, "version" }, "", &isolated.env_map);
+    defer allocator.free(result.stdout);
+    defer allocator.free(result.stderr);
+
+    try std.testing.expectEqual(exit_codes.success, result.code);
+    try std.testing.expect(std.mem.indexOf(u8, result.stdout, "orca ") != null);
+}
+
+test "phase2f doctor degrades gracefully when daemon is unavailable" {
+    if (!fileExists(orca_bin)) return;
+
+    const allocator = std.testing.allocator;
+    var isolated = try makeIsolatedFailClosedEnv(allocator);
+    defer allocator.free(isolated.home);
+    defer isolated.env_map.deinit();
+
+    const result = try runOrca(allocator, &.{ orca_bin, "doctor" }, "", &isolated.env_map);
+    defer allocator.free(result.stdout);
+    defer allocator.free(result.stderr);
+
+    try std.testing.expectEqual(exit_codes.success, result.code);
+    try std.testing.expect(std.mem.indexOf(u8, result.stdout, "daemon unavailable") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.stdout, "Rebuild both binaries with `./scripts/build-all.sh`") != null);
+}
+
+test "phase2f run denies shell commands when daemon is unavailable" {
+    if (!fileExists(orca_bin)) return;
+
+    const allocator = std.testing.allocator;
+    var isolated = try makeIsolatedFailClosedEnv(allocator);
+    defer allocator.free(isolated.home);
+    defer isolated.env_map.deinit();
+
+    const result = try runOrca(allocator, &.{ orca_bin, "run", "--workspace", ".", "--", "git", "status" }, "", &isolated.env_map);
+    defer allocator.free(result.stdout);
+    defer allocator.free(result.stderr);
+
+    try std.testing.expect(result.code != exit_codes.success);
+    try std.testing.expect(std.mem.indexOf(u8, result.stderr, "daemon unavailable") != null or std.mem.indexOf(u8, result.stderr, "command denied") != null);
 }
 
 test "phase2f malformed hook JSON preserves parse error behavior" {

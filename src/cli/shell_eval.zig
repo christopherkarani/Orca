@@ -53,6 +53,9 @@ pub fn daemonUnavailableReason(err: daemon.DaemonError) []const u8 {
         error.RequestSerializationFailed => "daemon unavailable: request serialization failed",
         error.ResponseParseFailed => "daemon unavailable: malformed daemon response",
         error.DaemonProtocolError => "daemon unavailable: protocol error",
+        error.MissingHandshake => "daemon unavailable: missing protocol handshake",
+        error.HandshakeMalformed => "daemon unavailable: malformed protocol handshake",
+        error.ProtocolMismatch => "daemon unavailable: incompatible daemon protocol",
         error.OutOfMemory => "daemon unavailable: out of memory",
     };
 }
@@ -359,6 +362,12 @@ pub fn mockDaemonUnavailableEvaluator(allocator: std.mem.Allocator, shell_event:
     return error.SocketConnectFailed;
 }
 
+pub fn mockDaemonProtocolMismatchEvaluator(allocator: std.mem.Allocator, shell_event: ShellCommandEvent) daemon.DaemonError!std.json.Parsed(daemon.DaemonResponse) {
+    _ = allocator;
+    _ = shell_event;
+    return error.ProtocolMismatch;
+}
+
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
@@ -401,6 +410,14 @@ test "shell_eval daemon error fails closed" {
     var decision = try evaluateCommand(allocator, .strict, &.{ "git", "status" }, null, mockDaemonErrorEvaluator);
     defer decision.deinit(allocator);
     try std.testing.expectEqual(core.decision.DecisionResult.deny, decision.decision.result);
+}
+
+test "shell_eval protocol mismatch fails closed" {
+    const allocator = std.testing.allocator;
+    var decision = try evaluateCommand(allocator, .strict, &.{ "git", "status" }, null, mockDaemonProtocolMismatchEvaluator);
+    defer decision.deinit(allocator);
+    try std.testing.expectEqual(core.decision.DecisionResult.deny, decision.decision.result);
+    try std.testing.expect(std.mem.indexOf(u8, decision.decision.reason, "incompatible daemon protocol") != null);
 }
 
 test "hook and run parity for safe and dangerous commands" {

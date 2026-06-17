@@ -2140,7 +2140,6 @@ mod tests {
 
             let socket = socket_path.clone();
             let pid = pid_path.clone();
-            let shutdown_tx = tx.clone();
             let daemon_task =
                 tokio::spawn(async move { orca_rs::daemon::run_daemon(&socket, &pid, tx, rx).await });
 

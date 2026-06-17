@@ -26,6 +26,9 @@ const orca_state_dir = ".orca";
 
 /// Environment variable override for the daemon binary path.
 const daemon_env_var = "ORCA_DAEMON";
+const expected_protocol_version: i64 = 1;
+const expected_protocol_label = "orca-uds-v1";
+const required_capabilities = [_][]const u8{ "Ping", "Evaluate", "ExecuteCli", "Shutdown" };
 
 /// Default time to wait for the daemon socket and Ping response after spawn.
 pub const default_readiness_timeout_ms: u64 = 5_000;
@@ -110,6 +113,9 @@ pub const DaemonError = error{
     RequestSerializationFailed,
     ResponseParseFailed,
     DaemonProtocolError,
+    MissingHandshake,
+    HandshakeMalformed,
+    ProtocolMismatch,
 };
 
 var ensure_daemon_lock: std.Io.Mutex = .init;
@@ -209,6 +215,73 @@ pub fn responseStringField(result: std.json.Value, field_name: []const u8) ?[]co
         .string => |s| s,
         else => null,
     };
+}
+
+fn responseIntegerField(result: std.json.Value, field_name: []const u8) ?i64 {
+    const object = switch (result) {
+        .object => |map| map,
+        else => return null,
+    };
+    const value = object.get(field_name) orelse return null;
+    return switch (value) {
+        .integer => |i| i,
+        else => null,
+    };
+}
+
+fn responseArrayField(result: std.json.Value, field_name: []const u8) ?[]const std.json.Value {
+    const object = switch (result) {
+        .object => |map| map,
+        else => return null,
+    };
+    const value = object.get(field_name) orelse return null;
+    return switch (value) {
+        .array => |items| items.items,
+        else => null,
+    };
+}
+
+fn handshakeHasCapability(result: std.json.Value, expected: []const u8) bool {
+    const items = responseArrayField(result, "capabilities") orelse return false;
+    for (items) |item| {
+        switch (item) {
+            .string => |value| {
+                if (std.mem.eql(u8, value, expected)) return true;
+            },
+            else => return false,
+        }
+    }
+    return false;
+}
+
+pub fn validateHandshakeResult(result: std.json.Value) DaemonError!void {
+    if (responseStatus(result) != .pong) return error.DaemonProtocolError;
+
+    const protocol_version = responseIntegerField(result, "protocol_version") orelse {
+        if (responseStringField(result, "protocol_version") != null) return error.HandshakeMalformed;
+        return error.MissingHandshake;
+    };
+    const protocol_label = responseStringField(result, "protocol_label") orelse {
+        if (responseArrayField(result, "protocol_label") != null) return error.HandshakeMalformed;
+        return error.MissingHandshake;
+    };
+    const capabilities = responseArrayField(result, "capabilities") orelse {
+        if (responseStringField(result, "capabilities") != null or responseIntegerField(result, "capabilities") != null) {
+            return error.HandshakeMalformed;
+        }
+        return error.MissingHandshake;
+    };
+
+    if (protocol_version != expected_protocol_version or !std.mem.eql(u8, protocol_label, expected_protocol_label)) {
+        return error.ProtocolMismatch;
+    }
+
+    for (capabilities) |item| {
+        if (item != .string) return error.HandshakeMalformed;
+    }
+    for (required_capabilities) |capability| {
+        if (!handshakeHasCapability(result, capability)) return error.ProtocolMismatch;
+    }
 }
 
 /// Return the best hook `rule` identifier from a daemon Deny payload.
@@ -336,6 +409,12 @@ pub fn ping(allocator: std.mem.Allocator) DaemonError!void {
     try pingWithTimeout(allocator, paths.socket, default_request_timeout_ms);
 }
 
+pub fn checkCompatibility(allocator: std.mem.Allocator) DaemonError!void {
+    const paths = try runtimePaths(allocator);
+    defer freeRuntimePaths(allocator, paths);
+    try handshakeWithTimeout(allocator, paths.socket, default_request_timeout_ms);
+}
+
 fn pingWithTimeout(allocator: std.mem.Allocator, socket_path: []const u8, timeout_ms: u64) DaemonError!void {
     var parsed = try sendRequestWithTimeout(allocator, socket_path, .{
         .id = 0,
@@ -344,6 +423,16 @@ fn pingWithTimeout(allocator: std.mem.Allocator, socket_path: []const u8, timeou
     }, timeout_ms);
     defer parsed.deinit();
     if (responseStatus(parsed.value.result) != .pong) return error.DaemonProtocolError;
+}
+
+fn handshakeWithTimeout(allocator: std.mem.Allocator, socket_path: []const u8, timeout_ms: u64) DaemonError!void {
+    var parsed = try sendRequestWithTimeout(allocator, socket_path, .{
+        .id = 0,
+        .method = "Ping",
+        .params = null,
+    }, timeout_ms);
+    defer parsed.deinit();
+    try validateHandshakeResult(parsed.value.result);
 }
 
 /// Send a single NDJSON request to the daemon and return its parsed response.
@@ -365,7 +454,7 @@ pub fn evaluate(
     command: []const u8,
     cwd: ?[]const u8,
 ) DaemonError!std.json.Parsed(DaemonResponse) {
-    try ensureDaemonRunning(allocator);
+    try ensureCompatibleDaemonRunning(allocator);
     const path = try socketPath(allocator);
     defer allocator.free(path);
 
@@ -382,7 +471,7 @@ pub fn evaluate(
 ///
 /// Callers inspect the returned result before deinitializing the Parsed response.
 pub fn executeCli(allocator: std.mem.Allocator, argv: []const []const u8) DaemonError!std.json.Parsed(DaemonResponse) {
-    try ensureDaemonRunning(allocator);
+    try ensureCompatibleDaemonRunning(allocator);
     const path = try socketPath(allocator);
     defer allocator.free(path);
 
@@ -518,18 +607,23 @@ pub fn ensureDaemonRunning(allocator: std.mem.Allocator) DaemonError!void {
     const paths = try runtimePaths(allocator);
     defer freeRuntimePaths(allocator, paths);
 
-    if (isStaleDaemonArtifacts(allocator, paths) catch return error.DaemonNotReady) {
-        cleanupStaleArtifacts(io, paths);
-    }
-
     // Another caller may have started the daemon while we waited for the lock.
     if (ping(allocator)) |_| return else |_| {}
 
     const daemon_binary = try findDaemonBinary(allocator) orelse return error.DaemonBinaryNotFound;
     defer allocator.free(daemon_binary);
 
+    // Let the hardened Rust daemon startup path own stale-artifact recovery so
+    // socket/PID cleanup uses the stricter liveness and ownership checks.
     try startDaemon(allocator, daemon_binary);
     try waitForDaemonReady(allocator, default_readiness_timeout_ms);
+}
+
+fn ensureCompatibleDaemonRunning(allocator: std.mem.Allocator) DaemonError!void {
+    try ensureDaemonRunning(allocator);
+    const path = try socketPath(allocator);
+    defer allocator.free(path);
+    try handshakeWithTimeout(allocator, path, default_request_timeout_ms);
 }
 
 fn adjacentDaemonBinaryPath(allocator: std.mem.Allocator, io: std.Io) DaemonError!?[]const u8 {
@@ -802,6 +896,37 @@ test "parseResponse accepts pong payload" {
     defer parsed.deinit();
     try std.testing.expectEqual(@as(u64, 1), parsed.value.id);
     try std.testing.expect(responseStatus(parsed.value.result) == .pong);
+}
+
+test "validateHandshakeResult accepts compatible pong payload" {
+    const line =
+        "{\"id\":1,\"result\":{\"status\":\"Pong\",\"protocol_version\":1,\"protocol_label\":\"orca-uds-v1\",\"capabilities\":[\"Ping\",\"Evaluate\",\"ExecuteCli\",\"Shutdown\"]}}";
+    var parsed = try parseResponse(std.testing.allocator, line);
+    defer parsed.deinit();
+    try validateHandshakeResult(parsed.value.result);
+}
+
+test "validateHandshakeResult rejects missing handshake fields" {
+    const line = "{\"id\":1,\"result\":{\"status\":\"Pong\"}}";
+    var parsed = try parseResponse(std.testing.allocator, line);
+    defer parsed.deinit();
+    try std.testing.expectError(error.MissingHandshake, validateHandshakeResult(parsed.value.result));
+}
+
+test "validateHandshakeResult rejects malformed handshake fields" {
+    const line =
+        "{\"id\":1,\"result\":{\"status\":\"Pong\",\"protocol_version\":\"1\",\"protocol_label\":\"orca-uds-v1\",\"capabilities\":[\"Ping\"]}}";
+    var parsed = try parseResponse(std.testing.allocator, line);
+    defer parsed.deinit();
+    try std.testing.expectError(error.HandshakeMalformed, validateHandshakeResult(parsed.value.result));
+}
+
+test "validateHandshakeResult rejects protocol mismatch" {
+    const line =
+        "{\"id\":1,\"result\":{\"status\":\"Pong\",\"protocol_version\":99,\"protocol_label\":\"orca-uds-v99\",\"capabilities\":[\"Ping\",\"Evaluate\",\"ExecuteCli\",\"Shutdown\"]}}";
+    var parsed = try parseResponse(std.testing.allocator, line);
+    defer parsed.deinit();
+    try std.testing.expectError(error.ProtocolMismatch, validateHandshakeResult(parsed.value.result));
 }
 
 test "buildExecuteCliRequestJson serializes expected argv" {

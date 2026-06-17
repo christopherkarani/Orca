@@ -1,5 +1,9 @@
 use serde::{Deserialize, Serialize};
 
+pub const DAEMON_PROTOCOL_VERSION: u32 = 1;
+pub const DAEMON_PROTOCOL_LABEL: &str = "orca-uds-v1";
+pub const DAEMON_CAPABILITIES: &[&str] = &["Ping", "Evaluate", "ExecuteCli", "Shutdown"];
+
 /// Request envelope sent by the Zig CLI over the Unix Domain Socket.
 ///
 /// Each line on the wire is a JSON object whose `method` field selects
@@ -62,7 +66,11 @@ pub struct AllowlistOverridePayload {
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(tag = "status")]
 pub enum ResultPayload {
-    Pong,
+    Pong {
+        protocol_version: u32,
+        protocol_label: String,
+        capabilities: Vec<String>,
+    },
     Allow {
         reason: String,
         #[serde(skip_serializing_if = "Option::is_none")]
@@ -101,6 +109,20 @@ pub enum ResultPayload {
         stderr: String,
         exit_code: i32,
     },
+}
+
+impl ResultPayload {
+    #[must_use]
+    pub fn pong() -> Self {
+        Self::Pong {
+            protocol_version: DAEMON_PROTOCOL_VERSION,
+            protocol_label: DAEMON_PROTOCOL_LABEL.to_string(),
+            capabilities: DAEMON_CAPABILITIES
+                .iter()
+                .map(|capability| (*capability).to_string())
+                .collect(),
+        }
+    }
 }
 
 #[cfg(test)]
@@ -144,6 +166,42 @@ mod tests {
         assert!(result.get("allowlist_override").is_none());
         assert!(result.get("graduated_response").is_none());
         assert!(result.get("session_occurrence").is_none());
+    }
+
+    #[test]
+    fn pong_payload_includes_protocol_metadata() {
+        let response = DaemonResponse {
+            id: 4,
+            result: ResultPayload::pong(),
+        };
+
+        let value = serde_json::to_value(response).unwrap();
+        let result = value.get("result").unwrap();
+        assert_eq!(
+            result.get("status").and_then(serde_json::Value::as_str),
+            Some("Pong")
+        );
+        assert_eq!(
+            result
+                .get("protocol_version")
+                .and_then(serde_json::Value::as_u64),
+            Some(u64::from(DAEMON_PROTOCOL_VERSION))
+        );
+        assert_eq!(
+            result
+                .get("protocol_label")
+                .and_then(serde_json::Value::as_str),
+            Some(DAEMON_PROTOCOL_LABEL)
+        );
+        let capabilities = result
+            .get("capabilities")
+            .and_then(serde_json::Value::as_array)
+            .unwrap();
+        assert_eq!(capabilities.len(), DAEMON_CAPABILITIES.len());
+        assert_eq!(
+            capabilities[1].as_str(),
+            Some(DAEMON_CAPABILITIES[1])
+        );
     }
 
     #[test]

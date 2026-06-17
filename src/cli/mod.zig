@@ -158,7 +158,8 @@ pub fn runWithCwd(io: std.Io, environ_map: *const std.process.Environ.Map, cwd: 
             try stderr.writeAll("orca version: unsupported argument. Run 'orca help version' for usage.\n");
             return exit_codes.usage;
         }
-        return proxyVersionCommand(realDaemonExecuteCli, io, stdout, stderr);
+        try version_command.writePlain(stdout, version_command.current());
+        return exit_codes.success;
     }
 
     if (isPhase1ProxyCommand(command)) {
@@ -259,6 +260,9 @@ fn daemonErrorLabel(err: anyerror) []const u8 {
         error.RequestSerializationFailed,
         error.ResponseParseFailed,
         error.DaemonProtocolError,
+        error.MissingHandshake,
+        error.HandshakeMalformed,
+        error.ProtocolMismatch,
         => "daemon protocol error",
         error.OutOfMemory => "out of memory",
         else => "daemon proxy failed",
@@ -555,12 +559,25 @@ test "phase 1 proxy reports daemon unavailable explicitly" {
     try std.testing.expect(std.mem.indexOf(u8, stderr_writer.buffered(), "DaemonBinaryNotFound") != null);
 }
 
+test "daemonErrorLabel distinguishes protocol compatibility failures" {
+    try std.testing.expectEqualStrings("daemon protocol error", daemonErrorLabel(error.ProtocolMismatch));
+    try std.testing.expectEqualStrings("daemon protocol error", daemonErrorLabel(error.MissingHandshake));
+    try std.testing.expectEqualStrings("daemon protocol error", daemonErrorLabel(error.HandshakeMalformed));
+}
+
 test "version supports json, help, and rejects extra arguments" {
     var stdout_buf: [1024]u8 = undefined;
     var stderr_buf: [256]u8 = undefined;
     var stdout_writer: std.Io.Writer = .fixed(&stdout_buf);
     var stderr_writer: std.Io.Writer = .fixed(&stderr_buf);
 
+    const plain_code = try testRun(&.{ "version" }, &stdout_writer, &stderr_writer);
+    try std.testing.expectEqual(exit_codes.success, plain_code);
+    try std.testing.expect(std.mem.indexOf(u8, stdout_writer.buffered(), version) != null);
+    try std.testing.expectEqualStrings("", stderr_writer.buffered());
+
+    stdout_writer = .fixed(&stdout_buf);
+    stderr_writer = .fixed(&stderr_buf);
     const help_code = try testRun(&.{ "version", "--help" }, &stdout_writer, &stderr_writer);
     try std.testing.expectEqual(exit_codes.success, help_code);
     try std.testing.expect(std.mem.indexOf(u8, stdout_writer.buffered(), "orca version") != null);

@@ -34,6 +34,7 @@ const commands = [_][]const u8{
     "demo",
     "disable",
     "uninstall",
+    "shutdown",
     "env",
     "version",
     "help",

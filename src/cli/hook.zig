@@ -1282,6 +1282,12 @@ fn mockDaemonTimeoutEvaluator(allocator: std.mem.Allocator, shell_event: ShellCo
     return error.SocketReadFailed;
 }
 
+fn mockDaemonProtocolMismatchEvaluator(allocator: std.mem.Allocator, shell_event: ShellCommandEvent) daemon.DaemonError!std.json.Parsed(daemon.DaemonResponse) {
+    _ = allocator;
+    _ = shell_event;
+    return error.ProtocolMismatch;
+}
+
 fn shellRouteSetup(allocator: std.mem.Allocator, redactions: *std.ArrayList(RedactionEntry), limitations: *std.ArrayList([]const u8)) !void {
     _ = redactions;
     try limitations.append(allocator, try allocator.dupe(u8, "Hook enforcement is additive; does not replace orca run supervision."));
@@ -2019,6 +2025,17 @@ test "hook daemon timeout blocks shell command via fail-closed route" {
     defer result.deinit(allocator);
     try std.testing.expectEqual(PluginDecision.block, result.decision);
     try std.testing.expect(std.mem.indexOf(u8, result.reason, "socket read failed") != null);
+}
+
+test "hook daemon protocol mismatch blocks shell command via fail-closed route" {
+    var gpa_state: std.heap.DebugAllocator(.{}) = .init;
+    defer _ = gpa_state.deinit();
+    const allocator = gpa_state.allocator();
+
+    var result = try runShellRoute(allocator, "git status", null, false, mockDaemonProtocolMismatchEvaluator);
+    defer result.deinit(allocator);
+    try std.testing.expectEqual(PluginDecision.block, result.decision);
+    try std.testing.expect(std.mem.indexOf(u8, result.reason, "incompatible daemon protocol") != null);
 }
 
 test "hook daemon deny maps capitalized severity to risk level" {

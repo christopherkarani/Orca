@@ -1342,6 +1342,22 @@ test "run daemon unavailable denies shell command" {
     try std.testing.expect(std.mem.indexOf(u8, stderr_writer.buffered(), "command denied") != null);
 }
 
+test "run daemon protocol mismatch denies shell command" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const root = try tmp.dir.realPathFileAlloc(std.testing.io, ".", std.testing.allocator);
+    defer std.testing.allocator.free(root);
+
+    var stdout_buf: [2048]u8 = undefined;
+    var stderr_buf: [2048]u8 = undefined;
+    var stdout_writer: std.Io.Writer = .fixed(&stdout_buf);
+    var stderr_writer: std.Io.Writer = .fixed(&stderr_buf);
+
+    const code = try commandForGuardTestWithShellEvaluator(&.{ "--workspace", root, "--", "git", "status" }, &stdout_writer, &stderr_writer, .ignore, shell_eval.mockDaemonProtocolMismatchEvaluator);
+    try std.testing.expectEqual(exit_codes.denial, code);
+    try std.testing.expect(std.mem.indexOf(u8, stderr_writer.buffered(), "daemon") != null or std.mem.indexOf(u8, stderr_writer.buffered(), "command denied") != null);
+}
+
 fn readLastSessionId(allocator: std.mem.Allocator, root: []const u8) ![]u8 {
     const last_path = try std.fs.path.join(allocator, &.{ root, ".orca", "last" });
     defer allocator.free(last_path);

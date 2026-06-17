@@ -393,7 +393,7 @@ custom_paths = [".orca/packs/custom.yaml"]
 "#;
     write_project_config(&repo, config);
 
-    let pack_v1 = r#"
+    let pack_v1 = r"
 schema_version: 1
 id: custom.reload
 name: Reload Pack
@@ -404,7 +404,7 @@ destructive_patterns:
     pattern: reloadpack-danger
     severity: high
     description: blocked by external pack
-"#;
+";
     write_external_pack(&repo, pack_v1);
 
     let cmd = "reloadpack-danger";
@@ -421,14 +421,14 @@ destructive_patterns:
         "external pack should deny command, got: {denied}"
     );
 
-    let pack_v2 = r#"
+    let pack_v2 = r"
 schema_version: 1
 id: custom.reload
 name: Reload Pack
 version: 1.0.0
 keywords: [reloadpack]
 destructive_patterns: []
-"#;
+";
     write_external_pack(&repo, pack_v2);
 
     let allowed = evaluate_at(&socket_path, 32, cmd, &cwd);
