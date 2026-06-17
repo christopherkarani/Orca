@@ -1253,6 +1253,15 @@ fn mockDaemonErrorEvaluator(allocator: std.mem.Allocator, shell_event: ShellComm
     return shell_eval.mockDaemonErrorEvaluator(allocator, shell_event);
 }
 
+fn mockDaemonSoftBlockAllowEvaluator(allocator: std.mem.Allocator, shell_event: ShellCommandEvent) daemon.DaemonError!std.json.Parsed(daemon.DaemonResponse) {
+    return shell_eval.mockDaemonSoftBlockAllowEvaluator(allocator, shell_event);
+}
+
+fn mockDaemonDenyPackOnlyEvaluator(allocator: std.mem.Allocator, shell_event: ShellCommandEvent) daemon.DaemonError!std.json.Parsed(daemon.DaemonResponse) {
+    _ = shell_event;
+    return shell_eval.mockDaemonResponse(allocator, "{\"id\":1,\"result\":{\"status\":\"Deny\",\"reason\":\"matched rm -rf / in command\",\"pack_id\":\"git\",\"severity\":\"high\",\"explanation\":\"recursive delete of root\"}}");
+}
+
 fn mockDaemonDenyWithPreviewEvaluator(allocator: std.mem.Allocator, shell_event: ShellCommandEvent) daemon.DaemonError!std.json.Parsed(daemon.DaemonResponse) {
     _ = shell_event;
     return shell_eval.mockDaemonResponse(allocator, "{\"id\":1,\"result\":{\"status\":\"Deny\",\"reason\":\"matched rm -rf / in command\",\"pack_id\":\"git\",\"pattern_name\":\"destructive_rm\",\"severity\":\"Critical\",\"explanation\":\"recursive delete of root\",\"matched_text_preview\":\"rm -rf /\"}}");
@@ -2115,6 +2124,72 @@ test "hook UserPromptSubmit stays on zig prompt path" {
 
     try std.testing.expect(result.decision == .allow or result.decision == .ask or result.decision == .warn);
     try std.testing.expectEqualStrings("prompt", result.category);
+}
+
+test "hook shell route ci mode converts daemon soft block to block" {
+    var gpa_state: std.heap.DebugAllocator(.{}) = .init;
+    defer _ = gpa_state.deinit();
+    const allocator = gpa_state.allocator();
+
+    var ask_result = try runShellRoute(allocator, "git status", null, false, mockDaemonSoftBlockAllowEvaluator);
+    defer ask_result.deinit(allocator);
+    try std.testing.expectEqual(PluginDecision.ask, ask_result.decision);
+
+    var block_result = try runShellRoute(allocator, "git status", null, true, mockDaemonSoftBlockAllowEvaluator);
+    defer block_result.deinit(allocator);
+    try std.testing.expectEqual(PluginDecision.block, block_result.decision);
+}
+
+test "hook daemon allow maps to unified allow JSON output" {
+    var gpa_state: std.heap.DebugAllocator(.{}) = .init;
+    defer _ = gpa_state.deinit();
+    const allocator = gpa_state.allocator();
+
+    var result = try runShellRoute(allocator, "git status", null, false, mockDaemonAllowEvaluator);
+    defer result.deinit(allocator);
+
+    var stdout_buf: [4096]u8 = undefined;
+    var stdout_writer: std.Io.Writer = .fixed(&stdout_buf);
+    try writeHookResponse(&stdout_writer, result);
+
+    var parsed = try std.json.parseFromSlice(std.json.Value, allocator, stdout_writer.buffered(), .{});
+    defer parsed.deinit();
+    try std.testing.expectEqualStrings("allow", parsed.value.object.get("decision").?.string);
+    try std.testing.expectEqualStrings("low", parsed.value.object.get("risk").?.string);
+    try std.testing.expectEqualStrings("command", parsed.value.object.get("category").?.string);
+}
+
+test "hook daemon deny maps to unified block JSON output" {
+    var gpa_state: std.heap.DebugAllocator(.{}) = .init;
+    defer _ = gpa_state.deinit();
+    const allocator = gpa_state.allocator();
+
+    var result = try runShellRoute(allocator, "rm -rf /", null, false, mockDaemonDenyEvaluator);
+    defer result.deinit(allocator);
+    try std.testing.expectEqual(PluginDecision.block, result.decision);
+
+    var stdout_buf: [4096]u8 = undefined;
+    var stdout_writer: std.Io.Writer = .fixed(&stdout_buf);
+    try writeHookResponse(&stdout_writer, result);
+
+    var parsed = try std.json.parseFromSlice(std.json.Value, allocator, stdout_writer.buffered(), .{});
+    defer parsed.deinit();
+    try std.testing.expectEqualStrings("block", parsed.value.object.get("decision").?.string);
+    try std.testing.expectEqualStrings("critical", parsed.value.object.get("risk").?.string);
+    try std.testing.expect(parsed.value.object.get("rule").?.string.len > 0);
+}
+
+test "hook daemon deny without pattern_name uses pack_id and redacts raw reason" {
+    var gpa_state: std.heap.DebugAllocator(.{}) = .init;
+    defer _ = gpa_state.deinit();
+    const allocator = gpa_state.allocator();
+
+    var result = try runShellRoute(allocator, "rm -rf /", null, false, mockDaemonDenyPackOnlyEvaluator);
+    defer result.deinit(allocator);
+
+    try std.testing.expectEqualStrings("git", result.rule.?);
+    try std.testing.expect(std.mem.indexOf(u8, result.reason, "rm -rf") == null);
+    try std.testing.expect(std.mem.indexOf(u8, result.message, "recursive delete") != null);
 }
 
 test "hook evaluatePreToolUse fail-closes malformed shell payload before daemon call" {

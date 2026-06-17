@@ -25,7 +25,9 @@ fn resolveEffectiveCwd(allocator: std.mem.Allocator, cwd: ?[]const u8) daemon.Da
     const path = cwd orelse ".";
     var threaded: std.Io.Threaded = .init_single_threaded;
     const io = threaded.io();
-    return std.Io.Dir.cwd().realPathFileAlloc(io, path, allocator) catch error.RequestSerializationFailed;
+    const resolved_z = std.Io.Dir.cwd().realPathFileAlloc(io, path, allocator) catch return error.RequestSerializationFailed;
+    defer allocator.free(resolved_z);
+    return allocator.dupe(u8, resolved_z) catch error.OutOfMemory;
 }
 
 pub fn defaultEvaluator(
@@ -152,8 +154,10 @@ pub fn buildDaemonDenyReason(
 
     const reason = if (rule) |rule_name|
         try std.fmt.allocPrint(allocator, "blocked by Orca policy rule: {s}", .{rule_name})
-    else
-        try allocator.dupe(u8, daemon.responseStringField(result, "reason") orelse "command denied by Orca policy");
+    else blk: {
+        // Never echo raw daemon reason strings; they may include matched command fragments.
+        break :blk try allocator.dupe(u8, "command denied by Orca policy");
+    };
 
     return .{ .reason = reason, .rule = rule };
 }
@@ -358,7 +362,6 @@ pub fn mockDaemonUnavailableEvaluator(allocator: std.mem.Allocator, shell_event:
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
-
 
 test "shell_eval allows safe command via mock daemon" {
     const allocator = std.testing.allocator;
