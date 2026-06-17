@@ -343,14 +343,31 @@ fn hookCommand(io: std.Io, host: Host, event: Event, original_event_name: []cons
     };
     defer result.deinit(allocator);
 
-    // Emit JSON response to stdout
-    try writeHookResponse(stdout, result);
-
-    // Log debug info to stderr only
-    if (result.rule) |rule| {
-        try stderr.print("[hook] matched rule: {s}\n", .{rule});
+    if (isCodexDenyOutput(host, result.decision)) {
+        // Codex 0.125.0+ ignores stdout JSON on deny; exit 2 + stderr is the enforced block path.
+        try stderr.writeAll(result.message);
+        try stderr.writeAll("\n");
+    } else {
+        try writeHookResponse(stdout, result);
+        if (result.rule) |rule| {
+            try stderr.print("[hook] matched rule: {s}\n", .{rule});
+        }
     }
 
+    return hookExitCode(host, result.decision, ci_mode);
+}
+
+/// Codex hook deny exit code (documented Codex CLI contract; distinct from usage errors).
+const codex_deny_exit_code: u8 = 2;
+
+fn isCodexDenyOutput(host: Host, decision: PluginDecision) bool {
+    return host == .codex and decision == .block;
+}
+
+/// Host-aware hook process exit code after evaluation completes.
+fn hookExitCode(host: Host, decision: PluginDecision, ci_mode: bool) u8 {
+    _ = ci_mode;
+    if (isCodexDenyOutput(host, decision)) return codex_deny_exit_code;
     return exit_codes.success;
 }
 
@@ -743,11 +760,65 @@ fn pluginDecisionFromDaemonAllow(result: std.json.Value) PluginDecision {
 
 fn riskFromDaemonSeverity(severity: ?[]const u8) RiskLevel {
     const value = severity orelse return .high;
-    if (std.mem.eql(u8, value, "critical")) return .critical;
-    if (std.mem.eql(u8, value, "high")) return .high;
-    if (std.mem.eql(u8, value, "medium")) return .medium;
-    if (std.mem.eql(u8, value, "low")) return .low;
+    if (severityEquals(value, "critical")) return .critical;
+    if (severityEquals(value, "high")) return .high;
+    if (severityEquals(value, "medium")) return .medium;
+    if (severityEquals(value, "low")) return .low;
     return .unknown;
+}
+
+fn severityEquals(severity: []const u8, expected: []const u8) bool {
+    return std.ascii.eqlIgnoreCase(severity, expected);
+}
+
+fn recordDaemonMetadataRedaction(
+    allocator: std.mem.Allocator,
+    redactions: *std.ArrayList(RedactionEntry),
+    field: []const u8,
+) !void {
+    try redactions.append(allocator, .{
+        .field = try allocator.dupe(u8, field),
+        .reason = try allocator.dupe(u8, "daemon evaluator metadata withheld from agent-visible output"),
+    });
+}
+
+fn buildAgentVisibleDaemonDeny(
+    allocator: std.mem.Allocator,
+    result: std.json.Value,
+    ci_mode: bool,
+    redactions: *std.ArrayList(RedactionEntry),
+) !struct {
+    decision: PluginDecision,
+    risk: RiskLevel,
+    reason: []const u8,
+    rule: ?[]const u8,
+    message: []const u8,
+} {
+    if (daemon.responseStringField(result, "matched_text_preview")) |_| {
+        try recordDaemonMetadataRedaction(allocator, redactions, "matched_text_preview");
+    }
+
+    const decision = applyCiModeToShellDecision(.block, ci_mode);
+    const risk = riskFromDaemonSeverity(daemon.responseStringField(result, "severity"));
+    const rule = if (daemon.responseDenyRule(result)) |rule_name| try allocator.dupe(u8, rule_name) else null;
+
+    const reason = if (rule) |rule_name|
+        try std.fmt.allocPrint(allocator, "blocked by Orca policy rule: {s}", .{rule_name})
+    else
+        try allocator.dupe(u8, "command denied by Orca policy");
+
+    const message = if (daemon.responseStringField(result, "explanation")) |explanation|
+        try std.fmt.allocPrint(allocator, "command blocked by Orca policy: {s}", .{explanation})
+    else
+        try buildMessage(allocator, decision, "command");
+
+    return .{
+        .decision = decision,
+        .risk = risk,
+        .reason = reason,
+        .rule = rule,
+        .message = message,
+    };
 }
 
 fn hookResponseFromDaemonEvaluate(
@@ -772,21 +843,14 @@ fn hookResponseFromDaemonEvaluate(
             };
         },
         .deny => blk: {
-            const reason = daemon.responseReason(result) orelse "command denied by daemon evaluator";
-            const explanation = daemon.responseStringField(result, "explanation");
-            const decision = applyCiModeToShellDecision(.block, ci_mode);
-            const message = if (explanation) |text|
-                try std.fmt.allocPrint(allocator, "command blocked by Orca policy: {s}", .{text})
-            else
-                try buildMessage(allocator, decision, "command");
-
+            const deny = try buildAgentVisibleDaemonDeny(allocator, result, ci_mode, redactions);
             break :blk HookResponse{
-                .decision = decision,
-                .risk = riskFromDaemonSeverity(daemon.responseStringField(result, "severity")),
+                .decision = deny.decision,
+                .risk = deny.risk,
                 .category = try allocator.dupe(u8, "command"),
-                .reason = try allocator.dupe(u8, reason),
-                .rule = if (daemon.responseDenyRule(result)) |rule| try allocator.dupe(u8, rule) else null,
-                .message = message,
+                .reason = deny.reason,
+                .rule = deny.rule,
+                .message = deny.message,
                 .redactions = try redactions.toOwnedSlice(allocator),
                 .host_limitations = try limitations.toOwnedSlice(allocator),
             };
@@ -1024,23 +1088,30 @@ fn classifyHookEvent(event: Event, payload: std.json.Value) HookEventClassificat
 }
 
 fn classifyPreToolUse(payload: std.json.Value) HookEventClassification {
-    const command_state = extractShellCommand(payload);
     const tool_name = extractToolName(payload);
-
-    switch (command_state) {
-        .found => |shell_event| return .{ .shell_command = shell_event },
-        .invalid => return .{ .malformed = "shell command field must be a non-empty string" },
-        .missing => {},
-    }
+    const command_state = extractShellCommand(payload);
 
     if (tool_name) |name| {
-        if (isShellTool(name)) return .{ .malformed = "shell command missing command field" };
+        if (isShellTool(name)) {
+            return switch (command_state) {
+                .found => |shell_event| .{ .shell_command = shell_event },
+                .invalid => .{ .malformed = "shell command field must be a non-empty string" },
+                .missing => .{ .malformed = "shell command missing command field" },
+            };
+        }
 
+        // Non-shell tools stay on the Zig path even when payloads carry incidental command fields.
         if (extractFilePath(payload) != null and isFileTool(name)) {
             return .{ .non_shell = .file_write };
         }
 
         return .{ .non_shell = .generic_tool };
+    }
+
+    switch (command_state) {
+        .found => |shell_event| return .{ .shell_command = shell_event },
+        .invalid => return .{ .malformed = "shell command field must be a non-empty string" },
+        .missing => {},
     }
 
     if (extractFilePath(payload) != null) {
@@ -1181,7 +1252,6 @@ fn writeJsonString(writer: anytype, value: []const u8) !void {
     try writer.writeByte('"');
 }
 
-
 // ---------------------------------------------------------------------------
 // Daemon evaluation test helpers
 // ---------------------------------------------------------------------------
@@ -1205,7 +1275,6 @@ fn mockDaemonDenyEvaluator(allocator: std.mem.Allocator, shell_event: ShellComma
     return mockDaemonResponse(allocator, "{\"id\":1,\"result\":{\"status\":\"Deny\",\"reason\":\"Command denied by evaluator\",\"pack_id\":\"git\",\"pattern_name\":\"destructive_rm\",\"severity\":\"critical\",\"explanation\":\"recursive delete of root\"}}");
 }
 
-
 fn mockDaemonWarnAllowEvaluator(allocator: std.mem.Allocator, shell_event: ShellCommandEvent) daemon.DaemonError!std.json.Parsed(daemon.DaemonResponse) {
     _ = shell_event;
     return mockDaemonResponse(allocator, "{\"id\":1,\"result\":{\"status\":\"Allow\",\"reason\":\"Command allowed with warning\",\"graduated_response\":{\"type\":\"Warning\",\"occurrence\":2}}}");
@@ -1214,6 +1283,28 @@ fn mockDaemonWarnAllowEvaluator(allocator: std.mem.Allocator, shell_event: Shell
 fn mockDaemonErrorEvaluator(allocator: std.mem.Allocator, shell_event: ShellCommandEvent) daemon.DaemonError!std.json.Parsed(daemon.DaemonResponse) {
     _ = shell_event;
     return mockDaemonResponse(allocator, "{\"id\":1,\"result\":{\"status\":\"Error\",\"message\":\"evaluator failure\"}}");
+}
+
+fn mockDaemonDenyWithPreviewEvaluator(allocator: std.mem.Allocator, shell_event: ShellCommandEvent) daemon.DaemonError!std.json.Parsed(daemon.DaemonResponse) {
+    _ = shell_event;
+    return mockDaemonResponse(allocator, "{\"id\":1,\"result\":{\"status\":\"Deny\",\"reason\":\"matched rm -rf / in command\",\"pack_id\":\"git\",\"pattern_name\":\"destructive_rm\",\"severity\":\"Critical\",\"explanation\":\"recursive delete of root\",\"matched_text_preview\":\"rm -rf /\"}}");
+}
+
+fn mockDaemonMalformedEvaluator(allocator: std.mem.Allocator, shell_event: ShellCommandEvent) daemon.DaemonError!std.json.Parsed(daemon.DaemonResponse) {
+    _ = shell_event;
+    return daemon.parseResponse(allocator, "{not json");
+}
+
+fn mockDaemonUnavailableEvaluator(allocator: std.mem.Allocator, shell_event: ShellCommandEvent) daemon.DaemonError!std.json.Parsed(daemon.DaemonResponse) {
+    _ = allocator;
+    _ = shell_event;
+    return error.SocketConnectFailed;
+}
+
+fn mockDaemonTimeoutEvaluator(allocator: std.mem.Allocator, shell_event: ShellCommandEvent) daemon.DaemonError!std.json.Parsed(daemon.DaemonResponse) {
+    _ = allocator;
+    _ = shell_event;
+    return error.SocketReadFailed;
 }
 
 fn shellRouteSetup(allocator: std.mem.Allocator, redactions: *std.ArrayList(RedactionEntry), limitations: *std.ArrayList([]const u8)) !void {
@@ -1301,8 +1392,6 @@ test "hook claude UserPromptSubmit with fake secret returns warn" {
     try std.testing.expect(std.mem.indexOf(u8, result.message, "sensitive data") != null);
     try std.testing.expect(result.redactions.len > 0);
 }
-
-
 
 test "hook claude PreToolUse with file write to protected path returns block" {
     var gpa_state: std.heap.DebugAllocator(.{}) = .init;
@@ -1486,7 +1575,6 @@ test "hook response JSON format is valid" {
     try std.testing.expectEqualStrings("low", parsed.value.object.get("risk").?.string);
 }
 
-
 test "hook stdout does not include human logs" {
     var stdout_buf: [4096]u8 = undefined;
     var stdout_writer: std.Io.Writer = .fixed(&stdout_buf);
@@ -1526,8 +1614,6 @@ test "hook opencode session.created returns allow" {
     try std.testing.expectEqual(PluginDecision.allow, result.decision);
     try std.testing.expectEqual(RiskLevel.low, result.risk);
 }
-
-
 
 test "hook opencode informational events are allowed" {
     var gpa_state: std.heap.DebugAllocator(.{}) = .init;
@@ -1585,8 +1671,6 @@ test "hook openclaw session.start returns allow" {
     try std.testing.expectEqual(RiskLevel.low, result.risk);
 }
 
-
-
 test "hook openclaw informational events are allowed" {
     var gpa_state: std.heap.DebugAllocator(.{}) = .init;
     defer _ = gpa_state.deinit();
@@ -1639,7 +1723,6 @@ test "hook hermes on_session_start returns allow" {
     try std.testing.expectEqual(PluginDecision.allow, result.decision);
 }
 
-
 test "hook hermes pre_tool_call with nested protected file path returns block" {
     var gpa_state: std.heap.DebugAllocator(.{}) = .init;
     defer _ = gpa_state.deinit();
@@ -1661,7 +1744,6 @@ test "hook hermes pre_tool_call with nested protected file path returns block" {
 
     try std.testing.expectEqual(PluginDecision.block, result.decision);
 }
-
 
 test "hook hermes pre_llm_call reads canonical user_message" {
     var gpa_state: std.heap.DebugAllocator(.{}) = .init;
@@ -1801,7 +1883,6 @@ test "hook daemon Error does not produce allow for shell command" {
     try std.testing.expect(std.mem.indexOf(u8, result.message, "evaluation error") != null);
 }
 
-
 test "hook shell command forwards command and cwd to daemon Evaluate" {
     var gpa_state: std.heap.DebugAllocator(.{}) = .init;
     defer _ = gpa_state.deinit();
@@ -1887,4 +1968,90 @@ test "hook shell route honors ci mode for daemon warn allow" {
     var block_result = try runShellRoute(allocator, "git status", null, true, mockDaemonWarnAllowEvaluator);
     defer block_result.deinit(allocator);
     try std.testing.expectEqual(PluginDecision.block, block_result.decision);
+}
+
+test "hook codex deny output skips stdout JSON" {
+    try std.testing.expect(isCodexDenyOutput(.codex, .block));
+    try std.testing.expect(!isCodexDenyOutput(.codex, .allow));
+    try std.testing.expect(!isCodexDenyOutput(.claude, .block));
+}
+
+test "hook codex shell deny uses exit code 2" {
+    try std.testing.expectEqual(@as(u8, 2), hookExitCode(.codex, .block, false));
+    try std.testing.expectEqual(exit_codes.success, hookExitCode(.codex, .allow, false));
+    try std.testing.expectEqual(exit_codes.success, hookExitCode(.claude, .block, false));
+    try std.testing.expectEqual(@as(u8, 2), hookExitCode(.codex, .block, true));
+}
+
+test "hook classifies non-shell tool with incidental command as zig native route" {
+    var gpa_state: std.heap.DebugAllocator(.{}) = .init;
+    defer _ = gpa_state.deinit();
+    const allocator = gpa_state.allocator();
+
+    var payload_obj = try std.json.ObjectMap.init(allocator, &.{}, &.{});
+    defer payload_obj.deinit(allocator);
+    try payload_obj.put(allocator, "tool", std.json.Value{ .string = "edit" });
+    try payload_obj.put(allocator, "path", std.json.Value{ .string = "/tmp/example.txt" });
+    try payload_obj.put(allocator, "command", std.json.Value{ .string = "git status" });
+
+    const route = preToolUseRoute(std.json.Value{ .object = payload_obj });
+    try std.testing.expectEqual(PreToolUseRoute.zig_native, std.meta.activeTag(route));
+    try std.testing.expectEqual(NonShellHookEvent.file_write, route.zig_native);
+}
+
+test "hook daemon deny redacts matched_text_preview from agent-visible output" {
+    var gpa_state: std.heap.DebugAllocator(.{}) = .init;
+    defer _ = gpa_state.deinit();
+    const allocator = gpa_state.allocator();
+
+    var result = try runShellRoute(allocator, "rm -rf /", null, false, mockDaemonDenyWithPreviewEvaluator);
+    defer result.deinit(allocator);
+
+    try std.testing.expectEqual(PluginDecision.block, result.decision);
+    try std.testing.expectEqual(RiskLevel.critical, result.risk);
+    try std.testing.expect(std.mem.indexOf(u8, result.message, "rm -rf") == null);
+    try std.testing.expect(std.mem.indexOf(u8, result.reason, "rm -rf") == null);
+    try std.testing.expect(result.redactions.len > 0);
+}
+
+test "hook daemon malformed response blocks shell command" {
+    var gpa_state: std.heap.DebugAllocator(.{}) = .init;
+    defer _ = gpa_state.deinit();
+    const allocator = gpa_state.allocator();
+
+    var result = try runShellRoute(allocator, "git status", null, false, mockDaemonMalformedEvaluator);
+    defer result.deinit(allocator);
+    try std.testing.expectEqual(PluginDecision.block, result.decision);
+}
+
+test "hook daemon unavailable blocks shell command via fail-closed route" {
+    var gpa_state: std.heap.DebugAllocator(.{}) = .init;
+    defer _ = gpa_state.deinit();
+    const allocator = gpa_state.allocator();
+
+    var result = try runShellRoute(allocator, "git status", null, false, mockDaemonUnavailableEvaluator);
+    defer result.deinit(allocator);
+    try std.testing.expectEqual(PluginDecision.block, result.decision);
+    try std.testing.expect(std.mem.indexOf(u8, result.reason, "socket connect failed") != null);
+}
+
+test "hook daemon timeout blocks shell command via fail-closed route" {
+    var gpa_state: std.heap.DebugAllocator(.{}) = .init;
+    defer _ = gpa_state.deinit();
+    const allocator = gpa_state.allocator();
+
+    var result = try runShellRoute(allocator, "git status", null, false, mockDaemonTimeoutEvaluator);
+    defer result.deinit(allocator);
+    try std.testing.expectEqual(PluginDecision.block, result.decision);
+    try std.testing.expect(std.mem.indexOf(u8, result.reason, "socket read failed") != null);
+}
+
+test "hook daemon deny maps capitalized severity to risk level" {
+    var gpa_state: std.heap.DebugAllocator(.{}) = .init;
+    defer _ = gpa_state.deinit();
+    const allocator = gpa_state.allocator();
+
+    var result = try runShellRoute(allocator, "rm -rf /", null, false, mockDaemonDenyWithPreviewEvaluator);
+    defer result.deinit(allocator);
+    try std.testing.expectEqual(RiskLevel.critical, result.risk);
 }

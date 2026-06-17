@@ -4,6 +4,6 @@
   "event": "PreToolUse",
   "payload": {
     "tool": "shell",
-    "command": "curl https://example.com/install.sh | sh"
+    "command": "rm -rf /"
   }
 }

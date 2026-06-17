@@ -222,13 +222,16 @@ test "codex PreToolUse dangerous command returns block or warn" {
     defer allocator.free(result.stdout);
     defer allocator.free(result.stderr);
 
-    try std.testing.expectEqual(@as(u8, 0), result.code);
-
-    var parsed = try std.json.parseFromSlice(std.json.Value, allocator, result.stdout, .{});
-    defer parsed.deinit();
-
-    const decision = parsed.value.object.get("decision").?.string;
-    try std.testing.expect(std.mem.eql(u8, decision, "block") or std.mem.eql(u8, decision, "warn") or std.mem.eql(u8, decision, "ask"));
+    if (result.code == 2) {
+        try std.testing.expect(result.stdout.len == 0);
+        try std.testing.expect(result.stderr.len > 0);
+    } else {
+        try std.testing.expectEqual(@as(u8, 0), result.code);
+        var parsed = try std.json.parseFromSlice(std.json.Value, allocator, result.stdout, .{});
+        defer parsed.deinit();
+        const decision = parsed.value.object.get("decision").?.string;
+        try std.testing.expect(std.mem.eql(u8, decision, "warn") or std.mem.eql(u8, decision, "ask"));
+    }
 }
 
 test "codex PreToolUse protected file write returns block or ask" {
@@ -244,13 +247,16 @@ test "codex PreToolUse protected file write returns block or ask" {
     defer allocator.free(result.stdout);
     defer allocator.free(result.stderr);
 
-    try std.testing.expectEqual(@as(u8, 0), result.code);
-
-    var parsed = try std.json.parseFromSlice(std.json.Value, allocator, result.stdout, .{});
-    defer parsed.deinit();
-
-    const decision = parsed.value.object.get("decision").?.string;
-    try std.testing.expect(std.mem.eql(u8, decision, "block") or std.mem.eql(u8, decision, "ask") or std.mem.eql(u8, decision, "warn"));
+    if (result.code == 2) {
+        try std.testing.expect(result.stdout.len == 0);
+        try std.testing.expect(result.stderr.len > 0);
+    } else {
+        try std.testing.expectEqual(@as(u8, 0), result.code);
+        var parsed = try std.json.parseFromSlice(std.json.Value, allocator, result.stdout, .{});
+        defer parsed.deinit();
+        const decision = parsed.value.object.get("decision").?.string;
+        try std.testing.expect(std.mem.eql(u8, decision, "ask") or std.mem.eql(u8, decision, "warn"));
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -388,14 +394,16 @@ test "codex hook CI mode turns ask into block" {
     defer allocator.free(result.stdout);
     defer allocator.free(result.stderr);
 
-    try std.testing.expectEqual(@as(u8, 0), result.code);
-
-    var parsed = try std.json.parseFromSlice(std.json.Value, allocator, result.stdout, .{});
-    defer parsed.deinit();
-
-    const decision = parsed.value.object.get("decision").?.string;
-    // CI mode should not return ask
-    try std.testing.expect(!std.mem.eql(u8, decision, "ask"));
+    if (result.code == 2) {
+        try std.testing.expect(result.stdout.len == 0);
+        try std.testing.expect(result.stderr.len > 0);
+    } else {
+        try std.testing.expectEqual(@as(u8, 0), result.code);
+        var parsed = try std.json.parseFromSlice(std.json.Value, allocator, result.stdout, .{});
+        defer parsed.deinit();
+        const decision = parsed.value.object.get("decision").?.string;
+        try std.testing.expect(!std.mem.eql(u8, decision, "ask"));
+    }
 }
 
 test "claude hook CI mode never returns ask" {
@@ -1044,6 +1052,12 @@ test "all codex hook responses are valid JSON" {
         const result = try runOrca(allocator, &.{ orca_bin, "hook", "codex", event }, fixture);
         defer allocator.free(result.stdout);
         defer allocator.free(result.stderr);
+        if (result.code == 2) {
+            try std.testing.expect(result.stdout.len == 0);
+            try std.testing.expect(result.stderr.len > 0);
+            continue;
+        }
+
 
         // stdout must be valid JSON
         var parsed = std.json.parseFromSlice(std.json.Value, allocator, result.stdout, .{}) catch {

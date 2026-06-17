@@ -171,6 +171,18 @@ pub fn build(b: *std.Build) void {
     });
     const run_cli_contract_tests = addRunTestTerminal(b, cli_contract_tests);
 
+    const phase2d_daemon_hook_matrix_tests = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("tests/phase2d_daemon_hook_matrix.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .name = "orca", .module = orca_mod },
+            },
+        }),
+    });
+    const run_phase2d_daemon_hook_matrix_tests = addRunTestTerminal(b, phase2d_daemon_hook_matrix_tests);
+
     const phase25_hardening_tests = b.addTest(.{
         .root_module = b.createModule(.{
             .root_source_file = b.path("tests/phase25_cli_hardening.zig"),
@@ -322,6 +334,7 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&run_cli_package_tests.step);
     test_step.dependOn(&run_cli_contract_tests.step);
     test_step.dependOn(&run_phase25_hardening_tests.step);
+    test_step.dependOn(&run_phase2d_daemon_hook_matrix_tests.step);
     test_step.dependOn(&run_phase42_customer_acquisition_tests.step);
     test_step.dependOn(&run_phase36_codex_plugin_tests.step);
     test_step.dependOn(&run_phase37_claude_plugin_tests.step);
