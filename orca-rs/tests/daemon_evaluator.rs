@@ -168,3 +168,278 @@ fn daemon_evaluate_multi_repo_allowlists() {
     assert!(!pid_path.exists(), "PID file should be removed after shutdown");
 }
 
+
+
+fn write_project_config(repo_root: &std::path::Path, contents: &str) {
+    std::fs::write(repo_root.join(".orca.toml"), contents).expect("failed to write .orca.toml");
+}
+
+fn write_external_pack(repo_root: &std::path::Path, pack_yaml: &str) {
+    let packs_dir = repo_root.join(".orca").join("packs");
+    std::fs::create_dir_all(&packs_dir).expect("failed to create packs dir");
+    std::fs::write(packs_dir.join("custom.yaml"), pack_yaml).expect("failed to write pack");
+}
+
+fn evaluate_at(socket_path: &std::path::Path, id: u64, command: &str, cwd: &std::path::Path) -> serde_json::Value {
+    let req = serde_json::json!({
+        "id": id,
+        "method": "Evaluate",
+        "params": {
+            "command": command,
+            "cwd": cwd.to_string_lossy(),
+        }
+    });
+    let mut payload = serde_json::to_string(&req).expect("request should serialize");
+    payload.push('\n');
+    let response = common::send_request(socket_path, &payload);
+    serde_json::from_str(&response).expect("response should be valid JSON")
+}
+
+#[test]
+#[cfg(unix)]
+fn daemon_warm_reload_picks_up_project_allowlist_change() {
+    let home_dir = tempfile::tempdir().expect("failed to create temp dir");
+    let repo = home_dir.path().join("repo");
+    init_git_repo(&repo);
+
+    let cmd = "git reset --hard";
+    let (socket_path, pid_path) = common::socket_and_pid_paths(home_dir.path());
+    let child = common::spawn_daemon(home_dir.path());
+    common::wait_for_daemon_ready(&socket_path, Duration::from_secs(5));
+
+    let cwd = repo.canonicalize().expect("canonicalize repo");
+
+    let before = evaluate_at(&socket_path, 20, cmd, &cwd);
+    assert_eq!(before["result"]["status"].as_str(), Some("Deny"));
+
+    write_project_allowlist(&repo, cmd);
+
+    let after = evaluate_at(&socket_path, 21, cmd, &cwd);
+    assert_eq!(
+        after["result"]["status"].as_str(),
+        Some("Allow"),
+        "warm daemon should observe allowlist edit without restart"
+    );
+
+    let _ = common::send_shutdown(&socket_path);
+    common::term_and_wait(child, Duration::from_secs(5));
+    assert!(!socket_path.exists());
+    assert!(!pid_path.exists());
+}
+
+#[test]
+#[cfg(unix)]
+fn daemon_warm_reload_picks_up_project_config_change() {
+    let home_dir = tempfile::tempdir().expect("failed to create temp dir");
+    let repo = home_dir.path().join("repo");
+    init_git_repo(&repo);
+
+    let cmd = "echo reload-config-test";
+    let block_config = r#"
+[[overrides.block]]
+pattern = "^echo reload-config-test$"
+reason = "blocked for reload test"
+"#;
+
+    let (socket_path, pid_path) = common::socket_and_pid_paths(home_dir.path());
+    let child = common::spawn_daemon(home_dir.path());
+    common::wait_for_daemon_ready(&socket_path, Duration::from_secs(5));
+
+    let cwd = repo.canonicalize().expect("canonicalize repo");
+
+    let before = evaluate_at(&socket_path, 22, cmd, &cwd);
+    assert_eq!(before["result"]["status"].as_str(), Some("Allow"));
+
+    write_project_config(&repo, block_config);
+
+    let blocked = evaluate_at(&socket_path, 23, cmd, &cwd);
+    assert_eq!(
+        blocked["result"]["status"].as_str(),
+        Some("Deny"),
+        "warm daemon should observe config block override without restart"
+    );
+
+    std::fs::remove_file(repo.join(".orca.toml")).expect("remove config");
+
+    let after_delete = evaluate_at(&socket_path, 24, cmd, &cwd);
+    assert_eq!(
+        after_delete["result"]["status"].as_str(),
+        Some("Allow"),
+        "warm daemon should observe deleted project config without restart"
+    );
+
+    let _ = common::send_shutdown(&socket_path);
+    common::term_and_wait(child, Duration::from_secs(5));
+    assert!(!socket_path.exists());
+    assert!(!pid_path.exists());
+}
+
+#[test]
+#[cfg(unix)]
+fn daemon_invalid_project_config_returns_error_not_stale_state() {
+    let home_dir = tempfile::tempdir().expect("failed to create temp dir");
+    let repo = home_dir.path().join("repo");
+    init_git_repo(&repo);
+
+    let cmd = "echo invalid-config-test";
+    let allow_config = r#"
+[[overrides.allow]]
+pattern = "^echo invalid-config-test$"
+reason = "allowed via config"
+"#;
+    write_project_config(&repo, allow_config);
+
+    let (socket_path, pid_path) = common::socket_and_pid_paths(home_dir.path());
+    let child = common::spawn_daemon(home_dir.path());
+    common::wait_for_daemon_ready(&socket_path, Duration::from_secs(5));
+
+    let cwd = repo.canonicalize().expect("canonicalize repo");
+
+    let allowed = evaluate_at(&socket_path, 25, cmd, &cwd);
+    assert_eq!(allowed["result"]["status"].as_str(), Some("Allow"));
+
+    write_project_config(&repo, "[[overrides.block]]
+invalid_syntax = 
+");
+
+    let invalid = evaluate_at(&socket_path, 26, cmd, &cwd);
+    assert_eq!(invalid["result"]["status"].as_str(), Some("Error"));
+    assert!(
+        invalid["result"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("invalid project config"),
+        "expected structured config error, got: {invalid}"
+    );
+
+    write_project_config(&repo, allow_config);
+
+    let fixed = evaluate_at(&socket_path, 27, cmd, &cwd);
+    assert_eq!(
+        fixed["result"]["status"].as_str(),
+        Some("Allow"),
+        "fixed project config should be picked up on next request"
+    );
+
+    let _ = common::send_shutdown(&socket_path);
+    common::term_and_wait(child, Duration::from_secs(5));
+    assert!(!socket_path.exists());
+    assert!(!pid_path.exists());
+}
+
+#[test]
+#[cfg(unix)]
+fn daemon_invalid_project_allowlist_returns_error_not_stale_allow() {
+    let home_dir = tempfile::tempdir().expect("failed to create temp dir");
+    let repo = home_dir.path().join("repo");
+    init_git_repo(&repo);
+
+    let cmd = "git reset --hard";
+    write_project_allowlist(&repo, cmd);
+
+    let (socket_path, pid_path) = common::socket_and_pid_paths(home_dir.path());
+    let child = common::spawn_daemon(home_dir.path());
+    common::wait_for_daemon_ready(&socket_path, Duration::from_secs(5));
+
+    let cwd = repo.canonicalize().expect("canonicalize repo");
+
+    let allowed = evaluate_at(&socket_path, 28, cmd, &cwd);
+    assert_eq!(allowed["result"]["status"].as_str(), Some("Allow"));
+
+    let orca_dir = repo.join(".orca");
+    std::fs::write(
+        orca_dir.join("allowlist.toml"),
+        "[[allow]]
+invalid_syntax = 
+",
+    )
+    .expect("write invalid allowlist");
+
+    let invalid = evaluate_at(&socket_path, 29, cmd, &cwd);
+    assert_eq!(invalid["result"]["status"].as_str(), Some("Error"));
+    assert!(
+        invalid["result"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("invalid project allowlist"),
+        "expected structured allowlist error, got: {invalid}"
+    );
+
+    write_project_allowlist(&repo, cmd);
+
+    let fixed = evaluate_at(&socket_path, 30, cmd, &cwd);
+    assert_eq!(
+        fixed["result"]["status"].as_str(),
+        Some("Allow"),
+        "fixed allowlist should be picked up on next request"
+    );
+
+    let _ = common::send_shutdown(&socket_path);
+    common::term_and_wait(child, Duration::from_secs(5));
+    assert!(!socket_path.exists());
+    assert!(!pid_path.exists());
+}
+
+#[test]
+#[cfg(unix)]
+fn daemon_warm_reload_picks_up_external_pack_change() {
+    let home_dir = tempfile::tempdir().expect("failed to create temp dir");
+    let repo = home_dir.path().join("repo");
+    init_git_repo(&repo);
+
+    let config = r#"
+[packs]
+custom_paths = [".orca/packs/custom.yaml"]
+"#;
+    write_project_config(&repo, config);
+
+    let pack_v1 = r#"
+schema_version: 1
+id: custom.reload
+name: Reload Pack
+version: 1.0.0
+keywords: [reloadpack]
+destructive_patterns:
+  - name: block-reload-cmd
+    pattern: reloadpack-danger
+    severity: high
+    description: blocked by external pack
+"#;
+    write_external_pack(&repo, pack_v1);
+
+    let cmd = "reloadpack-danger";
+    let (socket_path, pid_path) = common::socket_and_pid_paths(home_dir.path());
+    let child = common::spawn_daemon(home_dir.path());
+    common::wait_for_daemon_ready(&socket_path, Duration::from_secs(5));
+
+    let cwd = repo.canonicalize().expect("canonicalize repo");
+
+    let denied = evaluate_at(&socket_path, 31, cmd, &cwd);
+    assert_eq!(
+        denied["result"]["status"].as_str(),
+        Some("Deny"),
+        "external pack should deny command, got: {denied}"
+    );
+
+    let pack_v2 = r#"
+schema_version: 1
+id: custom.reload
+name: Reload Pack
+version: 1.0.0
+keywords: [reloadpack]
+destructive_patterns: []
+"#;
+    write_external_pack(&repo, pack_v2);
+
+    let allowed = evaluate_at(&socket_path, 32, cmd, &cwd);
+    assert_eq!(
+        allowed["result"]["status"].as_str(),
+        Some("Allow"),
+        "warm daemon should observe external pack edit without restart, got: {allowed}"
+    );
+
+    let _ = common::send_shutdown(&socket_path);
+    common::term_and_wait(child, Duration::from_secs(5));
+    assert!(!socket_path.exists());
+    assert!(!pid_path.exists());
+}

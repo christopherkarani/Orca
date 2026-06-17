@@ -1517,6 +1517,7 @@ pub fn evaluate_command_with_pack_order_at_path(
         None,
         project_path,
         None,
+        None,
     )
 }
 
@@ -1561,6 +1562,7 @@ pub fn evaluate_command_with_pack_order_deadline(
         heredoc_settings,
         allow_once_audit,
         None,
+        None,
         deadline,
     )
 }
@@ -1579,6 +1581,7 @@ pub fn evaluate_command_with_pack_order_deadline_at_path(
     heredoc_settings: &crate::config::HeredocSettings,
     allow_once_audit: Option<&crate::pending_exceptions::AllowOnceAuditConfig<'_>>,
     project_path: Option<&Path>,
+    external_store: Option<&crate::packs::ExternalPackStore>,
     deadline: Option<&Deadline>,
 ) -> EvaluationResult {
     // Check deadline at entry - if already exceeded, fail-open immediately.
@@ -1643,6 +1646,7 @@ pub fn evaluate_command_with_pack_order_deadline_at_path(
                     keyword_index,
                     compiled_overrides,
                     allow_once_audit,
+                    external_store,
                 };
                 if let Some(blocked) =
                     evaluate_heredoc(command, context, &mut heredoc_allowlist_hit)
@@ -1777,6 +1781,7 @@ pub fn evaluate_command_with_pack_order_deadline_at_path(
         keyword_index,
         None,
         project_path,
+        external_store,
     );
     if result.allowlist_override.is_none() {
         if let Some((matched, layer, reason)) = heredoc_allowlist_hit {
@@ -1799,6 +1804,7 @@ fn evaluate_packs_with_allowlists(
     keyword_index: Option<&crate::packs::EnabledKeywordIndex>,
     deadline: Option<&Deadline>,
     project_path: Option<&Path>,
+    external_store: Option<&crate::packs::ExternalPackStore>,
 ) -> EvaluationResult {
     if deadline_exceeded(deadline) || remaining_below(deadline, &crate::perf::PATTERN_MATCH) {
         return EvaluationResult::allowed_due_to_budget();
@@ -1811,7 +1817,8 @@ fn evaluate_packs_with_allowlists(
     // Otherwise, fall back to the per-pack metadata scan.
     //
     // External packs from custom_paths are also checked alongside built-in packs.
-    let external_store = crate::packs::get_external_packs();
+    let global_external_store = crate::packs::get_external_packs();
+    let external_store = external_store.or(global_external_store);
     let candidate_packs: Vec<(&String, &crate::packs::Pack)> = keyword_index.map_or_else(
         || {
             ordered_packs
@@ -2554,6 +2561,7 @@ where
                 keyword_index: keyword_index.as_ref(),
                 compiled_overrides,
                 allow_once_audit: None,
+                external_store: None,
             };
             if let Some(blocked) = evaluate_heredoc(command, context, &mut heredoc_allowlist_hit) {
                 return blocked;
@@ -2640,6 +2648,7 @@ where
         keyword_index.as_ref(),
         None,
         None, // project_path: legacy function, path-aware allowlisting unavailable
+        None,
     );
     if result.allowlist_override.is_none() {
         if let Some((matched, layer, reason)) = heredoc_allowlist_hit {
@@ -2661,6 +2670,7 @@ struct HeredocEvaluationContext<'a> {
     keyword_index: Option<&'a crate::packs::EnabledKeywordIndex>,
     compiled_overrides: &'a crate::config::CompiledOverrides,
     allow_once_audit: Option<&'a crate::pending_exceptions::AllowOnceAuditConfig<'a>>,
+    external_store: Option<&'a crate::packs::ExternalPackStore>,
 }
 
 #[allow(clippy::too_many_lines)]
@@ -2859,6 +2869,7 @@ fn evaluate_heredoc(
                         context.heredoc_settings,
                         context.allow_once_audit,
                         context.project_path,
+                        context.external_store,
                         context.deadline,
                     );
 

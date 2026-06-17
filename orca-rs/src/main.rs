@@ -640,6 +640,7 @@ async fn run_orca() -> Result<i32, Box<dyn std::error::Error + Send + Sync>> {
         &heredoc_settings,
         None, // allow_once_audit
         None, // project_path
+        None, // external_store (CLI uses global OnceLock cache)
         Some(&deadline),
     );
 
@@ -1705,6 +1706,7 @@ mod tests {
                 &compiled_overrides,
                 &allowlists,
                 &config.heredoc_settings(),
+                None,
                 None,
                 None,
                 None,

@@ -2660,6 +2660,7 @@ fn evaluate_batch_line(
         heredoc_settings,
         None,
         None,
+        None,
         None, // No deadline for batch mode
     );
 
@@ -4112,6 +4113,7 @@ fn test_command(
         &heredoc_settings,
         None, // allow_once_audit
         None, // project_path
+        None, // external_store
         None, // deadline
     );
 
@@ -4635,6 +4637,7 @@ fn classify_command(config: &Config, command: &str, format: ClassifyFormat, no_c
         &heredoc_settings,
         None, // allow_once_audit
         None, // project_path
+        None, // external_store
         None, // deadline
     );
 

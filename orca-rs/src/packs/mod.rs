@@ -1937,6 +1937,17 @@ impl ExternalPackStore {
         }
     }
 
+    /// Load external packs from expanded file paths into an owned store.
+    ///
+    /// Unlike [`load_external_packs`], this always reloads from disk and does
+    /// not consult the process-wide `OnceLock` cache. Daemon evaluation uses
+    /// this path so per-repo `custom_paths` and pack file edits are visible
+    /// without restarting the daemon.
+    #[must_use]
+    pub fn load_from_paths_owned(paths: &[String]) -> Self {
+        build_external_pack_store(paths)
+    }
+
     /// Get a pack by ID.
     #[must_use]
     pub fn get(&self, id: &str) -> Option<&Pack> {
@@ -2084,10 +2095,47 @@ pub struct ExternalCheckResult {
 /// Global storage for external packs (initialized once at startup).
 static EXTERNAL_PACKS: OnceLock<ExternalPackStore> = OnceLock::new();
 
+fn build_external_pack_store(paths: &[String]) -> ExternalPackStore {
+    let mut store = ExternalPackStore::new();
+
+    if paths.is_empty() {
+        return store;
+    }
+
+    let loader = external::ExternalPackLoader::from_paths(paths);
+    let result = loader.load_all_deduped();
+
+    for warning in result.warnings {
+        store.warnings.push(format!(
+            "Failed to load external pack from {}: {}",
+            warning.path.display(),
+            warning.error
+        ));
+    }
+
+    for loaded in result.packs {
+        let id = loaded.id.clone();
+        let pack = loaded.pack.into_pack();
+
+        for kw in pack.keywords {
+            if !store.keywords.contains(kw) {
+                store.keywords.push(kw);
+            }
+        }
+
+        store.packs.insert(id, pack);
+    }
+
+    store
+}
+
 /// Load external packs from the given file paths.
 ///
 /// This should be called once at startup after config is loaded.
 /// Subsequent calls are no-ops (returns the already-loaded store).
+///
+/// Daemon evaluation should use [`ExternalPackStore::load_from_paths_owned`]
+/// instead so pack paths and file contents can change without restart.
 ///
 /// # Arguments
 ///
@@ -2097,42 +2145,7 @@ static EXTERNAL_PACKS: OnceLock<ExternalPackStore> = OnceLock::new();
 ///
 /// Reference to the external pack store.
 pub fn load_external_packs(paths: &[String]) -> &'static ExternalPackStore {
-    EXTERNAL_PACKS.get_or_init(|| {
-        let mut store = ExternalPackStore::new();
-
-        if paths.is_empty() {
-            return store;
-        }
-
-        let loader = external::ExternalPackLoader::from_paths(paths);
-        let result = loader.load_all_deduped();
-
-        // Collect warnings
-        for warning in result.warnings {
-            store.warnings.push(format!(
-                "Failed to load external pack from {}: {}",
-                warning.path.display(),
-                warning.error
-            ));
-        }
-
-        // Convert and store loaded packs
-        for loaded in result.packs {
-            let id = loaded.id.clone();
-            let pack = loaded.pack.into_pack();
-
-            // Collect keywords
-            for kw in pack.keywords {
-                if !store.keywords.contains(kw) {
-                    store.keywords.push(kw);
-                }
-            }
-
-            store.packs.insert(id, pack);
-        }
-
-        store
-    })
+    EXTERNAL_PACKS.get_or_init(|| build_external_pack_store(paths))
 }
 
 /// Get the external pack store (returns None if not yet initialized).

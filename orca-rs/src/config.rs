@@ -1366,6 +1366,11 @@ impl PacksConfig {
                 after_repo_root
             };
 
+            // Anchor repo-relative custom_paths to the evaluation cwd so daemon
+            // requests resolve packs for the client's workspace, not the daemon
+            // process working directory.
+            let expanded = resolve_custom_path_against_cwd(&expanded, cwd);
+
             // Expand glob pattern.
             match glob::glob(&expanded) {
                 Ok(paths) => {
@@ -1389,12 +1394,22 @@ impl PacksConfig {
     }
 }
 
+
+fn resolve_custom_path_against_cwd(path: &str, cwd: Option<&Path>) -> String {
+    let candidate = Path::new(path);
+    if candidate.is_absolute() {
+        return path.to_string();
+    }
+    if let Some(cwd) = cwd {
+        return cwd.join(path).to_string_lossy().into_owned();
+    }
+    path.to_string()
+}
+
 /// Decision mode policy configuration.
 ///
 /// Controls how matched patterns are handled: deny (block), warn (allow with warning),
 /// or log (silent allow with optional logging).
-///
-/// Defaults respect severity: Critical/High → deny, Medium → warn, Low → log.
 /// This config allows overriding the default behavior per pack or per specific rule.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(default)]
@@ -3029,6 +3044,62 @@ impl Config {
                 None
             }
         }
+    }
+
+    /// Return an error when the project `.orca.toml` exists but cannot be parsed.
+    ///
+    /// Missing project config is not an error. Daemon evaluation uses this to
+    /// fail closed instead of silently ignoring a broken project config layer.
+    #[must_use]
+    pub fn project_config_load_error(start_dir: &Path) -> Option<String> {
+        let repo_root = find_repo_root(start_dir, REPO_ROOT_SEARCH_MAX_HOPS)?;
+        let config_path = repo_root.join(PROJECT_CONFIG_FILE);
+        if !config_path.exists() {
+            return None;
+        }
+
+        let Some(content) = read_config_file_bounded(&config_path, ConfigSource::Untrusted) else {
+            return Some(format!(
+                "invalid project config '{}': failed to read config file",
+                config_path.display()
+            ));
+        };
+
+        match toml::from_str::<ConfigLayer>(&content) {
+            Ok(_) => None,
+            Err(e) => Some(format!(
+                "invalid project config '{}': {e}",
+                config_path.display()
+            )),
+        }
+    }
+
+    /// Snapshot environment variables that affect daemon evaluation reload.
+    ///
+    /// Included in the daemon cwd cache fingerprint so mid-session env changes
+    /// invalidate cached pack lists, custom paths, and heredoc settings.
+    #[must_use]
+    pub fn daemon_reload_env_snapshot() -> Vec<(String, String)> {
+        let keys = [
+            "XDG_CONFIG_HOME".to_string(),
+            ENV_CONFIG_PATH.to_string(),
+            format!("{ENV_PREFIX}_PACKS"),
+            format!("{ENV_PREFIX}_DISABLE"),
+            format!("{ENV_PREFIX}_CUSTOM_PATHS"),
+            format!("{ENV_PREFIX}_ALLOWLIST_SYSTEM_PATH"),
+            format!("{ENV_PREFIX}_HEREDOC_ENABLED"),
+            format!("{ENV_PREFIX}_HEREDOC_TIMEOUT"),
+            format!("{ENV_PREFIX}_HEREDOC_TIMEOUT_MS"),
+            format!("{ENV_PREFIX}_HEREDOC_LANGUAGES"),
+            format!("{ENV_PREFIX}_POLICY_DEFAULT_MODE"),
+            format!("{ENV_PREFIX}_POLICY_OBSERVE_UNTIL"),
+        ];
+        keys.into_iter()
+            .map(|key| {
+                let value = env::var(&key).unwrap_or_default();
+                (key, value)
+            })
+            .collect()
     }
 
     /// Load configuration from a specific file.
@@ -7811,6 +7882,42 @@ low = "disabled"
         let resolved = packs.expand_custom_paths_from(Some(&subdir));
         assert_eq!(resolved.len(), 1, "should resolve one pack file");
         assert!(resolved[0].ends_with("team.yaml"));
+    }
+
+    #[test]
+    fn test_daemon_reload_env_snapshot_includes_eval_override_keys() {
+        unsafe { std::env::set_var("ORCA_PACKS", "core.git") };
+        let snapshot = Config::daemon_reload_env_snapshot();
+        unsafe { std::env::remove_var("ORCA_PACKS") };
+        assert!(snapshot.iter().any(|(k, v)| k == "ORCA_PACKS" && v == "core.git"));
+        assert!(snapshot.iter().any(|(k, _)| k == "ORCA_CUSTOM_PATHS"));
+
+        unsafe { std::env::set_var("ORCA_PACKS", "core.git") };
+        let first = Config::daemon_reload_env_snapshot();
+        unsafe { std::env::set_var("ORCA_PACKS", "core.filesystem") };
+        let second = Config::daemon_reload_env_snapshot();
+        unsafe { std::env::remove_var("ORCA_PACKS") };
+        assert_ne!(first, second);
+    }
+
+    #[test]
+    fn test_expand_custom_paths_relative_to_cwd() {
+        let tmp = tempfile::tempdir().expect("tmp");
+        let repo = tmp.path().join("myrepo");
+        std::fs::create_dir_all(repo.join(".git")).unwrap();
+        std::fs::create_dir_all(repo.join(".orca/packs")).unwrap();
+        std::fs::write(repo.join(".orca/packs/team.yaml"), "# pack").unwrap();
+
+        let packs = PacksConfig {
+            custom_paths: vec![".orca/packs/*.yaml".to_string()],
+            ..PacksConfig::default()
+        };
+        let resolved = packs.expand_custom_paths_from(Some(&repo));
+        assert_eq!(resolved.len(), 1);
+        assert_eq!(
+            resolved[0],
+            repo.join(".orca/packs/team.yaml").to_string_lossy()
+        );
     }
 
     #[test]

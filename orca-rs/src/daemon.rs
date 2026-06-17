@@ -31,8 +31,11 @@ fn is_process_alive(pid: u32) -> bool {
     }
 }
 
-use crate::allowlist::{LayeredAllowlist, load_allowlists_from};
-use crate::config::{CompiledOverrides, Config, HeredocSettings};
+use crate::allowlist::{AllowlistLayer, LayeredAllowlist, load_allowlists_from};
+use crate::branding::{CONFIG_DIR, PROJECT_CONFIG_FILE, PROJECT_DATA_DIR};
+use crate::config::{
+    self, CompiledOverrides, Config, HeredocSettings, REPO_ROOT_SEARCH_MAX_HOPS,
+};
 use crate::daemon_cli::execute_cli;
 use crate::daemon_protocol::{
     AllowlistOverridePayload, ClientEnvelope, DaemonRequest, DaemonResponse, ResultPayload,
@@ -42,14 +45,33 @@ use crate::evaluator::{
     EvaluationDecision, EvaluationResult, PatternMatch,
     evaluate_command_with_pack_order_deadline_at_path,
 };
-use crate::packs::{REGISTRY, load_external_packs};
+use crate::packs::{ExternalPackStore, REGISTRY};
 use crate::perf::Deadline;
+use std::collections::HashMap;
+use std::sync::{Arc, LazyLock, Mutex};
 use std::time::Duration;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::{UnixListener, UnixStream};
 use tokio::sync::watch;
 
 const DAEMON_EVALUATION_DEADLINE: Duration = Duration::from_millis(100);
+
+/// File metadata and env snapshot for deterministic cwd-scoped cache invalidation.
+#[derive(Clone, PartialEq, Eq)]
+struct ReloadFingerprint {
+    files: Vec<(PathBuf, u64, u128)>,
+    env: Vec<(String, String)>,
+}
+
+struct EvaluationContextCache {
+    entries: HashMap<PathBuf, (ReloadFingerprint, Arc<EvaluationContext>)>,
+}
+
+static EVAL_CONTEXT_CACHE: LazyLock<Mutex<EvaluationContextCache>> = LazyLock::new(|| {
+    Mutex::new(EvaluationContextCache {
+        entries: HashMap::new(),
+    })
+});
 
 struct EvaluationContext {
     allowlists: LayeredAllowlist,
@@ -58,17 +80,21 @@ struct EvaluationContext {
     ordered_packs: Vec<String>,
     enabled_keywords: Vec<&'static str>,
     keyword_index: Option<crate::packs::EnabledKeywordIndex>,
+    external_store: ExternalPackStore,
 }
 
 impl EvaluationContext {
-    fn load_at(cwd: &Path) -> Self {
-        let config = Config::load_from(Some(cwd));
+    fn build_at(cwd: &Path, config: &Config) -> Result<Self, String> {
         let allowlists = load_allowlists_from(Some(cwd));
+        if let Some(err) = project_allowlist_load_error(&allowlists) {
+            return Err(err);
+        }
+
         let compiled_overrides = config.overrides.compile();
         let heredoc_settings = config.heredoc_settings();
 
         let external_paths = config.packs.expand_custom_paths_from(Some(cwd));
-        let external_store = load_external_packs(&external_paths);
+        let external_store = ExternalPackStore::load_from_paths_owned(&external_paths);
 
         let mut enabled_pack_ids = config.enabled_pack_ids();
         let mut ordered_packs = REGISTRY.expand_enabled_ordered(&enabled_pack_ids);
@@ -92,14 +118,15 @@ impl EvaluationContext {
             REGISTRY.build_enabled_keyword_index(&ordered_packs)
         };
 
-        Self {
+        Ok(Self {
             allowlists,
             compiled_overrides,
             heredoc_settings,
             ordered_packs,
             enabled_keywords,
             keyword_index,
-        }
+            external_store,
+        })
     }
 
     fn evaluate(&self, command: &str, cwd: &Path) -> EvaluationResult {
@@ -114,9 +141,151 @@ impl EvaluationContext {
             &self.heredoc_settings,
             None,
             Some(cwd),
+            Some(&self.external_store),
             Some(&deadline),
         )
     }
+}
+
+fn project_allowlist_load_error(allowlists: &LayeredAllowlist) -> Option<String> {
+    for layer in &allowlists.layers {
+        if layer.layer != AllowlistLayer::Project {
+            continue;
+        }
+        let Some(first) = layer.file.errors.first() else {
+            continue;
+        };
+        return Some(format!(
+            "invalid project allowlist '{}': {}",
+            layer.path.display(),
+            first.message
+        ));
+    }
+    None
+}
+
+fn file_stat(path: &Path) -> Option<(u64, u128)> {
+    let meta = std::fs::metadata(path).ok()?;
+    let modified = meta.modified().ok()?;
+    let mtime = modified
+        .duration_since(std::time::UNIX_EPOCH)
+        .ok()?
+        .as_nanos();
+    Some((meta.len(), mtime))
+}
+
+fn collect_reload_paths(cwd: &Path, config: &Config) -> Vec<PathBuf> {
+    let mut paths = Vec::new();
+
+    if let Some(repo_root) = config::find_repo_root(cwd, REPO_ROOT_SEARCH_MAX_HOPS) {
+        paths.push(repo_root.join(PROJECT_CONFIG_FILE));
+        paths.push(repo_root.join(PROJECT_DATA_DIR).join("allowlist.toml"));
+    }
+
+    if let Ok(xdg_home) = std::env::var("XDG_CONFIG_HOME") {
+        if !xdg_home.trim().is_empty() {
+            paths.push(
+                PathBuf::from(xdg_home.trim())
+                    .join(CONFIG_DIR)
+                    .join("config.toml"),
+            );
+            paths.push(
+                PathBuf::from(xdg_home.trim())
+                    .join(CONFIG_DIR)
+                    .join("allowlist.toml"),
+            );
+        }
+    }
+
+    if let Some(home) = dirs::home_dir() {
+        paths.push(
+            home.join(".config")
+                .join(CONFIG_DIR)
+                .join("config.toml"),
+        );
+        paths.push(
+            home.join(".config")
+                .join(CONFIG_DIR)
+                .join("allowlist.toml"),
+        );
+    }
+
+    if let Some(config_dir) = dirs::config_dir() {
+        paths.push(config_dir.join(CONFIG_DIR).join("config.toml"));
+        paths.push(config_dir.join(CONFIG_DIR).join("allowlist.toml"));
+    }
+
+    paths.push(PathBuf::from("/etc").join(CONFIG_DIR).join("config.toml"));
+
+    let system_allowlist = std::env::var(format!("{}_ALLOWLIST_SYSTEM_PATH", crate::branding::ENV_PREFIX))
+        .map(|path| {
+            let trimmed = path.trim();
+            if trimmed.is_empty() {
+                None
+            } else {
+                Some(PathBuf::from(trimmed))
+            }
+        })
+        .unwrap_or_else(|_| Some(PathBuf::from(format!("/etc/{CONFIG_DIR}/allowlist.toml"))));
+    if let Some(path) = system_allowlist {
+        paths.push(path);
+    }
+
+    if let Ok(explicit) = std::env::var(crate::config::ENV_CONFIG_PATH) {
+        if let Some(path) = config::resolve_config_path_value(&explicit, Some(cwd)) {
+            paths.push(path);
+        }
+    }
+
+    for path in config.packs.expand_custom_paths_from(Some(cwd)) {
+        paths.push(PathBuf::from(path));
+    }
+
+    paths.sort();
+    paths.dedup();
+    paths
+}
+
+fn collect_reload_fingerprint(cwd: &Path, config: &Config) -> ReloadFingerprint {
+    let mut entries = Vec::new();
+    for path in collect_reload_paths(cwd, config) {
+        let (size, mtime) = file_stat(&path).unwrap_or((0, 0));
+        entries.push((path, size, mtime));
+    }
+    ReloadFingerprint {
+        files: entries,
+        env: Config::daemon_reload_env_snapshot(),
+    }
+}
+
+fn evaluation_context_for_cwd(cwd: &Path) -> Result<Arc<EvaluationContext>, String> {
+    if let Some(err) = Config::project_config_load_error(cwd) {
+        return Err(err);
+    }
+
+    let config = Config::load_from(Some(cwd));
+    let fingerprint = collect_reload_fingerprint(cwd, &config);
+    let canonical = cwd.to_path_buf();
+
+    {
+        let cache = EVAL_CONTEXT_CACHE
+            .lock()
+            .map_err(|_| "evaluation cache lock poisoned".to_string())?;
+        if let Some((cached_fp, ctx)) = cache.entries.get(&canonical) {
+            if cached_fp == &fingerprint {
+                return Ok(Arc::clone(ctx));
+            }
+        }
+    }
+
+    let ctx = Arc::new(EvaluationContext::build_at(cwd, &config)?);
+    let mut cache = EVAL_CONTEXT_CACHE
+        .lock()
+        .map_err(|_| "evaluation cache lock poisoned".to_string())?;
+    cache
+        .entries
+        .insert(canonical, (fingerprint, Arc::clone(&ctx)));
+    Ok(ctx)
 }
 
 /// Resolve the evaluation working directory from a daemon request.
@@ -340,14 +509,19 @@ async fn handle_connection(stream: UnixStream) {
             },
             DaemonRequest::Evaluate { command, cwd } => {
                 match resolve_evaluation_cwd(cwd.as_deref()) {
-                    Ok(eval_cwd) => {
-                        let ctx = EvaluationContext::load_at(&eval_cwd);
-                        let eval_result = ctx.evaluate(&command, &eval_cwd);
-                        DaemonResponse {
-                            id,
-                            result: result_payload_from_evaluation(eval_result),
+                    Ok(eval_cwd) => match evaluation_context_for_cwd(&eval_cwd) {
+                        Ok(ctx) => {
+                            let eval_result = ctx.evaluate(&command, &eval_cwd);
+                            DaemonResponse {
+                                id,
+                                result: result_payload_from_evaluation(eval_result),
+                            }
                         }
-                    }
+                        Err(message) => DaemonResponse {
+                            id,
+                            result: ResultPayload::Error { message },
+                        },
+                    },
                     Err(message) => DaemonResponse {
                         id,
                         result: ResultPayload::Error { message },
