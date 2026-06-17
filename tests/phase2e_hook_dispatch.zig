@@ -2,6 +2,7 @@ const std = @import("std");
 const exit_codes = @import("orca").cli.exit_codes;
 
 const orca_bin = "./zig-out/bin/orca";
+const fake_daemon_script = "tests/fixtures/fake-daemon-exit.sh";
 
 const HookRunResult = struct {
     stdout: []u8,
@@ -95,17 +96,34 @@ fn createProcessEnvMap(allocator: std.mem.Allocator) !std.process.Environ.Map {
     return try std.process.Environ.createMap(processEnviron(), allocator);
 }
 
-fn daemonSocketArtifactPresent() bool {
-    const home = std.c.getenv("HOME") orelse return false;
-    var path_buf: [std.fs.max_path_bytes]u8 = undefined;
-    const socket_path = std.fmt.bufPrint(&path_buf, "{s}/.orca/daemon.sock", .{home}) catch return false;
-    std.Io.Dir.cwd().access(std.testing.io, socket_path, .{}) catch return false;
-    return true;
+fn isolatedHomePath(allocator: std.mem.Allocator, label: []const u8) ![]const u8 {
+    const pid = std.c.getpid();
+    return try std.fmt.allocPrint(allocator, "/tmp/orca-phase2e-{s}-{d}", .{ label, pid });
+}
+
+fn makeIsolatedFailClosedEnv(allocator: std.mem.Allocator) !struct {
+    env_map: std.process.Environ.Map,
+    home: []const u8,
+} {
+    const home = try isolatedHomePath(allocator, "failclosed");
+    errdefer allocator.free(home);
+
+    var env_map = try createProcessEnvMap(allocator);
+    errdefer env_map.deinit();
+
+    try env_map.put("HOME", home);
+    try env_map.put("ORCA_DAEMON", fake_daemon_script);
+
+    return .{ .env_map = env_map, .home = home };
 }
 
 fn fileExists(path: []const u8) bool {
     std.Io.Dir.cwd().access(std.testing.io, path, .{}) catch return false;
     return true;
+}
+
+fn requireFakeDaemonFixture() !void {
+    try std.testing.expect(fileExists(fake_daemon_script));
 }
 
 fn readFile(allocator: std.mem.Allocator, path: []const u8) ![]u8 {
@@ -208,37 +226,40 @@ test "phase2e non-shell hook events stay on zig path without daemon" {
 
 test "phase2e shell PreToolUse fails closed when daemon is unavailable" {
     if (!fileExists(orca_bin)) return;
-    if (daemonSocketArtifactPresent()) return;
+    try requireFakeDaemonFixture();
 
     const allocator = std.testing.allocator;
     const fixture = try readFile(allocator, "tests/plugin-fixtures/claude/pre_tool_use_command_safe.json");
     defer allocator.free(fixture);
 
-    var env_map = try createProcessEnvMap(allocator);
-    defer env_map.deinit();
-    try env_map.put("ORCA_DAEMON", "/bin/false");
+    var isolated = try makeIsolatedFailClosedEnv(allocator);
+    defer allocator.free(isolated.home);
+    defer isolated.env_map.deinit();
 
-    const result = try runOrca(allocator, &.{ orca_bin, "hook", "claude", "PreToolUse" }, fixture, &env_map);
+    const result = try runOrca(allocator, &.{ orca_bin, "hook", "claude", "PreToolUse" }, fixture, &isolated.env_map);
     defer allocator.free(result.stdout);
     defer allocator.free(result.stderr);
 
     try expectHookDecision(allocator, "claude", "block", result);
-    try std.testing.expect(std.mem.indexOf(u8, result.stdout, "daemon") != null or std.mem.indexOf(u8, result.stdout, "unavailable") != null or std.mem.indexOf(u8, result.stdout, "blocked") != null);
+    const combined = try std.fmt.allocPrint(allocator, "{s}{s}", .{ result.stdout, result.stderr });
+    defer allocator.free(combined);
+    try std.testing.expect(std.mem.indexOf(u8, combined, "daemon") != null or std.mem.indexOf(u8, combined, "unavailable") != null or std.mem.indexOf(u8, combined, "blocked") != null);
 }
 
 test "phase2e shell PreToolUse missing command fails closed without daemon" {
     if (!fileExists(orca_bin)) return;
+    try requireFakeDaemonFixture();
 
     const allocator = std.testing.allocator;
     const envelope =
         \\{"version":1,"host":"codex","event":"PreToolUse","payload":{"tool":"bash"}}
     ;
 
-    var env_map = try createProcessEnvMap(allocator);
-    defer env_map.deinit();
-    try env_map.put("ORCA_DAEMON", "/nonexistent/orca-daemon-for-phase2e-test");
+    var isolated = try makeIsolatedFailClosedEnv(allocator);
+    defer allocator.free(isolated.home);
+    defer isolated.env_map.deinit();
 
-    const result = try runOrca(allocator, &.{ orca_bin, "hook", "codex", "PreToolUse" }, envelope, &env_map);
+    const result = try runOrca(allocator, &.{ orca_bin, "hook", "codex", "PreToolUse" }, envelope, &isolated.env_map);
     defer allocator.free(result.stdout);
     defer allocator.free(result.stderr);
 

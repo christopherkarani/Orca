@@ -135,6 +135,7 @@ SECURITY_INVARIANTS.md
 .opencode/
 .pi/
 .orchestrator/
+.omo/
 .agents/plugins/orca/
 .claude/plugins/
 .claude/
