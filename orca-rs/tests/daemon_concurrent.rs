@@ -44,7 +44,7 @@ fn daemon_concurrent_ping_responses() {
 
     // 3. Clean shutdown.
     let _ = common::send_shutdown(&socket_path);
-    common::term_and_wait(child, Duration::from_secs(5));
+    common::shutdown_and_wait(child, &socket_path, Duration::from_secs(5));
 
     assert!(
         !socket_path.exists(),

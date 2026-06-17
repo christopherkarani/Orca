@@ -333,7 +333,8 @@ fn resolve_evaluation_cwd(request_cwd: Option<&str>) -> Result<PathBuf, String> 
 pub async fn run_daemon(
     socket_path: &Path,
     pid_path: &Path,
-    mut shutdown: watch::Receiver<bool>,
+    shutdown_tx: watch::Sender<bool>,
+    mut shutdown_rx: watch::Receiver<bool>,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     // Ensure parent directory exists.
     if let Some(parent) = socket_path.parent() {
@@ -414,6 +415,7 @@ pub async fn run_daemon(
 
     let socket_path_buf: PathBuf = socket_path.to_path_buf();
     let pid_path_buf: PathBuf = pid_path.to_path_buf();
+    let shutdown_tx = Arc::new(shutdown_tx);
 
     #[cfg(unix)]
     let mut sigterm = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
@@ -425,15 +427,15 @@ pub async fn run_daemon(
             accept_result = listener.accept() => {
                 match accept_result {
                     Ok((stream, _addr)) => {
-                        tokio::spawn(handle_connection(stream));
+                        tokio::spawn(handle_connection(stream, Arc::clone(&shutdown_tx)));
                     }
                     Err(e) => {
                         tracing::warn!(error = %e, "UDS accept failed");
                     }
                 }
             }
-            _ = shutdown.changed() => {
-                if *shutdown.borrow() {
+            _ = shutdown_rx.changed() => {
+                if *shutdown_rx.borrow() {
                     break;
                 }
             }
@@ -450,15 +452,15 @@ pub async fn run_daemon(
             accept_result = listener.accept() => {
                 match accept_result {
                     Ok((stream, _addr)) => {
-                        tokio::spawn(handle_connection(stream));
+                        tokio::spawn(handle_connection(stream, Arc::clone(&shutdown_tx)));
                     }
                     Err(e) => {
                         tracing::warn!(error = %e, "UDS accept failed");
                     }
                 }
             }
-            _ = shutdown.changed() => {
-                if *shutdown.borrow() {
+            _ = shutdown_rx.changed() => {
+                if *shutdown_rx.borrow() {
                     break;
                 }
             }
@@ -477,7 +479,7 @@ pub async fn run_daemon(
     Ok(())
 }
 
-async fn handle_connection(stream: UnixStream) {
+async fn handle_connection(stream: UnixStream, shutdown_tx: Arc<watch::Sender<bool>>) {
     let (read_half, mut write_half) = stream.into_split();
     let reader = BufReader::new(read_half);
     let mut lines = reader.lines();
@@ -550,15 +552,8 @@ async fn handle_connection(stream: UnixStream) {
             break;
         }
 
-        // Shutdown request is acknowledged on this connection before the
-        // daemon loop exits via the shutdown channel.  We intentionally do
-        // NOT call process::exit here.
         if is_shutdown {
-            // Signal the main loop to shut down gracefully.
-            // The shutdown watch is owned by the main loop; we cannot send
-            // through it directly, but the Zig client is expected to send
-            // SIGTERM after the Shutdown response.  For now, close this
-            // connection and let the daemon's signal handler do the rest.
+            let _ = shutdown_tx.send(true);
             break;
         }
     }
@@ -697,7 +692,8 @@ mod tests {
 
         let socket = socket_path.clone();
         let pid = pid_path.clone();
-        let daemon_task = tokio::spawn(async move { run_daemon(&socket, &pid, rx).await });
+        let shutdown_tx = tx.clone();
+        let daemon_task = tokio::spawn(async move { run_daemon(&socket, &pid, tx, rx).await });
 
         wait_for_socket(&socket_path).await;
 
@@ -718,7 +714,7 @@ mod tests {
             env!("CARGO_PKG_VERSION")
         );
 
-        let _ = tx.send(true);
+        let _ = shutdown_tx.send(true);
         let result = tokio::time::timeout(Duration::from_secs(5), daemon_task).await;
         assert!(result.is_ok(), "daemon should complete within timeout");
         assert!(result.unwrap().is_ok(), "daemon should return Ok");
@@ -733,7 +729,8 @@ mod tests {
 
         let socket = socket_path.clone();
         let pid = pid_path.clone();
-        let daemon_task = tokio::spawn(async move { run_daemon(&socket, &pid, rx).await });
+        let shutdown_tx = tx.clone();
+        let daemon_task = tokio::spawn(async move { run_daemon(&socket, &pid, tx, rx).await });
 
         wait_for_socket(&socket_path).await;
 
@@ -755,7 +752,7 @@ mod tests {
         );
         assert_eq!(response["result"]["stdout"].as_str().unwrap(), "");
 
-        let _ = tx.send(true);
+        let _ = shutdown_tx.send(true);
         let result = tokio::time::timeout(Duration::from_secs(5), daemon_task).await;
         assert!(result.is_ok(), "daemon should complete within timeout");
         assert!(result.unwrap().is_ok(), "daemon should return Ok");
@@ -770,7 +767,8 @@ mod tests {
 
         let socket = socket_path.clone();
         let pid = pid_path.clone();
-        let daemon_task = tokio::spawn(async move { run_daemon(&socket, &pid, rx).await });
+        let shutdown_tx = tx.clone();
+        let daemon_task = tokio::spawn(async move { run_daemon(&socket, &pid, tx, rx).await });
 
         wait_for_socket(&socket_path).await;
 
@@ -803,7 +801,7 @@ mod tests {
         assert_eq!(ping_response["id"], 9);
         assert_eq!(ping_response["result"]["status"], "Pong");
 
-        let _ = tx.send(true);
+        let _ = shutdown_tx.send(true);
         let result = tokio::time::timeout(Duration::from_secs(5), daemon_task).await;
         assert!(result.is_ok(), "daemon should complete within timeout");
         assert!(result.unwrap().is_ok(), "daemon should return Ok");
@@ -877,7 +875,8 @@ reason = "test allowlist"
 
         let socket = socket_path.clone();
         let pid = pid_path.clone();
-        let daemon_task = tokio::spawn(async move { run_daemon(&socket, &pid, rx).await });
+        let shutdown_tx = tx.clone();
+        let daemon_task = tokio::spawn(async move { run_daemon(&socket, &pid, tx, rx).await });
 
         wait_for_socket(&socket_path).await;
 
@@ -900,7 +899,7 @@ reason = "test allowlist"
                 .contains("missing cwd")
         );
 
-        let _ = tx.send(true);
+        let _ = shutdown_tx.send(true);
         let _ = tokio::time::timeout(Duration::from_secs(5), daemon_task).await;
     }
 
@@ -913,7 +912,8 @@ reason = "test allowlist"
 
         let socket = socket_path.clone();
         let pid = pid_path.clone();
-        let daemon_task = tokio::spawn(async move { run_daemon(&socket, &pid, rx).await });
+        let shutdown_tx = tx.clone();
+        let daemon_task = tokio::spawn(async move { run_daemon(&socket, &pid, tx, rx).await });
 
         wait_for_socket(&socket_path).await;
 
@@ -936,7 +936,7 @@ reason = "test allowlist"
                 .contains("invalid cwd")
         );
 
-        let _ = tx.send(true);
+        let _ = shutdown_tx.send(true);
         let _ = tokio::time::timeout(Duration::from_secs(5), daemon_task).await;
     }
 
@@ -957,7 +957,8 @@ reason = "test allowlist"
 
         let socket = socket_path.clone();
         let pid = pid_path.clone();
-        let daemon_task = tokio::spawn(async move { run_daemon(&socket, &pid, rx).await });
+        let shutdown_tx = tx.clone();
+        let daemon_task = tokio::spawn(async move { run_daemon(&socket, &pid, tx, rx).await });
 
         wait_for_socket(&socket_path).await;
 
@@ -986,10 +987,185 @@ reason = "test allowlist"
         assert_eq!(deny_response["id"], 13);
         assert_eq!(deny_response["result"]["status"], "Deny");
 
-        let _ = tx.send(true);
+        let _ = shutdown_tx.send(true);
         let result = tokio::time::timeout(Duration::from_secs(5), daemon_task).await;
         assert!(result.is_ok(), "daemon should complete within timeout");
         assert!(result.unwrap().is_ok(), "daemon should return Ok");
+    }
+
+    #[tokio::test]
+    async fn daemon_shutdown_request_stops_daemon_and_removes_artifacts() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let socket_path = temp_dir.path().join("daemon.sock");
+        let pid_path = temp_dir.path().join("daemon.pid");
+        let (tx, rx) = tokio::sync::watch::channel(false);
+
+        let socket = socket_path.clone();
+        let pid = pid_path.clone();
+        let shutdown_tx = tx.clone();
+        let daemon_task = tokio::spawn(async move { run_daemon(&socket, &pid, tx, rx).await });
+
+        wait_for_socket(&socket_path).await;
+        assert!(pid_path.exists());
+
+        let mut stream = UnixStream::connect(&socket_path).await.unwrap();
+        stream
+            .write_all(br#"{"id":20,"method":"Shutdown","params":null}"#)
+            .await
+            .unwrap();
+        stream.write_all(b"\n").await.unwrap();
+
+        let response = read_daemon_response(stream).await;
+        assert_eq!(response["id"], 20);
+        assert_eq!(response["result"]["status"], "Pong");
+
+        let result = tokio::time::timeout(Duration::from_secs(5), daemon_task).await;
+        assert!(result.is_ok(), "daemon should complete within timeout");
+        assert!(result.unwrap().is_ok(), "daemon should return Ok");
+        assert!(!socket_path.exists(), "socket should be removed after Shutdown");
+        assert!(!pid_path.exists(), "pid file should be removed after Shutdown");
+    }
+
+    #[tokio::test]
+    async fn daemon_no_longer_responds_to_ping_after_shutdown() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let socket_path = temp_dir.path().join("daemon.sock");
+        let pid_path = temp_dir.path().join("daemon.pid");
+        let (tx, rx) = tokio::sync::watch::channel(false);
+
+        let socket = socket_path.clone();
+        let pid = pid_path.clone();
+        let shutdown_tx = tx.clone();
+        let daemon_task = tokio::spawn(async move { run_daemon(&socket, &pid, tx, rx).await });
+
+        wait_for_socket(&socket_path).await;
+
+        let mut stream = UnixStream::connect(&socket_path).await.unwrap();
+        stream
+            .write_all(br#"{"id":21,"method":"Shutdown","params":null}"#)
+            .await
+            .unwrap();
+        stream.write_all(b"\n").await.unwrap();
+        let _ = read_daemon_response(stream).await;
+
+        let _ = tokio::time::timeout(Duration::from_secs(5), daemon_task).await;
+
+        let connect_result = UnixStream::connect(&socket_path).await;
+        assert!(connect_result.is_err(), "socket should be gone after shutdown");
+    }
+
+    #[tokio::test]
+    async fn daemon_repeated_shutdown_requests_are_safe() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let socket_path = temp_dir.path().join("daemon.sock");
+        let pid_path = temp_dir.path().join("daemon.pid");
+        let (tx, rx) = tokio::sync::watch::channel(false);
+
+        let socket = socket_path.clone();
+        let pid = pid_path.clone();
+        let daemon_task = tokio::spawn(async move { run_daemon(&socket, &pid, tx, rx).await });
+
+        wait_for_socket(&socket_path).await;
+
+        let mut handles = Vec::with_capacity(3);
+        for id in 30..33 {
+            let sock = socket_path.clone();
+            handles.push(tokio::spawn(async move {
+                let mut stream = UnixStream::connect(&sock).await.unwrap();
+                let req = format!(r#"{{"id":{id},"method":"Shutdown","params":null}}"#);
+                stream.write_all(req.as_bytes()).await.unwrap();
+                stream.write_all(b"\n").await.unwrap();
+                read_daemon_response(stream).await
+            }));
+        }
+
+        let mut pong_count = 0;
+        for handle in handles {
+            let response = handle.await.unwrap();
+            if response["result"]["status"] == "Pong" {
+                pong_count += 1;
+            }
+        }
+        assert!(pong_count >= 1, "at least one Shutdown should be acknowledged");
+
+        let result = tokio::time::timeout(Duration::from_secs(5), daemon_task).await;
+        assert!(result.is_ok(), "daemon should complete within timeout");
+        assert!(!socket_path.exists());
+        assert!(!pid_path.exists());
+    }
+
+    #[tokio::test]
+    async fn daemon_shutdown_during_active_evaluate_completes_response() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let socket_path = temp_dir.path().join("daemon.sock");
+        let pid_path = temp_dir.path().join("daemon.pid");
+        let (tx, rx) = tokio::sync::watch::channel(false);
+
+        let socket = socket_path.clone();
+        let pid = pid_path.clone();
+        let shutdown_tx = tx.clone();
+        let daemon_task = tokio::spawn(async move { run_daemon(&socket, &pid, tx, rx).await });
+
+        wait_for_socket(&socket_path).await;
+
+        let eval_cwd = temp_dir.path().canonicalize().unwrap();
+        let allow_req = format!(
+            r#"{{"id":40,"method":"Evaluate","params":{{"command":"ls -la","cwd":"{}"}}}}"#,
+            eval_cwd.display()
+        );
+        let mut eval_stream = UnixStream::connect(&socket_path).await.unwrap();
+        eval_stream.write_all(allow_req.as_bytes()).await.unwrap();
+        eval_stream.write_all(b"\n").await.unwrap();
+        let eval_response = read_daemon_response(eval_stream).await;
+        assert_eq!(eval_response["id"], 40);
+        assert_eq!(eval_response["result"]["status"], "Allow");
+
+        let mut shutdown_stream = UnixStream::connect(&socket_path).await.unwrap();
+        shutdown_stream
+            .write_all(br#"{"id":41,"method":"Shutdown","params":null}"#)
+            .await
+            .unwrap();
+        shutdown_stream.write_all(b"\n").await.unwrap();
+        let shutdown_response = read_daemon_response(shutdown_stream).await;
+        assert_eq!(shutdown_response["id"], 41);
+        assert_eq!(shutdown_response["result"]["status"], "Pong");
+
+        let _ = tokio::time::timeout(Duration::from_secs(5), daemon_task).await;
+        assert!(!socket_path.exists());
+        assert!(!pid_path.exists());
+    }
+
+    #[tokio::test]
+    async fn daemon_malformed_request_returns_error_and_stays_alive() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let socket_path = temp_dir.path().join("daemon.sock");
+        let pid_path = temp_dir.path().join("daemon.pid");
+        let (tx, rx) = tokio::sync::watch::channel(false);
+
+        let socket = socket_path.clone();
+        let pid = pid_path.clone();
+        let shutdown_tx = tx.clone();
+        let daemon_task = tokio::spawn(async move { run_daemon(&socket, &pid, tx, rx).await });
+
+        wait_for_socket(&socket_path).await;
+
+        let mut stream = UnixStream::connect(&socket_path).await.unwrap();
+        stream.write_all(b"{not valid json}\n").await.unwrap();
+        let response = read_daemon_response(stream).await;
+        assert_eq!(response["id"], 0);
+        assert_eq!(response["result"]["status"], "Error");
+
+        let mut ping_stream = UnixStream::connect(&socket_path).await.unwrap();
+        ping_stream
+            .write_all(br#"{"id":51,"method":"Ping"}"#)
+            .await
+            .unwrap();
+        ping_stream.write_all(b"\n").await.unwrap();
+        let ping_response = read_daemon_response(ping_stream).await;
+        assert_eq!(ping_response["result"]["status"], "Pong");
+
+        let _ = shutdown_tx.send(true);
+        let _ = tokio::time::timeout(Duration::from_secs(5), daemon_task).await;
     }
 
 }

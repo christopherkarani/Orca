@@ -37,6 +37,7 @@ pub const interactive = @import("interactive.zig");
 pub const child_process = @import("child_process.zig");
 pub const style = @import("style.zig");
 pub const daemon = @import("daemon.zig");
+pub const shutdown = @import("shutdown.zig");
 pub const shell_eval = @import("shell_eval.zig");
 
 test {
@@ -49,6 +50,7 @@ test {
     _ = @import("spinner.zig");
     // Pull daemon UDS/IPC tests into the test binary.
     _ = daemon;
+    _ = shutdown;
     _ = shell_eval;
 }
 
@@ -201,6 +203,7 @@ pub fn runWithCwd(io: std.Io, environ_map: *const std.process.Environ.Map, cwd: 
     if (std.mem.eql(u8, command, "demo")) return demo.command(io, argv[1..], stdout, stderr);
     if (std.mem.eql(u8, command, "disable")) return disable.command(io, argv[1..], stdout, stderr);
     if (std.mem.eql(u8, command, "uninstall")) return uninstall.command(io, argv[1..], stdout, stderr);
+    if (std.mem.eql(u8, command, "shutdown")) return shutdown.command(io, argv[1..], stdout, stderr);
 
     // Warm "did you mean?" suggestions for unknown commands (foundation UX).
     if (suggestCommand(command)) |suggestion| {

@@ -219,6 +219,13 @@ pub const commands = [_]CommandInfo{
         "Creates a harmless local session showing a destructive command denied by Orca.",
         "The demo writes replay/report artifacts but does not execute the destructive command.",
     } },
+    .{ .name = "shutdown", .summary = "Stop the background Orca daemon", .usage = "orca shutdown --daemon", .category = .advanced, .examples = &.{
+        "orca shutdown --daemon",
+    }, .details = &.{
+        "Sends a graceful Shutdown request to the Rust daemon over UDS.",
+        "Removes $HOME/.orca/daemon.sock and daemon.pid when shutdown succeeds.",
+        "When the daemon is not running, stale artifacts are cleaned when safe.",
+    } },
     .{ .name = "disable", .summary = "Disable Orca plugins from host agents", .usage = "orca disable [codex|claude|opencode|openclaw|hermes|all] [--yes]", .category = .integrations, .details = &.{
         "Removes Orca plugin registrations from host agents without removing the Orca binary or policy files.",
         "Hosts: codex, claude, opencode, openclaw, hermes. Defaults to all if no host is specified.",

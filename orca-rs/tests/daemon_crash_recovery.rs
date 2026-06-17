@@ -60,7 +60,7 @@ fn daemon_crash_recovery_cleans_stale_socket() {
 
     // 7. Clean shutdown.
     let _ = common::send_shutdown(&socket_path);
-    common::term_and_wait(child2, Duration::from_secs(5));
+    common::shutdown_and_wait(child2, &socket_path, Duration::from_secs(5));
 
     // 8. Artifacts should be gone.
     assert!(

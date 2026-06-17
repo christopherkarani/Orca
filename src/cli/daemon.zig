@@ -661,6 +661,99 @@ fn getEnvVar(allocator: std.mem.Allocator, key: []const u8) !?[]const u8 {
     };
 }
 
+
+/// Outcome of a daemon shutdown attempt.
+pub const ShutdownResult = enum {
+    /// Daemon was running; Shutdown request sent and artifacts removed.
+    stopped,
+    /// No daemon was running and no stale artifacts needed cleanup.
+    not_running,
+    /// Stale socket/PID artifacts were removed without a live daemon.
+    stale_cleaned,
+};
+
+fn pathAccessible(io: std.Io, path: []const u8) bool {
+    std.Io.Dir.cwd().access(io, path, .{}) catch return false;
+    return true;
+}
+
+fn isProcessAlive(pid: std.posix.pid_t) bool {
+    if (pid <= 0) return false;
+    std.posix.kill(pid, @enumFromInt(0)) catch |err| switch (err) {
+        error.ProcessNotFound => return false,
+        else => return true,
+    };
+    return true;
+}
+
+fn readPidFromFile(io: std.Io, allocator: std.mem.Allocator, pid_path: []const u8) DaemonError!?std.posix.pid_t {
+    const content = std.Io.Dir.cwd().readFileAlloc(io, pid_path, allocator, .limited(32)) catch return null;
+    defer allocator.free(content);
+    const trimmed = std.mem.trim(u8, content, " \t\r\n");
+    if (trimmed.len == 0) return null;
+    return std.fmt.parseInt(std.posix.pid_t, trimmed, 10) catch null;
+}
+
+fn waitForDaemonArtifactsGone(io: std.Io, paths: RuntimePaths, timeout_ms: u64) DaemonError!void {
+    const deadline_ms = monotonicNowMs(io) + @as(i64, @intCast(timeout_ms));
+    while (monotonicNowMs(io) < deadline_ms) {
+        if (!pathAccessible(io, paths.socket) and !pathAccessible(io, paths.pid)) return;
+        std.Io.sleep(io, std.Io.Duration.fromMilliseconds(@intCast(readiness_poll_ms)), .awake) catch {};
+    }
+    return error.DaemonStartTimeout;
+}
+
+/// Stop the current user's Orca daemon when reachable, or clean stale artifacts.
+///
+/// Repeated calls are safe: a second shutdown after a successful stop reports
+/// `not_running`; stale artifact cleanup is idempotent.
+pub fn shutdownDaemon(allocator: std.mem.Allocator) DaemonError!ShutdownResult {
+    var threaded: std.Io.Threaded = .init_single_threaded;
+    const io = threaded.io();
+
+    const paths = try runtimePaths(allocator);
+    defer freeRuntimePaths(allocator, paths);
+
+    if (ping(allocator)) |_| {
+        var parsed = try sendRequest(allocator, paths.socket, .{
+            .id = 1,
+            .method = "Shutdown",
+            .params = null,
+        });
+        defer parsed.deinit();
+        if (responseStatus(parsed.value.result) != .pong) return error.DaemonProtocolError;
+        try waitForDaemonArtifactsGone(io, paths, default_readiness_timeout_ms);
+        return .stopped;
+    } else |_| {}
+
+    const socket_exists = pathAccessible(io, paths.socket);
+    const pid_exists = pathAccessible(io, paths.pid);
+
+    if (!socket_exists and !pid_exists) return .not_running;
+
+    if (isStaleDaemonArtifacts(allocator, paths) catch return error.DaemonNotReady) {
+        cleanupStaleArtifacts(io, paths);
+        return .stale_cleaned;
+    }
+
+    if (!socket_exists and pid_exists) {
+        const pid = try readPidFromFile(io, allocator, paths.pid);
+        if (pid) |live_pid| {
+            if (!isProcessAlive(live_pid)) {
+                std.Io.Dir.cwd().deleteFile(io, paths.pid) catch {};
+                return .stale_cleaned;
+            }
+            // Live PID with no responding socket: refuse to remove artifacts.
+            return error.DaemonNotReady;
+        }
+        std.Io.Dir.cwd().deleteFile(io, paths.pid) catch {};
+        return .stale_cleaned;
+    }
+
+    return .not_running;
+}
+
+
 // ---------------------------------------------------------------------------
 // Unit tests
 // ---------------------------------------------------------------------------

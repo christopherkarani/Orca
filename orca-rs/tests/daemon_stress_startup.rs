@@ -37,7 +37,7 @@ fn daemon_rapid_startup_stress_test() {
         if is_last {
             // Clean shutdown on the last iteration and verify removal.
             let _ = common::send_shutdown(&socket_path);
-            common::term_and_wait(child, Duration::from_secs(5));
+            common::shutdown_and_wait(child, &socket_path, Duration::from_secs(5));
 
             assert!(
                 !socket_path.exists(),

@@ -209,26 +209,30 @@ fn run_shutdown_actions() {
 /// buffered state (history writer, etc.) is persisted before the process
 /// exits.  In daemon mode the receiver is polled in the main loop; in CLI
 /// mode the receiver can be checked at well-defined yield points.
-fn install_signal_shutdown_handler() -> tokio::sync::watch::Receiver<bool> {
+fn install_signal_shutdown_handler() -> (
+    tokio::sync::watch::Sender<bool>,
+    tokio::sync::watch::Receiver<bool>,
+) {
     let (tx, rx) = tokio::sync::watch::channel(false);
+    let signal_tx = tx.clone();
     // Idempotent: ctrlc::set_handler returns Err on duplicate install.
     let _ = ctrlc::set_handler(move || {
         eprintln!("[orca] Flushing on signal...");
         run_shutdown_actions();
         if DAEMON_MODE_ACTIVE.load(Ordering::SeqCst) {
-            let _ = tx.send(true);
+            let _ = signal_tx.send(true);
         } else {
             std::process::exit(130);
         }
     });
-    rx
+    (tx, rx)
 }
 
 fn install_history_shutdown_handler(handle: orca_rs::history::HistoryFlushHandle) {
     register_shutdown_action(move || {
         handle.flush_sync();
     });
-    let _shutdown_rx = install_signal_shutdown_handler();
+    let (_shutdown_tx, _shutdown_rx) = install_signal_shutdown_handler();
 }
 
 fn is_top_level_global_flag(arg: &str) -> bool {
@@ -462,10 +466,10 @@ async fn run_orca() -> Result<i32, Box<dyn std::error::Error + Send + Sync>> {
     // UDS server and NDJSON IPC are implemented in Phase 0.5.
     if cli.daemon_mode {
         DAEMON_MODE_ACTIVE.store(true, Ordering::SeqCst);
-        let shutdown_rx = install_signal_shutdown_handler();
+        let (shutdown_tx, shutdown_rx) = install_signal_shutdown_handler();
         let home_dir = daemon_home_dir().ok_or("unable to determine home directory")?;
         let (socket_path, pid_path) = daemon_runtime_paths(&home_dir);
-        orca_rs::daemon::run_daemon(&socket_path, &pid_path, shutdown_rx).await?;
+        orca_rs::daemon::run_daemon(&socket_path, &pid_path, shutdown_tx, shutdown_rx).await?;
         return Ok(0);
     }
 
@@ -1951,8 +1955,9 @@ mod tests {
 
             let socket = socket_path.clone();
             let pid = pid_path.clone();
+            let shutdown_tx = tx.clone();
             let daemon_task =
-                tokio::spawn(async move { orca_rs::daemon::run_daemon(&socket, &pid, rx).await });
+                tokio::spawn(async move { orca_rs::daemon::run_daemon(&socket, &pid, tx, rx).await });
 
             // Wait for the socket to be bound.
             let mut attempts = 0;
@@ -1964,7 +1969,7 @@ mod tests {
             assert!(pid_path.exists(), "daemon should have written the pid file");
 
             // Signal shutdown
-            let _ = tx.send(true);
+            let _ = shutdown_tx.send(true);
 
             // Should complete cleanly within a reasonable time
             let result = tokio::time::timeout(Duration::from_secs(5), daemon_task).await;
@@ -1991,8 +1996,9 @@ mod tests {
 
             let socket = socket_path.clone();
             let pid = pid_path.clone();
+            let shutdown_tx = tx.clone();
             let daemon_task =
-                tokio::spawn(async move { orca_rs::daemon::run_daemon(&socket, &pid, rx).await });
+                tokio::spawn(async move { orca_rs::daemon::run_daemon(&socket, &pid, tx, rx).await });
 
             // Wait for the socket to be bound.
             let mut attempts = 0;
@@ -2016,7 +2022,7 @@ mod tests {
             assert_eq!(response["id"], 1);
             assert_eq!(response["result"]["status"], "Pong");
 
-            let _ = tx.send(true);
+            let _ = shutdown_tx.send(true);
             let result = tokio::time::timeout(Duration::from_secs(5), daemon_task).await;
             assert!(result.is_ok(), "daemon should complete within timeout");
             assert!(result.unwrap().is_ok(), "daemon should return Ok");
@@ -2034,8 +2040,9 @@ mod tests {
 
             let socket = socket_path.clone();
             let pid = pid_path.clone();
+            let shutdown_tx = tx.clone();
             let daemon_task =
-                tokio::spawn(async move { orca_rs::daemon::run_daemon(&socket, &pid, rx).await });
+                tokio::spawn(async move { orca_rs::daemon::run_daemon(&socket, &pid, tx, rx).await });
 
             let mut attempts = 0;
             while !socket_path.exists() && attempts < 50 {
@@ -2065,7 +2072,7 @@ mod tests {
             assert_eq!(response["id"], 2);
             assert_eq!(response["result"]["status"], "Allow");
 
-            let _ = tx.send(true);
+            let _ = shutdown_tx.send(true);
             let result = tokio::time::timeout(Duration::from_secs(5), daemon_task).await;
             assert!(result.is_ok(), "daemon should complete within timeout");
             assert!(result.unwrap().is_ok(), "daemon should return Ok");
@@ -2083,8 +2090,9 @@ mod tests {
 
             let socket = socket_path.clone();
             let pid = pid_path.clone();
+            let shutdown_tx = tx.clone();
             let daemon_task =
-                tokio::spawn(async move { orca_rs::daemon::run_daemon(&socket, &pid, rx).await });
+                tokio::spawn(async move { orca_rs::daemon::run_daemon(&socket, &pid, tx, rx).await });
 
             let mut attempts = 0;
             while !socket_path.exists() && attempts < 50 {
@@ -2114,7 +2122,7 @@ mod tests {
             assert_eq!(response["id"], 3);
             assert_eq!(response["result"]["status"], "Deny");
 
-            let _ = tx.send(true);
+            let _ = shutdown_tx.send(true);
             let result = tokio::time::timeout(Duration::from_secs(5), daemon_task).await;
             assert!(result.is_ok(), "daemon should complete within timeout");
             assert!(result.unwrap().is_ok(), "daemon should return Ok");
@@ -2132,8 +2140,9 @@ mod tests {
 
             let socket = socket_path.clone();
             let pid = pid_path.clone();
+            let shutdown_tx = tx.clone();
             let daemon_task =
-                tokio::spawn(async move { orca_rs::daemon::run_daemon(&socket, &pid, rx).await });
+                tokio::spawn(async move { orca_rs::daemon::run_daemon(&socket, &pid, tx, rx).await });
 
             let mut attempts = 0;
             while !socket_path.exists() && attempts < 50 {
@@ -2156,17 +2165,18 @@ mod tests {
             assert_eq!(response["id"], 4);
             assert_eq!(response["result"]["status"], "Pong");
 
-            let _ = tx.send(true);
             let result = tokio::time::timeout(Duration::from_secs(5), daemon_task).await;
             assert!(result.is_ok(), "daemon should complete within timeout");
             assert!(result.unwrap().is_ok(), "daemon should return Ok");
+            assert!(!socket_path.exists(), "socket should be removed after Shutdown");
+            assert!(!pid_path.exists(), "pid file should be removed after Shutdown");
         }
 
         #[test]
         fn signal_handler_returns_receiver() {
             // install_signal_shutdown_handler should return a receiver without panicking.
             // ctrlc::set_handler is idempotent — subsequent calls return Err but do not panic.
-            let rx = install_signal_shutdown_handler();
+            let (_tx, rx) = install_signal_shutdown_handler();
             // Initial value should be false
             assert!(!*rx.borrow());
         }

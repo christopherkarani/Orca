@@ -125,6 +125,26 @@ pub fn socket_and_pid_paths(home_dir: &Path) -> (PathBuf, PathBuf) {
     (socket_path, pid_path)
 }
 
+/// Send Shutdown and wait for the daemon child to exit cleanly.
+pub fn shutdown_and_wait(mut child: Child, socket_path: &Path, timeout: Duration) {
+    let _ = send_shutdown(socket_path);
+    let start = std::time::Instant::now();
+    loop {
+        match child.try_wait() {
+            Ok(Some(_)) => return,
+            Ok(None) => {
+                if start.elapsed() > timeout {
+                    let _ = child.kill();
+                    child.wait().expect("failed to wait for child after kill");
+                    panic!("daemon did not exit after Shutdown request within timeout");
+                }
+                thread::sleep(Duration::from_millis(50));
+            }
+            Err(e) => panic!("error waiting for child: {e}"),
+        }
+    }
+}
+
 /// Send SIGTERM to the child and wait for it to exit, falling back to
 /// SIGKILL after `timeout`.
 pub fn term_and_wait(mut child: Child, timeout: Duration) {
