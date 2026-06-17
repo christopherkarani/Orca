@@ -12,6 +12,20 @@ const daemon = @import("daemon.zig");
 const max_payload_len = 256 * 1024; // 256 KiB
 
 // ---------------------------------------------------------------------------
+// Hook evaluator dispatch (Phase 2E)
+//
+// PreToolUse shell-command events route to the Rust daemon `Evaluate` method.
+// All other events (prompt, permission, session, stop, post-tool, informational,
+// and non-shell PreToolUse) stay on the existing Zig policy path.
+//
+// Invariants:
+// - No shell-command PreToolUse may fall back to Zig native command evaluation.
+// - Daemon transport or protocol failures for shell commands fail closed (deny).
+// - Non-shell tools with incidental `command` fields stay on the Zig path.
+// - Shell tools with missing/invalid command fields fail closed before evaluation.
+// ---------------------------------------------------------------------------
+
+// ---------------------------------------------------------------------------
 // Top-level dispatch
 // ---------------------------------------------------------------------------
 
@@ -565,7 +579,7 @@ fn evaluateHook(
             };
         },
         .PreToolUse => {
-            return try evaluatePreToolUse(allocator, policy_value, payload, ci_mode, &redactions, &limitations);
+            return try evaluatePreToolUse(allocator, policy_value, payload, ci_mode, &redactions, &limitations, null);
         },
         .PermissionRequest => {
             const permission_kind = extractString(payload, "kind") orelse extractString(payload, "permission") orelse return error.MissingRequiredField;
@@ -653,6 +667,7 @@ fn evaluatePreToolUse(
     ci_mode: bool,
     redactions: *std.ArrayList(RedactionEntry),
     limitations: *std.ArrayList([]const u8),
+    shell_evaluator: ?ShellCommandEvaluatorFn,
 ) !HookResponse {
     return switch (preToolUseRoute(payload)) {
         .shell_command => |shell_event| evaluateShellCommandRoute(
@@ -661,7 +676,7 @@ fn evaluatePreToolUse(
             ci_mode,
             redactions,
             limitations,
-            null,
+            shell_evaluator,
         ),
         .zig_native => |native_event| evaluateNativePreToolUseRoute(
             allocator,
@@ -2054,4 +2069,132 @@ test "hook daemon deny maps capitalized severity to risk level" {
     var result = try runShellRoute(allocator, "rm -rf /", null, false, mockDaemonDenyWithPreviewEvaluator);
     defer result.deinit(allocator);
     try std.testing.expectEqual(RiskLevel.critical, result.risk);
+}
+
+test "hook evaluatePreToolUse routes shell PreToolUse through daemon evaluator" {
+    var gpa_state: std.heap.DebugAllocator(.{}) = .init;
+    defer _ = gpa_state.deinit();
+    const allocator = gpa_state.allocator();
+
+    var policy_obj = try core_api.loadPolicyPreset(allocator, .strict);
+    defer policy_obj.deinit();
+
+    var payload_obj = try std.json.ObjectMap.init(allocator, &.{}, &.{});
+    defer payload_obj.deinit(allocator);
+    try payload_obj.put(allocator, "tool", std.json.Value{ .string = "bash" });
+    try payload_obj.put(allocator, "command", std.json.Value{ .string = "git status" });
+
+    var redactions: std.ArrayList(RedactionEntry) = .empty;
+    var limitations: std.ArrayList([]const u8) = .empty;
+    try shellRouteSetup(allocator, &redactions, &limitations);
+
+    test_last_evaluate_command = null;
+    test_last_evaluate_cwd = null;
+
+    var result = try evaluatePreToolUse(
+        allocator,
+        @ptrCast(@alignCast(policy_obj)),
+        std.json.Value{ .object = payload_obj },
+        false,
+        &redactions,
+        &limitations,
+        mockDaemonAllowEvaluator,
+    );
+    defer result.deinit(allocator);
+
+    try std.testing.expectEqualStrings("git status", test_last_evaluate_command.?);
+    try std.testing.expectEqual(PluginDecision.allow, result.decision);
+    try std.testing.expectEqualStrings("command", result.category);
+}
+
+test "hook PermissionRequest stays on zig policy path" {
+    var gpa_state: std.heap.DebugAllocator(.{}) = .init;
+    defer _ = gpa_state.deinit();
+    const allocator = gpa_state.allocator();
+
+    var policy_obj = try core_api.loadPolicyPreset(allocator, .strict);
+    defer policy_obj.deinit();
+
+    var payload_obj = try std.json.ObjectMap.init(allocator, &.{}, &.{});
+    defer payload_obj.deinit(allocator);
+    try payload_obj.put(allocator, "kind", std.json.Value{ .string = "file_write" });
+    try payload_obj.put(allocator, "target", std.json.Value{ .string = "/etc/passwd" });
+
+    var result = try evaluateHook(allocator, @ptrCast(@alignCast(policy_obj)), .claude, .PermissionRequest, std.json.Value{ .object = payload_obj }, false);
+    defer result.deinit(allocator);
+
+    try std.testing.expectEqual(PluginDecision.block, result.decision);
+    try std.testing.expectEqualStrings("file_write", result.category);
+}
+
+test "hook session informational events stay on zig path without daemon" {
+    var gpa_state: std.heap.DebugAllocator(.{}) = .init;
+    defer _ = gpa_state.deinit();
+    const allocator = gpa_state.allocator();
+
+    var policy_obj = try core_api.loadPolicyPreset(allocator, .strict);
+    defer policy_obj.deinit();
+
+    var empty_obj = try std.json.ObjectMap.init(allocator, &.{}, &.{});
+    defer empty_obj.deinit(allocator);
+    const empty_payload = std.json.Value{ .object = empty_obj };
+
+    for (&[_]Event{ .PostToolUse, .Stop, .SessionEnd }) |event| {
+        var result = try evaluateHook(allocator, @ptrCast(@alignCast(policy_obj)), .codex, event, empty_payload, false);
+        defer result.deinit(allocator);
+        try std.testing.expectEqual(PluginDecision.allow, result.decision);
+        try std.testing.expectEqual(RiskLevel.low, result.risk);
+    }
+}
+
+test "hook UserPromptSubmit stays on zig prompt path" {
+    var gpa_state: std.heap.DebugAllocator(.{}) = .init;
+    defer _ = gpa_state.deinit();
+    const allocator = gpa_state.allocator();
+
+    var policy_obj = try core_api.loadPolicyPreset(allocator, .trusted);
+    defer policy_obj.deinit();
+
+    var payload_obj = try std.json.ObjectMap.init(allocator, &.{}, &.{});
+    defer payload_obj.deinit(allocator);
+    try payload_obj.put(allocator, "prompt", std.json.Value{ .string = "summarize the repo" });
+
+    var result = try evaluateHook(allocator, @ptrCast(@alignCast(policy_obj)), .claude, .UserPromptSubmit, std.json.Value{ .object = payload_obj }, false);
+    defer result.deinit(allocator);
+
+    try std.testing.expect(result.decision == .allow or result.decision == .ask or result.decision == .warn);
+    try std.testing.expectEqualStrings("prompt", result.category);
+}
+
+test "hook evaluatePreToolUse fail-closes malformed shell payload before daemon call" {
+    var gpa_state: std.heap.DebugAllocator(.{}) = .init;
+    defer _ = gpa_state.deinit();
+    const allocator = gpa_state.allocator();
+
+    var policy_obj = try core_api.loadPolicyPreset(allocator, .strict);
+    defer policy_obj.deinit();
+
+    var payload_obj = try std.json.ObjectMap.init(allocator, &.{}, &.{});
+    defer payload_obj.deinit(allocator);
+    try payload_obj.put(allocator, "tool", std.json.Value{ .string = "bash" });
+
+    var redactions: std.ArrayList(RedactionEntry) = .empty;
+    var limitations: std.ArrayList([]const u8) = .empty;
+    try shellRouteSetup(allocator, &redactions, &limitations);
+
+    test_last_evaluate_command = null;
+
+    var result = try evaluatePreToolUse(
+        allocator,
+        @ptrCast(@alignCast(policy_obj)),
+        std.json.Value{ .object = payload_obj },
+        false,
+        &redactions,
+        &limitations,
+        mockDaemonAllowEvaluator,
+    );
+    defer result.deinit(allocator);
+
+    try std.testing.expect(test_last_evaluate_command == null);
+    try std.testing.expectEqual(PluginDecision.block, result.decision);
 }

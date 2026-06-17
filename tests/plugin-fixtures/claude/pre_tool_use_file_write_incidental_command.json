@@ -1,0 +1,10 @@
+{
+  "version": 1,
+  "host": "claude",
+  "event": "PreToolUse",
+  "payload": {
+    "tool": "edit",
+    "path": "/tmp/example.txt",
+    "command": "git status"
+  }
+}
