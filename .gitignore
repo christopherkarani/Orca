@@ -67,8 +67,9 @@ orca_plugin_launch_plan_v3.zip
 *_plan_pack*.zip
 *_launch_plan*.zip
 
-# --- Local planning scratch ---
-planning/
+# --- Local planning scratch (contents ignored; planning/README.md is tracked) ---
+planning/**
+!planning/README.md
 /plans/
 .plan/
 .local-plans/

@@ -94,16 +94,34 @@ When you need to delegate work, call the right specialist. Prefer the narrowest 
 
 - Treat this repository as a public-facing GitHub repo by default.
 - Do not track private planning, marketing, GTM, customer-pilot, founder-led sales, launch-ops, release-draft, generated evidence, or local agent task files.
+- **Put local planning artifacts in `planning/`** (gitignored). Never drop handoffs, review TODOs, migration drafts, comparison memos, or agent prompts at the repo root or under `docs/` unless the user explicitly asks to publish them.
 - Keep these surfaces local-only unless the user explicitly asks to publish a specific artifact:
+  - `planning/` (except `planning/README.md`)
   - `go_to_market/`, `customer_pilot/`, `tasks/`, `reports/`
   - `.orca-edge/`, `.edge/`, `dist/`, `dist-dry-run/`
   - `docs/release/`, `docs/orca_opencode_openclaw_plan/`
   - `integrations/**/node_modules/`
 - Before staging or committing, run a tracked-file hygiene check:
   ```
-  git ls-files | rg '(^go_to_market/|^customer_pilot/|^tasks/|^reports/|^\\.orca-edge/|^\\.edge/|^dist/|^dist-dry-run/|^docs/release/|^docs/orca_opencode_openclaw_plan/|node_modules/)'
+  git ls-files | rg '(^planning/|^go_to_market/|^customer_pilot/|^tasks/|^reports/|^\\.orca-edge/|^\\.edge/|^dist/|^dist-dry-run/|^docs/release/|^docs/orca_opencode_openclaw_plan/|node_modules/)'
   ```
 - Never commit generated release archives, SBOMs, checksums, dry-run package output, red-team replay output, customer-pilot templates, SOW/NDA notes, target-account templates, outreach copy, pricing guidance, or task-memory logs.
+
+### Local planning folder (`planning/`)
+
+Use `planning/` for all session-local planning output. Suggested subfolders:
+
+| Subfolder | Use for |
+|-----------|---------|
+| `planning/migration/` | Merge plans, phase maps, gap registers |
+| `planning/handoffs/` | Agent session handoffs |
+| `planning/reviews/` | PR/issue review notes and TODO lists |
+| `planning/comparisons/` | Protocol, command, and build comparisons |
+| `planning/prompts/` | Agent prompts and task briefs |
+| `planning/exploration/` | Codebase recon and spike notes |
+| `planning/scratch/` | Disposable dumps and empty scratch files |
+
+Only `planning/README.md` is tracked. If you create planning files elsewhere, move them into `planning/` before ending the session.
 
 ---
 
@@ -113,7 +131,7 @@ This repository is unifying the Zig `orca` CLI and the Rust `orca-rs` CLI into a
 
 **Architecture:** Embedded Service — Zig `orca` is the primary CLI; Rust `orca-daemon` (renamed from `orca-rs`) runs as a background service. Communication via NDJSON over Unix Domain Sockets.
 
-**Read first:** `docs/plans/MERGE_ORCA_RS_INTO_ORCA_CLI_v2.md` for full architecture, phases, invariants, and file-level plan.
+**Read first:** `planning/migration/MERGE_ORCA_RS_INTO_ORCA_CLI_v2.md` for full architecture, phases, invariants, and file-level plan (local copy under gitignored `planning/`).
 
 **Key invariants:**
 1. Zig is the primary CLI — users type `orca <cmd>`, never `orca-daemon`
@@ -129,7 +147,7 @@ This repository is unifying the Zig `orca` CLI and the Rust `orca-rs` CLI into a
 - **Pinned version:** Zig **0.16.0** (see `.zigversion`, `build.zig.zon`, and CI).
 - **Never run bare `zig build` / `zig build test`** unless `zig version` is already `0.16.0`. Prefer **`./scripts/zig`**.
 - If `zig build` fails and `zig version` is not `0.16.0`, **stop and fix the toolchain** (`./scripts/ensure-zig-toolchain.sh --install`).
-- **Ignore stale local scratch:** `.orchestrator/` is gitignored; do not commit migration plans or agent session artifacts from there.
+- **Ignore stale local scratch:** `.orchestrator/` and `planning/` (except `planning/README.md`) are gitignored; do not commit migration plans or agent session artifacts from there.
 
 ---
 
@@ -208,7 +226,7 @@ Use the narrowest gate that matches the change; reserve the full suite for pre-m
 **Build both binaries:** `scripts/build-all.sh` (when available)
 
 **Read first when working on:**
-- Migration: `docs/plans/MERGE_ORCA_RS_INTO_ORCA_CLI_v2.md`
+- Migration: `planning/migration/MERGE_ORCA_RS_INTO_ORCA_CLI_v2.md`
 - Policy: `src/policy/mod.zig`, `schemas/policy-v1.json`
 - Hooks: `src/cli/hook.zig`, `orca-rs/src/hook.rs`
 - Packs: `orca-rs/src/packs/mod.rs`
