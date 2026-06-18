@@ -22,6 +22,7 @@ pub const version_command = @import("version.zig");
 pub const plugin = @import("plugin.zig");
 pub const plugin_install = @import("plugin_install.zig");
 pub const setup = @import("setup.zig");
+pub const start = @import("start.zig");
 pub const onboarding = @import("onboarding.zig");
 pub const quickstart = @import("quickstart.zig");
 pub const decide = @import("decide.zig");
@@ -48,6 +49,7 @@ test {
     // Pull style tests (TDD for color/TTY/NO_COLOR handling).
     _ = style;
     _ = onboarding;
+    _ = start;
     _ = quickstart;
     _ = @import("spinner.zig");
     // Pull daemon UDS/IPC tests into the test binary.
@@ -182,6 +184,7 @@ pub fn runWithCwd(io: std.Io, environ_map: *const std.process.Environ.Map, cwd: 
     }
 
     if (std.mem.eql(u8, command, "run")) return run_command.command(io, argv[1..], stdout, stderr);
+    if (std.mem.eql(u8, command, "start")) return start.command(io, cwd, argv[1..], stdout, stderr);
     if (std.mem.eql(u8, command, "quickstart")) return quickstart.command(io, cwd, argv[1..], stdout, stderr);
     if (std.mem.eql(u8, command, "init")) return init.command(io, cwd, argv[1..], stdout, stderr);
     if (std.mem.eql(u8, command, "doctor")) return doctor.command(io, argv[1..], stdout, stderr);
@@ -686,6 +689,37 @@ test "doctor dispatch --verbose prints platform capabilities" {
     try std.testing.expect(std.mem.indexOf(u8, stdout_writer.buffered(), "Capabilities:") != null);
     try std.testing.expect(std.mem.indexOf(u8, stdout_writer.buffered(), "network policy engine: active") != null);
     try std.testing.expectEqualStrings("", stderr_writer.buffered());
+}
+
+test "start dispatch appears in help and runs with --auto in temp workspace" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    var stdout_buf: [8192]u8 = undefined;
+    var stderr_buf: [512]u8 = undefined;
+    var stdout_writer: std.Io.Writer = .fixed(&stdout_buf);
+    var stderr_writer: std.Io.Writer = .fixed(&stderr_buf);
+
+    const help_code = try testRun(&.{"--help"}, &stdout_writer, &stderr_writer);
+    try std.testing.expectEqual(exit_codes.success, help_code);
+    try std.testing.expect(std.mem.indexOf(u8, stdout_writer.buffered(), "start") != null);
+
+    stdout_writer = .fixed(&stdout_buf);
+    stderr_writer = .fixed(&stderr_buf);
+    const code = try testRunWithCwd(tmp.dir, &.{ "start", "--auto", "--protection", "firewall", "--skip-verify" }, &stdout_writer, &stderr_writer);
+    try std.testing.expectEqual(exit_codes.success, code);
+    try std.testing.expect(std.mem.indexOf(u8, stdout_writer.buffered(), "Orca Start") != null);
+}
+
+test "start rejects non-interactive usage without --auto" {
+    var stdout_buf: [512]u8 = undefined;
+    var stderr_buf: [512]u8 = undefined;
+    var stdout_writer: std.Io.Writer = .fixed(&stdout_buf);
+    var stderr_writer: std.Io.Writer = .fixed(&stderr_buf);
+
+    const code = try testRunWithCwd(std.Io.Dir.cwd(), &.{"start"}, &stdout_writer, &stderr_writer);
+    try std.testing.expectEqual(exit_codes.usage, code);
+    try std.testing.expect(std.mem.indexOf(u8, stderr_writer.buffered(), "--auto") != null);
 }
 
 test "quickstart dispatch runs and prints steps" {

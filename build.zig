@@ -321,6 +321,18 @@ pub fn build(b: *std.Build) void {
     });
     const run_phase44_install_workspace_paths_tests = addRunTestTerminal(b, phase44_install_workspace_paths_tests);
 
+    const phase45_start_onboarding_tests = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("tests/phase45_start_onboarding.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .name = "orca", .module = orca_mod },
+            },
+        }),
+    });
+    const run_phase45_start_onboarding_tests = addRunTestTerminal(b, phase45_start_onboarding_tests);
+
     const setup_tests = b.addTest(.{
         .root_module = b.createModule(.{
             .root_source_file = b.path("tests/setup.zig"),
@@ -383,6 +395,7 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&run_phase44_version_drift_tests.step);
     test_step.dependOn(&run_phase44_setup_opencode_tests.step);
     test_step.dependOn(&run_phase44_install_workspace_paths_tests.step);
+    test_step.dependOn(&run_phase45_start_onboarding_tests.step);
     test_step.dependOn(&run_setup_tests.step);
 
     const fuzz_tests = b.addTest(.{

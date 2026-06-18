@@ -57,6 +57,26 @@ pub const commands = [_]CommandInfo{
         },
     },
     .{
+        .name = "start",
+        .summary = "Guided paid-beta onboarding: protection mode, hosts, verification",
+        .usage = "orca start [--auto] [--protection command-guard|firewall|maximum] [--hosts <list>] [--preset <name>] [--skip-verify]",
+        .category = .getting_started,
+        .examples = &.{
+            "orca start",
+            "orca start --auto --protection maximum",
+            "orca start --auto --protection command-guard --hosts codex,claude",
+        },
+        .details = &.{
+            "Primary first-run onboarding for paid beta users.",
+            "Explains changes before writing files, preserves existing policy unless you use `orca init --force`.",
+            "Protection modes: Command Guard (hooks + Rust daemon), Firewall (`orca run`), Maximum Protection (both).",
+            "On interactive terminals, prompts for protection mode and host integrations.",
+            "Use --auto for scripts/CI; combine with --protection and --hosts when stdin is not a TTY.",
+            "Verifies daemon health, safe allow and dangerous deny fixtures, and selected integration paths.",
+            "Re-run safely to repair or update an existing setup.",
+        },
+    },
+    .{
         .name = "quickstart",
         .summary = "One-command onboarding: doctor, init, setup",
         .usage = "orca quickstart [--auto] [--preset <name>]",
