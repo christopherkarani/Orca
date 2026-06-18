@@ -60,6 +60,13 @@ const IntegrationContext = struct {
     shell_name: []const u8,
     audit_sessions_present: bool,
     redteam_fixtures_present: bool,
+    daemon_binary_path: ?[]const u8 = null,
+    daemon_binary_exists: bool = false,
+    daemon_binary_executable: bool = false,
+    daemon_socket_path: ?[]const u8 = null,
+    daemon_socket_exists: bool = false,
+    daemon_pid_path: ?[]const u8 = null,
+    daemon_pid_exists: bool = false,
     daemon_status: []const u8,
     daemon_detail: []const u8,
 
@@ -69,6 +76,9 @@ const IntegrationContext = struct {
         if (self.agent_found.len > 0) self.allocator.free(self.agent_found);
         self.allocator.free(self.ci_provider);
         self.allocator.free(self.shell_name);
+        if (self.daemon_binary_path) |value| self.allocator.free(value);
+        if (self.daemon_socket_path) |value| self.allocator.free(value);
+        if (self.daemon_pid_path) |value| self.allocator.free(value);
         self.allocator.free(self.daemon_status);
         self.allocator.free(self.daemon_detail);
         self.* = undefined;
@@ -152,6 +162,7 @@ fn daemonDetailFromError(allocator: std.mem.Allocator, err: anyerror) !DaemonHea
     const detail = switch (err) {
         error.HomeDirectoryNotFound => "HOME is not set; daemon runtime path is unavailable.",
         error.DaemonBinaryNotFound => "orca-daemon binary not found; build or install the companion daemon.",
+        error.DaemonBinaryNotExecutable => "orca-daemon exists but is not executable; restore execute permission or reinstall the matching release.",
         error.DaemonSpawnFailed => "orca-daemon failed to start; inspect local build/install state.",
         error.DaemonStartTimeout => "orca-daemon startup timed out; verify socket cleanup and local process health.",
         error.DaemonNotReady => "daemon runtime exists but is not ready to answer requests.",
@@ -313,6 +324,21 @@ fn writeIntegrationReport(stdout: anytype, context: IntegrationContext) !void {
     try stdout.print("  shell: {s}\n", .{context.shell_name});
     try stdout.print("  audit/replay: {s}\n", .{if (context.audit_sessions_present) "session artifacts present; replay available" else "replay available; no local sessions detected"});
     try stdout.print("  red-team fixtures: {s}\n", .{if (context.redteam_fixtures_present) "available" else "not found"});
+    if (context.daemon_binary_path) |path| {
+        try stdout.print("  daemon binary: {s} ({s}, {s})\n", .{
+            path,
+            if (context.daemon_binary_exists) "present" else "missing",
+            if (context.daemon_binary_executable) "executable" else "not executable",
+        });
+    } else {
+        try stdout.writeAll("  daemon binary: unresolved\n");
+    }
+    if (context.daemon_socket_path) |path| {
+        try stdout.print("  daemon socket: {s} ({s})\n", .{ path, if (context.daemon_socket_exists) "present" else "missing" });
+    }
+    if (context.daemon_pid_path) |path| {
+        try stdout.print("  daemon pid: {s} ({s})\n", .{ path, if (context.daemon_pid_exists) "present" else "missing" });
+    }
     try stdout.print("  daemon health: {s} ({s})\n\n", .{ context.daemon_status, context.daemon_detail });
 }
 
@@ -375,7 +401,14 @@ fn writeRecommendations(stdout: anytype, context: IntegrationContext) !void {
     try stdout.writeAll("\nRecommended next step:\n");
     if (!std.mem.eql(u8, context.daemon_status, "compatible")) {
         try stdout.print("  Daemon health issue: {s}\n", .{context.daemon_detail});
-        try stdout.writeAll("  Ensure a compatible `orca-daemon` is installed and startable. Rebuild both binaries with `./scripts/build-all.sh`, then re-run `orca doctor`.\n");
+        if (context.daemon_binary_exists and !context.daemon_binary_executable) {
+            try stdout.writeAll("  Restore execute permission on `orca-daemon` or reinstall the matching release, then re-run `orca doctor`.\n");
+        } else if (!context.daemon_binary_exists) {
+            try stdout.writeAll("  Ensure `orca-daemon` is installed beside `orca` (or set `ORCA_DAEMON`), then re-run `orca doctor`.\n");
+            try stdout.writeAll("  For source builds, rebuild both binaries with `./scripts/build-all.sh`.\n");
+        } else {
+            try stdout.writeAll("  Ensure a compatible `orca-daemon` is installed and startable. Rebuild both binaries with `./scripts/build-all.sh`, then re-run `orca doctor`.\n");
+        }
         if (!context.policy_present) {
             try stdout.writeAll("  Then run `orca init --preset generic-agent` and review .orca/policy.yaml.\n");
         } else if (!context.policy_valid) {
@@ -432,6 +465,16 @@ fn collectIntegrationContextAt(io: std.Io, allocator: std.mem.Allocator, workspa
     errdefer allocator.free(ci_status.provider);
     const shell_name = try detectShell(allocator);
     errdefer allocator.free(shell_name);
+    const daemon_inspection = cli.daemon.inspectDaemonBinary(allocator) catch |err| switch (err) {
+        error.OutOfMemory => return err,
+        else => null,
+    };
+    defer if (daemon_inspection) |value| value.deinit(allocator);
+    const daemon_paths = cli.daemon.runtimePaths(allocator) catch |err| switch (err) {
+        error.OutOfMemory => return err,
+        else => null,
+    };
+    defer if (daemon_paths) |value| cli.daemon.freeRuntimePaths(allocator, value);
     const daemon_health: DaemonHealth = blk: {
         if (cli.daemon.checkCompatibility(allocator)) |_| {
             break :blk .{
@@ -461,6 +504,13 @@ fn collectIntegrationContextAt(io: std.Io, allocator: std.mem.Allocator, workspa
         .shell_name = shell_name,
         .audit_sessions_present = hasPath(io, workspace_root, ".orca/sessions"),
         .redteam_fixtures_present = resource_root.resourcePathExists(io, allocator, .{ .workspace_root = workspace_root }, "fixtures"),
+        .daemon_binary_path = if (daemon_inspection) |value| try allocator.dupe(u8, value.path) else null,
+        .daemon_binary_exists = if (daemon_inspection) |value| value.exists else false,
+        .daemon_binary_executable = if (daemon_inspection) |value| value.executable else false,
+        .daemon_socket_path = if (daemon_paths) |value| try allocator.dupe(u8, value.socket) else null,
+        .daemon_socket_exists = if (daemon_paths) |value| fileExistsAbsolute(io, value.socket) else false,
+        .daemon_pid_path = if (daemon_paths) |value| try allocator.dupe(u8, value.pid) else null,
+        .daemon_pid_exists = if (daemon_paths) |value| fileExistsAbsolute(io, value.pid) else false,
         .daemon_status = daemon_health.status,
         .daemon_detail = daemon_health.detail,
     };
@@ -839,6 +889,8 @@ test "doctor recommendations prioritize daemon remediation over missing policy" 
 const TestContextOptions = struct {
     policy_present: bool = true,
     policy_valid: bool = true,
+    daemon_binary_exists: bool = true,
+    daemon_binary_executable: bool = true,
     daemon_status: []const u8 = "compatible",
     daemon_detail: []const u8 = "running daemon answered with a compatible handshake.",
 };
@@ -859,6 +911,13 @@ fn testContext(allocator: std.mem.Allocator, options: TestContextOptions) !Integ
         .shell_name = try allocator.dupe(u8, "zsh"),
         .audit_sessions_present = false,
         .redteam_fixtures_present = true,
+        .daemon_binary_path = try allocator.dupe(u8, "/tmp/orca-daemon"),
+        .daemon_binary_exists = options.daemon_binary_exists,
+        .daemon_binary_executable = options.daemon_binary_executable,
+        .daemon_socket_path = try allocator.dupe(u8, "/tmp/daemon.sock"),
+        .daemon_socket_exists = false,
+        .daemon_pid_path = try allocator.dupe(u8, "/tmp/daemon.pid"),
+        .daemon_pid_exists = false,
         .daemon_status = try allocator.dupe(u8, options.daemon_status),
         .daemon_detail = try allocator.dupe(u8, options.daemon_detail),
     };

@@ -13,10 +13,10 @@ jobs:
         with:
           version: 0.16.0
       - name: Unit tests
-        run: zig build test
+        run: ./scripts/zig build test
       - name: Red-team CI
         run: |
-          zig build
+          ./scripts/zig build
           ./zig-out/bin/orca redteam --ci
       - name: Validate presets
         shell: bash

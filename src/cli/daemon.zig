@@ -13,7 +13,7 @@ const builtin = @import("builtin");
 const env_util = @import("../env_util.zig");
 
 /// Name of the Rust daemon binary.
-const daemon_binary_name = "orca-daemon";
+const daemon_binary_name = if (builtin.os.tag == .windows) "orca-daemon.exe" else "orca-daemon";
 
 /// Name of the Unix Domain Socket file used to detect a running daemon.
 const daemon_socket_name = "daemon.sock";
@@ -103,6 +103,7 @@ pub const DaemonError = error{
     HomeDirectoryNotFound,
     OutOfMemory,
     DaemonBinaryNotFound,
+    DaemonBinaryNotExecutable,
     DaemonSpawnFailed,
     DaemonStartTimeout,
     DaemonNotReady,
@@ -116,6 +117,24 @@ pub const DaemonError = error{
     MissingHandshake,
     HandshakeMalformed,
     ProtocolMismatch,
+};
+
+pub const DaemonBinarySource = enum {
+    env_override,
+    adjacent,
+    dev_release,
+    dev_debug,
+};
+
+pub const DaemonBinaryInspection = struct {
+    path: []const u8,
+    source: DaemonBinarySource,
+    exists: bool,
+    executable: bool,
+
+    pub fn deinit(self: DaemonBinaryInspection, allocator: std.mem.Allocator) void {
+        allocator.free(self.path);
+    }
 };
 
 var ensure_daemon_lock: std.Io.Mutex = .init;
@@ -379,27 +398,88 @@ pub fn findDaemonBinary(allocator: std.mem.Allocator) DaemonError!?[]const u8 {
 
     if (getEnvVar(allocator, daemon_env_var) catch return error.OutOfMemory) |env_path| {
         if (pathIsExecutable(io, env_path)) return env_path;
+        if (pathExists(io, env_path)) {
+            allocator.free(env_path);
+            return error.DaemonBinaryNotExecutable;
+        }
         allocator.free(env_path);
     }
 
-    if (adjacentDaemonBinaryPath(allocator, io) catch return error.OutOfMemory) |path| return path;
+    if (adjacentDaemonBinaryInspection(allocator, io) catch return error.OutOfMemory) |inspection| {
+        defer inspection.deinit(allocator);
+        if (inspection.executable) return allocator.dupe(u8, inspection.path) catch error.OutOfMemory;
+        if (inspection.exists) return error.DaemonBinaryNotExecutable;
+    }
 
     const self_dir = std.process.executableDirPathAlloc(io, allocator) catch return null;
     defer allocator.free(self_dir);
 
     const repo_root = std.fs.path.dirname(std.fs.path.dirname(self_dir) orelse return null) orelse return null;
     const dev_candidates = [_][]const u8{
-        "orca-rs/target/release/orca-daemon",
-        "orca-rs/target/debug/orca-daemon",
+        "orca-rs/target/release/" ++ daemon_binary_name,
+        "orca-rs/target/debug/" ++ daemon_binary_name,
     };
     for (dev_candidates) |rel| {
         const path = std.fs.path.join(allocator, &.{ repo_root, rel }) catch return error.OutOfMemory;
         errdefer allocator.free(path);
         if (pathIsExecutable(io, path)) return path;
+        if (pathExists(io, path)) {
+            allocator.free(path);
+            return error.DaemonBinaryNotExecutable;
+        }
         allocator.free(path);
     }
 
     return null;
+}
+
+pub fn inspectDaemonBinary(allocator: std.mem.Allocator) DaemonError!?DaemonBinaryInspection {
+    var threaded: std.Io.Threaded = .init_single_threaded;
+    const io = threaded.io();
+
+    if (getEnvVar(allocator, daemon_env_var) catch return error.OutOfMemory) |env_path| {
+        return .{
+            .path = env_path,
+            .source = .env_override,
+            .exists = pathExists(io, env_path),
+            .executable = pathIsExecutable(io, env_path),
+        };
+    }
+
+    if (adjacentDaemonBinaryInspection(allocator, io) catch return error.OutOfMemory) |inspection| {
+        return inspection;
+    }
+
+    const self_dir = std.process.executableDirPathAlloc(io, allocator) catch return null;
+    defer allocator.free(self_dir);
+
+    const repo_root = std.fs.path.dirname(std.fs.path.dirname(self_dir) orelse return null) orelse return null;
+    const dev_candidates = [_]struct { rel: []const u8, source: DaemonBinarySource }{
+        .{ .rel = "orca-rs/target/release/" ++ daemon_binary_name, .source = .dev_release },
+        .{ .rel = "orca-rs/target/debug/" ++ daemon_binary_name, .source = .dev_debug },
+    };
+    for (dev_candidates) |candidate| {
+        const path = std.fs.path.join(allocator, &.{ repo_root, candidate.rel }) catch return error.OutOfMemory;
+        const exists = pathExists(io, path);
+        const executable = pathIsExecutable(io, path);
+        if (exists or executable) {
+            return .{
+                .path = path,
+                .source = candidate.source,
+                .exists = exists,
+                .executable = executable,
+            };
+        }
+        allocator.free(path);
+    }
+
+    const adjacent_path = std.fs.path.join(allocator, &.{ self_dir, daemon_binary_name }) catch return error.OutOfMemory;
+    return .{
+        .path = adjacent_path,
+        .source = .adjacent,
+        .exists = false,
+        .executable = false,
+    };
 }
 
 /// Send a Ping request and verify the daemon responds with Pong.
@@ -410,6 +490,7 @@ pub fn ping(allocator: std.mem.Allocator) DaemonError!void {
 }
 
 pub fn checkCompatibility(allocator: std.mem.Allocator) DaemonError!void {
+    try requireResolvableDaemonBinary(allocator);
     const paths = try runtimePaths(allocator);
     defer freeRuntimePaths(allocator, paths);
     try handshakeWithTimeout(allocator, paths.socket, default_request_timeout_ms);
@@ -602,6 +683,8 @@ pub fn ensureDaemonRunning(allocator: std.mem.Allocator) DaemonError!void {
     ensure_daemon_lock.lock(io) catch return error.DaemonNotReady;
     defer ensure_daemon_lock.unlock(io);
 
+    try requireResolvableDaemonBinary(allocator);
+
     if (ping(allocator)) |_| return else |_| {}
 
     const paths = try runtimePaths(allocator);
@@ -617,6 +700,14 @@ pub fn ensureDaemonRunning(allocator: std.mem.Allocator) DaemonError!void {
     // socket/PID cleanup uses the stricter liveness and ownership checks.
     try startDaemon(allocator, daemon_binary);
     try waitForDaemonReady(allocator, default_readiness_timeout_ms);
+}
+
+fn requireResolvableDaemonBinary(allocator: std.mem.Allocator) DaemonError!void {
+    const inspection = try inspectDaemonBinary(allocator) orelse return error.DaemonBinaryNotFound;
+    defer inspection.deinit(allocator);
+
+    if (!inspection.exists) return error.DaemonBinaryNotFound;
+    if (!inspection.executable) return error.DaemonBinaryNotExecutable;
 }
 
 fn ensureCompatibleDaemonRunning(allocator: std.mem.Allocator) DaemonError!void {
@@ -638,8 +729,32 @@ fn adjacentDaemonBinaryPath(allocator: std.mem.Allocator, io: std.Io) DaemonErro
     return null;
 }
 
+fn adjacentDaemonBinaryInspection(allocator: std.mem.Allocator, io: std.Io) DaemonError!?DaemonBinaryInspection {
+    const self_dir = std.process.executableDirPathAlloc(io, allocator) catch return null;
+    defer allocator.free(self_dir);
+
+    const path = std.fs.path.join(allocator, &.{ self_dir, daemon_binary_name }) catch return error.OutOfMemory;
+    const exists = pathExists(io, path);
+    const executable = pathIsExecutable(io, path);
+    if (!exists and !executable) {
+        allocator.free(path);
+        return null;
+    }
+    return .{
+        .path = path,
+        .source = .adjacent,
+        .exists = exists,
+        .executable = executable,
+    };
+}
+
 fn pathIsExecutable(io: std.Io, path: []const u8) bool {
     std.Io.Dir.cwd().access(io, path, .{ .execute = true }) catch return false;
+    return true;
+}
+
+fn pathExists(io: std.Io, path: []const u8) bool {
+    std.Io.Dir.cwd().access(io, path, .{}) catch return false;
     return true;
 }
 
@@ -755,7 +870,6 @@ fn getEnvVar(allocator: std.mem.Allocator, key: []const u8) !?[]const u8 {
     };
 }
 
-
 /// Outcome of a daemon shutdown attempt.
 pub const ShutdownResult = enum {
     /// Daemon was running; Shutdown request sent and artifacts removed.
@@ -846,7 +960,6 @@ pub fn shutdownDaemon(allocator: std.mem.Allocator) DaemonError!ShutdownResult {
 
     return .not_running;
 }
-
 
 // ---------------------------------------------------------------------------
 // Unit tests

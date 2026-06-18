@@ -30,10 +30,12 @@ test "phase 44 VERSION matches install script defaults" {
     try expectContains(install_sh, "../VERSION");
     try expectContains(install_sh, "ORCA_RESOURCE_ROOT");
     try expectContains(install_sh, "integrations");
+    try expectContains(install_sh, "orca-daemon");
 
     const build_release = try readFile("scripts/build-release.sh");
     defer std.testing.allocator.free(build_release);
     try expectContains(build_release, "../VERSION");
+    try expectContains(build_release, "orca-daemon");
 
     const render_manifests = try readFile("scripts/render-package-manifests.sh");
     defer std.testing.allocator.free(render_manifests);
@@ -43,10 +45,12 @@ test "phase 44 VERSION matches install script defaults" {
     defer std.testing.allocator.free(install_ps1);
     try expectContains(install_ps1, "VERSION");
     try expectContains(install_ps1, "ORCA_RESOURCE_ROOT");
+    try expectContains(install_ps1, "orca-daemon");
 
     const homebrew = try readFile("packaging/homebrew/Formula/orca.rb");
     defer std.testing.allocator.free(homebrew);
     const version_needle = try std.fmt.allocPrint(std.testing.allocator, "version \"{s}\"", .{canonical});
     defer std.testing.allocator.free(version_needle);
     try expectContains(homebrew, version_needle);
+    try expectContains(homebrew, "bin.install \"bin/orca-daemon\"");
 }

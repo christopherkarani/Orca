@@ -18,14 +18,18 @@ jobs:
         with:
           version: 0.16.0
       - name: Build
-        run: zig build
+        shell: bash
+        run: ./scripts/zig build
+      - name: Assert zig build does not invoke cargo
+        shell: bash
+        run: ./scripts/assert-zig-build-no-cargo.sh
       - name: Version JSON
         shell: bash
         run: |
           ./zig-out/bin/orca version --json
       - name: Check Windows target from Unix runners
         if: runner.os != 'Windows'
-        run: zig build check-windows
+        run: ./scripts/zig build check-windows
       - name: Check release artifact naming references
         shell: bash
         run: |

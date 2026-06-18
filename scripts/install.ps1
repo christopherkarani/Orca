@@ -79,6 +79,15 @@ function Test-ExistingOrca($Path) {
     return [bool]($output -match '"product"\s*:\s*"orca"|^orca(\s|$)')
 }
 
+function Test-ExistingOrcaDaemon($Path) {
+    try {
+        $output = (& $Path version 2>$null | Out-String).Trim()
+    } catch {
+        return $false
+    }
+    return [bool]($output -match '^\d+\.\d+\.\d+')
+}
+
 function Install-RuntimeAssets($ExtractRoot) {
     New-Item -ItemType Directory -Force -Path $ResourceRoot | Out-Null
     foreach ($dir in $RuntimeDirs) {
@@ -172,19 +181,29 @@ try {
     if (-not $extractRoot) { Fail "artifact did not contain an extracted release root" }
     $binary = Get-ChildItem -LiteralPath $extractRoot.FullName -Recurse -File -Filter "orca.exe" | Select-Object -First 1
     if (-not $binary) { Fail "artifact did not contain orca.exe" }
+    $daemonBinary = Get-ChildItem -LiteralPath $extractRoot.FullName -Recurse -File -Filter "orca-daemon.exe" | Select-Object -First 1
+    if (-not $daemonBinary) { Fail "artifact did not contain orca-daemon.exe" }
 
     New-Item -ItemType Directory -Force -Path $InstallDir | Out-Null
     $destination = Join-Path $InstallDir "orca.exe"
+    $daemonDestination = Join-Path $InstallDir "orca-daemon.exe"
     if ((Test-Path -LiteralPath $destination) -and $env:ORCA_INSTALL_FORCE -ne "1") {
         if (-not (Test-ExistingOrca $destination)) {
             Fail "refusing to overwrite non-Orca file at $destination; set ORCA_INSTALL_FORCE=1 to replace it"
         }
     }
+    if ((Test-Path -LiteralPath $daemonDestination) -and $env:ORCA_INSTALL_FORCE -ne "1") {
+        if (-not (Test-ExistingOrcaDaemon $daemonDestination)) {
+            Fail "refusing to overwrite non-Orca file at $daemonDestination; set ORCA_INSTALL_FORCE=1 to replace it"
+        }
+    }
 
     Copy-Item -LiteralPath $binary.FullName -Destination $destination -Force
+    Copy-Item -LiteralPath $daemonBinary.FullName -Destination $daemonDestination -Force
     Install-RuntimeAssets $extractRoot.FullName
 
     Write-Host "Installed Orca to $destination"
+    Write-Host "Installed Orca daemon to $daemonDestination"
     Write-Host "Installed runtime assets to $ResourceRoot"
     Write-Host "Current runtime link: $CurrentLink -> $ResourceRoot"
     Write-Host "ORCA_RESOURCE_ROOT=$CurrentLink"

@@ -154,13 +154,13 @@ pub fn runWithCwd(io: std.Io, environ_map: *const std.process.Environ.Map, cwd: 
                 return exit_codes.success;
             }
             if (std.mem.eql(u8, argv[1], "--json")) {
-                try version_command.writeJson(stdout, version_command.current());
+                try version_command.writeJsonWithDaemon(std.heap.smp_allocator, stdout);
                 return exit_codes.success;
             }
             try stderr.writeAll("orca version: unsupported argument. Run 'orca help version' for usage.\n");
             return exit_codes.usage;
         }
-        try version_command.writePlain(stdout, version_command.current());
+        try version_command.writePlainWithDaemon(std.heap.smp_allocator, stdout);
         return exit_codes.success;
     }
 
@@ -250,6 +250,7 @@ fn daemonErrorLabel(err: anyerror) []const u8 {
     return switch (err) {
         error.HomeDirectoryNotFound,
         error.DaemonBinaryNotFound,
+        error.DaemonBinaryNotExecutable,
         error.DaemonSpawnFailed,
         error.DaemonStartTimeout,
         error.DaemonNotReady,
@@ -573,7 +574,7 @@ test "version supports json, help, and rejects extra arguments" {
     var stdout_writer: std.Io.Writer = .fixed(&stdout_buf);
     var stderr_writer: std.Io.Writer = .fixed(&stderr_buf);
 
-    const plain_code = try testRun(&.{ "version" }, &stdout_writer, &stderr_writer);
+    const plain_code = try testRun(&.{"version"}, &stdout_writer, &stderr_writer);
     try std.testing.expectEqual(exit_codes.success, plain_code);
     try std.testing.expect(std.mem.indexOf(u8, stdout_writer.buffered(), version) != null);
     try std.testing.expectEqualStrings("", stderr_writer.buffered());

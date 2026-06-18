@@ -3,6 +3,7 @@ param(
     [string]$Commit = $(if ($env:ORCA_COMMIT) { $env:ORCA_COMMIT } else { "unknown" }),
     [string]$BuildDate = $(if ($env:ORCA_BUILD_DATE) { $env:ORCA_BUILD_DATE } else { (Get-Date).ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ssZ") }),
     [string]$DistDir = $(if ($env:ORCA_DIST_DIR) { $env:ORCA_DIST_DIR } else { "dist" }),
+    [string]$DaemonArtifactDir = $(if ($env:ORCA_DAEMON_ARTIFACT_DIR) { $env:ORCA_DAEMON_ARTIFACT_DIR } else { "" }),
     [switch]$ArchiveOnly
 )
 
@@ -24,6 +25,45 @@ function Copy-ReleasePayload($Root) {
     }
 }
 
+function Get-HostReleaseTarget {
+    $os = if ($IsWindows -or $env:OS -eq "Windows_NT") { "windows" }
+          elseif ($IsMacOS) { "darwin" }
+          elseif ($IsLinux) { "linux" }
+          else { $null }
+    $arch = switch ([System.Runtime.InteropServices.RuntimeInformation]::OSArchitecture) {
+        ([System.Runtime.InteropServices.Architecture]::Arm64) { "arm64" }
+        ([System.Runtime.InteropServices.Architecture]::X64) { "amd64" }
+        default { $null }
+    }
+    return @{ Os = $os; Arch = $arch }
+}
+
+function Resolve-DaemonArtifact($Target) {
+    $daemonName = if ($Target.Os -eq "windows") { "orca-daemon.exe" } else { "orca-daemon" }
+    if ($DaemonArtifactDir) {
+        $candidate = Join-Path $DaemonArtifactDir "$($Target.Os)-$($Target.Arch)\$daemonName"
+        if (Test-Path -LiteralPath $candidate) {
+            return $candidate
+        }
+    }
+
+    $hostTarget = Get-HostReleaseTarget
+    if ($hostTarget.Os -and $hostTarget.Arch -and $Target.Os -eq $hostTarget.Os -and $Target.Arch -eq $hostTarget.Arch) {
+        $outDir = Join-Path $DistDir "daemon-artifacts"
+        $bash = Get-Command bash -ErrorAction SilentlyContinue
+        if (-not $bash) {
+            throw "bash is required to build daemon artifacts for $($Target.Os)-$($Target.Arch); install bash or set ORCA_DAEMON_ARTIFACT_DIR"
+        }
+        & $bash.Source (Join-Path $PWD "scripts/build-daemon-release.sh") $Target.Os $Target.Arch $outDir | Out-Null
+        $built = Join-Path $outDir "$($Target.Os)-$($Target.Arch)\$daemonName"
+        if (Test-Path -LiteralPath $built) {
+            return $built
+        }
+    }
+
+    throw "missing staged daemon artifact for $($Target.Os)-$($Target.Arch); build it via scripts/build-daemon-release.sh or set ORCA_DAEMON_ARTIFACT_DIR"
+}
+
 if (Test-Path -LiteralPath $DistDir) { Remove-Item -LiteralPath $DistDir -Recurse -Force }
 New-Item -ItemType Directory -Force -Path $DistDir | Out-Null
 
@@ -39,6 +79,9 @@ foreach ($target in $targets) {
     Copy-ReleasePayload $root
     New-Item -ItemType Directory -Force -Path (Join-Path $root "bin") | Out-Null
     Copy-Item -LiteralPath (Join-Path $prefix "bin/$($target.Bin)") -Destination (Join-Path $root "bin/$($target.Bin)")
+    $daemonArtifact = Resolve-DaemonArtifact $target
+    $daemonName = if ($target.Os -eq "windows") { "orca-daemon.exe" } else { "orca-daemon" }
+    Copy-Item -LiteralPath $daemonArtifact -Destination (Join-Path $root "bin/$daemonName")
 
     if ($target.Ext -eq "zip") {
         Compress-Archive -LiteralPath $root -DestinationPath (Join-Path $DistDir $artifact) -Force
@@ -83,6 +126,12 @@ $sbom = [ordered]@{
             name = "orca"
             type = "application"
             language = "zig"
+            dependencies = @()
+        },
+        [ordered]@{
+            name = "orca-daemon"
+            type = "application"
+            language = "rust"
             dependencies = @()
         }
     )

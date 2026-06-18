@@ -110,8 +110,8 @@ verify_checksum() {
 
 is_existing_orca() {
   candidate="$1"
-  output="$("$candidate" version 2>/dev/null)" || return 1
-  printf '%s\n' "$output" | grep -Eqi '"product"[[:space:]]*:[[:space:]]*"orca"|^orca([[:space:]]|$)'
+  output="$("$candidate" version 2>/dev/null)" || output="$("$candidate" --version 2>/dev/null)" || return 1
+  printf '%s\n' "$output" | grep -Eqi '"product"[[:space:]]*:[[:space:]]*"orca"|^orca([[:space:]]|$)|^[0-9]+\.[0-9]+\.[0-9]+'
 }
 
 safe_install() {
@@ -246,12 +246,17 @@ EXTRACT_ROOT="$(find "$TMP_DIR" -mindepth 1 -maxdepth 1 -type d | head -n 1)"
 
 FOUND_BIN="$(find "$EXTRACT_ROOT" -type f -name orca -perm -111 | head -n 1)"
 [ -n "$FOUND_BIN" ] || fail "artifact did not contain an executable orca binary"
+FOUND_DAEMON="$(find "$EXTRACT_ROOT" -type f -name orca-daemon -perm -111 | head -n 1)"
+[ -n "$FOUND_DAEMON" ] || fail "artifact did not contain an executable orca-daemon binary"
 
 DESTINATION="$INSTALL_DIR/orca"
+DAEMON_DESTINATION="$INSTALL_DIR/orca-daemon"
 safe_install "$FOUND_BIN" "$DESTINATION"
+safe_install "$FOUND_DAEMON" "$DAEMON_DESTINATION"
 install_runtime_assets "$EXTRACT_ROOT"
 
 printf '\nInstalled Orca to %s\n' "$DESTINATION"
+printf 'Installed Orca daemon to %s\n' "$DAEMON_DESTINATION"
 printf 'Installed runtime assets to %s\n' "$RESOURCE_ROOT"
 printf 'Current runtime symlink: %s -> %s\n' "$CURRENT_LINK" "$RESOURCE_ROOT"
 printf 'ORCA_RESOURCE_ROOT=%s\n' "$CURRENT_LINK"

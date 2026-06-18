@@ -54,11 +54,11 @@ pub const RustShellFeedRecord = struct {
     }
 };
 
-
 fn daemonUnavailableReason(err: daemon.DaemonError) []const u8 {
     return switch (err) {
         error.HomeDirectoryNotFound => "daemon unavailable: HOME not set",
         error.DaemonBinaryNotFound => "daemon unavailable: orca-daemon binary not found",
+        error.DaemonBinaryNotExecutable => "daemon unavailable: orca-daemon is not executable",
         error.DaemonSpawnFailed => "daemon unavailable: failed to spawn orca-daemon",
         error.DaemonStartTimeout => "daemon unavailable: startup timed out",
         error.DaemonNotReady => "daemon unavailable: daemon not ready",
@@ -343,7 +343,6 @@ pub fn buildFeedRecordFromUnavailable(
         .verified = verified,
     };
 }
-
 
 pub fn writeFeedRecordJson(writer: anytype, record: RustShellFeedRecord) !void {
     try writer.writeByte('{');

@@ -1,6 +1,7 @@
 const std = @import("std");
 const builtin = @import("builtin");
 const build_options = @import("build_options");
+const daemon = @import("daemon.zig");
 
 pub const Metadata = struct {
     product: []const u8 = "orca",
@@ -12,6 +13,27 @@ pub const Metadata = struct {
     release_channel: []const u8 = "stable",
     safety_boundary_version: []const u8 = "cli-local-dev-v1",
     safety_boundary: []const u8 = "Orca enforces local command, file, network, MCP, audit, and red-team controls; it does not provide hosted telemetry or cloud enforcement.",
+};
+
+pub const DaemonMetadata = struct {
+    status: []const u8,
+    version: ?[]const u8,
+    detail: []const u8,
+    binary_path: ?[]const u8,
+
+    pub fn deinit(self: DaemonMetadata, allocator: std.mem.Allocator) void {
+        if (self.version) |value| allocator.free(value);
+        if (self.binary_path) |value| allocator.free(value);
+    }
+};
+
+pub const Report = struct {
+    cli: Metadata,
+    daemon: DaemonMetadata,
+
+    pub fn deinit(self: Report, allocator: std.mem.Allocator) void {
+        self.daemon.deinit(allocator);
+    }
 };
 
 pub fn current() Metadata {
@@ -52,9 +74,136 @@ pub fn writeJson(writer: anytype, metadata: Metadata) !void {
     try writer.writeAll("\n}\n");
 }
 
+pub fn collectReport(allocator: std.mem.Allocator) !Report {
+    const cli_metadata = current();
+    const binary_path = binaryPathForReport(allocator);
+    errdefer if (binary_path) |value| allocator.free(value);
+
+    if (daemon.executeCli(allocator, &.{"version"})) |parsed| {
+        defer parsed.deinit();
+        const execution = try daemon.parseCliExecution(parsed.value.result);
+        const daemon_version = try trimOwned(allocator, execution.stdout);
+        errdefer allocator.free(daemon_version);
+        return .{
+            .cli = cli_metadata,
+            .daemon = .{
+                .status = "compatible",
+                .version = daemon_version,
+                .detail = "daemon responded to ExecuteCli version with a compatible protocol handshake.",
+                .binary_path = binary_path,
+            },
+        };
+    } else |err| {
+        return .{
+            .cli = cli_metadata,
+            .daemon = .{
+                .status = daemonStatusFromError(err),
+                .version = null,
+                .detail = daemonDetailFromError(err),
+                .binary_path = binary_path,
+            },
+        };
+    }
+}
+
+pub fn writePlainWithDaemon(allocator: std.mem.Allocator, writer: anytype) !void {
+    var report = try collectReport(allocator);
+    defer report.deinit(allocator);
+
+    try writePlain(writer, report.cli);
+    if (report.daemon.version) |daemon_version| {
+        try writer.print("daemon {s} ({s})\n", .{ daemon_version, report.daemon.status });
+    } else {
+        try writer.print("daemon {s} ({s})\n", .{ report.daemon.status, report.daemon.detail });
+    }
+}
+
+pub fn writeJsonWithDaemon(allocator: std.mem.Allocator, writer: anytype) !void {
+    var report = try collectReport(allocator);
+    defer report.deinit(allocator);
+
+    try writer.writeAll("{\n");
+    try writer.writeAll("  \"product\": ");
+    try writeJsonString(writer, report.cli.product);
+    try writer.writeAll(",\n  \"version\": ");
+    try writeJsonString(writer, report.cli.version);
+    try writer.writeAll(",\n  \"commit\": ");
+    try writeJsonNullableString(writer, report.cli.commit);
+    try writer.writeAll(",\n  \"target\": ");
+    try writeJsonString(writer, report.cli.target);
+    try writer.writeAll(",\n  \"target_triple\": ");
+    try writeJsonString(writer, report.cli.target_triple);
+    try writer.writeAll(",\n  \"build_date\": ");
+    try writeJsonNullableString(writer, report.cli.build_date);
+    try writer.writeAll(",\n  \"release_channel\": ");
+    try writeJsonString(writer, report.cli.release_channel);
+    try writer.writeAll(",\n  \"safety_boundary_version\": ");
+    try writeJsonString(writer, report.cli.safety_boundary_version);
+    try writer.writeAll(",\n  \"safety_boundary\": ");
+    try writeJsonString(writer, report.cli.safety_boundary);
+    try writer.writeAll(",\n  \"daemon\": {\n    \"status\": ");
+    try writeJsonString(writer, report.daemon.status);
+    try writer.writeAll(",\n    \"version\": ");
+    try writeJsonNullableString(writer, report.daemon.version);
+    try writer.writeAll(",\n    \"detail\": ");
+    try writeJsonString(writer, report.daemon.detail);
+    try writer.writeAll(",\n    \"binary_path\": ");
+    try writeJsonNullableString(writer, report.daemon.binary_path);
+    try writer.writeAll("\n  }\n}\n");
+}
+
 fn optionalValue(value: []const u8) ?[]const u8 {
     if (value.len == 0 or std.mem.eql(u8, value, "unknown")) return null;
     return value;
+}
+
+fn trimOwned(allocator: std.mem.Allocator, value: []const u8) ![]const u8 {
+    const trimmed = std.mem.trim(u8, value, " \n\r\t");
+    return try allocator.dupe(u8, trimmed);
+}
+
+fn daemonStatusFromError(err: anyerror) []const u8 {
+    return switch (err) {
+        error.ProtocolMismatch => "incompatible",
+        error.MissingHandshake,
+        error.HandshakeMalformed,
+        error.DaemonProtocolError,
+        error.ResponseParseFailed,
+        => "degraded",
+        else => "unavailable",
+    };
+}
+
+fn daemonDetailFromError(err: anyerror) []const u8 {
+    return switch (err) {
+        error.HomeDirectoryNotFound => "HOME is not set; daemon runtime path is unavailable.",
+        error.DaemonBinaryNotFound => "orca-daemon binary not found beside orca or via ORCA_DAEMON.",
+        error.DaemonBinaryNotExecutable => "orca-daemon was found but is not executable.",
+        error.DaemonSpawnFailed => "orca-daemon failed to start; verify the installed daemon matches this OS/architecture.",
+        error.DaemonStartTimeout => "orca-daemon startup timed out while waiting for the socket handshake.",
+        error.DaemonNotReady => "daemon runtime exists but is not ready to answer requests.",
+        error.StaleSocket => "daemon runtime contains stale socket artifacts.",
+        error.SocketConnectFailed => "no running daemon answered on the expected socket.",
+        error.SocketWriteFailed => "daemon socket accepted a connection but did not accept the request cleanly.",
+        error.SocketReadFailed => "daemon socket accepted a connection but did not return a response in time.",
+        error.RequestSerializationFailed => "failed to serialize the daemon version request.",
+        error.ResponseParseFailed => "daemon returned malformed JSON for the version request.",
+        error.DaemonProtocolError => "daemon answered, but the version request payload was not valid.",
+        error.MissingHandshake => "daemon answered Ping without the required protocol handshake fields.",
+        error.HandshakeMalformed => "daemon handshake fields were present but malformed.",
+        error.ProtocolMismatch => "daemon protocol version or capability set does not match this Orca CLI.",
+        error.OutOfMemory => "out of memory while probing daemon version.",
+        else => "unexpected daemon version error",
+    };
+}
+
+fn binaryPathForReport(allocator: std.mem.Allocator) ?[]const u8 {
+    const inspection = daemon.inspectDaemonBinary(allocator) catch return null;
+    if (inspection) |value| {
+        defer value.deinit(allocator);
+        return allocator.dupe(u8, value.path) catch null;
+    }
+    return null;
 }
 
 fn targetName() []const u8 {

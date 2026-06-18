@@ -13,7 +13,9 @@ const packageJson = require(path.join(packageRoot, "package.json"));
 const binDir = path.join(packageRoot, "vendor");
 const resourceDir = path.join(binDir, "resources");
 const exeName = process.platform === "win32" ? "orca.exe" : "orca";
+const daemonExeName = process.platform === "win32" ? "orca-daemon.exe" : "orca-daemon";
 const installedBinary = path.join(binDir, exeName);
+const installedDaemonBinary = path.join(binDir, daemonExeName);
 const maxDownloadBytes = 512 * 1024 * 1024;
 
 function platformName() {
@@ -113,16 +115,22 @@ function extractArchive(archive, destination, platform) {
   }
 }
 
-function copyInstalledBinary(extractDir, platform, arch) {
+function installReleasePayload(extractDir, platform, arch) {
   const top = path.join(extractDir, `orca-v${packageJson.version}-${platform}-${arch}`);
   const source = path.join(top, "bin", exeName);
+  const daemonSource = path.join(top, "bin", daemonExeName);
   if (!fs.existsSync(source)) {
     throw new Error(`archive did not contain expected binary: ${source}`);
+  }
+  if (!fs.existsSync(daemonSource)) {
+    throw new Error(`archive did not contain expected daemon binary: ${daemonSource}`);
   }
   fs.rmSync(binDir, { recursive: true, force: true });
   fs.mkdirSync(binDir, { recursive: true });
   fs.copyFileSync(source, installedBinary);
+  fs.copyFileSync(daemonSource, installedDaemonBinary);
   if (platform !== "windows") fs.chmodSync(installedBinary, 0o755);
+  if (platform !== "windows") fs.chmodSync(installedDaemonBinary, 0o755);
   fs.mkdirSync(resourceDir, { recursive: true });
   for (const dir of ["docs", "examples", "fixtures", "integrations", "policies", "schemas"]) {
     const sourceDir = path.join(top, dir);
@@ -157,7 +165,7 @@ async function install() {
       throw new Error(`checksum mismatch for ${name}: expected ${expected}, got ${actual}`);
     }
     extractArchive(archive, extractDir, platform);
-    copyInstalledBinary(extractDir, platform, arch);
+    installReleasePayload(extractDir, platform, arch);
   } finally {
     fs.rmSync(tmpRoot, { recursive: true, force: true });
   }
@@ -182,6 +190,9 @@ if (!fs.existsSync(installedBinary)) {
 const env = { ...process.env };
 if (fs.existsSync(resourceDir)) {
   env.ORCA_RESOURCE_ROOT = resourceDir;
+}
+if (fs.existsSync(installedDaemonBinary)) {
+  env.ORCA_DAEMON = installedDaemonBinary;
 }
 const result = childProcess.spawnSync(installedBinary, process.argv.slice(2), { stdio: "inherit", env });
 if (result.error) {

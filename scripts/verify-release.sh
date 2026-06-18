@@ -3,6 +3,7 @@ set -eu
 
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 DIST_DIR="${1:-${ORCA_DIST_DIR:-dist}}"
+RELEASE_PRODUCT="${ORCA_RELEASE_PRODUCT:-all}"
 
 fail() {
   printf 'release verify: %s\n' "$1" >&2
@@ -106,6 +107,16 @@ artifact_package_key() {
   esac
 }
 
+detect_host_target() {
+  host_os="$(uname -s | tr '[:upper:]' '[:lower:]')"
+  host_arch="$(uname -m)"
+  case "$host_arch" in
+    x86_64|amd64) host_arch="amd64" ;;
+    arm64|aarch64) host_arch="arm64" ;;
+  esac
+  printf '%s-%s' "$host_os" "$host_arch"
+}
+
 artifact_manifest_name() {
   case "$1" in
     orca-v*-darwin-amd64.tar.gz) printf 'orca-v#{version}-darwin-amd64.tar.gz' ;;
@@ -175,17 +186,87 @@ require_package_hashes() {
   done
 }
 
+require_release_artifacts() {
+  case "$RELEASE_PRODUCT" in
+    all | cli)
+      require_artifact "$DIST_DIR/orca-v*-darwin-amd64.tar.gz"
+      require_artifact "$DIST_DIR/orca-v*-darwin-arm64.tar.gz"
+      require_artifact "$DIST_DIR/orca-v*-linux-amd64.tar.gz"
+      require_artifact "$DIST_DIR/orca-v*-linux-arm64.tar.gz"
+      require_artifact "$DIST_DIR/orca-v*-windows-amd64.zip"
+      require_orca_archive_binary "$DIST_DIR/orca-v*-darwin-amd64.tar.gz" "orca"
+      require_orca_archive_binary "$DIST_DIR/orca-v*-darwin-amd64.tar.gz" "orca-daemon"
+      require_orca_archive_binary "$DIST_DIR/orca-v*-darwin-arm64.tar.gz" "orca"
+      require_orca_archive_binary "$DIST_DIR/orca-v*-darwin-arm64.tar.gz" "orca-daemon"
+      require_orca_archive_binary "$DIST_DIR/orca-v*-linux-amd64.tar.gz" "orca"
+      require_orca_archive_binary "$DIST_DIR/orca-v*-linux-amd64.tar.gz" "orca-daemon"
+      require_orca_archive_binary "$DIST_DIR/orca-v*-linux-arm64.tar.gz" "orca"
+      require_orca_archive_binary "$DIST_DIR/orca-v*-linux-arm64.tar.gz" "orca-daemon"
+      require_orca_archive_binary "$DIST_DIR/orca-v*-windows-amd64.zip" "orca.exe"
+      require_orca_archive_binary "$DIST_DIR/orca-v*-windows-amd64.zip" "orca-daemon.exe"
+      require_orca_archive_excludes "$DIST_DIR/orca-v*-darwin-amd64.tar.gz"
+      require_orca_archive_excludes "$DIST_DIR/orca-v*-darwin-arm64.tar.gz"
+      require_orca_archive_excludes "$DIST_DIR/orca-v*-linux-amd64.tar.gz"
+      require_orca_archive_excludes "$DIST_DIR/orca-v*-linux-arm64.tar.gz"
+      require_orca_archive_excludes "$DIST_DIR/orca-v*-windows-amd64.zip"
+      ;;
+    host)
+      case "$(detect_host_target)" in
+        darwin-amd64)
+          require_artifact "$DIST_DIR/orca-v*-darwin-amd64.tar.gz"
+          require_orca_archive_binary "$DIST_DIR/orca-v*-darwin-amd64.tar.gz" "orca"
+          require_orca_archive_binary "$DIST_DIR/orca-v*-darwin-amd64.tar.gz" "orca-daemon"
+          require_orca_archive_excludes "$DIST_DIR/orca-v*-darwin-amd64.tar.gz"
+          ;;
+        darwin-arm64)
+          require_artifact "$DIST_DIR/orca-v*-darwin-arm64.tar.gz"
+          require_orca_archive_binary "$DIST_DIR/orca-v*-darwin-arm64.tar.gz" "orca"
+          require_orca_archive_binary "$DIST_DIR/orca-v*-darwin-arm64.tar.gz" "orca-daemon"
+          require_orca_archive_excludes "$DIST_DIR/orca-v*-darwin-arm64.tar.gz"
+          ;;
+        linux-amd64)
+          require_artifact "$DIST_DIR/orca-v*-linux-amd64.tar.gz"
+          require_orca_archive_binary "$DIST_DIR/orca-v*-linux-amd64.tar.gz" "orca"
+          require_orca_archive_binary "$DIST_DIR/orca-v*-linux-amd64.tar.gz" "orca-daemon"
+          require_orca_archive_excludes "$DIST_DIR/orca-v*-linux-amd64.tar.gz"
+          ;;
+        linux-arm64)
+          require_artifact "$DIST_DIR/orca-v*-linux-arm64.tar.gz"
+          require_orca_archive_binary "$DIST_DIR/orca-v*-linux-arm64.tar.gz" "orca"
+          require_orca_archive_binary "$DIST_DIR/orca-v*-linux-arm64.tar.gz" "orca-daemon"
+          require_orca_archive_excludes "$DIST_DIR/orca-v*-linux-arm64.tar.gz"
+          ;;
+        windows-amd64)
+          require_artifact "$DIST_DIR/orca-v*-windows-amd64.zip"
+          require_orca_archive_binary "$DIST_DIR/orca-v*-windows-amd64.zip" "orca.exe"
+          require_orca_archive_binary "$DIST_DIR/orca-v*-windows-amd64.zip" "orca-daemon.exe"
+          require_orca_archive_excludes "$DIST_DIR/orca-v*-windows-amd64.zip"
+          ;;
+        *)
+          fail "unsupported host target for host-only release verification"
+          ;;
+      esac
+      ;;
+    *)
+      fail "unsupported ORCA_RELEASE_PRODUCT=${RELEASE_PRODUCT}"
+      ;;
+  esac
+}
+
 [ -d "$DIST_DIR" ] || fail "missing dist dir: $DIST_DIR"
 [ -s "$DIST_DIR/checksums.txt" ] || fail "missing checksums.txt"
 [ -s "$DIST_DIR/release-manifest.json" ] || fail "missing release-manifest.json"
 [ -s "$DIST_DIR/sbom.json" ] || fail "missing sbom.json"
-[ -s "$DIST_DIR/package-manifests/homebrew/Formula/orca.rb" ] || fail "missing rendered Homebrew formula"
-[ -s "$DIST_DIR/package-manifests/npm/package.json" ] || fail "missing rendered npm package manifest"
-[ -s "$DIST_DIR/package-manifests/npm/bin/orca.js" ] || fail "missing rendered npm launcher"
-[ -s "$DIST_DIR/package-manifests/scoop/orca.json" ] || fail "missing rendered Scoop manifest"
-[ -s "$DIST_DIR/package-manifests/winget/orca.yaml" ] || fail "missing rendered WinGet manifest"
+if [ "$RELEASE_PRODUCT" != "host" ]; then
+  [ -s "$DIST_DIR/package-manifests/homebrew/Formula/orca.rb" ] || fail "missing rendered Homebrew formula"
+  [ -s "$DIST_DIR/package-manifests/npm/package.json" ] || fail "missing rendered npm package manifest"
+  [ -s "$DIST_DIR/package-manifests/npm/bin/orca.js" ] || fail "missing rendered npm launcher"
+  [ -s "$DIST_DIR/package-manifests/scoop/orca.json" ] || fail "missing rendered Scoop manifest"
+  [ -s "$DIST_DIR/package-manifests/winget/orca.yaml" ] || fail "missing rendered WinGet manifest"
+fi
 grep -q '"products_included"' "$DIST_DIR/release-manifest.json" || fail "release-manifest.json missing products_included"
 grep -q '"orca"' "$DIST_DIR/release-manifest.json" || fail "release-manifest.json missing Orca product"
+grep -q '"orca-daemon"' "$DIST_DIR/release-manifest.json" || fail "release-manifest.json missing daemon product"
 
 if command -v sha256sum >/dev/null 2>&1; then
   (cd "$DIST_DIR" && sha256sum -c checksums.txt)
@@ -193,32 +274,20 @@ else
   (cd "$DIST_DIR" && shasum -a 256 -c checksums.txt)
 fi
 
-require_artifact "$DIST_DIR/orca-v*-darwin-amd64.tar.gz"
-require_artifact "$DIST_DIR/orca-v*-darwin-arm64.tar.gz"
-require_artifact "$DIST_DIR/orca-v*-linux-amd64.tar.gz"
-require_artifact "$DIST_DIR/orca-v*-linux-arm64.tar.gz"
-require_artifact "$DIST_DIR/orca-v*-windows-amd64.zip"
-require_orca_archive_binary "$DIST_DIR/orca-v*-darwin-amd64.tar.gz" "orca"
-require_orca_archive_binary "$DIST_DIR/orca-v*-darwin-arm64.tar.gz" "orca"
-require_orca_archive_binary "$DIST_DIR/orca-v*-linux-amd64.tar.gz" "orca"
-require_orca_archive_binary "$DIST_DIR/orca-v*-linux-arm64.tar.gz" "orca"
-require_orca_archive_binary "$DIST_DIR/orca-v*-windows-amd64.zip" "orca.exe"
-require_orca_archive_excludes "$DIST_DIR/orca-v*-darwin-amd64.tar.gz"
-require_orca_archive_excludes "$DIST_DIR/orca-v*-darwin-arm64.tar.gz"
-require_orca_archive_excludes "$DIST_DIR/orca-v*-linux-amd64.tar.gz"
-require_orca_archive_excludes "$DIST_DIR/orca-v*-linux-arm64.tar.gz"
-require_orca_archive_excludes "$DIST_DIR/orca-v*-windows-amd64.zip"
+require_release_artifacts
 grep -q '"signing_status"' "$DIST_DIR/release-manifest.json"
 grep -q '"sbom_status"' "$DIST_DIR/release-manifest.json"
-for rendered in \
-  "$DIST_DIR/package-manifests/homebrew/Formula/orca.rb" \
-  "$DIST_DIR/package-manifests/npm/package.json" \
-  "$DIST_DIR/package-manifests/scoop/orca.json" \
-  "$DIST_DIR/package-manifests/winget/orca.yaml"
-do
-  ! grep -q 'PLACEHOLDER' "$rendered" || { printf 'release verify: placeholder left in %s\n' "$rendered" >&2; exit 1; }
-done
-require_package_hashes
+if [ "$RELEASE_PRODUCT" != "host" ]; then
+  for rendered in \
+    "$DIST_DIR/package-manifests/homebrew/Formula/orca.rb" \
+    "$DIST_DIR/package-manifests/npm/package.json" \
+    "$DIST_DIR/package-manifests/scoop/orca.json" \
+    "$DIST_DIR/package-manifests/winget/orca.yaml"
+  do
+    ! grep -q 'PLACEHOLDER' "$rendered" || { printf 'release verify: placeholder left in %s\n' "$rendered" >&2; exit 1; }
+  done
+  require_package_hashes
+fi
 
 # Plugin version alignment check
 CLI_VERSION="$(cat "${REPO_ROOT}/VERSION" | tr -d '[:space:]')"

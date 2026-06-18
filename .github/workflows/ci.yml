@@ -12,5 +12,15 @@ jobs:
       - uses: mlugg/setup-zig@v2
         with:
           version: 0.16.0
-      - run: zig build
-      - run: zig build test
+      - run: ./scripts/zig build
+      - run: ./scripts/zig build test
+  rust-daemon:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Rust daemon tests
+        working-directory: orca-rs
+        run: cargo test
+      - name: Rust daemon clippy
+        working-directory: orca-rs
+        run: cargo clippy --all-targets

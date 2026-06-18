@@ -26,6 +26,7 @@ class Orca < Formula
 
   def install
     bin.install "bin/orca"
+    bin.install "bin/orca-daemon"
     prefix.install "orca-dashboard-ui/dist" => "orca-dashboard-ui/dist"
     pkgshare.install "integrations"
     pkgshare.install "fixtures"
@@ -53,6 +54,7 @@ class Orca < Formula
     assert_match version.to_s, shell_output("#{bin}/orca --version")
     # Exercise the full runtime contract (matching install.sh + DX smoke tests)
     system "#{bin}/orca", "doctor"
+    system "#{bin}/orca", "packs", "--help"
     system "#{bin}/orca", "plugin", "doctor", "hermes", "--json"
     system "#{bin}/orca", "redteam", "--ci"
   end

@@ -26,6 +26,6 @@ brew test packaging/homebrew/Formula/orca.rb
 ```sh
 brew tap christopherkarani/orca
 brew install orca
-orca --version
+orca version
 orca doctor
 ```
