@@ -113,13 +113,17 @@ function renderStatus(data) {
   const ci = data.ci_readiness;
   const blockedCount = data.blocked_actions.length;
   const sessionCount = data.sessions.length;
+  const daemonHealth = data.daemon_health || { status: "unknown", detail: "not probed" };
+  const rustShellCount = (data.rust_shell_decisions || []).length;
   els.summaryGrid.innerHTML = [
     metric("CLI", "Installed", `Orca ${data.orca.version}`),
     metric("Policy", policy.exists ? (policy.valid ? "Valid" : "Invalid") : "Missing", policy.exists ? policy.path : "Create one from a preset"),
+    metric("Daemon", daemonHealthLabel(daemonHealth.status), daemonHealth.detail || "Rust shell evaluator"),
     metric("Secretless", secretless.available ? "Available" : "Unavailable", `${secretless.active_broker.label}: references only`),
     metric("License", license.tier, license.report_export ? "report export enabled" : "core safety enabled"),
     metric("CI", ci.ok ? "Ready" : "Needs work", ci.error || ci.checks.map((check) => `${check.name}: ${check.status}`).join(", ")),
     metric("Prevented", `${blockedCount}`, blockedCount === 1 ? "blocked action found" : "blocked actions found"),
+    metric("Rust shell", `${rustShellCount}`, rustShellCount === 1 ? "daemon decision recorded" : "daemon decisions recorded"),
     metric("Sessions", `${sessionCount}`, data.orca.workspace_root),
   ].join("");
 
@@ -311,11 +315,33 @@ function renderBlockedList(container, actions, compact) {
       <div class="meta-grid">
         ${meta("Target", action.target)}
         ${meta("Decision", action.decision || "deny")}
+        ${meta("Source", action.decision_source || "zig-native")}
+        ${meta("Event", action.event_source || "session audit")}
+        ${meta("Host", action.host || "not recorded")}
+        ${meta("Daemon", action.daemon_status || "not recorded")}
+        ${meta("Pack", action.pack_id || "not recorded")}
+        ${meta("Severity", action.severity || "not recorded")}
         ${meta("Rule", action.rule || "not recorded")}
         ${meta("Reason", action.reason || "not recorded")}
+        ${meta("Remediation", action.remediation || "not recorded")}
       </div>
     </article>
   `).join("");
+}
+
+function daemonHealthLabel(status) {
+  switch (status) {
+    case "healthy":
+      return "Healthy";
+    case "unavailable":
+      return "Unavailable";
+    case "incompatible":
+      return "Incompatible";
+    case "degraded":
+      return "Degraded";
+    default:
+      return status || "Unknown";
+  }
 }
 
 function renderSessions(sessions) {

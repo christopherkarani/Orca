@@ -76,6 +76,37 @@ pub const RedactionSummary = struct {
     labels: []const []const u8 = &.{},
 };
 
+pub const EventMetadata = struct {
+    decision_source: ?[]const u8 = null,
+    event_source: ?[]const u8 = null,
+    host: ?[]const u8 = null,
+    daemon_status: ?[]const u8 = null,
+    pack_id: ?[]const u8 = null,
+    severity: ?[]const u8 = null,
+    remediation: ?[]const u8 = null,
+
+    pub fn isEmpty(self: EventMetadata) bool {
+        return self.decision_source == null and
+            self.event_source == null and
+            self.host == null and
+            self.daemon_status == null and
+            self.pack_id == null and
+            self.severity == null and
+            self.remediation == null;
+    }
+
+    pub fn deinit(self: *EventMetadata, allocator: std.mem.Allocator) void {
+        if (self.decision_source) |value| allocator.free(value);
+        if (self.event_source) |value| allocator.free(value);
+        if (self.host) |value| allocator.free(value);
+        if (self.daemon_status) |value| allocator.free(value);
+        if (self.pack_id) |value| allocator.free(value);
+        if (self.severity) |value| allocator.free(value);
+        if (self.remediation) |value| allocator.free(value);
+        self.* = .{};
+    }
+};
+
 pub const Event = struct {
     schema_version: u16 = schema_version,
     session_id: session.SessionId,
@@ -86,6 +117,7 @@ pub const Event = struct {
     target: types.Target,
     decision: ?decision.Decision = null,
     redactions: RedactionSummary = .{},
+    metadata: EventMetadata = .{},
     previous_hash: ?EventHash = null,
     event_hash: ?EventHash = null,
 };

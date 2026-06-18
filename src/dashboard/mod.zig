@@ -8,6 +8,8 @@ const credentials_runtime = @import("../intercept/credentials.zig");
 const supervisor = core.supervisor;
 const license_mod = @import("../license.zig");
 const ci_check = @import("../ci_check.zig");
+const rust_visibility = @import("../cli/rust_visibility.zig");
+const feed_writer = @import("../cli/feed_writer.zig");
 
 pub const max_request_body_len = 1024 * 1024;
 
@@ -41,6 +43,10 @@ pub fn writeStatusJson(io: std.Io, allocator: std.mem.Allocator, writer: anytype
     try writePluginCardJson(io, allocator, writer, workspace_root, "hermes", "Hermes", "hermes", "integrations/hermes-plugin", "orca plugin doctor hermes");
     try writer.writeAll("],\"sessions\":");
     try writeSessionsArrayJson(io, allocator, writer, workspace_root, 6);
+    try writer.writeAll(",\"daemon_health\":");
+    try writeDaemonHealthJson(allocator, writer);
+    try writer.writeAll(",\"rust_shell_decisions\":");
+    try writeRustShellDecisionsArrayJson(io, allocator, writer, workspace_root, 12);
     try writer.writeAll(",\"blocked_actions\":");
     try writeBlockedActionsArrayJson(io, allocator, writer, workspace_root, 8);
     try writer.writeAll(",\"quick_actions\":[");
@@ -448,20 +454,99 @@ fn writeSessionSummaryJson(io: std.Io, allocator: std.mem.Allocator, writer: any
     try writer.writeByte('}');
 }
 
+fn writeDaemonHealthJson(allocator: std.mem.Allocator, writer: anytype) !void {
+    var health = rust_visibility.probeGuiDaemonHealth(allocator) catch {
+        try writer.writeAll("{\"status\":\"unavailable\",\"detail\":\"failed to probe daemon health\"}");
+        return;
+    };
+    defer health.deinit(allocator);
+    try writer.writeByte('{');
+    try writer.writeAll("\"status\":");
+    try core.util.writeJsonString(writer, health.status);
+    try writer.writeAll(",\"detail\":");
+    try core.util.writeJsonString(writer, health.detail);
+    try writer.writeByte('}');
+}
+
+fn writeRustShellDecisionsArrayJson(io: std.Io, allocator: std.mem.Allocator, writer: anytype, workspace_root: []const u8, max_count: usize) !void {
+    const loaded = feed_writer.loadRecent(io, allocator, workspace_root, max_count) catch {
+        try writer.writeAll("[]");
+        return;
+    };
+    defer {
+        for (loaded) |*item| item.deinit(allocator);
+        allocator.free(loaded);
+    }
+    try writer.writeByte('[');
+    for (loaded, 0..) |item, index| {
+        if (index > 0) try writer.writeByte(',');
+        try writeFeedRecordJson(writer, item.record);
+    }
+    try writer.writeByte(']');
+}
+
+fn writeFeedRecordJson(writer: anytype, record: rust_visibility.RustShellFeedRecord) !void {
+    try writer.writeByte('{');
+    try writer.writeAll("\"timestamp\":");
+    try core.util.writeJsonString(writer, record.timestamp);
+    try writer.writeAll(",\"event_type\":");
+    try core.util.writeJsonString(writer, record.event_type);
+    try writer.writeAll(",\"decision\":");
+    try core.util.writeJsonString(writer, record.decision);
+    try writer.writeAll(",\"decision_source\":");
+    try core.util.writeJsonString(writer, record.decision_source);
+    try writer.writeAll(",\"event_source\":");
+    try core.util.writeJsonString(writer, record.event_source);
+    try writer.writeAll(",\"host\":");
+    if (record.host) |host| try core.util.writeJsonString(writer, host) else try writer.writeAll("null");
+    try writer.writeAll(",\"daemon_status\":");
+    try core.util.writeJsonString(writer, record.daemon_status);
+    try writer.writeAll(",\"pack_id\":");
+    if (record.pack_id) |pack_id| try core.util.writeJsonString(writer, pack_id) else try writer.writeAll("null");
+    try writer.writeAll(",\"severity\":");
+    if (record.severity) |severity| try core.util.writeJsonString(writer, severity) else try writer.writeAll("null");
+    try writer.writeAll(",\"reason\":");
+    try core.util.writeJsonString(writer, record.reason);
+    try writer.writeAll(",\"remediation\":");
+    if (record.remediation) |remediation| try core.util.writeJsonString(writer, remediation) else try writer.writeAll("null");
+    try writer.writeAll(",\"target\":");
+    try core.util.writeJsonString(writer, record.target_summary);
+    try writer.writeAll(",\"session_id\":");
+    if (record.session_id) |session_id| try core.util.writeJsonString(writer, session_id) else try writer.writeAll("null");
+    try writer.writeAll(",\"verified\":");
+    try writer.writeAll(if (record.verified) "true" else "false");
+    try writer.writeByte('}');
+}
+
 fn writeBlockedActionsArrayJson(io: std.Io, allocator: std.mem.Allocator, writer: anytype, workspace_root: []const u8, max_count: usize) !void {
-    const sessions_root = try std.fs.path.join(allocator, &.{ workspace_root, ".orca", "sessions" });
+    try writer.writeByte('[');
+    var written: usize = 0;
+
+    const feed_owned: ?[]feed_writer.LoadedFeedRecord = feed_writer.loadRecent(io, allocator, workspace_root, max_count) catch null;
+    defer if (feed_owned) |owned| {
+        for (owned) |*item| item.deinit(allocator);
+        allocator.free(owned);
+    };
+    const feed = feed_owned orelse &[_]feed_writer.LoadedFeedRecord{};
+    for (feed) |item| {
+        if (written >= max_count) break;
+        if (!std.mem.eql(u8, item.record.decision, "deny")) continue;
+        if (written > 0) try writer.writeByte(',');
+        try writeFeedRecordJson(writer, item.record);
+        written += 1;
+    }
+
+    const sessions_root = std.fs.path.join(allocator, &.{ workspace_root, ".orca", "sessions" }) catch {
+        try writer.writeByte(']');
+        return;
+    };
     defer allocator.free(sessions_root);
-    var dir = std.Io.Dir.cwd().openDir(io, sessions_root, .{ .iterate = true }) catch |err| switch (err) {
-        error.FileNotFound => {
-            try writer.writeAll("[]");
-            return;
-        },
-        else => return err,
+    var dir = std.Io.Dir.cwd().openDir(io, sessions_root, .{ .iterate = true }) catch {
+        try writer.writeByte(']');
+        return;
     };
     defer dir.close(io);
 
-    try writer.writeByte('[');
-    var written: usize = 0;
     var it = dir.iterate();
     while (written < max_count) {
         const entry = try it.next(io) orelse break;
@@ -479,9 +564,66 @@ fn writeBlockedActionsArrayJson(io: std.Io, allocator: std.mem.Allocator, writer
     try writer.writeByte(']');
 }
 
+const ParsedMetadata = struct {
+    decision_source: ?[]const u8 = null,
+    event_source: ?[]const u8 = null,
+    host: ?[]const u8 = null,
+    daemon_status: ?[]const u8 = null,
+    pack_id: ?[]const u8 = null,
+    severity: ?[]const u8 = null,
+    remediation: ?[]const u8 = null,
+};
+
+fn readEventMetadata(parsed: ?std.json.Parsed(std.json.Value)) ParsedMetadata {
+    const object = if (parsed) |p| blk: {
+        if (p.value != .object) return .{};
+        break :blk p.value.object;
+    } else return .{};
+    const metadata = object.get("metadata") orelse return .{};
+    if (metadata != .object) return .{};
+    return .{
+        .decision_source = readMetadataString(metadata.object, "decision_source"),
+        .event_source = readMetadataString(metadata.object, "event_source"),
+        .host = readMetadataString(metadata.object, "host"),
+        .daemon_status = readMetadataString(metadata.object, "daemon_status"),
+        .pack_id = readMetadataString(metadata.object, "pack_id"),
+        .severity = readMetadataString(metadata.object, "severity"),
+        .remediation = readMetadataString(metadata.object, "remediation"),
+    };
+}
+
+fn readMetadataString(object: std.json.ObjectMap, field: []const u8) ?[]const u8 {
+    const value = object.get(field) orelse return null;
+    if (value != .string) return null;
+    return value.string;
+}
+
+fn writeMetadataFields(writer: anytype, metadata: ParsedMetadata) !void {
+    try writer.writeAll(",\"decision_source\":");
+    if (metadata.decision_source) |value| try core.util.writeJsonString(writer, value) else try writer.writeAll("null");
+    try writer.writeAll(",\"event_source\":");
+    if (metadata.event_source) |value| try core.util.writeJsonString(writer, value) else try writer.writeAll("null");
+    try writer.writeAll(",\"host\":");
+    if (metadata.host) |value| try core.util.writeJsonString(writer, value) else try writer.writeAll("null");
+    try writer.writeAll(",\"daemon_status\":");
+    if (metadata.daemon_status) |value| try core.util.writeJsonString(writer, value) else try writer.writeAll("null");
+    try writer.writeAll(",\"pack_id\":");
+    if (metadata.pack_id) |value| try core.util.writeJsonString(writer, value) else try writer.writeAll("null");
+    try writer.writeAll(",\"severity\":");
+    if (metadata.severity) |value| try core.util.writeJsonString(writer, value) else try writer.writeAll("null");
+    try writer.writeAll(",\"remediation\":");
+    if (metadata.remediation) |value| try core.util.writeJsonString(writer, value) else try writer.writeAll("null");
+}
+
 fn writeBlockedActionJson(allocator: std.mem.Allocator, writer: anytype, session_id: []const u8, verified: bool, ev: anytype) !void {
     var parsed = std.json.parseFromSlice(std.json.Value, allocator, ev.raw, .{}) catch null;
     defer if (parsed) |*p| p.deinit();
+    const metadata = readEventMetadata(parsed);
+    const target = if (metadata.decision_source != null and std.mem.eql(u8, metadata.decision_source.?, rust_visibility.decision_source_rust))
+        rust_visibility.target_summary_shell
+    else
+        ev.target_value;
+
     try writer.writeByte('{');
     try writer.writeAll("\"session_id\":");
     try core.util.writeJsonString(writer, session_id);
@@ -490,7 +632,7 @@ fn writeBlockedActionJson(allocator: std.mem.Allocator, writer: anytype, session
     try writer.writeAll(",\"event_type\":");
     try core.util.writeJsonString(writer, ev.event_type);
     try writer.writeAll(",\"target\":");
-    try core.util.writeJsonString(writer, ev.target_value);
+    try core.util.writeJsonString(writer, target);
     try writer.writeAll(",\"decision\":");
     if (ev.decision_result) |result| try core.util.writeJsonString(writer, result) else try writer.writeAll("null");
     try writer.writeAll(",\"verified\":");
@@ -499,11 +641,9 @@ fn writeBlockedActionJson(allocator: std.mem.Allocator, writer: anytype, session
     try writeDecisionField(writer, parsed, "rule_id");
     try writer.writeAll(",\"reason\":");
     try writeDecisionField(writer, parsed, "reason");
-    try writer.writeAll(",\"raw\":");
-    try writer.writeAll(ev.raw);
+    try writeMetadataFields(writer, metadata);
     try writer.writeByte('}');
 }
-
 fn writeRecentSecretlessAuditEventsJson(io: std.Io, allocator: std.mem.Allocator, writer: anytype, workspace_root: []const u8, max_count: usize) !void {
     const sessions_root = try std.fs.path.join(allocator, &.{ workspace_root, ".orca", "sessions" });
     defer allocator.free(sessions_root);
@@ -688,6 +828,10 @@ test "dashboard assets expose dedicated secretless view" {
     try std.testing.expect(std.mem.indexOf(u8, index, "secretlessBrokerChecks") != null);
     try std.testing.expect(std.mem.indexOf(u8, app, "renderSecretless") != null);
     try std.testing.expect(std.mem.indexOf(u8, app, "insertSecretlessPolicyTemplate") != null);
+    try std.testing.expect(std.mem.indexOf(u8, app, "decision_source") != null);
+    try std.testing.expect(std.mem.indexOf(u8, app, "daemon_health") != null);
+    try std.testing.expect(std.mem.indexOf(u8, app, "daemonHealthLabel") != null);
+    try std.testing.expect(std.mem.indexOf(u8, app, "remediation") != null);
 }
 
 test "sessions json filters denied replay events" {
@@ -790,4 +934,41 @@ fn appendFixtureEvent(
         .decision = core_api.makeDecision(.{ .result = result, .reason = "fixture evidence" }),
     });
     try core_api.appendAuditEvent(writer, event);
+}
+
+test "status json exposes daemon health and rust shell decisions feed" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const root = try tmp.dir.realPathFileAlloc(std.testing.io, ".", std.testing.allocator);
+    defer std.testing.allocator.free(root);
+
+    var record = try rust_visibility.buildFeedRecordFromHookDecision(
+        std.testing.allocator,
+        std.testing.io,
+        "claude",
+        "healthy",
+        "deny",
+        "blocked by Orca policy rule: destructive_rm",
+        "destructive_rm",
+        "Critical",
+        "Use a safer workflow.",
+        "git",
+        null,
+    );
+    defer record.deinit(std.testing.allocator);
+    try feed_writer.appendRecord(std.testing.io, std.testing.allocator, root, record);
+
+    var aw: std.Io.Writer.Allocating = .init(std.testing.allocator);
+    try writeStatusJson(std.testing.io, std.testing.allocator, &aw.writer, root);
+    var out = aw.toArrayList();
+    defer out.deinit(std.testing.allocator);
+
+    try std.testing.expect(std.mem.indexOf(u8, out.items, "\"daemon_health\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out.items, "\"rust_shell_decisions\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out.items, "\"decision_source\":\"rust-daemon\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out.items, "\"pack_id\":\"git\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out.items, "\"severity\":\"Critical\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out.items, "shell command (redacted)") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out.items, "matched_text_preview") == null);
+    try std.testing.expect(std.mem.indexOf(u8, out.items, "\"raw\"") == null);
 }

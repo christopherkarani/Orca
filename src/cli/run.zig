@@ -11,6 +11,7 @@ const exit_codes = @import("exit_codes.zig");
 const help = @import("help.zig");
 const style = @import("style.zig");
 const shell_eval = @import("shell_eval.zig");
+const rust_visibility = @import("rust_visibility.zig");
 
 const RunOptions = struct {
     workspace: ?[]const u8 = null,
@@ -209,9 +210,28 @@ fn commandWithStdioAndEnv(io: std.Io, argv: []const []const u8, stdout: anytype,
             const display = try intercept.commands.displayArgvAlloc(self.allocator, self.command_argv);
             defer self.allocator.free(display);
 
-            try self.auditCommandEvent(session, .command_attempt, display, null);
+            try self.auditCommandEvent(session, .command_attempt, rust_visibility.target_summary_shell, null, .{});
 
-            var command_decision = try shell_eval.evaluateCommand(self.allocator, self.effective_mode, self.command_argv, self.workspace_root, self.shell_evaluator);
+            var rust_metadata: core.event.EventMetadata = .{};
+            defer rust_metadata.deinit(self.allocator);
+
+            const audit_options = shell_eval.ShellAuditOptions{
+                .io = self.audit_context.io,
+                .workspace_root = self.workspace_root,
+                .event_source = rust_visibility.event_source_run,
+                .session_id = session.id.slice(),
+                .verified = false,
+            };
+
+            var command_decision = try shell_eval.evaluateCommand(
+                self.allocator,
+                self.effective_mode,
+                self.command_argv,
+                self.workspace_root,
+                self.shell_evaluator,
+                &rust_metadata,
+                audit_options,
+            );
             defer command_decision.deinit(self.allocator);
 
             var final_decision = command_decision.decision;
@@ -227,7 +247,7 @@ fn commandWithStdioAndEnv(io: std.Io, argv: []const []const u8, stdout: anytype,
                     .ci_may_proceed = true,
                 };
             } else if (final_decision.result == .ask) {
-                try self.auditCommandEvent(session, .command_approval_requested, display, final_decision);
+                try self.auditCommandEvent(session, .command_approval_requested, rust_visibility.target_summary_shell, final_decision, rust_metadata);
                 const choice = try self.resolveApproval(command_decision, display);
                 switch (choice) {
                     .allow_once, .allow_session => {
@@ -245,7 +265,7 @@ fn commandWithStdioAndEnv(io: std.Io, argv: []const []const u8, stdout: anytype,
                             .risk_score = command_decision.decision.risk_score,
                             .ci_may_proceed = true,
                         };
-                        try self.auditCommandEvent(session, .user_approval, display, final_decision);
+                        try self.auditCommandEvent(session, .user_approval, rust_visibility.target_summary_shell, final_decision, rust_metadata);
                     },
                     .deny => {
                         approval_reason = try self.allocator.dupe(u8, "user denied command approval");
@@ -255,16 +275,16 @@ fn commandWithStdioAndEnv(io: std.Io, argv: []const []const u8, stdout: anytype,
                             .risk_score = command_decision.decision.risk_score,
                             .ci_may_proceed = false,
                         };
-                        try self.auditCommandEvent(session, .user_denial, display, final_decision);
+                        try self.auditCommandEvent(session, .user_denial, rust_visibility.target_summary_shell, final_decision, rust_metadata);
                     },
                 }
             }
 
             if (final_decision.result == .allow or final_decision.result == .observe) {
-                try self.auditCommandEvent(session, .command_allowed, display, final_decision);
+                try self.auditCommandEvent(session, .command_allowed, rust_visibility.target_summary_shell, final_decision, rust_metadata);
                 return;
             }
-            try self.auditCommandEvent(session, .command_denied, display, final_decision);
+            try self.auditCommandEvent(session, .command_denied, rust_visibility.target_summary_shell, final_decision, rust_metadata);
             return error.CommandDenied;
         }
 
@@ -381,7 +401,7 @@ fn commandWithStdioAndEnv(io: std.Io, argv: []const []const u8, stdout: anytype,
             });
         }
 
-        fn auditCommandEvent(self: *@This(), session: core.session.Session, event_type: core.event.EventType, display: []const u8, maybe_decision: ?core.decision.Decision) !void {
+        fn auditCommandEvent(self: *@This(), session: core.session.Session, event_type: core.event.EventType, target: []const u8, maybe_decision: ?core.decision.Decision, metadata: core.event.EventMetadata) !void {
             if (self.audit_context.writer == null) return;
             const ts = core.time.Timestamp.now(self.audit_context.io);
             const ev: core.event.Event = .{
@@ -390,8 +410,9 @@ fn commandWithStdioAndEnv(io: std.Io, argv: []const []const u8, stdout: anytype,
                 .timestamp = ts,
                 .event_type = event_type,
                 .actor = .{ .kind = .orca, .display = "orca" },
-                .target = .{ .kind = .command, .value = display },
+                .target = .{ .kind = .command, .value = target },
                 .decision = maybe_decision,
+                .metadata = metadata,
             };
             try core_api.appendAuditEvent(&self.audit_context.writer.?, ev);
         }
@@ -1106,7 +1127,8 @@ test "run command guard denies ci ask without prompting and audits command event
     try std.testing.expect(std.mem.indexOf(u8, events, "\"type\":\"command_attempt\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, events, "\"type\":\"command_denied\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, events, "sk-fakeSyntheticOpenAIKey") == null);
-    try std.testing.expect(std.mem.indexOf(u8, events, "[REDACTED:env:OPENAI_API_KEY:sha256:") != null);
+    try std.testing.expect(std.mem.indexOf(u8, events, "shell command (redacted)") != null);
+    try std.testing.expect(std.mem.indexOf(u8, events, "\"decision_source\":\"rust-daemon\"") != null);
 }
 
 test "run command guard allows safe command and creates session shim directory" {

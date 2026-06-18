@@ -198,6 +198,7 @@ pub fn canonicalFromJsonValue(allocator: std.mem.Allocator, value: std.json.Valu
         "target",
         "decision",
         "redactions",
+        "metadata",
         "previous_hash",
         "event_hash",
     });
@@ -217,6 +218,12 @@ pub fn canonicalFromJsonValue(allocator: std.mem.Allocator, value: std.json.Valu
     try writeDecisionValue(writer, try requiredField(object, "decision"));
     try writer.writeAll(",\"redactions\":");
     try writeRedactionsValue(writer, try requiredField(object, "redactions"));
+    if (object.get("metadata")) |metadata| {
+        if (metadata != .null) {
+            try writer.writeAll(",\"metadata\":");
+            try writeMetadataValue(writer, metadata);
+        }
+    }
     try writer.writeAll(",\"previous_hash\":");
     try writeNullableValue(writer, try requiredField(object, "previous_hash"));
     try writer.writeByte('}');
@@ -288,6 +295,42 @@ fn writeRedactionsValue(writer: anytype, value: std.json.Value) !void {
         try core.util.writeJsonString(writer, try expectString(label));
     }
     try writer.writeAll("]}");
+}
+
+fn writeMetadataValue(writer: anytype, value: std.json.Value) !void {
+    const object = try expectObject(value);
+    try rejectUnknownKeys(object, &.{
+        "decision_source",
+        "event_source",
+        "host",
+        "daemon_status",
+        "pack_id",
+        "severity",
+        "remediation",
+    });
+    const field_names = [_][]const u8{
+        "decision_source",
+        "event_source",
+        "host",
+        "daemon_status",
+        "pack_id",
+        "severity",
+        "remediation",
+    };
+    try writer.writeByte('{');
+    var wrote_field = false;
+    for (field_names) |field_name| {
+        if (object.get(field_name)) |field_value| {
+            if (field_value == .null) continue;
+            if (wrote_field) try writer.writeByte(',');
+            try writer.writeAll("\"");
+            try writer.writeAll(field_name);
+            try writer.writeAll("\":");
+            try core.util.writeJsonString(writer, try expectString(field_value));
+            wrote_field = true;
+        }
+    }
+    try writer.writeByte('}');
 }
 
 fn writeNullableValue(writer: anytype, value: std.json.Value) !void {
@@ -616,6 +659,70 @@ test "verification detects modified event fields" {
     var bad = try verifySessionDir(std.testing.io, std.testing.allocator, session_dir);
     defer bad.deinit(std.testing.allocator);
     try std.testing.expect(!bad.ok);
+}
+
+test "verification accepts rust shell metadata in audit events" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const root = try tmp.dir.realPathFileAlloc(std.testing.io, ".", std.testing.allocator);
+    defer std.testing.allocator.free(root);
+
+    const ts = core.time.Timestamp.fromUnixSeconds(1_777_983_130);
+    const sid = try core.session.generateSessionId(ts);
+    var eid: core.event.EventId = .{ .value = undefined, .len = 0 };
+    const eid_text = try std.fmt.bufPrint(&eid.value, "evt_metadata", .{});
+    eid.len = eid_text.len;
+
+    var metadata: core.event.EventMetadata = .{
+        .decision_source = try std.testing.allocator.dupe(u8, "rust-daemon"),
+        .event_source = try std.testing.allocator.dupe(u8, "run"),
+        .daemon_status = try std.testing.allocator.dupe(u8, "healthy"),
+        .pack_id = try std.testing.allocator.dupe(u8, "git"),
+        .severity = try std.testing.allocator.dupe(u8, "critical"),
+    };
+    defer metadata.deinit(std.testing.allocator);
+
+    const ev: core.event.Event = .{
+        .session_id = sid,
+        .event_id = eid,
+        .timestamp = ts,
+        .event_type = .command_denied,
+        .actor = .{ .kind = .orca, .display = "orca" },
+        .target = .{ .kind = .command, .value = "shell command (redacted)" },
+        .decision = .{
+            .result = .deny,
+            .reason = "blocked by Orca policy rule: destructive_rm",
+            .ci_may_proceed = false,
+        },
+        .metadata = metadata,
+    };
+
+    const session_dir = try std.fs.path.join(std.testing.allocator, &.{ root, ".orca", "sessions", sid.slice() });
+    defer std.testing.allocator.free(session_dir);
+    try std.Io.Dir.cwd().makePath(std.testing.io, session_dir);
+
+    const event_path = try std.fs.path.join(std.testing.allocator, &.{ session_dir, "events.jsonl" });
+    defer std.testing.allocator.free(event_path);
+    const summary_path = try std.fs.path.join(std.testing.allocator, &.{ session_dir, "summary.json" });
+    defer std.testing.allocator.free(summary_path);
+
+    const canonical = try hash_chain.canonicalEventAlloc(std.testing.allocator, ev, null);
+    defer std.testing.allocator.free(canonical);
+    const hash = hash_chain.eventHash(null, canonical);
+
+    {
+        const file = try std.Io.Dir.cwd().createFile(std.testing.io, event_path, .{});
+        defer file.close(std.testing.io);
+        var buf: [2048]u8 = undefined;
+        var file_writer = file.writer(&buf);
+        try hash_chain.writeEventJsonLine(&file_writer.interface, ev, null, &hash);
+        try file_writer.interface.flush();
+    }
+    try writeTestSummary(summary_path, 1, &hash, "[\"orca\",\"run\",\"--\",\"rm\",\"-rf\",\"/\"]");
+
+    var ok = try verifySessionDir(std.testing.io, std.testing.allocator, session_dir);
+    defer ok.deinit(std.testing.allocator);
+    try std.testing.expect(ok.ok);
 }
 
 test "verification rejects event records with unauthenticated extra keys" {

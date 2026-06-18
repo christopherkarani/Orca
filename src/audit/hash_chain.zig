@@ -47,6 +47,10 @@ fn writeEventFields(writer: anytype, ev: core.event.Event, previous_hash: ?[]con
     try writeDecision(writer, ev.decision);
     try writer.writeAll(",\"redactions\":");
     try writeRedactions(writer, ev.redactions);
+    if (!ev.metadata.isEmpty()) {
+        try writer.writeAll(",\"metadata\":");
+        try writeMetadata(writer, ev.metadata);
+    }
     try writer.writeAll(",\"previous_hash\":");
     try writeNullableRawString(writer, previous_hash);
     if (event_hash_value) |hash| {
@@ -108,6 +112,31 @@ fn writeRedactions(writer: anytype, redactions: core.event.RedactionSummary) !vo
         try core.util.writeJsonString(writer, redact_bridge.redactStringBounded(label, &redacted_buf));
     }
     try writer.writeAll("]}");
+}
+
+fn writeMetadata(writer: anytype, metadata: core.event.EventMetadata) !void {
+    try writer.writeByte('{');
+    var wrote_field = false;
+    inline for (.{
+        .{ "decision_source", metadata.decision_source },
+        .{ "event_source", metadata.event_source },
+        .{ "host", metadata.host },
+        .{ "daemon_status", metadata.daemon_status },
+        .{ "pack_id", metadata.pack_id },
+        .{ "severity", metadata.severity },
+        .{ "remediation", metadata.remediation },
+    }) |field| {
+        if (field[1]) |value| {
+            if (wrote_field) try writer.writeByte(',');
+            try writer.writeAll("\"");
+            try writer.writeAll(field[0]);
+            try writer.writeAll("\":");
+            var redacted_buf: [512]u8 = undefined;
+            try core.util.writeJsonString(writer, redact_bridge.redactStringBounded(value, &redacted_buf));
+            wrote_field = true;
+        }
+    }
+    try writer.writeByte('}');
 }
 
 fn writeNullableString(writer: anytype, value: ?[]const u8) !void {

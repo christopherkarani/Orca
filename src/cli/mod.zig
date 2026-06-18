@@ -39,6 +39,8 @@ pub const style = @import("style.zig");
 pub const daemon = @import("daemon.zig");
 pub const shutdown = @import("shutdown.zig");
 pub const shell_eval = @import("shell_eval.zig");
+pub const rust_visibility = @import("rust_visibility.zig");
+pub const feed_writer = @import("feed_writer.zig");
 
 test {
     // Ensure the child_process module (and its tests) are pulled into the test binary.

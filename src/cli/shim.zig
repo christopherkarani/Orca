@@ -77,7 +77,7 @@ fn execWithEnv(io: std.Io, allocator: std.mem.Allocator, command_argv: []const [
     defer selected.deinit();
     const effective_mode = shimMode(&selected.policy, env_map);
 
-    var command_decision = try shell_eval.evaluateCommand(allocator, effective_mode, command_argv, workspace_root, shell_evaluator);
+    var command_decision = try shell_eval.evaluateCommand(allocator, effective_mode, command_argv, workspace_root, shell_evaluator, null, null);
     defer command_decision.deinit(allocator);
 
     var final_decision = command_decision.decision;

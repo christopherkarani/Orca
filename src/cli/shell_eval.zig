@@ -10,6 +10,8 @@ const core = @import("orca_core").core;
 const policy = @import("orca_core").policy;
 const intercept = @import("../intercept/mod.zig");
 const daemon = @import("daemon.zig");
+const rust_visibility = @import("rust_visibility.zig");
+const feed_writer = @import("feed_writer.zig");
 
 pub const ShellCommandEvent = struct {
     command: []const u8,
@@ -20,6 +22,17 @@ pub const ShellCommandEvaluatorFn = *const fn (
     std.mem.Allocator,
     ShellCommandEvent,
 ) daemon.DaemonError!std.json.Parsed(daemon.DaemonResponse);
+
+pub const ShellAuditOptions = struct {
+    io: std.Io,
+    workspace_root: []const u8,
+    event_source: []const u8,
+    host: ?[]const u8 = null,
+    session_id: ?[]const u8 = null,
+    verified: bool = false,
+};
+
+const event_source_run = rust_visibility.event_source_run;
 
 fn resolveEffectiveCwd(allocator: std.mem.Allocator, cwd: ?[]const u8) daemon.DaemonError![]const u8 {
     const path = cwd orelse ".";
@@ -250,6 +263,8 @@ pub fn evaluateCommand(
     argv: []const []const u8,
     cwd: ?[]const u8,
     evaluator_override: ?ShellCommandEvaluatorFn,
+    metadata_out: ?*core.event.EventMetadata,
+    audit_options: ?ShellAuditOptions,
 ) !intercept.commands.CommandDecision {
     const display = try intercept.commands.displayArgvAlloc(allocator, argv);
     defer allocator.free(display);
@@ -259,6 +274,22 @@ pub fn evaluateCommand(
 
     const shell_event = ShellCommandEvent{ .command = display, .cwd = cwd };
     const daemon_response = evaluateParsed(allocator, shell_event, evaluator_override) catch |err| {
+        if (metadata_out) |out| {
+            out.* = try rust_visibility.metadataForUnavailable(allocator, event_source_run, null, err);
+        }
+        if (audit_options) |options| {
+            var record = try rust_visibility.buildFeedRecordFromUnavailable(
+                allocator,
+                options.io,
+                options.event_source,
+                options.host,
+                err,
+                options.session_id,
+                options.verified,
+            );
+            defer record.deinit(allocator);
+            feed_writer.appendRecordBestEffort(options.io, allocator, options.workspace_root, record);
+        }
         const unavailable = try failClosedDaemonUnavailableDecision(allocator, err);
         const explanation = try allocator.dupe(u8, "evaluated by Rust daemon (unavailable)");
         errdefer allocator.free(explanation);
@@ -275,6 +306,37 @@ pub fn evaluateCommand(
         };
     };
     defer daemon_response.deinit();
+
+    const daemon_status = blk: {
+        var health = try rust_visibility.probeGuiDaemonHealth(allocator);
+        defer health.deinit(allocator);
+        break :blk try allocator.dupe(u8, health.status);
+    };
+    defer allocator.free(daemon_status);
+
+    if (metadata_out) |out| {
+        out.* = try rust_visibility.metadataFromDaemonResult(
+            allocator,
+            event_source_run,
+            null,
+            daemon_status,
+            daemon_response.value.result,
+        );
+    }
+    if (audit_options) |options| {
+        var record = try rust_visibility.buildFeedRecordFromDaemon(
+            allocator,
+            options.io,
+            options.event_source,
+            options.host,
+            daemon_status,
+            daemon_response.value.result,
+            options.session_id,
+            options.verified,
+        );
+        defer record.deinit(allocator);
+        feed_writer.appendRecordBestEffort(options.io, allocator, options.workspace_root, record);
+    }
 
     const translated = try decisionFromDaemonResult(allocator, daemon_response.value.result, ci_mode);
 
@@ -374,7 +436,7 @@ pub fn mockDaemonProtocolMismatchEvaluator(allocator: std.mem.Allocator, shell_e
 
 test "shell_eval allows safe command via mock daemon" {
     const allocator = std.testing.allocator;
-    var decision = try evaluateCommand(allocator, .strict, &.{ "git", "status" }, "/tmp/repo", mockDaemonAllowEvaluator);
+    var decision = try evaluateCommand(allocator, .strict, &.{ "git", "status" }, "/tmp/repo", mockDaemonAllowEvaluator, null, null);
     defer decision.deinit(allocator);
     try std.testing.expectEqual(core.decision.DecisionResult.allow, decision.decision.result);
     try std.testing.expectEqualStrings("git status", test_last_evaluate_command.?);
@@ -383,7 +445,7 @@ test "shell_eval allows safe command via mock daemon" {
 
 test "shell_eval denies dangerous command via mock daemon" {
     const allocator = std.testing.allocator;
-    var decision = try evaluateCommand(allocator, .strict, &.{ "rm", "-rf", "/" }, null, mockDaemonDenyEvaluator);
+    var decision = try evaluateCommand(allocator, .strict, &.{ "rm", "-rf", "/" }, null, mockDaemonDenyEvaluator, null, null);
     defer decision.deinit(allocator);
     try std.testing.expectEqual(core.decision.DecisionResult.deny, decision.decision.result);
     try std.testing.expect(decision.owned_rule_id != null);
@@ -392,7 +454,7 @@ test "shell_eval denies dangerous command via mock daemon" {
 
 test "shell_eval fails closed when daemon unavailable" {
     const allocator = std.testing.allocator;
-    var decision = try evaluateCommand(allocator, .strict, &.{ "git", "status" }, null, mockDaemonUnavailableEvaluator);
+    var decision = try evaluateCommand(allocator, .strict, &.{ "git", "status" }, null, mockDaemonUnavailableEvaluator, null, null);
     defer decision.deinit(allocator);
     try std.testing.expectEqual(core.decision.DecisionResult.deny, decision.decision.result);
     try std.testing.expect(std.mem.indexOf(u8, decision.decision.reason, "daemon unavailable") != null);
@@ -400,21 +462,21 @@ test "shell_eval fails closed when daemon unavailable" {
 
 test "shell_eval ci mode converts warn allow to deny" {
     const allocator = std.testing.allocator;
-    var decision = try evaluateCommand(allocator, .ci, &.{ "git", "status" }, null, mockDaemonWarnAllowEvaluator);
+    var decision = try evaluateCommand(allocator, .ci, &.{ "git", "status" }, null, mockDaemonWarnAllowEvaluator, null, null);
     defer decision.deinit(allocator);
     try std.testing.expectEqual(core.decision.DecisionResult.deny, decision.decision.result);
 }
 
 test "shell_eval daemon error fails closed" {
     const allocator = std.testing.allocator;
-    var decision = try evaluateCommand(allocator, .strict, &.{ "git", "status" }, null, mockDaemonErrorEvaluator);
+    var decision = try evaluateCommand(allocator, .strict, &.{ "git", "status" }, null, mockDaemonErrorEvaluator, null, null);
     defer decision.deinit(allocator);
     try std.testing.expectEqual(core.decision.DecisionResult.deny, decision.decision.result);
 }
 
 test "shell_eval protocol mismatch fails closed" {
     const allocator = std.testing.allocator;
-    var decision = try evaluateCommand(allocator, .strict, &.{ "git", "status" }, null, mockDaemonProtocolMismatchEvaluator);
+    var decision = try evaluateCommand(allocator, .strict, &.{ "git", "status" }, null, mockDaemonProtocolMismatchEvaluator, null, null);
     defer decision.deinit(allocator);
     try std.testing.expectEqual(core.decision.DecisionResult.deny, decision.decision.result);
     try std.testing.expect(std.mem.indexOf(u8, decision.decision.reason, "incompatible daemon protocol") != null);
@@ -423,7 +485,7 @@ test "shell_eval protocol mismatch fails closed" {
 test "hook and run parity for safe and dangerous commands" {
     const allocator = std.testing.allocator;
 
-    var safe_run = try evaluateCommand(allocator, .strict, &.{ "git", "status" }, null, mockDaemonAllowEvaluator);
+    var safe_run = try evaluateCommand(allocator, .strict, &.{ "git", "status" }, null, mockDaemonAllowEvaluator, null, null);
     defer safe_run.deinit(allocator);
     var safe_daemon = try mockDaemonAllowEvaluator(allocator, .{ .command = "git status", .cwd = null });
     defer safe_daemon.deinit();
@@ -431,7 +493,7 @@ test "hook and run parity for safe and dangerous commands" {
     defer safe_hook.deinit(allocator);
     try std.testing.expectEqual(safe_run.decision.result, safe_hook.decision.result);
 
-    var dangerous_run = try evaluateCommand(allocator, .strict, &.{ "rm", "-rf", "/" }, null, mockDaemonDenyEvaluator);
+    var dangerous_run = try evaluateCommand(allocator, .strict, &.{ "rm", "-rf", "/" }, null, mockDaemonDenyEvaluator, null, null);
     defer dangerous_run.deinit(allocator);
     var dangerous_daemon = try mockDaemonDenyEvaluator(allocator, .{ .command = "rm -rf /", .cwd = null });
     defer dangerous_daemon.deinit();

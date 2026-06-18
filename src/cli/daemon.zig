@@ -229,7 +229,7 @@ fn responseIntegerField(result: std.json.Value, field_name: []const u8) ?i64 {
     };
 }
 
-fn responseArrayField(result: std.json.Value, field_name: []const u8) ?[]const std.json.Value {
+pub fn responseArrayField(result: std.json.Value, field_name: []const u8) ?[]const std.json.Value {
     const object = switch (result) {
         .object => |map| map,
         else => return null,

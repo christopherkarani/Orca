@@ -8,6 +8,8 @@ const exit_codes = @import("exit_codes.zig");
 const help = @import("help.zig");
 const daemon = @import("daemon.zig");
 const shell_eval = @import("shell_eval.zig");
+const rust_visibility = @import("rust_visibility.zig");
+const feed_writer = @import("feed_writer.zig");
 
 // Maximum JSON payload size to prevent memory exhaustion from hostile hosts.
 const max_payload_len = 256 * 1024; // 256 KiB
@@ -352,7 +354,7 @@ fn hookCommand(io: std.Io, host: Host, event: Event, original_event_name: []cons
     const hook_payload = parsed.value.object.get("payload") orelse std.json.Value{ .object = empty_payload };
 
     // Evaluate via host adapter
-    var result = evaluateHook(allocator, loaded.innerPtr(), host, event, hook_payload, ci_mode) catch |err| {
+    var result = evaluateHook(io, allocator, root, @tagName(host), loaded.innerPtr(), host, event, hook_payload, ci_mode) catch |err| {
         try stderr.print("orca hook: evaluation failed: {s}\n", .{@errorName(err)});
         return exit_codes.general;
     };
@@ -495,8 +497,46 @@ fn defaultShellCommandEvaluator(allocator: std.mem.Allocator, shell_event: Shell
     return shell_eval.defaultEvaluator(allocator, shell_event);
 }
 
-fn evaluateHook(
+
+fn evaluateHookForTest(
     allocator: std.mem.Allocator,
+    policy_value: *const policy.schema.Policy,
+    host: Host,
+    event: Event,
+    payload: std.json.Value,
+    ci_mode: bool,
+) !HookResponse {
+    return evaluateHook(std.testing.io, allocator, "/tmp/orca-hook-test", @tagName(host), policy_value, host, event, payload, ci_mode);
+}
+
+fn evaluatePreToolUseForTest(
+    allocator: std.mem.Allocator,
+    policy_value: *const policy.schema.Policy,
+    payload: std.json.Value,
+    ci_mode: bool,
+    redactions: *std.ArrayList(RedactionEntry),
+    limitations: *std.ArrayList([]const u8),
+    shell_evaluator: ?ShellCommandEvaluatorFn,
+) !HookResponse {
+    return evaluatePreToolUse(
+        std.testing.io,
+        allocator,
+        "/tmp/orca-hook-test",
+        "claude",
+        policy_value,
+        payload,
+        ci_mode,
+        redactions,
+        limitations,
+        shell_evaluator,
+    );
+}
+
+fn evaluateHook(
+    io: std.Io,
+    allocator: std.mem.Allocator,
+    workspace_root: []const u8,
+    host_name: []const u8,
     policy_value: *const policy.schema.Policy,
     _: Host,
     event: Event,
@@ -574,7 +614,7 @@ fn evaluateHook(
             };
         },
         .PreToolUse => {
-            return try evaluatePreToolUse(allocator, policy_value, payload, ci_mode, &redactions, &limitations, null);
+            return try evaluatePreToolUse(io, allocator, workspace_root, host_name, policy_value, payload, ci_mode, &redactions, &limitations, null);
         },
         .PermissionRequest => {
             const permission_kind = extractString(payload, "kind") orelse extractString(payload, "permission") orelse return error.MissingRequiredField;
@@ -656,7 +696,10 @@ fn buildMessage(allocator: std.mem.Allocator, decision: PluginDecision, category
 }
 
 fn evaluatePreToolUse(
+    io: std.Io,
     allocator: std.mem.Allocator,
+    workspace_root: []const u8,
+    host_name: []const u8,
     policy_value: *const policy.schema.Policy,
     payload: std.json.Value,
     ci_mode: bool,
@@ -666,7 +709,10 @@ fn evaluatePreToolUse(
 ) !HookResponse {
     return switch (preToolUseRoute(payload)) {
         .shell_command => |shell_event| evaluateShellCommandRoute(
+            io,
             allocator,
+            workspace_root,
+            host_name,
             shell_event,
             ci_mode,
             redactions,
@@ -694,7 +740,10 @@ fn evaluatePreToolUse(
 }
 
 fn evaluateShellCommandRoute(
+    io: std.Io,
     allocator: std.mem.Allocator,
+    workspace_root: []const u8,
+    host_name: []const u8,
     shell_event: ShellCommandEvent,
     ci_mode: bool,
     redactions: *std.ArrayList(RedactionEntry),
@@ -703,6 +752,7 @@ fn evaluateShellCommandRoute(
 ) !HookResponse {
     const evaluator = evaluator_override orelse defaultShellCommandEvaluator;
     const daemon_response = evaluator(allocator, shell_event) catch |err| {
+        recordShellHookUnavailable(io, allocator, workspace_root, host_name, err);
         return try makeFailClosedHookResponse(
             allocator,
             "command",
@@ -714,6 +764,17 @@ fn evaluateShellCommandRoute(
     };
     defer daemon_response.deinit();
 
+    var health = try rust_visibility.probeGuiDaemonHealth(allocator);
+    defer health.deinit(allocator);
+    recordShellHookDecision(
+        io,
+        allocator,
+        workspace_root,
+        host_name,
+        health.status,
+        daemon_response.value.result,
+    );
+
     return try hookResponseFromDaemonEvaluate(
         allocator,
         daemon_response.value.result,
@@ -721,6 +782,50 @@ fn evaluateShellCommandRoute(
         redactions,
         limitations,
     );
+}
+
+fn recordShellHookUnavailable(
+    io: std.Io,
+    allocator: std.mem.Allocator,
+    workspace_root: []const u8,
+    host_name: []const u8,
+    err: daemon.DaemonError,
+) void {
+    const session_id: ?[]const u8 = null;
+    var record = rust_visibility.buildFeedRecordFromUnavailable(
+        allocator,
+        io,
+        rust_visibility.event_source_hook,
+        host_name,
+        err,
+        session_id,
+        false,
+    ) catch return;
+    defer record.deinit(allocator);
+    feed_writer.appendRecordBestEffort(io, allocator, workspace_root, record);
+}
+
+fn recordShellHookDecision(
+    io: std.Io,
+    allocator: std.mem.Allocator,
+    workspace_root: []const u8,
+    host_name: []const u8,
+    daemon_status: []const u8,
+    result: std.json.Value,
+) void {
+    const session_id: ?[]const u8 = null;
+    var record = rust_visibility.buildFeedRecordFromDaemon(
+        allocator,
+        io,
+        rust_visibility.event_source_hook,
+        host_name,
+        daemon_status,
+        result,
+        session_id,
+        false,
+    ) catch return;
+    defer record.deinit(allocator);
+    feed_writer.appendRecordBestEffort(io, allocator, workspace_root, record);
 }
 
 fn daemonUnavailableReason(err: daemon.DaemonError) []const u8 {
@@ -1304,7 +1409,10 @@ fn runShellRoute(
     var limitations: std.ArrayList([]const u8) = .empty;
     try shellRouteSetup(allocator, &redactions, &limitations);
     return evaluateShellCommandRoute(
+        std.testing.io,
         allocator,
+        "/tmp/orca-hook-test",
+        "claude",
         .{ .command = command_text, .cwd = cwd },
         ci_mode,
         &redactions,
@@ -1346,7 +1454,7 @@ test "hook codex SessionStart returns allow" {
 
     var empty_obj = try std.json.ObjectMap.init(allocator, &.{}, &.{});
     defer empty_obj.deinit(allocator);
-    var result = try evaluateHook(allocator, @ptrCast(@alignCast(policy_obj)), .codex, .SessionStart, std.json.Value{ .object = empty_obj }, false);
+    var result = try evaluateHookForTest(allocator, @ptrCast(@alignCast(policy_obj)), .codex, .SessionStart, std.json.Value{ .object = empty_obj }, false);
     defer result.deinit(allocator);
 
     try std.testing.expectEqual(PluginDecision.allow, result.decision);
@@ -1365,7 +1473,7 @@ test "hook claude UserPromptSubmit with fake secret returns warn" {
     defer payload_obj.deinit(allocator);
     try payload_obj.put(allocator, "prompt", std.json.Value{ .string = "my token is ghp_fake_secret_value" });
 
-    var result = try evaluateHook(allocator, @ptrCast(@alignCast(policy_obj)), .claude, .UserPromptSubmit, std.json.Value{ .object = payload_obj }, false);
+    var result = try evaluateHookForTest(allocator, @ptrCast(@alignCast(policy_obj)), .claude, .UserPromptSubmit, std.json.Value{ .object = payload_obj }, false);
     defer result.deinit(allocator);
 
     try std.testing.expectEqual(PluginDecision.warn, result.decision);
@@ -1387,7 +1495,7 @@ test "hook claude PreToolUse with file write to protected path returns block" {
     try payload_obj.put(allocator, "tool", std.json.Value{ .string = "edit" });
     try payload_obj.put(allocator, "path", std.json.Value{ .string = "/etc/passwd" });
 
-    var result = try evaluateHook(allocator, @ptrCast(@alignCast(policy_obj)), .claude, .PreToolUse, std.json.Value{ .object = payload_obj }, false);
+    var result = try evaluateHookForTest(allocator, @ptrCast(@alignCast(policy_obj)), .claude, .PreToolUse, std.json.Value{ .object = payload_obj }, false);
     defer result.deinit(allocator);
 
     try std.testing.expectEqual(PluginDecision.block, result.decision);
@@ -1524,11 +1632,11 @@ test "hook fail-closes unsupported PreToolUse and rejects missing PermissionRequ
     defer empty_obj.deinit(allocator);
     const empty_payload = std.json.Value{ .object = empty_obj };
 
-    var result = try evaluateHook(allocator, @ptrCast(@alignCast(policy_obj)), .codex, .PreToolUse, empty_payload, false);
+    var result = try evaluateHookForTest(allocator, @ptrCast(@alignCast(policy_obj)), .codex, .PreToolUse, empty_payload, false);
     defer result.deinit(allocator);
     try std.testing.expectEqual(PluginDecision.block, result.decision);
     try std.testing.expectEqualStrings("command", result.category);
-    try std.testing.expectError(error.MissingRequiredField, evaluateHook(allocator, @ptrCast(@alignCast(policy_obj)), .claude, .PermissionRequest, empty_payload, false));
+    try std.testing.expectError(error.MissingRequiredField, evaluateHookForTest(allocator, @ptrCast(@alignCast(policy_obj)), .claude, .PermissionRequest, empty_payload, false));
 }
 
 test "hook response JSON format is valid" {
@@ -1589,7 +1697,7 @@ test "hook opencode session.created returns allow" {
 
     var empty_obj = try std.json.ObjectMap.init(allocator, &.{}, &.{});
     defer empty_obj.deinit(allocator);
-    var result = try evaluateHook(allocator, @ptrCast(@alignCast(policy_obj)), .opencode, .SessionStart, std.json.Value{ .object = empty_obj }, false);
+    var result = try evaluateHookForTest(allocator, @ptrCast(@alignCast(policy_obj)), .opencode, .SessionStart, std.json.Value{ .object = empty_obj }, false);
     defer result.deinit(allocator);
 
     try std.testing.expectEqual(PluginDecision.allow, result.decision);
@@ -1645,7 +1753,7 @@ test "hook openclaw session.start returns allow" {
 
     var empty_obj = try std.json.ObjectMap.init(allocator, &.{}, &.{});
     defer empty_obj.deinit(allocator);
-    var result = try evaluateHook(allocator, @ptrCast(@alignCast(policy_obj)), .openclaw, .SessionStart, std.json.Value{ .object = empty_obj }, false);
+    var result = try evaluateHookForTest(allocator, @ptrCast(@alignCast(policy_obj)), .openclaw, .SessionStart, std.json.Value{ .object = empty_obj }, false);
     defer result.deinit(allocator);
 
     try std.testing.expectEqual(PluginDecision.allow, result.decision);
@@ -1698,7 +1806,7 @@ test "hook hermes on_session_start returns allow" {
     var empty_obj = try std.json.ObjectMap.init(allocator, &.{}, &.{});
     defer empty_obj.deinit(allocator);
 
-    var result = try evaluateHook(allocator, @ptrCast(@alignCast(policy_obj)), .hermes, .SessionStart, std.json.Value{ .object = empty_obj }, false);
+    var result = try evaluateHookForTest(allocator, @ptrCast(@alignCast(policy_obj)), .hermes, .SessionStart, std.json.Value{ .object = empty_obj }, false);
     defer result.deinit(allocator);
 
     try std.testing.expectEqual(PluginDecision.allow, result.decision);
@@ -1720,7 +1828,7 @@ test "hook hermes pre_tool_call with nested protected file path returns block" {
     try payload_obj.put(allocator, "tool", std.json.Value{ .string = "write" });
     try payload_obj.put(allocator, "input", std.json.Value{ .object = input_obj });
 
-    var result = try evaluateHook(allocator, @ptrCast(@alignCast(policy_obj)), .hermes, .PreToolUse, std.json.Value{ .object = payload_obj }, false);
+    var result = try evaluateHookForTest(allocator, @ptrCast(@alignCast(policy_obj)), .hermes, .PreToolUse, std.json.Value{ .object = payload_obj }, false);
     defer result.deinit(allocator);
 
     try std.testing.expectEqual(PluginDecision.block, result.decision);
@@ -1737,7 +1845,7 @@ test "hook hermes pre_llm_call reads canonical user_message" {
     defer payload_obj.deinit(allocator);
     try payload_obj.put(allocator, "user_message", std.json.Value{ .string = "my token is ghp_fake_secret_value" });
 
-    var result = try evaluateHook(allocator, @ptrCast(@alignCast(policy_obj)), .hermes, .UserPromptSubmit, std.json.Value{ .object = payload_obj }, false);
+    var result = try evaluateHookForTest(allocator, @ptrCast(@alignCast(policy_obj)), .hermes, .UserPromptSubmit, std.json.Value{ .object = payload_obj }, false);
     defer result.deinit(allocator);
 
     try std.testing.expectEqual(PluginDecision.warn, result.decision);
@@ -1912,7 +2020,7 @@ test "hook non-shell PreToolUse keeps zig native file evaluation" {
     try payload_obj.put(allocator, "tool", std.json.Value{ .string = "edit" });
     try payload_obj.put(allocator, "path", std.json.Value{ .string = "/etc/passwd" });
 
-    var result = try evaluateHook(allocator, @ptrCast(@alignCast(policy_obj)), .claude, .PreToolUse, std.json.Value{ .object = payload_obj }, false);
+    var result = try evaluateHookForTest(allocator, @ptrCast(@alignCast(policy_obj)), .claude, .PreToolUse, std.json.Value{ .object = payload_obj }, false);
     defer result.deinit(allocator);
 
     try std.testing.expectEqual(PluginDecision.block, result.decision);
@@ -2068,7 +2176,7 @@ test "hook evaluatePreToolUse routes shell PreToolUse through daemon evaluator" 
     shell_eval.test_last_evaluate_command = null;
     shell_eval.test_last_evaluate_cwd = null;
 
-    var result = try evaluatePreToolUse(
+    var result = try evaluatePreToolUseForTest(
         allocator,
         @ptrCast(@alignCast(policy_obj)),
         std.json.Value{ .object = payload_obj },
@@ -2097,7 +2205,7 @@ test "hook PermissionRequest stays on zig policy path" {
     try payload_obj.put(allocator, "kind", std.json.Value{ .string = "file_write" });
     try payload_obj.put(allocator, "target", std.json.Value{ .string = "/etc/passwd" });
 
-    var result = try evaluateHook(allocator, @ptrCast(@alignCast(policy_obj)), .claude, .PermissionRequest, std.json.Value{ .object = payload_obj }, false);
+    var result = try evaluateHookForTest(allocator, @ptrCast(@alignCast(policy_obj)), .claude, .PermissionRequest, std.json.Value{ .object = payload_obj }, false);
     defer result.deinit(allocator);
 
     try std.testing.expectEqual(PluginDecision.block, result.decision);
@@ -2117,7 +2225,7 @@ test "hook session informational events stay on zig path without daemon" {
     const empty_payload = std.json.Value{ .object = empty_obj };
 
     for (&[_]Event{ .PostToolUse, .Stop, .SessionEnd }) |event| {
-        var result = try evaluateHook(allocator, @ptrCast(@alignCast(policy_obj)), .codex, event, empty_payload, false);
+        var result = try evaluateHookForTest(allocator, @ptrCast(@alignCast(policy_obj)), .codex, event, empty_payload, false);
         defer result.deinit(allocator);
         try std.testing.expectEqual(PluginDecision.allow, result.decision);
         try std.testing.expectEqual(RiskLevel.low, result.risk);
@@ -2136,7 +2244,7 @@ test "hook UserPromptSubmit stays on zig prompt path" {
     defer payload_obj.deinit(allocator);
     try payload_obj.put(allocator, "prompt", std.json.Value{ .string = "summarize the repo" });
 
-    var result = try evaluateHook(allocator, @ptrCast(@alignCast(policy_obj)), .claude, .UserPromptSubmit, std.json.Value{ .object = payload_obj }, false);
+    var result = try evaluateHookForTest(allocator, @ptrCast(@alignCast(policy_obj)), .claude, .UserPromptSubmit, std.json.Value{ .object = payload_obj }, false);
     defer result.deinit(allocator);
 
     try std.testing.expect(result.decision == .allow or result.decision == .ask or result.decision == .warn);
@@ -2227,7 +2335,7 @@ test "hook evaluatePreToolUse fail-closes malformed shell payload before daemon 
 
     shell_eval.test_last_evaluate_command = null;
 
-    var result = try evaluatePreToolUse(
+    var result = try evaluatePreToolUseForTest(
         allocator,
         @ptrCast(@alignCast(policy_obj)),
         std.json.Value{ .object = payload_obj },
