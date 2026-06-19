@@ -19,21 +19,14 @@ For strongest protection, set `ORCA_BIN` to an absolute path for the trusted Orc
 
 ## Install
 
-Local package validation:
-
-```bash
-pi install ./orca-pi
-```
-
-Future npm install:
-
 ```bash
 pi install npm:@orca-security/pi-orca
 ```
 
-For one-off local runtime testing:
+Local development or validation:
 
 ```bash
+pi install ./orca-pi
 pi -e ./orca-pi
 ```
 
@@ -120,6 +113,12 @@ Command unexpectedly blocked:
 This package targets Pi packages using `pi.extensions` / `pi.skills` manifests and Pi extension APIs with `tool_call`, `registerCommand`, `ctx.cwd`, `ctx.mode`, and `ctx.hasUI`.
 
 It targets Orca CLI builds exposing `orca evaluate --json --stdin` with schema version `1` and decisions `allow`, `deny`, or `error`.
+
+## Known Limitations
+
+- Slash commands (`/orca-start`, `/orca-doctor`, `/orca-mode`) are registered at extension load time. In Pi noninteractive/print/json modes, command output may not be visible even when registration succeeds. Validate slash commands in an interactive Pi session or via unit tests.
+- Session bypass is in-memory only and clears when the Pi session ends or reloads.
+- Only Pi `bash` tool calls are evaluated. Other tools (for example `read`) are not intercepted.
 
 ## Smoke Test Checklist
 
