@@ -1,0 +1,64 @@
+{
+  "name": "@orca-security/pi-orca",
+  "version": "0.1.0",
+  "description": "Official Orca integration package for Pi bash tool-call protection.",
+  "type": "module",
+  "license": "Apache-2.0",
+  "author": "Orca Security",
+  "homepage": "https://github.com/christopherkarani/Orca#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/christopherkarani/Orca.git",
+    "directory": "orca-pi"
+  },
+  "bugs": {
+    "url": "https://github.com/christopherkarani/Orca/issues"
+  },
+  "keywords": [
+    "pi-package",
+    "pi",
+    "pi-coding-agent",
+    "orca",
+    "security",
+    "guardrails",
+    "bash",
+    "tool-call"
+  ],
+  "files": [
+    "extensions/**/*.ts",
+    "!extensions/**/*.test.ts",
+    "skills/**/SKILL.md",
+    "README.md",
+    "scripts/smoke.sh"
+  ],
+  "pi": {
+    "extensions": [
+      "./extensions/orca.ts"
+    ],
+    "skills": [
+      "./skills"
+    ]
+  },
+  "scripts": {
+    "test": "tsx --test test/*.test.ts",
+    "typecheck": "tsc --noEmit",
+    "pack:dry": "npm pack --dry-run",
+    "smoke": "bash scripts/smoke.sh"
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-coding-agent": ">=0.79.0"
+  },
+  "peerDependenciesMeta": {
+    "@earendil-works/pi-coding-agent": {
+      "optional": false
+    }
+  },
+  "devDependencies": {
+    "@types/node": "^24.0.0",
+    "tsx": "^4.20.0",
+    "typescript": "^5.9.0"
+  },
+  "engines": {
+    "node": ">=22.19.0"
+  }
+}

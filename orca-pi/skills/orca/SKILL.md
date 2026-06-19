@@ -1,0 +1,19 @@
+---
+name: orca
+description: Use when Pi bash tool calls are protected by Orca runtime guardrails.
+---
+
+# Orca Guardrails For Pi
+
+Orca evaluates Pi bash tool calls before they run. Treat an Orca block as a security decision, not as a formatting problem to route around.
+
+When Orca blocks a command:
+
+- Explain the block reason to the user without restating sensitive command contents.
+- Ask the user how they want to proceed.
+- Do not bypass Orca by obfuscating, splitting, encoding, rewriting, or indirectly executing the same dangerous command.
+- Use `/orca-doctor` for setup or daemon issues.
+- Use Orca allowlist or allow-once workflows when they are available and explicitly approved by the user.
+- Never advise disabling Orca casually. Session bypass is only for informed, user-approved exceptions.
+
+If Orca is unavailable, prefer repair first: run `/orca-doctor`, then `/orca-start` or `orca start` if the daemon is stopped.
