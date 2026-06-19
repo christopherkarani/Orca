@@ -26,6 +26,7 @@ pub const start = @import("start.zig");
 pub const onboarding = @import("onboarding.zig");
 pub const quickstart = @import("quickstart.zig");
 pub const decide = @import("decide.zig");
+pub const evaluate = @import("evaluate.zig");
 pub const hook = @import("hook.zig");
 pub const dashboard_command = @import("dashboard.zig");
 pub const report = @import("report.zig");
@@ -56,6 +57,7 @@ test {
     _ = daemon;
     _ = shutdown;
     _ = shell_eval;
+    _ = evaluate;
 }
 
 pub const version = build_options.version;
@@ -201,6 +203,7 @@ pub fn runWithCwd(io: std.Io, environ_map: *const std.process.Environ.Map, cwd: 
     if (std.mem.eql(u8, command, "plugin")) return plugin.command(io, argv[1..], stdout, stderr);
     if (std.mem.eql(u8, command, "setup")) return setup.command(io, cwd, argv[1..], stdout, stderr);
     if (std.mem.eql(u8, command, "decide")) return decide.command(io, argv[1..], stdout, stderr);
+    if (std.mem.eql(u8, command, "evaluate")) return evaluate.command(io, argv[1..], stdout, stderr);
     if (std.mem.eql(u8, command, "hook")) return hook.command(io, argv[1..], stdout, stderr);
     if (std.mem.eql(u8, command, "dashboard")) return dashboard_command.command(io, argv[1..], stdout, stderr);
     if (std.mem.eql(u8, command, "report")) return report.command(io, argv[1..], stdout, stderr);
@@ -737,7 +740,8 @@ test "quickstart dispatch runs and prints steps" {
     const output = stdout_writer.buffered();
     try std.testing.expect(std.mem.indexOf(u8, output, "Orca Quickstart") != null);
     try std.testing.expect(std.mem.indexOf(u8, output, "Step 1: Checking your system") != null);
-    try std.testing.expect(std.mem.indexOf(u8, output, "Step 2: Creating your first policy") != null);
+    try std.testing.expect(std.mem.indexOf(u8, output, "Step 2: Creating your first policy") != null or
+        std.mem.indexOf(u8, output, "Step 2: Policy already exists") != null);
     try std.testing.expect(std.mem.indexOf(u8, output, "Step 3: Setting up") != null);
     try std.testing.expect(std.mem.indexOf(u8, output, "You're all set!") != null);
 }

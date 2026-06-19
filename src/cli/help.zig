@@ -359,6 +359,13 @@ pub const commands = [_]CommandInfo{
         "  orca decide <kind> --json <payload> [--ci]",
         "Output is JSON to stdout; debug logs go to stderr only.",
     } },
+    .{ .name = "evaluate", .summary = "Stable machine API for shell-command evaluation", .usage = "orca evaluate --json --stdin", .category = .integrations, .details = &.{
+        "Reads a versioned JSON request from stdin and evaluates shell_command events through the Rust daemon Evaluate path.",
+        "Requires schema_version=1, kind=shell_command, command string, and an absolute existing cwd.",
+        "Always writes the stable integration JSON response to stdout for invalid input and expected daemon outcomes.",
+        "Exit codes: 0 allow, 2 deny, 3 daemon/protocol failure, 64 invalid input, 1 unexpected internal error.",
+        "Designed for external integrations such as Pi bash tool-call evaluation; non-shell evaluation is intentionally unsupported.",
+    } },
     .{ .name = "hook", .summary = "Receive events from AI agent hosts", .usage = "orca hook <codex|claude|opencode|openclaw|hermes> <event> [--ci]", .category = .advanced, .details = &.{
         "Reads a JSON payload from stdin, normalizes host-specific events to Orca decisions,",
         "and emits a host-valid JSON response to stdout. Debug logs go to stderr only.",

@@ -27,6 +27,7 @@ const commands = [_][]const u8{
     "shim",
     "plugin",
     "decide",
+    "evaluate",
     "hook",
     "dashboard",
     "report",
