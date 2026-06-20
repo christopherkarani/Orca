@@ -1,4 +1,4 @@
-# @orca-security/pi-orca
+# @orca-sec/pi-orca
 
 Official Orca integration package for Pi. It intercepts Pi `bash` tool calls and evaluates shell commands with:
 
@@ -20,7 +20,7 @@ For strongest protection, set `ORCA_BIN` to an absolute path for the trusted Orc
 ## Install
 
 ```bash
-pi install npm:@orca-security/pi-orca
+pi install npm:@orca-sec/pi-orca
 ```
 
 Local development or validation:
@@ -134,4 +134,4 @@ It targets Orca CLI builds exposing `orca evaluate --json --stdin` with schema v
 10. Orca unavailable noninteractive mode blocks.
 11. `/orca-start`, `/orca-doctor`, and `/orca-mode` work.
 12. `pi install ./orca-pi`.
-13. `pi list` shows `@orca-security/pi-orca` or the local package source.
+13. `pi list` shows `@orca-sec/pi-orca` or the local package source.

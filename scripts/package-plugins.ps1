@@ -3,7 +3,13 @@
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
 
-$VERSION = if ($env:ORCA_PLUGIN_VERSION) { $env:ORCA_PLUGIN_VERSION } elseif ($env:ORCA_VERSION) { $env:ORCA_VERSION } else { "1.1.0" }
+$scriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
+$repoRoot = Resolve-Path (Join-Path $scriptDir "..")
+$defaultVersion = "1.2.0"
+if (Test-Path -LiteralPath (Join-Path $repoRoot "VERSION")) {
+    $defaultVersion = (Get-Content -LiteralPath (Join-Path $repoRoot "VERSION") -TotalCount 1).Trim()
+}
+$VERSION = if ($env:ORCA_PLUGIN_VERSION) { $env:ORCA_PLUGIN_VERSION } elseif ($env:ORCA_VERSION) { $env:ORCA_VERSION } else { $defaultVersion }
 $DIST_DIR = if ($env:ORCA_DIST_DIR) { $env:ORCA_DIST_DIR } else { "dist/plugins" }
 $SCRIPT_DIR = Split-Path -Parent $MyInvocation.MyCommand.Path
 $REPO_ROOT = Resolve-Path (Join-Path $SCRIPT_DIR "..")

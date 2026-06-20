@@ -1,10 +1,10 @@
 #!/usr/bin/env sh
 set -eu
 
-VERSION="${ORCA_PLUGIN_VERSION:-${ORCA_VERSION:-1.1.0}}"
-DIST_DIR="${ORCA_DIST_DIR:-dist/plugins}"
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
+VERSION="${ORCA_PLUGIN_VERSION:-${ORCA_VERSION:-$(tr -d '[:space:]' < "${REPO_ROOT}/VERSION" 2>/dev/null || printf '1.2.0')}}"
+DIST_DIR="${ORCA_DIST_DIR:-dist/plugins}"
 case "${DIST_DIR}" in
   /*) DIST_DIR_ABS="${DIST_DIR}" ;;
   *) DIST_DIR_ABS="${REPO_ROOT}/${DIST_DIR}" ;;

@@ -17,7 +17,7 @@ if (-not $Version) {
         if (Test-Path -LiteralPath $defaultVersionPath) {
             $Version = (Get-Content -LiteralPath $defaultVersionPath -TotalCount 1).Trim()
         } else {
-            $Version = "1.1.5"
+            $Version = "1.2.0"
         }
     }
 }

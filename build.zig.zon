@@ -1,6 +1,6 @@
 .{
     .name = .orca,
-    .version = "1.1.4",
+    .version = "1.2.0",
     .fingerprint = 0x6111eddd14dbd5f4, // Changing this has security and trust implications.
     .minimum_zig_version = "0.16.0",
     .dependencies = .{},

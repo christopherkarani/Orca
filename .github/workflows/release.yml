@@ -6,7 +6,7 @@ on:
       version:
         description: Version without leading v
         required: true
-        default: 0.19.0-dev
+        default: 1.2.0
       signing_enabled:
         description: Run optional signing hook
         required: true

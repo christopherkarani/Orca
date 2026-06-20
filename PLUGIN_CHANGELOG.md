@@ -1,5 +1,19 @@
 # Orca Plugin Changelog
 
+## 1.2.0 — Daemon Integration and Pi Extension
+
+### Added
+- **Pi extension** (`orca-pi/` → `@orca-guard/pi-orca@1.2.0`) — Intercepts Pi `bash` tool calls via `orca evaluate --json --stdin`. First public npm publish.
+- Slash commands `/orca-start`, `/orca-doctor`, `/orca-mode` for Pi sessions.
+
+### Changed
+- All hook-bridge plugins unified to version **1.2.0** (Codex, Claude, OpenCode, OpenClaw, Hermes Agent).
+- Shell evaluation for hook hosts now benefits from daemon-backed policy when `orca-daemon` is running.
+
+### Fixed
+- **Hermes Agent** — Hardened Orca discovery, `ORCA_HERMES_FAIL_OPEN` degraded-mode behavior, and install path alignment with `orca plugin doctor`.
+- **Pi** — Honor deny decisions, request timeouts, cwd propagation, and auto unavailable-mode handling.
+
 ## 1.1.4 — Unified Version Release
 
 ### Fixed

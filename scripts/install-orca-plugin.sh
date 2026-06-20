@@ -35,7 +35,7 @@ read_repo_version() {
   if [ -f "${REPO_ROOT}/VERSION" ]; then
     tr -d '[:space:]' < "${REPO_ROOT}/VERSION"
   else
-    printf '1.1.4'
+    printf '1.2.0'
   fi
 }
 

@@ -16,7 +16,7 @@ function Get-RepoVersion {
     if (Test-Path -LiteralPath $versionPath) {
         return (Get-Content -LiteralPath $versionPath -TotalCount 1).Trim()
     }
-    return "1.1.4"
+    return "1.2.0"
 }
 
 function Resolve-OrcaExecutable([string]$Candidate) {

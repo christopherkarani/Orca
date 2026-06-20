@@ -10,8 +10,9 @@ case "${DIST_DIR}" in
 esac
 
 PACKAGES="
-opencode-plugin:orca-opencode-plugin
-openclaw-plugin:orca-openclaw-plugin
+integrations/opencode-plugin
+integrations/openclaw-plugin
+orca-pi
 "
 
 rm -rf "${DIST_DIR_ABS}"
@@ -22,40 +23,55 @@ CHECKSUMS_FILE="${DIST_DIR_ABS}/orca-npm-plugin-checksums.txt"
 
 TOTAL_ISSUES=0
 
-for entry in ${PACKAGES}; do
-  PKG_DIR_NAME="$(echo "$entry" | cut -d: -f1)"
-  OUTPUT_PREFIX="$(echo "$entry" | cut -d: -f2)"
-  PACKAGE_DIR="${REPO_ROOT}/integrations/${PKG_DIR_NAME}"
+for rel_path in ${PACKAGES}; do
+  PACKAGE_DIR="${REPO_ROOT}/${rel_path}"
 
   if [ ! -d "${PACKAGE_DIR}" ]; then
     echo "WARNING: Package directory not found: ${PACKAGE_DIR}" >&2
     continue
   fi
 
+  PKG_NAME="$(node -p "require('${PACKAGE_DIR}/package.json').name")"
   VERSION="$(node -p "require('${PACKAGE_DIR}/package.json').version")"
+  SAFE_NAME="$(printf '%s' "$PKG_NAME" | tr '/@' '--' | sed 's/^--//')"
 
   echo ""
   echo "========================================"
-  echo "Packaging ${OUTPUT_PREFIX} v${VERSION}..."
+  echo "Packaging ${PKG_NAME} v${VERSION}..."
   echo "========================================"
 
-  if [ ! -f "${PACKAGE_DIR}/dist/index.js" ]; then
-    echo "ERROR: dist/index.js not found in ${PACKAGE_DIR}. Run 'npm run build' first." >&2
+  if [ -f "${PACKAGE_DIR}/dist/index.js" ]; then
+    :
+  elif [ -f "${PACKAGE_DIR}/extensions/orca.ts" ]; then
+    :
+  else
+    echo "ERROR: no packable entry found in ${PACKAGE_DIR} (expected dist/index.js or extensions/orca.ts)" >&2
     exit 1
   fi
 
   (cd "${PACKAGE_DIR}" && npm pack --dry-run)
 
-  PKG_TARBALL="${DIST_DIR_ABS}/${OUTPUT_PREFIX}-v${VERSION}.tgz"
+  PKG_TARBALL="${DIST_DIR_ABS}/${SAFE_NAME}-v${VERSION}.tgz"
   (cd "${PACKAGE_DIR}" && npm pack --pack-destination "${DIST_DIR_ABS}")
 
-  BUILT_TARBALL="${DIST_DIR_ABS}/${OUTPUT_PREFIX}-${VERSION}.tgz"
-  if [ -f "${BUILT_TARBALL}" ]; then
+  BUILT_TARBALL="${DIST_DIR_ABS}/$(node -p "require('${PACKAGE_DIR}/package.json').name.replace('@','').replace('/','-')")-${VERSION}.tgz"
+  if [ ! -f "${BUILT_TARBALL}" ]; then
+    BUILT_TARBALL="${DIST_DIR_ABS}/$(basename "${rel_path}")-${VERSION}.tgz"
+  fi
+  if [ -f "${BUILT_TARBALL}" ] && [ "${BUILT_TARBALL}" != "${PKG_TARBALL}" ]; then
     mv "${BUILT_TARBALL}" "${PKG_TARBALL}"
   fi
 
   if [ ! -f "${PKG_TARBALL}" ]; then
-    echo "ERROR: Failed to create tarball for ${OUTPUT_PREFIX}" >&2
+    for candidate in "${DIST_DIR_ABS}"/*.tgz; do
+      [ -f "$candidate" ] || continue
+      mv "$candidate" "${PKG_TARBALL}"
+      break
+    done
+  fi
+
+  if [ ! -f "${PKG_TARBALL}" ]; then
+    echo "ERROR: Failed to create tarball for ${PKG_NAME}" >&2
     exit 1
   fi
 
@@ -71,21 +87,21 @@ for entry in ${PACKAGES}; do
   fi
   printf '%s  %s\n' "$hash" "$(basename "$PKG_TARBALL")" >> "${CHECKSUMS_FILE}"
 
-  echo "Scanning ${OUTPUT_PREFIX} tarball for potential secrets..."
+  echo "Scanning ${PKG_NAME} tarball for potential secrets..."
   SCAN_ISSUES=0
 
   tmpdir="$(mktemp -d)"
   tar -xzf "${PKG_TARBALL}" -C "$tmpdir"
   if grep -riE "(api_key|apikey|secret|token|password|private_key|privkey)[[:space:]]*[:=][[:space:]]*[\"']?[a-zA-Z0-9_/-]{16,}" "$tmpdir" 2>/dev/null | grep -v "fake_" | grep -v "example" | grep -v "placeholder" | grep -v "your_"; then
-    echo "WARNING: Potential secret pattern in ${OUTPUT_PREFIX} tarball" >&2
+    echo "WARNING: Potential secret pattern in ${PKG_NAME} tarball" >&2
     SCAN_ISSUES=$((SCAN_ISSUES + 1))
   fi
   rm -rf "$tmpdir"
 
   if [ "$SCAN_ISSUES" -eq 0 ]; then
-    echo "Secret scan passed for ${OUTPUT_PREFIX}."
+    echo "Secret scan passed for ${PKG_NAME}."
   else
-    echo "WARNING: Secret scan found ${SCAN_ISSUES} potential issues in ${OUTPUT_PREFIX}. Review before release." >&2
+    echo "WARNING: Secret scan found ${SCAN_ISSUES} potential issues in ${PKG_NAME}. Review before release." >&2
     TOTAL_ISSUES=$((TOTAL_ISSUES + SCAN_ISSUES))
   fi
 done

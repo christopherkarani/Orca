@@ -1,6 +1,6 @@
 {
   "name": "@orca-runtime/orca",
-  "version": "1.1.0",
+  "version": "1.2.0",
   "description": "npm launcher for the Zig-built Orca binary.",
   "license": "Apache-2.0",
   "homepage": "https://github.com/christopherkarani/Orca",
@@ -29,7 +29,7 @@
     "README.md"
   ],
   "orca": {
-    "artifactBaseUrl": "https://github.com/christopherkarani/Orca/releases/download/v1.1.0",
+    "artifactBaseUrl": "https://github.com/christopherkarani/Orca/releases/download/v1.2.0",
     "supportedTargets": [
       "darwin-amd64",
       "darwin-arm64",

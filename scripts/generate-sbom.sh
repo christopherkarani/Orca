@@ -2,7 +2,9 @@
 set -eu
 
 ARTIFACT_DIR="${1:-dist}"
-VERSION="${ORCA_VERSION:-1.1.0}"
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
+VERSION="${ORCA_VERSION:-$(tr -d '[:space:]' < "${REPO_ROOT}/VERSION" 2>/dev/null || printf '1.2.0')}"
 RELEASE_PRODUCT="${ORCA_RELEASE_PRODUCT:-all}"
 OUTPUT="${ARTIFACT_DIR}/sbom.json"
 

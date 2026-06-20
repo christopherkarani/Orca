@@ -1,7 +1,7 @@
 #!/usr/bin/env sh
 set -eu
 
-VERSION="${ORCA_VERSION:-$(tr -d '[:space:]' <"$(dirname "$0")/../VERSION" 2>/dev/null || printf '1.1.5')}"
+VERSION="${ORCA_VERSION:-$(tr -d '[:space:]' <"$(dirname "$0")/../VERSION" 2>/dev/null || printf '1.2.0')}"
 COMMIT="${ORCA_COMMIT:-$(git rev-parse --short HEAD 2>/dev/null || printf unknown)}"
 BUILD_DATE="${ORCA_BUILD_DATE:-$(date -u +%Y-%m-%dT%H:%M:%SZ)}"
 DIST_DIR="${ORCA_DIST_DIR:-dist}"

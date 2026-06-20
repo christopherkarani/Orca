@@ -1,5 +1,34 @@
 # Changelog
 
+## v1.2.0 - 2026-06-19
+
+### Added
+- **Rust daemon (`orca-daemon`)** — UDS IPC between Zig CLI and Rust evaluator; shell hook evaluation routed through daemon with fail-closed behavior when unavailable.
+- **`orca evaluate`** — Stable machine JSON API for shell command evaluation (`--json --stdin`).
+- **`orca start`** — Guided onboarding flow with host detection and plugin install.
+- **Pi extension (`@orca-guard/pi-orca`)** — Official Pi package for bash tool-call protection via `orca evaluate`.
+- **Bundled `orca-daemon`** in all platform release archives and install layouts.
+
+### Changed
+- **Zig 0.16.0** toolchain migration.
+- **Guided onboarding** — Interactive `orca setup` with multi-host selection.
+- **Unified versioning** — Core and all agent plugins aligned to 1.2.0.
+- Shell `PreToolUse` / tool evaluation defaults route through Rust daemon when available.
+
+### Removed
+- **Orca Edge** — Drone/edge runtime removed from public core; agent guardrails focus only.
+
+### Fixed
+- **Hermes Agent** — Orca discovery, degraded-mode handling, and version mismatch fixes.
+- **Pi integration** — Honor deny decisions, timeouts, cwd, and auto unavailable mode.
+- Install/DX hardening — quick-install presets, `orca doctor` activation exports, piped install robustness.
+
+## v1.1.5 - 2026-05-24
+
+### Added
+- **`orca disable`** — Remove Orca plugin registrations from host agents without touching binary or policy.
+- **`orca uninstall`** — Full removal of plugins, binary, and user config (preserves workspace `.orca/`).
+
 ## v1.1.4 - 2026-05-21
 
 ### Fixed

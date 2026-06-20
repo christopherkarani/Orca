@@ -5,7 +5,7 @@ set -eu
 # - File execution (dev, local checkout): read ../VERSION when present.
 # - Piped public install (curl | sh — the primary documented path): $0 is not a
 #   regular file, so we skip the local read entirely (no redirection noise) and
-#   fall through to the GitHub API query (or ORCA_VERSION / hardcoded 1.1.5).
+#   fall through to the GitHub API query (or ORCA_VERSION / hardcoded 1.2.0).
 # - ORCA_VERSION always wins. Hardcoded value is only the final safety net.
 SCRIPT_DIR=""
 if [ -f "$0" ] 2>/dev/null; then
@@ -37,7 +37,7 @@ if [ -z "${DEFAULT_VERSION}" ] && [ -z "${ORCA_VERSION:-}" ]; then
     done
 fi
 
-VERSION="${ORCA_VERSION:-${DEFAULT_VERSION:-1.1.5}}"
+VERSION="${ORCA_VERSION:-${DEFAULT_VERSION:-1.2.0}}"
 BASE_URL="${ORCA_BASE_URL:-https://github.com/christopherkarani/Orca/releases/download/v${VERSION}}"
 INSTALL_DIR="${ORCA_INSTALL_DIR:-${HOME}/.local/bin}"
 SHARE_DIR="${ORCA_SHARE_DIR:-${HOME}/.local/share/orca}"
