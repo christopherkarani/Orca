@@ -53,7 +53,7 @@ orca demo blocked-action
 orca replay --session last --only denied --verify
 ```
 
-No AI agent required for the demo. No files are harmed.
+No AI agent required for the demo. No files are harmed
 
 ---
 
