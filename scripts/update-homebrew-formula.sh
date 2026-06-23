@@ -21,8 +21,13 @@ fail() {
 [ -f "$TEMPLATE" ] || fail "homebrew template not found: $TEMPLATE"
 
 BASE_URL="https://github.com/christopherkarani/Orca/releases/download/v${VERSION}"
+DIST_DIR="${ORCA_DIST_DIR:-}"
 
-printf 'Downloading release assets for Orca %s...\n' "$VERSION"
+if [ -n "$DIST_DIR" ]; then
+  printf 'Using local release assets for Orca %s from %s...\n' "$VERSION" "$DIST_DIR"
+else
+  printf 'Downloading release assets for Orca %s...\n' "$VERSION"
+fi
 
 for plat in darwin-arm64 darwin-amd64 linux-arm64 linux-amd64; do
   artifact="orca-v${VERSION}-${plat}.tar.gz"
@@ -30,7 +35,9 @@ for plat in darwin-arm64 darwin-amd64 linux-arm64 linux-amd64; do
   output="${TMP_DIR}/${artifact}"
 
   printf '  → %s\n' "$artifact"
-  if command -v curl >/dev/null 2>&1; then
+  if [ -n "$DIST_DIR" ] && [ -f "${DIST_DIR}/${artifact}" ]; then
+    cp "${DIST_DIR}/${artifact}" "$output"
+  elif command -v curl >/dev/null 2>&1; then
     curl -fsSL -o "$output" "$url" || fail "failed to download $url"
   elif command -v wget >/dev/null 2>&1; then
     wget -q -O "$output" "$url" || fail "failed to download $url"
