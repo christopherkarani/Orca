@@ -22,7 +22,6 @@ esac
 # - orca-v1.1.0-darwin-arm64.tar.gz
 # - orca-v1.1.0-linux-amd64.tar.gz
 # - orca-v1.1.0-linux-arm64.tar.gz
-# - orca-v1.1.0-windows-amd64.zip
 # Release archive names and installed binaries use Orca/Core names only.
 
 CLI_TARGETS="
@@ -30,7 +29,6 @@ darwin amd64 x86_64-macos tar.gz orca
 darwin arm64 aarch64-macos tar.gz orca
 linux amd64 x86_64-linux tar.gz orca
 linux arm64 aarch64-linux tar.gz orca
-windows amd64 x86_64-windows zip orca.exe
 "
 
 daemon_name_for_os() {
@@ -75,7 +73,7 @@ selected_targets() {
 
 target_platforms_json() {
   case "$RELEASE_PRODUCT" in
-    all | cli) printf '["darwin-amd64", "darwin-arm64", "linux-amd64", "linux-arm64", "windows-amd64"]' ;;
+    all | cli) printf '["darwin-amd64", "darwin-arm64", "linux-amd64", "linux-arm64"]' ;;
     host) printf '["%s-%s"]' "$HOST_OS" "$HOST_ARCH" ;;
     *) printf '[]' ;;
   esac

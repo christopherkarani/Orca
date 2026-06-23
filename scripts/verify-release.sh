@@ -177,13 +177,6 @@ require_package_hashes() {
     require_manifest_hash_for_artifact "$homebrew" "$name"
     require_manifest_hash_for_artifact "$npm" "$name"
   done
-  for artifact in "$DIST_DIR"/orca-v*-windows-amd64.zip; do
-    [ -f "$artifact" ] || continue
-    name="$(basename "$artifact")"
-    require_manifest_hash_for_artifact "$npm" "$name"
-    require_manifest_hash_for_artifact "$scoop" "$name"
-    require_manifest_hash_for_artifact "$winget" "$name"
-  done
 }
 
 require_release_artifacts() {
@@ -193,7 +186,6 @@ require_release_artifacts() {
       require_artifact "$DIST_DIR/orca-v*-darwin-arm64.tar.gz"
       require_artifact "$DIST_DIR/orca-v*-linux-amd64.tar.gz"
       require_artifact "$DIST_DIR/orca-v*-linux-arm64.tar.gz"
-      require_artifact "$DIST_DIR/orca-v*-windows-amd64.zip"
       require_orca_archive_binary "$DIST_DIR/orca-v*-darwin-amd64.tar.gz" "orca"
       require_orca_archive_binary "$DIST_DIR/orca-v*-darwin-amd64.tar.gz" "orca-daemon"
       require_orca_archive_binary "$DIST_DIR/orca-v*-darwin-arm64.tar.gz" "orca"
@@ -202,13 +194,10 @@ require_release_artifacts() {
       require_orca_archive_binary "$DIST_DIR/orca-v*-linux-amd64.tar.gz" "orca-daemon"
       require_orca_archive_binary "$DIST_DIR/orca-v*-linux-arm64.tar.gz" "orca"
       require_orca_archive_binary "$DIST_DIR/orca-v*-linux-arm64.tar.gz" "orca-daemon"
-      require_orca_archive_binary "$DIST_DIR/orca-v*-windows-amd64.zip" "orca.exe"
-      require_orca_archive_binary "$DIST_DIR/orca-v*-windows-amd64.zip" "orca-daemon.exe"
       require_orca_archive_excludes "$DIST_DIR/orca-v*-darwin-amd64.tar.gz"
       require_orca_archive_excludes "$DIST_DIR/orca-v*-darwin-arm64.tar.gz"
       require_orca_archive_excludes "$DIST_DIR/orca-v*-linux-amd64.tar.gz"
       require_orca_archive_excludes "$DIST_DIR/orca-v*-linux-arm64.tar.gz"
-      require_orca_archive_excludes "$DIST_DIR/orca-v*-windows-amd64.zip"
       ;;
     host)
       case "$(detect_host_target)" in
@@ -261,8 +250,6 @@ if [ "$RELEASE_PRODUCT" != "host" ]; then
   [ -s "$DIST_DIR/package-manifests/homebrew/Formula/orca.rb" ] || fail "missing rendered Homebrew formula"
   [ -s "$DIST_DIR/package-manifests/npm/package.json" ] || fail "missing rendered npm package manifest"
   [ -s "$DIST_DIR/package-manifests/npm/bin/orca.js" ] || fail "missing rendered npm launcher"
-  [ -s "$DIST_DIR/package-manifests/scoop/orca.json" ] || fail "missing rendered Scoop manifest"
-  [ -s "$DIST_DIR/package-manifests/winget/orca.yaml" ] || fail "missing rendered WinGet manifest"
 fi
 grep -q '"products_included"' "$DIST_DIR/release-manifest.json" || fail "release-manifest.json missing products_included"
 grep -q '"orca"' "$DIST_DIR/release-manifest.json" || fail "release-manifest.json missing Orca product"
@@ -280,9 +267,7 @@ grep -q '"sbom_status"' "$DIST_DIR/release-manifest.json"
 if [ "$RELEASE_PRODUCT" != "host" ]; then
   for rendered in \
     "$DIST_DIR/package-manifests/homebrew/Formula/orca.rb" \
-    "$DIST_DIR/package-manifests/npm/package.json" \
-    "$DIST_DIR/package-manifests/scoop/orca.json" \
-    "$DIST_DIR/package-manifests/winget/orca.yaml"
+    "$DIST_DIR/package-manifests/npm/package.json"
   do
     ! grep -q 'PLACEHOLDER' "$rendered" || { printf 'release verify: placeholder left in %s\n' "$rendered" >&2; exit 1; }
   done
