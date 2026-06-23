@@ -1,4 +1,6 @@
 const std = @import("std");
+const builtin = @import("builtin");
+const env_util = @import("../env_util.zig");
 
 /// Result of running a host command (e.g. `openclaw plugins uninstall ...` or `hermes ...`)
 /// with a timeout guard.
@@ -10,9 +12,9 @@ pub const HostCommandResult = struct {
     exit_code: u8,
     /// True if we killed the child because it exceeded the deadline.
     timed_out: bool,
-    /// Captured stdout (owned slice, caller must free). May be null if not captured.
+    /// Reserved for API compatibility. Host-management commands discard output.
     stdout: ?[]const u8,
-    /// Captured stderr (owned slice, caller must free). May be null if not captured.
+    /// Reserved for API compatibility. Host-management commands discard output.
     stderr: ?[]const u8,
 };
 
@@ -21,22 +23,9 @@ pub fn deinitHostCommandResult(result: HostCommandResult, allocator: std.mem.All
     if (result.stderr) |s| allocator.free(s);
 }
 
-fn readPipeToAlloc(io: std.Io, allocator: std.mem.Allocator, file: std.Io.File, limit: usize) !?[]u8 {
-    var list: std.ArrayList(u8) = .empty;
-    errdefer list.deinit(allocator);
-    var buf: [4096]u8 = undefined;
-    var reader = file.reader(io, &buf);
-    while (list.items.len < limit) {
-        const n = reader.interface.readSliceShort(buf[0..@min(buf.len, limit - list.items.len)]) catch break;
-        if (n == 0) break;
-        try list.appendSlice(allocator, buf[0..n]);
-    }
-    if (list.items.len == 0) return null;
-    return try list.toOwnedSlice(allocator);
-}
-
 /// Run an external command (intended for host agent CLIs like openclaw/hermes)
-/// with a hard timeout. Output is captured (and optionally streamed live for UX).
+/// with a hard timeout. Output is discarded so an untrusted host CLI cannot block
+/// Orca by filling a pipe. Current callers only need the exit status.
 ///
 /// On Unix we use a monitoring thread + timer + kill for reliable timeout.
 /// On Windows we use a best-effort wait loop + TerminateProcess (weaker guarantees).
@@ -53,24 +42,30 @@ pub fn runHostCommandTimed(
     stderr_writer: anytype,
 ) !HostCommandResult {
     if (argv.len == 0) return error.InvalidArgv;
+    _ = stdout_writer;
+    _ = stderr_writer;
 
-    var threaded = std.Io.Threaded.init(allocator, .{});
+    var threaded = std.Io.Threaded.init(allocator, .{
+        .environ = env_util.processEnviron(),
+    });
     defer threaded.deinit();
     const io = threaded.io();
 
     var child = try std.process.spawn(io, .{
         .argv = argv,
         .stdin = .ignore,
-        .stdout = .pipe,
-        .stderr = .pipe,
+        .stdout = .ignore,
+        .stderr = .ignore,
+        .pgid = if (builtin.os.tag == .windows) null else 0,
     });
+    const child_id = child.id.?;
 
     var timed_out: bool = false;
     var finished = std.atomic.Value(bool).init(false);
     var watcher: ?std.Thread = null;
     if (timeout_ms > 0) {
         watcher = std.Thread.spawn(.{}, struct {
-            fn run(c: *std.process.Child, watch_io: std.Io, flag: *bool, fin: *std.atomic.Value(bool), ms: u64) void {
+            fn run(id: std.process.Child.Id, watch_io: std.Io, flag: *bool, fin: *std.atomic.Value(bool), ms: u64) void {
                 var remaining: u64 = ms;
                 const chunk: u64 = 50;
                 while (remaining > 0) {
@@ -81,14 +76,23 @@ pub fn runHostCommandTimed(
                     remaining -= sl;
                 }
                 if (fin.load(.acquire)) return;
-                if (@import("builtin").os.tag == .windows) {
-                    c.kill(watch_io);
-                } else if (c.id) |pid| {
-                    std.posix.kill(pid, std.posix.SIG.TERM) catch {};
+                if (builtin.os.tag == .windows) {
+                    _ = std.os.windows.ntdll.NtTerminateProcess(id, @enumFromInt(1));
+                } else {
+                    std.posix.kill(-id, std.posix.SIG.TERM) catch {};
+                    var grace_ms: u64 = 500;
+                    while (grace_ms > 0 and !fin.load(.acquire)) {
+                        std.Io.sleep(watch_io, std.Io.Duration.fromMilliseconds(50), .awake) catch {};
+                        grace_ms -= 50;
+                    }
+                    if (!fin.load(.acquire)) std.posix.kill(-id, std.posix.SIG.KILL) catch {};
                 }
                 flag.* = true;
             }
-        }.run, .{ &child, io, &timed_out, &finished, timeout_ms }) catch null;
+        }.run, .{ child_id, io, &timed_out, &finished, timeout_ms }) catch |err| {
+            child.kill(io);
+            return err;
+        };
     }
 
     const term = child.wait(io) catch {
@@ -109,31 +113,11 @@ pub fn runHostCommandTimed(
         .signal, .stopped, .unknown => 255,
     };
 
-    const stdout_data = if (child.stdout) |out| blk: {
-        const data = readPipeToAlloc(io, allocator, out, 1 * 1024 * 1024) catch null;
-        if (stdout_writer) |w| {
-            if (data) |d| {
-                _ = w.writeAll(d) catch {};
-            }
-        }
-        break :blk data;
-    } else null;
-
-    const stderr_data = if (child.stderr) |err_pipe| blk: {
-        const data = readPipeToAlloc(io, allocator, err_pipe, 1 * 1024 * 1024) catch null;
-        if (stderr_writer) |w| {
-            if (data) |d| {
-                _ = w.writeAll(d) catch {};
-            }
-        }
-        break :blk data;
-    } else null;
-
     return HostCommandResult{
         .exit_code = exit_code,
         .timed_out = timed_out,
-        .stdout = stdout_data,
-        .stderr = stderr_data,
+        .stdout = null,
+        .stderr = null,
     };
 }
 
@@ -177,4 +161,32 @@ test "child_process: fast successful command returns reasonable result without h
     );
     defer deinitHostCommandResult(res, std.testing.allocator);
     try std.testing.expect(!res.timed_out);
+}
+
+test "child_process: host command resolves through inherited PATH" {
+    if (builtin.os.tag == .windows) return error.SkipZigTest;
+
+    const argv = [_][]const u8{ "sh", "-c", "exit 0" };
+    const res = try runHostCommandTimed(std.testing.allocator, &argv, 5_000, null, null);
+    defer deinitHostCommandResult(res, std.testing.allocator);
+
+    try std.testing.expect(!res.timed_out);
+    try std.testing.expectEqual(@as(u8, 0), res.exit_code);
+}
+
+test "child_process: ignored high-volume output cannot fill a pipe" {
+    if (builtin.os.tag == .windows) return error.SkipZigTest;
+    const argv = [_][]const u8{ "sh", "-c", "yes x | head -c 1048576" };
+    const res = try runHostCommandTimed(std.testing.allocator, &argv, 5_000, null, null);
+    defer deinitHostCommandResult(res, std.testing.allocator);
+    try std.testing.expect(!res.timed_out);
+    try std.testing.expectEqual(@as(u8, 0), res.exit_code);
+}
+
+test "child_process: timeout escalates when child ignores TERM" {
+    if (builtin.os.tag == .windows) return error.SkipZigTest;
+    const argv = [_][]const u8{ "sh", "-c", "trap '' TERM; sleep 10" };
+    const res = try runHostCommandTimed(std.testing.allocator, &argv, 50, null, null);
+    defer deinitHostCommandResult(res, std.testing.allocator);
+    try std.testing.expect(res.timed_out);
 }

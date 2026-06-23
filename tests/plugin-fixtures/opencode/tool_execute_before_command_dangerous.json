@@ -5,6 +5,6 @@
   "payload": {
     "tool": "shell",
     "command": "rm -rf /",
-    "cwd": "/Users/chriskarani/CodingProjects/aegis"
+    "cwd": "tests"
   }
 }

@@ -296,8 +296,8 @@ OPENCLAW_VERSION=$(grep '"version"' "${REPO_ROOT}/integrations/openclaw-plugin/p
 CODEX_VERSION=$(grep '"version"' "${REPO_ROOT}/integrations/codex-plugin/.codex-plugin/plugin.json" | head -1 | sed 's/.*"version": *"\([^"]*\)".*/\1/')
 CLAUDE_VERSION=$(grep '"version"' "${REPO_ROOT}/integrations/claude-code-plugin/.claude-plugin/plugin.json" | head -1 | sed 's/.*"version": *"\([^"]*\)".*/\1/')
 OPENCODE_VERSION=$(grep '"version"' "${REPO_ROOT}/integrations/opencode-plugin/package.json" | head -1 | sed 's/.*"version": *"\([^"]*\)".*/\1/')
-PI_VERSION=$(grep '"version"' "${REPO_ROOT}/orca-pi/package.json" | head -1 | sed 's/.*"version": *"\([^"]*\)".*/\1/')
-for plugin_version in "${HERMES_VERSION}" "${OPENCLAW_VERSION}" "${CODEX_VERSION}" "${CLAUDE_VERSION}" "${OPENCODE_VERSION}" "${PI_VERSION}"; do
+PI_RUNTIME_VERSION=$(grep '"@orca-runtime/orca"' "${REPO_ROOT}/orca-pi/package.json" | head -1 | sed 's/.*"@orca-runtime\/orca": *"\([^"]*\)".*/\1/')
+for plugin_version in "${HERMES_VERSION}" "${OPENCLAW_VERSION}" "${CODEX_VERSION}" "${CLAUDE_VERSION}" "${OPENCODE_VERSION}" "${PI_RUNTIME_VERSION}"; do
   if [ "${plugin_version}" != "${CLI_VERSION}" ]; then
     echo "ERROR: plugin version mismatch (expected ${CLI_VERSION}, got ${plugin_version})" >&2
     exit 1

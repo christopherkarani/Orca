@@ -1,4 +1,4 @@
-# Orca &nbsp;[![Version](https://img.shields.io/badge/version-1.2.0-blue)](https://github.com/christopherkarani/Orca/releases) [![License](https://img.shields.io/badge/license-Apache--2.0-green)](LICENSE) [![Zig](https://img.shields.io/badge/built%20with-Zig-orange)](https://ziglang.org) [![Build](https://img.shields.io/github/actions/workflow/status/christopherkarani/Orca/build.yml?branch=main&label=build)](https://github.com/christopherkarani/Orca/actions/workflows/build.yml) [![Stars](https://img.shields.io/github/stars/christopherkarani/Orca?style=social)](https://github.com/christopherkarani/Orca)
+# Orca &nbsp;[![Version](https://img.shields.io/badge/version-1.2.2-blue)](https://github.com/christopherkarani/Orca/releases) [![License](https://img.shields.io/badge/license-Apache--2.0-green)](LICENSE) [![Zig](https://img.shields.io/badge/built%20with-Zig-orange)](https://ziglang.org) [![Build](https://img.shields.io/github/actions/workflow/status/christopherkarani/Orca/build.yml?branch=main&label=build)](https://github.com/christopherkarani/Orca/actions/workflows/build.yml) [![Stars](https://img.shields.io/github/stars/christopherkarani/Orca?style=social)](https://github.com/christopherkarani/Orca)
 
 **Unleash AI agents with confidence.**
 
@@ -15,8 +15,8 @@ brew tap christopherkarani/orca && brew install --formula orca
 # Or install with the official script
 curl -fsSL https://raw.githubusercontent.com/christopherkarani/Orca/main/scripts/install.sh | sh
 
-# Or build from source (Zig 0.16.0)
-zig build
+# Or build both required binaries from source (Zig 0.16.0 + Rust)
+./scripts/build-all.sh
 ```
 
 ---

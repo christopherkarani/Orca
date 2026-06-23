@@ -1,3 +1,5 @@
 node_modules/
 .DS_Store
 *.tgz
+.skynex/production-gate.json
+.skynex/audit.log

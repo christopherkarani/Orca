@@ -14,6 +14,10 @@ jobs:
           version: 0.16.0
       - name: Unit tests
         run: ./scripts/zig build test
+      - name: First-user install and uninstall regressions
+        run: |
+          ./scripts/install-first-user-regression-test.sh
+          ./scripts/uninstall-first-user-regression-test.sh
       - name: Red-team CI
         run: |
           ./scripts/zig build
@@ -34,6 +38,7 @@ jobs:
           bash -n scripts/generate-sbom.sh
           bash -n scripts/verify-release.sh
           bash -n scripts/release-dry-run.sh
+          bash -n scripts/docker-install-layout-smoke-test.sh
           ruby -c packaging/homebrew/Formula/orca.rb
           python3 -m json.tool packaging/scoop/orca.json >/dev/null
           python3 -m json.tool packaging/npm/package.json >/dev/null

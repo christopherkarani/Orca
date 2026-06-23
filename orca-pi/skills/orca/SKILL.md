@@ -16,4 +16,6 @@ When Orca blocks a command:
 - Use Orca allowlist or allow-once workflows when they are available and explicitly approved by the user.
 - Never advise disabling Orca casually. Session bypass is only for informed, user-approved exceptions.
 
-If Orca is unavailable, prefer repair first: run `/orca-doctor`, then `/orca-start` or `orca start` if the daemon is stopped.
+Installation requires one command: `pi install npm:@orca-sec/pi-orca`. Do not mix that npm install with `pi install ./orca-pi`, which can register duplicate extensions and create binary ambiguity.
+
+If Orca is unavailable, prefer repair first: run `/orca-setup`, then `/orca-doctor`. `/orca-setup` only ensures the workspace policy and probes health; it never installs plugins for other hosts. The daemon starts automatically on the first protected evaluation.

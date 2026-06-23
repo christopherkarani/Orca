@@ -64,7 +64,7 @@ pub fn command(io: std.Io, cwd: std.Io.Dir, argv: []const []const u8, stdout: an
         try stdout.writeAll("Setup complete.\n\n");
     }
 
-    try stdout.writeAll("You're all set!\n");
+    try stdout.writeAll("Core protection is ready. Host integrations reported above may still need setup.\n");
     try stdout.writeAll("\nStart protecting your sessions:\n");
     try stdout.writeAll("  orca run -- <your-command>\n");
     try stdout.writeAll("\nUseful next steps:\n");

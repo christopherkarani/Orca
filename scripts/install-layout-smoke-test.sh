@@ -103,4 +103,7 @@ fail_closed_output="$("${ORCA_BIN}" hook claude PreToolUse < "${safe_fixture}")"
 assert_json_field "${fail_closed_output}" "decision" "block"
 assert_contains "${fail_closed_output}" "daemon unavailable"
 
+[[ -d "${STAGE_ROOT}/orca-dashboard-ui/dist" ]] || fail "staged release missing orca-dashboard-ui/dist"
+[[ -f "${STAGE_ROOT}/orca-dashboard-ui/dist/index.html" ]] || fail "staged dashboard bundle missing index.html"
+
 printf '[install-layout-smoke] passed for %s-%s\n' "${OS}" "${ARCH}"

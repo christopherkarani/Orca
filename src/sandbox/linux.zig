@@ -121,15 +121,19 @@ fn detectCgroups() Probe {
 }
 
 fn pathExists(path: []const u8) bool {
-    std.Io.Dir.accessAbsolute(std.testing.io, path, .{}) catch return false;
+    var threaded: std.Io.Threaded = .init_single_threaded;
+    const io = threaded.io();
+    std.Io.Dir.accessAbsolute(io, path, .{}) catch return false;
     return true;
 }
 
 fn readProcToggle(path: []const u8) ?bool {
+    var threaded: std.Io.Threaded = .init_single_threaded;
+    const io = threaded.io();
     var buf: [8]u8 = undefined;
-    const file = std.fs.openFileAbsolute(path, .{}) catch return null;
-    defer file.close(std.testing.io);
-    const len = file.readAll(&buf) catch return null;
+    const file = std.Io.Dir.openFileAbsolute(io, path, .{}) catch return null;
+    defer file.close(io);
+    const len = std.Io.File.readStreaming(file, io, &.{buf[0..]}) catch return null;
     const trimmed = std.mem.trim(u8, buf[0..len], " \t\r\n");
     if (std.mem.eql(u8, trimmed, "1")) return true;
     if (std.mem.eql(u8, trimmed, "0")) return false;

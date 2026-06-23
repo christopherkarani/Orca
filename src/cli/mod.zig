@@ -743,7 +743,7 @@ test "quickstart dispatch runs and prints steps" {
     try std.testing.expect(std.mem.indexOf(u8, output, "Step 2: Creating your first policy") != null or
         std.mem.indexOf(u8, output, "Step 2: Policy already exists") != null);
     try std.testing.expect(std.mem.indexOf(u8, output, "Step 3: Setting up") != null);
-    try std.testing.expect(std.mem.indexOf(u8, output, "You're all set!") != null);
+    try std.testing.expect(std.mem.indexOf(u8, output, "Core protection is ready") != null);
 }
 
 test "quickstart skips init when policy exists" {

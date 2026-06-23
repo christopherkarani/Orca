@@ -3,12 +3,13 @@
 ## Build From Source
 
 ```sh
-zig version
-zig build
+./scripts/zig version
+rustc --version
+./scripts/build-all.sh
 ./zig-out/bin/orca version --json
 ```
 
-Use Zig `0.16.0` (see `.zigversion`; prefer `./scripts/zig`).
+Use Zig `0.16.0` (see `.zigversion`; prefer `./scripts/zig`) and the repository's Rust toolchain. `zig build` intentionally does not invoke Cargo; `scripts/build-all.sh` builds the user-facing CLI and required `orca-daemon` companion independently.
 
 ## Release Artifacts
 
@@ -56,7 +57,7 @@ orca plugin install hermes --yes
 1. Download or build the archive for your OS and CPU.
 2. Verify its SHA-256 digest against `dist/checksums.txt`.
 3. Extract the archive, or run `scripts/install.sh` / `scripts/install.ps1` to install the binary and runtime assets together.
-4. Ensure `orca` is on `PATH` and `ORCA_RESOURCE_ROOT` points at the installed runtime tree. The easiest way: `eval "$(orca env 2>/dev/null || orca --print-install-env)"` (works for custom prefixes, Homebrew, containers, and Windows). Then run `orca doctor`.
+4. Paste the activation command printed by the installer. It invokes the absolute installed binary, so it also works in the shell that launched a first-time install before `orca` is on `PATH`. Then run `orca doctor`.
 
 ## Package Templates
 

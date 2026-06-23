@@ -53,4 +53,15 @@ test "phase 44 VERSION matches install script defaults" {
     defer std.testing.allocator.free(version_needle);
     try expectContains(homebrew, version_needle);
     try expectContains(homebrew, "bin.install \"bin/orca-daemon\"");
+    try expectContains(homebrew, "pkgshare.install \"orca-dashboard-ui\"");
+
+    const npm_launcher = try readFile("packaging/npm/bin/orca.js");
+    defer std.testing.allocator.free(npm_launcher);
+    try expectContains(npm_launcher, "\"orca-dashboard-ui\"");
+
+    const dockerfile = try readFile("packaging/docker/Dockerfile");
+    defer std.testing.allocator.free(dockerfile);
+    try expectContains(dockerfile, "COPY orca /opt/orca");
+    try expectContains(dockerfile, "ORCA_RESOURCE_ROOT=\"/opt/orca\"");
+    try expectContains(dockerfile, "USER orca");
 }

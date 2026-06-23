@@ -111,6 +111,7 @@ pub const DaemonError = error{
     SocketConnectFailed,
     SocketWriteFailed,
     SocketReadFailed,
+    InvalidWorkingDirectory,
     RequestSerializationFailed,
     ResponseParseFailed,
     DaemonProtocolError,

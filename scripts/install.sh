@@ -41,11 +41,12 @@ VERSION="${ORCA_VERSION:-${DEFAULT_VERSION:-1.2.0}}"
 BASE_URL="${ORCA_BASE_URL:-https://github.com/christopherkarani/Orca/releases/download/v${VERSION}}"
 INSTALL_DIR="${ORCA_INSTALL_DIR:-${HOME}/.local/bin}"
 SHARE_DIR="${ORCA_SHARE_DIR:-${HOME}/.local/share/orca}"
-RESOURCE_ROOT="${ORCA_RESOURCE_ROOT:-${SHARE_DIR}/${VERSION}}"
+RESOURCE_ROOT="${SHARE_DIR}/${VERSION}"
 CURRENT_LINK="${SHARE_DIR}/current"
 ARTIFACT_DIR="${ORCA_ARTIFACT_DIR:-}"
 TMP_DIR="$(mktemp -d "${TMPDIR:-/tmp}/orca-install.XXXXXX")"
 RUNTIME_DIRS="integrations fixtures schemas policies"
+INSTALL_MARKER=".orca-installation"
 
 cleanup() {
   rm -rf "$TMP_DIR"
@@ -96,6 +97,10 @@ sha256_file() {
   fi
 }
 
+shell_quote() {
+  printf "'%s'" "$(printf '%s' "$1" | sed "s/'/'\\\\''/g")"
+}
+
 verify_checksum() {
   artifact_name="$1"
   artifact_path="$2"
@@ -111,7 +116,7 @@ verify_checksum() {
 is_existing_orca() {
   candidate="$1"
   output="$("$candidate" version 2>/dev/null)" || output="$("$candidate" --version 2>/dev/null)" || return 1
-  printf '%s\n' "$output" | grep -Eqi '"product"[[:space:]]*:[[:space:]]*"orca"|^orca([[:space:]]|$)|^[0-9]+\.[0-9]+\.[0-9]+'
+  printf '%s\n' "$output" | grep -Eqi '"product"[[:space:]]*:[[:space:]]*"orca"|^orca(-daemon)?([[:space:]]|$)|^[0-9]+\.[0-9]+\.[0-9]+'
 }
 
 safe_install() {
@@ -142,6 +147,16 @@ install_runtime_assets() {
       fail "release archive missing runtime directory: $dir"
     fi
   done
+  if [ -d "$extract_root/orca-dashboard-ui" ]; then
+    rm -rf "$RESOURCE_ROOT/orca-dashboard-ui"
+    cp -R "$extract_root/orca-dashboard-ui" "$RESOURCE_ROOT/"
+  else
+    printf 'warning: release archive missing orca-dashboard-ui; orca dashboard will be unavailable until you reinstall a complete artifact.\n' >&2
+  fi
+  {
+    printf 'orca-runtime-v1\n'
+    printf 'version=%s\n' "$VERSION"
+  } > "$RESOURCE_ROOT/$INSTALL_MARKER"
   mkdir -p "$SHARE_DIR"
   ln -sfn "$RESOURCE_ROOT" "$CURRENT_LINK"
 }
@@ -174,21 +189,43 @@ ensure_path_entry() {
     mkdir -p "$(dirname "$rc_file")"
   fi
 
-  if [ -f "$rc_file" ]; then
-    if grep -qF "export PATH=\"$dir" "$rc_file" 2>/dev/null || grep -qF "export PATH=\"\$HOME/.local/bin" "$rc_file" 2>/dev/null; then
-      return 0
-    fi
+  marker="# Added by Orca installer"
+  quoted_dir="$(shell_quote "$dir")"
+  if [ "$shell_name" = "fish" ]; then
+    path_line="fish_add_path -- $quoted_dir"
+  else
+    path_line="export PATH=$quoted_dir:\"\$PATH\""
   fi
 
-  printf '\n# Added by Orca installer\nexport PATH="%s:$PATH"\n' "$dir" >> "$rc_file"
+  if [ -f "$rc_file" ] && grep -qF "$marker" "$rc_file" 2>/dev/null; then
+    tmp="$(mktemp)"
+    awk -v marker="$marker" -v new_line="$path_line" '
+      $0 == marker { print; print new_line; skip=1; next }
+      skip && (/^export PATH=/ || /^fish_add_path -- /) { next }
+      skip && $0 == "" { skip=0 }
+      { print }
+    ' "$rc_file" > "$tmp"
+    mv "$tmp" "$rc_file"
+    printf 'Updated %s in PATH entry in %s\n' "$dir" "$rc_file"
+    return 0
+  fi
+
+  printf '\n%s\n%s\n' "$marker" "$path_line" >> "$rc_file"
   printf 'Added %s to PATH in %s\n' "$dir" "$rc_file"
   printf 'Run: source %s   (or open a new terminal)\n' "$rc_file"
 }
 
 ensure_resource_root_entry() {
   shell_path="${SHELL:-/bin/sh}"
+  shell_name="$(basename "$shell_path")"
   rc_file="$(rc_file_for_shell "$shell_path")"
   marker="# Orca runtime assets"
+  quoted_current="$(shell_quote "$CURRENT_LINK")"
+  if [ "$shell_name" = "fish" ]; then
+    resource_line="set -gx ORCA_RESOURCE_ROOT $quoted_current"
+  else
+    resource_line="export ORCA_RESOURCE_ROOT=$quoted_current"
+  fi
 
   if [ ! -d "$(dirname "$rc_file")" ] && [ "$(dirname "$rc_file")" != "$HOME" ]; then
     mkdir -p "$(dirname "$rc_file")"
@@ -196,9 +233,9 @@ ensure_resource_root_entry() {
 
   if [ -f "$rc_file" ] && grep -qF "$marker" "$rc_file" 2>/dev/null; then
     tmp="$(mktemp)"
-    awk -v marker="$marker" -v new_line="export ORCA_RESOURCE_ROOT=\"${CURRENT_LINK}\"" '
+    awk -v marker="$marker" -v new_line="$resource_line" '
       $0 == marker { print; print new_line; skip=1; next }
-      skip && /^export ORCA_RESOURCE_ROOT=/ { next }
+      skip && (/^export ORCA_RESOURCE_ROOT=/ || /^set -gx ORCA_RESOURCE_ROOT /) { next }
       skip && $0 == "" { skip=0 }
       { print }
     ' "$rc_file" > "$tmp"
@@ -209,7 +246,7 @@ ensure_resource_root_entry() {
 
   {
     printf '\n%s\n' "$marker"
-    printf 'export ORCA_RESOURCE_ROOT="%s"\n' "$CURRENT_LINK"
+    printf '%s\n' "$resource_line"
   } >> "$rc_file"
   printf 'Added ORCA_RESOURCE_ROOT=%s to %s\n' "$CURRENT_LINK" "$rc_file"
 }
@@ -266,10 +303,11 @@ ensure_resource_root_entry "$CURRENT_LINK"
 
 # Highest-value DX improvement: give users an immediate activation block they can paste
 # in the *current* shell. This directly attacks the #1 source of "30 seconds" being false.
-# Uses the new `orca env` (or --print-install-env for compat) so the paths are always
-# correct for the actual install layout (including custom prefixes and Windows).
+# Uses the absolute installed binary because INSTALL_DIR is not yet on PATH in this shell.
+# Quote it for safe pasting even when a custom install directory contains shell metacharacters.
+quoted_destination="$(shell_quote "$DESTINATION")"
 printf '\nTo use orca in *this* terminal right now (without opening a new one), run:\n'
-printf '\n    eval "$(orca env 2>/dev/null || orca --print-install-env)"\n'
+printf '\n    eval "$(%s env 2>/dev/null || %s --print-install-env)"\n' "$quoted_destination" "$quoted_destination"
 printf '\n(These exports were also added to your shell profile for future terminals.)\n'
 
 printf '\nNext steps:\n'

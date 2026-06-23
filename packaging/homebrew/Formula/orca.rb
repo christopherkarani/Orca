@@ -1,7 +1,7 @@
 class Orca < Formula
   desc "Local runtime firewall for AI agents"
   homepage "https://github.com/christopherkarani/Orca"
-  version "1.2.0"
+  version "1.2.2"
   license "Apache-2.0"
 
   on_macos do
@@ -27,7 +27,7 @@ class Orca < Formula
   def install
     bin.install "bin/orca"
     bin.install "bin/orca-daemon"
-    prefix.install "orca-dashboard-ui/dist" => "orca-dashboard-ui/dist"
+    pkgshare.install "orca-dashboard-ui"
     pkgshare.install "integrations"
     pkgshare.install "fixtures"
     pkgshare.install "schemas"

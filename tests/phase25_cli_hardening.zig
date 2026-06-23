@@ -19,13 +19,20 @@ test "phase25 release scripts package runtime assets referenced by CLI docs" {
 }
 
 test "phase25 Windows package templates match nested zip layout" {
+    const version_file = try readFile(std.testing.allocator, "VERSION");
+    defer std.testing.allocator.free(version_file);
+    const version = std.mem.trim(u8, version_file, " \t\r\n");
     const scoop = try readFile(std.testing.allocator, "packaging/scoop/orca.json");
     defer std.testing.allocator.free(scoop);
     const winget = try readFile(std.testing.allocator, "packaging/winget/orca.yaml");
     defer std.testing.allocator.free(winget);
 
-    try std.testing.expect(std.mem.indexOf(u8, scoop, "orca-v1.1.0-windows-amd64\\\\bin\\\\orca.exe") != null);
-    try std.testing.expect(std.mem.indexOf(u8, winget, "orca-v1.1.0-windows-amd64\\bin\\orca.exe") != null);
+    const scoop_path = try std.fmt.allocPrint(std.testing.allocator, "orca-v{s}-windows-amd64\\\\bin\\\\orca.exe", .{version});
+    defer std.testing.allocator.free(scoop_path);
+    const winget_path = try std.fmt.allocPrint(std.testing.allocator, "orca-v{s}-windows-amd64\\bin\\orca.exe", .{version});
+    defer std.testing.allocator.free(winget_path);
+    try std.testing.expect(std.mem.indexOf(u8, scoop, scoop_path) != null);
+    try std.testing.expect(std.mem.indexOf(u8, winget, winget_path) != null);
 }
 
 test "phase25 npm package is honest while checksum placeholders remain" {

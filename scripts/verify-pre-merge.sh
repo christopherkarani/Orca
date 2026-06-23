@@ -17,4 +17,8 @@ echo "[verify-pre-merge] Fast gate"
 echo "[verify-pre-merge] Full test suite (plugin/phase/setup/fuzz)"
 ./scripts/zig build test
 
+echo "[verify-pre-merge] First-user install and uninstall regressions"
+./scripts/install-first-user-regression-test.sh
+./scripts/uninstall-first-user-regression-test.sh
+
 echo "[verify-pre-merge] All checks passed."

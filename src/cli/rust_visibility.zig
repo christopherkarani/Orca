@@ -66,6 +66,7 @@ fn daemonUnavailableReason(err: daemon.DaemonError) []const u8 {
         error.SocketConnectFailed => "daemon unavailable: socket connect failed",
         error.SocketWriteFailed => "daemon unavailable: socket write failed",
         error.SocketReadFailed => "daemon unavailable: socket read failed",
+        error.InvalidWorkingDirectory => "daemon unavailable: command working directory does not exist",
         error.RequestSerializationFailed => "daemon unavailable: request serialization failed",
         error.ResponseParseFailed => "daemon unavailable: malformed daemon response",
         error.DaemonProtocolError => "daemon unavailable: protocol error",

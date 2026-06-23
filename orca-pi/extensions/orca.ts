@@ -1,7 +1,9 @@
 import { spawn as nodeSpawn } from "node:child_process";
+import { spawnSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { existsSync } from "node:fs";
-import { resolve } from "node:path";
+import { accessSync, constants, existsSync } from "node:fs";
+import { createRequire } from "node:module";
+import { dirname, resolve } from "node:path";
 
 type UnavailableMode = "auto" | "ask" | "noninteractive-block" | "strict" | "allow-with-warning";
 type EffectiveUnavailableMode = "ask" | "noninteractive-block" | "strict" | "allow-with-warning";
@@ -40,7 +42,15 @@ type SpawnOptions = {
   stdio: ["pipe" | "ignore", "pipe" | "ignore", "pipe" | "ignore"];
   shell: false;
   signal?: AbortSignal;
+  env?: NodeJS.ProcessEnv;
+  cwd?: string;
 };
+
+type SpawnSyncLike = (
+  file: string,
+  args: string[],
+  options: { encoding: "utf8"; env: NodeJS.ProcessEnv; shell: false; timeout: number },
+) => { error?: Error; status: number | null; stdout?: string };
 
 type ChildLike = {
   stdin?: { write: (data: string) => void; end: () => void };
@@ -77,21 +87,65 @@ type RunProcessResult = {
   timedOut?: boolean;
 };
 
+type SetupResult = { status: "ready" | "missing" | "degraded"; message: string };
+type SessionState = { bypass: boolean; status: SetupResult["status"]; bootstrap?: Promise<SetupResult> };
+
 export type OrcaExtensionOptions = {
   orcaBin?: string;
+  resolveBin?: () => ResolvedOrcaBin;
   spawn?: SpawnLike;
   timeoutMs?: number;
+};
+
+export type ResolvedOrcaBin = {
+  orcaBin: string;
+  daemonBin?: string;
+  source: "explicit" | "bundled" | "path" | "missing";
+};
+
+type ResolveOrcaBinOptions = {
+  env?: NodeJS.ProcessEnv;
+  bundledPackageRoot?: string;
+  isExecutable?: (path: string) => boolean;
+  isCompatiblePathOrca?: () => boolean;
+  spawnSync?: SpawnSyncLike;
 };
 
 const STATUS_KEY = "orca";
 const DEFAULT_TIMEOUT_MS = 10_000;
 const MAX_CHILD_OUTPUT_BYTES = 1024 * 1024;
+const REQUIRED_ORCA_VERSION = (
+  createRequire(import.meta.url)("../package.json") as { dependencies: Record<string, string> }
+).dependencies["@orca-runtime/orca"];
 const ASK_OPTIONS = [
   "Block",
   "Run once anyway",
   "Disable Orca for this Pi session",
   "Show repair instructions / run doctor",
 ] as const;
+
+export function resolveOrcaBin(options: ResolveOrcaBinOptions = {}): ResolvedOrcaBin {
+  const env = options.env ?? process.env;
+  const isExecutable = options.isExecutable ?? isExecutableFile;
+  const explicit = env.ORCA_BIN?.trim();
+  if (explicit && isExecutable(explicit)) return { orcaBin: explicit, source: "explicit" };
+
+  const packageRoot = options.bundledPackageRoot ?? resolveBundledPackageRoot();
+  if (packageRoot) {
+    const executableSuffix = process.platform === "win32" ? ".exe" : "";
+    const orcaBin = resolve(packageRoot, "vendor", `orca${executableSuffix}`);
+    const daemonBin = resolve(packageRoot, "vendor", `orca-daemon${executableSuffix}`);
+    if (isExecutable(orcaBin) && isExecutable(daemonBin)) {
+      return { orcaBin, daemonBin, source: "bundled" };
+    }
+  }
+
+  const allowPath = env.ORCA_PI_USE_PATH === "true";
+  const pathIsCompatible = options.isCompatiblePathOrca ?? (() => isCompatiblePathOrca(env, options.spawnSync ?? spawnSync));
+  if (allowPath && pathIsCompatible()) return { orcaBin: "orca", source: "path" };
+
+  return { orcaBin: "__orca_bundled_runtime_missing__", source: "missing" };
+}
 
 export function buildEvaluateRequest(command: string, ctx: PiContext): OrcaEvaluateRequest {
   return {
@@ -110,7 +164,7 @@ export function buildEvaluateRequest(command: string, ctx: PiContext): OrcaEvalu
 
 export async function runOrcaEvaluate(
   request: OrcaEvaluateRequest,
-  options: Required<Pick<OrcaExtensionOptions, "orcaBin" | "spawn" | "timeoutMs">>,
+  options: Required<Pick<OrcaExtensionOptions, "orcaBin" | "spawn" | "timeoutMs">> & { env?: NodeJS.ProcessEnv },
 ): Promise<OrcaDecision> {
   const result = await runProcess(
     options.orcaBin,
@@ -118,6 +172,8 @@ export async function runOrcaEvaluate(
     JSON.stringify(request),
     options.spawn,
     options.timeoutMs,
+    options.env,
+    request.cwd,
   );
 
   if (result.timedOut) {
@@ -155,9 +211,10 @@ export async function runOrcaEvaluate(
 
 export async function runOrcaCommand(
   args: string[],
-  options: Required<Pick<OrcaExtensionOptions, "orcaBin" | "spawn" | "timeoutMs">>,
+  options: Required<Pick<OrcaExtensionOptions, "orcaBin" | "spawn" | "timeoutMs">> & { env?: NodeJS.ProcessEnv },
+  cwd?: string,
 ): Promise<RunProcessResult> {
-  return runProcess(options.orcaBin, args, undefined, options.spawn, options.timeoutMs);
+  return runProcess(options.orcaBin, args, undefined, options.spawn, options.timeoutMs, options.env, cwd);
 }
 
 export function resolveUnavailableMode(configured: UnavailableMode, ctx: PiContext): EffectiveUnavailableMode {
@@ -183,20 +240,24 @@ export function safeOrcaReason(response: unknown): string {
 }
 
 export function installOrcaExtension(pi: PiAPI, extensionOptions: OrcaExtensionOptions = {}): void {
+  const resolvedBin = extensionOptions.orcaBin
+    ? { orcaBin: extensionOptions.orcaBin, source: "explicit" as const }
+    : (extensionOptions.resolveBin ?? resolveOrcaBin)();
   const runtime = {
-    orcaBin: extensionOptions.orcaBin ?? process.env.ORCA_BIN ?? "orca",
+    orcaBin: resolvedBin.orcaBin,
     spawn: extensionOptions.spawn ?? (nodeSpawn as unknown as SpawnLike),
     timeoutMs: extensionOptions.timeoutMs ?? Number(process.env.ORCA_PI_TIMEOUT_MS ?? DEFAULT_TIMEOUT_MS),
+    env: resolvedBin.daemonBin ? { ...process.env, ORCA_DAEMON: resolvedBin.daemonBin } : process.env,
   };
 
   let unavailableMode: UnavailableMode = parseMode(process.env.ORCA_PI_MODE) ?? "auto";
-  const sessionState = new Map<string, { bypass: boolean }>();
+  const sessionState = new Map<string, SessionState>();
 
-  const stateFor = (ctx: PiContext): { bypass: boolean } => {
+  const stateFor = (ctx: PiContext): SessionState => {
     const key = sessionKey(ctx);
     const current = sessionState.get(key);
     if (current) return current;
-    const next = { bypass: false };
+    const next = { bypass: false, status: "degraded" as const };
     sessionState.set(key, next);
     return next;
   };
@@ -206,12 +267,24 @@ export function installOrcaExtension(pi: PiAPI, extensionOptions: OrcaExtensionO
       ctx.ui?.setStatus?.(STATUS_KEY, "orca bypass");
       return;
     }
-    ctx.ui?.setStatus?.(STATUS_KEY, unavailableMode === "auto" ? "orca auto" : `orca ${unavailableMode}`);
+    ctx.ui?.setStatus?.(STATUS_KEY, `orca ${stateFor(ctx).status}`);
   };
 
   pi.on("session_start", (_event, ctx) => {
-    stateFor(ctx).bypass = false;
+    const state = stateFor(ctx);
+    state.bypass = false;
+    state.status = "degraded";
     updateStatus(ctx);
+    if (process.env.ORCA_PI_AUTO_SETUP === "false") {
+      state.status = "ready";
+      updateStatus(ctx);
+      return;
+    }
+    state.bootstrap = setupOrca(ctx, runtime);
+    void state.bootstrap.then((result) => {
+      state.status = result.status;
+      updateStatus(ctx);
+    });
   });
 
   pi.on("session_shutdown", (_event, ctx) => {
@@ -226,6 +299,7 @@ export function installOrcaExtension(pi: PiAPI, extensionOptions: OrcaExtensionO
       return block("Blocked by Orca: malformed Pi bash tool call; missing non-empty command.");
     }
     const command = event.input.command;
+    await stateFor(ctx).bootstrap;
 
     if (stateFor(ctx).bypass) {
       ctx.ui?.notify?.("Orca protection is disabled for this Pi session; bash command allowed without Orca evaluation.", "warning");
@@ -244,39 +318,31 @@ export function installOrcaExtension(pi: PiAPI, extensionOptions: OrcaExtensionO
     });
   });
 
-  pi.registerCommand("orca-start", {
-    description: "Start Orca's local daemon or show installation instructions.",
-    handler: async (_args, ctx) => {
-      const version = await runOrcaCommand(["--version"], runtime);
-      if (version.error) {
-        notify(ctx, orcaInstallMessage(), "error");
-        return;
-      }
+  const setupHandler = async (_args: string | undefined, ctx: PiContext): Promise<void> => {
+    const result = await setupOrca(ctx, runtime);
+    stateFor(ctx).status = result.status;
+    updateStatus(ctx);
+    notify(ctx, result.message, result.status === "ready" ? "info" : result.status === "missing" ? "error" : "warning");
+  };
 
-      const result = await runOrcaCommand(["start"], runtime);
-      if (result.error) {
-        notify(ctx, `Unable to run Orca start: ${sanitizeVisibleText(result.error.message)}\n\nRun: orca start`, "error");
-        return;
-      }
-      if (result.code === 0) {
-        notify(ctx, "Orca start completed. Run /orca-doctor to verify daemon health.", "info");
-        return;
-      }
-      notify(ctx, `orca start exited with ${result.code ?? "unknown"}.\n\n${summarizeCommandOutput(result)}`, "warning");
+  pi.registerCommand("orca-setup", {
+    description: "Ensure the workspace policy exists and probe Orca daemon health.",
+    handler: setupHandler,
+  });
+
+  pi.registerCommand("orca-start", {
+    description: "Deprecated alias for /orca-setup.",
+    handler: async (_args, ctx) => {
+      await setupHandler(_args, ctx);
     },
   });
 
   pi.registerCommand("orca-doctor", {
     description: "Run Orca doctor and show setup or daemon health diagnostics.",
     handler: async (_args, ctx) => {
-      const jsonDoctor = await runOrcaCommand(["doctor", "--json"], runtime);
-      if (jsonDoctor.error) {
-        notify(ctx, orcaInstallMessage(), "error");
-        return;
-      }
-      const result = jsonDoctor.code === 0 ? jsonDoctor : await runOrcaCommand(["doctor"], runtime);
+      const result = await runOrcaCommand(["doctor"], runtime);
       if (result.error) {
-        notify(ctx, `Unable to run Orca doctor: ${sanitizeVisibleText(result.error.message)}`, "error");
+        notify(ctx, orcaInstallMessage(), "error");
         return;
       }
       notify(ctx, summarizeCommandOutput(result) || `orca doctor exited with ${result.code ?? "unknown"}`, result.code === 0 ? "info" : "warning");
@@ -350,12 +416,42 @@ async function handleUnavailable(
   }
 }
 
+async function setupOrca(
+  ctx: PiContext,
+  runtime: Required<Pick<OrcaExtensionOptions, "orcaBin" | "spawn" | "timeoutMs">> & { env?: NodeJS.ProcessEnv },
+): Promise<SetupResult> {
+  const cwd = resolveCwd(ctx.cwd);
+  const policyPath = resolve(cwd, ".orca", "policy.yaml");
+  if (!existsSync(policyPath)) {
+    const init = await runOrcaCommand(["init", "--preset", "generic-agent"], runtime, cwd);
+    if (init.error) return { status: "missing", message: orcaInstallMessage() };
+    if (init.code !== 0 || !existsSync(policyPath)) {
+      return {
+        status: "degraded",
+        message: `Orca policy setup failed (exit ${init.code ?? "unknown"}). ${summarizeCommandOutput(init)}`,
+      };
+    }
+  }
+
+  const doctor = await runOrcaCommand(["doctor"], runtime, cwd);
+  if (doctor.error) return { status: "missing", message: orcaInstallMessage() };
+  if (doctor.code !== 0) {
+    return {
+      status: "degraded",
+      message: `Orca policy is ready, but the health probe exited with ${doctor.code ?? "unknown"}. ${summarizeCommandOutput(doctor)}`,
+    };
+  }
+  return { status: "ready", message: "Orca policy is ready and daemon health checks passed." };
+}
+
 function runProcess(
   file: string,
   args: string[],
   stdin: string | undefined,
   spawn: SpawnLike,
   timeoutMs: number,
+  env?: NodeJS.ProcessEnv,
+  cwd?: string,
 ): Promise<RunProcessResult> {
   return new Promise((resolvePromise) => {
     const controller = new AbortController();
@@ -382,6 +478,8 @@ function runProcess(
         stdio: [stdin === undefined ? "ignore" : "pipe", "pipe", "pipe"],
         shell: false,
         signal: controller.signal,
+        env,
+        cwd,
       });
     } catch (error) {
       settle({ code: null, stdout, stderr, error: asError(error), timedOut });
@@ -430,6 +528,35 @@ function sessionKey(ctx: PiContext): string {
   return "__default_session__";
 }
 
+function resolveBundledPackageRoot(): string | undefined {
+  try {
+    const require = createRequire(import.meta.url);
+    return dirname(require.resolve("@orca-runtime/orca/package.json"));
+  } catch {
+    return undefined;
+  }
+}
+
+function isExecutableFile(path: string): boolean {
+  try {
+    accessSync(path, process.platform === "win32" ? constants.F_OK : constants.X_OK);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function isCompatiblePathOrca(env: NodeJS.ProcessEnv, runner: SpawnSyncLike): boolean {
+  const result = runner("orca", ["--version"], {
+    encoding: "utf8",
+    env,
+    shell: false,
+    timeout: 2_000,
+  });
+  if (result.error || result.status !== 0) return false;
+  return new RegExp(`\\borca\\s+${REQUIRED_ORCA_VERSION.replaceAll(".", "\\.")}\\b`).test(result.stdout ?? "");
+}
+
 function appendBounded(current: string, chunk: string, maxBytes: number): { text: string; exceeded: boolean } {
   const currentBytes = Buffer.byteLength(current);
   const chunkBytes = Buffer.byteLength(chunk);
@@ -452,11 +579,11 @@ function notify(ctx: PiContext, message: string, type: "info" | "warning" | "err
 }
 
 function repairMessage(reason: string): string {
-  return `Orca could not evaluate this bash command: ${sanitizeVisibleText(reason)}\n\nRun /orca-doctor or run \`orca doctor\`. If the daemon is stopped, run /orca-start or \`orca start\`.`;
+  return `Orca could not evaluate this bash command: ${sanitizeVisibleText(reason)}\n\nRun /orca-setup, then /orca-doctor. The daemon starts automatically on the first evaluation.`;
 }
 
 function orcaInstallMessage(): string {
-  return "Orca CLI was not found in Pi's PATH. Install Orca, or set ORCA_BIN to the Orca executable path, then run /orca-doctor.";
+  return "Orca CLI was not found. Reinstall npm:@orca-sec/pi-orca, or set ORCA_BIN to an executable Orca path, then run /orca-setup.";
 }
 
 function modeSummary(mode: UnavailableMode, sessionBypass: boolean): string {

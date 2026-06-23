@@ -132,7 +132,7 @@ function installReleasePayload(extractDir, platform, arch) {
   if (platform !== "windows") fs.chmodSync(installedBinary, 0o755);
   if (platform !== "windows") fs.chmodSync(installedDaemonBinary, 0o755);
   fs.mkdirSync(resourceDir, { recursive: true });
-  for (const dir of ["docs", "examples", "fixtures", "integrations", "policies", "schemas"]) {
+  for (const dir of ["docs", "examples", "fixtures", "integrations", "orca-dashboard-ui", "policies", "schemas"]) {
     const sourceDir = path.join(top, dir);
     if (fs.existsSync(sourceDir)) {
       fs.cpSync(sourceDir, path.join(resourceDir, dir), { recursive: true });

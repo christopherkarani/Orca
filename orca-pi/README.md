@@ -10,18 +10,16 @@ Safe commands proceed. Denied commands are blocked before Pi runs them. Orca err
 
 ## Prerequisites
 
-- Orca CLI installed and available on Pi's `PATH`.
 - Pi installed.
 - Node.js 22.19 or newer.
-
-Set `ORCA_BIN=/path/to/orca` if Pi cannot find the Orca executable.
-For strongest protection, set `ORCA_BIN` to an absolute path for the trusted Orca binary used by your Pi session.
 
 ## Install
 
 ```bash
 pi install npm:@orca-sec/pi-orca
 ```
+
+This installs the matching `@orca-runtime/orca` CLI and daemon dependency. Do not mix `pi install ./orca-pi` with `pi install npm:@orca-sec/pi-orca`; remove one source before switching to avoid duplicate extension registration and binary ambiguity.
 
 Local development or validation:
 
@@ -32,14 +30,9 @@ pi -e ./orca-pi
 
 ## First Run
 
-In Pi:
+No per-session command is required. On session start, the extension quietly creates `.orca/policy.yaml` with the `generic-agent` preset when it is missing, then probes Orca health. The first protected bash call waits for this bootstrap while Pi startup remains non-blocking.
 
-```text
-/orca-start
-/orca-doctor
-```
-
-`/orca-start` runs `orca start` when Orca is installed. `/orca-doctor` runs Orca diagnostics and reports setup or daemon issues.
+Run `/orca-setup` to repeat the Pi-only policy and health setup manually. It does not run `orca start` or install plugins for other agent hosts. `/orca-start` is a deprecated alias for `/orca-setup` for one release.
 
 ## Behavior
 
@@ -69,18 +62,21 @@ Change mode in Pi:
 
 Session bypass is in-memory only. It is cleared when the Pi session shuts down or reloads.
 
+The status line reports `orca ready`, `orca missing`, `orca degraded`, or `orca bypass`.
+
+Set `ORCA_PI_AUTO_SETUP=false` to disable session bootstrap. The package-managed runtime is used by default; set `ORCA_PI_USE_PATH=true` only when you explicitly trust a compatible PATH installation. `ORCA_BIN=/absolute/path/to/orca` remains the highest-priority override when the file is executable.
+
 ## Troubleshooting
 
 Orca not found:
 
-- Install Orca.
-- Confirm `orca --version` works in the same shell environment that launches Pi.
-- Or set `ORCA_BIN=/absolute/path/to/orca`.
+- Reinstall `npm:@orca-sec/pi-orca` so its version-locked runtime dependency can provision both binaries.
+- If overriding package resolution, confirm `ORCA_BIN` points to an executable Orca binary.
 
 Daemon unavailable:
 
-- Run `/orca-start` or `orca start`.
-- Run `/orca-doctor` or `orca doctor`.
+- Run `/orca-setup`, then `/orca-doctor`.
+- The daemon normally starts automatically on the first `orca evaluate` call.
 
 Protocol incompatible:
 
@@ -116,7 +112,7 @@ It targets Orca CLI builds exposing `orca evaluate --json --stdin` with schema v
 
 ## Known Limitations
 
-- Slash commands (`/orca-start`, `/orca-doctor`, `/orca-mode`) are registered at extension load time. In Pi noninteractive/print/json modes, command output may not be visible even when registration succeeds. Validate slash commands in an interactive Pi session or via unit tests.
+- Slash commands (`/orca-setup`, deprecated `/orca-start`, `/orca-doctor`, `/orca-mode`) are registered at extension load time. In Pi noninteractive/print/json modes, command output may not be visible even when registration succeeds. Validate slash commands in an interactive Pi session or via unit tests.
 - Session bypass is in-memory only and clears when the Pi session ends or reloads.
 - Only Pi `bash` tool calls are evaluated. Other tools (for example `read`) are not intercepted.
 
@@ -132,6 +128,6 @@ It targets Orca CLI builds exposing `orca evaluate --json --stdin` with schema v
 8. Dangerous bash tool call blocks.
 9. Orca unavailable interactive mode asks.
 10. Orca unavailable noninteractive mode blocks.
-11. `/orca-start`, `/orca-doctor`, and `/orca-mode` work.
+11. `/orca-setup`, `/orca-doctor`, and `/orca-mode` work.
 12. `pi install ./orca-pi`.
 13. `pi list` shows `@orca-sec/pi-orca` or the local package source.

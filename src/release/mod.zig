@@ -48,6 +48,7 @@ test "phase 19 package and workflow files are present" {
         "scripts/build-release.ps1",
         "scripts/generate-checksums.sh",
         "scripts/generate-sbom.sh",
+        "scripts/docker-install-layout-smoke-test.sh",
         "packaging/homebrew/Formula/orca.rb",
         "packaging/scoop/orca.json",
         "packaging/winget/orca.yaml",
@@ -94,9 +95,10 @@ test "phase 19 release files include integrity checks without obvious credential
 test "phase 19 Dockerfile references installed Orca binary" {
     const text = try std.Io.Dir.cwd().readFileAlloc(std.testing.io, "packaging/docker/Dockerfile", std.testing.allocator, .limited(64 * 1024));
     defer std.testing.allocator.free(text);
-    try std.testing.expect(std.mem.indexOf(u8, text, "COPY orca") != null);
-    try std.testing.expectEqual(@as(usize, 1), countOccurrences(text, "COPY orca /usr/local/bin/orca"));
-    try std.testing.expect(std.mem.indexOf(u8, text, "/usr/local/bin/orca") != null);
+    try std.testing.expectEqual(@as(usize, 1), countOccurrences(text, "COPY orca /opt/orca"));
+    try std.testing.expect(std.mem.indexOf(u8, text, "/opt/orca/bin/orca") != null);
+    try std.testing.expect(std.mem.indexOf(u8, text, "/opt/orca/bin/orca-daemon") != null);
+    try std.testing.expect(std.mem.indexOf(u8, text, "ORCA_RESOURCE_ROOT=\"/opt/orca\"") != null);
 }
 
 fn countOccurrences(haystack: []const u8, needle: []const u8) usize {

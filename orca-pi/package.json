@@ -1,6 +1,6 @@
 {
   "name": "@orca-sec/pi-orca",
-  "version": "1.2.0",
+  "version": "1.2.2",
   "description": "Official Orca integration package for Pi bash tool-call protection.",
   "type": "module",
   "license": "Apache-2.0",
@@ -44,6 +44,9 @@
     "typecheck": "tsc --noEmit",
     "pack:dry": "npm pack --dry-run",
     "smoke": "bash scripts/smoke.sh"
+  },
+  "dependencies": {
+    "@orca-runtime/orca": "1.2.2"
   },
   "peerDependencies": {
     "@earendil-works/pi-coding-agent": ">=0.79.0"

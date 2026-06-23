@@ -1,10 +1,13 @@
 import assert from "node:assert/strict";
 import { EventEmitter } from "node:events";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { resolve } from "node:path";
 import test from "node:test";
 import {
   buildEvaluateRequest,
   installOrcaExtension,
+  resolveOrcaBin,
   resolveUnavailableMode,
   runOrcaEvaluate,
   safeOrcaReason,
@@ -12,6 +15,11 @@ import {
 } from "../extensions/orca.ts";
 
 type Handler = (event: any, ctx: any) => Promise<any> | any;
+
+const packageJson = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8")) as {
+  dependencies: Record<string, string>;
+};
+const requiredRuntimeVersion = packageJson.dependencies["@orca-runtime/orca"];
 
 class FakeChild {
   stdinWrites: string[] = [];
@@ -38,13 +46,15 @@ class FakeChild {
   }
 }
 
-function makeSpawn(plans: Array<{ code?: number; stdout?: string; stderr?: string; error?: Error }> = []) {
+function makeSpawn(plans: Array<{ code?: number; stdout?: string; stderr?: string; error?: Error; run?: (call: { file: string; args: string[]; options: any; stdin: string[] }) => void }> = []) {
   const calls: Array<{ file: string; args: string[]; options: any; stdin: string[] }> = [];
   const spawn = (file: string, args: string[], options: any): FakeChild => {
     const child = new FakeChild();
-    calls.push({ file, args, options, stdin: child.stdinWrites });
+    const call = { file, args, options, stdin: child.stdinWrites };
+    calls.push(call);
     const plan = plans.shift() ?? { code: 0, stdout: allowJson() };
     queueMicrotask(() => {
+      plan.run?.(call);
       if (plan.stdout) child.stdout.emit("data", plan.stdout);
       if (plan.stderr) child.stderr.emit("data", plan.stderr);
       if (plan.error) child.fail(plan.error);
@@ -53,6 +63,11 @@ function makeSpawn(plans: Array<{ code?: number; stdout?: string; stderr?: strin
     return child;
   };
   return { spawn, calls };
+}
+
+async function flushAsyncWork(): Promise<void> {
+  await new Promise<void>((resolvePromise) => setImmediate(resolvePromise));
+  await new Promise<void>((resolvePromise) => setImmediate(resolvePromise));
 }
 
 function makePi() {
@@ -111,6 +126,167 @@ function errorJson(): string {
   });
 }
 
+test("resolveOrcaBin honors executable ORCA_BIN before other candidates", () => {
+  const result = resolveOrcaBin({
+    env: { ORCA_BIN: "/trusted/orca" },
+    bundledPackageRoot: "/package",
+    isExecutable: (path) => path === "/trusted/orca",
+    isCompatiblePathOrca: () => true,
+  });
+
+  assert.deepEqual(result, { orcaBin: "/trusted/orca", source: "explicit" });
+});
+
+test("resolveOrcaBin prefers the bundled runtime and requires opt-in for PATH", () => {
+  const defaults = {
+    bundledPackageRoot: "/package",
+    isExecutable: () => true,
+    isCompatiblePathOrca: () => true,
+  };
+
+  assert.deepEqual(resolveOrcaBin({ ...defaults, env: {} }), {
+    orcaBin: resolve("/package/vendor/orca"),
+    daemonBin: resolve("/package/vendor/orca-daemon"),
+    source: "bundled",
+  });
+  assert.deepEqual(resolveOrcaBin({ ...defaults, bundledPackageRoot: "/missing-package", isExecutable: () => false, env: { ORCA_PI_USE_PATH: "true" } }), {
+    orcaBin: "orca",
+    source: "path",
+  });
+});
+
+test("resolveOrcaBin uses bundled Orca when PATH is incompatible", () => {
+  const result = resolveOrcaBin({
+    env: {},
+    bundledPackageRoot: "/package",
+    isExecutable: () => true,
+    isCompatiblePathOrca: () => false,
+  });
+
+  assert.equal(result.orcaBin, resolve("/package/vendor/orca"));
+  assert.equal(result.daemonBin, resolve("/package/vendor/orca-daemon"));
+  assert.equal(result.source, "bundled");
+});
+
+test("resolveOrcaBin validates opted-in PATH version output", () => {
+  const compatible = resolveOrcaBin({
+    env: { ORCA_PI_USE_PATH: "true" },
+    bundledPackageRoot: "/missing-package",
+    isExecutable: () => false,
+    spawnSync: () => ({ status: 0, stdout: `orca ${requiredRuntimeVersion}\n` }),
+  });
+  assert.equal(compatible.source, "path");
+
+  for (const result of [
+    { status: 0, stdout: "orca 0.0.0\n" },
+    { status: 0, stdout: "not-orca\n" },
+    { status: 1, stdout: `orca ${requiredRuntimeVersion}\n` },
+    { status: null, stdout: "", error: new Error("timeout") },
+  ]) {
+    assert.equal(resolveOrcaBin({
+      env: { ORCA_PI_USE_PATH: "true" },
+      bundledPackageRoot: "/missing-package",
+      isExecutable: () => false,
+      spawnSync: () => result,
+    }).source, "missing");
+  }
+});
+
+test("bundled Orca evaluation receives its companion daemon path", async () => {
+  const { pi, handlers } = makePi();
+  const { spawn, calls } = makeSpawn([{ code: 0, stdout: allowJson() }]);
+  installOrcaExtension(pi, {
+    spawn,
+    resolveBin: () => ({ orcaBin: "/package/vendor/orca", daemonBin: "/package/vendor/orca-daemon", source: "bundled" }),
+  });
+
+  await fireToolCall(handlers.get("tool_call")![0], makeCtx().ctx);
+
+  assert.equal(calls[0].options.env.ORCA_DAEMON, "/package/vendor/orca-daemon");
+});
+
+test("session start quietly initializes a missing policy and probes health", async () => {
+  const cwd = mkdtempSync(resolve(tmpdir(), "orca-pi-"));
+  const { pi, handlers } = makePi();
+  const { spawn, calls } = makeSpawn([
+    {
+      code: 0,
+      run: (call) => {
+        mkdirSync(resolve(call.options.cwd, ".orca"));
+        writeFileSync(resolve(call.options.cwd, ".orca/policy.yaml"), "version: 1\n");
+      },
+    },
+    { code: 0, stdout: "healthy" },
+  ]);
+  const context = makeCtx({ cwd });
+  installOrcaExtension(pi, { spawn, orcaBin: "orca" });
+
+  const returned = handlers.get("session_start")![0]({}, context.ctx);
+  assert.equal(returned, undefined);
+  await flushAsyncWork();
+
+  assert.deepEqual(calls.map((call) => call.args), [["init", "--preset", "generic-agent"], ["doctor"]]);
+  assert.deepEqual(calls.map((call) => call.options.cwd), [cwd, cwd]);
+  assert.equal(context.notifications.length, 0);
+  assert.equal(context.statuses.at(-1)?.text, "orca ready");
+  rmSync(cwd, { recursive: true, force: true });
+});
+
+test("first bash evaluation waits for non-blocking session bootstrap", async () => {
+  const cwd = mkdtempSync(resolve(tmpdir(), "orca-pi-"));
+  const { pi, handlers } = makePi();
+  const { spawn, calls } = makeSpawn([
+    {
+      code: 0,
+      run: (call) => {
+        mkdirSync(resolve(call.options.cwd, ".orca"));
+        writeFileSync(resolve(call.options.cwd, ".orca/policy.yaml"), "version: 1\n");
+      },
+    },
+    { code: 0, stdout: "healthy" },
+    { code: 0, stdout: allowJson() },
+  ]);
+  const context = makeCtx({ cwd });
+  installOrcaExtension(pi, { spawn, orcaBin: "orca" });
+
+  assert.equal(handlers.get("session_start")![0]({}, context.ctx), undefined);
+  const decision = await fireToolCall(handlers.get("tool_call")![0], context.ctx);
+
+  assert.equal(decision, undefined);
+  assert.deepEqual(calls.map((call) => call.args), [
+    ["init", "--preset", "generic-agent"],
+    ["doctor"],
+    ["evaluate", "--json", "--stdin"],
+  ]);
+  assert.deepEqual(calls.map((call) => call.options.cwd), [cwd, cwd, cwd]);
+  rmSync(cwd, { recursive: true, force: true });
+});
+
+test("/orca-setup ensures policy and probes health without invoking start", async () => {
+  const cwd = mkdtempSync(resolve(tmpdir(), "orca-pi-"));
+  const { pi, commands } = makePi();
+  const { spawn, calls } = makeSpawn([
+    {
+      code: 0,
+      run: (call) => {
+        mkdirSync(resolve(call.options.cwd, ".orca"));
+        writeFileSync(resolve(call.options.cwd, ".orca/policy.yaml"), "version: 1\n");
+      },
+    },
+    { code: 0, stdout: "healthy" },
+  ]);
+  const context = makeCtx({ cwd });
+  installOrcaExtension(pi, { spawn, orcaBin: "orca" });
+
+  await commands.get("orca-setup")!.handler("", context.ctx);
+
+  assert.deepEqual(calls.map((call) => call.args), [["init", "--preset", "generic-agent"], ["doctor"]]);
+  assert.deepEqual(calls.map((call) => call.options.cwd), [cwd, cwd]);
+  assert.equal(calls.some((call) => call.args.includes("start")), false);
+  assert.equal(context.notifications.at(-1)?.type, "info");
+  rmSync(cwd, { recursive: true, force: true });
+});
+
 async function fireToolCall(handler: Handler, ctx: any, command = "git status", toolName = "bash") {
   return handler({ toolName, input: { command } }, ctx);
 }
@@ -163,7 +339,7 @@ test("Orca error in non-interactive mode blocks", async () => {
 
   const result = await fireToolCall(handlers.get("tool_call")![0], ctx);
   assert.equal(result.block, true);
-  assert.match(result.reason, /Run \/orca-doctor/);
+  assert.match(result.reason, /Run \/orca-setup/);
 });
 
 test("Orca error in interactive mode asks user", async () => {
@@ -185,7 +361,7 @@ test("auto mode blocks print sessions even when hasUI is true", async () => {
 
   const result = await fireToolCall(handlers.get("tool_call")![0], ctx);
   assert.equal(result.block, true);
-  assert.match(result.reason, /Run \/orca-doctor/);
+  assert.match(result.reason, /Run \/orca-setup/);
 });
 
 test("strict mode blocks", async () => {
@@ -295,12 +471,16 @@ test("/orca-doctor handles Orca missing", async () => {
   assert.match(notifications.at(-1)!.message, /not found/);
 });
 
-test("/orca-start handles Orca present and missing", async () => {
+test("deprecated /orca-start alias uses setup and never starts other plugins", async () => {
+  const cwd = mkdtempSync(resolve(tmpdir(), "orca-pi-"));
+  mkdirSync(resolve(cwd, ".orca"));
+  writeFileSync(resolve(cwd, ".orca/policy.yaml"), "version: 1\n");
   const present = makePi();
-  const presentSpawn = makeSpawn([{ code: 0, stdout: "orca 0.1.0" }, { code: 0, stdout: "started" }]);
+  const presentSpawn = makeSpawn([{ code: 0, stdout: "healthy" }]);
   installOrcaExtension(present.pi, { spawn: presentSpawn.spawn, orcaBin: "orca" });
-  const presentCtx = makeCtx();
+  const presentCtx = makeCtx({ cwd });
   await present.commands.get("orca-start")!.handler("", presentCtx.ctx);
+  assert.deepEqual(presentSpawn.calls.map((call) => call.args), [["doctor"]]);
   assert.equal(presentCtx.notifications.at(-1)?.type, "info");
 
   const missing = makePi();
@@ -309,6 +489,8 @@ test("/orca-start handles Orca present and missing", async () => {
   const missingCtx = makeCtx();
   await missing.commands.get("orca-start")!.handler("", missingCtx.ctx);
   assert.equal(missingCtx.notifications.at(-1)?.type, "error");
+  assert.equal(missingSpawn.calls.some((call) => call.args.includes("start")), false);
+  rmSync(cwd, { recursive: true, force: true });
 });
 
 test("/orca-mode changes mode", async () => {

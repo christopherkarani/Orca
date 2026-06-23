@@ -426,6 +426,11 @@ fn classifyDaemonError(err: daemon.DaemonError) ClassifiedDaemonError {
             .status = .unknown,
             .message = "failed to serialize daemon evaluation request",
         },
+        error.InvalidWorkingDirectory => .{
+            .code = .invalid_input,
+            .status = .unknown,
+            .message = "command working directory does not exist",
+        },
         error.OutOfMemory => .{
             .code = .internal_error,
             .status = .unknown,

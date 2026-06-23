@@ -9,6 +9,7 @@ const exit_codes = @import("exit_codes.zig");
 const help = @import("help.zig");
 const cli = @import("mod.zig");
 const plugin_install = @import("plugin_install.zig");
+const child_process = @import("child_process.zig");
 const resource_root = @import("../resource_root.zig");
 const env_util = @import("../env_util.zig");
 
@@ -196,6 +197,14 @@ pub fn deinitPluginDoctorReport(report: *PluginDoctorReport, allocator: std.mem.
 }
 
 pub fn collectPluginDoctorReport(io: std.Io, allocator: std.mem.Allocator) !PluginDoctorReport {
+    return collectPluginDoctorReportWithHermesSmoke(io, allocator, null);
+}
+
+fn collectPluginDoctorReportWithHermesSmoke(
+    io: std.Io,
+    allocator: std.mem.Allocator,
+    hermes_smoke_override: ?bool,
+) !PluginDoctorReport {
     const cwd: [:0]u8 = std.Io.Dir.cwd().realPathFileAlloc(io, ".", allocator) catch try allocator.dupeZ(u8, ".");
     errdefer allocator.free(cwd);
     const workspace_root = supervisor.resolveWorkspaceRoot(io, allocator, null, ".") catch try allocator.dupe(u8, cwd);
@@ -327,7 +336,7 @@ pub fn collectPluginDoctorReport(io: std.Io, allocator: std.mem.Allocator) !Plug
     if (!host_bins.openclaw) try appendWarning(allocator, &warnings, "OpenClaw host binary not found in PATH");
     if (!host_bins.hermes) try appendWarning(allocator, &warnings, "Hermes host binary not found in PATH");
 
-    const hermes_hook_smoke_passed = blk: {
+    const hermes_hook_smoke_passed = hermes_smoke_override orelse blk: {
         const result = smokeTestHook(allocator, "hermes", "pre_tool_call", "tests/fixtures/hook-safe.json", "allow") catch break :blk false;
         break :blk result.passed;
     };
@@ -1653,38 +1662,18 @@ pub fn filesEqual(allocator: std.mem.Allocator, lhs_path: []const u8, rhs_path: 
     return std.mem.eql(u8, lhs, rhs);
 }
 
-pub fn runOpenClawInstall(_: std.mem.Allocator, plugin_dir: []const u8) !u8 {
-    var threaded: std.Io.Threaded = .init_single_threaded;
-    const io = threaded.io();
+pub fn runOpenClawInstall(allocator: std.mem.Allocator, plugin_dir: []const u8) !u8 {
     const argv = [_][]const u8{ "openclaw", "plugins", "install", plugin_dir };
-    var child = try std.process.spawn(io, .{
-        .argv = &argv,
-        .stdin = .ignore,
-        .stdout = .inherit,
-        .stderr = .inherit,
-    });
-    const term = try child.wait(io);
-    return switch (term) {
-        .exited => |code| @as(u8, @intCast(@min(code, 255))),
-        else => 255,
-    };
+    const result = try child_process.runHostCommandTimed(allocator, &argv, 10_000, null, null);
+    defer child_process.deinitHostCommandResult(result, allocator);
+    return if (result.timed_out) 255 else result.exit_code;
 }
 
-pub fn runHermesEnable(_: std.mem.Allocator) !u8 {
-    var threaded: std.Io.Threaded = .init_single_threaded;
-    const io = threaded.io();
+pub fn runHermesEnable(allocator: std.mem.Allocator) !u8 {
     const argv = [_][]const u8{ "hermes", "plugins", "enable", "orca" };
-    var child = try std.process.spawn(io, .{
-        .argv = &argv,
-        .stdin = .ignore,
-        .stdout = .inherit,
-        .stderr = .inherit,
-    });
-    const term = try child.wait(io);
-    return switch (term) {
-        .exited => |code| @as(u8, @intCast(@min(code, 255))),
-        else => 255,
-    };
+    const result = try child_process.runHostCommandTimed(allocator, &argv, 10_000, null, null);
+    defer child_process.deinitHostCommandResult(result, allocator);
+    return if (result.timed_out) 255 else result.exit_code;
 }
 
 pub fn fileContains(allocator: std.mem.Allocator, path: []const u8, needle: []const u8) bool {
@@ -1870,7 +1859,7 @@ test "plugin doctor prints expected sections" {
 }
 
 fn collectPluginDoctorReportFailureHarness(allocator: std.mem.Allocator) !void {
-    var report = try collectPluginDoctorReport(std.testing.io, allocator);
+    var report = try collectPluginDoctorReportWithHermesSmoke(std.testing.io, allocator, true);
     defer deinitPluginDoctorReport(&report, allocator);
 }
 

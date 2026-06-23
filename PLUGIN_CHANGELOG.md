@@ -1,5 +1,18 @@
 # Orca Plugin Changelog
 
+## 1.2.2 — One-step Pi onboarding and runtime packaging
+
+### Added
+- **Pi extension** — depends on the version-matched `@orca-runtime/orca` package, resolves its bundled CLI and daemon, initializes missing workspace policy on session start, and exposes Pi-only `/orca-setup` without installing unrelated agent plugins.
+
+### Changed
+- **Pi extension** — `/orca-start` is a deprecated alias for `/orca-setup`; `/orca-doctor` now uses the supported `orca doctor` interface.
+
+## 1.2.1 — Pi `/orca-start` non-interactive fix
+
+### Fixed
+- **Pi extension** (`orca-pi/` → `@orca-sec/pi-orca@1.2.1`) — `/orca-start` now runs `orca start --auto` so onboarding works when Pi spawns Orca without a TTY (fixes exit code 2 in non-interactive terminals).
+
 ## 1.2.0 — Daemon Integration and Pi Extension
 
 ### Added

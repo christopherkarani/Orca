@@ -1,4 +1,5 @@
 const std = @import("std");
+const builtin = @import("builtin");
 
 const dashboard = @import("../dashboard/mod.zig");
 const resource_root = @import("../resource_root.zig");
@@ -21,6 +22,17 @@ const intercept = @import("../intercept/mod.zig");
 const default_host = "127.0.0.1";
 const default_port: u16 = 7742;
 const ui_dist_dir = "orca-dashboard-ui/dist";
+const dashboard_ui_missing_html =
+    \\<!doctype html>
+    \\<html lang="en">
+    \\<head><meta charset="utf-8"><title>Orca Dashboard</title></head>
+    \\<body>
+    \\<h1>Dashboard UI not installed</h1>
+    \\<p>The Orca install on this machine is missing <code>orca-dashboard-ui/dist</code> under <code>ORCA_RESOURCE_ROOT</code>.</p>
+    \\<p>Reinstall from a current release artifact or export <code>ORCA_RESOURCE_ROOT</code> to a checkout that contains the dashboard bundle.</p>
+    \\</body>
+    \\</html>
+;
 
 const DashboardOptions = struct {
     host: []const u8 = default_host,
@@ -33,6 +45,8 @@ const Request = struct {
     path: []const u8,
     body: []const u8,
     csrf_token: ?[]const u8,
+    host: ?[]const u8,
+    origin: ?[]const u8,
 };
 
 pub fn command(io: std.Io, argv: []const []const u8, stdout: anytype, stderr: anytype) !u8 {
@@ -120,6 +134,17 @@ fn serve(io: std.Io, options: DashboardOptions, stdout: anytype, stderr: anytype
     return exit_codes.success;
 }
 
+fn resolveDashboardDistDir(io: std.Io, allocator: std.mem.Allocator, workspace_root: []const u8) ![]u8 {
+    const resolved = try resource_root.resolveResourcePath(io, allocator, .{ .workspace_root = workspace_root }, ui_dist_dir);
+    errdefer allocator.free(resolved);
+    const index_path = try std.fs.path.join(allocator, &.{ resolved, "index.html" });
+    defer allocator.free(index_path);
+    std.Io.Dir.cwd().access(io, index_path, .{}) catch {
+        return error.ResourceNotFound;
+    };
+    return resolved;
+}
+
 fn handleConnection(io: std.Io, allocator: std.mem.Allocator, stream: std.Io.net.Stream, csrf_token: []const u8) !void {
     var request_buffer: std.ArrayList(u8) = .empty;
     defer request_buffer.deinit(allocator);
@@ -128,10 +153,22 @@ fn handleConnection(io: std.Io, allocator: std.mem.Allocator, stream: std.Io.net
         try sendText(io, stream, 400, "Bad Request", "text/plain; charset=utf-8", "bad request\n");
         return;
     };
+    if (!requestSourceAllowed(request)) {
+        try sendJsonError(io, stream, 403, "Forbidden", "request_source");
+        return;
+    }
 
     const workspace_root = try dashboard.resolveWorkspaceRoot(io, allocator);
     defer allocator.free(workspace_root);
-    const dist_dir = try resource_root.resolveResourcePath(io, allocator, .{ .workspace_root = workspace_root }, ui_dist_dir);
+    const dist_dir = resolveDashboardDistDir(io, allocator, workspace_root) catch |err| switch (err) {
+        error.ResourceNotFound => {
+            if (std.mem.eql(u8, request.method, "GET") and !std.mem.startsWith(u8, request.path, "/api/")) {
+                return sendText(io, stream, 503, "Service Unavailable", "text/html; charset=utf-8", dashboard_ui_missing_html);
+            }
+            return sendJsonError(io, stream, 503, "Service Unavailable", "dashboard_ui_missing");
+        },
+        else => return err,
+    };
     defer allocator.free(dist_dir);
     var body_aw: std.Io.Writer.Allocating = .init(allocator);
     errdefer body_aw.deinit();
@@ -197,6 +234,7 @@ fn handleConnection(io: std.Io, allocator: std.mem.Allocator, stream: std.Io.net
 
 fn serveStaticFile(io: std.Io, allocator: std.mem.Allocator, stream: std.Io.net.Stream, path: []const u8, csrf_token: []const u8, dist_dir: []const u8) !void {
     const rel_path = if (std.mem.eql(u8, path, "/")) "index.html" else path[1..];
+    if (!isSafeStaticPath(rel_path)) return sendJsonError(io, stream, 404, "Not Found", "not_found");
 
     const file_path = try std.fs.path.join(allocator, &.{ dist_dir, rel_path });
     defer allocator.free(file_path);
@@ -267,12 +305,13 @@ fn sendFile(io: std.Io, stream: std.Io.net.Stream, file: std.Io.File, content_ty
     if (std.mem.eql(u8, content_type, "text/html; charset=utf-8")) {
         var raw_list: std.ArrayList(u8) = .empty;
         defer raw_list.deinit(allocator);
-        var read_buf: [8192]u8 = undefined;
-        var file_reader = file.reader(io, &read_buf);
+        var reader_storage: [8192]u8 = undefined;
+        var file_reader = file.reader(io, &reader_storage);
+        var chunk: [8192]u8 = undefined;
         while (raw_list.items.len < size) {
-            const n = try file_reader.interface.readSliceShort(read_buf[0..@min(read_buf.len, size - raw_list.items.len)]);
+            const n = try file_reader.interface.readSliceShort(chunk[0..@min(chunk.len, size - raw_list.items.len)]);
             if (n == 0) break;
-            try raw_list.appendSlice(allocator, read_buf[0..n]);
+            try raw_list.appendSlice(allocator, chunk[0..n]);
         }
         const raw = try raw_list.toOwnedSlice(allocator);
         defer allocator.free(raw);
@@ -285,7 +324,7 @@ fn sendFile(io: std.Io, stream: std.Io.net.Stream, file: std.Io.File, content_ty
     var header_buf: [512]u8 = undefined;
     const header = try std.fmt.bufPrint(
         &header_buf,
-        "HTTP/1.1 200 OK\r\nContent-Type: {s}\r\nContent-Length: {d}\r\nCache-Control: public, max-age=3600\r\nConnection: close\r\n\r\n",
+        "HTTP/1.1 200 OK\r\nContent-Type: {s}\r\nContent-Length: {d}\r\nCache-Control: public, max-age=3600\r\nX-Content-Type-Options: nosniff\r\nX-Frame-Options: DENY\r\nReferrer-Policy: no-referrer\r\nContent-Security-Policy: default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; connect-src 'self'; object-src 'none'; frame-ancestors 'none'; base-uri 'none'\r\nConnection: close\r\n\r\n",
         .{ content_type, size },
     );
     var stream_buf: [8192]u8 = undefined;
@@ -293,26 +332,51 @@ fn sendFile(io: std.Io, stream: std.Io.net.Stream, file: std.Io.File, content_ty
     try stream_writer.interface.writeAll(header);
     try stream_writer.interface.flush();
 
-    var read_buf: [8192]u8 = undefined;
-    var file_reader = file.reader(io, &read_buf);
+    var reader_storage: [8192]u8 = undefined;
+    var file_reader = file.reader(io, &reader_storage);
+    var chunk: [8192]u8 = undefined;
     var remaining = size;
     while (remaining > 0) {
-        const to_read = @min(read_buf.len, remaining);
-        const n = try file_reader.interface.readSliceShort(read_buf[0..to_read]);
+        const to_read = @min(chunk.len, remaining);
+        const n = try file_reader.interface.readSliceShort(chunk[0..to_read]);
         if (n == 0) break;
-        try stream_writer.interface.writeAll(read_buf[0..n]);
+        try stream_writer.interface.writeAll(chunk[0..n]);
         remaining -= n;
     }
     try stream_writer.interface.flush();
 }
 
 fn readRequest(io: std.Io, allocator: std.mem.Allocator, stream: std.Io.net.Stream, buffer: *std.ArrayList(u8)) !void {
-    var temp: [8192]u8 = undefined;
-    while (buffer.items.len < dashboard.max_request_body_len + 8192) {
-        var reader = stream.reader(io, &temp);
-        const n = try reader.interface.readSliceShort(&temp);
+    if (builtin.os.tag == .windows) {
+        var reader_storage: [8192]u8 = undefined;
+        var reader = stream.reader(io, &reader_storage);
+        var chunk: [8192]u8 = undefined;
+        while (buffer.items.len < dashboard.max_request_body_len + 8192) {
+            const n = try reader.interface.readSliceShort(&chunk);
+            if (n == 0) break;
+            try buffer.appendSlice(allocator, chunk[0..n]);
+            if (requestComplete(buffer.items)) break;
+        }
+        return;
+    }
+
+    var chunk: [8192]u8 = undefined;
+    const started = std.Io.Clock.Timestamp.now(io, .awake);
+    const deadline_ns: i96 = 5 * std.time.ns_per_s;
+    while (buffer.items.len < dashboard.max_request_body_len + 8192 and started.durationFromNow(io).raw.nanoseconds < deadline_ns) {
+        var fds = [_]std.posix.pollfd{.{
+            .fd = stream.socket.handle,
+            .events = std.posix.POLL.IN,
+            .revents = 0,
+        }};
+        const ready = std.posix.poll(&fds, 100) catch break;
+        if (ready == 0) continue;
+        const n = std.posix.read(stream.socket.handle, chunk[0..]) catch |err| switch (err) {
+            error.WouldBlock => continue,
+            else => return err,
+        };
         if (n == 0) break;
-        try buffer.appendSlice(allocator, temp[0..n]);
+        try buffer.appendSlice(allocator, chunk[0..n]);
         if (requestComplete(buffer.items)) break;
     }
 }
@@ -342,7 +406,42 @@ fn parseRequest(bytes: []const u8) !Request {
         .path = path,
         .body = bytes[body_start .. body_start + content_length],
         .csrf_token = headerValue(headers, "x-orca-dashboard-token"),
+        .host = headerValue(headers, "host"),
+        .origin = headerValue(headers, "origin"),
     };
+}
+
+fn isSafeStaticPath(path: []const u8) bool {
+    if (path.len == 0 or std.fs.path.isAbsolute(path)) return false;
+    for (path) |byte| {
+        if (byte == '\\' or byte == 0 or byte < 0x20) return false;
+    }
+    var segments = std.mem.splitScalar(u8, path, '/');
+    while (segments.next()) |segment| {
+        if (segment.len == 0 or std.mem.eql(u8, segment, ".") or std.mem.eql(u8, segment, "..")) return false;
+        if (std.ascii.eqlIgnoreCase(segment, "%2e") or std.ascii.eqlIgnoreCase(segment, "%2e%2e")) return false;
+        if (std.mem.indexOfScalar(u8, segment, ':') != null) return false;
+    }
+    return true;
+}
+
+fn loopbackAuthority(value: []const u8) bool {
+    const authority = if (std.mem.startsWith(u8, value, "http://"))
+        value["http://".len..]
+    else if (std.mem.startsWith(u8, value, "https://"))
+        value["https://".len..]
+    else
+        value;
+    const host_port = authority[0 .. std.mem.indexOfScalar(u8, authority, '/') orelse authority.len];
+    const host = host_port[0 .. std.mem.indexOfScalar(u8, host_port, ':') orelse host_port.len];
+    return std.ascii.eqlIgnoreCase(host, "localhost") or std.mem.eql(u8, host, "127.0.0.1");
+}
+
+fn requestSourceAllowed(request: Request) bool {
+    const host = request.host orelse return false;
+    if (!loopbackAuthority(host)) return false;
+    if (request.origin) |origin| return loopbackAuthority(origin);
+    return true;
 }
 
 fn stripQuery(target: []const u8) []const u8 {
@@ -614,7 +713,7 @@ fn sendText(io: std.Io, stream: std.Io.net.Stream, status_code: u16, reason: []c
     var header_buf: [512]u8 = undefined;
     const header = try std.fmt.bufPrint(
         &header_buf,
-        "HTTP/1.1 {d} {s}\r\nContent-Type: {s}\r\nContent-Length: {d}\r\nCache-Control: no-store\r\nConnection: close\r\n\r\n",
+        "HTTP/1.1 {d} {s}\r\nContent-Type: {s}\r\nContent-Length: {d}\r\nCache-Control: no-store\r\nX-Content-Type-Options: nosniff\r\nX-Frame-Options: DENY\r\nReferrer-Policy: no-referrer\r\nContent-Security-Policy: default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; connect-src 'self'; object-src 'none'; frame-ancestors 'none'; base-uri 'none'\r\nConnection: close\r\n\r\n",
         .{ status_code, reason, content_type, body.len },
     );
     var buf: [1024]u8 = undefined;
@@ -675,4 +774,23 @@ test "request parser handles post body and query stripping" {
     try std.testing.expectEqualStrings("/api/actions", request.path);
     try std.testing.expectEqualStrings("{\"action\":\"doctor\"}", request.body);
     try std.testing.expectEqualStrings("abc", request.csrf_token.?);
+    try std.testing.expectEqualStrings("127.0.0.1", request.host.?);
+}
+
+test "dashboard static paths reject traversal and platform escapes" {
+    try std.testing.expect(isSafeStaticPath("index.html"));
+    try std.testing.expect(isSafeStaticPath("_next/static/app.js"));
+    try std.testing.expect(!isSafeStaticPath("../../README.md"));
+    try std.testing.expect(!isSafeStaticPath("%2e%2e/README.md"));
+    try std.testing.expect(!isSafeStaticPath("C:/Windows/win.ini"));
+    try std.testing.expect(!isSafeStaticPath("..\\..\\.ssh\\id_rsa"));
+}
+
+test "dashboard request source accepts loopback and rejects rebinding origins" {
+    const local = Request{ .method = "GET", .path = "/", .body = "", .csrf_token = null, .host = "127.0.0.1:7742", .origin = null };
+    try std.testing.expect(requestSourceAllowed(local));
+    const local_origin = Request{ .method = "POST", .path = "/api/actions", .body = "", .csrf_token = "x", .host = "localhost:7742", .origin = "http://localhost:7742" };
+    try std.testing.expect(requestSourceAllowed(local_origin));
+    const rebound = Request{ .method = "GET", .path = "/", .body = "", .csrf_token = null, .host = "attacker.example", .origin = "http://attacker.example" };
+    try std.testing.expect(!requestSourceAllowed(rebound));
 }

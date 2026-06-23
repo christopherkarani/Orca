@@ -1,1 +1,1 @@
-{"version":1,"host":"hermes","event":"pre_tool_call","payload":{"tool":"shell","input":{"command":"git status","cwd":"/tmp/orca-hermes-test"}}}
+{"version":1,"host":"hermes","event":"pre_tool_call","payload":{"tool":"shell","input":{"command":"git status","cwd":"tests"}}}

@@ -89,8 +89,13 @@ copy_cli_payload() {
   if [ -d "orca-dashboard-ui/dist" ]; then
     mkdir -p "$root/orca-dashboard-ui"
     cp -R orca-dashboard-ui/dist "$root/orca-dashboard-ui/dist"
+  elif [ -f "src/dashboard/assets/index.html" ]; then
+    mkdir -p "$root/orca-dashboard-ui/dist/assets"
+    cp src/dashboard/assets/index.html "$root/orca-dashboard-ui/dist/index.html"
+    cp src/dashboard/assets/app.css "$root/orca-dashboard-ui/dist/assets/app.css"
+    cp src/dashboard/assets/app.js "$root/orca-dashboard-ui/dist/assets/app.js"
   else
-    printf 'warning: orca-dashboard-ui/dist not found; run `npm run build` in orca-dashboard-ui/ before releasing.\n' >&2
+    printf 'warning: dashboard UI assets not found; orca dashboard will be unavailable in this artifact.\n' >&2
   fi
   find "$root" -type d \( \
     -name node_modules -o \

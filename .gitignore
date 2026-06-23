@@ -37,6 +37,7 @@ summary.md
 .aegis-edge/sessions/
 node_modules/
 **/node_modules/
+orca-rs/.xwin-cache/
 
 # --- Orca internal planning / generated plan packs ---
 aegis_phased_project/

@@ -38,7 +38,7 @@ fn resolveEffectiveCwd(allocator: std.mem.Allocator, cwd: ?[]const u8) daemon.Da
     const path = cwd orelse ".";
     var threaded: std.Io.Threaded = .init_single_threaded;
     const io = threaded.io();
-    const resolved_z = std.Io.Dir.cwd().realPathFileAlloc(io, path, allocator) catch return error.RequestSerializationFailed;
+    const resolved_z = std.Io.Dir.cwd().realPathFileAlloc(io, path, allocator) catch return error.InvalidWorkingDirectory;
     defer allocator.free(resolved_z);
     return allocator.dupe(u8, resolved_z) catch error.OutOfMemory;
 }
@@ -64,6 +64,7 @@ pub fn daemonUnavailableReason(err: daemon.DaemonError) []const u8 {
         error.SocketConnectFailed => "daemon unavailable: socket connect failed",
         error.SocketWriteFailed => "daemon unavailable: socket write failed",
         error.SocketReadFailed => "daemon unavailable: socket read failed",
+        error.InvalidWorkingDirectory => "daemon unavailable: command working directory does not exist",
         error.RequestSerializationFailed => "daemon unavailable: request serialization failed",
         error.ResponseParseFailed => "daemon unavailable: malformed daemon response",
         error.DaemonProtocolError => "daemon unavailable: protocol error",
@@ -459,6 +460,17 @@ test "shell_eval fails closed when daemon unavailable" {
     defer decision.deinit(allocator);
     try std.testing.expectEqual(core.decision.DecisionResult.deny, decision.decision.result);
     try std.testing.expect(std.mem.indexOf(u8, decision.decision.reason, "daemon unavailable") != null);
+}
+
+test "shell_eval reports a missing command working directory explicitly" {
+    try std.testing.expectError(
+        error.InvalidWorkingDirectory,
+        resolveEffectiveCwd(std.testing.allocator, "/definitely/missing/orca-working-directory"),
+    );
+    try std.testing.expectEqualStrings(
+        "daemon unavailable: command working directory does not exist",
+        daemonUnavailableReason(error.InvalidWorkingDirectory),
+    );
 }
 
 test "shell_eval ci mode converts warn allow to deny" {
