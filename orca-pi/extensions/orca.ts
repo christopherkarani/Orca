@@ -116,7 +116,7 @@ const DEFAULT_TIMEOUT_MS = 10_000;
 const MAX_CHILD_OUTPUT_BYTES = 1024 * 1024;
 const REQUIRED_ORCA_VERSION = (
   createRequire(import.meta.url)("../package.json") as { dependencies: Record<string, string> }
-).dependencies["@orca-runtime/orca"];
+).dependencies["@orca-sec/orca"];
 const ASK_OPTIONS = [
   "Block",
   "Run once anyway",
@@ -531,7 +531,7 @@ function sessionKey(ctx: PiContext): string {
 function resolveBundledPackageRoot(): string | undefined {
   try {
     const require = createRequire(import.meta.url);
-    return dirname(require.resolve("@orca-runtime/orca/package.json"));
+    return dirname(require.resolve("@orca-sec/orca/package.json"));
   } catch {
     return undefined;
   }

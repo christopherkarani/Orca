@@ -19,7 +19,7 @@ type Handler = (event: any, ctx: any) => Promise<any> | any;
 const packageJson = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8")) as {
   dependencies: Record<string, string>;
 };
-const requiredRuntimeVersion = packageJson.dependencies["@orca-runtime/orca"];
+const requiredRuntimeVersion = packageJson.dependencies["@orca-sec/orca"];
 
 class FakeChild {
   stdinWrites: string[] = [];

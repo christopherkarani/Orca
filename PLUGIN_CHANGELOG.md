@@ -3,7 +3,7 @@
 ## 1.2.2 — One-step Pi onboarding and runtime packaging
 
 ### Added
-- **Pi extension** — depends on the version-matched `@orca-runtime/orca` package, resolves its bundled CLI and daemon, initializes missing workspace policy on session start, and exposes Pi-only `/orca-setup` without installing unrelated agent plugins.
+- **Pi extension** — depends on the version-matched `@orca-sec/orca` package, resolves its bundled CLI and daemon, initializes missing workspace policy on session start, and exposes Pi-only `/orca-setup` without installing unrelated agent plugins.
 
 ### Changed
 - **Pi extension** — `/orca-start` is a deprecated alias for `/orca-setup`; `/orca-doctor` now uses the supported `orca doctor` interface.

@@ -19,7 +19,7 @@ Safe commands proceed. Denied commands are blocked before Pi runs them. Orca err
 pi install npm:@orca-sec/pi-orca
 ```
 
-This installs the matching `@orca-runtime/orca` CLI and daemon dependency. Do not mix `pi install ./orca-pi` with `pi install npm:@orca-sec/pi-orca`; remove one source before switching to avoid duplicate extension registration and binary ambiguity.
+This installs the matching `@orca-sec/orca` CLI and daemon dependency. Do not mix `pi install ./orca-pi` with `pi install npm:@orca-sec/pi-orca`; remove one source before switching to avoid duplicate extension registration and binary ambiguity.
 
 Local development or validation:
 
