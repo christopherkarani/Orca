@@ -1,5 +1,10 @@
 # Orca Plugin Changelog
 
+## 1.2.3 — OpenCode 1.16 plugin API fix
+
+### Fixed
+- **OpenCode plugin** — Rewrote `orca.ts` for the OpenCode 1.16 `Plugin` hook API (`tool.execute.before`, `permission.ask`, `event`). The previous `context.hooks.on` integration crashed at load on current OpenCode, so tool blocking never ran.
+
 ## 1.2.2 — One-step Pi onboarding and runtime packaging
 
 ### Added

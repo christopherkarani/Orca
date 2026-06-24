@@ -1,6 +1,6 @@
 # Winget manifest template. Release automation must replace checksums before publishing.
 PackageIdentifier: ChrisKarani.Orca
-PackageVersion: 1.2.2
+PackageVersion: 1.2.3
 PackageName: Orca
 Publisher: Chris Karani
 License: Apache-2.0
@@ -13,8 +13,8 @@ Installers:
     InstallerType: zip
     NestedInstallerType: portable
     NestedInstallerFiles:
-      - RelativeFilePath: orca-v1.2.2-windows-amd64\bin\orca.exe
+      - RelativeFilePath: orca-v1.2.3-windows-amd64\bin\orca.exe
         PortableCommandAlias: orca
-    InstallerUrl: https://github.com/christopherkarani/Orca/releases/download/v1.2.2/orca-v1.2.2-windows-amd64.zip
+    InstallerUrl: https://github.com/christopherkarani/Orca/releases/download/v1.2.3/orca-v1.2.3-windows-amd64.zip
     InstallerSha256: PLACEHOLDER_WINDOWS_AMD64_SHA256
 ReleaseNotes: Verify checksums.txt from the matching release before publishing this placeholder manifest.

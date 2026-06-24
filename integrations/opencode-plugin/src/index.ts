@@ -2,24 +2,6 @@ import { execSync } from 'child_process';
 import { existsSync } from 'fs';
 import { join, resolve } from 'path';
 
-interface OpenCodeContext {
-  hooks: {
-    on: (event: string, handler: (data: unknown) => unknown | Promise<unknown>) => void;
-  };
-  shell?: {
-    $: (strings: TemplateStringsArray, ...values: unknown[]) => Promise<{ stdout: string; stderr: string; exitCode: number }>;
-  };
-  logger?: {
-    info: (msg: string) => void;
-    warn: (msg: string) => void;
-    error: (msg: string) => void;
-  };
-  session?: {
-    id?: string;
-    cwd?: string;
-  };
-}
-
 interface OrcaResponse {
   version?: number;
   decision: 'allow' | 'block' | 'warn' | 'ask' | 'context_only' | 'error';
@@ -32,11 +14,74 @@ interface OrcaResponse {
   host_limitations?: string[];
 }
 
+type PluginContext = {
+  directory: string;
+  worktree: string;
+};
+
+type ToolExecuteBeforeInput = {
+  tool: string;
+  sessionID: string;
+  callID: string;
+};
+
+type ToolExecuteBeforeOutput = {
+  args: Record<string, unknown>;
+};
+
+type ToolExecuteAfterInput = ToolExecuteBeforeInput & {
+  args: Record<string, unknown>;
+};
+
+type ToolExecuteAfterOutput = {
+  title: string;
+  output: string;
+  metadata: unknown;
+};
+
+type PermissionAskOutput = {
+  status: 'ask' | 'deny' | 'allow';
+};
+
+type ShellEnvInput = {
+  cwd: string;
+  sessionID?: string;
+  callID?: string;
+};
+
+type ShellEnvOutput = {
+  env: Record<string, string>;
+};
+
+type PluginHooks = {
+  event?: (input: { event: Record<string, unknown> }) => Promise<void>;
+  'tool.execute.before'?: (
+    input: ToolExecuteBeforeInput,
+    output: ToolExecuteBeforeOutput
+  ) => Promise<void>;
+  'tool.execute.after'?: (
+    input: ToolExecuteAfterInput,
+    output: ToolExecuteAfterOutput
+  ) => Promise<void>;
+  'permission.ask'?: (input: Record<string, unknown>, output: PermissionAskOutput) => Promise<void>;
+  'shell.env'?: (input: ShellEnvInput, output: ShellEnvOutput) => Promise<void>;
+};
+
 const SECRET_KEYS = [
   'password', 'token', 'secret', 'api_key', 'apikey', 'api_secret',
   'auth', 'authorization', 'bearer', 'private_key', 'access_token',
   'refresh_token', 'credential', 'passwd', 'pwd',
 ];
+
+const AUDIT_EVENT_TYPES = new Set([
+  'session.created',
+  'permission.replied',
+  'file.edited',
+  'command.executed',
+  'session.updated',
+  'session.idle',
+  'session.error',
+]);
 
 function redactSecrets(data: unknown): unknown {
   if (data === null || data === undefined) return data;
@@ -92,32 +137,23 @@ function findOrca(cwd?: string): string | null {
   return null;
 }
 
-async function callOrca(
+function callOrca(
   orcaBin: string,
   event: string,
   data: unknown,
   sessionId: string | undefined,
-  blocking: boolean,
-  shell: OpenCodeContext['shell'],
-  logger: OpenCodeContext['logger']
-): Promise<OrcaResponse> {
-  const payload = buildPayload(event, data, sessionId);
-  const payloadJson = JSON.stringify(payload);
-
-  let stdout = '';
+  blocking: boolean
+): OrcaResponse {
+  const payloadJson = JSON.stringify(buildPayload(event, data, sessionId));
 
   try {
-    if (shell?.$) {
-      const result = await shell.$`echo ${payloadJson} | ${orcaBin} hook opencode ${event}`;
-      stdout = result.stdout ?? '';
-    } else {
-      stdout = execSync(`${orcaBin} hook opencode ${event}`, {
-        input: payloadJson,
-        encoding: 'utf-8',
-        timeout: blocking ? 15000 : 10000,
-        stdio: ['pipe', 'pipe', 'pipe'],
-      });
-    }
+    const stdout = execSync(`${orcaBin} hook opencode ${event}`, {
+      input: payloadJson,
+      encoding: 'utf-8',
+      timeout: blocking ? 15000 : 10000,
+      stdio: ['pipe', 'pipe', 'pipe'],
+      maxBuffer: 1024 * 1024,
+    });
 
     if (!stdout.trim()) {
       return { decision: 'allow' };
@@ -125,8 +161,8 @@ async function callOrca(
 
     return JSON.parse(stdout) as OrcaResponse;
   } catch (err: unknown) {
-    const safeErr = redactSecrets({ message: (err as Error).message });
-    logger?.error?.(`[orca] Hook ${event} failed: ${(safeErr as { message: string }).message}`);
+    const message = err instanceof Error ? err.message : String(err);
+    console.error(`[orca] Hook ${event} failed: ${message}`);
 
     return blocking
       ? {
@@ -146,97 +182,144 @@ async function callOrca(
   }
 }
 
-export default function orcaPlugin(context: OpenCodeContext): void {
-  const cwd = context.session?.cwd ?? process.cwd();
-  const sessionId = context.session?.id;
+function buildToolBeforePayload(
+  input: ToolExecuteBeforeInput,
+  output: ToolExecuteBeforeOutput
+): Record<string, unknown> {
+  return {
+    tool: input.tool,
+    sessionID: input.sessionID,
+    callID: input.callID,
+    ...output.args,
+    args: output.args,
+  };
+}
+
+function applyBlockingDecision(response: OrcaResponse, context: string): void {
+  if (response.decision === 'block') {
+    const msg = response.message || response.reason || 'Blocked by Orca policy';
+    console.error(`[orca] Blocked ${context}: ${msg}`);
+    throw new Error(`Orca blocked ${context}: ${msg}`);
+  }
+
+  if (response.decision === 'warn') {
+    console.warn(`[orca] Warning: ${response.message || response.reason}`);
+  }
+}
+
+function auditEventPayload(event: Record<string, unknown>): unknown {
+  if (event.type === 'session.error') {
+    return redactSecrets({
+      message: event.message,
+      stack: event.stack,
+      type: event.type,
+    });
+  }
+  return redactSecrets(event);
+}
+
+function sessionIdFromEvent(event: Record<string, unknown>): string | undefined {
+  if (typeof event.sessionID === 'string') return event.sessionID;
+  if (typeof event.session_id === 'string') return event.session_id;
+  return undefined;
+}
+
+function sessionIdFromRecord(value: Record<string, unknown>): string | undefined {
+  if (typeof value.sessionID === 'string') return value.sessionID;
+  if (typeof value.session_id === 'string') return value.session_id;
+  return undefined;
+}
+
+export default async function orcaPlugin(ctx: PluginContext): Promise<PluginHooks> {
+  const cwd = ctx.worktree || ctx.directory || process.cwd();
   const orcaBin = findOrca(cwd);
-  const { shell, logger } = context;
 
   if (!orcaBin) {
-    logger?.warn?.(
+    console.warn(
       '[orca] Binary not found in PATH or typical build paths. ' +
         'Run: ./scripts/install-orca-plugin.sh opencode project (or .\\scripts\\install-orca-plugin.ps1 opencode project on Windows).'
     );
-    return;
+    return {};
   }
 
-  logger?.info?.(`[orca] Plugin loaded. Binary: ${orcaBin}`);
+  console.log(`[orca] Plugin loaded. Binary: ${orcaBin}`);
 
-  context.hooks.on('session.created', async (session: unknown) => {
-    logger?.info?.('[orca] Plugin ready for session.');
-    await callOrca(orcaBin, 'session.created', { session_id: (session as { id?: string })?.id }, sessionId, false, shell, logger);
-  });
+  return {
+    event: async ({ event }) => {
+      const eventType = typeof event.type === 'string' ? event.type : '';
+      if (!AUDIT_EVENT_TYPES.has(eventType)) return;
 
-  context.hooks.on('tool.execute.before', async (toolCall: unknown) => {
-    const response = await callOrca(orcaBin, 'tool.execute.before', toolCall, sessionId, true, shell, logger);
+      if (eventType === 'session.created') {
+        console.log('[orca] Plugin ready for session.');
+      }
 
-    if (response.decision === 'block') {
-      const msg = response.message || response.reason || 'Blocked by Orca policy';
-      logger?.error?.(`[orca] Blocked tool execution: ${msg}`);
-      throw new Error(`Orca blocked tool execution: ${msg}`);
-    }
+      await callOrca(
+        orcaBin,
+        eventType,
+        auditEventPayload(event),
+        sessionIdFromEvent(event),
+        false
+      );
+    },
 
-    if (response.decision === 'warn') {
-      logger?.warn?.(`[orca] Warning: ${response.message || response.reason}`);
-    }
+    'tool.execute.before': async (input, output) => {
+      const response = callOrca(
+        orcaBin,
+        'tool.execute.before',
+        buildToolBeforePayload(input, output),
+        input.sessionID,
+        true
+      );
+      applyBlockingDecision(response, 'tool execution');
+    },
 
-    return toolCall;
-  });
+    'tool.execute.after': async (input, output) => {
+      await callOrca(
+        orcaBin,
+        'tool.execute.after',
+        {
+          tool: input.tool,
+          sessionID: input.sessionID,
+          callID: input.callID,
+          args: input.args,
+          title: output.title,
+          output: output.output,
+          metadata: output.metadata,
+        },
+        input.sessionID,
+        false
+      );
+    },
 
-  context.hooks.on('tool.execute.after', async (result: unknown) => {
-    await callOrca(orcaBin, 'tool.execute.after', result, sessionId, false, shell, logger);
-    return result;
-  });
+    'permission.ask': async (input, output) => {
+      const sessionId = sessionIdFromRecord(input);
+      const response = callOrca(orcaBin, 'permission.asked', input, sessionId, true);
 
-  context.hooks.on('permission.asked', async (permission: unknown) => {
-    const response = await callOrca(orcaBin, 'permission.asked', permission, sessionId, true, shell, logger);
+      if (response.decision === 'block') {
+        const msg = response.message || response.reason || 'Blocked by Orca policy';
+        console.error(`[orca] Blocked permission: ${msg}`);
+        output.status = 'deny';
+        return;
+      }
 
-    if (response.decision === 'block') {
-      const msg = response.message || response.reason || 'Blocked by Orca policy';
-      logger?.error?.(`[orca] Blocked permission: ${msg}`);
-      throw new Error(`Orca blocked permission request: ${msg}`);
-    }
+      if (response.decision === 'warn') {
+        console.warn(`[orca] Permission warning: ${response.message || response.reason}`);
+      }
+    },
 
-    if (response.decision === 'warn') {
-      logger?.warn?.(`[orca] Permission warning: ${response.message || response.reason}`);
-    }
-
-    return permission;
-  });
-
-  context.hooks.on('file.edited', async (edit: unknown) => {
-    await callOrca(orcaBin, 'file.edited', edit, sessionId, false, shell, logger);
-    return edit;
-  });
-
-  context.hooks.on('command.executed', async (command: unknown) => {
-    await callOrca(orcaBin, 'command.executed', command, sessionId, false, shell, logger);
-    return command;
-  });
-
-  context.hooks.on('session.updated', async (session: unknown) => {
-    await callOrca(orcaBin, 'session.updated', session, sessionId, false, shell, logger);
-    return session;
-  });
-
-  context.hooks.on('session.idle', async (session: unknown) => {
-    await callOrca(orcaBin, 'session.idle', session, sessionId, false, shell, logger);
-    return session;
-  });
-
-  context.hooks.on('session.error', async (error: unknown) => {
-    const safeError = redactSecrets({
-      message: (error as { message?: string })?.message,
-      stack: (error as { stack?: string })?.stack,
-      type: (error as { type?: string })?.type,
-    });
-    await callOrca(orcaBin, 'session.error', safeError, sessionId, false, shell, logger);
-    return error;
-  });
-
-  context.hooks.on('shell.env', async (env: unknown) => {
-    const safeEnv = redactSecrets(env);
-    await callOrca(orcaBin, 'shell.env', safeEnv, sessionId, false, shell, logger);
-    return env;
-  });
+    'shell.env': async (input, output) => {
+      await callOrca(
+        orcaBin,
+        'shell.env',
+        {
+          cwd: input.cwd,
+          sessionID: input.sessionID,
+          callID: input.callID,
+          env: redactSecrets(output.env),
+        },
+        input.sessionID,
+        false
+      );
+    },
+  };
 }

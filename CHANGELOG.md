@@ -1,5 +1,10 @@
 # Changelog
 
+## v1.2.3 - 2026-06-24
+
+### Fixed
+- **OpenCode plugin** — Update for OpenCode 1.16 plugin API so `tool.execute.before` blocking works again.
+
 ## v1.2.0 - 2026-06-19
 
 ### Added
