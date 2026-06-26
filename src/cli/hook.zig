@@ -362,6 +362,10 @@ fn hookCommand(io: std.Io, host: Host, event: Event, original_event_name: []cons
 
     if (isCodexDenyOutput(host, result.decision)) {
         // Codex 0.125.0+ ignores stdout JSON on deny; exit 2 + stderr is the enforced block path.
+        // Sentinel-first so agents scraping stderr can distinguish a guard block from a
+        // program error: provenance (guard) + consequence (no side effects) + recourse.
+        // Humans never reach this branch — non-Codex hosts render the JSON `message` themselves.
+        try stderr.writeAll(guard_sentinel_prefix);
         try stderr.writeAll(result.message);
         try stderr.writeAll("\n");
     } else {
@@ -373,6 +377,14 @@ fn hookCommand(io: std.Io, host: Host, event: Event, original_event_name: []cons
 
     return hookExitCode(host, result.decision, ci_mode);
 }
+
+/// Machine-readable sentinel prepended to the *agent-audience* deny stderr so an agent
+/// scraping stderr can distinguish a guard block from a program error. Provenance +
+/// consequence + recourse, parse-friendly, stable. Never shown to humans — it is emitted
+/// only on the Codex stderr block path (see `isCodexDenyOutput`), not the JSON host path.
+const guard_sentinel_prefix: []const u8 =
+    "[[ORCA-GUARD]] blocked. Command did not execute; no side effects. " ++
+    "Recourse: ask user to approve, or re-run with --allow once.\n";
 
 /// Codex hook deny exit code (documented Codex CLI contract; distinct from usage errors).
 const codex_deny_exit_code: u8 = 2;
@@ -496,7 +508,6 @@ const ShellCommandEvaluatorFn = shell_eval.ShellCommandEvaluatorFn;
 fn defaultShellCommandEvaluator(allocator: std.mem.Allocator, shell_event: ShellCommandEvent) daemon.DaemonError!std.json.Parsed(daemon.DaemonResponse) {
     return shell_eval.defaultEvaluator(allocator, shell_event);
 }
-
 
 fn evaluateHookForTest(
     allocator: std.mem.Allocator,
@@ -2063,6 +2074,28 @@ test "hook codex deny output skips stdout JSON" {
     try std.testing.expect(isCodexDenyOutput(.codex, .block));
     try std.testing.expect(!isCodexDenyOutput(.codex, .allow));
     try std.testing.expect(!isCodexDenyOutput(.claude, .block));
+}
+
+test "hook guard sentinel format is machine-parseable and stable" {
+    // The sentinel is the single recognisable signal an agent scraping stderr can branch on.
+    // Provenance + consequence + recourse, newline-terminated, starts with the parse tag.
+    try std.testing.expect(std.mem.startsWith(u8, guard_sentinel_prefix, "[[ORCA-GUARD]]"));
+    try std.testing.expect(std.mem.indexOf(u8, guard_sentinel_prefix, "did not execute") != null);
+    try std.testing.expect(std.mem.indexOf(u8, guard_sentinel_prefix, "no side effects") != null);
+    try std.testing.expect(std.mem.indexOf(u8, guard_sentinel_prefix, "Recourse") != null);
+    try std.testing.expect(guard_sentinel_prefix[guard_sentinel_prefix.len - 1] == '\n');
+}
+
+test "hook guard sentinel is gated to the codex block audience" {
+    // The sentinel prefix is only meaningful when emitted on the Codex deny stderr path;
+    // non-Codex hosts and allow/warn decisions must never expose it. We assert the gate
+    // (isCodexDenyOutput) stays exclusive so no future change leaks machine text to humans.
+    inline for ([_]Host{ .codex, .claude, .opencode, .openclaw, .hermes }) |h| {
+        inline for ([_]PluginDecision{ .allow, .block, .warn, .ask, .context_only, .err }) |d| {
+            const gated = isCodexDenyOutput(h, d);
+            try std.testing.expect(gated == (h == .codex and d == .block));
+        }
+    }
 }
 
 test "hook codex shell deny uses exit code 2" {

@@ -1,0 +1,32 @@
+.{
+    .name = "vaxis",
+    .version = "0.1.0",
+    .minimum_zig_version = "0.13.0",
+    .dependencies = .{
+        .zigimg = .{
+            .url = "git+https://github.com/zigimg/zigimg#3a667bdb3d7f0955a5a51c8468eac83210c1439e",
+            .hash = "1220dd654ef941fc76fd96f9ec6adadf83f69b9887a0d3f4ee5ac0a1a3e11be35cf5",
+            .lazy = true,
+        },
+        .zg = .{
+            .url = "https://codeberg.org/atman/zg/archive/v0.13.2.tar.gz",
+            .hash = "122055beff332830a391e9895c044d33b15ea21063779557024b46169fb1984c6e40",
+        },
+        .libxev = .{
+            .url = "git+https://github.com/mitchellh/libxev#f6a672a78436d8efee1aa847a43a900ad773618b",
+            .hash = "12207b7a5b538ffb7fb18f954ae17d2f8490b6e3778a9e30564ad82c58ee8da52361",
+            .lazy = true,
+        },
+        .aio = .{
+            .url = "git+https://github.com/Cloudef/zig-aio#b5a407344379508466c5dcbe4c74438a6166e2ca",
+            .hash = "1220a55aedabdd10578d0c514719ea39ae1bc6d7ed990f508dc100db7f0ccf391437",
+            .lazy = true,
+        },
+    },
+    .paths = .{
+        "LICENSE",
+        "build.zig",
+        "build.zig.zon",
+        "src",
+    },
+}

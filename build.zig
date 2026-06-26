@@ -61,6 +61,9 @@ pub fn build(b: *std.Build) void {
     const core_schema_documents_mod = core_schema_documents.createModule();
     _ = &core_schema_documents_mod;
 
+    const vaxis_dep = b.dependency("vaxis", .{ .target = target, .optimize = optimize });
+    const vaxis_mod = vaxis_dep.module("vaxis");
+
     const orca_core_engine_mod = b.createModule(.{
         .root_source_file = b.path("src/core_engine.zig"),
         .target = target,
@@ -83,6 +86,7 @@ pub fn build(b: *std.Build) void {
         .imports = &.{
             .{ .name = "orca_core", .module = orca_core_mod },
             .{ .name = "build_options", .module = build_options_mod },
+            .{ .name = "vaxis", .module = vaxis_mod },
         },
     });
     orca_mod.addImport("build_options", build_options_mod);
@@ -111,6 +115,7 @@ pub fn build(b: *std.Build) void {
         }),
     });
     exe.root_module.link_libc = true;
+    exe.root_module.addImport("vaxis", vaxis_mod);
 
     b.installArtifact(exe);
     const install_orca = b.addInstallArtifact(exe, .{});

@@ -2,6 +2,7 @@ const std = @import("std");
 const builtin = @import("builtin");
 const build_options = @import("build_options");
 const daemon = @import("daemon.zig");
+const tui = @import("../tui/mod.zig");
 
 pub const Metadata = struct {
     product: []const u8 = "orca",
@@ -116,6 +117,31 @@ pub fn writePlainWithDaemon(allocator: std.mem.Allocator, writer: anytype) !void
     } else {
         try writer.print("daemon {s} ({s})\n", .{ report.daemon.status, report.daemon.detail });
     }
+}
+
+/// Human-facing version output for Phase 2: compact brand banner plus a
+/// key-value grid (Version / Channel / Target / Daemon). The daemon row shows
+/// `version (status)` when the daemon answered, else the status alone. The
+/// `--json` machine path (`writeJsonWithDaemon`) is unchanged and byte-identical.
+pub fn writeHumanBanner(allocator: std.mem.Allocator, io: std.Io, writer: anytype) !void {
+    var report = try collectReport(allocator);
+    defer report.deinit(allocator);
+
+    try tui.render.banner(io, writer, report.cli.version, null);
+
+    var daemon_buf: [160]u8 = undefined;
+    const daemon_value = if (report.daemon.version) |daemon_version|
+        std.fmt.bufPrint(&daemon_buf, "{s} ({s})", .{ daemon_version, report.daemon.status }) catch report.daemon.status
+    else
+        report.daemon.status;
+
+    const rows = [_]tui.render.KV{
+        .{ .label = "Version", .value = report.cli.version },
+        .{ .label = "Channel", .value = report.cli.release_channel },
+        .{ .label = "Target", .value = report.cli.target },
+        .{ .label = "Daemon", .value = daemon_value },
+    };
+    try tui.render.keyValue(io, writer, &rows);
 }
 
 pub fn writeJsonWithDaemon(allocator: std.mem.Allocator, writer: anytype) !void {

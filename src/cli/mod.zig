@@ -38,6 +38,7 @@ pub const uninstall = @import("uninstall.zig");
 pub const interactive = @import("interactive.zig");
 pub const child_process = @import("child_process.zig");
 pub const style = @import("style.zig");
+pub const tui = @import("../tui/mod.zig");
 pub const daemon = @import("daemon.zig");
 pub const shutdown = @import("shutdown.zig");
 pub const shell_eval = @import("shell_eval.zig");
@@ -112,6 +113,45 @@ fn suggestCommand(unknown: []const u8) ?[]const u8 {
     return null;
 }
 
+/// Commands that render their own branded header internally and so must NOT
+/// receive the shared entry banner (would double-print).
+const self_banner_commands = [_][]const u8{ "version", "--version", "help", "run" };
+
+/// Commands whose output is always machine/raw (JSON, generated scripts, export
+/// lines, long-running servers) — never receive the human brand banner.
+const always_machine_commands = [_][]const u8{
+    "evaluate", "hook", "shim", "decide", "completions", "env", "dashboard", "--print-install-env",
+};
+
+/// True when the compact brand banner should open this invocation. The banner
+/// is a presentation-only header; it never appears on `--json`/machine/raw paths
+/// (byte-identity invariant) nor on `--help`/`help <cmd>` reference output.
+fn shouldShowBanner(command: []const u8, argv: []const []const u8) bool {
+    // Self-banner commands render their own header (version key-value grid, top
+    // help redesign, run session banner).
+    for (self_banner_commands) |s| {
+        if (std.mem.eql(u8, command, s)) return false;
+    }
+    // Always-machine / raw / server commands.
+    for (always_machine_commands) |m| {
+        if (std.mem.eql(u8, command, m)) return false;
+    }
+    // `help <cmd>` is command-specific reference help (no banner); bare `help`
+    // is top help and renders its own banner inside help.write.
+    if (std.mem.eql(u8, command, "help")) return false;
+    // Scan subcommand args (argv[1..]) for machine/help tokens.
+    var i: usize = 1;
+    while (i < argv.len) : (i += 1) {
+        const a = argv[i];
+        if (std.mem.eql(u8, a, "--json") or std.mem.eql(u8, a, "--stdin")) return false;
+        if (std.mem.eql(u8, a, "--help") or std.mem.eql(u8, a, "-h")) return false;
+        if (std.mem.eql(u8, a, "--format") and i + 1 < argv.len and std.mem.eql(u8, argv[i + 1], "json")) return false;
+    }
+    // Unknown commands get no banner (error path); the brand header belongs only
+    // to recognised human commands.
+    return help.findCommand(command) != null;
+}
+
 pub fn run(io: std.Io, environ_map: *const std.process.Environ.Map, argv: []const []const u8, stdout: anytype, stderr: anytype) !u8 {
     return runWithCwd(io, environ_map, std.Io.Dir.cwd(), argv, stdout, stderr);
 }
@@ -131,6 +171,13 @@ pub fn runWithCwd(io: std.Io, environ_map: *const std.process.Environ.Map, cwd: 
     }
 
     const command = argv[0];
+    // Compact brand header at the entry of every HUMAN command (Phase 2 brand
+    // cohesion). Suppressed for self-banner commands (version/help/run render
+    // their own header), always-machine/raw commands, --json/--stdin/--format
+    // json machine paths, --help reference output, and unknown commands.
+    if (shouldShowBanner(command, argv)) {
+        try tui.render.banner(io, stdout, version, null);
+    }
     if (std.mem.eql(u8, command, "help")) {
         if (argv.len == 1) {
             try help.write(io, stdout);
@@ -164,7 +211,8 @@ pub fn runWithCwd(io: std.Io, environ_map: *const std.process.Environ.Map, cwd: 
             try stderr.writeAll("orca version: unsupported argument. Run 'orca help version' for usage.\n");
             return exit_codes.usage;
         }
-        try version_command.writePlainWithDaemon(std.heap.smp_allocator, stdout);
+        // Human path: compact brand banner + key-value grid (Phase 2).
+        try version_command.writeHumanBanner(std.heap.smp_allocator, io, stdout);
         return exit_codes.success;
     }
 
@@ -627,6 +675,153 @@ test "unknown command returns non-zero with useful message" {
 }
 
 // ---------------------------------------------------------------------------
+// Phase 2 TDD: brand cohesion banner system (written FIRST — RED).
+// The compact `🛡  Orca · v<version>` header must open every HUMAN command,
+// be suppressed for --json / raw / machine / help-reference paths, and stay
+// byte-identical on --json. Banner marker in the plain-text degrade path is
+// the literal `🛡  Orca` glyph run (colour is suppressed under builtin.is_test).
+// ---------------------------------------------------------------------------
+
+test "version human path renders brand banner and key-value grid" {
+    var stdout_buf: [4096]u8 = undefined;
+    var stderr_buf: [256]u8 = undefined;
+    var stdout_writer: std.Io.Writer = .fixed(&stdout_buf);
+    var stderr_writer: std.Io.Writer = .fixed(&stderr_buf);
+
+    const code = try testRun(&.{"version"}, &stdout_writer, &stderr_writer);
+    try std.testing.expectEqual(exit_codes.success, code);
+    const out = stdout_writer.buffered();
+    // Compact brand header.
+    try std.testing.expect(std.mem.indexOf(u8, out, "\u{1F6E1}  Orca") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out, version) != null);
+    // Key-value grid labels.
+    try std.testing.expect(std.mem.indexOf(u8, out, "Version") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "Channel") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "Target") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "Daemon") != null);
+    try std.testing.expectEqualStrings("", stderr_writer.buffered());
+}
+
+test "version --json suppresses the brand banner (machine contract)" {
+    var stdout_buf: [4096]u8 = undefined;
+    var stderr_buf: [256]u8 = undefined;
+    var stdout_writer: std.Io.Writer = .fixed(&stdout_buf);
+    var stderr_writer: std.Io.Writer = .fixed(&stderr_buf);
+
+    const code = try testRun(&.{ "version", "--json" }, &stdout_writer, &stderr_writer);
+    try std.testing.expectEqual(exit_codes.success, code);
+    const out = stdout_writer.buffered();
+    try std.testing.expect(std.mem.indexOf(u8, out, "\u{1F6E1}  Orca") == null);
+    try std.testing.expect(out.len > 0 and out[0] == '{');
+    var parsed = try std.json.parseFromSlice(std.json.Value, std.testing.allocator, out, .{});
+    defer parsed.deinit();
+    try std.testing.expectEqualStrings(version, parsed.value.object.get("version").?.string);
+}
+
+test "top help renders brand banner, accent categories, and try-next hint" {
+    var stdout_buf: [16384]u8 = undefined;
+    var stderr_buf: [256]u8 = undefined;
+    var stdout_writer: std.Io.Writer = .fixed(&stdout_buf);
+    var stderr_writer: std.Io.Writer = .fixed(&stderr_buf);
+
+    const code = try testRun(&.{"--help"}, &stdout_writer, &stderr_writer);
+    try std.testing.expectEqual(exit_codes.success, code);
+    const out = stdout_writer.buffered();
+    // Brand banner opens the help.
+    try std.testing.expect(std.mem.indexOf(u8, out, "\u{1F6E1}  Orca") != null);
+    // Accent category headers retained.
+    try std.testing.expect(std.mem.indexOf(u8, out, "Getting Started") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "Core Workflow") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "Diagnostics & Reporting") != null);
+    // Two-column command + summary retained.
+    try std.testing.expect(std.mem.indexOf(u8, out, "Print shell environment") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "Receive events from AI agent hosts") != null);
+    // Try-next hint present.
+    try std.testing.expect(std.mem.indexOf(u8, out, "orca quickstart") != null);
+    // Hidden internal command still absent.
+    try std.testing.expect(std.mem.indexOf(u8, out, "shim") == null);
+    try std.testing.expectEqualStrings("", stderr_writer.buffered());
+}
+
+test "banner renders on a human command (doctor)" {
+    var stdout_buf: [16384]u8 = undefined;
+    var stderr_buf: [256]u8 = undefined;
+    var stdout_writer: std.Io.Writer = .fixed(&stdout_buf);
+    var stderr_writer: std.Io.Writer = .fixed(&stderr_buf);
+
+    const code = try testRun(&.{"doctor"}, &stdout_writer, &stderr_writer);
+    try std.testing.expectEqual(exit_codes.success, code);
+    const out = stdout_writer.buffered();
+    try std.testing.expect(std.mem.indexOf(u8, out, "\u{1F6E1}  Orca") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "Summary:") != null);
+    try std.testing.expectEqualStrings("", stderr_writer.buffered());
+}
+
+test "banner suppressed for raw env output" {
+    var stdout_buf: [4096]u8 = undefined;
+    var stderr_buf: [256]u8 = undefined;
+    var stdout_writer: std.Io.Writer = .fixed(&stdout_buf);
+    var stderr_writer: std.Io.Writer = .fixed(&stderr_buf);
+
+    const code = try testRun(&.{"env"}, &stdout_writer, &stderr_writer);
+    try std.testing.expectEqual(exit_codes.success, code);
+    const out = stdout_writer.buffered();
+    try std.testing.expect(std.mem.indexOf(u8, out, "PATH") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "\u{1F6E1}  Orca") == null);
+    try std.testing.expectEqualStrings("", stderr_writer.buffered());
+}
+
+test "banner suppressed for completions raw output" {
+    var stdout_buf: [4096]u8 = undefined;
+    var stderr_buf: [256]u8 = undefined;
+    var stdout_writer: std.Io.Writer = .fixed(&stdout_buf);
+    var stderr_writer: std.Io.Writer = .fixed(&stderr_buf);
+
+    const code = try testRun(&.{ "completions", "bash" }, &stdout_writer, &stderr_writer);
+    try std.testing.expectEqual(exit_codes.success, code);
+    const out = stdout_writer.buffered();
+    try std.testing.expect(std.mem.indexOf(u8, out, "complete -F") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "\u{1F6E1}  Orca") == null);
+}
+
+test "banner suppressed on machine proxy path (packs --format json)" {
+    var stdout_buf: [1024]u8 = undefined;
+    var stderr_buf: [512]u8 = undefined;
+    var stdout_writer: std.Io.Writer = .fixed(&stdout_buf);
+    var stderr_writer: std.Io.Writer = .fixed(&stderr_buf);
+
+    _ = try testRun(&.{ "packs", "--format", "json" }, &stdout_writer, &stderr_writer);
+    // Machine path must not emit a brand banner to stdout (byte-identity).
+    try std.testing.expect(std.mem.indexOf(u8, stdout_writer.buffered(), "\u{1F6E1}  Orca") == null);
+}
+
+test "banner suppressed on command-specific help (help run)" {
+    var stdout_buf: [4096]u8 = undefined;
+    var stderr_buf: [256]u8 = undefined;
+    var stdout_writer: std.Io.Writer = .fixed(&stdout_buf);
+    var stderr_writer: std.Io.Writer = .fixed(&stderr_buf);
+
+    const code = try testRun(&.{ "help", "run" }, &stdout_writer, &stderr_writer);
+    try std.testing.expectEqual(exit_codes.success, code);
+    const out = stdout_writer.buffered();
+    try std.testing.expect(std.mem.indexOf(u8, out, "orca run") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "\u{1F6E1}  Orca") == null);
+}
+
+test "banner suppressed on subcommand --help (doctor --help)" {
+    var stdout_buf: [4096]u8 = undefined;
+    var stderr_buf: [256]u8 = undefined;
+    var stdout_writer: std.Io.Writer = .fixed(&stdout_buf);
+    var stderr_writer: std.Io.Writer = .fixed(&stderr_buf);
+
+    const code = try testRun(&.{ "doctor", "--help" }, &stdout_writer, &stderr_writer);
+    try std.testing.expectEqual(exit_codes.success, code);
+    const out = stdout_writer.buffered();
+    try std.testing.expect(std.mem.indexOf(u8, out, "orca doctor") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "\u{1F6E1}  Orca") == null);
+}
+
+// ---------------------------------------------------------------------------
 // TDD tests for "Did you mean?" suggestions (written FIRST — RED, foundation work)
 // ---------------------------------------------------------------------------
 
@@ -790,7 +985,9 @@ test "policy command rejects unknown subcommands" {
 
     const code = try testRun(&.{ "policy", "--bad" }, &stdout_writer, &stderr_writer);
     try std.testing.expectEqual(exit_codes.usage, code);
-    try std.testing.expectEqualStrings("", stdout_writer.buffered());
+    // The brand banner opens the command (presentation only); the usage error
+    // still goes to stderr.
+    try std.testing.expect(std.mem.indexOf(u8, stdout_writer.buffered(), "\u{1F6E1}  Orca") != null);
     try std.testing.expect(std.mem.indexOf(u8, stderr_writer.buffered(), "unknown subcommand") != null);
 }
 
@@ -802,8 +999,11 @@ test "run dispatch launches child command" {
 
     const code = try run_command.commandForTest(&.{ "--", "zig", "version" }, &stdout_writer, &stderr_writer, .ignore);
     try std.testing.expectEqual(exit_codes.success, code);
-    // TDD: new framed output with shield + separators + status glyphs (foundation work)
-    try std.testing.expect(std.mem.indexOf(u8, stdout_writer.buffered(), "Orca is watching this session") != null);
+    // Phase 2: printSessionStart now renders the shared brand banner + key-value
+    // grid (the hand-rolled shield line is retired). The session shield +
+    // first-run celebration remain in printSessionEnd.
+    try std.testing.expect(std.mem.indexOf(u8, stdout_writer.buffered(), "\u{1F6E1}  Orca") != null);
+    try std.testing.expect(std.mem.indexOf(u8, stdout_writer.buffered(), "watching this session") != null);
     try std.testing.expect(std.mem.indexOf(u8, stdout_writer.buffered(), "Session ended cleanly") != null);
     try std.testing.expectEqualStrings("", stderr_writer.buffered());
 }

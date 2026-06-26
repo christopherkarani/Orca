@@ -1,5 +1,7 @@
 const std = @import("std");
 const style = @import("style.zig");
+const build_options = @import("build_options");
+const tui = @import("../tui/mod.zig");
 
 pub const Category = enum {
     getting_started,
@@ -418,28 +420,49 @@ pub const commands = [_]CommandInfo{
 };
 
 pub fn write(io: std.Io, writer: anytype) !void {
-    try writer.writeAll("Orca — local runtime firewall for AI agents\n" ++
-        "\n" ++
-        "Usage:\n" ++
-        "  orca <command> [options]\n" ++
-        "\n");
+    // Compact brand header (Phase 2 brand cohesion).
+    try tui.render.banner(io, writer, build_options.version, null);
+    try tui.theme.paint(io, writer, .muted, "Local runtime firewall for AI agents");
+    try writer.writeAll("\n\n");
+    try writer.writeAll("Usage:\n  orca <command> [options]\n\n");
+
+    // Compute a uniform command-name column width across all visible commands.
+    var name_width: usize = 0;
+    for (commands) |cmd| {
+        if (cmd.hidden) continue;
+        const w = tui.render.displayWidth(cmd.name);
+        if (w > name_width) name_width = w;
+    }
 
     const categories = comptime std.enums.values(Category);
     for (categories) |cat| {
+        if (cat == .internal) continue; // hide internal group entirely
         var any = false;
         for (commands) |cmd| {
             if (cmd.hidden or cmd.category != cat) continue;
             if (!any) {
-                try style.maybeColor(io, writer, style.Style.bold, categoryTitle(cat));
-                try writer.writeAll(":\n");
+                try writer.writeAll("  ");
+                try tui.theme.paintBold(io, writer, .brand, categoryTitle(cat));
+                try writer.writeAll("\n");
                 any = true;
             }
-            try writer.print("  {s:<13} {s}\n", .{ cmd.name, cmd.summary });
+            try writer.writeAll("    ");
+            try tui.theme.paint(io, writer, .text_bright, cmd.name);
+            try tui.render.writePadded(writer, "", name_width - tui.render.displayWidth(cmd.name) + 2);
+            try writer.writeAll(cmd.summary);
+            try writer.writeAll("\n");
         }
         if (any) try writer.writeAll("\n");
     }
 
-    try writer.writeAll("Use 'orca help <command>' for command-specific help.\n");
+    // Try-next hint.
+    try writer.writeAll("  ");
+    try tui.theme.paint(io, writer, .muted, "Next:");
+    try writer.writeAll(" run ");
+    try tui.theme.paint(io, writer, .text_bright, "orca help <command>");
+    try writer.writeAll(" for command-specific help, or ");
+    try tui.theme.paint(io, writer, .text_bright, "orca quickstart");
+    try writer.writeAll(" to get started.\n");
 }
 
 fn categoryTitle(cat: Category) []const u8 {
