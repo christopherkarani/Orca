@@ -36,6 +36,9 @@ pub const KeyAction = enum {
     space, // toggle (multiSelect only)
     escape, // cancel → safe default
     quit, // alias for escape
+    letter_y,
+    letter_e,
+    letter_s,
     other, // ignored
 };
 
@@ -108,10 +111,42 @@ pub fn confirmCore(io: std.Io, stdout: anytype, reader: *std.Io.Reader, kind: Co
 /// stdin and safely returns false on EOF/non-interactive input.
 pub fn confirm(io: std.Io, stdout: anytype, kind: ConfirmKind, message: []const u8, injected_reader: ?*std.Io.Reader) !bool {
     if (injected_reader) |reader| return confirmCore(io, stdout, reader, kind, message);
+    if (comptime !builtin.is_test) {
+        if (ttyAvailable(io)) return confirmRaw(io, stdout, kind, message) catch false;
+    }
     const stdin = std.Io.File.stdin();
     var buffer: [256]u8 = undefined;
     var reader = stdin.reader(io, &buffer);
     return confirmCore(io, stdout, &reader.interface, kind, message);
+}
+
+fn confirmRaw(io: std.Io, stdout: anytype, kind: ConfirmKind, message: []const u8) !bool {
+    var tty_buf: [4096]u8 = undefined;
+    var tty = try vaxis.tty.Tty.init(io, &tty_buf);
+    defer tty.deinit();
+    var decoder: RawDecoder = .{};
+    var answer: [3]u8 = undefined;
+    var len: usize = 0;
+    try stdout.writeAll("  ");
+    try theme.paintBold(io, stdout, if (kind == .danger) .danger else .brand, message);
+    try stdout.writeAll(if (kind == .danger) " Type 'yes' to confirm: " else " [y/N] ");
+    while (true) switch (try readRawAction(&tty, &decoder)) {
+        .enter => return if (kind == .danger) std.mem.eql(u8, answer[0..len], "yes") else len > 0 and answer[0] == 'y',
+        .escape, .quit => return false,
+        .letter_y => if (len < answer.len) {
+            answer[len] = 'y';
+            len += 1;
+        },
+        .letter_e => if (len < answer.len) {
+            answer[len] = 'e';
+            len += 1;
+        },
+        .letter_s => if (len < answer.len) {
+            answer[len] = 's';
+            len += 1;
+        },
+        else => {},
+    };
 }
 
 // ────────────────────────────────────────────────────────────────────────────
@@ -195,7 +230,7 @@ pub fn selectCore(
             },
             .enter => return focus,
             .escape, .quit => return if (default_index < options.len) default_index else null,
-            .space, .other => {},
+            .space, .letter_y, .letter_e, .letter_s, .other => {},
         }
     }
 }
@@ -276,7 +311,7 @@ pub fn multiSelectCore(
             },
             .enter => return true,
             .escape, .quit => return false,
-            .other => {},
+            .letter_y, .letter_e, .letter_s, .other => {},
         }
     }
 }
@@ -366,6 +401,9 @@ fn keyToAction(key: vaxis.Key) KeyAction {
     if (key.matches('k', .{})) return .up;
     if (key.matches('j', .{})) return .down;
     if (key.matches('q', .{})) return .quit;
+    if (key.matches('y', .{})) return .letter_y;
+    if (key.matches('e', .{})) return .letter_e;
+    if (key.matches('s', .{})) return .letter_s;
     return .other;
 }
 
@@ -383,7 +421,7 @@ fn selectRaw(
     var tty = try vaxis.tty.Tty.init(io, &tty_buf);
     defer tty.deinit();
 
-    var parser: vaxis.Parser = .{};
+    var decoder: RawDecoder = .{};
     var focus = if (default_index < options.len) default_index else 0;
     var first_frame = true;
     var frame_lines: usize = 0;
@@ -397,7 +435,7 @@ fn selectRaw(
         frame_lines = try renderSelectFrame(io, stdout, options, focus, header);
         try flushIfSupported(stdout);
 
-        const action = try readRawAction(&tty, &parser);
+        const action = try readRawAction(&tty, &decoder);
         switch (action) {
             .up => if (focus > 0) {
                 focus -= 1;
@@ -414,7 +452,7 @@ fn selectRaw(
                 _ = allocator;
                 return if (default_index < options.len) default_index else null;
             },
-            .space, .other => {},
+            .space, .letter_y, .letter_e, .letter_s, .other => {},
         }
     }
 }
@@ -431,7 +469,7 @@ fn multiSelectRaw(
     var tty = try vaxis.tty.Tty.init(io, &tty_buf);
     defer tty.deinit();
 
-    var parser: vaxis.Parser = .{};
+    var decoder: RawDecoder = .{};
     var focus: usize = 0;
     var first_frame = true;
     var frame_lines: usize = 0;
@@ -445,7 +483,7 @@ fn multiSelectRaw(
         frame_lines = try renderMultiSelectFrame(io, stdout, options, focus, header);
         try flushIfSupported(stdout);
 
-        const action = try readRawAction(&tty, &parser);
+        const action = try readRawAction(&tty, &decoder);
         switch (action) {
             .up => if (focus > 0) {
                 focus -= 1;
@@ -464,30 +502,53 @@ fn multiSelectRaw(
                 try stdout.writeAll("\n");
                 return false;
             },
-            .other => {},
+            .letter_y, .letter_e, .letter_s, .other => {},
         }
     }
 }
 
+const RawDecoder = struct {
+    parser: vaxis.Parser = .{},
+    carry: [256]u8 = undefined,
+    len: usize = 0,
+
+    fn feed(self: *RawDecoder, bytes: []const u8) !?KeyAction {
+        if (bytes.len > self.carry.len - self.len) return error.InputTooLong;
+        @memcpy(self.carry[self.len..][0..bytes.len], bytes);
+        self.len += bytes.len;
+        // A bare ESC may be the first fragment of CSI/SS3. Keep it until the
+        // next read instead of letting libvaxis prematurely classify it.
+        if (self.len == 1 and self.carry[0] == 0x1b) return null;
+        var consumed: usize = 0;
+        while (consumed < self.len) {
+            const res = try self.parser.parse(self.carry[consumed..self.len], null);
+            if (res.n == 0) break;
+            consumed += res.n;
+            if (res.event) |event| switch (event) {
+                .key_press => |key| {
+                    const action = keyToAction(key);
+                    std.mem.copyForwards(u8, self.carry[0 .. self.len - consumed], self.carry[consumed..self.len]);
+                    self.len -= consumed;
+                    return action;
+                },
+                else => {},
+            };
+        }
+        if (consumed > 0) {
+            std.mem.copyForwards(u8, self.carry[0 .. self.len - consumed], self.carry[consumed..self.len]);
+            self.len -= consumed;
+        }
+        return null;
+    }
+};
+
 /// Read bytes from the raw TTY and parse one complete key event into a `KeyAction`.
-fn readRawAction(tty: *vaxis.tty.Tty, parser: *vaxis.Parser) !KeyAction {
+fn readRawAction(tty: *vaxis.tty.Tty, decoder: *RawDecoder) !KeyAction {
     var buf: [256]u8 = undefined;
     while (true) {
         const n = try tty.read(&buf);
         if (n == 0) return .escape;
-        var consumed: usize = 0;
-        while (consumed < n) {
-            const slice = buf[consumed..n];
-            const res = try parser.parse(slice, null);
-            if (res.n == 0) break; // need more bytes for this sequence
-            consumed += res.n;
-            if (res.event) |ev| {
-                switch (ev) {
-                    .key_press => |key| return keyToAction(key),
-                    else => {},
-                }
-            }
-        }
+        if (try decoder.feed(buf[0..n])) |action| return action;
     }
 }
 
@@ -839,4 +900,11 @@ test "danger confirm requires explicit confirmation and defaults to deny" {
     out = .fixed(&out_buf);
     var empty_reader: std.Io.Reader = .fixed("");
     try std.testing.expect(!try confirmCore(std.testing.io, &out, &empty_reader, .danger, "Delete configuration?"));
+}
+
+test "raw decoder carries fragmented CSI key sequences across reads" {
+    var decoder: RawDecoder = .{};
+    try std.testing.expectEqual(@as(?KeyAction, null), try decoder.feed("\x1b"));
+    try std.testing.expectEqual(@as(?KeyAction, .up), try decoder.feed("[A"));
+    try std.testing.expectEqual(@as(usize, 0), decoder.len);
 }

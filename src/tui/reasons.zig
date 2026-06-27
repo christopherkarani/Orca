@@ -7,7 +7,6 @@ const std = @import("std");
 ///
 /// Rule ids and risk shapes mirror the Rust daemon / core policy matcher so the
 /// reasons stay accurate to what was actually matched.
-
 /// A plain-English explanation for a matched rule id (or a generic fallback).
 pub fn reasonForRule(rule_id: []const u8) []const u8 {
     // Mirrors the well-known core.filesystem / core.git rule ids.

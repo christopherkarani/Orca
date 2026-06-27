@@ -1,5 +1,6 @@
 const std = @import("std");
 const theme = @import("theme.zig");
+const terminal_text = @import("terminal_text.zig");
 
 /// Linear rich-output primitives for the Orca CLI.
 ///
@@ -50,7 +51,7 @@ fn codepointWidth(cp: u21) u2 {
 
 /// Write `s` then pad with spaces so the visible width reaches `width`.
 pub fn writePadded(stdout: anytype, s: []const u8, width: usize) !void {
-    try stdout.writeAll(s);
+    try terminal_text.write(stdout, s, .single_line);
     const w = displayWidth(s);
     if (w >= width) return;
     var i: usize = w;
@@ -175,7 +176,7 @@ pub fn keyValue(io: std.Io, stdout: anytype, rows: []const KV) !void {
         }
         try theme.paint(io, stdout, .muted, r.label);
         try stdout.writeAll("  ");
-        try stdout.writeAll(r.value);
+        try terminal_text.write(stdout, r.value, .single_line);
         try stdout.writeAll("\n");
     }
 }
@@ -229,7 +230,7 @@ fn writeWrapped(stdout: anytype, text: []const u8, indent: usize) !void {
             try stdout.writeAll(" ");
             col += 1;
         }
-        try stdout.writeAll(word);
+        try terminal_text.write(stdout, word, .single_line);
         col += w;
     }
 }
@@ -295,7 +296,7 @@ pub fn panel(
     for (body_lines) |line| {
         try stdout.writeAll(v);
         try stdout.writeAll(" ");
-        try stdout.writeAll(line);
+        try terminal_text.write(stdout, line, .single_line);
         const lw = displayWidth(line);
         var pad: usize = lw;
         while (pad < inner) : (pad += 1) try stdout.writeAll(" ");
@@ -368,7 +369,7 @@ pub fn table(
         try stdout.writeAll("  ");
         for (columns, 0..) |_, i| {
             const cell = if (i < row.len) row[i] else "";
-            try stdout.writeAll(cell);
+            try terminal_text.write(stdout, cell, .single_line);
             const cw = displayWidth(cell);
             if (cw < widths[i]) {
                 var n: usize = cw;
@@ -427,7 +428,7 @@ pub fn definitionList(io: std.Io, stdout: anytype, entries: []const Definition) 
         try theme.paint(io, stdout, .muted, entry.term);
         var pad = displayWidth(entry.term);
         while (pad < widest + 2) : (pad += 1) try stdout.writeAll(" ");
-        try stdout.writeAll(entry.description);
+        try terminal_text.write(stdout, entry.description, .single_line);
         try stdout.writeAll("\n");
     }
 }
@@ -448,7 +449,7 @@ pub fn timeline(io: std.Io, stdout: anytype, events: []const TimelineEvent) !voi
         try theme.paintBold(io, stdout, .text_bright, event.label);
         if (event.detail.len > 0) {
             try stdout.writeAll("  ");
-            try stdout.writeAll(event.detail);
+            try terminal_text.write(stdout, event.detail, .single_line);
         }
         try stdout.writeAll("\n");
     }
@@ -615,6 +616,24 @@ test "stepLine: plain output never emits cursor controls" {
     var w: std.Io.Writer = .fixed(&buf);
     try stepLine(std.testing.io, &w, .active, "Policy", null, 80);
     try std.testing.expect(std.mem.indexOfScalar(u8, w.buffered(), '\x1b') == null);
+}
+
+test "stepLine rich output emits canonical cursor control" {
+    theme.setTestActive(.{ .capability = .c256, .background = .dark });
+    defer theme.setTestActive(null);
+    var buf: [256]u8 = undefined;
+    var w: std.Io.Writer = .fixed(&buf);
+    try stepLine(std.testing.io, &w, .active, "Policy", null, 80);
+    try std.testing.expect(std.mem.startsWith(u8, w.buffered(), "\r\x1b[2K\r"));
+    try std.testing.expect(std.mem.indexOf(u8, w.buffered(), "38;5;") != null);
+}
+
+test "render primitives sanitize hostile terminal text" {
+    var buf: [512]u8 = undefined;
+    var w: std.Io.Writer = .fixed(&buf);
+    try definitionList(std.testing.io, &w, &.{.{ .term = "bad\x1b[2J", .description = "x\x1b]0;pwn\x07\ry" }});
+    try std.testing.expect(std.mem.indexOfScalar(u8, w.buffered(), 0x1b) == null);
+    try std.testing.expect(std.mem.indexOf(u8, w.buffered(), "pwn") == null);
 }
 
 test "definitionList renders terms and descriptions" {

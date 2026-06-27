@@ -1,5 +1,6 @@
 const std = @import("std");
 const builtin = @import("builtin");
+const terminal_text = @import("terminal_text.zig");
 
 /// Orca CLI design system: palette, color-capability detection, and theme tokens.
 ///
@@ -199,10 +200,15 @@ pub const Active = struct {
 
 var cached: ?Active = null;
 var rich_enabled = true;
+var test_active: ?Active = null;
 
 pub fn setRichEnabled(enabled: bool) void {
     rich_enabled = enabled;
     resetCache();
+}
+
+pub fn setTestActive(value: ?Active) void {
+    if (builtin.is_test) test_active = value;
 }
 
 /// Reset the cache. Used by tests; a no-op invoker hook keeps production stable.
@@ -219,6 +225,7 @@ pub fn resolve(d: DetectInput, bg: Background) Active {
 /// returns a plain-text theme so fixed-buffer writers never emit escapes.
 pub fn active(io: std.Io, stdout: anytype) Active {
     if (!rich_enabled) return .{ .capability = .none, .background = .unknown };
+    if (test_active) |value| return value;
     if (builtin.is_test) return .{ .capability = .none, .background = .unknown };
     if (cached) |a| return a;
 
@@ -303,12 +310,12 @@ fn detectBackground() Background {
 pub fn paint(io: std.Io, stdout: anytype, token: Token, text: []const u8) !void {
     const a = active(io, stdout);
     if (!a.capability.hasColor()) {
-        try stdout.writeAll(text);
+        try terminal_text.write(stdout, text, .single_line);
         return;
     }
     const seq = sequence(token, a.capability, a.background);
     if (seq.len > 0) try stdout.writeAll(seq);
-    try stdout.writeAll(text);
+    try terminal_text.write(stdout, text, .single_line);
     try stdout.writeAll(reset);
 }
 
@@ -316,13 +323,13 @@ pub fn paint(io: std.Io, stdout: anytype, token: Token, text: []const u8) !void 
 pub fn paintBold(io: std.Io, stdout: anytype, token: Token, text: []const u8) !void {
     const a = active(io, stdout);
     if (!a.capability.hasColor()) {
-        try stdout.writeAll(text);
+        try terminal_text.write(stdout, text, .single_line);
         return;
     }
     try stdout.writeAll(bold);
     const seq = sequence(token, a.capability, a.background);
     if (seq.len > 0) try stdout.writeAll(seq);
-    try stdout.writeAll(text);
+    try terminal_text.write(stdout, text, .single_line);
     try stdout.writeAll(reset);
 }
 

@@ -126,6 +126,19 @@ const always_machine_commands = [_][]const u8{
     "evaluate", "hook", "shim", "decide", "completions", "env", "dashboard", "--print-install-env",
 };
 
+fn isAlwaysMachineCommand(command: []const u8) bool {
+    for (always_machine_commands) |candidate| if (std.mem.eql(u8, command, candidate)) return true;
+    return false;
+}
+
+fn isMachineArgv(argv: []const []const u8) bool {
+    for (argv, 0..) |arg, index| {
+        if (std.mem.eql(u8, arg, "--json") or std.mem.eql(u8, arg, "--stdin")) return true;
+        if (std.mem.eql(u8, arg, "--format") and index + 1 < argv.len and std.mem.eql(u8, argv[index + 1], "json")) return true;
+    }
+    return false;
+}
+
 /// True when the compact brand banner should open this invocation. The banner
 /// is a presentation-only header; it never appears on `--json`/machine/raw paths
 /// (byte-identity invariant) nor on `--help`/`help <cmd>` reference output.
@@ -136,9 +149,7 @@ fn shouldShowBanner(command: []const u8, argv: []const []const u8) bool {
         if (std.mem.eql(u8, command, s)) return false;
     }
     // Always-machine / raw / server commands.
-    for (always_machine_commands) |m| {
-        if (std.mem.eql(u8, command, m)) return false;
-    }
+    if (isAlwaysMachineCommand(command)) return false;
     // `help <cmd>` is command-specific reference help (no banner); bare `help`
     // is top help and renders its own banner inside help.write.
     if (std.mem.eql(u8, command, "help")) return false;
@@ -159,25 +170,24 @@ pub fn run(io: std.Io, environ_map: *const std.process.Environ.Map, argv: []cons
     return runWithCwd(io, environ_map, std.Io.Dir.cwd(), argv, stdout, stderr);
 }
 
+const GlobalArgs = struct { command_index: usize, no_rich: bool };
+
+fn parseGlobalArgs(argv: []const []const u8) GlobalArgs {
+    var index: usize = 0;
+    var no_rich = false;
+    while (index < argv.len and std.mem.eql(u8, argv[index], "--no-rich")) : (index += 1) no_rich = true;
+    return .{ .command_index = index, .no_rich = no_rich };
+}
+
 pub fn runWithCwd(io: std.Io, environ_map: *const std.process.Environ.Map, cwd: std.Io.Dir, argv_input: []const []const u8, stdout: anytype, stderr: anytype) !u8 {
-    var filtered_args = try std.heap.smp_allocator.alloc([]const u8, argv_input.len);
-    defer std.heap.smp_allocator.free(filtered_args);
-    var arg_count: usize = 0;
-    var no_rich_flag = false;
-    var after_separator = false;
-    for (argv_input) |arg| {
-        if (std.mem.eql(u8, arg, "--")) after_separator = true;
-        if (!after_separator and std.mem.eql(u8, arg, "--no-rich")) {
-            no_rich_flag = true;
-            continue;
-        }
-        filtered_args[arg_count] = arg;
-        arg_count += 1;
-    }
-    const argv: []const []const u8 = filtered_args[0..arg_count];
+    const global_args = parseGlobalArgs(argv_input);
+    const argv = argv_input[global_args.command_index..];
     const no_rich_env = tui.output_policy.envDisablesRich(environ_map.get("ORCA_NO_RICH"));
-    tui.theme.setRichEnabled(!no_rich_env and !no_rich_flag);
-    style.setRichEnabled(!no_rich_env and !no_rich_flag);
+    const machine_output = if (argv.len == 0) false else !shouldShowBanner(argv[0], argv) and
+        (isMachineArgv(argv) or isAlwaysMachineCommand(argv[0]));
+    const output = tui.output_policy.resolve(no_rich_env, global_args.no_rich, machine_output);
+    tui.theme.setRichEnabled(output.rich);
+    style.setRichEnabled(output.rich);
     defer {
         tui.theme.setRichEnabled(true);
         style.setRichEnabled(null);
@@ -865,6 +875,34 @@ test "global --no-rich is consumed without changing version JSON contract" {
     stderr_writer = .fixed(&stderr_buf);
     try std.testing.expectEqual(exit_codes.success, try testRun(&.{ "--no-rich", "version", "--json" }, &escaped, &stderr_writer));
     try std.testing.expectEqualStrings(baseline.buffered(), escaped.buffered());
+}
+
+test "global flag parser only consumes no-rich before the command" {
+    const prefix = parseGlobalArgs(&.{ "--no-rich", "version", "--json" });
+    try std.testing.expect(prefix.no_rich);
+    try std.testing.expectEqual(@as(usize, 1), prefix.command_index);
+    const literal = parseGlobalArgs(&.{ "run", "--", "echo", "--no-rich" });
+    try std.testing.expect(!literal.no_rich);
+    try std.testing.expectEqual(@as(usize, 0), literal.command_index);
+    const value = parseGlobalArgs(&.{ "decide", "command", "--json", "{\"value\":\"--no-rich\"}" });
+    try std.testing.expect(!value.no_rich);
+}
+
+test "ORCA_NO_RICH truthy variants suppress presentation without changing machine JSON" {
+    const variants = [_][]const u8{ "1", "true", "yes" };
+    for (variants) |variant| {
+        var env_map = try std.process.Environ.createMap(std.process.Environ.empty, std.testing.allocator);
+        defer env_map.deinit();
+        try env_map.put("ORCA_NO_RICH", variant);
+        var stdout_buf: [4096]u8 = undefined;
+        var stderr_buf: [256]u8 = undefined;
+        var stdout_writer: std.Io.Writer = .fixed(&stdout_buf);
+        var stderr_writer: std.Io.Writer = .fixed(&stderr_buf);
+        try std.testing.expectEqual(exit_codes.success, try run(std.testing.io, &env_map, &.{ "version", "--json" }, &stdout_writer, &stderr_writer));
+        try std.testing.expect(stdout_writer.buffered().len > 0 and stdout_writer.buffered()[0] == '{');
+        try std.testing.expect(std.mem.indexOfScalar(u8, stdout_writer.buffered(), 0x1b) == null);
+        try std.testing.expectEqualStrings("", stderr_writer.buffered());
+    }
 }
 
 test "banner suppressed on command-specific help (help run)" {

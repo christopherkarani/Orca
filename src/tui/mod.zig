@@ -10,6 +10,7 @@ pub const render = @import("render.zig");
 pub const prompt = @import("prompt.zig");
 pub const spinner = @import("spinner.zig");
 pub const output_policy = @import("output_policy.zig");
+pub const terminal_text = @import("terminal_text.zig");
 pub const reasons = @import("reasons.zig");
 
 test {
@@ -18,5 +19,6 @@ test {
     _ = prompt;
     _ = spinner;
     _ = output_policy;
+    _ = terminal_text;
     _ = reasons;
 }

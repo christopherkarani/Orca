@@ -4,7 +4,7 @@
 
 New dependency: none.
 
-Orca currently uses only the Zig standard library. Future dependencies must document:
+At Phase 02, Orca used only the Zig standard library. New dependencies must document:
 
 - name and version/source;
 - license;
@@ -21,7 +21,8 @@ Orca Core facade, schema registry, and experimental ABI skeleton use only the Zi
 
 ## CLI TUI
 
-Dependency: `libvaxis` 0.6.0, pinned to commit `ca781b3c01f4` and Zig package
+Dependency: `libvaxis` 0.6.0, pinned to commit
+`ca781b3c01f44a92e5331652823b5a9ce445be96` and Zig package
 hash `vaxis-0.6.0-BWNV_Gz5CQBTx7g34RYMPTL-bJhsFCU3ECHQ-CZlBVsn` in
 `build.zig.zon`.
 
