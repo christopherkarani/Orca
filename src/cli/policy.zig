@@ -126,21 +126,25 @@ fn writePolicyExplanationHuman(io: std.Io, allocator: std.mem.Allocator, stdout:
 
     const rule_id = if (evaluation.matched_rule) |rule| rule.id else "none";
     const matched = if (evaluation.matched_rule) |rule| rule.pattern else "none";
-    const reason_line = try std.fmt.allocPrint(allocator, "Reason   {s}", .{evaluation.decision.reason});
-    errdefer allocator.free(reason_line);
-    const rule_line = try std.fmt.allocPrint(allocator, "Rule     {s}", .{rule_id});
-    errdefer allocator.free(rule_line);
-    const matched_line = try std.fmt.allocPrint(allocator, "Matched  {s}", .{matched});
-    errdefer allocator.free(matched_line);
-    const mode_line = try std.fmt.allocPrint(allocator, "Mode     {s}", .{policy_value.mode().toString()});
-    const detail_lines = [_][]u8{ reason_line, rule_line, matched_line, mode_line };
-    defer for (detail_lines) |line| allocator.free(line);
-    try tui.panel(io, stdout, "Decision details", &detail_lines);
+    try writePolicyDetailsPanel(io, allocator, stdout, evaluation.decision.reason, rule_id, matched, policy_value.mode().toString());
     const score = evaluation.decision.risk_score orelse 0;
     const risk_label = if (evaluation.decision.risk_score == null) "unknown" else if (score <= 25) "low" else if (score <= 50) "medium" else if (score <= 75) "high" else "critical";
     try stdout.writeAll("  Risk  ");
     try tui.meter(io, stdout, @as(f32, @floatFromInt(score)) / 100.0, risk_label);
     try stdout.writeAll("\n");
+}
+
+fn writePolicyDetailsPanel(io: std.Io, allocator: std.mem.Allocator, stdout: anytype, reason: []const u8, rule_id: []const u8, matched: []const u8, mode: []const u8) !void {
+    const reason_line = try std.fmt.allocPrint(allocator, "Reason   {s}", .{reason});
+    errdefer allocator.free(reason_line);
+    const rule_line = try std.fmt.allocPrint(allocator, "Rule     {s}", .{rule_id});
+    errdefer allocator.free(rule_line);
+    const matched_line = try std.fmt.allocPrint(allocator, "Matched  {s}", .{matched});
+    errdefer allocator.free(matched_line);
+    const mode_line = try std.fmt.allocPrint(allocator, "Mode     {s}", .{mode});
+    const detail_lines = [_][]u8{ reason_line, rule_line, matched_line, mode_line };
+    defer for (detail_lines) |line| allocator.free(line);
+    try tui.panel(io, stdout, "Decision details", &detail_lines);
 }
 
 const ExplainTarget = struct {
@@ -387,9 +391,27 @@ test "policy explain accepts explicit policy path" {
     const code = try command(std.testing.io, &.{ "explain", "--policy", path, "command", "git", "push", "origin", "main" }, &stdout_writer, &stderr_writer);
 
     try std.testing.expectEqual(exit_codes.success, code);
-    try std.testing.expect(std.mem.indexOf(u8, stdout_writer.buffered(), "[DENY]") != null);
-    try std.testing.expect(std.mem.indexOf(u8, stdout_writer.buffered(), "git push *") != null);
+    try std.testing.expectEqualStrings(@embedFile("test-fixtures/policy-explain-command-deny.txt"), stdout_writer.buffered());
     try std.testing.expectEqualStrings("", stderr_writer.buffered());
+}
+
+test "policy explanation panel sanitizes dynamic fields" {
+    var output: [2048]u8 = undefined;
+    var writer: std.Io.Writer = .fixed(&output);
+    try writePolicyDetailsPanel(
+        std.testing.io,
+        std.testing.allocator,
+        &writer,
+        "unsafe\x1b]0;owned\x07 reason\nforged",
+        "rule\x1b[2Jid",
+        "pattern\rspoof",
+        "strict",
+    );
+    const rendered = writer.buffered();
+    try std.testing.expect(std.mem.indexOfScalar(u8, rendered, 0x1b) == null);
+    try std.testing.expect(std.mem.indexOf(u8, rendered, "owned") == null);
+    try std.testing.expect(std.mem.indexOf(u8, rendered, "reason forged") != null);
+    try std.testing.expect(std.mem.indexOf(u8, rendered, "pattern spoof") != null);
 }
 
 test "policy packs list productized packs" {
