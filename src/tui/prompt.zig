@@ -111,13 +111,9 @@ pub fn confirmCore(io: std.Io, stdout: anytype, reader: *std.Io.Reader, kind: Co
 /// stdin and safely returns false on EOF/non-interactive input.
 pub fn confirm(io: std.Io, stdout: anytype, kind: ConfirmKind, message: []const u8, injected_reader: ?*std.Io.Reader) !bool {
     if (injected_reader) |reader| return confirmCore(io, stdout, reader, kind, message);
-    if (comptime !builtin.is_test) {
-        if (ttyAvailable(io)) return confirmRaw(io, stdout, kind, message) catch false;
-    }
-    const stdin = std.Io.File.stdin();
-    var buffer: [256]u8 = undefined;
-    var reader = stdin.reader(io, &buffer);
-    return confirmCore(io, stdout, &reader.interface, kind, message);
+    if (!ttyAvailable(io)) return false;
+    if (comptime !builtin.is_test) return confirmRaw(io, stdout, kind, message) catch false;
+    return false;
 }
 
 fn confirmRaw(io: std.Io, stdout: anytype, kind: ConfirmKind, message: []const u8) !bool {
@@ -540,16 +536,43 @@ const RawDecoder = struct {
         }
         return null;
     }
+
+    fn interByteTimeout(self: *RawDecoder) ?KeyAction {
+        if (self.len == 1 and self.carry[0] == 0x1b) {
+            self.len = 0;
+            return .escape;
+        }
+        return null;
+    }
 };
 
 /// Read bytes from the raw TTY and parse one complete key event into a `KeyAction`.
 fn readRawAction(tty: *vaxis.tty.Tty, decoder: *RawDecoder) !KeyAction {
+    if (comptime builtin.os.tag == .windows) {
+        while (true) switch (try tty.nextEvent(&decoder.parser, null)) {
+            .key_press => |key| return keyToAction(key),
+            else => {},
+        };
+    }
+    configureInterByteTimeout(tty);
     var buf: [256]u8 = undefined;
     while (true) {
         const n = try tty.read(&buf);
-        if (n == 0) return .escape;
+        if (n == 0) {
+            if (decoder.interByteTimeout()) |action| return action;
+            continue;
+        }
         if (try decoder.feed(buf[0..n])) |action| return action;
     }
+}
+
+fn configureInterByteTimeout(tty: *vaxis.tty.Tty) void {
+    if (comptime builtin.os.tag == .windows) return;
+    if (builtin.is_test) return;
+    var raw = std.posix.tcgetattr(tty.fd.handle) catch return;
+    raw.cc[@intFromEnum(std.posix.V.MIN)] = 0;
+    raw.cc[@intFromEnum(std.posix.V.TIME)] = 1; // 100 ms inter-byte timeout
+    std.posix.tcsetattr(tty.fd.handle, .NOW, raw) catch {};
 }
 
 // ────────────────────────────────────────────────────────────────────────────
@@ -907,4 +930,18 @@ test "raw decoder carries fragmented CSI key sequences across reads" {
     try std.testing.expectEqual(@as(?KeyAction, null), try decoder.feed("\x1b"));
     try std.testing.expectEqual(@as(?KeyAction, .up), try decoder.feed("[A"));
     try std.testing.expectEqual(@as(usize, 0), decoder.len);
+}
+
+test "raw decoder resolves standalone escape on inter-byte timeout" {
+    var decoder: RawDecoder = .{};
+    try std.testing.expectEqual(@as(?KeyAction, null), try decoder.feed("\x1b"));
+    try std.testing.expectEqual(@as(?KeyAction, .escape), decoder.interByteTimeout());
+    try std.testing.expectEqual(@as(usize, 0), decoder.len);
+}
+
+test "production confirm fails closed immediately without a tty" {
+    var out_buf: [64]u8 = undefined;
+    var out: std.Io.Writer = .fixed(&out_buf);
+    try std.testing.expect(!try confirm(std.testing.io, &out, .danger, "Delete?", null));
+    try std.testing.expectEqualStrings("", out.buffered());
 }
