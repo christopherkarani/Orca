@@ -88,6 +88,61 @@ This document covers common issues when installing, running, or uninstalling Orc
    ```
 4. Check that the host IDE's plugin system is enabled and configured to load hooks.
 
+## Cursor beforeShellExecution: invalid JSON
+
+**Symptom:** Cursor agent Shell tool is blocked with:
+
+```text
+Hook "orca" returned invalid JSON. The command was blocked for safety.
+```
+
+**Cause:** Cursor's `beforeShellExecution` hook expects valid JSON on stdout (`permission`, `continue`, …). If `~/.cursor/hooks.json` points at bare `orca` and the binary prints human help instead of JSON, Cursor fail-closes every shell command.
+
+**Fix (recommended):** Re-run Orca install so Cursor uses the generated Python wrapper:
+
+```bash
+# From an Orca install tree or release bundle
+./install.sh   # configure_cursor() writes ~/.cursor/hooks/orca-pre-shell.py
+```
+
+Expected `~/.cursor/hooks.json`:
+
+```json
+{
+  "version": 1,
+  "hooks": {
+    "beforeShellExecution": [
+      {
+        "command": "$HOME/.cursor/hooks/orca-pre-shell.py"
+      }
+    ]
+  }
+}
+```
+
+**Fix (bare `orca` on PATH):** Zig `orca` now supports Rust-compatible stdin agent-hook mode when invoked with no subcommand and piped JSON. Verify outside Cursor's agent shell:
+
+```bash
+echo '{"tool_name":"Bash","tool_input":{"command":"git status"}}' | orca
+# allow: empty stdout, exit 0
+
+echo '{"command":"pwd","cwd":"/tmp"}' | orca
+# allow: {"permission":"allow","continue":true,...}
+
+echo '{"tool_name":"Bash","tool_input":{"command":"rm -rf /"}}' | orca
+# deny: {"hookSpecificOutput":{"permissionDecision":"deny",...}}
+```
+
+Interactive `orca` with no args on a TTY still shows help (not hook mode).
+
+**Wrapper smoke test:**
+
+```bash
+echo '{"command":"echo hello","cwd":"'"$PWD"'"}' | python3 ~/.cursor/hooks/orca-pre-shell.py
+```
+
+Should print one JSON object with `"permission":"allow"` for safe commands.
+
 ## Hook output invalid
 
 **Symptom:** Host IDE reports invalid JSON from hook.

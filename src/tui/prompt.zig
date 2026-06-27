@@ -69,6 +69,7 @@ fn readKeyAction(reader: *std.Io.Reader) !KeyAction {
         error.EndOfStream => return .escape,
         else => return err,
     };
+    reader.toss(1); // Zig 0.16.0 std.Io.Reader takeDelimiterExclusive bug: leaves delimiter in stream
     return parseKeyActionLine(raw);
 }
 
@@ -798,3 +799,6 @@ test "select with injected reader delegates to core (TTY-independent path)" {
         .{ .label = "A", .description = "x" },
         .{ .label = "B", .description = "y" },
     };
+    const idx = try select(std.testing.io, std.testing.allocator, &w, &opts, 0, "Header", &in);
+    try std.testing.expectEqual(@as(?usize, 1), idx);
+}

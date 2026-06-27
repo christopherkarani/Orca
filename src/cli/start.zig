@@ -5,8 +5,9 @@ const help = @import("help.zig");
 const style = @import("style.zig");
 const onboarding = @import("onboarding.zig");
 const plugin = @import("plugin.zig");
-const interactive = @import("interactive.zig");
 const shell_eval = @import("shell_eval.zig");
+const build_options = @import("build_options");
+const tui = @import("../tui/mod.zig");
 
 pub fn command(io: std.Io, cwd: std.Io.Dir, argv: []const []const u8, stdout: anytype, stderr: anytype) !u8 {
     for (argv) |arg| {
@@ -17,23 +18,20 @@ pub fn command(io: std.Io, cwd: std.Io.Dir, argv: []const []const u8, stdout: an
     }
 
     if (argv.len == 0) {
-        if (onboarding.interactiveSetupDesired(io)) {
-            return runStart(io, cwd, .{}, stdout, stderr, null, null);
+        var flags: onboarding.StartFlags = .{};
+        if (!onboarding.interactiveSetupDesired(io)) {
+            flags.auto = true;
         }
-        try stderr.writeAll("orca start: non-interactive terminal requires --auto.\n");
-        try stderr.writeAll("Use: orca start --auto [--protection maximum] [--hosts codex,claude]\n");
-        return exit_codes.usage;
+        return runStart(io, cwd, flags, stdout, stderr, null, null);
     }
 
-    const flags = onboarding.parseStartFlags(argv, stderr) catch |err| switch (err) {
+    var flags = onboarding.parseStartFlags(argv, stderr) catch |err| switch (err) {
         error.Usage => return exit_codes.usage,
         else => return err,
     };
 
     if (!flags.auto and !onboarding.interactiveSetupDesired(io)) {
-        try stderr.writeAll("orca start: non-interactive terminal requires --auto.\n");
-        try stderr.writeAll("Use: orca start --auto [--protection maximum] [--hosts codex,claude]\n");
-        return exit_codes.usage;
+        flags.auto = true;
     }
 
     return runStart(io, cwd, flags, stdout, stderr, null, null);
@@ -52,8 +50,7 @@ pub fn runStart(
     defer _ = gpa_state.deinit();
     const allocator = gpa_state.allocator();
 
-    try stdout.writeAll("Orca Start\n");
-    try stdout.writeAll("==========\n\n");
+    try tui.render.banner(io, stdout, build_options.version, null);
     try stdout.writeAll(
         \\Orca will configure protection for your workspace, verify the Rust daemon when needed,
         \\install host integrations you choose, and run safe verification checks.
@@ -65,7 +62,7 @@ pub fn runStart(
     const workspace_root = try onboarding.resolveWorkspaceRootFromCwd(io, allocator, cwd);
     defer allocator.free(workspace_root);
 
-    const protection = try resolveProtectionMode(io, flags, stdout, stderr);
+    const protection = try resolveProtectionMode(io, allocator, flags, stdout, stderr);
     try stdout.print("Protection mode: {s}\n  {s}\n\n", .{ protection.label(), protection.description() });
 
     var doctor_report = try plugin.collectPluginDoctorReport(io, allocator);
@@ -74,40 +71,38 @@ pub fn runStart(
     const host_statuses = try onboarding.collectHostStatuses(io, allocator, doctor_report);
     defer allocator.free(host_statuses);
 
-    const selected_hosts = try resolveSelectedHosts(io, allocator, flags, host_statuses, stdout, stderr);
+    const selected_hosts = try resolveSelectedHosts(io, allocator, flags, host_statuses, stdout);
     defer if (selected_hosts.owned) onboarding.deinitHostList(allocator, selected_hosts.items);
 
     var failures: usize = 0;
     var protection_active = false;
 
-    try printStepHeader(stdout, "Policy");
     const policy_existed = onboarding.policyExists(io, workspace_root);
     const policy_code = try onboarding.ensurePolicy(io, cwd, workspace_root, flags.preset, stdout, stderr, .{
-        .missing = "  Creating .orca/policy.yaml...\n",
-        .exists = "  Policy already exists — leaving it unchanged.\n",
+        .missing = "Creating .orca/policy.yaml...\n",
+        .exists = "Policy already exists — leaving it unchanged.\n",
     });
     if (policy_code != exit_codes.success) {
-        try printStepResult(stdout, false, "Policy setup failed.");
+        try tui.render.stepLine(io, stdout, .failed, "Policy", "Policy setup failed.", 80);
         failures += 1;
     } else {
-        try printStepResult(stdout, true, if (policy_existed) "Existing policy preserved." else "Policy created.");
+        try tui.render.stepLine(io, stdout, .done, "Policy", if (policy_existed) "Existing policy preserved." else "Policy created.", 80);
     }
 
-    try printStepHeader(stdout, "Daemon");
     var daemon_check: onboarding.DaemonCheck = undefined;
     if (protection.needsCommandGuard()) {
         daemon_check = try onboarding.checkDaemonHealth(allocator, true, daemon_check_fn);
         const daemon_ok = daemon_check.status == .compatible;
         protection_active = protection_active or daemon_ok;
-        try stdout.print("  Status: {s}\n", .{daemon_check.status.label()});
-        try stdout.print("  Detail: {s}\n", .{daemon_check.detail});
-        try printStepResult(stdout, daemon_ok, if (daemon_ok) "Daemon ready for Command Guard." else daemon_check.remediation);
-        if (!daemon_ok) failures += 1;
+        try tui.render.stepLine(io, stdout, if (daemon_ok) .done else .failed, "Daemon", if (daemon_ok) "Ready for Command Guard" else daemon_check.remediation, 80);
+        if (!daemon_ok) {
+            try stdout.print("  Status: {s}\n", .{daemon_check.status.label()});
+            try stdout.print("  Detail: {s}\n", .{daemon_check.detail});
+            failures += 1;
+        }
     } else {
         daemon_check = try onboarding.checkDaemonHealth(allocator, false, daemon_check_fn);
-        try stdout.print("  Status: {s} (optional for Firewall-only)\n", .{daemon_check.status.label()});
-        try stdout.print("  Detail: {s}\n", .{daemon_check.detail});
-        try printStepResult(stdout, true, "Firewall mode does not require daemon for basic `orca run` sessions.");
+        try tui.render.stepLine(io, stdout, .done, "Daemon", "Not required for Firewall-only mode", 80);
         protection_active = onboarding.verifyFirewallReady(io, workspace_root);
     }
 
@@ -117,30 +112,26 @@ pub fn runStart(
         configured_hosts.deinit(allocator);
     }
 
-    try printStepHeader(stdout, "Host integrations");
     if (selected_hosts.items.len == 0) {
-        try printStepResult(stdout, true, "No hosts selected. You can run `orca setup` later.");
+        try tui.render.stepLine(io, stdout, .done, "Hosts", "No hosts selected.", 80);
     } else if (protection.needsCommandGuard()) {
         const host_failures = try installSelectedHosts(io, allocator, selected_hosts.items, stdout, &configured_hosts);
         failures += host_failures;
         protection_active = protection_active and host_failures == 0;
         if (host_failures == 0) {
-            try printStepResult(stdout, true, "Selected host integrations configured.");
+            try tui.render.stepLine(io, stdout, .done, "Hosts", "Integrations configured", 80);
         } else {
-            try printStepResult(stdout, false, "One or more host integrations failed. Run `orca plugin doctor`.");
+            try tui.render.stepLine(io, stdout, .failed, "Hosts", "Integration failed. Run `orca plugin doctor`", 80);
         }
     } else {
-        try stdout.writeAll("  Skipping hook installs for Firewall-only mode.\n");
-        try stdout.writeAll("  Use `orca run -- <agent>` to launch protected sessions.\n");
-        try printStepResult(stdout, true, "Firewall path ready.");
+        try tui.render.stepLine(io, stdout, .done, "Hosts", "Skipped for Firewall-only mode", 80);
         protection_active = onboarding.verifyFirewallReady(io, workspace_root);
     }
 
     var verification: ?onboarding.VerificationOutcome = null;
     if (!flags.skip_verify and failures == 0) {
-        try printStepHeader(stdout, "Verification");
         if (protection.needsCommandGuard() and daemon_check.status != .compatible) {
-            try printStepResult(stdout, false, "Skipped shell verification because the daemon is unavailable.");
+            try tui.render.stepLine(io, stdout, .failed, "Verify", "Skipped shell verification because the daemon is unavailable", 80);
             failures += 1;
         } else {
             const eval_fn = shell_evaluator orelse shell_eval.defaultEvaluator;
@@ -152,18 +143,20 @@ pub fn runStart(
                 selected_hosts.items,
                 eval_fn,
             );
-            try stdout.print("  Safe command ({s}): {s}\n", .{ onboarding.safe_verification_command, if (verification.?.safe_allowed) "allowed" else "FAILED" });
-            try stdout.print("  Dangerous command ({s}): {s}\n", .{ onboarding.dangerous_verification_command, if (verification.?.dangerous_denied) "denied" else "FAILED" });
-            if (verification.?.hook_verified) |hook_ok| {
-                try stdout.print("  Hook path: {s}\n", .{if (hook_ok) "verified" else "FAILED"});
-            }
-            if (verification.?.firewall_ready) |firewall_ok| {
-                try stdout.print("  Firewall policy: {s}\n", .{if (firewall_ok) "ready" else "missing"});
-            }
             const verify_ok = verification.?.passed();
             protection_active = protection_active and verify_ok;
-            try printStepResult(stdout, verify_ok, verification.?.detail);
-            if (!verify_ok) failures += 1;
+            try tui.render.stepLine(io, stdout, if (verify_ok) .done else .failed, "Verify", verification.?.detail, 80);
+            if (!verify_ok) {
+                try stdout.print("  Safe command ({s}): {s}\n", .{ onboarding.safe_verification_command, if (verification.?.safe_allowed) "allowed" else "FAILED" });
+                try stdout.print("  Dangerous command ({s}): {s}\n", .{ onboarding.dangerous_verification_command, if (verification.?.dangerous_denied) "denied" else "FAILED" });
+                if (verification.?.hook_verified) |hook_ok| {
+                    try stdout.print("  Hook path: {s}\n", .{if (hook_ok) "verified" else "FAILED"});
+                }
+                if (verification.?.firewall_ready) |firewall_ok| {
+                    try stdout.print("  Firewall policy: {s}\n", .{if (firewall_ok) "ready" else "missing"});
+                }
+                failures += 1;
+            }
         }
     } else if (flags.skip_verify) {
         try stdout.writeAll("\nVerification skipped (--skip-verify).\n");
@@ -179,31 +172,27 @@ pub fn runStart(
     return exit_codes.success;
 }
 
-fn resolveProtectionMode(io: std.Io, flags: onboarding.StartFlags, stdout: anytype, stderr: anytype) !onboarding.ProtectionMode {
+fn resolveProtectionMode(
+    io: std.Io,
+    allocator: std.mem.Allocator,
+    flags: onboarding.StartFlags,
+    stdout: anytype,
+    stderr: anytype,
+) !onboarding.ProtectionMode {
+    _ = stderr;
     if (flags.protection) |mode| return mode;
     if (flags.auto) return onboarding.defaultProtectionMode();
 
-    try stdout.writeAll("Choose your protection mode:\n");
-    try stdout.writeAll("  1) Command Guard — hook-based shell blocking\n");
-    try stdout.writeAll("  2) Firewall — sandboxed `orca run` sessions\n");
-    try stdout.writeAll("  3) Maximum Protection — both (recommended)\n\n");
-    try stdout.writeAll("Enter 1, 2, or 3 [default 3]: ");
-    try flushIfSupported(stdout);
-
-    const stdin_file = std.Io.File.stdin();
-    var stdin_reader_buf: [64]u8 = undefined;
-    var stdin_reader = stdin_file.reader(io, &stdin_reader_buf);
-    const raw = stdin_reader.interface.takeDelimiterExclusive('\n') catch |err| switch (err) {
-        error.EndOfStream => "",
-        else => return err,
+    const options = [_]tui.prompt.SelectionOption{
+        .{ .label = "Command Guard", .description = "hook-based shell blocking", .id = "command_guard" },
+        .{ .label = "Firewall", .description = "sandboxed `orca run` sessions", .id = "firewall" },
+        .{ .label = "Maximum Protection", .description = "both (recommended)", .id = "maximum_protection" },
     };
-    const input = std.mem.trim(u8, raw, " \t\r");
-    if (input.len == 0 or std.mem.eql(u8, input, "3")) return onboarding.defaultProtectionMode();
-    if (std.mem.eql(u8, input, "1")) return .command_guard;
-    if (std.mem.eql(u8, input, "2")) return .firewall;
-    if (std.mem.eql(u8, input, "3")) return .maximum_protection;
-    try stderr.writeAll("orca start: invalid selection; using Maximum Protection.\n");
-    return onboarding.defaultProtectionMode();
+    const idx = try tui.prompt.select(io, allocator, stdout, &options, 2, "Choose your protection mode", null);
+    const selected = idx orelse 2;
+    if (selected == 0) return .command_guard;
+    if (selected == 1) return .firewall;
+    return .maximum_protection;
 }
 
 const SelectedHosts = struct {
@@ -217,7 +206,6 @@ fn resolveSelectedHosts(
     flags: onboarding.StartFlags,
     host_statuses: []const onboarding.HostStatus,
     stdout: anytype,
-    stderr: anytype,
 ) !SelectedHosts {
     if (flags.hosts_csv) |csv| {
         return .{ .items = try onboarding.parseHostsCsv(allocator, csv), .owned = true };
@@ -246,41 +234,45 @@ fn resolveSelectedHosts(
         return .{ .items = &.{}, .owned = false };
     }
 
-    try stdout.writeAll("\nDetected agent hosts:\n");
-    var selection_items = try allocator.alloc(interactive.SelectionItem, host_statuses.len);
-    defer allocator.free(selection_items);
+    var options = try allocator.alloc(tui.prompt.SelectionOption, detected_count);
+    defer allocator.free(options);
 
-    var visible: usize = 0;
+    var visible_idx: usize = 0;
     for (host_statuses) |status| {
         if (!status.detected) continue;
         const marker = if (status.installed) " (installed)" else "";
         var label_buf: [64]u8 = undefined;
         const label = std.fmt.bufPrint(&label_buf, "{s}{s}", .{ status.name, marker }) catch status.name;
-        selection_items[visible] = .{
-            .label = label,
+        options[visible_idx] = .{
+            .label = try allocator.dupe(u8, label),
             .checked = true,
-            .id = status.name,
+            .id = try allocator.dupe(u8, status.name),
         };
-        visible += 1;
+        visible_idx += 1;
+    }
+    defer {
+        for (options) |opt| {
+            allocator.free(opt.label);
+            if (opt.id) |id| allocator.free(id);
+        }
     }
 
-    const stdin_file = std.Io.File.stdin();
-    var stdin_reader_buf: [256]u8 = undefined;
-    var stdin_reader = stdin_file.reader(io, &stdin_reader_buf);
-    var result = try interactive.runMultiSelect(allocator, selection_items[0..visible], stdout, &stdin_reader.interface);
-    defer interactive.deinitMultiSelectResult(&result, allocator);
+    const confirmed = try tui.prompt.multiSelect(io, allocator, stdout, options, "Select agent hosts to integrate", null);
+    if (!confirmed) {
+        try stdout.writeAll("\nHost selection cancelled.\n");
+        return .{ .items = &.{}, .owned = false };
+    }
 
     var list: std.ArrayList([]const u8) = .empty;
     errdefer {
         for (list.items) |item| allocator.free(item);
         list.deinit(allocator);
     }
-    for (result.items) |item| {
+    for (options) |item| {
         if (!item.checked) continue;
         const host_name = item.id orelse item.label;
         try list.append(allocator, try allocator.dupe(u8, host_name));
     }
-    _ = stderr;
     return .{ .items = try list.toOwnedSlice(allocator), .owned = true };
 }
 
@@ -326,15 +318,6 @@ fn runChild(io: std.Io, argv: []const []const u8) !u8 {
         .exited => |code| @as(u8, @intCast(@min(code, 255))),
         else => 255,
     };
-}
-
-fn printStepHeader(stdout: anytype, title: []const u8) !void {
-    try stdout.print("\n[{s}]\n", .{title});
-}
-
-fn printStepResult(stdout: anytype, ok: bool, detail: []const u8) !void {
-    const glyph = if (ok) "✓" else "✗";
-    try stdout.print("  {s} {s}\n", .{ glyph, detail });
 }
 
 fn writeSuccessSummary(
@@ -473,7 +456,7 @@ test "start auto mode with mock daemon completes in temp workspace" {
     try std.testing.expectEqual(exit_codes.success, code);
 
     const output = stdout_writer.buffered();
-    try std.testing.expect(std.mem.indexOf(u8, output, "Orca Start") != null);
+    try std.testing.expect(std.mem.indexOf(u8, output, "\u{1F6E1}  Orca") != null);
     try std.testing.expect(std.mem.indexOf(u8, output, "Firewall") != null);
     try std.testing.expect(std.mem.indexOf(u8, output, "Orca is configured") != null);
 }
@@ -544,7 +527,7 @@ test "start firewall mode verifies without daemon or shell evaluator" {
         null,
     );
     try std.testing.expectEqual(exit_codes.success, code);
-    try std.testing.expect(std.mem.indexOf(u8, stdout_writer.buffered(), "Firewall policy: ready") != null);
+    try std.testing.expect(std.mem.indexOf(u8, stdout_writer.buffered(), "Firewall-only mode") != null);
 }
 
 test "start verification failure detected by allow-only mock evaluator" {
@@ -554,4 +537,20 @@ test "start verification failure detected by allow-only mock evaluator" {
         shell_eval.mockDaemonAllowEvaluator,
     );
     try std.testing.expect(!outcome.passed());
+}
+
+test "start protection mode prompt selects default via injected reader" {
+    tui.theme.resetCache();
+    var buf: [4096]u8 = undefined;
+    var w: std.Io.Writer = .fixed(&buf);
+    var in = std.Io.Reader.fixed("enter\n");
+
+    const options = [_]tui.prompt.SelectionOption{
+        .{ .label = "Command Guard", .description = "hook-based shell blocking", .id = "command_guard" },
+        .{ .label = "Firewall", .description = "sandboxed `orca run` sessions", .id = "firewall" },
+        .{ .label = "Maximum Protection", .description = "both (recommended)", .id = "maximum_protection" },
+    };
+
+    const idx = try tui.prompt.select(std.testing.io, std.testing.allocator, &w, &options, 2, "Choose your protection mode", &in);
+    try std.testing.expectEqual(@as(?usize, 2), idx);
 }

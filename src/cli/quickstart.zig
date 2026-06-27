@@ -5,6 +5,8 @@ const help = @import("help.zig");
 const doctor = @import("doctor.zig");
 const setup = @import("setup.zig");
 const onboarding = @import("onboarding.zig");
+const build_options = @import("build_options");
+const tui = @import("../tui/mod.zig");
 
 pub fn command(io: std.Io, cwd: std.Io.Dir, argv: []const []const u8, stdout: anytype, stderr: anytype) !u8 {
     for (argv) |arg| {
@@ -26,43 +28,47 @@ pub fn command(io: std.Io, cwd: std.Io.Dir, argv: []const []const u8, stdout: an
     const workspace_root = try onboarding.resolveWorkspaceRootFromCwd(io, allocator, cwd);
     defer allocator.free(workspace_root);
 
-    try stdout.writeAll("Orca Quickstart\n");
-    try stdout.writeAll("==================\n\n");
+    try tui.render.banner(io, stdout, build_options.version, "quickstart");
+    try stdout.writeAll("\n");
 
-    try stdout.writeAll("-> Step 1: Checking your system...\n");
+    try tui.render.stepLine(io, stdout, .active, "Step 1 — System check", null, 0);
     const doctor_code = try doctor.command(io, &.{}, stdout, stderr);
     if (doctor_code != exit_codes.success) {
-        try stdout.writeAll("\nDoctor found issues. Please fix them and re-run quickstart.\n");
+        try tui.render.stepLine(io, stdout, .failed, "Step 1 — System check", "Doctor found issues.", 0);
+        try stdout.writeAll("\nFix the issues above and re-run `orca quickstart`.\n");
         return doctor_code;
     }
-    try stdout.writeAll("System check complete.\n\n");
+    try tui.render.stepLine(io, stdout, .done, "Step 1 — System check", "passed", 0);
+    try stdout.writeAll("\n");
 
     if (!onboarding.policyExists(io, workspace_root)) {
-        try stdout.writeAll("-> Step 2: Creating your first policy...\n");
+        try tui.render.stepLine(io, stdout, .active, "Step 2 — Policy", "Creating your first policy...", 0);
         const init_code = try onboarding.ensurePolicy(io, cwd, workspace_root, flags.preset, stdout, stderr, .{
             .missing = "",
             .exists = null,
         });
         if (init_code != exit_codes.success) {
-            try stdout.writeAll("\nPolicy creation failed.\n");
+            try tui.render.stepLine(io, stdout, .failed, "Step 2 — Policy", "Policy creation failed.", 0);
             return init_code;
         }
-        try stdout.writeAll("Policy created.\n\n");
+        try tui.render.stepLine(io, stdout, .done, "Step 2 — Policy", "created", 0);
     } else {
-        try stdout.writeAll("-> Step 2: Policy already exists. Skipping init.\n\n");
+        try tui.render.stepLine(io, stdout, .done, "Step 2 — Policy", "already exists — skipping init", 0);
     }
+    try stdout.writeAll("\n");
 
-    try stdout.writeAll("-> Step 3: Setting up agent host integrations...\n");
+    try tui.render.stepLine(io, stdout, .active, "Step 3 — Host integrations", "running setup...", 0);
     const setup_argv = if (flags.auto or !onboarding.interactiveSetupDesired(io))
-        &[_][]const u8{ "--auto", "--preset", flags.preset }
+        &[_][]const u8{ "--auto", "--preset", flags.preset, "--embedded" }
     else
-        &[_][]const u8{ "--preset", flags.preset };
+        &[_][]const u8{ "--preset", flags.preset, "--embedded" };
     const setup_code = try setup.command(io, cwd, setup_argv, stdout, stderr);
     if (setup_code != exit_codes.success) {
-        try stdout.writeAll("\nSetup finished with warnings. You may need to run `orca setup` manually.\n");
+        try tui.render.stepLine(io, stdout, .failed, "Step 3 — Host integrations", "setup finished with warnings", 0);
     } else {
-        try stdout.writeAll("Setup complete.\n\n");
+        try tui.render.stepLine(io, stdout, .done, "Step 3 — Host integrations", "complete", 0);
     }
+    try stdout.writeAll("\n");
 
     try stdout.writeAll("Core protection is ready. Host integrations reported above may still need setup.\n");
     try stdout.writeAll("\nStart protecting your sessions:\n");
@@ -73,4 +79,23 @@ pub fn command(io: std.Io, cwd: std.Io.Dir, argv: []const []const u8, stdout: an
     try stdout.writeAll("  orca help run      Learn about running commands\n");
 
     return exit_codes.success;
+}
+
+test "quickstart step labels render with brand banner" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    var stdout_buf: [8192]u8 = undefined;
+    var stderr_buf: [1024]u8 = undefined;
+    var stdout_writer: std.Io.Writer = .fixed(&stdout_buf);
+    var stderr_writer: std.Io.Writer = .fixed(&stderr_buf);
+
+    const code = try command(std.testing.io, tmp.dir, &.{ "--auto" }, &stdout_writer, &stderr_writer);
+    try std.testing.expectEqual(exit_codes.success, code);
+
+    const output = stdout_writer.buffered();
+    try std.testing.expect(std.mem.indexOf(u8, output, "\u{1F6E1}  Orca") != null);
+    try std.testing.expect(std.mem.indexOf(u8, output, "Step 1 — System check") != null);
+    try std.testing.expect(std.mem.indexOf(u8, output, "Step 2 — Policy") != null);
+    try std.testing.expect(std.mem.indexOf(u8, output, "Step 3 — Host integrations") != null);
 }

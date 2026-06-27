@@ -44,6 +44,7 @@ pub const shutdown = @import("shutdown.zig");
 pub const shell_eval = @import("shell_eval.zig");
 pub const rust_visibility = @import("rust_visibility.zig");
 pub const feed_writer = @import("feed_writer.zig");
+pub const agent_hook = @import("agent_hook.zig");
 
 test {
     // Ensure the child_process module (and its tests) are pulled into the test binary.
@@ -52,6 +53,7 @@ test {
     _ = style;
     _ = onboarding;
     _ = start;
+    _ = setup;
     _ = quickstart;
     _ = @import("spinner.zig");
     // Pull daemon UDS/IPC tests into the test binary.
@@ -59,6 +61,7 @@ test {
     _ = shutdown;
     _ = shell_eval;
     _ = evaluate;
+    _ = agent_hook;
 }
 
 pub const version = build_options.version;
@@ -165,7 +168,20 @@ pub fn runWithCwd(io: std.Io, environ_map: *const std.process.Environ.Map, cwd: 
     // is a fast O(1) cache hit with no side effects.
     _ = style.useColor(io, stdout);
 
-    if (argv.len == 0 or std.mem.eql(u8, argv[0], "--help") or std.mem.eql(u8, argv[0], "-h")) {
+    if (argv.len == 0) {
+        if (agent_hook.shouldEnter(io)) {
+            return agent_hook.command(io, stdout, stderr) catch |err| switch (err) {
+                error.NotAgentHookInput => {
+                    try help.write(io, stdout);
+                    return exit_codes.success;
+                },
+                else => return err,
+            };
+        }
+        try help.write(io, stdout);
+        return exit_codes.success;
+    }
+    if (std.mem.eql(u8, argv[0], "--help") or std.mem.eql(u8, argv[0], "-h")) {
         try help.write(io, stdout);
         return exit_codes.success;
     }
@@ -258,6 +274,7 @@ pub fn runWithCwd(io: std.Io, environ_map: *const std.process.Environ.Map, cwd: 
     if (std.mem.eql(u8, command, "license")) return license_command.command(io, argv[1..], stdout, stderr);
     if (std.mem.eql(u8, command, "ci")) return ci.command(io, argv[1..], stdout, stderr);
     if (std.mem.eql(u8, command, "demo")) return demo.command(io, argv[1..], stdout, stderr);
+    if (std.mem.eql(u8, command, "stop")) return disable.command(io, argv[1..], stdout, stderr);
     if (std.mem.eql(u8, command, "disable")) return disable.command(io, argv[1..], stdout, stderr);
     if (std.mem.eql(u8, command, "uninstall")) return uninstall.command(io, argv[1..], stdout, stderr);
     if (std.mem.eql(u8, command, "shutdown")) return shutdown.command(io, argv[1..], stdout, stderr);
@@ -836,7 +853,7 @@ test "unknown command suggests prefix match" {
     // Prefix match takes priority
     const suggestion = suggestCommand("do");
     try std.testing.expect(suggestion != null);
-    // "doctor" or "disable" etc. are valid; just ensure something returned
+    // "doctor" or "stop" etc. are valid; just ensure something returned
     try std.testing.expect(suggestion.?.len > 0);
 }
 
@@ -906,18 +923,22 @@ test "start dispatch appears in help and runs with --auto in temp workspace" {
     stderr_writer = .fixed(&stderr_buf);
     const code = try testRunWithCwd(tmp.dir, &.{ "start", "--auto", "--protection", "firewall", "--skip-verify" }, &stdout_writer, &stderr_writer);
     try std.testing.expectEqual(exit_codes.success, code);
-    try std.testing.expect(std.mem.indexOf(u8, stdout_writer.buffered(), "Orca Start") != null);
+    try std.testing.expect(std.mem.indexOf(u8, stdout_writer.buffered(), "\u{1F6E1}  Orca") != null);
 }
 
-test "start rejects non-interactive usage without --auto" {
-    var stdout_buf: [512]u8 = undefined;
+test "start auto-runs on non-TTY without --auto" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    var stdout_buf: [8192]u8 = undefined;
     var stderr_buf: [512]u8 = undefined;
     var stdout_writer: std.Io.Writer = .fixed(&stdout_buf);
     var stderr_writer: std.Io.Writer = .fixed(&stderr_buf);
 
-    const code = try testRunWithCwd(std.Io.Dir.cwd(), &.{"start"}, &stdout_writer, &stderr_writer);
-    try std.testing.expectEqual(exit_codes.usage, code);
-    try std.testing.expect(std.mem.indexOf(u8, stderr_writer.buffered(), "--auto") != null);
+    const code = try testRunWithCwd(tmp.dir, &.{ "start", "--protection", "firewall", "--skip-verify" }, &stdout_writer, &stderr_writer);
+    try std.testing.expectEqual(exit_codes.success, code);
+    try std.testing.expect(std.mem.indexOf(u8, stdout_writer.buffered(), "\u{1F6E1}  Orca") != null);
+    try std.testing.expectEqualStrings("", stderr_writer.buffered());
 }
 
 test "quickstart dispatch runs and prints steps" {
@@ -933,11 +954,10 @@ test "quickstart dispatch runs and prints steps" {
     try std.testing.expectEqual(exit_codes.success, code);
 
     const output = stdout_writer.buffered();
-    try std.testing.expect(std.mem.indexOf(u8, output, "Orca Quickstart") != null);
-    try std.testing.expect(std.mem.indexOf(u8, output, "Step 1: Checking your system") != null);
-    try std.testing.expect(std.mem.indexOf(u8, output, "Step 2: Creating your first policy") != null or
-        std.mem.indexOf(u8, output, "Step 2: Policy already exists") != null);
-    try std.testing.expect(std.mem.indexOf(u8, output, "Step 3: Setting up") != null);
+    try std.testing.expect(std.mem.indexOf(u8, output, "\u{1F6E1}  Orca") != null);
+    try std.testing.expect(std.mem.indexOf(u8, output, "Step 1 — System check") != null);
+    try std.testing.expect(std.mem.indexOf(u8, output, "Step 2 — Policy") != null);
+    try std.testing.expect(std.mem.indexOf(u8, output, "Step 3 — Host integrations") != null);
     try std.testing.expect(std.mem.indexOf(u8, output, "Core protection is ready") != null);
 }
 
@@ -961,8 +981,25 @@ test "quickstart skips init when policy exists" {
     try std.testing.expectEqual(exit_codes.success, code);
 
     const output = stdout_writer.buffered();
-    try std.testing.expect(std.mem.indexOf(u8, output, "Policy already exists") != null);
-    try std.testing.expect(std.mem.indexOf(u8, output, "Skipping init") != null);
+    try std.testing.expect(std.mem.indexOf(u8, output, "already exists — skipping init") != null);
+}
+
+test "stop dispatch is the public disable command" {
+    var stdout_buf: [4096]u8 = undefined;
+    var stderr_buf: [256]u8 = undefined;
+    var stdout_writer: std.Io.Writer = .fixed(&stdout_buf);
+    var stderr_writer: std.Io.Writer = .fixed(&stderr_buf);
+
+    const help_code = try testRun(&.{ "help", "stop" }, &stdout_writer, &stderr_writer);
+    try std.testing.expectEqual(exit_codes.success, help_code);
+    try std.testing.expect(std.mem.indexOf(u8, stdout_writer.buffered(), "orca stop") != null);
+    try std.testing.expect(std.mem.indexOf(u8, stdout_writer.buffered(), "cursor") != null);
+
+    stdout_writer = .fixed(&stdout_buf);
+    stderr_writer = .fixed(&stderr_buf);
+    const code = try testRun(&.{ "stop", "-all" }, &stdout_writer, &stderr_writer);
+    try std.testing.expectEqual(exit_codes.usage, code);
+    try std.testing.expect(std.mem.indexOf(u8, stderr_writer.buffered(), "orca stop") != null);
 }
 
 test "completions dispatch prints shell script" {
@@ -1024,10 +1061,9 @@ test "setup help describes guided interactive default on TTY and de-emphasizes -
     try std.testing.expectEqual(exit_codes.success, code);
 
     const output = stdout_writer.buffered();
-    // Accurate for current Phase 0 guided stub: mentions guided and the TTY/auto distinction.
-    // Full interactive toggle UI is future work; help text reflects stub reality.
+    // Accurate for Phase 3 guided flow: mentions guided mode and arrow-key selection.
     try std.testing.expect(std.mem.indexOf(u8, output, "guided") != null);
-    try std.testing.expect(std.mem.indexOf(u8, output, "auto-selects") != null or std.mem.indexOf(u8, output, "--auto") != null);
+    try std.testing.expect(std.mem.indexOf(u8, output, "arrow") != null or std.mem.indexOf(u8, output, "--auto") != null);
     try std.testing.expectEqualStrings("", stderr_writer.buffered());
 }
 

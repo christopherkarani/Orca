@@ -172,7 +172,7 @@ pub fn parseFlags(argv: []const []const u8, stderr: anytype, command_label: []co
     var index: usize = 0;
     while (index < argv.len) : (index += 1) {
         const arg = argv[index];
-        if (std.mem.eql(u8, arg, "--auto")) {
+        if (std.mem.eql(u8, arg, "--auto") or std.mem.eql(u8, arg, "--no-interact")) {
             flags.auto = true;
             continue;
         }
@@ -423,7 +423,7 @@ pub fn parseStartFlags(argv: []const []const u8, stderr: anytype) !StartFlags {
     var index: usize = 0;
     while (index < argv.len) : (index += 1) {
         const arg = argv[index];
-        if (std.mem.eql(u8, arg, "--auto") or std.mem.eql(u8, arg, "--yes")) {
+        if (std.mem.eql(u8, arg, "--auto") or std.mem.eql(u8, arg, "--yes") or std.mem.eql(u8, arg, "--no-interact")) {
             flags.auto = true;
             continue;
         }
