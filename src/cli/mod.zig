@@ -47,6 +47,7 @@ pub const feed_writer = @import("feed_writer.zig");
 pub const agent_hook = @import("agent_hook.zig");
 pub const daemon_contracts = @import("daemon_contracts.zig");
 pub const packs = @import("packs.zig");
+pub const history = @import("history.zig");
 
 test {
     // Ensure the child_process module (and its tests) are pulled into the test binary.
@@ -66,6 +67,7 @@ test {
     _ = agent_hook;
     _ = daemon_contracts;
     _ = packs;
+    _ = history;
 }
 
 pub const version = build_options.version;
@@ -285,6 +287,13 @@ pub fn runWithCwd(io: std.Io, environ_map: *const std.process.Environ.Map, cwd: 
         };
     }
 
+    if (std.mem.eql(u8, command, "history")) {
+        return history.command(io, argv[1..], stdout, stderr) catch |err| {
+            try stderr.print("orca history: {s}: {s}\n", .{ daemonErrorLabel(err), @errorName(err) });
+            return exit_codes.general;
+        };
+    }
+
     if (isPhase1ProxyCommand(command)) {
         return proxyPhase1Command(realDaemonExecuteCli, command, argv[1..], io, stdout, stderr);
     }
@@ -351,7 +360,6 @@ fn proxyVersionCommand(comptime execute_cli: anytype, io: std.Io, stdout: anytyp
 fn isPhase1ProxyCommand(command: []const u8) bool {
     return std.mem.eql(u8, command, "test") or
         std.mem.eql(u8, command, "scan") or
-        std.mem.eql(u8, command, "history") or
         std.mem.eql(u8, command, "precommit");
 }
 

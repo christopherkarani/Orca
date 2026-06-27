@@ -168,16 +168,16 @@ pub const commands = [_]CommandInfo{
     },
     .{
         .name = "history",
-        .summary = "Query Rust command history",
-        .usage = "orca history <action> [options]",
+        .summary = "Review protected command history",
+        .usage = "orca history [stats|check|analyze|interactive|export|prune|backup] [options]",
         .category = .diagnostics,
         .examples = &.{
             "orca history stats --days 7",
             "orca history check --strict",
         },
         .details = &.{
-            "Proxies to the Rust daemon so history queries use the Rust SQLite-backed history store.",
-            "Use 'orca history --help' for the full Rust-backed action list.",
+            "Human stats are rendered by Orca from structured history data.",
+            "Use 'orca history --help' for actions and examples.",
         },
     },
     .{
