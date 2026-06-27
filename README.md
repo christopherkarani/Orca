@@ -390,7 +390,7 @@ Run `orca doctor` to check your platform capabilities.
 
 ## Documentation
 
-- [Install](docs/install.md) — Prebuilt binaries, package managers, and build from source.
+- [Install](docs/install.md) — Prebuilt binaries, package managers, and build from source
 - [Quickstart](docs/quickstart.md) — Step-by-step first session.
 - [Policy](docs/policy.md) — Full policy schema and examples.
 - [Credentials](docs/credentials.md) — How Orca protects API keys, tokens, and secrets.
