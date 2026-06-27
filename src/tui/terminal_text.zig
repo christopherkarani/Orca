@@ -48,6 +48,15 @@ pub fn write(writer: anytype, input: []const u8, layout: Layout) !void {
     }
 }
 
+/// Return an owned, terminal-safe copy for renderers that must measure text
+/// before writing it (for example, fixed-width tables).
+pub fn sanitizeAlloc(allocator: std.mem.Allocator, input: []const u8, layout: Layout) ![]u8 {
+    var output: std.Io.Writer.Allocating = .init(allocator);
+    errdefer output.deinit();
+    try write(&output.writer, input, layout);
+    return output.toOwnedSlice();
+}
+
 test "sanitizer removes CSI OSC C0 and normalizes inline layout" {
     var buf: [256]u8 = undefined;
     var out: std.Io.Writer = .fixed(&buf);
@@ -61,4 +70,10 @@ test "sanitizer preserves intentional multiline breaks only" {
     var out: std.Io.Writer = .fixed(&buf);
     try write(&out, "one\ntwo", .multiline);
     try std.testing.expectEqualStrings("one\ntwo", out.buffered());
+}
+
+test "sanitizeAlloc returns terminal-safe text suitable for width measurement" {
+    const sanitized = try sanitizeAlloc(std.testing.allocator, "db.\x1b[2Jmysql\npack", .single_line);
+    defer std.testing.allocator.free(sanitized);
+    try std.testing.expectEqualStrings("db.mysql pack", sanitized);
 }

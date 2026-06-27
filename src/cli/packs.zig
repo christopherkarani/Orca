@@ -50,7 +50,7 @@ pub fn commandWithExecutor(comptime execute_cli: anytype, io: std.Io, argv: []co
         return exit_codes.general;
     };
     defer parsed.deinit();
-    return renderHuman(io, options, parsed.value, stdout);
+    return renderHuman(io, options, parsed.value, stdout, stderr);
 }
 
 fn shouldPassThrough(argv: []const []const u8) bool {
@@ -99,7 +99,7 @@ fn usageError(stderr: anytype, message: []const u8) error{InvalidArguments} {
     return error.InvalidArguments;
 }
 
-fn renderHuman(io: std.Io, options: Options, output: contracts.PacksOutput, stdout: anytype) !u8 {
+fn renderHuman(io: std.Io, options: Options, output: contracts.PacksOutput, stdout: anytype, stderr: anytype) !u8 {
     const allocator = std.heap.smp_allocator;
     var selected: std.ArrayListUnmanaged(contracts.PackInfo) = .empty;
     defer selected.deinit(allocator);
@@ -123,9 +123,15 @@ fn renderHuman(io: std.Io, options: Options, output: contracts.PacksOutput, stdo
         return exit_codes.success;
     }
 
-    const start = std.math.mul(usize, options.page - 1, options.page_size) catch selected.items.len;
+    const total_pages = 1 + (selected.items.len - 1) / options.page_size;
+    if (options.page > total_pages) {
+        return usageExit(stderr, "--page is beyond the available filtered results");
+    }
+
+    const start = std.math.mul(usize, options.page - 1, options.page_size) catch
+        return usageExit(stderr, "--page and --page-size are too large");
     const end = @min(selected.items.len, std.math.add(usize, start, options.page_size) catch selected.items.len);
-    const page_items = if (start < selected.items.len) selected.items[start..end] else selected.items[0..0];
+    const page_items = selected.items[start..end];
 
     const rows = try allocator.alloc([]const []const u8, page_items.len);
     defer allocator.free(rows);
@@ -136,14 +142,32 @@ fn renderHuman(io: std.Io, options: Options, output: contracts.PacksOutput, stdo
     }
     for (page_items, 0..) |pack, index| {
         const status = if (pack.enabled) "enabled" else "available";
+        const safe_id = try tui.terminal_text.sanitizeAlloc(allocator, pack.id, .single_line);
+        owned.append(allocator, safe_id) catch |err| {
+            allocator.free(safe_id);
+            return err;
+        };
+        const safe_category = try tui.terminal_text.sanitizeAlloc(allocator, pack.category, .single_line);
+        owned.append(allocator, safe_category) catch |err| {
+            allocator.free(safe_category);
+            return err;
+        };
+        const safe_description = try tui.terminal_text.sanitizeAlloc(allocator, pack.description, .single_line);
+        owned.append(allocator, safe_description) catch |err| {
+            allocator.free(safe_description);
+            return err;
+        };
         const patterns = try std.fmt.allocPrint(allocator, "{d} safe / {d} blocked", .{ pack.safe_pattern_count, pack.destructive_pattern_count });
-        try owned.append(allocator, patterns);
+        owned.append(allocator, patterns) catch |err| {
+            allocator.free(patterns);
+            return err;
+        };
         const cells = try allocator.alloc([]const u8, 5);
-        cells[0] = pack.id;
-        cells[1] = pack.category;
+        cells[0] = safe_id;
+        cells[1] = safe_category;
         cells[2] = status;
         cells[3] = patterns;
-        cells[4] = pack.description;
+        cells[4] = safe_description;
         rows[index] = cells;
     }
     defer for (rows) |row| allocator.free(row);
@@ -152,9 +176,13 @@ fn renderHuman(io: std.Io, options: Options, output: contracts.PacksOutput, stdo
         .{ .name = "PACK" },     .{ .name = "CATEGORY" },    .{ .name = "STATUS" },
         .{ .name = "PATTERNS" }, .{ .name = "DESCRIPTION" },
     }, rows);
-    const total_pages = 1 + (selected.items.len - 1) / options.page_size;
     try stdout.print("\nPage {d} of {d} · {d} pack(s)\n", .{ options.page, total_pages, selected.items.len });
     return exit_codes.success;
+}
+
+fn usageExit(stderr: anytype, message: []const u8) u8 {
+    usageError(stderr, message) catch {};
+    return exit_codes.usage;
 }
 
 fn lessThanPack(_: void, lhs: contracts.PackInfo, rhs: contracts.PackInfo) bool {
@@ -225,18 +253,28 @@ test "packs installed alias uses daemon enabled semantics and renders empty guid
 }
 
 test "packs machine help and raw modes are byte identical passthrough" {
-    const cases = [_][]const []const u8{
-        &.{ "--format", "json" }, &.{"--robot"}, &.{"--help"}, &.{ "--format", "pretty" }, &.{"--expand"},
+    const Case = struct { args: []const []const u8, expected: []const u8 };
+    const cases = [_]Case{
+        .{ .args = &.{ "--format", "json" }, .expected = "packs|--format|json" },
+        .{ .args = &.{"--robot"}, .expected = "packs|--robot" },
+        .{ .args = &.{"--help"}, .expected = "packs|--help" },
+        .{ .args = &.{"-h"}, .expected = "packs|-h" },
+        .{ .args = &.{ "-f", "json" }, .expected = "packs|-f|json" },
+        .{ .args = &.{"--format=json"}, .expected = "packs|--format=json" },
+        .{ .args = &.{ "--format", "pretty" }, .expected = "packs|--format|pretty" },
+        .{ .args = &.{"--expand"}, .expected = "packs|--expand" },
+        .{ .args = &.{ "--max-patterns", "7" }, .expected = "packs|--max-patterns|7" },
+        .{ .args = &.{"--max-patterns=7"}, .expected = "packs|--max-patterns=7" },
     };
-    for (cases) |args| {
+    for (cases) |case| {
         var stdout_buf: [128]u8 = undefined;
         var stderr_buf: [128]u8 = undefined;
         var stdout_writer: std.Io.Writer = .fixed(&stdout_buf);
         var stderr_writer: std.Io.Writer = .fixed(&stderr_buf);
-        const code = try commandWithExecutor(fakePassthrough, std.testing.io, args, &stdout_writer, &stderr_writer);
-        try std.testing.expectEqual(exit_codes.success, code);
-        try std.testing.expectEqualStrings("daemon\x1b[raw]\n", stdout_writer.buffered());
-        try std.testing.expectEqualStrings("", stderr_writer.buffered());
+        const code = try commandWithExecutor(fakePassthrough, std.testing.io, case.args, &stdout_writer, &stderr_writer);
+        try std.testing.expectEqual(@as(u8, 23), code);
+        try std.testing.expectEqualStrings(case.expected, stdout_writer.buffered());
+        try std.testing.expectEqualStrings("daemon exact stderr\n", stderr_writer.buffered());
     }
 }
 
@@ -255,6 +293,65 @@ test "packs rejects missing and invalid Zig option values with remediation" {
     }
 }
 
+test "packs sanitizes fields before deterministic table layout" {
+    var stdout_buf: [4096]u8 = undefined;
+    var stderr_buf: [256]u8 = undefined;
+    var stdout_writer: std.Io.Writer = .fixed(&stdout_buf);
+    var stderr_writer: std.Io.Writer = .fixed(&stderr_buf);
+    const code = try commandWithExecutor(fakeHostilePacksJson, std.testing.io, &.{}, &stdout_writer, &stderr_writer);
+    try std.testing.expectEqual(exit_codes.success, code);
+    try std.testing.expectEqualStrings(
+        "  PACK      CATEGORY  STATUS   PATTERNS            DESCRIPTION  \n" ++
+            "  --------------------------------------------------------------\n" ++
+            "  db.mysql  database  enabled  3 safe / 4 blocked  safe line    \n" ++
+            "\n" ++
+            "Page 1 of 1 · 1 pack(s)\n",
+        stdout_writer.buffered(),
+    );
+}
+
+test "packs rejects pages beyond filtered results including max usize" {
+    const max_page = try std.fmt.allocPrint(std.testing.allocator, "{d}", .{std.math.maxInt(usize)});
+    defer std.testing.allocator.free(max_page);
+    const cases = [_][]const []const u8{
+        &.{ "--filter", "git", "--page", "2" },
+        &.{ "--page", max_page, "--page-size", max_page },
+    };
+    for (cases) |args| {
+        var stdout_buf: [64]u8 = undefined;
+        var stderr_buf: [256]u8 = undefined;
+        var stdout_writer: std.Io.Writer = .fixed(&stdout_buf);
+        var stderr_writer: std.Io.Writer = .fixed(&stderr_buf);
+        const code = try commandWithExecutor(fakeUnsortedPacksJson, std.testing.io, args, &stdout_writer, &stderr_writer);
+        try std.testing.expectEqual(exit_codes.usage, code);
+        try std.testing.expect(std.mem.indexOf(u8, stderr_writer.buffered(), "page") != null);
+        try std.testing.expect(std.mem.indexOf(u8, stderr_writer.buffered(), "orca help packs") != null);
+    }
+}
+
+test "packs daemon failures preserve stdout stderr and exit code" {
+    var stdout_buf: [128]u8 = undefined;
+    var stderr_buf: [128]u8 = undefined;
+    var stdout_writer: std.Io.Writer = .fixed(&stdout_buf);
+    var stderr_writer: std.Io.Writer = .fixed(&stderr_buf);
+    const code = try commandWithExecutor(fakeDaemonFailure, std.testing.io, &.{}, &stdout_writer, &stderr_writer);
+    try std.testing.expectEqual(@as(u8, 17), code);
+    try std.testing.expectEqualStrings("daemon partial stdout\n", stdout_writer.buffered());
+    try std.testing.expectEqualStrings("daemon exact stderr\n", stderr_writer.buffered());
+}
+
+test "packs invalid daemon JSON gives doctor remediation without leaking payload" {
+    var stdout_buf: [128]u8 = undefined;
+    var stderr_buf: [256]u8 = undefined;
+    var stdout_writer: std.Io.Writer = .fixed(&stdout_buf);
+    var stderr_writer: std.Io.Writer = .fixed(&stderr_buf);
+    const code = try commandWithExecutor(fakeInvalidJson, std.testing.io, &.{}, &stdout_writer, &stderr_writer);
+    try std.testing.expectEqual(exit_codes.general, code);
+    try std.testing.expectEqualStrings("", stdout_writer.buffered());
+    try std.testing.expect(std.mem.indexOf(u8, stderr_writer.buffered(), "orca doctor") != null);
+    try std.testing.expect(std.mem.indexOf(u8, stderr_writer.buffered(), "TOP_SECRET") == null);
+}
+
 fn fakeUnsortedPacksJson(_: std.Io, argv: []const []const u8, stdout: anytype, _: anytype) !u8 {
     try std.testing.expectEqualSlices([]const u8, &.{ "packs", "--format", "json" }, argv);
     try stdout.writeAll(
@@ -269,10 +366,31 @@ fn fakeEnabledPacksEmpty(_: std.Io, argv: []const []const u8, stdout: anytype, _
     return exit_codes.success;
 }
 
-fn fakePassthrough(_: std.Io, argv: []const []const u8, stdout: anytype, _: anytype) !u8 {
-    try std.testing.expectEqualStrings("packs", argv[0]);
-    try stdout.writeAll("daemon\x1b[raw]\n");
+fn fakeHostilePacksJson(_: std.Io, _: []const []const u8, stdout: anytype, _: anytype) !u8 {
+    try stdout.writeAll(
+        \\{"packs":[{"id":"db.\u001b[2Jmysql","name":"MySQL","category":"data\u001b]0;x\u0007base","description":"safe\nline","enabled":true,"safe_pattern_count":3,"destructive_pattern_count":4}],"enabled_count":1,"total_count":1}
+    );
     return exit_codes.success;
+}
+
+fn fakeDaemonFailure(_: std.Io, _: []const []const u8, stdout: anytype, stderr: anytype) !u8 {
+    try stdout.writeAll("daemon partial stdout\n");
+    try stderr.writeAll("daemon exact stderr\n");
+    return 17;
+}
+
+fn fakeInvalidJson(_: std.Io, _: []const []const u8, stdout: anytype, _: anytype) !u8 {
+    try stdout.writeAll("{TOP_SECRET:not-json}");
+    return exit_codes.success;
+}
+
+fn fakePassthrough(_: std.Io, argv: []const []const u8, stdout: anytype, stderr: anytype) !u8 {
+    for (argv, 0..) |arg, index| {
+        if (index > 0) try stdout.writeByte('|');
+        try stdout.writeAll(arg);
+    }
+    try stderr.writeAll("daemon exact stderr\n");
+    return 23;
 }
 
 fn failIfCalled(_: std.Io, _: []const []const u8, _: anytype, _: anytype) !u8 {
