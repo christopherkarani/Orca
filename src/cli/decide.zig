@@ -6,6 +6,8 @@ const policy = @import("orca_core").policy;
 
 const exit_codes = @import("exit_codes.zig");
 const help = @import("help.zig");
+const tui = @import("../tui/render.zig");
+const terminal_text = @import("../tui/terminal_text.zig");
 
 // Maximum JSON payload size to prevent memory exhaustion from hostile hosts.
 const max_payload_len = 256 * 1024; // 256 KiB
@@ -59,6 +61,7 @@ fn decideCommand(io: std.Io, kind: DecisionKind, argv: []const []const u8, stdou
     var json_payload: ?[]const u8 = null;
     var use_stdin = false;
     var ci_mode = false;
+    var human = false;
 
     var index: usize = 0;
     while (index < argv.len) : (index += 1) {
@@ -73,11 +76,13 @@ fn decideCommand(io: std.Io, kind: DecisionKind, argv: []const []const u8, stdou
                 \\  orca decide <kind> --stdin
                 \\  orca decide <kind> --json <payload> [--ci]
                 \\  orca decide <kind> --stdin [--ci]
+                \\  orca decide <kind> --human (--json <payload>|--stdin) [--ci]
                 \\
                 \\Options:
                 \\  --json   Provide JSON payload inline.
                 \\  --stdin  Read JSON payload from stdin.
                 \\  --ci     CI mode: ask decisions become block.
+                \\  --human  Render a human-readable decision (default output is JSON).
                 \\
             );
             return exit_codes.success;
@@ -99,12 +104,20 @@ fn decideCommand(io: std.Io, kind: DecisionKind, argv: []const []const u8, stdou
             ci_mode = true;
             continue;
         }
+        if (std.mem.eql(u8, arg, "--human")) {
+            human = true;
+            continue;
+        }
         try stderr.print("orca decide: unknown option '{s}'.\n", .{arg});
         return exit_codes.usage;
     }
 
     if (json_payload == null and !use_stdin) {
         try stderr.writeAll("orca decide: expected --json <payload> or --stdin.\n");
+        return exit_codes.usage;
+    }
+    if (json_payload != null and use_stdin) {
+        try stderr.writeAll("orca decide: --json and --stdin are mutually exclusive.\n");
         return exit_codes.usage;
     }
     if (!use_stdin) {
@@ -154,12 +167,18 @@ fn decideCommand(io: std.Io, kind: DecisionKind, argv: []const []const u8, stdou
     };
     defer result.deinit(allocator);
 
-    // Emit JSON response to stdout
-    try writeDecisionJson(stdout, result);
+    if (human) {
+        try writeDecisionHuman(io, stdout, result);
+    } else {
+        // Frozen machine contract: default output remains byte-identical JSON.
+        try writeDecisionJson(stdout, result);
+    }
 
     // Log debug info to stderr only
     if (result.rule) |rule| {
-        try stderr.print("[decide] matched rule: {s}\n", .{rule});
+        try stderr.writeAll("[decide] matched rule: ");
+        try terminal_text.write(stderr, rule, .single_line);
+        try stderr.writeByte('\n');
     }
 
     return result.decision.exitCode();
@@ -426,6 +445,54 @@ fn writeDecisionJson(stdout: anytype, result: DecisionOutput) !void {
     try stdout.writeAll("}\n");
 }
 
+fn writeDecisionHuman(io: std.Io, stdout: anytype, result: DecisionOutput) !void {
+    try stdout.writeAll("Decision  ");
+    try tui.badge(io, stdout, badgeForDecision(result.decision));
+    try stdout.writeAll("\n\n");
+
+    const rule = result.rule orelse "none";
+    const rows = [_]tui.KV{
+        .{ .label = "Reason", .value = result.reason },
+        .{ .label = "Rule", .value = rule },
+        .{ .label = "Category", .value = result.category },
+        .{ .label = "Message", .value = result.message },
+    };
+    try tui.keyValue(io, stdout, &rows);
+    try stdout.writeAll("  Risk  ");
+    try tui.meter(io, stdout, riskFraction(result.risk), @tagName(result.risk));
+    try stdout.writeAll("\n");
+    if (result.redactions.len > 0) {
+        try stdout.print("  Redactions  {d}\n", .{result.redactions.len});
+        for (result.redactions) |redaction| {
+            try stdout.writeAll("    • ");
+            try terminal_text.write(stdout, redaction.field, .single_line);
+            try stdout.writeAll(": ");
+            try terminal_text.write(stdout, redaction.reason, .single_line);
+            try stdout.writeByte('\n');
+        }
+    }
+}
+
+fn badgeForDecision(decision: PluginDecision) tui.BadgeKind {
+    return switch (decision) {
+        .allow => .allow,
+        .block, .err => .deny,
+        .ask => .ask,
+        .warn => .warn,
+        .context_only => .info,
+    };
+}
+
+fn riskFraction(risk: RiskLevel) f32 {
+    return switch (risk) {
+        .low => 0.2,
+        .medium => 0.5,
+        .high => 0.75,
+        .critical => 1.0,
+        .unknown => 0.0,
+    };
+}
+
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
@@ -571,6 +638,52 @@ test "decide command machine output matches captured contract fixture" {
         @embedFile("test-fixtures/decide-command-allow.json"),
         stdout_writer.buffered(),
     );
+}
+
+test "decide human output matches captured contract fixture" {
+    var stdout_buf: [2048]u8 = undefined;
+    var stderr_buf: [512]u8 = undefined;
+    var stdout_writer: std.Io.Writer = .fixed(&stdout_buf);
+    var stderr_writer: std.Io.Writer = .fixed(&stderr_buf);
+    const code = try decideCommand(std.testing.io, .command, &.{
+        "--json", "{\"command\":\"echo hello\"}", "--human",
+    }, &stdout_writer, &stderr_writer);
+    try std.testing.expectEqual(exit_codes.success, code);
+    try std.testing.expectEqualStrings(
+        @embedFile("test-fixtures/decide-command-allow-human.txt"),
+        stdout_writer.buffered(),
+    );
+}
+
+test "decide rejects conflicting input transports" {
+    var stdout_buf: [256]u8 = undefined;
+    var stderr_buf: [256]u8 = undefined;
+    var stdout_writer: std.Io.Writer = .fixed(&stdout_buf);
+    var stderr_writer: std.Io.Writer = .fixed(&stderr_buf);
+    const code = try decideCommand(std.testing.io, .command, &.{
+        "--json", "{\"command\":\"echo hello\"}", "--stdin",
+    }, &stdout_writer, &stderr_writer);
+    try std.testing.expectEqual(exit_codes.usage, code);
+    try std.testing.expect(std.mem.indexOf(u8, stderr_writer.buffered(), "mutually exclusive") != null);
+    try std.testing.expectEqualStrings("", stdout_writer.buffered());
+}
+
+test "decide human output sanitizes dynamic terminal text" {
+    var stdout_buf: [1024]u8 = undefined;
+    var stdout_writer: std.Io.Writer = .fixed(&stdout_buf);
+    var result: DecisionOutput = .{
+        .decision = .block,
+        .risk = .critical,
+        .category = "command\x1b[2J",
+        .reason = "unsafe\x1b]0;owned\x07 reason",
+        .rule = "rule\rspoof",
+        .message = "blocked\nmessage",
+        .redactions = &.{},
+    };
+    _ = &result;
+    try writeDecisionHuman(std.testing.io, &stdout_writer, result);
+    try std.testing.expect(std.mem.indexOfScalar(u8, stdout_writer.buffered(), 0x1b) == null);
+    try std.testing.expect(std.mem.indexOf(u8, stdout_writer.buffered(), "blocked message") != null);
 }
 
 test "decide command with dangerous command returns block" {

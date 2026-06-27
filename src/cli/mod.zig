@@ -123,7 +123,7 @@ const self_banner_commands = [_][]const u8{ "version", "--version", "help", "run
 /// Commands whose output is always machine/raw (JSON, generated scripts, export
 /// lines, long-running servers) — never receive the human brand banner.
 const always_machine_commands = [_][]const u8{
-    "evaluate", "hook", "shim", "decide", "completions", "env", "dashboard", "--print-install-env",
+    "evaluate", "hook", "shim", "completions", "env", "dashboard", "--print-install-env",
 };
 
 fn isAlwaysMachineCommand(command: []const u8) bool {
@@ -147,6 +147,16 @@ fn shouldShowBanner(command: []const u8, argv: []const []const u8) bool {
     // help redesign, run session banner).
     for (self_banner_commands) |s| {
         if (std.mem.eql(u8, command, s)) return false;
+    }
+    // `decide` is a frozen machine API by default. Only its explicit human
+    // output mode participates in shared presentation, even though JSON/stdin
+    // are still the input transports.
+    if (std.mem.eql(u8, command, "decide")) {
+        for (argv[1..]) |arg| {
+            if (std.mem.eql(u8, arg, "--help") or std.mem.eql(u8, arg, "-h")) return false;
+        }
+        for (argv[1..]) |arg| if (std.mem.eql(u8, arg, "--human")) return true;
+        return false;
     }
     // Always-machine / raw / server commands.
     if (isAlwaysMachineCommand(command)) return false;
@@ -861,6 +871,12 @@ test "banner suppressed on machine proxy path (packs --format json)" {
     _ = try testRun(&.{ "packs", "--format", "json" }, &stdout_writer, &stderr_writer);
     // Machine path must not emit a brand banner to stdout (byte-identity).
     try std.testing.expect(std.mem.indexOf(u8, stdout_writer.buffered(), "\u{1F6E1}  Orca") == null);
+}
+
+test "decide human mode gets a banner while default JSON remains machine output" {
+    try std.testing.expect(shouldShowBanner("decide", &.{ "decide", "command", "--human", "--json", "{}" }));
+    try std.testing.expect(!shouldShowBanner("decide", &.{ "decide", "command", "--json", "{}" }));
+    try std.testing.expect(!shouldShowBanner("decide", &.{ "decide", "command", "--human", "--stdin", "--help" }));
 }
 
 test "global --no-rich is consumed without changing version JSON contract" {

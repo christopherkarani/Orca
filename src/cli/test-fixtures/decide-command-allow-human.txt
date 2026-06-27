@@ -1,0 +1,7 @@
+Decision  [ALLOW]
+
+     Reason  matched commands.allow rule "echo *"
+       Rule  commands.allow[14]
+   Category  command
+    Message  command allowed by Orca policy.
+  Risk  .................... unknown

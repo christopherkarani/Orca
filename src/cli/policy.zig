@@ -5,6 +5,7 @@ const supervisor = core.supervisor;
 const core_api = @import("orca_core").api;
 const exit_codes = @import("exit_codes.zig");
 const help = @import("help.zig");
+const tui = @import("../tui/render.zig");
 
 pub fn command(io: std.Io, argv: []const []const u8, stdout: anytype, stderr: anytype) !u8 {
     if (argv.len > 0 and (std.mem.eql(u8, argv[0], "--help") or std.mem.eql(u8, argv[0], "-h"))) {
@@ -107,8 +108,36 @@ fn explain(io: std.Io, argv: []const []const u8, stdout: anytype, stderr: anytyp
     };
     defer evaluation.deinit(allocator);
 
-    try core_api.writePolicyExplanation(stdout, loaded.policy, evaluation);
+    try writePolicyExplanationHuman(io, stdout, loaded.policy, evaluation);
     return exit_codes.success;
+}
+
+fn writePolicyExplanationHuman(io: std.Io, stdout: anytype, policy_value: *const core_api.Policy, evaluation: core_api.Evaluation) !void {
+    try stdout.writeAll("Decision  ");
+    try tui.badge(io, stdout, switch (evaluation.decision.result) {
+        .allow => .allow,
+        .deny => .deny,
+        .ask, .stage => .ask,
+        .observe => .info,
+        .redact => .warn,
+        .broker => .neutral,
+    });
+    try stdout.writeAll("\n\n");
+
+    const rule_id = if (evaluation.matched_rule) |rule| rule.id else "none";
+    const matched = if (evaluation.matched_rule) |rule| rule.pattern else "none";
+    const rows = [_]tui.KV{
+        .{ .label = "Reason", .value = evaluation.decision.reason },
+        .{ .label = "Rule", .value = rule_id },
+        .{ .label = "Matched", .value = matched },
+        .{ .label = "Mode", .value = policy_value.mode().toString() },
+    };
+    try tui.keyValue(io, stdout, &rows);
+    const score = evaluation.decision.risk_score orelse 0;
+    const risk_label = if (evaluation.decision.risk_score == null) "unknown" else if (score <= 25) "low" else if (score <= 50) "medium" else if (score <= 75) "high" else "critical";
+    try stdout.writeAll("  Risk  ");
+    try tui.meter(io, stdout, @as(f32, @floatFromInt(score)) / 100.0, risk_label);
+    try stdout.writeAll("\n");
 }
 
 const ExplainTarget = struct {
@@ -310,8 +339,10 @@ test "policy explain reports matched deny rule" {
 
     const code = try command(std.testing.io, &.{ "explain", "file.read", "~/.ssh/id_ed25519" }, &stdout_writer, &stderr_writer);
     try std.testing.expectEqual(exit_codes.success, code);
-    try std.testing.expect(std.mem.indexOf(u8, stdout_writer.buffered(), "Decision: deny") != null);
-    try std.testing.expect(std.mem.indexOf(u8, stdout_writer.buffered(), "Rule: files.read.deny") != null);
+    try std.testing.expect(std.mem.indexOf(u8, stdout_writer.buffered(), "[DENY]") != null);
+    try std.testing.expect(std.mem.indexOf(u8, stdout_writer.buffered(), "files.read.deny") != null);
+    try std.testing.expect(std.mem.indexOf(u8, stdout_writer.buffered(), "Mode") != null);
+    try std.testing.expect(std.mem.indexOf(u8, stdout_writer.buffered(), "Risk") != null);
     try std.testing.expectEqualStrings("", stderr_writer.buffered());
 }
 
@@ -353,7 +384,7 @@ test "policy explain accepts explicit policy path" {
     const code = try command(std.testing.io, &.{ "explain", "--policy", path, "command", "git", "push", "origin", "main" }, &stdout_writer, &stderr_writer);
 
     try std.testing.expectEqual(exit_codes.success, code);
-    try std.testing.expect(std.mem.indexOf(u8, stdout_writer.buffered(), "Decision: deny") != null);
+    try std.testing.expect(std.mem.indexOf(u8, stdout_writer.buffered(), "[DENY]") != null);
     try std.testing.expect(std.mem.indexOf(u8, stdout_writer.buffered(), "git push *") != null);
     try std.testing.expectEqualStrings("", stderr_writer.buffered());
 }

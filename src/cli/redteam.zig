@@ -77,7 +77,7 @@ pub fn command(io: std.Io, argv: []const []const u8, stdout: anytype, stderr: an
     if (options.json) {
         try redteam.reports.writeJson(stdout, suite);
     } else {
-        try redteam.reports.writeHuman(stdout, suite);
+        try redteam.reports.writeHuman(io, stdout, suite);
     }
 
     if (options.ci and !suite.allRequiredPassed()) return exit_codes.redteam_failure;

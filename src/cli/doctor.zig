@@ -8,6 +8,7 @@ const orca_mcp = @import("../mcp/mod.zig");
 const orca_policy = @import("orca_core").policy;
 const sandbox = @import("../sandbox/mod.zig");
 const resource_root = @import("../resource_root.zig");
+const tui = @import("../tui/mod.zig");
 const style = @import("style.zig");
 
 const exit_codes = @import("exit_codes.zig");
@@ -224,13 +225,14 @@ fn writeReport(io: std.Io, stdout: anytype, os: core.platform.Os, backend_report
     }
 
     if (!verbose) {
+        try writeDefaultPanels(io, stdout, os, backend_report, context, policy_status, counts);
         try writeRecommendations(stdout, context);
         return;
     }
 
     try stdout.print("OS: {s}\n", .{os.toString()});
     try stdout.print("Version: {s}\n\n", .{cli.version});
-    try writeIntegrationReport(stdout, context);
+    try writeIntegrationReport(io, stdout, context);
     try stdout.writeAll("Capabilities:\n");
     for (doctor_capabilities) |item| {
         if (item.feature) |feature| {
@@ -290,15 +292,58 @@ fn writeReport(io: std.Io, stdout: anytype, os: core.platform.Os, backend_report
     try writeRecommendations(stdout, context);
 }
 
-fn writeIntegrationReport(stdout: anytype, context: IntegrationContext) !void {
+fn writeDefaultPanels(
+    io: std.Io,
+    stdout: anytype,
+    os: core.platform.Os,
+    backend_report: sandbox.backend.ReportSet,
+    context: IntegrationContext,
+    policy_status: []const u8,
+    counts: anytype,
+) !void {
+    var health_storage: [5][96]u8 = undefined;
+    const health_lines = [_][]const u8{
+        try std.fmt.bufPrint(&health_storage[0], "Platform       {s}", .{os.toString()}),
+        try std.fmt.bufPrint(&health_storage[1], "Policy         {s}", .{policy_status}),
+        try std.fmt.bufPrint(&health_storage[2], "Daemon         {s}", .{daemonStatusSummary(context.daemon_status)}),
+        try std.fmt.bufPrint(&health_storage[3], "Capabilities   {d} active · {d} limited", .{ counts.active, counts.limited }),
+        try std.fmt.bufPrint(&health_storage[4], "Unavailable    {d}", .{counts.unavailable}),
+    };
+    try tui.render.panel(io, stdout, "System health", &health_lines);
+    try stdout.writeByte('\n');
+
+    var capability_storage: [doctor_capabilities.len][160]u8 = undefined;
+    var capability_lines: [doctor_capabilities.len][]const u8 = undefined;
+    for (doctor_capabilities, 0..) |item, index| {
+        if (item.feature) |feature| {
+            const report = backend_report.get(feature);
+            capability_lines[index] = try std.fmt.bufPrint(&capability_storage[index], "{s}  {s}: {s}", .{
+                levelColorAndGlyph(report.level).glyph,
+                item.label,
+                report.level.toString(),
+            });
+        } else if (item.capability) |capability| {
+            const report = core.platform.reportCapability(os, capability);
+            capability_lines[index] = try std.fmt.bufPrint(&capability_storage[index], "{s}  {s}: {s}", .{
+                stateColorAndGlyph(report.state).glyph,
+                item.label,
+                report.state.toString(),
+            });
+        }
+    }
+    try tui.render.panel(io, stdout, "Capabilities", &capability_lines);
+}
+
+fn writeIntegrationReport(io: std.Io, stdout: anytype, context: IntegrationContext) !void {
+    _ = io;
     try stdout.writeAll("Integration checks:\n");
-    try stdout.print("  workspace root: {s}\n", .{context.workspace_root});
+    try writeDynamicLine(stdout, "  workspace root: ", context.workspace_root, "\n");
     try stdout.print("  git repository: {s}\n", .{if (context.git_present) "detected" else "not detected"});
     if (context.policy_present) {
         if (context.policy_valid) {
             try stdout.writeAll("  .orca/policy.yaml: present and valid\n");
         } else {
-            try stdout.print("  .orca/policy.yaml: invalid ({s})\n", .{context.policy_error orelse "validation failed"});
+            try writeDynamicLine(stdout, "  .orca/policy.yaml: invalid (", context.policy_error orelse "validation failed", ")\n");
         }
     } else {
         try stdout.writeAll("  .orca/policy.yaml: missing\n");
@@ -309,7 +354,7 @@ fn writeIntegrationReport(stdout: anytype, context: IntegrationContext) !void {
         try stdout.writeAll("  known agent binaries: ");
         for (context.agent_found, 0..) |agent, index| {
             if (index > 0) try stdout.writeAll(", ");
-            try stdout.print("{s}", .{agent.command});
+            try tui.terminal_text.write(stdout, agent.command, .single_line);
         }
         try stdout.writeAll(" (presence only; not a security claim)\n");
     }
@@ -319,14 +364,19 @@ fn writeIntegrationReport(stdout: anytype, context: IntegrationContext) !void {
         try stdout.print("  MCP manifests: {d} found, {d} invalid\n", .{ context.mcp_manifest_count, context.mcp_manifest_invalid_count });
     }
     try stdout.print("  CI environment: {s}", .{if (context.ci_detected) "detected" else "not detected"});
-    if (context.ci_detected) try stdout.print(" ({s})", .{context.ci_provider});
+    if (context.ci_detected) {
+        try stdout.writeAll(" (");
+        try tui.terminal_text.write(stdout, context.ci_provider, .single_line);
+        try stdout.writeByte(')');
+    }
     try stdout.writeByte('\n');
-    try stdout.print("  shell: {s}\n", .{context.shell_name});
+    try writeDynamicLine(stdout, "  shell: ", context.shell_name, "\n");
     try stdout.print("  audit/replay: {s}\n", .{if (context.audit_sessions_present) "session artifacts present; replay available" else "replay available; no local sessions detected"});
     try stdout.print("  red-team fixtures: {s}\n", .{if (context.redteam_fixtures_present) "available" else "not found"});
     if (context.daemon_binary_path) |path| {
-        try stdout.print("  daemon binary: {s} ({s}, {s})\n", .{
-            path,
+        try stdout.writeAll("  daemon binary: ");
+        try tui.terminal_text.write(stdout, path, .single_line);
+        try stdout.print(" ({s}, {s})\n", .{
             if (context.daemon_binary_exists) "present" else "missing",
             if (context.daemon_binary_executable) "executable" else "not executable",
         });
@@ -334,12 +384,26 @@ fn writeIntegrationReport(stdout: anytype, context: IntegrationContext) !void {
         try stdout.writeAll("  daemon binary: unresolved\n");
     }
     if (context.daemon_socket_path) |path| {
-        try stdout.print("  daemon socket: {s} ({s})\n", .{ path, if (context.daemon_socket_exists) "present" else "missing" });
+        try stdout.writeAll("  daemon socket: ");
+        try tui.terminal_text.write(stdout, path, .single_line);
+        try stdout.print(" ({s})\n", .{if (context.daemon_socket_exists) "present" else "missing"});
     }
     if (context.daemon_pid_path) |path| {
-        try stdout.print("  daemon pid: {s} ({s})\n", .{ path, if (context.daemon_pid_exists) "present" else "missing" });
+        try stdout.writeAll("  daemon pid: ");
+        try tui.terminal_text.write(stdout, path, .single_line);
+        try stdout.print(" ({s})\n", .{if (context.daemon_pid_exists) "present" else "missing"});
     }
-    try stdout.print("  daemon health: {s} ({s})\n\n", .{ context.daemon_status, context.daemon_detail });
+    try stdout.writeAll("  daemon health: ");
+    try tui.terminal_text.write(stdout, context.daemon_status, .single_line);
+    try stdout.writeAll(" (");
+    try tui.terminal_text.write(stdout, context.daemon_detail, .single_line);
+    try stdout.writeAll(")\n\n");
+}
+
+fn writeDynamicLine(stdout: anytype, prefix: []const u8, value: []const u8, suffix: []const u8) !void {
+    try stdout.writeAll(prefix);
+    try tui.terminal_text.write(stdout, value, .single_line);
+    try stdout.writeAll(suffix);
 }
 
 fn writeWindowsBackendReport(io: std.Io, stdout: anytype, backend_report: sandbox.backend.ReportSet) !void {
@@ -400,7 +464,7 @@ fn writeBackendLine(io: std.Io, stdout: anytype, backend_report: sandbox.backend
 fn writeRecommendations(stdout: anytype, context: IntegrationContext) !void {
     try stdout.writeAll("\nRecommended next step:\n");
     if (!std.mem.eql(u8, context.daemon_status, "compatible")) {
-        try stdout.print("  Daemon health issue: {s}\n", .{context.daemon_detail});
+        try writeDynamicLine(stdout, "  Daemon health issue: ", context.daemon_detail, "\n");
         if (context.daemon_binary_exists and !context.daemon_binary_executable) {
             try stdout.writeAll("  Restore execute permission on `orca-daemon` or reinstall the matching release, then re-run `orca doctor`.\n");
         } else if (!context.daemon_binary_exists) {
@@ -834,6 +898,41 @@ test "doctor output has no ANSI codes in non-TTY mode" {
     try writeReport(std.testing.io, &stdout_writer, .linux, report, context, true);
     const written = stdout_writer.buffered();
     try std.testing.expect(std.mem.indexOf(u8, written, "\x1b[") == null);
+}
+
+test "doctor default renders compact health and capability panels" {
+    var stdout_buf: [8192]u8 = undefined;
+    var stdout_writer: std.Io.Writer = .fixed(&stdout_buf);
+    const report = sandbox.backend.detect(.linux);
+    var context = try testContext(std.testing.allocator, .{});
+    defer context.deinit();
+
+    try writeReport(std.testing.io, &stdout_writer, .linux, report, context, false);
+
+    const written = stdout_writer.buffered();
+    try std.testing.expect(std.mem.indexOf(u8, written, "System health") != null);
+    try std.testing.expect(std.mem.indexOf(u8, written, "Capabilities") != null);
+    try std.testing.expect(std.mem.indexOf(u8, written, "process supervision") != null);
+    try std.testing.expect(std.mem.indexOf(u8, written, "fallback mode:") == null);
+}
+
+test "doctor sanitizes hostile dynamic diagnostic text" {
+    var stdout_buf: [16384]u8 = undefined;
+    var stdout_writer: std.Io.Writer = .fixed(&stdout_buf);
+    const report = sandbox.backend.detect(.linux);
+    var context = try testContext(std.testing.allocator, .{});
+    defer context.deinit();
+    context.allocator.free(context.workspace_root);
+    context.workspace_root = try context.allocator.dupe(u8, "repo\x1b[2J\rspoof");
+    context.allocator.free(context.daemon_detail);
+    context.daemon_detail = try context.allocator.dupe(u8, "offline\x1b]0;pwn\x07\nforged");
+
+    try writeReport(std.testing.io, &stdout_writer, .linux, report, context, true);
+
+    const written = stdout_writer.buffered();
+    try std.testing.expect(std.mem.indexOfScalar(u8, written, 0x1b) == null);
+    try std.testing.expect(std.mem.indexOf(u8, written, "pwn") == null);
+    try std.testing.expect(std.mem.indexOf(u8, written, "\nforged") == null);
 }
 
 test "doctor summary includes daemon availability" {

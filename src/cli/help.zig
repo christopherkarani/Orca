@@ -356,7 +356,7 @@ pub const commands = [_]CommandInfo{
         "Plugin commands are safe by default: install defaults to --dry-run, doctor does not print secrets,",
         "and mcp-server is currently a documented stub that does not start a real server.",
     } },
-    .{ .name = "decide", .summary = "Ask Orca whether an action is allowed by policy", .usage = "orca decide <command|file|prompt|tool> --json <payload>|--stdin [--ci]", .category = .advanced, .details = &.{
+    .{ .name = "decide", .summary = "Ask Orca whether an action is allowed by policy", .usage = "orca decide <command|file|prompt|tool> (--json <payload>|--stdin) [--ci] [--human]", .category = .advanced, .details = &.{
         "Evaluates a policy decision for host plugins (Codex, Claude Code, OpenCode, etc.).",
         "Subcommands:",
         "  orca decide command --json '{\"command\":\"<cmd>\"}'",
@@ -365,7 +365,8 @@ pub const commands = [_]CommandInfo{
         "  orca decide tool    --json '{\"name\":\"<name>\"}'",
         "  orca decide <kind> --stdin",
         "  orca decide <kind> --json <payload> [--ci]",
-        "Output is JSON to stdout; debug logs go to stderr only.",
+        "Default output is stable JSON; add --human for a decision badge, details, and risk meter.",
+        "Debug logs go to stderr only.",
     } },
     .{ .name = "evaluate", .summary = "Stable machine API for shell-command evaluation", .usage = "orca evaluate --json --stdin", .category = .integrations, .details = &.{
         "Reads a versioned JSON request from stdin and evaluates shell_command events through the Rust daemon Evaluate path.",
