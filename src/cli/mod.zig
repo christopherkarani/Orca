@@ -46,6 +46,7 @@ pub const rust_visibility = @import("rust_visibility.zig");
 pub const feed_writer = @import("feed_writer.zig");
 pub const agent_hook = @import("agent_hook.zig");
 pub const daemon_contracts = @import("daemon_contracts.zig");
+pub const packs = @import("packs.zig");
 
 test {
     // Ensure the child_process module (and its tests) are pulled into the test binary.
@@ -64,6 +65,7 @@ test {
     _ = evaluate;
     _ = agent_hook;
     _ = daemon_contracts;
+    _ = packs;
 }
 
 pub const version = build_options.version;
@@ -276,6 +278,13 @@ pub fn runWithCwd(io: std.Io, environ_map: *const std.process.Environ.Map, cwd: 
         return exit_codes.success;
     }
 
+    if (std.mem.eql(u8, command, "packs")) {
+        return packs.command(io, argv[1..], stdout, stderr) catch |err| {
+            try stderr.print("orca packs: {s}: {s}\n", .{ daemonErrorLabel(err), @errorName(err) });
+            return exit_codes.general;
+        };
+    }
+
     if (isPhase1ProxyCommand(command)) {
         return proxyPhase1Command(realDaemonExecuteCli, command, argv[1..], io, stdout, stderr);
     }
@@ -343,8 +352,7 @@ fn isPhase1ProxyCommand(command: []const u8) bool {
     return std.mem.eql(u8, command, "test") or
         std.mem.eql(u8, command, "scan") or
         std.mem.eql(u8, command, "history") or
-        std.mem.eql(u8, command, "precommit") or
-        std.mem.eql(u8, command, "packs");
+        std.mem.eql(u8, command, "precommit");
 }
 
 fn proxyPhase1Command(comptime execute_cli: anytype, command: []const u8, command_args: []const []const u8, io: std.Io, stdout: anytype, stderr: anytype) !u8 {
@@ -404,6 +412,10 @@ fn realDaemonExecuteCli(_: std.Io, argv: []const []const u8, stdout: anytype, st
     stdout.writeAll(execution.stdout) catch return error.SocketWriteFailed;
     if (execution.stderr.len > 0) stderr.writeAll(execution.stderr) catch return error.SocketWriteFailed;
     return execution.exit_code;
+}
+
+pub fn executeDaemonCli(io: std.Io, argv: []const []const u8, stdout: anytype, stderr: anytype) !u8 {
+    return realDaemonExecuteCli(io, argv, stdout, stderr);
 }
 
 fn testRun(argv: []const []const u8, stdout: anytype, stderr: anytype) !u8 {

@@ -196,16 +196,18 @@ pub const commands = [_]CommandInfo{
     },
     .{
         .name = "packs",
-        .summary = "List Rust safety packs",
-        .usage = "orca packs [--enabled] [--format pretty|json]",
+        .summary = "Browse available safety packs",
+        .usage = "orca packs [--filter <term>] [--installed] [--page N] [--page-size N]",
         .category = .diagnostics,
         .examples = &.{
             "orca packs",
+            "orca packs --installed",
+            "orca packs --filter database --page-size 10",
             "orca packs --format json",
         },
         .details = &.{
-            "Proxies to the Rust daemon and lists built-in and configured external safety packs.",
-            "Use 'orca packs --help' for the full Rust-backed option set.",
+            "Human output is sorted and paginated locally; --installed is an alias for --enabled.",
+            "Use --format json or --robot for byte-stable daemon output.",
         },
     },
     .{ .name = "policy", .summary = "Validate, explain, and apply policies", .usage = "orca policy <check|explain|packs|apply-pack> [...]", .category = .core_workflow, .examples = &.{
