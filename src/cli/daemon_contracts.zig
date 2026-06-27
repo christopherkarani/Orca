@@ -6,14 +6,14 @@ pub const PackInfo = struct {
     category: []const u8,
     description: []const u8,
     enabled: bool,
-    safe_pattern_count: u64,
-    destructive_pattern_count: u64,
+    safe_pattern_count: usize,
+    destructive_pattern_count: usize,
 };
 
 pub const PacksOutput = struct {
     packs: []const PackInfo,
-    enabled_count: u64,
-    total_count: u64,
+    enabled_count: usize,
+    total_count: usize,
 };
 
 pub const OutcomeStats = struct {
@@ -74,18 +74,17 @@ pub fn parseHistoryStats(allocator: std.mem.Allocator, json: []const u8) !std.js
     return std.json.parseFromSlice(HistoryStats, allocator, json, .{ .ignore_unknown_fields = true });
 }
 
-/// Converts a Rust JSON count for APIs that require a platform-sized index.
-pub fn countToUsize(count: u64) error{Overflow}!usize {
-    return std.math.cast(usize, count) orelse error.Overflow;
-}
-
 test "packs contract requires current fields and ignores additive fields" {
+    try std.testing.expect(@TypeOf(@as(PacksOutput, undefined).enabled_count) == usize);
+    try std.testing.expect(@TypeOf(@as(PackInfo, undefined).safe_pattern_count) == usize);
+
     var parsed = try parsePacks(std.testing.allocator, @embedFile("test-fixtures/daemon-packs.json"));
     defer parsed.deinit();
 
-    try std.testing.expectEqual(@as(u64, 1), parsed.value.enabled_count);
+    try std.testing.expectEqual(@as(usize, 1), parsed.value.enabled_count);
     try std.testing.expectEqualStrings("core.git", parsed.value.packs[0].id);
-    try std.testing.expectEqual(@as(u64, 7), parsed.value.packs[0].destructive_pattern_count);
+    try std.testing.expectEqual(@as(usize, 7), parsed.value.packs[0].destructive_pattern_count);
+    try std.testing.expectEqualStrings("Protects destructive Git operations.", parsed.value.packs[0].description);
 }
 
 test "history stats contract models optional pack ids and trends" {
@@ -113,9 +112,21 @@ test "history stats accepts omitted trends and rejects missing required fields" 
     ));
 }
 
-test "count conversion is checked" {
-    try std.testing.expectEqual(@as(usize, 42), try countToUsize(42));
-    if (@bitSizeOf(usize) < @bitSizeOf(u64)) {
-        try std.testing.expectError(error.Overflow, countToUsize(std.math.maxInt(u64)));
+test "packs contract rejects invalid unsigned counts and missing nested fields" {
+    const invalid_documents = [_][]const u8{
+        \\{"packs":[],"enabled_count":-1,"total_count":0}
+        ,
+        \\{"packs":[{"id":"core.git","name":"Git","category":"core","description":"Git","enabled":true,"safe_pattern_count":1}],"enabled_count":1,"total_count":1}
+        ,
+        \\{"packs":[],"enabled_count":18446744073709551616,"total_count":0}
+        ,
+    };
+
+    for (invalid_documents) |document| {
+        if (parsePacks(std.testing.allocator, document)) |parsed_value| {
+            var parsed = parsed_value;
+            parsed.deinit();
+            return error.TestUnexpectedResult;
+        } else |_| {}
     }
 }
