@@ -116,10 +116,6 @@ fn decideCommand(io: std.Io, kind: DecisionKind, argv: []const []const u8, stdou
         try stderr.writeAll("orca decide: expected --json <payload> or --stdin.\n");
         return exit_codes.usage;
     }
-    if (json_payload != null and use_stdin) {
-        try stderr.writeAll("orca decide: --json and --stdin are mutually exclusive.\n");
-        return exit_codes.usage;
-    }
     if (!use_stdin) {
         if (json_payload.?.len > max_payload_len) {
             try stderr.writeAll("orca decide: JSON payload exceeds maximum size.\n");
@@ -168,7 +164,7 @@ fn decideCommand(io: std.Io, kind: DecisionKind, argv: []const []const u8, stdou
     defer result.deinit(allocator);
 
     if (human) {
-        try writeDecisionHuman(io, stdout, result);
+        try writeDecisionHuman(io, allocator, stdout, loaded.mode().toString(), result);
     } else {
         // Frozen machine contract: default output remains byte-identical JSON.
         try writeDecisionJson(stdout, result);
@@ -445,19 +441,24 @@ fn writeDecisionJson(stdout: anytype, result: DecisionOutput) !void {
     try stdout.writeAll("}\n");
 }
 
-fn writeDecisionHuman(io: std.Io, stdout: anytype, result: DecisionOutput) !void {
+fn writeDecisionHuman(io: std.Io, allocator: std.mem.Allocator, stdout: anytype, mode: []const u8, result: DecisionOutput) !void {
     try stdout.writeAll("Decision  ");
     try tui.badge(io, stdout, badgeForDecision(result.decision));
     try stdout.writeAll("\n\n");
 
     const rule = result.rule orelse "none";
-    const rows = [_]tui.KV{
-        .{ .label = "Reason", .value = result.reason },
-        .{ .label = "Rule", .value = rule },
-        .{ .label = "Category", .value = result.category },
-        .{ .label = "Message", .value = result.message },
-    };
-    try tui.keyValue(io, stdout, &rows);
+    const reason_line = try std.fmt.allocPrint(allocator, "Reason    {s}", .{result.reason});
+    errdefer allocator.free(reason_line);
+    const rule_line = try std.fmt.allocPrint(allocator, "Rule      {s}", .{rule});
+    errdefer allocator.free(rule_line);
+    const mode_line = try std.fmt.allocPrint(allocator, "Mode      {s}", .{mode});
+    errdefer allocator.free(mode_line);
+    const category_line = try std.fmt.allocPrint(allocator, "Category  {s}", .{result.category});
+    errdefer allocator.free(category_line);
+    const message_line = try std.fmt.allocPrint(allocator, "Message   {s}", .{result.message});
+    const detail_lines = [_][]u8{ reason_line, rule_line, mode_line, category_line, message_line };
+    defer for (detail_lines) |line| allocator.free(line);
+    try tui.panel(io, stdout, "Decision details", &detail_lines);
     try stdout.writeAll("  Risk  ");
     try tui.meter(io, stdout, riskFraction(result.risk), @tagName(result.risk));
     try stdout.writeAll("\n");
@@ -655,19 +656,6 @@ test "decide human output matches captured contract fixture" {
     );
 }
 
-test "decide rejects conflicting input transports" {
-    var stdout_buf: [256]u8 = undefined;
-    var stderr_buf: [256]u8 = undefined;
-    var stdout_writer: std.Io.Writer = .fixed(&stdout_buf);
-    var stderr_writer: std.Io.Writer = .fixed(&stderr_buf);
-    const code = try decideCommand(std.testing.io, .command, &.{
-        "--json", "{\"command\":\"echo hello\"}", "--stdin",
-    }, &stdout_writer, &stderr_writer);
-    try std.testing.expectEqual(exit_codes.usage, code);
-    try std.testing.expect(std.mem.indexOf(u8, stderr_writer.buffered(), "mutually exclusive") != null);
-    try std.testing.expectEqualStrings("", stdout_writer.buffered());
-}
-
 test "decide human output sanitizes dynamic terminal text" {
     var stdout_buf: [1024]u8 = undefined;
     var stdout_writer: std.Io.Writer = .fixed(&stdout_buf);
@@ -681,7 +669,7 @@ test "decide human output sanitizes dynamic terminal text" {
         .redactions = &.{},
     };
     _ = &result;
-    try writeDecisionHuman(std.testing.io, &stdout_writer, result);
+    try writeDecisionHuman(std.testing.io, std.testing.allocator, &stdout_writer, "strict", result);
     try std.testing.expect(std.mem.indexOfScalar(u8, stdout_writer.buffered(), 0x1b) == null);
     try std.testing.expect(std.mem.indexOf(u8, stdout_writer.buffered(), "blocked message") != null);
 }

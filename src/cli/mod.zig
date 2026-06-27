@@ -879,6 +879,24 @@ test "decide human mode gets a banner while default JSON remains machine output"
     try std.testing.expect(!shouldShowBanner("decide", &.{ "decide", "command", "--human", "--stdin", "--help" }));
 }
 
+test "decide human mode honors no-rich without changing default machine JSON" {
+    var machine_buf: [4096]u8 = undefined;
+    var human_buf: [4096]u8 = undefined;
+    var stderr_buf: [512]u8 = undefined;
+    var machine: std.Io.Writer = .fixed(&machine_buf);
+    var human: std.Io.Writer = .fixed(&human_buf);
+    var stderr_writer: std.Io.Writer = .fixed(&stderr_buf);
+    const payload = "{\"command\":\"echo hello\"}";
+
+    try std.testing.expectEqual(exit_codes.success, try testRun(&.{ "--no-rich", "decide", "command", "--json", payload }, &machine, &stderr_writer));
+    try std.testing.expectEqualStrings(@embedFile("test-fixtures/decide-command-allow.json"), machine.buffered());
+
+    stderr_writer = .fixed(&stderr_buf);
+    try std.testing.expectEqual(exit_codes.success, try testRun(&.{ "--no-rich", "decide", "command", "--human", "--json", payload }, &human, &stderr_writer));
+    try std.testing.expect(std.mem.indexOf(u8, human.buffered(), "[ALLOW]") != null);
+    try std.testing.expect(std.mem.indexOfScalar(u8, human.buffered(), 0x1b) == null);
+}
+
 test "global --no-rich is consumed without changing version JSON contract" {
     var baseline_buf: [4096]u8 = undefined;
     var escaped_buf: [4096]u8 = undefined;

@@ -168,3 +168,16 @@ test "redteam ci exits nonzero on failing fixture" {
     try std.testing.expectEqual(exit_codes.redteam_failure, code);
     try std.testing.expect(std.mem.indexOf(u8, stdout_writer.buffered(), "Orca Redteam Score") != null);
 }
+
+test "redteam ci accepts a relative fixture root with input directory" {
+    var stdout_buf: [8192]u8 = undefined;
+    var stderr_buf: [1024]u8 = undefined;
+    var stdout_writer: std.Io.Writer = .fixed(&stdout_buf);
+    var stderr_writer: std.Io.Writer = .fixed(&stderr_buf);
+
+    const code = try command(std.testing.io, &.{ "fixtures", "--fixture", "secret-env-read-basic", "--ci" }, &stdout_writer, &stderr_writer);
+    try std.testing.expectEqual(exit_codes.success, code);
+    try std.testing.expect(std.mem.indexOf(u8, stdout_writer.buffered(), "✓ PASS") != null);
+    try std.testing.expect(std.mem.indexOf(u8, stdout_writer.buffered(), "Category summary") != null);
+    try std.testing.expectEqualStrings("", stderr_writer.buffered());
+}

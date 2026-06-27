@@ -865,6 +865,11 @@ test "doctor --verbose prints full report" {
     const output = stdout_writer.buffered();
     try std.testing.expect(std.mem.indexOf(u8, output, "Summary:") != null);
     try std.testing.expect(std.mem.indexOf(u8, output, "Capabilities:") != null);
+    try std.testing.expect(std.mem.indexOf(u8, output, "Integration checks:") != null);
+    try std.testing.expect(std.mem.indexOf(u8, output, "workspace root:") != null);
+    try std.testing.expect(std.mem.indexOf(u8, output, "daemon health:") != null);
+    try std.testing.expect(std.mem.indexOf(u8, output, "fallback mode:") != null);
+    try std.testing.expect(std.mem.indexOf(u8, output, "Recommended next step:") != null);
     try std.testing.expectEqualStrings("", stderr_writer.buffered());
 }
 

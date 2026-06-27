@@ -108,11 +108,11 @@ fn explain(io: std.Io, argv: []const []const u8, stdout: anytype, stderr: anytyp
     };
     defer evaluation.deinit(allocator);
 
-    try writePolicyExplanationHuman(io, stdout, loaded.policy, evaluation);
+    try writePolicyExplanationHuman(io, allocator, stdout, loaded.policy, evaluation);
     return exit_codes.success;
 }
 
-fn writePolicyExplanationHuman(io: std.Io, stdout: anytype, policy_value: *const core_api.Policy, evaluation: core_api.Evaluation) !void {
+fn writePolicyExplanationHuman(io: std.Io, allocator: std.mem.Allocator, stdout: anytype, policy_value: *const core_api.Policy, evaluation: core_api.Evaluation) !void {
     try stdout.writeAll("Decision  ");
     try tui.badge(io, stdout, switch (evaluation.decision.result) {
         .allow => .allow,
@@ -126,13 +126,16 @@ fn writePolicyExplanationHuman(io: std.Io, stdout: anytype, policy_value: *const
 
     const rule_id = if (evaluation.matched_rule) |rule| rule.id else "none";
     const matched = if (evaluation.matched_rule) |rule| rule.pattern else "none";
-    const rows = [_]tui.KV{
-        .{ .label = "Reason", .value = evaluation.decision.reason },
-        .{ .label = "Rule", .value = rule_id },
-        .{ .label = "Matched", .value = matched },
-        .{ .label = "Mode", .value = policy_value.mode().toString() },
-    };
-    try tui.keyValue(io, stdout, &rows);
+    const reason_line = try std.fmt.allocPrint(allocator, "Reason   {s}", .{evaluation.decision.reason});
+    errdefer allocator.free(reason_line);
+    const rule_line = try std.fmt.allocPrint(allocator, "Rule     {s}", .{rule_id});
+    errdefer allocator.free(rule_line);
+    const matched_line = try std.fmt.allocPrint(allocator, "Matched  {s}", .{matched});
+    errdefer allocator.free(matched_line);
+    const mode_line = try std.fmt.allocPrint(allocator, "Mode     {s}", .{policy_value.mode().toString()});
+    const detail_lines = [_][]u8{ reason_line, rule_line, matched_line, mode_line };
+    defer for (detail_lines) |line| allocator.free(line);
+    try tui.panel(io, stdout, "Decision details", &detail_lines);
     const score = evaluation.decision.risk_score orelse 0;
     const risk_label = if (evaluation.decision.risk_score == null) "unknown" else if (score <= 25) "low" else if (score <= 50) "medium" else if (score <= 75) "high" else "critical";
     try stdout.writeAll("  Risk  ");
