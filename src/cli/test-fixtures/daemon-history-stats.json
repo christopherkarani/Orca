@@ -1,0 +1,19 @@
+{
+  "period_days": 7,
+  "total_commands": 42,
+  "outcomes": { "allowed": 30, "denied": 8, "warned": 3, "bypassed": 1 },
+  "block_rate": 19.047619,
+  "top_patterns": [
+    { "name": "force-push", "count": 8, "pack_id": "core.git" },
+    { "name": "uncategorized", "count": 2 }
+  ],
+  "top_projects": [{ "path": "/work/orca", "command_count": 42 }],
+  "agents": [{ "name": "claude-code", "count": 42 }],
+  "performance": { "p50_us": 80, "p95_us": 220, "p99_us": 500, "max_us": 900 },
+  "trends": {
+    "commands_change": 12.5,
+    "block_rate_change": -1.25,
+    "top_pattern_change": [["force-push", 3]]
+  },
+  "future_field": { "ignored": true }
+}

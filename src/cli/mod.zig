@@ -45,6 +45,7 @@ pub const shell_eval = @import("shell_eval.zig");
 pub const rust_visibility = @import("rust_visibility.zig");
 pub const feed_writer = @import("feed_writer.zig");
 pub const agent_hook = @import("agent_hook.zig");
+pub const daemon_contracts = @import("daemon_contracts.zig");
 
 test {
     // Ensure the child_process module (and its tests) are pulled into the test binary.
@@ -62,6 +63,7 @@ test {
     _ = shell_eval;
     _ = evaluate;
     _ = agent_hook;
+    _ = daemon_contracts;
 }
 
 pub const version = build_options.version;

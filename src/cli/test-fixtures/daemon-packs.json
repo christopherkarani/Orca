@@ -1,0 +1,17 @@
+{
+  "packs": [
+    {
+      "id": "core.git",
+      "name": "Git",
+      "category": "core",
+      "description": "Protects destructive Git operations.",
+      "enabled": true,
+      "safe_pattern_count": 12,
+      "destructive_pattern_count": 7,
+      "future_field": "ignored"
+    }
+  ],
+  "enabled_count": 1,
+  "total_count": 1,
+  "future_top_level": true
+}
