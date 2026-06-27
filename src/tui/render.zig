@@ -11,7 +11,6 @@ const theme = @import("theme.zig");
 /// Box-drawing uses Unicode (─ │ ┌ ┐ └ ┘ ├ ┤ ✗ ✓ ⚠ ℹ ● ○ ›). On capability `none`
 /// we still emit these glyphs (modern terminals, files, and pipes handle UTF-8);
 /// only colour sequences are suppressed.
-
 const reset = theme.reset;
 const bold = theme.bold;
 const dim = theme.dim;
@@ -37,8 +36,7 @@ fn codepointWidth(cp: u21) u2 {
     if (cp >= 0x0300 and cp <= 0x036F) return 0;
     if (cp == 0x200D) return 0; // ZWJ
     // Wide ranges (CJK, fullwidth, emoji-ish) — coarse but practical for CLI tables.
-    if (cp >= 0x1100 and (
-        cp <= 0x115F or // Hangul Jamo
+    if (cp >= 0x1100 and (cp <= 0x115F or // Hangul Jamo
         (cp >= 0x2E80 and cp <= 0xA4CF and cp != 0x303F) or // CJK radicals..Yi
         (cp >= 0xAC00 and cp <= 0xD7A3) or // Hangul syllables
         (cp >= 0xF900 and cp <= 0xFAFF) or // CJK compat ideographs
@@ -390,8 +388,8 @@ pub fn table(
 pub const StepStatus = enum { pending, active, done, failed };
 
 pub fn stepLine(io: std.Io, stdout: anytype, status: StepStatus, label: []const u8, detail: ?[]const u8, line_width: usize) !void {
-    if (line_width > 0) {
-        try stdout.writeAll("\r\x1b[2K\r"); // canonical clear-line (no-op on plain pipes harmlessly)
+    if (line_width > 0 and theme.active(io, stdout).capability.hasColor()) {
+        try stdout.writeAll("\r\x1b[2K\r");
     }
     const marker_token: theme.Token = switch (status) {
         .done, .active => .success,
@@ -417,6 +415,43 @@ pub fn stepLine(io: std.Io, stdout: anytype, status: StepStatus, label: []const 
         try theme.paint(io, stdout, .muted, d);
     }
     try stdout.writeAll("\n");
+}
+
+pub const Definition = struct { term: []const u8, description: []const u8 };
+
+pub fn definitionList(io: std.Io, stdout: anytype, entries: []const Definition) !void {
+    var widest: usize = 0;
+    for (entries) |entry| widest = @max(widest, displayWidth(entry.term));
+    for (entries) |entry| {
+        try stdout.writeAll("  ");
+        try theme.paint(io, stdout, .muted, entry.term);
+        var pad = displayWidth(entry.term);
+        while (pad < widest + 2) : (pad += 1) try stdout.writeAll(" ");
+        try stdout.writeAll(entry.description);
+        try stdout.writeAll("\n");
+    }
+}
+
+pub const Step = struct { status: StepStatus, label: []const u8, detail: ?[]const u8 = null };
+
+pub fn stepList(io: std.Io, stdout: anytype, steps: []const Step) !void {
+    for (steps) |step| try stepLine(io, stdout, step.status, step.label, step.detail, 0);
+}
+
+pub const TimelineEvent = struct { label: []const u8, detail: []const u8 };
+
+pub fn timeline(io: std.Io, stdout: anytype, events: []const TimelineEvent) !void {
+    for (events, 0..) |event, index| {
+        try stdout.writeAll("  ");
+        try theme.paint(io, stdout, .muted, if (index + 1 == events.len) "└" else "├");
+        try stdout.writeAll(" ");
+        try theme.paintBold(io, stdout, .text_bright, event.label);
+        if (event.detail.len > 0) {
+            try stdout.writeAll("  ");
+            try stdout.writeAll(event.detail);
+        }
+        try stdout.writeAll("\n");
+    }
 }
 
 // ────────────────────────────────────────────────────────────────────────────
@@ -531,7 +566,7 @@ test "panel: unicode output uses box-drawing corners" {
     theme.resetCache();
     var buf: [512]u8 = undefined;
     var w: std.Io.Writer = .fixed(&buf);
-    const body = [_][]const u8{ "x" };
+    const body = [_][]const u8{"x"};
     // Force a colour-capable active state by calling the colour variant directly
     // is not trivial; panel branches on active().capability.hasColor(). In tests
     // active() returns none, so this always renders ASCII. We assert the ASCII
@@ -573,4 +608,39 @@ test "stepLine: pending renders open circle" {
     var w: std.Io.Writer = .fixed(&buf);
     try stepLine(std.testing.io, &w, .pending, "Verify", null, 0);
     try std.testing.expect(std.mem.indexOf(u8, w.buffered(), "○") != null);
+}
+
+test "stepLine: plain output never emits cursor controls" {
+    var buf: [256]u8 = undefined;
+    var w: std.Io.Writer = .fixed(&buf);
+    try stepLine(std.testing.io, &w, .active, "Policy", null, 80);
+    try std.testing.expect(std.mem.indexOfScalar(u8, w.buffered(), '\x1b') == null);
+}
+
+test "definitionList renders terms and descriptions" {
+    var buf: [512]u8 = undefined;
+    var w: std.Io.Writer = .fixed(&buf);
+    try definitionList(std.testing.io, &w, &.{
+        .{ .term = "Decision", .description = "deny" },
+        .{ .term = "Reason", .description = "unsafe command" },
+    });
+    try std.testing.expect(std.mem.indexOf(u8, w.buffered(), "Decision") != null);
+    try std.testing.expect(std.mem.indexOf(u8, w.buffered(), "unsafe command") != null);
+}
+
+test "stepList and timeline render stable plain output" {
+    var buf: [1024]u8 = undefined;
+    var w: std.Io.Writer = .fixed(&buf);
+    try stepList(std.testing.io, &w, &.{
+        .{ .status = .done, .label = "Policy", .detail = "ready" },
+        .{ .status = .pending, .label = "Verify" },
+    });
+    try timeline(std.testing.io, &w, &.{
+        .{ .label = "command", .detail = "git status" },
+        .{ .label = "decision", .detail = "allow" },
+    });
+    const out = w.buffered();
+    try std.testing.expect(std.mem.indexOf(u8, out, "Policy") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "command") != null);
+    try std.testing.expect(std.mem.indexOfScalar(u8, out, '\x1b') == null);
 }

@@ -61,8 +61,14 @@ pub fn build(b: *std.Build) void {
     const core_schema_documents_mod = core_schema_documents.createModule();
     _ = &core_schema_documents_mod;
 
-    const vaxis_dep = b.dependency("vaxis", .{ .target = target, .optimize = optimize });
+    const vaxis_dep = b.dependency("vaxis", .{ .target = target, .optimize = optimize, .external_uucode = true });
     const vaxis_mod = vaxis_dep.module("vaxis");
+    const uucode_dep = b.dependency("uucode", .{
+        .target = target,
+        .optimize = optimize,
+        .fields = @as([]const []const u8, &.{ "east_asian_width", "grapheme_break", "general_category", "is_emoji_presentation" }),
+    });
+    vaxis_mod.addImport("uucode", uucode_dep.module("uucode"));
 
     const orca_core_engine_mod = b.createModule(.{
         .root_source_file = b.path("src/core_engine.zig"),

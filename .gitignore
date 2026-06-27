@@ -163,6 +163,7 @@ orca-dashboard-ui/
 # --- Merged from orca-rs/.gitignore ---
 /target
 /target/
+/zig-pkg/
 orca-rs/target/
 **/*.rs.bk
 a.out

@@ -159,7 +159,29 @@ pub fn run(io: std.Io, environ_map: *const std.process.Environ.Map, argv: []cons
     return runWithCwd(io, environ_map, std.Io.Dir.cwd(), argv, stdout, stderr);
 }
 
-pub fn runWithCwd(io: std.Io, environ_map: *const std.process.Environ.Map, cwd: std.Io.Dir, argv: []const []const u8, stdout: anytype, stderr: anytype) !u8 {
+pub fn runWithCwd(io: std.Io, environ_map: *const std.process.Environ.Map, cwd: std.Io.Dir, argv_input: []const []const u8, stdout: anytype, stderr: anytype) !u8 {
+    var filtered_args = try std.heap.smp_allocator.alloc([]const u8, argv_input.len);
+    defer std.heap.smp_allocator.free(filtered_args);
+    var arg_count: usize = 0;
+    var no_rich_flag = false;
+    var after_separator = false;
+    for (argv_input) |arg| {
+        if (std.mem.eql(u8, arg, "--")) after_separator = true;
+        if (!after_separator and std.mem.eql(u8, arg, "--no-rich")) {
+            no_rich_flag = true;
+            continue;
+        }
+        filtered_args[arg_count] = arg;
+        arg_count += 1;
+    }
+    const argv: []const []const u8 = filtered_args[0..arg_count];
+    const no_rich_env = tui.output_policy.envDisablesRich(environ_map.get("ORCA_NO_RICH"));
+    tui.theme.setRichEnabled(!no_rich_env and !no_rich_flag);
+    style.setRichEnabled(!no_rich_env and !no_rich_flag);
+    defer {
+        tui.theme.setRichEnabled(true);
+        style.setRichEnabled(null);
+    }
     // Fallback / safety-net color decision prime for direct and library callers.
     // The true one-time early prime now lives in main() (real CLI startup path).
     // This call remains so that code paths that enter through runWithCwd directly
@@ -517,6 +539,14 @@ fn fakeHistoryProxySuccess(_: std.Io, argv: []const []const u8, stdout: anytype,
     return exit_codes.success;
 }
 
+fn fakeHistoryMachineContract(_: std.Io, argv: []const []const u8, stdout: anytype, _: anytype) !u8 {
+    try std.testing.expectEqualStrings("history", argv[0]);
+    try std.testing.expectEqualStrings("--format", argv[1]);
+    try std.testing.expectEqualStrings("json", argv[2]);
+    try stdout.writeAll(@embedFile("test-fixtures/proxy-history.json"));
+    return exit_codes.success;
+}
+
 fn fakePrecommitProxySuccess(_: std.Io, argv: []const []const u8, stdout: anytype, _: anytype) !u8 {
     try std.testing.expectEqual(@as(usize, 1), argv.len);
     try std.testing.expectEqualStrings("precommit", argv[0]);
@@ -631,6 +661,17 @@ test "phase 1 proxy reports daemon unavailable explicitly" {
     try std.testing.expectEqualStrings("", stdout_writer.buffered());
     try std.testing.expect(std.mem.indexOf(u8, stderr_writer.buffered(), "orca packs: daemon unavailable") != null);
     try std.testing.expect(std.mem.indexOf(u8, stderr_writer.buffered(), "DaemonBinaryNotFound") != null);
+}
+
+test "proxied machine output remains byte-identical to daemon contract fixture" {
+    var stdout_buf: [256]u8 = undefined;
+    var stderr_buf: [128]u8 = undefined;
+    var stdout_writer: std.Io.Writer = .fixed(&stdout_buf);
+    var stderr_writer: std.Io.Writer = .fixed(&stderr_buf);
+    const code = try proxyPhase1Command(fakeHistoryMachineContract, "history", &.{ "--format", "json" }, std.testing.io, &stdout_writer, &stderr_writer);
+    try std.testing.expectEqual(exit_codes.success, code);
+    try std.testing.expectEqualStrings(@embedFile("test-fixtures/proxy-history.json"), stdout_writer.buffered());
+    try std.testing.expectEqualStrings("", stderr_writer.buffered());
 }
 
 test "daemonErrorLabel distinguishes protocol compatibility failures" {
@@ -810,6 +851,20 @@ test "banner suppressed on machine proxy path (packs --format json)" {
     _ = try testRun(&.{ "packs", "--format", "json" }, &stdout_writer, &stderr_writer);
     // Machine path must not emit a brand banner to stdout (byte-identity).
     try std.testing.expect(std.mem.indexOf(u8, stdout_writer.buffered(), "\u{1F6E1}  Orca") == null);
+}
+
+test "global --no-rich is consumed without changing version JSON contract" {
+    var baseline_buf: [4096]u8 = undefined;
+    var escaped_buf: [4096]u8 = undefined;
+    var stderr_buf: [256]u8 = undefined;
+    var baseline: std.Io.Writer = .fixed(&baseline_buf);
+    var escaped: std.Io.Writer = .fixed(&escaped_buf);
+    var stderr_writer: std.Io.Writer = .fixed(&stderr_buf);
+
+    try std.testing.expectEqual(exit_codes.success, try testRun(&.{ "version", "--json" }, &baseline, &stderr_writer));
+    stderr_writer = .fixed(&stderr_buf);
+    try std.testing.expectEqual(exit_codes.success, try testRun(&.{ "--no-rich", "version", "--json" }, &escaped, &stderr_writer));
+    try std.testing.expectEqualStrings(baseline.buffered(), escaped.buffered());
 }
 
 test "banner suppressed on command-specific help (help run)" {

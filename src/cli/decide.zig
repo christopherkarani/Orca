@@ -558,6 +558,21 @@ test "decide command with safe command returns allow" {
     try std.testing.expect(std.mem.indexOf(u8, output, "\"decision\": \"allow\"") != null);
 }
 
+test "decide command machine output matches captured contract fixture" {
+    var stdout_buf: [2048]u8 = undefined;
+    var stderr_buf: [512]u8 = undefined;
+    var stdout_writer: std.Io.Writer = .fixed(&stdout_buf);
+    var stderr_writer: std.Io.Writer = .fixed(&stderr_buf);
+    const code = try decideCommand(std.testing.io, .command, &.{
+        "--json", "{\"command\":\"echo hello\"}",
+    }, &stdout_writer, &stderr_writer);
+    try std.testing.expectEqual(exit_codes.success, code);
+    try std.testing.expectEqualStrings(
+        @embedFile("test-fixtures/decide-command-allow.json"),
+        stdout_writer.buffered(),
+    );
+}
+
 test "decide command with dangerous command returns block" {
     var stdout_buf: [2048]u8 = undefined;
     var stderr_buf: [256]u8 = undefined;

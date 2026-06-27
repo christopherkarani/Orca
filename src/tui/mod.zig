@@ -8,11 +8,15 @@
 pub const theme = @import("theme.zig");
 pub const render = @import("render.zig");
 pub const prompt = @import("prompt.zig");
+pub const spinner = @import("spinner.zig");
+pub const output_policy = @import("output_policy.zig");
 pub const reasons = @import("reasons.zig");
 
 test {
     _ = theme;
     _ = render;
     _ = prompt;
+    _ = spinner;
+    _ = output_policy;
     _ = reasons;
 }

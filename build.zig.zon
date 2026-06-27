@@ -8,6 +8,12 @@
             .url = "https://github.com/rockorager/libvaxis/archive/ca781b3c01f4.tar.gz",
             .hash = "vaxis-0.6.0-BWNV_Gz5CQBTx7g34RYMPTL-bJhsFCU3ECHQ-CZlBVsn",
         },
+        // libvaxis marks this dependency lazy; declare it at the root so clean
+        // checkouts resolve the Unicode module without a vendored cache.
+        .uucode = .{
+            .url = "git+https://github.com/jacobsandlund/uucode#2826a37a4562284fdacd8fa029d49509cc9bffcd",
+            .hash = "uucode-0.2.0-ZZjBPlK5VADj7fdoq7G8LIHzD5o6FSkcBXXrRWr4jnrA",
+        },
     },
     .paths = .{
         "build.zig",

@@ -87,6 +87,33 @@ pub const SelectionOption = struct {
     checked: bool = false,
 };
 
+pub const ConfirmKind = enum { normal, danger };
+
+/// Stream-injected confirm core. Destructive actions are deny-by-default and
+/// require an explicit `yes`; normal confirms accept `y` or `yes`.
+pub fn confirmCore(io: std.Io, stdout: anytype, reader: *std.Io.Reader, kind: ConfirmKind, message: []const u8) !bool {
+    try stdout.writeAll("  ");
+    try theme.paintBold(io, stdout, if (kind == .danger) .danger else .brand, message);
+    try stdout.writeAll(if (kind == .danger) " Type 'yes' to confirm: " else " [y/N] ");
+    const raw = reader.takeDelimiterExclusive('\n') catch |err| switch (err) {
+        error.EndOfStream => return false,
+        else => return err,
+    };
+    const answer = std.mem.trim(u8, raw, " \t\r");
+    return std.ascii.eqlIgnoreCase(answer, "yes") or
+        (kind == .normal and std.ascii.eqlIgnoreCase(answer, "y"));
+}
+
+/// Public confirm API. Callers may inject a reader for tests; production reads
+/// stdin and safely returns false on EOF/non-interactive input.
+pub fn confirm(io: std.Io, stdout: anytype, kind: ConfirmKind, message: []const u8, injected_reader: ?*std.Io.Reader) !bool {
+    if (injected_reader) |reader| return confirmCore(io, stdout, reader, kind, message);
+    const stdin = std.Io.File.stdin();
+    var buffer: [256]u8 = undefined;
+    var reader = stdin.reader(io, &buffer);
+    return confirmCore(io, stdout, &reader.interface, kind, message);
+}
+
 // ────────────────────────────────────────────────────────────────────────────
 // selectCore — single-choice list, stream-injected, unit-testable
 // ────────────────────────────────────────────────────────────────────────────
@@ -801,4 +828,15 @@ test "select with injected reader delegates to core (TTY-independent path)" {
     };
     const idx = try select(std.testing.io, std.testing.allocator, &w, &opts, 0, "Header", &in);
     try std.testing.expectEqual(@as(?usize, 1), idx);
+}
+
+test "danger confirm requires explicit confirmation and defaults to deny" {
+    var out_buf: [512]u8 = undefined;
+    var out: std.Io.Writer = .fixed(&out_buf);
+    var yes_reader: std.Io.Reader = .fixed("yes\n");
+    try std.testing.expect(try confirmCore(std.testing.io, &out, &yes_reader, .danger, "Delete configuration?"));
+
+    out = .fixed(&out_buf);
+    var empty_reader: std.Io.Reader = .fixed("");
+    try std.testing.expect(!try confirmCore(std.testing.io, &out, &empty_reader, .danger, "Delete configuration?"));
 }

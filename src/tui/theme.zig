@@ -153,10 +153,18 @@ pub fn sequence(token: Token, cap: Capability, bg: Background) []const u8 {
             .text => basic16.text,
             .text_bright => basic16.text_bright,
         },
-        .c256, .truecolor => blk: {
-            // Shared 256/truecolor path: emit truecolor escapes; terminals that
-            // report 256 but not truecolor are rare in practice and degrade to
-            // the nearest palette gracefully.
+        .c256 => switch (token) {
+            .brand => "\x1b[38;5;208m",
+            .success => "\x1b[38;5;40m",
+            .danger => "\x1b[38;5;196m",
+            .warn => "\x1b[38;5;178m",
+            .info => "\x1b[38;5;75m",
+            .muted => "\x1b[38;5;245m",
+            .surface => "\x1b[38;5;238m",
+            .text => "\x1b[38;5;252m",
+            .text_bright => "\x1b[38;5;255m",
+        },
+        .truecolor => blk: {
             const c = rgbFor(token, bg);
             break :blk sgrRgbBuf(c.r, c.g, c.b);
         },
@@ -190,6 +198,12 @@ pub const Active = struct {
 };
 
 var cached: ?Active = null;
+var rich_enabled = true;
+
+pub fn setRichEnabled(enabled: bool) void {
+    rich_enabled = enabled;
+    resetCache();
+}
 
 /// Reset the cache. Used by tests; a no-op invoker hook keeps production stable.
 pub fn resetCache() void {
@@ -204,6 +218,7 @@ pub fn resolve(d: DetectInput, bg: Background) Active {
 /// Cached runtime detection against real env/stdout. In `builtin.is_test` this
 /// returns a plain-text theme so fixed-buffer writers never emit escapes.
 pub fn active(io: std.Io, stdout: anytype) Active {
+    if (!rich_enabled) return .{ .capability = .none, .background = .unknown };
     if (builtin.is_test) return .{ .capability = .none, .background = .unknown };
     if (cached) |a| return a;
 
@@ -408,6 +423,12 @@ test "sequence: truecolor emits 38;2;r;g;b" {
     const s = sequence(.brand, .truecolor, .dark);
     try std.testing.expect(std.mem.startsWith(u8, s, "\x1b[38;2;255;122;69m"));
     try std.testing.expect(std.mem.endsWith(u8, s, "m"));
+}
+
+test "sequence: 256-color never emits truecolor" {
+    const seq = sequence(.brand, .c256, .dark);
+    try std.testing.expect(std.mem.indexOf(u8, seq, "38;2;") == null);
+    try std.testing.expect(std.mem.indexOf(u8, seq, "38;5;") != null);
 }
 
 test "sequence: truecolor light variant differs from dark for brand" {

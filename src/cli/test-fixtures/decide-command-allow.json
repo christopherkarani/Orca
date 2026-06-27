@@ -1,0 +1,11 @@
+{
+  "version": 1,
+  "decision": "allow",
+  "risk": "unknown",
+  "category": "command",
+  "reason": "matched commands.allow rule \"echo *\"",
+  "rule": "commands.allow[14]",
+  "message": "command allowed by Orca policy.",
+  "redactions": [
+  ]
+}
