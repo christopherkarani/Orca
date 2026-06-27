@@ -100,7 +100,10 @@ fn usageError(stderr: anytype, message: []const u8) error{InvalidArguments} {
 }
 
 fn renderHuman(io: std.Io, options: Options, output: contracts.PacksOutput, stdout: anytype, stderr: anytype) !u8 {
-    const allocator = std.heap.smp_allocator;
+    return renderHumanAlloc(std.heap.smp_allocator, io, options, output, stdout, stderr);
+}
+
+fn renderHumanAlloc(allocator: std.mem.Allocator, io: std.Io, options: Options, output: contracts.PacksOutput, stdout: anytype, stderr: anytype) !u8 {
     var selected: std.ArrayListUnmanaged(contracts.PackInfo) = .empty;
     defer selected.deinit(allocator);
     for (output.packs) |pack| {
@@ -135,6 +138,8 @@ fn renderHuman(io: std.Io, options: Options, output: contracts.PacksOutput, stdo
 
     const rows = try allocator.alloc([]const []const u8, page_items.len);
     defer allocator.free(rows);
+    var initialized_rows: usize = 0;
+    defer for (rows[0..initialized_rows]) |row| allocator.free(row);
     var owned: std.ArrayListUnmanaged([]u8) = .empty;
     defer {
         for (owned.items) |value| allocator.free(value);
@@ -169,8 +174,8 @@ fn renderHuman(io: std.Io, options: Options, output: contracts.PacksOutput, stdo
         cells[3] = patterns;
         cells[4] = safe_description;
         rows[index] = cells;
+        initialized_rows += 1;
     }
-    defer for (rows) |row| allocator.free(row);
 
     try tui.render.table(io, stdout, &.{
         .{ .name = "PACK" },     .{ .name = "CATEGORY" },    .{ .name = "STATUS" },
@@ -350,6 +355,27 @@ test "packs invalid daemon JSON gives doctor remediation without leaking payload
     try std.testing.expectEqualStrings("", stdout_writer.buffered());
     try std.testing.expect(std.mem.indexOf(u8, stderr_writer.buffered(), "orca doctor") != null);
     try std.testing.expect(std.mem.indexOf(u8, stderr_writer.buffered(), "TOP_SECRET") == null);
+}
+
+test "packs row construction cleans completed rows on later allocation failure" {
+    try std.testing.checkAllAllocationFailures(std.testing.allocator, renderPacksAllocationFailureProbe, .{});
+}
+
+fn renderPacksAllocationFailureProbe(allocator: std.mem.Allocator) !void {
+    const pack_rows = [_]contracts.PackInfo{
+        .{ .id = "core.git", .name = "Git", .category = "core", .description = "Protects Git", .enabled = true, .safe_pattern_count = 2, .destructive_pattern_count = 3 },
+        .{ .id = "database.mysql", .name = "MySQL", .category = "database", .description = "Protects MySQL", .enabled = false, .safe_pattern_count = 4, .destructive_pattern_count = 5 },
+    };
+    const output: contracts.PacksOutput = .{ .packs = &pack_rows, .enabled_count = 1, .total_count = 2 };
+    var stdout_buf: [4096]u8 = undefined;
+    var stderr_buf: [256]u8 = undefined;
+    var stdout_writer: std.Io.Writer = .fixed(&stdout_buf);
+    var stderr_writer: std.Io.Writer = .fixed(&stderr_buf);
+    _ = renderHumanAlloc(allocator, std.testing.io, .{}, output, &stdout_writer, &stderr_writer) catch |err| switch (err) {
+        // AllocatingWriter intentionally erases allocator failures to WriteFailed.
+        error.WriteFailed => return error.OutOfMemory,
+        else => return err,
+    };
 }
 
 fn fakeUnsortedPacksJson(_: std.Io, argv: []const []const u8, stdout: anytype, _: anytype) !u8 {
