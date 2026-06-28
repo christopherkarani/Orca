@@ -61,7 +61,8 @@ fn isHelp(argv: []const []const u8) bool {
 fn isHumanStats(argv: []const []const u8) bool {
     if (!std.mem.eql(u8, argv[0], "stats")) return false;
     for (argv[1..]) |arg| {
-        if (std.mem.eql(u8, arg, "--json") or std.mem.eql(u8, arg, "--robot") or
+        if (std.mem.eql(u8, arg, "--help") or std.mem.eql(u8, arg, "-h") or
+            std.mem.eql(u8, arg, "--json") or std.mem.eql(u8, arg, "--robot") or
             std.mem.eql(u8, arg, "--format") or std.mem.startsWith(u8, arg, "--format=")) return false;
     }
     return true;
@@ -106,7 +107,7 @@ fn renderHumanAlloc(allocator: std.mem.Allocator, io: std.Io, stats: contracts.H
     defer allocator.free(period);
     const total = try std.fmt.allocPrint(allocator, "{d}", .{stats.total_commands});
     defer allocator.free(total);
-    const blocked = try std.fmt.allocPrint(allocator, "{d:.2}%", .{stats.block_rate});
+    const blocked = try std.fmt.allocPrint(allocator, "{d:.2}%", .{stats.block_rate * 100.0});
     defer allocator.free(blocked);
     try tui.render.keyValue(io, stdout, &.{
         .{ .label = "Period", .value = period },
@@ -114,14 +115,16 @@ fn renderHumanAlloc(allocator: std.mem.Allocator, io: std.Io, stats: contracts.H
         .{ .label = "Block rate", .value = blocked },
     });
 
-    const outcome_values = [_][4][]u8{.{
-        try std.fmt.allocPrint(allocator, "{d}", .{stats.outcomes.allowed}),
-        try std.fmt.allocPrint(allocator, "{d}", .{stats.outcomes.denied}),
-        try std.fmt.allocPrint(allocator, "{d}", .{stats.outcomes.warned}),
-        try std.fmt.allocPrint(allocator, "{d}", .{stats.outcomes.bypassed}),
-    }};
-    defer inline for (outcome_values[0]) |value| allocator.free(value);
-    const outcome_rows = [_][]const []const u8{&outcome_values[0]};
+    const allowed = try std.fmt.allocPrint(allocator, "{d}", .{stats.outcomes.allowed});
+    defer allocator.free(allowed);
+    const denied = try std.fmt.allocPrint(allocator, "{d}", .{stats.outcomes.denied});
+    defer allocator.free(denied);
+    const warned = try std.fmt.allocPrint(allocator, "{d}", .{stats.outcomes.warned});
+    defer allocator.free(warned);
+    const bypassed = try std.fmt.allocPrint(allocator, "{d}", .{stats.outcomes.bypassed});
+    defer allocator.free(bypassed);
+    const outcome_values = [_][]const u8{ allowed, denied, warned, bypassed };
+    const outcome_rows = [_][]const []const u8{&outcome_values};
     try tui.render.table(io, stdout, &.{ .{ .name = "ALLOWED" }, .{ .name = "DENIED" }, .{ .name = "WARNED" }, .{ .name = "BYPASSED" } }, &outcome_rows);
 
     try renderPatterns(allocator, io, stats.top_patterns, stdout);
@@ -215,7 +218,11 @@ fn ownPrint(allocator: std.mem.Allocator, owned: *std.ArrayListUnmanaged([]u8), 
 }
 
 fn patternLessThan(_: void, a: contracts.PatternStat, b: contracts.PatternStat) bool {
-    return std.mem.order(u8, a.name, b.name) == .lt;
+    const name_order = std.mem.order(u8, a.name, b.name);
+    if (name_order != .eq) return name_order == .lt;
+    const pack_order = std.mem.order(u8, a.pack_id orelse "", b.pack_id orelse "");
+    if (pack_order != .eq) return pack_order == .lt;
+    return a.count < b.count;
 }
 fn agentLessThan(_: void, a: contracts.AgentStat, b: contracts.AgentStat) bool {
     return std.mem.order(u8, a.name, b.name) == .lt;
@@ -232,6 +239,7 @@ test "human history stats requests structured daemon JSON" {
     const code = try commandWithExecutor(fakeStats, std.testing.io, &.{ "stats", "--days", "7" }, &stdout, &stderr);
     try std.testing.expectEqual(exit_codes.success, code);
     try std.testing.expect(std.mem.indexOf(u8, stdout.buffered(), "PATTERN") != null);
+    try std.testing.expect(std.mem.indexOf(u8, stdout.buffered(), "19.05%") != null);
     try std.testing.expect(std.mem.indexOf(u8, stdout.buffered(), "orca-daemon") == null);
 }
 
@@ -258,8 +266,9 @@ fn unexpectedExecutor(_: std.Io, _: []const []const u8, _: anytype, _: anytype) 
 
 test "machine and non-stats history actions pass through byte-for-byte" {
     const cases = [_][]const []const u8{
-        &.{ "stats", "--json" },                           &.{ "check", "--strict" },          &.{ "export", "--output", "x.json" },
-        &.{ "prune", "--older-than-days", "30", "--yes" }, &.{ "backup", "--output", "x.db" },
+        &.{ "stats", "--json" },            &.{ "stats", "--help" },              &.{ "stats", "-h" },
+        &.{ "check", "--strict" },          &.{ "export", "--output", "x.json" }, &.{ "prune", "--older-than-days", "30", "--yes" },
+        &.{ "backup", "--output", "x.db" },
     };
     for (cases) |args| {
         var out: [64]u8 = undefined;
@@ -293,6 +302,21 @@ test "empty history onboards and hostile values are sanitized and sorted" {
     const rendered = stdout.buffered();
     try std.testing.expect(std.mem.indexOf(u8, rendered, "\x1b[2J") == null);
     try std.testing.expect(std.mem.indexOf(u8, rendered, "alpha").? < std.mem.indexOf(u8, rendered, "zeta").?);
+}
+
+test "duplicate pattern names have deterministic pack and count tie breaks" {
+    const patterns = [_]contracts.PatternStat{
+        .{ .name = "duplicate", .count = 9, .pack_id = "z.pack" },
+        .{ .name = "duplicate", .count = 7, .pack_id = "a.pack" },
+        .{ .name = "duplicate", .count = 2, .pack_id = "a.pack" },
+    };
+    var sorted = patterns;
+    std.mem.sort(contracts.PatternStat, &sorted, {}, patternLessThan);
+    try std.testing.expectEqualStrings("a.pack", sorted[0].pack_id.?);
+    try std.testing.expectEqual(@as(u64, 2), sorted[0].count);
+    try std.testing.expectEqualStrings("a.pack", sorted[1].pack_id.?);
+    try std.testing.expectEqual(@as(u64, 7), sorted[1].count);
+    try std.testing.expectEqualStrings("z.pack", sorted[2].pack_id.?);
 }
 
 test "invalid structured history data is remediated without echoing payload" {
@@ -345,5 +369,9 @@ fn renderAllocationFailureProbe(allocator: std.mem.Allocator) !void {
     };
     var out: [8192]u8 = undefined;
     var stdout: std.Io.Writer = .fixed(&out);
-    _ = try renderHumanAlloc(allocator, std.testing.io, stats, &stdout);
+    _ = renderHumanAlloc(allocator, std.testing.io, stats, &stdout) catch |err| switch (err) {
+        // AllocatingWriter intentionally erases allocator failures to WriteFailed.
+        error.WriteFailed => return error.OutOfMemory,
+        else => return err,
+    };
 }

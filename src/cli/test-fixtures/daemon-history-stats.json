@@ -2,7 +2,7 @@
   "period_days": 7,
   "total_commands": 42,
   "outcomes": { "allowed": 30, "denied": 8, "warned": 3, "bypassed": 1 },
-  "block_rate": 19.047619,
+  "block_rate": 0.19047619,
   "top_patterns": [
     { "name": "force-push", "count": 8, "pack_id": "core.git" },
     { "name": "uncategorized", "count": 2 }
