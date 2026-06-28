@@ -347,16 +347,16 @@ pub const commands = [_]CommandInfo{
         "Prints the current Orca version.",
         "--json emits version, commit, target, and build_date fields for release automation.",
     } },
-    .{ .name = "plugin", .summary = "Plugin management and diagnostics", .usage = "orca plugin <doctor|manifest|install|mcp-server> [options]", .category = .integrations, .details = &.{
+    .{ .name = "plugin", .summary = "Plugin management and diagnostics", .usage = "orca plugin <list|host|doctor|manifest|install> [options]", .category = .integrations, .details = &.{
         "Subcommands:",
+        "  orca plugin list",
+        "  orca plugin <codex|claude|opencode|openclaw|hermes> [--dry-run|--yes]",
         "  orca plugin doctor [codex|claude|opencode|openclaw|hermes] [--json]",
         "  orca plugin manifest [codex|claude|opencode|openclaw|hermes|all] [--json]",
         "  orca plugin install [codex|claude|opencode|openclaw|hermes|all] [--dry-run] [--path <path>] [--yes]",
-        "  orca plugin mcp-server [--help]",
         "Primary onboarding path: run `orca setup` (guided interactive selection on TTY terminals).",
         "`plugin install --yes` is retained for scripting, CI, and non-interactive use cases.",
-        "Plugin commands are safe by default: install defaults to --dry-run, doctor does not print secrets,",
-        "and mcp-server is currently a documented stub that does not start a real server.",
+        "Plugin commands are safe by default: install defaults to --dry-run and doctor does not print secrets.",
     } },
     .{ .name = "decide", .summary = "Ask Orca whether an action is allowed by policy", .usage = "orca decide <command|file|prompt|tool> (--json <payload>|--stdin) [--ci] [--human]", .category = .advanced, .details = &.{
         "Evaluates a policy decision for host plugins (Codex, Claude Code, OpenCode, etc.).",
