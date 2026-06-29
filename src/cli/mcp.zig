@@ -10,6 +10,7 @@ const help = @import("help.zig");
 const policy = @import("orca_core").policy;
 const version_command = @import("version.zig");
 const suggestions = @import("suggestions.zig");
+const tui = @import("../tui/mod.zig");
 
 pub fn command(io: std.Io, argv: []const []const u8, stdout: anytype, stderr: anytype) !u8 {
     if (argv.len > 0 and (std.mem.eql(u8, argv[0], "--help") or std.mem.eql(u8, argv[0], "-h"))) {
@@ -17,8 +18,8 @@ pub fn command(io: std.Io, argv: []const []const u8, stdout: anytype, stderr: an
         return exit_codes.success;
     }
     if (argv.len == 0) {
-        _ = try help.writeCommand(io, stderr, "mcp");
-        return exit_codes.usage;
+        try writeGroupedHelp(io, stdout);
+        return exit_codes.success;
     }
     if (std.mem.eql(u8, argv[0], "inspect")) return inspect(io, argv[1..], stdout, stderr);
     if (std.mem.eql(u8, argv[0], "proxy")) return proxy(io, argv[1..], stdout, stderr);
@@ -27,6 +28,24 @@ pub fn command(io: std.Io, argv: []const []const u8, stdout: anytype, stderr: an
     if (std.mem.eql(u8, argv[0], "manifest")) return manifestCommand(io, argv[1..], stdout, stderr);
     try suggestions.writeUnknownSubcommand(stderr, "orca mcp", argv[0], &.{ "inspect", "proxy", "list", "trust", "manifest" }, "mcp");
     return exit_codes.usage;
+}
+
+fn writeGroupedHelp(io: std.Io, stdout: anytype) !void {
+    try tui.theme.paintBold(io, stdout, .brand, "Common commands");
+    try stdout.writeByte('\n');
+    try tui.render.definitionList(io, stdout, &.{
+        .{ .term = "orca mcp list", .description = "Show configured MCP servers" },
+        .{ .term = "orca mcp inspect", .description = "Inspect tools exposed by a server" },
+    });
+    try stdout.writeByte('\n');
+    try tui.theme.paintBold(io, stdout, .brand, "Advanced and protocol");
+    try stdout.writeByte('\n');
+    try tui.render.definitionList(io, stdout, &.{
+        .{ .term = "orca mcp proxy", .description = "Run the policy-enforcing stdio proxy" },
+        .{ .term = "orca mcp manifest", .description = "Check or generate a server manifest" },
+        .{ .term = "orca mcp trust", .description = "Print a reviewed policy snippet" },
+    });
+    try stdout.writeAll("\nRun `orca help mcp` for complete options.\n");
 }
 
 const Options = struct {
@@ -300,8 +319,24 @@ fn list(io: std.Io, argv: []const []const u8, stdout: anytype, stderr: anytype) 
     var gpa_state: std.heap.DebugAllocator(.{}) = .init;
     defer _ = gpa_state.deinit();
     const allocator = gpa_state.allocator();
-    try stdout.writeAll("Known MCP servers:\n");
-    var found = false;
+    const Inventory = struct {
+        name: []u8,
+        transport: []u8,
+        command: []u8,
+        path: []u8,
+
+        fn deinit(self: @This(), allocator_: std.mem.Allocator) void {
+            allocator_.free(self.name);
+            allocator_.free(self.transport);
+            allocator_.free(self.command);
+            allocator_.free(self.path);
+        }
+    };
+    var inventory: std.ArrayList(Inventory) = .empty;
+    defer {
+        for (inventory.items) |item| item.deinit(allocator);
+        inventory.deinit(allocator);
+    }
     if (std.Io.Dir.cwd().openDir(io, ".orca/mcp", .{ .iterate = true })) |dir_value| {
         var dir = dir_value;
         defer dir.close(io);
@@ -311,16 +346,48 @@ fn list(io: std.Io, argv: []const []const u8, stdout: anytype, stderr: anytype) 
             const path = try std.fs.path.join(allocator, &.{ ".orca", "mcp", entry.name });
             defer allocator.free(path);
             var manifest = orca_mcp.manifests.loadFile(io, allocator, path) catch |err| {
-                try stdout.print("  invalid manifest: {s} ({s})\n", .{ path, @errorName(err) });
-                found = true;
+                try tui.render.callout(io, stdout, .warn, "Invalid MCP manifest", path);
+                try stdout.print("  Reason: {s}\n", .{@errorName(err)});
                 continue;
             };
             defer manifest.deinit(allocator);
-            try stdout.print("  {s} transport={s} command={s} manifest={s}\n", .{ manifest.server.name, manifest.server.transport.toString(), manifest.server.command, path });
-            found = true;
+            const name = try allocator.dupe(u8, manifest.server.name);
+            errdefer allocator.free(name);
+            const transport = try allocator.dupe(u8, manifest.server.transport.toString());
+            errdefer allocator.free(transport);
+            const command_text = try allocator.dupe(u8, manifest.server.command);
+            errdefer allocator.free(command_text);
+            const owned_path = try allocator.dupe(u8, path);
+            errdefer allocator.free(owned_path);
+            try inventory.append(allocator, .{ .name = name, .transport = transport, .command = command_text, .path = owned_path });
         }
     } else |_| {}
-    if (!found) try stdout.writeAll("  none configured (checked .orca/mcp/*.yaml)\n");
+    if (inventory.items.len == 0) {
+        try tui.render.callout(
+            io,
+            stdout,
+            .info,
+            "No MCP servers configured",
+            "Create one with: orca mcp manifest generate --server <name>",
+        );
+        return exit_codes.success;
+    }
+    const rows = try allocator.alloc([]const []const u8, inventory.items.len);
+    defer allocator.free(rows);
+    var initialized: usize = 0;
+    defer for (rows[0..initialized]) |row| allocator.free(row);
+    for (inventory.items, 0..) |item, index| {
+        const cells = try allocator.alloc([]const u8, 4);
+        cells[0] = item.name;
+        cells[1] = item.transport;
+        cells[2] = item.command;
+        cells[3] = item.path;
+        rows[index] = cells;
+        initialized += 1;
+    }
+    try tui.render.table(io, stdout, &.{
+        .{ .name = "SERVER" }, .{ .name = "TRANSPORT" }, .{ .name = "COMMAND" }, .{ .name = "MANIFEST" },
+    }, rows);
     return exit_codes.success;
 }
 
@@ -572,6 +639,39 @@ test "mcp command help and invalid subcommands are stable" {
     try std.testing.expect(std.mem.indexOf(u8, stderr_writer.buffered(), "unknown subcommand") != null);
     try std.testing.expect(std.mem.indexOf(u8, stderr_writer.buffered(), "Did you mean 'inspect'?") != null);
     try std.testing.expect(std.mem.indexOf(u8, stderr_writer.buffered(), "orca help mcp") != null);
+}
+
+test "bare mcp renders grouped help with list as the friendly entry" {
+    var stdout_buf: [2048]u8 = undefined;
+    var stderr_buf: [4096]u8 = undefined;
+    var stdout_writer: std.Io.Writer = .fixed(&stdout_buf);
+    var stderr_writer: std.Io.Writer = .fixed(&stderr_buf);
+    const code = try command(std.testing.io, &.{}, &stdout_writer, &stderr_writer);
+    try std.testing.expectEqual(exit_codes.success, code);
+    try std.testing.expectEqualStrings("", stderr_writer.buffered());
+    try std.testing.expect(std.mem.indexOf(u8, stdout_writer.buffered(), "Common commands") != null);
+    try std.testing.expect(std.mem.indexOf(u8, stdout_writer.buffered(), "Advanced and protocol") != null);
+    try std.testing.expect(std.mem.indexOf(u8, stdout_writer.buffered(), "orca mcp list") != null);
+}
+
+test "mcp list empty state is friendly plain output" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const previous_cwd = try std.Io.Dir.cwd().realPathFileAlloc(std.testing.io, ".", std.testing.allocator);
+    defer std.testing.allocator.free(previous_cwd);
+    try std.process.setCurrentDir(std.testing.io, tmp.dir);
+    defer std.process.setCurrentPath(std.testing.io, previous_cwd) catch {};
+
+    var stdout_buf: [2048]u8 = undefined;
+    var stderr_buf: [512]u8 = undefined;
+    var stdout_writer: std.Io.Writer = .fixed(&stdout_buf);
+    var stderr_writer: std.Io.Writer = .fixed(&stderr_buf);
+    const code = try command(std.testing.io, &.{"list"}, &stdout_writer, &stderr_writer);
+    try std.testing.expectEqual(exit_codes.success, code);
+    try std.testing.expectEqualStrings("", stderr_writer.buffered());
+    try std.testing.expect(std.mem.indexOf(u8, stdout_writer.buffered(), "No MCP servers configured") != null);
+    try std.testing.expect(std.mem.indexOf(u8, stdout_writer.buffered(), "orca mcp manifest generate") != null);
+    try std.testing.expect(std.mem.indexOfScalar(u8, stdout_writer.buffered(), 0x1b) == null);
 }
 
 test "mcp unknown flag and manifest subcommand include actionable suggestions" {

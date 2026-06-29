@@ -97,6 +97,12 @@ fn isAlwaysMachineCommand(command: []const u8) bool {
     return false;
 }
 
+fn isRawGeneratedInvocation(command: []const u8, argv: []const []const u8) bool {
+    if (!std.mem.eql(u8, command, "mcp") or argv.len <= 1) return false;
+    if (std.mem.eql(u8, argv[1], "proxy") or std.mem.eql(u8, argv[1], "trust")) return true;
+    return std.mem.eql(u8, argv[1], "manifest") and argv.len > 2 and std.mem.eql(u8, argv[2], "generate");
+}
+
 fn isMachineArgv(argv: []const []const u8) bool {
     for (argv, 0..) |arg, index| {
         if (std.mem.eql(u8, arg, "--json") or std.mem.eql(u8, arg, "--stdin")) return true;
@@ -128,6 +134,7 @@ fn shouldShowBanner(command: []const u8, argv: []const []const u8) bool {
     // human error remediation remains presentation-capable. JSON is still
     // classified as machine output by isMachineArgv.
     if (std.mem.eql(u8, command, "report")) return false;
+    if (isRawGeneratedInvocation(command, argv)) return false;
     // Always-machine / raw / server commands.
     if (isAlwaysMachineCommand(command)) return false;
     // `help <cmd>` is command-specific reference help (no banner); bare `help`
@@ -164,7 +171,7 @@ pub fn runWithCwd(io: std.Io, environ_map: *const std.process.Environ.Map, cwd: 
     const argv = argv_input[global_args.command_index..];
     const no_rich_env = tui.output_policy.envDisablesRich(environ_map.get("ORCA_NO_RICH"));
     const machine_output = if (argv.len == 0) false else !shouldShowBanner(argv[0], argv) and
-        (isMachineArgv(argv) or isAlwaysMachineCommand(argv[0]));
+        (isMachineArgv(argv) or isAlwaysMachineCommand(argv[0]) or isRawGeneratedInvocation(argv[0], argv));
     const output = tui.output_policy.resolve(no_rich_env, global_args.no_rich, machine_output);
     tui.theme.setRichEnabled(output.rich);
     style.setRichEnabled(output.rich);
@@ -909,6 +916,53 @@ test "report generated exports are classified as raw at top level" {
     try std.testing.expect(!shouldShowBanner("report", &.{"report"}));
     try std.testing.expect(!shouldShowBanner("report", &.{ "report", "--format", "markdown" }));
     try std.testing.expect(!shouldShowBanner("report", &.{ "report", "--format", "json" }));
+}
+
+test "top-level MCP generated surfaces preserve exact bytes" {
+    try std.testing.expect(isRawGeneratedInvocation("mcp", &.{ "mcp", "proxy", "--command", "server" }));
+    try std.testing.expect(!isRawGeneratedInvocation("mcp", &.{ "mcp", "list" }));
+    const expected_manifest =
+        \\version: 1
+        \\server:
+        \\  name: demo
+        \\  transport: stdio
+        \\  command: demo
+        \\  args: []
+        \\  expected_hash: null
+        \\  env:
+        \\    allow:
+        \\      - GITHUB_TOKEN
+        \\
+        \\tools:
+        \\resources:
+        \\  default: ask
+        \\prompts:
+        \\  default: ask
+        \\sampling:
+        \\  default: deny
+        \\
+    ;
+    const expected_trust =
+        \\Direct policy mutation is not implemented for this command.
+        \\Add this snippet to your policy after reviewing the server manifest:
+        \\
+        \\mcp:
+        \\  allow:
+        \\    - "demo.read"
+        \\
+    ;
+    inline for (.{
+        .{ .argv = &.{ "mcp", "manifest", "generate", "--server", "demo" }, .expected = expected_manifest },
+        .{ .argv = &.{ "mcp", "trust", "demo", "--tool", "read" }, .expected = expected_trust },
+    }) |case| {
+        var stdout_buf: [2048]u8 = undefined;
+        var stderr_buf: [512]u8 = undefined;
+        var stdout_writer: std.Io.Writer = .fixed(&stdout_buf);
+        var stderr_writer: std.Io.Writer = .fixed(&stderr_buf);
+        try std.testing.expectEqual(exit_codes.success, try testRun(case.argv, &stdout_writer, &stderr_writer));
+        try std.testing.expectEqualStrings(case.expected, stdout_writer.buffered());
+        try std.testing.expectEqualStrings("", stderr_writer.buffered());
+    }
 }
 
 extern "c" fn setenv(name: [*:0]const u8, value: [*:0]const u8, overwrite: c_int) c_int;
