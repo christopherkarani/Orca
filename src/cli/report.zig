@@ -8,6 +8,7 @@ const license = @import("../license.zig");
 const exit_codes = @import("exit_codes.zig");
 const help = @import("help.zig");
 const tui = @import("../tui/mod.zig");
+const suggestions = @import("suggestions.zig");
 
 const Format = enum { markdown, json };
 const Options = struct { session: []const u8 = "last", format: Format = .markdown };
@@ -101,7 +102,7 @@ fn parseOptions(io: std.Io, argv: []const []const u8, stdout: anytype, stderr: a
                 return error.Usage;
             }
         } else {
-            try stderr.print("orca report: unknown option '{s}'.\n", .{arg});
+            try suggestions.writeUnknownOption(stderr, "orca report", arg, &.{ "--session", "--format", "--help", "-h" }, "report");
             return error.Usage;
         }
     }

@@ -13,6 +13,7 @@ const child_process = @import("child_process.zig");
 const resource_root = @import("../resource_root.zig");
 const env_util = @import("../env_util.zig");
 const tui = @import("../tui/mod.zig");
+const suggestions = @import("suggestions.zig");
 
 // ---------------------------------------------------------------------------
 // Top-level dispatch
@@ -37,7 +38,7 @@ pub fn command(io: std.Io, argv: []const []const u8, stdout: anytype, stderr: an
         if (std.mem.eql(u8, argv[0], host)) return installAliasCommand(io, host, argv[1..], stdout, stderr);
     }
 
-    try stderr.print("orca plugin: unknown subcommand '{s}'.\n", .{argv[0]});
+    try suggestions.writeUnknownSubcommand(stderr, "orca plugin", argv[0], &.{ "doctor", "list", "manifest", "install", "mcp-server", "codex", "claude", "opencode", "openclaw", "hermes" }, "plugin");
     return exit_codes.usage;
 }
 
@@ -106,7 +107,7 @@ fn doctorCommand(io: std.Io, argv: []const []const u8, stdout: anytype, stderr: 
             target = .hermes;
             continue;
         }
-        try stderr.print("orca plugin doctor: unknown option '{s}'.\n", .{arg});
+        try suggestions.writeUnknownOption(stderr, "orca plugin doctor", arg, &.{ "--json", "--help", "-h", "codex", "claude", "opencode", "openclaw", "hermes" }, "plugin");
         return exit_codes.usage;
     }
 
@@ -222,7 +223,7 @@ fn listCommand(io: std.Io, argv: []const []const u8, stdout: anytype, stderr: an
             try stdout.writeAll("Usage:\n  orca plugin list\n");
             return exit_codes.success;
         }
-        try stderr.print("orca plugin list: unknown option '{s}'.\n", .{argv[0]});
+        try suggestions.writeUnknownOption(stderr, "orca plugin list", argv[0], &.{ "--help", "-h" }, "plugin");
         return exit_codes.usage;
     }
 
@@ -804,7 +805,7 @@ fn manifestCommand(io: std.Io, argv: []const []const u8, stdout: anytype, stderr
             target = .all;
             continue;
         }
-        try stderr.print("orca plugin manifest: unknown option '{s}'.\n", .{arg});
+        try suggestions.writeUnknownOption(stderr, "orca plugin manifest", arg, &.{ "--json", "--help", "-h", "codex", "claude", "opencode", "openclaw", "hermes", "all" }, "plugin");
         return exit_codes.usage;
     }
 
@@ -1172,7 +1173,7 @@ fn installCommand(io: std.Io, argv: []const []const u8, stdout: anytype, stderr:
             target = .all;
             continue;
         }
-        try stderr.print("orca plugin install: unknown option '{s}'.\n", .{arg});
+        try suggestions.writeUnknownOption(stderr, "orca plugin install", arg, &.{ "--dry-run", "--yes", "--all-detected", "--path", "--scope", "--help", "-h", "codex", "claude", "opencode", "openclaw", "hermes", "all" }, "plugin");
         return exit_codes.usage;
     }
 
@@ -1473,7 +1474,7 @@ fn mcpServerCommand(_: std.Io, argv: []const []const u8, stdout: anytype, stderr
             );
             return exit_codes.success;
         }
-        try stderr.print("orca plugin mcp-server: unknown option '{s}'.\n", .{arg});
+        try suggestions.writeUnknownOption(stderr, "orca plugin mcp-server", arg, &.{ "--help", "-h" }, "plugin");
         return exit_codes.usage;
     }
 

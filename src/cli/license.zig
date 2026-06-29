@@ -3,6 +3,7 @@ const std = @import("std");
 const license = @import("../license.zig");
 const exit_codes = @import("exit_codes.zig");
 const help = @import("help.zig");
+const suggestions = @import("suggestions.zig");
 
 pub fn command(io: std.Io, argv: []const []const u8, stdout: anytype, stderr: anytype) !u8 {
     if (argv.len == 0 or std.mem.eql(u8, argv[0], "--help") or std.mem.eql(u8, argv[0], "-h")) {
@@ -11,7 +12,7 @@ pub fn command(io: std.Io, argv: []const []const u8, stdout: anytype, stderr: an
     }
     if (std.mem.eql(u8, argv[0], "status")) return status(io, argv[1..], stdout, stderr);
     if (std.mem.eql(u8, argv[0], "activate")) return activate(io, argv[1..], stdout, stderr);
-    try stderr.print("orca license: unknown subcommand '{s}'. Expected status or activate.\n", .{argv[0]});
+    try suggestions.writeUnknownSubcommand(stderr, "orca license", argv[0], &.{ "status", "activate" }, "license");
     return exit_codes.usage;
 }
 
@@ -19,7 +20,7 @@ fn status(io: std.Io, argv: []const []const u8, stdout: anytype, stderr: anytype
     var json = false;
     for (argv) |arg| {
         if (std.mem.eql(u8, arg, "--json")) json = true else {
-            try stderr.print("orca license status: unknown option '{s}'.\n", .{arg});
+            try suggestions.writeUnknownOption(stderr, "orca license status", arg, &.{"--json"}, "license");
             return exit_codes.usage;
         }
     }
@@ -99,7 +100,9 @@ test "license command rejects unknown subcommands" {
     var stderr_buf: [256]u8 = undefined;
     var stdout_writer: std.Io.Writer = .fixed(&stdout_buf);
     var stderr_writer: std.Io.Writer = .fixed(&stderr_buf);
-    const code = try command(std.testing.io, &.{"bad"}, &stdout_writer, &stderr_writer);
+    const code = try command(std.testing.io, &.{"stats"}, &stdout_writer, &stderr_writer);
     try std.testing.expectEqual(exit_codes.usage, code);
     try std.testing.expect(std.mem.indexOf(u8, stderr_writer.buffered(), "unknown subcommand") != null);
+    try std.testing.expect(std.mem.indexOf(u8, stderr_writer.buffered(), "Did you mean 'status'?") != null);
+    try std.testing.expect(std.mem.indexOf(u8, stderr_writer.buffered(), "orca help license") != null);
 }

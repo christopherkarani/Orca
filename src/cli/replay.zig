@@ -6,6 +6,7 @@ const core_api = @import("orca_core").api;
 const exit_codes = @import("exit_codes.zig");
 const help = @import("help.zig");
 const tui = @import("../tui/mod.zig");
+const suggestions = @import("suggestions.zig");
 
 const ReplayCliOptions = struct {
     session: []const u8 = "last",
@@ -225,7 +226,7 @@ fn parseOptions(io: std.Io, argv: []const []const u8, stdout: anytype, stderr: a
             options.only_denied = true;
             options.fallback_to_list = false;
         } else {
-            try stderr.print("orca replay: unknown option '{s}'.\n", .{arg});
+            try suggestions.writeUnknownOption(stderr, "orca replay", arg, &.{ "--list", "--session", "--json", "--verify", "--only", "--help", "-h" }, "replay");
             return error.Usage;
         }
     }

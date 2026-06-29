@@ -5,6 +5,7 @@ const ci_check = @import("../ci_check.zig");
 const supervisor = core.supervisor;
 const exit_codes = @import("exit_codes.zig");
 const help = @import("help.zig");
+const suggestions = @import("suggestions.zig");
 
 const Format = enum { text, markdown, json };
 const Options = struct { format: Format = .text, github_summary: ?[]const u8 = null };
@@ -15,7 +16,7 @@ pub fn command(io: std.Io, argv: []const []const u8, stdout: anytype, stderr: an
         return if (argv.len == 0) exit_codes.usage else exit_codes.success;
     }
     if (!std.mem.eql(u8, argv[0], "check")) {
-        try stderr.print("orca ci: unknown subcommand '{s}'. Expected check.\n", .{argv[0]});
+        try suggestions.writeUnknownSubcommand(stderr, "orca ci", argv[0], &.{"check"}, "ci");
         return exit_codes.usage;
     }
     const options = parseOptions(argv[1..], stderr) catch |err| switch (err) {
@@ -76,7 +77,7 @@ fn parseOptions(argv: []const []const u8, stderr: anytype) !Options {
             }
             options.github_summary = argv[index];
         } else {
-            try stderr.print("orca ci check: unknown option '{s}'.\n", .{arg});
+            try suggestions.writeUnknownOption(stderr, "orca ci check", arg, &.{ "--format", "--github-summary" }, "ci");
             return error.Usage;
         }
     }
@@ -88,6 +89,8 @@ test "ci command rejects unknown subcommands" {
     var stderr_buf: [256]u8 = undefined;
     var stdout_writer: std.Io.Writer = .fixed(&stdout_buf);
     var stderr_writer: std.Io.Writer = .fixed(&stderr_buf);
-    const code = try command(std.testing.io, &.{"bad"}, &stdout_writer, &stderr_writer);
+    const code = try command(std.testing.io, &.{"chek"}, &stdout_writer, &stderr_writer);
     try std.testing.expectEqual(exit_codes.usage, code);
+    try std.testing.expect(std.mem.indexOf(u8, stderr_writer.buffered(), "Did you mean 'check'?") != null);
+    try std.testing.expect(std.mem.indexOf(u8, stderr_writer.buffered(), "orca help ci") != null);
 }

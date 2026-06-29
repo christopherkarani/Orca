@@ -4,6 +4,7 @@ const orca_policy = @import("orca_core").policy;
 const exit_codes = @import("exit_codes.zig");
 const help = @import("help.zig");
 const style = @import("style.zig");
+const suggestions = @import("suggestions.zig");
 
 const InitOptions = struct {
     mode: ?[]const u8 = null,
@@ -109,7 +110,7 @@ fn parseOptions(io: std.Io, argv: []const []const u8, stdout: anytype, stderr: a
             }
             options.mode = mode;
         } else {
-            try stderr.print("orca init: unknown option '{s}'.\n", .{arg});
+            try suggestions.writeUnknownOption(stderr, "orca init", arg, &.{ "--force", "--ci", "--quiet", "--preset", "--mode", "--help", "-h" }, "init");
             return error.Usage;
         }
     }

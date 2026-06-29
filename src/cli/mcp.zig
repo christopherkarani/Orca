@@ -9,6 +9,7 @@ const exit_codes = @import("exit_codes.zig");
 const help = @import("help.zig");
 const policy = @import("orca_core").policy;
 const version_command = @import("version.zig");
+const suggestions = @import("suggestions.zig");
 
 pub fn command(io: std.Io, argv: []const []const u8, stdout: anytype, stderr: anytype) !u8 {
     if (argv.len > 0 and (std.mem.eql(u8, argv[0], "--help") or std.mem.eql(u8, argv[0], "-h"))) {
@@ -24,7 +25,7 @@ pub fn command(io: std.Io, argv: []const []const u8, stdout: anytype, stderr: an
     if (std.mem.eql(u8, argv[0], "list")) return list(io, argv[1..], stdout, stderr);
     if (std.mem.eql(u8, argv[0], "trust")) return trust(argv[1..], stdout, stderr);
     if (std.mem.eql(u8, argv[0], "manifest")) return manifestCommand(io, argv[1..], stdout, stderr);
-    try stderr.print("orca mcp: unknown subcommand '{s}'.\n", .{argv[0]});
+    try suggestions.writeUnknownSubcommand(stderr, "orca mcp", argv[0], &.{ "inspect", "proxy", "list", "trust", "manifest" }, "mcp");
     return exit_codes.usage;
 }
 
@@ -78,7 +79,7 @@ fn parseOptions(allocator: std.mem.Allocator, argv: []const []const u8, stderr: 
             for (argv[index + 1 ..]) |command_arg| try command_parts.append(allocator, command_arg);
             break;
         } else {
-            try stderr.print("orca mcp: unknown option '{s}'.\n", .{arg});
+            try suggestions.writeUnknownOption(stderr, "orca mcp", arg, &.{ "--command", "--server", "--name", "--policy", "--manifest", "--mode" }, "mcp");
             return error.Usage;
         }
     }
@@ -363,7 +364,7 @@ fn manifestCommand(io: std.Io, argv: []const []const u8, stdout: anytype, stderr
     }
     if (std.mem.eql(u8, argv[0], "check")) return manifestCheck(io, argv[1..], stdout, stderr);
     if (std.mem.eql(u8, argv[0], "generate")) return manifestGenerate(argv[1..], stdout, stderr);
-    try stderr.print("orca mcp manifest: unknown subcommand '{s}'.\n", .{argv[0]});
+    try suggestions.writeUnknownSubcommand(stderr, "orca mcp manifest", argv[0], &.{ "check", "generate" }, "mcp");
     return exit_codes.usage;
 }
 
@@ -407,7 +408,7 @@ fn manifestGenerate(argv: []const []const u8, stdout: anytype, stderr: anytype) 
             args_start = index + 1;
             break;
         } else {
-            try stderr.print("orca mcp manifest generate: unknown option '{s}'.\n", .{argv[index]});
+            try suggestions.writeUnknownOption(stderr, "orca mcp manifest generate", argv[index], &.{ "--command", "--server", "--" }, "mcp");
             return exit_codes.usage;
         }
     }
@@ -566,9 +567,28 @@ test "mcp command help and invalid subcommands are stable" {
 
     stdout_writer = .fixed(&stdout_buf);
     stderr_writer = .fixed(&stderr_buf);
-    const bad_code = try command(std.testing.io, &.{"unknown"}, &stdout_writer, &stderr_writer);
+    const bad_code = try command(std.testing.io, &.{"inspec"}, &stdout_writer, &stderr_writer);
     try std.testing.expectEqual(exit_codes.usage, bad_code);
     try std.testing.expect(std.mem.indexOf(u8, stderr_writer.buffered(), "unknown subcommand") != null);
+    try std.testing.expect(std.mem.indexOf(u8, stderr_writer.buffered(), "Did you mean 'inspect'?") != null);
+    try std.testing.expect(std.mem.indexOf(u8, stderr_writer.buffered(), "orca help mcp") != null);
+}
+
+test "mcp unknown flag and manifest subcommand include actionable suggestions" {
+    var stdout_buf: [1024]u8 = undefined;
+    var stderr_buf: [512]u8 = undefined;
+    var stdout_writer: std.Io.Writer = .fixed(&stdout_buf);
+    var stderr_writer: std.Io.Writer = .fixed(&stderr_buf);
+
+    const flag_code = try command(std.testing.io, &.{ "inspect", "--comand", "server" }, &stdout_writer, &stderr_writer);
+    try std.testing.expectEqual(exit_codes.usage, flag_code);
+    try std.testing.expect(std.mem.indexOf(u8, stderr_writer.buffered(), "Did you mean '--command'?") != null);
+
+    stdout_writer = .fixed(&stdout_buf);
+    stderr_writer = .fixed(&stderr_buf);
+    const manifest_code = try command(std.testing.io, &.{ "manifest", "generat" }, &stdout_writer, &stderr_writer);
+    try std.testing.expectEqual(exit_codes.usage, manifest_code);
+    try std.testing.expect(std.mem.indexOf(u8, stderr_writer.buffered(), "Did you mean 'generate'?") != null);
 }
 
 test "mcp command parsing preserves server argv after --command" {

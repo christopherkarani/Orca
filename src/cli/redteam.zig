@@ -5,6 +5,7 @@ const redteam = @import("../redteam/mod.zig");
 const exit_codes = @import("exit_codes.zig");
 const help = @import("help.zig");
 const resource_root = @import("../resource_root.zig");
+const suggestions = @import("suggestions.zig");
 
 const Options = struct {
     root: []const u8 = "",
@@ -105,7 +106,7 @@ fn parseOptions(io: std.Io, argv: []const []const u8, stdout: anytype, stderr: a
             }
             options.fixture_id = argv[index];
         } else if (std.mem.startsWith(u8, arg, "-")) {
-            try stderr.print("orca redteam: unknown option '{s}'.\n", .{arg});
+            try suggestions.writeUnknownOption(stderr, "orca redteam", arg, &.{ "--json", "--ci", "--fixture", "--help", "-h" }, "redteam");
             return error.Usage;
         } else {
             if (saw_path) {

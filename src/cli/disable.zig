@@ -4,6 +4,7 @@ const exit_codes = @import("exit_codes.zig");
 const help = @import("help.zig");
 const plugin = @import("plugin.zig");
 const interactive = @import("interactive.zig");
+const suggestions = @import("suggestions.zig");
 
 // ---------------------------------------------------------------------------
 // Top-level dispatch
@@ -58,7 +59,13 @@ pub fn command(io: std.Io, argv: []const []const u8, stdout: anytype, stderr: an
             target = .all;
             continue;
         }
-        try stderr.print("orca stop: unknown option '{s}'.\n", .{arg});
+        try suggestions.writeUnknownOption(
+            stderr,
+            "orca stop",
+            arg,
+            &.{ "codex", "claude", "cursor", "opencode", "openclaw", "hermes", "all", "--yes", "--help" },
+            "stop",
+        );
         return exit_codes.usage;
     }
 
@@ -398,6 +405,13 @@ test "stop command help and invalid args" {
     const bad_code = try command(std.testing.io, &.{"--unknown"}, &stdout_writer, &stderr_writer);
     try std.testing.expectEqual(exit_codes.usage, bad_code);
     try std.testing.expect(std.mem.indexOf(u8, stderr_writer.buffered(), "orca stop") != null);
+
+    stdout_writer = .fixed(&stdout_buf);
+    stderr_writer = .fixed(&stderr_buf);
+    const typo_code = try command(std.testing.io, &.{"codxe"}, &stdout_writer, &stderr_writer);
+    try std.testing.expectEqual(exit_codes.usage, typo_code);
+    try std.testing.expect(std.mem.indexOf(u8, stderr_writer.buffered(), "Did you mean 'codex'?") != null);
+    try std.testing.expect(std.mem.indexOf(u8, stderr_writer.buffered(), "orca help stop") != null);
 }
 
 test "stop accepts legacy -all spelling but requires confirmation in non-TTY" {

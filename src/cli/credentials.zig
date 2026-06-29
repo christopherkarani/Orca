@@ -6,6 +6,7 @@ const credentials = @import("../intercept/credentials.zig");
 const exit_codes = @import("exit_codes.zig");
 const help = @import("help.zig");
 const supervisor = core.supervisor;
+const suggestions = @import("suggestions.zig");
 
 pub fn command(io: std.Io, argv: []const []const u8, stdout: anytype, stderr: anytype) !u8 {
     if (argv.len == 0 or std.mem.eql(u8, argv[0], "--help") or std.mem.eql(u8, argv[0], "-h")) {
@@ -13,7 +14,7 @@ pub fn command(io: std.Io, argv: []const []const u8, stdout: anytype, stderr: an
         return exit_codes.success;
     }
     if (!std.mem.eql(u8, argv[0], "check")) {
-        try stderr.print("orca credentials: unknown subcommand '{s}'.\n", .{argv[0]});
+        try suggestions.writeUnknownSubcommand(stderr, "orca credentials", argv[0], &.{"check"}, "credentials");
         return exit_codes.usage;
     }
     if (argv.len > 2) {
@@ -66,7 +67,9 @@ test "credentials command rejects unknown subcommand" {
     var stdout_writer: std.Io.Writer = .fixed(&stdout_buf);
     var stderr_writer: std.Io.Writer = .fixed(&stderr_buf);
 
-    const code = try command(std.testing.io, &.{"list"}, &stdout_writer, &stderr_writer);
+    const code = try command(std.testing.io, &.{"chek"}, &stdout_writer, &stderr_writer);
     try std.testing.expectEqual(exit_codes.usage, code);
     try std.testing.expect(std.mem.indexOf(u8, stderr_writer.buffered(), "unknown subcommand") != null);
+    try std.testing.expect(std.mem.indexOf(u8, stderr_writer.buffered(), "Did you mean 'check'?") != null);
+    try std.testing.expect(std.mem.indexOf(u8, stderr_writer.buffered(), "orca help credentials") != null);
 }

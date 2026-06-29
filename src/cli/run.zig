@@ -14,6 +14,7 @@ const shell_eval = @import("shell_eval.zig");
 const rust_visibility = @import("rust_visibility.zig");
 const tui = @import("../tui/mod.zig");
 const build_options = @import("build_options");
+const suggestions = @import("suggestions.zig");
 
 const RunOptions = struct {
     workspace: ?[]const u8 = null,
@@ -781,7 +782,7 @@ fn parseOptions(io: std.Io, argv: []const []const u8, stdout: anytype, stderr: a
             };
             options.required_backend_count += 1;
         } else if (std.mem.startsWith(u8, arg, "-")) {
-            try stderr.print("orca run: unknown option '{s}'.\n", .{arg});
+            try suggestions.writeUnknownOption(stderr, "orca run", arg, &.{ "--workspace", "--mode", "--policy", "--session-name", "--no-secrets", "--secretless", "--inherit-env", "--no-network", "--allow-network", "--network", "--network-backend", "--require-backend", "--help", "-h" }, "run");
             return error.Usage;
         } else {
             try stderr.writeAll("orca run: expected '--' before the command you want to run.\n" ++

@@ -5,14 +5,19 @@ const supervisor = core.supervisor;
 const demo = @import("../demo.zig");
 const exit_codes = @import("exit_codes.zig");
 const help = @import("help.zig");
+const suggestions = @import("suggestions.zig");
 
 pub fn command(io: std.Io, argv: []const []const u8, stdout: anytype, stderr: anytype) !u8 {
     if (argv.len == 0 or std.mem.eql(u8, argv[0], "--help") or std.mem.eql(u8, argv[0], "-h")) {
         _ = try help.writeCommand(io, stdout, "demo");
         return if (argv.len == 0) exit_codes.usage else exit_codes.success;
     }
-    if (!std.mem.eql(u8, argv[0], "blocked-action") or argv.len != 1) {
-        try stderr.writeAll("orca demo: expected 'blocked-action'.\n");
+    if (!std.mem.eql(u8, argv[0], "blocked-action")) {
+        try suggestions.writeUnknownSubcommand(stderr, "orca demo", argv[0], &.{"blocked-action"}, "demo");
+        return exit_codes.usage;
+    }
+    if (argv.len != 1) {
+        try stderr.writeAll("orca demo blocked-action: expected no additional arguments.\nRun 'orca help demo' for usage.\n");
         return exit_codes.usage;
     }
     var gpa_state: std.heap.DebugAllocator(.{}) = .init;
@@ -41,6 +46,8 @@ test "demo command rejects unknown demos" {
     var stderr_buf: [256]u8 = undefined;
     var stdout_writer: std.Io.Writer = .fixed(&stdout_buf);
     var stderr_writer: std.Io.Writer = .fixed(&stderr_buf);
-    const code = try command(std.testing.io, &.{"not-real"}, &stdout_writer, &stderr_writer);
+    const code = try command(std.testing.io, &.{"blocked-acton"}, &stdout_writer, &stderr_writer);
     try std.testing.expectEqual(exit_codes.usage, code);
+    try std.testing.expect(std.mem.indexOf(u8, stderr_writer.buffered(), "Did you mean 'blocked-action'?") != null);
+    try std.testing.expect(std.mem.indexOf(u8, stderr_writer.buffered(), "orca help demo") != null);
 }

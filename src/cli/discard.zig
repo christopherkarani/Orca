@@ -5,6 +5,7 @@ const core_api = @import("orca_core").api;
 const intercept = @import("../intercept/mod.zig");
 const exit_codes = @import("exit_codes.zig");
 const help = @import("help.zig");
+const suggestions = @import("suggestions.zig");
 
 pub fn command(io: std.Io, argv: []const []const u8, stdout: anytype, stderr: anytype) !u8 {
     const options = parseOptions(io, argv, stdout, stderr) catch |err| switch (err) {
@@ -71,7 +72,7 @@ fn parseOptions(io: std.Io, argv: []const []const u8, stdout: anytype, stderr: a
             }
             options.file = argv[index];
         } else {
-            try stderr.print("orca discard: unknown option '{s}'.\n", .{arg});
+            try suggestions.writeUnknownOption(stderr, "orca discard", arg, &.{ "--session", "--file", "--help", "-h" }, "discard");
             return error.Usage;
         }
     }

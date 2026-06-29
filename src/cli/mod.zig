@@ -48,6 +48,7 @@ pub const agent_hook = @import("agent_hook.zig");
 pub const daemon_contracts = @import("daemon_contracts.zig");
 pub const packs = @import("packs.zig");
 pub const history = @import("history.zig");
+pub const suggestions = @import("suggestions.zig");
 
 test {
     // Ensure the child_process module (and its tests) are pulled into the test binary.
@@ -72,54 +73,11 @@ test {
 
 pub const version = build_options.version;
 
-/// Minimal allocation-free Levenshtein distance for short ASCII strings (command names).
-fn levenshteinDistance(a: []const u8, b: []const u8) usize {
-    if (a.len == 0) return b.len;
-    if (b.len == 0) return a.len;
-
-    var prev_row: [64]usize = undefined;
-    var curr_row: [64]usize = undefined;
-
-    const m = @min(a.len, 63);
-    const n = @min(b.len, 63);
-
-    for (0..n + 1) |j| prev_row[j] = j;
-
-    for (0..m) |i| {
-        curr_row[0] = i + 1;
-        for (0..n) |j| {
-            const cost: usize = if (a[i] == b[j]) 0 else 1;
-            const del = prev_row[j + 1] + 1;
-            const ins = curr_row[j] + 1;
-            const sub = prev_row[j] + cost;
-            curr_row[j + 1] = @min(@min(del, ins), sub);
-        }
-        const tmp = prev_row;
-        prev_row = curr_row;
-        curr_row = tmp;
-    }
-    return prev_row[n];
-}
-
 /// Suggests a close command name for typos / prefixes. Returns null for no good match.
 fn suggestCommand(unknown: []const u8) ?[]const u8 {
-    // 1. Prefix match (fast, intuitive for partial typing like "do")
-    for (help.commands) |cmd| {
-        if (std.mem.startsWith(u8, cmd.name, unknown)) return cmd.name;
-    }
-
-    // 2. Best edit distance <= 2
-    var best: ?[]const u8 = null;
-    var best_dist: usize = 3;
-    for (help.commands) |cmd| {
-        const dist = levenshteinDistance(unknown, cmd.name);
-        if (dist < best_dist) {
-            best = cmd.name;
-            best_dist = dist;
-        }
-    }
-    if (best_dist <= 2) return best;
-    return null;
+    var names: [help.commands.len][]const u8 = undefined;
+    for (help.commands, 0..) |command, index| names[index] = command.name;
+    return suggestions.closest(unknown, &names);
 }
 
 /// Commands that render their own branded header internally and so must NOT
@@ -256,7 +214,13 @@ pub fn runWithCwd(io: std.Io, environ_map: *const std.process.Environ.Map, cwd: 
             return exit_codes.usage;
         }
         if (!try help.writeCommand(io, stdout, argv[1])) {
-            try stderr.print("orca help: unknown command '{s}'.\n", .{argv[1]});
+            try stderr.writeAll("orca help: unknown command '");
+            try tui.terminal_text.write(stderr, argv[1], .single_line);
+            if (suggestCommand(argv[1])) |suggestion| {
+                try stderr.print("'. Did you mean '{s}'?\nRun 'orca help {s}' for usage.\n", .{ suggestion, suggestion });
+            } else {
+                try stderr.writeAll("'.\nRun 'orca help' to see all commands.\n");
+            }
             return exit_codes.usage;
         }
         return exit_codes.success;
@@ -346,10 +310,12 @@ pub fn runWithCwd(io: std.Io, environ_map: *const std.process.Environ.Map, cwd: 
     if (std.mem.eql(u8, command, "shutdown")) return shutdown.command(io, argv[1..], stdout, stderr);
 
     // Warm "did you mean?" suggestions for unknown commands (foundation UX).
+    try stderr.writeAll("orca: unknown command '");
+    try tui.terminal_text.write(stderr, command, .single_line);
     if (suggestCommand(command)) |suggestion| {
-        try stderr.print("orca: unknown command '{s}'. Did you mean '{s}'?\nRun 'orca help' for usage.\n", .{ command, suggestion });
+        try stderr.print("'. Did you mean '{s}'?\nRun 'orca help' for usage.\n", .{suggestion});
     } else {
-        try stderr.print("orca: unknown command '{s}'.\nRun 'orca help' for usage.\n", .{command});
+        try stderr.writeAll("'.\nRun 'orca help' for usage.\n");
     }
     return exit_codes.usage;
 }
@@ -778,6 +744,55 @@ test "unknown command returns non-zero with useful message" {
     try std.testing.expect(std.mem.indexOf(u8, stderr_writer.buffered(), "unknown command") != null);
 }
 
+test "help unknown command suggests the closest command" {
+    var stdout_buf: [256]u8 = undefined;
+    var stderr_buf: [256]u8 = undefined;
+    var stdout_writer: std.Io.Writer = .fixed(&stdout_buf);
+    var stderr_writer: std.Io.Writer = .fixed(&stderr_buf);
+
+    const code = try testRun(&.{ "help", "docter" }, &stdout_writer, &stderr_writer);
+    try std.testing.expectEqual(exit_codes.usage, code);
+    try std.testing.expect(std.mem.indexOf(u8, stderr_writer.buffered(), "Did you mean 'doctor'?") != null);
+    try std.testing.expect(std.mem.indexOf(u8, stderr_writer.buffered(), "orca help doctor") != null);
+}
+
+test "human parser families suggest valid flags and exact help remediation" {
+    const Case = struct { argv: []const []const u8, suggestion: []const u8, help_command: []const u8 };
+    const cases = [_]Case{
+        .{ .argv = &.{ "doctor", "--verbse" }, .suggestion = "--verbose", .help_command = "doctor" },
+        .{ .argv = &.{ "init", "--presett" }, .suggestion = "--preset", .help_command = "init" },
+        .{ .argv = &.{ "policy", "explan" }, .suggestion = "explain", .help_command = "policy" },
+        .{ .argv = &.{ "replay", "--sesion" }, .suggestion = "--session", .help_command = "replay" },
+        .{ .argv = &.{ "report", "--sesion" }, .suggestion = "--session", .help_command = "report" },
+        .{ .argv = &.{ "decide", "comand" }, .suggestion = "command", .help_command = "decide" },
+        .{ .argv = &.{ "decide", "command", "--stdi" }, .suggestion = "--stdin", .help_command = "decide" },
+        .{ .argv = &.{ "redteam", "--fixtur" }, .suggestion = "--fixture", .help_command = "redteam" },
+        .{ .argv = &.{ "diff", "--sesion" }, .suggestion = "--session", .help_command = "diff" },
+        .{ .argv = &.{ "apply", "--sesion" }, .suggestion = "--session", .help_command = "apply" },
+        .{ .argv = &.{ "discard", "--sesion" }, .suggestion = "--session", .help_command = "discard" },
+        .{ .argv = &.{ "plugin", "instal" }, .suggestion = "install", .help_command = "plugin" },
+        .{ .argv = &.{ "setup", "--atuo" }, .suggestion = "--auto", .help_command = "setup" },
+        .{ .argv = &.{ "quickstart", "--atuo" }, .suggestion = "--auto", .help_command = "quickstart" },
+        .{ .argv = &.{ "start", "--protetion" }, .suggestion = "--protection", .help_command = "start" },
+        .{ .argv = &.{ "run", "--workspce" }, .suggestion = "--workspace", .help_command = "run" },
+        .{ .argv = &.{ "packs", "--filtre" }, .suggestion = "--filter", .help_command = "packs" },
+    };
+
+    for (cases) |case| {
+        var stdout_buf: [4096]u8 = undefined;
+        var stderr_buf: [1024]u8 = undefined;
+        var stdout_writer: std.Io.Writer = .fixed(&stdout_buf);
+        var stderr_writer: std.Io.Writer = .fixed(&stderr_buf);
+        const code = try testRun(case.argv, &stdout_writer, &stderr_writer);
+        try std.testing.expectEqual(exit_codes.usage, code);
+        try std.testing.expect(std.mem.indexOf(u8, stderr_writer.buffered(), case.suggestion) != null);
+        var remediation_buf: [64]u8 = undefined;
+        const remediation = try std.fmt.bufPrint(&remediation_buf, "orca help {s}", .{case.help_command});
+        try std.testing.expect(std.mem.indexOf(u8, stderr_writer.buffered(), remediation) != null);
+        try std.testing.expect(std.mem.indexOfScalar(u8, stderr_writer.buffered(), 0x1b) == null);
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Phase 2 TDD: brand cohesion banner system (written FIRST — RED).
 // The compact `🛡  Orca · v<version>` header must open every HUMAN command,
@@ -1160,6 +1175,12 @@ test "unknown command suggests prefix match" {
     try std.testing.expect(suggestion != null);
     // "doctor" or "stop" etc. are valid; just ensure something returned
     try std.testing.expect(suggestion.?.len > 0);
+}
+
+test "top-level command suggestions reject ambiguous short prefixes" {
+    try std.testing.expect(suggestCommand("") == null);
+    try std.testing.expect(suggestCommand("p") == null);
+    try std.testing.expectEqualStrings("doctor", suggestCommand("doctor").?);
 }
 
 test "completely unknown command has no suggestion" {

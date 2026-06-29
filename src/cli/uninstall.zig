@@ -6,6 +6,7 @@ const help = @import("help.zig");
 const plugin = @import("plugin.zig");
 const disable = @import("disable.zig");
 const interactive = @import("interactive.zig");
+const suggestions = @import("suggestions.zig");
 
 // ---------------------------------------------------------------------------
 // Top-level dispatch
@@ -39,7 +40,7 @@ pub fn command(io: std.Io, argv: []const []const u8, stdout: anytype, stderr: an
             keep_config = true;
             continue;
         }
-        try stderr.print("orca uninstall: unknown option '{s}'.\n", .{arg});
+        try suggestions.writeUnknownOption(stderr, "orca uninstall", arg, &.{ "--plugins-only", "--keep-config", "--yes", "--help" }, "uninstall");
         return exit_codes.usage;
     }
 
@@ -399,9 +400,11 @@ test "uninstall command help and invalid args" {
 
     stdout_writer = .fixed(&stdout_buf);
     stderr_writer = .fixed(&stderr_buf);
-    const bad_code = try command(std.testing.io, &.{"--unknown"}, &stdout_writer, &stderr_writer);
+    const bad_code = try command(std.testing.io, &.{"--plugins-onl"}, &stdout_writer, &stderr_writer);
     try std.testing.expectEqual(exit_codes.usage, bad_code);
     try std.testing.expect(std.mem.indexOf(u8, stderr_writer.buffered(), "unknown option") != null);
+    try std.testing.expect(std.mem.indexOf(u8, stderr_writer.buffered(), "Did you mean '--plugins-only'?") != null);
+    try std.testing.expect(std.mem.indexOf(u8, stderr_writer.buffered(), "orca help uninstall") != null);
 }
 
 test "uninstall without --yes in non-TTY returns usage" {

@@ -2,6 +2,7 @@ const std = @import("std");
 const exit_codes = @import("exit_codes.zig");
 const contracts = @import("daemon_contracts.zig");
 const tui = @import("../tui/mod.zig");
+const suggestions = @import("suggestions.zig");
 
 const Options = struct {
     filter: ?[]const u8 = null,
@@ -88,7 +89,8 @@ fn parseOptions(argv: []const []const u8, stderr: anytype) !Options {
             options.page_size = std.fmt.parseInt(usize, argv[i], 10) catch return usageError(stderr, "--page-size requires a positive integer");
             if (options.page_size == 0) return usageError(stderr, "--page-size requires a positive integer");
         } else {
-            return usageError(stderr, "unknown option");
+            suggestions.writeUnknownOption(stderr, "orca packs", arg, &.{ "--installed", "--enabled", "--filter", "--page", "--page-size" }, "packs") catch {};
+            return error.InvalidArguments;
         }
     }
     return options;

@@ -6,6 +6,7 @@ const core_api = @import("orca_core").api;
 const exit_codes = @import("exit_codes.zig");
 const help = @import("help.zig");
 const tui = @import("../tui/render.zig");
+const suggestions = @import("suggestions.zig");
 
 pub fn command(io: std.Io, argv: []const []const u8, stdout: anytype, stderr: anytype) !u8 {
     if (argv.len > 0 and (std.mem.eql(u8, argv[0], "--help") or std.mem.eql(u8, argv[0], "-h"))) {
@@ -22,7 +23,7 @@ pub fn command(io: std.Io, argv: []const []const u8, stdout: anytype, stderr: an
     if (std.mem.eql(u8, argv[0], "packs")) return packs(argv[1..], stdout, stderr);
     if (std.mem.eql(u8, argv[0], "apply-pack")) return applyPack(io, argv[1..], stdout, stderr);
 
-    try stderr.print("orca policy: unknown subcommand '{s}'. Expected check, explain, packs, or apply-pack.\n", .{argv[0]});
+    try suggestions.writeUnknownSubcommand(stderr, "orca policy", argv[0], &.{ "check", "explain", "packs", "apply-pack" }, "policy");
     return exit_codes.usage;
 }
 
@@ -178,7 +179,7 @@ fn parseExplainTarget(allocator: std.mem.Allocator, kind: orca_policy.explain.Ex
             if (method) |old| allocator.free(old);
             method = try allocator.dupe(u8, args[index]);
         } else if (std.mem.startsWith(u8, arg, "-")) {
-            try stderr.print("orca policy explain: unknown option '{s}'.\n", .{arg});
+            try suggestions.writeUnknownOption(stderr, "orca policy explain", arg, &.{"--method"}, "policy");
             if (target) |owned| allocator.free(owned);
             if (method) |owned| allocator.free(owned);
             return .{ .invalid = true };

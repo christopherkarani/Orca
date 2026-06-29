@@ -14,6 +14,7 @@ const style = @import("style.zig");
 const exit_codes = @import("exit_codes.zig");
 const help = @import("help.zig");
 const cli = @import("mod.zig");
+const suggestions = @import("suggestions.zig");
 
 const DoctorCapability = struct {
     label: []const u8,
@@ -102,7 +103,7 @@ pub fn command(io: std.Io, argv: []const []const u8, stdout: anytype, stderr: an
             verbose = true;
             continue;
         }
-        try stderr.print("orca doctor: unknown option '{s}'.\n", .{arg});
+        try suggestions.writeUnknownOption(stderr, "orca doctor", arg, &.{ "--verbose", "-v", "--help", "-h" }, "doctor");
         return exit_codes.usage;
     }
 

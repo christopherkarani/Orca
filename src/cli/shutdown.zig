@@ -3,6 +3,7 @@ const std = @import("std");
 const daemon = @import("daemon.zig");
 const exit_codes = @import("exit_codes.zig");
 const help = @import("help.zig");
+const suggestions = @import("suggestions.zig");
 
 pub fn command(io: std.Io, argv: []const []const u8, stdout: anytype, stderr: anytype) !u8 {
     var daemon_flag = false;
@@ -16,7 +17,7 @@ pub fn command(io: std.Io, argv: []const []const u8, stdout: anytype, stderr: an
             daemon_flag = true;
             continue;
         }
-        try stderr.print("orca shutdown: unknown option '{s}'.\n", .{arg});
+        try suggestions.writeUnknownOption(stderr, "orca shutdown", arg, &.{ "--daemon", "--help" }, "shutdown");
         return exit_codes.usage;
     }
 
@@ -69,6 +70,18 @@ test "shutdown requires --daemon flag" {
     const code = try command(std.testing.io, &.{}, &stdout_writer, &stderr_writer);
     try std.testing.expectEqual(exit_codes.usage, code);
     try std.testing.expect(std.mem.indexOf(u8, stderr_writer.buffered(), "expected --daemon") != null);
+}
+
+test "shutdown unknown flag suggests daemon qualifier" {
+    var stdout_buf: [128]u8 = undefined;
+    var stderr_buf: [256]u8 = undefined;
+    var stdout_writer: std.Io.Writer = .fixed(&stdout_buf);
+    var stderr_writer: std.Io.Writer = .fixed(&stderr_buf);
+
+    const code = try command(std.testing.io, &.{"--daemn"}, &stdout_writer, &stderr_writer);
+    try std.testing.expectEqual(exit_codes.usage, code);
+    try std.testing.expect(std.mem.indexOf(u8, stderr_writer.buffered(), "Did you mean '--daemon'?") != null);
+    try std.testing.expect(std.mem.indexOf(u8, stderr_writer.buffered(), "orca help shutdown") != null);
 }
 
 test "ShutdownResult enum values are distinct" {

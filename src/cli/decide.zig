@@ -8,6 +8,7 @@ const exit_codes = @import("exit_codes.zig");
 const help = @import("help.zig");
 const tui = @import("../tui/render.zig");
 const terminal_text = @import("../tui/terminal_text.zig");
+const suggestions = @import("suggestions.zig");
 
 // Maximum JSON payload size to prevent memory exhaustion from hostile hosts.
 const max_payload_len = 256 * 1024; // 256 KiB
@@ -27,7 +28,13 @@ pub fn command(io: std.Io, argv: []const []const u8, stdout: anytype, stderr: an
     }
 
     const kind = DecisionKind.parse(argv[0]) orelse {
-        try stderr.print("orca decide: unknown decision kind '{s}'. Expected command, file, prompt, or tool.\n", .{argv[0]});
+        try suggestions.writeUnknownSubcommand(
+            stderr,
+            "orca decide",
+            argv[0],
+            &.{ "command", "file", "prompt", "tool" },
+            "decide",
+        );
         return exit_codes.usage;
     };
 
@@ -108,7 +115,7 @@ fn decideCommand(io: std.Io, kind: DecisionKind, argv: []const []const u8, stdou
             human = true;
             continue;
         }
-        try stderr.print("orca decide: unknown option '{s}'.\n", .{arg});
+        try suggestions.writeUnknownOption(stderr, "orca decide", arg, &.{ "--json", "--stdin", "--ci", "--human", "--help", "-h" }, "decide");
         return exit_codes.usage;
     }
 
@@ -608,7 +615,8 @@ test "decide command help and invalid kind" {
     stderr_writer = .fixed(&stderr_buf);
     const bad_code = try command(std.testing.io, &.{"unknown"}, &stdout_writer, &stderr_writer);
     try std.testing.expectEqual(exit_codes.usage, bad_code);
-    try std.testing.expect(std.mem.indexOf(u8, stderr_writer.buffered(), "unknown decision kind") != null);
+    try std.testing.expect(std.mem.indexOf(u8, stderr_writer.buffered(), "unknown subcommand") != null);
+    try std.testing.expect(std.mem.indexOf(u8, stderr_writer.buffered(), "orca help decide") != null);
 }
 
 test "decide command with safe command returns allow" {
