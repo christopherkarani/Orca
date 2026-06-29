@@ -936,16 +936,30 @@ fn printSessionEnd(io: std.Io, stdout: anytype, result: supervisor.SessionResult
         try stdout.print("\n{s} Session ended with exit code {d}\n", .{ style.Glyph.cross, code });
     }
     if (is_first_session and code == 0) {
-        // First-run celebration (static emotional text) routed through maybeColor + Glyph.
-        // Demonstrates the warm path using the color helper (review gap closure).
+        // Phase 7: elevate the first-run celebration into a branded moment.
+        // A celebratory brand banner (shield + version + status) opens the
+        // moment, followed by a warm welcome line and a "Next steps" hint list
+        // composed from the same `→ ` pattern the deny block uses, so the whole
+        // tool speaks one visual language. Human-only — `--json`/machine output
+        // never reaches here. `isFirstSession` once-per-workspace semantics are
+        // unchanged (still best-effort, still gated on exit code 0).
         try stdout.writeAll("\n");
-        try style.maybeColor(
-            io,
-            stdout,
-            style.Style.green,
-            style.Glyph.party ++ " Welcome to Orca! Your first protected session completed successfully.\n" ++
-                "   Next: run `orca replay --session last` to review what happened.",
-        );
+        try tui.render.banner(io, stdout, build_options.version, "first protected session complete");
+        try stdout.writeAll("\n");
+        try tui.theme.paintBold(io, stdout, .success, "  Welcome to Orca!");
+        try stdout.writeAll(" Your first protected session completed successfully.\n");
+        try stdout.writeAll("\n");
+        try tui.theme.paintBold(io, stdout, .info, "  Next steps");
+        try stdout.writeAll("\n");
+        try stdout.writeAll("  → ");
+        try tui.theme.paint(io, stdout, .text_bright, "orca replay --session last");
+        try stdout.writeAll("  (review what happened)\n");
+        try stdout.writeAll("  → ");
+        try tui.theme.paint(io, stdout, .text_bright, "orca policy explain command \"<your-command>\"");
+        try stdout.writeAll("  (understand your rules)\n");
+        try stdout.writeAll("  → ");
+        try tui.theme.paint(io, stdout, .text_bright, "orca run -- <command>");
+        try stdout.writeAll("  (run another protected session)\n");
         try stdout.writeAll("\n");
     }
 }
@@ -1569,7 +1583,7 @@ test "first successful run prints celebration" {
     defer std.testing.allocator.free(root);
 
     // Fresh workspace: no .orca/sessions yet → should be first
-    var stdout_buf: [1024]u8 = undefined;
+    var stdout_buf: [4096]u8 = undefined;
     var stderr_buf: [512]u8 = undefined;
     var stdout_writer: std.Io.Writer = .fixed(&stdout_buf);
     var stderr_writer: std.Io.Writer = .fixed(&stderr_buf);
@@ -1577,8 +1591,13 @@ test "first successful run prints celebration" {
     const code = try commandForTestWithShellEvaluator(&.{ "--workspace", root, "--", "echo", "hi-from-first" }, &stdout_writer, &stderr_writer, .inherit, shell_eval.mockDaemonAllowEvaluator);
     try std.testing.expectEqual(exit_codes.success, code);
     const out = stdout_writer.buffered();
+    // Phase 7: elevated branded moment — brand shield + warm welcome + next-step hints.
+    try std.testing.expect(std.mem.indexOf(u8, out, "\u{1F6E1}") != null); // 🛡 brand shield glyph
     try std.testing.expect(std.mem.indexOf(u8, out, "Welcome to Orca!") != null);
     try std.testing.expect(std.mem.indexOf(u8, out, "replay --session last") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "Next steps") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "policy explain") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "orca run") != null);
     try std.testing.expectEqualStrings("", stderr_writer.buffered());
 }
 
@@ -1591,7 +1610,7 @@ test "subsequent runs do not print celebration" {
     // Pre-create a fake prior session dir inside the temp workspace
     try tmp.dir.createDirPath(std.testing.io, ".orca/sessions/2026-01-01T00-00-00Z_aaaa");
 
-    var stdout_buf: [1024]u8 = undefined;
+    var stdout_buf: [2048]u8 = undefined;
     var stderr_buf: [512]u8 = undefined;
     var stdout_writer: std.Io.Writer = .fixed(&stdout_buf);
     var stderr_writer: std.Io.Writer = .fixed(&stderr_buf);
@@ -1599,7 +1618,11 @@ test "subsequent runs do not print celebration" {
     const code = try commandForTestWithShellEvaluator(&.{ "--workspace", root, "--", "echo", "hi-from-second" }, &stdout_writer, &stderr_writer, .inherit, shell_eval.mockDaemonAllowEvaluator);
     try std.testing.expectEqual(exit_codes.success, code);
     const out = stdout_writer.buffered();
+    // Celebration-specific strings must be absent. (The session-start banner's
+    // shield may still appear, so we key on the celebration's welcome line and
+    // its dedicated 'Next steps' section rather than the shield glyph.)
     try std.testing.expect(std.mem.indexOf(u8, out, "Welcome to Orca!") == null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "Next steps") == null);
     try std.testing.expectEqualStrings("", stderr_writer.buffered());
 }
 
