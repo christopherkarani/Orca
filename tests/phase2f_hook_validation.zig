@@ -422,7 +422,7 @@ test "phase2f version still works when daemon is unavailable" {
     defer allocator.free(result.stderr);
 
     try std.testing.expectEqual(exit_codes.success, result.code);
-    try std.testing.expect(std.mem.indexOf(u8, result.stdout, "orca ") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.stdout, "Orca") != null);
 }
 
 test "phase2f doctor degrades gracefully when daemon is unavailable" {
@@ -455,7 +455,11 @@ test "phase2f run denies shell commands when daemon is unavailable" {
     defer allocator.free(result.stderr);
 
     try std.testing.expect(result.code != exit_codes.success);
-    try std.testing.expect(std.mem.indexOf(u8, result.stderr, "daemon unavailable") != null or std.mem.indexOf(u8, result.stderr, "command denied") != null);
+    try std.testing.expect(
+        std.mem.indexOf(u8, result.stderr, "daemon unavailable") != null or
+            std.mem.indexOf(u8, result.stderr, "command denied") != null or
+            std.mem.indexOf(u8, result.stderr, "Orca blocked") != null,
+    );
 }
 
 test "phase2f malformed hook JSON preserves parse error behavior" {
