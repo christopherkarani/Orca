@@ -3,7 +3,7 @@ const std = @import("std");
 const exit_codes = @import("exit_codes.zig");
 const help = @import("help.zig");
 const plugin = @import("plugin.zig");
-const interactive = @import("interactive.zig");
+const danger_confirmation = @import("danger_confirmation.zig");
 const suggestions = @import("suggestions.zig");
 
 // ---------------------------------------------------------------------------
@@ -71,22 +71,23 @@ pub fn command(io: std.Io, argv: []const []const u8, stdout: anytype, stderr: an
 
     if (!yes) {
         const stdin = std.Io.File.stdin();
-        if (try stdin.isTty(io)) {
-            const host_label = if (target == .all) "all" else @tagName(target);
-            var prompt_buf: [128]u8 = undefined;
-            const prompt = std.fmt.bufPrint(&prompt_buf, "Stop Orca for {s}? This removes plugin registrations from host agents.", .{host_label}) catch "Stop Orca?";
-
-            const confirmed = interactive.askConfirmInteractive(io, stdout, prompt, false) catch |err| {
-                try stderr.print("orca stop: confirmation failed: {s}\n", .{@errorName(err)});
-                return exit_codes.general;
-            };
-            if (!confirmed) {
+        const host_label = if (target == .all) "all" else @tagName(target);
+        var prompt_buf: [128]u8 = undefined;
+        const prompt = std.fmt.bufPrint(&prompt_buf, "Stop Orca for {s}? This removes plugin registrations from host agents.", .{host_label}) catch "Stop Orca?";
+        const decision = danger_confirmation.decide(io, stdout, prompt, false, try stdin.isTty(io), null) catch |err| {
+            try stderr.print("orca stop: confirmation failed: {s}\n", .{@errorName(err)});
+            return exit_codes.general;
+        };
+        switch (decision) {
+            .proceed => {},
+            .cancelled => {
                 try stdout.writeAll("canceled\n");
                 return exit_codes.success;
-            }
-        } else {
-            try stderr.writeAll("orca stop: requires --yes or run interactively.\n");
-            return exit_codes.usage;
+            },
+            .requires_yes => {
+                try stderr.writeAll("orca stop: requires --yes or run interactively.\n");
+                return exit_codes.usage;
+            },
         }
     }
 

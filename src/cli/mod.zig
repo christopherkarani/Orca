@@ -49,6 +49,7 @@ pub const daemon_contracts = @import("daemon_contracts.zig");
 pub const packs = @import("packs.zig");
 pub const history = @import("history.zig");
 pub const suggestions = @import("suggestions.zig");
+pub const danger_confirmation = @import("danger_confirmation.zig");
 
 test {
     // Ensure the child_process module (and its tests) are pulled into the test binary.
@@ -69,6 +70,7 @@ test {
     _ = daemon_contracts;
     _ = packs;
     _ = history;
+    _ = danger_confirmation;
 }
 
 pub const version = build_options.version;
