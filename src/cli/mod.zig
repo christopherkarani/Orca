@@ -983,6 +983,72 @@ test "diff and CI generated formats suppress presentation" {
     try std.testing.expect(!shouldShowBanner("ci", &.{ "ci", "check", "--format", "markdown" }));
 }
 
+test "top-level CI generated formats preserve exact bytes" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try tmp.dir.createDirPath(std.testing.io, ".git");
+    const previous_cwd = try std.Io.Dir.cwd().realPathFileAlloc(std.testing.io, ".", std.testing.allocator);
+    defer std.testing.allocator.free(previous_cwd);
+    try std.process.setCurrentDir(std.testing.io, tmp.dir);
+    defer std.process.setCurrentPath(std.testing.io, previous_cwd) catch {};
+
+    const expected_markdown =
+        \\# Orca CI Check
+        \\
+        \\- policy: **fail** - Missing .orca/policy.yaml. Run: orca init --preset team-ci
+        \\
+    ;
+    const expected_json =
+        \\{"ok":false,"checks":[{"name":"policy","status":"fail","message":"Missing .orca/policy.yaml. Run: orca init --preset team-ci"}]}
+        \\
+    ;
+    inline for (.{
+        .{ .format = "markdown", .expected = expected_markdown },
+        .{ .format = "json", .expected = expected_json },
+    }) |case| {
+        var stdout_buf: [2048]u8 = undefined;
+        var stderr_buf: [256]u8 = undefined;
+        var stdout_writer: std.Io.Writer = .fixed(&stdout_buf);
+        var stderr_writer: std.Io.Writer = .fixed(&stderr_buf);
+        const code = try testRun(&.{ "ci", "check", "--format", case.format }, &stdout_writer, &stderr_writer);
+        try std.testing.expectEqual(exit_codes.general, code);
+        try std.testing.expectEqualStrings(case.expected, stdout_writer.buffered());
+        try std.testing.expectEqualStrings("", stderr_writer.buffered());
+    }
+}
+
+test "top-level diff emits the exact patch from byte zero" {
+    const intercept_files = @import("../intercept/files.zig");
+    const policy_load = @import("orca_core").policy.load;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try tmp.dir.createDirPath(std.testing.io, ".git");
+    try tmp.dir.createDirPath(std.testing.io, "src");
+    try tmp.dir.writeFile(std.testing.io, .{ .sub_path = "src/existing.txt", .data = "old\n" });
+    const root = try tmp.dir.realPathFileAlloc(std.testing.io, ".", std.testing.allocator);
+    defer std.testing.allocator.free(root);
+    var loaded = try policy_load.loadPreset(std.testing.allocator, .strict);
+    defer loaded.deinit();
+    var staged = try intercept_files.stageUpdate(std.testing.io, std.testing.allocator, &loaded, root, "phase06-diff", "src/existing.txt", "newer\n", null);
+    defer staged.deinit(std.testing.allocator);
+    const previous_cwd = try std.Io.Dir.cwd().realPathFileAlloc(std.testing.io, ".", std.testing.allocator);
+    defer std.testing.allocator.free(previous_cwd);
+    try std.process.setCurrentDir(std.testing.io, tmp.dir);
+    defer std.process.setCurrentPath(std.testing.io, previous_cwd) catch {};
+
+    var stdout_buf: [2048]u8 = undefined;
+    var stderr_buf: [256]u8 = undefined;
+    var stdout_writer: std.Io.Writer = .fixed(&stdout_buf);
+    var stderr_writer: std.Io.Writer = .fixed(&stderr_buf);
+    const code = try testRun(&.{ "diff", "--session", "phase06-diff", "--file", "src/existing.txt" }, &stdout_writer, &stderr_writer);
+    try std.testing.expectEqual(exit_codes.success, code);
+    try std.testing.expectEqualStrings(
+        "--- a/src/existing.txt\n+++ b/src/existing.txt\n@@\n-old\n+newer\n",
+        stdout_writer.buffered(),
+    );
+    try std.testing.expectEqualStrings("", stderr_writer.buffered());
+}
+
 extern "c" fn setenv(name: [*:0]const u8, value: [*:0]const u8, overwrite: c_int) c_int;
 extern "c" fn unsetenv(name: [*:0]const u8) c_int;
 
