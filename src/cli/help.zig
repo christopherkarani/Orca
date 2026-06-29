@@ -244,7 +244,8 @@ pub const commands = [_]CommandInfo{
         "Creates a harmless local session showing a destructive command denied by Orca.",
         "The demo writes replay/report artifacts but does not execute the destructive command.",
     } },
-    .{ .name = "shutdown", .summary = "Stop the background Orca daemon", .usage = "orca shutdown --daemon", .category = .advanced, .examples = &.{
+    .{ .name = "shutdown", .summary = "Stop the background Orca daemon", .usage = "orca shutdown [--daemon]", .category = .advanced, .examples = &.{
+        "orca shutdown",
         "orca shutdown --daemon",
     }, .details = &.{
         "Sends a graceful Shutdown request to the Rust daemon over UDS.",
