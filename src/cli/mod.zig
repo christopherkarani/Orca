@@ -202,6 +202,21 @@ fn parseGlobalArgs(argv: []const []const u8) GlobalArgs {
 }
 
 pub fn runWithCwd(io: std.Io, environ_map: *const std.process.Environ.Map, cwd: std.Io.Dir, argv_input: []const []const u8, stdout: anytype, stderr: anytype) !u8 {
+    return runWithCwdUsing(realDaemonExecuteCli, packs.command, history.command, mcp.command, io, environ_map, cwd, argv_input, stdout, stderr);
+}
+
+fn runWithCwdUsing(
+    comptime daemon_execute: anytype,
+    comptime packs_command: anytype,
+    comptime history_command: anytype,
+    comptime mcp_command: anytype,
+    io: std.Io,
+    environ_map: *const std.process.Environ.Map,
+    cwd: std.Io.Dir,
+    argv_input: []const []const u8,
+    stdout: anytype,
+    stderr: anytype,
+) !u8 {
     const global_args = parseGlobalArgs(argv_input);
     const argv = argv_input[global_args.command_index..];
     const no_rich_env = tui.output_policy.envDisablesRich(environ_map.get("ORCA_NO_RICH"));
@@ -291,21 +306,21 @@ pub fn runWithCwd(io: std.Io, environ_map: *const std.process.Environ.Map, cwd: 
     }
 
     if (std.mem.eql(u8, command, "packs")) {
-        return packs.command(io, argv[1..], stdout, stderr) catch |err| {
+        return packs_command(io, argv[1..], stdout, stderr) catch |err| {
             try stderr.print("orca packs: {s}: {s}\n", .{ daemonErrorLabel(err), @errorName(err) });
             return exit_codes.general;
         };
     }
 
     if (std.mem.eql(u8, command, "history")) {
-        return history.command(io, argv[1..], stdout, stderr) catch |err| {
+        return history_command(io, argv[1..], stdout, stderr) catch |err| {
             try stderr.print("orca history: {s}: {s}\n", .{ daemonErrorLabel(err), @errorName(err) });
             return exit_codes.general;
         };
     }
 
     if (isPhase1ProxyCommand(command)) {
-        return proxyPhase1Command(realDaemonExecuteCli, command, argv[1..], io, stdout, stderr);
+        return proxyPhase1Command(daemon_execute, command, argv[1..], io, stdout, stderr);
     }
 
     // Highest-value DX helper for installers, Homebrew post-install hooks, npm wrapper,
@@ -332,7 +347,7 @@ pub fn runWithCwd(io: std.Io, environ_map: *const std.process.Environ.Map, cwd: 
     if (std.mem.eql(u8, command, "diff")) return diff.command(io, argv[1..], stdout, stderr);
     if (std.mem.eql(u8, command, "apply")) return apply.command(io, argv[1..], stdout, stderr);
     if (std.mem.eql(u8, command, "discard")) return discard.command(io, argv[1..], stdout, stderr);
-    if (std.mem.eql(u8, command, "mcp")) return mcp.command(io, argv[1..], stdout, stderr);
+    if (std.mem.eql(u8, command, "mcp")) return mcp_command(io, argv[1..], stdout, stderr);
     if (std.mem.eql(u8, command, "redteam")) return redteam.command(io, argv[1..], stdout, stderr);
     if (std.mem.eql(u8, command, "completions")) return completions.command(io, argv[1..], stdout, stderr);
     if (std.mem.eql(u8, command, "shim")) return shim.command(io, environ_map, argv[1..], stdout, stderr);
@@ -1037,14 +1052,49 @@ test "daemon passthrough and robot surfaces have no top-level presentation bytes
     }
 }
 
-test "top-level MCP proxy presentation preserves protocol bytes exactly" {
-    const protocol = "{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"tools\":[]}}\n";
-    var stdout_buf: [256]u8 = undefined;
-    var stdout_writer: std.Io.Writer = .fixed(&stdout_buf);
-    const argv = &.{ "mcp", "proxy", "--command", "server" };
-    try writeInvocationPresentation(std.testing.io, "mcp", argv, &stdout_writer);
-    try stdout_writer.writeAll(protocol);
-    try std.testing.expectEqualStrings(protocol, stdout_writer.buffered());
+fn fakeRawDaemon(_: std.Io, argv: []const []const u8, stdout: anytype, _: anytype) !u8 {
+    try stdout.print("daemon:{s}\n", .{argv[0]});
+    return 7;
+}
+
+fn fakeRawPacks(_: std.Io, argv: []const []const u8, stdout: anytype, _: anytype) !u8 {
+    try std.testing.expectEqualStrings("--robot", argv[0]);
+    try stdout.writeAll("packs-robot\n");
+    return 8;
+}
+
+fn fakeRawHistory(_: std.Io, argv: []const []const u8, stdout: anytype, _: anytype) !u8 {
+    try std.testing.expectEqualStrings("export", argv[0]);
+    try stdout.writeAll("history-export\n");
+    return 9;
+}
+
+fn fakeRawMcp(_: std.Io, argv: []const []const u8, stdout: anytype, _: anytype) !u8 {
+    try std.testing.expectEqualStrings("proxy", argv[0]);
+    try stdout.writeAll("{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"tools\":[]}}\n");
+    return 10;
+}
+
+test "public dispatch preserves daemon robot export and MCP protocol bytes exactly" {
+    const Case = struct { argv: []const []const u8, expected: []const u8, code: u8 };
+    const cases = [_]Case{
+        .{ .argv = &.{ "test", "git status" }, .expected = "daemon:test\n", .code = 7 },
+        .{ .argv = &.{ "packs", "--robot" }, .expected = "packs-robot\n", .code = 8 },
+        .{ .argv = &.{ "history", "export" }, .expected = "history-export\n", .code = 9 },
+        .{ .argv = &.{ "mcp", "proxy", "--command", "server" }, .expected = "{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"tools\":[]}}\n", .code = 10 },
+    };
+    var env_map = try std.process.Environ.createMap(std.process.Environ.empty, std.testing.allocator);
+    defer env_map.deinit();
+    for (cases) |case| {
+        var stdout_buf: [256]u8 = undefined;
+        var stderr_buf: [256]u8 = undefined;
+        var stdout_writer: std.Io.Writer = .fixed(&stdout_buf);
+        var stderr_writer: std.Io.Writer = .fixed(&stderr_buf);
+        const code = try runWithCwdUsing(fakeRawDaemon, fakeRawPacks, fakeRawHistory, fakeRawMcp, std.testing.io, &env_map, std.Io.Dir.cwd(), case.argv, &stdout_writer, &stderr_writer);
+        try std.testing.expectEqual(case.code, code);
+        try std.testing.expectEqualStrings(case.expected, stdout_writer.buffered());
+        try std.testing.expectEqualStrings("", stderr_writer.buffered());
+    }
 }
 
 test "diff and CI generated formats suppress presentation" {
