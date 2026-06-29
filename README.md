@@ -30,6 +30,8 @@ orca run -- openclaw
 orca run -- opencode
 ```
 
+This project is free and open source under Apache 2.0. If Orca is useful to you, please star the repository — it helps visibility and keeps development going.
+
 ---
 
 ## Why Orca exists
