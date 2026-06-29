@@ -1484,9 +1484,14 @@ test "run shell evaluation forwards command and cwd to daemon Evaluate" {
     var stdout_writer: std.Io.Writer = .fixed(&stdout_buf);
     var stderr_writer: std.Io.Writer = .fixed(&stderr_buf);
 
-    const code = try commandForGuardTestWithShellEvaluator(&.{ "--workspace", root, "--", "git", "status" }, &stdout_writer, &stderr_writer, .ignore, shell_eval.mockDaemonAllowEvaluator);
+    // Keep this forwarding test independent of the child/shim lifecycle. `git`
+    // is one of Orca's generated shims, so launching `git status` here also
+    // exercised a nested test-binary process and intermittently surfaced its
+    // signal termination as exit code 5. `true` is not shimmed and keeps this
+    // test focused on the Evaluate command/cwd boundary.
+    const code = try commandForGuardTestWithShellEvaluator(&.{ "--workspace", root, "--", "true" }, &stdout_writer, &stderr_writer, .ignore, shell_eval.mockDaemonAllowEvaluator);
     try std.testing.expectEqual(exit_codes.success, code);
-    try std.testing.expectEqualStrings("git status", shell_eval.test_last_evaluate_command.?);
+    try std.testing.expectEqualStrings("true", shell_eval.test_last_evaluate_command.?);
     try std.testing.expectEqualStrings(root, shell_eval.test_last_evaluate_cwd.?);
 }
 
