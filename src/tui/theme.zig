@@ -201,6 +201,7 @@ pub const Active = struct {
 var cached: ?Active = null;
 var rich_enabled = true;
 var test_active: ?Active = null;
+var test_reduced_motion: ?bool = null;
 
 pub fn setRichEnabled(enabled: bool) void {
     rich_enabled = enabled;
@@ -211,6 +212,14 @@ pub fn setTestActive(value: ?Active) void {
     if (builtin.is_test) test_active = value;
 }
 
+/// Override the reduced-motion decision for tests. Lets a unit test exercise the
+/// "colour on, motion off" path (which the documented env proxies can't reach on
+/// their own, since NO_COLOR/TERM=dumb/non-TTY also drop colour). Pass `null` to
+/// clear. No-op outside `builtin.is_test`.
+pub fn setTestReducedMotion(value: ?bool) void {
+    if (builtin.is_test) test_reduced_motion = value;
+}
+
 /// Reset the cache. Used by tests; a no-op invoker hook keeps production stable.
 pub fn resetCache() void {
     cached = null;
@@ -219,6 +228,18 @@ pub fn resetCache() void {
 /// Pure decision wrapper used by tests and the public detector.
 pub fn resolve(d: DetectInput, bg: Background) Active {
     return .{ .capability = detectCapability(d), .background = bg };
+}
+
+/// Pure decision: should motion (spinner animation, live step frames) be
+/// suppressed given environment signals? There is no dedicated ANSI
+/// reduced-motion env var, so the documented proxies are a non-TTY sink,
+/// `NO_COLOR`, or `TERM=dumb` — the same signals that drop colour. In practice
+/// reduced-motion and no-colour therefore arrive together; this named contract
+/// keeps the decision explicit and leaves room for a future dedicated signal
+/// without churning call sites. Tests call this directly; runtime code calls
+/// `reducedMotion`.
+pub fn reducedMotionFrom(d: DetectInput) bool {
+    return !d.is_tty or d.no_color or d.term_dumb;
 }
 
 /// Cached runtime detection against real env/stdout. In `builtin.is_test` this
@@ -245,6 +266,23 @@ pub fn active(io: std.Io, stdout: anytype) Active {
     }, bg);
     cached = a;
     return a;
+}
+
+/// Runtime reduced-motion decision. Mirrors `active()`'s test guards so
+/// fixed-buffer writers in tests never animate. When a test forces a colour
+/// capability via `setTestActive`, motion follows colour (on with colour, off
+/// without) unless `setTestReducedMotion` overrides it — that override is the
+/// only way to reach the "colour on, motion off" path in unit tests, because the
+/// documented env proxies (NO_COLOR/TERM=dumb/non-TTY) drop colour too.
+pub fn reducedMotion(io: std.Io, stdout: anytype) bool {
+    if (!rich_enabled) return true;
+    if (test_reduced_motion) |r| return r;
+    if (test_active) |t| return !t.capability.hasColor();
+    if (builtin.is_test) return true;
+    const is_tty = detectIsTty(io, stdout);
+    const no_color = envPresent("NO_COLOR");
+    const term_dumb = envTermDumb();
+    return !is_tty or no_color or term_dumb;
 }
 
 fn detectIsTty(io: std.Io, stdout: anytype) bool {
@@ -476,4 +514,48 @@ test "Capability.hasColor" {
     try std.testing.expect(!Capability.none.hasColor());
     try std.testing.expect(Capability.basic_16.hasColor());
     try std.testing.expect(Capability.truecolor.hasColor());
+}
+
+// ────────────────────────────────────────────────────────────────────────────
+// Reduced-motion decision (pure)
+// ────────────────────────────────────────────────────────────────────────────
+
+test "reducedMotionFrom: non-TTY forces motion off" {
+    try std.testing.expect(reducedMotionFrom(.{
+        .is_tty = false,
+        .no_color = false,
+        .term_dumb = false,
+        .colorterm_truecolor = true,
+        .term_256color = true,
+    }));
+}
+
+test "reducedMotionFrom: NO_COLOR forces motion off even on TTY" {
+    try std.testing.expect(reducedMotionFrom(.{
+        .is_tty = true,
+        .no_color = true,
+        .term_dumb = false,
+        .colorterm_truecolor = true,
+        .term_256color = true,
+    }));
+}
+
+test "reducedMotionFrom: TERM=dumb forces motion off" {
+    try std.testing.expect(reducedMotionFrom(.{
+        .is_tty = true,
+        .no_color = false,
+        .term_dumb = true,
+        .colorterm_truecolor = false,
+        .term_256color = false,
+    }));
+}
+
+test "reducedMotionFrom: plain TTY keeps motion on" {
+    try std.testing.expect(!reducedMotionFrom(.{
+        .is_tty = true,
+        .no_color = false,
+        .term_dumb = false,
+        .colorterm_truecolor = false,
+        .term_256color = false,
+    }));
 }

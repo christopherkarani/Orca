@@ -1,6 +1,7 @@
 const std = @import("std");
 const theme = @import("theme.zig");
 const terminal_text = @import("terminal_text.zig");
+const vaxis = @import("vaxis");
 
 /// Linear rich-output primitives for the Orca CLI.
 ///
@@ -389,9 +390,18 @@ pub fn table(
 pub const StepStatus = enum { pending, active, done, failed };
 
 pub fn stepLine(io: std.Io, stdout: anytype, status: StepStatus, label: []const u8, detail: ?[]const u8, line_width: usize) !void {
-    if (line_width > 0 and theme.active(io, stdout).capability.hasColor()) {
+    const a = theme.active(io, stdout);
+    const has_color = a.capability.hasColor();
+    // An active step is "live" only when colour is on AND motion is allowed
+    // (reduced-motion renders a static glyph instead of the braille frame).
+    const live_active = status == .active and has_color and !theme.reducedMotion(io, stdout);
+
+    // Live clear prefix: only when we'll overwrite this line in place (rich + a
+    // declared line width). Keeps piped/plain output free of cursor controls.
+    if (line_width > 0 and has_color) {
         try stdout.writeAll("\r\x1b[2K\r");
     }
+
     const marker_token: theme.Token = switch (status) {
         .done, .active => .success,
         .failed => .danger,
@@ -399,10 +409,17 @@ pub fn stepLine(io: std.Io, stdout: anytype, status: StepStatus, label: []const 
     };
     const glyph: []const u8 = switch (status) {
         .done => "✓",
-        .active => "›",
+        // Phase 7: the active step shows an inline spinner frame (one frame;
+        // caller ticks between phases) when live, else the static chevron.
+        .active => if (live_active) "⠋" else "›",
         .failed => "✗",
         .pending => "○",
     };
+
+    // Bracket the live spinner frame in a single synchronized-output pair so it
+    // paints atomically (no tear). Exactly one pair per active render.
+    if (live_active) try stdout.writeAll(vaxis.ctlseqs.sync_set);
+
     try stdout.writeAll("  ");
     try theme.paintBold(io, stdout, marker_token, glyph);
     try stdout.writeAll(" ");
@@ -415,6 +432,8 @@ pub fn stepLine(io: std.Io, stdout: anytype, status: StepStatus, label: []const 
         try stdout.writeAll("  ");
         try theme.paint(io, stdout, .muted, d);
     }
+
+    if (live_active) try stdout.writeAll(vaxis.ctlseqs.sync_reset);
     try stdout.writeAll("\n");
 }
 
@@ -626,6 +645,66 @@ test "stepLine rich output emits canonical cursor control" {
     try stepLine(std.testing.io, &w, .active, "Policy", null, 80);
     try std.testing.expect(std.mem.startsWith(u8, w.buffered(), "\r\x1b[2K\r"));
     try std.testing.expect(std.mem.indexOf(u8, w.buffered(), "38;5;") != null);
+}
+
+/// Count non-overlapping occurrences of `needle` in `haystack` (test helper).
+fn countSeq(haystack: []const u8, needle: []const u8) usize {
+    if (needle.len == 0) return 0;
+    var n: usize = 0;
+    var i: usize = 0;
+    while (i + needle.len <= haystack.len) {
+        if (std.mem.eql(u8, haystack[i .. i + needle.len], needle)) {
+            n += 1;
+            i += needle.len;
+        } else {
+            i += 1;
+        }
+    }
+    return n;
+}
+
+test "stepLine: live active step is bracketed by exactly one sync pair" {
+    // Phase 7 Task B: the active step renders an inline spinner frame, atomically
+    // bracketed by exactly one synchronized-output pair (rich + motion on).
+    theme.setTestActive(.{ .capability = .c256, .background = .dark });
+    theme.setTestReducedMotion(false);
+    defer {
+        theme.setTestActive(null);
+        theme.setTestReducedMotion(null);
+    }
+    var buf: [256]u8 = undefined;
+    var w: std.Io.Writer = .fixed(&buf);
+    try stepLine(std.testing.io, &w, .active, "Host integrations", "installing codex", 0);
+    const out = w.buffered();
+    // Braille spinner frame (not the static chevron) on the live active step.
+    try std.testing.expect(std.mem.indexOf(u8, out, "⠋") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "›") == null);
+    // Exactly one synchronized-output pair brackets the frame.
+    try std.testing.expectEqual(@as(usize, 1), countSeq(out, vaxis.ctlseqs.sync_set));
+    try std.testing.expectEqual(@as(usize, 1), countSeq(out, vaxis.ctlseqs.sync_reset));
+}
+
+test "stepLine: reduced-motion active step emits no sync controls" {
+    // Phase 7 Task B/F: under reduced-motion the active step renders a static
+    // glyph with NO synchronized-output controls, while colour is retained.
+    theme.setTestActive(.{ .capability = .c256, .background = .dark });
+    theme.setTestReducedMotion(true);
+    defer {
+        theme.setTestActive(null);
+        theme.setTestReducedMotion(null);
+    }
+    var buf: [256]u8 = undefined;
+    var w: std.Io.Writer = .fixed(&buf);
+    try stepLine(std.testing.io, &w, .active, "Host integrations", null, 0);
+    const out = w.buffered();
+    // Static chevron (not the braille frame) when motion is suppressed.
+    try std.testing.expect(std.mem.indexOf(u8, out, "›") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "⠋") == null);
+    // No synchronized-output controls on the reduced-motion path.
+    try std.testing.expect(std.mem.indexOf(u8, out, vaxis.ctlseqs.sync_set) == null);
+    try std.testing.expect(std.mem.indexOf(u8, out, vaxis.ctlseqs.sync_reset) == null);
+    // Colour is retained — reduced-motion stops animation, not colour.
+    try std.testing.expect(std.mem.indexOf(u8, out, "38;5;") != null);
 }
 
 test "render primitives sanitize hostile terminal text" {
