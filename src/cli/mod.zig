@@ -98,6 +98,15 @@ fn isAlwaysMachineCommand(command: []const u8) bool {
 }
 
 fn isRawGeneratedInvocation(command: []const u8, argv: []const []const u8) bool {
+    if (std.mem.eql(u8, command, "diff")) return true;
+    if (std.mem.eql(u8, command, "ci")) {
+        var index: usize = 1;
+        while (index + 1 < argv.len) : (index += 1) {
+            if (!std.mem.eql(u8, argv[index], "--format")) continue;
+            return std.mem.eql(u8, argv[index + 1], "markdown") or std.mem.eql(u8, argv[index + 1], "json");
+        }
+        return false;
+    }
     if (!std.mem.eql(u8, command, "mcp") or argv.len <= 1) return false;
     if (std.mem.eql(u8, argv[1], "proxy") or std.mem.eql(u8, argv[1], "trust")) return true;
     return std.mem.eql(u8, argv[1], "manifest") and argv.len > 2 and std.mem.eql(u8, argv[2], "generate");
@@ -963,6 +972,15 @@ test "top-level MCP generated surfaces preserve exact bytes" {
         try std.testing.expectEqualStrings(case.expected, stdout_writer.buffered());
         try std.testing.expectEqualStrings("", stderr_writer.buffered());
     }
+}
+
+test "diff and CI generated formats suppress presentation" {
+    try std.testing.expect(isRawGeneratedInvocation("diff", &.{"diff"}));
+    try std.testing.expect(isRawGeneratedInvocation("ci", &.{ "ci", "check", "--format", "markdown" }));
+    try std.testing.expect(isRawGeneratedInvocation("ci", &.{ "ci", "check", "--format", "json" }));
+    try std.testing.expect(!isRawGeneratedInvocation("ci", &.{ "ci", "check" }));
+    try std.testing.expect(!shouldShowBanner("diff", &.{"diff"}));
+    try std.testing.expect(!shouldShowBanner("ci", &.{ "ci", "check", "--format", "markdown" }));
 }
 
 extern "c" fn setenv(name: [*:0]const u8, value: [*:0]const u8, overwrite: c_int) c_int;
