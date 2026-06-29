@@ -44,7 +44,8 @@ fn check(io: std.Io, argv: []const []const u8, stdout: anytype, stderr: anytype)
     const source = if (argv.len == 1) argv[0] else "builtin:strict";
     var policy_value = if (argv.len == 1)
         core_api.loadPolicyFile(io, allocator, argv[0]) catch |err| {
-            try stderr.print("orca policy check: invalid policy {s}: {s}\n", .{ argv[0], @errorName(err) });
+            try suggestions.writeSanitizedValue(stderr, "orca policy check: invalid policy ", argv[0], ": ");
+            try stderr.print("{s}\n", .{@errorName(err)});
             return exit_codes.general;
         }
     else
@@ -80,7 +81,7 @@ fn explain(io: std.Io, argv: []const []const u8, stdout: anytype, stderr: anytyp
         return exit_codes.usage;
     }
     const kind = orca_policy.explain.ExplainKind.parse(positional[0]) orelse {
-        try stderr.print("orca policy explain: unsupported type '{s}'.\n", .{positional[0]});
+        try suggestions.writeSanitizedValue(stderr, "orca policy explain: unsupported type '", positional[0], "'.\n");
         return exit_codes.usage;
     };
     var gpa_state: std.heap.DebugAllocator(.{}) = .init;
@@ -230,7 +231,7 @@ fn applyPack(io: std.Io, argv: []const []const u8, stdout: anytype, stderr: anyt
         force = true;
     }
     const pack = orca_policy.presets.AgentPreset.parse(argv[0]) orelse {
-        try stderr.print("orca policy apply-pack: unknown policy pack '{s}'.\n", .{argv[0]});
+        try suggestions.writeInvalidValue(stderr, "orca policy apply-pack", "pack", argv[0], &.{ "solo-dev", "strict-local", "team-ci", "openclaw-hermes" }, "policy");
         return exit_codes.usage;
     };
     const pack_name = orca_policy.presets.agentPresetName(pack);

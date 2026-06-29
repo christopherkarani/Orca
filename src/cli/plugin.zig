@@ -1143,7 +1143,7 @@ fn installCommand(io: std.Io, argv: []const []const u8, stdout: anytype, stderr:
             } else if (std.mem.eql(u8, value, "global")) {
                 scope = .global;
             } else {
-                try stderr.print("orca plugin install: invalid --scope '{s}' (expected project|global).\n", .{value});
+                try suggestions.writeInvalidValue(stderr, "orca plugin install", "--scope", value, &.{ "project", "global" }, "plugin");
                 return exit_codes.usage;
             }
             index += 1;
@@ -2390,7 +2390,7 @@ test "plugin install rejects invalid scope" {
 
     const code = try installCommand(std.testing.io, &.{ "opencode", "--scope", "workspace" }, &stdout_writer, &stderr_writer);
     try std.testing.expectEqual(exit_codes.usage, code);
-    try std.testing.expect(std.mem.indexOf(u8, stderr_writer.buffered(), "invalid --scope") != null);
+    try std.testing.expect(std.mem.indexOf(u8, stderr_writer.buffered(), "invalid --scope value") != null);
 }
 
 test "plugin install opencode --scope global is accepted in dry-run" {

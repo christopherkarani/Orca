@@ -112,6 +112,28 @@ fn isRawGeneratedInvocation(command: []const u8, argv: []const []const u8) bool 
     return std.mem.eql(u8, argv[1], "manifest") and argv.len > 2 and std.mem.eql(u8, argv[2], "generate");
 }
 
+fn isRawPassthroughInvocation(command: []const u8, argv: []const []const u8) bool {
+    if (std.mem.eql(u8, command, "test") or std.mem.eql(u8, command, "scan") or
+        std.mem.eql(u8, command, "precommit")) return true;
+    if (std.mem.eql(u8, command, "packs")) {
+        for (argv[1..]) |arg| {
+            if (std.mem.eql(u8, arg, "--robot") or std.mem.eql(u8, arg, "--expand") or
+                std.mem.eql(u8, arg, "--verbose") or std.mem.eql(u8, arg, "-v") or
+                std.mem.eql(u8, arg, "--format") or std.mem.eql(u8, arg, "-f") or
+                std.mem.startsWith(u8, arg, "--format=") or std.mem.eql(u8, arg, "--max-patterns") or
+                std.mem.startsWith(u8, arg, "--max-patterns=")) return true;
+        }
+    }
+    if (std.mem.eql(u8, command, "history") and argv.len > 1) {
+        if (!std.mem.eql(u8, argv[1], "stats")) return true;
+        for (argv[2..]) |arg| {
+            if (std.mem.eql(u8, arg, "--json") or std.mem.eql(u8, arg, "--robot") or
+                std.mem.eql(u8, arg, "--format") or std.mem.startsWith(u8, arg, "--format=")) return true;
+        }
+    }
+    return false;
+}
+
 fn isMachineArgv(argv: []const []const u8) bool {
     for (argv, 0..) |arg, index| {
         if (std.mem.eql(u8, arg, "--json") or std.mem.eql(u8, arg, "--stdin")) return true;
@@ -143,7 +165,7 @@ fn shouldShowBanner(command: []const u8, argv: []const []const u8) bool {
     // human error remediation remains presentation-capable. JSON is still
     // classified as machine output by isMachineArgv.
     if (std.mem.eql(u8, command, "report")) return false;
-    if (isRawGeneratedInvocation(command, argv)) return false;
+    if (isRawGeneratedInvocation(command, argv) or isRawPassthroughInvocation(command, argv)) return false;
     // Always-machine / raw / server commands.
     if (isAlwaysMachineCommand(command)) return false;
     // `help <cmd>` is command-specific reference help (no banner); bare `help`
@@ -160,6 +182,10 @@ fn shouldShowBanner(command: []const u8, argv: []const []const u8) bool {
     // Unknown commands get no banner (error path); the brand header belongs only
     // to recognised human commands.
     return help.findCommand(command) != null;
+}
+
+fn writeInvocationPresentation(io: std.Io, command: []const u8, argv: []const []const u8, stdout: anytype) !void {
+    if (shouldShowBanner(command, argv)) try tui.render.banner(io, stdout, version, null);
 }
 
 pub fn run(io: std.Io, environ_map: *const std.process.Environ.Map, argv: []const []const u8, stdout: anytype, stderr: anytype) !u8 {
@@ -219,9 +245,7 @@ pub fn runWithCwd(io: std.Io, environ_map: *const std.process.Environ.Map, cwd: 
     // cohesion). Suppressed for self-banner commands (version/help/run render
     // their own header), always-machine/raw commands, --json/--stdin/--format
     // json machine paths, --help reference output, and unknown commands.
-    if (shouldShowBanner(command, argv)) {
-        try tui.render.banner(io, stdout, version, null);
-    }
+    try writeInvocationPresentation(io, command, argv, stdout);
     if (std.mem.eql(u8, command, "help")) {
         if (argv.len == 1) {
             try help.write(io, stdout);
@@ -811,6 +835,30 @@ test "human parser families suggest valid flags and exact help remediation" {
     }
 }
 
+test "human parser invalid values sanitize terminal controls and suggest valid values" {
+    const hostile = "strct\x1b[2J\nforged";
+    const Case = struct { argv: []const []const u8, suggestion: []const u8 };
+    const cases = [_]Case{
+        .{ .argv = &.{ "init", "--mode", hostile }, .suggestion = "strict" },
+        .{ .argv = &.{ "run", "--mode", hostile, "--", "true" }, .suggestion = "strict" },
+        .{ .argv = &.{ "run", "--network-backend", hostile, "--", "true" }, .suggestion = "proxy" },
+        .{ .argv = &.{ "plugin", "install", "--scope", hostile }, .suggestion = "project" },
+        .{ .argv = &.{ "policy", "apply-pack", hostile }, .suggestion = "strict-local" },
+    };
+
+    for (cases) |case| {
+        var stdout_buf: [4096]u8 = undefined;
+        var stderr_buf: [2048]u8 = undefined;
+        var stdout_writer: std.Io.Writer = .fixed(&stdout_buf);
+        var stderr_writer: std.Io.Writer = .fixed(&stderr_buf);
+        const code = try testRun(case.argv, &stdout_writer, &stderr_writer);
+        try std.testing.expectEqual(exit_codes.usage, code);
+        try std.testing.expect(std.mem.indexOfScalar(u8, stderr_writer.buffered(), 0x1b) == null);
+        try std.testing.expect(std.mem.indexOf(u8, stderr_writer.buffered(), "\nforged") == null);
+        try std.testing.expect(std.mem.indexOf(u8, stderr_writer.buffered(), case.suggestion) != null);
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Phase 2 TDD: brand cohesion banner system (written FIRST — RED).
 // The compact `🛡  Orca · v<version>` header must open every HUMAN command,
@@ -972,6 +1020,31 @@ test "top-level MCP generated surfaces preserve exact bytes" {
         try std.testing.expectEqualStrings(case.expected, stdout_writer.buffered());
         try std.testing.expectEqualStrings("", stderr_writer.buffered());
     }
+}
+
+test "daemon passthrough and robot surfaces have no top-level presentation bytes" {
+    const raw_invocations = [_]struct { command: []const u8, argv: []const []const u8 }{
+        .{ .command = "test", .argv = &.{ "test", "git status" } },
+        .{ .command = "scan", .argv = &.{ "scan", "." } },
+        .{ .command = "precommit", .argv = &.{"precommit"} },
+        .{ .command = "packs", .argv = &.{ "packs", "--robot" } },
+        .{ .command = "history", .argv = &.{ "history", "export", "--format", "jsonl" } },
+        .{ .command = "history", .argv = &.{ "history", "check" } },
+        .{ .command = "mcp", .argv = &.{ "mcp", "proxy", "--command", "server" } },
+    };
+    for (raw_invocations) |invocation| {
+        try std.testing.expect(!shouldShowBanner(invocation.command, invocation.argv));
+    }
+}
+
+test "top-level MCP proxy presentation preserves protocol bytes exactly" {
+    const protocol = "{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"tools\":[]}}\n";
+    var stdout_buf: [256]u8 = undefined;
+    var stdout_writer: std.Io.Writer = .fixed(&stdout_buf);
+    const argv = &.{ "mcp", "proxy", "--command", "server" };
+    try writeInvocationPresentation(std.testing.io, "mcp", argv, &stdout_writer);
+    try stdout_writer.writeAll(protocol);
+    try std.testing.expectEqualStrings(protocol, stdout_writer.buffered());
 }
 
 test "diff and CI generated formats suppress presentation" {

@@ -88,6 +88,31 @@ pub fn writeUnknownSubcommand(
     try writer.print("\nRun 'orca help {s}' for usage.\n", .{help_command});
 }
 
+pub fn writeInvalidValue(
+    writer: anytype,
+    context: []const u8,
+    option: []const u8,
+    unknown: []const u8,
+    candidates: []const []const u8,
+    help_command: []const u8,
+) !void {
+    try writer.print("{s}: invalid {s} value '", .{ context, option });
+    try terminal_text.write(writer, unknown, .single_line);
+    try writer.writeAll("'. Expected ");
+    for (candidates, 0..) |candidate, index| {
+        if (index > 0) try writer.writeAll("|");
+        try writer.writeAll(candidate);
+    }
+    if (closest(unknown, candidates)) |candidate| try writer.print(". Did you mean '{s}'?", .{candidate});
+    try writer.print(".\nRun 'orca help {s}' for usage.\n", .{help_command});
+}
+
+pub fn writeSanitizedValue(writer: anytype, prefix: []const u8, value: []const u8, suffix: []const u8) !void {
+    try writer.writeAll(prefix);
+    try terminal_text.write(writer, value, .single_line);
+    try writer.writeAll(suffix);
+}
+
 test "closest suggests prefixes and edit-distance typos without guessing unrelated tokens" {
     const candidates = &[_][]const u8{ "--command", "--manifest", "--policy" };
     try std.testing.expectEqualStrings("--command", closest("--comand", candidates).?);

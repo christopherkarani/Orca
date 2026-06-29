@@ -64,7 +64,7 @@ fn commandWithStdioAndEnv(io: std.Io, argv: []const []const u8, stdout: anytype,
 
     const workspace_root_for_policy = supervisor.resolveWorkspaceRoot(io, allocator, options.workspace, ".") catch |err| switch (err) {
         error.FileNotFound => {
-            try stderr.print("orca run: workspace not found: {s}\n", .{options.workspace orelse "."});
+            try suggestions.writeSanitizedValue(stderr, "orca run: workspace not found: ", options.workspace orelse ".", "\n");
             return exit_codes.general;
         },
         else => return err,
@@ -505,7 +505,7 @@ fn commandWithStdioAndEnv(io: std.Io, argv: []const []const u8, stdout: anytype,
         .health_monitor = health_monitor,
     }) catch |err| switch (err) {
         error.CommandNotFound => {
-            try stderr.print("orca run: command not found: {s}\n", .{options.command_argv[0]});
+            try suggestions.writeSanitizedValue(stderr, "orca run: command not found: ", options.command_argv[0], "\n");
             return exit_codes.general;
         },
         error.InvalidCommand => {
@@ -513,7 +513,7 @@ fn commandWithStdioAndEnv(io: std.Io, argv: []const []const u8, stdout: anytype,
             return exit_codes.usage;
         },
         error.FileNotFound => {
-            try stderr.print("orca run: workspace not found: {s}\n", .{options.workspace orelse "."});
+            try suggestions.writeSanitizedValue(stderr, "orca run: workspace not found: ", options.workspace orelse ".", "\n");
             return exit_codes.general;
         },
         error.CommandDenied => {
@@ -707,7 +707,7 @@ fn parseOptions(io: std.Io, argv: []const []const u8, stdout: anytype, stderr: a
                 return error.Usage;
             }
             options.mode = parseMode(argv[index]) orelse {
-                try stderr.print("orca run: unsupported mode '{s}'. Expected observe, ask, strict, or ci.\n", .{argv[index]});
+                try suggestions.writeInvalidValue(stderr, "orca run", "--mode", argv[index], &.{ "observe", "ask", "strict", "ci" }, "run");
                 return error.Usage;
             };
             options.mode_explicit = true;
@@ -753,7 +753,7 @@ fn parseOptions(io: std.Io, argv: []const []const u8, stdout: anytype, stderr: a
                 return error.Usage;
             }
             options.network_mode = policy.schema.NetworkMode.parse(argv[index]) orelse {
-                try stderr.print("orca run: unsupported network mode '{s}'. Expected observe, ask, allowlist, open, or off.\n", .{argv[index]});
+                try suggestions.writeInvalidValue(stderr, "orca run", "--network", argv[index], &.{ "observe", "ask", "allowlist", "open", "off" }, "run");
                 return error.Usage;
             };
         } else if (std.mem.eql(u8, arg, "--network-backend")) {
@@ -763,7 +763,7 @@ fn parseOptions(io: std.Io, argv: []const []const u8, stdout: anytype, stderr: a
                 return error.Usage;
             }
             options.network_backend = policy.schema.NetworkBackend.parse(argv[index]) orelse {
-                try stderr.print("orca run: unsupported network backend '{s}'. Expected decision-only or proxy.\n", .{argv[index]});
+                try suggestions.writeInvalidValue(stderr, "orca run", "--network-backend", argv[index], &.{ "decision-only", "proxy" }, "run");
                 return error.Usage;
             };
         } else if (std.mem.eql(u8, arg, "--require-backend")) {
@@ -777,7 +777,7 @@ fn parseOptions(io: std.Io, argv: []const []const u8, stdout: anytype, stderr: a
                 return error.Usage;
             }
             options.required_backend_values[options.required_backend_count] = sandbox.backend.Feature.parse(argv[index]) orelse {
-                try stderr.print("orca run: unsupported backend capability '{s}'.\n", .{argv[index]});
+                try suggestions.writeInvalidValue(stderr, "orca run", "--require-backend", argv[index], &.{ "policy-engine", "audit", "env-filtering", "path-staging", "shell-wrapping", "path-shims", "mcp-stdio-proxy", "network-observe", "network-enforce", "process-supervision", "user-namespaces", "mount-namespaces", "seccomp", "landlock", "cgroups", "strong-sandbox" }, "run");
                 return error.Usage;
             };
             options.required_backend_count += 1;
@@ -1447,7 +1447,7 @@ test "run rejects unknown network backend" {
 
     const code = try command(std.testing.io, &.{ "--network-backend", "magic", "--", "true" }, &stdout_writer, &stderr_writer);
     try std.testing.expectEqual(exit_codes.usage, code);
-    try std.testing.expect(std.mem.indexOf(u8, stderr_writer.buffered(), "unsupported network backend") != null);
+    try std.testing.expect(std.mem.indexOf(u8, stderr_writer.buffered(), "invalid --network-backend value") != null);
 }
 
 test "run require-backend fails closed when requested feature is unavailable" {

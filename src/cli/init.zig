@@ -93,7 +93,7 @@ fn parseOptions(io: std.Io, argv: []const []const u8, stdout: anytype, stderr: a
                 return error.Usage;
             }
             const preset = orca_policy.presets.AgentPreset.parse(argv[index]) orelse {
-                try stderr.print("orca init: unsupported preset '{s}'. Run 'orca help init' for supported presets.\n", .{argv[index]});
+                try suggestions.writeInvalidValue(stderr, "orca init", "--preset", argv[index], &.{ "generic-agent", "claude-code", "codex", "cursor-agent", "opencode", "cline-roo", "mcp-dev", "github-actions", "solo-dev", "strict-local", "team-ci", "openclaw-hermes", "trusted-local" }, "init");
                 return error.Usage;
             };
             options.preset = preset;
@@ -105,7 +105,7 @@ fn parseOptions(io: std.Io, argv: []const []const u8, stdout: anytype, stderr: a
             }
             const mode = argv[index];
             if (!isValidMode(mode)) {
-                try stderr.print("orca init: unsupported mode '{s}'. Expected strict, ask, observe, ci, or trusted.\n", .{mode});
+                try suggestions.writeInvalidValue(stderr, "orca init", "--mode", mode, &.{ "strict", "ask", "observe", "ci", "trusted" }, "init");
                 return error.Usage;
             }
             options.mode = mode;
@@ -251,5 +251,5 @@ test "init rejects invalid preset names clearly" {
 
     const code = try command(std.testing.io, tmp.dir, &.{ "--preset", "not-real" }, &stdout_writer, &stderr_writer);
     try std.testing.expectEqual(exit_codes.usage, code);
-    try std.testing.expect(std.mem.indexOf(u8, stderr_writer.buffered(), "unsupported preset 'not-real'") != null);
+    try std.testing.expect(std.mem.indexOf(u8, stderr_writer.buffered(), "invalid --preset value 'not-real'") != null);
 }
