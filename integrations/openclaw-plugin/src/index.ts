@@ -222,7 +222,7 @@ export default function orcaPlugin(api: OpenClawPluginApi): void {
     const response = await callOrca(orcaBin, 'tool.before', event, sessionId, true, logger);
 
     if (response.decision === 'block') {
-      const msg = response.message || response.reason || 'Blocked by Orca policy';
+      const msg = response.message || response.reason || 'Orca blocked this command.';
       logger?.error?.(`[orca] Blocked tool execution: ${msg}`);
       return { block: true, blockReason: msg };
     }

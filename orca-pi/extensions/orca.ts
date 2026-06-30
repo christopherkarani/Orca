@@ -33,6 +33,11 @@ type PiUI = {
 	) => Promise<string | undefined>;
 	notify?: (message: string, type?: "info" | "warning" | "error") => void;
 	setStatus?: (key: string, text: string | undefined) => void;
+	setWidget?: (
+		key: string,
+		value: undefined | string[],
+		opts?: { placement?: "aboveEditor" | "belowEditor" },
+	) => void;
 };
 
 type PiContext = {
@@ -120,6 +125,31 @@ export type OrcaDecision =
 	| { kind: "deny"; reason: string; response: unknown }
 	| { kind: "error"; reason: string; response?: unknown; error?: Error };
 
+type OrcaEvaluateResponse = {
+	decision?: string;
+	reason?: string;
+	message?: string;
+	severity?: string;
+	rule_id?: string;
+	ruleId?: string;
+	pack_id?: string;
+	packId?: string;
+	pattern_name?: string;
+	patternName?: string;
+	remediation?: Array<{ description?: string }>;
+	error?: { message?: string };
+};
+
+type OrcaDecisionCard = {
+	variant: "block" | "ask";
+	title: string;
+	summary: string;
+	rule?: string;
+	pack?: string;
+	severity?: string;
+	nextStep?: string;
+};
+
 type RunProcessResult = {
 	code: number | null;
 	stdout: string;
@@ -160,6 +190,7 @@ type ResolveOrcaBinOptions = {
 };
 
 const STATUS_KEY = "orca";
+const BLOCK_WIDGET_KEY = "orca-block";
 const DEFAULT_TIMEOUT_MS = 10_000;
 const MAX_CHILD_OUTPUT_BYTES = 1024 * 1024;
 const REQUIRED_ORCA_VERSION = (
@@ -268,7 +299,11 @@ export async function runOrcaEvaluate(
 		return { kind: "deny", reason: safeOrcaReason(parsed), response: parsed };
 	}
 	if (decision === "error") {
-		return { kind: "error", reason: safeOrcaReason(parsed), response: parsed };
+		return {
+			kind: "error",
+			reason: sanitizeVisibleText(getDecisionReason(parsed)),
+			response: parsed,
+		};
 	}
 
 	return {
@@ -316,15 +351,7 @@ function isNoninteractiveMode(mode: string | undefined): boolean {
 }
 
 export function safeOrcaReason(response: unknown): string {
-	const reason =
-		getStringField(response, "reason") ??
-		getNestedStringField(response, ["error", "message"]);
-	const rule = getStringField(response, "rule_id");
-	const cleanReason = sanitizeVisibleText(
-		reason ?? "Orca blocked this bash command.",
-	);
-	const cleanRule = rule ? sanitizeVisibleText(rule) : undefined;
-	return cleanRule ? `${cleanReason} [${cleanRule}]` : cleanReason;
+	return formatOrcaDecisionSummary(buildOrcaDecisionCard(response, "block"));
 }
 
 export function installOrcaExtension(
@@ -386,6 +413,7 @@ export function installOrcaExtension(
 	pi.on("session_shutdown", (_event, ctx) => {
 		stateFor(ctx).bypass = false;
 		ctx.ui?.setStatus?.(STATUS_KEY, undefined);
+		clearOrcaWidget(ctx);
 	});
 
 	pi.on(
@@ -397,14 +425,20 @@ export function installOrcaExtension(
 				typeof event.input?.command !== "string" ||
 				event.input.command.trim().length === 0
 			) {
-				return block(
-					"Blocked by Orca: malformed Pi bash tool call; missing non-empty command.",
-				);
+				const details = {
+					variant: "block" as const,
+					title: "ORCA BLOCKED",
+					summary:
+						"malformed Pi bash tool call; missing non-empty command.",
+				};
+				showOrcaWidget(ctx, details);
+				return block(formatOrcaDecisionSummary(details));
 			}
 			const command = event.input.command;
 			await stateFor(ctx).bootstrap;
 
 			if (stateFor(ctx).bypass) {
+				clearOrcaWidget(ctx);
 				ctx.ui?.notify?.(
 					"Orca protection is disabled for this Pi session; bash command allowed without Orca evaluation.",
 					"warning",
@@ -417,9 +451,15 @@ export function installOrcaExtension(
 				buildEvaluateRequest(command, ctx),
 				runtime,
 			);
-			if (decision.kind === "allow") return undefined;
-			if (decision.kind === "deny")
-				return block(`Blocked by Orca: ${decision.reason}`);
+			if (decision.kind === "allow") {
+				clearOrcaWidget(ctx);
+				return undefined;
+			}
+			if (decision.kind === "deny") {
+				const card = buildOrcaDecisionCard(decision.response, "block");
+				showOrcaWidget(ctx, card);
+				return block(formatOrcaDecisionSummary(card));
+			}
 			return handleUnavailable(
 				decision.reason,
 				ctx,
@@ -561,6 +601,7 @@ async function handleUnavailable(
 ): Promise<ToolCallResult> {
 	const repair = repairMessage(reason);
 	if (mode === "allow-with-warning") {
+		clearOrcaWidget(ctx);
 		notify(
 			ctx,
 			`Orca unavailable; allowing bash command with warning.\n\n${repair}`,
@@ -569,16 +610,25 @@ async function handleUnavailable(
 		return undefined;
 	}
 	if (mode === "strict" || mode === "noninteractive-block") {
-		return block(repair);
+		const card = {
+			variant: "block" as const,
+			title: "ORCA BLOCKED",
+			summary: repair,
+		};
+		showOrcaWidget(ctx, card);
+		return block(formatOrcaDecisionSummary(card));
 	}
 
+	const card = buildOrcaAskCard(repair);
+	showOrcaWidget(ctx, card);
 	const choice = await ctx.ui?.select?.(
-		"Orca could not evaluate this bash command",
+		"ORCA needs your decision",
 		[...ASK_OPTIONS],
 		{ timeout: 60_000, signal: ctx.signal },
 	);
 	switch (choice) {
 		case "Run once anyway":
+			clearOrcaWidget(ctx);
 			notify(
 				ctx,
 				"Allowed this bash command once without Orca evaluation.",
@@ -586,6 +636,7 @@ async function handleUnavailable(
 			);
 			return undefined;
 		case "Disable Orca for this Pi session":
+			clearOrcaWidget(ctx);
 			actions.disableSession();
 			notify(
 				ctx,
@@ -594,11 +645,25 @@ async function handleUnavailable(
 			);
 			return undefined;
 		case "Show repair instructions / run doctor":
+			clearOrcaWidget(ctx);
 			notify(ctx, repair, "error");
-			return block(repair);
+			return block(
+				formatOrcaDecisionSummary({
+					variant: "block",
+					title: "ORCA BLOCKED",
+					summary: repair,
+				}),
+			);
 		case "Block":
 		default:
-			return block(repair);
+			clearOrcaWidget(ctx);
+			return block(
+				formatOrcaDecisionSummary({
+					variant: "block",
+					title: "ORCA BLOCKED",
+					summary: repair,
+				}),
+			);
 	}
 }
 
@@ -811,6 +876,192 @@ function resolveCwd(cwd: string | undefined): string {
 
 function block(reason: string): ToolCallBlock {
 	return { block: true, reason: sanitizeVisibleText(reason) };
+}
+
+function clearOrcaWidget(ctx: PiContext): void {
+	ctx.ui?.setWidget?.(BLOCK_WIDGET_KEY, undefined);
+}
+
+function showOrcaWidget(ctx: PiContext, card: OrcaDecisionCard): void {
+	if (!ctx.ui?.setWidget) return;
+	ctx.ui.setWidget(BLOCK_WIDGET_KEY, buildOrcaWidget(card));
+}
+
+function buildOrcaWidget(card: OrcaDecisionCard): string[] {
+	const contentWidth = 62;
+	const isBlock = card.variant === "block";
+	const frame = isBlock
+		? { topLeft: "┏", topRight: "┓", side: "┃", teeLeft: "┣", teeRight: "┫", bottomLeft: "┗", bottomRight: "┛", rule: "━" }
+		: { topLeft: "┌", topRight: "┐", side: "│", teeLeft: "├", teeRight: "┤", bottomLeft: "└", bottomRight: "┘", rule: "─" };
+	const masthead = isBlock ? " ORCA // BLOCKED " : " ORCA // YOUR CALL ";
+	const stateLine = isBlock
+		? "COMMAND STOPPED BEFORE EXECUTION"
+		: "ORCA PAUSED THIS COMMAND";
+	const lines = [
+		buildLabeledBorder(frame.topLeft, frame.topRight, frame.rule, masthead, contentWidth),
+		`${frame.side} ${stateLine.padEnd(contentWidth - 2)} ${frame.side}`,
+		`${frame.teeLeft}${frame.rule.repeat(contentWidth)}${frame.teeRight}`,
+	];
+	for (const line of wrapText(card.summary, contentWidth - 2)) {
+		lines.push(`${frame.side} ${line.padEnd(contentWidth - 2)} ${frame.side}`);
+	}
+	lines.push(`${frame.teeLeft}${frame.rule.repeat(contentWidth)}${frame.teeRight}`);
+	lines.push(...formatWidgetRow("Rule", card.rule, contentWidth, frame.side));
+	if (card.pack)
+		lines.push(...formatWidgetRow("Pack", card.pack, contentWidth, frame.side));
+	if (card.severity)
+		lines.push(
+			...formatWidgetRow(
+				"Severity",
+				capitalize(card.severity),
+				contentWidth,
+				frame.side,
+			),
+		);
+	if (card.nextStep)
+		lines.push(
+			...formatWidgetRow("Next", card.nextStep, contentWidth, frame.side),
+		);
+	if (!isBlock)
+		lines.push(
+			...formatWidgetRow(
+				"Choose",
+				"Run once, repair Orca, or keep it blocked.",
+				contentWidth,
+				frame.side,
+			),
+		);
+	lines.push(
+		`${frame.bottomLeft}${frame.rule.repeat(contentWidth)}${frame.bottomRight}`,
+	);
+	return lines;
+}
+
+function buildLabeledBorder(
+	left: string,
+	right: string,
+	rule: string,
+	label: string,
+	width: number,
+): string {
+	const remaining = Math.max(0, width - label.length);
+	const before = Math.min(3, remaining);
+	return `${left}${rule.repeat(before)}${label}${rule.repeat(remaining - before)}${right}`;
+}
+
+function buildOrcaDecisionCard(
+	response: unknown,
+	variant: OrcaDecisionCard["variant"],
+): OrcaDecisionCard {
+	const reason = getDecisionReason(response);
+	const rule = getRuleId(response);
+	const pack = getStringFieldAny(response, ["pack_id", "packId"]);
+	const severity = getStringFieldAny(response, ["severity"]);
+	const nextStep = getNextStep(response);
+	return {
+		variant,
+		title: variant === "ask" ? "ORCA NEEDS YOUR DECISION" : "ORCA BLOCKED",
+		summary: sanitizeVisibleText(reason),
+		rule,
+		pack,
+		severity,
+		nextStep,
+	};
+}
+
+function buildOrcaAskCard(reason: string): OrcaDecisionCard {
+	return {
+		variant: "ask",
+		title: "ORCA NEEDS YOUR DECISION",
+		summary: sanitizeVisibleText(reason),
+	};
+}
+
+function formatOrcaDecisionSummary(card: OrcaDecisionCard): string {
+	const parts = [card.summary];
+	if (card.rule) parts.push(`rule ${card.rule}`);
+	if (card.pack && card.pack !== card.rule?.split(":")[0]) parts.push(`pack ${card.pack}`);
+	if (card.severity) parts.push(`severity ${card.severity}`);
+	return sanitizeVisibleText(`Orca ${card.variant === "ask" ? "needs your decision" : "blocked this bash command"}: ${parts.join(" • ")}`);
+}
+
+function getDecisionReason(response: unknown): string {
+	return (
+		getStringFieldAny(response, ["reason", "message"]) ??
+		getNestedStringField(response, ["error", "message"]) ??
+		"Orca blocked this bash command."
+	);
+}
+
+function getRuleId(response: unknown): string | undefined {
+	return getStringFieldAny(response, ["rule_id", "ruleId"]);
+}
+
+function getNextStep(response: unknown): string | undefined {
+	const remediation = Array.isArray((response as OrcaEvaluateResponse | null)?.remediation)
+		? (response as OrcaEvaluateResponse).remediation
+		: undefined;
+	const description = remediation?.find((entry) => entry?.description)?.description;
+	return description ? sanitizeVisibleText(description) : undefined;
+}
+
+function getStringFieldAny(
+	value: unknown,
+	keys: string[],
+): string | undefined {
+	for (const key of keys) {
+		const field = getStringField(value, key);
+		if (field) return field;
+	}
+	return undefined;
+}
+
+function capitalize(value: string): string {
+	return value.charAt(0).toUpperCase() + value.slice(1);
+}
+
+function wrapText(value: string, width: number): string[] {
+	const text = sanitizeVisibleText(value);
+	if (!text) return [""];
+	const words = text.split(/\s+/);
+	const lines: string[] = [];
+	let current = "";
+	for (const word of words) {
+		if (!current) {
+			current = word;
+			continue;
+		}
+		if (`${current} ${word}`.length <= width) {
+			current = `${current} ${word}`;
+			continue;
+		}
+		lines.push(current);
+		current = word;
+	}
+	if (current) lines.push(current);
+	return lines.flatMap((line) => {
+		if (line.length <= width) return [line];
+		const chunks: string[] = [];
+		for (let i = 0; i < line.length; i += width) chunks.push(line.slice(i, i + width));
+		return chunks;
+	});
+}
+
+function formatWidgetRow(
+	label: string,
+	value: string | undefined,
+	width: number,
+	side: string,
+): string[] {
+	if (!value) return [];
+	const contentWidth = width - 2;
+	const rowLabel = `${label}:`;
+	const available = Math.max(1, contentWidth - rowLabel.length - 1);
+	const wrapped = wrapText(value, available);
+	return wrapped.map((line, index) => {
+		const prefix = index === 0 ? rowLabel : "".padEnd(rowLabel.length, " ");
+		return `${side} ${prefix} ${line.padEnd(available)} ${side}`;
+	});
 }
 
 function notify(

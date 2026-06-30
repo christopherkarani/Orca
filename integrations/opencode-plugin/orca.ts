@@ -197,7 +197,7 @@ function buildToolBeforePayload(
 
 function applyBlockingDecision(response: OrcaResponse, context: string): void {
   if (response.decision === 'block') {
-    const msg = response.message || response.reason || 'Blocked by Orca policy';
+    const msg = response.message || response.reason || 'Orca blocked this command.';
     console.error(`[orca] Blocked ${context}: ${msg}`);
     throw new Error(`Orca blocked ${context}: ${msg}`);
   }
@@ -296,7 +296,7 @@ export default async function orcaPlugin(ctx: PluginContext): Promise<PluginHook
       const response = callOrca(orcaBin, 'permission.asked', input, sessionId, true);
 
       if (response.decision === 'block') {
-        const msg = response.message || response.reason || 'Blocked by Orca policy';
+        const msg = response.message || response.reason || 'Orca blocked this command.';
         console.error(`[orca] Blocked permission: ${msg}`);
         output.status = 'deny';
         return;
