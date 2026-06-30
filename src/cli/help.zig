@@ -169,15 +169,17 @@ pub const commands = [_]CommandInfo{
     .{
         .name = "history",
         .summary = "Review protected command history",
-        .usage = "orca history [stats|check|analyze|interactive|export|prune|backup] [options]",
+        .usage = "orca history [stats|check|analyze|interactive|export|prune|backup] [options] [--live]",
         .category = .diagnostics,
         .examples = &.{
             "orca history stats --days 7",
             "orca history check --strict",
+            "orca history --live",
         },
         .details = &.{
             "Human stats are rendered by Orca from structured history data.",
             "Use 'orca history --help' for actions and examples.",
+            "--live opens a scrollable alt-screen view of the current stats snapshot (TTY only; not with --json).",
         },
     },
     .{
@@ -279,15 +281,17 @@ pub const commands = [_]CommandInfo{
         "Local workspace .orca/ directories are not removed automatically;",
         "run 'find . -type d -name .orca' to locate them manually.",
     } },
-    .{ .name = "replay", .summary = "Replay an audit session", .usage = "orca replay [--list] [--session <id|last>] [--json] [--only denied] [--verify]", .category = .core_workflow, .examples = &.{
+    .{ .name = "replay", .summary = "Replay an audit session", .usage = "orca replay [--list] [--session <id|last>] [--json] [--only denied] [--verify] [--tui]", .category = .core_workflow, .examples = &.{
         "orca replay",
         "orca replay --list",
         "orca replay --session last",
         "orca replay --session 2026-05-29-abc123",
+        "orca replay --session last --tui",
     }, .details = &.{
         "Reads .orca session artifacts, renders a timeline, and can verify session integrity.",
         "With no args and no sessions, lists available sessions instead of erroring.",
         "Use --list to print all session IDs under .orca/sessions/.",
+        "--tui opens a scrollable alt-screen timeline view (TTY only; not with --json).",
     } },
     .{
         .name = "diff",

@@ -17,6 +17,11 @@ pub fn commandWithExecutor(comptime execute_cli: anytype, io: std.Io, argv: []co
         try writeHelp(stdout);
         return exit_codes.success;
     }
+    // Phase 7: --live is an opt-in alt-screen view of the current stats snapshot.
+    // Intercept before the stats/passthrough split so --live is never forwarded to
+    // the daemon. True command-level live-poll is a documented follow-up (it would
+    // need a Zig-side daemon-history parser, risking the frozen --json contract).
+    if (isLiveRequest(argv)) return renderLiveStats(execute_cli, io, argv, stdout, stderr);
     if (!isHumanStats(argv)) return passThrough(execute_cli, io, argv, stdout, stderr);
 
     const allocator = std.heap.smp_allocator;
@@ -54,8 +59,115 @@ fn passThrough(comptime execute_cli: anytype, io: std.Io, argv: []const []const 
     return execute_cli(io, daemon_argv, stdout, stderr);
 }
 
+/// Phase 7: render the current `history stats` snapshot inside the alt-screen
+/// viewer. Fetches the structured stats JSON (same path as `history stats`),
+/// renders the human form into a buffer, splits it into lines, and hands them to
+/// `tui.live_view.run` for scrollable display. Rejected on `--json`/`--robot`
+/// (frozen machine contract) and on non-interactive output (non-TTY / NO_COLOR /
+/// --no-rich) — the alt-screen never enters on a pipe.
+fn renderLiveStats(comptime execute_cli: anytype, io: std.Io, argv: []const []const u8, stdout: anytype, stderr: anytype) !u8 {
+    for (argv) |arg| {
+        if (std.mem.eql(u8, arg, "--json") or std.mem.eql(u8, arg, "--robot")) {
+            try stderr.writeAll("orca history: --live cannot be combined with --json/--robot (machine output is frozen).\n");
+            return exit_codes.usage;
+        }
+    }
+    if (!tui.theme.active(io, stdout).capability.hasColor()) {
+        try stderr.writeAll("orca history: --live needs an interactive colour terminal. Drop --live, or unset NO_COLOR / --no-rich.\n");
+        return exit_codes.usage;
+    }
+
+    const allocator = std.heap.smp_allocator;
+    const live_args = try buildLiveStatsArgv(allocator, argv);
+    defer allocator.free(live_args);
+    const daemon_argv = try allocator.alloc([]const u8, live_args.len + 1);
+    defer allocator.free(daemon_argv);
+    daemon_argv[0] = "history";
+    @memcpy(daemon_argv[1..], live_args);
+
+    var daemon_stdout: std.Io.Writer.Allocating = .init(allocator);
+    defer daemon_stdout.deinit();
+    var daemon_stderr: std.Io.Writer.Allocating = .init(allocator);
+    defer daemon_stderr.deinit();
+    const code = try execute_cli(io, daemon_argv, &daemon_stdout.writer, &daemon_stderr.writer);
+    if (code != exit_codes.success) {
+        try stdout.writeAll(daemon_stdout.written());
+        try stderr.writeAll(daemon_stderr.written());
+        return code;
+    }
+
+    var parsed = contracts.parseHistoryStats(allocator, daemon_stdout.written()) catch |err| {
+        try stderr.print("orca history: daemon returned invalid structured data ({s}). Run 'orca doctor'.\n", .{@errorName(err)});
+        return exit_codes.general;
+    };
+    defer parsed.deinit();
+
+    // Render the human form into a buffer, then split into lines for the viewer.
+    // This reuses the canonical stats renderer so the live view carries exactly
+    // the same information as the linear form (no divergence to maintain).
+    var human_buf: std.Io.Writer.Allocating = .init(allocator);
+    defer human_buf.deinit();
+    _ = try renderHumanAlloc(allocator, io, parsed.value, &human_buf.writer);
+    const lines = try splitLines(allocator, human_buf.written());
+    defer freeLines(allocator, lines);
+
+    try tui.live_view.run(io, stdout, "history · stats", lines, null, null);
+    return exit_codes.success;
+}
+
+/// Split `text` on newlines into owned line slices (empty trailing line dropped).
+fn splitLines(allocator: std.mem.Allocator, text: []const u8) ![][]const u8 {
+    var out: std.ArrayList([]const u8) = .empty;
+    errdefer {
+        for (out.items) |line| allocator.free(line);
+        out.deinit(allocator);
+    }
+    var it = std.mem.splitScalar(u8, text, '\n');
+    while (it.next()) |line| {
+        // Drop a single trailing empty line produced by the trailing '\n'.
+        if (line.len == 0 and it.peek() == null) break;
+        try out.append(allocator, try allocator.dupe(u8, line));
+    }
+    return try out.toOwnedSlice(allocator);
+}
+
+fn freeLines(allocator: std.mem.Allocator, lines: [][]const u8) void {
+    for (lines) |line| allocator.free(line);
+    allocator.free(lines);
+}
+
 fn isHelp(argv: []const []const u8) bool {
     return argv.len == 1 and (std.mem.eql(u8, argv[0], "--help") or std.mem.eql(u8, argv[0], "-h"));
+}
+
+/// True when `--live` appears in argv (and this isn't a --help request). The
+/// alt-screen view is handled in Zig; --live never reaches the daemon.
+fn isLiveRequest(argv: []const []const u8) bool {
+    for (argv) |arg| {
+        if (std.mem.eql(u8, arg, "--help") or std.mem.eql(u8, arg, "-h")) return false;
+        if (std.mem.eql(u8, arg, "--live")) return true;
+    }
+    return false;
+}
+
+/// Pure: build the daemon argv for the --live stats snapshot, dropping `--live`,
+/// normalising a leading `stats`, and appending `--json`. Returns the args
+/// AFTER the `history` subcommand (the caller prepends `history`). Unit-tested.
+fn buildLiveStatsArgv(allocator: std.mem.Allocator, argv: []const []const u8) ![][]const u8 {
+    var out: std.ArrayList([]const u8) = .empty;
+    errdefer out.deinit(allocator);
+    try out.append(allocator, "stats");
+    var saw_stats = false;
+    for (argv) |arg| {
+        if (std.mem.eql(u8, arg, "--live")) continue; // never forwarded
+        if (!saw_stats and std.mem.eql(u8, arg, "stats")) {
+            saw_stats = true; // drop a leading stats (we prepended one above)
+            continue;
+        }
+        try out.append(allocator, arg);
+    }
+    try out.append(allocator, "--json");
+    return try out.toOwnedSlice(allocator);
 }
 
 fn isHumanStats(argv: []const []const u8) bool {
@@ -247,6 +359,51 @@ fn fakeStats(_: std.Io, argv: []const []const u8, stdout: anytype, _: anytype) !
     try std.testing.expectEqualSlices([]const u8, &.{ "history", "stats", "--days", "7", "--json" }, argv);
     try stdout.writeAll(@embedFile("test-fixtures/daemon-history-stats.json"));
     return exit_codes.success;
+}
+
+// ---------------------------------------------------------------------------
+// Phase 7 Task D: --live alt-screen view (rejection contracts + the pure
+// argv builder; the raw TTY loop is manual-verify per the prompt.zig:19 note).
+// ---------------------------------------------------------------------------
+
+test "buildLiveStatsArgv: drops --live, normalises stats, appends --json" {
+    const cases = [_]struct { in: []const []const u8, want: []const []const u8 }{
+        .{ .in = &.{"--live"}, .want = &.{ "stats", "--json" } },
+        .{ .in = &.{ "--live", "--days", "7" }, .want = &.{ "stats", "--days", "7", "--json" } },
+        .{ .in = &.{ "stats", "--live", "--days", "7" }, .want = &.{ "stats", "--days", "7", "--json" } },
+        .{ .in = &.{"--live"}, .want = &.{ "stats", "--json" } },
+    };
+    for (cases) |c| {
+        const got = try buildLiveStatsArgv(std.testing.allocator, c.in);
+        defer std.testing.allocator.free(got);
+        try std.testing.expectEqualSlices([]const u8, c.want, got);
+    }
+}
+
+test "history --live is rejected on non-interactive output (no colour terminal)" {
+    // Fixed-buffer stdout → no colour capability → --live must be rejected with
+    // a usage error and must never fetch from the daemon or enter the alt-screen.
+    var out: [256]u8 = undefined;
+    var err: [256]u8 = undefined;
+    var stdout: std.Io.Writer = .fixed(&out);
+    var stderr: std.Io.Writer = .fixed(&err);
+    const code = try commandWithExecutor(unexpectedExecutor, std.testing.io, &.{"--live"}, &stdout, &stderr);
+    try std.testing.expectEqual(exit_codes.usage, code);
+    try std.testing.expect(std.mem.indexOf(u8, stderr.buffered(), "--live") != null);
+    try std.testing.expect(std.mem.indexOf(u8, stderr.buffered(), "interactive") != null);
+    try std.testing.expect(std.mem.indexOf(u8, stdout.buffered(), "\x1b[?1049") == null);
+}
+
+test "history --live cannot combine with --json" {
+    var out: [256]u8 = undefined;
+    var err: [256]u8 = undefined;
+    var stdout: std.Io.Writer = .fixed(&out);
+    var stderr: std.Io.Writer = .fixed(&err);
+    const code = try commandWithExecutor(unexpectedExecutor, std.testing.io, &.{ "--live", "--json" }, &stdout, &stderr);
+    try std.testing.expectEqual(exit_codes.usage, code);
+    try std.testing.expect(std.mem.indexOf(u8, stderr.buffered(), "--live") != null);
+    try std.testing.expect(std.mem.indexOf(u8, stderr.buffered(), "--json") != null);
+    try std.testing.expect(std.mem.indexOf(u8, stdout.buffered(), "\x1b[?1049") == null);
 }
 
 test "history help is Zig-owned and has no daemon branding" {

@@ -14,6 +14,9 @@ const ReplayCliOptions = struct {
     only_denied: bool = false,
     verify: bool = false,
     list: bool = false,
+    /// Phase 7: opt-in alt-screen timeline view (`orca replay --tui`). Default
+    /// stays linear (invariant #1: --json frozen). Rejected on non-TTY / --json.
+    tui_view: bool = false,
     /// When true, a missing default `last` session lists sessions instead of erroring.
     fallback_to_list: bool = false,
 };
@@ -81,8 +84,23 @@ fn replaySession(
     };
     defer session.deinit();
 
+    // Phase 7: --tui is a human-only alt-screen view; it must not combine with
+    // the frozen --json machine contract (invariant #1) and must not enter the
+    // alt-screen on non-interactive output (invariant #2).
+    if (options.json and options.tui_view) {
+        try stderr.writeAll("orca replay: --tui cannot be combined with --json (machine output is frozen).\n");
+        return exit_codes.usage;
+    }
     if (options.json) {
         try core_api.writeReplayJson(stdout, session);
+    } else if (options.tui_view) {
+        if (!tui.theme.active(io, stdout).capability.hasColor()) {
+            try stderr.writeAll("orca replay: --tui needs an interactive colour terminal. Drop --tui, or unset NO_COLOR / --no-rich.\n");
+            return exit_codes.usage;
+        }
+        const lines = try buildTimelineLinesForTui(allocator, session);
+        defer freeTimelineLines(allocator, lines);
+        try tui.live_view.run(io, stdout, "replay", lines, null, null);
     } else {
         try writeReplayHuman(io, allocator, stdout, session, options.verify);
     }
@@ -158,6 +176,59 @@ fn replayEventIcon(event_type: []const u8) []const u8 {
     return "•";
 }
 
+/// Build the flat, pre-rendered lines for the `--tui` alt-screen timeline view.
+/// Mirrors `writeReplayHuman`'s redaction-grouping (collapsing runs of
+/// `secret_redacted`) so the scrollable view carries the same information as the
+/// linear render. The caller owns the returned slice and each line; free with
+/// `freeTimelineLines`. This path is isolated from `writeReplayHuman` so the
+/// linear + --json byte contracts are untouched.
+fn buildTimelineLinesForTui(allocator: std.mem.Allocator, session: core_api.ReplaySession) ![][]const u8 {
+    var lines: std.ArrayList([]const u8) = .empty;
+    errdefer {
+        for (lines.items) |line| allocator.free(line);
+        lines.deinit(allocator);
+    }
+
+    // Session header for context.
+    try lines.append(allocator, try std.fmt.allocPrint(allocator, "Session   {s}", .{session.session_id}));
+    try lines.append(allocator, try std.fmt.allocPrint(allocator, "Command   {s}", .{session.command_display}));
+    try lines.append(allocator, try std.fmt.allocPrint(allocator, "Policy    {s}", .{session.policy}));
+    try lines.append(allocator, try std.fmt.allocPrint(allocator, "Status    {s}", .{session.status_display}));
+    try lines.append(allocator, try allocator.dupe(u8, ""));
+    try lines.append(allocator, try allocator.dupe(u8, "Timeline"));
+
+    var event_index: usize = 0;
+    while (event_index < session.events.len) {
+        const event = session.events[event_index];
+        var group_len: usize = 1;
+        if (std.mem.eql(u8, event.event_type, "secret_redacted")) {
+            while (event_index + group_len < session.events.len and
+                std.mem.eql(u8, session.events[event_index + group_len].event_type, "secret_redacted"))
+            {
+                group_len += 1;
+            }
+        }
+        const icon = replayEventIcon(event.event_type);
+        const line = if (group_len > 1)
+            try std.fmt.allocPrint(allocator, "{s}  {s} · {s} · {d} secret redactions · {s}", .{
+                icon, event.timestamp, event.event_type, group_len, event.target_value,
+            })
+        else
+            try std.fmt.allocPrint(allocator, "{s}  {s} · {s} · {s}", .{
+                icon, event.timestamp, event.event_type, event.target_value,
+            });
+        try lines.append(allocator, line);
+        event_index += group_len;
+    }
+
+    return try lines.toOwnedSlice(allocator);
+}
+
+fn freeTimelineLines(allocator: std.mem.Allocator, lines: [][]const u8) void {
+    for (lines) |line| allocator.free(line);
+    allocator.free(lines);
+}
+
 fn listSessions(io: std.Io, allocator: std.mem.Allocator, workspace_root: []const u8, stdout: anytype) !u8 {
     const sessions_dir = try std.fs.path.join(allocator, &.{ workspace_root, ".orca", "sessions" });
     defer allocator.free(sessions_dir);
@@ -225,8 +296,13 @@ fn parseOptions(io: std.Io, argv: []const []const u8, stdout: anytype, stderr: a
             }
             options.only_denied = true;
             options.fallback_to_list = false;
+        } else if (std.mem.eql(u8, arg, "--tui")) {
+            // Phase 7: opt-in alt-screen timeline view. Linear output is the
+            // default; --json stays frozen and cannot combine with --tui.
+            options.tui_view = true;
+            options.fallback_to_list = false;
         } else {
-            try suggestions.writeUnknownOption(stderr, "orca replay", arg, &.{ "--list", "--session", "--json", "--verify", "--only", "--help", "-h" }, "replay");
+            try suggestions.writeUnknownOption(stderr, "orca replay", arg, &.{ "--list", "--session", "--json", "--verify", "--only", "--tui", "--help", "-h" }, "replay");
             return error.Usage;
         }
     }
@@ -423,4 +499,116 @@ test "replay human timeline collapses repeated redactions and json remains exact
     ;
     try std.testing.expectEqualStrings(expected_json, actual_json.buffered());
     try std.testing.expectEqualStrings("", json_stderr.buffered());
+}
+
+// ---------------------------------------------------------------------------
+// Phase 7 Task D: --tui alt-screen view (rejection contracts; the raw TTY loop
+// is manual-verify per the prompt.zig:19 note). Linear + --json byte contracts
+// must be unchanged when --tui is absent.
+// ---------------------------------------------------------------------------
+
+test "replay --tui is rejected on non-interactive output (no colour terminal)" {
+    // Fixed-buffer stdout → theme.active() resolves to capability .none → the
+    // alt-screen view must be rejected with a usage error, never entering the
+    // alt-screen on a pipe/buffer (invariant: non-TTY → plain text).
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const root = try tmp.dir.realPathFileAlloc(std.testing.io, ".", std.testing.allocator);
+    defer std.testing.allocator.free(root);
+    try tmp.dir.createDirPath(std.testing.io, ".orca");
+    {
+        const policy_file = try tmp.dir.createFile(std.testing.io, ".orca/policy.yaml", .{});
+        defer policy_file.close(std.testing.io);
+        try policy_file.writeStreamingAll(std.testing.io, "version: 1\nmode: strict\n");
+    }
+    const session_id = try writeReplayTimelineFixture(std.testing.io, std.testing.allocator, root);
+    defer std.testing.allocator.free(session_id);
+
+    const previous_cwd = try std.Io.Dir.cwd().realPathFileAlloc(std.testing.io, ".", std.testing.allocator);
+    defer std.testing.allocator.free(previous_cwd);
+    try std.process.setCurrentDir(std.testing.io, tmp.dir);
+    defer std.process.setCurrentPath(std.testing.io, previous_cwd) catch {};
+
+    var stdout_buf: [4096]u8 = undefined;
+    var stderr_buf: [512]u8 = undefined;
+    var stdout_writer: std.Io.Writer = .fixed(&stdout_buf);
+    var stderr_writer: std.Io.Writer = .fixed(&stderr_buf);
+
+    const code = try command(std.testing.io, &.{ "--session", session_id, "--tui" }, &stdout_writer, &stderr_writer);
+    try std.testing.expectEqual(exit_codes.usage, code);
+    try std.testing.expect(std.mem.indexOf(u8, stderr_writer.buffered(), "--tui") != null);
+    try std.testing.expect(std.mem.indexOf(u8, stderr_writer.buffered(), "interactive") != null);
+    // No alt-screen controls leaked onto the buffer.
+    try std.testing.expect(std.mem.indexOf(u8, stdout_writer.buffered(), "\x1b[?1049") == null);
+}
+
+test "replay --tui cannot combine with --json" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const root = try tmp.dir.realPathFileAlloc(std.testing.io, ".", std.testing.allocator);
+    defer std.testing.allocator.free(root);
+    try tmp.dir.createDirPath(std.testing.io, ".orca");
+    {
+        const policy_file = try tmp.dir.createFile(std.testing.io, ".orca/policy.yaml", .{});
+        defer policy_file.close(std.testing.io);
+        try policy_file.writeStreamingAll(std.testing.io, "version: 1\nmode: strict\n");
+    }
+    const session_id = try writeReplayTimelineFixture(std.testing.io, std.testing.allocator, root);
+    defer std.testing.allocator.free(session_id);
+
+    const previous_cwd = try std.Io.Dir.cwd().realPathFileAlloc(std.testing.io, ".", std.testing.allocator);
+    defer std.testing.allocator.free(previous_cwd);
+    try std.process.setCurrentDir(std.testing.io, tmp.dir);
+    defer std.process.setCurrentPath(std.testing.io, previous_cwd) catch {};
+
+    var stdout_buf: [4096]u8 = undefined;
+    var stderr_buf: [512]u8 = undefined;
+    var stdout_writer: std.Io.Writer = .fixed(&stdout_buf);
+    var stderr_writer: std.Io.Writer = .fixed(&stderr_buf);
+
+    // --tui cannot combine with --json: rejected with a usage error (the frozen
+    // machine contract never enters the alt-screen).
+    const code = try command(std.testing.io, &.{ "--session", session_id, "--json", "--tui" }, &stdout_writer, &stderr_writer);
+    try std.testing.expectEqual(exit_codes.usage, code);
+    try std.testing.expect(std.mem.indexOf(u8, stderr_writer.buffered(), "--tui") != null);
+    try std.testing.expect(std.mem.indexOf(u8, stderr_writer.buffered(), "--json") != null);
+    // No JSON emitted and no alt-screen controls.
+    try std.testing.expectEqual(@as(usize, 0), stdout_writer.buffered().len);
+    try std.testing.expect(std.mem.indexOf(u8, stdout_writer.buffered(), "\x1b[?1049") == null);
+}
+
+test "replay linear timeline is unchanged when --tui is absent" {
+    // Regression guard: the default (no --tui) human render must be byte-identical
+    // to before the Phase 7 wiring (invariant #1: --json frozen; linear stable).
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const root = try tmp.dir.realPathFileAlloc(std.testing.io, ".", std.testing.allocator);
+    defer std.testing.allocator.free(root);
+    try tmp.dir.createDirPath(std.testing.io, ".orca");
+    {
+        const policy_file = try tmp.dir.createFile(std.testing.io, ".orca/policy.yaml", .{});
+        defer policy_file.close(std.testing.io);
+        try policy_file.writeStreamingAll(std.testing.io, "version: 1\nmode: strict\n");
+    }
+    const session_id = try writeReplayTimelineFixture(std.testing.io, std.testing.allocator, root);
+    defer std.testing.allocator.free(session_id);
+
+    const previous_cwd = try std.Io.Dir.cwd().realPathFileAlloc(std.testing.io, ".", std.testing.allocator);
+    defer std.testing.allocator.free(previous_cwd);
+    try std.process.setCurrentDir(std.testing.io, tmp.dir);
+    defer std.process.setCurrentPath(std.testing.io, previous_cwd) catch {};
+
+    var stdout_buf: [4096]u8 = undefined;
+    var stderr_buf: [512]u8 = undefined;
+    var stdout_writer: std.Io.Writer = .fixed(&stdout_buf);
+    var stderr_writer: std.Io.Writer = .fixed(&stderr_buf);
+
+    const code = try command(std.testing.io, &.{ "--session", session_id }, &stdout_writer, &stderr_writer);
+    try std.testing.expectEqual(exit_codes.success, code);
+    // Same collapsed-redaction contract as the pre-Phase-7 timeline test.
+    try std.testing.expect(std.mem.indexOf(u8, stdout_writer.buffered(), "3 secret redactions") != null);
+    try std.testing.expectEqual(@as(usize, 1), std.mem.count(u8, stdout_writer.buffered(), "secret_redacted"));
+    try std.testing.expect(std.mem.indexOf(u8, stdout_writer.buffered(), "├ ⚠") != null);
+    try std.testing.expect(std.mem.indexOf(u8, stdout_writer.buffered(), "└ ✓") != null);
+    try std.testing.expect(std.mem.indexOfScalar(u8, stdout_writer.buffered(), 0x1b) == null);
 }
