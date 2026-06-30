@@ -32,7 +32,13 @@ pi -e ./orca-pi
 
 No per-session command is required. On session start, the extension quietly creates `.orca/policy.yaml` with the `generic-agent` preset when it is missing, then probes Orca health. The first protected bash call waits for this bootstrap while Pi startup remains non-blocking.
 
-Run `/orca-setup` to repeat the Pi-only policy and health setup manually. It does not run `orca start` or install plugins for other agent hosts. `/orca-start` is a deprecated alias for `/orca-setup` for one release.
+Run `/orca-setup` to repeat the Pi-only policy and health setup manually. It does
+not run `orca start` or install plugins for other agent hosts.
+
+Use `/orca-stop` to disable Orca protection for the current Pi session, and
+`/orca-start` to re-enable it and verify Pi-only policy/health setup. These
+commands only affect the in-memory Pi session; they do not uninstall the package,
+remove policies, or start/stop other host plugins.
 
 ## Behavior
 
@@ -60,7 +66,9 @@ Change mode in Pi:
 /orca-mode bypass off
 ```
 
-Session bypass is in-memory only. It is cleared when the Pi session shuts down or reloads.
+Session bypass is in-memory only. It is cleared when the Pi session shuts down or
+reloads. `/orca-stop` turns this bypass on; `/orca-start` turns it off and reruns
+the Pi health check.
 
 The status line reports `orca ready`, `orca missing`, `orca degraded`, or `orca bypass`.
 
@@ -112,7 +120,11 @@ It targets Orca CLI builds exposing `orca evaluate --json --stdin` with schema v
 
 ## Known Limitations
 
-- Slash commands (`/orca-setup`, deprecated `/orca-start`, `/orca-doctor`, `/orca-mode`) are registered at extension load time. In Pi noninteractive/print/json modes, command output may not be visible even when registration succeeds. Validate slash commands in an interactive Pi session or via unit tests.
+- Slash commands (`/orca-setup`, `/orca-start`, `/orca-stop`, `/orca-doctor`,
+  `/orca-mode`) are registered at extension load time. In Pi noninteractive,
+  print, or json modes, command output may not be visible even when registration
+  succeeds. Validate slash commands in an interactive Pi session or via unit
+  tests.
 - Session bypass is in-memory only and clears when the Pi session ends or reloads.
 - Only Pi `bash` tool calls are evaluated. Other tools (for example `read`) are not intercepted.
 
@@ -128,6 +140,6 @@ It targets Orca CLI builds exposing `orca evaluate --json --stdin` with schema v
 8. Dangerous bash tool call blocks.
 9. Orca unavailable interactive mode asks.
 10. Orca unavailable noninteractive mode blocks.
-11. `/orca-setup`, `/orca-doctor`, and `/orca-mode` work.
+11. `/orca-setup`, `/orca-start`, `/orca-stop`, `/orca-doctor`, and `/orca-mode` work.
 12. `pi install ./orca-pi`.
 13. `pi list` shows `@orca-sec/pi-orca` or the local package source.
