@@ -32,8 +32,8 @@ report_binary_sizes() {
     extract_dir="${tmp_dir}/${artifact_name}"
     mkdir -p "$extract_dir"
     case "$artifact" in
-      *.tar.gz) tar -xzf "$artifact" -C "$extract_dir" ;;
-      *.zip) unzip -q "$artifact" -d "$extract_dir" ;;
+    *.tar.gz) tar -xzf "$artifact" -C "$extract_dir" ;;
+    *.zip) unzip -q "$artifact" -d "$extract_dir" ;;
     esac
     for binary in orca orca.exe orca-daemon orca-daemon.exe; do
       path="$(find "$extract_dir" -path "*/bin/$binary" -type f | head -n 1)"
