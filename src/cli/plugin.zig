@@ -3,16 +3,16 @@ const builtin = @import("builtin");
 const core = @import("orca_core").core;
 const supervisor = core.supervisor;
 const core_api = @import("orca_core").api;
-const sandbox = @import("../sandbox/mod.zig");
+const sandbox = @import("orca").sandbox;
 
 const exit_codes = @import("exit_codes.zig");
 const help = @import("help.zig");
 const cli = @import("mod.zig");
 const plugin_install = @import("plugin_install.zig");
 const child_process = @import("child_process.zig");
-const resource_root = @import("../resource_root.zig");
-const env_util = @import("../env_util.zig");
-const tui = @import("../tui/mod.zig");
+const resource_root = @import("orca").resource_root;
+const env_util = @import("orca").env_util;
+const tui = @import("orca").tui;
 const suggestions = @import("suggestions.zig");
 
 // ---------------------------------------------------------------------------

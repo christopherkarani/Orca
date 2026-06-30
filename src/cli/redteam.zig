@@ -1,10 +1,10 @@
 const std = @import("std");
 
-const env_util = @import("../env_util.zig");
-const redteam = @import("../redteam/mod.zig");
+const env_util = @import("orca").env_util;
+const redteam = @import("orca").redteam;
 const exit_codes = @import("exit_codes.zig");
 const help = @import("help.zig");
-const resource_root = @import("../resource_root.zig");
+const resource_root = @import("orca").resource_root;
 const suggestions = @import("suggestions.zig");
 
 const Options = struct {

@@ -16,6 +16,7 @@ pub const license = @import("license.zig");
 pub const ci_check = @import("ci_check.zig");
 pub const demo = @import("demo.zig");
 pub const resource_root = @import("resource_root.zig");
+pub const env_util = @import("env_util.zig");
 pub const tui = @import("tui/mod.zig");
 
 test {
@@ -35,5 +36,6 @@ test {
     _ = ci_check;
     _ = demo;
     _ = resource_root;
+    _ = env_util;
     _ = tui;
 }

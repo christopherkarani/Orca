@@ -1,7 +1,7 @@
 const std = @import("std");
 const exit_codes = @import("exit_codes.zig");
 const contracts = @import("daemon_contracts.zig");
-const tui = @import("../tui/mod.zig");
+const tui = @import("orca").tui;
 
 pub fn command(io: std.Io, argv: []const []const u8, stdout: anytype, stderr: anytype) !u8 {
     return commandWithExecutor(realExecute, io, argv, stdout, stderr);

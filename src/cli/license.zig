@@ -1,6 +1,6 @@
 const std = @import("std");
 
-const license = @import("../license.zig");
+const license = @import("orca").license;
 const exit_codes = @import("exit_codes.zig");
 const help = @import("help.zig");
 const suggestions = @import("suggestions.zig");

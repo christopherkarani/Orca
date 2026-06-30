@@ -96,6 +96,7 @@ pub fn build(b: *std.Build) void {
         },
     });
     orca_mod.addImport("build_options", build_options_mod);
+    orca_mod.addImport("orca", orca_mod);
 
     const orca_cli_mod = b.addModule("orca_cli", .{
         .root_source_file = b.path("packages/cli/src/root.zig"),
