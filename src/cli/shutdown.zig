@@ -3,25 +3,43 @@ const std = @import("std");
 const daemon = @import("daemon.zig");
 const exit_codes = @import("exit_codes.zig");
 const help = @import("help.zig");
+const suggestions = @import("suggestions.zig");
 
 pub fn command(io: std.Io, argv: []const []const u8, stdout: anytype, stderr: anytype) !u8 {
-    var daemon_flag = false;
+    return commandWithShutdown(daemon.shutdownDaemon, io, argv, stdout, stderr);
+}
 
+fn commandWithShutdown(comptime shutdown_fn: anytype, io: std.Io, argv: []const []const u8, stdout: anytype, stderr: anytype) !u8 {
+    return commandWithShutdownImpl(shutdown_fn, io, argv, stdout, stderr);
+}
+
+fn mockStopped(_: std.mem.Allocator) daemon.DaemonError!daemon.ShutdownResult {
+    return .stopped;
+}
+
+test "shutdown defaults to daemon stop and retains daemon qualifier" {
+    inline for (.{ &[_][]const u8{}, &[_][]const u8{"--daemon"} }) |argv| {
+        var stdout_buf: [128]u8 = undefined;
+        var stderr_buf: [256]u8 = undefined;
+        var stdout_writer: std.Io.Writer = .fixed(&stdout_buf);
+        var stderr_writer: std.Io.Writer = .fixed(&stderr_buf);
+        const code = try commandWithShutdown(mockStopped, std.testing.io, argv, &stdout_writer, &stderr_writer);
+        try std.testing.expectEqual(exit_codes.success, code);
+        try std.testing.expectEqualStrings("orca daemon stopped\n", stdout_writer.buffered());
+        try std.testing.expectEqualStrings("", stderr_writer.buffered());
+    }
+}
+
+fn commandWithShutdownImpl(comptime shutdown_fn: anytype, io: std.Io, argv: []const []const u8, stdout: anytype, stderr: anytype) !u8 {
     for (argv) |arg| {
         if (std.mem.eql(u8, arg, "--help") or std.mem.eql(u8, arg, "-h")) {
             _ = try help.writeCommand(io, stdout, "shutdown");
             return exit_codes.success;
         }
         if (std.mem.eql(u8, arg, "--daemon")) {
-            daemon_flag = true;
             continue;
         }
-        try stderr.print("orca shutdown: unknown option '{s}'.\n", .{arg});
-        return exit_codes.usage;
-    }
-
-    if (!daemon_flag) {
-        try stderr.writeAll("orca shutdown: expected --daemon. Run 'orca help shutdown' for usage.\n");
+        try suggestions.writeUnknownOption(stderr, "orca shutdown", arg, &.{ "--daemon", "--help" }, "shutdown");
         return exit_codes.usage;
     }
 
@@ -29,7 +47,7 @@ pub fn command(io: std.Io, argv: []const []const u8, stdout: anytype, stderr: an
     defer _ = gpa_state.deinit();
     const allocator = gpa_state.allocator();
 
-    const result = daemon.shutdownDaemon(allocator) catch |err| {
+    const result = shutdown_fn(allocator) catch |err| {
         try stderr.print("orca shutdown --daemon: {s}: {s}\n", .{ shutdownErrorLabel(err), @errorName(err) });
         return exit_codes.general;
     };
@@ -60,15 +78,16 @@ fn shutdownErrorLabel(err: daemon.DaemonError) []const u8 {
     };
 }
 
-test "shutdown requires --daemon flag" {
+test "shutdown unknown flag suggests daemon qualifier" {
     var stdout_buf: [128]u8 = undefined;
     var stderr_buf: [256]u8 = undefined;
     var stdout_writer: std.Io.Writer = .fixed(&stdout_buf);
     var stderr_writer: std.Io.Writer = .fixed(&stderr_buf);
 
-    const code = try command(std.testing.io, &.{}, &stdout_writer, &stderr_writer);
+    const code = try command(std.testing.io, &.{"--daemn"}, &stdout_writer, &stderr_writer);
     try std.testing.expectEqual(exit_codes.usage, code);
-    try std.testing.expect(std.mem.indexOf(u8, stderr_writer.buffered(), "expected --daemon") != null);
+    try std.testing.expect(std.mem.indexOf(u8, stderr_writer.buffered(), "Did you mean '--daemon'?") != null);
+    try std.testing.expect(std.mem.indexOf(u8, stderr_writer.buffered(), "orca help shutdown") != null);
 }
 
 test "ShutdownResult enum values are distinct" {

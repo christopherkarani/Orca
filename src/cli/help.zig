@@ -1,5 +1,7 @@
 const std = @import("std");
 const style = @import("style.zig");
+const build_options = @import("build_options");
+const tui = @import("../tui/mod.zig");
 
 pub const Category = enum {
     getting_started,
@@ -71,7 +73,8 @@ pub const commands = [_]CommandInfo{
             "Explains changes before writing files, preserves existing policy unless you use `orca init --force`.",
             "Protection modes: Command Guard (hooks + Rust daemon), Firewall (`orca run`), Maximum Protection (both).",
             "On interactive terminals, prompts for protection mode and host integrations.",
-            "Use --auto for scripts/CI; combine with --protection and --hosts when stdin is not a TTY.",
+            "On non-TTY terminals, auto-selects safe defaults (no --auto required).",
+            "Use --auto to force non-interactive mode on a TTY; combine with --protection and --hosts.",
             "Verifies daemon health, safe allow and dangerous deny fixtures, and selected integration paths.",
             "Re-run safely to repair or update an existing setup.",
         },
@@ -104,8 +107,8 @@ pub const commands = [_]CommandInfo{
             "orca setup --preset strict-local",
         },
         .details = &.{
-            "On interactive terminals (TTY), `orca setup` (no flags) enters guided mode with a numbered host selector.",
-            "Enter space-separated numbers (e.g. 1 3), 'all', 'none', or press Enter to accept defaults.",
+            "On interactive terminals (TTY), `orca setup` (no flags) enters guided mode with arrow-key host selection.",
+            "Use ↑↓ to navigate, Space to toggle hosts, Enter to confirm.",
             "Use --auto (or --yes alias) for the fully automatic non-interactive path used by scripts/CI.",
             "Use --preset to choose a policy preset (default: generic-agent).",
             "After setup, run 'orca run -- <your-command>' for immediate protection.",
@@ -165,16 +168,18 @@ pub const commands = [_]CommandInfo{
     },
     .{
         .name = "history",
-        .summary = "Query Rust command history",
-        .usage = "orca history <action> [options]",
+        .summary = "Review protected command history",
+        .usage = "orca history [stats|check|analyze|interactive|export|prune|backup] [options] [--live]",
         .category = .diagnostics,
         .examples = &.{
             "orca history stats --days 7",
             "orca history check --strict",
+            "orca history --live",
         },
         .details = &.{
-            "Proxies to the Rust daemon so history queries use the Rust SQLite-backed history store.",
-            "Use 'orca history --help' for the full Rust-backed action list.",
+            "Human stats are rendered by Orca from structured history data.",
+            "Use 'orca history --help' for actions and examples.",
+            "--live opens a scrollable alt-screen view of the current stats snapshot (TTY only; not with --json).",
         },
     },
     .{
@@ -193,16 +198,18 @@ pub const commands = [_]CommandInfo{
     },
     .{
         .name = "packs",
-        .summary = "List Rust safety packs",
-        .usage = "orca packs [--enabled] [--format pretty|json]",
+        .summary = "Browse available safety packs",
+        .usage = "orca packs [--filter <term>] [--installed] [--page N] [--page-size N]",
         .category = .diagnostics,
         .examples = &.{
             "orca packs",
+            "orca packs --installed",
+            "orca packs --filter database --page-size 10",
             "orca packs --format json",
         },
         .details = &.{
-            "Proxies to the Rust daemon and lists built-in and configured external safety packs.",
-            "Use 'orca packs --help' for the full Rust-backed option set.",
+            "Human output is sorted and paginated locally; --installed is an alias for --enabled.",
+            "Use --format json or --robot for byte-stable daemon output.",
         },
     },
     .{ .name = "policy", .summary = "Validate, explain, and apply policies", .usage = "orca policy <check|explain|packs|apply-pack> [...]", .category = .core_workflow, .examples = &.{
@@ -239,26 +246,32 @@ pub const commands = [_]CommandInfo{
         "Creates a harmless local session showing a destructive command denied by Orca.",
         "The demo writes replay/report artifacts but does not execute the destructive command.",
     } },
-    .{ .name = "shutdown", .summary = "Stop the background Orca daemon", .usage = "orca shutdown --daemon", .category = .advanced, .examples = &.{
+    .{ .name = "shutdown", .summary = "Stop the background Orca daemon", .usage = "orca shutdown [--daemon]", .category = .advanced, .examples = &.{
+        "orca shutdown",
         "orca shutdown --daemon",
     }, .details = &.{
         "Sends a graceful Shutdown request to the Rust daemon over UDS.",
         "Removes $HOME/.orca/daemon.sock and daemon.pid when shutdown succeeds.",
         "When the daemon is not running, stale artifacts are cleaned when safe.",
     } },
-    .{ .name = "disable", .summary = "Disable Orca plugins from host agents", .usage = "orca disable [codex|claude|opencode|openclaw|hermes|all] [--yes]", .category = .integrations, .details = &.{
+    .{ .name = "stop", .summary = "Stop Orca protection for host agents", .usage = "orca stop [codex|claude|cursor|opencode|openclaw|hermes|all] [--yes]", .category = .integrations, .examples = &.{
+        "orca stop",
+        "orca stop codex",
+        "orca stop cursor",
+    }, .details = &.{
         "Removes Orca plugin registrations from host agents without removing the Orca binary or policy files.",
-        "Hosts: codex, claude, opencode, openclaw, hermes. Defaults to all if no host is specified.",
+        "Hosts: codex, claude, cursor, opencode, openclaw, hermes. Defaults to all if no host is specified.",
+        "Cursor: removes the Orca shell hook wrapper and disables simple Orca-only hooks.json files.",
         "OpenCode: removes .opencode/plugins/orca.ts and ~/.config/opencode/plugins/orca.ts",
         "OpenClaw: runs 'openclaw plugins uninstall orca-openclaw-plugin'",
         "Hermes: runs 'hermes plugins disable orca' and removes ~/.hermes/plugins/orca/",
         "Codex / Claude: removes known plugin paths (host-managed install locations).",
-        "Re-enable later with: orca setup (guided) or orca plugin install <host>",
+        "Restart protection later with: orca setup (guided) or orca plugin install <host>",
     } },
     .{ .name = "uninstall", .summary = "Uninstall Orca from this machine", .usage = "orca uninstall [--plugins-only] [--keep-config] [--yes]", .category = .integrations, .details = &.{
         "Completely removes Orca and its integrations from the machine.",
         "Steps:",
-        "  1. Removes all plugins from host agents (same as 'orca disable').",
+        "  1. Removes all plugins from host agents (same as 'orca stop').",
         "  2. Removes the Orca binary from known locations (~/.local/bin/orca, PATH).",
         "  3. Removes user config and data (~/.config/orca/, ~/.orca).",
         "Options:",
@@ -268,15 +281,17 @@ pub const commands = [_]CommandInfo{
         "Local workspace .orca/ directories are not removed automatically;",
         "run 'find . -type d -name .orca' to locate them manually.",
     } },
-    .{ .name = "replay", .summary = "Replay an audit session", .usage = "orca replay [--list] [--session <id|last>] [--json] [--only denied] [--verify]", .category = .core_workflow, .examples = &.{
+    .{ .name = "replay", .summary = "Replay an audit session", .usage = "orca replay [--list] [--session <id|last>] [--json] [--only denied] [--verify] [--tui]", .category = .core_workflow, .examples = &.{
         "orca replay",
         "orca replay --list",
         "orca replay --session last",
         "orca replay --session 2026-05-29-abc123",
+        "orca replay --session last --tui",
     }, .details = &.{
         "Reads .orca session artifacts, renders a timeline, and can verify session integrity.",
         "With no args and no sessions, lists available sessions instead of erroring.",
         "Use --list to print all session IDs under .orca/sessions/.",
+        "--tui opens a scrollable alt-screen timeline view (TTY only; not with --json).",
     } },
     .{
         .name = "diff",
@@ -337,18 +352,18 @@ pub const commands = [_]CommandInfo{
         "Prints the current Orca version.",
         "--json emits version, commit, target, and build_date fields for release automation.",
     } },
-    .{ .name = "plugin", .summary = "Plugin management and diagnostics", .usage = "orca plugin <doctor|manifest|install|mcp-server> [options]", .category = .integrations, .details = &.{
+    .{ .name = "plugin", .summary = "Plugin management and diagnostics", .usage = "orca plugin <list|host|doctor|manifest|install> [options]", .category = .integrations, .details = &.{
         "Subcommands:",
+        "  orca plugin list",
+        "  orca plugin <codex|claude|opencode|openclaw|hermes> [--dry-run|--yes]",
         "  orca plugin doctor [codex|claude|opencode|openclaw|hermes] [--json]",
         "  orca plugin manifest [codex|claude|opencode|openclaw|hermes|all] [--json]",
         "  orca plugin install [codex|claude|opencode|openclaw|hermes|all] [--dry-run] [--path <path>] [--yes]",
-        "  orca plugin mcp-server [--help]",
         "Primary onboarding path: run `orca setup` (guided interactive selection on TTY terminals).",
         "`plugin install --yes` is retained for scripting, CI, and non-interactive use cases.",
-        "Plugin commands are safe by default: install defaults to --dry-run, doctor does not print secrets,",
-        "and mcp-server is currently a documented stub that does not start a real server.",
+        "Plugin commands are safe by default: install defaults to --dry-run and doctor does not print secrets.",
     } },
-    .{ .name = "decide", .summary = "Ask Orca whether an action is allowed by policy", .usage = "orca decide <command|file|prompt|tool> --json <payload>|--stdin [--ci]", .category = .advanced, .details = &.{
+    .{ .name = "decide", .summary = "Ask Orca whether an action is allowed by policy", .usage = "orca decide <command|file|prompt|tool> (--json <payload>|--stdin) [--ci] [--human]", .category = .advanced, .details = &.{
         "Evaluates a policy decision for host plugins (Codex, Claude Code, OpenCode, etc.).",
         "Subcommands:",
         "  orca decide command --json '{\"command\":\"<cmd>\"}'",
@@ -357,7 +372,8 @@ pub const commands = [_]CommandInfo{
         "  orca decide tool    --json '{\"name\":\"<name>\"}'",
         "  orca decide <kind> --stdin",
         "  orca decide <kind> --json <payload> [--ci]",
-        "Output is JSON to stdout; debug logs go to stderr only.",
+        "Default output is stable JSON; add --human for a decision badge, details, and risk meter.",
+        "Debug logs go to stderr only.",
     } },
     .{ .name = "evaluate", .summary = "Stable machine API for shell-command evaluation", .usage = "orca evaluate --json --stdin", .category = .integrations, .details = &.{
         "Reads a versioned JSON request from stdin and evaluates shell_command events through the Rust daemon Evaluate path.",
@@ -418,28 +434,62 @@ pub const commands = [_]CommandInfo{
 };
 
 pub fn write(io: std.Io, writer: anytype) !void {
-    try writer.writeAll("Orca — local runtime firewall for AI agents\n" ++
-        "\n" ++
-        "Usage:\n" ++
-        "  orca <command> [options]\n" ++
-        "\n");
+    // Compact brand header (Phase 2 brand cohesion).
+    try tui.render.banner(io, writer, build_options.version, null);
+    try tui.theme.paint(io, writer, .muted, "Local runtime firewall for AI agents");
+    try writer.writeAll("\n\n");
+    try writer.writeAll("Usage:\n  orca <command> [options]\n\n");
+
+    // Compute a uniform command-name column width across all visible commands.
+    var name_width: usize = 0;
+    for (commands) |cmd| {
+        if (cmd.hidden) continue;
+        const w = tui.render.displayWidth(cmd.name);
+        if (w > name_width) name_width = w;
+    }
 
     const categories = comptime std.enums.values(Category);
     for (categories) |cat| {
+        if (cat == .internal) continue; // hide internal group entirely
         var any = false;
         for (commands) |cmd| {
             if (cmd.hidden or cmd.category != cat) continue;
             if (!any) {
-                try style.maybeColor(io, writer, style.Style.bold, categoryTitle(cat));
-                try writer.writeAll(":\n");
+                try writer.writeAll("  ");
+                try tui.theme.paintBold(io, writer, .brand, categoryTitle(cat));
+                try writer.writeAll("\n");
                 any = true;
             }
-            try writer.print("  {s:<13} {s}\n", .{ cmd.name, cmd.summary });
+            try writer.writeAll("    ");
+            try tui.theme.paint(io, writer, .text_bright, cmd.name);
+            try tui.render.writePadded(writer, "", name_width - tui.render.displayWidth(cmd.name) + 2);
+            try writer.writeAll(cmd.summary);
+            try writer.writeAll("\n");
         }
         if (any) try writer.writeAll("\n");
     }
 
-    try writer.writeAll("Use 'orca help <command>' for command-specific help.\n");
+    // Global options (Phase 7 discoverability): surface the --no-rich /
+    // ORCA_NO_RICH escape hatch at the top level so users can find it without
+    // reading the source. --json/--robot are per-command machine flags.
+    try writer.writeAll("  ");
+    try tui.theme.paintBold(io, writer, .brand, "Global options");
+    try writer.writeAll("\n");
+    try writer.writeAll("    --no-rich   Plain text output (no colour, no animation). ");
+    try tui.theme.paint(io, writer, .muted, "Also ORCA_NO_RICH=1.");
+    try writer.writeAll("\n");
+    try writer.writeAll("                 Use this for piping, scripting, or terminals that mis-render colour.\n");
+    try writer.writeAll("    --json      Per-command machine output (byte-stable). See `orca help <command>`.\n");
+    try writer.writeAll("\n");
+
+    // Try-next hint.
+    try writer.writeAll("  ");
+    try tui.theme.paint(io, writer, .muted, "Next:");
+    try writer.writeAll(" run ");
+    try tui.theme.paint(io, writer, .text_bright, "orca help <command>");
+    try writer.writeAll(" for command-specific help, or ");
+    try tui.theme.paint(io, writer, .text_bright, "orca quickstart");
+    try writer.writeAll(" to get started.\n");
 }
 
 fn categoryTitle(cat: Category) []const u8 {

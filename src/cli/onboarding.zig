@@ -9,6 +9,7 @@ const plugin = @import("plugin.zig");
 const daemon = @import("daemon.zig");
 const shell_eval = @import("shell_eval.zig");
 const resource_root = @import("../resource_root.zig");
+const suggestions = @import("suggestions.zig");
 
 pub const default_preset = "generic-agent";
 
@@ -172,7 +173,7 @@ pub fn parseFlags(argv: []const []const u8, stderr: anytype, command_label: []co
     var index: usize = 0;
     while (index < argv.len) : (index += 1) {
         const arg = argv[index];
-        if (std.mem.eql(u8, arg, "--auto")) {
+        if (std.mem.eql(u8, arg, "--auto") or std.mem.eql(u8, arg, "--no-interact")) {
             flags.auto = true;
             continue;
         }
@@ -189,7 +190,12 @@ pub fn parseFlags(argv: []const []const u8, stderr: anytype, command_label: []co
             flags.preset = argv[index];
             continue;
         }
-        try stderr.print("{s}: unknown option '{s}'.\n", .{ command_label, arg });
+        const help_command = if (std.mem.eql(u8, command_label, "orca quickstart")) "quickstart" else "setup";
+        if (yes_is_auto) {
+            try suggestions.writeUnknownOption(stderr, command_label, arg, &.{ "--auto", "--no-interact", "--yes", "--preset" }, help_command);
+        } else {
+            try suggestions.writeUnknownOption(stderr, command_label, arg, &.{ "--auto", "--no-interact", "--preset" }, help_command);
+        }
         return error.Usage;
     }
     return flags;
@@ -423,7 +429,7 @@ pub fn parseStartFlags(argv: []const []const u8, stderr: anytype) !StartFlags {
     var index: usize = 0;
     while (index < argv.len) : (index += 1) {
         const arg = argv[index];
-        if (std.mem.eql(u8, arg, "--auto") or std.mem.eql(u8, arg, "--yes")) {
+        if (std.mem.eql(u8, arg, "--auto") or std.mem.eql(u8, arg, "--yes") or std.mem.eql(u8, arg, "--no-interact")) {
             flags.auto = true;
             continue;
         }
@@ -461,7 +467,7 @@ pub fn parseStartFlags(argv: []const []const u8, stderr: anytype) !StartFlags {
             flags.hosts_csv = argv[index];
             continue;
         }
-        try stderr.print("orca start: unknown option '{s}'.\n", .{arg});
+        try suggestions.writeUnknownOption(stderr, "orca start", arg, &.{ "--auto", "--yes", "--no-interact", "--skip-verify", "--preset", "--protection", "--hosts" }, "start");
         return error.Usage;
     }
     return flags;

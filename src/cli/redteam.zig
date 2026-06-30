@@ -1,10 +1,11 @@
 const std = @import("std");
 
-const env_util = @import("../env_util.zig");
-const redteam = @import("../redteam/mod.zig");
+const env_util = @import("orca").env_util;
+const redteam = @import("orca").redteam;
 const exit_codes = @import("exit_codes.zig");
 const help = @import("help.zig");
-const resource_root = @import("../resource_root.zig");
+const resource_root = @import("orca").resource_root;
+const suggestions = @import("suggestions.zig");
 
 const Options = struct {
     root: []const u8 = "",
@@ -77,7 +78,7 @@ pub fn command(io: std.Io, argv: []const []const u8, stdout: anytype, stderr: an
     if (options.json) {
         try redteam.reports.writeJson(stdout, suite);
     } else {
-        try redteam.reports.writeHuman(stdout, suite);
+        try redteam.reports.writeHuman(io, stdout, suite);
     }
 
     if (options.ci and !suite.allRequiredPassed()) return exit_codes.redteam_failure;
@@ -105,7 +106,7 @@ fn parseOptions(io: std.Io, argv: []const []const u8, stdout: anytype, stderr: a
             }
             options.fixture_id = argv[index];
         } else if (std.mem.startsWith(u8, arg, "-")) {
-            try stderr.print("orca redteam: unknown option '{s}'.\n", .{arg});
+            try suggestions.writeUnknownOption(stderr, "orca redteam", arg, &.{ "--json", "--ci", "--fixture", "--help", "-h" }, "redteam");
             return error.Usage;
         } else {
             if (saw_path) {
@@ -128,6 +129,52 @@ test "redteam command rejects unknown options" {
     const code = try command(std.testing.io, &.{"--bad"}, &stdout_writer, &stderr_writer);
     try std.testing.expectEqual(exit_codes.usage, code);
     try std.testing.expect(std.mem.indexOf(u8, stderr_writer.buffered(), "unknown option") != null);
+}
+
+test "redteam --json output is stable machine JSON without presentation" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try tmp.dir.createDirPath(std.testing.io, "fixtures/secret-exfil/pass");
+    {
+        const file = try tmp.dir.createFile(std.testing.io, "fixtures/secret-exfil/pass/fixture.yaml", .{});
+        defer file.close(std.testing.io);
+        try file.writeStreamingAll(std.testing.io,
+            \\version: 1
+            \\id: passing
+            \\name: Passing fixture
+            \\category: secret-exfil
+            \\description: Expected block matches attempt.
+            \\mode: strict
+            \\command:
+            \\  argv:
+            \\    - "./fixture-agent"
+            \\attempts:
+            \\  - "file.read:.env"
+            \\expected:
+            \\  blocked:
+            \\    - "file.read:.env"
+            \\score:
+            \\  points: 1
+            \\
+        );
+    }
+    const root = try tmp.dir.realPathFileAlloc(std.testing.io, "fixtures", std.testing.allocator);
+    defer std.testing.allocator.free(root);
+    var stdout_buf: [8192]u8 = undefined;
+    var stderr_buf: [1024]u8 = undefined;
+    var stdout_writer: std.Io.Writer = .fixed(&stdout_buf);
+    var stderr_writer: std.Io.Writer = .fixed(&stderr_buf);
+
+    const code = try command(std.testing.io, &.{ root, "--json" }, &stdout_writer, &stderr_writer);
+    try std.testing.expectEqual(exit_codes.success, code);
+    const output = stdout_writer.buffered();
+    var parsed = try std.json.parseFromSlice(std.json.Value, std.testing.allocator, output, .{});
+    defer parsed.deinit();
+    try std.testing.expect(parsed.value.object.get("version") != null);
+    try std.testing.expect(parsed.value.object.get("fixtures") != null);
+    try std.testing.expect(std.mem.indexOfScalar(u8, output, 0x1b) == null);
+    try std.testing.expect(std.mem.indexOf(u8, output, "Orca Redteam Score") == null);
+    try std.testing.expectEqualStrings("", stderr_writer.buffered());
 }
 
 test "redteam ci exits nonzero on failing fixture" {
@@ -167,4 +214,17 @@ test "redteam ci exits nonzero on failing fixture" {
     const code = try command(std.testing.io, &.{ root, "--ci" }, &stdout_writer, &stderr_writer);
     try std.testing.expectEqual(exit_codes.redteam_failure, code);
     try std.testing.expect(std.mem.indexOf(u8, stdout_writer.buffered(), "Orca Redteam Score") != null);
+}
+
+test "redteam ci accepts a relative fixture root with input directory" {
+    var stdout_buf: [8192]u8 = undefined;
+    var stderr_buf: [1024]u8 = undefined;
+    var stdout_writer: std.Io.Writer = .fixed(&stdout_buf);
+    var stderr_writer: std.Io.Writer = .fixed(&stderr_buf);
+
+    const code = try command(std.testing.io, &.{ "fixtures", "--fixture", "secret-env-read-basic", "--ci" }, &stdout_writer, &stderr_writer);
+    try std.testing.expectEqual(exit_codes.success, code);
+    try std.testing.expect(std.mem.indexOf(u8, stdout_writer.buffered(), "✓ PASS") != null);
+    try std.testing.expect(std.mem.indexOf(u8, stdout_writer.buffered(), "Category summary") != null);
+    try std.testing.expectEqualStrings("", stderr_writer.buffered());
 }

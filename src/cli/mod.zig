@@ -38,11 +38,18 @@ pub const uninstall = @import("uninstall.zig");
 pub const interactive = @import("interactive.zig");
 pub const child_process = @import("child_process.zig");
 pub const style = @import("style.zig");
+pub const tui = @import("../tui/mod.zig");
 pub const daemon = @import("daemon.zig");
 pub const shutdown = @import("shutdown.zig");
 pub const shell_eval = @import("shell_eval.zig");
 pub const rust_visibility = @import("rust_visibility.zig");
 pub const feed_writer = @import("feed_writer.zig");
+pub const agent_hook = @import("agent_hook.zig");
+pub const daemon_contracts = @import("daemon_contracts.zig");
+pub const packs = @import("packs.zig");
+pub const history = @import("history.zig");
+pub const suggestions = @import("suggestions.zig");
+pub const danger_confirmation = @import("danger_confirmation.zig");
 
 test {
     // Ensure the child_process module (and its tests) are pulled into the test binary.
@@ -51,6 +58,7 @@ test {
     _ = style;
     _ = onboarding;
     _ = start;
+    _ = setup;
     _ = quickstart;
     _ = @import("spinner.zig");
     // Pull daemon UDS/IPC tests into the test binary.
@@ -58,65 +66,185 @@ test {
     _ = shutdown;
     _ = shell_eval;
     _ = evaluate;
+    _ = agent_hook;
+    _ = daemon_contracts;
+    _ = packs;
+    _ = history;
+    _ = danger_confirmation;
 }
 
 pub const version = build_options.version;
 
-/// Minimal allocation-free Levenshtein distance for short ASCII strings (command names).
-fn levenshteinDistance(a: []const u8, b: []const u8) usize {
-    if (a.len == 0) return b.len;
-    if (b.len == 0) return a.len;
-
-    var prev_row: [64]usize = undefined;
-    var curr_row: [64]usize = undefined;
-
-    const m = @min(a.len, 63);
-    const n = @min(b.len, 63);
-
-    for (0..n + 1) |j| prev_row[j] = j;
-
-    for (0..m) |i| {
-        curr_row[0] = i + 1;
-        for (0..n) |j| {
-            const cost: usize = if (a[i] == b[j]) 0 else 1;
-            const del = prev_row[j + 1] + 1;
-            const ins = curr_row[j] + 1;
-            const sub = prev_row[j] + cost;
-            curr_row[j + 1] = @min(@min(del, ins), sub);
-        }
-        const tmp = prev_row;
-        prev_row = curr_row;
-        curr_row = tmp;
-    }
-    return prev_row[n];
-}
-
 /// Suggests a close command name for typos / prefixes. Returns null for no good match.
 fn suggestCommand(unknown: []const u8) ?[]const u8 {
-    // 1. Prefix match (fast, intuitive for partial typing like "do")
-    for (help.commands) |cmd| {
-        if (std.mem.startsWith(u8, cmd.name, unknown)) return cmd.name;
-    }
+    var names: [help.commands.len][]const u8 = undefined;
+    for (help.commands, 0..) |command, index| names[index] = command.name;
+    return suggestions.closest(unknown, &names);
+}
 
-    // 2. Best edit distance <= 2
-    var best: ?[]const u8 = null;
-    var best_dist: usize = 3;
-    for (help.commands) |cmd| {
-        const dist = levenshteinDistance(unknown, cmd.name);
-        if (dist < best_dist) {
-            best = cmd.name;
-            best_dist = dist;
+/// Commands that render their own branded header internally and so must NOT
+/// receive the shared entry banner (would double-print).
+const self_banner_commands = [_][]const u8{ "version", "--version", "help", "run" };
+
+/// Commands whose output is always machine/raw (JSON, generated scripts, export
+/// lines, long-running servers) — never receive the human brand banner.
+const always_machine_commands = [_][]const u8{
+    "evaluate", "hook", "shim", "completions", "env", "dashboard", "--print-install-env",
+};
+
+fn isAlwaysMachineCommand(command: []const u8) bool {
+    for (always_machine_commands) |candidate| if (std.mem.eql(u8, command, candidate)) return true;
+    return false;
+}
+
+fn isRawGeneratedInvocation(command: []const u8, argv: []const []const u8) bool {
+    if (std.mem.eql(u8, command, "diff")) return true;
+    if (std.mem.eql(u8, command, "ci")) {
+        var index: usize = 1;
+        while (index + 1 < argv.len) : (index += 1) {
+            if (!std.mem.eql(u8, argv[index], "--format")) continue;
+            return std.mem.eql(u8, argv[index + 1], "markdown") or std.mem.eql(u8, argv[index + 1], "json");
+        }
+        return false;
+    }
+    if (!std.mem.eql(u8, command, "mcp") or argv.len <= 1) return false;
+    if (std.mem.eql(u8, argv[1], "proxy") or std.mem.eql(u8, argv[1], "trust")) return true;
+    return std.mem.eql(u8, argv[1], "manifest") and argv.len > 2 and std.mem.eql(u8, argv[2], "generate");
+}
+
+fn isRawPassthroughInvocation(command: []const u8, argv: []const []const u8) bool {
+    if (std.mem.eql(u8, command, "test") or std.mem.eql(u8, command, "scan") or
+        std.mem.eql(u8, command, "precommit")) return true;
+    if (std.mem.eql(u8, command, "packs")) {
+        for (argv[1..]) |arg| {
+            if (std.mem.eql(u8, arg, "--robot") or std.mem.eql(u8, arg, "--expand") or
+                std.mem.eql(u8, arg, "--verbose") or std.mem.eql(u8, arg, "-v") or
+                std.mem.eql(u8, arg, "--format") or std.mem.eql(u8, arg, "-f") or
+                std.mem.startsWith(u8, arg, "--format=") or std.mem.eql(u8, arg, "--max-patterns") or
+                std.mem.startsWith(u8, arg, "--max-patterns=")) return true;
         }
     }
-    if (best_dist <= 2) return best;
-    return null;
+    if (std.mem.eql(u8, command, "history") and argv.len > 1) {
+        if (!std.mem.eql(u8, argv[1], "stats")) return true;
+        for (argv[2..]) |arg| {
+            if (std.mem.eql(u8, arg, "--json") or std.mem.eql(u8, arg, "--robot") or
+                std.mem.eql(u8, arg, "--format") or std.mem.startsWith(u8, arg, "--format=")) return true;
+        }
+    }
+    return false;
+}
+
+fn isMachineArgv(argv: []const []const u8) bool {
+    for (argv, 0..) |arg, index| {
+        if (std.mem.eql(u8, arg, "--json") or std.mem.eql(u8, arg, "--stdin")) return true;
+        if (std.mem.eql(u8, arg, "--format") and index + 1 < argv.len and std.mem.eql(u8, argv[index + 1], "json")) return true;
+    }
+    return false;
+}
+
+/// True when the compact brand banner should open this invocation. The banner
+/// is a presentation-only header; it never appears on `--json`/machine/raw paths
+/// (byte-identity invariant) nor on `--help`/`help <cmd>` reference output.
+fn shouldShowBanner(command: []const u8, argv: []const []const u8) bool {
+    // Self-banner commands render their own header (version key-value grid, top
+    // help redesign, run session banner).
+    for (self_banner_commands) |s| {
+        if (std.mem.eql(u8, command, s)) return false;
+    }
+    // `decide` is a frozen machine API by default. Only its explicit human
+    // output mode participates in shared presentation, even though JSON/stdin
+    // are still the input transports.
+    if (std.mem.eql(u8, command, "decide")) {
+        for (argv[1..]) |arg| {
+            if (std.mem.eql(u8, arg, "--help") or std.mem.eql(u8, arg, "-h")) return false;
+        }
+        for (argv[1..]) |arg| if (std.mem.eql(u8, arg, "--human")) return true;
+        return false;
+    }
+    // Reports are generated/export surfaces and never receive a banner, but
+    // human error remediation remains presentation-capable. JSON is still
+    // classified as machine output by isMachineArgv.
+    if (std.mem.eql(u8, command, "report")) return false;
+    // `history --live` is intercepted by the Zig CLI before daemon passthrough.
+    // Treat its non-TTY rejection as a human surface so it matches `replay --tui`,
+    // while keeping machine conflicts/banner-free JSON byte contracts raw.
+    if (std.mem.eql(u8, command, "history")) {
+        var live = false;
+        var i: usize = 1;
+        while (i < argv.len) : (i += 1) {
+            const a = argv[i];
+            if (std.mem.eql(u8, a, "--help") or std.mem.eql(u8, a, "-h")) return false;
+            if (std.mem.eql(u8, a, "--json") or std.mem.eql(u8, a, "--robot") or
+                std.mem.eql(u8, a, "--stdin")) return false;
+            if (std.mem.eql(u8, a, "--format") and i + 1 < argv.len and std.mem.eql(u8, argv[i + 1], "json")) return false;
+            if (std.mem.eql(u8, a, "--live")) live = true;
+        }
+        if (live) return true;
+    }
+    if (isRawGeneratedInvocation(command, argv) or isRawPassthroughInvocation(command, argv)) return false;
+    // Always-machine / raw / server commands.
+    if (isAlwaysMachineCommand(command)) return false;
+    // `help <cmd>` is command-specific reference help (no banner); bare `help`
+    // is top help and renders its own banner inside help.write.
+    if (std.mem.eql(u8, command, "help")) return false;
+    // Scan subcommand args (argv[1..]) for machine/help tokens.
+    var i: usize = 1;
+    while (i < argv.len) : (i += 1) {
+        const a = argv[i];
+        if (std.mem.eql(u8, a, "--json") or std.mem.eql(u8, a, "--stdin")) return false;
+        if (std.mem.eql(u8, a, "--help") or std.mem.eql(u8, a, "-h")) return false;
+        if (std.mem.eql(u8, a, "--format") and i + 1 < argv.len and std.mem.eql(u8, argv[i + 1], "json")) return false;
+    }
+    // Unknown commands get no banner (error path); the brand header belongs only
+    // to recognised human commands.
+    return help.findCommand(command) != null;
+}
+
+fn writeInvocationPresentation(io: std.Io, command: []const u8, argv: []const []const u8, stdout: anytype) !void {
+    if (shouldShowBanner(command, argv)) try tui.render.banner(io, stdout, version, null);
 }
 
 pub fn run(io: std.Io, environ_map: *const std.process.Environ.Map, argv: []const []const u8, stdout: anytype, stderr: anytype) !u8 {
     return runWithCwd(io, environ_map, std.Io.Dir.cwd(), argv, stdout, stderr);
 }
 
-pub fn runWithCwd(io: std.Io, environ_map: *const std.process.Environ.Map, cwd: std.Io.Dir, argv: []const []const u8, stdout: anytype, stderr: anytype) !u8 {
+const GlobalArgs = struct { command_index: usize, no_rich: bool };
+
+fn parseGlobalArgs(argv: []const []const u8) GlobalArgs {
+    var index: usize = 0;
+    var no_rich = false;
+    while (index < argv.len and std.mem.eql(u8, argv[index], "--no-rich")) : (index += 1) no_rich = true;
+    return .{ .command_index = index, .no_rich = no_rich };
+}
+
+pub fn runWithCwd(io: std.Io, environ_map: *const std.process.Environ.Map, cwd: std.Io.Dir, argv_input: []const []const u8, stdout: anytype, stderr: anytype) !u8 {
+    return runWithCwdUsing(realDaemonExecuteCli, packs.command, history.command, mcp.command, io, environ_map, cwd, argv_input, stdout, stderr);
+}
+
+fn runWithCwdUsing(
+    comptime daemon_execute: anytype,
+    comptime packs_command: anytype,
+    comptime history_command: anytype,
+    comptime mcp_command: anytype,
+    io: std.Io,
+    environ_map: *const std.process.Environ.Map,
+    cwd: std.Io.Dir,
+    argv_input: []const []const u8,
+    stdout: anytype,
+    stderr: anytype,
+) !u8 {
+    const global_args = parseGlobalArgs(argv_input);
+    const argv = argv_input[global_args.command_index..];
+    const no_rich_env = tui.output_policy.envDisablesRich(environ_map.get("ORCA_NO_RICH"));
+    const machine_output = if (argv.len == 0) false else !shouldShowBanner(argv[0], argv) and
+        (isMachineArgv(argv) or isAlwaysMachineCommand(argv[0]) or isRawGeneratedInvocation(argv[0], argv));
+    const output = tui.output_policy.resolve(no_rich_env, global_args.no_rich, machine_output);
+    tui.theme.setRichEnabled(output.rich);
+    style.setRichEnabled(output.rich);
+    defer {
+        tui.theme.setRichEnabled(true);
+        style.setRichEnabled(null);
+    }
     // Fallback / safety-net color decision prime for direct and library callers.
     // The true one-time early prime now lives in main() (real CLI startup path).
     // This call remains so that code paths that enter through runWithCwd directly
@@ -125,12 +253,30 @@ pub fn runWithCwd(io: std.Io, environ_map: *const std.process.Environ.Map, cwd: 
     // is a fast O(1) cache hit with no side effects.
     _ = style.useColor(io, stdout);
 
-    if (argv.len == 0 or std.mem.eql(u8, argv[0], "--help") or std.mem.eql(u8, argv[0], "-h")) {
+    if (argv.len == 0) {
+        if (agent_hook.shouldEnter(io)) {
+            return agent_hook.command(io, stdout, stderr) catch |err| switch (err) {
+                error.NotAgentHookInput => {
+                    try help.write(io, stdout);
+                    return exit_codes.success;
+                },
+                else => return err,
+            };
+        }
+        try help.write(io, stdout);
+        return exit_codes.success;
+    }
+    if (std.mem.eql(u8, argv[0], "--help") or std.mem.eql(u8, argv[0], "-h")) {
         try help.write(io, stdout);
         return exit_codes.success;
     }
 
     const command = argv[0];
+    // Compact brand header at the entry of every HUMAN command (Phase 2 brand
+    // cohesion). Suppressed for self-banner commands (version/help/run render
+    // their own header), always-machine/raw commands, --json/--stdin/--format
+    // json machine paths, --help reference output, and unknown commands.
+    try writeInvocationPresentation(io, command, argv, stdout);
     if (std.mem.eql(u8, command, "help")) {
         if (argv.len == 1) {
             try help.write(io, stdout);
@@ -141,7 +287,13 @@ pub fn runWithCwd(io: std.Io, environ_map: *const std.process.Environ.Map, cwd: 
             return exit_codes.usage;
         }
         if (!try help.writeCommand(io, stdout, argv[1])) {
-            try stderr.print("orca help: unknown command '{s}'.\n", .{argv[1]});
+            try stderr.writeAll("orca help: unknown command '");
+            try tui.terminal_text.write(stderr, argv[1], .single_line);
+            if (suggestCommand(argv[1])) |suggestion| {
+                try stderr.print("'. Did you mean '{s}'?\nRun 'orca help {s}' for usage.\n", .{ suggestion, suggestion });
+            } else {
+                try stderr.writeAll("'.\nRun 'orca help' to see all commands.\n");
+            }
             return exit_codes.usage;
         }
         return exit_codes.success;
@@ -164,12 +316,27 @@ pub fn runWithCwd(io: std.Io, environ_map: *const std.process.Environ.Map, cwd: 
             try stderr.writeAll("orca version: unsupported argument. Run 'orca help version' for usage.\n");
             return exit_codes.usage;
         }
-        try version_command.writePlainWithDaemon(std.heap.smp_allocator, stdout);
+        // Human path: compact brand banner + key-value grid (Phase 2).
+        try version_command.writeHumanBanner(std.heap.smp_allocator, io, stdout);
         return exit_codes.success;
     }
 
+    if (std.mem.eql(u8, command, "packs")) {
+        return packs_command(io, argv[1..], stdout, stderr) catch |err| {
+            try stderr.print("orca packs: {s}: {s}\n", .{ daemonErrorLabel(err), @errorName(err) });
+            return exit_codes.general;
+        };
+    }
+
+    if (std.mem.eql(u8, command, "history")) {
+        return history_command(io, argv[1..], stdout, stderr) catch |err| {
+            try stderr.print("orca history: {s}: {s}\n", .{ daemonErrorLabel(err), @errorName(err) });
+            return exit_codes.general;
+        };
+    }
+
     if (isPhase1ProxyCommand(command)) {
-        return proxyPhase1Command(realDaemonExecuteCli, command, argv[1..], io, stdout, stderr);
+        return proxyPhase1Command(daemon_execute, command, argv[1..], io, stdout, stderr);
     }
 
     // Highest-value DX helper for installers, Homebrew post-install hooks, npm wrapper,
@@ -196,7 +363,7 @@ pub fn runWithCwd(io: std.Io, environ_map: *const std.process.Environ.Map, cwd: 
     if (std.mem.eql(u8, command, "diff")) return diff.command(io, argv[1..], stdout, stderr);
     if (std.mem.eql(u8, command, "apply")) return apply.command(io, argv[1..], stdout, stderr);
     if (std.mem.eql(u8, command, "discard")) return discard.command(io, argv[1..], stdout, stderr);
-    if (std.mem.eql(u8, command, "mcp")) return mcp.command(io, argv[1..], stdout, stderr);
+    if (std.mem.eql(u8, command, "mcp")) return mcp_command(io, argv[1..], stdout, stderr);
     if (std.mem.eql(u8, command, "redteam")) return redteam.command(io, argv[1..], stdout, stderr);
     if (std.mem.eql(u8, command, "completions")) return completions.command(io, argv[1..], stdout, stderr);
     if (std.mem.eql(u8, command, "shim")) return shim.command(io, environ_map, argv[1..], stdout, stderr);
@@ -210,15 +377,18 @@ pub fn runWithCwd(io: std.Io, environ_map: *const std.process.Environ.Map, cwd: 
     if (std.mem.eql(u8, command, "license")) return license_command.command(io, argv[1..], stdout, stderr);
     if (std.mem.eql(u8, command, "ci")) return ci.command(io, argv[1..], stdout, stderr);
     if (std.mem.eql(u8, command, "demo")) return demo.command(io, argv[1..], stdout, stderr);
+    if (std.mem.eql(u8, command, "stop")) return disable.command(io, argv[1..], stdout, stderr);
     if (std.mem.eql(u8, command, "disable")) return disable.command(io, argv[1..], stdout, stderr);
     if (std.mem.eql(u8, command, "uninstall")) return uninstall.command(io, argv[1..], stdout, stderr);
     if (std.mem.eql(u8, command, "shutdown")) return shutdown.command(io, argv[1..], stdout, stderr);
 
     // Warm "did you mean?" suggestions for unknown commands (foundation UX).
+    try stderr.writeAll("orca: unknown command '");
+    try tui.terminal_text.write(stderr, command, .single_line);
     if (suggestCommand(command)) |suggestion| {
-        try stderr.print("orca: unknown command '{s}'. Did you mean '{s}'?\nRun 'orca help' for usage.\n", .{ command, suggestion });
+        try stderr.print("'. Did you mean '{s}'?\nRun 'orca help' for usage.\n", .{suggestion});
     } else {
-        try stderr.print("orca: unknown command '{s}'.\nRun 'orca help' for usage.\n", .{command});
+        try stderr.writeAll("'.\nRun 'orca help' for usage.\n");
     }
     return exit_codes.usage;
 }
@@ -233,9 +403,7 @@ fn proxyVersionCommand(comptime execute_cli: anytype, io: std.Io, stdout: anytyp
 fn isPhase1ProxyCommand(command: []const u8) bool {
     return std.mem.eql(u8, command, "test") or
         std.mem.eql(u8, command, "scan") or
-        std.mem.eql(u8, command, "history") or
-        std.mem.eql(u8, command, "precommit") or
-        std.mem.eql(u8, command, "packs");
+        std.mem.eql(u8, command, "precommit");
 }
 
 fn proxyPhase1Command(comptime execute_cli: anytype, command: []const u8, command_args: []const []const u8, io: std.Io, stdout: anytype, stderr: anytype) !u8 {
@@ -297,6 +465,10 @@ fn realDaemonExecuteCli(_: std.Io, argv: []const []const u8, stdout: anytype, st
     return execution.exit_code;
 }
 
+pub fn executeDaemonCli(io: std.Io, argv: []const []const u8, stdout: anytype, stderr: anytype) !u8 {
+    return realDaemonExecuteCli(io, argv, stdout, stderr);
+}
+
 fn testRun(argv: []const []const u8, stdout: anytype, stderr: anytype) !u8 {
     var env_map = try std.process.Environ.createMap(std.process.Environ.empty, std.testing.allocator);
     defer env_map.deinit();
@@ -327,6 +499,10 @@ test "help output is grouped, complete, and excludes hidden commands" {
     // Visible commands present
     try std.testing.expect(std.mem.indexOf(u8, output, "run") != null);
     try std.testing.expect(std.mem.indexOf(u8, output, "env") != null);
+    // Phase 7 Task E: the --no-rich / ORCA_NO_RICH escape hatch is discoverable
+    // from the top-level help (global-options surface).
+    try std.testing.expect(std.mem.indexOf(u8, output, "Global options") != null);
+    try std.testing.expect(std.mem.indexOf(u8, output, "--no-rich") != null);
     // Hidden internal command absent
     try std.testing.expect(std.mem.indexOf(u8, output, "shim") == null);
     try std.testing.expectEqualStrings("", stderr_writer.buffered());
@@ -452,6 +628,14 @@ fn fakeHistoryProxySuccess(_: std.Io, argv: []const []const u8, stdout: anytype,
     return exit_codes.success;
 }
 
+fn fakeHistoryMachineContract(_: std.Io, argv: []const []const u8, stdout: anytype, _: anytype) !u8 {
+    try std.testing.expectEqualStrings("history", argv[0]);
+    try std.testing.expectEqualStrings("--format", argv[1]);
+    try std.testing.expectEqualStrings("json", argv[2]);
+    try stdout.writeAll(@embedFile("test-fixtures/proxy-history.json"));
+    return exit_codes.success;
+}
+
 fn fakePrecommitProxySuccess(_: std.Io, argv: []const []const u8, stdout: anytype, _: anytype) !u8 {
     try std.testing.expectEqual(@as(usize, 1), argv.len);
     try std.testing.expectEqualStrings("precommit", argv[0]);
@@ -568,6 +752,17 @@ test "phase 1 proxy reports daemon unavailable explicitly" {
     try std.testing.expect(std.mem.indexOf(u8, stderr_writer.buffered(), "DaemonBinaryNotFound") != null);
 }
 
+test "proxied machine output remains byte-identical to daemon contract fixture" {
+    var stdout_buf: [256]u8 = undefined;
+    var stderr_buf: [128]u8 = undefined;
+    var stdout_writer: std.Io.Writer = .fixed(&stdout_buf);
+    var stderr_writer: std.Io.Writer = .fixed(&stderr_buf);
+    const code = try proxyPhase1Command(fakeHistoryMachineContract, "history", &.{ "--format", "json" }, std.testing.io, &stdout_writer, &stderr_writer);
+    try std.testing.expectEqual(exit_codes.success, code);
+    try std.testing.expectEqualStrings(@embedFile("test-fixtures/proxy-history.json"), stdout_writer.buffered());
+    try std.testing.expectEqualStrings("", stderr_writer.buffered());
+}
+
 test "daemonErrorLabel distinguishes protocol compatibility failures" {
     try std.testing.expectEqualStrings("daemon protocol error", daemonErrorLabel(error.ProtocolMismatch));
     try std.testing.expectEqualStrings("daemon protocol error", daemonErrorLabel(error.MissingHandshake));
@@ -626,6 +821,632 @@ test "unknown command returns non-zero with useful message" {
     try std.testing.expect(std.mem.indexOf(u8, stderr_writer.buffered(), "unknown command") != null);
 }
 
+test "help unknown command suggests the closest command" {
+    var stdout_buf: [256]u8 = undefined;
+    var stderr_buf: [256]u8 = undefined;
+    var stdout_writer: std.Io.Writer = .fixed(&stdout_buf);
+    var stderr_writer: std.Io.Writer = .fixed(&stderr_buf);
+
+    const code = try testRun(&.{ "help", "docter" }, &stdout_writer, &stderr_writer);
+    try std.testing.expectEqual(exit_codes.usage, code);
+    try std.testing.expect(std.mem.indexOf(u8, stderr_writer.buffered(), "Did you mean 'doctor'?") != null);
+    try std.testing.expect(std.mem.indexOf(u8, stderr_writer.buffered(), "orca help doctor") != null);
+}
+
+test "human parser families suggest valid flags and exact help remediation" {
+    const Case = struct { argv: []const []const u8, suggestion: []const u8, help_command: []const u8 };
+    const cases = [_]Case{
+        .{ .argv = &.{ "doctor", "--verbse" }, .suggestion = "--verbose", .help_command = "doctor" },
+        .{ .argv = &.{ "init", "--presett" }, .suggestion = "--preset", .help_command = "init" },
+        .{ .argv = &.{ "policy", "explan" }, .suggestion = "explain", .help_command = "policy" },
+        .{ .argv = &.{ "replay", "--sesion" }, .suggestion = "--session", .help_command = "replay" },
+        .{ .argv = &.{ "report", "--sesion" }, .suggestion = "--session", .help_command = "report" },
+        .{ .argv = &.{ "decide", "comand" }, .suggestion = "command", .help_command = "decide" },
+        .{ .argv = &.{ "decide", "command", "--stdi" }, .suggestion = "--stdin", .help_command = "decide" },
+        .{ .argv = &.{ "redteam", "--fixtur" }, .suggestion = "--fixture", .help_command = "redteam" },
+        .{ .argv = &.{ "diff", "--sesion" }, .suggestion = "--session", .help_command = "diff" },
+        .{ .argv = &.{ "apply", "--sesion" }, .suggestion = "--session", .help_command = "apply" },
+        .{ .argv = &.{ "discard", "--sesion" }, .suggestion = "--session", .help_command = "discard" },
+        .{ .argv = &.{ "plugin", "instal" }, .suggestion = "install", .help_command = "plugin" },
+        .{ .argv = &.{ "setup", "--atuo" }, .suggestion = "--auto", .help_command = "setup" },
+        .{ .argv = &.{ "quickstart", "--atuo" }, .suggestion = "--auto", .help_command = "quickstart" },
+        .{ .argv = &.{ "start", "--protetion" }, .suggestion = "--protection", .help_command = "start" },
+        .{ .argv = &.{ "run", "--workspce" }, .suggestion = "--workspace", .help_command = "run" },
+        .{ .argv = &.{ "packs", "--filtre" }, .suggestion = "--filter", .help_command = "packs" },
+    };
+
+    for (cases) |case| {
+        var stdout_buf: [4096]u8 = undefined;
+        var stderr_buf: [1024]u8 = undefined;
+        var stdout_writer: std.Io.Writer = .fixed(&stdout_buf);
+        var stderr_writer: std.Io.Writer = .fixed(&stderr_buf);
+        const code = try testRun(case.argv, &stdout_writer, &stderr_writer);
+        try std.testing.expectEqual(exit_codes.usage, code);
+        try std.testing.expect(std.mem.indexOf(u8, stderr_writer.buffered(), case.suggestion) != null);
+        var remediation_buf: [64]u8 = undefined;
+        const remediation = try std.fmt.bufPrint(&remediation_buf, "orca help {s}", .{case.help_command});
+        try std.testing.expect(std.mem.indexOf(u8, stderr_writer.buffered(), remediation) != null);
+        try std.testing.expect(std.mem.indexOfScalar(u8, stderr_writer.buffered(), 0x1b) == null);
+    }
+}
+
+test "human parser invalid values sanitize terminal controls and suggest valid values" {
+    const hostile = "strct\x1b[2J\nforged";
+    const Case = struct { argv: []const []const u8, suggestion: []const u8 };
+    const cases = [_]Case{
+        .{ .argv = &.{ "init", "--mode", hostile }, .suggestion = "strict" },
+        .{ .argv = &.{ "run", "--mode", hostile, "--", "true" }, .suggestion = "strict" },
+        .{ .argv = &.{ "run", "--network-backend", hostile, "--", "true" }, .suggestion = "proxy" },
+        .{ .argv = &.{ "plugin", "install", "--scope", hostile }, .suggestion = "project" },
+        .{ .argv = &.{ "policy", "apply-pack", hostile }, .suggestion = "strict-local" },
+    };
+
+    for (cases) |case| {
+        var stdout_buf: [4096]u8 = undefined;
+        var stderr_buf: [2048]u8 = undefined;
+        var stdout_writer: std.Io.Writer = .fixed(&stdout_buf);
+        var stderr_writer: std.Io.Writer = .fixed(&stderr_buf);
+        const code = try testRun(case.argv, &stdout_writer, &stderr_writer);
+        try std.testing.expectEqual(exit_codes.usage, code);
+        try std.testing.expect(std.mem.indexOfScalar(u8, stderr_writer.buffered(), 0x1b) == null);
+        try std.testing.expect(std.mem.indexOf(u8, stderr_writer.buffered(), "\nforged") == null);
+        try std.testing.expect(std.mem.indexOf(u8, stderr_writer.buffered(), case.suggestion) != null);
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Phase 2 TDD: brand cohesion banner system (written FIRST — RED).
+// The compact `🛡  Orca · v<version>` header must open every HUMAN command,
+// be suppressed for --json / raw / machine / help-reference paths, and stay
+// byte-identical on --json. Banner marker in the plain-text degrade path is
+// the literal `🛡  Orca` glyph run (colour is suppressed under builtin.is_test).
+// ---------------------------------------------------------------------------
+
+test "version human path renders brand banner and key-value grid" {
+    var stdout_buf: [4096]u8 = undefined;
+    var stderr_buf: [256]u8 = undefined;
+    var stdout_writer: std.Io.Writer = .fixed(&stdout_buf);
+    var stderr_writer: std.Io.Writer = .fixed(&stderr_buf);
+
+    const code = try testRun(&.{"version"}, &stdout_writer, &stderr_writer);
+    try std.testing.expectEqual(exit_codes.success, code);
+    const out = stdout_writer.buffered();
+    // Compact brand header.
+    try std.testing.expect(std.mem.indexOf(u8, out, "\u{1F6E1}  Orca") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out, version) != null);
+    // Key-value grid labels.
+    try std.testing.expect(std.mem.indexOf(u8, out, "Version") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "Channel") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "Target") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "Daemon") != null);
+    try std.testing.expectEqualStrings("", stderr_writer.buffered());
+}
+
+test "version --json suppresses the brand banner (machine contract)" {
+    var stdout_buf: [4096]u8 = undefined;
+    var stderr_buf: [256]u8 = undefined;
+    var stdout_writer: std.Io.Writer = .fixed(&stdout_buf);
+    var stderr_writer: std.Io.Writer = .fixed(&stderr_buf);
+
+    const code = try testRun(&.{ "version", "--json" }, &stdout_writer, &stderr_writer);
+    try std.testing.expectEqual(exit_codes.success, code);
+    const out = stdout_writer.buffered();
+    try std.testing.expect(std.mem.indexOf(u8, out, "\u{1F6E1}  Orca") == null);
+    try std.testing.expect(out.len > 0 and out[0] == '{');
+    var parsed = try std.json.parseFromSlice(std.json.Value, std.testing.allocator, out, .{});
+    defer parsed.deinit();
+    try std.testing.expectEqualStrings(version, parsed.value.object.get("version").?.string);
+}
+
+test "top help renders brand banner, accent categories, and try-next hint" {
+    var stdout_buf: [16384]u8 = undefined;
+    var stderr_buf: [256]u8 = undefined;
+    var stdout_writer: std.Io.Writer = .fixed(&stdout_buf);
+    var stderr_writer: std.Io.Writer = .fixed(&stderr_buf);
+
+    const code = try testRun(&.{"--help"}, &stdout_writer, &stderr_writer);
+    try std.testing.expectEqual(exit_codes.success, code);
+    const out = stdout_writer.buffered();
+    // Brand banner opens the help.
+    try std.testing.expect(std.mem.indexOf(u8, out, "\u{1F6E1}  Orca") != null);
+    // Accent category headers retained.
+    try std.testing.expect(std.mem.indexOf(u8, out, "Getting Started") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "Core Workflow") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "Diagnostics & Reporting") != null);
+    // Two-column command + summary retained.
+    try std.testing.expect(std.mem.indexOf(u8, out, "Print shell environment") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "Receive events from AI agent hosts") != null);
+    // Try-next hint present.
+    try std.testing.expect(std.mem.indexOf(u8, out, "orca quickstart") != null);
+    // Hidden internal command still absent.
+    try std.testing.expect(std.mem.indexOf(u8, out, "shim") == null);
+    try std.testing.expectEqualStrings("", stderr_writer.buffered());
+}
+
+test "banner renders on a human command (doctor)" {
+    var stdout_buf: [16384]u8 = undefined;
+    var stderr_buf: [256]u8 = undefined;
+    var stdout_writer: std.Io.Writer = .fixed(&stdout_buf);
+    var stderr_writer: std.Io.Writer = .fixed(&stderr_buf);
+
+    const code = try testRun(&.{"doctor"}, &stdout_writer, &stderr_writer);
+    try std.testing.expectEqual(exit_codes.success, code);
+    const out = stdout_writer.buffered();
+    try std.testing.expect(std.mem.indexOf(u8, out, "\u{1F6E1}  Orca") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "Summary:") != null);
+    try std.testing.expectEqualStrings("", stderr_writer.buffered());
+}
+
+test "banner suppressed for raw env output" {
+    var stdout_buf: [4096]u8 = undefined;
+    var stderr_buf: [256]u8 = undefined;
+    var stdout_writer: std.Io.Writer = .fixed(&stdout_buf);
+    var stderr_writer: std.Io.Writer = .fixed(&stderr_buf);
+
+    const code = try testRun(&.{"env"}, &stdout_writer, &stderr_writer);
+    try std.testing.expectEqual(exit_codes.success, code);
+    const out = stdout_writer.buffered();
+    try std.testing.expect(std.mem.indexOf(u8, out, "PATH") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "\u{1F6E1}  Orca") == null);
+    try std.testing.expectEqualStrings("", stderr_writer.buffered());
+}
+
+test "banner suppressed for completions raw output" {
+    var stdout_buf: [4096]u8 = undefined;
+    var stderr_buf: [256]u8 = undefined;
+    var stdout_writer: std.Io.Writer = .fixed(&stdout_buf);
+    var stderr_writer: std.Io.Writer = .fixed(&stderr_buf);
+
+    const code = try testRun(&.{ "completions", "bash" }, &stdout_writer, &stderr_writer);
+    try std.testing.expectEqual(exit_codes.success, code);
+    const out = stdout_writer.buffered();
+    try std.testing.expect(std.mem.indexOf(u8, out, "complete -F") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "\u{1F6E1}  Orca") == null);
+}
+
+test "report generated exports are classified as raw at top level" {
+    try std.testing.expect(!shouldShowBanner("report", &.{"report"}));
+    try std.testing.expect(!shouldShowBanner("report", &.{ "report", "--format", "markdown" }));
+    try std.testing.expect(!shouldShowBanner("report", &.{ "report", "--format", "json" }));
+}
+
+test "top-level MCP generated surfaces preserve exact bytes" {
+    try std.testing.expect(isRawGeneratedInvocation("mcp", &.{ "mcp", "proxy", "--command", "server" }));
+    try std.testing.expect(!isRawGeneratedInvocation("mcp", &.{ "mcp", "list" }));
+    const expected_manifest =
+        \\version: 1
+        \\server:
+        \\  name: demo
+        \\  transport: stdio
+        \\  command: demo
+        \\  args: []
+        \\  expected_hash: null
+        \\  env:
+        \\    allow:
+        \\      - GITHUB_TOKEN
+        \\
+        \\tools:
+        \\resources:
+        \\  default: ask
+        \\prompts:
+        \\  default: ask
+        \\sampling:
+        \\  default: deny
+        \\
+    ;
+    const expected_trust =
+        \\Direct policy mutation is not implemented for this command.
+        \\Add this snippet to your policy after reviewing the server manifest:
+        \\
+        \\mcp:
+        \\  allow:
+        \\    - "demo.read"
+        \\
+    ;
+    inline for (.{
+        .{ .argv = &.{ "mcp", "manifest", "generate", "--server", "demo" }, .expected = expected_manifest },
+        .{ .argv = &.{ "mcp", "trust", "demo", "--tool", "read" }, .expected = expected_trust },
+    }) |case| {
+        var stdout_buf: [2048]u8 = undefined;
+        var stderr_buf: [512]u8 = undefined;
+        var stdout_writer: std.Io.Writer = .fixed(&stdout_buf);
+        var stderr_writer: std.Io.Writer = .fixed(&stderr_buf);
+        try std.testing.expectEqual(exit_codes.success, try testRun(case.argv, &stdout_writer, &stderr_writer));
+        try std.testing.expectEqualStrings(case.expected, stdout_writer.buffered());
+        try std.testing.expectEqualStrings("", stderr_writer.buffered());
+    }
+}
+
+test "history live human rejection gets a banner while machine conflict stays raw" {
+    try std.testing.expect(shouldShowBanner("history", &.{ "history", "--live" }));
+    try std.testing.expect(!shouldShowBanner("history", &.{ "history", "--live", "--json" }));
+    try std.testing.expect(!shouldShowBanner("history", &.{ "history", "--live", "--robot" }));
+}
+
+test "daemon passthrough and robot surfaces have no top-level presentation bytes" {
+    const raw_invocations = [_]struct { command: []const u8, argv: []const []const u8 }{
+        .{ .command = "test", .argv = &.{ "test", "git status" } },
+        .{ .command = "scan", .argv = &.{ "scan", "." } },
+        .{ .command = "precommit", .argv = &.{"precommit"} },
+        .{ .command = "packs", .argv = &.{ "packs", "--robot" } },
+        .{ .command = "history", .argv = &.{ "history", "export", "--format", "jsonl" } },
+        .{ .command = "history", .argv = &.{ "history", "check" } },
+        .{ .command = "mcp", .argv = &.{ "mcp", "proxy", "--command", "server" } },
+    };
+    for (raw_invocations) |invocation| {
+        try std.testing.expect(!shouldShowBanner(invocation.command, invocation.argv));
+    }
+}
+
+fn fakeRawDaemon(_: std.Io, argv: []const []const u8, stdout: anytype, _: anytype) !u8 {
+    try stdout.print("daemon:{s}\n", .{argv[0]});
+    return 7;
+}
+
+fn fakeRawPacks(_: std.Io, argv: []const []const u8, stdout: anytype, _: anytype) !u8 {
+    try std.testing.expectEqualStrings("--robot", argv[0]);
+    try stdout.writeAll("packs-robot\n");
+    return 8;
+}
+
+fn fakeRawHistory(_: std.Io, argv: []const []const u8, stdout: anytype, _: anytype) !u8 {
+    try std.testing.expectEqualStrings("export", argv[0]);
+    try stdout.writeAll("history-export\n");
+    return 9;
+}
+
+fn fakeRawMcp(_: std.Io, argv: []const []const u8, stdout: anytype, _: anytype) !u8 {
+    try std.testing.expectEqualStrings("proxy", argv[0]);
+    try stdout.writeAll("{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"tools\":[]}}\n");
+    return 10;
+}
+
+test "public dispatch preserves daemon robot export and MCP protocol bytes exactly" {
+    const Case = struct { argv: []const []const u8, expected: []const u8, code: u8 };
+    const cases = [_]Case{
+        .{ .argv = &.{ "test", "git status" }, .expected = "daemon:test\n", .code = 7 },
+        .{ .argv = &.{ "packs", "--robot" }, .expected = "packs-robot\n", .code = 8 },
+        .{ .argv = &.{ "history", "export" }, .expected = "history-export\n", .code = 9 },
+        .{ .argv = &.{ "mcp", "proxy", "--command", "server" }, .expected = "{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"tools\":[]}}\n", .code = 10 },
+    };
+    var env_map = try std.process.Environ.createMap(std.process.Environ.empty, std.testing.allocator);
+    defer env_map.deinit();
+    for (cases) |case| {
+        var stdout_buf: [256]u8 = undefined;
+        var stderr_buf: [256]u8 = undefined;
+        var stdout_writer: std.Io.Writer = .fixed(&stdout_buf);
+        var stderr_writer: std.Io.Writer = .fixed(&stderr_buf);
+        const code = try runWithCwdUsing(fakeRawDaemon, fakeRawPacks, fakeRawHistory, fakeRawMcp, std.testing.io, &env_map, std.Io.Dir.cwd(), case.argv, &stdout_writer, &stderr_writer);
+        try std.testing.expectEqual(case.code, code);
+        try std.testing.expectEqualStrings(case.expected, stdout_writer.buffered());
+        try std.testing.expectEqualStrings("", stderr_writer.buffered());
+    }
+}
+
+test "diff and CI generated formats suppress presentation" {
+    try std.testing.expect(isRawGeneratedInvocation("diff", &.{"diff"}));
+    try std.testing.expect(isRawGeneratedInvocation("ci", &.{ "ci", "check", "--format", "markdown" }));
+    try std.testing.expect(isRawGeneratedInvocation("ci", &.{ "ci", "check", "--format", "json" }));
+    try std.testing.expect(!isRawGeneratedInvocation("ci", &.{ "ci", "check" }));
+    try std.testing.expect(!shouldShowBanner("diff", &.{"diff"}));
+    try std.testing.expect(!shouldShowBanner("ci", &.{ "ci", "check", "--format", "markdown" }));
+}
+
+test "top-level CI generated formats preserve exact bytes" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try tmp.dir.createDirPath(std.testing.io, ".git");
+    const previous_cwd = try std.Io.Dir.cwd().realPathFileAlloc(std.testing.io, ".", std.testing.allocator);
+    defer std.testing.allocator.free(previous_cwd);
+    try std.process.setCurrentDir(std.testing.io, tmp.dir);
+    defer std.process.setCurrentPath(std.testing.io, previous_cwd) catch {};
+
+    const expected_markdown =
+        \\# Orca CI Check
+        \\
+        \\- policy: **fail** - Missing .orca/policy.yaml. Run: orca init --preset team-ci
+        \\
+    ;
+    const expected_json =
+        \\{"ok":false,"checks":[{"name":"policy","status":"fail","message":"Missing .orca/policy.yaml. Run: orca init --preset team-ci"}]}
+        \\
+    ;
+    inline for (.{
+        .{ .format = "markdown", .expected = expected_markdown },
+        .{ .format = "json", .expected = expected_json },
+    }) |case| {
+        var stdout_buf: [2048]u8 = undefined;
+        var stderr_buf: [256]u8 = undefined;
+        var stdout_writer: std.Io.Writer = .fixed(&stdout_buf);
+        var stderr_writer: std.Io.Writer = .fixed(&stderr_buf);
+        const code = try testRun(&.{ "ci", "check", "--format", case.format }, &stdout_writer, &stderr_writer);
+        try std.testing.expectEqual(exit_codes.general, code);
+        try std.testing.expectEqualStrings(case.expected, stdout_writer.buffered());
+        try std.testing.expectEqualStrings("", stderr_writer.buffered());
+    }
+}
+
+test "top-level diff emits the exact patch from byte zero" {
+    const intercept_files = @import("orca").intercept.files;
+    const policy_load = @import("orca_core").policy.load;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try tmp.dir.createDirPath(std.testing.io, ".git");
+    try tmp.dir.createDirPath(std.testing.io, "src");
+    try tmp.dir.writeFile(std.testing.io, .{ .sub_path = "src/existing.txt", .data = "old\n" });
+    const root = try tmp.dir.realPathFileAlloc(std.testing.io, ".", std.testing.allocator);
+    defer std.testing.allocator.free(root);
+    var loaded = try policy_load.loadPreset(std.testing.allocator, .strict);
+    defer loaded.deinit();
+    var staged = try intercept_files.stageUpdate(std.testing.io, std.testing.allocator, &loaded, root, "phase06-diff", "src/existing.txt", "newer\n", null);
+    defer staged.deinit(std.testing.allocator);
+    const previous_cwd = try std.Io.Dir.cwd().realPathFileAlloc(std.testing.io, ".", std.testing.allocator);
+    defer std.testing.allocator.free(previous_cwd);
+    try std.process.setCurrentDir(std.testing.io, tmp.dir);
+    defer std.process.setCurrentPath(std.testing.io, previous_cwd) catch {};
+
+    var stdout_buf: [2048]u8 = undefined;
+    var stderr_buf: [256]u8 = undefined;
+    var stdout_writer: std.Io.Writer = .fixed(&stdout_buf);
+    var stderr_writer: std.Io.Writer = .fixed(&stderr_buf);
+    const code = try testRun(&.{ "diff", "--session", "phase06-diff", "--file", "src/existing.txt" }, &stdout_writer, &stderr_writer);
+    try std.testing.expectEqual(exit_codes.success, code);
+    try std.testing.expectEqualStrings(
+        "--- a/src/existing.txt\n+++ b/src/existing.txt\n@@\n-old\n+newer\n",
+        stdout_writer.buffered(),
+    );
+    try std.testing.expectEqualStrings("", stderr_writer.buffered());
+}
+
+extern "c" fn setenv(name: [*:0]const u8, value: [*:0]const u8, overwrite: c_int) c_int;
+extern "c" fn unsetenv(name: [*:0]const u8) c_int;
+
+fn writeTopLevelReportFixture(io: std.Io, allocator: std.mem.Allocator, workspace_root: []const u8) ![]u8 {
+    const core = @import("orca_core").core;
+    const core_api = @import("orca_core").api;
+    const now = core.time.Timestamp.fromUnixSeconds(1_777_983_130);
+    var session_id: core.session.SessionId = .{ .value = undefined, .len = 0 };
+    const session_id_text = try std.fmt.bufPrint(&session_id.value, "report-output-fixture", .{});
+    session_id.len = session_id_text.len;
+    const session = core.session.Session{
+        .id = session_id,
+        .started_at = now,
+        .ended_at = now,
+        .command = "orca",
+        .args = &.{ "run", "--", "rm", "-rf", "./fixture" },
+        .workspace_root = workspace_root,
+        .session_name = "report-output-test",
+        .mode = .strict,
+        .platform = core.platform.detectOs(),
+    };
+    var audit_writer = try core_api.createAuditWriter(io, allocator, session);
+    defer audit_writer.deinit();
+    var event_id: core.event.EventId = .{ .value = undefined, .len = 0 };
+    const event_id_text = try std.fmt.bufPrint(&event_id.value, "denied", .{});
+    event_id.len = event_id_text.len;
+    const event = try core_api.createAuditEvent(.{
+        .session_id = session.id,
+        .event_id = event_id,
+        .timestamp = now,
+        .event_type = .command_denied,
+        .actor = .{ .kind = .orca, .display = "orca" },
+        .target = .{ .kind = .command, .value = "rm -rf ./fixture" },
+        .decision = core_api.makeDecision(.{ .result = .deny, .reason = "blocked by fixture policy", .rule_id = "commands.deny" }),
+        .redactions = .{ .count = 1, .labels = &.{"fixture-label"} },
+    });
+    try core_api.appendAuditEvent(&audit_writer, event);
+    try audit_writer.writeLastPointer();
+    try core_api.writeAuditSummary(allocator, audit_writer.sessionDirPath(), .{
+        .session = session,
+        .status = .{ .exited = 1 },
+        .event_count = audit_writer.event_count,
+        .final_event_hash = audit_writer.finalHash() orelse "",
+        .policy = ".orca/policy.yaml",
+        .product_label = "Orca",
+    });
+    return allocator.dupe(u8, audit_writer.session_id.slice());
+}
+
+test "top-level report exports preserve exact generated bytes" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const root = try tmp.dir.realPathFileAlloc(std.testing.io, ".", std.testing.allocator);
+    defer std.testing.allocator.free(root);
+    const previous_xdg: ?[:0]u8 = if (std.c.getenv("XDG_CONFIG_HOME")) |value|
+        try std.testing.allocator.dupeZ(u8, std.mem.sliceTo(value, 0))
+    else
+        null;
+    defer {
+        if (previous_xdg) |value| {
+            _ = setenv("XDG_CONFIG_HOME", value, 1);
+            std.testing.allocator.free(value);
+        } else _ = unsetenv("XDG_CONFIG_HOME");
+    }
+    const previous_path: ?[:0]u8 = if (std.c.getenv("PATH")) |value|
+        try std.testing.allocator.dupeZ(u8, std.mem.sliceTo(value, 0))
+    else
+        null;
+    defer {
+        if (previous_path) |value| {
+            _ = setenv("PATH", value, 1);
+            std.testing.allocator.free(value);
+        } else _ = unsetenv("PATH");
+    }
+    try std.testing.expectEqual(@as(c_int, 0), setenv("XDG_CONFIG_HOME", root, 1));
+    try std.testing.expectEqual(@as(c_int, 0), setenv("PATH", "", 1));
+    const license_path = try std.fs.path.join(std.testing.allocator, &.{ root, "orca", "license.json" });
+    defer std.testing.allocator.free(license_path);
+    var activated = try @import("orca").license.activateToPath(std.testing.io, std.testing.allocator, "dev-pro", license_path);
+    activated.deinit();
+    try tmp.dir.createDirPath(std.testing.io, ".orca");
+    {
+        const policy_file = try tmp.dir.createFile(std.testing.io, ".orca/policy.yaml", .{});
+        defer policy_file.close(std.testing.io);
+        try policy_file.writeStreamingAll(std.testing.io, "version: 1\nmode: strict\n");
+    }
+    const session_id = try writeTopLevelReportFixture(std.testing.io, std.testing.allocator, root);
+    defer std.testing.allocator.free(session_id);
+    const previous_cwd = try std.Io.Dir.cwd().realPathFileAlloc(std.testing.io, ".", std.testing.allocator);
+    defer std.testing.allocator.free(previous_cwd);
+    try std.process.setCurrentDir(std.testing.io, tmp.dir);
+    defer std.process.setCurrentPath(std.testing.io, previous_cwd) catch {};
+
+    const expected_markdown =
+        \\# Orca Safety Report: report-output-fixture
+        \\
+        \\- Session id: `report-output-fixture`
+        \\- Command: `orca run -- rm -rf ./fixture`
+        \\- Status: exit 1
+        \\- Policy path: .orca/policy.yaml
+        \\- Hash-chain verification: verified
+        \\- Denied/prevented actions: 1
+        \\- Redactions: 1 (fixture-label)
+        \\
+        \\## What Orca Prevented
+        \\
+        \\Orca prevented 1 action from continuing because the active local policy denied them.
+        \\
+        \\- `rm -rf ./fixture` was blocked. Reason: blocked by fixture policy
+        \\
+        \\## Plugin Readiness
+        \\
+        \\- OpenClaw: host not detected, integration missing
+        \\- Hermes: host not detected, integration missing
+        \\
+    ;
+    const expected_json =
+        \\{"session_id":"report-output-fixture","command":"orca run -- rm -rf ./fixture","status":"exit 1","policy_path":".orca/policy.yaml","hash_chain_verified":true,"denied_count":1,"redactions":{"count":1,"labels":["fixture-label"]},"denied_actions":[{"event_type":"command_denied","target":"rm -rf ./fixture","reason":"blocked by fixture policy"}],"plugins":[{"id":"openclaw","host_detected":false,"integration_present":false},{"id":"hermes","host_detected":false,"integration_present":false}]}
+        \\
+    ;
+
+    var stdout_buf: [8192]u8 = undefined;
+    var stderr_buf: [256]u8 = undefined;
+    var stdout: std.Io.Writer = .fixed(&stdout_buf);
+    var stderr: std.Io.Writer = .fixed(&stderr_buf);
+    try std.testing.expectEqual(exit_codes.success, try testRun(&.{ "report", "--session", session_id }, &stdout, &stderr));
+    try std.testing.expectEqualStrings(expected_markdown, stdout.buffered());
+    try std.testing.expectEqualStrings("", stderr.buffered());
+
+    inline for (.{
+        .{ .argv = &.{ "report", "--session", session_id, "--format", "markdown" }, .expected = expected_markdown },
+        .{ .argv = &.{ "report", "--session", session_id, "--format", "json" }, .expected = expected_json },
+    }) |case| {
+        stdout = .fixed(&stdout_buf);
+        stderr = .fixed(&stderr_buf);
+        try std.testing.expectEqual(exit_codes.success, try testRunWithCwd(tmp.dir, case.argv, &stdout, &stderr));
+        try std.testing.expectEqualStrings(case.expected, stdout.buffered());
+        try std.testing.expectEqualStrings("", stderr.buffered());
+    }
+    stdout = .fixed(&stdout_buf);
+    stderr = .fixed(&stderr_buf);
+    try std.testing.expectEqual(exit_codes.success, try testRun(&.{ "report", "--session", session_id, "--format", "json" }, &stdout, &stderr));
+    try std.testing.expectEqualStrings(expected_json, stdout.buffered());
+    try std.testing.expectEqualStrings("", stderr.buffered());
+}
+
+test "banner suppressed on machine proxy path (packs --format json)" {
+    var stdout_buf: [1024]u8 = undefined;
+    var stderr_buf: [512]u8 = undefined;
+    var stdout_writer: std.Io.Writer = .fixed(&stdout_buf);
+    var stderr_writer: std.Io.Writer = .fixed(&stderr_buf);
+
+    _ = try testRun(&.{ "packs", "--format", "json" }, &stdout_writer, &stderr_writer);
+    // Machine path must not emit a brand banner to stdout (byte-identity).
+    try std.testing.expect(std.mem.indexOf(u8, stdout_writer.buffered(), "\u{1F6E1}  Orca") == null);
+}
+
+test "decide human mode gets a banner while default JSON remains machine output" {
+    try std.testing.expect(shouldShowBanner("decide", &.{ "decide", "command", "--human", "--json", "{}" }));
+    try std.testing.expect(!shouldShowBanner("decide", &.{ "decide", "command", "--json", "{}" }));
+    try std.testing.expect(!shouldShowBanner("decide", &.{ "decide", "command", "--human", "--stdin", "--help" }));
+}
+
+test "decide human mode honors no-rich without changing default machine JSON" {
+    var machine_buf: [4096]u8 = undefined;
+    var human_buf: [4096]u8 = undefined;
+    var stderr_buf: [512]u8 = undefined;
+    var machine: std.Io.Writer = .fixed(&machine_buf);
+    var human: std.Io.Writer = .fixed(&human_buf);
+    var stderr_writer: std.Io.Writer = .fixed(&stderr_buf);
+    const payload = "{\"command\":\"echo hello\"}";
+
+    try std.testing.expectEqual(exit_codes.success, try testRun(&.{ "--no-rich", "decide", "command", "--json", payload }, &machine, &stderr_writer));
+    try std.testing.expectEqualStrings(@embedFile("test-fixtures/decide-command-allow.json"), machine.buffered());
+
+    stderr_writer = .fixed(&stderr_buf);
+    try std.testing.expectEqual(exit_codes.success, try testRun(&.{ "--no-rich", "decide", "command", "--human", "--json", payload }, &human, &stderr_writer));
+    try std.testing.expect(std.mem.indexOf(u8, human.buffered(), "[ALLOW]") != null);
+    try std.testing.expect(std.mem.indexOfScalar(u8, human.buffered(), 0x1b) == null);
+}
+
+test "global --no-rich is consumed without changing version JSON contract" {
+    var baseline_buf: [4096]u8 = undefined;
+    var escaped_buf: [4096]u8 = undefined;
+    var stderr_buf: [256]u8 = undefined;
+    var baseline: std.Io.Writer = .fixed(&baseline_buf);
+    var escaped: std.Io.Writer = .fixed(&escaped_buf);
+    var stderr_writer: std.Io.Writer = .fixed(&stderr_buf);
+
+    try std.testing.expectEqual(exit_codes.success, try testRun(&.{ "version", "--json" }, &baseline, &stderr_writer));
+    stderr_writer = .fixed(&stderr_buf);
+    try std.testing.expectEqual(exit_codes.success, try testRun(&.{ "--no-rich", "version", "--json" }, &escaped, &stderr_writer));
+    try std.testing.expectEqualStrings(baseline.buffered(), escaped.buffered());
+}
+
+test "global flag parser only consumes no-rich before the command" {
+    const prefix = parseGlobalArgs(&.{ "--no-rich", "version", "--json" });
+    try std.testing.expect(prefix.no_rich);
+    try std.testing.expectEqual(@as(usize, 1), prefix.command_index);
+    const literal = parseGlobalArgs(&.{ "run", "--", "echo", "--no-rich" });
+    try std.testing.expect(!literal.no_rich);
+    try std.testing.expectEqual(@as(usize, 0), literal.command_index);
+    const value = parseGlobalArgs(&.{ "decide", "command", "--json", "{\"value\":\"--no-rich\"}" });
+    try std.testing.expect(!value.no_rich);
+}
+
+test "ORCA_NO_RICH truthy variants suppress presentation without changing machine JSON" {
+    const variants = [_][]const u8{ "1", "true", "yes" };
+    for (variants) |variant| {
+        var env_map = try std.process.Environ.createMap(std.process.Environ.empty, std.testing.allocator);
+        defer env_map.deinit();
+        try env_map.put("ORCA_NO_RICH", variant);
+        var stdout_buf: [4096]u8 = undefined;
+        var stderr_buf: [256]u8 = undefined;
+        var stdout_writer: std.Io.Writer = .fixed(&stdout_buf);
+        var stderr_writer: std.Io.Writer = .fixed(&stderr_buf);
+        try std.testing.expectEqual(exit_codes.success, try run(std.testing.io, &env_map, &.{ "version", "--json" }, &stdout_writer, &stderr_writer));
+        try std.testing.expect(stdout_writer.buffered().len > 0 and stdout_writer.buffered()[0] == '{');
+        try std.testing.expect(std.mem.indexOfScalar(u8, stdout_writer.buffered(), 0x1b) == null);
+        try std.testing.expectEqualStrings("", stderr_writer.buffered());
+    }
+}
+
+test "banner suppressed on command-specific help (help run)" {
+    var stdout_buf: [4096]u8 = undefined;
+    var stderr_buf: [256]u8 = undefined;
+    var stdout_writer: std.Io.Writer = .fixed(&stdout_buf);
+    var stderr_writer: std.Io.Writer = .fixed(&stderr_buf);
+
+    const code = try testRun(&.{ "help", "run" }, &stdout_writer, &stderr_writer);
+    try std.testing.expectEqual(exit_codes.success, code);
+    const out = stdout_writer.buffered();
+    try std.testing.expect(std.mem.indexOf(u8, out, "orca run") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "\u{1F6E1}  Orca") == null);
+}
+
+test "banner suppressed on subcommand --help (doctor --help)" {
+    var stdout_buf: [4096]u8 = undefined;
+    var stderr_buf: [256]u8 = undefined;
+    var stdout_writer: std.Io.Writer = .fixed(&stdout_buf);
+    var stderr_writer: std.Io.Writer = .fixed(&stderr_buf);
+
+    const code = try testRun(&.{ "doctor", "--help" }, &stdout_writer, &stderr_writer);
+    try std.testing.expectEqual(exit_codes.success, code);
+    const out = stdout_writer.buffered();
+    try std.testing.expect(std.mem.indexOf(u8, out, "orca doctor") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "\u{1F6E1}  Orca") == null);
+}
+
 // ---------------------------------------------------------------------------
 // TDD tests for "Did you mean?" suggestions (written FIRST — RED, foundation work)
 // ---------------------------------------------------------------------------
@@ -641,8 +1462,14 @@ test "unknown command suggests prefix match" {
     // Prefix match takes priority
     const suggestion = suggestCommand("do");
     try std.testing.expect(suggestion != null);
-    // "doctor" or "disable" etc. are valid; just ensure something returned
+    // "doctor" or "stop" etc. are valid; just ensure something returned
     try std.testing.expect(suggestion.?.len > 0);
+}
+
+test "top-level command suggestions reject ambiguous short prefixes" {
+    try std.testing.expect(suggestCommand("") == null);
+    try std.testing.expect(suggestCommand("p") == null);
+    try std.testing.expectEqualStrings("doctor", suggestCommand("doctor").?);
 }
 
 test "completely unknown command has no suggestion" {
@@ -711,18 +1538,22 @@ test "start dispatch appears in help and runs with --auto in temp workspace" {
     stderr_writer = .fixed(&stderr_buf);
     const code = try testRunWithCwd(tmp.dir, &.{ "start", "--auto", "--protection", "firewall", "--skip-verify" }, &stdout_writer, &stderr_writer);
     try std.testing.expectEqual(exit_codes.success, code);
-    try std.testing.expect(std.mem.indexOf(u8, stdout_writer.buffered(), "Orca Start") != null);
+    try std.testing.expect(std.mem.indexOf(u8, stdout_writer.buffered(), "\u{1F6E1}  Orca") != null);
 }
 
-test "start rejects non-interactive usage without --auto" {
-    var stdout_buf: [512]u8 = undefined;
+test "start auto-runs on non-TTY without --auto" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    var stdout_buf: [8192]u8 = undefined;
     var stderr_buf: [512]u8 = undefined;
     var stdout_writer: std.Io.Writer = .fixed(&stdout_buf);
     var stderr_writer: std.Io.Writer = .fixed(&stderr_buf);
 
-    const code = try testRunWithCwd(std.Io.Dir.cwd(), &.{"start"}, &stdout_writer, &stderr_writer);
-    try std.testing.expectEqual(exit_codes.usage, code);
-    try std.testing.expect(std.mem.indexOf(u8, stderr_writer.buffered(), "--auto") != null);
+    const code = try testRunWithCwd(tmp.dir, &.{ "start", "--protection", "firewall", "--skip-verify" }, &stdout_writer, &stderr_writer);
+    try std.testing.expectEqual(exit_codes.success, code);
+    try std.testing.expect(std.mem.indexOf(u8, stdout_writer.buffered(), "\u{1F6E1}  Orca") != null);
+    try std.testing.expectEqualStrings("", stderr_writer.buffered());
 }
 
 test "quickstart dispatch runs and prints steps" {
@@ -738,11 +1569,10 @@ test "quickstart dispatch runs and prints steps" {
     try std.testing.expectEqual(exit_codes.success, code);
 
     const output = stdout_writer.buffered();
-    try std.testing.expect(std.mem.indexOf(u8, output, "Orca Quickstart") != null);
-    try std.testing.expect(std.mem.indexOf(u8, output, "Step 1: Checking your system") != null);
-    try std.testing.expect(std.mem.indexOf(u8, output, "Step 2: Creating your first policy") != null or
-        std.mem.indexOf(u8, output, "Step 2: Policy already exists") != null);
-    try std.testing.expect(std.mem.indexOf(u8, output, "Step 3: Setting up") != null);
+    try std.testing.expect(std.mem.indexOf(u8, output, "\u{1F6E1}  Orca") != null);
+    try std.testing.expect(std.mem.indexOf(u8, output, "Step 1 — System check") != null);
+    try std.testing.expect(std.mem.indexOf(u8, output, "Step 2 — Policy") != null);
+    try std.testing.expect(std.mem.indexOf(u8, output, "Step 3 — Host integrations") != null);
     try std.testing.expect(std.mem.indexOf(u8, output, "Core protection is ready") != null);
 }
 
@@ -766,8 +1596,25 @@ test "quickstart skips init when policy exists" {
     try std.testing.expectEqual(exit_codes.success, code);
 
     const output = stdout_writer.buffered();
-    try std.testing.expect(std.mem.indexOf(u8, output, "Policy already exists") != null);
-    try std.testing.expect(std.mem.indexOf(u8, output, "Skipping init") != null);
+    try std.testing.expect(std.mem.indexOf(u8, output, "already exists — skipping init") != null);
+}
+
+test "stop dispatch is the public disable command" {
+    var stdout_buf: [4096]u8 = undefined;
+    var stderr_buf: [256]u8 = undefined;
+    var stdout_writer: std.Io.Writer = .fixed(&stdout_buf);
+    var stderr_writer: std.Io.Writer = .fixed(&stderr_buf);
+
+    const help_code = try testRun(&.{ "help", "stop" }, &stdout_writer, &stderr_writer);
+    try std.testing.expectEqual(exit_codes.success, help_code);
+    try std.testing.expect(std.mem.indexOf(u8, stdout_writer.buffered(), "orca stop") != null);
+    try std.testing.expect(std.mem.indexOf(u8, stdout_writer.buffered(), "cursor") != null);
+
+    stdout_writer = .fixed(&stdout_buf);
+    stderr_writer = .fixed(&stderr_buf);
+    const code = try testRun(&.{ "stop", "-all" }, &stdout_writer, &stderr_writer);
+    try std.testing.expectEqual(exit_codes.usage, code);
+    try std.testing.expect(std.mem.indexOf(u8, stderr_writer.buffered(), "orca stop") != null);
 }
 
 test "completions dispatch prints shell script" {
@@ -790,7 +1637,9 @@ test "policy command rejects unknown subcommands" {
 
     const code = try testRun(&.{ "policy", "--bad" }, &stdout_writer, &stderr_writer);
     try std.testing.expectEqual(exit_codes.usage, code);
-    try std.testing.expectEqualStrings("", stdout_writer.buffered());
+    // The brand banner opens the command (presentation only); the usage error
+    // still goes to stderr.
+    try std.testing.expect(std.mem.indexOf(u8, stdout_writer.buffered(), "\u{1F6E1}  Orca") != null);
     try std.testing.expect(std.mem.indexOf(u8, stderr_writer.buffered(), "unknown subcommand") != null);
 }
 
@@ -802,8 +1651,11 @@ test "run dispatch launches child command" {
 
     const code = try run_command.commandForTest(&.{ "--", "zig", "version" }, &stdout_writer, &stderr_writer, .ignore);
     try std.testing.expectEqual(exit_codes.success, code);
-    // TDD: new framed output with shield + separators + status glyphs (foundation work)
-    try std.testing.expect(std.mem.indexOf(u8, stdout_writer.buffered(), "Orca is watching this session") != null);
+    // Phase 2: printSessionStart now renders the shared brand banner + key-value
+    // grid (the hand-rolled shield line is retired). The session shield +
+    // first-run celebration remain in printSessionEnd.
+    try std.testing.expect(std.mem.indexOf(u8, stdout_writer.buffered(), "\u{1F6E1}  Orca") != null);
+    try std.testing.expect(std.mem.indexOf(u8, stdout_writer.buffered(), "watching this session") != null);
     try std.testing.expect(std.mem.indexOf(u8, stdout_writer.buffered(), "Session ended cleanly") != null);
     try std.testing.expectEqualStrings("", stderr_writer.buffered());
 }
@@ -824,10 +1676,9 @@ test "setup help describes guided interactive default on TTY and de-emphasizes -
     try std.testing.expectEqual(exit_codes.success, code);
 
     const output = stdout_writer.buffered();
-    // Accurate for current Phase 0 guided stub: mentions guided and the TTY/auto distinction.
-    // Full interactive toggle UI is future work; help text reflects stub reality.
+    // Accurate for Phase 3 guided flow: mentions guided mode and arrow-key selection.
     try std.testing.expect(std.mem.indexOf(u8, output, "guided") != null);
-    try std.testing.expect(std.mem.indexOf(u8, output, "auto-selects") != null or std.mem.indexOf(u8, output, "--auto") != null);
+    try std.testing.expect(std.mem.indexOf(u8, output, "arrow") != null or std.mem.indexOf(u8, output, "--auto") != null);
     try std.testing.expectEqualStrings("", stderr_writer.buffered());
 }
 

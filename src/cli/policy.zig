@@ -5,6 +5,8 @@ const supervisor = core.supervisor;
 const core_api = @import("orca_core").api;
 const exit_codes = @import("exit_codes.zig");
 const help = @import("help.zig");
+const tui = @import("../tui/render.zig");
+const suggestions = @import("suggestions.zig");
 
 pub fn command(io: std.Io, argv: []const []const u8, stdout: anytype, stderr: anytype) !u8 {
     if (argv.len > 0 and (std.mem.eql(u8, argv[0], "--help") or std.mem.eql(u8, argv[0], "-h"))) {
@@ -21,7 +23,7 @@ pub fn command(io: std.Io, argv: []const []const u8, stdout: anytype, stderr: an
     if (std.mem.eql(u8, argv[0], "packs")) return packs(argv[1..], stdout, stderr);
     if (std.mem.eql(u8, argv[0], "apply-pack")) return applyPack(io, argv[1..], stdout, stderr);
 
-    try stderr.print("orca policy: unknown subcommand '{s}'. Expected check, explain, packs, or apply-pack.\n", .{argv[0]});
+    try suggestions.writeUnknownSubcommand(stderr, "orca policy", argv[0], &.{ "check", "explain", "packs", "apply-pack" }, "policy");
     return exit_codes.usage;
 }
 
@@ -42,7 +44,8 @@ fn check(io: std.Io, argv: []const []const u8, stdout: anytype, stderr: anytype)
     const source = if (argv.len == 1) argv[0] else "builtin:strict";
     var policy_value = if (argv.len == 1)
         core_api.loadPolicyFile(io, allocator, argv[0]) catch |err| {
-            try stderr.print("orca policy check: invalid policy {s}: {s}\n", .{ argv[0], @errorName(err) });
+            try suggestions.writeSanitizedValue(stderr, "orca policy check: invalid policy ", argv[0], ": ");
+            try stderr.print("{s}\n", .{@errorName(err)});
             return exit_codes.general;
         }
     else
@@ -78,7 +81,7 @@ fn explain(io: std.Io, argv: []const []const u8, stdout: anytype, stderr: anytyp
         return exit_codes.usage;
     }
     const kind = orca_policy.explain.ExplainKind.parse(positional[0]) orelse {
-        try stderr.print("orca policy explain: unsupported type '{s}'.\n", .{positional[0]});
+        try suggestions.writeSanitizedValue(stderr, "orca policy explain: unsupported type '", positional[0], "'.\n");
         return exit_codes.usage;
     };
     var gpa_state: std.heap.DebugAllocator(.{}) = .init;
@@ -107,8 +110,43 @@ fn explain(io: std.Io, argv: []const []const u8, stdout: anytype, stderr: anytyp
     };
     defer evaluation.deinit(allocator);
 
-    try core_api.writePolicyExplanation(stdout, loaded.policy, evaluation);
+    try writePolicyExplanationHuman(io, allocator, stdout, loaded.policy, evaluation);
     return exit_codes.success;
+}
+
+fn writePolicyExplanationHuman(io: std.Io, allocator: std.mem.Allocator, stdout: anytype, policy_value: *const core_api.Policy, evaluation: core_api.Evaluation) !void {
+    try stdout.writeAll("Decision  ");
+    try tui.badge(io, stdout, switch (evaluation.decision.result) {
+        .allow => .allow,
+        .deny => .deny,
+        .ask, .stage => .ask,
+        .observe => .info,
+        .redact => .warn,
+        .broker => .neutral,
+    });
+    try stdout.writeAll("\n\n");
+
+    const rule_id = if (evaluation.matched_rule) |rule| rule.id else "none";
+    const matched = if (evaluation.matched_rule) |rule| rule.pattern else "none";
+    try writePolicyDetailsPanel(io, allocator, stdout, evaluation.decision.reason, rule_id, matched, policy_value.mode().toString());
+    const score = evaluation.decision.risk_score orelse 0;
+    const risk_label = if (evaluation.decision.risk_score == null) "unknown" else if (score <= 25) "low" else if (score <= 50) "medium" else if (score <= 75) "high" else "critical";
+    try stdout.writeAll("  Risk  ");
+    try tui.meter(io, stdout, @as(f32, @floatFromInt(score)) / 100.0, risk_label);
+    try stdout.writeAll("\n");
+}
+
+fn writePolicyDetailsPanel(io: std.Io, allocator: std.mem.Allocator, stdout: anytype, reason: []const u8, rule_id: []const u8, matched: []const u8, mode: []const u8) !void {
+    const reason_line = try std.fmt.allocPrint(allocator, "Reason   {s}", .{reason});
+    errdefer allocator.free(reason_line);
+    const rule_line = try std.fmt.allocPrint(allocator, "Rule     {s}", .{rule_id});
+    errdefer allocator.free(rule_line);
+    const matched_line = try std.fmt.allocPrint(allocator, "Matched  {s}", .{matched});
+    errdefer allocator.free(matched_line);
+    const mode_line = try std.fmt.allocPrint(allocator, "Mode     {s}", .{mode});
+    const detail_lines = [_][]u8{ reason_line, rule_line, matched_line, mode_line };
+    defer for (detail_lines) |line| allocator.free(line);
+    try tui.panel(io, stdout, "Decision details", &detail_lines);
 }
 
 const ExplainTarget = struct {
@@ -142,7 +180,7 @@ fn parseExplainTarget(allocator: std.mem.Allocator, kind: orca_policy.explain.Ex
             if (method) |old| allocator.free(old);
             method = try allocator.dupe(u8, args[index]);
         } else if (std.mem.startsWith(u8, arg, "-")) {
-            try stderr.print("orca policy explain: unknown option '{s}'.\n", .{arg});
+            try suggestions.writeUnknownOption(stderr, "orca policy explain", arg, &.{"--method"}, "policy");
             if (target) |owned| allocator.free(owned);
             if (method) |owned| allocator.free(owned);
             return .{ .invalid = true };
@@ -193,7 +231,7 @@ fn applyPack(io: std.Io, argv: []const []const u8, stdout: anytype, stderr: anyt
         force = true;
     }
     const pack = orca_policy.presets.AgentPreset.parse(argv[0]) orelse {
-        try stderr.print("orca policy apply-pack: unknown policy pack '{s}'.\n", .{argv[0]});
+        try suggestions.writeInvalidValue(stderr, "orca policy apply-pack", "pack", argv[0], &.{ "solo-dev", "strict-local", "team-ci", "openclaw-hermes" }, "policy");
         return exit_codes.usage;
     };
     const pack_name = orca_policy.presets.agentPresetName(pack);
@@ -310,8 +348,10 @@ test "policy explain reports matched deny rule" {
 
     const code = try command(std.testing.io, &.{ "explain", "file.read", "~/.ssh/id_ed25519" }, &stdout_writer, &stderr_writer);
     try std.testing.expectEqual(exit_codes.success, code);
-    try std.testing.expect(std.mem.indexOf(u8, stdout_writer.buffered(), "Decision: deny") != null);
-    try std.testing.expect(std.mem.indexOf(u8, stdout_writer.buffered(), "Rule: files.read.deny") != null);
+    try std.testing.expect(std.mem.indexOf(u8, stdout_writer.buffered(), "[DENY]") != null);
+    try std.testing.expect(std.mem.indexOf(u8, stdout_writer.buffered(), "files.read.deny") != null);
+    try std.testing.expect(std.mem.indexOf(u8, stdout_writer.buffered(), "Mode") != null);
+    try std.testing.expect(std.mem.indexOf(u8, stdout_writer.buffered(), "Risk") != null);
     try std.testing.expectEqualStrings("", stderr_writer.buffered());
 }
 
@@ -353,9 +393,27 @@ test "policy explain accepts explicit policy path" {
     const code = try command(std.testing.io, &.{ "explain", "--policy", path, "command", "git", "push", "origin", "main" }, &stdout_writer, &stderr_writer);
 
     try std.testing.expectEqual(exit_codes.success, code);
-    try std.testing.expect(std.mem.indexOf(u8, stdout_writer.buffered(), "Decision: deny") != null);
-    try std.testing.expect(std.mem.indexOf(u8, stdout_writer.buffered(), "git push *") != null);
+    try std.testing.expectEqualStrings(@embedFile("test-fixtures/policy-explain-command-deny.txt"), stdout_writer.buffered());
     try std.testing.expectEqualStrings("", stderr_writer.buffered());
+}
+
+test "policy explanation panel sanitizes dynamic fields" {
+    var output: [2048]u8 = undefined;
+    var writer: std.Io.Writer = .fixed(&output);
+    try writePolicyDetailsPanel(
+        std.testing.io,
+        std.testing.allocator,
+        &writer,
+        "unsafe\x1b]0;owned\x07 reason\nforged",
+        "rule\x1b[2Jid",
+        "pattern\rspoof",
+        "strict",
+    );
+    const rendered = writer.buffered();
+    try std.testing.expect(std.mem.indexOfScalar(u8, rendered, 0x1b) == null);
+    try std.testing.expect(std.mem.indexOf(u8, rendered, "owned") == null);
+    try std.testing.expect(std.mem.indexOf(u8, rendered, "reason forged") != null);
+    try std.testing.expect(std.mem.indexOf(u8, rendered, "pattern spoof") != null);
 }
 
 test "policy packs list productized packs" {

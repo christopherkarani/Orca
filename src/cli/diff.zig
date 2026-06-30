@@ -4,6 +4,7 @@ const supervisor = core.supervisor;
 const intercept = @import("../intercept/mod.zig");
 const exit_codes = @import("exit_codes.zig");
 const help = @import("help.zig");
+const suggestions = @import("suggestions.zig");
 
 pub fn command(io: std.Io, argv: []const []const u8, stdout: anytype, stderr: anytype) !u8 {
     const options = parseOptions(io, argv, stdout, stderr) catch |err| switch (err) {
@@ -60,7 +61,7 @@ fn parseOptions(io: std.Io, argv: []const []const u8, stdout: anytype, stderr: a
             }
             options.file = argv[index];
         } else {
-            try stderr.print("orca diff: unknown option '{s}'.\n", .{arg});
+            try suggestions.writeUnknownOption(stderr, "orca diff", arg, &.{ "--session", "--file", "--help", "-h" }, "diff");
             return error.Usage;
         }
     }

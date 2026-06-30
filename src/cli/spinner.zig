@@ -1,58 +1,7 @@
 const std = @import("std");
-const style = @import("style.zig");
+const tui_spinner = @import("../tui/spinner.zig");
 
-pub fn Spinner(comptime Writer: type) type {
-    return struct {
-        frames: []const []const u8 = &.{ "⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏" },
-        frame_index: usize = 0,
-        label: []const u8,
-        io: std.Io,
-        stdout: Writer,
-
-        pub fn start(self: *@This()) !void {
-            if (!style.useColor(self.io, self.stdout)) return;
-            try self.stdout.writeAll("\r\x1b[K");
-            try self.tick();
-        }
-
-        pub fn tick(self: *@This()) !void {
-            if (!style.useColor(self.io, self.stdout)) return;
-            const frame = self.frames[self.frame_index % self.frames.len];
-            try self.stdout.print("\r  {s} {s}...", .{ frame, self.label });
-            try flush(self.stdout);
-            self.frame_index += 1;
-        }
-
-        pub fn stop(self: *@This(), success: bool) !void {
-            if (!style.useColor(self.io, self.stdout)) {
-                if (success) {
-                    try self.stdout.print("  ✓ {s}\n", .{self.label});
-                } else {
-                    try self.stdout.print("  ✗ {s}\n", .{self.label});
-                }
-                return;
-            }
-            try self.stdout.writeAll("\r\x1b[K");
-            if (success) {
-                try self.stdout.print("  ✓ {s}\n", .{self.label});
-            } else {
-                try self.stdout.print("  ✗ {s}\n", .{self.label});
-            }
-        }
-    };
-}
-
-fn flush(writer: anytype) !void {
-    const Writer = @TypeOf(writer);
-    switch (@typeInfo(Writer)) {
-        .pointer => |pointer| {
-            if (@hasDecl(pointer.child, "flush")) try writer.flush();
-        },
-        else => {
-            if (@hasDecl(Writer, "flush")) try writer.flush();
-        },
-    }
-}
+pub const Spinner = tui_spinner.Spinner;
 
 test "Spinner start and tick are no-ops in test environment (non-TTY)" {
     var buf: [256]u8 = undefined;

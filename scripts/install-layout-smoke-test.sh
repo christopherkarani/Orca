@@ -4,21 +4,21 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 DIST_DIR="${ORCA_DIST_DIR:-dist}"
-VERSION="$(tr -d '[:space:]' < "${REPO_ROOT}/VERSION")"
+VERSION="$(tr -d '[:space:]' <"${REPO_ROOT}/VERSION")"
 
 detect_os() {
   case "$(uname -s)" in
-    Darwin) printf 'darwin' ;;
-    Linux) printf 'linux' ;;
-    *) printf 'unsupported' ;;
+  Darwin) printf 'darwin' ;;
+  Linux) printf 'linux' ;;
+  *) printf 'unsupported' ;;
   esac
 }
 
 detect_arch() {
   case "$(uname -m)" in
-    x86_64|amd64) printf 'amd64' ;;
-    arm64|aarch64) printf 'arm64' ;;
-    *) printf 'unsupported' ;;
+  x86_64 | amd64) printf 'amd64' ;;
+  arm64 | aarch64) printf 'arm64' ;;
+  *) printf 'unsupported' ;;
   esac
 }
 
@@ -73,8 +73,9 @@ export PATH="${STAGE_ROOT}/bin:${PATH}"
 export ORCA_RESOURCE_ROOT="${STAGE_ROOT}"
 
 version_output="$("${ORCA_BIN}" version)"
-assert_contains "${version_output}" "orca ${VERSION}"
-assert_contains "${version_output}" "daemon "
+assert_contains "${version_output}" "Version"
+assert_contains "${version_output}" "${VERSION}"
+assert_contains "${version_output}" "Daemon"
 
 doctor_output="$("${ORCA_BIN}" doctor --verbose)"
 assert_contains "${doctor_output}" "daemon health: compatible"
@@ -87,19 +88,20 @@ safe_fixture="${REPO_ROOT}/tests/plugin-fixtures/claude/pre_tool_use_command_saf
 [[ -f "${dangerous_fixture}" ]] || fail "missing dangerous hook fixture"
 [[ -f "${safe_fixture}" ]] || fail "missing safe hook fixture"
 
-dangerous_output="$("${ORCA_BIN}" hook claude PreToolUse < "${dangerous_fixture}")"
+dangerous_output="$("${ORCA_BIN}" hook claude PreToolUse <"${dangerous_fixture}")"
 assert_json_field "${dangerous_output}" "decision" "block"
 
 mv "${DAEMON_BIN}" "${DAEMON_BIN}.bak"
 
 degraded_version="$("${ORCA_BIN}" version)"
-assert_contains "${degraded_version}" "daemon unavailable"
+assert_contains "${degraded_version}" "Daemon"
+assert_contains "${degraded_version}" "unavailable"
 
 degraded_doctor="$("${ORCA_BIN}" doctor --verbose)"
 assert_contains "${degraded_doctor}" "daemon health: unavailable"
 assert_contains "${degraded_doctor}" "orca-daemon binary not found"
 
-fail_closed_output="$("${ORCA_BIN}" hook claude PreToolUse < "${safe_fixture}")"
+fail_closed_output="$("${ORCA_BIN}" hook claude PreToolUse <"${safe_fixture}")"
 assert_json_field "${fail_closed_output}" "decision" "block"
 assert_contains "${fail_closed_output}" "daemon unavailable"
 

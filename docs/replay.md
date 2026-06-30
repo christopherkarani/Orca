@@ -16,7 +16,12 @@ Orca writes per-session artifacts under `.orca/sessions/<session-id>/`.
 ./zig-out/bin/orca replay --session last --json
 ./zig-out/bin/orca replay --session last --only denied
 ./zig-out/bin/orca replay --session last --verify
+./zig-out/bin/orca replay --session last --tui
 ```
+
+## Alt-screen timeline
+
+`--tui` opens the replay timeline in an interactive alt-screen view for terminals that support rich output. It is opt-in; the default replay output stays linear for logs and copy/paste. `--tui` is TTY-only and cannot be combined with `--json` because replay JSON is a frozen machine contract.
 
 ## Hash-chain Verification
 

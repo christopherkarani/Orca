@@ -61,6 +61,15 @@ pub fn build(b: *std.Build) void {
     const core_schema_documents_mod = core_schema_documents.createModule();
     _ = &core_schema_documents_mod;
 
+    const vaxis_dep = b.dependency("vaxis", .{ .target = target, .optimize = optimize, .external_uucode = true });
+    const vaxis_mod = vaxis_dep.module("vaxis");
+    const uucode_dep = b.dependency("uucode", .{
+        .target = target,
+        .optimize = optimize,
+        .fields = @as([]const []const u8, &.{ "east_asian_width", "grapheme_break", "general_category", "is_emoji_presentation" }),
+    });
+    vaxis_mod.addImport("uucode", uucode_dep.module("uucode"));
+
     const orca_core_engine_mod = b.createModule(.{
         .root_source_file = b.path("src/core_engine.zig"),
         .target = target,
@@ -83,9 +92,11 @@ pub fn build(b: *std.Build) void {
         .imports = &.{
             .{ .name = "orca_core", .module = orca_core_mod },
             .{ .name = "build_options", .module = build_options_mod },
+            .{ .name = "vaxis", .module = vaxis_mod },
         },
     });
     orca_mod.addImport("build_options", build_options_mod);
+    orca_mod.addImport("orca", orca_mod);
 
     const orca_cli_mod = b.addModule("orca_cli", .{
         .root_source_file = b.path("packages/cli/src/root.zig"),
@@ -111,6 +122,7 @@ pub fn build(b: *std.Build) void {
         }),
     });
     exe.root_module.link_libc = true;
+    exe.root_module.addImport("vaxis", vaxis_mod);
 
     b.installArtifact(exe);
     const install_orca = b.addInstallArtifact(exe, .{});

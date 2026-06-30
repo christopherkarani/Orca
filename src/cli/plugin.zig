@@ -3,15 +3,17 @@ const builtin = @import("builtin");
 const core = @import("orca_core").core;
 const supervisor = core.supervisor;
 const core_api = @import("orca_core").api;
-const sandbox = @import("../sandbox/mod.zig");
+const sandbox = @import("orca").sandbox;
 
 const exit_codes = @import("exit_codes.zig");
 const help = @import("help.zig");
 const cli = @import("mod.zig");
 const plugin_install = @import("plugin_install.zig");
 const child_process = @import("child_process.zig");
-const resource_root = @import("../resource_root.zig");
-const env_util = @import("../env_util.zig");
+const resource_root = @import("orca").resource_root;
+const env_util = @import("orca").env_util;
+const tui = @import("orca").tui;
+const suggestions = @import("suggestions.zig");
 
 // ---------------------------------------------------------------------------
 // Top-level dispatch
@@ -28,12 +30,27 @@ pub fn command(io: std.Io, argv: []const []const u8, stdout: anytype, stderr: an
     }
 
     if (std.mem.eql(u8, argv[0], "doctor")) return doctorCommand(io, argv[1..], stdout, stderr);
+    if (std.mem.eql(u8, argv[0], "list")) return listCommand(io, argv[1..], stdout, stderr);
     if (std.mem.eql(u8, argv[0], "manifest")) return manifestCommand(io, argv[1..], stdout, stderr);
     if (std.mem.eql(u8, argv[0], "install")) return installCommand(io, argv[1..], stdout, stderr);
     if (std.mem.eql(u8, argv[0], "mcp-server")) return mcpServerCommand(io, argv[1..], stdout, stderr);
+    inline for (.{ "codex", "claude", "opencode", "openclaw", "hermes" }) |host| {
+        if (std.mem.eql(u8, argv[0], host)) return installAliasCommand(io, host, argv[1..], stdout, stderr);
+    }
 
-    try stderr.print("orca plugin: unknown subcommand '{s}'.\n", .{argv[0]});
+    try suggestions.writeUnknownSubcommand(stderr, "orca plugin", argv[0], &.{ "doctor", "list", "manifest", "install", "mcp-server", "codex", "claude", "opencode", "openclaw", "hermes" }, "plugin");
     return exit_codes.usage;
+}
+
+fn installAliasCommand(io: std.Io, host: []const u8, argv: []const []const u8, stdout: anytype, stderr: anytype) !u8 {
+    var gpa_state: std.heap.DebugAllocator(.{}) = .init;
+    defer _ = gpa_state.deinit();
+    const allocator = gpa_state.allocator();
+    const install_argv = try allocator.alloc([]const u8, argv.len + 1);
+    defer allocator.free(install_argv);
+    install_argv[0] = host;
+    @memcpy(install_argv[1..], argv);
+    return installCommand(io, install_argv, stdout, stderr);
 }
 
 // ---------------------------------------------------------------------------
@@ -90,7 +107,7 @@ fn doctorCommand(io: std.Io, argv: []const []const u8, stdout: anytype, stderr: 
             target = .hermes;
             continue;
         }
-        try stderr.print("orca plugin doctor: unknown option '{s}'.\n", .{arg});
+        try suggestions.writeUnknownOption(stderr, "orca plugin doctor", arg, &.{ "--json", "--help", "-h", "codex", "claude", "opencode", "openclaw", "hermes" }, "plugin");
         return exit_codes.usage;
     }
 
@@ -198,6 +215,80 @@ pub fn deinitPluginDoctorReport(report: *PluginDoctorReport, allocator: std.mem.
 
 pub fn collectPluginDoctorReport(io: std.Io, allocator: std.mem.Allocator) !PluginDoctorReport {
     return collectPluginDoctorReportWithHermesSmoke(io, allocator, null);
+}
+
+fn listCommand(io: std.Io, argv: []const []const u8, stdout: anytype, stderr: anytype) !u8 {
+    if (argv.len > 0) {
+        if (argv.len == 1 and (std.mem.eql(u8, argv[0], "--help") or std.mem.eql(u8, argv[0], "-h"))) {
+            try stdout.writeAll("Usage:\n  orca plugin list\n");
+            return exit_codes.success;
+        }
+        try suggestions.writeUnknownOption(stderr, "orca plugin list", argv[0], &.{ "--help", "-h" }, "plugin");
+        return exit_codes.usage;
+    }
+
+    var gpa_state: std.heap.DebugAllocator(.{}) = .init;
+    defer _ = gpa_state.deinit();
+    const allocator = gpa_state.allocator();
+    var report = try collectPluginDoctorReport(io, allocator);
+    defer deinitPluginDoctorReport(&report, allocator);
+    try writePluginList(io, allocator, stdout, report);
+    return exit_codes.success;
+}
+
+const PluginInventoryItem = struct {
+    host: []const u8,
+    detected: bool,
+    installed: bool,
+};
+
+fn pluginInventory(report: PluginDoctorReport) [5]PluginInventoryItem {
+    return .{
+        .{ .host = "Codex", .detected = report.host_binaries.codex, .installed = hostPluginInstalledFromReport("codex", report) },
+        .{ .host = "Claude Code", .detected = report.host_binaries.claude, .installed = hostPluginInstalledFromReport("claude", report) },
+        .{ .host = "OpenCode", .detected = report.host_binaries.opencode, .installed = hostPluginInstalledFromReport("opencode", report) },
+        .{ .host = "OpenClaw", .detected = report.host_binaries.openclaw, .installed = hostPluginInstalledFromReport("openclaw", report) },
+        .{ .host = "Hermes", .detected = report.host_binaries.hermes, .installed = hostPluginInstalledFromReport("hermes", report) },
+    };
+}
+
+fn writePluginList(io: std.Io, allocator: std.mem.Allocator, stdout: anytype, report: PluginDoctorReport) !void {
+    const inventory = pluginInventory(report);
+    const rows = try allocator.alloc([]const []const u8, inventory.len);
+    defer allocator.free(rows);
+    var initialized: usize = 0;
+    defer for (rows[0..initialized]) |row| allocator.free(row);
+    var detected_count: usize = 0;
+    var installed_count: usize = 0;
+
+    for (inventory, 0..) |item, index| {
+        if (item.detected) detected_count += 1;
+        if (item.installed) installed_count += 1;
+        const cells = try allocator.alloc([]const u8, 4);
+        cells[0] = item.host;
+        cells[1] = if (item.detected) "yes" else "no";
+        cells[2] = if (item.installed) "yes" else "no";
+        cells[3] = if (item.installed and item.detected)
+            "ready"
+        else if (item.installed)
+            "installed; host missing"
+        else if (item.detected)
+            "not installed"
+        else
+            "host not detected";
+        rows[index] = cells;
+        initialized += 1;
+    }
+
+    try tui.render.table(io, stdout, &.{
+        .{ .name = "HOST" }, .{ .name = "DETECTED" }, .{ .name = "INSTALLED" }, .{ .name = "STATUS" },
+    }, rows);
+    if (detected_count == 0) {
+        try stdout.writeAll("\nNo supported host CLIs detected. Install a host, then run 'orca plugin list' again.\n");
+    }
+    if (installed_count == 0) {
+        try stdout.writeAll("Preview setup with 'orca plugin codex --dry-run' (or replace codex with your host).\n");
+    }
 }
 
 fn collectPluginDoctorReportWithHermesSmoke(
@@ -714,7 +805,7 @@ fn manifestCommand(io: std.Io, argv: []const []const u8, stdout: anytype, stderr
             target = .all;
             continue;
         }
-        try stderr.print("orca plugin manifest: unknown option '{s}'.\n", .{arg});
+        try suggestions.writeUnknownOption(stderr, "orca plugin manifest", arg, &.{ "--json", "--help", "-h", "codex", "claude", "opencode", "openclaw", "hermes", "all" }, "plugin");
         return exit_codes.usage;
     }
 
@@ -1052,7 +1143,7 @@ fn installCommand(io: std.Io, argv: []const []const u8, stdout: anytype, stderr:
             } else if (std.mem.eql(u8, value, "global")) {
                 scope = .global;
             } else {
-                try stderr.print("orca plugin install: invalid --scope '{s}' (expected project|global).\n", .{value});
+                try suggestions.writeInvalidValue(stderr, "orca plugin install", "--scope", value, &.{ "project", "global" }, "plugin");
                 return exit_codes.usage;
             }
             index += 1;
@@ -1082,7 +1173,7 @@ fn installCommand(io: std.Io, argv: []const []const u8, stdout: anytype, stderr:
             target = .all;
             continue;
         }
-        try stderr.print("orca plugin install: unknown option '{s}'.\n", .{arg});
+        try suggestions.writeUnknownOption(stderr, "orca plugin install", arg, &.{ "--dry-run", "--yes", "--all-detected", "--path", "--scope", "--help", "-h", "codex", "claude", "opencode", "openclaw", "hermes", "all" }, "plugin");
         return exit_codes.usage;
     }
 
@@ -1383,7 +1474,7 @@ fn mcpServerCommand(_: std.Io, argv: []const []const u8, stdout: anytype, stderr
             );
             return exit_codes.success;
         }
-        try stderr.print("orca plugin mcp-server: unknown option '{s}'.\n", .{arg});
+        try suggestions.writeUnknownOption(stderr, "orca plugin mcp-server", arg, &.{ "--help", "-h" }, "plugin");
         return exit_codes.usage;
     }
 
@@ -1889,6 +1980,8 @@ test "plugin doctor --json emits valid JSON" {
     try std.testing.expect(parsed.value.object.get("hermes_hook_smoke_passed").? == .bool);
     try std.testing.expect(parsed.value.object.get("drone") == null);
     try std.testing.expect(parsed.value.object.get("warnings") != null);
+    try std.testing.expect(std.mem.indexOfScalar(u8, json, 0x1b) == null);
+    try std.testing.expect(std.mem.indexOf(u8, json, "Orca Plugin Doctor") == null);
     try std.testing.expectEqualStrings("", stderr_writer.buffered());
 }
 
@@ -2118,6 +2211,8 @@ test "plugin manifest --json emits valid JSON" {
     try std.testing.expect(parsed.value.object.get("opencode") != null);
     try std.testing.expect(parsed.value.object.get("openclaw") != null);
     try std.testing.expect(parsed.value.object.get("hermes") != null);
+    try std.testing.expect(std.mem.indexOfScalar(u8, json, 0x1b) == null);
+    try std.testing.expect(std.mem.indexOf(u8, json, "Orca Plugin") == null);
     try std.testing.expectEqualStrings("", stderr_writer.buffered());
 }
 
@@ -2299,7 +2394,7 @@ test "plugin install rejects invalid scope" {
 
     const code = try installCommand(std.testing.io, &.{ "opencode", "--scope", "workspace" }, &stdout_writer, &stderr_writer);
     try std.testing.expectEqual(exit_codes.usage, code);
-    try std.testing.expect(std.mem.indexOf(u8, stderr_writer.buffered(), "invalid --scope") != null);
+    try std.testing.expect(std.mem.indexOf(u8, stderr_writer.buffered(), "invalid --scope value") != null);
 }
 
 test "plugin install opencode --scope global is accepted in dry-run" {
@@ -2438,4 +2533,70 @@ test "plugin manifest all reports marketplace files" {
     try std.testing.expect(std.mem.indexOf(u8, output, ".agents/plugins/marketplace.json") != null);
     try std.testing.expect(std.mem.indexOf(u8, output, ".claude-plugin/marketplace.json") != null);
     try std.testing.expectEqualStrings("", stderr_writer.buffered());
+}
+
+fn pluginListTestReport() PluginDoctorReport {
+    return .{
+        .orca_version = "test",
+        .orca_binary_path = null,
+        .cwd = @constCast("."),
+        .workspace_root = ".",
+        .policy_present = false,
+        .policy_valid = false,
+        .policy_error = null,
+        .audit_replay_available = false,
+        .mcp_support_status = "",
+        .plugin_directories = .{ .codex = true, .claude = true, .opencode = true, .openclaw = true, .hermes = true, .common = true },
+        .host_binaries = .{ .codex = false, .claude = false, .opencode = false, .openclaw = false, .hermes = false },
+        .opencode_paths = .{ .project_plugin_exists = false, .global_plugin_exists = false, .config_references_plugin = false },
+        .openclaw_paths = .{ .host_plugin_installed = false, .plugin_manifest_exists = false, .package_json_exists = false, .source_exists = false, .detection_note = "" },
+        .hermes_paths = .{ .repo_manifest_exists = false, .repo_source_exists = false, .user_manifest_exists = false, .user_source_exists = false, .config_references_plugin = false },
+        .hermes_hook_smoke_passed = false,
+        .marketplace = .{ .codex_marketplace = false, .claude_marketplace = false, .codex_plugin_manifest = true, .claude_plugin_manifest = true, .codex_user_plugin = false, .claude_user_plugin = false },
+        .platform_summary = "",
+        .warnings = &.{},
+    };
+}
+
+fn pluginListAllocationFailureHarness(allocator: std.mem.Allocator) !void {
+    var buffer: [4096]u8 = undefined;
+    var writer: std.Io.Writer = .fixed(&buffer);
+    try writePluginList(std.testing.io, allocator, &writer, pluginListTestReport());
+}
+
+test "plugin list cleans up allocation failure paths" {
+    try std.testing.checkAllAllocationFailures(std.testing.allocator, pluginListAllocationFailureHarness, .{});
+}
+
+test "plugin list renders deterministic host inventory and empty guidance" {
+    const report = pluginListTestReport();
+    var buffer: [4096]u8 = undefined;
+    var writer: std.Io.Writer = .fixed(&buffer);
+
+    try writePluginList(std.testing.io, std.testing.allocator, &writer, report);
+
+    const output = writer.buffered();
+    try std.testing.expect(std.mem.indexOf(u8, output, "HOST") != null);
+    try std.testing.expect(std.mem.indexOf(u8, output, "Codex").? < std.mem.indexOf(u8, output, "Claude Code").?);
+    try std.testing.expect(std.mem.indexOf(u8, output, "Claude Code").? < std.mem.indexOf(u8, output, "OpenCode").?);
+    try std.testing.expect(std.mem.indexOf(u8, output, "No supported host CLIs detected") != null);
+    try std.testing.expect(std.mem.indexOf(u8, output, "orca plugin codex --dry-run") != null);
+}
+
+test "friendly plugin host alias preserves install dry-run output" {
+    var alias_stdout_buf: [8192]u8 = undefined;
+    var alias_stderr_buf: [256]u8 = undefined;
+    var direct_stdout_buf: [8192]u8 = undefined;
+    var direct_stderr_buf: [256]u8 = undefined;
+    var alias_stdout: std.Io.Writer = .fixed(&alias_stdout_buf);
+    var alias_stderr: std.Io.Writer = .fixed(&alias_stderr_buf);
+    var direct_stdout: std.Io.Writer = .fixed(&direct_stdout_buf);
+    var direct_stderr: std.Io.Writer = .fixed(&direct_stderr_buf);
+
+    const alias_code = try command(std.testing.io, &.{ "codex", "--dry-run" }, &alias_stdout, &alias_stderr);
+    const direct_code = try installCommand(std.testing.io, &.{ "codex", "--dry-run" }, &direct_stdout, &direct_stderr);
+
+    try std.testing.expectEqual(direct_code, alias_code);
+    try std.testing.expectEqualStrings(direct_stdout.buffered(), alias_stdout.buffered());
+    try std.testing.expectEqualStrings(direct_stderr.buffered(), alias_stderr.buffered());
 }

@@ -627,7 +627,8 @@ test "decide rejects unknown decision kind" {
     defer allocator.free(result.stderr);
 
     try std.testing.expect(result.code != 0);
-    try std.testing.expect(std.mem.indexOf(u8, result.stderr, "unknown decision kind") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.stderr, "unknown subcommand") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.stderr, "orca help decide") != null);
 }
 
 // ---------------------------------------------------------------------------

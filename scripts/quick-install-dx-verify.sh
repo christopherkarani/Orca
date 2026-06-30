@@ -49,10 +49,12 @@ expect_decision() {
   local label="$*"
   local out
   out="$("${ORCA_BIN}" policy explain --policy "${POLICY}" "$@" 2>&1)"
-  if echo "${out}" | grep -qE "^Decision: ${want}\$"; then
+  local badge
+  badge="$(printf '%s' "${want}" | tr '[:lower:]' '[:upper:]')"
+  if echo "${out}" | grep -qE "^Decision[[:space:]]+\[${badge}\]\$"; then
     echo "  PASS: ${label} -> ${want}"
   else
-    echo "  FAIL: ${label} expected Decision: ${want}"
+    echo "  FAIL: ${label} expected Decision [${badge}]"
     echo "${out}" | head -12
     exit 1
   fi

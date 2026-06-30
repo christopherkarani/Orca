@@ -12,6 +12,9 @@ const help = @import("help.zig");
 const style = @import("style.zig");
 const shell_eval = @import("shell_eval.zig");
 const rust_visibility = @import("rust_visibility.zig");
+const tui = @import("../tui/mod.zig");
+const build_options = @import("build_options");
+const suggestions = @import("suggestions.zig");
 
 const RunOptions = struct {
     workspace: ?[]const u8 = null,
@@ -61,7 +64,7 @@ fn commandWithStdioAndEnv(io: std.Io, argv: []const []const u8, stdout: anytype,
 
     const workspace_root_for_policy = supervisor.resolveWorkspaceRoot(io, allocator, options.workspace, ".") catch |err| switch (err) {
         error.FileNotFound => {
-            try stderr.print("orca run: workspace not found: {s}\n", .{options.workspace orelse "."});
+            try suggestions.writeSanitizedValue(stderr, "orca run: workspace not found: ", options.workspace orelse ".", "\n");
             return exit_codes.general;
         },
         else => return err,
@@ -194,6 +197,11 @@ fn commandWithStdioAndEnv(io: std.Io, argv: []const []const u8, stdout: anytype,
         stderr: @TypeOf(stderr),
         shell_evaluator: ?shell_eval.ShellCommandEvaluatorFn = null,
         workspace_root: []const u8,
+        // Phase 1 UX: captures the rule id of the most recently denied command so
+        // the `error.CommandDenied` handler can render a rich guardian block with a
+        // plain-English reason + risk meter. Allocator-owned; freed by the handler.
+        // Null on the fail-closed / user-denial paths (graceful degrade).
+        last_denied_rule_id: ?[]const u8 = null,
 
         pub fn beforeProcessLaunch(context: *anyopaque, session: core.session.Session) !void {
             const self: *@This() = @ptrCast(@alignCast(context));
@@ -285,6 +293,13 @@ fn commandWithStdioAndEnv(io: std.Io, argv: []const []const u8, stdout: anytype,
                 return;
             }
             try self.auditCommandEvent(session, .command_denied, rust_visibility.target_summary_shell, final_decision, rust_metadata);
+            // Capture the matched rule id for the rich deny block. The decision is
+            // freed by `defer command_decision.deinit` below; dupe so the handler
+            // can read it after this closure returns. `owned_rule_id` carries the
+            // daemon's pattern_name (e.g. "rm-rf-root-home"); null on fail-closed.
+            if (command_decision.owned_rule_id) |rid| {
+                self.last_denied_rule_id = try self.allocator.dupe(u8, rid);
+            }
             return error.CommandDenied;
         }
 
@@ -490,7 +505,7 @@ fn commandWithStdioAndEnv(io: std.Io, argv: []const []const u8, stdout: anytype,
         .health_monitor = health_monitor,
     }) catch |err| switch (err) {
         error.CommandNotFound => {
-            try stderr.print("orca run: command not found: {s}\n", .{options.command_argv[0]});
+            try suggestions.writeSanitizedValue(stderr, "orca run: command not found: ", options.command_argv[0], "\n");
             return exit_codes.general;
         },
         error.InvalidCommand => {
@@ -498,7 +513,7 @@ fn commandWithStdioAndEnv(io: std.Io, argv: []const []const u8, stdout: anytype,
             return exit_codes.usage;
         },
         error.FileNotFound => {
-            try stderr.print("orca run: workspace not found: {s}\n", .{options.workspace orelse "."});
+            try suggestions.writeSanitizedValue(stderr, "orca run: workspace not found: ", options.workspace orelse ".", "\n");
             return exit_codes.general;
         },
         error.CommandDenied => {
@@ -529,7 +544,25 @@ fn commandWithStdioAndEnv(io: std.Io, argv: []const []const u8, stdout: anytype,
                     try writeLastPointerNoMakePath(allocator, ended.workspace_root, ended.id.slice());
                 }
             }
-            try stderr.writeAll("orca run: command denied by command guard.\n");
+            // Phase 1 UX: render a rich "guardian block" to human stderr instead of
+            // the old flat one-liner. --json/robot/machine output is unaffected (it
+            // never reaches this human stderr path). Graceful-degrades when the
+            // matched rule id is unknown/null (fail-closed / user-denial paths).
+            renderDenyBlock(
+                io,
+                stderr,
+                allocator,
+                options.command_argv,
+                command_guard_context.last_denied_rule_id,
+                loaded_policy.path,
+                effective_policy_mode.toString(),
+            ) catch |render_err| {
+                // Never let a presentation failure mask the deny or alter the exit
+                // code; fall back to a minimal message and continue to denial.
+                stderr.print("orca run: command denied by command guard ({s}).\n", .{@errorName(render_err)}) catch {};
+            };
+            if (command_guard_context.last_denied_rule_id) |rid| allocator.free(rid);
+            command_guard_context.last_denied_rule_id = null;
             return exit_codes.denial;
         },
         error.BackendRequirementUnavailable => {
@@ -674,7 +707,7 @@ fn parseOptions(io: std.Io, argv: []const []const u8, stdout: anytype, stderr: a
                 return error.Usage;
             }
             options.mode = parseMode(argv[index]) orelse {
-                try stderr.print("orca run: unsupported mode '{s}'. Expected observe, ask, strict, or ci.\n", .{argv[index]});
+                try suggestions.writeInvalidValue(stderr, "orca run", "--mode", argv[index], &.{ "observe", "ask", "strict", "ci" }, "run");
                 return error.Usage;
             };
             options.mode_explicit = true;
@@ -720,7 +753,7 @@ fn parseOptions(io: std.Io, argv: []const []const u8, stdout: anytype, stderr: a
                 return error.Usage;
             }
             options.network_mode = policy.schema.NetworkMode.parse(argv[index]) orelse {
-                try stderr.print("orca run: unsupported network mode '{s}'. Expected observe, ask, allowlist, open, or off.\n", .{argv[index]});
+                try suggestions.writeInvalidValue(stderr, "orca run", "--network", argv[index], &.{ "observe", "ask", "allowlist", "open", "off" }, "run");
                 return error.Usage;
             };
         } else if (std.mem.eql(u8, arg, "--network-backend")) {
@@ -730,7 +763,7 @@ fn parseOptions(io: std.Io, argv: []const []const u8, stdout: anytype, stderr: a
                 return error.Usage;
             }
             options.network_backend = policy.schema.NetworkBackend.parse(argv[index]) orelse {
-                try stderr.print("orca run: unsupported network backend '{s}'. Expected decision-only or proxy.\n", .{argv[index]});
+                try suggestions.writeInvalidValue(stderr, "orca run", "--network-backend", argv[index], &.{ "decision-only", "proxy" }, "run");
                 return error.Usage;
             };
         } else if (std.mem.eql(u8, arg, "--require-backend")) {
@@ -744,12 +777,12 @@ fn parseOptions(io: std.Io, argv: []const []const u8, stdout: anytype, stderr: a
                 return error.Usage;
             }
             options.required_backend_values[options.required_backend_count] = sandbox.backend.Feature.parse(argv[index]) orelse {
-                try stderr.print("orca run: unsupported backend capability '{s}'.\n", .{argv[index]});
+                try suggestions.writeInvalidValue(stderr, "orca run", "--require-backend", argv[index], &.{ "policy-engine", "audit", "env-filtering", "path-staging", "shell-wrapping", "path-shims", "mcp-stdio-proxy", "network-observe", "network-enforce", "process-supervision", "user-namespaces", "mount-namespaces", "seccomp", "landlock", "cgroups", "strong-sandbox" }, "run");
                 return error.Usage;
             };
             options.required_backend_count += 1;
         } else if (std.mem.startsWith(u8, arg, "-")) {
-            try stderr.print("orca run: unknown option '{s}'.\n", .{arg});
+            try suggestions.writeUnknownOption(stderr, "orca run", arg, &.{ "--workspace", "--mode", "--policy", "--session-name", "--no-secrets", "--secretless", "--inherit-env", "--no-network", "--allow-network", "--network", "--network-backend", "--require-backend", "--help", "-h" }, "run");
             return error.Usage;
         } else {
             try stderr.writeAll("orca run: expected '--' before the command you want to run.\n" ++
@@ -865,18 +898,25 @@ fn coreModeToPolicyMode(mode: core.types.Mode) policy.schema.Mode {
 }
 
 fn printSessionStart(io: std.Io, stdout: anytype, session: core.session.Session) !void {
-    try stdout.writeAll("─────────────────────────────────────\n");
-    // Warm framing header routed through the color gate (maybeColor) + Glyph.
-    // On real TTY: bold shield line. On NO_COLOR/piped/test: identical plain bytes.
-    try style.maybeColor(io, stdout, style.Style.bold, style.Glyph.shield ++ "  Orca is watching this session");
-    try stdout.writeAll("\n─────────────────────────────────────\n");
-    try stdout.print("Session:   {s}\n", .{session.id.slice()});
-    try stdout.print("Workspace: {s}\n", .{session.workspace_root});
-    try stdout.print("Mode:      {s}\n", .{session.mode.toString()});
+    // Phase 2 brand cohesion: replace the hand-rolled `─────` + shield line with
+    // the shared compact brand banner (status chip carries the "watching" intent)
+    // and a key-value grid for Session / Workspace / Mode / Name. The shield +
+    // first-run celebration stay in `printSessionEnd` (gold standard; Phase 7).
+    try tui.render.banner(io, stdout, build_options.version, "watching this session");
+
+    var rows: [4]tui.render.KV = .{
+        .{ .label = "Session", .value = session.id.slice() },
+        .{ .label = "Workspace", .value = session.workspace_root },
+        .{ .label = "Mode", .value = session.mode.toString() },
+        .{ .label = "Name", .value = "" },
+    };
+    var count: usize = 3;
     if (session.session_name) |name| {
-        try stdout.print("Name:      {s}\n", .{name});
+        rows[3].value = name;
+        count = 4;
     }
-    try stdout.writeAll("─────────────────────────────────────\n\n");
+    try tui.render.keyValue(io, stdout, rows[0..count]);
+    try stdout.writeAll("\n");
 }
 
 fn printSessionEnd(io: std.Io, stdout: anytype, result: supervisor.SessionResult, is_first_session: bool) !void {
@@ -896,18 +936,129 @@ fn printSessionEnd(io: std.Io, stdout: anytype, result: supervisor.SessionResult
         try stdout.print("\n{s} Session ended with exit code {d}\n", .{ style.Glyph.cross, code });
     }
     if (is_first_session and code == 0) {
-        // First-run celebration (static emotional text) routed through maybeColor + Glyph.
-        // Demonstrates the warm path using the color helper (review gap closure).
+        // Phase 7: elevate the first-run celebration into a branded moment.
+        // A celebratory brand banner (shield + version + status) opens the
+        // moment, followed by a warm welcome line and a "Next steps" hint list
+        // composed from the same `→ ` pattern the deny block uses, so the whole
+        // tool speaks one visual language. Human-only — `--json`/machine output
+        // never reaches here. `isFirstSession` once-per-workspace semantics are
+        // unchanged (still best-effort, still gated on exit code 0).
         try stdout.writeAll("\n");
-        try style.maybeColor(
-            io,
-            stdout,
-            style.Style.green,
-            style.Glyph.party ++ " Welcome to Orca! Your first protected session completed successfully.\n" ++
-                "   Next: run `orca replay --session last` to review what happened.",
-        );
+        try tui.render.banner(io, stdout, build_options.version, "first protected session complete");
+        try stdout.writeAll("\n");
+        try tui.theme.paintBold(io, stdout, .success, "  Welcome to Orca!");
+        try stdout.writeAll(" Your first protected session completed successfully.\n");
+        try stdout.writeAll("\n");
+        try tui.theme.paintBold(io, stdout, .info, "  Next steps");
+        try stdout.writeAll("\n");
+        try stdout.writeAll("  → ");
+        try tui.theme.paint(io, stdout, .text_bright, "orca replay --session last");
+        try stdout.writeAll("  (review what happened)\n");
+        try stdout.writeAll("  → ");
+        try tui.theme.paint(io, stdout, .text_bright, "orca policy explain command \"<your-command>\"");
+        try stdout.writeAll("  (understand your rules)\n");
+        try stdout.writeAll("  → ");
+        try tui.theme.paint(io, stdout, .text_bright, "orca run -- <command>");
+        try stdout.writeAll("  (run another protected session)\n");
         try stdout.writeAll("\n");
     }
+}
+
+/// Render the rich "guardian block" for a denied command to a human-facing
+/// writer (stderr). Composes the `tui` design-system primitives:
+///
+///   ✗  Orca blocked a command            (callout .danger header)
+///   ┌──────────────────────────────┐
+///   │ ✗  <command>                 │     (panel, command as headline)
+///   ├──────────────────────────────┤
+///   │ Why        <plain-english>   │
+///   │ Rule       <rule_id or —>    │
+///   │ Policy     <path> · mode <m> │
+///   └──────────────────────────────┘
+///     Risk   ███████░░░░  <label>        (standalone meter — colour-safe)
+///   Safe alternatives               (when derivable from command shape)
+///     → <alt>  (<note>)
+///   If this is intentional
+///     → edit .orca/policy.yaml …
+///     → orca policy explain command "…"
+///
+/// Graceful degrade: when `rule_id` is null (fail-closed / user-denial paths) or
+/// not in the reason table, a generic reason + medium risk meter are used and
+/// safe alternatives still derive from the command shape when possible.
+///
+/// This is presentation only — it never changes the decision, audit output, or
+/// exit code. `--json`/robot output never reaches here.
+fn renderDenyBlock(
+    io: std.Io,
+    stdout: anytype,
+    allocator: std.mem.Allocator,
+    command_argv: []const []const u8,
+    rule_id: ?[]const u8,
+    policy_path: ?[]const u8,
+    policy_mode: []const u8,
+) !void {
+    // Header.
+    try stdout.writeAll("\n");
+    try tui.render.callout(io, stdout, .danger, "Orca blocked a command", "");
+    try stdout.writeAll("\n");
+
+    // Compose panel body lines (text-only — safe for the panel's width padding).
+    // The coloured risk meter is rendered separately below to avoid ANSI codes
+    // inside the padded panel body.
+    var body: std.ArrayList([]const u8) = .empty;
+    defer {
+        for (body.items) |line| allocator.free(line);
+        body.deinit(allocator);
+    }
+
+    const reason_text = if (rule_id) |rid| tui.reasons.reasonForRule(rid) else "Matched a deny rule in your Orca policy.";
+    try body.append(allocator, try std.fmt.allocPrint(allocator, "Why        {s}", .{reason_text}));
+
+    if (rule_id) |rid| {
+        try body.append(allocator, try std.fmt.allocPrint(allocator, "Rule       {s}", .{rid}));
+    } else {
+        try body.append(allocator, try allocator.dupe(u8, "Rule       —"));
+    }
+    try body.append(allocator, try std.fmt.allocPrint(allocator, "Policy     {s} · mode {s}", .{ policy_path orelse "built-in", policy_mode }));
+
+    // Panel title = the denied command, prefixed with the deny glyph.
+    const command_display = try intercept.commands.displayArgvAlloc(allocator, command_argv);
+    defer allocator.free(command_display);
+    const title = try std.fmt.allocPrint(allocator, "✗  {s}", .{command_display});
+    defer allocator.free(title);
+    try tui.render.panel(io, stdout, title, body.items);
+    try stdout.writeAll("\n");
+
+    // Risk meter (standalone — colour-safe; degrades to plain on non-TTY).
+    const risk = if (rule_id) |rid| tui.reasons.riskForRule(rid) else .medium;
+    try stdout.writeAll("  ");
+    try tui.theme.paint(io, stdout, .muted, "Risk   ");
+    try tui.render.meter(io, stdout, tui.reasons.riskFraction(risk), tui.reasons.riskLabel(risk));
+    try stdout.writeAll("\n\n");
+
+    // Safe alternatives (derived from command shape; may be empty).
+    const alts = try tui.reasons.safeAlternatives(allocator, command_display);
+    defer {
+        for (alts) |a| allocator.free(a.command);
+        allocator.free(alts);
+    }
+    if (alts.len > 0) {
+        try tui.theme.paintBold(io, stdout, .info, "  Safe alternatives");
+        try stdout.writeAll("\n");
+        for (alts) |a| {
+            try stdout.writeAll("  → ");
+            try tui.theme.paint(io, stdout, .text_bright, a.command);
+            try stdout.print("  ({s})\n", .{a.note});
+        }
+        try stdout.writeAll("\n");
+    }
+
+    // "If this is intentional" footer — power-user escape hatches.
+    try tui.theme.paintBold(io, stdout, .muted, "  If this is intentional");
+    try stdout.writeAll("\n");
+    try stdout.writeAll("  → edit .orca/policy.yaml to add an exception\n");
+    try stdout.print("  → orca policy explain command \"{s}\"\n", .{command_display});
+    try stdout.writeAll("\n");
 }
 
 fn flushIfSupported(writer: anytype) !void {
@@ -1028,7 +1179,11 @@ test "run accepts policy path and uses policy mode when mode is not explicit" {
 
     const code = try commandForTestWithShellEvaluator(&.{ "--policy", path, "--", "zig", "version" }, &stdout_writer, &stderr_writer, .ignore, shell_eval.mockDaemonAllowEvaluator);
     try std.testing.expectEqual(exit_codes.success, code);
-    try std.testing.expect(std.mem.indexOf(u8, stdout_writer.buffered(), "Mode:      strict") != null);
+    // Phase 2: printSessionStart renders Mode via the tui key-value grid (label
+    // "Mode", value = mode string). The exact padded column format is owned by
+    // tui.render.keyValue; assert the mode value + label are present.
+    try std.testing.expect(std.mem.indexOf(u8, stdout_writer.buffered(), "Mode") != null);
+    try std.testing.expect(std.mem.indexOf(u8, stdout_writer.buffered(), "strict") != null);
     try std.testing.expectEqualStrings("", stderr_writer.buffered());
 }
 
@@ -1120,7 +1275,9 @@ test "run command guard denies ci ask without prompting and audits command event
 
     const code = try commandForGuardTestWithShellEvaluator(&.{ "--workspace", root, "--mode", "ci", "--", "npm", "install", "OPENAI_API_KEY=sk-fakeSyntheticOpenAIKey1234567890" }, &stdout_writer, &stderr_writer, .inherit, shell_eval.mockDaemonDenyEvaluator);
     try std.testing.expectEqual(exit_codes.denial, code);
-    try std.testing.expect(std.mem.indexOf(u8, stderr_writer.buffered(), "command denied") != null);
+    // Phase 1 UX: rich guardian block replaces the flat "command denied" line.
+    try std.testing.expect(std.mem.indexOf(u8, stderr_writer.buffered(), "Orca blocked") != null);
+    try std.testing.expect(std.mem.indexOf(u8, stderr_writer.buffered(), "✗") != null);
 
     const events = try readLastEvents(std.testing.allocator, root);
     defer std.testing.allocator.free(events);
@@ -1304,7 +1461,7 @@ test "run rejects unknown network backend" {
 
     const code = try command(std.testing.io, &.{ "--network-backend", "magic", "--", "true" }, &stdout_writer, &stderr_writer);
     try std.testing.expectEqual(exit_codes.usage, code);
-    try std.testing.expect(std.mem.indexOf(u8, stderr_writer.buffered(), "unsupported network backend") != null);
+    try std.testing.expect(std.mem.indexOf(u8, stderr_writer.buffered(), "invalid --network-backend value") != null);
 }
 
 test "run require-backend fails closed when requested feature is unavailable" {
@@ -1342,9 +1499,14 @@ test "run shell evaluation forwards command and cwd to daemon Evaluate" {
     var stdout_writer: std.Io.Writer = .fixed(&stdout_buf);
     var stderr_writer: std.Io.Writer = .fixed(&stderr_buf);
 
-    const code = try commandForGuardTestWithShellEvaluator(&.{ "--workspace", root, "--", "git", "status" }, &stdout_writer, &stderr_writer, .ignore, shell_eval.mockDaemonAllowEvaluator);
+    // Keep this forwarding test independent of the child/shim lifecycle. `git`
+    // is one of Orca's generated shims, so launching `git status` here also
+    // exercised a nested test-binary process and intermittently surfaced its
+    // signal termination as exit code 5. `true` is not shimmed and keeps this
+    // test focused on the Evaluate command/cwd boundary.
+    const code = try commandForGuardTestWithShellEvaluator(&.{ "--workspace", root, "--", "true" }, &stdout_writer, &stderr_writer, .ignore, shell_eval.mockDaemonAllowEvaluator);
     try std.testing.expectEqual(exit_codes.success, code);
-    try std.testing.expectEqualStrings("git status", shell_eval.test_last_evaluate_command.?);
+    try std.testing.expectEqualStrings("true", shell_eval.test_last_evaluate_command.?);
     try std.testing.expectEqualStrings(root, shell_eval.test_last_evaluate_cwd.?);
 }
 
@@ -1361,7 +1523,8 @@ test "run daemon unavailable denies shell command" {
 
     const code = try commandForGuardTestWithShellEvaluator(&.{ "--workspace", root, "--", "git", "status" }, &stdout_writer, &stderr_writer, .ignore, shell_eval.mockDaemonUnavailableEvaluator);
     try std.testing.expectEqual(exit_codes.denial, code);
-    try std.testing.expect(std.mem.indexOf(u8, stderr_writer.buffered(), "command denied") != null);
+    // Phase 1 UX: rich guardian block (graceful-degrade path — no rule id).
+    try std.testing.expect(std.mem.indexOf(u8, stderr_writer.buffered(), "Orca blocked") != null);
 }
 
 test "run daemon protocol mismatch denies shell command" {
@@ -1377,7 +1540,7 @@ test "run daemon protocol mismatch denies shell command" {
 
     const code = try commandForGuardTestWithShellEvaluator(&.{ "--workspace", root, "--", "git", "status" }, &stdout_writer, &stderr_writer, .ignore, shell_eval.mockDaemonProtocolMismatchEvaluator);
     try std.testing.expectEqual(exit_codes.denial, code);
-    try std.testing.expect(std.mem.indexOf(u8, stderr_writer.buffered(), "daemon") != null or std.mem.indexOf(u8, stderr_writer.buffered(), "command denied") != null);
+    try std.testing.expect(std.mem.indexOf(u8, stderr_writer.buffered(), "Orca blocked") != null or std.mem.indexOf(u8, stderr_writer.buffered(), "command denied") != null);
 }
 
 fn readLastSessionId(allocator: std.mem.Allocator, root: []const u8) ![]u8 {
@@ -1420,7 +1583,7 @@ test "first successful run prints celebration" {
     defer std.testing.allocator.free(root);
 
     // Fresh workspace: no .orca/sessions yet → should be first
-    var stdout_buf: [1024]u8 = undefined;
+    var stdout_buf: [4096]u8 = undefined;
     var stderr_buf: [512]u8 = undefined;
     var stdout_writer: std.Io.Writer = .fixed(&stdout_buf);
     var stderr_writer: std.Io.Writer = .fixed(&stderr_buf);
@@ -1428,8 +1591,13 @@ test "first successful run prints celebration" {
     const code = try commandForTestWithShellEvaluator(&.{ "--workspace", root, "--", "echo", "hi-from-first" }, &stdout_writer, &stderr_writer, .inherit, shell_eval.mockDaemonAllowEvaluator);
     try std.testing.expectEqual(exit_codes.success, code);
     const out = stdout_writer.buffered();
+    // Phase 7: elevated branded moment — brand shield + warm welcome + next-step hints.
+    try std.testing.expect(std.mem.indexOf(u8, out, "\u{1F6E1}") != null); // 🛡 brand shield glyph
     try std.testing.expect(std.mem.indexOf(u8, out, "Welcome to Orca!") != null);
     try std.testing.expect(std.mem.indexOf(u8, out, "replay --session last") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "Next steps") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "policy explain") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "orca run") != null);
     try std.testing.expectEqualStrings("", stderr_writer.buffered());
 }
 
@@ -1442,7 +1610,7 @@ test "subsequent runs do not print celebration" {
     // Pre-create a fake prior session dir inside the temp workspace
     try tmp.dir.createDirPath(std.testing.io, ".orca/sessions/2026-01-01T00-00-00Z_aaaa");
 
-    var stdout_buf: [1024]u8 = undefined;
+    var stdout_buf: [2048]u8 = undefined;
     var stderr_buf: [512]u8 = undefined;
     var stdout_writer: std.Io.Writer = .fixed(&stdout_buf);
     var stderr_writer: std.Io.Writer = .fixed(&stderr_buf);
@@ -1450,6 +1618,116 @@ test "subsequent runs do not print celebration" {
     const code = try commandForTestWithShellEvaluator(&.{ "--workspace", root, "--", "echo", "hi-from-second" }, &stdout_writer, &stderr_writer, .inherit, shell_eval.mockDaemonAllowEvaluator);
     try std.testing.expectEqual(exit_codes.success, code);
     const out = stdout_writer.buffered();
+    // Celebration-specific strings must be absent. (The session-start banner's
+    // shield may still appear, so we key on the celebration's welcome line and
+    // its dedicated 'Next steps' section rather than the shield glyph.)
     try std.testing.expect(std.mem.indexOf(u8, out, "Welcome to Orca!") == null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "Next steps") == null);
     try std.testing.expectEqualStrings("", stderr_writer.buffered());
+}
+
+// ---------------------------------------------------------------------------
+// TDD: Phase 1 — rich guardian block on deny (written FIRST → RED → GREEN).
+// These exercise renderDenyBlock via the real run.zig deny path. Fixed-buffer
+// writers + std.testing.io force theme.active() to .none, so assertions hold
+// against the plain-text degrade path (the colour path is covered by theme.zig).
+// ---------------------------------------------------------------------------
+
+test "deny block renders rich guardian block for rm -rf /" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const root = try tmp.dir.realPathFileAlloc(std.testing.io, ".", std.testing.allocator);
+    defer std.testing.allocator.free(root);
+
+    var stdout_buf: [2048]u8 = undefined;
+    var stderr_buf: [4096]u8 = undefined;
+    var stdout_writer: std.Io.Writer = .fixed(&stdout_buf);
+    var stderr_writer: std.Io.Writer = .fixed(&stderr_buf);
+
+    const code = try commandForGuardTestWithShellEvaluator(&.{ "--workspace", root, "--", "rm", "-rf", "/" }, &stdout_writer, &stderr_writer, .inherit, shell_eval.mockDaemonDenyEvaluator);
+    try std.testing.expectEqual(exit_codes.denial, code);
+    const err = stderr_writer.buffered();
+
+    // Hero header.
+    try std.testing.expect(std.mem.indexOf(u8, err, "✗") != null);
+    try std.testing.expect(std.mem.indexOf(u8, err, "Orca blocked") != null);
+    // The denied command appears as the panel headline.
+    try std.testing.expect(std.mem.indexOf(u8, err, "rm -rf /") != null);
+    // Why / Rule / Policy rows inside the panel.
+    try std.testing.expect(std.mem.indexOf(u8, err, "Why") != null);
+    try std.testing.expect(std.mem.indexOf(u8, err, "Rule") != null);
+    try std.testing.expect(std.mem.indexOf(u8, err, "Policy") != null);
+    // Risk meter label is present.
+    try std.testing.expect(std.mem.indexOf(u8, err, "Risk") != null);
+    // Safe alternatives derived from `rm -rf /` shape.
+    try std.testing.expect(std.mem.indexOf(u8, err, "Safe alternatives") != null);
+    try std.testing.expect(std.mem.indexOf(u8, err, "./build") != null);
+    // "If this is intentional" footer with a real escape hatch.
+    try std.testing.expect(std.mem.indexOf(u8, err, "If this is intentional") != null);
+    try std.testing.expect(std.mem.indexOf(u8, err, "orca policy explain") != null);
+    // The old flat line is gone.
+    try std.testing.expect(std.mem.indexOf(u8, err, "command denied by command guard") == null);
+}
+
+test "deny block includes reasonForRule text when rule id is known" {
+    // reasonForRule is driven by the daemon's pattern_name. The mock deny
+    // evaluator returns pattern_name "destructive_rm" (not in the table), so it
+    // exercises the graceful-degrade fallback. Assert the fallback text appears.
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const root = try tmp.dir.realPathFileAlloc(std.testing.io, ".", std.testing.allocator);
+    defer std.testing.allocator.free(root);
+
+    var stdout_buf: [2048]u8 = undefined;
+    var stderr_buf: [4096]u8 = undefined;
+    var stdout_writer: std.Io.Writer = .fixed(&stdout_buf);
+    var stderr_writer: std.Io.Writer = .fixed(&stderr_buf);
+
+    const code = try commandForGuardTestWithShellEvaluator(&.{ "--workspace", root, "--", "rm", "-rf", "/" }, &stdout_writer, &stderr_writer, .inherit, shell_eval.mockDaemonDenyEvaluator);
+    try std.testing.expectEqual(exit_codes.denial, code);
+    const err = stderr_writer.buffered();
+    // The captured rule id ("destructive_rm") is shown in the Rule row.
+    try std.testing.expect(std.mem.indexOf(u8, err, "destructive_rm") != null);
+    // Unknown rule → fallback reason text from reasonForRule.
+    try std.testing.expect(std.mem.indexOf(u8, err, "deny rule") != null);
+}
+
+test "deny block graceful-degrades without rule id (daemon unavailable)" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const root = try tmp.dir.realPathFileAlloc(std.testing.io, ".", std.testing.allocator);
+    defer std.testing.allocator.free(root);
+
+    var stdout_buf: [2048]u8 = undefined;
+    var stderr_buf: [4096]u8 = undefined;
+    var stdout_writer: std.Io.Writer = .fixed(&stdout_buf);
+    var stderr_writer: std.Io.Writer = .fixed(&stderr_buf);
+
+    // mockDaemonUnavailableEvaluator → fail-closed deny with no rule id.
+    const code = try commandForGuardTestWithShellEvaluator(&.{ "--workspace", root, "--", "git", "status" }, &stdout_writer, &stderr_writer, .ignore, shell_eval.mockDaemonUnavailableEvaluator);
+    try std.testing.expectEqual(exit_codes.denial, code);
+    const err = stderr_writer.buffered();
+    try std.testing.expect(std.mem.indexOf(u8, err, "Orca blocked") != null);
+    try std.testing.expect(std.mem.indexOf(u8, err, "✗") != null);
+    // Rule row shows the em-dash placeholder when no rule id is available.
+    try std.testing.expect(std.mem.indexOf(u8, err, "Rule") != null);
+    // No crash; exit code unchanged.
+}
+
+test "deny block keeps exit code and does not print the flat line" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const root = try tmp.dir.realPathFileAlloc(std.testing.io, ".", std.testing.allocator);
+    defer std.testing.allocator.free(root);
+
+    var stdout_buf: [2048]u8 = undefined;
+    var stderr_buf: [4096]u8 = undefined;
+    var stdout_writer: std.Io.Writer = .fixed(&stdout_buf);
+    var stderr_writer: std.Io.Writer = .fixed(&stderr_buf);
+
+    const code = try commandForGuardTestWithShellEvaluator(&.{ "--workspace", root, "--", "rm", "-rf", "/" }, &stdout_writer, &stderr_writer, .inherit, shell_eval.mockDaemonDenyEvaluator);
+    // Invariant: exit code stays exit_codes.denial.
+    try std.testing.expectEqual(exit_codes.denial, code);
+    // The flat one-liner is fully replaced.
+    try std.testing.expect(std.mem.indexOf(u8, stderr_writer.buffered(), "orca run: command denied by command guard.\n") == null);
 }

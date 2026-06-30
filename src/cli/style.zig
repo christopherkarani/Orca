@@ -35,9 +35,16 @@ pub fn shouldUseColor(is_tty: bool, no_color: bool, term_dumb: bool) bool {
 /// Cached color decision. Populated explicitly early by cli.runWithCwd (primary path)
 /// or lazily on first useColor call (fallback). Protected by builtin.is_test guard.
 var global_color_enabled: ?bool = null;
+var rich_override: ?bool = null;
+
+pub fn setRichEnabled(enabled: ?bool) void {
+    rich_override = enabled;
+    global_color_enabled = null;
+}
 
 pub fn useColor(io: std.Io, stdout: anytype) bool {
     if (builtin.is_test) return false;
+    if (rich_override) |enabled| if (!enabled) return false;
     if (global_color_enabled) |cached| return cached;
 
     const result = detectColor(io, stdout);

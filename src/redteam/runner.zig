@@ -586,7 +586,12 @@ fn copyInputDirectory(allocator: std.mem.Allocator, fixture_yaml_path: []const u
         error.FileNotFound => return,
         else => return err,
     };
-    try copyDirectoryRecursive(io, allocator, input_dir, workspace_root);
+    // The recursive copier uses absolute-directory APIs. Resolve user-supplied
+    // relative fixture roots once at this boundary instead of letting them
+    // reach `openDirAbsolute`, which asserts and panics.
+    const input_abs = try std.Io.Dir.cwd().realPathFileAlloc(io, input_dir, allocator);
+    defer allocator.free(input_abs);
+    try copyDirectoryRecursive(io, allocator, input_abs, workspace_root);
 }
 
 fn copyDirectoryRecursive(io: std.Io, allocator: std.mem.Allocator, source_abs: []const u8, dest_abs: []const u8) !void {
@@ -885,4 +890,33 @@ test "redteam runner temp directories use OS temp base" {
         else => return err,
     };
     return error.TempDirWasNotCleaned;
+}
+
+test "redteam runner copies input directory from relative fixture path" {
+    const allocator = std.testing.allocator;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try tmp.dir.createDirPath(std.testing.io, "fixtures/sample/input/nested");
+    try tmp.dir.writeFile(std.testing.io, .{
+        .sub_path = "fixtures/sample/input/nested/payload.txt",
+        .data = "fixture payload",
+    });
+    try tmp.dir.createDirPath(std.testing.io, "workspace");
+
+    const root = try tmp.dir.realPathFileAlloc(std.testing.io, ".", allocator);
+    defer allocator.free(root);
+    const fixture_yaml = try std.fs.path.join(allocator, &.{ root, "fixtures/sample/fixture.yaml" });
+    defer allocator.free(fixture_yaml);
+    const cwd_path = try std.Io.Dir.cwd().realPathFileAlloc(std.testing.io, ".", allocator);
+    defer allocator.free(cwd_path);
+    const relative_fixture_yaml = try std.fs.path.relative(allocator, cwd_path, null, cwd_path, fixture_yaml);
+    defer allocator.free(relative_fixture_yaml);
+    const workspace = try tmp.dir.realPathFileAlloc(std.testing.io, "workspace", allocator);
+    defer allocator.free(workspace);
+
+    try copyInputDirectory(allocator, relative_fixture_yaml, workspace);
+
+    const copied = try tmp.dir.readFileAlloc(std.testing.io, "workspace/nested/payload.txt", allocator, .limited(64));
+    defer allocator.free(copied);
+    try std.testing.expectEqualStrings("fixture payload", copied);
 }

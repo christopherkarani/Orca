@@ -34,7 +34,7 @@ const commands = [_][]const u8{
     "license",
     "ci",
     "demo",
-    "disable",
+    "stop",
     "uninstall",
     "shutdown",
     "env",
@@ -221,7 +221,7 @@ test "completions include public internal command and common run flags" {
 // ---------------------------------------------------------------------------
 
 test "completions includes all commands" {
-    // This will fail until the hardcoded list is updated with disable/uninstall/env
+    // This will fail until the hardcoded list is updated with stop/uninstall/env
     const shells = [_][]const u8{ "bash", "zsh", "fish", "powershell" };
     for (shells) |shell| {
         var stdout_buf: [8192]u8 = undefined;

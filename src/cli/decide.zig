@@ -6,6 +6,9 @@ const policy = @import("orca_core").policy;
 
 const exit_codes = @import("exit_codes.zig");
 const help = @import("help.zig");
+const tui = @import("../tui/render.zig");
+const terminal_text = @import("../tui/terminal_text.zig");
+const suggestions = @import("suggestions.zig");
 
 // Maximum JSON payload size to prevent memory exhaustion from hostile hosts.
 const max_payload_len = 256 * 1024; // 256 KiB
@@ -25,7 +28,13 @@ pub fn command(io: std.Io, argv: []const []const u8, stdout: anytype, stderr: an
     }
 
     const kind = DecisionKind.parse(argv[0]) orelse {
-        try stderr.print("orca decide: unknown decision kind '{s}'. Expected command, file, prompt, or tool.\n", .{argv[0]});
+        try suggestions.writeUnknownSubcommand(
+            stderr,
+            "orca decide",
+            argv[0],
+            &.{ "command", "file", "prompt", "tool" },
+            "decide",
+        );
         return exit_codes.usage;
     };
 
@@ -59,6 +68,7 @@ fn decideCommand(io: std.Io, kind: DecisionKind, argv: []const []const u8, stdou
     var json_payload: ?[]const u8 = null;
     var use_stdin = false;
     var ci_mode = false;
+    var human = false;
 
     var index: usize = 0;
     while (index < argv.len) : (index += 1) {
@@ -73,11 +83,13 @@ fn decideCommand(io: std.Io, kind: DecisionKind, argv: []const []const u8, stdou
                 \\  orca decide <kind> --stdin
                 \\  orca decide <kind> --json <payload> [--ci]
                 \\  orca decide <kind> --stdin [--ci]
+                \\  orca decide <kind> --human (--json <payload>|--stdin) [--ci]
                 \\
                 \\Options:
                 \\  --json   Provide JSON payload inline.
                 \\  --stdin  Read JSON payload from stdin.
                 \\  --ci     CI mode: ask decisions become block.
+                \\  --human  Render a human-readable decision (default output is JSON).
                 \\
             );
             return exit_codes.success;
@@ -99,7 +111,11 @@ fn decideCommand(io: std.Io, kind: DecisionKind, argv: []const []const u8, stdou
             ci_mode = true;
             continue;
         }
-        try stderr.print("orca decide: unknown option '{s}'.\n", .{arg});
+        if (std.mem.eql(u8, arg, "--human")) {
+            human = true;
+            continue;
+        }
+        try suggestions.writeUnknownOption(stderr, "orca decide", arg, &.{ "--json", "--stdin", "--ci", "--human", "--help", "-h" }, "decide");
         return exit_codes.usage;
     }
 
@@ -154,12 +170,18 @@ fn decideCommand(io: std.Io, kind: DecisionKind, argv: []const []const u8, stdou
     };
     defer result.deinit(allocator);
 
-    // Emit JSON response to stdout
-    try writeDecisionJson(stdout, result);
+    if (human) {
+        try writeDecisionHuman(io, allocator, stdout, loaded.mode().toString(), result);
+    } else {
+        // Frozen machine contract: default output remains byte-identical JSON.
+        try writeDecisionJson(stdout, result);
+    }
 
     // Log debug info to stderr only
     if (result.rule) |rule| {
-        try stderr.print("[decide] matched rule: {s}\n", .{rule});
+        try stderr.writeAll("[decide] matched rule: ");
+        try terminal_text.write(stderr, rule, .single_line);
+        try stderr.writeByte('\n');
     }
 
     return result.decision.exitCode();
@@ -426,6 +448,59 @@ fn writeDecisionJson(stdout: anytype, result: DecisionOutput) !void {
     try stdout.writeAll("}\n");
 }
 
+fn writeDecisionHuman(io: std.Io, allocator: std.mem.Allocator, stdout: anytype, mode: []const u8, result: DecisionOutput) !void {
+    try stdout.writeAll("Decision  ");
+    try tui.badge(io, stdout, badgeForDecision(result.decision));
+    try stdout.writeAll("\n\n");
+
+    const rule = result.rule orelse "none";
+    const reason_line = try std.fmt.allocPrint(allocator, "Reason    {s}", .{result.reason});
+    errdefer allocator.free(reason_line);
+    const rule_line = try std.fmt.allocPrint(allocator, "Rule      {s}", .{rule});
+    errdefer allocator.free(rule_line);
+    const mode_line = try std.fmt.allocPrint(allocator, "Mode      {s}", .{mode});
+    errdefer allocator.free(mode_line);
+    const category_line = try std.fmt.allocPrint(allocator, "Category  {s}", .{result.category});
+    errdefer allocator.free(category_line);
+    const message_line = try std.fmt.allocPrint(allocator, "Message   {s}", .{result.message});
+    const detail_lines = [_][]u8{ reason_line, rule_line, mode_line, category_line, message_line };
+    defer for (detail_lines) |line| allocator.free(line);
+    try tui.panel(io, stdout, "Decision details", &detail_lines);
+    try stdout.writeAll("  Risk  ");
+    try tui.meter(io, stdout, riskFraction(result.risk), @tagName(result.risk));
+    try stdout.writeAll("\n");
+    if (result.redactions.len > 0) {
+        try stdout.print("  Redactions  {d}\n", .{result.redactions.len});
+        for (result.redactions) |redaction| {
+            try stdout.writeAll("    • ");
+            try terminal_text.write(stdout, redaction.field, .single_line);
+            try stdout.writeAll(": ");
+            try terminal_text.write(stdout, redaction.reason, .single_line);
+            try stdout.writeByte('\n');
+        }
+    }
+}
+
+fn badgeForDecision(decision: PluginDecision) tui.BadgeKind {
+    return switch (decision) {
+        .allow => .allow,
+        .block, .err => .deny,
+        .ask => .ask,
+        .warn => .warn,
+        .context_only => .info,
+    };
+}
+
+fn riskFraction(risk: RiskLevel) f32 {
+    return switch (risk) {
+        .low => 0.2,
+        .medium => 0.5,
+        .high => 0.75,
+        .critical => 1.0,
+        .unknown => 0.0,
+    };
+}
+
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
@@ -540,7 +615,8 @@ test "decide command help and invalid kind" {
     stderr_writer = .fixed(&stderr_buf);
     const bad_code = try command(std.testing.io, &.{"unknown"}, &stdout_writer, &stderr_writer);
     try std.testing.expectEqual(exit_codes.usage, bad_code);
-    try std.testing.expect(std.mem.indexOf(u8, stderr_writer.buffered(), "unknown decision kind") != null);
+    try std.testing.expect(std.mem.indexOf(u8, stderr_writer.buffered(), "unknown subcommand") != null);
+    try std.testing.expect(std.mem.indexOf(u8, stderr_writer.buffered(), "orca help decide") != null);
 }
 
 test "decide command with safe command returns allow" {
@@ -556,6 +632,86 @@ test "decide command with safe command returns allow" {
 
     const output = stdout_writer.buffered();
     try std.testing.expect(std.mem.indexOf(u8, output, "\"decision\": \"allow\"") != null);
+}
+
+test "decide command machine output matches captured contract fixture" {
+    var stdout_buf: [2048]u8 = undefined;
+    var stderr_buf: [512]u8 = undefined;
+    var stdout_writer: std.Io.Writer = .fixed(&stdout_buf);
+    var stderr_writer: std.Io.Writer = .fixed(&stderr_buf);
+    const code = try decideCommand(std.testing.io, .command, &.{
+        "--json", "{\"command\":\"echo hello\"}",
+    }, &stdout_writer, &stderr_writer);
+    try std.testing.expectEqual(exit_codes.success, code);
+    try std.testing.expectEqualStrings(
+        @embedFile("test-fixtures/decide-command-allow.json"),
+        stdout_writer.buffered(),
+    );
+}
+
+test "decide human output matches captured contract fixture" {
+    var stdout_buf: [2048]u8 = undefined;
+    var stderr_buf: [512]u8 = undefined;
+    var stdout_writer: std.Io.Writer = .fixed(&stdout_buf);
+    var stderr_writer: std.Io.Writer = .fixed(&stderr_buf);
+    const code = try decideCommand(std.testing.io, .command, &.{
+        "--json", "{\"command\":\"echo hello\"}", "--human",
+    }, &stdout_writer, &stderr_writer);
+    try std.testing.expectEqual(exit_codes.success, code);
+    try std.testing.expectEqualStrings(
+        @embedFile("test-fixtures/decide-command-allow-human.txt"),
+        stdout_writer.buffered(),
+    );
+}
+
+test "decide human output is plain under --no-rich even when colour is available" {
+    // Phase 7 Task E exhaustiveness: the global --no-rich / ORCA_NO_RICH hatch
+    // (resolved to theme.setRichEnabled(false) in mod.runWithCwdUsing) must gate
+    // COLOUR output on the human path, not just banner presence. Force colour
+    // on, then disable rich, and confirm no ANSI escapes leak into human output.
+    const theme = @import("../tui/theme.zig");
+    theme.setTestActive(.{ .capability = .c256, .background = .dark });
+    theme.setRichEnabled(false);
+    defer {
+        theme.setRichEnabled(true);
+        theme.setTestActive(null);
+        theme.resetCache();
+    }
+
+    var stdout_buf: [2048]u8 = undefined;
+    var stderr_buf: [512]u8 = undefined;
+    var stdout_writer: std.Io.Writer = .fixed(&stdout_buf);
+    var stderr_writer: std.Io.Writer = .fixed(&stderr_buf);
+
+    const code = try decideCommand(std.testing.io, .command, &.{
+        "--json", "{\"command\":\"echo hello\"}", "--human",
+    }, &stdout_writer, &stderr_writer);
+    try std.testing.expectEqual(exit_codes.success, code);
+
+    const out = stdout_writer.buffered();
+    // --no-rich suppresses colour even when a colour TTY is available.
+    try std.testing.expect(std.mem.indexOfScalar(u8, out, 0x1b) == null);
+    // Plain output still carries the full decision (degrades, never empties).
+    try std.testing.expect(std.mem.indexOf(u8, out, "Decision") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "[ALLOW]") != null);
+}
+
+test "decide human output sanitizes dynamic terminal text" {
+    var stdout_buf: [1024]u8 = undefined;
+    var stdout_writer: std.Io.Writer = .fixed(&stdout_buf);
+    var result: DecisionOutput = .{
+        .decision = .block,
+        .risk = .critical,
+        .category = "command\x1b[2J",
+        .reason = "unsafe\x1b]0;owned\x07 reason",
+        .rule = "rule\rspoof",
+        .message = "blocked\nmessage",
+        .redactions = &.{},
+    };
+    _ = &result;
+    try writeDecisionHuman(std.testing.io, std.testing.allocator, &stdout_writer, "strict", result);
+    try std.testing.expect(std.mem.indexOfScalar(u8, stdout_writer.buffered(), 0x1b) == null);
+    try std.testing.expect(std.mem.indexOf(u8, stdout_writer.buffered(), "blocked message") != null);
 }
 
 test "decide command with dangerous command returns block" {
