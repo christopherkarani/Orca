@@ -15,6 +15,8 @@ ORCA_NO_RICH=1 orca history
 
 `--no-rich` disables colour and animation but keeps the full information content — panels become ASCII, badges become `[ALLOW]`/`[DENY]`, and risk meters become text bars. It never affects `--json`/`--robot` machine output, which stays byte-stable regardless.
 
+Interactive alt-screen views are opt-in: `orca history --live` shows the current history stats snapshot, and `orca replay --session last --tui` shows a scrollable replay timeline. Both require an interactive rich terminal and are rejected with machine output modes such as `--json`.
+
 ## Dashboard
 
 ```sh
