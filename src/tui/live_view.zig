@@ -19,7 +19,6 @@ const vaxis = @import("vaxis");
 /// Opt-in only. The CLI commands reject `--live`/`--tui` on non-TTY and on
 /// `--json`/`--robot` (machine) output, so this module never enters the
 /// alt-screen on a pipe (invariant: non-TTY → plain text; `--json` frozen).
-
 pub const Lines = []const []const u8;
 
 /// Keys the live loop reacts to (mirrors `prompt.zig`'s `KeyAction` shape).
@@ -334,7 +333,7 @@ test "renderFrame: viewport window honours scroll offset and cap" {
 test "renderFrame: clamp when scroll offset exceeds line count" {
     var buf: [256]u8 = undefined;
     var w: std.Io.Writer = .fixed(&buf);
-    const lines = [_][]const u8{ "only" };
+    const lines = [_][]const u8{"only"};
     const n = try renderFrame(std.testing.io, &w, "history", &lines, 99, 10);
     const out = w.buffered();
     // Offset clamps to the end; the single row still renders.
