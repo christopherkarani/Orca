@@ -83,6 +83,21 @@ fn writeStatusJson(writer: anytype, current: license.License) !void {
     try writer.writeAll("}\n");
 }
 
+test "license status --json contract is stable and presentation-free" {
+    var current = try license.License.free(std.testing.allocator, "test-source");
+    defer current.deinit();
+
+    var out: [256]u8 = undefined;
+    var writer: std.Io.Writer = .fixed(&out);
+    try writeStatusJson(&writer, current);
+    try std.testing.expectEqualStrings(
+        "{\"tier\":\"Free\",\"verified\":false,\"license_id\":\"free\",\"source\":\"test-source\"}\n",
+        writer.buffered(),
+    );
+    try std.testing.expect(std.mem.indexOfScalar(u8, writer.buffered(), 0x1b) == null);
+    try std.testing.expect(std.mem.indexOf(u8, writer.buffered(), "Orca") == null);
+}
+
 test "license status reports free when path is missing" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();

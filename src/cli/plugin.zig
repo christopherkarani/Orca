@@ -1980,6 +1980,8 @@ test "plugin doctor --json emits valid JSON" {
     try std.testing.expect(parsed.value.object.get("hermes_hook_smoke_passed").? == .bool);
     try std.testing.expect(parsed.value.object.get("drone") == null);
     try std.testing.expect(parsed.value.object.get("warnings") != null);
+    try std.testing.expect(std.mem.indexOfScalar(u8, json, 0x1b) == null);
+    try std.testing.expect(std.mem.indexOf(u8, json, "Orca Plugin Doctor") == null);
     try std.testing.expectEqualStrings("", stderr_writer.buffered());
 }
 
@@ -2209,6 +2211,8 @@ test "plugin manifest --json emits valid JSON" {
     try std.testing.expect(parsed.value.object.get("opencode") != null);
     try std.testing.expect(parsed.value.object.get("openclaw") != null);
     try std.testing.expect(parsed.value.object.get("hermes") != null);
+    try std.testing.expect(std.mem.indexOfScalar(u8, json, 0x1b) == null);
+    try std.testing.expect(std.mem.indexOf(u8, json, "Orca Plugin") == null);
     try std.testing.expectEqualStrings("", stderr_writer.buffered());
 }
 

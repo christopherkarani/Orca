@@ -131,6 +131,52 @@ test "redteam command rejects unknown options" {
     try std.testing.expect(std.mem.indexOf(u8, stderr_writer.buffered(), "unknown option") != null);
 }
 
+test "redteam --json output is stable machine JSON without presentation" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try tmp.dir.createDirPath(std.testing.io, "fixtures/secret-exfil/pass");
+    {
+        const file = try tmp.dir.createFile(std.testing.io, "fixtures/secret-exfil/pass/fixture.yaml", .{});
+        defer file.close(std.testing.io);
+        try file.writeStreamingAll(std.testing.io,
+            \\version: 1
+            \\id: passing
+            \\name: Passing fixture
+            \\category: secret-exfil
+            \\description: Expected block matches attempt.
+            \\mode: strict
+            \\command:
+            \\  argv:
+            \\    - "./fixture-agent"
+            \\attempts:
+            \\  - "file.read:.env"
+            \\expected:
+            \\  blocked:
+            \\    - "file.read:.env"
+            \\score:
+            \\  points: 1
+            \\
+        );
+    }
+    const root = try tmp.dir.realPathFileAlloc(std.testing.io, "fixtures", std.testing.allocator);
+    defer std.testing.allocator.free(root);
+    var stdout_buf: [8192]u8 = undefined;
+    var stderr_buf: [1024]u8 = undefined;
+    var stdout_writer: std.Io.Writer = .fixed(&stdout_buf);
+    var stderr_writer: std.Io.Writer = .fixed(&stderr_buf);
+
+    const code = try command(std.testing.io, &.{ root, "--json" }, &stdout_writer, &stderr_writer);
+    try std.testing.expectEqual(exit_codes.success, code);
+    const output = stdout_writer.buffered();
+    var parsed = try std.json.parseFromSlice(std.json.Value, std.testing.allocator, output, .{});
+    defer parsed.deinit();
+    try std.testing.expect(parsed.value.object.get("version") != null);
+    try std.testing.expect(parsed.value.object.get("fixtures") != null);
+    try std.testing.expect(std.mem.indexOfScalar(u8, output, 0x1b) == null);
+    try std.testing.expect(std.mem.indexOf(u8, output, "Orca Redteam Score") == null);
+    try std.testing.expectEqualStrings("", stderr_writer.buffered());
+}
+
 test "redteam ci exits nonzero on failing fixture" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
