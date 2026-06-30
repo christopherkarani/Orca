@@ -43,3 +43,7 @@ hash `vaxis-0.6.0-BWNV_Gz5CQBTx7g34RYMPTL-bJhsFCU3ECHQ-CZlBVsn` in
   upstream lazy dependency reliably from a clean local package cache. Updates
   require reviewing the upstream manifests,
   licenses, and Zig package hashes, then running the CLI test and release gates.
+- Release dry-run size accounting: `scripts/release-dry-run.sh` now extracts the
+  built host archive and reports `orca` plus `orca-daemon` byte sizes. The first
+  Phase 8 dry-run on darwin-arm64 established `orca` at 2,828,488 bytes and
+  `orca-daemon` at 19,752,816 bytes; no hard threshold is enforced.

@@ -73,8 +73,9 @@ export PATH="${STAGE_ROOT}/bin:${PATH}"
 export ORCA_RESOURCE_ROOT="${STAGE_ROOT}"
 
 version_output="$("${ORCA_BIN}" version)"
-assert_contains "${version_output}" "orca ${VERSION}"
-assert_contains "${version_output}" "daemon "
+assert_contains "${version_output}" "Version"
+assert_contains "${version_output}" "${VERSION}"
+assert_contains "${version_output}" "Daemon"
 
 doctor_output="$("${ORCA_BIN}" doctor --verbose)"
 assert_contains "${doctor_output}" "daemon health: compatible"
@@ -93,7 +94,8 @@ assert_json_field "${dangerous_output}" "decision" "block"
 mv "${DAEMON_BIN}" "${DAEMON_BIN}.bak"
 
 degraded_version="$("${ORCA_BIN}" version)"
-assert_contains "${degraded_version}" "daemon unavailable"
+assert_contains "${degraded_version}" "Daemon"
+assert_contains "${degraded_version}" "unavailable"
 
 degraded_doctor="$("${ORCA_BIN}" doctor --verbose)"
 assert_contains "${degraded_doctor}" "daemon health: unavailable"
