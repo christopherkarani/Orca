@@ -742,3 +742,66 @@ test "stepList and timeline render stable plain output" {
     try std.testing.expect(std.mem.indexOf(u8, out, "command") != null);
     try std.testing.expect(std.mem.indexOfScalar(u8, out, '\x1b') == null);
 }
+
+// ────────────────────────────────────────────────────────────────────────────
+// Phase 7 Task C: light/dark background variants consumed by render primitives
+// (mirrors theme.zig's "light variant differs from dark" contract). Confirms no
+// substantial primitive hardcodes `.dark` — all resolve tokens via theme.active().
+// ────────────────────────────────────────────────────────────────────────────
+
+test "badge: truecolor light variant differs from dark" {
+    theme.setTestActive(.{ .capability = .truecolor, .background = .dark });
+    var dark_buf: [128]u8 = undefined;
+    var dark_w: std.Io.Writer = .fixed(&dark_buf);
+    try badge(std.testing.io, &dark_w, .deny);
+    const dark_out = dark_buf[0..dark_w.end];
+
+    theme.setTestActive(.{ .capability = .truecolor, .background = .light });
+    var light_buf: [128]u8 = undefined;
+    var light_w: std.Io.Writer = .fixed(&light_buf);
+    try badge(std.testing.io, &light_w, .deny);
+    const light_out = light_buf[0..light_w.end];
+
+    theme.setTestActive(null);
+    defer theme.setTestActive(null);
+    // The deny badge uses the danger token, whose light/dark truecolor RGBs differ.
+    try std.testing.expect(!std.mem.eql(u8, dark_out, light_out));
+}
+
+test "panel: truecolor light variant differs from dark" {
+    theme.setTestActive(.{ .capability = .truecolor, .background = .dark });
+    var dark_buf: [256]u8 = undefined;
+    var dark_w: std.Io.Writer = .fixed(&dark_buf);
+    try panel(std.testing.io, &dark_w, "Decision", &.{"deny"});
+    const dark_out = dark_buf[0..dark_w.end];
+
+    theme.setTestActive(.{ .capability = .truecolor, .background = .light });
+    var light_buf: [256]u8 = undefined;
+    var light_w: std.Io.Writer = .fixed(&light_buf);
+    try panel(std.testing.io, &light_w, "Decision", &.{"deny"});
+    const light_out = light_buf[0..light_w.end];
+
+    theme.setTestActive(null);
+    defer theme.setTestActive(null);
+    // The panel title uses the brand token, whose light/dark truecolor RGBs differ.
+    try std.testing.expect(!std.mem.eql(u8, dark_out, light_out));
+}
+
+test "meter: truecolor light variant differs from dark" {
+    theme.setTestActive(.{ .capability = .truecolor, .background = .dark });
+    var dark_buf: [128]u8 = undefined;
+    var dark_w: std.Io.Writer = .fixed(&dark_buf);
+    try meter(std.testing.io, &dark_w, 0.7, "high");
+    const dark_out = dark_buf[0..dark_w.end];
+
+    theme.setTestActive(.{ .capability = .truecolor, .background = .light });
+    var light_buf: [128]u8 = undefined;
+    var light_w: std.Io.Writer = .fixed(&light_buf);
+    try meter(std.testing.io, &light_w, 0.7, "high");
+    const light_out = light_buf[0..light_w.end];
+
+    theme.setTestActive(null);
+    defer theme.setTestActive(null);
+    // The meter uses the danger token at high risk, whose light/dark RGBs differ.
+    try std.testing.expect(!std.mem.eql(u8, dark_out, light_out));
+}

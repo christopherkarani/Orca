@@ -64,6 +64,63 @@ pub fn parseColorfgbg(value: []const u8) Background {
     return if (n <= 6) .dark else .light;
 }
 
+/// Classify an RGB background (0-255 per channel) as light or dark via relative
+/// luminance (ITU-R BT.709 weights). Threshold 0.5: backgrounds brighter than
+/// mid-grey read as `.light`, else `.dark`. Pure — unit-tested.
+pub fn rgbToBackground(r: u8, g: u8, b: u8) Background {
+    const rf: f32 = @as(f32, @floatFromInt(r)) / 255.0;
+    const gf: f32 = @as(f32, @floatFromInt(g)) / 255.0;
+    const bf: f32 = @as(f32, @floatFromInt(b)) / 255.0;
+    const lum = 0.2126 * rf + 0.7152 * gf + 0.0722 * bf;
+    return if (lum > 0.5) .light else .dark;
+}
+
+/// Parse the reply to an OSC 11 background-color query into a `Background` tone.
+/// Accepts the common X11 form `\x1b]11;rgb:RRRR/GGGG/BBBB\x1b\\` (or BEL-terminated
+/// `\x07`) and the short `rgb:R/G/B` form. Each component is 1-4 hex digits and is
+/// scaled to 0-255 against its own max so any precision replies consistently.
+/// Returns `.unknown` when the reply is absent or malformed (caller falls back).
+pub fn parseOsc11Reply(reply: []const u8) Background {
+    // Locate the `rgb:` payload after the `11;` selector.
+    const payload_idx = std.mem.indexOf(u8, reply, "rgb:") orelse return .unknown;
+    const rest = reply[payload_idx + 4 ..];
+    // Components are separated by `/` (X11) or `:` (some emulators); the payload
+    // ends at the string terminator (ST/BEL already stripped by the caller, or we
+    // trim at the first non-hex/non-separator run).
+    var comps: [3][]const u8 = .{ "", "", "" };
+    var count: usize = 0;
+    var it = std.mem.tokenizeAny(u8, rest, "/:");
+    while (it.next()) |c| {
+        if (count >= 3) break;
+        // Stop at a terminator if the ST/BEL was not stripped (e.g. `\x1b\\`).
+        var end: usize = 0;
+        while (end < c.len and std.ascii.isHex(c[end])) end += 1;
+        if (end == 0) break;
+        comps[count] = c[0..end];
+        count += 1;
+    }
+    if (count != 3) return .unknown;
+    // Parse each component; bail on any non-hex (already filtered) or empty.
+    const r_raw = std.fmt.parseInt(u32, comps[0], 16) catch return .unknown;
+    const g_raw = std.fmt.parseInt(u32, comps[1], 16) catch return .unknown;
+    const b_raw = std.fmt.parseInt(u32, comps[2], 16) catch return .unknown;
+    // Scale each component to 0-255 against its own digit-width max so a 4-digit
+    // `ffff` and a 1-digit `f` both map to 255.
+    const scale = struct {
+        fn to8(v: u32, digits: usize) u8 {
+            if (digits == 0) return 0;
+            const max: u32 = (@as(u32, 1) << @intCast(digits * 4)) - 1;
+            if (max == 0) return 0;
+            const scaled: u32 = (v * 255 + (max / 2)) / max;
+            return @intCast(@min(scaled, 255));
+        }
+    };
+    const r = scale.to8(r_raw, comps[0].len);
+    const g = scale.to8(g_raw, comps[1].len);
+    const b = scale.to8(b_raw, comps[2].len);
+    return rgbToBackground(r, g, b);
+}
+
 // ────────────────────────────────────────────────────────────────────────────
 // Palette
 // ────────────────────────────────────────────────────────────────────────────
@@ -255,7 +312,7 @@ pub fn active(io: std.Io, stdout: anytype) Active {
     const term_dumb = envTermDumb();
     const colorterm_truecolor = envColortermTruecolor();
     const term_256color = envTerm256color();
-    const bg = detectBackground();
+    const bg = detectBackground(io, is_tty);
 
     const a = resolve(.{
         .is_tty = is_tty,
@@ -334,9 +391,77 @@ fn envTerm256color() bool {
     return std.mem.indexOf(u8, s, "256color") != null;
 }
 
-fn detectBackground() Background {
+fn detectBackground(io: std.Io, is_tty: bool) Background {
+    // Phase 7: query the terminal background via OSC 11 on a real TTY. The TTY
+    // I/O path is comptime-gated out of test builds (vaxis.tty.Tty is a stub
+    // there) and only runs when stdout is an interactive terminal; any failure
+    // falls through to COLORFGBG, then the dark default. Tests never reach here
+    // because `active()` short-circuits on builtin.is_test / !rich_enabled.
+    if (is_tty) {
+        if (queryBackgroundOsc(io)) |bg| return bg;
+    }
     const colorfgbg = std.c.getenv("COLORFGBG") orelse return .dark;
     return parseColorfgbg(std.mem.sliceTo(colorfgbg, 0));
+}
+
+/// Query the terminal background colour via OSC 11 (`\x1b]11;?\x1b\\`) and parse
+/// the RGB reply. Real-TTY only; comptime-gated out of test builds so the
+/// stubbed libvaxis `Tty` is never analyzed. Restores terminal termios on every
+/// exit path. Returns `null` on any failure (caller falls back).
+fn queryBackgroundOsc(io: std.Io) ?Background {
+    if (comptime builtin.is_test) return null;
+    const vaxis = @import("vaxis");
+
+    var tty_buf: [4096]u8 = undefined;
+    var tty = vaxis.tty.Tty.init(io, &tty_buf) catch return null;
+    defer tty.deinit();
+
+    // Save termios and install a raw read with a short inter-byte timeout so a
+    // non-responding terminal cannot block the whole CLI (mirrors prompt.zig).
+    const saved = if (comptime builtin.os.tag != .windows)
+        std.posix.tcgetattr(tty.fd.handle) catch null
+    else
+        null;
+    defer if (saved) |s| {
+        if (comptime builtin.os.tag != .windows) {
+            std.posix.tcsetattr(tty.fd.handle, .NOW, s) catch {};
+        }
+    };
+    configureOscReadTimeout(&tty);
+
+    // Write the OSC 11 query to the same terminal we read the reply from. Both
+    // stdout and /dev/tty refer to the controlling terminal, so the emulator's
+    // reply is delivered on the Tty's input stream.
+    const query = "\x1b]11;?\x1b\\";
+    tty.fd.writeStreamingAll(io, query) catch return null;
+
+    // Read the reply with a bounded attempt budget (each read waits up to the
+    // inter-byte timeout; give the emulator a few rounds to respond).
+    var reply: [128]u8 = undefined;
+    var len: usize = 0;
+    var attempts: usize = 0;
+    while (attempts < 8 and len < reply.len) : (attempts += 1) {
+        const n = tty.read(reply[len..]) catch break;
+        if (n == 0) {
+            if (len > 0) break; // timeout after partial reply — try to parse what we have
+            continue;
+        }
+        len += n;
+        // The reply terminates with ST (\x1b\\) or BEL (\x07); stop once we see it.
+        if (std.mem.indexOfScalar(u8, reply[0..len], 0x07) != null or
+            std.mem.indexOf(u8, reply[0..len], "\x1b\\") != null) break;
+    }
+    if (len == 0) return null;
+    return parseOsc11Reply(reply[0..len]);
+}
+
+fn configureOscReadTimeout(tty: anytype) void {
+    if (comptime builtin.os.tag == .windows) return;
+    if (builtin.is_test) return;
+    var raw = std.posix.tcgetattr(tty.fd.handle) catch return;
+    raw.cc[@intFromEnum(std.posix.V.MIN)] = 0;
+    raw.cc[@intFromEnum(std.posix.V.TIME)] = 2; // 200 ms inter-byte timeout
+    std.posix.tcsetattr(tty.fd.handle, .NOW, raw) catch {};
 }
 
 // ────────────────────────────────────────────────────────────────────────────
@@ -449,6 +574,60 @@ test "parseColorfgbg: malformed is unknown" {
     try std.testing.expectEqual(Background.unknown, parseColorfgbg("garbage"));
     try std.testing.expectEqual(Background.unknown, parseColorfgbg("0"));
     try std.testing.expectEqual(Background.unknown, parseColorfgbg("0;abc"));
+}
+
+// ────────────────────────────────────────────────────────────────────────────
+// OSC 11 background reply parsing (pure)
+// ────────────────────────────────────────────────────────────────────────────
+
+test "rgbToBackground: black is dark" {
+    try std.testing.expectEqual(Background.dark, rgbToBackground(0, 0, 0));
+}
+
+test "rgbToBackground: white is light" {
+    try std.testing.expectEqual(Background.light, rgbToBackground(255, 255, 255));
+}
+
+test "rgbToBackground: near-black counts as dark" {
+    try std.testing.expectEqual(Background.dark, rgbToBackground(20, 22, 28));
+}
+
+test "rgbToBackground: near-white counts as light" {
+    try std.testing.expectEqual(Background.light, rgbToBackground(230, 237, 243));
+}
+
+test "parseOsc11Reply: black background (4-digit) is dark" {
+    // Standard X11 ST-terminated reply for a near-black background.
+    try std.testing.expectEqual(Background.dark, parseOsc11Reply("\x1b]11;rgb:0000/0000/0000\x1b\\"));
+}
+
+test "parseOsc11Reply: white background (4-digit) is light" {
+    try std.testing.expectEqual(Background.light, parseOsc11Reply("\x1b]11;rgb:ffff/ffff/ffff\x1b\\"));
+}
+
+test "parseOsc11Reply: BEL-terminated reply parses" {
+    // Some terminals terminate the OSC reply with BEL (0x07) instead of ST.
+    try std.testing.expectEqual(Background.dark, parseOsc11Reply("\x1b]11;rgb:1414/1414/1414\x07"));
+}
+
+test "parseOsc11Reply: short 1-digit form scales correctly" {
+    // `f` (max) scales to 255 → white → light; `0` → black → dark.
+    try std.testing.expectEqual(Background.light, parseOsc11Reply("\x1b]11;rgb:f/f/f\x1b\\"));
+    try std.testing.expectEqual(Background.dark, parseOsc11Reply("\x1b]11;rgb:0/0/0\x1b\\"));
+}
+
+test "parseOsc11Reply: mixed-precision still classifies" {
+    // A dark grey (#30363D, GitHub dark surface) → dark.
+    try std.testing.expectEqual(Background.dark, parseOsc11Reply("\x1b]11;rgb:3030/3636/3d3d\x1b\\"));
+    // A light grey (#d0d7de) → light.
+    try std.testing.expectEqual(Background.light, parseOsc11Reply("\x1b]11;rgb:d0d0/d7d7/dede\x1b\\"));
+}
+
+test "parseOsc11Reply: malformed payload is unknown" {
+    try std.testing.expectEqual(Background.unknown, parseOsc11Reply(""));
+    try std.testing.expectEqual(Background.unknown, parseOsc11Reply("not an osc reply"));
+    try std.testing.expectEqual(Background.unknown, parseOsc11Reply("\x1b]11;rgb:ff/ff\x1b\\")); // 2 comps
+    try std.testing.expectEqual(Background.unknown, parseOsc11Reply("\x1b]11;rgb:zz/ff/ff\x1b\\")); // non-hex
 }
 
 test "sequence: none capability emits empty string for every token" {
