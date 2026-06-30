@@ -214,7 +214,13 @@ pub fn callout(io: std.Io, stdout: anytype, kind: CalloutKind, title: []const u8
 
 /// Write `text` word-wrapped to ~`width` columns with a leading indent.
 fn writeWrapped(stdout: anytype, text: []const u8, indent: usize) !void {
-    const max_width: usize = 76;
+    try writeWrappedWidth(stdout, text, indent, 76);
+}
+
+/// Write terminal-safe text wrapped to `max_width`, including indentation.
+/// Words longer than the available content width are truncated with an ellipsis.
+pub fn writeWrappedWidth(stdout: anytype, text: []const u8, indent: usize, max_width: usize) !void {
+    if (max_width <= indent) return;
     var col: usize = indent;
     var i: usize = 0;
     while (i < indent) : (i += 1) try stdout.writeAll(" ");
@@ -231,9 +237,33 @@ fn writeWrapped(stdout: anytype, text: []const u8, indent: usize) !void {
             try stdout.writeAll(" ");
             col += 1;
         }
-        try terminal_text.write(stdout, word, .single_line);
-        col += w;
+        if (w + indent > max_width) {
+            try writeTruncated(stdout, word, max_width - indent);
+            col = max_width;
+        } else {
+            try terminal_text.write(stdout, word, .single_line);
+            col += w;
+        }
     }
+}
+
+/// Write at most `width` terminal columns, appending an ellipsis when clipped.
+pub fn writeTruncated(stdout: anytype, text: []const u8, width: usize) !void {
+    if (width == 0) return;
+    if (displayWidth(text) <= width) return terminal_text.write(stdout, text, .single_line);
+    if (width == 1) return stdout.writeAll("…");
+
+    var view = std.unicode.Utf8View.init(text) catch return stdout.writeAll("…");
+    var iterator = view.iterator();
+    var used: usize = 0;
+    while (iterator.nextCodepointSlice()) |slice| {
+        const cp = std.unicode.utf8Decode(slice) catch break;
+        const cp_width = codepointWidth(cp);
+        if (used + cp_width > width - 1) break;
+        try stdout.writeAll(slice);
+        used += cp_width;
+    }
+    try stdout.writeAll("…");
 }
 
 // ────────────────────────────────────────────────────────────────────────────
@@ -501,6 +531,20 @@ test "writePadded: no pad when already wide enough" {
     var w: std.Io.Writer = .fixed(&buf);
     try writePadded(&w, "abcde", 3);
     try std.testing.expectEqualStrings("abcde", w.buffered());
+}
+
+test "writeTruncated respects display width and preserves utf8" {
+    var buf: [64]u8 = undefined;
+    var w: std.Io.Writer = .fixed(&buf);
+    try writeTruncated(&w, "database.postgresql", 10);
+    try std.testing.expectEqualStrings("database.…", w.buffered());
+    try std.testing.expectEqual(@as(usize, 10), displayWidth(w.buffered()));
+
+    var wide_buf: [64]u8 = undefined;
+    var wide: std.Io.Writer = .fixed(&wide_buf);
+    try writeTruncated(&wide, "安全-policy", 6);
+    try std.testing.expectEqual(@as(usize, 6), displayWidth(wide.buffered()));
+    _ = try std.unicode.Utf8View.init(wide.buffered());
 }
 
 test "badge: plain output uses brackets" {

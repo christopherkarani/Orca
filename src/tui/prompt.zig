@@ -419,6 +419,7 @@ fn selectRaw(
 
     var decoder: RawDecoder = .{};
     var focus = if (default_index < options.len) default_index else 0;
+    const max_width = terminalColumns(&tty);
     var first_frame = true;
     var frame_lines: usize = 0;
 
@@ -428,7 +429,7 @@ fn selectRaw(
             try stdout.writeAll("\x1b[J");
         }
         first_frame = false;
-        frame_lines = try renderSelectFrame(io, stdout, options, focus, header);
+        frame_lines = try renderSelectFrame(io, stdout, options, focus, header, max_width);
         try flushIfSupported(stdout);
 
         const action = try readRawAction(&tty, &decoder);
@@ -440,11 +441,11 @@ fn selectRaw(
                 focus += 1;
             },
             .enter => {
-                try stdout.writeAll("\n");
+                try stdout.writeAll("\r\n");
                 return focus;
             },
             .escape, .quit => {
-                try stdout.writeAll("\n");
+                try stdout.writeAll("\r\n");
                 _ = allocator;
                 return if (default_index < options.len) default_index else null;
             },
@@ -467,6 +468,7 @@ fn multiSelectRaw(
 
     var decoder: RawDecoder = .{};
     var focus: usize = 0;
+    const max_width = terminalColumns(&tty);
     var first_frame = true;
     var frame_lines: usize = 0;
 
@@ -476,7 +478,7 @@ fn multiSelectRaw(
             try stdout.writeAll("\x1b[J");
         }
         first_frame = false;
-        frame_lines = try renderMultiSelectFrame(io, stdout, options, focus, header);
+        frame_lines = try renderMultiSelectFrame(io, stdout, options, focus, header, max_width);
         try flushIfSupported(stdout);
 
         const action = try readRawAction(&tty, &decoder);
@@ -491,11 +493,11 @@ fn multiSelectRaw(
                 options[focus].checked = !options[focus].checked;
             },
             .enter => {
-                try stdout.writeAll("\n");
+                try stdout.writeAll("\r\n");
                 return true;
             },
             .escape, .quit => {
-                try stdout.writeAll("\n");
+                try stdout.writeAll("\r\n");
                 return false;
             },
             .letter_y, .letter_e, .letter_s, .other => {},
@@ -575,6 +577,11 @@ fn configureInterByteTimeout(tty: *vaxis.tty.Tty) void {
     std.posix.tcsetattr(tty.fd.handle, .NOW, raw) catch {};
 }
 
+fn terminalColumns(tty: *vaxis.tty.Tty) usize {
+    const size = tty.getWinsize() catch return 80;
+    return if (size.cols >= 24) size.cols else 80;
+}
+
 // ────────────────────────────────────────────────────────────────────────────
 // Frame renderers (shared by raw + core paths)
 // ────────────────────────────────────────────────────────────────────────────
@@ -585,12 +592,13 @@ fn renderSelectFrame(
     options: []const SelectionOption,
     focus: usize,
     header: []const u8,
+    max_width: usize,
 ) !usize {
     var lines: usize = 0;
     if (header.len > 0) {
         try stdout.writeAll("  ");
-        try theme.paintBold(io, stdout, .text_bright, header);
-        try stdout.writeAll("\n");
+        try paintTruncated(io, stdout, .text_bright, true, header, max_width -| 2);
+        try stdout.writeAll("\r\n");
         lines += 1;
     }
     for (options, 0..) |opt, i| {
@@ -603,20 +611,21 @@ fn renderSelectFrame(
         }
         try stdout.writeAll(" ");
         if (focused) {
-            try theme.paintBold(io, stdout, .text_bright, opt.label);
+            try paintTruncated(io, stdout, .text_bright, true, opt.label, max_width -| 4);
         } else {
-            try theme.paint(io, stdout, .text, opt.label);
+            try paintTruncated(io, stdout, .text, false, opt.label, max_width -| 4);
         }
-        if (opt.description.len > 0) {
+        const option_width = 4 + render.displayWidth(opt.label);
+        if (opt.description.len > 0 and option_width + 2 + render.displayWidth(opt.description) <= max_width) {
             try stdout.writeAll("  ");
             try theme.paint(io, stdout, .muted, opt.description);
         }
-        try stdout.writeAll("\n");
+        try stdout.writeAll("\r\n");
         lines += 1;
     }
     try stdout.writeAll("  ");
-    try theme.paint(io, stdout, .muted, "↑↓ navigate · Enter select · Esc cancel");
-    try stdout.writeAll("\n");
+    try theme.paint(io, stdout, .muted, if (max_width >= 48) "↑↓ navigate · Enter select · Esc cancel" else "↑↓ · Enter · Esc");
+    try stdout.writeAll("\r\n");
     lines += 1;
     return lines;
 }
@@ -627,12 +636,13 @@ fn renderMultiSelectFrame(
     options: []const SelectionOption,
     focus: usize,
     header: []const u8,
+    max_width: usize,
 ) !usize {
     var lines: usize = 0;
     if (header.len > 0) {
         try stdout.writeAll("  ");
-        try theme.paintBold(io, stdout, .text_bright, header);
-        try stdout.writeAll("\n");
+        try paintTruncated(io, stdout, .text_bright, true, header, max_width -| 2);
+        try stdout.writeAll("\r\n");
         lines += 1;
     }
     for (options, 0..) |opt, i| {
@@ -648,16 +658,16 @@ fn renderMultiSelectFrame(
         try theme.paint(io, stdout, if (opt.checked) .success else .muted, box);
         try stdout.writeAll(" ");
         if (focused) {
-            try theme.paintBold(io, stdout, .text_bright, opt.label);
+            try paintTruncated(io, stdout, .text_bright, true, opt.label, max_width -| 8);
         } else {
-            try theme.paint(io, stdout, .text, opt.label);
+            try paintTruncated(io, stdout, .text, false, opt.label, max_width -| 8);
         }
-        try stdout.writeAll("\n");
+        try stdout.writeAll("\r\n");
         lines += 1;
     }
     try stdout.writeAll("  ");
-    try theme.paint(io, stdout, .muted, "↑↓ navigate · Space toggle · Enter confirm · Esc cancel");
-    try stdout.writeAll("\n");
+    try theme.paint(io, stdout, .muted, if (max_width >= 64) "↑↓ navigate · Space toggle · Enter confirm · Esc cancel" else "↑↓ · Space · Enter · Esc");
+    try stdout.writeAll("\r\n");
     lines += 1;
     return lines;
 }
@@ -687,8 +697,14 @@ fn multiSelectCoreWithStdin(io: std.Io, stdout: anytype, options: []SelectionOpt
 fn moveCursorUp(stdout: anytype, n: usize) !void {
     if (n == 0) return;
     var buf: [16]u8 = undefined;
-    const seq = std.fmt.bufPrint(&buf, "\x1b[{d}A", .{n}) catch return;
+    const seq = std.fmt.bufPrint(&buf, "\r\x1b[{d}A\r", .{n}) catch return;
     try stdout.writeAll(seq);
+}
+
+fn paintTruncated(io: std.Io, stdout: anytype, token: theme.Token, bold: bool, text: []const u8, width: usize) !void {
+    if (render.displayWidth(text) > width) return render.writeTruncated(stdout, text, width);
+    if (bold) return theme.paintBold(io, stdout, token, text);
+    return theme.paint(io, stdout, token, text);
 }
 
 fn flushIfSupported(writer: anytype) !void {
@@ -741,6 +757,27 @@ test "selectCore renders options, descriptions, and focus cursor" {
     try std.testing.expect(std.mem.indexOf(u8, out, "Hook-based shell blocking") != null);
     try std.testing.expect(std.mem.indexOf(u8, out, "Maximum Protection") != null);
     try std.testing.expect(std.mem.indexOf(u8, out, "navigate") != null);
+}
+
+test "raw select frame uses carriage-return line endings" {
+    theme.resetCache();
+    var buf: [2048]u8 = undefined;
+    var w: std.Io.Writer = .fixed(&buf);
+    const opts = [_]SelectionOption{
+        .{ .label = "Command Guard", .description = "Hook-based shell blocking" },
+    };
+
+    _ = try renderSelectFrame(std.testing.io, &w, &opts, 0, "Choose protection", 80);
+    const out = w.buffered();
+    try std.testing.expect(std.mem.indexOf(u8, out, "\r\n") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "\n") == std.mem.indexOf(u8, out, "\r\n").? + 1);
+}
+
+test "raw redraw returns to column zero before moving up" {
+    var buf: [64]u8 = undefined;
+    var w: std.Io.Writer = .fixed(&buf);
+    try moveCursorUp(&w, 3);
+    try std.testing.expectEqualStrings("\r\x1b[3A\r", w.buffered());
 }
 
 test "selectCore down then enter selects second option" {
