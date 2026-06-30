@@ -664,6 +664,38 @@ test "decide human output matches captured contract fixture" {
     );
 }
 
+test "decide human output is plain under --no-rich even when colour is available" {
+    // Phase 7 Task E exhaustiveness: the global --no-rich / ORCA_NO_RICH hatch
+    // (resolved to theme.setRichEnabled(false) in mod.runWithCwdUsing) must gate
+    // COLOUR output on the human path, not just banner presence. Force colour
+    // on, then disable rich, and confirm no ANSI escapes leak into human output.
+    const theme = @import("../tui/theme.zig");
+    theme.setTestActive(.{ .capability = .c256, .background = .dark });
+    theme.setRichEnabled(false);
+    defer {
+        theme.setRichEnabled(true);
+        theme.setTestActive(null);
+        theme.resetCache();
+    }
+
+    var stdout_buf: [2048]u8 = undefined;
+    var stderr_buf: [512]u8 = undefined;
+    var stdout_writer: std.Io.Writer = .fixed(&stdout_buf);
+    var stderr_writer: std.Io.Writer = .fixed(&stderr_buf);
+
+    const code = try decideCommand(std.testing.io, .command, &.{
+        "--json", "{\"command\":\"echo hello\"}", "--human",
+    }, &stdout_writer, &stderr_writer);
+    try std.testing.expectEqual(exit_codes.success, code);
+
+    const out = stdout_writer.buffered();
+    // --no-rich suppresses colour even when a colour TTY is available.
+    try std.testing.expect(std.mem.indexOfScalar(u8, out, 0x1b) == null);
+    // Plain output still carries the full decision (degrades, never empties).
+    try std.testing.expect(std.mem.indexOf(u8, out, "Decision") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "[ALLOW]") != null);
+}
+
 test "decide human output sanitizes dynamic terminal text" {
     var stdout_buf: [1024]u8 = undefined;
     var stdout_writer: std.Io.Writer = .fixed(&stdout_buf);

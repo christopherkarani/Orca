@@ -483,6 +483,10 @@ test "help output is grouped, complete, and excludes hidden commands" {
     // Visible commands present
     try std.testing.expect(std.mem.indexOf(u8, output, "run") != null);
     try std.testing.expect(std.mem.indexOf(u8, output, "env") != null);
+    // Phase 7 Task E: the --no-rich / ORCA_NO_RICH escape hatch is discoverable
+    // from the top-level help (global-options surface).
+    try std.testing.expect(std.mem.indexOf(u8, output, "Global options") != null);
+    try std.testing.expect(std.mem.indexOf(u8, output, "--no-rich") != null);
     // Hidden internal command absent
     try std.testing.expect(std.mem.indexOf(u8, output, "shim") == null);
     try std.testing.expectEqualStrings("", stderr_writer.buffered());

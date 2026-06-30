@@ -465,6 +465,19 @@ pub fn write(io: std.Io, writer: anytype) !void {
         if (any) try writer.writeAll("\n");
     }
 
+    // Global options (Phase 7 discoverability): surface the --no-rich /
+    // ORCA_NO_RICH escape hatch at the top level so users can find it without
+    // reading the source. --json/--robot are per-command machine flags.
+    try writer.writeAll("  ");
+    try tui.theme.paintBold(io, writer, .brand, "Global options");
+    try writer.writeAll("\n");
+    try writer.writeAll("    --no-rich   Plain text output (no colour, no animation). ");
+    try tui.theme.paint(io, writer, .muted, "Also ORCA_NO_RICH=1.");
+    try writer.writeAll("\n");
+    try writer.writeAll("                 Use this for piping, scripting, or terminals that mis-render colour.\n");
+    try writer.writeAll("    --json      Per-command machine output (byte-stable). See `orca help <command>`.\n");
+    try writer.writeAll("\n");
+
     // Try-next hint.
     try writer.writeAll("  ");
     try tui.theme.paint(io, writer, .muted, "Next:");

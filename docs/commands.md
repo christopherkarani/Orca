@@ -2,6 +2,19 @@
 
 Orca checks the direct command before launch and installs session PATH shims for common risky command names.
 
+## Rich output and `--no-rich`
+
+By default Orca renders human-facing output with colour, Unicode box-drawing, decision badges, risk meters, and (where useful) inline spinner frames on a terminal. When output is piped, when `NO_COLOR` is set, or when `TERM=dumb`, Orca automatically falls back to clean plain text.
+
+For piping, scripting, CI logs, or terminals that mis-render colour, force plain text everywhere with `--no-rich` (or set `ORCA_NO_RICH=1`):
+
+```sh
+orca --no-rich decide command --json '{"command":"rm -rf /"}' --human
+ORCA_NO_RICH=1 orca history
+```
+
+`--no-rich` disables colour and animation but keeps the full information content — panels become ASCII, badges become `[ALLOW]`/`[DENY]`, and risk meters become text bars. It never affects `--json`/`--robot` machine output, which stays byte-stable regardless.
+
 ## Dashboard
 
 ```sh
