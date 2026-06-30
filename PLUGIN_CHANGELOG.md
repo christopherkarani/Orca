@@ -1,5 +1,16 @@
 # Orca Plugin Changelog
 
+## 1.2.4 — Pi session commands and release alignment
+
+### Added
+- **Pi extension** — `/orca-start` and `/orca-stop` slash commands for in-session protection control.
+
+### Changed
+- All plugins and core unified to version **1.2.4**.
+
+### Fixed
+- OpenCode 1.16 plugin API compatibility from 1.2.3 remains stable.
+
 ## 1.2.3 — OpenCode 1.16 plugin API fix
 
 ### Fixed
