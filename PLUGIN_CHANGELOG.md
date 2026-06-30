@@ -1,5 +1,12 @@
 # Orca Plugin Changelog
 
+## 1.2.5 — Branded guardrail decisions
+
+### Changed
+- **Pi extension** — block and ask states now use related, compact Orca cards with distinct frames, clearer reason labels, and stable above-editor placement.
+- **OpenCode and OpenClaw** — fallback denial copy now identifies Orca explicitly.
+- All plugins and core unified to version **1.2.5**.
+
 ## 1.2.4 — Pi session commands and release alignment
 
 ### Added

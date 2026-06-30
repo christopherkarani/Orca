@@ -1,7 +1,7 @@
 class Orca < Formula
   desc "Local runtime firewall for AI agents"
   homepage "https://github.com/christopherkarani/Orca"
-  version "1.2.4"
+  version "1.2.5"
   license "Apache-2.0"
 
   on_macos do

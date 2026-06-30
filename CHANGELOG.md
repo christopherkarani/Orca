@@ -1,5 +1,14 @@
 # Changelog
 
+## v1.2.5 - 2026-07-01
+
+### Changed
+- Pi block and ask states now use compact, branded Orca decision cards with clearer reason hierarchy and bounded long-text wrapping.
+- Rust hook output and OpenCode/OpenClaw fallback copy now identify Orca explicitly across block and ask states.
+
+### Fixed
+- Pi decision cards use the stable above-editor widget surface and remain aligned for long or unbroken reasons.
+
 ## v1.2.4 - 2026-06-30
 
 ### Added
