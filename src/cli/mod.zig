@@ -165,6 +165,22 @@ fn shouldShowBanner(command: []const u8, argv: []const []const u8) bool {
     // human error remediation remains presentation-capable. JSON is still
     // classified as machine output by isMachineArgv.
     if (std.mem.eql(u8, command, "report")) return false;
+    // `history --live` is intercepted by the Zig CLI before daemon passthrough.
+    // Treat its non-TTY rejection as a human surface so it matches `replay --tui`,
+    // while keeping machine conflicts/banner-free JSON byte contracts raw.
+    if (std.mem.eql(u8, command, "history")) {
+        var live = false;
+        var i: usize = 1;
+        while (i < argv.len) : (i += 1) {
+            const a = argv[i];
+            if (std.mem.eql(u8, a, "--help") or std.mem.eql(u8, a, "-h")) return false;
+            if (std.mem.eql(u8, a, "--json") or std.mem.eql(u8, a, "--robot") or
+                std.mem.eql(u8, a, "--stdin")) return false;
+            if (std.mem.eql(u8, a, "--format") and i + 1 < argv.len and std.mem.eql(u8, argv[i + 1], "json")) return false;
+            if (std.mem.eql(u8, a, "--live")) live = true;
+        }
+        if (live) return true;
+    }
     if (isRawGeneratedInvocation(command, argv) or isRawPassthroughInvocation(command, argv)) return false;
     // Always-machine / raw / server commands.
     if (isAlwaysMachineCommand(command)) return false;
@@ -1039,6 +1055,12 @@ test "top-level MCP generated surfaces preserve exact bytes" {
         try std.testing.expectEqualStrings(case.expected, stdout_writer.buffered());
         try std.testing.expectEqualStrings("", stderr_writer.buffered());
     }
+}
+
+test "history live human rejection gets a banner while machine conflict stays raw" {
+    try std.testing.expect(shouldShowBanner("history", &.{ "history", "--live" }));
+    try std.testing.expect(!shouldShowBanner("history", &.{ "history", "--live", "--json" }));
+    try std.testing.expect(!shouldShowBanner("history", &.{ "history", "--live", "--robot" }));
 }
 
 test "daemon passthrough and robot surfaces have no top-level presentation bytes" {
