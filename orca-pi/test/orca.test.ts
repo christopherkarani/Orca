@@ -118,6 +118,11 @@ function makePi() {
 function makeCtx(overrides: Record<string, unknown> = {}) {
 	const notifications: Array<{ message: string; type?: string }> = [];
 	const statuses: Array<{ key: string; text: string | undefined }> = [];
+	const widgets: Array<{
+		key: string;
+		value: string[] | undefined;
+		opts?: { placement?: "aboveEditor" | "belowEditor" };
+	}> = [];
 	const selections: string[] = [];
 	const ctx = {
 		cwd: process.cwd(),
@@ -129,11 +134,16 @@ function makeCtx(overrides: Record<string, unknown> = {}) {
 				notifications.push({ message, type }),
 			setStatus: (key: string, text: string | undefined) =>
 				statuses.push({ key, text }),
+			setWidget: (
+				key: string,
+				value: undefined | string[],
+				opts?: { placement?: "aboveEditor" | "belowEditor" },
+			) => widgets.push({ key, value, opts }),
 			select: async () => selections.shift(),
 		},
 		...overrides,
 	};
-	return { ctx, notifications, statuses, selections };
+	return { ctx, notifications, statuses, widgets, selections };
 }
 
 function allowJson(): string {
@@ -415,7 +425,7 @@ test("bash dangerous command with Orca deny returns block", async () => {
 	const { pi, handlers } = makePi();
 	const { spawn } = makeSpawn([{ code: 2, stdout: denyJson() }]);
 	installOrcaExtension(pi, { spawn, orcaBin: "orca" });
-	const { ctx } = makeCtx();
+	const { ctx, widgets } = makeCtx();
 
 	const result = await fireToolCall(
 		handlers.get("tool_call")![0],
@@ -425,8 +435,55 @@ test("bash dangerous command with Orca deny returns block", async () => {
 	assert.deepEqual(result, {
 		block: true,
 		reason:
-			"Blocked by Orca: destructive filesystem command [core.filesystem:destructive-rm]",
+			"Orca blocked this bash command: destructive filesystem command • rule core.filesystem:destructive-rm",
 	});
+	const widget = widgets.find((entry) => entry.key === "orca-block");
+	assert.ok(widget, "expected Orca block widget");
+	assert.deepEqual(widget.opts, { placement: "aboveEditor" });
+	assert.match(widget?.value?.join("\n") ?? "", /┏━+/);
+	assert.match(widget?.value?.join("\n") ?? "", /ORCA \/\/ BLOCKED/);
+	assert.match(
+		widget?.value?.join("\n") ?? "",
+		/COMMAND STOPPED BEFORE EXECUTION/,
+	);
+	assert.match(widget?.value?.join("\n") ?? "", /destructive filesystem command/);
+	assert.match(widget?.value?.join("\n") ?? "", /Why: destructive filesystem command/);
+	assert.match(
+		widget?.value?.join("\n") ?? "",
+		/Rule: core\.filesystem:destructive-rm/,
+	);
+	assert.ok(
+		widget.value?.every((line) => line.length === 56),
+		"expected a compact, aligned 56-column Orca card",
+	);
+});
+
+test("Orca block widget keeps long reasons inside the compact frame", async () => {
+	const longReason = `unsafe-${"x".repeat(120)} command escaped policy`;
+	const { pi, handlers } = makePi();
+	const { spawn } = makeSpawn([
+		{
+			code: 2,
+			stdout: JSON.stringify({
+				decision: "deny",
+				reason: longReason,
+				rule_id: "custom.long-reason",
+			}),
+		},
+	]);
+	installOrcaExtension(pi, { spawn, orcaBin: "orca" });
+	const { ctx, widgets } = makeCtx();
+
+	await fireToolCall(handlers.get("tool_call")![0], ctx, "dangerous-command");
+
+	const widget = widgets.find((entry) => entry.key === "orca-block");
+	assert.ok(widget?.value, "expected Orca block widget content");
+	assert.ok(
+		widget.value.every((line) => line.length === 56),
+		"expected every long-reason card line to stay inside the frame",
+	);
+	assert.match(widget.value.join("\n"), /Why: unsafe-/);
+	assert.match(widget.value.join("\n"), /command escaped policy/);
 });
 
 test("bash dangerous command with Orca deny blocks even when exit code is not 2", async () => {
@@ -443,7 +500,7 @@ test("bash dangerous command with Orca deny blocks even when exit code is not 2"
 	assert.deepEqual(result, {
 		block: true,
 		reason:
-			"Blocked by Orca: destructive filesystem command [core.filesystem:destructive-rm]",
+			"Orca blocked this bash command: destructive filesystem command • rule core.filesystem:destructive-rm",
 	});
 });
 
@@ -462,11 +519,27 @@ test("Orca error in interactive mode asks user", async () => {
 	const { pi, handlers } = makePi();
 	const { spawn } = makeSpawn([{ code: 3, stdout: errorJson() }]);
 	installOrcaExtension(pi, { spawn, orcaBin: "orca" });
-	const { ctx, selections } = makeCtx();
+	const { ctx, selections, widgets } = makeCtx();
 	selections.push("Run once anyway");
 
 	const result = await fireToolCall(handlers.get("tool_call")![0], ctx);
 	assert.equal(result, undefined);
+	const askWidget = widgets.find((entry) => entry.key === "orca-block");
+	assert.ok(askWidget, "expected Orca ask widget");
+	assert.deepEqual(askWidget.opts, { placement: "aboveEditor" });
+	assert.match(askWidget.value?.join("\n") ?? "", /ORCA \/\/ YOUR CALL/);
+	assert.match(
+		askWidget.value?.join("\n") ?? "",
+		/ORCA PAUSED THIS COMMAND/,
+	);
+	assert.match(
+		askWidget.value?.join("\n") ?? "",
+		/Choose: Run once, repair Orca, or keep it blocked\./,
+	);
+	assert.ok(
+		askWidget.value?.every((line) => line.length === 56),
+		"expected a compact, aligned 56-column Orca ask card",
+	);
 });
 
 test("auto mode blocks print sessions even when hasUI is true", async () => {
@@ -741,7 +814,7 @@ test("helpers resolve modes and sanitize reasons", () => {
 	);
 	assert.match(
 		safeOrcaReason({ reason: "blocked token=abc123", rule_id: "rule" }),
-		/token=\[redacted\]/,
+		/Orca blocked this bash command: blocked token=\[redacted\] • rule rule/,
 	);
 });
 

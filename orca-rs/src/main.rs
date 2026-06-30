@@ -1376,7 +1376,7 @@ mod tests {
                     hook_event_name: "PreToolUse",
                     permission_decision: "deny",
                     permission_decision_reason: Cow::Owned(format!(
-                        "BLOCKED by orca\n\n\
+                        "ORCA BLOCKED\n\n\
                          Reason: {reason}\n\n\
                          Command: {command}\n\n\
                          If this operation is truly needed, ask the user for explicit \

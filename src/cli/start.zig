@@ -499,6 +499,7 @@ test "start reports failure when daemon required but unavailable" {
 test "start firewall mode verifies without daemon or shell evaluator" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
+    try tmp.dir.createDir(std.testing.io, ".git", .default_dir);
 
     var stdout_buf: [16384]u8 = undefined;
     var stderr_buf: [1024]u8 = undefined;

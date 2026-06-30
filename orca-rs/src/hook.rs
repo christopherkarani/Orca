@@ -819,7 +819,7 @@ pub fn format_denial_message(
     );
 
     format!(
-        "BLOCKED by orca\n\n\
+        "ORCA BLOCKED\n\n\
          {explain_hint}\n\n\
          Reason: {reason}\n\n\
          {explanation_block}\n\n\
@@ -1138,7 +1138,7 @@ pub fn write_denial_to(
         HookProtocol::Copilot => {
             let output = CopilotHookOutput {
                 continue_execution: false,
-                stop_reason: Cow::Owned(format!("BLOCKED by orca: {reason}")),
+                stop_reason: Cow::Owned(format!("ORCA BLOCKED: {reason}")),
                 permission_decision: "deny",
                 permission_decision_reason: Cow::Owned(message.clone()),
                 allow_once_code: allow_once.map(|info| info.code.clone()),
@@ -1157,7 +1157,7 @@ pub fn write_denial_to(
             let output = GeminiHookOutput {
                 decision: "deny",
                 reason: Cow::Owned(message),
-                system_message: Some(Cow::Owned(format!("BLOCKED by orca: {reason}"))),
+                system_message: Some(Cow::Owned(format!("ORCA BLOCKED: {reason}"))),
                 allow_once_code: allow_once.map(|info| info.code.clone()),
                 allow_once_full_hash: allow_once.map(|info| info.full_hash.clone()),
                 rule_id,
@@ -1307,7 +1307,7 @@ pub(crate) fn write_warning_to(
     // -- stderr: human-visible warning --
     {
         let _ = writeln!(stderr);
-        let _ = writeln!(stderr, "{} {}", "orca WARNING:".yellow().bold(), reason);
+        let _ = writeln!(stderr, "{} {}", "ORCA ASK:".yellow().bold(), reason);
 
         let rule_id = build_rule_id(pack, pattern);
         let explanation_text = format_explanation_text(explanation, rule_id.as_deref(), pack);
@@ -1331,7 +1331,7 @@ pub(crate) fn write_warning_to(
 
     // -- stdout: hook-protocol JSON with "ask" decision --
     let rule_id = build_rule_id(pack, pattern);
-    let warn_reason = format!("ORCA warn: {reason}");
+    let warn_reason = format!("ORCA ASK: {reason}");
 
     match protocol {
         HookProtocol::ClaudeCompatible => {
@@ -1358,7 +1358,7 @@ pub(crate) fn write_warning_to(
             // legacy stop signal. Hard denials set `continue=false` above.
             let output = CopilotHookOutput {
                 continue_execution: true,
-                stop_reason: Cow::Owned(format!("ORCA warn: {reason}")),
+                stop_reason: Cow::Owned(format!("ORCA ASK: {reason}")),
                 permission_decision: "ask",
                 permission_decision_reason: Cow::Owned(warn_reason),
                 allow_once_code: None,
@@ -1853,7 +1853,7 @@ mod tests {
         let output = GeminiHookOutput {
             decision: "deny",
             reason: Cow::Borrowed("blocked for safety"),
-            system_message: Some(Cow::Borrowed("BLOCKED by orca: test")),
+            system_message: Some(Cow::Borrowed("ORCA BLOCKED: test")),
             allow_once_code: None,
             allow_once_full_hash: None,
             rule_id: Some("core.git:reset-hard".to_string()),
@@ -1865,7 +1865,7 @@ mod tests {
         let json = serde_json::to_value(&output).unwrap();
         assert_eq!(json["decision"], "deny");
         assert_eq!(json["reason"], "blocked for safety");
-        assert_eq!(json["systemMessage"], "BLOCKED by orca: test");
+        assert_eq!(json["systemMessage"], "ORCA BLOCKED: test");
         assert!(json.get("continue").is_none());
         assert!(json.get("stopReason").is_none());
         assert_eq!(json["ruleId"], "core.git:reset-hard");
@@ -1901,7 +1901,7 @@ mod tests {
             hook_specific_output: HookSpecificOutput {
                 hook_event_name: "PreToolUse",
                 permission_decision: "ask",
-                permission_decision_reason: Cow::Borrowed("ORCA warn: risky pattern"),
+                permission_decision_reason: Cow::Borrowed("ORCA ASK: risky pattern"),
                 allow_once_code: None,
                 allow_once_full_hash: None,
                 rule_id: Some("core.git:checkout-dot".to_string()),
@@ -1919,7 +1919,7 @@ mod tests {
             specific["permissionDecisionReason"]
                 .as_str()
                 .unwrap()
-                .starts_with("ORCA warn:")
+                .starts_with("ORCA ASK:")
         );
         assert_eq!(specific["ruleId"], "core.git:checkout-dot");
         assert_eq!(specific["packId"], "core.git");
@@ -1929,9 +1929,9 @@ mod tests {
     fn test_copilot_warn_ask_json_shape() {
         let output = CopilotHookOutput {
             continue_execution: true,
-            stop_reason: Cow::Borrowed("ORCA warn: risky pattern"),
+            stop_reason: Cow::Borrowed("ORCA ASK: risky pattern"),
             permission_decision: "ask",
-            permission_decision_reason: Cow::Borrowed("ORCA warn: risky pattern"),
+            permission_decision_reason: Cow::Borrowed("ORCA ASK: risky pattern"),
             allow_once_code: None,
             allow_once_full_hash: None,
             rule_id: None,
@@ -1949,8 +1949,8 @@ mod tests {
     fn test_gemini_warn_allow_json_shape() {
         let output = GeminiHookOutput {
             decision: "allow",
-            reason: Cow::Borrowed("ORCA warn: risky pattern"),
-            system_message: Some(Cow::Borrowed("ORCA warn: risky pattern")),
+            reason: Cow::Borrowed("ORCA ASK: risky pattern"),
+            system_message: Some(Cow::Borrowed("ORCA ASK: risky pattern")),
             allow_once_code: None,
             allow_once_full_hash: None,
             rule_id: None,
@@ -1961,7 +1961,7 @@ mod tests {
         };
         let json = serde_json::to_value(&output).unwrap();
         assert_eq!(json["decision"], "allow");
-        assert!(json["reason"].as_str().unwrap().starts_with("ORCA warn:"));
+        assert!(json["reason"].as_str().unwrap().starts_with("ORCA ASK:"));
     }
 
     // =========================================================================
@@ -2156,7 +2156,7 @@ mod tests {
         let json: serde_json::Value = serde_json::from_str(stdout_str.trim())
             .unwrap_or_else(|e| panic!("stdout not valid JSON: {e}\nstdout: {stdout_str}"));
 
-        assert!(json["context"].as_str().unwrap().starts_with("ORCA warn:"));
+        assert!(json["context"].as_str().unwrap().starts_with("ORCA ASK:"));
         // Crucially: must NOT carry a "block" decision when warning.
         assert!(json.get("decision").is_none());
         assert!(json.get("action").is_none());
@@ -2363,7 +2363,7 @@ mod tests {
             "warn must NOT escalate to deny on Grok"
         );
         assert!(
-            json["reason"].as_str().unwrap().starts_with("ORCA warn:"),
+            json["reason"].as_str().unwrap().starts_with("ORCA ASK:"),
             "reason should be prefixed so the model knows this is advisory"
         );
         assert!(!stderr.is_empty(), "stderr must contain warn text");
@@ -2729,7 +2729,7 @@ mod tests {
             json["stopReason"]
                 .as_str()
                 .unwrap()
-                .contains("BLOCKED by orca")
+                .contains("ORCA BLOCKED")
         );
     }
 
@@ -2764,7 +2764,7 @@ mod tests {
             json["systemMessage"]
                 .as_str()
                 .unwrap()
-                .contains("BLOCKED by orca")
+                .contains("ORCA BLOCKED")
         );
     }
 
@@ -2794,7 +2794,7 @@ mod tests {
             specific["permissionDecisionReason"]
                 .as_str()
                 .unwrap()
-                .starts_with("ORCA warn:")
+                .starts_with("ORCA ASK:")
         );
         assert!(!stderr.is_empty(), "stderr must contain warning text");
     }
@@ -2827,8 +2827,8 @@ mod tests {
         );
         let stderr_str = String::from_utf8_lossy(&stderr);
         assert!(
-            stderr_str.contains("WARNING"),
-            "stderr must contain WARNING marker; got: {stderr_str}"
+            stderr_str.contains("ORCA ASK"),
+            "stderr must contain ORCA ASK marker; got: {stderr_str}"
         );
         assert!(
             stderr_str.contains("core.git:checkout-dot"),
@@ -2881,7 +2881,7 @@ mod tests {
             .unwrap_or_else(|e| panic!("stdout not valid JSON: {e}\nstdout: {stdout_str}"));
 
         assert_eq!(json["decision"], "allow");
-        assert!(json["reason"].as_str().unwrap().starts_with("ORCA warn:"));
+        assert!(json["reason"].as_str().unwrap().starts_with("ORCA ASK:"));
     }
 
     // =========================================================================

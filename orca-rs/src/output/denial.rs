@@ -184,15 +184,13 @@ impl DenialBox {
         if let Some(branch) = &self.branch_name {
             if self.is_protected_branch {
                 lines.push(format!(
-                    "[{severity_markup}]🛑 BLOCKED (Protected Branch: {branch})[/]"
+                    "[{severity_markup}]🛑 ORCA BLOCKED (Protected Branch: {branch})[/]"
                 ));
             } else {
-                lines.push(format!(
-                    "[{severity_markup}]🛑 BLOCKED (Branch: {branch})[/]"
-                ));
+                lines.push(format!("[{severity_markup}]🛑 ORCA BLOCKED (Branch: {branch})[/]"));
             }
         } else {
-            lines.push(format!("[{severity_markup}]🛑 COMMAND BLOCKED[/]"));
+            lines.push(format!("[{severity_markup}]🛑 ORCA BLOCKED[/]"));
         }
         lines.push(String::new());
 
@@ -279,12 +277,12 @@ impl DenialBox {
 
         if let Some(branch) = &self.branch_name {
             if self.is_protected_branch {
-                let _ = writeln!(output, "BLOCKED (Protected Branch: {branch})");
+                let _ = writeln!(output, "ORCA BLOCKED (Protected Branch: {branch})");
             } else {
-                let _ = writeln!(output, "BLOCKED (Branch: {branch})");
+                let _ = writeln!(output, "ORCA BLOCKED (Branch: {branch})");
             }
         } else {
-            let _ = writeln!(output, "BLOCKED: Destructive Command Detected");
+            let _ = writeln!(output, "ORCA BLOCKED: Destructive Command Detected");
         }
         let _ = writeln!(output);
 
@@ -348,12 +346,12 @@ impl DenialBox {
 
         let header = if let Some(branch) = &self.branch_name {
             if self.is_protected_branch {
-                format!(" \u{26d4}  BLOCKED (Protected Branch: {branch}) ")
+                format!(" \u{26d4}  ORCA BLOCKED (Protected Branch: {branch}) ")
             } else {
-                format!(" \u{26d4}  BLOCKED (Branch: {branch}) ")
+                format!(" \u{26d4}  ORCA BLOCKED (Branch: {branch}) ")
             }
         } else {
-            " \u{26d4}  BLOCKED: Destructive Command Detected ".to_string()
+            " \u{26d4}  ORCA BLOCKED: Destructive Command Detected ".to_string()
         };
         let header_len = header.chars().count();
         let top_pad = width.saturating_sub(header_len);
@@ -555,12 +553,12 @@ impl DenialBox {
 
         let header = if let Some(branch) = &self.branch_name {
             if self.is_protected_branch {
-                format!(" !  BLOCKED (Protected Branch: {branch}) ")
+                format!(" !  ORCA BLOCKED (Protected Branch: {branch}) ")
             } else {
-                format!(" !  BLOCKED (Branch: {branch}) ")
+                format!(" !  ORCA BLOCKED (Branch: {branch}) ")
             }
         } else {
-            " !  BLOCKED: Destructive Command Detected ".to_string()
+            " !  ORCA BLOCKED: Destructive Command Detected ".to_string()
         };
         let header_len = header.chars().count();
         let top_pad = width.saturating_sub(header_len);
@@ -688,7 +686,7 @@ impl DenialBox {
         // Header with color
         let _ = writeln!(
             output,
-            "\x1b[{}m\u{26d4}  BLOCKED\x1b[0m: Destructive Command Detected",
+            "\x1b[{}m\u{26d4}  ORCA BLOCKED\x1b[0m: Destructive Command Detected",
             &severity_code
         );
         let _ = writeln!(output);
@@ -979,7 +977,7 @@ mod tests {
 
         let output = denial.render_plain();
 
-        assert!(output.contains("BLOCKED"));
+        assert!(output.contains("ORCA BLOCKED"));
         assert!(output.contains("git reset --hard"));
         assert!(output.contains("Pattern: reset_hard"));
         assert!(output.contains("Pack: core.git"));
@@ -1059,7 +1057,7 @@ mod tests {
         // Should contain Unicode box-drawing characters
         assert!(output.contains('\u{256d}')); // Top-left corner
         assert!(output.contains('\u{256f}')); // Bottom-right corner
-        assert!(output.contains("BLOCKED"));
+        assert!(output.contains("ORCA BLOCKED"));
     }
 
     #[test]
@@ -1083,7 +1081,7 @@ mod tests {
         // Should use ASCII characters
         assert!(output.contains('+'));
         assert!(output.contains('-'));
-        assert!(output.contains("BLOCKED"));
+        assert!(output.contains("ORCA BLOCKED"));
     }
 
     #[test]
@@ -1101,7 +1099,7 @@ mod tests {
         let output = denial.render(&theme);
 
         assert!(output.contains('+'));
-        assert!(output.contains("BLOCKED"));
+        assert!(output.contains("ORCA BLOCKED"));
         assert!(
             !output.contains('\x1b'),
             "No ANSI escapes should appear when colors are disabled"
@@ -1123,7 +1121,7 @@ mod tests {
         let output = denial.render(&theme);
 
         assert!(output.contains('\u{256d}'));
-        assert!(output.contains("BLOCKED"));
+        assert!(output.contains("ORCA BLOCKED"));
         assert!(
             !output.contains('\x1b'),
             "No ANSI escapes should appear when colors are disabled"
@@ -1254,7 +1252,7 @@ mod tests {
             let output = denial.render_plain();
 
             assert!(
-                output.contains("BLOCKED"),
+                output.contains("ORCA BLOCKED"),
                 "All severities must show BLOCKED header"
             );
             assert!(
@@ -1283,7 +1281,7 @@ mod tests {
         let clean_output = strip_ansi_codes(&output);
 
         // Minimal style should still contain key elements
-        assert!(clean_output.contains("BLOCKED"));
+        assert!(clean_output.contains("ORCA BLOCKED"));
         // Highlighting might split the command with ANSI codes, but clean_output handles that
         assert!(clean_output.contains("git push --force"));
         assert!(clean_output.contains("Pattern: force_push"));
@@ -1333,7 +1331,7 @@ mod tests {
         assert!(!denial.is_protected_branch);
 
         let output = denial.render_plain();
-        assert!(output.contains("BLOCKED: Destructive Command Detected"));
+        assert!(output.contains("ORCA BLOCKED: Destructive Command Detected"));
         assert!(!output.contains("Branch:"));
         assert!(!output.contains("Protected"));
         assert!(!output.contains("Extra caution"));
@@ -1354,7 +1352,7 @@ mod tests {
         assert!(!denial.is_protected_branch);
 
         let output = denial.render_plain();
-        assert!(output.contains("BLOCKED (Branch: feature/my-branch)"));
+        assert!(output.contains("ORCA BLOCKED (Branch: feature/my-branch)"));
         assert!(!output.contains("Protected"));
         assert!(!output.contains("Extra caution"));
     }
@@ -1374,7 +1372,7 @@ mod tests {
         assert!(denial.is_protected_branch);
 
         let output = denial.render_plain();
-        assert!(output.contains("BLOCKED (Protected Branch: main)"));
+        assert!(output.contains("ORCA BLOCKED (Protected Branch: main)"));
         assert!(output.contains("Extra caution on protected branches"));
     }
 
@@ -1391,7 +1389,7 @@ mod tests {
             .with_branch_context("main", true);
 
         let output = denial.render(&theme);
-        assert!(output.contains("BLOCKED (Protected Branch: main)"));
+        assert!(output.contains("ORCA BLOCKED (Protected Branch: main)"));
         assert!(output.contains("Extra caution on protected branches"));
     }
 
@@ -1408,7 +1406,7 @@ mod tests {
             .with_branch_context("develop", false);
 
         let output = denial.render(&theme);
-        assert!(output.contains("BLOCKED (Branch: develop)"));
+        assert!(output.contains("ORCA BLOCKED (Branch: develop)"));
         assert!(!output.contains("Protected"));
     }
 
@@ -1427,7 +1425,7 @@ mod tests {
         .with_branch_context("main", true);
 
         let output = denial.render_plain();
-        assert!(output.contains("BLOCKED (Protected Branch: main)"));
+        assert!(output.contains("ORCA BLOCKED (Protected Branch: main)"));
         assert!(output.contains("Extra caution"));
         assert!(output.contains("Force push overwrites remote history"));
         assert!(output.contains("git push --force-with-lease"));
@@ -1460,7 +1458,10 @@ mod tests {
 
         assert_eq!(denial.allow_once_code.as_deref(), Some("abc123"));
         let output = denial.render_plain();
-        assert!(output.contains("BLOCKED"), "plain render should succeed");
+        assert!(
+            output.contains("ORCA BLOCKED"),
+            "plain render should succeed"
+        );
     }
 
     #[test]
@@ -1649,7 +1650,7 @@ mod tests {
             let output = denial.render(&theme);
 
             assert!(
-                output.contains("BLOCKED"),
+                output.contains("ORCA BLOCKED"),
                 "{border_style:?} fallback should identify the denial"
             );
             assert!(

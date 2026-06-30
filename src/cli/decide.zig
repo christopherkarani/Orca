@@ -65,6 +65,17 @@ const DecisionKind = enum {
 // ---------------------------------------------------------------------------
 
 fn decideCommand(io: std.Io, kind: DecisionKind, argv: []const []const u8, stdout: anytype, stderr: anytype) !u8 {
+    return decideCommandWithPolicy(io, kind, argv, stdout, stderr, null);
+}
+
+fn decideCommandWithPolicy(
+    io: std.Io,
+    kind: DecisionKind,
+    argv: []const []const u8,
+    stdout: anytype,
+    stderr: anytype,
+    explicit_policy_path: ?[]const u8,
+) !u8 {
     var json_payload: ?[]const u8 = null;
     var use_stdin = false;
     var ci_mode = false;
@@ -157,7 +168,7 @@ fn decideCommand(io: std.Io, kind: DecisionKind, argv: []const []const u8, stdou
     // Load policy
     const root = supervisor.resolveWorkspaceRoot(io, allocator, null, ".") catch try allocator.dupe(u8, ".");
     defer allocator.free(root);
-    var loaded = core_api.discoverPolicy(io, allocator, null, root) catch |err| {
+    var loaded = core_api.discoverPolicy(io, allocator, explicit_policy_path, root) catch |err| {
         try stderr.print("orca decide: failed to load policy: {s}\n", .{@errorName(err)});
         return exit_codes.general;
     };
@@ -654,9 +665,20 @@ test "decide human output matches captured contract fixture" {
     var stderr_buf: [512]u8 = undefined;
     var stdout_writer: std.Io.Writer = .fixed(&stdout_buf);
     var stderr_writer: std.Io.Writer = .fixed(&stderr_buf);
-    const code = try decideCommand(std.testing.io, .command, &.{
-        "--json", "{\"command\":\"echo hello\"}", "--human",
-    }, &stdout_writer, &stderr_writer);
+    const policy_path = try std.Io.Dir.cwd().realPathFileAlloc(
+        std.testing.io,
+        "policies/presets/generic-agent.yaml",
+        std.testing.allocator,
+    );
+    defer std.testing.allocator.free(policy_path);
+    const code = try decideCommandWithPolicy(
+        std.testing.io,
+        .command,
+        &.{ "--json", "{\"command\":\"echo hello\"}", "--human" },
+        &stdout_writer,
+        &stderr_writer,
+        policy_path,
+    );
     try std.testing.expectEqual(exit_codes.success, code);
     try std.testing.expectEqualStrings(
         @embedFile("test-fixtures/decide-command-allow-human.txt"),

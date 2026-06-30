@@ -1,5 +1,32 @@
 # Changelog
 
+## v1.2.5 - 2026-07-01
+
+### Changed
+- Pi block and ask states now use compact, branded Orca decision cards with clearer reason hierarchy and bounded long-text wrapping.
+- Rust hook output and OpenCode/OpenClaw fallback copy now identify Orca explicitly across block and ask states.
+
+### Fixed
+- Pi decision cards use the stable above-editor widget surface and remain aligned for long or unbroken reasons.
+
+## v1.2.4 - 2026-06-30
+
+### Added
+- **`--live` / `--tui` alt-screen views** for `history` and `replay`.
+- **Reduced-motion support** across TUI spinners and animations.
+- **OSC 11 background detection** for automatic light/dark theme wiring.
+- **Branded first-run celebration** and improved onboarding moments.
+- **Pi slash commands** `/orca-start` and `/orca-stop` for session-level protection control.
+
+### Changed
+- **`--no-rich`** and `ORCA_NO_RICH=1` now gate color without changing machine-readable output.
+- `--tui` + `--json` is rejected at preflight to prevent mixed output modes.
+
+### Fixed
+- CLI self-import support in the build.
+- Replay/history live help and banner rejection edge cases.
+- Phase 6 public contract freeze: exact bytes preserved for JSON, robot, export, and MCP proxy paths.
+
 ## v1.2.3 - 2026-06-24
 
 ### Fixed

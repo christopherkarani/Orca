@@ -38,6 +38,18 @@ pub fn renderFrame(
     scroll_offset: usize,
     viewport_rows: usize,
 ) !usize {
+    return renderFrameWithLineEnding(io, stdout, title, lines, scroll_offset, viewport_rows, "\n");
+}
+
+fn renderFrameWithLineEnding(
+    io: std.Io,
+    stdout: anytype,
+    title: []const u8,
+    lines: Lines,
+    scroll_offset: usize,
+    viewport_rows: usize,
+    line_ending: []const u8,
+) !usize {
     var written: usize = 0;
 
     // Header: brand + title.
@@ -45,7 +57,7 @@ pub fn renderFrame(
     try theme.paintBold(io, stdout, .brand, "🛡  Orca");
     try stdout.writeAll(" · ");
     try theme.paintBold(io, stdout, .text_bright, title);
-    try stdout.writeAll("\n");
+    try stdout.writeAll(line_ending);
     written += 1;
 
     // Viewport window of body lines. Clamp `start` to the last valid window
@@ -59,7 +71,7 @@ pub fn renderFrame(
     for (lines[start..end]) |line| {
         try stdout.writeAll("  ");
         try terminal_text.write(stdout, line, .single_line);
-        try stdout.writeAll("\n");
+        try stdout.writeAll(line_ending);
         written += 1;
     }
 
@@ -78,7 +90,7 @@ pub fn renderFrame(
         }) catch "  q quit · ↑↓ scroll · r refresh";
         try theme.paint(io, stdout, .muted, msg);
     }
-    try stdout.writeAll("\n");
+    try stdout.writeAll(line_ending);
     written += 1;
     return written;
 }
@@ -162,7 +174,7 @@ pub fn run(
             try stdout.writeAll("\x1b[J");
         }
         first_frame = false;
-        frame_lines = try renderFrame(io, stdout, title, current_lines, scroll, viewport);
+        frame_lines = try renderFrameWithLineEnding(io, stdout, title, current_lines, scroll, viewport, "\r\n");
         try flush(stdout);
 
         const action = readKey(&tty, &decoder) catch .quit;
@@ -281,7 +293,7 @@ fn configureReadTimeout(tty: anytype) void {
 fn moveCursorUp(stdout: anytype, n: usize) !void {
     if (n == 0) return;
     var buf: [16]u8 = undefined;
-    const seq = std.fmt.bufPrint(&buf, "\x1b[{d}A", .{n}) catch return;
+    const seq = std.fmt.bufPrint(&buf, "\r\x1b[{d}A\r", .{n}) catch return;
     try stdout.writeAll(seq);
 }
 
@@ -310,6 +322,15 @@ test "renderFrame: empty snapshot shows no-rows footer" {
     try std.testing.expect(std.mem.indexOfScalar(u8, out, '\x1b') == null);
     // Header + footer only.
     try std.testing.expectEqual(@as(usize, 2), n);
+}
+
+test "raw live frame uses carriage-return line endings" {
+    theme.resetCache();
+    var buf: [512]u8 = undefined;
+    var w: std.Io.Writer = .fixed(&buf);
+
+    _ = try renderFrameWithLineEnding(std.testing.io, &w, "history", &.{"row"}, 0, 1, "\r\n");
+    try std.testing.expect(std.mem.indexOf(u8, w.buffered(), "\r\n") != null);
 }
 
 test "renderFrame: viewport window honours scroll offset and cap" {

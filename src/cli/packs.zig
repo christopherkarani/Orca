@@ -138,17 +138,14 @@ fn renderHumanAlloc(allocator: std.mem.Allocator, io: std.Io, options: Options, 
     const end = @min(selected.items.len, std.math.add(usize, start, options.page_size) catch selected.items.len);
     const page_items = selected.items[start..end];
 
-    const rows = try allocator.alloc([]const []const u8, page_items.len);
-    defer allocator.free(rows);
-    var initialized_rows: usize = 0;
-    defer for (rows[0..initialized_rows]) |row| allocator.free(row);
     var owned: std.ArrayListUnmanaged([]u8) = .empty;
     defer {
         for (owned.items) |value| allocator.free(value);
         owned.deinit(allocator);
     }
-    for (page_items, 0..) |pack, index| {
-        const status = if (pack.enabled) "enabled" else "available";
+    try tui.theme.paintBold(io, stdout, .text_bright, "Safety packs");
+    try stdout.writeAll("\n\n");
+    for (page_items) |pack| {
         const safe_id = try tui.terminal_text.sanitizeAlloc(allocator, pack.id, .single_line);
         owned.append(allocator, safe_id) catch |err| {
             allocator.free(safe_id);
@@ -169,21 +166,21 @@ fn renderHumanAlloc(allocator: std.mem.Allocator, io: std.Io, options: Options, 
             allocator.free(patterns);
             return err;
         };
-        const cells = try allocator.alloc([]const u8, 5);
-        cells[0] = safe_id;
-        cells[1] = safe_category;
-        cells[2] = status;
-        cells[3] = patterns;
-        cells[4] = safe_description;
-        rows[index] = cells;
-        initialized_rows += 1;
+        try stdout.writeAll("  ");
+        try tui.theme.paintBold(io, stdout, if (pack.enabled) .success else .text_bright, if (pack.enabled) "●" else "○");
+        try stdout.writeAll(" ");
+        try tui.render.writeTruncated(stdout, safe_id, 60);
+        try stdout.writeAll("  ");
+        try tui.theme.paint(io, stdout, if (pack.enabled) .success else .muted, if (pack.enabled) "[enabled]" else "[available]");
+        try stdout.writeAll("\n    ");
+        try tui.render.writeTruncated(stdout, safe_category, 28);
+        try stdout.writeAll(" · ");
+        try stdout.writeAll(patterns);
+        try stdout.writeAll("\n");
+        try tui.render.writeWrappedWidth(stdout, safe_description, 4, 80);
+        try stdout.writeAll("\n\n");
     }
-
-    try tui.render.table(io, stdout, &.{
-        .{ .name = "PACK" },     .{ .name = "CATEGORY" },    .{ .name = "STATUS" },
-        .{ .name = "PATTERNS" }, .{ .name = "DESCRIPTION" },
-    }, rows);
-    try stdout.print("\nPage {d} of {d} · {d} pack(s)\n", .{ options.page, total_pages, selected.items.len });
+    try stdout.print("Page {d} of {d} · {d} pack(s)\n", .{ options.page, total_pages, selected.items.len });
     return exit_codes.success;
 }
 
@@ -221,7 +218,7 @@ test "human packs requests daemon JSON instead of parsing pretty output" {
     const code = try commandWithExecutor(fakePacksJson, std.testing.io, &.{}, &stdout_writer, &stderr_writer);
 
     try std.testing.expectEqual(exit_codes.success, code);
-    try std.testing.expect(std.mem.indexOf(u8, stdout_writer.buffered(), "PACK") != null);
+    try std.testing.expect(std.mem.indexOf(u8, stdout_writer.buffered(), "Safety packs") != null);
 }
 
 fn fakePacksJson(_: std.Io, argv: []const []const u8, stdout: anytype, _: anytype) !u8 {
@@ -300,7 +297,7 @@ test "packs rejects missing and invalid Zig option values with remediation" {
     }
 }
 
-test "packs sanitizes fields before deterministic table layout" {
+test "packs sanitizes fields before deterministic compact layout" {
     var stdout_buf: [4096]u8 = undefined;
     var stderr_buf: [256]u8 = undefined;
     var stdout_writer: std.Io.Writer = .fixed(&stdout_buf);
@@ -308,13 +305,27 @@ test "packs sanitizes fields before deterministic table layout" {
     const code = try commandWithExecutor(fakeHostilePacksJson, std.testing.io, &.{}, &stdout_writer, &stderr_writer);
     try std.testing.expectEqual(exit_codes.success, code);
     try std.testing.expectEqualStrings(
-        "  PACK      CATEGORY  STATUS   PATTERNS            DESCRIPTION  \n" ++
-            "  --------------------------------------------------------------\n" ++
-            "  db.mysql  database  enabled  3 safe / 4 blocked  safe line    \n" ++
-            "\n" ++
+        "Safety packs\n\n" ++
+            "  ● db.mysql  [enabled]\n" ++
+            "    database · 3 safe / 4 blocked\n" ++
+            "    safe line\n\n" ++
             "Page 1 of 1 · 1 pack(s)\n",
         stdout_writer.buffered(),
     );
+}
+
+test "packs human layout does not exceed eighty columns" {
+    var stdout_buf: [8192]u8 = undefined;
+    var stderr_buf: [256]u8 = undefined;
+    var stdout_writer: std.Io.Writer = .fixed(&stdout_buf);
+    var stderr_writer: std.Io.Writer = .fixed(&stderr_buf);
+    const code = try commandWithExecutor(fakeWidePackJson, std.testing.io, &.{}, &stdout_writer, &stderr_writer);
+    try std.testing.expectEqual(exit_codes.success, code);
+
+    var lines = std.mem.splitScalar(u8, stdout_writer.buffered(), '\n');
+    while (lines.next()) |line| {
+        try std.testing.expect(tui.render.displayWidth(line) <= 80);
+    }
 }
 
 test "packs rejects pages beyond filtered results including max usize" {
@@ -397,6 +408,13 @@ fn fakeEnabledPacksEmpty(_: std.Io, argv: []const []const u8, stdout: anytype, _
 fn fakeHostilePacksJson(_: std.Io, _: []const []const u8, stdout: anytype, _: anytype) !u8 {
     try stdout.writeAll(
         \\{"packs":[{"id":"db.\u001b[2Jmysql","name":"MySQL","category":"data\u001b]0;x\u0007base","description":"safe\nline","enabled":true,"safe_pattern_count":3,"destructive_pattern_count":4}],"enabled_count":1,"total_count":1}
+    );
+    return exit_codes.success;
+}
+
+fn fakeWidePackJson(_: std.Io, _: []const []const u8, stdout: anytype, _: anytype) !u8 {
+    try stdout.writeAll(
+        \\{"packs":[{"id":"infrastructure.fastly.edge.service","name":"Fastly","category":"infrastructure","description":"Protects against destructive Fastly CLI operations like service, domain, backend, and VCL deletion.","enabled":false,"safe_pattern_count":10,"destructive_pattern_count":6}],"enabled_count":0,"total_count":1}
     );
     return exit_codes.success;
 }
