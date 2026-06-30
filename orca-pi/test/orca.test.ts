@@ -439,6 +439,7 @@ test("bash dangerous command with Orca deny returns block", async () => {
 	});
 	const widget = widgets.find((entry) => entry.key === "orca-block");
 	assert.ok(widget, "expected Orca block widget");
+	assert.deepEqual(widget.opts, { placement: "aboveEditor" });
 	assert.match(widget?.value?.join("\n") ?? "", /┏━+/);
 	assert.match(widget?.value?.join("\n") ?? "", /ORCA \/\/ BLOCKED/);
 	assert.match(
@@ -446,10 +447,43 @@ test("bash dangerous command with Orca deny returns block", async () => {
 		/COMMAND STOPPED BEFORE EXECUTION/,
 	);
 	assert.match(widget?.value?.join("\n") ?? "", /destructive filesystem command/);
+	assert.match(widget?.value?.join("\n") ?? "", /Why: destructive filesystem command/);
 	assert.match(
 		widget?.value?.join("\n") ?? "",
 		/Rule: core\.filesystem:destructive-rm/,
 	);
+	assert.ok(
+		widget.value?.every((line) => line.length === 56),
+		"expected a compact, aligned 56-column Orca card",
+	);
+});
+
+test("Orca block widget keeps long reasons inside the compact frame", async () => {
+	const longReason = `unsafe-${"x".repeat(120)} command escaped policy`;
+	const { pi, handlers } = makePi();
+	const { spawn } = makeSpawn([
+		{
+			code: 2,
+			stdout: JSON.stringify({
+				decision: "deny",
+				reason: longReason,
+				rule_id: "custom.long-reason",
+			}),
+		},
+	]);
+	installOrcaExtension(pi, { spawn, orcaBin: "orca" });
+	const { ctx, widgets } = makeCtx();
+
+	await fireToolCall(handlers.get("tool_call")![0], ctx, "dangerous-command");
+
+	const widget = widgets.find((entry) => entry.key === "orca-block");
+	assert.ok(widget?.value, "expected Orca block widget content");
+	assert.ok(
+		widget.value.every((line) => line.length === 56),
+		"expected every long-reason card line to stay inside the frame",
+	);
+	assert.match(widget.value.join("\n"), /Why: unsafe-/);
+	assert.match(widget.value.join("\n"), /command escaped policy/);
 });
 
 test("bash dangerous command with Orca deny blocks even when exit code is not 2", async () => {
@@ -492,6 +526,7 @@ test("Orca error in interactive mode asks user", async () => {
 	assert.equal(result, undefined);
 	const askWidget = widgets.find((entry) => entry.key === "orca-block");
 	assert.ok(askWidget, "expected Orca ask widget");
+	assert.deepEqual(askWidget.opts, { placement: "aboveEditor" });
 	assert.match(askWidget.value?.join("\n") ?? "", /ORCA \/\/ YOUR CALL/);
 	assert.match(
 		askWidget.value?.join("\n") ?? "",
@@ -500,6 +535,10 @@ test("Orca error in interactive mode asks user", async () => {
 	assert.match(
 		askWidget.value?.join("\n") ?? "",
 		/Choose: Run once, repair Orca, or keep it blocked\./,
+	);
+	assert.ok(
+		askWidget.value?.every((line) => line.length === 56),
+		"expected a compact, aligned 56-column Orca ask card",
 	);
 });
 

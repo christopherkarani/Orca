@@ -884,11 +884,13 @@ function clearOrcaWidget(ctx: PiContext): void {
 
 function showOrcaWidget(ctx: PiContext, card: OrcaDecisionCard): void {
 	if (!ctx.ui?.setWidget) return;
-	ctx.ui.setWidget(BLOCK_WIDGET_KEY, buildOrcaWidget(card));
+	ctx.ui.setWidget(BLOCK_WIDGET_KEY, buildOrcaWidget(card), {
+		placement: "aboveEditor",
+	});
 }
 
 function buildOrcaWidget(card: OrcaDecisionCard): string[] {
-	const contentWidth = 62;
+	const contentWidth = 54;
 	const isBlock = card.variant === "block";
 	const frame = isBlock
 		? { topLeft: "┏", topRight: "┓", side: "┃", teeLeft: "┣", teeRight: "┫", bottomLeft: "┗", bottomRight: "┛", rule: "━" }
@@ -902,9 +904,7 @@ function buildOrcaWidget(card: OrcaDecisionCard): string[] {
 		`${frame.side} ${stateLine.padEnd(contentWidth - 2)} ${frame.side}`,
 		`${frame.teeLeft}${frame.rule.repeat(contentWidth)}${frame.teeRight}`,
 	];
-	for (const line of wrapText(card.summary, contentWidth - 2)) {
-		lines.push(`${frame.side} ${line.padEnd(contentWidth - 2)} ${frame.side}`);
-	}
+	lines.push(...formatWidgetRow("Why", card.summary, contentWidth, frame.side));
 	lines.push(`${frame.teeLeft}${frame.rule.repeat(contentWidth)}${frame.teeRight}`);
 	lines.push(...formatWidgetRow("Rule", card.rule, contentWidth, frame.side));
 	if (card.pack)
