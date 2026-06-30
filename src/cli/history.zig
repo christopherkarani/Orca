@@ -184,7 +184,7 @@ fn writeHelp(stdout: anytype) !void {
     try stdout.writeAll(
         \\Query command history tracked by Orca.
         \\
-        \\Usage: orca history <action> [options]
+        \\Usage: orca history <action> [options] [--live]
         \\
         \\Actions:
         \\  stats        Show outcomes, patterns, projects, and agents
@@ -199,6 +199,10 @@ fn writeHelp(stdout: anytype) !void {
         \\  orca history stats --days 7
         \\  orca history stats --json
         \\  orca history check --strict
+        \\  orca history --live
+        \\
+        \\Options:
+        \\  --live       Open a scrollable alt-screen stats view (TTY only; not with --json/--robot)
         \\
     );
 }
@@ -415,6 +419,7 @@ test "history help is Zig-owned and has no daemon branding" {
     try std.testing.expectEqual(exit_codes.success, code);
     try std.testing.expect(std.mem.indexOf(u8, stdout.buffered(), "orca-daemon") == null);
     try std.testing.expect(std.mem.indexOf(u8, stdout.buffered(), "orca history stats") != null);
+    try std.testing.expect(std.mem.indexOf(u8, stdout.buffered(), "--live") != null);
 }
 
 fn unexpectedExecutor(_: std.Io, _: []const []const u8, _: anytype, _: anytype) !u8 {
