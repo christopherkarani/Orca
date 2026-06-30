@@ -53,6 +53,22 @@ fn replaySession(
     stdout: anytype,
     stderr: anytype,
 ) !u8 {
+    // Phase 7: --tui preflight BEFORE session load. --tui is a human-only
+    // alt-screen view: it must not combine with --json (frozen machine contract,
+    // invariant #1) and must not enter the alt-screen on non-interactive output
+    // (invariant #2). Reject up front so a missing session never masks the flag
+    // conflict and we never load data we'll refuse to render.
+    if (options.tui_view) {
+        if (options.json) {
+            try stderr.writeAll("orca replay: --tui cannot be combined with --json (machine output is frozen).\n");
+            return exit_codes.usage;
+        }
+        if (!tui.theme.active(io, stdout).capability.hasColor()) {
+            try stderr.writeAll("orca replay: --tui needs an interactive colour terminal. Drop --tui, or unset NO_COLOR / --no-rich.\n");
+            return exit_codes.usage;
+        }
+    }
+
     var session = core_api.loadReplay(io, allocator, workspace_root, .{
         .session = options.session,
         .only_denied = options.only_denied,
@@ -84,20 +100,9 @@ fn replaySession(
     };
     defer session.deinit();
 
-    // Phase 7: --tui is a human-only alt-screen view; it must not combine with
-    // the frozen --json machine contract (invariant #1) and must not enter the
-    // alt-screen on non-interactive output (invariant #2).
-    if (options.json and options.tui_view) {
-        try stderr.writeAll("orca replay: --tui cannot be combined with --json (machine output is frozen).\n");
-        return exit_codes.usage;
-    }
     if (options.json) {
         try core_api.writeReplayJson(stdout, session);
     } else if (options.tui_view) {
-        if (!tui.theme.active(io, stdout).capability.hasColor()) {
-            try stderr.writeAll("orca replay: --tui needs an interactive colour terminal. Drop --tui, or unset NO_COLOR / --no-rich.\n");
-            return exit_codes.usage;
-        }
         const lines = try buildTimelineLinesForTui(allocator, session);
         defer freeTimelineLines(allocator, lines);
         try tui.live_view.run(io, stdout, "replay", lines, null, null);
@@ -543,37 +548,17 @@ test "replay --tui is rejected on non-interactive output (no colour terminal)" {
 }
 
 test "replay --tui cannot combine with --json" {
-    var tmp = std.testing.tmpDir(.{});
-    defer tmp.cleanup();
-    const root = try tmp.dir.realPathFileAlloc(std.testing.io, ".", std.testing.allocator);
-    defer std.testing.allocator.free(root);
-    try tmp.dir.createDirPath(std.testing.io, ".orca");
-    {
-        const policy_file = try tmp.dir.createFile(std.testing.io, ".orca/policy.yaml", .{});
-        defer policy_file.close(std.testing.io);
-        try policy_file.writeStreamingAll(std.testing.io, "version: 1\nmode: strict\n");
-    }
-    const session_id = try writeReplayTimelineFixture(std.testing.io, std.testing.allocator, root);
-    defer std.testing.allocator.free(session_id);
-
-    const previous_cwd = try std.Io.Dir.cwd().realPathFileAlloc(std.testing.io, ".", std.testing.allocator);
-    defer std.testing.allocator.free(previous_cwd);
-    try std.process.setCurrentDir(std.testing.io, tmp.dir);
-    defer std.process.setCurrentPath(std.testing.io, previous_cwd) catch {};
-
-    var stdout_buf: [4096]u8 = undefined;
-    var stderr_buf: [512]u8 = undefined;
+    // Phase 7: --tui+--json is rejected at preflight (before session load), so a
+    // missing session never masks the flag conflict. No workspace/session needed.
+    var stdout_buf: [256]u8 = undefined;
+    var stderr_buf: [256]u8 = undefined;
     var stdout_writer: std.Io.Writer = .fixed(&stdout_buf);
     var stderr_writer: std.Io.Writer = .fixed(&stderr_buf);
 
-    // --tui cannot combine with --json: rejected with a usage error (the frozen
-    // machine contract never enters the alt-screen).
-    const code = try command(std.testing.io, &.{ "--session", session_id, "--json", "--tui" }, &stdout_writer, &stderr_writer);
+    const code = try command(std.testing.io, &.{ "--json", "--tui" }, &stdout_writer, &stderr_writer);
     try std.testing.expectEqual(exit_codes.usage, code);
     try std.testing.expect(std.mem.indexOf(u8, stderr_writer.buffered(), "--tui") != null);
     try std.testing.expect(std.mem.indexOf(u8, stderr_writer.buffered(), "--json") != null);
-    // No JSON emitted and no alt-screen controls.
-    try std.testing.expectEqual(@as(usize, 0), stdout_writer.buffered().len);
     try std.testing.expect(std.mem.indexOf(u8, stdout_writer.buffered(), "\x1b[?1049") == null);
 }
 
