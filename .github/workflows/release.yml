@@ -141,3 +141,33 @@ jobs:
             dist/package-manifests/**
             dist/plugins/*.zip
             dist/plugins/orca-plugin-checksums.txt
+
+      # Attach all dist/ assets (including checksums.txt) to the GitHub Release.
+      # Without this step the artifacts only land in the workflow run and never
+      # reach the release page, so install.sh's checksum download 404s.
+      # Hard-gate on checksums.txt so a release can never publish without it.
+      - name: Attach assets to GitHub Release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -eu
+          test -s dist/checksums.txt || {
+            echo "::error::dist/checksums.txt is missing or empty; refusing to publish release without checksums"
+            exit 1
+          }
+          gh release create "v${ORCA_VERSION}" \
+            --repo "$GITHUB_REPOSITORY" \
+            --title "Orca v${ORCA_VERSION}" \
+            --verify-tag \
+            --generate-notes || true
+          gh release upload "v${ORCA_VERSION}" \
+            --repo "$GITHUB_REPOSITORY" \
+            --clobber \
+            dist/orca-v*.tar.gz \
+            dist/orca-v*.zip \
+            dist/checksums.txt \
+            dist/sbom.json \
+            dist/release-manifest.json \
+            dist/plugins/*.zip \
+            dist/plugins/orca-plugin-checksums.txt
