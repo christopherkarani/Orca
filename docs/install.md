@@ -48,7 +48,7 @@ User install after the tap repository is published:
 
 ```sh
 brew tap christopherkarani/orca
-brew install orca
+brew install --formula orca
 orca plugin install hermes --yes
 ```
 
