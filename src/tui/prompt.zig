@@ -117,8 +117,9 @@ pub fn confirm(io: std.Io, stdout: anytype, kind: ConfirmKind, message: []const 
 }
 
 fn confirmRaw(io: std.Io, stdout: anytype, kind: ConfirmKind, message: []const u8) !bool {
+    try flushIfSupported(stdout);
     var tty_buf: [4096]u8 = undefined;
-    var tty = try vaxis.tty.Tty.init(io, &tty_buf);
+    var tty = vaxis.tty.Tty.init(io, &tty_buf) catch return error.TtyUnavailable;
     defer tty.deinit();
     var decoder: RawDecoder = .{};
     var answer: [3]u8 = undefined;
@@ -126,6 +127,7 @@ fn confirmRaw(io: std.Io, stdout: anytype, kind: ConfirmKind, message: []const u
     try stdout.writeAll("  ");
     try theme.paintBold(io, stdout, if (kind == .danger) .danger else .brand, message);
     try stdout.writeAll(if (kind == .danger) " Type 'yes' to confirm: " else " [y/N] ");
+    try flushIfSupported(stdout);
     while (true) switch (try readRawAction(&tty, &decoder)) {
         .enter => return if (kind == .danger) std.mem.eql(u8, answer[0..len], "yes") else len > 0 and answer[0] == 'y',
         .escape, .quit => return false,
@@ -336,13 +338,16 @@ pub fn select(
     // The libvaxis raw-mode path opens /dev/tty and is unavailable under
     // `builtin.is_test` (vaxis.tty.Tty is a stub there). Gate it out at comptime
     // so the raw functions are never semantically analyzed in test builds; on
-    // any runtime Tty/Parser failure we fall back to the stream-injected core.
+    // Tty initialization failure falls back to the stream-injected core. Once
+    // a raw frame is visible, errors propagate instead of changing protocols
+    // or manufacturing an unconfirmed selection.
     if (comptime !builtin.is_test) {
         if (ttyAvailable(io)) {
             if (selectRaw(io, allocator, stdout, options, default_index, header)) |idx| {
                 return idx;
-            } else |_| {
-                // Fall through to stream-injected core with real stdin.
+            } else |err| switch (err) {
+                error.TtyUnavailable => {}, // Fall back before any raw frame was rendered.
+                else => return err,
             }
         }
     }
@@ -367,8 +372,9 @@ pub fn multiSelect(
         if (ttyAvailable(io)) {
             if (multiSelectRaw(io, allocator, stdout, options, header)) |ok| {
                 return ok;
-            } else |_| {
-                // Fall through.
+            } else |err| switch (err) {
+                error.TtyUnavailable => {}, // Fall back before any raw frame was rendered.
+                else => return err,
             }
         }
     }
@@ -413,8 +419,9 @@ fn selectRaw(
     default_index: usize,
     header: []const u8,
 ) !?usize {
+    try flushIfSupported(stdout);
     var tty_buf: [4096]u8 = undefined;
-    var tty = try vaxis.tty.Tty.init(io, &tty_buf);
+    var tty = vaxis.tty.Tty.init(io, &tty_buf) catch return error.TtyUnavailable;
     defer tty.deinit();
 
     var decoder: RawDecoder = .{};
@@ -462,8 +469,9 @@ fn multiSelectRaw(
     header: []const u8,
 ) !bool {
     _ = allocator;
+    try flushIfSupported(stdout);
     var tty_buf: [4096]u8 = undefined;
-    var tty = try vaxis.tty.Tty.init(io, &tty_buf);
+    var tty = vaxis.tty.Tty.init(io, &tty_buf) catch return error.TtyUnavailable;
     defer tty.deinit();
 
     var decoder: RawDecoder = .{};
@@ -559,7 +567,14 @@ fn readRawAction(tty: *vaxis.tty.Tty, decoder: *RawDecoder) !KeyAction {
     configureInterByteTimeout(tty);
     var buf: [256]u8 = undefined;
     while (true) {
-        const n = try tty.read(&buf);
+        // libvaxis routes `Tty.read` through Zig's streaming file API, where a
+        // POSIX VMIN=0/VTIME timeout is translated from read(2)'s zero return
+        // into error.EndOfStream. Read the descriptor directly so an idle
+        // timeout remains distinguishable from a failed raw session.
+        const n = std.posix.read(tty.fd.handle, &buf) catch |err| switch (err) {
+            error.WouldBlock => 0,
+            else => return err,
+        };
         if (n == 0) {
             if (decoder.interByteTimeout()) |action| return action;
             continue;
