@@ -28,7 +28,7 @@
     "README.md"
   ],
   "orca": {
-    "artifactBaseUrl": "https://github.com/christopherkarani/Orca/releases/download/v1.2.5",
+    "artifactBaseUrl": "https://github.com/christopherkarani/Orca/releases/download/v1.2.6",
     "supportedTargets": [
       "darwin-amd64",
       "darwin-arm64",
@@ -36,10 +36,10 @@
       "linux-arm64"
     ],
     "checksums": {
-      "darwin-amd64": "PLACEHOLDER_DARWIN_AMD64_SHA256",
-      "darwin-arm64": "PLACEHOLDER_DARWIN_ARM64_SHA256",
-      "linux-amd64": "PLACEHOLDER_LINUX_AMD64_SHA256",
-      "linux-arm64": "PLACEHOLDER_LINUX_ARM64_SHA256"
+      "darwin-amd64": "b88b8453ae0a81365b5c294ef2c48f490c70db4fefc67a51659b2af2b3addd1d",
+      "darwin-arm64": "d19f55e1094f63fbc714a9d02769153320471ee3098e24ceecc74a5aeb73809b",
+      "linux-amd64": "16c20be58efbe46bdaa3638687512d2e00b0bf89e8dce9478223b5cb9e9ece70",
+      "linux-arm64": "1647a05f3185c99d3a9eccfa1735dbb26f0a9739180ec7100b51ec80ff36700c"
     }
   }
 }
