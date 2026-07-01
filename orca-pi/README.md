@@ -45,7 +45,8 @@ remove policies, or start/stop other host plugins.
 - Non-`bash` tool calls are ignored.
 - `bash` tool calls are sent to Orca as JSON over stdin.
 - Orca `allow` lets the tool proceed.
-- Orca `deny` returns `{ block: true, reason }` to Pi.
+- Orca `deny` renders an inline Orca decision card in the conversation and
+  returns `{ block: true, reason }` to Pi before the command can run.
 - Orca `error`, malformed JSON, spawn failures, or timeouts use the configured unavailable mode.
 
 Unavailable modes:
@@ -70,7 +71,11 @@ Session bypass is in-memory only. It is cleared when the Pi session shuts down o
 reloads. `/orca-stop` turns this bypass on; `/orca-start` turns it off and reruns
 the Pi health check.
 
-The status line reports `orca ready`, `orca missing`, `orca degraded`, or `orca bypass`.
+Interactive `ask` mode pauses the bash tool call until the user chooses an
+explicit action. Its decision card remains visible while the prompt is open.
+
+The status line reports only Orca state: `orca ready`, `orca missing`,
+`orca degraded`, or `orca bypass`.
 
 Set `ORCA_PI_AUTO_SETUP=false` to disable session bootstrap. The package-managed runtime is used by default; set `ORCA_PI_USE_PATH=true` only when you explicitly trust a compatible PATH installation. `ORCA_BIN=/absolute/path/to/orca` remains the highest-priority override when the file is executable.
 
@@ -127,6 +132,8 @@ It targets Orca CLI builds exposing `orca evaluate --json --stdin` with schema v
   tests.
 - Session bypass is in-memory only and clears when the Pi session ends or reloads.
 - Only Pi `bash` tool calls are evaluated. Other tools (for example `read`) are not intercepted.
+- Pi hosts without the transcript `sendMessage` API fall back to a docked deny
+  card. Supported Pi versions use the inline conversation surface.
 
 ## Smoke Test Checklist
 

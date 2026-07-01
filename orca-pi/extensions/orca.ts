@@ -66,6 +66,18 @@ type PiAPI = {
 			) => Promise<void> | void;
 		},
 	) => void;
+	sendMessage?: (
+		message: {
+			customType: string;
+			content: string;
+			display: boolean;
+			details?: unknown;
+		},
+		options?: {
+			triggerTurn?: boolean;
+			deliverAs?: "steer" | "followUp" | "nextTurn";
+		},
+	) => void;
 };
 
 type SpawnOptions = {
@@ -431,7 +443,7 @@ export function installOrcaExtension(
 					summary:
 						"malformed Pi bash tool call; missing non-empty command.",
 				};
-				showOrcaWidget(ctx, details);
+				showOrcaDecision(pi, ctx, details);
 				return block(formatOrcaDecisionSummary(details));
 			}
 			const command = event.input.command;
@@ -457,11 +469,12 @@ export function installOrcaExtension(
 			}
 			if (decision.kind === "deny") {
 				const card = buildOrcaDecisionCard(decision.response, "block");
-				showOrcaWidget(ctx, card);
+				showOrcaDecision(pi, ctx, card);
 				return block(formatOrcaDecisionSummary(card));
 			}
 			return handleUnavailable(
 				decision.reason,
+				pi,
 				ctx,
 				resolveUnavailableMode(unavailableMode, ctx),
 				{
@@ -595,6 +608,7 @@ export function installOrcaExtension(
 
 async function handleUnavailable(
 	reason: string,
+	pi: PiAPI,
 	ctx: PiContext,
 	mode: EffectiveUnavailableMode,
 	actions: { disableSession: () => void },
@@ -615,11 +629,13 @@ async function handleUnavailable(
 			title: "ORCA BLOCKED",
 			summary: repair,
 		};
-		showOrcaWidget(ctx, card);
+		showOrcaDecision(pi, ctx, card);
 		return block(formatOrcaDecisionSummary(card));
 	}
 
 	const card = buildOrcaAskCard(repair);
+	// Pi queues transcript messages during an active tool turn, so the temporary
+	// widget keeps ask context readable until the blocking select() resolves.
 	showOrcaWidget(ctx, card);
 	const choice = await ctx.ui?.select?.(
 		"ORCA needs your decision",
@@ -887,6 +903,30 @@ function showOrcaWidget(ctx: PiContext, card: OrcaDecisionCard): void {
 	ctx.ui.setWidget(BLOCK_WIDGET_KEY, buildOrcaWidget(card), {
 		placement: "aboveEditor",
 	});
+}
+
+function showOrcaDecision(
+	pi: PiAPI,
+	ctx: PiContext,
+	card: OrcaDecisionCard,
+): void {
+	clearOrcaWidget(ctx);
+	if (pi.sendMessage) {
+		pi.sendMessage(
+			{
+				customType: "orca-decision",
+				content: buildOrcaWidget(card).join("\n"),
+				display: true,
+				details: card,
+			},
+			{ triggerTurn: false },
+		);
+		return;
+	}
+
+	// Older Pi hosts cannot append transcript messages. Keep their docked fallback
+	// isolated here; supported hosts always use the conversation surface above.
+	showOrcaWidget(ctx, card);
 }
 
 function buildOrcaWidget(card: OrcaDecisionCard): string[] {
