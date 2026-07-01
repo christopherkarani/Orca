@@ -1,6 +1,6 @@
 {
   "name": "@orca-sec/orca",
-  "version": "1.2.5",
+  "version": "1.2.6",
   "description": "npm launcher for the Zig-built Orca binary.",
   "license": "Apache-2.0",
   "homepage": "https://github.com/christopherkarani/Orca",

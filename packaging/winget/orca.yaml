@@ -1,6 +1,6 @@
 # Winget manifest template. Release automation must replace checksums before publishing.
 PackageIdentifier: ChrisKarani.Orca
-PackageVersion: 1.2.5
+PackageVersion: 1.2.6
 PackageName: Orca
 Publisher: Chris Karani
 License: Apache-2.0

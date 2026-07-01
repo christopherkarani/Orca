@@ -1,5 +1,13 @@
 # Changelog
 
+## v1.2.6 - 2026-07-01
+
+### Changed
+- All plugins and core unified to version **1.2.6**.
+
+### Fixed
+- Minor stability improvements across CLI, daemon, and plugin integrations.
+
 ## v1.2.5 - 2026-07-01
 
 ### Changed

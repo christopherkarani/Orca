@@ -1,6 +1,6 @@
 {
   "name": "@orca-sec/pi-orca",
-  "version": "1.2.5",
+  "version": "1.2.6",
   "description": "Official Orca integration package for Pi bash tool-call protection.",
   "type": "module",
   "license": "Apache-2.0",

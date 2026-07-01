@@ -1,5 +1,5 @@
 {
-  "version": "1.2.5",
+  "version": "1.2.6",
   "description": "Local runtime firewall for AI agents.",
   "homepage": "https://github.com/christopherkarani/Orca",
   "license": "Apache-2.0",

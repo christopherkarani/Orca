@@ -1,5 +1,13 @@
 # Orca Plugin Changelog
 
+## 1.2.6 — 2026-07-01
+
+### Changed
+- All plugins and core unified to version **1.2.6**.
+
+### Fixed
+- Minor stability improvements across plugin integrations.
+
 ## 1.2.5 — Branded guardrail decisions
 
 ### Changed
