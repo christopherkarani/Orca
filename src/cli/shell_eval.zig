@@ -283,6 +283,7 @@ pub fn evaluateCommand(
             var record = try rust_visibility.buildFeedRecordFromUnavailable(
                 allocator,
                 options.io,
+                options.workspace_root,
                 options.event_source,
                 options.host,
                 err,
@@ -329,6 +330,7 @@ pub fn evaluateCommand(
         var record = try rust_visibility.buildFeedRecordFromDaemon(
             allocator,
             options.io,
+            options.workspace_root,
             options.event_source,
             options.host,
             daemon_status,

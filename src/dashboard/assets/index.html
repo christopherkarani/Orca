@@ -21,10 +21,10 @@
         </div>
         <nav class="nav">
           <button class="nav-item active" type="button" data-view="overview">Overview</button>
-          <button class="nav-item" type="button" data-view="secretless">Secretless</button>
+          <button class="nav-item" type="button" data-view="secretless" data-workspace-only>Secretless</button>
           <button class="nav-item" type="button" data-view="activity">Activity</button>
-          <button class="nav-item" type="button" data-view="policy">Policy</button>
-          <button class="nav-item" type="button" data-view="integrations">Integrations</button>
+          <button class="nav-item" type="button" data-view="policy" data-workspace-only>Policy</button>
+          <button class="nav-item" type="button" data-view="integrations" data-workspace-only>Integrations</button>
         </nav>
         <div class="rail-footer">
           <span class="label">Bound to</span>
@@ -35,8 +35,8 @@
       <main id="main" class="main">
         <header class="topbar">
           <div>
-            <p class="eyebrow">Local runtime status</p>
-            <h2>Orca Dashboard</h2>
+            <p class="eyebrow" id="modeEyebrow">Local machine guardrails</p>
+            <h2 id="modeTitle">Machine-wide</h2>
           </div>
           <div class="topbar-actions">
             <button class="button secondary" type="button" id="refreshButton">Refresh</button>
@@ -47,6 +47,15 @@
         <section class="view active" data-view-panel="overview" aria-labelledby="overview-title">
           <h3 id="overview-title" class="section-title">Overview</h3>
           <div class="metric-grid" id="summaryGrid" aria-live="polite"></div>
+          <section class="panel workspace-panel" id="workspacePanel" aria-labelledby="workspaces-title">
+            <div class="panel-header">
+              <div>
+                <h4 id="workspaces-title">Registered workspaces</h4>
+                <span class="caption">Recent projects seen by local Orca decision writers</span>
+              </div>
+            </div>
+            <div class="workspace-list" id="workspaceList"></div>
+          </section>
           <div class="two-column">
             <section class="panel" aria-labelledby="quick-actions-title">
               <div class="panel-header">
@@ -58,14 +67,14 @@
             <section class="panel" aria-labelledby="blocked-title">
               <div class="panel-header">
                 <h4 id="blocked-title">Recently prevented</h4>
-                <span class="caption">From replay artifacts</span>
+                <span class="caption">Across registered workspaces</span>
               </div>
               <div class="timeline compact" id="blockedPreview"></div>
             </section>
           </div>
         </section>
 
-        <section class="view" data-view-panel="secretless" aria-labelledby="secretless-title">
+        <section class="view" data-view-panel="secretless" data-workspace-only aria-labelledby="secretless-title">
           <div class="section-heading">
             <div>
               <p class="eyebrow">Secretless Agent Runtime</p>
@@ -219,7 +228,7 @@
           </div>
         </section>
 
-        <section class="view" data-view-panel="policy" aria-labelledby="policy-title">
+        <section class="view" data-view-panel="policy" data-workspace-only aria-labelledby="policy-title">
           <h3 id="policy-title" class="section-title">Policy</h3>
           <div class="policy-layout">
             <section class="panel policy-editor" aria-labelledby="policy-editor-title">
@@ -244,7 +253,7 @@
           </div>
         </section>
 
-        <section class="view" data-view-panel="integrations" aria-labelledby="integrations-title">
+        <section class="view" data-view-panel="integrations" data-workspace-only aria-labelledby="integrations-title">
           <h3 id="integrations-title" class="section-title">Integrations</h3>
           <div class="integration-grid" id="integrationGrid"></div>
         </section>

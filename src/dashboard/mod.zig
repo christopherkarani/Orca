@@ -1,6 +1,7 @@
 const std = @import("std");
 const build_options = @import("build_options");
 
+const aggregate = @import("aggregate.zig");
 const core_api = @import("orca_core").api;
 const core = @import("orca_core").core;
 const policy_mod = @import("orca_core").policy;
@@ -19,12 +20,18 @@ pub const PolicySaveResult = struct {
 };
 
 pub fn resolveWorkspaceRoot(io: std.Io, allocator: std.mem.Allocator) ![]u8 {
-    return supervisor.resolveWorkspaceRoot(io, allocator, null, ".") catch try std.Io.Dir.cwd().realPathFileAlloc(io, ".", allocator);
+    return resolveWorkspaceRootFrom(io, allocator, ".");
+}
+
+pub fn resolveWorkspaceRootFrom(io: std.Io, allocator: std.mem.Allocator, path: []const u8) ![]u8 {
+    return supervisor.resolveWorkspaceRoot(io, allocator, null, path) catch try std.Io.Dir.cwd().realPathFileAlloc(io, path, allocator);
 }
 
 pub fn writeStatusJson(io: std.Io, allocator: std.mem.Allocator, writer: anytype, workspace_root: []const u8) !void {
     try writer.writeByte('{');
-    try writer.writeAll("\"orca\":{");
+    try writer.writeAll("\"mode\":\"workspace\",\"workspace_count\":1,\"workspaces\":[{\"root\":");
+    try core.util.writeJsonString(writer, workspace_root);
+    try writer.writeAll("}],\"orca\":{");
     try writer.writeAll("\"installed\":true,\"version\":");
     try core.util.writeJsonString(writer, build_options.version);
     try writer.writeAll(",\"workspace_root\":");
@@ -75,6 +82,38 @@ pub fn writeStatusJson(io: std.Io, allocator: std.mem.Allocator, writer: anytype
     try writeQuickAction(writer, "ci-check", "orca ci check --format markdown");
     try writer.writeByte(',');
     try writeQuickAction(writer, "demo-blocked-action", "orca demo blocked-action");
+    try writer.writeByte(',');
+    try writeQuickAction(writer, "license-status", "orca license status");
+    try writer.writeAll("]}");
+}
+
+pub fn writeMachineStatusJson(
+    io: std.Io,
+    allocator: std.mem.Allocator,
+    writer: anytype,
+    dashboard_root: []const u8,
+) !void {
+    const workspaces = try aggregate.loadWorkspaces(io, allocator, dashboard_root);
+    defer aggregate.deinitWorkspaces(allocator, workspaces);
+
+    try writer.writeAll("{\"mode\":\"machine\",\"workspace_count\":");
+    try writer.print("{d}", .{workspaces.len});
+    try writer.writeAll(",\"workspaces\":");
+    try aggregate.writeWorkspacesJson(writer, workspaces);
+    try writer.writeAll(",\"orca\":{\"installed\":true,\"version\":");
+    try core.util.writeJsonString(writer, build_options.version);
+    try writer.writeAll(",\"workspace_root\":null},\"policy\":null,\"secretless_runtime\":null,\"license\":");
+    try writeLicenseJson(io, allocator, writer);
+    try writer.writeAll(",\"ci_readiness\":null,\"plugins\":[],\"sessions\":");
+    try aggregate.writeSessionsJson(io, allocator, writer, workspaces, 20);
+    try writer.writeAll(",\"daemon_health\":");
+    try writeDaemonHealthJson(allocator, writer);
+    try writer.writeAll(",\"rust_shell_decisions\":");
+    try aggregate.writeGlobalFeedJson(io, allocator, writer, dashboard_root, 50, false);
+    try writer.writeAll(",\"blocked_actions\":");
+    try aggregate.writeGlobalFeedJson(io, allocator, writer, dashboard_root, 50, true);
+    try writer.writeAll(",\"quick_actions\":[");
+    try writeQuickAction(writer, "doctor", "orca doctor");
     try writer.writeByte(',');
     try writeQuickAction(writer, "license-status", "orca license status");
     try writer.writeAll("]}");
@@ -277,6 +316,21 @@ pub fn writeSessionsJson(io: std.Io, allocator: std.mem.Allocator, writer: anyty
     try writeSessionsArrayJson(io, allocator, writer, workspace_root, 20);
     try writer.writeAll(",\"blocked_actions\":");
     try writeBlockedActionsArrayJson(io, allocator, writer, workspace_root, 50);
+    try writer.writeByte('}');
+}
+
+pub fn writeMachineSessionsJson(
+    io: std.Io,
+    allocator: std.mem.Allocator,
+    writer: anytype,
+    dashboard_root: []const u8,
+) !void {
+    const workspaces = try aggregate.loadWorkspaces(io, allocator, dashboard_root);
+    defer aggregate.deinitWorkspaces(allocator, workspaces);
+    try writer.writeAll("{\"sessions\":");
+    try aggregate.writeSessionsJson(io, allocator, writer, workspaces, 50);
+    try writer.writeAll(",\"blocked_actions\":");
+    try aggregate.writeGlobalFeedJson(io, allocator, writer, dashboard_root, 100, true);
     try writer.writeByte('}');
 }
 
@@ -489,6 +543,8 @@ fn writeFeedRecordJson(writer: anytype, record: rust_visibility.RustShellFeedRec
     try writer.writeByte('{');
     try writer.writeAll("\"timestamp\":");
     try core.util.writeJsonString(writer, record.timestamp);
+    try writer.writeAll(",\"workspace_root\":");
+    try core.util.writeJsonString(writer, record.workspace_root);
     try writer.writeAll(",\"event_type\":");
     try core.util.writeJsonString(writer, record.event_type);
     try writer.writeAll(",\"decision\":");
@@ -826,12 +882,18 @@ test "dashboard assets expose dedicated secretless view" {
     try std.testing.expect(std.mem.indexOf(u8, index, "secretlessCredentialRefs") != null);
     try std.testing.expect(std.mem.indexOf(u8, index, "secretlessProxyMeta") != null);
     try std.testing.expect(std.mem.indexOf(u8, index, "secretlessBrokerChecks") != null);
+    try std.testing.expect(std.mem.indexOf(u8, index, "modeTitle") != null);
+    try std.testing.expect(std.mem.indexOf(u8, index, "workspaceList") != null);
+    try std.testing.expect(std.mem.indexOf(u8, index, "data-workspace-only") != null);
     try std.testing.expect(std.mem.indexOf(u8, app, "renderSecretless") != null);
     try std.testing.expect(std.mem.indexOf(u8, app, "insertSecretlessPolicyTemplate") != null);
     try std.testing.expect(std.mem.indexOf(u8, app, "decision_source") != null);
     try std.testing.expect(std.mem.indexOf(u8, app, "daemon_health") != null);
     try std.testing.expect(std.mem.indexOf(u8, app, "daemonHealthLabel") != null);
     try std.testing.expect(std.mem.indexOf(u8, app, "remediation") != null);
+    try std.testing.expect(std.mem.indexOf(u8, app, "data.mode === \"machine\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, app, "renderWorkspaces") != null);
+    try std.testing.expect(std.mem.indexOf(u8, app, "workspace_root") != null);
 }
 
 test "sessions json filters denied replay events" {
@@ -945,6 +1007,7 @@ test "status json exposes daemon health and rust shell decisions feed" {
     var record = try rust_visibility.buildFeedRecordFromHookDecision(
         std.testing.allocator,
         std.testing.io,
+        root,
         "claude",
         "healthy",
         "deny",
@@ -971,4 +1034,52 @@ test "status json exposes daemon health and rust shell decisions feed" {
     try std.testing.expect(std.mem.indexOf(u8, out.items, "shell command (redacted)") != null);
     try std.testing.expect(std.mem.indexOf(u8, out.items, "matched_text_preview") == null);
     try std.testing.expect(std.mem.indexOf(u8, out.items, "\"raw\"") == null);
+}
+
+test "machine status aggregates registered workspaces and exposes only global actions" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const root = try tmp.dir.realPathFileAlloc(std.testing.io, ".", std.testing.allocator);
+    defer std.testing.allocator.free(root);
+    const workspace_a = try std.fs.path.join(std.testing.allocator, &.{ root, "project-a" });
+    defer std.testing.allocator.free(workspace_a);
+    const workspace_b = try std.fs.path.join(std.testing.allocator, &.{ root, "project-b" });
+    defer std.testing.allocator.free(workspace_b);
+    try std.Io.Dir.cwd().createDirPath(std.testing.io, workspace_a);
+    try std.Io.Dir.cwd().createDirPath(std.testing.io, workspace_b);
+    try writeDeniedReplayFixture(std.testing.allocator, workspace_a);
+    try writeDeniedReplayFixture(std.testing.allocator, workspace_b);
+    const dashboard_root = try std.fs.path.join(std.testing.allocator, &.{ root, "home", ".orca", "dashboard" });
+    defer std.testing.allocator.free(dashboard_root);
+
+    for ([_][]const u8{ workspace_a, workspace_b }) |workspace| {
+        var record = try rust_visibility.buildFeedRecordFromHookDecision(
+            std.testing.allocator,
+            std.testing.io,
+            workspace,
+            "codex",
+            "healthy",
+            "deny",
+            "blocked by Orca policy",
+            null,
+            null,
+            null,
+            null,
+            null,
+        );
+        defer record.deinit(std.testing.allocator);
+        try feed_writer.appendGlobalRecord(std.testing.io, std.testing.allocator, dashboard_root, record);
+    }
+
+    var aw: std.Io.Writer.Allocating = .init(std.testing.allocator);
+    try writeMachineStatusJson(std.testing.io, std.testing.allocator, &aw.writer, dashboard_root);
+    const out = try aw.toOwnedSlice();
+    defer std.testing.allocator.free(out);
+    try std.testing.expect(std.mem.indexOf(u8, out, "\"mode\":\"machine\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "\"workspace_count\":2") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out, workspace_a) != null);
+    try std.testing.expect(std.mem.indexOf(u8, out, workspace_b) != null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "\"id\":\"doctor\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "\"id\":\"license-status\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "replay-last") == null);
 }

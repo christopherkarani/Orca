@@ -14,6 +14,7 @@ const plugin = @import("plugin.zig");
 const policy = @import("policy.zig");
 const replay = @import("replay.zig");
 const exit_codes = @import("exit_codes.zig");
+const feed_writer = @import("feed_writer.zig");
 const help = @import("help.zig");
 const core = @import("orca_core").core;
 const core_policy = @import("orca_core").policy;
@@ -21,7 +22,8 @@ const intercept = @import("../intercept/mod.zig");
 
 const default_host = "127.0.0.1";
 const default_port: u16 = 7742;
-const ui_dist_dir = "orca-dashboard-ui/dist";
+const canonical_ui_dir = "src/dashboard/assets";
+const installed_ui_dir = "orca-dashboard-ui/dist";
 const dashboard_ui_missing_html =
     \\<!doctype html>
     \\<html lang="en">
@@ -34,10 +36,31 @@ const dashboard_ui_missing_html =
     \\</html>
 ;
 
+fn dashboardWorkspaceSelection(
+    explicit_workspace: ?[]const u8,
+    explicit_machine: bool,
+    environment_workspace: ?[]const u8,
+) ?[]const u8 {
+    if (explicit_workspace) |workspace| return workspace;
+    if (explicit_machine) return null;
+    return environment_workspace;
+}
+
+fn actionAllowedWithoutWorkspace(action: []const u8) bool {
+    return std.mem.eql(u8, action, "doctor") or std.mem.eql(u8, action, "license-status");
+}
+
 const DashboardOptions = struct {
     host: []const u8 = default_host,
     port: u16 = default_port,
     once: bool = false,
+    workspace: ?[]const u8 = null,
+};
+
+const DashboardContext = struct {
+    workspace_root: ?[]const u8,
+    dashboard_root: ?[]const u8,
+    resource_root_hint: []const u8,
 };
 
 const Request = struct {
@@ -64,6 +87,8 @@ pub fn commandForTest(argv: []const []const u8, stdout: anytype, stderr: anytype
 
 fn parseOptions(io: std.Io, argv: []const []const u8, stdout: anytype, stderr: anytype) !DashboardOptions {
     var options: DashboardOptions = .{};
+    var explicit_workspace: ?[]const u8 = null;
+    var explicit_machine = false;
     var index: usize = 0;
     while (index < argv.len) : (index += 1) {
         const arg = argv[index];
@@ -93,11 +118,29 @@ fn parseOptions(io: std.Io, argv: []const []const u8, stdout: anytype, stderr: a
             };
         } else if (std.mem.eql(u8, arg, "--once")) {
             options.once = true;
+        } else if (std.mem.eql(u8, arg, "--workspace")) {
+            index += 1;
+            if (index >= argv.len or argv[index].len == 0) {
+                try stderr.writeAll("orca dashboard: --workspace requires a path.\n");
+                return error.Usage;
+            }
+            explicit_workspace = argv[index];
+        } else if (std.mem.eql(u8, arg, "--machine")) {
+            explicit_machine = true;
         } else {
             try stderr.print("orca dashboard: unknown option '{s}'.\n", .{arg});
             return error.Usage;
         }
     }
+    if (explicit_workspace != null and explicit_machine) {
+        try stderr.writeAll("orca dashboard: --workspace and --machine cannot be used together.\n");
+        return error.Usage;
+    }
+    const environment_workspace = if (std.c.getenv("ORCA_DASHBOARD_WORKSPACE")) |value| blk: {
+        const path = std.mem.span(value);
+        break :blk if (path.len == 0) null else path;
+    } else null;
+    options.workspace = dashboardWorkspaceSelection(explicit_workspace, explicit_machine, environment_workspace);
     return options;
 }
 
@@ -119,6 +162,26 @@ fn serve(io: std.Io, options: DashboardOptions, stdout: anytype, stderr: anytype
     const allocator = gpa_state.allocator();
     const csrf_token = try makeCsrfToken(io, allocator);
     defer allocator.free(csrf_token);
+    const workspace_root = if (options.workspace) |path|
+        try dashboard.resolveWorkspaceRootFrom(io, allocator, path)
+    else
+        null;
+    defer if (workspace_root) |root| allocator.free(root);
+    const resource_root_hint = if (workspace_root) |root|
+        try allocator.dupe(u8, root)
+    else
+        try dashboard.resolveWorkspaceRoot(io, allocator);
+    defer allocator.free(resource_root_hint);
+    const dashboard_root = if (workspace_root == null)
+        try feed_writer.resolveGlobalDashboardRoot(allocator)
+    else
+        null;
+    defer if (dashboard_root) |root| allocator.free(root);
+    const context = DashboardContext{
+        .workspace_root = workspace_root,
+        .dashboard_root = dashboard_root,
+        .resource_root_hint = resource_root_hint,
+    };
 
     while (true) {
         var stream = server.accept(io) catch |err| {
@@ -126,7 +189,7 @@ fn serve(io: std.Io, options: DashboardOptions, stdout: anytype, stderr: anytype
             continue;
         };
         defer stream.close(io);
-        handleConnection(io, allocator, stream, csrf_token) catch |err| {
+        handleConnection(io, allocator, stream, csrf_token, context) catch |err| {
             try stderr.print("orca dashboard: request failed: {s}\n", .{@errorName(err)});
         };
         if (options.once) break;
@@ -135,17 +198,29 @@ fn serve(io: std.Io, options: DashboardOptions, stdout: anytype, stderr: anytype
 }
 
 fn resolveDashboardDistDir(io: std.Io, allocator: std.mem.Allocator, workspace_root: []const u8) ![]u8 {
-    const resolved = try resource_root.resolveResourcePath(io, allocator, .{ .workspace_root = workspace_root }, ui_dist_dir);
-    errdefer allocator.free(resolved);
-    const index_path = try std.fs.path.join(allocator, &.{ resolved, "index.html" });
-    defer allocator.free(index_path);
-    std.Io.Dir.cwd().access(io, index_path, .{}) catch {
-        return error.ResourceNotFound;
-    };
-    return resolved;
+    for ([_][]const u8{ canonical_ui_dir, installed_ui_dir }) |relative_path| {
+        const resolved = resource_root.resolveResourcePath(io, allocator, .{ .workspace_root = workspace_root }, relative_path) catch continue;
+        const index_path = std.fs.path.join(allocator, &.{ resolved, "index.html" }) catch |err| {
+            allocator.free(resolved);
+            return err;
+        };
+        defer allocator.free(index_path);
+        std.Io.Dir.cwd().access(io, index_path, .{}) catch {
+            allocator.free(resolved);
+            continue;
+        };
+        return resolved;
+    }
+    return error.ResourceNotFound;
 }
 
-fn handleConnection(io: std.Io, allocator: std.mem.Allocator, stream: std.Io.net.Stream, csrf_token: []const u8) !void {
+fn handleConnection(
+    io: std.Io,
+    allocator: std.mem.Allocator,
+    stream: std.Io.net.Stream,
+    csrf_token: []const u8,
+    context: DashboardContext,
+) !void {
     var request_buffer: std.ArrayList(u8) = .empty;
     defer request_buffer.deinit(allocator);
     try readRequest(io, allocator, stream, &request_buffer);
@@ -158,9 +233,7 @@ fn handleConnection(io: std.Io, allocator: std.mem.Allocator, stream: std.Io.net
         return;
     }
 
-    const workspace_root = try dashboard.resolveWorkspaceRoot(io, allocator);
-    defer allocator.free(workspace_root);
-    const dist_dir = resolveDashboardDistDir(io, allocator, workspace_root) catch |err| switch (err) {
+    const dist_dir = resolveDashboardDistDir(io, allocator, context.resource_root_hint) catch |err| switch (err) {
         error.ResourceNotFound => {
             if (std.mem.eql(u8, request.method, "GET") and !std.mem.startsWith(u8, request.path, "/api/")) {
                 return sendText(io, stream, 503, "Service Unavailable", "text/html; charset=utf-8", dashboard_ui_missing_html);
@@ -179,7 +252,10 @@ fn handleConnection(io: std.Io, allocator: std.mem.Allocator, stream: std.Io.net
         return;
     }
     if (std.mem.eql(u8, request.method, "GET") and std.mem.eql(u8, request.path, "/api/status")) {
-        try dashboard.writeStatusJson(io, allocator, writer, workspace_root);
+        if (context.workspace_root) |workspace_root|
+            try dashboard.writeStatusJson(io, allocator, writer, workspace_root)
+        else
+            try dashboard.writeMachineStatusJson(io, allocator, writer, context.dashboard_root.?);
         try body_aw.writer.flush();
         const response_body = try body_aw.toOwnedSlice();
         defer allocator.free(response_body);
@@ -187,6 +263,7 @@ fn handleConnection(io: std.Io, allocator: std.mem.Allocator, stream: std.Io.net
         return;
     }
     if (std.mem.eql(u8, request.method, "GET") and std.mem.eql(u8, request.path, "/api/policy")) {
+        const workspace_root = context.workspace_root orelse return sendJsonError(io, stream, 409, "Conflict", "workspace_required");
         try dashboard.writePolicyJson(io, allocator, writer, workspace_root);
         try body_aw.writer.flush();
         const response_body = try body_aw.toOwnedSlice();
@@ -195,7 +272,10 @@ fn handleConnection(io: std.Io, allocator: std.mem.Allocator, stream: std.Io.net
         return;
     }
     if (std.mem.eql(u8, request.method, "GET") and std.mem.eql(u8, request.path, "/api/sessions")) {
-        try dashboard.writeSessionsJson(io, allocator, writer, workspace_root);
+        if (context.workspace_root) |workspace_root|
+            try dashboard.writeSessionsJson(io, allocator, writer, workspace_root)
+        else
+            try dashboard.writeMachineSessionsJson(io, allocator, writer, context.dashboard_root.?);
         try body_aw.writer.flush();
         const response_body = try body_aw.toOwnedSlice();
         defer allocator.free(response_body);
@@ -204,6 +284,7 @@ fn handleConnection(io: std.Io, allocator: std.mem.Allocator, stream: std.Io.net
     }
     if (std.mem.eql(u8, request.method, "POST") and std.mem.eql(u8, request.path, "/api/policy")) {
         if (!tokenMatches(request.csrf_token, csrf_token)) return sendJsonError(io, stream, 403, "Forbidden", "csrf");
+        const workspace_root = context.workspace_root orelse return sendJsonError(io, stream, 409, "Conflict", "workspace_required");
         try handlePolicySave(io, allocator, writer, workspace_root, request.body);
         try body_aw.writer.flush();
         const response_body = try body_aw.toOwnedSlice();
@@ -213,6 +294,7 @@ fn handleConnection(io: std.Io, allocator: std.mem.Allocator, stream: std.Io.net
     }
     if (std.mem.eql(u8, request.method, "POST") and std.mem.eql(u8, request.path, "/api/policy/init")) {
         if (!tokenMatches(request.csrf_token, csrf_token)) return sendJsonError(io, stream, 403, "Forbidden", "csrf");
+        const workspace_root = context.workspace_root orelse return sendJsonError(io, stream, 409, "Conflict", "workspace_required");
         try handlePolicyInit(io, allocator, writer, workspace_root, request.body);
         try body_aw.writer.flush();
         const response_body = try body_aw.toOwnedSlice();
@@ -222,7 +304,10 @@ fn handleConnection(io: std.Io, allocator: std.mem.Allocator, stream: std.Io.net
     }
     if (std.mem.eql(u8, request.method, "POST") and std.mem.eql(u8, request.path, "/api/actions")) {
         if (!tokenMatches(request.csrf_token, csrf_token)) return sendJsonError(io, stream, 403, "Forbidden", "csrf");
-        try handleAction(io, allocator, writer, request.body);
+        handleAction(io, allocator, writer, request.body, context.workspace_root != null) catch |err| switch (err) {
+            error.WorkspaceRequired => return sendJsonError(io, stream, 409, "Conflict", "workspace_required"),
+            else => return err,
+        };
         try body_aw.writer.flush();
         const response_body = try body_aw.toOwnedSlice();
         defer allocator.free(response_body);
@@ -508,13 +593,13 @@ fn writePolicyMutationResult(writer: anytype, result: dashboard.PolicySaveResult
     try writer.writeByte('}');
 }
 
-fn handleAction(io: std.Io, allocator: std.mem.Allocator, writer: anytype, body: []const u8) !void {
+fn handleAction(io: std.Io, allocator: std.mem.Allocator, writer: anytype, body: []const u8, workspace_selected: bool) !void {
     var parsed = try std.json.parseFromSlice(std.json.Value, allocator, body, .{});
     defer parsed.deinit();
     const object = if (parsed.value == .object) parsed.value.object else return error.BadRequest;
     const action_value = object.get("action") orelse return error.BadRequest;
     if (action_value != .string) return error.BadRequest;
-    const result = try runAllowedAction(io, allocator, action_value.string);
+    const result = try runAllowedAction(io, allocator, action_value.string, workspace_selected);
     defer allocator.free(result.stdout);
     defer allocator.free(result.stderr);
     try writer.print("{{\"ok\":{},\"exit_code\":{d},\"stdout\":", .{ result.exit_code == exit_codes.success, result.exit_code });
@@ -530,7 +615,8 @@ const CapturedAction = struct {
     stderr: []u8,
 };
 
-fn runAllowedAction(io: std.Io, allocator: std.mem.Allocator, action: []const u8) !CapturedAction {
+fn runAllowedAction(io: std.Io, allocator: std.mem.Allocator, action: []const u8, workspace_selected: bool) !CapturedAction {
+    if (!workspace_selected and !actionAllowedWithoutWorkspace(action)) return error.WorkspaceRequired;
     var stdout_aw: std.Io.Writer.Allocating = .init(allocator);
     errdefer stdout_aw.deinit();
     var stderr_aw: std.Io.Writer.Allocating = .init(allocator);
@@ -752,14 +838,42 @@ test "dashboard rejects non-localhost bindings" {
     try std.testing.expect(std.mem.indexOf(u8, stderr_writer.buffered(), "localhost") != null);
 }
 
+test "dashboard mode defaults to machine and honors workspace sources" {
+    try std.testing.expect(dashboardWorkspaceSelection(null, false, null) == null);
+    try std.testing.expect(dashboardWorkspaceSelection(null, true, null) == null);
+    try std.testing.expectEqualStrings("/tmp/flag", dashboardWorkspaceSelection("/tmp/flag", false, null).?);
+    try std.testing.expectEqualStrings("/tmp/env", dashboardWorkspaceSelection(null, false, "/tmp/env").?);
+}
+
+test "dashboard parses machine and workspace flags" {
+    var stdout_buf: [256]u8 = undefined;
+    var stderr_buf: [256]u8 = undefined;
+    var stdout: std.Io.Writer = .fixed(&stdout_buf);
+    var stderr: std.Io.Writer = .fixed(&stderr_buf);
+    const workspace = try parseOptions(std.testing.io, &.{ "--workspace", "/tmp/project" }, &stdout, &stderr);
+    try std.testing.expectEqualStrings("/tmp/project", workspace.workspace.?);
+    const machine = try parseOptions(std.testing.io, &.{"--machine"}, &stdout, &stderr);
+    try std.testing.expect(machine.workspace == null);
+    try std.testing.expectError(error.Usage, parseOptions(std.testing.io, &.{ "--workspace", "/tmp/project", "--machine" }, &stdout, &stderr));
+}
+
+test "machine dashboard actions exclude workspace-scoped commands" {
+    try std.testing.expect(actionAllowedWithoutWorkspace("doctor"));
+    try std.testing.expect(actionAllowedWithoutWorkspace("license-status"));
+    try std.testing.expect(!actionAllowedWithoutWorkspace("replay-last"));
+    try std.testing.expect(!actionAllowedWithoutWorkspace("report-last"));
+    try std.testing.expect(!actionAllowedWithoutWorkspace("demo-blocked-action"));
+    try std.testing.expectError(error.WorkspaceRequired, runAllowedAction(std.testing.io, std.testing.allocator, "replay-last", false));
+}
+
 test "dashboard action allowlist rejects arbitrary browser commands" {
-    try std.testing.expectError(error.UnsupportedDashboardAction, runAllowedAction(std.testing.io, std.testing.allocator, "rm -rf /"));
+    try std.testing.expectError(error.UnsupportedDashboardAction, runAllowedAction(std.testing.io, std.testing.allocator, "rm -rf /", true));
 }
 
 test "dashboard proxy-smoke action verifies local proxy forwarding" {
     if (@import("builtin").os.tag == .windows) return error.SkipZigTest;
 
-    const result = try runAllowedAction(std.testing.io, std.testing.allocator, "proxy-smoke");
+    const result = try runAllowedAction(std.testing.io, std.testing.allocator, "proxy-smoke", true);
     defer std.testing.allocator.free(result.stdout);
     defer std.testing.allocator.free(result.stderr);
     try std.testing.expectEqual(exit_codes.success, result.exit_code);

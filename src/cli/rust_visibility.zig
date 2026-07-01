@@ -22,6 +22,7 @@ pub const GuiDaemonHealth = struct {
 
 pub const RustShellFeedRecord = struct {
     timestamp: []const u8,
+    workspace_root: []const u8,
     event_type: []const u8,
     decision: []const u8,
     decision_source: []const u8,
@@ -38,6 +39,7 @@ pub const RustShellFeedRecord = struct {
 
     pub fn deinit(self: *RustShellFeedRecord, allocator: std.mem.Allocator) void {
         allocator.free(self.timestamp);
+        allocator.free(self.workspace_root);
         allocator.free(self.event_type);
         allocator.free(self.decision);
         allocator.free(self.decision_source);
@@ -191,6 +193,7 @@ pub fn hookEventTypeForDecisionTag(decision_tag: []const u8) []const u8 {
 pub fn buildFeedRecordFromHookDecision(
     allocator: std.mem.Allocator,
     io: std.Io,
+    workspace_root: []const u8,
     host: []const u8,
     daemon_status: []const u8,
     decision_tag: []const u8,
@@ -210,6 +213,7 @@ pub fn buildFeedRecordFromHookDecision(
 
     return .{
         .timestamp = try allocator.dupe(u8, timestamp),
+        .workspace_root = try allocator.dupe(u8, workspace_root),
         .event_type = try allocator.dupe(u8, hookEventTypeForDecisionTag(decision_tag)),
         .decision = try allocator.dupe(u8, decision_tag),
         .decision_source = try allocator.dupe(u8, decision_source_rust),
@@ -273,6 +277,7 @@ pub fn metadataForUnavailable(
 pub fn buildFeedRecordFromDaemon(
     allocator: std.mem.Allocator,
     io: std.Io,
+    workspace_root: []const u8,
     event_source: []const u8,
     host: ?[]const u8,
     daemon_status: []const u8,
@@ -291,6 +296,7 @@ pub fn buildFeedRecordFromDaemon(
 
     return .{
         .timestamp = try allocator.dupe(u8, timestamp),
+        .workspace_root = try allocator.dupe(u8, workspace_root),
         .event_type = try allocator.dupe(u8, eventTypeForDecision(decision)),
         .decision = try allocator.dupe(u8, decision),
         .decision_source = try allocator.dupe(u8, decision_source_rust),
@@ -310,6 +316,7 @@ pub fn buildFeedRecordFromDaemon(
 pub fn buildFeedRecordFromUnavailable(
     allocator: std.mem.Allocator,
     io: std.Io,
+    workspace_root: []const u8,
     event_source: []const u8,
     host: ?[]const u8,
     err: daemon.DaemonError,
@@ -329,6 +336,7 @@ pub fn buildFeedRecordFromUnavailable(
 
     return .{
         .timestamp = try allocator.dupe(u8, timestamp),
+        .workspace_root = try allocator.dupe(u8, workspace_root),
         .event_type = try allocator.dupe(u8, "command_denied"),
         .decision = try allocator.dupe(u8, "deny"),
         .decision_source = try allocator.dupe(u8, decision_source_rust),
@@ -348,6 +356,8 @@ pub fn buildFeedRecordFromUnavailable(
 pub fn writeFeedRecordJson(writer: anytype, record: RustShellFeedRecord) !void {
     try writer.writeByte('{');
     try writeJsonField(writer, "timestamp", record.timestamp);
+    try writer.writeByte(',');
+    try writeJsonField(writer, "workspace_root", record.workspace_root);
     try writer.writeByte(',');
     try writeJsonField(writer, "event_type", record.event_type);
     try writer.writeByte(',');

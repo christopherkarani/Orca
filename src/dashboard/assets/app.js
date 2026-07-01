@@ -5,7 +5,11 @@ const state = {
 };
 
 const els = {
+  modeEyebrow: document.querySelector("#modeEyebrow"),
+  modeTitle: document.querySelector("#modeTitle"),
   summaryGrid: document.querySelector("#summaryGrid"),
+  workspacePanel: document.querySelector("#workspacePanel"),
+  workspaceList: document.querySelector("#workspaceList"),
   quickActions: document.querySelector("#quickActions"),
   blockedPreview: document.querySelector("#blockedPreview"),
   sessionList: document.querySelector("#sessionList"),
@@ -56,6 +60,11 @@ document.body.addEventListener("click", (event) => {
   const presetButton = event.target.closest("[data-preset]");
   if (presetButton) {
     initPreset(presetButton.dataset.preset);
+    return;
+  }
+  const workspaceButton = event.target.closest("[data-workspace]");
+  if (workspaceButton) {
+    copyWorkspaceCommand(workspaceButton.dataset.workspace);
   }
 });
 
@@ -72,17 +81,34 @@ function showView(name) {
 
 async function refresh() {
   try {
-    const [status, policy] = await Promise.all([
-      getJson("/api/status"),
-      getJson("/api/policy"),
-    ]);
+    const status = await getJson("/api/status");
+    const machineMode = status.mode === "machine";
+    const policy = machineMode ? null : await getJson("/api/policy");
     state.status = status;
     state.policy = policy;
+    applyMode(status);
     renderStatus(status);
-    renderSecretless(status.secretless_runtime);
-    renderPolicy(policy);
+    if (!machineMode) {
+      renderSecretless(status.secretless_runtime);
+      renderPolicy(policy);
+    }
   } catch (error) {
     toast(`Refresh failed: ${error.message}`);
+  }
+}
+
+function applyMode(data) {
+  const machineMode = data.mode === "machine";
+  document.body.classList.toggle("machine-mode", machineMode);
+  els.modeTitle.textContent = machineMode ? "Machine-wide" : workspaceName(data.orca.workspace_root);
+  els.modeEyebrow.textContent = machineMode
+    ? "Local activity across every registered workspace"
+    : data.orca.workspace_root;
+  document.querySelectorAll("[data-workspace-only]").forEach((element) => {
+    element.hidden = machineMode;
+  });
+  if (machineMode && document.querySelector(".nav-item.active")?.dataset.view !== "overview") {
+    showView("overview");
   }
 }
 
@@ -107,6 +133,7 @@ async function postJson(path, body) {
 }
 
 function renderStatus(data) {
+  const machineMode = data.mode === "machine";
   const policy = data.policy;
   const secretless = data.secretless_runtime;
   const license = data.license;
@@ -115,7 +142,14 @@ function renderStatus(data) {
   const sessionCount = data.sessions.length;
   const daemonHealth = data.daemon_health || { status: "unknown", detail: "not probed" };
   const rustShellCount = (data.rust_shell_decisions || []).length;
-  els.summaryGrid.innerHTML = [
+  els.summaryGrid.innerHTML = machineMode ? [
+    metric("Scope", "Machine-wide", `${data.workspace_count} registered workspace${data.workspace_count === 1 ? "" : "s"}`),
+    metric("Daemon", daemonHealthLabel(daemonHealth.status), daemonHealth.detail || "Rust shell evaluator"),
+    metric("Prevented", `${blockedCount}`, "recent denied shell decisions"),
+    metric("Decisions", `${rustShellCount}`, "from Pi, Codex, Claude, run, and hooks"),
+    metric("Sessions", `${sessionCount}`, "merged from registered workspaces"),
+    metric("License", license.tier, license.report_export ? "report export enabled" : "core safety enabled"),
+  ].join("") : [
     metric("CLI", "Installed", `Orca ${data.orca.version}`),
     metric("Policy", policy.exists ? (policy.valid ? "Valid" : "Invalid") : "Missing", policy.exists ? policy.path : "Create one from a preset"),
     metric("Daemon", daemonHealthLabel(daemonHealth.status), daemonHealth.detail || "Rust shell evaluator"),
@@ -127,6 +161,8 @@ function renderStatus(data) {
     metric("Sessions", `${sessionCount}`, data.orca.workspace_root),
   ].join("");
 
+  renderWorkspaces(data.workspaces || [], machineMode);
+
   els.quickActions.innerHTML = data.quick_actions.map((action) => `
     <div class="action-card">
       <code class="command-line">${escapeHtml(action.command)}</code>
@@ -137,7 +173,49 @@ function renderStatus(data) {
   renderBlockedList(els.blockedPreview, data.blocked_actions, true);
   renderBlockedList(els.blockedTimeline, data.blocked_actions, false);
   renderSessions(data.sessions);
-  renderIntegrations(data.plugins);
+  if (!machineMode) renderIntegrations(data.plugins);
+}
+
+function renderWorkspaces(workspaces, machineMode) {
+  els.workspacePanel.hidden = !machineMode;
+  if (!machineMode) return;
+  if (!workspaces.length) {
+    els.workspaceList.innerHTML = `<div class="workspace-card"><h5>No workspaces registered yet</h5><p class="caption">Run Orca through an agent or hook in a project to register it here.</p></div>`;
+    return;
+  }
+  els.workspaceList.innerHTML = workspaces.map((workspace) => `
+    <article class="workspace-card">
+      <div>
+        <h5>${escapeHtml(workspaceName(workspace.root))}</h5>
+        <code>${escapeHtml(workspace.root)}</code>
+      </div>
+      <div class="workspace-meta">
+        <span class="status-pill ${workspace.policy_present ? "ok" : "warn"}">${workspace.policy_present ? "policy" : "no policy"}</span>
+        <span class="caption">${escapeHtml(workspace.last_host || "host unknown")}</span>
+        <button class="button secondary" type="button" data-workspace="${escapeHtml(workspace.root)}">Copy drill-down command</button>
+      </div>
+    </article>
+  `).join("");
+}
+
+async function copyWorkspaceCommand(workspaceRoot) {
+  const command = `orca dashboard --workspace ${shellQuote(workspaceRoot)}`;
+  try {
+    await navigator.clipboard.writeText(command);
+    toast("Workspace drill-down command copied");
+  } catch (_) {
+    els.commandOutput.textContent = command;
+    toast("Copy unavailable; command moved to output");
+  }
+}
+
+function workspaceName(path) {
+  if (!path) return "Workspace";
+  return path.split(/[\\/]/).filter(Boolean).at(-1) || path;
+}
+
+function shellQuote(value) {
+  return `'${String(value).replaceAll("'", `'\\''`)}'`;
 }
 
 function renderSecretless(secretless) {
@@ -318,6 +396,7 @@ function renderBlockedList(container, actions, compact) {
         ${meta("Source", action.decision_source || "zig-native")}
         ${meta("Event", action.event_source || "session audit")}
         ${meta("Host", action.host || "not recorded")}
+        ${meta("Workspace", action.workspace_root || "not recorded")}
         ${meta("Daemon", action.daemon_status || "not recorded")}
         ${meta("Pack", action.pack_id || "not recorded")}
         ${meta("Severity", action.severity || "not recorded")}
@@ -357,6 +436,9 @@ function renderSessions(sessions) {
       </header>
       <div class="meta-grid">
         ${meta("Command", session.command || "unknown")}
+        ${meta("Workspace", session.workspace_root || state.status?.orca?.workspace_root || "unknown")}
+        ${meta("Agent", session.host || "not recorded")}
+        ${meta("Time", session.timestamp || session.id)}
         ${meta("Policy", session.policy || "unknown")}
         ${meta("Status", session.status || "unknown")}
         ${meta("Denied", String(session.denied_count))}

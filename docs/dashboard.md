@@ -1,10 +1,33 @@
 # Local Dashboard
 
-Orca includes a local-first web dashboard for day-to-day inspection and setup.
+Orca includes a local-first web dashboard for machine-wide activity and workspace drill-down.
 
 ```sh
 orca dashboard
 ```
+
+`orca dashboard` now opens the machine-wide view by default. It is no longer tied to the shell's current working directory, so it can be started from `~` or any other directory.
+
+Use an explicit workspace for policy, Secretless, integrations, and workspace-scoped actions:
+
+```sh
+orca dashboard --workspace /path/to/project
+```
+
+`--machine` is an explicit alias for the default:
+
+```sh
+orca dashboard --machine
+```
+
+Set `ORCA_DASHBOARD_WORKSPACE` to make workspace mode the default for a shell or launcher:
+
+```sh
+export ORCA_DASHBOARD_WORKSPACE=/path/to/project
+orca dashboard
+```
+
+An explicit `--workspace` or `--machine` flag takes precedence over the environment variable. `--workspace` and `--machine` cannot be combined.
 
 By default it listens only on:
 
@@ -14,7 +37,21 @@ http://127.0.0.1:7742
 
 The dashboard is a local control surface over existing Orca behavior. It does not replace the CLI, does not evaluate policy in frontend code, and does not add hosted telemetry, accounts, cloud sync, or external services.
 
-## What It Shows
+## Machine-Wide View
+
+Machine-wide mode reads Orca's local workspace registry and global decision feed. It does not recursively scan `$HOME`.
+
+- Registered workspaces and their most recently observed agent host
+- Recent Rust daemon decisions across Pi, Codex, Claude, OpenCode, `orca run`, and other hook paths
+- Sessions merged from each registered workspace's `.orca/sessions` directory
+- Denied shell decisions with `workspace_root`, `host`, and recording source
+- Machine-wide daemon health and local license status
+
+Decision writers continue to store the existing per-workspace feed and also append a redacted record to `$HOME/.orca/dashboard/events.jsonl`. `$HOME/.orca/dashboard/workspaces.json` indexes recently active workspaces for session aggregation. Feed writes are best-effort and do not change hook, run, or evaluate exit behavior.
+
+Machine-wide mode exposes only global actions: `orca doctor` and `orca license status`. Policy, replay, report, CI, demo, credential, proxy, and integration actions stay hidden and are rejected server-side until the dashboard is started with an explicit workspace. This prevents ambiguous uses of `last` from `~`.
+
+## Workspace View
 
 - Orca version and workspace root
 - Local license tier, report-export availability, and offline verification status
@@ -29,7 +66,7 @@ The dashboard is a local control surface over existing Orca behavior. It does no
 
 ## Local Actions
 
-The browser can run only fixed Orca actions:
+In workspace mode, the browser can run only fixed Orca actions:
 
 ```sh
 orca doctor
@@ -43,7 +80,7 @@ orca demo blocked-action
 orca license status
 ```
 
-Policy edits are saved only after Orca parses and validates the submitted YAML. Preset initialization writes `.orca/policy.yaml` from the same preset text used by the CLI.
+Policy edits are saved only after Orca parses and validates the submitted YAML. Preset initialization writes `.orca/policy.yaml` from the same preset text used by the CLI. Policy routes return `workspace_required` in machine-wide mode.
 
 ## Secretless View
 

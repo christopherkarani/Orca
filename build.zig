@@ -22,6 +22,7 @@ fn addRunTestTerminal(b: *std.Build, exe: *std.Build.Step.Compile) *std.Build.St
         run_step.addArtifactArg(exe);
     }
     run_step.stdio = .inherit;
+    run_step.setEnvironmentVariable("ORCA_DISABLE_GLOBAL_DASHBOARD_FEED", "1");
     if (b.args) |args| {
         run_step.addArgs(args);
     }

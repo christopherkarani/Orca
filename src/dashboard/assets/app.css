@@ -20,6 +20,10 @@
   box-sizing: border-box;
 }
 
+[hidden] {
+  display: none !important;
+}
+
 body {
   margin: 0;
   min-height: 100dvh;
@@ -264,6 +268,51 @@ textarea {
 
 .panel {
   padding: 16px;
+}
+
+.workspace-panel {
+  margin-bottom: 16px;
+  background:
+    linear-gradient(135deg, rgba(15, 118, 110, 0.08), transparent 52%),
+    var(--surface);
+}
+
+.workspace-list {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+  margin-top: 14px;
+}
+
+.workspace-card {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  min-width: 0;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: rgba(255, 255, 255, 0.82);
+  padding: 14px;
+}
+
+.workspace-card h5 {
+  margin: 0 0 4px;
+  font-size: 15px;
+}
+
+.workspace-card code {
+  display: block;
+  color: var(--muted);
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+
+.workspace-meta {
+  display: grid;
+  justify-items: end;
+  gap: 8px;
+  flex: 0 0 auto;
 }
 
 .two-column,
@@ -606,6 +655,7 @@ textarea {
   }
 
   .metric-grid,
+  .workspace-list,
   .two-column,
   .policy-layout,
   .activity-layout,
@@ -614,6 +664,14 @@ textarea {
   .broker-grid,
   .table-row {
     grid-template-columns: 1fr;
+  }
+
+  .workspace-card {
+    flex-direction: column;
+  }
+
+  .workspace-meta {
+    justify-items: start;
   }
 
   .main {

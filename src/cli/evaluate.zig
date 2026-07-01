@@ -1,14 +1,17 @@
 const std = @import("std");
 const build_options = @import("build_options");
 
+const core = @import("orca_core").core;
 const daemon = @import("daemon.zig");
 const exit_codes = @import("exit_codes.zig");
+const feed_writer = @import("feed_writer.zig");
 const help = @import("help.zig");
 const rust_visibility = @import("rust_visibility.zig");
 
 const max_payload_len = 256 * 1024;
 const api_schema_version: i64 = 1;
 const daemon_protocol_version: i64 = 1;
+const event_source_evaluate = "evaluate";
 
 pub const exit_allowed: u8 = 0;
 pub const exit_denied: u8 = 2;
@@ -19,11 +22,13 @@ pub const exit_internal_error: u8 = 1;
 pub const EvaluateRequest = struct {
     schema_version: i64,
     request_id: ?[]const u8 = null,
+    host: ?[]const u8 = null,
     command: []const u8,
     cwd: []const u8,
 
     fn deinit(self: EvaluateRequest, allocator: std.mem.Allocator) void {
         if (self.request_id) |id| allocator.free(id);
+        if (self.host) |host| allocator.free(host);
         allocator.free(self.command);
         allocator.free(self.cwd);
     }
@@ -34,6 +39,12 @@ pub const EvaluatorFn = *const fn (
     []const u8,
     ?[]const u8,
 ) daemon.DaemonError!std.json.Parsed(daemon.DaemonResponse);
+
+const FeedDestination = union(enum) {
+    disabled,
+    process_home,
+    explicit: []const u8,
+};
 
 const ErrorCode = enum {
     invalid_input,
@@ -132,10 +143,17 @@ fn commandWithEvaluator(io: std.Io, argv: []const []const u8, stdout: anytype, s
     };
     defer allocator.free(payload);
 
-    return evaluatePayload(io, allocator, payload, stdout, evaluator);
+    return evaluatePayload(io, allocator, payload, stdout, evaluator, .process_home);
 }
 
-fn evaluatePayload(io: std.Io, allocator: std.mem.Allocator, payload: []const u8, stdout: anytype, evaluator: EvaluatorFn) !u8 {
+fn evaluatePayload(
+    io: std.Io,
+    allocator: std.mem.Allocator,
+    payload: []const u8,
+    stdout: anytype,
+    evaluator: EvaluatorFn,
+    feed_destination: FeedDestination,
+) !u8 {
     const request = parseRequest(io, allocator, payload) catch |err| {
         const request_id = requestIdBestEffort(allocator, payload) catch null;
         defer if (request_id) |id| allocator.free(id);
@@ -153,10 +171,13 @@ fn evaluatePayload(io: std.Io, allocator: std.mem.Allocator, payload: []const u8
     defer request.deinit(allocator);
 
     var parsed = evaluator(allocator, request.command, request.cwd) catch |err| {
+        recordUnavailableEvaluationBestEffort(io, allocator, request, err, feed_destination);
         try writeDaemonError(stdout, request.request_id, err);
         return exit_evaluator_error;
     };
     defer parsed.deinit();
+
+    recordEvaluationBestEffort(io, allocator, request, parsed.value.result, feed_destination);
 
     return writeEvaluationResponse(allocator, stdout, request, parsed.value.result) catch |err| switch (err) {
         error.DaemonProtocolError => {
@@ -172,6 +193,73 @@ fn evaluatePayload(io: std.Io, allocator: std.mem.Allocator, payload: []const u8
             return exit_internal_error;
         },
     };
+}
+
+fn recordEvaluationBestEffort(
+    io: std.Io,
+    allocator: std.mem.Allocator,
+    request: EvaluateRequest,
+    result: std.json.Value,
+    destination: FeedDestination,
+) void {
+    if (destination == .disabled) return;
+    const workspace_root = core.supervisor.resolveWorkspaceRoot(io, allocator, null, request.cwd) catch
+        allocator.dupe(u8, request.cwd) catch return;
+    defer allocator.free(workspace_root);
+    var record = rust_visibility.buildFeedRecordFromDaemon(
+        allocator,
+        io,
+        workspace_root,
+        event_source_evaluate,
+        request.host,
+        "healthy",
+        result,
+        request.request_id,
+        false,
+    ) catch return;
+    defer record.deinit(allocator);
+    persistEvaluationRecordBestEffort(io, allocator, record, destination);
+}
+
+fn recordUnavailableEvaluationBestEffort(
+    io: std.Io,
+    allocator: std.mem.Allocator,
+    request: EvaluateRequest,
+    err: daemon.DaemonError,
+    destination: FeedDestination,
+) void {
+    if (destination == .disabled) return;
+    const workspace_root = core.supervisor.resolveWorkspaceRoot(io, allocator, null, request.cwd) catch
+        allocator.dupe(u8, request.cwd) catch return;
+    defer allocator.free(workspace_root);
+    var record = rust_visibility.buildFeedRecordFromUnavailable(
+        allocator,
+        io,
+        workspace_root,
+        event_source_evaluate,
+        request.host,
+        err,
+        request.request_id,
+        false,
+    ) catch return;
+    defer record.deinit(allocator);
+    persistEvaluationRecordBestEffort(io, allocator, record, destination);
+}
+
+fn persistEvaluationRecordBestEffort(
+    io: std.Io,
+    allocator: std.mem.Allocator,
+    record: rust_visibility.RustShellFeedRecord,
+    destination: FeedDestination,
+) void {
+    feed_writer.appendRecord(io, allocator, record.workspace_root, record) catch {};
+    const dashboard_root = switch (destination) {
+        .disabled => return,
+        .process_home => if (feed_writer.processGlobalWritesDisabled()) return else feed_writer.resolveGlobalDashboardRoot(allocator) catch return,
+        .explicit => |root| allocator.dupe(u8, root) catch return,
+    };
+    defer allocator.free(dashboard_root);
+    feed_writer.appendGlobalRecord(io, allocator, dashboard_root, record) catch {};
 }
 
 const RequestParseError = error{
@@ -228,12 +316,15 @@ fn parseRequest(io: std.Io, allocator: std.mem.Allocator, payload: []const u8) (
 
     const owned_request_id = if (stringField(object, "request_id")) |id| try allocator.dupe(u8, id) else null;
     errdefer if (owned_request_id) |id| allocator.free(id);
+    const owned_host = if (nestedStringField(object, "source", "host")) |host| try allocator.dupe(u8, host) else null;
+    errdefer if (owned_host) |host| allocator.free(host);
     const owned_command = try allocator.dupe(u8, command_text);
     errdefer allocator.free(owned_command);
 
     return .{
         .schema_version = schema_version,
         .request_id = owned_request_id,
+        .host = owned_host,
         .command = owned_command,
         .cwd = canonical_cwd,
     };
@@ -261,6 +352,12 @@ fn stringField(object: std.json.ObjectMap, key: []const u8) ?[]const u8 {
         .string => |s| s,
         else => null,
     };
+}
+
+fn nestedStringField(object: std.json.ObjectMap, parent: []const u8, key: []const u8) ?[]const u8 {
+    const parent_value = object.get(parent) orelse return null;
+    if (parent_value != .object) return null;
+    return stringField(parent_value.object, key);
 }
 
 fn requestIdBestEffort(allocator: std.mem.Allocator, payload: []const u8) !?[]const u8 {
@@ -610,6 +707,7 @@ test "evaluate parses a valid request and canonicalizes cwd" {
     defer request.deinit(allocator);
     try std.testing.expectEqual(api_schema_version, request.schema_version);
     try std.testing.expectEqualStrings("req-1", request.request_id.?);
+    try std.testing.expectEqualStrings("pi", request.host.?);
     try std.testing.expectEqualStrings("git status", request.command);
     try std.testing.expect(std.fs.path.isAbsolute(request.cwd));
 }
@@ -636,7 +734,7 @@ test "evaluate allow response is stable JSON and exit 0" {
     var stdout_buf: [4096]u8 = undefined;
     var stdout: std.Io.Writer = .fixed(&stdout_buf);
 
-    const code = try evaluatePayload(std.testing.io, allocator, payload, &stdout, mockAllow);
+    const code = try evaluatePayload(std.testing.io, allocator, payload, &stdout, mockAllow, .disabled);
     try std.testing.expectEqual(exit_allowed, code);
     const output = stdout.buffered();
     try std.testing.expect(std.mem.indexOf(u8, output, "\"schema_version\": 1") != null);
@@ -654,7 +752,7 @@ test "evaluate deny response is safe and exit 2" {
     var stdout_buf: [8192]u8 = undefined;
     var stdout: std.Io.Writer = .fixed(&stdout_buf);
 
-    const code = try evaluatePayload(std.testing.io, allocator, payload, &stdout, mockDeny);
+    const code = try evaluatePayload(std.testing.io, allocator, payload, &stdout, mockDeny, .disabled);
     try std.testing.expectEqual(exit_denied, code);
     const output = stdout.buffered();
     try std.testing.expect(std.mem.indexOf(u8, output, "\"decision\": \"deny\"") != null);
@@ -665,10 +763,41 @@ test "evaluate deny response is safe and exit 2" {
     try std.testing.expect(std.mem.indexOf(u8, output, "ghp_fake_secret_value") == null);
 }
 
+test "evaluate records Pi decisions in workspace and global feeds" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try tmp.dir.createDir(std.testing.io, ".git", .default_dir);
+    const root = try tmp.dir.realPathFileAlloc(std.testing.io, ".", std.testing.allocator);
+    defer std.testing.allocator.free(root);
+    const dashboard_root = try std.fs.path.join(std.testing.allocator, &.{ root, "home", ".orca", "dashboard" });
+    defer std.testing.allocator.free(dashboard_root);
+    const payload = try validPayload(std.testing.allocator, "rm -rf tmp", root);
+    defer std.testing.allocator.free(payload);
+    var stdout_buf: [8192]u8 = undefined;
+    var stdout: std.Io.Writer = .fixed(&stdout_buf);
+
+    const code = try evaluatePayload(std.testing.io, std.testing.allocator, payload, &stdout, mockDeny, .{ .explicit = dashboard_root });
+    try std.testing.expectEqual(exit_denied, code);
+
+    const workspace_records = try feed_writer.loadRecent(std.testing.io, std.testing.allocator, root, 4);
+    defer {
+        for (workspace_records) |*item| item.deinit(std.testing.allocator);
+        std.testing.allocator.free(workspace_records);
+    }
+    try std.testing.expectEqual(@as(usize, 1), workspace_records.len);
+    try std.testing.expectEqualStrings("pi", workspace_records[0].record.host.?);
+    try std.testing.expectEqualStrings("req-1", workspace_records[0].record.session_id.?);
+    try std.testing.expectEqualStrings(root, workspace_records[0].record.workspace_root);
+
+    const global_events = try std.fs.path.join(std.testing.allocator, &.{ dashboard_root, feed_writer.global_events_file_name });
+    defer std.testing.allocator.free(global_events);
+    try std.Io.Dir.cwd().access(std.testing.io, global_events, .{});
+}
+
 test "evaluate invalid input writes JSON error and exit 64" {
     var stdout_buf: [2048]u8 = undefined;
     var stdout: std.Io.Writer = .fixed(&stdout_buf);
-    const code = try evaluatePayload(std.testing.io, std.testing.allocator, "{not json", &stdout, mockAllow);
+    const code = try evaluatePayload(std.testing.io, std.testing.allocator, "{not json", &stdout, mockAllow, .disabled);
     try std.testing.expectEqual(exit_invalid_input, code);
     const output = stdout.buffered();
     try std.testing.expect(std.mem.indexOf(u8, output, "\"decision\": \"error\"") != null);
@@ -691,7 +820,7 @@ test "evaluate daemon failures map to JSON error exit 3" {
     for (cases) |case| {
         var stdout_buf: [4096]u8 = undefined;
         var stdout: std.Io.Writer = .fixed(&stdout_buf);
-        const code = try evaluatePayload(std.testing.io, allocator, payload, &stdout, case[0]);
+        const code = try evaluatePayload(std.testing.io, allocator, payload, &stdout, case[0], .disabled);
         try std.testing.expectEqual(exit_evaluator_error, code);
         const output = stdout.buffered();
         try std.testing.expect(std.mem.indexOf(u8, output, "\"decision\": \"error\"") != null);

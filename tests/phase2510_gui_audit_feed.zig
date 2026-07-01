@@ -18,6 +18,7 @@ test "phase2510 hook deny feed record is rust-backed and redacted" {
     var record = try rust_visibility.buildFeedRecordFromHookDecision(
         std.testing.allocator,
         std.testing.io,
+        root,
         "claude",
         "healthy",
         "deny",
@@ -41,6 +42,9 @@ test "phase2510 hook deny feed record is rust-backed and redacted" {
     try std.testing.expectEqual(@as(usize, 1), loaded.len);
     try std.testing.expectEqualStrings("rust-daemon", loaded[0].record.decision_source);
     try std.testing.expectEqualStrings("hook", loaded[0].record.event_source);
+    try std.testing.expectEqualStrings(root, loaded[0].record.workspace_root);
+    try std.testing.expectEqualStrings("claude", loaded[0].record.host.?);
+    try std.testing.expect(std.mem.indexOf(u8, loaded[0].raw, "agent_host") == null);
     try std.testing.expectEqualStrings("git", loaded[0].record.pack_id.?);
     try std.testing.expectEqualStrings("Critical", loaded[0].record.severity.?);
     try std.testing.expectEqualStrings("shell command (redacted)", loaded[0].record.target_summary);
@@ -112,7 +116,7 @@ test "phase2510 run allow feed record when audit options provided" {
     var decision = try shell_eval.evaluateCommand(
         std.testing.allocator,
         .strict,
-        &.{ "true" },
+        &.{"true"},
         root,
         shell_eval.mockDaemonAllowEvaluator,
         null,
@@ -138,6 +142,7 @@ test "phase2510 daemon unavailable and incompatible feed statuses" {
     var unavailable = try rust_visibility.buildFeedRecordFromUnavailable(
         allocator,
         std.testing.io,
+        "/tmp/orca-workspace",
         rust_visibility.event_source_hook,
         "codex",
         error.SocketConnectFailed,
@@ -150,6 +155,7 @@ test "phase2510 daemon unavailable and incompatible feed statuses" {
     var incompatible = try rust_visibility.buildFeedRecordFromUnavailable(
         allocator,
         std.testing.io,
+        "/tmp/orca-workspace",
         rust_visibility.event_source_hook,
         "codex",
         error.ProtocolMismatch,
@@ -178,6 +184,7 @@ test "phase2510 status json exposes daemon health and rust shell feed" {
     var record = try rust_visibility.buildFeedRecordFromHookDecision(
         std.testing.allocator,
         std.testing.io,
+        root,
         "claude",
         "healthy",
         "deny",

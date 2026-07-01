@@ -806,6 +806,7 @@ fn recordShellHookUnavailable(
     var record = rust_visibility.buildFeedRecordFromUnavailable(
         allocator,
         io,
+        workspace_root,
         rust_visibility.event_source_hook,
         host_name,
         err,
@@ -828,6 +829,7 @@ fn recordShellHookDecision(
     var record = rust_visibility.buildFeedRecordFromDaemon(
         allocator,
         io,
+        workspace_root,
         rust_visibility.event_source_hook,
         host_name,
         daemon_status,

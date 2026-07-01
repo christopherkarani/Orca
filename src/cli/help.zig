@@ -424,8 +424,9 @@ pub const commands = [_]CommandInfo{
         "  orca hook hermes on_session_end",
         "Hook responses include host_limitations to honestly report enforcement limits.",
     } },
-    .{ .name = "dashboard", .summary = "Start the local Orca dashboard", .usage = "orca dashboard [--host 127.0.0.1] [--port 7742]", .category = .diagnostics, .details = &.{
-        "Starts a localhost-only web dashboard for health, policy, integrations, sessions, and denied-action replay.",
+    .{ .name = "dashboard", .summary = "Start the local Orca dashboard", .usage = "orca dashboard [--machine | --workspace PATH] [--host 127.0.0.1] [--port 7742]", .category = .diagnostics, .details = &.{
+        "Starts a localhost-only machine-wide dashboard by default; the view is not tied to shell cwd.",
+        "Use --workspace PATH or ORCA_DASHBOARD_WORKSPACE for policy, integrations, and workspace-scoped actions.",
         "The dashboard calls existing Orca CLI/Core paths and does not replace policy evaluation.",
         "Mutation routes use a per-run browser token and only expose fixed Orca actions; arbitrary shell commands are not accepted.",
         "Defaults to http://127.0.0.1:7742.",

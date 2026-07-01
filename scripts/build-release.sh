@@ -84,10 +84,7 @@ copy_cli_payload() {
   mkdir -p "$root"
   cp README.md LICENSE SECURITY.md CONTRIBUTING.md "$root/"
   cp -R docs policies schemas fixtures examples packages packaging scripts integrations "$root/"
-  if [ -d "orca-dashboard-ui/dist" ]; then
-    mkdir -p "$root/orca-dashboard-ui"
-    cp -R orca-dashboard-ui/dist "$root/orca-dashboard-ui/dist"
-  elif [ -f "src/dashboard/assets/index.html" ]; then
+  if [ -f "src/dashboard/assets/index.html" ]; then
     mkdir -p "$root/orca-dashboard-ui/dist/assets"
     cp src/dashboard/assets/index.html "$root/orca-dashboard-ui/dist/index.html"
     cp src/dashboard/assets/app.css "$root/orca-dashboard-ui/dist/assets/app.css"
