@@ -461,51 +461,7 @@ fn writeQuickAction(writer: anytype, id: []const u8, command: []const u8) !void 
 }
 
 fn writeSessionsArrayJson(io: std.Io, allocator: std.mem.Allocator, writer: anytype, workspace_root: []const u8, max_count: usize) !void {
-    const sessions_root = try std.fs.path.join(allocator, &.{ workspace_root, ".orca", "sessions" });
-    defer allocator.free(sessions_root);
-    var dir = std.Io.Dir.cwd().openDir(io, sessions_root, .{ .iterate = true }) catch |err| switch (err) {
-        error.FileNotFound => {
-            try writer.writeAll("[]");
-            return;
-        },
-        else => return err,
-    };
-    defer dir.close(io);
-
-    try writer.writeByte('[');
-    var it = dir.iterate();
-    var count: usize = 0;
-    while (count < max_count) {
-        const entry = try it.next(io) orelse break;
-        if (entry.kind != .directory) continue;
-        if (core.session.validateSessionIdText(entry.name)) |_| {} else |_| continue;
-        if (count > 0) try writer.writeByte(',');
-        try writeSessionSummaryJson(io, allocator, writer, workspace_root, entry.name);
-        count += 1;
-    }
-    try writer.writeByte(']');
-}
-
-fn writeSessionSummaryJson(io: std.Io, allocator: std.mem.Allocator, writer: anytype, workspace_root: []const u8, session_id: []const u8) !void {
-    try writer.writeByte('{');
-    try writer.writeAll("\"id\":");
-    try core.util.writeJsonString(writer, session_id);
-    if (core_api.loadReplay(io, allocator, workspace_root, .{ .session = session_id, .only_denied = true, .verify = false })) |loaded_replay| {
-        var replay = loaded_replay;
-        defer replay.deinit();
-        try writer.writeAll(",\"command\":");
-        try core.util.writeJsonString(writer, replay.command_display);
-        try writer.writeAll(",\"policy\":");
-        try core.util.writeJsonString(writer, replay.policy);
-        try writer.writeAll(",\"status\":");
-        try core.util.writeJsonString(writer, replay.status_display);
-        try writer.print(",\"denied_count\":{d},\"verified\":{}", .{ replay.events.len, replay.verified });
-    } else |err| {
-        if (err == error.OutOfMemory) return err;
-        try writer.writeAll(",\"command\":null,\"policy\":null,\"status\":\"unreadable\",\"denied_count\":0,\"verified\":false,\"error\":");
-        try core.util.writeJsonString(writer, @errorName(err));
-    }
-    try writer.writeByte('}');
+    return aggregate.writeWorkspaceSessionsJson(io, allocator, writer, workspace_root, max_count);
 }
 
 fn writeDaemonHealthJson(allocator: std.mem.Allocator, writer: anytype) !void {
@@ -578,7 +534,7 @@ fn writeBlockedActionsArrayJson(io: std.Io, allocator: std.mem.Allocator, writer
     try writer.writeByte('[');
     var written: usize = 0;
 
-    const feed_owned: ?[]feed_writer.LoadedFeedRecord = feed_writer.loadRecent(io, allocator, workspace_root, max_count) catch null;
+    const feed_owned: ?[]feed_writer.LoadedFeedRecord = feed_writer.loadRecent(io, allocator, workspace_root, std.math.maxInt(usize)) catch null;
     defer if (feed_owned) |owned| {
         for (owned) |*item| item.deinit(allocator);
         allocator.free(owned);
@@ -586,7 +542,7 @@ fn writeBlockedActionsArrayJson(io: std.Io, allocator: std.mem.Allocator, writer
     const feed = feed_owned orelse &[_]feed_writer.LoadedFeedRecord{};
     for (feed) |item| {
         if (written >= max_count) break;
-        if (!std.mem.eql(u8, item.record.decision, "deny")) continue;
+        if (!rust_visibility.isBlockedFeedRecord(item.record)) continue;
         if (written > 0) try writer.writeByte(',');
         try writeFeedRecordJson(writer, item.record);
         written += 1;
@@ -894,6 +850,64 @@ test "dashboard assets expose dedicated secretless view" {
     try std.testing.expect(std.mem.indexOf(u8, app, "data.mode === \"machine\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, app, "renderWorkspaces") != null);
     try std.testing.expect(std.mem.indexOf(u8, app, "workspace_root") != null);
+    try std.testing.expect(std.mem.indexOf(u8, app, "renderHermesActivity") != null);
+    try std.testing.expect(std.mem.indexOf(u8, app, "hermesDecisionClass") != null);
+    try std.testing.expect(std.mem.indexOf(u8, app, "approval-required") != null);
+}
+
+test "dashboard counts Hermes ask tool veto as blocked without losing ask label" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const root = try tmp.dir.realPathFileAlloc(std.testing.io, ".", std.testing.allocator);
+    defer std.testing.allocator.free(root);
+
+    var record = try rust_visibility.buildFeedRecordFromHookActivity(
+        std.testing.allocator,
+        std.testing.io,
+        root,
+        rust_visibility.event_source_hook,
+        "zig-native",
+        "hermes",
+        "not_applicable",
+        "hermes_tool_call_blocked",
+        "ask",
+        "approval required by policy",
+        "tool call (redacted)",
+        "hermes-session-1",
+        false,
+    );
+    defer record.deinit(std.testing.allocator);
+    try feed_writer.appendRecord(std.testing.io, std.testing.allocator, root, record);
+    for (0..12) |_| {
+        var allowed = try rust_visibility.buildFeedRecordFromHookActivity(
+            std.testing.allocator,
+            std.testing.io,
+            root,
+            rust_visibility.event_source_hook,
+            rust_visibility.decision_source_zig,
+            "hermes",
+            "not_applicable",
+            "hermes_prompt_review",
+            "allow",
+            "prompt reviewed",
+            "prompt (redacted)",
+            "hermes-session-1",
+            false,
+        );
+        defer allowed.deinit(std.testing.allocator);
+        try feed_writer.appendRecord(std.testing.io, std.testing.allocator, root, allowed);
+    }
+
+    var aw: std.Io.Writer.Allocating = .init(std.testing.allocator);
+    try writeStatusJson(std.testing.io, std.testing.allocator, &aw.writer, root);
+    var out = aw.toArrayList();
+    defer out.deinit(std.testing.allocator);
+
+    try std.testing.expect(std.mem.indexOf(u8, out.items, "\"event_type\":\"hermes_tool_call_blocked\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out.items, "\"decision\":\"ask\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out.items, "\"host\":\"hermes\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out.items, "\"id\":\"hermes-session-1\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out.items, "\"denied_count\":1") != null);
 }
 
 test "sessions json filters denied replay events" {
@@ -1119,4 +1133,41 @@ test "machine status includes feed-backed Pi sessions" {
     try std.testing.expect(std.mem.indexOf(u8, out, "\"id\":\"pi-session-42\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, out, "\"host\":\"pi\"") != null);
     try std.testing.expectEqual(@as(usize, 1), std.mem.count(u8, out, "\"id\":\"pi-session-42\""));
+}
+
+test "machine status aggregates Hermes approval blocks into sessions and blocked actions" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const root = try tmp.dir.realPathFileAlloc(std.testing.io, ".", std.testing.allocator);
+    defer std.testing.allocator.free(root);
+    const dashboard_root = try std.fs.path.join(std.testing.allocator, &.{ root, "home", ".orca", "dashboard" });
+    defer std.testing.allocator.free(dashboard_root);
+
+    var record = try rust_visibility.buildFeedRecordFromHookActivity(
+        std.testing.allocator,
+        std.testing.io,
+        root,
+        rust_visibility.event_source_hook,
+        rust_visibility.decision_source_zig,
+        "hermes",
+        "not_applicable",
+        "hermes_tool_call_blocked",
+        "ask",
+        "approval required",
+        "tool call (redacted)",
+        "hermes-session-42",
+        false,
+    );
+    defer record.deinit(std.testing.allocator);
+    try feed_writer.appendGlobalRecord(std.testing.io, std.testing.allocator, dashboard_root, record);
+
+    var aw: std.Io.Writer.Allocating = .init(std.testing.allocator);
+    try writeMachineStatusJson(std.testing.io, std.testing.allocator, &aw.writer, dashboard_root);
+    const out = try aw.toOwnedSlice();
+    defer std.testing.allocator.free(out);
+
+    try std.testing.expect(std.mem.indexOf(u8, out, "\"id\":\"hermes-session-42\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "\"host\":\"hermes\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "\"decision\":\"ask\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "\"denied_count\":1") != null);
 }

@@ -295,11 +295,15 @@ fn installSelectedHosts(
             failures += 1;
             continue;
         };
-        if (code == 0) {
-            try stdout.writeAll("installed\n");
+        const outcome = plugin.verifyHostInstallAfterChild(io, allocator, host_name, code);
+        if (outcome != .failed) {
+            if (outcome == .installed_after_child_failure)
+                try stdout.print("installed (verified; installer exited {d})\n", .{code})
+            else
+                try stdout.writeAll("installed (verified)\n");
             try configured_out.append(allocator, try allocator.dupe(u8, host_name));
         } else {
-            try stdout.print("failed (exit {d})\n", .{code});
+            try stdout.print("failed verification (installer exit {d})\n", .{code});
             failures += 1;
         }
     }

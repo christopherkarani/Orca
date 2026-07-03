@@ -237,6 +237,8 @@ fn hookCommand(io: std.Io, host: Host, event: Event, original_event_name: []cons
                 \\  orca hook hermes pre_llm_call
                 \\  orca hook hermes post_llm_call
                 \\  orca hook hermes on_session_end
+                \\  orca hook hermes on_session_finalize
+                \\  orca hook hermes on_session_reset
                 \\  orca hook hermes subagent_stop
                 \\
                 \\Options:
@@ -327,6 +329,14 @@ fn hookCommand(io: std.Io, host: Host, event: Event, original_event_name: []cons
         return exit_codes.success;
     }
 
+    const root = supervisor.resolveWorkspaceRoot(io, allocator, null, ".") catch try allocator.dupe(u8, ".");
+    defer allocator.free(root);
+
+    // Extract payload object
+    var empty_payload: std.json.ObjectMap = .empty;
+    defer empty_payload.deinit(allocator);
+    const hook_payload = parsed.value.object.get("payload") orelse std.json.Value{ .object = empty_payload };
+
     if (host == .hermes and isHermesInformationalEvent(request_event)) {
         var redactions: std.ArrayList(RedactionEntry) = .empty;
         var limitations: std.ArrayList([]const u8) = .empty;
@@ -335,23 +345,18 @@ fn hookCommand(io: std.Io, host: Host, event: Event, original_event_name: []cons
 
         var result = try makeInformationalResponse(allocator, .allow, .low, "session", "informational event", "Hermes event acknowledged by Orca.", &redactions, &limitations);
         defer result.deinit(allocator);
+        if (std.mem.eql(u8, request_event, "subagent_stop"))
+            recordHermesHookActivity(io, allocator, root, request_event, hook_payload, result);
         try writeHookResponse(stdout, result);
         return exit_codes.success;
     }
 
     // Load policy
-    const root = supervisor.resolveWorkspaceRoot(io, allocator, null, ".") catch try allocator.dupe(u8, ".");
-    defer allocator.free(root);
     var loaded = core_api.discoverPolicy(io, allocator, null, root) catch |err| {
         try stderr.print("orca hook: failed to load policy: {s}\n", .{@errorName(err)});
         return exit_codes.general;
     };
     defer loaded.deinit();
-
-    // Extract payload object
-    var empty_payload: std.json.ObjectMap = .empty;
-    defer empty_payload.deinit(allocator);
-    const hook_payload = parsed.value.object.get("payload") orelse std.json.Value{ .object = empty_payload };
 
     // Evaluate via host adapter
     var result = evaluateHook(io, allocator, root, @tagName(host), loaded.innerPtr(), host, event, hook_payload, ci_mode) catch |err| {
@@ -359,6 +364,8 @@ fn hookCommand(io: std.Io, host: Host, event: Event, original_event_name: []cons
         return exit_codes.general;
     };
     defer result.deinit(allocator);
+
+    if (host == .hermes) recordHermesHookActivity(io, allocator, root, request_event, hook_payload, result);
 
     if (isCodexDenyOutput(host, result.decision)) {
         // Codex 0.125.0+ ignores stdout JSON on deny; exit 2 + stderr is the enforced block path.
@@ -763,7 +770,7 @@ fn evaluateShellCommandRoute(
 ) !HookResponse {
     const evaluator = evaluator_override orelse defaultShellCommandEvaluator;
     const daemon_response = evaluator(allocator, shell_event) catch |err| {
-        recordShellHookUnavailable(io, allocator, workspace_root, host_name, err);
+        if (!std.mem.eql(u8, host_name, "hermes")) recordShellHookUnavailable(io, allocator, workspace_root, host_name, err);
         return try makeFailClosedHookResponse(
             allocator,
             "command",
@@ -775,16 +782,11 @@ fn evaluateShellCommandRoute(
     };
     defer daemon_response.deinit();
 
-    var health = try rust_visibility.probeGuiDaemonHealth(allocator);
-    defer health.deinit(allocator);
-    recordShellHookDecision(
-        io,
-        allocator,
-        workspace_root,
-        host_name,
-        health.status,
-        daemon_response.value.result,
-    );
+    if (!std.mem.eql(u8, host_name, "hermes")) {
+        var health = try rust_visibility.probeGuiDaemonHealth(allocator);
+        defer health.deinit(allocator);
+        recordShellHookDecision(io, allocator, workspace_root, host_name, health.status, daemon_response.value.result);
+    }
 
     return try hookResponseFromDaemonEvaluate(
         allocator,
@@ -802,7 +804,6 @@ fn recordShellHookUnavailable(
     host_name: []const u8,
     err: daemon.DaemonError,
 ) void {
-    const session_id: ?[]const u8 = null;
     var record = rust_visibility.buildFeedRecordFromUnavailable(
         allocator,
         io,
@@ -810,7 +811,7 @@ fn recordShellHookUnavailable(
         rust_visibility.event_source_hook,
         host_name,
         err,
-        session_id,
+        null,
         false,
     ) catch return;
     defer record.deinit(allocator);
@@ -825,7 +826,6 @@ fn recordShellHookDecision(
     daemon_status: []const u8,
     result: std.json.Value,
 ) void {
-    const session_id: ?[]const u8 = null;
     var record = rust_visibility.buildFeedRecordFromDaemon(
         allocator,
         io,
@@ -834,11 +834,104 @@ fn recordShellHookDecision(
         host_name,
         daemon_status,
         result,
-        session_id,
+        null,
         false,
     ) catch return;
     defer record.deinit(allocator);
     feed_writer.appendRecordBestEffort(io, allocator, workspace_root, record);
+}
+
+fn recordHermesHookActivity(
+    io: std.Io,
+    allocator: std.mem.Allocator,
+    workspace_root: []const u8,
+    event_name: []const u8,
+    payload: std.json.Value,
+    result: HookResponse,
+) void {
+    const shell_tool = std.mem.eql(u8, event_name, "pre_tool_call") and switch (preToolUseRoute(payload)) {
+        .shell_command => true,
+        .zig_native, .fail_closed => false,
+    };
+    var health: ?rust_visibility.GuiDaemonHealth = if (shell_tool) rust_visibility.probeGuiDaemonHealth(allocator) catch null else null;
+    defer if (health) |*value| value.deinit(allocator);
+
+    const decision_source = if (shell_tool) rust_visibility.decision_source_rust else rust_visibility.decision_source_zig;
+    const daemon_status = if (health) |value| value.status else if (shell_tool) "unavailable" else "not_applicable";
+    var target_buf: [160]u8 = undefined;
+    var record = rust_visibility.buildFeedRecordFromHookActivity(
+        allocator,
+        io,
+        workspace_root,
+        rust_visibility.event_source_hook,
+        decision_source,
+        "hermes",
+        daemon_status,
+        hermesFeedEventType(event_name, result.decision),
+        hermesFeedDecisionTag(result.decision),
+        result.reason,
+        hermesTargetSummary(payload, event_name, &target_buf),
+        extractHermesSessionId(payload, event_name),
+        false,
+    ) catch return;
+    defer record.deinit(allocator);
+    feed_writer.appendRecordBestEffort(io, allocator, workspace_root, record);
+}
+
+fn extractHermesSessionId(payload: std.json.Value, event_name: []const u8) ?[]const u8 {
+    const keys = if (std.mem.eql(u8, event_name, "subagent_stop"))
+        &[_][]const u8{ "parent_session_id", "session_id", "task_id" }
+    else
+        &[_][]const u8{ "session_id", "task_id", "parent_session_id" };
+    for (keys) |key| {
+        if (extractHermesIdentifier(payload, key)) |candidate| return candidate;
+    }
+    return null;
+}
+
+fn extractHermesIdentifier(payload: std.json.Value, key: []const u8) ?[]const u8 {
+    const candidate = extractString(payload, key) orelse
+        extractNestedString(payload, &.{ "kwargs", key }) orelse
+        extractNestedString(payload, &.{ "extra", key }) orelse return null;
+    core.session.validateSessionIdText(candidate) catch return null;
+    return candidate;
+}
+
+fn hermesFeedDecisionTag(decision: PluginDecision) []const u8 {
+    return switch (decision) {
+        .allow => "allow",
+        .block => "deny",
+        .warn => "warn",
+        .ask => "ask",
+        .context_only => "observe",
+        .err => "error",
+    };
+}
+
+fn hermesFeedEventType(event_name: []const u8, decision: PluginDecision) []const u8 {
+    if (std.mem.eql(u8, event_name, "on_session_start")) return "hermes_session_started";
+    if (std.mem.eql(u8, event_name, "pre_tool_call")) return switch (decision) {
+        .block, .warn, .ask, .err => "hermes_tool_call_blocked",
+        else => "hermes_tool_call",
+    };
+    if (std.mem.eql(u8, event_name, "post_tool_call")) return "hermes_tool_call_completed";
+    if (std.mem.eql(u8, event_name, "pre_llm_call")) return "hermes_prompt_review";
+    if (std.mem.eql(u8, event_name, "subagent_stop")) return "hermes_subagent_stopped";
+    return "hermes_session_ended";
+}
+
+fn hermesTargetSummary(payload: std.json.Value, event_name: []const u8, buffer: []u8) []const u8 {
+    if (std.mem.eql(u8, event_name, "pre_tool_call")) return "tool call (redacted)";
+    if (std.mem.eql(u8, event_name, "post_tool_call")) return "completed tool call (redacted)";
+    if (std.mem.eql(u8, event_name, "pre_llm_call")) return "prompt (redacted)";
+    if (std.mem.eql(u8, event_name, "subagent_stop")) {
+        if (extractHermesIdentifier(payload, "task_id")) |task_id|
+            return std.fmt.bufPrint(buffer, "subagent task {s} stopped", .{task_id}) catch "subagent stopped";
+        if (extractHermesIdentifier(payload, "agent_id")) |agent_id|
+            return std.fmt.bufPrint(buffer, "subagent {s} stopped", .{agent_id}) catch "subagent stopped";
+        return "subagent stopped";
+    }
+    return "Hermes session";
 }
 
 fn daemonUnavailableReason(err: daemon.DaemonError) []const u8 {
@@ -1883,6 +1976,8 @@ test "mapHermesEvent maps known events correctly" {
     try std.testing.expectEqual(Event.PostToolUse, mapHermesEvent("post_tool_call").?);
     try std.testing.expectEqual(Event.UserPromptSubmit, mapHermesEvent("pre_llm_call").?);
     try std.testing.expectEqual(Event.SessionEnd, mapHermesEvent("on_session_end").?);
+    try std.testing.expectEqual(Event.SessionEnd, mapHermesEvent("on_session_finalize").?);
+    try std.testing.expectEqual(Event.SessionEnd, mapHermesEvent("on_session_reset").?);
     try std.testing.expectEqual(null, mapHermesEvent("post_llm_call"));
     try std.testing.expectEqual(null, mapHermesEvent("unknown.event"));
 }
@@ -1892,6 +1987,78 @@ test "isHermesInformationalEvent identifies informational events" {
     try std.testing.expect(isHermesInformationalEvent("subagent_stop"));
     try std.testing.expect(!isHermesInformationalEvent("pre_tool_call"));
     try std.testing.expect(!isHermesInformationalEvent("on_session_start"));
+}
+
+test "hermes correlation extracts nested identifiers and prefers parent for subagents" {
+    const allocator = std.testing.allocator;
+    var kwargs = try std.json.ObjectMap.init(allocator, &.{}, &.{});
+    defer kwargs.deinit(allocator);
+    try kwargs.put(allocator, "session_id", .{ .string = "child-session" });
+    try kwargs.put(allocator, "parent_session_id", .{ .string = "parent-session" });
+    try kwargs.put(allocator, "task_id", .{ .string = "task-42" });
+    var payload = try std.json.ObjectMap.init(allocator, &.{}, &.{});
+    defer payload.deinit(allocator);
+    try payload.put(allocator, "kwargs", .{ .object = kwargs });
+
+    const value = std.json.Value{ .object = payload };
+    try std.testing.expectEqualStrings("child-session", extractHermesSessionId(value, "pre_tool_call").?);
+    try std.testing.expectEqualStrings("parent-session", extractHermesSessionId(value, "subagent_stop").?);
+}
+
+test "hermes activity preserves approval decisions and marks blocks as deny" {
+    try std.testing.expectEqualStrings("allow", hermesFeedDecisionTag(.allow));
+    try std.testing.expectEqualStrings("ask", hermesFeedDecisionTag(.ask));
+    try std.testing.expectEqualStrings("warn", hermesFeedDecisionTag(.warn));
+    try std.testing.expectEqualStrings("deny", hermesFeedDecisionTag(.block));
+    try std.testing.expectEqualStrings("hermes_tool_call_blocked", hermesFeedEventType("pre_tool_call", .ask));
+    try std.testing.expectEqualStrings("hermes_prompt_review", hermesFeedEventType("pre_llm_call", .warn));
+    try std.testing.expectEqualStrings("hermes_session_started", hermesFeedEventType("on_session_start", .allow));
+    try std.testing.expectEqualStrings("hermes_tool_call_completed", hermesFeedEventType("post_tool_call", .allow));
+    try std.testing.expectEqualStrings("hermes_session_ended", hermesFeedEventType("on_session_end", .allow));
+    try std.testing.expectEqualStrings("hermes_session_ended", hermesFeedEventType("on_session_finalize", .allow));
+    try std.testing.expectEqualStrings("hermes_session_ended", hermesFeedEventType("on_session_reset", .allow));
+    try std.testing.expectEqualStrings("hermes_subagent_stopped", hermesFeedEventType("subagent_stop", .allow));
+}
+
+test "hermes tool veto persists once with session and redacted reason" {
+    const allocator = std.testing.allocator;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const root = try tmp.dir.realPathFileAlloc(std.testing.io, ".", allocator);
+    defer allocator.free(root);
+
+    var payload = try std.json.ObjectMap.init(allocator, &.{}, &.{});
+    defer payload.deinit(allocator);
+    try payload.put(allocator, "session_id", .{ .string = "hermes-session-42" });
+    try payload.put(allocator, "tool_name", .{ .string = "write" });
+
+    var redactions: std.ArrayList(RedactionEntry) = .empty;
+    var limitations: std.ArrayList([]const u8) = .empty;
+    var result = try makeInformationalResponse(
+        allocator,
+        .ask,
+        .high,
+        "tool",
+        "approval required for OPENAI_API_KEY=sk-fakeSyntheticOpenAIKey1234567890",
+        "Approval required by Orca.",
+        &redactions,
+        &limitations,
+    );
+    defer result.deinit(allocator);
+
+    recordHermesHookActivity(std.testing.io, allocator, root, "pre_tool_call", .{ .object = payload }, result);
+    const loaded = try feed_writer.loadRecent(std.testing.io, allocator, root, 4);
+    defer {
+        for (loaded) |*item| item.deinit(allocator);
+        allocator.free(loaded);
+    }
+
+    try std.testing.expectEqual(@as(usize, 1), loaded.len);
+    try std.testing.expectEqualStrings("ask", loaded[0].record.decision);
+    try std.testing.expectEqualStrings("hermes_tool_call_blocked", loaded[0].record.event_type);
+    try std.testing.expectEqualStrings("hermes-session-42", loaded[0].record.session_id.?);
+    try std.testing.expect(rust_visibility.isBlockedFeedRecord(loaded[0].record));
+    try std.testing.expect(std.mem.indexOf(u8, loaded[0].raw, "sk-fakeSyntheticOpenAIKey1234567890") == null);
 }
 test "hook codex PreToolUse with safe command returns allow" {
     var gpa_state: std.heap.DebugAllocator(.{}) = .init;

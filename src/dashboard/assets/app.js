@@ -14,6 +14,7 @@ const els = {
   blockedPreview: document.querySelector("#blockedPreview"),
   sessionList: document.querySelector("#sessionList"),
   blockedTimeline: document.querySelector("#blockedTimeline"),
+  hermesActivity: document.querySelector("#hermesActivity"),
   policyText: document.querySelector("#policyText"),
   policyHelp: document.querySelector("#policyHelp"),
   presetList: document.querySelector("#presetList"),
@@ -173,6 +174,7 @@ function renderStatus(data) {
   renderBlockedList(els.blockedPreview, data.blocked_actions, true);
   renderBlockedList(els.blockedTimeline, data.blocked_actions, false);
   renderSessions(data.sessions);
+  renderHermesActivity(data.rust_shell_decisions || []);
   if (!machineMode) renderIntegrations(data.plugins);
 }
 
@@ -388,6 +390,7 @@ function renderBlockedList(container, actions, compact) {
     <article class="timeline-item">
       <header>
         <h5>${escapeHtml(action.event_type)}</h5>
+        <span class="status-pill ${hermesDecisionClass(action.decision)}">${escapeHtml(action.decision || "deny")}</span>
         <span class="status-pill ${action.verified ? "ok" : "warn"}">${action.verified ? "verified" : "unverified"}</span>
       </header>
       <div class="meta-grid">
@@ -406,6 +409,48 @@ function renderBlockedList(container, actions, compact) {
       </div>
     </article>
   `).join("");
+}
+
+function renderHermesActivity(records) {
+  const events = records.filter((record) => record.host === "hermes");
+  if (!events.length) {
+    els.hermesActivity.innerHTML = `<div class="timeline-item"><h5>No Hermes activity yet</h5><p class="caption">Hermes hook events appear here after the integration runs.</p></div>`;
+    return;
+  }
+  els.hermesActivity.innerHTML = events.map((event) => `
+    <article class="timeline-item hermes-card">
+      <header>
+        <h5>${escapeHtml(hermesEventLabel(event.event_type))}</h5>
+        <span class="status-pill ${hermesDecisionClass(event.decision)}">${escapeHtml(event.decision || "recorded")}</span>
+      </header>
+      <div class="meta-grid">
+        ${meta("Host", "Hermes")}
+        ${meta("Session", event.session_id || "not recorded")}
+        ${meta("Target", event.target || "redacted")}
+        ${meta("Reason", event.reason || "recorded by Orca")}
+      </div>
+    </article>
+  `).join("");
+}
+
+function hermesEventLabel(eventType) {
+  const labels = {
+    hermes_session_started: "Session started",
+    hermes_session_ended: "Session ended",
+    hermes_tool_call: "Tool call reviewed",
+    hermes_tool_call_blocked: "Tool call blocked",
+    hermes_tool_call_completed: "Tool call completed",
+    hermes_prompt_review: "Prompt review",
+    hermes_subagent_stopped: "Subagent stopped",
+  };
+  return labels[eventType] || eventType || "Hermes activity";
+}
+
+function hermesDecisionClass(decision) {
+  if (decision === "ask") return "approval-required";
+  if (decision === "deny" || decision === "block" || decision === "error") return "bad";
+  if (decision === "warn") return "warn";
+  return "ok";
 }
 
 function daemonHealthLabel(status) {
@@ -437,7 +482,7 @@ function renderSessions(sessions) {
       <div class="meta-grid">
         ${meta("Command", session.command || "unknown")}
         ${meta("Workspace", session.workspace_root || state.status?.orca?.workspace_root || "unknown")}
-        ${meta("Agent", session.host || "not recorded")}
+        ${meta("Host", session.host || "not recorded")}
         ${meta("Time", session.timestamp || session.id)}
         ${meta("Policy", session.policy || "unknown")}
         ${meta("Status", session.status || "unknown")}

@@ -353,6 +353,59 @@ pub fn buildFeedRecordFromUnavailable(
     };
 }
 
+pub fn buildFeedRecordFromHookActivity(
+    allocator: std.mem.Allocator,
+    io: std.Io,
+    workspace_root: []const u8,
+    event_source: []const u8,
+    decision_source: []const u8,
+    host: ?[]const u8,
+    daemon_status: []const u8,
+    event_type: []const u8,
+    decision_tag: []const u8,
+    reason: []const u8,
+    target_summary: []const u8,
+    session_id: ?[]const u8,
+    verified: bool,
+) !RustShellFeedRecord {
+    var timestamp_buf: [32]u8 = undefined;
+    const timestamp = try core.time.Timestamp.now(io).formatIso(&timestamp_buf);
+
+    var reason_buf: [512]u8 = undefined;
+    const safe_reason = core_api.redactStringBounded(reason, &reason_buf);
+
+    var target_buf: [512]u8 = undefined;
+    const safe_target = core_api.redactStringBounded(target_summary, &target_buf);
+
+    return .{
+        .timestamp = try allocator.dupe(u8, timestamp),
+        .workspace_root = try allocator.dupe(u8, workspace_root),
+        .event_type = try allocator.dupe(u8, event_type),
+        .decision = try allocator.dupe(u8, decision_tag),
+        .decision_source = try allocator.dupe(u8, decision_source),
+        .event_source = try allocator.dupe(u8, event_source),
+        .host = if (host) |host_name| try allocator.dupe(u8, host_name) else null,
+        .daemon_status = try allocator.dupe(u8, daemon_status),
+        .pack_id = null,
+        .severity = null,
+        .reason = try allocator.dupe(u8, safe_reason),
+        .remediation = null,
+        .target_summary = try allocator.dupe(u8, safe_target),
+        .session_id = if (session_id) |sid| try allocator.dupe(u8, sid) else null,
+        .verified = verified,
+    };
+}
+
+pub fn isBlockedFeedRecord(record: RustShellFeedRecord) bool {
+    if (std.mem.eql(u8, record.decision, "deny")) return true;
+    const host = record.host orelse return false;
+    return std.mem.eql(u8, host, "hermes") and
+        std.mem.eql(u8, record.event_type, "hermes_tool_call_blocked") and
+        (std.mem.eql(u8, record.decision, "ask") or
+            std.mem.eql(u8, record.decision, "warn") or
+            std.mem.eql(u8, record.decision, "error"));
+}
+
 pub fn writeFeedRecordJson(writer: anytype, record: RustShellFeedRecord) !void {
     try writer.writeByte('{');
     try writeJsonField(writer, "timestamp", record.timestamp);

@@ -123,6 +123,39 @@ pub fn writeSessionsJson(
     workspaces: []const Workspace,
     max_count: usize,
 ) !void {
+    const feed_owned: ?[]feed_writer.LoadedFeedRecord = feed_writer.loadGlobalRecent(io, allocator, dashboard_root, 1000) catch null;
+    defer if (feed_owned) |feed| {
+        for (feed) |*item| item.deinit(allocator);
+        allocator.free(feed);
+    };
+    return writeSessionsFromFeed(io, allocator, writer, workspaces, feed_owned orelse &.{}, max_count);
+}
+
+pub fn writeWorkspaceSessionsJson(
+    io: std.Io,
+    allocator: std.mem.Allocator,
+    writer: anytype,
+    workspace_root: []const u8,
+    max_count: usize,
+) !void {
+    var workspace = try dupeWorkspace(allocator, workspace_root, "", null, false);
+    defer workspace.deinit(allocator);
+    const feed_owned: ?[]feed_writer.LoadedFeedRecord = feed_writer.loadRecent(io, allocator, workspace_root, std.math.maxInt(usize)) catch null;
+    defer if (feed_owned) |feed| {
+        for (feed) |*item| item.deinit(allocator);
+        allocator.free(feed);
+    };
+    return writeSessionsFromFeed(io, allocator, writer, &.{workspace}, feed_owned orelse &.{}, max_count);
+}
+
+fn writeSessionsFromFeed(
+    io: std.Io,
+    allocator: std.mem.Allocator,
+    writer: anytype,
+    workspaces: []const Workspace,
+    feed: []const feed_writer.LoadedFeedRecord,
+    max_count: usize,
+) !void {
     var sessions: std.ArrayList(SessionRef) = .empty;
     defer {
         for (sessions.items) |*session| session.deinit(allocator);
@@ -147,12 +180,6 @@ pub fn writeSessionsJson(
             workspace_count += 1;
         }
     }
-    const feed_owned: ?[]feed_writer.LoadedFeedRecord = feed_writer.loadGlobalRecent(io, allocator, dashboard_root, 1000) catch null;
-    defer if (feed_owned) |feed| {
-        for (feed) |*item| item.deinit(allocator);
-        allocator.free(feed);
-    };
-    const feed = feed_owned orelse &[_]feed_writer.LoadedFeedRecord{};
     for (feed) |item| {
         const session_id = item.record.session_id orelse continue;
         if (findSession(sessions.items, item.record.workspace_root, session_id)) |index| {
@@ -171,7 +198,7 @@ pub fn writeSessionsJson(
                 session.host = host;
                 session.latest_decision = decision;
             }
-            if (std.mem.eql(u8, item.record.decision, "deny")) session.denied_count += 1;
+            if (rust_visibility.isBlockedFeedRecord(item.record)) session.denied_count += 1;
             continue;
         }
         var session = try dupeSessionRef(
@@ -181,7 +208,7 @@ pub fn writeSessionsJson(
             item.record.timestamp,
             item.record.host,
             item.record.decision,
-            if (std.mem.eql(u8, item.record.decision, "deny")) 1 else 0,
+            if (rust_visibility.isBlockedFeedRecord(item.record)) 1 else 0,
             true,
         );
         sessions.append(allocator, session) catch |err| {
@@ -261,7 +288,7 @@ pub fn writeGlobalFeedJson(
     max_count: usize,
     denied_only: bool,
 ) !void {
-    const loaded = feed_writer.loadGlobalRecent(io, allocator, dashboard_root, max_count) catch {
+    const loaded = feed_writer.loadGlobalRecent(io, allocator, dashboard_root, if (denied_only) std.math.maxInt(usize) else max_count) catch {
         try writer.writeAll("[]");
         return;
     };
@@ -273,7 +300,7 @@ pub fn writeGlobalFeedJson(
     try writer.writeByte('[');
     var written: usize = 0;
     for (loaded) |item| {
-        if (denied_only and !std.mem.eql(u8, item.record.decision, "deny")) continue;
+        if (denied_only and !rust_visibility.isBlockedFeedRecord(item.record)) continue;
         if (written > 0) try writer.writeByte(',');
         try writeFeedRecordJson(writer, item.record);
         written += 1;
