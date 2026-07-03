@@ -45,7 +45,7 @@ install_zig() {
   if [[ -x "${ZIG_BIN}" ]]; then
     return 0
   fi
-  echo "Installing Zig ${WANTED} to ${INSTALL_ROOT} ..."
+  echo "Installing Zig ${WANTED} to ${INSTALL_ROOT} ..." >&2
   mkdir -p "${INSTALL_ROOT}"
   tmp="$(mktemp -d)"
   trap 'rm -rf "${tmp}"' RETURN

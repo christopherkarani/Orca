@@ -1,0 +1,34 @@
+# syntax=docker/dockerfile:1
+FROM rust:1-bookworm AS build
+
+ARG TARGETARCH
+ARG ORCA_VERSION
+ARG ORCA_COMMIT
+ARG ORCA_BUILD_DATE
+
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends ca-certificates curl file xz-utils \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /src
+COPY . .
+
+RUN case "$TARGETARCH" in \
+      amd64) zig_target=x86_64-linux ;; \
+      arm64) zig_target=aarch64-linux ;; \
+      *) echo "unsupported Docker target architecture: $TARGETARCH" >&2; exit 1 ;; \
+    esac \
+    && ./scripts/zig build install-orca \
+      -Dtarget="$zig_target" \
+      -Doptimize=ReleaseSafe \
+      -Dversion="$ORCA_VERSION" \
+      -Dcommit="$ORCA_COMMIT" \
+      -Dbuild-date="$ORCA_BUILD_DATE" \
+      --prefix /tmp/orca-cli \
+    && ./scripts/build-daemon-release.sh linux "$TARGETARCH" /tmp/orca-daemon \
+    && mkdir -p "/out/linux-$TARGETARCH" \
+    && cp -p /tmp/orca-cli/bin/orca "/out/linux-$TARGETARCH/orca" \
+    && cp -p "/tmp/orca-daemon/linux-$TARGETARCH/orca-daemon" "/out/linux-$TARGETARCH/orca-daemon"
+
+FROM scratch
+COPY --from=build /out/ /

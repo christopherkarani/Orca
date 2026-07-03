@@ -1,5 +1,11 @@
 # Orca Plugin Changelog
 
+## 1.2.7 — 2026-07-03
+
+### Changed
+- All plugins and core unified to version **1.2.7**.
+- Pi session identifiers are available to dashboard activity feeds.
+
 ## 1.2.6 — 2026-07-01
 
 ### Changed

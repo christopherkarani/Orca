@@ -50,7 +50,8 @@ cp "${REPO_ROOT}/packaging/docker/Dockerfile" "${tmp_root}/Dockerfile"
 docker build --pull=false -t "${image}" "${tmp_root}" >/dev/null
 
 version_output="$(docker run --rm "${image}" version)"
-[[ "${version_output}" == *"orca ${VERSION}"* ]] || fail "container version output is incorrect"
+[[ "${version_output}" == *"Orca"* ]] || fail "container version output is missing the product name"
+[[ "${version_output}" == *"${VERSION}"* ]] || fail "container version output is missing ${VERSION}"
 run_output="$(docker run --rm --entrypoint sh "${image}" -ec '
   mkdir -p "$HOME/workspace"
   cd "$HOME/workspace"

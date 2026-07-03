@@ -8,6 +8,7 @@ DIST_DIR="${ORCA_DIST_DIR:-dist}"
 ZIG_OPTIMIZE="${ORCA_ZIG_OPTIMIZE:-ReleaseSafe}"
 RELEASE_PRODUCT="${ORCA_RELEASE_PRODUCT:-all}"
 DAEMON_ARTIFACT_DIR="${ORCA_DAEMON_ARTIFACT_DIR:-}"
+CLI_ARTIFACT_DIR="${ORCA_CLI_ARTIFACT_DIR:-}"
 SIGNING_STATUS="not_configured"
 
 HOST_OS="$(uname -s | tr '[:upper:]' '[:lower:]')"
@@ -218,13 +219,19 @@ build_cli_target() {
   rm -rf "$work"
   mkdir -p "$prefix" "$root/bin"
 
-  "$(dirname "$0")/zig" build install-orca \
-    -Dtarget="$zig_target" \
-    -Doptimize="$ZIG_OPTIMIZE" \
-    -Dversion="$VERSION" \
-    -Dcommit="$COMMIT" \
-    -Dbuild-date="$BUILD_DATE" \
-    --prefix "$prefix"
+  staged_cli="${CLI_ARTIFACT_DIR}/${os}-${arch}/${bin_name}"
+  if [ -n "$CLI_ARTIFACT_DIR" ] && [ -f "$staged_cli" ]; then
+    mkdir -p "$prefix/bin"
+    cp -p "$staged_cli" "$prefix/bin/$bin_name"
+  else
+    "$(dirname "$0")/zig" build install-orca \
+      -Dtarget="$zig_target" \
+      -Doptimize="$ZIG_OPTIMIZE" \
+      -Dversion="$VERSION" \
+      -Dcommit="$COMMIT" \
+      -Dbuild-date="$BUILD_DATE" \
+      --prefix "$prefix"
+  fi
 
   copy_cli_payload "$root"
   write_release_readme "$root" "orca"

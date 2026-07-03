@@ -1,5 +1,13 @@
 # Changelog
 
+## v1.2.7 - 2026-07-03
+
+### Added
+- Dashboard activity feeds now surface Pi session identifiers for clearer multi-session diagnostics.
+
+### Fixed
+- Local release publishing now attaches the complete verified artifact contract, including installer checksums.
+
 ## v1.2.6 - 2026-07-01
 
 ### Changed
