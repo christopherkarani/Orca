@@ -198,7 +198,7 @@ fn serve(io: std.Io, options: DashboardOptions, stdout: anytype, stderr: anytype
 }
 
 fn resolveDashboardDistDir(io: std.Io, allocator: std.mem.Allocator, workspace_root: []const u8) ![]u8 {
-    for ([_][]const u8{ canonical_ui_dir, installed_ui_dir }) |relative_path| {
+    for ([_][]const u8{ installed_ui_dir, canonical_ui_dir }) |relative_path| {
         const resolved = resource_root.resolveResourcePath(io, allocator, .{ .workspace_root = workspace_root }, relative_path) catch continue;
         const index_path = std.fs.path.join(allocator, &.{ resolved, "index.html" }) catch |err| {
             allocator.free(resolved);
@@ -843,6 +843,21 @@ test "dashboard mode defaults to machine and honors workspace sources" {
     try std.testing.expect(dashboardWorkspaceSelection(null, true, null) == null);
     try std.testing.expectEqualStrings("/tmp/flag", dashboardWorkspaceSelection("/tmp/flag", false, null).?);
     try std.testing.expectEqualStrings("/tmp/env", dashboardWorkspaceSelection(null, false, "/tmp/env").?);
+}
+
+test "dashboard prefers the polished installed bundle" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try tmp.dir.createDirPath(std.testing.io, "src/dashboard/assets");
+    try tmp.dir.createDirPath(std.testing.io, "orca-dashboard-ui/dist");
+    try tmp.dir.writeFile(std.testing.io, .{ .sub_path = "src/dashboard/assets/index.html", .data = "legacy" });
+    try tmp.dir.writeFile(std.testing.io, .{ .sub_path = "orca-dashboard-ui/dist/index.html", .data = "polished" });
+    const root = try tmp.dir.realPathFileAlloc(std.testing.io, ".", std.testing.allocator);
+    defer std.testing.allocator.free(root);
+
+    const resolved = try resolveDashboardDistDir(std.testing.io, std.testing.allocator, root);
+    defer std.testing.allocator.free(resolved);
+    try std.testing.expect(std.mem.endsWith(u8, resolved, installed_ui_dir));
 }
 
 test "dashboard parses machine and workspace flags" {

@@ -105,7 +105,7 @@ pub fn writeMachineStatusJson(
     try writer.writeAll(",\"workspace_root\":null},\"policy\":null,\"secretless_runtime\":null,\"license\":");
     try writeLicenseJson(io, allocator, writer);
     try writer.writeAll(",\"ci_readiness\":null,\"plugins\":[],\"sessions\":");
-    try aggregate.writeSessionsJson(io, allocator, writer, workspaces, 20);
+    try aggregate.writeSessionsJson(io, allocator, writer, dashboard_root, workspaces, 20);
     try writer.writeAll(",\"daemon_health\":");
     try writeDaemonHealthJson(allocator, writer);
     try writer.writeAll(",\"rust_shell_decisions\":");
@@ -328,7 +328,7 @@ pub fn writeMachineSessionsJson(
     const workspaces = try aggregate.loadWorkspaces(io, allocator, dashboard_root);
     defer aggregate.deinitWorkspaces(allocator, workspaces);
     try writer.writeAll("{\"sessions\":");
-    try aggregate.writeSessionsJson(io, allocator, writer, workspaces, 50);
+    try aggregate.writeSessionsJson(io, allocator, writer, dashboard_root, workspaces, 50);
     try writer.writeAll(",\"blocked_actions\":");
     try aggregate.writeGlobalFeedJson(io, allocator, writer, dashboard_root, 100, true);
     try writer.writeByte('}');
@@ -1082,4 +1082,41 @@ test "machine status aggregates registered workspaces and exposes only global ac
     try std.testing.expect(std.mem.indexOf(u8, out, "\"id\":\"doctor\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, out, "\"id\":\"license-status\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, out, "replay-last") == null);
+}
+
+test "machine status includes feed-backed Pi sessions" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const root = try tmp.dir.realPathFileAlloc(std.testing.io, ".", std.testing.allocator);
+    defer std.testing.allocator.free(root);
+    const dashboard_root = try std.fs.path.join(std.testing.allocator, &.{ root, "home", ".orca", "dashboard" });
+    defer std.testing.allocator.free(dashboard_root);
+
+    for ([_][]const u8{ "deny", "allow" }) |decision| {
+        var record = try rust_visibility.buildFeedRecordFromHookDecision(
+            std.testing.allocator,
+            std.testing.io,
+            root,
+            "pi",
+            "healthy",
+            decision,
+            "Pi decision",
+            null,
+            null,
+            null,
+            null,
+            "pi-session-42",
+        );
+        defer record.deinit(std.testing.allocator);
+        try feed_writer.appendGlobalRecord(std.testing.io, std.testing.allocator, dashboard_root, record);
+    }
+
+    var aw: std.Io.Writer.Allocating = .init(std.testing.allocator);
+    try writeMachineStatusJson(std.testing.io, std.testing.allocator, &aw.writer, dashboard_root);
+    const out = try aw.toOwnedSlice();
+    defer std.testing.allocator.free(out);
+
+    try std.testing.expect(std.mem.indexOf(u8, out, "\"id\":\"pi-session-42\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "\"host\":\"pi\"") != null);
+    try std.testing.expectEqual(@as(usize, 1), std.mem.count(u8, out, "\"id\":\"pi-session-42\""));
 }

@@ -43,7 +43,7 @@ Machine-wide mode reads Orca's local workspace registry and global decision feed
 
 - Registered workspaces and their most recently observed agent host
 - Recent Rust daemon decisions across Pi, Codex, Claude, OpenCode, `orca run`, and other hook paths
-- Sessions merged from each registered workspace's `.orca/sessions` directory
+- Sessions merged from registered workspace `.orca/sessions` directories and feed-backed agent sessions such as Pi
 - Denied shell decisions with `workspace_root`, `host`, and recording source
 - Machine-wide daemon health and local license status
 
