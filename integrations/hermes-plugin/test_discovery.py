@@ -57,6 +57,50 @@ class HermesPluginDiscoveryTests(unittest.TestCase):
             result = _PLUGIN._handle_hook_error(ctx, "pre_tool_call", exc)
         self.assertIsNone(result)
 
+    def test_pre_tool_call_blocks_policy_veto_decisions(self) -> None:
+        for decision in ("block", "warn", "ask"):
+            with self.subTest(decision=decision):
+                ctx = mock.Mock()
+                _PLUGIN._register(ctx, "pre_tool_call")
+                handler = ctx.register_hook.call_args.args[1]
+                with mock.patch.object(
+                    _PLUGIN,
+                    "_call_orca",
+                    return_value={"decision": decision, "message": f"{decision} by Orca"},
+                ):
+                    result = handler(tool_name="terminal", args={"command": "rm -rf /"})
+                self.assertEqual(
+                    result,
+                    {"action": "block", "message": f"{decision} by Orca"},
+                )
+
+    def test_pre_tool_call_allows_only_explicit_allow(self) -> None:
+        ctx = mock.Mock()
+        _PLUGIN._register(ctx, "pre_tool_call")
+        handler = ctx.register_hook.call_args.args[1]
+        with mock.patch.object(_PLUGIN, "_call_orca", return_value={"decision": "allow"}):
+            self.assertIsNone(handler(tool_name="terminal", args={"command": "git status"}))
+
+        for malformed in ([], "error", "unexpected"):
+            with self.subTest(decision=malformed):
+                with mock.patch.object(_PLUGIN, "_call_orca", return_value={"decision": malformed}):
+                    result = handler(tool_name="terminal", args={"command": "git status"})
+                self.assertEqual(result.get("action"), "block")
+
+    def test_pre_llm_call_remains_context_only_for_non_allowing_decisions(self) -> None:
+        for decision in ("block", "warn", "ask"):
+            with self.subTest(decision=decision):
+                ctx = mock.Mock()
+                _PLUGIN._register(ctx, "pre_llm_call")
+                handler = ctx.register_hook.call_args.args[1]
+                with mock.patch.object(
+                    _PLUGIN,
+                    "_call_orca",
+                    return_value={"decision": decision, "message": f"{decision} by Orca"},
+                ):
+                    result = handler(session_id="session-1", user_message="review me")
+                self.assertEqual(result, {"context": f"Orca policy note: {decision} by Orca"})
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -404,6 +404,16 @@ textarea {
   color: var(--danger);
 }
 
+.status-pill.approval-required {
+  color: var(--warning);
+  border-style: dashed;
+  background: #fff8e8;
+}
+
+.hermes-card {
+  border-left: 3px solid var(--warning);
+}
+
 .timeline {
   display: grid;
   gap: 10px;

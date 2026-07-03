@@ -36,6 +36,8 @@ test "phase 44 VERSION matches install script defaults" {
     defer std.testing.allocator.free(build_release);
     try expectContains(build_release, "../VERSION");
     try expectContains(build_release, "orca-daemon");
+    try expectContains(build_release, "if [ -d \"orca-dashboard-ui/dist\" ]");
+    try expectContains(build_release, "cp -R orca-dashboard-ui/dist");
 
     const render_manifests = try readFile("scripts/render-package-manifests.sh");
     defer std.testing.allocator.free(render_manifests);

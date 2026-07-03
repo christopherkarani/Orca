@@ -24,6 +24,7 @@
   },
   "scripts": {
     "build": "tsc -p tsconfig.json",
+    "test": "npm run build && node --test test/index.test.mjs",
     "pack:dry-run": "npm pack --dry-run"
   },
   "repository": {

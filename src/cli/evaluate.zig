@@ -22,12 +22,14 @@ pub const exit_internal_error: u8 = 1;
 pub const EvaluateRequest = struct {
     schema_version: i64,
     request_id: ?[]const u8 = null,
+    session_id: ?[]const u8 = null,
     host: ?[]const u8 = null,
     command: []const u8,
     cwd: []const u8,
 
     fn deinit(self: EvaluateRequest, allocator: std.mem.Allocator) void {
         if (self.request_id) |id| allocator.free(id);
+        if (self.session_id) |id| allocator.free(id);
         if (self.host) |host| allocator.free(host);
         allocator.free(self.command);
         allocator.free(self.cwd);
@@ -214,7 +216,7 @@ fn recordEvaluationBestEffort(
         request.host,
         "healthy",
         result,
-        request.request_id,
+        request.session_id orelse request.request_id,
         false,
     ) catch return;
     defer record.deinit(allocator);
@@ -239,7 +241,7 @@ fn recordUnavailableEvaluationBestEffort(
         event_source_evaluate,
         request.host,
         err,
-        request.request_id,
+        request.session_id orelse request.request_id,
         false,
     ) catch return;
     defer record.deinit(allocator);
@@ -316,6 +318,8 @@ fn parseRequest(io: std.Io, allocator: std.mem.Allocator, payload: []const u8) (
 
     const owned_request_id = if (stringField(object, "request_id")) |id| try allocator.dupe(u8, id) else null;
     errdefer if (owned_request_id) |id| allocator.free(id);
+    const owned_session_id = if (nestedStringField(object, "source", "session_id")) |id| try allocator.dupe(u8, id) else null;
+    errdefer if (owned_session_id) |id| allocator.free(id);
     const owned_host = if (nestedStringField(object, "source", "host")) |host| try allocator.dupe(u8, host) else null;
     errdefer if (owned_host) |host| allocator.free(host);
     const owned_command = try allocator.dupe(u8, command_text);
@@ -324,6 +328,7 @@ fn parseRequest(io: std.Io, allocator: std.mem.Allocator, payload: []const u8) (
     return .{
         .schema_version = schema_version,
         .request_id = owned_request_id,
+        .session_id = owned_session_id,
         .host = owned_host,
         .command = owned_command,
         .cwd = canonical_cwd,
@@ -691,7 +696,7 @@ fn testCwd(allocator: std.mem.Allocator) ![]u8 {
 fn validPayload(allocator: std.mem.Allocator, command_text: []const u8, cwd: []const u8) ![]u8 {
     return std.fmt.allocPrint(
         allocator,
-        "{{\"schema_version\":1,\"request_id\":\"req-1\",\"kind\":\"shell_command\",\"command\":\"{s}\",\"cwd\":\"{s}\",\"source\":{{\"host\":\"pi\",\"tool_name\":\"bash\",\"mode\":\"tui\"}}}}",
+        "{{\"schema_version\":1,\"request_id\":\"req-1\",\"kind\":\"shell_command\",\"command\":\"{s}\",\"cwd\":\"{s}\",\"source\":{{\"host\":\"pi\",\"tool_name\":\"bash\",\"mode\":\"tui\",\"session_id\":\"pi-session-42\"}}}}",
         .{ command_text, cwd },
     );
 }
@@ -707,6 +712,7 @@ test "evaluate parses a valid request and canonicalizes cwd" {
     defer request.deinit(allocator);
     try std.testing.expectEqual(api_schema_version, request.schema_version);
     try std.testing.expectEqualStrings("req-1", request.request_id.?);
+    try std.testing.expectEqualStrings("pi-session-42", request.session_id.?);
     try std.testing.expectEqualStrings("pi", request.host.?);
     try std.testing.expectEqualStrings("git status", request.command);
     try std.testing.expect(std.fs.path.isAbsolute(request.cwd));
@@ -786,7 +792,7 @@ test "evaluate records Pi decisions in workspace and global feeds" {
     }
     try std.testing.expectEqual(@as(usize, 1), workspace_records.len);
     try std.testing.expectEqualStrings("pi", workspace_records[0].record.host.?);
-    try std.testing.expectEqualStrings("req-1", workspace_records[0].record.session_id.?);
+    try std.testing.expectEqualStrings("pi-session-42", workspace_records[0].record.session_id.?);
     try std.testing.expectEqualStrings(root, workspace_records[0].record.workspace_root);
 
     const global_events = try std.fs.path.join(std.testing.allocator, &.{ dashboard_root, feed_writer.global_events_file_name });

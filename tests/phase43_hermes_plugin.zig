@@ -75,6 +75,10 @@ test "hermes plugin readme documents install and limits" {
     try std.testing.expect(std.mem.indexOf(u8, content, "install-orca-plugin.sh hermes") != null);
     try std.testing.expect(std.mem.indexOf(u8, content, "pre_gateway_dispatch") != null);
     try std.testing.expect(std.mem.indexOf(u8, content, "orca run -- hermes") != null);
+    try std.testing.expect(std.mem.indexOf(u8, content, "`block`, `warn`, and `ask`") != null);
+    try std.testing.expect(std.mem.indexOf(u8, content, "context-only") != null);
+    try std.testing.expect(std.mem.indexOf(u8, content, "Telegram and Discord") != null);
+    try std.testing.expect(std.mem.indexOf(u8, content, "native approval dialog") != null);
 }
 
 test "all hermes fixtures exist" {

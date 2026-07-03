@@ -115,24 +115,24 @@ fn runAutoSetup(io: std.Io, cwd: std.Io.Dir, preset: []const u8, stdout: anytype
             const install_argv = &[_][]const u8{ self_exe, "plugin", "install", host_name, "--yes" };
             const install_code = runChild(io, install_argv);
             if (install_code) |code| {
-                if (code != 0) {
+                const outcome = plugin.verifyHostInstallAfterChild(io, allocator, host_name, code);
+                if (outcome == .failed) {
                     try spinner.stop(false);
-                    try stdout.print(" (exit code {d})\n", .{code});
+                    try stdout.print(" verification failed (installer exit {d})\n", .{code});
                     failure_count += 1;
                     continue;
                 }
                 try spinner.stop(true);
-                try stdout.writeAll("\n");
+                if (outcome == .installed_after_child_failure)
+                    try stdout.print(" verified (installer exited {d})\n", .{code})
+                else
+                    try stdout.writeAll(" verified\n");
             } else |err| {
                 try spinner.stop(false);
                 try stdout.print(" ({s})\n", .{@errorName(err)});
                 failure_count += 1;
                 continue;
             }
-
-            const refreshed_report = try plugin.collectPluginDoctorReport(io, allocator);
-            plugin.deinitPluginDoctorReport(&doctor_report, allocator);
-            doctor_report = refreshed_report;
         }
 
         if (std.mem.eql(u8, host_name, "hermes")) {
@@ -368,13 +368,17 @@ fn runGuidedSetup(
             failure_count += 1;
             continue;
         };
-        if (code == 0) {
+        const outcome = plugin.verifyHostInstallAfterChild(io, allocator, host_name, code);
+        if (outcome != .failed) {
             try spinner.stop(true);
-            try stdout.writeAll("installed\n");
+            if (outcome == .installed_after_child_failure)
+                try stdout.print("installed (verified; installer exited {d})\n", .{code})
+            else
+                try stdout.writeAll("installed (verified)\n");
             try installed_hosts.append(allocator, try allocator.dupe(u8, host_name));
         } else {
             try spinner.stop(false);
-            try stdout.print("failed (exit {d})\n", .{code});
+            try stdout.print("failed verification (installer exit {d})\n", .{code});
             failure_count += 1;
         }
     }

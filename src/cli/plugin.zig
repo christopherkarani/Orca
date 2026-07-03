@@ -1657,6 +1657,28 @@ pub fn hostPluginInstalledFromReport(host_name: []const u8, report: PluginDoctor
     return false;
 }
 
+pub const HostInstallOutcome = enum {
+    installed,
+    installed_after_child_failure,
+    failed,
+};
+
+pub fn classifyHostInstallOutcome(child_exit_code: u8, installed_after: bool) HostInstallOutcome {
+    if (!installed_after) return .failed;
+    return if (child_exit_code == 0) .installed else .installed_after_child_failure;
+}
+
+pub fn verifyHostInstallAfterChild(
+    io: std.Io,
+    allocator: std.mem.Allocator,
+    host_name: []const u8,
+    child_exit_code: u8,
+) HostInstallOutcome {
+    var report = collectPluginDoctorReport(io, allocator) catch return .failed;
+    defer deinitPluginDoctorReport(&report, allocator);
+    return classifyHostInstallOutcome(child_exit_code, hostPluginInstalledFromReport(host_name, report));
+}
+
 pub fn hostPluginInstalledFromDoctorJson(host_name: []const u8, root: std.json.Value) bool {
     if (std.mem.eql(u8, host_name, "hermes")) {
         const paths = root.object.get("hermes_paths") orelse return false;
@@ -1947,6 +1969,13 @@ test "plugin doctor prints expected sections" {
     try std.testing.expect(std.mem.indexOf(u8, output, "Drone workstream:") == null);
     try std.testing.expect(std.mem.indexOf(u8, output, "Platform:") != null);
     try std.testing.expectEqualStrings("", stderr_writer.buffered());
+}
+
+test "host install outcome trusts refreshed doctor state over child exit" {
+    try std.testing.expectEqual(HostInstallOutcome.installed, classifyHostInstallOutcome(0, true));
+    try std.testing.expectEqual(HostInstallOutcome.installed_after_child_failure, classifyHostInstallOutcome(17, true));
+    try std.testing.expectEqual(HostInstallOutcome.failed, classifyHostInstallOutcome(0, false));
+    try std.testing.expectEqual(HostInstallOutcome.failed, classifyHostInstallOutcome(17, false));
 }
 
 fn collectPluginDoctorReportFailureHarness(allocator: std.mem.Allocator) !void {

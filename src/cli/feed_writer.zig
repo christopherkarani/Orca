@@ -258,7 +258,7 @@ fn loadRecentFromPath(
         out[index] = item;
     }
     for (stack.items[0..start]) |*item| item.deinit(allocator);
-    allocator.free(stack.items);
+    stack.deinit(allocator);
     return out;
 }
 

@@ -319,10 +319,14 @@ def _register(ctx: Any, event: str) -> None:
             return _handle_hook_error(ctx, event, exc)
 
         decision = response.get("decision", "allow")
-        if event == "pre_tool_call" and decision == "block":
-            message = response.get("message") or response.get("reason") or "blocked by Orca"
-            return {"action": "block", "message": message}
-        if event == "pre_llm_call" and decision in {"block", "warn", "ask"}:
+        if event == "pre_tool_call":
+            if decision == "allow":
+                return None
+            if isinstance(decision, str) and decision in ("block", "warn", "ask"):
+                message = response.get("message") or response.get("reason") or "blocked by Orca"
+                return {"action": "block", "message": message}
+            return {"action": "block", "message": "Orca returned an invalid tool decision; blocked fail-closed."}
+        if event == "pre_llm_call" and isinstance(decision, str) and decision in ("block", "warn", "ask"):
             message = response.get("message") or response.get("reason") or "Review this prompt under Orca policy."
             return {"context": f"Orca policy note: {message}"}
         return None

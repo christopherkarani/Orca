@@ -869,6 +869,15 @@ test("buildEvaluateRequest resolves relative cwd", () => {
 	assert.equal(request.cwd, resolve("."));
 });
 
+test("buildEvaluateRequest includes the stable Pi session id", () => {
+	const request = buildEvaluateRequest("git status", {
+		cwd: process.cwd(),
+		mode: "tui",
+		sessionManager: { getSessionId: () => "pi-session-42" },
+	});
+	assert.equal(request.source.session_id, "pi-session-42");
+});
+
 test("Orca timeout follows unavailable policy", async () => {
 	const { pi, handlers } = makePi();
 	const spawn = (): FakeChild => {

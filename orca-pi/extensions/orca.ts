@@ -129,6 +129,7 @@ export type OrcaEvaluateRequest = {
 		host: "pi";
 		tool_name: "bash";
 		mode?: string;
+		session_id?: string;
 	};
 };
 
@@ -264,6 +265,7 @@ export function buildEvaluateRequest(
 			host: "pi",
 			tool_name: "bash",
 			mode: ctx.mode,
+			session_id: sessionKey(ctx),
 		},
 	};
 }
