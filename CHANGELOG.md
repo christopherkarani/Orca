@@ -1,5 +1,10 @@
 # Changelog
 
+## v1.2.8 - 2026-07-04
+
+### Changed
+- Version bump to 1.2.8 across all manifests and plugins.
+
 ## v1.2.7 - 2026-07-03
 
 ### Added
