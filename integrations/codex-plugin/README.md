@@ -52,6 +52,7 @@ Expected output sections:
 |-------|---------|
 | `orca-doctor` | Check Orca installation, policy, and plugin readiness |
 | `orca-init` | Create or repair an Orca policy for the current repo |
+| `orca-release` | Cut, verify, and publish an Orca release locally |
 | `orca-protect` | Explain how to run Codex under Orca protection |
 | `orca-redteam` | Run deterministic red-team fixtures |
 | `orca-replay` | Show and explain the latest Orca session replay |

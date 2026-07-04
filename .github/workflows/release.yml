@@ -70,6 +70,30 @@ jobs:
           echo "ORCA_VERSION=$ORCA_VERSION" >> "$GITHUB_ENV"
           echo "ORCA_COMMIT=${GITHUB_SHA::12}" >> "$GITHUB_ENV"
           echo "ORCA_BUILD_DATE=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$GITHUB_ENV"
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: orca-dashboard-ui/package-lock.json
+      - name: Build Next.js dashboard
+        shell: bash
+        working-directory: orca-dashboard-ui
+        run: |
+          npm ci
+          npm run build
+      - name: Verify dashboard build
+        shell: bash
+        run: |
+          if [ ! -f "orca-dashboard-ui/dist/index.html" ]; then
+            echo "::error::Dashboard build did not produce orca-dashboard-ui/dist/index.html"
+            exit 1
+          fi
+          if ! grep -q 'class="[^"]*dark[^"]*"' orca-dashboard-ui/dist/index.html; then
+            echo "::error::Dashboard build output is not the dark Next.js dashboard (missing dark class on <html>)"
+            exit 1
+          fi
+          echo "Dashboard build verified: dark Next.js dashboard present with _next/static/ output."
       - name: Download daemon artifacts
         uses: actions/download-artifact@v4
         with:

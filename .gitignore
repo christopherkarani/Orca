@@ -6,6 +6,11 @@ zig-out/
 dist/
 dist/work/
 dist-dry-run/
+
+# Release build artifacts (toolchain, clean tree snapshots, npm cache)
+.release-zig/
+.release-clean-*
+.release-npm-cache/
 *.o
 *.obj
 *.a

@@ -89,10 +89,10 @@ copy_cli_payload() {
     mkdir -p "$root/orca-dashboard-ui"
     cp -R orca-dashboard-ui/dist "$root/orca-dashboard-ui/dist"
   elif [ -f "src/dashboard/assets/index.html" ]; then
-    mkdir -p "$root/orca-dashboard-ui/dist/assets"
-    cp src/dashboard/assets/index.html "$root/orca-dashboard-ui/dist/index.html"
-    cp src/dashboard/assets/app.css "$root/orca-dashboard-ui/dist/assets/app.css"
-    cp src/dashboard/assets/app.js "$root/orca-dashboard-ui/dist/assets/app.js"
+    printf 'error: orca-dashboard-ui/dist/ missing but legacy src/dashboard/assets/ exists.\n' >&2
+    printf 'error: Run "npm ci && npm run build" in orca-dashboard-ui/ before creating a release.\n' >&2
+    printf 'error: The legacy fallback has been intentionally removed to prevent shipping the wrong dashboard.\n' >&2
+    exit 1
   else
     printf 'warning: dashboard UI assets not found; orca dashboard will be unavailable in this artifact.\n' >&2
   fi
