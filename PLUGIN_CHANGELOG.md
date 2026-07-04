@@ -1,5 +1,10 @@
 # Orca Plugin Changelog
 
+## 1.2.8 — 2026-07-04
+
+### Changed
+- All plugins and core unified to version **1.2.8**.
+
 ## 1.2.7 — 2026-07-03
 
 ### Changed

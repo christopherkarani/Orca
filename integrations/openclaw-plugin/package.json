@@ -1,6 +1,6 @@
 {
   "name": "orca-openclaw-plugin",
-  "version": "1.2.7",
+  "version": "1.2.8",
   "description": "OpenClaw plugin wrapper for Orca runtime guardrails.",
   "type": "module",
   "main": "dist/index.js",
