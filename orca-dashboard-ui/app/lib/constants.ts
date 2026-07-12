@@ -1,0 +1,62 @@
+export const STATUS_POLL_INTERVAL = 30000;
+
+export const ACTION_IDS = [
+  "doctor",
+  "policy-check",
+  "credentials-check",
+  "credentials-check-github",
+  "proxy-smoke",
+  "policy-explain-github",
+  "replay-last",
+  "report-last",
+  "ci-check",
+  "demo-blocked-action",
+  "license-status",
+  "openclaw-doctor",
+  "hermes-doctor",
+  "replay-denied",
+] as const;
+
+export type ActionId = (typeof ACTION_IDS)[number];
+
+export const ACTION_LABELS: Record<string, string> = {
+  doctor: "Run Doctor",
+  "policy-check": "Policy Check",
+  "credentials-check": "Credentials Check",
+  "credentials-check-github": "Check GitHub PAT",
+  "proxy-smoke": "Proxy Smoke Test",
+  "policy-explain-github": "Explain GitHub Policy",
+  "replay-last": "Replay Last Session",
+  "report-last": "Report Last Session",
+  "ci-check": "CI Check",
+  "demo-blocked-action": "Demo Blocked Action",
+  "license-status": "License Status",
+  "openclaw-doctor": "OpenClaw Doctor",
+  "hermes-doctor": "Hermes Doctor",
+  "replay-denied": "Replay Denied",
+};
+
+export const ACTION_ICONS: Record<string, string> = {
+  doctor: "Stethoscope",
+  "policy-check": "ShieldCheck",
+  "credentials-check": "KeyRound",
+  "credentials-check-github": "Github",
+  "proxy-smoke": "Wifi",
+  "policy-explain-github": "FileText",
+  "replay-last": "RotateCcw",
+  "report-last": "FileBarChart",
+  "ci-check": "GitBranch",
+  "demo-blocked-action": "Ban",
+  "license-status": "BadgeCheck",
+  "openclaw-doctor": "Plug",
+  "hermes-doctor": "MessageSquare",
+  "replay-denied": "XCircle",
+};
+
+export const VIEW_TITLES: Record<string, string> = {
+  overview: "Overview",
+  secretless: "Secretless",
+  activity: "Activity",
+  policy: "Policy",
+  integrations: "Integrations",
+};
