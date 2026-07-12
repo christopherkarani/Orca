@@ -23,6 +23,14 @@ pub const Session = core_mod.session.Session;
 pub const SessionId = core_mod.session.SessionId;
 pub const EventId = core_mod.event.EventId;
 
+pub fn redactAlloc(allocator: std.mem.Allocator, value: []const u8) ![]u8 {
+    return audit.redact_bridge.redactAlloc(allocator, value);
+}
+
+pub fn isSensitiveRedactionKey(value: []const u8) bool {
+    return audit.redact_bridge.isSensitiveKey(value);
+}
+
 const PolicyInner = struct {
     value: policy_engine.schema.Policy,
     allocator: std.mem.Allocator,

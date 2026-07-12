@@ -215,7 +215,9 @@ fn commandWithStdioAndEnv(io: std.Io, argv: []const []const u8, stdout: anytype,
             }
             if (self.proxy_bind) |bind| try self.auditNetworkDecision(session, bind, .network_proxy_start, .{ .result = .observe, .reason = "proxy-mediated network backend started", .ci_may_proceed = true });
             try self.auditNetworkStartupEvents(session);
-            const display = try intercept.commands.displayArgvAlloc(self.allocator, self.command_argv);
+            const raw_display = try intercept.commands.displayArgvAlloc(self.allocator, self.command_argv);
+            defer self.allocator.free(raw_display);
+            const display = try intercept.commands.displayArgvRedactedAlloc(self.allocator, self.command_argv);
             defer self.allocator.free(display);
 
             try self.auditCommandEvent(session, .command_attempt, rust_visibility.target_summary_shell, null, .{});
@@ -245,7 +247,7 @@ fn commandWithStdioAndEnv(io: std.Io, argv: []const []const u8, stdout: anytype,
             var final_decision = command_decision.decision;
             var approval_reason: ?[]const u8 = null;
             defer if (approval_reason) |reason| self.allocator.free(reason);
-            const already_approved = self.approvals.contains(display);
+            const already_approved = self.approvals.contains(raw_display);
             if (already_approved and final_decision.result == .ask) {
                 approval_reason = try std.fmt.allocPrint(self.allocator, "session approval matched command: {s}", .{display});
                 final_decision = .{
@@ -259,12 +261,12 @@ fn commandWithStdioAndEnv(io: std.Io, argv: []const []const u8, stdout: anytype,
                 const choice = try self.resolveApproval(command_decision, display);
                 switch (choice) {
                     .allow_once, .allow_session => {
-                        if (choice == .allow_session) try self.approvals.allowForSession(display, command_decision.decision.reason);
+                        if (choice == .allow_session) try self.approvals.allowForSession(raw_display, command_decision.decision.reason);
                         try intercept.commands.appendApprovalHashEnv(
                             self.allocator,
                             self.env_map,
                             if (choice == .allow_session) intercept.commands.approved_session_env else intercept.commands.approved_once_env,
-                            display,
+                            raw_display,
                         );
                         approval_reason = try std.fmt.allocPrint(self.allocator, "user approved command {s}", .{if (choice == .allow_session) "for this session" else "once"});
                         final_decision = .{
@@ -298,7 +300,7 @@ fn commandWithStdioAndEnv(io: std.Io, argv: []const []const u8, stdout: anytype,
             // can read it after this closure returns. `owned_rule_id` carries the
             // daemon's pattern_name (e.g. "rm-rf-root-home"); null on fail-closed.
             if (command_decision.owned_rule_id) |rid| {
-                self.last_denied_rule_id = try self.allocator.dupe(u8, rid);
+                self.last_denied_rule_id = try core_api.redactAlloc(self.allocator, rid);
             }
             return error.CommandDenied;
         }
@@ -407,12 +409,16 @@ fn commandWithStdioAndEnv(io: std.Io, argv: []const []const u8, stdout: anytype,
             }
             var stdin_buf: [1024]u8 = undefined;
             var stdin_reader = stdin_file.readerStreaming(self.io, &stdin_buf);
+            const safe_policy_reason = try core_api.redactAlloc(self.allocator, command_decision.decision.reason);
+            defer self.allocator.free(safe_policy_reason);
+            const safe_rule = if (command_decision.decision.rule_id) |rule| try core_api.redactAlloc(self.allocator, rule) else null;
+            defer if (safe_rule) |rule| self.allocator.free(rule);
             return intercept.approvals.prompt(&stdin_reader.interface, self.stderr, .{
                 .command = display,
                 .risk_class = command_decision.classification.risk_class.toString(),
                 .risk_reason = command_decision.classification.reason,
-                .policy_reason = command_decision.decision.reason,
-                .matched_rule = command_decision.decision.rule_id,
+                .policy_reason = safe_policy_reason,
+                .matched_rule = safe_rule,
             });
         }
 
@@ -1022,7 +1028,7 @@ fn renderDenyBlock(
     try body.append(allocator, try std.fmt.allocPrint(allocator, "Policy     {s} · mode {s}", .{ policy_path orelse "built-in", policy_mode }));
 
     // Panel title = the denied command, prefixed with the deny glyph.
-    const command_display = try intercept.commands.displayArgvAlloc(allocator, command_argv);
+    const command_display = try intercept.commands.displayArgvRedactedAlloc(allocator, command_argv);
     defer allocator.free(command_display);
     const title = try std.fmt.allocPrint(allocator, "✗  {s}", .{command_display});
     defer allocator.free(title);

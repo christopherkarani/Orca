@@ -3,6 +3,7 @@ const builtin = @import("builtin");
 
 const core = @import("orca_core").core;
 const policy = @import("orca_core").policy;
+const core_api = @import("orca_core").api;
 
 pub const implemented = true;
 
@@ -58,6 +59,36 @@ pub fn displayArgvAlloc(allocator: std.mem.Allocator, argv: []const []const u8) 
         if (list.items.len > core.limits.max_command_len) return error.CommandTooLong;
     }
     return try list.toOwnedSlice(allocator);
+}
+
+pub fn displayArgvRedactedAlloc(allocator: std.mem.Allocator, argv: []const []const u8) ![]u8 {
+    if (argv.len == 0) return error.InvalidCommand;
+    var list: std.ArrayList(u8) = .empty;
+    errdefer list.deinit(allocator);
+    var redact_next = false;
+    for (argv, 0..) |arg, index| {
+        if (arg.len == 0) continue;
+        if (index > 0) try appendBounded(&list, allocator, " ");
+        const shown = if (redact_next)
+            try allocator.dupe(u8, "[REDACTED]")
+        else
+            try core_api.redactAlloc(allocator, arg);
+        defer allocator.free(shown);
+        try appendShellDisplayArg(&list, allocator, shown);
+        redact_next = !redact_next and core_api.isSensitiveRedactionKey(arg) and std.mem.indexOfScalar(u8, arg, '=') == null;
+        if (list.items.len > core.limits.max_command_len) return error.CommandTooLong;
+    }
+    return list.toOwnedSlice(allocator);
+}
+
+test "redacted argv display preserves evaluation input and hides flag secrets" {
+    const argv = [_][]const u8{ "curl", "--password", "correct horse battery staple", "--token=another-secret-value", "https://example.invalid" };
+    const display = try displayArgvRedactedAlloc(std.testing.allocator, &argv);
+    defer std.testing.allocator.free(display);
+    try std.testing.expect(std.mem.indexOf(u8, display, "correct horse") == null);
+    try std.testing.expect(std.mem.indexOf(u8, display, "another-secret") == null);
+    try std.testing.expect(std.mem.indexOf(u8, display, "https://example.invalid") != null);
+    try std.testing.expectEqualStrings("correct horse battery staple", argv[2]);
 }
 
 pub fn classifyArgv(argv: []const []const u8) Classification {

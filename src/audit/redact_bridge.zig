@@ -11,6 +11,147 @@ const EnvAssignment = struct {
 };
 
 pub const redacted_value = "[REDACTED]";
+const max_structured_input = 64 * 1024;
+
+/// Returns an owned copy with secret-bearing spans replaced. The scan is bounded
+/// and intentionally presentation-oriented: callers must continue to evaluate
+/// and execute the original value.
+pub fn redactAlloc(allocator: std.mem.Allocator, value: []const u8) ![]u8 {
+    if (value.len > max_structured_input) return allocator.dupe(u8, redacted_value);
+    if (try encodedContainsSecret(allocator, value)) return allocator.dupe(u8, redacted_value);
+    var out: std.ArrayList(u8) = .empty;
+    errdefer out.deinit(allocator);
+    var start: usize = 0;
+    var i: usize = 0;
+    while (i < value.len) {
+        const match = findStructuredSecret(value, i) orelse break;
+        try out.appendSlice(allocator, value[start..match.start]);
+        try out.appendSlice(allocator, redacted_value);
+        start = match.end;
+        i = match.end;
+    }
+    if (start == 0) {
+        if (classifyString(value) != null) return allocator.dupe(u8, redacted_value);
+        return allocator.dupe(u8, value);
+    }
+    try out.appendSlice(allocator, value[start..]);
+    return out.toOwnedSlice(allocator);
+}
+
+const SecretSpan = struct { start: usize, end: usize };
+
+fn findStructuredSecret(value: []const u8, from: usize) ?SecretSpan {
+    var i = from;
+    while (i < value.len) : (i += 1) {
+        // Provider tokens are case-insensitive at presentation boundaries.
+        const prefixes = [_][]const u8{ "github_pat_", "ghp_", "gho_", "ghu_", "ghs_", "ghr_", "sk-ant-", "sk-" };
+        for (prefixes) |prefix| {
+            if (startsWithIgnoreCase(value[i..], prefix)) {
+                var end = i + prefix.len;
+                while (end < value.len and isTokenChar(value[end])) : (end += 1) {}
+                if (end - i >= 20) return .{ .start = i, .end = end };
+            }
+        }
+
+        if (!isKeyStart(value, i)) continue;
+        const key_start = i;
+        var key_end = i;
+        while (key_end < value.len and (std.ascii.isAlphanumeric(value[key_end]) or value[key_end] == '_' or value[key_end] == '-')) : (key_end += 1) {}
+        if (!isSensitiveKey(value[key_start..key_end])) continue;
+        var cursor = key_end;
+        while (cursor < value.len and (value[cursor] == ' ' or value[cursor] == '\t' or value[cursor] == '"' or value[cursor] == '\'')) : (cursor += 1) {}
+        if (cursor < value.len and value[cursor] == ':') cursor += 1 else if (cursor < value.len and value[cursor] == '=') cursor += 1 else continue;
+        while (cursor < value.len and (value[cursor] == ' ' or value[cursor] == '\t')) : (cursor += 1) {}
+        var quote: ?u8 = null;
+        if (cursor < value.len and (value[cursor] == '"' or value[cursor] == '\'')) {
+            quote = value[cursor];
+            cursor += 1;
+        }
+        const secret_start = cursor;
+        const header_value = std.ascii.eqlIgnoreCase(value[key_start..key_end], "authorization") or std.ascii.eqlIgnoreCase(value[key_start..key_end], "proxy-authorization");
+        while (cursor < value.len) : (cursor += 1) {
+            if (quote) |q| {
+                if (value[cursor] == q) break;
+            } else if ((header_value and (value[cursor] == '\r' or value[cursor] == '\n')) or (!header_value and (std.ascii.isWhitespace(value[cursor]) or value[cursor] == ',' or value[cursor] == '&' or value[cursor] == ';' or value[cursor] == '}'))) break;
+        }
+        if (cursor > secret_start) return .{ .start = secret_start, .end = cursor };
+    }
+    return null;
+}
+
+pub fn isSensitiveKey(key: []const u8) bool {
+    const trimmed = std.mem.trim(u8, key, "-/");
+    const keys = [_][]const u8{ "authorization", "proxy-authorization", "password", "passwd", "passphrase", "token", "access_token", "api_key", "apikey", "private_key", "client_secret" };
+    for (keys) |candidate| if (std.ascii.eqlIgnoreCase(trimmed, candidate)) return true;
+    return isSecretEnvName(trimmed);
+}
+
+fn isKeyStart(value: []const u8, i: usize) bool {
+    return i == 0 or !(std.ascii.isAlphanumeric(value[i - 1]) or value[i - 1] == '_');
+}
+
+fn startsWithIgnoreCase(value: []const u8, prefix: []const u8) bool {
+    return value.len >= prefix.len and std.ascii.eqlIgnoreCase(value[0..prefix.len], prefix);
+}
+
+fn isTokenChar(char: u8) bool {
+    return std.ascii.isAlphanumeric(char) or char == '_' or char == '-';
+}
+
+fn encodedContainsSecret(allocator: std.mem.Allocator, value: []const u8) !bool {
+    var current = try allocator.dupe(u8, value);
+    defer allocator.free(current);
+    var depth: u8 = 0;
+    while (depth < 2) : (depth += 1) {
+        const decoded = try percentDecodeAlloc(allocator, current);
+        if (std.mem.eql(u8, decoded, current)) {
+            allocator.free(decoded);
+            break;
+        }
+        allocator.free(current);
+        current = decoded;
+        if (findStructuredSecret(current, 0) != null or classifyString(current) != null) return true;
+    }
+    if (value.len >= 24 and value.len <= 1024 and value.len % 4 == 0) {
+        const decoder = std.base64.standard.Decoder;
+        const size = decoder.calcSizeForSlice(value) catch 0;
+        if (size > 0 and size <= max_structured_input) {
+            const decoded = try allocator.alloc(u8, size);
+            defer allocator.free(decoded);
+            if (decoder.decode(decoded, value)) |_| {
+                if (std.unicode.utf8ValidateSlice(decoded) and (findStructuredSecret(decoded, 0) != null or classifyString(decoded) != null)) return true;
+            } else |_| {}
+        }
+    }
+    if (value.len >= 40 and value.len <= 2048 and value.len % 2 == 0) {
+        const decoded = try allocator.alloc(u8, value.len / 2);
+        defer allocator.free(decoded);
+        _ = std.fmt.hexToBytes(decoded, value) catch return false;
+        if (std.unicode.utf8ValidateSlice(decoded) and (findStructuredSecret(decoded, 0) != null or classifyString(decoded) != null)) return true;
+    }
+    return false;
+}
+
+fn percentDecodeAlloc(allocator: std.mem.Allocator, value: []const u8) ![]u8 {
+    var out: std.ArrayList(u8) = .empty;
+    errdefer out.deinit(allocator);
+    var i: usize = 0;
+    while (i < value.len) {
+        if (value[i] == '%' and i + 2 < value.len) {
+            const byte = std.fmt.parseInt(u8, value[i + 1 .. i + 3], 16) catch {
+                try out.append(allocator, value[i]);
+                i += 1;
+                continue;
+            };
+            try out.append(allocator, byte);
+            i += 3;
+        } else {
+            try out.append(allocator, value[i]);
+            i += 1;
+        }
+    }
+    return out.toOwnedSlice(allocator);
+}
 
 const secret_env_patterns = [_][]const u8{
     "*TOKEN*",
@@ -338,5 +479,39 @@ test "redaction covers synthetic policy url mcp and command contexts" {
         try std.testing.expect(std.mem.indexOf(u8, redacted, "fakeSynthetic") == null);
         try std.testing.expect(std.mem.indexOf(u8, redacted, "fake-secret-value") == null);
         try std.testing.expect(std.mem.indexOf(u8, redacted, "[REDACTED:") != null);
+    }
+}
+
+test "owned structured redaction preserves benign text and removes secret values" {
+    const cases = [_][]const u8{
+        "Authorization: Bearer correct-horse-battery-staple",
+        "curl --token=correct-horse-battery-staple /health",
+        "{\"password\":\"correct horse battery staple\",\"name\":\"orca\"}",
+        "prefix GhP_abcdefghijklmnopqrstuvwxyz suffix",
+    };
+    for (cases) |case| {
+        const redacted = try redactAlloc(std.testing.allocator, case);
+        defer std.testing.allocator.free(redacted);
+        try std.testing.expect(std.mem.indexOf(u8, redacted, "correct") == null);
+        try std.testing.expect(std.mem.indexOf(u8, redacted, "abcdefghijklmnopqrstuvwxyz") == null);
+        try std.testing.expect(std.mem.indexOf(u8, redacted, redacted_value) != null);
+    }
+    const benign = "curl --user-agent orca /health";
+    const unchanged = try redactAlloc(std.testing.allocator, benign);
+    defer std.testing.allocator.free(unchanged);
+    try std.testing.expectEqualStrings(benign, unchanged);
+}
+
+test "owned redaction detects bounded encodings" {
+    const encoded = [_][]const u8{
+        "token%3Dcorrect-horse-battery-staple",
+        "token%253Dcorrect-horse-battery-staple",
+        "dG9rZW49Y29ycmVjdC1ob3JzZS1iYXR0ZXJ5LXN0YXBsZQ==",
+        "746f6b656e3d636f72726563742d686f7273652d626174746572792d737461706c65",
+    };
+    for (encoded) |value| {
+        const redacted = try redactAlloc(std.testing.allocator, value);
+        defer std.testing.allocator.free(redacted);
+        try std.testing.expectEqualStrings(redacted_value, redacted);
     }
 }

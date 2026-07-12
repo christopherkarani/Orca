@@ -108,6 +108,10 @@ audit:
   tamper_evident: true
 ```
 
+`audit.redact_secrets` may be omitted (it defaults to `true`) or explicitly set
+to `true`. Setting it to `false` is rejected: persisted audit records and
+exported replay data never permit raw secrets.
+
 Explain decisions:
 
 ```sh
