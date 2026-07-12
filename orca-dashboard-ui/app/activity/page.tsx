@@ -2,14 +2,15 @@
 
 import { useEffect, useState, useCallback, useMemo } from "react";
 import { fetchStatus } from "../lib/api";
-import { feedHealthMessage, sessionKey, type StatusResponse } from "../lib/types";
+import { sessionKey, type StatusResponse } from "../lib/types";
+import { FeedHealthNotice, MachineContextFields } from "../lib/dashboard-mode";
 import { useToast } from "../hooks/useToast";
 import ErrorBoundary from "../components/ErrorBoundary";
 import PageHeader from "../components/PageHeader";
 import SectionHeader from "../components/SectionHeader";
 import StatusBadge from "../components/StatusBadge";
 import SkeletonCard from "../components/SkeletonCard";
-import { ShieldCheck, ShieldX, Ban, Clock, AlertTriangle } from "lucide-react";
+import { ShieldCheck, ShieldX, Ban, Clock } from "lucide-react";
 
 function ActivityContent() {
   const [data, setData] = useState<StatusResponse | null>(null);
@@ -36,7 +37,6 @@ function ActivityContent() {
     if (!selectedSession) return data?.blocked_actions ?? [];
     return data?.blocked_actions.filter((a) => sessionKey({ id: a.session_id, workspace_root: a.workspace_root }) === selectedSession) ?? [];
   }, [data, selectedSession]);
-  const feedWarning = data ? feedHealthMessage(data) : null;
 
   if (loading) {
     return (
@@ -54,12 +54,7 @@ function ActivityContent() {
     <div className="space-y-8" data-session-identity="workspace-root-and-id">
       <PageHeader title="Activity" subtitle="Session history and denied-action timeline." />
 
-      {feedWarning ? (
-        <div role="status" className="flex gap-3 rounded-card border border-warning/40 bg-warning/10 p-4 text-sm text-warning">
-          <AlertTriangle size={18} className="mt-0.5 shrink-0" />
-          <span>{feedWarning}</span>
-        </div>
-      ) : null}
+      {data ? <FeedHealthNotice status={data} /> : null}
 
       <div className="grid grid-cols-1 gap-6 lg:grid-cols-5">
         <section className="lg:col-span-2">
@@ -96,10 +91,9 @@ function ActivityContent() {
                     <div className="mt-1 text-[11px] text-text-tertiary">
                       {session.command ?? "unknown"} · {session.denied_count} denied
                     </div>
-                    <div className="mt-1 truncate text-[11px] text-text-tertiary" title={session.workspace_root}>
-                      Workspace: {session.workspace_root}
+                    <div className="mt-1 flex flex-col truncate text-[11px] text-text-tertiary" title={session.workspace_root}>
+                      <MachineContextFields workspaceRoot={session.workspace_root} host={session.host} />
                     </div>
-                    <div className="mt-1 text-[11px] text-text-tertiary">Host: {session.host ?? "not recorded"}</div>
                   </div>
                 </button>
               ))

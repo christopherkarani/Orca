@@ -4,7 +4,7 @@ A Vercel-style dashboard for the Orca local guardrail runtime. Built with Next.j
 
 ## Prerequisites
 
-- Node.js 18+
+- Node.js 18.18+ (or 19.8+)
 - The Orca backend must be running on `http://127.0.0.1:7742`
 
 ## Installation
@@ -20,7 +20,7 @@ npm install
 npm run dev
 ```
 
-The dev server starts on `http://localhost:3000` and proxies API requests to the Orca backend at `http://127.0.0.1:7742`.
+The development server starts on `http://localhost:3000`. API paths are same-origin in production; use the Orca-served static build for end-to-end API work.
 
 > **Note:** The Orca backend (`orca dashboard`) must be running on `localhost:7742` for the dashboard to load data.
 
@@ -28,8 +28,9 @@ The dev server starts on `http://localhost:3000` and proxies API requests to the
 
 ```bash
 npm run build
-npm start
 ```
+
+The build exports static files to `dist/`. Orca packages and serves that directory with its authenticated local dashboard server; `next start` is not used with this export configuration.
 
 ## Keyboard Shortcuts
 

@@ -11,6 +11,7 @@ import SkeletonCard from "../components/SkeletonCard";
 import ConfirmModal from "../components/ConfirmModal";
 import StatusBadge from "../components/StatusBadge";
 import { Loader2, FileText, AlertTriangle, ShieldX } from "lucide-react";
+import { WorkspaceOnlyGate } from "../lib/dashboard-mode";
 
 function PolicyContent() {
   const [data, setData] = useState<PolicyResponse | null>(null);
@@ -203,7 +204,7 @@ function PolicyContent() {
 export default function PolicyPage() {
   return (
     <ErrorBoundary>
-      <PolicyContent />
+      <WorkspaceOnlyGate><PolicyContent /></WorkspaceOnlyGate>
     </ErrorBoundary>
   );
 }

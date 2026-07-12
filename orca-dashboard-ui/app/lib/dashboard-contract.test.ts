@@ -1,9 +1,26 @@
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
 import test from "node:test";
+import React from "react";
+import { renderToStaticMarkup } from "react-dom/server";
 
-import { feedHealthMessage, sessionKey } from "./types.ts";
+import {
+  DashboardModeContext,
+  FeedHealthNotice,
+  MachineContextFields,
+  WorkspaceOnlyGate,
+} from "./dashboard-mode.ts";
 import { visibleNavigation } from "./nav.ts";
+import { sessionKey } from "./types.ts";
+
+function renderInMode(mode: "machine" | "workspace", child: React.ReactNode): string {
+  return renderToStaticMarkup(
+    React.createElement(
+      DashboardModeContext.Provider,
+      { value: { mode, loading: false } },
+      child,
+    ),
+  );
+}
 
 test("session identity includes its workspace", () => {
   assert.notEqual(
@@ -12,25 +29,38 @@ test("session identity includes its workspace", () => {
   );
 });
 
-test("machine navigation excludes workspace-only pages", () => {
-  assert.ok(!visibleNavigation("machine").some((tab) => tab.label === "Policy"));
-  assert.ok(!visibleNavigation("machine").some((tab) => tab.label === "Secretless"));
+test("machine navigation renders only global-safe destinations", () => {
+  const machineLabels = visibleNavigation("machine").map((tab) => tab.label);
+  const workspaceLabels = visibleNavigation("workspace").map((tab) => tab.label);
+  assert.deepEqual(machineLabels, ["Overview", "Activity", "Integrations"]);
+  assert.ok(workspaceLabels.includes("Policy"));
+  assert.ok(workspaceLabels.includes("Secretless"));
 });
 
-test("overview and activity expose machine-wide context and feed health", () => {
-  const overview = readFileSync(new URL("../page.tsx", import.meta.url), "utf8");
-  const activity = readFileSync(new URL("../activity/page.tsx", import.meta.url), "utf8");
+test("workspace-only routes do not mount their controls in machine mode", () => {
+  const controls = React.createElement("button", { "data-testid": "policy-save" }, "Save policy");
+  const machine = renderInMode("machine", React.createElement(WorkspaceOnlyGate, null, controls));
+  const workspace = renderInMode("workspace", React.createElement(WorkspaceOnlyGate, null, controls));
 
-  assert.match(overview, /Workspaces/);
-  assert.match(activity, /Workspace/);
-  assert.match(activity, /Host/);
-  assert.match(activity, /feedWarning/);
-  assert.match(
-    feedHealthMessage({ feed_health: "degraded", feed_skipped_lines: 2 }) ?? "",
-    /skipped 2 malformed lines/,
+  assert.doesNotMatch(machine, /data-testid="policy-save"/);
+  assert.match(machine, /Select a workspace/);
+  assert.match(machine, /orca dashboard --workspace/);
+  assert.match(workspace, /data-testid="policy-save"/);
+});
+
+test("machine activity renders workspace, host, and degraded-feed context", () => {
+  const context = renderToStaticMarkup(
+    React.createElement(MachineContextFields, { workspaceRoot: "/work/a", host: "build-01" }),
   );
-  assert.match(
-    feedHealthMessage({ feed_health: { status: "degraded", skipped_lines: 3 } }) ?? "",
-    /skipped 3 malformed lines/,
+  const warning = renderToStaticMarkup(
+    React.createElement(FeedHealthNotice, {
+      status: { feed_health: { status: "degraded", skipped_lines: 3 } },
+    }),
   );
+
+  assert.match(context, /Workspace/);
+  assert.match(context, /\/work\/a/);
+  assert.match(context, /Host/);
+  assert.match(context, /build-01/);
+  assert.match(warning, /skipped 3 malformed lines/);
 });

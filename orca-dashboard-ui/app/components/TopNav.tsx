@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useCallback, useEffect } from "react";
+import { useState, useCallback } from "react";
 import { usePathname } from "next/navigation";
 import Link from "next/link";
 import { Search, Stethoscope, RefreshCw } from "lucide-react";
@@ -8,24 +8,18 @@ import CommandPalette from "./CommandPalette";
 import { useKeyboardShortcut } from "../hooks/useKeyboardShortcut";
 import { useToast } from "../hooks/useToast";
 import { useCommandOutput } from "../hooks/useCommandOutput";
-import { fetchStatus, runAction } from "../lib/api";
+import { runAction } from "../lib/api";
 import { isNavTabActive, visibleNavigation } from "../lib/nav";
+import { useDashboardMode } from "../lib/dashboard-mode";
 
 export default function TopNav() {
   const pathname = usePathname();
   const [paletteOpen, setPaletteOpen] = useState(false);
-  const [mode, setMode] = useState<"machine" | "workspace">("machine");
+  const { mode } = useDashboardMode();
   const { enqueue } = useToast();
   const { append, expand } = useCommandOutput();
   const tabs = visibleNavigation(mode);
 
-  useEffect(() => {
-    let active = true;
-    fetchStatus().then((status) => {
-      if (active) setMode(status.mode);
-    }).catch(() => {});
-    return () => { active = false; };
-  }, [pathname]);
 
   useKeyboardShortcut("k", () => setPaletteOpen(true), { meta: true, preventDefault: true });
   useKeyboardShortcut("k", () => setPaletteOpen(true), { ctrl: true, preventDefault: true });
@@ -164,13 +158,6 @@ export default function TopNav() {
           })}
         </div>
       </nav>
-      {mode === "machine" && (pathname.startsWith("/policy") || pathname.startsWith("/secretless")) ? (
-        <div className="fixed inset-x-4 top-20 z-nav mx-auto max-w-xl rounded-card border border-warning/40 bg-background p-6 shadow-xl">
-          <h1 className="text-lg font-semibold text-text-primary">Select a workspace</h1>
-          <p className="mt-2 text-sm text-text-secondary">Policy and Secretless settings belong to a workspace. Restart the dashboard with <span className="font-mono">orca dashboard --workspace &lt;path&gt;</span>.</p>
-          <Link href="/" className="mt-4 inline-flex rounded-md bg-accent px-3 py-2 text-sm font-medium text-white">Return to overview</Link>
-        </div>
-      ) : null}
       <CommandPalette isOpen={paletteOpen} onClose={() => setPaletteOpen(false)} onRunAction={handleRunAction} />
     </>
   );

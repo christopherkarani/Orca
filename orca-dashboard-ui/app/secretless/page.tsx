@@ -13,6 +13,7 @@ import CodeBlock from "../components/CodeBlock";
 import SkeletonCard from "../components/SkeletonCard";
 import StatusBadge from "../components/StatusBadge";
 import { Copy, Check, ShieldCheck, ShieldX, AlertTriangle } from "lucide-react";
+import { WorkspaceOnlyGate } from "../lib/dashboard-mode";
 
 function MetaItem({ label, value }: { label: string; value: string }) {
   return (
@@ -324,7 +325,7 @@ function SecretlessContent() {
 export default function SecretlessPage() {
   return (
     <ErrorBoundary>
-      <SecretlessContent />
+      <WorkspaceOnlyGate><SecretlessContent /></WorkspaceOnlyGate>
     </ErrorBoundary>
   );
 }

@@ -6,7 +6,7 @@ import type {
   PolicyInitBody,
   ActionBody,
   ActionResult,
-} from "./types";
+} from "./types.ts";
 
 function getToken(): string {
   if (typeof document === "undefined") return "";

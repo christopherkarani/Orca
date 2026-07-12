@@ -2,7 +2,8 @@
 
 import { useEffect, useState, useCallback } from "react";
 import { fetchStatus, runAction } from "./lib/api";
-import { feedHealthMessage, type StatusResponse } from "./lib/types";
+import type { StatusResponse } from "./lib/types";
+import { FeedHealthNotice, MachineContextFields } from "./lib/dashboard-mode";
 import { STATUS_POLL_INTERVAL, ACTION_LABELS } from "./lib/constants";
 import { useToast } from "./hooks/useToast";
 import { useCommandOutput } from "./hooks/useCommandOutput";
@@ -13,7 +14,7 @@ import StatCard from "./components/StatCard";
 import SkeletonCard from "./components/SkeletonCard";
 import ActionTile from "./components/ActionTile";
 import StatusBadge from "./components/StatusBadge";
-import { ShieldCheck, ShieldX, Ban, AlertTriangle, Folder } from "lucide-react";
+import { ShieldCheck, ShieldX, Ban, Folder } from "lucide-react";
 
 function OverviewContent() {
   const [data, setData] = useState<StatusResponse | null>(null);
@@ -112,18 +113,12 @@ function OverviewContent() {
           status: "neutral" as const,
         },
       ];
-  const feedWarning = data ? feedHealthMessage(data) : null;
 
   return (
     <div className="space-y-10" data-dashboard-mode="machine-wide-capable">
       <PageHeader title="Overview" subtitle="Orca runtime status, quick actions, and recent activity." />
 
-      {feedWarning ? (
-        <div role="status" className="flex gap-3 rounded-card border border-warning/40 bg-warning/10 p-4 text-sm text-warning">
-          <AlertTriangle size={18} className="mt-0.5 shrink-0" />
-          <span>{feedWarning}</span>
-        </div>
-      ) : null}
+      {data ? <FeedHealthNotice status={data} /> : null}
 
       <section aria-labelledby="stats-title">
         <h2 id="stats-title" className="sr-only">Stats</h2>
@@ -227,8 +222,7 @@ function OverviewContent() {
                     </div>
                     <div className="mt-1 truncate font-mono text-[11px] text-text-secondary">{action.target}</div>
                     <div className="mt-2 flex flex-wrap gap-x-4 gap-y-1 text-[11px] text-text-tertiary">
-                      <span>Workspace: {action.workspace_root}</span>
-                      <span>Host: {action.host ?? "not recorded"}</span>
+                      <MachineContextFields workspaceRoot={action.workspace_root} host={action.host} />
                       <span>Decision: {action.decision ?? "deny"}</span>
                       <span>Rule: {action.rule ?? "not recorded"}</span>
                       <span>Reason: {action.reason ?? "not recorded"}</span>
