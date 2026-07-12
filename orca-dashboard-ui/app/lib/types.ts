@@ -157,8 +157,8 @@ export interface StatusResponse {
   plugins: Plugin[];
   sessions: Session[];
   blocked_actions: BlockedAction[];
-  feed_health: "healthy" | "degraded";
-  feed_skipped_lines: number;
+  feed_health: "healthy" | "degraded" | { status: "healthy" | "degraded"; skipped_lines: number };
+  feed_skipped_lines?: number;
   quick_actions: QuickAction[];
 }
 
@@ -169,8 +169,9 @@ export function sessionKey(session: Pick<Session, "id" | "workspace_root">): str
 export function feedHealthMessage(
   status: Pick<StatusResponse, "feed_health" | "feed_skipped_lines">,
 ): string | null {
-  const count = status.feed_skipped_lines ?? 0;
-  if (status.feed_health !== "degraded" && count === 0) return null;
+  const health = typeof status.feed_health === "string" ? status.feed_health : status.feed_health.status;
+  const count = status.feed_skipped_lines ?? (typeof status.feed_health === "string" ? 0 : status.feed_health.skipped_lines);
+  if (health !== "degraded" && count === 0) return null;
   return `Activity feed is degraded. Orca skipped ${count} malformed ${count === 1 ? "line" : "lines"}; valid activity is still shown.`;
 }
 

@@ -29,4 +29,8 @@ test("overview and activity expose machine-wide context and feed health", () => 
     feedHealthMessage({ feed_health: "degraded", feed_skipped_lines: 2 }) ?? "",
     /skipped 2 malformed lines/,
   );
+  assert.match(
+    feedHealthMessage({ feed_health: { status: "degraded", skipped_lines: 3 } }) ?? "",
+    /skipped 3 malformed lines/,
+  );
 });
