@@ -71,6 +71,10 @@ fn findStructuredSecret(value: []const u8, from: usize) ?SecretSpan {
         const header_value = std.ascii.eqlIgnoreCase(value[key_start..key_end], "authorization") or std.ascii.eqlIgnoreCase(value[key_start..key_end], "proxy-authorization");
         while (cursor < value.len) : (cursor += 1) {
             if (quote) |q| {
+                if (value[cursor] == '\\' and cursor + 1 < value.len) {
+                    cursor += 1;
+                    continue;
+                }
                 if (value[cursor] == q) break;
             } else if ((header_value and (value[cursor] == '\r' or value[cursor] == '\n')) or (!header_value and (std.ascii.isWhitespace(value[cursor]) or value[cursor] == ',' or value[cursor] == '&' or value[cursor] == ';' or value[cursor] == '}'))) break;
         }
@@ -112,6 +116,22 @@ fn encodedContainsSecret(allocator: std.mem.Allocator, value: []const u8) !bool 
         current = decoded;
         if (findStructuredSecret(current, 0) != null or classifyString(current) != null) return true;
     }
+    if (try encodedCandidateContainsSecret(allocator, value)) return true;
+    var tokens = std.mem.tokenizeAny(u8, value, " \t\r\n\"'(),;:{}[]<>");
+    var count: usize = 0;
+    while (tokens.next()) |raw| {
+        count += 1;
+        if (count > 256) break;
+        const candidate = if (std.mem.indexOfScalar(u8, raw, '=')) |eq|
+            if (eq + 1 < raw.len) raw[eq + 1 ..] else raw
+        else
+            raw;
+        if (try encodedCandidateContainsSecret(allocator, candidate)) return true;
+    }
+    return false;
+}
+
+fn encodedCandidateContainsSecret(allocator: std.mem.Allocator, value: []const u8) !bool {
     if (value.len >= 24 and value.len <= 1024 and value.len % 4 == 0) {
         const decoder = std.base64.standard.Decoder;
         const size = decoder.calcSizeForSlice(value) catch 0;
@@ -514,4 +534,26 @@ test "owned redaction detects bounded encodings" {
         defer std.testing.allocator.free(redacted);
         try std.testing.expectEqualStrings(redacted_value, redacted);
     }
+}
+
+test "owned redaction detects encoded candidates embedded in prose and assignments" {
+    const cases = [_][]const u8{
+        "payload=dG9rZW49Y29ycmVjdC1ob3JzZS1iYXR0ZXJ5LXN0YXBsZQ== mode=test",
+        "decoded candidate 746f6b656e3d636f72726563742d686f7273652d626174746572792d737461706c65 follows",
+    };
+    for (cases) |value| {
+        const redacted = try redactAlloc(std.testing.allocator, value);
+        defer std.testing.allocator.free(redacted);
+        try std.testing.expectEqualStrings(redacted_value, redacted);
+    }
+}
+
+test "owned structured redaction handles escaped quotes inside secret JSON values" {
+    const sentinel = "correct horse battery staple";
+    const value = "{\"password\":\"prefix \\\"quoted\\\" correct horse battery staple\",\"name\":\"orca\"}";
+    const redacted = try redactAlloc(std.testing.allocator, value);
+    defer std.testing.allocator.free(redacted);
+    try std.testing.expect(std.mem.indexOf(u8, redacted, sentinel) == null);
+    try std.testing.expect(std.mem.indexOf(u8, redacted, "quoted") == null);
+    try std.testing.expect(std.mem.indexOf(u8, redacted, "\"name\":\"orca\"") != null);
 }

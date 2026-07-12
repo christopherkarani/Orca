@@ -1005,13 +1005,19 @@ fn buildAgentVisibleDaemonDeny(
 
     const decision = applyCiModeToShellDecision(.block, ci_mode);
     const risk = riskFromDaemonSeverity(daemon.responseStringField(result, "severity"));
-    const deny = try shell_eval.buildDaemonDenyReason(allocator, result);
+    var deny = try shell_eval.buildDaemonDenyReason(allocator, result);
+    errdefer {
+        if (deny.reason.len > 0) allocator.free(deny.reason);
+        if (deny.rule) |rule| allocator.free(rule);
+    }
     const safe_reason = try core_api.redactAlloc(allocator, deny.reason);
     errdefer allocator.free(safe_reason);
     allocator.free(deny.reason);
+    deny.reason = "";
     const safe_rule = if (deny.rule) |rule| blk: {
         const safe = try core_api.redactAlloc(allocator, rule);
         allocator.free(rule);
+        deny.rule = null;
         break :blk safe;
     } else null;
     errdefer if (safe_rule) |rule| allocator.free(rule);
