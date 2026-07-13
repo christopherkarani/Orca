@@ -169,12 +169,7 @@ fn collectSnapshot(
 }
 
 fn daemonHumanStatus(status: onboarding.DaemonHealthStatus) []const u8 {
-    return switch (status) {
-        .compatible => "healthy",
-        .unavailable => "unavailable",
-        .incompatible => "incompatible",
-        .degraded => "degraded",
-    };
+    return status.label();
 }
 
 fn readPolicyMeta(io: std.Io, allocator: std.mem.Allocator, path: []const u8) struct { mode: ?[]const u8, preset: ?[]const u8 } {
@@ -239,12 +234,11 @@ fn buildHostsSummary(io: std.Io, allocator: std.mem.Allocator) ![]u8 {
         }
     }
     // Pi is not a managed plugin host; surface the P1 note briefly.
-    if (any) try buf.appendSlice(allocator, " ");
-    try buf.appendSlice(allocator, "pi:not managed");
     if (!any) {
-        // Keep pi note only if nothing else
+        buf.deinit(allocator);
         return try allocator.dupe(u8, "none detected · pi:not managed");
     }
+    try buf.appendSlice(allocator, " pi:not managed");
     return try buf.toOwnedSlice(allocator);
 }
 

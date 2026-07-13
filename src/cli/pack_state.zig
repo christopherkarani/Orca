@@ -536,15 +536,12 @@ fn renderEnabledArray(allocator: std.mem.Allocator, enabled: []const []const u8)
     return try buf.toOwnedSlice(allocator);
 }
 
-fn collectQuotedPackIds(allocator: std.mem.Allocator, content: []const u8, set: *std.StringArrayHashMapUnmanaged(void)) !void {
-    // Only scan inside [packs] section for safety.
-    const packs_idx = std.mem.indexOf(u8, content, "[packs]") orelse return;
+fn packsSectionBounds(content: []const u8) ?struct { start: usize, end: usize } {
+    const packs_idx = std.mem.indexOf(u8, content, "[packs]") orelse return null;
     var end = content.len;
-    // Next top-level [section]
-    var search = packs_idx + 7;
+    var search = packs_idx + "[packs]".len;
     while (search < content.len) : (search += 1) {
         if (content[search] == '\n' and search + 1 < content.len and content[search + 1] == '[') {
-            // avoid matching [[ or [packs] again poorly — simple: next line starting with [
             const line_start = search + 1;
             if (std.mem.startsWith(u8, content[line_start..], "[")) {
                 end = line_start;
@@ -552,21 +549,82 @@ fn collectQuotedPackIds(allocator: std.mem.Allocator, content: []const u8, set: 
             }
         }
     }
-    const section = content[packs_idx..end];
-    var i: usize = 0;
-    while (i < section.len) : (i += 1) {
-        if (section[i] != '"') continue;
-        const start = i + 1;
-        const close = std.mem.indexOfScalar(u8, section[start..], '"') orelse break;
-        const id = section[start .. start + close];
-        if (id.len > 0 and std.mem.indexOfScalar(u8, id, '\n') == null) {
-            // Use static-looking membership: only record if looks like pack id
-            if (std.mem.indexOfScalar(u8, id, '.') != null or std.mem.eql(u8, id, "package_managers") or std.mem.eql(u8, id, "strict_git")) {
-                const gop = try set.getOrPut(allocator, id);
-                if (!gop.found_existing) {
-                    gop.key_ptr.* = id;
-                    gop.value_ptr.* = {};
+    return .{ .start = packs_idx, .end = end };
+}
+
+/// Locate the `enabled = [...]` array value inside a `[packs]` section only.
+/// Does not scan `disabled` (or other keys) — disabled IDs must never be treated as enabled.
+fn enabledArraySlice(content: []const u8) ?[]const u8 {
+    const bounds = packsSectionBounds(content) orelse return null;
+    const section = content[bounds.start..bounds.end];
+
+    var pos: usize = 0;
+    while (pos < section.len) {
+        const rel = std.mem.indexOf(u8, section[pos..], "enabled") orelse break;
+        const abs = pos + rel;
+        // Require key-ish token: start of section/line or preceded by whitespace.
+        if (abs > 0) {
+            const prev = section[abs - 1];
+            if (prev != '\n' and prev != '\r' and prev != ' ' and prev != '\t') {
+                pos = abs + "enabled".len;
+                continue;
+            }
+        }
+        var cursor = abs + "enabled".len;
+        while (cursor < section.len and (section[cursor] == ' ' or section[cursor] == '\t')) : (cursor += 1) {}
+        if (cursor >= section.len or section[cursor] != '=') {
+            pos = abs + "enabled".len;
+            continue;
+        }
+        cursor += 1;
+        while (cursor < section.len and (section[cursor] == ' ' or section[cursor] == '\t' or section[cursor] == '\n' or section[cursor] == '\r')) : (cursor += 1) {}
+        if (cursor >= section.len or section[cursor] != '[') {
+            pos = abs + "enabled".len;
+            continue;
+        }
+        const array_start = cursor;
+        var depth: usize = 0;
+        var ve = cursor;
+        while (ve < section.len) : (ve += 1) {
+            if (section[ve] == '[') depth += 1;
+            if (section[ve] == ']') {
+                depth -= 1;
+                if (depth == 0) {
+                    ve += 1;
+                    return section[array_start..ve];
                 }
+            }
+        }
+        return null;
+    }
+    return null;
+}
+
+fn looksLikePackId(id: []const u8) bool {
+    if (id.len == 0) return false;
+    for (id) |c| {
+        const ok = (c >= 'a' and c <= 'z') or
+            (c >= 'A' and c <= 'Z') or
+            (c >= '0' and c <= '9') or
+            c == '_' or c == '.' or c == '-';
+        if (!ok) return false;
+    }
+    return true;
+}
+
+fn collectQuotedPackIds(allocator: std.mem.Allocator, content: []const u8, set: *std.StringArrayHashMapUnmanaged(void)) !void {
+    const array = enabledArraySlice(content) orelse return;
+    var i: usize = 0;
+    while (i < array.len) : (i += 1) {
+        if (array[i] != '"') continue;
+        const start = i + 1;
+        const close = std.mem.indexOfScalar(u8, array[start..], '"') orelse break;
+        const id = array[start .. start + close];
+        if (looksLikePackId(id)) {
+            const gop = try set.getOrPut(allocator, id);
+            if (!gop.found_existing) {
+                gop.key_ptr.* = id;
+                gop.value_ptr.* = {};
             }
         }
         i = start + close;
@@ -724,4 +782,59 @@ test "rewritePacksEnabledSection preserves other keys" {
     try std.testing.expect(std.mem.indexOf(u8, out, "verbose = true") != null);
     try std.testing.expect(std.mem.indexOf(u8, out, "containers.docker") != null);
     try std.testing.expect(std.mem.indexOf(u8, out, "disabled = [\"system.disk\"]") != null);
+}
+
+test "merge does not promote disabled packs into enabled" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const root_z = try tmp.dir.realPathFileAlloc(std.testing.io, ".", std.testing.allocator);
+    defer std.testing.allocator.free(root_z);
+    const root = try std.testing.allocator.dupe(u8, root_z);
+    defer std.testing.allocator.free(root);
+    try tmp.dir.createDirPath(std.testing.io, ".git");
+
+    const seed =
+        \\[packs]
+        \\enabled = ["package_managers"]
+        \\disabled = ["system.disk"]
+        \\
+    ;
+    {
+        const f = try tmp.dir.createFile(std.testing.io, ".orca.toml", .{});
+        defer f.close(std.testing.io);
+        try f.writeStreamingAll(std.testing.io, seed);
+    }
+
+    var result = try ensurePresetPacks(std.testing.io, std.testing.allocator, root, .team_ci);
+    defer result.deinit(std.testing.allocator);
+    try std.testing.expect(result.changed);
+
+    const config = try tmp.dir.readFileAlloc(std.testing.io, ".orca.toml", std.testing.allocator, .limited(8192));
+    defer std.testing.allocator.free(config);
+    try std.testing.expect(std.mem.indexOf(u8, config, "containers.docker") != null);
+    try std.testing.expect(std.mem.indexOf(u8, config, "package_managers") != null);
+    try std.testing.expect(std.mem.indexOf(u8, config, "disabled = [\"system.disk\"]") != null);
+
+    // system.disk must remain only under disabled, not be copied into enabled.
+    const enabled_slice = enabledArraySlice(config) orelse {
+        try std.testing.expect(false);
+        return;
+    };
+    try std.testing.expect(std.mem.indexOf(u8, enabled_slice, "system.disk") == null);
+}
+
+test "collectQuotedPackIds reads only enabled array" {
+    const content =
+        \\[packs]
+        \\enabled = ["package_managers", "containers.docker"]
+        \\disabled = ["system.disk", "strict_git"]
+        \\
+    ;
+    var set: std.StringArrayHashMapUnmanaged(void) = .empty;
+    defer set.deinit(std.testing.allocator);
+    try collectQuotedPackIds(std.testing.allocator, content, &set);
+    try std.testing.expect(set.contains("package_managers"));
+    try std.testing.expect(set.contains("containers.docker"));
+    try std.testing.expect(!set.contains("system.disk"));
+    try std.testing.expect(!set.contains("strict_git"));
 }
