@@ -13,10 +13,12 @@ const demo_cmd = @import("demo.zig");
 const plugin = @import("plugin.zig");
 const policy = @import("policy.zig");
 const replay = @import("replay.zig");
+const daemon = @import("daemon.zig");
 const exit_codes = @import("exit_codes.zig");
 const feed_writer = @import("feed_writer.zig");
 const help = @import("help.zig");
 const core = @import("orca_core").core;
+const core_api = @import("orca_core").api;
 const core_policy = @import("orca_core").policy;
 const intercept = @import("../intercept/mod.zig");
 
@@ -321,7 +323,7 @@ fn handleConnection(
     }
     if (std.mem.eql(u8, request.method, "POST") and std.mem.eql(u8, request.path, "/api/actions")) {
         if (!tokenMatches(request.csrf_token, csrf_token)) return sendJsonError(io, stream, 403, "Forbidden", "csrf");
-        handleAction(io, allocator, writer, request.body, context.workspace_root != null) catch |err| switch (err) {
+        handleAction(io, allocator, writer, request.body, context.workspace_root) catch |err| switch (err) {
             error.WorkspaceRequired => return sendJsonError(io, stream, 409, "Conflict", "workspace_required"),
             else => return err,
         };
@@ -610,19 +612,27 @@ fn writePolicyMutationResult(writer: anytype, result: dashboard.PolicySaveResult
     try writer.writeByte('}');
 }
 
-fn handleAction(io: std.Io, allocator: std.mem.Allocator, writer: anytype, body: []const u8, workspace_selected: bool) !void {
+fn handleAction(io: std.Io, allocator: std.mem.Allocator, writer: anytype, body: []const u8, workspace_root: ?[]const u8) !void {
     var parsed = try std.json.parseFromSlice(std.json.Value, allocator, body, .{});
     defer parsed.deinit();
     const object = if (parsed.value == .object) parsed.value.object else return error.BadRequest;
     const action_value = object.get("action") orelse return error.BadRequest;
     if (action_value != .string) return error.BadRequest;
-    const result = try runAllowedAction(io, allocator, action_value.string, workspace_selected);
+    const result = try runAllowedAction(io, allocator, action_value.string, workspace_root);
     defer allocator.free(result.stdout);
     defer allocator.free(result.stderr);
+    try writeCapturedActionJson(allocator, writer, result);
+}
+
+fn writeCapturedActionJson(allocator: std.mem.Allocator, writer: anytype, result: CapturedAction) !void {
+    const safe_stdout = try core_api.redactAlloc(allocator, result.stdout);
+    defer allocator.free(safe_stdout);
+    const safe_stderr = try core_api.redactAlloc(allocator, result.stderr);
+    defer allocator.free(safe_stderr);
     try writer.print("{{\"ok\":{},\"exit_code\":{d},\"stdout\":", .{ result.exit_code == exit_codes.success, result.exit_code });
-    try core.util.writeJsonString(writer, result.stdout);
+    try core.util.writeJsonString(writer, safe_stdout);
     try writer.writeAll(",\"stderr\":");
-    try core.util.writeJsonString(writer, result.stderr);
+    try core.util.writeJsonString(writer, safe_stderr);
     try writer.writeByte('}');
 }
 
@@ -632,8 +642,12 @@ const CapturedAction = struct {
     stderr: []u8,
 };
 
-fn runAllowedAction(io: std.Io, allocator: std.mem.Allocator, action: []const u8, workspace_selected: bool) !CapturedAction {
-    if (!workspace_selected and !actionAllowedWithoutWorkspace(action)) return error.WorkspaceRequired;
+fn runAllowedAction(io: std.Io, allocator: std.mem.Allocator, action: []const u8, workspace_root: ?[]const u8) !CapturedAction {
+    if (workspace_root == null and !actionAllowedWithoutWorkspace(action)) return error.WorkspaceRequired;
+    const original_cwd = if (workspace_root != null) try std.Io.Dir.cwd().realPathFileAlloc(io, ".", allocator) else null;
+    defer if (original_cwd) |cwd| allocator.free(cwd);
+    if (workspace_root) |root| try std.Io.Threaded.chdir(root);
+    defer if (original_cwd) |cwd| std.Io.Threaded.chdir(cwd) catch {};
     var stdout_aw: std.Io.Writer.Allocating = .init(allocator);
     errdefer stdout_aw.deinit();
     var stderr_aw: std.Io.Writer.Allocating = .init(allocator);
@@ -671,6 +685,8 @@ fn runAllowedAction(io: std.Io, allocator: std.mem.Allocator, action: []const u8
         try demo_cmd.command(io, &.{"blocked-action"}, stdout, stderr)
     else if (std.mem.eql(u8, action, "license-status"))
         try license_cmd.command(io, &.{"status"}, stdout, stderr)
+    else if (dashboardDaemonActionArgv(action)) |argv|
+        try runDaemonProxyAction(argv, workspace_root.?, stdout, stderr)
     else
         return error.UnsupportedDashboardAction;
 
@@ -679,6 +695,38 @@ fn runAllowedAction(io: std.Io, allocator: std.mem.Allocator, action: []const u8
         .stdout = try stdout_aw.toOwnedSlice(),
         .stderr = try stderr_aw.toOwnedSlice(),
     };
+}
+
+fn dashboardDaemonActionArgv(action: []const u8) ?[]const []const u8 {
+    if (std.mem.eql(u8, action, "suggest-allowlist")) return &.{ "suggest-allowlist", "--confidence", "high", "--non-interactive" };
+    if (std.mem.eql(u8, action, "allowlist-list")) return &.{ "allowlist", "list" };
+    return null;
+}
+
+/// Fixed argv proxy for allowlisted dashboard remediation actions (no browser-supplied args).
+fn runDaemonProxyAction(argv: []const []const u8, workspace_root: []const u8, stdout: anytype, stderr: anytype) !u8 {
+    var parsed = daemon.executeCliAt(std.heap.smp_allocator, argv, workspace_root) catch |err| {
+        try stderr.print("orca dashboard: daemon proxy failed ({s})\n", .{@errorName(err)});
+        return exit_codes.general;
+    };
+    defer parsed.deinit();
+
+    if (daemon.responseStatus(parsed.value.result) == .error_status) {
+        if (daemon.responseErrorMessage(parsed.value.result)) |message| {
+            try stderr.print("orca daemon: {s}\n", .{message});
+        } else {
+            try stderr.writeAll("orca daemon: protocol error\n");
+        }
+        return exit_codes.general;
+    }
+
+    const execution = daemon.parseCliExecution(parsed.value.result) catch {
+        try stderr.writeAll("orca dashboard: malformed daemon CLI response\n");
+        return exit_codes.general;
+    };
+    try stdout.writeAll(execution.stdout);
+    if (execution.stderr.len > 0) try stderr.writeAll(execution.stderr);
+    return execution.exit_code;
 }
 
 fn proxySmokeAction(io: std.Io, allocator: std.mem.Allocator, stdout: anytype, _: anytype) !u8 {
@@ -900,17 +948,61 @@ test "machine dashboard actions exclude workspace-scoped commands" {
     try std.testing.expect(!actionAllowedWithoutWorkspace("replay-last"));
     try std.testing.expect(!actionAllowedWithoutWorkspace("report-last"));
     try std.testing.expect(!actionAllowedWithoutWorkspace("demo-blocked-action"));
-    try std.testing.expectError(error.WorkspaceRequired, runAllowedAction(std.testing.io, std.testing.allocator, "replay-last", false));
+    try std.testing.expectError(error.WorkspaceRequired, runAllowedAction(std.testing.io, std.testing.allocator, "replay-last", null));
 }
 
 test "dashboard action allowlist rejects arbitrary browser commands" {
-    try std.testing.expectError(error.UnsupportedDashboardAction, runAllowedAction(std.testing.io, std.testing.allocator, "rm -rf /", true));
+    try std.testing.expectError(error.UnsupportedDashboardAction, runAllowedAction(std.testing.io, std.testing.allocator, "rm -rf /", "."));
+    try std.testing.expectError(error.UnsupportedDashboardAction, runAllowedAction(std.testing.io, std.testing.allocator, "allowlist add evil", "."));
+    try std.testing.expectError(error.UnsupportedDashboardAction, runAllowedAction(std.testing.io, std.testing.allocator, "shell-anything", "."));
+}
+
+test "dashboard remediation actions are registered on the allowlist" {
+    // Workspace required: these proxy daemon CLI and mutate/read workspace history.
+    try std.testing.expect(!actionAllowedWithoutWorkspace("suggest-allowlist"));
+    try std.testing.expect(!actionAllowedWithoutWorkspace("allowlist-list"));
+    try std.testing.expectError(error.WorkspaceRequired, runAllowedAction(std.testing.io, std.testing.allocator, "suggest-allowlist", null));
+    try std.testing.expectError(error.WorkspaceRequired, runAllowedAction(std.testing.io, std.testing.allocator, "allowlist-list", null));
+}
+
+test "dashboard remediation action argv is fixed and non-interactive" {
+    try std.testing.expectEqualSlices([]const u8, &.{ "suggest-allowlist", "--confidence", "high", "--non-interactive" }, dashboardDaemonActionArgv("suggest-allowlist").?);
+    try std.testing.expectEqualSlices([]const u8, &.{ "allowlist", "list" }, dashboardDaemonActionArgv("allowlist-list").?);
+    try std.testing.expect(dashboardDaemonActionArgv("allowlist add browser-controlled") == null);
+}
+
+test "dashboard action JSON redacts captured stdout and stderr" {
+    const sentinel = "sk-dashboardSyntheticSecretSentinel123456789";
+    var aw: std.Io.Writer.Allocating = .init(std.testing.allocator);
+    defer aw.deinit();
+    try writeCapturedActionJson(std.testing.allocator, &aw.writer, .{
+        .exit_code = exit_codes.general,
+        .stdout = @constCast("suggestion token=sk-dashboardSyntheticSecretSentinel123456789\n"),
+        .stderr = @constCast("Authorization: Bearer sk-dashboardSyntheticSecretSentinel123456789\n"),
+    });
+    try std.testing.expect(std.mem.indexOf(u8, aw.written(), sentinel) == null);
+    try std.testing.expect(std.mem.indexOf(u8, aw.written(), "[REDACTED]") != null);
+}
+
+test "workspace dashboard actions run in the selected canonical workspace" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const selected = try tmp.dir.realPathFileAlloc(std.testing.io, ".", std.testing.allocator);
+    defer std.testing.allocator.free(selected);
+
+    const result = try runAllowedAction(std.testing.io, std.testing.allocator, "init-generic-agent", selected);
+    defer std.testing.allocator.free(result.stdout);
+    defer std.testing.allocator.free(result.stderr);
+    try std.testing.expectEqual(exit_codes.success, result.exit_code);
+    const policy_path = try std.fs.path.join(std.testing.allocator, &.{ selected, ".orca", "policy.yaml" });
+    defer std.testing.allocator.free(policy_path);
+    try std.Io.Dir.cwd().access(std.testing.io, policy_path, .{});
 }
 
 test "dashboard proxy-smoke action verifies local proxy forwarding" {
     if (@import("builtin").os.tag == .windows) return error.SkipZigTest;
 
-    const result = try runAllowedAction(std.testing.io, std.testing.allocator, "proxy-smoke", true);
+    const result = try runAllowedAction(std.testing.io, std.testing.allocator, "proxy-smoke", ".");
     defer std.testing.allocator.free(result.stdout);
     defer std.testing.allocator.free(result.stderr);
     try std.testing.expectEqual(exit_codes.success, result.exit_code);

@@ -2,7 +2,13 @@ use serde::{Deserialize, Serialize};
 
 pub const DAEMON_PROTOCOL_VERSION: u32 = 1;
 pub const DAEMON_PROTOCOL_LABEL: &str = "orca-uds-v1";
-pub const DAEMON_CAPABILITIES: &[&str] = &["Ping", "Evaluate", "ExecuteCli", "Shutdown"];
+pub const DAEMON_CAPABILITIES: &[&str] = &[
+    "Ping",
+    "Evaluate",
+    "ExecuteCli",
+    "ExecuteCliCwd",
+    "Shutdown",
+];
 
 /// Request envelope sent by the Zig CLI over the Unix Domain Socket.
 ///
@@ -20,6 +26,8 @@ pub enum DaemonRequest {
     /// Execute a supported Rust CLI operation without terminating the daemon.
     ExecuteCli {
         argv: Vec<String>,
+        #[serde(default)]
+        cwd: Option<String>,
     },
     Shutdown,
 }
@@ -212,8 +220,24 @@ mod tests {
         .unwrap();
         assert_eq!(envelope.id, 3);
         match envelope.body {
-            DaemonRequest::ExecuteCli { argv } => {
+            DaemonRequest::ExecuteCli { argv, cwd } => {
                 assert_eq!(argv, vec!["version".to_string()]);
+                assert!(cwd.is_none());
+            }
+            other => panic!("expected ExecuteCli, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn deserializes_execute_cli_with_trusted_cwd() {
+        let envelope: ClientEnvelope = serde_json::from_str(
+            r#"{"id":4,"method":"ExecuteCli","params":{"argv":["suggest-allowlist","--non-interactive"],"cwd":"/tmp/canonical-workspace"}}"#,
+        )
+        .unwrap();
+        match envelope.body {
+            DaemonRequest::ExecuteCli { argv, cwd } => {
+                assert_eq!(argv[0], "suggest-allowlist");
+                assert_eq!(cwd.as_deref(), Some("/tmp/canonical-workspace"));
             }
             other => panic!("expected ExecuteCli, got {other:?}"),
         }

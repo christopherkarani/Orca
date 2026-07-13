@@ -58,6 +58,8 @@ pub fn writeStatusJson(io: std.Io, allocator: std.mem.Allocator, writer: anytype
     try writeRustShellDecisionsArrayJson(io, allocator, writer, workspace_root, 12);
     try writer.writeAll(",\"blocked_actions\":");
     try writeBlockedActionsArrayJson(io, allocator, writer, workspace_root, 8);
+    try writer.writeAll(",\"feed_health\":");
+    try writeWorkspaceFeedHealthJson(io, allocator, writer, workspace_root);
     try writer.writeAll(",\"quick_actions\":[");
     try writeQuickAction(writer, "doctor", "orca doctor");
     try writer.writeByte(',');
@@ -85,8 +87,23 @@ pub fn writeStatusJson(io: std.Io, allocator: std.mem.Allocator, writer: anytype
     try writer.writeByte(',');
     try writeQuickAction(writer, "demo-blocked-action", "orca demo blocked-action");
     try writer.writeByte(',');
+    try writeQuickAction(writer, "suggest-allowlist", "orca suggest-allowlist --confidence high");
+    try writer.writeByte(',');
+    try writeQuickAction(writer, "allowlist-list", "orca allowlist list");
+    try writer.writeByte(',');
     try writeQuickAction(writer, "license-status", "orca license status");
     try writer.writeAll("]}");
+}
+
+fn writeWorkspaceFeedHealthJson(io: std.Io, allocator: std.mem.Allocator, writer: anytype, workspace_root: []const u8) !void {
+    var loaded = feed_writer.loadRecentTailWithHealth(io, allocator, workspace_root) catch {
+        try writer.writeAll("{\"status\":\"degraded\",\"skipped_lines\":0}");
+        return;
+    };
+    defer loaded.deinit(allocator);
+    try writer.writeAll("{\"status\":");
+    try core.util.writeJsonString(writer, @tagName(loaded.health));
+    try writer.print(",\"skipped_lines\":{d}}}", .{loaded.skipped_lines});
 }
 
 pub fn writeMachineStatusJson(
@@ -865,6 +882,46 @@ test "dashboard assets expose dedicated secretless view" {
     try std.testing.expect(std.mem.indexOf(u8, app, "renderHermesActivity") != null);
     try std.testing.expect(std.mem.indexOf(u8, app, "hermesDecisionClass") != null);
     try std.testing.expect(std.mem.indexOf(u8, app, "approval-required") != null);
+    // P2c: host filter + denial remediation (copy + allowlisted actions)
+    try std.testing.expect(std.mem.indexOf(u8, index, "hostFilter") != null);
+    try std.testing.expect(std.mem.indexOf(u8, index, "coverageCaption") != null);
+    try std.testing.expect(std.mem.indexOf(u8, app, "data-host-filter") != null);
+    try std.testing.expect(std.mem.indexOf(u8, app, "filterActionsByHost") != null);
+    try std.testing.expect(std.mem.indexOf(u8, app, "remediationCommandsFor") != null);
+    try std.testing.expect(std.mem.indexOf(u8, app, "suggest-allowlist") != null);
+    try std.testing.expect(std.mem.indexOf(u8, app, "allowlist-list") != null);
+    try std.testing.expect(std.mem.indexOf(u8, app, "No denials yet") != null);
+    try std.testing.expect(std.mem.indexOf(u8, app, "PI_COVERAGE") != null);
+}
+
+test "workspace status lists remediation quick actions" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const root = try tmp.dir.realPathFileAlloc(std.testing.io, ".", std.testing.allocator);
+    defer std.testing.allocator.free(root);
+    var aw: std.Io.Writer.Allocating = .init(std.testing.allocator);
+    try writeStatusJson(std.testing.io, std.testing.allocator, &aw.writer, root);
+    var out = aw.toArrayList();
+    defer out.deinit(std.testing.allocator);
+    try std.testing.expect(std.mem.indexOf(u8, out.items, "\"id\":\"suggest-allowlist\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out.items, "\"id\":\"allowlist-list\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out.items, "orca suggest-allowlist --confidence high") != null);
+}
+
+test "workspace status always includes feed health required by the activity UI" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const root = try tmp.dir.realPathFileAlloc(std.testing.io, ".", std.testing.allocator);
+    defer std.testing.allocator.free(root);
+    const feed_path = try feed_writer.feedPath(std.testing.allocator, root);
+    defer std.testing.allocator.free(feed_path);
+    if (std.fs.path.dirname(feed_path)) |parent| try std.Io.Dir.cwd().createDirPath(std.testing.io, parent);
+    try std.Io.Dir.cwd().writeFile(std.testing.io, .{ .sub_path = feed_path, .data = "{malformed}\n" });
+
+    var aw: std.Io.Writer.Allocating = .init(std.testing.allocator);
+    defer aw.deinit();
+    try writeStatusJson(std.testing.io, std.testing.allocator, &aw.writer, root);
+    try std.testing.expect(std.mem.indexOf(u8, aw.written(), "\"feed_health\":{\"status\":\"degraded\",\"skipped_lines\":1}") != null);
 }
 
 test "dashboard counts Hermes ask tool veto as blocked without losing ask label" {
@@ -1151,6 +1208,8 @@ test "machine status aggregates registered workspaces and exposes only global ac
     try std.testing.expect(std.mem.indexOf(u8, out, "\"id\":\"doctor\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, out, "\"id\":\"license-status\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, out, "replay-last") == null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "suggest-allowlist") == null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "allowlist-list") == null);
 }
 
 test "machine status includes feed-backed Pi sessions" {

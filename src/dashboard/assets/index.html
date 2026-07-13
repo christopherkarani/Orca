@@ -220,9 +220,13 @@
             </section>
             <section class="panel" aria-labelledby="timeline-title">
               <div class="panel-header">
-                <h4 id="timeline-title">Denied timeline</h4>
-                <span class="caption">Target, rule, reason, verification</span>
+                <div>
+                  <h4 id="timeline-title">Denied timeline</h4>
+                  <span class="caption">Target, rule, host, remediation — filter by host below</span>
+                </div>
               </div>
+              <div class="host-filter" id="hostFilter" role="toolbar" aria-label="Filter denials by host"></div>
+              <p class="caption coverage-caption" id="coverageCaption"></p>
               <div class="timeline" id="blockedTimeline"></div>
             </section>
           </div>

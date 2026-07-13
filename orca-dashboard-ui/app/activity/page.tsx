@@ -1,22 +1,26 @@
 "use client";
 
 import { useEffect, useState, useCallback, useMemo } from "react";
-import { fetchStatus } from "../lib/api";
+import { fetchStatus, runAction } from "../lib/api";
 import { sessionKey, type StatusResponse } from "../lib/types";
 import { FeedHealthNotice, MachineContextFields } from "../lib/dashboard-mode";
 import { useToast } from "../hooks/useToast";
+import { useCommandOutput } from "../hooks/useCommandOutput";
 import ErrorBoundary from "../components/ErrorBoundary";
 import PageHeader from "../components/PageHeader";
 import SectionHeader from "../components/SectionHeader";
 import StatusBadge from "../components/StatusBadge";
 import SkeletonCard from "../components/SkeletonCard";
 import { ShieldCheck, ShieldX, Ban, Clock } from "lucide-react";
+import { ActivityHostFilter, filterActionsByHost, PI_COVERAGE, RemediationActions } from "../components/ActivityControls";
 
 function ActivityContent() {
   const [data, setData] = useState<StatusResponse | null>(null);
   const [loading, setLoading] = useState(true);
   const [selectedSession, setSelectedSession] = useState<string | null>(null);
+  const [hostFilter, setHostFilter] = useState("all");
   const { enqueue } = useToast();
+  const { append, expand } = useCommandOutput();
 
   const load = useCallback(async () => {
     try {
@@ -34,9 +38,32 @@ function ActivityContent() {
   }, [load]);
 
   const filteredActions = useMemo(() => {
-    if (!selectedSession) return data?.blocked_actions ?? [];
-    return data?.blocked_actions.filter((a) => sessionKey({ id: a.session_id, workspace_root: a.workspace_root }) === selectedSession) ?? [];
-  }, [data, selectedSession]);
+    const actions = filterActionsByHost(data?.blocked_actions ?? [], hostFilter);
+    if (!selectedSession) return actions;
+    return actions.filter((a) => sessionKey({ id: a.session_id, workspace_root: a.workspace_root }) === selectedSession);
+  }, [data, hostFilter, selectedSession]);
+
+  const handleRun = useCallback(async (actionId: string) => {
+    expand();
+    append(`$ ${actionId}`);
+    try {
+      const result = await runAction(actionId);
+      append([`exit ${result.exit_code}`, result.stdout, result.stderr].filter(Boolean).join("\n\n"));
+      enqueue(result.ok ? "Command completed" : "Command returned a non-zero result", result.ok ? "success" : "error");
+      load();
+    } catch (error) {
+      enqueue(error instanceof Error ? error.message : "Command failed", "error");
+    }
+  }, [append, enqueue, expand, load]);
+
+  const handleCopy = useCallback(async (value: string, label: string) => {
+    try {
+      await navigator.clipboard.writeText(value);
+      enqueue(`${label} copied`, "success");
+    } catch {
+      enqueue("Copy failed", "error");
+    }
+  }, [enqueue]);
 
   if (loading) {
     return (
@@ -103,6 +130,10 @@ function ActivityContent() {
 
         <section className="lg:col-span-3">
           <SectionHeader title="Denied timeline" subtitle="Target, rule, reason, verification" />
+          <div className="mb-4 space-y-3">
+            <ActivityHostFilter actions={data?.blocked_actions ?? []} selected={hostFilter} onSelect={setHostFilter} />
+            <p className="text-xs leading-5 text-text-tertiary">{PI_COVERAGE}</p>
+          </div>
           <div className="space-y-4">
             {filteredActions.length === 0 ? (
               <div className="flex flex-col items-center gap-3 rounded-card border border-dashed border-border bg-surface/50 p-8 text-center">
@@ -144,6 +175,7 @@ function ActivityContent() {
                           </div>
                         ))}
                       </div>
+                      {data ? <RemediationActions action={action} mode={data.mode} onRun={handleRun} onCopy={handleCopy} /> : null}
                     </div>
                   </div>
                 ))}

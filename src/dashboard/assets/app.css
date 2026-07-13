@@ -270,6 +270,49 @@ textarea {
   padding: 16px;
 }
 
+.host-filter {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin: 0 0 10px;
+}
+
+.host-chip {
+  min-height: 44px;
+  min-width: 44px;
+  padding: 6px 12px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: var(--surface-subtle);
+  color: var(--ink);
+}
+
+.host-chip.active {
+  border-color: var(--accent-dark);
+  background: rgba(15, 118, 110, 0.12);
+  color: var(--accent-dark);
+  font-weight: 600;
+}
+
+.coverage-caption {
+  margin: 0 0 12px;
+  color: var(--muted);
+}
+
+.remediation-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 12px;
+}
+
+.remediation-actions .button {
+  min-height: 44px;
+  min-width: 44px;
+  padding: 6px 12px;
+  font-size: 13px;
+}
+
 .workspace-panel {
   margin-bottom: 16px;
   background:

@@ -2,7 +2,13 @@ const token = document.querySelector('meta[name="orca-dashboard-token"]').conten
 const state = {
   status: null,
   policy: null,
+  hostFilter: "all",
+  blockedActions: [],
 };
+
+/** Honest Pi coverage note (matches orca-pi protected tool set). */
+const PI_COVERAGE =
+  "Pi: bash + write + edit + read + grep + find + ls protected (built-in tools; custom/MCP not intercepted). Shell always via daemon Evaluate. Process env/network/secretless: orca run -- pi …";
 
 const els = {
   modeEyebrow: document.querySelector("#modeEyebrow"),
@@ -14,6 +20,8 @@ const els = {
   blockedPreview: document.querySelector("#blockedPreview"),
   sessionList: document.querySelector("#sessionList"),
   blockedTimeline: document.querySelector("#blockedTimeline"),
+  hostFilter: document.querySelector("#hostFilter"),
+  coverageCaption: document.querySelector("#coverageCaption"),
   hermesActivity: document.querySelector("#hermesActivity"),
   policyText: document.querySelector("#policyText"),
   policyHelp: document.querySelector("#policyHelp"),
@@ -53,6 +61,19 @@ els.copySecretlessRunButton.addEventListener("click", copySecretlessRunCommand);
 els.insertSecretlessPolicyButton.addEventListener("click", insertSecretlessPolicyTemplate);
 
 document.body.addEventListener("click", (event) => {
+  const hostChip = event.target.closest("[data-host-filter]");
+  if (hostChip) {
+    state.hostFilter = hostChip.dataset.hostFilter || "all";
+    renderHostFilter(state.blockedActions);
+    renderBlockedList(els.blockedPreview, state.blockedActions, true);
+    renderBlockedList(els.blockedTimeline, state.blockedActions, false);
+    return;
+  }
+  const copyButton = event.target.closest("[data-copy]");
+  if (copyButton) {
+    copyText(copyButton.dataset.copy || "", copyButton.dataset.copyLabel || "Copied");
+    return;
+  }
   const actionButton = event.target.closest("[data-action]");
   if (actionButton) {
     runAction(actionButton.dataset.action);
@@ -171,8 +192,13 @@ function renderStatus(data) {
     </div>
   `).join("");
 
-  renderBlockedList(els.blockedPreview, data.blocked_actions, true);
-  renderBlockedList(els.blockedTimeline, data.blocked_actions, false);
+  state.blockedActions = data.blocked_actions || [];
+  renderHostFilter(state.blockedActions);
+  renderBlockedList(els.blockedPreview, state.blockedActions, true);
+  renderBlockedList(els.blockedTimeline, state.blockedActions, false);
+  if (els.coverageCaption) {
+    els.coverageCaption.textContent = PI_COVERAGE;
+  }
   renderSessions(data.sessions);
   renderHermesActivity(data.rust_shell_decisions || []);
   if (!machineMode) renderIntegrations(data.plugins);
@@ -380,13 +406,90 @@ function metric(label, value, detail) {
   `;
 }
 
+function filterActionsByHost(actions) {
+  if (!state.hostFilter || state.hostFilter === "all") return actions;
+  return actions.filter((action) => (action.host || "unknown") === state.hostFilter);
+}
+
+function knownHostsFromActions(actions) {
+  const hosts = new Set();
+  for (const action of actions) {
+    hosts.add(action.host || "unknown");
+  }
+  return Array.from(hosts).sort();
+}
+
+function renderHostFilter(actions) {
+  if (!els.hostFilter) return;
+  const hosts = knownHostsFromActions(actions);
+  const chips = [
+    { id: "all", label: "All hosts" },
+    ...hosts.map((host) => ({ id: host, label: host })),
+  ];
+  if (!chips.some((chip) => chip.id === state.hostFilter)) {
+    state.hostFilter = "all";
+  }
+  els.hostFilter.innerHTML = chips.map((chip) => `
+    <button
+      type="button"
+      class="host-chip${state.hostFilter === chip.id ? " active" : ""}"
+      data-host-filter="${escapeHtml(chip.id)}"
+      aria-pressed="${state.hostFilter === chip.id ? "true" : "false"}"
+    >${escapeHtml(chip.label)}</button>
+  `).join("");
+}
+
+function extractRuleId(action) {
+  if (action.rule && action.rule !== "null") return action.rule;
+  const reason = action.reason || "";
+  const match = reason.match(/rule[:\s]+([A-Za-z0-9_.:-]+)/i);
+  return match ? match[1] : null;
+}
+
+function remediationCommandsFor(action) {
+  const rule = extractRuleId(action);
+  const commands = [];
+  if (rule) {
+    commands.push({
+      label: "Copy allowlist add",
+      value: `orca allowlist add ${rule} -r "approved denial remediation"`,
+    });
+  }
+  commands.push({
+    label: "Copy suggest-allowlist",
+    value: "orca suggest-allowlist --confidence high --non-interactive",
+  });
+  if (action.remediation && action.remediation !== "not recorded") {
+    const firstLine = String(action.remediation).split("\n").find((line) => line.trim().startsWith("orca "));
+    if (firstLine) {
+      commands.push({ label: "Copy remediation line", value: firstLine.trim() });
+    }
+  }
+  return commands;
+}
+
 function renderBlockedList(container, actions, compact) {
-  if (!actions.length) {
-    container.innerHTML = `<div class="timeline-item"><h5>No denied actions found</h5><p class="caption">Run Orca with an agent, then replay denied events here.</p></div>`;
+  const filtered = filterActionsByHost(actions);
+  if (!filtered.length) {
+    const emptyTitle = actions.length
+      ? "No denials for this host filter"
+      : "No denials yet";
+    const emptyHint = actions.length
+      ? "Choose All hosts or another host chip above."
+      : "Next: run <code>orca run -- &lt;agent&gt;</code>, install a host plugin, or use <code>orca doctor</code>.";
+    container.innerHTML = `<div class="timeline-item"><h5>${emptyTitle}</h5><p class="caption">${emptyHint}</p>
+      <div class="remediation-actions">
+        <button class="button secondary" type="button" data-action="suggest-allowlist">Run suggest-allowlist</button>
+        <button class="button secondary" type="button" data-action="doctor">Run doctor</button>
+      </div>
+    </div>`;
     return;
   }
-  const visible = compact ? actions.slice(0, 4) : actions;
-  container.innerHTML = visible.map((action) => `
+  const visible = compact ? filtered.slice(0, 4) : filtered;
+  container.innerHTML = visible.map((action) => {
+    const rule = extractRuleId(action) || "not recorded";
+    const copies = remediationCommandsFor(action);
+    return `
     <article class="timeline-item">
       <header>
         <h5>${escapeHtml(action.event_type)}</h5>
@@ -403,12 +506,30 @@ function renderBlockedList(container, actions, compact) {
         ${meta("Daemon", action.daemon_status || "not recorded")}
         ${meta("Pack", action.pack_id || "not recorded")}
         ${meta("Severity", action.severity || "not recorded")}
-        ${meta("Rule", action.rule || "not recorded")}
+        ${meta("Rule", rule)}
         ${meta("Reason", action.reason || "not recorded")}
         ${meta("Remediation", action.remediation || "not recorded")}
       </div>
+      <div class="remediation-actions">
+        ${copies.map((cmd) => `
+          <button class="button secondary" type="button" data-copy="${escapeHtml(cmd.value)}" data-copy-label="${escapeHtml(cmd.label)}">${escapeHtml(cmd.label)}</button>
+        `).join("")}
+        <button class="button secondary" type="button" data-action="suggest-allowlist">Run suggest-allowlist</button>
+        <button class="button secondary" type="button" data-action="allowlist-list">List allowlist</button>
+      </div>
     </article>
-  `).join("");
+  `;
+  }).join("");
+}
+
+async function copyText(value, label) {
+  if (!value) return;
+  try {
+    await navigator.clipboard.writeText(value);
+    toast(`${label}: copied`);
+  } catch (error) {
+    toast(`Copy failed: ${error.message}`);
+  }
 }
 
 function renderHermesActivity(records) {

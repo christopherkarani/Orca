@@ -15,6 +15,8 @@ export const ACTION_IDS = [
   "openclaw-doctor",
   "hermes-doctor",
   "replay-denied",
+  "suggest-allowlist",
+  "allowlist-list",
 ] as const;
 
 export type ActionId = (typeof ACTION_IDS)[number];
@@ -34,6 +36,8 @@ export const ACTION_LABELS: Record<string, string> = {
   "openclaw-doctor": "OpenClaw Doctor",
   "hermes-doctor": "Hermes Doctor",
   "replay-denied": "Replay Denied",
+  "suggest-allowlist": "Suggest Allowlist",
+  "allowlist-list": "List Allowlist",
 };
 
 export const ACTION_ICONS: Record<string, string> = {

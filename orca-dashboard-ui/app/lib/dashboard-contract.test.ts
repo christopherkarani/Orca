@@ -12,6 +12,12 @@ import {
 } from "./dashboard-mode.ts";
 import { visibleNavigation } from "./nav.ts";
 import { sessionKey } from "./types.ts";
+import {
+  ActivityHostFilter,
+  RemediationActions,
+  filterActionsByHost,
+  remediationCommandsFor,
+} from "../components/ActivityControls.ts";
 
 function renderInMode(mode: "machine" | "workspace", child: React.ReactNode): string {
   return renderToStaticMarkup(
@@ -80,4 +86,33 @@ test("machine activity renders workspace, host, and degraded-feed context", () =
   assert.match(context, /Host/);
   assert.match(context, /build-01/);
   assert.match(warning, /skipped 3 malformed lines/);
+});
+
+const blockedActions = [
+  { session_id: "a", workspace_root: "/work/a", host: "pi", timestamp: "1", event_type: "deny", target: "shell command (redacted)", decision: "deny", verified: true, rule: "core.shell:pipe", reason: "blocked", raw: {} },
+  { session_id: "b", workspace_root: "/work/b", host: "hermes", timestamp: "2", event_type: "deny", target: "tool call (redacted)", decision: "ask", verified: false, rule: null, reason: "approval required", raw: {} },
+];
+
+test("activity host filtering is behavior-driven and preserves accessible targets", () => {
+  assert.deepEqual(filterActionsByHost(blockedActions, "pi").map((action) => action.session_id), ["a"]);
+  const markup = renderToStaticMarkup(
+    React.createElement(ActivityHostFilter, { actions: blockedActions, selected: "pi", onSelect: () => {} }),
+  );
+  assert.match(markup, /aria-pressed="true"/);
+  assert.match(markup, /min-h-11/);
+  assert.match(markup, /min-w-11/);
+  assert.match(markup, /focus-visible:outline/);
+});
+
+test("workspace remediation is fixed and machine mode never mounts workspace actions", () => {
+  const commands = remediationCommandsFor(blockedActions[0]);
+  assert.ok(commands.some((item) => item.value.includes("orca allowlist add core.shell:pipe")));
+  assert.ok(commands.some((item) => item.value === "orca suggest-allowlist --confidence high --non-interactive"));
+
+  const workspace = renderToStaticMarkup(React.createElement(RemediationActions, { action: blockedActions[0], mode: "workspace", onRun: () => {}, onCopy: () => {} }));
+  const machine = renderToStaticMarkup(React.createElement(RemediationActions, { action: blockedActions[0], mode: "machine", onRun: () => {}, onCopy: () => {} }));
+  assert.match(workspace, /Run suggest-allowlist/);
+  assert.match(workspace, /List allowlist/);
+  assert.match(workspace, /min-h-11/);
+  assert.equal(machine, "");
 });
