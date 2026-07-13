@@ -1013,8 +1013,8 @@ fn buildAgentVisibleDaemonDeny(
         try recordDaemonMetadataRedaction(allocator, redactions, "matched_text_preview");
     }
 
-    const risk = riskFromDaemonSeverity(daemon.responseStringField(result, "severity"));
     const shell_risk = shell_eval.riskLevelFromDaemonSeverity(daemon.responseStringField(result, "severity"));
+    const risk = riskFromDaemonSeverity(daemon.responseStringField(result, "severity"));
     const mapped = shell_eval.pluginDecisionFromModeAndSeverity(mode, shell_risk);
     const decision = applyCiModeToShellDecision(shellEvalPluginDecisionToHook(mapped), mode == .ci);
 
@@ -1600,6 +1600,18 @@ fn mockDaemonDenyEvaluator(allocator: std.mem.Allocator, shell_event: ShellComma
     return shell_eval.mockDaemonDenyEvaluator(allocator, shell_event);
 }
 
+fn mockDaemonDenyHighEvaluator(allocator: std.mem.Allocator, shell_event: ShellCommandEvent) daemon.DaemonError!std.json.Parsed(daemon.DaemonResponse) {
+    return shell_eval.mockDaemonDenyHighEvaluator(allocator, shell_event);
+}
+
+fn mockDaemonDenyMediumEvaluator(allocator: std.mem.Allocator, shell_event: ShellCommandEvent) daemon.DaemonError!std.json.Parsed(daemon.DaemonResponse) {
+    return shell_eval.mockDaemonDenyMediumEvaluator(allocator, shell_event);
+}
+
+fn mockDaemonDenyLowEvaluator(allocator: std.mem.Allocator, shell_event: ShellCommandEvent) daemon.DaemonError!std.json.Parsed(daemon.DaemonResponse) {
+    return shell_eval.mockDaemonDenyLowEvaluator(allocator, shell_event);
+}
+
 fn mockDaemonWarnAllowEvaluator(allocator: std.mem.Allocator, shell_event: ShellCommandEvent) daemon.DaemonError!std.json.Parsed(daemon.DaemonResponse) {
     return shell_eval.mockDaemonWarnAllowEvaluator(allocator, shell_event);
 }
@@ -1655,10 +1667,20 @@ fn runShellRoute(
     ci_mode: bool,
     evaluator: ShellCommandEvaluatorFn,
 ) !HookResponse {
+    const mode: policy.schema.Mode = if (ci_mode) .ci else .strict;
+    return runShellRouteWithMode(allocator, command_text, cwd, mode, evaluator);
+}
+
+fn runShellRouteWithMode(
+    allocator: std.mem.Allocator,
+    command_text: []const u8,
+    cwd: ?[]const u8,
+    mode: policy.schema.Mode,
+    evaluator: ShellCommandEvaluatorFn,
+) !HookResponse {
     var redactions: std.ArrayList(RedactionEntry) = .empty;
     var limitations: std.ArrayList([]const u8) = .empty;
     try shellRouteSetup(allocator, &redactions, &limitations);
-    const mode: policy.schema.Mode = if (ci_mode) .ci else .strict;
     return evaluateShellCommandRoute(
         std.testing.io,
         allocator,
@@ -2749,4 +2771,75 @@ test "hook evaluatePreToolUse fail-closes malformed shell payload before daemon 
 
     try std.testing.expect(shell_eval.test_last_evaluate_command == null);
     try std.testing.expectEqual(PluginDecision.block, result.decision);
+}
+
+test "hook mode x severity matrix for shell denials" {
+    var gpa_state: std.heap.DebugAllocator(.{}) = .init;
+    defer _ = gpa_state.deinit();
+    const allocator = gpa_state.allocator();
+
+    // High severity: observe warn, ask ask, strict/ci block
+    {
+        var r = try runShellRouteWithMode(allocator, "git push --force", null, .observe, mockDaemonDenyHighEvaluator);
+        defer r.deinit(allocator);
+        try std.testing.expectEqual(PluginDecision.warn, r.decision);
+        try std.testing.expect(std.mem.indexOf(u8, r.reason, "allowed in observe") != null);
+    }
+    {
+        var r = try runShellRouteWithMode(allocator, "git push --force", null, .ask, mockDaemonDenyHighEvaluator);
+        defer r.deinit(allocator);
+        try std.testing.expectEqual(PluginDecision.ask, r.decision);
+        try std.testing.expect(std.mem.indexOf(u8, r.reason, "requires approval") != null);
+    }
+    {
+        var r = try runShellRouteWithMode(allocator, "git push --force", null, .strict, mockDaemonDenyHighEvaluator);
+        defer r.deinit(allocator);
+        try std.testing.expectEqual(PluginDecision.block, r.decision);
+    }
+    {
+        var r = try runShellRouteWithMode(allocator, "git push --force", null, .ci, mockDaemonDenyHighEvaluator);
+        defer r.deinit(allocator);
+        try std.testing.expectEqual(PluginDecision.block, r.decision);
+    }
+
+    // Medium: observe allow, ask warn, strict block
+    {
+        var r = try runShellRouteWithMode(allocator, "docker image prune", null, .observe, mockDaemonDenyMediumEvaluator);
+        defer r.deinit(allocator);
+        try std.testing.expectEqual(PluginDecision.allow, r.decision);
+    }
+    {
+        var r = try runShellRouteWithMode(allocator, "docker image prune", null, .ask, mockDaemonDenyMediumEvaluator);
+        defer r.deinit(allocator);
+        try std.testing.expectEqual(PluginDecision.warn, r.decision);
+    }
+    {
+        var r = try runShellRouteWithMode(allocator, "docker image prune", null, .strict, mockDaemonDenyMediumEvaluator);
+        defer r.deinit(allocator);
+        try std.testing.expectEqual(PluginDecision.block, r.decision);
+    }
+
+    // Critical always block
+    {
+        var r = try runShellRouteWithMode(allocator, "rm -rf /", null, .observe, mockDaemonDenyEvaluator);
+        defer r.deinit(allocator);
+        try std.testing.expectEqual(PluginDecision.block, r.decision);
+    }
+    {
+        var r = try runShellRouteWithMode(allocator, "rm -rf /", null, .ask, mockDaemonDenyEvaluator);
+        defer r.deinit(allocator);
+        try std.testing.expectEqual(PluginDecision.block, r.decision);
+    }
+
+    // Low always allow
+    {
+        var r = try runShellRouteWithMode(allocator, "noisy", null, .strict, mockDaemonDenyLowEvaluator);
+        defer r.deinit(allocator);
+        try std.testing.expectEqual(PluginDecision.allow, r.decision);
+    }
+    {
+        var r = try runShellRouteWithMode(allocator, "noisy", null, .ci, mockDaemonDenyLowEvaluator);
+        defer r.deinit(allocator);
+        try std.testing.expectEqual(PluginDecision.allow, r.decision);
+    }
 }
