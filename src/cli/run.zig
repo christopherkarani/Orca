@@ -1552,6 +1552,77 @@ test "run shell evaluation forwards command and cwd to daemon Evaluate" {
     try std.testing.expectEqualStrings(root, shell_eval.test_last_evaluate_cwd.?);
 }
 
+test "approval presentation redacts argv while evaluation and execution retain original argv" {
+    const sentinel = "sk-orcaPresentationBoundarySentinel123456789";
+    const child_arg = "--token=sk-orcaPresentationBoundarySentinel123456789";
+
+    const command_argv = [_][]const u8{ "./capture-argv.sh", child_arg };
+    const display = try intercept.commands.displayArgvRedactedAlloc(std.testing.allocator, &command_argv);
+    defer std.testing.allocator.free(display);
+    var prompt_input: std.Io.Reader = .fixed("d\n");
+    var prompt_buf: [2048]u8 = undefined;
+    var prompt_writer: std.Io.Writer = .fixed(&prompt_buf);
+    const choice = try intercept.approvals.prompt(&prompt_input, &prompt_writer, .{
+        .command = display,
+        .risk_class = "unknown",
+        .risk_reason = "test evaluator requires approval",
+        .policy_reason = "commands.default: ask",
+    });
+    try std.testing.expectEqual(intercept.approvals.ApprovalChoice.deny, choice);
+    try std.testing.expect(std.mem.indexOf(u8, prompt_writer.buffered(), sentinel) == null);
+    try std.testing.expect(std.mem.indexOf(u8, prompt_writer.buffered(), "[REDACTED]") != null);
+
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const root = try tmp.dir.realPathFileAlloc(std.testing.io, ".", std.testing.allocator);
+    defer std.testing.allocator.free(root);
+    {
+        const script = try tmp.dir.createFile(std.testing.io, "capture-argv.sh", .{});
+        defer script.close(std.testing.io);
+        try script.writeStreamingAll(std.testing.io,
+            \\#!/bin/sh
+            \\printf '%s' "$1" > received-argv.txt
+            \\
+        );
+        try tmp.dir.setFilePermissions(std.testing.io, "capture-argv.sh", @enumFromInt(0o755), .{});
+    }
+
+    shell_eval.test_last_evaluate_command = null;
+    var stdout_buf: [2048]u8 = undefined;
+    var stderr_buf: [2048]u8 = undefined;
+    var stdout_writer: std.Io.Writer = .fixed(&stdout_buf);
+    var stderr_writer: std.Io.Writer = .fixed(&stderr_buf);
+    const code = try commandForGuardTestWithShellEvaluator(&.{ "--workspace", root, "--", "./capture-argv.sh", child_arg }, &stdout_writer, &stderr_writer, .ignore, shell_eval.mockDaemonAllowEvaluator);
+    try std.testing.expectEqual(exit_codes.success, code);
+    try std.testing.expect(std.mem.indexOf(u8, shell_eval.test_last_evaluate_command.?, sentinel) != null);
+
+    const received = try tmp.dir.readFileAlloc(std.testing.io, "received-argv.txt", std.testing.allocator, .limited(512));
+    defer std.testing.allocator.free(received);
+    try std.testing.expectEqualStrings(child_arg, received);
+}
+
+test "denial panel and remediation redact argv while evaluator receives original argv" {
+    const sentinel = "sk-orcaDeniedBoundarySentinel123456789";
+    const secret_arg = "--token=sk-orcaDeniedBoundarySentinel123456789";
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const root = try tmp.dir.realPathFileAlloc(std.testing.io, ".", std.testing.allocator);
+    defer std.testing.allocator.free(root);
+
+    shell_eval.test_last_evaluate_command = null;
+    var stdout_buf: [2048]u8 = undefined;
+    var stderr_buf: [8192]u8 = undefined;
+    var stdout_writer: std.Io.Writer = .fixed(&stdout_buf);
+    var stderr_writer: std.Io.Writer = .fixed(&stderr_buf);
+    const code = try commandForGuardTestWithShellEvaluator(&.{ "--workspace", root, "--mode", "ci", "--", "rm", "-rf", secret_arg }, &stdout_writer, &stderr_writer, .ignore, shell_eval.mockDaemonDenyEvaluator);
+    try std.testing.expectEqual(exit_codes.denial, code);
+    const rendered = stderr_writer.buffered();
+    try std.testing.expect(std.mem.indexOf(u8, rendered, "Orca blocked") != null);
+    try std.testing.expect(std.mem.indexOf(u8, rendered, "orca explain") != null);
+    try std.testing.expect(std.mem.indexOf(u8, rendered, sentinel) == null);
+    try std.testing.expect(std.mem.indexOf(u8, shell_eval.test_last_evaluate_command.?, sentinel) != null);
+}
+
 test "run daemon unavailable denies shell command" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();

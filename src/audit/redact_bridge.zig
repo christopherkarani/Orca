@@ -122,11 +122,15 @@ fn encodedContainsSecret(allocator: std.mem.Allocator, value: []const u8) !bool 
     while (tokens.next()) |raw| {
         count += 1;
         if (count > 256) break;
+        // Try the complete token first. Base64 padding uses `=`, so treating
+        // every token containing it as an assignment would discard the encoded
+        // payload before it reaches the decoder.
+        if (try encodedCandidateContainsSecret(allocator, raw)) return true;
         const candidate = if (std.mem.indexOfScalar(u8, raw, '=')) |eq|
             if (eq + 1 < raw.len) raw[eq + 1 ..] else raw
         else
             raw;
-        if (try encodedCandidateContainsSecret(allocator, candidate)) return true;
+        if (candidate.ptr != raw.ptr and try encodedCandidateContainsSecret(allocator, candidate)) return true;
     }
     return false;
 }
@@ -546,6 +550,16 @@ test "owned redaction detects encoded candidates embedded in prose and assignmen
         defer std.testing.allocator.free(redacted);
         try std.testing.expectEqualStrings(redacted_value, redacted);
     }
+}
+
+test "owned redaction detects padded base64 embedded directly in prose" {
+    // The decoded value is `token=` plus a low-entropy sentinel. Keeping the
+    // encoded token low-entropy ensures this exercises decoding rather than the
+    // independent high-entropy heuristic.
+    const value = "decoded candidate dG9rZW49YWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYQ== follows";
+    const redacted = try redactAlloc(std.testing.allocator, value);
+    defer std.testing.allocator.free(redacted);
+    try std.testing.expectEqualStrings(redacted_value, redacted);
 }
 
 test "owned structured redaction handles escaped quotes inside secret JSON values" {
