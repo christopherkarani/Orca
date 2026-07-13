@@ -401,7 +401,7 @@ fn hook_shape_snapshot(json: &Value, command: &str, rule: Option<&str>) -> Value
             "permissionDecision": hook_output.get("permissionDecision").cloned().unwrap_or(Value::Null),
             "permissionDecisionReason": {
                 "containsCommand": reason.contains(command),
-                "containsOrcaMarker": reason.contains("BLOCKED by orca") || reason.contains("ORCA warn:"),
+                "containsOrcaMarker": reason.starts_with("ORCA BLOCKED") || reason.starts_with("ORCA ASK:"),
                 "containsRule": rule.is_none_or(|expected| reason.contains(expected)),
             },
             "remediation": remediation_shape(hook_output.get("remediation")),
@@ -630,14 +630,14 @@ fn warn_policy_emits_ask_json_for_claude_and_stderr_only_for_codex() {
             &shape,
             expected_warn_shape(),
         );
-        assert_contains(log, "Claude warn stderr", &claude.stderr, "WARNING");
+        assert_contains(log, "Claude warn stderr", &claude.stderr, "ORCA ASK:");
 
         let codex_env = RealServiceEnv::new("warn-codex");
         codex_env.write_config(config);
         let codex = run_hook(log, &codex_env, Protocol::Codex, DESTRUCTIVE_COMMAND, &[]);
         assert_eq!(codex.exit_code, 0, "Codex warn should exit 0");
         assert_empty(log, "Codex warn stdout", &codex.stdout);
-        assert_contains(log, "Codex warn stderr", &codex.stderr, "WARNING");
+        assert_contains(log, "Codex warn stderr", &codex.stderr, "ORCA ASK:");
         assert_contains(
             log,
             "Codex warn stderr rule",
