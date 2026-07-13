@@ -664,8 +664,8 @@ fn actionNeedsWorkspaceCwd(action: []const u8) bool {
 /// Scoped process cwd change for legacy CLI entrypoints. Restore failures are hard errors
 /// so a subsequent dashboard request never inherits a foreign workspace.
 const WorkspaceCwdGuard = struct {
-    /// Owned path of the process cwd before enter(); not null-terminated.
-    original: ?[]u8,
+    /// Owned path of the process cwd before enter(); realPathFileAlloc is `[:0]u8`.
+    original: ?[:0]u8,
     allocator: std.mem.Allocator,
 
     fn enter(io: std.Io, allocator: std.mem.Allocator, workspace_root: []const u8) !WorkspaceCwdGuard {
