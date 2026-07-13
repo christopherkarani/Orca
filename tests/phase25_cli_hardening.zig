@@ -18,6 +18,18 @@ test "phase25 release scripts package runtime assets referenced by CLI docs" {
     }
 }
 
+test "phase25 release scripts exclude transient Python cache artifacts" {
+    const sh = try readFile(std.testing.allocator, "scripts/build-release.sh");
+    defer std.testing.allocator.free(sh);
+    const ps1 = try readFile(std.testing.allocator, "scripts/build-release.ps1");
+    defer std.testing.allocator.free(ps1);
+
+    for ([_][]const u8{ "__pycache__", ".pytest_cache", ".pyc", ".pyo" }) |marker| {
+        try std.testing.expect(std.mem.indexOf(u8, sh, marker) != null);
+        try std.testing.expect(std.mem.indexOf(u8, ps1, marker) != null);
+    }
+}
+
 test "phase25 Windows package templates match nested zip layout" {
     const version_file = try readFile(std.testing.allocator, "VERSION");
     defer std.testing.allocator.free(version_file);

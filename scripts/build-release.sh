@@ -98,11 +98,14 @@ copy_cli_payload() {
   fi
   find "$root" -type d \( \
     -name node_modules -o \
+    -name __pycache__ -o \
+    -name .pytest_cache -o \
     -name .pnpm-store -o \
     -name .yarn -o \
     -name .turbo -o \
     -name .cache \
     \) -prune -exec rm -rf {} +
+  find "$root" -type f \( -name '*.pyc' -o -name '*.pyo' \) -delete
   rm -rf \
     "$root/docs/integrations/drone-safepoint.md" \
     "$root/docs/integrations/drone-safety.md" \

@@ -23,6 +23,12 @@ function Copy-ReleasePayload($Root) {
     foreach ($path in @("docs", "policies", "schemas", "fixtures", "examples", "packages", "packaging", "scripts")) {
         Copy-Item $path -Destination $Root -Recurse
     }
+    Get-ChildItem -LiteralPath $Root -Recurse -Force -Directory |
+        Where-Object { $_.Name -in @("__pycache__", ".pytest_cache") } |
+        Remove-Item -Recurse -Force
+    Get-ChildItem -LiteralPath $Root -Recurse -Force -File |
+        Where-Object { $_.Extension -in @(".pyc", ".pyo") } |
+        Remove-Item -Force
 }
 
 function Get-HostReleaseTarget {
