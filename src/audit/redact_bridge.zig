@@ -136,15 +136,20 @@ fn encodedContainsSecret(allocator: std.mem.Allocator, value: []const u8) !bool 
 }
 
 fn encodedCandidateContainsSecret(allocator: std.mem.Allocator, value: []const u8) !bool {
-    if (value.len >= 24 and value.len <= 1024 and value.len % 4 == 0) {
-        const decoder = std.base64.standard.Decoder;
-        const size = decoder.calcSizeForSlice(value) catch 0;
-        if (size > 0 and size <= max_structured_input) {
+    if (value.len >= 24 and value.len <= 1024) {
+        const decoders = [_]std.base64.Base64Decoder{
+            std.base64.standard.Decoder,
+            std.base64.standard_no_pad.Decoder,
+            std.base64.url_safe.Decoder,
+            std.base64.url_safe_no_pad.Decoder,
+        };
+        for (decoders) |decoder| {
+            const size = decoder.calcSizeForSlice(value) catch continue;
+            if (size == 0 or size > max_structured_input) continue;
             const decoded = try allocator.alloc(u8, size);
             defer allocator.free(decoded);
-            if (decoder.decode(decoded, value)) |_| {
-                if (std.unicode.utf8ValidateSlice(decoded) and (findStructuredSecret(decoded, 0) != null or classifyString(decoded) != null)) return true;
-            } else |_| {}
+            decoder.decode(decoded, value) catch continue;
+            if (std.unicode.utf8ValidateSlice(decoded) and (findStructuredSecret(decoded, 0) != null or classifyString(decoded) != null)) return true;
         }
     }
     if (value.len >= 40 and value.len <= 2048 and value.len % 2 == 0) {
@@ -560,6 +565,56 @@ test "owned redaction detects padded base64 embedded directly in prose" {
     const redacted = try redactAlloc(std.testing.allocator, value);
     defer std.testing.allocator.free(redacted);
     try std.testing.expectEqualStrings(redacted_value, redacted);
+}
+
+test "owned redaction detects valid unpadded standard base64" {
+    // Decodes to `token=` followed by a deliberately low-entropy value. The
+    // missing `=` padding is valid for standard no-pad base64.
+    const value = "dG9rZW49YWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWE/Pz8";
+    const redacted = try redactAlloc(std.testing.allocator, value);
+    defer std.testing.allocator.free(redacted);
+    try std.testing.expectEqualStrings(redacted_value, redacted);
+}
+
+test "owned redaction detects padded and unpadded URL-safe base64" {
+    // Both candidates decode to the same low-entropy `KEY=...???` value. The
+    // encoded forms stay below the independent high-entropy heuristic, so this
+    // specifically proves URL-safe decoding.
+    const candidates = [_][]const u8{
+        "S0VZPWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYT8_Pw==",
+        "S0VZPWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYT8_Pw",
+    };
+    for (candidates) |value| {
+        const redacted = try redactAlloc(std.testing.allocator, value);
+        defer std.testing.allocator.free(redacted);
+        try std.testing.expectEqualStrings(redacted_value, redacted);
+    }
+}
+
+test "owned redaction detects unpadded base64 secrets in prose and assignments" {
+    const cases = [_][]const u8{
+        "decoded candidate dG9rZW49YWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWE/Pz8 follows",
+        "payload=dG9rZW49YWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWE_Pz8 mode=test",
+    };
+    for (cases) |value| {
+        const redacted = try redactAlloc(std.testing.allocator, value);
+        defer std.testing.allocator.free(redacted);
+        try std.testing.expectEqualStrings(redacted_value, redacted);
+    }
+}
+
+test "owned redaction preserves benign low-entropy base64 candidates" {
+    const candidates = [_][]const u8{
+        "eD1hYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYT8/Pw==",
+        "eD1hYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYT8/Pw",
+        "eD1hYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYT8_Pw==",
+        "eD1hYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYT8_Pw",
+    };
+    for (candidates) |value| {
+        const unchanged = try redactAlloc(std.testing.allocator, value);
+        defer std.testing.allocator.free(unchanged);
+        try std.testing.expectEqualStrings(value, unchanged);
+    }
 }
 
 test "owned structured redaction handles escaped quotes inside secret JSON values" {
