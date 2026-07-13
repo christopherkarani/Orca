@@ -20,6 +20,7 @@ pub const completions = @import("completions.zig");
 pub const shim = @import("shim.zig");
 pub const version_command = @import("version.zig");
 pub const plugin = @import("plugin.zig");
+pub const host_status = @import("host_status.zig");
 pub const plugin_install = @import("plugin_install.zig");
 pub const setup = @import("setup.zig");
 pub const start = @import("start.zig");
@@ -57,6 +58,7 @@ test {
     // Pull style tests (TDD for color/TTY/NO_COLOR handling).
     _ = style;
     _ = onboarding;
+    _ = host_status;
     _ = start;
     _ = setup;
     _ = quickstart;
@@ -1749,7 +1751,7 @@ test "quickstart skips init when policy exists" {
         try file.writeStreamingAll(std.testing.io, "version: 1\nmode: observe\n");
     }
 
-    var stdout_buf: [4096]u8 = undefined;
+    var stdout_buf: [65536]u8 = undefined;
     var stderr_buf: [1024]u8 = undefined;
     var stdout_writer: std.Io.Writer = .fixed(&stdout_buf);
     var stderr_writer: std.Io.Writer = .fixed(&stderr_buf);

@@ -25,9 +25,26 @@ class HermesPluginDiscoveryTests(unittest.TestCase):
     def test_fail_open_defaults_on(self) -> None:
         with mock.patch.dict(os.environ, {}, clear=False):
             os.environ.pop("ORCA_HERMES_FAIL_OPEN", None)
-            self.assertTrue(_PLUGIN._fail_open_enabled())
+            with mock.patch.object(_PLUGIN, "_stance_file_fail_open", return_value=None):
+                self.assertTrue(_PLUGIN._fail_open_enabled())
         with mock.patch.dict(os.environ, {"ORCA_HERMES_FAIL_OPEN": "0"}):
             self.assertFalse(_PLUGIN._fail_open_enabled())
+
+    def test_fail_open_stance_file_fail_closed_for_new_installs(self) -> None:
+        with mock.patch.dict(os.environ, {}, clear=False):
+            os.environ.pop("ORCA_HERMES_FAIL_OPEN", None)
+            with mock.patch.object(_PLUGIN, "_stance_file_fail_open", return_value=False):
+                self.assertFalse(_PLUGIN._fail_open_enabled())
+            # Env wins over stance file.
+            with mock.patch.dict(os.environ, {"ORCA_HERMES_FAIL_OPEN": "1"}):
+                with mock.patch.object(_PLUGIN, "_stance_file_fail_open", return_value=False):
+                    self.assertTrue(_PLUGIN._fail_open_enabled())
+
+    def test_parse_fail_open_token(self) -> None:
+        self.assertIs(_PLUGIN._parse_fail_open_token("fail-closed"), False)
+        self.assertIs(_PLUGIN._parse_fail_open_token("0"), False)
+        self.assertIs(_PLUGIN._parse_fail_open_token("fail-open"), True)
+        self.assertIsNone(_PLUGIN._parse_fail_open_token(""))
 
     def test_orca_executable_rejects_missing_file(self) -> None:
         self.assertIsNone(_PLUGIN._orca_executable("/nonexistent/orca-binary"))
@@ -54,8 +71,14 @@ class HermesPluginDiscoveryTests(unittest.TestCase):
         ctx = mock.Mock()
         exc = RuntimeError("Orca binary not found or too old for Hermes hooks")
         with mock.patch.dict(os.environ, {"ORCA_HERMES_FAIL_OPEN": "1"}):
-            result = _PLUGIN._handle_hook_error(ctx, "pre_tool_call", exc)
+            with mock.patch("builtins.print") as printed:
+                result = _PLUGIN._handle_hook_error(ctx, "pre_tool_call", exc)
         self.assertIsNone(result)
+        # Degraded allow must not be silent.
+        printed.assert_called()
+        warn_text = " ".join(str(c) for c in printed.call_args_list)
+        self.assertIn("FAIL-OPEN", warn_text)
+        self.assertIn("ORCA_HERMES_FAIL_OPEN=0", warn_text)
 
     def test_pre_tool_call_blocks_policy_veto_decisions(self) -> None:
         for decision in ("block", "warn", "ask"):
@@ -73,6 +96,26 @@ class HermesPluginDiscoveryTests(unittest.TestCase):
                     result,
                     {"action": "block", "message": f"{decision} by Orca"},
                 )
+
+    def test_pre_tool_call_surfaces_remediation_commands(self) -> None:
+        ctx = mock.Mock()
+        _PLUGIN._register(ctx, "pre_tool_call")
+        handler = ctx.register_hook.call_args.args[1]
+        with mock.patch.object(
+            _PLUGIN,
+            "_call_orca",
+            return_value={
+                "decision": "block",
+                "message": "blocked by Orca",
+                "rule_id": "core.filesystem:destructive_rm",
+                "remediation_commands": ["orca explain \"rm -rf /\"", "orca allowlist list"],
+            },
+        ):
+            result = handler(tool_name="terminal", args={"command": "rm -rf /"})
+        self.assertEqual(result.get("action"), "block")
+        message = result.get("message", "")
+        self.assertIn("orca explain", message)
+        self.assertIn("rule: core.filesystem:destructive_rm", message)
 
     def test_pre_tool_call_allows_only_explicit_allow(self) -> None:
         ctx = mock.Mock()

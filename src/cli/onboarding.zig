@@ -206,12 +206,10 @@ pub fn defaultProtectionMode() ProtectionMode {
 }
 
 pub fn hostHookEvent(host: []const u8) ?[]const u8 {
-    if (std.mem.eql(u8, host, "codex")) return "PreToolUse";
-    if (std.mem.eql(u8, host, "claude")) return "PreToolUse";
-    if (std.mem.eql(u8, host, "opencode")) return "tool.execute.before";
-    if (std.mem.eql(u8, host, "openclaw")) return "tool.before";
-    if (std.mem.eql(u8, host, "hermes")) return "pre_tool_call";
-    return null;
+    const host_status = @import("host_status.zig");
+    const gate = host_status.shellGate(host);
+    if (std.mem.eql(u8, gate, "unknown") or std.mem.eql(u8, gate, "evaluate bash")) return null;
+    return gate;
 }
 
 pub fn isSupportedHost(name: []const u8) bool {
@@ -376,14 +374,11 @@ fn resolveHookFixture(io: std.Io, allocator: std.mem.Allocator, workspace_root: 
 }
 
 pub fn verifyHookPath(io: std.Io, allocator: std.mem.Allocator, workspace_root: []const u8, host: []const u8) !bool {
-    const event = hostHookEvent(host) orelse return false;
-    const safe_path = resolveHookFixture(io, allocator, workspace_root, hook_safe_fixture) catch return false;
-    defer allocator.free(safe_path);
-    const danger_path = resolveHookFixture(io, allocator, workspace_root, hook_danger_fixture) catch return false;
-    defer allocator.free(danger_path);
-    const safe = plugin.smokeTestHook(allocator, host, event, safe_path, "allow") catch plugin.SmokeResult{ .passed = false };
-    const danger = plugin.smokeTestHook(allocator, host, event, danger_path, "block") catch plugin.SmokeResult{ .passed = false };
-    return safe.passed and danger.passed;
+    _ = io;
+    _ = workspace_root;
+    const host_status = @import("host_status.zig");
+    const smoke = host_status.runHostSmokePair(allocator, host) catch return false;
+    return smoke.bothPassed();
 }
 
 pub fn verifyFirewallReady(io: std.Io, workspace_root: []const u8) bool {

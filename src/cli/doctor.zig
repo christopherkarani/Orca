@@ -17,6 +17,7 @@ const cli = @import("mod.zig");
 const suggestions = @import("suggestions.zig");
 const plugin = @import("plugin.zig");
 const onboarding = @import("onboarding.zig");
+const host_status = @import("host_status.zig");
 
 const DoctorCapability = struct {
     label: []const u8,
@@ -95,6 +96,9 @@ const IntegrationContext = struct {
                 self.allocator.free(row.wired);
                 self.allocator.free(row.shell_gate);
                 self.allocator.free(row.fail_stance);
+                self.allocator.free(row.smoke_allow);
+                self.allocator.free(row.smoke_deny);
+                self.allocator.free(row.fix);
             }
             self.allocator.free(self.host_rows);
         }
@@ -107,6 +111,9 @@ const HostDoctorRow = struct {
     wired: []const u8,
     shell_gate: []const u8,
     fail_stance: []const u8,
+    smoke_allow: []const u8,
+    smoke_deny: []const u8,
+    fix: []const u8,
 };
 
 const DaemonHealth = struct {
@@ -498,11 +505,13 @@ fn writeHostStatusTable(io: std.Io, stdout: anytype, context: IntegrationContext
     var rows = try context.allocator.alloc([]const []const u8, context.host_rows.len);
     defer context.allocator.free(rows);
     for (context.host_rows, 0..) |row, i| {
-        const cells = try context.allocator.alloc([]const u8, 4);
+        const cells = try context.allocator.alloc([]const u8, 6);
         cells[0] = row.host;
         cells[1] = row.wired;
         cells[2] = row.shell_gate;
         cells[3] = row.fail_stance;
+        cells[4] = row.smoke_allow;
+        cells[5] = row.smoke_deny;
         rows[i] = cells;
     }
     defer for (rows) |row| context.allocator.free(row);
@@ -511,7 +520,15 @@ fn writeHostStatusTable(io: std.Io, stdout: anytype, context: IntegrationContext
         .{ .name = "WIRED" },
         .{ .name = "SHELL GATE" },
         .{ .name = "FAIL STANCE" },
+        .{ .name = "SMOKE ALLOW" },
+        .{ .name = "SMOKE DENY" },
     }, rows);
+    // Fix lines for every non-green row (wired != yes, smoke fail, or hermes fail-open).
+    for (context.host_rows) |row| {
+        const needs_fix = !std.mem.eql(u8, row.fix, "—") and row.fix.len > 0;
+        if (!needs_fix) continue;
+        try stdout.print("  fix {s}: {s}\n", .{ row.host, row.fix });
+    }
 }
 
 fn writeHermesFailOpenWarning(io: std.Io, stdout: anytype, context: IntegrationContext) !void {
@@ -521,32 +538,23 @@ fn writeHermesFailOpenWarning(io: std.Io, stdout: anytype, context: IntegrationC
         io,
         stdout,
         .warn,
-        "Hermes fail-open",
-        "Hermes allows tools when Orca is degraded. Set ORCA_HERMES_FAIL_OPEN=0 to block, or use orca run -- hermes for stronger enforcement.",
+        "Hermes effective fail-open",
+        "Hermes allows tools when Orca is missing/old. Not silent (warning each degraded allow). New installs write fail-closed stance; existing stay open until you set ORCA_HERMES_FAIL_OPEN=0 or use `orca run -- hermes`. Gateway chats may omit the block reason — check agent tool errors.",
     );
 }
 
 fn writePiNote(stdout: anytype) !void {
-    try stdout.writeAll("\nPi: install via pi package (@orca-sec/pi-orca); not managed by orca plugin install\n");
+    try stdout.writeAll("\nPi: not managed by `orca plugin install` (bash-only shell gate via `orca evaluate`).\n");
+    try stdout.writeAll("  Install: pi install npm:@orca-sec/pi-orca · bypass: /orca-stop · live: ./scripts/host-live-e2e.sh pi\n");
 }
 
 /// Effective Hermes fail-open default matches integrations/hermes-plugin (default allow when degraded).
 pub fn hermesFailOpenFromEnvValue(value: ?[]const u8) bool {
-    const raw = value orelse return true;
-    const trimmed = std.mem.trim(u8, raw, " \t\r\n");
-    if (trimmed.len == 0) return true;
-    if (std.ascii.eqlIgnoreCase(trimmed, "0") or
-        std.ascii.eqlIgnoreCase(trimmed, "false") or
-        std.ascii.eqlIgnoreCase(trimmed, "no") or
-        std.ascii.eqlIgnoreCase(trimmed, "off"))
-        return false;
-    return true;
+    return host_status.hermesFailOpenFromEnvValue(value);
 }
 
 fn hermesFailOpenFromEnv() bool {
-    var env_map = std.process.Environ.createMap(env_util.processEnviron(), std.heap.page_allocator) catch return true;
-    defer env_map.deinit();
-    return hermesFailOpenFromEnvValue(env_map.get("ORCA_HERMES_FAIL_OPEN"));
+    return host_status.hermesFailOpenFromEnv();
 }
 
 fn writeRecommendations(stdout: anytype, context: IntegrationContext) !void {
@@ -649,6 +657,9 @@ fn collectIntegrationContextAt(io: std.Io, allocator: std.mem.Allocator, workspa
             allocator.free(row.wired);
             allocator.free(row.shell_gate);
             allocator.free(row.fail_stance);
+            allocator.free(row.smoke_allow);
+            allocator.free(row.smoke_deny);
+            allocator.free(row.fix);
         }
         allocator.free(host_snapshot.rows);
     }
@@ -690,7 +701,7 @@ const HostDoctorSnapshot = struct {
 };
 
 fn collectHostDoctorRows(io: std.Io, allocator: std.mem.Allocator) !HostDoctorSnapshot {
-    // Skip Hermes hook smoke here — full plugin doctor already covers it; doctor should stay fast.
+    // Skip live hook smoke here — plugin install / `orca plugin doctor <host>` own latency.
     var doctor_report = try plugin.collectPluginDoctorReportWithHermesSmoke(io, allocator, true);
     defer plugin.deinitPluginDoctorReport(&doctor_report, allocator);
 
@@ -704,27 +715,49 @@ fn collectHostDoctorRows(io: std.Io, allocator: std.mem.Allocator) !HostDoctorSn
             allocator.free(row.wired);
             allocator.free(row.shell_gate);
             allocator.free(row.fail_stance);
+            allocator.free(row.smoke_allow);
+            allocator.free(row.smoke_deny);
+            allocator.free(row.fix);
         }
         list.deinit(allocator);
     }
 
-    for (onboarding.supported_hosts) |host_name| {
+    for (host_status.managed_hosts) |host_name| {
         const installed = plugin.hostPluginInstalledFromReport(host_name, doctor_report);
         const detected = plugin.binaryInPath(io, allocator, host_name);
         if (std.mem.eql(u8, host_name, "hermes") and installed) hermes_installed = true;
 
         const wired: []const u8 = if (installed) "yes" else if (detected) "no" else "—";
-        const shell_gate = onboarding.hostHookEvent(host_name) orelse "unknown";
-        const fail_stance: []const u8 = if (std.mem.eql(u8, host_name, "hermes"))
-            if (hermes_fail_open) "fail-open (default)" else "fail-closed"
-        else
-            "fail-closed shell";
+        const shell_gate = host_status.shellGate(host_name);
+        const fail_stance = host_status.failStance(host_name, hermes_fail_open);
+        const smoke = host_status.HostSmokePair{};
+        const fix = try host_status.formatFix(allocator, host_name, wired, smoke, hermes_fail_open);
 
         try list.append(allocator, .{
             .host = try allocator.dupe(u8, host_name),
             .wired = try allocator.dupe(u8, wired),
             .shell_gate = try allocator.dupe(u8, shell_gate),
             .fail_stance = try allocator.dupe(u8, fail_stance),
+            .smoke_allow = try allocator.dupe(u8, smoke.allow.toString()),
+            .smoke_deny = try allocator.dupe(u8, smoke.deny.toString()),
+            .fix = fix,
+        });
+    }
+
+    // Pi: first-class status line (honest bash-only / install path; not plugin-managed).
+    {
+        const pi_detected = host_status.detectPi(io, allocator);
+        const wired: []const u8 = if (pi_detected) "partial" else "—";
+        const smoke = host_status.HostSmokePair{};
+        const fix = try host_status.formatFix(allocator, "pi", wired, smoke, hermes_fail_open);
+        try list.append(allocator, .{
+            .host = try allocator.dupe(u8, "pi"),
+            .wired = try allocator.dupe(u8, wired),
+            .shell_gate = try allocator.dupe(u8, host_status.shellGate("pi")),
+            .fail_stance = try allocator.dupe(u8, host_status.failStance("pi", hermes_fail_open)),
+            .smoke_allow = try allocator.dupe(u8, smoke.allow.toString()),
+            .smoke_deny = try allocator.dupe(u8, smoke.deny.toString()),
+            .fix = fix,
         });
     }
 
@@ -1161,7 +1194,13 @@ test "doctor host table lists managed hosts and shell gates" {
     try std.testing.expect(std.mem.indexOf(u8, written, "openclaw") != null);
     try std.testing.expect(std.mem.indexOf(u8, written, "hermes") != null);
     try std.testing.expect(std.mem.indexOf(u8, written, "pre_tool_call") != null);
-    try std.testing.expect(std.mem.indexOf(u8, written, "Pi: install via pi package") != null);
+    try std.testing.expect(std.mem.indexOf(u8, written, "pi") != null);
+    try std.testing.expect(std.mem.indexOf(u8, written, "evaluate bash") != null);
+    try std.testing.expect(std.mem.indexOf(u8, written, "SMOKE ALLOW") != null);
+    try std.testing.expect(std.mem.indexOf(u8, written, "SMOKE DENY") != null);
+    try std.testing.expect(std.mem.indexOf(u8, written, "Pi: not managed by") != null or std.mem.indexOf(u8, written, "bash-only") != null);
+    try std.testing.expect(std.mem.indexOf(u8, written, "fix pi:") != null);
+    try std.testing.expect(std.mem.indexOf(u8, written, "plugin install") != null);
 }
 
 test "doctor warns when Hermes is installed with fail-open default" {
@@ -1176,7 +1215,7 @@ test "doctor warns when Hermes is installed with fail-open default" {
 
     try writeReport(std.testing.io, &stdout_writer, .linux, report, context, false);
     const written = stdout_writer.buffered();
-    try std.testing.expect(std.mem.indexOf(u8, written, "Hermes fail-open") != null);
+    try std.testing.expect(std.mem.indexOf(u8, written, "Hermes effective fail-open") != null or std.mem.indexOf(u8, written, "fail-open") != null);
     try std.testing.expect(std.mem.indexOf(u8, written, "ORCA_HERMES_FAIL_OPEN=0") != null);
     try std.testing.expect(std.mem.indexOf(u8, written, "orca run -- hermes") != null);
 }
@@ -1240,6 +1279,7 @@ fn testHostRows(allocator: std.mem.Allocator) ![]HostDoctorRow {
         .{ .name = "opencode", .gate = "tool.execute.before", .stance = "fail-closed shell" },
         .{ .name = "openclaw", .gate = "tool.before", .stance = "fail-closed shell" },
         .{ .name = "hermes", .gate = "pre_tool_call", .stance = "fail-open (default)" },
+        .{ .name = "pi", .gate = "evaluate bash", .stance = "mode-dependent" },
     };
     var list: std.ArrayList(HostDoctorRow) = .empty;
     errdefer {
@@ -1248,15 +1288,27 @@ fn testHostRows(allocator: std.mem.Allocator) ![]HostDoctorRow {
             allocator.free(row.wired);
             allocator.free(row.shell_gate);
             allocator.free(row.fail_stance);
+            allocator.free(row.smoke_allow);
+            allocator.free(row.smoke_deny);
+            allocator.free(row.fix);
         }
         list.deinit(allocator);
     }
     for (hosts) |h| {
+        const fix = if (std.mem.eql(u8, h.name, "hermes"))
+            try allocator.dupe(u8, "export ORCA_HERMES_FAIL_OPEN=0  # or: orca run -- hermes")
+        else if (std.mem.eql(u8, h.name, "pi"))
+            try allocator.dupe(u8, "pi install npm:@orca-sec/pi-orca")
+        else
+            try allocator.dupe(u8, "—");
         try list.append(allocator, .{
             .host = try allocator.dupe(u8, h.name),
             .wired = try allocator.dupe(u8, "—"),
             .shell_gate = try allocator.dupe(u8, h.gate),
             .fail_stance = try allocator.dupe(u8, h.stance),
+            .smoke_allow = try allocator.dupe(u8, "not-run"),
+            .smoke_deny = try allocator.dupe(u8, "not-run"),
+            .fix = fix,
         });
     }
     return try list.toOwnedSlice(allocator);

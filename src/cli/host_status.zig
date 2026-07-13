@@ -1,0 +1,558 @@
+//! Unified host integration status + install smoke helpers for Orca plugins.
+//!
+//! Product fields (human + JSON): host, wired, shell_gate, fail_stance,
+//! smoke_allow, smoke_deny, fix. Smoke maps to each host's real veto path.
+
+const std = @import("std");
+const env_util = @import("../env_util.zig");
+
+pub const managed_hosts = [_][]const u8{ "codex", "claude", "opencode", "openclaw", "hermes" };
+
+pub const SmokeOutcome = enum {
+    pass,
+    fail,
+    not_run,
+
+    pub fn toString(self: SmokeOutcome) []const u8 {
+        return switch (self) {
+            .pass => "pass",
+            .fail => "fail",
+            .not_run => "not-run",
+        };
+    }
+};
+
+pub const HostSmokePair = struct {
+    allow: SmokeOutcome = .not_run,
+    deny: SmokeOutcome = .not_run,
+
+    pub fn bothPassed(self: HostSmokePair) bool {
+        return self.allow == .pass and self.deny == .pass;
+    }
+
+    pub fn denyFailed(self: HostSmokePair) bool {
+        return self.deny == .fail;
+    }
+
+    pub fn isDegraded(self: HostSmokePair) bool {
+        return self.deny == .pass and self.allow == .fail;
+    }
+};
+
+/// Evidence-based readiness from smoke (deny proves protection; allow proves usability).
+pub const HostReadiness = enum {
+    /// allow+deny both pass — usable and protected.
+    protected,
+    /// deny pass, allow fail — fail-closed/safe but not usable (daemon/policy).
+    degraded,
+    /// deny fail — not proven protected.
+    not_protected,
+    /// smoke not run (or incomplete) — do not claim ready.
+    unknown,
+
+    pub fn toString(self: HostReadiness) []const u8 {
+        return switch (self) {
+            .protected => "protected",
+            .degraded => "degraded",
+            .not_protected => "not-protected",
+            .unknown => "unknown",
+        };
+    }
+
+    /// User-facing label; never "ready/protected" unless fully green.
+    pub fn label(self: HostReadiness) []const u8 {
+        return switch (self) {
+            .protected => "protected (ready)",
+            .degraded => "degraded (deny ok, allow failed — not ready)",
+            .not_protected => "not protected",
+            .unknown => "unknown (smoke not run)",
+        };
+    }
+};
+
+pub fn classifyReadiness(smoke: HostSmokePair) HostReadiness {
+    if (smoke.deny == .fail) return .not_protected;
+    if (smoke.bothPassed()) return .protected;
+    if (smoke.isDegraded()) return .degraded;
+    if (smoke.deny == .pass and smoke.allow == .not_run) return .degraded;
+    return .unknown;
+}
+
+pub const HostStatusRow = struct {
+    host: []const u8,
+    wired: []const u8,
+    shell_gate: []const u8,
+    fail_stance: []const u8,
+    smoke_allow: SmokeOutcome = .not_run,
+    smoke_deny: SmokeOutcome = .not_run,
+    fix: []const u8,
+};
+
+/// Hook event name for shell veto per managed host.
+pub fn shellGate(host: []const u8) []const u8 {
+    if (std.mem.eql(u8, host, "codex") or std.mem.eql(u8, host, "claude")) return "PreToolUse";
+    if (std.mem.eql(u8, host, "opencode")) return "tool.execute.before";
+    if (std.mem.eql(u8, host, "openclaw")) return "tool.before";
+    if (std.mem.eql(u8, host, "hermes")) return "pre_tool_call";
+    if (std.mem.eql(u8, host, "pi")) return "evaluate bash";
+    return "unknown";
+}
+
+/// Effective fail stance label for doctor tables.
+pub fn failStance(host: []const u8, hermes_fail_open: bool) []const u8 {
+    if (std.mem.eql(u8, host, "hermes")) {
+        return if (hermes_fail_open) "fail-open (default)" else "fail-closed";
+    }
+    if (std.mem.eql(u8, host, "pi")) return "mode-dependent";
+    return "fail-closed shell";
+}
+
+/// Runtime fix line for non-green host rows.
+pub fn formatFix(
+    allocator: std.mem.Allocator,
+    host: []const u8,
+    wired: []const u8,
+    smoke: HostSmokePair,
+    hermes_fail_open: bool,
+) ![]const u8 {
+    if (std.mem.eql(u8, host, "pi")) {
+        return try allocator.dupe(u8, "not managed by plugin install; pi install npm:@orca-sec/pi-orca (bash-only)");
+    }
+    // Degraded first: deny works but allow failed → daemon/policy, not reinstall.
+    if (smoke.isDegraded() or (smoke.deny == .pass and smoke.allow == .fail)) {
+        return try allocator.dupe(u8, "orca doctor  # fix daemon/policy (deny ok, allow failed — not ready)");
+    }
+    if (smoke.deny == .fail) {
+        if (std.mem.eql(u8, host, "hermes")) {
+            return try allocator.dupe(u8, "orca plugin doctor hermes; set ORCA_BIN; ORCA_HERMES_FAIL_OPEN=0 for fail-closed");
+        }
+        return try std.fmt.allocPrint(allocator, "orca plugin doctor {s}", .{host});
+    }
+    if (smoke.allow == .fail) {
+        return try std.fmt.allocPrint(allocator, "orca plugin doctor {s}", .{host});
+    }
+    if (std.mem.eql(u8, wired, "yes") or std.mem.eql(u8, wired, "partial")) {
+        if (std.mem.eql(u8, host, "hermes") and hermes_fail_open) {
+            return try allocator.dupe(u8, "export ORCA_HERMES_FAIL_OPEN=0  # or: orca run -- hermes");
+        }
+        return try allocator.dupe(u8, "—");
+    }
+    if (std.mem.eql(u8, wired, "no")) {
+        return try std.fmt.allocPrint(allocator, "orca plugin install {s} --yes", .{host});
+    }
+    return try std.fmt.allocPrint(allocator, "install {s} CLI, then orca plugin install {s} --yes", .{ host, host });
+}
+
+/// Pure smoke decision parser — unit-tested without spawning hooks.
+/// `expected` is "allow" or "block".
+pub fn interpretSmokeOutcome(
+    host: []const u8,
+    expected: []const u8,
+    exit_code: u8,
+    stdout: []const u8,
+    stderr: []const u8,
+) bool {
+    if (std.mem.eql(u8, expected, "allow")) {
+        if (exit_code != 0) return false;
+        const decision = extractDecision(stdout) orelse return false;
+        return std.mem.eql(u8, decision, "allow");
+    }
+    if (std.mem.eql(u8, expected, "block")) {
+        // Codex 0.125+: deny is exit 2 + stderr sentinel; stdout JSON is intentionally empty.
+        if (std.mem.eql(u8, host, "codex")) {
+            if (exit_code == 2) return true;
+            // Defensive: accept decision=block JSON if a host version emits it.
+            if (exit_code == 0) {
+                if (extractDecision(stdout)) |d| return std.mem.eql(u8, d, "block");
+            }
+            return false;
+        }
+        _ = stderr;
+        if (exit_code != 0) return false;
+        const decision = extractDecision(stdout) orelse return false;
+        return std.mem.eql(u8, decision, "block");
+    }
+    return false;
+}
+
+fn extractDecision(stdout: []const u8) ?[]const u8 {
+    const trimmed = std.mem.trim(u8, stdout, " \t\r\n");
+    if (trimmed.len == 0) return null;
+    // Lightweight scan avoids full JSON parse in the pure helper path.
+    const key = "\"decision\"";
+    const idx = std.mem.indexOf(u8, trimmed, key) orelse return null;
+    var i = idx + key.len;
+    while (i < trimmed.len and (trimmed[i] == ' ' or trimmed[i] == '\t' or trimmed[i] == ':' or trimmed[i] == '\n' or trimmed[i] == '\r')) : (i += 1) {}
+    if (i >= trimmed.len or trimmed[i] != '"') return null;
+    const start = i + 1;
+    const end = std.mem.indexOfScalarPos(u8, trimmed, start, '"') orelse return null;
+    return trimmed[start..end];
+}
+
+/// Minimal shell veto fixtures matching each host envelope (command in payload).
+pub fn buildHookFixture(allocator: std.mem.Allocator, host: []const u8, event: []const u8, command: []const u8) ![]u8 {
+    if (std.mem.eql(u8, host, "hermes")) {
+        return try std.fmt.allocPrint(allocator,
+            \\{{"version":1,"host":"hermes","event":"{s}","payload":{{"tool_name":"terminal","tool_input":{{"command":"{s}"}},"command":"{s}"}}}}
+        , .{ event, command, command });
+    }
+    if (std.mem.eql(u8, host, "opencode")) {
+        return try std.fmt.allocPrint(allocator,
+            \\{{"version":1,"host":"opencode","event":"{s}","payload":{{"tool":"bash","sessionID":"smoke","callID":"1","command":"{s}","args":{{"command":"{s}"}}}}}}
+        , .{ event, command, command });
+    }
+    if (std.mem.eql(u8, host, "openclaw")) {
+        return try std.fmt.allocPrint(allocator,
+            \\{{"version":1,"host":"openclaw","event":"{s}","payload":{{"tool":"bash","command":"{s}"}}}}
+        , .{ event, command });
+    }
+    // codex / claude PreToolUse shape
+    return try std.fmt.allocPrint(allocator,
+        \\{{"version":1,"host":"{s}","event":"{s}","payload":{{"tool_name":"Bash","tool_input":{{"command":"{s}"}}}}}}
+    , .{ host, event, command });
+}
+
+pub const safe_smoke_command = "git status";
+pub const danger_smoke_command = "rm -rf /";
+
+/// Resolve an orca CLI binary for hook smoke. Null when only the unit-test harness is available.
+fn resolveSmokeBinary(io: std.Io, allocator: std.mem.Allocator) !?[]u8 {
+    var env_map = env_util.createProcessMap(allocator) catch null;
+    defer if (env_map) |*m| m.deinit();
+    if (env_map) |*m| {
+        if (try env_util.getOwned(m, allocator, "ORCA_BIN")) |configured| {
+            if (std.Io.Dir.accessAbsolute(io, configured, .{})) |_| {
+                return configured;
+            } else |_| {
+                allocator.free(configured);
+            }
+        }
+    }
+
+    const self_exe = try std.process.executablePathAlloc(io, allocator);
+    const base = std.fs.path.basename(self_exe);
+    // Real CLI binaries are named `orca` (or `orca.exe`). The zig test harness is not.
+    if (std.mem.eql(u8, base, "orca") or std.mem.eql(u8, base, "orca.exe")) {
+        return self_exe;
+    }
+    allocator.free(self_exe);
+    return null;
+}
+
+/// Spawn `orca hook <host> <event>` with fixture JSON on stdin.
+/// Returns error.SmokeBinaryUnavailable when no orca CLI can be resolved (unit tests).
+pub fn smokeTestHookPayload(
+    allocator: std.mem.Allocator,
+    host: []const u8,
+    event: []const u8,
+    fixture_json: []const u8,
+    expected_decision: []const u8,
+) !bool {
+    // Pipe-based spawn needs a real Threaded Io (single-threaded reports OOM on pipe spawn).
+    var threaded = std.Io.Threaded.init(allocator, .{
+        .environ = env_util.processEnviron(),
+    });
+    defer threaded.deinit();
+    const io = threaded.io();
+
+    const orca_bin = try resolveSmokeBinary(io, allocator) orelse return error.SmokeBinaryUnavailable;
+    defer allocator.free(orca_bin);
+
+    const argv = &[_][]const u8{ orca_bin, "hook", host, event };
+    var child = try std.process.spawn(io, .{
+        .argv = argv,
+        .stdin = .pipe,
+        .stdout = .pipe,
+        .stderr = .ignore,
+    });
+
+    if (child.stdin) |*stdin| {
+        try stdin.writeStreamingAll(io, fixture_json);
+        stdin.close(io);
+        child.stdin = null;
+    }
+
+    var stdout_list: std.ArrayList(u8) = .empty;
+    defer stdout_list.deinit(allocator);
+    if (child.stdout) |out| {
+        var buf: [4096]u8 = undefined;
+        var reader = out.reader(io, &buf);
+        while (stdout_list.items.len < 64 * 1024) {
+            const n = reader.interface.readSliceShort(buf[0..@min(buf.len, 64 * 1024 - stdout_list.items.len)]) catch break;
+            if (n == 0) break;
+            try stdout_list.appendSlice(allocator, buf[0..n]);
+        }
+    }
+
+    const term = try child.wait(io);
+    const exit_code: u8 = if (term == .exited) term.exited else 255;
+    return interpretSmokeOutcome(host, expected_decision, exit_code, stdout_list.items, "");
+}
+
+pub fn runHostSmokePair(allocator: std.mem.Allocator, host: []const u8) !HostSmokePair {
+    const event = shellGate(host);
+    if (std.mem.eql(u8, event, "unknown") or std.mem.eql(u8, event, "evaluate bash")) {
+        return .{ .allow = .not_run, .deny = .not_run };
+    }
+
+    const allow_fixture = try buildHookFixture(allocator, host, event, safe_smoke_command);
+    defer allocator.free(allow_fixture);
+    const deny_fixture = try buildHookFixture(allocator, host, event, danger_smoke_command);
+    defer allocator.free(deny_fixture);
+
+    const allow_result = smokeTestHookPayload(allocator, host, event, allow_fixture, "allow");
+    const deny_result = smokeTestHookPayload(allocator, host, event, deny_fixture, "block");
+
+    // When only the unit-test harness is available, leave smoke as not-run.
+    if (allow_result == error.SmokeBinaryUnavailable or deny_result == error.SmokeBinaryUnavailable) {
+        return .{ .allow = .not_run, .deny = .not_run };
+    }
+
+    const allow_ok = allow_result catch false;
+    const deny_ok = deny_result catch false;
+    return .{
+        .allow = if (allow_ok) .pass else .fail,
+        .deny = if (deny_ok) .pass else .fail,
+    };
+}
+
+pub fn writeHostSmokeReport(stdout: anytype, host: []const u8, smoke: HostSmokePair) !void {
+    const readiness = classifyReadiness(smoke);
+    try stdout.print("  smoke allow: {s}\n", .{smoke.allow.toString()});
+    try stdout.print("  smoke deny:  {s}\n", .{smoke.deny.toString()});
+    try stdout.print("  readiness:   {s}\n", .{readiness.label()});
+    switch (readiness) {
+        .protected => {
+            try stdout.print("  smoke: PASSED (safe allow + dangerous deny on {s} veto path)\n", .{shellGate(host)});
+        },
+        .degraded => {
+            try stdout.writeAll("  smoke: DEGRADED — deny works but safe allow failed (daemon down or policy?)\n");
+            try stdout.writeAll("  status: NOT ready / NOT fully usable — fail-closed is active but everyday use may break\n");
+            try stdout.writeAll("  fix: orca doctor  # start/repair daemon first\n");
+        },
+        .not_protected => {
+            try stdout.writeAll("  smoke: FAILED — deny did not fire; host is NOT protected\n");
+            try stdout.print("  fix: orca plugin doctor {s}\n", .{host});
+        },
+        .unknown => {
+            try stdout.writeAll("  smoke: not run — do not treat host as protected or ready\n");
+        },
+    }
+}
+
+/// Cheap Pi detection: `pi` on PATH or common extension markers under home/cwd.
+pub fn detectPi(io: std.Io, allocator: std.mem.Allocator) bool {
+    if (binaryInPath(io, allocator, "pi")) return true;
+    var env_map = env_util.createProcessMap(allocator) catch return false;
+    defer env_map.deinit();
+    const home_owned = env_util.getOwned(&env_map, allocator, "HOME") catch return false;
+    const home = home_owned orelse return false;
+    defer allocator.free(home);
+    const markers = [_][]const u8{
+        ".pi/extensions/orca.ts",
+        ".pi/packages/@orca-sec/pi-orca",
+        "Library/Application Support/pi/extensions/orca.ts",
+    };
+    for (markers) |rel| {
+        const path = std.fs.path.join(allocator, &.{ home, rel }) catch continue;
+        defer allocator.free(path);
+        std.Io.Dir.accessAbsolute(io, path, .{}) catch continue;
+        return true;
+    }
+    return false;
+}
+
+fn binaryInPath(io: std.Io, allocator: std.mem.Allocator, name: []const u8) bool {
+    var env_map = env_util.createProcessMap(allocator) catch return false;
+    defer env_map.deinit();
+    const path_owned = env_util.getOwned(&env_map, allocator, "PATH") catch return false;
+    const path_val = path_owned orelse return false;
+    defer allocator.free(path_val);
+    var it = std.mem.splitScalar(u8, path_val, ':');
+    while (it.next()) |dir| {
+        if (dir.len == 0) continue;
+        const candidate = std.fs.path.join(allocator, &.{ dir, name }) catch continue;
+        defer allocator.free(candidate);
+        std.Io.Dir.accessAbsolute(io, candidate, .{}) catch continue;
+        return true;
+    }
+    return false;
+}
+
+/// Stance file written next to installed Hermes plugin for *new* installs (fail-closed).
+pub const hermes_fail_stance_filename = ".orca_fail_stance";
+
+/// Effective Hermes fail-open from an env value only (null/empty → fail-open product default).
+pub fn hermesFailOpenFromEnvValue(value: ?[]const u8) bool {
+    const raw = value orelse return true;
+    const trimmed = std.mem.trim(u8, raw, " \t\r\n");
+    if (trimmed.len == 0) return true;
+    if (std.ascii.eqlIgnoreCase(trimmed, "0") or
+        std.ascii.eqlIgnoreCase(trimmed, "false") or
+        std.ascii.eqlIgnoreCase(trimmed, "no") or
+        std.ascii.eqlIgnoreCase(trimmed, "off") or
+        std.ascii.eqlIgnoreCase(trimmed, "fail-closed") or
+        std.ascii.eqlIgnoreCase(trimmed, "closed"))
+        return false;
+    return true;
+}
+
+/// Parse install stance file content (`fail-closed` / `0` / `fail-open` / `1`).
+pub fn hermesFailOpenFromStanceText(text: []const u8) ?bool {
+    const trimmed = std.mem.trim(u8, text, " \t\r\n");
+    if (trimmed.len == 0) return null;
+    if (std.ascii.eqlIgnoreCase(trimmed, "0") or
+        std.ascii.eqlIgnoreCase(trimmed, "false") or
+        std.ascii.eqlIgnoreCase(trimmed, "no") or
+        std.ascii.eqlIgnoreCase(trimmed, "off") or
+        std.ascii.eqlIgnoreCase(trimmed, "fail-closed") or
+        std.ascii.eqlIgnoreCase(trimmed, "closed"))
+        return false;
+    if (std.ascii.eqlIgnoreCase(trimmed, "1") or
+        std.ascii.eqlIgnoreCase(trimmed, "true") or
+        std.ascii.eqlIgnoreCase(trimmed, "yes") or
+        std.ascii.eqlIgnoreCase(trimmed, "on") or
+        std.ascii.eqlIgnoreCase(trimmed, "fail-open") or
+        std.ascii.eqlIgnoreCase(trimmed, "open"))
+        return true;
+    return null;
+}
+
+/// Env wins when set; else install stance file under `plugin_dir`; else fail-open default.
+pub fn hermesFailOpenEffective(env_value: ?[]const u8, stance_file_text: ?[]const u8) bool {
+    if (env_value) |v| {
+        const trimmed = std.mem.trim(u8, v, " \t\r\n");
+        if (trimmed.len > 0) return hermesFailOpenFromEnvValue(trimmed);
+    }
+    if (stance_file_text) |text| {
+        if (hermesFailOpenFromStanceText(text)) |open| return open;
+    }
+    return true;
+}
+
+fn readHermesStanceFile(allocator: std.mem.Allocator) ?[]u8 {
+    var env_map = env_util.createProcessMap(allocator) catch return null;
+    defer env_map.deinit();
+    const home_owned = env_util.getOwned(&env_map, allocator, "HOME") catch return null;
+    const home = home_owned orelse return null;
+    defer allocator.free(home);
+    const path = std.fs.path.join(allocator, &.{ home, ".hermes", "plugins", "orca", hermes_fail_stance_filename }) catch return null;
+    defer allocator.free(path);
+    var threaded: std.Io.Threaded = .init_single_threaded;
+    const io = threaded.io();
+    return std.Io.Dir.cwd().readFileAlloc(io, path, allocator, .limited(64)) catch null;
+}
+
+pub fn hermesFailOpenFromEnv() bool {
+    var env_map = env_util.createProcessMap(std.heap.page_allocator) catch return true;
+    defer env_map.deinit();
+    const value = env_util.getOwned(&env_map, std.heap.page_allocator, "ORCA_HERMES_FAIL_OPEN") catch null;
+    defer if (value) |v| std.heap.page_allocator.free(v);
+
+    // When env is set (non-empty), it wins.
+    if (value) |v| {
+        const trimmed = std.mem.trim(u8, v, " \t\r\n");
+        if (trimmed.len > 0) return hermesFailOpenFromEnvValue(trimmed);
+    }
+
+    // New installs write .orca_fail_stance under the user plugin dir.
+    if (readHermesStanceFile(std.heap.page_allocator)) |stance| {
+        defer std.heap.page_allocator.free(stance);
+        if (hermesFailOpenFromStanceText(stance)) |open| return open;
+    }
+    return true;
+}
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
+test "interpretSmokeOutcome allow requires exit 0 and decision allow" {
+    try std.testing.expect(interpretSmokeOutcome("claude", "allow", 0, "{\"decision\":\"allow\"}\n", ""));
+    try std.testing.expect(!interpretSmokeOutcome("claude", "allow", 0, "{\"decision\":\"block\"}\n", ""));
+    try std.testing.expect(!interpretSmokeOutcome("claude", "allow", 1, "{\"decision\":\"allow\"}\n", ""));
+}
+
+test "interpretSmokeOutcome block for flexible hosts uses decision JSON" {
+    try std.testing.expect(interpretSmokeOutcome("claude", "block", 0, "{\"decision\":\"block\"}\n", ""));
+    try std.testing.expect(interpretSmokeOutcome("hermes", "block", 0, "{\n  \"decision\": \"block\"\n}\n", ""));
+    try std.testing.expect(interpretSmokeOutcome("opencode", "block", 0, "{\"decision\":\"block\",\"reason\":\"x\"}", ""));
+    try std.testing.expect(!interpretSmokeOutcome("openclaw", "block", 0, "{\"decision\":\"allow\"}", ""));
+}
+
+test "interpretSmokeOutcome codex deny uses exit code 2" {
+    try std.testing.expect(interpretSmokeOutcome("codex", "block", 2, "", "[[ORCA-GUARD]] blocked."));
+    try std.testing.expect(!interpretSmokeOutcome("codex", "block", 0, "", "error"));
+    try std.testing.expect(interpretSmokeOutcome("codex", "block", 0, "{\"decision\":\"block\"}", ""));
+}
+
+test "buildHookFixture embeds host event and command" {
+    const allocator = std.testing.allocator;
+    const fixture = try buildHookFixture(allocator, "claude", "PreToolUse", "git status");
+    defer allocator.free(fixture);
+    try std.testing.expect(std.mem.indexOf(u8, fixture, "\"host\":\"claude\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, fixture, "\"event\":\"PreToolUse\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, fixture, "git status") != null);
+    try std.testing.expect(std.mem.indexOf(u8, fixture, "tool_input") != null);
+}
+
+test "shellGate and failStance cover all P1 hosts" {
+    try std.testing.expectEqualStrings("PreToolUse", shellGate("codex"));
+    try std.testing.expectEqualStrings("PreToolUse", shellGate("claude"));
+    try std.testing.expectEqualStrings("tool.execute.before", shellGate("opencode"));
+    try std.testing.expectEqualStrings("tool.before", shellGate("openclaw"));
+    try std.testing.expectEqualStrings("pre_tool_call", shellGate("hermes"));
+    try std.testing.expectEqualStrings("evaluate bash", shellGate("pi"));
+    try std.testing.expectEqualStrings("fail-open (default)", failStance("hermes", true));
+    try std.testing.expectEqualStrings("fail-closed", failStance("hermes", false));
+    try std.testing.expectEqualStrings("mode-dependent", failStance("pi", true));
+    try std.testing.expectEqualStrings("fail-closed shell", failStance("codex", true));
+}
+
+test "formatFix prefers smoke failure and hermes fail-open remediation" {
+    const allocator = std.testing.allocator;
+    const smoke_fail = try formatFix(allocator, "claude", "yes", .{ .allow = .pass, .deny = .fail }, true);
+    defer allocator.free(smoke_fail);
+    try std.testing.expect(std.mem.indexOf(u8, smoke_fail, "plugin doctor claude") != null);
+
+    const hermes_open = try formatFix(allocator, "hermes", "yes", .{}, true);
+    defer allocator.free(hermes_open);
+    try std.testing.expect(std.mem.indexOf(u8, hermes_open, "ORCA_HERMES_FAIL_OPEN=0") != null);
+
+    const pi_fix = try formatFix(allocator, "pi", "—", .{}, true);
+    defer allocator.free(pi_fix);
+    try std.testing.expect(std.mem.indexOf(u8, pi_fix, "pi install") != null);
+}
+
+test "HostSmokePair bothPassed requires allow and deny pass" {
+    try std.testing.expect((HostSmokePair{ .allow = .pass, .deny = .pass }).bothPassed());
+    try std.testing.expect(!(HostSmokePair{ .allow = .pass, .deny = .fail }).bothPassed());
+    try std.testing.expect(!(HostSmokePair{ .allow = .not_run, .deny = .not_run }).bothPassed());
+}
+
+test "classifyReadiness maps smoke to protected degraded not-protected" {
+    try std.testing.expectEqual(HostReadiness.protected, classifyReadiness(.{ .allow = .pass, .deny = .pass }));
+    try std.testing.expectEqual(HostReadiness.degraded, classifyReadiness(.{ .allow = .fail, .deny = .pass }));
+    try std.testing.expectEqual(HostReadiness.not_protected, classifyReadiness(.{ .allow = .pass, .deny = .fail }));
+    try std.testing.expectEqual(HostReadiness.not_protected, classifyReadiness(.{ .allow = .fail, .deny = .fail }));
+    try std.testing.expectEqual(HostReadiness.unknown, classifyReadiness(.{}));
+    try std.testing.expect(std.mem.indexOf(u8, HostReadiness.degraded.label(), "not ready") != null);
+    try std.testing.expect(std.mem.indexOf(u8, HostReadiness.not_protected.label(), "not protected") != null);
+}
+
+test "formatFix degraded prefers daemon doctor not reinstall" {
+    const allocator = std.testing.allocator;
+    const fix = try formatFix(allocator, "claude", "yes", .{ .allow = .fail, .deny = .pass }, true);
+    defer allocator.free(fix);
+    try std.testing.expect(std.mem.indexOf(u8, fix, "orca doctor") != null);
+    try std.testing.expect(std.mem.indexOf(u8, fix, "not ready") != null);
+}
+
+test "hermesFailOpenEffective prefers env then stance then default open" {
+    try std.testing.expect(hermesFailOpenEffective(null, null));
+    try std.testing.expect(!hermesFailOpenEffective(null, "fail-closed"));
+    try std.testing.expect(hermesFailOpenEffective(null, "fail-open"));
+    try std.testing.expect(!hermesFailOpenEffective("0", "fail-open"));
+    try std.testing.expect(hermesFailOpenEffective("1", "fail-closed"));
+    try std.testing.expect(!hermesFailOpenFromStanceText("fail-closed").?);
+}

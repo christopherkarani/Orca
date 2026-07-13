@@ -55,6 +55,20 @@
       "type": "array",
       "items": { "type": "string" },
       "description": "Honest notes about host enforcement limits."
+    },
+    "rule_id": {
+      "type": ["string", "null"],
+      "description": "Alias of rule for agent-facing remediation (additive)."
+    },
+    "suggestions": {
+      "type": "array",
+      "items": { "type": "string" },
+      "description": "Optional human-readable remediation tips from the evaluator."
+    },
+    "remediation_commands": {
+      "type": "array",
+      "items": { "type": "string" },
+      "description": "Optional safe next-step CLI commands (explain / allow-once / allowlist)."
     }
   },
   "additionalProperties": false

@@ -410,7 +410,9 @@ fn writeSuccessEndCard(
         try stdout.writeAll("  orca doctor\n");
     }
     try stdout.writeAll("\n");
-    try tui.theme.paint(io, stdout, .muted, "Diagnostics: orca doctor · orca dashboard · orca start (re-run safely)");
+    try tui.theme.paint(io, stdout, .muted, "Pi is not managed by plugin install (bash-only): pi install npm:@orca-sec/pi-orca");
+    try stdout.writeAll("\n");
+    try tui.theme.paint(io, stdout, .muted, "Diagnostics: orca doctor · orca dashboard · ./scripts/host-live-e2e.sh · orca start (re-run safely)");
     try stdout.writeAll("\n");
 }
 
