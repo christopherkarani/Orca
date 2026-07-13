@@ -832,11 +832,16 @@ test "decide file CLI gives workspace-relative and absolute paths identical deci
         \\mode: trusted
         \\files:
         \\  read:
-        \\    allow: ["./**"]
-        \\    deny: ["./.env"]
+        \\    allow:
+        \\      - "./**"
+        \\    deny:
+        \\      - "./.env"
         \\  write:
-        \\    allow: ["./**"]
-        \\    deny: ["./.orca/**", "./.git/**"]
+        \\    allow:
+        \\      - "./**"
+        \\    deny:
+        \\      - "./.orca/**"
+        \\      - "./.git/**"
         ,
     });
     const policy_path = try tmp.dir.realPathFileAlloc(std.testing.io, "policy.yaml", std.testing.allocator);
