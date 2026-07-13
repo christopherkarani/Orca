@@ -176,8 +176,8 @@ fn runAutoSetup(io: std.Io, cwd: std.Io.Dir, preset: []const u8, stdout: anytype
         }
     }
 
-    try stdout.writeAll("\nPi: not managed by `orca plugin install` / setup host loop (bash-only).\n");
-    try stdout.writeAll("  Install: pi install npm:@orca-sec/pi-orca\n");
+    try stdout.writeAll("\nPi: not managed by `orca plugin install` / setup host loop; verify extension coverage with live smoke.\n");
+    try stdout.writeAll("  Install: pi install npm:@orca-sec/pi-orca · process: orca run -- pi\n");
 
     if (!any_detected) {
         try stdout.writeAll("\nNo agent hosts detected in PATH.\n");
