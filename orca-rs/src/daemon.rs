@@ -250,7 +250,7 @@ use crate::branding::{CONFIG_DIR, PROJECT_CONFIG_FILE, PROJECT_DATA_DIR};
 use crate::config::{
     self, CompiledOverrides, Config, HeredocSettings, REPO_ROOT_SEARCH_MAX_HOPS,
 };
-use crate::daemon_cli::execute_cli;
+use crate::daemon_cli::execute_cli_at;
 use crate::daemon_protocol::{
     AllowlistOverridePayload, ClientEnvelope, DaemonRequest, DaemonResponse, ResultPayload,
     SuggestionPayload,
@@ -804,8 +804,8 @@ async fn handle_connection(stream: UnixStream, shutdown_tx: Arc<watch::Sender<bo
                     },
                 }
             }
-            DaemonRequest::ExecuteCli { argv } => {
-                let cli_result = execute_cli(&argv);
+            DaemonRequest::ExecuteCli { argv, cwd } => {
+                let cli_result = execute_cli_at(&argv, cwd.as_deref());
                 DaemonResponse {
                     id,
                     result: ResultPayload::CliExecution {

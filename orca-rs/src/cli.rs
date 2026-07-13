@@ -2003,6 +2003,11 @@ pub fn version_stdout_line() -> String {
 /// classify, suggest-allowlist, rebase-recover, config, simulate.
 #[must_use]
 pub fn execute_daemon_cli(argv: &[String]) -> CliExecutionResult {
+    execute_daemon_cli_at(argv, None)
+}
+
+#[must_use]
+pub fn execute_daemon_cli_at(argv: &[String], cwd: Option<&str>) -> CliExecutionResult {
     if argv.is_empty() {
         return CliExecutionResult {
             stdout: String::new(),
@@ -2017,7 +2022,7 @@ pub fn execute_daemon_cli(argv: &[String]) -> CliExecutionResult {
             stderr: String::new(),
             exit_code: EXIT_SUCCESS,
         },
-        cmd if is_daemon_proxy_command(cmd) => execute_proxied_daemon_cli(argv),
+        cmd if is_daemon_proxy_command(cmd) => execute_proxied_daemon_cli(argv, cwd),
         other => CliExecutionResult {
             stdout: String::new(),
             stderr: format!(
@@ -2049,7 +2054,7 @@ fn is_daemon_proxy_command(command: &str) -> bool {
     )
 }
 
-fn execute_proxied_daemon_cli(argv: &[String]) -> CliExecutionResult {
+fn execute_proxied_daemon_cli(argv: &[String], cwd: Option<&str>) -> CliExecutionResult {
     let Some(mapped_argv) = map_daemon_proxy_argv(argv) else {
         return CliExecutionResult {
             stdout: String::new(),
@@ -2073,7 +2078,12 @@ fn execute_proxied_daemon_cli(argv: &[String]) -> CliExecutionResult {
         }
     };
 
-    match std::process::Command::new(exe).args(&mapped_argv).output() {
+    let mut command = std::process::Command::new(exe);
+    command.args(&mapped_argv);
+    if let Some(cwd) = cwd {
+        command.current_dir(cwd);
+    }
+    match command.output() {
         Ok(output) => CliExecutionResult {
             stdout: String::from_utf8_lossy(&output.stdout).into_owned(),
             stderr: String::from_utf8_lossy(&output.stderr).into_owned(),

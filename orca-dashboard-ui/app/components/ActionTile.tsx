@@ -52,6 +52,8 @@ const actionIconMap: Record<string, string> = {
   "openclaw-doctor": "Plug",
   "hermes-doctor": "MessageSquare",
   "replay-denied": "XCircle",
+  "suggest-allowlist": "ShieldCheck",
+  "allowlist-list": "FileText",
 };
 
 interface ActionTileProps {

@@ -30,6 +30,7 @@ pub const RustShellFeedRecord = struct {
     host: ?[]const u8,
     daemon_status: []const u8,
     pack_id: ?[]const u8,
+    rule: ?[]const u8,
     severity: ?[]const u8,
     reason: []const u8,
     remediation: ?[]const u8,
@@ -47,6 +48,7 @@ pub const RustShellFeedRecord = struct {
         if (self.host) |host| allocator.free(host);
         allocator.free(self.daemon_status);
         if (self.pack_id) |pack_id| allocator.free(pack_id);
+        if (self.rule) |rule| allocator.free(rule);
         if (self.severity) |severity| allocator.free(severity);
         allocator.free(self.reason);
         if (self.remediation) |remediation| allocator.free(remediation);
@@ -303,7 +305,6 @@ pub fn buildFeedRecordFromHookDecision(
     pack_id: ?[]const u8,
     session_id: ?[]const u8,
 ) !RustShellFeedRecord {
-    _ = rule;
     const safe_reason = try core_api.redactAlloc(allocator, reason);
     errdefer allocator.free(safe_reason);
 
@@ -320,6 +321,7 @@ pub fn buildFeedRecordFromHookDecision(
         .host = try allocator.dupe(u8, host),
         .daemon_status = try allocator.dupe(u8, daemon_status),
         .pack_id = if (pack_id) |pack| try allocator.dupe(u8, pack) else null,
+        .rule = if (rule) |rule_id| try allocator.dupe(u8, rule_id) else null,
         .severity = if (severity) |sev| try allocator.dupe(u8, sev) else null,
         .reason = safe_reason,
         .remediation = if (remediation) |text| blk: {
@@ -389,6 +391,8 @@ pub fn buildFeedRecordFromDaemon(
     errdefer allocator.free(reason);
     const remediation = try remediationFromDaemonResult(allocator, result);
     errdefer if (remediation) |text| allocator.free(text);
+    const rule = try ruleIdFromDaemonResult(allocator, result);
+    errdefer if (rule) |rule_id| allocator.free(rule_id);
 
     var timestamp_buf: [32]u8 = undefined;
     const timestamp = try core.time.Timestamp.now(io).formatIso(&timestamp_buf);
@@ -403,6 +407,7 @@ pub fn buildFeedRecordFromDaemon(
         .host = if (host) |host_name| try allocator.dupe(u8, host_name) else null,
         .daemon_status = try allocator.dupe(u8, daemon_status),
         .pack_id = if (packIdFromDaemonResult(result)) |pack| try allocator.dupe(u8, pack) else null,
+        .rule = rule,
         .severity = if (severityFromDaemonResult(result)) |sev| try allocator.dupe(u8, sev) else null,
         .reason = reason,
         .remediation = remediation,
@@ -443,6 +448,7 @@ pub fn buildFeedRecordFromUnavailable(
         .host = if (host) |host_name| try allocator.dupe(u8, host_name) else null,
         .daemon_status = try allocator.dupe(u8, daemon_status),
         .pack_id = null,
+        .rule = null,
         .severity = null,
         .reason = reason,
         .remediation = null,
@@ -485,6 +491,7 @@ pub fn buildFeedRecordFromHookActivity(
         .host = if (host) |host_name| try allocator.dupe(u8, host_name) else null,
         .daemon_status = try allocator.dupe(u8, daemon_status),
         .pack_id = null,
+        .rule = null,
         .severity = null,
         .reason = safe_reason,
         .remediation = null,
@@ -523,6 +530,8 @@ pub fn writeFeedRecordJson(writer: anytype, record: RustShellFeedRecord) !void {
     try writeJsonField(writer, "daemon_status", record.daemon_status);
     try writer.writeByte(',');
     try writeJsonFieldNullable(writer, "pack_id", record.pack_id);
+    try writer.writeByte(',');
+    try writeJsonFieldNullable(writer, "rule", record.rule);
     try writer.writeByte(',');
     try writeJsonFieldNullable(writer, "severity", record.severity);
     try writer.writeByte(',');
@@ -617,6 +626,31 @@ test "ruleIdFromDaemonResult joins pack and pattern" {
     const rule = try ruleIdFromDaemonResult(allocator, parsed.value);
     defer if (rule) |r| allocator.free(r);
     try std.testing.expectEqualStrings("core.git:reset-hard", rule.?);
+}
+
+test "daemon feed records retain composite rule ids" {
+    var parsed = try std.json.parseFromSlice(
+        std.json.Value,
+        std.testing.allocator,
+        \\{"status":"Deny","reason":"blocked","pack_id":"core.git","pattern_name":"reset-hard"}
+    ,
+        .{},
+    );
+    defer parsed.deinit();
+    var record = try buildFeedRecordFromDaemon(
+        std.testing.allocator,
+        std.testing.io,
+        "/tmp/workspace",
+        event_source_hook,
+        "codex",
+        "healthy",
+        parsed.value,
+        null,
+        false,
+    );
+    defer record.deinit(std.testing.allocator);
+
+    try std.testing.expectEqualStrings("core.git:reset-hard", record.rule.?);
 }
 
 test "formatDenyNextSteps includes explain allowlist and allow-once" {

@@ -13,10 +13,12 @@ const demo_cmd = @import("demo.zig");
 const plugin = @import("plugin.zig");
 const policy = @import("policy.zig");
 const replay = @import("replay.zig");
+const daemon = @import("daemon.zig");
 const exit_codes = @import("exit_codes.zig");
 const feed_writer = @import("feed_writer.zig");
 const help = @import("help.zig");
 const core = @import("orca_core").core;
+const core_api = @import("orca_core").api;
 const core_policy = @import("orca_core").policy;
 const intercept = @import("../intercept/mod.zig");
 
@@ -196,10 +198,15 @@ fn serve(io: std.Io, options: DashboardOptions, stdout: anytype, stderr: anytype
         defer stream.close(io);
         handleConnection(io, allocator, stream, csrf_token, context) catch |err| {
             try stderr.print("orca dashboard: request failed: {s}\n", .{@errorName(err)});
+            if (isFatalRequestError(err)) return err;
         };
         if (options.once) break;
     }
     return exit_codes.success;
+}
+
+fn isFatalRequestError(err: anyerror) bool {
+    return err == error.WorkspaceCwdRestoreFailed;
 }
 
 fn resolveDashboardDistDirTrusted(io: std.Io, allocator: std.mem.Allocator) ![]u8 {
@@ -321,7 +328,7 @@ fn handleConnection(
     }
     if (std.mem.eql(u8, request.method, "POST") and std.mem.eql(u8, request.path, "/api/actions")) {
         if (!tokenMatches(request.csrf_token, csrf_token)) return sendJsonError(io, stream, 403, "Forbidden", "csrf");
-        handleAction(io, allocator, writer, request.body, context.workspace_root != null) catch |err| switch (err) {
+        handleAction(io, allocator, writer, request.body, context.workspace_root) catch |err| switch (err) {
             error.WorkspaceRequired => return sendJsonError(io, stream, 409, "Conflict", "workspace_required"),
             else => return err,
         };
@@ -610,19 +617,27 @@ fn writePolicyMutationResult(writer: anytype, result: dashboard.PolicySaveResult
     try writer.writeByte('}');
 }
 
-fn handleAction(io: std.Io, allocator: std.mem.Allocator, writer: anytype, body: []const u8, workspace_selected: bool) !void {
+fn handleAction(io: std.Io, allocator: std.mem.Allocator, writer: anytype, body: []const u8, workspace_root: ?[]const u8) !void {
     var parsed = try std.json.parseFromSlice(std.json.Value, allocator, body, .{});
     defer parsed.deinit();
     const object = if (parsed.value == .object) parsed.value.object else return error.BadRequest;
     const action_value = object.get("action") orelse return error.BadRequest;
     if (action_value != .string) return error.BadRequest;
-    const result = try runAllowedAction(io, allocator, action_value.string, workspace_selected);
+    const result = try runAllowedAction(io, allocator, action_value.string, workspace_root);
     defer allocator.free(result.stdout);
     defer allocator.free(result.stderr);
+    try writeCapturedActionJson(allocator, writer, result);
+}
+
+fn writeCapturedActionJson(allocator: std.mem.Allocator, writer: anytype, result: CapturedAction) !void {
+    const safe_stdout = try core_api.redactAlloc(allocator, result.stdout);
+    defer allocator.free(safe_stdout);
+    const safe_stderr = try core_api.redactAlloc(allocator, result.stderr);
+    defer allocator.free(safe_stderr);
     try writer.print("{{\"ok\":{},\"exit_code\":{d},\"stdout\":", .{ result.exit_code == exit_codes.success, result.exit_code });
-    try core.util.writeJsonString(writer, result.stdout);
+    try core.util.writeJsonString(writer, safe_stdout);
     try writer.writeAll(",\"stderr\":");
-    try core.util.writeJsonString(writer, result.stderr);
+    try core.util.writeJsonString(writer, safe_stderr);
     try writer.writeByte('}');
 }
 
@@ -632,8 +647,45 @@ const CapturedAction = struct {
     stderr: []u8,
 };
 
-fn runAllowedAction(io: std.Io, allocator: std.mem.Allocator, action: []const u8, workspace_selected: bool) !CapturedAction {
-    if (!workspace_selected and !actionAllowedWithoutWorkspace(action)) return error.WorkspaceRequired;
+/// Commands that still resolve workspace from the process cwd (no path/Dir API yet).
+/// Prefer absolute paths or open Dir handles for new dashboard actions.
+fn actionNeedsWorkspaceCwd(action: []const u8) bool {
+    return std.mem.eql(u8, action, "doctor") or
+        std.mem.eql(u8, action, "credentials-check") or
+        std.mem.eql(u8, action, "credentials-check-github") or
+        std.mem.eql(u8, action, "policy-explain-github") or
+        std.mem.eql(u8, action, "replay-last") or
+        std.mem.eql(u8, action, "replay-denied") or
+        std.mem.eql(u8, action, "report-last") or
+        std.mem.eql(u8, action, "ci-check") or
+        std.mem.eql(u8, action, "demo-blocked-action");
+}
+
+/// Scoped process cwd change for legacy CLI entrypoints. Restore failures are hard errors
+/// so a subsequent dashboard request never inherits a foreign workspace.
+const WorkspaceCwdGuard = struct {
+    /// Owned path of the process cwd before enter(); realPathFileAlloc is `[:0]u8`.
+    original: ?[:0]u8,
+    allocator: std.mem.Allocator,
+
+    fn enter(io: std.Io, allocator: std.mem.Allocator, workspace_root: []const u8) !WorkspaceCwdGuard {
+        const original = try std.Io.Dir.cwd().realPathFileAlloc(io, ".", allocator);
+        errdefer allocator.free(original);
+        try std.Io.Threaded.chdir(workspace_root);
+        return .{ .original = original, .allocator = allocator };
+    }
+
+    fn leave(self: *WorkspaceCwdGuard) !void {
+        const original = self.original orelse return;
+        self.original = null;
+        defer self.allocator.free(original);
+        std.Io.Threaded.chdir(original) catch return error.WorkspaceCwdRestoreFailed;
+    }
+};
+
+fn runAllowedAction(io: std.Io, allocator: std.mem.Allocator, action: []const u8, workspace_root: ?[]const u8) !CapturedAction {
+    if (workspace_root == null and !actionAllowedWithoutWorkspace(action)) return error.WorkspaceRequired;
+
     var stdout_aw: std.Io.Writer.Allocating = .init(allocator);
     errdefer stdout_aw.deinit();
     var stderr_aw: std.Io.Writer.Allocating = .init(allocator);
@@ -641,44 +693,124 @@ fn runAllowedAction(io: std.Io, allocator: std.mem.Allocator, action: []const u8
     const stdout = &stdout_aw.writer;
     const stderr = &stderr_aw.writer;
 
-    const code = if (std.mem.eql(u8, action, "doctor"))
-        try doctor.command(io, &.{}, stdout, stderr)
-    else if (std.mem.eql(u8, action, "policy-check"))
-        try policy.command(io, &.{ "check", ".orca/policy.yaml" }, stdout, stderr)
+    // Daemon-proxied remediation: trusted cwd rides on ExecuteCli — never touch process cwd.
+    if (dashboardDaemonActionArgv(action)) |argv| {
+        const code = try runDaemonProxyAction(allocator, argv, workspace_root.?, stdout, stderr);
+        return .{
+            .exit_code = code,
+            .stdout = try stdout_aw.toOwnedSlice(),
+            .stderr = try stderr_aw.toOwnedSlice(),
+        };
+    }
+
+    // Init accepts an open Dir; no process chdir required.
+    if (std.mem.eql(u8, action, "init-generic-agent")) {
+        var workspace_dir = try std.Io.Dir.cwd().openDir(io, workspace_root.?, .{});
+        defer workspace_dir.close(io);
+        const code = try init.command(io, workspace_dir, &.{ "--preset", "generic-agent" }, stdout, stderr);
+        return .{
+            .exit_code = code,
+            .stdout = try stdout_aw.toOwnedSlice(),
+            .stderr = try stderr_aw.toOwnedSlice(),
+        };
+    }
+
+    // Policy check can use an absolute policy path without changing process cwd.
+    if (std.mem.eql(u8, action, "policy-check")) {
+        const policy_path = try std.fs.path.join(allocator, &.{ workspace_root.?, ".orca", "policy.yaml" });
+        defer allocator.free(policy_path);
+        const code = try policy.command(io, &.{ "check", policy_path }, stdout, stderr);
+        return .{
+            .exit_code = code,
+            .stdout = try stdout_aw.toOwnedSlice(),
+            .stderr = try stderr_aw.toOwnedSlice(),
+        };
+    }
+
+    var cwd_guard: ?WorkspaceCwdGuard = null;
+    if (workspace_root != null and actionNeedsWorkspaceCwd(action)) {
+        cwd_guard = try WorkspaceCwdGuard.enter(io, allocator, workspace_root.?);
+    }
+
+    const code = (if (std.mem.eql(u8, action, "doctor"))
+        doctor.command(io, &.{}, stdout, stderr)
     else if (std.mem.eql(u8, action, "credentials-check"))
-        try credentials_cmd.command(io, &.{"check"}, stdout, stderr)
+        credentials_cmd.command(io, &.{"check"}, stdout, stderr)
     else if (std.mem.eql(u8, action, "credentials-check-github"))
-        try credentials_cmd.command(io, &.{ "check", "github_pat" }, stdout, stderr)
+        credentials_cmd.command(io, &.{ "check", "github_pat" }, stdout, stderr)
     else if (std.mem.eql(u8, action, "proxy-smoke"))
-        try proxySmokeAction(io, allocator, stdout, stderr)
+        proxySmokeAction(io, allocator, stdout, stderr)
     else if (std.mem.eql(u8, action, "policy-explain-github"))
-        try policy.command(io, &.{ "explain", "network", "https://api.github.com/repos/acme/app/issues", "--method", "POST" }, stdout, stderr)
+        policy.command(io, &.{ "explain", "network", "https://api.github.com/repos/acme/app/issues", "--method", "POST" }, stdout, stderr)
     else if (std.mem.eql(u8, action, "replay-last"))
-        try replay.command(io, &.{ "--session", "last", "--verify" }, stdout, stderr)
+        replay.command(io, &.{ "--session", "last", "--verify" }, stdout, stderr)
     else if (std.mem.eql(u8, action, "openclaw-doctor"))
-        try plugin.command(io, &.{ "doctor", "openclaw" }, stdout, stderr)
+        plugin.command(io, &.{ "doctor", "openclaw" }, stdout, stderr)
     else if (std.mem.eql(u8, action, "hermes-doctor"))
-        try plugin.command(io, &.{ "doctor", "hermes" }, stdout, stderr)
+        plugin.command(io, &.{ "doctor", "hermes" }, stdout, stderr)
     else if (std.mem.eql(u8, action, "replay-denied"))
-        try replay.command(io, &.{ "--session", "last", "--only", "denied", "--verify" }, stdout, stderr)
-    else if (std.mem.eql(u8, action, "init-generic-agent"))
-        try init.command(io, std.Io.Dir.cwd(), &.{ "--preset", "generic-agent" }, stdout, stderr)
+        replay.command(io, &.{ "--session", "last", "--only", "denied", "--verify" }, stdout, stderr)
     else if (std.mem.eql(u8, action, "report-last"))
-        try report_cmd.command(io, &.{ "--session", "last", "--format", "markdown" }, stdout, stderr)
+        report_cmd.command(io, &.{ "--session", "last", "--format", "markdown" }, stdout, stderr)
     else if (std.mem.eql(u8, action, "ci-check"))
-        try ci_cmd.command(io, &.{ "check", "--format", "markdown" }, stdout, stderr)
+        ci_cmd.command(io, &.{ "check", "--format", "markdown" }, stdout, stderr)
     else if (std.mem.eql(u8, action, "demo-blocked-action"))
-        try demo_cmd.command(io, &.{"blocked-action"}, stdout, stderr)
+        demo_cmd.command(io, &.{"blocked-action"}, stdout, stderr)
     else if (std.mem.eql(u8, action, "license-status"))
-        try license_cmd.command(io, &.{"status"}, stdout, stderr)
+        license_cmd.command(io, &.{"status"}, stdout, stderr)
     else
-        return error.UnsupportedDashboardAction;
+        return error.UnsupportedDashboardAction) catch |err| {
+        if (cwd_guard) |*guard| try guard.leave();
+        return err;
+    };
+
+    if (cwd_guard) |*guard| {
+        try guard.leave();
+    }
 
     return .{
         .exit_code = code,
         .stdout = try stdout_aw.toOwnedSlice(),
         .stderr = try stderr_aw.toOwnedSlice(),
     };
+}
+
+fn dashboardDaemonActionArgv(action: []const u8) ?[]const []const u8 {
+    if (std.mem.eql(u8, action, "suggest-allowlist")) return &.{ "suggest-allowlist", "--confidence", "high", "--non-interactive" };
+    if (std.mem.eql(u8, action, "allowlist-list")) return &.{ "allowlist", "list" };
+    return null;
+}
+
+/// Fixed argv proxy for allowlisted dashboard remediation actions (no browser-supplied args).
+fn runDaemonProxyAction(
+    allocator: std.mem.Allocator,
+    argv: []const []const u8,
+    workspace_root: []const u8,
+    stdout: anytype,
+    stderr: anytype,
+) !u8 {
+    var parsed = daemon.executeCliAt(allocator, argv, workspace_root) catch |err| {
+        try stderr.print("orca dashboard: daemon proxy failed ({s})\n", .{@errorName(err)});
+        return exit_codes.general;
+    };
+    defer parsed.deinit();
+
+    if (daemon.responseStatus(parsed.value.result) == .error_status) {
+        if (daemon.responseErrorMessage(parsed.value.result)) |message| {
+            try stderr.print("orca daemon: {s}\n", .{message});
+        } else {
+            try stderr.writeAll("orca daemon: protocol error\n");
+        }
+        return exit_codes.general;
+    }
+
+    const execution = daemon.parseCliExecution(parsed.value.result) catch {
+        try stderr.writeAll("orca dashboard: malformed daemon CLI response\n");
+        return exit_codes.general;
+    };
+    try stdout.writeAll(execution.stdout);
+    if (execution.stderr.len > 0) try stderr.writeAll(execution.stderr);
+    return execution.exit_code;
 }
 
 fn proxySmokeAction(io: std.Io, allocator: std.mem.Allocator, stdout: anytype, _: anytype) !u8 {
@@ -900,17 +1032,127 @@ test "machine dashboard actions exclude workspace-scoped commands" {
     try std.testing.expect(!actionAllowedWithoutWorkspace("replay-last"));
     try std.testing.expect(!actionAllowedWithoutWorkspace("report-last"));
     try std.testing.expect(!actionAllowedWithoutWorkspace("demo-blocked-action"));
-    try std.testing.expectError(error.WorkspaceRequired, runAllowedAction(std.testing.io, std.testing.allocator, "replay-last", false));
+    try std.testing.expectError(error.WorkspaceRequired, runAllowedAction(std.testing.io, std.testing.allocator, "replay-last", null));
 }
 
 test "dashboard action allowlist rejects arbitrary browser commands" {
-    try std.testing.expectError(error.UnsupportedDashboardAction, runAllowedAction(std.testing.io, std.testing.allocator, "rm -rf /", true));
+    try std.testing.expectError(error.UnsupportedDashboardAction, runAllowedAction(std.testing.io, std.testing.allocator, "rm -rf /", "."));
+    try std.testing.expectError(error.UnsupportedDashboardAction, runAllowedAction(std.testing.io, std.testing.allocator, "allowlist add evil", "."));
+    try std.testing.expectError(error.UnsupportedDashboardAction, runAllowedAction(std.testing.io, std.testing.allocator, "shell-anything", "."));
+}
+
+test "dashboard remediation actions are registered on the allowlist" {
+    // Workspace required: these proxy daemon CLI and mutate/read workspace history.
+    try std.testing.expect(!actionAllowedWithoutWorkspace("suggest-allowlist"));
+    try std.testing.expect(!actionAllowedWithoutWorkspace("allowlist-list"));
+    try std.testing.expectError(error.WorkspaceRequired, runAllowedAction(std.testing.io, std.testing.allocator, "suggest-allowlist", null));
+    try std.testing.expectError(error.WorkspaceRequired, runAllowedAction(std.testing.io, std.testing.allocator, "allowlist-list", null));
+}
+
+test "dashboard remediation action argv is fixed and non-interactive" {
+    try std.testing.expectEqualSlices([]const u8, &.{ "suggest-allowlist", "--confidence", "high", "--non-interactive" }, dashboardDaemonActionArgv("suggest-allowlist").?);
+    try std.testing.expectEqualSlices([]const u8, &.{ "allowlist", "list" }, dashboardDaemonActionArgv("allowlist-list").?);
+    try std.testing.expect(dashboardDaemonActionArgv("allowlist add browser-controlled") == null);
+}
+
+test "dashboard action JSON redacts captured stdout and stderr" {
+    const sentinel = "sk-dashboardSyntheticSecretSentinel123456789";
+    var aw: std.Io.Writer.Allocating = .init(std.testing.allocator);
+    defer aw.deinit();
+    try writeCapturedActionJson(std.testing.allocator, &aw.writer, .{
+        .exit_code = exit_codes.general,
+        .stdout = @constCast("suggestion token=sk-dashboardSyntheticSecretSentinel123456789\n"),
+        .stderr = @constCast("Authorization: Bearer sk-dashboardSyntheticSecretSentinel123456789\n"),
+    });
+    try std.testing.expect(std.mem.indexOf(u8, aw.written(), sentinel) == null);
+    try std.testing.expect(std.mem.indexOf(u8, aw.written(), "[REDACTED]") != null);
+}
+
+test "workspace dashboard actions run in the selected canonical workspace" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const selected = try tmp.dir.realPathFileAlloc(std.testing.io, ".", std.testing.allocator);
+    defer std.testing.allocator.free(selected);
+
+    const previous_cwd = try std.Io.Dir.cwd().realPathFileAlloc(std.testing.io, ".", std.testing.allocator);
+    defer std.testing.allocator.free(previous_cwd);
+
+    const result = try runAllowedAction(std.testing.io, std.testing.allocator, "init-generic-agent", selected);
+    defer std.testing.allocator.free(result.stdout);
+    defer std.testing.allocator.free(result.stderr);
+    try std.testing.expectEqual(exit_codes.success, result.exit_code);
+    const policy_path = try std.fs.path.join(std.testing.allocator, &.{ selected, ".orca", "policy.yaml" });
+    defer std.testing.allocator.free(policy_path);
+    try std.Io.Dir.cwd().access(std.testing.io, policy_path, .{});
+
+    // init must not leave the process cwd on the selected workspace.
+    const after_cwd = try std.Io.Dir.cwd().realPathFileAlloc(std.testing.io, ".", std.testing.allocator);
+    defer std.testing.allocator.free(after_cwd);
+    try std.testing.expectEqualStrings(previous_cwd, after_cwd);
+}
+
+test "dashboard action workspace cwd classification matches remediation surface" {
+    try std.testing.expect(actionNeedsWorkspaceCwd("doctor"));
+    try std.testing.expect(!actionNeedsWorkspaceCwd("license-status"));
+    try std.testing.expect(!actionNeedsWorkspaceCwd("init-generic-agent"));
+    try std.testing.expect(!actionNeedsWorkspaceCwd("policy-check"));
+    try std.testing.expect(!actionNeedsWorkspaceCwd("suggest-allowlist"));
+    try std.testing.expect(actionNeedsWorkspaceCwd("replay-last"));
+    try std.testing.expect(actionNeedsWorkspaceCwd("ci-check"));
+    try std.testing.expect(actionNeedsWorkspaceCwd("demo-blocked-action"));
+}
+
+test "workspace dashboard doctor inspects the selected workspace" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try tmp.dir.createDir(std.testing.io, ".orca", .default_dir);
+    try tmp.dir.writeFile(std.testing.io, .{
+        .sub_path = ".orca/policy.yaml",
+        .data = "version: 1\nmode: definitely-invalid\n",
+    });
+    const selected = try tmp.dir.realPathFileAlloc(std.testing.io, ".", std.testing.allocator);
+    defer std.testing.allocator.free(selected);
+    const previous_cwd = try std.Io.Dir.cwd().realPathFileAlloc(std.testing.io, ".", std.testing.allocator);
+    defer std.testing.allocator.free(previous_cwd);
+
+    const result = try runAllowedAction(std.testing.io, std.testing.allocator, "doctor", selected);
+    defer std.testing.allocator.free(result.stdout);
+    defer std.testing.allocator.free(result.stderr);
+    try std.testing.expect(std.mem.indexOf(u8, result.stdout, "policy invalid") != null);
+
+    const after_cwd = try std.Io.Dir.cwd().realPathFileAlloc(std.testing.io, ".", std.testing.allocator);
+    defer std.testing.allocator.free(after_cwd);
+    try std.testing.expectEqualStrings(previous_cwd, after_cwd);
+}
+
+test "workspace cwd restore failure is fatal to the dashboard server" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try tmp.dir.createDir(std.testing.io, "original", .default_dir);
+    try tmp.dir.createDir(std.testing.io, "selected", .default_dir);
+    const original = try tmp.dir.realPathFileAlloc(std.testing.io, "original", std.testing.allocator);
+    defer std.testing.allocator.free(original);
+    const selected = try tmp.dir.realPathFileAlloc(std.testing.io, "selected", std.testing.allocator);
+    defer std.testing.allocator.free(selected);
+    const base = try tmp.dir.realPathFileAlloc(std.testing.io, ".", std.testing.allocator);
+    defer std.testing.allocator.free(base);
+    const moved = try std.fs.path.join(std.testing.allocator, &.{ base, "original-moved" });
+    defer std.testing.allocator.free(moved);
+    const actual_cwd = try std.Io.Dir.cwd().realPathFileAlloc(std.testing.io, ".", std.testing.allocator);
+    defer std.testing.allocator.free(actual_cwd);
+    defer std.Io.Threaded.chdir(actual_cwd) catch @panic("test failed to restore process cwd");
+
+    try std.Io.Threaded.chdir(original);
+    var guard = try WorkspaceCwdGuard.enter(std.testing.io, std.testing.allocator, selected);
+    try std.Io.Dir.renameAbsolute(original, moved, std.testing.io);
+    try std.testing.expectError(error.WorkspaceCwdRestoreFailed, guard.leave());
+    try std.testing.expect(isFatalRequestError(error.WorkspaceCwdRestoreFailed));
 }
 
 test "dashboard proxy-smoke action verifies local proxy forwarding" {
     if (@import("builtin").os.tag == .windows) return error.SkipZigTest;
 
-    const result = try runAllowedAction(std.testing.io, std.testing.allocator, "proxy-smoke", true);
+    const result = try runAllowedAction(std.testing.io, std.testing.allocator, "proxy-smoke", ".");
     defer std.testing.allocator.free(result.stdout);
     defer std.testing.allocator.free(result.stderr);
     try std.testing.expectEqual(exit_codes.success, result.exit_code);

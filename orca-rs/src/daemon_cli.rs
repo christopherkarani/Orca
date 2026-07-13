@@ -3,13 +3,14 @@
 //! Delegates to [`crate::cli::execute_daemon_cli`], which returns structured
 //! results instead of calling [`std::process::exit`].
 
-pub use crate::cli::{CliExecutionResult, execute_daemon_cli};
+pub use crate::cli::{CliExecutionResult, execute_daemon_cli, execute_daemon_cli_at};
 
 /// Daemon-side entry point for `ExecuteCli` requests.
 ///
 /// Alias kept for call sites (`daemon.rs`, tests) that predate the
 /// `execute_daemon_cli` name.
 pub use execute_daemon_cli as execute_cli;
+pub use execute_daemon_cli_at as execute_cli_at;
 
 #[cfg(test)]
 mod tests {
@@ -126,6 +127,20 @@ mod tests {
         assert_eq!(result.exit_code, EXIT_SUCCESS);
         assert!(result.stderr.is_empty());
         assert!(result.stdout.to_lowercase().contains("allowlist"));
+    }
+
+    #[test]
+    fn execute_cli_at_applies_requested_working_directory() {
+        let result = execute_cli_at(
+            &["allowlist".to_string(), "list".to_string()],
+            Some("/orca/definitely/not/a/workspace"),
+        );
+        assert_ne!(result.exit_code, EXIT_SUCCESS);
+        assert!(
+            result
+                .stderr
+                .contains("failed to execute daemon CLI command")
+        );
     }
 
     #[test]

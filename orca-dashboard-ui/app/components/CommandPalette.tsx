@@ -2,15 +2,9 @@
 
 import { useState, useEffect, useRef, useCallback } from "react";
 import { useRouter } from "next/navigation";
-import { Search, ShieldCheck, Stethoscope } from "lucide-react";
-import { NAV_TABS } from "../lib/nav";
-
-const actions = [
-  { id: "doctor", label: "Run Doctor", icon: Stethoscope },
-  { id: "policy-check", label: "Policy Check", icon: ShieldCheck },
-  { id: "credentials-check", label: "Credentials Check", icon: ShieldCheck },
-  { id: "ci-check", label: "CI Check", icon: ShieldCheck },
-];
+import { Search } from "lucide-react";
+import { CommandPaletteItems, commandPaletteItems, type CommandPaletteItem } from "../lib/command-palette";
+import { useDashboardMode } from "../lib/dashboard-mode";
 
 interface CommandPaletteProps {
   isOpen: boolean;
@@ -25,18 +19,18 @@ export default function CommandPalette({ isOpen, onClose, onRunAction }: Command
   const containerRef = useRef<HTMLDivElement>(null);
   const triggerRef = useRef<HTMLElement | null>(null);
   const router = useRouter();
+  const { mode } = useDashboardMode();
+  const allItems = commandPaletteItems(mode, query);
 
-  const views = NAV_TABS.map((tab) => ({
-    id: tab.id,
-    label: tab.label,
-    icon: tab.icon,
-    path: tab.href,
-  }));
-
-  const allItems = [
-    ...views.map((v) => ({ ...v, type: "view" as const })),
-    ...actions.map((a) => ({ ...a, type: "action" as const })),
-  ].filter((item) => item.label.toLowerCase().includes(query.toLowerCase()));
+  const selectItem = useCallback((item: CommandPaletteItem) => {
+    if (item.type === "view" && item.path) {
+      router.push(item.path);
+      onClose();
+    } else if (item.type === "action" && onRunAction) {
+      onRunAction(item.id);
+      onClose();
+    }
+  }, [router, onClose, onRunAction]);
 
   useEffect(() => {
     if (isOpen) {
@@ -65,13 +59,7 @@ export default function CommandPalette({ isOpen, onClose, onRunAction }: Command
         e.preventDefault();
         const item = allItems[selectedIndex];
         if (!item) return;
-        if (item.type === "view") {
-          router.push(item.path);
-          onClose();
-        } else if (item.type === "action" && onRunAction) {
-          onRunAction(item.id);
-          onClose();
-        }
+        selectItem(item);
       } else if (e.key === "Escape") {
         e.preventDefault();
         onClose();
@@ -92,7 +80,7 @@ export default function CommandPalette({ isOpen, onClose, onRunAction }: Command
         }
       }
     },
-    [allItems, selectedIndex, router, onClose, onRunAction]
+    [allItems, selectedIndex, selectItem]
   );
 
   if (!isOpen) return null;
@@ -127,36 +115,7 @@ export default function CommandPalette({ isOpen, onClose, onRunAction }: Command
           </kbd>
         </div>
         <div className="max-h-[50vh] overflow-auto py-2" role="listbox">
-          {allItems.length === 0 && (
-            <div className="px-4 py-8 text-center text-sm text-text-tertiary">No results found</div>
-          )}
-          {allItems.map((item, index) => {
-            const Icon = item.icon;
-            const isSelected = index === selectedIndex;
-            return (
-              <button
-                key={`${item.type}-${item.id}`}
-                role="option"
-                aria-selected={isSelected}
-                className={`flex w-full items-center gap-3 px-4 py-2.5 text-left text-[13px] transition-colors ${
-                  isSelected ? "bg-accent/10 text-text-primary" : "text-text-secondary hover:bg-surface-hover"
-                }`}
-                onClick={() => {
-                  if (item.type === "view") {
-                    router.push(item.path);
-                    onClose();
-                  } else if (item.type === "action" && onRunAction) {
-                    onRunAction(item.id);
-                    onClose();
-                  }
-                }}
-              >
-                <Icon size={15} className="shrink-0" strokeWidth={1.5} />
-                <span>{item.label}</span>
-                <span className="ml-auto text-[11px] text-text-tertiary capitalize">{item.type}</span>
-              </button>
-            );
-          })}
+          <CommandPaletteItems query={query} selectedIndex={selectedIndex} onSelect={selectItem} />
         </div>
       </div>
     </div>

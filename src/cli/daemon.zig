@@ -28,7 +28,7 @@ const orca_state_dir = ".orca";
 const daemon_env_var = "ORCA_DAEMON";
 const expected_protocol_version: i64 = 1;
 const expected_protocol_label = "orca-uds-v1";
-const required_capabilities = [_][]const u8{ "Ping", "Evaluate", "ExecuteCli", "Shutdown" };
+const required_capabilities = [_][]const u8{ "Ping", "Evaluate", "ExecuteCli", "ExecuteCliCwd", "Shutdown" };
 
 /// Default time to wait for the daemon socket and Ping response after spawn.
 pub const default_readiness_timeout_ms: u64 = 5_000;
@@ -76,6 +76,15 @@ const ExecuteCliRequest = struct {
     method: []const u8 = "ExecuteCli",
     params: struct {
         argv: []const []const u8,
+    },
+};
+
+const ExecuteCliAtRequest = struct {
+    id: u64,
+    method: []const u8 = "ExecuteCli",
+    params: struct {
+        argv: []const []const u8,
+        cwd: []const u8,
     },
 };
 
@@ -325,6 +334,13 @@ pub fn buildExecuteCliRequestJson(allocator: std.mem.Allocator, id: u64, argv: [
     }, .{}) catch error.RequestSerializationFailed;
 }
 
+pub fn buildExecuteCliRequestJsonAt(allocator: std.mem.Allocator, id: u64, argv: []const []const u8, cwd: []const u8) DaemonError![]u8 {
+    return std.json.Stringify.valueAlloc(allocator, ExecuteCliAtRequest{
+        .id = id,
+        .params = .{ .argv = argv, .cwd = cwd },
+    }, .{}) catch error.RequestSerializationFailed;
+}
+
 /// Build the JSON request envelope for the Rust daemon Evaluate method.
 ///
 /// Caller owns the returned slice.
@@ -560,6 +576,18 @@ pub fn executeCli(allocator: std.mem.Allocator, argv: []const []const u8) Daemon
     const json_str = try buildExecuteCliRequestJson(allocator, 1, argv);
     defer allocator.free(json_str);
 
+    var parsed = try sendRawRequestWithTimeout(allocator, path, json_str, default_request_timeout_ms);
+    errdefer parsed.deinit();
+    if (parsed.value.id != 1) return error.DaemonProtocolError;
+    return parsed;
+}
+
+pub fn executeCliAt(allocator: std.mem.Allocator, argv: []const []const u8, cwd: []const u8) DaemonError!std.json.Parsed(DaemonResponse) {
+    try ensureCompatibleDaemonRunning(allocator);
+    const path = try socketPath(allocator);
+    defer allocator.free(path);
+    const json_str = try buildExecuteCliRequestJsonAt(allocator, 1, argv, cwd);
+    defer allocator.free(json_str);
     var parsed = try sendRawRequestWithTimeout(allocator, path, json_str, default_request_timeout_ms);
     errdefer parsed.deinit();
     if (parsed.value.id != 1) return error.DaemonProtocolError;
@@ -1014,7 +1042,7 @@ test "parseResponse accepts pong payload" {
 
 test "validateHandshakeResult accepts compatible pong payload" {
     const line =
-        "{\"id\":1,\"result\":{\"status\":\"Pong\",\"protocol_version\":1,\"protocol_label\":\"orca-uds-v1\",\"capabilities\":[\"Ping\",\"Evaluate\",\"ExecuteCli\",\"Shutdown\"]}}";
+        "{\"id\":1,\"result\":{\"status\":\"Pong\",\"protocol_version\":1,\"protocol_label\":\"orca-uds-v1\",\"capabilities\":[\"Ping\",\"Evaluate\",\"ExecuteCli\",\"ExecuteCliCwd\",\"Shutdown\"]}}";
     var parsed = try parseResponse(std.testing.allocator, line);
     defer parsed.deinit();
     try validateHandshakeResult(parsed.value.result);
@@ -1048,6 +1076,12 @@ test "buildExecuteCliRequestJson serializes expected argv" {
     defer std.testing.allocator.free(json_str);
 
     try std.testing.expectEqualStrings("{\"id\":7,\"method\":\"ExecuteCli\",\"params\":{\"argv\":[\"version\"]}}", json_str);
+}
+
+test "buildExecuteCliRequestJson carries trusted workspace cwd" {
+    const json_str = try buildExecuteCliRequestJsonAt(std.testing.allocator, 8, &.{ "suggest-allowlist", "--non-interactive" }, "/tmp/canonical-workspace");
+    defer std.testing.allocator.free(json_str);
+    try std.testing.expectEqualStrings("{\"id\":8,\"method\":\"ExecuteCli\",\"params\":{\"argv\":[\"suggest-allowlist\",\"--non-interactive\"],\"cwd\":\"/tmp/canonical-workspace\"}}", json_str);
 }
 
 test "buildEvaluateRequestJson serializes command and cwd" {

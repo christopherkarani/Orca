@@ -5,6 +5,8 @@ const core = @import("orca_core").core;
 const feed_writer = @import("../cli/feed_writer.zig");
 const rust_visibility = @import("../cli/rust_visibility.zig");
 
+pub const SessionLoadHealth = enum { healthy, degraded };
+
 pub const Workspace = struct {
     root: []u8,
     last_seen_at: []u8,
@@ -122,13 +124,12 @@ pub fn writeSessionsJson(
     dashboard_root: []const u8,
     workspaces: []const Workspace,
     max_count: usize,
-) !void {
-    const feed_owned: ?[]feed_writer.LoadedFeedRecord = feed_writer.loadGlobalRecent(io, allocator, dashboard_root, 1000) catch null;
-    defer if (feed_owned) |feed| {
-        for (feed) |*item| item.deinit(allocator);
-        allocator.free(feed);
+) !SessionLoadHealth {
+    var loaded = feed_writer.loadGlobalTailWithHealth(io, allocator, dashboard_root) catch {
+        return writeSessionsFromFeed(io, allocator, writer, workspaces, &.{}, max_count);
     };
-    return writeSessionsFromFeed(io, allocator, writer, workspaces, feed_owned orelse &.{}, max_count);
+    defer loaded.deinit(allocator);
+    return writeSessionsFromFeed(io, allocator, writer, workspaces, loaded.records, max_count);
 }
 
 pub fn writeWorkspaceSessionsJson(
@@ -137,15 +138,14 @@ pub fn writeWorkspaceSessionsJson(
     writer: anytype,
     workspace_root: []const u8,
     max_count: usize,
-) !void {
+) !SessionLoadHealth {
     var workspace = try dupeWorkspace(allocator, workspace_root, "", null, false);
     defer workspace.deinit(allocator);
-    const feed_owned: ?[]feed_writer.LoadedFeedRecord = feed_writer.loadRecent(io, allocator, workspace_root, std.math.maxInt(usize)) catch null;
-    defer if (feed_owned) |feed| {
-        for (feed) |*item| item.deinit(allocator);
-        allocator.free(feed);
+    var loaded = feed_writer.loadRecentTailWithHealth(io, allocator, workspace_root) catch {
+        return writeSessionsFromFeed(io, allocator, writer, &.{workspace}, &.{}, max_count);
     };
-    return writeSessionsFromFeed(io, allocator, writer, &.{workspace}, feed_owned orelse &.{}, max_count);
+    defer loaded.deinit(allocator);
+    return writeSessionsFromFeed(io, allocator, writer, &.{workspace}, loaded.records, max_count);
 }
 
 fn writeSessionsFromFeed(
@@ -155,70 +155,13 @@ fn writeSessionsFromFeed(
     workspaces: []const Workspace,
     feed: []const feed_writer.LoadedFeedRecord,
     max_count: usize,
-) !void {
-    var sessions: std.ArrayList(SessionRef) = .empty;
-    defer {
-        for (sessions.items) |*session| session.deinit(allocator);
-        sessions.deinit(allocator);
-    }
-    for (workspaces) |workspace| {
-        const sessions_root = std.fs.path.join(allocator, &.{ workspace.root, ".orca", "sessions" }) catch continue;
-        defer allocator.free(sessions_root);
-        var dir = std.Io.Dir.cwd().openDir(io, sessions_root, .{ .iterate = true }) catch continue;
-        defer dir.close(io);
-        var iterator = dir.iterate();
-        while (true) {
-            const entry = iterator.next(io) catch break orelse break;
-            if (entry.kind != .directory) continue;
-            if (core.session.validateSessionIdText(entry.name)) |_| {} else |_| continue;
-            var session = try dupeSessionRef(allocator, workspace.root, entry.name, entry.name, null, null, 0, false);
-            sessions.append(allocator, session) catch |err| {
-                session.deinit(allocator);
-                return err;
-            };
-        }
-    }
-    for (feed) |item| {
-        const session_id = item.record.session_id orelse continue;
-        if (findSession(sessions.items, item.record.workspace_root, session_id)) |index| {
-            const session = &sessions.items[index];
-            if (std.mem.order(u8, item.record.timestamp, session.timestamp) == .gt) {
-                const timestamp = try allocator.dupe(u8, item.record.timestamp);
-                errdefer allocator.free(timestamp);
-                const host = if (item.record.host) |value| try allocator.dupe(u8, value) else null;
-                errdefer if (host) |value| allocator.free(value);
-                const decision = try allocator.dupe(u8, item.record.decision);
-                errdefer allocator.free(decision);
-                allocator.free(session.timestamp);
-                if (session.host) |value| allocator.free(value);
-                if (session.latest_decision) |value| allocator.free(value);
-                session.timestamp = timestamp;
-                session.host = host;
-                session.latest_decision = decision;
-            }
-            if (rust_visibility.isBlockedFeedRecord(item.record)) session.denied_count += 1;
-            continue;
-        }
-        var session = try dupeSessionRef(
-            allocator,
-            item.record.workspace_root,
-            session_id,
-            item.record.timestamp,
-            item.record.host,
-            item.record.decision,
-            if (rust_visibility.isBlockedFeedRecord(item.record)) 1 else 0,
-            true,
-        );
-        sessions.append(allocator, session) catch |err| {
-            session.deinit(allocator);
-            return err;
-        };
-    }
-    std.mem.sort(SessionRef, sessions.items, {}, newestSessionFirst);
+) !SessionLoadHealth {
+    var loaded = try loadBoundedSessions(io, allocator, workspaces, feed, max_count);
+    defer loaded.deinit(allocator);
+    std.mem.sort(SessionRef, loaded.sessions.items, {}, newestSessionFirst);
 
     try writer.writeByte('[');
-    const count = @min(max_count, sessions.items.len);
-    for (sessions.items[0..count], 0..) |session, index| {
+    for (loaded.sessions.items, 0..) |session, index| {
         if (index > 0) try writer.writeByte(',');
         if (session.feed_only)
             try writeFeedSessionSummaryJson(writer, session)
@@ -226,6 +169,165 @@ fn writeSessionsFromFeed(
             try writeSessionSummaryJson(io, allocator, writer, session);
     }
     try writer.writeByte(']');
+    return loaded.health;
+}
+
+const BoundedSessionLoad = struct {
+    sessions: std.ArrayList(SessionRef) = .empty,
+    health: SessionLoadHealth = .healthy,
+
+    fn deinit(self: *BoundedSessionLoad, allocator: std.mem.Allocator) void {
+        for (self.sessions.items) |*session| session.deinit(allocator);
+        self.sessions.deinit(allocator);
+        self.* = undefined;
+    }
+};
+
+fn loadBoundedSessions(
+    io: std.Io,
+    allocator: std.mem.Allocator,
+    workspaces: []const Workspace,
+    feed: []const feed_writer.LoadedFeedRecord,
+    max_count: usize,
+) !BoundedSessionLoad {
+    var loaded: BoundedSessionLoad = .{};
+    errdefer loaded.deinit(allocator);
+    if (max_count == 0) return loaded;
+
+    var health: SessionLoadHealth = .healthy;
+    for (workspaces) |workspace| {
+        const sessions_root = try std.fs.path.join(allocator, &.{ workspace.root, ".orca", "sessions" });
+        defer allocator.free(sessions_root);
+        var dir = std.Io.Dir.cwd().openDir(io, sessions_root, .{ .iterate = true }) catch |err| switch (err) {
+            error.FileNotFound => continue,
+            else => {
+                health = .degraded;
+                continue;
+            },
+        };
+        defer dir.close(io);
+        var iterator = dir.iterate();
+        while (true) {
+            const entry = iterator.next(io) catch {
+                health = .degraded;
+                break;
+            } orelse break;
+            if (entry.kind != .directory) continue;
+            if (core.session.validateSessionIdText(entry.name)) |_| {} else |_| continue;
+            var session = try dupeSessionRef(allocator, workspace.root, entry.name, entry.name, null, null, 0, false);
+            try retainNewestSession(allocator, &loaded.sessions, &session, max_count);
+        }
+    }
+    for (feed) |item| {
+        const session_id = item.record.session_id orelse continue;
+        if (findSession(loaded.sessions.items, item.record.workspace_root, session_id)) |index| {
+            const session = &loaded.sessions.items[index];
+            if (std.mem.order(u8, item.record.timestamp, session.timestamp) == .gt) {
+                const timestamp = try allocator.dupe(u8, item.record.timestamp);
+                allocator.free(session.timestamp);
+                session.timestamp = timestamp;
+            }
+            continue;
+        }
+        const filesystem_backed = try sessionDirectoryExists(io, allocator, item.record.workspace_root, session_id);
+        const timestamp = if (filesystem_backed and std.mem.order(u8, session_id, item.record.timestamp) == .gt)
+            session_id
+        else
+            item.record.timestamp;
+        var session = try dupeSessionRef(
+            allocator,
+            item.record.workspace_root,
+            session_id,
+            timestamp,
+            null,
+            null,
+            0,
+            !filesystem_backed,
+        );
+        try retainNewestSession(allocator, &loaded.sessions, &session, max_count);
+    }
+    try enrichRetainedSessionsFromFeed(allocator, loaded.sessions.items, feed);
+    loaded.health = health;
+    return loaded;
+}
+
+/// Selection stays bounded to the requested top-K. Once that set is known, rebuild
+/// its feed metadata from the complete bounded feed tail so eviction and re-entry
+/// cannot discard earlier decisions for a retained session.
+fn enrichRetainedSessionsFromFeed(
+    allocator: std.mem.Allocator,
+    sessions: []SessionRef,
+    feed: []const feed_writer.LoadedFeedRecord,
+) !void {
+    for (sessions) |*session| {
+        if (session.host) |value| allocator.free(value);
+        if (session.latest_decision) |value| allocator.free(value);
+        session.host = null;
+        session.latest_decision = null;
+        session.denied_count = 0;
+
+        var latest_feed_timestamp: ?[]const u8 = null;
+        for (feed) |item| {
+            const session_id = item.record.session_id orelse continue;
+            if (!std.mem.eql(u8, session.workspace_root, item.record.workspace_root) or
+                !std.mem.eql(u8, session.id, session_id)) continue;
+
+            if (rust_visibility.isBlockedFeedRecord(item.record)) session.denied_count += 1;
+            if (latest_feed_timestamp) |timestamp| {
+                if (std.mem.order(u8, item.record.timestamp, timestamp) != .gt) continue;
+            }
+
+            const host = if (item.record.host) |value| try allocator.dupe(u8, value) else null;
+            errdefer if (host) |value| allocator.free(value);
+            const decision = try allocator.dupe(u8, item.record.decision);
+            errdefer allocator.free(decision);
+            if (session.host) |value| allocator.free(value);
+            if (session.latest_decision) |value| allocator.free(value);
+            session.host = host;
+            session.latest_decision = decision;
+            latest_feed_timestamp = item.record.timestamp;
+        }
+    }
+}
+
+fn retainNewestSession(
+    allocator: std.mem.Allocator,
+    sessions: *std.ArrayList(SessionRef),
+    candidate: *SessionRef,
+    max_count: usize,
+) !void {
+    if (max_count == 0) {
+        candidate.deinit(allocator);
+        return;
+    }
+    if (sessions.items.len < max_count) {
+        sessions.append(allocator, candidate.*) catch |err| {
+            candidate.deinit(allocator);
+            return err;
+        };
+        candidate.* = undefined;
+        return;
+    }
+
+    var oldest_index: usize = 0;
+    for (sessions.items[1..], 1..) |session, index| {
+        if (std.mem.order(u8, session.timestamp, sessions.items[oldest_index].timestamp) == .lt) oldest_index = index;
+    }
+    if (std.mem.order(u8, candidate.timestamp, sessions.items[oldest_index].timestamp) != .gt) {
+        candidate.deinit(allocator);
+        return;
+    }
+    sessions.items[oldest_index].deinit(allocator);
+    sessions.items[oldest_index] = candidate.*;
+    candidate.* = undefined;
+}
+
+fn sessionDirectoryExists(io: std.Io, allocator: std.mem.Allocator, workspace_root: []const u8, session_id: []const u8) !bool {
+    const path = try std.fs.path.join(allocator, &.{ workspace_root, ".orca", "sessions", session_id });
+    defer allocator.free(path);
+    var dir = std.Io.Dir.cwd().openDir(io, path, .{}) catch return false;
+    dir.close(io);
+    return true;
 }
 
 fn dupeSessionRef(
@@ -286,13 +388,21 @@ pub fn writeGlobalFeedJson(
     max_count: usize,
     denied_only: bool,
 ) !void {
-    const loaded = feed_writer.loadGlobalRecent(io, allocator, dashboard_root, if (denied_only) std.math.maxInt(usize) else max_count) catch {
+    var loaded_result = if (denied_only)
+        feed_writer.loadGlobalRecentMatchingWithHealth(io, allocator, dashboard_root, max_count, .blocked) catch {
+            try writer.writeAll("[]");
+            return;
+        }
+    else
+        feed_writer.loadGlobalRecentWithHealth(io, allocator, dashboard_root, max_count) catch {
+            try writer.writeAll("[]");
+            return;
+        };
+    defer loaded_result.deinit(allocator);
+    const loaded = loaded_result.records;
+    if (loaded.len == 0) {
         try writer.writeAll("[]");
         return;
-    };
-    defer {
-        for (loaded) |*item| item.deinit(allocator);
-        allocator.free(loaded);
     }
     std.mem.sort(feed_writer.LoadedFeedRecord, loaded, {}, newestFeedFirst);
     try writer.writeByte('[');
@@ -301,7 +411,7 @@ pub fn writeGlobalFeedJson(
         if (written >= max_count) break;
         if (denied_only and !rust_visibility.isBlockedFeedRecord(item.record)) continue;
         if (written > 0) try writer.writeByte(',');
-        try writeFeedRecordJson(writer, item.record);
+        try writeFeedRecordJson(allocator, writer, item.record);
         written += 1;
     }
     try writer.writeByte(']');
@@ -313,7 +423,7 @@ pub fn writeGlobalFeedHealthJson(
     writer: anytype,
     dashboard_root: []const u8,
 ) !void {
-    var loaded = feed_writer.loadGlobalRecentWithHealth(io, allocator, dashboard_root, 1) catch {
+    var loaded = feed_writer.loadGlobalTailWithHealth(io, allocator, dashboard_root) catch {
         try writer.writeAll("{\"status\":\"degraded\",\"skipped_lines\":0}");
         return;
     };
@@ -362,7 +472,7 @@ fn writeSessionSummaryJson(
     try writer.writeByte('}');
 }
 
-fn writeFeedRecordJson(writer: anytype, record: rust_visibility.RustShellFeedRecord) !void {
+fn writeFeedRecordJson(allocator: std.mem.Allocator, writer: anytype, record: rust_visibility.RustShellFeedRecord) !void {
     try writer.writeAll("{\"timestamp\":");
     try core.util.writeJsonString(writer, record.timestamp);
     try writer.writeAll(",\"workspace_root\":");
@@ -381,19 +491,27 @@ fn writeFeedRecordJson(writer: anytype, record: rust_visibility.RustShellFeedRec
     try core.util.writeJsonString(writer, record.daemon_status);
     try writer.writeAll(",\"pack_id\":");
     if (record.pack_id) |pack| try core.util.writeJsonString(writer, pack) else try writer.writeAll("null");
+    try writer.writeAll(",\"rule\":");
+    if (record.rule) |rule| try core.util.writeJsonString(writer, rule) else try writer.writeAll("null");
     try writer.writeAll(",\"severity\":");
     if (record.severity) |severity| try core.util.writeJsonString(writer, severity) else try writer.writeAll("null");
     try writer.writeAll(",\"reason\":");
-    try core.util.writeJsonString(writer, record.reason);
+    try writeRedactedJsonString(allocator, writer, record.reason);
     try writer.writeAll(",\"remediation\":");
-    if (record.remediation) |remediation| try core.util.writeJsonString(writer, remediation) else try writer.writeAll("null");
+    if (record.remediation) |remediation| try writeRedactedJsonString(allocator, writer, remediation) else try writer.writeAll("null");
     try writer.writeAll(",\"target\":");
-    try core.util.writeJsonString(writer, record.target_summary);
+    try writeRedactedJsonString(allocator, writer, record.target_summary);
     try writer.writeAll(",\"session_id\":");
     if (record.session_id) |session_id| try core.util.writeJsonString(writer, session_id) else try writer.writeAll("null");
     try writer.writeAll(",\"verified\":");
     try writer.writeAll(if (record.verified) "true" else "false");
     try writer.writeByte('}');
+}
+
+fn writeRedactedJsonString(allocator: std.mem.Allocator, writer: anytype, value: []const u8) !void {
+    const redacted = try core_api.redactAlloc(allocator, value);
+    defer allocator.free(redacted);
+    try core.util.writeJsonString(writer, redacted);
 }
 
 fn newestSessionFirst(_: void, lhs: SessionRef, rhs: SessionRef) bool {
@@ -461,11 +579,205 @@ test "sessions are globally sorted before truncation and filesystem sessions kee
     defer workspace.deinit(std.testing.allocator);
     var output: std.Io.Writer.Allocating = .init(std.testing.allocator);
     defer output.deinit();
-    try writeSessionsFromFeed(std.testing.io, std.testing.allocator, &output.writer, &.{workspace}, feed, 2);
+    _ = try writeSessionsFromFeed(std.testing.io, std.testing.allocator, &output.writer, &.{workspace}, feed, 2);
     const json = output.writer.buffered();
     try std.testing.expect(std.mem.indexOf(u8, json, oldest) == null);
     try std.testing.expect(std.mem.indexOf(u8, json, newest) != null);
     try std.testing.expect(std.mem.indexOf(u8, json, "\"host\":\"pi\"") != null);
+}
+
+test "large session directories retain only the requested top k and zero is safe" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const root = try tmp.dir.realPathFileAlloc(std.testing.io, ".", std.testing.allocator);
+    defer std.testing.allocator.free(root);
+    const sessions_root = try std.fs.path.join(std.testing.allocator, &.{ root, ".orca", "sessions" });
+    defer std.testing.allocator.free(sessions_root);
+    try std.Io.Dir.cwd().createDirPath(std.testing.io, sessions_root);
+
+    var newest_id: ?[]u8 = null;
+    defer if (newest_id) |id| std.testing.allocator.free(id);
+    for (0..256) |index| {
+        const id = try core.session.generateSessionId(core.time.Timestamp.fromUnixSeconds(1_700_000_000 + @as(i64, @intCast(index))));
+        if (index == 255) newest_id = try std.testing.allocator.dupe(u8, id.slice());
+        const path = try std.fs.path.join(std.testing.allocator, &.{ sessions_root, id.slice() });
+        defer std.testing.allocator.free(path);
+        try std.Io.Dir.cwd().createDirPath(std.testing.io, path);
+    }
+    var workspace = try dupeWorkspace(std.testing.allocator, root, "", null, false);
+    defer workspace.deinit(std.testing.allocator);
+
+    var retained = try loadBoundedSessions(std.testing.io, std.testing.allocator, &.{workspace}, &.{}, 3);
+    defer retained.deinit(std.testing.allocator);
+    try std.testing.expectEqual(@as(usize, 3), retained.sessions.items.len);
+    try std.testing.expect(findSession(retained.sessions.items, root, newest_id.?) != null);
+
+    var none = try loadBoundedSessions(std.testing.io, std.testing.allocator, &.{workspace}, &.{}, 0);
+    defer none.deinit(std.testing.allocator);
+    try std.testing.expectEqual(@as(usize, 0), none.sessions.items.len);
+
+    var output: std.Io.Writer.Allocating = .init(std.testing.allocator);
+    defer output.deinit();
+    _ = try writeSessionsFromFeed(std.testing.io, std.testing.allocator, &output.writer, &.{workspace}, &.{}, 3);
+    try std.testing.expectEqual(@as(usize, 3), std.mem.count(u8, output.writer.buffered(), "\"id\":"));
+}
+
+test "bounded session re-entry preserves earlier denied events" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const root = try tmp.dir.realPathFileAlloc(std.testing.io, ".", std.testing.allocator);
+    defer std.testing.allocator.free(root);
+    const dashboard_root = try std.fs.path.join(std.testing.allocator, &.{ root, "dashboard" });
+    defer std.testing.allocator.free(dashboard_root);
+    try std.Io.Dir.cwd().createDirPath(std.testing.io, dashboard_root);
+    const events_path = try std.fs.path.join(std.testing.allocator, &.{ dashboard_root, feed_writer.global_events_file_name });
+    defer std.testing.allocator.free(events_path);
+
+    const fixture = try std.fmt.allocPrint(
+        std.testing.allocator,
+        "{{\"timestamp\":\"2026-07-13T00:00:00Z\",\"workspace_root\":\"{s}\",\"event_type\":\"command_denied\",\"decision\":\"deny\",\"decision_source\":\"rust-daemon\",\"event_source\":\"hook\",\"host\":\"pi\",\"daemon_status\":\"healthy\",\"pack_id\":null,\"severity\":null,\"reason\":\"blocked\",\"remediation\":null,\"target_summary\":\"shell command (redacted)\",\"session_id\":\"A\",\"verified\":false}}\n" ++
+            "{{\"timestamp\":\"2026-07-13T00:01:00Z\",\"workspace_root\":\"{s}\",\"event_type\":\"command_allowed\",\"decision\":\"allow\",\"decision_source\":\"rust-daemon\",\"event_source\":\"hook\",\"host\":\"codex\",\"daemon_status\":\"healthy\",\"pack_id\":null,\"severity\":null,\"reason\":\"allowed\",\"remediation\":null,\"target_summary\":\"shell command (redacted)\",\"session_id\":\"B\",\"verified\":false}}\n" ++
+            "{{\"timestamp\":\"2026-07-13T00:02:00Z\",\"workspace_root\":\"{s}\",\"event_type\":\"command_allowed\",\"decision\":\"allow\",\"decision_source\":\"rust-daemon\",\"event_source\":\"hook\",\"host\":\"claude\",\"daemon_status\":\"healthy\",\"pack_id\":null,\"severity\":null,\"reason\":\"allowed\",\"remediation\":null,\"target_summary\":\"shell command (redacted)\",\"session_id\":\"C\",\"verified\":false}}\n" ++
+            "{{\"timestamp\":\"2026-07-13T00:03:00Z\",\"workspace_root\":\"{s}\",\"event_type\":\"command_allowed\",\"decision\":\"allow\",\"decision_source\":\"rust-daemon\",\"event_source\":\"hook\",\"host\":\"opencode\",\"daemon_status\":\"healthy\",\"pack_id\":null,\"severity\":null,\"reason\":\"allowed\",\"remediation\":null,\"target_summary\":\"shell command (redacted)\",\"session_id\":\"A\",\"verified\":false}}\n",
+        .{ root, root, root, root },
+    );
+    defer std.testing.allocator.free(fixture);
+    const file = try std.Io.Dir.cwd().createFile(std.testing.io, events_path, .{});
+    defer file.close(std.testing.io);
+    var file_buffer: [4096]u8 = undefined;
+    var file_writer = file.writer(std.testing.io, &file_buffer);
+    try file_writer.interface.writeAll(fixture);
+    try file_writer.interface.flush();
+
+    var loaded = try feed_writer.loadGlobalTailWithHealth(std.testing.io, std.testing.allocator, dashboard_root);
+    defer loaded.deinit(std.testing.allocator);
+    var workspace = try dupeWorkspace(std.testing.allocator, root, "", null, false);
+    defer workspace.deinit(std.testing.allocator);
+    var output: std.Io.Writer.Allocating = .init(std.testing.allocator);
+    defer output.deinit();
+    _ = try writeSessionsFromFeed(std.testing.io, std.testing.allocator, &output.writer, &.{workspace}, loaded.records, 2);
+    const json = output.writer.buffered();
+    const session_a = std.mem.indexOf(u8, json, "\"id\":\"A\"") orelse return error.TestExpectedEqual;
+    const session_a_end = std.mem.indexOfScalarPos(u8, json, session_a, '}') orelse json.len;
+    try std.testing.expect(std.mem.indexOf(u8, json[session_a..session_a_end], "\"denied_count\":1") != null);
+    try std.testing.expect(std.mem.indexOf(u8, json, "\"id\":\"B\"") == null);
+}
+
+test "machine sessions enrich records beyond the former one thousand row cap" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const root = try tmp.dir.realPathFileAlloc(std.testing.io, ".", std.testing.allocator);
+    defer std.testing.allocator.free(root);
+    const dashboard_root = try std.fs.path.join(std.testing.allocator, &.{ root, "dashboard" });
+    defer std.testing.allocator.free(dashboard_root);
+    try std.Io.Dir.cwd().createDirPath(std.testing.io, dashboard_root);
+
+    const target_id = try core.session.generateSessionId(core.time.Timestamp.fromUnixSeconds(1_700_000_000));
+    const target = target_id.slice();
+    const session_path = try std.fs.path.join(std.testing.allocator, &.{ root, ".orca", "sessions", target });
+    defer std.testing.allocator.free(session_path);
+    try std.Io.Dir.cwd().createDirPath(std.testing.io, session_path);
+
+    const events_path = try std.fs.path.join(std.testing.allocator, &.{ dashboard_root, feed_writer.global_events_file_name });
+    defer std.testing.allocator.free(events_path);
+    const file = try std.Io.Dir.cwd().createFile(std.testing.io, events_path, .{});
+    defer file.close(std.testing.io);
+    var buffer: [4096]u8 = undefined;
+    var file_writer = file.writer(std.testing.io, &buffer);
+    var target_record = try rust_visibility.buildFeedRecordFromHookDecision(
+        std.testing.allocator,
+        std.testing.io,
+        root,
+        "pi",
+        "healthy",
+        "deny",
+        "target blocked",
+        null,
+        null,
+        null,
+        null,
+        target,
+    );
+    defer target_record.deinit(std.testing.allocator);
+    try rust_visibility.writeFeedRecordJson(&file_writer.interface, target_record);
+    try file_writer.interface.writeByte('\n');
+    var noise_record = try rust_visibility.buildFeedRecordFromHookDecision(
+        std.testing.allocator,
+        std.testing.io,
+        root,
+        "codex",
+        "healthy",
+        "allow",
+        "noise",
+        null,
+        null,
+        null,
+        null,
+        "noise-session",
+    );
+    defer noise_record.deinit(std.testing.allocator);
+    for (0..1000) |_| {
+        try rust_visibility.writeFeedRecordJson(&file_writer.interface, noise_record);
+        try file_writer.interface.writeByte('\n');
+    }
+    try file_writer.interface.flush();
+
+    var workspace = try dupeWorkspace(std.testing.allocator, root, "", null, false);
+    defer workspace.deinit(std.testing.allocator);
+    var output: std.Io.Writer.Allocating = .init(std.testing.allocator);
+    defer output.deinit();
+    _ = try writeSessionsJson(std.testing.io, std.testing.allocator, &output.writer, dashboard_root, &.{workspace}, 2);
+    try std.testing.expect(std.mem.indexOf(u8, output.writer.buffered(), "\"host\":\"pi\"") != null);
+}
+
+test "machine sessions sort across workspaces before truncation" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const base = try tmp.dir.realPathFileAlloc(std.testing.io, ".", std.testing.allocator);
+    defer std.testing.allocator.free(base);
+    const older_root = try std.fs.path.join(std.testing.allocator, &.{ base, "older" });
+    defer std.testing.allocator.free(older_root);
+    const newer_root = try std.fs.path.join(std.testing.allocator, &.{ base, "newer" });
+    defer std.testing.allocator.free(newer_root);
+    const older_id = try core.session.generateSessionId(core.time.Timestamp.fromUnixSeconds(1_700_000_000));
+    const newer_id = try core.session.generateSessionId(core.time.Timestamp.fromUnixSeconds(1_700_000_100));
+    const older_path = try std.fs.path.join(std.testing.allocator, &.{ older_root, ".orca", "sessions", older_id.slice() });
+    defer std.testing.allocator.free(older_path);
+    const newer_path = try std.fs.path.join(std.testing.allocator, &.{ newer_root, ".orca", "sessions", newer_id.slice() });
+    defer std.testing.allocator.free(newer_path);
+    try std.Io.Dir.cwd().createDirPath(std.testing.io, older_path);
+    try std.Io.Dir.cwd().createDirPath(std.testing.io, newer_path);
+
+    var older = try dupeWorkspace(std.testing.allocator, older_root, "", null, false);
+    defer older.deinit(std.testing.allocator);
+    var newer = try dupeWorkspace(std.testing.allocator, newer_root, "", null, false);
+    defer newer.deinit(std.testing.allocator);
+    var output: std.Io.Writer.Allocating = .init(std.testing.allocator);
+    defer output.deinit();
+    _ = try writeSessionsFromFeed(std.testing.io, std.testing.allocator, &output.writer, &.{ older, newer }, &.{}, 1);
+    const json = output.writer.buffered();
+    try std.testing.expect(std.mem.indexOf(u8, json, newer_id.slice()) != null);
+    try std.testing.expect(std.mem.indexOf(u8, json, older_id.slice()) == null);
+}
+
+test "session directory access failures report degraded aggregation" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const root = try tmp.dir.realPathFileAlloc(std.testing.io, ".", std.testing.allocator);
+    defer std.testing.allocator.free(root);
+    const sessions_path = try std.fs.path.join(std.testing.allocator, &.{ root, ".orca", "sessions" });
+    defer std.testing.allocator.free(sessions_path);
+    try std.Io.Dir.cwd().createDirPath(std.testing.io, std.fs.path.dirname(sessions_path).?);
+    const invalid_dir = try std.Io.Dir.cwd().createFile(std.testing.io, sessions_path, .{});
+    invalid_dir.close(std.testing.io);
+
+    var workspace = try dupeWorkspace(std.testing.allocator, root, "", null, false);
+    defer workspace.deinit(std.testing.allocator);
+    var output: std.Io.Writer.Allocating = .init(std.testing.allocator);
+    defer output.deinit();
+    const health = try writeSessionsFromFeed(std.testing.io, std.testing.allocator, &output.writer, &.{workspace}, &.{}, 1);
+    try std.testing.expectEqual(SessionLoadHealth.degraded, health);
+    try std.testing.expectEqualStrings("[]", output.writer.buffered());
 }
 
 test "denied-only global feed honors max count" {
@@ -499,4 +811,33 @@ test "denied-only global feed honors max count" {
     defer output.deinit();
     try writeGlobalFeedJson(std.testing.io, std.testing.allocator, &output.writer, dashboard_root, 2, true);
     try std.testing.expectEqual(@as(usize, 2), std.mem.count(u8, output.writer.buffered(), "\"timestamp\":"));
+}
+
+test "global feed redacts legacy free-form fields and exposes rule ids" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const root = try tmp.dir.realPathFileAlloc(std.testing.io, ".", std.testing.allocator);
+    defer std.testing.allocator.free(root);
+    const dashboard_root = try std.fs.path.join(std.testing.allocator, &.{ root, "dashboard" });
+    defer std.testing.allocator.free(dashboard_root);
+    try std.Io.Dir.cwd().createDirPath(std.testing.io, dashboard_root);
+    const events_path = try std.fs.path.join(std.testing.allocator, &.{ dashboard_root, feed_writer.global_events_file_name });
+    defer std.testing.allocator.free(events_path);
+    const legacy_secret = "sk-legacyGlobalSyntheticSecret123456789";
+    const fixture = try std.fmt.allocPrint(
+        std.testing.allocator,
+        "{{\"timestamp\":\"2026-07-13T00:00:00Z\",\"workspace_root\":\"{s}\",\"event_type\":\"command_denied\",\"decision\":\"deny\",\"decision_source\":\"rust-daemon\",\"event_source\":\"hook\",\"host\":\"codex\",\"daemon_status\":\"healthy\",\"pack_id\":\"core.shell\",\"severity\":\"high\",\"reason\":\"token={s}\",\"remediation\":\"Authorization: Bearer {s}\",\"target_summary\":\"--token={s}\",\"session_id\":null,\"verified\":false}}\n{{\"timestamp\":\"2026-07-13T00:00:01Z\",\"workspace_root\":\"{s}\",\"event_type\":\"command_denied\",\"decision\":\"deny\",\"decision_source\":\"rust-daemon\",\"event_source\":\"hook\",\"host\":\"codex\",\"daemon_status\":\"healthy\",\"pack_id\":\"core.shell\",\"rule\":\"core.shell:pipe\",\"severity\":\"high\",\"reason\":\"blocked\",\"remediation\":null,\"target_summary\":\"shell command (redacted)\",\"session_id\":null,\"verified\":false}}\n",
+        .{ root, legacy_secret, legacy_secret, legacy_secret, root },
+    );
+    defer std.testing.allocator.free(fixture);
+    try std.Io.Dir.cwd().writeFile(std.testing.io, .{ .sub_path = events_path, .data = fixture });
+
+    var output: std.Io.Writer.Allocating = .init(std.testing.allocator);
+    defer output.deinit();
+    try writeGlobalFeedJson(std.testing.io, std.testing.allocator, &output.writer, dashboard_root, 10, true);
+    const json = output.writer.buffered();
+    try std.testing.expect(std.mem.indexOf(u8, json, legacy_secret) == null);
+    try std.testing.expect(std.mem.indexOf(u8, json, "[REDACTED]") != null);
+    try std.testing.expect(std.mem.indexOf(u8, json, "\"rule\":null") != null);
+    try std.testing.expect(std.mem.indexOf(u8, json, "\"rule\":\"core.shell:pipe\"") != null);
 }

@@ -547,8 +547,9 @@ fn writeHermesFailOpenWarning(io: std.Io, stdout: anytype, context: IntegrationC
 }
 
 fn writePiNote(stdout: anytype) !void {
-    try stdout.writeAll("\nPi: not managed by `orca plugin install` (bash-only shell gate via `orca evaluate`).\n");
-    try stdout.writeAll("  Install: pi install npm:@orca-sec/pi-orca · bypass: /orca-stop · live: ./scripts/host-live-e2e.sh pi\n");
+    try stdout.writeAll("\nPi: not managed by `orca plugin install`; extension coverage is unknown until live smoke.\n");
+    try stdout.writeAll("  Install: pi install npm:@orca-sec/pi-orca · process env/network: orca run -- pi · bypass: /orca-stop\n");
+    try stdout.writeAll("  Live: ./scripts/host-live-e2e.sh pi\n");
 }
 
 fn writePacksSection(io: std.Io, stdout: anytype, context: IntegrationContext) !void {
@@ -758,10 +759,10 @@ fn collectHostDoctorRows(io: std.Io, allocator: std.mem.Allocator) !HostDoctorSn
         });
     }
 
-    // Pi: first-class status line (honest bash-only / install path; not plugin-managed).
+    // Pi: first-class status line (honest coverage / install path; not plugin-managed).
     {
-        const pi_detected = host_status.detectPi(io, allocator);
-        const wired: []const u8 = if (pi_detected) "partial" else "—";
+        const pi_status = host_status.inspectPi(io, allocator);
+        const wired = pi_status.wiredLabel();
         const smoke = host_status.HostSmokePair{};
         const fix = try host_status.formatFix(allocator, "pi", wired, smoke, hermes_fail_open);
         try list.append(allocator, .{
@@ -1226,10 +1227,12 @@ test "doctor host table lists managed hosts and shell gates" {
     try std.testing.expect(std.mem.indexOf(u8, written, "hermes") != null);
     try std.testing.expect(std.mem.indexOf(u8, written, "pre_tool_call") != null);
     try std.testing.expect(std.mem.indexOf(u8, written, "pi") != null);
-    try std.testing.expect(std.mem.indexOf(u8, written, "evaluate bash") != null);
+    try std.testing.expect(std.mem.indexOf(u8, written, "extension-managed (smoke not run)") != null);
     try std.testing.expect(std.mem.indexOf(u8, written, "SMOKE ALLOW") != null);
     try std.testing.expect(std.mem.indexOf(u8, written, "SMOKE DENY") != null);
-    try std.testing.expect(std.mem.indexOf(u8, written, "Pi: not managed by") != null or std.mem.indexOf(u8, written, "bash-only") != null);
+    try std.testing.expect(std.mem.indexOf(u8, written, "Pi: not managed by") != null);
+    try std.testing.expect(std.mem.indexOf(u8, written, "orca run -- pi") != null);
+    try std.testing.expect(std.mem.indexOf(u8, written, "pi …") == null);
     try std.testing.expect(std.mem.indexOf(u8, written, "fix pi:") != null);
     try std.testing.expect(std.mem.indexOf(u8, written, "plugin install") != null);
 }
@@ -1310,7 +1313,7 @@ fn testHostRows(allocator: std.mem.Allocator) ![]HostDoctorRow {
         .{ .name = "opencode", .gate = "tool.execute.before", .stance = "fail-closed shell" },
         .{ .name = "openclaw", .gate = "tool.before", .stance = "fail-closed shell" },
         .{ .name = "hermes", .gate = "pre_tool_call", .stance = "fail-open (default)" },
-        .{ .name = "pi", .gate = "evaluate bash", .stance = "mode-dependent" },
+        .{ .name = "pi", .gate = "extension-managed (smoke not run)", .stance = "mode-dependent" },
     };
     var list: std.ArrayList(HostDoctorRow) = .empty;
     errdefer {

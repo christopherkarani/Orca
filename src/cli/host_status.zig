@@ -7,6 +7,28 @@ const std = @import("std");
 const env_util = @import("../env_util.zig");
 
 pub const managed_hosts = [_][]const u8{ "codex", "claude", "opencode", "openclaw", "hermes" };
+pub const pi_process_command = "orca run -- pi";
+
+pub const PiStatus = struct {
+    binary_detected: bool = false,
+    extension_installed: bool = false,
+
+    pub fn detected(self: PiStatus) bool {
+        return self.binary_detected or self.extension_installed;
+    }
+
+    pub fn wiredLabel(self: PiStatus) []const u8 {
+        if (self.extension_installed) return "yes";
+        if (self.binary_detected) return "no";
+        return "—";
+    }
+
+    pub fn detail(self: PiStatus) []const u8 {
+        if (self.extension_installed) return "Orca extension installed; coverage unknown until live smoke";
+        if (self.binary_detected) return "Pi detected; Orca extension not installed";
+        return "Pi not detected";
+    }
+};
 
 pub const SmokeOutcome = enum {
     pass,
@@ -94,7 +116,7 @@ pub fn shellGate(host: []const u8) []const u8 {
     if (std.mem.eql(u8, host, "opencode")) return "tool.execute.before";
     if (std.mem.eql(u8, host, "openclaw")) return "tool.before";
     if (std.mem.eql(u8, host, "hermes")) return "pre_tool_call";
-    if (std.mem.eql(u8, host, "pi")) return "evaluate bash";
+    if (std.mem.eql(u8, host, "pi")) return "extension-managed (smoke not run)";
     return "unknown";
 }
 
@@ -116,7 +138,13 @@ pub fn formatFix(
     hermes_fail_open: bool,
 ) ![]const u8 {
     if (std.mem.eql(u8, host, "pi")) {
-        return try allocator.dupe(u8, "not managed by plugin install; pi install npm:@orca-sec/pi-orca (bash-only)");
+        if (std.mem.eql(u8, wired, "yes")) {
+            return try allocator.dupe(u8, "./scripts/host-live-e2e.sh pi  # verify extension coverage");
+        }
+        if (std.mem.eql(u8, wired, "no")) {
+            return try allocator.dupe(u8, "pi install npm:@orca-sec/pi-orca  # Pi detected; extension missing");
+        }
+        return try allocator.dupe(u8, "install Pi, then: pi install npm:@orca-sec/pi-orca");
     }
     // Degraded first: deny works but allow failed → daemon/policy, not reinstall.
     if (smoke.isDegraded() or (smoke.deny == .pass and smoke.allow == .fail)) {
@@ -291,7 +319,13 @@ pub fn smokeTestHookPayload(
 
 pub fn runHostSmokePair(allocator: std.mem.Allocator, host: []const u8) !HostSmokePair {
     const event = shellGate(host);
-    if (std.mem.eql(u8, event, "unknown") or std.mem.eql(u8, event, "evaluate bash")) {
+    // Pi is extension-managed (not a hook-event smoke target). Keep legacy "evaluate bash"
+    // and expanded coverage labels out of the PreToolUse-style fixture path.
+    if (std.mem.eql(u8, event, "unknown") or
+        std.mem.eql(u8, host, "pi") or
+        std.mem.eql(u8, event, "evaluate bash") or
+        std.mem.startsWith(u8, event, "bash+"))
+    {
         return .{ .allow = .not_run, .deny = .not_run };
     }
 
@@ -340,24 +374,57 @@ pub fn writeHostSmokeReport(stdout: anytype, host: []const u8, smoke: HostSmokeP
     }
 }
 
-/// Cheap Pi detection: `pi` on PATH or common extension markers under home/cwd.
-pub fn detectPi(io: std.Io, allocator: std.mem.Allocator) bool {
-    if (binaryInPath(io, allocator, "pi")) return true;
-    var env_map = env_util.createProcessMap(allocator) catch return false;
+/// Inspect Pi host presence separately from the official Orca extension package.
+pub fn inspectPi(io: std.Io, allocator: std.mem.Allocator) PiStatus {
+    const binary_detected = binaryInPath(io, allocator, "pi");
+    var env_map = env_util.createProcessMap(allocator) catch return .{ .binary_detected = binary_detected };
     defer env_map.deinit();
-    const home_owned = env_util.getOwned(&env_map, allocator, "HOME") catch return false;
-    const home = home_owned orelse return false;
+    const home_owned = env_util.getOwned(&env_map, allocator, "HOME") catch return .{ .binary_detected = binary_detected };
+    const home = home_owned orelse return .{ .binary_detected = binary_detected };
     defer allocator.free(home);
-    const markers = [_][]const u8{
-        ".pi/extensions/orca.ts",
-        ".pi/packages/@orca-sec/pi-orca",
-        "Library/Application Support/pi/extensions/orca.ts",
+    return .{
+        .binary_detected = binary_detected,
+        .extension_installed = piExtensionInstalledAtHome(io, allocator, home),
     };
-    for (markers) |rel| {
-        const path = std.fs.path.join(allocator, &.{ home, rel }) catch continue;
-        defer allocator.free(path);
-        std.Io.Dir.accessAbsolute(io, path, .{}) catch continue;
-        return true;
+}
+
+/// Compatibility helper for callers that only need to know whether any Pi surface exists.
+pub fn detectPi(io: std.Io, allocator: std.mem.Allocator) bool {
+    return inspectPi(io, allocator).detected();
+}
+
+const PiPackageManifest = struct {
+    name: []const u8,
+    version: []const u8,
+};
+
+const PiSettings = struct {
+    packages: []const []const u8 = &.{},
+};
+
+fn piExtensionInstalledAtHome(io: std.Io, allocator: std.mem.Allocator, home: []const u8) bool {
+    const package_root = std.fs.path.join(allocator, &.{ home, ".pi/agent/npm/node_modules/@orca-sec/pi-orca" }) catch return false;
+    defer allocator.free(package_root);
+    const manifest_path = std.fs.path.join(allocator, &.{ package_root, "package.json" }) catch return false;
+    defer allocator.free(manifest_path);
+    const extension_path = std.fs.path.join(allocator, &.{ package_root, "extensions/orca.ts" }) catch return false;
+    defer allocator.free(extension_path);
+    const settings_path = std.fs.path.join(allocator, &.{ home, ".pi/agent/settings.json" }) catch return false;
+    defer allocator.free(settings_path);
+
+    std.Io.Dir.accessAbsolute(io, extension_path, .{}) catch return false;
+    const manifest_text = std.Io.Dir.cwd().readFileAlloc(io, manifest_path, allocator, .limited(64 * 1024)) catch return false;
+    defer allocator.free(manifest_text);
+    var parsed = std.json.parseFromSlice(PiPackageManifest, allocator, manifest_text, .{ .ignore_unknown_fields = true }) catch return false;
+    defer parsed.deinit();
+    if (!std.mem.eql(u8, parsed.value.name, "@orca-sec/pi-orca") or parsed.value.version.len == 0) return false;
+
+    const settings_text = std.Io.Dir.cwd().readFileAlloc(io, settings_path, allocator, .limited(1024 * 1024)) catch return false;
+    defer allocator.free(settings_text);
+    var settings = std.json.parseFromSlice(PiSettings, allocator, settings_text, .{ .ignore_unknown_fields = true }) catch return false;
+    defer settings.deinit();
+    for (settings.value.packages) |package| {
+        if (std.mem.eql(u8, package, "npm:@orca-sec/pi-orca")) return true;
     }
     return false;
 }
@@ -502,7 +569,7 @@ test "shellGate and failStance cover all P1 hosts" {
     try std.testing.expectEqualStrings("tool.execute.before", shellGate("opencode"));
     try std.testing.expectEqualStrings("tool.before", shellGate("openclaw"));
     try std.testing.expectEqualStrings("pre_tool_call", shellGate("hermes"));
-    try std.testing.expectEqualStrings("evaluate bash", shellGate("pi"));
+    try std.testing.expectEqualStrings("extension-managed (smoke not run)", shellGate("pi"));
     try std.testing.expectEqualStrings("fail-open (default)", failStance("hermes", true));
     try std.testing.expectEqualStrings("fail-closed", failStance("hermes", false));
     try std.testing.expectEqualStrings("mode-dependent", failStance("pi", true));
@@ -522,6 +589,51 @@ test "formatFix prefers smoke failure and hermes fail-open remediation" {
     const pi_fix = try formatFix(allocator, "pi", "—", .{}, true);
     defer allocator.free(pi_fix);
     try std.testing.expect(std.mem.indexOf(u8, pi_fix, "pi install") != null);
+    try std.testing.expect(std.mem.indexOf(u8, pi_fix, "coverage") == null);
+}
+
+test "Pi status distinguishes host detection from extension installation" {
+    const binary_only = PiStatus{ .binary_detected = true };
+    try std.testing.expectEqualStrings("no", binary_only.wiredLabel());
+    try std.testing.expectEqualStrings("Pi detected; Orca extension not installed", binary_only.detail());
+
+    const installed = PiStatus{ .binary_detected = true, .extension_installed = true };
+    try std.testing.expectEqualStrings("yes", installed.wiredLabel());
+    try std.testing.expectEqualStrings("Orca extension installed; coverage unknown until live smoke", installed.detail());
+
+    const absent = PiStatus{};
+    try std.testing.expectEqualStrings("—", absent.wiredLabel());
+}
+
+test "Pi extension installation requires registration and official package markers" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const home = try tmp.dir.realPathFileAlloc(std.testing.io, ".", std.testing.allocator);
+    defer std.testing.allocator.free(home);
+
+    try tmp.dir.createDirPath(std.testing.io, ".pi/agent/npm/node_modules/@orca-sec/pi-orca/extensions");
+    try tmp.dir.writeFile(std.testing.io, .{
+        .sub_path = ".pi/agent/npm/node_modules/@orca-sec/pi-orca/package.json",
+        .data = "{\"name\":\"@orca-sec/pi-orca\",\"version\":\"1.2.8\"}",
+    });
+    try std.testing.expect(!piExtensionInstalledAtHome(std.testing.io, std.testing.allocator, home));
+
+    try tmp.dir.writeFile(std.testing.io, .{
+        .sub_path = ".pi/agent/npm/node_modules/@orca-sec/pi-orca/extensions/orca.ts",
+        .data = "export default function orca() {}",
+    });
+    try std.testing.expect(!piExtensionInstalledAtHome(std.testing.io, std.testing.allocator, home));
+
+    try tmp.dir.writeFile(std.testing.io, .{
+        .sub_path = ".pi/agent/settings.json",
+        .data = "{\"packages\":[\"npm:@orca-sec/pi-orca\"]}",
+    });
+    try std.testing.expect(piExtensionInstalledAtHome(std.testing.io, std.testing.allocator, home));
+}
+
+test "Pi process command is exact and copyable" {
+    try std.testing.expectEqualStrings("orca run -- pi", pi_process_command);
+    try std.testing.expect(std.mem.indexOf(u8, pi_process_command, "…") == null);
 }
 
 test "HostSmokePair bothPassed requires allow and deny pass" {

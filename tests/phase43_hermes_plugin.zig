@@ -55,7 +55,7 @@ test "hermes plugin source detects stale Orca binaries and version mismatch" {
     try std.testing.expect(std.mem.indexOf(u8, content, "_handle_hook_error") != null);
     try std.testing.expect(std.mem.indexOf(u8, content, "ORCA_HERMES_FAIL_OPEN") != null);
     try std.testing.expect(std.mem.indexOf(u8, content, "_orca_executable") != null);
-    try std.testing.expect(std.mem.indexOf(u8, content, "Allowing tool call without Orca guardrails") != null);
+    try std.testing.expect(std.mem.indexOf(u8, content, "Allowing tool call WITHOUT Orca guardrails") != null);
 }
 
 test "hermes plugin readme documents degraded mode and discovery order" {

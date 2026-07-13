@@ -49,13 +49,17 @@ pub fn writeStatusJson(io: std.Io, allocator: std.mem.Allocator, writer: anytype
     try writer.writeByte(',');
     try writePluginCardJson(io, allocator, writer, workspace_root, "hermes", "Hermes", "hermes", "integrations/hermes-plugin", "orca plugin doctor hermes");
     try writer.writeAll("],\"sessions\":");
-    try writeSessionsArrayJson(io, allocator, writer, workspace_root, 6);
+    const session_health = try writeSessionsArrayJson(io, allocator, writer, workspace_root, 6);
+    try writer.writeAll(",\"session_health\":");
+    try core.util.writeJsonString(writer, @tagName(session_health));
     try writer.writeAll(",\"daemon_health\":");
     try writeDaemonHealthJson(allocator, writer);
     try writer.writeAll(",\"rust_shell_decisions\":");
     try writeRustShellDecisionsArrayJson(io, allocator, writer, workspace_root, 12);
     try writer.writeAll(",\"blocked_actions\":");
     try writeBlockedActionsArrayJson(io, allocator, writer, workspace_root, 8);
+    try writer.writeAll(",\"feed_health\":");
+    try writeWorkspaceFeedHealthJson(io, allocator, writer, workspace_root);
     try writer.writeAll(",\"quick_actions\":[");
     try writeQuickAction(writer, "doctor", "orca doctor");
     try writer.writeByte(',');
@@ -83,8 +87,23 @@ pub fn writeStatusJson(io: std.Io, allocator: std.mem.Allocator, writer: anytype
     try writer.writeByte(',');
     try writeQuickAction(writer, "demo-blocked-action", "orca demo blocked-action");
     try writer.writeByte(',');
+    try writeQuickAction(writer, "suggest-allowlist", "orca suggest-allowlist --confidence high");
+    try writer.writeByte(',');
+    try writeQuickAction(writer, "allowlist-list", "orca allowlist list");
+    try writer.writeByte(',');
     try writeQuickAction(writer, "license-status", "orca license status");
     try writer.writeAll("]}");
+}
+
+fn writeWorkspaceFeedHealthJson(io: std.Io, allocator: std.mem.Allocator, writer: anytype, workspace_root: []const u8) !void {
+    var loaded = feed_writer.loadRecentTailWithHealth(io, allocator, workspace_root) catch {
+        try writer.writeAll("{\"status\":\"degraded\",\"skipped_lines\":0}");
+        return;
+    };
+    defer loaded.deinit(allocator);
+    try writer.writeAll("{\"status\":");
+    try core.util.writeJsonString(writer, @tagName(loaded.health));
+    try writer.print(",\"skipped_lines\":{d}}}", .{loaded.skipped_lines});
 }
 
 pub fn writeMachineStatusJson(
@@ -105,7 +124,9 @@ pub fn writeMachineStatusJson(
     try writer.writeAll(",\"workspace_root\":null},\"policy\":null,\"secretless_runtime\":null,\"license\":");
     try writeLicenseJson(io, allocator, writer);
     try writer.writeAll(",\"ci_readiness\":null,\"plugins\":[],\"sessions\":");
-    try aggregate.writeSessionsJson(io, allocator, writer, dashboard_root, workspaces, 20);
+    const session_health = try aggregate.writeSessionsJson(io, allocator, writer, dashboard_root, workspaces, 20);
+    try writer.writeAll(",\"session_health\":");
+    try core.util.writeJsonString(writer, @tagName(session_health));
     try writer.writeAll(",\"daemon_health\":");
     try writeDaemonHealthJson(allocator, writer);
     try writer.writeAll(",\"rust_shell_decisions\":");
@@ -315,7 +336,9 @@ pub fn initPolicyFromPreset(io: std.Io, allocator: std.mem.Allocator, workspace_
 pub fn writeSessionsJson(io: std.Io, allocator: std.mem.Allocator, writer: anytype, workspace_root: []const u8) !void {
     try writer.writeByte('{');
     try writer.writeAll("\"sessions\":");
-    try writeSessionsArrayJson(io, allocator, writer, workspace_root, 20);
+    const session_health = try writeSessionsArrayJson(io, allocator, writer, workspace_root, 20);
+    try writer.writeAll(",\"session_health\":");
+    try core.util.writeJsonString(writer, @tagName(session_health));
     try writer.writeAll(",\"blocked_actions\":");
     try writeBlockedActionsArrayJson(io, allocator, writer, workspace_root, 50);
     try writer.writeByte('}');
@@ -330,7 +353,9 @@ pub fn writeMachineSessionsJson(
     const workspaces = try aggregate.loadWorkspaces(io, allocator, dashboard_root);
     defer aggregate.deinitWorkspaces(allocator, workspaces);
     try writer.writeAll("{\"sessions\":");
-    try aggregate.writeSessionsJson(io, allocator, writer, dashboard_root, workspaces, 50);
+    const session_health = try aggregate.writeSessionsJson(io, allocator, writer, dashboard_root, workspaces, 50);
+    try writer.writeAll(",\"session_health\":");
+    try core.util.writeJsonString(writer, @tagName(session_health));
     try writer.writeAll(",\"blocked_actions\":");
     try aggregate.writeGlobalFeedJson(io, allocator, writer, dashboard_root, 100, true);
     try writer.writeByte('}');
@@ -462,7 +487,7 @@ fn writeQuickAction(writer: anytype, id: []const u8, command: []const u8) !void 
     try writer.writeByte('}');
 }
 
-fn writeSessionsArrayJson(io: std.Io, allocator: std.mem.Allocator, writer: anytype, workspace_root: []const u8, max_count: usize) !void {
+fn writeSessionsArrayJson(io: std.Io, allocator: std.mem.Allocator, writer: anytype, workspace_root: []const u8, max_count: usize) !aggregate.SessionLoadHealth {
     return aggregate.writeWorkspaceSessionsJson(io, allocator, writer, workspace_root, max_count);
 }
 
@@ -492,12 +517,12 @@ fn writeRustShellDecisionsArrayJson(io: std.Io, allocator: std.mem.Allocator, wr
     try writer.writeByte('[');
     for (loaded, 0..) |item, index| {
         if (index > 0) try writer.writeByte(',');
-        try writeFeedRecordJson(writer, item.record);
+        try writeFeedRecordJson(allocator, writer, item.record);
     }
     try writer.writeByte(']');
 }
 
-fn writeFeedRecordJson(writer: anytype, record: rust_visibility.RustShellFeedRecord) !void {
+fn writeFeedRecordJson(allocator: std.mem.Allocator, writer: anytype, record: rust_visibility.RustShellFeedRecord) !void {
     try writer.writeByte('{');
     try writer.writeAll("\"timestamp\":");
     try core.util.writeJsonString(writer, record.timestamp);
@@ -517,14 +542,16 @@ fn writeFeedRecordJson(writer: anytype, record: rust_visibility.RustShellFeedRec
     try core.util.writeJsonString(writer, record.daemon_status);
     try writer.writeAll(",\"pack_id\":");
     if (record.pack_id) |pack_id| try core.util.writeJsonString(writer, pack_id) else try writer.writeAll("null");
+    try writer.writeAll(",\"rule\":");
+    if (record.rule) |rule| try core.util.writeJsonString(writer, rule) else try writer.writeAll("null");
     try writer.writeAll(",\"severity\":");
     if (record.severity) |severity| try core.util.writeJsonString(writer, severity) else try writer.writeAll("null");
     try writer.writeAll(",\"reason\":");
-    try core.util.writeJsonString(writer, record.reason);
+    try writeRedactedJsonString(allocator, writer, record.reason);
     try writer.writeAll(",\"remediation\":");
-    if (record.remediation) |remediation| try core.util.writeJsonString(writer, remediation) else try writer.writeAll("null");
+    if (record.remediation) |remediation| try writeRedactedJsonString(allocator, writer, remediation) else try writer.writeAll("null");
     try writer.writeAll(",\"target\":");
-    try core.util.writeJsonString(writer, record.target_summary);
+    try writeRedactedJsonString(allocator, writer, record.target_summary);
     try writer.writeAll(",\"session_id\":");
     if (record.session_id) |session_id| try core.util.writeJsonString(writer, session_id) else try writer.writeAll("null");
     try writer.writeAll(",\"verified\":");
@@ -532,21 +559,29 @@ fn writeFeedRecordJson(writer: anytype, record: rust_visibility.RustShellFeedRec
     try writer.writeByte('}');
 }
 
+fn writeRedactedJsonString(allocator: std.mem.Allocator, writer: anytype, value: []const u8) !void {
+    const redacted = try core_api.redactAlloc(allocator, value);
+    defer allocator.free(redacted);
+    try core.util.writeJsonString(writer, redacted);
+}
+
 fn writeBlockedActionsArrayJson(io: std.Io, allocator: std.mem.Allocator, writer: anytype, workspace_root: []const u8, max_count: usize) !void {
     try writer.writeByte('[');
     var written: usize = 0;
 
-    const feed_owned: ?[]feed_writer.LoadedFeedRecord = feed_writer.loadRecent(io, allocator, workspace_root, std.math.maxInt(usize)) catch null;
-    defer if (feed_owned) |owned| {
-        for (owned) |*item| item.deinit(allocator);
-        allocator.free(owned);
-    };
-    const feed = feed_owned orelse &[_]feed_writer.LoadedFeedRecord{};
+    var feed_result: ?feed_writer.FeedLoadResult = feed_writer.loadRecentMatchingWithHealth(
+        io,
+        allocator,
+        workspace_root,
+        max_count,
+        .blocked,
+    ) catch null;
+    defer if (feed_result) |*result| result.deinit(allocator);
+    const feed = if (feed_result) |result| result.records else &[_]feed_writer.LoadedFeedRecord{};
     for (feed) |item| {
         if (written >= max_count) break;
-        if (!rust_visibility.isBlockedFeedRecord(item.record)) continue;
         if (written > 0) try writer.writeByte(',');
-        try writeFeedRecordJson(writer, item.record);
+        try writeFeedRecordJson(allocator, writer, item.record);
         written += 1;
     }
 
@@ -855,6 +890,46 @@ test "dashboard assets expose dedicated secretless view" {
     try std.testing.expect(std.mem.indexOf(u8, app, "renderHermesActivity") != null);
     try std.testing.expect(std.mem.indexOf(u8, app, "hermesDecisionClass") != null);
     try std.testing.expect(std.mem.indexOf(u8, app, "approval-required") != null);
+    // P2c: host filter + denial remediation (copy + allowlisted actions)
+    try std.testing.expect(std.mem.indexOf(u8, index, "hostFilter") != null);
+    try std.testing.expect(std.mem.indexOf(u8, index, "coverageCaption") != null);
+    try std.testing.expect(std.mem.indexOf(u8, app, "data-host-filter") != null);
+    try std.testing.expect(std.mem.indexOf(u8, app, "filterActionsByHost") != null);
+    try std.testing.expect(std.mem.indexOf(u8, app, "remediationCommandsFor") != null);
+    try std.testing.expect(std.mem.indexOf(u8, app, "suggest-allowlist") != null);
+    try std.testing.expect(std.mem.indexOf(u8, app, "allowlist-list") != null);
+    try std.testing.expect(std.mem.indexOf(u8, app, "No denials yet") != null);
+    try std.testing.expect(std.mem.indexOf(u8, app, "PI_COVERAGE") != null);
+}
+
+test "workspace status lists remediation quick actions" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const root = try tmp.dir.realPathFileAlloc(std.testing.io, ".", std.testing.allocator);
+    defer std.testing.allocator.free(root);
+    var aw: std.Io.Writer.Allocating = .init(std.testing.allocator);
+    try writeStatusJson(std.testing.io, std.testing.allocator, &aw.writer, root);
+    var out = aw.toArrayList();
+    defer out.deinit(std.testing.allocator);
+    try std.testing.expect(std.mem.indexOf(u8, out.items, "\"id\":\"suggest-allowlist\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out.items, "\"id\":\"allowlist-list\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out.items, "orca suggest-allowlist --confidence high") != null);
+}
+
+test "workspace status always includes feed health required by the activity UI" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const root = try tmp.dir.realPathFileAlloc(std.testing.io, ".", std.testing.allocator);
+    defer std.testing.allocator.free(root);
+    const feed_path = try feed_writer.feedPath(std.testing.allocator, root);
+    defer std.testing.allocator.free(feed_path);
+    if (std.fs.path.dirname(feed_path)) |parent| try std.Io.Dir.cwd().createDirPath(std.testing.io, parent);
+    try std.Io.Dir.cwd().writeFile(std.testing.io, .{ .sub_path = feed_path, .data = "{malformed}\n" });
+
+    var aw: std.Io.Writer.Allocating = .init(std.testing.allocator);
+    defer aw.deinit();
+    try writeStatusJson(std.testing.io, std.testing.allocator, &aw.writer, root);
+    try std.testing.expect(std.mem.indexOf(u8, aw.written(), "\"feed_health\":{\"status\":\"degraded\",\"skipped_lines\":1}") != null);
 }
 
 test "dashboard counts Hermes ask tool veto as blocked without losing ask label" {
@@ -910,6 +985,77 @@ test "dashboard counts Hermes ask tool veto as blocked without losing ask label"
     try std.testing.expect(std.mem.indexOf(u8, out.items, "\"host\":\"hermes\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, out.items, "\"id\":\"hermes-session-1\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, out.items, "\"denied_count\":1") != null);
+}
+
+test "workspace blocked actions returns only the latest bounded denied feed records" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const root = try tmp.dir.realPathFileAlloc(std.testing.io, ".", std.testing.allocator);
+    defer std.testing.allocator.free(root);
+
+    for ([_]struct { decision: []const u8, reason: []const u8 }{
+        .{ .decision = "deny", .reason = "oldest blocked action" },
+        .{ .decision = "allow", .reason = "allowed between blocks" },
+        .{ .decision = "deny", .reason = "middle blocked action" },
+        .{ .decision = "deny", .reason = "newest blocked action" },
+        .{ .decision = "allow", .reason = "newest allowed action" },
+    }) |fixture| {
+        var record = try rust_visibility.buildFeedRecordFromHookDecision(
+            std.testing.allocator,
+            std.testing.io,
+            root,
+            "codex",
+            "healthy",
+            fixture.decision,
+            fixture.reason,
+            null,
+            null,
+            null,
+            null,
+            null,
+        );
+        defer record.deinit(std.testing.allocator);
+        try feed_writer.appendRecord(std.testing.io, std.testing.allocator, root, record);
+    }
+
+    var output: std.Io.Writer.Allocating = .init(std.testing.allocator);
+    defer output.deinit();
+    try writeBlockedActionsArrayJson(std.testing.io, std.testing.allocator, &output.writer, root, 2);
+    const json = output.written();
+
+    try std.testing.expectEqual(@as(usize, 2), std.mem.count(u8, json, "\"event_type\":"));
+    try std.testing.expect(std.mem.indexOf(u8, json, "oldest blocked action") == null);
+    try std.testing.expect(std.mem.indexOf(u8, json, "middle blocked action") != null);
+    try std.testing.expect(std.mem.indexOf(u8, json, "newest blocked action") != null);
+    try std.testing.expect(std.mem.indexOf(u8, json, "newest allowed action") == null);
+}
+
+test "workspace blocked actions redact legacy free-form fields and expose rule ids" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const root = try tmp.dir.realPathFileAlloc(std.testing.io, ".", std.testing.allocator);
+    defer std.testing.allocator.free(root);
+    const feed_path = try feed_writer.feedPath(std.testing.allocator, root);
+    defer std.testing.allocator.free(feed_path);
+    const feed_dir = std.fs.path.dirname(feed_path).?;
+    try std.Io.Dir.cwd().createDirPath(std.testing.io, feed_dir);
+    const legacy_secret = "sk-legacyWorkspaceSyntheticSecret123456";
+    const fixture = try std.fmt.allocPrint(
+        std.testing.allocator,
+        "{{\"timestamp\":\"2026-07-13T00:00:00Z\",\"workspace_root\":\"{s}\",\"event_type\":\"command_denied\",\"decision\":\"deny\",\"decision_source\":\"rust-daemon\",\"event_source\":\"hook\",\"host\":\"codex\",\"daemon_status\":\"healthy\",\"pack_id\":\"core.shell\",\"severity\":\"high\",\"reason\":\"token={s}\",\"remediation\":\"Authorization: Bearer {s}\",\"target_summary\":\"--token={s}\",\"session_id\":null,\"verified\":false}}\n{{\"timestamp\":\"2026-07-13T00:00:01Z\",\"workspace_root\":\"{s}\",\"event_type\":\"command_denied\",\"decision\":\"deny\",\"decision_source\":\"rust-daemon\",\"event_source\":\"hook\",\"host\":\"codex\",\"daemon_status\":\"healthy\",\"pack_id\":\"core.shell\",\"rule\":\"core.shell:pipe\",\"severity\":\"high\",\"reason\":\"blocked\",\"remediation\":null,\"target_summary\":\"shell command (redacted)\",\"session_id\":null,\"verified\":false}}\n",
+        .{ root, legacy_secret, legacy_secret, legacy_secret, root },
+    );
+    defer std.testing.allocator.free(fixture);
+    try std.Io.Dir.cwd().writeFile(std.testing.io, .{ .sub_path = feed_path, .data = fixture });
+
+    var output: std.Io.Writer.Allocating = .init(std.testing.allocator);
+    defer output.deinit();
+    try writeBlockedActionsArrayJson(std.testing.io, std.testing.allocator, &output.writer, root, 10);
+    const json = output.writer.buffered();
+    try std.testing.expect(std.mem.indexOf(u8, json, legacy_secret) == null);
+    try std.testing.expect(std.mem.indexOf(u8, json, "[REDACTED]") != null);
+    try std.testing.expect(std.mem.indexOf(u8, json, "\"rule\":null") != null);
+    try std.testing.expect(std.mem.indexOf(u8, json, "\"rule\":\"core.shell:pipe\"") != null);
 }
 
 test "sessions json filters denied replay events" {
@@ -1098,6 +1244,8 @@ test "machine status aggregates registered workspaces and exposes only global ac
     try std.testing.expect(std.mem.indexOf(u8, out, "\"id\":\"doctor\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, out, "\"id\":\"license-status\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, out, "replay-last") == null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "suggest-allowlist") == null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "allowlist-list") == null);
 }
 
 test "machine status includes feed-backed Pi sessions" {

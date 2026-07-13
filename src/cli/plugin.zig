@@ -740,8 +740,8 @@ fn writeUnifiedHostStatusTable(
     }
 
     if (include_pi) {
-        const pi_detected = host_status.detectPi(io, allocator);
-        const wired: []const u8 = if (pi_detected) "partial" else "—";
+        const pi_status = host_status.inspectPi(io, allocator);
+        const wired = pi_status.wiredLabel();
         const smoke = host_status.HostSmokePair{};
         const allow_s = try allocator.dupe(u8, smoke.allow.toString());
         try owned.append(allocator, allow_s);
@@ -775,8 +775,8 @@ fn writeUnifiedHostStatusTable(
         try stdout.print("  fix {s}: {s}\n", .{ line.host, line.fix });
     }
     if (include_pi) {
-        try stdout.writeAll("  note pi: not managed by `orca plugin install`; bash-only via `orca evaluate`\n");
-        try stdout.writeAll("    → install: pi install npm:@orca-sec/pi-orca\n");
+        try stdout.writeAll("  note pi: not managed by `orca plugin install`; extension coverage unknown until live smoke\n");
+        try stdout.writeAll("    → install: pi install npm:@orca-sec/pi-orca · process: orca run -- pi\n");
     }
     if (hostPluginInstalledFromReport("hermes", report) and hermes_fail_open and (target == .all or target == .hermes)) {
         try stdout.writeAll("  warn hermes: effective fail-open when Orca degraded — set ORCA_HERMES_FAIL_OPEN=0 or use orca run -- hermes\n");
@@ -1619,8 +1619,8 @@ fn installCommand(io: std.Io, argv: []const []const u8, stdout: anytype, stderr:
 
     // Pi is never managed by plugin install / install-all (honest non-management).
     if (!dry_run and (target == .all or all_detected)) {
-        try stdout.writeAll("\nPi: not managed by `orca plugin install` (bash-only).\n");
-        try stdout.writeAll("  Install: pi install npm:@orca-sec/pi-orca\n");
+        try stdout.writeAll("\nPi: not managed by `orca plugin install`; extension coverage requires live smoke.\n");
+        try stdout.writeAll("  Install: pi install npm:@orca-sec/pi-orca · process: orca run -- pi\n");
         try stdout.writeAll("  Live check: ./scripts/host-live-e2e.sh pi\n");
     }
 
@@ -2195,6 +2195,8 @@ test "plugin doctor prints expected sections" {
     try std.testing.expect(std.mem.indexOf(u8, output, "Host status:") != null);
     try std.testing.expect(std.mem.indexOf(u8, output, "SMOKE ALLOW") != null);
     try std.testing.expect(std.mem.indexOf(u8, output, "pi") != null);
+    try std.testing.expect(std.mem.indexOf(u8, output, "orca run -- pi") != null);
+    try std.testing.expect(std.mem.indexOf(u8, output, "pi …") == null);
     try std.testing.expect(std.mem.indexOf(u8, output, "Plugin directories:") != null);
     try std.testing.expect(std.mem.indexOf(u8, output, "Host binaries:") != null);
     try std.testing.expect(std.mem.indexOf(u8, output, "Drone workstream:") == null);

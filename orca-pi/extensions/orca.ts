@@ -3,7 +3,7 @@ import { spawnSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { accessSync, constants, existsSync } from "node:fs";
 import { createRequire } from "node:module";
-import { dirname, resolve } from "node:path";
+import { dirname, isAbsolute, resolve } from "node:path";
 import {
 	handleSecretCaptureInput,
 	isSecretCaptureDisabled,
@@ -129,6 +129,54 @@ type SpawnLike = (
 	options: SpawnOptions,
 ) => ChildLike;
 
+/** Built-in Pi tools Orca intercepts. Custom/MCP tools are not protected. */
+export const PROTECTED_PI_TOOLS = [
+	"bash",
+	"write",
+	"edit",
+	"read",
+	"grep",
+	"find",
+	"ls",
+] as const;
+export type ProtectedPiTool = (typeof PROTECTED_PI_TOOLS)[number];
+
+/** File tools that use Zig `orca decide file` with operation write. */
+const FILE_WRITE_TOOLS = new Set<string>(["write", "edit"]);
+/** File tools that use Zig `orca decide file` with operation read. */
+const FILE_READ_TOOLS = new Set<string>(["read", "grep", "find", "ls"]);
+/** Discovery tools can traverse/read descendants that a root-only preflight cannot prove safe. */
+const BROAD_DISCOVERY_TOOLS = new Set<string>(["grep", "find", "ls"]);
+
+export function isProtectedPiTool(toolName: string): toolName is ProtectedPiTool {
+	return (PROTECTED_PI_TOOLS as readonly string[]).includes(toolName);
+}
+
+/** Honest coverage string for doctor/status surfaces. */
+export function piCoverageLabel(): string {
+	return "bash + write + edit + read policy-protected; grep + find + ls approval-gated (descendants are not individually evaluated; custom/MCP not intercepted)";
+}
+
+/**
+ * Path target for decide-file preflight.
+ * - read/write/edit: require non-empty `path`
+ * - grep/find/ls: optional `path` (Pi defaults to cwd / "."); use that default when omitted
+ */
+export function extractDecideFilePath(
+	toolName: string,
+	input: Record<string, unknown> | undefined,
+): { path: string; required: boolean } | null {
+	const raw = typeof input?.path === "string" ? input.path.trim() : "";
+	if (toolName === "read" || FILE_WRITE_TOOLS.has(toolName)) {
+		return { path: raw, required: true };
+	}
+	if (FILE_READ_TOOLS.has(toolName)) {
+		// Pi grep/find/ls default search/list root is cwd when path is omitted.
+		return { path: raw || ".", required: false };
+	}
+	return null;
+}
+
 export type OrcaEvaluateRequest = {
 	schema_version: 1;
 	request_id: string;
@@ -137,15 +185,22 @@ export type OrcaEvaluateRequest = {
 	cwd: string;
 	source: {
 		host: "pi";
-		tool_name: "bash";
+		tool_name: string;
 		mode?: string;
 		session_id?: string;
 	};
 };
 
+export type OrcaDecideFileRequest = {
+	path: string;
+	operation: "read" | "write";
+};
+
 export type OrcaDecision =
 	| { kind: "allow"; response: unknown }
 	| { kind: "deny"; reason: string; response: unknown }
+	| { kind: "ask"; reason: string; response: unknown }
+	| { kind: "warn"; reason: string; response: unknown }
 	| { kind: "error"; reason: string; response?: unknown; error?: Error };
 
 type OrcaEvaluateResponse = {
@@ -227,6 +282,49 @@ const ASK_OPTIONS = [
 	"Disable Orca for this Pi session",
 	"Show repair instructions / run doctor",
 ] as const;
+const POLICY_ASK_OPTIONS = [
+	"Block",
+	"Run once anyway",
+	"Disable Orca for this Pi session",
+	"Show policy reason",
+] as const;
+const ONCE_OPTION = "Run once anyway";
+
+/**
+ * Whether interactive prompts may offer "Run once anyway".
+ * - `ORCA_PI_ALLOW_ONCE=false|0|no` disables always
+ * - `ORCA_PI_MODE=strict` disables by default (production hardening)
+ * - `ORCA_PI_ALLOW_ONCE=true` re-enables even under strict
+ */
+export function allowOnceBypassEnabled(
+	env: NodeJS.ProcessEnv = process.env,
+	unavailableMode?: UnavailableMode,
+): boolean {
+	const raw = env.ORCA_PI_ALLOW_ONCE?.trim().toLowerCase();
+	if (raw === "false" || raw === "0" || raw === "no") return false;
+	if (raw === "true" || raw === "1" || raw === "yes") return true;
+	if (unavailableMode === "strict") return false;
+	return true;
+}
+
+export function askOptionsFor(
+	kind: "policy" | "unavailable",
+	allowOnce: boolean,
+): string[] {
+	const base =
+		kind === "policy" ? [...POLICY_ASK_OPTIONS] : [...ASK_OPTIONS];
+	if (allowOnce) return base;
+	return base.filter((option) => option !== ONCE_OPTION);
+}
+
+const DECIDE_EXIT_CODE = {
+	allow: 0,
+	context_only: 0,
+	block: 3,
+	ask: 7,
+	warn: 8,
+	error: 1,
+} as const;
 
 export function resolveOrcaBin(
 	options: ResolveOrcaBinOptions = {},
@@ -264,6 +362,7 @@ export function resolveOrcaBin(
 export function buildEvaluateRequest(
 	command: string,
 	ctx: PiContext,
+	toolName = "bash",
 ): OrcaEvaluateRequest {
 	return {
 		schema_version: 1,
@@ -273,11 +372,25 @@ export function buildEvaluateRequest(
 		cwd: resolveCwd(ctx.cwd),
 		source: {
 			host: "pi",
-			tool_name: "bash",
+			tool_name: toolName,
 			mode: ctx.mode,
 			session_id: sessionKey(ctx),
 		},
 	};
+}
+
+export function buildDecideFilePayload(
+	path: string,
+	operation: "read" | "write" = "write",
+): OrcaDecideFileRequest {
+	return { path, operation };
+}
+
+export function resolveToolPath(pathInput: string, ctx: PiContext): string {
+	const trimmed = pathInput.trim();
+	if (!trimmed) return trimmed;
+	if (isAbsolute(trimmed)) return resolve(trimmed);
+	return resolve(resolveCwd(ctx.cwd), trimmed);
 }
 
 export async function runOrcaEvaluate(
@@ -334,6 +447,109 @@ export async function runOrcaEvaluate(
 		kind: "error",
 		reason: `Orca returned an unexpected evaluation result (exit ${result.code ?? "unknown"}).`,
 		response: parsed,
+	};
+}
+
+/**
+ * Non-shell file tools → Zig `orca decide file` (policy.yaml files.write/read).
+ * Does not use daemon Evaluate (shell-only).
+ */
+export async function runOrcaDecideFile(
+	payload: OrcaDecideFileRequest,
+	options: Required<
+		Pick<OrcaExtensionOptions, "orcaBin" | "spawn" | "timeoutMs">
+	> & { env?: NodeJS.ProcessEnv; cwd?: string },
+): Promise<OrcaDecision> {
+	const result = await runProcess(
+		options.orcaBin,
+		["decide", "file", "--json", JSON.stringify(payload)],
+		undefined,
+		options.spawn,
+		options.timeoutMs,
+		options.env,
+		options.cwd,
+	);
+
+	if (result.timedOut) {
+		return { kind: "error", reason: "Orca decide timed out." };
+	}
+	if (result.error) {
+		const reason =
+			result.error.message === "Orca output exceeded maximum size"
+				? "Orca output exceeded maximum size."
+				: "Orca is unavailable.";
+		return { kind: "error", reason, error: result.error };
+	}
+
+	let parsed: unknown;
+	try {
+		parsed = JSON.parse(result.stdout);
+	} catch {
+		return { kind: "error", reason: "Orca decide returned malformed JSON." };
+	}
+
+	const decision = getStringField(parsed, "decision");
+	const reason = sanitizeVisibleText(
+		getStringFieldAny(parsed, ["reason", "message"]) ??
+			"Orca blocked this file action.",
+	);
+	// A machine decision is trusted only when its process status agrees with the
+	// frozen `orca decide` exit-code contract. Mismatches fail closed.
+	if (
+		!decision ||
+		!(decision in DECIDE_EXIT_CODE) ||
+		result.code !== DECIDE_EXIT_CODE[decision as keyof typeof DECIDE_EXIT_CODE]
+	) {
+		return {
+			kind: "error",
+			reason: `Orca decide returned an inconsistent result (decision ${decision ?? "missing"}, exit ${result.code ?? "signal"}).`,
+			response: parsed,
+		};
+	}
+
+	// decide uses allow | block | ask | warn | context_only | error.
+	if (decision === "context_only" && payload.operation === "write") {
+		const response = {
+			...(parsed as Record<string, unknown>),
+			decision: "deny",
+			reason: "Orca allowed context only; write side effects are not permitted.",
+		};
+		return { kind: "deny", reason: safeOrcaReason(response), response };
+	}
+	if (decision === "allow" || decision === "context_only") {
+		return { kind: "allow", response: parsed };
+	}
+	if (decision === "block") {
+		return {
+			kind: "deny",
+			reason: safeOrcaReason(normalizeDecideToEvaluateShape(parsed)),
+			response: normalizeDecideToEvaluateShape(parsed),
+		};
+	}
+	if (decision === "ask") {
+		return { kind: "ask", reason, response: parsed };
+	}
+	if (decision === "warn") {
+		return { kind: "warn", reason, response: parsed };
+	}
+	if (decision === "error") {
+		return { kind: "error", reason, response: parsed };
+	}
+
+	return {
+		kind: "error",
+		reason: `Orca decide returned an unexpected result (exit ${result.code ?? "unknown"}).`,
+		response: parsed,
+	};
+}
+
+function normalizeDecideToEvaluateShape(response: unknown): unknown {
+	if (!response || typeof response !== "object") return response;
+	const obj = response as Record<string, unknown>;
+	return {
+		...obj,
+		decision: obj.decision === "block" ? "deny" : obj.decision,
+		rule_id: typeof obj.rule === "string" ? obj.rule : obj.rule_id,
 	};
 }
 
@@ -469,58 +685,93 @@ export function installOrcaExtension(
 	pi.on(
 		"tool_call",
 		async (event: PiToolCallEvent, ctx: PiContext): Promise<ToolCallResult> => {
-			if (event.toolName !== "bash") return undefined;
+			if (!isProtectedPiTool(event.toolName)) return undefined;
 
-			if (
-				typeof event.input?.command !== "string" ||
-				event.input.command.trim().length === 0
-			) {
-				const details = {
-					variant: "block" as const,
-					title: "ORCA BLOCKED",
-					summary:
-						"malformed Pi bash tool call; missing non-empty command.",
-				};
-				showOrcaDecision(pi, ctx, details);
-				return block(formatOrcaDecisionSummary(details));
-			}
-			const command = event.input.command;
 			await stateFor(ctx).bootstrap;
 
 			if (stateFor(ctx).bypass) {
 				clearOrcaWidget(ctx);
 				ctx.ui?.notify?.(
-					"Orca protection is disabled for this Pi session; bash command allowed without Orca evaluation.",
+					`Orca protection is disabled for this Pi session; ${event.toolName} allowed without Orca evaluation.`,
 					"warning",
 				);
 				updateStatus(ctx);
 				return undefined;
 			}
 
-			const decision = await runOrcaEvaluate(
-				buildEvaluateRequest(command, ctx),
-				runtime,
+			const toolLabel = event.toolName;
+			const disableSession = () => {
+				stateFor(ctx).bypass = true;
+				updateStatus(ctx);
+			};
+
+			if (event.toolName === "bash") {
+				if (
+					typeof event.input?.command !== "string" ||
+					event.input.command.trim().length === 0
+				) {
+					const details = {
+						variant: "block" as const,
+						title: "ORCA BLOCKED",
+						summary:
+							"malformed Pi bash tool call; missing non-empty command.",
+					};
+					showOrcaDecision(pi, ctx, details);
+					return block(formatOrcaDecisionSummary(details, toolLabel));
+				}
+				const decision = await runOrcaEvaluate(
+					buildEvaluateRequest(event.input.command, ctx, "bash"),
+					runtime,
+				);
+				return applyToolDecision(
+					decision,
+					pi,
+					ctx,
+					toolLabel,
+					unavailableMode,
+					disableSession,
+					runtime.env,
+				);
+			}
+
+			// write/edit → decide file write; read/grep/find/ls → decide file read
+			const pathTarget = extractDecideFilePath(event.toolName, event.input);
+			if (!pathTarget) return undefined;
+			if (pathTarget.required && !pathTarget.path) {
+				const details = {
+					variant: "block" as const,
+					title: "ORCA BLOCKED",
+					summary: `malformed Pi ${toolLabel} tool call; missing non-empty path.`,
+				};
+				showOrcaDecision(pi, ctx, details);
+				return block(formatOrcaDecisionSummary(details, toolLabel));
+			}
+			const absPath = resolveToolPath(pathTarget.path, ctx);
+			const operation: "read" | "write" = FILE_WRITE_TOOLS.has(event.toolName)
+				? "write"
+				: "read";
+			const decision = await runOrcaDecideFile(
+				buildDecideFilePayload(absPath, operation),
+				{ ...runtime, cwd: resolveCwd(ctx.cwd) },
 			);
-			if (decision.kind === "allow") {
-				clearOrcaWidget(ctx);
-				return undefined;
+			if (decision.kind === "allow" && BROAD_DISCOVERY_TOOLS.has(event.toolName)) {
+				return handlePolicyAsk(
+					`Orca allowed the ${toolLabel} root, but this broad discovery action may traverse descendant files that were not individually evaluated. Explicit approval is required.`,
+					pi,
+					ctx,
+					toolLabel,
+					{ disableSession },
+					allowOnceBypassEnabled(runtime.env, unavailableMode),
+				);
 			}
-			if (decision.kind === "deny") {
-				const card = buildOrcaDecisionCard(decision.response, "block");
-				showOrcaDecision(pi, ctx, card);
-				return block(formatOrcaDecisionSummary(card));
-			}
-			return handleUnavailable(
-				decision.reason,
+			return applyToolDecision(
+				decision,
 				pi,
 				ctx,
-				resolveUnavailableMode(unavailableMode, ctx),
-				{
-					disableSession: () => {
-						stateFor(ctx).bypass = true;
-						updateStatus(ctx);
-					},
-				},
+				toolLabel,
+				unavailableMode,
+				disableSession,
+				runtime.env,
 			);
 		},
 	);
@@ -579,7 +830,7 @@ export function installOrcaExtension(
 			updateStatus(ctx);
 			notify(
 				ctx,
-				"Orca disabled for this Pi session only. Bash calls will run without Orca evaluation until /orca-start.",
+				`Orca disabled for this Pi session only. Protected tools (${piCoverageLabel()}) run without Orca until /orca-start.`,
 				"warning",
 			);
 		},
@@ -590,13 +841,19 @@ export function installOrcaExtension(
 		handler: async (_args, ctx) => {
 			const result = await runOrcaCommand(["doctor"], runtime);
 			if (result.error) {
-				notify(ctx, orcaInstallMessage(), "error");
+				notify(
+					ctx,
+					`${orcaInstallMessage()}\n\nCoverage: ${piCoverageLabel()}`,
+					"error",
+				);
 				return;
 			}
+			const body =
+				summarizeCommandOutput(result) ||
+				`orca doctor exited with ${result.code ?? "unknown"}`;
 			notify(
 				ctx,
-				summarizeCommandOutput(result) ||
-					`orca doctor exited with ${result.code ?? "unknown"}`,
+				`${body}\n\nCoverage: ${piCoverageLabel()}`,
 				result.code === 0 ? "info" : "warning",
 			);
 		},
@@ -622,7 +879,7 @@ export function installOrcaExtension(
 				updateStatus(ctx);
 				notify(
 					ctx,
-					"Orca bypass disabled. Bash calls will be evaluated by Orca.",
+					`Orca bypass disabled. Protected tools (${piCoverageLabel()}) will be evaluated by Orca.`,
 					"info",
 				);
 				return;
@@ -644,19 +901,181 @@ export function installOrcaExtension(
 	});
 }
 
+async function applyToolDecision(
+	decision: OrcaDecision,
+	pi: PiAPI,
+	ctx: PiContext,
+	toolLabel: string,
+	unavailableMode: UnavailableMode,
+	disableSession: () => void,
+	env: NodeJS.ProcessEnv = process.env,
+): Promise<ToolCallResult> {
+	if (decision.kind === "allow") {
+		clearOrcaWidget(ctx);
+		return undefined;
+	}
+	if (decision.kind === "deny") {
+		const card = buildOrcaDecisionCard(decision.response, "block");
+		showOrcaDecision(pi, ctx, card);
+		return block(formatOrcaDecisionSummary(card, toolLabel));
+	}
+	if (decision.kind === "warn") {
+		clearOrcaWidget(ctx);
+		notify(
+			ctx,
+			`Orca flagged this ${toolLabel} action: ${decision.reason}. Proceeding with warning.`,
+			"warning",
+		);
+		return undefined;
+	}
+	if (decision.kind === "ask") {
+		return handlePolicyAsk(
+			decision.reason,
+			pi,
+			ctx,
+			toolLabel,
+			{ disableSession },
+			allowOnceBypassEnabled(env, unavailableMode),
+		);
+	}
+	return handleUnavailable(
+		decision.reason,
+		pi,
+		ctx,
+		resolveUnavailableMode(unavailableMode, ctx),
+		{ disableSession },
+		toolLabel,
+		allowOnceBypassEnabled(env, unavailableMode),
+	);
+}
+
+function recordOnceBypass(
+	pi: PiAPI,
+	ctx: PiContext,
+	toolLabel: string,
+	source: "policy" | "unavailable",
+): boolean {
+	if (!pi.sendMessage) {
+		notify(ctx, "Orca blocked the once-bypass because transcript auditing is unavailable.", "error");
+		return false;
+	}
+	const details = {
+		event: "orca_once_bypass",
+		tool: truncate(sanitizeVisibleText(toolLabel), 128),
+		source,
+	};
+	try {
+		pi.sendMessage(
+			{
+				customType: "orca.audit",
+				content: `orca once-bypass: ${details.tool} (${source})`,
+				display: false,
+				details,
+			},
+			{ triggerTurn: false },
+		);
+	} catch {
+		notify(ctx, "Orca blocked the once-bypass because transcript auditing failed.", "error");
+		return false;
+	}
+	notify(ctx, `Orca audit: once-bypass used for ${details.tool} (${source}).`, "warning");
+	return true;
+}
+
+async function handlePolicyAsk(
+	reason: string,
+	pi: PiAPI,
+	ctx: PiContext,
+	toolLabel: string,
+	actions: { disableSession: () => void },
+	allowOnce: boolean,
+): Promise<ToolCallResult> {
+	const summary = sanitizeVisibleText(reason);
+	const card = buildOrcaAskCard(summary);
+	showOrcaWidget(ctx, card);
+	const choice = await ctx.ui?.select?.(
+		"ORCA needs your decision",
+		askOptionsFor("policy", allowOnce),
+		{ timeout: 60_000, signal: ctx.signal },
+	);
+	switch (choice) {
+		case "Run once anyway":
+			if (!allowOnce) {
+				clearOrcaWidget(ctx);
+				return block(
+					formatOrcaDecisionSummary(
+						{
+							variant: "block",
+							title: "ORCA BLOCKED",
+							summary,
+						},
+						toolLabel,
+					),
+				);
+			}
+			clearOrcaWidget(ctx);
+			if (!recordOnceBypass(pi, ctx, toolLabel, "policy")) {
+				return block("Orca blocked this once-bypass because a required transcript audit event could not be recorded.");
+			}
+			notify(
+				ctx,
+				`Allowed this ${toolLabel} action once without Orca evaluation.`,
+				"warning",
+			);
+			return undefined;
+		case "Disable Orca for this Pi session":
+			clearOrcaWidget(ctx);
+			actions.disableSession();
+			notify(
+				ctx,
+				"Orca disabled for this Pi session only. Use /orca-start to re-enable.",
+				"warning",
+			);
+			return undefined;
+		case "Show policy reason":
+			clearOrcaWidget(ctx);
+			notify(ctx, summary, "error");
+			return block(
+				formatOrcaDecisionSummary(
+					{
+						variant: "block",
+						title: "ORCA BLOCKED",
+						summary,
+					},
+					toolLabel,
+				),
+			);
+		case "Block":
+		default:
+			clearOrcaWidget(ctx);
+			return block(
+				formatOrcaDecisionSummary(
+					{
+						variant: "block",
+						title: "ORCA BLOCKED",
+						summary,
+					},
+					toolLabel,
+				),
+			);
+	}
+}
+
 async function handleUnavailable(
 	reason: string,
 	pi: PiAPI,
 	ctx: PiContext,
 	mode: EffectiveUnavailableMode,
 	actions: { disableSession: () => void },
+	toolLabel = "bash",
+	allowOnce = true,
 ): Promise<ToolCallResult> {
-	const repair = repairMessage(reason);
+	const repair = repairMessage(reason, toolLabel);
 	if (mode === "allow-with-warning") {
 		clearOrcaWidget(ctx);
 		notify(
 			ctx,
-			`Orca unavailable; allowing bash command with warning.\n\n${repair}`,
+			`Orca unavailable; allowing ${toolLabel} with warning.\n\n${repair}`,
 			"warning",
 		);
 		return undefined;
@@ -668,7 +1087,7 @@ async function handleUnavailable(
 			summary: repair,
 		};
 		showOrcaDecision(pi, ctx, card);
-		return block(formatOrcaDecisionSummary(card));
+		return block(formatOrcaDecisionSummary(card, toolLabel));
 	}
 
 	const card = buildOrcaAskCard(repair);
@@ -677,15 +1096,31 @@ async function handleUnavailable(
 	showOrcaWidget(ctx, card);
 	const choice = await ctx.ui?.select?.(
 		"ORCA needs your decision",
-		[...ASK_OPTIONS],
+		askOptionsFor("unavailable", allowOnce),
 		{ timeout: 60_000, signal: ctx.signal },
 	);
 	switch (choice) {
 		case "Run once anyway":
+			if (!allowOnce) {
+				clearOrcaWidget(ctx);
+				return block(
+					formatOrcaDecisionSummary(
+						{
+							variant: "block",
+							title: "ORCA BLOCKED",
+							summary: repair,
+						},
+						toolLabel,
+					),
+				);
+			}
 			clearOrcaWidget(ctx);
+			if (!recordOnceBypass(pi, ctx, toolLabel, "unavailable")) {
+				return block("Orca blocked this once-bypass because a required transcript audit event could not be recorded.");
+			}
 			notify(
 				ctx,
-				"Allowed this bash command once without Orca evaluation.",
+				`Allowed this ${toolLabel} action once without Orca evaluation.`,
 				"warning",
 			);
 			return undefined;
@@ -702,21 +1137,27 @@ async function handleUnavailable(
 			clearOrcaWidget(ctx);
 			notify(ctx, repair, "error");
 			return block(
-				formatOrcaDecisionSummary({
-					variant: "block",
-					title: "ORCA BLOCKED",
-					summary: repair,
-				}),
+				formatOrcaDecisionSummary(
+					{
+						variant: "block",
+						title: "ORCA BLOCKED",
+						summary: repair,
+					},
+					toolLabel,
+				),
 			);
 		case "Block":
 		default:
 			clearOrcaWidget(ctx);
 			return block(
-				formatOrcaDecisionSummary({
-					variant: "block",
-					title: "ORCA BLOCKED",
-					summary: repair,
-				}),
+				formatOrcaDecisionSummary(
+					{
+						variant: "block",
+						title: "ORCA BLOCKED",
+						summary: repair,
+					},
+					toolLabel,
+				),
 			);
 	}
 }
@@ -1055,24 +1496,33 @@ function buildOrcaAskCard(reason: string): OrcaDecisionCard {
 	};
 }
 
-function formatOrcaDecisionSummary(card: OrcaDecisionCard): string {
+function formatOrcaDecisionSummary(
+	card: OrcaDecisionCard,
+	toolLabel = "bash",
+): string {
 	const parts = [card.summary];
 	if (card.rule) parts.push(`rule ${card.rule}`);
 	if (card.pack && card.pack !== card.rule?.split(":")[0]) parts.push(`pack ${card.pack}`);
 	if (card.severity) parts.push(`severity ${card.severity}`);
-	return sanitizeVisibleText(`Orca ${card.variant === "ask" ? "needs your decision" : "blocked this bash command"}: ${parts.join(" • ")}`);
+	const action =
+		toolLabel === "bash" ? "bash command" : `${toolLabel} action`;
+	return sanitizeVisibleText(
+		`Orca ${card.variant === "ask" ? "needs your decision" : `blocked this ${action}`}: ${parts.join(" • ")}`,
+	);
 }
 
 function getDecisionReason(response: unknown): string {
 	return (
 		getStringFieldAny(response, ["reason", "message"]) ??
 		getNestedStringField(response, ["error", "message"]) ??
-		"Orca blocked this bash command."
+		"Orca blocked this action."
 	);
 }
 
 function getRuleId(response: unknown): string | undefined {
-	return getStringFieldAny(response, ["rule_id", "ruleId"]);
+	// Evaluate uses rule_id; decide file uses `rule`. normalizeDecideToEvaluateShape
+	// maps rule → rule_id, but accept both so cards stay robust.
+	return getStringFieldAny(response, ["rule_id", "ruleId", "rule"]);
 }
 
 function getNextStep(response: unknown): string | undefined {
@@ -1150,20 +1600,24 @@ function notify(
 	ctx.ui?.notify?.(truncate(sanitizeVisibleText(message), 2_000), type);
 }
 
-function repairMessage(reason: string): string {
-	return `Orca could not evaluate this bash command: ${sanitizeVisibleText(reason)}\n\nRun /orca-setup, then /orca-doctor. The daemon starts automatically on the first evaluation.`;
-}
-
-function orcaInstallMessage(): string {
-	return "Orca CLI was not found. Reinstall npm:@orca-sec/pi-orca, or set ORCA_BIN to an executable Orca path, then run /orca-setup.";
+function repairMessage(reason: string, toolLabel = "bash"): string {
+	return `Orca could not evaluate this ${toolLabel} action: ${sanitizeVisibleText(reason)}\n\nRun /orca-setup, then /orca-doctor. Coverage: ${piCoverageLabel()}. The daemon starts automatically on shell evaluate.`;
 }
 
 function modeSummary(mode: UnavailableMode, sessionBypass: boolean): string {
 	return [
 		`Orca Pi mode: ${mode}`,
 		`Session bypass: ${sessionBypass ? "on" : "off"}`,
+		`Coverage: ${piCoverageLabel()}`,
+		`Once-bypass: ${allowOnceBypassEnabled(process.env, mode) ? "allowed" : "disabled"} (ORCA_PI_ALLOW_ONCE; strict disables by default)`,
+		"Default ORCA_PI_MODE=auto (interactive ask; noninteractive block). Production: prefer strict. allow-with-warning is never the default.",
 		"Modes: auto, ask, noninteractive-block, strict, allow-with-warning.",
+		"Process-level env/network/secretless requires: orca run [--secretless] [--network …] -- pi …",
 	].join("\n");
+}
+
+function orcaInstallMessage(): string {
+	return "Orca CLI was not found. Reinstall npm:@orca-sec/pi-orca, or set ORCA_BIN to an executable Orca path, then run /orca-setup.";
 }
 
 function summarizeCommandOutput(result: RunProcessResult): string {

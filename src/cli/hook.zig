@@ -1050,6 +1050,7 @@ fn buildAgentVisibleDaemonDeny(
         }
         break :blk try buildMessage(allocator, decision, "command");
     } else try buildMessage(allocator, decision, "command");
+    errdefer allocator.free(message);
 
     const suggestions = try collectDaemonSuggestionTexts(allocator, result);
     errdefer {

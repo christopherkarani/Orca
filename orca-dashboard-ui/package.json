@@ -4,7 +4,7 @@
   "private": true,
   "type": "module",
   "engines": {
-    "node": "^18.18.0 || ^19.8.0 || >=20.0.0"
+    "node": ">=22.6.0"
   },
   "scripts": {
     "test": "node --test --experimental-strip-types app/lib/dashboard-contract.test.ts",

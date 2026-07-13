@@ -67,3 +67,19 @@ test "phase 44 VERSION matches install script defaults" {
     try expectContains(dockerfile, "ORCA_RESOURCE_ROOT=\"/opt/orca\"");
     try expectContains(dockerfile, "USER orca");
 }
+
+test "dashboard CI and release workflows honor the declared Node engine" {
+    const package_json = try readFile("orca-dashboard-ui/package.json");
+    defer std.testing.allocator.free(package_json);
+    try expectContains(package_json, "\"node\": \">=22.6.0\"");
+
+    const release_workflow = try readFile(".github/workflows/release.yml");
+    defer std.testing.allocator.free(release_workflow);
+    try expectContains(release_workflow, "node-version: 22.6.0");
+
+    const test_workflow = try readFile(".github/workflows/test.yml");
+    defer std.testing.allocator.free(test_workflow);
+    for ([_][]const u8{ "node-version: 22.6.0", "working-directory: orca-dashboard-ui", "npm ci", "npm test", "npm run build" }) |required| {
+        try expectContains(test_workflow, required);
+    }
+}

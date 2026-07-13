@@ -286,8 +286,8 @@ fn real_claude_warn_output_conforms_to_hook_schema() {
         "warn policy must emit Claude ask JSON"
     );
     assert!(
-        stderr.contains("WARNING") || stderr.contains("warn"),
-        "stderr should contain the human-readable warning, got:\n{stderr}"
+        stderr.contains("ORCA ASK:"),
+        "stderr should contain the human-readable ask marker, got:\n{stderr}"
     );
 }
 

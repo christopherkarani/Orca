@@ -9,6 +9,7 @@ const help = @import("help.zig");
 const tui = @import("../tui/render.zig");
 const terminal_text = @import("../tui/terminal_text.zig");
 const suggestions = @import("suggestions.zig");
+const file_intercept = @import("../intercept/files.zig");
 
 // Maximum JSON payload size to prevent memory exhaustion from hostile hosts.
 const max_payload_len = 256 * 1024; // 256 KiB
@@ -175,7 +176,7 @@ fn decideCommandWithPolicy(
     defer loaded.deinit();
 
     // Evaluate decision
-    var result = evaluateDecision(allocator, loaded.innerPtr(), kind, parsed.value, ci_mode) catch |err| {
+    var result = evaluateDecision(io, allocator, loaded.innerPtr(), kind, parsed.value, ci_mode, root) catch |err| {
         try stderr.print("orca decide: evaluation failed: {s}\n", .{@errorName(err)});
         return exit_codes.general;
     };
@@ -283,11 +284,13 @@ const RedactionEntry = struct {
 };
 
 fn evaluateDecision(
+    io: std.Io,
     allocator: std.mem.Allocator,
     policy_value: *const policy.schema.Policy,
     kind: DecisionKind,
     payload: std.json.Value,
     ci_mode: bool,
+    workspace_root: []const u8,
 ) !DecisionOutput {
     var redactions: std.ArrayList(RedactionEntry) = .empty;
 
@@ -319,8 +322,13 @@ fn evaluateDecision(
 
             const explain_kind: policy.explain.ExplainKind = if (std.mem.eql(u8, operation, "write")) .file_write else .file_read;
             const category_text = if (std.mem.eql(u8, operation, "write")) "file.write" else "file.read";
+            const policy_path = normalizeFilePolicyPath(io, allocator, workspace_root, path) catch |err| switch (err) {
+                error.OutOfMemory => return err,
+                else => return buildFileNormalizationBlock(allocator, category_text),
+            };
+            defer allocator.free(policy_path);
 
-            const evaluation = try core_api.explainAction(allocator, @ptrCast(policy_value), explain_kind, path);
+            const evaluation = try core_api.explainAction(allocator, @ptrCast(policy_value), explain_kind, policy_path);
             defer evaluation.deinit(allocator);
 
             const decision = PluginDecision.fromDecisionResult(evaluation.decision.result, ci_mode);
@@ -404,6 +412,71 @@ fn evaluateDecision(
             };
         },
     }
+}
+
+fn buildFileNormalizationBlock(allocator: std.mem.Allocator, category: []const u8) !DecisionOutput {
+    const owned_category = try allocator.dupe(u8, category);
+    errdefer allocator.free(owned_category);
+    const reason = try allocator.dupe(u8, "file access denied: path resolves outside workspace or through a symlink escape");
+    errdefer allocator.free(reason);
+    const rule = try std.fmt.allocPrint(allocator, "builtin.files.{s}.deny[outside_workspace]", .{
+        if (std.mem.eql(u8, category, "file.write")) "write" else "read",
+    });
+    errdefer allocator.free(rule);
+    const message = try buildMessage(allocator, .block, category);
+    errdefer allocator.free(message);
+    return .{
+        .decision = .block,
+        .risk = .critical,
+        .category = owned_category,
+        .reason = reason,
+        .rule = rule,
+        .message = message,
+        .redactions = try allocator.alloc(RedactionEntry, 0),
+    };
+}
+
+/// Policy file rules are workspace-relative, while host adapters commonly emit
+/// absolute paths. Normalize an absolute target inside the selected workspace
+/// to the same `./relative` form as a direct CLI caller. Absolute paths outside
+/// the workspace stay absolute so home/system rules retain their semantics.
+fn normalizeFilePolicyPath(io: std.Io, allocator: std.mem.Allocator, workspace_root_raw: []const u8, raw_path: []const u8) ![]u8 {
+    const lexical = try normalizeFilePolicyPathLexical(allocator, workspace_root_raw, raw_path);
+    if (!std.mem.startsWith(u8, lexical, "./")) return lexical;
+    defer allocator.free(lexical);
+
+    var normalized = try file_intercept.normalizePath(io, allocator, workspace_root_raw, raw_path);
+    defer normalized.deinit(allocator);
+    return allocator.dupe(u8, normalized.policy_path);
+}
+
+fn normalizeFilePolicyPathLexical(allocator: std.mem.Allocator, workspace_root_raw: []const u8, raw_path: []const u8) ![]u8 {
+    if (!std.fs.path.isAbsolute(workspace_root_raw)) {
+        return allocator.dupe(u8, raw_path);
+    }
+
+    const workspace_root = try std.fs.path.resolve(allocator, &.{workspace_root_raw});
+    defer allocator.free(workspace_root);
+    const absolute_path = if (std.fs.path.isAbsolute(raw_path))
+        try std.fs.path.resolve(allocator, &.{raw_path})
+    else
+        try std.fs.path.resolve(allocator, &.{ workspace_root, raw_path });
+    defer allocator.free(absolute_path);
+
+    if (std.mem.eql(u8, absolute_path, workspace_root)) return allocator.dupe(u8, ".");
+    if (absolute_path.len <= workspace_root.len or
+        !std.mem.eql(u8, absolute_path[0..workspace_root.len], workspace_root) or
+        (absolute_path[workspace_root.len] != '/' and absolute_path[workspace_root.len] != '\\'))
+    {
+        return allocator.dupe(u8, absolute_path);
+    }
+
+    const relative = absolute_path[workspace_root.len + 1 ..];
+    const normalized = try std.fmt.allocPrint(allocator, "./{s}", .{relative});
+    for (normalized) |*char| {
+        if (char.* == '\\') char.* = '/';
+    }
+    return normalized;
 }
 
 fn buildMessage(allocator: std.mem.Allocator, decision: PluginDecision, category: []const u8) ![]const u8 {
@@ -766,6 +839,200 @@ test "decide file write to protected path returns block" {
     const output = stdout_writer.buffered();
     try std.testing.expect(std.mem.indexOf(u8, output, "\"decision\": \"block\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, output, "\"category\": \"file.write\"") != null);
+}
+
+test "decide file normalizes absolute workspace paths to policy-relative targets" {
+    const allocator = std.testing.allocator;
+    const root = "/workspace/project";
+
+    const policy_relative = try normalizeFilePolicyPathLexical(allocator, root, "/workspace/project/.orca/policy.yaml");
+    defer allocator.free(policy_relative);
+    try std.testing.expectEqualStrings("./.orca/policy.yaml", policy_relative);
+
+    const git_relative = try normalizeFilePolicyPathLexical(allocator, root, "/workspace/project/.git/config");
+    defer allocator.free(git_relative);
+    try std.testing.expectEqualStrings("./.git/config", git_relative);
+
+    const env_relative = try normalizeFilePolicyPathLexical(allocator, root, "/workspace/project/.env");
+    defer allocator.free(env_relative);
+    try std.testing.expectEqualStrings("./.env", env_relative);
+
+    const absolute_dot_segment = try normalizeFilePolicyPathLexical(allocator, root, "/workspace/project/src/../.env");
+    defer allocator.free(absolute_dot_segment);
+    try std.testing.expectEqualStrings("./.env", absolute_dot_segment);
+
+    const protected_dot_segment = try normalizeFilePolicyPathLexical(allocator, root, "/workspace/project/.orca/../.env");
+    defer allocator.free(protected_dot_segment);
+    try std.testing.expectEqualStrings("./.env", protected_dot_segment);
+
+    const relative_dot_segment = try normalizeFilePolicyPathLexical(allocator, root, "src/../.env");
+    defer allocator.free(relative_dot_segment);
+    try std.testing.expectEqualStrings("./.env", relative_dot_segment);
+
+    const allowed_relative = try normalizeFilePolicyPathLexical(allocator, root, "/workspace/project/src/main.zig");
+    defer allocator.free(allowed_relative);
+    try std.testing.expectEqualStrings("./src/main.zig", allowed_relative);
+
+    const outside = try normalizeFilePolicyPathLexical(allocator, root, "/tmp/outside.txt");
+    defer allocator.free(outside);
+    try std.testing.expectEqualStrings("/tmp/outside.txt", outside);
+
+    const escaped = try normalizeFilePolicyPathLexical(allocator, root, "/workspace/project/../outside.txt");
+    defer allocator.free(escaped);
+    try std.testing.expectEqualStrings("/workspace/outside.txt", escaped);
+}
+
+test "decide file resolves symlinks before policy evaluation" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try tmp.dir.createDir(std.testing.io, "workspace", .default_dir);
+    try tmp.dir.writeFile(std.testing.io, .{ .sub_path = "workspace/.env", .data = "synthetic=true\n" });
+
+    const root = try tmp.dir.realPathFileAlloc(std.testing.io, "workspace", std.testing.allocator);
+    defer std.testing.allocator.free(root);
+    const protected_path = try std.fs.path.join(std.testing.allocator, &.{ root, ".env" });
+    defer std.testing.allocator.free(protected_path);
+    const alias_path = try std.fs.path.join(std.testing.allocator, &.{ root, "config-link" });
+    defer std.testing.allocator.free(alias_path);
+    std.Io.Dir.cwd().symLink(std.testing.io, protected_path, alias_path, .{}) catch |err| switch (err) {
+        error.PermissionDenied => return error.SkipZigTest,
+        else => return err,
+    };
+
+    const normalized = try normalizeFilePolicyPath(std.testing.io, std.testing.allocator, root, alias_path);
+    defer std.testing.allocator.free(normalized);
+    try std.testing.expectEqualStrings("./.env", normalized);
+}
+
+test "decide file returns a structured block for workspace symlink escapes" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try tmp.dir.createDir(std.testing.io, "workspace", .default_dir);
+    try tmp.dir.writeFile(std.testing.io, .{ .sub_path = "outside.txt", .data = "synthetic\n" });
+
+    const root = try tmp.dir.realPathFileAlloc(std.testing.io, "workspace", std.testing.allocator);
+    defer std.testing.allocator.free(root);
+    const outside_path = try tmp.dir.realPathFileAlloc(std.testing.io, "outside.txt", std.testing.allocator);
+    defer std.testing.allocator.free(outside_path);
+    const alias_path = try std.fs.path.join(std.testing.allocator, &.{ root, "outside-link" });
+    defer std.testing.allocator.free(alias_path);
+    std.Io.Dir.cwd().symLink(std.testing.io, outside_path, alias_path, .{}) catch |err| switch (err) {
+        error.PermissionDenied => return error.SkipZigTest,
+        else => return err,
+    };
+
+    const policy_path = try std.Io.Dir.cwd().realPathFileAlloc(
+        std.testing.io,
+        "policies/presets/generic-agent.yaml",
+        std.testing.allocator,
+    );
+    defer std.testing.allocator.free(policy_path);
+    var loaded = try core_api.discoverPolicy(std.testing.io, std.testing.allocator, policy_path, root);
+    defer loaded.deinit();
+    const payload_text = try std.fmt.allocPrint(std.testing.allocator, "{{\"path\":\"{s}\",\"operation\":\"read\"}}", .{alias_path});
+    defer std.testing.allocator.free(payload_text);
+    var parsed = try std.json.parseFromSlice(std.json.Value, std.testing.allocator, payload_text, .{});
+    defer parsed.deinit();
+
+    var result = try evaluateDecision(
+        std.testing.io,
+        std.testing.allocator,
+        loaded.innerPtr(),
+        .file,
+        parsed.value,
+        true,
+        root,
+    );
+    defer result.deinit(std.testing.allocator);
+    try std.testing.expectEqual(PluginDecision.block, result.decision);
+    try std.testing.expectEqual(exit_codes.denial, result.decision.exitCode());
+    try std.testing.expectEqualStrings("file.read", result.category);
+    try std.testing.expectEqualStrings("builtin.files.read.deny[outside_workspace]", result.rule.?);
+
+    var output_buffer: [1024]u8 = undefined;
+    var output: std.Io.Writer = .fixed(&output_buffer);
+    try writeDecisionJson(&output, result);
+    try std.testing.expect(std.mem.indexOf(u8, output.buffered(), "\"decision\": \"block\"") != null);
+}
+
+test "decide file CLI gives workspace-relative and absolute paths identical decisions" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try tmp.dir.writeFile(std.testing.io, .{
+        .sub_path = "policy.yaml",
+        .data =
+        \\version: 1
+        \\mode: trusted
+        \\files:
+        \\  read:
+        \\    allow:
+        \\      - "./**"
+        \\    deny:
+        \\      - "./.env"
+        \\  write:
+        \\    allow:
+        \\      - "./**"
+        \\    deny:
+        \\      - "./.orca/**"
+        \\      - "./.git/**"
+        ,
+    });
+    const policy_path = try tmp.dir.realPathFileAlloc(std.testing.io, "policy.yaml", std.testing.allocator);
+    defer std.testing.allocator.free(policy_path);
+    const root = try std.Io.Dir.cwd().realPathFileAlloc(std.testing.io, ".", std.testing.allocator);
+    defer std.testing.allocator.free(root);
+
+    const cases = [_]struct {
+        relative: []const u8,
+        operation: []const u8,
+        expected: u8,
+    }{
+        .{ .relative = ".orca/policy.yaml", .operation = "write", .expected = exit_codes.denial },
+        .{ .relative = ".git/config", .operation = "write", .expected = exit_codes.denial },
+        .{ .relative = ".env", .operation = "read", .expected = exit_codes.denial },
+        .{ .relative = "src/../.env", .operation = "read", .expected = exit_codes.denial },
+        .{ .relative = ".orca/../.env", .operation = "read", .expected = exit_codes.denial },
+        .{ .relative = "README.md", .operation = "read", .expected = exit_codes.success },
+    };
+
+    for (cases) |case| {
+        const absolute = try std.fs.path.join(std.testing.allocator, &.{ root, case.relative });
+        defer std.testing.allocator.free(absolute);
+        const relative_json = try std.fmt.allocPrint(std.testing.allocator, "{{\"path\":\"{s}\",\"operation\":\"{s}\"}}", .{ case.relative, case.operation });
+        defer std.testing.allocator.free(relative_json);
+        const absolute_json = try std.fmt.allocPrint(std.testing.allocator, "{{\"path\":\"{s}\",\"operation\":\"{s}\"}}", .{ absolute, case.operation });
+        defer std.testing.allocator.free(absolute_json);
+
+        var relative_stdout_buf: [2048]u8 = undefined;
+        var relative_stderr_buf: [512]u8 = undefined;
+        var relative_stdout: std.Io.Writer = .fixed(&relative_stdout_buf);
+        var relative_stderr: std.Io.Writer = .fixed(&relative_stderr_buf);
+        const relative_code = try decideCommandWithPolicy(
+            std.testing.io,
+            .file,
+            &.{ "--json", relative_json },
+            &relative_stdout,
+            &relative_stderr,
+            policy_path,
+        );
+
+        var absolute_stdout_buf: [2048]u8 = undefined;
+        var absolute_stderr_buf: [512]u8 = undefined;
+        var absolute_stdout: std.Io.Writer = .fixed(&absolute_stdout_buf);
+        var absolute_stderr: std.Io.Writer = .fixed(&absolute_stderr_buf);
+        const absolute_code = try decideCommandWithPolicy(
+            std.testing.io,
+            .file,
+            &.{ "--json", absolute_json },
+            &absolute_stdout,
+            &absolute_stderr,
+            policy_path,
+        );
+
+        try std.testing.expectEqual(case.expected, relative_code);
+        try std.testing.expectEqual(relative_code, absolute_code);
+        try std.testing.expectEqualStrings(relative_stdout.buffered(), absolute_stdout.buffered());
+    }
 }
 
 test "decide file rejects unknown operation instead of downgrading to read" {

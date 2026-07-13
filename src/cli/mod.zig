@@ -78,6 +78,10 @@ test {
     _ = status;
     _ = history;
     _ = danger_confirmation;
+    // Surfaces touched by production-readiness hardening (M1–M4).
+    _ = completions;
+    _ = dashboard_command;
+    _ = feed_writer;
 }
 
 pub const version = build_options.version;

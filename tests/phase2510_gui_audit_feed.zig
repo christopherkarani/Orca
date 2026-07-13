@@ -91,7 +91,7 @@ test "phase2510 run deny feed record is rust-backed with pack metadata" {
     try std.testing.expectEqualStrings("rust-daemon", loaded[loaded.len - 1].record.decision_source);
     try std.testing.expectEqualStrings("run", loaded[loaded.len - 1].record.event_source);
     try std.testing.expectEqualStrings("deny", loaded[loaded.len - 1].record.decision);
-    try std.testing.expectEqualStrings("git", loaded[loaded.len - 1].record.pack_id.?);
+    try std.testing.expectEqualStrings("core.filesystem", loaded[loaded.len - 1].record.pack_id.?);
     try std.testing.expectEqualStrings("critical", loaded[loaded.len - 1].record.severity.?);
     try std.testing.expect(std.mem.indexOf(u8, loaded[loaded.len - 1].raw, fake_secret) == null);
     try std.testing.expect(std.mem.indexOf(u8, loaded[loaded.len - 1].raw, "matched_text_preview") == null);

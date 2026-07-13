@@ -1,12 +1,15 @@
 # @orca-sec/pi-orca
 
-Official Orca integration package for Pi. It intercepts Pi `bash` tool calls and evaluates shell commands with:
+Official Orca integration package for Pi. It intercepts built-in Pi tool calls:
 
-```bash
-orca evaluate --json --stdin
-```
+| Tool | Path |
+|------|------|
+| `bash` | `orca evaluate --json --stdin` (daemon shell Evaluate; fail-closed when unavailable) |
+| `write` / `edit` | `orca decide file` with `operation: write` (Zig `files.write`; path only) |
+| `read` | `orca decide file` with `operation: read` (Zig `files.read`; path only) |
+| `grep` / `find` / `ls` | Root preflight via `orca decide file`, followed by explicit per-call approval because descendant files are not individually evaluated |
 
-Safe commands proceed. Denied commands are blocked before Pi runs them. Orca errors follow the configured unavailable-mode policy.
+Safe actions proceed. Denied actions are blocked before Pi runs them. Orca errors follow the configured unavailable-mode policy. Custom/MCP tools are **not** intercepted. Tool hooks alone do **not** provide process-level env isolation, network policy, or secretless execution — use `orca run` for that.
 
 It also provides **Pi-only** credential capture from chat input: when you paste an API key into a prompt, the extension can store it under `.orca/dev-secrets.env` (with consent) and rewrite the prompt so the model never receives the raw secret. This is not a multi-host feature; Claude, Codex, OpenCode, Hermes, and OpenClaw adapters are out of scope for this package.
 
@@ -32,7 +35,18 @@ pi -e ./orca-pi
 
 ## First Run
 
-No per-session command is required. On session start, the extension quietly creates `.orca/policy.yaml` with the `generic-agent` preset when it is missing, then probes Orca health. The first protected bash call waits for this bootstrap while Pi startup remains non-blocking.
+1. Install the package: `pi install npm:@orca-sec/pi-orca` (creates workspace policy via extension bootstrap).
+2. **Recommended launch** for process-level env/network/secretless:
+
+```bash
+orca run -- pi
+# or:
+orca run --secretless --network ask -- pi
+```
+
+Extension hooks alone protect tool calls; they do **not** wrap the Pi process for env/network/secretless. Prefer `orca run` whenever you need those controls.
+
+No per-session command is required after install. On session start, the extension quietly creates `.orca/policy.yaml` with the `generic-agent` preset when it is missing, then probes Orca health. The first protected tool call waits for this bootstrap while Pi startup remains non-blocking.
 
 Run `/orca-setup` to repeat the Pi-only policy and health setup manually. It does
 not run `orca start` or install plugins for other agent hosts.
@@ -44,12 +58,15 @@ remove policies, or start/stop other host plugins.
 
 ## Behavior
 
-- Non-`bash` tool calls are ignored.
-- `bash` tool calls are sent to Orca as JSON over stdin.
-- Orca `allow` lets the tool proceed.
-- Orca `deny` renders an inline Orca decision card in the conversation and
-  returns `{ block: true, reason }` to Pi before the command can run.
-- Orca `error`, malformed JSON, spawn failures, or timeouts use the configured unavailable mode.
+- Policy-protected built-in tools: `bash`, `write`, `edit`, and direct `read`. `grep`, `find`, and `ls` are approval-gated after root preflight because a root-only check cannot prove every descendant safe. Custom/MCP tools are not intercepted.
+- `bash` is sent to `orca evaluate` as JSON over stdin (daemon shell path; `source.host=pi`).
+- `write` / `edit` send the resolved path to `orca decide file` with `operation: write` (Zig policy; path only — content is not sent).
+- `read` requires a non-empty `path` and uses `operation: read`.
+- `grep` / `find` / `ls` preflight the tool's `path` (or cwd) as `operation: read`; even an allow requires explicit user approval, and noninteractive sessions block, because descendant files are not individually evaluated.
+- Orca allow lets the tool proceed.
+- Orca deny/block renders an inline Orca decision card (includes **rule id** when the policy match returns one) and returns `{ block: true, reason }` to Pi before the action can run.
+- Orca error, malformed JSON, spawn failures, or timeouts use the configured unavailable mode (same fail-closed modes for bash and file tools).
+- Session bypass (`/orca-stop`, `/orca-mode bypass on`) applies to all protected tools for the session.
 
 ### Credential capture from prompt (Pi only)
 
@@ -84,13 +101,15 @@ Name inference:
 - On store success, the extension sets `process.env[NAME]` for the **current Pi/extension Node process only**. Child tool environments are not automatically rewritten. Load `.orca/dev-secrets.env` into the shell before launching Pi, or use an Orca secretless/env-broker workflow when you need tools to resolve credentials without pasting them into chat.
 - Defense in depth: the `context` hook scrubs any remaining secret-like spans in user messages before each LLM call (no re-prompt to store on history).
 
-Unavailable modes:
+Unavailable modes (`ORCA_PI_MODE`):
 
-- `auto`: interactive Pi sessions ask; noninteractive/json/print sessions block.
+- `auto` (**default**): interactive Pi sessions ask; noninteractive/json/print sessions block. Does not silently fail open.
 - `ask`: prompt with Block, Run once anyway, Disable Orca for this session, or Show repair instructions.
 - `noninteractive-block`: block and show repair guidance.
-- `strict`: always block on Orca errors.
-- `allow-with-warning`: allow but warn that Orca is degraded.
+- `strict`: always block on Orca errors, and disables interactive "Run once anyway" by default. **Recommended for production.**
+- `allow-with-warning`: allow but warn that Orca is degraded. **Never the default.**
+
+Once-bypass (`Run once anyway`) is an interactive escape hatch. It is disabled when `ORCA_PI_MODE=strict` (unless `ORCA_PI_ALLOW_ONCE=true`) or when `ORCA_PI_ALLOW_ONCE=false`. Every once-bypass emits a redacted `orca.audit` transcript event (`event: orca_once_bypass`) and a warning notification. If the host cannot record that audit event, Orca keeps the action blocked.
 
 Change mode in Pi:
 
@@ -149,7 +168,7 @@ Command unexpectedly blocked:
 - Session bypass is keyed to the Pi session id when Pi exposes one.
 - Malformed `bash` tool-call payloads fail closed.
 - Child process output is bounded before parsing.
-- Non-bash tools are not blocked by the evaluate path.
+- Unlisted tools are not blocked by the evaluate/decide paths.
 - Credential capture never writes raw secrets into `policy.yaml`, decision cards, or notify text.
 - Credential capture never auto-stores without interactive consent.
 - Capture is **Pi only**; other agent hosts are not covered by this package.
@@ -168,7 +187,9 @@ It targets Orca CLI builds exposing `orca evaluate --json --stdin` with schema v
   succeeds. Validate slash commands in an interactive Pi session or via unit
   tests.
 - Session bypass is in-memory only and clears when the Pi session ends or reloads.
-- Only Pi `bash` tool calls are evaluated. Other tools (for example `read`) are not intercepted.
+- Built-in Pi `bash`, `write`, `edit`, and direct `read` are policy-protected. `grep`, `find`, and `ls` require explicit approval after root preflight; custom/MCP tools are not intercepted.
+- File protection uses Zig policy.yaml (`files.read` / `files.write`); it is not the same engine as daemon pack rules for shell.
+- Process-level env isolation, network policy, and secretless require `orca run [--secretless] [--network …] -- pi …`; the extension alone does not provide them.
 - Pi hosts without the transcript `sendMessage` API fall back to a docked deny
   card. Supported Pi versions use the inline conversation surface.
 - **Credential capture is Pi only.** Other hosts (Claude, Codex, OpenCode, Hermes, OpenClaw) are not implemented here.

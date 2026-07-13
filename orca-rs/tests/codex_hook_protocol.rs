@@ -723,8 +723,8 @@ fn codex_warn_path_exits_zero_with_stderr_warning() {
         "Codex warn must produce non-empty stderr\n{outcome}"
     );
     assert!(
-        outcome.stderr_contains("WARNING") || outcome.stderr_contains("warn"),
-        "stderr must contain warning text\n{outcome}"
+        outcome.stderr_contains("ORCA ASK:"),
+        "stderr must contain the host-visible ask marker\n{outcome}"
     );
 }
 
@@ -990,8 +990,8 @@ fn claude_warn_path_exits_zero_with_ask_json() {
         hso["permissionDecisionReason"]
             .as_str()
             .unwrap_or("")
-            .contains("warn"),
-        "Claude warn reason must mention 'warn'\n{outcome}"
+            .starts_with("ORCA ASK:"),
+        "Claude warn reason must use the host-visible ask marker\n{outcome}"
     );
 
     // stderr should have a human-visible warning
@@ -1000,8 +1000,8 @@ fn claude_warn_path_exits_zero_with_ask_json() {
         "Claude warn stderr must be non-empty\n{outcome}"
     );
     assert!(
-        outcome.stderr_contains("WARNING") || outcome.stderr_contains("warn"),
-        "stderr must contain warning text\n{outcome}"
+        outcome.stderr_contains("ORCA ASK:"),
+        "stderr must contain the host-visible ask marker\n{outcome}"
     );
 }
 
@@ -1043,8 +1043,8 @@ fn copilot_warn_path_exits_zero_with_ask_json_and_continue_true() {
         json["permissionDecisionReason"]
             .as_str()
             .unwrap_or("")
-            .contains("warn"),
-        "Copilot warn reason must mention 'warn'\n{outcome}"
+            .starts_with("ORCA ASK:"),
+        "Copilot warn reason must use the host-visible ask marker\n{outcome}"
     );
 }
 
