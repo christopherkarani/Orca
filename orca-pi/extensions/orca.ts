@@ -288,6 +288,34 @@ const POLICY_ASK_OPTIONS = [
 	"Disable Orca for this Pi session",
 	"Show policy reason",
 ] as const;
+const ONCE_OPTION = "Run once anyway";
+
+/**
+ * Whether interactive prompts may offer "Run once anyway".
+ * - `ORCA_PI_ALLOW_ONCE=false|0|no` disables always
+ * - `ORCA_PI_MODE=strict` disables by default (production hardening)
+ * - `ORCA_PI_ALLOW_ONCE=true` re-enables even under strict
+ */
+export function allowOnceBypassEnabled(
+	env: NodeJS.ProcessEnv = process.env,
+	unavailableMode?: UnavailableMode,
+): boolean {
+	const raw = env.ORCA_PI_ALLOW_ONCE?.trim().toLowerCase();
+	if (raw === "false" || raw === "0" || raw === "no") return false;
+	if (raw === "true" || raw === "1" || raw === "yes") return true;
+	if (unavailableMode === "strict") return false;
+	return true;
+}
+
+export function askOptionsFor(
+	kind: "policy" | "unavailable",
+	allowOnce: boolean,
+): string[] {
+	const base =
+		kind === "policy" ? [...POLICY_ASK_OPTIONS] : [...ASK_OPTIONS];
+	if (allowOnce) return base;
+	return base.filter((option) => option !== ONCE_OPTION);
+}
 
 const DECIDE_EXIT_CODE = {
 	allow: 0,
@@ -702,6 +730,7 @@ export function installOrcaExtension(
 					toolLabel,
 					unavailableMode,
 					disableSession,
+					runtime.env,
 				);
 			}
 
@@ -732,6 +761,7 @@ export function installOrcaExtension(
 					ctx,
 					toolLabel,
 					{ disableSession },
+					allowOnceBypassEnabled(runtime.env, unavailableMode),
 				);
 			}
 			return applyToolDecision(
@@ -741,6 +771,7 @@ export function installOrcaExtension(
 				toolLabel,
 				unavailableMode,
 				disableSession,
+				runtime.env,
 			);
 		},
 	);
@@ -877,6 +908,7 @@ async function applyToolDecision(
 	toolLabel: string,
 	unavailableMode: UnavailableMode,
 	disableSession: () => void,
+	env: NodeJS.ProcessEnv = process.env,
 ): Promise<ToolCallResult> {
 	if (decision.kind === "allow") {
 		clearOrcaWidget(ctx);
@@ -897,9 +929,14 @@ async function applyToolDecision(
 		return undefined;
 	}
 	if (decision.kind === "ask") {
-		return handlePolicyAsk(decision.reason, pi, ctx, toolLabel, {
-			disableSession,
-		});
+		return handlePolicyAsk(
+			decision.reason,
+			pi,
+			ctx,
+			toolLabel,
+			{ disableSession },
+			allowOnceBypassEnabled(env, unavailableMode),
+		);
 	}
 	return handleUnavailable(
 		decision.reason,
@@ -908,6 +945,36 @@ async function applyToolDecision(
 		resolveUnavailableMode(unavailableMode, ctx),
 		{ disableSession },
 		toolLabel,
+		allowOnceBypassEnabled(env, unavailableMode),
+	);
+}
+
+function recordOnceBypass(
+	pi: PiAPI,
+	ctx: PiContext,
+	toolLabel: string,
+	source: "policy" | "unavailable",
+): void {
+	const details = {
+		event: "orca_once_bypass",
+		tool: toolLabel,
+		source,
+		session_id: sessionKey(ctx),
+		cwd: resolveCwd(ctx.cwd),
+	};
+	notify(
+		ctx,
+		`Orca audit: once-bypass used for ${toolLabel} (${source}).`,
+		"warning",
+	);
+	pi.sendMessage?.(
+		{
+			customType: "orca.audit",
+			content: `orca once-bypass: ${toolLabel} (${source})`,
+			display: false,
+			details,
+		},
+		{ triggerTurn: false },
 	);
 }
 
@@ -917,18 +984,33 @@ async function handlePolicyAsk(
 	ctx: PiContext,
 	toolLabel: string,
 	actions: { disableSession: () => void },
+	allowOnce: boolean,
 ): Promise<ToolCallResult> {
 	const summary = sanitizeVisibleText(reason);
 	const card = buildOrcaAskCard(summary);
 	showOrcaWidget(ctx, card);
 	const choice = await ctx.ui?.select?.(
 		"ORCA needs your decision",
-		[...POLICY_ASK_OPTIONS],
+		askOptionsFor("policy", allowOnce),
 		{ timeout: 60_000, signal: ctx.signal },
 	);
 	switch (choice) {
 		case "Run once anyway":
+			if (!allowOnce) {
+				clearOrcaWidget(ctx);
+				return block(
+					formatOrcaDecisionSummary(
+						{
+							variant: "block",
+							title: "ORCA BLOCKED",
+							summary,
+						},
+						toolLabel,
+					),
+				);
+			}
 			clearOrcaWidget(ctx);
+			recordOnceBypass(pi, ctx, toolLabel, "policy");
 			notify(
 				ctx,
 				`Allowed this ${toolLabel} action once without Orca evaluation.`,
@@ -980,6 +1062,7 @@ async function handleUnavailable(
 	mode: EffectiveUnavailableMode,
 	actions: { disableSession: () => void },
 	toolLabel = "bash",
+	allowOnce = true,
 ): Promise<ToolCallResult> {
 	const repair = repairMessage(reason, toolLabel);
 	if (mode === "allow-with-warning") {
@@ -1007,12 +1090,26 @@ async function handleUnavailable(
 	showOrcaWidget(ctx, card);
 	const choice = await ctx.ui?.select?.(
 		"ORCA needs your decision",
-		[...ASK_OPTIONS],
+		askOptionsFor("unavailable", allowOnce),
 		{ timeout: 60_000, signal: ctx.signal },
 	);
 	switch (choice) {
 		case "Run once anyway":
+			if (!allowOnce) {
+				clearOrcaWidget(ctx);
+				return block(
+					formatOrcaDecisionSummary(
+						{
+							variant: "block",
+							title: "ORCA BLOCKED",
+							summary: repair,
+						},
+						toolLabel,
+					),
+				);
+			}
 			clearOrcaWidget(ctx);
+			recordOnceBypass(pi, ctx, toolLabel, "unavailable");
 			notify(
 				ctx,
 				`Allowed this ${toolLabel} action once without Orca evaluation.`,
@@ -1504,6 +1601,7 @@ function modeSummary(mode: UnavailableMode, sessionBypass: boolean): string {
 		`Orca Pi mode: ${mode}`,
 		`Session bypass: ${sessionBypass ? "on" : "off"}`,
 		`Coverage: ${piCoverageLabel()}`,
+		`Once-bypass: ${allowOnceBypassEnabled(process.env, mode) ? "allowed" : "disabled"} (ORCA_PI_ALLOW_ONCE; strict disables by default)`,
 		"Default ORCA_PI_MODE=auto (interactive ask; noninteractive block). Production: prefer strict. allow-with-warning is never the default.",
 		"Modes: auto, ask, noninteractive-block, strict, allow-with-warning.",
 		"Process-level env/network/secretless requires: orca run [--secretless] [--network …] -- pi …",

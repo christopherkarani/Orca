@@ -50,6 +50,8 @@ fn writePublicCommands(writer: anytype) !void {
     }
 }
 
+/// Extract long flags from help text. Soft-caps at `flags.len` — extras are dropped
+/// rather than panicking or overflowing the fixed buffer.
 fn appendLongFlags(text: []const u8, flags: *[max_command_flags][]const u8, len: *usize) void {
     var cursor: usize = 0;
     while (std.mem.indexOfPos(u8, text, cursor, "--")) |start| {
@@ -62,7 +64,7 @@ fn appendLongFlags(text: []const u8, flags: *[max_command_flags][]const u8, len:
         for (flags[0..len.*]) |existing| {
             if (std.mem.eql(u8, candidate, existing)) break;
         } else {
-            std.debug.assert(len.* < flags.len);
+            if (len.* >= flags.len) return; // soft-cap: keep first N unique flags
             flags[len.*] = candidate;
             len.* += 1;
         }
@@ -253,6 +255,23 @@ fn writePowerShell(writer: anytype) !void {
         \\}
         \\
     );
+}
+
+test "appendLongFlags soft-caps without panic or overflow" {
+    var buffer: [max_command_flags][]const u8 = undefined;
+    var len: usize = 0;
+
+    // Build a synthetic help string with more unique flags than the fixed buffer.
+    var text_aw: std.Io.Writer.Allocating = .init(std.testing.allocator);
+    defer text_aw.deinit();
+    var index: usize = 0;
+    while (index < max_command_flags + 32) : (index += 1) {
+        try text_aw.writer.print(" --flag{d}", .{index});
+    }
+    appendLongFlags(text_aw.writer.buffered(), &buffer, &len);
+    try std.testing.expectEqual(@as(usize, max_command_flags), len);
+    try std.testing.expectEqualStrings("--flag0", buffer[0]);
+    try std.testing.expectEqualStrings("--flag63", buffer[max_command_flags - 1]);
 }
 
 test "completions output is non-empty for supported shells" {

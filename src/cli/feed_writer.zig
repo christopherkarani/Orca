@@ -367,6 +367,59 @@ fn loadGlobalRecentFilteredWithHealth(
     };
 }
 
+/// Bounded recent-record ring: O(1) eviction of oldest entries when full.
+const FeedRecordRing = struct {
+    items: []LoadedFeedRecord,
+    start: usize = 0,
+    len: usize = 0,
+
+    fn init(allocator: std.mem.Allocator, capacity: usize) !FeedRecordRing {
+        const items = try allocator.alloc(LoadedFeedRecord, capacity);
+        return .{ .items = items };
+    }
+
+    fn deinit(self: *FeedRecordRing, allocator: std.mem.Allocator) void {
+        if (self.items.len == 0) {
+            self.* = undefined;
+            return;
+        }
+        var index: usize = 0;
+        while (index < self.len) : (index += 1) {
+            self.items[(self.start + index) % self.items.len].deinit(allocator);
+        }
+        allocator.free(self.items);
+        self.* = undefined;
+    }
+
+    fn push(self: *FeedRecordRing, allocator: std.mem.Allocator, item: LoadedFeedRecord) void {
+        if (self.items.len == 0) {
+            var discarded = item;
+            discarded.deinit(allocator);
+            return;
+        }
+        if (self.len == self.items.len) {
+            self.items[self.start].deinit(allocator);
+            self.start = (self.start + 1) % self.items.len;
+            self.len -= 1;
+        }
+        const slot = (self.start + self.len) % self.items.len;
+        self.items[slot] = item;
+        self.len += 1;
+    }
+
+    fn toOwnedSlice(self: *FeedRecordRing, allocator: std.mem.Allocator) ![]LoadedFeedRecord {
+        const out = try allocator.alloc(LoadedFeedRecord, self.len);
+        var index: usize = 0;
+        while (index < self.len) : (index += 1) {
+            out[index] = self.items[(self.start + index) % self.items.len];
+        }
+        // Transfer ownership of records; free the ring buffer only.
+        allocator.free(self.items);
+        self.* = .{ .items = &.{} };
+        return out;
+    }
+};
+
 fn loadRecentFromPath(
     io: std.Io,
     allocator: std.mem.Allocator,
@@ -395,13 +448,40 @@ fn loadRecentFromPath(
         bounded;
 
     var lines = std.mem.splitScalar(u8, parse_text, '\n');
+    var skipped_lines: usize = if (start > 0) 1 else 0;
+
+    if (max_count) |limit| {
+        var ring = try FeedRecordRing.init(allocator, limit);
+        errdefer ring.deinit(allocator);
+        while (lines.next()) |line| {
+            if (line.len == 0) continue;
+            const owned_line = try allocator.dupe(u8, line);
+            const record = parseFeedRecord(allocator, owned_line, fallback_workspace_root) catch |err| {
+                allocator.free(owned_line);
+                if (err == error.OutOfMemory) return err;
+                skipped_lines += 1;
+                continue;
+            };
+            if (!filter.matches(record)) {
+                allocator.free(owned_line);
+                var discarded = record;
+                discarded.deinit(allocator);
+                continue;
+            }
+            ring.push(allocator, .{ .raw = owned_line, .record = record });
+        }
+        return .{
+            .records = try ring.toOwnedSlice(allocator),
+            .health = if (skipped_lines == 0) .healthy else .degraded,
+            .skipped_lines = skipped_lines,
+        };
+    }
+
     var stack: std.ArrayList(LoadedFeedRecord) = .empty;
     errdefer {
         for (stack.items) |*item| item.deinit(allocator);
         stack.deinit(allocator);
     }
-
-    var skipped_lines: usize = if (start > 0) 1 else 0;
     while (lines.next()) |line| {
         if (line.len == 0) continue;
         const owned_line = try allocator.dupe(u8, line);
@@ -418,14 +498,6 @@ fn loadRecentFromPath(
             continue;
         }
         try stack.append(allocator, .{ .raw = owned_line, .record = record });
-        if (max_count) |limit| {
-            if (stack.items.len > limit) {
-                var discarded = stack.items[0];
-                discarded.deinit(allocator);
-                std.mem.copyForwards(LoadedFeedRecord, stack.items[0 .. stack.items.len - 1], stack.items[1..]);
-                stack.items.len -= 1;
-            }
-        }
     }
 
     return .{
@@ -553,6 +625,56 @@ test "feed writer round-trips rust shell decision without raw command" {
     try std.testing.expectEqualStrings("destructive_rm", loaded[0].record.rule.?);
     try std.testing.expectEqualStrings("shell command (redacted)", loaded[0].record.target_summary);
     try std.testing.expect(std.mem.indexOf(u8, loaded[0].raw, "matched_text_preview") == null);
+}
+
+test "feed record ring retains newest entries with O(1) eviction" {
+    var ring = try FeedRecordRing.init(std.testing.allocator, 2);
+    defer ring.deinit(std.testing.allocator);
+
+    const make = struct {
+        fn record(allocator: std.mem.Allocator, id: []const u8) !LoadedFeedRecord {
+            const raw = try allocator.dupe(u8, id);
+            errdefer allocator.free(raw);
+            return .{
+                .raw = raw,
+                .record = .{
+                    .timestamp = try allocator.dupe(u8, "2026-07-13T00:00:00Z"),
+                    .workspace_root = try allocator.dupe(u8, "/tmp"),
+                    .event_type = try allocator.dupe(u8, "command_denied"),
+                    .decision = try allocator.dupe(u8, "deny"),
+                    .decision_source = try allocator.dupe(u8, "rust-daemon"),
+                    .event_source = try allocator.dupe(u8, "hook"),
+                    .host = null,
+                    .daemon_status = try allocator.dupe(u8, "healthy"),
+                    .pack_id = null,
+                    .rule = null,
+                    .severity = null,
+                    .reason = try allocator.dupe(u8, id),
+                    .remediation = null,
+                    .target_summary = try allocator.dupe(u8, "shell command (redacted)"),
+                    .session_id = null,
+                    .verified = false,
+                },
+            };
+        }
+    }.record;
+
+    ring.push(std.testing.allocator, try make(std.testing.allocator, "a"));
+    ring.push(std.testing.allocator, try make(std.testing.allocator, "b"));
+    ring.push(std.testing.allocator, try make(std.testing.allocator, "c"));
+    try std.testing.expectEqual(@as(usize, 2), ring.len);
+    try std.testing.expectEqualStrings("b", ring.items[ring.start].record.reason);
+    const next = (ring.start + 1) % ring.items.len;
+    try std.testing.expectEqualStrings("c", ring.items[next].record.reason);
+
+    const owned = try ring.toOwnedSlice(std.testing.allocator);
+    defer {
+        for (owned) |*item| item.deinit(std.testing.allocator);
+        std.testing.allocator.free(owned);
+    }
+    try std.testing.expectEqual(@as(usize, 2), owned.len);
+    try std.testing.expectEqualStrings("b", owned[0].record.reason);
+    try std.testing.expectEqualStrings("c", owned[1].record.reason);
 }
 
 test "feed loader accepts legacy records without rule" {

@@ -106,8 +106,10 @@ Unavailable modes (`ORCA_PI_MODE`):
 - `auto` (**default**): interactive Pi sessions ask; noninteractive/json/print sessions block. Does not silently fail open.
 - `ask`: prompt with Block, Run once anyway, Disable Orca for this session, or Show repair instructions.
 - `noninteractive-block`: block and show repair guidance.
-- `strict`: always block on Orca errors. **Recommended for production.**
+- `strict`: always block on Orca errors, and disables interactive "Run once anyway" by default. **Recommended for production.**
 - `allow-with-warning`: allow but warn that Orca is degraded. **Never the default.**
+
+Once-bypass (`Run once anyway`) is an interactive escape hatch. It is disabled when `ORCA_PI_MODE=strict` (unless `ORCA_PI_ALLOW_ONCE=true`) or when `ORCA_PI_ALLOW_ONCE=false`. Every once-bypass emits an `orca.audit` transcript event (`event: orca_once_bypass`) and a warning notification.
 
 Change mode in Pi:
 

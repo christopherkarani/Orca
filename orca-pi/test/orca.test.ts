@@ -11,6 +11,8 @@ import { tmpdir } from "node:os";
 import { resolve } from "node:path";
 import test from "node:test";
 import {
+	allowOnceBypassEnabled,
+	askOptionsFor,
 	buildDecideFilePayload,
 	buildEvaluateRequest,
 	extractDecideFilePath,
@@ -706,7 +708,91 @@ test("file-policy ask uses truthful policy choices", async () => {
 	);
 	assert.equal(result?.block, true);
 	assert.ok(offered.includes("Show policy reason"));
+	assert.ok(offered.includes("Run once anyway"));
 	assert.ok(!offered.some((choice) => /repair|doctor/i.test(choice)));
+});
+
+test("allowOnceBypassEnabled honors env and strict mode", () => {
+	assert.equal(allowOnceBypassEnabled({}), true);
+	assert.equal(allowOnceBypassEnabled({}, "auto"), true);
+	assert.equal(allowOnceBypassEnabled({}, "strict"), false);
+	assert.equal(
+		allowOnceBypassEnabled({ ORCA_PI_ALLOW_ONCE: "false" }, "auto"),
+		false,
+	);
+	assert.equal(
+		allowOnceBypassEnabled({ ORCA_PI_ALLOW_ONCE: "true" }, "strict"),
+		true,
+	);
+	assert.deepEqual(askOptionsFor("policy", false), [
+		"Block",
+		"Disable Orca for this Pi session",
+		"Show policy reason",
+	]);
+	assert.ok(askOptionsFor("unavailable", true).includes("Run once anyway"));
+	assert.ok(!askOptionsFor("unavailable", false).includes("Run once anyway"));
+});
+
+test("strict mode policy ask omits once-bypass", async () => {
+	const { pi, handlers, commands } = makePi();
+	const { spawn } = makeSpawn([
+		{ code: 7, stdout: decideJson("ask", "file.write") },
+	]);
+	installOrcaExtension(pi, { spawn, orcaBin: "orca" });
+	const { ctx } = makeCtx();
+	await commands.get("orca-mode")!.handler("strict", ctx);
+	let offered: string[] = [];
+	(ctx.ui as any).select = async (_title: string, options: string[]) => {
+		offered = options;
+		return "Block";
+	};
+
+	const result = await fireToolCall(
+		handlers.get("tool_call")![0],
+		ctx,
+		"",
+		"write",
+		{ path: "src/main.ts", content: "x" },
+	);
+	assert.equal(result?.block, true);
+	assert.ok(!offered.includes("Run once anyway"));
+	assert.ok(offered.includes("Show policy reason"));
+});
+
+test("once-bypass records an audit event", async () => {
+	const { pi, handlers, messages } = makePi();
+	const { spawn } = makeSpawn([
+		{ code: 7, stdout: decideJson("ask", "file.write") },
+	]);
+	installOrcaExtension(pi, { spawn, orcaBin: "orca" });
+	const { ctx, notifications } = makeCtx();
+	(ctx.ui as any).select = async () => "Run once anyway";
+
+	const result = await fireToolCall(
+		handlers.get("tool_call")![0],
+		ctx,
+		"",
+		"write",
+		{ path: "src/main.ts", content: "x" },
+	);
+	assert.equal(result, undefined);
+	assert.ok(
+		notifications.some((n) => /orca audit: once-bypass/i.test(n.message)),
+	);
+	const audit = messages.find((m) => m.message.customType === "orca.audit");
+	assert.ok(audit);
+	assert.equal(
+		(audit?.message.details as { event?: string } | undefined)?.event,
+		"orca_once_bypass",
+	);
+	assert.equal(
+		(audit?.message.details as { tool?: string } | undefined)?.tool,
+		"write",
+	);
+	assert.equal(
+		(audit?.message.details as { source?: string } | undefined)?.source,
+		"policy",
+	);
 });
 
 test("malformed read tool call fails closed", async () => {
