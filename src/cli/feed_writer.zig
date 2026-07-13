@@ -262,10 +262,20 @@ pub fn loadRecentWithHealth(
     workspace_root: []const u8,
     max_count: usize,
 ) !FeedLoadResult {
+    return loadRecentMatchingWithHealth(io, allocator, workspace_root, max_count, .all);
+}
+
+pub fn loadRecentMatchingWithHealth(
+    io: std.Io,
+    allocator: std.mem.Allocator,
+    workspace_root: []const u8,
+    max_count: usize,
+    filter: FeedRecordFilter,
+) !FeedLoadResult {
     const feed_path = feedPath(allocator, workspace_root) catch return .{ .records = &.{}, .health = .healthy, .skipped_lines = 0 };
     defer allocator.free(feed_path);
 
-    return loadRecentFromPath(io, allocator, feed_path, workspace_root, max_count, .all);
+    return loadRecentFromPath(io, allocator, feed_path, workspace_root, max_count, filter);
 }
 
 pub fn loadRecentTailWithHealth(

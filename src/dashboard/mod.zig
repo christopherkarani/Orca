@@ -544,15 +544,17 @@ fn writeBlockedActionsArrayJson(io: std.Io, allocator: std.mem.Allocator, writer
     try writer.writeByte('[');
     var written: usize = 0;
 
-    const feed_owned: ?[]feed_writer.LoadedFeedRecord = feed_writer.loadRecent(io, allocator, workspace_root, std.math.maxInt(usize)) catch null;
-    defer if (feed_owned) |owned| {
-        for (owned) |*item| item.deinit(allocator);
-        allocator.free(owned);
-    };
-    const feed = feed_owned orelse &[_]feed_writer.LoadedFeedRecord{};
+    var feed_result: ?feed_writer.FeedLoadResult = feed_writer.loadRecentMatchingWithHealth(
+        io,
+        allocator,
+        workspace_root,
+        max_count,
+        .blocked,
+    ) catch null;
+    defer if (feed_result) |*result| result.deinit(allocator);
+    const feed = if (feed_result) |result| result.records else &[_]feed_writer.LoadedFeedRecord{};
     for (feed) |item| {
         if (written >= max_count) break;
-        if (!rust_visibility.isBlockedFeedRecord(item.record)) continue;
         if (written > 0) try writer.writeByte(',');
         try writeFeedRecordJson(writer, item.record);
         written += 1;
@@ -918,6 +920,49 @@ test "dashboard counts Hermes ask tool veto as blocked without losing ask label"
     try std.testing.expect(std.mem.indexOf(u8, out.items, "\"host\":\"hermes\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, out.items, "\"id\":\"hermes-session-1\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, out.items, "\"denied_count\":1") != null);
+}
+
+test "workspace blocked actions returns only the latest bounded denied feed records" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const root = try tmp.dir.realPathFileAlloc(std.testing.io, ".", std.testing.allocator);
+    defer std.testing.allocator.free(root);
+
+    for ([_]struct { decision: []const u8, reason: []const u8 }{
+        .{ .decision = "deny", .reason = "oldest blocked action" },
+        .{ .decision = "allow", .reason = "allowed between blocks" },
+        .{ .decision = "deny", .reason = "middle blocked action" },
+        .{ .decision = "deny", .reason = "newest blocked action" },
+        .{ .decision = "allow", .reason = "newest allowed action" },
+    }) |fixture| {
+        var record = try rust_visibility.buildFeedRecordFromHookDecision(
+            std.testing.allocator,
+            std.testing.io,
+            root,
+            "codex",
+            "healthy",
+            fixture.decision,
+            fixture.reason,
+            null,
+            null,
+            null,
+            null,
+            null,
+        );
+        defer record.deinit(std.testing.allocator);
+        try feed_writer.appendRecord(std.testing.io, std.testing.allocator, root, record);
+    }
+
+    var output: std.Io.Writer.Allocating = .init(std.testing.allocator);
+    defer output.deinit();
+    try writeBlockedActionsArrayJson(std.testing.io, std.testing.allocator, &output.writer, root, 2);
+    const json = output.written();
+
+    try std.testing.expectEqual(@as(usize, 2), std.mem.count(u8, json, "\"event_type\":"));
+    try std.testing.expect(std.mem.indexOf(u8, json, "oldest blocked action") == null);
+    try std.testing.expect(std.mem.indexOf(u8, json, "middle blocked action") != null);
+    try std.testing.expect(std.mem.indexOf(u8, json, "newest blocked action") != null);
+    try std.testing.expect(std.mem.indexOf(u8, json, "newest allowed action") == null);
 }
 
 test "sessions json filters denied replay events" {
