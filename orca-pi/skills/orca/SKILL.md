@@ -40,7 +40,8 @@ When Orca blocks a command or file action:
 ## Defaults
 
 - Default unavailable mode: `ORCA_PI_MODE=auto` (interactive ask; noninteractive block). Does not silently fail open.
-- Production: prefer `ORCA_PI_MODE=strict` or `/orca-mode strict`.
+- Production: prefer `ORCA_PI_MODE=strict` or `/orca-mode strict` (strict also disables "Run once anyway" unless `ORCA_PI_ALLOW_ONCE=true`).
+- Once-bypass is auditable: every successful use emits a redacted `orca.audit` event (`event: orca_once_bypass`); if the host cannot record it, Orca keeps the action blocked. Set `ORCA_PI_ALLOW_ONCE=false` to remove the option entirely.
 - `allow-with-warning` is never the default.
 
 ## Credential capture from prompt (Pi only)
