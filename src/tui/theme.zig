@@ -253,6 +253,13 @@ pub const dim = "\x1b[2m";
 pub const Active = struct {
     capability: Capability,
     background: Background,
+    /// Box-drawing / multi-byte glyphs. Independent of color so NO_COLOR
+    /// terminals can still render Unicode when they are interactive TTYs.
+    unicode: bool = false,
+
+    pub fn supportsUnicode(self: Active) bool {
+        return self.unicode;
+    }
 };
 
 var cached: ?Active = null;
@@ -284,7 +291,12 @@ pub fn resetCache() void {
 
 /// Pure decision wrapper used by tests and the public detector.
 pub fn resolve(d: DetectInput, bg: Background) Active {
-    return .{ .capability = detectCapability(d), .background = bg };
+    return .{
+        .capability = detectCapability(d),
+        .background = bg,
+        // Unicode follows TTY/dumb signals, not color availability.
+        .unicode = d.is_tty and !d.term_dumb,
+    };
 }
 
 /// Pure decision: should motion (spinner animation, live step frames) be
@@ -302,9 +314,16 @@ pub fn reducedMotionFrom(d: DetectInput) bool {
 /// Cached runtime detection against real env/stdout. In `builtin.is_test` this
 /// returns a plain-text theme so fixed-buffer writers never emit escapes.
 pub fn active(io: std.Io, stdout: anytype) Active {
-    if (!rich_enabled) return .{ .capability = .none, .background = .unknown };
-    if (test_active) |value| return value;
-    if (builtin.is_test) return .{ .capability = .none, .background = .unknown };
+    if (!rich_enabled) return .{ .capability = .none, .background = .unknown, .unicode = false };
+    if (test_active) |value| {
+        // Test overrides may omit unicode; default to matching color capability
+        // so existing setTestActive call sites keep box-drawing when colored.
+        if (!value.unicode and value.capability.hasColor()) {
+            return .{ .capability = value.capability, .background = value.background, .unicode = true };
+        }
+        return value;
+    }
+    if (builtin.is_test) return .{ .capability = .none, .background = .unknown, .unicode = false };
     if (cached) |a| return a;
 
     const is_tty = detectIsTty(io, stdout);
@@ -693,6 +712,36 @@ test "Capability.hasColor" {
     try std.testing.expect(!Capability.none.hasColor());
     try std.testing.expect(Capability.basic_16.hasColor());
     try std.testing.expect(Capability.truecolor.hasColor());
+}
+
+test "unicode is independent of color capability" {
+    const no_color_tty = resolve(.{
+        .is_tty = true,
+        .no_color = true,
+        .term_dumb = false,
+        .colorterm_truecolor = false,
+        .term_256color = false,
+    }, .dark);
+    try std.testing.expect(!no_color_tty.capability.hasColor());
+    try std.testing.expect(no_color_tty.supportsUnicode());
+
+    const dumb = resolve(.{
+        .is_tty = true,
+        .no_color = false,
+        .term_dumb = true,
+        .colorterm_truecolor = false,
+        .term_256color = false,
+    }, .dark);
+    try std.testing.expect(!dumb.supportsUnicode());
+
+    const pipe = resolve(.{
+        .is_tty = false,
+        .no_color = false,
+        .term_dumb = false,
+        .colorterm_truecolor = false,
+        .term_256color = false,
+    }, .unknown);
+    try std.testing.expect(!pipe.supportsUnicode());
 }
 
 // ────────────────────────────────────────────────────────────────────────────

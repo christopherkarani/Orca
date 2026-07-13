@@ -285,8 +285,8 @@ pub fn buildFeedRecordFromHookDecision(
     session_id: ?[]const u8,
 ) !RustShellFeedRecord {
     _ = rule;
-    var reason_buf: [512]u8 = undefined;
-    const safe_reason = core_api.redactStringBounded(reason, &reason_buf);
+    const safe_reason = try core_api.redactAlloc(allocator, reason);
+    errdefer allocator.free(safe_reason);
 
     var timestamp_buf: [32]u8 = undefined;
     const timestamp = try core.time.Timestamp.now(io).formatIso(&timestamp_buf);
@@ -302,7 +302,7 @@ pub fn buildFeedRecordFromHookDecision(
         .daemon_status = try allocator.dupe(u8, daemon_status),
         .pack_id = if (pack_id) |pack| try allocator.dupe(u8, pack) else null,
         .severity = if (severity) |sev| try allocator.dupe(u8, sev) else null,
-        .reason = try allocator.dupe(u8, safe_reason),
+        .reason = safe_reason,
         .remediation = if (remediation) |text| blk: {
             break :blk try sanitizeRemediationText(allocator, text);
         } else null,
@@ -451,11 +451,10 @@ pub fn buildFeedRecordFromHookActivity(
     var timestamp_buf: [32]u8 = undefined;
     const timestamp = try core.time.Timestamp.now(io).formatIso(&timestamp_buf);
 
-    var reason_buf: [512]u8 = undefined;
-    const safe_reason = core_api.redactStringBounded(reason, &reason_buf);
-
-    var target_buf: [512]u8 = undefined;
-    const safe_target = core_api.redactStringBounded(target_summary, &target_buf);
+    const safe_reason = try core_api.redactAlloc(allocator, reason);
+    errdefer allocator.free(safe_reason);
+    const safe_target = try core_api.redactAlloc(allocator, target_summary);
+    errdefer allocator.free(safe_target);
 
     return .{
         .timestamp = try allocator.dupe(u8, timestamp),
@@ -468,9 +467,9 @@ pub fn buildFeedRecordFromHookActivity(
         .daemon_status = try allocator.dupe(u8, daemon_status),
         .pack_id = null,
         .severity = null,
-        .reason = try allocator.dupe(u8, safe_reason),
+        .reason = safe_reason,
         .remediation = null,
-        .target_summary = try allocator.dupe(u8, safe_target),
+        .target_summary = safe_target,
         .session_id = if (session_id) |sid| try allocator.dupe(u8, sid) else null,
         .verified = verified,
     };
@@ -541,18 +540,26 @@ fn writeJsonFieldNullable(writer: anytype, field: []const u8, value: ?[]const u8
 }
 
 fn sanitizeRemediationText(allocator: std.mem.Allocator, text: []const u8) ![]const u8 {
-    var buffer: [512]u8 = undefined;
-    const redacted = core_api.redactStringBounded(text, &buffer);
-    return try allocator.dupe(u8, redacted);
+    // Presentation boundary: use structured/encoded redaction, not the bounded classifier alone.
+    return try core_api.redactAlloc(allocator, text);
 }
 
 test "rust visibility redacts fake secret from feed reason" {
     const allocator = std.testing.allocator;
     const raw = "blocked OPENAI_API_KEY=sk-fakeSyntheticOpenAIKey1234567890 in command";
-    var reason_buf: [512]u8 = undefined;
-    const redacted = core_api.redactStringBounded(raw, &reason_buf);
+    const redacted = try core_api.redactAlloc(allocator, raw);
+    defer allocator.free(redacted);
     try std.testing.expect(std.mem.indexOf(u8, redacted, "sk-fakeSyntheticOpenAIKey1234567890") == null);
-    _ = allocator;
+}
+
+test "sanitizeRemediationText redacts encoded secrets" {
+    const allocator = std.testing.allocator;
+    // base64("token=correct-horse-battery-staple")
+    const encoded = "dG9rZW49Y29ycmVjdC1ob3JzZS1iYXR0ZXJ5LXN0YXBsZQ==";
+    const redacted = try sanitizeRemediationText(allocator, encoded);
+    defer allocator.free(redacted);
+    try std.testing.expect(std.mem.indexOf(u8, redacted, "correct") == null);
+    try std.testing.expect(std.mem.indexOf(u8, redacted, encoded) == null);
 }
 
 test "rust visibility maps doctor compatible status to healthy" {

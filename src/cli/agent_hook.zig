@@ -14,6 +14,7 @@ const build_options = @import("build_options");
 
 const exit_codes = @import("exit_codes.zig");
 const shell_eval = @import("shell_eval.zig");
+const core_api = @import("orca_core").api;
 
 const max_payload_len = 256 * 1024;
 
@@ -105,10 +106,14 @@ pub fn evaluatePayload(
         .deny, .redact, .stage, .broker => {
             // Keep host JSON contracts valid; enrich the human-readable reason
             // string with a short tip when present (no new required fields).
-            const reason = if (decision.owned_remediation) |tip| blk: {
+            // Re-redact the final presentation string so tips cannot leak secrets
+            // even if a future path skips remediation sanitization.
+            const combined = if (decision.owned_remediation) |tip| blk: {
                 break :blk try std.fmt.allocPrint(allocator, "{s}. Tip: {s}", .{ decision.owned_reason, tip });
-            } else decision.owned_reason;
-            defer if (decision.owned_remediation != null) allocator.free(reason);
+            } else try allocator.dupe(u8, decision.owned_reason);
+            defer allocator.free(combined);
+            const reason = try core_api.redactAlloc(allocator, combined);
+            defer allocator.free(reason);
             try writeDeny(stdout, format, reason);
         },
         .allow, .observe, .ask => try writeAllow(stdout, format),

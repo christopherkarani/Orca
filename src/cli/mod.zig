@@ -209,13 +209,45 @@ pub fn run(io: std.Io, environ_map: *const std.process.Environ.Map, argv: []cons
     return runWithCwd(io, environ_map, std.Io.Dir.cwd(), argv, stdout, stderr);
 }
 
-const GlobalArgs = struct { command_index: usize, no_rich: bool };
+const GlobalArgs = struct {
+    /// Argv with global `--no-rich` tokens removed (not after `--`).
+    argv: []const []const u8,
+    no_rich: bool,
+    /// True when `argv` is heap-owned and must be freed by the caller.
+    owned: bool = false,
+};
 
-fn parseGlobalArgs(argv: []const []const u8) GlobalArgs {
-    var index: usize = 0;
+/// Strip global `--no-rich` before or after the command, but never after `--`
+/// (child argv / opaque payloads must keep a literal `--no-rich`).
+fn parseGlobalArgs(allocator: std.mem.Allocator, argv: []const []const u8) !GlobalArgs {
     var no_rich = false;
-    while (index < argv.len and std.mem.eql(u8, argv[index], "--no-rich")) : (index += 1) no_rich = true;
-    return .{ .command_index = index, .no_rich = no_rich };
+    var needs_filter = false;
+    var after_separator = false;
+    for (argv) |arg| {
+        if (!after_separator and std.mem.eql(u8, arg, "--")) {
+            after_separator = true;
+            continue;
+        }
+        if (!after_separator and std.mem.eql(u8, arg, "--no-rich")) {
+            no_rich = true;
+            needs_filter = true;
+        }
+    }
+    if (!needs_filter) return .{ .argv = argv, .no_rich = no_rich, .owned = false };
+
+    var list: std.ArrayList([]const u8) = .empty;
+    errdefer list.deinit(allocator);
+    after_separator = false;
+    for (argv) |arg| {
+        if (!after_separator and std.mem.eql(u8, arg, "--")) {
+            after_separator = true;
+            try list.append(allocator, arg);
+            continue;
+        }
+        if (!after_separator and std.mem.eql(u8, arg, "--no-rich")) continue;
+        try list.append(allocator, arg);
+    }
+    return .{ .argv = try list.toOwnedSlice(allocator), .no_rich = no_rich, .owned = true };
 }
 
 pub fn runWithCwd(io: std.Io, environ_map: *const std.process.Environ.Map, cwd: std.Io.Dir, argv_input: []const []const u8, stdout: anytype, stderr: anytype) !u8 {
@@ -234,8 +266,10 @@ fn runWithCwdUsing(
     stdout: anytype,
     stderr: anytype,
 ) !u8 {
-    const global_args = parseGlobalArgs(argv_input);
-    const argv = argv_input[global_args.command_index..];
+    const allocator = std.heap.smp_allocator;
+    const global_args = try parseGlobalArgs(allocator, argv_input);
+    defer if (global_args.owned) allocator.free(global_args.argv);
+    const argv = global_args.argv;
     const no_rich_env = tui.output_policy.envDisablesRich(environ_map.get("ORCA_NO_RICH"));
     const machine_output = if (argv.len == 0) false else !shouldShowBanner(argv[0], argv) and
         (isMachineArgv(argv) or isAlwaysMachineCommand(argv[0]) or isRawGeneratedInvocation(argv[0], argv));
@@ -1486,14 +1520,31 @@ test "global --no-rich is consumed without changing version JSON contract" {
     try std.testing.expectEqualStrings(baseline.buffered(), escaped.buffered());
 }
 
-test "global flag parser only consumes no-rich before the command" {
-    const prefix = parseGlobalArgs(&.{ "--no-rich", "version", "--json" });
+test "global flag parser consumes no-rich before or after the command" {
+    const allocator = std.testing.allocator;
+
+    const prefix = try parseGlobalArgs(allocator, &.{ "--no-rich", "version", "--json" });
+    defer if (prefix.owned) allocator.free(prefix.argv);
     try std.testing.expect(prefix.no_rich);
-    try std.testing.expectEqual(@as(usize, 1), prefix.command_index);
-    const literal = parseGlobalArgs(&.{ "run", "--", "echo", "--no-rich" });
+    try std.testing.expectEqual(@as(usize, 2), prefix.argv.len);
+    try std.testing.expectEqualStrings("version", prefix.argv[0]);
+
+    const suffix = try parseGlobalArgs(allocator, &.{ "version", "--no-rich", "--json" });
+    defer if (suffix.owned) allocator.free(suffix.argv);
+    try std.testing.expect(suffix.no_rich);
+    try std.testing.expectEqual(@as(usize, 2), suffix.argv.len);
+    try std.testing.expectEqualStrings("version", suffix.argv[0]);
+    try std.testing.expectEqualStrings("--json", suffix.argv[1]);
+
+    // After `--`, `--no-rich` is child argv and must not be consumed.
+    const literal = try parseGlobalArgs(allocator, &.{ "run", "--", "echo", "--no-rich" });
+    defer if (literal.owned) allocator.free(literal.argv);
     try std.testing.expect(!literal.no_rich);
-    try std.testing.expectEqual(@as(usize, 0), literal.command_index);
-    const value = parseGlobalArgs(&.{ "decide", "command", "--json", "{\"value\":\"--no-rich\"}" });
+    try std.testing.expectEqual(@as(usize, 4), literal.argv.len);
+
+    // Opaque payload values are a single argv element, not the flag.
+    const value = try parseGlobalArgs(allocator, &.{ "decide", "command", "--json", "{\"value\":\"--no-rich\"}" });
+    defer if (value.owned) allocator.free(value.argv);
     try std.testing.expect(!value.no_rich);
 }
 

@@ -274,7 +274,31 @@ pub fn loadGlobalRecentWithHealth(
 ) !FeedLoadResult {
     const events_path = try std.fs.path.join(allocator, &.{ dashboard_root, global_events_file_name });
     defer allocator.free(events_path);
-    return loadRecentFromPath(io, allocator, events_path, null, max_count);
+    const active = try loadRecentFromPath(io, allocator, events_path, null, max_count);
+    if (max_count == 0 or active.records.len >= max_count) return active;
+
+    const rotated_path = try std.fs.path.join(allocator, &.{ dashboard_root, rotated_global_events_file_name });
+    defer allocator.free(rotated_path);
+    const need_from_rotated = max_count - active.records.len;
+    const rotated = try loadRecentFromPath(io, allocator, rotated_path, null, need_from_rotated);
+    if (rotated.records.len == 0) {
+        var empty = rotated;
+        empty.deinit(allocator);
+        return active;
+    }
+
+    // Chronological merge: older rotated generation, then active generation.
+    const combined_len = rotated.records.len + active.records.len;
+    const combined = try allocator.alloc(LoadedFeedRecord, combined_len);
+    @memcpy(combined[0..rotated.records.len], rotated.records);
+    @memcpy(combined[rotated.records.len..], active.records);
+    allocator.free(rotated.records);
+    allocator.free(active.records);
+    return .{
+        .records = combined,
+        .health = if (rotated.skipped_lines == 0 and active.skipped_lines == 0) .healthy else .degraded,
+        .skipped_lines = rotated.skipped_lines + active.skipped_lines,
+    };
 }
 
 fn loadRecentFromPath(
@@ -546,6 +570,66 @@ test "global feed rotates one generation and keeps the newest record active" {
     }
     try std.testing.expectEqual(@as(usize, 1), loaded.len);
     try std.testing.expectEqualStrings("newest", loaded[0].record.session_id.?);
+}
+
+test "global feed load merges rotated generation history" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const root = try tmp.dir.realPathFileAlloc(std.testing.io, ".", std.testing.allocator);
+    defer std.testing.allocator.free(root);
+    const dashboard_root = try std.fs.path.join(std.testing.allocator, &.{ root, "dashboard" });
+    defer std.testing.allocator.free(dashboard_root);
+    try std.Io.Dir.cwd().createDirPath(std.testing.io, dashboard_root);
+
+    var older = try rust_visibility.buildFeedRecordFromHookDecision(
+        std.testing.allocator,
+        std.testing.io,
+        root,
+        "codex",
+        "healthy",
+        "deny",
+        "older-blocked",
+        null,
+        null,
+        null,
+        null,
+        "older-session",
+    );
+    defer older.deinit(std.testing.allocator);
+    try appendGlobalRecord(std.testing.io, std.testing.allocator, dashboard_root, older);
+
+    // Simulate a completed rotation: active generation becomes the rotated file.
+    const events_path = try std.fs.path.join(std.testing.allocator, &.{ dashboard_root, global_events_file_name });
+    defer std.testing.allocator.free(events_path);
+    const rotated_path = try std.fs.path.join(std.testing.allocator, &.{ dashboard_root, rotated_global_events_file_name });
+    defer std.testing.allocator.free(rotated_path);
+    try std.Io.Dir.renameAbsolute(events_path, rotated_path, std.testing.io);
+
+    var newer = try rust_visibility.buildFeedRecordFromHookDecision(
+        std.testing.allocator,
+        std.testing.io,
+        root,
+        "codex",
+        "healthy",
+        "deny",
+        "newer-blocked",
+        null,
+        null,
+        null,
+        null,
+        "newer-session",
+    );
+    defer newer.deinit(std.testing.allocator);
+    try appendGlobalRecord(std.testing.io, std.testing.allocator, dashboard_root, newer);
+
+    const loaded = try loadGlobalRecent(std.testing.io, std.testing.allocator, dashboard_root, 4);
+    defer {
+        for (loaded) |*item| item.deinit(std.testing.allocator);
+        std.testing.allocator.free(loaded);
+    }
+    try std.testing.expectEqual(@as(usize, 2), loaded.len);
+    try std.testing.expectEqualStrings("older-session", loaded[0].record.session_id.?);
+    try std.testing.expectEqualStrings("newer-session", loaded[1].record.session_id.?);
 }
 
 test "global feed append records workspace and updates registry" {

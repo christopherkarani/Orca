@@ -47,7 +47,11 @@ fn dashboardWorkspaceSelection(
 }
 
 fn actionAllowedWithoutWorkspace(action: []const u8) bool {
-    return std.mem.eql(u8, action, "doctor") or std.mem.eql(u8, action, "license-status");
+    return std.mem.eql(u8, action, "doctor") or
+        std.mem.eql(u8, action, "license-status") or
+        // Plugin doctor is host-global (not workspace policy) and safe in machine mode.
+        std.mem.eql(u8, action, "openclaw-doctor") or
+        std.mem.eql(u8, action, "hermes-doctor");
 }
 
 const DashboardOptions = struct {
@@ -127,7 +131,14 @@ fn parseOptions(io: std.Io, argv: []const []const u8, stdout: anytype, stderr: a
         } else if (std.mem.eql(u8, arg, "--machine")) {
             explicit_machine = true;
         } else {
-            try stderr.print("orca dashboard: unknown option '{s}'.\n", .{arg});
+            const suggestions = @import("suggestions.zig");
+            suggestions.writeUnknownOption(
+                stderr,
+                "orca dashboard",
+                arg,
+                &.{ "--host", "--port", "--once", "--workspace", "--machine", "--help" },
+                "dashboard",
+            ) catch {};
             return error.Usage;
         }
     }
@@ -153,7 +164,8 @@ fn serve(io: std.Io, options: DashboardOptions, stdout: anytype, stderr: anytype
         return exit_codes.general;
     };
     defer server.deinit(io);
-    try stdout.print("Orca dashboard listening at http://{s}:{d}\n", .{ options.host, options.port });
+    const mode_label: []const u8 = if (options.workspace != null) "workspace" else "machine";
+    try stdout.print("Orca dashboard listening at http://{s}:{d} ({s} mode)\n", .{ options.host, options.port, mode_label });
     try flushIfSupported(stdout);
 
     var gpa_state: std.heap.DebugAllocator(.{}) = .init;
@@ -883,6 +895,8 @@ test "dashboard parses machine and workspace flags" {
 test "machine dashboard actions exclude workspace-scoped commands" {
     try std.testing.expect(actionAllowedWithoutWorkspace("doctor"));
     try std.testing.expect(actionAllowedWithoutWorkspace("license-status"));
+    try std.testing.expect(actionAllowedWithoutWorkspace("openclaw-doctor"));
+    try std.testing.expect(actionAllowedWithoutWorkspace("hermes-doctor"));
     try std.testing.expect(!actionAllowedWithoutWorkspace("replay-last"));
     try std.testing.expect(!actionAllowedWithoutWorkspace("report-last"));
     try std.testing.expect(!actionAllowedWithoutWorkspace("demo-blocked-action"));

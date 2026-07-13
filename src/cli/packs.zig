@@ -1,6 +1,7 @@
 const std = @import("std");
 const exit_codes = @import("exit_codes.zig");
 const contracts = @import("daemon_contracts.zig");
+const help = @import("help.zig");
 const tui = @import("../tui/mod.zig");
 const suggestions = @import("suggestions.zig");
 
@@ -21,6 +22,14 @@ fn realExecute(io: std.Io, argv: []const []const u8, stdout: anytype, stderr: an
 }
 
 pub fn commandWithExecutor(comptime execute_cli: anytype, io: std.Io, argv: []const []const u8, stdout: anytype, stderr: anytype) !u8 {
+    // Zig owns human help for the friendly packs interface; raw daemon help is
+    // still available via machine passthrough flags (--robot, --format, …).
+    for (argv) |arg| {
+        if (std.mem.eql(u8, arg, "--help") or std.mem.eql(u8, arg, "-h")) {
+            _ = try help.writeCommand(io, stdout, "packs");
+            return exit_codes.success;
+        }
+    }
     if (shouldPassThrough(argv)) {
         const daemon_argv = try std.heap.smp_allocator.alloc([]const u8, argv.len + 1);
         defer std.heap.smp_allocator.free(daemon_argv);
@@ -56,8 +65,7 @@ pub fn commandWithExecutor(comptime execute_cli: anytype, io: std.Io, argv: []co
 
 fn shouldPassThrough(argv: []const []const u8) bool {
     for (argv) |arg| {
-        if (std.mem.eql(u8, arg, "--help") or std.mem.eql(u8, arg, "-h") or
-            std.mem.eql(u8, arg, "--robot") or std.mem.eql(u8, arg, "--expand") or
+        if (std.mem.eql(u8, arg, "--robot") or std.mem.eql(u8, arg, "--expand") or
             std.mem.eql(u8, arg, "--verbose") or std.mem.eql(u8, arg, "-v") or
             std.mem.eql(u8, arg, "--format") or std.mem.eql(u8, arg, "-f") or
             std.mem.startsWith(u8, arg, "--format=") or std.mem.eql(u8, arg, "--max-patterns") or
@@ -256,13 +264,11 @@ test "packs installed alias uses daemon enabled semantics and renders empty guid
     try std.testing.expect(std.mem.indexOf(u8, stdout_writer.buffered(), "config.toml") != null);
 }
 
-test "packs machine help and raw modes are byte identical passthrough" {
+test "packs machine raw modes are byte identical passthrough" {
     const Case = struct { args: []const []const u8, expected: []const u8 };
     const cases = [_]Case{
         .{ .args = &.{ "--format", "json" }, .expected = "packs|--format|json" },
         .{ .args = &.{"--robot"}, .expected = "packs|--robot" },
-        .{ .args = &.{"--help"}, .expected = "packs|--help" },
-        .{ .args = &.{"-h"}, .expected = "packs|-h" },
         .{ .args = &.{ "-f", "json" }, .expected = "packs|-f|json" },
         .{ .args = &.{"--format=json"}, .expected = "packs|--format=json" },
         .{ .args = &.{ "--format", "pretty" }, .expected = "packs|--format|pretty" },
@@ -280,6 +286,18 @@ test "packs machine help and raw modes are byte identical passthrough" {
         try std.testing.expectEqualStrings(case.expected, stdout_writer.buffered());
         try std.testing.expectEqualStrings("daemon exact stderr\n", stderr_writer.buffered());
     }
+}
+
+test "packs --help is Zig-owned and does not call the daemon" {
+    var stdout_buf: [2048]u8 = undefined;
+    var stderr_buf: [128]u8 = undefined;
+    var stdout_writer: std.Io.Writer = .fixed(&stdout_buf);
+    var stderr_writer: std.Io.Writer = .fixed(&stderr_buf);
+    const code = try commandWithExecutor(failIfCalled, std.testing.io, &.{"--help"}, &stdout_writer, &stderr_writer);
+    try std.testing.expectEqual(exit_codes.success, code);
+    try std.testing.expect(std.mem.indexOf(u8, stdout_writer.buffered(), "Browse available safety packs") != null);
+    try std.testing.expect(std.mem.indexOf(u8, stdout_writer.buffered(), "orca packs") != null);
+    try std.testing.expectEqualStrings("", stderr_writer.buffered());
 }
 
 test "packs rejects missing and invalid Zig option values with remediation" {
