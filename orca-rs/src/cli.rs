@@ -2000,7 +2000,7 @@ pub fn version_stdout_line() -> String {
 ///
 /// Phase A high-value set (proxied via Zig `orca`): version, test, scan,
 /// history, packs, precommit, explain, allowlist, allow, unallow, allow-once,
-/// classify, suggest-allowlist, rebase-recover, config.
+/// classify, suggest-allowlist, rebase-recover, config, simulate.
 #[must_use]
 pub fn execute_daemon_cli(argv: &[String]) -> CliExecutionResult {
     if argv.is_empty() {
@@ -2021,7 +2021,7 @@ pub fn execute_daemon_cli(argv: &[String]) -> CliExecutionResult {
         other => CliExecutionResult {
             stdout: String::new(),
             stderr: format!(
-                "unsupported daemon CLI command: {other} (supported: version, test, scan, history, precommit, packs, explain, allowlist, allow, unallow, allow-once, classify, suggest-allowlist, rebase-recover, config)"
+                "unsupported daemon CLI command: {other} (supported: version, test, scan, history, precommit, packs, explain, allowlist, allow, unallow, allow-once, classify, suggest-allowlist, rebase-recover, config, simulate)"
             ),
             exit_code: EXIT_PARSE_ERROR,
         },
@@ -2045,6 +2045,7 @@ fn is_daemon_proxy_command(command: &str) -> bool {
             | "suggest-allowlist"
             | "rebase-recover"
             | "config"
+            | "simulate"
     )
 }
 
@@ -8081,6 +8082,38 @@ fn output_suggestions_text(suggestions: &[AllowlistSuggestion]) {
         if suggestion.cluster.commands.len() > 5 {
             println!("  ... and {} more", suggestion.cluster.commands.len() - 5);
         }
+        println!();
+    }
+
+    // Day-2 policy loop: copy-pasteable next commands for high-confidence items.
+    let high_conf: Vec<(usize, &AllowlistSuggestion)> = suggestions
+        .iter()
+        .enumerate()
+        .filter(|(_, s)| matches!(s.confidence, ConfidenceTier::High))
+        .map(|(i, s)| (i + 1, s))
+        .collect();
+    if !high_conf.is_empty() {
+        println!("Next steps (high confidence)");
+        println!("───────────────────────────");
+        println!("Apply by index (non-interactive), or allowlist an example command:");
+        for (idx, suggestion) in &high_conf {
+            println!("  orca suggest-allowlist --apply {idx}");
+            if let Some(example) = suggestion.cluster.commands.first() {
+                let escaped = example.replace('\'', "'\\''");
+                println!(
+                    "  orca allowlist add-command '{escaped}' -r \"from suggest-allowlist\""
+                );
+            }
+        }
+        println!();
+        println!("Or re-run on a TTY to accept/skip interactively:");
+        println!("  orca suggest-allowlist");
+        println!();
+    } else {
+        println!("Next steps");
+        println!("──────────");
+        println!("  orca suggest-allowlist --confidence high   # filter high-confidence only");
+        println!("  orca allowlist list                        # review current allowlist");
         println!();
     }
 }

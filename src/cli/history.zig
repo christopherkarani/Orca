@@ -17,6 +17,15 @@ pub fn commandWithExecutor(comptime execute_cli: anytype, io: std.Io, argv: []co
         try writeHelp(stdout);
         return exit_codes.success;
     }
+    // Day-2 loop discoverability: `orca history suggest` → suggest-allowlist.
+    if (std.mem.eql(u8, argv[0], "suggest")) {
+        const allocator = std.heap.smp_allocator;
+        const daemon_argv = try allocator.alloc([]const u8, argv.len);
+        defer allocator.free(daemon_argv);
+        daemon_argv[0] = "suggest-allowlist";
+        if (argv.len > 1) @memcpy(daemon_argv[1..], argv[1..]);
+        return execute_cli(io, daemon_argv, stdout, stderr);
+    }
     // Phase 7: --live is an opt-in alt-screen view of the current stats snapshot.
     // Intercept before the stats/passthrough split so --live is never forwarded to
     // the daemon. True command-level live-poll is a documented follow-up (it would
@@ -190,14 +199,22 @@ fn writeHelp(stdout: anytype) !void {
         \\  stats        Show outcomes, patterns, projects, and agents
         \\  check        Check history database health
         \\  analyze      Analyze denials and recommendations
+        \\  suggest      Suggest allowlist entries from denials (alias of suggest-allowlist)
         \\  interactive  Review prior decisions
         \\  export       Export command history
         \\  prune        Remove old entries
         \\  backup       Back up the history database
         \\
+        \\Day-2 policy loop:
+        \\  orca history stats
+        \\  orca history suggest          # or: orca suggest-allowlist
+        \\  orca suggest-allowlist --apply N
+        \\  orca allowlist add-command …  # from high-confidence examples
+        \\
         \\Examples:
         \\  orca history stats --days 7
         \\  orca history stats --json
+        \\  orca history suggest --confidence high
         \\  orca history check --strict
         \\  orca history --live
         \\
@@ -205,6 +222,24 @@ fn writeHelp(stdout: anytype) !void {
         \\  --live       Open a scrollable alt-screen stats view (TTY only; not with --json/--robot)
         \\
     );
+}
+
+test "history suggest routes to suggest-allowlist argv" {
+    var out: [256]u8 = undefined;
+    var err: [64]u8 = undefined;
+    var stdout: std.Io.Writer = .fixed(&out);
+    var stderr: std.Io.Writer = .fixed(&err);
+
+    const code = try commandWithExecutor(fakeSuggestAllowlist, std.testing.io, &.{ "suggest", "--confidence", "high" }, &stdout, &stderr);
+    try std.testing.expectEqual(exit_codes.success, code);
+    try std.testing.expectEqualStrings("suggest-allowlist ok\n", stdout.buffered());
+    try std.testing.expectEqualStrings("", stderr.buffered());
+}
+
+fn fakeSuggestAllowlist(_: std.Io, argv: []const []const u8, stdout: anytype, _: anytype) !u8 {
+    try std.testing.expectEqualSlices([]const u8, &.{ "suggest-allowlist", "--confidence", "high" }, argv);
+    try stdout.writeAll("suggest-allowlist ok\n");
+    return exit_codes.success;
 }
 
 fn renderHumanAlloc(allocator: std.mem.Allocator, io: std.Io, stats: contracts.HistoryStats, stdout: anytype) !u8 {
@@ -246,6 +281,10 @@ fn renderHumanAlloc(allocator: std.mem.Allocator, io: std.Io, stats: contracts.H
     try renderPatterns(allocator, io, stats.top_patterns, stdout);
     try renderNamedCounts(allocator, io, stats.agents, "AGENT", stdout);
     try renderProjects(allocator, io, stats.top_projects, stdout);
+
+    if (stats.outcomes.denied > 0) {
+        try tui.render.callout(io, stdout, .info, "Next", "Turn denials into policy:\n  → orca history suggest\n  → orca suggest-allowlist --confidence high\n  → orca allowlist add-command \"…\" -r \"reason\"");
+    }
     return exit_codes.success;
 }
 

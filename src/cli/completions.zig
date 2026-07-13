@@ -24,6 +24,7 @@ const commands = [_][]const u8{
     "suggest-allowlist",
     "rebase-recover",
     "config",
+    "simulate",
     "packs",
     "policy",
     "credentials",
