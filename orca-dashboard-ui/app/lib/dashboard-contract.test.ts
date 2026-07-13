@@ -3,6 +3,7 @@ import test from "node:test";
 import React from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 
+import { CommandPaletteItems } from "./command-palette.ts";
 import {
   DashboardModeContext,
   FeedHealthNotice,
@@ -35,6 +36,22 @@ test("machine navigation renders only global-safe destinations", () => {
   assert.deepEqual(machineLabels, ["Overview", "Activity", "Integrations"]);
   assert.ok(workspaceLabels.includes("Policy"));
   assert.ok(workspaceLabels.includes("Secretless"));
+});
+
+test("command palette renders only actions and views allowed by dashboard mode", () => {
+  const machine = renderInMode("machine", React.createElement(CommandPaletteItems));
+  const workspace = renderInMode("workspace", React.createElement(CommandPaletteItems));
+
+  assert.match(machine, /Overview/);
+  assert.match(machine, /Run Doctor/);
+  assert.doesNotMatch(machine, /Policy/);
+  assert.doesNotMatch(machine, /Secretless/);
+  assert.doesNotMatch(machine, /Credentials Check/);
+  assert.doesNotMatch(machine, /CI Check/);
+  assert.match(workspace, /Policy/);
+  assert.match(workspace, /Secretless/);
+  assert.match(workspace, /Credentials Check/);
+  assert.match(workspace, /CI Check/);
 });
 
 test("workspace-only routes do not mount their controls in machine mode", () => {

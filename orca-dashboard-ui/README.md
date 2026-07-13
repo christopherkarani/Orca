@@ -4,7 +4,7 @@ A Vercel-style dashboard for the Orca local guardrail runtime. Built with Next.j
 
 ## Prerequisites
 
-- Node.js 18.18+ (or 19.8+)
+- Node.js 22.6+
 - The Orca backend must be running on `http://127.0.0.1:7742`
 
 ## Installation
