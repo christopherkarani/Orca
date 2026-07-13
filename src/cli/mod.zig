@@ -48,6 +48,8 @@ pub const feed_writer = @import("feed_writer.zig");
 pub const agent_hook = @import("agent_hook.zig");
 pub const daemon_contracts = @import("daemon_contracts.zig");
 pub const packs = @import("packs.zig");
+pub const pack_state = @import("pack_state.zig");
+pub const status = @import("status.zig");
 pub const history = @import("history.zig");
 pub const suggestions = @import("suggestions.zig");
 pub const danger_confirmation = @import("danger_confirmation.zig");
@@ -72,6 +74,8 @@ test {
     _ = agent_hook;
     _ = daemon_contracts;
     _ = packs;
+    _ = pack_state;
+    _ = status;
     _ = history;
     _ = danger_confirmation;
 }
@@ -393,6 +397,7 @@ fn runWithCwdUsing(
     if (std.mem.eql(u8, command, "start")) return start.command(io, cwd, argv[1..], stdout, stderr);
     if (std.mem.eql(u8, command, "quickstart")) return quickstart.command(io, cwd, argv[1..], stdout, stderr);
     if (std.mem.eql(u8, command, "init")) return init.command(io, cwd, argv[1..], stdout, stderr);
+    if (std.mem.eql(u8, command, "status")) return status.command(io, argv[1..], stdout, stderr);
     if (std.mem.eql(u8, command, "doctor")) return doctor.command(io, argv[1..], stdout, stderr);
     if (std.mem.eql(u8, command, "policy")) return policy.command(io, argv[1..], stdout, stderr);
     if (std.mem.eql(u8, command, "credentials")) return credentials_command.command(io, argv[1..], stdout, stderr);

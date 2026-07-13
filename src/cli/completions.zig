@@ -9,6 +9,7 @@ const commands = [_][]const u8{
     "setup",
     "start",
     "quickstart",
+    "status",
     "doctor",
     "test",
     "scan",

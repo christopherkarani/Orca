@@ -4,6 +4,7 @@ const exit_codes = @import("exit_codes.zig");
 const help = @import("help.zig");
 const style = @import("style.zig");
 const onboarding = @import("onboarding.zig");
+const pack_state = @import("pack_state.zig");
 const plugin = @import("plugin.zig");
 const shell_eval = @import("shell_eval.zig");
 const build_options = @import("build_options");
@@ -87,6 +88,17 @@ pub fn runStart(
         failures += 1;
     } else {
         try tui.render.stepLine(io, stdout, .done, "Policy", if (policy_existed) "Existing policy preserved." else "Policy created.", 80);
+    }
+
+    // Additive pack enablement from preset (project .orca.toml when in git repo).
+    var packs_result = pack_state.ensurePresetPacksByName(io, allocator, workspace_root, flags.preset) catch pack_state.EnsurePacksResult{
+        .message = "Packs: baseline only (pack config write skipped)",
+        .owned = false,
+    };
+    defer packs_result.deinit(allocator);
+    try tui.render.stepLine(io, stdout, .done, "Packs", packs_result.message, 80);
+    if (packs_result.config_path) |path| {
+        try stdout.print("  Pack config ({s}): {s}\n", .{ packs_result.scope.?.label(), path });
     }
 
     var daemon_check: onboarding.DaemonCheck = undefined;

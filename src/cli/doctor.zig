@@ -18,6 +18,7 @@ const suggestions = @import("suggestions.zig");
 const plugin = @import("plugin.zig");
 const onboarding = @import("onboarding.zig");
 const host_status = @import("host_status.zig");
+const pack_state = @import("pack_state.zig");
 
 const DoctorCapability = struct {
     label: []const u8,
@@ -257,6 +258,7 @@ fn writeReport(io: std.Io, stdout: anytype, os: core.platform.Os, backend_report
     if (!verbose) {
         try writeDefaultPanels(io, stdout, os, backend_report, context, policy_status, counts);
         try writeHostStatusTable(io, stdout, context);
+        try writePacksSection(io, stdout, context);
         try writeHermesFailOpenWarning(io, stdout, context);
         try writePiNote(stdout);
         try writeRecommendations(stdout, context);
@@ -267,6 +269,7 @@ fn writeReport(io: std.Io, stdout: anytype, os: core.platform.Os, backend_report
     try stdout.print("Version: {s}\n\n", .{cli.version});
     try writeIntegrationReport(io, stdout, context);
     try writeHostStatusTable(io, stdout, context);
+    try writePacksSection(io, stdout, context);
     try writeHermesFailOpenWarning(io, stdout, context);
     try writePiNote(stdout);
     try stdout.writeAll("Capabilities:\n");
@@ -546,6 +549,17 @@ fn writeHermesFailOpenWarning(io: std.Io, stdout: anytype, context: IntegrationC
 fn writePiNote(stdout: anytype) !void {
     try stdout.writeAll("\nPi: not managed by `orca plugin install` (bash-only shell gate via `orca evaluate`).\n");
     try stdout.writeAll("  Install: pi install npm:@orca-sec/pi-orca · bypass: /orca-stop · live: ./scripts/host-live-e2e.sh pi\n");
+}
+
+fn writePacksSection(io: std.Io, stdout: anytype, context: IntegrationContext) !void {
+    // Avoid spawning the daemon when health probe already failed (doctor stays fast).
+    if (!std.mem.eql(u8, context.daemon_status, "compatible")) {
+        try pack_state.writeDoctorPacksSection(stdout, pack_state.unknownPacksSummary());
+        return;
+    }
+    var summary = pack_state.queryPacksSummaryDefault(io, context.allocator) catch pack_state.unknownPacksSummary();
+    defer summary.deinit(context.allocator);
+    try pack_state.writeDoctorPacksSection(stdout, summary);
 }
 
 /// Effective Hermes fail-open default matches integrations/hermes-plugin (default allow when degraded).
@@ -1176,6 +1190,23 @@ test "doctor recommendations prioritize daemon remediation over missing policy" 
     try std.testing.expect(std.mem.indexOf(u8, written, "Daemon health issue: no running daemon answered on the expected socket.") != null);
     try std.testing.expect(std.mem.indexOf(u8, written, "./scripts/build-all.sh") != null);
     try std.testing.expect(std.mem.indexOf(u8, written, "orca init --preset generic-agent") != null);
+}
+
+test "doctor packs section is unknown when daemon is unavailable" {
+    var stdout_buf: [16384]u8 = undefined;
+    var stdout_writer: std.Io.Writer = .fixed(&stdout_buf);
+    const report = sandbox.backend.detect(.linux);
+    var context = try testContext(std.testing.allocator, .{
+        .daemon_status = "unavailable",
+        .daemon_detail = "no running daemon answered on the expected socket.",
+    });
+    defer context.deinit();
+
+    try writeReport(std.testing.io, &stdout_writer, .linux, report, context, false);
+    const written = stdout_writer.buffered();
+    try std.testing.expect(std.mem.indexOf(u8, written, "\nPacks\n") != null);
+    try std.testing.expect(std.mem.indexOf(u8, written, "unknown (daemon unavailable") != null);
+    try std.testing.expect(std.mem.indexOf(u8, written, "fails closed") != null);
 }
 
 test "doctor host table lists managed hosts and shell gates" {

@@ -54,7 +54,9 @@ pub const commands = [_]CommandInfo{
         },
         .details = &.{
             "Creates .orca/policy.yaml from a practical editable preset.",
+            "Also enables preset-mapped safety packs in project `.orca.toml` (git repo) or user config (additive; never wipes customizations).",
             "Presets: generic-agent, claude-code, codex, cursor-agent, opencode, cline-roo, mcp-dev, github-actions, solo-dev, strict-local, team-ci, openclaw-hermes, trusted-local.",
+            "Pack map: generic-agent/solo-dev/trusted-local/mcp-dev = baseline only; claude-code/codex/… = package_managers; team-ci/github-actions/openclaw-hermes = containers + k8s + terraform (+ GHA for CI); strict-local = strict_git.",
             "Refuses to overwrite an existing policy unless --force is provided.",
         },
     },
@@ -125,6 +127,23 @@ pub const commands = [_]CommandInfo{
         },
     },
     .{
+        .name = "status",
+        .summary = "One-glance protection snapshot",
+        .usage = "orca status [--json]",
+        .category = .getting_started,
+        .examples = &.{
+            "orca status",
+            "orca status --json",
+        },
+        .details = &.{
+            "Shows daemon health, policy path/mode, hosts summary, enabled packs, and one next step.",
+            "Status is the glance; `orca doctor` is the deep diagnostic.",
+            "Packs summary uses the daemon registry (fail-closed note when the daemon is unavailable).",
+            "Pack enablement is written to project `.orca.toml` when in a git repo, else user config (`$XDG_CONFIG_HOME/orca/config.toml` or `~/.config/orca/config.toml`).",
+            "Use --json for scripting (includes schema_version).",
+        },
+    },
+    .{
         .name = "doctor",
         .summary = "Show platform capabilities",
         .usage = "orca doctor [-v|--verbose]",
@@ -135,7 +154,9 @@ pub const commands = [_]CommandInfo{
         },
         .details = &.{
             "Default output is a one-line summary plus recommended next steps.",
+            "Includes a Packs section (baseline always-on + opt-in enabled) when the daemon is reachable.",
             "Use --verbose for the full platform, integration, and capability report.",
+            "For a one-glance snapshot, prefer `orca status`.",
         },
     },
     .{
@@ -323,16 +344,19 @@ pub const commands = [_]CommandInfo{
     .{
         .name = "packs",
         .summary = "Browse available safety packs",
-        .usage = "orca packs [--filter <term>] [--installed] [--page N] [--page-size N]",
+        .usage = "orca packs [--filter <term>] [--enabled|--installed] [--page N] [--page-size N]",
         .category = .diagnostics,
         .examples = &.{
             "orca packs",
+            "orca packs --enabled",
             "orca packs --installed",
             "orca packs --filter database --page-size 10",
             "orca packs --format json",
         },
         .details = &.{
+            "Detail view of the daemon pack registry. For a one-line summary, use `orca status` or `orca doctor`.",
             "Human output is sorted and paginated locally; --installed is an alias for --enabled.",
+            "Baseline packs (core.*, system.disk) are always on; opt-in packs come from config / presets.",
             "Use --format json or --robot for byte-stable daemon output.",
         },
     },
@@ -572,7 +596,8 @@ pub fn write(io: std.Io, writer: anytype) !void {
     try writer.writeAll("\n");
     const tasks = [_]struct { label: []const u8, cmd: []const u8 }{
         .{ .label = "Get protected", .cmd = "orca start" },
-        .{ .label = "See status", .cmd = "orca doctor" },
+        .{ .label = "See status", .cmd = "orca status" },
+        .{ .label = "Deep diagnose", .cmd = "orca doctor" },
         .{ .label = "Why blocked?", .cmd = "orca explain \"…\"" },
         .{ .label = "Run an agent", .cmd = "orca run -- <agent>" },
         .{ .label = "Wire a host", .cmd = "orca plugin install" },
