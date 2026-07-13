@@ -765,7 +765,11 @@ test("once-bypass records an audit event", async () => {
 		{ code: 7, stdout: decideJson("ask", "file.write") },
 	]);
 	installOrcaExtension(pi, { spawn, orcaBin: "orca" });
-	const { ctx, notifications } = makeCtx();
+	const syntheticSecret = "sk-syntheticOnceBypassSecret123456789";
+	const { ctx, notifications } = makeCtx({
+		cwd: `/tmp/token=${syntheticSecret}`,
+		sessionManager: { getSessionId: () => `session-token=${syntheticSecret}` },
+	});
 	(ctx.ui as any).select = async () => "Run once anyway";
 
 	const result = await fireToolCall(
@@ -792,6 +796,34 @@ test("once-bypass records an audit event", async () => {
 	assert.equal(
 		(audit?.message.details as { source?: string } | undefined)?.source,
 		"policy",
+	);
+	assert.ok(!JSON.stringify(audit?.message.details).includes(syntheticSecret));
+	assert.ok(JSON.stringify(audit?.message.details).length < 1_024);
+});
+
+test("once-bypass stays blocked when transcript auditing is unavailable", async () => {
+	const { pi, handlers, messages } = makePi();
+	delete (pi as { sendMessage?: unknown }).sendMessage;
+	const { spawn } = makeSpawn([
+		{ code: 7, stdout: decideJson("ask", "file.write") },
+	]);
+	installOrcaExtension(pi, { spawn, orcaBin: "orca" });
+	const { ctx, notifications } = makeCtx();
+	(ctx.ui as any).select = async () => "Run once anyway";
+
+	const result = await fireToolCall(
+		handlers.get("tool_call")![0],
+		ctx,
+		"",
+		"write",
+		{ path: "src/main.ts", content: "x" },
+	);
+	assert.equal(result?.block, true);
+	assert.equal(messages.length, 0);
+	assert.ok(
+		notifications.some((notification) =>
+			/transcript auditing is unavailable/i.test(notification.message),
+		),
 	);
 });
 

@@ -954,28 +954,34 @@ function recordOnceBypass(
 	ctx: PiContext,
 	toolLabel: string,
 	source: "policy" | "unavailable",
-): void {
+): boolean {
+	if (!pi.sendMessage) {
+		notify(ctx, "Orca blocked the once-bypass because transcript auditing is unavailable.", "error");
+		return false;
+	}
 	const details = {
 		event: "orca_once_bypass",
-		tool: toolLabel,
+		tool: truncate(sanitizeVisibleText(toolLabel), 128),
 		source,
-		session_id: sessionKey(ctx),
-		cwd: resolveCwd(ctx.cwd),
+		session_id: truncate(sanitizeVisibleText(sessionKey(ctx)), 256),
+		cwd: truncate(sanitizeVisibleText(resolveCwd(ctx.cwd)), 512),
 	};
-	notify(
-		ctx,
-		`Orca audit: once-bypass used for ${toolLabel} (${source}).`,
-		"warning",
-	);
-	pi.sendMessage?.(
-		{
-			customType: "orca.audit",
-			content: `orca once-bypass: ${toolLabel} (${source})`,
-			display: false,
-			details,
-		},
-		{ triggerTurn: false },
-	);
+	try {
+		pi.sendMessage(
+			{
+				customType: "orca.audit",
+				content: `orca once-bypass: ${details.tool} (${source})`,
+				display: false,
+				details,
+			},
+			{ triggerTurn: false },
+		);
+	} catch {
+		notify(ctx, "Orca blocked the once-bypass because transcript auditing failed.", "error");
+		return false;
+	}
+	notify(ctx, `Orca audit: once-bypass used for ${details.tool} (${source}).`, "warning");
+	return true;
 }
 
 async function handlePolicyAsk(
@@ -1010,7 +1016,9 @@ async function handlePolicyAsk(
 				);
 			}
 			clearOrcaWidget(ctx);
-			recordOnceBypass(pi, ctx, toolLabel, "policy");
+			if (!recordOnceBypass(pi, ctx, toolLabel, "policy")) {
+				return block("Orca blocked this once-bypass because a required transcript audit event could not be recorded.");
+			}
 			notify(
 				ctx,
 				`Allowed this ${toolLabel} action once without Orca evaluation.`,
@@ -1109,7 +1117,9 @@ async function handleUnavailable(
 				);
 			}
 			clearOrcaWidget(ctx);
-			recordOnceBypass(pi, ctx, toolLabel, "unavailable");
+			if (!recordOnceBypass(pi, ctx, toolLabel, "unavailable")) {
+				return block("Orca blocked this once-bypass because a required transcript audit event could not be recorded.");
+			}
 			notify(
 				ctx,
 				`Allowed this ${toolLabel} action once without Orca evaluation.`,

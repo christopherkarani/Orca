@@ -109,7 +109,7 @@ Unavailable modes (`ORCA_PI_MODE`):
 - `strict`: always block on Orca errors, and disables interactive "Run once anyway" by default. **Recommended for production.**
 - `allow-with-warning`: allow but warn that Orca is degraded. **Never the default.**
 
-Once-bypass (`Run once anyway`) is an interactive escape hatch. It is disabled when `ORCA_PI_MODE=strict` (unless `ORCA_PI_ALLOW_ONCE=true`) or when `ORCA_PI_ALLOW_ONCE=false`. Every once-bypass emits an `orca.audit` transcript event (`event: orca_once_bypass`) and a warning notification.
+Once-bypass (`Run once anyway`) is an interactive escape hatch. It is disabled when `ORCA_PI_MODE=strict` (unless `ORCA_PI_ALLOW_ONCE=true`) or when `ORCA_PI_ALLOW_ONCE=false`. Every once-bypass emits a redacted `orca.audit` transcript event (`event: orca_once_bypass`) and a warning notification. If the host cannot record that audit event, Orca keeps the action blocked.
 
 Change mode in Pi:
 
