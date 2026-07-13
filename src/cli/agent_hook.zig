@@ -102,7 +102,15 @@ pub fn evaluatePayload(
     defer decision.deinit(allocator);
 
     switch (decision.decision.result) {
-        .deny, .redact, .stage, .broker => try writeDeny(stdout, format, decision.owned_reason),
+        .deny, .redact, .stage, .broker => {
+            // Keep host JSON contracts valid; enrich the human-readable reason
+            // string with a short tip when present (no new required fields).
+            const reason = if (decision.owned_remediation) |tip| blk: {
+                break :blk try std.fmt.allocPrint(allocator, "{s}. Tip: {s}", .{ decision.owned_reason, tip });
+            } else decision.owned_reason;
+            defer if (decision.owned_remediation != null) allocator.free(reason);
+            try writeDeny(stdout, format, reason);
+        },
         .allow, .observe, .ask => try writeAllow(stdout, format),
     }
 
@@ -323,20 +331,23 @@ test "evaluatePayload allow emits cursor JSON and empty agent stdout" {
 test "evaluatePayload deny emits hookSpecificOutput and cursor deny JSON" {
     const allocator = std.testing.allocator;
 
-    var agent_buf: [1024]u8 = undefined;
+    var agent_buf: [2048]u8 = undefined;
     var agent_stdout: std.Io.Writer = .fixed(&agent_buf);
     const agent_payload = "{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"rm -rf /\"}}";
     _ = try evaluatePayload(allocator, agent_payload, &agent_stdout, shell_eval.mockDaemonDenyEvaluator);
     const agent_output = agent_stdout.buffered();
     try std.testing.expect(std.mem.indexOf(u8, agent_output, "\"permissionDecision\":\"deny\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, agent_output, "\"hookEventName\":\"PreToolUse\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, agent_output, "core.filesystem:destructive_rm") != null);
+    try std.testing.expect(std.mem.indexOf(u8, agent_output, "Tip:") != null);
 
-    var cursor_buf: [1024]u8 = undefined;
+    var cursor_buf: [2048]u8 = undefined;
     var cursor_stdout: std.Io.Writer = .fixed(&cursor_buf);
     const cursor_payload = "{\"command\":\"rm -rf /\",\"cwd\":\"/tmp\"}";
     _ = try evaluatePayload(allocator, cursor_payload, &cursor_stdout, shell_eval.mockDaemonDenyEvaluator);
     const cursor_output = cursor_stdout.buffered();
     try std.testing.expect(std.mem.indexOf(u8, cursor_output, "\"permission\":\"deny\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, cursor_output, "core.filesystem:destructive_rm") != null);
 }
 
 test "evaluatePayload fails closed when daemon unavailable" {

@@ -1997,6 +1997,10 @@ pub fn version_stdout_line() -> String {
 /// Routes through the same version formatting as standalone `orca --version`
 /// stdout output.  Unsupported commands return structured errors instead of
 /// terminating the process.
+///
+/// Phase A high-value set (proxied via Zig `orca`): version, test, scan,
+/// history, packs, precommit, explain, allowlist, allow, unallow, allow-once,
+/// classify, suggest-allowlist, rebase-recover, config.
 #[must_use]
 pub fn execute_daemon_cli(argv: &[String]) -> CliExecutionResult {
     if argv.is_empty() {
@@ -2013,19 +2017,39 @@ pub fn execute_daemon_cli(argv: &[String]) -> CliExecutionResult {
             stderr: String::new(),
             exit_code: EXIT_SUCCESS,
         },
-        "test" | "scan" | "history" | "packs" | "precommit" => execute_phase1_daemon_cli(argv),
+        cmd if is_daemon_proxy_command(cmd) => execute_proxied_daemon_cli(argv),
         other => CliExecutionResult {
             stdout: String::new(),
             stderr: format!(
-                "unsupported daemon CLI command: {other} (Phase 1 supports: version, test, scan, history, precommit, packs)"
+                "unsupported daemon CLI command: {other} (supported: version, test, scan, history, precommit, packs, explain, allowlist, allow, unallow, allow-once, classify, suggest-allowlist, rebase-recover, config)"
             ),
             exit_code: EXIT_PARSE_ERROR,
         },
     }
 }
 
-fn execute_phase1_daemon_cli(argv: &[String]) -> CliExecutionResult {
-    let Some(mapped_argv) = phase1_daemon_argv(argv) else {
+fn is_daemon_proxy_command(command: &str) -> bool {
+    matches!(
+        command,
+        "test"
+            | "scan"
+            | "history"
+            | "packs"
+            | "precommit"
+            | "explain"
+            | "allowlist"
+            | "allow"
+            | "unallow"
+            | "allow-once"
+            | "classify"
+            | "suggest-allowlist"
+            | "rebase-recover"
+            | "config"
+    )
+}
+
+fn execute_proxied_daemon_cli(argv: &[String]) -> CliExecutionResult {
+    let Some(mapped_argv) = map_daemon_proxy_argv(argv) else {
         return CliExecutionResult {
             stdout: String::new(),
             stderr: "ExecuteCli requires at least one argument (subcommand)".to_string(),
@@ -2034,7 +2058,7 @@ fn execute_phase1_daemon_cli(argv: &[String]) -> CliExecutionResult {
     };
 
     if mapped_argv.iter().any(|arg| arg == "--help" || arg == "-h") {
-        return render_phase1_help(mapped_argv[0].as_str());
+        return render_daemon_proxy_help(mapped_argv[0].as_str());
     }
 
     let exe = match std::env::current_exe() {
@@ -2062,7 +2086,7 @@ fn execute_phase1_daemon_cli(argv: &[String]) -> CliExecutionResult {
     }
 }
 
-fn phase1_daemon_argv(argv: &[String]) -> Option<Vec<String>> {
+fn map_daemon_proxy_argv(argv: &[String]) -> Option<Vec<String>> {
     let (command, rest) = argv.split_first()?;
     let mapped = if command == "precommit" {
         let mut mapped = Vec::with_capacity(rest.len() + 2);
@@ -2079,7 +2103,7 @@ fn phase1_daemon_argv(argv: &[String]) -> Option<Vec<String>> {
     Some(mapped)
 }
 
-fn render_phase1_help(command_name: &str) -> CliExecutionResult {
+fn render_daemon_proxy_help(command_name: &str) -> CliExecutionResult {
     let mut command = Cli::command();
     let Some(subcommand) = command.find_subcommand_mut(command_name) else {
         return CliExecutionResult {

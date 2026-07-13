@@ -197,6 +197,130 @@ pub const commands = [_]CommandInfo{
         },
     },
     .{
+        .name = "explain",
+        .summary = "Explain why a shell command is blocked or allowed (Rust packs)",
+        .usage = "orca explain <command> [options]",
+        .category = .core_workflow,
+        .examples = &.{
+            "orca explain \"git reset --hard\"",
+            "orca explain \"rm -rf /tmp/x\" --format json",
+        },
+        .details = &.{
+            "Proxies to the Rust daemon pack decision trace for shell commands.",
+            "Different from 'orca policy explain', which explains Zig policy.yaml rules.",
+            "Use 'orca explain --help' for the full Rust-backed option set.",
+        },
+    },
+    .{
+        .name = "classify",
+        .summary = "Classify a shell command's risk without blocking",
+        .usage = "orca classify <command> [options]",
+        .category = .diagnostics,
+        .examples = &.{
+            "orca classify \"git status\"",
+            "orca classify \"rm -rf /\" --format json",
+        },
+        .details = &.{
+            "Proxies to the Rust daemon risk classifier (read-only; does not block).",
+            "Use 'orca classify --help' for the full Rust-backed option set.",
+        },
+    },
+    .{
+        .name = "allowlist",
+        .summary = "Manage allowlist entries for pack rules",
+        .usage = "orca allowlist <add|list|remove|validate|prune|...> [options]",
+        .category = .core_workflow,
+        .examples = &.{
+            "orca allowlist list",
+            "orca allowlist add core.git:reset-hard -r \"intentional reset\"",
+            "orca allow \"core.git:reset-hard\" -r \"intentional reset\"",
+        },
+        .details = &.{
+            "Proxies to the Rust daemon allowlist manager.",
+            "Shortcuts: 'orca allow <rule>' and 'orca unallow <rule>' also proxy.",
+            "Use 'orca allowlist --help' for actions and options.",
+        },
+    },
+    .{
+        .name = "allow",
+        .summary = "Add a rule to the allowlist (shortcut)",
+        .usage = "orca allow <rule-id> -r <reason> [options]",
+        .category = .core_workflow,
+        .examples = &.{
+            "orca allow core.git:reset-hard -r \"recovering local branch\"",
+        },
+        .details = &.{
+            "Shortcut for 'orca allowlist add'. Proxies to the Rust daemon.",
+        },
+    },
+    .{
+        .name = "unallow",
+        .summary = "Remove a rule from the allowlist (shortcut)",
+        .usage = "orca unallow <rule-id> [options]",
+        .category = .core_workflow,
+        .examples = &.{
+            "orca unallow core.git:reset-hard",
+        },
+        .details = &.{
+            "Shortcut for 'orca allowlist remove'. Proxies to the Rust daemon.",
+        },
+    },
+    .{
+        .name = "allow-once",
+        .summary = "Allow a blocked command once via short code",
+        .usage = "orca allow-once <code|list|clear|revoke> [options]",
+        .category = .core_workflow,
+        .examples = &.{
+            "orca allow-once list",
+            "orca allow-once ABC123",
+        },
+        .details = &.{
+            "Proxies to the Rust daemon pending-exception / allow-once store.",
+            "Use 'orca allow-once --help' for apply and management subcommands.",
+        },
+    },
+    .{
+        .name = "suggest-allowlist",
+        .summary = "Suggest allowlist entries from protected history",
+        .usage = "orca suggest-allowlist [options]",
+        .category = .diagnostics,
+        .examples = &.{
+            "orca suggest-allowlist",
+            "orca suggest-allowlist --format json",
+        },
+        .details = &.{
+            "Proxies to the Rust daemon; requires history to be enabled.",
+            "Use 'orca suggest-allowlist --help' for filters and confidence options.",
+        },
+    },
+    .{
+        .name = "rebase-recover",
+        .summary = "Issue a short-lived permit for git rebase recovery",
+        .usage = "orca rebase-recover [--ttl <seconds>]",
+        .category = .core_workflow,
+        .examples = &.{
+            "orca rebase-recover",
+            "orca rebase-recover --ttl 120",
+        },
+        .details = &.{
+            "Proxies to the Rust daemon. Unblocks the next git checkout -- / restore",
+            "step after a messy rebase recovery within a short TTL.",
+        },
+    },
+    .{
+        .name = "config",
+        .summary = "Show Orca daemon configuration",
+        .usage = "orca config",
+        .category = .diagnostics,
+        .examples = &.{
+            "orca config",
+        },
+        .details = &.{
+            "Proxies to the Rust daemon config show path (read-only).",
+            "Use 'orca config --help' for daemon-backed details.",
+        },
+    },
+    .{
         .name = "packs",
         .summary = "Browse available safety packs",
         .usage = "orca packs [--filter <term>] [--installed] [--page N] [--page-size N]",
@@ -221,7 +345,8 @@ pub const commands = [_]CommandInfo{
         "  orca policy explain [--policy <path>] <file.read|file.write|env|command|network|mcp> <target> [--method <HTTP_METHOD>]",
         "  orca policy packs",
         "  orca policy apply-pack <solo-dev|strict-local|team-ci|openclaw-hermes> [--force]",
-        "Explanations show the decision, reason, matched rule when available, and policy mode.",
+        "policy explain covers Zig policy.yaml rules (file/env/network/mcp).",
+        "For shell pack traces use 'orca explain \"<command>\"' instead.",
     } },
     .{ .name = "credentials", .summary = "Verify credential brokers without exposing secrets", .usage = "orca credentials check [credential-ref]", .category = .advanced, .details = &.{
         "Checks configured credential brokers and optional credential refs without printing raw secret values.",

@@ -86,11 +86,11 @@ fn buildDaemonDenyReason(
     reason: []const u8,
     rule: ?[]const u8,
 } {
-    const rule = if (daemon.responseDenyRule(result)) |rule_name| try allocator.dupe(u8, rule_name) else null;
+    const rule = try ruleIdFromDaemonResult(allocator, result);
     errdefer if (rule) |rule_name| allocator.free(rule_name);
 
     const reason = if (rule) |rule_name|
-        try std.fmt.allocPrint(allocator, "blocked by Orca policy rule: {s}", .{rule_name})
+        try std.fmt.allocPrint(allocator, "blocked by Orca rule: {s}", .{rule_name})
     else
         try allocator.dupe(u8, "command denied by Orca policy");
 
@@ -137,13 +137,45 @@ pub fn severityFromDaemonResult(result: std.json.Value) ?[]const u8 {
 }
 
 pub fn remediationFromDaemonResult(allocator: std.mem.Allocator, result: std.json.Value) !?[]const u8 {
+    // Daemon SuggestionPayload shape: { command, description, platform }.
+    // Prefer description; fall back to command; then explanation.
     if (daemon.responseArrayField(result, "suggestions")) |items| {
         if (items.len > 0) {
             const first = items[0];
             if (first == .object) {
+                // Legacy/alternate field used by some fixtures.
                 if (first.object.get("text")) |text_value| {
                     if (text_value == .string) {
                         return try sanitizeRemediationText(allocator, text_value.string);
+                    }
+                }
+                const description = switch (first.object.get("description") orelse .null) {
+                    .string => |s| s,
+                    else => null,
+                };
+                const command = switch (first.object.get("command") orelse .null) {
+                    .string => |s| s,
+                    else => null,
+                };
+                if (description) |desc| {
+                    if (command) |cmd| {
+                        if (desc.len > 0 and cmd.len > 0) {
+                            const combined = try std.fmt.allocPrint(allocator, "Consider using '{s}': {s}", .{ cmd, desc });
+                            errdefer allocator.free(combined);
+                            const sanitized = try sanitizeRemediationText(allocator, combined);
+                            allocator.free(combined);
+                            return sanitized;
+                        }
+                    }
+                    if (desc.len > 0) return try sanitizeRemediationText(allocator, desc);
+                }
+                if (command) |cmd| {
+                    if (cmd.len > 0) {
+                        const tip = try std.fmt.allocPrint(allocator, "Consider using '{s}'", .{cmd});
+                        errdefer allocator.free(tip);
+                        const sanitized = try sanitizeRemediationText(allocator, tip);
+                        allocator.free(tip);
+                        return sanitized;
                     }
                 }
             }
@@ -153,6 +185,54 @@ pub fn remediationFromDaemonResult(allocator: std.mem.Allocator, result: std.jso
         return try sanitizeRemediationText(allocator, explanation);
     }
     return null;
+}
+
+/// Build a `pack_id:pattern_name` rule id when both fields are present.
+pub fn ruleIdFromDaemonResult(allocator: std.mem.Allocator, result: std.json.Value) !?[]const u8 {
+    if (daemon.responseStatus(result) != .deny) return null;
+    const pack_id = daemon.responseStringField(result, "pack_id");
+    const pattern_name = daemon.responseStringField(result, "pattern_name");
+    if (pack_id) |pack| {
+        if (pattern_name) |pattern| return try std.fmt.allocPrint(allocator, "{s}:{s}", .{ pack, pattern });
+        return try allocator.dupe(u8, pack);
+    }
+    if (pattern_name) |pattern| return try allocator.dupe(u8, pattern);
+    return null;
+}
+
+/// Format human-facing next-step lines after a shell deny (no trailing newline).
+/// `command_display` must already be redacted for presentation.
+pub fn formatDenyNextSteps(
+    allocator: std.mem.Allocator,
+    command_display: []const u8,
+    rule_id: ?[]const u8,
+    tip: ?[]const u8,
+) ![]const u8 {
+    var list: std.ArrayList(u8) = .empty;
+    errdefer list.deinit(allocator);
+
+    if (tip) |t| {
+        if (t.len > 0) {
+            const tip_line = try std.fmt.allocPrint(allocator, "Tip: {s}\n", .{t});
+            defer allocator.free(tip_line);
+            try list.appendSlice(allocator, tip_line);
+        }
+    }
+    try list.appendSlice(allocator, "Next:\n");
+    {
+        const line = try std.fmt.allocPrint(allocator, "  orca explain \"{s}\"\n", .{command_display});
+        defer allocator.free(line);
+        try list.appendSlice(allocator, line);
+    }
+    if (rule_id) |rid| {
+        const line = try std.fmt.allocPrint(allocator, "  orca allowlist add {s} -r \"reason\"\n", .{rid});
+        defer allocator.free(line);
+        try list.appendSlice(allocator, line);
+    } else {
+        try list.appendSlice(allocator, "  orca allowlist list\n");
+    }
+    try list.appendSlice(allocator, "  orca allow-once <code>   # when a short code was issued on block\n");
+    return try list.toOwnedSlice(allocator);
 }
 
 pub fn safeReasonFromDaemonResult(allocator: std.mem.Allocator, result: std.json.Value) ![]const u8 {
@@ -478,4 +558,47 @@ test "rust visibility redacts fake secret from feed reason" {
 test "rust visibility maps doctor compatible status to healthy" {
     try std.testing.expectEqualStrings("healthy", guiDaemonStatusFromDoctorStatus("compatible"));
     try std.testing.expectEqualStrings("unavailable", guiDaemonStatusFromDoctorStatus("unavailable"));
+}
+
+test "remediationFromDaemonResult reads suggestion description and command" {
+    const allocator = std.testing.allocator;
+    var parsed = try std.json.parseFromSlice(
+        std.json.Value,
+        allocator,
+        \\{"status":"Deny","reason":"blocked","pack_id":"core.git","pattern_name":"reset-hard","suggestions":[{"command":"git stash","description":"Save work first","platform":"any"}],"explanation":"fallback"}
+    ,
+        .{},
+    );
+    defer parsed.deinit();
+
+    const remediation = try remediationFromDaemonResult(allocator, parsed.value);
+    defer if (remediation) |text| allocator.free(text);
+    try std.testing.expect(remediation != null);
+    try std.testing.expect(std.mem.indexOf(u8, remediation.?, "git stash") != null);
+    try std.testing.expect(std.mem.indexOf(u8, remediation.?, "Save work first") != null);
+}
+
+test "ruleIdFromDaemonResult joins pack and pattern" {
+    const allocator = std.testing.allocator;
+    var parsed = try std.json.parseFromSlice(
+        std.json.Value,
+        allocator,
+        \\{"status":"Deny","reason":"blocked","pack_id":"core.git","pattern_name":"reset-hard"}
+    ,
+        .{},
+    );
+    defer parsed.deinit();
+    const rule = try ruleIdFromDaemonResult(allocator, parsed.value);
+    defer if (rule) |r| allocator.free(r);
+    try std.testing.expectEqualStrings("core.git:reset-hard", rule.?);
+}
+
+test "formatDenyNextSteps includes explain allowlist and allow-once" {
+    const allocator = std.testing.allocator;
+    const footer = try formatDenyNextSteps(allocator, "git reset --hard", "core.git:reset-hard", "Consider using 'git stash'");
+    defer allocator.free(footer);
+    try std.testing.expect(std.mem.indexOf(u8, footer, "Tip: Consider using 'git stash'") != null);
+    try std.testing.expect(std.mem.indexOf(u8, footer, "orca explain \"git reset --hard\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, footer, "orca allowlist add core.git:reset-hard") != null);
+    try std.testing.expect(std.mem.indexOf(u8, footer, "orca allow-once") != null);
 }

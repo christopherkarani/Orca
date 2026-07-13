@@ -89,6 +89,62 @@ mod tests {
     }
 
     #[test]
+    fn phase_a_explain_command_is_supported() {
+        let result = execute_cli(&["explain".to_string(), "--help".to_string()]);
+        assert_eq!(result.exit_code, EXIT_SUCCESS);
+        assert!(result.stderr.is_empty());
+        assert!(result.stdout.to_lowercase().contains("explain"));
+    }
+
+    #[test]
+    fn phase_a_allowlist_command_is_supported() {
+        let result = execute_cli(&["allowlist".to_string(), "--help".to_string()]);
+        assert_eq!(result.exit_code, EXIT_SUCCESS);
+        assert!(result.stderr.is_empty());
+        assert!(result.stdout.to_lowercase().contains("allowlist"));
+    }
+
+    #[test]
+    fn phase_a_allow_once_command_is_supported() {
+        let result = execute_cli(&["allow-once".to_string(), "--help".to_string()]);
+        assert_eq!(result.exit_code, EXIT_SUCCESS);
+        assert!(result.stderr.is_empty());
+        assert!(result.stdout.to_lowercase().contains("allow"));
+    }
+
+    #[test]
+    fn phase_a_classify_command_is_supported() {
+        let result = execute_cli(&["classify".to_string(), "--help".to_string()]);
+        assert_eq!(result.exit_code, EXIT_SUCCESS);
+        assert!(result.stderr.is_empty());
+        assert!(result.stdout.to_lowercase().contains("classify"));
+    }
+
+    #[test]
+    fn phase_a_suggest_allowlist_command_is_supported() {
+        let result = execute_cli(&["suggest-allowlist".to_string(), "--help".to_string()]);
+        assert_eq!(result.exit_code, EXIT_SUCCESS);
+        assert!(result.stderr.is_empty());
+        assert!(result.stdout.to_lowercase().contains("allowlist"));
+    }
+
+    #[test]
+    fn phase_a_rebase_recover_command_is_supported() {
+        let result = execute_cli(&["rebase-recover".to_string(), "--help".to_string()]);
+        assert_eq!(result.exit_code, EXIT_SUCCESS);
+        assert!(result.stderr.is_empty());
+        assert!(result.stdout.to_lowercase().contains("rebase"));
+    }
+
+    #[test]
+    fn phase_a_config_command_is_supported() {
+        let result = execute_cli(&["config".to_string(), "--help".to_string()]);
+        assert_eq!(result.exit_code, EXIT_SUCCESS);
+        assert!(result.stderr.is_empty());
+        assert!(result.stdout.to_lowercase().contains("config"));
+    }
+
+    #[test]
     fn phase4_command_is_still_deferred() {
         let result = execute_cli(&["stats".to_string()]);
         assert_eq!(result.exit_code, EXIT_PARSE_ERROR);

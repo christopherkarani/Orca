@@ -65,6 +65,7 @@ test {
     _ = daemon;
     _ = shutdown;
     _ = shell_eval;
+    _ = rust_visibility;
     _ = evaluate;
     _ = agent_hook;
     _ = daemon_contracts;
@@ -113,8 +114,8 @@ fn isRawGeneratedInvocation(command: []const u8, argv: []const []const u8) bool 
 }
 
 fn isRawPassthroughInvocation(command: []const u8, argv: []const []const u8) bool {
-    if (std.mem.eql(u8, command, "test") or std.mem.eql(u8, command, "scan") or
-        std.mem.eql(u8, command, "precommit")) return true;
+    // Daemon-proxied commands preserve byte identity for machine/help output.
+    if (isDaemonProxyCommand(command)) return true;
     if (std.mem.eql(u8, command, "packs")) {
         for (argv[1..]) |arg| {
             if (std.mem.eql(u8, arg, "--robot") or std.mem.eql(u8, arg, "--expand") or
@@ -335,8 +336,8 @@ fn runWithCwdUsing(
         };
     }
 
-    if (isPhase1ProxyCommand(command)) {
-        return proxyPhase1Command(daemon_execute, command, argv[1..], io, stdout, stderr);
+    if (isDaemonProxyCommand(command)) {
+        return proxyDaemonCommand(daemon_execute, command, argv[1..], io, stdout, stderr);
     }
 
     // Highest-value DX helper for installers, Homebrew post-install hooks, npm wrapper,
@@ -400,13 +401,24 @@ fn proxyVersionCommand(comptime execute_cli: anytype, io: std.Io, stdout: anytyp
     };
 }
 
-fn isPhase1ProxyCommand(command: []const u8) bool {
+/// Top-level commands proxied through the Rust daemon via ExecuteCli.
+/// Packs/history have richer Zig wrappers; these use argv passthrough.
+fn isDaemonProxyCommand(command: []const u8) bool {
     return std.mem.eql(u8, command, "test") or
         std.mem.eql(u8, command, "scan") or
-        std.mem.eql(u8, command, "precommit");
+        std.mem.eql(u8, command, "precommit") or
+        std.mem.eql(u8, command, "explain") or
+        std.mem.eql(u8, command, "allowlist") or
+        std.mem.eql(u8, command, "allow") or
+        std.mem.eql(u8, command, "unallow") or
+        std.mem.eql(u8, command, "allow-once") or
+        std.mem.eql(u8, command, "classify") or
+        std.mem.eql(u8, command, "suggest-allowlist") or
+        std.mem.eql(u8, command, "rebase-recover") or
+        std.mem.eql(u8, command, "config");
 }
 
-fn proxyPhase1Command(comptime execute_cli: anytype, command: []const u8, command_args: []const []const u8, io: std.Io, stdout: anytype, stderr: anytype) !u8 {
+fn proxyDaemonCommand(comptime execute_cli: anytype, command: []const u8, command_args: []const []const u8, io: std.Io, stdout: anytype, stderr: anytype) !u8 {
     const allocator = std.heap.smp_allocator;
     const daemon_argv = try allocator.alloc([]const u8, command_args.len + 1);
     defer allocator.free(daemon_argv);
@@ -419,6 +431,10 @@ fn proxyPhase1Command(comptime execute_cli: anytype, command: []const u8, comman
         return exit_codes.general;
     };
 }
+
+// Keep legacy names as aliases so existing tests and call sites compile.
+const isPhase1ProxyCommand = isDaemonProxyCommand;
+const proxyPhase1Command = proxyDaemonCommand;
 
 fn daemonErrorLabel(err: anyerror) []const u8 {
     return switch (err) {
@@ -658,6 +674,36 @@ fn fakePhase1ProxyUnavailable(_: std.Io, argv: []const []const u8, _: anytype, _
     return error.DaemonBinaryNotFound;
 }
 
+fn fakeExplainProxySuccess(_: std.Io, argv: []const []const u8, stdout: anytype, _: anytype) !u8 {
+    try std.testing.expectEqual(@as(usize, 2), argv.len);
+    try std.testing.expectEqualStrings("explain", argv[0]);
+    try std.testing.expectEqualStrings("git reset --hard", argv[1]);
+    try stdout.writeAll("explain ok\n");
+    return exit_codes.success;
+}
+
+fn fakeAllowlistProxySuccess(_: std.Io, argv: []const []const u8, stdout: anytype, _: anytype) !u8 {
+    try std.testing.expectEqual(@as(usize, 2), argv.len);
+    try std.testing.expectEqualStrings("allowlist", argv[0]);
+    try std.testing.expectEqualStrings("list", argv[1]);
+    try stdout.writeAll("allowlist ok\n");
+    return exit_codes.success;
+}
+
+fn fakeClassifyProxySuccess(_: std.Io, argv: []const []const u8, stdout: anytype, _: anytype) !u8 {
+    try std.testing.expectEqual(@as(usize, 2), argv.len);
+    try std.testing.expectEqualStrings("classify", argv[0]);
+    try std.testing.expectEqualStrings("rm -rf /tmp/x", argv[1]);
+    try stdout.writeAll("classify ok\n");
+    return exit_codes.success;
+}
+
+fn fakeAllowOnceProxyUnavailable(_: std.Io, argv: []const []const u8, _: anytype, _: anytype) !u8 {
+    try std.testing.expectEqual(@as(usize, 1), argv.len);
+    try std.testing.expectEqualStrings("allow-once", argv[0]);
+    return error.DaemonBinaryNotFound;
+}
+
 test "version proxy routes version argv and renders success" {
     var stdout_buf: [128]u8 = undefined;
     var stderr_buf: [128]u8 = undefined;
@@ -750,6 +796,53 @@ test "phase 1 proxy reports daemon unavailable explicitly" {
     try std.testing.expectEqualStrings("", stdout_writer.buffered());
     try std.testing.expect(std.mem.indexOf(u8, stderr_writer.buffered(), "orca packs: daemon unavailable") != null);
     try std.testing.expect(std.mem.indexOf(u8, stderr_writer.buffered(), "DaemonBinaryNotFound") != null);
+}
+
+test "phase A proxy commands construct daemon argv and render success" {
+    var stdout_buf: [128]u8 = undefined;
+    var stderr_buf: [128]u8 = undefined;
+    var stdout_writer: std.Io.Writer = .fixed(&stdout_buf);
+    var stderr_writer: std.Io.Writer = .fixed(&stderr_buf);
+
+    try std.testing.expect(isDaemonProxyCommand("explain"));
+    try std.testing.expect(isDaemonProxyCommand("allowlist"));
+    try std.testing.expect(isDaemonProxyCommand("allow"));
+    try std.testing.expect(isDaemonProxyCommand("unallow"));
+    try std.testing.expect(isDaemonProxyCommand("allow-once"));
+    try std.testing.expect(isDaemonProxyCommand("classify"));
+    try std.testing.expect(isDaemonProxyCommand("suggest-allowlist"));
+    try std.testing.expect(isDaemonProxyCommand("rebase-recover"));
+    try std.testing.expect(isDaemonProxyCommand("config"));
+    try std.testing.expect(!isDaemonProxyCommand("doctor"));
+    try std.testing.expect(!isDaemonProxyCommand("init"));
+
+    const explain_code = try proxyDaemonCommand(fakeExplainProxySuccess, "explain", &.{"git reset --hard"}, std.testing.io, &stdout_writer, &stderr_writer);
+    try std.testing.expectEqual(exit_codes.success, explain_code);
+    try std.testing.expectEqualStrings("explain ok\n", stdout_writer.buffered());
+
+    stdout_writer = .fixed(&stdout_buf);
+    stderr_writer = .fixed(&stderr_buf);
+    const allowlist_code = try proxyDaemonCommand(fakeAllowlistProxySuccess, "allowlist", &.{"list"}, std.testing.io, &stdout_writer, &stderr_writer);
+    try std.testing.expectEqual(exit_codes.success, allowlist_code);
+    try std.testing.expectEqualStrings("allowlist ok\n", stdout_writer.buffered());
+
+    stdout_writer = .fixed(&stdout_buf);
+    stderr_writer = .fixed(&stderr_buf);
+    const classify_code = try proxyDaemonCommand(fakeClassifyProxySuccess, "classify", &.{"rm -rf /tmp/x"}, std.testing.io, &stdout_writer, &stderr_writer);
+    try std.testing.expectEqual(exit_codes.success, classify_code);
+    try std.testing.expectEqualStrings("classify ok\n", stdout_writer.buffered());
+}
+
+test "phase A proxy reports daemon unavailable with command label" {
+    var stdout_buf: [128]u8 = undefined;
+    var stderr_buf: [128]u8 = undefined;
+    var stdout_writer: std.Io.Writer = .fixed(&stdout_buf);
+    var stderr_writer: std.Io.Writer = .fixed(&stderr_buf);
+
+    const code = try proxyDaemonCommand(fakeAllowOnceProxyUnavailable, "allow-once", &.{}, std.testing.io, &stdout_writer, &stderr_writer);
+    try std.testing.expectEqual(exit_codes.general, code);
+    try std.testing.expectEqualStrings("", stdout_writer.buffered());
+    try std.testing.expect(std.mem.indexOf(u8, stderr_writer.buffered(), "orca allow-once: daemon unavailable") != null);
 }
 
 test "proxied machine output remains byte-identical to daemon contract fixture" {

@@ -40,10 +40,12 @@ pub const CommandDecision = struct {
     decision: core.decision.Decision,
     owned_reason: []const u8,
     owned_rule_id: ?[]const u8 = null,
+    owned_remediation: ?[]const u8 = null,
 
     pub fn deinit(self: CommandDecision, allocator: std.mem.Allocator) void {
         allocator.free(self.owned_reason);
         if (self.owned_rule_id) |rule_id| allocator.free(rule_id);
+        if (self.owned_remediation) |remediation| allocator.free(remediation);
         self.policy_evaluation.deinit(allocator);
     }
 };

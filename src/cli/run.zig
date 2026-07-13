@@ -202,6 +202,7 @@ fn commandWithStdioAndEnv(io: std.Io, argv: []const []const u8, stdout: anytype,
         // plain-English reason + risk meter. Allocator-owned; freed by the handler.
         // Null on the fail-closed / user-denial paths (graceful degrade).
         last_denied_rule_id: ?[]const u8 = null,
+        last_denied_remediation: ?[]const u8 = null,
 
         pub fn beforeProcessLaunch(context: *anyopaque, session: core.session.Session) !void {
             const self: *@This() = @ptrCast(@alignCast(context));
@@ -295,12 +296,17 @@ fn commandWithStdioAndEnv(io: std.Io, argv: []const []const u8, stdout: anytype,
                 return;
             }
             try self.auditCommandEvent(session, .command_denied, rust_visibility.target_summary_shell, final_decision, rust_metadata);
-            // Capture the matched rule id for the rich deny block. The decision is
-            // freed by `defer command_decision.deinit` below; dupe so the handler
-            // can read it after this closure returns. `owned_rule_id` carries the
-            // daemon's pattern_name (e.g. "rm-rf-root-home"); null on fail-closed.
+            // Capture the matched rule id and remediation tip for the rich deny
+            // block. The decision is freed by `defer command_decision.deinit`
+            // below; dupe so the handler can read them after this closure returns.
+            // Rule id is pack:pattern when available; null on fail-closed.
             if (command_decision.owned_rule_id) |rid| {
                 self.last_denied_rule_id = try core_api.redactAlloc(self.allocator, rid);
+            }
+            if (command_decision.owned_remediation) |tip| {
+                self.last_denied_remediation = try core_api.redactAlloc(self.allocator, tip);
+            } else if (rust_metadata.remediation) |tip| {
+                self.last_denied_remediation = try core_api.redactAlloc(self.allocator, tip);
             }
             return error.CommandDenied;
         }
@@ -560,6 +566,7 @@ fn commandWithStdioAndEnv(io: std.Io, argv: []const []const u8, stdout: anytype,
                 allocator,
                 options.command_argv,
                 command_guard_context.last_denied_rule_id,
+                command_guard_context.last_denied_remediation,
                 loaded_policy.path,
                 effective_policy_mode.toString(),
             ) catch |render_err| {
@@ -569,6 +576,8 @@ fn commandWithStdioAndEnv(io: std.Io, argv: []const []const u8, stdout: anytype,
             };
             if (command_guard_context.last_denied_rule_id) |rid| allocator.free(rid);
             command_guard_context.last_denied_rule_id = null;
+            if (command_guard_context.last_denied_remediation) |tip| allocator.free(tip);
+            command_guard_context.last_denied_remediation = null;
             return exit_codes.denial;
         },
         error.BackendRequirementUnavailable => {
@@ -984,9 +993,11 @@ fn printSessionEnd(io: std.Io, stdout: anytype, result: supervisor.SessionResult
 ///     Risk   ███████░░░░  <label>        (standalone meter — colour-safe)
 ///   Safe alternatives               (when derivable from command shape)
 ///     → <alt>  (<note>)
-///   If this is intentional
-///     → edit .orca/policy.yaml …
-///     → orca policy explain command "…"
+///   Tip / Next
+///     Tip: <daemon suggestion when present>
+///     → orca explain "…"
+///     → orca allowlist add <rule> -r "reason"
+///     → orca allow-once <code>
 ///
 /// Graceful degrade: when `rule_id` is null (fail-closed / user-denial paths) or
 /// not in the reason table, a generic reason + medium risk meter are used and
@@ -1000,6 +1011,7 @@ fn renderDenyBlock(
     allocator: std.mem.Allocator,
     command_argv: []const []const u8,
     rule_id: ?[]const u8,
+    remediation_tip: ?[]const u8,
     policy_path: ?[]const u8,
     policy_mode: []const u8,
 ) !void {
@@ -1017,7 +1029,12 @@ fn renderDenyBlock(
         body.deinit(allocator);
     }
 
-    const reason_text = if (rule_id) |rid| tui.reasons.reasonForRule(rid) else "Matched a deny rule in your Orca policy.";
+    // Prefer bare pattern for the reason table (accepts pack:pattern or bare).
+    const reason_key = if (rule_id) |rid| blk: {
+        if (std.mem.lastIndexOfScalar(u8, rid, ':')) |idx| break :blk rid[idx + 1 ..];
+        break :blk rid;
+    } else null;
+    const reason_text = if (reason_key) |rid| tui.reasons.reasonForRule(rid) else "Matched a deny rule in your Orca policy.";
     try body.append(allocator, try std.fmt.allocPrint(allocator, "Why        {s}", .{reason_text}));
 
     if (rule_id) |rid| {
@@ -1036,19 +1053,24 @@ fn renderDenyBlock(
     try stdout.writeAll("\n");
 
     // Risk meter (standalone — colour-safe; degrades to plain on non-TTY).
-    const risk = if (rule_id) |rid| tui.reasons.riskForRule(rid) else .medium;
+    const risk = if (reason_key) |rid| tui.reasons.riskForRule(rid) else .medium;
     try stdout.writeAll("  ");
     try tui.theme.paint(io, stdout, .muted, "Risk   ");
     try tui.render.meter(io, stdout, tui.reasons.riskFraction(risk), tui.reasons.riskLabel(risk));
     try stdout.writeAll("\n\n");
 
-    // Safe alternatives (derived from command shape; may be empty).
+    // Safe alternatives: prefer daemon suggestion tip, then command-shape heuristics.
     const alts = try tui.reasons.safeAlternatives(allocator, command_display);
     defer {
         for (alts) |a| allocator.free(a.command);
         allocator.free(alts);
     }
-    if (alts.len > 0) {
+    if (remediation_tip) |tip| {
+        try tui.theme.paintBold(io, stdout, .info, "  Tip");
+        try stdout.writeAll("\n  ");
+        try stdout.writeAll(tip);
+        try stdout.writeAll("\n\n");
+    } else if (alts.len > 0) {
         try tui.theme.paintBold(io, stdout, .info, "  Safe alternatives");
         try stdout.writeAll("\n");
         for (alts) |a| {
@@ -1059,11 +1081,25 @@ fn renderDenyBlock(
         try stdout.writeAll("\n");
     }
 
-    // "If this is intentional" footer — power-user escape hatches.
-    try tui.theme.paintBold(io, stdout, .muted, "  If this is intentional");
+    // Next-step footer: daemon pack tools (explain / allowlist / allow-once).
+    const next_steps = try rust_visibility.formatDenyNextSteps(allocator, command_display, rule_id, null);
+    defer allocator.free(next_steps);
+    try tui.theme.paintBold(io, stdout, .muted, "  Next");
     try stdout.writeAll("\n");
-    try stdout.writeAll("  → edit .orca/policy.yaml to add an exception\n");
-    try stdout.print("  → orca policy explain command \"{s}\"\n", .{command_display});
+    // Indent each line of the footer for the panel-adjacent layout.
+    var line_iter = std.mem.splitScalar(u8, next_steps, '\n');
+    while (line_iter.next()) |line| {
+        if (line.len == 0) continue;
+        if (std.mem.startsWith(u8, line, "Next:")) continue; // title already printed
+        if (std.mem.startsWith(u8, line, "  ")) {
+            try stdout.writeAll(line);
+            try stdout.writeAll("\n");
+        } else {
+            try stdout.writeAll("  ");
+            try stdout.writeAll(line);
+            try stdout.writeAll("\n");
+        }
+    }
     try stdout.writeAll("\n");
 }
 
@@ -1665,20 +1701,22 @@ test "deny block renders rich guardian block for rm -rf /" {
     try std.testing.expect(std.mem.indexOf(u8, err, "Policy") != null);
     // Risk meter label is present.
     try std.testing.expect(std.mem.indexOf(u8, err, "Risk") != null);
-    // Safe alternatives derived from `rm -rf /` shape.
-    try std.testing.expect(std.mem.indexOf(u8, err, "Safe alternatives") != null);
-    try std.testing.expect(std.mem.indexOf(u8, err, "./build") != null);
-    // "If this is intentional" footer with a real escape hatch.
-    try std.testing.expect(std.mem.indexOf(u8, err, "If this is intentional") != null);
-    try std.testing.expect(std.mem.indexOf(u8, err, "orca policy explain") != null);
+    // Daemon suggestion tip (mock includes safer alternative).
+    try std.testing.expect(std.mem.indexOf(u8, err, "Tip") != null);
+    try std.testing.expect(std.mem.indexOf(u8, err, "rm -rf ./build") != null or std.mem.indexOf(u8, err, "./build") != null);
+    // Next-step footer with pack tools (not policy.yaml explain).
+    try std.testing.expect(std.mem.indexOf(u8, err, "Next") != null);
+    try std.testing.expect(std.mem.indexOf(u8, err, "orca explain") != null);
+    try std.testing.expect(std.mem.indexOf(u8, err, "orca allowlist add") != null);
+    try std.testing.expect(std.mem.indexOf(u8, err, "orca allow-once") != null);
     // The old flat line is gone.
     try std.testing.expect(std.mem.indexOf(u8, err, "command denied by command guard") == null);
 }
 
 test "deny block includes reasonForRule text when rule id is known" {
     // reasonForRule is driven by the daemon's pattern_name. The mock deny
-    // evaluator returns pattern_name "destructive_rm" (not in the table), so it
-    // exercises the graceful-degrade fallback. Assert the fallback text appears.
+    // evaluator returns pack:pattern "core.filesystem:destructive_rm"; pattern
+    // is not in the reason table, so graceful-degrade fallback still applies.
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
     const root = try tmp.dir.realPathFileAlloc(std.testing.io, ".", std.testing.allocator);
@@ -1692,8 +1730,8 @@ test "deny block includes reasonForRule text when rule id is known" {
     const code = try commandForGuardTestWithShellEvaluator(&.{ "--workspace", root, "--", "rm", "-rf", "/" }, &stdout_writer, &stderr_writer, .inherit, shell_eval.mockDaemonDenyEvaluator);
     try std.testing.expectEqual(exit_codes.denial, code);
     const err = stderr_writer.buffered();
-    // The captured rule id ("destructive_rm") is shown in the Rule row.
-    try std.testing.expect(std.mem.indexOf(u8, err, "destructive_rm") != null);
+    // Full pack:pattern rule id is shown in the Rule row.
+    try std.testing.expect(std.mem.indexOf(u8, err, "core.filesystem:destructive_rm") != null);
     // Unknown rule → fallback reason text from reasonForRule.
     try std.testing.expect(std.mem.indexOf(u8, err, "deny rule") != null);
 }

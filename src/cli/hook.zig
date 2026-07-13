@@ -2207,7 +2207,7 @@ test "hook daemon Deny preserves reason and rule metadata" {
 
     try std.testing.expectEqual(PluginDecision.block, result.decision);
     try std.testing.expectEqual(RiskLevel.critical, result.risk);
-    try std.testing.expectEqualStrings("destructive_rm", result.rule.?);
+    try std.testing.expectEqualStrings("core.filesystem:destructive_rm", result.rule.?);
     try std.testing.expect(std.mem.indexOf(u8, result.message, "recursive delete") != null);
 }
 

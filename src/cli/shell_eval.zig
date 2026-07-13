@@ -111,10 +111,12 @@ const OwnedRunDecision = struct {
     decision: core.decision.Decision,
     owned_reason: []const u8,
     owned_rule_id: ?[]const u8 = null,
+    owned_remediation: ?[]const u8 = null,
 
     pub fn deinit(self: OwnedRunDecision, allocator: std.mem.Allocator) void {
         allocator.free(self.owned_reason);
         if (self.owned_rule_id) |rule_id| allocator.free(rule_id);
+        if (self.owned_remediation) |remediation| allocator.free(remediation);
     }
 };
 
@@ -167,11 +169,12 @@ pub fn buildDaemonDenyReason(
     reason: []const u8,
     rule: ?[]const u8,
 } {
-    const rule = if (daemon.responseDenyRule(result)) |rule_name| try allocator.dupe(u8, rule_name) else null;
+    // Prefer pack:pattern (e.g. core.git:reset-hard) over bare pattern_name.
+    const rule = try rust_visibility.ruleIdFromDaemonResult(allocator, result);
     errdefer if (rule) |rule_name| allocator.free(rule_name);
 
     const reason = if (rule) |rule_name|
-        try std.fmt.allocPrint(allocator, "blocked by Orca policy rule: {s}", .{rule_name})
+        try std.fmt.allocPrint(allocator, "blocked by Orca rule: {s}", .{rule_name})
     else blk: {
         // Never echo raw daemon reason strings; they may include matched command fragments.
         break :blk try allocator.dupe(u8, "command denied by Orca policy");
@@ -215,6 +218,11 @@ pub fn decisionFromDaemonResult(
         },
         .deny => blk: {
             const deny = try buildDaemonDenyReason(allocator, result);
+            errdefer {
+                allocator.free(deny.reason);
+                if (deny.rule) |rule| allocator.free(rule);
+            }
+            const remediation = try rust_visibility.remediationFromDaemonResult(allocator, result);
             const risk = riskLevelFromDaemonSeverity(daemon.responseStringField(result, "severity"));
             break :blk OwnedRunDecision{
                 .decision = .{
@@ -227,6 +235,7 @@ pub fn decisionFromDaemonResult(
                 },
                 .owned_reason = deny.reason,
                 .owned_rule_id = deny.rule,
+                .owned_remediation = remediation,
             };
         },
         .error_status => try failClosedRunDecision(
@@ -349,6 +358,7 @@ pub fn evaluateCommand(
 
     const owned_reason = translated.owned_reason;
     const owned_rule_id = translated.owned_rule_id;
+    const owned_remediation = translated.owned_remediation;
 
     return .{
         .classification = classification,
@@ -361,6 +371,7 @@ pub fn evaluateCommand(
         .decision = translated.decision,
         .owned_reason = owned_reason,
         .owned_rule_id = owned_rule_id,
+        .owned_remediation = owned_remediation,
     };
 }
 
@@ -404,7 +415,7 @@ pub fn mockDaemonAllowEvaluator(allocator: std.mem.Allocator, shell_event: Shell
 
 pub fn mockDaemonDenyEvaluator(allocator: std.mem.Allocator, shell_event: ShellCommandEvent) daemon.DaemonError!std.json.Parsed(daemon.DaemonResponse) {
     recordMockShellEvent(shell_event);
-    return mockDaemonResponse(allocator, "{\"id\":1,\"result\":{\"status\":\"Deny\",\"reason\":\"Command denied by evaluator\",\"pack_id\":\"git\",\"pattern_name\":\"destructive_rm\",\"severity\":\"critical\",\"explanation\":\"recursive delete of root\"}}");
+    return mockDaemonResponse(allocator, "{\"id\":1,\"result\":{\"status\":\"Deny\",\"reason\":\"Command denied by evaluator\",\"pack_id\":\"core.filesystem\",\"pattern_name\":\"destructive_rm\",\"severity\":\"critical\",\"explanation\":\"recursive delete of root\",\"suggestions\":[{\"command\":\"rm -rf ./build\",\"description\":\"Limit delete to a project build directory\",\"platform\":\"any\"}]}}");
 }
 
 pub fn mockDaemonSoftBlockAllowEvaluator(allocator: std.mem.Allocator, shell_event: ShellCommandEvent) daemon.DaemonError!std.json.Parsed(daemon.DaemonResponse) {
@@ -453,7 +464,10 @@ test "shell_eval denies dangerous command via mock daemon" {
     defer decision.deinit(allocator);
     try std.testing.expectEqual(core.decision.DecisionResult.deny, decision.decision.result);
     try std.testing.expect(decision.owned_rule_id != null);
-    try std.testing.expectEqualStrings("destructive_rm", decision.owned_rule_id.?);
+    try std.testing.expectEqualStrings("core.filesystem:destructive_rm", decision.owned_rule_id.?);
+    try std.testing.expect(std.mem.indexOf(u8, decision.owned_reason, "blocked by Orca rule: core.filesystem:destructive_rm") != null);
+    try std.testing.expect(decision.owned_remediation != null);
+    try std.testing.expect(std.mem.indexOf(u8, decision.owned_remediation.?, "rm -rf ./build") != null);
 }
 
 test "shell_eval fails closed when daemon unavailable" {
