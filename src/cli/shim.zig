@@ -7,6 +7,7 @@ const policy = @import("orca_core").policy;
 const exit_codes = @import("exit_codes.zig");
 const help = @import("help.zig");
 const shell_eval = @import("shell_eval.zig");
+const rust_visibility = @import("rust_visibility.zig");
 
 const ShimOptions = struct {
     command_argv: []const []const u8 = &.{},
@@ -103,6 +104,16 @@ fn execWithEnv(io: std.Io, allocator: std.mem.Allocator, command_argv: []const [
             try appendCommandEvent(io, &writer, session_id, .command_attempt, display, null);
             try appendCommandEvent(io, &writer, session_id, .command_denied, display, command_decision.decision);
             try stderr.print("orca shim exec: command denied: {s}\n", .{command_decision.decision.reason});
+            const command_display = try intercept.commands.displayArgvRedactedAlloc(allocator, command_argv);
+            defer allocator.free(command_display);
+            const next = try rust_visibility.formatDenyNextSteps(
+                allocator,
+                command_display,
+                command_decision.owned_rule_id,
+                command_decision.owned_remediation,
+            );
+            defer allocator.free(next);
+            try stderr.writeAll(next);
             return exit_codes.denial;
         }
     }

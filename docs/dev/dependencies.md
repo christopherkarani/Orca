@@ -47,3 +47,32 @@ hash `vaxis-0.6.0-BWNV_Gz5CQBTx7g34RYMPTL-bJhsFCU3ECHQ-CZlBVsn` in
   built host archive and reports `orca` plus `orca-daemon` byte sizes. The first
   Phase 8 dry-run on darwin-arm64 established `orca` at 2,828,488 bytes and
   `orca-daemon` at 19,752,816 bytes; no hard threshold is enforced.
+
+## Dashboard UI (`orca-dashboard-ui`)
+
+Local operator UI exported as static assets under `orca-dashboard-ui/dist` and
+served by the Zig `orca dashboard` command. These Node packages are **build-time
+only** for the UI export; they are not linked into `orca` or `orca-daemon`.
+
+| Package | Role | Notes |
+|---|---|---|
+| `next` ^15.1 | Static export / React app framework | Builds machine-wide + workspace dashboard |
+| `react` / `react-dom` ^19 | UI runtime | Used only in the exported static bundle |
+| `tailwindcss` ^3.4 + `postcss` / `autoprefixer` | Styling | Build-time CSS pipeline |
+| `typescript` ^5.7 | Typecheck | Dev/build only |
+| `lucide-react` ^0.460 | Icons | Presentation only |
+| `shiki` ^1.24 / `ansi-to-html` ^0.7 | Code/ANSI rendering | Presentation of command output |
+| `clsx` / `tailwind-merge` / `class-variance-authority` | Class composition | Presentation only |
+| `geist` ^1.3 | Font package | Presentation only |
+
+- License: primarily MIT (Next/React ecosystem). Review upstream licenses on
+  upgrade.
+- Security boundary: the dashboard UI talks to the local Zig dashboard HTTP
+  server (CSRF-gated actions, localhost-only by default). It does not evaluate
+  policy or replace the daemon. Secrets must still be redacted before any
+  host-visible text is written.
+- Why not Zig-only assets: the machine-wide operator UI needs a component model
+  and static export pipeline; the existing Zig dashboard server continues to own
+  API, authz, and feed aggregation.
+- Testing: `npm test` in `orca-dashboard-ui` (contract tests) and
+  `scripts/install-layout-smoke-test.sh` markers for the shipped export.

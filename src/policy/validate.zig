@@ -15,6 +15,9 @@ pub fn policy(value: *const schema.Policy) !void {
     try validateCredentials(value.credentials);
     try validateServices(value.services, value.credentials);
     try validateRuleSet("mcp", value.mcp, core.limits.max_event_field_len);
+    // Audit records are persisted and may be exported. Disabling secret
+    // redaction is therefore not a supported policy state.
+    if (!value.audit.redact_secrets) return error.InvalidPolicy;
 }
 
 fn validateEnv(env: schema.EnvPolicy) !void {
@@ -166,6 +169,14 @@ test "built-in presets validate" {
         defer agent_preset.deinit();
         try policy(&agent_preset);
     }
+}
+
+test "policy rejects disabling persisted secret redaction" {
+    const load = @import("load.zig");
+    var loaded = try load.loadPreset(std.testing.allocator, .observe);
+    defer loaded.deinit();
+    loaded.audit.redact_secrets = false;
+    try std.testing.expectError(error.InvalidPolicy, policy(&loaded));
 }
 
 test "policy patterns with unsafe control characters are rejected" {

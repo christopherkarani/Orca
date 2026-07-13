@@ -65,6 +65,7 @@ test {
     _ = daemon;
     _ = shutdown;
     _ = shell_eval;
+    _ = rust_visibility;
     _ = evaluate;
     _ = agent_hook;
     _ = daemon_contracts;
@@ -113,8 +114,8 @@ fn isRawGeneratedInvocation(command: []const u8, argv: []const []const u8) bool 
 }
 
 fn isRawPassthroughInvocation(command: []const u8, argv: []const []const u8) bool {
-    if (std.mem.eql(u8, command, "test") or std.mem.eql(u8, command, "scan") or
-        std.mem.eql(u8, command, "precommit")) return true;
+    // Daemon-proxied commands preserve byte identity for machine/help output.
+    if (isDaemonProxyCommand(command)) return true;
     if (std.mem.eql(u8, command, "packs")) {
         for (argv[1..]) |arg| {
             if (std.mem.eql(u8, arg, "--robot") or std.mem.eql(u8, arg, "--expand") or
@@ -208,13 +209,45 @@ pub fn run(io: std.Io, environ_map: *const std.process.Environ.Map, argv: []cons
     return runWithCwd(io, environ_map, std.Io.Dir.cwd(), argv, stdout, stderr);
 }
 
-const GlobalArgs = struct { command_index: usize, no_rich: bool };
+const GlobalArgs = struct {
+    /// Argv with global `--no-rich` tokens removed (not after `--`).
+    argv: []const []const u8,
+    no_rich: bool,
+    /// True when `argv` is heap-owned and must be freed by the caller.
+    owned: bool = false,
+};
 
-fn parseGlobalArgs(argv: []const []const u8) GlobalArgs {
-    var index: usize = 0;
+/// Strip global `--no-rich` before or after the command, but never after `--`
+/// (child argv / opaque payloads must keep a literal `--no-rich`).
+fn parseGlobalArgs(allocator: std.mem.Allocator, argv: []const []const u8) !GlobalArgs {
     var no_rich = false;
-    while (index < argv.len and std.mem.eql(u8, argv[index], "--no-rich")) : (index += 1) no_rich = true;
-    return .{ .command_index = index, .no_rich = no_rich };
+    var needs_filter = false;
+    var after_separator = false;
+    for (argv) |arg| {
+        if (!after_separator and std.mem.eql(u8, arg, "--")) {
+            after_separator = true;
+            continue;
+        }
+        if (!after_separator and std.mem.eql(u8, arg, "--no-rich")) {
+            no_rich = true;
+            needs_filter = true;
+        }
+    }
+    if (!needs_filter) return .{ .argv = argv, .no_rich = no_rich, .owned = false };
+
+    var list: std.ArrayList([]const u8) = .empty;
+    errdefer list.deinit(allocator);
+    after_separator = false;
+    for (argv) |arg| {
+        if (!after_separator and std.mem.eql(u8, arg, "--")) {
+            after_separator = true;
+            try list.append(allocator, arg);
+            continue;
+        }
+        if (!after_separator and std.mem.eql(u8, arg, "--no-rich")) continue;
+        try list.append(allocator, arg);
+    }
+    return .{ .argv = try list.toOwnedSlice(allocator), .no_rich = no_rich, .owned = true };
 }
 
 pub fn runWithCwd(io: std.Io, environ_map: *const std.process.Environ.Map, cwd: std.Io.Dir, argv_input: []const []const u8, stdout: anytype, stderr: anytype) !u8 {
@@ -233,8 +266,10 @@ fn runWithCwdUsing(
     stdout: anytype,
     stderr: anytype,
 ) !u8 {
-    const global_args = parseGlobalArgs(argv_input);
-    const argv = argv_input[global_args.command_index..];
+    const allocator = std.heap.smp_allocator;
+    const global_args = try parseGlobalArgs(allocator, argv_input);
+    defer if (global_args.owned) allocator.free(global_args.argv);
+    const argv = global_args.argv;
     const no_rich_env = tui.output_policy.envDisablesRich(environ_map.get("ORCA_NO_RICH"));
     const machine_output = if (argv.len == 0) false else !shouldShowBanner(argv[0], argv) and
         (isMachineArgv(argv) or isAlwaysMachineCommand(argv[0]) or isRawGeneratedInvocation(argv[0], argv));
@@ -335,8 +370,8 @@ fn runWithCwdUsing(
         };
     }
 
-    if (isPhase1ProxyCommand(command)) {
-        return proxyPhase1Command(daemon_execute, command, argv[1..], io, stdout, stderr);
+    if (isDaemonProxyCommand(command)) {
+        return proxyDaemonCommand(daemon_execute, command, argv[1..], io, stdout, stderr);
     }
 
     // Highest-value DX helper for installers, Homebrew post-install hooks, npm wrapper,
@@ -400,13 +435,24 @@ fn proxyVersionCommand(comptime execute_cli: anytype, io: std.Io, stdout: anytyp
     };
 }
 
-fn isPhase1ProxyCommand(command: []const u8) bool {
+/// Top-level commands proxied through the Rust daemon via ExecuteCli.
+/// Packs/history have richer Zig wrappers; these use argv passthrough.
+fn isDaemonProxyCommand(command: []const u8) bool {
     return std.mem.eql(u8, command, "test") or
         std.mem.eql(u8, command, "scan") or
-        std.mem.eql(u8, command, "precommit");
+        std.mem.eql(u8, command, "precommit") or
+        std.mem.eql(u8, command, "explain") or
+        std.mem.eql(u8, command, "allowlist") or
+        std.mem.eql(u8, command, "allow") or
+        std.mem.eql(u8, command, "unallow") or
+        std.mem.eql(u8, command, "allow-once") or
+        std.mem.eql(u8, command, "classify") or
+        std.mem.eql(u8, command, "suggest-allowlist") or
+        std.mem.eql(u8, command, "rebase-recover") or
+        std.mem.eql(u8, command, "config");
 }
 
-fn proxyPhase1Command(comptime execute_cli: anytype, command: []const u8, command_args: []const []const u8, io: std.Io, stdout: anytype, stderr: anytype) !u8 {
+fn proxyDaemonCommand(comptime execute_cli: anytype, command: []const u8, command_args: []const []const u8, io: std.Io, stdout: anytype, stderr: anytype) !u8 {
     const allocator = std.heap.smp_allocator;
     const daemon_argv = try allocator.alloc([]const u8, command_args.len + 1);
     defer allocator.free(daemon_argv);
@@ -419,6 +465,10 @@ fn proxyPhase1Command(comptime execute_cli: anytype, command: []const u8, comman
         return exit_codes.general;
     };
 }
+
+// Keep legacy names as aliases so existing tests and call sites compile.
+const isPhase1ProxyCommand = isDaemonProxyCommand;
+const proxyPhase1Command = proxyDaemonCommand;
 
 fn daemonErrorLabel(err: anyerror) []const u8 {
     return switch (err) {
@@ -658,6 +708,36 @@ fn fakePhase1ProxyUnavailable(_: std.Io, argv: []const []const u8, _: anytype, _
     return error.DaemonBinaryNotFound;
 }
 
+fn fakeExplainProxySuccess(_: std.Io, argv: []const []const u8, stdout: anytype, _: anytype) !u8 {
+    try std.testing.expectEqual(@as(usize, 2), argv.len);
+    try std.testing.expectEqualStrings("explain", argv[0]);
+    try std.testing.expectEqualStrings("git reset --hard", argv[1]);
+    try stdout.writeAll("explain ok\n");
+    return exit_codes.success;
+}
+
+fn fakeAllowlistProxySuccess(_: std.Io, argv: []const []const u8, stdout: anytype, _: anytype) !u8 {
+    try std.testing.expectEqual(@as(usize, 2), argv.len);
+    try std.testing.expectEqualStrings("allowlist", argv[0]);
+    try std.testing.expectEqualStrings("list", argv[1]);
+    try stdout.writeAll("allowlist ok\n");
+    return exit_codes.success;
+}
+
+fn fakeClassifyProxySuccess(_: std.Io, argv: []const []const u8, stdout: anytype, _: anytype) !u8 {
+    try std.testing.expectEqual(@as(usize, 2), argv.len);
+    try std.testing.expectEqualStrings("classify", argv[0]);
+    try std.testing.expectEqualStrings("rm -rf /tmp/x", argv[1]);
+    try stdout.writeAll("classify ok\n");
+    return exit_codes.success;
+}
+
+fn fakeAllowOnceProxyUnavailable(_: std.Io, argv: []const []const u8, _: anytype, _: anytype) !u8 {
+    try std.testing.expectEqual(@as(usize, 1), argv.len);
+    try std.testing.expectEqualStrings("allow-once", argv[0]);
+    return error.DaemonBinaryNotFound;
+}
+
 test "version proxy routes version argv and renders success" {
     var stdout_buf: [128]u8 = undefined;
     var stderr_buf: [128]u8 = undefined;
@@ -750,6 +830,53 @@ test "phase 1 proxy reports daemon unavailable explicitly" {
     try std.testing.expectEqualStrings("", stdout_writer.buffered());
     try std.testing.expect(std.mem.indexOf(u8, stderr_writer.buffered(), "orca packs: daemon unavailable") != null);
     try std.testing.expect(std.mem.indexOf(u8, stderr_writer.buffered(), "DaemonBinaryNotFound") != null);
+}
+
+test "phase A proxy commands construct daemon argv and render success" {
+    var stdout_buf: [128]u8 = undefined;
+    var stderr_buf: [128]u8 = undefined;
+    var stdout_writer: std.Io.Writer = .fixed(&stdout_buf);
+    var stderr_writer: std.Io.Writer = .fixed(&stderr_buf);
+
+    try std.testing.expect(isDaemonProxyCommand("explain"));
+    try std.testing.expect(isDaemonProxyCommand("allowlist"));
+    try std.testing.expect(isDaemonProxyCommand("allow"));
+    try std.testing.expect(isDaemonProxyCommand("unallow"));
+    try std.testing.expect(isDaemonProxyCommand("allow-once"));
+    try std.testing.expect(isDaemonProxyCommand("classify"));
+    try std.testing.expect(isDaemonProxyCommand("suggest-allowlist"));
+    try std.testing.expect(isDaemonProxyCommand("rebase-recover"));
+    try std.testing.expect(isDaemonProxyCommand("config"));
+    try std.testing.expect(!isDaemonProxyCommand("doctor"));
+    try std.testing.expect(!isDaemonProxyCommand("init"));
+
+    const explain_code = try proxyDaemonCommand(fakeExplainProxySuccess, "explain", &.{"git reset --hard"}, std.testing.io, &stdout_writer, &stderr_writer);
+    try std.testing.expectEqual(exit_codes.success, explain_code);
+    try std.testing.expectEqualStrings("explain ok\n", stdout_writer.buffered());
+
+    stdout_writer = .fixed(&stdout_buf);
+    stderr_writer = .fixed(&stderr_buf);
+    const allowlist_code = try proxyDaemonCommand(fakeAllowlistProxySuccess, "allowlist", &.{"list"}, std.testing.io, &stdout_writer, &stderr_writer);
+    try std.testing.expectEqual(exit_codes.success, allowlist_code);
+    try std.testing.expectEqualStrings("allowlist ok\n", stdout_writer.buffered());
+
+    stdout_writer = .fixed(&stdout_buf);
+    stderr_writer = .fixed(&stderr_buf);
+    const classify_code = try proxyDaemonCommand(fakeClassifyProxySuccess, "classify", &.{"rm -rf /tmp/x"}, std.testing.io, &stdout_writer, &stderr_writer);
+    try std.testing.expectEqual(exit_codes.success, classify_code);
+    try std.testing.expectEqualStrings("classify ok\n", stdout_writer.buffered());
+}
+
+test "phase A proxy reports daemon unavailable with command label" {
+    var stdout_buf: [128]u8 = undefined;
+    var stderr_buf: [128]u8 = undefined;
+    var stdout_writer: std.Io.Writer = .fixed(&stdout_buf);
+    var stderr_writer: std.Io.Writer = .fixed(&stderr_buf);
+
+    const code = try proxyDaemonCommand(fakeAllowOnceProxyUnavailable, "allow-once", &.{}, std.testing.io, &stdout_writer, &stderr_writer);
+    try std.testing.expectEqual(exit_codes.general, code);
+    try std.testing.expectEqualStrings("", stdout_writer.buffered());
+    try std.testing.expect(std.mem.indexOf(u8, stderr_writer.buffered(), "orca allow-once: daemon unavailable") != null);
 }
 
 test "proxied machine output remains byte-identical to daemon contract fixture" {
@@ -1393,14 +1520,31 @@ test "global --no-rich is consumed without changing version JSON contract" {
     try std.testing.expectEqualStrings(baseline.buffered(), escaped.buffered());
 }
 
-test "global flag parser only consumes no-rich before the command" {
-    const prefix = parseGlobalArgs(&.{ "--no-rich", "version", "--json" });
+test "global flag parser consumes no-rich before or after the command" {
+    const allocator = std.testing.allocator;
+
+    const prefix = try parseGlobalArgs(allocator, &.{ "--no-rich", "version", "--json" });
+    defer if (prefix.owned) allocator.free(prefix.argv);
     try std.testing.expect(prefix.no_rich);
-    try std.testing.expectEqual(@as(usize, 1), prefix.command_index);
-    const literal = parseGlobalArgs(&.{ "run", "--", "echo", "--no-rich" });
+    try std.testing.expectEqual(@as(usize, 2), prefix.argv.len);
+    try std.testing.expectEqualStrings("version", prefix.argv[0]);
+
+    const suffix = try parseGlobalArgs(allocator, &.{ "version", "--no-rich", "--json" });
+    defer if (suffix.owned) allocator.free(suffix.argv);
+    try std.testing.expect(suffix.no_rich);
+    try std.testing.expectEqual(@as(usize, 2), suffix.argv.len);
+    try std.testing.expectEqualStrings("version", suffix.argv[0]);
+    try std.testing.expectEqualStrings("--json", suffix.argv[1]);
+
+    // After `--`, `--no-rich` is child argv and must not be consumed.
+    const literal = try parseGlobalArgs(allocator, &.{ "run", "--", "echo", "--no-rich" });
+    defer if (literal.owned) allocator.free(literal.argv);
     try std.testing.expect(!literal.no_rich);
-    try std.testing.expectEqual(@as(usize, 0), literal.command_index);
-    const value = parseGlobalArgs(&.{ "decide", "command", "--json", "{\"value\":\"--no-rich\"}" });
+    try std.testing.expectEqual(@as(usize, 4), literal.argv.len);
+
+    // Opaque payload values are a single argv element, not the flag.
+    const value = try parseGlobalArgs(allocator, &.{ "decide", "command", "--json", "{\"value\":\"--no-rich\"}" });
+    defer if (value.owned) allocator.free(value.argv);
     try std.testing.expect(!value.no_rich);
 }
 

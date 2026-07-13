@@ -47,7 +47,11 @@ fn dashboardWorkspaceSelection(
 }
 
 fn actionAllowedWithoutWorkspace(action: []const u8) bool {
-    return std.mem.eql(u8, action, "doctor") or std.mem.eql(u8, action, "license-status");
+    return std.mem.eql(u8, action, "doctor") or
+        std.mem.eql(u8, action, "license-status") or
+        // Plugin doctor is host-global (not workspace policy) and safe in machine mode.
+        std.mem.eql(u8, action, "openclaw-doctor") or
+        std.mem.eql(u8, action, "hermes-doctor");
 }
 
 const DashboardOptions = struct {
@@ -60,7 +64,6 @@ const DashboardOptions = struct {
 const DashboardContext = struct {
     workspace_root: ?[]const u8,
     dashboard_root: ?[]const u8,
-    resource_root_hint: []const u8,
 };
 
 const Request = struct {
@@ -128,7 +131,14 @@ fn parseOptions(io: std.Io, argv: []const []const u8, stdout: anytype, stderr: a
         } else if (std.mem.eql(u8, arg, "--machine")) {
             explicit_machine = true;
         } else {
-            try stderr.print("orca dashboard: unknown option '{s}'.\n", .{arg});
+            const suggestions = @import("suggestions.zig");
+            suggestions.writeUnknownOption(
+                stderr,
+                "orca dashboard",
+                arg,
+                &.{ "--host", "--port", "--once", "--workspace", "--machine", "--help" },
+                "dashboard",
+            ) catch {};
             return error.Usage;
         }
     }
@@ -154,7 +164,8 @@ fn serve(io: std.Io, options: DashboardOptions, stdout: anytype, stderr: anytype
         return exit_codes.general;
     };
     defer server.deinit(io);
-    try stdout.print("Orca dashboard listening at http://{s}:{d}\n", .{ options.host, options.port });
+    const mode_label: []const u8 = if (options.workspace != null) "workspace" else "machine";
+    try stdout.print("Orca dashboard listening at http://{s}:{d} ({s} mode)\n", .{ options.host, options.port, mode_label });
     try flushIfSupported(stdout);
 
     var gpa_state: std.heap.DebugAllocator(.{}) = .init;
@@ -167,11 +178,6 @@ fn serve(io: std.Io, options: DashboardOptions, stdout: anytype, stderr: anytype
     else
         null;
     defer if (workspace_root) |root| allocator.free(root);
-    const resource_root_hint = if (workspace_root) |root|
-        try allocator.dupe(u8, root)
-    else
-        try dashboard.resolveWorkspaceRoot(io, allocator);
-    defer allocator.free(resource_root_hint);
     const dashboard_root = if (workspace_root == null)
         try feed_writer.resolveGlobalDashboardRoot(allocator)
     else
@@ -180,7 +186,6 @@ fn serve(io: std.Io, options: DashboardOptions, stdout: anytype, stderr: anytype
     const context = DashboardContext{
         .workspace_root = workspace_root,
         .dashboard_root = dashboard_root,
-        .resource_root_hint = resource_root_hint,
     };
 
     while (true) {
@@ -197,9 +202,21 @@ fn serve(io: std.Io, options: DashboardOptions, stdout: anytype, stderr: anytype
     return exit_codes.success;
 }
 
-fn resolveDashboardDistDir(io: std.Io, allocator: std.mem.Allocator, workspace_root: []const u8) ![]u8 {
+fn resolveDashboardDistDirTrusted(io: std.Io, allocator: std.mem.Allocator) ![]u8 {
+    return resolveDashboardDistDirTrustedFrom(io, allocator, null);
+}
+
+fn resolveDashboardDistDirTrustedFrom(
+    io: std.Io,
+    allocator: std.mem.Allocator,
+    resource_root_override: ?[]const u8,
+) ![]u8 {
     for ([_][]const u8{ installed_ui_dir, canonical_ui_dir }) |relative_path| {
-        const resolved = resource_root.resolveResourcePath(io, allocator, .{ .workspace_root = workspace_root }, relative_path) catch continue;
+        const resolved = resource_root.resolveResourcePath(io, allocator, .{
+            // Dashboard code must never be selected from the current workspace.
+            .workspace_root = "/__orca_dashboard_workspace_assets_disabled__",
+            .resource_root_override = resource_root_override,
+        }, relative_path) catch continue;
         const index_path = std.fs.path.join(allocator, &.{ resolved, "index.html" }) catch |err| {
             allocator.free(resolved);
             return err;
@@ -233,7 +250,7 @@ fn handleConnection(
         return;
     }
 
-    const dist_dir = resolveDashboardDistDir(io, allocator, context.resource_root_hint) catch |err| switch (err) {
+    const dist_dir = resolveDashboardDistDirTrusted(io, allocator) catch |err| switch (err) {
         error.ResourceNotFound => {
             if (std.mem.eql(u8, request.method, "GET") and !std.mem.startsWith(u8, request.path, "/api/")) {
                 return sendText(io, stream, 503, "Service Unavailable", "text/html; charset=utf-8", dashboard_ui_missing_html);
@@ -845,18 +862,21 @@ test "dashboard mode defaults to machine and honors workspace sources" {
     try std.testing.expectEqualStrings("/tmp/env", dashboardWorkspaceSelection(null, false, "/tmp/env").?);
 }
 
-test "dashboard prefers the polished installed bundle" {
+test "dashboard ignores workspace assets and accepts explicit trusted resource root" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
     try tmp.dir.createDirPath(std.testing.io, "src/dashboard/assets");
     try tmp.dir.createDirPath(std.testing.io, "orca-dashboard-ui/dist");
     try tmp.dir.writeFile(std.testing.io, .{ .sub_path = "src/dashboard/assets/index.html", .data = "legacy" });
     try tmp.dir.writeFile(std.testing.io, .{ .sub_path = "orca-dashboard-ui/dist/index.html", .data = "polished" });
-    const root = try tmp.dir.realPathFileAlloc(std.testing.io, ".", std.testing.allocator);
-    defer std.testing.allocator.free(root);
+    try tmp.dir.createDirPath(std.testing.io, "trusted/orca-dashboard-ui/dist");
+    try tmp.dir.writeFile(std.testing.io, .{ .sub_path = "trusted/orca-dashboard-ui/dist/index.html", .data = "trusted" });
+    const trusted_root = try tmp.dir.realPathFileAlloc(std.testing.io, "trusted", std.testing.allocator);
+    defer std.testing.allocator.free(trusted_root);
 
-    const resolved = try resolveDashboardDistDir(std.testing.io, std.testing.allocator, root);
+    const resolved = try resolveDashboardDistDirTrustedFrom(std.testing.io, std.testing.allocator, trusted_root);
     defer std.testing.allocator.free(resolved);
+    try std.testing.expect(std.mem.startsWith(u8, resolved, trusted_root));
     try std.testing.expect(std.mem.endsWith(u8, resolved, installed_ui_dir));
 }
 
@@ -875,6 +895,8 @@ test "dashboard parses machine and workspace flags" {
 test "machine dashboard actions exclude workspace-scoped commands" {
     try std.testing.expect(actionAllowedWithoutWorkspace("doctor"));
     try std.testing.expect(actionAllowedWithoutWorkspace("license-status"));
+    try std.testing.expect(actionAllowedWithoutWorkspace("openclaw-doctor"));
+    try std.testing.expect(actionAllowedWithoutWorkspace("hermes-doctor"));
     try std.testing.expect(!actionAllowedWithoutWorkspace("replay-last"));
     try std.testing.expect(!actionAllowedWithoutWorkspace("report-last"));
     try std.testing.expect(!actionAllowedWithoutWorkspace("demo-blocked-action"));

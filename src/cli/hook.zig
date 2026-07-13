@@ -262,6 +262,10 @@ fn hookCommand(io: std.Io, host: Host, event: Event, original_event_name: []cons
     // Read payload from stdin (hooks always read from stdin)
     const payload_text = readBoundedStdin(io, allocator, max_payload_len) catch |err| {
         if (err == error.PayloadTooLarge) {
+            if (host == .codex and event == .PreToolUse) {
+                try writeCodexGuardBlock(stderr, "orca hook: JSON payload exceeds maximum size; Orca blocked it before evaluation.");
+                return codex_deny_exit_code;
+            }
             try stderr.writeAll("orca hook: JSON payload exceeds maximum size.\n");
             return exit_codes.general;
         }
@@ -372,9 +376,7 @@ fn hookCommand(io: std.Io, host: Host, event: Event, original_event_name: []cons
         // Sentinel-first so agents scraping stderr can distinguish a guard block from a
         // program error: provenance (guard) + consequence (no side effects) + recourse.
         // Humans never reach this branch — non-Codex hosts render the JSON `message` themselves.
-        try stderr.writeAll(guard_sentinel_prefix);
-        try stderr.writeAll(result.message);
-        try stderr.writeAll("\n");
+        try writeCodexGuardBlock(stderr, result.message);
     } else {
         try writeHookResponse(stdout, result);
         if (result.rule) |rule| {
@@ -395,6 +397,12 @@ const guard_sentinel_prefix: []const u8 =
 
 /// Codex hook deny exit code (documented Codex CLI contract; distinct from usage errors).
 const codex_deny_exit_code: u8 = 2;
+
+fn writeCodexGuardBlock(stderr: anytype, message: []const u8) !void {
+    try stderr.writeAll(guard_sentinel_prefix);
+    try stderr.writeAll(message);
+    try stderr.writeAll("\n");
+}
 
 fn isCodexDenyOutput(host: Host, decision: PluginDecision) bool {
     return host == .codex and decision == .block;
@@ -997,18 +1005,34 @@ fn buildAgentVisibleDaemonDeny(
 
     const decision = applyCiModeToShellDecision(.block, ci_mode);
     const risk = riskFromDaemonSeverity(daemon.responseStringField(result, "severity"));
-    const deny = try shell_eval.buildDaemonDenyReason(allocator, result);
+    var deny = try shell_eval.buildDaemonDenyReason(allocator, result);
+    errdefer {
+        if (deny.reason.len > 0) allocator.free(deny.reason);
+        if (deny.rule) |rule| allocator.free(rule);
+    }
+    const safe_reason = try core_api.redactAlloc(allocator, deny.reason);
+    errdefer allocator.free(safe_reason);
+    allocator.free(deny.reason);
+    deny.reason = "";
+    const safe_rule = if (deny.rule) |rule| blk: {
+        const safe = try core_api.redactAlloc(allocator, rule);
+        allocator.free(rule);
+        deny.rule = null;
+        break :blk safe;
+    } else null;
+    errdefer if (safe_rule) |rule| allocator.free(rule);
 
-    const message = if (daemon.responseStringField(result, "explanation")) |explanation|
-        try std.fmt.allocPrint(allocator, "command blocked by Orca policy: {s}", .{explanation})
-    else
-        try buildMessage(allocator, decision, "command");
+    const message = if (daemon.responseStringField(result, "explanation")) |explanation| blk: {
+        const safe = try core_api.redactAlloc(allocator, explanation);
+        defer allocator.free(safe);
+        break :blk try std.fmt.allocPrint(allocator, "command blocked by Orca policy: {s}", .{safe});
+    } else try buildMessage(allocator, decision, "command");
 
     return .{
         .decision = decision,
         .risk = risk,
-        .reason = deny.reason,
-        .rule = deny.rule,
+        .reason = safe_reason,
+        .rule = safe_rule,
         .message = message,
     };
 }
@@ -1023,11 +1047,12 @@ fn hookResponseFromDaemonEvaluate(
     return switch (daemon.responseStatus(result)) {
         .allow => blk: {
             const decision = applyCiModeToShellDecision(pluginDecisionFromDaemonAllow(result), ci_mode);
+            const safe_reason = try core_api.redactAlloc(allocator, daemon.responseReason(result) orelse "command allowed by daemon evaluator");
             break :blk HookResponse{
                 .decision = decision,
                 .risk = if (decision == .warn) .medium else .low,
                 .category = try allocator.dupe(u8, "command"),
-                .reason = try allocator.dupe(u8, daemon.responseReason(result) orelse "command allowed by daemon evaluator"),
+                .reason = safe_reason,
                 .rule = null,
                 .message = try buildMessage(allocator, decision, "command"),
                 .redactions = try redactions.toOwnedSlice(allocator),
@@ -1047,14 +1072,18 @@ fn hookResponseFromDaemonEvaluate(
                 .host_limitations = try limitations.toOwnedSlice(allocator),
             };
         },
-        .error_status => try makeFailClosedHookResponse(
-            allocator,
-            "command",
-            daemon.responseErrorMessage(result) orelse "daemon evaluation error",
-            "Shell command blocked: Orca daemon returned an evaluation error.",
-            redactions,
-            limitations,
-        ),
+        .error_status => blk: {
+            const safe_error = try core_api.redactAlloc(allocator, daemon.responseErrorMessage(result) orelse "daemon evaluation error");
+            defer allocator.free(safe_error);
+            break :blk try makeFailClosedHookResponse(
+                allocator,
+                "command",
+                safe_error,
+                "Shell command blocked: Orca daemon returned an evaluation error.",
+                redactions,
+                limitations,
+            );
+        },
         .pong, .cli_execution, .unknown => try makeFailClosedHookResponse(
             allocator,
             "command",
@@ -2178,7 +2207,7 @@ test "hook daemon Deny preserves reason and rule metadata" {
 
     try std.testing.expectEqual(PluginDecision.block, result.decision);
     try std.testing.expectEqual(RiskLevel.critical, result.risk);
-    try std.testing.expectEqualStrings("destructive_rm", result.rule.?);
+    try std.testing.expectEqualStrings("core.filesystem:destructive_rm", result.rule.?);
     try std.testing.expect(std.mem.indexOf(u8, result.message, "recursive delete") != null);
 }
 
@@ -2303,6 +2332,23 @@ test "hook daemon deny redacts matched_text_preview from agent-visible output" {
     try std.testing.expect(std.mem.indexOf(u8, result.message, "rm -rf") == null);
     try std.testing.expect(std.mem.indexOf(u8, result.reason, "rm -rf") == null);
     try std.testing.expect(result.redactions.len > 0);
+}
+
+test "hook daemon strings are redacted at agent-visible boundary" {
+    const allocator = std.testing.allocator;
+    const sentinel = "ghp_abcdefghijklmnopqrstuvwxyz123456";
+    const json = try std.fmt.allocPrint(allocator, "{{\"status\":\"Deny\",\"reason\":\"token={s}\",\"explanation\":\"Authorization: Bearer {s}\",\"severity\":\"high\"}}", .{ sentinel, sentinel });
+    defer allocator.free(json);
+    var parsed = try std.json.parseFromSlice(std.json.Value, allocator, json, .{});
+    defer parsed.deinit();
+    var redactions: std.ArrayList(RedactionEntry) = .empty;
+    defer redactions.deinit(allocator);
+    var limitations: std.ArrayList([]const u8) = .empty;
+    defer limitations.deinit(allocator);
+    var result = try hookResponseFromDaemonEvaluate(allocator, parsed.value, false, &redactions, &limitations);
+    defer result.deinit(allocator);
+    try std.testing.expect(std.mem.indexOf(u8, result.reason, sentinel) == null);
+    try std.testing.expect(std.mem.indexOf(u8, result.message, sentinel) == null);
 }
 
 test "hook daemon malformed response blocks shell command" {

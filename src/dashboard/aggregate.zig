@@ -167,8 +167,7 @@ fn writeSessionsFromFeed(
         var dir = std.Io.Dir.cwd().openDir(io, sessions_root, .{ .iterate = true }) catch continue;
         defer dir.close(io);
         var iterator = dir.iterate();
-        var workspace_count: usize = 0;
-        while (workspace_count < max_count) {
+        while (true) {
             const entry = iterator.next(io) catch break orelse break;
             if (entry.kind != .directory) continue;
             if (core.session.validateSessionIdText(entry.name)) |_| {} else |_| continue;
@@ -177,7 +176,6 @@ fn writeSessionsFromFeed(
                 session.deinit(allocator);
                 return err;
             };
-            workspace_count += 1;
         }
     }
     for (feed) |item| {
@@ -225,7 +223,7 @@ fn writeSessionsFromFeed(
         if (session.feed_only)
             try writeFeedSessionSummaryJson(writer, session)
         else
-            try writeSessionSummaryJson(io, allocator, writer, session.workspace_root, session.id);
+            try writeSessionSummaryJson(io, allocator, writer, session);
     }
     try writer.writeByte(']');
 }
@@ -300,6 +298,7 @@ pub fn writeGlobalFeedJson(
     try writer.writeByte('[');
     var written: usize = 0;
     for (loaded) |item| {
+        if (written >= max_count) break;
         if (denied_only and !rust_visibility.isBlockedFeedRecord(item.record)) continue;
         if (written > 0) try writer.writeByte(',');
         try writeFeedRecordJson(writer, item.record);
@@ -308,21 +307,37 @@ pub fn writeGlobalFeedJson(
     try writer.writeByte(']');
 }
 
+pub fn writeGlobalFeedHealthJson(
+    io: std.Io,
+    allocator: std.mem.Allocator,
+    writer: anytype,
+    dashboard_root: []const u8,
+) !void {
+    var loaded = feed_writer.loadGlobalRecentWithHealth(io, allocator, dashboard_root, 1) catch {
+        try writer.writeAll("{\"status\":\"degraded\",\"skipped_lines\":0}");
+        return;
+    };
+    defer loaded.deinit(allocator);
+    try writer.writeAll("{\"status\":");
+    try core.util.writeJsonString(writer, @tagName(loaded.health));
+    try writer.print(",\"skipped_lines\":{d}}}", .{loaded.skipped_lines});
+}
+
 fn writeSessionSummaryJson(
     io: std.Io,
     allocator: std.mem.Allocator,
     writer: anytype,
-    workspace_root: []const u8,
-    session_id: []const u8,
+    session: SessionRef,
 ) !void {
     try writer.writeAll("{\"id\":");
-    try core.util.writeJsonString(writer, session_id);
+    try core.util.writeJsonString(writer, session.id);
     try writer.writeAll(",\"timestamp\":");
-    try core.util.writeJsonString(writer, session_id);
+    try core.util.writeJsonString(writer, session.timestamp);
     try writer.writeAll(",\"workspace_root\":");
-    try core.util.writeJsonString(writer, workspace_root);
-    try writer.writeAll(",\"host\":null");
-    if (core_api.loadReplay(io, allocator, workspace_root, .{ .session = session_id, .only_denied = true, .verify = false })) |loaded| {
+    try core.util.writeJsonString(writer, session.workspace_root);
+    try writer.writeAll(",\"host\":");
+    if (session.host) |host| try core.util.writeJsonString(writer, host) else try writer.writeAll("null");
+    if (core_api.loadReplay(io, allocator, session.workspace_root, .{ .session = session.id, .only_denied = true, .verify = false })) |loaded| {
         var replay = loaded;
         defer replay.deinit();
         try writer.writeAll(",\"command\":");
@@ -330,11 +345,19 @@ fn writeSessionSummaryJson(
         try writer.writeAll(",\"policy\":");
         try core.util.writeJsonString(writer, replay.policy);
         try writer.writeAll(",\"status\":");
-        try core.util.writeJsonString(writer, replay.status_display);
-        try writer.print(",\"denied_count\":{d},\"verified\":{}", .{ replay.events.len, replay.verified });
+        if (session.latest_decision) |decision|
+            try core.util.writeJsonString(writer, decision)
+        else
+            try core.util.writeJsonString(writer, replay.status_display);
+        try writer.print(",\"denied_count\":{d},\"verified\":{}", .{ @max(replay.events.len, session.denied_count), replay.verified });
     } else |err| {
         if (err == error.OutOfMemory) return err;
-        try writer.writeAll(",\"command\":null,\"policy\":null,\"status\":\"unreadable\",\"denied_count\":0,\"verified\":false");
+        try writer.writeAll(",\"command\":null,\"policy\":null,\"status\":");
+        if (session.latest_decision) |decision|
+            try core.util.writeJsonString(writer, decision)
+        else
+            try writer.writeAll("\"unreadable\"");
+        try writer.print(",\"denied_count\":{d},\"verified\":false", .{session.denied_count});
     }
     try writer.writeByte('}');
 }
@@ -390,4 +413,90 @@ fn stringField(object: std.json.ObjectMap, name: []const u8) ?[]const u8 {
 fn boolField(object: std.json.ObjectMap, name: []const u8) bool {
     const value = object.get(name) orelse return false;
     return value == .bool and value.bool;
+}
+
+test "sessions are globally sorted before truncation and filesystem sessions keep feed metadata" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const root = try tmp.dir.realPathFileAlloc(std.testing.io, ".", std.testing.allocator);
+    defer std.testing.allocator.free(root);
+    const sessions_root = try std.fs.path.join(std.testing.allocator, &.{ root, ".orca", "sessions" });
+    defer std.testing.allocator.free(sessions_root);
+    try std.Io.Dir.cwd().createDirPath(std.testing.io, sessions_root);
+
+    const oldest_id = try core.session.generateSessionId(core.time.Timestamp.fromUnixSeconds(1_700_000_000));
+    const middle_id = try core.session.generateSessionId(core.time.Timestamp.fromUnixSeconds(1_700_000_100));
+    const newest_id = try core.session.generateSessionId(core.time.Timestamp.fromUnixSeconds(1_700_000_200));
+    const oldest = oldest_id.slice();
+    const middle = middle_id.slice();
+    const newest = newest_id.slice();
+    for ([_][]const u8{ oldest, middle, newest }) |id| {
+        const path = try std.fs.path.join(std.testing.allocator, &.{ sessions_root, id });
+        defer std.testing.allocator.free(path);
+        try std.Io.Dir.cwd().createDirPath(std.testing.io, path);
+    }
+
+    var record = try rust_visibility.buildFeedRecordFromHookDecision(
+        std.testing.allocator,
+        std.testing.io,
+        root,
+        "pi",
+        "healthy",
+        "deny",
+        "blocked",
+        null,
+        null,
+        null,
+        null,
+        newest,
+    );
+    defer record.deinit(std.testing.allocator);
+    try feed_writer.appendRecord(std.testing.io, std.testing.allocator, root, record);
+    const feed = try feed_writer.loadRecent(std.testing.io, std.testing.allocator, root, 8);
+    defer {
+        for (feed) |*item| item.deinit(std.testing.allocator);
+        std.testing.allocator.free(feed);
+    }
+    var workspace = try dupeWorkspace(std.testing.allocator, root, "", null, false);
+    defer workspace.deinit(std.testing.allocator);
+    var output: std.Io.Writer.Allocating = .init(std.testing.allocator);
+    defer output.deinit();
+    try writeSessionsFromFeed(std.testing.io, std.testing.allocator, &output.writer, &.{workspace}, feed, 2);
+    const json = output.writer.buffered();
+    try std.testing.expect(std.mem.indexOf(u8, json, oldest) == null);
+    try std.testing.expect(std.mem.indexOf(u8, json, newest) != null);
+    try std.testing.expect(std.mem.indexOf(u8, json, "\"host\":\"pi\"") != null);
+}
+
+test "denied-only global feed honors max count" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const root = try tmp.dir.realPathFileAlloc(std.testing.io, ".", std.testing.allocator);
+    defer std.testing.allocator.free(root);
+    const dashboard_root = try std.fs.path.join(std.testing.allocator, &.{ root, "dashboard" });
+    defer std.testing.allocator.free(dashboard_root);
+    for (0..4) |index| {
+        const session_id = try std.fmt.allocPrint(std.testing.allocator, "session-{d}", .{index});
+        defer std.testing.allocator.free(session_id);
+        var record = try rust_visibility.buildFeedRecordFromHookDecision(
+            std.testing.allocator,
+            std.testing.io,
+            root,
+            "codex",
+            "healthy",
+            "deny",
+            "blocked",
+            null,
+            null,
+            null,
+            null,
+            session_id,
+        );
+        defer record.deinit(std.testing.allocator);
+        try feed_writer.appendGlobalRecord(std.testing.io, std.testing.allocator, dashboard_root, record);
+    }
+    var output: std.Io.Writer.Allocating = .init(std.testing.allocator);
+    defer output.deinit();
+    try writeGlobalFeedJson(std.testing.io, std.testing.allocator, &output.writer, dashboard_root, 2, true);
+    try std.testing.expectEqual(@as(usize, 2), std.mem.count(u8, output.writer.buffered(), "\"timestamp\":"));
 }

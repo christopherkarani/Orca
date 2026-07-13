@@ -154,7 +154,14 @@ docs/integrations/openclaw-security-scan-analysis.md
 
 # --- Generated planning / UI collateral ---
 PROMPT_*.md
-orca-dashboard-ui/
+orca-dashboard-ui/.next/
+orca-dashboard-ui/dist/
+orca-dashboard-ui/node_modules/
+orca-dashboard-ui/tsconfig.tsbuildinfo
+orca-dashboard-ui/.DS_Store
+orca-dashboard-ui/app/.DS_Store
+orca-dashboard-ui/playwright-qa*.mjs
+orca-dashboard-ui/screenshot.mjs
 
 .skynex/production-gate.json
 .skynex/audit.log

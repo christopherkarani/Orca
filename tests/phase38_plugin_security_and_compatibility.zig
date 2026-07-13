@@ -635,7 +635,7 @@ test "decide rejects unknown decision kind" {
 // 7. Oversized input tests
 // ---------------------------------------------------------------------------
 
-test "hook codex rejects oversized payload safely" {
+test "hook codex fail-closes oversized PreToolUse payload" {
     if (!binaryExists()) return;
     const allocator = std.testing.allocator;
 
@@ -643,7 +643,7 @@ test "hook codex rejects oversized payload safely" {
     var oversized: std.ArrayList(u8) = .empty;
     defer oversized.deinit(allocator);
 
-    try oversized.appendSlice(allocator, "{\"version\":1,\"host\":\"codex\",\"event\":\"SessionStart\",\"payload\":{\"data\":\"");
+    try oversized.appendSlice(allocator, "{\"version\":1,\"host\":\"codex\",\"event\":\"PreToolUse\",\"payload\":{\"tool\":\"shell\",\"command\":\"echo safe # ");
     // Append enough data to exceed 256 KiB
     var i: usize = 0;
     while (i < 300 * 1024) : (i += 1) {
@@ -651,12 +651,14 @@ test "hook codex rejects oversized payload safely" {
     }
     try oversized.appendSlice(allocator, "\"}}");
 
-    const result = try runOrca(allocator, &.{ orca_bin, "hook", "codex", "SessionStart" }, oversized.items);
+    const result = try runOrca(allocator, &.{ orca_bin, "hook", "codex", "PreToolUse" }, oversized.items);
     defer allocator.free(result.stdout);
     defer allocator.free(result.stderr);
 
-    // Should not crash; may succeed with truncated data or fail gracefully
-    try std.testing.expect(result.code != 0 or std.mem.indexOf(u8, result.stderr, "invalid") != null or std.mem.indexOf(u8, result.stdout, "error") != null);
+    try std.testing.expectEqual(@as(u8, 2), result.code);
+    try std.testing.expectEqual(@as(usize, 0), result.stdout.len);
+    try std.testing.expect(std.mem.startsWith(u8, result.stderr, "[[ORCA-GUARD]] blocked."));
+    try std.testing.expect(std.mem.indexOf(u8, result.stderr, "payload exceeds maximum size") != null);
 }
 
 test "hook claude rejects oversized payload safely" {
@@ -1058,7 +1060,6 @@ test "all codex hook responses are valid JSON" {
             try std.testing.expect(result.stderr.len > 0);
             continue;
         }
-
 
         // stdout must be valid JSON
         var parsed = std.json.parseFromSlice(std.json.Value, allocator, result.stdout, .{}) catch {

@@ -108,4 +108,15 @@ assert_contains "${fail_closed_output}" "daemon unavailable"
 [[ -d "${STAGE_ROOT}/orca-dashboard-ui/dist" ]] || fail "staged release missing orca-dashboard-ui/dist"
 [[ -f "${STAGE_ROOT}/orca-dashboard-ui/dist/index.html" ]] || fail "staged dashboard bundle missing index.html"
 
+assert_dashboard_bundle_contains() {
+  local marker="$1"
+  if ! grep -R -F -q -- "${marker}" "${STAGE_ROOT}/orca-dashboard-ui/dist"; then
+    fail "staged dashboard bundle missing machine-wide marker: ${marker}"
+  fi
+}
+
+assert_dashboard_bundle_contains "machine-wide-capable"
+assert_dashboard_bundle_contains "workspace-root-and-id"
+assert_dashboard_bundle_contains "Activity feed is degraded"
+
 printf '[install-layout-smoke] passed for %s-%s\n' "${OS}" "${ARCH}"

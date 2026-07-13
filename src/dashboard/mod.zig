@@ -112,6 +112,8 @@ pub fn writeMachineStatusJson(
     try aggregate.writeGlobalFeedJson(io, allocator, writer, dashboard_root, 50, false);
     try writer.writeAll(",\"blocked_actions\":");
     try aggregate.writeGlobalFeedJson(io, allocator, writer, dashboard_root, 50, true);
+    try writer.writeAll(",\"feed_health\":");
+    try aggregate.writeGlobalFeedHealthJson(io, allocator, writer, dashboard_root);
     try writer.writeAll(",\"quick_actions\":[");
     try writeQuickAction(writer, "doctor", "orca doctor");
     try writer.writeByte(',');

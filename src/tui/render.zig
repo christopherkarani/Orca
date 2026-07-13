@@ -83,7 +83,7 @@ pub fn banner(io: std.Io, stdout: anytype, version: []const u8, status: ?[]const
 /// `none` so pipes/readability hold up).
 pub fn ruleLine(io: std.Io, stdout: anytype, width: usize) !void {
     const a = theme.active(io, stdout);
-    const ch: []const u8 = if (a.capability.hasColor()) "─" else "-";
+    const ch: []const u8 = if (a.supportsUnicode()) "─" else "-";
     var i: usize = 0;
     while (i < width) : (i += 1) try stdout.writeAll(ch);
 }
@@ -271,8 +271,8 @@ pub fn writeTruncated(stdout: anytype, text: []const u8, width: usize) !void {
 // ────────────────────────────────────────────────────────────────────────────
 
 /// Render a titled panel around pre-formatted body lines (a slice of strings,
-/// each already one visual line). Borders use box-drawing on colour output and
-/// ASCII `-|+` on plain output for readability in pipes.
+/// each already one visual line). Borders use box-drawing when Unicode is
+/// supported (independent of color) and ASCII `-|+` otherwise.
 pub fn panel(
     io: std.Io,
     stdout: anytype,
@@ -280,7 +280,7 @@ pub fn panel(
     body_lines: []const []const u8,
 ) !void {
     const a = theme.active(io, stdout);
-    const use_unicode = a.capability.hasColor();
+    const use_unicode = a.supportsUnicode();
     const tl = if (use_unicode) "┌" else "+";
     const tr = if (use_unicode) "┐" else "+";
     const bl = if (use_unicode) "└" else "+";
@@ -391,7 +391,7 @@ pub fn table(
     for (widths, 0..) |w, i| {
         _ = i;
         var n: usize = 0;
-        while (n < w + 2) : (n += 1) try stdout.writeAll(if (theme.active(io, stdout).capability.hasColor()) "─" else "-");
+        while (n < w + 2) : (n += 1) try stdout.writeAll(if (theme.active(io, stdout).supportsUnicode()) "─" else "-");
     }
     try stdout.writeAll("\n");
 
@@ -627,16 +627,15 @@ test "panel: plain output uses ASCII box chars and contains title + body" {
 }
 
 test "panel: unicode output uses box-drawing corners" {
-    theme.resetCache();
+    theme.setTestActive(.{ .capability = .none, .background = .dark, .unicode = true });
+    defer theme.setTestActive(null);
     var buf: [512]u8 = undefined;
     var w: std.Io.Writer = .fixed(&buf);
     const body = [_][]const u8{"x"};
-    // Force a colour-capable active state by calling the colour variant directly
-    // is not trivial; panel branches on active().capability.hasColor(). In tests
-    // active() returns none, so this always renders ASCII. We assert the ASCII
-    // path produces well-formed lines ending with newline.
     try panel(std.testing.io, &w, null, &body);
-    try std.testing.expect(std.mem.indexOf(u8, w.buffered(), "x") != null);
+    const out = w.buffered();
+    try std.testing.expect(std.mem.indexOf(u8, out, "┌") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "x") != null);
 }
 
 test "table: header + rows aligned" {
