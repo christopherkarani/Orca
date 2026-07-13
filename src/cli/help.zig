@@ -207,7 +207,7 @@ pub const commands = [_]CommandInfo{
         },
         .details = &.{
             "Proxies to the Rust daemon pack decision trace for shell commands.",
-            "Different from 'orca policy explain', which explains Zig policy.yaml rules.",
+            "This is different from 'orca policy explain', which explains Zig .orca/policy.yaml rules for files/network/commands.",
             "Use 'orca explain --help' for the full Rust-backed option set.",
         },
     },
@@ -566,6 +566,34 @@ pub fn write(io: std.Io, writer: anytype) !void {
     try writer.writeAll("\n\n");
     try writer.writeAll("Usage:\n  orca <command> [options]\n\n");
 
+    // Task-oriented primary paths (P0 "one product" discoverability).
+    try writer.writeAll("  ");
+    try tui.theme.paintBold(io, writer, .brand, "Common tasks");
+    try writer.writeAll("\n");
+    const tasks = [_]struct { label: []const u8, cmd: []const u8 }{
+        .{ .label = "Get protected", .cmd = "orca start" },
+        .{ .label = "See status", .cmd = "orca doctor" },
+        .{ .label = "Why blocked?", .cmd = "orca explain \"…\"" },
+        .{ .label = "Run an agent", .cmd = "orca run -- <agent>" },
+        .{ .label = "Wire a host", .cmd = "orca plugin install" },
+    };
+    var task_label_width: usize = 0;
+    for (tasks) |task| {
+        const w = tui.render.displayWidth(task.label);
+        if (w > task_label_width) task_label_width = w;
+    }
+    for (tasks) |task| {
+        try writer.writeAll("    ");
+        try tui.theme.paint(io, writer, .text_bright, task.label);
+        try tui.render.writePadded(writer, "", task_label_width - tui.render.displayWidth(task.label) + 2);
+        try writer.writeAll(task.cmd);
+        try writer.writeAll("\n");
+    }
+    try writer.writeAll("\n");
+    try writer.writeAll("  ");
+    try tui.theme.paint(io, writer, .muted, "Shell deny remediation: orca explain / allow-once / allowlist (daemon). Policy files: orca policy explain.");
+    try writer.writeAll("\n\n");
+
     // Compute a uniform command-name column width across all visible commands.
     var name_width: usize = 0;
     for (commands) |cmd| {
@@ -612,10 +640,10 @@ pub fn write(io: std.Io, writer: anytype) !void {
     try writer.writeAll("  ");
     try tui.theme.paint(io, writer, .muted, "Next:");
     try writer.writeAll(" run ");
+    try tui.theme.paint(io, writer, .text_bright, "orca start");
+    try writer.writeAll(" to get protected, or ");
     try tui.theme.paint(io, writer, .text_bright, "orca help <command>");
-    try writer.writeAll(" for command-specific help, or ");
-    try tui.theme.paint(io, writer, .text_bright, "orca quickstart");
-    try writer.writeAll(" to get started.\n");
+    try writer.writeAll(" for details.\n");
 }
 
 fn categoryTitle(cat: Category) []const u8 {

@@ -15,6 +15,8 @@ const exit_codes = @import("exit_codes.zig");
 const help = @import("help.zig");
 const cli = @import("mod.zig");
 const suggestions = @import("suggestions.zig");
+const plugin = @import("plugin.zig");
+const onboarding = @import("onboarding.zig");
 
 const DoctorCapability = struct {
     label: []const u8,
@@ -71,6 +73,10 @@ const IntegrationContext = struct {
     daemon_pid_exists: bool = false,
     daemon_status: []const u8,
     daemon_detail: []const u8,
+    /// Host integration snapshot for the doctor host table (owned slices).
+    host_rows: []const HostDoctorRow = &.{},
+    hermes_fail_open: bool = true,
+    hermes_installed: bool = false,
 
     fn deinit(self: *IntegrationContext) void {
         self.allocator.free(self.workspace_root);
@@ -83,8 +89,24 @@ const IntegrationContext = struct {
         if (self.daemon_pid_path) |value| self.allocator.free(value);
         self.allocator.free(self.daemon_status);
         self.allocator.free(self.daemon_detail);
+        if (self.host_rows.len > 0) {
+            for (self.host_rows) |row| {
+                self.allocator.free(row.host);
+                self.allocator.free(row.wired);
+                self.allocator.free(row.shell_gate);
+                self.allocator.free(row.fail_stance);
+            }
+            self.allocator.free(self.host_rows);
+        }
         self.* = undefined;
     }
+};
+
+const HostDoctorRow = struct {
+    host: []const u8,
+    wired: []const u8,
+    shell_gate: []const u8,
+    fail_stance: []const u8,
 };
 
 const DaemonHealth = struct {
@@ -227,6 +249,9 @@ fn writeReport(io: std.Io, stdout: anytype, os: core.platform.Os, backend_report
 
     if (!verbose) {
         try writeDefaultPanels(io, stdout, os, backend_report, context, policy_status, counts);
+        try writeHostStatusTable(io, stdout, context);
+        try writeHermesFailOpenWarning(io, stdout, context);
+        try writePiNote(stdout);
         try writeRecommendations(stdout, context);
         return;
     }
@@ -234,6 +259,9 @@ fn writeReport(io: std.Io, stdout: anytype, os: core.platform.Os, backend_report
     try stdout.print("OS: {s}\n", .{os.toString()});
     try stdout.print("Version: {s}\n\n", .{cli.version});
     try writeIntegrationReport(io, stdout, context);
+    try writeHostStatusTable(io, stdout, context);
+    try writeHermesFailOpenWarning(io, stdout, context);
+    try writePiNote(stdout);
     try stdout.writeAll("Capabilities:\n");
     for (doctor_capabilities) |item| {
         if (item.feature) |feature| {
@@ -462,6 +490,65 @@ fn writeBackendLine(io: std.Io, stdout: anytype, backend_report: sandbox.backend
     }
 }
 
+fn writeHostStatusTable(io: std.Io, stdout: anytype, context: IntegrationContext) !void {
+    if (context.host_rows.len == 0) return;
+    try stdout.writeAll("\n");
+    try tui.theme.paintBold(io, stdout, .brand, "Host integrations");
+    try stdout.writeAll("\n");
+    var rows = try context.allocator.alloc([]const []const u8, context.host_rows.len);
+    defer context.allocator.free(rows);
+    for (context.host_rows, 0..) |row, i| {
+        const cells = try context.allocator.alloc([]const u8, 4);
+        cells[0] = row.host;
+        cells[1] = row.wired;
+        cells[2] = row.shell_gate;
+        cells[3] = row.fail_stance;
+        rows[i] = cells;
+    }
+    defer for (rows) |row| context.allocator.free(row);
+    try tui.render.table(io, stdout, &.{
+        .{ .name = "HOST" },
+        .{ .name = "WIRED" },
+        .{ .name = "SHELL GATE" },
+        .{ .name = "FAIL STANCE" },
+    }, rows);
+}
+
+fn writeHermesFailOpenWarning(io: std.Io, stdout: anytype, context: IntegrationContext) !void {
+    if (!context.hermes_installed or !context.hermes_fail_open) return;
+    try stdout.writeAll("\n");
+    try tui.render.callout(
+        io,
+        stdout,
+        .warn,
+        "Hermes fail-open",
+        "Hermes allows tools when Orca is degraded. Set ORCA_HERMES_FAIL_OPEN=0 to block, or use orca run -- hermes for stronger enforcement.",
+    );
+}
+
+fn writePiNote(stdout: anytype) !void {
+    try stdout.writeAll("\nPi: install via pi package (@orca-sec/pi-orca); not managed by orca plugin install\n");
+}
+
+/// Effective Hermes fail-open default matches integrations/hermes-plugin (default allow when degraded).
+pub fn hermesFailOpenFromEnvValue(value: ?[]const u8) bool {
+    const raw = value orelse return true;
+    const trimmed = std.mem.trim(u8, raw, " \t\r\n");
+    if (trimmed.len == 0) return true;
+    if (std.ascii.eqlIgnoreCase(trimmed, "0") or
+        std.ascii.eqlIgnoreCase(trimmed, "false") or
+        std.ascii.eqlIgnoreCase(trimmed, "no") or
+        std.ascii.eqlIgnoreCase(trimmed, "off"))
+        return false;
+    return true;
+}
+
+fn hermesFailOpenFromEnv() bool {
+    var env_map = std.process.Environ.createMap(env_util.processEnviron(), std.heap.page_allocator) catch return true;
+    defer env_map.deinit();
+    return hermesFailOpenFromEnvValue(env_map.get("ORCA_HERMES_FAIL_OPEN"));
+}
+
 fn writeRecommendations(stdout: anytype, context: IntegrationContext) !void {
     try stdout.writeAll("\nRecommended next step:\n");
     if (!std.mem.eql(u8, context.daemon_status, "compatible")) {
@@ -554,6 +641,18 @@ fn collectIntegrationContextAt(io: std.Io, allocator: std.mem.Allocator, workspa
         allocator.free(daemon_health.status);
         allocator.free(daemon_health.detail);
     }
+
+    const host_snapshot = try collectHostDoctorRows(io, allocator);
+    errdefer {
+        for (host_snapshot.rows) |row| {
+            allocator.free(row.host);
+            allocator.free(row.wired);
+            allocator.free(row.shell_gate);
+            allocator.free(row.fail_stance);
+        }
+        allocator.free(host_snapshot.rows);
+    }
+
     return .{
         .allocator = allocator,
         .workspace_root = workspace_root,
@@ -578,6 +677,61 @@ fn collectIntegrationContextAt(io: std.Io, allocator: std.mem.Allocator, workspa
         .daemon_pid_exists = if (daemon_paths) |value| fileExistsAbsolute(io, value.pid) else false,
         .daemon_status = daemon_health.status,
         .daemon_detail = daemon_health.detail,
+        .host_rows = host_snapshot.rows,
+        .hermes_fail_open = host_snapshot.hermes_fail_open,
+        .hermes_installed = host_snapshot.hermes_installed,
+    };
+}
+
+const HostDoctorSnapshot = struct {
+    rows: []HostDoctorRow,
+    hermes_fail_open: bool,
+    hermes_installed: bool,
+};
+
+fn collectHostDoctorRows(io: std.Io, allocator: std.mem.Allocator) !HostDoctorSnapshot {
+    // Skip Hermes hook smoke here — full plugin doctor already covers it; doctor should stay fast.
+    var doctor_report = try plugin.collectPluginDoctorReportWithHermesSmoke(io, allocator, true);
+    defer plugin.deinitPluginDoctorReport(&doctor_report, allocator);
+
+    const hermes_fail_open = hermesFailOpenFromEnv();
+    var hermes_installed = false;
+
+    var list: std.ArrayList(HostDoctorRow) = .empty;
+    errdefer {
+        for (list.items) |row| {
+            allocator.free(row.host);
+            allocator.free(row.wired);
+            allocator.free(row.shell_gate);
+            allocator.free(row.fail_stance);
+        }
+        list.deinit(allocator);
+    }
+
+    for (onboarding.supported_hosts) |host_name| {
+        const installed = plugin.hostPluginInstalledFromReport(host_name, doctor_report);
+        const detected = plugin.binaryInPath(io, allocator, host_name);
+        if (std.mem.eql(u8, host_name, "hermes") and installed) hermes_installed = true;
+
+        const wired: []const u8 = if (installed) "yes" else if (detected) "no" else "—";
+        const shell_gate = onboarding.hostHookEvent(host_name) orelse "unknown";
+        const fail_stance: []const u8 = if (std.mem.eql(u8, host_name, "hermes"))
+            if (hermes_fail_open) "fail-open (default)" else "fail-closed"
+        else
+            "fail-closed shell";
+
+        try list.append(allocator, .{
+            .host = try allocator.dupe(u8, host_name),
+            .wired = try allocator.dupe(u8, wired),
+            .shell_gate = try allocator.dupe(u8, shell_gate),
+            .fail_stance = try allocator.dupe(u8, fail_stance),
+        });
+    }
+
+    return .{
+        .rows = try list.toOwnedSlice(allocator),
+        .hermes_fail_open = hermes_fail_open,
+        .hermes_installed = hermes_installed,
     };
 }
 
@@ -689,7 +843,7 @@ fn detectShell(allocator: std.mem.Allocator) ![]const u8 {
 }
 
 test "doctor prints OS and planned capabilities" {
-    var stdout_buf: [8192]u8 = undefined;
+    var stdout_buf: [32768]u8 = undefined;
     var stderr_buf: [256]u8 = undefined;
     var stdout_writer: std.Io.Writer = .fixed(&stdout_buf);
     var stderr_writer: std.Io.Writer = .fixed(&stderr_buf);
@@ -711,7 +865,7 @@ test "doctor prints OS and planned capabilities" {
 }
 
 test "doctor can render Linux backend details from an injected report" {
-    var stdout_buf: [8192]u8 = undefined;
+    var stdout_buf: [32768]u8 = undefined;
     var stdout_writer: std.Io.Writer = .fixed(&stdout_buf);
     const report = sandbox.backend.detect(.linux);
     var context = try testContext(std.testing.allocator, .{});
@@ -729,7 +883,7 @@ test "doctor can render Linux backend details from an injected report" {
 }
 
 test "doctor can render macOS backend details from an injected report" {
-    var stdout_buf: [8192]u8 = undefined;
+    var stdout_buf: [32768]u8 = undefined;
     var stdout_writer: std.Io.Writer = .fixed(&stdout_buf);
     const report = sandbox.backend.detect(.macos);
     var context = try testContext(std.testing.allocator, .{});
@@ -752,7 +906,7 @@ test "doctor can render macOS backend details from an injected report" {
 }
 
 test "doctor can render Windows backend details from an injected report" {
-    var stdout_buf: [8192]u8 = undefined;
+    var stdout_buf: [32768]u8 = undefined;
     var stdout_writer: std.Io.Writer = .fixed(&stdout_buf);
     const report = sandbox.backend.detect(.windows);
     var context = try testContext(std.testing.allocator, .{});
@@ -791,7 +945,7 @@ test "doctor detects valid policy in current workspace" {
         try file.writeStreamingAll(std.testing.io, orca_policy.presets.agentPresetText(.generic_agent));
     }
 
-    var stdout_buf: [8192]u8 = undefined;
+    var stdout_buf: [32768]u8 = undefined;
     var stderr_buf: [512]u8 = undefined;
     var stdout_writer: std.Io.Writer = .fixed(&stdout_buf);
     var stderr_writer: std.Io.Writer = .fixed(&stderr_buf);
@@ -822,7 +976,7 @@ test "doctor reports invalid policy clearly without printing synthetic secrets" 
         );
     }
 
-    var stdout_buf: [8192]u8 = undefined;
+    var stdout_buf: [32768]u8 = undefined;
     var stderr_buf: [512]u8 = undefined;
     var stdout_writer: std.Io.Writer = .fixed(&stdout_buf);
     var stderr_writer: std.Io.Writer = .fixed(&stderr_buf);
@@ -838,7 +992,7 @@ test "doctor reports invalid policy clearly without printing synthetic secrets" 
 }
 
 test "doctor prints summary line" {
-    var stdout_buf: [8192]u8 = undefined;
+    var stdout_buf: [32768]u8 = undefined;
     var stderr_buf: [256]u8 = undefined;
     var stdout_writer: std.Io.Writer = .fixed(&stdout_buf);
     var stderr_writer: std.Io.Writer = .fixed(&stderr_buf);
@@ -855,7 +1009,7 @@ test "doctor prints summary line" {
 }
 
 test "doctor --verbose prints full report" {
-    var stdout_buf: [8192]u8 = undefined;
+    var stdout_buf: [32768]u8 = undefined;
     var stderr_buf: [256]u8 = undefined;
     var stdout_writer: std.Io.Writer = .fixed(&stdout_buf);
     var stderr_writer: std.Io.Writer = .fixed(&stderr_buf);
@@ -880,7 +1034,7 @@ test "doctor integration collection returns allocator failures instead of panick
 }
 
 test "doctor output contains status glyphs in plain text mode" {
-    var stdout_buf: [8192]u8 = undefined;
+    var stdout_buf: [32768]u8 = undefined;
     var stdout_writer: std.Io.Writer = .fixed(&stdout_buf);
     const report = sandbox.backend.detect(.linux);
     var context = try testContext(std.testing.allocator, .{});
@@ -895,7 +1049,7 @@ test "doctor output contains status glyphs in plain text mode" {
 }
 
 test "doctor output has no ANSI codes in non-TTY mode" {
-    var stdout_buf: [8192]u8 = undefined;
+    var stdout_buf: [32768]u8 = undefined;
     var stdout_writer: std.Io.Writer = .fixed(&stdout_buf);
     const report = sandbox.backend.detect(.linux);
     var context = try testContext(std.testing.allocator, .{});
@@ -907,7 +1061,7 @@ test "doctor output has no ANSI codes in non-TTY mode" {
 }
 
 test "doctor default renders compact health and capability panels" {
-    var stdout_buf: [8192]u8 = undefined;
+    var stdout_buf: [32768]u8 = undefined;
     var stdout_writer: std.Io.Writer = .fixed(&stdout_buf);
     const report = sandbox.backend.detect(.linux);
     var context = try testContext(std.testing.allocator, .{});
@@ -942,7 +1096,7 @@ test "doctor sanitizes hostile dynamic diagnostic text" {
 }
 
 test "doctor summary includes daemon availability" {
-    var stdout_buf: [8192]u8 = undefined;
+    var stdout_buf: [32768]u8 = undefined;
     var stdout_writer: std.Io.Writer = .fixed(&stdout_buf);
     const report = sandbox.backend.detect(.linux);
     var context = try testContext(std.testing.allocator, .{
@@ -958,7 +1112,7 @@ test "doctor summary includes daemon availability" {
 }
 
 test "doctor integration report includes daemon health details" {
-    var stdout_buf: [8192]u8 = undefined;
+    var stdout_buf: [32768]u8 = undefined;
     var stdout_writer: std.Io.Writer = .fixed(&stdout_buf);
     const report = sandbox.backend.detect(.linux);
     var context = try testContext(std.testing.allocator, .{
@@ -974,7 +1128,7 @@ test "doctor integration report includes daemon health details" {
 }
 
 test "doctor recommendations prioritize daemon remediation over missing policy" {
-    var stdout_buf: [8192]u8 = undefined;
+    var stdout_buf: [32768]u8 = undefined;
     var stdout_writer: std.Io.Writer = .fixed(&stdout_buf);
     const report = sandbox.backend.detect(.linux);
     var context = try testContext(std.testing.allocator, .{
@@ -991,6 +1145,51 @@ test "doctor recommendations prioritize daemon remediation over missing policy" 
     try std.testing.expect(std.mem.indexOf(u8, written, "orca init --preset generic-agent") != null);
 }
 
+test "doctor host table lists managed hosts and shell gates" {
+    var stdout_buf: [16384]u8 = undefined;
+    var stdout_writer: std.Io.Writer = .fixed(&stdout_buf);
+    const report = sandbox.backend.detect(.linux);
+    var context = try testContext(std.testing.allocator, .{});
+    defer context.deinit();
+
+    try writeReport(std.testing.io, &stdout_writer, .linux, report, context, false);
+    const written = stdout_writer.buffered();
+    try std.testing.expect(std.mem.indexOf(u8, written, "Host integrations") != null);
+    try std.testing.expect(std.mem.indexOf(u8, written, "codex") != null);
+    try std.testing.expect(std.mem.indexOf(u8, written, "claude") != null);
+    try std.testing.expect(std.mem.indexOf(u8, written, "opencode") != null);
+    try std.testing.expect(std.mem.indexOf(u8, written, "openclaw") != null);
+    try std.testing.expect(std.mem.indexOf(u8, written, "hermes") != null);
+    try std.testing.expect(std.mem.indexOf(u8, written, "pre_tool_call") != null);
+    try std.testing.expect(std.mem.indexOf(u8, written, "Pi: install via pi package") != null);
+}
+
+test "doctor warns when Hermes is installed with fail-open default" {
+    var stdout_buf: [16384]u8 = undefined;
+    var stdout_writer: std.Io.Writer = .fixed(&stdout_buf);
+    const report = sandbox.backend.detect(.linux);
+    var context = try testContext(std.testing.allocator, .{
+        .hermes_installed = true,
+        .hermes_fail_open = true,
+    });
+    defer context.deinit();
+
+    try writeReport(std.testing.io, &stdout_writer, .linux, report, context, false);
+    const written = stdout_writer.buffered();
+    try std.testing.expect(std.mem.indexOf(u8, written, "Hermes fail-open") != null);
+    try std.testing.expect(std.mem.indexOf(u8, written, "ORCA_HERMES_FAIL_OPEN=0") != null);
+    try std.testing.expect(std.mem.indexOf(u8, written, "orca run -- hermes") != null);
+}
+
+test "hermesFailOpenFromEnvValue defaults to fail-open" {
+    try std.testing.expect(hermesFailOpenFromEnvValue(null));
+    try std.testing.expect(hermesFailOpenFromEnvValue("1"));
+    try std.testing.expect(hermesFailOpenFromEnvValue("true"));
+    try std.testing.expect(!hermesFailOpenFromEnvValue("0"));
+    try std.testing.expect(!hermesFailOpenFromEnvValue("false"));
+    try std.testing.expect(!hermesFailOpenFromEnvValue("off"));
+}
+
 const TestContextOptions = struct {
     policy_present: bool = true,
     policy_valid: bool = true,
@@ -998,9 +1197,12 @@ const TestContextOptions = struct {
     daemon_binary_executable: bool = true,
     daemon_status: []const u8 = "compatible",
     daemon_detail: []const u8 = "running daemon answered with a compatible handshake.",
+    hermes_fail_open: bool = true,
+    hermes_installed: bool = false,
 };
 
 fn testContext(allocator: std.mem.Allocator, options: TestContextOptions) !IntegrationContext {
+    const host_rows = try testHostRows(allocator);
     return .{
         .allocator = allocator,
         .workspace_root = try allocator.dupe(u8, "."),
@@ -1025,5 +1227,37 @@ fn testContext(allocator: std.mem.Allocator, options: TestContextOptions) !Integ
         .daemon_pid_exists = false,
         .daemon_status = try allocator.dupe(u8, options.daemon_status),
         .daemon_detail = try allocator.dupe(u8, options.daemon_detail),
+        .host_rows = host_rows,
+        .hermes_fail_open = options.hermes_fail_open,
+        .hermes_installed = options.hermes_installed,
     };
+}
+
+fn testHostRows(allocator: std.mem.Allocator) ![]HostDoctorRow {
+    const hosts = [_]struct { name: []const u8, gate: []const u8, stance: []const u8 }{
+        .{ .name = "codex", .gate = "PreToolUse", .stance = "fail-closed shell" },
+        .{ .name = "claude", .gate = "PreToolUse", .stance = "fail-closed shell" },
+        .{ .name = "opencode", .gate = "tool.execute.before", .stance = "fail-closed shell" },
+        .{ .name = "openclaw", .gate = "tool.before", .stance = "fail-closed shell" },
+        .{ .name = "hermes", .gate = "pre_tool_call", .stance = "fail-open (default)" },
+    };
+    var list: std.ArrayList(HostDoctorRow) = .empty;
+    errdefer {
+        for (list.items) |row| {
+            allocator.free(row.host);
+            allocator.free(row.wired);
+            allocator.free(row.shell_gate);
+            allocator.free(row.fail_stance);
+        }
+        list.deinit(allocator);
+    }
+    for (hosts) |h| {
+        try list.append(allocator, .{
+            .host = try allocator.dupe(u8, h.name),
+            .wired = try allocator.dupe(u8, "—"),
+            .shell_gate = try allocator.dupe(u8, h.gate),
+            .fail_stance = try allocator.dupe(u8, h.stance),
+        });
+    }
+    return try list.toOwnedSlice(allocator);
 }

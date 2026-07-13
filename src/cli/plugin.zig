@@ -291,7 +291,10 @@ fn writePluginList(io: std.Io, allocator: std.mem.Allocator, stdout: anytype, re
     }
 }
 
-fn collectPluginDoctorReportWithHermesSmoke(
+/// When `hermes_smoke_override` is non-null, skip spawning the Hermes hook smoke test
+/// and use the provided boolean. Prefer this for lightweight host inventory paths
+/// (e.g. `orca doctor` host table) that should not pay smoke-test latency.
+pub fn collectPluginDoctorReportWithHermesSmoke(
     io: std.Io,
     allocator: std.mem.Allocator,
     hermes_smoke_override: ?bool,

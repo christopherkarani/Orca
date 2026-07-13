@@ -202,11 +202,22 @@ pub fn ruleIdFromDaemonResult(allocator: std.mem.Allocator, result: std.json.Val
 
 /// Format human-facing next-step lines after a shell deny (no trailing newline).
 /// `command_display` must already be redacted for presentation.
+/// When `allow_once_code` is set, emit a concrete `orca allow-once <code>` line first.
 pub fn formatDenyNextSteps(
     allocator: std.mem.Allocator,
     command_display: []const u8,
     rule_id: ?[]const u8,
     tip: ?[]const u8,
+) ![]const u8 {
+    return formatDenyNextStepsWithCode(allocator, command_display, rule_id, tip, null);
+}
+
+pub fn formatDenyNextStepsWithCode(
+    allocator: std.mem.Allocator,
+    command_display: []const u8,
+    rule_id: ?[]const u8,
+    tip: ?[]const u8,
+    allow_once_code: ?[]const u8,
 ) ![]const u8 {
     var list: std.ArrayList(u8) = .empty;
     errdefer list.deinit(allocator);
@@ -224,6 +235,15 @@ pub fn formatDenyNextSteps(
         defer allocator.free(line);
         try list.appendSlice(allocator, line);
     }
+    if (allow_once_code) |code| {
+        if (code.len > 0) {
+            const line = try std.fmt.allocPrint(allocator, "  orca allow-once {s}\n", .{code});
+            defer allocator.free(line);
+            try list.appendSlice(allocator, line);
+        }
+    } else {
+        try list.appendSlice(allocator, "  orca allow-once <code>          # if a short code was issued on block\n");
+    }
     if (rule_id) |rid| {
         const line = try std.fmt.allocPrint(allocator, "  orca allowlist add {s} -r \"reason\"\n", .{rid});
         defer allocator.free(line);
@@ -231,7 +251,6 @@ pub fn formatDenyNextSteps(
     } else {
         try list.appendSlice(allocator, "  orca allowlist list\n");
     }
-    try list.appendSlice(allocator, "  orca allow-once <code>   # when a short code was issued on block\n");
     return try list.toOwnedSlice(allocator);
 }
 
@@ -608,4 +627,18 @@ test "formatDenyNextSteps includes explain allowlist and allow-once" {
     try std.testing.expect(std.mem.indexOf(u8, footer, "orca explain \"git reset --hard\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, footer, "orca allowlist add core.git:reset-hard") != null);
     try std.testing.expect(std.mem.indexOf(u8, footer, "orca allow-once") != null);
+    // Next order: explain, then allow-once, then allowlist.
+    const explain_at = std.mem.indexOf(u8, footer, "orca explain").?;
+    const once_at = std.mem.indexOf(u8, footer, "orca allow-once").?;
+    const allowlist_at = std.mem.indexOf(u8, footer, "orca allowlist add").?;
+    try std.testing.expect(explain_at < once_at);
+    try std.testing.expect(once_at < allowlist_at);
+}
+
+test "formatDenyNextStepsWithCode emits concrete allow-once code" {
+    const allocator = std.testing.allocator;
+    const footer = try formatDenyNextStepsWithCode(allocator, "rm -rf /", "core.filesystem:destructive_rm", null, "A1B2C3");
+    defer allocator.free(footer);
+    try std.testing.expect(std.mem.indexOf(u8, footer, "orca allow-once A1B2C3") != null);
+    try std.testing.expect(std.mem.indexOf(u8, footer, "orca allowlist add core.filesystem:destructive_rm") != null);
 }
