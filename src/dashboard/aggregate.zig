@@ -5,6 +5,8 @@ const core = @import("orca_core").core;
 const feed_writer = @import("../cli/feed_writer.zig");
 const rust_visibility = @import("../cli/rust_visibility.zig");
 
+pub const SessionLoadHealth = enum { healthy, degraded };
+
 pub const Workspace = struct {
     root: []u8,
     last_seen_at: []u8,
@@ -122,13 +124,12 @@ pub fn writeSessionsJson(
     dashboard_root: []const u8,
     workspaces: []const Workspace,
     max_count: usize,
-) !void {
-    const feed_owned: ?[]feed_writer.LoadedFeedRecord = feed_writer.loadGlobalRecent(io, allocator, dashboard_root, 1000) catch null;
-    defer if (feed_owned) |feed| {
-        for (feed) |*item| item.deinit(allocator);
-        allocator.free(feed);
+) !SessionLoadHealth {
+    var loaded = feed_writer.loadGlobalTailWithHealth(io, allocator, dashboard_root) catch {
+        return writeSessionsFromFeed(io, allocator, writer, workspaces, &.{}, max_count);
     };
-    return writeSessionsFromFeed(io, allocator, writer, workspaces, feed_owned orelse &.{}, max_count);
+    defer loaded.deinit(allocator);
+    return writeSessionsFromFeed(io, allocator, writer, workspaces, loaded.records, max_count);
 }
 
 pub fn writeWorkspaceSessionsJson(
@@ -137,15 +138,14 @@ pub fn writeWorkspaceSessionsJson(
     writer: anytype,
     workspace_root: []const u8,
     max_count: usize,
-) !void {
+) !SessionLoadHealth {
     var workspace = try dupeWorkspace(allocator, workspace_root, "", null, false);
     defer workspace.deinit(allocator);
-    const feed_owned: ?[]feed_writer.LoadedFeedRecord = feed_writer.loadRecent(io, allocator, workspace_root, std.math.maxInt(usize)) catch null;
-    defer if (feed_owned) |feed| {
-        for (feed) |*item| item.deinit(allocator);
-        allocator.free(feed);
+    var loaded = feed_writer.loadRecentTailWithHealth(io, allocator, workspace_root) catch {
+        return writeSessionsFromFeed(io, allocator, writer, &.{workspace}, &.{}, max_count);
     };
-    return writeSessionsFromFeed(io, allocator, writer, &.{workspace}, feed_owned orelse &.{}, max_count);
+    defer loaded.deinit(allocator);
+    return writeSessionsFromFeed(io, allocator, writer, &.{workspace}, loaded.records, max_count);
 }
 
 fn writeSessionsFromFeed(
@@ -155,20 +155,30 @@ fn writeSessionsFromFeed(
     workspaces: []const Workspace,
     feed: []const feed_writer.LoadedFeedRecord,
     max_count: usize,
-) !void {
+) !SessionLoadHealth {
     var sessions: std.ArrayList(SessionRef) = .empty;
     defer {
         for (sessions.items) |*session| session.deinit(allocator);
         sessions.deinit(allocator);
     }
+    var health: SessionLoadHealth = .healthy;
     for (workspaces) |workspace| {
-        const sessions_root = std.fs.path.join(allocator, &.{ workspace.root, ".orca", "sessions" }) catch continue;
+        const sessions_root = try std.fs.path.join(allocator, &.{ workspace.root, ".orca", "sessions" });
         defer allocator.free(sessions_root);
-        var dir = std.Io.Dir.cwd().openDir(io, sessions_root, .{ .iterate = true }) catch continue;
+        var dir = std.Io.Dir.cwd().openDir(io, sessions_root, .{ .iterate = true }) catch |err| switch (err) {
+            error.FileNotFound => continue,
+            else => {
+                health = .degraded;
+                continue;
+            },
+        };
         defer dir.close(io);
         var iterator = dir.iterate();
         while (true) {
-            const entry = iterator.next(io) catch break orelse break;
+            const entry = iterator.next(io) catch {
+                health = .degraded;
+                break;
+            } orelse break;
             if (entry.kind != .directory) continue;
             if (core.session.validateSessionIdText(entry.name)) |_| {} else |_| continue;
             var session = try dupeSessionRef(allocator, workspace.root, entry.name, entry.name, null, null, 0, false);
@@ -226,6 +236,7 @@ fn writeSessionsFromFeed(
             try writeSessionSummaryJson(io, allocator, writer, session);
     }
     try writer.writeByte(']');
+    return health;
 }
 
 fn dupeSessionRef(
@@ -286,13 +297,21 @@ pub fn writeGlobalFeedJson(
     max_count: usize,
     denied_only: bool,
 ) !void {
-    const loaded = feed_writer.loadGlobalRecent(io, allocator, dashboard_root, if (denied_only) std.math.maxInt(usize) else max_count) catch {
+    var loaded_result = if (denied_only)
+        feed_writer.loadGlobalRecentMatchingWithHealth(io, allocator, dashboard_root, max_count, .blocked) catch {
+            try writer.writeAll("[]");
+            return;
+        }
+    else
+        feed_writer.loadGlobalRecentWithHealth(io, allocator, dashboard_root, max_count) catch {
+            try writer.writeAll("[]");
+            return;
+        };
+    defer loaded_result.deinit(allocator);
+    const loaded = loaded_result.records;
+    if (loaded.len == 0) {
         try writer.writeAll("[]");
         return;
-    };
-    defer {
-        for (loaded) |*item| item.deinit(allocator);
-        allocator.free(loaded);
     }
     std.mem.sort(feed_writer.LoadedFeedRecord, loaded, {}, newestFeedFirst);
     try writer.writeByte('[');
@@ -313,7 +332,7 @@ pub fn writeGlobalFeedHealthJson(
     writer: anytype,
     dashboard_root: []const u8,
 ) !void {
-    var loaded = feed_writer.loadGlobalRecentWithHealth(io, allocator, dashboard_root, 1) catch {
+    var loaded = feed_writer.loadGlobalTailWithHealth(io, allocator, dashboard_root) catch {
         try writer.writeAll("{\"status\":\"degraded\",\"skipped_lines\":0}");
         return;
     };
@@ -461,11 +480,128 @@ test "sessions are globally sorted before truncation and filesystem sessions kee
     defer workspace.deinit(std.testing.allocator);
     var output: std.Io.Writer.Allocating = .init(std.testing.allocator);
     defer output.deinit();
-    try writeSessionsFromFeed(std.testing.io, std.testing.allocator, &output.writer, &.{workspace}, feed, 2);
+    _ = try writeSessionsFromFeed(std.testing.io, std.testing.allocator, &output.writer, &.{workspace}, feed, 2);
     const json = output.writer.buffered();
     try std.testing.expect(std.mem.indexOf(u8, json, oldest) == null);
     try std.testing.expect(std.mem.indexOf(u8, json, newest) != null);
     try std.testing.expect(std.mem.indexOf(u8, json, "\"host\":\"pi\"") != null);
+}
+
+test "machine sessions enrich records beyond the former one thousand row cap" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const root = try tmp.dir.realPathFileAlloc(std.testing.io, ".", std.testing.allocator);
+    defer std.testing.allocator.free(root);
+    const dashboard_root = try std.fs.path.join(std.testing.allocator, &.{ root, "dashboard" });
+    defer std.testing.allocator.free(dashboard_root);
+    try std.Io.Dir.cwd().createDirPath(std.testing.io, dashboard_root);
+
+    const target_id = try core.session.generateSessionId(core.time.Timestamp.fromUnixSeconds(1_700_000_000));
+    const target = target_id.slice();
+    const session_path = try std.fs.path.join(std.testing.allocator, &.{ root, ".orca", "sessions", target });
+    defer std.testing.allocator.free(session_path);
+    try std.Io.Dir.cwd().createDirPath(std.testing.io, session_path);
+
+    const events_path = try std.fs.path.join(std.testing.allocator, &.{ dashboard_root, feed_writer.global_events_file_name });
+    defer std.testing.allocator.free(events_path);
+    const file = try std.Io.Dir.cwd().createFile(std.testing.io, events_path, .{});
+    defer file.close(std.testing.io);
+    var buffer: [4096]u8 = undefined;
+    var file_writer = file.writer(std.testing.io, &buffer);
+    var target_record = try rust_visibility.buildFeedRecordFromHookDecision(
+        std.testing.allocator,
+        std.testing.io,
+        root,
+        "pi",
+        "healthy",
+        "deny",
+        "target blocked",
+        null,
+        null,
+        null,
+        null,
+        target,
+    );
+    defer target_record.deinit(std.testing.allocator);
+    try rust_visibility.writeFeedRecordJson(&file_writer.interface, target_record);
+    try file_writer.interface.writeByte('\n');
+    var noise_record = try rust_visibility.buildFeedRecordFromHookDecision(
+        std.testing.allocator,
+        std.testing.io,
+        root,
+        "codex",
+        "healthy",
+        "allow",
+        "noise",
+        null,
+        null,
+        null,
+        null,
+        "noise-session",
+    );
+    defer noise_record.deinit(std.testing.allocator);
+    for (0..1000) |_| {
+        try rust_visibility.writeFeedRecordJson(&file_writer.interface, noise_record);
+        try file_writer.interface.writeByte('\n');
+    }
+    try file_writer.interface.flush();
+
+    var workspace = try dupeWorkspace(std.testing.allocator, root, "", null, false);
+    defer workspace.deinit(std.testing.allocator);
+    var output: std.Io.Writer.Allocating = .init(std.testing.allocator);
+    defer output.deinit();
+    _ = try writeSessionsJson(std.testing.io, std.testing.allocator, &output.writer, dashboard_root, &.{workspace}, 2);
+    try std.testing.expect(std.mem.indexOf(u8, output.writer.buffered(), "\"host\":\"pi\"") != null);
+}
+
+test "machine sessions sort across workspaces before truncation" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const base = try tmp.dir.realPathFileAlloc(std.testing.io, ".", std.testing.allocator);
+    defer std.testing.allocator.free(base);
+    const older_root = try std.fs.path.join(std.testing.allocator, &.{ base, "older" });
+    defer std.testing.allocator.free(older_root);
+    const newer_root = try std.fs.path.join(std.testing.allocator, &.{ base, "newer" });
+    defer std.testing.allocator.free(newer_root);
+    const older_id = try core.session.generateSessionId(core.time.Timestamp.fromUnixSeconds(1_700_000_000));
+    const newer_id = try core.session.generateSessionId(core.time.Timestamp.fromUnixSeconds(1_700_000_100));
+    const older_path = try std.fs.path.join(std.testing.allocator, &.{ older_root, ".orca", "sessions", older_id.slice() });
+    defer std.testing.allocator.free(older_path);
+    const newer_path = try std.fs.path.join(std.testing.allocator, &.{ newer_root, ".orca", "sessions", newer_id.slice() });
+    defer std.testing.allocator.free(newer_path);
+    try std.Io.Dir.cwd().createDirPath(std.testing.io, older_path);
+    try std.Io.Dir.cwd().createDirPath(std.testing.io, newer_path);
+
+    var older = try dupeWorkspace(std.testing.allocator, older_root, "", null, false);
+    defer older.deinit(std.testing.allocator);
+    var newer = try dupeWorkspace(std.testing.allocator, newer_root, "", null, false);
+    defer newer.deinit(std.testing.allocator);
+    var output: std.Io.Writer.Allocating = .init(std.testing.allocator);
+    defer output.deinit();
+    _ = try writeSessionsFromFeed(std.testing.io, std.testing.allocator, &output.writer, &.{ older, newer }, &.{}, 1);
+    const json = output.writer.buffered();
+    try std.testing.expect(std.mem.indexOf(u8, json, newer_id.slice()) != null);
+    try std.testing.expect(std.mem.indexOf(u8, json, older_id.slice()) == null);
+}
+
+test "session directory access failures report degraded aggregation" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const root = try tmp.dir.realPathFileAlloc(std.testing.io, ".", std.testing.allocator);
+    defer std.testing.allocator.free(root);
+    const sessions_path = try std.fs.path.join(std.testing.allocator, &.{ root, ".orca", "sessions" });
+    defer std.testing.allocator.free(sessions_path);
+    try std.Io.Dir.cwd().createDirPath(std.testing.io, std.fs.path.dirname(sessions_path).?);
+    const invalid_dir = try std.Io.Dir.cwd().createFile(std.testing.io, sessions_path, .{});
+    invalid_dir.close(std.testing.io);
+
+    var workspace = try dupeWorkspace(std.testing.allocator, root, "", null, false);
+    defer workspace.deinit(std.testing.allocator);
+    var output: std.Io.Writer.Allocating = .init(std.testing.allocator);
+    defer output.deinit();
+    const health = try writeSessionsFromFeed(std.testing.io, std.testing.allocator, &output.writer, &.{workspace}, &.{}, 1);
+    try std.testing.expectEqual(SessionLoadHealth.degraded, health);
+    try std.testing.expectEqualStrings("[]", output.writer.buffered());
 }
 
 test "denied-only global feed honors max count" {

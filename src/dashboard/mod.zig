@@ -49,7 +49,9 @@ pub fn writeStatusJson(io: std.Io, allocator: std.mem.Allocator, writer: anytype
     try writer.writeByte(',');
     try writePluginCardJson(io, allocator, writer, workspace_root, "hermes", "Hermes", "hermes", "integrations/hermes-plugin", "orca plugin doctor hermes");
     try writer.writeAll("],\"sessions\":");
-    try writeSessionsArrayJson(io, allocator, writer, workspace_root, 6);
+    const session_health = try writeSessionsArrayJson(io, allocator, writer, workspace_root, 6);
+    try writer.writeAll(",\"session_health\":");
+    try core.util.writeJsonString(writer, @tagName(session_health));
     try writer.writeAll(",\"daemon_health\":");
     try writeDaemonHealthJson(allocator, writer);
     try writer.writeAll(",\"rust_shell_decisions\":");
@@ -105,7 +107,9 @@ pub fn writeMachineStatusJson(
     try writer.writeAll(",\"workspace_root\":null},\"policy\":null,\"secretless_runtime\":null,\"license\":");
     try writeLicenseJson(io, allocator, writer);
     try writer.writeAll(",\"ci_readiness\":null,\"plugins\":[],\"sessions\":");
-    try aggregate.writeSessionsJson(io, allocator, writer, dashboard_root, workspaces, 20);
+    const session_health = try aggregate.writeSessionsJson(io, allocator, writer, dashboard_root, workspaces, 20);
+    try writer.writeAll(",\"session_health\":");
+    try core.util.writeJsonString(writer, @tagName(session_health));
     try writer.writeAll(",\"daemon_health\":");
     try writeDaemonHealthJson(allocator, writer);
     try writer.writeAll(",\"rust_shell_decisions\":");
@@ -315,7 +319,9 @@ pub fn initPolicyFromPreset(io: std.Io, allocator: std.mem.Allocator, workspace_
 pub fn writeSessionsJson(io: std.Io, allocator: std.mem.Allocator, writer: anytype, workspace_root: []const u8) !void {
     try writer.writeByte('{');
     try writer.writeAll("\"sessions\":");
-    try writeSessionsArrayJson(io, allocator, writer, workspace_root, 20);
+    const session_health = try writeSessionsArrayJson(io, allocator, writer, workspace_root, 20);
+    try writer.writeAll(",\"session_health\":");
+    try core.util.writeJsonString(writer, @tagName(session_health));
     try writer.writeAll(",\"blocked_actions\":");
     try writeBlockedActionsArrayJson(io, allocator, writer, workspace_root, 50);
     try writer.writeByte('}');
@@ -330,7 +336,9 @@ pub fn writeMachineSessionsJson(
     const workspaces = try aggregate.loadWorkspaces(io, allocator, dashboard_root);
     defer aggregate.deinitWorkspaces(allocator, workspaces);
     try writer.writeAll("{\"sessions\":");
-    try aggregate.writeSessionsJson(io, allocator, writer, dashboard_root, workspaces, 50);
+    const session_health = try aggregate.writeSessionsJson(io, allocator, writer, dashboard_root, workspaces, 50);
+    try writer.writeAll(",\"session_health\":");
+    try core.util.writeJsonString(writer, @tagName(session_health));
     try writer.writeAll(",\"blocked_actions\":");
     try aggregate.writeGlobalFeedJson(io, allocator, writer, dashboard_root, 100, true);
     try writer.writeByte('}');
@@ -462,7 +470,7 @@ fn writeQuickAction(writer: anytype, id: []const u8, command: []const u8) !void 
     try writer.writeByte('}');
 }
 
-fn writeSessionsArrayJson(io: std.Io, allocator: std.mem.Allocator, writer: anytype, workspace_root: []const u8, max_count: usize) !void {
+fn writeSessionsArrayJson(io: std.Io, allocator: std.mem.Allocator, writer: anytype, workspace_root: []const u8, max_count: usize) !aggregate.SessionLoadHealth {
     return aggregate.writeWorkspaceSessionsJson(io, allocator, writer, workspace_root, max_count);
 }
 

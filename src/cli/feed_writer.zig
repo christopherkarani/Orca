@@ -222,6 +222,18 @@ pub const LoadedFeedRecord = struct {
 
 pub const FeedLoadHealth = enum { healthy, degraded };
 
+pub const FeedRecordFilter = enum {
+    all,
+    blocked,
+
+    fn matches(self: FeedRecordFilter, record: rust_visibility.RustShellFeedRecord) bool {
+        return switch (self) {
+            .all => true,
+            .blocked => rust_visibility.isBlockedFeedRecord(record),
+        };
+    }
+};
+
 pub const FeedLoadResult = struct {
     records: []LoadedFeedRecord,
     health: FeedLoadHealth,
@@ -253,7 +265,17 @@ pub fn loadRecentWithHealth(
     const feed_path = feedPath(allocator, workspace_root) catch return .{ .records = &.{}, .health = .healthy, .skipped_lines = 0 };
     defer allocator.free(feed_path);
 
-    return loadRecentFromPath(io, allocator, feed_path, workspace_root, max_count);
+    return loadRecentFromPath(io, allocator, feed_path, workspace_root, max_count, .all);
+}
+
+pub fn loadRecentTailWithHealth(
+    io: std.Io,
+    allocator: std.mem.Allocator,
+    workspace_root: []const u8,
+) !FeedLoadResult {
+    const feed_path = feedPath(allocator, workspace_root) catch return .{ .records = &.{}, .health = .healthy, .skipped_lines = 0 };
+    defer allocator.free(feed_path);
+    return loadRecentFromPath(io, allocator, feed_path, workspace_root, null, .all);
 }
 
 pub fn loadGlobalRecent(
@@ -272,16 +294,50 @@ pub fn loadGlobalRecentWithHealth(
     dashboard_root: []const u8,
     max_count: usize,
 ) !FeedLoadResult {
+    return loadGlobalRecentFilteredWithHealth(io, allocator, dashboard_root, max_count, .all);
+}
+
+pub fn loadGlobalRecentMatchingWithHealth(
+    io: std.Io,
+    allocator: std.mem.Allocator,
+    dashboard_root: []const u8,
+    max_count: usize,
+    filter: FeedRecordFilter,
+) !FeedLoadResult {
+    return loadGlobalRecentFilteredWithHealth(io, allocator, dashboard_root, max_count, filter);
+}
+
+pub fn loadGlobalTailWithHealth(
+    io: std.Io,
+    allocator: std.mem.Allocator,
+    dashboard_root: []const u8,
+) !FeedLoadResult {
+    return loadGlobalRecentFilteredWithHealth(io, allocator, dashboard_root, null, .all);
+}
+
+fn loadGlobalRecentFilteredWithHealth(
+    io: std.Io,
+    allocator: std.mem.Allocator,
+    dashboard_root: []const u8,
+    max_count: ?usize,
+    filter: FeedRecordFilter,
+) !FeedLoadResult {
     const events_path = try std.fs.path.join(allocator, &.{ dashboard_root, global_events_file_name });
     defer allocator.free(events_path);
-    const active = try loadRecentFromPath(io, allocator, events_path, null, max_count);
-    if (max_count == 0 or active.records.len >= max_count) return active;
+    var active = try loadRecentFromPath(io, allocator, events_path, null, max_count, filter);
+    errdefer active.deinit(allocator);
+    if (max_count) |limit| {
+        if (limit == 0 or active.records.len >= limit) return active;
+    }
 
     const rotated_path = try std.fs.path.join(allocator, &.{ dashboard_root, rotated_global_events_file_name });
     defer allocator.free(rotated_path);
-    const need_from_rotated = max_count - active.records.len;
-    const rotated = try loadRecentFromPath(io, allocator, rotated_path, null, need_from_rotated);
+    const need_from_rotated = if (max_count) |limit| limit - active.records.len else null;
+    var rotated = try loadRecentFromPath(io, allocator, rotated_path, null, need_from_rotated, filter);
+    errdefer rotated.deinit(allocator);
     if (rotated.records.len == 0) {
+        active.skipped_lines += rotated.skipped_lines;
+        if (active.skipped_lines > 0) active.health = .degraded;
         var empty = rotated;
         empty.deinit(allocator);
         return active;
@@ -306,7 +362,8 @@ fn loadRecentFromPath(
     allocator: std.mem.Allocator,
     path: []const u8,
     fallback_workspace_root: ?[]const u8,
-    max_count: usize,
+    max_count: ?usize,
+    filter: FeedRecordFilter,
 ) !FeedLoadResult {
     const file = std.Io.Dir.cwd().openFile(io, path, .{}) catch |err| switch (err) {
         error.FileNotFound => return .{ .records = &.{}, .health = .healthy, .skipped_lines = 0 },
@@ -344,24 +401,25 @@ fn loadRecentFromPath(
             skipped_lines += 1;
             continue;
         };
+        if (!filter.matches(record)) {
+            allocator.free(owned_line);
+            var discarded = record;
+            discarded.deinit(allocator);
+            continue;
+        }
         try stack.append(allocator, .{ .raw = owned_line, .record = record });
+        if (max_count) |limit| {
+            if (stack.items.len > limit) {
+                var discarded = stack.items[0];
+                discarded.deinit(allocator);
+                std.mem.copyForwards(LoadedFeedRecord, stack.items[0 .. stack.items.len - 1], stack.items[1..]);
+                stack.items.len -= 1;
+            }
+        }
     }
 
-    if (stack.items.len <= max_count) return .{
-        .records = try stack.toOwnedSlice(allocator),
-        .health = if (skipped_lines == 0) .healthy else .degraded,
-        .skipped_lines = skipped_lines,
-    };
-
-    const retained_start = stack.items.len - max_count;
-    const out = try allocator.alloc(LoadedFeedRecord, max_count);
-    for (stack.items[retained_start..], 0..) |item, index| {
-        out[index] = item;
-    }
-    for (stack.items[0..retained_start]) |*item| item.deinit(allocator);
-    stack.deinit(allocator);
     return .{
-        .records = out,
+        .records = try stack.toOwnedSlice(allocator),
         .health = if (skipped_lines == 0) .healthy else .degraded,
         .skipped_lines = skipped_lines,
     };
@@ -523,6 +581,88 @@ test "feed loader skips malformed records and reports degraded health" {
     try std.testing.expectEqual(@as(usize, 1), loaded.records.len);
 }
 
+test "global feed matching loader retains only bounded blocked records" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const root = try tmp.dir.realPathFileAlloc(std.testing.io, ".", std.testing.allocator);
+    defer std.testing.allocator.free(root);
+    const dashboard_root = try std.fs.path.join(std.testing.allocator, &.{ root, "dashboard" });
+    defer std.testing.allocator.free(dashboard_root);
+
+    for (0..6) |index| {
+        const decision = if (index % 2 == 0) "deny" else "allow";
+        var record = try rust_visibility.buildFeedRecordFromHookDecision(
+            std.testing.allocator,
+            std.testing.io,
+            root,
+            "codex",
+            "healthy",
+            decision,
+            if (index % 2 == 0) "blocked" else "allowed",
+            null,
+            null,
+            null,
+            null,
+            null,
+        );
+        defer record.deinit(std.testing.allocator);
+        try appendGlobalRecord(std.testing.io, std.testing.allocator, dashboard_root, record);
+    }
+
+    var loaded = try loadGlobalRecentMatchingWithHealth(
+        std.testing.io,
+        std.testing.allocator,
+        dashboard_root,
+        2,
+        .blocked,
+    );
+    defer loaded.deinit(std.testing.allocator);
+    try std.testing.expectEqual(@as(usize, 2), loaded.records.len);
+    for (loaded.records) |item| try std.testing.expect(rust_visibility.isBlockedFeedRecord(item.record));
+}
+
+test "feed loader accepts histories larger than 64 MiB by reading a bounded tail" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const root = try tmp.dir.realPathFileAlloc(std.testing.io, ".", std.testing.allocator);
+    defer std.testing.allocator.free(root);
+    const path = try feedPath(std.testing.allocator, root);
+    defer std.testing.allocator.free(path);
+    const parent = std.fs.path.dirname(path).?;
+    try std.Io.Dir.cwd().createDirPath(std.testing.io, parent);
+
+    const file = try std.Io.Dir.cwd().createFile(std.testing.io, path, .{ .read = true });
+    defer file.close(std.testing.io);
+    var buffer: [4096]u8 = undefined;
+    var writer = file.writer(std.testing.io, &buffer);
+    try writer.seekToUnbuffered(65 * 1024 * 1024);
+    try writer.interface.writeByte('\n');
+    var record = try rust_visibility.buildFeedRecordFromHookDecision(
+        std.testing.allocator,
+        std.testing.io,
+        root,
+        "codex",
+        "healthy",
+        "deny",
+        "blocked",
+        null,
+        null,
+        null,
+        null,
+        "tail-session",
+    );
+    defer record.deinit(std.testing.allocator);
+    try rust_visibility.writeFeedRecordJson(&writer.interface, record);
+    try writer.interface.writeByte('\n');
+    try writer.interface.flush();
+
+    var loaded = try loadRecentWithHealth(std.testing.io, std.testing.allocator, root, 1);
+    defer loaded.deinit(std.testing.allocator);
+    try std.testing.expectEqual(@as(usize, 1), loaded.records.len);
+    try std.testing.expectEqualStrings("tail-session", loaded.records[0].record.session_id.?);
+    try std.testing.expectEqual(FeedLoadHealth.degraded, loaded.health);
+}
+
 test "global feed rotates one generation and keeps the newest record active" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
@@ -630,6 +770,42 @@ test "global feed load merges rotated generation history" {
     try std.testing.expectEqual(@as(usize, 2), loaded.len);
     try std.testing.expectEqualStrings("older-session", loaded[0].record.session_id.?);
     try std.testing.expectEqualStrings("newer-session", loaded[1].record.session_id.?);
+}
+
+test "global tail health includes malformed rotated generation" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const root = try tmp.dir.realPathFileAlloc(std.testing.io, ".", std.testing.allocator);
+    defer std.testing.allocator.free(root);
+    const dashboard_root = try std.fs.path.join(std.testing.allocator, &.{ root, "dashboard" });
+    defer std.testing.allocator.free(dashboard_root);
+    try std.Io.Dir.cwd().createDirPath(std.testing.io, dashboard_root);
+    const rotated_path = try std.fs.path.join(std.testing.allocator, &.{ dashboard_root, rotated_global_events_file_name });
+    defer std.testing.allocator.free(rotated_path);
+    try std.Io.Dir.cwd().writeFile(std.testing.io, .{ .sub_path = rotated_path, .data = "{malformed}\n" });
+
+    var record = try rust_visibility.buildFeedRecordFromHookDecision(
+        std.testing.allocator,
+        std.testing.io,
+        root,
+        "codex",
+        "healthy",
+        "allow",
+        "active",
+        null,
+        null,
+        null,
+        null,
+        "active-session",
+    );
+    defer record.deinit(std.testing.allocator);
+    try appendGlobalRecord(std.testing.io, std.testing.allocator, dashboard_root, record);
+
+    var loaded = try loadGlobalTailWithHealth(std.testing.io, std.testing.allocator, dashboard_root);
+    defer loaded.deinit(std.testing.allocator);
+    try std.testing.expectEqual(FeedLoadHealth.degraded, loaded.health);
+    try std.testing.expectEqual(@as(usize, 1), loaded.skipped_lines);
+    try std.testing.expectEqual(@as(usize, 1), loaded.records.len);
 }
 
 test "global feed append records workspace and updates registry" {
