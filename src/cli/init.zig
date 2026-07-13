@@ -1,10 +1,12 @@
 const std = @import("std");
 
 const orca_policy = @import("orca_core").policy;
+const core = @import("orca_core").core;
 const exit_codes = @import("exit_codes.zig");
 const help = @import("help.zig");
 const style = @import("style.zig");
 const suggestions = @import("suggestions.zig");
+const pack_state = @import("pack_state.zig");
 
 const InitOptions = struct {
     mode: ?[]const u8 = null,
@@ -41,6 +43,25 @@ pub fn command(io: std.Io, cwd: std.Io.Dir, argv: []const []const u8, stdout: an
     const preset_text = orca_policy.presets.agentPresetText(options.preset);
     try writePolicy(io, file, preset_text, options.mode);
     const info = orca_policy.presets.agentPresetInfo(options.preset);
+
+    // Additive pack enablement for the daemon evaluator (project `.orca.toml` when in a git
+    // repo, else user config). Zig still owns policy.yaml; packs config is additive.
+    var gpa_state: std.heap.DebugAllocator(.{}) = .init;
+    defer _ = gpa_state.deinit();
+    const allocator = gpa_state.allocator();
+
+    // Resolve workspace from the init cwd (avoid importing onboarding — circular with init).
+    const cwd_path = try cwd.realPathFileAlloc(io, ".", allocator);
+    defer allocator.free(cwd_path);
+    const workspace_root = core.supervisor.resolveWorkspaceRoot(io, allocator, null, cwd_path) catch try allocator.dupe(u8, cwd_path);
+    defer allocator.free(workspace_root);
+
+    var packs_result = pack_state.ensurePresetPacks(io, allocator, workspace_root, options.preset) catch pack_state.EnsurePacksResult{
+        .message = "Packs: baseline only (pack config write skipped)",
+        .owned = false,
+    };
+    defer packs_result.deinit(allocator);
+
     if (!options.quiet) {
         // Warm success message: format into a buffer so it can route through
         // maybeColor, matching the style of setup.zig and run.zig warm paths.
@@ -59,12 +80,17 @@ pub fn command(io: std.Io, cwd: std.Io.Dir, argv: []const []const u8, stdout: an
                 try stdout.print("{s} Created .orca/policy.yaml from preset '{s}'.\n", .{ style.Glyph.check, info.name });
             }
         }
+        try stdout.print("{s}\n", .{packs_result.message});
+        if (packs_result.config_path) |path| {
+            try stdout.print("  Pack config ({s}): {s}\n", .{ packs_result.scope.?.label(), path });
+        }
         if (info.experimental) try stdout.print("Warning: {s}\n", .{info.warning});
         try stdout.writeAll("\n" ++
             "Your policy is ready.\n" ++
             "\n" ++
             "Next steps:\n" ++
             "  orca policy check .orca/policy.yaml\n" ++
+            "  orca status\n" ++
             "  orca doctor\n" ++
             "  orca run -- <command>\n" ++
             "\n");
@@ -207,11 +233,49 @@ test "init accepts generic-agent preset alias" {
     const code = try command(std.testing.io, tmp.dir, &.{ "--preset", "generic-agent", "--force" }, &stdout_writer, &stderr_writer);
     try std.testing.expectEqual(exit_codes.success, code);
     try std.testing.expect(std.mem.indexOf(u8, stdout_writer.buffered(), "generic-agent") != null);
+    try std.testing.expect(std.mem.indexOf(u8, stdout_writer.buffered(), "Packs: baseline only") != null);
     try std.testing.expectEqualStrings("", stderr_writer.buffered());
 
     const policy = try tmp.dir.readFileAlloc(std.testing.io, ".orca/policy.yaml", std.testing.allocator, .limited(4096));
     defer std.testing.allocator.free(policy);
     try std.testing.expect(std.mem.indexOf(u8, policy, "version: 1") != null);
+}
+
+test "init team-ci enables opt-in packs in project .orca.toml" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try tmp.dir.createDirPath(std.testing.io, ".git");
+
+    var stdout_buf: [2048]u8 = undefined;
+    var stderr_buf: [512]u8 = undefined;
+    var stdout_writer: std.Io.Writer = .fixed(&stdout_buf);
+    var stderr_writer: std.Io.Writer = .fixed(&stderr_buf);
+
+    const code = try command(std.testing.io, tmp.dir, &.{ "--preset", "team-ci", "--force" }, &stdout_writer, &stderr_writer);
+    try std.testing.expectEqual(exit_codes.success, code);
+    const out = stdout_writer.buffered();
+    try std.testing.expect(std.mem.indexOf(u8, out, "Enabled packs:") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "containers.docker") != null);
+    try std.testing.expectEqualStrings("", stderr_writer.buffered());
+
+    const policy = try tmp.dir.readFileAlloc(std.testing.io, ".orca/policy.yaml", std.testing.allocator, .limited(16 * 1024));
+    defer std.testing.allocator.free(policy);
+    try std.testing.expect(std.mem.indexOf(u8, policy, "version: 1") != null);
+
+    const packs_cfg = try tmp.dir.readFileAlloc(std.testing.io, ".orca.toml", std.testing.allocator, .limited(8192));
+    defer std.testing.allocator.free(packs_cfg);
+    try std.testing.expect(std.mem.indexOf(u8, packs_cfg, "containers.docker") != null);
+    try std.testing.expect(std.mem.indexOf(u8, packs_cfg, "kubernetes.kubectl") != null);
+    try std.testing.expect(std.mem.indexOf(u8, packs_cfg, "infrastructure.terraform") != null);
+
+    // Idempotent re-run with force for policy only still merges packs without wiping.
+    stdout_writer = .fixed(&stdout_buf);
+    stderr_writer = .fixed(&stderr_buf);
+    const second = try command(std.testing.io, tmp.dir, &.{ "--preset", "team-ci", "--force" }, &stdout_writer, &stderr_writer);
+    try std.testing.expectEqual(exit_codes.success, second);
+    const packs_cfg2 = try tmp.dir.readFileAlloc(std.testing.io, ".orca.toml", std.testing.allocator, .limited(8192));
+    defer std.testing.allocator.free(packs_cfg2);
+    try std.testing.expect(std.mem.indexOf(u8, packs_cfg2, "containers.docker") != null);
 }
 
 test "init writes requested phase 18 presets as valid policies" {

@@ -5,6 +5,7 @@ const help = @import("help.zig");
 const style = @import("style.zig");
 const plugin = @import("plugin.zig");
 const onboarding = @import("onboarding.zig");
+const pack_state = @import("pack_state.zig");
 const spinner_pkg = @import("spinner.zig");
 const build_options = @import("build_options");
 const tui = @import("../tui/mod.zig");
@@ -85,6 +86,18 @@ fn runAutoSetup(io: std.Io, cwd: std.Io.Dir, preset: []const u8, stdout: anytype
         .exists = "Policy already exists.\n",
     });
     if (policy_code != exit_codes.success) return policy_code;
+
+    // Additive pack enablement (idempotent). Init may have already written packs when policy
+    // was created; re-run merges without wiping user customizations.
+    var packs_result = pack_state.ensurePresetPacksByName(io, allocator, workspace_root, preset) catch pack_state.EnsurePacksResult{
+        .message = "Packs: baseline only (pack config write skipped)",
+        .owned = false,
+    };
+    defer packs_result.deinit(allocator);
+    try stdout.print("{s}\n", .{packs_result.message});
+    if (packs_result.config_path) |path| {
+        try stdout.print("  Pack config ({s}): {s}\n", .{ packs_result.scope.?.label(), path });
+    }
 
     var doctor_report = try plugin.collectPluginDoctorReport(io, allocator);
     defer plugin.deinitPluginDoctorReport(&doctor_report, allocator);
@@ -258,6 +271,16 @@ fn runGuidedSetup(
     }
     if (!render.embedded) {
         try tui.render.stepLine(io, stdout, .done, "Policy", if (policy_existed) "Existing policy preserved." else "Policy created.", 0);
+    }
+
+    var packs_result = pack_state.ensurePresetPacksByName(io, allocator, workspace_root, preset) catch pack_state.EnsurePacksResult{
+        .message = "Packs: baseline only (pack config write skipped)",
+        .owned = false,
+    };
+    defer packs_result.deinit(allocator);
+    try stdout.print("{s}\n", .{packs_result.message});
+    if (packs_result.config_path) |path| {
+        try stdout.print("  Pack config ({s}): {s}\n", .{ packs_result.scope.?.label(), path });
     }
 
     var doctor_report = try plugin.collectPluginDoctorReport(io, allocator);

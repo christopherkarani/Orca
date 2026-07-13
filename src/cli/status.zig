@@ -1,0 +1,451 @@
+//! `orca status` — one-glance protection snapshot (P2a).
+//! Doctor remains the deep diagnostic; status is the summary.
+
+const std = @import("std");
+const orca_policy = @import("orca_core").policy;
+const core = @import("orca_core").core;
+const supervisor = core.supervisor;
+
+const exit_codes = @import("exit_codes.zig");
+const help = @import("help.zig");
+const suggestions = @import("suggestions.zig");
+const onboarding = @import("onboarding.zig");
+const pack_state = @import("pack_state.zig");
+const plugin = @import("plugin.zig");
+const host_status = @import("host_status.zig");
+
+const Options = struct {
+    json: bool = false,
+};
+
+pub fn command(io: std.Io, argv: []const []const u8, stdout: anytype, stderr: anytype) !u8 {
+    return commandWithDeps(realExecuteCli, null, io, argv, stdout, stderr);
+}
+
+fn realExecuteCli(io: std.Io, argv: []const []const u8, stdout: anytype, stderr: anytype) !u8 {
+    const cli = @import("mod.zig");
+    return cli.executeDaemonCli(io, argv, stdout, stderr);
+}
+
+/// Injectable for tests: execute_cli for packs; daemon_check_fn for health.
+pub fn commandWithDeps(
+    comptime execute_cli: anytype,
+    daemon_check_fn: ?*const fn (std.mem.Allocator, bool) anyerror!void,
+    io: std.Io,
+    argv: []const []const u8,
+    stdout: anytype,
+    stderr: anytype,
+) !u8 {
+    const options = parseOptions(argv, stderr) catch return exit_codes.usage;
+    for (argv) |arg| {
+        if (std.mem.eql(u8, arg, "--help") or std.mem.eql(u8, arg, "-h")) {
+            _ = try help.writeCommand(io, stdout, "status");
+            return exit_codes.success;
+        }
+    }
+
+    var gpa_state: std.heap.DebugAllocator(.{}) = .init;
+    defer _ = gpa_state.deinit();
+    const allocator = gpa_state.allocator();
+
+    var snapshot = try collectSnapshot(execute_cli, daemon_check_fn, io, allocator);
+    defer snapshot.deinit(allocator);
+
+    if (options.json) {
+        try writeJson(stdout, snapshot);
+    } else {
+        try writeHuman(stdout, snapshot);
+    }
+    return exit_codes.success;
+}
+
+fn parseOptions(argv: []const []const u8, stderr: anytype) !Options {
+    var options: Options = .{};
+    for (argv) |arg| {
+        if (std.mem.eql(u8, arg, "--help") or std.mem.eql(u8, arg, "-h")) continue;
+        if (std.mem.eql(u8, arg, "--json")) {
+            options.json = true;
+            continue;
+        }
+        try suggestions.writeUnknownOption(stderr, "orca status", arg, &.{ "--json", "--help", "-h" }, "status");
+        return error.Usage;
+    }
+    return options;
+}
+
+const Snapshot = struct {
+    daemon_status: []const u8,
+    daemon_detail: []const u8,
+    policy_path: []const u8,
+    policy_present: bool,
+    policy_mode: ?[]const u8,
+    policy_preset: ?[]const u8,
+    hosts_summary: []const u8,
+    packs_summary_line: []const u8,
+    packs_known: bool,
+    packs_opt_in_count: usize,
+    packs_opt_in: []const []const u8,
+    next_step: []const u8,
+
+    fn deinit(self: *Snapshot, allocator: std.mem.Allocator) void {
+        allocator.free(self.daemon_status);
+        allocator.free(self.daemon_detail);
+        allocator.free(self.policy_path);
+        if (self.policy_mode) |m| allocator.free(m);
+        if (self.policy_preset) |p| allocator.free(p);
+        allocator.free(self.hosts_summary);
+        allocator.free(self.packs_summary_line);
+        for (self.packs_opt_in) |id| allocator.free(id);
+        allocator.free(self.packs_opt_in);
+        allocator.free(self.next_step);
+        self.* = undefined;
+    }
+};
+
+fn collectSnapshot(
+    comptime execute_cli: anytype,
+    daemon_check_fn: ?*const fn (std.mem.Allocator, bool) anyerror!void,
+    io: std.Io,
+    allocator: std.mem.Allocator,
+) !Snapshot {
+    // Daemon: ensure/start with existing timeout patterns when possible.
+    const daemon_check = try onboarding.checkDaemonHealth(allocator, true, daemon_check_fn);
+    const daemon_status = try allocator.dupe(u8, daemonHumanStatus(daemon_check.status));
+    errdefer allocator.free(daemon_status);
+    const daemon_detail = try allocator.dupe(u8, daemon_check.detail);
+    errdefer allocator.free(daemon_detail);
+
+    const workspace_root = try onboarding.resolveWorkspaceRoot(io, allocator);
+    defer allocator.free(workspace_root);
+
+    const policy_path = try onboarding.policyPath(allocator, workspace_root);
+    errdefer allocator.free(policy_path);
+    const policy_present = onboarding.policyExists(io, workspace_root);
+
+    var policy_mode: ?[]const u8 = null;
+    var policy_preset: ?[]const u8 = null;
+    if (policy_present) {
+        const meta = readPolicyMeta(io, allocator, policy_path);
+        policy_mode = meta.mode;
+        policy_preset = meta.preset;
+    }
+    errdefer if (policy_mode) |m| allocator.free(m);
+    errdefer if (policy_preset) |p| allocator.free(p);
+
+    const hosts_summary = try buildHostsSummary(io, allocator);
+    errdefer allocator.free(hosts_summary);
+
+    var packs = try pack_state.queryPacksSummary(execute_cli, io, allocator);
+    defer packs.deinit(allocator);
+    const packs_line = try pack_state.formatSummaryLine(allocator, packs);
+    errdefer allocator.free(packs_line);
+
+    var opt_in_owned: std.ArrayListUnmanaged([]const u8) = .empty;
+    errdefer {
+        for (opt_in_owned.items) |id| allocator.free(id);
+        opt_in_owned.deinit(allocator);
+    }
+    for (packs.opt_in_ids) |id| {
+        try opt_in_owned.append(allocator, try allocator.dupe(u8, id));
+    }
+
+    const next_step = try chooseNextStep(allocator, daemon_check.status, policy_present, packs.known);
+    errdefer allocator.free(next_step);
+
+    return .{
+        .daemon_status = daemon_status,
+        .daemon_detail = daemon_detail,
+        .policy_path = policy_path,
+        .policy_present = policy_present,
+        .policy_mode = policy_mode,
+        .policy_preset = policy_preset,
+        .hosts_summary = hosts_summary,
+        .packs_summary_line = packs_line,
+        .packs_known = packs.known,
+        .packs_opt_in_count = packs.optInCount(),
+        .packs_opt_in = try opt_in_owned.toOwnedSlice(allocator),
+        .next_step = next_step,
+    };
+}
+
+fn daemonHumanStatus(status: onboarding.DaemonHealthStatus) []const u8 {
+    return status.label();
+}
+
+fn readPolicyMeta(io: std.Io, allocator: std.mem.Allocator, path: []const u8) struct { mode: ?[]const u8, preset: ?[]const u8 } {
+    const content = std.Io.Dir.cwd().readFileAlloc(io, path, allocator, .limited(64 * 1024)) catch {
+        return .{ .mode = null, .preset = null };
+    };
+    defer allocator.free(content);
+
+    var mode: ?[]const u8 = null;
+    var preset: ?[]const u8 = null;
+    var lines = std.mem.splitScalar(u8, content, '\n');
+    while (lines.next()) |line| {
+        const trimmed = std.mem.trim(u8, line, " \t\r");
+        if (std.mem.startsWith(u8, trimmed, "mode:")) {
+            const value = std.mem.trim(u8, trimmed["mode:".len..], " \t");
+            if (value.len > 0 and mode == null) {
+                mode = allocator.dupe(u8, value) catch null;
+            }
+        }
+        // "# Orca preset: generic-agent" or "# Orca policy pack: team-ci"
+        if (std.mem.indexOf(u8, trimmed, "preset:")) |idx| {
+            const after = std.mem.trim(u8, trimmed[idx + "preset:".len ..], " \t");
+            if (after.len > 0 and preset == null) {
+                var end = after.len;
+                if (std.mem.indexOfScalar(u8, after, ' ')) |sp| end = sp;
+                preset = allocator.dupe(u8, after[0..end]) catch null;
+            }
+        } else if (std.mem.indexOf(u8, trimmed, "policy pack:")) |idx| {
+            const after = std.mem.trim(u8, trimmed[idx + "policy pack:".len ..], " \t");
+            if (after.len > 0 and preset == null) {
+                var end = after.len;
+                if (std.mem.indexOfScalar(u8, after, ' ')) |sp| end = sp;
+                preset = allocator.dupe(u8, after[0..end]) catch null;
+            }
+        }
+    }
+    return .{ .mode = mode, .preset = preset };
+}
+
+fn buildHostsSummary(io: std.Io, allocator: std.mem.Allocator) ![]u8 {
+    var doctor_report = plugin.collectPluginDoctorReport(io, allocator) catch {
+        return try allocator.dupe(u8, "unknown (plugin scan failed)");
+    };
+    defer plugin.deinitPluginDoctorReport(&doctor_report, allocator);
+
+    const statuses = try onboarding.collectHostStatuses(io, allocator, doctor_report);
+    defer allocator.free(statuses);
+
+    var buf: std.ArrayListUnmanaged(u8) = .empty;
+    errdefer buf.deinit(allocator);
+
+    var any = false;
+    for (statuses) |st| {
+        if (!st.detected and !st.installed) continue;
+        if (any) try buf.appendSlice(allocator, " ");
+        any = true;
+        try buf.appendSlice(allocator, st.name);
+        if (st.installed) {
+            try buf.appendSlice(allocator, "✓");
+        } else if (st.detected) {
+            try buf.appendSlice(allocator, ":detected");
+        }
+    }
+    // Pi is not a managed plugin host; surface the P1 note briefly.
+    if (!any) {
+        buf.deinit(allocator);
+        return try allocator.dupe(u8, "none detected · pi:not managed");
+    }
+    try buf.appendSlice(allocator, " pi:not managed");
+    return try buf.toOwnedSlice(allocator);
+}
+
+fn chooseNextStep(
+    allocator: std.mem.Allocator,
+    daemon_status: onboarding.DaemonHealthStatus,
+    policy_present: bool,
+    packs_known: bool,
+) ![]u8 {
+    return switch (daemon_status) {
+        .unavailable => try allocator.dupe(u8, "Start or install orca-daemon, then re-run `orca status` (shell eval fails closed)."),
+        .incompatible => try allocator.dupe(u8, "Upgrade orca and orca-daemon together, then re-run `orca status`."),
+        .degraded => try allocator.dupe(u8, "Restart the daemon: `orca shutdown --daemon` then `orca status`."),
+        .compatible => blk: {
+            if (!policy_present) {
+                break :blk try allocator.dupe(u8, "Run `orca init --preset generic-agent` (or `orca start`) to create a policy.");
+            }
+            if (!packs_known) {
+                break :blk try allocator.dupe(u8, "Daemon is up but packs could not be listed; run `orca doctor`.");
+            }
+            break :blk try allocator.dupe(u8, "Protected path looks healthy. Run `orca doctor` for details or `orca run -- <agent>`.");
+        },
+    };
+}
+
+fn writeHuman(stdout: anytype, s: Snapshot) !void {
+    try stdout.writeAll("Orca status\n");
+    try stdout.print("  Daemon:    {s}  ({s})\n", .{ s.daemon_status, s.daemon_detail });
+    if (s.policy_present) {
+        try stdout.writeAll("  Policy:    ");
+        try stdout.writeAll(s.policy_path);
+        if (s.policy_mode) |mode| try stdout.print("  mode={s}", .{mode});
+        if (s.policy_preset) |preset| try stdout.print("  preset={s}", .{preset});
+        try stdout.writeAll("\n");
+    } else {
+        try stdout.print("  Policy:    missing  (expected {s})\n", .{s.policy_path});
+    }
+    try stdout.print("  Hosts:     {s}\n", .{s.hosts_summary});
+    try stdout.print("  Packs:     {s}\n", .{s.packs_summary_line});
+    try stdout.print("  Next:      {s}\n", .{s.next_step});
+}
+
+fn writeJson(stdout: anytype, s: Snapshot) !void {
+    try stdout.writeAll("{\n");
+    try stdout.writeAll("  \"schema_version\": 1,\n");
+
+    var daemon_status_buf: [128]u8 = undefined;
+    var daemon_detail_buf: [512]u8 = undefined;
+    try stdout.print("  \"daemon\": {{\"status\":{s},\"detail\":{s}}},\n", .{
+        escapeJson(s.daemon_status, &daemon_status_buf),
+        escapeJson(s.daemon_detail, &daemon_detail_buf),
+    });
+
+    var path_buf: [1024]u8 = undefined;
+    try stdout.print("  \"policy\": {{\"path\":{s},\"present\":{}", .{
+        escapeJson(s.policy_path, &path_buf),
+        s.policy_present,
+    });
+    if (s.policy_mode) |mode| {
+        var mode_buf: [64]u8 = undefined;
+        try stdout.print(",\"mode\":{s}", .{escapeJson(mode, &mode_buf)});
+    } else {
+        try stdout.writeAll(",\"mode\":null");
+    }
+    if (s.policy_preset) |preset| {
+        var preset_buf: [64]u8 = undefined;
+        try stdout.print(",\"preset\":{s}", .{escapeJson(preset, &preset_buf)});
+    } else {
+        try stdout.writeAll(",\"preset\":null");
+    }
+    try stdout.writeAll("},\n");
+
+    var hosts_buf: [2048]u8 = undefined;
+    try stdout.print("  \"hosts\": {{\"summary\":{s}}},\n", .{escapeJson(s.hosts_summary, &hosts_buf)});
+
+    try stdout.writeAll("  \"packs\": {");
+    try stdout.print("\"known\":{},\"opt_in_count\":{d},\"opt_in\":[", .{ s.packs_known, s.packs_opt_in_count });
+    for (s.packs_opt_in, 0..) |id, i| {
+        if (i > 0) try stdout.writeAll(",");
+        var id_buf: [128]u8 = undefined;
+        try stdout.writeAll(escapeJson(id, &id_buf));
+    }
+    var packs_buf: [2048]u8 = undefined;
+    try stdout.print("],\"summary\":{s}", .{escapeJson(s.packs_summary_line, &packs_buf)});
+    try stdout.writeAll("},\n");
+
+    var next_buf: [1024]u8 = undefined;
+    try stdout.print("  \"next\": {s}\n", .{escapeJson(s.next_step, &next_buf)});
+    try stdout.writeAll("}\n");
+}
+
+/// Returns a quoted JSON string using `buf` as scratch (includes quotes).
+fn escapeJson(value: []const u8, buf: []u8) []const u8 {
+    if (buf.len < 3) return "\"\"";
+    var out: std.Io.Writer = .fixed(buf);
+    out.writeByte('"') catch return "\"\"";
+    for (value) |c| {
+        switch (c) {
+            '"' => out.writeAll("\\\"") catch return "\"\"",
+            '\\' => out.writeAll("\\\\") catch return "\"\"",
+            '\n' => out.writeAll("\\n") catch return "\"\"",
+            '\r' => out.writeAll("\\r") catch return "\"\"",
+            '\t' => out.writeAll("\\t") catch return "\"\"",
+            else => {
+                if (c < 0x20) {
+                    var hex: [6]u8 = undefined;
+                    const h = std.fmt.bufPrint(&hex, "\\u{x:0>4}", .{c}) catch return "\"\"";
+                    out.writeAll(h) catch return "\"\"";
+                } else {
+                    out.writeByte(c) catch return "\"\"";
+                }
+            },
+        }
+    }
+    out.writeByte('"') catch return "\"\"";
+    return out.buffered();
+}
+
+// ─── Tests ───────────────────────────────────────────────────────────────────
+
+fn fakePacksHealthy(_: std.Io, argv: []const []const u8, stdout: anytype, _: anytype) !u8 {
+    try std.testing.expectEqualStrings("packs", argv[0]);
+    try stdout.writeAll(
+        \\{"packs":[{"id":"core.git","name":"Git","category":"core","description":"g","enabled":true,"safe_pattern_count":1,"destructive_pattern_count":1},{"id":"system.disk","name":"Disk","category":"system","description":"d","enabled":true,"safe_pattern_count":1,"destructive_pattern_count":1},{"id":"containers.docker","name":"Docker","category":"containers","description":"c","enabled":true,"safe_pattern_count":1,"destructive_pattern_count":1}],"enabled_count":3,"total_count":3}
+    );
+    return exit_codes.success;
+}
+
+fn fakePacksFail(_: std.Io, _: []const []const u8, _: anytype, _: anytype) !u8 {
+    return error.SocketConnectFailed;
+}
+
+fn mockDaemonOk(_: std.mem.Allocator, _: bool) anyerror!void {}
+
+fn mockDaemonDown(_: std.mem.Allocator, _: bool) anyerror!void {
+    return error.SocketConnectFailed;
+}
+
+test "status human healthy path shows section labels" {
+    var stdout_buf: [4096]u8 = undefined;
+    var stderr_buf: [256]u8 = undefined;
+    var stdout_writer: std.Io.Writer = .fixed(&stdout_buf);
+    var stderr_writer: std.Io.Writer = .fixed(&stderr_buf);
+
+    const code = try commandWithDeps(fakePacksHealthy, mockDaemonOk, std.testing.io, &.{}, &stdout_writer, &stderr_writer);
+    try std.testing.expectEqual(exit_codes.success, code);
+    const out = stdout_writer.buffered();
+    try std.testing.expect(std.mem.indexOf(u8, out, "Orca status") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "Daemon:") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "healthy") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "Policy:") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "Hosts:") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "Packs:") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "containers.docker") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "Next:") != null);
+}
+
+test "status daemon unavailable path" {
+    var stdout_buf: [4096]u8 = undefined;
+    var stderr_buf: [256]u8 = undefined;
+    var stdout_writer: std.Io.Writer = .fixed(&stdout_buf);
+    var stderr_writer: std.Io.Writer = .fixed(&stderr_buf);
+
+    const code = try commandWithDeps(fakePacksFail, mockDaemonDown, std.testing.io, &.{}, &stdout_writer, &stderr_writer);
+    try std.testing.expectEqual(exit_codes.success, code);
+    const out = stdout_writer.buffered();
+    try std.testing.expect(std.mem.indexOf(u8, out, "unavailable") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "Packs:") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "unknown") != null or std.mem.indexOf(u8, out, "fails closed") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "Next:") != null);
+}
+
+test "status --json parses with schema_version" {
+    var stdout_buf: [8192]u8 = undefined;
+    var stderr_buf: [256]u8 = undefined;
+    var stdout_writer: std.Io.Writer = .fixed(&stdout_buf);
+    var stderr_writer: std.Io.Writer = .fixed(&stderr_buf);
+
+    const code = try commandWithDeps(fakePacksHealthy, mockDaemonOk, std.testing.io, &.{"--json"}, &stdout_writer, &stderr_writer);
+    try std.testing.expectEqual(exit_codes.success, code);
+    const out = stdout_writer.buffered();
+    try std.testing.expect(std.mem.indexOf(u8, out, "\"schema_version\": 1") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "\"daemon\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "\"policy\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "\"hosts\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "\"packs\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "\"next\"") != null);
+
+    var parsed = try std.json.parseFromSlice(std.json.Value, std.testing.allocator, out, .{});
+    defer parsed.deinit();
+    try std.testing.expect(parsed.value == .object);
+    try std.testing.expectEqual(@as(i64, 1), parsed.value.object.get("schema_version").?.integer);
+}
+
+test "status rejects unknown options" {
+    var stdout_buf: [64]u8 = undefined;
+    var stderr_buf: [256]u8 = undefined;
+    var stdout_writer: std.Io.Writer = .fixed(&stdout_buf);
+    var stderr_writer: std.Io.Writer = .fixed(&stderr_buf);
+    const code = try commandWithDeps(fakePacksHealthy, mockDaemonOk, std.testing.io, &.{"--nope"}, &stdout_writer, &stderr_writer);
+    try std.testing.expectEqual(exit_codes.usage, code);
+    try std.testing.expect(std.mem.indexOf(u8, stderr_writer.buffered(), "orca help status") != null);
+}
+
+// Silence unused imports when tests are filtered
+test {
+    _ = orca_policy;
+    _ = supervisor;
+    _ = host_status;
+}
