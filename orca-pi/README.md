@@ -8,6 +8,8 @@ orca evaluate --json --stdin
 
 Safe commands proceed. Denied commands are blocked before Pi runs them. Orca errors follow the configured unavailable-mode policy.
 
+It also provides **Pi-only** credential capture from chat input: when you paste an API key into a prompt, the extension can store it under `.orca/dev-secrets.env` (with consent) and rewrite the prompt so the model never receives the raw secret. This is not a multi-host feature; Claude, Codex, OpenCode, Hermes, and OpenClaw adapters are out of scope for this package.
+
 ## Prerequisites
 
 - Pi installed.
@@ -48,6 +50,39 @@ remove policies, or start/stop other host plugins.
 - Orca `deny` renders an inline Orca decision card in the conversation and
   returns `{ block: true, reason }` to Pi before the command can run.
 - Orca `error`, malformed JSON, spawn failures, or timeouts use the configured unavailable mode.
+
+### Credential capture from prompt (Pi only)
+
+When interactive Pi receives user input that looks like a secret (for example an OpenAI-style `sk-…` key, Anthropic `sk-ant-…`, GitHub `ghp_` / `github_pat_`, or a secret-like `NAME=value` assignment), the extension:
+
+1. **Detects** the span in the submitted input.
+2. **Asks for consent** (`select`): store as an inferred env name, scrub without storing, or block the turn.
+3. **Stores** (only on accept) by appending or updating `NAME=value` in workspace `.orca/dev-secrets.env` (create `.orca/` as needed; file mode `0600` when the platform allows). This path matches Orca’s env-file-dev broker validation (under `.orca/`, contains `dev`, ends with `.env`).
+4. **Rewrites** the prompt so the raw secret is replaced with `$ENV_NAME` and short guidance to use the environment variable. The model must not receive the raw value.
+
+Name inference:
+
+| Pattern | Default env name |
+|---------|------------------|
+| `sk-…` (not `sk-ant-`) | `OPENAI_API_KEY` |
+| `sk-ant-…` | `ANTHROPIC_API_KEY` |
+| `ghp_` / `gho_` / `ghu_` / `ghs_` / `ghr_` / `github_pat_` | `GITHUB_TOKEN` |
+| Secret-like `NAME=value` | `NAME` (uppercased) |
+
+**Accept:** secret written; transformed text continues to the agent.  
+**Decline (scrub only):** nothing written; secret spans still removed from the text sent to the model.  
+**Block / dismiss:** turn is `handled` (no LLM); nothing stored.  
+**Noninteractive** (`print` / `json` / `noninteractive`, or `hasUI !== true`): **fail closed** — no silent store; return `handled` with a clear message that interactive capture is required.
+
+**Session bash bypass** (`/orca-stop`): bash evaluation is skipped, but secret capture still scrubs or blocks secrets so they are not leaked to the model by default.
+
+**Disable:** set `ORCA_PI_SECRET_CAPTURE=false` to turn off capture and context scrubbing.
+
+**What the agent process actually receives:**
+
+- The rewritten prompt references `$OPENAI_API_KEY` (or the chosen name); it does not include the raw secret.
+- On store success, the extension sets `process.env[NAME]` for the **current Pi/extension Node process only**. Child tool environments are not automatically rewritten. Load `.orca/dev-secrets.env` into the shell before launching Pi, or use an Orca secretless/env-broker workflow when you need tools to resolve credentials without pasting them into chat.
+- Defense in depth: the `context` hook scrubs any remaining secret-like spans in user messages before each LLM call (no re-prompt to store on history).
 
 Unavailable modes:
 
@@ -108,14 +143,16 @@ Command unexpectedly blocked:
 - Orca is invoked with `spawn(file, args, { shell: false })`; no shell interpolation is used.
 - Request JSON is passed through stdin.
 - Raw commands are not logged by default.
-- Block messages use Orca's redacted reason and basic token redaction.
+- Block messages use Orca's redacted reason and basic token redaction (including common API key shapes).
 - Noninteractive mode fails closed by default.
 - Session bypass is not persisted.
 - Session bypass is keyed to the Pi session id when Pi exposes one.
 - Malformed `bash` tool-call payloads fail closed.
 - Child process output is bounded before parsing.
-- The extension does not modify Pi tool input.
-- Non-bash tools are not blocked.
+- Non-bash tools are not blocked by the evaluate path.
+- Credential capture never writes raw secrets into `policy.yaml`, decision cards, or notify text.
+- Credential capture never auto-stores without interactive consent.
+- Capture is **Pi only**; other agent hosts are not covered by this package.
 
 ## Version Compatibility
 
@@ -134,6 +171,10 @@ It targets Orca CLI builds exposing `orca evaluate --json --stdin` with schema v
 - Only Pi `bash` tool calls are evaluated. Other tools (for example `read`) are not intercepted.
 - Pi hosts without the transcript `sendMessage` API fall back to a docked deny
   card. Supported Pi versions use the inline conversation surface.
+- **Credential capture is Pi only.** Other hosts (Claude, Codex, OpenCode, Hermes, OpenClaw) are not implemented here.
+- Prior session history already on disk may still contain secrets pasted before capture was available or before a transform ran; capture does not rewrite old transcript files.
+- Detection is pattern-based and can miss unusual secret formats or produce rare false positives; users can block the turn or set `ORCA_PI_SECRET_CAPTURE=false`.
+- Storing into `.orca/dev-secrets.env` does not by itself inject that file into every tool’s environment; see Behavior above.
 
 ## Smoke Test Checklist
 
@@ -148,5 +189,8 @@ It targets Orca CLI builds exposing `orca evaluate --json --stdin` with schema v
 9. Orca unavailable interactive mode asks.
 10. Orca unavailable noninteractive mode blocks.
 11. `/orca-setup`, `/orca-start`, `/orca-stop`, `/orca-doctor`, and `/orca-mode` work.
+12. Paste a synthetic key (e.g. `sk-fakeSyntheticOpenAIKey1234567890`) into interactive Pi → confirm store → prompt is scrubbed; `.orca/dev-secrets.env` contains `OPENAI_API_KEY=…` without the raw key appearing in UI notifications.
+13. Same paste → decline store → nothing written; model text has no raw key.
+14. Same paste in `print`/`json` mode → fail closed (no store, turn handled).
 12. `pi install ./orca-pi`.
 13. `pi list` shows `@orca-sec/pi-orca` or the local package source.

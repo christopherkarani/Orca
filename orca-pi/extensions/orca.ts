@@ -4,6 +4,11 @@ import { randomUUID } from "node:crypto";
 import { accessSync, constants, existsSync } from "node:fs";
 import { createRequire } from "node:module";
 import { dirname, resolve } from "node:path";
+import {
+	handleSecretCaptureInput,
+	isSecretCaptureDisabled,
+	scrubContextMessages,
+} from "./secret_capture.ts";
 
 type UnavailableMode =
 	| "auto"
@@ -31,6 +36,11 @@ type PiUI = {
 		options: string[],
 		opts?: { timeout?: number; signal?: AbortSignal },
 	) => Promise<string | undefined>;
+	confirm?: (
+		title: string,
+		message: string,
+		opts?: { timeout?: number; signal?: AbortSignal },
+	) => Promise<boolean | undefined>;
 	notify?: (message: string, type?: "info" | "warning" | "error") => void;
 	setStatus?: (key: string, text: string | undefined) => void;
 	setWidget?: (
@@ -428,6 +438,32 @@ export function installOrcaExtension(
 		stateFor(ctx).bypass = false;
 		ctx.ui?.setStatus?.(STATUS_KEY, undefined);
 		clearOrcaWidget(ctx);
+	});
+
+	// Credential capture from prompt (Pi only). Still runs when bash bypass is on
+	// so secrets are not forwarded to the model by default.
+	pi.on("input", async (event, ctx: PiContext) => {
+		if (isSecretCaptureDisabled()) return { action: "continue" as const };
+		return handleSecretCaptureInput(
+			{
+				text: typeof event?.text === "string" ? event.text : "",
+				source: typeof event?.source === "string" ? event.source : undefined,
+				images: event?.images,
+			},
+			ctx,
+		);
+	});
+
+	// Defense in depth: scrub any secret-like spans still present in user messages
+	// before the LLM call (no consent/store prompts on history).
+	pi.on("context", async (event) => {
+		if (isSecretCaptureDisabled()) return undefined;
+		const messages = event?.messages;
+		if (!Array.isArray(messages)) return undefined;
+		const scrubbed = scrubContextMessages(
+			messages as Array<Record<string, unknown>>,
+		);
+		return { messages: scrubbed };
 	});
 
 	pi.on(
@@ -1150,6 +1186,12 @@ function parseMode(value: string | undefined): UnavailableMode | undefined {
 
 function sanitizeVisibleText(value: string): string {
 	return value
+		.replace(/\bsk-ant-[A-Za-z0-9_-]{20,}\b/g, "[redacted-token]")
+		.replace(/\bsk-(?!ant-)[A-Za-z0-9_-]{20,}\b/g, "[redacted-token]")
+		.replace(
+			/\b(?:gh[pousr]_[A-Za-z0-9_]{20,}|github_pat_[A-Za-z0-9_]{20,})\b/g,
+			"[redacted-token]",
+		)
 		.replace(/[A-Za-z0-9_]*gh[pousr]_[A-Za-z0-9_]+/g, "[redacted-token]")
 		.replace(/(password|token|secret|api[_-]?key)=\S+/gi, "$1=[redacted]")
 		.replace(/\s+/g, " ")
