@@ -963,8 +963,6 @@ function recordOnceBypass(
 		event: "orca_once_bypass",
 		tool: truncate(sanitizeVisibleText(toolLabel), 128),
 		source,
-		session_id: truncate(sanitizeVisibleText(sessionKey(ctx)), 256),
-		cwd: truncate(sanitizeVisibleText(resolveCwd(ctx.cwd)), 512),
 	};
 	try {
 		pi.sendMessage(

@@ -765,10 +765,11 @@ test("once-bypass records an audit event", async () => {
 		{ code: 7, stdout: decideJson("ask", "file.write") },
 	]);
 	installOrcaExtension(pi, { spawn, orcaBin: "orca" });
-	const syntheticSecret = "sk-syntheticOnceBypassSecret123456789";
+	const syntheticSecret = "AKIASYNTHETICONLY1234";
+	const encodedSecret = "dG9rZW49c3ludGhldGljLW9ubHktc2VjcmV0";
 	const { ctx, notifications } = makeCtx({
-		cwd: `/tmp/token=${syntheticSecret}`,
-		sessionManager: { getSessionId: () => `session-token=${syntheticSecret}` },
+		cwd: `/tmp/${syntheticSecret}/${encodedSecret}`,
+		sessionManager: { getSessionId: () => `session-${syntheticSecret}-${encodedSecret}` },
 	});
 	(ctx.ui as any).select = async () => "Run once anyway";
 
@@ -797,8 +798,11 @@ test("once-bypass records an audit event", async () => {
 		(audit?.message.details as { source?: string } | undefined)?.source,
 		"policy",
 	);
-	assert.ok(!JSON.stringify(audit?.message.details).includes(syntheticSecret));
-	assert.ok(JSON.stringify(audit?.message.details).length < 1_024);
+	const serializedDetails = JSON.stringify(audit?.message.details);
+	assert.ok(!serializedDetails.includes(syntheticSecret));
+	assert.ok(!serializedDetails.includes(encodedSecret));
+	assert.ok(!Object.hasOwn(audit?.message.details as object, "cwd"));
+	assert.ok(!Object.hasOwn(audit?.message.details as object, "session_id"));
 });
 
 test("once-bypass stays blocked when transcript auditing is unavailable", async () => {
