@@ -207,9 +207,23 @@ pub fn defaultProtectionMode() ProtectionMode {
 
 pub fn hostHookEvent(host: []const u8) ?[]const u8 {
     const host_status = @import("host_status.zig");
-    const gate = host_status.shellGate(host);
-    if (std.mem.eql(u8, gate, "unknown") or std.mem.eql(u8, gate, "evaluate bash")) return null;
-    return gate;
+    return hookEventFromGate(host, host_status.shellGate(host));
+}
+
+fn hookEventFromGate(host: []const u8, gate: []const u8) ?[]const u8 {
+    // shellGate also returns human-readable coverage labels for extension-managed hosts.
+    // Only known hook event identifiers may enter hook installation or smoke paths.
+    if (std.mem.eql(u8, host, "pi")) return null;
+    const hook_events = [_][]const u8{
+        "PreToolUse",
+        "tool.execute.before",
+        "tool.before",
+        "pre_tool_call",
+    };
+    for (hook_events) |event| {
+        if (std.mem.eql(u8, gate, event)) return gate;
+    }
+    return null;
 }
 
 pub fn isSupportedHost(name: []const u8) bool {
@@ -513,6 +527,20 @@ test "onboarding protection mode parsing and requirements" {
     try std.testing.expect(!ProtectionMode.firewall.needsCommandGuard());
     try std.testing.expect(ProtectionMode.maximum_protection.needsCommandGuard());
     try std.testing.expect(ProtectionMode.maximum_protection.needsFirewall());
+}
+
+test "onboarding hostHookEvent maps hooks and rejects Pi coverage labels" {
+    try std.testing.expectEqualStrings("PreToolUse", hostHookEvent("codex").?);
+    try std.testing.expectEqualStrings("PreToolUse", hostHookEvent("claude").?);
+    try std.testing.expectEqualStrings("tool.execute.before", hostHookEvent("opencode").?);
+    try std.testing.expectEqualStrings("tool.before", hostHookEvent("openclaw").?);
+    try std.testing.expectEqualStrings("pre_tool_call", hostHookEvent("hermes").?);
+
+    try std.testing.expect(hostHookEvent("pi") == null);
+    try std.testing.expect(hookEventFromGate("pi", "evaluate bash") == null);
+    try std.testing.expect(hookEventFromGate("pi", "bash+write+edit+read") == null);
+    try std.testing.expect(hookEventFromGate("pi", "extension-managed (smoke not run)") == null);
+    try std.testing.expect(hookEventFromGate("future-host", "bash+write") == null);
 }
 
 test "onboarding parseStartFlags accepts protection and hosts" {

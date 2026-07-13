@@ -3,6 +3,8 @@
 #
 # Fixture/install smoke (`orca hook …`) proves the CLI entrypoint offline.
 # This script is the optional live path: skip honestly when host/daemon/ORCA_BIN missing.
+# Pi currently exercises the daemon-backed shell evaluation directly; its file-tool
+# extension coverage is reported for context but is not exercised by this script.
 # Not part of default `test-fast` — do not make CI flaky.
 #
 # Usage:
@@ -170,7 +172,7 @@ live_note() {
     opencode) echo "plugin throw path ← tool.execute.before decision" ;;
     openclaw) echo "plugin tool.before → JSON block" ;;
     hermes) echo "Hermes plugin pre_tool_call → {action:block}; fixture uses orca hook" ;;
-    pi) echo "pi extension → orca evaluate --json --stdin (bash-only)" ;;
+    pi) echo "direct smoke: evaluate bash; extension also protects write/edit/read and approval-gates grep/find/ls after root preflight (not exercised here)" ;;
   esac
 }
 
@@ -195,7 +197,11 @@ for host in "${HOSTS[@]}"; do
 
   if ! host_present "$host"; then
     log "[$host] skip — host not installed (live: skipped — host not installed)"
-    log "         fixture smoke still available via: orca plugin install $host / orca plugin doctor $host"
+    if [[ "$host" == "pi" ]]; then
+      log "         install Pi, then: pi install npm:@orca-sec/pi-orca"
+    else
+      log "         fixture smoke still available via: orca plugin install $host / orca plugin doctor $host"
+    fi
     log "         live differs: $(live_note "$host")"
     skip=$((skip + 1))
     continue
