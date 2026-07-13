@@ -517,12 +517,12 @@ fn writeRustShellDecisionsArrayJson(io: std.Io, allocator: std.mem.Allocator, wr
     try writer.writeByte('[');
     for (loaded, 0..) |item, index| {
         if (index > 0) try writer.writeByte(',');
-        try writeFeedRecordJson(writer, item.record);
+        try writeFeedRecordJson(allocator, writer, item.record);
     }
     try writer.writeByte(']');
 }
 
-fn writeFeedRecordJson(writer: anytype, record: rust_visibility.RustShellFeedRecord) !void {
+fn writeFeedRecordJson(allocator: std.mem.Allocator, writer: anytype, record: rust_visibility.RustShellFeedRecord) !void {
     try writer.writeByte('{');
     try writer.writeAll("\"timestamp\":");
     try core.util.writeJsonString(writer, record.timestamp);
@@ -542,19 +542,27 @@ fn writeFeedRecordJson(writer: anytype, record: rust_visibility.RustShellFeedRec
     try core.util.writeJsonString(writer, record.daemon_status);
     try writer.writeAll(",\"pack_id\":");
     if (record.pack_id) |pack_id| try core.util.writeJsonString(writer, pack_id) else try writer.writeAll("null");
+    try writer.writeAll(",\"rule\":");
+    if (record.rule) |rule| try core.util.writeJsonString(writer, rule) else try writer.writeAll("null");
     try writer.writeAll(",\"severity\":");
     if (record.severity) |severity| try core.util.writeJsonString(writer, severity) else try writer.writeAll("null");
     try writer.writeAll(",\"reason\":");
-    try core.util.writeJsonString(writer, record.reason);
+    try writeRedactedJsonString(allocator, writer, record.reason);
     try writer.writeAll(",\"remediation\":");
-    if (record.remediation) |remediation| try core.util.writeJsonString(writer, remediation) else try writer.writeAll("null");
+    if (record.remediation) |remediation| try writeRedactedJsonString(allocator, writer, remediation) else try writer.writeAll("null");
     try writer.writeAll(",\"target\":");
-    try core.util.writeJsonString(writer, record.target_summary);
+    try writeRedactedJsonString(allocator, writer, record.target_summary);
     try writer.writeAll(",\"session_id\":");
     if (record.session_id) |session_id| try core.util.writeJsonString(writer, session_id) else try writer.writeAll("null");
     try writer.writeAll(",\"verified\":");
     try writer.writeAll(if (record.verified) "true" else "false");
     try writer.writeByte('}');
+}
+
+fn writeRedactedJsonString(allocator: std.mem.Allocator, writer: anytype, value: []const u8) !void {
+    const redacted = try core_api.redactAlloc(allocator, value);
+    defer allocator.free(redacted);
+    try core.util.writeJsonString(writer, redacted);
 }
 
 fn writeBlockedActionsArrayJson(io: std.Io, allocator: std.mem.Allocator, writer: anytype, workspace_root: []const u8, max_count: usize) !void {
@@ -573,7 +581,7 @@ fn writeBlockedActionsArrayJson(io: std.Io, allocator: std.mem.Allocator, writer
     for (feed) |item| {
         if (written >= max_count) break;
         if (written > 0) try writer.writeByte(',');
-        try writeFeedRecordJson(writer, item.record);
+        try writeFeedRecordJson(allocator, writer, item.record);
         written += 1;
     }
 
@@ -1020,6 +1028,34 @@ test "workspace blocked actions returns only the latest bounded denied feed reco
     try std.testing.expect(std.mem.indexOf(u8, json, "middle blocked action") != null);
     try std.testing.expect(std.mem.indexOf(u8, json, "newest blocked action") != null);
     try std.testing.expect(std.mem.indexOf(u8, json, "newest allowed action") == null);
+}
+
+test "workspace blocked actions redact legacy free-form fields and expose rule ids" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const root = try tmp.dir.realPathFileAlloc(std.testing.io, ".", std.testing.allocator);
+    defer std.testing.allocator.free(root);
+    const feed_path = try feed_writer.feedPath(std.testing.allocator, root);
+    defer std.testing.allocator.free(feed_path);
+    const feed_dir = std.fs.path.dirname(feed_path).?;
+    try std.Io.Dir.cwd().createDirPath(std.testing.io, feed_dir);
+    const legacy_secret = "sk-legacyWorkspaceSyntheticSecret123456";
+    const fixture = try std.fmt.allocPrint(
+        std.testing.allocator,
+        "{{\"timestamp\":\"2026-07-13T00:00:00Z\",\"workspace_root\":\"{s}\",\"event_type\":\"command_denied\",\"decision\":\"deny\",\"decision_source\":\"rust-daemon\",\"event_source\":\"hook\",\"host\":\"codex\",\"daemon_status\":\"healthy\",\"pack_id\":\"core.shell\",\"severity\":\"high\",\"reason\":\"token={s}\",\"remediation\":\"Authorization: Bearer {s}\",\"target_summary\":\"--token={s}\",\"session_id\":null,\"verified\":false}}\n{{\"timestamp\":\"2026-07-13T00:00:01Z\",\"workspace_root\":\"{s}\",\"event_type\":\"command_denied\",\"decision\":\"deny\",\"decision_source\":\"rust-daemon\",\"event_source\":\"hook\",\"host\":\"codex\",\"daemon_status\":\"healthy\",\"pack_id\":\"core.shell\",\"rule\":\"core.shell:pipe\",\"severity\":\"high\",\"reason\":\"blocked\",\"remediation\":null,\"target_summary\":\"shell command (redacted)\",\"session_id\":null,\"verified\":false}}\n",
+        .{ root, legacy_secret, legacy_secret, legacy_secret, root },
+    );
+    defer std.testing.allocator.free(fixture);
+    try std.Io.Dir.cwd().writeFile(std.testing.io, .{ .sub_path = feed_path, .data = fixture });
+
+    var output: std.Io.Writer.Allocating = .init(std.testing.allocator);
+    defer output.deinit();
+    try writeBlockedActionsArrayJson(std.testing.io, std.testing.allocator, &output.writer, root, 10);
+    const json = output.writer.buffered();
+    try std.testing.expect(std.mem.indexOf(u8, json, legacy_secret) == null);
+    try std.testing.expect(std.mem.indexOf(u8, json, "[REDACTED]") != null);
+    try std.testing.expect(std.mem.indexOf(u8, json, "\"rule\":null") != null);
+    try std.testing.expect(std.mem.indexOf(u8, json, "\"rule\":\"core.shell:pipe\"") != null);
 }
 
 test "sessions json filters denied replay events" {

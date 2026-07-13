@@ -468,7 +468,12 @@ function remediationCommandsFor(action) {
   return commands;
 }
 
+function workspaceActionMarkup(machineMode, markup) {
+  return machineMode ? "" : markup;
+}
+
 function renderBlockedList(container, actions, compact) {
+  const machineMode = state.status?.mode === "machine";
   const filtered = filterActionsByHost(actions);
   if (!filtered.length) {
     const emptyTitle = actions.length
@@ -479,7 +484,7 @@ function renderBlockedList(container, actions, compact) {
       : "Next: run <code>orca run -- &lt;agent&gt;</code>, install a host plugin, or use <code>orca doctor</code>.";
     container.innerHTML = `<div class="timeline-item"><h5>${emptyTitle}</h5><p class="caption">${emptyHint}</p>
       <div class="remediation-actions">
-        <button class="button secondary" type="button" data-action="suggest-allowlist">Run suggest-allowlist</button>
+        ${workspaceActionMarkup(machineMode, `<button class="button secondary" type="button" data-action="suggest-allowlist">Run suggest-allowlist</button>`)}
         <button class="button secondary" type="button" data-action="doctor">Run doctor</button>
       </div>
     </div>`;
@@ -510,13 +515,13 @@ function renderBlockedList(container, actions, compact) {
         ${meta("Reason", action.reason || "not recorded")}
         ${meta("Remediation", action.remediation || "not recorded")}
       </div>
-      <div class="remediation-actions">
+      ${workspaceActionMarkup(machineMode, `<div class="remediation-actions">
         ${copies.map((cmd) => `
           <button class="button secondary" type="button" data-copy="${escapeHtml(cmd.value)}" data-copy-label="${escapeHtml(cmd.label)}">${escapeHtml(cmd.label)}</button>
         `).join("")}
         <button class="button secondary" type="button" data-action="suggest-allowlist">Run suggest-allowlist</button>
         <button class="button secondary" type="button" data-action="allowlist-list">List allowlist</button>
-      </div>
+      </div>`)}
     </article>
   `;
   }).join("");

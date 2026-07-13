@@ -459,6 +459,8 @@ fn parseFeedRecord(allocator: std.mem.Allocator, line: []const u8, fallback_work
     errdefer allocator.free(daemon_status);
     const pack_id = try dupOptionalString(allocator, object, "pack_id");
     errdefer if (pack_id) |value| allocator.free(value);
+    const rule = try dupOptionalString(allocator, object, "rule");
+    errdefer if (rule) |value| allocator.free(value);
     const severity = try dupOptionalString(allocator, object, "severity");
     errdefer if (severity) |value| allocator.free(value);
     const reason = try dupRequiredString(allocator, object, "reason");
@@ -479,6 +481,7 @@ fn parseFeedRecord(allocator: std.mem.Allocator, line: []const u8, fallback_work
         .host = host,
         .daemon_status = daemon_status,
         .pack_id = pack_id,
+        .rule = rule,
         .severity = severity,
         .reason = reason,
         .remediation = remediation,
@@ -547,8 +550,19 @@ test "feed writer round-trips rust shell decision without raw command" {
     try std.testing.expectEqualStrings(root, loaded[0].record.workspace_root);
     try std.testing.expectEqualStrings("claude", loaded[0].record.host.?);
     try std.testing.expectEqualStrings("git", loaded[0].record.pack_id.?);
+    try std.testing.expectEqualStrings("destructive_rm", loaded[0].record.rule.?);
     try std.testing.expectEqualStrings("shell command (redacted)", loaded[0].record.target_summary);
     try std.testing.expect(std.mem.indexOf(u8, loaded[0].raw, "matched_text_preview") == null);
+}
+
+test "feed loader accepts legacy records without rule" {
+    const line =
+        \\{"timestamp":"2026-07-13T00:00:00Z","workspace_root":"/tmp/legacy","event_type":"command_denied","decision":"deny","decision_source":"rust-daemon","event_source":"hook","host":"codex","daemon_status":"healthy","pack_id":"core.shell","severity":"high","reason":"blocked","remediation":null,"target_summary":"shell command (redacted)","session_id":null,"verified":false}
+    ;
+    var record = try parseFeedRecord(std.testing.allocator, line, null);
+    defer record.deinit(std.testing.allocator);
+
+    try std.testing.expect(record.rule == null);
 }
 
 test "feed loader skips malformed records and reports degraded health" {

@@ -1,5 +1,7 @@
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import test from "node:test";
+import vm from "node:vm";
 import React from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 
@@ -115,4 +117,18 @@ test("workspace remediation is fixed and machine mode never mounts workspace act
   assert.match(workspace, /List allowlist/);
   assert.match(workspace, /min-h-11/);
   assert.equal(machine, "");
+});
+
+test("legacy fallback suppresses workspace remediation markup in machine mode", () => {
+  const source = readFileSync(new URL("../../../src/dashboard/assets/app.js", import.meta.url), "utf8");
+  const helper = source.match(/function workspaceActionMarkup\(machineMode, markup\) \{[\s\S]*?\n\}/)?.[0];
+  assert.ok(helper, "legacy fallback must define its mode-aware workspace action helper");
+
+  const context: { workspaceResult?: string; machineResult?: string } = {};
+  vm.runInNewContext(
+    `${helper}; workspaceResult = workspaceActionMarkup(false, "<button>workspace</button>"); machineResult = workspaceActionMarkup(true, "<button>workspace</button>");`,
+    context,
+  );
+  assert.equal(context.workspaceResult, "<button>workspace</button>");
+  assert.equal(context.machineResult, "");
 });
