@@ -125,10 +125,10 @@ impl OrcaOutput {
             .and_then(Value::as_str)
     }
 
-    /// Check if stderr contains a warning.
+    /// Check if stderr contains the host-visible marker for a warn-policy decision.
     #[must_use]
     pub fn has_warning(&self) -> bool {
-        self.stderr.contains("WARNING") || self.stderr.contains("orca WARNING")
+        self.stderr.contains("ORCA ASK:")
     }
 }
 
@@ -770,6 +770,19 @@ mod tests {
 
         assert!(output.is_allowed());
         assert!(!output.is_blocked());
+    }
+
+    #[test]
+    fn test_warn_output_uses_host_visible_ask_marker() {
+        let output = OrcaOutput {
+            stdout: String::new(),
+            stderr: "ORCA ASK: approval required".to_string(),
+            exit_code: 0,
+            duration: Duration::from_millis(5),
+            json: None,
+        };
+
+        assert!(output.has_warning());
     }
 
     #[test]
