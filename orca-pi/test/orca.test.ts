@@ -787,6 +787,7 @@ test("buildDecideFilePayload, resolveToolPath, extractDecideFilePath", () => {
 	});
 	const { ctx } = makeCtx({ cwd: "/workspace" });
 	assert.equal(resolveToolPath("/abs/file", ctx), "/abs/file");
+	assert.equal(resolveToolPath("/workspace/src/../.env", ctx), "/workspace/.env");
 	assert.equal(
 		resolveToolPath("rel.txt", { cwd: process.cwd() }),
 		resolve(process.cwd(), "rel.txt"),

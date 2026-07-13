@@ -414,20 +414,27 @@ fn evaluateDecision(
 /// to the same `./relative` form as a direct CLI caller. Absolute paths outside
 /// the workspace stay absolute so home/system rules retain their semantics.
 fn normalizeFilePolicyPath(allocator: std.mem.Allocator, workspace_root_raw: []const u8, raw_path: []const u8) ![]u8 {
-    if (!std.fs.path.isAbsolute(raw_path) or !std.fs.path.isAbsolute(workspace_root_raw)) {
+    if (!std.fs.path.isAbsolute(workspace_root_raw)) {
         return allocator.dupe(u8, raw_path);
     }
 
-    const workspace_root = std.mem.trimEnd(u8, workspace_root_raw, "/\\");
-    if (std.mem.eql(u8, raw_path, workspace_root)) return allocator.dupe(u8, ".");
-    if (raw_path.len <= workspace_root.len or
-        !std.mem.eql(u8, raw_path[0..workspace_root.len], workspace_root) or
-        (raw_path[workspace_root.len] != '/' and raw_path[workspace_root.len] != '\\'))
+    const workspace_root = try std.fs.path.resolve(allocator, &.{workspace_root_raw});
+    defer allocator.free(workspace_root);
+    const absolute_path = if (std.fs.path.isAbsolute(raw_path))
+        try std.fs.path.resolve(allocator, &.{raw_path})
+    else
+        try std.fs.path.resolve(allocator, &.{ workspace_root, raw_path });
+    defer allocator.free(absolute_path);
+
+    if (std.mem.eql(u8, absolute_path, workspace_root)) return allocator.dupe(u8, ".");
+    if (absolute_path.len <= workspace_root.len or
+        !std.mem.eql(u8, absolute_path[0..workspace_root.len], workspace_root) or
+        (absolute_path[workspace_root.len] != '/' and absolute_path[workspace_root.len] != '\\'))
     {
-        return allocator.dupe(u8, raw_path);
+        return allocator.dupe(u8, absolute_path);
     }
 
-    const relative = raw_path[workspace_root.len + 1 ..];
+    const relative = absolute_path[workspace_root.len + 1 ..];
     const normalized = try std.fmt.allocPrint(allocator, "./{s}", .{relative});
     for (normalized) |*char| {
         if (char.* == '\\') char.* = '/';
@@ -813,6 +820,18 @@ test "decide file normalizes absolute workspace paths to policy-relative targets
     defer allocator.free(env_relative);
     try std.testing.expectEqualStrings("./.env", env_relative);
 
+    const absolute_dot_segment = try normalizeFilePolicyPath(allocator, root, "/workspace/project/src/../.env");
+    defer allocator.free(absolute_dot_segment);
+    try std.testing.expectEqualStrings("./.env", absolute_dot_segment);
+
+    const protected_dot_segment = try normalizeFilePolicyPath(allocator, root, "/workspace/project/.orca/../.env");
+    defer allocator.free(protected_dot_segment);
+    try std.testing.expectEqualStrings("./.env", protected_dot_segment);
+
+    const relative_dot_segment = try normalizeFilePolicyPath(allocator, root, "src/../.env");
+    defer allocator.free(relative_dot_segment);
+    try std.testing.expectEqualStrings("./.env", relative_dot_segment);
+
     const allowed_relative = try normalizeFilePolicyPath(allocator, root, "/workspace/project/src/main.zig");
     defer allocator.free(allowed_relative);
     try std.testing.expectEqualStrings("./src/main.zig", allowed_relative);
@@ -820,6 +839,10 @@ test "decide file normalizes absolute workspace paths to policy-relative targets
     const outside = try normalizeFilePolicyPath(allocator, root, "/tmp/outside.txt");
     defer allocator.free(outside);
     try std.testing.expectEqualStrings("/tmp/outside.txt", outside);
+
+    const escaped = try normalizeFilePolicyPath(allocator, root, "/workspace/project/../outside.txt");
+    defer allocator.free(escaped);
+    try std.testing.expectEqualStrings("/workspace/outside.txt", escaped);
 }
 
 test "decide file CLI gives workspace-relative and absolute paths identical decisions" {
@@ -857,6 +880,8 @@ test "decide file CLI gives workspace-relative and absolute paths identical deci
         .{ .relative = ".orca/policy.yaml", .operation = "write", .expected = exit_codes.denial },
         .{ .relative = ".git/config", .operation = "write", .expected = exit_codes.denial },
         .{ .relative = ".env", .operation = "read", .expected = exit_codes.denial },
+        .{ .relative = "src/../.env", .operation = "read", .expected = exit_codes.denial },
+        .{ .relative = ".orca/../.env", .operation = "read", .expected = exit_codes.denial },
         .{ .relative = "README.md", .operation = "read", .expected = exit_codes.success },
     };
 

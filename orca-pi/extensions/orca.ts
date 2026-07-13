@@ -361,7 +361,7 @@ export function buildDecideFilePayload(
 export function resolveToolPath(pathInput: string, ctx: PiContext): string {
 	const trimmed = pathInput.trim();
 	if (!trimmed) return trimmed;
-	if (isAbsolute(trimmed)) return trimmed;
+	if (isAbsolute(trimmed)) return resolve(trimmed);
 	return resolve(resolveCwd(ctx.cwd), trimmed);
 }
 
