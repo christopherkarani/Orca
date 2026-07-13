@@ -91,6 +91,7 @@ fn runAutoSetup(io: std.Io, cwd: std.Io.Dir, preset: []const u8, stdout: anytype
 
     var any_detected = false;
     var failure_count: usize = 0;
+    var degraded_count: usize = 0;
 
     for (onboarding.supported_hosts) |host_name| {
         if (!plugin.binaryInPath(io, allocator, host_name)) continue;
@@ -135,23 +136,35 @@ fn runAutoSetup(io: std.Io, cwd: std.Io.Dir, preset: []const u8, stdout: anytype
             }
         }
 
-        if (std.mem.eql(u8, host_name, "hermes")) {
-            const safe_fixture = "tests/fixtures/hook-safe.json";
-            const danger_fixture = "tests/fixtures/hook-danger.json";
-            const safe_result = plugin.smokeTestHook(allocator, "hermes", "pre_tool_call", safe_fixture, "allow") catch plugin.SmokeResult{ .passed = false };
-            const danger_result = plugin.smokeTestHook(allocator, "hermes", "pre_tool_call", danger_fixture, "block") catch plugin.SmokeResult{ .passed = false };
-            const safe_ok = safe_result.passed;
-            const danger_ok = danger_result.passed;
-            if (safe_ok and danger_ok) {
-                try stdout.print("  {s}: smoke test PASSED\n", .{host_name});
-            } else {
-                try stdout.print("  {s}: smoke test FAILED (safe={s}, danger={s})\n", .{ host_name, if (safe_ok) "pass" else "fail", if (danger_ok) "pass" else "fail" });
-                failure_count += 1;
+        {
+            const host_status = @import("host_status.zig");
+            const smoke = host_status.runHostSmokePair(allocator, host_name) catch host_status.HostSmokePair{ .allow = .fail, .deny = .fail };
+            const readiness = host_status.classifyReadiness(smoke);
+            try stdout.print("  {s}: smoke allow={s} deny={s} readiness={s}\n", .{
+                host_name,
+                smoke.allow.toString(),
+                smoke.deny.toString(),
+                readiness.toString(),
+            });
+            switch (readiness) {
+                .protected => {},
+                .degraded => {
+                    try stdout.writeAll("    → DEGRADED (deny ok, allow failed) — not ready; fix: orca doctor\n");
+                    degraded_count += 1;
+                },
+                .not_protected => {
+                    try stdout.writeAll("    → NOT protected — deny smoke failed\n");
+                    failure_count += 1;
+                },
+                .unknown => {
+                    try stdout.writeAll("    → smoke not run — do not treat as protected\n");
+                },
             }
-        } else {
-            try stdout.print("  {s}: smoke test skipped\n", .{host_name});
         }
     }
+
+    try stdout.writeAll("\nPi: not managed by `orca plugin install` / setup host loop (bash-only).\n");
+    try stdout.writeAll("  Install: pi install npm:@orca-sec/pi-orca\n");
 
     if (!any_detected) {
         try stdout.writeAll("\nNo agent hosts detected in PATH.\n");
@@ -165,8 +178,17 @@ fn runAutoSetup(io: std.Io, cwd: std.Io.Dir, preset: []const u8, stdout: anytype
     }
 
     try stdout.writeAll("\n");
+    if (degraded_count > 0) {
+        try stdout.print("Setup finished with {d} degraded host(s) — deny ok but allow failed (not ready).\n", .{degraded_count});
+        try stdout.writeAll("Fix daemon first: orca doctor\n");
+        try stdout.writeAll("Live host E2E (optional): ./scripts/host-live-e2e.sh\n");
+        // Exit 0: protection proof passed; degraded is yellow messaging only (L3).
+        return exit_codes.success;
+    }
+
     try style.maybeColor(io, stdout, style.Style.green, style.Glyph.party ++ " Setup complete!");
     try stdout.writeAll("\nRun 'orca run -- <command>' to start a protected session.\n");
+    try stdout.writeAll("Live host E2E (optional): ./scripts/host-live-e2e.sh\n");
     return exit_codes.success;
 }
 

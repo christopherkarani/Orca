@@ -20,6 +20,7 @@ pub const completions = @import("completions.zig");
 pub const shim = @import("shim.zig");
 pub const version_command = @import("version.zig");
 pub const plugin = @import("plugin.zig");
+pub const host_status = @import("host_status.zig");
 pub const plugin_install = @import("plugin_install.zig");
 pub const setup = @import("setup.zig");
 pub const start = @import("start.zig");
@@ -57,6 +58,7 @@ test {
     // Pull style tests (TDD for color/TTY/NO_COLOR handling).
     _ = style;
     _ = onboarding;
+    _ = host_status;
     _ = start;
     _ = setup;
     _ = quickstart;
@@ -532,7 +534,7 @@ fn testRunWithCwd(cwd: std.Io.Dir, argv: []const []const u8, stdout: anytype, st
 }
 
 test "help output is grouped, complete, and excludes hidden commands" {
-    var stdout_buf: [8192]u8 = undefined;
+    var stdout_buf: [16384]u8 = undefined;
     var stderr_buf: [256]u8 = undefined;
     var stdout_writer: std.Io.Writer = .fixed(&stdout_buf);
     var stderr_writer: std.Io.Writer = .fixed(&stderr_buf);
@@ -543,6 +545,10 @@ test "help output is grouped, complete, and excludes hidden commands" {
     const output = stdout_writer.buffered();
     // Title and category headers present
     try std.testing.expect(std.mem.indexOf(u8, output, "Orca") != null);
+    try std.testing.expect(std.mem.indexOf(u8, output, "Common tasks") != null);
+    try std.testing.expect(std.mem.indexOf(u8, output, "Get protected") != null);
+    try std.testing.expect(std.mem.indexOf(u8, output, "orca start") != null);
+    try std.testing.expect(std.mem.indexOf(u8, output, "orca explain") != null);
     try std.testing.expect(std.mem.indexOf(u8, output, "Getting Started") != null);
     try std.testing.expect(std.mem.indexOf(u8, output, "Core Workflow") != null);
     try std.testing.expect(std.mem.indexOf(u8, output, "Diagnostics & Reporting") != null);
@@ -559,7 +565,7 @@ test "help output is grouped, complete, and excludes hidden commands" {
 }
 
 test "help output uses human-friendly summaries" {
-    var stdout_buf: [4096]u8 = undefined;
+    var stdout_buf: [16384]u8 = undefined;
     var stdout_writer: std.Io.Writer = .fixed(&stdout_buf);
     var empty_buf: [0]u8 = undefined;
     var stderr_writer: std.Io.Writer = .fixed(&empty_buf);
@@ -577,8 +583,21 @@ test "help output uses human-friendly summaries" {
     try std.testing.expect(std.mem.indexOf(u8, output, "Receive events from AI agent hosts") != null);
 }
 
-test "env command appears in help and dispatches correctly" {
+test "help disambiguates explain vs policy explain" {
     var stdout_buf: [4096]u8 = undefined;
+    var stderr_buf: [256]u8 = undefined;
+    var stdout_writer: std.Io.Writer = .fixed(&stdout_buf);
+    var stderr_writer: std.Io.Writer = .fixed(&stderr_buf);
+
+    const code = try testRun(&.{ "help", "explain" }, &stdout_writer, &stderr_writer);
+    try std.testing.expectEqual(exit_codes.success, code);
+    const output = stdout_writer.buffered();
+    try std.testing.expect(std.mem.indexOf(u8, output, "policy explain") != null);
+    try std.testing.expect(std.mem.indexOf(u8, output, "Rust") != null or std.mem.indexOf(u8, output, "daemon") != null);
+}
+
+test "env command appears in help and dispatches correctly" {
+    var stdout_buf: [16384]u8 = undefined;
     var stderr_buf: [256]u8 = undefined;
     var stdout_writer: std.Io.Writer = .fixed(&stdout_buf);
     var stderr_writer: std.Io.Writer = .fixed(&stderr_buf);
@@ -1083,8 +1102,9 @@ test "top help renders brand banner, accent categories, and try-next hint" {
     // Two-column command + summary retained.
     try std.testing.expect(std.mem.indexOf(u8, out, "Print shell environment") != null);
     try std.testing.expect(std.mem.indexOf(u8, out, "Receive events from AI agent hosts") != null);
-    // Try-next hint present.
-    try std.testing.expect(std.mem.indexOf(u8, out, "orca quickstart") != null);
+    // Task paths and try-next hint present.
+    try std.testing.expect(std.mem.indexOf(u8, out, "Common tasks") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "orca start") != null);
     // Hidden internal command still absent.
     try std.testing.expect(std.mem.indexOf(u8, out, "shim") == null);
     try std.testing.expectEqualStrings("", stderr_writer.buffered());
@@ -1731,7 +1751,7 @@ test "quickstart skips init when policy exists" {
         try file.writeStreamingAll(std.testing.io, "version: 1\nmode: observe\n");
     }
 
-    var stdout_buf: [4096]u8 = undefined;
+    var stdout_buf: [65536]u8 = undefined;
     var stderr_buf: [1024]u8 = undefined;
     var stdout_writer: std.Io.Writer = .fixed(&stdout_buf);
     var stderr_writer: std.Io.Writer = .fixed(&stderr_buf);

@@ -584,6 +584,12 @@ fn writeResponseJson(stdout: anytype, response: MachineResponse) !void {
         try stdout.writeAll(",\"command\":null,\"platform\":null}");
     }
     try stdout.writeAll("],\n");
+    // Additive machine-usable next steps for Pi / evaluate consumers.
+    try stdout.writeAll("  \"remediation_commands\": [");
+    if (std.mem.eql(u8, response.decision, "deny")) {
+        try stdout.writeAll("\"orca explain \\\"<command>\\\"\",\"orca allow-once <code>\",\"orca allowlist list\"");
+    }
+    try stdout.writeAll("],\n");
     try stdout.writeAll("  \"daemon\": {\n");
     try stdout.writeAll("    \"status\": ");
     try writeJsonString(stdout, response.daemon_status.toString());

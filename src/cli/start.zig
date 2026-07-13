@@ -168,7 +168,18 @@ pub fn runStart(
         return exit_codes.general;
     }
 
-    try writeSuccessSummary(io, stdout, protection, selected_hosts.items, configured_hosts.items, daemon_check, verification);
+    try writeSuccessEndCard(
+        io,
+        allocator,
+        stdout,
+        workspace_root,
+        flags.preset,
+        protection,
+        selected_hosts.items,
+        configured_hosts.items,
+        daemon_check,
+        verification,
+    );
     return exit_codes.success;
 }
 
@@ -324,59 +335,92 @@ fn runChild(io: std.Io, argv: []const []const u8) !u8 {
     };
 }
 
-fn writeSuccessSummary(
+/// Stable first-run end-card after successful `orca start`.
+/// Works on non-TTY (plain text, no broken ANSI via tui theme degrade).
+fn writeSuccessEndCard(
     io: std.Io,
+    allocator: std.mem.Allocator,
     stdout: anytype,
+    workspace_root: []const u8,
+    preset: []const u8,
     protection: onboarding.ProtectionMode,
     selected_hosts: []const []const u8,
     configured_hosts: []const []const u8,
     daemon_check: onboarding.DaemonCheck,
     verification: ?onboarding.VerificationOutcome,
 ) !void {
-    try style.maybeColor(io, stdout, style.Style.green, style.Glyph.party ++ " Orca is configured!");
-    try stdout.writeAll("\n\nSummary\n-------\n");
-    try stdout.print("Protection: {s}\n", .{protection.label()});
-    if (protection.needsCommandGuard()) {
-        if (configured_hosts.len == 0) {
-            try stdout.writeAll("Configured hosts: none\n");
-        } else {
-            try stdout.writeAll("Configured hosts: ");
-            for (configured_hosts, 0..) |host, i| {
-                if (i > 0) try stdout.writeAll(", ");
-                try stdout.writeAll(host);
-            }
-            try stdout.writeAll("\n");
+    try tui.render.callout(io, stdout, .success, "You are protected", "Orca is configured for this workspace.");
+    try stdout.writeAll("\n");
+
+    const policy_path = try std.fs.path.join(allocator, &.{ workspace_root, ".orca", "policy.yaml" });
+    defer allocator.free(policy_path);
+    const policy_line = try std.fmt.allocPrint(allocator, "{s}  (preset {s})", .{ policy_path, preset });
+    defer allocator.free(policy_line);
+    const daemon_line = try std.fmt.allocPrint(allocator, "{s}", .{daemon_check.status.label()});
+    defer allocator.free(daemon_line);
+    const protection_line = try std.fmt.allocPrint(allocator, "{s}", .{protection.label()});
+    defer allocator.free(protection_line);
+    const verify_line: []const u8 = if (verification) |v|
+        if (v.passed()) "passed" else "failed"
+    else
+        "skipped";
+
+    const daemon_status_line = try std.fmt.allocPrint(allocator, "Daemon       {s}", .{daemon_line});
+    defer allocator.free(daemon_status_line);
+    const policy_status_line = try std.fmt.allocPrint(allocator, "Policy       {s}", .{policy_line});
+    defer allocator.free(policy_status_line);
+    const protection_status_line = try std.fmt.allocPrint(allocator, "Protection   {s}", .{protection_line});
+    defer allocator.free(protection_status_line);
+    const verify_status_line = try std.fmt.allocPrint(allocator, "Verify       {s}", .{verify_line});
+    defer allocator.free(verify_status_line);
+    const status_lines = [_][]const u8{ daemon_status_line, policy_status_line, protection_status_line, verify_status_line };
+    try tui.render.panel(io, stdout, "Status", &status_lines);
+    try stdout.writeAll("\n");
+
+    // Host install results: selected hosts get ✓ / failed; unselected shown as skipped when CG.
+    var host_lines: std.ArrayList([]const u8) = .empty;
+    defer {
+        for (host_lines.items) |line| allocator.free(line);
+        host_lines.deinit(allocator);
+    }
+    if (!protection.needsCommandGuard()) {
+        try host_lines.append(allocator, try allocator.dupe(u8, "hooks skipped (Firewall-only mode)"));
+        for (selected_hosts) |host| {
+            try host_lines.append(allocator, try std.fmt.allocPrint(allocator, "  {s}  skipped", .{host}));
         }
+    } else if (selected_hosts.len == 0) {
+        try host_lines.append(allocator, try allocator.dupe(u8, "none selected"));
     } else {
-        try stdout.writeAll("Configured hosts: hooks skipped (Firewall-only mode)\n");
-        if (selected_hosts.len > 0) {
-            try stdout.writeAll("Detected hosts: ");
-            for (selected_hosts, 0..) |host, i| {
-                if (i > 0) try stdout.writeAll(", ");
-                try stdout.writeAll(host);
-            }
-            try stdout.writeAll("\n");
+        for (selected_hosts) |host| {
+            const ok = hostInList(host, configured_hosts);
+            const mark: []const u8 = if (ok) "✓" else "failed";
+            try host_lines.append(allocator, try std.fmt.allocPrint(allocator, "  {s}  {s}", .{ host, mark }));
         }
     }
-    try stdout.print("Daemon: {s}\n", .{daemon_check.status.label()});
-    if (verification) |v| {
-        try stdout.print("Verification: {s}\n", .{if (v.passed()) "passed" else "failed"});
-    }
-    try stdout.writeAll("\nTry it manually:\n");
-    if (protection.needsCommandGuard()) {
-        try stdout.writeAll("  orca hook hermes pre_tool_call < tests/fixtures/hook-danger.json\n");
-    }
+    try tui.render.panel(io, stdout, "Hosts", host_lines.items);
+    try stdout.writeAll("\n");
+
+    try tui.theme.paintBold(io, stdout, .brand, "Try next");
+    try stdout.writeAll("\n");
+    try stdout.writeAll("  orca demo blocked-action\n");
+    try stdout.writeAll("  orca test \"git reset --hard\"\n");
     if (protection.needsFirewall()) {
         try stdout.writeAll("  orca run -- echo hello\n");
+    } else {
+        try stdout.writeAll("  orca doctor\n");
     }
-    try stdout.writeAll("\nDiagnostics:\n");
-    try stdout.writeAll("  orca doctor\n");
-    try stdout.writeAll("  orca version\n");
-    try stdout.writeAll("\nAudit feed / GUI:\n");
-    try stdout.writeAll("  orca dashboard\n");
-    try stdout.writeAll("  orca replay\n");
-    try stdout.writeAll("\nRe-run onboarding safely:\n");
-    try stdout.writeAll("  orca start\n");
+    try stdout.writeAll("\n");
+    try tui.theme.paint(io, stdout, .muted, "Pi is not managed by plugin install (bash-only): pi install npm:@orca-sec/pi-orca");
+    try stdout.writeAll("\n");
+    try tui.theme.paint(io, stdout, .muted, "Diagnostics: orca doctor · orca dashboard · ./scripts/host-live-e2e.sh · orca start (re-run safely)");
+    try stdout.writeAll("\n");
+}
+
+fn hostInList(name: []const u8, list: []const []const u8) bool {
+    for (list) |item| {
+        if (std.mem.eql(u8, item, name)) return true;
+    }
+    return false;
 }
 
 fn writeFailureSummary(
@@ -462,7 +506,12 @@ test "start auto mode with mock daemon completes in temp workspace" {
     const output = stdout_writer.buffered();
     try std.testing.expect(std.mem.indexOf(u8, output, "\u{1F6E1}  Orca") != null);
     try std.testing.expect(std.mem.indexOf(u8, output, "Firewall") != null);
-    try std.testing.expect(std.mem.indexOf(u8, output, "Orca is configured") != null);
+    try std.testing.expect(std.mem.indexOf(u8, output, "You are protected") != null);
+    try std.testing.expect(std.mem.indexOf(u8, output, "Daemon") != null);
+    try std.testing.expect(std.mem.indexOf(u8, output, "Policy") != null);
+    try std.testing.expect(std.mem.indexOf(u8, output, "Hosts") != null);
+    try std.testing.expect(std.mem.indexOf(u8, output, "orca demo blocked-action") != null);
+    try std.testing.expect(std.mem.indexOf(u8, output, "orca test \"git reset --hard\"") != null);
 }
 
 test "start reports failure when daemon required but unavailable" {

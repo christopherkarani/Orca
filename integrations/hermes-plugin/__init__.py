@@ -66,10 +66,57 @@ _orca_cache_env: str | None = None
 _orca_cache_path: str | None = None
 
 
+_FAIL_STANCE_FILENAMES = (".orca_fail_stance", "ORCA_FAIL_STANCE")
+_FAIL_CLOSED_TOKENS = frozenset({"0", "false", "no", "off", "fail-closed", "closed"})
+_FAIL_OPEN_TOKENS = frozenset({"1", "true", "yes", "on", "fail-open", "open"})
+
+
+def _parse_fail_open_token(raw: str) -> bool | None:
+    token = raw.strip().lower()
+    if not token:
+        return None
+    if token in _FAIL_CLOSED_TOKENS:
+        return False
+    if token in _FAIL_OPEN_TOKENS:
+        return True
+    return None
+
+
+def _stance_file_fail_open() -> bool | None:
+    """Read install-time stance next to this plugin (written for *new* orca plugin install hermes)."""
+    base = Path(__file__).resolve().parent
+    for name in _FAIL_STANCE_FILENAMES:
+        path = base / name
+        try:
+            if not path.is_file():
+                continue
+            text = path.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            continue
+        for line in text.splitlines():
+            stripped = line.strip()
+            if not stripped or stripped.startswith("#"):
+                continue
+            parsed = _parse_fail_open_token(stripped)
+            if parsed is not None:
+                return parsed
+    return None
+
+
 def _fail_open_enabled() -> bool:
-    """Allow Hermes to proceed without Orca when degraded (default on). Set ORCA_HERMES_FAIL_OPEN=0 to block."""
-    value = os.environ.get("ORCA_HERMES_FAIL_OPEN", "1").strip().lower()
-    return value not in ("0", "false", "no", "off")
+    """Allow Hermes to proceed without Orca when degraded.
+
+    Precedence: ORCA_HERMES_FAIL_OPEN env (when set) → install stance file → product default fail-open.
+    New installs via `orca plugin install hermes` write `.orca_fail_stance` = fail-closed.
+    """
+    if "ORCA_HERMES_FAIL_OPEN" in os.environ:
+        value = os.environ.get("ORCA_HERMES_FAIL_OPEN", "").strip().lower()
+        if value:
+            return value not in _FAIL_CLOSED_TOKENS
+    stance = _stance_file_fail_open()
+    if stance is not None:
+        return stance
+    return True
 
 
 def _redact(value: Any) -> Any:
@@ -196,11 +243,13 @@ def _find_orca() -> str | None:
 
 
 def _warn_degraded(ctx: Any, event: str, message: str) -> None:
+    """Always surface degraded-path warnings — never silent fail-open."""
+    full = f"[orca-hermes] {message}"
     logger = getattr(ctx, "logger", None)
     if logger and hasattr(logger, "warning"):
-        logger.warning(message)
-    elif event in POLICY_EVENTS:
-        print(f"warning: {message}", flush=True)
+        logger.warning(full)
+    # Also print so non-logger hosts and CI logs always see the stance.
+    print(f"warning: {full}", flush=True)
 
 
 def _handle_hook_error(ctx: Any, event: str, exc: BaseException) -> Any:
@@ -216,8 +265,9 @@ def _handle_hook_error(ctx: Any, event: str, exc: BaseException) -> Any:
         _warn_degraded(
             ctx,
             event,
-            "Orca is missing or too old for Hermes hooks; upgrade Orca or set ORCA_BIN. "
-            "Allowing tool call without Orca guardrails.",
+            "FAIL-OPEN: Orca is missing or too old for Hermes hooks; upgrade Orca or set ORCA_BIN. "
+            "Allowing tool call WITHOUT Orca guardrails. "
+            "Set ORCA_HERMES_FAIL_OPEN=0 to block, or use `orca run -- hermes`.",
         )
         return None
     if event == "pre_tool_call":
@@ -229,13 +279,15 @@ def _handle_hook_error(ctx: Any, event: str, exc: BaseException) -> Any:
         _warn_degraded(
             ctx,
             event,
-            "Orca is too old for Hermes hooks; upgrade Orca or set ORCA_BIN. "
+            "FAIL-OPEN: Orca is too old for Hermes hooks; upgrade Orca or set ORCA_BIN. "
             "Continuing without Orca guardrails for this event.",
         )
         return None
     logger = getattr(ctx, "logger", None)
     if logger and hasattr(logger, "warning"):
         logger.warning("Orca Hermes hook failed for %s: %s", event, exc)
+    else:
+        print(f"warning: [orca-hermes] hook failed for {event}: {exc}", flush=True)
     return None
 
 
@@ -324,6 +376,15 @@ def _register(ctx: Any, event: str) -> None:
                 return None
             if isinstance(decision, str) and decision in ("block", "warn", "ask"):
                 message = response.get("message") or response.get("reason") or "blocked by Orca"
+                # Surface additive remediation when present (host-safe string field).
+                remediation = response.get("remediation_commands")
+                if isinstance(remediation, list) and remediation:
+                    tips = "; ".join(str(item) for item in remediation if item)
+                    if tips:
+                        message = f"{message} Next: {tips}"
+                rule_id = response.get("rule_id") or response.get("rule")
+                if rule_id:
+                    message = f"{message} (rule: {rule_id})"
                 return {"action": "block", "message": message}
             return {"action": "block", "message": "Orca returned an invalid tool decision; blocked fail-closed."}
         if event == "pre_llm_call" and isinstance(decision, str) and decision in ("block", "warn", "ask"):

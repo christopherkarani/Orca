@@ -393,7 +393,7 @@ fn hookCommand(io: std.Io, host: Host, event: Event, original_event_name: []cons
 /// only on the Codex stderr block path (see `isCodexDenyOutput`), not the JSON host path.
 const guard_sentinel_prefix: []const u8 =
     "[[ORCA-GUARD]] blocked. Command did not execute; no side effects. " ++
-    "Recourse: ask user to approve, or re-run with --allow once.\n";
+    "Recourse: orca explain \"<command>\"; orca allow-once <code>; orca allowlist list\n";
 
 /// Codex hook deny exit code (documented Codex CLI contract; distinct from usage errors).
 const codex_deny_exit_code: u8 = 2;
@@ -480,6 +480,9 @@ const HookResponse = struct {
     message: []const u8,
     redactions: []RedactionEntry,
     host_limitations: [][]const u8,
+    /// Additive agent-facing fields (optional). Omitted on Codex minimal deny path.
+    suggestions: [][]const u8 = &.{},
+    remediation_commands: [][]const u8 = &.{},
 
     fn deinit(self: *HookResponse, allocator: std.mem.Allocator) void {
         allocator.free(self.reason);
@@ -490,6 +493,10 @@ const HookResponse = struct {
         allocator.free(self.redactions);
         for (self.host_limitations) |l| allocator.free(l);
         allocator.free(self.host_limitations);
+        for (self.suggestions) |s| allocator.free(s);
+        if (self.suggestions.len > 0) allocator.free(self.suggestions);
+        for (self.remediation_commands) |c| allocator.free(c);
+        if (self.remediation_commands.len > 0) allocator.free(self.remediation_commands);
         self.* = undefined;
     }
 };
@@ -998,6 +1005,8 @@ fn buildAgentVisibleDaemonDeny(
     reason: []const u8,
     rule: ?[]const u8,
     message: []const u8,
+    suggestions: [][]const u8,
+    remediation_commands: [][]const u8,
 } {
     if (daemon.responseStringField(result, "matched_text_preview")) |_| {
         try recordDaemonMetadataRedaction(allocator, redactions, "matched_text_preview");
@@ -1028,13 +1037,75 @@ fn buildAgentVisibleDaemonDeny(
         break :blk try std.fmt.allocPrint(allocator, "command blocked by Orca policy: {s}", .{safe});
     } else try buildMessage(allocator, decision, "command");
 
+    const suggestions = try collectDaemonSuggestionTexts(allocator, result);
+    errdefer {
+        for (suggestions) |s| allocator.free(s);
+        allocator.free(suggestions);
+    }
+    const remediation_commands = try buildRemediationCommands(allocator, safe_rule);
+    errdefer {
+        for (remediation_commands) |c| allocator.free(c);
+        allocator.free(remediation_commands);
+    }
+
     return .{
         .decision = decision,
         .risk = risk,
         .reason = safe_reason,
         .rule = safe_rule,
         .message = message,
+        .suggestions = suggestions,
+        .remediation_commands = remediation_commands,
     };
+}
+
+fn collectDaemonSuggestionTexts(allocator: std.mem.Allocator, result: std.json.Value) ![][]const u8 {
+    const items = daemon.responseArrayField(result, "suggestions") orelse return try allocator.alloc([]const u8, 0);
+    var list: std.ArrayList([]const u8) = .empty;
+    errdefer {
+        for (list.items) |s| allocator.free(s);
+        list.deinit(allocator);
+    }
+    for (items) |item| {
+        if (item != .object) continue;
+        const description = switch (item.object.get("description") orelse .null) {
+            .string => |s| s,
+            else => null,
+        };
+        const suggestion_cmd = switch (item.object.get("command") orelse .null) {
+            .string => |s| s,
+            else => null,
+        };
+        if (description) |desc| {
+            if (suggestion_cmd) |cmd| {
+                const text = try std.fmt.allocPrint(allocator, "{s} ({s})", .{ desc, cmd });
+                const safe = try core_api.redactAlloc(allocator, text);
+                allocator.free(text);
+                try list.append(allocator, safe);
+                continue;
+            }
+            try list.append(allocator, try core_api.redactAlloc(allocator, desc));
+        } else if (suggestion_cmd) |cmd| {
+            try list.append(allocator, try core_api.redactAlloc(allocator, cmd));
+        }
+    }
+    return try list.toOwnedSlice(allocator);
+}
+
+fn buildRemediationCommands(allocator: std.mem.Allocator, rule_id: ?[]const u8) ![][]const u8 {
+    var list: std.ArrayList([]const u8) = .empty;
+    errdefer {
+        for (list.items) |s| allocator.free(s);
+        list.deinit(allocator);
+    }
+    try list.append(allocator, try allocator.dupe(u8, "orca explain \"<command>\""));
+    try list.append(allocator, try allocator.dupe(u8, "orca allow-once <code>"));
+    if (rule_id) |rid| {
+        try list.append(allocator, try std.fmt.allocPrint(allocator, "orca allowlist add {s} -r \"reason\"", .{rid}));
+    } else {
+        try list.append(allocator, try allocator.dupe(u8, "orca allowlist list"));
+    }
+    return try list.toOwnedSlice(allocator);
 }
 
 fn hookResponseFromDaemonEvaluate(
@@ -1070,6 +1141,8 @@ fn hookResponseFromDaemonEvaluate(
                 .message = deny.message,
                 .redactions = try redactions.toOwnedSlice(allocator),
                 .host_limitations = try limitations.toOwnedSlice(allocator),
+                .suggestions = deny.suggestions,
+                .remediation_commands = deny.remediation_commands,
             };
         },
         .error_status => blk: {
@@ -1189,6 +1262,15 @@ fn writeHookResponse(stdout: anytype, result: HookResponse) !void {
     }
     try stdout.writeAll(",\n");
 
+    // Alias for agents that prefer rule_id (additive; mirrors `rule`).
+    try stdout.writeAll("  \"rule_id\": ");
+    if (result.rule) |rule| {
+        try writeJsonString(stdout, rule);
+    } else {
+        try stdout.writeAll("null");
+    }
+    try stdout.writeAll(",\n");
+
     try stdout.writeAll("  \"message\": ");
     try writeJsonString(stdout, result.message);
     try stdout.writeAll(",\n");
@@ -1212,6 +1294,24 @@ fn writeHookResponse(stdout: anytype, result: HookResponse) !void {
         try stdout.writeAll("    ");
         try writeJsonString(stdout, l);
         if (i < result.host_limitations.len - 1) try stdout.writeAll(",");
+        try stdout.writeAll("\n");
+    }
+    try stdout.writeAll("  ],\n");
+
+    try stdout.writeAll("  \"suggestions\": [\n");
+    for (result.suggestions, 0..) |s, i| {
+        try stdout.writeAll("    ");
+        try writeJsonString(stdout, s);
+        if (i < result.suggestions.len - 1) try stdout.writeAll(",");
+        try stdout.writeAll("\n");
+    }
+    try stdout.writeAll("  ],\n");
+
+    try stdout.writeAll("  \"remediation_commands\": [\n");
+    for (result.remediation_commands, 0..) |c, i| {
+        try stdout.writeAll("    ");
+        try writeJsonString(stdout, c);
+        if (i < result.remediation_commands.len - 1) try stdout.writeAll(",");
         try stdout.writeAll("\n");
     }
     try stdout.writeAll("  ]\n");
@@ -2281,7 +2381,44 @@ test "hook guard sentinel format is machine-parseable and stable" {
     try std.testing.expect(std.mem.indexOf(u8, guard_sentinel_prefix, "did not execute") != null);
     try std.testing.expect(std.mem.indexOf(u8, guard_sentinel_prefix, "no side effects") != null);
     try std.testing.expect(std.mem.indexOf(u8, guard_sentinel_prefix, "Recourse") != null);
+    try std.testing.expect(std.mem.indexOf(u8, guard_sentinel_prefix, "orca explain") != null);
     try std.testing.expect(guard_sentinel_prefix[guard_sentinel_prefix.len - 1] == '\n');
+}
+
+test "hook daemon deny includes remediation fields for flexible hosts" {
+    const allocator = std.testing.allocator;
+    const json =
+        \\{"status":"Deny","reason":"blocked","pack_id":"core.filesystem","pattern_name":"destructive_rm","severity":"critical","explanation":"recursive delete","suggestions":[{"command":"rm -rf ./build","description":"Limit delete scope","platform":"any"}]}
+    ;
+    var parsed = try std.json.parseFromSlice(std.json.Value, allocator, json, .{});
+    defer parsed.deinit();
+    var redactions: std.ArrayList(RedactionEntry) = .empty;
+    defer {
+        for (redactions.items) |r| r.deinit(allocator);
+        redactions.deinit(allocator);
+    }
+    var limitations: std.ArrayList([]const u8) = .empty;
+    defer {
+        for (limitations.items) |l| allocator.free(l);
+        limitations.deinit(allocator);
+    }
+    var result = try hookResponseFromDaemonEvaluate(allocator, parsed.value, false, &redactions, &limitations);
+    defer result.deinit(allocator);
+
+    try std.testing.expectEqual(PluginDecision.block, result.decision);
+    try std.testing.expect(result.rule != null);
+    try std.testing.expect(result.suggestions.len >= 1);
+    try std.testing.expect(result.remediation_commands.len >= 2);
+    try std.testing.expect(std.mem.indexOf(u8, result.remediation_commands[0], "orca explain") != null);
+
+    var out_buf: [4096]u8 = undefined;
+    var out: std.Io.Writer = .fixed(&out_buf);
+    try writeHookResponse(&out, result);
+    const written = out.buffered();
+    try std.testing.expect(std.mem.indexOf(u8, written, "\"rule_id\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, written, "\"suggestions\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, written, "\"remediation_commands\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, written, "orca allowlist") != null);
 }
 
 test "hook guard sentinel is gated to the codex block audience" {
