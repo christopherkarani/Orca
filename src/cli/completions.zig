@@ -5,41 +5,7 @@ const help = @import("help.zig");
 
 const global_flags = [_][]const u8{ "--help", "--no-rich" };
 
-const CommandOptions = struct {
-    name: []const u8,
-    flags: []const []const u8,
-};
-
-const command_options = [_]CommandOptions{
-    .{ .name = "run", .flags = &.{ "--workspace", "--mode", "--policy", "--session-name", "--no-secrets", "--secretless", "--inherit-env", "--no-network", "--allow-network", "--network", "--network-backend", "--require-backend" } },
-    .{ .name = "init", .flags = &.{ "--preset", "--mode", "--ci", "--force" } },
-    .{ .name = "start", .flags = &.{ "--auto", "--protection", "--hosts", "--preset", "--skip-verify" } },
-    .{ .name = "quickstart", .flags = &.{ "--auto", "--preset" } },
-    .{ .name = "setup", .flags = &.{ "--auto", "--yes", "--preset" } },
-    .{ .name = "status", .flags = &.{"--json"} },
-    .{ .name = "doctor", .flags = &.{"--verbose"} },
-    .{ .name = "scan", .flags = &.{ "--staged", "--paths" } },
-    .{ .name = "history", .flags = &.{ "--live", "--json" } },
-    .{ .name = "simulate", .flags = &.{"--file"} },
-    .{ .name = "rebase-recover", .flags = &.{"--ttl"} },
-    .{ .name = "packs", .flags = &.{ "--filter", "--enabled", "--installed", "--page", "--page-size" } },
-    .{ .name = "report", .flags = &.{ "--session", "--format" } },
-    .{ .name = "ci", .flags = &.{ "--format", "--github-summary" } },
-    .{ .name = "shutdown", .flags = &.{"--daemon"} },
-    .{ .name = "stop", .flags = &.{"--yes"} },
-    .{ .name = "uninstall", .flags = &.{ "--plugins-only", "--keep-config", "--yes" } },
-    .{ .name = "replay", .flags = &.{ "--list", "--session", "--json", "--only", "--verify", "--tui" } },
-    .{ .name = "diff", .flags = &.{ "--session", "--file" } },
-    .{ .name = "apply", .flags = &.{ "--session", "--file" } },
-    .{ .name = "discard", .flags = &.{ "--session", "--file" } },
-    .{ .name = "redteam", .flags = &.{ "--json", "--ci", "--fixture" } },
-    .{ .name = "version", .flags = &.{"--json"} },
-    .{ .name = "plugin", .flags = &.{ "--dry-run", "--yes", "--json", "--path" } },
-    .{ .name = "decide", .flags = &.{ "--json", "--stdin", "--ci", "--human" } },
-    .{ .name = "evaluate", .flags = &.{ "--json", "--stdin" } },
-    .{ .name = "hook", .flags = &.{"--ci"} },
-    .{ .name = "dashboard", .flags = &.{ "--machine", "--workspace", "--host", "--port", "--once" } },
-};
+const max_command_flags = 64;
 
 pub fn command(io: std.Io, argv: []const []const u8, stdout: anytype, stderr: anytype) !u8 {
     if (argv.len == 1 and (std.mem.eql(u8, argv[0], "--help") or std.mem.eql(u8, argv[0], "-h"))) {
@@ -84,18 +50,56 @@ fn writePublicCommands(writer: anytype) !void {
     }
 }
 
+fn appendLongFlags(text: []const u8, flags: *[max_command_flags][]const u8, len: *usize) void {
+    var cursor: usize = 0;
+    while (std.mem.indexOfPos(u8, text, cursor, "--")) |start| {
+        var end = start + 2;
+        while (end < text.len and (std.ascii.isAlphanumeric(text[end]) or text[end] == '-')) : (end += 1) {}
+        cursor = end;
+        if (end == start + 2) continue;
+
+        const candidate = text[start..end];
+        for (flags[0..len.*]) |existing| {
+            if (std.mem.eql(u8, candidate, existing)) break;
+        } else {
+            std.debug.assert(len.* < flags.len);
+            flags[len.*] = candidate;
+            len.* += 1;
+        }
+    }
+}
+
+fn commandFlags(command_info: help.CommandInfo, buffer: *[max_command_flags][]const u8) []const []const u8 {
+    var len: usize = 0;
+    appendLongFlags(command_info.usage, buffer, &len);
+    for (command_info.examples) |example| appendLongFlags(example, buffer, &len);
+    for (command_info.additional_completion_flags) |flag| appendLongFlags(flag, buffer, &len);
+    return buffer[0..len];
+}
+
 fn writeBashCases(writer: anytype) !void {
-    for (command_options) |options| {
-        try writer.print("    {s}) flags=\"${{flags}} ", .{options.name});
-        try writeWords(writer, options.flags);
+    for (help.commands) |cmd| {
+        if (cmd.hidden) continue;
+        var flag_buffer: [max_command_flags][]const u8 = undefined;
+        const flags = commandFlags(cmd, &flag_buffer);
+        if (flags.len == 0) continue;
+        try writer.print("    {s}) has_command=true; flags=\"${{flags}}", .{cmd.name});
+        if (flags.len > 0) {
+            try writer.writeByte(' ');
+            try writeWords(writer, flags);
+        }
         try writer.writeAll("\" ;;\n");
     }
 }
 
 fn writeZshCases(writer: anytype) !void {
-    for (command_options) |options| {
-        try writer.print("    {s}) flags+=(", .{options.name});
-        for (options.flags) |flag| try writer.print(" '{s}'", .{flag});
+    for (help.commands) |cmd| {
+        if (cmd.hidden) continue;
+        var flag_buffer: [max_command_flags][]const u8 = undefined;
+        const flags = commandFlags(cmd, &flag_buffer);
+        if (flags.len == 0) continue;
+        try writer.print("    {s}) has_command=true; flags+=(", .{cmd.name});
+        for (flags) |flag| try writer.print(" '{s}'", .{flag});
         try writer.writeAll(" ) ;;\n");
     }
 }
@@ -103,10 +107,16 @@ fn writeZshCases(writer: anytype) !void {
 fn writeBash(writer: anytype) !void {
     try writer.writeAll(
         \\_orca_completions() {
-        \\  local cur commands command flags
+        \\  local cur commands command flags has_command word
         \\  COMPREPLY=()
         \\  cur="${COMP_WORDS[COMP_CWORD]}"
-        \\  command="${COMP_WORDS[1]}"
+        \\  command=""
+        \\  has_command=false
+        \\  for word in "${COMP_WORDS[@]:1}"; do
+        \\    [[ "${word}" == -* ]] && continue
+        \\    command="${word}"
+        \\    break
+        \\  done
         \\  commands="
     );
     try writePublicCommands(writer);
@@ -117,12 +127,13 @@ fn writeBash(writer: anytype) !void {
     try writeWords(writer, &global_flags);
     try writer.writeAll(
         \\"
+        \\  case " ${commands} " in *" ${command} "*) has_command=true ;; esac
         \\  case "${command}" in
     );
     try writeBashCases(writer);
     try writer.writeAll(
         \\  esac
-        \\  if [[ ${COMP_CWORD} -eq 1 ]]; then
+        \\  if [[ "${has_command}" != true ]]; then
         \\    COMPREPLY=( $(compgen -W "${commands} ${flags}" -- "${cur}") )
         \\  else
         \\    COMPREPLY=( $(compgen -W "${flags}" -- "${cur}") )
@@ -138,6 +149,8 @@ fn writeZsh(writer: anytype) !void {
         \\#compdef orca
         \\_orca() {
         \\  local -a commands flags
+        \\  local command word
+        \\  local has_command=false
         \\  commands=(
     );
     for (help.commands) |cmd| {
@@ -150,12 +163,19 @@ fn writeZsh(writer: anytype) !void {
     for (global_flags) |flag| try writer.print("    '{s}'\n", .{flag});
     try writer.writeAll(
         \\  )
-        \\  case "${words[2]}" in
+        \\  command=""
+        \\  for word in "${words[@]:2}"; do
+        \\    [[ "${word}" == -* ]] && continue
+        \\    command="${word}"
+        \\    break
+        \\  done
+        \\  (( ${commands[(Ie)$command]} )) && has_command=true
+        \\  case "${command}" in
     );
     try writeZshCases(writer);
     try writer.writeAll(
         \\  esac
-        \\  if (( CURRENT == 2 )); then
+        \\  if [[ "${has_command}" != true ]]; then
         \\    _describe 'command' commands
         \\  else
         \\    _describe 'flag' flags
@@ -173,9 +193,11 @@ fn writeFish(writer: anytype) !void {
     for (global_flags) |flag| {
         try writer.print("complete -c orca -f -l {s}\n", .{flag[2..]});
     }
-    for (command_options) |options| {
-        for (options.flags) |flag| {
-            try writer.print("complete -c orca -f -n '__fish_seen_subcommand_from {s}' -l {s}\n", .{ options.name, flag[2..] });
+    for (help.commands) |cmd| {
+        if (cmd.hidden) continue;
+        var flag_buffer: [max_command_flags][]const u8 = undefined;
+        for (commandFlags(cmd, &flag_buffer)) |flag| {
+            try writer.print("complete -c orca -f -n '__fish_seen_subcommand_from {s}' -l {s}\n", .{ cmd.name, flag[2..] });
         }
     }
 }
@@ -198,21 +220,33 @@ fn writePowerShell(writer: anytype) !void {
         \\  )
         \\  $elements = @($commandAst.CommandElements)
         \\  $flags = @($globalFlags)
-        \\  if ($elements.Count -gt 1) {
-        \\    switch ($elements[1].Extent.Text) {
+        \\  $commandName = $null
+        \\  $hasCommand = $false
+        \\  foreach ($element in $elements | Select-Object -Skip 1) {
+        \\    $text = $element.Extent.Text
+        \\    if (-not $text.StartsWith('-')) {
+        \\      $commandName = $text
+        \\      break
+        \\    }
+        \\  }
+        \\  $hasCommand = $commands -contains $commandName
+        \\  switch ($commandName) {
     );
-    for (command_options) |options| {
-        try writer.print("      '{s}' {{ $flags += @(", .{options.name});
-        for (options.flags, 0..) |flag, index| {
+    for (help.commands) |cmd| {
+        if (cmd.hidden) continue;
+        var flag_buffer: [max_command_flags][]const u8 = undefined;
+        const flags = commandFlags(cmd, &flag_buffer);
+        if (flags.len == 0) continue;
+        try writer.print("    '{s}' {{ $hasCommand = $true; $flags += @(", .{cmd.name});
+        for (flags, 0..) |flag, index| {
             if (index > 0) try writer.writeAll(", ");
             try writer.print("'{s}'", .{flag});
         }
         try writer.writeAll(") }\n");
     }
     try writer.writeAll(
-        \\    }
         \\  }
-        \\  $candidates = if ($elements.Count -le 2) { $commands + $globalFlags } else { $flags }
+        \\  $candidates = if (-not $hasCommand) { $commands + $globalFlags } else { $flags }
         \\  $candidates | Where-Object { $_ -like "$wordToComplete*" } | ForEach-Object {
         \\    [System.Management.Automation.CompletionResult]::new($_, $_, 'ParameterValue', $_)
         \\  }
@@ -291,10 +325,10 @@ test "completions scope flags to their owning command" {
         dashboard_scope: []const u8,
         packs_scope: []const u8,
     }{
-        .{ .shell = "bash", .dashboard_scope = "dashboard) flags=", .packs_scope = "packs) flags=" },
-        .{ .shell = "zsh", .dashboard_scope = "dashboard) flags+=(", .packs_scope = "packs) flags+=(" },
+        .{ .shell = "bash", .dashboard_scope = "dashboard) has_command=true; flags=", .packs_scope = "packs) has_command=true; flags=" },
+        .{ .shell = "zsh", .dashboard_scope = "dashboard) has_command=true; flags+=(", .packs_scope = "packs) has_command=true; flags+=(" },
         .{ .shell = "fish", .dashboard_scope = "__fish_seen_subcommand_from dashboard", .packs_scope = "__fish_seen_subcommand_from packs" },
-        .{ .shell = "powershell", .dashboard_scope = "'dashboard' { $flags +=", .packs_scope = "'packs' { $flags +=" },
+        .{ .shell = "powershell", .dashboard_scope = "'dashboard' { $hasCommand = $true; $flags +=", .packs_scope = "'packs' { $hasCommand = $true; $flags +=" },
     };
     for (cases) |case| {
         var stdout_buf: [32 * 1024]u8 = undefined;
@@ -330,6 +364,53 @@ test "completions include every public help command" {
         for (help.commands) |cmd| {
             if (cmd.hidden) continue;
             try std.testing.expect(std.mem.indexOf(u8, stdout_writer.buffered(), cmd.name) != null);
+        }
+    }
+}
+
+test "completions discover the first public command after global options" {
+    const cases = [_]struct {
+        shell: []const u8,
+        marker: []const u8,
+    }{
+        .{ .shell = "bash", .marker = "for word in \"${COMP_WORDS[@]:1}\"" },
+        .{ .shell = "zsh", .marker = "for word in \"${words[@]:2}\"" },
+        .{ .shell = "powershell", .marker = "Select-Object -Skip 1" },
+    };
+
+    for (cases) |case| {
+        var stdout_buf: [32 * 1024]u8 = undefined;
+        var stderr_buf: [512]u8 = undefined;
+        var stdout_writer: std.Io.Writer = .fixed(&stdout_buf);
+        var stderr_writer: std.Io.Writer = .fixed(&stderr_buf);
+
+        const code = try command(std.testing.io, &.{case.shell}, &stdout_writer, &stderr_writer);
+        try std.testing.expectEqual(exit_codes.success, code);
+        try std.testing.expect(std.mem.indexOf(u8, stdout_writer.buffered(), case.marker) != null);
+    }
+}
+
+test "completions expose canonical init history and onboarding flags" {
+    const cases = [_]struct {
+        shell: []const u8,
+        required: []const []const u8,
+    }{
+        .{ .shell = "bash", .required = &.{ "init) has_command=true; flags=\"${flags} --preset --mode --ci --force --quiet", "history) has_command=true; flags=\"${flags} --days --strict --live --json --robot --format", "setup) has_command=true; flags=\"${flags} --auto --yes --no-interact --preset" } },
+        .{ .shell = "zsh", .required = &.{ "init) has_command=true; flags+=( '--preset' '--mode' '--ci' '--force' '--quiet'", "history) has_command=true; flags+=( '--days' '--strict' '--live' '--json' '--robot' '--format'", "setup) has_command=true; flags+=( '--auto' '--yes' '--no-interact' '--preset'" } },
+        .{ .shell = "fish", .required = &.{ "__fish_seen_subcommand_from init' -l quiet", "__fish_seen_subcommand_from history' -l robot", "__fish_seen_subcommand_from history' -l format", "__fish_seen_subcommand_from setup' -l no-interact" } },
+        .{ .shell = "powershell", .required = &.{ "'init' { $hasCommand = $true; $flags += @('--preset', '--mode', '--ci', '--force', '--quiet')", "'history' { $hasCommand = $true; $flags += @('--days', '--strict', '--live', '--json', '--robot', '--format')", "'setup' { $hasCommand = $true; $flags += @('--auto', '--yes', '--no-interact', '--preset')" } },
+    };
+
+    for (cases) |case| {
+        var stdout_buf: [32 * 1024]u8 = undefined;
+        var stderr_buf: [512]u8 = undefined;
+        var stdout_writer: std.Io.Writer = .fixed(&stdout_buf);
+        var stderr_writer: std.Io.Writer = .fixed(&stderr_buf);
+
+        const code = try command(std.testing.io, &.{case.shell}, &stdout_writer, &stderr_writer);
+        try std.testing.expectEqual(exit_codes.success, code);
+        for (case.required) |needle| {
+            try std.testing.expect(std.mem.indexOf(u8, stdout_writer.buffered(), needle) != null);
         }
     }
 }

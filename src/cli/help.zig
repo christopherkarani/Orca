@@ -19,6 +19,7 @@ pub const CommandInfo = struct {
     usage: []const u8,
     details: []const []const u8,
     examples: []const []const u8 = &.{},
+    additional_completion_flags: []const []const u8 = &.{},
     category: Category = .advanced,
     hidden: bool = false,
 };
@@ -34,6 +35,7 @@ pub const commands = [_]CommandInfo{
             "orca run --mode strict -- codex",
             "orca run --no-network --no-secrets -- claude",
         },
+        .additional_completion_flags = &.{ "--workspace", "--policy", "--session-name", "--secretless", "--inherit-env", "--allow-network", "--network", "--network-backend", "--require-backend" },
         .details = &.{
             "Starts a protected session, filters the child environment through policy, checks the command through a command safety check, writes audit artifacts, and mirrors the child exit code.",
             "Options: --workspace <path>, --mode observe|ask|strict|ci, --policy <path>, --session-name <name>, --no-secrets, --secretless, --inherit-env, --no-network, --allow-network <domain>, --network observe|ask|allowlist|open|off, --network-backend decision-only|proxy, --require-backend <capability>, --help",
@@ -45,7 +47,7 @@ pub const commands = [_]CommandInfo{
     .{
         .name = "init",
         .summary = "Create an Orca policy",
-        .usage = "orca init [--preset <name>] [--mode strict|ask|observe|ci|trusted] [--ci] [--force]",
+        .usage = "orca init [--preset <name>] [--mode strict|ask|observe|ci|trusted] [--ci] [--force] [--quiet]",
         .category = .getting_started,
         .examples = &.{
             "orca init --preset generic-agent",
@@ -58,12 +60,13 @@ pub const commands = [_]CommandInfo{
             "Presets: generic-agent, claude-code, codex, cursor-agent, opencode, cline-roo, mcp-dev, github-actions, solo-dev, strict-local, team-ci, openclaw-hermes, trusted-local.",
             "Pack map: generic-agent/solo-dev/trusted-local/mcp-dev = baseline only; claude-code/codex/… = package_managers; team-ci/github-actions/openclaw-hermes = containers + k8s + terraform (+ GHA for CI); strict-local = strict_git.",
             "Refuses to overwrite an existing policy unless --force is provided.",
+            "Use --quiet to suppress informational output in scripts.",
         },
     },
     .{
         .name = "start",
         .summary = "Guided paid-beta onboarding: protection mode, hosts, verification",
-        .usage = "orca start [--auto] [--protection command-guard|firewall|maximum] [--hosts <list>] [--preset <name>] [--skip-verify]",
+        .usage = "orca start [--auto|--yes|--no-interact] [--protection command-guard|firewall|maximum] [--hosts <list>] [--preset <name>] [--skip-verify]",
         .category = .getting_started,
         .examples = &.{
             "orca start",
@@ -77,6 +80,7 @@ pub const commands = [_]CommandInfo{
             "On interactive terminals, prompts for protection mode and host integrations.",
             "On non-TTY terminals, auto-selects safe defaults (no --auto required).",
             "Use --auto to force non-interactive mode on a TTY; combine with --protection and --hosts.",
+            "Compatibility flags --yes and --no-interact also select non-interactive mode.",
             "Verifies daemon health, safe allow and dangerous deny fixtures, and selected integration paths.",
             "Re-run safely to repair or update an existing setup.",
         },
@@ -84,7 +88,7 @@ pub const commands = [_]CommandInfo{
     .{
         .name = "quickstart",
         .summary = "One-command onboarding: doctor, init, setup",
-        .usage = "orca quickstart [--auto] [--preset <name>]",
+        .usage = "orca quickstart [--auto|--no-interact] [--preset <name>]",
         .category = .getting_started,
         .examples = &.{
             "orca quickstart",
@@ -95,13 +99,14 @@ pub const commands = [_]CommandInfo{
             "Runs doctor -> init (if needed) -> setup in one command.",
             "On interactive terminals, setup runs in guided mode.",
             "Use --auto for non-interactive environments (CI, scripts).",
+            "The compatibility flag --no-interact also selects non-interactive mode.",
             "Use --preset to choose a policy preset (default: generic-agent).",
         },
     },
     .{
         .name = "setup",
         .summary = "Guided post-install setup for agent host integrations",
-        .usage = "orca setup [--auto] [--preset <name>]",
+        .usage = "orca setup [--auto|--yes|--no-interact] [--preset <name>]",
         .category = .getting_started,
         .examples = &.{
             "orca setup",
@@ -112,6 +117,7 @@ pub const commands = [_]CommandInfo{
             "On interactive terminals (TTY), `orca setup` (no flags) enters guided mode with arrow-key host selection.",
             "Use ↑↓ to navigate, Space to toggle hosts, Enter to confirm.",
             "Use --auto (or --yes alias) for the fully automatic non-interactive path used by scripts/CI.",
+            "The compatibility flag --no-interact also selects the non-interactive path.",
             "Use --preset to choose a policy preset (default: generic-agent).",
             "After setup, run 'orca run -- <your-command>' for immediate protection.",
         },
@@ -190,7 +196,7 @@ pub const commands = [_]CommandInfo{
     .{
         .name = "history",
         .summary = "Review protected command history",
-        .usage = "orca history [stats|check|analyze|interactive|export|prune|backup] [options] [--live]",
+        .usage = "orca history [stats|check|analyze|interactive|export|prune|backup] [options] [--days N] [--strict] [--live] [--json|--robot|--format <value>]",
         .category = .diagnostics,
         .examples = &.{
             "orca history stats --days 7",
@@ -201,6 +207,7 @@ pub const commands = [_]CommandInfo{
             "Human stats are rendered by Orca from structured history data.",
             "Use 'orca history --help' for actions and examples.",
             "--live opens a scrollable alt-screen view of the current stats snapshot (TTY only; not with --json).",
+            "Use --json, --robot, or --format for machine-readable daemon output.",
         },
     },
     .{
@@ -311,6 +318,7 @@ pub const commands = [_]CommandInfo{
             "orca suggest-allowlist --format json",
             "orca history suggest",
         },
+        .additional_completion_flags = &.{"--apply"},
         .details = &.{
             "Day-2 policy loop: denials → suggestions → allowlist.",
             "Proxies to the Rust daemon; requires history to be enabled.",
@@ -375,6 +383,7 @@ pub const commands = [_]CommandInfo{
             "orca packs --filter database --page-size 10",
             "orca packs --format json",
         },
+        .additional_completion_flags = &.{"--robot"},
         .details = &.{
             "Detail view of the daemon pack registry. For a one-line summary, use `orca status` or `orca doctor`.",
             "Human output is sorted and paginated locally; --installed is an alias for --enabled.",
@@ -382,7 +391,7 @@ pub const commands = [_]CommandInfo{
             "Use --format json or --robot for byte-stable daemon output.",
         },
     },
-    .{ .name = "policy", .summary = "Validate, explain, and apply policies", .usage = "orca policy <check|explain|packs|apply-pack> [...]", .category = .core_workflow, .examples = &.{
+    .{ .name = "policy", .summary = "Validate, explain, and apply policies", .usage = "orca policy <check|explain|packs|apply-pack> [...]", .category = .core_workflow, .additional_completion_flags = &.{ "--policy", "--method", "--force" }, .examples = &.{
         "orca policy check .orca/policy.yaml",
         "orca policy explain file.read /etc/passwd",
     }, .details = &.{
@@ -403,7 +412,7 @@ pub const commands = [_]CommandInfo{
         "Loads a local session, verifies session integrity, and exports denied actions, redactions, plugin readiness, and a plain-language prevention summary.",
         "Report export is a Pro/Team local-license feature. Core safety commands remain available without a license.",
     } },
-    .{ .name = "license", .summary = "Manage local offline licenses", .usage = "orca license <status|activate> [...]", .category = .advanced, .details = &.{
+    .{ .name = "license", .summary = "Manage local offline licenses", .usage = "orca license <status|activate> [...]", .category = .advanced, .additional_completion_flags = &.{"--json"}, .details = &.{
         "Subcommands:",
         "  orca license status [--json]",
         "  orca license activate <key-or-file>",
@@ -494,7 +503,7 @@ pub const commands = [_]CommandInfo{
             "See 'orca diff' to review changes and 'orca apply' to commit them.",
         },
     },
-    .{ .name = "mcp", .summary = "Inspect and proxy MCP servers", .usage = "orca mcp <inspect|proxy|list|trust|manifest> [options]", .category = .advanced, .details = &.{
+    .{ .name = "mcp", .summary = "Inspect and proxy MCP servers", .usage = "orca mcp <inspect|proxy|list|trust|manifest> [options]", .category = .advanced, .additional_completion_flags = &.{ "--command", "--name", "--policy", "--manifest", "--mode", "--tool", "--server" }, .details = &.{
         "Subcommands:",
         "  orca mcp inspect --command <server> [--name <server-name>] [--policy <path>]",
         "  orca mcp proxy --command <server> [--name <server-name>] [--policy <path>] [--manifest <path>] [--mode observe|ask|strict|ci]",
@@ -523,7 +532,7 @@ pub const commands = [_]CommandInfo{
         "Prints the current Orca version.",
         "--json emits version, commit, target, and build_date fields for release automation.",
     } },
-    .{ .name = "plugin", .summary = "Plugin management and diagnostics", .usage = "orca plugin <list|host|doctor|manifest|install> [options]", .category = .integrations, .details = &.{
+    .{ .name = "plugin", .summary = "Plugin management and diagnostics", .usage = "orca plugin <list|host|doctor|manifest|install> [options]", .category = .integrations, .additional_completion_flags = &.{ "--dry-run", "--yes", "--json", "--path" }, .details = &.{
         "Subcommands:",
         "  orca plugin list",
         "  orca plugin <codex|claude|opencode|openclaw|hermes> [--dry-run|--yes]",
@@ -595,12 +604,13 @@ pub const commands = [_]CommandInfo{
         "  orca hook hermes on_session_end",
         "Hook responses include host_limitations to honestly report enforcement limits.",
     } },
-    .{ .name = "dashboard", .summary = "Start the local Orca dashboard", .usage = "orca dashboard [--machine | --workspace PATH] [--host 127.0.0.1] [--port 7742]", .category = .diagnostics, .details = &.{
+    .{ .name = "dashboard", .summary = "Start the local Orca dashboard", .usage = "orca dashboard [--machine | --workspace PATH] [--host 127.0.0.1] [--port 7742] [--once]", .category = .diagnostics, .details = &.{
         "Starts a localhost-only machine-wide dashboard by default; the view is not tied to shell cwd.",
         "Use --workspace PATH or ORCA_DASHBOARD_WORKSPACE for policy, integrations, and workspace-scoped actions.",
         "The dashboard calls existing Orca CLI/Core paths and does not replace policy evaluation.",
         "Mutation routes use a per-run browser token and only expose fixed Orca actions; arbitrary shell commands are not accepted.",
         "Defaults to http://127.0.0.1:7742.",
+        "Use --once to serve one request for smoke tests and automation.",
     } },
     .{ .name = "help", .summary = "Show help", .usage = "orca help [command]", .category = .getting_started, .details = &.{"Shows top-level help or command-specific help."} },
 };
