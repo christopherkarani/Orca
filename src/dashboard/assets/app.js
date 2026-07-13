@@ -440,7 +440,8 @@ function renderHostFilter(actions) {
 }
 
 function extractRuleId(action) {
-  if (action.rule && action.rule !== "null") return action.rule;
+  const explicit = String(action.rule || "");
+  if (/^[A-Za-z0-9_.:-]+$/.test(explicit)) return explicit;
   const reason = action.reason || "";
   const match = reason.match(/rule[:\s]+([A-Za-z0-9_.:-]+)/i);
   return match ? match[1] : null;
@@ -459,12 +460,6 @@ function remediationCommandsFor(action) {
     label: "Copy suggest-allowlist",
     value: "orca suggest-allowlist --confidence high --non-interactive",
   });
-  if (action.remediation && action.remediation !== "not recorded") {
-    const firstLine = String(action.remediation).split("\n").find((line) => line.trim().startsWith("orca "));
-    if (firstLine) {
-      commands.push({ label: "Copy remediation line", value: firstLine.trim() });
-    }
-  }
   return commands;
 }
 

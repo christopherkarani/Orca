@@ -132,3 +132,21 @@ test("legacy fallback suppresses workspace remediation markup in machine mode", 
   assert.equal(context.workspaceResult, "<button>workspace</button>");
   assert.equal(context.machineResult, "");
 });
+
+test("legacy fallback never builds commands from hostile persisted remediation", () => {
+  const source = readFileSync(new URL("../../../src/dashboard/assets/app.js", import.meta.url), "utf8");
+  const extractRule = source.match(/function extractRuleId\(action\) \{[\s\S]*?\n\}/)?.[0];
+  const remediation = source.match(/function remediationCommandsFor\(action\) \{[\s\S]*?\n\}/)?.[0];
+  assert.ok(extractRule);
+  assert.ok(remediation);
+
+  const context: { commands?: Array<{ value: string }> } = {};
+  vm.runInNewContext(
+    `${extractRule}; ${remediation}; commands = remediationCommandsFor({ rule: "safe; touch /tmp/pwn", reason: "blocked", remediation: "orca safe; touch /tmp/pwn" });`,
+    context,
+  );
+  assert.deepEqual(
+    Array.from(context.commands ?? [], (command) => command.value),
+    ["orca suggest-allowlist --confidence high --non-interactive"],
+  );
+});

@@ -315,8 +315,6 @@ fn evaluateDecision(
         },
         .file => {
             const path = extractString(payload, "path") orelse return error.MissingRequiredField;
-            const policy_path = try normalizeFilePolicyPath(io, allocator, workspace_root, path);
-            defer allocator.free(policy_path);
             const operation = extractString(payload, "operation") orelse "read";
             if (!std.mem.eql(u8, operation, "read") and !std.mem.eql(u8, operation, "write")) {
                 return error.InvalidFileOperation;
@@ -324,6 +322,11 @@ fn evaluateDecision(
 
             const explain_kind: policy.explain.ExplainKind = if (std.mem.eql(u8, operation, "write")) .file_write else .file_read;
             const category_text = if (std.mem.eql(u8, operation, "write")) "file.write" else "file.read";
+            const policy_path = normalizeFilePolicyPath(io, allocator, workspace_root, path) catch |err| switch (err) {
+                error.OutOfMemory => return err,
+                else => return buildFileNormalizationBlock(allocator, category_text),
+            };
+            defer allocator.free(policy_path);
 
             const evaluation = try core_api.explainAction(allocator, @ptrCast(policy_value), explain_kind, policy_path);
             defer evaluation.deinit(allocator);
@@ -409,6 +412,28 @@ fn evaluateDecision(
             };
         },
     }
+}
+
+fn buildFileNormalizationBlock(allocator: std.mem.Allocator, category: []const u8) !DecisionOutput {
+    const owned_category = try allocator.dupe(u8, category);
+    errdefer allocator.free(owned_category);
+    const reason = try allocator.dupe(u8, "file access denied: path resolves outside workspace or through a symlink escape");
+    errdefer allocator.free(reason);
+    const rule = try std.fmt.allocPrint(allocator, "builtin.files.{s}.deny[outside_workspace]", .{
+        if (std.mem.eql(u8, category, "file.write")) "write" else "read",
+    });
+    errdefer allocator.free(rule);
+    const message = try buildMessage(allocator, .block, category);
+    errdefer allocator.free(message);
+    return .{
+        .decision = .block,
+        .risk = .critical,
+        .category = owned_category,
+        .reason = reason,
+        .rule = rule,
+        .message = message,
+        .redactions = try allocator.alloc(RedactionEntry, 0),
+    };
 }
 
 /// Policy file rules are workspace-relative, while host adapters commonly emit
@@ -877,6 +902,57 @@ test "decide file resolves symlinks before policy evaluation" {
     const normalized = try normalizeFilePolicyPath(std.testing.io, std.testing.allocator, root, alias_path);
     defer std.testing.allocator.free(normalized);
     try std.testing.expectEqualStrings("./.env", normalized);
+}
+
+test "decide file returns a structured block for workspace symlink escapes" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try tmp.dir.createDir(std.testing.io, "workspace", .default_dir);
+    try tmp.dir.writeFile(std.testing.io, .{ .sub_path = "outside.txt", .data = "synthetic\n" });
+
+    const root = try tmp.dir.realPathFileAlloc(std.testing.io, "workspace", std.testing.allocator);
+    defer std.testing.allocator.free(root);
+    const outside_path = try tmp.dir.realPathFileAlloc(std.testing.io, "outside.txt", std.testing.allocator);
+    defer std.testing.allocator.free(outside_path);
+    const alias_path = try std.fs.path.join(std.testing.allocator, &.{ root, "outside-link" });
+    defer std.testing.allocator.free(alias_path);
+    std.Io.Dir.cwd().symLink(std.testing.io, outside_path, alias_path, .{}) catch |err| switch (err) {
+        error.PermissionDenied => return error.SkipZigTest,
+        else => return err,
+    };
+
+    const policy_path = try std.Io.Dir.cwd().realPathFileAlloc(
+        std.testing.io,
+        "policies/presets/generic-agent.yaml",
+        std.testing.allocator,
+    );
+    defer std.testing.allocator.free(policy_path);
+    var loaded = try core_api.discoverPolicy(std.testing.io, std.testing.allocator, policy_path, root);
+    defer loaded.deinit();
+    const payload_text = try std.fmt.allocPrint(std.testing.allocator, "{{\"path\":\"{s}\",\"operation\":\"read\"}}", .{alias_path});
+    defer std.testing.allocator.free(payload_text);
+    var parsed = try std.json.parseFromSlice(std.json.Value, std.testing.allocator, payload_text, .{});
+    defer parsed.deinit();
+
+    var result = try evaluateDecision(
+        std.testing.io,
+        std.testing.allocator,
+        loaded.innerPtr(),
+        .file,
+        parsed.value,
+        true,
+        root,
+    );
+    defer result.deinit(std.testing.allocator);
+    try std.testing.expectEqual(PluginDecision.block, result.decision);
+    try std.testing.expectEqual(exit_codes.denial, result.decision.exitCode());
+    try std.testing.expectEqualStrings("file.read", result.category);
+    try std.testing.expectEqualStrings("builtin.files.read.deny[outside_workspace]", result.rule.?);
+
+    var output_buffer: [1024]u8 = undefined;
+    var output: std.Io.Writer = .fixed(&output_buffer);
+    try writeDecisionJson(&output, result);
+    try std.testing.expect(std.mem.indexOf(u8, output.buffered(), "\"decision\": \"block\"") != null);
 }
 
 test "decide file CLI gives workspace-relative and absolute paths identical decisions" {
