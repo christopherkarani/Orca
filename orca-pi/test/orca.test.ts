@@ -11,10 +11,16 @@ import { tmpdir } from "node:os";
 import { resolve } from "node:path";
 import test from "node:test";
 import {
+	buildDecideFilePayload,
 	buildEvaluateRequest,
+	extractDecideFilePath,
 	installOrcaExtension,
+	isProtectedPiTool,
+	piCoverageLabel,
 	resolveOrcaBin,
+	resolveToolPath,
 	resolveUnavailableMode,
+	runOrcaDecideFile,
 	runOrcaEvaluate,
 	safeOrcaReason,
 	type OrcaEvaluateRequest,
@@ -45,7 +51,7 @@ class FakeChild {
 		this.emitter.on(event, handler);
 	}
 
-	close(code: number): void {
+	close(code: number | null): void {
 		this.emitter.emit("close", code);
 	}
 
@@ -56,7 +62,7 @@ class FakeChild {
 
 function makeSpawn(
 	plans: Array<{
-		code?: number;
+		code?: number | null;
 		stdout?: string;
 		stderr?: string;
 		error?: Error;
@@ -84,7 +90,7 @@ function makeSpawn(
 			if (plan.stdout) child.stdout.emit("data", plan.stdout);
 			if (plan.stderr) child.stderr.emit("data", plan.stderr);
 			if (plan.error) child.fail(plan.error);
-			else child.close(plan.code ?? 0);
+			else child.close(plan.code === undefined ? 0 : plan.code);
 		});
 		return child;
 	};
@@ -410,13 +416,93 @@ async function fireToolCall(
 	ctx: any,
 	command = "git status",
 	toolName = "bash",
+	input?: Record<string, unknown>,
 ) {
-	return handler({ toolName, input: { command } }, ctx);
+	const payload =
+		input ??
+		(toolName === "bash"
+			? { command }
+			: { path: command, content: "x" });
+	return handler({ toolName, input: payload }, ctx);
 }
 
-test("non-bash tool call is ignored", async () => {
+function decideBlockJson(
+	rule = "files.write.deny[0]",
+	category = "file.write",
+): string {
+	return JSON.stringify({
+		version: 1,
+		decision: "block",
+		risk: "high",
+		category,
+		reason: `matched ${category} deny rule`,
+		rule,
+		message: `${category} blocked by Orca policy.`,
+		redactions: [],
+	});
+}
+
+function decideAllowJson(category = "file.write"): string {
+	return JSON.stringify({
+		version: 1,
+		decision: "allow",
+		risk: "low",
+		category,
+		reason: "default allow",
+		rule: null,
+		message: `${category} allowed by Orca policy.`,
+		redactions: [],
+	});
+}
+
+function decideJson(
+	decision: "allow" | "block" | "ask" | "warn" | "context_only" | "error",
+	category = "file.write",
+): string {
+	return JSON.stringify({
+		version: 1,
+		decision,
+		risk: "low",
+		category,
+		reason: `${category} returned ${decision}`,
+		rule: null,
+		message: `${category} returned ${decision}`,
+		redactions: [],
+	});
+}
+
+test("decide file rejects context_only for write side effects", async () => {
+	const { spawn } = makeSpawn([
+		{ code: 0, stdout: decideJson("context_only") },
+	]);
+	const result = await runOrcaDecideFile(
+		{ path: "./src/main.ts", operation: "write" },
+		{ spawn, orcaBin: "orca", timeoutMs: 1_000, cwd: process.cwd() },
+	);
+	assert.equal(result.kind, "deny");
+});
+
+test("decide file validates decision and exit-code consistency", async () => {
+	for (const plan of [
+		{ code: 1, stdout: decideJson("allow") },
+		{ code: 0, stdout: decideJson("block") },
+		{ code: 0, stdout: decideJson("ask") },
+		{ code: 0, stdout: decideJson("warn") },
+		{ code: null, stdout: decideJson("allow") },
+		{ code: 0, stdout: "" },
+	]) {
+		const { spawn } = makeSpawn([plan]);
+		const result = await runOrcaDecideFile(
+			{ path: "./README.md", operation: "read" },
+			{ spawn, orcaBin: "orca", timeoutMs: 1_000, cwd: process.cwd() },
+		);
+		assert.equal(result.kind, "error", JSON.stringify(plan));
+	}
+});
+
+test("custom/MCP tools remain unintercepted", async () => {
 	const { pi, handlers } = makePi();
-	const { spawn } = makeSpawn();
+	const { spawn, calls } = makeSpawn();
 	installOrcaExtension(pi, { spawn, orcaBin: "orca" });
 	const { ctx } = makeCtx();
 
@@ -424,9 +510,303 @@ test("non-bash tool call is ignored", async () => {
 		handlers.get("tool_call")![0],
 		ctx,
 		"hello",
-		"read",
+		"mcp_custom_tool",
+		{ path: "README.md" },
 	);
 	assert.equal(result, undefined);
+	assert.equal(calls.length, 0);
+	assert.equal(isProtectedPiTool("mcp_custom_tool"), false);
+	assert.equal(isProtectedPiTool("read"), true);
+	assert.equal(isProtectedPiTool("write"), true);
+	assert.match(piCoverageLabel(), /bash \+ write \+ edit \+ read policy-protected/);
+	assert.match(piCoverageLabel(), /grep \+ find \+ ls approval-gated/);
+	assert.match(piCoverageLabel(), /custom\/MCP not intercepted/);
+});
+
+test("write tool is evaluated via orca decide file", async () => {
+	const { pi, handlers, messages } = makePi();
+	const { spawn, calls } = makeSpawn([
+		{ code: 3, stdout: decideBlockJson("files.write.deny[2]") },
+	]);
+	installOrcaExtension(pi, { spawn, orcaBin: "orca" });
+	const { ctx } = makeCtx({ cwd: process.cwd() });
+
+	const result = await fireToolCall(
+		handlers.get("tool_call")![0],
+		ctx,
+		"",
+		"write",
+		{ path: ".orca/policy.yaml", content: "evil" },
+	);
+
+	assert.equal(result?.block, true);
+	assert.match(result?.reason ?? "", /write action|blocked/i);
+	assert.match(result?.reason ?? "", /rule files\.write\.deny\[2\]/);
+	assert.equal(calls.length, 1);
+	assert.deepEqual(calls[0].args.slice(0, 3), ["decide", "file", "--json"]);
+	const payload = JSON.parse(calls[0].args[3] as string) as {
+		path: string;
+		operation: string;
+	};
+	assert.equal(payload.operation, "write");
+	assert.ok(payload.path.includes(".orca/policy.yaml"));
+	assert.equal(messages.length, 1);
+	assert.equal(messages[0].message.customType, "orca-decision");
+	assert.match(messages[0].message.content, /Rule: files\.write\.deny\[2\]/);
+});
+
+test("edit tool allow proceeds without block", async () => {
+	const { pi, handlers } = makePi();
+	const { spawn, calls } = makeSpawn([{ code: 0, stdout: decideAllowJson() }]);
+	installOrcaExtension(pi, { spawn, orcaBin: "orca" });
+	const { ctx } = makeCtx();
+
+	const result = await fireToolCall(
+		handlers.get("tool_call")![0],
+		ctx,
+		"",
+		"edit",
+		{ path: "src/main.ts", edits: [{ oldText: "a", newText: "b" }] },
+	);
+	assert.equal(result, undefined);
+	assert.equal(calls[0].args[0], "decide");
+	assert.equal(calls[0].args[1], "file");
+});
+
+test("read tool is evaluated via orca decide file with operation read", async () => {
+	const { pi, handlers, messages } = makePi();
+	const { spawn, calls } = makeSpawn([
+		{
+			code: 3,
+			stdout: decideBlockJson("files.read.deny[0]", "file.read"),
+		},
+	]);
+	installOrcaExtension(pi, { spawn, orcaBin: "orca" });
+	const { ctx } = makeCtx({ cwd: process.cwd() });
+
+	const result = await fireToolCall(
+		handlers.get("tool_call")![0],
+		ctx,
+		"",
+		"read",
+		{ path: ".ssh/id_rsa" },
+	);
+
+	assert.equal(result?.block, true);
+	assert.match(result?.reason ?? "", /read action|blocked/i);
+	assert.match(result?.reason ?? "", /rule files\.read\.deny\[0\]/);
+	assert.equal(calls.length, 1);
+	assert.deepEqual(calls[0].args.slice(0, 3), ["decide", "file", "--json"]);
+	const payload = JSON.parse(calls[0].args[3] as string) as {
+		path: string;
+		operation: string;
+	};
+	assert.equal(payload.operation, "read");
+	assert.ok(payload.path.includes(".ssh/id_rsa"));
+	assert.equal(messages.length, 1);
+	assert.match(messages[0].message.content, /Rule: files\.read\.deny\[0\]/);
+});
+
+test("grep tool requires approval even when its broad root is allowed", async () => {
+	const { pi, handlers } = makePi();
+	const { spawn, calls } = makeSpawn([
+		{ code: 0, stdout: decideAllowJson("file.read") },
+	]);
+	installOrcaExtension(pi, { spawn, orcaBin: "orca" });
+	const { ctx } = makeCtx({ cwd: process.cwd(), hasUI: false, mode: "print" });
+
+	const result = await fireToolCall(
+		handlers.get("tool_call")![0],
+		ctx,
+		"",
+		"grep",
+		{ pattern: "secret", path: ".env" },
+	);
+	assert.equal(result?.block, true);
+	assert.match(result?.reason ?? "", /broad discovery|approval/i);
+	const payload = JSON.parse(calls[0].args[3] as string) as {
+		path: string;
+		operation: string;
+	};
+	assert.equal(payload.operation, "read");
+	assert.ok(payload.path.includes(".env"));
+});
+
+test("find tool defaults missing path to cwd for decide file", async () => {
+	const { pi, handlers } = makePi();
+	const { spawn, calls } = makeSpawn([
+		{ code: 0, stdout: decideAllowJson("file.read") },
+	]);
+	installOrcaExtension(pi, { spawn, orcaBin: "orca" });
+	const cwd = process.cwd();
+	const { ctx } = makeCtx({ cwd, hasUI: false, mode: "print" });
+
+	const result = await fireToolCall(
+		handlers.get("tool_call")![0],
+		ctx,
+		"",
+		"find",
+		{ pattern: "**/*.pem" },
+	);
+	assert.equal(result?.block, true);
+	const payload = JSON.parse(calls[0].args[3] as string) as {
+		path: string;
+		operation: string;
+	};
+	assert.equal(payload.operation, "read");
+	assert.equal(payload.path, cwd);
+});
+
+test("ls tool denies sensitive directory via decide file read", async () => {
+	const { pi, handlers } = makePi();
+	const { spawn, calls } = makeSpawn([
+		{
+			code: 3,
+			stdout: decideBlockJson("files.read.deny[1]", "file.read"),
+		},
+	]);
+	installOrcaExtension(pi, { spawn, orcaBin: "orca" });
+	const { ctx } = makeCtx();
+
+	const result = await fireToolCall(
+		handlers.get("tool_call")![0],
+		ctx,
+		"",
+		"ls",
+		{ path: "~/.ssh" },
+	);
+	assert.equal(result?.block, true);
+	assert.match(result?.reason ?? "", /ls action|blocked/i);
+	assert.match(result?.reason ?? "", /rule files\.read\.deny\[1\]/);
+	const payload = JSON.parse(calls[0].args[3] as string) as {
+		operation: string;
+	};
+	assert.equal(payload.operation, "read");
+});
+
+test("file-policy ask uses truthful policy choices", async () => {
+	const { pi, handlers } = makePi();
+	const { spawn } = makeSpawn([
+		{ code: 7, stdout: decideJson("ask", "file.write") },
+	]);
+	installOrcaExtension(pi, { spawn, orcaBin: "orca" });
+	const { ctx } = makeCtx();
+	let offered: string[] = [];
+	(ctx.ui as any).select = async (_title: string, options: string[]) => {
+		offered = options;
+		return "Block";
+	};
+
+	const result = await fireToolCall(
+		handlers.get("tool_call")![0],
+		ctx,
+		"",
+		"write",
+		{ path: "src/main.ts", content: "x" },
+	);
+	assert.equal(result?.block, true);
+	assert.ok(offered.includes("Show policy reason"));
+	assert.ok(!offered.some((choice) => /repair|doctor/i.test(choice)));
+});
+
+test("malformed read tool call fails closed", async () => {
+	const { pi, handlers } = makePi();
+	const { spawn, calls } = makeSpawn();
+	installOrcaExtension(pi, { spawn, orcaBin: "orca" });
+	const { ctx } = makeCtx();
+
+	const result = await fireToolCall(
+		handlers.get("tool_call")![0],
+		ctx,
+		"",
+		"read",
+		{ path: "   " },
+	);
+	assert.equal(result?.block, true);
+	assert.match(result?.reason ?? "", /malformed Pi read tool call/);
+	assert.equal(calls.length, 0);
+});
+
+test("read tool unavailable path fails closed in noninteractive mode", async () => {
+	const { pi, handlers } = makePi();
+	const { spawn } = makeSpawn([
+		{ error: new Error("spawn ENOENT") },
+	]);
+	installOrcaExtension(pi, { spawn, orcaBin: "orca" });
+	const { ctx } = makeCtx({ hasUI: false, mode: "print" });
+
+	const result = await fireToolCall(
+		handlers.get("tool_call")![0],
+		ctx,
+		"",
+		"read",
+		{ path: "README.md" },
+	);
+	assert.equal(result?.block, true);
+	assert.match(result?.reason ?? "", /Orca is unavailable|could not evaluate this read/i);
+});
+
+test("session bypass skips write and read evaluation", async () => {
+	const { pi, handlers, commands } = makePi();
+	const { spawn, calls } = makeSpawn();
+	installOrcaExtension(pi, { spawn, orcaBin: "orca" });
+	const { ctx, notifications } = makeCtx();
+
+	await commands.get("orca-stop")!.handler("", ctx);
+	const writeResult = await fireToolCall(
+		handlers.get("tool_call")![0],
+		ctx,
+		"",
+		"write",
+		{ path: "/tmp/x", content: "y" },
+	);
+	const readResult = await fireToolCall(
+		handlers.get("tool_call")![0],
+		ctx,
+		"",
+		"read",
+		{ path: "/tmp/secret" },
+	);
+	assert.equal(writeResult, undefined);
+	assert.equal(readResult, undefined);
+	assert.equal(calls.length, 0);
+	assert.ok(
+		notifications.some((n) => /write allowed without Orca/i.test(n.message)),
+	);
+	assert.ok(
+		notifications.some((n) => /read allowed without Orca/i.test(n.message)),
+	);
+});
+
+test("buildDecideFilePayload, resolveToolPath, extractDecideFilePath", () => {
+	const payload = buildDecideFilePayload("/tmp/a", "write");
+	assert.deepEqual(payload, { path: "/tmp/a", operation: "write" });
+	assert.deepEqual(buildDecideFilePayload("/tmp/b", "read"), {
+		path: "/tmp/b",
+		operation: "read",
+	});
+	const { ctx } = makeCtx({ cwd: "/workspace" });
+	assert.equal(resolveToolPath("/abs/file", ctx), "/abs/file");
+	assert.equal(
+		resolveToolPath("rel.txt", { cwd: process.cwd() }),
+		resolve(process.cwd(), "rel.txt"),
+	);
+	assert.deepEqual(extractDecideFilePath("read", { path: "a.txt" }), {
+		path: "a.txt",
+		required: true,
+	});
+	assert.deepEqual(extractDecideFilePath("grep", { pattern: "x" }), {
+		path: ".",
+		required: false,
+	});
+	assert.deepEqual(extractDecideFilePath("find", { pattern: "*", path: "src" }), {
+		path: "src",
+		required: false,
+	});
+	assert.deepEqual(extractDecideFilePath("ls", {}), {
+		path: ".",
+		required: false,
+	});
 });
 
 test("bash safe command with Orca allow returns undefined", async () => {
@@ -704,6 +1084,8 @@ test("/orca-doctor handles Orca present", async () => {
 	await commands.get("orca-doctor")!.handler("", ctx);
 	assert.equal(notifications.at(-1)?.type, "info");
 	assert.match(notifications.at(-1)!.message, /ok/);
+	assert.match(notifications.at(-1)!.message, /Coverage:/);
+	assert.match(notifications.at(-1)!.message, /bash \+ write \+ edit \+ read policy-protected/);
 });
 
 test("/orca-doctor handles Orca missing", async () => {
@@ -715,6 +1097,7 @@ test("/orca-doctor handles Orca missing", async () => {
 	await commands.get("orca-doctor")!.handler("", ctx);
 	assert.equal(notifications.at(-1)?.type, "error");
 	assert.match(notifications.at(-1)!.message, /not found/);
+	assert.match(notifications.at(-1)!.message, /Coverage:/);
 });
 
 test("/orca-stop disables Pi bash protection until /orca-start re-enables it", async () => {
@@ -807,6 +1190,13 @@ test("/orca-mode changes mode", async () => {
 
 	await commands.get("orca-mode")!.handler("strict", ctx);
 	assert.match(notifications.at(-1)!.message, /strict/);
+	assert.match(notifications.at(-1)!.message, /Coverage:/);
+	assert.match(notifications.at(-1)!.message, /orca run/);
+	assert.match(notifications.at(-1)!.message, /prefer strict|Production/i);
+
+	await commands.get("orca-mode")!.handler("", ctx);
+	assert.match(notifications.at(-1)!.message, /Orca Pi mode: strict/);
+	assert.match(notifications.at(-1)!.message, /bash \+ write \+ edit \+ read policy-protected/);
 });
 
 test("no shell interpolation is used when invoking Orca", async () => {

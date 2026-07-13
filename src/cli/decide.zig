@@ -175,7 +175,7 @@ fn decideCommandWithPolicy(
     defer loaded.deinit();
 
     // Evaluate decision
-    var result = evaluateDecision(allocator, loaded.innerPtr(), kind, parsed.value, ci_mode) catch |err| {
+    var result = evaluateDecision(allocator, loaded.innerPtr(), kind, parsed.value, ci_mode, root) catch |err| {
         try stderr.print("orca decide: evaluation failed: {s}\n", .{@errorName(err)});
         return exit_codes.general;
     };
@@ -288,6 +288,7 @@ fn evaluateDecision(
     kind: DecisionKind,
     payload: std.json.Value,
     ci_mode: bool,
+    workspace_root: []const u8,
 ) !DecisionOutput {
     var redactions: std.ArrayList(RedactionEntry) = .empty;
 
@@ -312,6 +313,8 @@ fn evaluateDecision(
         },
         .file => {
             const path = extractString(payload, "path") orelse return error.MissingRequiredField;
+            const policy_path = try normalizeFilePolicyPath(allocator, workspace_root, path);
+            defer allocator.free(policy_path);
             const operation = extractString(payload, "operation") orelse "read";
             if (!std.mem.eql(u8, operation, "read") and !std.mem.eql(u8, operation, "write")) {
                 return error.InvalidFileOperation;
@@ -320,7 +323,7 @@ fn evaluateDecision(
             const explain_kind: policy.explain.ExplainKind = if (std.mem.eql(u8, operation, "write")) .file_write else .file_read;
             const category_text = if (std.mem.eql(u8, operation, "write")) "file.write" else "file.read";
 
-            const evaluation = try core_api.explainAction(allocator, @ptrCast(policy_value), explain_kind, path);
+            const evaluation = try core_api.explainAction(allocator, @ptrCast(policy_value), explain_kind, policy_path);
             defer evaluation.deinit(allocator);
 
             const decision = PluginDecision.fromDecisionResult(evaluation.decision.result, ci_mode);
@@ -404,6 +407,32 @@ fn evaluateDecision(
             };
         },
     }
+}
+
+/// Policy file rules are workspace-relative, while host adapters commonly emit
+/// absolute paths. Normalize an absolute target inside the selected workspace
+/// to the same `./relative` form as a direct CLI caller. Absolute paths outside
+/// the workspace stay absolute so home/system rules retain their semantics.
+fn normalizeFilePolicyPath(allocator: std.mem.Allocator, workspace_root_raw: []const u8, raw_path: []const u8) ![]u8 {
+    if (!std.fs.path.isAbsolute(raw_path) or !std.fs.path.isAbsolute(workspace_root_raw)) {
+        return allocator.dupe(u8, raw_path);
+    }
+
+    const workspace_root = std.mem.trimEnd(u8, workspace_root_raw, "/\\");
+    if (std.mem.eql(u8, raw_path, workspace_root)) return allocator.dupe(u8, ".");
+    if (raw_path.len <= workspace_root.len or
+        !std.mem.eql(u8, raw_path[0..workspace_root.len], workspace_root) or
+        (raw_path[workspace_root.len] != '/' and raw_path[workspace_root.len] != '\\'))
+    {
+        return allocator.dupe(u8, raw_path);
+    }
+
+    const relative = raw_path[workspace_root.len + 1 ..];
+    const normalized = try std.fmt.allocPrint(allocator, "./{s}", .{relative});
+    for (normalized) |*char| {
+        if (char.* == '\\') char.* = '/';
+    }
+    return normalized;
 }
 
 fn buildMessage(allocator: std.mem.Allocator, decision: PluginDecision, category: []const u8) ![]const u8 {
@@ -766,6 +795,104 @@ test "decide file write to protected path returns block" {
     const output = stdout_writer.buffered();
     try std.testing.expect(std.mem.indexOf(u8, output, "\"decision\": \"block\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, output, "\"category\": \"file.write\"") != null);
+}
+
+test "decide file normalizes absolute workspace paths to policy-relative targets" {
+    const allocator = std.testing.allocator;
+    const root = "/workspace/project";
+
+    const policy_relative = try normalizeFilePolicyPath(allocator, root, "/workspace/project/.orca/policy.yaml");
+    defer allocator.free(policy_relative);
+    try std.testing.expectEqualStrings("./.orca/policy.yaml", policy_relative);
+
+    const git_relative = try normalizeFilePolicyPath(allocator, root, "/workspace/project/.git/config");
+    defer allocator.free(git_relative);
+    try std.testing.expectEqualStrings("./.git/config", git_relative);
+
+    const env_relative = try normalizeFilePolicyPath(allocator, root, "/workspace/project/.env");
+    defer allocator.free(env_relative);
+    try std.testing.expectEqualStrings("./.env", env_relative);
+
+    const allowed_relative = try normalizeFilePolicyPath(allocator, root, "/workspace/project/src/main.zig");
+    defer allocator.free(allowed_relative);
+    try std.testing.expectEqualStrings("./src/main.zig", allowed_relative);
+
+    const outside = try normalizeFilePolicyPath(allocator, root, "/tmp/outside.txt");
+    defer allocator.free(outside);
+    try std.testing.expectEqualStrings("/tmp/outside.txt", outside);
+}
+
+test "decide file CLI gives workspace-relative and absolute paths identical decisions" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try tmp.dir.writeFile(std.testing.io, .{
+        .sub_path = "policy.yaml",
+        .data =
+        \\version: 1
+        \\mode: trusted
+        \\files:
+        \\  read:
+        \\    allow: ["./**"]
+        \\    deny: ["./.env"]
+        \\  write:
+        \\    allow: ["./**"]
+        \\    deny: ["./.orca/**", "./.git/**"]
+        ,
+    });
+    const policy_path = try tmp.dir.realPathFileAlloc(std.testing.io, "policy.yaml", std.testing.allocator);
+    defer std.testing.allocator.free(policy_path);
+    const root = try std.Io.Dir.cwd().realPathFileAlloc(std.testing.io, ".", std.testing.allocator);
+    defer std.testing.allocator.free(root);
+
+    const cases = [_]struct {
+        relative: []const u8,
+        operation: []const u8,
+        expected: u8,
+    }{
+        .{ .relative = ".orca/policy.yaml", .operation = "write", .expected = exit_codes.denial },
+        .{ .relative = ".git/config", .operation = "write", .expected = exit_codes.denial },
+        .{ .relative = ".env", .operation = "read", .expected = exit_codes.denial },
+        .{ .relative = "README.md", .operation = "read", .expected = exit_codes.success },
+    };
+
+    for (cases) |case| {
+        const absolute = try std.fs.path.join(std.testing.allocator, &.{ root, case.relative });
+        defer std.testing.allocator.free(absolute);
+        const relative_json = try std.fmt.allocPrint(std.testing.allocator, "{{\"path\":\"{s}\",\"operation\":\"{s}\"}}", .{ case.relative, case.operation });
+        defer std.testing.allocator.free(relative_json);
+        const absolute_json = try std.fmt.allocPrint(std.testing.allocator, "{{\"path\":\"{s}\",\"operation\":\"{s}\"}}", .{ absolute, case.operation });
+        defer std.testing.allocator.free(absolute_json);
+
+        var relative_stdout_buf: [2048]u8 = undefined;
+        var relative_stderr_buf: [512]u8 = undefined;
+        var relative_stdout: std.Io.Writer = .fixed(&relative_stdout_buf);
+        var relative_stderr: std.Io.Writer = .fixed(&relative_stderr_buf);
+        const relative_code = try decideCommandWithPolicy(
+            std.testing.io,
+            .file,
+            &.{ "--json", relative_json },
+            &relative_stdout,
+            &relative_stderr,
+            policy_path,
+        );
+
+        var absolute_stdout_buf: [2048]u8 = undefined;
+        var absolute_stderr_buf: [512]u8 = undefined;
+        var absolute_stdout: std.Io.Writer = .fixed(&absolute_stdout_buf);
+        var absolute_stderr: std.Io.Writer = .fixed(&absolute_stderr_buf);
+        const absolute_code = try decideCommandWithPolicy(
+            std.testing.io,
+            .file,
+            &.{ "--json", absolute_json },
+            &absolute_stdout,
+            &absolute_stderr,
+            policy_path,
+        );
+
+        try std.testing.expectEqual(case.expected, relative_code);
+        try std.testing.expectEqual(relative_code, absolute_code);
+        try std.testing.expectEqualStrings(relative_stdout.buffered(), absolute_stdout.buffered());
+    }
 }
 
 test "decide file rejects unknown operation instead of downgrading to read" {
