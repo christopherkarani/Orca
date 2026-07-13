@@ -15,6 +15,7 @@ const build_options = @import("build_options");
 const exit_codes = @import("exit_codes.zig");
 const shell_eval = @import("shell_eval.zig");
 const core_api = @import("orca_core").api;
+const policy = @import("orca_core").policy;
 
 const max_payload_len = 256 * 1024;
 
@@ -99,7 +100,15 @@ pub fn evaluatePayload(
     };
     defer daemon_response.deinit();
 
-    const decision = try shell_eval.decisionFromDaemonResult(allocator, daemon_response.value.result, false);
+    // Bare agent-hook path has no loaded policy; honor ORCA_MODE when set, else strict.
+    const mode = blk: {
+        if (std.c.getenv("ORCA_MODE")) |raw_c| {
+            const raw = std.mem.span(raw_c);
+            if (policy.schema.Mode.parse(raw)) |mode_value| break :blk mode_value;
+        }
+        break :blk policy.schema.Mode.strict;
+    };
+    const decision = try shell_eval.decisionFromDaemonResult(allocator, daemon_response.value.result, mode);
     defer decision.deinit(allocator);
 
     switch (decision.decision.result) {

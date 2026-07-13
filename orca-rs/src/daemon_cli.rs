@@ -145,6 +145,14 @@ mod tests {
     }
 
     #[test]
+    fn p2b_simulate_command_is_supported() {
+        let result = execute_cli(&["simulate".to_string(), "--help".to_string()]);
+        assert_eq!(result.exit_code, EXIT_SUCCESS);
+        assert!(result.stderr.is_empty());
+        assert!(result.stdout.to_lowercase().contains("simulate"));
+    }
+
+    #[test]
     fn phase4_command_is_still_deferred() {
         let result = execute_cli(&["stats".to_string()]);
         assert_eq!(result.exit_code, EXIT_PARSE_ERROR);

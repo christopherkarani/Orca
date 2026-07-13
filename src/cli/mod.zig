@@ -456,7 +456,8 @@ fn isDaemonProxyCommand(command: []const u8) bool {
         std.mem.eql(u8, command, "classify") or
         std.mem.eql(u8, command, "suggest-allowlist") or
         std.mem.eql(u8, command, "rebase-recover") or
-        std.mem.eql(u8, command, "config");
+        std.mem.eql(u8, command, "config") or
+        std.mem.eql(u8, command, "simulate");
 }
 
 fn proxyDaemonCommand(comptime execute_cli: anytype, command: []const u8, command_args: []const []const u8, io: std.Io, stdout: anytype, stderr: anytype) !u8 {
@@ -762,6 +763,22 @@ fn fakeAllowOnceProxyUnavailable(_: std.Io, argv: []const []const u8, _: anytype
     return error.DaemonBinaryNotFound;
 }
 
+fn fakeSimulateProxySuccess(_: std.Io, argv: []const []const u8, stdout: anytype, _: anytype) !u8 {
+    try std.testing.expectEqual(@as(usize, 3), argv.len);
+    try std.testing.expectEqualStrings("simulate", argv[0]);
+    try std.testing.expectEqualStrings("--file", argv[1]);
+    try std.testing.expectEqualStrings("commands.txt", argv[2]);
+    try stdout.writeAll("simulate ok\n");
+    return exit_codes.success;
+}
+
+fn fakeSuggestAllowlistProxySuccess(_: std.Io, argv: []const []const u8, stdout: anytype, _: anytype) !u8 {
+    try std.testing.expectEqual(@as(usize, 1), argv.len);
+    try std.testing.expectEqualStrings("suggest-allowlist", argv[0]);
+    try stdout.writeAll("Allowlist Suggestions\nNext steps (high confidence)\n  orca suggest-allowlist --apply 1\n");
+    return exit_codes.success;
+}
+
 test "version proxy routes version argv and renders success" {
     var stdout_buf: [128]u8 = undefined;
     var stderr_buf: [128]u8 = undefined;
@@ -871,6 +888,7 @@ test "phase A proxy commands construct daemon argv and render success" {
     try std.testing.expect(isDaemonProxyCommand("suggest-allowlist"));
     try std.testing.expect(isDaemonProxyCommand("rebase-recover"));
     try std.testing.expect(isDaemonProxyCommand("config"));
+    try std.testing.expect(isDaemonProxyCommand("simulate"));
     try std.testing.expect(!isDaemonProxyCommand("doctor"));
     try std.testing.expect(!isDaemonProxyCommand("init"));
 
@@ -901,6 +919,30 @@ test "phase A proxy reports daemon unavailable with command label" {
     try std.testing.expectEqual(exit_codes.general, code);
     try std.testing.expectEqualStrings("", stdout_writer.buffered());
     try std.testing.expect(std.mem.indexOf(u8, stderr_writer.buffered(), "orca allow-once: daemon unavailable") != null);
+}
+
+test "simulate proxy routes argv to daemon ExecuteCli" {
+    var stdout_buf: [128]u8 = undefined;
+    var stderr_buf: [128]u8 = undefined;
+    var stdout_writer: std.Io.Writer = .fixed(&stdout_buf);
+    var stderr_writer: std.Io.Writer = .fixed(&stderr_buf);
+
+    const code = try proxyDaemonCommand(fakeSimulateProxySuccess, "simulate", &.{ "--file", "commands.txt" }, std.testing.io, &stdout_writer, &stderr_writer);
+    try std.testing.expectEqual(exit_codes.success, code);
+    try std.testing.expectEqualStrings("simulate ok\n", stdout_writer.buffered());
+    try std.testing.expectEqualStrings("", stderr_writer.buffered());
+}
+
+test "suggest-allowlist proxy routes and preserves next-step shape" {
+    var stdout_buf: [256]u8 = undefined;
+    var stderr_buf: [128]u8 = undefined;
+    var stdout_writer: std.Io.Writer = .fixed(&stdout_buf);
+    var stderr_writer: std.Io.Writer = .fixed(&stderr_buf);
+
+    const code = try proxyDaemonCommand(fakeSuggestAllowlistProxySuccess, "suggest-allowlist", &.{}, std.testing.io, &stdout_writer, &stderr_writer);
+    try std.testing.expectEqual(exit_codes.success, code);
+    try std.testing.expect(std.mem.indexOf(u8, stdout_writer.buffered(), "Next steps") != null);
+    try std.testing.expect(std.mem.indexOf(u8, stdout_writer.buffered(), "suggest-allowlist --apply") != null);
 }
 
 test "proxied machine output remains byte-identical to daemon contract fixture" {

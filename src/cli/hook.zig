@@ -740,6 +740,7 @@ fn evaluatePreToolUse(
     limitations: *std.ArrayList([]const u8),
     shell_evaluator: ?ShellCommandEvaluatorFn,
 ) !HookResponse {
+    const shell_mode: policy.schema.Mode = if (ci_mode) .ci else policy_value.mode;
     return switch (preToolUseRoute(payload)) {
         .shell_command => |shell_event| evaluateShellCommandRoute(
             io,
@@ -747,7 +748,7 @@ fn evaluatePreToolUse(
             workspace_root,
             host_name,
             shell_event,
-            ci_mode,
+            shell_mode,
             redactions,
             limitations,
             shell_evaluator,
@@ -778,7 +779,7 @@ fn evaluateShellCommandRoute(
     workspace_root: []const u8,
     host_name: []const u8,
     shell_event: ShellCommandEvent,
-    ci_mode: bool,
+    mode: policy.schema.Mode,
     redactions: *std.ArrayList(RedactionEntry),
     limitations: *std.ArrayList([]const u8),
     evaluator_override: ?ShellCommandEvaluatorFn,
@@ -806,7 +807,7 @@ fn evaluateShellCommandRoute(
     return try hookResponseFromDaemonEvaluate(
         allocator,
         daemon_response.value.result,
-        ci_mode,
+        mode,
         redactions,
         limitations,
     );
@@ -997,7 +998,7 @@ fn recordDaemonMetadataRedaction(
 fn buildAgentVisibleDaemonDeny(
     allocator: std.mem.Allocator,
     result: std.json.Value,
-    ci_mode: bool,
+    mode: policy.schema.Mode,
     redactions: *std.ArrayList(RedactionEntry),
 ) !struct {
     decision: PluginDecision,
@@ -1012,17 +1013,27 @@ fn buildAgentVisibleDaemonDeny(
         try recordDaemonMetadataRedaction(allocator, redactions, "matched_text_preview");
     }
 
-    const decision = applyCiModeToShellDecision(.block, ci_mode);
     const risk = riskFromDaemonSeverity(daemon.responseStringField(result, "severity"));
+    const shell_risk = shell_eval.riskLevelFromDaemonSeverity(daemon.responseStringField(result, "severity"));
+    const mapped = shell_eval.pluginDecisionFromModeAndSeverity(mode, shell_risk);
+    const decision = applyCiModeToShellDecision(shellEvalPluginDecisionToHook(mapped), mode == .ci);
+
     var deny = try shell_eval.buildDaemonDenyReason(allocator, result);
     errdefer {
         if (deny.reason.len > 0) allocator.free(deny.reason);
         if (deny.rule) |rule| allocator.free(rule);
     }
-    const safe_reason = try core_api.redactAlloc(allocator, deny.reason);
+
+    // Prefer mode-softened reason when mode does not hard-block.
+    const reason_src = if (decision == .block)
+        deny.reason
+    else
+        shell_eval.modeSoftenedReason(mode, shell_risk, mapped);
+    const safe_reason = try core_api.redactAlloc(allocator, reason_src);
     errdefer allocator.free(safe_reason);
     allocator.free(deny.reason);
     deny.reason = "";
+
     const safe_rule = if (deny.rule) |rule| blk: {
         const safe = try core_api.redactAlloc(allocator, rule);
         allocator.free(rule);
@@ -1031,10 +1042,13 @@ fn buildAgentVisibleDaemonDeny(
     } else null;
     errdefer if (safe_rule) |rule| allocator.free(rule);
 
-    const message = if (daemon.responseStringField(result, "explanation")) |explanation| blk: {
-        const safe = try core_api.redactAlloc(allocator, explanation);
-        defer allocator.free(safe);
-        break :blk try std.fmt.allocPrint(allocator, "command blocked by Orca policy: {s}", .{safe});
+    const message = if (decision == .block) blk: {
+        if (daemon.responseStringField(result, "explanation")) |explanation| {
+            const safe = try core_api.redactAlloc(allocator, explanation);
+            defer allocator.free(safe);
+            break :blk try std.fmt.allocPrint(allocator, "command blocked by Orca policy: {s}", .{safe});
+        }
+        break :blk try buildMessage(allocator, decision, "command");
     } else try buildMessage(allocator, decision, "command");
 
     const suggestions = try collectDaemonSuggestionTexts(allocator, result);
@@ -1111,10 +1125,11 @@ fn buildRemediationCommands(allocator: std.mem.Allocator, rule_id: ?[]const u8) 
 fn hookResponseFromDaemonEvaluate(
     allocator: std.mem.Allocator,
     result: std.json.Value,
-    ci_mode: bool,
+    mode: policy.schema.Mode,
     redactions: *std.ArrayList(RedactionEntry),
     limitations: *std.ArrayList([]const u8),
 ) !HookResponse {
+    const ci_mode = mode == .ci;
     return switch (daemon.responseStatus(result)) {
         .allow => blk: {
             const decision = applyCiModeToShellDecision(pluginDecisionFromDaemonAllow(result), ci_mode);
@@ -1131,7 +1146,7 @@ fn hookResponseFromDaemonEvaluate(
             };
         },
         .deny => blk: {
-            const deny = try buildAgentVisibleDaemonDeny(allocator, result, ci_mode, redactions);
+            const deny = try buildAgentVisibleDaemonDeny(allocator, result, mode, redactions);
             break :blk HookResponse{
                 .decision = deny.decision,
                 .risk = deny.risk,
@@ -1643,13 +1658,14 @@ fn runShellRoute(
     var redactions: std.ArrayList(RedactionEntry) = .empty;
     var limitations: std.ArrayList([]const u8) = .empty;
     try shellRouteSetup(allocator, &redactions, &limitations);
+    const mode: policy.schema.Mode = if (ci_mode) .ci else .strict;
     return evaluateShellCommandRoute(
         std.testing.io,
         allocator,
         "/tmp/orca-hook-test",
         "claude",
         .{ .command = command_text, .cwd = cwd },
-        ci_mode,
+        mode,
         &redactions,
         &limitations,
         evaluator,
@@ -2348,7 +2364,7 @@ test "hookResponseFromDaemonEvaluate rejects unexpected daemon payload" {
     var parsed = try daemon.parseResponse(allocator, "{\"id\":1,\"result\":{\"status\":\"Pong\"}}");
     defer parsed.deinit();
 
-    var result = try hookResponseFromDaemonEvaluate(allocator, parsed.value.result, false, &redactions, &limitations);
+    var result = try hookResponseFromDaemonEvaluate(allocator, parsed.value.result, .strict, &redactions, &limitations);
     defer result.deinit(allocator);
 
     try std.testing.expectEqual(PluginDecision.block, result.decision);
@@ -2402,7 +2418,7 @@ test "hook daemon deny includes remediation fields for flexible hosts" {
         for (limitations.items) |l| allocator.free(l);
         limitations.deinit(allocator);
     }
-    var result = try hookResponseFromDaemonEvaluate(allocator, parsed.value, false, &redactions, &limitations);
+    var result = try hookResponseFromDaemonEvaluate(allocator, parsed.value, .strict, &redactions, &limitations);
     defer result.deinit(allocator);
 
     try std.testing.expectEqual(PluginDecision.block, result.decision);
@@ -2482,7 +2498,7 @@ test "hook daemon strings are redacted at agent-visible boundary" {
     defer redactions.deinit(allocator);
     var limitations: std.ArrayList([]const u8) = .empty;
     defer limitations.deinit(allocator);
-    var result = try hookResponseFromDaemonEvaluate(allocator, parsed.value, false, &redactions, &limitations);
+    var result = try hookResponseFromDaemonEvaluate(allocator, parsed.value, .strict, &redactions, &limitations);
     defer result.deinit(allocator);
     try std.testing.expect(std.mem.indexOf(u8, result.reason, sentinel) == null);
     try std.testing.expect(std.mem.indexOf(u8, result.message, sentinel) == null);

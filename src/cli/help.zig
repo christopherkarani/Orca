@@ -307,11 +307,33 @@ pub const commands = [_]CommandInfo{
         .category = .diagnostics,
         .examples = &.{
             "orca suggest-allowlist",
+            "orca suggest-allowlist --confidence high",
             "orca suggest-allowlist --format json",
+            "orca history suggest",
         },
         .details = &.{
+            "Day-2 policy loop: denials → suggestions → allowlist.",
             "Proxies to the Rust daemon; requires history to be enabled.",
+            "Human output includes copy-pasteable next commands (`suggest-allowlist --apply N` / `allowlist add-command`) for high-confidence items.",
+            "Alias: `orca history suggest` (same as suggest-allowlist).",
             "Use 'orca suggest-allowlist --help' for filters and confidence options.",
+        },
+    },
+    .{
+        .name = "simulate",
+        .summary = "Dry-run policy / packs against a command file or history dump",
+        .usage = "orca simulate [--file <path>] [options]",
+        .category = .diagnostics,
+        .examples = &.{
+            "orca simulate --file commands.txt",
+            "orca simulate -f denials.jsonl --format pretty",
+            "orca simulate --help",
+        },
+        .details = &.{
+            "What-if dry-run for pack rollout and false-positive review before tightening modes.",
+            "Proxies to the Rust daemon simulate engine (does not execute shell commands).",
+            "Input is a file of commands or hook JSONL (use -f / --file; default stdin).",
+            "Prints allow/deny counts and top denials. Use before enabling packs or switching to strict/ci.",
         },
     },
     .{
