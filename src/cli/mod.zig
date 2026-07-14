@@ -42,6 +42,7 @@ pub const child_process = @import("child_process.zig");
 pub const style = @import("style.zig");
 pub const tui = @import("../tui/mod.zig");
 pub const daemon = @import("daemon.zig");
+pub const daemon_uds = @import("daemon_uds.zig");
 pub const shutdown = @import("shutdown.zig");
 pub const shell_eval = @import("shell_eval.zig");
 pub const rust_visibility = @import("rust_visibility.zig");
@@ -69,8 +70,11 @@ test {
     _ = setup;
     _ = quickstart;
     _ = @import("spinner.zig");
-    // Pull daemon UDS/IPC tests into the test binary.
+    // Pull daemon UDS/IPC/trust/error tests into the test binary.
     _ = daemon;
+    _ = daemon_uds;
+    _ = daemon.trust;
+    _ = daemon.errors;
     _ = shutdown;
     _ = shell_eval;
     _ = rust_visibility;
@@ -489,29 +493,7 @@ const isPhase1ProxyCommand = isDaemonProxyCommand;
 const proxyPhase1Command = proxyDaemonCommand;
 
 fn daemonErrorLabel(err: anyerror) []const u8 {
-    return switch (err) {
-        error.HomeDirectoryNotFound,
-        error.DaemonBinaryNotFound,
-        error.DaemonBinaryNotExecutable,
-        error.DaemonSpawnFailed,
-        error.DaemonStartTimeout,
-        error.DaemonNotReady,
-        error.StaleSocket,
-        error.SocketConnectFailed,
-        => "daemon unavailable",
-        error.SocketReadFailed,
-        error.SocketWriteFailed,
-        => "daemon communication failed",
-        error.RequestSerializationFailed,
-        error.ResponseParseFailed,
-        error.DaemonProtocolError,
-        error.MissingHandshake,
-        error.HandshakeMalformed,
-        error.ProtocolMismatch,
-        => "daemon protocol error",
-        error.OutOfMemory => "out of memory",
-        else => "daemon proxy failed",
-    };
+    return daemon.errors.proxyCategoryLabel(err);
 }
 
 fn realDaemonExecuteCli(_: std.Io, argv: []const []const u8, stdout: anytype, stderr: anytype) daemon.DaemonError!u8 {

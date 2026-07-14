@@ -69,6 +69,7 @@ const IntegrationContext = struct {
     daemon_binary_path: ?[]const u8 = null,
     daemon_binary_exists: bool = false,
     daemon_binary_executable: bool = false,
+    daemon_binary_untrusted: bool = false,
     daemon_socket_path: ?[]const u8 = null,
     daemon_socket_exists: bool = false,
     daemon_pid_path: ?[]const u8 = null,
@@ -224,37 +225,9 @@ fn daemonStatusSummary(status: onboarding.DaemonHealthStatus) []const u8 {
 }
 
 fn daemonDetailFromError(allocator: std.mem.Allocator, err: anyerror) !DaemonHealth {
-    const status: onboarding.DaemonHealthStatus = if (err == error.ProtocolMismatch)
-        .incompatible
-    else if (err == error.MissingHandshake or err == error.HandshakeMalformed or err == error.DaemonProtocolError or err == error.ResponseParseFailed)
-        .degraded
-    else
-        .unavailable;
-
-    const detail = switch (err) {
-        error.HomeDirectoryNotFound => "HOME is not set; daemon runtime path is unavailable.",
-        error.DaemonBinaryNotFound => "orca-daemon binary not found; build or install the companion daemon.",
-        error.DaemonBinaryNotExecutable => "orca-daemon exists but is not executable; restore execute permission or reinstall the matching release.",
-        error.DaemonSpawnFailed => "orca-daemon failed to start; inspect local build/install state.",
-        error.DaemonStartTimeout => "orca-daemon startup timed out; verify socket cleanup and local process health.",
-        error.DaemonNotReady => "daemon runtime exists but is not ready to answer requests.",
-        error.StaleSocket => "daemon runtime contains stale socket artifacts.",
-        error.SocketConnectFailed => "no running daemon answered on the expected socket.",
-        error.SocketWriteFailed => "daemon socket accepted a connection but did not accept the request cleanly.",
-        error.SocketReadFailed => "daemon socket accepted a connection but did not return a response in time.",
-        error.RequestSerializationFailed => "failed to serialize the daemon health probe request.",
-        error.ResponseParseFailed => "daemon returned malformed JSON for the health probe.",
-        error.DaemonProtocolError => "daemon answered, but the health probe payload was not a valid Pong handshake.",
-        error.MissingHandshake => "daemon answered Ping without the required protocol handshake fields.",
-        error.HandshakeMalformed => "daemon handshake fields were present but malformed.",
-        error.ProtocolMismatch => "daemon protocol version or capability set does not match this Orca CLI.",
-        error.OutOfMemory => "out of memory while probing daemon compatibility.",
-        else => "unexpected daemon health error",
-    };
-
     return .{
-        .status = status,
-        .detail = try allocator.dupe(u8, detail),
+        .status = cli.daemon.errors.doctorHealthStatus(err),
+        .detail = try allocator.dupe(u8, cli.daemon.errors.doctorProbeDetail(err)),
     };
 }
 
@@ -459,6 +432,9 @@ fn writeIntegrationReport(io: std.Io, stdout: anytype, context: IntegrationConte
             if (context.daemon_binary_exists) "present" else "missing",
             if (context.daemon_binary_executable) "executable" else "not executable",
         });
+        if (context.daemon_binary_untrusted) {
+            try stdout.writeAll("  daemon binary trust: world-writable ORCA_DAEMON path (refused for shell evaluation)\n");
+        }
     } else {
         try stdout.writeAll("  daemon binary: unresolved\n");
     }
@@ -616,7 +592,9 @@ fn writeRecommendations(stdout: anytype, context: IntegrationContext) !void {
     try stdout.writeAll("\nRecommended next step:\n");
     if (context.daemon_health != .compatible) {
         try writeDynamicLine(stdout, "  Daemon health issue: ", context.daemon_detail, "\n");
-        if (context.daemon_binary_exists and !context.daemon_binary_executable) {
+        if (context.daemon_binary_untrusted) {
+            try stdout.writeAll("  Unset `ORCA_DAEMON` or point it at a non-world-writable `orca-daemon` binary, then re-run `orca doctor`.\n");
+        } else if (context.daemon_binary_exists and !context.daemon_binary_executable) {
             try stdout.writeAll("  Restore execute permission on `orca-daemon` or reinstall the matching release, then re-run `orca doctor`.\n");
         } else if (!context.daemon_binary_exists) {
             try stdout.writeAll("  Ensure `orca-daemon` is installed beside `orca` (or set `ORCA_DAEMON`), then re-run `orca doctor`.\n");
@@ -726,6 +704,10 @@ fn collectIntegrationContextAt(io: std.Io, allocator: std.mem.Allocator, workspa
         .daemon_binary_path = if (daemon_inspection) |value| try allocator.dupe(u8, value.path) else null,
         .daemon_binary_exists = if (daemon_inspection) |value| value.exists else false,
         .daemon_binary_executable = if (daemon_inspection) |value| value.executable else false,
+        .daemon_binary_untrusted = if (daemon_inspection) |value|
+            value.source == .env_override and value.untrusted
+        else
+            false,
         .daemon_socket_path = if (daemon_paths) |value| try allocator.dupe(u8, value.socket) else null,
         .daemon_socket_exists = if (daemon_paths) |value| fileExistsAbsolute(io, value.socket) else false,
         .daemon_pid_path = if (daemon_paths) |value| try allocator.dupe(u8, value.pid) else null,
@@ -1204,6 +1186,23 @@ test "doctor integration report includes daemon health details" {
     try std.testing.expect(std.mem.indexOf(u8, written, "does not match this Orca CLI") != null);
 }
 
+test "doctor integration report warns on world-writable ORCA_DAEMON path" {
+    var stdout_buf: [32768]u8 = undefined;
+    var stdout_writer: std.Io.Writer = .fixed(&stdout_buf);
+    const report = sandbox.backend.detect(.linux);
+    var context = try testContext(std.testing.allocator, .{
+        .daemon_health = .unavailable,
+        .daemon_detail = "ORCA_DAEMON points at a world-writable path.",
+        .daemon_binary_untrusted = true,
+    });
+    defer context.deinit();
+
+    try writeReport(std.testing.io, &stdout_writer, .linux, report, context, true);
+    const written = stdout_writer.buffered();
+    try std.testing.expect(std.mem.indexOf(u8, written, "daemon binary trust: world-writable ORCA_DAEMON path") != null);
+    try std.testing.expect(std.mem.indexOf(u8, written, "Unset `ORCA_DAEMON` or point it at a non-world-writable") != null);
+}
+
 test "doctor recommendations prioritize daemon remediation over missing policy" {
     var stdout_buf: [32768]u8 = undefined;
     var stdout_writer: std.Io.Writer = .fixed(&stdout_buf);
@@ -1332,6 +1331,7 @@ const TestContextOptions = struct {
     policy_valid: bool = true,
     daemon_binary_exists: bool = true,
     daemon_binary_executable: bool = true,
+    daemon_binary_untrusted: bool = false,
     daemon_health: onboarding.DaemonHealthStatus = .compatible,
     daemon_detail: []const u8 = "running daemon answered with a compatible handshake.",
     hermes_fail_open: bool = true,
@@ -1358,6 +1358,7 @@ fn testContext(allocator: std.mem.Allocator, options: TestContextOptions) !Integ
         .daemon_binary_path = try allocator.dupe(u8, "/tmp/orca-daemon"),
         .daemon_binary_exists = options.daemon_binary_exists,
         .daemon_binary_executable = options.daemon_binary_executable,
+        .daemon_binary_untrusted = options.daemon_binary_untrusted,
         .daemon_socket_path = try allocator.dupe(u8, "/tmp/daemon.sock"),
         .daemon_socket_exists = false,
         .daemon_pid_path = try allocator.dupe(u8, "/tmp/daemon.pid"),

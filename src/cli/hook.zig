@@ -972,19 +972,14 @@ fn shellEvalPluginDecisionToHook(decision: shell_eval.PluginDecision) PluginDeci
     };
 }
 
-fn applyCiModeToShellDecision(decision: PluginDecision, ci_mode: bool) PluginDecision {
-    return switch (decision) {
-        .ask, .warn => if (ci_mode) .block else decision,
-        else => decision,
-    };
+fn pluginDecisionFromDaemonAllow(result: std.json.Value, ci_mode: bool) PluginDecision {
+    return shellEvalPluginDecisionToHook(
+        shell_eval.pluginDecisionFromDaemonAllow(result).applyCiMode(ci_mode),
+    );
 }
 
-fn pluginDecisionFromDaemonAllow(result: std.json.Value) PluginDecision {
-    return shellEvalPluginDecisionToHook(shell_eval.pluginDecisionFromDaemonAllow(result));
-}
-
-fn riskFromDaemonSeverity(severity: ?[]const u8) RiskLevel {
-    return switch (shell_eval.riskLevelFromDaemonSeverity(severity)) {
+fn hookRiskFromShellRisk(shell_risk: shell_eval.RiskLevel) RiskLevel {
+    return switch (shell_risk) {
         .low => .low,
         .medium => .medium,
         .high => .high,
@@ -1023,9 +1018,9 @@ fn buildAgentVisibleDaemonDeny(
     }
 
     const shell_risk = shell_eval.riskLevelFromDaemonSeverity(daemon.responseStringField(result, "severity"));
-    const risk = riskFromDaemonSeverity(daemon.responseStringField(result, "severity"));
+    const risk = hookRiskFromShellRisk(shell_risk);
     const mapped = shell_eval.pluginDecisionFromModeAndSeverity(mode, shell_risk);
-    const decision = applyCiModeToShellDecision(shellEvalPluginDecisionToHook(mapped), mode == .ci);
+    const decision = shellEvalPluginDecisionToHook(mapped.applyCiMode(mode == .ci));
 
     var deny = try shell_eval.buildDaemonDenyReason(allocator, result);
     errdefer {
@@ -1142,7 +1137,7 @@ fn hookResponseFromDaemonEvaluate(
     const ci_mode = mode == .ci;
     return switch (daemon.responseStatus(result)) {
         .allow => blk: {
-            const decision = applyCiModeToShellDecision(pluginDecisionFromDaemonAllow(result), ci_mode);
+            const decision = pluginDecisionFromDaemonAllow(result, ci_mode);
             const safe_reason = try core_api.redactAlloc(allocator, daemon.responseReason(result) orelse "command allowed by daemon evaluator");
             break :blk HookResponse{
                 .decision = decision,

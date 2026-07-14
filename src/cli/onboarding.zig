@@ -319,22 +319,7 @@ fn defaultDaemonCheck(allocator: std.mem.Allocator, ensure_running: bool) !void 
 }
 
 fn daemonCheckDetail(err: anyerror) []const u8 {
-    return switch (err) {
-        error.ProtocolMismatch => "Protocol version mismatch between orca and orca-daemon.",
-        error.MissingHandshake => "Daemon did not return a protocol handshake.",
-        error.HandshakeMalformed => "Daemon handshake was malformed.",
-        error.DaemonProtocolError => "Daemon returned a protocol error.",
-        error.ResponseParseFailed => "Daemon response could not be parsed.",
-        error.DaemonBinaryNotFound => "orca-daemon binary was not found.",
-        error.DaemonBinaryNotExecutable => "orca-daemon is not executable.",
-        error.DaemonSpawnFailed => "Failed to start orca-daemon.",
-        error.DaemonStartTimeout => "Timed out waiting for orca-daemon.",
-        error.DaemonNotReady => "orca-daemon is not ready.",
-        error.StaleSocket => "Stale daemon socket artifact detected.",
-        error.SocketConnectFailed => "Could not connect to orca-daemon socket.",
-        error.HomeDirectoryNotFound => "HOME is not set.",
-        else => "Could not verify orca-daemon health.",
-    };
+    return daemon.errors.onboardingDetail(err);
 }
 
 pub fn verifyShellEvaluation(
