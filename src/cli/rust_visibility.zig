@@ -59,26 +59,7 @@ pub const RustShellFeedRecord = struct {
 };
 
 fn daemonUnavailableReason(err: daemon.DaemonError) []const u8 {
-    return switch (err) {
-        error.HomeDirectoryNotFound => "daemon unavailable: HOME not set",
-        error.DaemonBinaryNotFound => "daemon unavailable: orca-daemon binary not found",
-        error.DaemonBinaryNotExecutable => "daemon unavailable: orca-daemon is not executable",
-        error.DaemonSpawnFailed => "daemon unavailable: failed to spawn orca-daemon",
-        error.DaemonStartTimeout => "daemon unavailable: startup timed out",
-        error.DaemonNotReady => "daemon unavailable: daemon not ready",
-        error.StaleSocket => "daemon unavailable: stale socket artifact",
-        error.SocketConnectFailed => "daemon unavailable: socket connect failed",
-        error.SocketWriteFailed => "daemon unavailable: socket write failed",
-        error.SocketReadFailed => "daemon unavailable: socket read failed",
-        error.InvalidWorkingDirectory => "daemon unavailable: command working directory does not exist",
-        error.RequestSerializationFailed => "daemon unavailable: request serialization failed",
-        error.ResponseParseFailed => "daemon unavailable: malformed daemon response",
-        error.DaemonProtocolError => "daemon unavailable: protocol error",
-        error.MissingHandshake => "daemon unavailable: missing protocol handshake",
-        error.HandshakeMalformed => "daemon unavailable: malformed protocol handshake",
-        error.ProtocolMismatch => "daemon unavailable: incompatible daemon protocol",
-        error.OutOfMemory => "daemon unavailable: out of memory",
-    };
+    return daemon.errors.shellUnavailableReason(err);
 }
 
 fn buildDaemonDenyReason(

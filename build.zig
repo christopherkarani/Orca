@@ -245,6 +245,19 @@ pub fn build(b: *std.Build) void {
     });
     const run_phase25_hardening_tests = addRunTestTerminal(b, phase25_hardening_tests);
 
+    const daemon_ipc_hardening_tests = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("tests/daemon_ipc_hardening.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .name = "orca", .module = orca_mod },
+            },
+        }),
+    });
+    daemon_ipc_hardening_tests.root_module.link_libc = true;
+    const run_daemon_ipc_hardening_tests = addRunTestTerminal(b, daemon_ipc_hardening_tests);
+
     const phase42_customer_acquisition_tests = b.addTest(.{
         .root_module = b.createModule(.{
             .root_source_file = b.path("tests/phase42_drone_customer_acquisition.zig"),
@@ -370,6 +383,7 @@ pub fn build(b: *std.Build) void {
     compile_test_fast_step.dependOn(&lib_tests.step);
     compile_test_fast_step.dependOn(&core_package_tests.step);
     compile_test_fast_step.dependOn(&core_contract_tests.step);
+    compile_test_fast_step.dependOn(&daemon_ipc_hardening_tests.step);
 
     const test_lib_step = b.step("test-lib", "Run orca lib inline tests only");
     test_lib_step.dependOn(&run_lib_tests.step);
@@ -396,6 +410,7 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&run_cli_package_tests.step);
     test_step.dependOn(&run_cli_contract_tests.step);
     test_step.dependOn(&run_phase25_hardening_tests.step);
+    test_step.dependOn(&run_daemon_ipc_hardening_tests.step);
     test_step.dependOn(&run_phase2d_daemon_hook_matrix_tests.step);
     test_step.dependOn(&run_phase2e_hook_dispatch_tests.step);
     test_step.dependOn(&run_phase2f_hook_validation_tests.step);
