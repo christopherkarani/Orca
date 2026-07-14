@@ -104,6 +104,9 @@ fn commandWithStdioAndEnv(io: std.Io, argv: []const []const u8, stdout: anytype,
         },
     };
     defer filtered_env.deinit();
+    if (options.secretless) {
+        try intercept.env.writeSecretlessReadinessNote(stderr, filtered_env.secretless_replacements);
+    }
     try installNetworkEnvironment(allocator, &filtered_env.env_map, loaded_policy.innerPtr().network);
     var proxy_runtime: ?intercept.proxy.Runtime = null;
     defer if (proxy_runtime) |*runtime| runtime.deinit();
@@ -1242,13 +1245,18 @@ test "run rejects inherit-env when selected policy disallows it" {
 
 test "run accepts secretless option" {
     var stdout_buf: [1024]u8 = undefined;
-    var stderr_buf: [512]u8 = undefined;
+    var stderr_buf: [2048]u8 = undefined;
     var stdout_writer: std.Io.Writer = .fixed(&stdout_buf);
     var stderr_writer: std.Io.Writer = .fixed(&stderr_buf);
 
     const code = try commandForTestWithShellEvaluator(&.{ "--secretless", "--", "true" }, &stdout_writer, &stderr_writer, .ignore, shell_eval.mockDaemonAllowEvaluator);
     try std.testing.expectEqual(exit_codes.success, code);
-    try std.testing.expectEqualStrings("", stderr_writer.buffered());
+    // Host env may contain secret-like vars; if rewritten, expect the loud readiness warning only.
+    const stderr_out = stderr_writer.buffered();
+    if (stderr_out.len != 0) {
+        try std.testing.expect(std.mem.indexOf(u8, stderr_out, "--secretless rewrote") != null);
+        try std.testing.expect(std.mem.indexOf(u8, stderr_out, "non-resolving") != null);
+    }
 }
 
 test "run secretless replaces child env and keeps raw secret out of audit artifacts" {
@@ -1292,6 +1300,11 @@ test "run secretless replaces child env and keeps raw secret out of audit artifa
 
     const code = try commandForTestWithEnv(&.{ "--workspace", root, "--policy", policy_path, "--secretless", "--inherit-env", "--", "./dump-env.sh" }, &stdout_writer, &stderr_writer, .ignore, &current);
     try std.testing.expectEqual(exit_codes.success, code);
+
+    const stderr_out = stderr_writer.buffered();
+    try std.testing.expect(std.mem.indexOf(u8, stderr_out, "--secretless rewrote") != null);
+    try std.testing.expect(std.mem.indexOf(u8, stderr_out, "non-resolving") != null);
+    try std.testing.expect(std.mem.indexOf(u8, stderr_out, "ghp_fakeSyntheticTokenValue") == null);
 
     const child_env = try tmp.dir.readFileAlloc(std.testing.io, "child-env.txt", std.testing.allocator, .limited(512));
     defer std.testing.allocator.free(child_env);

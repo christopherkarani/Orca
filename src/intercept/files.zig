@@ -353,6 +353,57 @@ pub fn discardStaged(io: std.Io, allocator: std.mem.Allocator, workspace_root: [
     return applyOrDiscard(io, allocator, workspace_root, session_id, optional_file, false, audit_context);
 }
 
+/// Paths that would be applied or discarded (relative workspace paths). Caller frees with deinit.
+pub const StagedSummary = struct {
+    count: usize,
+    paths: [][]const u8,
+    allocator: std.mem.Allocator,
+
+    pub fn deinit(self: *StagedSummary) void {
+        for (self.paths) |p| self.allocator.free(p);
+        self.allocator.free(self.paths);
+        self.* = undefined;
+    }
+};
+
+/// List staged file paths for dry-run / confirmation summaries. Does not mutate.
+pub fn summarizeStaged(
+    io: std.Io,
+    allocator: std.mem.Allocator,
+    workspace_root: []const u8,
+    session_id: []const u8,
+    optional_file: ?[]const u8,
+) !StagedSummary {
+    const session_dir = try sessionDirPath(allocator, workspace_root, session_id);
+    defer allocator.free(session_dir);
+    var index = try loadIndex(io, allocator, workspace_root, session_dir);
+    defer index.deinit();
+
+    const normalized_filter = if (optional_file) |file| blk: {
+        var normalized = try normalizePath(io, allocator, workspace_root, file);
+        defer normalized.deinit(allocator);
+        break :blk try allocator.dupe(u8, normalized.relative_path);
+    } else null;
+    defer if (normalized_filter) |filter| allocator.free(filter);
+
+    var paths: std.ArrayList([]const u8) = .empty;
+    errdefer {
+        for (paths.items) |p| allocator.free(p);
+        paths.deinit(allocator);
+    }
+    for (index.entries.items) |entry| {
+        if (normalized_filter) |filter| {
+            if (!std.mem.eql(u8, filter, entry.normalized_path)) continue;
+        }
+        try paths.append(allocator, try allocator.dupe(u8, entry.normalized_path));
+    }
+    return .{
+        .count = paths.items.len,
+        .paths = try paths.toOwnedSlice(allocator),
+        .allocator = allocator,
+    };
+}
+
 pub fn resolveSessionId(io: std.Io, allocator: std.mem.Allocator, workspace_root: []const u8, requested: []const u8) ![]u8 {
     if (!std.mem.eql(u8, requested, "last")) {
         try validateSessionId(requested);

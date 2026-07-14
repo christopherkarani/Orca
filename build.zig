@@ -233,6 +233,18 @@ pub fn build(b: *std.Build) void {
     });
     const run_phase2510_gui_audit_feed_tests = addRunTestTerminal(b, phase2510_gui_audit_feed_tests);
 
+    const phase_zh2_presentation_redaction_tests = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("tests/phase_zh2_presentation_redaction.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .name = "orca", .module = orca_mod },
+            },
+        }),
+    });
+    const run_phase_zh2_presentation_redaction_tests = addRunTestTerminal(b, phase_zh2_presentation_redaction_tests);
+
     const phase25_hardening_tests = b.addTest(.{
         .root_module = b.createModule(.{
             .root_source_file = b.path("tests/phase25_cli_hardening.zig"),
@@ -360,6 +372,11 @@ pub fn build(b: *std.Build) void {
     });
     const run_setup_tests = addRunTestTerminal(b, setup_tests);
 
+    const check_fixture_secrets = b.addSystemCommand(&.{ "bash", "scripts/check-fixture-secrets.sh" });
+    check_fixture_secrets.setCwd(b.path("."));
+    const check_fixture_secrets_step = b.step("check-fixture-secrets", "Scan fixtures/tests for non-synthetic secret patterns");
+    check_fixture_secrets_step.dependOn(&check_fixture_secrets.step);
+
     const check_step = b.step("check", "Compile Orca CLI only (fastest compile gate)");
     check_step.dependOn(&exe.step);
 
@@ -389,6 +406,7 @@ pub fn build(b: *std.Build) void {
     test_fast_step.dependOn(&run_core_contract_tests.step);
 
     const test_step = b.step("test", "Run unit tests");
+    test_step.dependOn(&check_fixture_secrets.step);
     test_step.dependOn(&run_lib_tests.step);
     test_step.dependOn(&run_exe_tests.step);
     test_step.dependOn(&run_core_package_tests.step);
@@ -400,6 +418,7 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&run_phase2e_hook_dispatch_tests.step);
     test_step.dependOn(&run_phase2f_hook_validation_tests.step);
     test_step.dependOn(&run_phase2510_gui_audit_feed_tests.step);
+    test_step.dependOn(&run_phase_zh2_presentation_redaction_tests.step);
     test_step.dependOn(&run_phase42_customer_acquisition_tests.step);
     test_step.dependOn(&run_phase36_codex_plugin_tests.step);
     test_step.dependOn(&run_phase37_claude_plugin_tests.step);

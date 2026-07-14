@@ -241,7 +241,10 @@ test "openclaw plugin source contains orca hook call" {
     const content = try readFile(std.testing.allocator, source_path);
     defer std.testing.allocator.free(content);
 
-    try std.testing.expect(std.mem.indexOf(u8, content, "hook openclaw") != null);
+    // argv form: execFileSync(orcaBin, ['hook', 'openclaw', event], ...)
+    try std.testing.expect(std.mem.indexOf(u8, content, "'hook'") != null or std.mem.indexOf(u8, content, "\"hook\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, content, "'openclaw'") != null or std.mem.indexOf(u8, content, "\"openclaw\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, content, "execFileSync") != null);
 }
 
 test "openclaw plugin source does not duplicate policy logic" {
@@ -294,12 +297,13 @@ test "openclaw plugin README exists" {
     try std.testing.expect(fileExists(readme_path));
 }
 
-test "openclaw plugin README includes strongest-protection warning" {
+test "openclaw plugin README promotes wrapper and labels npm unprotected" {
     const content = try readFile(std.testing.allocator, readme_path);
     defer std.testing.allocator.free(content);
 
-    try std.testing.expect(std.mem.indexOf(u8, content, "strongest local protection") != null);
-    try std.testing.expect(std.mem.indexOf(u8, content, "orca run --") != null);
+    try std.testing.expect(std.mem.indexOf(u8, content, "orca run -- openclaw") != null);
+    try std.testing.expect(std.mem.indexOf(u8, content, "unprotected") != null);
+    try std.testing.expect(std.mem.indexOf(u8, content, "wrapper") != null);
 }
 
 test "openclaw plugin README states no MCP server behavior" {
@@ -316,11 +320,13 @@ test "openclaw plugin README states no drone plugin features" {
     try std.testing.expect(std.mem.indexOf(u8, content, "drone-specific plugin features") != null);
 }
 
-test "openclaw plugin README has npm install instructions" {
+test "openclaw plugin README has npm install instructions demoted as unprotected" {
     const content = try readFile(std.testing.allocator, readme_path);
     defer std.testing.allocator.free(content);
 
     try std.testing.expect(std.mem.indexOf(u8, content, "openclaw plugins install npm:orca-openclaw-plugin") != null);
+    try std.testing.expect(std.mem.indexOf(u8, content, "NOT recommended for security") != null or
+        std.mem.indexOf(u8, content, "unprotected") != null);
 }
 
 test "openclaw plugin README does not claim npm publication happened" {

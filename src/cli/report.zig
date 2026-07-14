@@ -70,10 +70,20 @@ pub fn command(io: std.Io, argv: []const []const u8, stdout: anytype, stderr: an
     defer replay.deinit();
 
     switch (options.format) {
-        .markdown => try report.writeMarkdown(io, allocator, stdout, workspace_root, replay),
-        .json => try report.writeJson(io, allocator, stdout, workspace_root, replay),
+        .markdown => report.writeMarkdown(io, allocator, stdout, workspace_root, replay) catch |err| return mapReportExportError(stderr, err),
+        .json => report.writeJson(io, allocator, stdout, workspace_root, replay) catch |err| return mapReportExportError(stderr, err),
     }
     return exit_codes.success;
+}
+
+fn mapReportExportError(stderr: anytype, err: anyerror) !u8 {
+    switch (err) {
+        error.ParseIntegrityFailed => {
+            try stderr.writeAll("orca report: event parse integrity failed; refusing to export report from incomplete evidence.\n");
+            return exit_codes.general;
+        },
+        else => return err,
+    }
 }
 
 fn parseOptions(io: std.Io, argv: []const []const u8, stdout: anytype, stderr: anytype) !Options {

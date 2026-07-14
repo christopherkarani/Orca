@@ -39,7 +39,7 @@ pub const commands = [_]CommandInfo{
         .details = &.{
             "Starts a protected session, filters the child environment through policy, checks the command through a command safety check, writes audit artifacts, and mirrors the child exit code.",
             "Options: --workspace <path>, --mode observe|ask|strict|ci, --policy <path>, --session-name <name>, --no-secrets, --secretless, --inherit-env, --no-network, --allow-network <domain>, --network observe|ask|allowlist|open|off, --network-backend decision-only|proxy, --require-backend <capability>, --help",
-            "Strict and CI modes default to environments without secret access. --secretless replaces policy-visible secret env values with credential references instead of raw values. --inherit-env is allowed only when the selected policy permits inheritance.",
+            "Strict and CI modes default to environments without secret access. --secretless replaces policy-visible secret env values with non-resolving orca-secret:// local-dummy references (not usable as raw model API keys; opt-in only). --inherit-env is allowed only when the selected policy permits inheritance.",
             "Network flags update the run-time policy and audit network decisions. --network-backend proxy starts an explicit localhost proxy and injects HTTP_PROXY/HTTPS_PROXY/ALL_PROXY; HTTPS CONNECT is host/port only without interception.",
             "Linux uses platform feature detection where available. Optional kernel features are reported honestly and are not claimed active unless actually active.",
         },
@@ -76,7 +76,10 @@ pub const commands = [_]CommandInfo{
         .details = &.{
             "Primary first-run onboarding for paid beta users.",
             "Explains changes before writing files, preserves existing policy unless you use `orca init --force`.",
-            "Protection modes: Command Guard (hooks + Rust daemon), Firewall (`orca run`), Maximum Protection (both).",
+            "Protection mode flags map to grades (not a second taxonomy):",
+            "command-guard ≈ hook (+ daemon for shell eval);",
+            "firewall ≈ wrapper (`orca run`/shims — CLI label, not kernel firewall);",
+            "maximum ≈ hook+wrapper aspirational, not OS-enforced unless doctor reports active.",
             "On interactive terminals, prompts for protection mode and host integrations.",
             "On non-TTY terminals, auto-selects safe defaults (no --auto required).",
             "Use --auto to force non-interactive mode on a TTY; combine with --protection and --hosts.",
@@ -135,33 +138,42 @@ pub const commands = [_]CommandInfo{
     .{
         .name = "status",
         .summary = "One-glance protection snapshot",
-        .usage = "orca status [--json]",
+        .usage = "orca status [--json] [--check]",
         .category = .getting_started,
         .examples = &.{
             "orca status",
             "orca status --json",
+            "orca status --check",
+            "orca status --check --json",
         },
+        .additional_completion_flags = &.{ "--json", "--check" },
         .details = &.{
-            "Shows daemon health, policy path/mode, hosts summary, enabled packs, and one next step.",
+            "Shows daemon health, policy path/mode/valid, hosts summary, enabled packs, and one next step.",
             "Status is the glance; `orca doctor` is the deep diagnostic.",
             "Packs summary uses the daemon registry (fail-closed note when the daemon is unavailable).",
             "Pack enablement is written to project `.orca.toml` when in a git repo, else user config (`$XDG_CONFIG_HOME/orca/config.toml` or `~/.config/orca/config.toml`).",
-            "Use --json for scripting (includes schema_version).",
+            "Use --json for scripting (includes schema_version, ready, state, policy.valid).",
+            "Use --check for automation: exit non-zero when core readiness fails (daemon not compatible, or policy missing/invalid). Default without --check still prints the full report and exits 0.",
         },
     },
     .{
         .name = "doctor",
         .summary = "Show platform capabilities",
-        .usage = "orca doctor [-v|--verbose]",
+        .usage = "orca doctor [-v|--verbose] [--check] [--json]",
         .category = .getting_started,
         .examples = &.{
             "orca doctor",
             "orca doctor --verbose",
+            "orca doctor --check",
+            "orca doctor --json",
         },
+        .additional_completion_flags = &.{ "--verbose", "-v", "--check", "--json" },
         .details = &.{
             "Default output is a one-line summary plus recommended next steps.",
             "Includes a Packs section (baseline always-on + opt-in enabled) when the daemon is reachable.",
             "Use --verbose for the full platform, integration, and capability report.",
+            "Use --check for automation: exit non-zero when core readiness fails (daemon not compatible, or policy missing/invalid).",
+            "Use --json for a minimal readiness report (ready, state, policy.valid).",
             "For a one-glance snapshot, prefer `orca status`.",
         },
     },
@@ -391,15 +403,21 @@ pub const commands = [_]CommandInfo{
             "Use --format json or --robot for byte-stable daemon output.",
         },
     },
-    .{ .name = "policy", .summary = "Validate, explain, and apply policies", .usage = "orca policy <check|explain|packs|apply-pack> [...]", .category = .core_workflow, .additional_completion_flags = &.{ "--policy", "--method", "--force" }, .examples = &.{
+    .{ .name = "policy", .summary = "Validate, explain, and apply policies", .usage = "orca policy <check|explain|packs|apply-pack> [...]", .category = .core_workflow, .additional_completion_flags = &.{ "--policy", "--method", "--force", "--preset" }, .examples = &.{
+        "orca policy check",
         "orca policy check .orca/policy.yaml",
+        "orca policy check --preset strict",
         "orca policy explain file.read /etc/passwd",
     }, .details = &.{
         "Subcommands:",
-        "  orca policy check <policy-path>",
+        "  orca policy check [policy-path]   # default: workspace .orca/policy.yaml (not builtin)",
+        "  orca policy check --preset <observe|ask|strict|ci|redteam|trusted>",
+        "  orca policy check builtin:<preset>",
         "  orca policy explain [--policy <path>] <file.read|file.write|env|command|network|mcp> <target> [--method <HTTP_METHOD>]",
         "  orca policy packs",
         "  orca policy apply-pack <solo-dev|strict-local|team-ci|openclaw-hermes> [--force]",
+        "policy check with no path validates the workspace policy only; missing policy fails (run orca init).",
+        "Built-in presets require --preset or an explicit builtin:<name> path.",
         "policy explain covers Zig policy.yaml rules (file/env/network/mcp).",
         "For shell pack traces use 'orca explain \"<command>\"' instead.",
     } },
@@ -486,20 +504,26 @@ pub const commands = [_]CommandInfo{
     .{
         .name = "apply",
         .summary = "Commit pending file changes",
-        .usage = "orca apply [--session <id|last>] [--file <path>]",
+        .usage = "orca apply [--session <id|last>] [--file <path>] [--dry-run] [--yes]",
         .category = .staged_changes,
+        .additional_completion_flags = &.{ "--dry-run", "--yes" },
         .details = &.{
             "Applies reviewed pending file changes after original-state checks where feasible.",
+            "--dry-run prints a summary without mutating; non-interactive mutation requires --yes.",
+            "Interactive confirm defaults to No (empty Enter cancels).",
             "See 'orca diff' to review changes and 'orca discard' to cancel them.",
         },
     },
     .{
         .name = "discard",
         .summary = "Reject pending file changes",
-        .usage = "orca discard [--session <id|last>] [--file <path>]",
+        .usage = "orca discard [--session <id|last>] [--file <path>] [--dry-run] [--yes]",
         .category = .staged_changes,
+        .additional_completion_flags = &.{ "--dry-run", "--yes" },
         .details = &.{
-            "Removes pending file changes without changing workspace files.",
+            "Destroys proposed staged changes without changing workspace files.",
+            "--dry-run prints a summary without mutating; non-interactive mutation requires --yes.",
+            "Interactive confirm defaults to No and warns that discard destroys proposed staged changes.",
             "See 'orca diff' to review changes and 'orca apply' to commit them.",
         },
     },
@@ -514,10 +538,12 @@ pub const commands = [_]CommandInfo{
         "The proxy handles MCP server communication over stdio and forwards messages transparently.",
         "Remote HTTP MCP, OAuth, and hosted gateway behavior are limited/deferred in Phase 17.",
     } },
-    .{ .name = "redteam", .summary = "Run built-in safety tests against current policy", .usage = "orca redteam [path] [--json] [--ci] [--fixture <id>]", .category = .advanced, .details = &.{
-        "Discovers deterministic local fixtures, runs them against implemented Orca controls, and reports a scorecard.",
-        "When no path is provided, fixtures are discovered under ./fixtures.",
-        "--json emits a machine-readable report. --ci never prompts and exits non-zero if any required fixture fails or is unsupported.",
+    .{ .name = "redteam", .summary = "Run built-in fixture engine self-tests (not your workspace policy)", .usage = "orca redteam [path] [--json] [--ci] [--fixture <id>]", .category = .advanced, .details = &.{
+        "Runs deterministic local fixtures against the internal builtin:redteam preset with synthetic in-process (Zig) evaluation.",
+        "This is an engine self-test: it does not load .orca/policy.yaml, does not exercise the Rust daemon shell path, and does not prove wrapper/host/proxy/OS enforcement.",
+        "Reports include provenance (suite_kind, policy, evaluator, real_action_attempted=false). A 100% score is not workspace-policy assurance.",
+        "When no path is provided, fixtures are discovered under ./fixtures (or installed resource fixtures).",
+        "--json emits a machine-readable report with a provenance object. --ci never prompts and exits non-zero if any required fixture fails or is unsupported.",
     } },
     .{ .name = "completions", .summary = "Generate shell completions", .usage = "orca completions <bash|zsh|fish|powershell>", .category = .getting_started, .details = &.{
         "Prints a completion script to stdout for the requested shell.",
@@ -538,10 +564,11 @@ pub const commands = [_]CommandInfo{
         "  orca plugin <codex|claude|opencode|openclaw|hermes> [--dry-run|--yes]",
         "  orca plugin doctor [codex|claude|opencode|openclaw|hermes] [--json]",
         "  orca plugin manifest [codex|claude|opencode|openclaw|hermes|all] [--json]",
-        "  orca plugin install [codex|claude|opencode|openclaw|hermes|all] [--dry-run] [--path <path>] [--yes]",
+        "  orca plugin install                                 # dry-run preview of all hosts (no mutation)",
+        "  orca plugin install <codex|claude|opencode|openclaw|hermes|all> [--dry-run|--yes] [--path <path>]",
         "Primary onboarding path: run `orca setup` (guided interactive selection on TTY terminals).",
-        "`plugin install --yes` is retained for scripting, CI, and non-interactive use cases.",
-        "Plugin commands are safe by default: install defaults to --dry-run and doctor does not print secrets.",
+        "Bare install never mutates; mutation requires an explicit host or `all` plus --yes (confirm default No on TTY).",
+        "Plugin doctor does not print secrets.",
     } },
     .{ .name = "decide", .summary = "Ask Orca whether an action is allowed by policy", .usage = "orca decide <command|file|prompt|tool> (--json <payload>|--stdin) [--ci] [--human]", .category = .advanced, .details = &.{
         "Evaluates a policy decision for host plugins (Codex, Claude Code, OpenCode, etc.).",
@@ -618,7 +645,7 @@ pub const commands = [_]CommandInfo{
 pub fn write(io: std.Io, writer: anytype) !void {
     // Compact brand header (Phase 2 brand cohesion).
     try tui.render.banner(io, writer, build_options.version, null);
-    try tui.theme.paint(io, writer, .muted, "Local runtime firewall for AI agents");
+    try tui.theme.paint(io, writer, .muted, "Graded policy mediation for AI agent actions");
     try writer.writeAll("\n\n");
     try writer.writeAll("Usage:\n  orca <command> [options]\n\n");
 

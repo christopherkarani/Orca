@@ -1,4 +1,4 @@
-import { execSync } from 'child_process';
+import { execFileSync, execSync } from 'child_process';
 import { existsSync } from 'fs';
 import { join, resolve } from 'path';
 
@@ -47,6 +47,18 @@ const SECRET_KEYS = [
   'auth', 'authorization', 'bearer', 'private_key', 'access_token',
   'refresh_token', 'credential', 'passwd', 'pwd',
 ];
+
+const ALLOW_DECISIONS = new Set(['allow', 'warn', 'context_only']);
+
+/** Matches Zig `openclaw_status.enforcement_note` intent (prefer wrapper; npm unprotected). */
+export const ENFORCEMENT_NOTE =
+  'unprotected for npm/ClawHub (hooks no-op); prefer wrapper: orca run -- openclaw';
+
+/** Standing warning text for npm/ClawHub unprotected installs. */
+export const UNPROTECTED_NOOP_WARNING =
+  `[orca] unprotected: npm/ClawHub/CLI-metadata install — OpenClaw wires api.on to a no-op, ` +
+  `so before_tool_call / after_tool_call hooks will NOT fire and cannot block tools. ` +
+  `Prefer wrapper: \`orca run -- openclaw\` (${ENFORCEMENT_NOTE}).`;
 
 function redactSecrets(data: unknown): unknown {
   if (data === null || data === undefined) return data;
@@ -102,6 +114,138 @@ function findOrca(cwd?: string): string | null {
   return null;
 }
 
+function failClosedBlock(reason: string, message: string): OrcaResponse {
+  return {
+    decision: 'block',
+    risk: 'high',
+    category: 'unknown',
+    reason,
+    message,
+  };
+}
+
+function softAllow(reason: string, message?: string): OrcaResponse {
+  return {
+    decision: 'allow',
+    risk: 'unknown',
+    category: 'unknown',
+    reason,
+    message,
+  };
+}
+
+function normalizeBlockingDecision(
+  decision: string,
+  base: Partial<OrcaResponse>
+): OrcaResponse {
+  if (decision === 'block' || decision === 'error') {
+    return {
+      ...base,
+      decision: 'block',
+      risk: base.risk ?? 'high',
+      category: base.category ?? 'unknown',
+      reason: base.reason,
+      message:
+        base.message ||
+        base.reason ||
+        (decision === 'error'
+          ? 'Orca returned error; blocking as a precaution.'
+          : 'Orca blocked this command.'),
+    };
+  }
+  if (decision === 'ask') {
+    return failClosedBlock(
+      'orca_ask_unsupported',
+      'Orca requested interactive approval (ask); OpenClaw has no ask UX — blocking.'
+    );
+  }
+  if (!ALLOW_DECISIONS.has(decision)) {
+    return failClosedBlock(
+      'orca_unrecognized_decision',
+      `Orca returned unrecognized decision "${decision}"; blocking as a precaution.`
+    );
+  }
+  return {
+    decision: decision as OrcaResponse['decision'],
+    risk: base.risk,
+    category: base.category,
+    reason: base.reason,
+    message: base.message,
+    version: base.version,
+    rule: base.rule,
+    redactions: base.redactions,
+    host_limitations: base.host_limitations,
+  };
+}
+
+/**
+ * Parse Orca hook stdout into a decision.
+ * Non-blocking: soft-allow on empty/malformed.
+ * Blocking: fail closed on empty/whitespace, parse errors, missing/non-string decision,
+ * `ask`, and unrecognized decisions (no OpenClaw ask UX).
+ */
+export function parseHookResponse(stdout: string, blocking: boolean): OrcaResponse {
+  const fail = (reason: string, blockMsg: string, softMsg: string): OrcaResponse =>
+    blocking ? failClosedBlock(reason, blockMsg) : softAllow(reason, softMsg);
+
+  if (!stdout.trim()) {
+    return fail(
+      'orca_empty_response',
+      'Orca returned empty output; blocking as a precaution.',
+      'Orca returned empty output; allowing non-blocking event.'
+    );
+  }
+
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(stdout);
+  } catch {
+    return fail(
+      'orca_parse_error',
+      'Orca returned unreadable JSON; blocking as a precaution.',
+      'Orca returned unreadable JSON; allowing non-blocking event.'
+    );
+  }
+
+  if (!parsed || typeof parsed !== 'object') {
+    return fail(
+      'orca_missing_decision',
+      'Orca response missing decision; blocking as a precaution.',
+      'Orca response missing decision; allowing non-blocking event.'
+    );
+  }
+
+  const record = parsed as Record<string, unknown>;
+  const decisionRaw = record.decision;
+  if (typeof decisionRaw !== 'string') {
+    return fail(
+      'orca_missing_decision',
+      'Orca response missing decision; blocking as a precaution.',
+      'Orca response missing decision; allowing non-blocking event.'
+    );
+  }
+
+  if (!blocking) {
+    return {
+      decision: decisionRaw as OrcaResponse['decision'],
+      version: typeof record.version === 'number' ? record.version : undefined,
+      risk: record.risk as OrcaResponse['risk'],
+      category: typeof record.category === 'string' ? record.category : undefined,
+      reason: typeof record.reason === 'string' ? record.reason : undefined,
+      message: typeof record.message === 'string' ? record.message : undefined,
+    };
+  }
+
+  return normalizeBlockingDecision(decisionRaw, {
+    version: typeof record.version === 'number' ? record.version : undefined,
+    risk: record.risk as OrcaResponse['risk'],
+    category: typeof record.category === 'string' ? record.category : undefined,
+    reason: typeof record.reason === 'string' ? record.reason : undefined,
+    message: typeof record.message === 'string' ? record.message : undefined,
+    rule: (record.rule as string | null | undefined) ?? undefined,
+  });
+}
+
 async function callOrca(
   orcaBin: string,
   event: string,
@@ -113,40 +257,33 @@ async function callOrca(
   const payload = buildPayload(event, data, sessionId);
   const payloadJson = JSON.stringify(payload);
 
-  let stdout = '';
-
   try {
-    stdout = execSync(`${orcaBin} hook openclaw ${event}`, {
-      input: payloadJson,
-      encoding: 'utf-8',
-      timeout: blocking ? 15000 : 10000,
-      stdio: ['pipe', 'pipe', 'pipe'],
-    });
+    // argv array — no shell interpolation of orcaBin
+    const stdout = execFileSync(
+      orcaBin,
+      ['hook', 'openclaw', event],
+      {
+        input: payloadJson,
+        encoding: 'utf-8',
+        timeout: blocking ? 15000 : 10000,
+        stdio: ['pipe', 'pipe', 'pipe'],
+      }
+    );
 
-    if (!stdout.trim()) {
-      return { decision: 'allow' };
-    }
-
-    return JSON.parse(stdout) as OrcaResponse;
+    return parseHookResponse(stdout, blocking);
   } catch (err: unknown) {
     const safeErr = redactSecrets({ message: (err as Error).message });
     logger?.error?.(`[orca] Hook ${event} failed: ${(safeErr as { message: string }).message}`);
 
     return blocking
-      ? {
-          decision: 'block',
-          risk: 'high',
-          category: 'unknown',
-          reason: 'orca_hook_error',
-          message: 'Orca hook failed; blocking as a precaution.',
-        }
-      : {
-          decision: 'allow',
-          risk: 'unknown',
-          category: 'unknown',
-          reason: 'orca_hook_error',
-          message: 'Orca hook failed; allowing because this event is non-blocking.',
-        };
+      ? failClosedBlock(
+          'orca_hook_error',
+          'Orca hook failed; blocking as a precaution.'
+        )
+      : softAllow(
+          'orca_hook_error',
+          'Orca hook failed; allowing because this event is non-blocking.'
+        );
   }
 }
 
@@ -186,7 +323,7 @@ export default function orcaPlugin(api: OpenClawPluginApi): void {
   if (typeof api.on !== 'function') {
     logger?.warn?.(
       '[orca] OpenClaw plugin API does not expose hook registration (api.on). ' +
-        'Plugin will not register lifecycle hooks.'
+        'Plugin will not register lifecycle hooks. State: unprotected for hook grade; prefer wrapper: `orca run -- openclaw`.'
     );
     return;
   }
@@ -194,14 +331,7 @@ export default function orcaPlugin(api: OpenClawPluginApi): void {
   const onIsNoop = isOnNoop(api);
 
   if (onIsNoop) {
-    logger?.warn?.(
-      '[orca] Detected npm/global plugin install. ' +
-        'OpenClaw currently wires api.on to a no-op for non-bundled plugins, ' +
-        'so before_tool_call / after_tool_call hooks will NOT fire. ' +
-        'For full runtime guardrails, run OpenClaw through Orca:  ' +
-        '`orca run -- openclaw`  ' +
-        '(see https://github.com/christopherkarani/Orca#openclaw-plugin).'
-    );
+    logger?.warn?.(UNPROTECTED_NOOP_WARNING);
   }
 
   logger?.info?.(`[orca] Plugin loaded. Binary: ${orcaBin}`);

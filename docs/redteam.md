@@ -1,6 +1,23 @@
 # Red-team
 
-Red-team fixtures are deterministic local checks for Orca controls.
+`orca redteam` is a **fixture engine self-test**. It exercises Orca’s built-in redteam fixture suite against the internal **`builtin:redteam`** policy preset using **synthetic, in-process** attempts (Zig evaluators).
+
+## What it is
+
+- Deterministic local fixtures under `fixtures/` (or installed resource fixtures)
+- Synthetic command / file / network / MCP attempts — **no real agent launch**
+- Scorecard + optional JSON report with **provenance** so results cannot be mistaken for install assurance
+
+## What it is not
+
+- **Not** a test of your workspace `.orca/policy.yaml`
+- **Not** a test of the **Rust daemon** shell evaluation path used in production hooks
+- **Not** proof that PATH wrappers, host hooks, network proxy, or OS-enforced filesystem backends are active
+- A **100% score does not mean** your workspace is protected
+
+For protection grade honesty, see [protection-grades.md](protection-grades.md) and `orca doctor` / `orca status` (readiness checks are a separate concern).
+
+Future directions (not implemented here): `redteam policy` against workspace YAML, and live e2e that exercise daemon/host boundaries.
 
 ## Categories
 
@@ -19,9 +36,21 @@ Current fixture categories include prompt injection, secret exfiltration, shell 
 ./zig-out/bin/orca redteam --json --ci > redteam.json
 ```
 
+JSON includes a top-level `provenance` object, for example:
+
+| Field | Meaning (current suite) |
+|-------|-------------------------|
+| `suite_kind` | `engine-self-test` |
+| `policy` | `builtin:redteam` |
+| `policy_path` | `preset:redteam` (not a workspace path) |
+| `evaluator` | `zig-in-process` (not `rust-daemon`) |
+| `real_action_attempted` | `false` |
+| `network_enforcement` | `unavailable` (installed backend not exercised) |
+| `uncovered_boundaries` | workspace policy, daemon shell, wrapper PATH, host hooks, proxy, OS FS, … |
+
 ## CI Mode
 
-`--ci` is non-interactive and exits non-zero if a required fixture fails or is unsupported.
+`--ci` is non-interactive and exits non-zero if a required fixture fails or is unsupported. Use it to gate **engine regressions**, not “current policy is safe.”
 
 ## Adding Fixtures
 

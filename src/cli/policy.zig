@@ -7,6 +7,7 @@ const exit_codes = @import("exit_codes.zig");
 const help = @import("help.zig");
 const tui = @import("../tui/render.zig");
 const suggestions = @import("suggestions.zig");
+const onboarding = @import("onboarding.zig");
 
 pub fn command(io: std.Io, argv: []const []const u8, stdout: anytype, stderr: anytype) !u8 {
     if (argv.len > 0 and (std.mem.eql(u8, argv[0], "--help") or std.mem.eql(u8, argv[0], "-h"))) {
@@ -28,12 +29,50 @@ pub fn command(io: std.Io, argv: []const []const u8, stdout: anytype, stderr: an
 }
 
 fn check(io: std.Io, argv: []const []const u8, stdout: anytype, stderr: anytype) !u8 {
-    if (argv.len == 1 and (std.mem.eql(u8, argv[0], "--help") or std.mem.eql(u8, argv[0], "-h"))) {
-        try stdout.writeAll("Usage:\n  orca policy check [policy-path]\n");
-        return exit_codes.success;
+    var preset_name: ?[]const u8 = null;
+    var path_arg: ?[]const u8 = null;
+    var index: usize = 0;
+    while (index < argv.len) : (index += 1) {
+        const arg = argv[index];
+        if (std.mem.eql(u8, arg, "--help") or std.mem.eql(u8, arg, "-h")) {
+            try stdout.writeAll(
+                \\Usage:
+                \\  orca policy check
+                \\  orca policy check <policy-path>
+                \\  orca policy check --preset <observe|ask|strict|ci|redteam|trusted>
+                \\  orca policy check builtin:<preset>
+                \\
+                \\With no path, validates the workspace policy at .orca/policy.yaml.
+                \\Built-in presets require --preset or an explicit builtin:<name> path.
+                \\
+            );
+            return exit_codes.success;
+        }
+        if (std.mem.eql(u8, arg, "--preset")) {
+            index += 1;
+            if (index >= argv.len) {
+                try stderr.writeAll("orca policy check: --preset requires a name.\n");
+                return exit_codes.usage;
+            }
+            if (preset_name != null) {
+                try stderr.writeAll("orca policy check: --preset specified more than once.\n");
+                return exit_codes.usage;
+            }
+            preset_name = argv[index];
+            continue;
+        }
+        if (std.mem.startsWith(u8, arg, "-")) {
+            try suggestions.writeUnknownOption(stderr, "orca policy check", arg, &.{ "--preset", "--help", "-h" }, "policy");
+            return exit_codes.usage;
+        }
+        if (path_arg != null) {
+            try stderr.writeAll("orca policy check: expected at most one policy path.\n");
+            return exit_codes.usage;
+        }
+        path_arg = arg;
     }
-    if (argv.len > 1) {
-        try stderr.writeAll("orca policy check: expected at most one policy path.\n");
+    if (preset_name != null and path_arg != null) {
+        try stderr.writeAll("orca policy check: use either --preset or a policy path, not both.\n");
         return exit_codes.usage;
     }
 
@@ -41,17 +80,57 @@ fn check(io: std.Io, argv: []const []const u8, stdout: anytype, stderr: anytype)
     defer _ = gpa_state.deinit();
     const allocator = gpa_state.allocator();
 
-    const source = if (argv.len == 1) argv[0] else "builtin:strict";
-    var policy_value = if (argv.len == 1)
-        core_api.loadPolicyFile(io, allocator, argv[0]) catch |err| {
-            try suggestions.writeSanitizedValue(stderr, "orca policy check: invalid policy ", argv[0], ": ");
-            try stderr.print("{s}\n", .{@errorName(err)});
+    // Explicit builtin:name path form (same as --preset).
+    if (path_arg) |raw| {
+        if (std.mem.startsWith(u8, raw, "builtin:")) {
+            preset_name = raw["builtin:".len..];
+            path_arg = null;
+        }
+    }
+
+    if (preset_name) |name| {
+        const preset = orca_policy.presets.Preset.parse(name) orelse {
+            try suggestions.writeInvalidValue(
+                stderr,
+                "orca policy check",
+                "--preset",
+                name,
+                &.{ "observe", "ask", "strict", "ci", "redteam", "trusted" },
+                "policy",
+            );
+            return exit_codes.usage;
+        };
+        var policy_value = try core_api.loadPolicyPreset(allocator, preset);
+        defer policy_value.deinit();
+        try stdout.print("Policy OK: builtin:{s}\nMode: {s}\n", .{ @tagName(preset), policy_value.mode().toString() });
+        return exit_codes.success;
+    }
+
+    // Explicit path, or workspace discovery — never silently validate builtin.
+    var source_owned: ?[]u8 = null;
+    defer if (source_owned) |p| allocator.free(p);
+    const source: []const u8 = if (path_arg) |path| path else blk: {
+        const workspace_root = supervisor.resolveWorkspaceRoot(io, allocator, null, ".") catch try allocator.dupe(u8, ".");
+        defer allocator.free(workspace_root);
+        const discovered = try onboarding.policyPath(allocator, workspace_root);
+        if (!onboarding.policyExists(io, workspace_root)) {
+            defer allocator.free(discovered);
+            try stderr.print(
+                "orca policy check: no workspace policy at {s}\nRun `orca init` to create one, or pass a path / --preset <name>.\n",
+                .{discovered},
+            );
             return exit_codes.general;
         }
-    else
-        try core_api.loadPolicyPreset(allocator, orca_policy.presets.defaultPreset());
-    defer policy_value.deinit();
+        source_owned = discovered;
+        break :blk discovered;
+    };
 
+    var policy_value = core_api.loadPolicyFile(io, allocator, source) catch |err| {
+        try suggestions.writeSanitizedValue(stderr, "orca policy check: invalid policy ", source, ": ");
+        try stderr.print("{s}\n", .{@errorName(err)});
+        return exit_codes.general;
+    };
+    defer policy_value.deinit();
     try stdout.print("Policy OK: {s}\nMode: {s}\n", .{ source, policy_value.mode().toString() });
     return exit_codes.success;
 }
@@ -328,16 +407,61 @@ test "policy check rejects scalar values on object-only grouping keys" {
     try std.testing.expect(std.mem.indexOf(u8, stderr_writer.buffered(), "InvalidPolicy") != null);
 }
 
-test "policy check without path validates the built-in default policy" {
-    var stdout_buf: [512]u8 = undefined;
+test "policy check without path validates workspace policy not builtin" {
+    var stdout_buf: [1024]u8 = undefined;
     var stderr_buf: [512]u8 = undefined;
     var stdout_writer: std.Io.Writer = .fixed(&stdout_buf);
     var stderr_writer: std.Io.Writer = .fixed(&stderr_buf);
 
     const code = try command(std.testing.io, &.{"check"}, &stdout_writer, &stderr_writer);
+    // Workspace may or may not have .orca/policy.yaml depending on cwd.
+    if (code == exit_codes.success) {
+        const out = stdout_writer.buffered();
+        try std.testing.expect(std.mem.indexOf(u8, out, "Policy OK:") != null);
+        try std.testing.expect(std.mem.indexOf(u8, out, "policy.yaml") != null);
+        try std.testing.expect(std.mem.indexOf(u8, out, "Policy OK: builtin:") == null);
+        try std.testing.expectEqualStrings("", stderr_writer.buffered());
+    } else {
+        try std.testing.expectEqual(exit_codes.general, code);
+        try std.testing.expect(std.mem.indexOf(u8, stderr_writer.buffered(), "no workspace policy") != null);
+        try std.testing.expect(std.mem.indexOf(u8, stderr_writer.buffered(), "orca init") != null);
+    }
+}
+
+test "policy check --preset validates built-in only when explicit" {
+    var stdout_buf: [512]u8 = undefined;
+    var stderr_buf: [512]u8 = undefined;
+    var stdout_writer: std.Io.Writer = .fixed(&stdout_buf);
+    var stderr_writer: std.Io.Writer = .fixed(&stderr_buf);
+
+    const code = try command(std.testing.io, &.{ "check", "--preset", "strict" }, &stdout_writer, &stderr_writer);
     try std.testing.expectEqual(exit_codes.success, code);
     try std.testing.expect(std.mem.indexOf(u8, stdout_writer.buffered(), "Policy OK: builtin:strict") != null);
     try std.testing.expectEqualStrings("", stderr_writer.buffered());
+}
+
+test "policy check builtin:path form validates built-in when explicit" {
+    var stdout_buf: [512]u8 = undefined;
+    var stderr_buf: [512]u8 = undefined;
+    var stdout_writer: std.Io.Writer = .fixed(&stdout_buf);
+    var stderr_writer: std.Io.Writer = .fixed(&stderr_buf);
+
+    const code = try command(std.testing.io, &.{ "check", "builtin:ask" }, &stdout_writer, &stderr_writer);
+    try std.testing.expectEqual(exit_codes.success, code);
+    try std.testing.expect(std.mem.indexOf(u8, stdout_writer.buffered(), "Policy OK: builtin:ask") != null);
+    try std.testing.expectEqualStrings("", stderr_writer.buffered());
+}
+
+test "policy check missing explicit path fails without falling back to builtin" {
+    var stdout_buf: [512]u8 = undefined;
+    var stderr_buf: [512]u8 = undefined;
+    var stdout_writer: std.Io.Writer = .fixed(&stdout_buf);
+    var stderr_writer: std.Io.Writer = .fixed(&stderr_buf);
+
+    const code = try command(std.testing.io, &.{ "check", "/no/such/orca-policy-check-missing.yaml" }, &stdout_writer, &stderr_writer);
+    try std.testing.expectEqual(exit_codes.general, code);
+    try std.testing.expect(std.mem.indexOf(u8, stderr_writer.buffered(), "invalid policy") != null);
+    try std.testing.expect(std.mem.indexOf(u8, stdout_writer.buffered(), "Policy OK: builtin:") == null);
 }
 
 test "policy explain reports matched deny rule" {

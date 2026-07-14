@@ -177,6 +177,8 @@ const OwnedRunDecision = struct {
     owned_reason: []const u8,
     owned_rule_id: ?[]const u8 = null,
     owned_remediation: ?[]const u8 = null,
+    /// Typed fail-closed marker for Evaluate transport/engine failures.
+    fail_closed: bool = false,
 
     pub fn deinit(self: OwnedRunDecision, allocator: std.mem.Allocator) void {
         allocator.free(self.owned_reason);
@@ -327,10 +329,9 @@ pub fn decisionFromDaemonResult(
                 .owned_rule_id = rule,
             };
         },
-        .error_status => try failClosedRunDecision(
-            allocator,
-            daemon.responseErrorMessage(result) orelse "daemon evaluation error",
-        ),
+        // Engine Error / unexpected shapes are fail-closed via the typed flag on
+        // OwnedRunDecision — entrypoints must not re-parse reason strings.
+        .error_status => try failClosedEvaluationError(allocator, daemon.responseErrorMessage(result)),
         .pong, .cli_execution, .unknown => try failClosedRunDecision(
             allocator,
             "unexpected daemon response for shell command evaluation",
@@ -338,18 +339,33 @@ pub fn decisionFromDaemonResult(
     };
 }
 
-fn failClosedRunDecision(allocator: std.mem.Allocator, reason: []const u8) !OwnedRunDecision {
-    const owned = try allocator.dupe(u8, reason);
+/// Build a fail-closed decision that owns `owned_reason` (no re-dupe).
+fn failClosedOwned(owned_reason: []u8) OwnedRunDecision {
     return .{
         .decision = .{
             .result = .deny,
-            .reason = owned,
+            .reason = owned_reason,
             .risk_score = RiskLevel.high.toRiskScore(),
             .requires_user = false,
             .ci_may_proceed = false,
         },
-        .owned_reason = owned,
+        .owned_reason = owned_reason,
+        .fail_closed = true,
     };
+}
+
+fn failClosedRunDecision(allocator: std.mem.Allocator, reason: []const u8) !OwnedRunDecision {
+    return failClosedOwned(try allocator.dupe(u8, reason));
+}
+
+/// Human-facing reason for daemon Error status. Always `fail_closed = true` regardless of text.
+fn failClosedEvaluationError(allocator: std.mem.Allocator, message: ?[]const u8) !OwnedRunDecision {
+    const msg = message orelse return failClosedRunDecision(allocator, "daemon evaluation error");
+    // Keep stable prefixes for diagnostics without treating them as a second security authority.
+    if (std.mem.startsWith(u8, msg, "daemon evaluation error") or std.mem.startsWith(u8, msg, "daemon unavailable")) {
+        return failClosedRunDecision(allocator, msg);
+    }
+    return failClosedOwned(try std.fmt.allocPrint(allocator, "daemon evaluation error: {s}", .{msg}));
 }
 
 pub fn failClosedDaemonUnavailableDecision(allocator: std.mem.Allocator, err: daemon.DaemonError) !OwnedRunDecision {
@@ -403,6 +419,7 @@ pub fn evaluateCommand(
             .decision = unavailable.decision,
             .owned_reason = owned_reason,
             .owned_rule_id = null,
+            .fail_closed = true,
         };
     };
     defer daemon_response.deinit();
@@ -460,6 +477,7 @@ pub fn evaluateCommand(
         .owned_reason = owned_reason,
         .owned_rule_id = owned_rule_id,
         .owned_remediation = owned_remediation,
+        .fail_closed = translated.fail_closed,
     };
 }
 
@@ -573,12 +591,31 @@ test "shell_eval denies dangerous command via mock daemon" {
     try std.testing.expect(std.mem.indexOf(u8, decision.owned_remediation.?, "rm -rf ./build") != null);
 }
 
-test "shell_eval fails closed when daemon unavailable" {
+test "shell_eval fail_closed is typed on Evaluate failures only" {
     const allocator = std.testing.allocator;
-    var decision = try evaluateCommand(allocator, .strict, &.{ "git", "status" }, null, mockDaemonUnavailableEvaluator, null, null);
-    defer decision.deinit(allocator);
-    try std.testing.expectEqual(core.decision.DecisionResult.deny, decision.decision.result);
-    try std.testing.expect(std.mem.indexOf(u8, decision.decision.reason, "daemon unavailable") != null);
+    const Case = struct {
+        evaluator: ShellCommandEvaluatorFn,
+        expect_fail_closed: bool,
+        reason_sub: ?[]const u8 = null,
+    };
+    const cases = [_]Case{
+        .{ .evaluator = mockDaemonUnavailableEvaluator, .expect_fail_closed = true, .reason_sub = "daemon unavailable" },
+        .{ .evaluator = mockDaemonProtocolMismatchEvaluator, .expect_fail_closed = true, .reason_sub = "incompatible daemon protocol" },
+        .{ .evaluator = mockDaemonErrorEvaluator, .expect_fail_closed = true, .reason_sub = "daemon evaluation error" },
+        .{ .evaluator = mockDaemonDenyEvaluator, .expect_fail_closed = false },
+        .{ .evaluator = mockDaemonAllowEvaluator, .expect_fail_closed = false },
+    };
+    for (cases) |case| {
+        var decision = try evaluateCommand(allocator, .strict, &.{ "git", "status" }, null, case.evaluator, null, null);
+        defer decision.deinit(allocator);
+        try std.testing.expectEqual(case.expect_fail_closed, decision.fail_closed);
+        if (case.expect_fail_closed) {
+            try std.testing.expectEqual(core.decision.DecisionResult.deny, decision.decision.result);
+        }
+        if (case.reason_sub) |sub| {
+            try std.testing.expect(std.mem.indexOf(u8, decision.decision.reason, sub) != null);
+        }
+    }
 }
 
 test "shell_eval reports a missing command working directory explicitly" {
@@ -597,21 +634,6 @@ test "shell_eval ci mode converts warn allow to deny" {
     var decision = try evaluateCommand(allocator, .ci, &.{ "git", "status" }, null, mockDaemonWarnAllowEvaluator, null, null);
     defer decision.deinit(allocator);
     try std.testing.expectEqual(core.decision.DecisionResult.deny, decision.decision.result);
-}
-
-test "shell_eval daemon error fails closed" {
-    const allocator = std.testing.allocator;
-    var decision = try evaluateCommand(allocator, .strict, &.{ "git", "status" }, null, mockDaemonErrorEvaluator, null, null);
-    defer decision.deinit(allocator);
-    try std.testing.expectEqual(core.decision.DecisionResult.deny, decision.decision.result);
-}
-
-test "shell_eval protocol mismatch fails closed" {
-    const allocator = std.testing.allocator;
-    var decision = try evaluateCommand(allocator, .strict, &.{ "git", "status" }, null, mockDaemonProtocolMismatchEvaluator, null, null);
-    defer decision.deinit(allocator);
-    try std.testing.expectEqual(core.decision.DecisionResult.deny, decision.decision.result);
-    try std.testing.expect(std.mem.indexOf(u8, decision.decision.reason, "incompatible daemon protocol") != null);
 }
 
 test "hook and run parity for safe and dangerous commands" {
@@ -678,12 +700,20 @@ test "mode x severity matrix maps daemon denials" {
     }
 }
 
-test "mode matrix: daemon unavailable denies in observe" {
+test "mode matrix: daemon unavailable and engine error deny in observe" {
     const allocator = std.testing.allocator;
-    var decision = try evaluateCommand(allocator, .observe, &.{ "git", "status" }, null, mockDaemonUnavailableEvaluator, null, null);
-    defer decision.deinit(allocator);
-    try std.testing.expectEqual(core.decision.DecisionResult.deny, decision.decision.result);
-    try std.testing.expect(std.mem.indexOf(u8, decision.decision.reason, "daemon unavailable") != null);
+
+    var unavailable = try evaluateCommand(allocator, .observe, &.{ "git", "status" }, null, mockDaemonUnavailableEvaluator, null, null);
+    defer unavailable.deinit(allocator);
+    try std.testing.expectEqual(core.decision.DecisionResult.deny, unavailable.decision.result);
+    try std.testing.expect(unavailable.fail_closed);
+    try std.testing.expect(std.mem.indexOf(u8, unavailable.decision.reason, "daemon unavailable") != null);
+
+    var engine_err = try evaluateCommand(allocator, .observe, &.{ "git", "status" }, null, mockDaemonErrorEvaluator, null, null);
+    defer engine_err.deinit(allocator);
+    try std.testing.expectEqual(core.decision.DecisionResult.deny, engine_err.decision.result);
+    try std.testing.expect(engine_err.fail_closed);
+    try std.testing.expect(std.mem.indexOf(u8, engine_err.decision.reason, "daemon evaluation error") != null);
 }
 
 test "pluginDecisionFromModeAndSeverity table" {

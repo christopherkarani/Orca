@@ -39,11 +39,12 @@ If you have OpenClaw installed locally:
 openclaw plugins install ./integrations/openclaw-plugin
 ```
 
-### npm install
+### npm install — unprotected
 
-After npm publication, install with:
+npm install of this plugin is **`unprotected`**: OpenClaw currently loads npm plugins in CLI-metadata mode where `api.on` is a no-op, so hooks do not fire and cannot block tools. Prefer `orca run -- openclaw` (grade **`wrapper`**).
 
 ```bash
+# distribution only — not an enforcement install
 openclaw plugins install npm:orca-openclaw-plugin
 ```
 
@@ -55,7 +56,7 @@ openclaw plugins install orca-openclaw-plugin
 
 For local validation before publication, use `npm pack --dry-run`.
 
-Verify the install with:
+Verify with honesty (installed ≠ protected):
 
 ```bash
 orca plugin doctor openclaw
@@ -63,15 +64,15 @@ openclaw plugins list --json
 openclaw plugins doctor
 ```
 
-### ClawHub install
+### ClawHub install — unprotected
 
-The plugin is published to ClawHub as `orca-openclaw-plugin`.
+ClawHub install has the same limitation as npm: **`unprotected`** (hooks no-op in current CLI-metadata mode). Prefer `orca run -- openclaw`.
 
 ```bash
 openclaw plugins install clawhub:orca-openclaw-plugin
 ```
 
-**Note:** The `clawhub:` install protocol requires a recent OpenClaw version. If your version does not support it, use the local path or npm install methods instead.
+**Note:** The `clawhub:` install protocol requires a recent OpenClaw version. If your version does not support it, use the local path install or the wrapper path above.
 
 For submission details, see [openclaw-clawhub.md](openclaw-clawhub.md). For the readiness checklist, see [openclaw-clawhub-checklist.md](openclaw-clawhub-checklist.md).
 

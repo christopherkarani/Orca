@@ -8,9 +8,27 @@ const tui = @import("../tui/mod.zig");
 
 pub const implemented = true;
 
+/// Fixed provenance for the current fixture-engine suite.
+/// Not workspace policy; not Rust daemon / host enforcement.
+pub const suite_kind = "engine-self-test";
+pub const policy_id = "builtin:redteam";
+pub const policy_path = "preset:redteam";
+pub const evaluator_id = "zig-in-process";
+pub const network_enforcement = "unavailable";
+pub const uncovered_boundaries = [_][]const u8{
+    "workspace_policy",
+    "rust_daemon_shell",
+    "wrapper_path",
+    "host_hooks",
+    "network_proxy",
+    "os_enforced_fs",
+};
+
 pub fn writeHuman(io: std.Io, writer: anytype, suite: runner.SuiteResult) !void {
     const totals = suite.totals();
-    try writer.writeAll("Orca Redteam Score\n\n");
+    try writer.writeAll("Orca Redteam — engine self-test\n\n");
+    try writeHumanProvenance(writer);
+    try writer.writeByte('\n');
 
     var fixture_rows: std.ArrayList([]const []const u8) = .empty;
     defer {
@@ -70,7 +88,7 @@ pub fn writeHuman(io: std.Io, writer: anytype, suite: runner.SuiteResult) !void 
     try tui.render.table(io, writer, &category_columns, category_rows.items);
     try writer.writeByte('\n');
     try writer.print(
-        \\Overall:
+        \\Overall (fixture engine self-test only — not workspace policy assurance):
         \\  {d}/{d} fixtures passed
         \\  {d}%
         \\
@@ -90,9 +108,28 @@ pub fn writeHuman(io: std.Io, writer: anytype, suite: runner.SuiteResult) !void 
     }
 }
 
+fn writeHumanProvenance(writer: anytype) !void {
+    try writer.writeAll("Provenance\n");
+    try writer.print("  suite_kind:              {s}\n", .{suite_kind});
+    try writer.print("  policy:                  {s}\n", .{policy_id});
+    try writer.print("  policy_path:             {s}\n", .{policy_path});
+    try writer.print("  evaluator:               {s}\n", .{evaluator_id});
+    try writer.writeAll("  real_action_attempted:   false\n");
+    try writer.print("  network_enforcement:     {s}\n", .{network_enforcement});
+    try writer.writeAll("  uncovered_boundaries:    ");
+    for (uncovered_boundaries, 0..) |boundary, index| {
+        if (index > 0) try writer.writeAll(", ");
+        try writer.writeAll(boundary);
+    }
+    try writer.writeByte('\n');
+    try writer.writeAll("  note: 100% does not mean your workspace policy or installed enforcement is protected\n");
+}
+
 pub fn writeJson(writer: anytype, suite: runner.SuiteResult) !void {
     const totals = suite.totals();
-    try writer.writeAll("{\"version\":1,\"totals\":");
+    try writer.writeAll("{\"version\":1,\"provenance\":");
+    try writeProvenanceJson(writer);
+    try writer.writeAll(",\"totals\":");
     try writeTotals(writer, totals);
     try writer.writeAll(",\"categories\":[");
     var wrote_category = false;
@@ -122,6 +159,25 @@ pub fn writeJson(writer: anytype, suite: runner.SuiteResult) !void {
         try writeFixtureResult(writer, result);
     }
     try writer.writeAll("]}\n");
+}
+
+fn writeProvenanceJson(writer: anytype) !void {
+    try writer.writeAll("{\"suite_kind\":");
+    try writeSafeJsonString(writer, suite_kind);
+    try writer.writeAll(",\"policy\":");
+    try writeSafeJsonString(writer, policy_id);
+    try writer.writeAll(",\"policy_path\":");
+    try writeSafeJsonString(writer, policy_path);
+    try writer.writeAll(",\"evaluator\":");
+    try writeSafeJsonString(writer, evaluator_id);
+    try writer.writeAll(",\"real_action_attempted\":false,\"network_enforcement\":");
+    try writeSafeJsonString(writer, network_enforcement);
+    try writer.writeAll(",\"uncovered_boundaries\":[");
+    for (uncovered_boundaries, 0..) |boundary, index| {
+        if (index > 0) try writer.writeByte(',');
+        try writeSafeJsonString(writer, boundary);
+    }
+    try writer.writeAll("]}");
 }
 
 fn writeTotals(writer: anytype, totals: scorecard.Totals) !void {
@@ -225,14 +281,26 @@ test "redteam json output is machine readable" {
     try writeJson(&out_writer.writer, suite);
     const out = try out_writer.toOwnedSlice();
     defer allocator.free(out);
-    try std.testing.expectEqualStrings(
-        "{\"version\":1,\"totals\":{\"fixtures\":1,\"passed\":1,\"failed\":0,\"skipped\":0,\"points_possible\":10,\"points_earned\":10,\"percent\":100},\"categories\":[{\"category\":\"secret-exfil\",\"name\":\"Secret exfiltration\",\"fixtures\":1,\"passed\":1,\"failed\":0,\"skipped\":0,\"points_possible\":10,\"points_earned\":10}],\"fixtures\":[{\"id\":\"secret-env-read-basic\",\"name\":\"Agent attempts to read .env\",\"category\":\"secret-exfil\",\"status\":\"passed\",\"pass\":true,\"required\":true,\"points_possible\":10,\"points_earned\":10,\"missing_capabilities\":[],\"expected_checks\":[{\"expected\":\"file.read:.env\",\"passed\":true,\"observed\":\"blocked\"}],\"actual_observed\":[{\"action\":\"file.read:.env\",\"event_type\":\"file_read_denied\",\"decision\":\"deny\",\"summary\":\"matched rule\"}],\"failure_reason\":null}]}\n",
-        out,
-    );
     var parsed = try std.json.parseFromSlice(std.json.Value, allocator, out, .{});
     defer parsed.deinit();
     try std.testing.expect(parsed.value.object.get("fixtures") != null);
     try std.testing.expect(std.mem.indexOf(u8, out, "\"points_earned\":10") != null);
+    const provenance = parsed.value.object.get("provenance") orelse {
+        try std.testing.expect(false);
+        unreachable;
+    };
+    try std.testing.expectEqualStrings(suite_kind, provenance.object.get("suite_kind").?.string);
+    try std.testing.expectEqualStrings(policy_id, provenance.object.get("policy").?.string);
+    try std.testing.expectEqualStrings(policy_path, provenance.object.get("policy_path").?.string);
+    try std.testing.expectEqualStrings(evaluator_id, provenance.object.get("evaluator").?.string);
+    try std.testing.expect(provenance.object.get("real_action_attempted").?.bool == false);
+    try std.testing.expectEqualStrings(network_enforcement, provenance.object.get("network_enforcement").?.string);
+    const boundaries = provenance.object.get("uncovered_boundaries").?.array;
+    try std.testing.expect(boundaries.items.len >= 4);
+    try std.testing.expect(std.mem.indexOf(u8, out, "\"real_action_attempted\":false") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "rust_daemon_shell") != null);
+    // Additive provenance must not break version for existing consumers.
+    try std.testing.expectEqual(@as(i64, 1), parsed.value.object.get("version").?.integer);
 }
 
 test "redteam human output renders fixture and category scorecard tables" {
@@ -258,6 +326,12 @@ test "redteam human output renders fixture and category scorecard tables" {
     var writer: std.Io.Writer = .fixed(&output);
     try writeHuman(std.testing.io, &writer, suite);
     const rendered = writer.buffered();
+    try std.testing.expect(std.mem.indexOf(u8, rendered, "Orca Redteam — engine self-test") != null);
+    try std.testing.expect(std.mem.indexOf(u8, rendered, "Provenance") != null);
+    try std.testing.expect(std.mem.indexOf(u8, rendered, "engine-self-test") != null);
+    try std.testing.expect(std.mem.indexOf(u8, rendered, "builtin:redteam") != null);
+    try std.testing.expect(std.mem.indexOf(u8, rendered, "zig-in-process") != null);
+    try std.testing.expect(std.mem.indexOf(u8, rendered, "real_action_attempted:   false") != null);
     try std.testing.expect(std.mem.indexOf(u8, rendered, "Result") != null);
     try std.testing.expect(std.mem.indexOf(u8, rendered, "✗ FAIL") != null);
     try std.testing.expect(std.mem.indexOf(u8, rendered, "Category summary") != null);

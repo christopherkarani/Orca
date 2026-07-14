@@ -395,14 +395,33 @@ test "evaluatePayload deny emits hookSpecificOutput and cursor deny JSON" {
     try std.testing.expect(std.mem.indexOf(u8, cursor_output, "core.filesystem:destructive_rm") != null);
 }
 
-test "evaluatePayload fails closed when daemon unavailable" {
+test "evaluatePayload fails closed on daemon evaluate failures" {
     const allocator = std.testing.allocator;
-    var stdout_buf: [1024]u8 = undefined;
-    var stdout: std.Io.Writer = .fixed(&stdout_buf);
-
     const payload = "{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"git status\"}}";
-    _ = try evaluatePayload(allocator, payload, &stdout, shell_eval.mockDaemonUnavailableEvaluator);
-    try std.testing.expect(std.mem.indexOf(u8, stdout.buffered(), "\"permissionDecision\":\"deny\"") != null);
+
+    const Case = struct {
+        mode: ?policy.schema.Mode,
+        evaluator: ShellCommandEvaluatorFn,
+        reason_sub: []const u8,
+    };
+    const cases = [_]Case{
+        .{ .mode = null, .evaluator = shell_eval.mockDaemonUnavailableEvaluator, .reason_sub = "daemon unavailable" },
+        .{ .mode = null, .evaluator = shell_eval.mockDaemonProtocolMismatchEvaluator, .reason_sub = "daemon unavailable" },
+        .{ .mode = .observe, .evaluator = shell_eval.mockDaemonUnavailableEvaluator, .reason_sub = "daemon unavailable" },
+    };
+
+    for (cases) |case| {
+        var stdout_buf: [1024]u8 = undefined;
+        var stdout: std.Io.Writer = .fixed(&stdout_buf);
+        if (case.mode) |mode| {
+            _ = try evaluatePayloadWithMode(allocator, payload, &stdout, case.evaluator, mode);
+        } else {
+            _ = try evaluatePayload(allocator, payload, &stdout, case.evaluator);
+        }
+        const out = stdout.buffered();
+        try std.testing.expect(std.mem.indexOf(u8, out, "\"permissionDecision\":\"deny\"") != null);
+        try std.testing.expect(std.mem.indexOf(u8, out, case.reason_sub) != null);
+    }
 }
 
 test "evaluatePayload invalid JSON fails open with no stdout" {

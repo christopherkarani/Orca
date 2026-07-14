@@ -263,7 +263,7 @@ fn hookCommand(io: std.Io, host: Host, event: Event, original_event_name: []cons
     const payload_text = readBoundedStdin(io, allocator, max_payload_len) catch |err| {
         if (err == error.PayloadTooLarge) {
             if (host == .codex and event == .PreToolUse) {
-                try writeCodexGuardBlock(stderr, "orca hook: JSON payload exceeds maximum size; Orca blocked it before evaluation.");
+                try writeCodexGuardBlock(stderr, "orca hook: JSON payload exceeds maximum size; Orca blocked it before evaluation.", null);
                 return codex_deny_exit_code;
             }
             try stderr.writeAll("orca hook: JSON payload exceeds maximum size.\n");
@@ -376,7 +376,9 @@ fn hookCommand(io: std.Io, host: Host, event: Event, original_event_name: []cons
         // Sentinel-first so agents scraping stderr can distinguish a guard block from a
         // program error: provenance (guard) + consequence (no side effects) + recourse.
         // Humans never reach this branch — non-Codex hosts render the JSON `message` themselves.
-        try writeCodexGuardBlock(stderr, result.message);
+        // Include `reason` so fail-closed diagnostics (daemon unavailable / protocol mismatch)
+        // are visible on the same path as JSON hosts.
+        try writeCodexGuardBlock(stderr, result.message, result.reason);
     } else {
         try writeHookResponse(stdout, result);
         if (result.rule) |rule| {
@@ -398,10 +400,17 @@ const guard_sentinel_prefix: []const u8 =
 /// Codex hook deny exit code (documented Codex CLI contract; distinct from usage errors).
 const codex_deny_exit_code: u8 = 2;
 
-fn writeCodexGuardBlock(stderr: anytype, message: []const u8) !void {
+fn writeCodexGuardBlock(stderr: anytype, message: []const u8, reason: ?[]const u8) !void {
     try stderr.writeAll(guard_sentinel_prefix);
     try stderr.writeAll(message);
     try stderr.writeAll("\n");
+    // Optional second line when reason is not already embedded in the human message.
+    if (reason) |r| {
+        if (r.len > 0 and std.mem.indexOf(u8, message, r) == null) {
+            try stderr.writeAll(r);
+            try stderr.writeAll("\n");
+        }
+    }
 }
 
 fn isCodexDenyOutput(host: Host, decision: PluginDecision) bool {
@@ -2568,6 +2577,17 @@ test "hook daemon protocol mismatch blocks shell command via fail-closed route" 
     defer result.deinit(allocator);
     try std.testing.expectEqual(PluginDecision.block, result.decision);
     try std.testing.expect(std.mem.indexOf(u8, result.reason, "incompatible daemon protocol") != null);
+}
+
+test "hook observe mode fails closed when daemon unavailable" {
+    var gpa_state: std.heap.DebugAllocator(.{}) = .init;
+    defer _ = gpa_state.deinit();
+    const allocator = gpa_state.allocator();
+
+    var result = try runShellRouteWithMode(allocator, "git status", null, .observe, mockDaemonUnavailableEvaluator);
+    defer result.deinit(allocator);
+    try std.testing.expectEqual(PluginDecision.block, result.decision);
+    try std.testing.expect(std.mem.indexOf(u8, result.reason, "daemon unavailable") != null);
 }
 
 test "hook daemon deny maps capitalized severity to risk level" {

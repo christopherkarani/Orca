@@ -102,17 +102,46 @@ Before launching the agent process, Orca filters the environment variables based
 
 ### Secretless Mode
 
-Run with `--secretless` to replace secret values with broker references:
+Run with `--secretless` to replace secret-like environment values with **non-resolving** broker references:
 
 ```bash
-orca run --secretless -- claude
+orca run --secretless -- <command>
 ```
 
 In this mode:
 - `GITHUB_TOKEN=ghp_xxxxxxxx` becomes `GITHUB_TOKEN=orca-secret://local-dummy/env/GITHUB_TOKEN/a1b2c3d4`
-- The agent sees the reference, not the raw value
-- The agent can pass the reference to tools that understand Orca brokers
+- The child process sees the reference, not the raw value
 - Raw values are never written to policy, audit, or replay artifacts
+- `orca run` prints a stderr warning when one or more secret-like vars were rewritten
+
+**Day-1 agent readiness (read carefully):**
+
+| Fact | Detail |
+|------|--------|
+| Broker used for env rewrite | Always `local-dummy` today — **reference-only; does not resolve raw values** |
+| Claude / Pi / Codex / OpenCode | Do **not** natively understand `orca-secret://…`. They expect real provider credentials (env API keys, or host-specific login stores). |
+| Broker resolve APIs | `orca credentials check` / policy `credentials.refs` resolve configured refs for **check** boundaries — they are **not** wired into secretless env rewrite at spawn |
+| Network proxy | Does **not** mint or inject model API keys into agent HTTP requests |
+
+**Not ready — do not default.** Do **not** treat `--secretless` as a safe default for day-1 agent launches that authenticate via `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, `GITHUB_TOKEN`, or similar env vars. Those launches will get non-functional refs and typically fail with provider auth errors (for example HTTP 401), not a clear “missing broker” failure from the model host.
+
+**Recommended day-1 agent path (usable credentials):**
+
+```bash
+# Prefer host login / non-env credential stores when available (e.g. Claude Code login).
+# For env-based model keys, omit --secretless so the filtered child env can still carry raw keys
+# subject to policy mode (observe inherits; strict/ci strip secrets unless allowlisted).
+orca run -- <agent-command>
+```
+
+**Opt-in secretless path (strip/tooling demos, not model-key auth):**
+
+```bash
+orca credentials check
+orca run --secretless --network-backend proxy -- <command>
+```
+
+Use secretless when you intentionally want raw secret-like env **out** of the child (demo leak resistance, redaction evidence). Expect model providers that read those env names to fail auth until a product path injects or resolves usable credentials into the agent.
 
 ### Redaction Records
 

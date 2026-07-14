@@ -15,6 +15,8 @@ const env_util = @import("orca").env_util;
 const tui = @import("orca").tui;
 const suggestions = @import("suggestions.zig");
 const host_status = @import("host_status.zig");
+const openclaw_status = @import("openclaw_status.zig");
+const interactive = @import("interactive.zig");
 
 // ---------------------------------------------------------------------------
 // Top-level dispatch
@@ -620,8 +622,7 @@ fn writeDoctorPlain(io: std.Io, allocator: std.mem.Allocator, stdout: anytype, r
             try stdout.print("  host package.json: {s}\n", .{if (report.openclaw_paths.package_json_exists) "exists" else "not found"});
             try stdout.print("  host source (src/index.ts): {s}\n", .{if (report.openclaw_paths.source_exists) "exists" else "not found"});
             try stdout.print("  detection note: {s}\n", .{report.openclaw_paths.detection_note});
-            try stdout.writeAll("  install: use 'orca plugin install openclaw --dry-run' to preview\n");
-            try stdout.writeAll("  note: npm package orca-openclaw-plugin is published; ClawHub package orca-openclaw-plugin is published\n");
+            try openclaw_status.writeDoctorHonesty(stdout);
         },
         .hermes => {
             try stdout.writeAll("\nHermes plugin status:\n");
@@ -852,7 +853,8 @@ fn writeDoctorJson(stdout: anytype, report: PluginDoctorReport, target: DoctorTa
     try stdout.print("    \"source_exists\": {s},\n", .{if (report.openclaw_paths.source_exists) "true" else "false"});
     try stdout.writeAll("    \"detection_note\": ");
     try writeJsonString(stdout, report.openclaw_paths.detection_note);
-    try stdout.writeAll("\n");
+    try stdout.writeAll(",\n");
+    try openclaw_status.writePathsJsonHonesty(stdout);
     try stdout.writeAll("  },\n");
 
     try stdout.writeAll("  \"hermes_paths\": {\n");
@@ -1210,6 +1212,7 @@ const InstallScope = enum { project, global };
 
 fn installCommand(io: std.Io, argv: []const []const u8, stdout: anytype, stderr: anytype) !u8 {
     var target: InstallTarget = .all;
+    var target_explicit = false;
     var dry_run = true; // default to safe dry-run
     var dry_run_explicit = false;
     var custom_path: ?[]const u8 = null;
@@ -1227,28 +1230,24 @@ fn installCommand(io: std.Io, argv: []const []const u8, stdout: anytype, stderr:
         if (std.mem.eql(u8, arg, "--help") or std.mem.eql(u8, arg, "-h")) {
             try stdout.writeAll(
                 \\Usage:
-                \\  orca plugin install codex [--dry-run]
-                \\  orca plugin install claude [--dry-run]
-                \\  orca plugin install opencode [--dry-run]
-                \\  orca plugin install openclaw [--dry-run]
-                \\  orca plugin install hermes [--dry-run]
-                \\  orca plugin install all [--dry-run]
+                \\  orca plugin install                     # dry-run preview of all hosts (no mutation)
+                \\  orca plugin install codex [--dry-run|--yes]
+                \\  orca plugin install claude [--dry-run|--yes]
+                \\  orca plugin install opencode [--dry-run|--yes]
+                \\  orca plugin install openclaw [--dry-run|--yes]
+                \\  orca plugin install hermes [--dry-run|--yes]
+                \\  orca plugin install all [--dry-run|--yes]
                 \\  orca plugin install all --all-detected [--dry-run|--yes]
-                \\  orca plugin install codex --path <plugin-path> [--dry-run]
-                \\  orca plugin install claude --path <plugin-path> [--dry-run]
-                \\  orca plugin install opencode --path <plugin-path> [--dry-run]
-                \\  orca plugin install openclaw --path <plugin-path> [--dry-run]
-                \\  orca plugin install hermes --path <plugin-path> [--dry-run]
+                \\  orca plugin install <target> --path <plugin-path> [--dry-run|--yes]
                 \\  orca plugin install opencode --scope project|global [--dry-run|--yes]
-                \\  orca plugin install <target> [--yes]
-                \\  
-                \\Primary flow: `orca setup` (guided auto-select on TTY, Phase 0). --yes / --auto for scripts/CI. Full selector UI planned later.
+                \\
+                \\Primary flow: `orca setup` (guided auto-select on TTY). Mutation requires an explicit host or `all` plus --yes (or interactive confirm default No).
                 \\Options:
-                \\  --dry-run       Preview changes without mutating host config (default)
+                \\  --dry-run       Preview changes without mutating host config
                 \\  --all-detected  Only install for hosts found in PATH
                 \\  --path          Use a custom plugin path instead of the default
                 \\  --scope         OpenCode install scope: project|global (default: project)
-                \\  --yes           Skip confirmation prompt (use with care for non-TTY)
+                \\  --yes           Confirm mutation (required for non-TTY install)
                 \\
             );
             return exit_codes.success;
@@ -1295,41 +1294,61 @@ fn installCommand(io: std.Io, argv: []const []const u8, stdout: anytype, stderr:
         }
         if (std.mem.eql(u8, arg, "codex")) {
             target = .codex;
+            target_explicit = true;
             continue;
         }
         if (std.mem.eql(u8, arg, "claude")) {
             target = .claude;
+            target_explicit = true;
             continue;
         }
         if (std.mem.eql(u8, arg, "opencode")) {
             target = .opencode;
+            target_explicit = true;
             continue;
         }
         if (std.mem.eql(u8, arg, "openclaw")) {
             target = .openclaw;
+            target_explicit = true;
             continue;
         }
         if (std.mem.eql(u8, arg, "hermes") or std.mem.eql(u8, arg, "hermess")) {
             target = .hermes;
+            target_explicit = true;
             continue;
         }
         if (std.mem.eql(u8, arg, "all")) {
             target = .all;
+            target_explicit = true;
             continue;
         }
         try suggestions.writeUnknownOption(stderr, "orca plugin install", arg, &.{ "--dry-run", "--yes", "--all-detected", "--path", "--scope", "--help", "-h", "codex", "claude", "opencode", "openclaw", "hermes", "all" }, "plugin");
         return exit_codes.usage;
     }
 
-    if (!dry_run_explicit and !yes) {
+    // Bare install (no host / all): dry-run preview only — never mutate all hosts by default.
+    if (!target_explicit) {
+        if (yes and !dry_run_explicit) {
+            try stderr.writeAll(
+                "orca plugin install: mutation requires an explicit host or `all` (e.g. `orca plugin install codex --yes`).\n" ++
+                    "Bare `orca plugin install` is a dry-run preview only.\n",
+            );
+            return exit_codes.usage;
+        }
+        dry_run = true;
+        target = .all;
+    } else if (!dry_run_explicit and !yes) {
         const stdin = std.Io.File.stdin();
         if ((stdin.isTty(io) catch false)) {
             const host_label = if (target == .all and all_detected) "all detected" else if (target == .all) "all" else @tagName(target);
-            try stdout.print("Install {s} plugin? [Y/n] ", .{host_label});
-            var buf: [8]u8 = undefined;
-            const n = try stdin.readStreaming(io, &.{&buf});
-            const answer = if (n > 0) std.mem.trimEnd(u8, buf[0..n], "\r\n") else "";
-            if (answer.len > 0 and (answer[0] == 'n' or answer[0] == 'N')) {
+            var prompt_buf: [64]u8 = undefined;
+            const prompt = std.fmt.bufPrint(&prompt_buf, "Install {s} plugin?", .{host_label}) catch "Install plugin?";
+            // Canonical confirm: empty Enter = default No (cancel).
+            const accepted = interactive.askConfirmInteractive(io, stdout, prompt, false) catch |err| {
+                try stderr.print("orca plugin install: confirmation failed: {s}\n", .{@errorName(err)});
+                return exit_codes.general;
+            };
+            if (!accepted) {
                 try stdout.writeAll("canceled\n");
                 return exit_codes.success;
             }
@@ -1444,10 +1463,7 @@ fn installCommand(io: std.Io, argv: []const []const u8, stdout: anytype, stderr:
                 // OpenClaw-specific install guidance
                 const install_command = try std.fmt.allocPrint(allocator, "openclaw plugins install {s}", .{plugin_dir});
                 defer allocator.free(install_command);
-                try stdout.writeAll("  install paths for OpenClaw:\n");
-                try stdout.writeAll("    local:   openclaw plugins install ./integrations/openclaw-plugin\n");
-                try stdout.writeAll("    npm:     openclaw plugins install npm:orca-openclaw-plugin (published)\n");
-                try stdout.writeAll("    clawhub: openclaw plugins install clawhub:orca-openclaw-plugin (published)\n");
+                try openclaw_status.writeInstallPaths(stdout);
                 if (dry_run) {
                     try stdout.writeAll("  action: no changes made (dry-run)\n");
                     try stdout.print("  next step: run '{s}' if OpenClaw is installed\n", .{install_command});
@@ -2324,6 +2340,28 @@ test "plugin doctor openclaw shows openclaw-specific section" {
     try std.testing.expect(std.mem.indexOf(u8, output, "host binary:") != null);
     try std.testing.expect(std.mem.indexOf(u8, output, "plugin manifest") != null);
     try std.testing.expect(std.mem.indexOf(u8, output, "package.json") != null);
+    // Invariant tokens (not full marketing slogans).
+    try std.testing.expect(std.mem.indexOf(u8, output, "unprotected") != null);
+    try std.testing.expect(std.mem.indexOf(u8, output, openclaw_status.preferred_wrapper) != null);
+    try std.testing.expect(std.mem.indexOf(u8, output, "installed != protected") != null);
+    try std.testing.expectEqualStrings("", stderr_writer.buffered());
+}
+
+test "plugin doctor openclaw --json includes enforcement_note and hook_grade unverified" {
+    var stdout_buf: [32768]u8 = undefined;
+    var stderr_buf: [256]u8 = undefined;
+    var stdout_writer: std.Io.Writer = .fixed(&stdout_buf);
+    var stderr_writer: std.Io.Writer = .fixed(&stderr_buf);
+
+    const code = try doctorCommand(std.testing.io, &.{ "openclaw", "--json" }, &stdout_writer, &stderr_writer);
+    try std.testing.expectEqual(exit_codes.success, code);
+
+    const output = stdout_writer.buffered();
+    try std.testing.expect(std.mem.indexOf(u8, output, "\"enforcement_note\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, output, "unprotected") != null);
+    try std.testing.expect(std.mem.indexOf(u8, output, "\"hook_grade\": \"unverified\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, output, "\"npm_path\": \"unprotected\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, output, "hook_enforcing") == null);
     try std.testing.expectEqualStrings("", stderr_writer.buffered());
 }
 
@@ -2587,6 +2625,45 @@ test "plugin install without --yes or --dry-run in non-TTY returns usage" {
     const code = try installCommand(std.testing.io, &.{"codex"}, &stdout_writer, &stderr_writer);
     try std.testing.expectEqual(exit_codes.usage, code);
 
+    try std.testing.expect(std.mem.indexOf(u8, stderr_writer.buffered(), "--yes or --dry-run") != null);
+}
+
+test "plugin install bare does not mutate (dry-run preview of all)" {
+    var stdout_buf: [8192]u8 = undefined;
+    var stderr_buf: [512]u8 = undefined;
+    var stdout_writer: std.Io.Writer = .fixed(&stdout_buf);
+    var stderr_writer: std.Io.Writer = .fixed(&stderr_buf);
+
+    const code = try installCommand(std.testing.io, &.{}, &stdout_writer, &stderr_writer);
+    try std.testing.expectEqual(exit_codes.success, code);
+
+    const output = stdout_writer.buffered();
+    try std.testing.expect(std.mem.indexOf(u8, output, "dry-run") != null);
+    try std.testing.expect(std.mem.indexOf(u8, output, "no changes made") != null or std.mem.indexOf(u8, output, "mode: dry-run") != null);
+    try std.testing.expect(std.mem.indexOf(u8, output, "mode: install") == null);
+    try std.testing.expectEqualStrings("", stderr_writer.buffered());
+}
+
+test "plugin install bare --yes without host fails closed" {
+    var stdout_buf: [2048]u8 = undefined;
+    var stderr_buf: [512]u8 = undefined;
+    var stdout_writer: std.Io.Writer = .fixed(&stdout_buf);
+    var stderr_writer: std.Io.Writer = .fixed(&stderr_buf);
+
+    const code = try installCommand(std.testing.io, &.{"--yes"}, &stdout_writer, &stderr_writer);
+    try std.testing.expectEqual(exit_codes.usage, code);
+    try std.testing.expect(std.mem.indexOf(u8, stderr_writer.buffered(), "explicit host") != null);
+    try std.testing.expect(std.mem.indexOf(u8, stdout_writer.buffered(), "mode: install") == null);
+}
+
+test "plugin install all without --yes in non-TTY fails" {
+    var stdout_buf: [2048]u8 = undefined;
+    var stderr_buf: [256]u8 = undefined;
+    var stdout_writer: std.Io.Writer = .fixed(&stdout_buf);
+    var stderr_writer: std.Io.Writer = .fixed(&stderr_buf);
+
+    const code = try installCommand(std.testing.io, &.{"all"}, &stdout_writer, &stderr_writer);
+    try std.testing.expectEqual(exit_codes.usage, code);
     try std.testing.expect(std.mem.indexOf(u8, stderr_writer.buffered(), "--yes or --dry-run") != null);
 }
 

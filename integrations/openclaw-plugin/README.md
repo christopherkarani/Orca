@@ -2,18 +2,34 @@
 
 OpenClaw plugin wrapper for Orca runtime guardrails.
 
+## Protection first (read this)
+
+| Path | Grade | Blocks tools? |
+|------|-------|---------------|
+| `orca run -- openclaw` | **`wrapper`** (supported) | Yes — process launched under Orca |
+| npm / ClawHub / CLI-metadata plugin install | **`unprotected`** | **No** — OpenClaw wires `api.on` to a no-op; hooks never fire |
+| Local / bundled plugin path | **unverified `hook`** | Only if the host actually registers and honors hooks (not proven by install alone) |
+
+**Never treat “plugin installed” as protection.** For mediation you can rely on today, use:
+
+```bash
+orca run -- openclaw
+```
+
+Grades: see the main README [protection grades](../../README.md#protection-grades) and `docs/compatibility.md`.
+
 ## What this plugin does
 
-This plugin adds Orca-native lifecycle hooks to OpenClaw. It lets OpenClaw call the Orca CLI for policy checks, audit logging, and runtime safety decisions without duplicating policy logic.
+This plugin adds Orca-native lifecycle hooks to OpenClaw when the host exposes real `api.on` registration. It calls the Orca CLI for policy checks, audit logging, and runtime safety decisions without duplicating policy logic.
 
-The plugin is a thin integration layer. The Orca CLI remains the source of truth for all policy decisions.
+The Orca CLI remains the source of truth for all policy decisions. When hooks do not fire (npm/ClawHub), this package cannot enforce anything.
 
 ## Prerequisites
 
 - Orca CLI built and available in PATH (run `orca doctor` to verify)
 - OpenClaw host installed
 
-Orca is not bundled into this plugin package. Fast setup:
+Orca is not bundled into this plugin package. Fast setup (install plumbing, not enforcement proof):
 
 ```bash
 ./scripts/install-orca-plugin.sh openclaw project
@@ -25,7 +41,15 @@ Windows:
 .\scripts\install-orca-plugin.ps1 openclaw project
 ```
 
-## Install from local path
+## Supported protection path
+
+```bash
+orca run -- openclaw
+```
+
+This is the primary recommended path (grade **`wrapper`**). It does not depend on OpenClaw plugin hooks firing.
+
+## Install from local path (optional plumbing)
 
 If you have OpenClaw installed locally:
 
@@ -33,79 +57,62 @@ If you have OpenClaw installed locally:
 openclaw plugins install ./integrations/openclaw-plugin
 ```
 
-The strongest local protection remains running OpenClaw through `orca run -- openclaw`; the OpenClaw plugin provides native guardrails where OpenClaw plugin hooks support them.
-
-## Install from npm
-
-After npm publication, install with:
+Or:
 
 ```bash
+orca plugin install openclaw
+```
+
+Local install is still **not** a claim of live **`hook`** enforcement. Prefer `orca run -- openclaw`. Confirm with `orca plugin doctor openclaw` (installed ≠ protected).
+
+## Install from npm / ClawHub — unprotected
+
+These paths install metadata and may look successful, but in current OpenClaw **CLI-metadata** mode `api.on` is a no-op. Lifecycle hooks **do not fire**. Classification: **`unprotected`**.
+
+```bash
+# NOT recommended for security — unprotected (hooks no-op)
 openclaw plugins install npm:orca-openclaw-plugin
-```
-
-If OpenClaw's security scanner blocks the install (the plugin uses `child_process` to call the `orca` binary), use:
-
-```bash
-openclaw plugins install npm:orca-openclaw-plugin --dangerously-force-unsafe-install
-```
-
-If OpenClaw supports bare npm package installs:
-
-```bash
-openclaw plugins install orca-openclaw-plugin
-```
-
-**Important:** When installed via npm, OpenClaw currently loads the plugin in `cli-metadata` mode, which wires `api.on` to a no-op. This means `before_tool_call` hooks **will not fire** and the plugin cannot block destructive commands. For full protection, run OpenClaw through Orca (`orca run -- openclaw`) or install the plugin as a local path / bundled extension.
-
-
-## Install from ClawHub
-
-The plugin is published to ClawHub as `orca-openclaw-plugin`.
-
-```bash
 openclaw plugins install clawhub:orca-openclaw-plugin
 ```
 
-If OpenClaw's security scanner blocks the install, use:
+`--dangerously-force-unsafe-install` only bypasses OpenClaw’s security scanner so the package can load; it does **not** enable hook enforcement. Do not use it as a security install step.
 
-```bash
-openclaw plugins install clawhub:orca-openclaw-plugin --dangerously-force-unsafe-install
-```
+For submission details (packaging only), see `docs/integrations/openclaw-clawhub.md`.
 
-**Note:** The `clawhub:` install protocol requires a recent OpenClaw version. If your version does not support it, use the local path or npm install methods instead.
-
-For submission details, see `docs/integrations/openclaw-clawhub.md`.
-
-## Verify install
-
-Run the Orca plugin doctor:
+## Verify install (honest doctor)
 
 ```bash
 orca plugin doctor openclaw
 ```
 
-Expected output sections:
-- Orca version
-- Policy status (present/valid)
-- Plugin directories (openclaw: found)
-- Host binaries (openclaw: detected or not detected)
+Doctor reports host binary, extension paths, and whether a host plugin appears installed. **Installed does not mean protected.** Expect an enforcement note that npm/ClawHub is **`unprotected`** and that the preferred path is `orca run -- openclaw`.
 
 ## Hooks included
 
-The plugin registers lifecycle hooks that call `orca hook openclaw <event>`:
+When hooks actually register (not npm CLI-metadata), the plugin calls `orca hook openclaw <event>`:
 
 | Event | When it fires | Behavior |
 |-------|---------------|----------|
 | `session.start` | At the start of an OpenClaw session | Informational (readiness log) |
-| `tool.before` | Before OpenClaw invokes a tool | **Blocking** — Orca can prevent the tool call |
+| `tool.before` | Before OpenClaw invokes a tool | **Blocking when hooks fire** — empty/malformed/`ask` fail closed to block |
 | `tool.after` | After OpenClaw finishes using a tool | Informational (audit only) |
 | `session.end` | When the session ends | Informational (audit only) |
 
-OpenClaw does not currently expose dedicated permission lifecycle hooks to this plugin. Permission-like blocking is handled through `tool.before` before the tool call executes.
+OpenClaw does not currently expose dedicated permission lifecycle hooks to this plugin. Permission-like blocking is handled through `tool.before` **only if** `before_tool_call` runs.
+
+**Do not claim `tool.before` is blocking for npm/ClawHub installs** — those installs are **`unprotected`**.
 
 ## How hooks call Orca
 
-Each hook sends a JSON payload to `orca hook openclaw <event>` via stdin and reads a JSON decision from stdout. The plugin preserves OpenClaw's expected return values. Human-readable logs go to stderr.
+Each hook sends a JSON payload to `orca hook openclaw <event>` via stdin and reads a JSON decision from stdout. On the blocking path (`tool.before`):
+
+- empty or whitespace-only stdout → **block**
+- JSON parse failure or missing `decision` → **block**
+- `decision: "ask"` or unrecognized → **block** (no OpenClaw ask UX)
+- `decision: "block"` → block
+- `decision: "allow"` / `"warn"` → allow (warn logs only)
+
+Human-readable logs go to stderr.
 
 Example payload for `tool.before`:
 
@@ -136,7 +143,7 @@ Example response:
 }
 ```
 
-If the decision is `block`, the plugin throws an error that prevents the tool from executing.
+If the decision is `block` (including fail-closed cases), the plugin returns a block result that prevents the tool from executing **when the host honors the hook**.
 
 ## Run redteam
 
@@ -162,51 +169,30 @@ This plugin does not mutate host configuration, so uninstalling is safe.
 
 ## Known limitations
 
-- **npm/global installs: `api.on` is a no-op in current OpenClaw versions.**  
-  OpenClaw loads npm-installed plugins with `registrationMode: "cli-metadata"`, where `api.on` is wired to a no-op function. This means `before_tool_call` and `after_tool_call` hooks **never fire** for npm/ClawHub/global installs, so the plugin cannot block destructive tool calls.  
-  **Workaround:** For full runtime guardrails, run OpenClaw through Orca:  
-  `orca run -- openclaw`  
-  The plugin will still log a prominent warning when it detects this situation.  
-  **Fix needed in OpenClaw:** `api.on` (or an equivalent typed-hook API) must be exposed for npm plugins with explicit user opt-in.
-- Hooks are advisory for informational events; blocking hooks depend on OpenClaw honoring thrown errors.
-- The strongest protection remains `orca run -- openclaw`.
+- **npm/ClawHub/global installs are `unprotected`.** OpenClaw loads them with `registrationMode: "cli-metadata"`, where `api.on` is a no-op. Hooks never fire; the plugin cannot block tools. Supported protection: `orca run -- openclaw` (**`wrapper`**).
+- Local/bundled install does not by itself prove **`hook`** grade without live-host E2E.
+- Hooks are advisory for informational events; blocking depends on OpenClaw honoring hook return values.
 - Plugin installation depends on OpenClaw version and plugin loading mechanism.
 - No telemetry is collected.
-- npm package support has been prepared for `orca-openclaw-plugin`.
-- ClawHub submission is complete. The plugin is published as `orca-openclaw-plugin@1.1.4`.
+- npm package name prepared: `orca-openclaw-plugin`. ClawHub package published for distribution — distribution ≠ enforcement.
 
 ## Security model
 
 - This plugin calls the Orca CLI; it does not reimplement policy logic.
 - No raw secrets are persisted in plugin files.
 - Secrets are redacted from payloads before sending to Orca (keys matching `password`, `token`, `secret`, `api_key`, etc. are replaced with `[REDACTED]`).
-- Hook return values remain valid for OpenClaw parsing.
+- Blocking hooks fail closed on empty/malformed/`ask` responses.
 - Human logs go to stderr.
 - CI mode never prompts.
-- This plugin does not claim stronger enforcement than OpenClaw hooks support.
+- This plugin does not claim stronger enforcement than OpenClaw hooks actually provide.
+- Non-enforcing installs are labeled **`unprotected`**, not soft-warned “green” installs.
 
 ## No MCP server behavior
 
 The OpenClaw plugin does not add MCP server behavior or drone-specific plugin features.
 
-## Strongest protection warning
-
-> The Orca OpenClaw plugin adds lifecycle hooks for OpenClaw. For the strongest local protection, run the OpenClaw process itself through Orca with `orca run -- openclaw`.
-
 ## OpenClaw Security Scan Notice
 
-OpenClaw's plugin security scanner blocks plugins that use `child_process`. The Orca plugin legitimately needs this to call the `orca` CLI binary for policy enforcement.
+OpenClaw’s plugin security scanner may block packages that use `child_process`. The Orca plugin needs that only to call the local `orca` binary.
 
-If installation is blocked, use:
-
-```bash
-openclaw plugins install npm:orca-openclaw-plugin --dangerously-force-unsafe-install
-```
-
-Or for ClawHub:
-
-```bash
-openclaw plugins install clawhub:orca-openclaw-plugin --dangerously-force-unsafe-install
-```
-
-This is a known limitation. The plugin is safe — it only calls the local `orca` binary that you already installed and trust.
+Bypassing the scanner (for example with `--dangerously-force-unsafe-install`) is **not** a security recommendation and does **not** turn an npm install into an enforcing install. Prefer `orca run -- openclaw`.

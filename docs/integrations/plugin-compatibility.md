@@ -52,12 +52,13 @@ This document describes feature compatibility across the Orca CLI and host plugi
 ### OpenClaw
 
 - Hooks are advisory; enforcement depends on OpenClaw host support.
+- **npm/ClawHub/CLI-metadata installs are `unprotected`** (`api.on` no-op; hooks do not fire). Supported path: `orca run -- openclaw` (grade **`wrapper`**).
 - Actual plugin loading mechanism depends on OpenClaw version.
 - OpenClaw uses hooks, not skills.
 - OpenClaw hooks: `session_start`, `before_tool_call`, `after_tool_call`, `session_end` (map to Orca CLI events `session.start`, `tool.before`, `tool.after`, `session.end`).
-- OpenClaw does not expose dedicated permission hooks; blocking is handled via `before_tool_call`.
-- npm package: published (orca-openclaw-plugin@1.1.3)
-- ClawHub submission: published (orca-openclaw-plugin@1.1.3)
+- OpenClaw does not expose dedicated permission hooks; blocking is handled via `before_tool_call` only when hooks actually fire.
+- npm package: published (orca-openclaw-plugin@1.1.3) — distribution only, not enforcement
+- ClawHub submission: published (orca-openclaw-plugin@1.1.3) — distribution only, not enforcement
 
 ## Version Compatibility
 

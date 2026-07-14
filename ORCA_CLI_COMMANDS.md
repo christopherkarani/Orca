@@ -2,10 +2,10 @@
 
 > Generated from source at `src/cli/mod.zig`, `src/cli/help.zig`, `src/main.zig`, and individual command modules.
 > Version: 1.1.5 (from `VERSION`)
-> Product: **Orca** — Local runtime firewall for AI agents (Codex, Claude Code, OpenCode, OpenClaw, Hermes)
+> Product: **Orca** — Graded policy mediation for AI agent actions (Codex, Claude Code, OpenCode, OpenClaw, Hermes)
 
 Orca ships **one** CLI binary:
-- **`orca`** — The desktop/CI AI-agent runtime firewall (main product)
+- **`orca`** — Desktop/CI policy mediation for AI agents (main product; grades: hook | wrapper | proxy | OS-enforced)
 
 ---
 

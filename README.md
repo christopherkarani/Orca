@@ -1,10 +1,10 @@
-# Orca &nbsp;[![Version](https://img.shields.io/badge/version-1.2.7-blue)](https://github.com/christopherkarani/Orca/releases) [![License](https://img.shields.io/badge/license-Apache--2.0-green)](LICENSE) [![Zig](https://img.shields.io/badge/built%20with-Zig-orange)](https://ziglang.org) [![Build](https://img.shields.io/github/actions/workflow/status/christopherkarani/Orca/build.yml?branch=main&label=build)](https://github.com/christopherkarani/Orca/actions/workflows/build.yml) [![Stars](https://img.shields.io/github/stars/christopherkarani/Orca?style=social)](https://github.com/christopherkarani/Orca)
+# Orca &nbsp;[![Version](https://img.shields.io/badge/version-1.2.8-blue)](https://github.com/christopherkarani/Orca/releases) [![License](https://img.shields.io/badge/license-Apache--2.0-green)](LICENSE) [![Zig](https://img.shields.io/badge/built%20with-Zig-orange)](https://ziglang.org) [![Build](https://img.shields.io/github/actions/workflow/status/christopherkarani/Orca/build.yml?branch=main&label=build)](https://github.com/christopherkarani/Orca/actions/workflows/build.yml) [![Stars](https://img.shields.io/github/stars/christopherkarani/Orca?style=social)](https://github.com/christopherkarani/Orca)
 
 # Orca
 
 **The safety layer for autonomous AI agents running on real machines.**
 
-Orca lets you give AI agents more autonomy without letting them delete data, leak secrets, modify protected files, or perform irreversible actions without approval.
+Orca lets you give AI agents more autonomy by evaluating risky shell, file, network, and tool actions against your policy — when those actions actually pass through Orca’s mediation path.
 
 AI agents are no longer just chatbots. They run shell commands, edit files, call APIs, access credentials, use tools, browse the web, and operate on laptops, servers, CI pipelines, and spare machines.
 
@@ -12,7 +12,7 @@ That is powerful.
 
 It is also dangerous.
 
-Orca sits between the agent and the machine, enforcing your policies before risky actions execute.
+Orca is **graded mediation** (`hook` | `wrapper` | `proxy` | `OS-enforced`), not a universal sandbox. Default `orca run` is typically **wrapper** (PATH shims). See [Protection grades](#protection-grades).
 
 ```bash
 # Install
@@ -175,7 +175,7 @@ Shell / files / network / tools / cloud / databases
 
 The agent can still do useful work.
 
-It just cannot silently cross the boundaries you define.
+Actions on a mediation path are evaluated against your policy. Paths that bypass mediation are outside that guarantee — see [Protection grades](#protection-grades) and [docs/threat-model.md](docs/threat-model.md).
 
 ---
 
@@ -310,7 +310,24 @@ In CI mode, Orca fails closed:
 orca run --ci -- codex --prompt "Refactor auth"
 ```
 
-No prompts. Risky actions are blocked automatically.
+No prompts. Risky actions on the mediation path are blocked automatically.
+
+---
+
+## Protection grades
+
+Orca is **graded mediation**, not a universal OS sandbox. Canonical definitions, bypass classes, and the map from doctor / `orca start --protection` labels live in **[docs/compatibility.md](docs/compatibility.md#protection-grades-canonical)** (also linked from [docs/threat-model.md](docs/threat-model.md)).
+
+| Grade | Meaning | Typical surface |
+| --- | --- | --- |
+| `hook` | Host invokes Orca and honors veto | Native plugin / host hook that fires |
+| `wrapper` | PATH shims / `orca run` | Finite executable list; absolute paths may bypass |
+| `proxy` | Traffic must traverse an Orca proxy | MCP / optional network proxies |
+| `OS-enforced` | Kernel/sandbox backend enforcing | Only when `orca doctor` reports active |
+
+**Default `orca run`:** typically **`wrapper`**. **`hook`** only when the host fires and honors veto. **`OS-enforced`** only when doctor reports the backend active.
+
+Quick map: doctor `wrapper-only` → grade `wrapper`; `orca start --protection firewall` → primarily `wrapper` (CLI label, not kernel firewall); `--protection maximum` → aspirational multi-grade (`hook` + `wrapper`), **not** `OS-enforced` unless doctor confirms.
 
 ---
 
@@ -424,15 +441,15 @@ If the agent tries something dangerous, the job fails safely.
 
 ---
 
-### 5. Red-team regression testing
+### 5. Red-team engine self-test
 
-Test your policy against known attack fixtures:
+Run built-in fixture engine self-tests (internal `builtin:redteam` preset — not your workspace policy):
 
 ```bash
 orca redteam --ci
 ```
 
-Use this to make sure new policies do not accidentally weaken your guardrails.
+This catches regressions in Orca’s fixture evaluators. It does **not** prove your installed policy, daemon, or host enforcement is correct. See [docs/redteam.md](docs/redteam.md).
 
 ---
 
@@ -440,33 +457,33 @@ Use this to make sure new policies do not accidentally weaken your guardrails.
 
 Orca is designed to be honest about what it does and does not protect.
 
-### What Orca does
+### What Orca does (when mediation is active)
 
-* launches agents inside a policy-controlled process
-* evaluates shell commands before execution
-* mediates file access based on policy
-* filters sensitive environment variables
-* detects secret access and exfiltration attempts
-* enforces network rules
-* records tamper-evident audit logs
+* launches agents through a policy-controlled process (`orca run` / wrapper grade)
+* evaluates shell commands that hit PATH shims or host hooks that fire and honor veto
+* mediates file access on Orca-mediated write paths (staged writes; OS FS enforcement only if doctor reports active)
+* filters sensitive environment variables for Orca-launched children
+* detects secret-like access patterns on mediated paths and redacts audit output
+* applies network **decisions** for mediated traffic; blocks only when a proxy or OS-enforced backend is actually in path
+* records tamper-evident audit logs for Orca-managed sessions
 * supports replayable sessions
-* fails closed in CI mode
+* fails closed in CI mode for evaluated actions
 
 ### What Orca does not claim
 
-Orca is not a perfect kernel sandbox.
+Orca is not a perfect kernel sandbox and is not universal transparent FS/network interception.
 
-It does not protect agents that are not launched through Orca.
+It does not protect agents that are not launched through Orca (or host hooks that do not fire).
 
 It does not replace Docker, VMs, OS permissions, VPNs, SSH hardening, or least-privilege infrastructure.
 
 Use those too.
 
-Orca is the behavior-level policy layer on top.
+Orca is a graded, behavior-level policy layer on top of paths it actually mediates — see [Protection grades](#protection-grades).
 
 Docker controls the environment.
 
-Orca controls what the agent is allowed to do inside that environment.
+Orca controls what the agent is allowed to do on mediated paths inside that environment.
 
 ---
 
@@ -561,9 +578,9 @@ Not the secret.
 
 ## Native plugins
 
-Orca can run as a wrapper around agents, which is the strongest protection model.
+`orca run` (grade **`wrapper`**) is the default mediation path for launching an agent under Orca. It is **not** OS-enforced and is not automatically stronger than a host **`hook`** that actually fires and honors veto — those grades stack when both are active. Kernel-level strength requires **`OS-enforced`** (rare; check `orca doctor`).
 
-Some agents also support native plugins or hooks for deeper integration.
+Some agents also support native plugins or hooks for deeper integration (grade **`hook`** when hooks fire and honor veto).
 
 ### Hermes
 
@@ -575,11 +592,13 @@ orca plugin doctor hermes
 
 ### OpenClaw
 
+**Supported protection path** (grade **`wrapper`**):
+
 ```bash
-openclaw plugins install npm:orca-openclaw-plugin --dangerously-force-unsafe-install
+orca run -- openclaw
 ```
 
-OpenClaw requires the override because the plugin calls the local `orca` binary for policy enforcement.
+Optional plugin install (local path / `orca plugin install openclaw`) is install plumbing only — it does **not** prove **`hook`** enforcement. npm, ClawHub, and CLI-metadata loads of the native plugin are **`unprotected`**: OpenClaw currently no-ops `api.on`, so tool hooks do not fire and cannot block. See [`integrations/openclaw-plugin/README.md`](integrations/openclaw-plugin/README.md) and [protection grades](#protection-grades).
 
 ---
 

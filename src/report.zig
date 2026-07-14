@@ -3,6 +3,9 @@ const std = @import("std");
 const core_api = @import("orca_core").api;
 const core = @import("orca_core").core;
 const env_util = @import("env_util.zig");
+const presentation = @import("presentation/mod.zig");
+
+pub const ParseIntegrityFailed = presentation.replay_event.ParseIntegrityFailed;
 
 pub const PluginReadiness = struct {
     id: []const u8,
@@ -12,15 +15,20 @@ pub const PluginReadiness = struct {
 };
 
 pub fn writeMarkdown(io: std.Io, allocator: std.mem.Allocator, writer: anytype, workspace_root: []const u8, session: core_api.ReplaySession) !void {
-    var redactions = try summarizeRedactions(allocator, session);
+    var redactions = try presentation.replay_event.summarizeRedactions(allocator, session, session.verified);
     defer redactions.deinit(allocator);
     const plugins = try pluginReadiness(io, allocator, workspace_root);
 
+    const safe_command = try presentation.redact.redactOwned(allocator, session.command_display);
+    defer allocator.free(safe_command);
+    const safe_policy = try presentation.redact.redactOwned(allocator, session.policy);
+    defer allocator.free(safe_policy);
+
     try writer.print("# Orca Safety Report: {s}\n\n", .{session.session_id});
     try writer.print("- Session id: `{s}`\n", .{session.session_id});
-    try writer.print("- Command: `{s}`\n", .{session.command_display});
+    try writer.print("- Command: `{s}`\n", .{safe_command});
     try writer.print("- Status: {s}\n", .{session.status_display});
-    try writer.print("- Policy path: {s}\n", .{session.policy});
+    try writer.print("- Policy path: {s}\n", .{safe_policy});
     try writer.print("- Hash-chain verification: {s}\n", .{if (session.verified) "verified" else "failed or unavailable"});
     try writer.print("- Denied/prevented actions: {d}\n", .{session.events.len});
     try writer.print("- Redactions: {d}", .{redactions.count});
@@ -39,10 +47,13 @@ pub fn writeMarkdown(io: std.Io, allocator: std.mem.Allocator, writer: anytype, 
         try writer.writeAll("Orca did not record a denied action in this session.\n\n");
     } else {
         try writer.print("Orca prevented {d} action{s} from continuing because the active local policy denied them.\n\n", .{ session.events.len, if (session.events.len == 1) "" else "s" });
-        for (session.events) |ev| {
-            const reason = try decisionReason(allocator, ev.raw);
-            defer allocator.free(reason);
-            try writer.print("- `{s}` was blocked. Reason: {s}\n", .{ ev.target_value, reason });
+        const views = try presentation.replay_event.deniedActionViews(allocator, session);
+        defer {
+            for (views) |*view| view.deinit(allocator);
+            allocator.free(views);
+        }
+        for (views) |view| {
+            try writer.print("- `{s}` was blocked. Reason: {s}\n", .{ view.target, view.reason });
         }
         try writer.writeByte('\n');
     }
@@ -58,19 +69,24 @@ pub fn writeMarkdown(io: std.Io, allocator: std.mem.Allocator, writer: anytype, 
 }
 
 pub fn writeJson(io: std.Io, allocator: std.mem.Allocator, writer: anytype, workspace_root: []const u8, session: core_api.ReplaySession) !void {
-    var redactions = try summarizeRedactions(allocator, session);
+    var redactions = try presentation.replay_event.summarizeRedactions(allocator, session, session.verified);
     defer redactions.deinit(allocator);
     const plugins = try pluginReadiness(io, allocator, workspace_root);
+
+    const safe_command = try presentation.redact.redactOwned(allocator, session.command_display);
+    defer allocator.free(safe_command);
+    const safe_policy = try presentation.redact.redactOwned(allocator, session.policy);
+    defer allocator.free(safe_policy);
 
     try writer.writeByte('{');
     try writer.writeAll("\"session_id\":");
     try core.util.writeJsonString(writer, session.session_id);
     try writer.writeAll(",\"command\":");
-    try core.util.writeJsonString(writer, session.command_display);
+    try core.util.writeJsonString(writer, safe_command);
     try writer.writeAll(",\"status\":");
     try core.util.writeJsonString(writer, session.status_display);
     try writer.writeAll(",\"policy_path\":");
-    try core.util.writeJsonString(writer, session.policy);
+    try core.util.writeJsonString(writer, safe_policy);
     try writer.print(",\"hash_chain_verified\":{},\"denied_count\":{d}", .{ session.verified, session.events.len });
     try writer.print(",\"redactions\":{{\"count\":{d},\"labels\":[", .{redactions.count});
     for (redactions.labels.items, 0..) |label, index| {
@@ -78,16 +94,19 @@ pub fn writeJson(io: std.Io, allocator: std.mem.Allocator, writer: anytype, work
         try core.util.writeJsonString(writer, label);
     }
     try writer.writeAll("]},\"denied_actions\":[");
-    for (session.events, 0..) |ev, index| {
+    const views = try presentation.replay_event.deniedActionViews(allocator, session);
+    defer {
+        for (views) |*view| view.deinit(allocator);
+        allocator.free(views);
+    }
+    for (views, 0..) |view, index| {
         if (index > 0) try writer.writeByte(',');
-        const reason = try decisionReason(allocator, ev.raw);
-        defer allocator.free(reason);
         try writer.writeAll("{\"event_type\":");
-        try core.util.writeJsonString(writer, ev.event_type);
+        try core.util.writeJsonString(writer, view.event_type);
         try writer.writeAll(",\"target\":");
-        try core.util.writeJsonString(writer, ev.target_value);
+        try core.util.writeJsonString(writer, view.target);
         try writer.writeAll(",\"reason\":");
-        try core.util.writeJsonString(writer, reason);
+        try core.util.writeJsonString(writer, view.reason);
         try writer.writeByte('}');
     }
     try writer.writeAll("],\"plugins\":[");
@@ -102,59 +121,6 @@ pub fn writeJson(io: std.Io, allocator: std.mem.Allocator, writer: anytype, work
         try writer.writeByte('}');
     }
     try writer.writeAll("]}\n");
-}
-
-const RedactionSummary = struct {
-    allocator: std.mem.Allocator,
-    count: usize = 0,
-    labels: std.ArrayList([]u8) = .empty,
-
-    fn deinit(self: *RedactionSummary, allocator: std.mem.Allocator) void {
-        for (self.labels.items) |label| allocator.free(label);
-        self.labels.deinit(allocator);
-    }
-};
-
-fn summarizeRedactions(allocator: std.mem.Allocator, session: core_api.ReplaySession) !RedactionSummary {
-    var summary = RedactionSummary{ .allocator = allocator };
-    errdefer summary.deinit(allocator);
-    for (session.events) |ev| {
-        var parsed = std.json.parseFromSlice(std.json.Value, allocator, ev.raw, .{}) catch continue;
-        defer parsed.deinit();
-        if (parsed.value != .object) continue;
-        const redactions = parsed.value.object.get("redactions") orelse continue;
-        if (redactions != .object) continue;
-        if (redactions.object.get("count")) |count_value| {
-            if (count_value == .integer and count_value.integer > 0) summary.count += @intCast(count_value.integer);
-        }
-        if (redactions.object.get("labels")) |labels_value| {
-            if (labels_value != .array) continue;
-            for (labels_value.array.items) |label| {
-                if (label != .string) continue;
-                if (try containsLabel(summary.labels.items, label.string)) continue;
-                try summary.labels.append(allocator, try allocator.dupe(u8, label.string));
-            }
-        }
-    }
-    return summary;
-}
-
-fn containsLabel(labels: []const []u8, value: []const u8) !bool {
-    for (labels) |label| {
-        if (std.mem.eql(u8, label, value)) return true;
-    }
-    return false;
-}
-
-fn decisionReason(allocator: std.mem.Allocator, raw: []const u8) ![]u8 {
-    var parsed = std.json.parseFromSlice(std.json.Value, allocator, raw, .{}) catch return allocator.dupe(u8, "policy denied the action");
-    defer parsed.deinit();
-    if (parsed.value != .object) return allocator.dupe(u8, "policy denied the action");
-    const decision = parsed.value.object.get("decision") orelse return allocator.dupe(u8, "policy denied the action");
-    if (decision != .object) return allocator.dupe(u8, "policy denied the action");
-    const reason = decision.object.get("reason") orelse return allocator.dupe(u8, "policy denied the action");
-    if (reason != .string or reason.string.len == 0) return allocator.dupe(u8, "policy denied the action");
-    return allocator.dupe(u8, reason.string);
 }
 
 pub fn pluginReadiness(io: std.Io, allocator: std.mem.Allocator, workspace_root: []const u8) ![2]PluginReadiness {
@@ -196,6 +162,43 @@ fn executableInPath(io: std.Io, allocator: std.mem.Allocator, name: []const u8) 
         if (std.Io.Dir.cwd().access(io, candidate, .{})) |_| return true else |_| {}
     }
     return false;
+}
+
+test "report markdown and json redact synthetic secrets in reason and target" {
+    const allocator = std.testing.allocator;
+    var session = try presentation.fixtures.syntheticSecretReplaySession(allocator, .{});
+    defer session.deinit();
+
+    var md: std.Io.Writer.Allocating = .init(allocator);
+    defer md.deinit();
+    try writeMarkdown(std.testing.io, allocator, &md.writer, "/tmp", session);
+    const md_out = try md.toOwnedSlice();
+    defer allocator.free(md_out);
+    try std.testing.expect(std.mem.indexOf(u8, md_out, presentation.fixtures.synthetic_secret) == null);
+    try std.testing.expect(std.mem.indexOf(u8, md_out, "[REDACTED]") != null);
+
+    var json: std.Io.Writer.Allocating = .init(allocator);
+    defer json.deinit();
+    try writeJson(std.testing.io, allocator, &json.writer, "/tmp", session);
+    const json_out = try json.toOwnedSlice();
+    defer allocator.free(json_out);
+    try std.testing.expect(std.mem.indexOf(u8, json_out, presentation.fixtures.synthetic_secret) == null);
+}
+
+test "report fails closed on unparseable event when verification claimed" {
+    const allocator = std.testing.allocator;
+    var session = try presentation.fixtures.syntheticSecretReplaySession(allocator, .{ .session_id = "zh2-parse", .verified = true });
+    defer session.deinit();
+    allocator.free(session.events[0].raw);
+    session.events[0].raw = try allocator.dupe(u8, "{not-valid-json");
+
+    var md: std.Io.Writer.Allocating = .init(allocator);
+    defer md.deinit();
+    try std.testing.expectError(error.ParseIntegrityFailed, writeMarkdown(std.testing.io, allocator, &md.writer, "/tmp", session));
+
+    var json: std.Io.Writer.Allocating = .init(allocator);
+    defer json.deinit();
+    try std.testing.expectError(error.ParseIntegrityFailed, writeJson(std.testing.io, allocator, &json.writer, "/tmp", session));
 }
 
 test "report renders denied action and redaction summary" {

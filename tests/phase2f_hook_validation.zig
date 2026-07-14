@@ -363,6 +363,34 @@ test "phase2f non-shell events stay on zig path without requiring daemon" {
     }
 }
 
+/// Run every primary shell host fixture under `env_map` and assert block + a required reason needle.
+/// Codex host contract: exit code 2, empty stdout, reason on stderr (not JSON).
+fn expectShellHostsBlockWithReason(
+    allocator: std.mem.Allocator,
+    env_map: *const std.process.Environ.Map,
+    reason_needle: []const u8,
+) !void {
+    for (shell_host_cases) |host_case| {
+        const fixture = try readFile(allocator, host_case.safe_fixture);
+        defer allocator.free(fixture);
+
+        const result = try runOrca(allocator, &.{ orca_bin, "hook", host_case.host, host_case.event }, fixture, env_map);
+        defer allocator.free(result.stdout);
+        defer allocator.free(result.stderr);
+
+        try expectHookDecision(allocator, host_case.host, "block", result);
+        if (std.mem.eql(u8, host_case.host, "codex")) {
+            // Host contract beyond generic block: codex deny is exit 2 with no JSON stdout.
+            try std.testing.expectEqual(codex_deny_exit_code, result.code);
+            try std.testing.expectEqual(@as(usize, 0), result.stdout.len);
+            try std.testing.expect(result.stderr.len > 0);
+        }
+        const combined = try std.fmt.allocPrint(allocator, "{s}{s}", .{ result.stdout, result.stderr });
+        defer allocator.free(combined);
+        try std.testing.expect(std.mem.indexOf(u8, combined, reason_needle) != null);
+    }
+}
+
 test "phase2f shell hooks fail closed when daemon cannot start" {
     if (!fileExists(orca_bin)) return;
     try requireFakeDaemonFixture();
@@ -372,19 +400,8 @@ test "phase2f shell hooks fail closed when daemon cannot start" {
     defer allocator.free(isolated.home);
     defer isolated.env_map.deinit();
 
-    for (shell_host_cases) |host_case| {
-        const fixture = try readFile(allocator, host_case.safe_fixture);
-        defer allocator.free(fixture);
-
-        const result = try runOrca(allocator, &.{ orca_bin, "hook", host_case.host, host_case.event }, fixture, &isolated.env_map);
-        defer allocator.free(result.stdout);
-        defer allocator.free(result.stderr);
-
-        try expectHookDecision(allocator, host_case.host, "block", result);
-        const combined = try std.fmt.allocPrint(allocator, "{s}{s}", .{ result.stdout, result.stderr });
-        defer allocator.free(combined);
-        try std.testing.expect(std.mem.indexOf(u8, combined, "daemon") != null or std.mem.indexOf(u8, combined, "unavailable") != null or std.mem.indexOf(u8, combined, "blocked") != null);
-    }
+    // Spawn/start failure maps through daemonUnavailableReason ("daemon unavailable: …").
+    try expectShellHostsBlockWithReason(allocator, &isolated.env_map, "daemon unavailable");
 }
 
 test "phase2f shell hooks fail closed on protocol mismatch" {
@@ -392,21 +409,12 @@ test "phase2f shell hooks fail closed on protocol mismatch" {
     try requireMismatchDaemonFixture();
 
     const allocator = std.testing.allocator;
-    const fixture = try readFile(allocator, "tests/plugin-fixtures/claude/pre_tool_use_command_safe.json");
-    defer allocator.free(fixture);
-
     var isolated = try makeIsolatedMismatchEnv(allocator);
     defer allocator.free(isolated.home);
     defer isolated.env_map.deinit();
 
-    const result = try runOrca(allocator, &.{ orca_bin, "hook", "claude", "PreToolUse" }, fixture, &isolated.env_map);
-    defer allocator.free(result.stdout);
-    defer allocator.free(result.stderr);
-
-    try expectHookDecision(allocator, "claude", "block", result);
-    const combined = try std.fmt.allocPrint(allocator, "{s}{s}", .{ result.stdout, result.stderr });
-    defer allocator.free(combined);
-    try std.testing.expect(std.mem.indexOf(u8, combined, "incompatible daemon protocol") != null);
+    // Protocol mismatch must surface the canonical reason fragment, not a generic block.
+    try expectShellHostsBlockWithReason(allocator, &isolated.env_map, "incompatible daemon protocol");
 }
 
 test "phase2f version still works when daemon is unavailable" {

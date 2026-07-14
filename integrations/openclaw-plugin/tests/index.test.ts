@@ -1,6 +1,10 @@
 import { describe, it, mock } from 'node:test';
 import assert from 'node:assert';
-import orcaPlugin, { isOnNoop } from '../src/index.ts';
+import orcaPlugin, {
+  isOnNoop,
+  parseHookResponse,
+  UNPROTECTED_NOOP_WARNING,
+} from '../src/index.ts';
 
 // Minimal mock API factory
 function makeApi(overrides: Partial<Parameters<typeof orcaPlugin>[0]> = {}) {
@@ -50,26 +54,101 @@ describe('isOnNoop', () => {
   });
 });
 
+describe('parseHookResponse (fail-closed blocking path)', () => {
+  it('empty stdout on blocking path → block', () => {
+    const r = parseHookResponse('', true);
+    assert.strictEqual(r.decision, 'block');
+    assert.strictEqual(r.reason, 'orca_empty_response');
+  });
+
+  it('whitespace-only stdout on blocking path → block', () => {
+    const r = parseHookResponse('   \n\t  ', true);
+    assert.strictEqual(r.decision, 'block');
+    assert.strictEqual(r.reason, 'orca_empty_response');
+  });
+
+  it('malformed JSON on blocking path → block', () => {
+    const r = parseHookResponse('{not-json', true);
+    assert.strictEqual(r.decision, 'block');
+    assert.strictEqual(r.reason, 'orca_parse_error');
+  });
+
+  it('missing decision on blocking path → block', () => {
+    const r = parseHookResponse(JSON.stringify({ version: 1 }), true);
+    assert.strictEqual(r.decision, 'block');
+    assert.strictEqual(r.reason, 'orca_missing_decision');
+  });
+
+  it('non-string decision on blocking path → block', () => {
+    const r = parseHookResponse(JSON.stringify({ decision: 42 }), true);
+    assert.strictEqual(r.decision, 'block');
+    assert.strictEqual(r.reason, 'orca_missing_decision');
+  });
+
+  it('ask decision on blocking path → block', () => {
+    const r = parseHookResponse(
+      JSON.stringify({ decision: 'ask', reason: 'needs_approval' }),
+      true
+    );
+    assert.strictEqual(r.decision, 'block');
+    assert.strictEqual(r.reason, 'orca_ask_unsupported');
+  });
+
+  it('unrecognized decision on blocking path → block', () => {
+    const r = parseHookResponse(
+      JSON.stringify({ decision: 'maybe', reason: 'weird' }),
+      true
+    );
+    assert.strictEqual(r.decision, 'block');
+    assert.strictEqual(r.reason, 'orca_unrecognized_decision');
+  });
+
+  it('allow decision passes through', () => {
+    const r = parseHookResponse(
+      JSON.stringify({ decision: 'allow', reason: 'policy_allow' }),
+      true
+    );
+    assert.strictEqual(r.decision, 'allow');
+  });
+
+  it('block decision passes through', () => {
+    const r = parseHookResponse(
+      JSON.stringify({ decision: 'block', reason: 'policy_deny', message: 'nope' }),
+      true
+    );
+    assert.strictEqual(r.decision, 'block');
+    assert.strictEqual(r.message, 'nope');
+  });
+
+  it('empty stdout on non-blocking path → allow', () => {
+    const r = parseHookResponse('', false);
+    assert.strictEqual(r.decision, 'allow');
+  });
+});
+
 describe('orcaPlugin', () => {
-  it('warns about noop api.on for npm installs', () => {
+  it('warns about unprotected noop api.on for npm installs', () => {
     const api = makeApi({
       source: '/path/to/node_modules/orca-openclaw-plugin',
     });
-    // Prevent early return from missing binary by providing a fake PATH
-    // Since findOrca calls `which orca`, we can't easily stub it without
-    // refactoring. Instead we accept that on CI/orca-installed machines
-    // the test may take the binary-found path.
-    // For unit testing we should ideally inject findOrca, but for now
-    // we test the warning via isOnNoop directly.
     orcaPlugin(api);
 
     const warnCalls = (api.logger.warn as any).mock.calls;
     const noopWarning = warnCalls.find(
       (c: any) =>
         typeof c.arguments[0] === 'string' &&
-        c.arguments[0].includes('api.on to a no-op')
+        (c.arguments[0].includes('unprotected') ||
+          c.arguments[0] === UNPROTECTED_NOOP_WARNING)
     );
-    assert.ok(noopWarning, 'Expected warning about noop api.on');
+    assert.ok(noopWarning, 'Expected unprotected warning about noop api.on');
+    assert.ok(
+      String(noopWarning.arguments[0]).includes('unprotected'),
+      'Warning must include unprotected grade label'
+    );
+    assert.ok(
+      String(noopWarning.arguments[0]).includes('orca run -- openclaw'),
+      'Warning must recommend wrapper path'
+    );
   });
 
   it('does not warn about noop when source is bundled', () => {
@@ -82,9 +161,9 @@ describe('orcaPlugin', () => {
     const noopWarning = warnCalls.find(
       (c: any) =>
         typeof c.arguments[0] === 'string' &&
-        c.arguments[0].includes('api.on to a no-op')
+        c.arguments[0].includes('unprotected')
     );
-    assert.strictEqual(noopWarning, undefined, 'Should not warn for bundled installs');
+    assert.strictEqual(noopWarning, undefined, 'Should not warn unprotected for bundled installs');
   });
 
   it('registers lifecycle hooks even when api.on is suspected noop', () => {
