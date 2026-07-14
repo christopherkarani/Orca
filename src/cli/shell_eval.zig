@@ -112,25 +112,30 @@ pub fn pluginDecisionFromModeAndSeverity(mode: policy.schema.Mode, severity: Ris
         .observe, .trusted => switch (severity) {
             .high, .unknown => .warn,
             .medium, .low => .allow,
-            .critical => .block,
+            .critical => unreachable,
         },
         .ask => switch (severity) {
             .high, .unknown => .ask,
             .medium => .warn,
             .low => .allow,
-            .critical => .block,
+            .critical => unreachable,
         },
         .strict, .redteam => switch (severity) {
             .high, .unknown, .medium => .block,
             .low => .allow,
-            .critical => .block,
+            .critical => unreachable,
         },
         .ci => switch (severity) {
             .high, .unknown, .medium => .block,
             .low => .allow,
-            .critical => .block,
+            .critical => unreachable,
         },
     };
+}
+
+/// Mode×severity outcome for daemon Deny, including CI hardening of ask/warn.
+pub fn pluginDecisionForDaemonDeny(mode: policy.schema.Mode, severity: RiskLevel) PluginDecision {
+    return pluginDecisionFromModeAndSeverity(mode, severity).applyCiMode(mode == .ci);
 }
 
 /// Human-facing reason when mode softens a daemon deny into allow/warn/ask.
@@ -267,7 +272,7 @@ pub fn decisionFromDaemonResult(
         },
         .deny => blk: {
             const risk = riskLevelFromDaemonSeverity(daemon.responseStringField(result, "severity"));
-            const plugin_decision = pluginDecisionFromModeAndSeverity(mode, risk).applyCiMode(ci_mode);
+            const plugin_decision = pluginDecisionForDaemonDeny(mode, risk);
 
             if (plugin_decision == .block) {
                 const deny = try buildDaemonDenyReason(allocator, result);
@@ -505,19 +510,50 @@ pub fn mockDaemonDenyEvaluator(allocator: std.mem.Allocator, shell_event: ShellC
     return mockDaemonResponse(allocator, "{\"id\":1,\"result\":{\"status\":\"Deny\",\"reason\":\"Command denied by evaluator\",\"pack_id\":\"core.filesystem\",\"pattern_name\":\"destructive_rm\",\"severity\":\"critical\",\"explanation\":\"recursive delete of root\",\"suggestions\":[{\"command\":\"rm -rf ./build\",\"description\":\"Limit delete to a project build directory\",\"platform\":\"any\"}]}}");
 }
 
-pub fn mockDaemonDenyHighEvaluator(allocator: std.mem.Allocator, shell_event: ShellCommandEvent) daemon.DaemonError!std.json.Parsed(daemon.DaemonResponse) {
+fn mockDaemonDenyPackHitEvaluator(
+    allocator: std.mem.Allocator,
+    shell_event: ShellCommandEvent,
+    pack_id: []const u8,
+    pattern_name: []const u8,
+    severity_field: ?[]const u8,
+    explanation: []const u8,
+) daemon.DaemonError!std.json.Parsed(daemon.DaemonResponse) {
     recordMockShellEvent(shell_event);
-    return mockDaemonResponse(allocator, "{\"id\":1,\"result\":{\"status\":\"Deny\",\"reason\":\"Command denied by evaluator\",\"pack_id\":\"core.git\",\"pattern_name\":\"force-push\",\"severity\":\"high\",\"explanation\":\"force push rewrites remote history\"}}");
+    const json = if (severity_field) |severity| blk: {
+        break :blk try std.fmt.allocPrint(
+            allocator,
+            "{{\"id\":1,\"result\":{{\"status\":\"Deny\",\"reason\":\"Command denied by evaluator\",\"pack_id\":\"{s}\",\"pattern_name\":\"{s}\",\"severity\":\"{s}\",\"explanation\":\"{s}\"}}}}",
+            .{ pack_id, pattern_name, severity, explanation },
+        );
+    } else blk: {
+        break :blk try std.fmt.allocPrint(
+            allocator,
+            "{{\"id\":1,\"result\":{{\"status\":\"Deny\",\"reason\":\"Command denied by evaluator\",\"pack_id\":\"{s}\",\"pattern_name\":\"{s}\",\"explanation\":\"{s}\"}}}}",
+            .{ pack_id, pattern_name, explanation },
+        );
+    };
+    defer allocator.free(json);
+    return mockDaemonResponse(allocator, json);
+}
+
+pub fn mockDaemonDenyHighEvaluator(allocator: std.mem.Allocator, shell_event: ShellCommandEvent) daemon.DaemonError!std.json.Parsed(daemon.DaemonResponse) {
+    return mockDaemonDenyPackHitEvaluator(allocator, shell_event, "core.git", "force-push", "high", "force push rewrites remote history");
 }
 
 pub fn mockDaemonDenyMediumEvaluator(allocator: std.mem.Allocator, shell_event: ShellCommandEvent) daemon.DaemonError!std.json.Parsed(daemon.DaemonResponse) {
-    recordMockShellEvent(shell_event);
-    return mockDaemonResponse(allocator, "{\"id\":1,\"result\":{\"status\":\"Deny\",\"reason\":\"Command denied by evaluator\",\"pack_id\":\"containers.docker\",\"pattern_name\":\"image-prune\",\"severity\":\"medium\",\"explanation\":\"prunes docker images\"}}");
+    return mockDaemonDenyPackHitEvaluator(allocator, shell_event, "containers.docker", "image-prune", "medium", "prunes docker images");
 }
 
 pub fn mockDaemonDenyLowEvaluator(allocator: std.mem.Allocator, shell_event: ShellCommandEvent) daemon.DaemonError!std.json.Parsed(daemon.DaemonResponse) {
-    recordMockShellEvent(shell_event);
-    return mockDaemonResponse(allocator, "{\"id\":1,\"result\":{\"status\":\"Deny\",\"reason\":\"Command denied by evaluator\",\"pack_id\":\"advisory\",\"pattern_name\":\"noisy-pattern\",\"severity\":\"low\",\"explanation\":\"advisory only\"}}");
+    return mockDaemonDenyPackHitEvaluator(allocator, shell_event, "advisory", "noisy-pattern", "low", "advisory only");
+}
+
+pub fn mockDaemonDenyUnknownSeverityEvaluator(allocator: std.mem.Allocator, shell_event: ShellCommandEvent) daemon.DaemonError!std.json.Parsed(daemon.DaemonResponse) {
+    return mockDaemonDenyPackHitEvaluator(allocator, shell_event, "core.git", "unclassified-hit", "bogus", "unrecognized severity string");
+}
+
+pub fn mockDaemonDenyMissingSeverityEvaluator(allocator: std.mem.Allocator, shell_event: ShellCommandEvent) daemon.DaemonError!std.json.Parsed(daemon.DaemonResponse) {
+    return mockDaemonDenyPackHitEvaluator(allocator, shell_event, "core.git", "missing-severity", null, "severity field omitted");
 }
 
 pub fn mockDaemonSoftBlockAllowEvaluator(allocator: std.mem.Allocator, shell_event: ShellCommandEvent) daemon.DaemonError!std.json.Parsed(daemon.DaemonResponse) {
@@ -669,6 +705,11 @@ test "mode x severity matrix maps daemon denials" {
         .{ .mode = .ask, .evaluator = mockDaemonDenyEvaluator, .expected = .deny },
         .{ .mode = .strict, .evaluator = mockDaemonDenyEvaluator, .expected = .deny },
         .{ .mode = .ci, .evaluator = mockDaemonDenyEvaluator, .expected = .deny },
+        // Unknown / missing severity: unknown string follows high; omitted maps to high
+        .{ .mode = .observe, .evaluator = mockDaemonDenyUnknownSeverityEvaluator, .expected = .observe },
+        .{ .mode = .strict, .evaluator = mockDaemonDenyUnknownSeverityEvaluator, .expected = .deny },
+        .{ .mode = .ci, .evaluator = mockDaemonDenyUnknownSeverityEvaluator, .expected = .deny },
+        .{ .mode = .strict, .evaluator = mockDaemonDenyMissingSeverityEvaluator, .expected = .deny },
     };
 
     for (cases) |case| {
@@ -697,22 +738,62 @@ test "mode matrix: daemon unavailable and engine error deny in observe" {
     try std.testing.expect(std.mem.indexOf(u8, engine_err.decision.reason, "daemon evaluation error") != null);
 }
 
-test "pluginDecisionFromModeAndSeverity table" {
-    // High
-    try std.testing.expectEqual(PluginDecision.warn, pluginDecisionFromModeAndSeverity(.observe, .high));
-    try std.testing.expectEqual(PluginDecision.ask, pluginDecisionFromModeAndSeverity(.ask, .high));
-    try std.testing.expectEqual(PluginDecision.block, pluginDecisionFromModeAndSeverity(.strict, .high));
-    try std.testing.expectEqual(PluginDecision.block, pluginDecisionFromModeAndSeverity(.ci, .high));
-    // Medium
-    try std.testing.expectEqual(PluginDecision.allow, pluginDecisionFromModeAndSeverity(.observe, .medium));
-    try std.testing.expectEqual(PluginDecision.warn, pluginDecisionFromModeAndSeverity(.ask, .medium));
-    try std.testing.expectEqual(PluginDecision.block, pluginDecisionFromModeAndSeverity(.strict, .medium));
-    // Critical always block
-    try std.testing.expectEqual(PluginDecision.block, pluginDecisionFromModeAndSeverity(.observe, .critical));
-    try std.testing.expectEqual(PluginDecision.block, pluginDecisionFromModeAndSeverity(.ask, .critical));
-    // Low always allow
-    try std.testing.expectEqual(PluginDecision.allow, pluginDecisionFromModeAndSeverity(.ci, .low));
-    try std.testing.expectEqual(PluginDecision.allow, pluginDecisionFromModeAndSeverity(.strict, .low));
+test "pluginDecisionFromModeAndSeverity mode groups x severity" {
+    const Row = struct {
+        severity: RiskLevel,
+        observe_like: PluginDecision,
+        ask: PluginDecision,
+        strict_like: PluginDecision,
+        ci: PluginDecision,
+    };
+
+    const rows = [_]Row{
+        .{ .severity = .critical, .observe_like = .block, .ask = .block, .strict_like = .block, .ci = .block },
+        .{ .severity = .high, .observe_like = .warn, .ask = .ask, .strict_like = .block, .ci = .block },
+        .{ .severity = .unknown, .observe_like = .warn, .ask = .ask, .strict_like = .block, .ci = .block },
+        .{ .severity = .medium, .observe_like = .allow, .ask = .warn, .strict_like = .block, .ci = .block },
+        .{ .severity = .low, .observe_like = .allow, .ask = .allow, .strict_like = .allow, .ci = .allow },
+    };
+
+    const observe_modes = [_]policy.schema.Mode{ .observe, .trusted };
+    const strict_modes = [_]policy.schema.Mode{ .strict, .redteam };
+
+    for (rows) |row| {
+        for (observe_modes) |mode| {
+            try std.testing.expectEqual(row.observe_like, pluginDecisionFromModeAndSeverity(mode, row.severity));
+        }
+        try std.testing.expectEqual(row.ask, pluginDecisionFromModeAndSeverity(.ask, row.severity));
+        for (strict_modes) |mode| {
+            try std.testing.expectEqual(row.strict_like, pluginDecisionFromModeAndSeverity(mode, row.severity));
+        }
+        try std.testing.expectEqual(row.ci, pluginDecisionFromModeAndSeverity(.ci, row.severity));
+    }
+
+    // Security invariants: observe ≠ strict for high; ci never softens pack hits to allow.
+    try std.testing.expect(pluginDecisionFromModeAndSeverity(.observe, .high) != pluginDecisionFromModeAndSeverity(.strict, .high));
+    for ([_]RiskLevel{ .critical, .high, .medium, .unknown }) |severity| {
+        try std.testing.expect(pluginDecisionForDaemonDeny(.ci, severity) != .allow);
+        try std.testing.expectEqual(PluginDecision.block, pluginDecisionForDaemonDeny(.ci, severity));
+    }
+}
+
+test "riskLevelFromDaemonSeverity maps null to high and nonsense to unknown" {
+    try std.testing.expectEqual(RiskLevel.high, riskLevelFromDaemonSeverity(null));
+    try std.testing.expectEqual(RiskLevel.high, riskLevelFromDaemonSeverity("HIGH"));
+    try std.testing.expectEqual(RiskLevel.critical, riskLevelFromDaemonSeverity("Critical"));
+    try std.testing.expectEqual(RiskLevel.medium, riskLevelFromDaemonSeverity("medium"));
+    try std.testing.expectEqual(RiskLevel.low, riskLevelFromDaemonSeverity("low"));
+    try std.testing.expectEqual(RiskLevel.unknown, riskLevelFromDaemonSeverity("bogus"));
+    try std.testing.expectEqual(RiskLevel.unknown, riskLevelFromDaemonSeverity(""));
+}
+
+test "PluginDecision.applyCiMode hardens ask and warn only" {
+    try std.testing.expectEqual(PluginDecision.block, PluginDecision.ask.applyCiMode(true));
+    try std.testing.expectEqual(PluginDecision.block, PluginDecision.warn.applyCiMode(true));
+    try std.testing.expectEqual(PluginDecision.ask, PluginDecision.ask.applyCiMode(false));
+    try std.testing.expectEqual(PluginDecision.warn, PluginDecision.warn.applyCiMode(false));
+    try std.testing.expectEqual(PluginDecision.allow, PluginDecision.allow.applyCiMode(true));
+    try std.testing.expectEqual(PluginDecision.block, PluginDecision.block.applyCiMode(true));
 }
 
 test "mode-softened high severity maps to valid plugin decision vocabulary" {
