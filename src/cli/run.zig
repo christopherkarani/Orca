@@ -324,6 +324,15 @@ fn commandWithStdioAndEnv(io: std.Io, argv: []const []const u8, stdout: anytype,
             try self.env_map.put("ORCA_WORKSPACE_ROOT", session.workspace_root);
             if (self.selected_policy.source_path) |path| try self.env_map.put("ORCA_POLICY_PATH", path);
             try self.env_map.put("ORCA_MODE", self.effective_mode.toString());
+            // Durable mode for path-shim callbacks — env alone is child-writable.
+            const shim_mod = @import("shim.zig");
+            try shim_mod.writeSessionShimMode(
+                self.audit_context.io,
+                self.allocator,
+                session.workspace_root,
+                session.id.slice(),
+                self.effective_mode,
+            );
         }
 
         fn auditBackendCapability(self: *@This(), session: core.session.Session) !void {

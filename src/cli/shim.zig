@@ -76,7 +76,7 @@ fn execWithEnv(io: std.Io, allocator: std.mem.Allocator, command_argv: []const [
         else => return err,
     };
     defer selected.deinit();
-    const effective_mode = shimMode(&selected.policy, env_map);
+    const effective_mode = try shimMode(io, allocator, workspace_root, session_id, &selected.policy, env_map);
 
     var command_decision = try shell_eval.evaluateCommand(allocator, effective_mode, command_argv, workspace_root, shell_evaluator, null, null);
     defer command_decision.deinit(allocator);
@@ -205,11 +205,73 @@ fn loadRecordedPolicySource(io: std.Io, allocator: std.mem.Allocator, source: []
     return policy.load.discover(io, allocator, source, workspace_root);
 }
 
-fn shimMode(selected: *const policy.schema.Policy, env_map: *const std.process.Environ.Map) policy.schema.Mode {
-    if (env_map.get("ORCA_MODE")) |mode_text| {
-        return policy.schema.Mode.parse(mode_text) orelse selected.mode;
+/// Session-recorded mode file written by `orca run` before shims are active.
+/// Child processes can rewrite env; they must not rewrite enforcement mode via `ORCA_MODE`.
+pub const session_mode_filename = "shim_mode";
+
+fn sessionModePath(allocator: std.mem.Allocator, workspace_root: []const u8, session_id: []const u8) ![]u8 {
+    return try std.fs.path.join(allocator, &.{ workspace_root, ".orca", "sessions", session_id, session_mode_filename });
+}
+
+/// Persist the parent session's effective mode so shim callbacks cannot soften via env.
+pub fn writeSessionShimMode(io: std.Io, allocator: std.mem.Allocator, workspace_root: []const u8, session_id: []const u8, mode: policy.schema.Mode) !void {
+    const path = try sessionModePath(allocator, workspace_root, session_id);
+    defer allocator.free(path);
+    const sessions_dir = try std.fs.path.join(allocator, &.{ workspace_root, ".orca", "sessions", session_id });
+    defer allocator.free(sessions_dir);
+    try std.Io.Dir.cwd().createDirPath(io, sessions_dir);
+    const file = try std.Io.Dir.cwd().createFile(io, path, .{});
+    defer file.close(io);
+    try file.writeStreamingAll(io, mode.toString());
+    try file.writeStreamingAll(io, "\n");
+}
+
+fn readSessionShimMode(io: std.Io, allocator: std.mem.Allocator, workspace_root: []const u8, session_id: []const u8) !?policy.schema.Mode {
+    const path = try sessionModePath(allocator, workspace_root, session_id);
+    defer allocator.free(path);
+    const bytes = std.Io.Dir.cwd().readFileAlloc(io, path, allocator, .limited(64)) catch return null;
+    defer allocator.free(bytes);
+    const trimmed = std.mem.trim(u8, bytes, " \t\r\n");
+    return policy.schema.Mode.parse(trimmed);
+}
+
+fn modeStrictness(mode: policy.schema.Mode) u8 {
+    return switch (mode) {
+        .observe, .trusted => 0,
+        .ask => 1,
+        .strict, .redteam => 2,
+        .ci => 3,
+    };
+}
+
+fn moreRestrictiveMode(a: policy.schema.Mode, b: policy.schema.Mode) policy.schema.Mode {
+    return if (modeStrictness(a) >= modeStrictness(b)) a else b;
+}
+
+/// Resolve shim evaluation mode. Child env is hostile: never soften below the
+/// parent-recorded session mode (or policy mode when no recording exists).
+fn shimMode(
+    io: std.Io,
+    allocator: std.mem.Allocator,
+    workspace_root: []const u8,
+    session_id: []const u8,
+    selected: *const policy.schema.Policy,
+    env_map: *const std.process.Environ.Map,
+) !policy.schema.Mode {
+    // Parent `orca run` writes shim_mode before PATH shims are active. Prefer it
+    // over ORCA_MODE so agents cannot ORCA_MODE=observe their way past strict.
+    if (try readSessionShimMode(io, allocator, workspace_root, session_id)) |recorded| {
+        return recorded;
     }
-    return selected.mode;
+
+    // Legacy / tests without a recorded mode: env may only raise strictness.
+    const policy_mode = selected.mode;
+    if (env_map.get("ORCA_MODE")) |mode_text| {
+        if (policy.schema.Mode.parse(mode_text)) |env_mode| {
+            return moreRestrictiveMode(policy_mode, env_mode);
+        }
+    }
+    return policy_mode;
 }
 
 fn approvalRecordedForCommand(io: std.Io, allocator: std.mem.Allocator, workspace_root: []const u8, session_id: []const u8, command_display: []const u8) !bool {
@@ -499,6 +561,32 @@ test "shim callback accepts recorded builtin policy source" {
     try std.testing.expectEqual(exit_codes.success, code);
 }
 
+test "shim ignores child ORCA_MODE softening when session mode is strict" {
+    if (@import("builtin").os.tag == .windows) return error.SkipZigTest;
+    var fx = try prepareShimExecFixture(.{
+        .mode = "strict",
+        .real_bin = "git",
+        .policy_path = "builtin:strict",
+        .record_builtin_policy = true,
+    });
+    defer fx.deinit();
+
+    // Child tries to soften enforcement — session shim_mode must win.
+    try fx.env_map.put("ORCA_MODE", "observe");
+
+    var stderr_buf: [2048]u8 = undefined;
+    var stderr_writer: std.Io.Writer = .fixed(&stderr_buf);
+    const code = try execWithEnv(
+        std.testing.io,
+        std.testing.allocator,
+        &.{ "git", "push", "--force" },
+        &fx.env_map,
+        &stderr_writer,
+        shell_eval.mockDaemonDenyHighEvaluator,
+    );
+    try std.testing.expectEqual(exit_codes.denial, code);
+}
+
 test "shim fails closed on daemon evaluate failures" {
     if (@import("builtin").os.tag == .windows) return error.SkipZigTest;
 
@@ -630,6 +718,10 @@ fn prepareShimExecFixture(opts: ShimFixtureOpts) !ShimTestEnv {
     if (opts.record_builtin_policy) {
         try recordShimPolicyLoaded(std.testing.allocator, root, session_id, "builtin:strict");
     }
+
+    // Parent session mode recording (same as orca run installShims).
+    const mode = policy.schema.Mode.parse(opts.mode) orelse .strict;
+    try writeSessionShimMode(std.testing.io, std.testing.allocator, root, session_id, mode);
 
     var env_map = std.process.Environ.Map.init(std.testing.allocator);
     errdefer env_map.deinit();

@@ -144,7 +144,9 @@ pub fn command(io: std.Io, argv: []const []const u8, stdout: anytype, stderr: an
 
     const os = core.platform.detectOs();
     const backend_report = sandbox.backend.detect(os);
-    var context = collectIntegrationContext(io, allocator) catch |err| {
+    // --check/--json are probe contracts: never spawn/ensure the daemon.
+    const ensure_running = !(options.check or options.json);
+    var context = collectIntegrationContext(io, allocator, ensure_running) catch |err| {
         try stderr.print("orca doctor: failed to collect integration context: {s}\n", .{@errorName(err)});
         return exit_codes.general;
     };
@@ -625,13 +627,13 @@ fn writeRecommendations(stdout: anytype, context: IntegrationContext) !void {
     }
 }
 
-fn collectIntegrationContext(io: std.Io, allocator: std.mem.Allocator) !IntegrationContext {
+fn collectIntegrationContext(io: std.Io, allocator: std.mem.Allocator, ensure_running: bool) !IntegrationContext {
     const workspace_root = supervisor.resolveWorkspaceRoot(io, allocator, null, ".") catch try allocator.dupe(u8, ".");
     errdefer allocator.free(workspace_root);
-    return try collectIntegrationContextAt(io, allocator, workspace_root);
+    return try collectIntegrationContextAt(io, allocator, workspace_root, ensure_running);
 }
 
-fn collectIntegrationContextAt(io: std.Io, allocator: std.mem.Allocator, workspace_root: []const u8) !IntegrationContext {
+fn collectIntegrationContextAt(io: std.Io, allocator: std.mem.Allocator, workspace_root: []const u8, ensure_running: bool) !IntegrationContext {
     const git_present = hasPath(io, workspace_root, ".git");
 
     const policy_path = try std.fs.path.join(allocator, &.{ workspace_root, ".orca", "policy.yaml" });
@@ -660,9 +662,10 @@ fn collectIntegrationContextAt(io: std.Io, allocator: std.mem.Allocator, workspa
         else => null,
     };
     defer if (daemon_paths) |value| cli.daemon.freeRuntimePaths(allocator, value);
-    // Shared onboarding health path (same as status/quickstart) so --check readiness does not drift.
+    // Shared onboarding health path (same as status/quickstart). Probe paths pass
+    // ensure_running=false so --check never mutates daemon runtime.
     const daemon_health: DaemonHealth = blk: {
-        const check = onboarding.checkDaemonHealth(allocator, true, null) catch |err| {
+        const check = onboarding.checkDaemonHealth(allocator, ensure_running, null) catch |err| {
             break :blk try daemonDetailFromError(allocator, err);
         };
         break :blk .{
@@ -1008,7 +1011,7 @@ test "doctor detects valid policy in current workspace" {
     var stderr_buf: [512]u8 = undefined;
     var stdout_writer: std.Io.Writer = .fixed(&stdout_buf);
     var stderr_writer: std.Io.Writer = .fixed(&stderr_buf);
-    var context = try collectIntegrationContextAt(std.testing.io, std.testing.allocator, tmp_path);
+    var context = try collectIntegrationContextAt(std.testing.io, std.testing.allocator, tmp_path, true);
     defer context.deinit();
 
     try writeReport(std.testing.io, &stdout_writer, core.platform.detectOs(), sandbox.backend.detect(core.platform.detectOs()), context, true);
@@ -1039,7 +1042,7 @@ test "doctor reports invalid policy clearly without printing synthetic secrets" 
     var stderr_buf: [512]u8 = undefined;
     var stdout_writer: std.Io.Writer = .fixed(&stdout_buf);
     var stderr_writer: std.Io.Writer = .fixed(&stderr_buf);
-    var context = try collectIntegrationContextAt(std.testing.io, std.testing.allocator, tmp_path);
+    var context = try collectIntegrationContextAt(std.testing.io, std.testing.allocator, tmp_path, true);
     defer context.deinit();
 
     try writeReport(std.testing.io, &stdout_writer, core.platform.detectOs(), sandbox.backend.detect(core.platform.detectOs()), context, true);
@@ -1089,7 +1092,7 @@ test "doctor --verbose prints full report" {
 
 test "doctor integration collection returns allocator failures instead of panicking" {
     var failing_allocator = std.testing.FailingAllocator.init(std.testing.allocator, .{ .fail_index = 0 });
-    try std.testing.expectError(error.OutOfMemory, collectIntegrationContextAt(std.testing.io, failing_allocator.allocator(), "."));
+    try std.testing.expectError(error.OutOfMemory, collectIntegrationContextAt(std.testing.io, failing_allocator.allocator(), ".", true));
 }
 
 test "doctor output contains status glyphs in plain text mode" {

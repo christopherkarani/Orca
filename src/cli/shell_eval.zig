@@ -145,7 +145,8 @@ pub fn modeSoftenedReason(mode: policy.schema.Mode, severity: RiskLevel, plugin:
             .observe, .trusted => "allowed in observe; would deny in strict",
             .ask => "allowed in ask mode for low-severity pack hit",
             .strict, .redteam => "allowed in strict for low-severity pack hit",
-            .ci => "allowed in ci for low-severity pack hit",
+            // CI never softens Deny to allow (matrix always blocks); keep exhaustive.
+            .ci => unreachable,
         },
         .warn => switch (mode) {
             .observe, .trusted => "allowed in observe (warn); would deny in strict",
@@ -177,7 +178,9 @@ fn severityEquals(severity: []const u8, expected: []const u8) bool {
 }
 
 pub fn riskLevelFromDaemonSeverity(severity: ?[]const u8) RiskLevel {
-    const value = severity orelse return .high;
+    // Missing severity on Deny must not soften: treat as critical so observe/ask
+    // cannot warn-allow catastrophic hits that omitted the field.
+    const value = severity orelse return .critical;
     if (severityEquals(value, "critical")) return .critical;
     if (severityEquals(value, "high")) return .high;
     if (severityEquals(value, "medium")) return .medium;
@@ -704,10 +707,11 @@ test "mode x severity matrix maps daemon denials" {
         .{ .mode = .ask, .evaluator = mockDaemonDenyEvaluator, .expected = .deny },
         .{ .mode = .strict, .evaluator = mockDaemonDenyEvaluator, .expected = .deny },
         .{ .mode = .ci, .evaluator = mockDaemonDenyEvaluator, .expected = .deny },
-        // Unknown / missing severity: unknown string follows high; omitted maps to high
+        // Unknown severity string follows high (warn in observe); omitted severity is critical (never softens).
         .{ .mode = .observe, .evaluator = mockDaemonDenyUnknownSeverityEvaluator, .expected = .observe },
         .{ .mode = .strict, .evaluator = mockDaemonDenyUnknownSeverityEvaluator, .expected = .deny },
         .{ .mode = .ci, .evaluator = mockDaemonDenyUnknownSeverityEvaluator, .expected = .deny },
+        .{ .mode = .observe, .evaluator = mockDaemonDenyMissingSeverityEvaluator, .expected = .deny },
         .{ .mode = .strict, .evaluator = mockDaemonDenyMissingSeverityEvaluator, .expected = .deny },
     };
 
@@ -776,8 +780,8 @@ test "pluginDecisionFromModeAndSeverity mode groups x severity" {
     }
 }
 
-test "riskLevelFromDaemonSeverity maps null to high and nonsense to unknown" {
-    try std.testing.expectEqual(RiskLevel.high, riskLevelFromDaemonSeverity(null));
+test "riskLevelFromDaemonSeverity maps null to critical and nonsense to unknown" {
+    try std.testing.expectEqual(RiskLevel.critical, riskLevelFromDaemonSeverity(null));
     try std.testing.expectEqual(RiskLevel.high, riskLevelFromDaemonSeverity("HIGH"));
     try std.testing.expectEqual(RiskLevel.critical, riskLevelFromDaemonSeverity("Critical"));
     try std.testing.expectEqual(RiskLevel.medium, riskLevelFromDaemonSeverity("medium"));

@@ -13,7 +13,10 @@ pub const EnvOverrideTrust = enum {
 /// Assess whether an `ORCA_DAEMON` path is safe to execute.
 /// Stat failures are treated as untrusted (fail-closed for env overrides).
 pub fn assessEnvOverridePath(io: std.Io, path: []const u8) EnvOverrideTrust {
-    if (builtin.os.tag == .windows) return .trusted;
+    // POSIX trust checks (symlink + world-writable) do not map cleanly to Win32
+    // ACLs yet. Refuse env overrides on Windows until ACL-based checks exist —
+    // fail closed rather than treating every override as trusted.
+    if (builtin.os.tag == .windows) return .untrusted_stat_unavailable;
     const link_stat = std.Io.Dir.cwd().statFile(io, path, .{ .follow_symlinks = false }) catch return .untrusted_stat_unavailable;
     if (link_stat.kind == .sym_link) return .untrusted_symlink;
     const stat = std.Io.Dir.cwd().statFile(io, path, .{}) catch return .untrusted_stat_unavailable;

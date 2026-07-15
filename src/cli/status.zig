@@ -50,7 +50,9 @@ pub fn commandWithDeps(
     defer _ = gpa_state.deinit();
     const allocator = gpa_state.allocator();
 
-    var snapshot = try collectSnapshot(execute_cli, daemon_check_fn, io, allocator);
+    // --check/--json are probe contracts: never spawn/ensure the daemon.
+    const ensure_running = !(options.check or options.json);
+    var snapshot = try collectSnapshot(execute_cli, daemon_check_fn, io, allocator, ensure_running);
     defer snapshot.deinit(allocator);
 
     if (options.json) {
@@ -80,7 +82,8 @@ fn parseOptions(argv: []const []const u8, stderr: anytype) !Options {
 }
 
 const Snapshot = struct {
-    daemon_status: []const u8,
+    /// Typed daemon health — format at edges (human vs wire).
+    daemon_health: onboarding.DaemonHealthStatus,
     daemon_detail: []const u8,
     policy_path: []const u8,
     policy_present: bool,
@@ -96,7 +99,6 @@ const Snapshot = struct {
     readiness: readiness.Assessment,
 
     fn deinit(self: *Snapshot, allocator: std.mem.Allocator) void {
-        allocator.free(self.daemon_status);
         allocator.free(self.daemon_detail);
         allocator.free(self.policy_path);
         if (self.policy_mode) |m| allocator.free(m);
@@ -115,11 +117,10 @@ fn collectSnapshot(
     daemon_check_fn: ?*const fn (std.mem.Allocator, bool) anyerror!void,
     io: std.Io,
     allocator: std.mem.Allocator,
+    ensure_running: bool,
 ) !Snapshot {
-    // Daemon: ensure/start with existing timeout patterns when possible.
-    const daemon_check = try onboarding.checkDaemonHealth(allocator, true, daemon_check_fn);
-    const daemon_status = try allocator.dupe(u8, daemonHumanStatus(daemon_check.status));
-    errdefer allocator.free(daemon_status);
+    // Probe paths pass ensure_running=false so --check never mutates runtime.
+    const daemon_check = try onboarding.checkDaemonHealth(allocator, ensure_running, daemon_check_fn);
     const daemon_detail = try allocator.dupe(u8, daemon_check.detail);
     errdefer allocator.free(daemon_detail);
 
@@ -166,7 +167,7 @@ fn collectSnapshot(
     errdefer allocator.free(next_step);
 
     return .{
-        .daemon_status = daemon_status,
+        .daemon_health = daemon_check.status,
         .daemon_detail = daemon_detail,
         .policy_path = policy_path,
         .policy_present = policy_present,
@@ -181,10 +182,6 @@ fn collectSnapshot(
         .next_step = next_step,
         .readiness = core_ready,
     };
-}
-
-fn daemonHumanStatus(status: onboarding.DaemonHealthStatus) []const u8 {
-    return status.label();
 }
 
 fn readPolicyMeta(io: std.Io, allocator: std.mem.Allocator, path: []const u8) struct { mode: ?[]const u8, preset: ?[]const u8 } {
@@ -285,7 +282,7 @@ fn chooseNextStep(
 
 fn writeHuman(stdout: anytype, s: Snapshot) !void {
     try stdout.writeAll("Orca status\n");
-    try stdout.print("  Daemon:    {s}  ({s})\n", .{ s.daemon_status, s.daemon_detail });
+    try stdout.print("  Daemon:    {s}  ({s})\n", .{ s.daemon_health.label(), s.daemon_detail });
     if (s.policy_present) {
         try stdout.writeAll("  Policy:    ");
         try stdout.writeAll(s.policy_path);
@@ -304,10 +301,11 @@ fn writeHuman(stdout: anytype, s: Snapshot) !void {
 
 fn writeJson(stdout: anytype, s: Snapshot, check_mode: bool) !void {
     // Shared readiness envelope leaves the root object open after policy so we can append.
+    // Wire vocabulary only — never human labels like "healthy".
     try readiness.writeJsonEnvelope(stdout, .{
         .assessment = s.readiness,
         .check = check_mode,
-        .daemon_status = s.daemon_status,
+        .daemon_status = readiness.daemonWireLabel(s.daemon_health),
         .daemon_detail = s.daemon_detail,
         .policy_path = s.policy_path,
         .policy_mode = s.policy_mode,
@@ -423,6 +421,10 @@ test "status --json includes ready state and policy.valid" {
     try std.testing.expect(std.mem.indexOf(u8, out, "\"hosts\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, out, "\"packs\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, out, "\"next\"") != null);
+    // Wire vocabulary only — never human "healthy".
+    try std.testing.expect(std.mem.indexOf(u8, out, "\"status\":\"compatible\"") != null or std.mem.indexOf(u8, out, "\"status\": \"compatible\"") != null or std.mem.indexOf(u8, out, "\"status\":\"unavailable\"") != null or std.mem.indexOf(u8, out, "\"status\": \"unavailable\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "\"status\":\"healthy\"") == null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "\"status\": \"healthy\"") == null);
 
     var parsed = try std.json.parseFromSlice(std.json.Value, std.testing.allocator, out, .{});
     defer parsed.deinit();
@@ -430,9 +432,29 @@ test "status --json includes ready state and policy.valid" {
     try std.testing.expectEqual(@as(i64, 1), parsed.value.object.get("schema_version").?.integer);
     try std.testing.expect(parsed.value.object.get("ready") != null);
     try std.testing.expect(parsed.value.object.get("state") != null);
+    const daemon_obj = parsed.value.object.get("daemon").?.object;
+    const wire_status = daemon_obj.get("status").?.string;
+    try std.testing.expect(std.mem.eql(u8, wire_status, "compatible") or std.mem.eql(u8, wire_status, "unavailable") or std.mem.eql(u8, wire_status, "incompatible") or std.mem.eql(u8, wire_status, "degraded"));
+    try std.testing.expect(!std.mem.eql(u8, wire_status, "healthy"));
     const policy_obj = parsed.value.object.get("policy").?.object;
     try std.testing.expect(policy_obj.get("valid") != null);
     try std.testing.expect(policy_obj.get("present") != null);
+}
+
+test "status --check does not ensure-run the daemon" {
+    const Spy = struct {
+        var ensure_running: ?bool = null;
+        fn check(_: std.mem.Allocator, ensure: bool) anyerror!void {
+            ensure_running = ensure;
+        }
+    };
+    Spy.ensure_running = null;
+    var stdout_buf: [4096]u8 = undefined;
+    var stderr_buf: [256]u8 = undefined;
+    var stdout_writer: std.Io.Writer = .fixed(&stdout_buf);
+    var stderr_writer: std.Io.Writer = .fixed(&stderr_buf);
+    _ = try commandWithDeps(fakePacksFail, Spy.check, std.testing.io, &.{"--check"}, &stdout_writer, &stderr_writer);
+    try std.testing.expectEqual(false, Spy.ensure_running.?);
 }
 
 test "status --check --json fails when daemon down and sets check true" {

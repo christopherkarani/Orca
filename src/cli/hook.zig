@@ -1502,6 +1502,7 @@ fn extractShellCommand(payload: std.json.Value) CommandFieldState {
 fn extractToolName(payload: std.json.Value) ?[]const u8 {
     return extractString(payload, "tool") orelse
         extractString(payload, "tool_name") orelse
+        extractString(payload, "toolName") orelse // OpenClaw before_tool_call
         extractString(payload, "name") orelse
         extractNestedString(payload, &.{ "tool", "name" });
 }
@@ -1549,22 +1550,7 @@ fn isFileTool(tool_name: []const u8) bool {
 }
 
 fn isShellTool(tool_name: []const u8) bool {
-    const shell_tools = &[_][]const u8{
-        "bash",
-        "shell",
-        "sh",
-        "zsh",
-        "terminal",
-        "run_shell_command",
-        "run_terminal_cmd",
-        "powershell",
-        "pwsh",
-        "launch-process",
-    };
-    for (shell_tools) |st| {
-        if (std.ascii.eqlIgnoreCase(tool_name, st)) return true;
-    }
-    return false;
+    return @import("shell_tools.zig").isShellTool(tool_name);
 }
 
 const command_field_paths = [_][]const []const u8{

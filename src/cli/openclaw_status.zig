@@ -3,6 +3,7 @@
 //! unprotected; hook grade is unverified; prefer wrapper `orca run -- openclaw`.
 
 const std = @import("std");
+const core = @import("orca_core").core;
 
 /// Shared enforcement note (plain + JSON). Single source of truth for doctor copy.
 pub const enforcement_note =
@@ -29,13 +30,13 @@ pub fn writeDoctorHonesty(stdout: anytype) !void {
 /// (caller has already written detection_note and a trailing comma is expected before this).
 pub fn writePathsJsonHonesty(stdout: anytype) !void {
     try stdout.writeAll("    \"enforcement_note\": ");
-    try writeJsonString(stdout, enforcement_note);
+    try core.util.writeJsonString(stdout, enforcement_note);
     try stdout.writeAll(",\n");
     try stdout.writeAll("    \"hook_grade\": ");
-    try writeJsonString(stdout, hook_grade);
+    try core.util.writeJsonString(stdout, hook_grade);
     try stdout.writeAll(",\n");
     try stdout.writeAll("    \"npm_path\": ");
-    try writeJsonString(stdout, npm_path_label);
+    try core.util.writeJsonString(stdout, npm_path_label);
     try stdout.writeAll("\n");
 }
 
@@ -46,22 +47,6 @@ pub fn writeInstallPaths(stdout: anytype) !void {
     try stdout.writeAll("    local:   openclaw plugins install ./integrations/openclaw-plugin\n");
     try stdout.writeAll("    npm:     openclaw plugins install npm:orca-openclaw-plugin (published; unprotected — hooks no-op)\n");
     try stdout.writeAll("    clawhub: openclaw plugins install clawhub:orca-openclaw-plugin (published; unprotected — hooks no-op)\n");
-}
-
-fn writeJsonString(writer: anytype, value: []const u8) !void {
-    try writer.writeByte('"');
-    for (value) |byte| {
-        switch (byte) {
-            '"' => try writer.writeAll("\\\""),
-            '\\' => try writer.writeAll("\\\\"),
-            '\n' => try writer.writeAll("\\n"),
-            '\r' => try writer.writeAll("\\r"),
-            '\t' => try writer.writeAll("\\t"),
-            0...8, 11...12, 14...0x1f => try writer.print("\\u{x:0>4}", .{byte}),
-            else => try writer.writeByte(byte),
-        }
-    }
-    try writer.writeByte('"');
 }
 
 test "openclaw honesty constants are stable tokens" {

@@ -192,26 +192,36 @@ pub fn extractCwd(root: std.json.Value, format: InputFormat) ?[]const u8 {
 
 fn isShellHookCandidate(object: std.json.ObjectMap) bool {
     const tool_name = stringField(object, "tool_name") orelse stringField(object, "toolName");
-    if (tool_name) |name| return isSupportedShellTool(name);
+    if (tool_name) |name| {
+        // Known shell tool names always route through the daemon evaluator.
+        if (isSupportedShellTool(name)) return true;
+        // Unknown tool name with an explicit command field is still shell-like —
+        // misclassification would fail-open real shell hosts (e.g. "Shell", "exec").
+        if (toolInputHasCommand(object)) return true;
+        return false;
+    }
     return object.get("tool_input") != null or object.get("toolInput") != null or
         object.get("tool_args") != null or object.get("toolArgs") != null;
 }
 
-fn isSupportedShellTool(tool_name: []const u8) bool {
-    var lower_buf: [64]u8 = undefined;
-    if (tool_name.len > lower_buf.len) return false;
-    for (tool_name, 0..) |c, i| {
-        lower_buf[i] = std.ascii.toLower(c);
+fn toolInputHasCommand(object: std.json.ObjectMap) bool {
+    if (object.get("tool_input")) |v| {
+        if (extractCommandFromToolInput(v) != null) return true;
     }
-    const lower = lower_buf[0..tool_name.len];
-    return std.mem.eql(u8, lower, "bash") or
-        std.mem.eql(u8, lower, "launch-process") or
-        std.mem.eql(u8, lower, "powershell") or
-        std.mem.eql(u8, lower, "pwsh") or
-        std.mem.eql(u8, lower, "run_shell_command") or
-        std.mem.eql(u8, lower, "run-shell-command") or
-        std.mem.eql(u8, lower, "terminal") or
-        std.mem.eql(u8, lower, "run_terminal_cmd");
+    if (object.get("toolInput")) |v| {
+        if (extractCommandFromToolInput(v) != null) return true;
+    }
+    if (object.get("tool_args")) |v| {
+        if (extractCommandFromToolArgs(v) != null) return true;
+    }
+    if (object.get("toolArgs")) |v| {
+        if (extractCommandFromToolArgs(v) != null) return true;
+    }
+    return false;
+}
+
+fn isSupportedShellTool(tool_name: []const u8) bool {
+    return @import("shell_tools.zig").isShellTool(tool_name);
 }
 
 fn extractCommandFromToolInput(value: std.json.Value) ?[]const u8 {
@@ -352,6 +362,23 @@ test "extractCommand reads Bash tool_input and cursor command fields" {
     var cursor = std.json.parseFromSlice(std.json.Value, std.testing.allocator, "{\"command\":\"pwd\",\"cwd\":\"/tmp\"}", .{}) catch unreachable;
     defer cursor.deinit();
     try std.testing.expectEqualStrings("pwd", extractCommand(cursor.value, .cursor_shell).?);
+}
+
+test "extractCommand routes Shell shell sh zsh exec tool names as shell" {
+    const payloads = [_][]const u8{
+        "{\"tool_name\":\"Shell\",\"tool_input\":{\"command\":\"git status\"}}",
+        "{\"tool_name\":\"shell\",\"tool_input\":{\"command\":\"git status\"}}",
+        "{\"tool_name\":\"sh\",\"tool_input\":{\"command\":\"git status\"}}",
+        "{\"tool_name\":\"zsh\",\"tool_input\":{\"command\":\"git status\"}}",
+        "{\"toolName\":\"exec\",\"tool_input\":{\"command\":\"git status\"}}",
+        "{\"tool_name\":\"UnknownTool\",\"tool_input\":{\"command\":\"git status\"}}",
+    };
+    for (payloads) |payload| {
+        var parsed = try std.json.parseFromSlice(std.json.Value, std.testing.allocator, payload, .{});
+        defer parsed.deinit();
+        try std.testing.expectEqual(InputFormat.agent_hook, detectInputFormat(parsed.value).?);
+        try std.testing.expectEqualStrings("git status", extractCommand(parsed.value, .agent_hook).?);
+    }
 }
 
 test "evaluatePayload allow emits cursor JSON and empty agent stdout" {

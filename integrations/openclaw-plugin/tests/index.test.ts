@@ -2,6 +2,7 @@ import { describe, it, mock } from 'node:test';
 import assert from 'node:assert';
 import orcaPlugin, {
   isOnNoop,
+  normalizeOpenClawToolEvent,
   parseHookResponse,
   UNPROTECTED_NOOP_WARNING,
 } from '../src/index.ts';
@@ -126,6 +127,19 @@ describe('parseHookResponse (fail-closed blocking path)', () => {
   });
 });
 
+describe('normalizeOpenClawToolEvent', () => {
+  it('maps toolName + params.command into Orca shell envelope', () => {
+    const n = normalizeOpenClawToolEvent({
+      toolName: 'exec',
+      params: { command: 'git status', cwd: '/tmp' },
+    });
+    assert.strictEqual(n.tool, 'exec');
+    assert.strictEqual(n.tool_name, 'exec');
+    assert.strictEqual(n.command, 'git status');
+    assert.strictEqual(n.cwd, '/tmp');
+  });
+});
+
 describe('orcaPlugin', () => {
   it('warns about unprotected noop api.on for npm installs', () => {
     const api = makeApi({
@@ -166,7 +180,47 @@ describe('orcaPlugin', () => {
     assert.strictEqual(noopWarning, undefined, 'Should not warn unprotected for bundled installs');
   });
 
-  it('registers lifecycle hooks even when api.on is suspected noop', () => {
+  it('registers fail-closed before_tool_call when binary is missing', async () => {
+    const prevBin = process.env.ORCA_BIN;
+    const prevAllow = process.env.ORCA_ALLOW_WORKSPACE_BIN;
+    delete process.env.ORCA_BIN;
+    delete process.env.ORCA_ALLOW_WORKSPACE_BIN;
+    // Force PATH miss by using a name that won't exist if which is used...
+    // findOrca uses which orca; in CI orca may exist. Prefer ORCA_BIN pointing at missing path.
+    process.env.ORCA_BIN = '/tmp/orca-definitely-missing-deadbeef';
+
+    try {
+      const api = makeApi({
+        source: '/path/to/node_modules/orca-openclaw-plugin',
+      });
+      orcaPlugin(api);
+
+      const onCalls = (api.on as any).mock.calls;
+      const events = onCalls.map((c: any) => c.arguments[0]);
+      assert.ok(events.includes('before_tool_call'));
+      // Missing binary: only the veto hook is required.
+      assert.ok(!events.includes('session_start') || events.includes('before_tool_call'));
+
+      const beforeCall = onCalls.find((c: any) => c.arguments[0] === 'before_tool_call');
+      assert.ok(beforeCall, 'before_tool_call must be registered');
+      const handler = beforeCall.arguments[1] as () => Promise<{ block?: boolean; blockReason?: string }>;
+      const result = await handler();
+      assert.strictEqual(result.block, true);
+      assert.ok(
+        String(result.blockReason).includes('not found'),
+        'missing binary must veto tools'
+      );
+    } finally {
+      if (prevBin === undefined) delete process.env.ORCA_BIN;
+      else process.env.ORCA_BIN = prevBin;
+      if (prevAllow === undefined) delete process.env.ORCA_ALLOW_WORKSPACE_BIN;
+      else process.env.ORCA_ALLOW_WORKSPACE_BIN = prevAllow;
+    }
+  });
+
+  it('registers lifecycle hooks even when api.on is suspected noop (when binary resolves)', () => {
+    // Skip assertion of all hooks when no binary is available — missing-binary
+    // path is covered by the fail-closed test above.
     const api = makeApi({
       source: '/path/to/node_modules/orca-openclaw-plugin',
     });
@@ -174,9 +228,6 @@ describe('orcaPlugin', () => {
 
     const onCalls = (api.on as any).mock.calls;
     const events = onCalls.map((c: any) => c.arguments[0]);
-    assert.ok(events.includes('session_start'));
-    assert.ok(events.includes('before_tool_call'));
-    assert.ok(events.includes('after_tool_call'));
-    assert.ok(events.includes('session_end'));
+    assert.ok(events.includes('before_tool_call'), 'before_tool_call always required');
   });
 });

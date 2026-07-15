@@ -1,4 +1,4 @@
-import { execFileSync, execSync } from 'child_process';
+import { execFileSync } from 'child_process';
 import { existsSync } from 'fs';
 import { join, resolve } from 'path';
 
@@ -89,29 +89,96 @@ function buildPayload(event: string, data: unknown, sessionId?: string): object 
   };
 }
 
-function findOrca(cwd?: string): string | null {
+/**
+ * Resolve the Orca binary.
+ * Prefer absolute ORCA_BIN, then PATH. Workspace-relative zig-out paths are
+ * only used when ORCA_ALLOW_WORKSPACE_BIN=1 (dev), because agents can plant a
+ * fake `./zig-out/bin/orca` that always allows.
+ */
+export function findOrca(cwd?: string): string | null {
+  const envBin = process.env.ORCA_BIN?.trim();
+  if (envBin) {
+    if (envBin.includes('/') || envBin.includes('\\')) {
+      // Explicit absolute/relative path: honor it strictly (no PATH fallback).
+      return existsSync(envBin) ? envBin : null;
+    }
+    // Bare name — resolve via PATH only (no shell interpolation).
+    try {
+      const which = execFileSync('which', [envBin], {
+        encoding: 'utf-8',
+        stdio: ['pipe', 'pipe', 'ignore'],
+      });
+      const bin = which.trim();
+      if (bin) return bin;
+    } catch {
+      // not on PATH
+    }
+    return null;
+  }
+
   try {
-    const which = execSync('which orca', { encoding: 'utf-8', stdio: ['pipe', 'pipe', 'ignore'] });
+    const which = execFileSync('which', ['orca'], {
+      encoding: 'utf-8',
+      stdio: ['pipe', 'pipe', 'ignore'],
+    });
     const bin = which.trim();
     if (bin) return bin;
   } catch {
     // orca not in PATH
   }
 
-  const candidates = [
-    cwd ? join(cwd, 'zig-out', 'bin', 'orca') : null,
-    cwd ? join(cwd, '..', 'zig-out', 'bin', 'orca') : null,
-    cwd ? join(cwd, '..', '..', 'zig-out', 'bin', 'orca') : null,
-    resolve('zig-out', 'bin', 'orca'),
-    resolve('..', 'zig-out', 'bin', 'orca'),
-    resolve('..', '..', 'zig-out', 'bin', 'orca'),
-  ].filter((p): p is string => p !== null);
+  // Dev-only: never trust agent-writable workspace bins in production loads.
+  if (process.env.ORCA_ALLOW_WORKSPACE_BIN === '1') {
+    const candidates = [
+      cwd ? join(cwd, 'zig-out', 'bin', 'orca') : null,
+      cwd ? join(cwd, '..', 'zig-out', 'bin', 'orca') : null,
+      cwd ? join(cwd, '..', '..', 'zig-out', 'bin', 'orca') : null,
+      resolve('zig-out', 'bin', 'orca'),
+      resolve('..', 'zig-out', 'bin', 'orca'),
+      resolve('..', '..', 'zig-out', 'bin', 'orca'),
+    ].filter((p): p is string => p !== null);
 
-  for (const p of candidates) {
-    if (existsSync(p)) return p;
+    for (const p of candidates) {
+      if (existsSync(p)) return p;
+    }
   }
 
   return null;
+}
+
+/** Normalize OpenClaw tool events into the envelope Orca hook understands. */
+export function normalizeOpenClawToolEvent(event: unknown): Record<string, unknown> {
+  const e = (event && typeof event === 'object' ? event : {}) as Record<string, unknown>;
+  const params =
+    e.params && typeof e.params === 'object'
+      ? (e.params as Record<string, unknown>)
+      : e.tool_input && typeof e.tool_input === 'object'
+        ? (e.tool_input as Record<string, unknown>)
+        : {};
+  const tool =
+    (typeof e.toolName === 'string' && e.toolName) ||
+    (typeof e.tool_name === 'string' && e.tool_name) ||
+    (typeof e.tool === 'string' && e.tool) ||
+    undefined;
+  const command =
+    (typeof params.command === 'string' && params.command) ||
+    (typeof e.command === 'string' && e.command) ||
+    undefined;
+  const cwd =
+    (typeof params.cwd === 'string' && params.cwd) ||
+    (typeof params.workdir === 'string' && params.workdir) ||
+    (typeof e.cwd === 'string' && e.cwd) ||
+    undefined;
+
+  return {
+    ...e,
+    tool,
+    tool_name: tool,
+    toolName: tool,
+    params,
+    command,
+    cwd,
+  };
 }
 
 function failClosedBlock(reason: string, message: string): OrcaResponse {
@@ -312,14 +379,6 @@ export default function orcaPlugin(api: OpenClawPluginApi): void {
   const orcaBin = findOrca(cwd);
   const { logger } = api;
 
-  if (!orcaBin) {
-    logger?.warn?.(
-      '[orca] Binary not found in PATH or typical build paths. ' +
-        'Run: ./scripts/install-orca-plugin.sh openclaw project (or .\\scripts\\install-orca-plugin.ps1 openclaw project on Windows).'
-    );
-    return;
-  }
-
   if (typeof api.on !== 'function') {
     logger?.warn?.(
       '[orca] OpenClaw plugin API does not expose hook registration (api.on). ' +
@@ -332,6 +391,24 @@ export default function orcaPlugin(api: OpenClawPluginApi): void {
 
   if (onIsNoop) {
     logger?.warn?.(UNPROTECTED_NOOP_WARNING);
+  }
+
+  if (!orcaBin) {
+    logger?.warn?.(
+      '[orca] Binary not found in PATH (or ORCA_BIN). ' +
+        'Registering fail-closed before_tool_call vetoes. ' +
+        'Install Orca or set ORCA_BIN to an absolute path. Prefer wrapper: `orca run -- openclaw`.'
+    );
+    // Fail closed: missing binary must not silently leave tools unenforced.
+    api.on(
+      'before_tool_call',
+      async () => ({
+        block: true,
+        blockReason: 'Orca binary not found; blocking as a precaution.',
+      }),
+      { timeoutMs: 5_000 }
+    );
+    return;
   }
 
   logger?.info?.(`[orca] Plugin loaded. Binary: ${orcaBin}`);
@@ -348,24 +425,31 @@ export default function orcaPlugin(api: OpenClawPluginApi): void {
     );
   });
 
-  api.on('before_tool_call', async (event) => {
-    const response = await callOrca(orcaBin, 'tool.before', event, sessionId, true, logger);
+  // Host timeout is fail-open; keep CLI budget under the hook budget.
+  api.on(
+    'before_tool_call',
+    async (event) => {
+      const normalized = normalizeOpenClawToolEvent(event);
+      const response = await callOrca(orcaBin, 'tool.before', normalized, sessionId, true, logger);
 
-    if (response.decision === 'block') {
-      const msg = response.message || response.reason || 'Orca blocked this command.';
-      logger?.error?.(`[orca] Blocked tool execution: ${msg}`);
-      return { block: true, blockReason: msg };
-    }
+      if (response.decision === 'block') {
+        const msg = response.message || response.reason || 'Orca blocked this command.';
+        logger?.error?.(`[orca] Blocked tool execution: ${msg}`);
+        return { block: true, blockReason: msg };
+      }
 
-    if (response.decision === 'warn') {
-      logger?.warn?.(`[orca] Warning: ${response.message || response.reason}`);
-    }
+      if (response.decision === 'warn') {
+        logger?.warn?.(`[orca] Warning: ${response.message || response.reason}`);
+      }
 
-    return { params: (event as { params?: Record<string, unknown> })?.params };
-  });
+      // Do not return { params: undefined } — some hosts treat that as a rewrite.
+      return;
+    },
+    { timeoutMs: 20_000 }
+  );
 
   api.on('after_tool_call', async (event) => {
-    await callOrca(orcaBin, 'tool.after', event, sessionId, false, logger);
+    await callOrca(orcaBin, 'tool.after', normalizeOpenClawToolEvent(event), sessionId, false, logger);
   });
 
   api.on('session_end', async (event) => {

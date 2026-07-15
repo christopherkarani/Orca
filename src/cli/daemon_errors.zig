@@ -14,7 +14,7 @@ pub fn shellUnavailableReason(err: anyerror) []const u8 {
         error.HomeDirectoryNotFound => "daemon unavailable: HOME not set",
         error.DaemonBinaryNotFound => "daemon unavailable: orca-daemon binary not found",
         error.DaemonBinaryNotExecutable => "daemon unavailable: orca-daemon is not executable",
-        error.DaemonBinaryUntrusted => "daemon unavailable: ORCA_DAEMON points at an untrusted world-writable path",
+        error.DaemonBinaryUntrusted => "daemon unavailable: ORCA_DAEMON points at an untrusted path (symlink, world-writable, or unstatable)",
         error.DaemonSpawnFailed => "daemon unavailable: failed to spawn orca-daemon",
         error.DaemonStartTimeout => "daemon unavailable: startup timed out",
         error.DaemonNotReady => "daemon unavailable: daemon not ready",
@@ -100,9 +100,9 @@ fn detail(err: anyerror, audience: Audience, probe: ProbeContext) []const u8 {
             .version => "orca-daemon was found but is not executable.",
         },
         error.DaemonBinaryUntrusted => switch (audience) {
-            .doctor => "ORCA_DAEMON points at a world-writable path; unset it or choose a non-world-writable orca-daemon binary.",
-            .onboarding => "ORCA_DAEMON points at a world-writable path.",
-            .version => "ORCA_DAEMON points at a world-writable path.",
+            .doctor => "ORCA_DAEMON points at an untrusted path (symlink, world-writable binary/ancestor, or unstatable); unset it or choose a trusted orca-daemon binary.",
+            .onboarding => "ORCA_DAEMON points at an untrusted path.",
+            .version => "ORCA_DAEMON points at an untrusted path.",
         },
         error.DaemonSpawnFailed => switch (audience) {
             .doctor => "orca-daemon failed to start; inspect local build/install state.",
