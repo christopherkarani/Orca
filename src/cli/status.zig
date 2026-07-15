@@ -315,22 +315,23 @@ fn writeJson(stdout: anytype, s: Snapshot, check_mode: bool) !void {
         .close_object = false,
     });
 
-    var hosts_buf: [2048]u8 = undefined;
-    try stdout.print("  \"hosts\": {{\"summary\":{s}}},\n", .{readiness.escapeJson(s.hosts_summary, &hosts_buf)});
+    try stdout.writeAll("  \"hosts\": {\"summary\":");
+    try core.util.writeJsonString(stdout, s.hosts_summary);
+    try stdout.writeAll("},\n");
 
     try stdout.writeAll("  \"packs\": {");
     try stdout.print("\"known\":{},\"opt_in_count\":{d},\"opt_in\":[", .{ s.packs_known, s.packs_opt_in_count });
     for (s.packs_opt_in, 0..) |id, i| {
         if (i > 0) try stdout.writeAll(",");
-        var id_buf: [128]u8 = undefined;
-        try stdout.writeAll(readiness.escapeJson(id, &id_buf));
+        try core.util.writeJsonString(stdout, id);
     }
-    var packs_buf: [2048]u8 = undefined;
-    try stdout.print("],\"summary\":{s}", .{readiness.escapeJson(s.packs_summary_line, &packs_buf)});
+    try stdout.writeAll("],\"summary\":");
+    try core.util.writeJsonString(stdout, s.packs_summary_line);
     try stdout.writeAll("},\n");
 
-    var next_buf: [1024]u8 = undefined;
-    try stdout.print("  \"next\": {s}\n", .{readiness.escapeJson(s.next_step, &next_buf)});
+    try stdout.writeAll("  \"next\": ");
+    try core.util.writeJsonString(stdout, s.next_step);
+    try stdout.writeAll("\n");
     try stdout.writeAll("}\n");
 }
 

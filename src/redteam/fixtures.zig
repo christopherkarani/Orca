@@ -105,11 +105,13 @@ pub const Command = struct {
 };
 
 pub const Expected = struct {
+    input_contains: []const []const u8 = &.{},
     blocked: []const []const u8 = &.{},
     redacted: []const []const u8 = &.{},
     no_log_contains: []const []const u8 = &.{},
 
     pub fn deinit(self: Expected, allocator: std.mem.Allocator) void {
+        freeStringList(allocator, self.input_contains);
         freeStringList(allocator, self.blocked);
         freeStringList(allocator, self.redacted);
         freeStringList(allocator, self.no_log_contains);
@@ -175,6 +177,7 @@ const Section = enum {
     command_argv,
     attempts,
     expected,
+    expected_input_contains,
     expected_blocked,
     expected_redacted,
     expected_no_log_contains,
@@ -197,6 +200,7 @@ const Builder = struct {
     blocked: std.ArrayList([]const u8) = .empty,
     redacted: std.ArrayList([]const u8) = .empty,
     no_log_contains: std.ArrayList([]const u8) = .empty,
+    input_contains: std.ArrayList([]const u8) = .empty,
     required: bool = true,
     requires_backend: std.ArrayList(sandbox.backend.Feature) = .empty,
     points: ?u32 = null,
@@ -215,6 +219,7 @@ const Builder = struct {
         freeList(self.allocator, &self.blocked);
         freeList(self.allocator, &self.redacted);
         freeList(self.allocator, &self.no_log_contains);
+        freeList(self.allocator, &self.input_contains);
         self.requires_backend.deinit(self.allocator);
     }
 
@@ -226,6 +231,7 @@ const Builder = struct {
             .expected_blocked => try self.blocked.append(self.allocator, owned),
             .expected_redacted => try self.redacted.append(self.allocator, owned),
             .expected_no_log_contains => try self.no_log_contains.append(self.allocator, owned),
+            .expected_input_contains => try self.input_contains.append(self.allocator, owned),
             else => return error.InvalidFixture,
         }
     }
@@ -274,6 +280,8 @@ const Builder = struct {
         errdefer freeStringList(self.allocator, redacted);
         const no_log_contains = try self.no_log_contains.toOwnedSlice(self.allocator);
         errdefer freeStringList(self.allocator, no_log_contains);
+        const input_contains = try self.input_contains.toOwnedSlice(self.allocator);
+        errdefer freeStringList(self.allocator, input_contains);
         const backend = try self.requires_backend.toOwnedSlice(self.allocator);
         errdefer if (backend.len > 0) self.allocator.free(backend);
 
@@ -292,6 +300,7 @@ const Builder = struct {
             .command = .{ .argv = command_argv },
             .attempts = attempts,
             .expected = .{
+                .input_contains = input_contains,
                 .blocked = blocked,
                 .redacted = redacted,
                 .no_log_contains = no_log_contains,
@@ -391,6 +400,9 @@ pub fn parseSlice(allocator: std.mem.Allocator, fixture_path: []const u8, text: 
             } else if (std.mem.eql(u8, key, "no_log_contains")) {
                 list_target = .expected_no_log_contains;
                 section = .expected_no_log_contains;
+            } else if (std.mem.eql(u8, key, "input_contains")) {
+                list_target = .expected_input_contains;
+                section = .expected_input_contains;
             } else {
                 return error.InvalidFixture;
             }
@@ -413,7 +425,7 @@ pub fn parseSlice(allocator: std.mem.Allocator, fixture_path: []const u8, text: 
 
 fn isExpectedSection(section: Section) bool {
     return switch (section) {
-        .expected, .expected_blocked, .expected_redacted, .expected_no_log_contains => true,
+        .expected, .expected_input_contains, .expected_blocked, .expected_redacted, .expected_no_log_contains => true,
         else => false,
     };
 }

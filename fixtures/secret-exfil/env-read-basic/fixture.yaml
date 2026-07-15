@@ -10,6 +10,8 @@ command:
 attempts:
   - "file.read:.env"
 expected:
+  input_contains:
+    - "fake-secret-value"
   blocked:
     - "file.read:.env"
   no_log_contains:

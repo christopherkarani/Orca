@@ -99,7 +99,7 @@ pub const RiskLevel = enum {
 /// | observe | deny                   | warn-allow     | allow  | allow|
 /// | ask     | deny                   | ask            | warn   | allow|
 /// | strict  | deny                   | deny           | deny   | allow|
-/// | ci      | deny                   | deny           | deny   | allow|
+/// | ci      | deny                   | deny           | deny   | deny |
 ///
 /// Critical remains deny in every mode (catastrophic always-on rules such as
 /// core.filesystem root wipe / core.git reset --hard). Daemon unavailable is
@@ -126,8 +126,7 @@ pub fn pluginDecisionFromModeAndSeverity(mode: policy.schema.Mode, severity: Ris
             .critical => unreachable,
         },
         .ci => switch (severity) {
-            .high, .unknown, .medium => .block,
-            .low => .allow,
+            .high, .unknown, .medium, .low => .block,
             .critical => unreachable,
         },
     };
@@ -695,11 +694,11 @@ test "mode x severity matrix maps daemon denials" {
         .{ .mode = .ask, .evaluator = mockDaemonDenyMediumEvaluator, .expected = .observe, .reason_substr = "warning in ask" },
         .{ .mode = .strict, .evaluator = mockDaemonDenyMediumEvaluator, .expected = .deny },
         .{ .mode = .ci, .evaluator = mockDaemonDenyMediumEvaluator, .expected = .deny },
-        // Low: allow in all modes
+        // Low: CI preserves the daemon denial while interactive modes may soften it.
         .{ .mode = .observe, .evaluator = mockDaemonDenyLowEvaluator, .expected = .allow },
         .{ .mode = .ask, .evaluator = mockDaemonDenyLowEvaluator, .expected = .allow },
         .{ .mode = .strict, .evaluator = mockDaemonDenyLowEvaluator, .expected = .allow },
-        .{ .mode = .ci, .evaluator = mockDaemonDenyLowEvaluator, .expected = .allow },
+        .{ .mode = .ci, .evaluator = mockDaemonDenyLowEvaluator, .expected = .deny },
         // Critical: always deny (even observe)
         .{ .mode = .observe, .evaluator = mockDaemonDenyEvaluator, .expected = .deny },
         .{ .mode = .ask, .evaluator = mockDaemonDenyEvaluator, .expected = .deny },
@@ -752,7 +751,7 @@ test "pluginDecisionFromModeAndSeverity mode groups x severity" {
         .{ .severity = .high, .observe_like = .warn, .ask = .ask, .strict_like = .block, .ci = .block },
         .{ .severity = .unknown, .observe_like = .warn, .ask = .ask, .strict_like = .block, .ci = .block },
         .{ .severity = .medium, .observe_like = .allow, .ask = .warn, .strict_like = .block, .ci = .block },
-        .{ .severity = .low, .observe_like = .allow, .ask = .allow, .strict_like = .allow, .ci = .allow },
+        .{ .severity = .low, .observe_like = .allow, .ask = .allow, .strict_like = .allow, .ci = .block },
     };
 
     const observe_modes = [_]policy.schema.Mode{ .observe, .trusted };
@@ -771,7 +770,7 @@ test "pluginDecisionFromModeAndSeverity mode groups x severity" {
 
     // Security invariants: observe ≠ strict for high; ci never softens pack hits to allow.
     try std.testing.expect(pluginDecisionFromModeAndSeverity(.observe, .high) != pluginDecisionFromModeAndSeverity(.strict, .high));
-    for ([_]RiskLevel{ .critical, .high, .medium, .unknown }) |severity| {
+    for ([_]RiskLevel{ .critical, .high, .medium, .low, .unknown }) |severity| {
         try std.testing.expect(pluginDecisionForDaemonDeny(.ci, severity) != .allow);
         try std.testing.expectEqual(PluginDecision.block, pluginDecisionForDaemonDeny(.ci, severity));
     }

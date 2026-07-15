@@ -80,13 +80,13 @@ pub fn command(io: std.Io, argv: []const []const u8, stdout: anytype, stderr: an
     };
     defer allocator.free(session_id);
 
-    var summary = intercept.files.summarizeStaged(io, allocator, workspace_root, session_id, options.file) catch |err| {
+    var preview = intercept.files.previewStaged(io, allocator, workspace_root, session_id, options.file) catch |err| {
         try stderr.print("orca {s}: failed to list staged files: {s}\n", .{ name, @errorName(err) });
         return exit_codes.general;
     };
-    defer summary.deinit();
+    defer preview.deinit();
 
-    try writeSummary(stdout, kind, session_id, summary);
+    try writeSummary(stdout, kind, session_id, preview.summary);
     if (options.dry_run) {
         try stdout.writeAll("dry-run: no changes made.\n");
         return exit_codes.success;
@@ -116,8 +116,8 @@ pub fn command(io: std.Io, argv: []const []const u8, stdout: anytype, stderr: an
     const audit_context: intercept.files.AuditContext = .{ .writer = &session_writer, .session = audit_session };
 
     const result = switch (kind) {
-        .apply => intercept.files.applyStaged(io, allocator, workspace_root, session_id, options.file, audit_context),
-        .discard => intercept.files.discardStaged(io, allocator, workspace_root, session_id, options.file, audit_context),
+        .apply => intercept.files.applyStagedConfirmed(io, allocator, workspace_root, session_id, options.file, preview.fingerprint, audit_context),
+        .discard => intercept.files.discardStagedConfirmed(io, allocator, workspace_root, session_id, options.file, preview.fingerprint, audit_context),
     } catch |err| {
         try stderr.print("orca {s}: failed to {s} staged files: {s}\n", .{ name, name, @errorName(err) });
         return exit_codes.general;

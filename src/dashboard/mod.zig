@@ -804,6 +804,15 @@ test "dashboard assets expose dedicated secretless view" {
     try std.testing.expect(std.mem.indexOf(u8, app, "allowlist-list") != null);
     try std.testing.expect(std.mem.indexOf(u8, app, "No denials yet") != null);
     try std.testing.expect(std.mem.indexOf(u8, app, "PI_COVERAGE") != null);
+    // XSS: dynamic plugin.id must be attribute-escaped in data-action sinks.
+    try std.testing.expect(std.mem.indexOf(u8, app, "escapeHtml(plugin.id)") != null);
+    try std.testing.expect(std.mem.indexOf(u8, app, "data-action=\"${plugin.id}-doctor\"") == null);
+    try std.testing.expect(std.mem.indexOf(u8, app, "function escapeHtml(value)") != null);
+    try std.testing.expect(std.mem.indexOf(u8, app, ".replaceAll(\"&\", \"&amp;\")") != null);
+    try std.testing.expect(std.mem.indexOf(u8, app, ".replaceAll(\"<\", \"&lt;\")") != null);
+    try std.testing.expect(std.mem.indexOf(u8, app, ".replaceAll(\">\", \"&gt;\")") != null);
+    try std.testing.expect(std.mem.indexOf(u8, app, ".replaceAll('\"', \"&quot;\")") != null);
+    try std.testing.expect(std.mem.indexOf(u8, app, ".replaceAll(\"'\", \"&#039;\")") != null);
 }
 
 test "workspace status lists remediation quick actions" {

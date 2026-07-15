@@ -37,7 +37,7 @@ pub fn writeBlockedActionJson(allocator: std.mem.Allocator, writer: anytype, ses
     try writeDecisionRuleField(writer, parsed);
     try writer.writeAll(",\"reason\":");
     try writeDecisionReasonField(allocator, writer, parsed);
-    try writeMetadataFields(writer, metadata);
+    try writeMetadataFields(allocator, writer, metadata);
     try writer.writeByte('}');
 }
 
@@ -73,21 +73,29 @@ fn readMetadataString(object: std.json.ObjectMap, field: []const u8) ?[]const u8
     return value.string;
 }
 
-pub fn writeMetadataFields(writer: anytype, metadata: ParsedMetadata) !void {
+pub fn writeMetadataFields(allocator: std.mem.Allocator, writer: anytype, metadata: ParsedMetadata) !void {
     try writer.writeAll(",\"decision_source\":");
-    if (metadata.decision_source) |value| try core.util.writeJsonString(writer, value) else try writer.writeAll("null");
+    try writeOptionalRedactedJsonString(allocator, writer, metadata.decision_source);
     try writer.writeAll(",\"event_source\":");
-    if (metadata.event_source) |value| try core.util.writeJsonString(writer, value) else try writer.writeAll("null");
+    try writeOptionalRedactedJsonString(allocator, writer, metadata.event_source);
     try writer.writeAll(",\"host\":");
-    if (metadata.host) |value| try core.util.writeJsonString(writer, value) else try writer.writeAll("null");
+    try writeOptionalRedactedJsonString(allocator, writer, metadata.host);
     try writer.writeAll(",\"daemon_status\":");
-    if (metadata.daemon_status) |value| try core.util.writeJsonString(writer, value) else try writer.writeAll("null");
+    try writeOptionalRedactedJsonString(allocator, writer, metadata.daemon_status);
     try writer.writeAll(",\"pack_id\":");
-    if (metadata.pack_id) |value| try core.util.writeJsonString(writer, value) else try writer.writeAll("null");
+    try writeOptionalRedactedJsonString(allocator, writer, metadata.pack_id);
     try writer.writeAll(",\"severity\":");
-    if (metadata.severity) |value| try core.util.writeJsonString(writer, value) else try writer.writeAll("null");
+    try writeOptionalRedactedJsonString(allocator, writer, metadata.severity);
     try writer.writeAll(",\"remediation\":");
-    if (metadata.remediation) |value| try core.util.writeJsonString(writer, value) else try writer.writeAll("null");
+    try writeOptionalRedactedJsonString(allocator, writer, metadata.remediation);
+}
+
+fn writeOptionalRedactedJsonString(allocator: std.mem.Allocator, writer: anytype, value: ?[]const u8) !void {
+    if (value) |text| {
+        try presentation.redact.writeJsonString(allocator, writer, text);
+    } else {
+        try writer.writeAll("null");
+    }
 }
 
 fn writeDecisionRuleField(writer: anytype, parsed: ?std.json.Parsed(std.json.Value)) !void {
@@ -108,4 +116,17 @@ fn decisionStringField(parsed: ?std.json.Parsed(std.json.Value), field: []const 
     const raw = decision.object.get(field) orelse return null;
     if (raw != .string) return null;
     return raw.string;
+}
+
+test "metadata remediation is redacted before dashboard serialization" {
+    var output: [512]u8 = undefined;
+    var writer: std.Io.Writer = .fixed(&output);
+
+    try writeMetadataFields(std.testing.allocator, &writer, .{
+        .remediation = "Authorization: Bearer sk-fakeSyntheticOpenAIKey1234567890",
+    });
+
+    const rendered = writer.buffered();
+    try std.testing.expect(std.mem.indexOf(u8, rendered, "sk-fakeSyntheticOpenAIKey1234567890") == null);
+    try std.testing.expect(std.mem.indexOf(u8, rendered, "[REDACTED]") != null);
 }

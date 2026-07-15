@@ -33,14 +33,12 @@ SCAN_PATHS=(
   tests
 )
 
-is_allowlisted() {
-  local line="$1"
-  for marker in "${ALLOW_SYNTHETIC[@]}"; do
-    if [[ "$line" == *"$marker"* ]]; then
-      return 0
-    fi
-  done
-  return 1
+is_allowlisted_token() {
+  local token="$1"
+  case "$token" in
+    *fakeSynthetic*|ghp_fake*|sk-fake*|sk-ant-fake*|fake_p05_*|sk-legacyWorkspaceSyntheticSecret) return 0 ;;
+    *) return 1 ;;
+  esac
 }
 
 violations=0
@@ -52,14 +50,19 @@ for scan_root in "${SCAN_PATHS[@]}"; do
     while IFS= read -r line || [[ -n "$line" ]]; do
       line_no=$((line_no + 1))
       for pattern in "${PATTERNS[@]}"; do
-        if [[ "$line" =~ $pattern ]] && ! is_allowlisted "$line"; then
-          echo "fixture-secret-violation: ${file}:${line_no}: matches /${pattern}/ without synthetic allowlist marker" >&2
-          violations=$((violations + 1))
-          break
-        fi
+        remaining="$line"
+        while [[ "$remaining" =~ $pattern ]]; do
+          token="${BASH_REMATCH[0]}"
+          if ! is_allowlisted_token "$token"; then
+            echo "fixture-secret-violation: ${file}:${line_no}: matches /${pattern}/ without exact synthetic token" >&2
+            violations=$((violations + 1))
+            break
+          fi
+          remaining="${remaining#*"$token"}"
+        done
       done
     done <"$file"
-  done < <(find "$scan_root" -type f \( -name '*.zig' -o -name '*.yaml' -o -name '*.yml' -o -name '*.md' -o -name '*.json' -o -name '*.jsonl' -o -name '*.ts' -o -name '*.env' \) -print0)
+  done < <(find "$scan_root" -type f -size -1M -print0)
 done
 
 if [[ "$violations" -gt 0 ]]; then

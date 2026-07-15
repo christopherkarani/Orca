@@ -10,6 +10,17 @@ const build_options = @import("build_options");
 const tui = @import("../tui/mod.zig");
 
 pub fn command(io: std.Io, cwd: std.Io.Dir, argv: []const []const u8, stdout: anytype, stderr: anytype) !u8 {
+    return commandWithDaemonChecker(null, io, cwd, argv, stdout, stderr);
+}
+
+fn commandWithDaemonChecker(
+    daemon_check_fn: ?*const fn (std.mem.Allocator, bool) anyerror!void,
+    io: std.Io,
+    cwd: std.Io.Dir,
+    argv: []const []const u8,
+    stdout: anytype,
+    stderr: anytype,
+) !u8 {
     for (argv) |arg| {
         if (std.mem.eql(u8, arg, "--help") or std.mem.eql(u8, arg, "-h")) {
             _ = try help.writeCommand(io, stdout, "quickstart");
@@ -17,17 +28,58 @@ pub fn command(io: std.Io, cwd: std.Io.Dir, argv: []const []const u8, stdout: an
         }
     }
 
-    const flags = onboarding.parseFlags(argv, stderr, "orca quickstart", false) catch |err| switch (err) {
-        error.Usage => return exit_codes.usage,
-        else => return err,
-    };
-
     var gpa_state: std.heap.DebugAllocator(.{}) = .init;
     defer _ = gpa_state.deinit();
     const allocator = gpa_state.allocator();
 
+    var filtered_args: std.ArrayList([]const u8) = .empty;
+    defer filtered_args.deinit(allocator);
+    var check_mode = false;
+    var json_mode = false;
+    for (argv) |arg| {
+        if (std.mem.eql(u8, arg, "--check")) {
+            check_mode = true;
+        } else if (std.mem.eql(u8, arg, "--json")) {
+            json_mode = true;
+        } else {
+            try filtered_args.append(allocator, arg);
+        }
+    }
+
+    const flags = onboarding.parseFlags(filtered_args.items, stderr, "orca quickstart", false) catch |err| switch (err) {
+        error.Usage => return exit_codes.usage,
+        else => return err,
+    };
+
     const workspace_root = try onboarding.resolveWorkspaceRootFromCwd(io, allocator, cwd);
     defer allocator.free(workspace_root);
+
+    // `--check` and `--json` are automation/readiness contracts, never an
+    // implicit setup path. They assess the same two core gates as status and
+    // doctor without creating policy or touching host integrations.
+    if (check_mode or json_mode) {
+        const daemon_check = try onboarding.checkDaemonHealth(allocator, false, daemon_check_fn);
+        var policy = try readiness.assessWorkspacePolicy(io, allocator, workspace_root);
+        defer policy.deinit(allocator);
+        const assessment = readiness.assess(daemon_check.status, policy.present, policy.valid);
+        const policy_path = try onboarding.policyPath(allocator, workspace_root);
+        defer allocator.free(policy_path);
+
+        if (json_mode) {
+            try readiness.writeJsonEnvelope(stdout, .{
+                .assessment = assessment,
+                .check = check_mode,
+                .daemon_status = readiness.daemonWireLabel(daemon_check.status),
+                .daemon_detail = daemon_check.detail,
+                .policy_path = policy_path,
+                .policy_error = policy.error_name,
+            });
+        } else {
+            var receipt_buf: [192]u8 = undefined;
+            try stdout.print("quickstart check: {s}\n", .{assessment.formatReceipt(&receipt_buf)});
+        }
+        return assessment.exitCode(check_mode);
+    }
 
     try tui.render.banner(io, stdout, build_options.version, "quickstart");
     try stdout.writeAll("\n");
@@ -36,7 +88,7 @@ pub fn command(io: std.Io, cwd: std.Io.Dir, argv: []const []const u8, stdout: an
     try tui.render.stepLine(io, stdout, .active, "Step 1 — System check", null, 0);
     _ = try doctor.command(io, &.{}, stdout, stderr);
 
-    const daemon_check = try onboarding.checkDaemonHealth(allocator, true, null);
+    const daemon_check = try onboarding.checkDaemonHealth(allocator, true, daemon_check_fn);
     if (daemon_check.status != .compatible) {
         try tui.render.stepLine(io, stdout, .failed, "Step 1 — System check", "Daemon not ready.", 0);
         try stdout.writeAll("\n");
@@ -128,7 +180,7 @@ test "quickstart step labels render with brand banner" {
     var stdout_writer: std.Io.Writer = .fixed(&stdout_buf);
     var stderr_writer: std.Io.Writer = .fixed(&stderr_buf);
 
-    const code = try command(std.testing.io, tmp.dir, &.{ "--auto" }, &stdout_writer, &stderr_writer);
+    const code = try command(std.testing.io, tmp.dir, &.{"--auto"}, &stdout_writer, &stderr_writer);
     const output = stdout_writer.buffered();
     try std.testing.expect(std.mem.indexOf(u8, output, "\u{1F6E1}  Orca") != null);
     try std.testing.expect(std.mem.indexOf(u8, output, "Step 1 — System check") != null);
@@ -150,4 +202,47 @@ test "quickstart receipt does not claim ready when core readiness fails" {
     const line = a.formatReceipt(&buf);
     try std.testing.expect(std.mem.indexOf(u8, line, "not ready") != null);
     try std.testing.expect(std.mem.indexOf(u8, line, "Core protection is ready") == null);
+}
+
+test "quickstart check json is a read-only readiness envelope" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var stdout_buf: [4096]u8 = undefined;
+    var stderr_buf: [1024]u8 = undefined;
+    var stdout_writer: std.Io.Writer = .fixed(&stdout_buf);
+    var stderr_writer: std.Io.Writer = .fixed(&stderr_buf);
+
+    _ = try command(std.testing.io, tmp.dir, &.{ "--check", "--json", "--auto" }, &stdout_writer, &stderr_writer);
+    const output = stdout_writer.buffered();
+    try std.testing.expect(std.mem.indexOf(u8, output, "\"schema_version\": 1") != null);
+    try std.testing.expect(std.mem.indexOf(u8, output, "\"check\": true") != null);
+    try std.testing.expect(std.mem.indexOf(u8, output, "\"policy\"") != null);
+
+    var parsed = try std.json.parseFromSlice(std.json.Value, std.testing.allocator, output, .{});
+    defer parsed.deinit();
+    try std.testing.expect(parsed.value == .object);
+    const workspace = try tmp.dir.realPathFileAlloc(std.testing.io, ".", std.testing.allocator);
+    defer std.testing.allocator.free(workspace);
+    try std.testing.expect(!onboarding.policyExists(std.testing.io, workspace));
+}
+
+test "quickstart check does not request daemon startup" {
+    const spy = struct {
+        var ensure_running: ?bool = null;
+        fn check(_: std.mem.Allocator, ensure: bool) !void {
+            ensure_running = ensure;
+            return error.DaemonBinaryNotFound;
+        }
+    };
+    spy.ensure_running = null;
+
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var stdout_buf: [2048]u8 = undefined;
+    var stderr_buf: [1024]u8 = undefined;
+    var stdout_writer: std.Io.Writer = .fixed(&stdout_buf);
+    var stderr_writer: std.Io.Writer = .fixed(&stderr_buf);
+
+    _ = try commandWithDaemonChecker(spy.check, std.testing.io, tmp.dir, &.{"--check"}, &stdout_writer, &stderr_writer);
+    try std.testing.expectEqual(false, spy.ensure_running.?);
 }

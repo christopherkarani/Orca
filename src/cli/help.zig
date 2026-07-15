@@ -637,6 +637,7 @@ pub const commands = [_]CommandInfo{
         "The dashboard calls existing Orca CLI/Core paths and does not replace policy evaluation.",
         "Mutation routes use a per-run browser token and only expose fixed Orca actions; arbitrary shell commands are not accepted.",
         "Defaults to http://127.0.0.1:7742.",
+        "LAN and non-loopback binds (for example 0.0.0.0) are rejected; the dashboard is intentionally localhost-only.",
         "Use --once to serve one request for smoke tests and automation.",
     } },
     .{ .name = "help", .summary = "Show help", .usage = "orca help [command]", .category = .getting_started, .details = &.{"Shows top-level help or command-specific help."} },

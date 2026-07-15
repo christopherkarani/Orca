@@ -193,6 +193,7 @@ rustc-ice-*.txt
 temp_*.rs
 .local_backup_*/
 .env
+!fixtures/**/input/.env
 .env.local
 lcov.info
 coverage-summary.txt

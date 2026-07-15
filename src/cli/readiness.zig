@@ -3,6 +3,7 @@
 
 const std = @import("std");
 const core_api = @import("orca_core").api;
+const core = @import("orca_core").core;
 
 const exit_codes = @import("exit_codes.zig");
 const onboarding = @import("onboarding.zig");
@@ -133,34 +134,30 @@ pub fn writeJsonEnvelope(stdout: anytype, env: JsonEnvelope) !void {
     try stdout.print("  \"state\": \"{s}\",\n", .{env.assessment.state.label()});
     try stdout.print("  \"check\": {},\n", .{env.check});
 
-    var daemon_status_buf: [128]u8 = undefined;
-    var daemon_detail_buf: [512]u8 = undefined;
-    try stdout.print("  \"daemon\": {{\"status\":{s},\"detail\":{s}}},\n", .{
-        escapeJson(env.daemon_status, &daemon_status_buf),
-        escapeJson(env.daemon_detail, &daemon_detail_buf),
-    });
+    try stdout.writeAll("  \"daemon\": {\"status\":");
+    try core.util.writeJsonString(stdout, env.daemon_status);
+    try stdout.writeAll(",\"detail\":");
+    try core.util.writeJsonString(stdout, env.daemon_detail);
+    try stdout.writeAll("},\n");
 
-    var path_buf: [1024]u8 = undefined;
-    try stdout.print("  \"policy\": {{\"path\":{s},\"present\":{},\"valid\":{}", .{
-        escapeJson(env.policy_path, &path_buf),
-        env.assessment.policy_present,
-        env.assessment.policy_valid,
-    });
+    try stdout.writeAll("  \"policy\": {\"path\":");
+    try core.util.writeJsonString(stdout, env.policy_path);
+    try stdout.print(",\"present\":{},\"valid\":{}", .{ env.assessment.policy_present, env.assessment.policy_valid });
     if (env.policy_mode) |mode| {
-        var mode_buf: [64]u8 = undefined;
-        try stdout.print(",\"mode\":{s}", .{escapeJson(mode, &mode_buf)});
+        try stdout.writeAll(",\"mode\":");
+        try core.util.writeJsonString(stdout, mode);
     } else {
         try stdout.writeAll(",\"mode\":null");
     }
     if (env.policy_preset) |preset| {
-        var preset_buf: [64]u8 = undefined;
-        try stdout.print(",\"preset\":{s}", .{escapeJson(preset, &preset_buf)});
+        try stdout.writeAll(",\"preset\":");
+        try core.util.writeJsonString(stdout, preset);
     } else {
         try stdout.writeAll(",\"preset\":null");
     }
     if (env.policy_error) |err_name| {
-        var err_buf: [128]u8 = undefined;
-        try stdout.print(",\"error\":{s}", .{escapeJson(err_name, &err_buf)});
+        try stdout.writeAll(",\"error\":");
+        try core.util.writeJsonString(stdout, err_name);
     } else {
         try stdout.writeAll(",\"error\":null");
     }
@@ -169,33 +166,6 @@ pub fn writeJsonEnvelope(stdout: anytype, env: JsonEnvelope) !void {
     } else {
         try stdout.writeAll("},\n");
     }
-}
-
-/// Returns a quoted JSON string using `buf` as scratch (includes quotes).
-pub fn escapeJson(value: []const u8, buf: []u8) []const u8 {
-    if (buf.len < 3) return "\"\"";
-    var out: std.Io.Writer = .fixed(buf);
-    out.writeByte('"') catch return "\"\"";
-    for (value) |c| {
-        switch (c) {
-            '"' => out.writeAll("\\\"") catch return "\"\"",
-            '\\' => out.writeAll("\\\\") catch return "\"\"",
-            '\n' => out.writeAll("\\n") catch return "\"\"",
-            '\r' => out.writeAll("\\r") catch return "\"\"",
-            '\t' => out.writeAll("\\t") catch return "\"\"",
-            else => {
-                if (c < 0x20) {
-                    var hex: [6]u8 = undefined;
-                    const h = std.fmt.bufPrint(&hex, "\\u{x:0>4}", .{c}) catch return "\"\"";
-                    out.writeAll(h) catch return "\"\"";
-                } else {
-                    out.writeByte(c) catch return "\"\"";
-                }
-            },
-        }
-    }
-    out.writeByte('"') catch return "\"\"";
-    return out.buffered();
 }
 
 // ─── Tests ───────────────────────────────────────────────────────────────────
@@ -295,6 +265,30 @@ test "writeJsonEnvelope close and open forms" {
     });
     const open = w.buffered();
     try std.testing.expect(std.mem.endsWith(u8, open, "},\n"));
+}
+
+test "writeJsonEnvelope preserves long and heavily escaped values" {
+    var detail: [4096]u8 = undefined;
+    for (&detail, 0..) |*byte, index| byte.* = if (index % 2 == 0) '"' else '\\';
+    var path: [2048]u8 = undefined;
+    @memset(&path, 'p');
+
+    var buf: [16384]u8 = undefined;
+    var writer: std.Io.Writer = .fixed(&buf);
+    try writeJsonEnvelope(&writer, .{
+        .assessment = assess(.compatible, true, true),
+        .check = true,
+        .daemon_status = "compatible",
+        .daemon_detail = &detail,
+        .policy_path = &path,
+    });
+
+    var parsed = try std.json.parseFromSlice(std.json.Value, std.testing.allocator, writer.buffered(), .{});
+    defer parsed.deinit();
+    const daemon = parsed.value.object.get("daemon").?.object;
+    const policy_value = parsed.value.object.get("policy").?.object;
+    try std.testing.expectEqualStrings(&detail, daemon.get("detail").?.string);
+    try std.testing.expectEqualStrings(&path, policy_value.get("path").?.string);
 }
 
 test "daemonWireLabel is stable machine vocabulary" {

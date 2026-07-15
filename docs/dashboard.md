@@ -108,4 +108,6 @@ Mutation routes require a per-run browser token embedded in the dashboard page a
 
 ## Security Notes
 
+Binding to non-loopback addresses (LAN or `0.0.0.0`) is not supported. The dashboard is intentionally localhost-only so a browser on the local machine cannot be turned into a remote command or open-proxy surface.
+
 Use `orca doctor` as the source of truth for platform capability claims. The dashboard should describe controls as active, limited, wrapper-only, observe-only, or unavailable based on Orca state; it must not imply transparent sandboxing or enforcement that Orca does not provide.

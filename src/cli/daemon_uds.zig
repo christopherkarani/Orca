@@ -13,7 +13,12 @@ pub fn sockaddrUnFromPath(path: []const u8) !UnixSockaddr {
         .family = @intCast(afUnix()),
         .path = undefined,
     };
-    const path_len = @min(path.len, addr.path.len - 1);
+    // Never truncate a pathname: doing so can connect to or bind a different
+    // socket than the caller requested. A zero-length pathname is likewise not
+    // a filesystem socket path.
+    if (path.len == 0) return error.InvalidSocketPath;
+    if (path.len >= addr.path.len) return error.SocketPathTooLong;
+    const path_len = path.len;
     @memset(&addr.path, 0);
     @memcpy(addr.path[0..path_len], path[0..path_len]);
     addr.path[path_len] = 0;
@@ -22,6 +27,14 @@ pub fn sockaddrUnFromPath(path: []const u8) !UnixSockaddr {
         .addr = addr,
         .len = @intCast(@offsetOf(std.c.sockaddr.un, "path") + path_len + 1),
     };
+}
+
+test "sockaddrUnFromPath rejects empty and overlong paths" {
+    var overlong: [@sizeOf(std.c.sockaddr.un)]u8 = undefined;
+    @memset(&overlong, 'a');
+
+    try std.testing.expectError(error.InvalidSocketPath, sockaddrUnFromPath(""));
+    try std.testing.expectError(error.SocketPathTooLong, sockaddrUnFromPath(&overlong));
 }
 
 pub fn openUnixStreamSocket() !std.posix.fd_t {

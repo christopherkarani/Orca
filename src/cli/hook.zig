@@ -263,7 +263,7 @@ fn hookCommand(io: std.Io, host: Host, event: Event, original_event_name: []cons
     const payload_text = readBoundedStdin(io, allocator, max_payload_len) catch |err| {
         if (err == error.PayloadTooLarge) {
             if (host == .codex and event == .PreToolUse) {
-                try writeCodexGuardBlock(stderr, "orca hook: JSON payload exceeds maximum size; Orca blocked it before evaluation.", null);
+                try writeCodexGuardBlock(allocator, stderr, "orca hook: JSON payload exceeds maximum size; Orca blocked it before evaluation.", null);
                 return codex_deny_exit_code;
             }
             try stderr.writeAll("orca hook: JSON payload exceeds maximum size.\n");
@@ -376,9 +376,9 @@ fn hookCommand(io: std.Io, host: Host, event: Event, original_event_name: []cons
         // Sentinel-first so agents scraping stderr can distinguish a guard block from a
         // program error: provenance (guard) + consequence (no side effects) + recourse.
         // Humans never reach this branch — non-Codex hosts render the JSON `message` themselves.
-        // Include `reason` so fail-closed diagnostics (daemon unavailable / protocol mismatch)
-        // are visible on the same path as JSON hosts.
-        try writeCodexGuardBlock(stderr, result.message, result.reason);
+        // Dynamic policy output crosses an agent-visible boundary here; redact it before
+        // presentation so native Zig routes cannot disclose matched patterns or targets.
+        try writeCodexGuardBlock(allocator, stderr, result.message, result.reason);
     } else {
         try writeHookResponse(stdout, result);
         if (result.rule) |rule| {
@@ -400,13 +400,18 @@ const guard_sentinel_prefix: []const u8 =
 /// Codex hook deny exit code (documented Codex CLI contract; distinct from usage errors).
 const codex_deny_exit_code: u8 = 2;
 
-fn writeCodexGuardBlock(stderr: anytype, message: []const u8, reason: ?[]const u8) !void {
+fn writeCodexGuardBlock(allocator: std.mem.Allocator, stderr: anytype, message: []const u8, reason: ?[]const u8) !void {
+    const safe_message = try core_api.redactAlloc(allocator, message);
+    defer allocator.free(safe_message);
+    const safe_reason = if (reason) |value| try core_api.redactAlloc(allocator, value) else null;
+    defer if (safe_reason) |value| allocator.free(value);
+
     try stderr.writeAll(guard_sentinel_prefix);
-    try stderr.writeAll(message);
+    try stderr.writeAll(safe_message);
     try stderr.writeAll("\n");
     // Optional second line when reason is not already embedded in the human message.
-    if (reason) |r| {
-        if (r.len > 0 and std.mem.indexOf(u8, message, r) == null) {
+    if (safe_reason) |r| {
+        if (r.len > 0 and std.mem.indexOf(u8, safe_message, r) == null) {
             try stderr.writeAll(r);
             try stderr.writeAll("\n");
         }
@@ -2428,6 +2433,18 @@ test "hook guard sentinel format is machine-parseable and stable" {
     try std.testing.expect(guard_sentinel_prefix[guard_sentinel_prefix.len - 1] == '\n');
 }
 
+test "hook Codex guard block redacts dynamic presentation fields" {
+    const secret = "sk-fakeSyntheticOpenAIKey1234567890";
+    var buf: [2048]u8 = undefined;
+    var writer: std.Io.Writer = .fixed(&buf);
+    try writeCodexGuardBlock(std.testing.allocator, &writer, "Blocked because path contains " ++ secret, "matched deny pattern " ++ secret);
+    const written = writer.buffered();
+    try std.testing.expect(std.mem.indexOf(u8, written, guard_sentinel_prefix) != null);
+    try std.testing.expect(std.mem.indexOf(u8, written, secret) == null);
+    // Presentation redaction may use plain `[REDACTED]` or typed `[REDACTED:…]` tokens.
+    try std.testing.expect(std.mem.indexOf(u8, written, "[REDACTED") != null);
+}
+
 test "hook daemon deny includes remediation fields for flexible hosts" {
     const allocator = std.testing.allocator;
     const json =
@@ -2847,7 +2864,7 @@ test "hook mode x severity matrix for shell denials" {
         try std.testing.expectEqual(PluginDecision.block, r.decision);
     }
 
-    // Low always allow
+    // Low: interactive modes allow; CI preserves the daemon denial (fail-closed automation).
     {
         var r = try runShellRouteWithMode(allocator, "noisy", null, .strict, mockDaemonDenyLowEvaluator);
         defer r.deinit(allocator);
@@ -2856,6 +2873,6 @@ test "hook mode x severity matrix for shell denials" {
     {
         var r = try runShellRouteWithMode(allocator, "noisy", null, .ci, mockDaemonDenyLowEvaluator);
         defer r.deinit(allocator);
-        try std.testing.expectEqual(PluginDecision.allow, r.decision);
+        try std.testing.expectEqual(PluginDecision.block, r.decision);
     }
 }

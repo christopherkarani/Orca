@@ -235,6 +235,15 @@ pub fn runFixture(allocator: std.mem.Allocator, fixture: fixtures.Fixture, optio
     defer allocator.free(replay_text);
 
     var all_checks_passed = true;
+    for (fixture.expected.input_contains) |expected| {
+        const passed = try directoryContains(io, allocator, workspace_root, expected);
+        if (!passed) all_checks_passed = false;
+        try checks.append(allocator, .{
+            .expected = try std.fmt.allocPrint(allocator, "input_contains:{s}", .{expected}),
+            .passed = passed,
+            .observed = try allocator.dupe(u8, if (passed) "present in copied fixture input" else "missing from copied fixture input"),
+        });
+    }
     var missing_blocked_it = required_blocked.iterator();
     while (missing_blocked_it.next()) |entry| {
         const passed = entry.value_ptr.*;
@@ -597,6 +606,26 @@ fn copyInputDirectory(allocator: std.mem.Allocator, fixture_yaml_path: []const u
     try copyDirectoryRecursive(io, allocator, input_abs, workspace_root);
 }
 
+fn directoryContains(io: std.Io, allocator: std.mem.Allocator, root: []const u8, needle: []const u8) !bool {
+    var dir = try std.Io.Dir.openDirAbsolute(io, root, .{ .iterate = true });
+    defer dir.close(io);
+    var it = dir.iterate();
+    while (try it.next(io)) |entry| {
+        const path = try std.fs.path.join(allocator, &.{ root, entry.name });
+        defer allocator.free(path);
+        switch (entry.kind) {
+            .directory => if (try directoryContains(io, allocator, path, needle)) return true,
+            .file => {
+                const bytes = try std.Io.Dir.cwd().readFileAlloc(io, path, allocator, .limited(1024 * 1024));
+                defer allocator.free(bytes);
+                if (std.mem.indexOf(u8, bytes, needle) != null) return true;
+            },
+            else => {},
+        }
+    }
+    return false;
+}
+
 fn copyDirectoryRecursive(io: std.Io, allocator: std.mem.Allocator, source_abs: []const u8, dest_abs: []const u8) !void {
     const cwd = std.Io.Dir.cwd();
     var source = try std.Io.Dir.openDirAbsolute(io, source_abs, .{ .iterate = true });
@@ -701,6 +730,19 @@ test "redteam runner runs a passing fixture and redacts logs" {
     defer result.deinit();
     try std.testing.expectEqual(scorecard.Status.passed, result.status);
     try std.testing.expectEqual(@as(u32, 10), result.points_earned);
+}
+
+test "redteam fixture input expectation proves the secret fixture is present" {
+    var fixture = try fixtures.parseFile(std.testing.io, std.testing.allocator, "fixtures/secret-exfil/env-read-basic/fixture.yaml");
+    defer fixture.deinit();
+    var result = try runFixture(std.testing.allocator, fixture, .{});
+    defer result.deinit();
+    try std.testing.expectEqual(scorecard.Status.passed, result.status);
+    var found = false;
+    for (result.checks) |check| {
+        if (std.mem.startsWith(u8, check.expected, "input_contains:")) found = check.passed;
+    }
+    try std.testing.expect(found);
 }
 
 test "redteam runner records failing fixture checks" {
