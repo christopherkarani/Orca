@@ -193,10 +193,11 @@ fn runAutoSetup(io: std.Io, cwd: std.Io.Dir, preset: []const u8, stdout: anytype
     try stdout.writeAll("\n");
     if (degraded_count > 0) {
         try stdout.print("Setup finished with {d} degraded host(s) — deny ok but allow failed (not ready).\n", .{degraded_count});
-        try stdout.writeAll("Fix daemon first: orca doctor\n");
+        try stdout.writeAll("Monitoring/partial — not fully ready for protect.\n");
+        try stdout.writeAll("Fix daemon first: orca doctor --check\n");
         try stdout.writeAll("Live host E2E (optional): ./scripts/host-live-e2e.sh\n");
-        // Exit 0: protection proof passed; degraded is yellow messaging only (L3).
-        return exit_codes.success;
+        // Nonzero: degraded hosts mean setup is not complete (honest exit contract).
+        return exit_codes.general;
     }
 
     try style.maybeColor(io, stdout, style.Style.green, style.Glyph.party ++ " Setup complete!");

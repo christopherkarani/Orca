@@ -192,26 +192,36 @@ pub fn extractCwd(root: std.json.Value, format: InputFormat) ?[]const u8 {
 
 fn isShellHookCandidate(object: std.json.ObjectMap) bool {
     const tool_name = stringField(object, "tool_name") orelse stringField(object, "toolName");
-    if (tool_name) |name| return isSupportedShellTool(name);
+    if (tool_name) |name| {
+        // Known shell tool names always route through the daemon evaluator.
+        if (isSupportedShellTool(name)) return true;
+        // Unknown tool name with an explicit command field is still shell-like —
+        // misclassification would fail-open real shell hosts (e.g. "Shell", "exec").
+        if (toolInputHasCommand(object)) return true;
+        return false;
+    }
     return object.get("tool_input") != null or object.get("toolInput") != null or
         object.get("tool_args") != null or object.get("toolArgs") != null;
 }
 
-fn isSupportedShellTool(tool_name: []const u8) bool {
-    var lower_buf: [64]u8 = undefined;
-    if (tool_name.len > lower_buf.len) return false;
-    for (tool_name, 0..) |c, i| {
-        lower_buf[i] = std.ascii.toLower(c);
+fn toolInputHasCommand(object: std.json.ObjectMap) bool {
+    if (object.get("tool_input")) |v| {
+        if (extractCommandFromToolInput(v) != null) return true;
     }
-    const lower = lower_buf[0..tool_name.len];
-    return std.mem.eql(u8, lower, "bash") or
-        std.mem.eql(u8, lower, "launch-process") or
-        std.mem.eql(u8, lower, "powershell") or
-        std.mem.eql(u8, lower, "pwsh") or
-        std.mem.eql(u8, lower, "run_shell_command") or
-        std.mem.eql(u8, lower, "run-shell-command") or
-        std.mem.eql(u8, lower, "terminal") or
-        std.mem.eql(u8, lower, "run_terminal_cmd");
+    if (object.get("toolInput")) |v| {
+        if (extractCommandFromToolInput(v) != null) return true;
+    }
+    if (object.get("tool_args")) |v| {
+        if (extractCommandFromToolArgs(v) != null) return true;
+    }
+    if (object.get("toolArgs")) |v| {
+        if (extractCommandFromToolArgs(v) != null) return true;
+    }
+    return false;
+}
+
+fn isSupportedShellTool(tool_name: []const u8) bool {
+    return @import("shell_tools.zig").isShellTool(tool_name);
 }
 
 fn extractCommandFromToolInput(value: std.json.Value) ?[]const u8 {
@@ -354,6 +364,23 @@ test "extractCommand reads Bash tool_input and cursor command fields" {
     try std.testing.expectEqualStrings("pwd", extractCommand(cursor.value, .cursor_shell).?);
 }
 
+test "extractCommand routes Shell shell sh zsh exec tool names as shell" {
+    const payloads = [_][]const u8{
+        "{\"tool_name\":\"Shell\",\"tool_input\":{\"command\":\"git status\"}}",
+        "{\"tool_name\":\"shell\",\"tool_input\":{\"command\":\"git status\"}}",
+        "{\"tool_name\":\"sh\",\"tool_input\":{\"command\":\"git status\"}}",
+        "{\"tool_name\":\"zsh\",\"tool_input\":{\"command\":\"git status\"}}",
+        "{\"toolName\":\"exec\",\"tool_input\":{\"command\":\"git status\"}}",
+        "{\"tool_name\":\"UnknownTool\",\"tool_input\":{\"command\":\"git status\"}}",
+    };
+    for (payloads) |payload| {
+        var parsed = try std.json.parseFromSlice(std.json.Value, std.testing.allocator, payload, .{});
+        defer parsed.deinit();
+        try std.testing.expectEqual(InputFormat.agent_hook, detectInputFormat(parsed.value).?);
+        try std.testing.expectEqualStrings("git status", extractCommand(parsed.value, .agent_hook).?);
+    }
+}
+
 test "evaluatePayload allow emits cursor JSON and empty agent stdout" {
     const allocator = std.testing.allocator;
 
@@ -395,14 +422,33 @@ test "evaluatePayload deny emits hookSpecificOutput and cursor deny JSON" {
     try std.testing.expect(std.mem.indexOf(u8, cursor_output, "core.filesystem:destructive_rm") != null);
 }
 
-test "evaluatePayload fails closed when daemon unavailable" {
+test "evaluatePayload fails closed on daemon evaluate failures" {
     const allocator = std.testing.allocator;
-    var stdout_buf: [1024]u8 = undefined;
-    var stdout: std.Io.Writer = .fixed(&stdout_buf);
-
     const payload = "{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"git status\"}}";
-    _ = try evaluatePayload(allocator, payload, &stdout, shell_eval.mockDaemonUnavailableEvaluator);
-    try std.testing.expect(std.mem.indexOf(u8, stdout.buffered(), "\"permissionDecision\":\"deny\"") != null);
+
+    const Case = struct {
+        mode: ?policy.schema.Mode,
+        evaluator: ShellCommandEvaluatorFn,
+        reason_sub: []const u8,
+    };
+    const cases = [_]Case{
+        .{ .mode = null, .evaluator = shell_eval.mockDaemonUnavailableEvaluator, .reason_sub = "daemon unavailable" },
+        .{ .mode = null, .evaluator = shell_eval.mockDaemonProtocolMismatchEvaluator, .reason_sub = "daemon unavailable" },
+        .{ .mode = .observe, .evaluator = shell_eval.mockDaemonUnavailableEvaluator, .reason_sub = "daemon unavailable" },
+    };
+
+    for (cases) |case| {
+        var stdout_buf: [1024]u8 = undefined;
+        var stdout: std.Io.Writer = .fixed(&stdout_buf);
+        if (case.mode) |mode| {
+            _ = try evaluatePayloadWithMode(allocator, payload, &stdout, case.evaluator, mode);
+        } else {
+            _ = try evaluatePayload(allocator, payload, &stdout, case.evaluator);
+        }
+        const out = stdout.buffered();
+        try std.testing.expect(std.mem.indexOf(u8, out, "\"permissionDecision\":\"deny\"") != null);
+        try std.testing.expect(std.mem.indexOf(u8, out, case.reason_sub) != null);
+    }
 }
 
 test "evaluatePayload invalid JSON fails open with no stdout" {

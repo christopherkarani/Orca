@@ -5,6 +5,8 @@ const hash_chain = @import("hash_chain.zig");
 const redact_bridge = @import("redact_bridge.zig");
 const audit_summary = @import("summary.zig");
 
+pub const ParseIntegrityFailed = error{ParseIntegrityFailed};
+
 pub const ReplayOptions = struct {
     session: []const u8 = "last",
     only_denied: bool = false,
@@ -19,7 +21,7 @@ pub const ReplayEvent = struct {
     target_value: []u8,
     decision_result: ?[]u8,
 
-    fn deinit(self: ReplayEvent, allocator: std.mem.Allocator) void {
+    pub fn deinit(self: ReplayEvent, allocator: std.mem.Allocator) void {
         allocator.free(self.raw);
         allocator.free(self.timestamp);
         allocator.free(self.event_type);

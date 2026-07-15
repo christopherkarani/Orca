@@ -643,7 +643,7 @@ function renderIntegrations(plugins) {
       </div>
       <div class="action-grid">
         ${plugin.setup_commands.map((command) => `<code class="command-line">${escapeHtml(command)}</code>`).join("")}
-        <button class="button secondary" type="button" data-action="${plugin.id}-doctor">Run ${escapeHtml(plugin.label)} doctor</button>
+        <button class="button secondary" type="button" data-action="${escapeHtml(plugin.id)}-doctor">Run ${escapeHtml(plugin.label)} doctor</button>
       </div>
     </article>
   `).join("");

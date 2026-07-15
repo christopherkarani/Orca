@@ -201,26 +201,7 @@ fn daemonStatusFromError(err: anyerror) []const u8 {
 }
 
 fn daemonDetailFromError(err: anyerror) []const u8 {
-    return switch (err) {
-        error.HomeDirectoryNotFound => "HOME is not set; daemon runtime path is unavailable.",
-        error.DaemonBinaryNotFound => "orca-daemon binary not found beside orca or via ORCA_DAEMON.",
-        error.DaemonBinaryNotExecutable => "orca-daemon was found but is not executable.",
-        error.DaemonSpawnFailed => "orca-daemon failed to start; verify the installed daemon matches this OS/architecture.",
-        error.DaemonStartTimeout => "orca-daemon startup timed out while waiting for the socket handshake.",
-        error.DaemonNotReady => "daemon runtime exists but is not ready to answer requests.",
-        error.StaleSocket => "daemon runtime contains stale socket artifacts.",
-        error.SocketConnectFailed => "no running daemon answered on the expected socket.",
-        error.SocketWriteFailed => "daemon socket accepted a connection but did not accept the request cleanly.",
-        error.SocketReadFailed => "daemon socket accepted a connection but did not return a response in time.",
-        error.RequestSerializationFailed => "failed to serialize the daemon version request.",
-        error.ResponseParseFailed => "daemon returned malformed JSON for the version request.",
-        error.DaemonProtocolError => "daemon answered, but the version request payload was not valid.",
-        error.MissingHandshake => "daemon answered Ping without the required protocol handshake fields.",
-        error.HandshakeMalformed => "daemon handshake fields were present but malformed.",
-        error.ProtocolMismatch => "daemon protocol version or capability set does not match this Orca CLI.",
-        error.OutOfMemory => "out of memory while probing daemon version.",
-        else => "unexpected daemon version error",
-    };
+    return daemon.errors.versionProbeDetail(err);
 }
 
 fn binaryPathForReport(allocator: std.mem.Allocator) ?[]const u8 {

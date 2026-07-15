@@ -39,6 +39,8 @@ The policy created by `init --preset generic-agent` (and `setup --auto`) is tune
 
 Orca writes audit artifacts under `.orca/sessions/<session-id>/`.
 
+**Protection grade:** default `orca run` is typically **`wrapper`** (PATH shims). Absolute paths, non-shimmed binaries, non-proxy traffic, and non-firing host hooks can still bypass. Canonical grades and vocabulary map: [compatibility.md](compatibility.md#protection-grades-canonical).
+
 ## 5. Replay The Session
 
 ```sh

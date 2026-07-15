@@ -172,8 +172,17 @@ test "redteam --json output is stable machine JSON without presentation" {
     defer parsed.deinit();
     try std.testing.expect(parsed.value.object.get("version") != null);
     try std.testing.expect(parsed.value.object.get("fixtures") != null);
+    const provenance = parsed.value.object.get("provenance") orelse {
+        try std.testing.expect(false);
+        unreachable;
+    };
+    try std.testing.expectEqualStrings("engine-self-test", provenance.object.get("suite_kind").?.string);
+    try std.testing.expectEqualStrings("builtin:redteam", provenance.object.get("policy").?.string);
+    try std.testing.expectEqualStrings("zig-in-process", provenance.object.get("evaluator").?.string);
+    try std.testing.expect(provenance.object.get("real_action_attempted").?.bool == false);
     try std.testing.expect(std.mem.indexOfScalar(u8, output, 0x1b) == null);
     try std.testing.expect(std.mem.indexOf(u8, output, "Orca Redteam Score") == null);
+    try std.testing.expect(std.mem.indexOf(u8, output, "Orca Redteam — engine self-test") == null);
     try std.testing.expectEqualStrings("", stderr_writer.buffered());
 }
 
@@ -213,7 +222,8 @@ test "redteam ci exits nonzero on failing fixture" {
 
     const code = try command(std.testing.io, &.{ root, "--ci" }, &stdout_writer, &stderr_writer);
     try std.testing.expectEqual(exit_codes.redteam_failure, code);
-    try std.testing.expect(std.mem.indexOf(u8, stdout_writer.buffered(), "Orca Redteam Score") != null);
+    try std.testing.expect(std.mem.indexOf(u8, stdout_writer.buffered(), "Orca Redteam — engine self-test") != null);
+    try std.testing.expect(std.mem.indexOf(u8, stdout_writer.buffered(), "builtin:redteam") != null);
 }
 
 test "redteam ci accepts a relative fixture root with input directory" {

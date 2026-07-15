@@ -76,7 +76,7 @@ fn execWithEnv(io: std.Io, allocator: std.mem.Allocator, command_argv: []const [
         else => return err,
     };
     defer selected.deinit();
-    const effective_mode = shimMode(&selected.policy, env_map);
+    const effective_mode = try shimMode(io, allocator, workspace_root, session_id, &selected.policy, env_map);
 
     var command_decision = try shell_eval.evaluateCommand(allocator, effective_mode, command_argv, workspace_root, shell_evaluator, null, null);
     defer command_decision.deinit(allocator);
@@ -85,8 +85,10 @@ fn execWithEnv(io: std.Io, allocator: std.mem.Allocator, command_argv: []const [
     if (command_decision.decision.result != .allow and command_decision.decision.result != .observe) {
         // Child can forge ORCA_APPROVED_COMMAND_SESSION; durable audit record is required for
         // session-scoped approval. ORCA_APPROVED_COMMAND_ONCE is parent-set immediately before spawn.
-        const parent_approved = try approvalRecordedForCommand(io, allocator, workspace_root, session_id, display) or
-            intercept.commands.onceApprovalEnvMatches(env_map, display);
+        // Fail-closed Evaluate failures (daemon unavailable / protocol mismatch / malformed) are never
+        // softened by parent approval — only pack Deny / SoftBlock outcomes may be approved.
+        const parent_approved = !command_decision.fail_closed and (try approvalRecordedForCommand(io, allocator, workspace_root, session_id, display) or
+            intercept.commands.onceApprovalEnvMatches(env_map, display));
         if (parent_approved) {
             try intercept.commands.consumeOnceApproval(allocator, @constCast(env_map), display);
             final_decision = .{
@@ -203,11 +205,73 @@ fn loadRecordedPolicySource(io: std.Io, allocator: std.mem.Allocator, source: []
     return policy.load.discover(io, allocator, source, workspace_root);
 }
 
-fn shimMode(selected: *const policy.schema.Policy, env_map: *const std.process.Environ.Map) policy.schema.Mode {
-    if (env_map.get("ORCA_MODE")) |mode_text| {
-        return policy.schema.Mode.parse(mode_text) orelse selected.mode;
+/// Session-recorded mode file written by `orca run` before shims are active.
+/// Child processes can rewrite env; they must not rewrite enforcement mode via `ORCA_MODE`.
+pub const session_mode_filename = "shim_mode";
+
+fn sessionModePath(allocator: std.mem.Allocator, workspace_root: []const u8, session_id: []const u8) ![]u8 {
+    return try std.fs.path.join(allocator, &.{ workspace_root, ".orca", "sessions", session_id, session_mode_filename });
+}
+
+/// Persist the parent session's effective mode so shim callbacks cannot soften via env.
+pub fn writeSessionShimMode(io: std.Io, allocator: std.mem.Allocator, workspace_root: []const u8, session_id: []const u8, mode: policy.schema.Mode) !void {
+    const path = try sessionModePath(allocator, workspace_root, session_id);
+    defer allocator.free(path);
+    const sessions_dir = try std.fs.path.join(allocator, &.{ workspace_root, ".orca", "sessions", session_id });
+    defer allocator.free(sessions_dir);
+    try std.Io.Dir.cwd().createDirPath(io, sessions_dir);
+    const file = try std.Io.Dir.cwd().createFile(io, path, .{});
+    defer file.close(io);
+    try file.writeStreamingAll(io, mode.toString());
+    try file.writeStreamingAll(io, "\n");
+}
+
+fn readSessionShimMode(io: std.Io, allocator: std.mem.Allocator, workspace_root: []const u8, session_id: []const u8) !?policy.schema.Mode {
+    const path = try sessionModePath(allocator, workspace_root, session_id);
+    defer allocator.free(path);
+    const bytes = std.Io.Dir.cwd().readFileAlloc(io, path, allocator, .limited(64)) catch return null;
+    defer allocator.free(bytes);
+    const trimmed = std.mem.trim(u8, bytes, " \t\r\n");
+    return policy.schema.Mode.parse(trimmed);
+}
+
+fn modeStrictness(mode: policy.schema.Mode) u8 {
+    return switch (mode) {
+        .observe, .trusted => 0,
+        .ask => 1,
+        .strict, .redteam => 2,
+        .ci => 3,
+    };
+}
+
+fn moreRestrictiveMode(a: policy.schema.Mode, b: policy.schema.Mode) policy.schema.Mode {
+    return if (modeStrictness(a) >= modeStrictness(b)) a else b;
+}
+
+/// Resolve shim evaluation mode. Child env is hostile: never soften below the
+/// parent-recorded session mode (or policy mode when no recording exists).
+fn shimMode(
+    io: std.Io,
+    allocator: std.mem.Allocator,
+    workspace_root: []const u8,
+    session_id: []const u8,
+    selected: *const policy.schema.Policy,
+    env_map: *const std.process.Environ.Map,
+) !policy.schema.Mode {
+    // Parent `orca run` writes shim_mode before PATH shims are active. Prefer it
+    // over ORCA_MODE so agents cannot ORCA_MODE=observe their way past strict.
+    if (try readSessionShimMode(io, allocator, workspace_root, session_id)) |recorded| {
+        return recorded;
     }
-    return selected.mode;
+
+    // Legacy / tests without a recorded mode: env may only raise strictness.
+    const policy_mode = selected.mode;
+    if (env_map.get("ORCA_MODE")) |mode_text| {
+        if (policy.schema.Mode.parse(mode_text)) |env_mode| {
+            return moreRestrictiveMode(policy_mode, env_mode);
+        }
+    }
+    return policy_mode;
 }
 
 fn approvalRecordedForCommand(io: std.Io, allocator: std.mem.Allocator, workspace_root: []const u8, session_id: []const u8, command_display: []const u8) !bool {
@@ -305,73 +369,36 @@ test "shim parser rejects missing separator" {
 
 test "shim callback delegates allowed commands and removes shim path" {
     if (@import("builtin").os.tag == .windows) return error.SkipZigTest;
-    var tmp = std.testing.tmpDir(.{});
-    defer tmp.cleanup();
-    try writeTestWorkspacePolicy(tmp.dir);
-    const root = try testRealPath(std.testing.allocator, tmp.dir, ".");
-    defer std.testing.allocator.free(root);
-    try tmp.dir.createDirPath(std.testing.io, "real");
-    try tmp.dir.createDirPath(std.testing.io, "shim");
-    try writeTestScript(tmp.dir, "real/true", "exit 0\n");
-    try writeTestScript(tmp.dir, "shim/true", "exit 9\n");
-    const real_dir = try testRealPath(std.testing.allocator, tmp.dir, "real");
-    defer std.testing.allocator.free(real_dir);
-    const shim_dir = try testRealPath(std.testing.allocator, tmp.dir, "shim");
-    defer std.testing.allocator.free(shim_dir);
-    const session_id = try prepareShimSession(std.testing.allocator, root);
-    defer std.testing.allocator.free(session_id);
-
-    var env_map = std.process.Environ.Map.init(std.testing.allocator);
-    defer env_map.deinit();
-    const path_value = try std.fmt.allocPrint(std.testing.allocator, "{s}:{s}", .{ shim_dir, real_dir });
-    defer std.testing.allocator.free(path_value);
-    try env_map.put("PATH", path_value);
-    try env_map.put("ORCA_SESSION_ID", session_id);
-    try env_map.put("ORCA_WORKSPACE_ROOT", root);
-    try env_map.put("ORCA_SHIM_DIR", shim_dir);
-    try env_map.put("ORCA_MODE", "observe");
+    var fx = try prepareShimExecFixture(.{
+        .mode = "observe",
+        .real_bin = "true",
+        .shim_bin = "true",
+    });
+    defer fx.deinit();
 
     var stderr_buf: [1024]u8 = undefined;
     var stderr_writer: std.Io.Writer = .fixed(&stderr_buf);
-    const code = try execWithEnv(std.testing.io, std.testing.allocator, &.{"true"}, &env_map, &stderr_writer, shell_eval.mockDaemonAllowEvaluator);
+    const code = try execWithEnv(std.testing.io, std.testing.allocator, &.{"true"}, &fx.env_map, &stderr_writer, shell_eval.mockDaemonAllowEvaluator);
     try std.testing.expectEqual(exit_codes.success, code);
 }
 
 test "shim callback blocks denied commands before delegation" {
     if (@import("builtin").os.tag == .windows) return error.SkipZigTest;
-    var tmp = std.testing.tmpDir(.{});
-    defer tmp.cleanup();
-    try writeTestWorkspacePolicy(tmp.dir);
-    const root = try testRealPath(std.testing.allocator, tmp.dir, ".");
-    defer std.testing.allocator.free(root);
-    try tmp.dir.createDirPath(std.testing.io, "real");
-    try tmp.dir.createDirPath(std.testing.io, "shim");
-    try writeTestScript(tmp.dir, "real/rm", "exit 42\n");
-    const real_dir = try testRealPath(std.testing.allocator, tmp.dir, "real");
-    defer std.testing.allocator.free(real_dir);
-    const shim_dir = try testRealPath(std.testing.allocator, tmp.dir, "shim");
-    defer std.testing.allocator.free(shim_dir);
-    const session_id = try prepareShimSession(std.testing.allocator, root);
-    defer std.testing.allocator.free(session_id);
-
-    var env_map = std.process.Environ.Map.init(std.testing.allocator);
-    defer env_map.deinit();
-    const path_value = try std.fmt.allocPrint(std.testing.allocator, "{s}:{s}", .{ shim_dir, real_dir });
-    defer std.testing.allocator.free(path_value);
-    try env_map.put("PATH", path_value);
-    try env_map.put("ORCA_SESSION_ID", session_id);
-    try env_map.put("ORCA_WORKSPACE_ROOT", root);
-    try env_map.put("ORCA_SHIM_DIR", shim_dir);
-    try env_map.put("ORCA_MODE", "strict");
-    try recordShimPolicyLoaded(std.testing.allocator, root, session_id, "builtin:strict");
-    try env_map.put("ORCA_POLICY_PATH", "builtin:strict");
+    var fx = try prepareShimExecFixture(.{
+        .mode = "strict",
+        .real_bin = "rm",
+        .real_script_body = "exit 42\n",
+        .policy_path = "builtin:strict",
+        .record_builtin_policy = true,
+    });
+    defer fx.deinit();
 
     var stderr_buf: [1024]u8 = undefined;
     var stderr_writer: std.Io.Writer = .fixed(&stderr_buf);
-    const code = try execWithEnv(std.testing.io, std.testing.allocator, &.{ "rm", "-rf", "/" }, &env_map, &stderr_writer, shell_eval.mockDaemonDenyEvaluator);
+    const code = try execWithEnv(std.testing.io, std.testing.allocator, &.{ "rm", "-rf", "/" }, &fx.env_map, &stderr_writer, shell_eval.mockDaemonDenyEvaluator);
     try std.testing.expectEqual(exit_codes.denial, code);
 
-    const events = try readSessionEvents(std.testing.allocator, root, session_id);
+    const events = try readSessionEvents(std.testing.allocator, fx.root, fx.session_id);
     defer std.testing.allocator.free(events);
     try std.testing.expect(std.mem.indexOf(u8, events, "\"type\":\"command_denied\"") != null);
 }
@@ -439,40 +466,24 @@ test "shim callback preserves parent approval for ask-class command" {
 
 test "shim callback rejects forged approval hash from child environment" {
     if (@import("builtin").os.tag == .windows) return error.SkipZigTest;
-    var tmp = std.testing.tmpDir(.{});
-    defer tmp.cleanup();
-    try writeTestWorkspacePolicy(tmp.dir);
-    const root = try testRealPath(std.testing.allocator, tmp.dir, ".");
-    defer std.testing.allocator.free(root);
-    try tmp.dir.createDirPath(std.testing.io, "real");
-    try tmp.dir.createDirPath(std.testing.io, "shim");
-    try writeTestScript(tmp.dir, "real/git", "exit 0\n");
-    const real_dir = try testRealPath(std.testing.allocator, tmp.dir, "real");
-    defer std.testing.allocator.free(real_dir);
-    const shim_dir = try testRealPath(std.testing.allocator, tmp.dir, "shim");
-    defer std.testing.allocator.free(shim_dir);
-    const session_id = try prepareShimSession(std.testing.allocator, root);
-    defer std.testing.allocator.free(session_id);
+    var fx = try prepareShimExecFixture(.{ .mode = "strict", .real_bin = "git" });
+    defer fx.deinit();
 
-    var env_map = std.process.Environ.Map.init(std.testing.allocator);
-    defer env_map.deinit();
-    const path_value = try std.fmt.allocPrint(std.testing.allocator, "{s}:{s}", .{ shim_dir, real_dir });
-    defer std.testing.allocator.free(path_value);
-    try env_map.put("PATH", path_value);
-    try env_map.put("ORCA_SESSION_ID", session_id);
-    try env_map.put("ORCA_WORKSPACE_ROOT", root);
-    try env_map.put("ORCA_SHIM_DIR", shim_dir);
-    try env_map.put("ORCA_MODE", "strict");
     const display = try intercept.commands.displayArgvAlloc(std.testing.allocator, &.{ "git", "push" });
     defer std.testing.allocator.free(display);
-    try intercept.commands.appendApprovalHashEnv(std.testing.allocator, &env_map, intercept.commands.approved_session_env, display);
+    try intercept.commands.appendApprovalHashEnv(
+        std.testing.allocator,
+        &fx.env_map,
+        intercept.commands.approved_session_env,
+        display,
+    );
 
     var stderr_buf: [1024]u8 = undefined;
     var stderr_writer: std.Io.Writer = .fixed(&stderr_buf);
-    const code = try execWithEnv(std.testing.io, std.testing.allocator, &.{ "git", "push" }, &env_map, &stderr_writer, shell_eval.mockDaemonDenyEvaluator);
+    const code = try execWithEnv(std.testing.io, std.testing.allocator, &.{ "git", "push" }, &fx.env_map, &stderr_writer, shell_eval.mockDaemonDenyEvaluator);
     try std.testing.expectEqual(exit_codes.denial, code);
 
-    const events = try readSessionEvents(std.testing.allocator, root, session_id);
+    const events = try readSessionEvents(std.testing.allocator, fx.root, fx.session_id);
     defer std.testing.allocator.free(events);
     try std.testing.expect(std.mem.indexOf(u8, events, "\"type\":\"command_denied\"") != null);
 }
@@ -531,42 +542,209 @@ test "shim callback rejects forged policy path from child environment" {
 
 test "shim callback accepts recorded builtin policy source" {
     if (@import("builtin").os.tag == .windows) return error.SkipZigTest;
-    var tmp = std.testing.tmpDir(.{});
-    defer tmp.cleanup();
-    try writeTestWorkspacePolicy(tmp.dir);
-    const root = try testRealPath(std.testing.allocator, tmp.dir, ".");
-    defer std.testing.allocator.free(root);
-    try tmp.dir.createDirPath(std.testing.io, "real");
-    try tmp.dir.createDirPath(std.testing.io, "shim");
-    try writeTestScript(tmp.dir, "real/true", "exit 0\n");
-    try writeTestScript(tmp.dir, "shim/true", "exit 9\n");
-    const real_dir = try testRealPath(std.testing.allocator, tmp.dir, "real");
-    defer std.testing.allocator.free(real_dir);
-    const shim_dir = try testRealPath(std.testing.allocator, tmp.dir, "shim");
-    defer std.testing.allocator.free(shim_dir);
-    const session_id = try prepareShimSession(std.testing.allocator, root);
-    defer std.testing.allocator.free(session_id);
-    try recordShimPolicyLoaded(std.testing.allocator, root, session_id, "builtin:strict");
-    try std.testing.expect(try policyPathRecordedForSession(std.testing.io, std.testing.allocator, root, session_id, "builtin:strict"));
-
-    var env_map = std.process.Environ.Map.init(std.testing.allocator);
-    defer env_map.deinit();
-    const path_value = try std.fmt.allocPrint(std.testing.allocator, "{s}:{s}", .{ shim_dir, real_dir });
-    defer std.testing.allocator.free(path_value);
-    try env_map.put("PATH", path_value);
-    try env_map.put("ORCA_SESSION_ID", session_id);
-    try env_map.put("ORCA_WORKSPACE_ROOT", root);
-    try env_map.put("ORCA_SHIM_DIR", shim_dir);
-    try env_map.put("ORCA_MODE", "observe");
-    try env_map.put("ORCA_POLICY_PATH", "builtin:strict");
+    var fx = try prepareShimExecFixture(.{
+        .mode = "observe",
+        .real_bin = "true",
+        .shim_bin = "true",
+        .policy_path = "builtin:strict",
+        .record_builtin_policy = true,
+    });
+    defer fx.deinit();
+    try std.testing.expect(try policyPathRecordedForSession(std.testing.io, std.testing.allocator, fx.root, fx.session_id, "builtin:strict"));
 
     var stderr_buf: [1024]u8 = undefined;
     var stderr_writer: std.Io.Writer = .fixed(&stderr_buf);
-    const code = try execWithEnv(std.testing.io, std.testing.allocator, &.{"true"}, &env_map, &stderr_writer, shell_eval.mockDaemonAllowEvaluator);
+    const code = try execWithEnv(std.testing.io, std.testing.allocator, &.{"true"}, &fx.env_map, &stderr_writer, shell_eval.mockDaemonAllowEvaluator);
     if (code != exit_codes.success) {
         std.debug.print("builtin policy shim stderr: {s}\n", .{stderr_writer.buffered()});
     }
     try std.testing.expectEqual(exit_codes.success, code);
+}
+
+test "shim ignores child ORCA_MODE softening when session mode is strict" {
+    if (@import("builtin").os.tag == .windows) return error.SkipZigTest;
+    var fx = try prepareShimExecFixture(.{
+        .mode = "strict",
+        .real_bin = "git",
+        .policy_path = "builtin:strict",
+        .record_builtin_policy = true,
+    });
+    defer fx.deinit();
+
+    // Child tries to soften enforcement — session shim_mode must win.
+    try fx.env_map.put("ORCA_MODE", "observe");
+
+    var stderr_buf: [2048]u8 = undefined;
+    var stderr_writer: std.Io.Writer = .fixed(&stderr_buf);
+    const code = try execWithEnv(
+        std.testing.io,
+        std.testing.allocator,
+        &.{ "git", "push", "--force" },
+        &fx.env_map,
+        &stderr_writer,
+        shell_eval.mockDaemonDenyHighEvaluator,
+    );
+    try std.testing.expectEqual(exit_codes.denial, code);
+}
+
+test "shim fails closed on daemon evaluate failures" {
+    if (@import("builtin").os.tag == .windows) return error.SkipZigTest;
+
+    const Case = struct {
+        mode: []const u8,
+        evaluator: shell_eval.ShellCommandEvaluatorFn,
+        reason_sub: []const u8,
+        /// When true, record a parent approval for the command before exec.
+        with_parent_approval: bool = false,
+    };
+    const cases = [_]Case{
+        .{ .mode = "strict", .evaluator = shell_eval.mockDaemonUnavailableEvaluator, .reason_sub = "daemon unavailable" },
+        .{ .mode = "strict", .evaluator = shell_eval.mockDaemonProtocolMismatchEvaluator, .reason_sub = "daemon unavailable" },
+        .{ .mode = "strict", .evaluator = shell_eval.mockDaemonErrorEvaluator, .reason_sub = "daemon evaluation error" },
+        .{ .mode = "observe", .evaluator = shell_eval.mockDaemonUnavailableEvaluator, .reason_sub = "daemon unavailable" },
+        // Product law: recorded parent approval must not override fail-closed Evaluate denials.
+        .{
+            .mode = "strict",
+            .evaluator = shell_eval.mockDaemonUnavailableEvaluator,
+            .reason_sub = "daemon unavailable",
+            .with_parent_approval = true,
+        },
+        .{
+            .mode = "strict",
+            .evaluator = shell_eval.mockDaemonErrorEvaluator,
+            .reason_sub = "daemon evaluation error",
+            .with_parent_approval = true,
+        },
+    };
+
+    for (cases) |case| {
+        // Real binary would succeed if shim incorrectly delegated.
+        var fx = try prepareShimExecFixture(.{ .mode = case.mode, .real_bin = "git" });
+        defer fx.deinit();
+
+        const argv = [_][]const u8{ "git", "status" };
+        if (case.with_parent_approval) {
+            const display = try intercept.commands.displayArgvAlloc(std.testing.allocator, &argv);
+            defer std.testing.allocator.free(display);
+            try recordShimApproval(std.testing.allocator, fx.root, fx.session_id, display);
+            try intercept.commands.appendApprovalHashEnv(
+                std.testing.allocator,
+                &fx.env_map,
+                intercept.commands.approved_once_env,
+                display,
+            );
+        }
+
+        var stderr_buf: [2048]u8 = undefined;
+        var stderr_writer: std.Io.Writer = .fixed(&stderr_buf);
+        const code = try execWithEnv(
+            std.testing.io,
+            std.testing.allocator,
+            &argv,
+            &fx.env_map,
+            &stderr_writer,
+            case.evaluator,
+        );
+        try std.testing.expectEqual(exit_codes.denial, code);
+        try std.testing.expect(std.mem.indexOf(u8, stderr_writer.buffered(), "command denied") != null);
+        try std.testing.expect(std.mem.indexOf(u8, stderr_writer.buffered(), case.reason_sub) != null);
+
+        const events = try readSessionEvents(std.testing.allocator, fx.root, fx.session_id);
+        defer std.testing.allocator.free(events);
+        try std.testing.expect(std.mem.indexOf(u8, events, "\"type\":\"command_denied\"") != null);
+        try std.testing.expect(std.mem.indexOf(u8, events, "\"type\":\"command_allowed\"") == null);
+    }
+}
+
+const ShimFixtureOpts = struct {
+    mode: []const u8 = "strict",
+    real_bin: []const u8 = "git",
+    real_script_body: []const u8 = "exit 0\n",
+    /// When set, also write `shim/<name>` (PATH is shim_dir:real_dir so shim wins if present).
+    shim_bin: ?[]const u8 = null,
+    shim_script_body: []const u8 = "exit 9\n",
+    policy_path: ?[]const u8 = null,
+    record_builtin_policy: bool = false,
+};
+
+const ShimTestEnv = struct {
+    tmp: std.testing.TmpDir,
+    root: []u8,
+    real_dir: []u8,
+    shim_dir: []u8,
+    session_id: []u8,
+    path_value: []u8,
+    env_map: std.process.Environ.Map,
+
+    fn deinit(self: *ShimTestEnv) void {
+        self.env_map.deinit();
+        std.testing.allocator.free(self.path_value);
+        std.testing.allocator.free(self.session_id);
+        std.testing.allocator.free(self.shim_dir);
+        std.testing.allocator.free(self.real_dir);
+        std.testing.allocator.free(self.root);
+        self.tmp.cleanup();
+    }
+};
+
+fn prepareShimExecFixture(opts: ShimFixtureOpts) !ShimTestEnv {
+    var tmp = std.testing.tmpDir(.{});
+    errdefer tmp.cleanup();
+    try writeTestWorkspacePolicy(tmp.dir);
+
+    const root = try testRealPath(std.testing.allocator, tmp.dir, ".");
+    errdefer std.testing.allocator.free(root);
+
+    try tmp.dir.createDirPath(std.testing.io, "real");
+    try tmp.dir.createDirPath(std.testing.io, "shim");
+
+    const real_path = try std.fmt.allocPrint(std.testing.allocator, "real/{s}", .{opts.real_bin});
+    defer std.testing.allocator.free(real_path);
+    try writeTestScript(tmp.dir, real_path, opts.real_script_body);
+
+    if (opts.shim_bin) |shim_name| {
+        const shim_path = try std.fmt.allocPrint(std.testing.allocator, "shim/{s}", .{shim_name});
+        defer std.testing.allocator.free(shim_path);
+        try writeTestScript(tmp.dir, shim_path, opts.shim_script_body);
+    }
+
+    const real_dir = try testRealPath(std.testing.allocator, tmp.dir, "real");
+    errdefer std.testing.allocator.free(real_dir);
+    const shim_dir = try testRealPath(std.testing.allocator, tmp.dir, "shim");
+    errdefer std.testing.allocator.free(shim_dir);
+    const session_id = try prepareShimSession(std.testing.allocator, root);
+    errdefer std.testing.allocator.free(session_id);
+
+    if (opts.record_builtin_policy) {
+        try recordShimPolicyLoaded(std.testing.allocator, root, session_id, "builtin:strict");
+    }
+
+    // Parent session mode recording (same as orca run installShims).
+    const mode = policy.schema.Mode.parse(opts.mode) orelse .strict;
+    try writeSessionShimMode(std.testing.io, std.testing.allocator, root, session_id, mode);
+
+    var env_map = std.process.Environ.Map.init(std.testing.allocator);
+    errdefer env_map.deinit();
+    const path_value = try std.fmt.allocPrint(std.testing.allocator, "{s}:{s}", .{ shim_dir, real_dir });
+    errdefer std.testing.allocator.free(path_value);
+    try env_map.put("PATH", path_value);
+    try env_map.put("ORCA_SESSION_ID", session_id);
+    try env_map.put("ORCA_WORKSPACE_ROOT", root);
+    try env_map.put("ORCA_SHIM_DIR", shim_dir);
+    try env_map.put("ORCA_MODE", opts.mode);
+    if (opts.policy_path) |policy_path| {
+        try env_map.put("ORCA_POLICY_PATH", policy_path);
+    }
+
+    return .{
+        .tmp = tmp,
+        .root = root,
+        .real_dir = real_dir,
+        .shim_dir = shim_dir,
+        .session_id = session_id,
+        .path_value = path_value,
+        .env_map = env_map,
+    };
 }
 
 fn testRealPath(allocator: std.mem.Allocator, dir: std.Io.Dir, subpath: []const u8) ![]u8 {

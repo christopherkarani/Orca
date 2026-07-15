@@ -7,6 +7,7 @@
 const std = @import("std");
 
 const core = @import("orca_core").core;
+const core_api = @import("orca_core").api;
 const policy = @import("orca_core").policy;
 const intercept = @import("../intercept/mod.zig");
 const daemon = @import("daemon.zig");
@@ -53,26 +54,7 @@ pub fn defaultEvaluator(
 }
 
 pub fn daemonUnavailableReason(err: daemon.DaemonError) []const u8 {
-    return switch (err) {
-        error.HomeDirectoryNotFound => "daemon unavailable: HOME not set",
-        error.DaemonBinaryNotFound => "daemon unavailable: orca-daemon binary not found",
-        error.DaemonBinaryNotExecutable => "daemon unavailable: orca-daemon is not executable",
-        error.DaemonSpawnFailed => "daemon unavailable: failed to spawn orca-daemon",
-        error.DaemonStartTimeout => "daemon unavailable: startup timed out",
-        error.DaemonNotReady => "daemon unavailable: daemon not ready",
-        error.StaleSocket => "daemon unavailable: stale socket artifact",
-        error.SocketConnectFailed => "daemon unavailable: socket connect failed",
-        error.SocketWriteFailed => "daemon unavailable: socket write failed",
-        error.SocketReadFailed => "daemon unavailable: socket read failed",
-        error.InvalidWorkingDirectory => "daemon unavailable: command working directory does not exist",
-        error.RequestSerializationFailed => "daemon unavailable: request serialization failed",
-        error.ResponseParseFailed => "daemon unavailable: malformed daemon response",
-        error.DaemonProtocolError => "daemon unavailable: protocol error",
-        error.MissingHandshake => "daemon unavailable: missing protocol handshake",
-        error.HandshakeMalformed => "daemon unavailable: malformed protocol handshake",
-        error.ProtocolMismatch => "daemon unavailable: incompatible daemon protocol",
-        error.OutOfMemory => "daemon unavailable: out of memory",
-    };
+    return daemon.errors.shellUnavailableReason(err);
 }
 
 pub const PluginDecision = enum {
@@ -118,7 +100,7 @@ pub const RiskLevel = enum {
 /// | observe | deny                   | warn-allow     | allow  | allow|
 /// | ask     | deny                   | ask            | warn   | allow|
 /// | strict  | deny                   | deny           | deny   | allow|
-/// | ci      | deny                   | deny           | deny   | allow|
+/// | ci      | deny                   | deny           | deny   | deny |
 ///
 /// Critical remains deny in every mode (catastrophic always-on rules such as
 /// core.filesystem root wipe / core.git reset --hard). Daemon unavailable is
@@ -131,25 +113,29 @@ pub fn pluginDecisionFromModeAndSeverity(mode: policy.schema.Mode, severity: Ris
         .observe, .trusted => switch (severity) {
             .high, .unknown => .warn,
             .medium, .low => .allow,
-            .critical => .block,
+            .critical => unreachable,
         },
         .ask => switch (severity) {
             .high, .unknown => .ask,
             .medium => .warn,
             .low => .allow,
-            .critical => .block,
+            .critical => unreachable,
         },
         .strict, .redteam => switch (severity) {
             .high, .unknown, .medium => .block,
             .low => .allow,
-            .critical => .block,
+            .critical => unreachable,
         },
         .ci => switch (severity) {
-            .high, .unknown, .medium => .block,
-            .low => .allow,
-            .critical => .block,
+            .high, .unknown, .medium, .low => .block,
+            .critical => unreachable,
         },
     };
+}
+
+/// Mode×severity outcome for daemon Deny, including CI hardening of ask/warn.
+pub fn pluginDecisionForDaemonDeny(mode: policy.schema.Mode, severity: RiskLevel) PluginDecision {
+    return pluginDecisionFromModeAndSeverity(mode, severity).applyCiMode(mode == .ci);
 }
 
 /// Human-facing reason when mode softens a daemon deny into allow/warn/ask.
@@ -160,7 +146,8 @@ pub fn modeSoftenedReason(mode: policy.schema.Mode, severity: RiskLevel, plugin:
             .observe, .trusted => "allowed in observe; would deny in strict",
             .ask => "allowed in ask mode for low-severity pack hit",
             .strict, .redteam => "allowed in strict for low-severity pack hit",
-            .ci => "allowed in ci for low-severity pack hit",
+            // CI never softens Deny to allow (matrix always blocks); keep exhaustive.
+            .ci => unreachable,
         },
         .warn => switch (mode) {
             .observe, .trusted => "allowed in observe (warn); would deny in strict",
@@ -177,6 +164,8 @@ const OwnedRunDecision = struct {
     owned_reason: []const u8,
     owned_rule_id: ?[]const u8 = null,
     owned_remediation: ?[]const u8 = null,
+    /// Typed fail-closed marker for Evaluate transport/engine failures.
+    fail_closed: bool = false,
 
     pub fn deinit(self: OwnedRunDecision, allocator: std.mem.Allocator) void {
         allocator.free(self.owned_reason);
@@ -190,7 +179,9 @@ fn severityEquals(severity: []const u8, expected: []const u8) bool {
 }
 
 pub fn riskLevelFromDaemonSeverity(severity: ?[]const u8) RiskLevel {
-    const value = severity orelse return .high;
+    // Missing severity on Deny must not soften: treat as critical so observe/ask
+    // cannot warn-allow catastrophic hits that omitted the field.
+    const value = severity orelse return .critical;
     if (severityEquals(value, "critical")) return .critical;
     if (severityEquals(value, "high")) return .high;
     if (severityEquals(value, "medium")) return .medium;
@@ -267,8 +258,9 @@ pub fn decisionFromDaemonResult(
         .allow => blk: {
             const plugin_decision = pluginDecisionFromDaemonAllow(result).applyCiMode(ci_mode);
             const decision_result = decisionResultFromPluginDecision(plugin_decision);
-            const reason = try allocator.dupe(
-                u8,
+            // Align with hook.zig: daemon allow reasons may embed command fragments / secrets.
+            const reason = try core_api.redactAlloc(
+                allocator,
                 daemon.responseReason(result) orelse "command allowed by daemon evaluator",
             );
             break :blk OwnedRunDecision{
@@ -284,7 +276,7 @@ pub fn decisionFromDaemonResult(
         },
         .deny => blk: {
             const risk = riskLevelFromDaemonSeverity(daemon.responseStringField(result, "severity"));
-            const plugin_decision = pluginDecisionFromModeAndSeverity(mode, risk).applyCiMode(ci_mode);
+            const plugin_decision = pluginDecisionForDaemonDeny(mode, risk);
 
             if (plugin_decision == .block) {
                 const deny = try buildDaemonDenyReason(allocator, result);
@@ -327,10 +319,9 @@ pub fn decisionFromDaemonResult(
                 .owned_rule_id = rule,
             };
         },
-        .error_status => try failClosedRunDecision(
-            allocator,
-            daemon.responseErrorMessage(result) orelse "daemon evaluation error",
-        ),
+        // Engine Error / unexpected shapes are fail-closed via the typed flag on
+        // OwnedRunDecision — entrypoints must not re-parse reason strings.
+        .error_status => try failClosedEvaluationError(allocator, daemon.responseErrorMessage(result)),
         .pong, .cli_execution, .unknown => try failClosedRunDecision(
             allocator,
             "unexpected daemon response for shell command evaluation",
@@ -338,18 +329,36 @@ pub fn decisionFromDaemonResult(
     };
 }
 
-fn failClosedRunDecision(allocator: std.mem.Allocator, reason: []const u8) !OwnedRunDecision {
-    const owned = try allocator.dupe(u8, reason);
+/// Build a fail-closed decision that owns `owned_reason` (no re-dupe).
+fn failClosedOwned(owned_reason: []u8) OwnedRunDecision {
     return .{
         .decision = .{
             .result = .deny,
-            .reason = owned,
+            .reason = owned_reason,
             .risk_score = RiskLevel.high.toRiskScore(),
             .requires_user = false,
             .ci_may_proceed = false,
         },
-        .owned_reason = owned,
+        .owned_reason = owned_reason,
+        .fail_closed = true,
     };
+}
+
+fn failClosedRunDecision(allocator: std.mem.Allocator, reason: []const u8) !OwnedRunDecision {
+    return failClosedOwned(try allocator.dupe(u8, reason));
+}
+
+/// Human-facing reason for daemon Error status. Always `fail_closed = true` regardless of text.
+fn failClosedEvaluationError(allocator: std.mem.Allocator, message: ?[]const u8) !OwnedRunDecision {
+    const msg = message orelse return failClosedRunDecision(allocator, "daemon evaluation error");
+    // Redact before surfacing: Error messages may embed command fragments or secret-like tokens.
+    // Keep stable prefixes for diagnostics without treating them as a second security authority.
+    if (std.mem.startsWith(u8, msg, "daemon evaluation error") or std.mem.startsWith(u8, msg, "daemon unavailable")) {
+        return failClosedOwned(try core_api.redactAlloc(allocator, msg));
+    }
+    const formatted = try std.fmt.allocPrint(allocator, "daemon evaluation error: {s}", .{msg});
+    defer allocator.free(formatted);
+    return failClosedOwned(try core_api.redactAlloc(allocator, formatted));
 }
 
 pub fn failClosedDaemonUnavailableDecision(allocator: std.mem.Allocator, err: daemon.DaemonError) !OwnedRunDecision {
@@ -403,6 +412,7 @@ pub fn evaluateCommand(
             .decision = unavailable.decision,
             .owned_reason = owned_reason,
             .owned_rule_id = null,
+            .fail_closed = true,
         };
     };
     defer daemon_response.deinit();
@@ -460,6 +470,7 @@ pub fn evaluateCommand(
         .owned_reason = owned_reason,
         .owned_rule_id = owned_rule_id,
         .owned_remediation = owned_remediation,
+        .fail_closed = translated.fail_closed,
     };
 }
 
@@ -506,19 +517,50 @@ pub fn mockDaemonDenyEvaluator(allocator: std.mem.Allocator, shell_event: ShellC
     return mockDaemonResponse(allocator, "{\"id\":1,\"result\":{\"status\":\"Deny\",\"reason\":\"Command denied by evaluator\",\"pack_id\":\"core.filesystem\",\"pattern_name\":\"destructive_rm\",\"severity\":\"critical\",\"explanation\":\"recursive delete of root\",\"suggestions\":[{\"command\":\"rm -rf ./build\",\"description\":\"Limit delete to a project build directory\",\"platform\":\"any\"}]}}");
 }
 
-pub fn mockDaemonDenyHighEvaluator(allocator: std.mem.Allocator, shell_event: ShellCommandEvent) daemon.DaemonError!std.json.Parsed(daemon.DaemonResponse) {
+fn mockDaemonDenyPackHitEvaluator(
+    allocator: std.mem.Allocator,
+    shell_event: ShellCommandEvent,
+    pack_id: []const u8,
+    pattern_name: []const u8,
+    severity_field: ?[]const u8,
+    explanation: []const u8,
+) daemon.DaemonError!std.json.Parsed(daemon.DaemonResponse) {
     recordMockShellEvent(shell_event);
-    return mockDaemonResponse(allocator, "{\"id\":1,\"result\":{\"status\":\"Deny\",\"reason\":\"Command denied by evaluator\",\"pack_id\":\"core.git\",\"pattern_name\":\"force-push\",\"severity\":\"high\",\"explanation\":\"force push rewrites remote history\"}}");
+    const json = if (severity_field) |severity| blk: {
+        break :blk try std.fmt.allocPrint(
+            allocator,
+            "{{\"id\":1,\"result\":{{\"status\":\"Deny\",\"reason\":\"Command denied by evaluator\",\"pack_id\":\"{s}\",\"pattern_name\":\"{s}\",\"severity\":\"{s}\",\"explanation\":\"{s}\"}}}}",
+            .{ pack_id, pattern_name, severity, explanation },
+        );
+    } else blk: {
+        break :blk try std.fmt.allocPrint(
+            allocator,
+            "{{\"id\":1,\"result\":{{\"status\":\"Deny\",\"reason\":\"Command denied by evaluator\",\"pack_id\":\"{s}\",\"pattern_name\":\"{s}\",\"explanation\":\"{s}\"}}}}",
+            .{ pack_id, pattern_name, explanation },
+        );
+    };
+    defer allocator.free(json);
+    return mockDaemonResponse(allocator, json);
+}
+
+pub fn mockDaemonDenyHighEvaluator(allocator: std.mem.Allocator, shell_event: ShellCommandEvent) daemon.DaemonError!std.json.Parsed(daemon.DaemonResponse) {
+    return mockDaemonDenyPackHitEvaluator(allocator, shell_event, "core.git", "force-push", "high", "force push rewrites remote history");
 }
 
 pub fn mockDaemonDenyMediumEvaluator(allocator: std.mem.Allocator, shell_event: ShellCommandEvent) daemon.DaemonError!std.json.Parsed(daemon.DaemonResponse) {
-    recordMockShellEvent(shell_event);
-    return mockDaemonResponse(allocator, "{\"id\":1,\"result\":{\"status\":\"Deny\",\"reason\":\"Command denied by evaluator\",\"pack_id\":\"containers.docker\",\"pattern_name\":\"image-prune\",\"severity\":\"medium\",\"explanation\":\"prunes docker images\"}}");
+    return mockDaemonDenyPackHitEvaluator(allocator, shell_event, "containers.docker", "image-prune", "medium", "prunes docker images");
 }
 
 pub fn mockDaemonDenyLowEvaluator(allocator: std.mem.Allocator, shell_event: ShellCommandEvent) daemon.DaemonError!std.json.Parsed(daemon.DaemonResponse) {
-    recordMockShellEvent(shell_event);
-    return mockDaemonResponse(allocator, "{\"id\":1,\"result\":{\"status\":\"Deny\",\"reason\":\"Command denied by evaluator\",\"pack_id\":\"advisory\",\"pattern_name\":\"noisy-pattern\",\"severity\":\"low\",\"explanation\":\"advisory only\"}}");
+    return mockDaemonDenyPackHitEvaluator(allocator, shell_event, "advisory", "noisy-pattern", "low", "advisory only");
+}
+
+pub fn mockDaemonDenyUnknownSeverityEvaluator(allocator: std.mem.Allocator, shell_event: ShellCommandEvent) daemon.DaemonError!std.json.Parsed(daemon.DaemonResponse) {
+    return mockDaemonDenyPackHitEvaluator(allocator, shell_event, "core.git", "unclassified-hit", "bogus", "unrecognized severity string");
+}
+
+pub fn mockDaemonDenyMissingSeverityEvaluator(allocator: std.mem.Allocator, shell_event: ShellCommandEvent) daemon.DaemonError!std.json.Parsed(daemon.DaemonResponse) {
+    return mockDaemonDenyPackHitEvaluator(allocator, shell_event, "core.git", "missing-severity", null, "severity field omitted");
 }
 
 pub fn mockDaemonSoftBlockAllowEvaluator(allocator: std.mem.Allocator, shell_event: ShellCommandEvent) daemon.DaemonError!std.json.Parsed(daemon.DaemonResponse) {
@@ -561,6 +603,61 @@ test "shell_eval allows safe command via mock daemon" {
     try std.testing.expectEqualStrings("/tmp/repo", test_last_evaluate_cwd.?);
 }
 
+fn mockDaemonAllowWithSecretReasonEvaluator(
+    allocator: std.mem.Allocator,
+    shell_event: ShellCommandEvent,
+) daemon.DaemonError!std.json.Parsed(daemon.DaemonResponse) {
+    recordMockShellEvent(shell_event);
+    return mockDaemonResponse(
+        allocator,
+        "{\"id\":1,\"result\":{\"status\":\"Allow\",\"reason\":\"allowed; OPENAI_API_KEY=sk-fakeSyntheticOpenAIKey1234567890\"}}",
+    );
+}
+
+fn mockDaemonErrorWithSecretMessageEvaluator(
+    allocator: std.mem.Allocator,
+    shell_event: ShellCommandEvent,
+) daemon.DaemonError!std.json.Parsed(daemon.DaemonResponse) {
+    _ = shell_event;
+    return mockDaemonResponse(
+        allocator,
+        "{\"id\":1,\"result\":{\"status\":\"Error\",\"message\":\"eval failed token=sk-fakeSyntheticOpenAIKey1234567890\"}}",
+    );
+}
+
+test "shell_eval redacts secrets in allow reasons and evaluation errors" {
+    const allocator = std.testing.allocator;
+
+    var allowed = try evaluateCommand(
+        allocator,
+        .strict,
+        &.{ "git", "status" },
+        null,
+        mockDaemonAllowWithSecretReasonEvaluator,
+        null,
+        null,
+    );
+    defer allowed.deinit(allocator);
+    try std.testing.expectEqual(core.decision.DecisionResult.allow, allowed.decision.result);
+    try std.testing.expect(std.mem.indexOf(u8, allowed.owned_reason, "sk-fakeSyntheticOpenAIKey1234567890") == null);
+    try std.testing.expect(std.mem.indexOf(u8, allowed.owned_reason, "[REDACTED]") != null);
+
+    var engine_err = try evaluateCommand(
+        allocator,
+        .observe,
+        &.{ "git", "status" },
+        null,
+        mockDaemonErrorWithSecretMessageEvaluator,
+        null,
+        null,
+    );
+    defer engine_err.deinit(allocator);
+    try std.testing.expectEqual(core.decision.DecisionResult.deny, engine_err.decision.result);
+    try std.testing.expect(engine_err.fail_closed);
+    try std.testing.expect(std.mem.indexOf(u8, engine_err.owned_reason, "sk-fakeSyntheticOpenAIKey1234567890") == null);
+    try std.testing.expect(std.mem.indexOf(u8, engine_err.owned_reason, "daemon evaluation error") != null);
+}
+
 test "shell_eval denies dangerous command via mock daemon" {
     const allocator = std.testing.allocator;
     var decision = try evaluateCommand(allocator, .strict, &.{ "rm", "-rf", "/" }, null, mockDaemonDenyEvaluator, null, null);
@@ -573,12 +670,31 @@ test "shell_eval denies dangerous command via mock daemon" {
     try std.testing.expect(std.mem.indexOf(u8, decision.owned_remediation.?, "rm -rf ./build") != null);
 }
 
-test "shell_eval fails closed when daemon unavailable" {
+test "shell_eval fail_closed is typed on Evaluate failures only" {
     const allocator = std.testing.allocator;
-    var decision = try evaluateCommand(allocator, .strict, &.{ "git", "status" }, null, mockDaemonUnavailableEvaluator, null, null);
-    defer decision.deinit(allocator);
-    try std.testing.expectEqual(core.decision.DecisionResult.deny, decision.decision.result);
-    try std.testing.expect(std.mem.indexOf(u8, decision.decision.reason, "daemon unavailable") != null);
+    const Case = struct {
+        evaluator: ShellCommandEvaluatorFn,
+        expect_fail_closed: bool,
+        reason_sub: ?[]const u8 = null,
+    };
+    const cases = [_]Case{
+        .{ .evaluator = mockDaemonUnavailableEvaluator, .expect_fail_closed = true, .reason_sub = "daemon unavailable" },
+        .{ .evaluator = mockDaemonProtocolMismatchEvaluator, .expect_fail_closed = true, .reason_sub = "incompatible daemon protocol" },
+        .{ .evaluator = mockDaemonErrorEvaluator, .expect_fail_closed = true, .reason_sub = "daemon evaluation error" },
+        .{ .evaluator = mockDaemonDenyEvaluator, .expect_fail_closed = false },
+        .{ .evaluator = mockDaemonAllowEvaluator, .expect_fail_closed = false },
+    };
+    for (cases) |case| {
+        var decision = try evaluateCommand(allocator, .strict, &.{ "git", "status" }, null, case.evaluator, null, null);
+        defer decision.deinit(allocator);
+        try std.testing.expectEqual(case.expect_fail_closed, decision.fail_closed);
+        if (case.expect_fail_closed) {
+            try std.testing.expectEqual(core.decision.DecisionResult.deny, decision.decision.result);
+        }
+        if (case.reason_sub) |sub| {
+            try std.testing.expect(std.mem.indexOf(u8, decision.decision.reason, sub) != null);
+        }
+    }
 }
 
 test "shell_eval reports a missing command working directory explicitly" {
@@ -597,21 +713,6 @@ test "shell_eval ci mode converts warn allow to deny" {
     var decision = try evaluateCommand(allocator, .ci, &.{ "git", "status" }, null, mockDaemonWarnAllowEvaluator, null, null);
     defer decision.deinit(allocator);
     try std.testing.expectEqual(core.decision.DecisionResult.deny, decision.decision.result);
-}
-
-test "shell_eval daemon error fails closed" {
-    const allocator = std.testing.allocator;
-    var decision = try evaluateCommand(allocator, .strict, &.{ "git", "status" }, null, mockDaemonErrorEvaluator, null, null);
-    defer decision.deinit(allocator);
-    try std.testing.expectEqual(core.decision.DecisionResult.deny, decision.decision.result);
-}
-
-test "shell_eval protocol mismatch fails closed" {
-    const allocator = std.testing.allocator;
-    var decision = try evaluateCommand(allocator, .strict, &.{ "git", "status" }, null, mockDaemonProtocolMismatchEvaluator, null, null);
-    defer decision.deinit(allocator);
-    try std.testing.expectEqual(core.decision.DecisionResult.deny, decision.decision.result);
-    try std.testing.expect(std.mem.indexOf(u8, decision.decision.reason, "incompatible daemon protocol") != null);
 }
 
 test "hook and run parity for safe and dangerous commands" {
@@ -656,16 +757,22 @@ test "mode x severity matrix maps daemon denials" {
         .{ .mode = .ask, .evaluator = mockDaemonDenyMediumEvaluator, .expected = .observe, .reason_substr = "warning in ask" },
         .{ .mode = .strict, .evaluator = mockDaemonDenyMediumEvaluator, .expected = .deny },
         .{ .mode = .ci, .evaluator = mockDaemonDenyMediumEvaluator, .expected = .deny },
-        // Low: allow in all modes
+        // Low: CI preserves the daemon denial while interactive modes may soften it.
         .{ .mode = .observe, .evaluator = mockDaemonDenyLowEvaluator, .expected = .allow },
         .{ .mode = .ask, .evaluator = mockDaemonDenyLowEvaluator, .expected = .allow },
         .{ .mode = .strict, .evaluator = mockDaemonDenyLowEvaluator, .expected = .allow },
-        .{ .mode = .ci, .evaluator = mockDaemonDenyLowEvaluator, .expected = .allow },
+        .{ .mode = .ci, .evaluator = mockDaemonDenyLowEvaluator, .expected = .deny },
         // Critical: always deny (even observe)
         .{ .mode = .observe, .evaluator = mockDaemonDenyEvaluator, .expected = .deny },
         .{ .mode = .ask, .evaluator = mockDaemonDenyEvaluator, .expected = .deny },
         .{ .mode = .strict, .evaluator = mockDaemonDenyEvaluator, .expected = .deny },
         .{ .mode = .ci, .evaluator = mockDaemonDenyEvaluator, .expected = .deny },
+        // Unknown severity string follows high (warn in observe); omitted severity is critical (never softens).
+        .{ .mode = .observe, .evaluator = mockDaemonDenyUnknownSeverityEvaluator, .expected = .observe },
+        .{ .mode = .strict, .evaluator = mockDaemonDenyUnknownSeverityEvaluator, .expected = .deny },
+        .{ .mode = .ci, .evaluator = mockDaemonDenyUnknownSeverityEvaluator, .expected = .deny },
+        .{ .mode = .observe, .evaluator = mockDaemonDenyMissingSeverityEvaluator, .expected = .deny },
+        .{ .mode = .strict, .evaluator = mockDaemonDenyMissingSeverityEvaluator, .expected = .deny },
     };
 
     for (cases) |case| {
@@ -678,30 +785,78 @@ test "mode x severity matrix maps daemon denials" {
     }
 }
 
-test "mode matrix: daemon unavailable denies in observe" {
+test "mode matrix: daemon unavailable and engine error deny in observe" {
     const allocator = std.testing.allocator;
-    var decision = try evaluateCommand(allocator, .observe, &.{ "git", "status" }, null, mockDaemonUnavailableEvaluator, null, null);
-    defer decision.deinit(allocator);
-    try std.testing.expectEqual(core.decision.DecisionResult.deny, decision.decision.result);
-    try std.testing.expect(std.mem.indexOf(u8, decision.decision.reason, "daemon unavailable") != null);
+
+    var unavailable = try evaluateCommand(allocator, .observe, &.{ "git", "status" }, null, mockDaemonUnavailableEvaluator, null, null);
+    defer unavailable.deinit(allocator);
+    try std.testing.expectEqual(core.decision.DecisionResult.deny, unavailable.decision.result);
+    try std.testing.expect(unavailable.fail_closed);
+    try std.testing.expect(std.mem.indexOf(u8, unavailable.decision.reason, "daemon unavailable") != null);
+
+    var engine_err = try evaluateCommand(allocator, .observe, &.{ "git", "status" }, null, mockDaemonErrorEvaluator, null, null);
+    defer engine_err.deinit(allocator);
+    try std.testing.expectEqual(core.decision.DecisionResult.deny, engine_err.decision.result);
+    try std.testing.expect(engine_err.fail_closed);
+    try std.testing.expect(std.mem.indexOf(u8, engine_err.decision.reason, "daemon evaluation error") != null);
 }
 
-test "pluginDecisionFromModeAndSeverity table" {
-    // High
-    try std.testing.expectEqual(PluginDecision.warn, pluginDecisionFromModeAndSeverity(.observe, .high));
-    try std.testing.expectEqual(PluginDecision.ask, pluginDecisionFromModeAndSeverity(.ask, .high));
-    try std.testing.expectEqual(PluginDecision.block, pluginDecisionFromModeAndSeverity(.strict, .high));
-    try std.testing.expectEqual(PluginDecision.block, pluginDecisionFromModeAndSeverity(.ci, .high));
-    // Medium
-    try std.testing.expectEqual(PluginDecision.allow, pluginDecisionFromModeAndSeverity(.observe, .medium));
-    try std.testing.expectEqual(PluginDecision.warn, pluginDecisionFromModeAndSeverity(.ask, .medium));
-    try std.testing.expectEqual(PluginDecision.block, pluginDecisionFromModeAndSeverity(.strict, .medium));
-    // Critical always block
-    try std.testing.expectEqual(PluginDecision.block, pluginDecisionFromModeAndSeverity(.observe, .critical));
-    try std.testing.expectEqual(PluginDecision.block, pluginDecisionFromModeAndSeverity(.ask, .critical));
-    // Low always allow
-    try std.testing.expectEqual(PluginDecision.allow, pluginDecisionFromModeAndSeverity(.ci, .low));
-    try std.testing.expectEqual(PluginDecision.allow, pluginDecisionFromModeAndSeverity(.strict, .low));
+test "pluginDecisionFromModeAndSeverity mode groups x severity" {
+    const Row = struct {
+        severity: RiskLevel,
+        observe_like: PluginDecision,
+        ask: PluginDecision,
+        strict_like: PluginDecision,
+        ci: PluginDecision,
+    };
+
+    const rows = [_]Row{
+        .{ .severity = .critical, .observe_like = .block, .ask = .block, .strict_like = .block, .ci = .block },
+        .{ .severity = .high, .observe_like = .warn, .ask = .ask, .strict_like = .block, .ci = .block },
+        .{ .severity = .unknown, .observe_like = .warn, .ask = .ask, .strict_like = .block, .ci = .block },
+        .{ .severity = .medium, .observe_like = .allow, .ask = .warn, .strict_like = .block, .ci = .block },
+        .{ .severity = .low, .observe_like = .allow, .ask = .allow, .strict_like = .allow, .ci = .block },
+    };
+
+    const observe_modes = [_]policy.schema.Mode{ .observe, .trusted };
+    const strict_modes = [_]policy.schema.Mode{ .strict, .redteam };
+
+    for (rows) |row| {
+        for (observe_modes) |mode| {
+            try std.testing.expectEqual(row.observe_like, pluginDecisionFromModeAndSeverity(mode, row.severity));
+        }
+        try std.testing.expectEqual(row.ask, pluginDecisionFromModeAndSeverity(.ask, row.severity));
+        for (strict_modes) |mode| {
+            try std.testing.expectEqual(row.strict_like, pluginDecisionFromModeAndSeverity(mode, row.severity));
+        }
+        try std.testing.expectEqual(row.ci, pluginDecisionFromModeAndSeverity(.ci, row.severity));
+    }
+
+    // Security invariants: observe ≠ strict for high; ci never softens pack hits to allow.
+    try std.testing.expect(pluginDecisionFromModeAndSeverity(.observe, .high) != pluginDecisionFromModeAndSeverity(.strict, .high));
+    for ([_]RiskLevel{ .critical, .high, .medium, .low, .unknown }) |severity| {
+        try std.testing.expect(pluginDecisionForDaemonDeny(.ci, severity) != .allow);
+        try std.testing.expectEqual(PluginDecision.block, pluginDecisionForDaemonDeny(.ci, severity));
+    }
+}
+
+test "riskLevelFromDaemonSeverity maps null to critical and nonsense to unknown" {
+    try std.testing.expectEqual(RiskLevel.critical, riskLevelFromDaemonSeverity(null));
+    try std.testing.expectEqual(RiskLevel.high, riskLevelFromDaemonSeverity("HIGH"));
+    try std.testing.expectEqual(RiskLevel.critical, riskLevelFromDaemonSeverity("Critical"));
+    try std.testing.expectEqual(RiskLevel.medium, riskLevelFromDaemonSeverity("medium"));
+    try std.testing.expectEqual(RiskLevel.low, riskLevelFromDaemonSeverity("low"));
+    try std.testing.expectEqual(RiskLevel.unknown, riskLevelFromDaemonSeverity("bogus"));
+    try std.testing.expectEqual(RiskLevel.unknown, riskLevelFromDaemonSeverity(""));
+}
+
+test "PluginDecision.applyCiMode hardens ask and warn only" {
+    try std.testing.expectEqual(PluginDecision.block, PluginDecision.ask.applyCiMode(true));
+    try std.testing.expectEqual(PluginDecision.block, PluginDecision.warn.applyCiMode(true));
+    try std.testing.expectEqual(PluginDecision.ask, PluginDecision.ask.applyCiMode(false));
+    try std.testing.expectEqual(PluginDecision.warn, PluginDecision.warn.applyCiMode(false));
+    try std.testing.expectEqual(PluginDecision.allow, PluginDecision.allow.applyCiMode(true));
+    try std.testing.expectEqual(PluginDecision.block, PluginDecision.block.applyCiMode(true));
 }
 
 test "mode-softened high severity maps to valid plugin decision vocabulary" {

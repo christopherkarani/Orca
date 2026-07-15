@@ -2,7 +2,7 @@
 source: tests/output_snapshots.rs
 expression: normalize_snapshot(denial.render_plain())
 ---
-BLOCKED: Destructive Command Detected
+ORCA BLOCKED: Destructive Command Detected
 
   Command: rm -rf /prod
            ^^^^^^

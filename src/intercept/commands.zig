@@ -41,6 +41,10 @@ pub const CommandDecision = struct {
     owned_reason: []const u8,
     owned_rule_id: ?[]const u8 = null,
     owned_remediation: ?[]const u8 = null,
+    /// True when the decision is a fail-closed Evaluate failure (daemon unavailable,
+    /// protocol mismatch, malformed/unexpected response). Never softenable by
+    /// parent approval or mode×severity — only pack Deny / SoftBlock may be approved.
+    fail_closed: bool = false,
 
     pub fn deinit(self: CommandDecision, allocator: std.mem.Allocator) void {
         allocator.free(self.owned_reason);

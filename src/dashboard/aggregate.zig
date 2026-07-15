@@ -2,6 +2,7 @@ const std = @import("std");
 
 const core_api = @import("orca_core").api;
 const core = @import("orca_core").core;
+const presentation = @import("../presentation/mod.zig");
 const feed_writer = @import("../cli/feed_writer.zig");
 const rust_visibility = @import("../cli/rust_visibility.zig");
 
@@ -496,22 +497,16 @@ fn writeFeedRecordJson(allocator: std.mem.Allocator, writer: anytype, record: ru
     try writer.writeAll(",\"severity\":");
     if (record.severity) |severity| try core.util.writeJsonString(writer, severity) else try writer.writeAll("null");
     try writer.writeAll(",\"reason\":");
-    try writeRedactedJsonString(allocator, writer, record.reason);
+    try presentation.redact.writeJsonString(allocator, writer, record.reason);
     try writer.writeAll(",\"remediation\":");
-    if (record.remediation) |remediation| try writeRedactedJsonString(allocator, writer, remediation) else try writer.writeAll("null");
+    if (record.remediation) |remediation| try presentation.redact.writeJsonString(allocator, writer, remediation) else try writer.writeAll("null");
     try writer.writeAll(",\"target\":");
-    try writeRedactedJsonString(allocator, writer, record.target_summary);
+    try presentation.redact.writeJsonString(allocator, writer, record.target_summary);
     try writer.writeAll(",\"session_id\":");
     if (record.session_id) |session_id| try core.util.writeJsonString(writer, session_id) else try writer.writeAll("null");
     try writer.writeAll(",\"verified\":");
     try writer.writeAll(if (record.verified) "true" else "false");
     try writer.writeByte('}');
-}
-
-fn writeRedactedJsonString(allocator: std.mem.Allocator, writer: anytype, value: []const u8) !void {
-    const redacted = try core_api.redactAlloc(allocator, value);
-    defer allocator.free(redacted);
-    try core.util.writeJsonString(writer, redacted);
 }
 
 fn newestSessionFirst(_: void, lhs: SessionRef, rhs: SessionRef) bool {

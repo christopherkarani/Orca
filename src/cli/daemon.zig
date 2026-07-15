@@ -11,6 +11,12 @@
 const std = @import("std");
 const builtin = @import("builtin");
 const env_util = @import("../env_util.zig");
+const daemon_trust = @import("daemon_trust.zig");
+const daemon_uds = @import("daemon_uds.zig");
+
+pub const errors = @import("daemon_errors.zig");
+pub const trust = daemon_trust;
+pub const uds = daemon_uds;
 
 /// Name of the Rust daemon binary.
 const daemon_binary_name = if (builtin.os.tag == .windows) "orca-daemon.exe" else "orca-daemon";
@@ -37,7 +43,7 @@ pub const default_readiness_timeout_ms: u64 = 5_000;
 const readiness_poll_ms: u64 = 50;
 
 /// Per-request UDS timeout for Ping and other daemon IPC.
-const default_request_timeout_ms: u64 = 500;
+pub const default_request_timeout_ms: u64 = 500;
 
 /// Maximum NDJSON response line accepted from the daemon.
 const max_response_line_bytes: usize = 1024 * 1024;
@@ -113,6 +119,7 @@ pub const DaemonError = error{
     OutOfMemory,
     DaemonBinaryNotFound,
     DaemonBinaryNotExecutable,
+    DaemonBinaryUntrusted,
     DaemonSpawnFailed,
     DaemonStartTimeout,
     DaemonNotReady,
@@ -141,6 +148,8 @@ pub const DaemonBinaryInspection = struct {
     source: DaemonBinarySource,
     exists: bool,
     executable: bool,
+    /// True when `ORCA_DAEMON` points at a world-writable path (other-write bit set).
+    untrusted: bool = false,
 
     pub fn deinit(self: DaemonBinaryInspection, allocator: std.mem.Allocator) void {
         allocator.free(self.path);
@@ -460,6 +469,7 @@ pub fn inspectDaemonBinary(allocator: std.mem.Allocator) DaemonError!?DaemonBina
             .source = .env_override,
             .exists = pathExists(io, env_path),
             .executable = pathIsExecutable(io, env_path),
+            .untrusted = daemon_trust.isEnvOverrideUntrusted(io, allocator, env_path),
         };
     }
 
@@ -594,7 +604,7 @@ pub fn executeCliAt(allocator: std.mem.Allocator, argv: []const []const u8, cwd:
     return parsed;
 }
 
-fn sendRequestWithTimeout(
+pub fn sendRequestWithTimeout(
     allocator: std.mem.Allocator,
     socket_path: []const u8,
     request: DaemonRequest,
@@ -616,7 +626,7 @@ fn sendRawRequestWithTimeout(
     var threaded: std.Io.Threaded = .init_single_threaded;
     const io = threaded.io();
 
-    const fd = connectUnixSocket(socket_path) catch return error.SocketConnectFailed;
+    const fd = daemon_uds.connectUnixSocket(socket_path) catch return error.SocketConnectFailed;
     defer _ = std.c.close(fd);
 
     try writeAllFdWithTimeout(io, fd, json_str, timeout_ms);
@@ -734,9 +744,14 @@ pub fn ensureDaemonRunning(allocator: std.mem.Allocator) DaemonError!void {
 fn requireResolvableDaemonBinary(allocator: std.mem.Allocator) DaemonError!void {
     const inspection = try inspectDaemonBinary(allocator) orelse return error.DaemonBinaryNotFound;
     defer inspection.deinit(allocator);
+    try validateBinaryInspection(inspection);
+}
 
+/// Validate a resolved daemon binary inspection before spawn or IPC.
+pub fn validateBinaryInspection(inspection: DaemonBinaryInspection) DaemonError!void {
     if (!inspection.exists) return error.DaemonBinaryNotFound;
     if (!inspection.executable) return error.DaemonBinaryNotExecutable;
+    if (inspection.source == .env_override and inspection.untrusted) return error.DaemonBinaryUntrusted;
 }
 
 fn ensureCompatibleDaemonRunning(allocator: std.mem.Allocator) DaemonError!void {
@@ -854,37 +869,9 @@ fn readLineFdWithTimeout(io: std.Io, allocator: std.mem.Allocator, fd: std.posix
     return read_buf.toOwnedSlice(allocator) catch return error.SocketReadFailed;
 }
 
-/// Open a connection to a Unix Domain Socket at `path`.
-fn connectUnixSocket(path: []const u8) !std.posix.fd_t {
-    const AF_UNIX = switch (builtin.os.tag) {
-        .linux => std.posix.AF.UNIX,
-        .macos => 1,
-        else => @compileError("unsupported OS for UDS"),
-    };
-    const SOCK_STREAM = switch (builtin.os.tag) {
-        .linux => std.posix.SOCK.STREAM,
-        .macos => 1,
-        else => @compileError("unsupported OS for UDS"),
-    };
-
-    const fd = std.c.socket(AF_UNIX, SOCK_STREAM, 0);
-    if (fd < 0) return error.SocketConnectFailed;
-    errdefer _ = std.c.close(fd);
-
-    var addr: std.c.sockaddr.un = .{
-        .family = AF_UNIX,
-        .path = undefined,
-    };
-    const path_len = @min(path.len, addr.path.len - 1);
-    @memset(&addr.path, 0);
-    @memcpy(addr.path[0..path_len], path[0..path_len]);
-    addr.path[path_len] = 0;
-
-    const addr_len: u32 = @intCast(@offsetOf(std.c.sockaddr.un, "path") + path_len + 1);
-    const rc = std.c.connect(fd, @ptrCast(&addr), addr_len);
-    if (rc < 0) return error.SocketConnectFailed;
-
-    return fd;
+/// Monotonic clock helper exposed for IPC timeout tests.
+pub fn monotonicNowMsForTest(io: std.Io) i64 {
+    return monotonicNowMs(io);
 }
 
 fn getEnvVar(allocator: std.mem.Allocator, key: []const u8) !?[]const u8 {
@@ -1272,4 +1259,42 @@ test "integration: ensureDaemonRunning when ORCA_DAEMON is set" {
 
     try ensureDaemonRunning(allocator);
     try ping(allocator);
+}
+
+test "cleanupStaleArtifacts clears stale socket so isStaleDaemonArtifacts is false" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const home = try tmp.dir.realPathFileAlloc(std.testing.io, ".", std.testing.allocator);
+    defer std.testing.allocator.free(home);
+
+    const paths = try runtimePathsForHome(std.testing.allocator, home);
+    defer freeRuntimePaths(std.testing.allocator, paths);
+
+    try tmp.dir.createDirPath(std.testing.io, ".orca");
+    const sock = try tmp.dir.createFile(std.testing.io, ".orca/daemon.sock", .{});
+    sock.close(std.testing.io);
+    try tmp.dir.writeFile(std.testing.io, .{
+        .sub_path = ".orca/daemon.pid",
+        .data = "999999\n",
+    });
+
+    try std.testing.expect(try isStaleDaemonArtifacts(std.testing.allocator, paths));
+    cleanupStaleArtifacts(std.testing.io, paths);
+    try std.testing.expect(!try isStaleDaemonArtifacts(std.testing.allocator, paths));
+    try std.testing.expect(!pathAccessible(std.testing.io, paths.socket));
+    try std.testing.expect(!pathAccessible(std.testing.io, paths.pid));
+}
+
+test "validateBinaryInspection accepts trusted adjacent binary" {
+    const path = try std.testing.allocator.dupe(u8, "/tmp/orca-daemon");
+    defer std.testing.allocator.free(path);
+
+    try validateBinaryInspection(.{
+        .path = path,
+        .source = .adjacent,
+        .exists = true,
+        .executable = true,
+        .untrusted = false,
+    });
 }

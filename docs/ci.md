@@ -21,6 +21,7 @@ jobs:
         run: zig build test
       - name: Orca CI check
         run: ./zig-out/bin/orca ci check --format markdown
+      # Fixture engine self-test (builtin:redteam); not workspace policy assurance.
       - name: Orca red-team
         run: ./zig-out/bin/orca redteam --ci --json > orca-redteam.json
       - uses: actions/upload-artifact@v4

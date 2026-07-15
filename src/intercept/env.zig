@@ -21,6 +21,8 @@ pub const FilteredEnv = struct {
     env_map: std.process.Environ.Map,
     use_custom_env: bool,
     redactions: []RedactionRecord,
+    /// Count of secret-like values rewritten to non-resolving `orca-secret://` refs under `--secretless`.
+    secretless_replacements: usize = 0,
 
     pub fn deinit(self: *FilteredEnv) void {
         for (self.redactions) |record| {
@@ -33,6 +35,16 @@ pub const FilteredEnv = struct {
         self.* = undefined;
     }
 };
+
+/// Loud readiness note when `--secretless` rewrote secret-like env vars to
+/// non-resolving local-dummy refs (avoids silent provider 401s on day-1 launches).
+pub fn writeSecretlessReadinessNote(stderr: anytype, secretless_replacements: usize) !void {
+    if (secretless_replacements == 0) return;
+    try stderr.print(
+        "orca run: --secretless rewrote {d} secret-like env var(s) to non-resolving orca-secret://local-dummy/... references. Agents that need raw model API keys from the environment (e.g. OPENAI_API_KEY, ANTHROPIC_API_KEY) will not authenticate. Omit --secretless for day-1 agent launches; see docs/credentials.md (Secretless Mode).\n",
+        .{secretless_replacements},
+    );
+}
 
 pub fn filterCurrent(
     allocator: std.mem.Allocator,
@@ -69,7 +81,10 @@ pub fn filterMap(
     const inherit_source = selected_policy.env.inherit or request.inherit_env;
     const minimal = !inherit_source or isEnforcingNoSecretsMode(effective_mode);
     const force_no_secrets = request.no_secrets or (isEnforcingNoSecretsMode(effective_mode) and !request.secretless);
+    // Secretless always emits local-dummy refs today. These are non-resolving: child processes
+    // that treat env values as raw provider credentials will not authenticate.
     const broker = credentials.localDummyBroker();
+    var secretless_replacements: usize = 0;
 
     var it = current.iterator();
     while (it.next()) |entry| {
@@ -89,6 +104,7 @@ pub fn filterMap(
                 const ref = try broker.envReference(allocator, name, value);
                 defer ref.deinit(allocator);
                 try env_map.put(name, ref.value);
+                secretless_replacements += 1;
             } else {
                 try env_map.put(name, value);
             }
@@ -100,6 +116,7 @@ pub fn filterMap(
         .env_map = env_map,
         .use_custom_env = true,
         .redactions = try redactions.toOwnedSlice(allocator),
+        .secretless_replacements = secretless_replacements,
     };
 }
 
@@ -298,7 +315,48 @@ test "secretless replaces inherited secret-like env with local broker references
     try std.testing.expect(std.mem.indexOf(u8, token_value, "ghp_fakeSyntheticTokenValue") == null);
     try std.testing.expectEqualStrings("ok", filtered.env_map.get("SAFE_VALUE").?);
     try std.testing.expectEqual(@as(usize, 1), filtered.redactions.len);
+    try std.testing.expectEqual(@as(usize, 1), filtered.secretless_replacements);
     try std.testing.expect(std.mem.indexOf(u8, filtered.redactions[0].labels[0], "ghp_fakeSyntheticTokenValue") == null);
+}
+
+test "writeSecretlessReadinessNote is silent when count is zero" {
+    var buf: [256]u8 = undefined;
+    var w: std.Io.Writer = .fixed(&buf);
+    try writeSecretlessReadinessNote(&w, 0);
+    try std.testing.expectEqualStrings("", w.buffered());
+}
+
+test "writeSecretlessReadinessNote mentions count when non-zero" {
+    var buf: [512]u8 = undefined;
+    var w: std.Io.Writer = .fixed(&buf);
+    try writeSecretlessReadinessNote(&w, 3);
+    const out = w.buffered();
+    try std.testing.expect(std.mem.indexOf(u8, out, "--secretless rewrote") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "3") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "non-resolving") != null);
+}
+
+test "secretless rewrites model API key env names to non-resolving local-dummy refs" {
+    var selected = try policy.load.loadPreset(std.testing.allocator, .observe);
+    defer selected.deinit();
+
+    var current = std.process.Environ.Map.init(std.testing.allocator);
+    defer current.deinit();
+    try current.put("OPENAI_API_KEY", "sk-fakeSyntheticOpenAIKey1234567890");
+    try current.put("ANTHROPIC_API_KEY", "sk-ant-fakeSyntheticAnthropicKey1234567890");
+    try current.put("PATH", "/usr/bin");
+
+    var filtered = try filterMap(std.testing.allocator, &current, &selected, .observe, .{ .secretless = true });
+    defer filtered.deinit();
+
+    const openai = filtered.env_map.get("OPENAI_API_KEY").?;
+    const anthropic = filtered.env_map.get("ANTHROPIC_API_KEY").?;
+    try std.testing.expect(std.mem.startsWith(u8, openai, "orca-secret://local-dummy/env/OPENAI_API_KEY/"));
+    try std.testing.expect(std.mem.startsWith(u8, anthropic, "orca-secret://local-dummy/env/ANTHROPIC_API_KEY/"));
+    try std.testing.expect(std.mem.indexOf(u8, openai, "sk-fakeSynthetic") == null);
+    try std.testing.expect(std.mem.indexOf(u8, anthropic, "sk-ant-fakeSynthetic") == null);
+    try std.testing.expectEqualStrings("/usr/bin", filtered.env_map.get("PATH").?);
+    try std.testing.expectEqual(@as(usize, 2), filtered.secretless_replacements);
 }
 
 test "observe mode override still honors env inherit false" {

@@ -48,12 +48,128 @@ fn dashboardWorkspaceSelection(
     return environment_workspace;
 }
 
+/// Single source of truth for dashboard actions: browser IDs never become argv;
+/// metadata (workspace, cwd, UI exposure, daemon proxy) lives with the enum.
+const DashboardAction = enum {
+    doctor,
+    credentials_check,
+    credentials_check_github,
+    proxy_smoke,
+    policy_check,
+    policy_explain_github,
+    replay_last,
+    openclaw_doctor,
+    hermes_doctor,
+    replay_denied,
+    report_last,
+    ci_check,
+    demo_blocked_action,
+    suggest_allowlist,
+    allowlist_list,
+    license_status,
+    init_generic_agent,
+
+    fn id(self: DashboardAction) []const u8 {
+        return switch (self) {
+            .doctor => "doctor",
+            .credentials_check => "credentials-check",
+            .credentials_check_github => "credentials-check-github",
+            .proxy_smoke => "proxy-smoke",
+            .policy_check => "policy-check",
+            .policy_explain_github => "policy-explain-github",
+            .replay_last => "replay-last",
+            .openclaw_doctor => "openclaw-doctor",
+            .hermes_doctor => "hermes-doctor",
+            .replay_denied => "replay-denied",
+            .report_last => "report-last",
+            .ci_check => "ci-check",
+            .demo_blocked_action => "demo-blocked-action",
+            .suggest_allowlist => "suggest-allowlist",
+            .allowlist_list => "allowlist-list",
+            .license_status => "license-status",
+            .init_generic_agent => "init-generic-agent",
+        };
+    }
+
+    fn parse(action: []const u8) ?DashboardAction {
+        inline for (std.meta.tags(DashboardAction)) |tag| {
+            if (std.mem.eql(u8, tag.id(), action)) return tag;
+        }
+        return null;
+    }
+
+    /// Safe in machine mode without a selected workspace.
+    fn allowedWithoutWorkspace(self: DashboardAction) bool {
+        return switch (self) {
+            // Plugin doctor is host-global (not workspace policy).
+            .doctor, .license_status, .openclaw_doctor, .hermes_doctor => true,
+            else => false,
+        };
+    }
+
+    /// Legacy entrypoints that still resolve workspace from process cwd.
+    fn needsWorkspaceCwd(self: DashboardAction) bool {
+        return switch (self) {
+            .doctor,
+            .credentials_check,
+            .credentials_check_github,
+            .policy_explain_github,
+            .replay_last,
+            .replay_denied,
+            .report_last,
+            .ci_check,
+            .demo_blocked_action,
+            => true,
+            else => false,
+        };
+    }
+
+    /// Present in workspace quick_actions / integration buttons (not server-only init).
+    fn exposedInUi(self: DashboardAction) bool {
+        return self != .init_generic_agent;
+    }
+
+    /// Fixed daemon argv only — never browser-supplied args.
+    fn daemonArgv(self: DashboardAction) ?[]const []const u8 {
+        return switch (self) {
+            .suggest_allowlist => &.{ "suggest-allowlist", "--confidence", "high", "--non-interactive" },
+            .allowlist_list => &.{ "allowlist", "list" },
+            else => null,
+        };
+    }
+};
+
 fn actionAllowedWithoutWorkspace(action: []const u8) bool {
-    return std.mem.eql(u8, action, "doctor") or
-        std.mem.eql(u8, action, "license-status") or
-        // Plugin doctor is host-global (not workspace policy) and safe in machine mode.
-        std.mem.eql(u8, action, "openclaw-doctor") or
-        std.mem.eql(u8, action, "hermes-doctor");
+    return if (DashboardAction.parse(action)) |kind| kind.allowedWithoutWorkspace() else false;
+}
+
+fn isAllowlistedDashboardAction(action: []const u8) bool {
+    return DashboardAction.parse(action) != null;
+}
+
+fn actionNeedsWorkspaceCwd(action: []const u8) bool {
+    return if (DashboardAction.parse(action)) |kind| kind.needsWorkspaceCwd() else false;
+}
+
+fn dashboardDaemonActionArgv(action: []const u8) ?[]const []const u8 {
+    return if (DashboardAction.parse(action)) |kind| kind.daemonArgv() else null;
+}
+
+/// Mirrors `escapeHtml` in `src/dashboard/assets/app.js` for XSS fixture tests.
+fn escapeHtmlForAudit(allocator: std.mem.Allocator, value: []const u8) ![]u8 {
+    var list: std.ArrayList(u8) = .empty;
+    errdefer list.deinit(allocator);
+    for (value) |c| {
+        switch (c) {
+            '&' => try list.appendSlice(allocator, "&amp;"),
+            '<' => try list.appendSlice(allocator, "&lt;"),
+            '>' => try list.appendSlice(allocator, "&gt;"),
+            '"' => try list.appendSlice(allocator, "&quot;"),
+            '\'' => try list.appendSlice(allocator, "&#039;"),
+            else => try list.append(allocator, c),
+        }
+    }
+    return try list.toOwnedSlice(allocator);
 }
 
 const DashboardOptions = struct {
@@ -647,20 +763,6 @@ const CapturedAction = struct {
     stderr: []u8,
 };
 
-/// Commands that still resolve workspace from the process cwd (no path/Dir API yet).
-/// Prefer absolute paths or open Dir handles for new dashboard actions.
-fn actionNeedsWorkspaceCwd(action: []const u8) bool {
-    return std.mem.eql(u8, action, "doctor") or
-        std.mem.eql(u8, action, "credentials-check") or
-        std.mem.eql(u8, action, "credentials-check-github") or
-        std.mem.eql(u8, action, "policy-explain-github") or
-        std.mem.eql(u8, action, "replay-last") or
-        std.mem.eql(u8, action, "replay-denied") or
-        std.mem.eql(u8, action, "report-last") or
-        std.mem.eql(u8, action, "ci-check") or
-        std.mem.eql(u8, action, "demo-blocked-action");
-}
-
 /// Scoped process cwd change for legacy CLI entrypoints. Restore failures are hard errors
 /// so a subsequent dashboard request never inherits a foreign workspace.
 const WorkspaceCwdGuard = struct {
@@ -684,7 +786,8 @@ const WorkspaceCwdGuard = struct {
 };
 
 fn runAllowedAction(io: std.Io, allocator: std.mem.Allocator, action: []const u8, workspace_root: ?[]const u8) !CapturedAction {
-    if (workspace_root == null and !actionAllowedWithoutWorkspace(action)) return error.WorkspaceRequired;
+    const kind = DashboardAction.parse(action) orelse return error.UnsupportedDashboardAction;
+    if (workspace_root == null and !kind.allowedWithoutWorkspace()) return error.WorkspaceRequired;
 
     var stdout_aw: std.Io.Writer.Allocating = .init(allocator);
     errdefer stdout_aw.deinit();
@@ -694,7 +797,7 @@ fn runAllowedAction(io: std.Io, allocator: std.mem.Allocator, action: []const u8
     const stderr = &stderr_aw.writer;
 
     // Daemon-proxied remediation: trusted cwd rides on ExecuteCli — never touch process cwd.
-    if (dashboardDaemonActionArgv(action)) |argv| {
+    if (kind.daemonArgv()) |argv| {
         const code = try runDaemonProxyAction(allocator, argv, workspace_root.?, stdout, stderr);
         return .{
             .exit_code = code,
@@ -704,7 +807,7 @@ fn runAllowedAction(io: std.Io, allocator: std.mem.Allocator, action: []const u8
     }
 
     // Init accepts an open Dir; no process chdir required.
-    if (std.mem.eql(u8, action, "init-generic-agent")) {
+    if (kind == .init_generic_agent) {
         var workspace_dir = try std.Io.Dir.cwd().openDir(io, workspace_root.?, .{});
         defer workspace_dir.close(io);
         const code = try init.command(io, workspace_dir, &.{ "--preset", "generic-agent" }, stdout, stderr);
@@ -716,7 +819,7 @@ fn runAllowedAction(io: std.Io, allocator: std.mem.Allocator, action: []const u8
     }
 
     // Policy check can use an absolute policy path without changing process cwd.
-    if (std.mem.eql(u8, action, "policy-check")) {
+    if (kind == .policy_check) {
         const policy_path = try std.fs.path.join(allocator, &.{ workspace_root.?, ".orca", "policy.yaml" });
         defer allocator.free(policy_path);
         const code = try policy.command(io, &.{ "check", policy_path }, stdout, stderr);
@@ -728,38 +831,27 @@ fn runAllowedAction(io: std.Io, allocator: std.mem.Allocator, action: []const u8
     }
 
     var cwd_guard: ?WorkspaceCwdGuard = null;
-    if (workspace_root != null and actionNeedsWorkspaceCwd(action)) {
+    if (workspace_root != null and kind.needsWorkspaceCwd()) {
         cwd_guard = try WorkspaceCwdGuard.enter(io, allocator, workspace_root.?);
     }
 
-    const code = (if (std.mem.eql(u8, action, "doctor"))
-        doctor.command(io, &.{}, stdout, stderr)
-    else if (std.mem.eql(u8, action, "credentials-check"))
-        credentials_cmd.command(io, &.{"check"}, stdout, stderr)
-    else if (std.mem.eql(u8, action, "credentials-check-github"))
-        credentials_cmd.command(io, &.{ "check", "github_pat" }, stdout, stderr)
-    else if (std.mem.eql(u8, action, "proxy-smoke"))
-        proxySmokeAction(io, allocator, stdout, stderr)
-    else if (std.mem.eql(u8, action, "policy-explain-github"))
-        policy.command(io, &.{ "explain", "network", "https://api.github.com/repos/acme/app/issues", "--method", "POST" }, stdout, stderr)
-    else if (std.mem.eql(u8, action, "replay-last"))
-        replay.command(io, &.{ "--session", "last", "--verify" }, stdout, stderr)
-    else if (std.mem.eql(u8, action, "openclaw-doctor"))
-        plugin.command(io, &.{ "doctor", "openclaw" }, stdout, stderr)
-    else if (std.mem.eql(u8, action, "hermes-doctor"))
-        plugin.command(io, &.{ "doctor", "hermes" }, stdout, stderr)
-    else if (std.mem.eql(u8, action, "replay-denied"))
-        replay.command(io, &.{ "--session", "last", "--only", "denied", "--verify" }, stdout, stderr)
-    else if (std.mem.eql(u8, action, "report-last"))
-        report_cmd.command(io, &.{ "--session", "last", "--format", "markdown" }, stdout, stderr)
-    else if (std.mem.eql(u8, action, "ci-check"))
-        ci_cmd.command(io, &.{ "check", "--format", "markdown" }, stdout, stderr)
-    else if (std.mem.eql(u8, action, "demo-blocked-action"))
-        demo_cmd.command(io, &.{"blocked-action"}, stdout, stderr)
-    else if (std.mem.eql(u8, action, "license-status"))
-        license_cmd.command(io, &.{"status"}, stdout, stderr)
-    else
-        return error.UnsupportedDashboardAction) catch |err| {
+    const code = (switch (kind) {
+        .doctor => doctor.command(io, &.{}, stdout, stderr),
+        .credentials_check => credentials_cmd.command(io, &.{"check"}, stdout, stderr),
+        .credentials_check_github => credentials_cmd.command(io, &.{ "check", "github_pat" }, stdout, stderr),
+        .proxy_smoke => proxySmokeAction(io, allocator, stdout, stderr),
+        .policy_explain_github => policy.command(io, &.{ "explain", "network", "https://api.github.com/repos/acme/app/issues", "--method", "POST" }, stdout, stderr),
+        .replay_last => replay.command(io, &.{ "--session", "last", "--verify" }, stdout, stderr),
+        .openclaw_doctor => plugin.command(io, &.{ "doctor", "openclaw" }, stdout, stderr),
+        .hermes_doctor => plugin.command(io, &.{ "doctor", "hermes" }, stdout, stderr),
+        .replay_denied => replay.command(io, &.{ "--session", "last", "--only", "denied", "--verify" }, stdout, stderr),
+        .report_last => report_cmd.command(io, &.{ "--session", "last", "--format", "markdown" }, stdout, stderr),
+        .ci_check => ci_cmd.command(io, &.{ "check", "--format", "markdown" }, stdout, stderr),
+        .demo_blocked_action => demo_cmd.command(io, &.{"blocked-action"}, stdout, stderr),
+        .license_status => license_cmd.command(io, &.{"status"}, stdout, stderr),
+        // Handled above (daemon / openDir / absolute path).
+        .suggest_allowlist, .allowlist_list, .init_generic_agent, .policy_check => unreachable,
+    }) catch |err| {
         if (cwd_guard) |*guard| try guard.leave();
         return err;
     };
@@ -773,12 +865,6 @@ fn runAllowedAction(io: std.Io, allocator: std.mem.Allocator, action: []const u8
         .stdout = try stdout_aw.toOwnedSlice(),
         .stderr = try stderr_aw.toOwnedSlice(),
     };
-}
-
-fn dashboardDaemonActionArgv(action: []const u8) ?[]const []const u8 {
-    if (std.mem.eql(u8, action, "suggest-allowlist")) return &.{ "suggest-allowlist", "--confidence", "high", "--non-interactive" };
-    if (std.mem.eql(u8, action, "allowlist-list")) return &.{ "allowlist", "list" };
-    return null;
 }
 
 /// Fixed argv proxy for allowlisted dashboard remediation actions (no browser-supplied args).
@@ -1039,6 +1125,56 @@ test "dashboard action allowlist rejects arbitrary browser commands" {
     try std.testing.expectError(error.UnsupportedDashboardAction, runAllowedAction(std.testing.io, std.testing.allocator, "rm -rf /", "."));
     try std.testing.expectError(error.UnsupportedDashboardAction, runAllowedAction(std.testing.io, std.testing.allocator, "allowlist add evil", "."));
     try std.testing.expectError(error.UnsupportedDashboardAction, runAllowedAction(std.testing.io, std.testing.allocator, "shell-anything", "."));
+    try std.testing.expectError(error.UnsupportedDashboardAction, runAllowedAction(std.testing.io, std.testing.allocator, "curl-open-proxy", "."));
+    try std.testing.expectError(error.UnsupportedDashboardAction, runAllowedAction(std.testing.io, std.testing.allocator, "openclaw-doctor; rm -rf /", "."));
+    try std.testing.expectError(error.UnsupportedDashboardAction, runAllowedAction(std.testing.io, std.testing.allocator, "evil-doctor", "."));
+    try std.testing.expect(!isAllowlistedDashboardAction("rm -rf /"));
+    try std.testing.expect(!isAllowlistedDashboardAction("proxy-fetch-url"));
+}
+
+test "dashboard UI action ids are a subset of the server allowlist" {
+    inline for (std.meta.tags(DashboardAction)) |tag| {
+        try std.testing.expect(isAllowlistedDashboardAction(tag.id()));
+        if (tag.exposedInUi()) {
+            try std.testing.expect(DashboardAction.parse(tag.id()) != null);
+        }
+    }
+    // Server may allow more than the UI exposes (e.g. init-generic-agent).
+    try std.testing.expect(isAllowlistedDashboardAction("init-generic-agent"));
+    try std.testing.expect(!DashboardAction.init_generic_agent.exposedInUi());
+}
+
+test "dashboard escapeHtml neutralizes XSS payloads" {
+    const payloads = [_][]const u8{
+        "<script>alert(1)</script>",
+        "\"><img src=x onerror=alert(1)>",
+        "javascript:alert(1)",
+        "'-alert(1)-'",
+        "<img src=x onerror=alert(1)>",
+        "&lt;already&gt;",
+    };
+    for (payloads) |payload| {
+        const escaped = try escapeHtmlForAudit(std.testing.allocator, payload);
+        defer std.testing.allocator.free(escaped);
+        try std.testing.expect(std.mem.indexOf(u8, escaped, "<") == null);
+        try std.testing.expect(std.mem.indexOf(u8, escaped, ">") == null);
+        try std.testing.expect(std.mem.indexOf(u8, escaped, "\"") == null);
+        try std.testing.expect(std.mem.indexOf(u8, escaped, "'") == null);
+        // Raw tags must not survive; entities may remain as text only.
+        try std.testing.expect(std.mem.indexOf(u8, escaped, "<script") == null);
+        try std.testing.expect(std.mem.indexOf(u8, escaped, "<img") == null);
+    }
+    const attr = try escapeHtmlForAudit(std.testing.allocator, "\"><img src=x onerror=alert(1)>");
+    defer std.testing.allocator.free(attr);
+    try std.testing.expectEqualStrings("&quot;&gt;&lt;img src=x onerror=alert(1)&gt;", attr);
+}
+
+test "dashboard csrf token matching rejects missing and wrong tokens" {
+    try std.testing.expect(tokenMatches("abc", "abc"));
+    try std.testing.expect(!tokenMatches(null, "abc"));
+    try std.testing.expect(!tokenMatches("", "abc"));
+    try std.testing.expect(!tokenMatches("ab", "abc"));
+    try std.testing.expect(!tokenMatches("abc", "xyz"));
 }
 
 test "dashboard remediation actions are registered on the allowlist" {

@@ -11,6 +11,7 @@ pub const sandbox = @import("sandbox/mod.zig");
 pub const redteam = @import("redteam/mod.zig");
 pub const release = @import("release/mod.zig");
 pub const dashboard = @import("dashboard/mod.zig");
+pub const presentation = @import("presentation/mod.zig");
 pub const report = @import("report.zig");
 pub const license = @import("license.zig");
 pub const ci_check = @import("ci_check.zig");
@@ -31,6 +32,7 @@ test {
     _ = redteam;
     _ = release;
     _ = dashboard;
+    _ = presentation;
     _ = report;
     _ = license;
     _ = ci_check;

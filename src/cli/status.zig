@@ -13,9 +13,11 @@ const onboarding = @import("onboarding.zig");
 const pack_state = @import("pack_state.zig");
 const plugin = @import("plugin.zig");
 const host_status = @import("host_status.zig");
+const readiness = @import("readiness.zig");
 
 const Options = struct {
     json: bool = false,
+    check: bool = false,
 };
 
 pub fn command(io: std.Io, argv: []const []const u8, stdout: anytype, stderr: anytype) !u8 {
@@ -48,15 +50,17 @@ pub fn commandWithDeps(
     defer _ = gpa_state.deinit();
     const allocator = gpa_state.allocator();
 
-    var snapshot = try collectSnapshot(execute_cli, daemon_check_fn, io, allocator);
+    // --check/--json are probe contracts: never spawn/ensure the daemon.
+    const ensure_running = !(options.check or options.json);
+    var snapshot = try collectSnapshot(execute_cli, daemon_check_fn, io, allocator, ensure_running);
     defer snapshot.deinit(allocator);
 
     if (options.json) {
-        try writeJson(stdout, snapshot);
+        try writeJson(stdout, snapshot, options.check);
     } else {
         try writeHuman(stdout, snapshot);
     }
-    return exit_codes.success;
+    return snapshot.readiness.exitCode(options.check);
 }
 
 fn parseOptions(argv: []const []const u8, stderr: anytype) !Options {
@@ -67,17 +71,25 @@ fn parseOptions(argv: []const []const u8, stderr: anytype) !Options {
             options.json = true;
             continue;
         }
-        try suggestions.writeUnknownOption(stderr, "orca status", arg, &.{ "--json", "--help", "-h" }, "status");
+        if (std.mem.eql(u8, arg, "--check")) {
+            options.check = true;
+            continue;
+        }
+        try suggestions.writeUnknownOption(stderr, "orca status", arg, &.{ "--json", "--check", "--help", "-h" }, "status");
         return error.Usage;
     }
     return options;
 }
 
 const Snapshot = struct {
-    daemon_status: []const u8,
+    /// Typed daemon health — format at edges (human vs wire).
+    daemon_health: onboarding.DaemonHealthStatus,
     daemon_detail: []const u8,
     policy_path: []const u8,
     policy_present: bool,
+    policy_valid: bool,
+    /// Load/parse error name when present but invalid (owned).
+    policy_error: ?[]const u8 = null,
     policy_mode: ?[]const u8,
     policy_preset: ?[]const u8,
     hosts_summary: []const u8,
@@ -86,11 +98,12 @@ const Snapshot = struct {
     packs_opt_in_count: usize,
     packs_opt_in: []const []const u8,
     next_step: []const u8,
+    readiness: readiness.Assessment,
 
     fn deinit(self: *Snapshot, allocator: std.mem.Allocator) void {
-        allocator.free(self.daemon_status);
         allocator.free(self.daemon_detail);
         allocator.free(self.policy_path);
+        if (self.policy_error) |err_name| allocator.free(err_name);
         if (self.policy_mode) |m| allocator.free(m);
         if (self.policy_preset) |p| allocator.free(p);
         allocator.free(self.hosts_summary);
@@ -107,11 +120,10 @@ fn collectSnapshot(
     daemon_check_fn: ?*const fn (std.mem.Allocator, bool) anyerror!void,
     io: std.Io,
     allocator: std.mem.Allocator,
+    ensure_running: bool,
 ) !Snapshot {
-    // Daemon: ensure/start with existing timeout patterns when possible.
-    const daemon_check = try onboarding.checkDaemonHealth(allocator, true, daemon_check_fn);
-    const daemon_status = try allocator.dupe(u8, daemonHumanStatus(daemon_check.status));
-    errdefer allocator.free(daemon_status);
+    // Probe paths pass ensure_running=false so --check never mutates runtime.
+    const daemon_check = try onboarding.checkDaemonHealth(allocator, ensure_running, daemon_check_fn);
     const daemon_detail = try allocator.dupe(u8, daemon_check.detail);
     errdefer allocator.free(daemon_detail);
 
@@ -120,7 +132,14 @@ fn collectSnapshot(
 
     const policy_path = try onboarding.policyPath(allocator, workspace_root);
     errdefer allocator.free(policy_path);
-    const policy_present = onboarding.policyExists(io, workspace_root);
+
+    var policy_assessment = try readiness.assessPolicyFile(io, allocator, policy_path);
+    const policy_present = policy_assessment.present;
+    const policy_valid = policy_assessment.valid;
+    // Transfer ownership of error_name into Snapshot.policy_error.
+    const policy_error = policy_assessment.error_name;
+    policy_assessment.error_name = null;
+    errdefer if (policy_error) |value| allocator.free(value);
 
     var policy_mode: ?[]const u8 = null;
     var policy_preset: ?[]const u8 = null;
@@ -149,14 +168,17 @@ fn collectSnapshot(
         try opt_in_owned.append(allocator, try allocator.dupe(u8, id));
     }
 
-    const next_step = try chooseNextStep(allocator, daemon_check.status, policy_present, packs.known);
+    const core_ready = readiness.assess(daemon_check.status, policy_present, policy_valid);
+    const next_step = try chooseNextStep(allocator, daemon_check.status, policy_present, policy_valid, packs.known);
     errdefer allocator.free(next_step);
 
     return .{
-        .daemon_status = daemon_status,
+        .daemon_health = daemon_check.status,
         .daemon_detail = daemon_detail,
         .policy_path = policy_path,
         .policy_present = policy_present,
+        .policy_valid = policy_valid,
+        .policy_error = policy_error,
         .policy_mode = policy_mode,
         .policy_preset = policy_preset,
         .hosts_summary = hosts_summary,
@@ -165,11 +187,8 @@ fn collectSnapshot(
         .packs_opt_in_count = packs.optInCount(),
         .packs_opt_in = try opt_in_owned.toOwnedSlice(allocator),
         .next_step = next_step,
+        .readiness = core_ready,
     };
-}
-
-fn daemonHumanStatus(status: onboarding.DaemonHealthStatus) []const u8 {
-    return status.label();
 }
 
 fn readPolicyMeta(io: std.Io, allocator: std.mem.Allocator, path: []const u8) struct { mode: ?[]const u8, preset: ?[]const u8 } {
@@ -246,6 +265,7 @@ fn chooseNextStep(
     allocator: std.mem.Allocator,
     daemon_status: onboarding.DaemonHealthStatus,
     policy_present: bool,
+    policy_valid: bool,
     packs_known: bool,
 ) ![]u8 {
     return switch (daemon_status) {
@@ -255,6 +275,9 @@ fn chooseNextStep(
         .compatible => blk: {
             if (!policy_present) {
                 break :blk try allocator.dupe(u8, "Run `orca init --preset generic-agent` (or `orca start`) to create a policy.");
+            }
+            if (!policy_valid) {
+                break :blk try allocator.dupe(u8, "Fix invalid policy (parse/load failed), then re-run `orca status --check` or `orca doctor --check`.");
             }
             if (!packs_known) {
                 break :blk try allocator.dupe(u8, "Daemon is up but packs could not be listed; run `orca doctor`.");
@@ -266,95 +289,56 @@ fn chooseNextStep(
 
 fn writeHuman(stdout: anytype, s: Snapshot) !void {
     try stdout.writeAll("Orca status\n");
-    try stdout.print("  Daemon:    {s}  ({s})\n", .{ s.daemon_status, s.daemon_detail });
+    try stdout.print("  Daemon:    {s}  ({s})\n", .{ s.daemon_health.label(), s.daemon_detail });
     if (s.policy_present) {
         try stdout.writeAll("  Policy:    ");
         try stdout.writeAll(s.policy_path);
+        try stdout.print("  valid={}", .{s.policy_valid});
         if (s.policy_mode) |mode| try stdout.print("  mode={s}", .{mode});
         if (s.policy_preset) |preset| try stdout.print("  preset={s}", .{preset});
         try stdout.writeAll("\n");
     } else {
         try stdout.print("  Policy:    missing  (expected {s})\n", .{s.policy_path});
     }
+    try stdout.print("  Ready:     {}  ({s})\n", .{ s.readiness.ready, s.readiness.state.label() });
     try stdout.print("  Hosts:     {s}\n", .{s.hosts_summary});
     try stdout.print("  Packs:     {s}\n", .{s.packs_summary_line});
     try stdout.print("  Next:      {s}\n", .{s.next_step});
 }
 
-fn writeJson(stdout: anytype, s: Snapshot) !void {
-    try stdout.writeAll("{\n");
-    try stdout.writeAll("  \"schema_version\": 1,\n");
-
-    var daemon_status_buf: [128]u8 = undefined;
-    var daemon_detail_buf: [512]u8 = undefined;
-    try stdout.print("  \"daemon\": {{\"status\":{s},\"detail\":{s}}},\n", .{
-        escapeJson(s.daemon_status, &daemon_status_buf),
-        escapeJson(s.daemon_detail, &daemon_detail_buf),
+fn writeJson(stdout: anytype, s: Snapshot, check_mode: bool) !void {
+    // Shared readiness envelope leaves the root object open after policy so we can append.
+    // Wire vocabulary only — never human labels like "healthy".
+    try readiness.writeJsonEnvelope(stdout, .{
+        .assessment = s.readiness,
+        .check = check_mode,
+        .daemon_status = readiness.daemonWireLabel(s.daemon_health),
+        .daemon_detail = s.daemon_detail,
+        .policy_path = s.policy_path,
+        .policy_error = s.policy_error,
+        .policy_mode = s.policy_mode,
+        .policy_preset = s.policy_preset,
+        .close_object = false,
     });
 
-    var path_buf: [1024]u8 = undefined;
-    try stdout.print("  \"policy\": {{\"path\":{s},\"present\":{}", .{
-        escapeJson(s.policy_path, &path_buf),
-        s.policy_present,
-    });
-    if (s.policy_mode) |mode| {
-        var mode_buf: [64]u8 = undefined;
-        try stdout.print(",\"mode\":{s}", .{escapeJson(mode, &mode_buf)});
-    } else {
-        try stdout.writeAll(",\"mode\":null");
-    }
-    if (s.policy_preset) |preset| {
-        var preset_buf: [64]u8 = undefined;
-        try stdout.print(",\"preset\":{s}", .{escapeJson(preset, &preset_buf)});
-    } else {
-        try stdout.writeAll(",\"preset\":null");
-    }
+    try stdout.writeAll("  \"hosts\": {\"summary\":");
+    try core.util.writeJsonString(stdout, s.hosts_summary);
     try stdout.writeAll("},\n");
-
-    var hosts_buf: [2048]u8 = undefined;
-    try stdout.print("  \"hosts\": {{\"summary\":{s}}},\n", .{escapeJson(s.hosts_summary, &hosts_buf)});
 
     try stdout.writeAll("  \"packs\": {");
     try stdout.print("\"known\":{},\"opt_in_count\":{d},\"opt_in\":[", .{ s.packs_known, s.packs_opt_in_count });
     for (s.packs_opt_in, 0..) |id, i| {
         if (i > 0) try stdout.writeAll(",");
-        var id_buf: [128]u8 = undefined;
-        try stdout.writeAll(escapeJson(id, &id_buf));
+        try core.util.writeJsonString(stdout, id);
     }
-    var packs_buf: [2048]u8 = undefined;
-    try stdout.print("],\"summary\":{s}", .{escapeJson(s.packs_summary_line, &packs_buf)});
+    try stdout.writeAll("],\"summary\":");
+    try core.util.writeJsonString(stdout, s.packs_summary_line);
     try stdout.writeAll("},\n");
 
-    var next_buf: [1024]u8 = undefined;
-    try stdout.print("  \"next\": {s}\n", .{escapeJson(s.next_step, &next_buf)});
+    try stdout.writeAll("  \"next\": ");
+    try core.util.writeJsonString(stdout, s.next_step);
+    try stdout.writeAll("\n");
     try stdout.writeAll("}\n");
-}
-
-/// Returns a quoted JSON string using `buf` as scratch (includes quotes).
-fn escapeJson(value: []const u8, buf: []u8) []const u8 {
-    if (buf.len < 3) return "\"\"";
-    var out: std.Io.Writer = .fixed(buf);
-    out.writeByte('"') catch return "\"\"";
-    for (value) |c| {
-        switch (c) {
-            '"' => out.writeAll("\\\"") catch return "\"\"",
-            '\\' => out.writeAll("\\\\") catch return "\"\"",
-            '\n' => out.writeAll("\\n") catch return "\"\"",
-            '\r' => out.writeAll("\\r") catch return "\"\"",
-            '\t' => out.writeAll("\\t") catch return "\"\"",
-            else => {
-                if (c < 0x20) {
-                    var hex: [6]u8 = undefined;
-                    const h = std.fmt.bufPrint(&hex, "\\u{x:0>4}", .{c}) catch return "\"\"";
-                    out.writeAll(h) catch return "\"\"";
-                } else {
-                    out.writeByte(c) catch return "\"\"";
-                }
-            },
-        }
-    }
-    out.writeByte('"') catch return "\"\"";
-    return out.buffered();
 }
 
 // ─── Tests ───────────────────────────────────────────────────────────────────
@@ -396,7 +380,7 @@ test "status human healthy path shows section labels" {
     try std.testing.expect(std.mem.indexOf(u8, out, "Next:") != null);
 }
 
-test "status daemon unavailable path" {
+test "status daemon unavailable path still exits 0 without --check" {
     var stdout_buf: [4096]u8 = undefined;
     var stderr_buf: [256]u8 = undefined;
     var stdout_writer: std.Io.Writer = .fixed(&stdout_buf);
@@ -409,28 +393,90 @@ test "status daemon unavailable path" {
     try std.testing.expect(std.mem.indexOf(u8, out, "Packs:") != null);
     try std.testing.expect(std.mem.indexOf(u8, out, "unknown") != null or std.mem.indexOf(u8, out, "fails closed") != null);
     try std.testing.expect(std.mem.indexOf(u8, out, "Next:") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "Protected path looks healthy") == null);
 }
 
-test "status --json parses with schema_version" {
+test "status --check fails when daemon unavailable" {
+    var stdout_buf: [4096]u8 = undefined;
+    var stderr_buf: [256]u8 = undefined;
+    var stdout_writer: std.Io.Writer = .fixed(&stdout_buf);
+    var stderr_writer: std.Io.Writer = .fixed(&stderr_buf);
+
+    const code = try commandWithDeps(fakePacksFail, mockDaemonDown, std.testing.io, &.{"--check"}, &stdout_writer, &stderr_writer);
+    try std.testing.expectEqual(exit_codes.general, code);
+    const out = stdout_writer.buffered();
+    try std.testing.expect(std.mem.indexOf(u8, out, "unavailable") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "Ready:") != null);
+}
+
+test "status --json includes ready state and policy.valid" {
     var stdout_buf: [8192]u8 = undefined;
     var stderr_buf: [256]u8 = undefined;
     var stdout_writer: std.Io.Writer = .fixed(&stdout_buf);
     var stderr_writer: std.Io.Writer = .fixed(&stderr_buf);
 
     const code = try commandWithDeps(fakePacksHealthy, mockDaemonOk, std.testing.io, &.{"--json"}, &stdout_writer, &stderr_writer);
+    // Without --check, report always succeeds even if core is not ready.
     try std.testing.expectEqual(exit_codes.success, code);
     const out = stdout_writer.buffered();
     try std.testing.expect(std.mem.indexOf(u8, out, "\"schema_version\": 1") != null);
     try std.testing.expect(std.mem.indexOf(u8, out, "\"daemon\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, out, "\"policy\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "\"valid\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "\"ready\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "\"state\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "\"check\": false") != null);
     try std.testing.expect(std.mem.indexOf(u8, out, "\"hosts\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, out, "\"packs\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, out, "\"next\"") != null);
+    // Wire vocabulary only — never human "healthy".
+    try std.testing.expect(std.mem.indexOf(u8, out, "\"status\":\"compatible\"") != null or std.mem.indexOf(u8, out, "\"status\": \"compatible\"") != null or std.mem.indexOf(u8, out, "\"status\":\"unavailable\"") != null or std.mem.indexOf(u8, out, "\"status\": \"unavailable\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "\"status\":\"healthy\"") == null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "\"status\": \"healthy\"") == null);
 
     var parsed = try std.json.parseFromSlice(std.json.Value, std.testing.allocator, out, .{});
     defer parsed.deinit();
     try std.testing.expect(parsed.value == .object);
     try std.testing.expectEqual(@as(i64, 1), parsed.value.object.get("schema_version").?.integer);
+    try std.testing.expect(parsed.value.object.get("ready") != null);
+    try std.testing.expect(parsed.value.object.get("state") != null);
+    const daemon_obj = parsed.value.object.get("daemon").?.object;
+    const wire_status = daemon_obj.get("status").?.string;
+    try std.testing.expect(std.mem.eql(u8, wire_status, "compatible") or std.mem.eql(u8, wire_status, "unavailable") or std.mem.eql(u8, wire_status, "incompatible") or std.mem.eql(u8, wire_status, "degraded"));
+    try std.testing.expect(!std.mem.eql(u8, wire_status, "healthy"));
+    const policy_obj = parsed.value.object.get("policy").?.object;
+    try std.testing.expect(policy_obj.get("valid") != null);
+    try std.testing.expect(policy_obj.get("present") != null);
+}
+
+test "status --check does not ensure-run the daemon" {
+    const Spy = struct {
+        var ensure_running: ?bool = null;
+        fn check(_: std.mem.Allocator, ensure: bool) anyerror!void {
+            ensure_running = ensure;
+        }
+    };
+    Spy.ensure_running = null;
+    var stdout_buf: [4096]u8 = undefined;
+    var stderr_buf: [256]u8 = undefined;
+    var stdout_writer: std.Io.Writer = .fixed(&stdout_buf);
+    var stderr_writer: std.Io.Writer = .fixed(&stderr_buf);
+    _ = try commandWithDeps(fakePacksFail, Spy.check, std.testing.io, &.{"--check"}, &stdout_writer, &stderr_writer);
+    try std.testing.expectEqual(false, Spy.ensure_running.?);
+}
+
+test "status --check --json fails when daemon down and sets check true" {
+    var stdout_buf: [8192]u8 = undefined;
+    var stderr_buf: [256]u8 = undefined;
+    var stdout_writer: std.Io.Writer = .fixed(&stdout_buf);
+    var stderr_writer: std.Io.Writer = .fixed(&stderr_buf);
+
+    const code = try commandWithDeps(fakePacksFail, mockDaemonDown, std.testing.io, &.{ "--check", "--json" }, &stdout_writer, &stderr_writer);
+    try std.testing.expectEqual(exit_codes.general, code);
+    const out = stdout_writer.buffered();
+    try std.testing.expect(std.mem.indexOf(u8, out, "\"ready\": false") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "\"state\": \"not_ready\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "\"check\": true") != null);
 }
 
 test "status rejects unknown options" {
@@ -443,9 +489,25 @@ test "status rejects unknown options" {
     try std.testing.expect(std.mem.indexOf(u8, stderr_writer.buffered(), "orca help status") != null);
 }
 
+test "chooseNextStep requires valid policy for healthy copy" {
+    const missing = try chooseNextStep(std.testing.allocator, .compatible, false, false, true);
+    defer std.testing.allocator.free(missing);
+    try std.testing.expect(std.mem.indexOf(u8, missing, "init") != null);
+
+    const invalid = try chooseNextStep(std.testing.allocator, .compatible, true, false, true);
+    defer std.testing.allocator.free(invalid);
+    try std.testing.expect(std.mem.indexOf(u8, invalid, "invalid policy") != null);
+    try std.testing.expect(std.mem.indexOf(u8, invalid, "Protected path looks healthy") == null);
+
+    const healthy = try chooseNextStep(std.testing.allocator, .compatible, true, true, true);
+    defer std.testing.allocator.free(healthy);
+    try std.testing.expect(std.mem.indexOf(u8, healthy, "Protected path looks healthy") != null);
+}
+
 // Silence unused imports when tests are filtered
 test {
     _ = orca_policy;
     _ = supervisor;
     _ = host_status;
+    _ = readiness;
 }

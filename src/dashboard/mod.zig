@@ -2,6 +2,8 @@ const std = @import("std");
 const build_options = @import("build_options");
 
 const aggregate = @import("aggregate.zig");
+const blocked_actions = @import("blocked_actions.zig");
+const presentation = @import("../presentation/mod.zig");
 const core_api = @import("orca_core").api;
 const core = @import("orca_core").core;
 const policy_mod = @import("orca_core").policy;
@@ -547,22 +549,16 @@ fn writeFeedRecordJson(allocator: std.mem.Allocator, writer: anytype, record: ru
     try writer.writeAll(",\"severity\":");
     if (record.severity) |severity| try core.util.writeJsonString(writer, severity) else try writer.writeAll("null");
     try writer.writeAll(",\"reason\":");
-    try writeRedactedJsonString(allocator, writer, record.reason);
+    try presentation.redact.writeJsonString(allocator, writer, record.reason);
     try writer.writeAll(",\"remediation\":");
-    if (record.remediation) |remediation| try writeRedactedJsonString(allocator, writer, remediation) else try writer.writeAll("null");
+    if (record.remediation) |remediation| try presentation.redact.writeJsonString(allocator, writer, remediation) else try writer.writeAll("null");
     try writer.writeAll(",\"target\":");
-    try writeRedactedJsonString(allocator, writer, record.target_summary);
+    try presentation.redact.writeJsonString(allocator, writer, record.target_summary);
     try writer.writeAll(",\"session_id\":");
     if (record.session_id) |session_id| try core.util.writeJsonString(writer, session_id) else try writer.writeAll("null");
     try writer.writeAll(",\"verified\":");
     try writer.writeAll(if (record.verified) "true" else "false");
     try writer.writeByte('}');
-}
-
-fn writeRedactedJsonString(allocator: std.mem.Allocator, writer: anytype, value: []const u8) !void {
-    const redacted = try core_api.redactAlloc(allocator, value);
-    defer allocator.free(redacted);
-    try core.util.writeJsonString(writer, redacted);
 }
 
 fn writeBlockedActionsArrayJson(io: std.Io, allocator: std.mem.Allocator, writer: anytype, workspace_root: []const u8, max_count: usize) !void {
@@ -606,93 +602,13 @@ fn writeBlockedActionsArrayJson(io: std.Io, allocator: std.mem.Allocator, writer
         for (replay.events) |ev| {
             if (written >= max_count) break;
             if (written > 0) try writer.writeByte(',');
-            try writeBlockedActionJson(allocator, writer, replay.session_id, replay.verified, ev);
+            try blocked_actions.writeBlockedActionJson(allocator, writer, replay.session_id, replay.verified, ev);
             written += 1;
         }
     }
     try writer.writeByte(']');
 }
 
-const ParsedMetadata = struct {
-    decision_source: ?[]const u8 = null,
-    event_source: ?[]const u8 = null,
-    host: ?[]const u8 = null,
-    daemon_status: ?[]const u8 = null,
-    pack_id: ?[]const u8 = null,
-    severity: ?[]const u8 = null,
-    remediation: ?[]const u8 = null,
-};
-
-fn readEventMetadata(parsed: ?std.json.Parsed(std.json.Value)) ParsedMetadata {
-    const object = if (parsed) |p| blk: {
-        if (p.value != .object) return .{};
-        break :blk p.value.object;
-    } else return .{};
-    const metadata = object.get("metadata") orelse return .{};
-    if (metadata != .object) return .{};
-    return .{
-        .decision_source = readMetadataString(metadata.object, "decision_source"),
-        .event_source = readMetadataString(metadata.object, "event_source"),
-        .host = readMetadataString(metadata.object, "host"),
-        .daemon_status = readMetadataString(metadata.object, "daemon_status"),
-        .pack_id = readMetadataString(metadata.object, "pack_id"),
-        .severity = readMetadataString(metadata.object, "severity"),
-        .remediation = readMetadataString(metadata.object, "remediation"),
-    };
-}
-
-fn readMetadataString(object: std.json.ObjectMap, field: []const u8) ?[]const u8 {
-    const value = object.get(field) orelse return null;
-    if (value != .string) return null;
-    return value.string;
-}
-
-fn writeMetadataFields(writer: anytype, metadata: ParsedMetadata) !void {
-    try writer.writeAll(",\"decision_source\":");
-    if (metadata.decision_source) |value| try core.util.writeJsonString(writer, value) else try writer.writeAll("null");
-    try writer.writeAll(",\"event_source\":");
-    if (metadata.event_source) |value| try core.util.writeJsonString(writer, value) else try writer.writeAll("null");
-    try writer.writeAll(",\"host\":");
-    if (metadata.host) |value| try core.util.writeJsonString(writer, value) else try writer.writeAll("null");
-    try writer.writeAll(",\"daemon_status\":");
-    if (metadata.daemon_status) |value| try core.util.writeJsonString(writer, value) else try writer.writeAll("null");
-    try writer.writeAll(",\"pack_id\":");
-    if (metadata.pack_id) |value| try core.util.writeJsonString(writer, value) else try writer.writeAll("null");
-    try writer.writeAll(",\"severity\":");
-    if (metadata.severity) |value| try core.util.writeJsonString(writer, value) else try writer.writeAll("null");
-    try writer.writeAll(",\"remediation\":");
-    if (metadata.remediation) |value| try core.util.writeJsonString(writer, value) else try writer.writeAll("null");
-}
-
-fn writeBlockedActionJson(allocator: std.mem.Allocator, writer: anytype, session_id: []const u8, verified: bool, ev: anytype) !void {
-    var parsed = std.json.parseFromSlice(std.json.Value, allocator, ev.raw, .{}) catch null;
-    defer if (parsed) |*p| p.deinit();
-    const metadata = readEventMetadata(parsed);
-    const target = if (metadata.decision_source != null and std.mem.eql(u8, metadata.decision_source.?, rust_visibility.decision_source_rust))
-        rust_visibility.target_summary_shell
-    else
-        ev.target_value;
-
-    try writer.writeByte('{');
-    try writer.writeAll("\"session_id\":");
-    try core.util.writeJsonString(writer, session_id);
-    try writer.writeAll(",\"timestamp\":");
-    try core.util.writeJsonString(writer, ev.timestamp);
-    try writer.writeAll(",\"event_type\":");
-    try core.util.writeJsonString(writer, ev.event_type);
-    try writer.writeAll(",\"target\":");
-    try core.util.writeJsonString(writer, target);
-    try writer.writeAll(",\"decision\":");
-    if (ev.decision_result) |result| try core.util.writeJsonString(writer, result) else try writer.writeAll("null");
-    try writer.writeAll(",\"verified\":");
-    try writer.writeAll(if (verified) "true" else "false");
-    try writer.writeAll(",\"rule\":");
-    try writeDecisionField(writer, parsed, "rule_id");
-    try writer.writeAll(",\"reason\":");
-    try writeDecisionField(writer, parsed, "reason");
-    try writeMetadataFields(writer, metadata);
-    try writer.writeByte('}');
-}
 fn writeRecentSecretlessAuditEventsJson(io: std.Io, allocator: std.mem.Allocator, writer: anytype, workspace_root: []const u8, max_count: usize) !void {
     const sessions_root = try std.fs.path.join(allocator, &.{ workspace_root, ".orca", "sessions" });
     defer allocator.free(sessions_root);
@@ -726,7 +642,7 @@ fn writeRecentSecretlessAuditEventsJson(io: std.Io, allocator: std.mem.Allocator
             try writer.writeAll(",\"event_type\":");
             try core.util.writeJsonString(writer, ev.event_type);
             try writer.writeAll(",\"target\":");
-            try core.util.writeJsonString(writer, ev.target_value);
+            try presentation.redact.writeJsonString(allocator, writer, ev.target_value);
             try writer.writeAll(",\"decision\":");
             if (ev.decision_result) |result| try core.util.writeJsonString(writer, result) else try writer.writeAll("null");
             try writer.writeAll(",\"verified\":");
@@ -745,18 +661,6 @@ fn isSecretlessEvidenceEvent(event_type: []const u8) bool {
         std.mem.eql(u8, event_type, "network_connect_attempt") or
         std.mem.eql(u8, event_type, "network_connect_allowed") or
         std.mem.eql(u8, event_type, "network_connect_denied");
-}
-
-fn writeDecisionField(writer: anytype, parsed: ?std.json.Parsed(std.json.Value), field: []const u8) !void {
-    const value = if (parsed) |p| blk: {
-        if (p.value != .object) break :blk null;
-        const decision = p.value.object.get("decision") orelse break :blk null;
-        if (decision != .object) break :blk null;
-        const raw = decision.object.get(field) orelse break :blk null;
-        if (raw != .string) break :blk null;
-        break :blk raw.string;
-    } else null;
-    if (value) |text| try core.util.writeJsonString(writer, text) else try writer.writeAll("null");
 }
 
 fn writeStringArray(writer: anytype, values: []const []const u8) !void {
@@ -900,6 +804,15 @@ test "dashboard assets expose dedicated secretless view" {
     try std.testing.expect(std.mem.indexOf(u8, app, "allowlist-list") != null);
     try std.testing.expect(std.mem.indexOf(u8, app, "No denials yet") != null);
     try std.testing.expect(std.mem.indexOf(u8, app, "PI_COVERAGE") != null);
+    // XSS: dynamic plugin.id must be attribute-escaped in data-action sinks.
+    try std.testing.expect(std.mem.indexOf(u8, app, "escapeHtml(plugin.id)") != null);
+    try std.testing.expect(std.mem.indexOf(u8, app, "data-action=\"${plugin.id}-doctor\"") == null);
+    try std.testing.expect(std.mem.indexOf(u8, app, "function escapeHtml(value)") != null);
+    try std.testing.expect(std.mem.indexOf(u8, app, ".replaceAll(\"&\", \"&amp;\")") != null);
+    try std.testing.expect(std.mem.indexOf(u8, app, ".replaceAll(\"<\", \"&lt;\")") != null);
+    try std.testing.expect(std.mem.indexOf(u8, app, ".replaceAll(\">\", \"&gt;\")") != null);
+    try std.testing.expect(std.mem.indexOf(u8, app, ".replaceAll('\"', \"&quot;\")") != null);
+    try std.testing.expect(std.mem.indexOf(u8, app, ".replaceAll(\"'\", \"&#039;\")") != null);
 }
 
 test "workspace status lists remediation quick actions" {
@@ -1028,6 +941,19 @@ test "workspace blocked actions returns only the latest bounded denied feed reco
     try std.testing.expect(std.mem.indexOf(u8, json, "middle blocked action") != null);
     try std.testing.expect(std.mem.indexOf(u8, json, "newest blocked action") != null);
     try std.testing.expect(std.mem.indexOf(u8, json, "newest allowed action") == null);
+}
+
+test "workspace blocked actions redact zig replay decision reason and target" {
+    const allocator = std.testing.allocator;
+    var replay_event = try presentation.fixtures.syntheticSecretReplayEvent(allocator);
+    defer replay_event.deinit(allocator);
+
+    var output: std.Io.Writer.Allocating = .init(allocator);
+    defer output.deinit();
+    try blocked_actions.writeBlockedActionJson(allocator, &output.writer, "zh2-dash", false, replay_event);
+    const json = output.written();
+    try std.testing.expect(std.mem.indexOf(u8, json, presentation.fixtures.synthetic_secret) == null);
+    try std.testing.expect(std.mem.indexOf(u8, json, "[REDACTED]") != null);
 }
 
 test "workspace blocked actions redact legacy free-form fields and expose rule ids" {

@@ -3,7 +3,6 @@ const builtin = @import("builtin");
 const env_util = @import("../env_util.zig");
 const core = @import("orca_core").core;
 const supervisor = core.supervisor;
-const core_api = @import("orca_core").api;
 const orca_mcp = @import("../mcp/mod.zig");
 const orca_policy = @import("orca_core").policy;
 const sandbox = @import("../sandbox/mod.zig");
@@ -19,6 +18,7 @@ const plugin = @import("plugin.zig");
 const onboarding = @import("onboarding.zig");
 const host_status = @import("host_status.zig");
 const pack_state = @import("pack_state.zig");
+const readiness = @import("readiness.zig");
 
 const DoctorCapability = struct {
     label: []const u8,
@@ -69,11 +69,13 @@ const IntegrationContext = struct {
     daemon_binary_path: ?[]const u8 = null,
     daemon_binary_exists: bool = false,
     daemon_binary_executable: bool = false,
+    daemon_binary_untrusted: bool = false,
     daemon_socket_path: ?[]const u8 = null,
     daemon_socket_exists: bool = false,
     daemon_pid_path: ?[]const u8 = null,
     daemon_pid_exists: bool = false,
-    daemon_status: []const u8,
+    /// Canonical daemon health (enum — not stringly typed).
+    daemon_health: onboarding.DaemonHealthStatus,
     daemon_detail: []const u8,
     /// Host integration snapshot for the doctor host table (owned slices).
     host_rows: []const HostDoctorRow = &.{},
@@ -89,7 +91,6 @@ const IntegrationContext = struct {
         if (self.daemon_binary_path) |value| self.allocator.free(value);
         if (self.daemon_socket_path) |value| self.allocator.free(value);
         if (self.daemon_pid_path) |value| self.allocator.free(value);
-        self.allocator.free(self.daemon_status);
         self.allocator.free(self.daemon_detail);
         if (self.host_rows.len > 0) {
             for (self.host_rows) |row| {
@@ -118,23 +119,23 @@ const HostDoctorRow = struct {
 };
 
 const DaemonHealth = struct {
-    status: []const u8,
+    status: onboarding.DaemonHealthStatus,
     detail: []const u8,
 };
 
+const DoctorOptions = struct {
+    verbose: bool = false,
+    check: bool = false,
+    json: bool = false,
+};
+
 pub fn command(io: std.Io, argv: []const []const u8, stdout: anytype, stderr: anytype) !u8 {
-    var verbose = false;
+    const options = parseDoctorOptions(argv, stderr) catch return exit_codes.usage;
     for (argv) |arg| {
         if (std.mem.eql(u8, arg, "--help") or std.mem.eql(u8, arg, "-h")) {
             _ = try help.writeCommand(io, stdout, "doctor");
             return exit_codes.success;
         }
-        if (std.mem.eql(u8, arg, "-v") or std.mem.eql(u8, arg, "--verbose")) {
-            verbose = true;
-            continue;
-        }
-        try suggestions.writeUnknownOption(stderr, "orca doctor", arg, &.{ "--verbose", "-v", "--help", "-h" }, "doctor");
-        return exit_codes.usage;
     }
 
     var gpa_state: std.heap.DebugAllocator(.{}) = .init;
@@ -143,13 +144,53 @@ pub fn command(io: std.Io, argv: []const []const u8, stdout: anytype, stderr: an
 
     const os = core.platform.detectOs();
     const backend_report = sandbox.backend.detect(os);
-    var context = collectIntegrationContext(io, allocator) catch |err| {
+    // --check/--json are probe contracts: never spawn/ensure the daemon.
+    const ensure_running = !(options.check or options.json);
+    var context = collectIntegrationContext(io, allocator, ensure_running) catch |err| {
         try stderr.print("orca doctor: failed to collect integration context: {s}\n", .{@errorName(err)});
         return exit_codes.general;
     };
     defer context.deinit();
-    try writeReport(io, stdout, os, backend_report, context, verbose);
-    return exit_codes.success;
+
+    const core_ready = readiness.assess(context.daemon_health, context.policy_present, context.policy_valid);
+    if (options.json) {
+        const policy_path = try std.fs.path.join(allocator, &.{ context.workspace_root, ".orca", "policy.yaml" });
+        defer allocator.free(policy_path);
+        try readiness.writeJsonEnvelope(stdout, .{
+            .assessment = core_ready,
+            .check = options.check,
+            .daemon_status = readiness.daemonWireLabel(context.daemon_health),
+            .daemon_detail = context.daemon_detail,
+            .policy_path = policy_path,
+            .policy_error = context.policy_error,
+            .close_object = true,
+        });
+    } else {
+        try writeReport(io, stdout, os, backend_report, context, options.verbose);
+    }
+    return core_ready.exitCode(options.check);
+}
+
+fn parseDoctorOptions(argv: []const []const u8, stderr: anytype) !DoctorOptions {
+    var options: DoctorOptions = .{};
+    for (argv) |arg| {
+        if (std.mem.eql(u8, arg, "--help") or std.mem.eql(u8, arg, "-h")) continue;
+        if (std.mem.eql(u8, arg, "-v") or std.mem.eql(u8, arg, "--verbose")) {
+            options.verbose = true;
+            continue;
+        }
+        if (std.mem.eql(u8, arg, "--check")) {
+            options.check = true;
+            continue;
+        }
+        if (std.mem.eql(u8, arg, "--json")) {
+            options.json = true;
+            continue;
+        }
+        try suggestions.writeUnknownOption(stderr, "orca doctor", arg, &.{ "--verbose", "-v", "--check", "--json", "--help", "-h" }, "doctor");
+        return error.Usage;
+    }
+    return options;
 }
 
 fn countCapabilitySummary(os: core.platform.Os, backend_report: sandbox.backend.ReportSet) struct { active: usize, limited: usize, unavailable: usize } {
@@ -176,45 +217,19 @@ fn countCapabilitySummary(os: core.platform.Os, backend_report: sandbox.backend.
     return .{ .active = active_count, .limited = limited_count, .unavailable = unavailable_count };
 }
 
-fn daemonStatusSummary(status: []const u8) []const u8 {
-    if (std.mem.eql(u8, status, "compatible")) return "daemon compatible";
-    if (std.mem.eql(u8, status, "unavailable")) return "daemon unavailable";
-    if (std.mem.eql(u8, status, "incompatible")) return "daemon incompatible";
-    return "daemon degraded";
+fn daemonStatusSummary(status: onboarding.DaemonHealthStatus) []const u8 {
+    return switch (status) {
+        .compatible => "daemon compatible",
+        .unavailable => "daemon unavailable",
+        .incompatible => "daemon incompatible",
+        .degraded => "daemon degraded",
+    };
 }
 
 fn daemonDetailFromError(allocator: std.mem.Allocator, err: anyerror) !DaemonHealth {
-    const status = if (err == error.ProtocolMismatch)
-        "incompatible"
-    else if (err == error.MissingHandshake or err == error.HandshakeMalformed or err == error.DaemonProtocolError or err == error.ResponseParseFailed)
-        "degraded"
-    else
-        "unavailable";
-
-    const detail = switch (err) {
-        error.HomeDirectoryNotFound => "HOME is not set; daemon runtime path is unavailable.",
-        error.DaemonBinaryNotFound => "orca-daemon binary not found; build or install the companion daemon.",
-        error.DaemonBinaryNotExecutable => "orca-daemon exists but is not executable; restore execute permission or reinstall the matching release.",
-        error.DaemonSpawnFailed => "orca-daemon failed to start; inspect local build/install state.",
-        error.DaemonStartTimeout => "orca-daemon startup timed out; verify socket cleanup and local process health.",
-        error.DaemonNotReady => "daemon runtime exists but is not ready to answer requests.",
-        error.StaleSocket => "daemon runtime contains stale socket artifacts.",
-        error.SocketConnectFailed => "no running daemon answered on the expected socket.",
-        error.SocketWriteFailed => "daemon socket accepted a connection but did not accept the request cleanly.",
-        error.SocketReadFailed => "daemon socket accepted a connection but did not return a response in time.",
-        error.RequestSerializationFailed => "failed to serialize the daemon health probe request.",
-        error.ResponseParseFailed => "daemon returned malformed JSON for the health probe.",
-        error.DaemonProtocolError => "daemon answered, but the health probe payload was not a valid Pong handshake.",
-        error.MissingHandshake => "daemon answered Ping without the required protocol handshake fields.",
-        error.HandshakeMalformed => "daemon handshake fields were present but malformed.",
-        error.ProtocolMismatch => "daemon protocol version or capability set does not match this Orca CLI.",
-        error.OutOfMemory => "out of memory while probing daemon compatibility.",
-        else => "unexpected daemon health error",
-    };
-
     return .{
-        .status = try allocator.dupe(u8, status),
-        .detail = try allocator.dupe(u8, detail),
+        .status = cli.daemon.errors.doctorHealthStatus(err),
+        .detail = try allocator.dupe(u8, cli.daemon.errors.doctorProbeDetail(err)),
     };
 }
 
@@ -242,7 +257,7 @@ fn writeReport(io: std.Io, stdout: anytype, os: core.platform.Os, backend_report
             counts.unavailable,
             style.Style.reset,
             policy_status,
-            daemonStatusSummary(context.daemon_status),
+            daemonStatusSummary(context.daemon_health),
         });
     } else {
         try stdout.print("Summary: {s} · {d} active · {d} limited · {d} unavailable · {s} · {s}\n\n", .{
@@ -251,7 +266,7 @@ fn writeReport(io: std.Io, stdout: anytype, os: core.platform.Os, backend_report
             counts.limited,
             counts.unavailable,
             policy_status,
-            daemonStatusSummary(context.daemon_status),
+            daemonStatusSummary(context.daemon_health),
         });
     }
 
@@ -344,7 +359,7 @@ fn writeDefaultPanels(
     const health_lines = [_][]const u8{
         try std.fmt.bufPrint(&health_storage[0], "Platform       {s}", .{os.toString()}),
         try std.fmt.bufPrint(&health_storage[1], "Policy         {s}", .{policy_status}),
-        try std.fmt.bufPrint(&health_storage[2], "Daemon         {s}", .{daemonStatusSummary(context.daemon_status)}),
+        try std.fmt.bufPrint(&health_storage[2], "Daemon         {s}", .{daemonStatusSummary(context.daemon_health)}),
         try std.fmt.bufPrint(&health_storage[3], "Capabilities   {d} active · {d} limited", .{ counts.active, counts.limited }),
         try std.fmt.bufPrint(&health_storage[4], "Unavailable    {d}", .{counts.unavailable}),
     };
@@ -419,6 +434,9 @@ fn writeIntegrationReport(io: std.Io, stdout: anytype, context: IntegrationConte
             if (context.daemon_binary_exists) "present" else "missing",
             if (context.daemon_binary_executable) "executable" else "not executable",
         });
+        if (context.daemon_binary_untrusted) {
+            try stdout.writeAll("  daemon binary trust: world-writable ORCA_DAEMON path (refused for shell evaluation)\n");
+        }
     } else {
         try stdout.writeAll("  daemon binary: unresolved\n");
     }
@@ -433,7 +451,7 @@ fn writeIntegrationReport(io: std.Io, stdout: anytype, context: IntegrationConte
         try stdout.print(" ({s})\n", .{if (context.daemon_pid_exists) "present" else "missing"});
     }
     try stdout.writeAll("  daemon health: ");
-    try tui.terminal_text.write(stdout, context.daemon_status, .single_line);
+    try tui.terminal_text.write(stdout, readiness.daemonWireLabel(context.daemon_health), .single_line);
     try stdout.writeAll(" (");
     try tui.terminal_text.write(stdout, context.daemon_detail, .single_line);
     try stdout.writeAll(")\n\n");
@@ -554,7 +572,7 @@ fn writePiNote(stdout: anytype) !void {
 
 fn writePacksSection(io: std.Io, stdout: anytype, context: IntegrationContext) !void {
     // Avoid spawning the daemon when health probe already failed (doctor stays fast).
-    if (!std.mem.eql(u8, context.daemon_status, "compatible")) {
+    if (context.daemon_health != .compatible) {
         try pack_state.writeDoctorPacksSection(stdout, pack_state.unknownPacksSummary());
         return;
     }
@@ -574,9 +592,11 @@ fn hermesFailOpenFromEnv() bool {
 
 fn writeRecommendations(stdout: anytype, context: IntegrationContext) !void {
     try stdout.writeAll("\nRecommended next step:\n");
-    if (!std.mem.eql(u8, context.daemon_status, "compatible")) {
+    if (context.daemon_health != .compatible) {
         try writeDynamicLine(stdout, "  Daemon health issue: ", context.daemon_detail, "\n");
-        if (context.daemon_binary_exists and !context.daemon_binary_executable) {
+        if (context.daemon_binary_untrusted) {
+            try stdout.writeAll("  Unset `ORCA_DAEMON` or point it at a non-world-writable `orca-daemon` binary, then re-run `orca doctor`.\n");
+        } else if (context.daemon_binary_exists and !context.daemon_binary_executable) {
             try stdout.writeAll("  Restore execute permission on `orca-daemon` or reinstall the matching release, then re-run `orca doctor`.\n");
         } else if (!context.daemon_binary_exists) {
             try stdout.writeAll("  Ensure `orca-daemon` is installed beside `orca` (or set `ORCA_DAEMON`), then re-run `orca doctor`.\n");
@@ -607,32 +627,24 @@ fn writeRecommendations(stdout: anytype, context: IntegrationContext) !void {
     }
 }
 
-fn collectIntegrationContext(io: std.Io, allocator: std.mem.Allocator) !IntegrationContext {
+fn collectIntegrationContext(io: std.Io, allocator: std.mem.Allocator, ensure_running: bool) !IntegrationContext {
     const workspace_root = supervisor.resolveWorkspaceRoot(io, allocator, null, ".") catch try allocator.dupe(u8, ".");
     errdefer allocator.free(workspace_root);
-    return try collectIntegrationContextAt(io, allocator, workspace_root);
+    return try collectIntegrationContextAt(io, allocator, workspace_root, ensure_running);
 }
 
-fn collectIntegrationContextAt(io: std.Io, allocator: std.mem.Allocator, workspace_root: []const u8) !IntegrationContext {
+fn collectIntegrationContextAt(io: std.Io, allocator: std.mem.Allocator, workspace_root: []const u8, ensure_running: bool) !IntegrationContext {
     const git_present = hasPath(io, workspace_root, ".git");
 
     const policy_path = try std.fs.path.join(allocator, &.{ workspace_root, ".orca", "policy.yaml" });
     defer allocator.free(policy_path);
-    var policy_present = false;
-    var policy_valid = false;
-    var policy_error: ?[]const u8 = null;
+    var policy_assessment = try readiness.assessPolicyFile(io, allocator, policy_path);
+    const policy_present = policy_assessment.present;
+    const policy_valid = policy_assessment.valid;
+    // Transfer ownership of error_name into IntegrationContext.policy_error.
+    const policy_error = policy_assessment.error_name;
+    policy_assessment.error_name = null;
     errdefer if (policy_error) |value| allocator.free(value);
-    if (fileExistsAbsolute(io, policy_path)) {
-        policy_present = true;
-        if (core_api.loadPolicyFile(io, allocator, policy_path)) |loaded_policy| {
-            var loaded = loaded_policy;
-            loaded.deinit();
-            policy_valid = true;
-        } else |err| {
-            if (err == error.OutOfMemory) return err;
-            policy_error = try std.fmt.allocPrint(allocator, "{s}", .{@errorName(err)});
-        }
-    }
     const manifests = countMcpManifests(io, allocator, workspace_root);
     const agents = try detectAgents(io, allocator);
     errdefer if (agents.len > 0) allocator.free(agents);
@@ -650,20 +662,18 @@ fn collectIntegrationContextAt(io: std.Io, allocator: std.mem.Allocator, workspa
         else => null,
     };
     defer if (daemon_paths) |value| cli.daemon.freeRuntimePaths(allocator, value);
+    // Shared onboarding health path (same as status/quickstart). Probe paths pass
+    // ensure_running=false so --check never mutates daemon runtime.
     const daemon_health: DaemonHealth = blk: {
-        if (cli.daemon.checkCompatibility(allocator)) |_| {
-            break :blk .{
-                .status = try allocator.dupe(u8, "compatible"),
-                .detail = try allocator.dupe(u8, "running daemon answered with a compatible handshake."),
-            };
-        } else |err| {
+        const check = onboarding.checkDaemonHealth(allocator, ensure_running, null) catch |err| {
             break :blk try daemonDetailFromError(allocator, err);
-        }
+        };
+        break :blk .{
+            .status = check.status,
+            .detail = try allocator.dupe(u8, check.detail),
+        };
     };
-    errdefer {
-        allocator.free(daemon_health.status);
-        allocator.free(daemon_health.detail);
-    }
+    errdefer allocator.free(daemon_health.detail);
 
     const host_snapshot = try collectHostDoctorRows(io, allocator);
     errdefer {
@@ -697,11 +707,15 @@ fn collectIntegrationContextAt(io: std.Io, allocator: std.mem.Allocator, workspa
         .daemon_binary_path = if (daemon_inspection) |value| try allocator.dupe(u8, value.path) else null,
         .daemon_binary_exists = if (daemon_inspection) |value| value.exists else false,
         .daemon_binary_executable = if (daemon_inspection) |value| value.executable else false,
+        .daemon_binary_untrusted = if (daemon_inspection) |value|
+            value.source == .env_override and value.untrusted
+        else
+            false,
         .daemon_socket_path = if (daemon_paths) |value| try allocator.dupe(u8, value.socket) else null,
         .daemon_socket_exists = if (daemon_paths) |value| fileExistsAbsolute(io, value.socket) else false,
         .daemon_pid_path = if (daemon_paths) |value| try allocator.dupe(u8, value.pid) else null,
         .daemon_pid_exists = if (daemon_paths) |value| fileExistsAbsolute(io, value.pid) else false,
-        .daemon_status = daemon_health.status,
+        .daemon_health = daemon_health.status,
         .daemon_detail = daemon_health.detail,
         .host_rows = host_snapshot.rows,
         .hermes_fail_open = host_snapshot.hermes_fail_open,
@@ -997,7 +1011,7 @@ test "doctor detects valid policy in current workspace" {
     var stderr_buf: [512]u8 = undefined;
     var stdout_writer: std.Io.Writer = .fixed(&stdout_buf);
     var stderr_writer: std.Io.Writer = .fixed(&stderr_buf);
-    var context = try collectIntegrationContextAt(std.testing.io, std.testing.allocator, tmp_path);
+    var context = try collectIntegrationContextAt(std.testing.io, std.testing.allocator, tmp_path, true);
     defer context.deinit();
 
     try writeReport(std.testing.io, &stdout_writer, core.platform.detectOs(), sandbox.backend.detect(core.platform.detectOs()), context, true);
@@ -1028,7 +1042,7 @@ test "doctor reports invalid policy clearly without printing synthetic secrets" 
     var stderr_buf: [512]u8 = undefined;
     var stdout_writer: std.Io.Writer = .fixed(&stdout_buf);
     var stderr_writer: std.Io.Writer = .fixed(&stderr_buf);
-    var context = try collectIntegrationContextAt(std.testing.io, std.testing.allocator, tmp_path);
+    var context = try collectIntegrationContextAt(std.testing.io, std.testing.allocator, tmp_path, true);
     defer context.deinit();
 
     try writeReport(std.testing.io, &stdout_writer, core.platform.detectOs(), sandbox.backend.detect(core.platform.detectOs()), context, true);
@@ -1078,7 +1092,7 @@ test "doctor --verbose prints full report" {
 
 test "doctor integration collection returns allocator failures instead of panicking" {
     var failing_allocator = std.testing.FailingAllocator.init(std.testing.allocator, .{ .fail_index = 0 });
-    try std.testing.expectError(error.OutOfMemory, collectIntegrationContextAt(std.testing.io, failing_allocator.allocator(), "."));
+    try std.testing.expectError(error.OutOfMemory, collectIntegrationContextAt(std.testing.io, failing_allocator.allocator(), ".", true));
 }
 
 test "doctor output contains status glyphs in plain text mode" {
@@ -1148,7 +1162,7 @@ test "doctor summary includes daemon availability" {
     var stdout_writer: std.Io.Writer = .fixed(&stdout_buf);
     const report = sandbox.backend.detect(.linux);
     var context = try testContext(std.testing.allocator, .{
-        .daemon_status = "unavailable",
+        .daemon_health = .unavailable,
         .daemon_detail = "no running daemon answered on the expected socket.",
     });
     defer context.deinit();
@@ -1164,7 +1178,7 @@ test "doctor integration report includes daemon health details" {
     var stdout_writer: std.Io.Writer = .fixed(&stdout_buf);
     const report = sandbox.backend.detect(.linux);
     var context = try testContext(std.testing.allocator, .{
-        .daemon_status = "incompatible",
+        .daemon_health = .incompatible,
         .daemon_detail = "daemon protocol version or capability set does not match this Orca CLI.",
     });
     defer context.deinit();
@@ -1175,13 +1189,30 @@ test "doctor integration report includes daemon health details" {
     try std.testing.expect(std.mem.indexOf(u8, written, "does not match this Orca CLI") != null);
 }
 
+test "doctor integration report warns on world-writable ORCA_DAEMON path" {
+    var stdout_buf: [32768]u8 = undefined;
+    var stdout_writer: std.Io.Writer = .fixed(&stdout_buf);
+    const report = sandbox.backend.detect(.linux);
+    var context = try testContext(std.testing.allocator, .{
+        .daemon_health = .unavailable,
+        .daemon_detail = "ORCA_DAEMON points at a world-writable path.",
+        .daemon_binary_untrusted = true,
+    });
+    defer context.deinit();
+
+    try writeReport(std.testing.io, &stdout_writer, .linux, report, context, true);
+    const written = stdout_writer.buffered();
+    try std.testing.expect(std.mem.indexOf(u8, written, "daemon binary trust: world-writable ORCA_DAEMON path") != null);
+    try std.testing.expect(std.mem.indexOf(u8, written, "Unset `ORCA_DAEMON` or point it at a non-world-writable") != null);
+}
+
 test "doctor recommendations prioritize daemon remediation over missing policy" {
     var stdout_buf: [32768]u8 = undefined;
     var stdout_writer: std.Io.Writer = .fixed(&stdout_buf);
     const report = sandbox.backend.detect(.linux);
     var context = try testContext(std.testing.allocator, .{
         .policy_present = false,
-        .daemon_status = "unavailable",
+        .daemon_health = .unavailable,
         .daemon_detail = "no running daemon answered on the expected socket.",
     });
     defer context.deinit();
@@ -1198,7 +1229,7 @@ test "doctor packs section is unknown when daemon is unavailable" {
     var stdout_writer: std.Io.Writer = .fixed(&stdout_buf);
     const report = sandbox.backend.detect(.linux);
     var context = try testContext(std.testing.allocator, .{
-        .daemon_status = "unavailable",
+        .daemon_health = .unavailable,
         .daemon_detail = "no running daemon answered on the expected socket.",
     });
     defer context.deinit();
@@ -1263,12 +1294,48 @@ test "hermesFailOpenFromEnvValue defaults to fail-open" {
     try std.testing.expect(!hermesFailOpenFromEnvValue("off"));
 }
 
+test "doctor rejects unknown option" {
+    var stdout_buf: [64]u8 = undefined;
+    var stderr_buf: [256]u8 = undefined;
+    var stdout_writer: std.Io.Writer = .fixed(&stdout_buf);
+    var stderr_writer: std.Io.Writer = .fixed(&stderr_buf);
+    const code = try command(std.testing.io, &.{"--nope"}, &stdout_writer, &stderr_writer);
+    try std.testing.expectEqual(exit_codes.usage, code);
+}
+
+test "doctor --json readiness includes ready and policy.valid" {
+    var stdout_buf: [8192]u8 = undefined;
+    var stderr_buf: [256]u8 = undefined;
+    var stdout_writer: std.Io.Writer = .fixed(&stdout_buf);
+    var stderr_writer: std.Io.Writer = .fixed(&stderr_buf);
+
+    // Without --check: always exit 0 for report render even if not ready.
+    const code = try command(std.testing.io, &.{"--json"}, &stdout_writer, &stderr_writer);
+    try std.testing.expectEqual(exit_codes.success, code);
+    const out = stdout_writer.buffered();
+    try std.testing.expect(std.mem.indexOf(u8, out, "\"schema_version\": 1") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "\"ready\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "\"state\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "\"valid\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "\"check\": false") != null);
+}
+
+test "doctor parseDoctorOptions accepts --check and --json" {
+    var stderr_buf: [64]u8 = undefined;
+    var stderr_writer: std.Io.Writer = .fixed(&stderr_buf);
+    const opts = try parseDoctorOptions(&.{ "--check", "--json", "--verbose" }, &stderr_writer);
+    try std.testing.expect(opts.check);
+    try std.testing.expect(opts.json);
+    try std.testing.expect(opts.verbose);
+}
+
 const TestContextOptions = struct {
     policy_present: bool = true,
     policy_valid: bool = true,
     daemon_binary_exists: bool = true,
     daemon_binary_executable: bool = true,
-    daemon_status: []const u8 = "compatible",
+    daemon_binary_untrusted: bool = false,
+    daemon_health: onboarding.DaemonHealthStatus = .compatible,
     daemon_detail: []const u8 = "running daemon answered with a compatible handshake.",
     hermes_fail_open: bool = true,
     hermes_installed: bool = false,
@@ -1294,11 +1361,12 @@ fn testContext(allocator: std.mem.Allocator, options: TestContextOptions) !Integ
         .daemon_binary_path = try allocator.dupe(u8, "/tmp/orca-daemon"),
         .daemon_binary_exists = options.daemon_binary_exists,
         .daemon_binary_executable = options.daemon_binary_executable,
+        .daemon_binary_untrusted = options.daemon_binary_untrusted,
         .daemon_socket_path = try allocator.dupe(u8, "/tmp/daemon.sock"),
         .daemon_socket_exists = false,
         .daemon_pid_path = try allocator.dupe(u8, "/tmp/daemon.pid"),
         .daemon_pid_exists = false,
-        .daemon_status = try allocator.dupe(u8, options.daemon_status),
+        .daemon_health = options.daemon_health,
         .daemon_detail = try allocator.dupe(u8, options.daemon_detail),
         .host_rows = host_rows,
         .hermes_fail_open = options.hermes_fail_open,

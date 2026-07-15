@@ -291,6 +291,8 @@ pub fn stageDelete(
     const session_dir = try sessionDirPath(allocator, workspace_root, session_id);
     errdefer allocator.free(session_dir);
     try ensureStagingDirs(io, session_dir);
+    var index_lock = try StagingIndexLock.acquire(io, allocator, session_dir);
+    defer index_lock.release(io);
 
     const original_bytes = try std.Io.Dir.cwd().readFileAlloc(io, normalized.resolved_path, allocator, .limited(max_staged_file_bytes));
     defer allocator.free(original_bytes);
@@ -346,11 +348,119 @@ pub fn diffStaged(io: std.Io, allocator: std.mem.Allocator, workspace_root: []co
 }
 
 pub fn applyStaged(io: std.Io, allocator: std.mem.Allocator, workspace_root: []const u8, session_id: []const u8, optional_file: ?[]const u8, audit_context: ?AuditContext) !ApplyDiscardResult {
-    return applyOrDiscard(io, allocator, workspace_root, session_id, optional_file, true, audit_context);
+    return applyOrDiscard(io, allocator, workspace_root, session_id, optional_file, null, true, audit_context);
 }
 
 pub fn discardStaged(io: std.Io, allocator: std.mem.Allocator, workspace_root: []const u8, session_id: []const u8, optional_file: ?[]const u8, audit_context: ?AuditContext) !ApplyDiscardResult {
-    return applyOrDiscard(io, allocator, workspace_root, session_id, optional_file, false, audit_context);
+    return applyOrDiscard(io, allocator, workspace_root, session_id, optional_file, null, false, audit_context);
+}
+
+pub fn stagedIndexFingerprint(io: std.Io, allocator: std.mem.Allocator, workspace_root: []const u8, session_id: []const u8) ![]u8 {
+    const session_dir = try sessionDirPath(allocator, workspace_root, session_id);
+    defer allocator.free(session_dir);
+    const path = try std.fs.path.join(allocator, &.{ session_dir, "staging-index.json" });
+    defer allocator.free(path);
+    const bytes = std.Io.Dir.cwd().readFileAlloc(io, path, allocator, .limited(core.limits.max_mcp_message_len)) catch |err| switch (err) {
+        error.FileNotFound => return sha256HexAlloc(allocator, ""),
+        else => return err,
+    };
+    defer allocator.free(bytes);
+    return sha256HexAlloc(allocator, bytes);
+}
+
+pub const StagedPreview = struct {
+    summary: StagedSummary,
+    fingerprint: []u8,
+    allocator: std.mem.Allocator,
+
+    pub fn deinit(self: *StagedPreview) void {
+        self.summary.deinit();
+        self.allocator.free(self.fingerprint);
+        self.* = undefined;
+    }
+};
+
+/// Capture the exact staged generation presented for confirmation. Every Orca staging
+/// writer holds the same lock, preventing a writer from changing the index between the
+/// visible summary and its confirmation fingerprint.
+pub fn previewStaged(
+    io: std.Io,
+    allocator: std.mem.Allocator,
+    workspace_root: []const u8,
+    session_id: []const u8,
+    optional_file: ?[]const u8,
+) !StagedPreview {
+    const session_dir = try sessionDirPath(allocator, workspace_root, session_id);
+    defer allocator.free(session_dir);
+    var index_lock = try StagingIndexLock.acquire(io, allocator, session_dir);
+    defer index_lock.release(io);
+
+    var summary = try summarizeStaged(io, allocator, workspace_root, session_id, optional_file);
+    errdefer summary.deinit();
+    return .{
+        .summary = summary,
+        .fingerprint = try stagedIndexFingerprint(io, allocator, workspace_root, session_id),
+        .allocator = allocator,
+    };
+}
+
+pub fn applyStagedConfirmed(io: std.Io, allocator: std.mem.Allocator, workspace_root: []const u8, session_id: []const u8, optional_file: ?[]const u8, expected_fingerprint: []const u8, audit_context: ?AuditContext) !ApplyDiscardResult {
+    return applyOrDiscard(io, allocator, workspace_root, session_id, optional_file, expected_fingerprint, true, audit_context);
+}
+
+pub fn discardStagedConfirmed(io: std.Io, allocator: std.mem.Allocator, workspace_root: []const u8, session_id: []const u8, optional_file: ?[]const u8, expected_fingerprint: []const u8, audit_context: ?AuditContext) !ApplyDiscardResult {
+    return applyOrDiscard(io, allocator, workspace_root, session_id, optional_file, expected_fingerprint, false, audit_context);
+}
+
+/// Paths that would be applied or discarded (relative workspace paths). Caller frees with deinit.
+pub const StagedSummary = struct {
+    count: usize,
+    paths: [][]const u8,
+    allocator: std.mem.Allocator,
+
+    pub fn deinit(self: *StagedSummary) void {
+        for (self.paths) |p| self.allocator.free(p);
+        self.allocator.free(self.paths);
+        self.* = undefined;
+    }
+};
+
+/// List staged file paths for dry-run / confirmation summaries. Does not mutate.
+pub fn summarizeStaged(
+    io: std.Io,
+    allocator: std.mem.Allocator,
+    workspace_root: []const u8,
+    session_id: []const u8,
+    optional_file: ?[]const u8,
+) !StagedSummary {
+    const session_dir = try sessionDirPath(allocator, workspace_root, session_id);
+    defer allocator.free(session_dir);
+    var index = try loadIndex(io, allocator, workspace_root, session_dir);
+    defer index.deinit();
+
+    const normalized_filter = if (optional_file) |file| blk: {
+        var normalized = try normalizePath(io, allocator, workspace_root, file);
+        defer normalized.deinit(allocator);
+        break :blk try allocator.dupe(u8, normalized.relative_path);
+    } else null;
+    defer if (normalized_filter) |filter| allocator.free(filter);
+
+    var paths: std.ArrayList([]const u8) = .empty;
+    errdefer {
+        for (paths.items) |p| allocator.free(p);
+        paths.deinit(allocator);
+    }
+    for (index.entries.items) |entry| {
+        if (normalized_filter) |filter| {
+            if (!std.mem.eql(u8, filter, entry.normalized_path)) continue;
+        }
+        try paths.append(allocator, try allocator.dupe(u8, entry.normalized_path));
+    }
+    return .{
+        .count = paths.items.len,
+        .paths = try paths.toOwnedSlice(allocator),
+        .allocator = allocator,
+    };
 }
 
 pub fn resolveSessionId(io: std.Io, allocator: std.mem.Allocator, workspace_root: []const u8, requested: []const u8) ![]u8 {
@@ -391,6 +501,8 @@ fn stageBytes(
     const session_dir = try sessionDirPath(allocator, workspace_root, session_id);
     errdefer allocator.free(session_dir);
     try ensureStagingDirs(io, session_dir);
+    var index_lock = try StagingIndexLock.acquire(io, allocator, session_dir);
+    defer index_lock.release(io);
 
     const existed = fileExists(io, normalized.resolved_path);
     var original_hash: ?[]u8 = null;
@@ -440,11 +552,20 @@ fn applyOrDiscard(
     workspace_root: []const u8,
     session_id: []const u8,
     optional_file: ?[]const u8,
+    expected_fingerprint: ?[]const u8,
     comptime apply: bool,
     audit_context: ?AuditContext,
 ) !ApplyDiscardResult {
     const session_dir = try sessionDirPath(allocator, workspace_root, session_id);
     defer allocator.free(session_dir);
+    var index_lock = try StagingIndexLock.acquire(io, allocator, session_dir);
+    defer index_lock.release(io);
+
+    if (expected_fingerprint) |expected| {
+        const actual = try stagedIndexFingerprint(io, allocator, workspace_root, session_id);
+        defer allocator.free(actual);
+        if (!std.mem.eql(u8, expected, actual)) return error.StagingChanged;
+    }
     var index = try loadIndex(io, allocator, workspace_root, session_dir);
     defer index.deinit();
 
@@ -686,6 +807,28 @@ fn writeIndex(io: std.Io, allocator: std.mem.Allocator, session_dir: []const u8,
     try file.writeStreamingAll(io, "\n");
     try file.sync(io);
 }
+
+/// Exclusive staging-index lock. All staging writers/readers that mutate or
+/// fingerprint the index acquire this so preview/confirm cannot race.
+const StagingIndexLock = struct {
+    file: std.Io.File,
+
+    fn acquire(io: std.Io, allocator: std.mem.Allocator, session_dir: []const u8) !StagingIndexLock {
+        try ensureStagingDirs(io, session_dir);
+        const lock_path = try std.fs.path.join(allocator, &.{ session_dir, "staging-index.lock" });
+        defer allocator.free(lock_path);
+        const lock_file = try std.Io.Dir.cwd().createFile(io, lock_path, .{ .read = true });
+        errdefer lock_file.close(io);
+        try lock_file.lock(io, .exclusive);
+        return .{ .file = lock_file };
+    }
+
+    fn release(self: *StagingIndexLock, io: std.Io) void {
+        self.file.unlock(io);
+        self.file.close(io);
+        self.* = undefined;
+    }
+};
 
 fn writeNullableJsonString(writer: anytype, value: ?[]const u8) !void {
     if (value) |string| try core.util.writeJsonString(writer, string) else try writer.writeAll("null");
@@ -1421,6 +1564,34 @@ test "staged create update diff apply discard and index integrity" {
     const discarded = try discardStaged(std.testing.io, std.testing.allocator, root, session_id, "src/new.txt", null);
     try std.testing.expectEqual(@as(usize, 1), discarded.count);
     try std.testing.expectError(error.FileNotFound, tmp.dir.access(std.testing.io, "src/new.txt", .{}));
+}
+
+test "confirmed apply rejects an index changed after its preview" {
+    const io = std.testing.io;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try tmp.dir.createDirPath(io, ".git");
+    const root = try testAllocRealPath(io, tmp.dir, ".", std.testing.allocator);
+    defer std.testing.allocator.free(root);
+    var loaded = try policy.load.loadPreset(std.testing.allocator, .strict);
+    defer loaded.deinit();
+
+    var first = try stageWrite(io, std.testing.allocator, &loaded, root, "preview-race", "first.txt", "first\n", null);
+    defer first.deinit(std.testing.allocator);
+    var preview = try previewStaged(io, std.testing.allocator, root, "preview-race", null);
+    defer preview.deinit();
+    try std.testing.expectEqual(@as(usize, 1), preview.summary.count);
+
+    var second = try stageWrite(io, std.testing.allocator, &loaded, root, "preview-race", "second.txt", "second\n", null);
+    defer second.deinit(std.testing.allocator);
+
+    try std.testing.expectError(
+        error.StagingChanged,
+        applyStagedConfirmed(io, std.testing.allocator, root, "preview-race", null, preview.fingerprint, null),
+    );
+    var summary = try summarizeStaged(io, std.testing.allocator, root, "preview-race", null);
+    defer summary.deinit();
+    try std.testing.expectEqual(@as(usize, 2), summary.count);
 }
 
 test "staging workflow accepts Windows-style backslash paths as workspace relative paths" {
