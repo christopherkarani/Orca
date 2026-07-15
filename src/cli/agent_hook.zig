@@ -62,14 +62,59 @@ pub fn commandWithEvaluator(
     return evaluatePayload(allocator, payload, stdout, evaluator);
 }
 
+/// Soft modes (observe / ask / trusted) that can weaken pack hits.
+fn isSoftMode(mode: policy.schema.Mode) bool {
+    return switch (mode) {
+        .observe, .ask, .trusted => true,
+        .strict, .redteam, .ci => false,
+    };
+}
+
+fn envFlagTruthy(name: [*:0]const u8) bool {
+    const raw_c = std.c.getenv(name) orelse return false;
+    const raw = std.mem.span(raw_c);
+    return std.mem.eql(u8, raw, "1") or
+        std.ascii.eqlIgnoreCase(raw, "true") or
+        std.ascii.eqlIgnoreCase(raw, "yes") or
+        std.ascii.eqlIgnoreCase(raw, "on");
+}
+
 /// Resolve mode for bare agent-hook (no loaded policy YAML).
-/// Honor `ORCA_MODE` when set to a known mode; otherwise strict.
+///
+/// Floor is **strict**. `ORCA_MODE` may only *raise* strictness (strict →
+/// redteam/ci). Soft modes from env (`observe`/`ask`/`trusted`) are ignored
+/// unless the operator explicitly sets `ORCA_ALLOW_MODE_SOFTEN=1`, so a
+/// hostile process env cannot silently downgrade bare Cursor/agent hooks.
+/// Prefer `orca run` (session `shim_mode`) for intentional soft modes.
 pub fn resolveModeFromEnv() policy.schema.Mode {
+    const floor: policy.schema.Mode = .strict;
+    const allow_soften = envFlagTruthy("ORCA_ALLOW_MODE_SOFTEN");
+
     if (std.c.getenv("ORCA_MODE")) |raw_c| {
         const raw = std.mem.span(raw_c);
-        if (policy.schema.Mode.parse(raw)) |mode_value| return mode_value;
+        if (policy.schema.Mode.parse(raw)) |env_mode| {
+            if (isSoftMode(env_mode)) {
+                // Soft modes require explicit operator opt-in; never ambient soften.
+                return if (allow_soften) env_mode else floor;
+            }
+            // Hard modes may only raise above the strict floor (redteam/ci).
+            return moreRestrictiveMode(floor, env_mode);
+        }
     }
-    return .strict;
+    return floor;
+}
+
+fn modeStrictness(mode: policy.schema.Mode) u8 {
+    return switch (mode) {
+        .observe, .trusted => 0,
+        .ask => 1,
+        .strict, .redteam => 2,
+        .ci => 3,
+    };
+}
+
+fn moreRestrictiveMode(a: policy.schema.Mode, b: policy.schema.Mode) policy.schema.Mode {
+    return if (modeStrictness(a) >= modeStrictness(b)) a else b;
 }
 
 pub fn evaluatePayload(
@@ -514,4 +559,22 @@ test "critical deny stays deny even in observe mode" {
 
 test "agent hook mode version is wired into build metadata" {
     try std.testing.expect(build_options.version.len > 0);
+}
+
+test "resolveModeFromEnv floors soft modes without ORCA_ALLOW_MODE_SOFTEN" {
+    // Unit-test the pure helpers rather than mutating process env (not safe in
+    // parallel test runners). Soft modes without opt-in must not drop below strict.
+    try std.testing.expect(isSoftMode(.observe));
+    try std.testing.expect(isSoftMode(.ask));
+    try std.testing.expect(isSoftMode(.trusted));
+    try std.testing.expect(!isSoftMode(.strict));
+    try std.testing.expect(!isSoftMode(.ci));
+    try std.testing.expect(!isSoftMode(.redteam));
+
+    try std.testing.expectEqual(policy.schema.Mode.strict, moreRestrictiveMode(.strict, .observe));
+    try std.testing.expectEqual(policy.schema.Mode.strict, moreRestrictiveMode(.strict, .ask));
+    try std.testing.expectEqual(policy.schema.Mode.ci, moreRestrictiveMode(.strict, .ci));
+    // redteam and strict share the same strictness tier (identical mode×severity matrix).
+    try std.testing.expectEqual(policy.schema.Mode.strict, moreRestrictiveMode(.strict, .redteam));
+    try std.testing.expectEqual(policy.schema.Mode.redteam, moreRestrictiveMode(.redteam, .strict));
 }

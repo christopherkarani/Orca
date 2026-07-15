@@ -591,17 +591,20 @@ fn applyOrDiscard(
         }
 
         if (apply) {
-            try verifyOriginalState(io, allocator, entry);
             switch (entry.operation) {
                 .create, .update => {
                     const staged_bytes = try readVerifiedStagedBytes(io, allocator, entry);
                     defer allocator.free(staged_bytes);
-                    try ensureParentPath(entry.original_path);
-                    try writeAbsoluteFile(entry.original_path, staged_bytes);
+                    // Atomic replace with a final original-hash check immediately
+                    // before rename, closing the verify→write TOCTOU window.
+                    try applyBytesAtomically(io, allocator, entry, staged_bytes);
                 },
-                .delete => std.Io.Dir.cwd().deleteFile(io, entry.original_path) catch |err| switch (err) {
-                    error.FileNotFound => {},
-                    else => return err,
+                .delete => {
+                    try verifyOriginalState(io, allocator, entry);
+                    std.Io.Dir.cwd().deleteFile(io, entry.original_path) catch |err| switch (err) {
+                        error.FileNotFound => {},
+                        else => return err,
+                    };
                 },
             }
             try auditFileEvent(audit_context, .file_apply, entry.normalized_path, .{ .result = .allow, .reason = "staged file applied", .ci_may_proceed = true });
@@ -679,6 +682,40 @@ fn readVerifiedStagedBytes(io: std.Io, allocator: std.mem.Allocator, entry: Stag
     defer allocator.free(actual);
     if (!std.mem.eql(u8, expected, actual)) return error.StagedChanged;
     return bytes;
+}
+
+/// Write staged bytes via same-directory temp + rename, re-checking the original
+/// hash immediately before the rename so a concurrent editor cannot race the
+/// earlier verifyOriginalState check.
+fn applyBytesAtomically(
+    io: std.Io,
+    allocator: std.mem.Allocator,
+    entry: StagedEntry,
+    staged_bytes: []const u8,
+) !void {
+    try verifyOriginalState(io, allocator, entry);
+    try ensureParentPath(entry.original_path);
+
+    const parent = std.fs.path.dirname(entry.original_path) orelse ".";
+    const base = std.fs.path.basename(entry.original_path);
+    // Same directory as the destination so rename is atomic on the same volume.
+    const tmp_name = try std.fmt.allocPrint(allocator, ".orca-apply-{s}.tmp", .{base});
+    defer allocator.free(tmp_name);
+    const tmp_path = try std.fs.path.join(allocator, &.{ parent, tmp_name });
+    defer allocator.free(tmp_path);
+
+    try writeAbsoluteFile(tmp_path, staged_bytes);
+    errdefer std.Io.Dir.cwd().deleteFile(io, tmp_path) catch {};
+
+    // Final check: original must still match the staged snapshot before replace.
+    try verifyOriginalState(io, allocator, entry);
+
+    const cwd = std.Io.Dir.cwd();
+    cwd.rename(tmp_path, cwd, entry.original_path, io) catch |err| {
+        // Clean up temp on failure; leave original untouched.
+        cwd.deleteFile(io, tmp_path) catch {};
+        return err;
+    };
 }
 
 fn cleanupEntryFiles(io: std.Io, session_dir: []const u8, relative_path: []const u8) void {
@@ -1688,6 +1725,66 @@ test "staging index rejects paths outside workspace and session" {
     defer std.testing.allocator.free(index_text_staged_escape);
     try writeAbsoluteFile(index_path, index_text_staged_escape);
     try std.testing.expectError(error.InvalidStagingIndex, diffStaged(std.testing.io, std.testing.allocator, root, "evil", null));
+}
+
+test "apply rejects original changed between stage and apply" {
+    const io = std.testing.io;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try tmp.dir.createDirPath(io, ".git");
+    try tmp.dir.createDirPath(io, "src");
+    try tmp.dir.writeFile(io, .{ .sub_path = "src/existing.txt", .data = "original\n" });
+    const root = try testAllocRealPath(io, tmp.dir, ".", std.testing.allocator);
+    defer std.testing.allocator.free(root);
+    var loaded = try policy.load.loadPreset(std.testing.allocator, .strict);
+    defer loaded.deinit();
+
+    var staged = try stageUpdate(io, std.testing.allocator, &loaded, root, "orig-race", "src/existing.txt", "staged\n", null);
+    defer staged.deinit(std.testing.allocator);
+
+    // Concurrent editor rewrites the workspace file after stage.
+    try tmp.dir.writeFile(io, .{ .sub_path = "src/existing.txt", .data = "concurrent edit\n" });
+
+    try std.testing.expectError(
+        error.OriginalChanged,
+        applyStaged(io, std.testing.allocator, root, "orig-race", "src/existing.txt", null),
+    );
+    // Workspace must keep the concurrent edit (apply must not clobber).
+    const after = try tmp.dir.readFileAlloc(io, "src/existing.txt", std.testing.allocator, .limited(1024));
+    defer std.testing.allocator.free(after);
+    try std.testing.expectEqualStrings("concurrent edit\n", after);
+}
+
+test "atomic apply writes staged content for create and update" {
+    const io = std.testing.io;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try tmp.dir.createDirPath(io, ".git");
+    try tmp.dir.createDirPath(io, "src");
+    try tmp.dir.writeFile(io, .{ .sub_path = "src/existing.txt", .data = "old\n" });
+    const root = try testAllocRealPath(io, tmp.dir, ".", std.testing.allocator);
+    defer std.testing.allocator.free(root);
+    var loaded = try policy.load.loadPreset(std.testing.allocator, .strict);
+    defer loaded.deinit();
+
+    var created = try stageWrite(io, std.testing.allocator, &loaded, root, "atomic-apply", "src/new.txt", "created\n", null);
+    defer created.deinit(std.testing.allocator);
+    var updated = try stageUpdate(io, std.testing.allocator, &loaded, root, "atomic-apply", "src/existing.txt", "updated\n", null);
+    defer updated.deinit(std.testing.allocator);
+
+    const applied = try applyStaged(io, std.testing.allocator, root, "atomic-apply", null, null);
+    try std.testing.expectEqual(@as(usize, 2), applied.count);
+
+    const new_text = try tmp.dir.readFileAlloc(io, "src/new.txt", std.testing.allocator, .limited(1024));
+    defer std.testing.allocator.free(new_text);
+    try std.testing.expectEqualStrings("created\n", new_text);
+    const upd_text = try tmp.dir.readFileAlloc(io, "src/existing.txt", std.testing.allocator, .limited(1024));
+    defer std.testing.allocator.free(upd_text);
+    try std.testing.expectEqualStrings("updated\n", upd_text);
+
+    // Temp apply artifacts must not remain beside the destination.
+    try std.testing.expectError(error.FileNotFound, tmp.dir.access(io, "src/.orca-apply-new.txt.tmp", .{}));
+    try std.testing.expectError(error.FileNotFound, tmp.dir.access(io, "src/.orca-apply-existing.txt.tmp", .{}));
 }
 
 test "apply rejects tampered staged blob hash" {
