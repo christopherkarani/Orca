@@ -135,6 +135,15 @@ echo '{"tool_name":"Bash","tool_input":{"command":"rm -rf /"}}' | orca
 
 Interactive `orca` with no args on a TTY still shows help (not hook mode).
 
+**Mode (bare hook):** Default is `strict`. Ambient `ORCA_MODE=observe` / `ask` / `trusted` is **ignored** so a hostile env cannot soften bare hooks. To intentionally soften bare-hook mode, set both:
+
+```bash
+export ORCA_ALLOW_MODE_SOFTEN=1
+export ORCA_MODE=observe
+```
+
+Prefer `orca run -- …` (session-recorded `shim_mode`) for intentional soft modes under an agent session.
+
 **Wrapper smoke test:**
 
 ```bash
