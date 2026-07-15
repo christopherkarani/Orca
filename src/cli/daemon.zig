@@ -469,7 +469,7 @@ pub fn inspectDaemonBinary(allocator: std.mem.Allocator) DaemonError!?DaemonBina
             .source = .env_override,
             .exists = pathExists(io, env_path),
             .executable = pathIsExecutable(io, env_path),
-            .untrusted = daemon_trust.isEnvOverrideUntrusted(io, env_path),
+            .untrusted = daemon_trust.isEnvOverrideUntrusted(io, allocator, env_path),
         };
     }
 

@@ -88,6 +88,8 @@ const Snapshot = struct {
     policy_path: []const u8,
     policy_present: bool,
     policy_valid: bool,
+    /// Load/parse error name when present but invalid (owned).
+    policy_error: ?[]const u8 = null,
     policy_mode: ?[]const u8,
     policy_preset: ?[]const u8,
     hosts_summary: []const u8,
@@ -101,6 +103,7 @@ const Snapshot = struct {
     fn deinit(self: *Snapshot, allocator: std.mem.Allocator) void {
         allocator.free(self.daemon_detail);
         allocator.free(self.policy_path);
+        if (self.policy_error) |err_name| allocator.free(err_name);
         if (self.policy_mode) |m| allocator.free(m);
         if (self.policy_preset) |p| allocator.free(p);
         allocator.free(self.hosts_summary);
@@ -131,9 +134,12 @@ fn collectSnapshot(
     errdefer allocator.free(policy_path);
 
     var policy_assessment = try readiness.assessPolicyFile(io, allocator, policy_path);
-    defer policy_assessment.deinit(allocator);
     const policy_present = policy_assessment.present;
     const policy_valid = policy_assessment.valid;
+    // Transfer ownership of error_name into Snapshot.policy_error.
+    const policy_error = policy_assessment.error_name;
+    policy_assessment.error_name = null;
+    errdefer if (policy_error) |value| allocator.free(value);
 
     var policy_mode: ?[]const u8 = null;
     var policy_preset: ?[]const u8 = null;
@@ -172,6 +178,7 @@ fn collectSnapshot(
         .policy_path = policy_path,
         .policy_present = policy_present,
         .policy_valid = policy_valid,
+        .policy_error = policy_error,
         .policy_mode = policy_mode,
         .policy_preset = policy_preset,
         .hosts_summary = hosts_summary,
@@ -308,6 +315,7 @@ fn writeJson(stdout: anytype, s: Snapshot, check_mode: bool) !void {
         .daemon_status = readiness.daemonWireLabel(s.daemon_health),
         .daemon_detail = s.daemon_detail,
         .policy_path = s.policy_path,
+        .policy_error = s.policy_error,
         .policy_mode = s.policy_mode,
         .policy_preset = s.policy_preset,
         .close_object = false,

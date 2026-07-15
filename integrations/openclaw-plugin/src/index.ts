@@ -1,6 +1,6 @@
 import { execFileSync } from 'child_process';
 import { existsSync } from 'fs';
-import { join, resolve } from 'path';
+import { isAbsolute, join, resolve } from 'path';
 
 interface OrcaResponse {
   version?: number;
@@ -91,15 +91,18 @@ function buildPayload(event: string, data: unknown, sessionId?: string): object 
 
 /**
  * Resolve the Orca binary.
- * Prefer absolute ORCA_BIN, then PATH. Workspace-relative zig-out paths are
- * only used when ORCA_ALLOW_WORKSPACE_BIN=1 (dev), because agents can plant a
- * fake `./zig-out/bin/orca` that always allows.
+ * Prefer absolute ORCA_BIN, then PATH. Relative ORCA_BIN and workspace
+ * zig-out paths are agent-plantable (fake always-allow binary), so:
+ * - path-shaped ORCA_BIN must be absolute
+ * - workspace zig-out candidates require ORCA_ALLOW_WORKSPACE_BIN=1 (dev only)
  */
 export function findOrca(cwd?: string): string | null {
   const envBin = process.env.ORCA_BIN?.trim();
   if (envBin) {
     if (envBin.includes('/') || envBin.includes('\\')) {
-      // Explicit absolute/relative path: honor it strictly (no PATH fallback).
+      // Relative paths like ./zig-out/bin/orca or evil/orca are agent-writable.
+      // Require an absolute path (no PATH fallback for path-shaped values).
+      if (!isAbsolute(envBin)) return null;
       return existsSync(envBin) ? envBin : null;
     }
     // Bare name — resolve via PATH only (no shell interpolation).
@@ -391,6 +394,17 @@ export default function orcaPlugin(api: OpenClawPluginApi): void {
 
   if (onIsNoop) {
     logger?.warn?.(UNPROTECTED_NOOP_WARNING);
+    // npm/ClawHub installs wire api.on to a no-op. Registering a veto handler
+    // would claim fail-closed protection while hooks never fire. Prefer the
+    // wrapper path instead of a false sense of enforcement.
+    if (!orcaBin) {
+      logger?.warn?.(
+        '[orca] Binary not found in PATH (or ORCA_BIN). ' +
+          'npm/ClawHub install remains unprotected (hooks no-op); ' +
+          'prefer wrapper: `orca run -- openclaw`.'
+      );
+    }
+    return;
   }
 
   if (!orcaBin) {
@@ -399,7 +413,7 @@ export default function orcaPlugin(api: OpenClawPluginApi): void {
         'Registering fail-closed before_tool_call vetoes. ' +
         'Install Orca or set ORCA_BIN to an absolute path. Prefer wrapper: `orca run -- openclaw`.'
     );
-    // Fail closed: missing binary must not silently leave tools unenforced.
+    // Fail closed only when hooks can actually fire (bundled / real api.on).
     api.on(
       'before_tool_call',
       async () => ({

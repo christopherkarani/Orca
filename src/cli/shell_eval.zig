@@ -7,6 +7,7 @@
 const std = @import("std");
 
 const core = @import("orca_core").core;
+const core_api = @import("orca_core").api;
 const policy = @import("orca_core").policy;
 const intercept = @import("../intercept/mod.zig");
 const daemon = @import("daemon.zig");
@@ -257,8 +258,9 @@ pub fn decisionFromDaemonResult(
         .allow => blk: {
             const plugin_decision = pluginDecisionFromDaemonAllow(result).applyCiMode(ci_mode);
             const decision_result = decisionResultFromPluginDecision(plugin_decision);
-            const reason = try allocator.dupe(
-                u8,
+            // Align with hook.zig: daemon allow reasons may embed command fragments / secrets.
+            const reason = try core_api.redactAlloc(
+                allocator,
                 daemon.responseReason(result) orelse "command allowed by daemon evaluator",
             );
             break :blk OwnedRunDecision{
@@ -349,11 +351,14 @@ fn failClosedRunDecision(allocator: std.mem.Allocator, reason: []const u8) !Owne
 /// Human-facing reason for daemon Error status. Always `fail_closed = true` regardless of text.
 fn failClosedEvaluationError(allocator: std.mem.Allocator, message: ?[]const u8) !OwnedRunDecision {
     const msg = message orelse return failClosedRunDecision(allocator, "daemon evaluation error");
+    // Redact before surfacing: Error messages may embed command fragments or secret-like tokens.
     // Keep stable prefixes for diagnostics without treating them as a second security authority.
     if (std.mem.startsWith(u8, msg, "daemon evaluation error") or std.mem.startsWith(u8, msg, "daemon unavailable")) {
-        return failClosedRunDecision(allocator, msg);
+        return failClosedOwned(try core_api.redactAlloc(allocator, msg));
     }
-    return failClosedOwned(try std.fmt.allocPrint(allocator, "daemon evaluation error: {s}", .{msg}));
+    const formatted = try std.fmt.allocPrint(allocator, "daemon evaluation error: {s}", .{msg});
+    defer allocator.free(formatted);
+    return failClosedOwned(try core_api.redactAlloc(allocator, formatted));
 }
 
 pub fn failClosedDaemonUnavailableDecision(allocator: std.mem.Allocator, err: daemon.DaemonError) !OwnedRunDecision {
@@ -596,6 +601,61 @@ test "shell_eval allows safe command via mock daemon" {
     try std.testing.expectEqual(core.decision.DecisionResult.allow, decision.decision.result);
     try std.testing.expectEqualStrings("git status", test_last_evaluate_command.?);
     try std.testing.expectEqualStrings("/tmp/repo", test_last_evaluate_cwd.?);
+}
+
+fn mockDaemonAllowWithSecretReasonEvaluator(
+    allocator: std.mem.Allocator,
+    shell_event: ShellCommandEvent,
+) daemon.DaemonError!std.json.Parsed(daemon.DaemonResponse) {
+    recordMockShellEvent(shell_event);
+    return mockDaemonResponse(
+        allocator,
+        "{\"id\":1,\"result\":{\"status\":\"Allow\",\"reason\":\"allowed; OPENAI_API_KEY=sk-fakeSyntheticOpenAIKey1234567890\"}}",
+    );
+}
+
+fn mockDaemonErrorWithSecretMessageEvaluator(
+    allocator: std.mem.Allocator,
+    shell_event: ShellCommandEvent,
+) daemon.DaemonError!std.json.Parsed(daemon.DaemonResponse) {
+    _ = shell_event;
+    return mockDaemonResponse(
+        allocator,
+        "{\"id\":1,\"result\":{\"status\":\"Error\",\"message\":\"eval failed token=sk-fakeSyntheticOpenAIKey1234567890\"}}",
+    );
+}
+
+test "shell_eval redacts secrets in allow reasons and evaluation errors" {
+    const allocator = std.testing.allocator;
+
+    var allowed = try evaluateCommand(
+        allocator,
+        .strict,
+        &.{ "git", "status" },
+        null,
+        mockDaemonAllowWithSecretReasonEvaluator,
+        null,
+        null,
+    );
+    defer allowed.deinit(allocator);
+    try std.testing.expectEqual(core.decision.DecisionResult.allow, allowed.decision.result);
+    try std.testing.expect(std.mem.indexOf(u8, allowed.owned_reason, "sk-fakeSyntheticOpenAIKey1234567890") == null);
+    try std.testing.expect(std.mem.indexOf(u8, allowed.owned_reason, "[REDACTED]") != null);
+
+    var engine_err = try evaluateCommand(
+        allocator,
+        .observe,
+        &.{ "git", "status" },
+        null,
+        mockDaemonErrorWithSecretMessageEvaluator,
+        null,
+        null,
+    );
+    defer engine_err.deinit(allocator);
+    try std.testing.expectEqual(core.decision.DecisionResult.deny, engine_err.decision.result);
+    try std.testing.expect(engine_err.fail_closed);
+    try std.testing.expect(std.mem.indexOf(u8, engine_err.owned_reason, "sk-fakeSyntheticOpenAIKey1234567890") == null);
+    try std.testing.expect(std.mem.indexOf(u8, engine_err.owned_reason, "daemon evaluation error") != null);
 }
 
 test "shell_eval denies dangerous command via mock daemon" {

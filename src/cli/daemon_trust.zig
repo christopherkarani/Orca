@@ -12,14 +12,38 @@ pub const EnvOverrideTrust = enum {
 
 /// Assess whether an `ORCA_DAEMON` path is safe to execute.
 /// Stat failures are treated as untrusted (fail-closed for env overrides).
-pub fn assessEnvOverridePath(io: std.Io, path: []const u8) EnvOverrideTrust {
+///
+/// Symlinks are allowed when both the override path and its resolved target
+/// (and their ancestors) are not world-writable. Homebrew-style installs place
+/// a symlink under a safe prefix pointing at a Cellar binary; rejecting every
+/// symlink breaks those installs without improving trust.
+pub fn assessEnvOverridePath(io: std.Io, allocator: std.mem.Allocator, path: []const u8) EnvOverrideTrust {
     // POSIX trust checks (symlink + world-writable) do not map cleanly to Win32
     // ACLs yet. Refuse env overrides on Windows until ACL-based checks exist —
     // fail closed rather than treating every override as trusted.
     if (builtin.os.tag == .windows) return .untrusted_stat_unavailable;
+
+    // Parent of the override path must not be world-writable: otherwise an
+    // attacker can replace a symlink (or the binary) after our check.
+    if (hasWorldWritableAncestor(io, path)) return .untrusted_world_writable;
+
     const link_stat = std.Io.Dir.cwd().statFile(io, path, .{ .follow_symlinks = false }) catch return .untrusted_stat_unavailable;
-    if (link_stat.kind == .sym_link) return .untrusted_symlink;
+    if (link_stat.kind == .sym_link) {
+        // Resolve to the final target and apply the same trust rules there.
+        // A symlink into a world-writable tree remains untrusted; a symlink
+        // into a safe Cellar path is trusted.
+        const resolved = std.Io.Dir.cwd().realPathFileAlloc(io, path, allocator) catch return .untrusted_stat_unavailable;
+        defer allocator.free(resolved);
+        return assessResolvedPath(io, resolved);
+    }
+
+    return assessResolvedPath(io, path);
+}
+
+fn assessResolvedPath(io: std.Io, path: []const u8) EnvOverrideTrust {
     const stat = std.Io.Dir.cwd().statFile(io, path, .{}) catch return .untrusted_stat_unavailable;
+    // realpath should have flattened remaining links; if not, fail closed.
+    if (stat.kind == .sym_link) return .untrusted_symlink;
     if (isWorldWritable(stat.permissions.toMode())) return .untrusted_world_writable;
     return if (hasWorldWritableAncestor(io, path)) .untrusted_world_writable else .trusted;
 }
@@ -45,8 +69,8 @@ fn hasWorldWritableAncestor(io: std.Io, path: []const u8) bool {
     return isWorldWritable(cwd_stat.permissions.toMode());
 }
 
-pub fn isEnvOverrideUntrusted(io: std.Io, path: []const u8) bool {
-    return assessEnvOverridePath(io, path) != .trusted;
+pub fn isEnvOverrideUntrusted(io: std.Io, allocator: std.mem.Allocator, path: []const u8) bool {
+    return assessEnvOverridePath(io, allocator, path) != .trusted;
 }
 
 test "assessEnvOverridePath detects world-writable binary path" {
@@ -63,10 +87,10 @@ test "assessEnvOverridePath detects world-writable binary path" {
     defer std.testing.allocator.free(path);
 
     try tmp.dir.setFilePermissions(std.testing.io, "orca-daemon", std.Io.File.Permissions.fromMode(0o755), .{});
-    try std.testing.expectEqual(.trusted, assessEnvOverridePath(std.testing.io, path));
+    try std.testing.expectEqual(.trusted, assessEnvOverridePath(std.testing.io, std.testing.allocator, path));
 
     try tmp.dir.setFilePermissions(std.testing.io, "orca-daemon", std.Io.File.Permissions.fromMode(0o777), .{});
-    try std.testing.expectEqual(.untrusted_world_writable, assessEnvOverridePath(std.testing.io, path));
+    try std.testing.expectEqual(.untrusted_world_writable, assessEnvOverridePath(std.testing.io, std.testing.allocator, path));
 }
 
 test "assessEnvOverridePath rejects a binary beneath a world-writable directory" {
@@ -84,7 +108,7 @@ test "assessEnvOverridePath rejects a binary beneath a world-writable directory"
 
     const path = try tmp.dir.realPathFileAlloc(std.testing.io, "unsafe/orca-daemon", std.testing.allocator);
     defer std.testing.allocator.free(path);
-    try std.testing.expectEqual(.untrusted_world_writable, assessEnvOverridePath(std.testing.io, path));
+    try std.testing.expectEqual(.untrusted_world_writable, assessEnvOverridePath(std.testing.io, std.testing.allocator, path));
 }
 
 test "assessEnvOverridePath rejects a safe-path symlink to an unsafe target" {
@@ -109,11 +133,45 @@ test "assessEnvOverridePath rejects a safe-path symlink to an unsafe target" {
     defer std.testing.allocator.free(link_path);
     try std.Io.Dir.cwd().symLink(std.testing.io, unsafe_target, link_path, .{});
 
-    try std.testing.expectEqual(.untrusted_symlink, assessEnvOverridePath(std.testing.io, link_path));
+    // Symlink itself is under a safe parent; trust fails because the resolved
+    // target sits under a world-writable directory.
+    try std.testing.expectEqual(.untrusted_world_writable, assessEnvOverridePath(std.testing.io, std.testing.allocator, link_path));
+}
+
+test "assessEnvOverridePath trusts a safe symlink to a safe target" {
+    if (builtin.os.tag == .windows) return;
+
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try tmp.dir.createDirPath(std.testing.io, "cellar");
+    try tmp.dir.createDirPath(std.testing.io, "bin");
+
+    const target = try tmp.dir.createFile(std.testing.io, "cellar/orca-daemon", .{});
+    defer target.close(std.testing.io);
+    try target.writeStreamingAll(std.testing.io, "#!/bin/sh\nexit 0\n");
+    try tmp.dir.setFilePermissions(std.testing.io, "cellar/orca-daemon", std.Io.File.Permissions.fromMode(0o755), .{});
+
+    const cellar_target = try tmp.dir.realPathFileAlloc(std.testing.io, "cellar/orca-daemon", std.testing.allocator);
+    defer std.testing.allocator.free(cellar_target);
+    const bin_dir = try tmp.dir.realPathFileAlloc(std.testing.io, "bin", std.testing.allocator);
+    defer std.testing.allocator.free(bin_dir);
+    const link_path = try std.fs.path.join(std.testing.allocator, &.{ bin_dir, "orca-daemon" });
+    defer std.testing.allocator.free(link_path);
+    try std.Io.Dir.cwd().symLink(std.testing.io, cellar_target, link_path, .{});
+
+    try std.testing.expectEqual(.trusted, assessEnvOverridePath(std.testing.io, std.testing.allocator, link_path));
 }
 
 test "assessEnvOverridePath treats missing path as stat-unavailable" {
     if (builtin.os.tag == .windows) return;
-    const missing = "/tmp/orca-daemon-trust-missing-deadbeef";
-    try std.testing.expectEqual(.untrusted_stat_unavailable, assessEnvOverridePath(std.testing.io, missing));
+
+    // Avoid /tmp: it is often world-writable, which surfaces as untrusted_world_writable
+    // before the missing-file stat. Use a non-existent path under a typically safe prefix.
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const root = try tmp.dir.realPathFileAlloc(std.testing.io, ".", std.testing.allocator);
+    defer std.testing.allocator.free(root);
+    const missing = try std.fs.path.join(std.testing.allocator, &.{ root, "orca-daemon-trust-missing-deadbeef" });
+    defer std.testing.allocator.free(missing);
+    try std.testing.expectEqual(.untrusted_stat_unavailable, assessEnvOverridePath(std.testing.io, std.testing.allocator, missing));
 }
