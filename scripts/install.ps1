@@ -41,10 +41,6 @@ function Write-Ui([string]$Message, [ConsoleColor]$Color = [ConsoleColor]::Gray)
     }
 }
 
-function Write-StepActive([string]$Label) {
-    Write-Ui ("  > " + $Label) Cyan
-}
-
 function Write-StepDone([string]$Label, [string]$Detail = "") {
     if ($Detail) {
         Write-Ui ("  + " + $Label + "  " + $Detail) Green
@@ -53,7 +49,18 @@ function Write-StepDone([string]$Label, [string]$Detail = "") {
     }
 }
 
+function Write-StepActive([string]$Label) {
+    # Only for long-running phases; instant steps use Write-StepDone alone.
+    Write-Ui ("  > " + $Label) Green
+}
+
+function Write-Activation {
+    # Always printed (including quiet) so automation can hand off to orca env.
+    Write-Host "    orca env   # then evaluate the set commands (or copy them for cmd.exe)"
+}
+
 function Fail($Message, $Remediation = $null) {
+    # Errors always print (including quiet mode).
     Write-Host ""
     Write-Host ("  x " + $Message) -ForegroundColor Red
     if ($Remediation) {
@@ -198,21 +205,24 @@ function Ensure-ResourceRootEntry($TargetRoot) {
 }
 
 function Detect-Hosts {
+    # Specs: Name, optional command, optional config directory under $HOME.
+    $specs = @(
+        @{ Name = "claude"; Command = "claude"; Dir = ".claude" },
+        @{ Name = "codex"; Command = "codex"; Dir = ".codex" },
+        @{ Name = "opencode"; Command = "opencode"; Dir = ".config\opencode" },
+        @{ Name = "openclaw"; Command = "openclaw"; Dir = $null },
+        @{ Name = "hermes"; Command = "hermes"; Dir = ".hermes" }
+    )
     $found = New-Object System.Collections.Generic.List[string]
-    if ((Get-Command claude -ErrorAction SilentlyContinue) -or (Test-Path -LiteralPath (Join-Path $HOME ".claude"))) {
-        [void]$found.Add("claude")
-    }
-    if ((Get-Command codex -ErrorAction SilentlyContinue) -or (Test-Path -LiteralPath (Join-Path $HOME ".codex"))) {
-        [void]$found.Add("codex")
-    }
-    if ((Get-Command opencode -ErrorAction SilentlyContinue) -or (Test-Path -LiteralPath (Join-Path $HOME ".config\opencode"))) {
-        [void]$found.Add("opencode")
-    }
-    if (Get-Command openclaw -ErrorAction SilentlyContinue) {
-        [void]$found.Add("openclaw")
-    }
-    if ((Get-Command hermes -ErrorAction SilentlyContinue) -or (Test-Path -LiteralPath (Join-Path $HOME ".hermes"))) {
-        [void]$found.Add("hermes")
+    foreach ($spec in $specs) {
+        $hasCmd = [bool](Get-Command $spec.Command -ErrorAction SilentlyContinue)
+        $hasDir = $false
+        if ($spec.Dir) {
+            $hasDir = Test-Path -LiteralPath (Join-Path $HOME $spec.Dir)
+        }
+        if ($hasCmd -or $hasDir) {
+            [void]$found.Add($spec.Name)
+        }
     }
     return $found
 }
@@ -252,7 +262,7 @@ try {
     $artifactPath = Join-Path $tempDir $artifact
     $checksumsPath = Join-Path $tempDir "checksums.txt"
 
-    Write-StepActive "Resolve release"
+    # Instant steps: done marker only (no active/done double print).
     Write-StepDone "Resolve release" ("v" + $Version)
 
     if ($installMode -eq "upgrade") {
@@ -262,11 +272,14 @@ try {
     }
 
     if ($ArtifactDir) {
-        Write-StepActive "Use local artifacts"
         $localArtifact = Join-Path $ArtifactDir $artifact
         $localChecksums = Join-Path $ArtifactDir "checksums.txt"
-        if (-not (Test-Path -LiteralPath $localArtifact)) { Fail "artifact not found: $localArtifact" }
-        if (-not (Test-Path -LiteralPath $localChecksums)) { Fail "checksums.txt not found in $ArtifactDir" }
+        if (-not (Test-Path -LiteralPath $localArtifact)) {
+            Fail "artifact not found: $localArtifact" "Expected $artifact under ORCA_ARTIFACT_DIR."
+        }
+        if (-not (Test-Path -LiteralPath $localChecksums)) {
+            Fail "checksums.txt not found in $ArtifactDir" "Place checksums.txt next to the archive for offline install."
+        }
         Copy-Item -LiteralPath $localArtifact -Destination $artifactPath
         Copy-Item -LiteralPath $localChecksums -Destination $checksumsPath
         Write-StepDone "Use local artifacts" $ArtifactDir
@@ -277,18 +290,23 @@ try {
         Write-StepDone "Download archive" $artifact
     }
 
-    Write-StepActive "Verify SHA-256"
     Verify-Checksum $artifactPath $checksumsPath $artifact
     Write-StepDone "Verify SHA-256" "ok"
 
     Write-StepActive "Install binaries + runtime"
     Expand-Archive -LiteralPath $artifactPath -DestinationPath $tempDir -Force
     $extractRoot = Get-ChildItem -LiteralPath $tempDir -Directory | Where-Object { $_.Name -like "orca-v*" } | Select-Object -First 1
-    if (-not $extractRoot) { Fail "artifact did not contain an extracted release root" }
+    if (-not $extractRoot) {
+        Fail "artifact did not contain an extracted release root" "Unexpected archive layout for $artifact."
+    }
     $binary = Get-ChildItem -LiteralPath $extractRoot.FullName -Recurse -File -Filter "orca.exe" | Select-Object -First 1
-    if (-not $binary) { Fail "artifact did not contain orca.exe" }
+    if (-not $binary) {
+        Fail "artifact did not contain orca.exe" "Unexpected archive layout for $artifact."
+    }
     $daemonBinary = Get-ChildItem -LiteralPath $extractRoot.FullName -Recurse -File -Filter "orca-daemon.exe" | Select-Object -First 1
-    if (-not $daemonBinary) { Fail "artifact did not contain orca-daemon.exe" }
+    if (-not $daemonBinary) {
+        Fail "artifact did not contain orca-daemon.exe" "Unexpected archive layout for $artifact."
+    }
 
     New-Item -ItemType Directory -Force -Path $InstallDir | Out-Null
     $destination = Join-Path $InstallDir "orca.exe"
@@ -309,7 +327,6 @@ try {
     Install-RuntimeAssets $extractRoot.FullName
     Write-StepDone "Install binaries + runtime" "orca.exe, orca-daemon.exe, assets"
 
-    Write-StepActive "Configure shell"
     $resourceNote = Ensure-ResourceRootEntry $CurrentLink
     Write-StepDone "Configure shell" "ORCA_RESOURCE_ROOT"
 
@@ -327,7 +344,7 @@ try {
         Write-Ui "  Activate this session" White
         Write-Ui "  (InstallDir may not be on PATH yet)" DarkGray
         Write-Host ""
-        Write-Host "    orca env   # then evaluate the set commands (or copy them for cmd.exe)"
+        Write-Activation
         Write-Host ""
         Write-Ui "  Profile exports were also written for future sessions." DarkGray
         Write-Host ""
@@ -353,6 +370,8 @@ try {
             Write-Ui ("    env      " + $resourceNote) DarkGray
         }
         Write-Host ""
+    } else {
+        Write-Activation
     }
 } finally {
     Remove-Item -LiteralPath $tempDir -Recurse -Force -ErrorAction SilentlyContinue

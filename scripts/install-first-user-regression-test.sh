@@ -104,9 +104,31 @@ printf '%s\n' "${plain_output}" | grep -Eq 'Orca' || fail "installer did not pri
 printf '%s\n' "${plain_output}" | grep -Eq 'installed|reinstalled' || fail "installer did not print success receipt"
 printf '%s\n' "${plain_output}" | grep -Eq 'Activate this terminal|Activate this session' || fail "installer did not print activation hero"
 printf '%s\n' "${plain_output}" | grep -Eq 'Details' || fail "installer did not print details section"
+# Dashboard soft-warn (fixture has no orca-dashboard-ui) belongs on the receipt stdout, not stderr.
+printf '%s\n' "${plain_output}" | grep -Eq 'orca-dashboard-ui' || fail "installer did not surface missing dashboard-ui on the receipt"
 unset ORCA_FIRST_USER_ACTIVATED
 eval "${activation}"
 [[ "${ORCA_FIRST_USER_ACTIVATED:-}" == 1 ]] || fail "printed activation command did not activate the current shell"
+
+# Quiet mode: only the activation line on stdout (no banner / steps / details).
+quiet_output="$(
+  HOME="${home}" \
+  SHELL=/bin/sh \
+  ORCA_VERSION="${VERSION}" \
+  ORCA_ARTIFACT_DIR="${artifact_dir}" \
+  ORCA_INSTALL_DIR="${install_dir}" \
+  ORCA_SHARE_DIR="${share_dir}" \
+  ORCA_INSTALL_QUIET=1 \
+  sh "${REPO_ROOT}/scripts/install.sh" 2>/dev/null
+)"
+quiet_activation="$(printf '%s\n' "${quiet_output}" | awk '/^    eval / { sub(/^    /, ""); print; exit }')"
+[[ -n "${quiet_activation}" ]] || fail "quiet mode did not print an activation command"
+if printf '%s\n' "${quiet_output}" | grep -Eq 'Platform|Details|Resolve release|Activate this terminal'; then
+  fail "quiet mode leaked non-activation UI"
+fi
+# Only the activation line should be non-empty content (allow blank lines).
+nonempty_quiet="$(printf '%s\n' "${quiet_output}" | sed '/^[[:space:]]*$/d')"
+[[ "$(printf '%s\n' "${nonempty_quiet}" | wc -l | tr -d ' ')" == "1" ]] || fail "quiet mode printed more than the activation line"
 
 (
   cd "${home}"
