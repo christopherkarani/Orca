@@ -314,6 +314,7 @@ test "completions include command-specific dashboard and packs flags" {
     const required_flags = [_][]const u8{
         "--machine",   "--workspace", "--host",   "--port", "--once",
         "--installed", "--enabled",   "--filter", "--page", "--page-size",
+        "--no-patterns", "--verbose",
     };
     for (shells) |shell| {
         var stdout_buf: [32 * 1024]u8 = undefined;

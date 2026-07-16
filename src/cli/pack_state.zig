@@ -57,6 +57,35 @@ pub const EnsurePacksResult = struct {
     }
 };
 
+/// Result of `enablePacks` / `disablePacks` (CLI activation UX).
+pub const PackMutationResult = struct {
+    message: []const u8,
+    config_path: ?[]const u8 = null,
+    scope: ?ConfigScope = null,
+    changed: bool = false,
+    added: []const []const u8 = &.{},
+    removed: []const []const u8 = &.{},
+    disabled_added: []const []const u8 = &.{},
+    baseline_notes: []const []const u8 = &.{},
+    owned: bool = false,
+
+    pub fn deinit(self: *PackMutationResult, allocator: std.mem.Allocator) void {
+        if (!self.owned) return;
+        allocator.free(self.message);
+        if (self.config_path) |path| allocator.free(path);
+        freeOwnedSlice(allocator, self.added);
+        freeOwnedSlice(allocator, self.removed);
+        freeOwnedSlice(allocator, self.disabled_added);
+        freeOwnedSlice(allocator, self.baseline_notes);
+        self.* = undefined;
+    }
+};
+
+fn freeOwnedSlice(allocator: std.mem.Allocator, items: []const []const u8) void {
+    for (items) |item| allocator.free(item);
+    allocator.free(items);
+}
+
 pub const PacksSummary = struct {
     known: bool,
     /// Total packs with enabled=true from daemon listing (includes baseline).
@@ -160,7 +189,7 @@ pub fn formatSummaryLine(allocator: std.mem.Allocator, summary: PacksSummary) ![
         return try allocator.dupe(u8, "unknown (daemon unavailable; shell evaluation fails closed)");
     }
     if (summary.opt_in_ids.len == 0) {
-        return try allocator.dupe(u8, "baseline only (core.*, system.disk always on)");
+        return try allocator.dupe(u8, "baseline only — enable more with `orca packs enable …`");
     }
     var list_buf: std.ArrayListUnmanaged(u8) = .empty;
     defer list_buf.deinit(allocator);
@@ -185,15 +214,26 @@ pub fn formatSummaryLine(allocator: std.mem.Allocator, summary: PacksSummary) ![
 
 /// Write doctor-style multi-line packs section (stable labels for tests).
 pub fn writeDoctorPacksSection(stdout: anytype, summary: PacksSummary) !void {
+    try writeDoctorPacksSectionWithConfig(stdout, summary, null, null);
+}
+
+/// Doctor packs section with optional config path/scope for next-action context.
+pub fn writeDoctorPacksSectionWithConfig(
+    stdout: anytype,
+    summary: PacksSummary,
+    config_path: ?[]const u8,
+    scope: ?ConfigScope,
+) !void {
     try stdout.writeAll("\nPacks\n");
     if (!summary.known) {
         try stdout.writeAll("  unknown (daemon unavailable; shell evaluation fails closed)\n");
-        try stdout.writeAll("  Run `orca packs` once the daemon is healthy for the full list.\n");
+        try stdout.writeAll("  Next: orca doctor · orca packs  (retry once the daemon is healthy)\n");
         return;
     }
     try stdout.writeAll("  baseline: core.*, system.disk (always on)\n");
     if (summary.opt_in_ids.len == 0) {
         try stdout.writeAll("  opt-in: none enabled (baseline only)\n");
+        try stdout.writeAll("  Next: orca packs enable <id>  ·  orca packs --enabled  ·  orca packs show <id>\n");
     } else {
         try stdout.print("  opt-in: {d} enabled", .{summary.opt_in_ids.len});
         const show = @min(summary.opt_in_ids.len, summary_list_limit);
@@ -210,8 +250,15 @@ pub fn writeDoctorPacksSection(stdout: anytype, summary: PacksSummary) !void {
             try stdout.writeAll(")");
         }
         try stdout.writeAll("\n");
+        try stdout.writeAll("  Next: orca packs --enabled  ·  orca packs show <id>  ·  orca packs enable <id>\n");
     }
-    try stdout.writeAll("  Detail: orca packs · orca packs --enabled\n");
+    if (config_path) |path| {
+        if (scope) |s| {
+            try stdout.print("  Config: {s} ({s})\n", .{ path, s.label() });
+        } else {
+            try stdout.print("  Config: {s}\n", .{path});
+        }
+    }
 }
 
 /// Query daemon packs JSON via ExecuteCli-compatible callback.
@@ -322,6 +369,299 @@ pub fn ensurePresetPacksByName(
         };
     };
     return ensurePresetPacks(io, allocator, workspace_root, preset);
+}
+
+/// Additive enable of opt-in pack IDs into project/user pack config.
+/// Baseline IDs are noted as always-on (and removed from disabled if present).
+pub fn enablePacks(
+    io: std.Io,
+    allocator: std.mem.Allocator,
+    workspace_root: []const u8,
+    ids: []const []const u8,
+) !PackMutationResult {
+    if (ids.len == 0) return error.InvalidArguments;
+
+    const resolved = try resolvePackConfigPath(io, allocator, workspace_root);
+    errdefer allocator.free(resolved.path);
+
+    const existing_raw = readFileIfExists(io, allocator, resolved.path) catch null;
+    defer if (existing_raw) |raw| allocator.free(raw);
+
+    var enabled_list: std.ArrayListUnmanaged([]const u8) = .empty;
+    defer {
+        for (enabled_list.items) |id| allocator.free(id);
+        enabled_list.deinit(allocator);
+    }
+    var disabled_list: std.ArrayListUnmanaged([]const u8) = .empty;
+    defer {
+        for (disabled_list.items) |id| allocator.free(id);
+        disabled_list.deinit(allocator);
+    }
+
+    if (existing_raw) |raw| {
+        try collectQuotedPackIdsOwned(allocator, raw, &enabled_list);
+        try collectQuotedDisabledIdsOwned(allocator, raw, &disabled_list);
+    }
+
+    var added: std.ArrayListUnmanaged([]const u8) = .empty;
+    errdefer {
+        for (added.items) |id| allocator.free(id);
+        added.deinit(allocator);
+    }
+    var baseline_notes: std.ArrayListUnmanaged([]const u8) = .empty;
+    errdefer {
+        for (baseline_notes.items) |n| allocator.free(n);
+        baseline_notes.deinit(allocator);
+    }
+    // Creating a new config file is a change only when we write opt-in ids or clear disabled.
+    var changed = false;
+
+    for (ids) |pack_id| {
+        if (!looksLikePackId(pack_id)) return error.InvalidArguments;
+
+        // Re-enable: drop from disabled when present.
+        if (removeIdFromList(allocator, &disabled_list, pack_id)) {
+            changed = true;
+        }
+
+        if (isBaselinePackId(pack_id)) {
+            const note = try std.fmt.allocPrint(
+                allocator,
+                "{s} is always on (baseline); no need to list it in enabled",
+                .{pack_id},
+            );
+            try baseline_notes.append(allocator, note);
+            continue;
+        }
+
+        if (listContains(enabled_list.items, pack_id)) continue;
+        try enabled_list.append(allocator, try allocator.dupe(u8, pack_id));
+        try added.append(allocator, try allocator.dupe(u8, pack_id));
+        changed = true;
+    }
+
+    if (changed) {
+        try writePacksArrays(io, allocator, resolved.path, existing_raw, enabled_list.items, disabled_list.items);
+    }
+
+    const message = try formatMutationMessage(allocator, .enable, added.items, &.{}, &.{}, baseline_notes.items, changed);
+    const added_owned = try added.toOwnedSlice(allocator);
+    added = .empty;
+    const notes_owned = try baseline_notes.toOwnedSlice(allocator);
+    baseline_notes = .empty;
+    return .{
+        .message = message,
+        .config_path = resolved.path,
+        .scope = resolved.scope,
+        .changed = changed,
+        .added = added_owned,
+        .baseline_notes = notes_owned,
+        .owned = true,
+    };
+}
+
+/// Disable pack IDs: opt-in removed from enabled; baseline added to disabled.
+pub fn disablePacks(
+    io: std.Io,
+    allocator: std.mem.Allocator,
+    workspace_root: []const u8,
+    ids: []const []const u8,
+) !PackMutationResult {
+    if (ids.len == 0) return error.InvalidArguments;
+
+    const resolved = try resolvePackConfigPath(io, allocator, workspace_root);
+    errdefer allocator.free(resolved.path);
+
+    const existing_raw = readFileIfExists(io, allocator, resolved.path) catch null;
+    defer if (existing_raw) |raw| allocator.free(raw);
+
+    var enabled_list: std.ArrayListUnmanaged([]const u8) = .empty;
+    defer {
+        for (enabled_list.items) |id| allocator.free(id);
+        enabled_list.deinit(allocator);
+    }
+    var disabled_list: std.ArrayListUnmanaged([]const u8) = .empty;
+    defer {
+        for (disabled_list.items) |id| allocator.free(id);
+        disabled_list.deinit(allocator);
+    }
+
+    if (existing_raw) |raw| {
+        try collectQuotedPackIdsOwned(allocator, raw, &enabled_list);
+        try collectQuotedDisabledIdsOwned(allocator, raw, &disabled_list);
+    }
+
+    var removed: std.ArrayListUnmanaged([]const u8) = .empty;
+    errdefer {
+        for (removed.items) |id| allocator.free(id);
+        removed.deinit(allocator);
+    }
+    var disabled_added: std.ArrayListUnmanaged([]const u8) = .empty;
+    errdefer {
+        for (disabled_added.items) |id| allocator.free(id);
+        disabled_added.deinit(allocator);
+    }
+    var baseline_notes: std.ArrayListUnmanaged([]const u8) = .empty;
+    errdefer {
+        for (baseline_notes.items) |n| allocator.free(n);
+        baseline_notes.deinit(allocator);
+    }
+    var changed = false;
+
+    for (ids) |pack_id| {
+        if (!looksLikePackId(pack_id)) return error.InvalidArguments;
+
+        if (isBaselinePackId(pack_id)) {
+            if (removeIdFromList(allocator, &enabled_list, pack_id)) {
+                try removed.append(allocator, try allocator.dupe(u8, pack_id));
+                changed = true;
+            }
+            if (!listContains(disabled_list.items, pack_id)) {
+                try disabled_list.append(allocator, try allocator.dupe(u8, pack_id));
+                try disabled_added.append(allocator, try allocator.dupe(u8, pack_id));
+                changed = true;
+            }
+            if (std.mem.eql(u8, pack_id, "core") or std.mem.startsWith(u8, pack_id, "core.")) {
+                const note = try std.fmt.allocPrint(
+                    allocator,
+                    "{s}: listed in disabled; daemon may still expand core category as always-on",
+                    .{pack_id},
+                );
+                try baseline_notes.append(allocator, note);
+            }
+            continue;
+        }
+
+        if (removeIdFromList(allocator, &enabled_list, pack_id)) {
+            try removed.append(allocator, try allocator.dupe(u8, pack_id));
+            changed = true;
+        }
+    }
+
+    if (changed) {
+        try writePacksArrays(io, allocator, resolved.path, existing_raw, enabled_list.items, disabled_list.items);
+    }
+
+    const message = try formatMutationMessage(allocator, .disable, &.{}, removed.items, disabled_added.items, baseline_notes.items, changed);
+    const removed_owned = try removed.toOwnedSlice(allocator);
+    removed = .empty;
+    const disabled_owned = try disabled_added.toOwnedSlice(allocator);
+    disabled_added = .empty;
+    const notes_owned = try baseline_notes.toOwnedSlice(allocator);
+    baseline_notes = .empty;
+    return .{
+        .message = message,
+        .config_path = resolved.path,
+        .scope = resolved.scope,
+        .changed = changed,
+        .removed = removed_owned,
+        .disabled_added = disabled_owned,
+        .baseline_notes = notes_owned,
+        .owned = true,
+    };
+}
+
+const MutationKind = enum { enable, disable };
+
+fn formatMutationMessage(
+    allocator: std.mem.Allocator,
+    kind: MutationKind,
+    added: []const []const u8,
+    removed: []const []const u8,
+    disabled_added: []const []const u8,
+    baseline_notes: []const []const u8,
+    changed: bool,
+) ![]u8 {
+    var buf: std.ArrayListUnmanaged(u8) = .empty;
+    errdefer buf.deinit(allocator);
+    switch (kind) {
+        .enable => {
+            if (added.len == 0 and !changed) {
+                try buf.appendSlice(allocator, "No pack config changes (already enabled or baseline only)");
+            } else if (added.len == 0 and changed) {
+                try buf.appendSlice(allocator, "Updated pack config (baseline / disabled list)");
+            } else {
+                try buf.appendSlice(allocator, "Enabled ");
+                try appendIdList(allocator, &buf, added);
+            }
+        },
+        .disable => {
+            if (!changed) {
+                try buf.appendSlice(allocator, "No pack config changes (already disabled or not enabled)");
+            } else {
+                if (removed.len > 0) {
+                    try buf.appendSlice(allocator, "Disabled ");
+                    try appendIdList(allocator, &buf, removed);
+                }
+                if (disabled_added.len > 0) {
+                    if (buf.items.len > 0) try buf.appendSlice(allocator, "; ");
+                    try buf.appendSlice(allocator, "opted out ");
+                    try appendIdList(allocator, &buf, disabled_added);
+                    try buf.appendSlice(allocator, " via disabled");
+                }
+                if (buf.items.len == 0) {
+                    try buf.appendSlice(allocator, "Updated pack config");
+                }
+            }
+        },
+    }
+    if (baseline_notes.len > 0) {
+        try buf.appendSlice(allocator, " · ");
+        try buf.appendSlice(allocator, baseline_notes[0]);
+        if (baseline_notes.len > 1) {
+            const more = try std.fmt.allocPrint(allocator, " (+{d} more notes)", .{baseline_notes.len - 1});
+            defer allocator.free(more);
+            try buf.appendSlice(allocator, more);
+        }
+    }
+    return try buf.toOwnedSlice(allocator);
+}
+
+fn appendIdList(allocator: std.mem.Allocator, buf: *std.ArrayListUnmanaged(u8), ids: []const []const u8) !void {
+    for (ids, 0..) |id, i| {
+        if (i > 0) try buf.appendSlice(allocator, ", ");
+        try buf.appendSlice(allocator, id);
+    }
+}
+
+fn listContains(haystack: []const []const u8, needle: []const u8) bool {
+    for (haystack) |id| {
+        if (std.mem.eql(u8, id, needle)) return true;
+    }
+    return false;
+}
+
+fn removeIdFromList(allocator: std.mem.Allocator, list: *std.ArrayListUnmanaged([]const u8), id: []const u8) bool {
+    var i: usize = 0;
+    while (i < list.items.len) : (i += 1) {
+        if (std.mem.eql(u8, list.items[i], id)) {
+            allocator.free(list.items[i]);
+            _ = list.orderedRemove(i);
+            return true;
+        }
+    }
+    return false;
+}
+
+fn writePacksArrays(
+    io: std.Io,
+    allocator: std.mem.Allocator,
+    config_path: []const u8,
+    existing_raw: ?[]const u8,
+    enabled: []const []const u8,
+    disabled: []const []const u8,
+) !void {
+    if (existing_raw) |raw| {
+        const rewritten = try rewritePacksEnabledSection(allocator, raw, enabled);
+        defer allocator.free(rewritten);
+        const with_disabled = try rewritePacksDisabledSection(allocator, rewritten, disabled);
+        defer allocator.free(with_disabled);
+        try writeConfigFile(io, allocator, config_path, with_disabled);
+    } else {
+        const body = try renderNewPackConfigWithDisabled(allocator, enabled, disabled);
+        defer allocator.free(body);
+        try writeConfigFile(io, allocator, config_path, body);
+    }
 }
 
 fn formatEnabledPacksMessage(allocator: std.mem.Allocator, enabled: []const []const u8) ![]u8 {
@@ -442,11 +782,19 @@ fn writeConfigFile(io: std.Io, allocator: std.mem.Allocator, path: []const u8, c
 }
 
 fn renderNewPackConfig(allocator: std.mem.Allocator, enabled: []const []const u8) ![]u8 {
+    return renderNewPackConfigWithDisabled(allocator, enabled, &.{});
+}
+
+fn renderNewPackConfigWithDisabled(
+    allocator: std.mem.Allocator,
+    enabled: []const []const u8,
+    disabled: []const []const u8,
+) ![]u8 {
     var buf: std.ArrayListUnmanaged(u8) = .empty;
     errdefer buf.deinit(allocator);
     try buf.appendSlice(allocator,
         \\# Orca pack configuration
-        \\# Written by `orca init` / `orca setup` / `orca start` (power baseline).
+        \\# Written by `orca init` / `orca setup` / `orca start` / `orca packs enable|disable`.
         \\# Prefer project `.orca.toml` in a git repo; otherwise user config.
         \\# Baseline packs (core.*, system.disk) are always on and need not be listed.
         \\# Additive: re-running setup merges packs and does not wipe customizations.
@@ -461,11 +809,11 @@ fn renderNewPackConfig(allocator: std.mem.Allocator, enabled: []const []const u8
         try buf.appendSlice(allocator, "\"");
     }
     if (enabled.len > 0) try buf.appendSlice(allocator, "\n");
-    try buf.appendSlice(allocator,
-        \\]
-        \\disabled = []
-        \\
-    );
+    try buf.appendSlice(allocator, "]\ndisabled = ");
+    const disabled_arr = try renderEnabledArray(allocator, disabled);
+    defer allocator.free(disabled_arr);
+    try buf.appendSlice(allocator, disabled_arr);
+    try buf.appendSlice(allocator, "\n");
     return try buf.toOwnedSlice(allocator);
 }
 
@@ -534,6 +882,113 @@ fn renderEnabledArray(allocator: std.mem.Allocator, enabled: []const []const u8)
     }
     try buf.appendSlice(allocator, "]");
     return try buf.toOwnedSlice(allocator);
+}
+
+/// Replace or append a `[packs] disabled = [...]` block while preserving other content.
+fn rewritePacksDisabledSection(allocator: std.mem.Allocator, existing: []const u8, disabled: []const []const u8) ![]u8 {
+    const new_disabled = try renderEnabledArray(allocator, disabled);
+    defer allocator.free(new_disabled);
+
+    if (std.mem.indexOf(u8, existing, "[packs]") == null) {
+        return try std.fmt.allocPrint(allocator, "{s}\n[packs]\nenabled = []\ndisabled = {s}\n", .{ existing, new_disabled });
+    }
+
+    if (disabledArraySlice(existing)) |array_slice| {
+        // Locate the absolute start of the array value inside existing.
+        const packs_idx = std.mem.indexOf(u8, existing, "[packs]").?;
+        const bounds = packsSectionBounds(existing).?;
+        const section = existing[bounds.start..bounds.end];
+        const rel = std.mem.indexOf(u8, section, array_slice) orelse {
+            return try std.fmt.allocPrint(allocator, "{s}\ndisabled = {s}\n", .{ existing, new_disabled });
+        };
+        const abs = bounds.start + rel;
+        _ = packs_idx;
+        return try std.fmt.allocPrint(allocator, "{s}{s}{s}", .{ existing[0..abs], new_disabled, existing[abs + array_slice.len ..] });
+    }
+
+    // [packs] exists but no disabled key — insert after enabled array or [packs] line.
+    const packs_idx = std.mem.indexOf(u8, existing, "[packs]").?;
+    if (enabledArraySlice(existing)) |enabled_slice| {
+        const bounds = packsSectionBounds(existing).?;
+        const section = existing[bounds.start..bounds.end];
+        const rel = std.mem.indexOf(u8, section, enabled_slice) orelse packs_idx;
+        const abs_end = bounds.start + rel + enabled_slice.len;
+        return try std.fmt.allocPrint(
+            allocator,
+            "{s}\ndisabled = {s}{s}",
+            .{ existing[0..abs_end], new_disabled, existing[abs_end..] },
+        );
+    }
+
+    var line_end = packs_idx;
+    while (line_end < existing.len and existing[line_end] != '\n') : (line_end += 1) {}
+    if (line_end < existing.len) line_end += 1;
+    return try std.fmt.allocPrint(
+        allocator,
+        "{s}disabled = {s}\n{s}",
+        .{ existing[0..line_end], new_disabled, existing[line_end..] },
+    );
+}
+
+/// Locate the `disabled = [...]` array value inside a `[packs]` section only.
+fn disabledArraySlice(content: []const u8) ?[]const u8 {
+    const bounds = packsSectionBounds(content) orelse return null;
+    const section = content[bounds.start..bounds.end];
+
+    var pos: usize = 0;
+    while (pos < section.len) {
+        const rel = std.mem.indexOf(u8, section[pos..], "disabled") orelse break;
+        const abs = pos + rel;
+        if (abs > 0) {
+            const prev = section[abs - 1];
+            if (prev != '\n' and prev != '\r' and prev != ' ' and prev != '\t') {
+                pos = abs + "disabled".len;
+                continue;
+            }
+        }
+        var cursor = abs + "disabled".len;
+        while (cursor < section.len and (section[cursor] == ' ' or section[cursor] == '\t')) : (cursor += 1) {}
+        if (cursor >= section.len or section[cursor] != '=') {
+            pos = abs + "disabled".len;
+            continue;
+        }
+        cursor += 1;
+        while (cursor < section.len and (section[cursor] == ' ' or section[cursor] == '\t' or section[cursor] == '\n' or section[cursor] == '\r')) : (cursor += 1) {}
+        if (cursor >= section.len or section[cursor] != '[') {
+            pos = abs + "disabled".len;
+            continue;
+        }
+        const array_start = cursor;
+        var depth: usize = 0;
+        var ve = cursor;
+        while (ve < section.len) : (ve += 1) {
+            if (section[ve] == '[') depth += 1;
+            if (section[ve] == ']') {
+                depth -= 1;
+                if (depth == 0) {
+                    ve += 1;
+                    return section[array_start..ve];
+                }
+            }
+        }
+        return null;
+    }
+    return null;
+}
+
+fn collectQuotedDisabledIdsOwned(allocator: std.mem.Allocator, content: []const u8, out: *std.ArrayListUnmanaged([]const u8)) !void {
+    const array = disabledArraySlice(content) orelse return;
+    var i: usize = 0;
+    while (i < array.len) : (i += 1) {
+        if (array[i] != '"') continue;
+        const start = i + 1;
+        const close = std.mem.indexOfScalar(u8, array[start..], '"') orelse break;
+        const id = array[start .. start + close];
+        if (looksLikePackId(id)) {
+            try out.append(allocator, try allocator.dupe(u8, id));
+        }
+        i = start + close;
+    }
 }
 
 fn packsSectionBounds(content: []const u8) ?struct { start: usize, end: usize } {
@@ -760,10 +1215,13 @@ test "doctor packs section labels are stable" {
     try std.testing.expect(std.mem.indexOf(u8, out, "baseline: core.*, system.disk") != null);
     try std.testing.expect(std.mem.indexOf(u8, out, "opt-in: 2 enabled") != null);
     try std.testing.expect(std.mem.indexOf(u8, out, "containers.docker") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "orca packs show") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "orca packs enable") != null);
 
     writer = .fixed(&buf);
     try writeDoctorPacksSection(&writer, unknownPacksSummary());
     try std.testing.expect(std.mem.indexOf(u8, writer.buffered(), "unknown (daemon unavailable") != null);
+    try std.testing.expect(std.mem.indexOf(u8, writer.buffered(), "orca packs") != null);
 }
 
 test "rewritePacksEnabledSection preserves other keys" {
@@ -837,4 +1295,139 @@ test "collectQuotedPackIds reads only enabled array" {
     try std.testing.expect(set.contains("containers.docker"));
     try std.testing.expect(!set.contains("system.disk"));
     try std.testing.expect(!set.contains("strict_git"));
+}
+
+test "enablePacks merges opt-in packs and is idempotent" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const root_z = try tmp.dir.realPathFileAlloc(std.testing.io, ".", std.testing.allocator);
+    defer std.testing.allocator.free(root_z);
+    const root = try std.testing.allocator.dupe(u8, root_z);
+    defer std.testing.allocator.free(root);
+    try tmp.dir.createDirPath(std.testing.io, ".git");
+
+    const seed =
+        \\[general]
+        \\verbose = true
+        \\
+        \\[packs]
+        \\enabled = ["package_managers"]
+        \\disabled = ["system.disk"]
+        \\
+    ;
+    {
+        const f = try tmp.dir.createFile(std.testing.io, ".orca.toml", .{});
+        defer f.close(std.testing.io);
+        try f.writeStreamingAll(std.testing.io, seed);
+    }
+
+    var first = try enablePacks(std.testing.io, std.testing.allocator, root, &.{ "containers.docker", "package_managers" });
+    defer first.deinit(std.testing.allocator);
+    try std.testing.expect(first.changed);
+    try std.testing.expect(first.scope == .project);
+    try std.testing.expectEqual(@as(usize, 1), first.added.len);
+    try std.testing.expectEqualStrings("containers.docker", first.added[0]);
+
+    const config = try tmp.dir.readFileAlloc(std.testing.io, ".orca.toml", std.testing.allocator, .limited(8192));
+    defer std.testing.allocator.free(config);
+    try std.testing.expect(std.mem.indexOf(u8, config, "containers.docker") != null);
+    try std.testing.expect(std.mem.indexOf(u8, config, "package_managers") != null);
+    try std.testing.expect(std.mem.indexOf(u8, config, "verbose = true") != null);
+    try std.testing.expect(std.mem.indexOf(u8, config, "disabled = [\"system.disk\"]") != null or std.mem.indexOf(u8, config, "system.disk") != null);
+
+    var second = try enablePacks(std.testing.io, std.testing.allocator, root, &.{"containers.docker"});
+    defer second.deinit(std.testing.allocator);
+    try std.testing.expect(!second.changed);
+    try std.testing.expectEqual(@as(usize, 0), second.added.len);
+}
+
+test "enablePacks baseline notes and re-enables from disabled" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const root_z = try tmp.dir.realPathFileAlloc(std.testing.io, ".", std.testing.allocator);
+    defer std.testing.allocator.free(root_z);
+    const root = try std.testing.allocator.dupe(u8, root_z);
+    defer std.testing.allocator.free(root);
+    try tmp.dir.createDirPath(std.testing.io, ".git");
+
+    const seed =
+        \\[packs]
+        \\enabled = []
+        \\disabled = ["system.disk"]
+        \\
+    ;
+    {
+        const f = try tmp.dir.createFile(std.testing.io, ".orca.toml", .{});
+        defer f.close(std.testing.io);
+        try f.writeStreamingAll(std.testing.io, seed);
+    }
+
+    var result = try enablePacks(std.testing.io, std.testing.allocator, root, &.{ "core.git", "system.disk" });
+    defer result.deinit(std.testing.allocator);
+    try std.testing.expect(result.changed);
+    try std.testing.expect(result.baseline_notes.len >= 1);
+
+    const config = try tmp.dir.readFileAlloc(std.testing.io, ".orca.toml", std.testing.allocator, .limited(8192));
+    defer std.testing.allocator.free(config);
+    const disabled = disabledArraySlice(config) orelse "";
+    try std.testing.expect(std.mem.indexOf(u8, disabled, "system.disk") == null);
+}
+
+test "disablePacks removes opt-in and opts out baseline" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const root_z = try tmp.dir.realPathFileAlloc(std.testing.io, ".", std.testing.allocator);
+    defer std.testing.allocator.free(root_z);
+    const root = try std.testing.allocator.dupe(u8, root_z);
+    defer std.testing.allocator.free(root);
+    try tmp.dir.createDirPath(std.testing.io, ".git");
+
+    const seed =
+        \\[agents]
+        \\claude = true
+        \\
+        \\[packs]
+        \\enabled = ["containers.docker", "package_managers"]
+        \\disabled = []
+        \\
+    ;
+    {
+        const f = try tmp.dir.createFile(std.testing.io, ".orca.toml", .{});
+        defer f.close(std.testing.io);
+        try f.writeStreamingAll(std.testing.io, seed);
+    }
+
+    var result = try disablePacks(std.testing.io, std.testing.allocator, root, &.{ "containers.docker", "system.disk" });
+    defer result.deinit(std.testing.allocator);
+    try std.testing.expect(result.changed);
+    try std.testing.expectEqual(@as(usize, 1), result.removed.len);
+    try std.testing.expectEqualStrings("containers.docker", result.removed[0]);
+    try std.testing.expectEqual(@as(usize, 1), result.disabled_added.len);
+    try std.testing.expectEqualStrings("system.disk", result.disabled_added[0]);
+
+    const config = try tmp.dir.readFileAlloc(std.testing.io, ".orca.toml", std.testing.allocator, .limited(8192));
+    defer std.testing.allocator.free(config);
+    try std.testing.expect(std.mem.indexOf(u8, config, "claude = true") != null);
+    try std.testing.expect(std.mem.indexOf(u8, config, "package_managers") != null);
+    const enabled = enabledArraySlice(config) orelse "";
+    try std.testing.expect(std.mem.indexOf(u8, enabled, "containers.docker") == null);
+    const disabled = disabledArraySlice(config) orelse "";
+    try std.testing.expect(std.mem.indexOf(u8, disabled, "system.disk") != null);
+
+    var again = try disablePacks(std.testing.io, std.testing.allocator, root, &.{"containers.docker"});
+    defer again.deinit(std.testing.allocator);
+    try std.testing.expect(!again.changed);
+}
+
+test "formatSummaryLine baseline invites packs enable" {
+    const line = try formatSummaryLine(std.testing.allocator, .{
+        .known = true,
+        .total_enabled = 2,
+        .total_available = 10,
+        .opt_in_ids = &.{},
+        .owned = false,
+    });
+    defer std.testing.allocator.free(line);
+    try std.testing.expect(std.mem.indexOf(u8, line, "baseline only") != null);
+    try std.testing.expect(std.mem.indexOf(u8, line, "packs enable") != null);
 }

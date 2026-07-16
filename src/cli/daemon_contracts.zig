@@ -16,6 +16,37 @@ pub const PacksOutput = struct {
     total_count: usize,
 };
 
+/// Detail view from daemon `pack info --json` (not the list PackInfo shape).
+pub const PackSuggestion = struct {
+    command: []const u8,
+    description: []const u8,
+};
+
+pub const SafePatternDetail = struct {
+    name: []const u8,
+    regex: []const u8 = "",
+};
+
+pub const DestructivePatternDetail = struct {
+    name: []const u8,
+    regex: []const u8 = "",
+    severity: []const u8,
+    reason: []const u8,
+    explanation: ?[]const u8 = null,
+    suggestions: []const PackSuggestion = &.{},
+};
+
+pub const PackDetail = struct {
+    id: []const u8,
+    name: []const u8,
+    description: []const u8,
+    keywords: []const []const u8 = &.{},
+    safe_pattern_count: usize,
+    destructive_pattern_count: usize,
+    safe_patterns: ?[]const SafePatternDetail = null,
+    destructive_patterns: ?[]const DestructivePatternDetail = null,
+};
+
 pub const OutcomeStats = struct {
     allowed: u64,
     denied: u64,
@@ -68,6 +99,10 @@ pub const HistoryStats = struct {
 
 pub fn parsePacks(allocator: std.mem.Allocator, json: []const u8) !std.json.Parsed(PacksOutput) {
     return std.json.parseFromSlice(PacksOutput, allocator, json, .{ .ignore_unknown_fields = true });
+}
+
+pub fn parsePackDetail(allocator: std.mem.Allocator, json: []const u8) !std.json.Parsed(PackDetail) {
+    return std.json.parseFromSlice(PackDetail, allocator, json, .{ .ignore_unknown_fields = true });
 }
 
 pub fn parseHistoryStats(allocator: std.mem.Allocator, json: []const u8) !std.json.Parsed(HistoryStats) {
@@ -129,4 +164,24 @@ test "packs contract rejects invalid unsigned counts and missing nested fields" 
             return error.TestUnexpectedResult;
         } else |_| {}
     }
+}
+
+test "pack detail contract parses patterns and ignores additive fields" {
+    var with_patterns = try parsePackDetail(std.testing.allocator,
+        \\{"id":"core.git","name":"Git","description":"Protects Git","keywords":["git"],"safe_pattern_count":2,"destructive_pattern_count":1,"safe_patterns":[{"name":"status","regex":"^git status"}],"destructive_patterns":[{"name":"force-push","regex":"git push --force","severity":"critical","reason":"Rewrites remote history","explanation":"Use lease","suggestions":[{"command":"git push --force-with-lease","description":"Safer force push"}]}],"extra_field":true}
+    );
+    defer with_patterns.deinit();
+    try std.testing.expectEqualStrings("core.git", with_patterns.value.id);
+    try std.testing.expectEqual(@as(usize, 1), with_patterns.value.destructive_patterns.?.len);
+    try std.testing.expectEqualStrings("critical", with_patterns.value.destructive_patterns.?[0].severity);
+    try std.testing.expectEqualStrings("force-push", with_patterns.value.destructive_patterns.?[0].name);
+    try std.testing.expectEqualStrings("git push --force-with-lease", with_patterns.value.destructive_patterns.?[0].suggestions[0].command);
+
+    var counts_only = try parsePackDetail(std.testing.allocator,
+        \\{"id":"core.git","name":"Git","description":"Protects Git","safe_pattern_count":2,"destructive_pattern_count":3}
+    );
+    defer counts_only.deinit();
+    try std.testing.expect(counts_only.value.safe_patterns == null);
+    try std.testing.expect(counts_only.value.destructive_patterns == null);
+    try std.testing.expectEqual(@as(usize, 3), counts_only.value.destructive_pattern_count);
 }

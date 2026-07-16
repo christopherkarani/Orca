@@ -385,22 +385,32 @@ pub const commands = [_]CommandInfo{
     },
     .{
         .name = "packs",
-        .summary = "Browse available safety packs",
-        .usage = "orca packs [--filter <term>] [--enabled|--installed] [--page N] [--page-size N]",
+        .summary = "Browse, inspect, and enable safety packs",
+        .usage =
+        \\orca packs [--filter <term>] [--enabled|--installed] [--page N] [--page-size N]
+        \\  orca packs show <id> [--no-patterns] [--verbose] [--format json]
+        \\  orca packs enable <id> [id…]
+        \\  orca packs disable <id> [id…]
+        ,
         .category = .diagnostics,
         .examples = &.{
             "orca packs",
             "orca packs --enabled",
-            "orca packs --installed",
+            "orca packs show core.git",
+            "orca packs enable containers.docker database.postgresql",
+            "orca packs disable containers.docker",
             "orca packs --filter database --page-size 10",
             "orca packs --format json",
         },
-        .additional_completion_flags = &.{"--robot"},
+        .additional_completion_flags = &.{ "--robot", "--no-patterns", "--verbose" },
         .details = &.{
-            "Detail view of the daemon pack registry. For a one-line summary, use `orca status` or `orca doctor`.",
-            "Human output is sorted and paginated locally; --installed is an alias for --enabled.",
-            "Baseline packs (core.*, system.disk) are always on; opt-in packs come from config / presets.",
-            "Use --format json or --robot for byte-stable daemon output.",
+            "Safety packs are Rust shell-rule sets evaluated by the daemon (not policy presets).",
+            "Policy presets use `orca policy packs` / `orca policy apply-pack` instead.",
+            "List is sorted and paginated locally; --installed is an alias for --enabled.",
+            "Baseline packs (core.*, system.disk) are always on; opt-in packs are enabled via config or `orca packs enable`.",
+            "Enable/disable writes project `.orca.toml` in a git repo, otherwise user config (`$XDG_CONFIG_HOME/orca/config.toml` or `~/.config/orca/config.toml`).",
+            "`orca packs show <id>` prefers daemon `pack info --json` (human view hides raw regex unless --verbose).",
+            "Use --format json or --robot on the list path for byte-stable daemon output.",
         },
     },
     .{ .name = "policy", .summary = "Validate, explain, and apply policies", .usage = "orca policy <check|explain|packs|apply-pack> [...]", .category = .core_workflow, .additional_completion_flags = &.{ "--policy", "--method", "--force", "--preset" }, .examples = &.{

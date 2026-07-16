@@ -572,13 +572,21 @@ fn writePiNote(stdout: anytype) !void {
 
 fn writePacksSection(io: std.Io, stdout: anytype, context: IntegrationContext) !void {
     // Avoid spawning the daemon when health probe already failed (doctor stays fast).
+    const config_path: ?[]const u8 = blk: {
+        const root = onboarding.resolveWorkspaceRoot(io, context.allocator) catch break :blk null;
+        defer context.allocator.free(root);
+        const resolved = pack_state.resolvePackConfigPath(io, context.allocator, root) catch break :blk null;
+        break :blk resolved.path;
+    };
+    defer if (config_path) |p| context.allocator.free(p);
+
     if (context.daemon_health != .compatible) {
-        try pack_state.writeDoctorPacksSection(stdout, pack_state.unknownPacksSummary());
+        try pack_state.writeDoctorPacksSectionWithConfig(stdout, pack_state.unknownPacksSummary(), config_path, null);
         return;
     }
     var summary = pack_state.queryPacksSummaryDefault(io, context.allocator) catch pack_state.unknownPacksSummary();
     defer summary.deinit(context.allocator);
-    try pack_state.writeDoctorPacksSection(stdout, summary);
+    try pack_state.writeDoctorPacksSectionWithConfig(stdout, summary, config_path, null);
 }
 
 /// Effective Hermes fail-open default matches integrations/hermes-plugin (default allow when degraded).

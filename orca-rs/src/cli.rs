@@ -1999,7 +1999,7 @@ pub fn version_stdout_line() -> String {
 /// terminating the process.
 ///
 /// Phase A high-value set (proxied via Zig `orca`): version, test, scan,
-/// history, packs, precommit, explain, allowlist, allow, unallow, allow-once,
+/// history, packs, pack, precommit, explain, allowlist, allow, unallow, allow-once,
 /// classify, suggest-allowlist, rebase-recover, config, simulate.
 #[must_use]
 pub fn execute_daemon_cli(argv: &[String]) -> CliExecutionResult {
@@ -2026,7 +2026,7 @@ pub fn execute_daemon_cli_at(argv: &[String], cwd: Option<&str>) -> CliExecution
         other => CliExecutionResult {
             stdout: String::new(),
             stderr: format!(
-                "unsupported daemon CLI command: {other} (supported: version, test, scan, history, precommit, packs, explain, allowlist, allow, unallow, allow-once, classify, suggest-allowlist, rebase-recover, config, simulate)"
+                "unsupported daemon CLI command: {other} (supported: version, test, scan, history, precommit, packs, pack, explain, allowlist, allow, unallow, allow-once, classify, suggest-allowlist, rebase-recover, config, simulate)"
             ),
             exit_code: EXIT_PARSE_ERROR,
         },
@@ -2040,6 +2040,7 @@ fn is_daemon_proxy_command(command: &str) -> bool {
             | "scan"
             | "history"
             | "packs"
+            | "pack"
             | "precommit"
             | "explain"
             | "allowlist"
