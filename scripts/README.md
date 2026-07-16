@@ -2,8 +2,8 @@
 
 Phase 19 release helpers:
 
-- `install.sh`: macOS/Linux installer with OS/arch detection and checksum verification.
-- `install.ps1`: Windows installer with OS/arch detection and checksum verification.
+- `install.sh`: macOS/Linux installer with OS/arch detection, checksum verification, and a step-based TTY UI (banner, progress phases, activation hero, host soft-detect). Set `ORCA_INSTALL_QUIET=1` for non-error silence; honors `NO_COLOR`.
+- `install.ps1`: Windows installer with the same install contracts and a matching presentation.
 - `install-orca-plugin.sh`: one-command bootstrap for `orca` + plugin install + plugin doctor (`opencode`, `openclaw`, or `hermes`).
 - `install-orca-plugin.ps1`: Windows one-command bootstrap for `orca` + plugin install + plugin doctor (`opencode`, `openclaw`, or `hermes`).
 - `update-homebrew-formula.sh`: updates `packaging/homebrew/Formula/orca.rb` from `dist/checksums.txt`.

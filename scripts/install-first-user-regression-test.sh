@@ -98,6 +98,12 @@ resource_root="${share_dir}/${VERSION}"
 activation="$(printf '%s\n' "${output}" | awk '/^    eval / { sub(/^    /, ""); print; exit }')"
 [[ -n "${activation}" ]] || fail "installer did not print an activation command"
 [[ "${activation}" == *"${install_dir}/orca"* ]] || fail "activation command does not use the absolute installed binary"
+# UX receipt: brand + success + hierarchy (presentation may use ANSI; strip for asserts).
+plain_output="$(printf '%s\n' "${output}" | sed $'s/\x1b\\[[0-9;]*m//g')"
+printf '%s\n' "${plain_output}" | grep -Eq 'Orca' || fail "installer did not print brand header"
+printf '%s\n' "${plain_output}" | grep -Eq 'installed|reinstalled' || fail "installer did not print success receipt"
+printf '%s\n' "${plain_output}" | grep -Eq 'Activate this terminal|Activate this session' || fail "installer did not print activation hero"
+printf '%s\n' "${plain_output}" | grep -Eq 'Details' || fail "installer did not print details section"
 unset ORCA_FIRST_USER_ACTIVATED
 eval "${activation}"
 [[ "${ORCA_FIRST_USER_ACTIVATED:-}" == 1 ]] || fail "printed activation command did not activate the current shell"

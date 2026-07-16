@@ -57,7 +57,9 @@ orca plugin install hermes --yes
 1. Download or build the archive for your OS and CPU.
 2. Verify its SHA-256 digest against `dist/checksums.txt`.
 3. Extract the archive, or run `scripts/install.sh` / `scripts/install.ps1` to install the binary and runtime assets together.
-4. Paste the activation command printed by the installer. It invokes the absolute installed binary, so it also works in the shell that launched a first-time install before `orca` is on `PATH`. Then run `orca doctor`.
+4. Paste the activation command printed by the installer (the highlighted `eval "$(… env …)"` block on Unix). It invokes the absolute installed binary, so it also works in the shell that launched a first-time install before `orca` is on `PATH`. Then run `orca doctor` and `orca setup` to wire host integrations.
+
+The curl installer prints a step-based receipt (brand header, phases, activation hero, optional host soft-detect). It honors `NO_COLOR` and `ORCA_INSTALL_QUIET=1` (non-error silence; activation line still printed). Host configuration is never performed by the installer — that remains `orca setup`.
 
 ## Package Templates
 

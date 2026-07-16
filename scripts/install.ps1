@@ -29,15 +29,47 @@ $ResourceRoot = if ($env:ORCA_RESOURCE_ROOT) { $env:ORCA_RESOURCE_ROOT } else { 
 $CurrentLink = Join-Path $ShareDir "current"
 $RuntimeDirs = @("integrations", "fixtures", "schemas", "policies")
 
-function Fail($Message) {
-    Write-Error "orca install: $Message"
+$Quiet = ($env:ORCA_INSTALL_QUIET -eq "1")
+$UseColor = -not $Quiet -and -not $env:NO_COLOR -and ($Host.UI.RawUI -ne $null)
+
+function Write-Ui([string]$Message, [ConsoleColor]$Color = [ConsoleColor]::Gray) {
+    if ($Quiet) { return }
+    if ($UseColor) {
+        Write-Host $Message -ForegroundColor $Color
+    } else {
+        Write-Host $Message
+    }
+}
+
+function Write-StepActive([string]$Label) {
+    Write-Ui ("  > " + $Label) Cyan
+}
+
+function Write-StepDone([string]$Label, [string]$Detail = "") {
+    if ($Detail) {
+        Write-Ui ("  + " + $Label + "  " + $Detail) Green
+    } else {
+        Write-Ui ("  + " + $Label) Green
+    }
+}
+
+function Fail($Message, $Remediation = $null) {
+    Write-Host ""
+    Write-Host ("  x " + $Message) -ForegroundColor Red
+    if ($Remediation) {
+        foreach ($line in ($Remediation -split "`n")) {
+            if ($line) { Write-Host ("    " + $line) -ForegroundColor DarkGray }
+        }
+    }
+    Write-Host ""
+    Write-Host "  Docs  https://github.com/christopherkarani/Orca/blob/main/docs/install.md" -ForegroundColor DarkGray
     exit 1
 }
 
 function Detect-OS {
     if ($env:ORCA_OS_OVERRIDE) { return $env:ORCA_OS_OVERRIDE.ToLowerInvariant() }
     if ($IsWindows -or $env:OS -eq "Windows_NT") { return "windows" }
-    Fail "unsupported operating system for install.ps1"
+    Fail "unsupported operating system for install.ps1" "Use scripts/install.sh on macOS/Linux."
 }
 
 function Detect-Arch {
@@ -46,7 +78,7 @@ function Detect-Arch {
         "x64" { return "amd64" }
         "x86_64" { return "amd64" }
         "amd64" { return "amd64" }
-        default { Fail "unsupported architecture: $arch" }
+        default { Fail "unsupported architecture: $arch" "Supported: amd64 (x64)." }
     }
 }
 
@@ -62,12 +94,18 @@ function Get-ChecksumEntry($ChecksumsPath, $ArtifactName) {
 
 function Verify-Checksum($ArtifactPath, $ChecksumsPath, $ArtifactName) {
     if (-not (Test-Path -LiteralPath $ChecksumsPath)) {
-        Fail "checksums.txt not found; download it and verify manually before installing"
+        Fail "checksums.txt not found" "Download checksums.txt with the archive and verify manually before installing."
     }
     $expected = Get-ChecksumEntry $ChecksumsPath $ArtifactName
-    if (-not $expected) { Fail "no checksum entry found for $ArtifactName" }
+    if (-not $expected) { Fail "no checksum entry found for $ArtifactName" "The release checksums.txt may not list this platform artifact yet." }
     $actual = (Get-FileHash -Algorithm SHA256 -LiteralPath $ArtifactPath).Hash.ToLowerInvariant()
-    if ($expected -ne $actual) { Fail "checksum mismatch for $ArtifactName" }
+    if ($expected -ne $actual) {
+        Fail "checksum mismatch for $ArtifactName" @"
+Expected: $expected
+Got:      $actual
+Refuse to install a corrupted or tampered archive.
+"@
+    }
 }
 
 function Test-ExistingOrca($Path) {
@@ -88,12 +126,21 @@ function Test-ExistingOrcaDaemon($Path) {
     return [bool]($output -match '^\d+\.\d+\.\d+')
 }
 
+function Get-ExistingVersionLabel($Path) {
+    try {
+        $output = & $Path version 2>$null | Out-String
+        $m = [regex]::Match($output, '\d+\.\d+\.\d+')
+        if ($m.Success) { return $m.Value }
+    } catch { }
+    return $null
+}
+
 function Install-RuntimeAssets($ExtractRoot) {
     New-Item -ItemType Directory -Force -Path $ResourceRoot | Out-Null
     foreach ($dir in $RuntimeDirs) {
         $source = Join-Path $ExtractRoot $dir
         if (-not (Test-Path -LiteralPath $source)) {
-            Fail "release archive missing runtime directory: $dir"
+            Fail "release archive missing runtime directory: $dir" "Re-download the official release artifact for v$Version."
         }
         $dest = Join-Path $ResourceRoot $dir
         if (Test-Path -LiteralPath $dest) {
@@ -139,8 +186,7 @@ function Ensure-ResourceRootEntry($TargetRoot) {
             [void]$updated.Add($line)
         }
         Set-Content -LiteralPath $profilePath -Value $updated
-        Write-Host "Updated ORCA_RESOURCE_ROOT=$TargetRoot in $profilePath"
-        return
+        return "updated ORCA_RESOURCE_ROOT in $profilePath"
     }
 
     @(
@@ -148,7 +194,27 @@ function Ensure-ResourceRootEntry($TargetRoot) {
         $marker,
         "`$env:ORCA_RESOURCE_ROOT = `"$TargetRoot`""
     ) | Add-Content -LiteralPath $profilePath
-    Write-Host "Added ORCA_RESOURCE_ROOT=$TargetRoot to $profilePath"
+    return "added ORCA_RESOURCE_ROOT in $profilePath"
+}
+
+function Detect-Hosts {
+    $found = New-Object System.Collections.Generic.List[string]
+    if ((Get-Command claude -ErrorAction SilentlyContinue) -or (Test-Path -LiteralPath (Join-Path $HOME ".claude"))) {
+        [void]$found.Add("claude")
+    }
+    if ((Get-Command codex -ErrorAction SilentlyContinue) -or (Test-Path -LiteralPath (Join-Path $HOME ".codex"))) {
+        [void]$found.Add("codex")
+    }
+    if ((Get-Command opencode -ErrorAction SilentlyContinue) -or (Test-Path -LiteralPath (Join-Path $HOME ".config\opencode"))) {
+        [void]$found.Add("opencode")
+    }
+    if (Get-Command openclaw -ErrorAction SilentlyContinue) {
+        [void]$found.Add("openclaw")
+    }
+    if ((Get-Command hermes -ErrorAction SilentlyContinue) -or (Test-Path -LiteralPath (Join-Path $HOME ".hermes"))) {
+        [void]$found.Add("hermes")
+    }
+    return $found
 }
 
 $os = Detect-OS
@@ -159,23 +225,63 @@ $artifact = "orca-v$Version-windows-$arch.zip"
 $tempDir = Join-Path ([System.IO.Path]::GetTempPath()) "orca-install-$([System.Guid]::NewGuid().ToString('N'))"
 New-Item -ItemType Directory -Path $tempDir | Out-Null
 
+$installMode = "install"
+$previousLabel = $null
+$destinationPreview = Join-Path $InstallDir "orca.exe"
+if ((Test-Path -LiteralPath $destinationPreview) -and (Test-ExistingOrca $destinationPreview)) {
+    $previousLabel = Get-ExistingVersionLabel $destinationPreview
+    if ($previousLabel -and $previousLabel -ne $Version) {
+        $installMode = "upgrade"
+    } else {
+        $installMode = "reinstall"
+        if (-not $previousLabel) { $previousLabel = "installed" }
+    }
+}
+
+if (-not $Quiet) {
+    Write-Host ""
+    Write-Ui ("  Orca · v" + $Version) Cyan
+    Write-Ui "  --------------------------------" DarkGray
+    Write-Ui "  Agent runtime protection · policy + daemon" DarkGray
+    Write-Host ("  Platform  " + $os + "/" + $arch)
+    Write-Host ("  Target    " + $InstallDir)
+    Write-Host ""
+}
+
 try {
     $artifactPath = Join-Path $tempDir $artifact
     $checksumsPath = Join-Path $tempDir "checksums.txt"
 
+    Write-StepActive "Resolve release"
+    Write-StepDone "Resolve release" ("v" + $Version)
+
+    if ($installMode -eq "upgrade") {
+        Write-Ui ("  > Upgrading " + $previousLabel + " -> " + $Version) Cyan
+    } elseif ($installMode -eq "reinstall") {
+        Write-Ui ("  > Reinstalling v" + $Version) Cyan
+    }
+
     if ($ArtifactDir) {
+        Write-StepActive "Use local artifacts"
         $localArtifact = Join-Path $ArtifactDir $artifact
         $localChecksums = Join-Path $ArtifactDir "checksums.txt"
         if (-not (Test-Path -LiteralPath $localArtifact)) { Fail "artifact not found: $localArtifact" }
         if (-not (Test-Path -LiteralPath $localChecksums)) { Fail "checksums.txt not found in $ArtifactDir" }
         Copy-Item -LiteralPath $localArtifact -Destination $artifactPath
         Copy-Item -LiteralPath $localChecksums -Destination $checksumsPath
+        Write-StepDone "Use local artifacts" $ArtifactDir
     } else {
+        Write-StepActive "Download archive"
         Invoke-WebRequest -Uri "$BaseUrl/$artifact" -OutFile $artifactPath
         Invoke-WebRequest -Uri "$BaseUrl/checksums.txt" -OutFile $checksumsPath
+        Write-StepDone "Download archive" $artifact
     }
 
+    Write-StepActive "Verify SHA-256"
     Verify-Checksum $artifactPath $checksumsPath $artifact
+    Write-StepDone "Verify SHA-256" "ok"
+
+    Write-StepActive "Install binaries + runtime"
     Expand-Archive -LiteralPath $artifactPath -DestinationPath $tempDir -Force
     $extractRoot = Get-ChildItem -LiteralPath $tempDir -Directory | Where-Object { $_.Name -like "orca-v*" } | Select-Object -First 1
     if (-not $extractRoot) { Fail "artifact did not contain an extracted release root" }
@@ -189,34 +295,65 @@ try {
     $daemonDestination = Join-Path $InstallDir "orca-daemon.exe"
     if ((Test-Path -LiteralPath $destination) -and $env:ORCA_INSTALL_FORCE -ne "1") {
         if (-not (Test-ExistingOrca $destination)) {
-            Fail "refusing to overwrite non-Orca file at $destination; set ORCA_INSTALL_FORCE=1 to replace it"
+            Fail "refusing to overwrite non-Orca file at $destination" "Set ORCA_INSTALL_FORCE=1 to replace it, or choose another ORCA_INSTALL_DIR."
         }
     }
     if ((Test-Path -LiteralPath $daemonDestination) -and $env:ORCA_INSTALL_FORCE -ne "1") {
         if (-not (Test-ExistingOrcaDaemon $daemonDestination)) {
-            Fail "refusing to overwrite non-Orca file at $daemonDestination; set ORCA_INSTALL_FORCE=1 to replace it"
+            Fail "refusing to overwrite non-Orca file at $daemonDestination" "Set ORCA_INSTALL_FORCE=1 to replace it, or choose another ORCA_INSTALL_DIR."
         }
     }
 
     Copy-Item -LiteralPath $binary.FullName -Destination $destination -Force
     Copy-Item -LiteralPath $daemonBinary.FullName -Destination $daemonDestination -Force
     Install-RuntimeAssets $extractRoot.FullName
+    Write-StepDone "Install binaries + runtime" "orca.exe, orca-daemon.exe, assets"
 
-    Write-Host "Installed Orca to $destination"
-    Write-Host "Installed Orca daemon to $daemonDestination"
-    Write-Host "Installed runtime assets to $ResourceRoot"
-    Write-Host "Current runtime link: $CurrentLink -> $ResourceRoot"
-    Write-Host "ORCA_RESOURCE_ROOT=$CurrentLink"
-    Ensure-ResourceRootEntry $CurrentLink
-    Write-Host ""
-    Write-Host "To use orca in this PowerShell session (before restarting or reloading `$PROFILE), run:"
-    Write-Host "  orca env   # then evaluate the set commands (or copy them for cmd.exe)"
-    Write-Host ""
-    Write-Host "Next steps:"
-    Write-Host "  orca --version"
-    Write-Host "  orca doctor"
-    Write-Host "  orca setup          # guided interactive host selection (default on interactive terminals)"
-    Write-Host "  (optional) orca plugin list"
+    Write-StepActive "Configure shell"
+    $resourceNote = Ensure-ResourceRootEntry $CurrentLink
+    Write-StepDone "Configure shell" "ORCA_RESOURCE_ROOT"
+
+    $hosts = Detect-Hosts
+
+    if (-not $Quiet) {
+        Write-Host ""
+        switch ($installMode) {
+            "upgrade" { Write-Ui ("  +  Orca v" + $Version + " installed  (upgraded from " + $previousLabel + ")") Green }
+            "reinstall" { Write-Ui ("  +  Orca v" + $Version + " reinstalled") Green }
+            default { Write-Ui ("  +  Orca v" + $Version + " installed") Green }
+        }
+        Write-Ui "  Daemon + runtime ready" DarkGray
+        Write-Host ""
+        Write-Ui "  Activate this session" White
+        Write-Ui "  (InstallDir may not be on PATH yet)" DarkGray
+        Write-Host ""
+        Write-Host "    orca env   # then evaluate the set commands (or copy them for cmd.exe)"
+        Write-Host ""
+        Write-Ui "  Profile exports were also written for future sessions." DarkGray
+        Write-Host ""
+        Write-Ui "  Then" White
+        Write-Host "    orca doctor"
+        Write-Host "    orca setup          # guided host wiring (default on interactive terminals)"
+
+        if ($hosts.Count -gt 0) {
+            Write-Host ""
+            Write-Ui "  Detected hosts (not configured yet)" White
+            foreach ($h in $hosts) {
+                Write-Ui ("  · " + $h.PadRight(10) + " found") DarkGray
+            }
+            Write-Ui "  Wire them with: orca setup" DarkGray
+        }
+
+        Write-Host ""
+        Write-Ui "  Details" DarkGray
+        Write-Ui ("    binary   " + $destination) DarkGray
+        Write-Ui ("    daemon   " + $daemonDestination) DarkGray
+        Write-Ui ("    assets   " + $CurrentLink + " -> " + $ResourceRoot) DarkGray
+        if ($resourceNote) {
+            Write-Ui ("    env      " + $resourceNote) DarkGray
+        }
+        Write-Host ""
+    }
 } finally {
     Remove-Item -LiteralPath $tempDir -Recurse -Force -ErrorAction SilentlyContinue
 }
