@@ -30,11 +30,21 @@ $CurrentLink = Join-Path $ShareDir "current"
 $RuntimeDirs = @("integrations", "fixtures", "schemas", "policies")
 
 $Quiet = ($env:ORCA_INSTALL_QUIET -eq "1")
-$UseColor = -not $Quiet -and -not $env:NO_COLOR -and ($Host.UI.RawUI -ne $null)
+# Errors may still use color when the host supports it; quiet only suppresses non-error UI.
+$HostSupportsColor = -not $env:NO_COLOR -and ($null -ne $Host.UI.RawUI)
+$UseColor = -not $Quiet -and $HostSupportsColor
 
 function Write-Ui([string]$Message, [ConsoleColor]$Color = [ConsoleColor]::Gray) {
     if ($Quiet) { return }
     if ($UseColor) {
+        Write-Host $Message -ForegroundColor $Color
+    } else {
+        Write-Host $Message
+    }
+}
+
+function Write-HostColor([string]$Message, [ConsoleColor]$Color) {
+    if ($HostSupportsColor) {
         Write-Host $Message -ForegroundColor $Color
     } else {
         Write-Host $Message
@@ -50,7 +60,6 @@ function Write-StepDone([string]$Label, [string]$Detail = "") {
 }
 
 function Write-StepActive([string]$Label) {
-    # Only for long-running phases; instant steps use Write-StepDone alone.
     Write-Ui ("  > " + $Label) Green
 }
 
@@ -60,16 +69,15 @@ function Write-Activation {
 }
 
 function Fail($Message, $Remediation = $null) {
-    # Errors always print (including quiet mode).
     Write-Host ""
-    Write-Host ("  x " + $Message) -ForegroundColor Red
+    Write-HostColor ("  x " + $Message) Red
     if ($Remediation) {
         foreach ($line in ($Remediation -split "`n")) {
-            if ($line) { Write-Host ("    " + $line) -ForegroundColor DarkGray }
+            if ($line) { Write-HostColor ("    " + $line) DarkGray }
         }
     }
     Write-Host ""
-    Write-Host "  Docs  https://github.com/christopherkarani/Orca/blob/main/docs/install.md" -ForegroundColor DarkGray
+    Write-HostColor "  Docs  https://github.com/christopherkarani/Orca/blob/main/docs/install.md" DarkGray
     exit 1
 }
 
@@ -115,31 +123,22 @@ Refuse to install a corrupted or tampered archive.
     }
 }
 
-function Test-ExistingOrca($Path) {
+# Returns $null when path is missing or not Orca; otherwise @{ Version = <semver or $null> }.
+# Matches CLI and daemon: product JSON, ^orca(-daemon)?, or a bare semver line.
+function Get-ExistingOrcaInfo($Path) {
+    if (-not (Test-Path -LiteralPath $Path)) { return $null }
     try {
         $output = & $Path version 2>$null | Out-String
     } catch {
-        return $false
+        return $null
     }
-    return [bool]($output -match '"product"\s*:\s*"orca"|^orca(\s|$)')
-}
-
-function Test-ExistingOrcaDaemon($Path) {
-    try {
-        $output = (& $Path version 2>$null | Out-String).Trim()
-    } catch {
-        return $false
+    if (-not ($output -match '"product"\s*:\s*"orca"|^orca(-daemon)?(\s|$)|^\d+\.\d+\.\d+')) {
+        return $null
     }
-    return [bool]($output -match '^\d+\.\d+\.\d+')
-}
-
-function Get-ExistingVersionLabel($Path) {
-    try {
-        $output = & $Path version 2>$null | Out-String
-        $m = [regex]::Match($output, '\d+\.\d+\.\d+')
-        if ($m.Success) { return $m.Value }
-    } catch { }
-    return $null
+    $version = $null
+    $m = [regex]::Match($output, '\d+\.\d+\.\d+')
+    if ($m.Success) { $version = $m.Value }
+    return @{ Version = $version }
 }
 
 function Install-RuntimeAssets($ExtractRoot) {
@@ -193,7 +192,7 @@ function Ensure-ResourceRootEntry($TargetRoot) {
             [void]$updated.Add($line)
         }
         Set-Content -LiteralPath $profilePath -Value $updated
-        return "updated ORCA_RESOURCE_ROOT in $profilePath"
+        return
     }
 
     @(
@@ -201,30 +200,47 @@ function Ensure-ResourceRootEntry($TargetRoot) {
         $marker,
         "`$env:ORCA_RESOURCE_ROOT = `"$TargetRoot`""
     ) | Add-Content -LiteralPath $profilePath
-    return "added ORCA_RESOURCE_ROOT in $profilePath"
 }
 
-function Detect-Hosts {
-    # Specs: Name, optional command, optional config directory under $HOME.
-    $specs = @(
-        @{ Name = "claude"; Command = "claude"; Dir = ".claude" },
-        @{ Name = "codex"; Command = "codex"; Dir = ".codex" },
-        @{ Name = "opencode"; Command = "opencode"; Dir = ".config\opencode" },
-        @{ Name = "openclaw"; Command = "openclaw"; Dir = $null },
-        @{ Name = "hermes"; Command = "hermes"; Dir = ".hermes" }
+function Write-SuccessReceipt {
+    param(
+        [string]$PreviousVersion,
+        [string]$Destination,
+        [string]$DaemonDestination
     )
-    $found = New-Object System.Collections.Generic.List[string]
-    foreach ($spec in $specs) {
-        $hasCmd = [bool](Get-Command $spec.Command -ErrorAction SilentlyContinue)
-        $hasDir = $false
-        if ($spec.Dir) {
-            $hasDir = Test-Path -LiteralPath (Join-Path $HOME $spec.Dir)
-        }
-        if ($hasCmd -or $hasDir) {
-            [void]$found.Add($spec.Name)
-        }
+
+    if ($Quiet) {
+        Write-Activation
+        return
     }
-    return $found
+
+    Write-Host ""
+    if ($PreviousVersion -and $PreviousVersion -ne $Version -and $PreviousVersion -ne "installed") {
+        Write-Ui ("  +  Orca v" + $Version + " installed  (upgraded from " + $PreviousVersion + ")") Green
+    } elseif ($PreviousVersion) {
+        Write-Ui ("  +  Orca v" + $Version + " reinstalled") Green
+    } else {
+        Write-Ui ("  +  Orca v" + $Version + " installed") Green
+    }
+    Write-Ui "  Daemon + runtime ready" DarkGray
+    Write-Host ""
+    Write-Ui "  Activate this session" White
+    Write-Ui "  (InstallDir may not be on PATH yet)" DarkGray
+    Write-Host ""
+    Write-Activation
+    Write-Host ""
+    Write-Ui "  Profile exports were also written for future sessions." DarkGray
+    Write-Host ""
+    Write-Ui "  Then" White
+    Write-Host "    orca doctor"
+    Write-Host "    orca setup          # guided host wiring (default on interactive terminals)"
+
+    Write-Host ""
+    Write-Ui "  Details" DarkGray
+    Write-Ui ("    binary   " + $Destination) DarkGray
+    Write-Ui ("    daemon   " + $DaemonDestination) DarkGray
+    Write-Ui ("    assets   " + $CurrentLink + " -> " + $ResourceRoot) DarkGray
+    Write-Host ""
 }
 
 $os = Detect-OS
@@ -235,17 +251,15 @@ $artifact = "orca-v$Version-windows-$arch.zip"
 $tempDir = Join-Path ([System.IO.Path]::GetTempPath()) "orca-install-$([System.Guid]::NewGuid().ToString('N'))"
 New-Item -ItemType Directory -Path $tempDir | Out-Null
 
-$installMode = "install"
-$previousLabel = $null
-$destinationPreview = Join-Path $InstallDir "orca.exe"
-if ((Test-Path -LiteralPath $destinationPreview) -and (Test-ExistingOrca $destinationPreview)) {
-    $previousLabel = Get-ExistingVersionLabel $destinationPreview
-    if ($previousLabel -and $previousLabel -ne $Version) {
-        $installMode = "upgrade"
-    } else {
-        $installMode = "reinstall"
-        if (-not $previousLabel) { $previousLabel = "installed" }
-    }
+$destination = Join-Path $InstallDir "orca.exe"
+$daemonDestination = Join-Path $InstallDir "orca-daemon.exe"
+
+# Empty = fresh; semver or "installed" = existing CLI at destination.
+$previousVersion = $null
+$existingCli = Get-ExistingOrcaInfo $destination
+if ($existingCli) {
+    $previousVersion = $existingCli.Version
+    if (-not $previousVersion) { $previousVersion = "installed" }
 }
 
 if (-not $Quiet) {
@@ -262,14 +276,13 @@ try {
     $artifactPath = Join-Path $tempDir $artifact
     $checksumsPath = Join-Path $tempDir "checksums.txt"
 
-    # Instant steps: done marker only (no active/done double print).
-    Write-StepDone "Resolve release" ("v" + $Version)
-
-    if ($installMode -eq "upgrade") {
-        Write-Ui ("  > Upgrading " + $previousLabel + " -> " + $Version) Cyan
-    } elseif ($installMode -eq "reinstall") {
-        Write-Ui ("  > Reinstalling v" + $Version) Cyan
+    $resolveDetail = "v" + $Version
+    if ($previousVersion -and $previousVersion -ne $Version -and $previousVersion -ne "installed") {
+        $resolveDetail = $resolveDetail + "; upgrading " + $previousVersion + " -> " + $Version
+    } elseif ($previousVersion) {
+        $resolveDetail = $resolveDetail + "; reinstall"
     }
+    Write-StepDone "Resolve release" $resolveDetail
 
     if ($ArtifactDir) {
         $localArtifact = Join-Path $ArtifactDir $artifact
@@ -309,15 +322,13 @@ try {
     }
 
     New-Item -ItemType Directory -Force -Path $InstallDir | Out-Null
-    $destination = Join-Path $InstallDir "orca.exe"
-    $daemonDestination = Join-Path $InstallDir "orca-daemon.exe"
     if ((Test-Path -LiteralPath $destination) -and $env:ORCA_INSTALL_FORCE -ne "1") {
-        if (-not (Test-ExistingOrca $destination)) {
+        if (-not (Get-ExistingOrcaInfo $destination)) {
             Fail "refusing to overwrite non-Orca file at $destination" "Set ORCA_INSTALL_FORCE=1 to replace it, or choose another ORCA_INSTALL_DIR."
         }
     }
     if ((Test-Path -LiteralPath $daemonDestination) -and $env:ORCA_INSTALL_FORCE -ne "1") {
-        if (-not (Test-ExistingOrcaDaemon $daemonDestination)) {
+        if (-not (Get-ExistingOrcaInfo $daemonDestination)) {
             Fail "refusing to overwrite non-Orca file at $daemonDestination" "Set ORCA_INSTALL_FORCE=1 to replace it, or choose another ORCA_INSTALL_DIR."
         }
     }
@@ -327,52 +338,10 @@ try {
     Install-RuntimeAssets $extractRoot.FullName
     Write-StepDone "Install binaries + runtime" "orca.exe, orca-daemon.exe, assets"
 
-    $resourceNote = Ensure-ResourceRootEntry $CurrentLink
+    Ensure-ResourceRootEntry $CurrentLink
     Write-StepDone "Configure shell" "ORCA_RESOURCE_ROOT"
 
-    $hosts = Detect-Hosts
-
-    if (-not $Quiet) {
-        Write-Host ""
-        switch ($installMode) {
-            "upgrade" { Write-Ui ("  +  Orca v" + $Version + " installed  (upgraded from " + $previousLabel + ")") Green }
-            "reinstall" { Write-Ui ("  +  Orca v" + $Version + " reinstalled") Green }
-            default { Write-Ui ("  +  Orca v" + $Version + " installed") Green }
-        }
-        Write-Ui "  Daemon + runtime ready" DarkGray
-        Write-Host ""
-        Write-Ui "  Activate this session" White
-        Write-Ui "  (InstallDir may not be on PATH yet)" DarkGray
-        Write-Host ""
-        Write-Activation
-        Write-Host ""
-        Write-Ui "  Profile exports were also written for future sessions." DarkGray
-        Write-Host ""
-        Write-Ui "  Then" White
-        Write-Host "    orca doctor"
-        Write-Host "    orca setup          # guided host wiring (default on interactive terminals)"
-
-        if ($hosts.Count -gt 0) {
-            Write-Host ""
-            Write-Ui "  Detected hosts (not configured yet)" White
-            foreach ($h in $hosts) {
-                Write-Ui ("  · " + $h.PadRight(10) + " found") DarkGray
-            }
-            Write-Ui "  Wire them with: orca setup" DarkGray
-        }
-
-        Write-Host ""
-        Write-Ui "  Details" DarkGray
-        Write-Ui ("    binary   " + $destination) DarkGray
-        Write-Ui ("    daemon   " + $daemonDestination) DarkGray
-        Write-Ui ("    assets   " + $CurrentLink + " -> " + $ResourceRoot) DarkGray
-        if ($resourceNote) {
-            Write-Ui ("    env      " + $resourceNote) DarkGray
-        }
-        Write-Host ""
-    } else {
-        Write-Activation
-    }
+    Write-SuccessReceipt -PreviousVersion $previousVersion -Destination $destination -DaemonDestination $daemonDestination
 } finally {
     Remove-Item -LiteralPath $tempDir -Recurse -Force -ErrorAction SilentlyContinue
 }

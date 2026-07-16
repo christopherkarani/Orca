@@ -28,20 +28,28 @@ if [ -f "$0" ] 2>/dev/null; then
 fi
 
 # ── Presentation ─────────────────────────────────────────────────────────────
-# Quiet confidence: brand + named steps + one activation hero. Degrades cleanly
-# for CI, pipes, NO_COLOR, and ORCA_INSTALL_QUIET. Glyphs match src/tui/render.zig
-# (active/done markers use success green; narrative info uses cyan).
+# Brand + named steps + activation hero. Quiet / NO_COLOR / pipe degrade cleanly.
+# Glyphs align with src/tui/render.zig (active/done use success green).
 
 QUIET=0
 if [ "${ORCA_INSTALL_QUIET:-0}" = "1" ]; then
   QUIET=1
 fi
 
+IS_TTY=0
+if [ -t 1 ] 2>/dev/null; then
+  IS_TTY=1
+fi
+
 USE_COLOR=0
-if [ "$QUIET" -eq 0 ] && [ -t 1 ] 2>/dev/null; then
-  if [ -z "${NO_COLOR:-}" ] && [ "${TERM:-}" != "dumb" ]; then
-    USE_COLOR=1
-  fi
+if [ "$QUIET" -eq 0 ] && [ "$IS_TTY" -eq 1 ] && [ -z "${NO_COLOR:-}" ] && [ "${TERM:-}" != "dumb" ]; then
+  USE_COLOR=1
+fi
+
+# Progress is TTY+!quiet only — NO_COLOR must not hide bars.
+SHOW_PROGRESS=0
+if [ "$QUIET" -eq 0 ] && [ "$IS_TTY" -eq 1 ]; then
+  SHOW_PROGRESS=1
 fi
 
 if [ "$USE_COLOR" -eq 1 ]; then
@@ -61,55 +69,40 @@ ui_dim() {
   printf '%s%s%s\n' "$C_DIM" "$*" "$C_RESET"
 }
 
-ui_info() {
-  [ "$QUIET" -eq 1 ] && return 0
-  printf '  %s›%s %s\n' "$C_CYAN" "$C_RESET" "$*"
-}
-
 ui_err() {
-  # Errors always print (including quiet mode).
   printf '  %s✗%s %s\n' "$C_RED" "$C_RESET" "$*" >&2
 }
 
 print_banner() {
-  version_label="$1"
-  platform_label="$2"
-  target_label="$3"
   [ "$QUIET" -eq 1 ] && return 0
-
   printf '\n'
-  printf '  %s🛡  Orca%s · %sv%s%s\n' "$C_BOLD$C_CYAN" "$C_RESET" "$C_BOLD" "$version_label" "$C_RESET"
+  printf '  %s🛡  Orca%s · %sv%s%s\n' "$C_BOLD$C_CYAN" "$C_RESET" "$C_BOLD" "$1" "$C_RESET"
   if [ "$USE_COLOR" -eq 1 ]; then
     printf '  %s────────────────────────────────%s\n' "$C_DIM" "$C_RESET"
   else
     printf '  --------------------------------\n'
   fi
   ui_dim "  Agent runtime protection · policy + daemon"
-  printf '  %sPlatform%s  %s\n' "$C_DIM" "$C_RESET" "$platform_label"
-  printf '  %sTarget%s    %s\n' "$C_DIM" "$C_RESET" "$target_label"
+  printf '  %sPlatform%s  %s\n' "$C_DIM" "$C_RESET" "$2"
+  printf '  %sTarget%s    %s\n' "$C_DIM" "$C_RESET" "$3"
   printf '\n'
 }
 
-# Sequential phase markers (no in-place spinner in POSIX sh).
-# Active marker color matches TUI stepLine: success token for active + done.
 step_active() {
   [ "$QUIET" -eq 1 ] && return 0
   printf '  %s›%s %s%s%s\n' "$C_GREEN" "$C_RESET" "$C_BOLD" "$1" "$C_RESET"
 }
 
 step_done() {
-  label="$1"
-  detail="${2:-}"
   [ "$QUIET" -eq 1 ] && return 0
-  if [ -n "$detail" ]; then
-    printf '  %s✓%s %s  %s%s%s\n' "$C_GREEN" "$C_RESET" "$label" "$C_DIM" "$detail" "$C_RESET"
+  if [ -n "${2:-}" ]; then
+    printf '  %s✓%s %s  %s%s%s\n' "$C_GREEN" "$C_RESET" "$1" "$C_DIM" "$2" "$C_RESET"
   else
-    printf '  %s✓%s %s\n' "$C_GREEN" "$C_RESET" "$label"
+    printf '  %s✓%s %s\n' "$C_GREEN" "$C_RESET" "$1"
   fi
 }
 
 # fail MESSAGE [REMEDIATION]
-# Prints a structured error and exits 1. Remediation may contain newlines.
 fail() {
   msg="$1"
   remediation="${2:-}"
@@ -125,11 +118,9 @@ fail() {
   exit 1
 }
 
-# Single activation line (contract: /^    eval /). Always printed, including quiet.
+# Contract: /^    eval / — always printed, including quiet.
 print_activation() {
-  quoted_destination="$1"
-  printf '    eval "$(%s env 2>/dev/null || %s --print-install-env)"\n' \
-    "$quoted_destination" "$quoted_destination"
+  printf '    eval "$(%s env 2>/dev/null || %s --print-install-env)"\n' "$1" "$1"
 }
 
 # ── Version resolution ───────────────────────────────────────────────────────
@@ -139,36 +130,31 @@ if [ -n "$SCRIPT_DIR" ] && [ -r "${SCRIPT_DIR}/../VERSION" ]; then
   DEFAULT_VERSION="$(tr -d '[:space:]' < "${SCRIPT_DIR}/../VERSION" 2>/dev/null || true)"
 fi
 
-RESOLVED_FROM="default"
+RESOLVED_FROM="fallback 1.2.0"
 if [ -n "${ORCA_VERSION:-}" ]; then
   RESOLVED_FROM="ORCA_VERSION"
 elif [ -n "${DEFAULT_VERSION}" ]; then
   RESOLVED_FROM="local VERSION"
-elif [ -z "${ORCA_VERSION:-}" ]; then
-  # Piped / non-filesystem execution path. Best-effort latest release.
-  for _url in "https://api.github.com/repos/christopherkarani/Orca/releases/latest"; do
-    _resp=""
-    if command -v curl >/dev/null 2>&1; then
-      _resp="$(curl -fsSL --max-time 8 -H "User-Agent: orca-install-script/1.0 (github.com/christopherkarani/Orca)" "$_url" 2>/dev/null || true)"
-    elif command -v wget >/dev/null 2>&1; then
-      _resp="$(wget -qO- --timeout=8 --user-agent="orca-install-script/1.0 (github.com/christopherkarani/Orca)" "$_url" 2>/dev/null || true)"
+else
+  # Piped / non-filesystem path: best-effort latest release.
+  _url="https://api.github.com/repos/christopherkarani/Orca/releases/latest"
+  _resp=""
+  if command -v curl >/dev/null 2>&1; then
+    _resp="$(curl -fsSL --max-time 8 -H "User-Agent: orca-install-script/1.0 (github.com/christopherkarani/Orca)" "$_url" 2>/dev/null || true)"
+  elif command -v wget >/dev/null 2>&1; then
+    _resp="$(wget -qO- --timeout=8 --user-agent="orca-install-script/1.0 (github.com/christopherkarani/Orca)" "$_url" 2>/dev/null || true)"
+  fi
+  if [ -n "${_resp:-}" ]; then
+    _tag="$(printf '%s' "$_resp" | grep -o '"tag_name"[[:space:]]*:[[:space:]]*"[vV]*[^"]*"' | head -n1 | \
+      sed -E 's/.*"tag_name"[[:space:]]*:[[:space:]]*"[vV]?([^"]*)".*/\1/' || true)"
+    if [ -n "${_tag:-}" ]; then
+      DEFAULT_VERSION="$_tag"
+      RESOLVED_FROM="GitHub latest"
     fi
-    if [ -n "${_resp:-}" ]; then
-      _tag="$(printf '%s' "$_resp" | grep -o '"tag_name"[[:space:]]*:[[:space:]]*"[vV]*[^"]*"' | head -n1 | \
-        sed -E 's/.*"tag_name"[[:space:]]*:[[:space:]]*"[vV]?([^"]*)".*/\1/' || true)"
-      if [ -n "${_tag:-}" ]; then
-        DEFAULT_VERSION="$_tag"
-        RESOLVED_FROM="GitHub latest"
-        break
-      fi
-    fi
-  done
+  fi
 fi
 
 VERSION="${ORCA_VERSION:-${DEFAULT_VERSION:-1.2.0}}"
-if [ -z "${ORCA_VERSION:-}" ] && [ -z "${DEFAULT_VERSION}" ]; then
-  RESOLVED_FROM="fallback 1.2.0"
-fi
 BASE_URL="${ORCA_BASE_URL:-https://github.com/christopherkarani/Orca/releases/download/v${VERSION}}"
 INSTALL_DIR="${ORCA_INSTALL_DIR:-${HOME}/.local/bin}"
 SHARE_DIR="${ORCA_SHARE_DIR:-${HOME}/.local/share/orca}"
@@ -178,14 +164,6 @@ ARTIFACT_DIR="${ORCA_ARTIFACT_DIR:-}"
 TMP_DIR="$(mktemp -d "${TMPDIR:-/tmp}/orca-install.XXXXXX")"
 RUNTIME_DIRS="integrations fixtures schemas policies"
 INSTALL_MARKER=".orca-installation"
-
-# Profile notes collected during shell config (printed under Details).
-PATH_NOTE=""
-RESOURCE_NOTE=""
-SHELL_NOTE=""
-DASHBOARD_WARN=0
-INSTALL_MODE="install"
-PREVIOUS_LABEL=""
 
 cleanup() {
   rm -rf "$TMP_DIR"
@@ -212,32 +190,30 @@ detect_arch() {
   esac
 }
 
-download_fail_remediation() {
-  printf 'Check network access and that release v%s exists.
-Retry: ORCA_VERSION=%s curl -fsSL https://raw.githubusercontent.com/christopherkarani/Orca/main/scripts/install.sh | sh' \
-    "$VERSION" "$VERSION"
-}
-
 download() {
   url="$1"
   output="$2"
   if command -v curl >/dev/null 2>&1; then
-    # Progress bar on TTY; silent otherwise (CI / quiet).
-    if [ "$USE_COLOR" -eq 1 ] && [ "$QUIET" -eq 0 ]; then
-      curl -fL --progress-bar "$url" -o "$output" || fail "download failed: $url" "$(download_fail_remediation)"
+    if [ "$SHOW_PROGRESS" -eq 1 ]; then
+      set -- curl -fL --progress-bar "$url" -o "$output"
     else
-      curl -fsSL "$url" -o "$output" || fail "download failed: $url" "$(download_fail_remediation)"
+      set -- curl -fsSL "$url" -o "$output"
     fi
   elif command -v wget >/dev/null 2>&1; then
-    if [ "$USE_COLOR" -eq 1 ] && [ "$QUIET" -eq 0 ]; then
-      wget --show-progress -q "$url" -O "$output" 2>&1 || wget -q "$url" -O "$output" || fail "download failed: $url" "$(download_fail_remediation)"
-    else
-      wget -q "$url" -O "$output" || fail "download failed: $url" "$(download_fail_remediation)"
+    if [ "$SHOW_PROGRESS" -eq 1 ]; then
+      # Fall back if --show-progress is unsupported.
+      wget --show-progress -q "$url" -O "$output" 2>&1 || wget -q "$url" -O "$output" || \
+        fail "download failed: $url" "Check network access and that release v${VERSION} exists.
+Retry: ORCA_VERSION=${VERSION} curl -fsSL https://raw.githubusercontent.com/christopherkarani/Orca/main/scripts/install.sh | sh"
+      return 0
     fi
+    set -- wget -q "$url" -O "$output"
   else
     fail "curl or wget is required to download release artifacts" \
       "Install curl, then re-run the installer."
   fi
+  "$@" || fail "download failed: $url" "Check network access and that release v${VERSION} exists.
+Retry: ORCA_VERSION=${VERSION} curl -fsSL https://raw.githubusercontent.com/christopherkarani/Orca/main/scripts/install.sh | sh"
 }
 
 sha256_file() {
@@ -278,21 +254,14 @@ Offline:  set ORCA_ARTIFACT_DIR after verifying checksums by hand."
   fi
 }
 
-# Probe an existing binary once: sets _PROBE_VERSION when it looks like Orca.
-# Avoids double-invoking the binary for install-mode + version label.
+# Exit 0 if candidate looks like Orca/orca-daemon; print semver (may be empty) on stdout.
 probe_existing_orca() {
   candidate="$1"
-  _PROBE_VERSION=""
   [ -e "$candidate" ] || return 1
   out="$("$candidate" version 2>/dev/null)" || out="$("$candidate" --version 2>/dev/null)" || return 1
   printf '%s\n' "$out" | grep -Eqi '"product"[[:space:]]*:[[:space:]]*"orca"|^orca(-daemon)?([[:space:]]|$)|^[0-9]+\.[0-9]+\.[0-9]+' || return 1
-  # Prefer a dotted semver token (sed for broader POSIX portability than grep -oE).
-  _PROBE_VERSION="$(printf '%s\n' "$out" | sed -n 's/.*\([0-9][0-9]*\.[0-9][0-9]*\.[0-9][0-9]*\).*/\1/p' | head -n1 || true)"
+  printf '%s\n' "$out" | sed -n 's/.*\([0-9][0-9]*\.[0-9][0-9]*\.[0-9][0-9]*\).*/\1/p' | head -n1 || true
   return 0
-}
-
-is_existing_orca() {
-  probe_existing_orca "$1"
 }
 
 safe_install() {
@@ -300,9 +269,7 @@ safe_install() {
   destination="$2"
 
   if [ -e "$destination" ] && [ "${ORCA_INSTALL_FORCE:-0}" != "1" ]; then
-    if is_existing_orca "$destination"; then
-      :
-    else
+    if ! probe_existing_orca "$destination" >/dev/null; then
       fail "refusing to overwrite non-Orca file at $destination" \
         "Set ORCA_INSTALL_FORCE=1 to replace it, or choose another ORCA_INSTALL_DIR."
     fi
@@ -328,8 +295,6 @@ install_runtime_assets() {
   if [ -d "$extract_root/orca-dashboard-ui" ]; then
     rm -rf "$RESOURCE_ROOT/orca-dashboard-ui"
     cp -R "$extract_root/orca-dashboard-ui" "$RESOURCE_ROOT/"
-  else
-    DASHBOARD_WARN=1
   fi
   {
     printf 'orca-runtime-v1\n'
@@ -384,13 +349,10 @@ ensure_path_entry() {
       { print }
     ' "$rc_file" > "$tmp"
     mv "$tmp" "$rc_file"
-    PATH_NOTE="updated PATH in ${rc_file}"
     return 0
   fi
 
   printf '\n%s\n%s\n' "$marker" "$path_line" >> "$rc_file"
-  PATH_NOTE="added PATH in ${rc_file}"
-  SHELL_NOTE="source ${rc_file}  (or open a new terminal)"
 }
 
 ensure_resource_root_entry() {
@@ -418,7 +380,6 @@ ensure_resource_root_entry() {
       { print }
     ' "$rc_file" > "$tmp"
     mv "$tmp" "$rc_file"
-    RESOURCE_NOTE="updated ORCA_RESOURCE_ROOT in ${rc_file}"
     return 0
   fi
 
@@ -426,67 +387,30 @@ ensure_resource_root_entry() {
     printf '\n%s\n' "$marker"
     printf '%s\n' "$resource_line"
   } >> "$rc_file"
-  RESOURCE_NOTE="added ORCA_RESOURCE_ROOT in ${rc_file}"
 }
 
-# Read-only host soft-detect (does not configure hooks — that is orca setup).
-# Format: "name:bin_or_empty:dir_or_empty" — bin checked via command -v; dir via -d.
-detect_hosts() {
-  found=""
-  # openclaw: binary only (no stable home dir). Others: binary or config dir.
-  for spec in \
-    "claude:claude:${HOME}/.claude" \
-    "codex:codex:${HOME}/.codex" \
-    "opencode:opencode:${HOME}/.config/opencode" \
-    "openclaw:openclaw:" \
-    "hermes:hermes:${HOME}/.hermes"
-  do
-    name="${spec%%:*}"
-    rest="${spec#*:}"
-    bin="${rest%%:*}"
-    dir="${rest#*:}"
-    if command -v "$bin" >/dev/null 2>&1; then
-      found="${found} ${name}"
-    elif [ -n "$dir" ] && [ -d "$dir" ]; then
-      found="${found} ${name}"
-    fi
-  done
-  printf '%s' "${found# }"
-}
-
-print_host_hints() {
-  hosts="$1"
-  [ "$QUIET" -eq 1 ] && return 0
-  [ -z "$hosts" ] && return 0
-  printf '\n'
-  printf '  %sDetected hosts%s (not configured yet)\n' "$C_BOLD" "$C_RESET"
-  for h in $hosts; do
-    printf '  %s·%s %-10s %sfound%s\n' "$C_DIM" "$C_RESET" "$h" "$C_DIM" "$C_RESET"
-  done
-  ui_dim "  Wire them with: orca setup"
-}
-
+# previous_version may be empty (fresh), a semver (upgrade/reinstall), or "installed".
 print_success() {
-  hosts="$1"
+  previous_version="$1"
   quoted_destination="$2"
+  missing_dashboard="$3"
 
-  [ "$QUIET" -eq 1 ] && return 0
+  if [ "$QUIET" -eq 1 ]; then
+    print_activation "$quoted_destination"
+    return 0
+  fi
 
   printf '\n'
-  case "$INSTALL_MODE" in
-    upgrade)
-      printf '  %s✓%s  %sOrca v%s installed%s  %s(upgraded from %s)%s\n' \
-        "$C_GREEN" "$C_RESET" "$C_BOLD" "$VERSION" "$C_RESET" "$C_DIM" "$PREVIOUS_LABEL" "$C_RESET"
-      ;;
-    reinstall)
-      printf '  %s✓%s  %sOrca v%s reinstalled%s\n' \
-        "$C_GREEN" "$C_RESET" "$C_BOLD" "$VERSION" "$C_RESET"
-      ;;
-    *)
-      printf '  %s✓%s  %sOrca v%s installed%s\n' \
-        "$C_GREEN" "$C_RESET" "$C_BOLD" "$VERSION" "$C_RESET"
-      ;;
-  esac
+  if [ -n "$previous_version" ] && [ "$previous_version" != "$VERSION" ] && [ "$previous_version" != "installed" ]; then
+    printf '  %s✓%s  %sOrca v%s installed%s  %s(upgraded from %s)%s\n' \
+      "$C_GREEN" "$C_RESET" "$C_BOLD" "$VERSION" "$C_RESET" "$C_DIM" "$previous_version" "$C_RESET"
+  elif [ -n "$previous_version" ]; then
+    printf '  %s✓%s  %sOrca v%s reinstalled%s\n' \
+      "$C_GREEN" "$C_RESET" "$C_BOLD" "$VERSION" "$C_RESET"
+  else
+    printf '  %s✓%s  %sOrca v%s installed%s\n' \
+      "$C_GREEN" "$C_RESET" "$C_BOLD" "$VERSION" "$C_RESET"
+  fi
   ui_dim "  Daemon + runtime ready"
 
   printf '\n'
@@ -502,10 +426,7 @@ print_success() {
   printf '    orca doctor\n'
   printf '    orca setup          %s# guided host wiring (TTY); --auto for CI%s\n' "$C_DIM" "$C_RESET"
 
-  print_host_hints "$hosts"
-
-  # Part of the success receipt (stdout), not a side-channel on stderr.
-  if [ "$DASHBOARD_WARN" -eq 1 ]; then
+  if [ "$missing_dashboard" -eq 1 ]; then
     printf '\n'
     printf '  %s⚠%s %s\n' "$C_YELLOW" "$C_RESET" \
       "Release archive missing orca-dashboard-ui; reinstall a complete artifact for the dashboard."
@@ -516,15 +437,6 @@ print_success() {
   printf '  %s  binary   %s%s\n' "$C_DIM" "$DESTINATION" "$C_RESET"
   printf '  %s  daemon   %s%s\n' "$C_DIM" "$DAEMON_DESTINATION" "$C_RESET"
   printf '  %s  assets   %s → %s%s\n' "$C_DIM" "$CURRENT_LINK" "$RESOURCE_ROOT" "$C_RESET"
-  if [ -n "$PATH_NOTE" ]; then
-    printf '  %s  path     %s%s\n' "$C_DIM" "$PATH_NOTE" "$C_RESET"
-  fi
-  if [ -n "$RESOURCE_NOTE" ]; then
-    printf '  %s  env      %s%s\n' "$C_DIM" "$RESOURCE_NOTE" "$C_RESET"
-  fi
-  if [ -n "$SHELL_NOTE" ]; then
-    printf '  %s  shell    %s%s\n' "$C_DIM" "$SHELL_NOTE" "$C_RESET"
-  fi
   printf '\n'
 }
 
@@ -536,28 +448,24 @@ ARTIFACT="orca-v${VERSION}-${OS}-${ARCH}.tar.gz"
 DESTINATION="$INSTALL_DIR/orca"
 DAEMON_DESTINATION="$INSTALL_DIR/orca-daemon"
 
-# Detect existing install before overwrite (single binary probe for mode + label).
-if probe_existing_orca "$DESTINATION"; then
-  PREVIOUS_LABEL="$_PROBE_VERSION"
-  if [ -n "$PREVIOUS_LABEL" ] && [ "$PREVIOUS_LABEL" != "$VERSION" ]; then
-    INSTALL_MODE="upgrade"
-  else
-    INSTALL_MODE="reinstall"
-    if [ -z "$PREVIOUS_LABEL" ]; then
-      PREVIOUS_LABEL="installed"
-    fi
+# Empty = fresh install; semver or "installed" = existing CLI at destination.
+PREVIOUS_VERSION=""
+if previous_out="$(probe_existing_orca "$DESTINATION")"; then
+  PREVIOUS_VERSION="$previous_out"
+  if [ -z "$PREVIOUS_VERSION" ]; then
+    PREVIOUS_VERSION="installed"
   fi
 fi
 
 print_banner "$VERSION" "${OS}/${ARCH}" "$INSTALL_DIR"
 
-step_done "Resolve release" "v${VERSION} (${RESOLVED_FROM})"
-
-if [ "$INSTALL_MODE" = "upgrade" ]; then
-  ui_info "Upgrading ${PREVIOUS_LABEL} → ${VERSION}"
-elif [ "$INSTALL_MODE" = "reinstall" ]; then
-  ui_info "Reinstalling v${VERSION}"
+resolve_detail="v${VERSION} (${RESOLVED_FROM})"
+if [ -n "$PREVIOUS_VERSION" ] && [ "$PREVIOUS_VERSION" != "$VERSION" ] && [ "$PREVIOUS_VERSION" != "installed" ]; then
+  resolve_detail="${resolve_detail}; upgrading ${PREVIOUS_VERSION} → ${VERSION}"
+elif [ -n "$PREVIOUS_VERSION" ]; then
+  resolve_detail="${resolve_detail}; reinstall"
 fi
+step_done "Resolve release" "$resolve_detail"
 
 if [ -n "$ARTIFACT_DIR" ]; then
   [ -f "$ARTIFACT_DIR/$ARTIFACT" ] || fail "artifact not found: $ARTIFACT_DIR/$ARTIFACT" \
@@ -568,7 +476,6 @@ if [ -n "$ARTIFACT_DIR" ]; then
   cp "$ARTIFACT_DIR/checksums.txt" "$TMP_DIR/checksums.txt"
   step_done "Use local artifacts" "$ARTIFACT_DIR"
 else
-  # Active marker only for the network-bound phase (can take a while).
   step_active "Download archive"
   download "$BASE_URL/$ARTIFACT" "$TMP_DIR/$ARTIFACT"
   download "$BASE_URL/checksums.txt" "$TMP_DIR/checksums.txt"
@@ -579,9 +486,7 @@ verify_checksum "$ARTIFACT" "$TMP_DIR/$ARTIFACT" "$TMP_DIR/checksums.txt"
 step_done "Verify SHA-256" "ok"
 
 step_active "Install binaries + runtime"
-# Extract while suppressing only the harmless macOS provenance xattr noise that appears
-# when Linux extracts tarballs produced on macOS (or that carry extended attributes).
-# Real tar failures still cause the script to abort via the subsequent checks.
+# Suppress only harmless macOS provenance xattr noise from Linux tar of macOS archives.
 tar -xzf "$TMP_DIR/$ARTIFACT" -C "$TMP_DIR" 2>"$TMP_DIR/.tar.err" || {
   grep -v 'LIBARCHIVE.xattr.com.apple.provenance' "$TMP_DIR/.tar.err" | \
     grep -v 'Ignoring unknown extended header keyword' >&2 || true
@@ -611,13 +516,9 @@ ensure_path_entry "$INSTALL_DIR"
 ensure_resource_root_entry "$CURRENT_LINK"
 step_done "Configure shell" "PATH + ORCA_RESOURCE_ROOT"
 
-# Host soft-detect (read-only) after install so PATH may include more tools.
-DETECTED_HOSTS="$(detect_hosts)"
-quoted_destination="$(shell_quote "$DESTINATION")"
-
-print_success "$DETECTED_HOSTS" "$quoted_destination"
-
-# Quiet mode still prints the activation line so automation can parse it.
-if [ "$QUIET" -eq 1 ]; then
-  print_activation "$quoted_destination"
+MISSING_DASHBOARD=0
+if [ ! -d "$RESOURCE_ROOT/orca-dashboard-ui" ]; then
+  MISSING_DASHBOARD=1
 fi
+
+print_success "$PREVIOUS_VERSION" "$(shell_quote "$DESTINATION")" "$MISSING_DASHBOARD"
