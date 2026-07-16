@@ -191,6 +191,13 @@ fn parseShowOptions(argv: []const []const u8, stderr: anytype) !ShowOptions {
     return options;
 }
 
+fn trackSanitized(allocator: std.mem.Allocator, owned: *std.ArrayListUnmanaged([]u8), value: []const u8) ![]u8 {
+    const safe = try tui.terminal_text.sanitizeAlloc(allocator, value, .single_line);
+    errdefer allocator.free(safe);
+    try owned.append(allocator, safe);
+    return safe;
+}
+
 fn renderShowHuman(
     allocator: std.mem.Allocator,
     io: std.Io,
@@ -207,12 +214,9 @@ fn renderShowHuman(
         owned.deinit(allocator);
     }
 
-    const safe_id = try tui.terminal_text.sanitizeAlloc(allocator, detail.id, .single_line);
-    try owned.append(allocator, safe_id);
-    const safe_name = try tui.terminal_text.sanitizeAlloc(allocator, detail.name, .single_line);
-    try owned.append(allocator, safe_name);
-    const safe_desc = try tui.terminal_text.sanitizeAlloc(allocator, detail.description, .single_line);
-    try owned.append(allocator, safe_desc);
+    const safe_id = try trackSanitized(allocator, &owned, detail.id);
+    const safe_name = try trackSanitized(allocator, &owned, detail.name);
+    const safe_desc = try trackSanitized(allocator, &owned, detail.description);
 
     try tui.theme.paintBold(io, stdout, .text_bright, "Safety pack");
     try stdout.writeAll("  ");
@@ -226,8 +230,7 @@ fn renderShowHuman(
     try stdout.writeAll(safe_name);
     try stdout.writeAll("\n");
     if (category.len > 0) {
-        const safe_cat = try tui.terminal_text.sanitizeAlloc(allocator, category, .single_line);
-        try owned.append(allocator, safe_cat);
+        const safe_cat = try trackSanitized(allocator, &owned, category);
         try stdout.writeAll("Category     ");
         try stdout.writeAll(safe_cat);
         try stdout.writeAll("\n");
@@ -243,12 +246,9 @@ fn renderShowHuman(
             try tui.theme.paintBold(io, stdout, .text_bright, "Destructive rules");
             try stdout.print(" ({d})\n", .{destructive.len});
             for (destructive) |rule| {
-                const name = try tui.terminal_text.sanitizeAlloc(allocator, rule.name, .single_line);
-                try owned.append(allocator, name);
-                const severity = try tui.terminal_text.sanitizeAlloc(allocator, rule.severity, .single_line);
-                try owned.append(allocator, severity);
-                const reason = try tui.terminal_text.sanitizeAlloc(allocator, rule.reason, .single_line);
-                try owned.append(allocator, reason);
+                const name = try trackSanitized(allocator, &owned, rule.name);
+                const severity = try trackSanitized(allocator, &owned, rule.severity);
+                const reason = try trackSanitized(allocator, &owned, rule.reason);
                 try stdout.writeAll("  • ");
                 try tui.theme.paintBold(io, stdout, .danger, name);
                 try stdout.writeAll("  ");
@@ -257,22 +257,19 @@ fn renderShowHuman(
                 try tui.render.writeWrappedWidth(stdout, reason, 4, 80);
                 try stdout.writeAll("\n");
                 if (rule.explanation) |explanation| {
-                    const expl = try tui.terminal_text.sanitizeAlloc(allocator, explanation, .single_line);
-                    try owned.append(allocator, expl);
+                    const expl = try trackSanitized(allocator, &owned, explanation);
                     try stdout.writeAll("    ");
                     try tui.render.writeWrappedWidth(stdout, expl, 4, 80);
                     try stdout.writeAll("\n");
                 }
                 for (rule.suggestions) |sug| {
-                    const cmd = try tui.terminal_text.sanitizeAlloc(allocator, sug.command, .single_line);
-                    try owned.append(allocator, cmd);
+                    const cmd = try trackSanitized(allocator, &owned, sug.command);
                     try stdout.writeAll("    Try: ");
                     try stdout.writeAll(cmd);
                     try stdout.writeAll("\n");
                 }
                 if (verbose and rule.regex.len > 0) {
-                    const rx = try tui.terminal_text.sanitizeAlloc(allocator, rule.regex, .single_line);
-                    try owned.append(allocator, rx);
+                    const rx = try trackSanitized(allocator, &owned, rule.regex);
                     try stdout.writeAll("    regex: ");
                     try stdout.writeAll(rx);
                     try stdout.writeAll("\n");
@@ -288,12 +285,10 @@ fn renderShowHuman(
             for (safe) |rule| {
                 if (!first) try stdout.writeAll(", ");
                 first = false;
-                const name = try tui.terminal_text.sanitizeAlloc(allocator, rule.name, .single_line);
-                try owned.append(allocator, name);
+                const name = try trackSanitized(allocator, &owned, rule.name);
                 try stdout.writeAll(name);
                 if (verbose and rule.regex.len > 0) {
-                    const rx = try tui.terminal_text.sanitizeAlloc(allocator, rule.regex, .single_line);
-                    try owned.append(allocator, rx);
+                    const rx = try trackSanitized(allocator, &owned, rule.regex);
                     try stdout.writeAll(" (");
                     try stdout.writeAll(rx);
                     try stdout.writeAll(")");
