@@ -6,6 +6,7 @@ const builtin = @import("builtin");
 pub const EnvOverrideTrust = enum {
     trusted,
     untrusted_world_writable,
+    untrusted_owner,
     untrusted_symlink,
     untrusted_stat_unavailable,
 };
@@ -13,25 +14,26 @@ pub const EnvOverrideTrust = enum {
 /// Assess whether an `ORCA_DAEMON` path is safe to execute.
 /// Stat failures are treated as untrusted (fail-closed for env overrides).
 ///
-/// Symlinks are allowed when both the override path and its resolved target
-/// (and their ancestors) are not world-writable. Homebrew-style installs place
-/// a symlink under a safe prefix pointing at a Cellar binary; rejecting every
-/// symlink breaks those installs without improving trust.
+/// Trust rules (POSIX):
+/// - Symlinks are allowed when the override path and its resolved target (and
+///   their ancestors) are not group/world-writable. Homebrew-style installs
+///   place a symlink under a safe prefix pointing at a Cellar binary.
+/// - Binary owner must be the current euid or root (uid 0).
+/// - Binary mode must not be group- or world-writable (`mode & 0o022 == 0`).
+/// - Ancestors of the path must not be group- or world-writable.
 pub fn assessEnvOverridePath(io: std.Io, allocator: std.mem.Allocator, path: []const u8) EnvOverrideTrust {
-    // POSIX trust checks (symlink + world-writable) do not map cleanly to Win32
-    // ACLs yet. Refuse env overrides on Windows until ACL-based checks exist —
-    // fail closed rather than treating every override as trusted.
+    // POSIX trust checks do not map cleanly to Win32 ACLs yet. Refuse env
+    // overrides on Windows until ACL-based checks exist — fail closed rather
+    // than treating every override as trusted.
     if (builtin.os.tag == .windows) return .untrusted_stat_unavailable;
 
-    // Parent of the override path must not be world-writable: otherwise an
+    // Parent of the override path must not be group/world-writable: otherwise an
     // attacker can replace a symlink (or the binary) after our check.
-    if (hasWorldWritableAncestor(io, path)) return .untrusted_world_writable;
+    if (hasWritableByOthersAncestor(io, path)) return .untrusted_world_writable;
 
     const link_stat = std.Io.Dir.cwd().statFile(io, path, .{ .follow_symlinks = false }) catch return .untrusted_stat_unavailable;
     if (link_stat.kind == .sym_link) {
         // Resolve to the final target and apply the same trust rules there.
-        // A symlink into a world-writable tree remains untrusted; a symlink
-        // into a safe Cellar path is trusted.
         const resolved = std.Io.Dir.cwd().realPathFileAlloc(io, path, allocator) catch return .untrusted_stat_unavailable;
         defer allocator.free(resolved);
         return assessResolvedPath(io, resolved);
@@ -44,19 +46,24 @@ fn assessResolvedPath(io: std.Io, path: []const u8) EnvOverrideTrust {
     const stat = std.Io.Dir.cwd().statFile(io, path, .{}) catch return .untrusted_stat_unavailable;
     // realpath should have flattened remaining links; if not, fail closed.
     if (stat.kind == .sym_link) return .untrusted_symlink;
-    if (isWorldWritable(stat.permissions.toMode())) return .untrusted_world_writable;
-    return if (hasWorldWritableAncestor(io, path)) .untrusted_world_writable else .trusted;
+    if (isWritableByOthers(stat.permissions.toMode())) return .untrusted_world_writable;
+    if (hasWritableByOthersAncestor(io, path)) return .untrusted_world_writable;
+
+    const owner = pathOwnerUid(io, path) catch return .untrusted_stat_unavailable;
+    if (!ownerIsTrusted(owner)) return .untrusted_owner;
+    return .trusted;
 }
 
-fn isWorldWritable(mode: std.posix.mode_t) bool {
-    return (mode & 0o002) != 0;
+/// Group- or world-writable bits (SSH/OpenBSD-style: only owner may write).
+fn isWritableByOthers(mode: std.posix.mode_t) bool {
+    return (mode & 0o022) != 0;
 }
 
-fn hasWorldWritableAncestor(io: std.Io, path: []const u8) bool {
+fn hasWritableByOthersAncestor(io: std.Io, path: []const u8) bool {
     var ancestor = std.fs.path.dirname(path);
     while (ancestor) |directory| {
         const stat = std.Io.Dir.cwd().statFile(io, directory, .{}) catch return true;
-        if (isWorldWritable(stat.permissions.toMode())) return true;
+        if (isWritableByOthers(stat.permissions.toMode())) return true;
         const parent = std.fs.path.dirname(directory);
         // Guard against root self-parent edge cases (dirname("/") may be null or "/").
         if (parent) |p| {
@@ -66,7 +73,24 @@ fn hasWorldWritableAncestor(io: std.Io, path: []const u8) bool {
     }
     if (std.fs.path.isAbsolute(path)) return false;
     const cwd_stat = std.Io.Dir.cwd().statFile(io, ".", .{}) catch return true;
-    return isWorldWritable(cwd_stat.permissions.toMode());
+    return isWritableByOthers(cwd_stat.permissions.toMode());
+}
+
+fn ownerIsTrusted(uid: std.posix.system.uid_t) bool {
+    const euid = std.posix.system.geteuid();
+    return uid == euid or uid == 0;
+}
+
+fn pathOwnerUid(io: std.Io, path: []const u8) !std.posix.system.uid_t {
+    // Prefer open+fstat: path-based `stat` is not uniformly exposed via std.c on
+    // all Zig 0.16 targets, while fstat on an open fd is stable.
+    const file = std.Io.Dir.cwd().openFile(io, path, .{}) catch return error.StatFailed;
+    defer file.close(io);
+
+    var st: std.posix.system.Stat = undefined;
+    const rc = std.posix.system.fstat(file.handle, &st);
+    if (rc != 0) return error.StatFailed;
+    return st.uid;
 }
 
 pub fn isEnvOverrideUntrusted(io: std.Io, allocator: std.mem.Allocator, path: []const u8) bool {
@@ -90,6 +114,22 @@ test "assessEnvOverridePath detects world-writable binary path" {
     try std.testing.expectEqual(.trusted, assessEnvOverridePath(std.testing.io, std.testing.allocator, path));
 
     try tmp.dir.setFilePermissions(std.testing.io, "orca-daemon", std.Io.File.Permissions.fromMode(0o777), .{});
+    try std.testing.expectEqual(.untrusted_world_writable, assessEnvOverridePath(std.testing.io, std.testing.allocator, path));
+}
+
+test "assessEnvOverridePath rejects group-writable binary" {
+    if (builtin.os.tag == .windows) return;
+
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const file = try tmp.dir.createFile(std.testing.io, "orca-daemon", .{});
+    defer file.close(std.testing.io);
+    try file.writeStreamingAll(std.testing.io, "#!/bin/sh\nexit 0\n");
+    try tmp.dir.setFilePermissions(std.testing.io, "orca-daemon", std.Io.File.Permissions.fromMode(0o775), .{});
+
+    const path = try tmp.dir.realPathFileAlloc(std.testing.io, "orca-daemon", std.testing.allocator);
+    defer std.testing.allocator.free(path);
     try std.testing.expectEqual(.untrusted_world_writable, assessEnvOverridePath(std.testing.io, std.testing.allocator, path));
 }
 
@@ -174,4 +214,12 @@ test "assessEnvOverridePath treats missing path as stat-unavailable" {
     const missing = try std.fs.path.join(std.testing.allocator, &.{ root, "orca-daemon-trust-missing-deadbeef" });
     defer std.testing.allocator.free(missing);
     try std.testing.expectEqual(.untrusted_stat_unavailable, assessEnvOverridePath(std.testing.io, std.testing.allocator, missing));
+}
+
+test "ownerIsTrusted accepts euid and root only" {
+    if (builtin.os.tag == .windows) return;
+    const euid = std.posix.system.geteuid();
+    try std.testing.expect(ownerIsTrusted(euid));
+    try std.testing.expect(ownerIsTrusted(0));
+    if (euid != 1) try std.testing.expect(!ownerIsTrusted(1));
 }

@@ -29,15 +29,62 @@ $ResourceRoot = if ($env:ORCA_RESOURCE_ROOT) { $env:ORCA_RESOURCE_ROOT } else { 
 $CurrentLink = Join-Path $ShareDir "current"
 $RuntimeDirs = @("integrations", "fixtures", "schemas", "policies")
 
-function Fail($Message) {
-    Write-Error "orca install: $Message"
+$Quiet = ($env:ORCA_INSTALL_QUIET -eq "1")
+# Errors may still use color when the host supports it; quiet only suppresses non-error UI.
+$HostSupportsColor = -not $env:NO_COLOR -and ($null -ne $Host.UI.RawUI)
+$UseColor = -not $Quiet -and $HostSupportsColor
+
+function Write-Ui([string]$Message, [ConsoleColor]$Color = [ConsoleColor]::Gray) {
+    if ($Quiet) { return }
+    if ($UseColor) {
+        Write-Host $Message -ForegroundColor $Color
+    } else {
+        Write-Host $Message
+    }
+}
+
+function Write-HostColor([string]$Message, [ConsoleColor]$Color) {
+    if ($HostSupportsColor) {
+        Write-Host $Message -ForegroundColor $Color
+    } else {
+        Write-Host $Message
+    }
+}
+
+function Write-StepDone([string]$Label, [string]$Detail = "") {
+    if ($Detail) {
+        Write-Ui ("  + " + $Label + "  " + $Detail) Green
+    } else {
+        Write-Ui ("  + " + $Label) Green
+    }
+}
+
+function Write-StepActive([string]$Label) {
+    Write-Ui ("  > " + $Label) Green
+}
+
+function Write-Activation {
+    # Always printed (including quiet) so automation can hand off to orca env.
+    Write-Host "    orca env   # then evaluate the set commands (or copy them for cmd.exe)"
+}
+
+function Fail($Message, $Remediation = $null) {
+    Write-Host ""
+    Write-HostColor ("  x " + $Message) Red
+    if ($Remediation) {
+        foreach ($line in ($Remediation -split "`n")) {
+            if ($line) { Write-HostColor ("    " + $line) DarkGray }
+        }
+    }
+    Write-Host ""
+    Write-HostColor "  Docs  https://github.com/christopherkarani/Orca/blob/main/docs/install.md" DarkGray
     exit 1
 }
 
 function Detect-OS {
     if ($env:ORCA_OS_OVERRIDE) { return $env:ORCA_OS_OVERRIDE.ToLowerInvariant() }
     if ($IsWindows -or $env:OS -eq "Windows_NT") { return "windows" }
-    Fail "unsupported operating system for install.ps1"
+    Fail "unsupported operating system for install.ps1" "Use scripts/install.sh on macOS/Linux."
 }
 
 function Detect-Arch {
@@ -46,7 +93,7 @@ function Detect-Arch {
         "x64" { return "amd64" }
         "x86_64" { return "amd64" }
         "amd64" { return "amd64" }
-        default { Fail "unsupported architecture: $arch" }
+        default { Fail "unsupported architecture: $arch" "Supported: amd64 (x64)." }
     }
 }
 
@@ -62,30 +109,36 @@ function Get-ChecksumEntry($ChecksumsPath, $ArtifactName) {
 
 function Verify-Checksum($ArtifactPath, $ChecksumsPath, $ArtifactName) {
     if (-not (Test-Path -LiteralPath $ChecksumsPath)) {
-        Fail "checksums.txt not found; download it and verify manually before installing"
+        Fail "checksums.txt not found" "Download checksums.txt with the archive and verify manually before installing."
     }
     $expected = Get-ChecksumEntry $ChecksumsPath $ArtifactName
-    if (-not $expected) { Fail "no checksum entry found for $ArtifactName" }
+    if (-not $expected) { Fail "no checksum entry found for $ArtifactName" "The release checksums.txt may not list this platform artifact yet." }
     $actual = (Get-FileHash -Algorithm SHA256 -LiteralPath $ArtifactPath).Hash.ToLowerInvariant()
-    if ($expected -ne $actual) { Fail "checksum mismatch for $ArtifactName" }
+    if ($expected -ne $actual) {
+        Fail "checksum mismatch for $ArtifactName" @"
+Expected: $expected
+Got:      $actual
+Refuse to install a corrupted or tampered archive.
+"@
+    }
 }
 
-function Test-ExistingOrca($Path) {
+# Returns $null when path is missing or not Orca; otherwise @{ Version = <semver or $null> }.
+# Matches CLI and daemon: product JSON, ^orca(-daemon)?, or a bare semver line.
+function Get-ExistingOrcaInfo($Path) {
+    if (-not (Test-Path -LiteralPath $Path)) { return $null }
     try {
         $output = & $Path version 2>$null | Out-String
     } catch {
-        return $false
+        return $null
     }
-    return [bool]($output -match '"product"\s*:\s*"orca"|^orca(\s|$)')
-}
-
-function Test-ExistingOrcaDaemon($Path) {
-    try {
-        $output = (& $Path version 2>$null | Out-String).Trim()
-    } catch {
-        return $false
+    if (-not ($output -match '"product"\s*:\s*"orca"|^orca(-daemon)?(\s|$)|^\d+\.\d+\.\d+')) {
+        return $null
     }
-    return [bool]($output -match '^\d+\.\d+\.\d+')
+    $version = $null
+    $m = [regex]::Match($output, '\d+\.\d+\.\d+')
+    if ($m.Success) { $version = $m.Value }
+    return @{ Version = $version }
 }
 
 function Install-RuntimeAssets($ExtractRoot) {
@@ -93,7 +146,7 @@ function Install-RuntimeAssets($ExtractRoot) {
     foreach ($dir in $RuntimeDirs) {
         $source = Join-Path $ExtractRoot $dir
         if (-not (Test-Path -LiteralPath $source)) {
-            Fail "release archive missing runtime directory: $dir"
+            Fail "release archive missing runtime directory: $dir" "Re-download the official release artifact for v$Version."
         }
         $dest = Join-Path $ResourceRoot $dir
         if (Test-Path -LiteralPath $dest) {
@@ -139,7 +192,6 @@ function Ensure-ResourceRootEntry($TargetRoot) {
             [void]$updated.Add($line)
         }
         Set-Content -LiteralPath $profilePath -Value $updated
-        Write-Host "Updated ORCA_RESOURCE_ROOT=$TargetRoot in $profilePath"
         return
     }
 
@@ -148,7 +200,47 @@ function Ensure-ResourceRootEntry($TargetRoot) {
         $marker,
         "`$env:ORCA_RESOURCE_ROOT = `"$TargetRoot`""
     ) | Add-Content -LiteralPath $profilePath
-    Write-Host "Added ORCA_RESOURCE_ROOT=$TargetRoot to $profilePath"
+}
+
+function Write-SuccessReceipt {
+    param(
+        [string]$PreviousVersion,
+        [string]$Destination,
+        [string]$DaemonDestination
+    )
+
+    if ($Quiet) {
+        Write-Activation
+        return
+    }
+
+    Write-Host ""
+    if ($PreviousVersion -and $PreviousVersion -ne $Version -and $PreviousVersion -ne "installed") {
+        Write-Ui ("  +  Orca v" + $Version + " installed  (upgraded from " + $PreviousVersion + ")") Green
+    } elseif ($PreviousVersion) {
+        Write-Ui ("  +  Orca v" + $Version + " reinstalled") Green
+    } else {
+        Write-Ui ("  +  Orca v" + $Version + " installed") Green
+    }
+    Write-Ui "  Daemon + runtime ready" DarkGray
+    Write-Host ""
+    Write-Ui "  Activate this session" White
+    Write-Ui "  (InstallDir may not be on PATH yet)" DarkGray
+    Write-Host ""
+    Write-Activation
+    Write-Host ""
+    Write-Ui "  Profile exports were also written for future sessions." DarkGray
+    Write-Host ""
+    Write-Ui "  Then" White
+    Write-Host "    orca doctor"
+    Write-Host "    orca setup          # guided host wiring (default on interactive terminals)"
+
+    Write-Host ""
+    Write-Ui "  Details" DarkGray
+    Write-Ui ("    binary   " + $Destination) DarkGray
+    Write-Ui ("    daemon   " + $DaemonDestination) DarkGray
+    Write-Ui ("    assets   " + $CurrentLink + " -> " + $ResourceRoot) DarkGray
+    Write-Host ""
 }
 
 $os = Detect-OS
@@ -159,64 +251,97 @@ $artifact = "orca-v$Version-windows-$arch.zip"
 $tempDir = Join-Path ([System.IO.Path]::GetTempPath()) "orca-install-$([System.Guid]::NewGuid().ToString('N'))"
 New-Item -ItemType Directory -Path $tempDir | Out-Null
 
+$destination = Join-Path $InstallDir "orca.exe"
+$daemonDestination = Join-Path $InstallDir "orca-daemon.exe"
+
+# Empty = fresh; semver or "installed" = existing CLI at destination.
+$previousVersion = $null
+$existingCli = Get-ExistingOrcaInfo $destination
+if ($existingCli) {
+    $previousVersion = $existingCli.Version
+    if (-not $previousVersion) { $previousVersion = "installed" }
+}
+
+if (-not $Quiet) {
+    Write-Host ""
+    Write-Ui ("  Orca · v" + $Version) Cyan
+    Write-Ui "  --------------------------------" DarkGray
+    Write-Ui "  Agent runtime protection · policy + daemon" DarkGray
+    Write-Host ("  Platform  " + $os + "/" + $arch)
+    Write-Host ("  Target    " + $InstallDir)
+    Write-Host ""
+}
+
 try {
     $artifactPath = Join-Path $tempDir $artifact
     $checksumsPath = Join-Path $tempDir "checksums.txt"
 
+    $resolveDetail = "v" + $Version
+    if ($previousVersion -and $previousVersion -ne $Version -and $previousVersion -ne "installed") {
+        $resolveDetail = $resolveDetail + "; upgrading " + $previousVersion + " -> " + $Version
+    } elseif ($previousVersion) {
+        $resolveDetail = $resolveDetail + "; reinstall"
+    }
+    Write-StepDone "Resolve release" $resolveDetail
+
     if ($ArtifactDir) {
         $localArtifact = Join-Path $ArtifactDir $artifact
         $localChecksums = Join-Path $ArtifactDir "checksums.txt"
-        if (-not (Test-Path -LiteralPath $localArtifact)) { Fail "artifact not found: $localArtifact" }
-        if (-not (Test-Path -LiteralPath $localChecksums)) { Fail "checksums.txt not found in $ArtifactDir" }
+        if (-not (Test-Path -LiteralPath $localArtifact)) {
+            Fail "artifact not found: $localArtifact" "Expected $artifact under ORCA_ARTIFACT_DIR."
+        }
+        if (-not (Test-Path -LiteralPath $localChecksums)) {
+            Fail "checksums.txt not found in $ArtifactDir" "Place checksums.txt next to the archive for offline install."
+        }
         Copy-Item -LiteralPath $localArtifact -Destination $artifactPath
         Copy-Item -LiteralPath $localChecksums -Destination $checksumsPath
+        Write-StepDone "Use local artifacts" $ArtifactDir
     } else {
+        Write-StepActive "Download archive"
         Invoke-WebRequest -Uri "$BaseUrl/$artifact" -OutFile $artifactPath
         Invoke-WebRequest -Uri "$BaseUrl/checksums.txt" -OutFile $checksumsPath
+        Write-StepDone "Download archive" $artifact
     }
 
     Verify-Checksum $artifactPath $checksumsPath $artifact
+    Write-StepDone "Verify SHA-256" "ok"
+
+    Write-StepActive "Install binaries + runtime"
     Expand-Archive -LiteralPath $artifactPath -DestinationPath $tempDir -Force
     $extractRoot = Get-ChildItem -LiteralPath $tempDir -Directory | Where-Object { $_.Name -like "orca-v*" } | Select-Object -First 1
-    if (-not $extractRoot) { Fail "artifact did not contain an extracted release root" }
+    if (-not $extractRoot) {
+        Fail "artifact did not contain an extracted release root" "Unexpected archive layout for $artifact."
+    }
     $binary = Get-ChildItem -LiteralPath $extractRoot.FullName -Recurse -File -Filter "orca.exe" | Select-Object -First 1
-    if (-not $binary) { Fail "artifact did not contain orca.exe" }
+    if (-not $binary) {
+        Fail "artifact did not contain orca.exe" "Unexpected archive layout for $artifact."
+    }
     $daemonBinary = Get-ChildItem -LiteralPath $extractRoot.FullName -Recurse -File -Filter "orca-daemon.exe" | Select-Object -First 1
-    if (-not $daemonBinary) { Fail "artifact did not contain orca-daemon.exe" }
+    if (-not $daemonBinary) {
+        Fail "artifact did not contain orca-daemon.exe" "Unexpected archive layout for $artifact."
+    }
 
     New-Item -ItemType Directory -Force -Path $InstallDir | Out-Null
-    $destination = Join-Path $InstallDir "orca.exe"
-    $daemonDestination = Join-Path $InstallDir "orca-daemon.exe"
     if ((Test-Path -LiteralPath $destination) -and $env:ORCA_INSTALL_FORCE -ne "1") {
-        if (-not (Test-ExistingOrca $destination)) {
-            Fail "refusing to overwrite non-Orca file at $destination; set ORCA_INSTALL_FORCE=1 to replace it"
+        if (-not (Get-ExistingOrcaInfo $destination)) {
+            Fail "refusing to overwrite non-Orca file at $destination" "Set ORCA_INSTALL_FORCE=1 to replace it, or choose another ORCA_INSTALL_DIR."
         }
     }
     if ((Test-Path -LiteralPath $daemonDestination) -and $env:ORCA_INSTALL_FORCE -ne "1") {
-        if (-not (Test-ExistingOrcaDaemon $daemonDestination)) {
-            Fail "refusing to overwrite non-Orca file at $daemonDestination; set ORCA_INSTALL_FORCE=1 to replace it"
+        if (-not (Get-ExistingOrcaInfo $daemonDestination)) {
+            Fail "refusing to overwrite non-Orca file at $daemonDestination" "Set ORCA_INSTALL_FORCE=1 to replace it, or choose another ORCA_INSTALL_DIR."
         }
     }
 
     Copy-Item -LiteralPath $binary.FullName -Destination $destination -Force
     Copy-Item -LiteralPath $daemonBinary.FullName -Destination $daemonDestination -Force
     Install-RuntimeAssets $extractRoot.FullName
+    Write-StepDone "Install binaries + runtime" "orca.exe, orca-daemon.exe, assets"
 
-    Write-Host "Installed Orca to $destination"
-    Write-Host "Installed Orca daemon to $daemonDestination"
-    Write-Host "Installed runtime assets to $ResourceRoot"
-    Write-Host "Current runtime link: $CurrentLink -> $ResourceRoot"
-    Write-Host "ORCA_RESOURCE_ROOT=$CurrentLink"
     Ensure-ResourceRootEntry $CurrentLink
-    Write-Host ""
-    Write-Host "To use orca in this PowerShell session (before restarting or reloading `$PROFILE), run:"
-    Write-Host "  orca env   # then evaluate the set commands (or copy them for cmd.exe)"
-    Write-Host ""
-    Write-Host "Next steps:"
-    Write-Host "  orca --version"
-    Write-Host "  orca doctor"
-    Write-Host "  orca setup          # guided interactive host selection (default on interactive terminals)"
-    Write-Host "  (optional) orca plugin list"
+    Write-StepDone "Configure shell" "ORCA_RESOURCE_ROOT"
+
+    Write-SuccessReceipt -PreviousVersion $previousVersion -Destination $destination -DaemonDestination $daemonDestination
 } finally {
     Remove-Item -LiteralPath $tempDir -Recurse -Force -ErrorAction SilentlyContinue
 }

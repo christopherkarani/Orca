@@ -14,7 +14,7 @@ pub fn shellUnavailableReason(err: anyerror) []const u8 {
         error.HomeDirectoryNotFound => "daemon unavailable: HOME not set",
         error.DaemonBinaryNotFound => "daemon unavailable: orca-daemon binary not found",
         error.DaemonBinaryNotExecutable => "daemon unavailable: orca-daemon is not executable",
-        error.DaemonBinaryUntrusted => "daemon unavailable: ORCA_DAEMON points at an untrusted path (world-writable binary/ancestor, or unstatable)",
+        error.DaemonBinaryUntrusted => "daemon unavailable: ORCA_DAEMON points at an untrusted path (group/world-writable, wrong owner, or unstatable)",
         error.DaemonSpawnFailed => "daemon unavailable: failed to spawn orca-daemon",
         error.DaemonStartTimeout => "daemon unavailable: startup timed out",
         error.DaemonNotReady => "daemon unavailable: daemon not ready",
@@ -100,7 +100,7 @@ fn detail(err: anyerror, audience: Audience, probe: ProbeContext) []const u8 {
             .version => "orca-daemon was found but is not executable.",
         },
         error.DaemonBinaryUntrusted => switch (audience) {
-            .doctor => "ORCA_DAEMON points at an untrusted path (world-writable binary/ancestor, or unstatable); unset it or choose a trusted orca-daemon binary. Safe symlinks (e.g. Homebrew) are allowed when the target is trusted.",
+            .doctor => "ORCA_DAEMON points at an untrusted path (group/world-writable binary or ancestor, owner not euid/root, or unstatable); unset it or choose a trusted orca-daemon binary. Safe symlinks (e.g. Homebrew) are allowed when the target is trusted.",
             .onboarding => "ORCA_DAEMON points at an untrusted path.",
             .version => "ORCA_DAEMON points at an untrusted path.",
         },
