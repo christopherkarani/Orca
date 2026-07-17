@@ -75,10 +75,26 @@ test "hermes plugin readme documents install and limits" {
     try std.testing.expect(std.mem.indexOf(u8, content, "install-orca-plugin.sh hermes") != null);
     try std.testing.expect(std.mem.indexOf(u8, content, "pre_gateway_dispatch") != null);
     try std.testing.expect(std.mem.indexOf(u8, content, "orca run -- hermes") != null);
-    try std.testing.expect(std.mem.indexOf(u8, content, "`block`, `warn`, and `ask`") != null);
-    try std.testing.expect(std.mem.indexOf(u8, content, "context-only") != null);
+    try std.testing.expect(std.mem.indexOf(u8, content, "context-only") != null or std.mem.indexOf(u8, content, "Context-only") != null);
     try std.testing.expect(std.mem.indexOf(u8, content, "Telegram and Discord") != null);
-    try std.testing.expect(std.mem.indexOf(u8, content, "native approval dialog") != null);
+    // Native approve-and-resume for tool ask (not block-without-resume).
+    try std.testing.expect(std.mem.indexOf(u8, content, "approve") != null);
+    try std.testing.expect(std.mem.indexOf(u8, content, "rule_key") != null);
+    try std.testing.expect(std.mem.indexOf(u8, content, "approve-and-resume") != null);
+    // Must not claim passive notes or clarify are the approval mechanism.
+    try std.testing.expect(std.mem.indexOf(u8, content, "tell the model to call") == null);
+}
+
+test "hermes plugin source maps ask to approve not permanent block" {
+    const content = try readFile(std.testing.allocator, source_path);
+    defer std.testing.allocator.free(content);
+
+    try std.testing.expect(std.mem.indexOf(u8, content, "\"approve\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, content, "rule_key") != null);
+    try std.testing.expect(std.mem.indexOf(u8, content, "_stable_rule_key") != null);
+    try std.testing.expect(std.mem.indexOf(u8, content, "_map_pre_tool_call") != null);
+    // CI hardening of ask → block must remain.
+    try std.testing.expect(std.mem.indexOf(u8, content, "_ci_mode") != null);
 }
 
 test "all hermes fixtures exist" {

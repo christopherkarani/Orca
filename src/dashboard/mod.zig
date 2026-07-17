@@ -859,7 +859,7 @@ test "dashboard counts Hermes ask tool veto as blocked without losing ask label"
         "zig-native",
         "hermes",
         "not_applicable",
-        "hermes_tool_call_blocked",
+        "hermes_tool_call_ask",
         "ask",
         "approval required by policy",
         "tool call (redacted)",
@@ -893,7 +893,7 @@ test "dashboard counts Hermes ask tool veto as blocked without losing ask label"
     var out = aw.toArrayList();
     defer out.deinit(std.testing.allocator);
 
-    try std.testing.expect(std.mem.indexOf(u8, out.items, "\"event_type\":\"hermes_tool_call_blocked\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out.items, "\"event_type\":\"hermes_tool_call_ask\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, out.items, "\"decision\":\"ask\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, out.items, "\"host\":\"hermes\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, out.items, "\"id\":\"hermes-session-1\"") != null);
@@ -1227,7 +1227,7 @@ test "machine status aggregates Hermes approval blocks into sessions and blocked
         rust_visibility.decision_source_zig,
         "hermes",
         "not_applicable",
-        "hermes_tool_call_blocked",
+        "hermes_tool_call_ask",
         "ask",
         "approval required",
         "tool call (redacted)",

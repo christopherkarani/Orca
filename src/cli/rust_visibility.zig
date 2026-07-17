@@ -485,11 +485,18 @@ pub fn buildFeedRecordFromHookActivity(
 pub fn isBlockedFeedRecord(record: RustShellFeedRecord) bool {
     if (std.mem.eql(u8, record.decision, "deny")) return true;
     const host = record.host orelse return false;
-    return std.mem.eql(u8, host, "hermes") and
-        std.mem.eql(u8, record.event_type, "hermes_tool_call_blocked") and
-        (std.mem.eql(u8, record.decision, "ask") or
-            std.mem.eql(u8, record.decision, "warn") or
-            std.mem.eql(u8, record.decision, "error"));
+    if (!std.mem.eql(u8, host, "hermes")) return false;
+    // Non-allow tool outcomes: hard block, native ask (approve gate), warn, or error.
+    const non_allow_tool =
+        std.mem.eql(u8, record.event_type, "hermes_tool_call_blocked") or
+        std.mem.eql(u8, record.event_type, "hermes_tool_call_ask") or
+        std.mem.eql(u8, record.event_type, "hermes_tool_call_warn");
+    if (!non_allow_tool) return false;
+    return std.mem.eql(u8, record.decision, "ask") or
+        std.mem.eql(u8, record.decision, "warn") or
+        std.mem.eql(u8, record.decision, "error") or
+        std.mem.eql(u8, record.decision, "deny") or
+        std.mem.eql(u8, record.decision, "block");
 }
 
 pub fn writeFeedRecordJson(writer: anytype, record: RustShellFeedRecord) !void {

@@ -560,6 +560,8 @@ function hermesEventLabel(eventType) {
     hermes_session_ended: "Session ended",
     hermes_tool_call: "Tool call reviewed",
     hermes_tool_call_blocked: "Tool call blocked",
+    hermes_tool_call_ask: "Tool call needs approval",
+    hermes_tool_call_warn: "Tool call warning",
     hermes_tool_call_completed: "Tool call completed",
     hermes_prompt_review: "Prompt review",
     hermes_subagent_stopped: "Subagent stopped",

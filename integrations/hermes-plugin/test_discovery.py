@@ -80,22 +80,98 @@ class HermesPluginDiscoveryTests(unittest.TestCase):
         self.assertIn("FAIL-OPEN", warn_text)
         self.assertIn("ORCA_HERMES_FAIL_OPEN=0", warn_text)
 
-    def test_pre_tool_call_blocks_policy_veto_decisions(self) -> None:
-        for decision in ("block", "warn", "ask"):
-            with self.subTest(decision=decision):
-                ctx = mock.Mock()
-                _PLUGIN._register(ctx, "pre_tool_call")
-                handler = ctx.register_hook.call_args.args[1]
-                with mock.patch.object(
-                    _PLUGIN,
-                    "_call_orca",
-                    return_value={"decision": decision, "message": f"{decision} by Orca"},
-                ):
-                    result = handler(tool_name="terminal", args={"command": "rm -rf /"})
-                self.assertEqual(
-                    result,
-                    {"action": "block", "message": f"{decision} by Orca"},
-                )
+    def test_pre_tool_call_blocks_hard_deny(self) -> None:
+        ctx = mock.Mock()
+        _PLUGIN._register(ctx, "pre_tool_call")
+        handler = ctx.register_hook.call_args.args[1]
+        with mock.patch.object(
+            _PLUGIN,
+            "_call_orca",
+            return_value={"decision": "block", "message": "block by Orca"},
+        ):
+            result = handler(tool_name="terminal", args={"command": "rm -rf /"})
+        self.assertEqual(result, {"action": "block", "message": "block by Orca"})
+
+    def test_pre_tool_call_ask_uses_native_approve_path(self) -> None:
+        """Orca ask must escalate to Hermes human gate, not permanent block-without-resume."""
+        ctx = mock.Mock()
+        _PLUGIN._register(ctx, "pre_tool_call")
+        handler = ctx.register_hook.call_args.args[1]
+        with mock.patch.dict(os.environ, {}, clear=False):
+            for key in ("CI", "ORCA_CI", "ORCA_NONINTERACTIVE"):
+                os.environ.pop(key, None)
+            with mock.patch.object(
+                _PLUGIN,
+                "_call_orca",
+                return_value={
+                    "decision": "ask",
+                    "message": "approval required by Orca",
+                    "rule_id": "core.filesystem:destructive_rm",
+                },
+            ):
+                result = handler(tool_name="terminal", args={"command": "rm -rf /tmp/x"})
+        self.assertIsInstance(result, dict)
+        assert result is not None
+        self.assertEqual(result.get("action"), "approve")
+        self.assertIn("approval required by Orca", result.get("message", ""))
+        rule_key = result.get("rule_key", "")
+        self.assertTrue(rule_key.startswith("orca:"), rule_key)
+        self.assertIn("core.filesystem:destructive_rm", rule_key)
+        self.assertIn("terminal", rule_key)
+
+    def test_pre_tool_call_ask_hardens_to_block_in_ci(self) -> None:
+        ctx = mock.Mock()
+        _PLUGIN._register(ctx, "pre_tool_call")
+        handler = ctx.register_hook.call_args.args[1]
+        with mock.patch.dict(os.environ, {"CI": "true"}):
+            with mock.patch.object(
+                _PLUGIN,
+                "_call_orca",
+                return_value={"decision": "ask", "message": "approval required by Orca"},
+            ):
+                result = handler(tool_name="terminal", args={"command": "rm -rf /tmp/x"})
+        self.assertEqual(result.get("action"), "block")
+        self.assertIn("approval required", result.get("message", "").lower())
+
+    def test_pre_tool_call_warn_is_not_silent_block(self) -> None:
+        """warn must not be collapsed to permanent block; log and allow with semantic fidelity."""
+        ctx = mock.Mock()
+        _PLUGIN._register(ctx, "pre_tool_call")
+        handler = ctx.register_hook.call_args.args[1]
+        with mock.patch.object(
+            _PLUGIN,
+            "_call_orca",
+            return_value={"decision": "warn", "message": "warn by Orca"},
+        ):
+            with mock.patch("builtins.print") as printed:
+                result = handler(tool_name="terminal", args={"command": "curl example.com"})
+        self.assertIsNone(result)
+        warn_text = " ".join(str(c) for c in printed.call_args_list)
+        self.assertIn("warn by Orca", warn_text)
+
+    def test_pre_tool_call_rule_key_does_not_over_approve(self) -> None:
+        """Distinct tool args under the same rule get distinct rule_keys for [a]lways grain."""
+        key_a = _PLUGIN._stable_rule_key(
+            {"rule_id": "core.shell:network"},
+            "terminal",
+            {"command": "curl http://a.example"},
+        )
+        key_b = _PLUGIN._stable_rule_key(
+            {"rule_id": "core.shell:network"},
+            "terminal",
+            {"command": "curl http://b.example"},
+        )
+        self.assertNotEqual(key_a, key_b)
+        self.assertTrue(key_a.startswith("orca:core.shell:network:terminal:"))
+        self.assertTrue(key_b.startswith("orca:core.shell:network:terminal:"))
+
+        # Same args → same key (stable).
+        key_a2 = _PLUGIN._stable_rule_key(
+            {"rule_id": "core.shell:network"},
+            "terminal",
+            {"command": "curl http://a.example"},
+        )
+        self.assertEqual(key_a, key_a2)
 
     def test_pre_tool_call_surfaces_remediation_commands(self) -> None:
         ctx = mock.Mock()
@@ -130,19 +206,63 @@ class HermesPluginDiscoveryTests(unittest.TestCase):
                     result = handler(tool_name="terminal", args={"command": "git status"})
                 self.assertEqual(result.get("action"), "block")
 
-    def test_pre_llm_call_remains_context_only_for_non_allowing_decisions(self) -> None:
-        for decision in ("block", "warn", "ask"):
-            with self.subTest(decision=decision):
-                ctx = mock.Mock()
-                _PLUGIN._register(ctx, "pre_llm_call")
-                handler = ctx.register_hook.call_args.args[1]
-                with mock.patch.object(
-                    _PLUGIN,
-                    "_call_orca",
-                    return_value={"decision": decision, "message": f"{decision} by Orca"},
-                ):
-                    result = handler(session_id="session-1", user_message="review me")
-                self.assertEqual(result, {"context": f"Orca policy note: {decision} by Orca"})
+    def test_pre_llm_call_warn_is_advisory_context(self) -> None:
+        ctx = mock.Mock()
+        _PLUGIN._register(ctx, "pre_llm_call")
+        handler = ctx.register_hook.call_args.args[1]
+        with mock.patch.object(
+            _PLUGIN,
+            "_call_orca",
+            return_value={"decision": "warn", "message": "warn by Orca"},
+        ):
+            result = handler(session_id="session-1", user_message="review me")
+        self.assertIsInstance(result, dict)
+        assert result is not None
+        self.assertIn("context", result)
+        self.assertIn("warn by Orca", result["context"])
+        self.assertIn("advisory", result["context"].lower())
+
+    def test_pre_llm_call_ask_does_not_claim_enforcement(self) -> None:
+        """Prompt-level ask cannot use Hermes native approve; notes must not pretend they enforce."""
+        ctx = mock.Mock()
+        _PLUGIN._register(ctx, "pre_llm_call")
+        handler = ctx.register_hook.call_args.args[1]
+        with mock.patch.object(
+            _PLUGIN,
+            "_call_orca",
+            return_value={"decision": "ask", "message": "ask by Orca"},
+        ):
+            result = handler(session_id="session-1", user_message="review me")
+        self.assertIsInstance(result, dict)
+        assert result is not None
+        context = result.get("context", "")
+        self.assertIn("ask by Orca", context)
+        self.assertNotIn("requires user approval", context.lower())
+        # Must be honest that this is not an approval gate.
+        self.assertTrue(
+            "does not enforce" in context.lower() or "cannot gate" in context.lower(),
+            context,
+        )
+        self.assertIn("orca run", context.lower())
+
+    def test_pre_llm_call_block_is_honest_about_host_limit(self) -> None:
+        ctx = mock.Mock()
+        _PLUGIN._register(ctx, "pre_llm_call")
+        handler = ctx.register_hook.call_args.args[1]
+        with mock.patch.object(
+            _PLUGIN,
+            "_call_orca",
+            return_value={"decision": "block", "message": "block by Orca"},
+        ):
+            result = handler(session_id="session-1", user_message="review me")
+        self.assertIsInstance(result, dict)
+        assert result is not None
+        context = result.get("context", "")
+        self.assertIn("block by Orca", context)
+        self.assertTrue(
+            "does not enforce" in context.lower() or "cannot" in context.lower(),
+            context,
+        )
 
 
 if __name__ == "__main__":

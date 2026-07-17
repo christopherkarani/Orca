@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import shutil
@@ -362,6 +363,135 @@ def _call_orca(event: str, data: Any) -> dict[str, Any]:
     return json.loads(completed.stdout)
 
 
+def _ci_mode() -> bool:
+    """True when interactive approval cannot be answered (CI / noninteractive)."""
+    for key in ("CI", "ORCA_CI", "ORCA_NONINTERACTIVE"):
+        value = os.environ.get(key, "").strip().lower()
+        if value and value not in ("0", "false", "no", "off"):
+            return True
+    return False
+
+
+def _stable_rule_key(response: dict[str, Any], tool_name: str, tool_input: Any) -> str:
+    """Stable Hermes [a]lways allowlist grain for Orca ask decisions.
+
+    Format: ``orca:{rule}:{tool}:{args_fp}``
+
+    - ``rule`` is Orca ``rule_id``/``rule`` when present (else ``policy``).
+    - ``tool`` is the Hermes tool name.
+    - ``args_fp`` is a short hash of canonical tool args so approving one
+      command/path under a rule does not blanket every later match of that rule.
+    """
+    rule = response.get("rule_id") or response.get("rule") or "policy"
+    rule_s = str(rule).strip() or "policy"
+    tool_s = (tool_name or "tool").strip() or "tool"
+    try:
+        canonical = json.dumps(tool_input, sort_keys=True, default=str, separators=(",", ":"))
+    except (TypeError, ValueError):
+        canonical = str(tool_input)
+    fingerprint = hashlib.sha256(canonical.encode("utf-8")).hexdigest()[:12]
+    return f"orca:{rule_s}:{tool_s}:{fingerprint}"
+
+
+def _format_tool_message(response: dict[str, Any], *, default: str = "blocked by Orca") -> str:
+    message = response.get("message") or response.get("reason") or default
+    if not isinstance(message, str):
+        message = default
+    remediation = response.get("remediation_commands")
+    if isinstance(remediation, list) and remediation:
+        tips = "; ".join(str(item) for item in remediation if item)
+        if tips:
+            message = f"{message} Next: {tips}"
+    rule_id = response.get("rule_id") or response.get("rule")
+    if rule_id:
+        message = f"{message} (rule: {rule_id})"
+    return message
+
+
+def _map_pre_tool_call(
+    ctx: Any,
+    response: dict[str, Any],
+    tool_name: str,
+    tool_input: Any,
+) -> Any:
+    """Map Orca decision → Hermes pre_tool_call directive.
+
+    - allow → None (proceed)
+    - block → {"action": "block", ...} hard deny
+    - ask → {"action": "approve", "message", "rule_key"} (native human gate);
+      CI/noninteractive hardens ask → block
+    - warn → log advisory warning and allow (not collapsed to block)
+    - other → fail-closed block
+    """
+    decision = response.get("decision", "allow")
+    if decision == "allow":
+        return None
+    if decision == "warn":
+        message = _format_tool_message(response, default="policy warning from Orca")
+        _warn_degraded(ctx, "pre_tool_call", f"WARN (advisory, not blocked): {message}")
+        return None
+    if decision == "block":
+        return {
+            "action": "block",
+            "message": _format_tool_message(response, default="blocked by Orca"),
+        }
+    if decision == "ask":
+        message = _format_tool_message(response, default="approval required by Orca")
+        if _ci_mode():
+            return {
+                "action": "block",
+                "message": (
+                    f"{message} "
+                    "(CI/noninteractive: Orca ask hardened to block; no approval prompt available)"
+                ),
+            }
+        return {
+            "action": "approve",
+            "message": message,
+            "rule_key": _stable_rule_key(response, tool_name, tool_input),
+        }
+    return {
+        "action": "block",
+        "message": "Orca returned an invalid tool decision; blocked fail-closed.",
+    }
+
+
+def _map_pre_llm_call(response: dict[str, Any]) -> Any:
+    """Map Orca decision → Hermes pre_llm_call context.
+
+    Hermes only supports context injection on this hook — it cannot veto the
+    turn or open an approval dialog. Context notes are therefore advisory:
+
+    - warn / context_only: honest advisory policy note
+    - ask / block: honest note that this is NOT an enforcement or approval gate;
+      strongest real gate remains ``orca run -- hermes``
+    """
+    decision = response.get("decision", "allow")
+    if decision not in ("block", "warn", "ask", "context_only"):
+        return None
+    message = response.get("message") or response.get("reason") or "Review this prompt under Orca policy."
+    if not isinstance(message, str):
+        message = "Review this prompt under Orca policy."
+    if decision == "warn" or decision == "context_only":
+        return {"context": f"Orca policy note (warn/observe, advisory only): {message}"}
+    if decision == "ask":
+        return {
+            "context": (
+                f"Orca policy note (ask — not an approval gate): {message} "
+                "Hermes pre_llm_call cannot gate prompts or open approve-and-resume. "
+                "This note does not enforce approval. Prefer `orca run -- hermes` for outer enforcement."
+            )
+        }
+    # block
+    return {
+        "context": (
+            f"Orca policy note (block — host cannot veto pre_llm_call): {message} "
+            "Hermes pre_llm_call cannot block the turn; this note does not enforce a deny. "
+            "Prefer `orca run -- hermes` for outer enforcement."
+        )
+    }
+
+
 def _register(ctx: Any, event: str) -> None:
     def handler(*args: Any, **kwargs: Any) -> Any:
         payload = _event_payload(event, args, kwargs)
@@ -370,26 +500,14 @@ def _register(ctx: Any, event: str) -> None:
         except (RuntimeError, json.JSONDecodeError, subprocess.SubprocessError, OSError) as exc:
             return _handle_hook_error(ctx, event, exc)
 
-        decision = response.get("decision", "allow")
         if event == "pre_tool_call":
-            if decision == "allow":
-                return None
-            if isinstance(decision, str) and decision in ("block", "warn", "ask"):
-                message = response.get("message") or response.get("reason") or "blocked by Orca"
-                # Surface additive remediation when present (host-safe string field).
-                remediation = response.get("remediation_commands")
-                if isinstance(remediation, list) and remediation:
-                    tips = "; ".join(str(item) for item in remediation if item)
-                    if tips:
-                        message = f"{message} Next: {tips}"
-                rule_id = response.get("rule_id") or response.get("rule")
-                if rule_id:
-                    message = f"{message} (rule: {rule_id})"
-                return {"action": "block", "message": message}
-            return {"action": "block", "message": "Orca returned an invalid tool decision; blocked fail-closed."}
-        if event == "pre_llm_call" and isinstance(decision, str) and decision in ("block", "warn", "ask"):
-            message = response.get("message") or response.get("reason") or "Review this prompt under Orca policy."
-            return {"context": f"Orca policy note: {message}"}
+            tool_name = str(payload.get("tool_name") or kwargs.get("tool_name") or "")
+            tool_input = payload.get("tool_input")
+            if tool_input is None:
+                tool_input = kwargs.get("args") or kwargs.get("params") or {}
+            return _map_pre_tool_call(ctx, response, tool_name, tool_input)
+        if event == "pre_llm_call":
+            return _map_pre_llm_call(response)
         return None
 
     ctx.register_hook(event, handler)

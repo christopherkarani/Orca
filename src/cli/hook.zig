@@ -941,7 +941,10 @@ fn hermesFeedDecisionTag(decision: PluginDecision) []const u8 {
 fn hermesFeedEventType(event_name: []const u8, decision: PluginDecision) []const u8 {
     if (std.mem.eql(u8, event_name, "on_session_start")) return "hermes_session_started";
     if (std.mem.eql(u8, event_name, "pre_tool_call")) return switch (decision) {
-        .block, .warn, .ask, .err => "hermes_tool_call_blocked",
+        // Match Hermes plugin mapping: only hard deny is "blocked"; ask escalates to host approve UI.
+        .block, .err => "hermes_tool_call_blocked",
+        .ask => "hermes_tool_call_ask",
+        .warn => "hermes_tool_call_warn",
         else => "hermes_tool_call",
     };
     if (std.mem.eql(u8, event_name, "post_tool_call")) return "hermes_tool_call_completed";
@@ -2173,7 +2176,9 @@ test "hermes activity preserves approval decisions and marks blocks as deny" {
     try std.testing.expectEqualStrings("ask", hermesFeedDecisionTag(.ask));
     try std.testing.expectEqualStrings("warn", hermesFeedDecisionTag(.warn));
     try std.testing.expectEqualStrings("deny", hermesFeedDecisionTag(.block));
-    try std.testing.expectEqualStrings("hermes_tool_call_blocked", hermesFeedEventType("pre_tool_call", .ask));
+    try std.testing.expectEqualStrings("hermes_tool_call_ask", hermesFeedEventType("pre_tool_call", .ask));
+    try std.testing.expectEqualStrings("hermes_tool_call_warn", hermesFeedEventType("pre_tool_call", .warn));
+    try std.testing.expectEqualStrings("hermes_tool_call_blocked", hermesFeedEventType("pre_tool_call", .block));
     try std.testing.expectEqualStrings("hermes_prompt_review", hermesFeedEventType("pre_llm_call", .warn));
     try std.testing.expectEqualStrings("hermes_session_started", hermesFeedEventType("on_session_start", .allow));
     try std.testing.expectEqualStrings("hermes_tool_call_completed", hermesFeedEventType("post_tool_call", .allow));
@@ -2218,8 +2223,9 @@ test "hermes tool veto persists once with session and redacted reason" {
 
     try std.testing.expectEqual(@as(usize, 1), loaded.len);
     try std.testing.expectEqualStrings("ask", loaded[0].record.decision);
-    try std.testing.expectEqualStrings("hermes_tool_call_blocked", loaded[0].record.event_type);
+    try std.testing.expectEqualStrings("hermes_tool_call_ask", loaded[0].record.event_type);
     try std.testing.expectEqualStrings("hermes-session-42", loaded[0].record.session_id.?);
+    // ask is approval-required (still a non-allow outcome for feed visibility).
     try std.testing.expect(rust_visibility.isBlockedFeedRecord(loaded[0].record));
     try std.testing.expect(std.mem.indexOf(u8, loaded[0].raw, "sk-fakeSyntheticOpenAIKey1234567890") == null);
 }
