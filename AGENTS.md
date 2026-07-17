@@ -83,3 +83,17 @@ cargo test --lib
 - Keep Zig and Rust build systems separate.
 - Do not fall back to Zig native evaluation if the daemon is unavailable.
 - Migration phases are ordered; do not skip ahead.
+
+## Agent skills
+
+### Issue tracker
+
+Issues live in GitHub Issues for `christopherkarani/Orca` (via `gh`). See `docs/agents/issue-tracker.md`.
+
+### Triage labels
+
+Default vocabulary: `needs-triage`, `needs-info`, `ready-for-agent`, `ready-for-human`, `wontfix`. See `docs/agents/triage-labels.md`.
+
+### Domain docs
+
+Single-context layout (`CONTEXT.md` + `docs/adr/` at repo root). See `docs/agents/domain.md`.

@@ -129,7 +129,10 @@ type SpawnLike = (
 	options: SpawnOptions,
 ) => ChildLike;
 
-/** Built-in Pi tools Orca intercepts. Custom/MCP tools are not protected. */
+/**
+ * Built-in Pi tools with specialized evaluators (evaluate / decide file).
+ * All other tool names are still intercepted via name-gated `orca decide tool`.
+ */
 export const PROTECTED_PI_TOOLS = [
 	"bash",
 	"write",
@@ -154,7 +157,7 @@ export function isProtectedPiTool(toolName: string): toolName is ProtectedPiTool
 
 /** Honest coverage string for doctor/status surfaces. */
 export function piCoverageLabel(): string {
-	return "bash + write + edit + read policy-protected; grep + find + ls approval-gated (descendants are not individually evaluated; custom/MCP not intercepted)";
+	return "bash + write + edit + read policy-protected; grep + find + ls approval-gated (descendants not individually evaluated); custom tool names gated via decide tool (not full MCP protocol mediation)";
 }
 
 /**
@@ -194,6 +197,11 @@ export type OrcaEvaluateRequest = {
 export type OrcaDecideFileRequest = {
 	path: string;
 	operation: "read" | "write";
+};
+
+/** Custom / MCP-shaped tool names → Zig `orca decide tool` (name only). */
+export type OrcaDecideToolRequest = {
+	name: string;
 };
 
 export type OrcaDecision =
@@ -386,6 +394,13 @@ export function buildDecideFilePayload(
 	return { path, operation };
 }
 
+/** Payload for `orca decide tool --json` (tool name only; no arg extraction). */
+export function buildDecideToolPayload(input: {
+	name: string;
+}): OrcaDecideToolRequest {
+	return { name: input.name.trim() };
+}
+
 export function resolveToolPath(pathInput: string, ctx: PiContext): string {
 	const trimmed = pathInput.trim();
 	if (!trimmed) return trimmed;
@@ -450,19 +465,27 @@ export async function runOrcaEvaluate(
 	};
 }
 
+type DecideRuntimeOptions = Required<
+	Pick<OrcaExtensionOptions, "orcaBin" | "spawn" | "timeoutMs">
+> & { env?: NodeJS.ProcessEnv; cwd?: string };
+
 /**
- * Non-shell file tools → Zig `orca decide file` (policy.yaml files.write/read).
- * Does not use daemon Evaluate (shell-only).
+ * Shared `orca decide <kind> --json` runner. Fail-closed on timeout, spawn
+ * error, malformed JSON, and decision/exit-code mismatch.
  */
-export async function runOrcaDecideFile(
-	payload: OrcaDecideFileRequest,
-	options: Required<
-		Pick<OrcaExtensionOptions, "orcaBin" | "spawn" | "timeoutMs">
-	> & { env?: NodeJS.ProcessEnv; cwd?: string },
+async function runOrcaDecide(
+	kind: "file" | "tool",
+	payload: object,
+	options: DecideRuntimeOptions,
+	map: {
+		defaultReason: string;
+		/** File write only: context_only must not allow side effects. */
+		denyContextOnly?: boolean;
+	},
 ): Promise<OrcaDecision> {
 	const result = await runProcess(
 		options.orcaBin,
-		["decide", "file", "--json", JSON.stringify(payload)],
+		["decide", kind, "--json", JSON.stringify(payload)],
 		undefined,
 		options.spawn,
 		options.timeoutMs,
@@ -490,11 +513,10 @@ export async function runOrcaDecideFile(
 
 	const decision = getStringField(parsed, "decision");
 	const reason = sanitizeVisibleText(
-		getStringFieldAny(parsed, ["reason", "message"]) ??
-			"Orca blocked this file action.",
+		getStringFieldAny(parsed, ["reason", "message"]) ?? map.defaultReason,
 	);
-	// A machine decision is trusted only when its process status agrees with the
-	// frozen `orca decide` exit-code contract. Mismatches fail closed.
+	// Trust a machine decision only when process status matches the frozen
+	// `orca decide` exit-code contract. Mismatches fail closed.
 	if (
 		!decision ||
 		!(decision in DECIDE_EXIT_CODE) ||
@@ -508,7 +530,7 @@ export async function runOrcaDecideFile(
 	}
 
 	// decide uses allow | block | ask | warn | context_only | error.
-	if (decision === "context_only" && payload.operation === "write") {
+	if (decision === "context_only" && map.denyContextOnly) {
 		const response = {
 			...(parsed as Record<string, unknown>),
 			decision: "deny",
@@ -520,10 +542,11 @@ export async function runOrcaDecideFile(
 		return { kind: "allow", response: parsed };
 	}
 	if (decision === "block") {
+		const normalized = normalizeDecideToEvaluateShape(parsed);
 		return {
 			kind: "deny",
-			reason: safeOrcaReason(normalizeDecideToEvaluateShape(parsed)),
-			response: normalizeDecideToEvaluateShape(parsed),
+			reason: safeOrcaReason(normalized),
+			response: normalized,
 		};
 	}
 	if (decision === "ask") {
@@ -543,6 +566,30 @@ export async function runOrcaDecideFile(
 	};
 }
 
+/** Non-shell file tools → Zig `orca decide file` (path only; not daemon Evaluate). */
+export async function runOrcaDecideFile(
+	payload: OrcaDecideFileRequest,
+	options: DecideRuntimeOptions,
+): Promise<OrcaDecision> {
+	return runOrcaDecide("file", payload, options, {
+		defaultReason: "Orca blocked this file action.",
+		denyContextOnly: payload.operation === "write",
+	});
+}
+
+/**
+ * Custom / MCP-shaped tools → Zig `orca decide tool` (name only).
+ * Does not extract paths or args from custom tool inputs.
+ */
+export async function runOrcaDecideTool(
+	payload: OrcaDecideToolRequest,
+	options: DecideRuntimeOptions,
+): Promise<OrcaDecision> {
+	return runOrcaDecide("tool", payload, options, {
+		defaultReason: "Orca blocked this tool action.",
+	});
+}
+
 function normalizeDecideToEvaluateShape(response: unknown): unknown {
 	if (!response || typeof response !== "object") return response;
 	const obj = response as Record<string, unknown>;
@@ -551,6 +598,21 @@ function normalizeDecideToEvaluateShape(response: unknown): unknown {
 		decision: obj.decision === "block" ? "deny" : obj.decision,
 		rule_id: typeof obj.rule === "string" ? obj.rule : obj.rule_id,
 	};
+}
+
+function blockMalformedToolCall(
+	pi: PiAPI,
+	ctx: PiContext,
+	toolLabel: string,
+	summary: string,
+): ToolCallResult {
+	const details = {
+		variant: "block" as const,
+		title: "ORCA BLOCKED",
+		summary,
+	};
+	showOrcaDecision(pi, ctx, details);
+	return block(formatOrcaDecisionSummary(details, toolLabel));
 }
 
 export async function runOrcaCommand(
@@ -685,8 +747,6 @@ export function installOrcaExtension(
 	pi.on(
 		"tool_call",
 		async (event: PiToolCallEvent, ctx: PiContext): Promise<ToolCallResult> => {
-			if (!isProtectedPiTool(event.toolName)) return undefined;
-
 			await stateFor(ctx).bootstrap;
 
 			if (stateFor(ctx).bypass) {
@@ -710,14 +770,12 @@ export function installOrcaExtension(
 					typeof event.input?.command !== "string" ||
 					event.input.command.trim().length === 0
 				) {
-					const details = {
-						variant: "block" as const,
-						title: "ORCA BLOCKED",
-						summary:
-							"malformed Pi bash tool call; missing non-empty command.",
-					};
-					showOrcaDecision(pi, ctx, details);
-					return block(formatOrcaDecisionSummary(details, toolLabel));
+					return blockMalformedToolCall(
+						pi,
+						ctx,
+						toolLabel,
+						"malformed Pi bash tool call; missing non-empty command.",
+					);
 				}
 				const decision = await runOrcaEvaluate(
 					buildEvaluateRequest(event.input.command, ctx, "bash"),
@@ -735,35 +793,65 @@ export function installOrcaExtension(
 			}
 
 			// write/edit → decide file write; read/grep/find/ls → decide file read
-			const pathTarget = extractDecideFilePath(event.toolName, event.input);
-			if (!pathTarget) return undefined;
-			if (pathTarget.required && !pathTarget.path) {
-				const details = {
-					variant: "block" as const,
-					title: "ORCA BLOCKED",
-					summary: `malformed Pi ${toolLabel} tool call; missing non-empty path.`,
-				};
-				showOrcaDecision(pi, ctx, details);
-				return block(formatOrcaDecisionSummary(details, toolLabel));
-			}
-			const absPath = resolveToolPath(pathTarget.path, ctx);
-			const operation: "read" | "write" = FILE_WRITE_TOOLS.has(event.toolName)
-				? "write"
-				: "read";
-			const decision = await runOrcaDecideFile(
-				buildDecideFilePayload(absPath, operation),
-				{ ...runtime, cwd: resolveCwd(ctx.cwd) },
-			);
-			if (decision.kind === "allow" && BROAD_DISCOVERY_TOOLS.has(event.toolName)) {
-				return handlePolicyAsk(
-					`Orca allowed the ${toolLabel} root, but this broad discovery action may traverse descendant files that were not individually evaluated. Explicit approval is required.`,
+			if (isProtectedPiTool(event.toolName)) {
+				const pathTarget = extractDecideFilePath(event.toolName, event.input);
+				if (!pathTarget) return undefined;
+				if (pathTarget.required && !pathTarget.path) {
+					return blockMalformedToolCall(
+						pi,
+						ctx,
+						toolLabel,
+						`malformed Pi ${toolLabel} tool call; missing non-empty path.`,
+					);
+				}
+				const absPath = resolveToolPath(pathTarget.path, ctx);
+				const operation: "read" | "write" = FILE_WRITE_TOOLS.has(
+					event.toolName,
+				)
+					? "write"
+					: "read";
+				const decision = await runOrcaDecideFile(
+					buildDecideFilePayload(absPath, operation),
+					{ ...runtime, cwd: resolveCwd(ctx.cwd) },
+				);
+				if (
+					decision.kind === "allow" &&
+					BROAD_DISCOVERY_TOOLS.has(event.toolName)
+				) {
+					return handlePolicyAsk(
+						`Orca allowed the ${toolLabel} root, but this broad discovery action may traverse descendant files that were not individually evaluated. Explicit approval is required.`,
+						pi,
+						ctx,
+						toolLabel,
+						{ disableSession },
+						allowOnceBypassEnabled(runtime.env, unavailableMode),
+					);
+				}
+				return applyToolDecision(
+					decision,
 					pi,
 					ctx,
 					toolLabel,
-					{ disableSession },
-					allowOnceBypassEnabled(runtime.env, unavailableMode),
+					unavailableMode,
+					disableSession,
+					runtime.env,
 				);
 			}
+
+			// Custom / MCP-shaped tools → name-gated decide tool (not full MCP proxy).
+			const name = (event.toolName ?? "").trim();
+			if (!name) {
+				return blockMalformedToolCall(
+					pi,
+					ctx,
+					"tool",
+					"malformed Pi tool call; missing non-empty tool name.",
+				);
+			}
+			const decision = await runOrcaDecideTool(
+				buildDecideToolPayload({ name }),
+				{ ...runtime, cwd: resolveCwd(ctx.cwd) },
+			);
 			return applyToolDecision(
 				decision,
 				pi,

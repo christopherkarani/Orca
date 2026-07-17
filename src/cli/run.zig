@@ -25,7 +25,7 @@ const RunOptions = struct {
     no_secrets: bool = false,
     secretless: bool = false,
     inherit_env: bool = false,
-    no_network: bool = false,
+    /// Set by `--network` / `--no-network`. Null means apply agent-primary default (ask).
     network_mode: ?policy.schema.NetworkMode = null,
     network_backend: ?policy.schema.NetworkBackend = null,
     allow_network_values: [32][]const u8 = undefined,
@@ -134,10 +134,12 @@ fn commandWithStdioAndEnv(io: std.Io, argv: []const []const u8, stdout: anytype,
     const StartPrinter = struct {
         io: std.Io,
         writer: @TypeOf(stdout),
+        network_mode: policy.schema.NetworkMode,
+        secretless: bool,
 
         pub fn print(context: *anyopaque, session: core.session.Session) !void {
             const self: *@This() = @ptrCast(@alignCast(context));
-            try printSessionStart(self.io, self.writer, session);
+            try printSessionStart(self.io, self.writer, session, self.network_mode, self.secretless);
             try flushIfSupported(self.writer);
         }
     };
@@ -151,7 +153,12 @@ fn commandWithStdioAndEnv(io: std.Io, argv: []const []const u8, stdout: anytype,
         }
     };
 
-    var start_printer: StartPrinter = .{ .io = io, .writer = stdout };
+    var start_printer: StartPrinter = .{
+        .io = io,
+        .writer = stdout,
+        .network_mode = cliNetworkMode(options),
+        .secretless = options.secretless,
+    };
     const AuditContext = struct {
         io: std.Io,
         allocator: std.mem.Allocator,
@@ -759,7 +766,6 @@ fn parseOptions(io: std.Io, argv: []const []const u8, stdout: anytype, stderr: a
         } else if (std.mem.eql(u8, arg, "--inherit-env")) {
             options.inherit_env = true;
         } else if (std.mem.eql(u8, arg, "--no-network")) {
-            options.no_network = true;
             options.network_mode = .off;
         } else if (std.mem.eql(u8, arg, "--allow-network")) {
             index += 1;
@@ -834,9 +840,14 @@ fn parseOptions(io: std.Io, argv: []const []const u8, stdout: anytype, stderr: a
     return options;
 }
 
+/// CLI network mode for this run: explicit `--network`/`--no-network` wins; else agent-primary ask.
+/// Secretless is intentionally not defaulted here (Phase 1 SECRETLESS_DEFAULT_GO: no).
+fn cliNetworkMode(options: RunOptions) policy.schema.NetworkMode {
+    return options.network_mode orelse .ask;
+}
+
 fn applyNetworkOverlay(allocator: std.mem.Allocator, selected_policy: *policy.schema.Policy, options: RunOptions) !void {
-    if (options.no_network) selected_policy.network.mode = .off;
-    if (options.network_mode) |mode| selected_policy.network.mode = mode;
+    selected_policy.network.mode = cliNetworkMode(options);
     if (options.network_backend) |backend| selected_policy.network.backend = backend;
     const runtime_allow = options.allowNetwork();
     if (runtime_allow.len == 0) return;
@@ -861,7 +872,6 @@ fn applyNetworkOverlay(allocator: std.mem.Allocator, selected_policy: *policy.sc
     }
     if (old_allow.len > 0) allocator.free(old_allow);
     selected_policy.network.allow = next;
-    if (selected_policy.network.mode == null) selected_policy.network.mode = .allowlist;
 }
 
 fn requiresBackend(options: RunOptions, feature: sandbox.backend.Feature) bool {
@@ -924,11 +934,21 @@ fn coreModeToPolicyMode(mode: core.types.Mode) policy.schema.Mode {
     };
 }
 
-fn printSessionStart(io: std.Io, stdout: anytype, session: core.session.Session) !void {
-    // Phase 2 brand cohesion: replace the hand-rolled `─────` + shield line with
-    // the shared compact brand banner (status chip carries the "watching" intent)
-    // and a key-value grid for Session / Workspace / Mode / Name. The shield +
-    // first-run celebration stay in `printSessionEnd` (gold standard; Phase 7).
+fn writeSessionPosture(stdout: anytype, network_mode: policy.schema.NetworkMode, secretless: bool) !void {
+    try stdout.print(
+        "Posture: network={s} secretless={s}  (override: --network … | --no-network | --secretless)\n",
+        .{ network_mode.toString(), if (secretless) "on" else "off" },
+    );
+}
+
+fn printSessionStart(
+    io: std.Io,
+    stdout: anytype,
+    session: core.session.Session,
+    network_mode: policy.schema.NetworkMode,
+    secretless: bool,
+) !void {
+    // Compact brand banner + Session / Workspace / Mode / Name grid. Celebration stays in printSessionEnd.
     try tui.render.banner(io, stdout, build_options.version, "watching this session");
 
     var rows: [4]tui.render.KV = .{
@@ -943,6 +963,7 @@ fn printSessionStart(io: std.Io, stdout: anytype, session: core.session.Session)
         count = 4;
     }
     try tui.render.keyValue(io, stdout, rows[0..count]);
+    try writeSessionPosture(stdout, network_mode, secretless);
     try stdout.writeAll("\n");
 }
 
@@ -1414,6 +1435,117 @@ test "run no-network sets network mode off and audits denied network state" {
     try std.testing.expect(std.mem.indexOf(u8, events, "\"type\":\"network_connect_denied\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, events, "\"type\":\"network_exfiltration_suspected\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, events, "network mode off") != null);
+}
+
+test "cliNetworkMode defaults to ask; explicit flags win; secretless stays off by default" {
+    const defaults: RunOptions = .{};
+    try std.testing.expectEqual(policy.schema.NetworkMode.ask, cliNetworkMode(defaults));
+    try std.testing.expect(!defaults.secretless);
+
+    const modes = [_]policy.schema.NetworkMode{ .open, .allowlist, .observe, .off, .ask };
+    for (modes) |mode| {
+        try std.testing.expectEqual(mode, cliNetworkMode(.{ .network_mode = mode }));
+    }
+
+    // --no-network is modeled as network_mode = .off (last flag wins in parseOptions).
+    try std.testing.expectEqual(policy.schema.NetworkMode.off, cliNetworkMode(.{ .network_mode = .off }));
+    const secretless_on: RunOptions = .{ .secretless = true };
+    try std.testing.expect(secretless_on.secretless);
+}
+
+test "writeSessionPosture formats network and secretless with override hint" {
+    var buf: [256]u8 = undefined;
+    var writer: std.Io.Writer = .fixed(&buf);
+    try writeSessionPosture(&writer, .ask, false);
+    try std.testing.expectEqualStrings(
+        "Posture: network=ask secretless=off  (override: --network … | --no-network | --secretless)\n",
+        writer.buffered(),
+    );
+
+    writer = .fixed(&buf);
+    try writeSessionPosture(&writer, .allowlist, true);
+    try std.testing.expectEqualStrings(
+        "Posture: network=allowlist secretless=on  (override: --network … | --no-network | --secretless)\n",
+        writer.buffered(),
+    );
+}
+
+test "applyNetworkOverlay defaults to ask and does not force allowlist for --allow-network alone" {
+    var pol: policy.schema.Policy = .{ .allocator = std.testing.allocator };
+    defer pol.network.deinit(std.testing.allocator);
+    pol.network.mode = .allowlist; // preset-like; CLI default must override
+
+    try applyNetworkOverlay(std.testing.allocator, &pol, .{});
+    try std.testing.expectEqual(policy.schema.NetworkMode.ask, pol.network.mode.?);
+
+    pol.network.mode = .allowlist;
+    var opts: RunOptions = .{};
+    opts.allow_network_values[0] = "api.example.com";
+    opts.allow_network_count = 1;
+    try applyNetworkOverlay(std.testing.allocator, &pol, opts);
+    try std.testing.expectEqual(policy.schema.NetworkMode.ask, pol.network.mode.?);
+    try std.testing.expect(pol.network.allow.len >= 1);
+
+    try applyNetworkOverlay(std.testing.allocator, &pol, .{ .network_mode = .open });
+    try std.testing.expectEqual(policy.schema.NetworkMode.open, pol.network.mode.?);
+
+    try applyNetworkOverlay(std.testing.allocator, &pol, .{ .network_mode = .off });
+    try std.testing.expectEqual(policy.schema.NetworkMode.off, pol.network.mode.?);
+}
+
+test "run defaults to network ask, secretless off, posture line; noninteractive does not hang" {
+    if (builtin.os.tag == .windows) return error.SkipZigTest;
+
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const root = try tmp.dir.realPathFileAlloc(std.testing.io, ".", std.testing.allocator);
+    defer std.testing.allocator.free(root);
+    {
+        const policy_file = try tmp.dir.createFile(std.testing.io, "policy.yaml", .{});
+        defer policy_file.close(std.testing.io);
+        try policy_file.writeStreamingAll(std.testing.io,
+            \\version: 1
+            \\mode: observe
+            \\env:
+            \\  inherit: true
+            \\network:
+            \\  mode: allowlist
+            \\commands:
+            \\  allow:
+            \\    - "/bin/sh *"
+        );
+    }
+    const policy_path = try tmp.dir.realPathFileAlloc(std.testing.io, "policy.yaml", std.testing.allocator);
+    defer std.testing.allocator.free(policy_path);
+
+    var current = std.process.Environ.Map.init(std.testing.allocator);
+    defer current.deinit();
+    const path_env = if (std.c.getenv("PATH")) |path| std.mem.span(path) else "/usr/bin:/bin:/usr/sbin:/sbin";
+    try current.put("PATH", path_env);
+    try current.put("GITHUB_TOKEN", "ghp_rawDefaultSecretShouldStay");
+
+    var stdout_buf: [4096]u8 = undefined;
+    var stderr_buf: [2048]u8 = undefined;
+    var stdout_writer: std.Io.Writer = .fixed(&stdout_buf);
+    var stderr_writer: std.Io.Writer = .fixed(&stderr_buf);
+
+    const code = try commandForTestWithEnvAndShellEvaluator(&.{ "--workspace", root, "--policy", policy_path, "--", "/bin/sh", "-c", "env > default-env.txt" }, &stdout_writer, &stderr_writer, .ignore, &current, shell_eval.mockDaemonAllowEvaluator);
+    try std.testing.expectEqual(exit_codes.success, code);
+    try std.testing.expect(std.mem.indexOf(u8, stdout_writer.buffered(), "Posture: network=ask secretless=off") != null);
+
+    const written = try tmp.dir.readFileAlloc(std.testing.io, "default-env.txt", std.testing.allocator, .limited(16384));
+    defer std.testing.allocator.free(written);
+    try std.testing.expect(std.mem.indexOf(u8, written, "ORCA_NETWORK_MODE=ask") != null);
+    try std.testing.expect(std.mem.indexOf(u8, written, "GITHUB_TOKEN=ghp_rawDefaultSecretShouldStay") != null);
+    try std.testing.expect(std.mem.indexOf(u8, written, "orca-secret://") == null);
+    try std.testing.expect(std.mem.indexOf(u8, stderr_writer.buffered(), "--secretless rewrote") == null);
+
+    // CI + default network ask: no session-start stdin prompt; completes without hang.
+    stdout_writer = .fixed(&stdout_buf);
+    stderr_writer = .fixed(&stderr_buf);
+    const ci_code = try commandForGuardTestWithShellEvaluator(&.{ "--workspace", root, "--mode", "ci", "--", "true" }, &stdout_writer, &stderr_writer, .ignore, shell_eval.mockDaemonAllowEvaluator);
+    try std.testing.expectEqual(exit_codes.success, ci_code);
+    try std.testing.expect(std.mem.indexOf(u8, stdout_writer.buffered(), "Posture: network=ask secretless=off") != null);
 }
 
 test "run allow-network adds temporary allow rule and redacts URL secrets in audit" {

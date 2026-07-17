@@ -8,7 +8,7 @@ const state = {
 
 /** Honest Pi coverage note (matches orca-pi protected tool set). */
 const PI_COVERAGE =
-  "Pi: bash + write + edit + read + grep + find + ls protected (built-in tools; custom/MCP not intercepted). Shell always via daemon Evaluate. Process env/network/secretless: orca run -- pi …";
+  "Pi: bash + write + edit + read + grep + find + ls protected; custom tool names gated via decide tool (not full MCP protocol). Shell always via daemon Evaluate. Process env/network/secretless: orca run -- pi …";
 
 const els = {
   modeEyebrow: document.querySelector("#modeEyebrow"),

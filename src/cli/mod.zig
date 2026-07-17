@@ -6,6 +6,7 @@ pub const args = @import("args.zig");
 pub const exit_codes = @import("exit_codes.zig");
 pub const help = @import("help.zig");
 pub const run_command = @import("run.zig");
+pub const host_launch = @import("host_launch.zig");
 pub const init = @import("init.zig");
 pub const doctor = @import("doctor.zig");
 pub const policy = @import("policy.zig");
@@ -92,6 +93,7 @@ test {
     _ = completions;
     _ = dashboard_command;
     _ = feed_writer;
+    _ = host_launch;
 }
 
 pub const version = build_options.version;
@@ -168,10 +170,11 @@ fn isMachineArgv(argv: []const []const u8) bool {
 /// (byte-identity invariant) nor on `--help`/`help <cmd>` reference output.
 fn shouldShowBanner(command: []const u8, argv: []const []const u8) bool {
     // Self-banner commands render their own header (version key-value grid, top
-    // help redesign, run session banner).
+    // help redesign, run session banner). Host launch aliases rewrite into run.
     for (self_banner_commands) |s| {
         if (std.mem.eql(u8, command, s)) return false;
     }
+    if (host_launch.isHostLaunchAlias(command)) return false;
     // `decide` is a frozen machine API by default. Only its explicit human
     // output mode participates in shared presentation, even though JSON/stdin
     // are still the input transports.
@@ -438,6 +441,11 @@ fn runWithCwdUsing(
     if (std.mem.eql(u8, command, "uninstall")) return uninstall.command(io, argv[1..], stdout, stderr);
     if (std.mem.eql(u8, command, "shutdown")) return shutdown.command(io, argv[1..], stdout, stderr);
 
+    // Host launch aliases after real Orca commands (Orca wins on name collision).
+    if (try host_launch.tryDispatch(allocator, command, argv[1..], run_command.command, io, stdout, stderr)) |code| {
+        return code;
+    }
+
     // Warm "did you mean?" suggestions for unknown commands (foundation UX).
     try stderr.writeAll("orca: unknown command '");
     try tui.terminal_text.write(stderr, command, .single_line);
@@ -626,7 +634,8 @@ test "command-specific help works through help command and command flag" {
     try std.testing.expectEqual(exit_codes.success, code);
     try std.testing.expect(std.mem.indexOf(u8, stdout_writer.buffered(), "orca run") != null);
     try std.testing.expect(std.mem.indexOf(u8, stdout_writer.buffered(), "Examples:") != null);
-    try std.testing.expect(std.mem.indexOf(u8, stdout_writer.buffered(), "orca run -- echo") != null);
+    try std.testing.expect(std.mem.indexOf(u8, stdout_writer.buffered(), "orca run -- claude") != null);
+    try std.testing.expect(std.mem.indexOf(u8, stdout_writer.buffered(), "network mode is ask") != null);
     try std.testing.expectEqualStrings("", stderr_writer.buffered());
 
     stdout_writer = .fixed(&stdout_buf);
@@ -637,7 +646,7 @@ test "command-specific help works through help command and command flag" {
 }
 
 test "help run includes examples section" {
-    var stdout_buf: [2048]u8 = undefined;
+    var stdout_buf: [4096]u8 = undefined;
     var stderr_buf: [256]u8 = undefined;
     var stdout_writer: std.Io.Writer = .fixed(&stdout_buf);
     var stderr_writer: std.Io.Writer = .fixed(&stderr_buf);
@@ -647,7 +656,9 @@ test "help run includes examples section" {
 
     const output = stdout_writer.buffered();
     try std.testing.expect(std.mem.indexOf(u8, output, "Examples:") != null);
-    try std.testing.expect(std.mem.indexOf(u8, output, "orca run -- echo") != null);
+    try std.testing.expect(std.mem.indexOf(u8, output, "orca run -- claude") != null);
+    try std.testing.expect(std.mem.indexOf(u8, output, "orca claude") != null);
+    try std.testing.expect(std.mem.indexOf(u8, output, "Secretless stays off") != null);
     try std.testing.expectEqualStrings("", stderr_writer.buffered());
 }
 

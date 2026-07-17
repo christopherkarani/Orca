@@ -14,6 +14,7 @@ import {
 	allowOnceBypassEnabled,
 	askOptionsFor,
 	buildDecideFilePayload,
+	buildDecideToolPayload,
 	buildEvaluateRequest,
 	extractDecideFilePath,
 	installOrcaExtension,
@@ -23,6 +24,7 @@ import {
 	resolveToolPath,
 	resolveUnavailableMode,
 	runOrcaDecideFile,
+	runOrcaDecideTool,
 	runOrcaEvaluate,
 	safeOrcaReason,
 	type OrcaEvaluateRequest,
@@ -502,7 +504,105 @@ test("decide file validates decision and exit-code consistency", async () => {
 	}
 });
 
-test("custom/MCP tools remain unintercepted", async () => {
+test("custom/MCP-shaped tools are name-gated via orca decide tool", async () => {
+	const { pi, handlers } = makePi();
+	const { spawn, calls } = makeSpawn([
+		{ code: 0, stdout: decideAllowJson("tool") },
+	]);
+	installOrcaExtension(pi, { spawn, orcaBin: "orca" });
+	const { ctx } = makeCtx({ cwd: process.cwd() });
+
+	const result = await fireToolCall(
+		handlers.get("tool_call")![0],
+		ctx,
+		"hello",
+		"mcp_custom_tool",
+		{ path: "README.md", args: { secret: "x" } },
+	);
+	assert.equal(result, undefined);
+	assert.equal(calls.length, 1);
+	assert.deepEqual(calls[0].args.slice(0, 3), ["decide", "tool", "--json"]);
+	const payload = JSON.parse(calls[0].args[3] as string) as { name: string };
+	assert.deepEqual(payload, { name: "mcp_custom_tool" });
+	assert.equal(isProtectedPiTool("mcp_custom_tool"), false);
+	assert.equal(isProtectedPiTool("read"), true);
+	assert.equal(isProtectedPiTool("write"), true);
+	assert.match(piCoverageLabel(), /bash \+ write \+ edit \+ read policy-protected/);
+	assert.match(piCoverageLabel(), /grep \+ find \+ ls approval-gated/);
+	assert.match(piCoverageLabel(), /custom tool names gated via decide tool/);
+	assert.match(piCoverageLabel(), /not full MCP protocol mediation/);
+	assert.doesNotMatch(piCoverageLabel(), /custom\/MCP not intercepted/);
+});
+
+test("custom tool deny blocks with rule id on card", async () => {
+	const { pi, handlers } = makePi();
+	const { spawn, calls } = makeSpawn([
+		{ code: 3, stdout: decideBlockJson("tools.deny[0]", "tool") },
+	]);
+	installOrcaExtension(pi, { spawn, orcaBin: "orca" });
+	const { ctx } = makeCtx({ cwd: process.cwd() });
+
+	const result = await fireToolCall(
+		handlers.get("tool_call")![0],
+		ctx,
+		"",
+		"read_file",
+		{ uri: "file:///etc/passwd" },
+	);
+
+	assert.equal(result?.block, true);
+	assert.match(result?.reason ?? "", /rule tools\.deny\[0\]/);
+	assert.equal(calls.length, 1);
+	assert.deepEqual(calls[0].args.slice(0, 3), ["decide", "tool", "--json"]);
+	const payload = JSON.parse(calls[0].args[3] as string) as { name: string };
+	assert.deepEqual(payload, { name: "read_file" });
+});
+
+test("custom tool unavailable fails closed", async () => {
+	const { pi, handlers } = makePi();
+	const { spawn } = makeSpawn([{ error: new Error("ENOENT") }]);
+	installOrcaExtension(pi, { spawn, orcaBin: "missing-orca" });
+	const { ctx } = makeCtx({ hasUI: false, mode: "print" });
+
+	const result = await fireToolCall(
+		handlers.get("tool_call")![0],
+		ctx,
+		"",
+		"mcp_custom_tool",
+		{},
+	);
+	assert.equal(result?.block, true);
+	assert.match(result?.reason ?? "", /Orca is unavailable/);
+});
+
+test("session bypass skips decide tool for custom tools", async () => {
+	const { pi, handlers } = makePi();
+	const { spawn, calls } = makeSpawn([{ code: 3, stdout: errorJson() }]);
+	installOrcaExtension(pi, { spawn, orcaBin: "orca" });
+	const { ctx, selections } = makeCtx();
+	selections.push("Disable Orca for this Pi session");
+
+	// First call triggers unavailable → user disables session.
+	const first = await fireToolCall(
+		handlers.get("tool_call")![0],
+		ctx,
+		"",
+		"mcp_custom_tool",
+		{},
+	);
+	const second = await fireToolCall(
+		handlers.get("tool_call")![0],
+		ctx,
+		"",
+		"mcp_custom_tool",
+		{},
+	);
+	assert.equal(first, undefined);
+	assert.equal(second, undefined);
+	assert.equal(calls.length, 1);
+});
+
+test("empty custom tool name fails closed without spawning decide", async () => {
 	const { pi, handlers } = makePi();
 	const { spawn, calls } = makeSpawn();
 	installOrcaExtension(pi, { spawn, orcaBin: "orca" });
@@ -511,18 +611,51 @@ test("custom/MCP tools remain unintercepted", async () => {
 	const result = await fireToolCall(
 		handlers.get("tool_call")![0],
 		ctx,
-		"hello",
-		"mcp_custom_tool",
-		{ path: "README.md" },
+		"",
+		"   ",
+		{},
 	);
-	assert.equal(result, undefined);
+	assert.equal(result?.block, true);
+	assert.match(result?.reason ?? "", /missing non-empty tool name|malformed/i);
 	assert.equal(calls.length, 0);
-	assert.equal(isProtectedPiTool("mcp_custom_tool"), false);
-	assert.equal(isProtectedPiTool("read"), true);
-	assert.equal(isProtectedPiTool("write"), true);
-	assert.match(piCoverageLabel(), /bash \+ write \+ edit \+ read policy-protected/);
-	assert.match(piCoverageLabel(), /grep \+ find \+ ls approval-gated/);
-	assert.match(piCoverageLabel(), /custom\/MCP not intercepted/);
+});
+
+test("buildDecideToolPayload trims name", () => {
+	assert.deepEqual(buildDecideToolPayload({ name: "  read_file  " }), {
+		name: "read_file",
+	});
+});
+
+test("runOrcaDecideTool maps block to deny and validates exit codes", async () => {
+	const blocked = await runOrcaDecideTool(
+		{ name: "read_file" },
+		{
+			spawn: makeSpawn([
+				{ code: 3, stdout: decideBlockJson("tools.deny[1]", "tool") },
+			]).spawn,
+			orcaBin: "orca",
+			timeoutMs: 1_000,
+			cwd: process.cwd(),
+		},
+	);
+	assert.equal(blocked.kind, "deny");
+
+	for (const plan of [
+		{ code: 1, stdout: decideAllowJson("tool") },
+		{ code: 0, stdout: decideBlockJson("tools.deny[0]", "tool") },
+		{ code: 0, stdout: "" },
+	]) {
+		const result = await runOrcaDecideTool(
+			{ name: "x" },
+			{
+				spawn: makeSpawn([plan]).spawn,
+				orcaBin: "orca",
+				timeoutMs: 1_000,
+				cwd: process.cwd(),
+			},
+		);
+		assert.equal(result.kind, "error", JSON.stringify(plan));
+	}
 });
 
 test("write tool is evaluated via orca decide file", async () => {

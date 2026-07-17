@@ -58,15 +58,16 @@ remove policies, or start/stop other host plugins.
 
 ## Behavior
 
-- Policy-protected built-in tools: `bash`, `write`, `edit`, and direct `read`. `grep`, `find`, and `ls` are approval-gated after root preflight because a root-only check cannot prove every descendant safe. Custom/MCP tools are not intercepted.
+- Policy-protected built-in tools: `bash`, `write`, `edit`, and direct `read`. `grep`, `find`, and `ls` are approval-gated after root preflight because a root-only check cannot prove every descendant safe. Custom/MCP-shaped tool names are **name-gated** via `orca decide tool` (not full MCP protocol mediation).
 - `bash` is sent to `orca evaluate` as JSON over stdin (daemon shell path; `source.host=pi`).
 - `write` / `edit` send the resolved path to `orca decide file` with `operation: write` (Zig policy; path only — content is not sent).
 - `read` requires a non-empty `path` and uses `operation: read`.
 - `grep` / `find` / `ls` preflight the tool's `path` (or cwd) as `operation: read`; even an allow requires explicit user approval, and noninteractive sessions block, because descendant files are not individually evaluated.
+- Any other `tool_call` name is sent to `orca decide tool --json '{"name":"<toolName>"}'` (name only; args/paths are not extracted).
 - Orca allow lets the tool proceed.
 - Orca deny/block renders an inline Orca decision card (includes **rule id** when the policy match returns one) and returns `{ block: true, reason }` to Pi before the action can run.
-- Orca error, malformed JSON, spawn failures, or timeouts use the configured unavailable mode (same fail-closed modes for bash and file tools).
-- Session bypass (`/orca-stop`, `/orca-mode bypass on`) applies to all protected tools for the session.
+- Orca error, malformed JSON, spawn failures, or timeouts use the configured unavailable mode (same fail-closed modes for bash, file, and custom tools).
+- Session bypass (`/orca-stop`, `/orca-mode bypass on`) applies to all tools for the session (builtins and custom).
 
 ### Credential capture from prompt (Pi only)
 
@@ -187,7 +188,7 @@ It targets Orca CLI builds exposing `orca evaluate --json --stdin` with schema v
   succeeds. Validate slash commands in an interactive Pi session or via unit
   tests.
 - Session bypass is in-memory only and clears when the Pi session ends or reloads.
-- Built-in Pi `bash`, `write`, `edit`, and direct `read` are policy-protected. `grep`, `find`, and `ls` require explicit approval after root preflight; custom/MCP tools are not intercepted.
+- Built-in Pi `bash`, `write`, `edit`, and direct `read` are policy-protected. `grep`, `find`, and `ls` require explicit approval after root preflight; custom/MCP-shaped tools are name-gated via `orca decide tool` (not full MCP protocol mediation).
 - File protection uses Zig policy.yaml (`files.read` / `files.write`); it is not the same engine as daemon pack rules for shell.
 - Process-level env isolation, network policy, and secretless require `orca run [--secretless] [--network …] -- pi …`; the extension alone does not provide them.
 - Pi hosts without the transcript `sendMessage` API fall back to a docked deny

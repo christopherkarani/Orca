@@ -1,0 +1,151 @@
+const std = @import("std");
+
+/// Exact host names that rewrite to `orca run -- <host> …`.
+/// Canonical allowlist for dispatch, help, and completions.
+/// Separate from managed_hosts (plugins) so `pi` can launch without plugin install.
+pub const host_launch_aliases = [_][]const u8{
+    "claude",
+    "codex",
+    "pi",
+    "opencode",
+    "openclaw",
+    "hermes",
+};
+
+/// Exact, case-sensitive allowlist match only (no fuzzy host matching).
+pub fn isHostLaunchAlias(name: []const u8) bool {
+    for (host_launch_aliases) |host| {
+        if (std.mem.eql(u8, name, host)) return true;
+    }
+    return false;
+}
+
+/// Builds argv for `run_command.command`: `["--", host] ++ rest`.
+/// Caller owns and must free the returned slice (not the pointed-to strings).
+/// Does not inject `--secretless` or network flags — Phase 2 defaults apply via bare run.
+pub fn buildRunArgv(allocator: std.mem.Allocator, host: []const u8, rest: []const []const u8) ![]const []const u8 {
+    const out = try allocator.alloc([]const u8, rest.len + 2);
+    out[0] = "--";
+    out[1] = host;
+    if (rest.len > 0) @memcpy(out[2..], rest);
+    return out;
+}
+
+/// If `command` is a host launch alias, rewrite argv and call `runFn`.
+/// Returns null when `command` is not an alias (caller continues normal dispatch).
+/// `runFn` is injected to avoid host_launch → run → help → host_launch import cycles.
+pub fn tryDispatch(
+    allocator: std.mem.Allocator,
+    command: []const u8,
+    rest: []const []const u8,
+    comptime runFn: anytype,
+    io: std.Io,
+    stdout: anytype,
+    stderr: anytype,
+) !?u8 {
+    if (!isHostLaunchAlias(command)) return null;
+    const run_argv = try buildRunArgv(allocator, command, rest);
+    defer allocator.free(run_argv);
+    return try runFn(io, run_argv, stdout, stderr);
+}
+
+test "isHostLaunchAlias exact allowlist only" {
+    for (host_launch_aliases) |host| {
+        try std.testing.expect(isHostLaunchAlias(host));
+    }
+    try std.testing.expect(!isHostLaunchAlias("Claude"));
+    try std.testing.expect(!isHostLaunchAlias("claude "));
+    try std.testing.expect(!isHostLaunchAlias("notanagent"));
+    try std.testing.expect(!isHostLaunchAlias("run"));
+    try std.testing.expect(!isHostLaunchAlias(""));
+    try std.testing.expect(!isHostLaunchAlias("clau"));
+    try std.testing.expect(!isHostLaunchAlias("pi2"));
+}
+
+test "buildRunArgv is equivalent to bare run -- host rest without Orca flags" {
+    const allocator = std.testing.allocator;
+
+    {
+        const argv = try buildRunArgv(allocator, "claude", &.{});
+        defer allocator.free(argv);
+        try std.testing.expectEqual(@as(usize, 2), argv.len);
+        try std.testing.expectEqualStrings("--", argv[0]);
+        try std.testing.expectEqualStrings("claude", argv[1]);
+        for (argv) |arg| {
+            try std.testing.expect(!std.mem.eql(u8, arg, "--secretless"));
+            try std.testing.expect(!std.mem.startsWith(u8, arg, "--network"));
+            try std.testing.expect(!std.mem.eql(u8, arg, "--no-network"));
+            try std.testing.expect(!std.mem.eql(u8, arg, "--allow-network"));
+        }
+    }
+
+    {
+        const rest = [_][]const u8{ "exec", "foo", "--help" };
+        const argv = try buildRunArgv(allocator, "codex", &rest);
+        defer allocator.free(argv);
+        try std.testing.expectEqual(@as(usize, 5), argv.len);
+        try std.testing.expectEqualStrings("--", argv[0]);
+        try std.testing.expectEqualStrings("codex", argv[1]);
+        try std.testing.expectEqualStrings("exec", argv[2]);
+        try std.testing.expectEqualStrings("foo", argv[3]);
+        try std.testing.expectEqualStrings("--help", argv[4]);
+        for (argv) |arg| {
+            try std.testing.expect(!std.mem.eql(u8, arg, "--secretless"));
+        }
+    }
+
+    {
+        const rest = [_][]const u8{ "arg1", "arg2" };
+        const argv = try buildRunArgv(allocator, "claude", &rest);
+        defer allocator.free(argv);
+        try std.testing.expectEqualStrings("--", argv[0]);
+        try std.testing.expectEqualStrings("claude", argv[1]);
+        try std.testing.expectEqualStrings("arg1", argv[2]);
+        try std.testing.expectEqualStrings("arg2", argv[3]);
+    }
+
+    {
+        // v1: agent argv only — --network is for the agent, not Orca run flags.
+        const rest = [_][]const u8{"--network"};
+        const argv = try buildRunArgv(allocator, "pi", &rest);
+        defer allocator.free(argv);
+        try std.testing.expectEqual(@as(usize, 3), argv.len);
+        try std.testing.expectEqualStrings("--", argv[0]);
+        try std.testing.expectEqualStrings("pi", argv[1]);
+        try std.testing.expectEqualStrings("--network", argv[2]);
+    }
+}
+
+test "tryDispatch returns null for non-aliases and rewrites aliases" {
+    const allocator = std.testing.allocator;
+
+    const null_code = try tryDispatch(allocator, "notanagent", &.{}, struct {
+        fn run(_: std.Io, _: []const []const u8, _: anytype, _: anytype) !u8 {
+            return error.ShouldNotRun;
+        }
+    }.run, std.testing.io, {}, {});
+    try std.testing.expect(null_code == null);
+
+    const Capture = struct {
+        var seen_len: usize = 0;
+        var seen0: []const u8 = "";
+        var seen1: []const u8 = "";
+        var seen2: []const u8 = "";
+
+        fn run(_: std.Io, argv: []const []const u8, _: anytype, _: anytype) !u8 {
+            seen_len = argv.len;
+            seen0 = argv[0];
+            seen1 = argv[1];
+            if (argv.len > 2) seen2 = argv[2];
+            return 42;
+        }
+    };
+    Capture.seen_len = 0;
+
+    const code = try tryDispatch(allocator, "pi", &.{"--help"}, Capture.run, std.testing.io, {}, {});
+    try std.testing.expectEqual(@as(u8, 42), code.?);
+    try std.testing.expectEqual(@as(usize, 3), Capture.seen_len);
+    try std.testing.expectEqualStrings("--", Capture.seen0);
+    try std.testing.expectEqualStrings("pi", Capture.seen1);
+    try std.testing.expectEqualStrings("--help", Capture.seen2);
+}

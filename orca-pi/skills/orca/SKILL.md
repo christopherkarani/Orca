@@ -5,7 +5,7 @@ description: Use when Pi bash/write/edit/read/discovery tool calls are protected
 
 # Orca Guardrails For Pi
 
-Orca evaluates Pi **built-in** tools before they run:
+Orca evaluates Pi tools before they run:
 
 | Tool | Path |
 |------|------|
@@ -13,8 +13,9 @@ Orca evaluates Pi **built-in** tools before they run:
 | `write` / `edit` | Zig `orca decide file` with `operation: write` |
 | `read` | Zig `orca decide file` with `operation: read` |
 | `grep` / `find` / `ls` | Root preflight plus explicit approval; descendants are not individually evaluated |
+| Any other tool name (custom / MCP-shaped) | Zig `orca decide tool` with `{"name":"<toolName>"}` (name only) |
 
-Custom/MCP tools are **not** intercepted. Treat an Orca block as a security decision, not as a formatting problem to route around.
+Custom/MCP-shaped tools are **name-gated** via `decide tool` — this is **not** full MCP protocol mediation or an MCP proxy. Treat an Orca block as a security decision, not as a formatting problem to route around.
 
 `grep`, `find`, and `ls` remain approval-gated even when the root preflight allows them. Do not describe a broad root check as proof that every traversed file is safe.
 

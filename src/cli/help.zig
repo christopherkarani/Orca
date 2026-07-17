@@ -2,6 +2,7 @@ const std = @import("std");
 const style = @import("style.zig");
 const build_options = @import("build_options");
 const tui = @import("../tui/mod.zig");
+const host_launch = @import("host_launch.zig");
 
 pub const Category = enum {
     getting_started,
@@ -24,26 +25,56 @@ pub const CommandInfo = struct {
     hidden: bool = false,
 };
 
-pub const commands = [_]CommandInfo{
-    .{
-        .name = "run",
-        .summary = "Run a command under Orca",
-        .usage = "orca run [options] -- <command> [args...]",
+/// One help entry per allowlisted host — driven by `host_launch.host_launch_aliases`.
+fn hostAliasCommand(comptime host: []const u8) CommandInfo {
+    return .{
+        .name = host,
+        .summary = "Launch " ++ host ++ " under Orca (alias for orca run -- " ++ host ++ ")",
+        .usage = "orca " ++ host ++ " [agent-args...]",
         .category = .core_workflow,
-        .examples = &.{
-            "orca run -- echo 'hello world'",
-            "orca run --mode strict -- codex",
-            "orca run --no-network --no-secrets -- claude",
-        },
-        .additional_completion_flags = &.{ "--workspace", "--policy", "--session-name", "--secretless", "--inherit-env", "--allow-network", "--network", "--network-backend", "--require-backend" },
+        .examples = &.{"orca " ++ host},
         .details = &.{
-            "Starts a protected session, filters the child environment through policy, checks the command through a command safety check, writes audit artifacts, and mirrors the child exit code.",
-            "Options: --workspace <path>, --mode observe|ask|strict|ci, --policy <path>, --session-name <name>, --no-secrets, --secretless, --inherit-env, --no-network, --allow-network <domain>, --network observe|ask|allowlist|open|off, --network-backend decision-only|proxy, --require-backend <capability>, --help",
-            "Strict and CI modes default to environments without secret access. --secretless replaces policy-visible secret env values with non-resolving orca-secret:// local-dummy references (not usable as raw model API keys; opt-in only). --inherit-env is allowed only when the selected policy permits inheritance.",
-            "Network flags update the run-time policy and audit network decisions. --network-backend proxy starts an explicit localhost proxy and injects HTTP_PROXY/HTTPS_PROXY/ALL_PROXY; HTTPS CONNECT is host/port only without interception.",
-            "Linux uses platform feature detection where available. Optional kernel features are reported honestly and are not claimed active unless actually active.",
+            "Thin host launch alias: equivalent to `orca run -- " ++ host ++ " [agent-args...]`.",
+            "Inherits agent-primary defaults (network ask; secretless off). Orca run flags stay on `orca run` only — everything after the host name is agent argv.",
         },
-    },
+    };
+}
+
+fn hostAliasCommands() [host_launch.host_launch_aliases.len]CommandInfo {
+    var out: [host_launch.host_launch_aliases.len]CommandInfo = undefined;
+    inline for (host_launch.host_launch_aliases, 0..) |host, i| {
+        out[i] = hostAliasCommand(host);
+    }
+    return out;
+}
+
+pub const commands =
+    [_]CommandInfo{
+        .{
+            .name = "run",
+            .summary = "Run a command under Orca (agent-primary defaults)",
+            .usage = "orca run [options] -- <command> [args...]",
+            .category = .core_workflow,
+            .examples = &.{
+                "orca claude",
+                "orca pi",
+                "orca run -- claude",
+                "orca run --network allowlist -- pi",
+                "orca run --no-network --no-secrets -- echo 'offline'",
+                "orca run --secretless --network-backend proxy -- <command>",
+            },
+            .additional_completion_flags = &.{ "--workspace", "--policy", "--session-name", "--secretless", "--inherit-env", "--allow-network", "--network", "--network-backend", "--require-backend" },
+            .details = &.{
+                "Starts a protected session, filters the child environment through policy, checks the command through a command safety check, writes audit artifacts, and mirrors the child exit code.",
+                "Agent-primary defaults: network mode is ask when --network/--no-network are omitted (overrides policy network.mode for this run). Secretless stays off unless --secretless. Opt-outs: --network open|allowlist|observe|off|ask, --no-network.",
+                "Host launch aliases (orca claude, orca pi, …) rewrite to this command with no extra flags — same defaults. Pass Orca run flags only on `orca run`, not after a host alias name.",
+                "Options: --workspace <path>, --mode observe|ask|strict|ci, --policy <path>, --session-name <name>, --no-secrets, --secretless, --inherit-env, --no-network, --allow-network <domain>, --network observe|ask|allowlist|open|off, --network-backend decision-only|proxy, --require-backend <capability>, --help",
+                "Strict and CI modes default to environments without secret access. --secretless replaces policy-visible secret env values with non-resolving orca-secret:// local-dummy references (not usable as raw model API keys; opt-in strip/demo only — not day-1 model auth). --inherit-env is allowed only when the selected policy permits inheritance.",
+                "Network flags update the run-time policy and audit network decisions. --network-backend proxy starts an explicit localhost proxy and injects HTTP_PROXY/HTTPS_PROXY/ALL_PROXY; HTTPS CONNECT is host/port only without interception.",
+                "Linux uses platform feature detection where available. Optional kernel features are reported honestly and are not claimed active unless actually active.",
+            },
+        },
+    } ++ hostAliasCommands() ++ [_]CommandInfo{
     .{
         .name = "init",
         .summary = "Create an Orca policy",
@@ -669,7 +700,7 @@ pub fn write(io: std.Io, writer: anytype) !void {
         .{ .label = "See status", .cmd = "orca status" },
         .{ .label = "Deep diagnose", .cmd = "orca doctor" },
         .{ .label = "Why blocked?", .cmd = "orca explain \"…\"" },
-        .{ .label = "Run an agent", .cmd = "orca run -- <agent>" },
+        .{ .label = "Run an agent", .cmd = "orca claude  (or: orca pi | orca run -- <agent>)" },
         .{ .label = "Wire a host", .cmd = "orca plugin install" },
     };
     var task_label_width: usize = 0;
@@ -777,4 +808,40 @@ pub fn findCommand(name: []const u8) ?CommandInfo {
         if (std.mem.eql(u8, command.name, name)) return command;
     }
     return null;
+}
+
+test "host launch allowlist is the single source for help alias entries" {
+    for (host_launch.host_launch_aliases) |host| {
+        const info = findCommand(host) orelse {
+            std.debug.print("missing help entry for host launch alias: {s}\n", .{host});
+            try std.testing.expect(false);
+            return;
+        };
+        try std.testing.expectEqualStrings(host, info.name);
+        try std.testing.expect(std.mem.indexOf(u8, info.summary, host) != null);
+        try std.testing.expect(std.mem.indexOf(u8, info.usage, host) != null);
+        try std.testing.expect(std.mem.indexOf(u8, info.details[0], "orca run -- ") != null);
+        try std.testing.expect(std.mem.indexOf(u8, info.details[1], "secretless off") != null);
+    }
+    try std.testing.expect(findCommand("notanagent") == null);
+    try std.testing.expect(!host_launch.isHostLaunchAlias("notanagent"));
+}
+
+test "top help and per-host help surface claude and pi aliases" {
+    var buf: [24576]u8 = undefined;
+    var writer: std.Io.Writer = .fixed(&buf);
+    try write(std.testing.io, &writer);
+    const top = writer.buffered();
+    try std.testing.expect(std.mem.indexOf(u8, top, "claude") != null);
+    try std.testing.expect(std.mem.indexOf(u8, top, "pi") != null);
+    try std.testing.expect(std.mem.indexOf(u8, top, "orca claude") != null);
+
+    writer = .fixed(&buf);
+    try std.testing.expect(try writeCommand(std.testing.io, &writer, "claude"));
+    try std.testing.expect(std.mem.indexOf(u8, writer.buffered(), "orca run -- claude") != null);
+    try std.testing.expect(std.mem.indexOf(u8, writer.buffered(), "secretless off") != null);
+
+    writer = .fixed(&buf);
+    try std.testing.expect(try writeCommand(std.testing.io, &writer, "pi"));
+    try std.testing.expect(std.mem.indexOf(u8, writer.buffered(), "orca run -- pi") != null);
 }

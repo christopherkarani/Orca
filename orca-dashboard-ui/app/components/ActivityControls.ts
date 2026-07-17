@@ -6,7 +6,7 @@ import type { BlockedAction } from "../lib/types.ts";
 import type { DashboardMode } from "../lib/dashboard-mode.ts";
 
 export const PI_COVERAGE =
-  "Pi protects bash, write, edit, read, grep, find, and ls built-in tools. Custom and MCP tools are not intercepted; use orca run -- pi for process environment, network, and secretless controls.";
+  "Pi protects bash, write, edit, read, grep, find, and ls built-in tools. Custom/MCP-shaped tool names are gated via orca decide tool (not full MCP protocol mediation). Use orca run -- pi for process environment, network, and secretless controls.";
 
 export interface RemediationCommand {
   label: string;
