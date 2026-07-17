@@ -482,21 +482,18 @@ pub fn buildFeedRecordFromHookActivity(
     };
 }
 
+/// True when a feed row belongs on the blocked/attention surface.
+///
+/// Classification is **decision-based** (not host event-type string lists):
+/// - `deny` / `block` / `error` — hard denial or evaluation failure
+/// - `ask` — approval required (still needs human attention)
+/// - `warn` — advisory only; tools may proceed; never counts as blocked
 pub fn isBlockedFeedRecord(record: RustShellFeedRecord) bool {
     if (std.mem.eql(u8, record.decision, "deny")) return true;
-    const host = record.host orelse return false;
-    if (!std.mem.eql(u8, host, "hermes")) return false;
-    // Non-allow tool outcomes: hard block, native ask (approve gate), warn, or error.
-    const non_allow_tool =
-        std.mem.eql(u8, record.event_type, "hermes_tool_call_blocked") or
-        std.mem.eql(u8, record.event_type, "hermes_tool_call_ask") or
-        std.mem.eql(u8, record.event_type, "hermes_tool_call_warn");
-    if (!non_allow_tool) return false;
-    return std.mem.eql(u8, record.decision, "ask") or
-        std.mem.eql(u8, record.decision, "warn") or
-        std.mem.eql(u8, record.decision, "error") or
-        std.mem.eql(u8, record.decision, "deny") or
-        std.mem.eql(u8, record.decision, "block");
+    if (std.mem.eql(u8, record.decision, "block")) return true;
+    if (std.mem.eql(u8, record.decision, "error")) return true;
+    if (std.mem.eql(u8, record.decision, "ask")) return true;
+    return false;
 }
 
 pub fn writeFeedRecordJson(writer: anytype, record: RustShellFeedRecord) !void {
@@ -663,4 +660,41 @@ test "formatDenyNextStepsWithCode emits concrete allow-once code" {
     defer allocator.free(footer);
     try std.testing.expect(std.mem.indexOf(u8, footer, "orca allow-once A1B2C3") != null);
     try std.testing.expect(std.mem.indexOf(u8, footer, "orca allowlist add core.filesystem:destructive_rm") != null);
+}
+
+test "isBlockedFeedRecord is decision-based; warn is not blocked" {
+    const base = RustShellFeedRecord{
+        .timestamp = "t",
+        .workspace_root = "/w",
+        .event_type = "hermes_tool_call_warn",
+        .decision = "warn",
+        .decision_source = "zig-native",
+        .event_source = "hook",
+        .host = "hermes",
+        .daemon_status = "not_applicable",
+        .pack_id = null,
+        .rule = null,
+        .severity = null,
+        .reason = "advisory",
+        .remediation = null,
+        .target_summary = "tool",
+        .session_id = "s",
+        .verified = false,
+    };
+    try std.testing.expect(!isBlockedFeedRecord(base));
+
+    var ask = base;
+    ask.decision = "ask";
+    ask.event_type = "hermes_tool_call_ask";
+    try std.testing.expect(isBlockedFeedRecord(ask));
+
+    var deny = base;
+    deny.decision = "deny";
+    deny.event_type = "hermes_tool_call_blocked";
+    try std.testing.expect(isBlockedFeedRecord(deny));
+
+    var allow = base;
+    allow.decision = "allow";
+    allow.event_type = "hermes_tool_call";
+    try std.testing.expect(!isBlockedFeedRecord(allow));
 }

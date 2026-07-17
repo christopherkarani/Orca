@@ -31,10 +31,10 @@ This is **not** a passive model note, and it is **not** “tell the model to cal
 Always-allow entries are keyed so they do not over-approve:
 
 ```text
-orca:{rule_id|policy}:{tool_name}:{sha256(args)[:12]}
+orca|{rule_id|policy}|{tool_name}|{sha256(args)[:12]}
 ```
 
-Approving `curl http://a.example` under rule `core.shell:network` does **not** auto-approve a later `curl http://b.example` under the same rule.
+Separators are `|` so rule ids that contain `:` stay unambiguous. Approving `curl http://a.example` under rule `core.shell:network` does **not** auto-approve a later `curl http://b.example` under the same rule.
 
 ### CI / noninteractive
 

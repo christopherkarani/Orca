@@ -23,7 +23,7 @@
     "node": ">=18.0.0"
   },
   "scripts": {
-    "build": "tsc -p tsconfig.json",
+    "build": "tsc -p tsconfig.json && cp src/index.ts orca.ts",
     "test": "npm run build && node --test test/index.test.mjs",
     "pack:dry-run": "npm pack --dry-run"
   },

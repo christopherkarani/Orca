@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import importlib.util
+import json
 import os
 import sys
 import unittest
@@ -115,9 +116,9 @@ class HermesPluginDiscoveryTests(unittest.TestCase):
         self.assertEqual(result.get("action"), "approve")
         self.assertIn("approval required by Orca", result.get("message", ""))
         rule_key = result.get("rule_key", "")
-        self.assertTrue(rule_key.startswith("orca:"), rule_key)
+        self.assertTrue(rule_key.startswith("orca|"), rule_key)
         self.assertIn("core.filesystem:destructive_rm", rule_key)
-        self.assertIn("terminal", rule_key)
+        self.assertIn("|terminal|", f"|{rule_key}|")
 
     def test_pre_tool_call_ask_hardens_to_block_in_ci(self) -> None:
         ctx = mock.Mock()
@@ -162,8 +163,8 @@ class HermesPluginDiscoveryTests(unittest.TestCase):
             {"command": "curl http://b.example"},
         )
         self.assertNotEqual(key_a, key_b)
-        self.assertTrue(key_a.startswith("orca:core.shell:network:terminal:"))
-        self.assertTrue(key_b.startswith("orca:core.shell:network:terminal:"))
+        self.assertTrue(key_a.startswith("orca|core.shell:network|terminal|"), key_a)
+        self.assertTrue(key_b.startswith("orca|core.shell:network|terminal|"), key_b)
 
         # Same args → same key (stable).
         key_a2 = _PLUGIN._stable_rule_key(
@@ -172,6 +173,60 @@ class HermesPluginDiscoveryTests(unittest.TestCase):
             {"command": "curl http://a.example"},
         )
         self.assertEqual(key_a, key_a2)
+
+    def test_policy_warn_does_not_use_degraded_framing(self) -> None:
+        ctx = mock.Mock()
+        _PLUGIN._register(ctx, "pre_tool_call")
+        handler = ctx.register_hook.call_args.args[1]
+        with mock.patch.object(
+            _PLUGIN,
+            "_call_orca",
+            return_value={"decision": "warn", "message": "warn by Orca"},
+        ):
+            with mock.patch("builtins.print") as printed:
+                result = handler(tool_name="terminal", args={"command": "curl example.com"})
+        self.assertIsNone(result)
+        warn_text = " ".join(str(c) for c in printed.call_args_list)
+        self.assertIn("warn by Orca", warn_text)
+        self.assertNotIn("FAIL-OPEN", warn_text)
+
+    def test_host_decision_mapping_example_matches_tool_modes(self) -> None:
+        """Schema example is enforced against pure mapping modes (no silent drift)."""
+        example_path = (
+            Path(__file__).resolve().parents[1]
+            / "common"
+            / "schemas"
+            / "examples"
+            / "hermes-decision-mapping-v1.json"
+        )
+        example = json.loads(example_path.read_text(encoding="utf-8"))
+        mapping_table = example["tool_path"]["mapping"]
+        for decision, expected in (
+            ("allow", "proceed"),
+            ("block", "hard_block"),
+            ("ask", "native_approve_and_resume"),
+            ("warn", "advisory_log"),
+        ):
+            with self.subTest(decision=decision):
+                self.assertEqual(mapping_table[decision]["mode"], expected)
+                self.assertEqual(_PLUGIN._mapping.tool_action_mode(decision), expected)
+
+        # Runtime shapes for key decisions.
+        self.assertIsNone(
+            _PLUGIN._mapping.map_pre_tool_call({"decision": "allow"}, "terminal", {})
+        )
+        blocked = _PLUGIN._mapping.map_pre_tool_call(
+            {"decision": "block", "message": "no"}, "terminal", {}
+        )
+        self.assertEqual(blocked["action"], "block")
+        approved = _PLUGIN._mapping.map_pre_tool_call(
+            {"decision": "ask", "message": "need"},
+            "terminal",
+            {"command": "x"},
+            environ={},
+        )
+        self.assertEqual(approved["action"], "approve")
+        self.assertTrue(approved["rule_key"].startswith("orca|"))
 
     def test_pre_tool_call_surfaces_remediation_commands(self) -> None:
         ctx = mock.Mock()

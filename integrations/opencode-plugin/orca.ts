@@ -207,6 +207,35 @@ function applyBlockingDecision(response: OrcaResponse, context: string): void {
   }
 }
 
+/** Orca decision → OpenCode permission.ask status. Unknown decisions fail closed to deny. */
+const PERMISSION_STATUS: Record<string, PermissionAskOutput['status']> = {
+  block: 'deny',
+  error: 'deny',
+  ask: 'ask',
+  allow: 'allow',
+  context_only: 'allow',
+  // Keep host permission UI for advisory outcomes (do not auto-allow).
+  warn: 'ask',
+};
+
+function applyPermissionDecision(response: OrcaResponse, output: PermissionAskOutput): void {
+  const status = PERMISSION_STATUS[response.decision];
+  if (!status) {
+    const msg = response.message || response.reason || 'Orca returned an invalid permission decision';
+    console.error(`[orca] Blocked permission (fail-closed): ${msg}`);
+    output.status = 'deny';
+    return;
+  }
+  if (status === 'deny') {
+    const msg = response.message || response.reason || 'Orca blocked this command.';
+    console.error(`[orca] Blocked permission: ${msg}`);
+  }
+  if (response.decision === 'warn') {
+    console.warn(`[orca] Permission warning: ${response.message || response.reason}`);
+  }
+  output.status = status;
+}
+
 function auditEventPayload(event: Record<string, unknown>): unknown {
   if (event.type === 'session.error') {
     return redactSecrets({
@@ -294,31 +323,8 @@ export default async function orcaPlugin(ctx: PluginContext): Promise<PluginHook
     'permission.ask': async (input, output) => {
       const sessionId = sessionIdFromRecord(input);
       const response = callOrca(orcaBin, 'permission.asked', input, sessionId, true);
-
-      // OpenCode is already presenting a permission UI on this hook.
-      // Hard deny only; leave Orca `ask` as host `ask` so the user can approve-and-resume.
-      // Do not map security-critical ask solely to a silent allow.
-      if (response.decision === 'block' || response.decision === 'error') {
-        const msg = response.message || response.reason || 'Orca blocked this command.';
-        console.error(`[orca] Blocked permission: ${msg}`);
-        output.status = 'deny';
-        return;
-      }
-
-      if (response.decision === 'ask') {
-        output.status = 'ask';
-        return;
-      }
-
-      if (response.decision === 'allow' || response.decision === 'context_only') {
-        output.status = 'allow';
-        return;
-      }
-
-      if (response.decision === 'warn') {
-        console.warn(`[orca] Permission warning: ${response.message || response.reason}`);
-        // warn stays advisory; host may still prompt depending on OpenCode defaults.
-      }
+      // Host already presents permission UI: map via table (ask stays ask for resume).
+      applyPermissionDecision(response, output);
     },
 
     'shell.env': async (input, output) => {

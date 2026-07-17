@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import hashlib
 import json
 import os
 import shutil
@@ -10,6 +9,26 @@ import subprocess
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
+
+
+def _load_mapping() -> Any:
+    """Load pure mapping helpers as package submodule or sibling file."""
+    try:
+        from . import mapping as mapping_mod  # type: ignore[attr-defined]
+
+        return mapping_mod
+    except ImportError:
+        import importlib.util
+
+        path = Path(__file__).resolve().with_name("mapping.py")
+        spec = importlib.util.spec_from_file_location("orca_hermes_mapping", path)
+        assert spec and spec.loader
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        return mod
+
+
+_mapping = _load_mapping()
 
 
 SECRET_KEYS = (
@@ -363,49 +382,20 @@ def _call_orca(event: str, data: Any) -> dict[str, Any]:
     return json.loads(completed.stdout)
 
 
-def _ci_mode() -> bool:
-    """True when interactive approval cannot be answered (CI / noninteractive)."""
-    for key in ("CI", "ORCA_CI", "ORCA_NONINTERACTIVE"):
-        value = os.environ.get(key, "").strip().lower()
-        if value and value not in ("0", "false", "no", "off"):
-            return True
-    return False
+def _log_policy_warn(ctx: Any, message: str) -> None:
+    """Surface an advisory policy warn — not a degraded/fail-open path."""
+    full = f"[orca-hermes] {message}"
+    logger = getattr(ctx, "logger", None)
+    if logger and hasattr(logger, "warning"):
+        logger.warning(full)
+    print(f"warning: {full}", flush=True)
 
 
-def _stable_rule_key(response: dict[str, Any], tool_name: str, tool_input: Any) -> str:
-    """Stable Hermes [a]lways allowlist grain for Orca ask decisions.
-
-    Format: ``orca:{rule}:{tool}:{args_fp}``
-
-    - ``rule`` is Orca ``rule_id``/``rule`` when present (else ``policy``).
-    - ``tool`` is the Hermes tool name.
-    - ``args_fp`` is a short hash of canonical tool args so approving one
-      command/path under a rule does not blanket every later match of that rule.
-    """
-    rule = response.get("rule_id") or response.get("rule") or "policy"
-    rule_s = str(rule).strip() or "policy"
-    tool_s = (tool_name or "tool").strip() or "tool"
-    try:
-        canonical = json.dumps(tool_input, sort_keys=True, default=str, separators=(",", ":"))
-    except (TypeError, ValueError):
-        canonical = str(tool_input)
-    fingerprint = hashlib.sha256(canonical.encode("utf-8")).hexdigest()[:12]
-    return f"orca:{rule_s}:{tool_s}:{fingerprint}"
-
-
-def _format_tool_message(response: dict[str, Any], *, default: str = "blocked by Orca") -> str:
-    message = response.get("message") or response.get("reason") or default
-    if not isinstance(message, str):
-        message = default
-    remediation = response.get("remediation_commands")
-    if isinstance(remediation, list) and remediation:
-        tips = "; ".join(str(item) for item in remediation if item)
-        if tips:
-            message = f"{message} Next: {tips}"
-    rule_id = response.get("rule_id") or response.get("rule")
-    if rule_id:
-        message = f"{message} (rule: {rule_id})"
-    return message
+# Re-export pure mapping helpers for tests and external callers.
+_ci_mode = _mapping.ci_mode
+_stable_rule_key = _mapping.stable_rule_key
+_format_tool_message = _mapping.format_tool_message
+_map_pre_llm_call = _mapping.map_pre_llm_call
 
 
 def _map_pre_tool_call(
@@ -414,82 +404,12 @@ def _map_pre_tool_call(
     tool_name: str,
     tool_input: Any,
 ) -> Any:
-    """Map Orca decision → Hermes pre_tool_call directive.
-
-    - allow → None (proceed)
-    - block → {"action": "block", ...} hard deny
-    - ask → {"action": "approve", "message", "rule_key"} (native human gate);
-      CI/noninteractive hardens ask → block
-    - warn → log advisory warning and allow (not collapsed to block)
-    - other → fail-closed block
-    """
-    decision = response.get("decision", "allow")
-    if decision == "allow":
-        return None
-    if decision == "warn":
-        message = _format_tool_message(response, default="policy warning from Orca")
-        _warn_degraded(ctx, "pre_tool_call", f"WARN (advisory, not blocked): {message}")
-        return None
-    if decision == "block":
-        return {
-            "action": "block",
-            "message": _format_tool_message(response, default="blocked by Orca"),
-        }
-    if decision == "ask":
-        message = _format_tool_message(response, default="approval required by Orca")
-        if _ci_mode():
-            return {
-                "action": "block",
-                "message": (
-                    f"{message} "
-                    "(CI/noninteractive: Orca ask hardened to block; no approval prompt available)"
-                ),
-            }
-        return {
-            "action": "approve",
-            "message": message,
-            "rule_key": _stable_rule_key(response, tool_name, tool_input),
-        }
-    return {
-        "action": "block",
-        "message": "Orca returned an invalid tool decision; blocked fail-closed.",
-    }
-
-
-def _map_pre_llm_call(response: dict[str, Any]) -> Any:
-    """Map Orca decision → Hermes pre_llm_call context.
-
-    Hermes only supports context injection on this hook — it cannot veto the
-    turn or open an approval dialog. Context notes are therefore advisory:
-
-    - warn / context_only: honest advisory policy note
-    - ask / block: honest note that this is NOT an enforcement or approval gate;
-      strongest real gate remains ``orca run -- hermes``
-    """
-    decision = response.get("decision", "allow")
-    if decision not in ("block", "warn", "ask", "context_only"):
-        return None
-    message = response.get("message") or response.get("reason") or "Review this prompt under Orca policy."
-    if not isinstance(message, str):
-        message = "Review this prompt under Orca policy."
-    if decision == "warn" or decision == "context_only":
-        return {"context": f"Orca policy note (warn/observe, advisory only): {message}"}
-    if decision == "ask":
-        return {
-            "context": (
-                f"Orca policy note (ask — not an approval gate): {message} "
-                "Hermes pre_llm_call cannot gate prompts or open approve-and-resume. "
-                "This note does not enforce approval. Prefer `orca run -- hermes` for outer enforcement."
-            )
-        }
-    # block
-    return {
-        "context": (
-            f"Orca policy note (block — host cannot veto pre_llm_call): {message} "
-            "Hermes pre_llm_call cannot block the turn; this note does not enforce a deny. "
-            "Prefer `orca run -- hermes` for outer enforcement."
-        )
-    }
+    return _mapping.map_pre_tool_call(
+        response,
+        tool_name,
+        tool_input,
+        log_warn=lambda msg: _log_policy_warn(ctx, msg),
+    )
 
 
 def _register(ctx: Any, event: str) -> None:

@@ -89,12 +89,18 @@ test "hermes plugin source maps ask to approve not permanent block" {
     const content = try readFile(std.testing.allocator, source_path);
     defer std.testing.allocator.free(content);
 
-    try std.testing.expect(std.mem.indexOf(u8, content, "\"approve\"") != null);
-    try std.testing.expect(std.mem.indexOf(u8, content, "rule_key") != null);
-    try std.testing.expect(std.mem.indexOf(u8, content, "_stable_rule_key") != null);
     try std.testing.expect(std.mem.indexOf(u8, content, "_map_pre_tool_call") != null);
-    // CI hardening of ask → block must remain.
-    try std.testing.expect(std.mem.indexOf(u8, content, "_ci_mode") != null);
+    try std.testing.expect(std.mem.indexOf(u8, content, "mapping") != null);
+    try std.testing.expect(std.mem.indexOf(u8, content, "_log_policy_warn") != null);
+
+    const mapping_path = plugin_dir ++ "/mapping.py";
+    try std.testing.expect(fileExists(mapping_path));
+    const mapping = try readFile(std.testing.allocator, mapping_path);
+    defer std.testing.allocator.free(mapping);
+    try std.testing.expect(std.mem.indexOf(u8, mapping, "approve") != null);
+    try std.testing.expect(std.mem.indexOf(u8, mapping, "ci_mode") != null);
+    try std.testing.expect(std.mem.indexOf(u8, mapping, "stable_rule_key") != null);
+    try std.testing.expect(std.mem.indexOf(u8, mapping, "rule_key") != null);
 }
 
 test "all hermes fixtures exist" {

@@ -80,6 +80,17 @@ See `integrations/common/schemas/host-capabilities-v1.json` and
 `integrations/common/schemas/host-decision-mapping-v1.json` for machine-readable
 enforcement modes plugins can advertise or tests can assert.
 
+## Feed / dashboard classification
+
+Blocked-actions counters classify by **decision**, not host event-type strings:
+
+| decision | Counts as blocked/attention? |
+|---|---|
+| `deny` / `block` / `error` | Yes (hard deny or failure) |
+| `ask` | Yes (approval required) |
+| `warn` | **No** (advisory; tool may proceed) |
+| `allow` / `context_only` | No |
+
 ## Adapter rules (non-negotiable)
 
 1. Policy logic stays in Orca (`orca hook` / `orca decide`). Plugins only map outputs.
@@ -87,6 +98,7 @@ enforcement modes plugins can advertise or tests can assert.
 3. Do not collapse `warn` to `block` without docs + tests.
 4. Document host limitations in README + `host_limitations` response fields.
 5. Strongest shell boundary remains `orca run -- <host> ...`.
+6. Hermes pure mapping lives in `integrations/hermes-plugin/mapping.py`; the example JSON under `integrations/common/schemas/examples/` is asserted by plugin unit tests.
 
 ## See also
 
