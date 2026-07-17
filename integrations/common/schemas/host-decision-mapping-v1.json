@@ -1,0 +1,108 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://orca.local/schemas/host-decision-mapping-v1.json",
+  "title": "Orca Host Decision Mapping v1",
+  "description": "Machine-readable contract for how adapters map Orca decisions to host actions. Prevents silent lies about approval/enforcement.",
+  "type": "object",
+  "required": ["version", "host", "tool_path", "prompt_path"],
+  "properties": {
+    "version": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 1
+    },
+    "host": {
+      "type": "string",
+      "enum": ["hermes", "openclaw", "opencode", "claude", "codex", "pi", "other"]
+    },
+    "tool_path": {
+      "type": "object",
+      "required": ["event", "mapping", "ci_hardens_ask_to_block"],
+      "properties": {
+        "event": { "type": "string" },
+        "ci_hardens_ask_to_block": { "type": "boolean" },
+        "mapping": {
+          "type": "object",
+          "required": ["allow", "block", "ask", "warn"],
+          "properties": {
+            "allow": { "$ref": "#/definitions/hostAction" },
+            "block": { "$ref": "#/definitions/hostAction" },
+            "ask": { "$ref": "#/definitions/hostAction" },
+            "warn": { "$ref": "#/definitions/hostAction" },
+            "context_only": { "$ref": "#/definitions/hostAction" },
+            "error": { "$ref": "#/definitions/hostAction" }
+          },
+          "additionalProperties": false
+        }
+      },
+      "additionalProperties": false
+    },
+    "prompt_path": {
+      "type": "object",
+      "required": ["event", "enforcement", "mapping"],
+      "properties": {
+        "event": { "type": "string" },
+        "enforcement": {
+          "type": "string",
+          "enum": [
+            "native_approve_and_resume",
+            "hard_block",
+            "hard_block_no_resume",
+            "advisory_context_only",
+            "outer_wrapper_only",
+            "none"
+          ],
+          "description": "Honest capability of the host for prompt-level ask/block."
+        },
+        "mapping": {
+          "type": "object",
+          "properties": {
+            "allow": { "$ref": "#/definitions/hostAction" },
+            "block": { "$ref": "#/definitions/hostAction" },
+            "ask": { "$ref": "#/definitions/hostAction" },
+            "warn": { "$ref": "#/definitions/hostAction" },
+            "context_only": { "$ref": "#/definitions/hostAction" }
+          },
+          "additionalProperties": false
+        }
+      },
+      "additionalProperties": false
+    },
+    "limitations": {
+      "type": "array",
+      "items": { "type": "string" }
+    }
+  },
+  "additionalProperties": false,
+  "definitions": {
+    "hostAction": {
+      "type": "object",
+      "required": ["mode"],
+      "properties": {
+        "mode": {
+          "type": "string",
+          "enum": [
+            "proceed",
+            "hard_block",
+            "native_approve_and_resume",
+            "hard_block_no_resume",
+            "advisory_log",
+            "advisory_context",
+            "fail_closed_block",
+            "outer_wrapper_required"
+          ]
+        },
+        "host_action": {
+          "type": "string",
+          "description": "Host-native action name when applicable (e.g. Hermes approve/block)."
+        },
+        "rule_key": {
+          "type": "boolean",
+          "description": "Whether a stable rule_key is required for allowlist grain."
+        },
+        "notes": { "type": "string" }
+      },
+      "additionalProperties": false
+    }
+  }
+}

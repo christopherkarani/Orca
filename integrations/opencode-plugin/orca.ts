@@ -295,15 +295,29 @@ export default async function orcaPlugin(ctx: PluginContext): Promise<PluginHook
       const sessionId = sessionIdFromRecord(input);
       const response = callOrca(orcaBin, 'permission.asked', input, sessionId, true);
 
-      if (response.decision === 'block' || response.decision === 'ask') {
+      // OpenCode is already presenting a permission UI on this hook.
+      // Hard deny only; leave Orca `ask` as host `ask` so the user can approve-and-resume.
+      // Do not map security-critical ask solely to a silent allow.
+      if (response.decision === 'block' || response.decision === 'error') {
         const msg = response.message || response.reason || 'Orca blocked this command.';
         console.error(`[orca] Blocked permission: ${msg}`);
         output.status = 'deny';
         return;
       }
 
+      if (response.decision === 'ask') {
+        output.status = 'ask';
+        return;
+      }
+
+      if (response.decision === 'allow' || response.decision === 'context_only') {
+        output.status = 'allow';
+        return;
+      }
+
       if (response.decision === 'warn') {
         console.warn(`[orca] Permission warning: ${response.message || response.reason}`);
+        // warn stays advisory; host may still prompt depending on OpenCode defaults.
       }
     },
 

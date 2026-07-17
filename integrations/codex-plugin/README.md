@@ -117,6 +117,19 @@ Remove the plugin from Codex using your Codex plugin management commands. This p
 
 This plugin does not add MCP server behavior or drone-specific plugin features.
 
+## Decision mapping (honest)
+
+Orca returns host-actionable decisions on hook stdout. Codex interprets them:
+
+| Orca | Expected host behavior |
+|---|---|
+| `allow` | Proceed |
+| `block` | Deny the tool / permission |
+| `ask` | Prefer Codex’s native permission / approval UI when the event supports it (`PermissionRequest` / gated tools). If the host surface cannot prompt, fail closed to deny — do not treat a model-visible note as approval. |
+| `warn` | Advisory; do not silently equate to hard deny unless policy/CI requires it |
+
+CI / noninteractive (`orca hook ... --ci` or env) hardens `ask` → `block` in Orca before the host sees it.
+
 ## Strongest protection warning
 
 > The Orca Codex plugin adds native skills and lifecycle hooks for Codex. For the strongest local protection, run the Codex process itself through Orca with `orca run -- <codex-command>`.

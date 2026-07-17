@@ -247,8 +247,19 @@ CI mode is noninteractive and fail closed.
 
 For headless runs, Orca should report the CI limitation directly instead of pretending an approval flow exists.
 
+## Cross-host decision mapping
+
+The living multi-host matrix (Hermes native approve-and-resume, OpenClaw/OpenCode ask→block limitations, prompt-path honesty) lives in:
+
+- `docs/integrations/host-decision-mapping.md`
+- `integrations/common/schemas/host-decision-mapping-v1.json`
+- `integrations/common/schemas/examples/hermes-decision-mapping-v1.json`
+
+Adapters must not claim text context notes enforce approval.
+
 ## See Also
 
+- `docs/integrations/host-decision-mapping.md`
 - `docs/integrations/orca-cli-plugin.md`
 - `docs/integrations/plugin-security-model.md`
 - `aegis_plugin_launch_plan_v3/P02_AGENT_HOST_INTEGRATION_API.md`

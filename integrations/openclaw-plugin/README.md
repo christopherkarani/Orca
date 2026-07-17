@@ -108,7 +108,7 @@ Each hook sends a JSON payload to `orca hook openclaw <event>` via stdin and rea
 
 - empty or whitespace-only stdout → **block**
 - JSON parse failure or missing `decision` → **block**
-- `decision: "ask"` or unrecognized → **block** (no OpenClaw ask UX)
+- `decision: "ask"` or unrecognized → **block** (no OpenClaw ask UX / approve-and-resume yet — documented host limitation; do not fake context notes as approval)
 - `decision: "block"` → block
 - `decision: "allow"` / `"warn"` → allow (warn logs only)
 

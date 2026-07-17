@@ -100,7 +100,7 @@ The plugin registers lifecycle hooks that call `orca hook opencode <event>`:
 | `session.created` | At the start of an OpenCode session | Informational (readiness log) |
 | `tool.execute.before` | Before OpenCode invokes a tool | **Blocking** — Orca can prevent the tool call |
 | `tool.execute.after` | After OpenCode finishes using a tool | Informational (audit only) |
-| `permission.asked` | When OpenCode requests user permission | **Blocking** — Orca can deny the permission |
+| `permission.asked` | When OpenCode requests user permission | **Native permission path** — Orca `block`/`error` → deny; Orca `ask` leaves host `ask` (approve-and-resume); `allow` can auto-allow |
 | `file.edited` | When a file is edited by OpenCode | Informational (audit only) |
 | `command.executed` | When a shell command is executed | Informational (audit only) |
 | `session.updated` | When the session state changes | Informational (audit only) |

@@ -35,6 +35,31 @@
       "type": "string",
       "enum": ["none", "wrapper-only", "observe-only", "limited", "active"],
       "description": "Best available sandbox level on this platform."
+    },
+    "tool_ask_enforcement": {
+      "type": "string",
+      "enum": [
+        "native_approve_and_resume",
+        "hard_block_no_resume",
+        "advisory_only",
+        "none"
+      ],
+      "description": "How this host enforces Orca ask on tool events. native_approve_and_resume is the preferred long-term path."
+    },
+    "prompt_ask_enforcement": {
+      "type": "string",
+      "enum": [
+        "native_approve_and_resume",
+        "hard_block_no_resume",
+        "advisory_context_only",
+        "outer_wrapper_only",
+        "none"
+      ],
+      "description": "How this host enforces Orca ask on prompt/pre-LLM events. advisory_context_only must not be advertised as approval."
+    },
+    "warn_collapses_to_block": {
+      "type": "boolean",
+      "description": "If true, warn is intentionally treated as hard block (must be documented and tested)."
     }
   },
   "additionalProperties": false

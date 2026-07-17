@@ -54,7 +54,7 @@ for (const [command, message] of [
   });
 }
 
-test('permission.ask denies an Orca ask if OpenCode invokes the legacy callback', async () => {
+test('permission.ask keeps host ask for Orca ask (approve-and-resume)', async () => {
   await withFakeOrca(async (plugin) => {
     const permissionAsk = plugin['permission.ask'];
     assert.ok(permissionAsk);
@@ -62,6 +62,33 @@ test('permission.ask denies an Orca ask if OpenCode invokes the legacy callback'
 
     await permissionAsk({ sessionID: 'session-1', command: 'rm file.txt' }, output);
 
+    // Native permission UI: Orca ask must not hard-deny without resume.
+    assert.equal(output.status, 'ask');
+  });
+});
+
+test('permission.ask denies Orca block', async () => {
+  await withFakeOrca(async (plugin) => {
+    const permissionAsk = plugin['permission.ask'];
+    assert.ok(permissionAsk);
+    const output = { status: 'ask' };
+
+    await permissionAsk({ sessionID: 'session-1', command: 'rm -rf build' }, output);
+
     assert.equal(output.status, 'deny');
+  });
+});
+
+test('tool.execute.before still hard-blocks Orca ask (no resume on that path)', async () => {
+  await withFakeOrca(async (plugin) => {
+    const before = plugin['tool.execute.before'];
+    assert.ok(before);
+    await assert.rejects(
+      before(
+        { tool: 'bash', sessionID: 'session-1', callID: 'call-1' },
+        { args: { command: 'rm file.txt' } }
+      ),
+      /Orca blocked tool execution: approval required/
+    );
   });
 });

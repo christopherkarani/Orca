@@ -119,6 +119,19 @@ Remove the plugin from Claude Code using your Claude Code plugin management comm
 
 This plugin does not add MCP server behavior or drone-specific plugin features.
 
+## Decision mapping (honest)
+
+Orca returns host-actionable decisions on hook stdout. Claude Code interprets them:
+
+| Orca | Expected host behavior |
+|---|---|
+| `allow` | Proceed |
+| `block` | Deny the tool / permission |
+| `ask` | Prefer Claude’s native permission / approval UI when the event supports it (`PermissionRequest` / gated tools). If the host surface cannot prompt, fail closed to deny — do not treat a model-visible note as approval. |
+| `warn` | Advisory; do not silently equate to hard deny unless policy/CI requires it |
+
+CI / noninteractive (`orca hook ... --ci` or env) hardens `ask` → `block` in Orca before the host sees it.
+
 ## Strongest protection warning
 
 > The Orca Claude Code plugin adds native skills and lifecycle hooks for Claude Code. For the strongest local protection, run the Claude Code process itself through Orca with `orca run -- <claude-code-command>`.
