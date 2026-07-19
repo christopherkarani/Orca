@@ -1,6 +1,7 @@
 const std = @import("std");
 
 const evaluate = @import("evaluate.zig");
+const effects = @import("effects/mod.zig");
 const schema = @import("schema.zig");
 
 pub const ExplainKind = enum {
@@ -36,6 +37,8 @@ pub fn explain(
 
 pub const ExplainOptions = struct {
     network_method: ?[]const u8 = null,
+    /// Optional structural tool args for `.tool` explain (Phase B).
+    tool_args: ?effects.ToolArgsView = null,
 };
 
 pub fn explainWithOptions(
@@ -52,7 +55,7 @@ pub fn explainWithOptions(
         .command => evaluate.command(policy, target, allocator),
         .network => if (options.network_method) |method| evaluate.networkWithMethod(policy, target, method, allocator) else evaluate.network(policy, target, allocator),
         .mcp => evaluate.mcp(policy, target, allocator),
-        .tool => evaluate.tool(policy, target, allocator),
+        .tool => evaluate.toolWithArgs(policy, target, options.tool_args, allocator),
     };
 }
 
@@ -114,4 +117,47 @@ test "network explanation includes service-aware path rules" {
     const method_denied = try explainWithOptions(std.testing.allocator, &policy, .network, "https://api.github.com/user/keys", .{ .network_method = "GET" });
     defer method_denied.deinit(std.testing.allocator);
     try std.testing.expectEqualStrings("services.github.paths.deny[0]", method_denied.matched_rule.?.id);
+}
+
+test "tool explain with structural args denies notify under effects" {
+    const load = @import("load.zig");
+    var policy = try load.parseFromSlice(std.testing.allocator,
+        \\version: 1
+        \\mode: strict
+        \\mcp:
+        \\  default: allow
+        \\effects:
+        \\  deny:
+        \\    - comms.message
+    , "explain-structural.yaml");
+    defer policy.deinit();
+
+    const keys = [_][]const u8{ "to", "body" };
+    const denied = try explainWithOptions(std.testing.allocator, &policy, .tool, "notify", .{
+        .tool_args = .{ .keys = &keys },
+    });
+    defer denied.deinit(std.testing.allocator);
+    try std.testing.expectEqual(@import("../core/public.zig").decision.DecisionResult.deny, denied.decision.result);
+    try std.testing.expect(std.mem.indexOf(u8, denied.decision.reason, "structural.") != null);
+}
+
+test "network explain under effects deny publish tags twitter" {
+    const load = @import("load.zig");
+    var policy = try load.parseFromSlice(std.testing.allocator,
+        \\version: 1
+        \\mode: strict
+        \\network:
+        \\  mode: open
+        \\  default: allow
+        \\effects:
+        \\  deny:
+        \\    - comms.publish
+    , "explain-net.yaml");
+    defer policy.deinit();
+
+    const denied = try explain(std.testing.allocator, &policy, .network, "https://api.twitter.com/2/tweets");
+    defer denied.deinit(std.testing.allocator);
+    try std.testing.expectEqual(@import("../core/public.zig").decision.DecisionResult.deny, denied.decision.result);
+    try std.testing.expect(std.mem.indexOf(u8, denied.decision.reason, "network_tag.") != null or
+        std.mem.indexOf(u8, denied.decision.reason, "comms.publish") != null);
 }

@@ -23,18 +23,20 @@ pub fn action(policy: *const schema.Policy, requested: core.types.Action, ctx: s
         .command_exec => |command_action| {
             const display = try commandDisplay(allocator, command_action.argv);
             defer allocator.free(display);
-            return evaluateRuleSet(allocator, mode, .command, "commands", policy.commands, display);
+            const surface = try evaluateRuleSet(allocator, mode, .command, "commands", policy.commands, display);
+            return mergeCommandWithEffects(allocator, mode, policy, display, surface);
         },
         .network_connect => |network_action| {
             const destination_text = try networkDestinationText(allocator, network_action);
             defer allocator.free(destination_text);
-            return evaluateNetworkPolicy(allocator, mode, policy.network, policy.services, destination_text, network_action.method);
+            const surface = try evaluateNetworkPolicy(allocator, mode, policy.network, policy.services, destination_text, network_action.method);
+            return mergeNetworkWithEffects(allocator, mode, policy, destination_text, surface);
         },
         .mcp_tool_call => |tool_action| {
             const selector = try mcpSelector(allocator, tool_action.server, tool_action.tool_name);
             defer allocator.free(selector);
             const surface = try evaluateRuleSet(allocator, mode, .mcp, "mcp", policy.mcp, selector);
-            return mergeWithEffects(allocator, mode, policy, tool_action.tool_name, surface);
+            return mergeWithEffects(allocator, mode, policy, tool_action.tool_name, null, surface);
         },
         .mcp_resource_read => |resource| {
             const selector = try mcpSelector(allocator, resource.server, resource.uri);
@@ -57,22 +59,46 @@ pub fn action(policy: *const schema.Policy, requested: core.types.Action, ctx: s
 
 /// Host/MCP tool call by name: MCP selector surface rules ∩ effect-class rules.
 pub fn tool(policy: *const schema.Policy, tool_name: []const u8, allocator: std.mem.Allocator) !schema.Evaluation {
-    return action(policy, .{ .mcp_tool_call = .{ .tool_name = tool_name } }, .{}, allocator);
+    return toolWithArgs(policy, tool_name, null, allocator);
+}
+
+/// Tool evaluation with optional structural args (Phase B). Keeps MCPToolAction name-only (Option A).
+pub fn toolWithArgs(
+    policy: *const schema.Policy,
+    tool_name: []const u8,
+    args: ?effects.ToolArgsView,
+    allocator: std.mem.Allocator,
+) !schema.Evaluation {
+    return mcpToolCallWithArgs(policy, null, tool_name, args, .{}, allocator);
+}
+
+/// MCP tools/call with server scope + optional structural args (Phase B Option A).
+pub fn mcpToolCallWithArgs(
+    policy: *const schema.Policy,
+    server: ?[]const u8,
+    tool_name: []const u8,
+    args: ?effects.ToolArgsView,
+    ctx: schema.EvaluationContext,
+    allocator: std.mem.Allocator,
+) !schema.Evaluation {
+    const mode = ctx.mode orelse policy.mode;
+    const selector = try mcpSelector(allocator, server, tool_name);
+    defer allocator.free(selector);
+    const surface = try evaluateRuleSet(allocator, mode, .mcp, "mcp", policy.mcp, selector);
+    return mergeWithEffects(allocator, mode, policy, tool_name, args, surface);
 }
 
 /// Merge surface evaluation with effect-class rules when `effects:` is configured.
 /// Higher restriction wins (deny > ask > allow > observe). Equal severity keeps the surface result.
-fn mergeWithEffects(
+/// Structural / network / shell hits raise restriction only (never alone flip surface deny → allow).
+fn mergeEffectHits(
     allocator: std.mem.Allocator,
     mode: schema.Mode,
     policy: *const schema.Policy,
-    tool_name: []const u8,
+    hits: []const effects.EffectHit,
     surface: schema.Evaluation,
 ) !schema.Evaluation {
     if (!policy.effects.isActive()) return surface;
-
-    const hits = try effects.classifyToolName(allocator, tool_name);
-    defer allocator.free(hits);
 
     const default_kind: ?effects.EffectDecisionKind = if (policy.effects.default) |default|
         decisionValueToEffectKind(default)
@@ -94,6 +120,55 @@ fn mergeWithEffects(
     }
     effect_eval.deinit(allocator);
     return surface;
+}
+
+fn mergeWithEffects(
+    allocator: std.mem.Allocator,
+    mode: schema.Mode,
+    policy: *const schema.Policy,
+    tool_name: []const u8,
+    args: ?effects.ToolArgsView,
+    surface: schema.Evaluation,
+) !schema.Evaluation {
+    if (!policy.effects.isActive()) return surface;
+
+    const hits = try effects.classifyToolCall(allocator, tool_name, args);
+    defer allocator.free(hits);
+    return mergeEffectHits(allocator, mode, policy, hits, surface);
+}
+
+fn mergeNetworkWithEffects(
+    allocator: std.mem.Allocator,
+    mode: schema.Mode,
+    policy: *const schema.Policy,
+    destination_text: []const u8,
+    surface: schema.Evaluation,
+) !schema.Evaluation {
+    if (!policy.effects.isActive()) return surface;
+
+    const host = networkParts(destination_text).host;
+    const hits = try effects.network_tags.classifyHost(allocator, host);
+    defer allocator.free(hits);
+    // Network tags: only merge when we have host hits. Do not apply effects.default
+    // via empty hits here — that would deny all untagged hosts when default is deny.
+    if (hits.len == 0) return surface;
+    return mergeEffectHits(allocator, mode, policy, hits, surface);
+}
+
+fn mergeCommandWithEffects(
+    allocator: std.mem.Allocator,
+    mode: schema.Mode,
+    policy: *const schema.Policy,
+    command_text: []const u8,
+    surface: schema.Evaluation,
+) !schema.Evaluation {
+    if (!policy.effects.isActive()) return surface;
+
+    const hits = try effects.shell_bypass.classifyCommand(allocator, command_text);
+    defer allocator.free(hits);
+    // Shell bypass: only when a bypass pattern hits — do not apply effects.default to all commands.
+    if (hits.len == 0) return surface;
+    return mergeEffectHits(allocator, mode, policy, hits, surface);
 }
 
 fn decisionValueToEffectKind(value: schema.DecisionValue) effects.EffectDecisionKind {
@@ -171,7 +246,9 @@ pub fn env(policy: *const schema.Policy, name: []const u8, allocator: std.mem.Al
 }
 
 pub fn command(policy: *const schema.Policy, command_text: []const u8, allocator: std.mem.Allocator) !schema.Evaluation {
-    return evaluateRuleSet(allocator, policy.mode, .command, "commands", policy.commands, command_text);
+    const mode = policy.mode;
+    const surface = try evaluateRuleSet(allocator, mode, .command, "commands", policy.commands, command_text);
+    return mergeCommandWithEffects(allocator, mode, policy, command_text, surface);
 }
 
 pub fn network(policy: *const schema.Policy, host: []const u8, allocator: std.mem.Allocator) !schema.Evaluation {
@@ -940,4 +1017,90 @@ test "effects.default applies to unclassified tool names" {
     var read_ok = try tool(&policy, "Read", std.testing.allocator);
     defer read_ok.deinit(std.testing.allocator);
     try std.testing.expectEqual(core.decision.DecisionResult.allow, read_ok.decision.result);
+}
+
+test "structural args deny notify with to+body under effects.deny comms.message" {
+    const load = @import("load.zig");
+    var policy = try load.parseFromSlice(std.testing.allocator,
+        \\version: 1
+        \\mode: strict
+        \\mcp:
+        \\  default: allow
+        \\  allow:
+        \\    - "*"
+        \\effects:
+        \\  deny:
+        \\    - comms.message
+    , "structural.yaml");
+    defer policy.deinit();
+
+    const keys = [_][]const u8{ "to", "body" };
+    var denied = try toolWithArgs(&policy, "notify", .{ .keys = &keys }, std.testing.allocator);
+    defer denied.deinit(std.testing.allocator);
+    try std.testing.expectEqual(core.decision.DecisionResult.deny, denied.decision.result);
+    try std.testing.expect(std.mem.indexOf(u8, denied.decision.reason, "structural.") != null);
+    try std.testing.expect(std.mem.indexOf(u8, denied.decision.reason, "comms.message") != null);
+
+    // Same name without keys: not denied by structural alone (no catalog hit, no default).
+    var allowed = try toolWithArgs(&policy, "notify", .{}, std.testing.allocator);
+    defer allowed.deinit(std.testing.allocator);
+    try std.testing.expectEqual(core.decision.DecisionResult.allow, allowed.decision.result);
+}
+
+test "network effect tag denies tagged host when effects deny publish" {
+    const load = @import("load.zig");
+    var policy = try load.parseFromSlice(std.testing.allocator,
+        \\version: 1
+        \\mode: strict
+        \\network:
+        \\  mode: open
+        \\  default: allow
+        \\effects:
+        \\  deny:
+        \\    - comms.publish
+    , "net-effects.yaml");
+    defer policy.deinit();
+
+    var denied = try network(&policy, "https://api.twitter.com/2/tweets", std.testing.allocator);
+    defer denied.deinit(std.testing.allocator);
+    try std.testing.expectEqual(core.decision.DecisionResult.deny, denied.decision.result);
+    try std.testing.expect(std.mem.indexOf(u8, denied.decision.reason, "network_tag.") != null or
+        std.mem.indexOf(u8, denied.decision.reason, "comms.publish") != null);
+
+    // Without effects: same network policy allows
+    var open_policy = try load.parseFromSlice(std.testing.allocator,
+        \\version: 1
+        \\mode: strict
+        \\network:
+        \\  mode: open
+        \\  default: allow
+    , "net-open.yaml");
+    defer open_policy.deinit();
+    var allowed = try network(&open_policy, "https://api.twitter.com/2/tweets", std.testing.allocator);
+    defer allowed.deinit(std.testing.allocator);
+    try std.testing.expectEqual(core.decision.DecisionResult.allow, allowed.decision.result);
+}
+
+test "shell mailto bypass denies under effects deny comms.message" {
+    const load = @import("load.zig");
+    var policy = try load.parseFromSlice(std.testing.allocator,
+        \\version: 1
+        \\mode: strict
+        \\commands:
+        \\  default: allow
+        \\effects:
+        \\  deny:
+        \\    - comms.message
+    , "shell-effects.yaml");
+    defer policy.deinit();
+
+    var denied = try command(&policy, "open 'mailto:x@y.com'", std.testing.allocator);
+    defer denied.deinit(std.testing.allocator);
+    try std.testing.expectEqual(core.decision.DecisionResult.deny, denied.decision.result);
+    try std.testing.expect(std.mem.indexOf(u8, denied.decision.reason, "shell_bypass.") != null);
+
+    // Unrelated command still allows
+    var ok = try command(&policy, "git status", std.testing.allocator);
+    defer ok.deinit(std.testing.allocator);
+    try std.testing.expectEqual(core.decision.DecisionResult.allow, ok.decision.result);
 }

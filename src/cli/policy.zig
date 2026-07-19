@@ -137,7 +137,13 @@ fn check(io: std.Io, argv: []const []const u8, stdout: anytype, stderr: anytype)
 
 fn explain(io: std.Io, argv: []const []const u8, stdout: anytype, stderr: anytype) !u8 {
     if (argv.len == 1 and (std.mem.eql(u8, argv[0], "--help") or std.mem.eql(u8, argv[0], "-h"))) {
-        try stdout.writeAll("Usage:\n  orca policy explain [--policy <path>] <file.read|file.write|env|command|network|mcp|tool> <target> [--method <HTTP_METHOD>]\n");
+        try stdout.writeAll(
+            \\Usage:
+            \\  orca policy explain [--policy <path>] <file.read|file.write|env|command|network|mcp|tool> <target> [--method <HTTP_METHOD>] [--args '<json-object>']
+            \\
+            \\  --args is only used for `tool` (structural effect classification). Size-bounded JSON object.
+            \\
+        );
         return exit_codes.success;
     }
     var policy_path: ?[]const u8 = null;
@@ -183,7 +189,34 @@ fn explain(io: std.Io, argv: []const []const u8, stdout: anytype, stderr: anytyp
     };
     defer loaded.deinit();
 
-    const evaluation = core_api.explainActionWithOptions(allocator, loaded.policy, kind, parsed_target.target, .{ .network_method = parsed_target.method }) catch |err| {
+    var owned_args: ?orca_policy.effects.OwnedArgsView = null;
+    defer if (owned_args) |*oa| oa.deinit(allocator);
+    if (parsed_target.args_json) |args_json| {
+        if (kind != .tool) {
+            try stderr.writeAll("orca policy explain: --args is only valid for tool explanations.\n");
+            return exit_codes.usage;
+        }
+        if (args_json.len > 8 * 1024) {
+            try stderr.writeAll("orca policy explain: --args JSON too large (max 8KiB).\n");
+            return exit_codes.usage;
+        }
+        var parsed_json = std.json.parseFromSlice(std.json.Value, allocator, args_json, .{}) catch {
+            try stderr.writeAll("orca policy explain: --args must be a JSON object.\n");
+            return exit_codes.usage;
+        };
+        defer parsed_json.deinit();
+        if (parsed_json.value != .object) {
+            try stderr.writeAll("orca policy explain: --args must be a JSON object.\n");
+            return exit_codes.usage;
+        }
+        owned_args = try orca_policy.effects.toolArgsViewFromJsonObject(allocator, parsed_json.value);
+    }
+    const tool_args: ?orca_policy.effects.ToolArgsView = if (owned_args) |oa| oa.view else null;
+
+    const evaluation = core_api.explainActionWithOptions(allocator, loaded.policy, kind, parsed_target.target, .{
+        .network_method = parsed_target.method,
+        .tool_args = tool_args,
+    }) catch |err| {
         try stderr.print("orca policy explain: failed to evaluate action: {s}\n", .{@errorName(err)});
         return exit_codes.general;
     };
@@ -231,6 +264,8 @@ fn writePolicyDetailsPanel(io: std.Io, allocator: std.mem.Allocator, stdout: any
 const ExplainTarget = struct {
     target: []const u8 = "",
     method: ?[]const u8 = null,
+    /// Borrowed argv slice for `--args` JSON (not owned).
+    args_json: ?[]const u8 = null,
     invalid: bool = false,
 
     fn deinit(self: ExplainTarget, allocator: std.mem.Allocator) void {
@@ -240,7 +275,14 @@ const ExplainTarget = struct {
 };
 
 fn parseExplainTarget(allocator: std.mem.Allocator, kind: orca_policy.explain.ExplainKind, args: []const []const u8, stderr: anytype) !ExplainTarget {
-    if (kind == .command) return .{ .target = try joinArgs(allocator, args) };
+    if (kind == .command) {
+        // command may include trailing flags only after command text; keep simple: join all non-flag tokens
+        // Strip trailing --args if present (not valid for command).
+        return .{ .target = try joinArgs(allocator, args) };
+    }
+    if (kind == .tool) {
+        return try parseToolExplainTarget(allocator, args, stderr);
+    }
     if (kind != .network) {
         if (args.len != 1) return .{ .invalid = true };
         return .{ .target = try allocator.dupe(u8, args[0]) };
@@ -279,6 +321,40 @@ fn parseExplainTarget(allocator: std.mem.Allocator, kind: orca_policy.explain.Ex
         return .{ .invalid = true };
     }
     return .{ .target = target.?, .method = method };
+}
+
+fn parseToolExplainTarget(allocator: std.mem.Allocator, args: []const []const u8, stderr: anytype) !ExplainTarget {
+    var target: ?[]const u8 = null;
+    var args_json: ?[]const u8 = null;
+    var index: usize = 0;
+    while (index < args.len) : (index += 1) {
+        const arg = args[index];
+        if (std.mem.eql(u8, arg, "--args")) {
+            index += 1;
+            if (index >= args.len) {
+                try stderr.writeAll("orca policy explain: --args requires a JSON object string.\n");
+                if (target) |owned| allocator.free(owned);
+                return .{ .invalid = true };
+            }
+            args_json = args[index];
+        } else if (std.mem.startsWith(u8, arg, "-")) {
+            try suggestions.writeUnknownOption(stderr, "orca policy explain", arg, &.{ "--args", "--method" }, "policy");
+            if (target) |owned| allocator.free(owned);
+            return .{ .invalid = true };
+        } else {
+            if (target != null) {
+                try stderr.writeAll("orca policy explain: expected one tool name.\n");
+                if (target) |owned| allocator.free(owned);
+                return .{ .invalid = true };
+            }
+            target = try allocator.dupe(u8, arg);
+        }
+    }
+    if (target == null) {
+        try stderr.writeAll("orca policy explain: expected a tool name.\n");
+        return .{ .invalid = true };
+    }
+    return .{ .target = target.?, .args_json = args_json };
 }
 
 fn packs(argv: []const []const u8, stdout: anytype, stderr: anytype) !u8 {

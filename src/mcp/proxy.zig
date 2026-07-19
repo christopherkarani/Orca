@@ -203,9 +203,21 @@ fn handleToolsCall(
     const target = try toolTargetDisplay(allocator, config.server_name, tool_name, jsonrpc.toolCallArguments(request_value));
     defer allocator.free(target);
 
-    var eval = try policy_mod.evaluate.action(
+    // Option A: MCPToolAction stays name-only; structural args flow through mcpToolCallWithArgs.
+    var owned_args: ?policy_mod.effects.OwnedArgsView = null;
+    defer if (owned_args) |*oa| oa.deinit(allocator);
+    if (jsonrpc.toolCallArguments(request_value)) |arguments| {
+        if (arguments == .object) {
+            owned_args = try policy_mod.effects.toolArgsViewFromJsonObject(allocator, arguments);
+        }
+    }
+    const args_view: ?policy_mod.effects.ToolArgsView = if (owned_args) |oa| oa.view else null;
+
+    var eval = try policy_mod.evaluate.mcpToolCallWithArgs(
         config.policy,
-        .{ .mcp_tool_call = .{ .server = config.server_name, .tool_name = tool_name } },
+        config.server_name,
+        tool_name,
+        args_view,
         .{ .mode = config.mode },
         allocator,
     );
@@ -1646,4 +1658,32 @@ test "proxy denies send_email when effects.deny includes comms.message" {
     try std.testing.expect(!server.saw_safe_call);
     try std.testing.expect(std.mem.indexOf(u8, output_writer.buffered(), "\"error\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, output_writer.buffered(), "policy") != null or std.mem.indexOf(u8, output_writer.buffered(), "denied") != null);
+}
+
+test "proxy denies notify with structural to+body under effects.deny" {
+    const load = policy_mod.load;
+    var policy = try load.parseFromSlice(std.testing.allocator,
+        \\version: 1
+        \\mode: strict
+        \\mcp:
+        \\  default: allow
+        \\  allow:
+        \\    - "*"
+        \\effects:
+        \\  deny:
+        \\    - comms.message
+    , "structural-proxy.yaml");
+    defer policy.deinit();
+    var server = FakeServer{ .allocator = std.testing.allocator };
+    var input: std.Io.Reader = .fixed("{\"jsonrpc\":\"2.0\",\"id\":41,\"method\":\"tools/call\",\"params\":{\"name\":\"notify\",\"arguments\":{\"to\":\"a@b.com\",\"body\":\"hi\"}}}\n");
+    var output_buf: [1024]u8 = undefined;
+    var output_writer: std.Io.Writer = .fixed(&output_buf);
+    try runWithServer(std.testing.allocator, .{
+        .server_name = "fake",
+        .server_command_display = "fake",
+        .policy = &policy,
+        .mode = .strict,
+    }, &input, &output_writer, .{ .context = &server, .request = FakeServer.request, .notify = FakeServer.notify });
+    try std.testing.expect(!server.saw_safe_call);
+    try std.testing.expect(std.mem.indexOf(u8, output_writer.buffered(), "\"error\"") != null);
 }
