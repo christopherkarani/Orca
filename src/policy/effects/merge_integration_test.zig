@@ -5,6 +5,41 @@ const core = @import("../../core/public.zig");
 const evaluate = @import("../evaluate.zig");
 const load = @import("../load.zig");
 
+test "pack mapped tool denied via effects.deny" {
+    const packs = @import("packs.zig");
+
+    const yaml =
+        \\version: 1
+        \\id: acme
+        \\names:
+        \\  send_acme_ping: comms.message
+    ;
+    var pack_set = try packs.PackSet.fromPack(
+        std.testing.allocator,
+        try packs.parsePackFromSlice(std.testing.allocator, yaml, "acme.yaml"),
+    );
+    defer pack_set.deinit();
+
+    var policy = try load.parseFromSlice(std.testing.allocator,
+        \\version: 1
+        \\mode: strict
+        \\mcp:
+        \\  default: allow
+        \\  allow:
+        \\    - "*"
+        \\effects:
+        \\  deny:
+        \\    - comms.message
+    , "pack-effects.yaml");
+    defer policy.deinit();
+
+    var denied = try evaluate.toolWithPacks(&policy, "send_acme_ping", null, &pack_set, std.testing.allocator);
+    defer denied.deinit(std.testing.allocator);
+    try std.testing.expectEqual(core.decision.DecisionResult.deny, denied.decision.result);
+    try std.testing.expect(std.mem.indexOf(u8, denied.decision.rule_id.?, "effects.deny") != null);
+    try std.testing.expect(std.mem.indexOf(u8, denied.decision.reason, "pack.acme.") != null);
+}
+
 test "structural args deny notify with to+body under effects.deny comms.message" {
     var policy = try load.parseFromSlice(std.testing.allocator,
         \\version: 1

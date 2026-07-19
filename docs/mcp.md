@@ -9,7 +9,15 @@ Orca supports stdio MCP proxying for servers launched through Orca.
 ./zig-out/bin/orca mcp inspect --name demo --policy policies/presets/mcp-dev.yaml --command python3 -- fixtures/mcp/fake_server.py
 ```
 
-`inspect` initializes the server, sends `notifications/initialized`, calls `tools/list`, and reports risk findings. When `--policy <path>` is provided, it also evaluates each listed tool selector through the loaded Core policy and prints the policy decision.
+`inspect` initializes the server, sends `notifications/initialized`, calls `tools/list`, and reports risk findings. For each tool it also prints **inferred effect hits** from the built-in catalog (and user effect packs when present), e.g. `effects: comms.message [high catalog…]` or `effects: (none)`.
+
+When `--policy <path>` is provided, it evaluates each listed tool through the loaded Core policy (including `effects:` when configured) and prints the policy decision and matched rule. Example line:
+
+```text
+  send_email    risk: high  default: ask  effects: comms.message [high catalog…]  policy: deny rule: effects.deny[comms.message]
+```
+
+Effect output never includes raw argument values. For interactive classification without starting a server, use `orca tools classify <name>`.
 
 ## Proxy
 

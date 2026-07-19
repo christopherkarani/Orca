@@ -36,7 +36,7 @@ pub fn action(policy: *const schema.Policy, requested: core.types.Action, ctx: s
             const selector = try mcpSelector(allocator, tool_action.server, tool_action.tool_name);
             defer allocator.free(selector);
             const surface = try evaluateRuleSet(allocator, mode, .mcp, "mcp", policy.mcp, selector);
-            return mergeWithEffects(allocator, mode, policy, tool_action.tool_name, null, surface);
+            return mergeWithEffects(allocator, mode, policy, tool_action.tool_name, null, surface, ctx.effect_packs);
         },
         .mcp_resource_read => |resource| {
             const selector = try mcpSelector(allocator, resource.server, resource.uri);
@@ -72,6 +72,17 @@ pub fn toolWithArgs(
     return mcpToolCallWithArgs(policy, null, tool_name, args, .{}, allocator);
 }
 
+/// Tool evaluation with optional user effect packs (Phase C).
+pub fn toolWithPacks(
+    policy: *const schema.Policy,
+    tool_name: []const u8,
+    args: ?effects.ToolArgsView,
+    pack_set: ?*const effects.PackSet,
+    allocator: std.mem.Allocator,
+) !schema.Evaluation {
+    return mcpToolCallWithArgs(policy, null, tool_name, args, .{ .effect_packs = pack_set }, allocator);
+}
+
 /// MCP tools/call with server scope + optional structural args (Phase B Option A).
 pub fn mcpToolCallWithArgs(
     policy: *const schema.Policy,
@@ -85,7 +96,7 @@ pub fn mcpToolCallWithArgs(
     const selector = try mcpSelector(allocator, server, tool_name);
     defer allocator.free(selector);
     const surface = try evaluateRuleSet(allocator, mode, .mcp, "mcp", policy.mcp, selector);
-    return mergeWithEffects(allocator, mode, policy, tool_name, args, surface);
+    return mergeWithEffects(allocator, mode, policy, tool_name, args, surface, ctx.effect_packs);
 }
 
 /// Merge surface evaluation with effect-class rules when `effects:` is configured.
@@ -129,10 +140,11 @@ fn mergeWithEffects(
     tool_name: []const u8,
     args: ?effects.ToolArgsView,
     surface: schema.Evaluation,
+    pack_set: ?*const effects.PackSet,
 ) !schema.Evaluation {
     if (!policy.effects.isActive()) return surface;
 
-    const hits = try effects.classifyToolCall(allocator, tool_name, args);
+    const hits = try effects.classifyToolCallWithPacks(allocator, pack_set, tool_name, args);
     defer allocator.free(hits);
     return mergeEffectHits(allocator, mode, policy, hits, surface);
 }

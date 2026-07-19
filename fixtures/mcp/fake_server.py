@@ -21,6 +21,17 @@ TOOLS = [
         },
     },
     {
+        "name": "send_email",
+        "description": "Send an email message",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "to": {"type": "string"},
+                "body": {"type": "string"},
+            },
+        },
+    },
+    {
         "name": "delete_repository",
         "description": "Delete a repository",
         "inputSchema": {
