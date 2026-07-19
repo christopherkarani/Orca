@@ -165,8 +165,10 @@ deny into allow. Explicit MCP allow does not override an effect deny.
 
 Surfaces covered:
 
-- Host generic tools (`orca decide tool`, PreToolUse non-shell/file) **with
-  tool_input/args** for structural matches
+- Host generic tools (PreToolUse non-shell/file) **with tool_input/args** for
+  structural matches
+- `orca decide tool --json '{"name":"…","tool_input":{…}}'` (same arg shapes)
+- `orca policy explain tool <name> --args '{…}'` for demos
 - MCP `tools/call` via the proxy (name + `arguments` object)
 - Network connect evaluation when effects are configured
 - Zig command evaluation (`orca policy explain command`, `command_exec`)
@@ -177,6 +179,8 @@ Surfaces covered:
   `commands` packs. Phase B shell effect patterns apply on the **Zig** command
   evaluation path; full Rust-pack parity is not claimed. Network effect tags
   still catch many `curl`-style bypasses when the network path is evaluated.
+- Structural classification is top-level + one nested object level of keys;
+  deeper nesting or stringified JSON args are not fully covered.
 - Host file PreToolUse uses `files.write` / `files.read` (not effect IDs on
   that specialized route). Denying `shell.exec` / `fs.write` as effects only
   applies when the call is evaluated as a **tool name**.

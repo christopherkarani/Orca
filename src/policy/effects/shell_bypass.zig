@@ -23,19 +23,10 @@ pub fn classifyCommand(allocator: std.mem.Allocator, command_text: []const u8) !
         });
     }
 
-    // Optional: curl/wget to tagged hosts
-    if (extractCurlLikeUrl(trimmed)) |url| {
-        const host = network_tags.hostFromUrlOrHost(url);
+    // curl/wget to tagged hosts (scheme or bare host operand)
+    if (extractCurlLikeHost(trimmed)) |host| {
         if (network_tags.effectForHost(host)) |tag| {
-            // Avoid duplicate effect ids
-            var already = false;
-            for (hits.items) |h| {
-                if (std.mem.eql(u8, h.id, tag.effect_id)) {
-                    already = true;
-                    break;
-                }
-            }
-            if (!already) {
+            if (!hasEffectId(hits.items, tag.effect_id)) {
                 const matcher: []const u8 = if (std.mem.eql(u8, tag.effect_id, "comms.publish"))
                     "shell_bypass.comms.publish.curl_host"
                 else if (std.mem.eql(u8, tag.effect_id, "comms.message"))
@@ -51,16 +42,8 @@ pub fn classifyCommand(allocator: std.mem.Allocator, command_text: []const u8) !
         }
     }
 
-    // Optional: osascript Messages
     if (matchesOsascriptMessages(trimmed)) {
-        var already = false;
-        for (hits.items) |h| {
-            if (std.mem.eql(u8, h.id, "comms.message")) {
-                already = true;
-                break;
-            }
-        }
-        if (!already) {
+        if (!hasEffectId(hits.items, "comms.message")) {
             try hits.append(allocator, .{
                 .id = "comms.message",
                 .confidence = .medium,
@@ -75,23 +58,66 @@ pub fn classifyCommand(allocator: std.mem.Allocator, command_text: []const u8) !
     return try hits.toOwnedSlice(allocator);
 }
 
-/// `open mailto:…` / `open 'mailto:…'` / `open "mailto:…"` (case-insensitive open).
+fn hasEffectId(hits: []const catalog.EffectHit, id: []const u8) bool {
+    for (hits) |h| {
+        if (std.mem.eql(u8, h.id, id)) return true;
+    }
+    return false;
+}
+
+/// `open` / `/usr/bin/open` as a command token with a following `mailto:` arg.
 fn matchesMailtoOpen(command_text: []const u8) bool {
-    // Must contain mailto: (case-insensitive)
-    if (indexOfIgnoreCase(command_text, "mailto:") == null) return false;
-    // And look like open … mailto
-    // Accept: open mailto:, open 'mailto:, open "mailto:, /usr/bin/open mailto:
-    if (indexOfIgnoreCase(command_text, "open") == null) return false;
-    // Require open to appear before mailto in typical form
-    const open_idx = indexOfIgnoreCase(command_text, "open") orelse return false;
-    const mail_idx = indexOfIgnoreCase(command_text, "mailto:") orelse return false;
-    return open_idx < mail_idx;
+    var tokens: [32][]const u8 = undefined;
+    const n = tokenizeSimple(command_text, &tokens);
+    if (n < 2) return false;
+
+    var i: usize = 0;
+    while (i + 1 < n) : (i += 1) {
+        if (!isOpenToken(tokens[i])) continue;
+        // Next non-flag-like token should start with mailto:
+        var j = i + 1;
+        while (j < n) : (j += 1) {
+            const t = tokens[j];
+            if (t.len > 0 and t[0] == '-') continue; // skip -a Mail etc. loosely
+            return startsWithIgnoreCase(t, "mailto:");
+        }
+    }
+    return false;
+}
+
+fn isOpenToken(token: []const u8) bool {
+    if (std.ascii.eqlIgnoreCase(token, "open")) return true;
+    // path form: .../open
+    if (std.mem.lastIndexOfScalar(u8, token, '/')) |slash| {
+        return std.ascii.eqlIgnoreCase(token[slash + 1 ..], "open");
+    }
+    return false;
+}
+
+fn startsWithIgnoreCase(haystack: []const u8, prefix: []const u8) bool {
+    if (haystack.len < prefix.len) return false;
+    return std.ascii.eqlIgnoreCase(haystack[0..prefix.len], prefix);
 }
 
 fn matchesOsascriptMessages(command_text: []const u8) bool {
-    if (indexOfIgnoreCase(command_text, "osascript") == null) return false;
-    // Messages app reference
-    return indexOfIgnoreCase(command_text, "messages") != null;
+    var tokens: [32][]const u8 = undefined;
+    const n = tokenizeSimple(command_text, &tokens);
+    var has_osascript = false;
+    var has_messages = false;
+    for (tokens[0..n]) |t| {
+        if (std.ascii.eqlIgnoreCase(t, "osascript") or endsWithIgnoreCase(t, "/osascript")) {
+            has_osascript = true;
+        }
+        if (std.ascii.eqlIgnoreCase(t, "messages") or indexOfIgnoreCase(t, "messages") != null) {
+            has_messages = true;
+        }
+    }
+    return has_osascript and has_messages;
+}
+
+fn endsWithIgnoreCase(haystack: []const u8, suffix: []const u8) bool {
+    if (haystack.len < suffix.len) return false;
+    return std.ascii.eqlIgnoreCase(haystack[haystack.len - suffix.len ..], suffix);
 }
 
 fn indexOfIgnoreCase(haystack: []const u8, needle: []const u8) ?usize {
@@ -103,29 +129,72 @@ fn indexOfIgnoreCase(haystack: []const u8, needle: []const u8) ?usize {
     return null;
 }
 
-/// Best-effort first URL-looking token after curl/wget.
-fn extractCurlLikeUrl(command_text: []const u8) ?[]const u8 {
-    const lower_is_curl = indexOfIgnoreCase(command_text, "curl") != null or
-        indexOfIgnoreCase(command_text, "wget") != null;
-    if (!lower_is_curl) return null;
+/// Whitespace tokenizer with simple single/double quote stripping (no escapes).
+fn tokenizeSimple(command_text: []const u8, out: [][]const u8) usize {
+    var count: usize = 0;
+    var i: usize = 0;
+    while (i < command_text.len and count < out.len) {
+        while (i < command_text.len and (command_text[i] == ' ' or command_text[i] == '\t' or command_text[i] == '\n' or command_text[i] == '\r')) : (i += 1) {}
+        if (i >= command_text.len) break;
 
-    // Scan for http(s):// token
-    if (indexOfIgnoreCase(command_text, "https://")) |idx| {
-        return urlTokenAt(command_text, idx);
+        if (command_text[i] == '\'' or command_text[i] == '"') {
+            const quote = command_text[i];
+            i += 1;
+            const start = i;
+            while (i < command_text.len and command_text[i] != quote) : (i += 1) {}
+            out[count] = command_text[start..i];
+            count += 1;
+            if (i < command_text.len) i += 1;
+            continue;
+        }
+
+        const start = i;
+        while (i < command_text.len and command_text[i] != ' ' and command_text[i] != '\t' and command_text[i] != '\n' and command_text[i] != '\r') : (i += 1) {}
+        out[count] = command_text[start..i];
+        count += 1;
     }
-    if (indexOfIgnoreCase(command_text, "http://")) |idx| {
-        return urlTokenAt(command_text, idx);
-    }
-    return null;
+    return count;
 }
 
-fn urlTokenAt(command_text: []const u8, start: usize) []const u8 {
-    var end = start;
-    while (end < command_text.len) : (end += 1) {
-        const c = command_text[end];
-        if (c == ' ' or c == '\t' or c == '\'' or c == '"' or c == ')' or c == ';') break;
+/// Best-effort host from curl/wget: first http(s) URL or bare host-looking operand.
+fn extractCurlLikeHost(command_text: []const u8) ?[]const u8 {
+    var tokens: [32][]const u8 = undefined;
+    const n = tokenizeSimple(command_text, &tokens);
+    if (n == 0) return null;
+
+    var is_curl = false;
+    for (tokens[0..n]) |t| {
+        if (std.ascii.eqlIgnoreCase(t, "curl") or std.ascii.eqlIgnoreCase(t, "wget") or
+            endsWithIgnoreCase(t, "/curl") or endsWithIgnoreCase(t, "/wget"))
+        {
+            is_curl = true;
+            break;
+        }
     }
-    return command_text[start..end];
+    if (!is_curl) return null;
+
+    // Prefer explicit http(s) URL token
+    for (tokens[0..n]) |t| {
+        if (startsWithIgnoreCase(t, "https://") or startsWithIgnoreCase(t, "http://")) {
+            return network_tags.hostFromUrlOrHost(t);
+        }
+    }
+    // --url value
+    var i: usize = 0;
+    while (i + 1 < n) : (i += 1) {
+        if (std.mem.eql(u8, tokens[i], "--url") or std.mem.eql(u8, tokens[i], "-url")) {
+            return network_tags.hostFromUrlOrHost(tokens[i + 1]);
+        }
+    }
+    // Bare host-looking tokens (contain a dot, not a flag)
+    for (tokens[0..n]) |t| {
+        if (t.len == 0 or t[0] == '-') continue;
+        if (std.ascii.eqlIgnoreCase(t, "curl") or std.ascii.eqlIgnoreCase(t, "wget")) continue;
+        if (std.mem.indexOfScalar(u8, t, '.') == null) continue;
+        const host = network_tags.hostFromUrlOrHost(t);
+        if (network_tags.effectForHost(host) != null) return host;
+    }
+    return null;
 }
 
 test "open mailto classifies as comms.message" {
@@ -143,6 +212,12 @@ test "open mailto without quotes" {
     try std.testing.expect(std.mem.startsWith(u8, hits[0].matcher, "shell_bypass."));
 }
 
+test "incidental open in text is not mailto bypass" {
+    const hits = try classifyCommand(std.testing.allocator, "echo 'please open mailto:x@y.com'");
+    defer std.testing.allocator.free(hits);
+    try std.testing.expectEqual(@as(usize, 0), hits.len);
+}
+
 test "unrelated command has no shell bypass hits" {
     const hits = try classifyCommand(std.testing.allocator, "git status");
     defer std.testing.allocator.free(hits);
@@ -155,4 +230,11 @@ test "curl to twitter host is publish" {
     try std.testing.expect(hits.len >= 1);
     try std.testing.expectEqualStrings("comms.publish", hits[0].id);
     try std.testing.expect(std.mem.startsWith(u8, hits[0].matcher, "shell_bypass."));
+}
+
+test "curl bare tagged host is publish" {
+    const hits = try classifyCommand(std.testing.allocator, "curl -X POST api.twitter.com/2/tweets");
+    defer std.testing.allocator.free(hits);
+    try std.testing.expect(hits.len >= 1);
+    try std.testing.expectEqualStrings("comms.publish", hits[0].id);
 }

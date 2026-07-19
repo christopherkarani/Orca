@@ -7,7 +7,7 @@ const catalog = @import("catalog.zig");
 const ids = @import("ids.zig");
 
 const HostTag = struct {
-    /// Exact host or suffix (leading `*.` means domain suffix match, same spirit as matchers.matchesDomain).
+    /// Exact host or parent-domain match (e.g. `twitter.com` matches `api.twitter.com`).
     host: []const u8,
     effect_id: []const u8,
     matcher: []const u8,

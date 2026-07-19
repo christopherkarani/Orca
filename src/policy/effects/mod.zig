@@ -40,4 +40,5 @@ test {
     _ = network_tags;
     _ = shell_bypass;
     _ = evaluate;
+    _ = @import("merge_integration_test.zig");
 }

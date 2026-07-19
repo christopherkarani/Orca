@@ -338,7 +338,7 @@ fn parseToolExplainTarget(allocator: std.mem.Allocator, args: []const []const u8
             }
             args_json = args[index];
         } else if (std.mem.startsWith(u8, arg, "-")) {
-            try suggestions.writeUnknownOption(stderr, "orca policy explain", arg, &.{ "--args", "--method" }, "policy");
+            try suggestions.writeUnknownOption(stderr, "orca policy explain", arg, &.{"--args"}, "policy");
             if (target) |owned| allocator.free(owned);
             return .{ .invalid = true };
         } else {
