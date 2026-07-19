@@ -15,6 +15,12 @@
 - **Phase C discovery** — `orca mcp inspect` prints inferred effects per tool; `orca tools classify <name> [--args] [--policy]` for interactive classification (no secret values in output).
 - **User effect packs** — YAML in `.orca/effect-packs/` and `~/.config/orca/effect-packs/` add names/tokens/structural key-sets (`pack.<id>.*` matchers). Classification-only; decisions still require policy `effects:`. Invalid packs fail closed. Example: `examples/effect-packs/demo.yaml`.
 
+### Fixed
+- Network effect tags now apply on the **runtime proxy** path (`network_eval.evaluate` / `orca run`), not only `policy explain network`.
+- Shell bypass: `open -a`/`-b` option values are skipped; multi-URL `curl` scans every operand; `open`/`curl` require command position (avoids `printf … open mailto:` false positives).
+- Shell bypass: wrappers with options (`sudo -u root curl …`, `env -i open …`, `xargs curl …`), escaped operators (`foo\;`), non-transfer curl values (`--referer`), and lookup-only `command -v`/`-V` are handled correctly.
+- Structural arg scan prefers interesting keys/values against decoy padding (including large objects and string-value slot exhaustion); `href`/`uri` share interesting priority with other URL keys; eviction allocates before free (OOM-safe).
+
 ## v1.2.8 - 2026-07-04
 
 ### Changed

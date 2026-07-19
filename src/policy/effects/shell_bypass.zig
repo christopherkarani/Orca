@@ -23,24 +23,8 @@ pub fn classifyCommand(allocator: std.mem.Allocator, command_text: []const u8) !
         });
     }
 
-    // curl/wget to tagged hosts (scheme or bare host operand)
-    if (extractCurlLikeHost(trimmed)) |host| {
-        if (network_tags.effectForHost(host)) |tag| {
-            if (!hasEffectId(hits.items, tag.effect_id)) {
-                const matcher: []const u8 = if (std.mem.eql(u8, tag.effect_id, "comms.publish"))
-                    "shell_bypass.comms.publish.curl_host"
-                else if (std.mem.eql(u8, tag.effect_id, "comms.message"))
-                    "shell_bypass.comms.message.curl_host"
-                else
-                    "shell_bypass.unknown.external.curl_host";
-                try hits.append(allocator, .{
-                    .id = tag.effect_id,
-                    .confidence = .medium,
-                    .matcher = matcher,
-                });
-            }
-        }
-    }
+    // curl/wget: inspect every URL / tagged host operand (not only the first).
+    try appendCurlLikeHostEffects(allocator, trimmed, &hits);
 
     if (matchesOsascriptMessages(trimmed)) {
         if (!hasEffectId(hits.items, "comms.message")) {
@@ -65,33 +49,197 @@ fn hasEffectId(hits: []const catalog.EffectHit, id: []const u8) bool {
     return false;
 }
 
-/// `open` / `/usr/bin/open` as a command token with a following `mailto:` arg.
+fn appendCurlHostHit(
+    allocator: std.mem.Allocator,
+    hits: *std.ArrayList(catalog.EffectHit),
+    host: []const u8,
+) !void {
+    const tag = network_tags.effectForHost(host) orelse return;
+    if (hasEffectId(hits.items, tag.effect_id)) return;
+    const matcher: []const u8 = if (std.mem.eql(u8, tag.effect_id, "comms.publish"))
+        "shell_bypass.comms.publish.curl_host"
+    else if (std.mem.eql(u8, tag.effect_id, "comms.message"))
+        "shell_bypass.comms.message.curl_host"
+    else
+        "shell_bypass.unknown.external.curl_host";
+    try hits.append(allocator, .{
+        .id = tag.effect_id,
+        .confidence = .medium,
+        .matcher = matcher,
+    });
+}
+
+/// `open` / `/usr/bin/open` in command position with a following `mailto:` operand.
 fn matchesMailtoOpen(command_text: []const u8) bool {
-    var tokens: [32][]const u8 = undefined;
+    var tokens: [48][]const u8 = undefined;
     const n = tokenizeSimple(command_text, &tokens);
     if (n < 2) return false;
 
     var i: usize = 0;
     while (i + 1 < n) : (i += 1) {
         if (!isOpenToken(tokens[i])) continue;
-        // Next non-flag-like token should start with mailto:
+        if (!isCommandPosition(tokens[0..n], i)) continue;
+
+        // Walk past macOS `open` options (including value-taking flags like -a/-b).
         var j = i + 1;
-        while (j < n) : (j += 1) {
+        while (j < n) {
+            if (isShellOperator(tokens[j])) break;
             const t = tokens[j];
-            if (t.len > 0 and t[0] == '-') continue; // skip -a Mail etc. loosely
+            if (t.len > 0 and t[0] == '-') {
+                if (openFlagConsumesNext(t)) {
+                    j += 1; // flag
+                    if (j < n and !isShellOperator(tokens[j]) and !(tokens[j].len > 0 and tokens[j][0] == '-')) {
+                        j += 1; // option value (e.g. Mail)
+                    }
+                    continue;
+                }
+                j += 1; // boolean flag
+                continue;
+            }
             return startsWithIgnoreCase(t, "mailto:");
         }
     }
     return false;
 }
 
+/// macOS `open` flags that take a following value argument.
+fn openFlagConsumesNext(token: []const u8) bool {
+    return std.mem.eql(u8, token, "-a") or
+        std.mem.eql(u8, token, "-b") or
+        std.mem.eql(u8, token, "-s") or
+        std.mem.eql(u8, token, "--args");
+}
+
 fn isOpenToken(token: []const u8) bool {
     if (std.ascii.eqlIgnoreCase(token, "open")) return true;
-    // path form: .../open
     if (std.mem.lastIndexOfScalar(u8, token, '/')) |slash| {
         return std.ascii.eqlIgnoreCase(token[slash + 1 ..], "open");
     }
     return false;
+}
+
+fn isCurlLikeToken(token: []const u8) bool {
+    if (std.ascii.eqlIgnoreCase(token, "curl") or std.ascii.eqlIgnoreCase(token, "wget")) return true;
+    if (endsWithIgnoreCase(token, "/curl") or endsWithIgnoreCase(token, "/wget")) return true;
+    return false;
+}
+
+/// True when `index` is the first executable of a shell command segment:
+/// start of segment, after `;`/`|`/`&&`/`||`/`&`, after env assignments, after
+/// common wrappers (`sudo`, `env`, `command`, `xargs`, `nohup`, `nice`, `time`),
+/// or after wrapper option flags/values (`sudo -u root curl …`, `env -i open …`).
+/// Lookup-only `command -v`/`-V` does not count as execution.
+fn isCommandPosition(tokens: []const []const u8, index: usize) bool {
+    if (index == 0) return true;
+    // Walk left through env assignments, wrappers, and their option tokens.
+    var i = index;
+    while (i > 0) {
+        const prev = tokens[i - 1];
+        if (isShellOperator(prev)) return true;
+        if (isEnvAssignment(prev)) {
+            i -= 1;
+            continue;
+        }
+        if (isCommandWrapper(prev)) {
+            // Bash `command -v`/`-V` describes a name; it does not execute it.
+            if (isCommandBuiltinLookup(tokens, i - 1, index)) return false;
+            i -= 1;
+            continue;
+        }
+        if (prev.len > 0 and prev[0] == '-') {
+            i -= 1;
+            continue;
+        }
+        // Value after a value-taking wrapper flag (e.g. `-u` → `root` before `curl`).
+        if (i >= 2) {
+            const maybe_flag = tokens[i - 2];
+            if (maybe_flag.len > 0 and maybe_flag[0] == '-' and wrapperFlagTakesValue(maybe_flag)) {
+                i -= 1;
+                continue;
+            }
+        }
+        return false;
+    }
+    return true;
+}
+
+/// True when `tokens[wrapper_index]` is the `command` builtin used with `-v`/`-V`
+/// between the builtin and the candidate executable at `exec_index`.
+fn isCommandBuiltinLookup(tokens: []const []const u8, wrapper_index: usize, exec_index: usize) bool {
+    if (wrapper_index >= tokens.len or wrapper_index >= exec_index) return false;
+    var base = tokens[wrapper_index];
+    if (std.mem.lastIndexOfScalar(u8, base, '/')) |slash| base = base[slash + 1 ..];
+    if (!std.ascii.eqlIgnoreCase(base, "command")) return false;
+
+    var j = wrapper_index + 1;
+    while (j < exec_index) : (j += 1) {
+        const t = tokens[j];
+        if (std.mem.eql(u8, t, "-v") or std.mem.eql(u8, t, "-V")) return true;
+    }
+    return false;
+}
+
+/// Known wrapper flags that take a following value (conservative; used when walking left).
+/// Boolean wrapper flags (`-n`, `-i`, `-E`, …) are skipped via the generic `-` branch.
+fn wrapperFlagTakesValue(flag: []const u8) bool {
+    // `--name=value` is a single token; no following value to skip.
+    if (std.mem.startsWith(u8, flag, "--") and std.mem.indexOfScalar(u8, flag, '=') != null) return false;
+    const value_flags = [_][]const u8{
+        // sudo
+        "-u",             "--user",     "-g",          "--group",
+        "-h",             "--host",     "-C",          "--close-from",
+        "-D",             "--chdir",    "-p",          "--prompt",
+        "-r",             "--role",     "-T",          "--type",
+        "--other-user",
+        // env
+          "-u",         "--unset",     "-S",
+        "--split-string", "-C",         "--chdir",
+        // nice / time (common)
+            "-n",
+        "--adjustment",   "-f",         "-o",
+        // xargs
+                 "-a",
+        "--arg-file",     "-d",         "--delimiter", "-E",
+        "-e",             "--eof",      "-I",          "-i",
+        "--replace",      "-L",         "-l",          "--max-lines",
+        "-n",             "--max-args", "-P",          "--max-procs",
+        "-R",             "-s",         "--max-chars",
+    };
+    for (value_flags) |name| {
+        if (std.mem.eql(u8, flag, name)) return true;
+    }
+    return false;
+}
+
+fn isEnvAssignment(token: []const u8) bool {
+    // FOO=bar (simple shell assignment; not PATH-style with /).
+    if (token.len < 2) return false;
+    const eq = std.mem.indexOfScalar(u8, token, '=') orelse return false;
+    if (eq == 0) return false;
+    for (token[0..eq]) |c| {
+        if (!(std.ascii.isAlphanumeric(c) or c == '_')) return false;
+    }
+    return true;
+}
+
+fn isCommandWrapper(token: []const u8) bool {
+    // Launchers that run a following COMMAND (not mere data operands).
+    const wrappers = [_][]const u8{ "sudo", "env", "command", "xargs", "nohup", "nice", "time", "builtin" };
+    // Strip path prefix: /usr/bin/sudo
+    var base = token;
+    if (std.mem.lastIndexOfScalar(u8, token, '/')) |slash| base = token[slash + 1 ..];
+    for (wrappers) |w| {
+        if (std.ascii.eqlIgnoreCase(base, w)) return true;
+    }
+    return false;
+}
+
+fn isShellOperator(token: []const u8) bool {
+    return std.mem.eql(u8, token, ";") or
+        std.mem.eql(u8, token, "|") or
+        std.mem.eql(u8, token, "&&") or
+        std.mem.eql(u8, token, "||") or
+        std.mem.eql(u8, token, "&");
 }
 
 fn startsWithIgnoreCase(haystack: []const u8, prefix: []const u8) bool {
@@ -100,7 +248,7 @@ fn startsWithIgnoreCase(haystack: []const u8, prefix: []const u8) bool {
 }
 
 fn matchesOsascriptMessages(command_text: []const u8) bool {
-    var tokens: [32][]const u8 = undefined;
+    var tokens: [48][]const u8 = undefined;
     const n = tokenizeSimple(command_text, &tokens);
     var has_osascript = false;
     var has_messages = false;
@@ -129,12 +277,13 @@ fn indexOfIgnoreCase(haystack: []const u8, needle: []const u8) ?usize {
     return null;
 }
 
-/// Whitespace tokenizer with simple single/double quote stripping (no escapes).
+/// Whitespace tokenizer with quote stripping; also emits shell operators as tokens
+/// and splits attached operators (e.g. `decoy;` → `decoy`, `;`).
 fn tokenizeSimple(command_text: []const u8, out: [][]const u8) usize {
     var count: usize = 0;
     var i: usize = 0;
     while (i < command_text.len and count < out.len) {
-        while (i < command_text.len and (command_text[i] == ' ' or command_text[i] == '\t' or command_text[i] == '\n' or command_text[i] == '\r')) : (i += 1) {}
+        while (i < command_text.len and isSpace(command_text[i])) : (i += 1) {}
         if (i >= command_text.len) break;
 
         if (command_text[i] == '\'' or command_text[i] == '"') {
@@ -148,53 +297,189 @@ fn tokenizeSimple(command_text: []const u8, out: [][]const u8) usize {
             continue;
         }
 
+        // Shell operators as their own tokens (including && and ||).
+        if (tryEmitOperator(command_text, &i, out, &count)) continue;
+
         const start = i;
-        while (i < command_text.len and command_text[i] != ' ' and command_text[i] != '\t' and command_text[i] != '\n' and command_text[i] != '\r') : (i += 1) {}
-        out[count] = command_text[start..i];
-        count += 1;
+        while (i < command_text.len and !isSpace(command_text[i]) and !isOperatorStart(command_text, i)) : (i += 1) {}
+        if (i > start) {
+            out[count] = command_text[start..i];
+            count += 1;
+        }
     }
     return count;
 }
 
-/// Best-effort host from curl/wget: first http(s) URL or bare host-looking operand.
-fn extractCurlLikeHost(command_text: []const u8) ?[]const u8 {
-    var tokens: [32][]const u8 = undefined;
+fn isSpace(c: u8) bool {
+    return c == ' ' or c == '\t' or c == '\n' or c == '\r';
+}
+
+/// True when `text[i]` is an unescaped shell operator character (`;`, `|`, `&`).
+/// A char preceded by an odd number of backslashes is escaped and not an operator.
+fn isOperatorStart(text: []const u8, i: usize) bool {
+    const c = text[i];
+    if (c != ';' and c != '|' and c != '&') return false;
+    return !isEscapedAt(text, i);
+}
+
+fn isEscapedAt(text: []const u8, i: usize) bool {
+    // Count consecutive backslashes immediately before index i.
+    var bs: usize = 0;
+    var j = i;
+    while (j > 0 and text[j - 1] == '\\') {
+        bs += 1;
+        j -= 1;
+    }
+    return (bs % 2) == 1;
+}
+
+fn tryEmitOperator(text: []const u8, i: *usize, out: [][]const u8, count: *usize) bool {
+    if (count.* >= out.len or i.* >= text.len) return false;
+    if (!isOperatorStart(text, i.*)) return false;
+    const c = text[i.*];
+    if (c == ';') {
+        out[count.*] = text[i.* .. i.* + 1];
+        count.* += 1;
+        i.* += 1;
+        return true;
+    }
+    if (c == '|' or c == '&') {
+        // Only treat doubled forms as one operator when the second char is also unescaped
+        // (second is adjacent so escape only applies to the first).
+        if (i.* + 1 < text.len and text[i.* + 1] == c) {
+            out[count.*] = text[i.* .. i.* + 2];
+            count.* += 1;
+            i.* += 2;
+            return true;
+        }
+        out[count.*] = text[i.* .. i.* + 1];
+        count.* += 1;
+        i.* += 1;
+        return true;
+    }
+    return false;
+}
+
+/// Curl/wget flags whose following argument is not a transfer URL.
+/// `--url` / `-url` are handled separately as transfer-URL sources.
+fn curlFlagTakesValue(flag: []const u8) bool {
+    // `--name=value` embeds the value; no next-token skip.
+    if (std.mem.startsWith(u8, flag, "--") and std.mem.indexOfScalar(u8, flag, '=') != null) return false;
+    if (std.mem.eql(u8, flag, "--url") or std.mem.eql(u8, flag, "-url")) return false;
+
+    const value_long = [_][]const u8{
+        "--referer",       "--header",               "--user-agent",
+        "--cookie",        "--output",               "--user",
+        "--proxy",         "--data",                 "--data-raw",
+        "--data-binary",   "--data-urlencode",       "--form",
+        "--form-string",   "--write-out",            "--cert",
+        "--key",           "--cacert",               "--capath",
+        "--resolve",       "--connect-to",           "--interface",
+        "--dns-servers",   "--config",               "--stderr",
+        "--trace",         "--trace-ascii",          "--upload-file",
+        "--range",         "--max-time",             "--connect-timeout",
+        "--retry",         "--proto",                "--proto-redir",
+        "--proto-default", "--proxy-user",           "--oauth2-bearer",
+        "--unix-socket",   "--abstract-unix-socket", "--url-query",
+        "--json",          "--request",              "--max-redirs",
+        "--limit-rate",    "--max-filesize",         "--output-dir",
+        "--proxy-header",  "--pinnedpubkey",         "--pass",
+        "--engine",        "--ciphers",              "--tls-max",
+        "--tls13-ciphers", "--curves",               "--dns-ipv4-addr",
+        "--dns-ipv6-addr", "--doh-url",              "--hostpubmd5",
+        "--hostpubsha256", "--krb",                  "--login-options",
+        "--netrc-file",    "--noproxy",              "--proxy1.0",
+        "--pubkey",        "--rate",                 "--sasl-authzid",
+        "--tlsuser",       "--tlspassword",          "--aws-sigv4",
+        "--hsts",          "--etag-save",            "--etag-compare",
+        "--variable",
+    };
+    for (value_long) |name| {
+        if (std.mem.eql(u8, flag, name)) return true;
+    }
+
+    // Pure short options that take a value (not combined like -HContent-Type:…).
+    if (flag.len == 2 and flag[0] == '-') {
+        const c = flag[1];
+        return c == 'e' or // --referer
+            c == 'H' or // --header
+            c == 'A' or // --user-agent
+            c == 'b' or // --cookie
+            c == 'o' or // --output
+            c == 'u' or // --user
+            c == 'x' or // --proxy
+            c == 'd' or // --data
+            c == 'F' or // --form
+            c == 'w' or // --write-out
+            c == 'K' or // --config
+            c == 'T' or // --upload-file
+            c == 'r' or // --range
+            c == 'm' or // --max-time
+            c == 'U' or // --proxy-user
+            c == 'X' or // --request
+            c == 'E' or // --cert
+            c == 'Y' or // --speed-limit
+            c == 'y' or // --speed-time
+            c == 'C' or // --continue-at
+            c == 'z' or // --time-cond
+            c == 'c' or // --cookie-jar
+            c == 'D' or // --dump-header
+            c == 'P'; // --ftp-port
+    }
+    return false;
+}
+
+/// Append effect hits for every curl/wget URL / tagged host operand in command position.
+fn appendCurlLikeHostEffects(
+    allocator: std.mem.Allocator,
+    command_text: []const u8,
+    hits: *std.ArrayList(catalog.EffectHit),
+) !void {
+    var tokens: [48][]const u8 = undefined;
     const n = tokenizeSimple(command_text, &tokens);
-    if (n == 0) return null;
+    if (n == 0) return;
 
-    var is_curl = false;
-    for (tokens[0..n]) |t| {
-        if (std.ascii.eqlIgnoreCase(t, "curl") or std.ascii.eqlIgnoreCase(t, "wget") or
-            endsWithIgnoreCase(t, "/curl") or endsWithIgnoreCase(t, "/wget"))
-        {
-            is_curl = true;
-            break;
-        }
-    }
-    if (!is_curl) return null;
-
-    // Prefer explicit http(s) URL token
-    for (tokens[0..n]) |t| {
-        if (startsWithIgnoreCase(t, "https://") or startsWithIgnoreCase(t, "http://")) {
-            return network_tags.hostFromUrlOrHost(t);
-        }
-    }
-    // --url value
     var i: usize = 0;
-    while (i + 1 < n) : (i += 1) {
-        if (std.mem.eql(u8, tokens[i], "--url") or std.mem.eql(u8, tokens[i], "-url")) {
-            return network_tags.hostFromUrlOrHost(tokens[i + 1]);
+    while (i < n) : (i += 1) {
+        if (!isCurlLikeToken(tokens[i])) continue;
+        if (!isCommandPosition(tokens[0..n], i)) continue;
+
+        // Scan operands until next shell operator.
+        var j = i + 1;
+        while (j < n) : (j += 1) {
+            if (isShellOperator(tokens[j])) break;
+            const t = tokens[j];
+            if (t.len == 0) continue;
+
+            // --url / -url VALUE → transfer URL (always classify).
+            if ((std.mem.eql(u8, t, "--url") or std.mem.eql(u8, t, "-url")) and j + 1 < n) {
+                const host = network_tags.hostFromUrlOrHost(tokens[j + 1]);
+                try appendCurlHostHit(allocator, hits, host);
+                j += 1;
+                continue;
+            }
+
+            // Value-taking options: skip the next token (not a transfer URL).
+            if (t[0] == '-') {
+                if (curlFlagTakesValue(t) and j + 1 < n and !isShellOperator(tokens[j + 1])) {
+                    j += 1; // skip option value
+                }
+                continue;
+            }
+
+            if (startsWithIgnoreCase(t, "https://") or startsWithIgnoreCase(t, "http://")) {
+                const host = network_tags.hostFromUrlOrHost(t);
+                try appendCurlHostHit(allocator, hits, host);
+                continue;
+            }
+
+            // Bare host-looking tokens that match a curated tag.
+            if (std.mem.indexOfScalar(u8, t, '.') != null) {
+                const host = network_tags.hostFromUrlOrHost(t);
+                try appendCurlHostHit(allocator, hits, host);
+            }
         }
     }
-    // Bare host-looking tokens (contain a dot, not a flag)
-    for (tokens[0..n]) |t| {
-        if (t.len == 0 or t[0] == '-') continue;
-        if (std.ascii.eqlIgnoreCase(t, "curl") or std.ascii.eqlIgnoreCase(t, "wget")) continue;
-        if (std.mem.indexOfScalar(u8, t, '.') == null) continue;
-        const host = network_tags.hostFromUrlOrHost(t);
-        if (network_tags.effectForHost(host) != null) return host;
-    }
-    return null;
 }
 
 test "open mailto classifies as comms.message" {
@@ -212,10 +497,52 @@ test "open mailto without quotes" {
     try std.testing.expect(std.mem.startsWith(u8, hits[0].matcher, "shell_bypass."));
 }
 
+test "open -a Mail mailto still classifies" {
+    const hits = try classifyCommand(std.testing.allocator, "open -a Mail mailto:x@y.com");
+    defer std.testing.allocator.free(hits);
+    try std.testing.expect(hits.len >= 1);
+    try std.testing.expectEqualStrings("comms.message", hits[0].id);
+}
+
+test "open -b bundle mailto still classifies" {
+    const hits = try classifyCommand(std.testing.allocator, "open -b com.apple.mail mailto:x@y.com");
+    defer std.testing.allocator.free(hits);
+    try std.testing.expect(hits.len >= 1);
+    try std.testing.expectEqualStrings("comms.message", hits[0].id);
+}
+
+test "decoy mailto before real open still classifies" {
+    const hits = try classifyCommand(std.testing.allocator, "echo mailto:decoy; open mailto:x@y.com");
+    defer std.testing.allocator.free(hits);
+    try std.testing.expect(hits.len >= 1);
+    try std.testing.expectEqualStrings("comms.message", hits[0].id);
+}
+
 test "incidental open in text is not mailto bypass" {
     const hits = try classifyCommand(std.testing.allocator, "echo 'please open mailto:x@y.com'");
     defer std.testing.allocator.free(hits);
     try std.testing.expectEqual(@as(usize, 0), hits.len);
+}
+
+test "printf open mailto args is not mailto bypass" {
+    // open/mailto appear as data operands, not as a command launch.
+    const hits = try classifyCommand(std.testing.allocator, "printf '%s %s' open mailto:x@y.com");
+    defer std.testing.allocator.free(hits);
+    try std.testing.expectEqual(@as(usize, 0), hits.len);
+}
+
+test "sudo open mailto still classifies" {
+    const hits = try classifyCommand(std.testing.allocator, "sudo open mailto:x@y.com");
+    defer std.testing.allocator.free(hits);
+    try std.testing.expect(hits.len >= 1);
+    try std.testing.expectEqualStrings("comms.message", hits[0].id);
+}
+
+test "env assignment before open mailto still classifies" {
+    const hits = try classifyCommand(std.testing.allocator, "FOO=1 open mailto:x@y.com");
+    defer std.testing.allocator.free(hits);
+    try std.testing.expect(hits.len >= 1);
+    try std.testing.expectEqualStrings("comms.message", hits[0].id);
 }
 
 test "unrelated command has no shell bypass hits" {
@@ -237,4 +564,101 @@ test "curl bare tagged host is publish" {
     defer std.testing.allocator.free(hits);
     try std.testing.expect(hits.len >= 1);
     try std.testing.expectEqualStrings("comms.publish", hits[0].id);
+}
+
+test "curl multi-URL second tagged host still hits" {
+    // First URL is untagged; second is a publish host — must still classify.
+    const hits = try classifyCommand(
+        std.testing.allocator,
+        "curl https://example.com https://api.twitter.com/2/tweets",
+    );
+    defer std.testing.allocator.free(hits);
+    try std.testing.expect(hits.len >= 1);
+    try std.testing.expectEqualStrings("comms.publish", hits[0].id);
+}
+
+test "curl --url tagged host hits" {
+    const hits = try classifyCommand(std.testing.allocator, "curl --url https://api.twitter.com/2/tweets");
+    defer std.testing.allocator.free(hits);
+    try std.testing.expect(hits.len >= 1);
+    try std.testing.expectEqualStrings("comms.publish", hits[0].id);
+}
+
+test "sudo -u root curl tagged host is publish" {
+    const hits = try classifyCommand(std.testing.allocator, "sudo -u root curl https://api.twitter.com/2/tweets");
+    defer std.testing.allocator.free(hits);
+    try std.testing.expect(hits.len >= 1);
+    try std.testing.expectEqualStrings("comms.publish", hits[0].id);
+}
+
+test "env -i open mailto still classifies" {
+    const hits = try classifyCommand(std.testing.allocator, "env -i open mailto:x@y.com");
+    defer std.testing.allocator.free(hits);
+    try std.testing.expect(hits.len >= 1);
+    try std.testing.expectEqualStrings("comms.message", hits[0].id);
+}
+
+test "sudo -n open -a Mail mailto still classifies" {
+    const hits = try classifyCommand(std.testing.allocator, "sudo -n open -a Mail mailto:x@y.com");
+    defer std.testing.allocator.free(hits);
+    try std.testing.expect(hits.len >= 1);
+    try std.testing.expectEqualStrings("comms.message", hits[0].id);
+}
+
+test "escaped semicolon does not split commands for mailto" {
+    // `foo\;` keeps `;` inside the word; open is a printf/arg, not a new command.
+    const hits = try classifyCommand(std.testing.allocator, "printf foo\\; open mailto:x@y.com");
+    defer std.testing.allocator.free(hits);
+    try std.testing.expectEqual(@as(usize, 0), hits.len);
+}
+
+test "curl --referer tagged host is not publish" {
+    const hits = try classifyCommand(
+        std.testing.allocator,
+        "curl https://example.com --referer https://api.twitter.com/2/tweets",
+    );
+    defer std.testing.allocator.free(hits);
+    try std.testing.expectEqual(@as(usize, 0), hits.len);
+}
+
+test "xargs curl tagged host is publish" {
+    // Launcher: xargs runs COMMAND; curl must still be command-position.
+    const hits = try classifyCommand(
+        std.testing.allocator,
+        "printf 'arg\\n' | xargs curl https://api.twitter.com/2/tweets",
+    );
+    defer std.testing.allocator.free(hits);
+    try std.testing.expect(hits.len >= 1);
+    try std.testing.expectEqualStrings("comms.publish", hits[0].id);
+}
+
+test "xargs -n 2 curl tagged host is publish" {
+    const hits = try classifyCommand(
+        std.testing.allocator,
+        "xargs -n 2 curl https://api.twitter.com/2/tweets",
+    );
+    defer std.testing.allocator.free(hits);
+    try std.testing.expect(hits.len >= 1);
+    try std.testing.expectEqualStrings("comms.publish", hits[0].id);
+}
+
+test "command -v open mailto is not message bypass" {
+    // Bash `command -v` is lookup-only; must not classify as launching open.
+    const hits = try classifyCommand(std.testing.allocator, "command -v open mailto:x@y.com");
+    defer std.testing.allocator.free(hits);
+    try std.testing.expectEqual(@as(usize, 0), hits.len);
+}
+
+test "command -V open mailto is not message bypass" {
+    const hits = try classifyCommand(std.testing.allocator, "command -V open mailto:x@y.com");
+    defer std.testing.allocator.free(hits);
+    try std.testing.expectEqual(@as(usize, 0), hits.len);
+}
+
+test "command open mailto still classifies" {
+    // `command open` without -v/-V still executes open.
+    const hits = try classifyCommand(std.testing.allocator, "command open mailto:x@y.com");
+    defer std.testing.allocator.free(hits);
+    try std.testing.expect(hits.len >= 1);
+    try std.testing.expectEqualStrings("comms.message", hits[0].id);
 }
