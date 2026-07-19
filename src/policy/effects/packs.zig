@@ -103,7 +103,15 @@ pub fn userConfigPacksDir(allocator: std.mem.Allocator) !?[]u8 {
     return null;
 }
 
+pub const LoadOptions = struct {
+    /// Override auto-resolved user config dir (`null` = resolve from env).
+    user_config_dir: ?[]const u8 = null,
+    /// When true, unreadable pack directories fail closed (enforcement). Discovery soft-skips.
+    fail_on_access_denied: bool = false,
+};
+
 /// Load packs: user config (lower) then workspace `.orca/effect-packs` (higher / last-wins).
+/// Within a directory, files load in lexicographic filename order (deterministic tie-break).
 /// Missing directories are OK. Present but invalid files fail closed.
 /// Use for discovery (`tools classify`, `mcp inspect`) where packs are always consulted.
 pub fn loadPacks(
@@ -112,22 +120,34 @@ pub fn loadPacks(
     workspace_root: []const u8,
     user_config_dir: ?[]const u8,
 ) !PackSet {
+    return loadPacksWithOptions(io, allocator, workspace_root, .{
+        .user_config_dir = user_config_dir,
+        .fail_on_access_denied = false,
+    });
+}
+
+fn loadPacksWithOptions(
+    io: std.Io,
+    allocator: std.mem.Allocator,
+    workspace_root: []const u8,
+    options: LoadOptions,
+) !PackSet {
     var list: std.ArrayList(Pack) = .empty;
     errdefer {
-        for (list.items) |*p| p.deinit();
+        for (list.items) |*pack| pack.deinit();
         list.deinit(allocator);
     }
 
-    if (user_config_dir) |dir| {
-        try appendPacksFromDir(io, allocator, dir, &list);
+    if (options.user_config_dir) |dir| {
+        try appendPacksFromDir(io, allocator, dir, &list, options.fail_on_access_denied);
     } else if (try userConfigPacksDir(allocator)) |auto| {
         defer allocator.free(auto);
-        try appendPacksFromDir(io, allocator, auto, &list);
+        try appendPacksFromDir(io, allocator, auto, &list, options.fail_on_access_denied);
     }
 
     const workspace_dir = try std.fs.path.join(allocator, &.{ workspace_root, ".orca", "effect-packs" });
     defer allocator.free(workspace_dir);
-    try appendPacksFromDir(io, allocator, workspace_dir, &list);
+    try appendPacksFromDir(io, allocator, workspace_dir, &list, options.fail_on_access_denied);
 
     return .{
         .packs = try list.toOwnedSlice(allocator),
@@ -137,7 +157,7 @@ pub fn loadPacks(
 
 /// Enforcement path: skip pack I/O when `effects:` is inactive (packs only matter for
 /// classification hits that feed `effects:` decisions). When active, load and fail closed
-/// on invalid pack files — same as discovery.
+/// on invalid pack files and unreadable pack directories.
 pub fn loadPacksForEnforcement(
     io: std.Io,
     allocator: std.mem.Allocator,
@@ -145,7 +165,10 @@ pub fn loadPacksForEnforcement(
     effects_active: bool,
 ) !PackSet {
     if (!effects_active) return PackSet.empty(allocator);
-    return loadPacks(io, allocator, workspace_root, null);
+    return loadPacksWithOptions(io, allocator, workspace_root, .{
+        .user_config_dir = null,
+        .fail_on_access_denied = true,
+    });
 }
 
 fn appendPacksFromDir(
@@ -153,19 +176,40 @@ fn appendPacksFromDir(
     allocator: std.mem.Allocator,
     dir_path: []const u8,
     list: *std.ArrayList(Pack),
+    fail_on_access_denied: bool,
 ) !void {
     var dir = std.Io.Dir.cwd().openDir(io, dir_path, .{ .iterate = true }) catch |err| switch (err) {
-        error.FileNotFound, error.NotDir, error.AccessDenied => return,
+        error.FileNotFound, error.NotDir => return,
+        error.AccessDenied => {
+            if (fail_on_access_denied) return PackError.InvalidEffectPack;
+            return;
+        },
         else => return err,
     };
     defer dir.close(io);
+
+    // Collect then sort so same-tier last-wins is deterministic across filesystems.
+    var names: std.ArrayList([]const u8) = .empty;
+    defer {
+        for (names.items) |n| allocator.free(n);
+        names.deinit(allocator);
+    }
 
     var it = dir.iterate();
     while (try it.next(io)) |entry| {
         if (entry.kind != .file) continue;
         if (!(std.mem.endsWith(u8, entry.name, ".yaml") or std.mem.endsWith(u8, entry.name, ".yml"))) continue;
+        try names.append(allocator, try allocator.dupe(u8, entry.name));
+    }
 
-        const file_path = try std.fs.path.join(allocator, &.{ dir_path, entry.name });
+    std.mem.sort([]const u8, names.items, {}, struct {
+        fn less(_: void, a: []const u8, b: []const u8) bool {
+            return std.mem.order(u8, a, b) == .lt;
+        }
+    }.less);
+
+    for (names.items) |entry_name| {
+        const file_path = try std.fs.path.join(allocator, &.{ dir_path, entry_name });
         defer allocator.free(file_path);
 
         const text = std.Io.Dir.cwd().readFileAlloc(
@@ -175,6 +219,10 @@ fn appendPacksFromDir(
             .limited(max_pack_file_bytes + 1),
         ) catch |err| switch (err) {
             error.FileTooBig => return PackError.EffectPackTooLarge,
+            error.AccessDenied => {
+                if (fail_on_access_denied) return PackError.InvalidEffectPack;
+                return err;
+            },
             else => return err,
         };
         defer allocator.free(text);
@@ -311,6 +359,7 @@ pub fn parsePackFromSlice(allocator: std.mem.Allocator, text: []const u8, source
             if (section == .structural_keys) {
                 const key = parseScalar(body);
                 if (key.len == 0) return PackError.InvalidEffectPack;
+                if (current_keys.items.len >= max_keys_per_structural) return PackError.InvalidEffectPack;
                 try current_keys.append(arena, try arena.dupe(u8, key));
                 continue;
             }
@@ -431,6 +480,7 @@ fn finishStructuralItem(
     if (effect.* == null and keys.items.len == 0) return;
     const eid = effect.* orelse return PackError.InvalidEffectPack;
     if (keys.items.len == 0) return PackError.InvalidEffectPack;
+    if (keys.items.len > max_keys_per_structural) return PackError.InvalidEffectPack;
     if (list.items.len >= max_structural_per_pack) return PackError.EffectPackTooManyEntries;
     const pid = pack_id orelse return PackError.InvalidEffectPack;
 
@@ -480,6 +530,8 @@ pub fn classifyPackHits(
 
     const normalized = try catalog.normalizeToolName(allocator, trimmed);
     defer allocator.free(normalized);
+    // Match both full name and last segment (mcp__server__tool → tool), same as catalog.
+    const focus = catalog.focusName(normalized);
 
     // Exact name → one effect: highest-priority pack wins (workspace over user config).
     // Walk reverse; first match is final (do not accumulate competing name maps).
@@ -488,7 +540,7 @@ pub fn classifyPackHits(
         outer: while (i > 0) {
             i -= 1;
             for (pack_set.packs[i].names) |mapping| {
-                if (std.mem.eql(u8, mapping.name, normalized)) {
+                if (std.mem.eql(u8, mapping.name, normalized) or std.mem.eql(u8, mapping.name, focus)) {
                     try appendUniquePreferHigher(allocator, &hits, .{
                         .id = mapping.effect_id,
                         .confidence = .high,
@@ -503,7 +555,8 @@ pub fn classifyPackHits(
     for (pack_set.packs) |pack| {
         for (pack.tokens) |mapping| {
             if (mapping.token.len == 0) continue;
-            if (std.mem.indexOf(u8, normalized, mapping.token) != null) {
+            // Same token rules as catalog (short tokens need whole `_` segments).
+            if (catalog.containsToken(normalized, mapping.token) or catalog.containsToken(focus, mapping.token)) {
                 try appendUniquePreferHigher(allocator, &hits, .{
                     .id = mapping.effect_id,
                     .confidence = .medium,
@@ -786,4 +839,101 @@ test "loadPacks invalid pack fails closed" {
     const root = try tmp.dir.realPathFileAlloc(std.testing.io, ".", std.testing.allocator);
     defer std.testing.allocator.free(root);
     try std.testing.expectError(PackError.UnknownEffectId, loadPacks(std.testing.io, std.testing.allocator, root, null));
+}
+
+test "pack exact name matches mcp focus segment" {
+    const yaml =
+        \\version: 1
+        \\id: acme
+        \\names:
+        \\  send_acme_ping: comms.message
+    ;
+    var set = try PackSet.fromPack(std.testing.allocator, try parsePackFromSlice(std.testing.allocator, yaml, "acme.yaml"));
+    defer set.deinit();
+
+    const hits = try classifyPackHits(std.testing.allocator, &set, "mcp__acme__send_acme_ping", null);
+    defer std.testing.allocator.free(hits);
+    try std.testing.expectEqual(@as(usize, 1), hits.len);
+    try std.testing.expectEqualStrings("comms.message", hits[0].id);
+    try std.testing.expect(std.mem.startsWith(u8, hits[0].matcher, "pack.acme.name:"));
+}
+
+test "structural list-form keys respect max_keys_per_structural" {
+    var yaml_buf: std.ArrayList(u8) = .empty;
+    defer yaml_buf.deinit(std.testing.allocator);
+    try yaml_buf.appendSlice(std.testing.allocator,
+        \\version: 1
+        \\id: acme
+        \\structural:
+        \\  - effect: comms.message
+        \\    keys:
+    );
+    var i: usize = 0;
+    while (i < max_keys_per_structural + 1) : (i += 1) {
+        const line = try std.fmt.allocPrint(std.testing.allocator, "\n      - k{d}", .{i});
+        defer std.testing.allocator.free(line);
+        try yaml_buf.appendSlice(std.testing.allocator, line);
+    }
+    try std.testing.expectError(
+        PackError.InvalidEffectPack,
+        parsePackFromSlice(std.testing.allocator, yaml_buf.items, "too-many-keys.yaml"),
+    );
+}
+
+test "short pack token requires whole segment" {
+    const yaml =
+        \\version: 1
+        \\id: acme
+        \\tokens:
+        \\  sms: comms.message
+    ;
+    var set = try PackSet.fromPack(std.testing.allocator, try parsePackFromSlice(std.testing.allocator, yaml, "acme.yaml"));
+    defer set.deinit();
+
+    // "asms" contains substring "sms" but is not a whole segment — must not match.
+    const no_hit = try classifyPackHits(std.testing.allocator, &set, "asms_helper", null);
+    defer std.testing.allocator.free(no_hit);
+    try std.testing.expectEqual(@as(usize, 0), no_hit.len);
+
+    const hit = try classifyPackHits(std.testing.allocator, &set, "send_sms_now", null);
+    defer std.testing.allocator.free(hit);
+    try std.testing.expectEqual(@as(usize, 1), hit.len);
+    try std.testing.expectEqualStrings("comms.message", hit[0].id);
+}
+
+test "same-dir packs load in lexicographic filename order" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try tmp.dir.createDirPath(std.testing.io, ".orca/effect-packs");
+    {
+        const a = try tmp.dir.createFile(std.testing.io, ".orca/effect-packs/a-first.yaml", .{});
+        defer a.close(std.testing.io);
+        try a.writeStreamingAll(std.testing.io,
+            \\version: 1
+            \\id: first
+            \\names:
+            \\  custom_send: money.transfer
+        );
+        const z = try tmp.dir.createFile(std.testing.io, ".orca/effect-packs/z-last.yaml", .{});
+        defer z.close(std.testing.io);
+        try z.writeStreamingAll(std.testing.io,
+            \\version: 1
+            \\id: last
+            \\names:
+            \\  custom_send: comms.message
+        );
+    }
+    const root = try tmp.dir.realPathFileAlloc(std.testing.io, ".", std.testing.allocator);
+    defer std.testing.allocator.free(root);
+    var set = try loadPacks(std.testing.io, std.testing.allocator, root, null);
+    defer set.deinit();
+    try std.testing.expectEqual(@as(usize, 2), set.packs.len);
+    try std.testing.expectEqualStrings("first", set.packs[0].id);
+    try std.testing.expectEqualStrings("last", set.packs[1].id);
+
+    const hits = try classifyPackHits(std.testing.allocator, &set, "custom_send", null);
+    defer std.testing.allocator.free(hits);
+    try std.testing.expectEqual(@as(usize, 1), hits.len);
+    try std.testing.expectEqualStrings("comms.message", hits[0].id);
+    try std.testing.expect(std.mem.startsWith(u8, hits[0].matcher, "pack.last."));
 }

@@ -242,7 +242,7 @@ test "tools classify with policy effects deny" {
     try std.testing.expect(std.mem.indexOf(u8, out, "effects.") != null);
 }
 
-test "tools classify pack mapped tool" {
+test "loadPacks classifies pack mapped tool" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
     try tmp.dir.createDirPath(std.testing.io, ".orca/effect-packs");
@@ -256,12 +256,10 @@ test "tools classify pack mapped tool" {
             \\  send_acme_ping: comms.message
         );
     }
-    // Chdir into tmp so workspace discovery finds .orca/effect-packs
+    // Unit-level: workspace pack load + classify (not full CLI cwd resolution).
     const root = try tmp.dir.realPathFileAlloc(std.testing.io, ".", std.testing.allocator);
     defer std.testing.allocator.free(root);
 
-    // loadPacks uses workspace_root; classify uses resolveWorkspaceRoot(cwd).
-    // Call classify path via pack load + classify directly for isolation.
     var pack_set = try orca_policy.effects.loadPacks(std.testing.io, std.testing.allocator, root, null);
     defer pack_set.deinit();
     const hits = try orca_policy.effects.classifyToolCallWithPacks(std.testing.allocator, &pack_set, "send_acme_ping", null);

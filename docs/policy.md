@@ -210,6 +210,10 @@ Rules:
 - Effect ids must be known (`comms.message`, …)
 - Unknown keys, bad ids, or oversized files **fail closed** (clear error; no silent ignore of that file)
 - Missing pack directories are fine
+- Within a directory, packs load in **lexicographic filename order**; later files win on exact-name conflicts (workspace still outranks user config)
+- Exact names match full normalized tool names and the last `__`/`/` segment (e.g. pack `send_acme_ping` matches `mcp__acme__send_acme_ping`)
+- Tokens reuse catalog matching: short tokens (≤3 chars) require a whole `_`-separated segment
+- Structural `keys` lists are capped (max 16 keys per rule)
 - **Decisions still require policy `effects:`** — e.g. `effects.deny: [comms.message]` blocks pack-mapped tools
 
 List loaded packs: `orca tools packs`.

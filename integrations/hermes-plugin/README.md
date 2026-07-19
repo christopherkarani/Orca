@@ -24,7 +24,7 @@ Hermes ≥ the version that shipped `pre_tool_call` `action: approve` (escalatio
 2. Hermes prompts the user (CLI/TUI) or submits a pending approval (gateway).
 3. On approve, the tool **resumes** and runs. On deny/timeout, Hermes fail-closes to a block.
 
-This is **not** a passive model note, and it is **not** “tell the model to call `clarify`”. Enforcement is host-native.
+This is **not** a passive model note, and it is **not** a request for the model to invoke `clarify`. Enforcement is host-native.
 
 #### `rule_key` grain
 
