@@ -17,6 +17,7 @@ pub const apply = @import("apply.zig");
 pub const discard = @import("discard.zig");
 pub const staged_mutation = @import("staged_mutation.zig");
 pub const mcp = @import("mcp.zig");
+pub const tools = @import("tools.zig");
 pub const redteam = @import("redteam.zig");
 pub const completions = @import("completions.zig");
 pub const shim = @import("shim.zig");
@@ -423,6 +424,7 @@ fn runWithCwdUsing(
     if (std.mem.eql(u8, command, "apply")) return apply.command(io, argv[1..], stdout, stderr);
     if (std.mem.eql(u8, command, "discard")) return discard.command(io, argv[1..], stdout, stderr);
     if (std.mem.eql(u8, command, "mcp")) return mcp_command(io, argv[1..], stdout, stderr);
+    if (std.mem.eql(u8, command, "tools")) return tools.command(io, argv[1..], stdout, stderr);
     if (std.mem.eql(u8, command, "redteam")) return redteam.command(io, argv[1..], stdout, stderr);
     if (std.mem.eql(u8, command, "completions")) return completions.command(io, argv[1..], stdout, stderr);
     if (std.mem.eql(u8, command, "shim")) return shim.command(io, environ_map, argv[1..], stdout, stderr);

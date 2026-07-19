@@ -404,12 +404,20 @@ fn evaluateDecision(
             const args_view: ?policy.effects.ToolArgsView = if (owned_args) |oa| oa.view else null;
             // Use .tool (MCP surface ∩ effect-class), not pure .mcp, so `orca decide tool`
             // matches host PreToolUse / MCP proxy enforcement when effects: is configured.
+            // Phase C: load packs when effects: is active so pack-mapped names match hook/proxy.
+            var pack_set = policy.effects.loadPacksForEnforcement(
+                io,
+                allocator,
+                workspace_root,
+                policy_value.effects.isActive(),
+            ) catch return error.InvalidEffectPack;
+            defer pack_set.deinit();
             const evaluation = try core_api.explainActionWithOptions(
                 allocator,
                 @ptrCast(policy_value),
                 .tool,
                 tool_name,
-                .{ .tool_args = args_view },
+                .{ .tool_args = args_view, .effect_packs = &pack_set },
             );
             defer evaluation.deinit(allocator);
 

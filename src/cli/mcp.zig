@@ -162,16 +162,17 @@ fn inspect(io: std.Io, argv: []const []const u8, stdout: anytype, stderr: anytyp
     };
     defer inventory.deinit(allocator);
 
+    const workspace = supervisor.resolveWorkspaceRoot(io, allocator, null, ".") catch try allocator.dupe(u8, ".");
+    defer allocator.free(workspace);
+    var effect_packs = policy.effects.loadPacks(io, allocator, workspace, null) catch |err| {
+        try stderr.print("orca mcp inspect: invalid effect pack: {s}\n", .{@errorName(err)});
+        return exit_codes.general;
+    };
+    defer effect_packs.deinit();
+
     try stdout.print("MCP Server: {s}\nTransport: stdio\nTools:\n", .{options.server_name});
     for (inventory.tools) |tool| {
-        try stdout.print("  {s:<24} risk: {s:<8} default: {s}", .{ tool.name, tool.risk.toString(), orca_mcp.tools.defaultDecisionForRisk(tool.risk) });
-        if (loaded_policy) |selected| {
-            var evaluation = try core_api.evaluateAction(allocator, selected, .{ .mcp_tool_call = .{ .server = options.server_name, .tool_name = tool.name } }, .{});
-            defer evaluation.deinit(allocator);
-            try stdout.print(" policy: {s}", .{evaluation.decision.result.toString()});
-            if (evaluation.decision.rule_id) |rule_id| try stdout.print(" rule: {s}", .{rule_id});
-        }
-        try stdout.writeByte('\n');
+        try writeInspectToolLine(allocator, stdout, options.server_name, tool, loaded_policy, &effect_packs);
     }
     try stdout.writeAll("\nFindings:\n");
     var finding_count: usize = 0;
@@ -183,6 +184,38 @@ fn inspect(io: std.Io, argv: []const []const u8, stdout: anytype, stderr: anytyp
     }
     if (finding_count == 0) try stdout.writeAll("  none\n");
     return exit_codes.success;
+}
+
+fn writeInspectToolLine(
+    allocator: std.mem.Allocator,
+    stdout: anytype,
+    server_name: []const u8,
+    tool: orca_mcp.tools.ToolInfo,
+    loaded_policy: ?*core_api.Policy,
+    effect_packs: *const policy.effects.PackSet,
+) !void {
+    try stdout.print("  {s:<24} risk: {s:<8} default: {s}", .{
+        tool.name,
+        tool.risk.toString(),
+        orca_mcp.tools.defaultDecisionForRisk(tool.risk),
+    });
+    const hits = try policy.effects.classifyToolCallWithPacks(allocator, effect_packs, tool.name, null);
+    defer allocator.free(hits);
+    const effects_text = try policy.effects.formatHitsCompact(hits, allocator);
+    defer allocator.free(effects_text);
+    try stdout.print(" effects: {s}", .{effects_text});
+    if (loaded_policy) |selected| {
+        var evaluation = try core_api.evaluateAction(
+            allocator,
+            selected,
+            .{ .mcp_tool_call = .{ .server = server_name, .tool_name = tool.name } },
+            .{ .effect_packs = effect_packs },
+        );
+        defer evaluation.deinit(allocator);
+        try stdout.print(" policy: {s}", .{evaluation.decision.result.toString()});
+        if (evaluation.decision.rule_id) |rule_id| try stdout.print(" rule: {s}", .{rule_id});
+    }
+    try stdout.writeByte('\n');
 }
 
 fn proxy(io: std.Io, argv: []const []const u8, stdout: anytype, stderr: anytype) !u8 {
@@ -256,6 +289,17 @@ fn proxy(io: std.Io, argv: []const []const u8, stdout: anytype, stderr: anytype)
     }
     defer if (tty_file) |file| file.close(io);
 
+    var effect_packs = policy.effects.loadPacksForEnforcement(
+        io,
+        allocator,
+        workspace,
+        loaded.innerPtr().effects.isActive(),
+    ) catch |err| {
+        try stderr.print("orca mcp proxy: invalid effect pack: {s}\n", .{@errorName(err)});
+        return exit_codes.general;
+    };
+    defer effect_packs.deinit();
+
     orca_mcp.proxy.runWithServer(allocator, .{
         .server_name = options.server_name,
         .server_command_display = options.command_argv[0],
@@ -265,6 +309,7 @@ fn proxy(io: std.Io, argv: []const []const u8, stdout: anytype, stderr: anytype)
         .approval_reader = if (approval_reader_storage) |*reader| &reader.interface else null,
         .approval_writer = if (approval_writer_storage) |*writer| &writer.interface else null,
         .manifest = if (loaded_manifest) |*manifest| manifest else null,
+        .effect_packs = &effect_packs,
     }, &stdin_reader.interface, stdout, .{
         .context = &server,
         .request = orca_mcp.transport.ProcessServer.request,
@@ -768,6 +813,46 @@ test "mcp inspect policy option reports Core policy decisions" {
     try std.testing.expect(std.mem.indexOf(u8, output, "policy: allow") != null);
     try std.testing.expect(std.mem.indexOf(u8, output, "delete_repository") != null);
     try std.testing.expect(std.mem.indexOf(u8, output, "policy: deny") != null);
+    try std.testing.expect(std.mem.indexOf(u8, output, "effects:") != null);
+    _ = stderr_writer.buffered();
+}
+
+test "mcp inspect shows effects and effects.deny for send_email" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    {
+        const file = try tmp.dir.createFile(std.testing.io, "effects-policy.yaml", .{});
+        defer file.close(std.testing.io);
+        try file.writeStreamingAll(std.testing.io,
+            \\version: 1
+            \\mode: strict
+            \\mcp:
+            \\  default: allow
+            \\  allow:
+            \\    - "*"
+            \\effects:
+            \\  deny:
+            \\    - comms.message
+        );
+    }
+    const policy_path = try tmp.dir.realPathFileAlloc(std.testing.io, "effects-policy.yaml", std.testing.allocator);
+    defer std.testing.allocator.free(policy_path);
+
+    var stdout_buf: [16384]u8 = undefined;
+    var stderr_buf: [2048]u8 = undefined;
+    var stdout_writer: std.Io.Writer = .fixed(&stdout_buf);
+    var stderr_writer: std.Io.Writer = .fixed(&stderr_buf);
+
+    const code = try command(std.testing.io, &.{ "inspect", "--name", "fake", "--policy", policy_path, "--command", "python3", "--", "fixtures/mcp/fake_server.py" }, &stdout_writer, &stderr_writer);
+    try std.testing.expectEqual(exit_codes.success, code);
+    const output = stdout_writer.buffered();
+    try std.testing.expect(std.mem.indexOf(u8, output, "send_email") != null);
+    try std.testing.expect(std.mem.indexOf(u8, output, "comms.message") != null);
+    try std.testing.expect(std.mem.indexOf(u8, output, "effects:") != null);
+    try std.testing.expect(std.mem.indexOf(u8, output, "policy: deny") != null);
+    try std.testing.expect(std.mem.indexOf(u8, output, "effects.") != null);
+    try std.testing.expect(std.mem.indexOf(u8, output, "search_issues") != null);
+    try std.testing.expect(std.mem.indexOf(u8, output, "(none)") != null);
     _ = stderr_writer.buffered();
 }
 

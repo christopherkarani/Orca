@@ -1,0 +1,20 @@
+# Example user effect pack (Phase C).
+# Copy to .orca/effect-packs/ or ~/.config/orca/effect-packs/
+# then set policy effects.deny (e.g. comms.message) to enforce.
+#
+# Packs only extend classification — they never grant allow past effects.deny.
+
+version: 1
+id: demo-comms
+description: Demo mappings for renamed/internal messaging tools
+
+names:
+  send_acme_ping: comms.message
+  acme_tweet: comms.publish
+
+tokens:
+  acmechat: comms.message
+
+structural:
+  - effect: comms.message
+    keys: [acme_to, acme_body]

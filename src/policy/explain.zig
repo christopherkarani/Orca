@@ -39,6 +39,8 @@ pub const ExplainOptions = struct {
     network_method: ?[]const u8 = null,
     /// Optional structural tool args for `.tool` explain (Phase B).
     tool_args: ?effects.ToolArgsView = null,
+    /// Optional user effect packs for `.tool` explain (Phase C).
+    effect_packs: ?*const effects.PackSet = null,
 };
 
 pub fn explainWithOptions(
@@ -55,7 +57,7 @@ pub fn explainWithOptions(
         .command => evaluate.command(policy, target, allocator),
         .network => if (options.network_method) |method| evaluate.networkWithMethod(policy, target, method, allocator) else evaluate.network(policy, target, allocator),
         .mcp => evaluate.mcp(policy, target, allocator),
-        .tool => evaluate.toolWithArgs(policy, target, options.tool_args, allocator),
+        .tool => evaluate.toolWithPacks(policy, target, options.tool_args, options.effect_packs, allocator),
     };
 }
 

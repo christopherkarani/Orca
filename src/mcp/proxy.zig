@@ -22,6 +22,8 @@ pub const Config = struct {
     approval_reader: ?*std.Io.Reader = null,
     approval_writer: ?*std.Io.Writer = null,
     manifest: ?*const manifests.Manifest = null,
+    /// Phase C: user effect packs (classification only). Caller owns lifetime.
+    effect_packs: ?*const policy_mod.effects.PackSet = null,
 };
 
 pub const ServerIo = struct {
@@ -218,7 +220,7 @@ fn handleToolsCall(
         config.server_name,
         tool_name,
         args_view,
-        .{ .mode = config.mode },
+        .{ .mode = config.mode, .effect_packs = config.effect_packs },
         allocator,
     );
     defer eval.deinit(allocator);

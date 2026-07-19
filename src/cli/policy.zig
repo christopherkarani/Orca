@@ -213,9 +213,21 @@ fn explain(io: std.Io, argv: []const []const u8, stdout: anytype, stderr: anytyp
     }
     const tool_args: ?orca_policy.effects.ToolArgsView = if (owned_args) |oa| oa.view else null;
 
+    var effect_packs = orca_policy.effects.loadPacksForEnforcement(
+        io,
+        allocator,
+        root,
+        loaded.innerPtr().effects.isActive(),
+    ) catch |err| {
+        try stderr.print("orca policy explain: invalid effect pack: {s}\n", .{@errorName(err)});
+        return exit_codes.general;
+    };
+    defer effect_packs.deinit();
+
     const evaluation = core_api.explainActionWithOptions(allocator, loaded.policy, kind, parsed_target.target, .{
         .network_method = parsed_target.method,
         .tool_args = tool_args,
+        .effect_packs = &effect_packs,
     }) catch |err| {
         try stderr.print("orca policy explain: failed to evaluate action: {s}\n", .{@errorName(err)});
         return exit_codes.general;
