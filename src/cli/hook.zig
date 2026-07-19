@@ -1228,7 +1228,14 @@ fn evaluateNativePreToolUseRoute(
         .generic_tool => {
             const generic_tool_name = extractToolName(payload) orelse return error.MissingRequiredField;
             // Combined MCP selector + effect-class evaluation (when effects: is configured).
-            const evaluation = try core_api.explainAction(allocator, @ptrCast(policy_value), .tool, generic_tool_name);
+            // Phase B: pass tool_input/args keys for structural classification when present.
+            var owned_args: ?policy.effects.OwnedArgsView = null;
+            defer if (owned_args) |*oa| oa.deinit(allocator);
+            if (extractToolArgsObject(payload)) |args_obj| {
+                owned_args = try policy.effects.toolArgsViewFromJsonObject(allocator, args_obj);
+            }
+            const args_view: ?policy.effects.ToolArgsView = if (owned_args) |oa| oa.view else null;
+            const evaluation = try policy.evaluate.toolWithArgs(policy_value, generic_tool_name, args_view, allocator);
             defer evaluation.deinit(allocator);
 
             const decision = PluginDecision.fromDecisionResult(evaluation.decision.result, ci_mode);
@@ -1543,6 +1550,26 @@ fn extractNestedValue(payload: std.json.Value, keys: []const []const u8) ?std.js
         current = current.object.get(key) orelse return null;
     }
     return current;
+}
+
+/// Locate a JSON object of tool arguments for structural effect classification.
+/// Prefer tool_input / args / params / input / kwargs.tool_input (host variance).
+fn extractToolArgsObject(payload: std.json.Value) ?std.json.Value {
+    const paths = [_][]const []const u8{
+        &.{"tool_input"},
+        &.{"args"},
+        &.{"params"},
+        &.{"input"},
+        &.{ "kwargs", "tool_input" },
+        &.{ "kwargs", "args" },
+        &.{ "tool", "input" },
+    };
+    for (paths) |path| {
+        if (extractNestedValue(payload, path)) |value| {
+            if (value == .object) return value;
+        }
+    }
+    return null;
 }
 
 fn isFileTool(tool_name: []const u8) bool {
@@ -2904,4 +2931,46 @@ test "hook PreToolUse denies send_email when effects.deny includes comms.message
     var twitter_result = try evaluateHookForTest(allocator, @ptrCast(@alignCast(&policy_obj)), .claude, .PreToolUse, std.json.Value{ .object = twitter_payload }, false);
     defer twitter_result.deinit(allocator);
     try std.testing.expectEqual(PluginDecision.block, twitter_result.decision);
+}
+
+test "hook PreToolUse denies notify with structural to+body under effects.deny" {
+    var gpa_state: std.heap.DebugAllocator(.{}) = .init;
+    defer _ = gpa_state.deinit();
+    const allocator = gpa_state.allocator();
+
+    var policy_obj = try policy.load.parseFromSlice(allocator,
+        \\version: 1
+        \\mode: strict
+        \\mcp:
+        \\  default: allow
+        \\effects:
+        \\  deny:
+        \\    - comms.message
+    , "structural-hook.yaml");
+    defer policy_obj.deinit();
+
+    var tool_input = try std.json.ObjectMap.init(allocator, &.{}, &.{});
+    defer tool_input.deinit(allocator);
+    try tool_input.put(allocator, "to", std.json.Value{ .string = "a@b.com" });
+    try tool_input.put(allocator, "body", std.json.Value{ .string = "hello" });
+
+    var payload_obj = try std.json.ObjectMap.init(allocator, &.{}, &.{});
+    defer payload_obj.deinit(allocator);
+    try payload_obj.put(allocator, "tool_name", std.json.Value{ .string = "notify" });
+    try payload_obj.put(allocator, "tool_input", std.json.Value{ .object = tool_input });
+
+    var result = try evaluateHookForTest(allocator, @ptrCast(@alignCast(&policy_obj)), .claude, .PreToolUse, std.json.Value{ .object = payload_obj }, false);
+    defer result.deinit(allocator);
+
+    try std.testing.expectEqual(PluginDecision.block, result.decision);
+    try std.testing.expect(std.mem.indexOf(u8, result.reason, "structural.") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.reason, "comms.message") != null);
+
+    // Same tool without keys is not blocked by structural alone.
+    var bare = try std.json.ObjectMap.init(allocator, &.{}, &.{});
+    defer bare.deinit(allocator);
+    try bare.put(allocator, "tool_name", std.json.Value{ .string = "notify" });
+    var bare_result = try evaluateHookForTest(allocator, @ptrCast(@alignCast(&policy_obj)), .claude, .PreToolUse, std.json.Value{ .object = bare }, false);
+    defer bare_result.deinit(allocator);
+    try std.testing.expectEqual(PluginDecision.allow, bare_result.decision);
 }

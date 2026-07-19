@@ -395,9 +395,22 @@ fn evaluateDecision(
                 extractString(payload, "tool") orelse
                 extractNestedString(payload, &.{ "tool", "name" }) orelse
                 return error.MissingRequiredField;
+            // Phase B: optional tool_input/args/input for structural classification.
+            var owned_args: ?policy.effects.OwnedArgsView = null;
+            defer if (owned_args) |*oa| oa.deinit(allocator);
+            if (extractToolArgsObject(payload)) |args_obj| {
+                owned_args = try policy.effects.toolArgsViewFromJsonObject(allocator, args_obj);
+            }
+            const args_view: ?policy.effects.ToolArgsView = if (owned_args) |oa| oa.view else null;
             // Use .tool (MCP surface ∩ effect-class), not pure .mcp, so `orca decide tool`
             // matches host PreToolUse / MCP proxy enforcement when effects: is configured.
-            const evaluation = try core_api.explainAction(allocator, @ptrCast(policy_value), .tool, tool_name);
+            const evaluation = try core_api.explainActionWithOptions(
+                allocator,
+                @ptrCast(policy_value),
+                .tool,
+                tool_name,
+                .{ .tool_args = args_view },
+            );
             defer evaluation.deinit(allocator);
 
             const decision = PluginDecision.fromDecisionResult(evaluation.decision.result, ci_mode);
@@ -651,6 +664,33 @@ fn extractNestedString(payload: std.json.Value, keys: []const []const u8) ?[]con
         .string => |s| s,
         else => null,
     };
+}
+
+fn extractNestedValue(payload: std.json.Value, keys: []const []const u8) ?std.json.Value {
+    var current = payload;
+    for (keys) |key| {
+        if (current != .object) return null;
+        current = current.object.get(key) orelse return null;
+    }
+    return current;
+}
+
+/// Locate a JSON object of tool arguments for structural effect classification.
+fn extractToolArgsObject(payload: std.json.Value) ?std.json.Value {
+    const paths = [_][]const []const u8{
+        &.{"tool_input"},
+        &.{"args"},
+        &.{"input"},
+        &.{"arguments"},
+        &.{"params"},
+        &.{ "tool", "input" },
+    };
+    for (paths) |path| {
+        if (extractNestedValue(payload, path)) |value| {
+            if (value == .object) return value;
+        }
+    }
+    return null;
 }
 
 fn writeJsonString(writer: anytype, value: []const u8) !void {

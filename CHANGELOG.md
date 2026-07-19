@@ -8,6 +8,10 @@
 - Preset `no-external-comms` for strict-local plus external-comms effect denials.
 - Host `PreToolUse` generic tools, `orca decide tool`, and MCP `tools/call` enforce effect rules when `effects:` is configured (deny beats MCP allow).
 - `effects.default` applies to unclassified tool names (catalog misses), matching surface-default semantics.
+- **Phase B structural classification** — tools renamed as `notify`/`helper` still match effects from argument key sets (e.g. `{to, body}`) and bounded value shapes; reasons use `structural.*` matcher ids (no secret values).
+- **Network effect tags** — when `effects:` is active, curated hosts (e.g. `api.twitter.com` → `comms.publish`) merge into network evaluation (`network_tag.*` matchers).
+- **Shell bypass (Zig command path)** — `open mailto:…` (and optional curl-to-tagged-host) merges effects on Zig command evaluation (`shell_bypass.*`); host shell PreToolUse still primarily uses Rust packs (documented residual gap).
+- `orca policy explain tool <name> --args '<json-object>'` for structural demos (size-bounded).
 
 ## v1.2.8 - 2026-07-04
 
