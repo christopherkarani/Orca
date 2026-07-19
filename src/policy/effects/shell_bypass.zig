@@ -124,10 +124,45 @@ fn isCurlLikeToken(token: []const u8) bool {
     return false;
 }
 
-/// True when `index` is the first token of a shell command segment (start or after ; | && || &).
+/// True when `index` is the first executable of a shell command segment:
+/// start of segment, after `;`/`|`/`&&`/`||`/`&`, after env assignments, or after
+/// common wrappers (`sudo`, `env`, `command`, `nohup`, `nice`, `time`).
 fn isCommandPosition(tokens: []const []const u8, index: usize) bool {
     if (index == 0) return true;
-    return isShellOperator(tokens[index - 1]);
+    // Walk left through env assignments and wrapper prefixes.
+    var i = index;
+    while (i > 0) {
+        const prev = tokens[i - 1];
+        if (isShellOperator(prev)) return true;
+        if (isEnvAssignment(prev) or isCommandWrapper(prev)) {
+            i -= 1;
+            continue;
+        }
+        return false;
+    }
+    return true;
+}
+
+fn isEnvAssignment(token: []const u8) bool {
+    // FOO=bar (simple shell assignment; not PATH-style with /).
+    if (token.len < 2) return false;
+    const eq = std.mem.indexOfScalar(u8, token, '=') orelse return false;
+    if (eq == 0) return false;
+    for (token[0..eq]) |c| {
+        if (!(std.ascii.isAlphanumeric(c) or c == '_')) return false;
+    }
+    return true;
+}
+
+fn isCommandWrapper(token: []const u8) bool {
+    const wrappers = [_][]const u8{ "sudo", "env", "command", "nohup", "nice", "time", "builtin" };
+    // Strip path prefix: /usr/bin/sudo
+    var base = token;
+    if (std.mem.lastIndexOfScalar(u8, token, '/')) |slash| base = token[slash + 1 ..];
+    for (wrappers) |w| {
+        if (std.ascii.eqlIgnoreCase(base, w)) return true;
+    }
+    return false;
 }
 
 fn isShellOperator(token: []const u8) bool {
@@ -333,6 +368,20 @@ test "printf open mailto args is not mailto bypass" {
     const hits = try classifyCommand(std.testing.allocator, "printf '%s %s' open mailto:x@y.com");
     defer std.testing.allocator.free(hits);
     try std.testing.expectEqual(@as(usize, 0), hits.len);
+}
+
+test "sudo open mailto still classifies" {
+    const hits = try classifyCommand(std.testing.allocator, "sudo open mailto:x@y.com");
+    defer std.testing.allocator.free(hits);
+    try std.testing.expect(hits.len >= 1);
+    try std.testing.expectEqualStrings("comms.message", hits[0].id);
+}
+
+test "env assignment before open mailto still classifies" {
+    const hits = try classifyCommand(std.testing.allocator, "FOO=1 open mailto:x@y.com");
+    defer std.testing.allocator.free(hits);
+    try std.testing.expect(hits.len >= 1);
+    try std.testing.expectEqualStrings("comms.message", hits[0].id);
 }
 
 test "unrelated command has no shell bypass hits" {
