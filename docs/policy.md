@@ -166,9 +166,10 @@ deny into allow. Explicit MCP allow does not override an effect deny.
    the runtime proxy (`orca run` / `network_eval.evaluate`).
 5. **Shell bypass (Zig command path)** — patterns such as `open mailto:…`
    (including `open -a Mail mailto:…`), multi-URL `curl` to tagged hosts, and
-   command-position matching (including wrappers such as `sudo`/`env`/`xargs`)
-   map to `comms.message` / `comms.publish` (matcher `shell_bypass.…`) on Zig
-   `command` / `orca policy explain command` evaluation.
+   command-position matching (including wrappers such as `sudo`/`env`/`xargs`,
+   shell control introducers like `if`/`then`/`!`, and real newlines as
+   separators) map to `comms.message` / `comms.publish` (matcher
+   `shell_bypass.…`) on Zig `command` / `orca policy explain command` evaluation.
 
 Surfaces covered:
 

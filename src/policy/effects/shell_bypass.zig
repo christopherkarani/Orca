@@ -125,9 +125,10 @@ fn isCurlLikeToken(token: []const u8) bool {
 }
 
 /// True when `index` is the first executable of a shell command segment:
-/// start of segment, after `;`/`|`/`&&`/`||`/`&`, after env assignments, after
-/// common wrappers (`sudo`, `env`, `command`, `xargs`, `nohup`, `nice`, `time`),
-/// or after wrapper option flags/values (`sudo -u root curl …`, `env -i open …`).
+/// start of segment, after `;`/`|`/`&&`/`||`/`&`/newline, after shell control
+/// introducers (`if`/`then`/`!`/…), after env assignments, after common wrappers
+/// (`sudo`, `env`, `command`, `xargs`, `nohup`, `nice`, `time`), or after wrapper
+/// option flags/values (`sudo -u root curl …`, `env -i open …`).
 /// Lookup-only `command -v`/`-V` does not count as execution.
 fn isCommandPosition(tokens: []const []const u8, index: usize) bool {
     if (index == 0) return true;
@@ -136,6 +137,11 @@ fn isCommandPosition(tokens: []const []const u8, index: usize) bool {
     while (i > 0) {
         const prev = tokens[i - 1];
         if (isShellOperator(prev)) return true;
+        // `if curl …`, `! open …`, `then open …` — only when the introducer
+        // itself is in command position (avoids `echo if curl` false positives).
+        if (isShellCommandIntroducer(prev)) {
+            return isCommandPosition(tokens, i - 1);
+        }
         if (isEnvAssignment(prev)) {
             i -= 1;
             continue;
@@ -161,6 +167,19 @@ fn isCommandPosition(tokens: []const []const u8, index: usize) bool {
         return false;
     }
     return true;
+}
+
+/// Shell tokens that introduce a following command (not mere data words like `in`).
+fn isShellCommandIntroducer(token: []const u8) bool {
+    const keywords = [_][]const u8{
+        "if",   "then", "else", "elif",
+        "while", "until", "do",
+        "!",    "{",    "(",
+    };
+    for (keywords) |kw| {
+        if (std.mem.eql(u8, token, kw)) return true;
+    }
+    return false;
 }
 
 /// True when `tokens[wrapper_index]` is the `command` builtin used with `-v`/`-V`
@@ -239,7 +258,8 @@ fn isShellOperator(token: []const u8) bool {
         std.mem.eql(u8, token, "|") or
         std.mem.eql(u8, token, "&&") or
         std.mem.eql(u8, token, "||") or
-        std.mem.eql(u8, token, "&");
+        std.mem.eql(u8, token, "&") or
+        std.mem.eql(u8, token, "\n");
 }
 
 fn startsWithIgnoreCase(haystack: []const u8, prefix: []const u8) bool {
@@ -283,7 +303,18 @@ fn tokenizeSimple(command_text: []const u8, out: [][]const u8) usize {
     var count: usize = 0;
     var i: usize = 0;
     while (i < command_text.len and count < out.len) {
-        while (i < command_text.len and isSpace(command_text[i])) : (i += 1) {}
+        // Skip horizontal whitespace and escaped newlines (line continuation).
+        while (i < command_text.len) {
+            if (isSpace(command_text[i])) {
+                i += 1;
+                continue;
+            }
+            if (command_text[i] == '\n' and isEscapedAt(command_text, i)) {
+                i += 1;
+                continue;
+            }
+            break;
+        }
         if (i >= command_text.len) break;
 
         if (command_text[i] == '\'' or command_text[i] == '"') {
@@ -297,11 +328,27 @@ fn tokenizeSimple(command_text: []const u8, out: [][]const u8) usize {
             continue;
         }
 
-        // Shell operators as their own tokens (including && and ||).
+        // Shell operators as their own tokens (including &&, ||, and newlines).
         if (tryEmitOperator(command_text, &i, out, &count)) continue;
 
+        // Collect a word. Active backslash-newline is line continuation (not a command boundary):
+        // end the current contiguous span before the backslash and resume after the newline.
         const start = i;
-        while (i < command_text.len and !isSpace(command_text[i]) and !isOperatorStart(command_text, i)) : (i += 1) {}
+        while (i < command_text.len) {
+            if (isSpace(command_text[i])) break;
+            if (isOperatorStart(command_text, i)) break;
+            // Active backslash-newline only when this backslash is not itself escaped.
+            if (command_text[i] == '\\' and i + 1 < command_text.len and command_text[i + 1] == '\n' and !isEscapedAt(command_text, i)) {
+                if (i > start) {
+                    out[count] = command_text[start..i];
+                    count += 1;
+                    if (count >= out.len) return count;
+                }
+                i += 2; // skip backslash + newline continuation
+                break;
+            }
+            i += 1;
+        }
         if (i > start) {
             out[count] = command_text[start..i];
             count += 1;
@@ -311,13 +358,15 @@ fn tokenizeSimple(command_text: []const u8, out: [][]const u8) usize {
 }
 
 fn isSpace(c: u8) bool {
-    return c == ' ' or c == '\t' or c == '\n' or c == '\r';
+    // Newlines are command separators (see isOperatorStart), not ordinary space.
+    return c == ' ' or c == '\t' or c == '\r';
 }
 
-/// True when `text[i]` is an unescaped shell operator character (`;`, `|`, `&`).
+/// True when `text[i]` is an unescaped shell operator character (`;`, `|`, `&`, newline).
 /// A char preceded by an odd number of backslashes is escaped and not an operator.
 fn isOperatorStart(text: []const u8, i: usize) bool {
     const c = text[i];
+    if (c == '\n') return !isEscapedAt(text, i);
     if (c != ';' and c != '|' and c != '&') return false;
     return !isEscapedAt(text, i);
 }
@@ -337,7 +386,7 @@ fn tryEmitOperator(text: []const u8, i: *usize, out: [][]const u8, count: *usize
     if (count.* >= out.len or i.* >= text.len) return false;
     if (!isOperatorStart(text, i.*)) return false;
     const c = text[i.*];
-    if (c == ';') {
+    if (c == ';' or c == '\n') {
         out[count.*] = text[i.* .. i.* + 1];
         count.* += 1;
         i.* += 1;
@@ -661,4 +710,62 @@ test "command open mailto still classifies" {
     defer std.testing.allocator.free(hits);
     try std.testing.expect(hits.len >= 1);
     try std.testing.expectEqualStrings("comms.message", hits[0].id);
+}
+
+test "newline separates commands for curl publish" {
+    // Real line break starts a new shell command; curl must still classify.
+    const hits = try classifyCommand(
+        std.testing.allocator,
+        "printf x\ncurl https://api.twitter.com/2/tweets",
+    );
+    defer std.testing.allocator.free(hits);
+    try std.testing.expect(hits.len >= 1);
+    try std.testing.expectEqualStrings("comms.publish", hits[0].id);
+}
+
+test "if curl tagged host is publish" {
+    // Shell control keyword: `if CMD` executes CMD.
+    const hits = try classifyCommand(
+        std.testing.allocator,
+        "if curl https://api.twitter.com/2/tweets; then echo ok; fi",
+    );
+    defer std.testing.allocator.free(hits);
+    try std.testing.expect(hits.len >= 1);
+    try std.testing.expectEqualStrings("comms.publish", hits[0].id);
+}
+
+test "bang open mailto still classifies" {
+    // `! CMD` negates exit status but still executes CMD.
+    const hits = try classifyCommand(std.testing.allocator, "! open mailto:x@y.com");
+    defer std.testing.allocator.free(hits);
+    try std.testing.expect(hits.len >= 1);
+    try std.testing.expectEqualStrings("comms.message", hits[0].id);
+}
+
+test "then open mailto still classifies" {
+    const hits = try classifyCommand(
+        std.testing.allocator,
+        "if true; then open mailto:x@y.com; fi",
+    );
+    defer std.testing.allocator.free(hits);
+    try std.testing.expect(hits.len >= 1);
+    try std.testing.expectEqualStrings("comms.message", hits[0].id);
+}
+
+test "incidental if keyword is not command introducer" {
+    // `if` is data after `echo`; must not treat curl as executed.
+    const hits = try classifyCommand(
+        std.testing.allocator,
+        "echo if curl https://api.twitter.com/2/tweets",
+    );
+    defer std.testing.allocator.free(hits);
+    try std.testing.expectEqual(@as(usize, 0), hits.len);
+}
+
+test "escaped newline is line continuation not command separator" {
+    // Active backslash-newline continues the same command; curl remains printf data, not a launch.
+    const cmd = "printf x" ++ "\\" ++ "\n" ++ "curl https://api.twitter.com/2/tweets";
+    const hits = try classifyCommand(std.testing.allocator, cmd);
+    defer std.testing.allocator.free(hits);
+    try std.testing.expectEqual(@as(usize, 0), hits.len);
 }
