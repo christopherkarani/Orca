@@ -125,11 +125,12 @@ fn isCurlLikeToken(token: []const u8) bool {
 }
 
 /// True when `index` is the first executable of a shell command segment:
-/// start of segment, after `;`/`|`/`&&`/`||`/`&`, after env assignments, or after
-/// common wrappers (`sudo`, `env`, `command`, `nohup`, `nice`, `time`).
+/// start of segment, after `;`/`|`/`&&`/`||`/`&`, after env assignments, after
+/// common wrappers (`sudo`, `env`, `command`, `nohup`, `nice`, `time`), or after
+/// wrapper option flags/values (`sudo -u root curl …`, `env -i open …`).
 fn isCommandPosition(tokens: []const []const u8, index: usize) bool {
     if (index == 0) return true;
-    // Walk left through env assignments and wrapper prefixes.
+    // Walk left through env assignments, wrappers, and their option tokens.
     var i = index;
     while (i > 0) {
         const prev = tokens[i - 1];
@@ -138,9 +139,46 @@ fn isCommandPosition(tokens: []const []const u8, index: usize) bool {
             i -= 1;
             continue;
         }
+        if (prev.len > 0 and prev[0] == '-') {
+            i -= 1;
+            continue;
+        }
+        // Value after a value-taking wrapper flag (e.g. `-u` → `root` before `curl`).
+        if (i >= 2) {
+            const maybe_flag = tokens[i - 2];
+            if (maybe_flag.len > 0 and maybe_flag[0] == '-' and wrapperFlagTakesValue(maybe_flag)) {
+                i -= 1;
+                continue;
+            }
+        }
         return false;
     }
     return true;
+}
+
+/// Known wrapper flags that take a following value (conservative; used when walking left).
+/// Boolean wrapper flags (`-n`, `-i`, `-E`, …) are skipped via the generic `-` branch.
+fn wrapperFlagTakesValue(flag: []const u8) bool {
+    // `--name=value` is a single token; no following value to skip.
+    if (std.mem.startsWith(u8, flag, "--") and std.mem.indexOfScalar(u8, flag, '=') != null) return false;
+    const value_flags = [_][]const u8{
+        // sudo
+        "-u",             "--user",  "-g",      "--group",
+        "-h",             "--host",  "-C",      "--close-from",
+        "-D",             "--chdir", "-p",      "--prompt",
+        "-r",             "--role",  "-T",      "--type",
+        "--other-user",
+        // env
+          "-u",      "--unset", "-S",
+        "--split-string", "-C",      "--chdir",
+        // nice / time (common)
+        "-n",
+        "--adjustment",   "-f",      "-o",
+    };
+    for (value_flags) |name| {
+        if (std.mem.eql(u8, flag, name)) return true;
+    }
+    return false;
 }
 
 fn isEnvAssignment(token: []const u8) bool {
@@ -245,13 +283,28 @@ fn isSpace(c: u8) bool {
     return c == ' ' or c == '\t' or c == '\n' or c == '\r';
 }
 
+/// True when `text[i]` is an unescaped shell operator character (`;`, `|`, `&`).
+/// A char preceded by an odd number of backslashes is escaped and not an operator.
 fn isOperatorStart(text: []const u8, i: usize) bool {
     const c = text[i];
-    return c == ';' or c == '|' or c == '&';
+    if (c != ';' and c != '|' and c != '&') return false;
+    return !isEscapedAt(text, i);
+}
+
+fn isEscapedAt(text: []const u8, i: usize) bool {
+    // Count consecutive backslashes immediately before index i.
+    var bs: usize = 0;
+    var j = i;
+    while (j > 0 and text[j - 1] == '\\') {
+        bs += 1;
+        j -= 1;
+    }
+    return (bs % 2) == 1;
 }
 
 fn tryEmitOperator(text: []const u8, i: *usize, out: [][]const u8, count: *usize) bool {
     if (count.* >= out.len or i.* >= text.len) return false;
+    if (!isOperatorStart(text, i.*)) return false;
     const c = text[i.*];
     if (c == ';') {
         out[count.*] = text[i.* .. i.* + 1];
@@ -260,6 +313,8 @@ fn tryEmitOperator(text: []const u8, i: *usize, out: [][]const u8, count: *usize
         return true;
     }
     if (c == '|' or c == '&') {
+        // Only treat doubled forms as one operator when the second char is also unescaped
+        // (second is adjacent so escape only applies to the first).
         if (i.* + 1 < text.len and text[i.* + 1] == c) {
             out[count.*] = text[i.* .. i.* + 2];
             count.* += 1;
@@ -270,6 +325,75 @@ fn tryEmitOperator(text: []const u8, i: *usize, out: [][]const u8, count: *usize
         count.* += 1;
         i.* += 1;
         return true;
+    }
+    return false;
+}
+
+/// Curl/wget flags whose following argument is not a transfer URL.
+/// `--url` / `-url` are handled separately as transfer-URL sources.
+fn curlFlagTakesValue(flag: []const u8) bool {
+    // `--name=value` embeds the value; no next-token skip.
+    if (std.mem.startsWith(u8, flag, "--") and std.mem.indexOfScalar(u8, flag, '=') != null) return false;
+    if (std.mem.eql(u8, flag, "--url") or std.mem.eql(u8, flag, "-url")) return false;
+
+    const value_long = [_][]const u8{
+        "--referer",       "--header",               "--user-agent",
+        "--cookie",        "--output",               "--user",
+        "--proxy",         "--data",                 "--data-raw",
+        "--data-binary",   "--data-urlencode",       "--form",
+        "--form-string",   "--write-out",            "--cert",
+        "--key",           "--cacert",               "--capath",
+        "--resolve",       "--connect-to",           "--interface",
+        "--dns-servers",   "--config",               "--stderr",
+        "--trace",         "--trace-ascii",          "--upload-file",
+        "--range",         "--max-time",             "--connect-timeout",
+        "--retry",         "--proto",                "--proto-redir",
+        "--proto-default", "--proxy-user",           "--oauth2-bearer",
+        "--unix-socket",   "--abstract-unix-socket", "--url-query",
+        "--json",          "--request",              "--max-redirs",
+        "--limit-rate",    "--max-filesize",         "--output-dir",
+        "--proxy-header",  "--pinnedpubkey",         "--pass",
+        "--engine",        "--ciphers",              "--tls-max",
+        "--tls13-ciphers", "--curves",               "--dns-ipv4-addr",
+        "--dns-ipv6-addr", "--doh-url",              "--hostpubmd5",
+        "--hostpubsha256", "--krb",                  "--login-options",
+        "--netrc-file",    "--noproxy",              "--proxy1.0",
+        "--pubkey",        "--rate",                 "--sasl-authzid",
+        "--tlsuser",       "--tlspassword",          "--aws-sigv4",
+        "--hsts",          "--etag-save",            "--etag-compare",
+        "--variable",
+    };
+    for (value_long) |name| {
+        if (std.mem.eql(u8, flag, name)) return true;
+    }
+
+    // Pure short options that take a value (not combined like -HContent-Type:…).
+    if (flag.len == 2 and flag[0] == '-') {
+        const c = flag[1];
+        return c == 'e' or // --referer
+            c == 'H' or // --header
+            c == 'A' or // --user-agent
+            c == 'b' or // --cookie
+            c == 'o' or // --output
+            c == 'u' or // --user
+            c == 'x' or // --proxy
+            c == 'd' or // --data
+            c == 'F' or // --form
+            c == 'w' or // --write-out
+            c == 'K' or // --config
+            c == 'T' or // --upload-file
+            c == 'r' or // --range
+            c == 'm' or // --max-time
+            c == 'U' or // --proxy-user
+            c == 'X' or // --request
+            c == 'E' or // --cert
+            c == 'Y' or // --speed-limit
+            c == 'y' or // --speed-time
+            c == 'C' or // --continue-at
+            c == 'z' or // --time-cond
+            c == 'c' or // --cookie-jar
+            c == 'D' or // --dump-header
+            c == 'P'; // --ftp-port
     }
     return false;
 }
@@ -296,7 +420,7 @@ fn appendCurlLikeHostEffects(
             const t = tokens[j];
             if (t.len == 0) continue;
 
-            // --url / -url VALUE
+            // --url / -url VALUE → transfer URL (always classify).
             if ((std.mem.eql(u8, t, "--url") or std.mem.eql(u8, t, "-url")) and j + 1 < n) {
                 const host = network_tags.hostFromUrlOrHost(tokens[j + 1]);
                 try appendCurlHostHit(allocator, hits, host);
@@ -304,7 +428,13 @@ fn appendCurlLikeHostEffects(
                 continue;
             }
 
-            if (t[0] == '-') continue; // other flags (value args may look host-like; skip flags only)
+            // Value-taking options: skip the next token (not a transfer URL).
+            if (t[0] == '-') {
+                if (curlFlagTakesValue(t) and j + 1 < n and !isShellOperator(tokens[j + 1])) {
+                    j += 1; // skip option value
+                }
+                continue;
+            }
 
             if (startsWithIgnoreCase(t, "https://") or startsWithIgnoreCase(t, "http://")) {
                 const host = network_tags.hostFromUrlOrHost(t);
@@ -421,4 +551,41 @@ test "curl --url tagged host hits" {
     defer std.testing.allocator.free(hits);
     try std.testing.expect(hits.len >= 1);
     try std.testing.expectEqualStrings("comms.publish", hits[0].id);
+}
+
+test "sudo -u root curl tagged host is publish" {
+    const hits = try classifyCommand(std.testing.allocator, "sudo -u root curl https://api.twitter.com/2/tweets");
+    defer std.testing.allocator.free(hits);
+    try std.testing.expect(hits.len >= 1);
+    try std.testing.expectEqualStrings("comms.publish", hits[0].id);
+}
+
+test "env -i open mailto still classifies" {
+    const hits = try classifyCommand(std.testing.allocator, "env -i open mailto:x@y.com");
+    defer std.testing.allocator.free(hits);
+    try std.testing.expect(hits.len >= 1);
+    try std.testing.expectEqualStrings("comms.message", hits[0].id);
+}
+
+test "sudo -n open -a Mail mailto still classifies" {
+    const hits = try classifyCommand(std.testing.allocator, "sudo -n open -a Mail mailto:x@y.com");
+    defer std.testing.allocator.free(hits);
+    try std.testing.expect(hits.len >= 1);
+    try std.testing.expectEqualStrings("comms.message", hits[0].id);
+}
+
+test "escaped semicolon does not split commands for mailto" {
+    // `foo\;` keeps `;` inside the word; open is a printf/arg, not a new command.
+    const hits = try classifyCommand(std.testing.allocator, "printf foo\\; open mailto:x@y.com");
+    defer std.testing.allocator.free(hits);
+    try std.testing.expectEqual(@as(usize, 0), hits.len);
+}
+
+test "curl --referer tagged host is not publish" {
+    const hits = try classifyCommand(
+        std.testing.allocator,
+        "curl https://example.com --referer https://api.twitter.com/2/tweets",
+    );
+    defer std.testing.allocator.free(hits);
+    try std.testing.expectEqual(@as(usize, 0), hits.len);
 }

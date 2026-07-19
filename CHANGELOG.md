@@ -16,7 +16,8 @@
 ### Fixed
 - Network effect tags now apply on the **runtime proxy** path (`network_eval.evaluate` / `orca run`), not only `policy explain network`.
 - Shell bypass: `open -a`/`-b` option values are skipped; multi-URL `curl` scans every operand; `open`/`curl` require command position (avoids `printf … open mailto:` false positives).
-- Structural arg scan prefers interesting keys/values against decoy padding (including large objects and string-value slot exhaustion).
+- Shell bypass: wrappers with options (`sudo -u root curl …`, `env -i open …`), escaped operators (`foo\;`), and non-transfer curl values (`--referer`) are handled correctly.
+- Structural arg scan prefers interesting keys/values against decoy padding (including large objects and string-value slot exhaustion); `href`/`uri` share interesting priority with other URL keys.
 
 ## v1.2.8 - 2026-07-04
 

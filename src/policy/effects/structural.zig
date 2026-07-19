@@ -56,11 +56,14 @@ const key_sets = [_]KeySet{
 };
 
 /// Keys preferred when truncating large arg objects (padding-resistant).
+/// Must include every `url_shape_keys` and `contact_keys` member so the interesting-first
+/// collection pass cannot drop URL/contact values when other interesting strings fill the cap.
 const interesting_keys = [_][]const u8{
     "to",      "body",     "message", "recipient", "phone",    "text",
     "channel", "email",    "subject", "tweet",     "status",   "post_text",
     "amount",  "currency", "price",   "url",       "payload",  "visibility",
     "public",  "from",     "host",    "endpoint",  "base_url", "mailto",
+    "href",    "uri",
 };
 
 const contact_keys = [_][]const u8{ "to", "email", "recipient", "phone", "from", "mailto" };
@@ -771,4 +774,78 @@ test "large decoy object cannot hide to+body past scan window" {
     defer std.testing.allocator.free(hits);
     try std.testing.expect(hits.len >= 1);
     try std.testing.expectEqualStrings("comms.message", hits[0].id);
+}
+
+/// Build JSON with a url-shape key first, then enough interesting string fields to fill
+/// `max_string_values`. Without that url-shape key in `interesting_keys`, pass 1 fills the
+/// cap and pass 2 drops the URL — missing `comms.publish` from the host tag.
+fn assertUrlShapeSurvivesInterestingPadding(comptime url_key: []const u8) !void {
+    // Exactly max_string_values interesting non-url-shape keys so the budget is full before
+    // a non-interesting href/uri would be considered in pass 2.
+    const padding_keys = [_][]const u8{
+        "to",      "body",     "message", "recipient", "phone",  "text",
+        "channel", "email",    "subject", "tweet",     "status", "post_text",
+        "amount",  "currency", "price",   "payload",
+    };
+    comptime {
+        if (padding_keys.len != max_string_values) @compileError("padding must fill max_string_values");
+    }
+
+    var list: std.ArrayList(u8) = .empty;
+    defer list.deinit(std.testing.allocator);
+    try list.appendSlice(std.testing.allocator, "{");
+    // url-shape key first so, once interesting, it is collected in pass 1 before the cap fills.
+    try list.writer(std.testing.allocator).print(
+        "\"{s}\":\"https://api.twitter.com/2/tweets\"",
+        .{url_key},
+    );
+    for (padding_keys) |pk| {
+        try list.writer(std.testing.allocator).print(",\"{s}\":\"x\"", .{pk});
+    }
+    try list.appendSlice(std.testing.allocator, "}");
+
+    const parsed = try std.json.parseFromSlice(std.json.Value, std.testing.allocator, list.items, .{});
+    defer parsed.deinit();
+    var owned = try toolArgsViewFromJsonObject(std.testing.allocator, parsed.value);
+    defer owned.deinit(std.testing.allocator);
+
+    // Ensure the URL string itself survived collection (not merely a key-set publish hit).
+    var saw_twitter_url = false;
+    for (owned.view.string_values) |v| {
+        if (std.mem.indexOf(u8, v, "api.twitter.com") != null) {
+            saw_twitter_url = true;
+            break;
+        }
+    }
+    try std.testing.expect(saw_twitter_url);
+
+    const hits = try classifyArgs(std.testing.allocator, "helper", owned.view);
+    defer std.testing.allocator.free(hits);
+    var saw_url_host_publish = false;
+    for (hits) |h| {
+        if (std.mem.eql(u8, h.id, "comms.publish") and
+            std.mem.eql(u8, h.matcher, "structural.comms.publish.value:url_host"))
+        {
+            saw_url_host_publish = true;
+            break;
+        }
+    }
+    try std.testing.expect(saw_url_host_publish);
+}
+
+test "href survives max_string_values interesting padding for publish host" {
+    try assertUrlShapeSurvivesInterestingPadding("href");
+}
+
+test "uri survives max_string_values interesting padding for publish host" {
+    try assertUrlShapeSurvivesInterestingPadding("uri");
+}
+
+test "url_shape_keys are a subset of interesting_keys" {
+    for (url_shape_keys) |uk| {
+        try std.testing.expect(isInterestingKey(uk));
+    }
+    for (contact_keys) |ck| {
+        try std.testing.expect(isInterestingKey(ck));
+    }
 }

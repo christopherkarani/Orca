@@ -352,8 +352,8 @@ fn mergeNetworkEffectTags(
         .allow = policy.effects.allow,
         .deny = policy.effects.deny,
         .ask = policy.effects.ask,
-        // No effects.default here: empty-hit paths already returned; for hits without an
-        // explicit allow/deny/ask we still let evaluateHits apply default if configured.
+        // Untagged hosts already returned above (no blanket default). For tagged hosts,
+        // pass effects.default so unmatched tag ids still honor the configured default.
         .default = if (policy.effects.default) |d| switch (d) {
             .allow => .allow,
             .deny => .deny,
