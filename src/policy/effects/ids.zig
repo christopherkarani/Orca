@@ -4,6 +4,10 @@
 const std = @import("std");
 
 /// Canonical effect identifiers. Policy authors use these strings (and `namespace.*` wildcards).
+///
+/// Phase A catalog emitters cover the common messaging/money/auth/device/surface IDs.
+/// `comms.calendar`, `code.mutate_remote`, and `secrets.read` are reserved vocabulary
+/// (valid in YAML / wildcards) but have little or no catalog emission until later phases.
 pub const known_ids = [_][]const u8{
     "shell.exec",
     "fs.read",

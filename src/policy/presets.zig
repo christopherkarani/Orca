@@ -606,6 +606,45 @@ test "no-external-comms preset includes effect denials" {
     try std.testing.expectEqual(core.decision.DecisionResult.deny, denied.decision.result);
 }
 
+test "no-external-comms on-disk YAML matches embedded effect rules" {
+    const load = @import("load.zig");
+    const evaluate = @import("evaluate.zig");
+    const core = @import("../core/public.zig");
+
+    var embedded = try load.parseFromSlice(
+        std.testing.allocator,
+        agentPresetText(.no_external_comms),
+        "embedded-no-external-comms.yaml",
+    );
+    defer embedded.deinit();
+
+    const on_disk_paths = [_][]const u8{
+        "policies/presets/no-external-comms.yaml",
+        "examples/policies/no-external-comms.yaml",
+    };
+    for (on_disk_paths) |path| {
+        const text_bytes = try std.Io.Dir.cwd().readFileAlloc(std.testing.io, path, std.testing.allocator, .limited(1024 * 1024));
+        defer std.testing.allocator.free(text_bytes);
+        var disk = try load.parseFromSlice(std.testing.allocator, text_bytes, path);
+        defer disk.deinit();
+
+        try std.testing.expect(disk.effects.isActive());
+        try std.testing.expectEqual(embedded.effects.default, disk.effects.default);
+        try std.testing.expectEqual(embedded.effects.deny.len, disk.effects.deny.len);
+        try std.testing.expectEqual(embedded.effects.ask.len, disk.effects.ask.len);
+        for (embedded.effects.deny, disk.effects.deny) |a, b| {
+            try std.testing.expectEqualStrings(a, b);
+        }
+        for (embedded.effects.ask, disk.effects.ask) |a, b| {
+            try std.testing.expectEqualStrings(a, b);
+        }
+
+        var denied = try evaluate.tool(&disk, "send_email", std.testing.allocator);
+        defer denied.deinit(std.testing.allocator);
+        try std.testing.expectEqual(core.decision.DecisionResult.deny, denied.decision.result);
+    }
+}
+
 // Quick-install DX invariants: the presets used by `orca init --preset` and `setup --auto`
 // (generic-agent and friends via common_strict_rules) must remain conservative.
 // These properties are the "source of truth" for the generated .orca/policy.yaml.

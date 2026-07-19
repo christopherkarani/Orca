@@ -914,3 +914,30 @@ test "mcp explain path ignores effects; tool path applies them" {
     defer with_effects.deinit(std.testing.allocator);
     try std.testing.expectEqual(core.decision.DecisionResult.deny, with_effects.decision.result);
 }
+
+test "effects.default applies to unclassified tool names" {
+    const load = @import("load.zig");
+    var policy = try load.parseFromSlice(std.testing.allocator,
+        \\version: 1
+        \\mode: strict
+        \\mcp:
+        \\  default: allow
+        \\effects:
+        \\  default: deny
+        \\  allow:
+        \\    - fs.read
+        \\    - fs.write
+        \\    - shell.exec
+    , "effects-default.yaml");
+    defer policy.deinit();
+
+    // Catalog miss + effects.default: deny — must not fail open to MCP allow.
+    var unknown = try tool(&policy, "totally_novel_helper", std.testing.allocator);
+    defer unknown.deinit(std.testing.allocator);
+    try std.testing.expectEqual(core.decision.DecisionResult.deny, unknown.decision.result);
+    try std.testing.expect(std.mem.indexOf(u8, unknown.decision.rule_id.?, "effects") != null);
+
+    var read_ok = try tool(&policy, "Read", std.testing.allocator);
+    defer read_ok.deinit(std.testing.allocator);
+    try std.testing.expectEqual(core.decision.DecisionResult.allow, read_ok.decision.result);
+}

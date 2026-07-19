@@ -266,15 +266,6 @@ pub const EffectsPolicy = struct {
         freeStringList(allocator, self.deny);
         freeStringList(allocator, self.ask);
     }
-
-    pub fn asRuleSet(self: EffectsPolicy) RuleSet {
-        return .{
-            .allow = self.allow,
-            .deny = self.deny,
-            .ask = self.ask,
-            .default = self.default,
-        };
-    }
 };
 
 pub const CredentialBrokerKind = enum {

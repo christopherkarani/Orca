@@ -51,7 +51,11 @@ fn findPattern(effect_id: []const u8, patterns: []const []const u8) ?[]const u8 
 }
 
 /// Evaluate hits against effect rules. Deny beats ask beats allow.
-/// Returns `.none` when there are no hits, or hits exist but no rule/default applies.
+///
+/// When there are **no catalog hits**, `effects.default` still applies (same idea as
+/// `mcp.default` / `commands.default`): unclassified tools are constrained by the
+/// configured default rather than silently falling through to the surface decision.
+/// Returns `.none` only when no rule and no default apply.
 pub fn evaluateHits(hits: []const catalog.EffectHit, rules: EffectsRuleView) EffectMatch {
     var best: EffectMatch = .{
         .kind = .none,
@@ -60,6 +64,21 @@ pub fn evaluateHits(hits: []const catalog.EffectHit, rules: EffectsRuleView) Eff
         .matcher = "",
         .confidence = .low,
     };
+
+    if (hits.len == 0) {
+        if (rules.default) |default_kind| {
+            if (default_kind != .none) {
+                return .{
+                    .kind = default_kind,
+                    .effect_id = "unknown.external",
+                    .pattern = "effects.default",
+                    .matcher = "catalog.unclassified",
+                    .confidence = .low,
+                };
+            }
+        }
+        return best;
+    }
 
     for (hits) |hit| {
         if (findPattern(hit.id, rules.deny)) |pattern| {
@@ -147,10 +166,19 @@ test "default applies when no explicit rule" {
     try std.testing.expectEqualStrings("effects.default", result.pattern);
 }
 
-test "no hits yields none" {
+test "no hits applies effects.default" {
     const result = evaluateHits(&.{}, .{
         .deny = &.{"comms.*"},
         .default = .deny,
+    });
+    try std.testing.expect(result.kind == .deny);
+    try std.testing.expectEqualStrings("effects.default", result.pattern);
+    try std.testing.expectEqualStrings("catalog.unclassified", result.matcher);
+}
+
+test "no hits without default yields none" {
+    const result = evaluateHits(&.{}, .{
+        .deny = &.{"comms.*"},
     });
     try std.testing.expect(result.kind == .none);
 }

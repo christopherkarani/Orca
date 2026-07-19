@@ -41,8 +41,13 @@ const exact_names = [_]ExactEntry{
     // comms.message
     .{ .name = "send_email", .effect_id = "comms.message", .matcher = "catalog.comms.message.exact:send_email" },
     .{ .name = "sendemail", .effect_id = "comms.message", .matcher = "catalog.comms.message.exact:sendemail" },
+    .{ .name = "sendmail", .effect_id = "comms.message", .matcher = "catalog.comms.message.exact:sendmail" },
     .{ .name = "email_send", .effect_id = "comms.message", .matcher = "catalog.comms.message.exact:email_send" },
     .{ .name = "gmail_send", .effect_id = "comms.message", .matcher = "catalog.comms.message.exact:gmail_send" },
+    .{ .name = "mailgun_send", .effect_id = "comms.message", .matcher = "catalog.comms.message.exact:mailgun_send" },
+    .{ .name = "ses_send_email", .effect_id = "comms.message", .matcher = "catalog.comms.message.exact:ses_send_email" },
+    .{ .name = "sendgrid_send", .effect_id = "comms.message", .matcher = "catalog.comms.message.exact:sendgrid_send" },
+    .{ .name = "postmark_send", .effect_id = "comms.message", .matcher = "catalog.comms.message.exact:postmark_send" },
     .{ .name = "send_imessage", .effect_id = "comms.message", .matcher = "catalog.comms.message.exact:send_imessage" },
     .{ .name = "send_sms", .effect_id = "comms.message", .matcher = "catalog.comms.message.exact:send_sms" },
     .{ .name = "send_message", .effect_id = "comms.message", .matcher = "catalog.comms.message.exact:send_message" },
@@ -102,11 +107,15 @@ const exact_names = [_]ExactEntry{
 
 /// Domain tokens that imply an effect when present in the tool name.
 /// Prefer domain nouns over bare verbs to limit false positives (e.g. send_progress).
+/// Short tokens (len <= 3) match whole segments only (split on `_`) to avoid `sms` in `asms…`.
 const name_tokens = [_]TokenEntry{
     // comms.message domains
     .{ .token = "imessage", .effect_id = "comms.message", .matcher = "catalog.comms.message.token:imessage" },
     .{ .token = "email", .effect_id = "comms.message", .matcher = "catalog.comms.message.token:email" },
     .{ .token = "gmail", .effect_id = "comms.message", .matcher = "catalog.comms.message.token:gmail" },
+    .{ .token = "mailgun", .effect_id = "comms.message", .matcher = "catalog.comms.message.token:mailgun" },
+    .{ .token = "sendgrid", .effect_id = "comms.message", .matcher = "catalog.comms.message.token:sendgrid" },
+    .{ .token = "postmark", .effect_id = "comms.message", .matcher = "catalog.comms.message.token:postmark" },
     .{ .token = "smtp", .effect_id = "comms.message", .matcher = "catalog.comms.message.token:smtp" },
     .{ .token = "sms", .effect_id = "comms.message", .matcher = "catalog.comms.message.token:sms" },
     .{ .token = "whatsapp", .effect_id = "comms.message", .matcher = "catalog.comms.message.token:whatsapp" },
@@ -147,11 +156,23 @@ fn namesEqualNormalized(a: []const u8, b_normalized: []const u8) bool {
 
 fn containsToken(normalized: []const u8, token: []const u8) bool {
     if (token.len == 0 or normalized.len < token.len) return false;
-    // Prefer whole-segment style: token as substring is OK for catalog domains
-    // (email, twitter) which are distinctive. Reject token that is only a short
-    // accidental substring of an unrelated word when token is very short — all
-    // current tokens are length >= 3.
+    // Short tokens (e.g. `sms`) require a whole `_`-separated segment to limit
+    // false positives inside longer words. Longer domain nouns may be substrings.
+    if (token.len <= 3) return hasSegment(normalized, token);
     return std.mem.indexOf(u8, normalized, token) != null;
+}
+
+fn hasSegment(normalized: []const u8, token: []const u8) bool {
+    var rest = normalized;
+    while (rest.len > 0) {
+        const sep = std.mem.indexOfScalar(u8, rest, '_');
+        const segment = if (sep) |i| rest[0..i] else rest;
+        if (std.mem.eql(u8, segment, token)) return true;
+        if (sep) |i| {
+            rest = rest[i + 1 ..];
+        } else break;
+    }
+    return false;
 }
 
 fn appendUniqueHit(allocator: std.mem.Allocator, hits: *std.ArrayList(EffectHit), hit: EffectHit) !void {
@@ -230,6 +251,15 @@ fn looksUnknownExternal(normalized: []const u8) bool {
     for (prefixes) |prefix| {
         if (std.mem.startsWith(u8, normalized, prefix)) return true;
     }
+    // Common outbound aliases that lack a catalog domain token.
+    const exact_aliases = [_][]const u8{ "sendmail", "mail", "mailx" };
+    for (exact_aliases) |alias| {
+        if (std.mem.eql(u8, normalized, alias)) return true;
+    }
+    const suffixes = [_][]const u8{ "_mail", "_email", "_sms", "_tweet" };
+    for (suffixes) |suffix| {
+        if (std.mem.endsWith(u8, normalized, suffix)) return true;
+    }
     return false;
 }
 
@@ -293,6 +323,30 @@ test "unknown send_ prefix yields unknown.external at low confidence" {
     try std.testing.expect(hits.len == 1);
     try std.testing.expectEqualStrings("unknown.external", hits[0].id);
     try std.testing.expect(hits[0].confidence == .low);
+}
+
+test "ESP and sendmail aliases classify as comms.message" {
+    const cases = [_][]const u8{ "sendmail", "mailgun_send", "ses_send_email", "company_mailgun_helper" };
+    for (cases) |name| {
+        const hits = try classifyToolName(std.testing.allocator, name);
+        defer std.testing.allocator.free(hits);
+        try std.testing.expect(hits.len >= 1);
+        try std.testing.expectEqualStrings("comms.message", hits[0].id);
+    }
+}
+
+test "short sms token matches segments only" {
+    const sms = try classifyToolName(std.testing.allocator, "provider_sms_send");
+    defer std.testing.allocator.free(sms);
+    try std.testing.expect(sms.len >= 1);
+    try std.testing.expectEqualStrings("comms.message", sms[0].id);
+
+    // `asms` must not match token `sms` as a raw substring.
+    const not_sms = try classifyToolName(std.testing.allocator, "list_asms_status");
+    defer std.testing.allocator.free(not_sms);
+    for (not_sms) |hit| {
+        try std.testing.expect(!std.mem.eql(u8, hit.id, "comms.message"));
+    }
 }
 
 test "mcp-style prefixed tool names still classify" {

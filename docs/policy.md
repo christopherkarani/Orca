@@ -133,19 +133,32 @@ behavior (no effect evaluation).
 |-----------|---------|
 | `comms.message` | Email, SMS, iMessage, Slack/Discord/Telegram-style messaging |
 | `comms.publish` | Public social posts (Twitter/X, LinkedIn, …) |
-| `comms.calendar` | Calendar / invite side effects |
+| `comms.calendar` | Calendar / invite side effects (reserved; limited catalog coverage in Phase A) |
 | `money.transfer` | Payments and transfers |
 | `identity.auth` | Token/PAT/OAuth minting |
 | `device.control` | Physical / IoT actuation |
-| `shell.exec` / `fs.read` / `fs.write` / `net.connect` | Surface-aligned host tools |
+| `code.mutate_remote` / `secrets.read` | Reserved for later phases (valid in YAML; limited emitters today) |
+| `shell.exec` / `fs.read` / `fs.write` / `net.connect` | Tool-name surface IDs for shell/fs/net-shaped **tool names** |
 | `unknown.external` | Unclassified outbound-looking tool names (`send_*`, `post_*`, …) |
 
 Patterns may be exact IDs or family wildcards (`comms.*`). **Any denied effect
 denies**; deny beats allow. Explicit MCP allow does not override an effect deny.
 
-Phase A matches **tool names** (catalog + tokens). Shell argv and network host
-bypasses still rely on `commands` / `network` rules (and future effect
-cross-linking).
+Phase A matches **tool names** (catalog + tokens) on the tool-call surface:
+
+- Host generic tools (`orca decide tool`, PreToolUse non-shell/file routes)
+- MCP `tools/call` via the proxy
+
+**Not covered yet by `effects:`:** host shell PreToolUse (Rust daemon / `commands`
+rules) and host file PreToolUse (`files.write` / `files.read`). Denying
+`shell.exec` or `fs.write` only applies when the call is evaluated as a tool
+name (MCP or generic tool path), not when those specialized host routes run.
+Shell argv and network host bypasses still rely on `commands` / `network` rules
+(and future effect cross-linking).
+
+When `effects:` is present, `effects.default` applies to **catalog hits that
+match no allow/deny/ask pattern** and to **tools with zero catalog hits**
+(unclassified names). Missing `effects:` keeps legacy behavior.
 
 Preset: `no-external-comms` (`orca init --preset no-external-comms`).
 

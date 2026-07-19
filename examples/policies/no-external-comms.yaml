@@ -87,11 +87,11 @@ network:
     secret_patterns: true
 
 mcp:
-  default: deny
+  default: ask
   allow:
+    - "*.search_*"
     - "*.list_*"
     - "*.get_*"
-    - "*.search_*"
   deny:
     - "*.delete_*"
     - "*.shell"
