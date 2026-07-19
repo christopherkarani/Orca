@@ -768,7 +768,9 @@ fn evaluatePreToolUse(
             shell_evaluator,
         ),
         .zig_native => |native_event| evaluateNativePreToolUseRoute(
+            io,
             allocator,
+            workspace_root,
             policy_value,
             payload,
             native_event,
@@ -1197,7 +1199,9 @@ fn hookResponseFromDaemonEvaluate(
 }
 
 fn evaluateNativePreToolUseRoute(
+    io: std.Io,
     allocator: std.mem.Allocator,
+    workspace_root: []const u8,
     policy_value: *const policy.schema.Policy,
     payload: std.json.Value,
     native_event: NonShellHookEvent,
@@ -1229,13 +1233,30 @@ fn evaluateNativePreToolUseRoute(
             const generic_tool_name = extractToolName(payload) orelse return error.MissingRequiredField;
             // Combined MCP selector + effect-class evaluation (when effects: is configured).
             // Phase B: pass tool_input/args keys for structural classification when present.
+            // Phase C: load user effect packs (classification only; decisions via effects:).
             var owned_args: ?policy.effects.OwnedArgsView = null;
             defer if (owned_args) |*oa| oa.deinit(allocator);
             if (extractToolArgsObject(payload)) |args_obj| {
                 owned_args = try policy.effects.toolArgsViewFromJsonObject(allocator, args_obj);
             }
             const args_view: ?policy.effects.ToolArgsView = if (owned_args) |oa| oa.view else null;
-            const evaluation = try policy.evaluate.toolWithArgs(policy_value, generic_tool_name, args_view, allocator);
+            var pack_set = policy.effects.loadPacksForEnforcement(
+                io,
+                allocator,
+                workspace_root,
+                policy_value.effects.isActive(),
+            ) catch {
+                return try makeFailClosedHookResponse(
+                    allocator,
+                    "tool",
+                    "invalid effect pack",
+                    "Tool blocked: Orca could not load effect packs (fail closed).",
+                    redactions,
+                    limitations,
+                );
+            };
+            defer pack_set.deinit();
+            const evaluation = try policy.evaluate.toolWithPacks(policy_value, generic_tool_name, args_view, &pack_set, allocator);
             defer evaluation.deinit(allocator);
 
             const decision = PluginDecision.fromDecisionResult(evaluation.decision.result, ci_mode);

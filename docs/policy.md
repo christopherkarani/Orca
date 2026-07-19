@@ -156,41 +156,99 @@ deny into allow. Explicit MCP allow does not override an effect deny.
    string **values** look like email/phone/known messaging-API URLs. Reasons
    include matcher ids such as `structural.comms.message.keys:to+body` (keys
    only — never raw secret values).
-3. **Network host tags** — when `effects:` is active, destinations such as
+3. **User effect packs (high/medium)** — workspace and user-config YAML packs
+   add exact names, tokens, and structural key-sets. Matchers use
+   `pack.<id>.*`. Packs are **classification-only**; they never grant allow
+   past `effects.deny`.
+4. **Network host tags** — when `effects:` is active, destinations such as
    `api.twitter.com` map to `comms.publish` (matcher `network_tag.…`) and
    merge with network surface rules on **both** `policy explain network` and
    the runtime proxy (`orca run` / `network_eval.evaluate`).
-4. **Shell bypass (Zig command path)** — patterns such as `open mailto:…`
+5. **Shell bypass (Zig command path)** — patterns such as `open mailto:…`
    (including `open -a Mail mailto:…`), multi-URL `curl` to tagged hosts, and
-   command-position matching map to `comms.message` / `comms.publish`
-   (matcher `shell_bypass.…`) on Zig `command` evaluation.
+   command-position matching (including wrappers such as `sudo`/`env`/`xargs`)
+   map to `comms.message` / `comms.publish` (matcher `shell_bypass.…`) on Zig
+   `command` / `orca policy explain command` evaluation.
 
 Surfaces covered:
 
 - Host generic tools (PreToolUse non-shell/file) **with tool_input/args** for
-  structural matches
+  structural matches (and user effect packs when present)
 - `orca decide tool --json '{"name":"…","tool_input":{…}}'` (same arg shapes)
 - `orca policy explain tool <name> --args '{…}'` for demos
+- `orca tools classify <name> [--args '{…}'] [--policy <path>]` for discovery
 - MCP `tools/call` via the proxy (name + `arguments` object)
+- `orca mcp inspect` shows inferred effects per listed tool
 - Network connect evaluation when effects are configured (explain **and**
   proxy-mediated runtime)
 - Zig command evaluation (`orca policy explain command`, `command_exec`)
+
+### User effect packs
+
+Extend the built-in catalog without listing every tool name in policy YAML:
+
+| Priority | Path |
+|----------|------|
+| Lowest | Built-in Zig catalog / structural / network / shell |
+| Mid | `$XDG_CONFIG_HOME/orca/effect-packs/*.yaml` or `~/.config/orca/effect-packs/` |
+| Highest | Workspace `.orca/effect-packs/*.yaml` |
+
+Example (see also `examples/effect-packs/demo.yaml`):
+
+```yaml
+version: 1
+id: acme-comms
+description: optional
+names:
+  send_acme_ping: comms.message
+tokens:
+  acmechat: comms.message
+structural:
+  - effect: comms.message
+    keys: [acme_to, acme_body]
+```
+
+Rules:
+
+- `version: 1` only; `id` must match `[a-z0-9_-]{1,64}`
+- Effect ids must be known (`comms.message`, …)
+- Unknown keys, bad ids, or oversized files **fail closed** (clear error; no silent ignore of that file)
+- Missing pack directories are fine
+- Within a directory, packs load in **lexicographic filename order**; later files win on exact-name conflicts (workspace still outranks user config)
+- Exact names match full normalized tool names and the last `__`/`/` segment (e.g. pack `send_acme_ping` matches `mcp__acme__send_acme_ping`)
+- Tokens reuse catalog matching: short tokens (≤3 chars) require a whole `_`-separated segment
+- Structural `keys` lists are capped (max 16 keys per rule)
+- **Decisions still require policy `effects:`** — e.g. `effects.deny: [comms.message]` blocks pack-mapped tools
+
+List loaded packs: `orca tools packs`.
+
+### Discovery
+
+```sh
+./zig-out/bin/orca tools classify send_email
+./zig-out/bin/orca tools classify notify --args '{"to":"a@b.com","body":"hi"}'
+./zig-out/bin/orca tools classify send_acme_ping --policy .orca/policy.yaml
+./zig-out/bin/orca mcp inspect --name demo --policy .orca/policy.yaml --command python3 -- fixtures/mcp/fake_server.py
+```
+
+Inspect and classify print effect ids, confidence, and matcher labels only —
+never raw email/body/token values.
 
 ### Residual gaps
 
 - **Host shell PreToolUse** still primarily uses the **Rust daemon** and
   `commands` packs. Phase B shell effect patterns apply on the **Zig** command
-  evaluation path; full Rust-pack parity is not claimed. Network effect tags
-  still catch many `curl`-style bypasses when the network path is evaluated
-  (including the proxy).
+  evaluation path; full Rust-pack parity (including effect packs on that path)
+  is not claimed. Network effect tags still catch many `curl`-style bypasses
+  when the network path is evaluated (including the proxy).
 - Structural classification is top-level + one nested object level of keys
   (interesting keys preferred against padding); deeper nesting or stringified
   JSON args are not fully covered.
 - Host file PreToolUse uses `files.write` / `files.read` (not effect IDs on
   that specialized route). Denying `shell.exec` / `fs.write` as effects only
   applies when the call is evaluated as a **tool name**.
-- Browser/computer-use UI actions and user-authored effect packs are later
-  phases.
+- Browser/computer-use UI actions remain out of scope.
+- Opt-in LLM / embedding classifiers are deferred (Phase D).
 
 When `effects:` is present, `effects.default` applies to **tool**
 classification hits that match no allow/deny/ask pattern and to **tools with

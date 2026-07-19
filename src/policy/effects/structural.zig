@@ -398,14 +398,16 @@ fn appendKeyIfRoom(
     }
     if (keys.items.len >= max_keys) {
         if (!prefer_interesting or !isInterestingKey(norm)) return;
-        // Try replace a non-interesting key to make room
+        // Try replace a non-interesting key to make room.
+        // Allocate first so OOM cannot leave a freed slot for errdefer double-free.
         var replaced = false;
         for (keys.items, 0..) |existing, i| {
             var ebuf: [128]u8 = undefined;
             const en = normalizeKeyBuf(existing, &ebuf) orelse continue;
             if (!isInterestingKey(en)) {
+                const new_key = try allocator.dupe(u8, key);
                 allocator.free(existing);
-                keys.items[i] = try allocator.dupe(u8, key);
+                keys.items[i] = new_key;
                 replaced = true;
                 break;
             }
@@ -432,20 +434,28 @@ fn appendStringValue(
     if (strings.items.len >= max_string_values) {
         if (!prefer_interesting or !interesting) return;
         // Evict a non-interesting value slot so padding cannot hide email/url shapes.
+        // Allocate replacements *before* freeing so OOM cannot leave dangling freed pointers
+        // (errdefer on the ArrayList would double-free).
         var replaced = false;
         for (string_keys.items, 0..) |existing_key, i| {
             var ebuf: [128]u8 = undefined;
             const en = normalizeKeyBuf(existing_key, &ebuf) orelse continue;
             if (isInterestingKey(en)) continue;
             const old_len = strings.items[i].len;
+            const freed_budget = if (string_bytes.* >= old_len) string_bytes.* - old_len else 0;
+            if (freed_budget >= max_string_scan_bytes) continue;
+            const take = @min(s.len, max_string_scan_bytes - freed_budget);
+            if (take == 0) continue;
+
+            const new_s = try allocator.dupe(u8, s[0..take]);
+            errdefer allocator.free(new_s);
+            const new_k = try allocator.dupe(u8, key);
+            // Ownership transferred into slots; free old after both allocs succeed.
             allocator.free(strings.items[i]);
             allocator.free(string_keys.items[i]);
-            if (string_bytes.* >= old_len) string_bytes.* -= old_len else string_bytes.* = 0;
-            if (string_bytes.* >= max_string_scan_bytes) return;
-            const take = @min(s.len, max_string_scan_bytes - string_bytes.*);
-            strings.items[i] = try allocator.dupe(u8, s[0..take]);
-            string_keys.items[i] = try allocator.dupe(u8, key);
-            string_bytes.* += take;
+            strings.items[i] = new_s;
+            string_keys.items[i] = new_k;
+            string_bytes.* = freed_budget + take;
             replaced = true;
             break;
         }

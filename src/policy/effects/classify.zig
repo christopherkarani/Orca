@@ -9,14 +9,15 @@ pub const ToolArgsView = structural.ToolArgsView;
 pub const EffectHit = catalog.EffectHit;
 pub const Confidence = catalog.Confidence;
 
-fn appendUniquePreferHigher(
+/// Prefer higher confidence when the same effect id is emitted by multiple matchers.
+/// Confidence enum order: high < medium < low (lower @intFromEnum = stronger).
+pub fn appendUniquePreferHigher(
     allocator: std.mem.Allocator,
     hits: *std.ArrayList(EffectHit),
     hit: EffectHit,
 ) !void {
     for (hits.items, 0..) |existing, i| {
         if (std.mem.eql(u8, existing.id, hit.id)) {
-            // lower @intFromEnum = higher confidence (high=0, medium=1, low=2)
             if (@intFromEnum(hit.confidence) < @intFromEnum(existing.confidence)) {
                 hits.items[i] = hit;
             }

@@ -126,8 +126,9 @@ fn isCurlLikeToken(token: []const u8) bool {
 
 /// True when `index` is the first executable of a shell command segment:
 /// start of segment, after `;`/`|`/`&&`/`||`/`&`, after env assignments, after
-/// common wrappers (`sudo`, `env`, `command`, `nohup`, `nice`, `time`), or after
-/// wrapper option flags/values (`sudo -u root curl …`, `env -i open …`).
+/// common wrappers (`sudo`, `env`, `command`, `xargs`, `nohup`, `nice`, `time`),
+/// or after wrapper option flags/values (`sudo -u root curl …`, `env -i open …`).
+/// Lookup-only `command -v`/`-V` does not count as execution.
 fn isCommandPosition(tokens: []const []const u8, index: usize) bool {
     if (index == 0) return true;
     // Walk left through env assignments, wrappers, and their option tokens.
@@ -135,7 +136,13 @@ fn isCommandPosition(tokens: []const []const u8, index: usize) bool {
     while (i > 0) {
         const prev = tokens[i - 1];
         if (isShellOperator(prev)) return true;
-        if (isEnvAssignment(prev) or isCommandWrapper(prev)) {
+        if (isEnvAssignment(prev)) {
+            i -= 1;
+            continue;
+        }
+        if (isCommandWrapper(prev)) {
+            // Bash `command -v`/`-V` describes a name; it does not execute it.
+            if (isCommandBuiltinLookup(tokens, i - 1, index)) return false;
             i -= 1;
             continue;
         }
@@ -156,6 +163,22 @@ fn isCommandPosition(tokens: []const []const u8, index: usize) bool {
     return true;
 }
 
+/// True when `tokens[wrapper_index]` is the `command` builtin used with `-v`/`-V`
+/// between the builtin and the candidate executable at `exec_index`.
+fn isCommandBuiltinLookup(tokens: []const []const u8, wrapper_index: usize, exec_index: usize) bool {
+    if (wrapper_index >= tokens.len or wrapper_index >= exec_index) return false;
+    var base = tokens[wrapper_index];
+    if (std.mem.lastIndexOfScalar(u8, base, '/')) |slash| base = base[slash + 1 ..];
+    if (!std.ascii.eqlIgnoreCase(base, "command")) return false;
+
+    var j = wrapper_index + 1;
+    while (j < exec_index) : (j += 1) {
+        const t = tokens[j];
+        if (std.mem.eql(u8, t, "-v") or std.mem.eql(u8, t, "-V")) return true;
+    }
+    return false;
+}
+
 /// Known wrapper flags that take a following value (conservative; used when walking left).
 /// Boolean wrapper flags (`-n`, `-i`, `-E`, …) are skipped via the generic `-` branch.
 fn wrapperFlagTakesValue(flag: []const u8) bool {
@@ -163,17 +186,24 @@ fn wrapperFlagTakesValue(flag: []const u8) bool {
     if (std.mem.startsWith(u8, flag, "--") and std.mem.indexOfScalar(u8, flag, '=') != null) return false;
     const value_flags = [_][]const u8{
         // sudo
-        "-u",             "--user",  "-g",      "--group",
-        "-h",             "--host",  "-C",      "--close-from",
-        "-D",             "--chdir", "-p",      "--prompt",
-        "-r",             "--role",  "-T",      "--type",
+        "-u",             "--user",     "-g",          "--group",
+        "-h",             "--host",     "-C",          "--close-from",
+        "-D",             "--chdir",    "-p",          "--prompt",
+        "-r",             "--role",     "-T",          "--type",
         "--other-user",
         // env
-          "-u",      "--unset", "-S",
-        "--split-string", "-C",      "--chdir",
+          "-u",         "--unset",     "-S",
+        "--split-string", "-C",         "--chdir",
         // nice / time (common)
-        "-n",
-        "--adjustment",   "-f",      "-o",
+            "-n",
+        "--adjustment",   "-f",         "-o",
+        // xargs
+                 "-a",
+        "--arg-file",     "-d",         "--delimiter", "-E",
+        "-e",             "--eof",      "-I",          "-i",
+        "--replace",      "-L",         "-l",          "--max-lines",
+        "-n",             "--max-args", "-P",          "--max-procs",
+        "-R",             "-s",         "--max-chars",
     };
     for (value_flags) |name| {
         if (std.mem.eql(u8, flag, name)) return true;
@@ -193,7 +223,8 @@ fn isEnvAssignment(token: []const u8) bool {
 }
 
 fn isCommandWrapper(token: []const u8) bool {
-    const wrappers = [_][]const u8{ "sudo", "env", "command", "nohup", "nice", "time", "builtin" };
+    // Launchers that run a following COMMAND (not mere data operands).
+    const wrappers = [_][]const u8{ "sudo", "env", "command", "xargs", "nohup", "nice", "time", "builtin" };
     // Strip path prefix: /usr/bin/sudo
     var base = token;
     if (std.mem.lastIndexOfScalar(u8, token, '/')) |slash| base = token[slash + 1 ..];
@@ -588,4 +619,46 @@ test "curl --referer tagged host is not publish" {
     );
     defer std.testing.allocator.free(hits);
     try std.testing.expectEqual(@as(usize, 0), hits.len);
+}
+
+test "xargs curl tagged host is publish" {
+    // Launcher: xargs runs COMMAND; curl must still be command-position.
+    const hits = try classifyCommand(
+        std.testing.allocator,
+        "printf 'arg\\n' | xargs curl https://api.twitter.com/2/tweets",
+    );
+    defer std.testing.allocator.free(hits);
+    try std.testing.expect(hits.len >= 1);
+    try std.testing.expectEqualStrings("comms.publish", hits[0].id);
+}
+
+test "xargs -n 2 curl tagged host is publish" {
+    const hits = try classifyCommand(
+        std.testing.allocator,
+        "xargs -n 2 curl https://api.twitter.com/2/tweets",
+    );
+    defer std.testing.allocator.free(hits);
+    try std.testing.expect(hits.len >= 1);
+    try std.testing.expectEqualStrings("comms.publish", hits[0].id);
+}
+
+test "command -v open mailto is not message bypass" {
+    // Bash `command -v` is lookup-only; must not classify as launching open.
+    const hits = try classifyCommand(std.testing.allocator, "command -v open mailto:x@y.com");
+    defer std.testing.allocator.free(hits);
+    try std.testing.expectEqual(@as(usize, 0), hits.len);
+}
+
+test "command -V open mailto is not message bypass" {
+    const hits = try classifyCommand(std.testing.allocator, "command -V open mailto:x@y.com");
+    defer std.testing.allocator.free(hits);
+    try std.testing.expectEqual(@as(usize, 0), hits.len);
+}
+
+test "command open mailto still classifies" {
+    // `command open` without -v/-V still executes open.
+    const hits = try classifyCommand(std.testing.allocator, "command open mailto:x@y.com");
+    defer std.testing.allocator.free(hits);
+    try std.testing.expect(hits.len >= 1);
+    try std.testing.expectEqualStrings("comms.message", hits[0].id);
 }

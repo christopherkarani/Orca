@@ -2,6 +2,7 @@
 //!
 //! Phase A: deterministic catalog over tool names (host PreToolUse + MCP tools/call).
 //! Phase B: structural args, network host tags, shell command bypass (Zig path).
+//! Phase C: user effect packs + discovery formatting (classification-only; decisions via effects:).
 
 pub const ids = @import("ids.zig");
 pub const catalog = @import("catalog.zig");
@@ -10,15 +11,22 @@ pub const classify = @import("classify.zig");
 pub const network_tags = @import("network_tags.zig");
 pub const shell_bypass = @import("shell_bypass.zig");
 pub const evaluate = @import("evaluate.zig");
+pub const format = @import("format.zig");
+pub const packs = @import("packs.zig");
 
 pub const Confidence = catalog.Confidence;
 pub const EffectHit = catalog.EffectHit;
 pub const ToolArgsView = structural.ToolArgsView;
 pub const OwnedArgsView = structural.OwnedArgsView;
+pub const PackSet = packs.PackSet;
+pub const Pack = packs.Pack;
 
 /// Name-only classification (Phase A). Prefer `classifyToolCall` when args are available.
 pub const classifyToolName = classify.classifyToolName;
 pub const classifyToolCall = classify.classifyToolCall;
+pub const classifyToolCallWithPacks = packs.classifyToolCallWithPacks;
+pub const loadPacks = packs.loadPacks;
+pub const loadPacksForEnforcement = packs.loadPacksForEnforcement;
 pub const normalizeToolName = catalog.normalizeToolName;
 pub const toolArgsViewFromJsonObject = structural.toolArgsViewFromJsonObject;
 
@@ -32,6 +40,9 @@ pub const EffectMatch = evaluate.EffectMatch;
 pub const EffectsRuleView = evaluate.EffectsRuleView;
 pub const evaluateHits = evaluate.evaluateHits;
 
+pub const formatHitsCompact = format.formatHitsCompact;
+pub const writeHitsHuman = format.writeHitsHuman;
+
 test {
     _ = ids;
     _ = catalog;
@@ -40,5 +51,7 @@ test {
     _ = network_tags;
     _ = shell_bypass;
     _ = evaluate;
+    _ = format;
+    _ = packs;
     _ = @import("merge_integration_test.zig");
 }

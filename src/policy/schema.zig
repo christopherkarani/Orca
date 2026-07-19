@@ -1,6 +1,7 @@
 const std = @import("std");
 
 const core = @import("../core/public.zig");
+const effect_packs = @import("effects/packs.zig");
 
 pub const version: u16 = 1;
 
@@ -391,6 +392,8 @@ pub const Evaluation = struct {
 
 pub const EvaluationContext = struct {
     mode: ?Mode = null,
+    /// Optional user effect packs (classification only). Owned by caller for the evaluation lifetime.
+    effect_packs: ?*const effect_packs.PackSet = null,
 };
 
 pub const LoadSource = enum {

@@ -154,7 +154,9 @@ fn namesEqualNormalized(a: []const u8, b_normalized: []const u8) bool {
     return true;
 }
 
-fn containsToken(normalized: []const u8, token: []const u8) bool {
+/// Token match used by catalog and user effect packs. Short tokens (len ≤ 3)
+/// require a whole `_`-separated segment to limit false positives.
+pub fn containsToken(normalized: []const u8, token: []const u8) bool {
     if (token.len == 0 or normalized.len < token.len) return false;
     // Short tokens (e.g. `sms`) require a whole `_`-separated segment to limit
     // false positives inside longer words. Longer domain nouns may be substrings.
@@ -235,7 +237,8 @@ pub fn classifyToolName(allocator: std.mem.Allocator, tool_name: []const u8) ![]
     return try hits.toOwnedSlice(allocator);
 }
 
-fn focusName(normalized: []const u8) []const u8 {
+/// Last segment after `__` or `/` — host MCP names like `mcp__acme__send_email`.
+pub fn focusName(normalized: []const u8) []const u8 {
     // Prefer last path segment after __ or /
     if (std.mem.lastIndexOf(u8, normalized, "__")) |idx| {
         return normalized[idx + 2 ..];
