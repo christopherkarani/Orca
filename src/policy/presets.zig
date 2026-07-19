@@ -30,6 +30,7 @@ pub const AgentPreset = enum {
     team_ci,
     openclaw_hermes,
     trusted_local,
+    no_external_comms,
 
     pub fn parse(value: []const u8) ?AgentPreset {
         for (agent_preset_infos) |info| {
@@ -60,6 +61,7 @@ pub const agent_preset_infos = [_]AgentPresetInfo{
     .{ .preset = .team_ci, .name = "team-ci", .experimental = false, .warning = "" },
     .{ .preset = .openclaw_hermes, .name = "openclaw-hermes", .experimental = false, .warning = "" },
     .{ .preset = .trusted_local, .name = "trusted-local", .experimental = false, .warning = "" },
+    .{ .preset = .no_external_comms, .name = "no-external-comms", .experimental = false, .warning = "" },
 };
 
 pub fn agentPresetName(preset: AgentPreset) []const u8 {
@@ -88,6 +90,7 @@ pub fn agentPresetText(preset: AgentPreset) []const u8 {
         .team_ci => team_ci_policy,
         .openclaw_hermes => openclaw_hermes_policy,
         .trusted_local => trusted_local_policy,
+        .no_external_comms => no_external_comms_policy,
     };
 }
 
@@ -168,6 +171,26 @@ const strict_local_policy =
     \\# Local strict mode. Unknown actions are denied or staged; add narrow allow rules as needed.
     \\
 ++ strict_policy;
+
+const no_external_comms_policy =
+    \\# Orca preset: no-external-comms
+    \\# Strict local baseline plus effect-class denials for messaging, social publish, and payments.
+    \\# Blocks tools like send_email / send_imessage / post_twitter by semantic effect, not exact tool names.
+    \\
+++ strict_policy ++
+    \\
+    \\effects:
+    \\  default: allow
+    \\  deny:
+    \\    - comms.message
+    \\    - comms.publish
+    \\    - money.transfer
+    \\  ask:
+    \\    - unknown.external
+    \\    - identity.auth
+    \\    - device.control
+    \\
+;
 
 const team_ci_policy =
     \\# Orca policy pack: team-ci
@@ -548,19 +571,39 @@ test "built-in presets expose required phase 07 policies" {
 }
 
 test "phase 18 agent presets are exposed with stable names" {
-    try std.testing.expectEqual(@as(usize, 13), agent_preset_infos.len);
+    try std.testing.expectEqual(@as(usize, 14), agent_preset_infos.len);
     try std.testing.expectEqual(AgentPreset.generic_agent, AgentPreset.parse("generic-agent").?);
     try std.testing.expectEqual(AgentPreset.github_actions, AgentPreset.parse("github-actions").?);
     try std.testing.expectEqual(AgentPreset.solo_dev, AgentPreset.parse("solo-dev").?);
     try std.testing.expectEqual(AgentPreset.strict_local, AgentPreset.parse("strict-local").?);
     try std.testing.expectEqual(AgentPreset.team_ci, AgentPreset.parse("team-ci").?);
     try std.testing.expectEqual(AgentPreset.openclaw_hermes, AgentPreset.parse("openclaw-hermes").?);
+    try std.testing.expectEqual(AgentPreset.no_external_comms, AgentPreset.parse("no-external-comms").?);
     try std.testing.expect(AgentPreset.parse("not-a-preset") == null);
     for (agent_preset_infos) |info| {
         const source = agentPresetText(info.preset);
         try std.testing.expect(std.mem.indexOf(u8, source, "version: 1") != null);
         try std.testing.expect(std.mem.indexOf(u8, source, "redact_secrets: true") != null);
     }
+}
+
+test "no-external-comms preset includes effect denials" {
+    const source = agentPresetText(.no_external_comms);
+    try std.testing.expect(std.mem.indexOf(u8, source, "effects:") != null);
+    try std.testing.expect(std.mem.indexOf(u8, source, "comms.message") != null);
+    try std.testing.expect(std.mem.indexOf(u8, source, "comms.publish") != null);
+    try std.testing.expect(std.mem.indexOf(u8, source, "money.transfer") != null);
+
+    const load = @import("load.zig");
+    var policy = try load.parseFromSlice(std.testing.allocator, source, "no-external-comms.yaml");
+    defer policy.deinit();
+    try std.testing.expect(policy.effects.isActive());
+
+    const evaluate = @import("evaluate.zig");
+    const core = @import("../core/public.zig");
+    var denied = try evaluate.tool(&policy, "send_email", std.testing.allocator);
+    defer denied.deinit(std.testing.allocator);
+    try std.testing.expectEqual(core.decision.DecisionResult.deny, denied.decision.result);
 }
 
 // Quick-install DX invariants: the presets used by `orca init --preset` and `setup --auto`

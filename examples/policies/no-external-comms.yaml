@@ -1,0 +1,117 @@
+# Orca preset: no-external-comms
+# Strict local baseline plus effect-class denials for messaging, social publish, and payments.
+# Blocks tools like send_email / send_imessage / post_twitter by semantic effect, not exact tool names.
+version: 1
+mode: strict
+
+workspace:
+  root: "."
+  write_mode: staged
+
+env:
+  inherit: false
+  allow:
+    - PATH
+    - HOME
+    - LANG
+    - TERM
+  deny_patterns:
+    - "*TOKEN*"
+    - "*SECRET*"
+    - "*PASSWORD*"
+    - "*PASSWD*"
+    - "*PRIVATE*"
+    - "*KEY*"
+    - "AWS_*"
+    - "AZURE_*"
+    - "GITHUB_TOKEN"
+    - "GH_TOKEN"
+    - "OPENAI_API_KEY"
+    - "ANTHROPIC_API_KEY"
+    - "NPM_TOKEN"
+    - "PYPI_TOKEN"
+    - "SSH_AUTH_SOCK"
+
+files:
+  read:
+    allow:
+      - "./**"
+    deny:
+      - "./.env"
+      - "./.env.*"
+      - "~/.ssh/**"
+      - "~/.aws/**"
+      - "~/.config/gh/**"
+      - "**/*credentials*"
+      - "**/*secret*"
+      - "**/*token*"
+  write:
+    allow:
+      - "./**"
+    deny:
+      - "./.git/**"
+      - "./.orca/**"
+    mode: staged
+
+commands:
+  default: deny
+  allow:
+    - "git status"
+    - "git diff *"
+    - "ls *"
+    - "pwd"
+    - "zig version"
+    - "zig build *"
+  deny:
+    - "rm -rf *"
+    - "find * -delete"
+    - "curl * | sh"
+    - "wget * | bash"
+    - "sudo *"
+    - "cat .env"
+    - "cat ~/.ssh/*"
+
+network:
+  mode: allowlist
+  default: deny
+  allow:
+    - "api.github.com"
+    - "*.github.com"
+  deny:
+    - "pastebin.com"
+    - "*.ngrok.io"
+    - "*.requestbin.net"
+  detect_exfiltration:
+    dns: true
+    long_query_strings: true
+    secret_patterns: true
+
+mcp:
+  default: deny
+  allow:
+    - "*.list_*"
+    - "*.get_*"
+    - "*.search_*"
+  deny:
+    - "*.delete_*"
+    - "*.shell"
+    - "*.run_command"
+
+
+# Effect-class policy: deny external communication and money movement by intent.
+# See docs/policy.md § Effects. Shell argv bypasses still need network/command rules (Phase B).
+effects:
+  default: allow
+  deny:
+    - comms.message
+    - comms.publish
+    - money.transfer
+  ask:
+    - unknown.external
+    - identity.auth
+    - device.control
+
+audit:
+  level: full
+  redact_secrets: true
+  tamper_evident: true

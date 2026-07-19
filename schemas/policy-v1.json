@@ -77,6 +77,7 @@
       "additionalProperties": { "$ref": "#/$defs/servicePolicy" }
     },
     "mcp": { "$ref": "#/$defs/mcpPolicy" },
+    "effects": { "$ref": "#/$defs/effectsPolicy" },
     "audit": {
       "type": "object",
       "additionalProperties": false,
@@ -177,6 +178,16 @@
             }
           }
         }
+      }
+    },
+    "effectsPolicy": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "allow": { "$ref": "#/$defs/stringList" },
+        "deny": { "$ref": "#/$defs/stringList" },
+        "ask": { "$ref": "#/$defs/stringList" },
+        "default": { "$ref": "#/$defs/decision" }
       }
     }
   }

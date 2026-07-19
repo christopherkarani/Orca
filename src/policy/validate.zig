@@ -2,6 +2,7 @@ const std = @import("std");
 
 const audit_redact = @import("../audit/redact_bridge.zig");
 const core = @import("../core/public.zig");
+const effects = @import("effects/mod.zig");
 const schema = @import("schema.zig");
 
 pub fn policy(value: *const schema.Policy) !void {
@@ -15,9 +16,26 @@ pub fn policy(value: *const schema.Policy) !void {
     try validateCredentials(value.credentials);
     try validateServices(value.services, value.credentials);
     try validateRuleSet("mcp", value.mcp, core.limits.max_event_field_len);
+    try validateEffects(value.effects);
     // Audit records are persisted and may be exported. Disabling secret
     // redaction is therefore not a supported policy state.
     if (!value.audit.redact_secrets) return error.InvalidPolicy;
+}
+
+fn validateEffects(effects_policy: schema.EffectsPolicy) !void {
+    if (!effects_policy.configured) {
+        if (effects_policy.allow.len != 0 or effects_policy.deny.len != 0 or effects_policy.ask.len != 0 or effects_policy.default != null)
+            return error.InvalidPolicy;
+        return;
+    }
+    for (effects_policy.allow) |pattern| try validateEffectPattern("effects.allow", pattern);
+    for (effects_policy.deny) |pattern| try validateEffectPattern("effects.deny", pattern);
+    for (effects_policy.ask) |pattern| try validateEffectPattern("effects.ask", pattern);
+}
+
+fn validateEffectPattern(label: []const u8, pattern: []const u8) !void {
+    try validatePatternString(label, pattern, core.limits.max_event_field_len);
+    if (!effects.isValidEffectPattern(pattern)) return error.InvalidPolicy;
 }
 
 fn validateEnv(env: schema.EnvPolicy) !void {

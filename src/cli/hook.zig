@@ -1227,7 +1227,8 @@ fn evaluateNativePreToolUseRoute(
         },
         .generic_tool => {
             const generic_tool_name = extractToolName(payload) orelse return error.MissingRequiredField;
-            const evaluation = try core_api.explainAction(allocator, @ptrCast(policy_value), .mcp, generic_tool_name);
+            // Combined MCP selector + effect-class evaluation (when effects: is configured).
+            const evaluation = try core_api.explainAction(allocator, @ptrCast(policy_value), .tool, generic_tool_name);
             defer evaluation.deinit(allocator);
 
             const decision = PluginDecision.fromDecisionResult(evaluation.decision.result, ci_mode);
@@ -2867,4 +2868,40 @@ test "hook mode x severity matrix for shell denials" {
         defer r.deinit(allocator);
         try std.testing.expectEqual(PluginDecision.block, r.decision);
     }
+}
+
+test "hook PreToolUse denies send_email when effects.deny includes comms.message" {
+    var gpa_state: std.heap.DebugAllocator(.{}) = .init;
+    defer _ = gpa_state.deinit();
+    const allocator = gpa_state.allocator();
+
+    var policy_obj = try policy.load.parseFromSlice(allocator,
+        \\version: 1
+        \\mode: strict
+        \\mcp:
+        \\  default: allow
+        \\effects:
+        \\  deny:
+        \\    - comms.message
+        \\    - comms.publish
+    , "effects-hook.yaml");
+    defer policy_obj.deinit();
+
+    var payload_obj = try std.json.ObjectMap.init(allocator, &.{}, &.{});
+    defer payload_obj.deinit(allocator);
+    try payload_obj.put(allocator, "tool_name", std.json.Value{ .string = "send_email" });
+
+    var result = try evaluateHookForTest(allocator, @ptrCast(@alignCast(&policy_obj)), .claude, .PreToolUse, std.json.Value{ .object = payload_obj }, false);
+    defer result.deinit(allocator);
+
+    try std.testing.expectEqual(PluginDecision.block, result.decision);
+    try std.testing.expect(std.mem.indexOf(u8, result.reason, "comms.message") != null or std.mem.indexOf(u8, result.rule orelse "", "effects.deny") != null);
+
+    var twitter_payload = try std.json.ObjectMap.init(allocator, &.{}, &.{});
+    defer twitter_payload.deinit(allocator);
+    try twitter_payload.put(allocator, "tool_name", std.json.Value{ .string = "post_twitter" });
+
+    var twitter_result = try evaluateHookForTest(allocator, @ptrCast(@alignCast(&policy_obj)), .claude, .PreToolUse, std.json.Value{ .object = twitter_payload }, false);
+    defer twitter_result.deinit(allocator);
+    try std.testing.expectEqual(PluginDecision.block, twitter_result.decision);
 }

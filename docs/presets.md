@@ -18,6 +18,7 @@ Available presets:
 - `opencode`: generic/experimental local coding-agent assumptions.
 - `cline-roo`: generic/experimental local editor/MCP-agent assumptions.
 - `mcp-dev`: stdio MCP development baseline with conservative tool defaults.
+- `no-external-comms`: strict-local baseline plus effect-class denials for messaging, social publish, and payments (`comms.message`, `comms.publish`, `money.transfer`).
 - `github-actions`: non-interactive CI baseline.
 - `solo-dev`: product policy pack for local solo development with ask-mode defaults.
 - `strict-local`: strict local baseline with denied unknown commands/network.

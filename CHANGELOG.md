@@ -1,5 +1,13 @@
 # Changelog
 
+## Unreleased
+
+### Added
+- **Effect-class policy** (`effects:`) classifies host/MCP tool names into semantic effects (`comms.message`, `comms.publish`, `money.transfer`, …) so users can deny messaging/social tools without listing every name.
+- Built-in tool-name catalog and `orca policy explain tool <name>`.
+- Preset `no-external-comms` for strict-local plus external-comms effect denials.
+- Host `PreToolUse` generic tools and MCP `tools/call` enforce effect rules when `effects:` is configured (deny beats MCP allow).
+
 ## v1.2.8 - 2026-07-04
 
 ### Changed

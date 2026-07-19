@@ -102,6 +102,16 @@ mcp:
   deny:
     - "*.delete_*"
     - "*.run_command"
+effects:
+  # Optional. When present, tool calls are also classified into semantic effects
+  # (comms.message, comms.publish, money.transfer, …) independent of exact tool names.
+  default: allow
+  deny:
+    - comms.message
+    - comms.publish
+    - money.transfer
+  ask:
+    - unknown.external
 audit:
   level: full
   redact_secrets: true
@@ -112,6 +122,33 @@ audit:
 to `true`. Setting it to `false` is rejected: persisted audit records and
 exported replay data never permit raw secrets.
 
+## Effects (semantic tool intent)
+
+When the `effects:` section is present, Orca classifies host and MCP **tool
+names** into coarse effect IDs and evaluates them in addition to surface rules
+(`mcp`, `commands`, `files`, `network`). Missing `effects:` keeps legacy
+behavior (no effect evaluation).
+
+| Effect ID | Meaning |
+|-----------|---------|
+| `comms.message` | Email, SMS, iMessage, Slack/Discord/Telegram-style messaging |
+| `comms.publish` | Public social posts (Twitter/X, LinkedIn, …) |
+| `comms.calendar` | Calendar / invite side effects |
+| `money.transfer` | Payments and transfers |
+| `identity.auth` | Token/PAT/OAuth minting |
+| `device.control` | Physical / IoT actuation |
+| `shell.exec` / `fs.read` / `fs.write` / `net.connect` | Surface-aligned host tools |
+| `unknown.external` | Unclassified outbound-looking tool names (`send_*`, `post_*`, …) |
+
+Patterns may be exact IDs or family wildcards (`comms.*`). **Any denied effect
+denies**; deny beats allow. Explicit MCP allow does not override an effect deny.
+
+Phase A matches **tool names** (catalog + tokens). Shell argv and network host
+bypasses still rely on `commands` / `network` rules (and future effect
+cross-linking).
+
+Preset: `no-external-comms` (`orca init --preset no-external-comms`).
+
 Explain decisions:
 
 ```sh
@@ -120,6 +157,7 @@ Explain decisions:
 ./zig-out/bin/orca policy explain network https://example.invalid/path
 ./zig-out/bin/orca policy explain network https://api.github.com/repos/acme/app/issues --method POST
 ./zig-out/bin/orca policy explain mcp demo.list_files
+./zig-out/bin/orca policy explain tool send_email
 ```
 
 ## Invalid Policy Behavior

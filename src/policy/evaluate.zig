@@ -1,6 +1,7 @@
 const std = @import("std");
 
 const core = @import("../core/public.zig");
+const effects = @import("effects/mod.zig");
 const matchers = @import("matchers.zig");
 const schema = @import("schema.zig");
 
@@ -29,10 +30,11 @@ pub fn action(policy: *const schema.Policy, requested: core.types.Action, ctx: s
             defer allocator.free(destination_text);
             return evaluateNetworkPolicy(allocator, mode, policy.network, policy.services, destination_text, network_action.method);
         },
-        .mcp_tool_call => |tool| {
-            const selector = try mcpSelector(allocator, tool.server, tool.tool_name);
+        .mcp_tool_call => |tool_action| {
+            const selector = try mcpSelector(allocator, tool_action.server, tool_action.tool_name);
             defer allocator.free(selector);
-            return evaluateRuleSet(allocator, mode, .mcp, "mcp", policy.mcp, selector);
+            const surface = try evaluateRuleSet(allocator, mode, .mcp, "mcp", policy.mcp, selector);
+            return mergeWithEffects(allocator, mode, policy, tool_action.tool_name, surface);
         },
         .mcp_resource_read => |resource| {
             const selector = try mcpSelector(allocator, resource.server, resource.uri);
@@ -50,6 +52,109 @@ pub fn action(policy: *const schema.Policy, requested: core.types.Action, ctx: s
             return evaluateRuleSet(allocator, mode, .mcp, "mcp", policy.mcp, selector);
         },
         .approval_decision, .staging_decision => defaultDecision(allocator, mode, null, "unsupported policy action surface"),
+    };
+}
+
+/// Host/MCP tool call by name: MCP selector surface rules ∩ effect-class rules.
+pub fn tool(policy: *const schema.Policy, tool_name: []const u8, allocator: std.mem.Allocator) !schema.Evaluation {
+    return action(policy, .{ .mcp_tool_call = .{ .tool_name = tool_name } }, .{}, allocator);
+}
+
+/// Merge surface evaluation with effect-class rules when `effects:` is configured.
+/// Higher restriction wins (deny > ask > allow > observe). Equal severity keeps the surface result.
+fn mergeWithEffects(
+    allocator: std.mem.Allocator,
+    mode: schema.Mode,
+    policy: *const schema.Policy,
+    tool_name: []const u8,
+    surface: schema.Evaluation,
+) !schema.Evaluation {
+    if (!policy.effects.isActive()) return surface;
+
+    const hits = try effects.classifyToolName(allocator, tool_name);
+    defer allocator.free(hits);
+
+    const default_kind: ?effects.EffectDecisionKind = if (policy.effects.default) |default|
+        decisionValueToEffectKind(default)
+    else
+        null;
+
+    const match = effects.evaluateHits(hits, .{
+        .allow = policy.effects.allow,
+        .deny = policy.effects.deny,
+        .ask = policy.effects.ask,
+        .default = default_kind,
+    });
+    if (match.kind == .none) return surface;
+
+    var effect_eval = try evaluationFromEffectMatch(allocator, mode, match);
+    if (decisionSeverity(effect_eval) > decisionSeverity(surface)) {
+        surface.deinit(allocator);
+        return effect_eval;
+    }
+    effect_eval.deinit(allocator);
+    return surface;
+}
+
+fn decisionValueToEffectKind(value: schema.DecisionValue) effects.EffectDecisionKind {
+    return switch (value) {
+        .allow => .allow,
+        .deny => .deny,
+        .ask => .ask,
+        .observe => .observe,
+    };
+}
+
+fn decisionSeverity(evaluation: schema.Evaluation) u8 {
+    return switch (evaluation.decision.result) {
+        .deny => 4,
+        .ask => 3,
+        .allow => 2,
+        .observe => 1,
+        // Non-policy outcomes treat as low severity for effect merge purposes.
+        .redact, .stage, .broker => 1,
+    };
+}
+
+fn evaluationFromEffectMatch(
+    allocator: std.mem.Allocator,
+    mode: schema.Mode,
+    match: effects.EffectMatch,
+) !schema.Evaluation {
+    var decision_value: schema.DecisionValue = switch (match.kind) {
+        .allow => .allow,
+        .deny => .deny,
+        .ask => .ask,
+        .observe => .observe,
+        .none => unreachable,
+    };
+    if (mode == .ci and decision_value == .ask) decision_value = .deny;
+
+    const label = switch (match.kind) {
+        .allow => "effects.allow",
+        .deny => "effects.deny",
+        .ask => "effects.ask",
+        .observe => "effects.observe",
+        .none => unreachable,
+    };
+    const rule_id = try std.fmt.allocPrint(allocator, "{s}[{s}]", .{ label, match.pattern });
+    errdefer allocator.free(rule_id);
+    const explanation = try std.fmt.allocPrint(
+        allocator,
+        "effect \"{s}\" matched {s} pattern \"{s}\" via {s}",
+        .{ match.effect_id, label, match.pattern, match.matcher },
+    );
+    return .{
+        .decision = .{
+            .result = decision_value.toDecisionResult(),
+            .rule_id = rule_id,
+            .reason = explanation,
+            .requires_user = decision_value == .ask,
+            .ci_may_proceed = decision_value == .allow or decision_value == .observe,
+        },
+        .matched_rule = .{ .id = rule_id, .pattern = match.pattern },
+        .explanation = explanation,
+        .owned_rule_id = rule_id,
     };
 }
 
@@ -348,6 +453,7 @@ test "network policy evaluation honors explicit port-scoped rules" {
 }
 
 pub fn mcp(policy: *const schema.Policy, selector: []const u8, allocator: std.mem.Allocator) !schema.Evaluation {
+    // Pure MCP selector surface (no effect-class merge). Use `tool` for host/MCP tool calls.
     return evaluateRuleSet(allocator, policy.mode, .mcp, "mcp", policy.mcp, selector);
 }
 
@@ -734,4 +840,77 @@ test "quick install bare zig build asks today under generic-agent preset (gap)" 
     const suffixed = try command(&policy, "zig build .", std.testing.allocator);
     defer suffixed.deinit(std.testing.allocator);
     try std.testing.expectEqual(core.decision.DecisionResult.allow, suffixed.decision.result);
+}
+
+test "effects deny blocks send_email even when mcp allows all" {
+    const load = @import("load.zig");
+    var policy = try load.parseFromSlice(std.testing.allocator,
+        \\version: 1
+        \\mode: strict
+        \\mcp:
+        \\  default: allow
+        \\  allow:
+        \\    - "*"
+        \\effects:
+        \\  deny:
+        \\    - comms.message
+        \\    - comms.publish
+    , "effects.yaml");
+    defer policy.deinit();
+
+    var denied = try tool(&policy, "send_email", std.testing.allocator);
+    defer denied.deinit(std.testing.allocator);
+    try std.testing.expectEqual(core.decision.DecisionResult.deny, denied.decision.result);
+    try std.testing.expect(std.mem.indexOf(u8, denied.decision.rule_id.?, "effects.deny") != null);
+    try std.testing.expect(std.mem.indexOf(u8, denied.decision.reason, "comms.message") != null);
+
+    var publish = try tool(&policy, "post_twitter", std.testing.allocator);
+    defer publish.deinit(std.testing.allocator);
+    try std.testing.expectEqual(core.decision.DecisionResult.deny, publish.decision.result);
+
+    var imessage = try tool(&policy, "send_imessage", std.testing.allocator);
+    defer imessage.deinit(std.testing.allocator);
+    try std.testing.expectEqual(core.decision.DecisionResult.deny, imessage.decision.result);
+
+    var read_ok = try tool(&policy, "Read", std.testing.allocator);
+    defer read_ok.deinit(std.testing.allocator);
+    try std.testing.expectEqual(core.decision.DecisionResult.allow, read_ok.decision.result);
+}
+
+test "without effects section tool evaluation is pure mcp surface" {
+    const load = @import("load.zig");
+    var policy = try load.parseFromSlice(std.testing.allocator,
+        \\version: 1
+        \\mode: strict
+        \\mcp:
+        \\  default: allow
+    , "no-effects.yaml");
+    defer policy.deinit();
+    try std.testing.expect(!policy.effects.isActive());
+
+    var allowed = try tool(&policy, "send_email", std.testing.allocator);
+    defer allowed.deinit(std.testing.allocator);
+    try std.testing.expectEqual(core.decision.DecisionResult.allow, allowed.decision.result);
+}
+
+test "mcp explain path ignores effects; tool path applies them" {
+    const load = @import("load.zig");
+    var policy = try load.parseFromSlice(std.testing.allocator,
+        \\version: 1
+        \\mode: strict
+        \\mcp:
+        \\  default: allow
+        \\effects:
+        \\  deny:
+        \\    - comms.*
+    , "split.yaml");
+    defer policy.deinit();
+
+    var surface = try mcp(&policy, "send_email", std.testing.allocator);
+    defer surface.deinit(std.testing.allocator);
+    try std.testing.expectEqual(core.decision.DecisionResult.allow, surface.decision.result);
+
+    var with_effects = try tool(&policy, "send_email", std.testing.allocator);
+    defer with_effects.deinit(std.testing.allocator);
+    try std.testing.expectEqual(core.decision.DecisionResult.deny, with_effects.decision.result);
 }
