@@ -20,8 +20,10 @@ pub const ToolArgsView = struct {
 pub const max_keys: usize = 48;
 pub const max_string_values: usize = 16;
 pub const max_string_scan_bytes: usize = 4 * 1024;
-/// Cap on JSON object entries walked (padding resistance without unbounded memory).
+/// Cap on non-interesting JSON object entries walked (padding fill pass).
 pub const max_object_entries_scanned: usize = 256;
+/// Hard cap for interesting-key scan (full pass; still bounded to avoid DoS).
+pub const max_object_entries_interesting_scan: usize = 4096;
 
 const KeySet = struct {
     /// Required keys (normalized). All must be present.
@@ -418,13 +420,139 @@ fn appendStringValue(
     key: []const u8,
     s: []const u8,
     string_bytes: *usize,
+    prefer_interesting: bool,
 ) !void {
-    if (strings.items.len >= max_string_values) return;
+    var kbuf: [128]u8 = undefined;
+    const knorm = normalizeKeyBuf(key, &kbuf);
+    const interesting = if (knorm) |n| isInterestingKey(n) else false;
+
+    if (strings.items.len >= max_string_values) {
+        if (!prefer_interesting or !interesting) return;
+        // Evict a non-interesting value slot so padding cannot hide email/url shapes.
+        var replaced = false;
+        for (string_keys.items, 0..) |existing_key, i| {
+            var ebuf: [128]u8 = undefined;
+            const en = normalizeKeyBuf(existing_key, &ebuf) orelse continue;
+            if (isInterestingKey(en)) continue;
+            const old_len = strings.items[i].len;
+            allocator.free(strings.items[i]);
+            allocator.free(string_keys.items[i]);
+            if (string_bytes.* >= old_len) string_bytes.* -= old_len else string_bytes.* = 0;
+            if (string_bytes.* >= max_string_scan_bytes) return;
+            const take = @min(s.len, max_string_scan_bytes - string_bytes.*);
+            strings.items[i] = try allocator.dupe(u8, s[0..take]);
+            string_keys.items[i] = try allocator.dupe(u8, key);
+            string_bytes.* += take;
+            replaced = true;
+            break;
+        }
+        if (!replaced) return;
+        return;
+    }
     if (string_bytes.* >= max_string_scan_bytes) return;
     const take = @min(s.len, max_string_scan_bytes - string_bytes.*);
     try strings.append(allocator, try allocator.dupe(u8, s[0..take]));
     try string_keys.append(allocator, try allocator.dupe(u8, key));
     string_bytes.* += take;
+}
+
+const CollectMode = enum { interesting_only, non_interesting_only };
+
+/// Walk a JSON object collecting keys/values. Two-pass caller uses interesting_only first
+/// so late structural fields remain visible after decoy padding (order-independent).
+fn collectObjectEntries(
+    allocator: std.mem.Allocator,
+    object: std.json.ObjectMap,
+    keys: *std.ArrayList([]const u8),
+    strings: *std.ArrayList([]const u8),
+    string_keys: *std.ArrayList([]const u8),
+    string_bytes: *usize,
+    mode: CollectMode,
+) !void {
+    const scan_limit: usize = switch (mode) {
+        // Interesting pass walks far enough that decoy padding cannot hide to/body.
+        .interesting_only => max_object_entries_interesting_scan,
+        .non_interesting_only => max_object_entries_scanned,
+    };
+    var entries_scanned: usize = 0;
+    var it = object.iterator();
+    while (it.next()) |entry| {
+        if (entries_scanned >= scan_limit) break;
+        entries_scanned += 1;
+
+        var kbuf: [128]u8 = undefined;
+        const knorm = normalizeKeyBuf(entry.key_ptr.*, &kbuf);
+        const interesting = if (knorm) |n| isInterestingKey(n) else false;
+
+        // Nested objects: always walk one level for the matching mode (interesting nested
+        // keys can hide under a decoy parent key name).
+        if (entry.value_ptr.* == .object) {
+            try collectNested(
+                allocator,
+                entry.value_ptr.*.object,
+                keys,
+                strings,
+                string_keys,
+                string_bytes,
+                mode,
+            );
+        }
+
+        switch (mode) {
+            .interesting_only => if (!interesting) continue,
+            .non_interesting_only => if (interesting) continue,
+        }
+
+        try appendKeyIfRoom(allocator, keys, entry.key_ptr.*, interesting);
+
+        if (entry.value_ptr.* == .string) {
+            try appendStringValue(
+                allocator,
+                strings,
+                string_keys,
+                entry.key_ptr.*,
+                entry.value_ptr.*.string,
+                string_bytes,
+                interesting,
+            );
+        }
+    }
+}
+
+fn collectNested(
+    allocator: std.mem.Allocator,
+    nested: std.json.ObjectMap,
+    keys: *std.ArrayList([]const u8),
+    strings: *std.ArrayList([]const u8),
+    string_keys: *std.ArrayList([]const u8),
+    string_bytes: *usize,
+    mode: CollectMode,
+) !void {
+    var nit = nested.iterator();
+    var nested_scanned: usize = 0;
+    while (nit.next()) |nentry| {
+        if (nested_scanned >= 64) break;
+        nested_scanned += 1;
+        var nkbuf: [128]u8 = undefined;
+        const nknorm = normalizeKeyBuf(nentry.key_ptr.*, &nkbuf);
+        const ninteresting = if (nknorm) |n| isInterestingKey(n) else false;
+        switch (mode) {
+            .interesting_only => if (!ninteresting) continue,
+            .non_interesting_only => if (ninteresting) continue,
+        }
+        try appendKeyIfRoom(allocator, keys, nentry.key_ptr.*, ninteresting);
+        if (nentry.value_ptr.* == .string) {
+            try appendStringValue(
+                allocator,
+                strings,
+                string_keys,
+                nentry.key_ptr.*,
+                nentry.value_ptr.*.string,
+                string_bytes,
+                ninteresting,
+            );
+        }
+    }
 }
 
 pub fn toolArgsViewFromJsonObject(allocator: std.mem.Allocator, value: std.json.Value) !OwnedArgsView {
@@ -447,48 +575,11 @@ pub fn toolArgsViewFromJsonObject(allocator: std.mem.Allocator, value: std.json.
     }
 
     var string_bytes: usize = 0;
-    var entries_scanned: usize = 0;
 
-    var it = value.object.iterator();
-    while (it.next()) |entry| {
-        if (entries_scanned >= max_object_entries_scanned) break;
-        entries_scanned += 1;
-
-        var kbuf: [128]u8 = undefined;
-        const knorm = normalizeKeyBuf(entry.key_ptr.*, &kbuf);
-        const interesting = if (knorm) |n| isInterestingKey(n) else false;
-        try appendKeyIfRoom(allocator, &keys, entry.key_ptr.*, interesting);
-
-        switch (entry.value_ptr.*) {
-            .string => |s| {
-                try appendStringValue(allocator, &strings, &string_keys, entry.key_ptr.*, s, &string_bytes);
-            },
-            .object => |nested| {
-                // One-level flatten: nested keys count for structural sets (padding + wrap resistance).
-                var nit = nested.iterator();
-                var nested_scanned: usize = 0;
-                while (nit.next()) |nentry| {
-                    if (nested_scanned >= 64) break;
-                    nested_scanned += 1;
-                    var nkbuf: [128]u8 = undefined;
-                    const nknorm = normalizeKeyBuf(nentry.key_ptr.*, &nkbuf);
-                    const ninteresting = if (nknorm) |n| isInterestingKey(n) else false;
-                    try appendKeyIfRoom(allocator, &keys, nentry.key_ptr.*, ninteresting);
-                    if (nentry.value_ptr.* == .string) {
-                        try appendStringValue(
-                            allocator,
-                            &strings,
-                            &string_keys,
-                            nentry.key_ptr.*,
-                            nentry.value_ptr.*.string,
-                            &string_bytes,
-                        );
-                    }
-                }
-            },
-            else => {},
-        }
-    }
+    // Pass 1: interesting keys/values first (padding-resistant regardless of map order).
+    try collectObjectEntries(allocator, value.object, &keys, &strings, &string_keys, &string_bytes, .interesting_only);
+    // Pass 2: remaining non-interesting entries fill spare capacity (bounded).
+    try collectObjectEntries(allocator, value.object, &keys, &strings, &string_keys, &string_bytes, .non_interesting_only);
 
     return .{
         .view = .{
@@ -631,6 +722,48 @@ test "nested payload to+body is visible" {
         \\{"payload":{"to":"a@b.com","body":"hi"}}
     ;
     const parsed = try std.json.parseFromSlice(std.json.Value, std.testing.allocator, json, .{});
+    defer parsed.deinit();
+    var owned = try toolArgsViewFromJsonObject(std.testing.allocator, parsed.value);
+    defer owned.deinit(std.testing.allocator);
+    const hits = try classifyArgs(std.testing.allocator, "notify", owned.view);
+    defer std.testing.allocator.free(hits);
+    try std.testing.expect(hits.len >= 1);
+    try std.testing.expectEqualStrings("comms.message", hits[0].id);
+}
+
+test "string-value padding cannot hide email on contact key" {
+    // Fill max_string_values with decoy strings, then place email last.
+    var list: std.ArrayList(u8) = .empty;
+    defer list.deinit(std.testing.allocator);
+    try list.appendSlice(std.testing.allocator, "{");
+    var i: usize = 0;
+    while (i < max_string_values) : (i += 1) {
+        if (i > 0) try list.appendSlice(std.testing.allocator, ",");
+        try list.writer(std.testing.allocator).print("\"decoy{d}\":\"x\"", .{i});
+    }
+    try list.appendSlice(std.testing.allocator, ",\"email\":\"user@example.com\"}");
+    const parsed = try std.json.parseFromSlice(std.json.Value, std.testing.allocator, list.items, .{});
+    defer parsed.deinit();
+    var owned = try toolArgsViewFromJsonObject(std.testing.allocator, parsed.value);
+    defer owned.deinit(std.testing.allocator);
+    const hits = try classifyArgs(std.testing.allocator, "helper", owned.view);
+    defer std.testing.allocator.free(hits);
+    try std.testing.expect(hits.len >= 1);
+    try std.testing.expectEqualStrings("comms.message", hits[0].id);
+}
+
+test "large decoy object cannot hide to+body past scan window" {
+    // More than max_object_entries_scanned decoys, then to/body at the end.
+    var list: std.ArrayList(u8) = .empty;
+    defer list.deinit(std.testing.allocator);
+    try list.appendSlice(std.testing.allocator, "{");
+    var i: usize = 0;
+    while (i < max_object_entries_scanned + 8) : (i += 1) {
+        if (i > 0) try list.appendSlice(std.testing.allocator, ",");
+        try list.writer(std.testing.allocator).print("\"decoy{d}\":\"x\"", .{i});
+    }
+    try list.appendSlice(std.testing.allocator, ",\"to\":\"a@b.com\",\"body\":\"hi\"}");
+    const parsed = try std.json.parseFromSlice(std.json.Value, std.testing.allocator, list.items, .{});
     defer parsed.deinit();
     var owned = try toolArgsViewFromJsonObject(std.testing.allocator, parsed.value);
     defer owned.deinit(std.testing.allocator);

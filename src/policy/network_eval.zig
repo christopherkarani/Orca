@@ -2,6 +2,7 @@ const std = @import("std");
 
 const audit_redact = @import("../audit/redact_bridge.zig");
 const core = @import("../core/mod.zig");
+const effects = @import("effects/mod.zig");
 const matchers = @import("matchers.zig");
 const schema = @import("schema.zig");
 
@@ -228,6 +229,20 @@ pub fn evaluate(
     destination_text: []const u8,
     options: Options,
 ) !Decision {
+    var decision = try evaluateSurface(allocator, policy, effective_mode, destination_text, options);
+    errdefer decision.deinit(allocator);
+    // Shared by proxy / run / redteam: surface network rules ∩ effect host tags.
+    try mergeNetworkEffectTags(allocator, policy, effective_mode, options, &decision);
+    return decision;
+}
+
+fn evaluateSurface(
+    allocator: std.mem.Allocator,
+    policy: *const schema.Policy,
+    effective_mode: schema.Mode,
+    destination_text: []const u8,
+    options: Options,
+) !Decision {
     const destination = parseDestination(destination_text) catch |err| {
         if (effective_mode == .ci or effective_mode == .strict or policy.network.effectiveMode() == .off or policy.network.effectiveMode() == .allowlist) {
             const target = try allocator.dupe(u8, "[invalid-network-destination]");
@@ -304,6 +319,89 @@ pub fn evaluate(
         .open => .allow,
     };
     return buildDecision(allocator, destination, fallback, null, "network mode default", enforcement_mode, findings, target, true, options.ci_mode);
+}
+
+fn decisionResultSeverity(result: core.decision.DecisionResult) u8 {
+    return switch (result) {
+        .deny => 4,
+        .ask => 3,
+        .allow => 2,
+        .observe => 1,
+        .redact, .stage, .broker => 1,
+    };
+}
+
+/// When `effects:` is active, raise restriction for curated hosts (e.g. api.twitter.com → comms.publish).
+/// Only applies when a host tag hits — does not apply effects.default to untagged destinations.
+/// Used by the runtime proxy path (`orca run`) so it matches `policy explain network`.
+fn mergeNetworkEffectTags(
+    allocator: std.mem.Allocator,
+    policy: *const schema.Policy,
+    effective_mode: schema.Mode,
+    options: Options,
+    decision: *Decision,
+) !void {
+    if (!policy.effects.isActive()) return;
+    if (decision.destination.host.len == 0) return;
+
+    const hits = try effects.network_tags.classifyHost(allocator, decision.destination.host);
+    defer allocator.free(hits);
+    if (hits.len == 0) return;
+
+    const match = effects.evaluateHits(hits, .{
+        .allow = policy.effects.allow,
+        .deny = policy.effects.deny,
+        .ask = policy.effects.ask,
+        // No effects.default here: empty-hit paths already returned; for hits without an
+        // explicit allow/deny/ask we still let evaluateHits apply default if configured.
+        .default = if (policy.effects.default) |d| switch (d) {
+            .allow => .allow,
+            .deny => .deny,
+            .ask => .ask,
+            .observe => .observe,
+        } else null,
+    });
+    if (match.kind == .none) return;
+
+    var value: schema.DecisionValue = switch (match.kind) {
+        .allow => .allow,
+        .deny => .deny,
+        .ask => .ask,
+        .observe => .observe,
+        .none => return,
+    };
+    if ((effective_mode == .ci or options.ci_mode) and value == .ask) value = .deny;
+
+    const effect_result = value.toDecisionResult();
+    if (decisionResultSeverity(effect_result) <= decisionResultSeverity(decision.decision.result)) return;
+
+    // Allocate replacements first so a failed alloc cannot leave dangling free'd pointers.
+    const rule_id = try std.fmt.allocPrint(allocator, "effects.{s}", .{match.kind.toString()});
+    errdefer allocator.free(rule_id);
+    const reason = try std.fmt.allocPrint(
+        allocator,
+        "effect {s} ({s}); host={s}; enforcement={s}",
+        .{ match.effect_id, match.matcher, decision.destination.host, decision.enforcement_mode.toString() },
+    );
+    errdefer allocator.free(reason);
+
+    allocator.free(decision.owned_reason);
+    if (decision.owned_rule_id) |old| allocator.free(old);
+
+    decision.owned_rule_id = rule_id;
+    decision.owned_reason = reason;
+    decision.matched_rule = .{ .id = rule_id, .pattern = match.pattern };
+    decision.decision = .{
+        .result = effect_result,
+        .rule_id = rule_id,
+        .reason = reason,
+        .risk_score = decision.decision.risk_score,
+        .requires_user = effect_result == .ask,
+        .ci_may_proceed = if (options.ci_mode or effective_mode == .ci)
+            (effect_result == .allow or effect_result == .observe)
+        else
+            (effect_result != .deny),
+    };
 }
 
 fn evaluateServices(
@@ -1155,4 +1253,52 @@ test "unknown domain tracker owns host keys" {
     try std.testing.expectEqualStrings("first.example.com", stored);
     try std.testing.expect(stored.ptr != transient_ptr);
     try std.testing.expect(!try tracker.record("first.example.com"));
+}
+
+test "network effect tags deny publish host under open network policy" {
+    const load = @import("load.zig");
+    var policy = try load.parseFromSlice(std.testing.allocator,
+        \\version: 1
+        \\mode: strict
+        \\network:
+        \\  mode: open
+        \\  default: allow
+        \\effects:
+        \\  deny:
+        \\    - comms.publish
+    , "net-effects-proxy.yaml");
+    defer policy.deinit();
+
+    // Same path the runtime proxy uses (network_eval.evaluate).
+    var denied = try evaluate(std.testing.allocator, &policy, .strict, "https://api.twitter.com/2/tweets", .{
+        .enforcement_mode = .proxy_mediated,
+    });
+    defer denied.deinit(std.testing.allocator);
+    try std.testing.expectEqual(core.decision.DecisionResult.deny, denied.decision.result);
+    try std.testing.expect(std.mem.indexOf(u8, denied.decision.reason, "comms.publish") != null or
+        std.mem.indexOf(u8, denied.decision.reason, "network_tag.") != null);
+
+    var untagged = try evaluate(std.testing.allocator, &policy, .strict, "https://example.com/", .{
+        .enforcement_mode = .proxy_mediated,
+    });
+    defer untagged.deinit(std.testing.allocator);
+    try std.testing.expectEqual(core.decision.DecisionResult.allow, untagged.decision.result);
+}
+
+test "network effect tags absent when effects section missing" {
+    const load = @import("load.zig");
+    var policy = try load.parseFromSlice(std.testing.allocator,
+        \\version: 1
+        \\mode: strict
+        \\network:
+        \\  mode: open
+        \\  default: allow
+    , "net-open-proxy.yaml");
+    defer policy.deinit();
+
+    var allowed = try evaluate(std.testing.allocator, &policy, .strict, "https://api.twitter.com/2/tweets", .{
+        .enforcement_mode = .proxy_mediated,
+    });
+    defer allowed.deinit(std.testing.allocator);
+    try std.testing.expectEqual(core.decision.DecisionResult.allow, allowed.decision.result);
 }

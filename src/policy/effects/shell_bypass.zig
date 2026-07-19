@@ -23,24 +23,8 @@ pub fn classifyCommand(allocator: std.mem.Allocator, command_text: []const u8) !
         });
     }
 
-    // curl/wget to tagged hosts (scheme or bare host operand)
-    if (extractCurlLikeHost(trimmed)) |host| {
-        if (network_tags.effectForHost(host)) |tag| {
-            if (!hasEffectId(hits.items, tag.effect_id)) {
-                const matcher: []const u8 = if (std.mem.eql(u8, tag.effect_id, "comms.publish"))
-                    "shell_bypass.comms.publish.curl_host"
-                else if (std.mem.eql(u8, tag.effect_id, "comms.message"))
-                    "shell_bypass.comms.message.curl_host"
-                else
-                    "shell_bypass.unknown.external.curl_host";
-                try hits.append(allocator, .{
-                    .id = tag.effect_id,
-                    .confidence = .medium,
-                    .matcher = matcher,
-                });
-            }
-        }
-    }
+    // curl/wget: inspect every URL / tagged host operand (not only the first).
+    try appendCurlLikeHostEffects(allocator, trimmed, &hits);
 
     if (matchesOsascriptMessages(trimmed)) {
         if (!hasEffectId(hits.items, "comms.message")) {
@@ -65,33 +49,93 @@ fn hasEffectId(hits: []const catalog.EffectHit, id: []const u8) bool {
     return false;
 }
 
-/// `open` / `/usr/bin/open` as a command token with a following `mailto:` arg.
+fn appendCurlHostHit(
+    allocator: std.mem.Allocator,
+    hits: *std.ArrayList(catalog.EffectHit),
+    host: []const u8,
+) !void {
+    const tag = network_tags.effectForHost(host) orelse return;
+    if (hasEffectId(hits.items, tag.effect_id)) return;
+    const matcher: []const u8 = if (std.mem.eql(u8, tag.effect_id, "comms.publish"))
+        "shell_bypass.comms.publish.curl_host"
+    else if (std.mem.eql(u8, tag.effect_id, "comms.message"))
+        "shell_bypass.comms.message.curl_host"
+    else
+        "shell_bypass.unknown.external.curl_host";
+    try hits.append(allocator, .{
+        .id = tag.effect_id,
+        .confidence = .medium,
+        .matcher = matcher,
+    });
+}
+
+/// `open` / `/usr/bin/open` in command position with a following `mailto:` operand.
 fn matchesMailtoOpen(command_text: []const u8) bool {
-    var tokens: [32][]const u8 = undefined;
+    var tokens: [48][]const u8 = undefined;
     const n = tokenizeSimple(command_text, &tokens);
     if (n < 2) return false;
 
     var i: usize = 0;
     while (i + 1 < n) : (i += 1) {
         if (!isOpenToken(tokens[i])) continue;
-        // Next non-flag-like token should start with mailto:
+        if (!isCommandPosition(tokens[0..n], i)) continue;
+
+        // Walk past macOS `open` options (including value-taking flags like -a/-b).
         var j = i + 1;
-        while (j < n) : (j += 1) {
+        while (j < n) {
+            if (isShellOperator(tokens[j])) break;
             const t = tokens[j];
-            if (t.len > 0 and t[0] == '-') continue; // skip -a Mail etc. loosely
+            if (t.len > 0 and t[0] == '-') {
+                if (openFlagConsumesNext(t)) {
+                    j += 1; // flag
+                    if (j < n and !isShellOperator(tokens[j]) and !(tokens[j].len > 0 and tokens[j][0] == '-')) {
+                        j += 1; // option value (e.g. Mail)
+                    }
+                    continue;
+                }
+                j += 1; // boolean flag
+                continue;
+            }
             return startsWithIgnoreCase(t, "mailto:");
         }
     }
     return false;
 }
 
+/// macOS `open` flags that take a following value argument.
+fn openFlagConsumesNext(token: []const u8) bool {
+    return std.mem.eql(u8, token, "-a") or
+        std.mem.eql(u8, token, "-b") or
+        std.mem.eql(u8, token, "-s") or
+        std.mem.eql(u8, token, "--args");
+}
+
 fn isOpenToken(token: []const u8) bool {
     if (std.ascii.eqlIgnoreCase(token, "open")) return true;
-    // path form: .../open
     if (std.mem.lastIndexOfScalar(u8, token, '/')) |slash| {
         return std.ascii.eqlIgnoreCase(token[slash + 1 ..], "open");
     }
     return false;
+}
+
+fn isCurlLikeToken(token: []const u8) bool {
+    if (std.ascii.eqlIgnoreCase(token, "curl") or std.ascii.eqlIgnoreCase(token, "wget")) return true;
+    if (endsWithIgnoreCase(token, "/curl") or endsWithIgnoreCase(token, "/wget")) return true;
+    return false;
+}
+
+/// True when `index` is the first token of a shell command segment (start or after ; | && || &).
+fn isCommandPosition(tokens: []const []const u8, index: usize) bool {
+    if (index == 0) return true;
+    return isShellOperator(tokens[index - 1]);
+}
+
+fn isShellOperator(token: []const u8) bool {
+    return std.mem.eql(u8, token, ";") or
+        std.mem.eql(u8, token, "|") or
+        std.mem.eql(u8, token, "&&") or
+        std.mem.eql(u8, token, "||") or
+        std.mem.eql(u8, token, "&");
 }
 
 fn startsWithIgnoreCase(haystack: []const u8, prefix: []const u8) bool {
@@ -100,7 +144,7 @@ fn startsWithIgnoreCase(haystack: []const u8, prefix: []const u8) bool {
 }
 
 fn matchesOsascriptMessages(command_text: []const u8) bool {
-    var tokens: [32][]const u8 = undefined;
+    var tokens: [48][]const u8 = undefined;
     const n = tokenizeSimple(command_text, &tokens);
     var has_osascript = false;
     var has_messages = false;
@@ -129,12 +173,13 @@ fn indexOfIgnoreCase(haystack: []const u8, needle: []const u8) ?usize {
     return null;
 }
 
-/// Whitespace tokenizer with simple single/double quote stripping (no escapes).
+/// Whitespace tokenizer with quote stripping; also emits shell operators as tokens
+/// and splits attached operators (e.g. `decoy;` → `decoy`, `;`).
 fn tokenizeSimple(command_text: []const u8, out: [][]const u8) usize {
     var count: usize = 0;
     var i: usize = 0;
     while (i < command_text.len and count < out.len) {
-        while (i < command_text.len and (command_text[i] == ' ' or command_text[i] == '\t' or command_text[i] == '\n' or command_text[i] == '\r')) : (i += 1) {}
+        while (i < command_text.len and isSpace(command_text[i])) : (i += 1) {}
         if (i >= command_text.len) break;
 
         if (command_text[i] == '\'' or command_text[i] == '"') {
@@ -148,53 +193,97 @@ fn tokenizeSimple(command_text: []const u8, out: [][]const u8) usize {
             continue;
         }
 
+        // Shell operators as their own tokens (including && and ||).
+        if (tryEmitOperator(command_text, &i, out, &count)) continue;
+
         const start = i;
-        while (i < command_text.len and command_text[i] != ' ' and command_text[i] != '\t' and command_text[i] != '\n' and command_text[i] != '\r') : (i += 1) {}
-        out[count] = command_text[start..i];
-        count += 1;
+        while (i < command_text.len and !isSpace(command_text[i]) and !isOperatorStart(command_text, i)) : (i += 1) {}
+        if (i > start) {
+            out[count] = command_text[start..i];
+            count += 1;
+        }
     }
     return count;
 }
 
-/// Best-effort host from curl/wget: first http(s) URL or bare host-looking operand.
-fn extractCurlLikeHost(command_text: []const u8) ?[]const u8 {
-    var tokens: [32][]const u8 = undefined;
+fn isSpace(c: u8) bool {
+    return c == ' ' or c == '\t' or c == '\n' or c == '\r';
+}
+
+fn isOperatorStart(text: []const u8, i: usize) bool {
+    const c = text[i];
+    return c == ';' or c == '|' or c == '&';
+}
+
+fn tryEmitOperator(text: []const u8, i: *usize, out: [][]const u8, count: *usize) bool {
+    if (count.* >= out.len or i.* >= text.len) return false;
+    const c = text[i.*];
+    if (c == ';') {
+        out[count.*] = text[i.* .. i.* + 1];
+        count.* += 1;
+        i.* += 1;
+        return true;
+    }
+    if (c == '|' or c == '&') {
+        if (i.* + 1 < text.len and text[i.* + 1] == c) {
+            out[count.*] = text[i.* .. i.* + 2];
+            count.* += 1;
+            i.* += 2;
+            return true;
+        }
+        out[count.*] = text[i.* .. i.* + 1];
+        count.* += 1;
+        i.* += 1;
+        return true;
+    }
+    return false;
+}
+
+/// Append effect hits for every curl/wget URL / tagged host operand in command position.
+fn appendCurlLikeHostEffects(
+    allocator: std.mem.Allocator,
+    command_text: []const u8,
+    hits: *std.ArrayList(catalog.EffectHit),
+) !void {
+    var tokens: [48][]const u8 = undefined;
     const n = tokenizeSimple(command_text, &tokens);
-    if (n == 0) return null;
+    if (n == 0) return;
 
-    var is_curl = false;
-    for (tokens[0..n]) |t| {
-        if (std.ascii.eqlIgnoreCase(t, "curl") or std.ascii.eqlIgnoreCase(t, "wget") or
-            endsWithIgnoreCase(t, "/curl") or endsWithIgnoreCase(t, "/wget"))
-        {
-            is_curl = true;
-            break;
-        }
-    }
-    if (!is_curl) return null;
-
-    // Prefer explicit http(s) URL token
-    for (tokens[0..n]) |t| {
-        if (startsWithIgnoreCase(t, "https://") or startsWithIgnoreCase(t, "http://")) {
-            return network_tags.hostFromUrlOrHost(t);
-        }
-    }
-    // --url value
     var i: usize = 0;
-    while (i + 1 < n) : (i += 1) {
-        if (std.mem.eql(u8, tokens[i], "--url") or std.mem.eql(u8, tokens[i], "-url")) {
-            return network_tags.hostFromUrlOrHost(tokens[i + 1]);
+    while (i < n) : (i += 1) {
+        if (!isCurlLikeToken(tokens[i])) continue;
+        if (!isCommandPosition(tokens[0..n], i)) continue;
+
+        // Scan operands until next shell operator.
+        var j = i + 1;
+        while (j < n) : (j += 1) {
+            if (isShellOperator(tokens[j])) break;
+            const t = tokens[j];
+            if (t.len == 0) continue;
+
+            // --url / -url VALUE
+            if ((std.mem.eql(u8, t, "--url") or std.mem.eql(u8, t, "-url")) and j + 1 < n) {
+                const host = network_tags.hostFromUrlOrHost(tokens[j + 1]);
+                try appendCurlHostHit(allocator, hits, host);
+                j += 1;
+                continue;
+            }
+
+            if (t[0] == '-') continue; // other flags (value args may look host-like; skip flags only)
+
+            if (startsWithIgnoreCase(t, "https://") or startsWithIgnoreCase(t, "http://")) {
+                const host = network_tags.hostFromUrlOrHost(t);
+                try appendCurlHostHit(allocator, hits, host);
+                continue;
+            }
+
+            // Bare host-looking tokens that match a curated tag.
+            if (std.mem.indexOfScalar(u8, t, '.') != null) {
+                const host = network_tags.hostFromUrlOrHost(t);
+                try appendCurlHostHit(allocator, hits, host);
+            }
         }
     }
-    // Bare host-looking tokens (contain a dot, not a flag)
-    for (tokens[0..n]) |t| {
-        if (t.len == 0 or t[0] == '-') continue;
-        if (std.ascii.eqlIgnoreCase(t, "curl") or std.ascii.eqlIgnoreCase(t, "wget")) continue;
-        if (std.mem.indexOfScalar(u8, t, '.') == null) continue;
-        const host = network_tags.hostFromUrlOrHost(t);
-        if (network_tags.effectForHost(host) != null) return host;
-    }
-    return null;
 }
 
 test "open mailto classifies as comms.message" {
@@ -212,8 +301,36 @@ test "open mailto without quotes" {
     try std.testing.expect(std.mem.startsWith(u8, hits[0].matcher, "shell_bypass."));
 }
 
+test "open -a Mail mailto still classifies" {
+    const hits = try classifyCommand(std.testing.allocator, "open -a Mail mailto:x@y.com");
+    defer std.testing.allocator.free(hits);
+    try std.testing.expect(hits.len >= 1);
+    try std.testing.expectEqualStrings("comms.message", hits[0].id);
+}
+
+test "open -b bundle mailto still classifies" {
+    const hits = try classifyCommand(std.testing.allocator, "open -b com.apple.mail mailto:x@y.com");
+    defer std.testing.allocator.free(hits);
+    try std.testing.expect(hits.len >= 1);
+    try std.testing.expectEqualStrings("comms.message", hits[0].id);
+}
+
+test "decoy mailto before real open still classifies" {
+    const hits = try classifyCommand(std.testing.allocator, "echo mailto:decoy; open mailto:x@y.com");
+    defer std.testing.allocator.free(hits);
+    try std.testing.expect(hits.len >= 1);
+    try std.testing.expectEqualStrings("comms.message", hits[0].id);
+}
+
 test "incidental open in text is not mailto bypass" {
     const hits = try classifyCommand(std.testing.allocator, "echo 'please open mailto:x@y.com'");
+    defer std.testing.allocator.free(hits);
+    try std.testing.expectEqual(@as(usize, 0), hits.len);
+}
+
+test "printf open mailto args is not mailto bypass" {
+    // open/mailto appear as data operands, not as a command launch.
+    const hits = try classifyCommand(std.testing.allocator, "printf '%s %s' open mailto:x@y.com");
     defer std.testing.allocator.free(hits);
     try std.testing.expectEqual(@as(usize, 0), hits.len);
 }
@@ -234,6 +351,24 @@ test "curl to twitter host is publish" {
 
 test "curl bare tagged host is publish" {
     const hits = try classifyCommand(std.testing.allocator, "curl -X POST api.twitter.com/2/tweets");
+    defer std.testing.allocator.free(hits);
+    try std.testing.expect(hits.len >= 1);
+    try std.testing.expectEqualStrings("comms.publish", hits[0].id);
+}
+
+test "curl multi-URL second tagged host still hits" {
+    // First URL is untagged; second is a publish host — must still classify.
+    const hits = try classifyCommand(
+        std.testing.allocator,
+        "curl https://example.com https://api.twitter.com/2/tweets",
+    );
+    defer std.testing.allocator.free(hits);
+    try std.testing.expect(hits.len >= 1);
+    try std.testing.expectEqualStrings("comms.publish", hits[0].id);
+}
+
+test "curl --url tagged host hits" {
+    const hits = try classifyCommand(std.testing.allocator, "curl --url https://api.twitter.com/2/tweets");
     defer std.testing.allocator.free(hits);
     try std.testing.expect(hits.len >= 1);
     try std.testing.expectEqualStrings("comms.publish", hits[0].id);

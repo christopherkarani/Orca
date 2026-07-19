@@ -13,6 +13,11 @@
 - **Shell bypass (Zig command path)** — `open mailto:…` (and optional curl-to-tagged-host) merges effects on Zig command evaluation (`shell_bypass.*`); host shell PreToolUse still primarily uses Rust packs (documented residual gap).
 - `orca policy explain tool <name> --args '<json-object>'` for structural demos (size-bounded).
 
+### Fixed
+- Network effect tags now apply on the **runtime proxy** path (`network_eval.evaluate` / `orca run`), not only `policy explain network`.
+- Shell bypass: `open -a`/`-b` option values are skipped; multi-URL `curl` scans every operand; `open`/`curl` require command position (avoids `printf … open mailto:` false positives).
+- Structural arg scan prefers interesting keys/values against decoy padding (including large objects and string-value slot exhaustion).
+
 ## v1.2.8 - 2026-07-04
 
 ### Changed

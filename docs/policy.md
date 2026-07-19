@@ -158,10 +158,12 @@ deny into allow. Explicit MCP allow does not override an effect deny.
    only — never raw secret values).
 3. **Network host tags** — when `effects:` is active, destinations such as
    `api.twitter.com` map to `comms.publish` (matcher `network_tag.…`) and
-   merge with network surface rules.
+   merge with network surface rules on **both** `policy explain network` and
+   the runtime proxy (`orca run` / `network_eval.evaluate`).
 4. **Shell bypass (Zig command path)** — patterns such as `open mailto:…`
-   map to `comms.message` (matcher `shell_bypass.…`) on Zig `command` /
-   `orca policy explain command` evaluation. Optional: `curl` to a tagged host.
+   (including `open -a Mail mailto:…`), multi-URL `curl` to tagged hosts, and
+   command-position matching map to `comms.message` / `comms.publish`
+   (matcher `shell_bypass.…`) on Zig `command` evaluation.
 
 Surfaces covered:
 
@@ -170,7 +172,8 @@ Surfaces covered:
 - `orca decide tool --json '{"name":"…","tool_input":{…}}'` (same arg shapes)
 - `orca policy explain tool <name> --args '{…}'` for demos
 - MCP `tools/call` via the proxy (name + `arguments` object)
-- Network connect evaluation when effects are configured
+- Network connect evaluation when effects are configured (explain **and**
+  proxy-mediated runtime)
 - Zig command evaluation (`orca policy explain command`, `command_exec`)
 
 ### Residual gaps
@@ -178,9 +181,11 @@ Surfaces covered:
 - **Host shell PreToolUse** still primarily uses the **Rust daemon** and
   `commands` packs. Phase B shell effect patterns apply on the **Zig** command
   evaluation path; full Rust-pack parity is not claimed. Network effect tags
-  still catch many `curl`-style bypasses when the network path is evaluated.
-- Structural classification is top-level + one nested object level of keys;
-  deeper nesting or stringified JSON args are not fully covered.
+  still catch many `curl`-style bypasses when the network path is evaluated
+  (including the proxy).
+- Structural classification is top-level + one nested object level of keys
+  (interesting keys preferred against padding); deeper nesting or stringified
+  JSON args are not fully covered.
 - Host file PreToolUse uses `files.write` / `files.read` (not effect IDs on
   that specialized route). Denying `shell.exec` / `fs.write` as effects only
   applies when the call is evaluated as a **tool name**.
