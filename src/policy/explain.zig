@@ -10,6 +10,8 @@ pub const ExplainKind = enum {
     command,
     network,
     mcp,
+    /// Host/MCP tool call by name (MCP selector ∩ effect-class rules).
+    tool,
 
     pub fn parse(value: []const u8) ?ExplainKind {
         if (std.mem.eql(u8, value, "file.read")) return .file_read;
@@ -18,6 +20,7 @@ pub const ExplainKind = enum {
         if (std.mem.eql(u8, value, "command")) return .command;
         if (std.mem.eql(u8, value, "network")) return .network;
         if (std.mem.eql(u8, value, "mcp")) return .mcp;
+        if (std.mem.eql(u8, value, "tool")) return .tool;
         return null;
     }
 };
@@ -49,6 +52,7 @@ pub fn explainWithOptions(
         .command => evaluate.command(policy, target, allocator),
         .network => if (options.network_method) |method| evaluate.networkWithMethod(policy, target, method, allocator) else evaluate.network(policy, target, allocator),
         .mcp => evaluate.mcp(policy, target, allocator),
+        .tool => evaluate.tool(policy, target, allocator),
     };
 }
 

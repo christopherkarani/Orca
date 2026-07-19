@@ -137,7 +137,7 @@ fn check(io: std.Io, argv: []const []const u8, stdout: anytype, stderr: anytype)
 
 fn explain(io: std.Io, argv: []const []const u8, stdout: anytype, stderr: anytype) !u8 {
     if (argv.len == 1 and (std.mem.eql(u8, argv[0], "--help") or std.mem.eql(u8, argv[0], "-h"))) {
-        try stdout.writeAll("Usage:\n  orca policy explain [--policy <path>] <file.read|file.write|env|command|network|mcp> <target> [--method <HTTP_METHOD>]\n");
+        try stdout.writeAll("Usage:\n  orca policy explain [--policy <path>] <file.read|file.write|env|command|network|mcp|tool> <target> [--method <HTTP_METHOD>]\n");
         return exit_codes.success;
     }
     var policy_path: ?[]const u8 = null;

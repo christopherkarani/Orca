@@ -102,6 +102,16 @@ mcp:
   deny:
     - "*.delete_*"
     - "*.run_command"
+effects:
+  # Optional. When present, tool calls are also classified into semantic effects
+  # (comms.message, comms.publish, money.transfer, …) independent of exact tool names.
+  default: allow
+  deny:
+    - comms.message
+    - comms.publish
+    - money.transfer
+  ask:
+    - unknown.external
 audit:
   level: full
   redact_secrets: true
@@ -112,6 +122,46 @@ audit:
 to `true`. Setting it to `false` is rejected: persisted audit records and
 exported replay data never permit raw secrets.
 
+## Effects (semantic tool intent)
+
+When the `effects:` section is present, Orca classifies host and MCP **tool
+names** into coarse effect IDs and evaluates them in addition to surface rules
+(`mcp`, `commands`, `files`, `network`). Missing `effects:` keeps legacy
+behavior (no effect evaluation).
+
+| Effect ID | Meaning |
+|-----------|---------|
+| `comms.message` | Email, SMS, iMessage, Slack/Discord/Telegram-style messaging |
+| `comms.publish` | Public social posts (Twitter/X, LinkedIn, …) |
+| `comms.calendar` | Calendar / invite side effects (reserved; limited catalog coverage in Phase A) |
+| `money.transfer` | Payments and transfers |
+| `identity.auth` | Token/PAT/OAuth minting |
+| `device.control` | Physical / IoT actuation |
+| `code.mutate_remote` / `secrets.read` | Reserved for later phases (valid in YAML; limited emitters today) |
+| `shell.exec` / `fs.read` / `fs.write` / `net.connect` | Tool-name surface IDs for shell/fs/net-shaped **tool names** |
+| `unknown.external` | Unclassified outbound-looking tool names (`send_*`, `post_*`, …) |
+
+Patterns may be exact IDs or family wildcards (`comms.*`). **Any denied effect
+denies**; deny beats allow. Explicit MCP allow does not override an effect deny.
+
+Phase A matches **tool names** (catalog + tokens) on the tool-call surface:
+
+- Host generic tools (`orca decide tool`, PreToolUse non-shell/file routes)
+- MCP `tools/call` via the proxy
+
+**Not covered yet by `effects:`:** host shell PreToolUse (Rust daemon / `commands`
+rules) and host file PreToolUse (`files.write` / `files.read`). Denying
+`shell.exec` or `fs.write` only applies when the call is evaluated as a tool
+name (MCP or generic tool path), not when those specialized host routes run.
+Shell argv and network host bypasses still rely on `commands` / `network` rules
+(and future effect cross-linking).
+
+When `effects:` is present, `effects.default` applies to **catalog hits that
+match no allow/deny/ask pattern** and to **tools with zero catalog hits**
+(unclassified names). Missing `effects:` keeps legacy behavior.
+
+Preset: `no-external-comms` (`orca init --preset no-external-comms`).
+
 Explain decisions:
 
 ```sh
@@ -120,6 +170,7 @@ Explain decisions:
 ./zig-out/bin/orca policy explain network https://example.invalid/path
 ./zig-out/bin/orca policy explain network https://api.github.com/repos/acme/app/issues --method POST
 ./zig-out/bin/orca policy explain mcp demo.list_files
+./zig-out/bin/orca policy explain tool send_email
 ```
 
 ## Invalid Policy Behavior

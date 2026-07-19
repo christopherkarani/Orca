@@ -80,7 +80,7 @@ pub fn presetOptInPacks(preset: orca_policy.presets.AgentPreset) []const []const
         // Coding agents: small safe package-manager pack.
         .claude_code, .codex, .cursor_agent, .opencode, .cline_roo => &.{"package_managers"},
         // Local strict: extra git paranoia on top of baseline.
-        .strict_local => &.{"strict_git"},
+        .strict_local, .no_external_comms => &.{"strict_git"},
         // Team / CI style: containers + k8s + terraform + GHA.
         .team_ci, .github_actions => &.{
             "containers.docker",

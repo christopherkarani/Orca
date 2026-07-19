@@ -248,6 +248,26 @@ pub const ServicePolicy = struct {
 
 pub const MCPPolicy = RuleSet;
 
+/// Effect-class policy (semantic tool intent). Inactive unless `configured` is true
+/// (the `effects:` key was present in the policy document).
+pub const EffectsPolicy = struct {
+    configured: bool = false,
+    allow: []const []const u8 = &.{},
+    deny: []const []const u8 = &.{},
+    ask: []const []const u8 = &.{},
+    default: ?DecisionValue = null,
+
+    pub fn isActive(self: EffectsPolicy) bool {
+        return self.configured;
+    }
+
+    pub fn deinit(self: EffectsPolicy, allocator: std.mem.Allocator) void {
+        freeStringList(allocator, self.allow);
+        freeStringList(allocator, self.deny);
+        freeStringList(allocator, self.ask);
+    }
+};
+
 pub const CredentialBrokerKind = enum {
     local_dummy,
     env_file_dev,
@@ -331,6 +351,7 @@ pub const Policy = struct {
     credentials: CredentialsPolicy = .{},
     services: []const ServicePolicy = &.{},
     mcp: MCPPolicy = .{},
+    effects: EffectsPolicy = .{},
     audit: AuditPolicy = .{},
     source_path: ?[]const u8 = null,
     allocator: std.mem.Allocator,
@@ -345,6 +366,7 @@ pub const Policy = struct {
         for (self.services) |service| service.deinit(self.allocator);
         if (self.services.len > 0) self.allocator.free(self.services);
         self.mcp.deinit(self.allocator);
+        self.effects.deinit(self.allocator);
         if (self.source_path) |path| self.allocator.free(path);
         self.* = undefined;
     }

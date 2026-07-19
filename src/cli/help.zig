@@ -454,7 +454,7 @@ pub const commands =
         "  orca policy check [policy-path]   # default: workspace .orca/policy.yaml (not builtin)",
         "  orca policy check --preset <observe|ask|strict|ci|redteam|trusted>",
         "  orca policy check builtin:<preset>",
-        "  orca policy explain [--policy <path>] <file.read|file.write|env|command|network|mcp> <target> [--method <HTTP_METHOD>]",
+        "  orca policy explain [--policy <path>] <file.read|file.write|env|command|network|mcp|tool> <target> [--method <HTTP_METHOD>]",
         "  orca policy packs",
         "  orca policy apply-pack <solo-dev|strict-local|team-ci|openclaw-hermes> [--force]",
         "policy check with no path validates the workspace policy only; missing policy fails (run orca init).",

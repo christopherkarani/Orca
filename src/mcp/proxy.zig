@@ -1618,3 +1618,32 @@ test "proxy fails closed for high-volume tools/list responses" {
     try std.testing.expect(std.mem.indexOf(u8, written, "\"error\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, written, "\"tools\"") == null);
 }
+
+test "proxy denies send_email when effects.deny includes comms.message" {
+    const load = policy_mod.load;
+    var policy = try load.parseFromSlice(std.testing.allocator,
+        \\version: 1
+        \\mode: strict
+        \\mcp:
+        \\  default: allow
+        \\  allow:
+        \\    - "*"
+        \\effects:
+        \\  deny:
+        \\    - comms.message
+    , "effects.yaml");
+    defer policy.deinit();
+    var server = FakeServer{ .allocator = std.testing.allocator };
+    var input: std.Io.Reader = .fixed("{\"jsonrpc\":\"2.0\",\"id\":40,\"method\":\"tools/call\",\"params\":{\"name\":\"send_email\",\"arguments\":{\"to\":\"a@b.com\"}}}\n");
+    var output_buf: [1024]u8 = undefined;
+    var output_writer: std.Io.Writer = .fixed(&output_buf);
+    try runWithServer(std.testing.allocator, .{
+        .server_name = "fake",
+        .server_command_display = "fake",
+        .policy = &policy,
+        .mode = .strict,
+    }, &input, &output_writer, .{ .context = &server, .request = FakeServer.request, .notify = FakeServer.notify });
+    try std.testing.expect(!server.saw_safe_call);
+    try std.testing.expect(std.mem.indexOf(u8, output_writer.buffered(), "\"error\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, output_writer.buffered(), "policy") != null or std.mem.indexOf(u8, output_writer.buffered(), "denied") != null);
+}

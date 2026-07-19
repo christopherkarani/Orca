@@ -40,6 +40,7 @@ const Section = enum {
     mcp_servers,
     mcp_server,
     mcp_server_tools,
+    effects,
     audit,
     ignored,
 };
@@ -68,6 +69,9 @@ const ListTarget = enum {
     mcp_allow,
     mcp_deny,
     mcp_ask,
+    effects_allow,
+    effects_deny,
+    effects_ask,
 };
 
 const ServiceBuilder = struct {
@@ -204,6 +208,11 @@ const Builder = struct {
     mcp_ask: std.ArrayList([]const u8) = .empty,
     mcp_default: ?schema.DecisionValue = null,
     active_mcp_server: ?[]const u8 = null,
+    effects_configured: bool = false,
+    effects_allow: std.ArrayList([]const u8) = .empty,
+    effects_deny: std.ArrayList([]const u8) = .empty,
+    effects_ask: std.ArrayList([]const u8) = .empty,
+    effects_default: ?schema.DecisionValue = null,
     audit_level: schema.AuditLevel = .full,
     audit_redact_secrets: bool = true,
     audit_tamper_evident: bool = true,
@@ -240,6 +249,9 @@ const Builder = struct {
         freeList(self.allocator, &self.mcp_deny);
         freeList(self.allocator, &self.mcp_ask);
         if (self.active_mcp_server) |server| self.allocator.free(server);
+        freeList(self.allocator, &self.effects_allow);
+        freeList(self.allocator, &self.effects_deny);
+        freeList(self.allocator, &self.effects_ask);
     }
 
     fn append(self: *Builder, target: ListTarget, value: []const u8) !void {
@@ -273,6 +285,9 @@ const Builder = struct {
             .mcp_allow => try self.mcp_allow.append(self.allocator, owned),
             .mcp_deny => try self.mcp_deny.append(self.allocator, owned),
             .mcp_ask => try self.mcp_ask.append(self.allocator, owned),
+            .effects_allow => try self.effects_allow.append(self.allocator, owned),
+            .effects_deny => try self.effects_deny.append(self.allocator, owned),
+            .effects_ask => try self.effects_ask.append(self.allocator, owned),
             .none => return error.InvalidPolicy,
         }
     }
@@ -336,6 +351,10 @@ const Builder = struct {
             .credentials = .{},
             .services = &.{},
             .mcp = .{ .default = self.mcp_default },
+            .effects = .{
+                .configured = self.effects_configured,
+                .default = self.effects_default,
+            },
             .audit = .{
                 .level = self.audit_level,
                 .redact_secrets = self.audit_redact_secrets,
@@ -367,6 +386,9 @@ const Builder = struct {
         policy.mcp.allow = try self.mcp_allow.toOwnedSlice(self.allocator);
         policy.mcp.deny = try self.mcp_deny.toOwnedSlice(self.allocator);
         policy.mcp.ask = try self.mcp_ask.toOwnedSlice(self.allocator);
+        policy.effects.allow = try self.effects_allow.toOwnedSlice(self.allocator);
+        policy.effects.deny = try self.effects_deny.toOwnedSlice(self.allocator);
+        policy.effects.ask = try self.effects_ask.toOwnedSlice(self.allocator);
         policy.source_path = if (source_path) |path| try self.allocator.dupe(u8, path) else null;
         try validate.policy(&policy);
         return policy;
@@ -560,6 +582,10 @@ fn parseYaml(allocator: std.mem.Allocator, text: []const u8, source_path: ?[]con
             } else if (std.mem.eql(u8, key, "mcp")) {
                 try requireEmptyGroupingValue(value);
                 section = .mcp;
+            } else if (std.mem.eql(u8, key, "effects")) {
+                try requireEmptyGroupingValue(value);
+                builder.effects_configured = true;
+                section = .effects;
             } else if (std.mem.eql(u8, key, "audit")) {
                 try requireEmptyGroupingValue(value);
                 section = .audit;
@@ -791,6 +817,7 @@ fn applyYamlField(builder: *Builder, section: Section, key: []const u8, value: [
                 try applyRuleSetField(builder, .mcp_allow, .mcp_deny, .mcp_ask, &builder.mcp_default, key, scalar, list_target);
             }
         },
+        .effects => try applyRuleSetField(builder, .effects_allow, .effects_deny, .effects_ask, &builder.effects_default, key, scalar, list_target),
         .audit => {
             if (std.mem.eql(u8, key, "level")) builder.audit_level = schema.AuditLevel.parse(scalar) orelse return error.UnsupportedPolicyAuditLevel else if (std.mem.eql(u8, key, "redact_secrets")) builder.audit_redact_secrets = try parseBool(scalar) else if (std.mem.eql(u8, key, "tamper_evident")) builder.audit_tamper_evident = try parseBool(scalar) else return error.InvalidPolicy;
         },
@@ -836,7 +863,7 @@ fn parseJson(allocator: std.mem.Allocator, text: []const u8, source_path: ?[]con
     defer parsed.deinit();
     if (parsed.value != .object) return error.InvalidPolicy;
     const object = parsed.value.object;
-    try rejectUnknownKeys(object, &.{ "version", "mode", "workspace", "env", "files", "commands", "network", "credentials", "services", "mcp", "audit" });
+    try rejectUnknownKeys(object, &.{ "version", "mode", "workspace", "env", "files", "commands", "network", "credentials", "services", "mcp", "effects", "audit" });
     var builder = Builder.init(allocator);
     defer builder.deinit();
 
@@ -854,8 +881,14 @@ fn parseJson(allocator: std.mem.Allocator, text: []const u8, source_path: ?[]con
     if (object.get("credentials")) |value| try parseJsonCredentials(&builder, value);
     if (object.get("services")) |value| try parseJsonServices(&builder, value);
     if (object.get("mcp")) |value| try parseJsonMcp(&builder, value);
+    if (object.get("effects")) |value| try parseJsonEffects(&builder, value);
     if (object.get("audit")) |value| try parseJsonAudit(&builder, value);
     return builder.toPolicy(source_path);
+}
+
+fn parseJsonEffects(builder: *Builder, value: std.json.Value) !void {
+    builder.effects_configured = true;
+    try parseJsonRules(builder, value, .effects_allow, .effects_deny, .effects_ask, &builder.effects_default);
 }
 
 fn parseJsonWorkspace(builder: *Builder, value: std.json.Value) !void {
@@ -1420,4 +1453,61 @@ fn parsePolicyAllocationFailureProbe(allocator: std.mem.Allocator) !void {
 fn discoverPolicyAllocationFailureProbe(allocator: std.mem.Allocator, policy_path: []const u8, root: []const u8) !void {
     var loaded = try discover(allocator, policy_path, root);
     defer loaded.deinit();
+}
+
+test "effects section loads and marks configured" {
+    var yaml_policy = try parseFromSlice(std.testing.allocator,
+        \\version: 1
+        \\mode: strict
+        \\effects:
+        \\  default: allow
+        \\  deny:
+        \\    - comms.message
+        \\    - comms.*
+        \\  ask:
+        \\    - unknown.external
+    , "effects.yaml");
+    defer yaml_policy.deinit();
+    try std.testing.expect(yaml_policy.effects.isActive());
+    try std.testing.expectEqual(schema.DecisionValue.allow, yaml_policy.effects.default.?);
+    try std.testing.expectEqualStrings("comms.message", yaml_policy.effects.deny[0]);
+    try std.testing.expectEqualStrings("comms.*", yaml_policy.effects.deny[1]);
+    try std.testing.expectEqualStrings("unknown.external", yaml_policy.effects.ask[0]);
+
+    var json_policy = try parseFromSlice(std.testing.allocator,
+        \\{"version":1,"mode":"strict","effects":{"deny":["money.transfer"],"default":"ask"}}
+    , "effects.json");
+    defer json_policy.deinit();
+    try std.testing.expect(json_policy.effects.isActive());
+    try std.testing.expectEqualStrings("money.transfer", json_policy.effects.deny[0]);
+    try std.testing.expectEqual(schema.DecisionValue.ask, json_policy.effects.default.?);
+}
+
+test "effects section absent is inactive" {
+    var policy = try parseFromSlice(std.testing.allocator,
+        \\version: 1
+        \\mode: strict
+        \\mcp:
+        \\  default: deny
+    , "no-effects.yaml");
+    defer policy.deinit();
+    try std.testing.expect(!policy.effects.isActive());
+}
+
+test "invalid effect patterns are rejected" {
+    try std.testing.expectError(error.InvalidPolicy, parseFromSlice(std.testing.allocator,
+        \\version: 1
+        \\mode: strict
+        \\effects:
+        \\  deny:
+        \\    - not.a.real.effect
+    , "bad-effects.yaml"));
+
+    try std.testing.expectError(error.InvalidPolicy, parseFromSlice(std.testing.allocator,
+        \\version: 1
+        \\mode: strict
+        \\effects:
+        \\  deny:
+        \\    - nope.*
+    , "bad-wildcard.yaml"));
 }

@@ -395,7 +395,9 @@ fn evaluateDecision(
                 extractString(payload, "tool") orelse
                 extractNestedString(payload, &.{ "tool", "name" }) orelse
                 return error.MissingRequiredField;
-            const evaluation = try core_api.explainAction(allocator, @ptrCast(policy_value), .mcp, tool_name);
+            // Use .tool (MCP surface ∩ effect-class), not pure .mcp, so `orca decide tool`
+            // matches host PreToolUse / MCP proxy enforcement when effects: is configured.
+            const evaluation = try core_api.explainAction(allocator, @ptrCast(policy_value), .tool, tool_name);
             defer evaluation.deinit(allocator);
 
             const decision = PluginDecision.fromDecisionResult(evaluation.decision.result, ci_mode);
@@ -1144,6 +1146,49 @@ test "decide tool returns valid JSON" {
     try std.testing.expect(parsed.value.object.get("category") != null);
     try std.testing.expect(parsed.value.object.get("reason") != null);
     try std.testing.expect(parsed.value.object.get("message") != null);
+}
+
+test "decide tool applies effect-class denials" {
+    // MCP surface allows the tool; effects must still deny (proves .tool path, not pure .mcp).
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try tmp.dir.writeFile(std.testing.io, .{
+        .sub_path = "policy.yaml",
+        .data =
+        \\version: 1
+        \\mode: strict
+        \\mcp:
+        \\  default: allow
+        \\effects:
+        \\  deny:
+        \\    - comms.message
+        \\
+        ,
+    });
+    const policy_path = try tmp.dir.realPathFileAlloc(std.testing.io, "policy.yaml", std.testing.allocator);
+    defer std.testing.allocator.free(policy_path);
+
+    var stdout_buf: [4096]u8 = undefined;
+    var stderr_buf: [512]u8 = undefined;
+    var stdout_writer: std.Io.Writer = .fixed(&stdout_buf);
+    var stderr_writer: std.Io.Writer = .fixed(&stderr_buf);
+
+    const code = try decideCommandWithPolicy(
+        std.testing.io,
+        .tool,
+        &.{ "--json", "{\"name\":\"send_email\"}" },
+        &stdout_writer,
+        &stderr_writer,
+        policy_path,
+    );
+    try std.testing.expectEqual(exit_codes.denial, code);
+    const output = stdout_writer.buffered();
+    var parsed = try std.json.parseFromSlice(std.json.Value, std.testing.allocator, output, .{});
+    defer parsed.deinit();
+    try std.testing.expectEqualStrings("block", parsed.value.object.get("decision").?.string);
+    const reason = parsed.value.object.get("reason").?.string;
+    try std.testing.expect(std.mem.indexOf(u8, reason, "comms.message") != null);
+    try std.testing.expect(std.mem.indexOf(u8, reason, "effect") != null);
 }
 
 test "decide non-ci mode returns ask exit code for unknown command" {
