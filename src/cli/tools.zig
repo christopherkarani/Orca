@@ -110,18 +110,32 @@ fn classify(io: std.Io, argv: []const []const u8, stdout: anytype, stderr: anyty
     };
     defer pack_set.deinit();
 
-    const hits = try orca_policy.effects.classifyToolCallWithPacks(allocator, &pack_set, name, args_view);
-    defer allocator.free(hits);
-    try orca_policy.effects.writeHitsHuman(stdout, hits);
+    var classifier_enabled = false;
+    var loaded_policy: ?orca_policy.schema.Policy = null;
+    defer if (loaded_policy) |*p| p.deinit();
 
     if (policy_path) |path| {
-        var loaded = orca_policy.load.loadFile(io, allocator, path) catch |err| {
+        loaded_policy = orca_policy.load.loadFile(io, allocator, path) catch |err| {
             try stderr.print("orca tools classify: failed to load policy {s}: {s}\n", .{ path, @errorName(err) });
             return exit_codes.general;
         };
-        defer loaded.deinit();
+        if (loaded_policy.?.effects.isActive()) {
+            classifier_enabled = loaded_policy.?.effects.classifier.isEnabled();
+        }
+    }
 
-        var evaluation = try orca_policy.evaluate.toolWithPacks(&loaded, name, args_view, &pack_set, allocator);
+    const hits = orca_policy.effects.classifyToolCallWithResidual(allocator, &pack_set, name, args_view, classifier_enabled) catch |err| {
+        if (err == error.ClassifierUnavailable) {
+            try stderr.writeAll("orca tools classify: effects.classifier unavailable\n");
+            return exit_codes.general;
+        }
+        return err;
+    };
+    defer allocator.free(hits);
+    try orca_policy.effects.writeHitsHuman(stdout, hits);
+
+    if (loaded_policy) |*loaded| {
+        var evaluation = try orca_policy.evaluate.toolWithPacks(loaded, name, args_view, &pack_set, allocator);
         defer evaluation.deinit(allocator);
         try stdout.print("Policy decision: {s}", .{evaluation.decision.result.toString()});
         if (evaluation.decision.rule_id) |rule_id| try stdout.print("  rule: {s}", .{rule_id});
@@ -240,6 +254,43 @@ test "tools classify with policy effects deny" {
     try std.testing.expect(std.mem.indexOf(u8, out, "comms.message") != null);
     try std.testing.expect(std.mem.indexOf(u8, out, "Policy decision: deny") != null);
     try std.testing.expect(std.mem.indexOf(u8, out, "effects.") != null);
+}
+
+test "tools classify residual with classifier local policy" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    {
+        const file = try tmp.dir.createFile(std.testing.io, "residual.yaml", .{});
+        defer file.close(std.testing.io);
+        try file.writeStreamingAll(std.testing.io,
+            \\version: 1
+            \\mode: strict
+            \\mcp:
+            \\  default: allow
+            \\effects:
+            \\  classifier: local
+            \\  deny:
+            \\    - comms.message
+        );
+    }
+    const policy_path = try tmp.dir.realPathFileAlloc(std.testing.io, "residual.yaml", std.testing.allocator);
+    defer std.testing.allocator.free(policy_path);
+
+    var stdout_buf: [4096]u8 = undefined;
+    var stderr_buf: [512]u8 = undefined;
+    var stdout_writer: std.Io.Writer = .fixed(&stdout_buf);
+    var stderr_writer: std.Io.Writer = .fixed(&stderr_buf);
+    const code = try command(
+        std.testing.io,
+        &.{ "classify", "acme_mailer_job", "--policy", policy_path },
+        &stdout_writer,
+        &stderr_writer,
+    );
+    try std.testing.expectEqual(exit_codes.success, code);
+    const out = stdout_writer.buffered();
+    try std.testing.expect(std.mem.indexOf(u8, out, "classifier.local.") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "comms.message") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "Policy decision: deny") != null);
 }
 
 test "loadPacks classifies pack mapped tool" {

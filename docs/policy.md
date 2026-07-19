@@ -128,7 +128,7 @@ When the `effects:` section is present, Orca classifies mediated actions into
 coarse **effect IDs** and evaluates them in addition to surface rules (`mcp`,
 `commands`, `files`, `network`). Missing `effects:` keeps legacy behavior (no
 effect evaluation). Classification is **deterministic** (catalog + structural
-tables + host tags) — no LLM.
+tables + host tags + optional local residual). No cloud LLM classification.
 
 | Effect ID | Meaning |
 |-----------|---------|
@@ -160,15 +160,37 @@ deny into allow. Explicit MCP allow does not override an effect deny.
    add exact names, tokens, and structural key-sets. Matchers use
    `pack.<id>.*`. Packs are **classification-only**; they never grant allow
    past `effects.deny`.
-4. **Network host tags** — when `effects:` is active, destinations such as
+4. **Local residual classifier (low, opt-in)** — when `effects.classifier` is
+   `local` (or `local-embed`, same engine in v1), tools that A–C leave
+   under-classified may pick up low-confidence hits via pure-Zig
+   prototype/token similarity on the tool name and arg **keys** (not chat
+   history, not a cloud model). Matchers use `classifier.local.*`. **Off by
+   default.** Raise-only: residual hits may increase restriction (ask/deny)
+   but never alone flip a surface deny into allow. In `strict` / `ci` /
+   `redteam`, if the classifier is enabled but unavailable, residual tools
+   **fail closed** (`effects.classifier unavailable`).
+5. **Network host tags** — when `effects:` is active, destinations such as
    `api.twitter.com` map to `comms.publish` (matcher `network_tag.…`) and
    merge with network surface rules on **both** `policy explain network` and
    the runtime proxy (`orca run` / `network_eval.evaluate`).
-5. **Shell bypass (Zig command path)** — patterns such as `open mailto:…`
+6. **Shell bypass (Zig command path)** — patterns such as `open mailto:…`
    (including `open -a Mail mailto:…`), multi-URL `curl` to tagged hosts, and
    command-position matching (including wrappers such as `sudo`/`env`/`xargs`)
    map to `comms.message` / `comms.publish` (matcher `shell_bypass.…`) on Zig
    `command` / `orca policy explain command` evaluation.
+
+Example residual opt-in (block-style lists):
+
+```yaml
+version: 1
+mode: strict
+effects:
+  default: ask
+  deny:
+    - comms.message
+    - comms.publish
+  classifier: local
+```
 
 Surfaces covered:
 
@@ -248,7 +270,9 @@ never raw email/body/token values.
   that specialized route). Denying `shell.exec` / `fs.write` as effects only
   applies when the call is evaluated as a **tool name**.
 - Browser/computer-use UI actions remain out of scope.
-- Opt-in LLM / embedding classifiers are deferred (Phase D).
+- Residual classifier v1 is **local prototype/token similarity**, not neural
+  embeddings or a remote LLM. `local-embed` is an alias for `local`. It only
+  runs on under-classified tools and only raises restriction.
 
 When `effects:` is present, `effects.default` applies to **tool**
 classification hits that match no allow/deny/ask pattern and to **tools with

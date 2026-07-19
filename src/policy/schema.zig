@@ -249,6 +249,32 @@ pub const ServicePolicy = struct {
 
 pub const MCPPolicy = RuleSet;
 
+/// Optional residual effect classifier (Phase D). Off by default.
+/// `local` / `local-embed` enable pure-Zig prototype/token similarity — no cloud.
+pub const EffectsClassifier = enum {
+    off,
+    local,
+
+    pub fn parse(value: []const u8) ?EffectsClassifier {
+        if (std.mem.eql(u8, value, "off")) return .off;
+        if (std.mem.eql(u8, value, "local")) return .local;
+        // Plan language alias; same pure-Zig residual engine in v1 (not neural embed).
+        if (std.mem.eql(u8, value, "local-embed") or std.mem.eql(u8, value, "local_embed")) return .local;
+        return null;
+    }
+
+    pub fn toString(self: EffectsClassifier) []const u8 {
+        return switch (self) {
+            .off => "off",
+            .local => "local",
+        };
+    }
+
+    pub fn isEnabled(self: EffectsClassifier) bool {
+        return self != .off;
+    }
+};
+
 /// Effect-class policy (semantic tool intent). Inactive unless `configured` is true
 /// (the `effects:` key was present in the policy document).
 pub const EffectsPolicy = struct {
@@ -257,6 +283,8 @@ pub const EffectsPolicy = struct {
     deny: []const []const u8 = &.{},
     ask: []const []const u8 = &.{},
     default: ?DecisionValue = null,
+    /// Residual classifier; default off when omitted.
+    classifier: EffectsClassifier = .off,
 
     pub fn isActive(self: EffectsPolicy) bool {
         return self.configured;

@@ -187,7 +187,12 @@
         "allow": { "$ref": "#/$defs/stringList" },
         "deny": { "$ref": "#/$defs/stringList" },
         "ask": { "$ref": "#/$defs/stringList" },
-        "default": { "$ref": "#/$defs/decision" }
+        "default": { "$ref": "#/$defs/decision" },
+        "classifier": {
+          "type": "string",
+          "enum": ["off", "local", "local-embed", "local_embed"],
+          "description": "Optional residual classifier. Default off. local/local-embed enable pure-Zig prototype similarity (no cloud)."
+        }
       }
     }
   }

@@ -213,6 +213,7 @@ const Builder = struct {
     effects_deny: std.ArrayList([]const u8) = .empty,
     effects_ask: std.ArrayList([]const u8) = .empty,
     effects_default: ?schema.DecisionValue = null,
+    effects_classifier: schema.EffectsClassifier = .off,
     audit_level: schema.AuditLevel = .full,
     audit_redact_secrets: bool = true,
     audit_tamper_evident: bool = true,
@@ -354,6 +355,7 @@ const Builder = struct {
             .effects = .{
                 .configured = self.effects_configured,
                 .default = self.effects_default,
+                .classifier = self.effects_classifier,
             },
             .audit = .{
                 .level = self.audit_level,
@@ -817,7 +819,14 @@ fn applyYamlField(builder: *Builder, section: Section, key: []const u8, value: [
                 try applyRuleSetField(builder, .mcp_allow, .mcp_deny, .mcp_ask, &builder.mcp_default, key, scalar, list_target);
             }
         },
-        .effects => try applyRuleSetField(builder, .effects_allow, .effects_deny, .effects_ask, &builder.effects_default, key, scalar, list_target),
+        .effects => {
+            if (std.mem.eql(u8, key, "classifier")) {
+                list_target.* = .none;
+                builder.effects_classifier = schema.EffectsClassifier.parse(scalar) orelse return error.InvalidPolicy;
+            } else {
+                try applyRuleSetField(builder, .effects_allow, .effects_deny, .effects_ask, &builder.effects_default, key, scalar, list_target);
+            }
+        },
         .audit => {
             if (std.mem.eql(u8, key, "level")) builder.audit_level = schema.AuditLevel.parse(scalar) orelse return error.UnsupportedPolicyAuditLevel else if (std.mem.eql(u8, key, "redact_secrets")) builder.audit_redact_secrets = try parseBool(scalar) else if (std.mem.eql(u8, key, "tamper_evident")) builder.audit_tamper_evident = try parseBool(scalar) else return error.InvalidPolicy;
         },
@@ -888,7 +897,12 @@ fn parseJson(allocator: std.mem.Allocator, text: []const u8, source_path: ?[]con
 
 fn parseJsonEffects(builder: *Builder, value: std.json.Value) !void {
     builder.effects_configured = true;
-    try parseJsonRules(builder, value, .effects_allow, .effects_deny, .effects_ask, &builder.effects_default);
+    try parseJsonRulesWithKeys(builder, value, .effects_allow, .effects_deny, .effects_ask, &builder.effects_default, &.{ "allow", "deny", "ask", "default", "classifier" });
+    if (value == .object) {
+        if (value.object.get("classifier")) |classifier| {
+            builder.effects_classifier = schema.EffectsClassifier.parse(try expectString(classifier)) orelse return error.InvalidPolicy;
+        }
+    }
 }
 
 fn parseJsonWorkspace(builder: *Builder, value: std.json.Value) !void {
@@ -1510,4 +1524,63 @@ test "invalid effect patterns are rejected" {
         \\  deny:
         \\    - nope.*
     , "bad-wildcard.yaml"));
+}
+
+test "effects.classifier defaults off and parses local aliases" {
+    var omitted = try parseFromSlice(std.testing.allocator,
+        \\version: 1
+        \\mode: strict
+        \\effects:
+        \\  default: allow
+        \\  deny:
+        \\    - comms.message
+    , "classifier-omitted.yaml");
+    defer omitted.deinit();
+    try std.testing.expect(omitted.effects.classifier == .off);
+
+    var off = try parseFromSlice(std.testing.allocator,
+        \\version: 1
+        \\mode: strict
+        \\effects:
+        \\  classifier: off
+        \\  deny:
+        \\    - comms.message
+    , "classifier-off.yaml");
+    defer off.deinit();
+    try std.testing.expect(off.effects.classifier == .off);
+
+    var local = try parseFromSlice(std.testing.allocator,
+        \\version: 1
+        \\mode: strict
+        \\effects:
+        \\  classifier: local
+        \\  deny:
+        \\    - comms.message
+    , "classifier-local.yaml");
+    defer local.deinit();
+    try std.testing.expect(local.effects.classifier == .local);
+
+    var embed = try parseFromSlice(std.testing.allocator,
+        \\version: 1
+        \\mode: strict
+        \\effects:
+        \\  classifier: local-embed
+        \\  deny:
+        \\    - comms.message
+    , "classifier-embed.yaml");
+    defer embed.deinit();
+    try std.testing.expect(embed.effects.classifier == .local);
+
+    var json_policy = try parseFromSlice(std.testing.allocator,
+        \\{"version":1,"mode":"strict","effects":{"classifier":"local","deny":["comms.message"]}}
+    , "classifier.json");
+    defer json_policy.deinit();
+    try std.testing.expect(json_policy.effects.classifier == .local);
+
+    try std.testing.expectError(error.InvalidPolicy, parseFromSlice(std.testing.allocator,
+        \\version: 1
+        \\mode: strict
+        \\effects:
+        \\  classifier: cloud-llm
+    , "classifier-bad.yaml"));
 }
