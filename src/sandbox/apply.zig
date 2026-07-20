@@ -4,9 +4,8 @@
 //!   cli/run → applyBeforeExec → supervisor.run → process.prepareChild
 //!     → sandboxed spawn (apply_posix) or std.process.spawn
 //!
-//! `sandbox.backend.prepare` / PreparedSandbox is capability scaffolding and
-//! unit-test surface only (M-15) — it must never alone authorize session `active`.
-//! Production attach is exclusively applyBeforeExec + apply_posix child apply.
+//! Scaffold `backend.prepare` was removed (M-13). Production attach is exclusively
+//! applyBeforeExec + apply_posix child apply; capability detect stays in backend.
 //!
 //! This module:
 //! - compiles a pure FS profile (`profile.compileProfile`)
@@ -108,38 +107,58 @@ pub const ApplyResult = struct {
         return self.childApplyKind() != .none;
     }
 
-    /// Promote prepared results to active only after proven agent-child apply
-    /// (status-pipe handshake in apply_posix). Never promote from fork or probe alone.
-    pub fn promoteAfterChildSpawn(self: *ApplyResult) void {
-        switch (self.childApplyKind()) {
+    /// Proof that agent-child OS FS apply handshake succeeded (M-12).
+    /// Only `spawnAgent` constructs a valid proof; `promoteWithProof` rejects forgeries
+    /// that do not match prepared materials + magic seal.
+    pub const ChildAttachProof = struct {
+        mechanism: posture.BackendMechanism,
+        /// Must equal `attach_proof_magic` — set only by `spawnAgent`.
+        magic: u64,
+
+        pub fn isValid(self: ChildAttachProof) bool {
+            return self.magic == attach_proof_magic and self.mechanism != .none;
+        }
+    };
+
+    /// Result of a successful sandboxed agent spawn (pid + attach proof).
+    pub const SpawnedAgent = struct {
+        pid: i32,
+        proof: ChildAttachProof,
+    };
+
+    /// Promote to session-active only with a valid `ChildAttachProof` from `spawnAgent`.
+    /// Bare materials alone never authorize active (S-GLO-01).
+    pub fn promoteWithProof(self: *ApplyResult, proof: ChildAttachProof) void {
+        if (!proof.isValid()) return;
+        const kind = self.childApplyKind();
+        const matches = switch (kind) {
+            .none => false,
+            .landlock => proof.mechanism == .landlock,
+            .seatbelt => proof.mechanism == .seatbelt,
+        };
+        if (!matches) return;
+        const hash = self.profile_hash_hex orelse return;
+        switch (proof.mechanism) {
+            .landlock => self.receipt = posture.activeReceipt(.landlock, hash[0..], "workspace RW, system RO, no home"),
+            .seatbelt => self.receipt = posture.activeReceipt(.seatbelt, hash[0..], "workspace RW, system RO, no home"),
             .none => {},
-            .landlock => {
-                if (self.profile_hash_hex) |hash| {
-                    self.receipt = posture.activeReceipt(.landlock, hash[0..], "workspace RW, system RO, no home");
-                }
-            },
-            .seatbelt => {
-                if (self.profile_hash_hex) |hash| {
-                    self.receipt = posture.activeReceipt(.seatbelt, hash[0..], "workspace RW, system RO, no home");
-                }
-            },
         }
     }
 
     /// Spawn the agent with OS FS apply in the child (Landlock / Seatbelt).
     /// Parent stays unrestricted. Blocks until status-pipe proves apply (M-2).
-    /// Returns the child pid on success.
+    /// On success, mutates this result to active via a typed attach proof (M-12).
     pub fn spawnAgent(
-        self: *const ApplyResult,
+        self: *ApplyResult,
         io: std.Io,
         allocator: std.mem.Allocator,
         argv: []const []const u8,
         env_map: ?*const std.process.Environ.Map,
         workspace_root: []const u8,
         stdio: apply_posix.StdioBehavior,
-    ) !i32 {
+    ) !SpawnedAgent {
         if (argv.len == 0) return error.FileNotFound;
-        const resolved = try apply_posix.resolveArgv0(io, allocator, argv[0]);
+        const resolved = try apply_posix.resolveArgv0(io, allocator, argv[0], env_map);
         defer if (resolved.owned) allocator.free(resolved.path);
 
         var argv_owned = try allocator.alloc([]const u8, argv.len);
@@ -170,17 +189,32 @@ pub const ApplyResult = struct {
                 );
             },
         };
-        return child.pid;
+
+        // Handshake proven: mint attach proof and promote receipt atomically.
+        const proof = self.makeAttachProof() orelse return error.Unexpected;
+        self.promoteWithProof(proof);
+        return .{ .pid = child.pid, .proof = proof };
+    }
+
+    fn makeAttachProof(self: *const ApplyResult) ?ChildAttachProof {
+        return switch (self.childApplyKind()) {
+            .none => null,
+            .landlock => .{ .mechanism = .landlock, .magic = attach_proof_magic },
+            .seatbelt => .{ .mechanism = .seatbelt, .magic = attach_proof_magic },
+        };
     }
 };
 
-/// Platform apply outcome from Landlock/Seatbelt.
+/// Magic seal for `ChildAttachProof` (only `spawnAgent` / `makeAttachProof` set this).
+const attach_proof_magic: u64 = 0x4f5243415f415450; // "ORCA_ATP"
+
+/// Platform prepare outcome from Landlock/Seatbelt (parent seam only).
 /// Parent seam never returns a live-session attach: only prepared_child materials
 /// (or unavailable/failed). Session `active` requires child status-pipe + promote.
 const PlatformApplyStatus = enum {
     /// Backend not present / not implemented for this build.
     unavailable,
-    /// Backend present but apply failed.
+    /// Backend present but prepare failed.
     failed,
     /// Profile prepared; agent child must apply before exec. Not active yet.
     prepared_child,
@@ -205,7 +239,7 @@ fn setFailReason(boundary: ApplyBoundary, reason: []const u8) void {
 /// - `on` + unavailable/failed (no child plan) → `error.RequireFailed` (fail closed)
 /// - `on` + prepared child plan → returns materials; receipt stays non-active until promote
 /// - `auto` + unavailable → unavailable receipt; caller may still spawn (interactive degrade)
-/// - Session `active` only after agent-child apply handshake + `promoteAfterChildSpawn` (S-GLO-01)
+/// - Session `active` only after agent-child apply handshake + `promoteWithProof` (S-GLO-01)
 pub fn applyBeforeExec(boundary: ApplyBoundary) ApplyError!ApplyResult {
     switch (boundary.mode) {
         .off => return .{
@@ -218,19 +252,23 @@ pub fn applyBeforeExec(boundary: ApplyBoundary) ApplyError!ApplyResult {
     }
 
     // Compile pure profile (grants model only — no syscalls).
+    // OOM is never a soft grade-drop (M-9): propagate so callers fail closed hard.
+    // InvalidWorkspace / other compile failures → profile_compile_failed (on→RequireFailed, auto→unavailable).
     var compiled = profile.compileProfile(boundary.allocator, .{
         .workspace_root = boundary.workspace_root,
         .control_roots = boundary.control_roots,
         .include_tmp = boundary.include_tmp,
-    }) catch {
-        // Invalid workspace / OOM on compile: fail closed when required.
-        setFailReason(boundary, "profile_compile_failed");
-        if (boundary.mode == .on) return error.RequireFailed;
-        return .{
-            .receipt = posture.unavailableReceipt("profile_compile_failed"),
-            .env_scrubbed = false,
-            .profile_compiled = false,
-        };
+    }) catch |err| switch (err) {
+        error.OutOfMemory => return error.OutOfMemory,
+        else => {
+            setFailReason(boundary, "profile_compile_failed");
+            if (boundary.mode == .on) return error.RequireFailed;
+            return .{
+                .receipt = posture.unavailableReceipt("profile_compile_failed"),
+                .env_scrubbed = false,
+                .profile_compiled = false,
+            };
+        },
     };
     var transfer_landlock = false;
     defer if (!transfer_landlock) compiled.deinit();
@@ -238,23 +276,27 @@ pub fn applyBeforeExec(boundary: ApplyBoundary) ApplyError!ApplyResult {
     var hash_copy: [64]u8 = undefined;
     @memcpy(hash_copy[0..], compiled.hash());
 
-    // Scrub loader/startup injection vectors on child env (in place).
-    // Fail closed on incomplete scrub (OOM mid-scan): never launch with residual
-    // LD_PRELOAD-class keys when mode is on/auto (M-3).
+    // Launch hygiene on child env (on/auto):
+    // 1) denylist scrub (injection keys)
+    // 2) launch allowlist (M-20) — only safe runtime/session keys remain
+    // Fail closed on incomplete scrub/allowlist (OOM mid-scan).
     var removed: usize = 0;
     var scrubbed = false;
     if (boundary.env_map) |env_map| {
         removed = env_scrub.scrubEnvMapInPlace(env_map) catch {
             setFailReason(boundary, "env_scrub_failed");
-            // Both on and auto: incomplete denylist scrub is a hard security failure,
-            // not a grade drop — residual injection keys must not reach the agent.
             return error.RequireFailed;
         };
+        const allow_removed = env_scrub.applyLaunchAllowlistInPlace(env_map) catch {
+            setFailReason(boundary, "env_allowlist_failed");
+            return error.RequireFailed;
+        };
+        removed += allow_removed;
         scrubbed = true;
     }
 
-    // Platform OS apply — Linux Landlock child verify; macOS Seatbelt prepare.
-    // FD scrub runs only in the forked agent child (`apply_posix`), never here.
+    // Platform OS prepare — Linux Landlock ABI probe; macOS Seatbelt prepare.
+    // FD scrub / real attach run only in the forked agent child (`apply_posix`), never here.
     const platform = tryPlatformApply(boundary.allocator, boundary.mode, &compiled);
 
     switch (platform.status) {
@@ -310,7 +352,7 @@ pub fn applyBeforeExec(boundary: ApplyBoundary) ApplyError!ApplyResult {
     }
 }
 
-/// Platform apply: Linux → Landlock probe + prepared child plan; macOS → Seatbelt prepare.
+/// Platform prepare: Linux → Landlock ABI probe + prepared child plan; macOS → Seatbelt prepare.
 /// Neither path returns session-active from the parent seam alone.
 fn tryPlatformApply(
     allocator: std.mem.Allocator,
@@ -319,7 +361,7 @@ fn tryPlatformApply(
 ) PlatformApplyOutcome {
     _ = mode;
     return switch (builtin.os.tag) {
-        .linux => tryPlatformApplyLinux(compiled),
+        .linux => tryPlatformApplyLinux(),
         .macos => tryMacOsSeatbelt(allocator, compiled),
         else => .{
             .status = .unavailable,
@@ -356,7 +398,10 @@ fn tryMacOsSeatbelt(
     };
 }
 
-fn tryPlatformApplyLinux(compiled: *const profile.CompiledProfile) PlatformApplyOutcome {
+/// Linux prepare: ABI probe only (M-15). Do not double-apply via verifyApplyInChild
+/// on the production hot path — real Landlock attach is the agent child in apply_posix.
+/// `landlock.verifyApplyInChild` remains available for unit tests in landlock.zig.
+fn tryPlatformApplyLinux() PlatformApplyOutcome {
     if (!landlock.isAbiAvailable()) {
         return .{
             .status = .unavailable,
@@ -364,29 +409,6 @@ fn tryPlatformApplyLinux(compiled: *const profile.CompiledProfile) PlatformApply
             .reason_code = "landlock_unavailable",
         };
     }
-
-    // Capability preflight in a throwaway child. Parent is never restricted.
-    // Success proves Landlock *can* apply — not that the agent child has applied.
-    // Session active is deferred until agent-child status-pipe handshake + promote.
-    landlock.verifyApplyInChild(compiled) catch |err| {
-        return switch (err) {
-            error.Unavailable, error.Unsupported => .{
-                .status = .unavailable,
-                .mechanism = .none,
-                .reason_code = "landlock_unavailable",
-            },
-            error.PathOpenFailed => .{
-                .status = .failed,
-                .mechanism = .none,
-                .reason_code = "landlock_path_open_failed",
-            },
-            error.ApplyFailed => .{
-                .status = .failed,
-                .mechanism = .none,
-                .reason_code = "landlock_apply_failed",
-            },
-        };
-    };
 
     return .{
         .status = .prepared_child,
@@ -428,8 +450,8 @@ test "mode auto without Landlock returns unavailable and scrubs env" {
     try env_map.put("PATH", "/usr/bin");
     try env_map.put("ORCA_SESSION_ID", "s1");
 
-    // Use a path that may not exist — on Linux Landlock path open fails → failed/unavailable;
-    // on macOS always unavailable (or prepared on matrix hosts). Scrub must still run.
+    // Parent prepare is ABI/backend probe only (M-15) — missing path is not a parent failure.
+    // Scrub must still run; session stays non-active until agent-child apply + promote.
     var result = try applyBeforeExec(.{
         .allocator = std.testing.allocator,
         .mode = .auto,
@@ -449,7 +471,7 @@ test "mode auto without Landlock returns unavailable and scrubs env" {
     try std.testing.expectEqualStrings("s1", env_map.get("ORCA_SESSION_ID").?);
     // Non-Linux: backend_not_implemented / macos_version_unsupported / prepared;
     // Linux without ABI: landlock_unavailable;
-    // Linux with ABI but missing path: landlock_path_open_failed / landlock_apply_failed.
+    // Linux with ABI: prepared_child (landlock_child_apply_required) — attach failure is spawn path.
     try std.testing.expect(result.receipt.posture == .unavailable or result.receipt.posture == .failed);
 }
 
@@ -466,7 +488,7 @@ test "mode on without usable Landlock fails closed with RequireFailed" {
         .env_map = &env_map,
         .fail_reason_out = &fail_reason,
     });
-    // Linux without Landlock / path open → RequireFailed.
+    // Linux without Landlock ABI → RequireFailed; with ABI → prepared_child (path open is spawn).
     // macOS matrix Seatbelt prepare succeeds (child apply still required; not active yet).
     if (result) |*ok| {
         defer ok.deinit();
@@ -475,7 +497,7 @@ test "mode on without usable Landlock fails closed with RequireFailed" {
             try std.testing.expectEqual(ChildApplyKind.seatbelt, ok.childApplyKind());
             try std.testing.expect(!ok.receipt.isActive());
         } else {
-            // Parent seam never active: prepared child plan only if backend usable.
+            // Parent seam never active: prepared child plan only if ABI available.
             try std.testing.expect(ok.requiresChildApply());
             try std.testing.expect(!ok.receipt.isActive());
         }
@@ -543,6 +565,22 @@ test "mode auto + invalid workspace degrades to unavailable" {
     try std.testing.expectEqualStrings("profile_compile_failed", result.receipt.reason_code.?);
 }
 
+test "profile compile OutOfMemory propagates (never soft unavailable)" {
+    // M-9: OOM on compile is hard failure for both on and auto — not grade-drop.
+    const modes = [_]OsSandboxMode{ .on, .auto };
+    for (modes) |mode| {
+        var failing = std.testing.FailingAllocator.init(std.testing.allocator, .{ .fail_index = 0 });
+        const err = applyBeforeExec(.{
+            .allocator = failing.allocator(),
+            .mode = mode,
+            .workspace_root = "/tmp/orca-apply-ws-compile-oom",
+            .env_map = null,
+        });
+        try std.testing.expectError(error.OutOfMemory, err);
+        try std.testing.expect(failing.has_induced_failure);
+    }
+}
+
 test "non-Linux never yields active receipt from apply seam without child spawn" {
     if (builtin.os.tag == .linux) return error.SkipZigTest;
 
@@ -597,7 +635,7 @@ test "Linux Landlock prepares child plan without claiming active" {
     });
     defer result.deinit();
 
-    // Probe success → prepared plan, not session active.
+    // ABI available → prepared plan without parent-side Landlock apply (M-15); not session active.
     try std.testing.expect(!result.receipt.isActive());
     try std.testing.expect(!result.mayReportActive());
     try std.testing.expectEqual(ChildApplyKind.landlock, result.childApplyKind());
@@ -605,12 +643,17 @@ test "Linux Landlock prepares child plan without claiming active" {
     try std.testing.expect(result.profile_hash_hex != null);
     try std.testing.expectEqualStrings("landlock_child_apply_required", result.receipt.reason_code.?);
 
-    // Promote only after proven agent-child apply (status pipe / spawn path).
-    result.promoteAfterChildSpawn();
+    // M-12: bare materials never activate; only typed proof from spawn path.
+    result.promoteWithProof(.{ .mechanism = .landlock, .magic = 0 });
+    try std.testing.expect(!result.receipt.isActive());
+    const forged_wrong_mech = ApplyResult.ChildAttachProof{ .mechanism = .seatbelt, .magic = attach_proof_magic };
+    result.promoteWithProof(forged_wrong_mech);
+    try std.testing.expect(!result.receipt.isActive());
+    // Valid proof matching landlock materials promotes.
+    result.promoteWithProof(.{ .mechanism = .landlock, .magic = attach_proof_magic });
     try std.testing.expect(result.receipt.isActive());
     try std.testing.expect(result.mayReportActive());
     try std.testing.expectEqual(posture.BackendMechanism.landlock, result.receipt.mechanism);
-    // N1: hash still readable after promote (owned copy, not dangling).
     const hash_view = result.receipt.profileHashSlice().?;
     try std.testing.expectEqual(@as(usize, 64), hash_view.len);
     try std.testing.expectEqualStrings(result.profile_hash_hex.?[0..], hash_view);
@@ -632,49 +675,68 @@ test "never claims network in active landlock fs_scope" {
     try std.testing.expect(std.mem.indexOf(u8, complete.fs_scope, "network") == null);
 }
 
-test "promoteAfterChildSpawn activates seatbelt when SBPL prepared" {
+test "promoteWithProof activates only with valid seal matching materials" {
     const hash: [64]u8 = .{'a'} ** 64;
     var result: ApplyResult = .{
         .receipt = posture.unavailableReceipt("seatbelt_child_apply_required"),
         .profile_compiled = true,
         .profile_hash_hex = hash,
-        .seatbelt_sbpl_z = null, // no owned string — kind uses null unless set
+        .seatbelt_sbpl_z = null,
         .allocator = std.testing.allocator,
     };
-    // Manually mark as seatbelt plan via a non-null empty-owned placeholder.
     result.seatbelt_sbpl_z = try std.testing.allocator.dupeZ(u8, "(version 1)\n");
     defer result.deinit();
 
     try std.testing.expectEqual(ChildApplyKind.seatbelt, result.childApplyKind());
     try std.testing.expect(!result.receipt.isActive());
-    result.promoteAfterChildSpawn();
+    // Zero magic rejected.
+    result.promoteWithProof(.{ .mechanism = .seatbelt, .magic = 0 });
+    try std.testing.expect(!result.receipt.isActive());
+    result.promoteWithProof(.{ .mechanism = .seatbelt, .magic = attach_proof_magic });
     try std.testing.expect(result.receipt.isActive());
     try std.testing.expectEqual(posture.BackendMechanism.seatbelt, result.receipt.mechanism);
     try std.testing.expect(std.mem.indexOf(u8, result.receipt.fs_scope, "network") == null);
 }
 
-test "promoteAfterChildSpawn activates landlock when profile prepared" {
-    const hash: [64]u8 = .{'b'} ** 64;
-    const compiled = try profile.compileProfile(std.testing.allocator, .{
-        .workspace_root = "/tmp",
-        .control_roots = &.{},
-        .include_tmp = false,
-    });
-    var result: ApplyResult = .{
-        .receipt = posture.unavailableReceipt("landlock_child_apply_required"),
-        .profile_compiled = true,
-        .profile_hash_hex = hash,
-        .landlock_profile = compiled,
-        .allocator = std.testing.allocator,
-    };
-    defer result.deinit();
+test "spawnAgent promotes with typed proof on macOS Seatbelt" {
+    if (builtin.os.tag != .macos) return error.SkipZigTest;
+    if (!macos_seatbelt.sandboxInitAvailable()) return error.SkipZigTest;
+    const ver = macos_seatbelt.detectProductVersion() catch return error.SkipZigTest;
+    if (!macos_seatbelt.isMatrixMajor(ver.major)) return error.SkipZigTest;
 
-    try std.testing.expectEqual(ChildApplyKind.landlock, result.childApplyKind());
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try tmp.dir.createDirPath(std.testing.io, ".orca");
+    try tmp.dir.writeFile(std.testing.io, .{ .sub_path = "neighbor.txt", .data = "ok" });
+    const root = try tmp.dir.realPathFileAlloc(std.testing.io, ".", std.testing.allocator);
+    defer std.testing.allocator.free(root);
+
+    var result = try applyBeforeExec(.{
+        .allocator = std.testing.allocator,
+        .mode = .on,
+        .workspace_root = root,
+        .env_map = null,
+    });
+    defer result.deinit();
+    try std.testing.expectEqual(ChildApplyKind.seatbelt, result.childApplyKind());
     try std.testing.expect(!result.receipt.isActive());
-    result.promoteAfterChildSpawn();
+
+    const spawned = try result.spawnAgent(
+        std.testing.io,
+        std.testing.allocator,
+        &[_][]const u8{"/usr/bin/true"},
+        null,
+        root,
+        .ignore,
+    );
+    try std.testing.expect(spawned.proof.isValid());
+    try std.testing.expectEqual(posture.BackendMechanism.seatbelt, spawned.proof.mechanism);
     try std.testing.expect(result.receipt.isActive());
-    try std.testing.expectEqual(posture.BackendMechanism.landlock, result.receipt.mechanism);
-    try std.testing.expect(std.mem.indexOf(u8, result.receipt.fs_scope, "network") == null);
+    try std.testing.expectEqual(posture.BackendMechanism.seatbelt, result.receipt.mechanism);
+
+    var status: c_int = 0;
+    _ = std.c.waitpid(spawned.pid, &status, 0);
+    try std.testing.expect((status & 0x7f) == 0);
 }
 
 test "mode on surfaces real reason_code via fail_reason_out on this host" {

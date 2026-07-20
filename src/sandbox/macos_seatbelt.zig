@@ -346,9 +346,11 @@ test "applyInChild succeeds for minimal profile in forked child" {
     try std.testing.expectEqual(@as(u8, 0), exit_code);
 }
 
-// CTRL template: unsandboxed canary readable; sandboxed child denies outside grant
-// and allows workspace neighbor read/write. Uses prepare SBPL + applyInChild.
-// Exit codes from child: 0=ok, 2=apply fail, 3=outside readable (leak), 4=ws read fail, 5=ws write fail.
+// CTRL template: unsandboxed canary readable; sandboxed child denies outside grant,
+// allows workspace neighbor read/write, and denies control-root write (M-5).
+// Uses prepare SBPL + applyInChild.
+// Exit codes from child: 0=ok, 2=apply fail, 3=outside readable (leak), 4=ws read fail,
+// 5=ws write fail, 6=control root writable (leak).
 test "real FS deny: outside canary denied; workspace readable and writable" {
     if (builtin.os.tag != .macos) return error.SkipZigTest;
     if (!sandboxInitAvailable()) return error.SkipZigTest;
@@ -363,6 +365,9 @@ test "real FS deny: outside canary denied; workspace readable and writable" {
 
     var ws_tmp = std.testing.tmpDir(.{});
     defer ws_tmp.cleanup();
+    // Control root must exist under the workspace before apply so the write probe
+    // targets a real path (profile always carves {workspace}/.orca).
+    try ws_tmp.dir.createDirPath(io, ".orca");
     // realPath so Seatbelt grants match kernel paths (/private/var vs /var).
     const ws_root = try ws_tmp.dir.realPathFileAlloc(io, ".", allocator);
     defer allocator.free(ws_root);
@@ -394,6 +399,11 @@ test "real FS deny: outside canary denied; workspace readable and writable" {
     const write_probe_z = try allocator.dupeZ(u8, write_probe_path);
     defer allocator.free(write_probe_z);
 
+    const control_write_path = try std.fs.path.join(allocator, &.{ ws_root, ".orca", "policy.yaml" });
+    defer allocator.free(control_write_path);
+    const control_write_z = try allocator.dupeZ(u8, control_write_path);
+    defer allocator.free(control_write_z);
+
     // CTRL-BASELINE: unsandboxed parent can read the outside canary.
     {
         const baseline = try std.Io.Dir.cwd().readFileAlloc(io, canary_path, allocator, .limited(4096));
@@ -407,13 +417,6 @@ test "real FS deny: outside canary denied; workspace readable and writable" {
         try std.testing.expectEqualStrings("WORKSPACE_NEIGHBOR_OK", baseline_ws);
     }
 
-    // Control path under workspace (must not be agent-writable under live Seatbelt).
-    try ws_tmp.dir.createDir(io, ".orca", .default_dir);
-    const control_write = try std.fs.path.join(allocator, &.{ ws_root, ".orca", "policy.yaml" });
-    defer allocator.free(control_write);
-    const control_write_z = try allocator.dupeZ(u8, control_write);
-    defer allocator.free(control_write_z);
-
     // Prepare real product SBPL from compiled profile (not a hand-rolled minimal string).
     var compiled = try profile.compileProfile(allocator, .{
         .workspace_root = ws_root,
@@ -423,7 +426,8 @@ test "real FS deny: outside canary denied; workspace readable and writable" {
     // Outside path must not sit under the workspace grant.
     try std.testing.expect(!compiled.isAgentWritable(canary_path));
     try std.testing.expect(compiled.isAgentWritable(neighbor_path));
-    try std.testing.expect(!compiled.isAgentWritable(control_write));
+    // Control path under workspace must not be agent-writable (profile carves .orca).
+    try std.testing.expect(!compiled.isAgentWritable(control_write_path));
 
     const prepared = prepareForChildApply(allocator, &compiled);
     defer if (prepared.sbpl_z) |p| allocator.free(p);
@@ -495,6 +499,10 @@ test "real FS deny: outside canary denied; workspace readable and writable" {
     const probe = try std.Io.Dir.cwd().readFileAlloc(io, write_probe_path, allocator, .limited(64));
     defer allocator.free(probe);
     try std.testing.expectEqualStrings("wrote", probe);
+
+    // Control file must not have been created by the sandboxed child.
+    const ctrl_probe = std.Io.Dir.cwd().access(io, control_write_path, .{});
+    try std.testing.expectError(error.FileNotFound, ctrl_probe);
 }
 
 test "verbose mechanism name is Seatbelt (verbose paths only)" {

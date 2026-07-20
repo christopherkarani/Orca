@@ -6,6 +6,7 @@ pub const args = @import("args.zig");
 pub const exit_codes = @import("exit_codes.zig");
 pub const help = @import("help.zig");
 pub const run_command = @import("run.zig");
+pub const run_os_sandbox = @import("run_os_sandbox.zig");
 pub const host_launch = @import("host_launch.zig");
 pub const init = @import("init.zig");
 pub const doctor = @import("doctor.zig");
@@ -90,6 +91,7 @@ test {
     _ = doctor;
     _ = history;
     _ = danger_confirmation;
+    _ = run_os_sandbox;
     // Surfaces touched by production-readiness hardening (M1–M4).
     _ = completions;
     _ = dashboard_command;

@@ -13,13 +13,19 @@
 //!   `JAVA_TOOL_OPTIONS`, `_JAVA_OPTIONS`, `DOTNET_STARTUP_HOOKS`
 //! - TLS / crypto config injection: `OPENSSL_CONF`, `SSLKEYLOGFILE`
 //!
-//! ## Keep class (not scrubbed by this module)
+//! ## Keep class (not scrubbed by denylist)
 //! - `PATH`, `HOME`, `LANG`, `TERM`
 //! - `ORCA_*` session vars when present
 //!
-//! HOME grants may be restricted separately by callers; this scrub does not
-//! strip HOME. Policy-level env filtering remains in `intercept/env.zig`.
-//! Full allowlist env remains a needs-design follow-up (P0-I-05 complete form).
+//! ## Launch allowlist (M-20 / P0-I-05 complete form on sandbox path)
+//! After denylist scrub, `applyBeforeExec` (mode on/auto) also applies a
+//! **launch allowlist**: only known-safe runtime/session keys remain. Secrets,
+//! provider credentials, and arbitrary host env vars are stripped. Policy-level
+//! filtering in `intercept/env.zig` still runs first; `--secretless` rewrites
+//! secret-like values before this allowlist.
+//!
+//! HOME grants may be restricted separately by FS profile apply; this module
+//! does not strip HOME from the allowlist (agents need a home path string).
 
 const std = @import("std");
 
@@ -71,6 +77,48 @@ pub const keep_keys = [_][]const u8{
     "TERM",
 };
 
+/// Exact keys retained by the launch allowlist (M-20).
+pub const launch_allow_exact = [_][]const u8{
+    "PATH",
+    "HOME",
+    "LANG",
+    "TERM",
+    "USER",
+    "LOGNAME",
+    "SHELL",
+    "TMPDIR",
+    "TMP",
+    "TEMP",
+    "TZ",
+    "PWD",
+    "HOSTNAME",
+    "HOST",
+    "COLORTERM",
+    "NO_COLOR",
+    "FORCE_COLOR",
+    "TERM_PROGRAM",
+    "TERM_PROGRAM_VERSION",
+    "SHLVL",
+    "EDITOR",
+    "VISUAL",
+    // Proxy/network mediation vars installed by Orca itself for the session.
+    "HTTP_PROXY",
+    "HTTPS_PROXY",
+    "http_proxy",
+    "https_proxy",
+    "NO_PROXY",
+    "no_proxy",
+    "ALL_PROXY",
+    "all_proxy",
+};
+
+/// Prefixes retained by the launch allowlist (in addition to exact keys).
+pub const launch_allow_prefixes = [_][]const u8{
+    "ORCA_",
+    "LC_",
+    "XDG_",
+};
+
 /// True when `name` is in the scrub denylist (exact or prefix match).
 pub fn shouldScrubKey(name: []const u8) bool {
     // Keep class always wins (defensive; denylist does not include these).
@@ -91,6 +139,26 @@ pub fn isKeepClass(name: []const u8) bool {
         if (std.mem.eql(u8, name, key)) return true;
     }
     if (std.mem.startsWith(u8, name, "ORCA_")) return true;
+    return false;
+}
+
+/// True when `name` is retained by the launch allowlist (M-20).
+pub fn isLaunchAllowlisted(name: []const u8) bool {
+    for (launch_allow_exact) |key| {
+        if (std.mem.eql(u8, name, key)) return true;
+    }
+    for (launch_allow_prefixes) |prefix| {
+        if (std.mem.startsWith(u8, name, prefix)) return true;
+    }
+    return false;
+}
+
+/// True when a key/value pair is retained for sandboxed launch.
+/// Keeps allowlisted keys, plus any value that is an Orca secretless ref
+/// (`orca-secret://…`) so `--secretless` dummy refs survive the allowlist.
+pub fn shouldRetainLaunchEnv(name: []const u8, value: []const u8) bool {
+    if (isLaunchAllowlisted(name)) return true;
+    if (std.mem.startsWith(u8, value, "orca-secret://")) return true;
     return false;
 }
 
@@ -129,6 +197,43 @@ pub fn scrubEnvMapInPlace(env_map: *std.process.Environ.Map) error{OutOfMemory}!
     while (it.next()) |entry| {
         const name = entry.key_ptr.*;
         if (!shouldScrubKey(name)) continue;
+        const owned = env_map.allocator.dupe(u8, name) catch {
+            incomplete = true;
+            break;
+        };
+        to_remove.append(env_map.allocator, owned) catch {
+            env_map.allocator.free(owned);
+            incomplete = true;
+            break;
+        };
+    }
+
+    var removed: usize = 0;
+    for (to_remove.items) |name| {
+        if (env_map.swapRemove(name)) removed += 1;
+    }
+
+    if (incomplete) return error.OutOfMemory;
+    return removed;
+}
+
+/// Remove keys not on the launch allowlist. Returns count of removals.
+///
+/// Fail closed on OOM while collecting keys (same contract as denylist scrub).
+/// Intended for sandbox on/auto after `scrubEnvMapInPlace`.
+pub fn applyLaunchAllowlistInPlace(env_map: *std.process.Environ.Map) error{OutOfMemory}!usize {
+    var to_remove: std.ArrayList([]u8) = .empty;
+    defer {
+        for (to_remove.items) |key| env_map.allocator.free(key);
+        to_remove.deinit(env_map.allocator);
+    }
+
+    var incomplete = false;
+    var it = env_map.iterator();
+    while (it.next()) |entry| {
+        const name = entry.key_ptr.*;
+        const value = entry.value_ptr.*;
+        if (shouldRetainLaunchEnv(name, value)) continue;
         const owned = env_map.allocator.dupe(u8, name) catch {
             incomplete = true;
             break;
@@ -341,4 +446,40 @@ test "keep class and scrub class are disjoint for documented names" {
         try std.testing.expect(!shouldScrubKey(key));
         try std.testing.expect(isKeepClass(key));
     }
+}
+
+test "launch allowlist keeps runtime keys and strips secrets" {
+    try std.testing.expect(isLaunchAllowlisted("PATH"));
+    try std.testing.expect(isLaunchAllowlisted("HOME"));
+    try std.testing.expect(isLaunchAllowlisted("ORCA_SESSION_ID"));
+    try std.testing.expect(isLaunchAllowlisted("LC_ALL"));
+    try std.testing.expect(isLaunchAllowlisted("XDG_RUNTIME_DIR"));
+    try std.testing.expect(isLaunchAllowlisted("TMPDIR"));
+    try std.testing.expect(!isLaunchAllowlisted("OPENAI_API_KEY"));
+    try std.testing.expect(!isLaunchAllowlisted("AWS_SECRET_ACCESS_KEY"));
+    try std.testing.expect(!isLaunchAllowlisted("MY_CUSTOM_TOKEN"));
+    try std.testing.expect(!isLaunchAllowlisted("SSLKEYLOGFILE"));
+}
+
+test "applyLaunchAllowlistInPlace strips non-allowlisted keys" {
+    var env_map = std.process.Environ.Map.init(std.testing.allocator);
+    defer env_map.deinit();
+    try env_map.put("PATH", "/bin");
+    try env_map.put("HOME", "/home/agent");
+    try env_map.put("ORCA_SESSION_ID", "s1");
+    try env_map.put("OPENAI_API_KEY", "sk-test");
+    try env_map.put("AWS_SECRET_ACCESS_KEY", "secret");
+    try env_map.put("RANDOM_HOST_VAR", "x");
+    try env_map.put("GITHUB_TOKEN", "orca-secret://local-dummy/env/GITHUB_TOKEN/abc");
+
+    const removed = try applyLaunchAllowlistInPlace(&env_map);
+    try std.testing.expectEqual(@as(usize, 3), removed);
+    try std.testing.expectEqualStrings("/bin", env_map.get("PATH").?);
+    try std.testing.expectEqualStrings("/home/agent", env_map.get("HOME").?);
+    try std.testing.expectEqualStrings("s1", env_map.get("ORCA_SESSION_ID").?);
+    try std.testing.expect(env_map.get("OPENAI_API_KEY") == null);
+    try std.testing.expect(env_map.get("AWS_SECRET_ACCESS_KEY") == null);
+    try std.testing.expect(env_map.get("RANDOM_HOST_VAR") == null);
+    // Secretless refs survive allowlist (key present, non-resolving value).
+    try std.testing.expect(std.mem.startsWith(u8, env_map.get("GITHUB_TOKEN").?, "orca-secret://"));
 }

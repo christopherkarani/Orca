@@ -52,15 +52,6 @@ pub fn detect() backend.ReportSet {
     };
 }
 
-pub fn prepare(allocator: std.mem.Allocator, request: backend.PrepareRequest, report: backend.ReportSet) backend.PreparedSandbox {
-    var prepared = backend.prepareFallback(allocator, request, report);
-    if (builtin.os.tag == .linux) {
-        prepared.use_process_group = true;
-        prepared.process_group_cleanup = true;
-    }
-    return prepared;
-}
-
 pub fn killProcessGroup(pgid: i32) void {
     if (builtin.os.tag != .linux) return;
     if (pgid <= 0) return;
@@ -170,62 +161,18 @@ test "Linux capability detector is target-gated and honest" {
     }
 }
 
-test "Linux fallback launch can run a simple command" {
+// M-13: no scaffold prepare path — production attach is apply_posix only.
+// Process-group leadership for agent spawn is proven in apply_posix tests.
+test "Linux process group spawn runs simple command" {
     if (builtin.os.tag != .linux) return error.SkipZigTest;
 
-    var argv = [_][]const u8{"true"};
-    var prepared = prepare(std.testing.allocator, .{
-        .io = std.testing.io,
-        .argv = &argv,
-        .workspace_root = ".",
-        .stdio = .ignore,
-    }, detect());
-    try prepared.spawn();
-    try prepared.waitForSpawn();
-    const term = try prepared.wait();
+    var child = try std.process.spawn(std.testing.io, .{
+        .argv = &[_][]const u8{"true"},
+        .stdin = .ignore,
+        .stdout = .ignore,
+        .stderr = .ignore,
+        .pgid = 0,
+    });
+    const term = try child.wait(std.testing.io);
     try std.testing.expectEqual(std.process.Child.Term{ .exited = 0 }, term);
-}
-
-test "Linux process supervision uses process group cleanup" {
-    if (builtin.os.tag != .linux) return error.SkipZigTest;
-
-    var argv = [_][]const u8{"true"};
-    const prepared = prepare(std.testing.allocator, .{
-        .io = std.testing.io,
-        .argv = &argv,
-        .workspace_root = ".",
-        .stdio = .ignore,
-    }, detect());
-    try std.testing.expect(prepared.process_group_cleanup);
-}
-
-test "Linux process supervision cleans up same-process-group descendants" {
-    if (builtin.os.tag != .linux) return error.SkipZigTest;
-
-    var tmp = std.testing.tmpDir(.{});
-    defer tmp.cleanup();
-    const root = try tmp.dir.realPathFileAlloc(std.testing.io, ".", std.testing.allocator);
-    defer std.testing.allocator.free(root);
-
-    var argv = [_][]const u8{ "/bin/sh", "-c", "sleep 30 & echo $! > child.pid" };
-    var prepared = prepare(std.testing.allocator, .{
-        .io = std.testing.io,
-        .argv = &argv,
-        .workspace_root = root,
-        .stdio = .ignore,
-    }, detect());
-    try prepared.spawn();
-    try prepared.waitForSpawn();
-    const term = try prepared.wait();
-    try std.testing.expectEqual(std.process.Child.Term{ .exited = 0 }, term);
-
-    const pid_text = try tmp.dir.readFileAlloc(std.testing.io, "child.pid", std.testing.allocator, .limited(64));
-    defer std.testing.allocator.free(pid_text);
-    const pid = try std.fmt.parseInt(std.posix.pid_t, std.mem.trim(u8, pid_text, " \t\r\n"), 10);
-    std.Io.sleep(std.testing.io, std.Io.Duration.fromNanoseconds(100 * std.time.ns_per_ms), .awake) catch {};
-    std.posix.kill(pid, @enumFromInt(0)) catch |err| switch (err) {
-        error.ProcessNotFound => return,
-        else => return err,
-    };
-    return error.ProcessTreeCleanupFailed;
 }

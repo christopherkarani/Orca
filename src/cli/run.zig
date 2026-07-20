@@ -15,6 +15,7 @@ const rust_visibility = @import("rust_visibility.zig");
 const tui = @import("../tui/mod.zig");
 const build_options = @import("build_options");
 const suggestions = @import("suggestions.zig");
+const run_os_sandbox = @import("run_os_sandbox.zig");
 
 const RunOptions = struct {
     workspace: ?[]const u8 = null,
@@ -133,41 +134,19 @@ fn commandWithStdioAndEnv(io: std.Io, argv: []const []const u8, stdout: anytype,
     const backend_report = sandbox.backend.detect(core.platform.detectOs());
     try installBackendEnvironment(&filtered_env.env_map, backend_report);
 
-    // Production apply-before-exec seam (U04–U07): profile + env scrub + platform prepare.
-    // mode=on fails closed when backend unavailable; mode=auto degrades loudly; mode=off disables.
-    // Child Landlock/Seatbelt apply materials are retained for agent spawn (U07).
-    var fail_reason: []const u8 = "unknown";
-    var apply_result = sandbox.apply.applyBeforeExec(.{
-        .allocator = allocator,
-        .mode = options.os_sandbox,
-        .workspace_root = workspace_root_for_policy,
-        .env_map = &filtered_env.env_map,
-        .fail_reason_out = &fail_reason,
-    }) catch |err| switch (err) {
-        error.RequireFailed => {
-            try stderr.print(
-                "orca run: OS sandbox required (--os-sandbox on) but unavailable ({s}).\n",
-                .{fail_reason},
-            );
-            return exit_codes.unsupported;
-        },
-        error.OutOfMemory => return error.OutOfMemory,
+    // Production apply-before-exec (M-14 helpers in run_os_sandbox.zig).
+    var apply_result = switch (try run_os_sandbox.applyForRun(
+        allocator,
+        options.os_sandbox,
+        workspace_root_for_policy,
+        &filtered_env.env_map,
+        stderr,
+    )) {
+        .require_failed => |code| return code,
+        .ok => |r| r,
     };
     defer apply_result.deinit();
-
-    // auto + unavailable/failed with no child apply plan → loud grade drop on stderr.
-    if (options.os_sandbox == .auto and apply_result.childApplyKind() == .none) {
-        switch (apply_result.receipt.posture) {
-            .unavailable, .failed => {
-                const reason = apply_result.receipt.reason_code orelse "unknown";
-                try stderr.print(
-                    "orca run: WARNING: OS sandbox unavailable ({s}); continuing without OS FS isolation (grade drop). Use --os-sandbox on to require it, or --os-sandbox off to silence.\n",
-                    .{reason},
-                );
-            },
-            .active, .disabled => {},
-        }
-    }
+    try run_os_sandbox.warnAutoDegrade(options.os_sandbox, &apply_result, stderr);
 
     const AuditContext = struct {
         io: std.Io,
@@ -204,17 +183,14 @@ fn commandWithStdioAndEnv(io: std.Io, argv: []const []const u8, stdout: anytype,
         writer: @TypeOf(stdout),
         network_mode: policy.schema.NetworkMode,
         secretless: bool,
-        apply_result: *sandbox.apply.ApplyResult,
-        os_child_apply_used: *const bool,
+        apply_result: *const sandbox.apply.ApplyResult,
         audit_context: *AuditContext,
 
         pub fn print(context: *anyopaque, session: core.session.Session) !void {
             const self: *@This() = @ptrCast(@alignCast(context));
-            if (self.os_child_apply_used.*) {
-                self.apply_result.promoteAfterChildSpawn();
-            }
-            // Final attach receipt (post-promote) — posture string, optional profile hash, fs_scope only.
-            try auditSandboxPosture(self.audit_context, session, self.apply_result.receipt);
+            // Active receipt is set inside ApplyResult.spawnAgent via promoteWithProof
+            // after the child status-pipe handshake (M-12). Do not promote from materials alone.
+            try run_os_sandbox.auditSandboxPosture(self.audit_context, session, self.apply_result.receipt);
             try printSessionStart(self.io, self.writer, session, self.network_mode, self.secretless, self.apply_result.receipt);
             try flushIfSupported(self.writer);
         }
@@ -229,15 +205,12 @@ fn commandWithStdioAndEnv(io: std.Io, argv: []const []const u8, stdout: anytype,
         }
     };
 
-    // os_child_apply_used is filled by supervisor after sandboxed spawn (before this hook).
-    var os_child_apply_used_flag = false;
     var start_printer: StartPrinter = .{
         .io = io,
         .writer = stdout,
         .network_mode = cliNetworkMode(options),
         .secretless = options.secretless,
         .apply_result = &apply_result,
-        .os_child_apply_used = &os_child_apply_used_flag,
         .audit_context = &audit_context,
     };
 
@@ -565,35 +538,9 @@ fn commandWithStdioAndEnv(io: std.Io, argv: []const []const u8, stdout: anytype,
         .callback = AuditContext.append,
     } else null;
 
-    // U07: when apply retained child materials, spawn via apply.spawnAgent so the agent is boxed.
-    const SandboxSpawnCtx = struct {
-        apply_result: *const sandbox.apply.ApplyResult,
-
-        fn spawn(context: *anyopaque, request: core.process.CustomSpawnRequest) anyerror!std.process.Child {
-            const self: *@This() = @ptrCast(@alignCast(context));
-            const child_stdio: sandbox.apply_posix.StdioBehavior = switch (request.stdio) {
-                .inherit => .inherit,
-                .ignore => .ignore,
-            };
-            const pid = try self.apply_result.spawnAgent(
-                request.io,
-                request.allocator,
-                request.argv,
-                request.env_map,
-                request.workspace_root,
-                child_stdio,
-            );
-            return core.process.childFromPid(pid);
-        }
-    };
-    var sandbox_spawn_ctx: SandboxSpawnCtx = .{ .apply_result = &apply_result };
-    const os_child_apply: core.process.OsChildApply = switch (apply_result.childApplyKind()) {
-        .none => .none,
-        .landlock, .seatbelt => .{ .custom = .{
-            .context = &sandbox_spawn_ctx,
-            .spawnFn = SandboxSpawnCtx.spawn,
-        } },
-    };
+    // U07/M-12/M-14: sandboxed spawn via run_os_sandbox (spawnAgent promotes with proof).
+    var sandbox_spawn_ctx: run_os_sandbox.SandboxSpawnCtx = undefined;
+    const os_child_apply = run_os_sandbox.buildOsChildApply(&apply_result, &sandbox_spawn_ctx);
 
     var result = supervisor.run(io, allocator, .{
         .command = options.command_argv[0],
@@ -606,7 +553,6 @@ fn commandWithStdioAndEnv(io: std.Io, argv: []const []const u8, stdout: anytype,
         .env_map = &filtered_env.env_map,
         .env_redactions = filtered_env.redactions,
         .os_child_apply = os_child_apply,
-        .os_child_apply_used_out = &os_child_apply_used_flag,
         .before_spawn = before_spawn,
         .before_process_launch = if (audit_enabled) supervisor.StartHook{
             .context = &command_guard_context,
@@ -1036,32 +982,6 @@ fn writeSessionPosture(stdout: anytype, network_mode: policy.schema.NetworkMode,
     );
 }
 
-/// Emit sandbox_posture at session start via posture.formatAuditReason (no profile blobs).
-fn auditSandboxPosture(
-    audit_context: anytype,
-    session: core.session.Session,
-    receipt: sandbox.posture.AttachReceipt,
-) !void {
-    if (audit_context.writer == null) return;
-    var reason_buf: [384]u8 = undefined;
-    const reason = try sandbox.posture.formatAuditReason(&reason_buf, receipt);
-    const ts = core.time.Timestamp.now(audit_context.io);
-    const ev: core.event.Event = .{
-        .session_id = session.id,
-        .event_id = try core.event.generateEventId(ts),
-        .timestamp = ts,
-        .event_type = .sandbox_posture,
-        .actor = .{ .kind = .orca, .display = "orca" },
-        .target = .{ .kind = .session, .value = "os_filesystem_sandbox" },
-        .decision = .{
-            .result = .observe,
-            .reason = reason,
-            .ci_may_proceed = true,
-        },
-    };
-    try core_api.appendAuditEvent(&audit_context.writer.?, ev);
-}
-
 fn printSessionStart(
     io: std.Io,
     stdout: anytype,
@@ -1088,7 +1008,7 @@ fn printSessionStart(
     try writeSessionPosture(stdout, network_mode, secretless);
     // Mechanism-neutral OS sandbox line (S-GLO-03) — never "Seatbelt"/"Landlock" here.
     var os_line_buf: [256]u8 = undefined;
-    const os_line = sandbox.posture.formatSessionBanner(&os_line_buf, os_receipt) catch "OS sandbox: unavailable";
+    const os_line = run_os_sandbox.formatOsSandboxBannerLine(&os_line_buf, os_receipt);
     try stdout.print("{s}\n", .{os_line});
     try stdout.writeAll("\n");
 }
@@ -2313,6 +2233,40 @@ test "run --os-sandbox auto degrades loudly when backend unavailable" {
 test "RunOptions default os_sandbox is auto" {
     const defaults: RunOptions = .{};
     try std.testing.expectEqual(sandbox.posture.OsSandboxMode.auto, defaults.os_sandbox);
+}
+
+// M-18: full production `orca run` attach when OS backend is available.
+test "orca run --os-sandbox on attaches and banners active when backend available" {
+    if (builtin.os.tag != .macos) return error.SkipZigTest;
+    if (!sandbox.macos_seatbelt.sandboxInitAvailable()) return error.SkipZigTest;
+    const ver = sandbox.macos_seatbelt.detectProductVersion() catch return error.SkipZigTest;
+    if (!sandbox.macos_seatbelt.isMatrixMajor(ver.major)) return error.SkipZigTest;
+
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try tmp.dir.createDirPath(std.testing.io, ".orca");
+    try tmp.dir.writeFile(std.testing.io, .{ .sub_path = "neighbor.txt", .data = "ok" });
+    const root = try tmp.dir.realPathFileAlloc(std.testing.io, ".", std.testing.allocator);
+    defer std.testing.allocator.free(root);
+
+    var stdout_buf: [8192]u8 = undefined;
+    var stderr_buf: [4096]u8 = undefined;
+    var stdout_writer: std.Io.Writer = .fixed(&stdout_buf);
+    var stderr_writer: std.Io.Writer = .fixed(&stderr_buf);
+
+    const code = try commandForGuardTestWithShellEvaluator(
+        &.{ "--workspace", root, "--os-sandbox", "on", "--", "/usr/bin/true" },
+        &stdout_writer,
+        &stderr_writer,
+        .ignore,
+        shell_eval.mockDaemonAllowEvaluator,
+    );
+    try std.testing.expectEqual(exit_codes.success, code);
+    const out = stdout_writer.buffered();
+    try std.testing.expect(std.mem.indexOf(u8, out, "OS sandbox: active") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "Seatbelt") == null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "Landlock") == null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "network: unrestricted") != null);
 }
 
 test "session start banner is mechanism-neutral for disabled OS sandbox" {

@@ -1,19 +1,28 @@
 #!/usr/bin/env bash
 # Adversarial OS FS sandbox e2e + evidence generator (P0-I-06 / M-11 / M-12 / F-1 / F-5).
 #
-# CTRL-ATTACH is set only when a real FS deny canary under the production apply
-# path (Landlock applySelf / Seatbelt applyInChild + product profile) passes.
-# Prepare-only unit tests and promote-without-spawn must never mark attach.
+# Primary proofs use the production apply path unit tests (real FS deny canaries,
+# neighbor RW, control-root non-writable). Full `orca run` shell evaluation
+# requires the Rust daemon; when the daemon is unavailable this script still
+# records proofs from the Zig test surface.
 #
-# Full interactive `orca run` still needs the Rust daemon for command-guard; this
-# script records Zig production-path apply proofs and never claims false
-# CTRL-ATTACH from capability probes alone.
+# Honesty (M-1 / M-4 / S-GLO-09) — dual requirement for CTRL-ATTACH:
+#   CTRL-ATTACH is claimed only when BOTH are green:
+#     1. Real FS deny canaries (also set TEST-DENY + CTRL-NEIGHBOR)
+#     2. Production forkApply*AndExec handshake for this OS:
+#        - macOS: forkApplySeatbeltAndExec ... handshake...OK
+#        - Linux: forkApplyLandlockAndExec ... handshake...OK
+#   FS-deny-only (no production handshake) → TEST-DENY + CTRL-NEIGHBOR only;
+#   attach_detail=zig_unit_fs_deny_without_production_handshake (not attach).
+#   Handshake-only / prepare/probe greps → CTRL-PREPARE only — never attach.
+#   Platform SKIP of real FS deny (no backend ABI on host) is honest non-attach.
 #
 # Usage:
 #   ./scripts/os-sandbox-adversarial-e2e.sh [--case CASE_ID] [--binary PATH] [--out DIR]
 #
-# Exit 0 when baseline proofs pass without contradictory claims.
-# Exit 1 on test-fast failure, attach-without-deny, or Linux ABI present but deny skipped.
+# Exit 0 when full attach is proven, or partial when platform-skip / no backend
+# expected. Exit 1 on suite failure, contradictory attach claims, or (on
+# linux/darwin) green suite without dual attach proof when deny did not SKIP.
 
 set -euo pipefail
 
@@ -29,7 +38,7 @@ while [[ $# -gt 0 ]]; do
     --binary) BINARY="$2"; shift 2 ;;
     --out) OUT_DIR="$2"; shift 2 ;;
     -h|--help)
-      sed -n '2,20p' "$0"
+      sed -n '2,28p' "$0"
       exit 0
       ;;
     *) echo "unknown arg: $1" >&2; exit 2 ;;
@@ -63,11 +72,14 @@ fi
 
 bool_json() { if [[ "$1" == true ]]; then echo true; else echo false; fi; }
 
-ctrl_baseline_ok=true
+# M-12: baseline starts false; set true only after BINARY --version succeeds.
+ctrl_baseline_ok=false
+ctrl_prepare_ok=false
 ctrl_attach_ok=false
 test_deny_ok=false
 ctrl_neighbor_ok=false
 ctrl_off_ok=false
+prepare_detail="not_proven"
 attach_detail="not_proven"
 deny_detail="not_proven"
 neighbor_detail="not_proven"
@@ -84,25 +96,49 @@ TEST_LOG="$(mktemp)"
 TEST_RC=$?
 set -e
 
-# Real FS deny under product profile is the only path that authorizes CTRL-ATTACH (F-1).
+# CTRL-PREPARE only — probe/prepare greps never authorize CTRL-ATTACH.
+if grep -qE 'Linux Landlock prepares child plan without claiming active\.\.\.OK' "$TEST_LOG" \
+  || grep -qE 'verifyApplyInChild and applySelf skip or run on Linux only\.\.\.OK' "$TEST_LOG" \
+  || grep -qE 'parent apply seam never claims active \(probe/prepare only\)\.\.\.OK' "$TEST_LOG"; then
+  ctrl_prepare_ok=true
+  prepare_detail="zig_prepare_or_probe_only"
+fi
+
+# Production forkApply + status-pipe handshake (Seatbelt on macOS, Landlock on Linux).
+# Either platform's production path sets handshake_ok. Handshake alone is
+# prepare-strength only — never paints CTRL-ATTACH green without FS deny (M-1/M-4).
+handshake_ok=false
+if grep -qE 'forkApplySeatbeltAndExec applies then execs on macOS with handshake\.\.\.OK' "$TEST_LOG" \
+  || grep -qE 'forkApplyLandlockAndExec applies then execs on Linux with handshake\.\.\.OK' "$TEST_LOG"; then
+  handshake_ok=true
+  ctrl_prepare_ok=true
+  prepare_detail="zig_fork_apply_handshake"
+  if [[ "$OS_NAME" == "darwin" ]]; then backend_id="seatbelt"; fi
+  if [[ "$OS_NAME" == "linux" ]]; then backend_id="landlock"; fi
+fi
+
+# Real FS deny canaries → TEST-DENY + CTRL-NEIGHBOR.
+# CTRL-ATTACH only when production forkApply handshake is also OK (M-1 dual requirement).
 if grep -qE 'real FS deny: outside canary denied; workspace readable and writable\.\.\.OK' "$TEST_LOG" \
   || grep -qE 'real FS deny: outside denied; neighbor RW; control root not writable\.\.\.OK' "$TEST_LOG"; then
   test_deny_ok=true
   deny_detail="outside_unreadable_under_sandbox"
   ctrl_neighbor_ok=true
   neighbor_detail="workspace_neighbor_rw"
-  ctrl_attach_ok=true
-  attach_detail="zig_real_fs_deny_canary"
   if [[ "$OS_NAME" == "darwin" ]]; then backend_id="seatbelt"; fi
   if [[ "$OS_NAME" == "linux" ]]; then backend_id="landlock"; fi
+  if [[ "$handshake_ok" == true ]]; then
+    ctrl_attach_ok=true
+    attach_detail="zig_real_fs_deny_canary_and_handshake"
+  else
+    # Unit canary only — not production attach (M-1 honesty).
+    attach_detail="zig_unit_fs_deny_without_production_handshake"
+  fi
 fi
 
-# SKIP on wrong OS / missing ABI is honest non-attach (not a false active claim).
-if grep -qE 'real FS deny:.*\.\.\.SKIP' "$TEST_LOG"; then
-  if [[ "$ctrl_attach_ok" != true ]]; then
-    attach_detail="platform_skip_no_backend_on_host"
-    deny_detail="platform_skip"
-  fi
+# SKIP on wrong OS / missing ABI is honest non-attach, not failure.
+if grep -qE 'real FS deny:.*\.\.\.SKIP' "$TEST_LOG" && [[ "$ctrl_attach_ok" != true ]]; then
+  attach_detail="platform_skip_no_backend_on_host"
 fi
 
 # Mode-off unit proof
@@ -174,6 +210,7 @@ cat >"$MANIFEST" <<JSON
   "exit_code": ${exit_code},
   "controls": {
     "CTRL-BASELINE": {"ok": $(bool_json $ctrl_baseline_ok), "detail": "binary_present"},
+    "CTRL-PREPARE": {"ok": $(bool_json $ctrl_prepare_ok), "detail": "${prepare_detail}"},
     "CTRL-ATTACH": {"ok": $(bool_json $ctrl_attach_ok), "detail": "${attach_detail}"},
     "TEST-DENY": {"ok": $(bool_json $test_deny_ok), "detail": "${deny_detail}"},
     "CTRL-NEIGHBOR": {"ok": $(bool_json $ctrl_neighbor_ok), "detail": "${neighbor_detail}"},
@@ -187,25 +224,41 @@ JSON
 rm -f "$TEST_LOG"
 
 echo "Wrote evidence: $MANIFEST"
-echo "CTRL-BASELINE=$(bool_json $ctrl_baseline_ok) CTRL-ATTACH=$(bool_json $ctrl_attach_ok) TEST-DENY=$(bool_json $test_deny_ok) CTRL-NEIGHBOR=$(bool_json $ctrl_neighbor_ok) CTRL-OFF=$(bool_json $ctrl_off_ok)"
+echo "CTRL-BASELINE=$(bool_json $ctrl_baseline_ok) CTRL-PREPARE=$(bool_json $ctrl_prepare_ok) CTRL-ATTACH=$(bool_json $ctrl_attach_ok) TEST-DENY=$(bool_json $test_deny_ok) CTRL-NEIGHBOR=$(bool_json $ctrl_neighbor_ok) CTRL-OFF=$(bool_json $ctrl_off_ok)"
 
 if [[ $TEST_RC -ne 0 ]]; then
   exit 1
 fi
 
+# F-5: Linux ABI/prepare present but real FS deny not green is fail.
 if [[ "$linux_deny_required" == true && "$test_deny_ok" != true ]]; then
   echo "FAIL: Linux Landlock ABI/prepare path ran but real FS deny was not OK (F-5)" >&2
   exit 1
 fi
 
+# Any CTRL-ATTACH claim requires TEST-DENY + CTRL-NEIGHBOR + production handshake.
 if [[ "$ctrl_attach_ok" == true ]]; then
-  if [[ "$test_deny_ok" != true || "$ctrl_neighbor_ok" != true ]]; then
-    echo "FAIL: attach claimed but deny/neighbor not green" >&2
+  if [[ "$test_deny_ok" != true || "$ctrl_neighbor_ok" != true || "$handshake_ok" != true ]]; then
+    echo "FAIL: CTRL-ATTACH claimed (${attach_detail}) but dual proof incomplete (deny=${test_deny_ok} neighbor=${ctrl_neighbor_ok} handshake=${handshake_ok})" >&2
     exit 1
   fi
   echo "PASS: sandbox proofs green (attach=${attach_detail})"
   exit 0
 fi
 
-echo "PASS (partial): no full attach on this host; suite green without false active claim"
+# M-15: on linux/darwin, green suite without dual attach proof is FAIL unless
+# real FS deny platform-skipped (no backend ABI) — prepare-only is not enough.
+if [[ "$OS_NAME" == "linux" || "$OS_NAME" == "darwin" ]]; then
+  if [[ "$attach_detail" != "platform_skip_no_backend_on_host" ]]; then
+    echo "FAIL: CTRL-ATTACH not proven on ${OS_NAME}; require production forkApply handshake + real FS deny (detail=${attach_detail})" >&2
+    exit 1
+  fi
+fi
+
+if [[ "$ctrl_prepare_ok" == true ]]; then
+  echo "PASS (partial): prepare/probe only (detail=${prepare_detail}); no CTRL-ATTACH claimed (attach=${attach_detail})"
+  exit 0
+fi
+
+echo "PASS (partial): no full attach on this host; suite green without false active claim (attach=${attach_detail})"
 exit 0

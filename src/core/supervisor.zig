@@ -161,9 +161,8 @@ pub fn run(io: std.Io, allocator: std.mem.Allocator, config: RunConfig) !Session
     argv[0] = config.command;
     @memcpy(argv[1..], config.args);
 
-    // Production OS FS apply (U04): cli/run calls sandbox.apply.applyBeforeExec before
-    // supervisor.run, then passes os_child_apply for the agent spawn. Scaffold
-    // backend.prepare is test/doctor surface only — not this path (M-15).
+    // Production OS FS apply: cli/run calls sandbox.apply.applyBeforeExec before
+    // supervisor.run, then passes os_child_apply for the agent spawn (no scaffold path).
 
     var prepared = process.prepareChild(io, allocator, .{
         .io = io,

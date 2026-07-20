@@ -225,16 +225,20 @@ test "SBPL never grants broad HOME" {
     try std.testing.expect(!compiled.grantsHome(home));
 }
 
-test "SBPL escapes quotes in paths" {
+test "SBPL escapes quotes and backslashes in paths" {
     const allocator = std.testing.allocator;
-    // Path with quote is unusual; use backslash-heavy path instead if compile rejects.
+    const nasty = "/tmp/x\"y\\z";
     var compiled = try profile.compileProfile(allocator, .{
-        .workspace_root = "/tmp/orca-ws",
+        .workspace_root = nasty,
         .system_ro_prefixes = &[_][]const u8{"/usr"},
     });
     defer compiled.deinit();
 
     const sbpl = try renderSbpl(allocator, &compiled);
     defer allocator.free(sbpl);
-    try std.testing.expect(std.mem.indexOf(u8, sbpl, "(deny default)") != null);
+
+    const escaped_grant = "(subpath \"/tmp/x\\\"y\\\\z\")";
+    try std.testing.expect(std.mem.indexOf(u8, sbpl, escaped_grant) != null);
+    const escaped_control = "(deny file-write* (subpath \"/tmp/x\\\"y\\\\z/.orca\"))";
+    try std.testing.expect(std.mem.indexOf(u8, sbpl, escaped_control) != null);
 }

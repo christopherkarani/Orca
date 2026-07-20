@@ -1,0 +1,216 @@
+//! OS filesystem sandbox helpers for `orca run` (M-14).
+//!
+//! Keeps apply-before-exec wiring, spawn hooks, auto-degrade messaging, and
+//! posture audit/banner helpers out of the main `run.zig` orchestration file.
+
+const std = @import("std");
+const builtin = @import("builtin");
+
+const core = @import("orca_core").core;
+const core_api = @import("orca_core").api;
+const sandbox = @import("../sandbox/mod.zig");
+const exit_codes = @import("exit_codes.zig");
+
+pub const ApplyForRunOutcome = union(enum) {
+    /// `--os-sandbox on` failed closed; already printed reason to stderr.
+    require_failed: u8,
+    /// Prepared (or disabled) result — caller must `deinit`.
+    ok: sandbox.apply.ApplyResult,
+};
+
+/// Apply OS sandbox for the production run path.
+pub fn applyForRun(
+    allocator: std.mem.Allocator,
+    mode: sandbox.posture.OsSandboxMode,
+    workspace_root: []const u8,
+    env_map: *std.process.Environ.Map,
+    stderr: anytype,
+) !ApplyForRunOutcome {
+    var fail_reason: []const u8 = "unknown";
+    const result = sandbox.apply.applyBeforeExec(.{
+        .allocator = allocator,
+        .mode = mode,
+        .workspace_root = workspace_root,
+        .env_map = env_map,
+        .fail_reason_out = &fail_reason,
+    }) catch |err| switch (err) {
+        error.RequireFailed => {
+            try stderr.print(
+                "orca run: OS sandbox required (--os-sandbox on) but unavailable ({s}).\n",
+                .{fail_reason},
+            );
+            return .{ .require_failed = exit_codes.unsupported };
+        },
+        error.OutOfMemory => return error.OutOfMemory,
+    };
+    return .{ .ok = result };
+}
+
+/// Loud grade-drop warning for `--os-sandbox auto` when no child apply plan exists.
+pub fn warnAutoDegrade(
+    mode: sandbox.posture.OsSandboxMode,
+    apply_result: *const sandbox.apply.ApplyResult,
+    stderr: anytype,
+) !void {
+    if (mode != .auto or apply_result.childApplyKind() != .none) return;
+    switch (apply_result.receipt.posture) {
+        .unavailable, .failed => {
+            const reason = apply_result.receipt.reason_code orelse "unknown";
+            try stderr.print(
+                "orca run: WARNING: OS sandbox unavailable ({s}); continuing without OS FS isolation (grade drop). Use --os-sandbox on to require it, or --os-sandbox off to silence.\n",
+                .{reason},
+            );
+        },
+        .active, .disabled => {},
+    }
+}
+
+/// Build production `OsChildApply` from prepared materials (Landlock/Seatbelt).
+/// `apply_result` must outlive the returned hook (spawn mutates it to active).
+pub fn buildOsChildApply(
+    apply_result: *sandbox.apply.ApplyResult,
+    ctx: *SandboxSpawnCtx,
+) core.process.OsChildApply {
+    ctx.* = .{ .apply_result = apply_result };
+    return switch (apply_result.childApplyKind()) {
+        .none => .none,
+        .landlock, .seatbelt => .{ .custom = .{
+            .context = ctx,
+            .spawnFn = SandboxSpawnCtx.spawn,
+        } },
+    };
+}
+
+pub const SandboxSpawnCtx = struct {
+    apply_result: *sandbox.apply.ApplyResult,
+
+    pub fn spawn(context: *anyopaque, request: core.process.CustomSpawnRequest) anyerror!std.process.Child {
+        const self: *@This() = @ptrCast(@alignCast(context));
+        const child_stdio: sandbox.apply_posix.StdioBehavior = switch (request.stdio) {
+            .inherit => .inherit,
+            .ignore => .ignore,
+        };
+        // spawnAgent mints ChildAttachProof and promotes receipt (M-12).
+        const spawned = try self.apply_result.spawnAgent(
+            request.io,
+            request.allocator,
+            request.argv,
+            request.env_map,
+            request.workspace_root,
+            child_stdio,
+        );
+        return core.process.childFromPid(spawned.pid);
+    }
+};
+
+/// Emit sandbox_posture at session start (posture/hash/fs_scope only — no rule blobs).
+pub fn auditSandboxPosture(
+    audit_context: anytype,
+    session: core.session.Session,
+    receipt: sandbox.posture.AttachReceipt,
+) !void {
+    if (audit_context.writer == null) return;
+    var reason_buf: [384]u8 = undefined;
+    const reason = try sandbox.posture.formatAuditReason(&reason_buf, receipt);
+    const ts = core.time.Timestamp.now(audit_context.io);
+    const ev: core.event.Event = .{
+        .session_id = session.id,
+        .event_id = try core.event.generateEventId(ts),
+        .timestamp = ts,
+        .event_type = .sandbox_posture,
+        .actor = .{ .kind = .orca, .display = "orca" },
+        .target = .{ .kind = .session, .value = "os_filesystem_sandbox" },
+        .decision = .{
+            .result = .observe,
+            .reason = reason,
+            .ci_may_proceed = true,
+        },
+    };
+    try core_api.appendAuditEvent(&audit_context.writer.?, ev);
+}
+
+/// Format mechanism-neutral OS sandbox banner line for session start.
+pub fn formatOsSandboxBannerLine(buf: []u8, receipt: sandbox.posture.AttachReceipt) []const u8 {
+    return sandbox.posture.formatSessionBanner(buf, receipt) catch "OS sandbox: unavailable";
+}
+
+// ── tests ──────────────────────────────────────────────────────────────────
+
+test "auto degrade warns only when no child plan" {
+    var stderr_buf: [512]u8 = undefined;
+    var stderr_writer: std.Io.Writer = .fixed(&stderr_buf);
+    const result = try sandbox.apply.applyBeforeExec(.{
+        .allocator = std.testing.allocator,
+        .mode = .off,
+        .workspace_root = "/tmp/ws",
+        .env_map = null,
+    });
+    // mode off → disabled, no warn
+    try warnAutoDegrade(.auto, &result, &stderr_writer);
+    try std.testing.expectEqual(@as(usize, 0), stderr_writer.buffered().len);
+}
+
+test "ChildAttachProof invalid magic does not activate" {
+    var result = try sandbox.apply.applyBeforeExec(.{
+        .allocator = std.testing.allocator,
+        .mode = .off,
+        .workspace_root = "/tmp/ws",
+        .env_map = null,
+    });
+    try std.testing.expect(!result.receipt.isActive());
+    result.promoteWithProof(.{ .mechanism = .seatbelt, .magic = 0 });
+    try std.testing.expect(!result.receipt.isActive());
+}
+
+test "run path spawnAgent attach when Seatbelt available" {
+    if (builtin.os.tag != .macos) return error.SkipZigTest;
+    if (!sandbox.macos_seatbelt.sandboxInitAvailable()) return error.SkipZigTest;
+    const ver = sandbox.macos_seatbelt.detectProductVersion() catch return error.SkipZigTest;
+    if (!sandbox.macos_seatbelt.isMatrixMajor(ver.major)) return error.SkipZigTest;
+
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try tmp.dir.createDirPath(std.testing.io, ".orca");
+    try tmp.dir.writeFile(std.testing.io, .{ .sub_path = "neighbor.txt", .data = "ok" });
+    const root = try tmp.dir.realPathFileAlloc(std.testing.io, ".", std.testing.allocator);
+    defer std.testing.allocator.free(root);
+
+    var env_map = std.process.Environ.Map.init(std.testing.allocator);
+    defer env_map.deinit();
+    try env_map.put("PATH", "/usr/bin:/bin");
+    try env_map.put("HOME", "/tmp");
+    try env_map.put("OPENAI_API_KEY", "sk-should-be-stripped");
+
+    var apply_result = try sandbox.apply.applyBeforeExec(.{
+        .allocator = std.testing.allocator,
+        .mode = .on,
+        .workspace_root = root,
+        .env_map = &env_map,
+    });
+    defer apply_result.deinit();
+    try std.testing.expectEqual(sandbox.apply.ChildApplyKind.seatbelt, apply_result.childApplyKind());
+    // M-20: secret stripped by launch allowlist
+    try std.testing.expect(env_map.get("OPENAI_API_KEY") == null);
+    try std.testing.expect(env_map.get("PATH") != null);
+
+    var ctx: SandboxSpawnCtx = undefined;
+    const os_apply = buildOsChildApply(&apply_result, &ctx);
+    try std.testing.expect(os_apply == .custom);
+
+    const child = try SandboxSpawnCtx.spawn(@ptrCast(&ctx), .{
+        .io = std.testing.io,
+        .allocator = std.testing.allocator,
+        .argv = &[_][]const u8{"/usr/bin/true"},
+        .workspace_root = root,
+        .env_map = &env_map,
+        .stdio = .ignore,
+    });
+    try std.testing.expect(apply_result.receipt.isActive());
+    try std.testing.expectEqual(sandbox.posture.BackendMechanism.seatbelt, apply_result.receipt.mechanism);
+
+    var status: c_int = 0;
+    if (child.id) |pid| {
+        _ = std.c.waitpid(pid, &status, 0);
+    }
+    try std.testing.expect((status & 0x7f) == 0);
+}
