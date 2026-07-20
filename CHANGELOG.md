@@ -3,6 +3,7 @@
 ## Unreleased
 
 ### Added
+- **Phase D residual classifier** — optional `effects.classifier: local` (alias `local-embed`) runs pure-Zig prototype/token similarity on tools that catalog/structural/packs leave under-classified. Default **off**. Raise-only; matchers `classifier.local.*`; fail-closed in strict/ci/redteam when enabled but unavailable. No cloud classification; no new deps.
 - **Effect-class policy** (`effects:`) classifies host/MCP tool names into semantic effects (`comms.message`, `comms.publish`, `money.transfer`, …) so users can deny messaging/social tools without listing every name.
 - Built-in tool-name catalog and `orca policy explain tool <name>`.
 - Preset `no-external-comms` for strict-local plus external-comms effect denials.

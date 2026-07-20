@@ -3,6 +3,7 @@
 //! Phase A: deterministic catalog over tool names (host PreToolUse + MCP tools/call).
 //! Phase B: structural args, network host tags, shell command bypass (Zig path).
 //! Phase C: user effect packs + discovery formatting (classification-only; decisions via effects:).
+//! Phase D: optional local residual classifier (prototype similarity; default off; raise-only).
 
 pub const ids = @import("ids.zig");
 pub const catalog = @import("catalog.zig");
@@ -13,6 +14,7 @@ pub const shell_bypass = @import("shell_bypass.zig");
 pub const evaluate = @import("evaluate.zig");
 pub const format = @import("format.zig");
 pub const packs = @import("packs.zig");
+pub const classifier = @import("classifier.zig");
 
 pub const Confidence = catalog.Confidence;
 pub const EffectHit = catalog.EffectHit;
@@ -25,6 +27,10 @@ pub const Pack = packs.Pack;
 pub const classifyToolName = classify.classifyToolName;
 pub const classifyToolCall = classify.classifyToolCall;
 pub const classifyToolCallWithPacks = packs.classifyToolCallWithPacks;
+/// Packs + optional residual classifier (Phase D). Prefer this when `effects.classifier` is known.
+pub const classifyToolCallWithResidual = classifier.classifyToolCallWithResidual;
+pub const ToolClassifyResult = classifier.ToolClassifyResult;
+pub const evaluateHitsRaiseOnly = classifier.evaluateHitsRaiseOnly;
 pub const loadPacks = packs.loadPacks;
 pub const loadPacksForEnforcement = packs.loadPacksForEnforcement;
 pub const normalizeToolName = catalog.normalizeToolName;
@@ -53,5 +59,6 @@ test {
     _ = evaluate;
     _ = format;
     _ = packs;
+    _ = classifier;
     _ = @import("merge_integration_test.zig");
 }

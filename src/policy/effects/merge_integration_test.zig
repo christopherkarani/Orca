@@ -119,3 +119,212 @@ test "shell mailto bypass denies under effects deny comms.message" {
     defer ok.deinit(std.testing.allocator);
     try std.testing.expectEqual(core.decision.DecisionResult.allow, ok.decision.result);
 }
+
+test "classifier local residual denies acme_mailer_job under effects.deny" {
+    var policy = try load.parseFromSlice(std.testing.allocator,
+        \\version: 1
+        \\mode: strict
+        \\mcp:
+        \\  default: allow
+        \\  allow:
+        \\    - "*"
+        \\effects:
+        \\  classifier: local
+        \\  deny:
+        \\    - comms.message
+    , "residual-deny.yaml");
+    defer policy.deinit();
+
+    var denied = try evaluate.tool(&policy, "acme_mailer_job", std.testing.allocator);
+    defer denied.deinit(std.testing.allocator);
+    try std.testing.expectEqual(core.decision.DecisionResult.deny, denied.decision.result);
+    try std.testing.expect(std.mem.indexOf(u8, denied.decision.reason, "classifier.local.") != null);
+    try std.testing.expect(std.mem.indexOf(u8, denied.decision.reason, "comms.message") != null);
+}
+
+// M-1: decoy publish/money arg features must not demote residual family deny to fail-open.
+// Keys avoid structural complete sets so residual still applies.
+test "classifier residual family deny survives arg decoys" {
+    var policy = try load.parseFromSlice(std.testing.allocator,
+        \\version: 1
+        \\mode: strict
+        \\mcp:
+        \\  default: allow
+        \\  allow:
+        \\    - "*"
+        \\effects:
+        \\  classifier: local
+        \\  deny:
+        \\    - comms.message
+    , "residual-decoy-deny.yaml");
+    defer policy.deinit();
+
+    const keys = [_][]const u8{ "publisher", "payment", "social", "billing" };
+    const vals = [_][]const u8{ "twitter", "stripe", "linkedin", "paypal", "mastodon", "publish" };
+    var denied = try evaluate.toolWithArgs(
+        &policy,
+        "acme_mailer_job",
+        .{ .keys = &keys, .string_values = &vals },
+        std.testing.allocator,
+    );
+    defer denied.deinit(std.testing.allocator);
+    try std.testing.expectEqual(core.decision.DecisionResult.deny, denied.decision.result);
+    try std.testing.expect(std.mem.indexOf(u8, denied.decision.reason, "comms.message") != null);
+}
+
+test "classifier off leaves residual tool on mcp surface allow" {
+    var policy = try load.parseFromSlice(std.testing.allocator,
+        \\version: 1
+        \\mode: strict
+        \\mcp:
+        \\  default: allow
+        \\  allow:
+        \\    - "*"
+        \\effects:
+        \\  classifier: off
+        \\  deny:
+        \\    - comms.message
+    , "residual-off.yaml");
+    defer policy.deinit();
+
+    var allowed = try evaluate.tool(&policy, "acme_mailer_job", std.testing.allocator);
+    defer allowed.deinit(std.testing.allocator);
+    // No catalog/structural hit; classifier off → no residual → effects none → mcp allow.
+    try std.testing.expectEqual(core.decision.DecisionResult.allow, allowed.decision.result);
+}
+
+test "classifier residual cannot allow past surface deny" {
+    var policy = try load.parseFromSlice(std.testing.allocator,
+        \\version: 1
+        \\mode: strict
+        \\mcp:
+        \\  default: deny
+        \\effects:
+        \\  classifier: local
+        \\  allow:
+        \\    - comms.message
+    , "raise-only.yaml");
+    defer policy.deinit();
+
+    var denied = try evaluate.tool(&policy, "acme_mailer_job", std.testing.allocator);
+    defer denied.deinit(std.testing.allocator);
+    try std.testing.expectEqual(core.decision.DecisionResult.deny, denied.decision.result);
+}
+
+test "classifier unavailable fails closed in strict mode" {
+    const classifier = @import("classifier.zig");
+    classifier.testing_force_unavailable = true;
+    defer classifier.testing_force_unavailable = false;
+
+    var policy = try load.parseFromSlice(std.testing.allocator,
+        \\version: 1
+        \\mode: strict
+        \\mcp:
+        \\  default: allow
+        \\effects:
+        \\  classifier: local
+        \\  deny:
+        \\    - comms.message
+    , "fail-closed.yaml");
+    defer policy.deinit();
+
+    var denied = try evaluate.tool(&policy, "acme_mailer_job", std.testing.allocator);
+    defer denied.deinit(std.testing.allocator);
+    try std.testing.expectEqual(core.decision.DecisionResult.deny, denied.decision.result);
+    try std.testing.expect(std.mem.indexOf(u8, denied.decision.reason, "effects.classifier unavailable") != null);
+}
+
+test "classifier unavailable fails closed in ci and redteam modes" {
+    const classifier = @import("classifier.zig");
+    classifier.testing_force_unavailable = true;
+    defer classifier.testing_force_unavailable = false;
+
+    const modes = [_][]const u8{ "ci", "redteam" };
+    for (modes) |mode_name| {
+        const yaml = try std.fmt.allocPrint(std.testing.allocator,
+            \\version: 1
+            \\mode: {s}
+            \\mcp:
+            \\  default: allow
+            \\effects:
+            \\  classifier: local
+            \\  deny:
+            \\    - comms.message
+        , .{mode_name});
+        defer std.testing.allocator.free(yaml);
+
+        var policy = try load.parseFromSlice(std.testing.allocator, yaml, "fail-closed-mode.yaml");
+        defer policy.deinit();
+
+        var denied = try evaluate.tool(&policy, "acme_mailer_job", std.testing.allocator);
+        defer denied.deinit(std.testing.allocator);
+        try std.testing.expectEqual(core.decision.DecisionResult.deny, denied.decision.result);
+        try std.testing.expect(std.mem.indexOf(u8, denied.decision.reason, "effects.classifier unavailable") != null);
+    }
+}
+
+test "classifier unavailable does not deny in observe mode" {
+    const classifier = @import("classifier.zig");
+    classifier.testing_force_unavailable = true;
+    defer classifier.testing_force_unavailable = false;
+
+    var policy = try load.parseFromSlice(std.testing.allocator,
+        \\version: 1
+        \\mode: observe
+        \\mcp:
+        \\  default: allow
+        \\effects:
+        \\  classifier: local
+        \\  deny:
+        \\    - comms.message
+    , "fail-open-observe.yaml");
+    defer policy.deinit();
+
+    var allowed = try evaluate.tool(&policy, "acme_mailer_job", std.testing.allocator);
+    defer allowed.deinit(std.testing.allocator);
+    try std.testing.expectEqual(core.decision.DecisionResult.allow, allowed.decision.result);
+}
+
+test "send_email still catalog deny under classifier local" {
+    var policy = try load.parseFromSlice(std.testing.allocator,
+        \\version: 1
+        \\mode: strict
+        \\mcp:
+        \\  default: allow
+        \\effects:
+        \\  classifier: local
+        \\  deny:
+        \\    - comms.message
+    , "catalog-wins.yaml");
+    defer policy.deinit();
+
+    var denied = try evaluate.tool(&policy, "send_email", std.testing.allocator);
+    defer denied.deinit(std.testing.allocator);
+    try std.testing.expectEqual(core.decision.DecisionResult.deny, denied.decision.result);
+    try std.testing.expect(std.mem.indexOf(u8, denied.decision.reason, "catalog.") != null);
+    try std.testing.expect(std.mem.indexOf(u8, denied.decision.reason, "classifier.local.") == null);
+}
+
+test "classifier unavailable still catalog deny for send_email" {
+    const classifier = @import("classifier.zig");
+    classifier.testing_force_unavailable = true;
+    defer classifier.testing_force_unavailable = false;
+
+    var policy = try load.parseFromSlice(std.testing.allocator,
+        \\version: 1
+        \\mode: strict
+        \\mcp:
+        \\  default: allow
+        \\effects:
+        \\  classifier: local
+        \\  deny:
+        \\    - comms.message
+    , "fail-closed-catalog.yaml");
+    defer policy.deinit();
+
+    var denied = try evaluate.tool(&policy, "send_email", std.testing.allocator);
+    defer denied.deinit(std.testing.allocator);
+    try std.testing.expectEqual(core.decision.DecisionResult.deny, denied.decision.result);
+    try std.testing.expect(std.mem.indexOf(u8, denied.decision.reason, "catalog.") != null);
+    try std.testing.expect(std.mem.indexOf(u8, denied.decision.reason, "effects.classifier unavailable") == null);
+}

@@ -137,7 +137,8 @@ fn hasUrlShapeKey(normalized_keys: []const []const u8) bool {
     return false;
 }
 
-fn isFileOrShellToolName(tool_name: []const u8) bool {
+/// Host file/shell tool focuses — used by structural guards and residual hard-exclude.
+pub fn isFileOrShellToolName(tool_name: []const u8) bool {
     const blocked = [_][]const u8{
         "write",     "edit",       "read",              "bash",             "shell",
         "sh",        "zsh",        "exec",              "terminal",         "powershell",

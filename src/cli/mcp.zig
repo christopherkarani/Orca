@@ -119,14 +119,16 @@ fn inspect(io: std.Io, argv: []const []const u8, stdout: anytype, stderr: anytyp
 
     const options = parseOptions(allocator, argv, stderr) catch |err| return usageCode(err, stderr);
     defer options.deinit(allocator);
-    var loaded_policy: ?*core_api.Policy = null;
-    defer if (loaded_policy) |loaded| loaded.deinit();
+    // Schema policy so inspect can read effects.classifier (opaque core_api.Policy cannot).
+    var loaded_policy: ?policy.schema.Policy = null;
+    defer if (loaded_policy) |*loaded| loaded.deinit();
     if (options.policy_path) |path| {
-        loaded_policy = core_api.loadPolicyFile(io, allocator, path) catch |err| {
+        loaded_policy = policy.load.loadFile(io, allocator, path) catch |err| {
             try stderr.print("orca mcp inspect: invalid policy: {s}\n", .{@errorName(err)});
             return exit_codes.general;
         };
     }
+    const policy_ref: ?*const policy.schema.Policy = if (loaded_policy) |*loaded| loaded else null;
     var server = orca_mcp.transport.ProcessServer.spawn(io, allocator, options.command_argv) catch |err| {
         try stderr.print("orca mcp inspect: failed to start server: {s}\n", .{@errorName(err)});
         return exit_codes.general;
@@ -172,7 +174,7 @@ fn inspect(io: std.Io, argv: []const []const u8, stdout: anytype, stderr: anytyp
 
     try stdout.print("MCP Server: {s}\nTransport: stdio\nTools:\n", .{options.server_name});
     for (inventory.tools) |tool| {
-        try writeInspectToolLine(allocator, stdout, options.server_name, tool, loaded_policy, &effect_packs);
+        try writeInspectToolLine(allocator, stdout, options.server_name, tool, policy_ref, &effect_packs);
     }
     try stdout.writeAll("\nFindings:\n");
     var finding_count: usize = 0;
@@ -191,7 +193,7 @@ fn writeInspectToolLine(
     stdout: anytype,
     server_name: []const u8,
     tool: orca_mcp.tools.ToolInfo,
-    loaded_policy: ?*core_api.Policy,
+    loaded_policy: ?*const policy.schema.Policy,
     effect_packs: *const policy.effects.PackSet,
 ) !void {
     try stdout.print("  {s:<24} risk: {s:<8} default: {s}", .{
@@ -199,17 +201,28 @@ fn writeInspectToolLine(
         tool.risk.toString(),
         orca_mcp.tools.defaultDecisionForRisk(tool.risk),
     });
-    const hits = try policy.effects.classifyToolCallWithPacks(allocator, effect_packs, tool.name, null);
-    defer allocator.free(hits);
-    const effects_text = try policy.effects.formatHitsCompact(hits, allocator);
+    // Match evaluate/tools classify: residual when effects.classifier is enabled.
+    const classifier_enabled = if (loaded_policy) |selected|
+        selected.effects.isActive() and selected.effects.classifier.isEnabled()
+    else
+        false;
+    const classified = try policy.effects.classifyToolCallWithResidual(
+        allocator,
+        effect_packs,
+        tool.name,
+        null,
+        classifier_enabled,
+    );
+    defer classified.deinit(allocator);
+    const effects_text = try policy.effects.formatHitsCompact(classified.hits, allocator);
     defer allocator.free(effects_text);
     try stdout.print(" effects: {s}", .{effects_text});
     if (loaded_policy) |selected| {
-        var evaluation = try core_api.evaluateAction(
-            allocator,
+        var evaluation = try policy.evaluate.action(
             selected,
             .{ .mcp_tool_call = .{ .server = server_name, .tool_name = tool.name } },
             .{ .effect_packs = effect_packs },
+            allocator,
         );
         defer evaluation.deinit(allocator);
         try stdout.print(" policy: {s}", .{evaluation.decision.result.toString()});
@@ -854,6 +867,84 @@ test "mcp inspect shows effects and effects.deny for send_email" {
     try std.testing.expect(std.mem.indexOf(u8, output, "search_issues") != null);
     try std.testing.expect(std.mem.indexOf(u8, output, "(none)") != null);
     _ = stderr_writer.buffered();
+}
+
+test "writeInspectToolLine surfaces residual classifier.local when effects.classifier local" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    {
+        const file = try tmp.dir.createFile(std.testing.io, "residual.yaml", .{});
+        defer file.close(std.testing.io);
+        try file.writeStreamingAll(std.testing.io,
+            \\version: 1
+            \\mode: strict
+            \\mcp:
+            \\  default: allow
+            \\effects:
+            \\  classifier: local
+            \\  deny:
+            \\    - comms.message
+        );
+    }
+    const policy_path = try tmp.dir.realPathFileAlloc(std.testing.io, "residual.yaml", std.testing.allocator);
+    defer std.testing.allocator.free(policy_path);
+
+    var loaded = try policy.load.loadFile(std.testing.io, std.testing.allocator, policy_path);
+    defer loaded.deinit();
+    var packs = policy.effects.PackSet.empty(std.testing.allocator);
+    defer packs.deinit();
+
+    var stdout_buf: [2048]u8 = undefined;
+    var stdout_writer: std.Io.Writer = .fixed(&stdout_buf);
+    const tool = orca_mcp.tools.ToolInfo{
+        .name = "acme_mailer_job",
+        .description = "",
+        .risk = .medium,
+        .findings = &.{},
+    };
+    try writeInspectToolLine(std.testing.allocator, &stdout_writer, "fake", tool, &loaded, &packs);
+    const out = stdout_writer.buffered();
+    try std.testing.expect(std.mem.indexOf(u8, out, "classifier.local.") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "comms.message") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "policy: deny") != null);
+}
+
+test "writeInspectToolLine packs-only when classifier off" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    {
+        const file = try tmp.dir.createFile(std.testing.io, "no-residual.yaml", .{});
+        defer file.close(std.testing.io);
+        try file.writeStreamingAll(std.testing.io,
+            \\version: 1
+            \\mode: strict
+            \\mcp:
+            \\  default: allow
+            \\effects:
+            \\  deny:
+            \\    - comms.message
+        );
+    }
+    const policy_path = try tmp.dir.realPathFileAlloc(std.testing.io, "no-residual.yaml", std.testing.allocator);
+    defer std.testing.allocator.free(policy_path);
+
+    var loaded = try policy.load.loadFile(std.testing.io, std.testing.allocator, policy_path);
+    defer loaded.deinit();
+    var packs = policy.effects.PackSet.empty(std.testing.allocator);
+    defer packs.deinit();
+
+    var stdout_buf: [2048]u8 = undefined;
+    var stdout_writer: std.Io.Writer = .fixed(&stdout_buf);
+    const tool = orca_mcp.tools.ToolInfo{
+        .name = "acme_mailer_job",
+        .description = "",
+        .risk = .medium,
+        .findings = &.{},
+    };
+    try writeInspectToolLine(std.testing.allocator, &stdout_writer, "fake", tool, &loaded, &packs);
+    const out = stdout_writer.buffered();
+    try std.testing.expect(std.mem.indexOf(u8, out, "classifier.local.") == null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "(none)") != null);
 }
 
 test "manifest binding requires exact argv hash and env allowlist" {

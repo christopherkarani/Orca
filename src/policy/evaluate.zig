@@ -99,29 +99,27 @@ pub fn mcpToolCallWithArgs(
     return mergeWithEffects(allocator, mode, policy, tool_name, args, surface, ctx.effect_packs);
 }
 
-/// Merge surface evaluation with effect-class rules when `effects:` is configured.
-/// Higher restriction wins (deny > ask > allow > observe). Equal severity keeps the surface result.
-/// Structural / network / shell hits raise restriction only (never alone flip surface deny → allow).
-fn mergeEffectHits(
-    allocator: std.mem.Allocator,
-    mode: schema.Mode,
-    policy: *const schema.Policy,
-    hits: []const effects.EffectHit,
-    surface: schema.Evaluation,
-) !schema.Evaluation {
-    if (!policy.effects.isActive()) return surface;
-
+fn effectsRuleView(policy: *const schema.Policy) effects.EffectsRuleView {
     const default_kind: ?effects.EffectDecisionKind = if (policy.effects.default) |default|
         decisionValueToEffectKind(default)
     else
         null;
-
-    const match = effects.evaluateHits(hits, .{
+    return .{
         .allow = policy.effects.allow,
         .deny = policy.effects.deny,
         .ask = policy.effects.ask,
         .default = default_kind,
-    });
+    };
+}
+
+/// Merge surface evaluation with an effect-class match.
+/// Higher restriction wins (deny > ask > allow > observe). Equal severity keeps the surface result.
+fn mergeEffectMatch(
+    allocator: std.mem.Allocator,
+    mode: schema.Mode,
+    match: effects.EffectMatch,
+    surface: schema.Evaluation,
+) !schema.Evaluation {
     if (match.kind == .none) return surface;
 
     var effect_eval = try evaluationFromEffectMatch(allocator, mode, match);
@@ -131,6 +129,38 @@ fn mergeEffectHits(
     }
     effect_eval.deinit(allocator);
     return surface;
+}
+
+/// Merge surface evaluation with effect-class rules when `effects:` is configured.
+/// Structural / network / shell hits raise restriction only (never alone flip surface deny → allow).
+fn mergeEffectHits(
+    allocator: std.mem.Allocator,
+    mode: schema.Mode,
+    policy: *const schema.Policy,
+    hits: []const effects.EffectHit,
+    surface: schema.Evaluation,
+) !schema.Evaluation {
+    if (!policy.effects.isActive()) return surface;
+    const match = effects.evaluateHits(hits, effectsRuleView(policy));
+    return mergeEffectMatch(allocator, mode, match, surface);
+}
+
+fn evaluationClassifierUnavailable(allocator: std.mem.Allocator) !schema.Evaluation {
+    const rule_id = try allocator.dupe(u8, "effects.classifier");
+    errdefer allocator.free(rule_id);
+    const explanation = try allocator.dupe(u8, "effects.classifier unavailable");
+    return .{
+        .decision = .{
+            .result = .deny,
+            .rule_id = rule_id,
+            .reason = explanation,
+            .requires_user = false,
+            .ci_may_proceed = false,
+        },
+        .matched_rule = .{ .id = rule_id, .pattern = "effects.classifier" },
+        .explanation = explanation,
+        .owned_rule_id = rule_id,
+    };
 }
 
 fn mergeWithEffects(
@@ -144,9 +174,25 @@ fn mergeWithEffects(
 ) !schema.Evaluation {
     if (!policy.effects.isActive()) return surface;
 
-    const hits = try effects.classifyToolCallWithPacks(allocator, pack_set, tool_name, args);
-    defer allocator.free(hits);
-    return mergeEffectHits(allocator, mode, policy, hits, surface);
+    const classified = try effects.classifyToolCallWithResidual(
+        allocator,
+        pack_set,
+        tool_name,
+        args,
+        policy.effects.classifier.isEnabled(),
+    );
+    defer classified.deinit(allocator);
+
+    // Fail closed only for residual/under-classified tools. Catalog/structural base hits
+    // still resolve via raise-only evaluate when residual inject reports unavailable.
+    if (classified.unavailable and mode.isEnforcing() and effects.classifier.isResidual(classified.hits)) {
+        surface.deinit(allocator);
+        return evaluationClassifierUnavailable(allocator);
+    }
+
+    // Raise-only residual: partition residual matchers (no second packs classify).
+    const match = try effects.evaluateHitsRaiseOnly(allocator, classified.hits, effectsRuleView(policy));
+    return mergeEffectMatch(allocator, mode, match, surface);
 }
 
 fn mergeNetworkWithEffects(

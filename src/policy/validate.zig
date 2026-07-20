@@ -26,6 +26,8 @@ fn validateEffects(effects_policy: schema.EffectsPolicy) !void {
     if (!effects_policy.configured) {
         if (effects_policy.allow.len != 0 or effects_policy.deny.len != 0 or effects_policy.ask.len != 0 or effects_policy.default != null)
             return error.InvalidPolicy;
+        // Classifier only valid under an active effects: section.
+        if (effects_policy.classifier != .off) return error.InvalidPolicy;
         return;
     }
     for (effects_policy.allow) |pattern| try validateEffectPattern("effects.allow", pattern);
