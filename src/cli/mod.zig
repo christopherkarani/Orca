@@ -1935,7 +1935,7 @@ test "run dispatch launches child command" {
     var stdout_writer: std.Io.Writer = .fixed(&stdout_buf);
     var stderr_writer: std.Io.Writer = .fixed(&stderr_buf);
 
-    const code = try run_command.commandForTest(&.{ "--", "zig", "version" }, &stdout_writer, &stderr_writer, .ignore);
+    const code = try run_command.commandForTest(&.{ "--os-sandbox", "off", "--", "zig", "version" }, &stdout_writer, &stderr_writer, .ignore);
     try std.testing.expectEqual(exit_codes.success, code);
     // Phase 2: printSessionStart now renders the shared brand banner + key-value
     // grid (the hand-rolled shield line is retired). The session shield +
@@ -1943,6 +1943,7 @@ test "run dispatch launches child command" {
     try std.testing.expect(std.mem.indexOf(u8, stdout_writer.buffered(), "\u{1F6E1}  Orca") != null);
     try std.testing.expect(std.mem.indexOf(u8, stdout_writer.buffered(), "watching this session") != null);
     try std.testing.expect(std.mem.indexOf(u8, stdout_writer.buffered(), "Session ended cleanly") != null);
+    try std.testing.expect(std.mem.indexOf(u8, stdout_writer.buffered(), "OS sandbox: disabled") != null);
     try std.testing.expectEqualStrings("", stderr_writer.buffered());
 }
 

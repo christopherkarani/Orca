@@ -33,6 +33,10 @@ pub const RunConfig = struct {
     os_sandbox_mode: OsSandboxMode = .auto,
     /// True when sandbox.apply.applyBeforeExec already ran for this launch.
     os_sandbox_apply_done: bool = false,
+    /// When set, agent spawn applies Landlock/Seatbelt in the child before exec (U07).
+    os_child_apply: process.OsChildApply = .none,
+    /// Set true after a successful sandboxed spawn (apply_posix path).
+    os_child_apply_used_out: ?*bool = null,
     before_spawn: ?StartHook = null,
     before_process_launch: ?StartHook = null,
     on_session_start: ?StartHook = null,
@@ -183,6 +187,7 @@ pub fn run(io: std.Io, allocator: std.mem.Allocator, config: RunConfig) !Session
         .workspace_root = workspace_root,
         .stdio = config.stdio,
         .env_map = config.env_map,
+        .os_child_apply = config.os_child_apply,
     });
 
     prepared.spawn() catch |err| switch (err) {
@@ -193,6 +198,10 @@ pub fn run(io: std.Io, allocator: std.mem.Allocator, config: RunConfig) !Session
         error.FileNotFound => return error.CommandNotFound,
         else => return err,
     };
+
+    if (config.os_child_apply_used_out) |out| {
+        out.* = prepared.os_child_apply_used;
+    }
 
     if (config.on_session_start) |hook| {
         hook.callback(hook.context, session) catch |err| {

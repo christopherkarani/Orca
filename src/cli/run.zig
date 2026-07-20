@@ -133,34 +133,56 @@ fn commandWithStdioAndEnv(io: std.Io, argv: []const []const u8, stdout: anytype,
     const backend_report = sandbox.backend.detect(core.platform.detectOs());
     try installBackendEnvironment(&filtered_env.env_map, backend_report);
 
-    // Production apply-before-exec seam (U04): profile + env scrub + platform stub.
-    // mode=on fails closed when backend unavailable; mode=auto degrades; mode=off disables.
-    const apply_result = sandbox.apply.applyBeforeExec(.{
+    // Production apply-before-exec seam (U04–U07): profile + env scrub + platform prepare.
+    // mode=on fails closed when backend unavailable; mode=auto degrades loudly; mode=off disables.
+    // Child Landlock/Seatbelt apply materials are retained for agent spawn (U07).
+    var fail_reason: []const u8 = "unknown";
+    var apply_result = sandbox.apply.applyBeforeExec(.{
         .allocator = allocator,
         .mode = options.os_sandbox,
         .workspace_root = workspace_root_for_policy,
         .env_map = &filtered_env.env_map,
+        .fail_reason_out = &fail_reason,
     }) catch |err| switch (err) {
         error.RequireFailed => {
             try stderr.print(
                 "orca run: OS sandbox required (--os-sandbox on) but unavailable ({s}).\n",
-                .{"backend_not_implemented"},
+                .{fail_reason},
             );
             return exit_codes.unsupported;
         },
         error.OutOfMemory => return error.OutOfMemory,
     };
-    _ = apply_result;
+    defer apply_result.deinit();
+
+    // auto + unavailable/failed with no child apply plan → loud grade drop on stderr.
+    if (options.os_sandbox == .auto and apply_result.childApplyKind() == .none) {
+        switch (apply_result.receipt.posture) {
+            .unavailable, .failed => {
+                const reason = apply_result.receipt.reason_code orelse "unknown";
+                try stderr.print(
+                    "orca run: WARNING: OS sandbox unavailable ({s}); continuing without OS FS isolation (grade drop). Use --os-sandbox on to require it, or --os-sandbox off to silence.\n",
+                    .{reason},
+                );
+            },
+            .active, .disabled => {},
+        }
+    }
 
     const StartPrinter = struct {
         io: std.Io,
         writer: @TypeOf(stdout),
         network_mode: policy.schema.NetworkMode,
         secretless: bool,
+        apply_result: *sandbox.apply.ApplyResult,
+        os_child_apply_used: *const bool,
 
         pub fn print(context: *anyopaque, session: core.session.Session) !void {
             const self: *@This() = @ptrCast(@alignCast(context));
-            try printSessionStart(self.io, self.writer, session, self.network_mode, self.secretless);
+            if (self.os_child_apply_used.*) {
+                self.apply_result.promoteAfterChildSpawn();
+            }
+            try printSessionStart(self.io, self.writer, session, self.network_mode, self.secretless, self.apply_result.receipt);
             try flushIfSupported(self.writer);
         }
     };
@@ -174,11 +196,15 @@ fn commandWithStdioAndEnv(io: std.Io, argv: []const []const u8, stdout: anytype,
         }
     };
 
+    // os_child_apply_used is filled by supervisor after sandboxed spawn (before this hook).
+    var os_child_apply_used_flag = false;
     var start_printer: StartPrinter = .{
         .io = io,
         .writer = stdout,
         .network_mode = cliNetworkMode(options),
         .secretless = options.secretless,
+        .apply_result = &apply_result,
+        .os_child_apply_used = &os_child_apply_used_flag,
     };
     const AuditContext = struct {
         io: std.Io,
@@ -534,6 +560,24 @@ fn commandWithStdioAndEnv(io: std.Io, argv: []const []const u8, stdout: anytype,
         .callback = AuditContext.append,
     } else null;
 
+    // U07: when apply retained child materials, spawn via apply_posix so the agent is boxed.
+    const SandboxSpawnCtx = struct {
+        apply_result: *const sandbox.apply.ApplyResult,
+
+        fn spawn(context: *anyopaque, request: core.process.CustomSpawnRequest) anyerror!std.process.Child {
+            const self: *@This() = @ptrCast(@alignCast(context));
+            return spawnSandboxedAgent(self.apply_result, request);
+        }
+    };
+    var sandbox_spawn_ctx: SandboxSpawnCtx = .{ .apply_result = &apply_result };
+    const os_child_apply: core.process.OsChildApply = switch (apply_result.childApplyKind()) {
+        .none => .none,
+        .landlock, .seatbelt => .{ .custom = .{
+            .context = &sandbox_spawn_ctx,
+            .spawnFn = SandboxSpawnCtx.spawn,
+        } },
+    };
+
     var result = supervisor.run(io, allocator, .{
         .command = options.command_argv[0],
         .args = options.command_argv[1..],
@@ -550,6 +594,8 @@ fn commandWithStdioAndEnv(io: std.Io, argv: []const []const u8, stdout: anytype,
             .off => .off,
         },
         .os_sandbox_apply_done = true,
+        .os_child_apply = os_child_apply,
+        .os_child_apply_used_out = &os_child_apply_used_flag,
         .before_spawn = before_spawn,
         .before_process_launch = if (audit_enabled) supervisor.StartHook{
             .context = &command_guard_context,
@@ -975,6 +1021,45 @@ fn coreModeToPolicyMode(mode: core.types.Mode) policy.schema.Mode {
     };
 }
 
+
+/// Spawn agent with OS FS apply in the child (Landlock / Seatbelt). Parent stays free.
+fn spawnSandboxedAgent(
+    apply_result: *const sandbox.apply.ApplyResult,
+    request: core.process.CustomSpawnRequest,
+) !std.process.Child {
+    if (request.argv.len == 0) return error.FileNotFound;
+    const resolved = try sandbox.apply_posix.resolveArgv0(request.io, request.allocator, request.argv[0]);
+    defer if (resolved.owned) request.allocator.free(resolved.path);
+
+    var argv_owned = try request.allocator.alloc([]const u8, request.argv.len);
+    defer request.allocator.free(argv_owned);
+    argv_owned[0] = resolved.path;
+    @memcpy(argv_owned[1..], request.argv[1..]);
+
+    const child_pid = switch (apply_result.childApplyKind()) {
+        .none => return error.Unexpected,
+        .landlock => blk: {
+            const profile_ptr = &(apply_result.landlock_profile orelse return error.Unexpected);
+            break :blk try sandbox.apply_posix.forkApplyLandlockAndExec(
+                profile_ptr,
+                argv_owned,
+                request.env_map,
+                request.workspace_root,
+            );
+        },
+        .seatbelt => blk: {
+            const sbpl = apply_result.seatbelt_sbpl_z orelse return error.Unexpected;
+            break :blk try sandbox.apply_posix.forkApplySeatbeltAndExec(
+                sbpl.ptr,
+                argv_owned,
+                request.env_map,
+                request.workspace_root,
+            );
+        },
+    };
+    return core.process.childFromPid(child_pid.pid);
+}
+
 fn writeSessionPosture(stdout: anytype, network_mode: policy.schema.NetworkMode, secretless: bool) !void {
     try stdout.print(
         "Posture: network={s} secretless={s}  (override: --network … | --no-network | --secretless)\n",
@@ -988,6 +1073,7 @@ fn printSessionStart(
     session: core.session.Session,
     network_mode: policy.schema.NetworkMode,
     secretless: bool,
+    os_receipt: sandbox.posture.AttachReceipt,
 ) !void {
     // Compact brand banner + Session / Workspace / Mode / Name grid. Celebration stays in printSessionEnd.
     try tui.render.banner(io, stdout, build_options.version, "watching this session");
@@ -1005,6 +1091,10 @@ fn printSessionStart(
     }
     try tui.render.keyValue(io, stdout, rows[0..count]);
     try writeSessionPosture(stdout, network_mode, secretless);
+    // Mechanism-neutral OS sandbox line (S-GLO-03) — never "Seatbelt"/"Landlock" here.
+    var os_line_buf: [256]u8 = undefined;
+    const os_line = sandbox.posture.formatSessionBanner(&os_line_buf, os_receipt) catch "OS sandbox: unavailable";
+    try stdout.print("{s}\n", .{os_line});
     try stdout.writeAll("\n");
 }
 
@@ -1293,7 +1383,7 @@ test "run accepts policy path and uses policy mode when mode is not explicit" {
     var stdout_writer: std.Io.Writer = .fixed(&stdout_buf);
     var stderr_writer: std.Io.Writer = .fixed(&stderr_buf);
 
-    const code = try commandForTestWithShellEvaluator(&.{ "--policy", path, "--", "zig", "version" }, &stdout_writer, &stderr_writer, .ignore, shell_eval.mockDaemonAllowEvaluator);
+    const code = try commandForTestWithShellEvaluator(&.{ "--policy", path, "--os-sandbox", "off", "--", "zig", "version" }, &stdout_writer, &stderr_writer, .ignore, shell_eval.mockDaemonAllowEvaluator);
     try std.testing.expectEqual(exit_codes.success, code);
     // Phase 2: printSessionStart renders Mode via the tui key-value grid (label
     // "Mode", value = mode string). The exact padded column format is owned by
@@ -1320,7 +1410,7 @@ test "run accepts secretless option" {
     var stdout_writer: std.Io.Writer = .fixed(&stdout_buf);
     var stderr_writer: std.Io.Writer = .fixed(&stderr_buf);
 
-    const code = try commandForTestWithShellEvaluator(&.{ "--secretless", "--", "true" }, &stdout_writer, &stderr_writer, .ignore, shell_eval.mockDaemonAllowEvaluator);
+    const code = try commandForTestWithShellEvaluator(&.{ "--secretless", "--os-sandbox", "off", "--", "true" }, &stdout_writer, &stderr_writer, .ignore, shell_eval.mockDaemonAllowEvaluator);
     try std.testing.expectEqual(exit_codes.success, code);
     // Host env may contain secret-like vars; if rewritten, expect the loud readiness warning only.
     const stderr_out = stderr_writer.buffered();
@@ -1425,7 +1515,7 @@ test "run command guard allows safe command and creates session shim directory" 
     var stdout_writer: std.Io.Writer = .fixed(&stdout_buf);
     var stderr_writer: std.Io.Writer = .fixed(&stderr_buf);
 
-    const code = try commandForGuardTestWithShellEvaluator(&.{ "--workspace", root, "--", "true" }, &stdout_writer, &stderr_writer, .inherit, shell_eval.mockDaemonAllowEvaluator);
+    const code = try commandForGuardTestWithShellEvaluator(&.{ "--workspace", root, "--os-sandbox", "off", "--", "true" }, &stdout_writer, &stderr_writer, .inherit, shell_eval.mockDaemonAllowEvaluator);
     try std.testing.expectEqual(exit_codes.success, code);
     try std.testing.expectEqualStrings("", stderr_writer.buffered());
 
@@ -1469,7 +1559,7 @@ test "run no-network sets network mode off and audits denied network state" {
     var stdout_writer: std.Io.Writer = .fixed(&stdout_buf);
     var stderr_writer: std.Io.Writer = .fixed(&stderr_buf);
 
-    const code = try commandForGuardTestWithShellEvaluator(&.{ "--workspace", root, "--no-network", "--", "true" }, &stdout_writer, &stderr_writer, .inherit, shell_eval.mockDaemonAllowEvaluator);
+    const code = try commandForGuardTestWithShellEvaluator(&.{ "--workspace", root, "--no-network", "--os-sandbox", "off", "--", "true" }, &stdout_writer, &stderr_writer, .inherit, shell_eval.mockDaemonAllowEvaluator);
     try std.testing.expectEqual(exit_codes.success, code);
     const events = try readLastEvents(std.testing.allocator, root);
     defer std.testing.allocator.free(events);
@@ -1570,7 +1660,7 @@ test "run defaults to network ask, secretless off, posture line; noninteractive 
     var stdout_writer: std.Io.Writer = .fixed(&stdout_buf);
     var stderr_writer: std.Io.Writer = .fixed(&stderr_buf);
 
-    const code = try commandForTestWithEnvAndShellEvaluator(&.{ "--workspace", root, "--policy", policy_path, "--", "/bin/sh", "-c", "env > default-env.txt" }, &stdout_writer, &stderr_writer, .ignore, &current, shell_eval.mockDaemonAllowEvaluator);
+    const code = try commandForTestWithEnvAndShellEvaluator(&.{ "--workspace", root, "--policy", policy_path, "--os-sandbox", "off", "--", "/bin/sh", "-c", "env > default-env.txt" }, &stdout_writer, &stderr_writer, .ignore, &current, shell_eval.mockDaemonAllowEvaluator);
     try std.testing.expectEqual(exit_codes.success, code);
     try std.testing.expect(std.mem.indexOf(u8, stdout_writer.buffered(), "Posture: network=ask secretless=off") != null);
 
@@ -1584,7 +1674,7 @@ test "run defaults to network ask, secretless off, posture line; noninteractive 
     // CI + default network ask: no session-start stdin prompt; completes without hang.
     stdout_writer = .fixed(&stdout_buf);
     stderr_writer = .fixed(&stderr_buf);
-    const ci_code = try commandForGuardTestWithShellEvaluator(&.{ "--workspace", root, "--mode", "ci", "--", "true" }, &stdout_writer, &stderr_writer, .ignore, shell_eval.mockDaemonAllowEvaluator);
+    const ci_code = try commandForGuardTestWithShellEvaluator(&.{ "--workspace", root, "--mode", "ci", "--os-sandbox", "off", "--", "true" }, &stdout_writer, &stderr_writer, .ignore, shell_eval.mockDaemonAllowEvaluator);
     try std.testing.expectEqual(exit_codes.success, ci_code);
     try std.testing.expect(std.mem.indexOf(u8, stdout_writer.buffered(), "Posture: network=ask secretless=off") != null);
 }
@@ -1600,7 +1690,7 @@ test "run allow-network adds temporary allow rule and redacts URL secrets in aud
     var stdout_writer: std.Io.Writer = .fixed(&stdout_buf);
     var stderr_writer: std.Io.Writer = .fixed(&stderr_buf);
 
-    const code = try commandForGuardTestWithShellEvaluator(&.{ "--workspace", root, "--allow-network", "https://api.github.com/repos?token=sk-fakeSyntheticOpenAIKey1234567890", "--", "true" }, &stdout_writer, &stderr_writer, .inherit, shell_eval.mockDaemonAllowEvaluator);
+    const code = try commandForGuardTestWithShellEvaluator(&.{ "--workspace", root, "--allow-network", "https://api.github.com/repos?token=sk-fakeSyntheticOpenAIKey1234567890", "--os-sandbox", "off", "--", "true" }, &stdout_writer, &stderr_writer, .inherit, shell_eval.mockDaemonAllowEvaluator);
     try std.testing.expectEqual(exit_codes.success, code);
     const events = try readLastEvents(std.testing.allocator, root);
     defer std.testing.allocator.free(events);
@@ -1622,7 +1712,7 @@ test "run exports backend capability status to child environment" {
     var stdout_writer: std.Io.Writer = .fixed(&stdout_buf);
     var stderr_writer: std.Io.Writer = .fixed(&stderr_buf);
 
-    const code = try commandForTestWithShellEvaluator(&.{ "--workspace", root, "--", "/bin/sh", "-c", "env > backend-env.txt" }, &stdout_writer, &stderr_writer, .ignore, shell_eval.mockDaemonAllowEvaluator);
+    const code = try commandForTestWithShellEvaluator(&.{ "--workspace", root, "--os-sandbox", "off", "--", "/bin/sh", "-c", "env > backend-env.txt" }, &stdout_writer, &stderr_writer, .ignore, shell_eval.mockDaemonAllowEvaluator);
     try std.testing.expectEqual(exit_codes.success, code);
     try std.testing.expectEqualStrings("", stderr_writer.buffered());
 
@@ -1672,7 +1762,7 @@ test "run proxy backend injects proxy environment and satisfies network enforcem
     var stdout_writer: std.Io.Writer = .fixed(&stdout_buf);
     var stderr_writer: std.Io.Writer = .fixed(&stderr_buf);
 
-    const code = try commandForTestWithEnvAndShellEvaluator(&.{ "--workspace", root, "--policy", policy_path, "--network-backend", "proxy", "--require-backend", "network_enforce", "--", "/bin/sh", "-c", "env > proxy-env.txt" }, &stdout_writer, &stderr_writer, .ignore, &current, shell_eval.mockDaemonAllowEvaluator);
+    const code = try commandForTestWithEnvAndShellEvaluator(&.{ "--workspace", root, "--policy", policy_path, "--os-sandbox", "off", "--network-backend", "proxy", "--require-backend", "network_enforce", "--", "/bin/sh", "-c", "env > proxy-env.txt" }, &stdout_writer, &stderr_writer, .ignore, &current, shell_eval.mockDaemonAllowEvaluator);
     try std.testing.expectEqual(exit_codes.success, code);
     try std.testing.expectEqualStrings("", stderr_writer.buffered());
 
@@ -1896,7 +1986,7 @@ test "first successful run prints celebration" {
     var stdout_writer: std.Io.Writer = .fixed(&stdout_buf);
     var stderr_writer: std.Io.Writer = .fixed(&stderr_buf);
 
-    const code = try commandForTestWithShellEvaluator(&.{ "--workspace", root, "--", "echo", "hi-from-first" }, &stdout_writer, &stderr_writer, .inherit, shell_eval.mockDaemonAllowEvaluator);
+    const code = try commandForTestWithShellEvaluator(&.{ "--workspace", root, "--os-sandbox", "off", "--", "echo", "hi-from-first" }, &stdout_writer, &stderr_writer, .inherit, shell_eval.mockDaemonAllowEvaluator);
     try std.testing.expectEqual(exit_codes.success, code);
     const out = stdout_writer.buffered();
     // Phase 7: elevated branded moment — brand shield + warm welcome + next-step hints.
@@ -1923,7 +2013,7 @@ test "subsequent runs do not print celebration" {
     var stdout_writer: std.Io.Writer = .fixed(&stdout_buf);
     var stderr_writer: std.Io.Writer = .fixed(&stderr_buf);
 
-    const code = try commandForTestWithShellEvaluator(&.{ "--workspace", root, "--", "echo", "hi-from-second" }, &stdout_writer, &stderr_writer, .inherit, shell_eval.mockDaemonAllowEvaluator);
+    const code = try commandForTestWithShellEvaluator(&.{ "--workspace", root, "--os-sandbox", "off", "--", "echo", "hi-from-second" }, &stdout_writer, &stderr_writer, .inherit, shell_eval.mockDaemonAllowEvaluator);
     try std.testing.expectEqual(exit_codes.success, code);
     const out = stdout_writer.buffered();
     // Celebration-specific strings must be absent. (The session-start banner's
@@ -2083,9 +2173,17 @@ test "run --os-sandbox on fails closed without backend (no agent)" {
         .ignore,
         shell_eval.mockDaemonAllowEvaluator,
     );
-    try std.testing.expectEqual(exit_codes.unsupported, code);
-    try std.testing.expect(std.mem.indexOf(u8, stderr_writer.buffered(), "OS sandbox required") != null);
-    // No session audit dir should be created for spawn (apply fails before supervisor).
+    // On Linux with Landlock + real workspace this may succeed; elsewhere fail-closed.
+    if (code == exit_codes.unsupported) {
+        try std.testing.expect(std.mem.indexOf(u8, stderr_writer.buffered(), "OS sandbox required") != null);
+        // Real reason_code — not the U04 placeholder.
+        try std.testing.expect(std.mem.indexOf(u8, stderr_writer.buffered(), "backend_not_implemented") == null or builtin.os.tag != .macos);
+        if (builtin.os.tag == .macos) {
+            try std.testing.expect(std.mem.indexOf(u8, stderr_writer.buffered(), "macos_version_unsupported") != null);
+        }
+    } else {
+        try std.testing.expectEqual(exit_codes.success, code);
+    }
 }
 
 test "run --os-sandbox off succeeds with disabled path" {
@@ -2107,16 +2205,22 @@ test "run --os-sandbox off succeeds with disabled path" {
         shell_eval.mockDaemonAllowEvaluator,
     );
     try std.testing.expectEqual(exit_codes.success, code);
+    const out = stdout_writer.buffered();
+    try std.testing.expect(std.mem.indexOf(u8, out, "OS sandbox: disabled") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "Seatbelt") == null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "Landlock") == null);
+    // off should not print grade-drop warning
+    try std.testing.expect(std.mem.indexOf(u8, stderr_writer.buffered(), "grade drop") == null);
 }
 
-test "run --os-sandbox auto degrades when backend unavailable" {
+test "run --os-sandbox auto degrades loudly when backend unavailable" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
     const root = try tmp.dir.realPathFileAlloc(std.testing.io, ".", std.testing.allocator);
     defer std.testing.allocator.free(root);
 
-    var stdout_buf: [2048]u8 = undefined;
-    var stderr_buf: [2048]u8 = undefined;
+    var stdout_buf: [4096]u8 = undefined;
+    var stderr_buf: [4096]u8 = undefined;
     var stdout_writer: std.Io.Writer = .fixed(&stdout_buf);
     var stderr_writer: std.Io.Writer = .fixed(&stderr_buf);
 
@@ -2128,9 +2232,48 @@ test "run --os-sandbox auto degrades when backend unavailable" {
         shell_eval.mockDaemonAllowEvaluator,
     );
     try std.testing.expectEqual(exit_codes.success, code);
+    const out = stdout_writer.buffered();
+    try std.testing.expect(std.mem.indexOf(u8, out, "OS sandbox:") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "Seatbelt") == null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "Landlock") == null);
+
+    // When no child apply plan (typical macOS outside matrix / landlock-less hosts): loud degrade.
+    // When Landlock/Seatbelt child plan exists, spawn may attach — grade drop optional.
+    const err = stderr_writer.buffered();
+    if (std.mem.indexOf(u8, out, "OS sandbox: unavailable") != null or std.mem.indexOf(u8, out, "OS sandbox: failed") != null) {
+        try std.testing.expect(std.mem.indexOf(u8, err, "grade drop") != null);
+        try std.testing.expect(std.mem.indexOf(u8, err, "WARNING") != null);
+    }
 }
 
 test "RunOptions default os_sandbox is auto" {
     const defaults: RunOptions = .{};
     try std.testing.expectEqual(sandbox.posture.OsSandboxMode.auto, defaults.os_sandbox);
+}
+
+test "session start banner is mechanism-neutral for disabled OS sandbox" {
+    var buf: [512]u8 = undefined;
+    var writer: std.Io.Writer = .fixed(&buf);
+    const id = try core.session.generateSessionId(core.time.Timestamp.fromUnixSeconds(1_777_983_130));
+    const session: core.session.Session = .{
+        .id = id,
+        .started_at = core.time.Timestamp.fromUnixSeconds(1_777_983_130),
+        .command = "true",
+        .args = &.{},
+        .workspace_root = "/tmp/ws",
+        .mode = .observe,
+        .platform = core.platform.detectOs(),
+    };
+    try printSessionStart(std.testing.io, &writer, session, .ask, false, sandbox.posture.disabledReceipt());
+    const out = writer.buffered();
+    try std.testing.expect(std.mem.indexOf(u8, out, "OS sandbox: disabled") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "Seatbelt") == null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "Landlock") == null);
+
+    writer = .fixed(&buf);
+    try printSessionStart(std.testing.io, &writer, session, .ask, false, sandbox.posture.activeReceipt(.seatbelt, "abcd", "workspace RW, system RO, no home"));
+    const active_out = writer.buffered();
+    try std.testing.expect(std.mem.indexOf(u8, active_out, "OS sandbox: active") != null);
+    try std.testing.expect(std.mem.indexOf(u8, active_out, "Seatbelt") == null);
+    try std.testing.expect(std.mem.indexOf(u8, active_out, "network: unrestricted") != null);
 }
