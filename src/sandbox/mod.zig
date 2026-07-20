@@ -9,6 +9,7 @@ pub const evidence = @import("evidence.zig");
 pub const canary = @import("canary.zig");
 pub const env_scrub = @import("env_scrub.zig");
 pub const fd_scrub = @import("fd_scrub.zig");
+pub const profile = @import("profile.zig");
 
 pub const phase = "02-repo-bootstrap";
 
@@ -24,4 +25,5 @@ test {
     _ = canary;
     _ = env_scrub;
     _ = fd_scrub;
+    _ = profile;
 }
