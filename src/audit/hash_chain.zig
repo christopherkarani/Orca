@@ -206,9 +206,66 @@ test "redaction labels are redacted at the audit serialization boundary" {
         .redactions = .{ .count = 1, .labels = &labels },
     };
 
-    var list: std.ArrayList(u8) = .empty;
-    defer list.deinit(std.testing.allocator);
-    try writeEventJsonLine(list.writer(std.testing.allocator), ev, null, "abc");
-    try std.testing.expect(std.mem.indexOf(u8, list.items, "fake_secret_value") == null);
-    try std.testing.expect(std.mem.indexOf(u8, list.items, "[REDACTED:") != null);
+    var out: std.Io.Writer.Allocating = .init(std.testing.allocator);
+    defer out.deinit();
+    try writeEventJsonLine(&out.writer, ev, null, "abc");
+    try std.testing.expect(std.mem.indexOf(u8, out.written(), "fake_secret_value") == null);
+    try std.testing.expect(std.mem.indexOf(u8, out.written(), "[REDACTED:") != null);
+}
+
+
+test "sandbox_posture serializes posture hash and fs_scope without full profile" {
+    const ts = core.time.Timestamp.fromUnixSeconds(1_777_983_130);
+    const sid = try core.session.generateSessionId(ts);
+    var eid: core.event.EventId = .{ .value = undefined, .len = 0 };
+    const eid_text = try std.fmt.bufPrint(&eid.value, "evt_sandbox_posture", .{});
+    eid.len = eid_text.len;
+    const reason = "posture=active; profile_hash=abcd1234; fs_scope=workspace RW, system RO, no home";
+    const ev: core.event.Event = .{
+        .session_id = sid,
+        .event_id = eid,
+        .timestamp = ts,
+        .event_type = .sandbox_posture,
+        .actor = .{ .kind = .orca, .display = "orca" },
+        .target = .{ .kind = .session, .value = "os_filesystem_sandbox" },
+        .decision = .{
+            .result = .observe,
+            .reason = reason,
+            .ci_may_proceed = true,
+        },
+    };
+
+    var out: std.Io.Writer.Allocating = .init(std.testing.allocator);
+    defer out.deinit();
+    try writeEventJsonLine(&out.writer, ev, null, "deadbeef");
+    const line = out.written();
+    try std.testing.expect(std.mem.indexOf(u8, line, "\"type\":\"sandbox_posture\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, line, "posture=active") != null);
+    try std.testing.expect(std.mem.indexOf(u8, line, "profile_hash=abcd1234") != null);
+    try std.testing.expect(std.mem.indexOf(u8, line, "fs_scope=workspace RW") != null);
+    // Full profile / SBPL / landlock rule blobs must not appear.
+    try std.testing.expect(std.mem.indexOf(u8, line, "(version 1)") == null);
+    try std.testing.expect(std.mem.indexOf(u8, line, "allow default") == null);
+    try std.testing.expect(std.mem.indexOf(u8, line, "LANDLOCK") == null);
+}
+
+test "os_fs_deny type serializes but is reserved (not ordinary EACCES)" {
+    const ts = core.time.Timestamp.fromUnixSeconds(1_777_983_130);
+    const sid = try core.session.generateSessionId(ts);
+    var eid: core.event.EventId = .{ .value = undefined, .len = 0 };
+    const eid_text = try std.fmt.bufPrint(&eid.value, "evt_os_fs_deny", .{});
+    eid.len = eid_text.len;
+    const ev: core.event.Event = .{
+        .session_id = sid,
+        .event_id = eid,
+        .timestamp = ts,
+        .event_type = .os_fs_deny,
+        .actor = .{ .kind = .orca, .display = "orca" },
+        .target = .{ .kind = .file_path, .value = "/tmp/x" },
+    };
+    const canonical = try canonicalEventAlloc(std.testing.allocator, ev, null);
+    defer std.testing.allocator.free(canonical);
+    try std.testing.expect(std.mem.indexOf(u8, canonical, "\"type\":\"os_fs_deny\"") != null);
+    // Ordinary AccessDenied mapping stays on file_*_denied.
+    try std.testing.expectEqual(core.event.EventType.file_read_denied, core.event.eventTypeForOrdinaryFsDeny(.read));
 }

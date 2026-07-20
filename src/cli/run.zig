@@ -169,43 +169,6 @@ fn commandWithStdioAndEnv(io: std.Io, argv: []const []const u8, stdout: anytype,
         }
     }
 
-    const StartPrinter = struct {
-        io: std.Io,
-        writer: @TypeOf(stdout),
-        network_mode: policy.schema.NetworkMode,
-        secretless: bool,
-        apply_result: *sandbox.apply.ApplyResult,
-        os_child_apply_used: *const bool,
-
-        pub fn print(context: *anyopaque, session: core.session.Session) !void {
-            const self: *@This() = @ptrCast(@alignCast(context));
-            if (self.os_child_apply_used.*) {
-                self.apply_result.promoteAfterChildSpawn();
-            }
-            try printSessionStart(self.io, self.writer, session, self.network_mode, self.secretless, self.apply_result.receipt);
-            try flushIfSupported(self.writer);
-        }
-    };
-
-    const ProxyHealthContext = struct {
-        runtime: *intercept.proxy.Runtime,
-
-        pub fn healthy(context: *anyopaque) bool {
-            const self: *@This() = @ptrCast(@alignCast(context));
-            return self.runtime.isHealthy();
-        }
-    };
-
-    // os_child_apply_used is filled by supervisor after sandboxed spawn (before this hook).
-    var os_child_apply_used_flag = false;
-    var start_printer: StartPrinter = .{
-        .io = io,
-        .writer = stdout,
-        .network_mode = cliNetworkMode(options),
-        .secretless = options.secretless,
-        .apply_result = &apply_result,
-        .os_child_apply_used = &os_child_apply_used_flag,
-    };
     const AuditContext = struct {
         io: std.Io,
         allocator: std.mem.Allocator,
@@ -235,6 +198,48 @@ fn commandWithStdioAndEnv(io: std.Io, argv: []const []const u8, stdout: anytype,
     };
     var audit_context: AuditContext = .{ .io = io, .allocator = allocator };
     defer audit_context.deinit();
+
+    const StartPrinter = struct {
+        io: std.Io,
+        writer: @TypeOf(stdout),
+        network_mode: policy.schema.NetworkMode,
+        secretless: bool,
+        apply_result: *sandbox.apply.ApplyResult,
+        os_child_apply_used: *const bool,
+        audit_context: *AuditContext,
+
+        pub fn print(context: *anyopaque, session: core.session.Session) !void {
+            const self: *@This() = @ptrCast(@alignCast(context));
+            if (self.os_child_apply_used.*) {
+                self.apply_result.promoteAfterChildSpawn();
+            }
+            // Final attach receipt (post-promote) — posture string, optional profile hash, fs_scope only.
+            try auditSandboxPosture(self.audit_context, session, self.apply_result.receipt);
+            try printSessionStart(self.io, self.writer, session, self.network_mode, self.secretless, self.apply_result.receipt);
+            try flushIfSupported(self.writer);
+        }
+    };
+
+    const ProxyHealthContext = struct {
+        runtime: *intercept.proxy.Runtime,
+
+        pub fn healthy(context: *anyopaque) bool {
+            const self: *@This() = @ptrCast(@alignCast(context));
+            return self.runtime.isHealthy();
+        }
+    };
+
+    // os_child_apply_used is filled by supervisor after sandboxed spawn (before this hook).
+    var os_child_apply_used_flag = false;
+    var start_printer: StartPrinter = .{
+        .io = io,
+        .writer = stdout,
+        .network_mode = cliNetworkMode(options),
+        .secretless = options.secretless,
+        .apply_result = &apply_result,
+        .os_child_apply_used = &os_child_apply_used_flag,
+        .audit_context = &audit_context,
+    };
 
     var session_approvals = intercept.approvals.SessionApprovals.init(allocator);
     defer session_approvals.deinit();
@@ -1067,6 +1072,59 @@ fn writeSessionPosture(stdout: anytype, network_mode: policy.schema.NetworkMode,
     );
 }
 
+
+/// Emit sandbox_posture at session start: posture string, optional profile hash, fs_scope.
+/// Never writes full profile / SBPL / landlock rule text into the audit trail.
+fn appendSandboxPostureEvent(
+    io: std.Io,
+    writer: *core_api.AuditWriter,
+    session: core.session.Session,
+    receipt: sandbox.posture.AttachReceipt,
+) !void {
+    const posture_str = receipt.posture.toString();
+    const fs_scope = receipt.fs_scope;
+    var reason_buf: [384]u8 = undefined;
+    const reason: []const u8 = blk: {
+        if (receipt.profileHashSlice()) |hash| {
+            // Full hex digest only (no SBPL / landlock rule text). Fixed storage is already hex.
+            break :blk try std.fmt.bufPrint(&reason_buf, "posture={s}; profile_hash={s}; fs_scope={s}", .{ posture_str, hash, fs_scope });
+        } else if (receipt.reason_code) |code| {
+            break :blk try std.fmt.bufPrint(&reason_buf, "posture={s}; fs_scope={s}; reason={s}", .{ posture_str, fs_scope, code });
+        } else {
+            break :blk try std.fmt.bufPrint(&reason_buf, "posture={s}; fs_scope={s}", .{ posture_str, fs_scope });
+        }
+    };
+    const ts = core.time.Timestamp.now(io);
+    const ev: core.event.Event = .{
+        .session_id = session.id,
+        .event_id = try core.event.generateEventId(ts),
+        .timestamp = ts,
+        .event_type = .sandbox_posture,
+        .actor = .{ .kind = .orca, .display = "orca" },
+        .target = .{ .kind = .session, .value = "os_filesystem_sandbox" },
+        .decision = .{
+            .result = .observe,
+            .reason = reason,
+            .ci_may_proceed = true,
+        },
+    };
+    try core_api.appendAuditEvent(writer, ev);
+}
+
+fn auditSandboxPosture(
+    audit_context: anytype,
+    session: core.session.Session,
+    receipt: sandbox.posture.AttachReceipt,
+) !void {
+    if (audit_context.writer == null) return;
+    try appendSandboxPostureEvent(
+        audit_context.io,
+        &audit_context.writer.?,
+        session,
+        receipt,
+    );
+}
+
 fn printSessionStart(
     io: std.Io,
     stdout: anytype,
@@ -1528,6 +1586,74 @@ test "run command guard allows safe command and creates session shim directory" 
     const events = try readLastEvents(std.testing.allocator, root);
     defer std.testing.allocator.free(events);
     try std.testing.expect(std.mem.indexOf(u8, events, "\"type\":\"command_allowed\"") != null);
+}
+
+
+test "sandbox_posture event type serializes and ordinary EACCES is never os_fs_deny" {
+    try std.testing.expectEqualStrings("sandbox_posture", core.event.EventType.sandbox_posture.toString());
+    try std.testing.expectEqualStrings("os_fs_deny", core.event.EventType.os_fs_deny.toString());
+    // Ordinary Unix AccessDenied / EACCES maps to file_*_denied — never auto-emit os_fs_deny.
+    try std.testing.expectEqual(core.event.EventType.file_read_denied, core.event.eventTypeForOrdinaryFsDeny(.read));
+    try std.testing.expectEqual(core.event.EventType.file_write_denied, core.event.eventTypeForOrdinaryFsDeny(.write));
+
+    // Serialize a sandbox_posture event the same way the audit hash chain does.
+    const hash_chain = @import("orca_core").audit.hash_chain;
+    const ts = core.time.Timestamp.fromUnixSeconds(1_777_983_130);
+    const sid = try core.session.generateSessionId(ts);
+    var eid: core.event.EventId = .{ .value = undefined, .len = 0 };
+    const eid_text = try std.fmt.bufPrint(&eid.value, "evt_u08_posture", .{});
+    eid.len = eid_text.len;
+    const reason = "posture=active; profile_hash=abcd1234; fs_scope=workspace RW, system RO, no home";
+    const ev: core.event.Event = .{
+        .session_id = sid,
+        .event_id = eid,
+        .timestamp = ts,
+        .event_type = .sandbox_posture,
+        .actor = .{ .kind = .orca, .display = "orca" },
+        .target = .{ .kind = .session, .value = "os_filesystem_sandbox" },
+        .decision = .{
+            .result = .observe,
+            .reason = reason,
+            .ci_may_proceed = true,
+        },
+    };
+    var out: std.Io.Writer.Allocating = .init(std.testing.allocator);
+    defer out.deinit();
+    try hash_chain.writeEventJsonLine(&out.writer, ev, null, "cafe");
+    const line = out.written();
+    try std.testing.expect(std.mem.indexOf(u8, line, "\"type\":\"sandbox_posture\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, line, "posture=active") != null);
+    try std.testing.expect(std.mem.indexOf(u8, line, "profile_hash=abcd1234") != null);
+    try std.testing.expect(std.mem.indexOf(u8, line, "fs_scope=workspace RW") != null);
+    try std.testing.expect(std.mem.indexOf(u8, line, "allow default") == null);
+    try std.testing.expect(std.mem.indexOf(u8, line, "(version 1)") == null);
+    try std.testing.expect(std.mem.indexOf(u8, line, "\"type\":\"os_fs_deny\"") == null);
+}
+
+test "run emits sandbox_posture audit event without full profile" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const root = try tmp.dir.realPathFileAlloc(std.testing.io, ".", std.testing.allocator);
+    defer std.testing.allocator.free(root);
+
+    var stdout_buf: [4096]u8 = undefined;
+    var stderr_buf: [2048]u8 = undefined;
+    var stdout_writer: std.Io.Writer = .fixed(&stdout_buf);
+    var stderr_writer: std.Io.Writer = .fixed(&stderr_buf);
+
+    // --os-sandbox off guarantees disabled posture and a successful session start path.
+    const code = try commandForGuardTestWithShellEvaluator(&.{ "--workspace", root, "--os-sandbox", "off", "--", "true" }, &stdout_writer, &stderr_writer, .inherit, shell_eval.mockDaemonAllowEvaluator);
+    try std.testing.expectEqual(exit_codes.success, code);
+
+    const events = try readLastEvents(std.testing.allocator, root);
+    defer std.testing.allocator.free(events);
+    try std.testing.expect(std.mem.indexOf(u8, events, "\"type\":\"sandbox_posture\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, events, "posture=disabled") != null);
+    try std.testing.expect(std.mem.indexOf(u8, events, "fs_scope=") != null);
+    // No full profile / SBPL / os_fs_deny auto-emission on a normal run.
+    try std.testing.expect(std.mem.indexOf(u8, events, "allow default") == null);
+    try std.testing.expect(std.mem.indexOf(u8, events, "(version 1)") == null);
+    try std.testing.expect(std.mem.indexOf(u8, events, "\"type\":\"os_fs_deny\"") == null);
 }
 
 test "run command guard denies destructive command before spawn" {
