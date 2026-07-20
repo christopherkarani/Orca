@@ -291,6 +291,49 @@ test "tools classify residual with classifier local policy" {
     try std.testing.expect(std.mem.indexOf(u8, out, "Policy decision: deny") != null);
 }
 
+// M-1: agent-controlled arg keys/values must not demote residual family to unknown.external
+// (family-specific deny would fail open under default allow).
+test "tools classify residual denies acme_mailer_job despite arg decoys" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    {
+        const file = try tmp.dir.createFile(std.testing.io, "residual-decoy.yaml", .{});
+        defer file.close(std.testing.io);
+        try file.writeStreamingAll(std.testing.io,
+            \\version: 1
+            \\mode: strict
+            \\mcp:
+            \\  default: allow
+            \\effects:
+            \\  classifier: local
+            \\  deny:
+            \\    - comms.message
+        );
+    }
+    const policy_path = try tmp.dir.realPathFileAlloc(std.testing.io, "residual-decoy.yaml", std.testing.allocator);
+    defer std.testing.allocator.free(policy_path);
+
+    var stdout_buf: [4096]u8 = undefined;
+    var stderr_buf: [512]u8 = undefined;
+    var stdout_writer: std.Io.Writer = .fixed(&stdout_buf);
+    var stderr_writer: std.Io.Writer = .fixed(&stderr_buf);
+    // Decoy publish/money *string values* (and non-structural keys). Avoid structural
+    // key-sets like bare `tweet` which would leave residual entirely (medium family hit).
+    const decoy_args =
+        \\{"a":"twitter","b":"publish","c":"linkedin","d":"mastodon","e":"stripe","f":"paypal","g":"billing","publisher":"x"}
+    ;
+    const code = try command(
+        std.testing.io,
+        &.{ "classify", "acme_mailer_job", "--args", decoy_args, "--policy", policy_path },
+        &stdout_writer,
+        &stderr_writer,
+    );
+    try std.testing.expectEqual(exit_codes.success, code);
+    const out = stdout_writer.buffered();
+    try std.testing.expect(std.mem.indexOf(u8, out, "comms.message") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "Policy decision: deny") != null);
+}
+
 test "loadPacks classifies pack mapped tool" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();

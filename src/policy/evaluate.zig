@@ -183,7 +183,9 @@ fn mergeWithEffects(
     );
     defer classified.deinit(allocator);
 
-    if (classified.unavailable and mode.isEnforcing()) {
+    // Fail closed only for residual/under-classified tools. Catalog/structural base hits
+    // still resolve via raise-only evaluate when residual inject reports unavailable.
+    if (classified.unavailable and mode.isEnforcing() and effects.classifier.isResidual(classified.hits)) {
         surface.deinit(allocator);
         return evaluationClassifierUnavailable(allocator);
     }

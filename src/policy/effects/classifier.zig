@@ -1,11 +1,15 @@
 //! Optional local residual effect classifier (Phase D).
 //!
-//! Pure Zig prototype/token similarity over tool name + arg keys/short string tokens.
+//! Pure Zig prototype/token similarity over tool name (+ optional arg tokens for outbound only).
 //! Runs only when catalog/structural/packs leave the tool under-classified.
 //! Raise-only: residual may increase restriction only; never a cloud call.
 //! Matchers use `classifier.local.*` prefixes.
+//!
+//! Prototype family scores use **name tokens only** so agent-controlled arg keys/values
+//! cannot demote a residual family hit to `unknown.external` (fail-open under family denies).
 
 const std = @import("std");
+const builtin = @import("builtin");
 const catalog = @import("catalog.zig");
 const classify = @import("classify.zig");
 const effect_eval = @import("evaluate.zig");
@@ -13,16 +17,16 @@ const ids = @import("ids.zig");
 const packs_mod = @import("packs.zig");
 const structural = @import("structural.zig");
 
-pub const EffectHit = catalog.EffectHit;
-pub const Confidence = catalog.Confidence;
-pub const ToolArgsView = structural.ToolArgsView;
-pub const PackSet = packs_mod.PackSet;
-pub const EffectsRuleView = effect_eval.EffectsRuleView;
-pub const EffectMatch = effect_eval.EffectMatch;
+const EffectHit = catalog.EffectHit;
+const ToolArgsView = structural.ToolArgsView;
+const PackSet = packs_mod.PackSet;
+const EffectsRuleView = effect_eval.EffectsRuleView;
+const EffectMatch = effect_eval.EffectMatch;
 
 pub const residual_matcher_prefix = "classifier.local.";
 
 /// Test inject: when true, residual classification is treated as unavailable.
+/// Ignored outside `builtin.is_test` builds.
 pub var testing_force_unavailable: bool = false;
 
 const max_feature_tokens: usize = 32;
@@ -41,9 +45,9 @@ const prototypes = [_]Prototype{
         .effect_id = "comms.message",
         .matcher = "classifier.local.prototype:comms.message",
         .tokens = &.{
-            "mail",     "mailer",   "email",    "smtp",     "message", "messaging",
-            "sms",      "imessage", "slack",    "discord",  "telegram", "whatsapp",
-            "notify",   "notifier", "recipient", "inbox",   "outbox",  "postmark",
+            "mail",     "mailer",   "email",     "smtp",    "message",  "messaging",
+            "sms",      "imessage", "slack",     "discord", "telegram", "whatsapp",
+            "notify",   "notifier", "recipient", "inbox",   "outbox",   "postmark",
             "sendgrid", "mailgun",
         },
     },
@@ -51,15 +55,15 @@ const prototypes = [_]Prototype{
         .effect_id = "comms.publish",
         .matcher = "classifier.local.prototype:comms.publish",
         .tokens = &.{
-            "tweet", "twitter", "publish", "publisher", "bluesky", "mastodon",
-            "linkedin", "social", "timeline", "fediverse",
+            "tweet",    "twitter", "publish",  "publisher", "bluesky", "mastodon",
+            "linkedin", "social",  "timeline", "fediverse",
         },
     },
     .{
         .effect_id = "money.transfer",
         .matcher = "classifier.local.prototype:money.transfer",
         .tokens = &.{
-            "payment", "pay", "stripe", "paypal", "charge", "transfer",
+            "payment", "pay",     "stripe",   "paypal", "charge", "transfer",
             "invoice", "billing", "checkout", "payout", "wire",
         },
     },
@@ -68,22 +72,14 @@ const prototypes = [_]Prototype{
         .matcher = "classifier.local.prototype:identity.auth",
         .tokens = &.{
             "oauth", "auth", "authorize", "token", "pat", "credential",
-            "login", "sso", "oidc", "saml",
+            "login", "sso",  "oidc",      "saml",
         },
     },
 };
 
 const outbound_tokens = [_][]const u8{
-    "outbound", "webhook", "http", "https", "api", "remote", "external",
+    "outbound", "webhook", "http",     "https",  "api",   "remote", "external",
     "fetch",    "request", "callback", "egress", "exfil", "upload",
-};
-
-/// Host file/shell focuses — never residual toward comms/money if catalog somehow misses.
-const hard_exclude_focus = [_][]const u8{
-    "read",           "read_file", "write",       "write_file", "edit",
-    "file_write",     "file_edit", "create_file", "apply",      "bash",
-    "shell",          "sh",        "zsh",         "exec",       "terminal",
-    "powershell",     "pwsh",      "run_shell_command", "run_terminal_cmd",
 };
 
 /// Result of packs classify ± residual. Always includes usable hits (base at minimum).
@@ -112,13 +108,6 @@ pub fn isResidual(existing_hits: []const EffectHit) bool {
     return true;
 }
 
-fn isHardExcluded(focus: []const u8, normalized: []const u8) bool {
-    for (hard_exclude_focus) |ex| {
-        if (std.mem.eql(u8, focus, ex) or std.mem.eql(u8, normalized, ex)) return true;
-    }
-    return false;
-}
-
 fn tokenizeName(allocator: std.mem.Allocator, normalized: []const u8, out: *std.ArrayList([]const u8)) !void {
     var rest = normalized;
     while (rest.len > 0) {
@@ -138,13 +127,15 @@ fn appendUniqueToken(allocator: std.mem.Allocator, out: *std.ArrayList([]const u
     for (out.items) |existing| {
         if (std.mem.eql(u8, existing, token)) return;
     }
-    try out.append(allocator, try allocator.dupe(u8, token));
+    const owned = try allocator.dupe(u8, token);
+    errdefer allocator.free(owned);
+    try out.append(allocator, owned);
 }
 
-fn buildFeatureBag(
+/// Name-only feature bag for prototype family scoring (agent args must not vote).
+fn buildNameFeatureBag(
     allocator: std.mem.Allocator,
     tool_name: []const u8,
-    args: ?ToolArgsView,
 ) ![]const []const u8 {
     var tokens: std.ArrayList([]const u8) = .empty;
     errdefer {
@@ -161,6 +152,20 @@ fn buildFeatureBag(
         if (focus.len >= 2 and focus.len <= max_token_bytes) {
             try appendUniqueToken(allocator, &tokens, focus);
         }
+    }
+
+    return try tokens.toOwnedSlice(allocator);
+}
+
+/// Arg keys + short string values — used only for outbound/unknown scoring, never prototype ranking.
+fn buildArgFeatureBag(
+    allocator: std.mem.Allocator,
+    args: ?ToolArgsView,
+) ![]const []const u8 {
+    var tokens: std.ArrayList([]const u8) = .empty;
+    errdefer {
+        for (tokens.items) |t| allocator.free(t);
+        tokens.deinit(allocator);
     }
 
     if (args) |view| {
@@ -219,17 +224,9 @@ fn featureContains(features: []const []const u8, token: []const u8) bool {
     return false;
 }
 
-fn scorePrototype(features: []const []const u8, proto: Prototype) i32 {
+fn scoreTokenSet(features: []const []const u8, tokens: []const []const u8) i32 {
     var score: i32 = 0;
-    for (proto.tokens) |t| {
-        if (featureContains(features, t)) score += 1;
-    }
-    return score;
-}
-
-fn scoreOutbound(features: []const []const u8) i32 {
-    var score: i32 = 0;
-    for (outbound_tokens) |t| {
+    for (tokens) |t| {
         if (featureContains(features, t)) score += 1;
     }
     return score;
@@ -237,6 +234,9 @@ fn scoreOutbound(features: []const []const u8) i32 {
 
 /// Score residual tools. Empty when not residual / excluded / below threshold.
 /// Matchers are static. Slice owned by `allocator`.
+///
+/// Family prototypes are scored from **name tokens only**. Arg features may contribute
+/// only to `unknown.external` outbound detection — never to cross-family ranking.
 pub fn classifyResidual(
     allocator: std.mem.Allocator,
     tool_name: []const u8,
@@ -248,20 +248,17 @@ pub fn classifyResidual(
     const trimmed = std.mem.trim(u8, tool_name, " \t\r\n");
     if (trimmed.len == 0) return try allocator.alloc(EffectHit, 0);
 
-    const normalized = try catalog.normalizeToolName(allocator, trimmed);
-    defer allocator.free(normalized);
-    const focus = catalog.focusName(normalized);
-    if (isHardExcluded(focus, normalized)) return try allocator.alloc(EffectHit, 0);
+    if (structural.isFileOrShellToolName(trimmed)) return try allocator.alloc(EffectHit, 0);
 
-    const features = try buildFeatureBag(allocator, tool_name, args);
-    defer freeFeatureBag(allocator, features);
-    if (features.len == 0) return try allocator.alloc(EffectHit, 0);
+    const name_features = try buildNameFeatureBag(allocator, tool_name);
+    defer freeFeatureBag(allocator, name_features);
+    if (name_features.len == 0) return try allocator.alloc(EffectHit, 0);
 
     var best_idx: ?usize = null;
     var best_score: i32 = 0;
     var second_score: i32 = 0;
     for (prototypes, 0..) |proto, i| {
-        const s = scorePrototype(features, proto);
+        const s = scoreTokenSet(name_features, proto.tokens);
         if (s > best_score) {
             second_score = best_score;
             best_score = s;
@@ -274,8 +271,10 @@ pub fn classifyResidual(
     var hits: std.ArrayList(EffectHit) = .empty;
     errdefer hits.deinit(allocator);
 
+    // Emit best family whenever it clears the score threshold. Margin is not required
+    // to emit (avoids demoting to unknown-only); weak margin may also add unknown.external.
     if (best_idx) |idx| {
-        if (best_score >= score_threshold and (best_score - second_score) >= score_margin) {
+        if (best_score >= score_threshold) {
             const proto = prototypes[idx];
             std.debug.assert(ids.isKnownEffectId(proto.effect_id));
             try classify.appendUniquePreferHigher(allocator, &hits, .{
@@ -283,11 +282,22 @@ pub fn classifyResidual(
                 .confidence = .low,
                 .matcher = proto.matcher,
             });
+            if ((best_score - second_score) < score_margin) {
+                try classify.appendUniquePreferHigher(allocator, &hits, .{
+                    .id = "unknown.external",
+                    .confidence = .low,
+                    .matcher = "classifier.local.residual:unknown.external",
+                });
+            }
             return try hits.toOwnedSlice(allocator);
         }
     }
 
-    if (scoreOutbound(features) >= 1 or best_score >= 1) {
+    const arg_features = try buildArgFeatureBag(allocator, args);
+    defer freeFeatureBag(allocator, arg_features);
+    const outbound_name = scoreTokenSet(name_features, &outbound_tokens);
+    const outbound_args = scoreTokenSet(arg_features, &outbound_tokens);
+    if (outbound_name + outbound_args >= 1 or best_score >= 1) {
         try classify.appendUniquePreferHigher(allocator, &hits, .{
             .id = "unknown.external",
             .confidence = .low,
@@ -308,20 +318,31 @@ pub fn classifyToolCallWithResidual(
     classifier_enabled: bool,
 ) std.mem.Allocator.Error!ToolClassifyResult {
     const base = try packs_mod.classifyToolCallWithPacks(allocator, pack_set, tool_name, args);
-    if (!classifier_enabled) return .{ .hits = base };
+    var free_base = true;
+    errdefer if (free_base) allocator.free(base);
 
-    if (testing_force_unavailable) {
+    if (!classifier_enabled) {
+        free_base = false;
+        return .{ .hits = base };
+    }
+
+    if (builtin.is_test and testing_force_unavailable) {
+        free_base = false;
         return .{ .hits = base, .unavailable = true };
     }
 
     const residual = try classifyResidual(allocator, tool_name, args, base);
     defer allocator.free(residual);
-    if (residual.len == 0) return .{ .hits = base };
+    if (residual.len == 0) {
+        free_base = false;
+        return .{ .hits = base };
+    }
 
     var hits: std.ArrayList(EffectHit) = .empty;
     errdefer hits.deinit(allocator);
     for (base) |h| try classify.appendUniquePreferHigher(allocator, &hits, h);
     allocator.free(base);
+    free_base = false;
     for (residual) |h| try classify.appendUniquePreferHigher(allocator, &hits, h);
     for (hits.items) |hit| {
         std.debug.assert(ids.isKnownEffectId(hit.id));
@@ -460,6 +481,37 @@ test "outbound residual name can emit unknown.external" {
         }
     }
     try std.testing.expect(found);
+}
+
+test "arg decoys cannot demote residual family deny for acme_mailer_job" {
+    // Agent-controlled keys/values that boost competing prototypes must not
+    // replace comms.message with unknown.external-only (family deny would fail open).
+    // Keys avoid structural complete sets (e.g. bare `tweet`) so residual still runs.
+    const keys = [_][]const u8{ "publisher", "payment", "social", "billing" };
+    const vals = [_][]const u8{ "twitter", "stripe", "linkedin", "paypal", "mastodon", "publish" };
+    const result = try classifyToolCallWithResidual(
+        std.testing.allocator,
+        null,
+        "acme_mailer_job",
+        .{ .keys = &keys, .string_values = &vals },
+        true,
+    );
+    defer result.deinit(std.testing.allocator);
+
+    var found_msg = false;
+    for (result.hits) |h| {
+        if (std.mem.eql(u8, h.id, "comms.message") and isResidualMatcher(h.matcher)) {
+            found_msg = true;
+            try std.testing.expect(h.confidence == .low);
+        }
+    }
+    try std.testing.expect(found_msg);
+
+    const match = effect_eval.evaluateHits(result.hits, .{
+        .deny = &.{"comms.message"},
+        .default = .allow,
+    });
+    try std.testing.expect(match.kind == .deny);
 }
 
 test "evaluateHitsRaiseOnly does not let residual allow beat base deny default" {

@@ -31,7 +31,6 @@ pub const classifyToolCallWithPacks = packs.classifyToolCallWithPacks;
 pub const classifyToolCallWithResidual = classifier.classifyToolCallWithResidual;
 pub const ToolClassifyResult = classifier.ToolClassifyResult;
 pub const evaluateHitsRaiseOnly = classifier.evaluateHitsRaiseOnly;
-pub const isResidualMatcher = classifier.isResidualMatcher;
 pub const loadPacks = packs.loadPacks;
 pub const loadPacksForEnforcement = packs.loadPacksForEnforcement;
 pub const normalizeToolName = catalog.normalizeToolName;

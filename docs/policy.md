@@ -163,12 +163,13 @@ deny into allow. Explicit MCP allow does not override an effect deny.
 4. **Local residual classifier (low, opt-in)** — when `effects.classifier` is
    `local` (or `local-embed`, same engine in v1), tools that A–C leave
    under-classified may pick up low-confidence hits via pure-Zig
-   prototype/token similarity on the tool name and arg **keys** (not chat
-   history, not a cloud model). Matchers use `classifier.local.*`. **Off by
-   default.** Raise-only: residual hits may increase restriction (ask/deny)
-   but never alone flip a surface deny into allow. In `strict` / `ci` /
-   `redteam`, if the classifier is enabled but unavailable, residual tools
-   **fail closed** (`effects.classifier unavailable`).
+   prototype/token similarity on the tool **name**, argument **keys**, and
+   bounded short alphanumeric string **value tokens** (secrets filtered;
+   not chat history, not a cloud model). Matchers use `classifier.local.*`.
+   **Off by default.** Raise-only: residual hits may increase restriction
+   (ask/deny) but never alone flip a surface deny into allow. In `strict` /
+   `ci` / `redteam`, if the classifier is enabled but unavailable, residual
+   tools **fail closed** (`effects.classifier unavailable`).
 5. **Network host tags** — when `effects:` is active, destinations such as
    `api.twitter.com` map to `comms.publish` (matcher `network_tag.…`) and
    merge with network surface rules on **both** `policy explain network` and
@@ -271,8 +272,10 @@ never raw email/body/token values.
   applies when the call is evaluated as a **tool name**.
 - Browser/computer-use UI actions remain out of scope.
 - Residual classifier v1 is **local prototype/token similarity**, not neural
-  embeddings or a remote LLM. `local-embed` is an alias for `local`. It only
-  runs on under-classified tools and only raises restriction.
+  embeddings or a remote LLM. `local-embed` is an alias for `local`. Features
+  are tool name tokens, arg keys, and bounded short alphanumeric string value
+  tokens (secret-looking values filtered). It only runs on under-classified
+  tools and only raises restriction.
 
 When `effects:` is present, `effects.default` applies to **tool**
 classification hits that match no allow/deny/ask pattern and to **tools with

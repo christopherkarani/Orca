@@ -271,13 +271,6 @@ pub const EffectsClassifier = enum {
         return null;
     }
 
-    pub fn toString(self: EffectsClassifier) []const u8 {
-        return switch (self) {
-            .off => "off",
-            .local => "local",
-        };
-    }
-
     pub fn isEnabled(self: EffectsClassifier) bool {
         return self != .off;
     }
