@@ -3,6 +3,7 @@ const builtin = @import("builtin");
 
 const backend = @import("backend.zig");
 const platform = @import("orca_core").platform;
+const macos_seatbelt = @import("macos_seatbelt.zig");
 
 pub const implemented = true;
 
@@ -18,7 +19,26 @@ pub fn detect() backend.ReportSet {
     backend.setReport(&reports, .seccomp, .unsupported, "Linux seccomp-bpf is not a macOS feature");
     backend.setReport(&reports, .landlock, .unsupported, "Linux Landlock is not a macOS feature");
     backend.setReport(&reports, .cgroups, .unsupported, "Linux cgroup cleanup is not a macOS feature");
-    backend.setReport(&reports, .strong_sandbox, .unavailable, "OS filesystem sandbox not active: apply-before-exec is not wired on the production launch path; capability probes are not a live session claim");
+
+    // Strong sandbox: version-gated deprecated custom profile API (matrix 14/15).
+    // Capability probes never authorize a live session `active` claim (S-GLO-01).
+    const support = if (builtin.os.tag == .macos)
+        macos_seatbelt.evaluateSupport()
+    else
+        macos_seatbelt.SupportStatus.not_macos;
+
+    const strong_level: backend.Level = switch (support) {
+        // API path present on advertised matrix — still not a live session attach.
+        .supported => .partial,
+        .version_unsupported, .symbol_unavailable, .not_macos => .unavailable,
+    };
+    const strong_note: []const u8 = switch (support) {
+        .supported => "OS filesystem sandbox API present on a supported macOS version; session active only after apply-before-exec child attach and profile hash",
+        .version_unsupported => "OS filesystem sandbox unavailable: running macOS is outside the advertised support matrix (14/15); capability probes are not a live session claim",
+        .symbol_unavailable => "OS filesystem sandbox unavailable: sandbox apply symbol not resolvable; capability probes are not a live session claim",
+        .not_macos => "OS filesystem sandbox is a macOS feature",
+    };
+    backend.setReport(&reports, .strong_sandbox, strong_level, strong_note);
 
     return .{
         .os = .macos,
@@ -48,8 +68,22 @@ test "macOS capability detector is honest about wrapper and unavailable protecti
     try std.testing.expectEqual(backend.Level.wrapper_only, report.get(.path_shims).level);
     try std.testing.expectEqual(backend.Level.active, report.get(.process_supervision).level);
     try std.testing.expectEqual(backend.Level.limited, report.get(.network_enforce).level);
-    try std.testing.expectEqual(backend.Level.unavailable, report.get(.strong_sandbox).level);
-    try std.testing.expect(!report.featureAvailable(.strong_sandbox));
+    // strong_sandbox never active from detect (S-GLO-01).
+    try std.testing.expect(report.get(.strong_sandbox).level != .active);
+    try std.testing.expect(!report.featureAvailable(.strong_sandbox) or report.get(.strong_sandbox).level == .partial);
+    // Default doctor notes stay mechanism-neutral (no "Seatbelt" branding).
+    try std.testing.expect(std.mem.indexOf(u8, report.get(.strong_sandbox).note, "Seatbelt") == null);
+}
+
+test "macOS strong_sandbox tracks version matrix without live active claim" {
+    if (builtin.os.tag != .macos) return error.SkipZigTest;
+    const report = detect();
+    const support = macos_seatbelt.evaluateSupport();
+    switch (support) {
+        .supported => try std.testing.expectEqual(backend.Level.partial, report.get(.strong_sandbox).level),
+        else => try std.testing.expectEqual(backend.Level.unavailable, report.get(.strong_sandbox).level),
+    }
+    try std.testing.expect(report.get(.strong_sandbox).level != .active);
 }
 
 test "macOS launch can run a simple command" {

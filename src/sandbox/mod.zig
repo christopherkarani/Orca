@@ -13,6 +13,8 @@ pub const profile = @import("profile.zig");
 pub const apply = @import("apply.zig");
 pub const landlock = @import("landlock.zig");
 pub const apply_posix = @import("apply_posix.zig");
+pub const macos_profile = @import("macos_profile.zig");
+pub const macos_seatbelt = @import("macos_seatbelt.zig");
 
 pub const phase = "02-repo-bootstrap";
 
@@ -32,4 +34,6 @@ test {
     _ = apply;
     _ = landlock;
     _ = apply_posix;
+    _ = macos_profile;
+    _ = macos_seatbelt;
 }

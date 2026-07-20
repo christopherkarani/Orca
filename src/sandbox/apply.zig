@@ -25,6 +25,7 @@ const fd_scrub = @import("fd_scrub.zig");
 const launch_authority = @import("launch_authority.zig");
 const landlock = @import("landlock.zig");
 const apply_posix = @import("apply_posix.zig");
+const macos_seatbelt = @import("macos_seatbelt.zig");
 
 /// Re-export mode for callers that only touch apply.
 pub const OsSandboxMode = posture.OsSandboxMode;
@@ -60,6 +61,17 @@ pub const ApplyResult = struct {
     profile_compiled: bool = false,
     /// Owned hex hash of compiled profile when compile succeeded.
     profile_hash_hex: ?[64]u8 = null,
+    /// Owned NUL-terminated SBPL for child-side Seatbelt apply (macOS). Free with deinit.
+    seatbelt_sbpl_z: ?[:0]u8 = null,
+    allocator: ?std.mem.Allocator = null,
+
+    pub fn deinit(self: *ApplyResult) void {
+        if (self.seatbelt_sbpl_z) |p| {
+            if (self.allocator) |a| a.free(p);
+            self.seatbelt_sbpl_z = null;
+        }
+        self.* = undefined;
+    }
 
     pub fn mayReportActive(self: ApplyResult) bool {
         return launch_authority.mayReportSessionActive(self.receipt);
@@ -74,12 +86,15 @@ const PlatformApplyStatus = enum {
     unavailable,
     /// Backend present but apply failed.
     failed,
+    /// Profile prepared; child must apply before exec (macOS Seatbelt). Not active yet.
+    prepared_child,
 };
 
 const PlatformApplyOutcome = struct {
     status: PlatformApplyStatus,
     mechanism: posture.BackendMechanism = .none,
     reason_code: []const u8,
+    seatbelt_sbpl_z: ?[:0]u8 = null,
 };
 
 /// Apply OS sandbox policy for the production launch path.
@@ -131,8 +146,8 @@ pub fn applyBeforeExec(boundary: ApplyBoundary) ApplyError!ApplyResult {
     _ = fd_scrub.default_keep_fds;
     _ = apply_posix.verifyLandlockApplyInChild;
 
-    // Platform OS apply — Linux Landlock (U05); other platforms unavailable until U06.
-    const platform = tryPlatformApply(boundary.mode, &compiled);
+    // Platform OS apply — Linux Landlock (U05); macOS Seatbelt prepare (U06).
+    const platform = tryPlatformApply(boundary.allocator, boundary.mode, &compiled);
 
     switch (platform.status) {
         .attached => {
@@ -156,7 +171,24 @@ pub fn applyBeforeExec(boundary: ApplyBoundary) ApplyError!ApplyResult {
                 .profile_hash_hex = hash_copy,
             };
         },
+        .prepared_child => {
+            // macOS parent prepare only — not active until child applyInChild (U07 spawn wire).
+            if (boundary.mode == .on) {
+                if (platform.seatbelt_sbpl_z) |p| boundary.allocator.free(p);
+                return error.RequireFailed;
+            }
+            return .{
+                .receipt = posture.unavailableReceipt(platform.reason_code),
+                .env_scrubbed = scrubbed,
+                .env_keys_removed = removed,
+                .profile_compiled = true,
+                .profile_hash_hex = hash_copy,
+                .seatbelt_sbpl_z = platform.seatbelt_sbpl_z,
+                .allocator = boundary.allocator,
+            };
+        },
         .unavailable => {
+            if (platform.seatbelt_sbpl_z) |p| boundary.allocator.free(p);
             if (boundary.mode == .on) return error.RequireFailed;
             return .{
                 .receipt = posture.unavailableReceipt(platform.reason_code),
@@ -167,6 +199,7 @@ pub fn applyBeforeExec(boundary: ApplyBoundary) ApplyError!ApplyResult {
             };
         },
         .failed => {
+            if (platform.seatbelt_sbpl_z) |p| boundary.allocator.free(p);
             if (boundary.mode == .on) return error.RequireFailed;
             return .{
                 .receipt = posture.failedReceipt(platform.reason_code),
@@ -182,17 +215,48 @@ pub fn applyBeforeExec(boundary: ApplyBoundary) ApplyError!ApplyResult {
 /// Compile-time / doc marker: FD scrub is child-only.
 pub const fd_scrub_call_site_is_child_only = true;
 
-/// Platform apply: Linux → Landlock child verify; else unavailable (Seatbelt U06).
-fn tryPlatformApply(mode: OsSandboxMode, compiled: *const profile.CompiledProfile) PlatformApplyOutcome {
+/// Platform apply: Linux → Landlock child verify; macOS → Seatbelt prepare (child apply U07).
+fn tryPlatformApply(
+    allocator: std.mem.Allocator,
+    mode: OsSandboxMode,
+    compiled: *const profile.CompiledProfile,
+) PlatformApplyOutcome {
     _ = mode;
-    if (builtin.os.tag == .linux) {
-        return tryPlatformApplyLinux(compiled);
-    }
-    // macOS Seatbelt is U06; Windows unsupported in Phase 1.
-    return .{
-        .status = .unavailable,
-        .mechanism = .none,
-        .reason_code = "backend_not_implemented",
+    return switch (builtin.os.tag) {
+        .linux => tryPlatformApplyLinux(compiled),
+        .macos => tryMacOsSeatbelt(allocator, compiled),
+        else => .{
+            .status = .unavailable,
+            .mechanism = .none,
+            .reason_code = "backend_not_implemented",
+        },
+    };
+}
+
+fn tryMacOsSeatbelt(
+    allocator: std.mem.Allocator,
+    compiled: *const profile.CompiledProfile,
+) PlatformApplyOutcome {
+    const prepared = macos_seatbelt.prepareForChildApply(allocator, compiled);
+    return switch (prepared.status) {
+        .unavailable => .{
+            .status = .unavailable,
+            .mechanism = .none,
+            .reason_code = prepared.reason_code,
+            .seatbelt_sbpl_z = null,
+        },
+        .failed => .{
+            .status = .failed,
+            .mechanism = .none,
+            .reason_code = prepared.reason_code,
+            .seatbelt_sbpl_z = null,
+        },
+        .prepared => .{
+            .status = .prepared_child,
+            .mechanism = .seatbelt,
+            .reason_code = "seatbelt_child_apply_required",
+            .seatbelt_sbpl_z = prepared.sbpl_z,
+        },
     };
 }
 
