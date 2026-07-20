@@ -9,7 +9,7 @@ const help = @import("help.zig");
 const tui = @import("../tui/render.zig");
 const terminal_text = @import("../tui/terminal_text.zig");
 const suggestions = @import("suggestions.zig");
-const file_intercept = @import("../intercept/files.zig");
+const file_policy_path = @import("file_policy_path.zig");
 
 // Maximum JSON payload size to prevent memory exhaustion from hostile hosts.
 const max_payload_len = 256 * 1024; // 256 KiB
@@ -322,7 +322,7 @@ fn evaluateDecision(
 
             const explain_kind: policy.explain.ExplainKind = if (std.mem.eql(u8, operation, "write")) .file_write else .file_read;
             const category_text = if (std.mem.eql(u8, operation, "write")) "file.write" else "file.read";
-            const policy_path = normalizeFilePolicyPath(io, allocator, workspace_root, path) catch |err| switch (err) {
+            const policy_path = file_policy_path.normalizeFilePolicyPath(io, allocator, workspace_root, path) catch |err| switch (err) {
                 error.OutOfMemory => return err,
                 else => return buildFileNormalizationBlock(allocator, category_text),
             };
@@ -440,11 +440,9 @@ fn evaluateDecision(
 fn buildFileNormalizationBlock(allocator: std.mem.Allocator, category: []const u8) !DecisionOutput {
     const owned_category = try allocator.dupe(u8, category);
     errdefer allocator.free(owned_category);
-    const reason = try allocator.dupe(u8, "file access denied: path resolves outside workspace or through a symlink escape");
+    const reason = try allocator.dupe(u8, file_policy_path.outside_workspace_reason);
     errdefer allocator.free(reason);
-    const rule = try std.fmt.allocPrint(allocator, "builtin.files.{s}.deny[outside_workspace]", .{
-        if (std.mem.eql(u8, category, "file.write")) "write" else "read",
-    });
+    const rule = try file_policy_path.outsideWorkspaceRuleId(allocator, category);
     errdefer allocator.free(rule);
     const message = try buildMessage(allocator, .block, category);
     errdefer allocator.free(message);
@@ -457,49 +455,6 @@ fn buildFileNormalizationBlock(allocator: std.mem.Allocator, category: []const u
         .message = message,
         .redactions = try allocator.alloc(RedactionEntry, 0),
     };
-}
-
-/// Policy file rules are workspace-relative, while host adapters commonly emit
-/// absolute paths. Normalize an absolute target inside the selected workspace
-/// to the same `./relative` form as a direct CLI caller. Absolute paths outside
-/// the workspace stay absolute so home/system rules retain their semantics.
-fn normalizeFilePolicyPath(io: std.Io, allocator: std.mem.Allocator, workspace_root_raw: []const u8, raw_path: []const u8) ![]u8 {
-    const lexical = try normalizeFilePolicyPathLexical(allocator, workspace_root_raw, raw_path);
-    if (!std.mem.startsWith(u8, lexical, "./")) return lexical;
-    defer allocator.free(lexical);
-
-    var normalized = try file_intercept.normalizePath(io, allocator, workspace_root_raw, raw_path);
-    defer normalized.deinit(allocator);
-    return allocator.dupe(u8, normalized.policy_path);
-}
-
-fn normalizeFilePolicyPathLexical(allocator: std.mem.Allocator, workspace_root_raw: []const u8, raw_path: []const u8) ![]u8 {
-    if (!std.fs.path.isAbsolute(workspace_root_raw)) {
-        return allocator.dupe(u8, raw_path);
-    }
-
-    const workspace_root = try std.fs.path.resolve(allocator, &.{workspace_root_raw});
-    defer allocator.free(workspace_root);
-    const absolute_path = if (std.fs.path.isAbsolute(raw_path))
-        try std.fs.path.resolve(allocator, &.{raw_path})
-    else
-        try std.fs.path.resolve(allocator, &.{ workspace_root, raw_path });
-    defer allocator.free(absolute_path);
-
-    if (std.mem.eql(u8, absolute_path, workspace_root)) return allocator.dupe(u8, ".");
-    if (absolute_path.len <= workspace_root.len or
-        !std.mem.eql(u8, absolute_path[0..workspace_root.len], workspace_root) or
-        (absolute_path[workspace_root.len] != '/' and absolute_path[workspace_root.len] != '\\'))
-    {
-        return allocator.dupe(u8, absolute_path);
-    }
-
-    const relative = absolute_path[workspace_root.len + 1 ..];
-    const normalized = try std.fmt.allocPrint(allocator, "./{s}", .{relative});
-    for (normalized) |*char| {
-        if (char.* == '\\') char.* = '/';
-    }
-    return normalized;
 }
 
 fn buildMessage(allocator: std.mem.Allocator, decision: PluginDecision, category: []const u8) ![]const u8 {
@@ -895,39 +850,39 @@ test "decide file normalizes absolute workspace paths to policy-relative targets
     const allocator = std.testing.allocator;
     const root = "/workspace/project";
 
-    const policy_relative = try normalizeFilePolicyPathLexical(allocator, root, "/workspace/project/.orca/policy.yaml");
+    const policy_relative = try file_policy_path.normalizeFilePolicyPathLexical(allocator, root, "/workspace/project/.orca/policy.yaml");
     defer allocator.free(policy_relative);
     try std.testing.expectEqualStrings("./.orca/policy.yaml", policy_relative);
 
-    const git_relative = try normalizeFilePolicyPathLexical(allocator, root, "/workspace/project/.git/config");
+    const git_relative = try file_policy_path.normalizeFilePolicyPathLexical(allocator, root, "/workspace/project/.git/config");
     defer allocator.free(git_relative);
     try std.testing.expectEqualStrings("./.git/config", git_relative);
 
-    const env_relative = try normalizeFilePolicyPathLexical(allocator, root, "/workspace/project/.env");
+    const env_relative = try file_policy_path.normalizeFilePolicyPathLexical(allocator, root, "/workspace/project/.env");
     defer allocator.free(env_relative);
     try std.testing.expectEqualStrings("./.env", env_relative);
 
-    const absolute_dot_segment = try normalizeFilePolicyPathLexical(allocator, root, "/workspace/project/src/../.env");
+    const absolute_dot_segment = try file_policy_path.normalizeFilePolicyPathLexical(allocator, root, "/workspace/project/src/../.env");
     defer allocator.free(absolute_dot_segment);
     try std.testing.expectEqualStrings("./.env", absolute_dot_segment);
 
-    const protected_dot_segment = try normalizeFilePolicyPathLexical(allocator, root, "/workspace/project/.orca/../.env");
+    const protected_dot_segment = try file_policy_path.normalizeFilePolicyPathLexical(allocator, root, "/workspace/project/.orca/../.env");
     defer allocator.free(protected_dot_segment);
     try std.testing.expectEqualStrings("./.env", protected_dot_segment);
 
-    const relative_dot_segment = try normalizeFilePolicyPathLexical(allocator, root, "src/../.env");
+    const relative_dot_segment = try file_policy_path.normalizeFilePolicyPathLexical(allocator, root, "src/../.env");
     defer allocator.free(relative_dot_segment);
     try std.testing.expectEqualStrings("./.env", relative_dot_segment);
 
-    const allowed_relative = try normalizeFilePolicyPathLexical(allocator, root, "/workspace/project/src/main.zig");
+    const allowed_relative = try file_policy_path.normalizeFilePolicyPathLexical(allocator, root, "/workspace/project/src/main.zig");
     defer allocator.free(allowed_relative);
     try std.testing.expectEqualStrings("./src/main.zig", allowed_relative);
 
-    const outside = try normalizeFilePolicyPathLexical(allocator, root, "/tmp/outside.txt");
+    const outside = try file_policy_path.normalizeFilePolicyPathLexical(allocator, root, "/tmp/outside.txt");
     defer allocator.free(outside);
     try std.testing.expectEqualStrings("/tmp/outside.txt", outside);
 
-    const escaped = try normalizeFilePolicyPathLexical(allocator, root, "/workspace/project/../outside.txt");
+    const escaped = try file_policy_path.normalizeFilePolicyPathLexical(allocator, root, "/workspace/project/../outside.txt");
     defer allocator.free(escaped);
     try std.testing.expectEqualStrings("/workspace/outside.txt", escaped);
 }
@@ -949,7 +904,7 @@ test "decide file resolves symlinks before policy evaluation" {
         else => return err,
     };
 
-    const normalized = try normalizeFilePolicyPath(std.testing.io, std.testing.allocator, root, alias_path);
+    const normalized = try file_policy_path.normalizeFilePolicyPath(std.testing.io, std.testing.allocator, root, alias_path);
     defer std.testing.allocator.free(normalized);
     try std.testing.expectEqualStrings("./.env", normalized);
 }

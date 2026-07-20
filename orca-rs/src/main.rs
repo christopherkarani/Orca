@@ -523,12 +523,20 @@ async fn run_orca() -> Result<i32, Box<dyn std::error::Error + Send + Sync>> {
     let hook_input = match hook::read_hook_input(max_input_bytes) {
         Ok(input) => input,
         Err(hook::HookReadError::InputTooLarge(len)) => {
-            eprintln!(
-                "[orca] Warning: stdin input ({len} bytes) exceeds limit ({max_input_bytes} bytes); allowing command (fail-open)"
-            );
-            return Ok(0);
+            return Ok(hook::fail_closed_unparsed_input_exit(&format!(
+                "stdin input ({len} bytes) exceeds limit ({max_input_bytes} bytes)"
+            )));
         }
-        Err(_) => return Ok(0), // Fail open on IO or JSON errors
+        Err(hook::HookReadError::Io(err)) => {
+            return Ok(hook::fail_closed_unparsed_input_exit(&format!(
+                "failed to read hook stdin: {err}"
+            )));
+        }
+        Err(hook::HookReadError::Json(err)) => {
+            return Ok(hook::fail_closed_unparsed_input_exit(&format!(
+                "failed to parse hook JSON: {err}"
+            )));
+        }
     };
 
     // Start evaluation deadline after input size checks (includes evaluation).
@@ -659,7 +667,7 @@ async fn run_orca() -> Result<i32, Box<dyn std::error::Error + Send + Sync>> {
                 history_agent_type,
                 &command,
                 &working_dir,
-                HistoryOutcome::Allow,
+                HistoryOutcome::Deny,
                 eval_duration,
                 None,
                 None,
@@ -676,7 +684,12 @@ async fn run_orca() -> Result<i32, Box<dyn std::error::Error + Send + Sync>> {
                 HOOK_EVALUATION_BUDGET,
             );
         }
-        return Ok(0);
+        // Align with daemon Evaluate: budget skip is fail-closed deny.
+        return Ok(hook::fail_closed_hook_deny(
+            hook_protocol,
+            &command,
+            "Command denied: evaluator budget exceeded",
+        ));
     }
 
     if result.decision != EvaluationDecision::Deny {
@@ -707,13 +720,13 @@ async fn run_orca() -> Result<i32, Box<dyn std::error::Error + Send + Sync>> {
     }
 
     let Some(ref info) = result.pattern_info else {
-        // Fail open: structurally unexpected, but hook safety wins.
+        // Fail closed: Deny without pattern metadata is structurally unexpected.
         if let Some(writer) = history_writer.as_ref() {
             let entry = build_history_entry(
                 history_agent_type,
                 &command,
                 &working_dir,
-                HistoryOutcome::Allow,
+                HistoryOutcome::Deny,
                 eval_duration,
                 None,
                 None,
@@ -721,7 +734,11 @@ async fn run_orca() -> Result<i32, Box<dyn std::error::Error + Send + Sync>> {
             );
             writer.log(entry);
         }
-        return Ok(0);
+        return Ok(hook::fail_closed_hook_deny(
+            hook_protocol,
+            &command,
+            "Command denied by evaluator",
+        ));
     };
 
     let pack = info.pack_id.as_deref();
@@ -781,15 +798,8 @@ async fn run_orca() -> Result<i32, Box<dyn std::error::Error + Send + Sync>> {
     if matches!(mode, DecisionMode::Deny) {
         if let Some(cwd_ref) = cwd_path.as_deref() {
             if let Some(reason) =
-                orca_rs::rebase_recovery::should_allow_recovery(cwd_ref, pack, pattern)
+                orca_rs::rebase_recovery::try_allow_recovery(cwd_ref, pack, pattern)
             {
-                // Consume the permit if that's why we allowed (single-shot).
-                if matches!(
-                    reason,
-                    orca_rs::rebase_recovery::RecoveryReason::ActivePermit(_)
-                ) {
-                    orca_rs::rebase_recovery::consume_permit(cwd_ref);
-                }
                 // Inform on stderr (visible to the agent and to humans).
                 // Stays silent when stderr isn't a TTY and robot mode is on,
                 // but the message itself is always safe to emit.
@@ -1957,7 +1967,9 @@ mod tests {
             let pid = pid_path.clone();
             let shutdown_tx = tx.clone();
             let daemon_task =
-                tokio::spawn(async move { orca_rs::daemon::run_daemon(&socket, &pid, tx, rx).await });
+                tokio::spawn(
+                    async move { orca_rs::daemon::run_daemon(&socket, &pid, tx, rx).await },
+                );
 
             // Wait for the socket to be bound.
             let mut attempts = 0;
@@ -1998,7 +2010,9 @@ mod tests {
             let pid = pid_path.clone();
             let shutdown_tx = tx.clone();
             let daemon_task =
-                tokio::spawn(async move { orca_rs::daemon::run_daemon(&socket, &pid, tx, rx).await });
+                tokio::spawn(
+                    async move { orca_rs::daemon::run_daemon(&socket, &pid, tx, rx).await },
+                );
 
             // Wait for the socket to be bound.
             let mut attempts = 0;
@@ -2042,7 +2056,9 @@ mod tests {
             let pid = pid_path.clone();
             let shutdown_tx = tx.clone();
             let daemon_task =
-                tokio::spawn(async move { orca_rs::daemon::run_daemon(&socket, &pid, tx, rx).await });
+                tokio::spawn(
+                    async move { orca_rs::daemon::run_daemon(&socket, &pid, tx, rx).await },
+                );
 
             let mut attempts = 0;
             while !socket_path.exists() && attempts < 50 {
@@ -2058,10 +2074,7 @@ mod tests {
             );
 
             let mut stream = UnixStream::connect(&socket_path).await.unwrap();
-            stream
-                .write_all(allow_req.as_bytes())
-                .await
-                .unwrap();
+            stream.write_all(allow_req.as_bytes()).await.unwrap();
 
             let mut buf = String::new();
             let (read_half, _write_half) = stream.into_split();
@@ -2092,7 +2105,9 @@ mod tests {
             let pid = pid_path.clone();
             let shutdown_tx = tx.clone();
             let daemon_task =
-                tokio::spawn(async move { orca_rs::daemon::run_daemon(&socket, &pid, tx, rx).await });
+                tokio::spawn(
+                    async move { orca_rs::daemon::run_daemon(&socket, &pid, tx, rx).await },
+                );
 
             let mut attempts = 0;
             while !socket_path.exists() && attempts < 50 {
@@ -2108,10 +2123,7 @@ mod tests {
             );
 
             let mut stream = UnixStream::connect(&socket_path).await.unwrap();
-            stream
-                .write_all(deny_req.as_bytes())
-                .await
-                .unwrap();
+            stream.write_all(deny_req.as_bytes()).await.unwrap();
 
             let mut buf = String::new();
             let (read_half, _write_half) = stream.into_split();
@@ -2141,7 +2153,9 @@ mod tests {
             let socket = socket_path.clone();
             let pid = pid_path.clone();
             let daemon_task =
-                tokio::spawn(async move { orca_rs::daemon::run_daemon(&socket, &pid, tx, rx).await });
+                tokio::spawn(
+                    async move { orca_rs::daemon::run_daemon(&socket, &pid, tx, rx).await },
+                );
 
             let mut attempts = 0;
             while !socket_path.exists() && attempts < 50 {
@@ -2167,8 +2181,14 @@ mod tests {
             let result = tokio::time::timeout(Duration::from_secs(5), daemon_task).await;
             assert!(result.is_ok(), "daemon should complete within timeout");
             assert!(result.unwrap().is_ok(), "daemon should return Ok");
-            assert!(!socket_path.exists(), "socket should be removed after Shutdown");
-            assert!(!pid_path.exists(), "pid file should be removed after Shutdown");
+            assert!(
+                !socket_path.exists(),
+                "socket should be removed after Shutdown"
+            );
+            assert!(
+                !pid_path.exists(),
+                "pid file should be removed after Shutdown"
+            );
         }
 
         #[test]

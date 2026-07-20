@@ -185,4 +185,70 @@ mod tests {
         let result = execute_cli(&["version".to_string()]);
         assert_eq!(result.stdout, version_stdout_line());
     }
+
+    #[test]
+    fn mutating_allow_over_execute_cli_is_denied() {
+        use crate::exit_codes::EXIT_DENIED;
+        let result = execute_cli(&[
+            "allow".to_string(),
+            "core.git:reset-hard".to_string(),
+            "-r".to_string(),
+            "test".to_string(),
+        ]);
+        assert_eq!(result.exit_code, EXIT_DENIED);
+        assert!(result.stdout.is_empty());
+        assert!(
+            result.stderr.contains("refused mutating command"),
+            "unexpected stderr: {}",
+            result.stderr
+        );
+    }
+
+    #[test]
+    fn mutating_allowlist_add_over_execute_cli_is_denied() {
+        use crate::exit_codes::EXIT_DENIED;
+        let result = execute_cli(&[
+            "allowlist".to_string(),
+            "add".to_string(),
+            "core.git:reset-hard".to_string(),
+            "-r".to_string(),
+            "test".to_string(),
+        ]);
+        assert_eq!(result.exit_code, EXIT_DENIED);
+        assert!(result.stderr.contains("refused mutating command"));
+    }
+
+    #[test]
+    fn suggest_allowlist_apply_over_execute_cli_is_denied() {
+        use crate::exit_codes::EXIT_DENIED;
+        let result = execute_cli(&[
+            "suggest-allowlist".to_string(),
+            "--apply".to_string(),
+            "1".to_string(),
+        ]);
+        assert_eq!(result.exit_code, EXIT_DENIED);
+        assert!(result.stderr.contains("refused mutating command"));
+    }
+
+    #[test]
+    fn suggest_allowlist_undo_over_execute_cli_is_denied() {
+        use crate::exit_codes::EXIT_DENIED;
+        let result = execute_cli(&[
+            "suggest-allowlist".to_string(),
+            "--undo".to_string(),
+            "60".to_string(),
+        ]);
+        assert_eq!(result.exit_code, EXIT_DENIED);
+        assert!(result.stderr.contains("refused mutating command"));
+    }
+
+    #[test]
+    fn read_only_classify_and_explain_still_work_over_execute_cli() {
+        let classify = execute_cli(&["classify".to_string(), "--help".to_string()]);
+        assert_eq!(classify.exit_code, EXIT_SUCCESS);
+        let explain = execute_cli(&["explain".to_string(), "--help".to_string()]);
+        assert_eq!(explain.exit_code, EXIT_SUCCESS);
+        let list = execute_cli(&["allowlist".to_string(), "--help".to_string()]);
+        assert_eq!(list.exit_code, EXIT_SUCCESS);
+    }
 }

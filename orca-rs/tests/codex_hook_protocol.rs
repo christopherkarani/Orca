@@ -1326,11 +1326,11 @@ fn cross_protocol_allow_structural_parity() {
 }
 
 // ===========================================================================
-// P2.10 — Fail-open / error-mode integration tests
+// P2.10 — Error-mode integration tests (legacy stdin hook)
 //
-// orca never crashes the host AI agent. Malformed, oversize, or missing input
-// always results in fail-open (exit 0). These tests verify the documented
-// "Fail-Open Philosophy" from README.
+// Unparsed stdin (malformed/oversize JSON) and evaluator budget/missing-info
+// paths are fail-closed (EXIT_DENIED). Structurally valid JSON that yields no
+// extractable command remains fail-open (exit 0, empty stdout).
 // ===========================================================================
 
 // ---------------------------------------------------------------------------
@@ -1341,12 +1341,8 @@ fn cross_protocol_allow_structural_parity() {
 fn failopen_not_json_at_all() {
     let outcome = run_hook_raw(b"not-json-at-all", &[]);
     assert_eq!(
-        outcome.exit_code, 0,
-        "malformed input must fail-open\n{outcome}"
-    );
-    assert!(
-        outcome.stdout.is_empty(),
-        "no stdout on fail-open\n{outcome}"
+        outcome.exit_code, 1,
+        "malformed input must fail-closed (EXIT_DENIED)\n{outcome}"
     );
 }
 
@@ -1354,32 +1350,26 @@ fn failopen_not_json_at_all() {
 fn failopen_incomplete_json_brace() {
     let outcome = run_hook_raw(b"{", &[]);
     assert_eq!(
-        outcome.exit_code, 0,
-        "incomplete JSON must fail-open\n{outcome}"
-    );
-    assert!(
-        outcome.stdout.is_empty(),
-        "no stdout on fail-open\n{outcome}"
+        outcome.exit_code, 1,
+        "incomplete JSON must fail-closed (EXIT_DENIED)\n{outcome}"
     );
 }
 
 #[test]
 fn failopen_json_null() {
     let outcome = run_hook_raw(b"null", &[]);
-    assert_eq!(outcome.exit_code, 0, "JSON null must fail-open\n{outcome}");
-    assert!(
-        outcome.stdout.is_empty(),
-        "no stdout on fail-open\n{outcome}"
+    assert_eq!(
+        outcome.exit_code, 1,
+        "JSON null must fail-closed (EXIT_DENIED)\n{outcome}"
     );
 }
 
 #[test]
 fn failopen_json_array() {
     let outcome = run_hook_raw(b"[]", &[]);
-    assert_eq!(outcome.exit_code, 0, "JSON array must fail-open\n{outcome}");
-    assert!(
-        outcome.stdout.is_empty(),
-        "no stdout on fail-open\n{outcome}"
+    assert_eq!(
+        outcome.exit_code, 1,
+        "JSON array must fail-closed (EXIT_DENIED)\n{outcome}"
     );
 }
 
@@ -1461,12 +1451,8 @@ fn failopen_json_command_is_object() {
 fn failopen_empty_stdin() {
     let outcome = run_hook_raw(b"", &[]);
     assert_eq!(
-        outcome.exit_code, 0,
-        "empty stdin must fail-open\n{outcome}"
-    );
-    assert!(
-        outcome.stdout.is_empty(),
-        "no stdout on fail-open\n{outcome}"
+        outcome.exit_code, 1,
+        "empty stdin must fail-closed (EXIT_DENIED)\n{outcome}"
     );
 }
 
@@ -1479,12 +1465,8 @@ fn failopen_truncated_json() {
     let payload = br#"{ "tool_name": "Bash", "tool_input": { "command": "git reset --ha"#;
     let outcome = run_hook_raw(payload, &[]);
     assert_eq!(
-        outcome.exit_code, 0,
-        "truncated JSON must fail-open\n{outcome}"
-    );
-    assert!(
-        outcome.stdout.is_empty(),
-        "no stdout on fail-open\n{outcome}"
+        outcome.exit_code, 1,
+        "truncated JSON must fail-closed (EXIT_DENIED)\n{outcome}"
     );
 }
 
@@ -1500,12 +1482,8 @@ fn failopen_oversize_stdin() {
         format!(r#"{{ "tool_name": "Bash", "tool_input": {{ "command": "{padding}" }} }}"#);
     let outcome = run_hook_raw(payload.as_bytes(), &[]);
     assert_eq!(
-        outcome.exit_code, 0,
-        "oversize stdin must fail-open\n{outcome}"
-    );
-    assert!(
-        outcome.stdout.is_empty(),
-        "no stdout on fail-open\n{outcome}"
+        outcome.exit_code, 1,
+        "oversize stdin must fail-closed (EXIT_DENIED)\n{outcome}"
     );
     assert!(
         outcome.stderr_contains("exceeds limit"),
@@ -1553,11 +1531,11 @@ fn failopen_turn_id_wrong_type() {
   "tool_use_id": "call_test"
 }"#;
     let outcome = run_hook_raw(payload, &[]);
-    // orca should either fail-open (if serde rejects the type) or process normally.
-    // Either way, no crash — exit 0 or 2 (if treated as valid Codex payload).
+    // Serde type mismatch is now fail-closed (EXIT_DENIED). If serde is
+    // lenient and the payload processes as Codex, exit 2 on deny is also OK.
     assert!(
-        outcome.exit_code == 0 || outcome.exit_code == 2,
-        "wrong-type turn_id must not crash (exit 0 or 2), got {}\n{outcome}",
+        outcome.exit_code == 0 || outcome.exit_code == 1 || outcome.exit_code == 2,
+        "wrong-type turn_id must not crash (exit 0/1/2), got {}\n{outcome}",
         outcome.exit_code
     );
 }
@@ -1580,16 +1558,10 @@ fn failopen_no_crash_signal_on_garbage() {
 
     for payload in garbage_payloads {
         let outcome = run_hook_raw(payload, &[]);
-        assert_eq!(
-            outcome.exit_code,
-            0,
-            "garbage input must fail-open (exit 0), got {} for {:?}\n{outcome}",
-            outcome.exit_code,
-            String::from_utf8_lossy(payload)
-        );
         assert!(
-            outcome.stdout.is_empty(),
-            "no stdout for garbage input {:?}\n{outcome}",
+            outcome.exit_code == 0 || outcome.exit_code == 1,
+            "garbage input must not crash (exit 0 allow or 1 deny), got {} for {:?}\n{outcome}",
+            outcome.exit_code,
             String::from_utf8_lossy(payload)
         );
         // Must not contain panic backtrace

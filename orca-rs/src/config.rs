@@ -30,9 +30,13 @@ pub(crate) const MAX_CONFIG_BYTES: u64 = 1024 * 1024;
 /// Trust class for a config-file source. Controls symlink handling.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum ConfigSource {
-    /// User/project layer (or any caller-controlled path). Symlinks are
-    /// followed normally; the only enforcement is the size cap.
+    /// User layer (or any caller-controlled path outside the repo). Symlinks
+    /// are followed normally; the only enforcement is the size cap.
     Untrusted,
+    /// In-repo project layer (`.orca.toml`, project allowlist). Refuses any
+    /// symlink so a checked-in link cannot redirect policy to attacker-owned
+    /// files outside the repo.
+    Project,
     /// System-wide config layer (`/etc/orca/config.toml`). Refuses to load
     /// when the path is a symlink to a target the current user can write
     /// to — that combination would let a non-root user influence the
@@ -40,15 +44,22 @@ pub(crate) enum ConfigSource {
     System,
 }
 
-/// Read a config file with a size cap and (for system layer) a symlink
-/// safety check. Returns `None` and logs a warning on any failure.
+/// Read a config file with a size cap and (for system/project layers) a
+/// symlink safety check. Returns `None` and logs a warning on any failure.
 pub(crate) fn read_config_file_bounded(path: &Path, source: ConfigSource) -> Option<String> {
-    if source == ConfigSource::System {
-        // Symlink defense: refuse to follow if the link target is in a
-        // user-writable location. We use `symlink_metadata` so the call
-        // does not traverse the link itself.
+    if source == ConfigSource::System || source == ConfigSource::Project {
+        // Symlink defense: use `symlink_metadata` so we do not traverse the link.
+        // Project: refuse any symlink (in-repo policy must be a real file).
+        // System: refuse only when the target is user-writable.
         match fs::symlink_metadata(path) {
             Ok(meta) if meta.file_type().is_symlink() => {
+                if source == ConfigSource::Project {
+                    eprintln!(
+                        "Warning: refusing to load project config '{}' — path is a symlink",
+                        path.display()
+                    );
+                    return None;
+                }
                 if symlink_target_is_user_writable(path) {
                     eprintln!(
                         "Warning: refusing to load system config '{}' — symlink to user-writable target",
@@ -1393,7 +1404,6 @@ impl PacksConfig {
         result
     }
 }
-
 
 fn resolve_custom_path_against_cwd(path: &str, cwd: Option<&Path>) -> String {
     let candidate = Path::new(path);
@@ -2991,7 +3001,7 @@ impl Config {
         let explicit_layer = env::var(ENV_CONFIG_PATH)
             .ok()
             .and_then(|value| resolve_config_path_value(&value, start_dir))
-            .and_then(|path| Self::load_layer_from_file(&path));
+            .and_then(|path| Self::load_layer_from_file(&path, ConfigSource::Untrusted));
 
         // Load system config (lowest priority of file configs)
         if let Some(system_config) = Self::load_system_config_layer() {
@@ -3030,8 +3040,8 @@ impl Config {
     /// Layers preserve field presence (via `Option<T>`) so higher-precedence
     /// configs can explicitly set values back to defaults.
     #[must_use]
-    fn load_layer_from_file(path: &Path) -> Option<ConfigLayer> {
-        let content = read_config_file_bounded(path, ConfigSource::Untrusted)?;
+    fn load_layer_from_file(path: &Path, source: ConfigSource) -> Option<ConfigLayer> {
+        let content = read_config_file_bounded(path, source)?;
 
         match toml::from_str(&content) {
             Ok(layer) => Some(layer),
@@ -3058,7 +3068,7 @@ impl Config {
             return None;
         }
 
-        let Some(content) = read_config_file_bounded(&config_path, ConfigSource::Untrusted) else {
+        let Some(content) = read_config_file_bounded(&config_path, ConfigSource::Project) else {
             return Some(format!(
                 "invalid project config '{}': failed to read config file",
                 config_path.display()
@@ -3145,7 +3155,7 @@ impl Config {
             if let Some(xdg_home) = resolve_config_path_value(&xdg_home, None) {
                 let xdg_path = xdg_home.join(CONFIG_DIR).join(CONFIG_FILE_NAME);
                 if xdg_path.exists() {
-                    if let Some(layer) = Self::load_layer_from_file(&xdg_path) {
+                    if let Some(layer) = Self::load_layer_from_file(&xdg_path, ConfigSource::Untrusted) {
                         return Some(layer);
                     }
                 }
@@ -3157,7 +3167,7 @@ impl Config {
         if let Some(home) = dirs::home_dir() {
             let xdg_path = home.join(".config").join(CONFIG_DIR).join(CONFIG_FILE_NAME);
             if xdg_path.exists() {
-                if let Some(layer) = Self::load_layer_from_file(&xdg_path) {
+                if let Some(layer) = Self::load_layer_from_file(&xdg_path, ConfigSource::Untrusted) {
                     return Some(layer);
                 }
             }
@@ -3166,7 +3176,7 @@ impl Config {
         // Fall back to platform-native path (e.g., ~/Library/Application Support/orca/ on macOS)
         let config_dir = dirs::config_dir()?;
         let path = config_dir.join(CONFIG_DIR).join(CONFIG_FILE_NAME);
-        Self::load_layer_from_file(&path)
+        Self::load_layer_from_file(&path, ConfigSource::Untrusted)
     }
 
     /// Load project-level configuration (`.orca.toml` in repo root).
@@ -3177,7 +3187,7 @@ impl Config {
         if !config_path.exists() {
             return None;
         }
-        Self::load_layer_from_file(&config_path)
+        Self::load_layer_from_file(&config_path, ConfigSource::Project)
     }
 
     /// Merge another config layer into this one (other takes priority when set).
@@ -7889,7 +7899,11 @@ low = "disabled"
         unsafe { std::env::set_var("ORCA_PACKS", "core.git") };
         let snapshot = Config::daemon_reload_env_snapshot();
         unsafe { std::env::remove_var("ORCA_PACKS") };
-        assert!(snapshot.iter().any(|(k, v)| k == "ORCA_PACKS" && v == "core.git"));
+        assert!(
+            snapshot
+                .iter()
+                .any(|(k, v)| k == "ORCA_PACKS" && v == "core.git")
+        );
         assert!(snapshot.iter().any(|(k, _)| k == "ORCA_CUSTOM_PATHS"));
 
         unsafe { std::env::set_var("ORCA_PACKS", "core.git") };
@@ -8012,6 +8026,26 @@ low = "disabled"
 
         // The same symlink loaded as Untrusted is permitted (size still capped).
         let read = read_config_file_bounded(&symlink_path, ConfigSource::Untrusted);
+        assert_eq!(read.as_deref(), Some("key = \"injected\""));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn read_config_file_bounded_project_rejects_any_symlink() {
+        use tempfile::TempDir;
+        let temp = TempDir::new().expect("tempdir");
+        let target = temp.path().join("real.toml");
+        std::fs::write(&target, "key = \"injected\"").unwrap();
+        let symlink_path = temp.path().join("project_config.toml");
+        std::os::unix::fs::symlink(&target, &symlink_path).unwrap();
+
+        let read = read_config_file_bounded(&symlink_path, ConfigSource::Project);
+        assert!(
+            read.is_none(),
+            "project layer must refuse symlinks entirely"
+        );
+
+        let read = read_config_file_bounded(&target, ConfigSource::Project);
         assert_eq!(read.as_deref(), Some("key = \"injected\""));
     }
 }

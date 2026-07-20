@@ -115,6 +115,23 @@ pub fn should_allow_recovery(
     None
 }
 
+/// Shared post-deny recovery gate for legacy hook and daemon Evaluate.
+///
+/// If recovery applies, consumes a single-use permit (when that was the
+/// signal) and returns the reason so callers can convert Deny → Allow.
+#[must_use]
+pub fn try_allow_recovery(
+    cwd: &Path,
+    pack_id: Option<&str>,
+    pattern_name: Option<&str>,
+) -> Option<RecoveryReason> {
+    let reason = should_allow_recovery(cwd, pack_id, pattern_name)?;
+    if matches!(reason, RecoveryReason::ActivePermit(_)) {
+        consume_permit(cwd);
+    }
+    Some(reason)
+}
+
 /// Detect whether a rebase is in progress in the given working directory.
 ///
 /// Uses the standard git-porcelain convention: the presence of

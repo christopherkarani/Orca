@@ -350,6 +350,63 @@ pub(crate) fn redact_command(command: &str, config: &RedactionConfig) -> String 
     }
 }
 
+/// Replace known secret-bearing token spans with `[REDACTED]`.
+///
+/// Used at IPC boundaries (daemon Deny payloads) so wire-format JSON does not
+/// carry raw credential material even when Zig later redacts agent-visible
+/// output. Mirrors the presentation-oriented prefix scan in Zig's
+/// `audit/redact_bridge.zig` (not a full crypto classifier).
+#[must_use]
+pub fn redact_sensitive_text(text: &str) -> String {
+    const REDACTED: &str = "[REDACTED]";
+    const PREFIXES: &[&str] = &[
+        "github_pat_",
+        "ghp_",
+        "gho_",
+        "ghu_",
+        "ghs_",
+        "ghr_",
+        "sk-ant-",
+        "sk-",
+    ];
+
+    let bytes = text.as_bytes();
+    let mut out = String::with_capacity(text.len());
+    let mut i = 0usize;
+    while i < bytes.len() {
+        let rest = &text[i..];
+        let mut matched_prefix: Option<&str> = None;
+        for prefix in PREFIXES {
+            if rest.len() >= prefix.len()
+                && rest[..prefix.len()].eq_ignore_ascii_case(prefix)
+            {
+                matched_prefix = Some(prefix);
+                break;
+            }
+        }
+        if let Some(prefix) = matched_prefix {
+            let mut end = i + prefix.len();
+            while end < bytes.len() && is_token_char(bytes[end]) {
+                end += 1;
+            }
+            // Require a minimum token length so short accidental prefixes
+            // (e.g. bare "sk-") are left alone — same threshold as Zig.
+            if end - i >= 20 {
+                out.push_str(REDACTED);
+                i = end;
+                continue;
+            }
+        }
+        out.push(text[i..].chars().next().unwrap_or('\0'));
+        i += text[i..].chars().next().map_or(1, char::len_utf8);
+    }
+    out
+}
+
+fn is_token_char(b: u8) -> bool {
+    b.is_ascii_alphanumeric() || b == b'_' || b == b'-'
+}
+
 fn redact_arguments(command: &str, max_len: usize) -> String {
     let mut result = String::with_capacity(command.len());
     let mut in_quote = false;
@@ -1006,6 +1063,30 @@ mod tests {
         assert!(!config.enabled);
         assert!(config.file.is_none());
         assert_eq!(config.format, LogFormat::Text);
+    }
+
+    #[test]
+    fn redact_sensitive_text_redacts_github_pat_prefix() {
+        let raw = "export TOKEN=ghp_fakeSyntheticTokenValue1234567890";
+        let redacted = redact_sensitive_text(raw);
+        assert!(
+            !redacted.contains("ghp_fake"),
+            "raw token must not remain: {redacted}"
+        );
+        assert!(
+            redacted.contains("[REDACTED]"),
+            "expected redaction marker: {redacted}"
+        );
+        assert!(
+            redacted.contains("export TOKEN="),
+            "non-secret prefix should remain: {redacted}"
+        );
+    }
+
+    #[test]
+    fn redact_sensitive_text_preserves_benign_text() {
+        let benign = "git checkout -- . && rm -rf /tmp/scratch";
+        assert_eq!(redact_sensitive_text(benign), benign);
     }
 
     #[test]

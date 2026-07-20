@@ -1,22 +1,24 @@
 import assert from 'node:assert/strict';
-import { chmod, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { chmod, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import test from 'node:test';
 
-import orcaPlugin from '../dist/index.js';
+import orcaPlugin, { findOrca, parseHookResponse } from '../dist/index.js';
 
 const pluginRoot = join(dirname(fileURLToPath(import.meta.url)), '..');
 
-async function withFakeOrca(run) {
+async function withFakeOrca(run, scriptBody) {
   const directory = await mkdtemp(join(tmpdir(), 'orca-opencode-plugin-'));
   const orcaBin = join(directory, 'orca');
   const originalPath = process.env.PATH;
+  const originalAllow = process.env.ORCA_ALLOW_WORKSPACE_BIN;
 
   await writeFile(
     orcaBin,
-    `#!/bin/sh
+    scriptBody ??
+      `#!/bin/sh
 payload=$(cat)
 case "$payload" in
   *'"command":"rm -rf'* ) printf '%s\\n' '{"decision":"block","message":"command blocked"}' ;;
@@ -27,11 +29,14 @@ esac
   );
   await chmod(orcaBin, 0o755);
   process.env.PATH = `${directory}:${originalPath ?? ''}`;
+  delete process.env.ORCA_ALLOW_WORKSPACE_BIN;
 
   try {
     await run(await orcaPlugin({ directory, worktree: directory }));
   } finally {
     process.env.PATH = originalPath;
+    if (originalAllow === undefined) delete process.env.ORCA_ALLOW_WORKSPACE_BIN;
+    else process.env.ORCA_ALLOW_WORKSPACE_BIN = originalAllow;
     await rm(directory, { recursive: true, force: true });
   }
 }
@@ -129,4 +134,163 @@ test('orca.ts is a single-source sync of src/index.ts', async () => {
     src,
     'orca.ts must match src/index.ts (npm run build copies src → orca.ts)'
   );
+});
+
+test('missing binary registers fail-closed veto hooks', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'orca-opencode-plugin-'));
+  const originalPath = process.env.PATH;
+  const originalAllow = process.env.ORCA_ALLOW_WORKSPACE_BIN;
+  // Empty PATH so `which orca` fails; no workspace candidates without env gate.
+  process.env.PATH = directory;
+  delete process.env.ORCA_ALLOW_WORKSPACE_BIN;
+  try {
+    const plugin = await orcaPlugin({ directory, worktree: directory });
+    const before = plugin['tool.execute.before'];
+    const permissionAsk = plugin['permission.ask'];
+    assert.ok(before, 'missing binary must register tool.execute.before veto');
+    assert.ok(permissionAsk, 'missing binary must register permission.ask veto');
+
+    await assert.rejects(
+      before(
+        { tool: 'bash', sessionID: 'session-1', callID: 'call-1' },
+        { args: { command: 'echo hi' } }
+      ),
+      /Orca binary not found/
+    );
+
+    const output = { status: 'ask' };
+    await permissionAsk({ sessionID: 'session-1', command: 'echo hi' }, output);
+    assert.equal(output.status, 'deny');
+  } finally {
+    process.env.PATH = originalPath;
+    if (originalAllow === undefined) delete process.env.ORCA_ALLOW_WORKSPACE_BIN;
+    else process.env.ORCA_ALLOW_WORKSPACE_BIN = originalAllow;
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test('tool.execute.before blocks empty stdout', async () => {
+  await withFakeOrca(
+    async (plugin) => {
+      const before = plugin['tool.execute.before'];
+      assert.ok(before);
+      await assert.rejects(
+        before(
+          { tool: 'bash', sessionID: 'session-1', callID: 'call-1' },
+          { args: { command: 'echo hi' } }
+        ),
+        /Orca blocked tool execution/
+      );
+    },
+    `#!/bin/sh
+# empty stdout
+`
+  );
+});
+
+test('tool.execute.before blocks decision error', async () => {
+  await withFakeOrca(
+    async (plugin) => {
+      const before = plugin['tool.execute.before'];
+      assert.ok(before);
+      await assert.rejects(
+        before(
+          { tool: 'bash', sessionID: 'session-1', callID: 'call-1' },
+          { args: { command: 'echo hi' } }
+        ),
+        /Orca blocked tool execution/
+      );
+    },
+    `#!/bin/sh
+printf '%s\\n' '{"decision":"error","message":"evaluator failed"}'
+`
+  );
+});
+
+test('tool.execute.before blocks unknown decision', async () => {
+  await withFakeOrca(
+    async (plugin) => {
+      const before = plugin['tool.execute.before'];
+      assert.ok(before);
+      await assert.rejects(
+        before(
+          { tool: 'bash', sessionID: 'session-1', callID: 'call-1' },
+          { args: { command: 'echo hi' } }
+        ),
+        /Orca blocked tool execution/
+      );
+    },
+    `#!/bin/sh
+printf '%s\\n' '{"decision":"unexpected","message":"bad decision"}'
+`
+  );
+});
+
+test('findOrca ignores workspace zig-out without ORCA_ALLOW_WORKSPACE_BIN', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'orca-opencode-plugin-'));
+  const zigOutBin = join(directory, 'zig-out', 'bin');
+  const orcaBin = join(zigOutBin, 'orca');
+  const originalPath = process.env.PATH;
+  const originalAllow = process.env.ORCA_ALLOW_WORKSPACE_BIN;
+  await mkdir(zigOutBin, { recursive: true });
+  await writeFile(orcaBin, '#!/bin/sh\necho ok\n');
+  await chmod(orcaBin, 0o755);
+  process.env.PATH = directory; // no orca on PATH
+  delete process.env.ORCA_ALLOW_WORKSPACE_BIN;
+  try {
+    assert.equal(findOrca(directory), null);
+  } finally {
+    process.env.PATH = originalPath;
+    if (originalAllow === undefined) delete process.env.ORCA_ALLOW_WORKSPACE_BIN;
+    else process.env.ORCA_ALLOW_WORKSPACE_BIN = originalAllow;
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test('findOrca accepts workspace zig-out when ORCA_ALLOW_WORKSPACE_BIN=1', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'orca-opencode-plugin-'));
+  const zigOutBin = join(directory, 'zig-out', 'bin');
+  const orcaBin = join(zigOutBin, 'orca');
+  const originalPath = process.env.PATH;
+  const originalAllow = process.env.ORCA_ALLOW_WORKSPACE_BIN;
+  await mkdir(zigOutBin, { recursive: true });
+  await writeFile(orcaBin, '#!/bin/sh\necho ok\n');
+  await chmod(orcaBin, 0o755);
+  process.env.PATH = directory;
+  process.env.ORCA_ALLOW_WORKSPACE_BIN = '1';
+  try {
+    assert.equal(findOrca(directory), orcaBin);
+  } finally {
+    process.env.PATH = originalPath;
+    if (originalAllow === undefined) delete process.env.ORCA_ALLOW_WORKSPACE_BIN;
+    else process.env.ORCA_ALLOW_WORKSPACE_BIN = originalAllow;
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test('parseHookResponse empty stdout blocks on blocking path', () => {
+  const r = parseHookResponse('', true);
+  assert.equal(r.decision, 'block');
+  assert.equal(r.reason, 'orca_empty_response');
+});
+
+test('parseHookResponse empty stdout allows on non-blocking path', () => {
+  const r = parseHookResponse('', false);
+  assert.equal(r.decision, 'allow');
+});
+
+test('parseHookResponse error decision blocks on blocking path', () => {
+  const r = parseHookResponse(JSON.stringify({ decision: 'error', message: 'boom' }), true);
+  assert.equal(r.decision, 'block');
+});
+
+test('parseHookResponse unknown decision blocks on blocking path', () => {
+  const r = parseHookResponse(JSON.stringify({ decision: 'maybe' }), true);
+  assert.equal(r.decision, 'block');
+  assert.equal(r.reason, 'orca_unrecognized_decision');
+});
+
+test('parseHookResponse keeps ask on blocking path for permission.ask UX', () => {
+  const r = parseHookResponse(JSON.stringify({ decision: 'ask', message: 'need approval' }), true);
+  assert.equal(r.decision, 'ask');
 });

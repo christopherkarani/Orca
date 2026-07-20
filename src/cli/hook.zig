@@ -10,6 +10,7 @@ const daemon = @import("daemon.zig");
 const shell_eval = @import("shell_eval.zig");
 const rust_visibility = @import("rust_visibility.zig");
 const feed_writer = @import("feed_writer.zig");
+const file_policy_path = @import("file_policy_path.zig");
 
 // Maximum JSON payload size to prevent memory exhaustion from hostile hosts.
 const max_payload_len = 256 * 1024; // 256 KiB
@@ -17,15 +18,18 @@ const max_payload_len = 256 * 1024; // 256 KiB
 // ---------------------------------------------------------------------------
 // Hook evaluator dispatch (Phase 2E)
 //
-// PreToolUse shell-command events route to the Rust daemon `Evaluate` method.
-// All other events (prompt, permission, session, stop, post-tool, informational,
-// and non-shell PreToolUse) stay on the existing Zig policy path.
+// PreToolUse shell-command events (and PermissionRequest shell/command) route to
+// the Rust daemon `Evaluate` method. Other events (prompt, file permission,
+// session, stop, post-tool, informational, and non-shell PreToolUse) stay on the
+// Zig policy path.
 //
 // Invariants:
-// - No shell-command PreToolUse may fall back to Zig native command evaluation.
+// - No shell-command PreToolUse/PermissionRequest may fall back to Zig native command evaluation.
 // - Daemon transport or protocol failures for shell commands fail closed (deny).
 // - Non-shell tools with incidental `command` fields stay on the Zig path.
 // - Shell tools with missing/invalid command fields fail closed before evaluation.
+// - File paths for PreToolUse writes and PermissionRequest file ops are normalized
+//   like `orca decide` (symlink escape / outside-workspace fail closed).
 // ---------------------------------------------------------------------------
 
 // ---------------------------------------------------------------------------
@@ -262,9 +266,16 @@ fn hookCommand(io: std.Io, host: Host, event: Event, original_event_name: []cons
     // Read payload from stdin (hooks always read from stdin)
     const payload_text = readBoundedStdin(io, allocator, max_payload_len) catch |err| {
         if (err == error.PayloadTooLarge) {
-            if (host == .codex and event == .PreToolUse) {
-                try writeCodexGuardBlock(allocator, stderr, "orca hook: JSON payload exceeds maximum size; Orca blocked it before evaluation.", null);
-                return codex_deny_exit_code;
+            if (shouldFailClosedOnPreEval(host, event)) {
+                return try emitPreEvalFailClosed(
+                    allocator,
+                    host,
+                    stdout,
+                    stderr,
+                    "hook",
+                    "payload too large",
+                    "orca hook: JSON payload exceeds maximum size; Orca blocked it before evaluation.",
+                );
             }
             try stderr.writeAll("orca hook: JSON payload exceeds maximum size.\n");
             return exit_codes.general;
@@ -280,6 +291,17 @@ fn hookCommand(io: std.Io, host: Host, event: Event, original_event_name: []cons
 
     // Parse JSON payload
     var parsed = std.json.parseFromSlice(std.json.Value, allocator, payload_text, .{}) catch |err| {
+        if (shouldFailClosedOnPreEval(host, event)) {
+            return try emitPreEvalFailClosed(
+                allocator,
+                host,
+                stdout,
+                stderr,
+                "hook",
+                "invalid JSON",
+                "orca hook: invalid JSON; Orca blocked it before evaluation.",
+            );
+        }
         try stderr.print("orca hook: invalid JSON ({s}).\n", .{@errorName(err)});
         return exit_codes.general;
     };
@@ -288,6 +310,17 @@ fn hookCommand(io: std.Io, host: Host, event: Event, original_event_name: []cons
     // Validate version
     const version_value = extractInteger(parsed.value, "version") orelse 0;
     if (version_value != 1) {
+        if (shouldFailClosedOnPreEval(host, event)) {
+            return try emitPreEvalFailClosed(
+                allocator,
+                host,
+                stdout,
+                stderr,
+                "hook",
+                "unsupported schema version",
+                "orca hook: unsupported schema version; Orca blocked it before evaluation.",
+            );
+        }
         try stderr.print("orca hook: unsupported schema version {d}. Expected 1.\n", .{version_value});
         return exit_codes.general;
     }
@@ -295,6 +328,17 @@ fn hookCommand(io: std.Io, host: Host, event: Event, original_event_name: []cons
     // Validate host matches
     const request_host = extractString(parsed.value, "host") orelse "";
     if (!std.mem.eql(u8, request_host, @tagName(host))) {
+        if (shouldFailClosedOnPreEval(host, event)) {
+            return try emitPreEvalFailClosed(
+                allocator,
+                host,
+                stdout,
+                stderr,
+                "hook",
+                "host mismatch",
+                "orca hook: host mismatch; Orca blocked it before evaluation.",
+            );
+        }
         try stderr.print("orca hook: host mismatch. Expected '{s}', got '{s}'.\n", .{ @tagName(host), request_host });
         return exit_codes.general;
     }
@@ -303,6 +347,17 @@ fn hookCommand(io: std.Io, host: Host, event: Event, original_event_name: []cons
     const request_event = extractString(parsed.value, "event") orelse "";
     const expected_event = if (host == .opencode or host == .openclaw or host == .hermes) original_event_name else @tagName(event);
     if (!std.mem.eql(u8, request_event, expected_event)) {
+        if (shouldFailClosedOnPreEval(host, event)) {
+            return try emitPreEvalFailClosed(
+                allocator,
+                host,
+                stdout,
+                stderr,
+                "hook",
+                "event mismatch",
+                "orca hook: event mismatch; Orca blocked it before evaluation.",
+            );
+        }
         try stderr.print("orca hook: event mismatch. Expected '{s}', got '{s}'.\n", .{ expected_event, request_event });
         return exit_codes.general;
     }
@@ -357,13 +412,35 @@ fn hookCommand(io: std.Io, host: Host, event: Event, original_event_name: []cons
 
     // Load policy
     var loaded = core_api.discoverPolicy(io, allocator, null, root) catch |err| {
+        if (shouldFailClosedOnPreEval(host, event)) {
+            return try emitPreEvalFailClosed(
+                allocator,
+                host,
+                stdout,
+                stderr,
+                "hook",
+                "policy load failed",
+                "orca hook: failed to load policy; Orca blocked it before evaluation.",
+            );
+        }
         try stderr.print("orca hook: failed to load policy: {s}\n", .{@errorName(err)});
         return exit_codes.general;
     };
     defer loaded.deinit();
 
     // Evaluate via host adapter
-    var result = evaluateHook(io, allocator, root, @tagName(host), loaded.innerPtr(), host, event, hook_payload, ci_mode) catch |err| {
+    var result = evaluateHook(io, allocator, root, @tagName(host), loaded.innerPtr(), host, event, hook_payload, ci_mode, null) catch |err| {
+        if (shouldFailClosedOnPreEval(host, event)) {
+            return try emitPreEvalFailClosed(
+                allocator,
+                host,
+                stdout,
+                stderr,
+                "hook",
+                "evaluation failed",
+                "orca hook: evaluation failed; Orca blocked it before evaluation.",
+            );
+        }
         try stderr.print("orca hook: evaluation failed: {s}\n", .{@errorName(err)});
         return exit_codes.general;
     };
@@ -427,6 +504,39 @@ fn hookExitCode(host: Host, decision: PluginDecision, ci_mode: bool) u8 {
     _ = ci_mode;
     if (isCodexDenyOutput(host, decision)) return codex_deny_exit_code;
     return exit_codes.success;
+}
+
+/// Pre-evaluation failures (invalid JSON, schema/host/event mismatch, policy load,
+/// evaluateHook errors) must fail closed for PreToolUse / PermissionRequest on every
+/// host, and for Codex on every event (hosts that treat stderr-only exits as soft).
+fn shouldFailClosedOnPreEval(host: Host, event: Event) bool {
+    return host == .codex or event == .PreToolUse or event == .PermissionRequest;
+}
+
+/// Emit a structured fail-closed hook response for pre-eval failures.
+/// Codex: sentinel stderr + exit 2. Other hosts: JSON `decision: block` on stdout.
+fn emitPreEvalFailClosed(
+    allocator: std.mem.Allocator,
+    host: Host,
+    stdout: anytype,
+    stderr: anytype,
+    category: []const u8,
+    reason: []const u8,
+    message: []const u8,
+) !u8 {
+    var redactions: std.ArrayList(RedactionEntry) = .empty;
+    var limitations: std.ArrayList([]const u8) = .empty;
+    try limitations.append(allocator, try allocator.dupe(u8, "Hook enforcement is additive; does not replace orca run supervision."));
+
+    var result = try makeFailClosedHookResponse(allocator, category, reason, message, &redactions, &limitations);
+    defer result.deinit(allocator);
+
+    if (isCodexDenyOutput(host, result.decision)) {
+        try writeCodexGuardBlock(allocator, stderr, result.message, result.reason);
+        return codex_deny_exit_code;
+    }
+    try writeHookResponse(stdout, result);
+    return hookExitCode(host, result.decision, false);
 }
 
 // ---------------------------------------------------------------------------
@@ -553,7 +663,20 @@ fn evaluateHookForTest(
     payload: std.json.Value,
     ci_mode: bool,
 ) !HookResponse {
-    return evaluateHook(std.testing.io, allocator, "/tmp/orca-hook-test", @tagName(host), policy_value, host, event, payload, ci_mode);
+    return evaluateHookForTestWithOptions(allocator, "/tmp/orca-hook-test", policy_value, host, event, payload, ci_mode, null);
+}
+
+fn evaluateHookForTestWithOptions(
+    allocator: std.mem.Allocator,
+    workspace_root: []const u8,
+    policy_value: *const policy.schema.Policy,
+    host: Host,
+    event: Event,
+    payload: std.json.Value,
+    ci_mode: bool,
+    shell_evaluator: ?ShellCommandEvaluatorFn,
+) !HookResponse {
+    return evaluateHook(std.testing.io, allocator, workspace_root, @tagName(host), policy_value, host, event, payload, ci_mode, shell_evaluator);
 }
 
 fn evaluatePreToolUseForTest(
@@ -589,6 +712,7 @@ fn evaluateHook(
     event: Event,
     payload: std.json.Value,
     ci_mode: bool,
+    shell_evaluator: ?ShellCommandEvaluatorFn,
 ) !HookResponse {
     var redactions: std.ArrayList(RedactionEntry) = .empty;
     var limitations: std.ArrayList([]const u8) = .empty;
@@ -661,7 +785,7 @@ fn evaluateHook(
             };
         },
         .PreToolUse => {
-            return try evaluatePreToolUse(io, allocator, workspace_root, host_name, policy_value, payload, ci_mode, &redactions, &limitations, null);
+            return try evaluatePreToolUse(io, allocator, workspace_root, host_name, policy_value, payload, ci_mode, &redactions, &limitations, shell_evaluator);
         },
         .PermissionRequest => {
             const permission_kind = extractString(payload, "kind") orelse extractString(payload, "permission") orelse return error.MissingRequiredField;
@@ -689,7 +813,40 @@ fn evaluateHook(
             else
                 .env;
 
-            const evaluation = try core_api.explainAction(allocator, @ptrCast(policy_value), explain_kind, target);
+            // Shell/command PermissionRequest uses the same daemon route as PreToolUse shell.
+            if (explain_kind == .command) {
+                const shell_mode: policy.schema.Mode = if (ci_mode) .ci else policy_value.mode;
+                return try evaluateShellCommandRoute(
+                    io,
+                    allocator,
+                    workspace_root,
+                    host_name,
+                    .{ .command = target, .cwd = null },
+                    shell_mode,
+                    &redactions,
+                    &limitations,
+                    shell_evaluator,
+                );
+            }
+
+            const explain_target = blk: {
+                if (explain_kind != .file_write and explain_kind != .file_read) break :blk target;
+                const rule_category: []const u8 = if (explain_kind == .file_write) "file.write" else "file.read";
+                break :blk file_policy_path.normalizeFilePolicyPath(io, allocator, workspace_root, target) catch |err| switch (err) {
+                    error.OutOfMemory => return err,
+                    else => return try makeFileNormalizationBlockResponse(
+                        allocator,
+                        @tagName(explain_kind),
+                        rule_category,
+                        &redactions,
+                        &limitations,
+                    ),
+                };
+            };
+            const owned_policy_path = explain_kind == .file_write or explain_kind == .file_read;
+            defer if (owned_policy_path) allocator.free(explain_target);
+
+            const evaluation = try core_api.explainAction(allocator, @ptrCast(policy_value), explain_kind, explain_target);
             defer evaluation.deinit(allocator);
 
             const decision = PluginDecision.fromDecisionResult(evaluation.decision.result, ci_mode);
@@ -1212,7 +1369,19 @@ fn evaluateNativePreToolUseRoute(
     switch (native_event) {
         .file_write => {
             const path = extractFilePath(payload) orelse return error.MissingRequiredField;
-            const evaluation = try core_api.explainAction(allocator, @ptrCast(policy_value), .file_write, path);
+            const policy_path = file_policy_path.normalizeFilePolicyPath(io, allocator, workspace_root, path) catch |err| switch (err) {
+                error.OutOfMemory => return err,
+                else => return try makeFileNormalizationBlockResponse(
+                    allocator,
+                    "file.write",
+                    "file.write",
+                    redactions,
+                    limitations,
+                ),
+            };
+            defer allocator.free(policy_path);
+
+            const evaluation = try core_api.explainAction(allocator, @ptrCast(policy_value), .file_write, policy_path);
             defer evaluation.deinit(allocator);
 
             const decision = PluginDecision.fromDecisionResult(evaluation.decision.result, ci_mode);
@@ -1292,6 +1461,33 @@ fn makeFailClosedHookResponse(
         .reason = try allocator.dupe(u8, reason),
         .rule = null,
         .message = try allocator.dupe(u8, message),
+        .redactions = try redactions.toOwnedSlice(allocator),
+        .host_limitations = try limitations.toOwnedSlice(allocator),
+    };
+}
+
+fn makeFileNormalizationBlockResponse(
+    allocator: std.mem.Allocator,
+    category: []const u8,
+    rule_category: []const u8,
+    redactions: *std.ArrayList(RedactionEntry),
+    limitations: *std.ArrayList([]const u8),
+) !HookResponse {
+    const owned_category = try allocator.dupe(u8, category);
+    errdefer allocator.free(owned_category);
+    const reason = try allocator.dupe(u8, file_policy_path.outside_workspace_reason);
+    errdefer allocator.free(reason);
+    const rule = try file_policy_path.outsideWorkspaceRuleId(allocator, rule_category);
+    errdefer allocator.free(rule);
+    const message = try buildMessage(allocator, .block, category);
+    errdefer allocator.free(message);
+    return .{
+        .decision = .block,
+        .risk = .critical,
+        .category = owned_category,
+        .reason = reason,
+        .rule = rule,
+        .message = message,
         .redactions = try redactions.toOwnedSlice(allocator),
         .host_limitations = try limitations.toOwnedSlice(allocator),
     };
@@ -2541,6 +2737,62 @@ test "hook codex shell deny uses exit code 2" {
     try std.testing.expectEqual(@as(u8, 2), hookExitCode(.codex, .block, true));
 }
 
+test "hook pre-eval fail-closed gate covers PreToolUse PermissionRequest and Codex" {
+    try std.testing.expect(shouldFailClosedOnPreEval(.codex, .SessionStart));
+    try std.testing.expect(shouldFailClosedOnPreEval(.codex, .PreToolUse));
+    try std.testing.expect(shouldFailClosedOnPreEval(.claude, .PreToolUse));
+    try std.testing.expect(shouldFailClosedOnPreEval(.claude, .PermissionRequest));
+    try std.testing.expect(!shouldFailClosedOnPreEval(.claude, .SessionStart));
+    try std.testing.expect(!shouldFailClosedOnPreEval(.claude, .UserPromptSubmit));
+}
+
+test "hook pre-eval fail-closed Codex emits sentinel and exit 2" {
+    const allocator = std.testing.allocator;
+    var stdout_buf: [2048]u8 = undefined;
+    var stderr_buf: [2048]u8 = undefined;
+    var stdout_writer: std.Io.Writer = .fixed(&stdout_buf);
+    var stderr_writer: std.Io.Writer = .fixed(&stderr_buf);
+
+    const code = try emitPreEvalFailClosed(
+        allocator,
+        .codex,
+        &stdout_writer,
+        &stderr_writer,
+        "hook",
+        "invalid JSON",
+        "orca hook: invalid JSON; Orca blocked it before evaluation.",
+    );
+    try std.testing.expectEqual(codex_deny_exit_code, code);
+    try std.testing.expectEqual(@as(usize, 0), stdout_writer.buffered().len);
+    try std.testing.expect(std.mem.indexOf(u8, stderr_writer.buffered(), guard_sentinel_prefix) != null);
+    try std.testing.expect(std.mem.indexOf(u8, stderr_writer.buffered(), "invalid JSON") != null);
+}
+
+test "hook pre-eval fail-closed Claude emits block JSON on stdout" {
+    const allocator = std.testing.allocator;
+    var stdout_buf: [2048]u8 = undefined;
+    var stderr_buf: [512]u8 = undefined;
+    var stdout_writer: std.Io.Writer = .fixed(&stdout_buf);
+    var stderr_writer: std.Io.Writer = .fixed(&stderr_buf);
+
+    const code = try emitPreEvalFailClosed(
+        allocator,
+        .claude,
+        &stdout_writer,
+        &stderr_writer,
+        "hook",
+        "policy load failed",
+        "orca hook: failed to load policy; Orca blocked it before evaluation.",
+    );
+    try std.testing.expectEqual(exit_codes.success, code);
+    try std.testing.expectEqual(@as(usize, 0), stderr_writer.buffered().len);
+
+    var parsed = try std.json.parseFromSlice(std.json.Value, allocator, stdout_writer.buffered(), .{});
+    defer parsed.deinit();
+    try std.testing.expectEqualStrings("block", parsed.value.object.get("decision").?.string);
+    try std.testing.expectEqualStrings("policy load failed", parsed.value.object.get("reason").?.string);
+}
+
 test "hook classifies non-shell tool with incidental command as zig native route" {
     var gpa_state: std.heap.DebugAllocator(.{}) = .init;
     defer _ = gpa_state.deinit();
@@ -2689,7 +2941,7 @@ test "hook evaluatePreToolUse routes shell PreToolUse through daemon evaluator" 
     try std.testing.expectEqualStrings("command", result.category);
 }
 
-test "hook PermissionRequest stays on zig policy path" {
+test "hook PermissionRequest file stays on zig policy path" {
     var gpa_state: std.heap.DebugAllocator(.{}) = .init;
     defer _ = gpa_state.deinit();
     const allocator = gpa_state.allocator();
@@ -2707,6 +2959,129 @@ test "hook PermissionRequest stays on zig policy path" {
 
     try std.testing.expectEqual(PluginDecision.block, result.decision);
     try std.testing.expectEqualStrings("file_write", result.category);
+}
+
+test "hook PermissionRequest shell routes through daemon evaluator" {
+    var gpa_state: std.heap.DebugAllocator(.{}) = .init;
+    defer _ = gpa_state.deinit();
+    const allocator = gpa_state.allocator();
+
+    var policy_obj = try core_api.loadPolicyPreset(allocator, .strict);
+    defer policy_obj.deinit();
+
+    var payload_obj = try std.json.ObjectMap.init(allocator, &.{}, &.{});
+    defer payload_obj.deinit(allocator);
+    try payload_obj.put(allocator, "kind", std.json.Value{ .string = "shell" });
+    try payload_obj.put(allocator, "target", std.json.Value{ .string = "rm -rf /" });
+
+    shell_eval.test_last_evaluate_command = null;
+    var result = try evaluateHookForTestWithOptions(
+        allocator,
+        "/tmp/orca-hook-test",
+        @ptrCast(@alignCast(policy_obj)),
+        .claude,
+        .PermissionRequest,
+        std.json.Value{ .object = payload_obj },
+        false,
+        mockDaemonDenyEvaluator,
+    );
+    defer result.deinit(allocator);
+
+    try std.testing.expectEqualStrings("rm -rf /", shell_eval.test_last_evaluate_command.?);
+    try std.testing.expectEqual(PluginDecision.block, result.decision);
+    try std.testing.expectEqualStrings("command", result.category);
+}
+
+test "hook PreToolUse file_write blocks symlink escape like decide" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try tmp.dir.createDir(std.testing.io, "workspace", .default_dir);
+    try tmp.dir.writeFile(std.testing.io, .{ .sub_path = "outside.txt", .data = "synthetic\n" });
+
+    const root = try tmp.dir.realPathFileAlloc(std.testing.io, "workspace", std.testing.allocator);
+    defer std.testing.allocator.free(root);
+    const outside_path = try tmp.dir.realPathFileAlloc(std.testing.io, "outside.txt", std.testing.allocator);
+    defer std.testing.allocator.free(outside_path);
+    const alias_path = try std.fs.path.join(std.testing.allocator, &.{ root, "outside-link" });
+    defer std.testing.allocator.free(alias_path);
+    std.Io.Dir.cwd().symLink(std.testing.io, outside_path, alias_path, .{}) catch |err| switch (err) {
+        error.PermissionDenied => return error.SkipZigTest,
+        else => return err,
+    };
+
+    var gpa_state: std.heap.DebugAllocator(.{}) = .init;
+    defer _ = gpa_state.deinit();
+    const allocator = gpa_state.allocator();
+
+    var policy_obj = try core_api.loadPolicyPreset(allocator, .strict);
+    defer policy_obj.deinit();
+
+    var payload_obj = try std.json.ObjectMap.init(allocator, &.{}, &.{});
+    defer payload_obj.deinit(allocator);
+    try payload_obj.put(allocator, "tool", std.json.Value{ .string = "edit" });
+    try payload_obj.put(allocator, "path", std.json.Value{ .string = alias_path });
+
+    var result = try evaluateHookForTestWithOptions(
+        allocator,
+        root,
+        @ptrCast(@alignCast(policy_obj)),
+        .claude,
+        .PreToolUse,
+        std.json.Value{ .object = payload_obj },
+        false,
+        null,
+    );
+    defer result.deinit(allocator);
+
+    try std.testing.expectEqual(PluginDecision.block, result.decision);
+    try std.testing.expectEqualStrings("file.write", result.category);
+    try std.testing.expectEqualStrings("builtin.files.write.deny[outside_workspace]", result.rule.?);
+}
+
+test "hook PermissionRequest file_write blocks symlink escape like decide" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try tmp.dir.createDir(std.testing.io, "workspace", .default_dir);
+    try tmp.dir.writeFile(std.testing.io, .{ .sub_path = "outside.txt", .data = "synthetic\n" });
+
+    const root = try tmp.dir.realPathFileAlloc(std.testing.io, "workspace", std.testing.allocator);
+    defer std.testing.allocator.free(root);
+    const outside_path = try tmp.dir.realPathFileAlloc(std.testing.io, "outside.txt", std.testing.allocator);
+    defer std.testing.allocator.free(outside_path);
+    const alias_path = try std.fs.path.join(std.testing.allocator, &.{ root, "outside-link" });
+    defer std.testing.allocator.free(alias_path);
+    std.Io.Dir.cwd().symLink(std.testing.io, outside_path, alias_path, .{}) catch |err| switch (err) {
+        error.PermissionDenied => return error.SkipZigTest,
+        else => return err,
+    };
+
+    var gpa_state: std.heap.DebugAllocator(.{}) = .init;
+    defer _ = gpa_state.deinit();
+    const allocator = gpa_state.allocator();
+
+    var policy_obj = try core_api.loadPolicyPreset(allocator, .trusted);
+    defer policy_obj.deinit();
+
+    var payload_obj = try std.json.ObjectMap.init(allocator, &.{}, &.{});
+    defer payload_obj.deinit(allocator);
+    try payload_obj.put(allocator, "kind", std.json.Value{ .string = "file_write" });
+    try payload_obj.put(allocator, "target", std.json.Value{ .string = alias_path });
+
+    var result = try evaluateHookForTestWithOptions(
+        allocator,
+        root,
+        @ptrCast(@alignCast(policy_obj)),
+        .claude,
+        .PermissionRequest,
+        std.json.Value{ .object = payload_obj },
+        false,
+        null,
+    );
+    defer result.deinit(allocator);
+
+    try std.testing.expectEqual(PluginDecision.block, result.decision);
+    try std.testing.expectEqualStrings("file_write", result.category);
+    try std.testing.expectEqualStrings("builtin.files.write.deny[outside_workspace]", result.rule.?);
 }
 
 test "hook session informational events stay on zig path without daemon" {

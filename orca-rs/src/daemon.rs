@@ -92,13 +92,14 @@ fn ensure_runtime_dir_secure(path: &Path) -> std::io::Result<()> {
         }
     }
 
-    std::fs::set_permissions(path, std::fs::Permissions::from_mode(RUNTIME_DIR_MODE))
-        .map_err(|err| {
+    std::fs::set_permissions(path, std::fs::Permissions::from_mode(RUNTIME_DIR_MODE)).map_err(
+        |err| {
             std::io::Error::other(format!(
                 "failed to secure daemon runtime directory {}: {err}",
                 path.display()
             ))
-        })?;
+        },
+    )?;
 
     let metadata = std::fs::symlink_metadata(path).map_err(|err| {
         std::io::Error::other(format!(
@@ -215,7 +216,10 @@ fn socket_is_probeable(socket_path: &Path) -> std::io::Result<bool> {
 #[cfg(unix)]
 fn ensure_removable_stale_artifact(path: &Path, kind: &str) -> std::io::Result<()> {
     let metadata = std::fs::symlink_metadata(path).map_err(|err| {
-        std::io::Error::other(format!("failed to inspect stale {kind} {}: {err}", path.display()))
+        std::io::Error::other(format!(
+            "failed to inspect stale {kind} {}: {err}",
+            path.display()
+        ))
     })?;
     ensure_owned_by_current_user(path, &metadata, kind)
 }
@@ -229,27 +233,53 @@ fn secure_write_pid_file(pid_path: &Path) -> std::io::Result<()> {
         .truncate(true)
         .write(true)
         .open(pid_path)
-        .map_err(|err| std::io::Error::other(format!("failed to open daemon pid file {}: {err}", pid_path.display())))?;
+        .map_err(|err| {
+            std::io::Error::other(format!(
+                "failed to open daemon pid file {}: {err}",
+                pid_path.display()
+            ))
+        })?;
     file.write_all(process::id().to_string().as_bytes())
-        .map_err(|err| std::io::Error::other(format!("failed to write daemon pid file {}: {err}", pid_path.display())))?;
-    file.sync_all()
-        .map_err(|err| std::io::Error::other(format!("failed to sync daemon pid file {}: {err}", pid_path.display())))?;
-    std::fs::set_permissions(pid_path, std::fs::Permissions::from_mode(PID_FILE_MODE))
-        .map_err(|err| std::io::Error::other(format!("failed to secure daemon pid file {}: {err}", pid_path.display())))?;
+        .map_err(|err| {
+            std::io::Error::other(format!(
+                "failed to write daemon pid file {}: {err}",
+                pid_path.display()
+            ))
+        })?;
+    file.sync_all().map_err(|err| {
+        std::io::Error::other(format!(
+            "failed to sync daemon pid file {}: {err}",
+            pid_path.display()
+        ))
+    })?;
+    std::fs::set_permissions(pid_path, std::fs::Permissions::from_mode(PID_FILE_MODE)).map_err(
+        |err| {
+            std::io::Error::other(format!(
+                "failed to secure daemon pid file {}: {err}",
+                pid_path.display()
+            ))
+        },
+    )?;
     Ok(())
 }
 
 #[cfg(unix)]
 fn secure_socket_permissions(socket_path: &Path) -> std::io::Result<()> {
-    std::fs::set_permissions(socket_path, std::fs::Permissions::from_mode(SOCKET_FILE_MODE))
-        .map_err(|err| std::io::Error::other(format!("failed to secure daemon socket {}: {err}", socket_path.display())))
+    std::fs::set_permissions(
+        socket_path,
+        std::fs::Permissions::from_mode(SOCKET_FILE_MODE),
+    )
+    .map_err(|err| {
+        std::io::Error::other(format!(
+            "failed to secure daemon socket {}: {err}",
+            socket_path.display()
+        ))
+    })
 }
 
 use crate::allowlist::{AllowlistLayer, LayeredAllowlist, load_allowlists_from};
 use crate::branding::{CONFIG_DIR, PROJECT_CONFIG_FILE, PROJECT_DATA_DIR};
-use crate::config::{
-    self, CompiledOverrides, Config, HeredocSettings, REPO_ROOT_SEARCH_MAX_HOPS,
-};
+use crate::config::{self, CompiledOverrides, Config, HeredocSettings, REPO_ROOT_SEARCH_MAX_HOPS};
 use crate::daemon_cli::execute_cli_at;
 use crate::daemon_protocol::{
     AllowlistOverridePayload, ClientEnvelope, DaemonRequest, DaemonResponse, ResultPayload,
@@ -420,16 +450,8 @@ fn collect_reload_paths(cwd: &Path, config: &Config) -> Vec<PathBuf> {
     }
 
     if let Some(home) = dirs::home_dir() {
-        paths.push(
-            home.join(".config")
-                .join(CONFIG_DIR)
-                .join("config.toml"),
-        );
-        paths.push(
-            home.join(".config")
-                .join(CONFIG_DIR)
-                .join("allowlist.toml"),
-        );
+        paths.push(home.join(".config").join(CONFIG_DIR).join("config.toml"));
+        paths.push(home.join(".config").join(CONFIG_DIR).join("allowlist.toml"));
     }
 
     if let Some(config_dir) = dirs::config_dir() {
@@ -439,16 +461,19 @@ fn collect_reload_paths(cwd: &Path, config: &Config) -> Vec<PathBuf> {
 
     paths.push(PathBuf::from("/etc").join(CONFIG_DIR).join("config.toml"));
 
-    let system_allowlist = std::env::var(format!("{}_ALLOWLIST_SYSTEM_PATH", crate::branding::ENV_PREFIX))
-        .map(|path| {
-            let trimmed = path.trim();
-            if trimmed.is_empty() {
-                None
-            } else {
-                Some(PathBuf::from(trimmed))
-            }
-        })
-        .unwrap_or_else(|_| Some(PathBuf::from(format!("/etc/{CONFIG_DIR}/allowlist.toml"))));
+    let system_allowlist = std::env::var(format!(
+        "{}_ALLOWLIST_SYSTEM_PATH",
+        crate::branding::ENV_PREFIX
+    ))
+    .map(|path| {
+        let trimmed = path.trim();
+        if trimmed.is_empty() {
+            None
+        } else {
+            Some(PathBuf::from(trimmed))
+        }
+    })
+    .unwrap_or_else(|_| Some(PathBuf::from(format!("/etc/{CONFIG_DIR}/allowlist.toml"))));
     if let Some(path) = system_allowlist {
         paths.push(path);
     }
@@ -510,7 +535,7 @@ fn evaluation_context_for_cwd(cwd: &Path) -> Result<Arc<EvaluationContext>, Stri
     Ok(ctx)
 }
 
-/// Resolve the evaluation working directory from a daemon request.
+/// Resolve a working directory from a daemon request (`Evaluate` / `ExecuteCli`).
 ///
 /// The client must send an absolute path. Relative values are rejected because
 /// they would resolve against the daemon process working directory, not the
@@ -519,11 +544,11 @@ fn evaluation_context_for_cwd(cwd: &Path) -> Result<Arc<EvaluationContext>, Stri
 /// Returns an error when `cwd` is missing, relative, does not exist, or is not a directory.
 fn resolve_evaluation_cwd(request_cwd: Option<&str>) -> Result<PathBuf, String> {
     let Some(cwd_str) = request_cwd else {
-        return Err("missing cwd in Evaluate request".to_string());
+        return Err("missing cwd in request".to_string());
     };
 
     if cwd_str.trim().is_empty() {
-        return Err("missing cwd in Evaluate request".to_string());
+        return Err("missing cwd in request".to_string());
     }
 
     let path = PathBuf::from(cwd_str);
@@ -574,8 +599,7 @@ pub async fn run_daemon(
         #[cfg(unix)]
         let pid_state = pid_file_state(pid_path)?;
         #[cfg(unix)]
-        let live_socket =
-            socket_is_probeable(socket_path)? && probe_existing_daemon(socket_path);
+        let live_socket = socket_is_probeable(socket_path)? && probe_existing_daemon(socket_path);
 
         #[cfg(unix)]
         if live_socket {
@@ -790,7 +814,7 @@ async fn handle_connection(stream: UnixStream, shutdown_tx: Arc<watch::Sender<bo
                             let eval_result = ctx.evaluate(&command, &eval_cwd);
                             DaemonResponse {
                                 id,
-                                result: result_payload_from_evaluation(eval_result),
+                                result: result_payload_from_evaluation(eval_result, &eval_cwd),
                             }
                         }
                         Err(message) => DaemonResponse {
@@ -805,13 +829,36 @@ async fn handle_connection(stream: UnixStream, shutdown_tx: Arc<watch::Sender<bo
                 }
             }
             DaemonRequest::ExecuteCli { argv, cwd } => {
-                let cli_result = execute_cli_at(&argv, cwd.as_deref());
-                DaemonResponse {
-                    id,
-                    result: ResultPayload::CliExecution {
-                        stdout: cli_result.stdout,
-                        stderr: cli_result.stderr,
-                        exit_code: cli_result.exit_code,
+                // R06: when cwd is present, reuse the same absolute-dir checks as Evaluate.
+                match cwd.as_deref() {
+                    None => {
+                        let cli_result = execute_cli_at(&argv, None);
+                        DaemonResponse {
+                            id,
+                            result: ResultPayload::CliExecution {
+                                stdout: cli_result.stdout,
+                                stderr: cli_result.stderr,
+                                exit_code: cli_result.exit_code,
+                            },
+                        }
+                    }
+                    Some(_) => match resolve_evaluation_cwd(cwd.as_deref()) {
+                        Ok(path) => {
+                            let cwd_arg = path.to_string_lossy().into_owned();
+                            let cli_result = execute_cli_at(&argv, Some(cwd_arg.as_str()));
+                            DaemonResponse {
+                                id,
+                                result: ResultPayload::CliExecution {
+                                    stdout: cli_result.stdout,
+                                    stderr: cli_result.stderr,
+                                    exit_code: cli_result.exit_code,
+                                },
+                            }
+                        }
+                        Err(message) => DaemonResponse {
+                            id,
+                            result: ResultPayload::Error { message },
+                        },
                     },
                 }
             }
@@ -843,7 +890,7 @@ async fn write_response(
     write_half.flush().await
 }
 
-fn result_payload_from_evaluation(result: EvaluationResult) -> ResultPayload {
+fn result_payload_from_evaluation(result: EvaluationResult, cwd: &Path) -> ResultPayload {
     if result.skipped_due_to_budget {
         return ResultPayload::Deny {
             reason: "Command denied: evaluator budget exceeded".to_string(),
@@ -872,7 +919,27 @@ fn result_payload_from_evaluation(result: EvaluationResult) -> ResultPayload {
             graduated_response: None,
             session_occurrence: None,
         },
-        EvaluationDecision::Deny => deny_payload(result.pattern_info),
+        EvaluationDecision::Deny => {
+            // Rebase-recovery unblock (issue #104): shared with legacy hook.
+            if let Some(info) = result.pattern_info.as_ref() {
+                if let Some(reason) = crate::rebase_recovery::try_allow_recovery(
+                    cwd,
+                    info.pack_id.as_deref(),
+                    info.pattern_name.as_deref(),
+                ) {
+                    return ResultPayload::Allow {
+                        reason: format!(
+                            "Command allowed by rebase-recovery ({})",
+                            reason.label()
+                        ),
+                        allowlist_override: None,
+                        graduated_response: None,
+                        session_occurrence: None,
+                    };
+                }
+            }
+            deny_payload(result.pattern_info)
+        }
     }
 }
 
@@ -902,12 +969,18 @@ fn deny_payload(pattern_info: Option<PatternMatch>) -> ResultPayload {
         .collect();
 
     ResultPayload::Deny {
-        reason: info.reason,
+        reason: crate::logging::redact_sensitive_text(&info.reason),
         pack_id: info.pack_id,
         pattern_name: info.pattern_name,
         severity: info.severity,
-        matched_text_preview: info.matched_text_preview,
-        explanation: info.explanation,
+        matched_text_preview: info
+            .matched_text_preview
+            .as_deref()
+            .map(crate::logging::redact_sensitive_text),
+        explanation: info
+            .explanation
+            .as_deref()
+            .map(crate::logging::redact_sensitive_text),
         suggestions: (!suggestions.is_empty()).then_some(suggestions),
         // TODO(phase1a): The response schema is ready, but session
         // tracking/graduated responses are out of scope for this phase.
@@ -924,7 +997,7 @@ mod tests {
     fn evaluator_budget_skip_denies_in_daemon_mode() {
         let result = EvaluationResult::allowed_due_to_budget();
 
-        let payload = result_payload_from_evaluation(result);
+        let payload = result_payload_from_evaluation(result, Path::new("/tmp"));
 
         match payload {
             ResultPayload::Deny {
@@ -939,6 +1012,98 @@ mod tests {
             }
             other => panic!("expected daemon budget skip to deny, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn deny_payload_redacts_secret_bearing_fields() {
+        let token = "ghp_fakeSyntheticTokenValue1234567890";
+        let info = PatternMatch {
+            pack_id: Some("core.filesystem".to_string()),
+            pattern_name: Some("rm-rf-root-home".to_string()),
+            severity: Some(crate::packs::Severity::Critical),
+            reason: format!("matched secret-bearing span {token}"),
+            source: crate::evaluator::MatchSource::Pack,
+            matched_span: None,
+            matched_text_preview: Some(token.to_string()),
+            explanation: Some(format!("do not leak {token} over IPC")),
+            suggestions: &[],
+        };
+
+        let payload = deny_payload(Some(info));
+        let json = serde_json::to_string(&payload).expect("deny payload should serialize");
+        assert!(
+            !json.contains(token),
+            "Deny IPC must not carry raw token, got: {json}"
+        );
+        assert!(
+            json.contains("[REDACTED]"),
+            "expected redaction marker in Deny IPC, got: {json}"
+        );
+    }
+
+    #[test]
+    fn rebase_recovery_allows_checkout_discard_during_rebase() {
+        let root = std::env::temp_dir().join(format!(
+            "orca-daemon-rebase-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or(0)
+        ));
+        std::fs::create_dir_all(root.join(".git").join("rebase-merge")).unwrap();
+
+        let denied = EvaluationResult::denied_by_pack_pattern(
+            "core.git",
+            "checkout-discard",
+            "git checkout -- discards uncommitted changes",
+            None,
+            crate::packs::Severity::High,
+            &[],
+        );
+        let payload = result_payload_from_evaluation(denied, &root);
+        match payload {
+            ResultPayload::Allow { reason, .. } => {
+                assert!(
+                    reason.contains("rebase-recovery"),
+                    "expected rebase-recovery allow reason, got: {reason}"
+                );
+            }
+            other => panic!("expected Allow during rebase recovery, got {other:?}"),
+        }
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn rebase_recovery_does_not_allow_outside_rebase() {
+        let root = std::env::temp_dir().join(format!(
+            "orca-daemon-no-rebase-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or(0)
+        ));
+        std::fs::create_dir_all(root.join(".git")).unwrap();
+
+        let denied = EvaluationResult::denied_by_pack_pattern(
+            "core.git",
+            "checkout-discard",
+            "git checkout -- discards uncommitted changes",
+            None,
+            crate::packs::Severity::High,
+            &[],
+        );
+        let payload = result_payload_from_evaluation(denied, &root);
+        match payload {
+            ResultPayload::Deny { pattern_name, .. } => {
+                assert_eq!(pattern_name.as_deref(), Some("checkout-discard"));
+            }
+            other => panic!("expected Deny outside rebase, got {other:?}"),
+        }
+
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     async fn wait_for_socket(socket_path: &std::path::Path) {
@@ -1050,6 +1215,113 @@ mod tests {
         assert!(result.unwrap().is_ok(), "daemon should return Ok");
     }
 
+
+    #[tokio::test]
+    async fn daemon_execute_cli_rejects_relative_cwd() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let socket_path = temp_dir.path().join("daemon.sock");
+        let pid_path = temp_dir.path().join("daemon.pid");
+        let (tx, rx) = tokio::sync::watch::channel(false);
+
+        let socket = socket_path.clone();
+        let pid = pid_path.clone();
+        let shutdown_tx = tx.clone();
+        let daemon_task = tokio::spawn(async move { run_daemon(&socket, &pid, tx, rx).await });
+
+        wait_for_socket(&socket_path).await;
+
+        let mut stream = UnixStream::connect(&socket_path).await.unwrap();
+        stream
+            .write_all(
+                b"{\"id\":61,\"method\":\"ExecuteCli\",\"params\":{\"argv\":[\"version\"],\"cwd\":\"rel/path\"}}\n",
+            )
+            .await
+            .unwrap();
+
+        let response = read_daemon_response(stream).await;
+        assert_eq!(response["id"], 61);
+        assert_eq!(response["result"]["status"], "Error");
+        let message = response["result"]["message"].as_str().unwrap();
+        assert!(message.contains("invalid cwd"), "unexpected: {message}");
+        assert!(message.contains("absolute"), "unexpected: {message}");
+
+        let _ = shutdown_tx.send(true);
+        let _ = tokio::time::timeout(Duration::from_secs(5), daemon_task).await;
+    }
+
+    #[tokio::test]
+    async fn daemon_execute_cli_rejects_missing_cwd_path() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let socket_path = temp_dir.path().join("daemon.sock");
+        let pid_path = temp_dir.path().join("daemon.pid");
+        let (tx, rx) = tokio::sync::watch::channel(false);
+
+        let socket = socket_path.clone();
+        let pid = pid_path.clone();
+        let shutdown_tx = tx.clone();
+        let daemon_task = tokio::spawn(async move { run_daemon(&socket, &pid, tx, rx).await });
+
+        wait_for_socket(&socket_path).await;
+
+        let mut stream = UnixStream::connect(&socket_path).await.unwrap();
+        stream
+            .write_all(
+                b"{\"id\":62,\"method\":\"ExecuteCli\",\"params\":{\"argv\":[\"version\"],\"cwd\":\"/nonexistent/orca/cwd/execute-cli\"}}\n",
+            )
+            .await
+            .unwrap();
+
+        let response = read_daemon_response(stream).await;
+        assert_eq!(response["id"], 62);
+        assert_eq!(response["result"]["status"], "Error");
+        let message = response["result"]["message"].as_str().unwrap();
+        assert!(message.contains("invalid cwd"), "unexpected: {message}");
+        assert!(message.contains("does not exist"), "unexpected: {message}");
+
+        let _ = shutdown_tx.send(true);
+        let _ = tokio::time::timeout(Duration::from_secs(5), daemon_task).await;
+    }
+
+    #[tokio::test]
+    async fn daemon_execute_cli_rejects_mutating_allow() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let socket_path = temp_dir.path().join("daemon.sock");
+        let pid_path = temp_dir.path().join("daemon.pid");
+        let (tx, rx) = tokio::sync::watch::channel(false);
+
+        let socket = socket_path.clone();
+        let pid = pid_path.clone();
+        let shutdown_tx = tx.clone();
+        let daemon_task = tokio::spawn(async move { run_daemon(&socket, &pid, tx, rx).await });
+
+        wait_for_socket(&socket_path).await;
+
+        let mut stream = UnixStream::connect(&socket_path).await.unwrap();
+        stream
+            .write_all(
+                b"{\"id\":63,\"method\":\"ExecuteCli\",\"params\":{\"argv\":[\"allow\",\"core.git:reset-hard\",\"-r\",\"x\"]}}\n",
+            )
+            .await
+            .unwrap();
+
+        let response = read_daemon_response(stream).await;
+        assert_eq!(response["id"], 63);
+        assert_eq!(response["result"]["status"], "CliExecution");
+        assert_eq!(response["result"]["exit_code"], 1);
+        assert!(
+            response["result"]["stderr"]
+                .as_str()
+                .unwrap()
+                .contains("refused mutating command"),
+            "unexpected: {}",
+            response
+        );
+
+        let _ = shutdown_tx.send(true);
+        let _ = tokio::time::timeout(Duration::from_secs(5), daemon_task).await;
+    }
+
+
     #[tokio::test]
     async fn daemon_stays_alive_after_execute_cli_success_and_error() {
         let temp_dir = tempfile::tempdir().unwrap();
@@ -1134,8 +1406,7 @@ reason = "test allowlist"
 
     #[test]
     fn resolve_evaluation_cwd_rejects_nonexistent_path() {
-        let err = resolve_evaluation_cwd(Some("/nonexistent/orca/cwd/test/path"))
-            .unwrap_err();
+        let err = resolve_evaluation_cwd(Some("/nonexistent/orca/cwd/test/path")).unwrap_err();
         assert!(err.contains("invalid cwd"), "unexpected error: {err}");
         assert!(err.contains("does not exist"), "unexpected error: {err}");
     }
@@ -1313,8 +1584,14 @@ reason = "test allowlist"
         let result = tokio::time::timeout(Duration::from_secs(5), daemon_task).await;
         assert!(result.is_ok(), "daemon should complete within timeout");
         assert!(result.unwrap().is_ok(), "daemon should return Ok");
-        assert!(!socket_path.exists(), "socket should be removed after Shutdown");
-        assert!(!pid_path.exists(), "pid file should be removed after Shutdown");
+        assert!(
+            !socket_path.exists(),
+            "socket should be removed after Shutdown"
+        );
+        assert!(
+            !pid_path.exists(),
+            "pid file should be removed after Shutdown"
+        );
     }
 
     #[tokio::test]
@@ -1341,7 +1618,10 @@ reason = "test allowlist"
         let _ = tokio::time::timeout(Duration::from_secs(5), daemon_task).await;
 
         let connect_result = UnixStream::connect(&socket_path).await;
-        assert!(connect_result.is_err(), "socket should be gone after shutdown");
+        assert!(
+            connect_result.is_err(),
+            "socket should be gone after shutdown"
+        );
     }
 
     #[tokio::test]
@@ -1376,7 +1656,10 @@ reason = "test allowlist"
                 pong_count += 1;
             }
         }
-        assert!(pong_count >= 1, "at least one Shutdown should be acknowledged");
+        assert!(
+            pong_count >= 1,
+            "at least one Shutdown should be acknowledged"
+        );
 
         let result = tokio::time::timeout(Duration::from_secs(5), daemon_task).await;
         assert!(result.is_ok(), "daemon should complete within timeout");
@@ -1624,7 +1907,12 @@ reason = "test allowlist"
 
         let result = run_daemon(&socket_path, &pid_path, tx, rx).await;
         assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("refusing to overwrite"));
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("refusing to overwrite")
+        );
         assert!(pid_path.exists(), "live pid artifact must remain in place");
     }
 
@@ -1653,5 +1941,4 @@ reason = "test allowlist"
         let _ = shutdown_tx.send(true);
         let _ = tokio::time::timeout(Duration::from_secs(5), daemon_task).await;
     }
-
 }

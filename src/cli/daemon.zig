@@ -604,6 +604,67 @@ pub fn executeCliAt(allocator: std.mem.Allocator, argv: []const []const u8, cwd:
     return parsed;
 }
 
+/// Run a CLI subcommand by spawning the local `orca-daemon` binary (no UDS).
+///
+/// Used for mutating commands (`allow`, `allowlist add`, …) that ExecuteCli
+/// refuses over the socket. stdout/stderr are forwarded to the provided writers.
+pub fn runLocalCli(allocator: std.mem.Allocator, argv: []const []const u8, stdout: anytype, stderr: anytype) DaemonError!u8 {
+    if (argv.len == 0) return error.DaemonProtocolError;
+    try requireResolvableDaemonBinary(allocator);
+    const daemon_binary = try findDaemonBinary(allocator) orelse return error.DaemonBinaryNotFound;
+    defer allocator.free(daemon_binary);
+
+    var full_argv = try allocator.alloc([]const u8, argv.len + 1);
+    defer allocator.free(full_argv);
+    full_argv[0] = daemon_binary;
+    @memcpy(full_argv[1..], argv);
+
+    var threaded = std.Io.Threaded.init(allocator, .{
+        .environ = env_util.processEnviron(),
+    });
+    defer threaded.deinit();
+    const io = threaded.io();
+
+    var child = std.process.spawn(io, .{
+        .argv = full_argv,
+        .stdin = .ignore,
+        .stdout = .pipe,
+        .stderr = .pipe,
+    }) catch return error.DaemonSpawnFailed;
+
+    var stdout_list: std.ArrayList(u8) = .empty;
+    defer stdout_list.deinit(allocator);
+    var stderr_list: std.ArrayList(u8) = .empty;
+    defer stderr_list.deinit(allocator);
+
+    if (child.stdout) |out| {
+        var buf: [4096]u8 = undefined;
+        var reader = out.reader(io, &buf);
+        while (stdout_list.items.len < 1024 * 1024) {
+            const n = reader.interface.readSliceShort(buf[0..@min(buf.len, 1024 * 1024 - stdout_list.items.len)]) catch break;
+            if (n == 0) break;
+            stdout_list.appendSlice(allocator, buf[0..n]) catch return error.OutOfMemory;
+        }
+    }
+    if (child.stderr) |err_out| {
+        var buf: [4096]u8 = undefined;
+        var reader = err_out.reader(io, &buf);
+        while (stderr_list.items.len < 1024 * 1024) {
+            const n = reader.interface.readSliceShort(buf[0..@min(buf.len, 1024 * 1024 - stderr_list.items.len)]) catch break;
+            if (n == 0) break;
+            stderr_list.appendSlice(allocator, buf[0..n]) catch return error.OutOfMemory;
+        }
+    }
+
+    const term = child.wait(io) catch return error.DaemonSpawnFailed;
+    stdout.writeAll(stdout_list.items) catch return error.SocketWriteFailed;
+    if (stderr_list.items.len > 0) stderr.writeAll(stderr_list.items) catch return error.SocketWriteFailed;
+    return switch (term) {
+        .exited => |code| @as(u8, @intCast(@min(code, 255))),
+        else => 255,
+    };
+}
+
 pub fn sendRequestWithTimeout(
     allocator: std.mem.Allocator,
     socket_path: []const u8,

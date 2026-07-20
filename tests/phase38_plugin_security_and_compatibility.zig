@@ -15,6 +15,7 @@ const exit_codes = @import("orca").cli.exit_codes;
 // ---------------------------------------------------------------------------
 
 const orca_bin = "./zig-out/bin/orca";
+const codex_deny_exit_code: u8 = 2;
 const codex_fixture_dir = "tests/plugin-fixtures/codex";
 const claude_fixture_dir = "tests/plugin-fixtures/claude";
 
@@ -576,8 +577,10 @@ test "hook codex rejects invalid JSON" {
     defer allocator.free(result.stdout);
     defer allocator.free(result.stderr);
 
-    try std.testing.expect(result.code != 0);
-    try std.testing.expect(std.mem.indexOf(u8, result.stderr, "invalid JSON") != null);
+    // PreToolUse pre-eval failures fail closed: Codex deny contract is exit 2 + sentinel.
+    try std.testing.expectEqual(codex_deny_exit_code, result.code);
+    try std.testing.expectEqual(@as(usize, 0), result.stdout.len);
+    try std.testing.expect(std.mem.indexOf(u8, result.stderr, "[[ORCA-GUARD]]") != null);
 }
 
 test "hook claude rejects invalid JSON" {
@@ -588,8 +591,11 @@ test "hook claude rejects invalid JSON" {
     defer allocator.free(result.stdout);
     defer allocator.free(result.stderr);
 
-    try std.testing.expect(result.code != 0);
-    try std.testing.expect(std.mem.indexOf(u8, result.stderr, "invalid JSON") != null);
+    // PreToolUse pre-eval failures fail closed with structured block JSON (exit 0).
+    try std.testing.expectEqual(exit_codes.success, result.code);
+    var parsed = try std.json.parseFromSlice(std.json.Value, allocator, result.stdout, .{});
+    defer parsed.deinit();
+    try std.testing.expectEqualStrings("block", parsed.value.object.get("decision").?.string);
 }
 
 test "hook codex rejects unknown host in payload" {
@@ -600,8 +606,10 @@ test "hook codex rejects unknown host in payload" {
     defer allocator.free(result.stdout);
     defer allocator.free(result.stderr);
 
-    try std.testing.expect(result.code != 0);
-    try std.testing.expect(std.mem.indexOf(u8, result.stderr, "host mismatch") != null);
+    // Codex pre-eval failures fail closed (exit 2 + sentinel), including SessionStart.
+    try std.testing.expectEqual(codex_deny_exit_code, result.code);
+    try std.testing.expectEqual(@as(usize, 0), result.stdout.len);
+    try std.testing.expect(std.mem.indexOf(u8, result.stderr, "[[ORCA-GUARD]]") != null);
 }
 
 test "hook claude rejects unknown event in payload" {

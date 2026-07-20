@@ -1998,9 +1998,14 @@ pub fn version_stdout_line() -> String {
 /// stdout output.  Unsupported commands return structured errors instead of
 /// terminating the process.
 ///
-/// Phase A high-value set (proxied via Zig `orca`): version, test, scan,
-/// history, packs, pack, precommit, explain, allowlist, allow, unallow, allow-once,
-/// classify, suggest-allowlist, rebase-recover, config, simulate.
+/// Read-only proxies (version, test, scan, history, packs, pack, precommit,
+/// explain, classify, simulate, allowlist list/show, suggest-allowlist without
+/// `--apply`/`--undo`, and `--help` for any proxy command) are allowed over UDS.
+///
+/// Mutating commands (`allow`, `unallow`, `allow-once`, `rebase-recover`,
+/// `config`, allowlist writes, `suggest-allowlist --apply`/`--undo`) are refused here.
+/// The Zig CLI must spawn `orca-daemon <cmd>` directly for those — same-UID
+/// peers on the 0600 socket must not rewrite policy via ExecuteCli.
 #[must_use]
 pub fn execute_daemon_cli(argv: &[String]) -> CliExecutionResult {
     execute_daemon_cli_at(argv, None)
@@ -2016,6 +2021,18 @@ pub fn execute_daemon_cli_at(argv: &[String], cwd: Option<&str>) -> CliExecution
         };
     }
 
+    // R03: refuse policy mutations over UDS ExecuteCli (socket is same-UID).
+    if is_mutating_daemon_cli_argv(argv) {
+        return CliExecutionResult {
+            stdout: String::new(),
+            stderr: format!(
+                "ExecuteCli refused mutating command `{}`: policy mutations are not permitted over the daemon UDS socket. Run `orca-daemon {} …` locally (Zig `orca` spawns the daemon binary for these commands).",
+                argv[0], argv[0]
+            ),
+            exit_code: EXIT_DENIED,
+        };
+    }
+
     match argv[0].as_str() {
         "version" | "--version" | "-V" => CliExecutionResult {
             stdout: version_stdout_line(),
@@ -2026,10 +2043,37 @@ pub fn execute_daemon_cli_at(argv: &[String], cwd: Option<&str>) -> CliExecution
         other => CliExecutionResult {
             stdout: String::new(),
             stderr: format!(
-                "unsupported daemon CLI command: {other} (supported: version, test, scan, history, precommit, packs, pack, explain, allowlist, allow, unallow, allow-once, classify, suggest-allowlist, rebase-recover, config, simulate)"
+                "unsupported daemon CLI command: {other} (supported read-only: version, test, scan, history, precommit, packs, pack, explain, allowlist list/show, classify, suggest-allowlist, simulate; mutations require local orca-daemon)"
             ),
             exit_code: EXIT_PARSE_ERROR,
         },
+    }
+}
+
+/// True when `argv` would mutate policy/config if executed via ExecuteCli.
+///
+/// `--help` / `-h` are treated as read-only for every command.
+#[must_use]
+pub(crate) fn is_mutating_daemon_cli_argv(argv: &[String]) -> bool {
+    if argv.is_empty() {
+        return false;
+    }
+    if argv.iter().any(|arg| arg == "--help" || arg == "-h") {
+        return false;
+    }
+    match argv[0].as_str() {
+        "allow" | "unallow" | "allow-once" | "rebase-recover" | "config" => true,
+        "allowlist" => match argv.get(1).map(String::as_str) {
+            None | Some("list") | Some("show") | Some("ls") => false,
+            Some(_) => true,
+        },
+        "suggest-allowlist" => argv.iter().any(|arg| {
+            arg == "--apply"
+                || arg.starts_with("--apply=")
+                || arg == "--undo"
+                || arg.starts_with("--undo=")
+        }),
+        _ => false,
     }
 }
 
@@ -8111,22 +8155,19 @@ fn output_suggestions_text(suggestions: &[AllowlistSuggestion]) {
             println!("  orca suggest-allowlist --apply {idx}");
             if let Some(example) = suggestion.cluster.commands.first() {
                 let escaped = example.replace('\'', "'\\''");
-                println!(
-                    "  orca allowlist add-command '{escaped}' -r \"from suggest-allowlist\""
-                );
+                println!("  orca allowlist add-command '{escaped}' -r \"from suggest-allowlist\"");
             }
         }
         println!();
         println!("Or re-run on a TTY to accept/skip interactively:");
         println!("  orca suggest-allowlist");
-        println!();
     } else {
         println!("Next steps");
         println!("──────────");
         println!("  orca suggest-allowlist --confidence high   # filter high-confidence only");
         println!("  orca allowlist list                        # review current allowlist");
-        println!();
     }
+    println!();
 }
 
 /// Output suggestions interactively (prompting user for each).

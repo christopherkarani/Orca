@@ -267,3 +267,27 @@ test "phase2e shell PreToolUse missing command fails closed without daemon" {
     try std.testing.expect(result.stdout.len == 0);
     try std.testing.expect(result.stderr.len > 0);
 }
+
+test "phase2e Codex PreToolUse invalid JSON fails closed with exit 2 and sentinel" {
+    if (!fileExists(orca_bin)) return;
+
+    const allocator = std.testing.allocator;
+    const result = try runOrca(allocator, &.{ orca_bin, "hook", "codex", "PreToolUse" }, "{not json", null);
+    defer allocator.free(result.stdout);
+    defer allocator.free(result.stderr);
+
+    try std.testing.expectEqual(codex_deny_exit_code, result.code);
+    try std.testing.expectEqual(@as(usize, 0), result.stdout.len);
+    try std.testing.expect(std.mem.indexOf(u8, result.stderr, "[[ORCA-GUARD]]") != null);
+}
+
+test "phase2e Claude PreToolUse invalid JSON fails closed with block JSON" {
+    if (!fileExists(orca_bin)) return;
+
+    const allocator = std.testing.allocator;
+    const result = try runOrca(allocator, &.{ orca_bin, "hook", "claude", "PreToolUse" }, "{not json", null);
+    defer allocator.free(result.stdout);
+    defer allocator.free(result.stderr);
+
+    try expectHookDecision(allocator, "claude", "block", result);
+}

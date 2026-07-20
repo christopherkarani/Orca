@@ -1331,12 +1331,13 @@ fn load_allowlist_file(layer: AllowlistLayer, path: &Path) -> AllowlistFile {
         return AllowlistFile::default();
     }
 
-    // System layer is privileged: refuse symlinks to user-writable targets.
-    // Other layers only enforce the size cap (still want bounded reads).
-    let source = if layer == AllowlistLayer::System {
-        crate::config::ConfigSource::System
-    } else {
-        crate::config::ConfigSource::Untrusted
+    // System: refuse symlinks to user-writable targets.
+    // Project: refuse any symlink (in-repo policy must be a regular file).
+    // User: size cap only (Untrusted).
+    let source = match layer {
+        AllowlistLayer::System => crate::config::ConfigSource::System,
+        AllowlistLayer::Project => crate::config::ConfigSource::Project,
+        AllowlistLayer::User | AllowlistLayer::Agent => crate::config::ConfigSource::Untrusted,
     };
 
     let Some(content) = crate::config::read_config_file_bounded(path, source) else {
@@ -2887,4 +2888,44 @@ mod tests {
             "ee preflight verify --cmd \"dd if=/dev/zero of=/dev/sda\""
         ));
     }
+
+    #[cfg(unix)]
+    #[test]
+    fn project_allowlist_symlink_is_rejected() {
+        use tempfile::TempDir;
+        let temp = TempDir::new().expect("tempdir");
+        let target = temp.path().join("real_allowlist.toml");
+        std::fs::write(
+            &target,
+            r#"
+[[allow]]
+exact_command = "git status"
+reason = "symlink target"
+"#,
+        )
+        .unwrap();
+        let symlink_path = temp.path().join("allowlist.toml");
+        std::os::unix::fs::symlink(&target, &symlink_path).unwrap();
+
+        let file = load_allowlist_file(AllowlistLayer::Project, &symlink_path);
+        assert!(
+            file.entries.is_empty(),
+            "symlinked project allowlist must not load entries"
+        );
+        assert!(
+            !file.errors.is_empty(),
+            "symlinked project allowlist must surface a load error"
+        );
+        assert!(
+            file.errors[0].message.contains("symlink")
+                || file.errors[0].message.contains("failed to read"),
+            "unexpected error: {:?}",
+            file.errors[0].message
+        );
+
+        let regular = load_allowlist_file(AllowlistLayer::Project, &target);
+        assert_eq!(regular.entries.len(), 1);
+        assert!(regular.errors.is_empty());
+    }
+
 }

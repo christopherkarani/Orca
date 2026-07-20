@@ -187,7 +187,9 @@ impl DenialBox {
                     "[{severity_markup}]🛑 ORCA BLOCKED (Protected Branch: {branch})[/]"
                 ));
             } else {
-                lines.push(format!("[{severity_markup}]🛑 ORCA BLOCKED (Branch: {branch})[/]"));
+                lines.push(format!(
+                    "[{severity_markup}]🛑 ORCA BLOCKED (Branch: {branch})[/]"
+                ));
             }
         } else {
             lines.push(format!("[{severity_markup}]🛑 ORCA BLOCKED[/]"));

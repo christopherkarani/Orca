@@ -1263,6 +1263,45 @@ pub fn output_denial_for_protocol(
 #[cold]
 #[inline(never)]
 #[allow(clippy::too_many_arguments)]
+
+/// Fail-closed exit when hook stdin cannot be parsed (no protocol yet).
+///
+/// Used for oversized input, IO errors, and JSON parse failures on the
+/// legacy stdin hook path. Prefer protocol-aware deny JSON when available.
+#[must_use]
+pub fn fail_closed_unparsed_input_exit(message: &str) -> i32 {
+    eprintln!("[orca] Deny: {message}");
+    crate::exit_codes::EXIT_DENIED
+}
+
+/// Fail-closed denial when the hook protocol is known.
+///
+/// Emits the host-specific deny payload (JSON for Claude-compatible hosts;
+/// stderr-only for Codex) and returns the exit code that host expects for a
+/// hard block (`2` for Codex, `0` with deny JSON for Claude-compatible).
+#[must_use]
+pub fn fail_closed_hook_deny(protocol: HookProtocol, command: &str, reason: &str) -> i32 {
+    output_denial_for_protocol(
+        protocol,
+        command,
+        reason,
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+        &[],
+        None,
+    );
+    match protocol {
+        HookProtocol::Codex => 2,
+        _ => crate::exit_codes::EXIT_SUCCESS,
+    }
+}
+
+
 pub fn output_denial(
     command: &str,
     reason: &str,
@@ -1613,6 +1652,33 @@ mod tests {
                 unsafe { std::env::remove_var(self.key) };
             }
         }
+    }
+
+    #[test]
+    fn fail_closed_unparsed_input_returns_exit_denied() {
+        let code = fail_closed_unparsed_input_exit("stdin input exceeds limit");
+        assert_eq!(code, crate::exit_codes::EXIT_DENIED);
+    }
+
+    #[test]
+    fn fail_closed_hook_deny_codex_uses_exit_two() {
+        let code = fail_closed_hook_deny(
+            HookProtocol::Codex,
+            "git status",
+            "Command denied: evaluator budget exceeded",
+        );
+        assert_eq!(code, 2);
+    }
+
+    #[test]
+    fn fail_closed_hook_deny_claude_uses_exit_success_with_json_contract() {
+        // Claude-compatible hosts consume deny via stdout JSON at exit 0.
+        let code = fail_closed_hook_deny(
+            HookProtocol::ClaudeCompatible,
+            "git status",
+            "Command denied by evaluator",
+        );
+        assert_eq!(code, crate::exit_codes::EXIT_SUCCESS);
     }
 
     #[test]

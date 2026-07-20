@@ -206,18 +206,14 @@ mod tests {
             .and_then(serde_json::Value::as_array)
             .unwrap();
         assert_eq!(capabilities.len(), DAEMON_CAPABILITIES.len());
-        assert_eq!(
-            capabilities[1].as_str(),
-            Some(DAEMON_CAPABILITIES[1])
-        );
+        assert_eq!(capabilities[1].as_str(), Some(DAEMON_CAPABILITIES[1]));
     }
 
     #[test]
     fn deserializes_execute_cli_with_argv() {
-        let envelope: ClientEnvelope = serde_json::from_str(
-            r#"{"id":3,"method":"ExecuteCli","params":{"argv":["version"]}}"#,
-        )
-        .unwrap();
+        let envelope: ClientEnvelope =
+            serde_json::from_str(r#"{"id":3,"method":"ExecuteCli","params":{"argv":["version"]}}"#)
+                .unwrap();
         assert_eq!(envelope.id, 3);
         match envelope.body {
             DaemonRequest::ExecuteCli { argv, cwd } => {
@@ -266,7 +262,10 @@ mod tests {
             Some("0.6.0\n")
         );
         assert!(result.get("stderr").is_none());
-        assert_eq!(result.get("exit_code").and_then(serde_json::Value::as_i64), Some(0));
+        assert_eq!(
+            result.get("exit_code").and_then(serde_json::Value::as_i64),
+            Some(0)
+        );
     }
 
     #[test]

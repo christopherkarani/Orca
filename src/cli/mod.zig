@@ -137,8 +137,8 @@ fn isRawGeneratedInvocation(command: []const u8, argv: []const []const u8) bool 
 }
 
 fn isRawPassthroughInvocation(command: []const u8, argv: []const []const u8) bool {
-    // Daemon-proxied commands preserve byte identity for machine/help output.
-    if (isDaemonProxyCommand(command)) return true;
+    // Daemon-proxied / local-mutating commands preserve byte identity for machine/help output.
+    if (isDaemonProxyCommand(command) or isDaemonLocalMutatingTopLevel(command)) return true;
     if (std.mem.eql(u8, command, "packs")) {
         for (argv[1..]) |arg| {
             if (std.mem.eql(u8, arg, "--robot") or std.mem.eql(u8, arg, "--expand") or
@@ -394,6 +394,10 @@ fn runWithCwdUsing(
         };
     }
 
+    // R03: mutating policy commands spawn orca-daemon locally (not ExecuteCli UDS).
+    if (isDaemonLocalMutatingInvocation(command, argv[1..])) {
+        return runLocalDaemonCommand(command, argv[1..], stdout, stderr);
+    }
     if (isDaemonProxyCommand(command)) {
         return proxyDaemonCommand(daemon_execute, command, argv[1..], io, stdout, stderr);
     }
@@ -466,22 +470,52 @@ fn proxyVersionCommand(comptime execute_cli: anytype, io: std.Io, stdout: anytyp
     };
 }
 
-/// Top-level commands proxied through the Rust daemon via ExecuteCli.
+/// Top-level commands proxied through the Rust daemon via ExecuteCli (read-only).
 /// Packs/history have richer Zig wrappers; these use argv passthrough.
+/// Mutating commands (`allow`, …) use `runLocalDaemonCommand` instead — R03.
 fn isDaemonProxyCommand(command: []const u8) bool {
     return std.mem.eql(u8, command, "test") or
         std.mem.eql(u8, command, "scan") or
         std.mem.eql(u8, command, "precommit") or
         std.mem.eql(u8, command, "explain") or
         std.mem.eql(u8, command, "allowlist") or
-        std.mem.eql(u8, command, "allow") or
-        std.mem.eql(u8, command, "unallow") or
-        std.mem.eql(u8, command, "allow-once") or
         std.mem.eql(u8, command, "classify") or
         std.mem.eql(u8, command, "suggest-allowlist") or
-        std.mem.eql(u8, command, "rebase-recover") or
-        std.mem.eql(u8, command, "config") or
         std.mem.eql(u8, command, "simulate");
+}
+
+/// Commands that always mutate policy/config: never sent over ExecuteCli UDS.
+fn isDaemonLocalMutatingTopLevel(command: []const u8) bool {
+    return std.mem.eql(u8, command, "allow") or
+        std.mem.eql(u8, command, "unallow") or
+        std.mem.eql(u8, command, "allow-once") or
+        std.mem.eql(u8, command, "rebase-recover") or
+        std.mem.eql(u8, command, "config");
+}
+
+/// True when this invocation must spawn `orca-daemon` locally (no UDS ExecuteCli).
+fn isDaemonLocalMutatingInvocation(command: []const u8, command_args: []const []const u8) bool {
+    // Top-level mutators always go local (including `--help`).
+    if (isDaemonLocalMutatingTopLevel(command)) return true;
+    if (std.mem.eql(u8, command, "allowlist")) {
+        for (command_args) |arg| {
+            if (std.mem.eql(u8, arg, "--help") or std.mem.eql(u8, arg, "-h")) return false;
+        }
+        if (command_args.len == 0) return false;
+        const sub = command_args[0];
+        if (std.mem.eql(u8, sub, "list") or std.mem.eql(u8, sub, "show") or
+            std.mem.eql(u8, sub, "ls")) return false;
+        return true;
+    }
+    if (std.mem.eql(u8, command, "suggest-allowlist")) {
+        for (command_args) |arg| {
+            if (std.mem.eql(u8, arg, "--help") or std.mem.eql(u8, arg, "-h")) return false;
+            if (std.mem.eql(u8, arg, "--apply") or std.mem.startsWith(u8, arg, "--apply=")) return true;
+            if (std.mem.eql(u8, arg, "--undo") or std.mem.startsWith(u8, arg, "--undo=")) return true;
+        }
+        return false;
+    }
+    return false;
 }
 
 fn proxyDaemonCommand(comptime execute_cli: anytype, command: []const u8, command_args: []const []const u8, io: std.Io, stdout: anytype, stderr: anytype) !u8 {
@@ -493,6 +527,20 @@ fn proxyDaemonCommand(comptime execute_cli: anytype, command: []const u8, comman
     if (command_args.len > 0) @memcpy(daemon_argv[1..], command_args);
 
     return execute_cli(io, daemon_argv, stdout, stderr) catch |err| {
+        try stderr.print("orca {s}: {s}: {s}\n", .{ command, daemonErrorLabel(err), @errorName(err) });
+        return exit_codes.general;
+    };
+}
+
+fn runLocalDaemonCommand(command: []const u8, command_args: []const []const u8, stdout: anytype, stderr: anytype) !u8 {
+    const allocator = std.heap.smp_allocator;
+    const daemon_argv = try allocator.alloc([]const u8, command_args.len + 1);
+    defer allocator.free(daemon_argv);
+
+    daemon_argv[0] = command;
+    if (command_args.len > 0) @memcpy(daemon_argv[1..], command_args);
+
+    return daemon.runLocalCli(allocator, daemon_argv, stdout, stderr) catch |err| {
         try stderr.print("orca {s}: {s}: {s}\n", .{ command, daemonErrorLabel(err), @errorName(err) });
         return exit_codes.general;
     };
@@ -886,14 +934,21 @@ test "phase A proxy commands construct daemon argv and render success" {
 
     try std.testing.expect(isDaemonProxyCommand("explain"));
     try std.testing.expect(isDaemonProxyCommand("allowlist"));
-    try std.testing.expect(isDaemonProxyCommand("allow"));
-    try std.testing.expect(isDaemonProxyCommand("unallow"));
-    try std.testing.expect(isDaemonProxyCommand("allow-once"));
+    try std.testing.expect(!isDaemonProxyCommand("allow"));
+    try std.testing.expect(!isDaemonProxyCommand("unallow"));
+    try std.testing.expect(!isDaemonProxyCommand("allow-once"));
     try std.testing.expect(isDaemonProxyCommand("classify"));
     try std.testing.expect(isDaemonProxyCommand("suggest-allowlist"));
-    try std.testing.expect(isDaemonProxyCommand("rebase-recover"));
-    try std.testing.expect(isDaemonProxyCommand("config"));
+    try std.testing.expect(!isDaemonProxyCommand("rebase-recover"));
+    try std.testing.expect(!isDaemonProxyCommand("config"));
     try std.testing.expect(isDaemonProxyCommand("simulate"));
+    try std.testing.expect(isDaemonLocalMutatingTopLevel("allow"));
+    try std.testing.expect(isDaemonLocalMutatingTopLevel("allow-once"));
+    try std.testing.expect(isDaemonLocalMutatingInvocation("allowlist", &.{"add"}));
+    try std.testing.expect(!isDaemonLocalMutatingInvocation("allowlist", &.{"list"}));
+    try std.testing.expect(isDaemonLocalMutatingInvocation("suggest-allowlist", &.{ "--apply", "1" }));
+    try std.testing.expect(isDaemonLocalMutatingInvocation("suggest-allowlist", &.{ "--undo", "60" }));
+    try std.testing.expect(!isDaemonLocalMutatingInvocation("suggest-allowlist", &.{ "--non-interactive" }));
     try std.testing.expect(!isDaemonProxyCommand("doctor"));
     try std.testing.expect(!isDaemonProxyCommand("init"));
 
