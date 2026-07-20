@@ -105,7 +105,7 @@ fn detectLandlock() Probe {
     const linux = std.os.linux;
     const rc = linux.syscall3(.landlock_create_ruleset, 0, 0, LANDLOCK_CREATE_RULESET_VERSION);
     return switch (std.posix.errno(rc)) {
-        .SUCCESS => .{ .level = .partial, .note = "Landlock ABI is available; no ruleset is installed by this backend" },
+        .SUCCESS => .{ .level = .partial, .note = "Landlock ABI is available; session active only after child apply-before-exec" },
         .NOSYS => .{ .level = .unavailable, .note = "Landlock syscalls are unavailable" },
         .OPNOTSUPP, .INVAL => .{ .level = .unavailable, .note = "Landlock ABI probing is unsupported by this kernel" },
         .ACCES, .PERM => .{ .level = .unavailable, .note = "Landlock probing denied by the current runtime" },

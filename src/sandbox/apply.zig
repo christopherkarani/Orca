@@ -1,29 +1,30 @@
 //! Single ApplyBeforeExec boundary for production agent launch (P0-A-03 / P1-PRE-03).
 //!
-//! Production path (U04):
+//! Production path (U04/U05):
 //!   cli/run → applyBeforeExec → supervisor.run → process.prepareChild → std.process.spawn
 //!
 //! This module:
 //! - compiles a pure FS profile (`profile.compileProfile`)
 //! - scrubs loader/startup injection env (`env_scrub`)
 //! - documents the child-side FD scrub call site (`fd_scrub`)
-//! - attempts platform OS apply via a **stub** until U05 (Landlock) / U06 (Seatbelt)
+//! - attempts platform OS apply: Landlock on Linux (U05); Seatbelt on macOS (U06)
 //!
-//! NEVER reports session `active` without a real backend attach (U05/U06).
-//! Stubs return `unavailable` / `failed` only.
+//! Landlock restrict_self runs only in a **forked child** (verify path) so the
+//! parent Orca process stays free. Production agent exec should use
+//! `apply_posix.forkApplyLandlockAndExec` so the agent inherits the same box.
 //!
-//! ## FD scrub call site (child-side, not parent)
-//! `fd_scrub.closeInheritedFdsDefault()` (or custom keep set) must run **after fork /
-//! before exec**, or via posix_spawn file actions. The parent process must not call
-//! default close — it would close Orca's own FDs. U04 documents the site; U05/U06
-//! bind it when platform spawn supports pre-exec hooks.
+//! Session `active` only after real Landlock apply succeeds in the child.
+//! NEVER claims network Landlock.
 
 const std = @import("std");
+const builtin = @import("builtin");
 const posture = @import("posture.zig");
 const profile = @import("profile.zig");
 const env_scrub = @import("env_scrub.zig");
 const fd_scrub = @import("fd_scrub.zig");
 const launch_authority = @import("launch_authority.zig");
+const landlock = @import("landlock.zig");
+const apply_posix = @import("apply_posix.zig");
 
 /// Re-export mode for callers that only touch apply.
 pub const OsSandboxMode = posture.OsSandboxMode;
@@ -55,9 +56,9 @@ pub const ApplyResult = struct {
     env_scrubbed: bool = false,
     /// Count of keys removed by env scrub (0 if not scrubbed).
     env_keys_removed: usize = 0,
-    /// Profile was compiled (owned hash lives only on receipt when active — never for stubs).
+    /// Profile was compiled.
     profile_compiled: bool = false,
-    /// Hex hash of compiled profile when compile succeeded (not attached; diagnostic).
+    /// Owned hex hash of compiled profile when compile succeeded.
     profile_hash_hex: ?[64]u8 = null,
 
     pub fn mayReportActive(self: ApplyResult) bool {
@@ -65,9 +66,9 @@ pub const ApplyResult = struct {
     }
 };
 
-/// Platform apply outcome from Landlock/Seatbelt (stub until U05/U06).
+/// Platform apply outcome from Landlock/Seatbelt.
 const PlatformApplyStatus = enum {
-    /// Real attach succeeded (not returned by stub).
+    /// Real attach succeeded (child Landlock apply verified).
     attached,
     /// Backend not present / not implemented for this build.
     unavailable,
@@ -84,11 +85,10 @@ const PlatformApplyOutcome = struct {
 /// Apply OS sandbox policy for the production launch path.
 ///
 /// - `off` → disabled receipt; no profile/platform apply; no env scrub at this seam
-/// - `on` / `auto` → compile profile, scrub env, attempt platform apply (stub → unavailable)
+/// - `on` / `auto` → compile profile, scrub env, attempt platform apply
 /// - `on` + unavailable/failed → `error.RequireFailed` (fail closed; caller must not spawn)
 /// - `auto` + unavailable → unavailable receipt; caller may still spawn (interactive degrade)
-///
-/// Never returns a receipt with `posture == .active` from the stub path.
+/// - `active` only when Linux Landlock child apply succeeds (U05)
 pub fn applyBeforeExec(boundary: ApplyBoundary) ApplyError!ApplyResult {
     switch (boundary.mode) {
         .off => return .{
@@ -128,17 +128,16 @@ pub fn applyBeforeExec(boundary: ApplyBoundary) ApplyError!ApplyResult {
     }
 
     // Document FD scrub intent for child-side (do not run in parent).
-    // See module doc and `fd_scrub_call_site_is_child_only`.
     _ = fd_scrub.default_keep_fds;
+    _ = apply_posix.verifyLandlockApplyInChild;
 
-    // Platform OS apply — stub returns unavailable (U05/U06 implement real attach).
-    const platform = tryPlatformApplyStub(boundary.mode, &compiled);
+    // Platform OS apply — Linux Landlock (U05); other platforms unavailable until U06.
+    const platform = tryPlatformApply(boundary.mode, &compiled);
 
     switch (platform.status) {
         .attached => {
-            // Real backends only (U05/U06). Stub never reaches here.
-            // Guard: still refuse active without mechanism + hash.
-            const receipt = posture.activeReceipt(platform.mechanism, compiled.hash(), "workspace RW, system RO, no home");
+            // N1: activeReceipt copies hash into owned [64]u8 — no UAF after compiled.deinit.
+            const receipt = posture.activeReceipt(platform.mechanism, hash_copy[0..], "workspace RW, system RO, no home");
             if (!receipt.isActive()) {
                 if (boundary.mode == .on) return error.RequireFailed;
                 return .{
@@ -183,16 +182,54 @@ pub fn applyBeforeExec(boundary: ApplyBoundary) ApplyError!ApplyResult {
 /// Compile-time / doc marker: FD scrub is child-only.
 pub const fd_scrub_call_site_is_child_only = true;
 
-/// Stub platform apply. Real Landlock/Seatbelt land in U05/U06 and must never
-/// claim attach from this function.
-fn tryPlatformApplyStub(mode: OsSandboxMode, compiled: *const profile.CompiledProfile) PlatformApplyOutcome {
+/// Platform apply: Linux → Landlock child verify; else unavailable (Seatbelt U06).
+fn tryPlatformApply(mode: OsSandboxMode, compiled: *const profile.CompiledProfile) PlatformApplyOutcome {
     _ = mode;
-    _ = compiled;
-    // Intentionally no Landlock/Seatbelt syscalls (U04).
+    if (builtin.os.tag == .linux) {
+        return tryPlatformApplyLinux(compiled);
+    }
+    // macOS Seatbelt is U06; Windows unsupported in Phase 1.
     return .{
         .status = .unavailable,
         .mechanism = .none,
         .reason_code = "backend_not_implemented",
+    };
+}
+
+fn tryPlatformApplyLinux(compiled: *const profile.CompiledProfile) PlatformApplyOutcome {
+    if (!landlock.isAbiAvailable()) {
+        return .{
+            .status = .unavailable,
+            .mechanism = .none,
+            .reason_code = "landlock_unavailable",
+        };
+    }
+
+    // Real apply in a forked child so the parent Orca process is never restricted.
+    landlock.verifyApplyInChild(compiled) catch |err| {
+        return switch (err) {
+            error.Unavailable, error.Unsupported => .{
+                .status = .unavailable,
+                .mechanism = .none,
+                .reason_code = "landlock_unavailable",
+            },
+            error.PathOpenFailed => .{
+                .status = .failed,
+                .mechanism = .none,
+                .reason_code = "landlock_path_open_failed",
+            },
+            error.ApplyFailed => .{
+                .status = .failed,
+                .mechanism = .none,
+                .reason_code = "landlock_apply_failed",
+            },
+        };
+    };
+
+    return .{
+        .status = .attached,
+        .mechanism = .landlock,
+        .reason_code = "landlock_attached",
     };
 }
 
@@ -221,21 +258,23 @@ test "mode off returns disabled receipt without scrub or active claim" {
     try std.testing.expectEqualStrings("os_sandbox_off", result.receipt.reason_code.?);
 }
 
-test "mode auto + stub backend returns unavailable and scrubs env (interactive degrade)" {
+test "mode auto without Landlock returns unavailable and scrubs env" {
     var env_map = std.process.Environ.Map.init(std.testing.allocator);
     defer env_map.deinit();
     try env_map.put("LD_PRELOAD", "evil.so");
     try env_map.put("PATH", "/usr/bin");
     try env_map.put("ORCA_SESSION_ID", "s1");
 
+    // Use a path that may not exist — on Linux Landlock path open fails → failed/unavailable;
+    // on macOS always unavailable. Scrub must still run.
     const result = try applyBeforeExec(.{
         .allocator = std.testing.allocator,
         .mode = .auto,
-        .workspace_root = "/tmp/orca-apply-ws",
+        .workspace_root = "/tmp/orca-apply-ws-nonexistent-u05",
         .env_map = &env_map,
     });
 
-    try std.testing.expectEqual(posture.SessionPosture.unavailable, result.receipt.posture);
+    try std.testing.expect(result.receipt.posture != .active);
     try std.testing.expect(!result.receipt.isActive());
     try std.testing.expect(!result.mayReportActive());
     try std.testing.expect(result.env_scrubbed);
@@ -244,10 +283,12 @@ test "mode auto + stub backend returns unavailable and scrubs env (interactive d
     try std.testing.expect(env_map.get("LD_PRELOAD") == null);
     try std.testing.expectEqualStrings("/usr/bin", env_map.get("PATH").?);
     try std.testing.expectEqualStrings("s1", env_map.get("ORCA_SESSION_ID").?);
-    try std.testing.expectEqualStrings("backend_not_implemented", result.receipt.reason_code.?);
+    // Non-Linux: backend_not_implemented; Linux without ABI: landlock_unavailable;
+    // Linux with ABI but missing path: landlock_path_open_failed / landlock_apply_failed.
+    try std.testing.expect(result.receipt.posture == .unavailable or result.receipt.posture == .failed);
 }
 
-test "mode on + stub backend fails closed with RequireFailed" {
+test "mode on without usable Landlock fails closed with RequireFailed" {
     var env_map = std.process.Environ.Map.init(std.testing.allocator);
     defer env_map.deinit();
     try env_map.put("PATH", "/bin");
@@ -255,7 +296,7 @@ test "mode on + stub backend fails closed with RequireFailed" {
     const err = applyBeforeExec(.{
         .allocator = std.testing.allocator,
         .mode = .on,
-        .workspace_root = "/tmp/orca-apply-ws",
+        .workspace_root = "/tmp/orca-apply-ws-nonexistent-u05",
         .env_map = &env_map,
     });
     try std.testing.expectError(error.RequireFailed, err);
@@ -283,7 +324,9 @@ test "mode auto + invalid workspace degrades to unavailable" {
     try std.testing.expectEqualStrings("profile_compile_failed", result.receipt.reason_code.?);
 }
 
-test "stub path never yields active receipt or mayReportActive" {
+test "non-Linux never yields active receipt from apply seam" {
+    if (builtin.os.tag == .linux) return error.SkipZigTest;
+
     const modes = [_]OsSandboxMode{ .off, .auto };
     for (modes) |mode| {
         const result = try applyBeforeExec(.{
@@ -301,14 +344,13 @@ test "stub path never yields active receipt or mayReportActive" {
 
 test "fd scrub call site is documented as child-only" {
     try std.testing.expect(fd_scrub_call_site_is_child_only);
-    // Sanity: keep set is stdio only (0/1/2).
     try std.testing.expect(fd_scrub.isKeptFd(0, &fd_scrub.default_keep_fds));
     try std.testing.expect(fd_scrub.isKeptFd(1, &fd_scrub.default_keep_fds));
     try std.testing.expect(fd_scrub.isKeptFd(2, &fd_scrub.default_keep_fds));
     try std.testing.expect(fd_scrub.shouldCloseFd(3, &fd_scrub.default_keep_fds));
 }
 
-test "production apply seam is wired but stubs cannot satisfy active" {
+test "production apply seam is wired; active only with complete receipt" {
     try std.testing.expect(launch_authority.production_apply_wired);
     const result = try applyBeforeExec(.{
         .allocator = std.testing.allocator,
@@ -316,5 +358,54 @@ test "production apply seam is wired but stubs cannot satisfy active" {
         .workspace_root = "/workspace",
         .env_map = null,
     });
-    try std.testing.expect(!launch_authority.mayReportSessionActive(result.receipt));
+    // On macOS / Landlock-missing Linux: not active. On Linux with Landlock + real
+    // workspace path open: may be failed (path) not active for fictional /workspace.
+    if (result.receipt.isActive()) {
+        try std.testing.expect(launch_authority.mayReportSessionActive(result.receipt));
+        try std.testing.expectEqual(posture.BackendMechanism.landlock, result.receipt.mechanism);
+        try std.testing.expect(result.receipt.profile_hash_hex != null);
+    } else {
+        try std.testing.expect(!launch_authority.mayReportSessionActive(result.receipt));
+    }
+}
+
+test "Linux Landlock can attach active when workspace exists" {
+    if (builtin.os.tag != .linux) return error.SkipZigTest;
+    if (!landlock.isAbiAvailable()) return error.SkipZigTest;
+
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const root = try tmp.dir.realPathFileAlloc(std.testing.io, ".", std.testing.allocator);
+    defer std.testing.allocator.free(root);
+
+    const result = try applyBeforeExec(.{
+        .allocator = std.testing.allocator,
+        .mode = .auto,
+        .workspace_root = root,
+        .env_map = null,
+        .include_tmp = false,
+    });
+
+    try std.testing.expect(result.receipt.isActive());
+    try std.testing.expect(result.mayReportActive());
+    try std.testing.expectEqual(posture.BackendMechanism.landlock, result.receipt.mechanism);
+    try std.testing.expect(result.receipt.profile_hash_hex != null);
+    // N1: hash still readable after apply returns (owned copy, not dangling).
+    const hash_view = result.receipt.profileHashSlice().?;
+    try std.testing.expectEqual(@as(usize, 64), hash_view.len);
+    try std.testing.expectEqualStrings(result.profile_hash_hex.?[0..], hash_view);
+
+    // mode on also succeeds when Landlock works.
+    const on_result = try applyBeforeExec(.{
+        .allocator = std.testing.allocator,
+        .mode = .on,
+        .workspace_root = root,
+        .env_map = null,
+    });
+    try std.testing.expect(on_result.receipt.isActive());
+}
+
+test "never claims network in active landlock fs_scope" {
+    const complete = posture.activeReceipt(.landlock, "abcd", "workspace RW, system RO, no home");
+    try std.testing.expect(std.mem.indexOf(u8, complete.fs_scope, "network") == null);
 }

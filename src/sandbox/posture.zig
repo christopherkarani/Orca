@@ -74,12 +74,19 @@ pub const BackendMechanism = enum {
 pub const AttachReceipt = struct {
     posture: SessionPosture,
     mechanism: BackendMechanism = .none,
-    profile_hash_hex: ?[]const u8 = null,
+    /// Owned hex hash when active (fixed storage — avoids UAF on returned receipts).
+    profile_hash_hex: ?[64]u8 = null,
     fs_scope: []const u8 = "none",
     reason_code: ?[]const u8 = null,
 
     pub fn isActive(self: AttachReceipt) bool {
         return self.posture == .active and self.profile_hash_hex != null and self.mechanism != .none;
+    }
+
+    /// View the owned hash as a slice (valid for lifetime of this receipt value).
+    pub fn profileHashSlice(self: *const AttachReceipt) ?[]const u8 {
+        if (self.profile_hash_hex) |*h| return h[0..];
+        return null;
     }
 };
 
@@ -105,10 +112,14 @@ pub fn activeReceipt(
     profile_hash_hex: []const u8,
     fs_scope: []const u8,
 ) AttachReceipt {
+    // Copy into owned fixed storage (N1: no borrow of caller-owned / ephemeral memory).
+    var hex: [64]u8 = .{'0'} ** 64;
+    const n = @min(profile_hash_hex.len, 64);
+    @memcpy(hex[0..n], profile_hash_hex[0..n]);
     return .{
         .posture = .active,
         .mechanism = mechanism,
-        .profile_hash_hex = profile_hash_hex,
+        .profile_hash_hex = hex,
         .fs_scope = fs_scope,
         .reason_code = null,
     };
