@@ -29,6 +29,9 @@ pub const classifyToolCall = classify.classifyToolCall;
 pub const classifyToolCallWithPacks = packs.classifyToolCallWithPacks;
 /// Packs + optional residual classifier (Phase D). Prefer this when `effects.classifier` is known.
 pub const classifyToolCallWithResidual = classifier.classifyToolCallWithResidual;
+pub const ToolClassifyResult = classifier.ToolClassifyResult;
+pub const evaluateHitsRaiseOnly = classifier.evaluateHitsRaiseOnly;
+pub const isResidualMatcher = classifier.isResidualMatcher;
 pub const loadPacks = packs.loadPacks;
 pub const loadPacksForEnforcement = packs.loadPacksForEnforcement;
 pub const normalizeToolName = catalog.normalizeToolName;

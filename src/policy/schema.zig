@@ -32,6 +32,14 @@ pub const Mode = enum {
             .ci => .ci,
         };
     }
+
+    /// Modes that fail closed on unavailable residual classifier (Phase D).
+    pub fn isEnforcing(self: Mode) bool {
+        return switch (self) {
+            .strict, .ci, .redteam => true,
+            .observe, .ask, .trusted => false,
+        };
+    }
 };
 
 pub const DecisionValue = enum {

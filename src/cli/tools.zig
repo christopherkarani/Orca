@@ -124,15 +124,13 @@ fn classify(io: std.Io, argv: []const []const u8, stdout: anytype, stderr: anyty
         }
     }
 
-    const hits = orca_policy.effects.classifyToolCallWithResidual(allocator, &pack_set, name, args_view, classifier_enabled) catch |err| {
-        if (err == error.ClassifierUnavailable) {
-            try stderr.writeAll("orca tools classify: effects.classifier unavailable\n");
-            return exit_codes.general;
-        }
-        return err;
-    };
-    defer allocator.free(hits);
-    try orca_policy.effects.writeHitsHuman(stdout, hits);
+    const classified = try orca_policy.effects.classifyToolCallWithResidual(allocator, &pack_set, name, args_view, classifier_enabled);
+    defer classified.deinit(allocator);
+    if (classified.unavailable) {
+        try stderr.writeAll("orca tools classify: effects.classifier unavailable\n");
+        return exit_codes.general;
+    }
+    try orca_policy.effects.writeHitsHuman(stdout, classified.hits);
 
     if (loaded_policy) |*loaded| {
         var evaluation = try orca_policy.evaluate.toolWithPacks(loaded, name, args_view, &pack_set, allocator);

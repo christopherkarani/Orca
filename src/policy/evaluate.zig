@@ -99,29 +99,27 @@ pub fn mcpToolCallWithArgs(
     return mergeWithEffects(allocator, mode, policy, tool_name, args, surface, ctx.effect_packs);
 }
 
-/// Merge surface evaluation with effect-class rules when `effects:` is configured.
-/// Higher restriction wins (deny > ask > allow > observe). Equal severity keeps the surface result.
-/// Structural / network / shell hits raise restriction only (never alone flip surface deny → allow).
-fn mergeEffectHits(
-    allocator: std.mem.Allocator,
-    mode: schema.Mode,
-    policy: *const schema.Policy,
-    hits: []const effects.EffectHit,
-    surface: schema.Evaluation,
-) !schema.Evaluation {
-    if (!policy.effects.isActive()) return surface;
-
+fn effectsRuleView(policy: *const schema.Policy) effects.EffectsRuleView {
     const default_kind: ?effects.EffectDecisionKind = if (policy.effects.default) |default|
         decisionValueToEffectKind(default)
     else
         null;
-
-    const match = effects.evaluateHits(hits, .{
+    return .{
         .allow = policy.effects.allow,
         .deny = policy.effects.deny,
         .ask = policy.effects.ask,
         .default = default_kind,
-    });
+    };
+}
+
+/// Merge surface evaluation with an effect-class match.
+/// Higher restriction wins (deny > ask > allow > observe). Equal severity keeps the surface result.
+fn mergeEffectMatch(
+    allocator: std.mem.Allocator,
+    mode: schema.Mode,
+    match: effects.EffectMatch,
+    surface: schema.Evaluation,
+) !schema.Evaluation {
     if (match.kind == .none) return surface;
 
     var effect_eval = try evaluationFromEffectMatch(allocator, mode, match);
@@ -133,15 +131,21 @@ fn mergeEffectHits(
     return surface;
 }
 
-fn isEnforcingMode(mode: schema.Mode) bool {
-    return switch (mode) {
-        .strict, .ci, .redteam => true,
-        .observe, .ask, .trusted => false,
-    };
+/// Merge surface evaluation with effect-class rules when `effects:` is configured.
+/// Structural / network / shell hits raise restriction only (never alone flip surface deny → allow).
+fn mergeEffectHits(
+    allocator: std.mem.Allocator,
+    mode: schema.Mode,
+    policy: *const schema.Policy,
+    hits: []const effects.EffectHit,
+    surface: schema.Evaluation,
+) !schema.Evaluation {
+    if (!policy.effects.isActive()) return surface;
+    const match = effects.evaluateHits(hits, effectsRuleView(policy));
+    return mergeEffectMatch(allocator, mode, match, surface);
 }
 
-fn evaluationClassifierUnavailable(allocator: std.mem.Allocator, mode: schema.Mode) !schema.Evaluation {
-    _ = mode;
+fn evaluationClassifierUnavailable(allocator: std.mem.Allocator) !schema.Evaluation {
     const rule_id = try allocator.dupe(u8, "effects.classifier");
     errdefer allocator.free(rule_id);
     const explanation = try allocator.dupe(u8, "effects.classifier unavailable");
@@ -159,12 +163,6 @@ fn evaluationClassifierUnavailable(allocator: std.mem.Allocator, mode: schema.Mo
     };
 }
 
-/// Raise-only residual: prefer higher severity between base (A–C) and combined (A–C + residual).
-fn preferRaiseOnly(base: effects.EffectMatch, combined: effects.EffectMatch) effects.EffectMatch {
-    if (combined.kind.severity() >= base.kind.severity()) return combined;
-    return base;
-}
-
 fn mergeWithEffects(
     allocator: std.mem.Allocator,
     mode: schema.Mode,
@@ -176,64 +174,23 @@ fn mergeWithEffects(
 ) !schema.Evaluation {
     if (!policy.effects.isActive()) return surface;
 
-    const classifier_enabled = policy.effects.classifier.isEnabled();
-    const hits = effects.classifyToolCallWithResidual(allocator, pack_set, tool_name, args, classifier_enabled) catch |err| {
-        if (err == error.ClassifierUnavailable) {
-            if (isEnforcingMode(mode)) {
-                surface.deinit(allocator);
-                return evaluationClassifierUnavailable(allocator, mode);
-            }
-            // observe / trusted / ask: do not raise; continue with packs-only.
-            const base_hits = try effects.classifyToolCallWithPacks(allocator, pack_set, tool_name, args);
-            defer allocator.free(base_hits);
-            return mergeEffectHits(allocator, mode, policy, base_hits, surface);
-        }
-        return err;
-    };
-    defer allocator.free(hits);
+    const classified = try effects.classifyToolCallWithResidual(
+        allocator,
+        pack_set,
+        tool_name,
+        args,
+        policy.effects.classifier.isEnabled(),
+    );
+    defer classified.deinit(allocator);
 
-    if (!classifier_enabled) {
-        return mergeEffectHits(allocator, mode, policy, hits, surface);
-    }
-
-    // Raise-only: residual must not reduce severity vs A–C-only evaluation.
-    const default_kind: ?effects.EffectDecisionKind = if (policy.effects.default) |default|
-        decisionValueToEffectKind(default)
-    else
-        null;
-    const rules: effects.EffectsRuleView = .{
-        .allow = policy.effects.allow,
-        .deny = policy.effects.deny,
-        .ask = policy.effects.ask,
-        .default = default_kind,
-    };
-
-    // Recompute base (packs only) for raise-only compare when residual matchers present.
-    var has_residual = false;
-    for (hits) |h| {
-        if (std.mem.startsWith(u8, h.matcher, "classifier.local.")) {
-            has_residual = true;
-            break;
-        }
-    }
-    if (!has_residual) {
-        return mergeEffectHits(allocator, mode, policy, hits, surface);
-    }
-
-    const base_hits = try effects.classifyToolCallWithPacks(allocator, pack_set, tool_name, args);
-    defer allocator.free(base_hits);
-    const base_match = effects.evaluateHits(base_hits, rules);
-    const combined_match = effects.evaluateHits(hits, rules);
-    const match = preferRaiseOnly(base_match, combined_match);
-    if (match.kind == .none) return surface;
-
-    var effect_eval = try evaluationFromEffectMatch(allocator, mode, match);
-    if (decisionSeverity(effect_eval) > decisionSeverity(surface)) {
+    if (classified.unavailable and mode.isEnforcing()) {
         surface.deinit(allocator);
-        return effect_eval;
+        return evaluationClassifierUnavailable(allocator);
     }
-    effect_eval.deinit(allocator);
-    return surface;
+
+    // Raise-only residual: partition residual matchers (no second packs classify).
+    const match = try effects.evaluateHitsRaiseOnly(allocator, classified.hits, effectsRuleView(policy));
+    return mergeEffectMatch(allocator, mode, match, surface);
 }
 
 fn mergeNetworkWithEffects(
