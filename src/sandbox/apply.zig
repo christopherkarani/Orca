@@ -175,9 +175,9 @@ pub const ApplyResult = struct {
 };
 
 /// Platform apply outcome from Landlock/Seatbelt.
+/// Parent seam never returns a live-session attach: only prepared_child materials
+/// (or unavailable/failed). Session `active` requires child status-pipe + promote.
 const PlatformApplyStatus = enum {
-    /// Real attach succeeded (child Landlock apply verified).
-    attached,
     /// Backend not present / not implemented for this build.
     unavailable,
     /// Backend present but apply failed.
@@ -258,32 +258,6 @@ pub fn applyBeforeExec(boundary: ApplyBoundary) ApplyError!ApplyResult {
     const platform = tryPlatformApply(boundary.allocator, boundary.mode, &compiled);
 
     switch (platform.status) {
-        .attached => {
-            // N1: activeReceipt copies hash into owned [64]u8 — no UAF after compiled.deinit.
-            const receipt = posture.activeReceipt(platform.mechanism, hash_copy[0..], "workspace RW, system RO, no home");
-            if (!receipt.isActive()) {
-                setFailReason(boundary, "attach_incomplete");
-                if (boundary.mode == .on) return error.RequireFailed;
-                return .{
-                    .receipt = posture.failedReceipt("attach_incomplete"),
-                    .env_scrubbed = scrubbed,
-                    .env_keys_removed = removed,
-                    .profile_compiled = true,
-                    .profile_hash_hex = hash_copy,
-                };
-            }
-            // Transfer compiled profile so agent spawn can landlock the real child (U07).
-            transfer_landlock = true;
-            return .{
-                .receipt = receipt,
-                .env_scrubbed = scrubbed,
-                .env_keys_removed = removed,
-                .profile_compiled = true,
-                .profile_hash_hex = hash_copy,
-                .landlock_profile = compiled,
-                .allocator = boundary.allocator,
-            };
-        },
         .prepared_child => {
             // Parent prepare only — not active until proven agent-child apply (U07 / status pipe).
             // Linux: transfer landlock profile. macOS: keep SBPL. Spawn path applies then promotes.

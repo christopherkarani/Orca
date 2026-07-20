@@ -166,9 +166,14 @@ pub const StdioBehavior = enum {
     ignore,
 };
 
-/// Scaffold / unit-test surface only (M-15). Production agent launch uses
-/// `sandbox.apply.applyBeforeExec` + `process.OsChildApply` / `apply_posix`, not this path.
-/// `PreparedSandbox` must never alone authorize session `active` (S-GLO-01).
+/// Scaffold / unit-test surface only (M-15 / F-8).
+///
+/// **Do not use for production agent launch.** Production uses
+/// `sandbox.apply.applyBeforeExec` + `process.OsChildApply` / `apply_posix`.
+/// This path provides process-group helpers only — no Landlock/Seatbelt apply —
+/// and must never authorize session `active` (S-GLO-01).
+pub const scaffold_prepare_is_test_only: bool = true;
+
 pub const PrepareRequest = struct {
     io: std.Io,
     argv: []const []const u8,
@@ -179,6 +184,7 @@ pub const PrepareRequest = struct {
 
 /// Scaffold sandbox process handle for tests and doctor capability paths.
 /// Not the production `orca run` attach path (see apply.zig / apply_posix.zig).
+/// Spawning via this type does **not** install an OS FS sandbox.
 pub const PreparedSandbox = struct {
     io: std.Io,
     argv: []const []const u8,
@@ -416,4 +422,9 @@ test "required backend features require active enforcement" {
     try std.testing.expectEqual(Feature.network_enforce, report.firstMissingRequired(&.{.network_enforce}).?.feature);
     try std.testing.expectEqual(Feature.seccomp, report.firstMissingRequired(&.{.seccomp}).?.feature);
     try std.testing.expectEqual(Feature.path_shims, report.firstMissingRequired(&.{.path_shims}).?.feature);
+}
+
+test "scaffold prepare is explicitly test-only (F-8 dual-path guard)" {
+    // Production attach must use apply.applyBeforeExec + apply_posix, never this flag-as-false.
+    try std.testing.expect(scaffold_prepare_is_test_only);
 }

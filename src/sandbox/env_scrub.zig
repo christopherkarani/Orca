@@ -5,12 +5,13 @@
 //! when mode is `on`/`auto`.
 //!
 //! ## Scrub denylist (removed)
-//! - Dynamic linker / preload: `LD_PRELOAD`, `LD_LIBRARY_PATH`, `LD_AUDIT`,
-//!   `LD_DEBUG_OUTPUT`, `GCONV_PATH`, `DYLD_*`
-//! - Shell startup injection: `BASH_ENV`, `ENV`, `ZDOTDIR`, `BASH_FUNC_*`
-//! - Interpreter / startup injection: `PYTHONSTARTUP`, `PYTHONPATH`,
-//!   `NODE_OPTIONS`, `RUBYOPT`, `RUBYLIB`, `PERL5OPT`, `PERL5LIB`,
+//! - Dynamic linker / preload: all `LD_*`, `GCONV_PATH`, `GLIBC_TUNABLES`, `DYLD_*`
+//! - Shell startup injection: `BASH_ENV`, `ENV`, `ZDOTDIR`, `BASH_FUNC_*`,
+//!   `PROMPT_COMMAND`, `CDPATH`, `IFS`, `SHELLOPTS`, `BASHOPTS`
+//! - Interpreter / startup injection: `PYTHONSTARTUP`, `PYTHONPATH`, `PYTHONHOME`,
+//!   `NODE_OPTIONS`, `NODE_PATH`, `RUBYOPT`, `RUBYLIB`, `PERL5OPT`, `PERL5LIB`,
 //!   `JAVA_TOOL_OPTIONS`, `_JAVA_OPTIONS`, `DOTNET_STARTUP_HOOKS`
+//! - TLS / crypto config injection: `OPENSSL_CONF`, `SSLKEYLOGFILE`
 //!
 //! ## Keep class (not scrubbed by this module)
 //! - `PATH`, `HOME`, `LANG`, `TERM`
@@ -23,18 +24,27 @@
 const std = @import("std");
 
 /// Exact env names removed for shell/interpreter/library injection.
+/// (Most `LD_*` are covered by the `LD_` prefix; exact entries kept for docs/tests.)
 pub const exact_scrub_keys = [_][]const u8{
     "LD_PRELOAD",
     "LD_LIBRARY_PATH",
     "LD_AUDIT",
     "LD_DEBUG_OUTPUT",
     "GCONV_PATH",
+    "GLIBC_TUNABLES",
     "BASH_ENV",
     "ENV",
     "ZDOTDIR",
+    "PROMPT_COMMAND",
+    "CDPATH",
+    "IFS",
+    "SHELLOPTS",
+    "BASHOPTS",
     "PYTHONSTARTUP",
     "PYTHONPATH",
+    "PYTHONHOME",
     "NODE_OPTIONS",
+    "NODE_PATH",
     "RUBYOPT",
     "RUBYLIB",
     "PERL5OPT",
@@ -42,10 +52,13 @@ pub const exact_scrub_keys = [_][]const u8{
     "JAVA_TOOL_OPTIONS",
     "_JAVA_OPTIONS",
     "DOTNET_STARTUP_HOOKS",
+    "OPENSSL_CONF",
+    "SSLKEYLOGFILE",
 };
 
 /// Prefixes removed (all matching keys). Case-sensitive.
 pub const scrub_prefixes = [_][]const u8{
+    "LD_",
     "DYLD_",
     "BASH_FUNC_",
 };
@@ -165,6 +178,15 @@ test "shouldScrubKey removes expanded linker and runtime injection keys" {
     try std.testing.expect(shouldScrubKey("LD_AUDIT"));
     try std.testing.expect(shouldScrubKey("GCONV_PATH"));
     try std.testing.expect(shouldScrubKey("LD_DEBUG_OUTPUT"));
+    try std.testing.expect(shouldScrubKey("LD_USE_LOAD_BIAS")); // LD_ prefix
+    try std.testing.expect(shouldScrubKey("GLIBC_TUNABLES"));
+    try std.testing.expect(shouldScrubKey("OPENSSL_CONF"));
+    try std.testing.expect(shouldScrubKey("SSLKEYLOGFILE"));
+    try std.testing.expect(shouldScrubKey("PYTHONHOME"));
+    try std.testing.expect(shouldScrubKey("NODE_PATH"));
+    try std.testing.expect(shouldScrubKey("PROMPT_COMMAND"));
+    try std.testing.expect(shouldScrubKey("CDPATH"));
+    try std.testing.expect(shouldScrubKey("IFS"));
     try std.testing.expect(shouldScrubKey("DOTNET_STARTUP_HOOKS"));
     try std.testing.expect(shouldScrubKey("JAVA_TOOL_OPTIONS"));
     try std.testing.expect(shouldScrubKey("_JAVA_OPTIONS"));

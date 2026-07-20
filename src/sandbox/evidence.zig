@@ -48,8 +48,16 @@ pub const Manifest = struct {
         if (self.binary_sha256.len == 0) return error.MissingBinaryHash;
         if (self.platform_os.len == 0) return error.MissingPlatform;
         if (self.command.len == 0) return error.MissingCommand;
-        // Probe-only attach is forbidden for enforcement manifests.
+        // Probe-only / prepare-only attach is forbidden for enforcement manifests (F-1).
         if (std.mem.eql(u8, self.ctrl_attach.detail, "capability_probe")) return error.ProbeOnlyAttach;
+        if (std.mem.eql(u8, self.ctrl_attach.detail, "zig_status_pipe_or_prepare_handshake")) return error.PrepareOnlyAttach;
+        if (std.mem.indexOf(u8, self.ctrl_attach.detail, "prepare") != null and
+            std.mem.indexOf(u8, self.ctrl_attach.detail, "without") != null)
+        {
+            return error.PrepareOnlyAttach;
+        }
+        // CTRL-ATTACH without TEST-DENY is not an enforcement claim.
+        if (self.ctrl_attach.ok and !self.test_deny.ok) return error.AttachWithoutDeny;
     }
 };
 
@@ -132,6 +140,42 @@ test "evidence manifest rejects capability_probe as CTRL-ATTACH (S-GLO-09)" {
         .ctrl_off = .{ .ok = true },
     };
     try std.testing.expectError(error.ProbeOnlyAttach, bad.validate());
+}
+
+test "evidence manifest rejects prepare-only and attach-without-deny (F-1)" {
+    const prepare_only = Manifest{
+        .gate_ids = &.{"P1-I-01"},
+        .case_id = "prep",
+        .source_commit = "deadbeef",
+        .binary_sha256 = "00",
+        .platform_os = "linux",
+        .platform_arch = "x86_64",
+        .backend_id = "landlock",
+        .command = "test-fast",
+        .ctrl_baseline = .{ .ok = true },
+        .ctrl_attach = .{ .ok = true, .detail = "zig_status_pipe_or_prepare_handshake" },
+        .test_deny = .{ .ok = true },
+        .ctrl_neighbor = .{ .ok = true },
+        .ctrl_off = .{ .ok = true },
+    };
+    try std.testing.expectError(error.PrepareOnlyAttach, prepare_only.validate());
+
+    const no_deny = Manifest{
+        .gate_ids = &.{"P1-I-01"},
+        .case_id = "no-deny",
+        .source_commit = "deadbeef",
+        .binary_sha256 = "00",
+        .platform_os = "linux",
+        .platform_arch = "x86_64",
+        .backend_id = "landlock",
+        .command = "test-fast",
+        .ctrl_baseline = .{ .ok = true },
+        .ctrl_attach = .{ .ok = true, .detail = "zig_real_fs_deny_canary" },
+        .test_deny = .{ .ok = false },
+        .ctrl_neighbor = .{ .ok = true },
+        .ctrl_off = .{ .ok = true },
+    };
+    try std.testing.expectError(error.AttachWithoutDeny, no_deny.validate());
 }
 
 test "valid enforcement manifest serializes and reports all controls" {

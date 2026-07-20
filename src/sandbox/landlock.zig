@@ -215,11 +215,15 @@ fn addPathBeneathRule(
 }
 
 /// Expand an RW grant that contains control roots into:
+/// - RO PATH_BENEATH on the grant path itself (readdir/list/walk only — no MAKE/WRITE)
 /// - RO PATH_BENEATH on each control root under the grant (readable, not writable)
 /// - RW PATH_BENEATH on each immediate child that is not a control path
 ///
 /// Landlock cannot deny a subpath of a granted PATH_BENEATH, so we never install
-/// a single RW rule on a directory that contains a control root (M-1 / P1-U-04).
+/// a single RW (or MAKE) rule on a directory that contains a control root (M-1).
+/// Create-at-grant-root is intentionally not granted: MAKE_* on the parent would
+/// also allow creating under control roots. Seatbelt uses require-not; Landlock
+/// approximates with child RW + root RO (F-2 parity residual: no create-at-root).
 fn addRwGrantExcludingControls(
     ruleset_fd: i32,
     grant_path: []const u8,
@@ -240,6 +244,12 @@ fn addRwGrantExcludingControls(
     // If the grant path itself is a control root, do not grant RW at all.
     if (isControlPath(grant_path, control_roots)) {
         return false;
+    }
+
+    // RO on the grant directory so readdir(".") / listing workspace works without
+    // granting MAKE/WRITE that would cover control subtrees (F-2).
+    if (!try addPathBeneathRule(ruleset_fd, grant_path, ro, true)) {
+        return error.PathOpenFailed;
     }
 
     // Enumerate immediate children; grant RW only outside control trees.
@@ -430,7 +440,7 @@ test "verifyApplyInChild and applySelf skip or run on Linux only" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
     try tmp.dir.writeFile(std.testing.io, .{ .sub_path = "neighbor.txt", .data = "ok" });
-    try tmp.dir.makePath(std.testing.io, ".orca");
+    try tmp.dir.createDir(std.testing.io, ".orca", .default_dir);
     const root = try tmp.dir.realPathFileAlloc(std.testing.io, ".", std.testing.allocator);
     defer std.testing.allocator.free(root);
 
@@ -461,7 +471,7 @@ test "real FS deny: outside denied; neighbor RW; control root not writable" {
 
     var ws_tmp = std.testing.tmpDir(.{});
     defer ws_tmp.cleanup();
-    try ws_tmp.dir.makePath(io, ".orca");
+    try ws_tmp.dir.createDir(io, ".orca", .default_dir);
     try ws_tmp.dir.writeFile(io, .{ .sub_path = "neighbor.txt", .data = "WORKSPACE_NEIGHBOR_OK" });
     const ws_root = try ws_tmp.dir.realPathFileAlloc(io, ".", allocator);
     defer allocator.free(ws_root);
@@ -534,6 +544,34 @@ test "real FS deny: outside denied; neighbor RW; control root not writable" {
             linux.exit(6); // control write leak
         }
 
+        // F-2: workspace root is listable (RO expand), but create-at-root is denied
+        // (MAKE on parent would cover control trees).
+        @memcpy(path_buf[0..ws_root.len], ws_root);
+        path_buf[ws_root.len] = 0;
+        const ws_dir_fd = linux.open(
+            path_buf[0..ws_root.len :0].ptr,
+            .{ .DIRECTORY = true, .CLOEXEC = true },
+            0,
+        );
+        if (linux.errno(ws_dir_fd) != .SUCCESS) linux.exit(7);
+        _ = linux.close(@intCast(ws_dir_fd));
+
+        const suffix = "/new_at_root.txt";
+        if (ws_root.len + suffix.len >= path_buf.len) linux.exit(8);
+        @memcpy(path_buf[0..ws_root.len], ws_root);
+        @memcpy(path_buf[ws_root.len..][0..suffix.len], suffix);
+        const create_len = ws_root.len + suffix.len;
+        path_buf[create_len] = 0;
+        const new_fd = linux.open(
+            path_buf[0..create_len :0].ptr,
+            .{ .ACCMODE = .WRONLY, .CREAT = true, .TRUNC = true, .CLOEXEC = true },
+            0o600,
+        );
+        if (linux.errno(new_fd) == .SUCCESS) {
+            _ = linux.close(@intCast(new_fd));
+            linux.exit(8); // create-at-root should not gain MAKE on expanded parent
+        }
+
         linux.exit(0);
     }
 
@@ -554,6 +592,8 @@ test "real FS deny: outside denied; neighbor RW; control root not writable" {
         4 => return error.WorkspaceNeighborUnreadableUnderSandbox,
         5 => return error.WorkspaceWriteFailedUnderSandbox,
         6 => return error.ControlRootWritableUnderSandbox,
+        7 => return error.WorkspaceRootUnlistableUnderExpand,
+        8 => return error.CreateAtWorkspaceRootAllowedUnderExpand,
         else => return error.UnexpectedSandboxProbeExit,
     }
 }

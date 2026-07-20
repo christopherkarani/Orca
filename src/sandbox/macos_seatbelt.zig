@@ -407,6 +407,13 @@ test "real FS deny: outside canary denied; workspace readable and writable" {
         try std.testing.expectEqualStrings("WORKSPACE_NEIGHBOR_OK", baseline_ws);
     }
 
+    // Control path under workspace (must not be agent-writable under live Seatbelt).
+    try ws_tmp.dir.createDir(io, ".orca", .default_dir);
+    const control_write = try std.fs.path.join(allocator, &.{ ws_root, ".orca", "policy.yaml" });
+    defer allocator.free(control_write);
+    const control_write_z = try allocator.dupeZ(u8, control_write);
+    defer allocator.free(control_write_z);
+
     // Prepare real product SBPL from compiled profile (not a hand-rolled minimal string).
     var compiled = try profile.compileProfile(allocator, .{
         .workspace_root = ws_root,
@@ -416,6 +423,7 @@ test "real FS deny: outside canary denied; workspace readable and writable" {
     // Outside path must not sit under the workspace grant.
     try std.testing.expect(!compiled.isAgentWritable(canary_path));
     try std.testing.expect(compiled.isAgentWritable(neighbor_path));
+    try std.testing.expect(!compiled.isAgentWritable(control_write));
 
     const prepared = prepareForChildApply(allocator, &compiled);
     defer if (prepared.sbpl_z) |p| allocator.free(p);
@@ -452,6 +460,17 @@ test "real FS deny: outside canary denied; workspace readable and writable" {
         _ = std.c.close(wfd);
         if (wrote != 5) std.c._exit(5);
 
+        // F-3: control root write must fail under live Seatbelt (not SBPL string only).
+        const cfd = std.c.open(
+            control_write_z.ptr,
+            .{ .ACCMODE = .WRONLY, .CREAT = true, .TRUNC = true },
+            @as(std.c.mode_t, 0o600),
+        );
+        if (cfd >= 0) {
+            _ = std.c.close(cfd);
+            std.c._exit(6); // control write leak
+        }
+
         std.c._exit(0);
     }
 
@@ -467,6 +486,7 @@ test "real FS deny: outside canary denied; workspace readable and writable" {
         3 => return error.OutsideCanaryReadableUnderSandbox,
         4 => return error.WorkspaceNeighborUnreadableUnderSandbox,
         5 => return error.WorkspaceWriteFailedUnderSandbox,
+        6 => return error.ControlRootWritableUnderSandbox,
         else => return error.UnexpectedSandboxChildExit,
     }
     try std.testing.expectEqual(@as(u8, 0), exit_code);

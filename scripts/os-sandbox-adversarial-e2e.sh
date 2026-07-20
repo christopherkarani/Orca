@@ -1,17 +1,19 @@
 #!/usr/bin/env bash
-# Adversarial OS FS sandbox e2e + evidence generator (P0-I-06 / M-11 / M-12).
+# Adversarial OS FS sandbox e2e + evidence generator (P0-I-06 / M-11 / M-12 / F-1 / F-5).
 #
-# Primary proofs use the production apply path unit tests (status-pipe attach,
-# outside deny, neighbor RW, control-root non-writable on Landlock). Full
-# `orca run` shell evaluation requires the Rust daemon; when the daemon is
-# unavailable this script still records attach proofs from the Zig test surface
-# and never claims false CTRL-ATTACH from capability probes alone.
+# CTRL-ATTACH is set only when a real FS deny canary under the production apply
+# path (Landlock applySelf / Seatbelt applyInChild + product profile) passes.
+# Prepare-only unit tests and promote-without-spawn must never mark attach.
+#
+# Full interactive `orca run` still needs the Rust daemon for command-guard; this
+# script records Zig production-path apply proofs and never claims false
+# CTRL-ATTACH from capability probes alone.
 #
 # Usage:
 #   ./scripts/os-sandbox-adversarial-e2e.sh [--case CASE_ID] [--binary PATH] [--out DIR]
 #
-# Exit 0 when baseline proofs pass. Exit 1 only on contradictory results
-# (attach claimed but deny/neighbor failed).
+# Exit 0 when baseline proofs pass without contradictory claims.
+# Exit 1 on test-fast failure, attach-without-deny, or Linux ABI present but deny skipped.
 
 set -euo pipefail
 
@@ -27,7 +29,7 @@ while [[ $# -gt 0 ]]; do
     --binary) BINARY="$2"; shift 2 ;;
     --out) OUT_DIR="$2"; shift 2 ;;
     -h|--help)
-      sed -n '2,18p' "$0"
+      sed -n '2,20p' "$0"
       exit 0
       ;;
     *) echo "unknown arg: $1" >&2; exit 2 ;;
@@ -72,9 +74,9 @@ neighbor_detail="not_proven"
 off_detail="not_run"
 backend_id="none"
 exit_code=0
+linux_deny_required=false
 
 # --- Zig production-path proofs (apply_posix / landlock / seatbelt) ----------
-# test-fast already covers these; re-run the sandbox-related suite for evidence.
 echo "Running sandbox apply/landlock/seatbelt proofs via test-fast..."
 set +e
 TEST_LOG="$(mktemp)"
@@ -82,29 +84,25 @@ TEST_LOG="$(mktemp)"
 TEST_RC=$?
 set -e
 
-if grep -qE 'forkApplySeatbeltAndExec applies then execs on macOS with handshake\.\.\.OK' "$TEST_LOG" \
-  || grep -qE 'verifyApplyInChild and applySelf skip or run on Linux only\.\.\.OK' "$TEST_LOG" \
-  || grep -qE 'Linux Landlock prepares child plan without claiming active\.\.\.OK' "$TEST_LOG"; then
-  ctrl_attach_ok=true
-  attach_detail="zig_status_pipe_or_prepare_handshake"
-fi
-
+# Real FS deny under product profile is the only path that authorizes CTRL-ATTACH (F-1).
 if grep -qE 'real FS deny: outside canary denied; workspace readable and writable\.\.\.OK' "$TEST_LOG" \
   || grep -qE 'real FS deny: outside denied; neighbor RW; control root not writable\.\.\.OK' "$TEST_LOG"; then
   test_deny_ok=true
   deny_detail="outside_unreadable_under_sandbox"
   ctrl_neighbor_ok=true
   neighbor_detail="workspace_neighbor_rw"
-  if [[ "$OS_NAME" == "darwin" ]]; then backend_id="seatbelt"; fi
-  if [[ "$OS_NAME" == "linux" ]]; then backend_id="landlock"; fi
-  # Real FS deny implies attach
   ctrl_attach_ok=true
   attach_detail="zig_real_fs_deny_canary"
+  if [[ "$OS_NAME" == "darwin" ]]; then backend_id="seatbelt"; fi
+  if [[ "$OS_NAME" == "linux" ]]; then backend_id="landlock"; fi
 fi
 
-# SKIP on wrong OS is honest non-attach, not failure
-if grep -qE 'real FS deny:.*\.\.\.SKIP' "$TEST_LOG" && [[ "$ctrl_attach_ok" != true ]]; then
-  attach_detail="platform_skip_no_backend_on_host"
+# SKIP on wrong OS / missing ABI is honest non-attach (not a false active claim).
+if grep -qE 'real FS deny:.*\.\.\.SKIP' "$TEST_LOG"; then
+  if [[ "$ctrl_attach_ok" != true ]]; then
+    attach_detail="platform_skip_no_backend_on_host"
+    deny_detail="platform_skip"
+  fi
 fi
 
 # Mode-off unit proof
@@ -121,8 +119,24 @@ if ! grep -qE 'parent apply seam never claims active \(probe/prepare only\)\.\.\
   fi
 fi
 
-# --- Optional: orca binary mode-off smoke (does not require daemon allow) ----
-# Doctor/posture path only — command launch may fail closed without daemon.
+# F-5: On Linux CI hosts, Landlock is expected. If the suite ran and the real FS
+# deny test was neither OK nor SKIP, or we detect ABI via a Landlock prepare OK
+# without deny, fail closed rather than greenwash.
+if [[ "$OS_NAME" == "linux" ]]; then
+  if grep -qE 'Linux Landlock prepares child plan without claiming active\.\.\.OK' "$TEST_LOG" \
+    || grep -qE 'verifyApplyInChild and applySelf skip or run on Linux only\.\.\.OK' "$TEST_LOG"; then
+    # ABI/prepare path exercised — require real deny for a green attach gate.
+    linux_deny_required=true
+  fi
+  if grep -qE 'real FS deny: outside denied; neighbor RW; control root not writable\.\.\.OK' "$TEST_LOG"; then
+    linux_deny_required=false # satisfied
+  elif grep -qE 'real FS deny:.*\.\.\.SKIP' "$TEST_LOG"; then
+    # Explicit skip (no ABI) — allow partial pass without attach.
+    linux_deny_required=false
+  fi
+fi
+
+# --- Optional: orca binary smoke (does not require daemon allow) ----
 set +e
 "$BINARY" --version >/dev/null 2>&1
 BIN_RC=$?
@@ -137,18 +151,26 @@ if [[ $TEST_RC -ne 0 ]]; then
   tail -40 "$TEST_LOG" >&2 || true
 fi
 
+# Never claim attach without deny (F-1 invariant).
+if [[ "$ctrl_attach_ok" == true && "$test_deny_ok" != true ]]; then
+  echo "FAIL: CTRL-ATTACH set without TEST-DENY" >&2
+  ctrl_attach_ok=false
+  attach_detail="invalid_attach_without_deny"
+  exit_code=1
+fi
+
 MANIFEST="$OUT_DIR/${CASE_ID}-${OS_NAME}-${ARCH_NAME}.json"
 cat >"$MANIFEST" <<JSON
 {
   "schema_version": 1,
-  "gate_ids": ["P1-I-01", "P0-I-06", "M-11", "M-12"],
+  "gate_ids": ["P1-I-01", "P0-I-06", "M-11", "M-12", "F-1", "F-5"],
   "case_id": "${CASE_ID}",
   "source_commit": "${COMMIT}",
   "binary_sha256": "${BINARY_SHA}",
   "platform": {"os": "${OS_NAME}", "arch": "${ARCH_NAME}"},
   "backend_id": "${backend_id}",
   "profile_hash": "",
-  "command": "./scripts/zig build test-fast (sandbox apply/landlock/seatbelt proofs)",
+  "command": "./scripts/zig build test-fast (sandbox apply real-FS-deny proofs only for CTRL-ATTACH)",
   "exit_code": ${exit_code},
   "controls": {
     "CTRL-BASELINE": {"ok": $(bool_json $ctrl_baseline_ok), "detail": "binary_present"},
@@ -171,14 +193,15 @@ if [[ $TEST_RC -ne 0 ]]; then
   exit 1
 fi
 
+if [[ "$linux_deny_required" == true && "$test_deny_ok" != true ]]; then
+  echo "FAIL: Linux Landlock ABI/prepare path ran but real FS deny was not OK (F-5)" >&2
+  exit 1
+fi
+
 if [[ "$ctrl_attach_ok" == true ]]; then
   if [[ "$test_deny_ok" != true || "$ctrl_neighbor_ok" != true ]]; then
-    # Attach without deny is only OK for prepare/handshake tests that do not
-    # exercise canary deny (e.g. Linux CI without landlock ABI).
-    if [[ "$attach_detail" == "zig_real_fs_deny_canary" ]]; then
-      echo "FAIL: real FS deny attach claimed but deny/neighbor not green" >&2
-      exit 1
-    fi
+    echo "FAIL: attach claimed but deny/neighbor not green" >&2
+    exit 1
   fi
   echo "PASS: sandbox proofs green (attach=${attach_detail})"
   exit 0

@@ -140,7 +140,25 @@ fn forkApplyLandlockAndExecLinux(
             linux.exit(127);
         };
 
-        // Prove apply to parent before exec (S-GLO-01 handshake).
+        // chdir + argv0 preflight under the box before handshake (F-4): parent must
+        // not promote active if the agent binary is unreadable/unexecutable under grants.
+        if (cwd_z) |z| {
+            if (linux.chdir(z.ptr) != 0) {
+                closeFd(status_w);
+                linux.exit(127);
+            }
+        }
+
+        const path = argv_z[0] orelse {
+            closeFd(status_w);
+            linux.exit(127);
+        };
+        if (!preflightExecTarget(path)) {
+            closeFd(status_w);
+            linux.exit(127);
+        }
+
+        // Prove apply + launch preflight to parent (S-GLO-01 handshake).
         if (!writeStatusOk(status_w)) {
             closeFd(status_w);
             linux.exit(127);
@@ -150,13 +168,6 @@ fn forkApplyLandlockAndExecLinux(
 
         fd_scrub.closeInheritedFdsDefault();
 
-        if (cwd_z) |z| {
-            if (linux.chdir(z.ptr) != 0) linux.exit(127);
-        }
-
-        const path = argv_z[0] orelse {
-            linux.exit(127);
-        };
         _ = linux.execve(path, argv_z.ptr, envp.ptr.ptr);
         linux.exit(127);
     }
@@ -227,6 +238,23 @@ fn forkApplySeatbeltAndExecMacOs(
             std.c._exit(127);
         };
 
+        // chdir + argv0 preflight under the box before handshake (F-4).
+        if (cwd_z) |z| {
+            if (std.c.chdir(z.ptr) != 0) {
+                closeFd(status_w);
+                std.c._exit(127);
+            }
+        }
+
+        const path = argv_z[0] orelse {
+            closeFd(status_w);
+            std.c._exit(127);
+        };
+        if (!preflightExecTarget(path)) {
+            closeFd(status_w);
+            std.c._exit(127);
+        }
+
         if (!writeStatusOk(status_w)) {
             closeFd(status_w);
             std.c._exit(127);
@@ -236,13 +264,6 @@ fn forkApplySeatbeltAndExecMacOs(
 
         fd_scrub.closeInheritedFdsDefault();
 
-        if (cwd_z) |z| {
-            if (std.c.chdir(z.ptr) != 0) std.c._exit(127);
-        }
-
-        const path = argv_z[0] orelse {
-            std.c._exit(127);
-        };
         _ = std.c.execve(path, @ptrCast(argv_z.ptr), @ptrCast(envp.ptr.ptr));
         std.c._exit(127);
     }
@@ -258,6 +279,23 @@ fn forkApplySeatbeltAndExecMacOs(
     }
 
     return .{ .pid = pid };
+}
+
+// ── preflight ──────────────────────────────────────────────────────────────
+
+/// Best-effort check that `path` is readable+executable under the current box.
+/// Runs in the child after apply and optional chdir; failure fails the handshake
+/// so the parent does not promote session `active` (F-4).
+fn preflightExecTarget(path: [*:0]const u8) bool {
+    switch (builtin.os.tag) {
+        .windows, .wasi => return true,
+        else => {
+            // POSIX: R_OK=4, X_OK=1 (portable constants; libc access).
+            const R_OK: c_int = 4;
+            const X_OK: c_int = 1;
+            return std.c.access(path, R_OK | X_OK) == 0;
+        },
+    }
 }
 
 // ── status pipe ────────────────────────────────────────────────────────────

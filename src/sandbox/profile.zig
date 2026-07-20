@@ -83,6 +83,12 @@ pub const CompiledProfile = struct {
     }
 
     /// Agent-writable only under an RW grant and outside all control roots.
+    ///
+    /// Pure grant model (Seatbelt-shaped). Linux Landlock expands RW parents that
+    /// contain control roots into child RW + parent RO, so **create-at-workspace-root**
+    /// may be denied by the OS even when this returns true for paths under the
+    /// workspace (see landlock.addRwGrantExcludingControls). Prefer writing under
+    /// existing workspace children for portable agent I/O.
     pub fn isAgentWritable(self: *const CompiledProfile, path: []const u8) bool {
         if (self.isControlPath(path)) return false;
         for (self.grants) |g| {
@@ -102,9 +108,10 @@ pub const CompiledProfile = struct {
 };
 
 /// Default system read-only prefixes (no home, no /tmp).
+/// Includes `/opt` on macOS so Homebrew-style agent binaries can exec under Seatbelt.
 pub fn defaultSystemRoPrefixes() []const []const u8 {
     return switch (builtin.os.tag) {
-        .macos => &[_][]const u8{ "/usr", "/bin", "/sbin", "/lib", "/System", "/Library" },
+        .macos => &[_][]const u8{ "/usr", "/bin", "/sbin", "/lib", "/System", "/Library", "/opt" },
         else => &[_][]const u8{ "/usr", "/bin", "/sbin", "/lib" },
     };
 }
