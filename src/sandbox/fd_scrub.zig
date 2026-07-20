@@ -4,8 +4,8 @@
 //! log handles, or other parent FDs. Unit-testable via pure list/predicate
 //! helpers; actual close is a thin platform loop.
 //!
-//! Not wired into process.prepareChild here — handoff for U04-apply-seam
-//! (apply after fork / before exec, or via posix_spawn file actions).
+//! Called from the post-fork child path in `apply_posix` before exec (not in
+//! the parent). Keep set defaults to stdin/stdout/stderr.
 
 const std = @import("std");
 const builtin = @import("builtin");
@@ -89,7 +89,7 @@ fn bestEffortClose(fd: i32) void {
 
 /// Close inherited FDs above the keep set (default: keep 0/1/2).
 /// Best-effort: ignores close errors (EBADF for already-closed slots).
-/// Prefer calling from a post-fork child path (U04) or via posix_spawn file actions.
+/// Call from the post-fork child before exec (see `apply_posix`).
 pub fn closeInheritedFds(keep: []const i32) void {
     const open_max = platformOpenMax();
     if (open_max <= 0) return;

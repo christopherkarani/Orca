@@ -29,9 +29,19 @@ pub fn detect() backend.ReportSet {
     const cgroups = detectCgroups();
     backend.setReport(&reports, .cgroups, cgroups.level, cgroups.note);
 
-    // Capability probe may show backend APIs as partial; session active requires apply+attach.
-    const strong_level: backend.Level = .unavailable;
-    backend.setReport(&reports, .strong_sandbox, strong_level, "OS filesystem sandbox not active: apply-before-exec is not wired on the production launch path; capability probes are not a live session claim");
+    // Strong sandbox: Landlock capability probe only. Session active only after child apply-before-exec attach.
+    // Never claim "not wired" — production apply path is live; detect is not a live session claim (S-GLO-01).
+    const strong_level: backend.Level = switch (landlock.level) {
+        .partial, .active, .limited => .partial,
+        .failed => .failed,
+        .unavailable, .unsupported, .observe_only, .wrapper_only => .unavailable,
+    };
+    const strong_note: []const u8 = switch (landlock.level) {
+        .partial, .active, .limited => "OS filesystem sandbox API present; session active only after apply-before-exec child attach and profile hash",
+        .failed => "OS filesystem sandbox unavailable: Landlock probing failed; capability probes are not a live session claim",
+        .unavailable, .unsupported, .observe_only, .wrapper_only => "OS filesystem sandbox unavailable; capability probes are not a live session claim",
+    };
+    backend.setReport(&reports, .strong_sandbox, strong_level, strong_note);
 
     return .{
         .os = .linux,
@@ -149,8 +159,15 @@ test "Linux capability detector is target-gated and honest" {
     try std.testing.expectEqualStrings("linux", report.backend_name);
     try std.testing.expectEqual(backend.Level.active, report.get(.process_supervision).level);
     try std.testing.expect(report.get(.network_enforce).level != .active);
-    try std.testing.expectEqual(backend.Level.unavailable, report.get(.strong_sandbox).level);
+    // strong_sandbox never active from detect (S-GLO-01); partial only when Landlock API present.
+    try std.testing.expect(report.get(.strong_sandbox).level != .active);
     try std.testing.expect(!report.featureAvailable(.strong_sandbox));
+    try std.testing.expect(std.mem.indexOf(u8, report.get(.strong_sandbox).note, "not wired") == null);
+    switch (report.get(.landlock).level) {
+        .partial, .active, .limited => try std.testing.expectEqual(backend.Level.partial, report.get(.strong_sandbox).level),
+        .failed => try std.testing.expectEqual(backend.Level.failed, report.get(.strong_sandbox).level),
+        else => try std.testing.expectEqual(backend.Level.unavailable, report.get(.strong_sandbox).level),
+    }
 }
 
 test "Linux fallback launch can run a simple command" {

@@ -565,13 +565,25 @@ fn commandWithStdioAndEnv(io: std.Io, argv: []const []const u8, stdout: anytype,
         .callback = AuditContext.append,
     } else null;
 
-    // U07: when apply retained child materials, spawn via apply_posix so the agent is boxed.
+    // U07: when apply retained child materials, spawn via apply.spawnAgent so the agent is boxed.
     const SandboxSpawnCtx = struct {
         apply_result: *const sandbox.apply.ApplyResult,
 
         fn spawn(context: *anyopaque, request: core.process.CustomSpawnRequest) anyerror!std.process.Child {
             const self: *@This() = @ptrCast(@alignCast(context));
-            return spawnSandboxedAgent(self.apply_result, request);
+            const child_stdio: sandbox.apply_posix.StdioBehavior = switch (request.stdio) {
+                .inherit => .inherit,
+                .ignore => .ignore,
+            };
+            const pid = try self.apply_result.spawnAgent(
+                request.io,
+                request.allocator,
+                request.argv,
+                request.env_map,
+                request.workspace_root,
+                child_stdio,
+            );
+            return core.process.childFromPid(pid);
         }
     };
     var sandbox_spawn_ctx: SandboxSpawnCtx = .{ .apply_result = &apply_result };
@@ -593,12 +605,6 @@ fn commandWithStdioAndEnv(io: std.Io, argv: []const []const u8, stdout: anytype,
         .stdio = stdio,
         .env_map = &filtered_env.env_map,
         .env_redactions = filtered_env.redactions,
-        .os_sandbox_mode = switch (options.os_sandbox) {
-            .auto => .auto,
-            .on => .on,
-            .off => .off,
-        },
-        .os_sandbox_apply_done = true,
         .os_child_apply = os_child_apply,
         .os_child_apply_used_out = &os_child_apply_used_flag,
         .before_spawn = before_spawn,
@@ -620,10 +626,6 @@ fn commandWithStdioAndEnv(io: std.Io, argv: []const []const u8, stdout: anytype,
         error.InvalidCommand => {
             try stderr.writeAll("orca run: missing command after '--'.\n");
             return exit_codes.usage;
-        },
-        error.OsSandboxApplyRequired => {
-            try stderr.writeAll("orca run: OS sandbox apply required but was not performed.\n");
-            return exit_codes.unsupported;
         },
         error.FileNotFound => {
             try suggestions.writeSanitizedValue(stderr, "orca run: workspace not found: ", options.workspace orelse ".", "\n");
@@ -1027,44 +1029,6 @@ fn coreModeToPolicyMode(mode: core.types.Mode) policy.schema.Mode {
 }
 
 
-/// Spawn agent with OS FS apply in the child (Landlock / Seatbelt). Parent stays free.
-fn spawnSandboxedAgent(
-    apply_result: *const sandbox.apply.ApplyResult,
-    request: core.process.CustomSpawnRequest,
-) !std.process.Child {
-    if (request.argv.len == 0) return error.FileNotFound;
-    const resolved = try sandbox.apply_posix.resolveArgv0(request.io, request.allocator, request.argv[0]);
-    defer if (resolved.owned) request.allocator.free(resolved.path);
-
-    var argv_owned = try request.allocator.alloc([]const u8, request.argv.len);
-    defer request.allocator.free(argv_owned);
-    argv_owned[0] = resolved.path;
-    @memcpy(argv_owned[1..], request.argv[1..]);
-
-    const child_pid = switch (apply_result.childApplyKind()) {
-        .none => return error.Unexpected,
-        .landlock => blk: {
-            const profile_ptr = &(apply_result.landlock_profile orelse return error.Unexpected);
-            break :blk try sandbox.apply_posix.forkApplyLandlockAndExec(
-                profile_ptr,
-                argv_owned,
-                request.env_map,
-                request.workspace_root,
-            );
-        },
-        .seatbelt => blk: {
-            const sbpl = apply_result.seatbelt_sbpl_z orelse return error.Unexpected;
-            break :blk try sandbox.apply_posix.forkApplySeatbeltAndExec(
-                sbpl.ptr,
-                argv_owned,
-                request.env_map,
-                request.workspace_root,
-            );
-        },
-    };
-    return core.process.childFromPid(child_pid.pid);
-}
-
 fn writeSessionPosture(stdout: anytype, network_mode: policy.schema.NetworkMode, secretless: bool) !void {
     try stdout.print(
         "Posture: network={s} secretless={s}  (override: --network … | --no-network | --secretless)\n",
@@ -1072,29 +1036,16 @@ fn writeSessionPosture(stdout: anytype, network_mode: policy.schema.NetworkMode,
     );
 }
 
-
-/// Emit sandbox_posture at session start: posture string, optional profile hash, fs_scope.
-/// Never writes full profile / SBPL / landlock rule text into the audit trail.
-fn appendSandboxPostureEvent(
-    io: std.Io,
-    writer: *core_api.AuditWriter,
+/// Emit sandbox_posture at session start via posture.formatAuditReason (no profile blobs).
+fn auditSandboxPosture(
+    audit_context: anytype,
     session: core.session.Session,
     receipt: sandbox.posture.AttachReceipt,
 ) !void {
-    const posture_str = receipt.posture.toString();
-    const fs_scope = receipt.fs_scope;
+    if (audit_context.writer == null) return;
     var reason_buf: [384]u8 = undefined;
-    const reason: []const u8 = blk: {
-        if (receipt.profileHashSlice()) |hash| {
-            // Full hex digest only (no SBPL / landlock rule text). Fixed storage is already hex.
-            break :blk try std.fmt.bufPrint(&reason_buf, "posture={s}; profile_hash={s}; fs_scope={s}", .{ posture_str, hash, fs_scope });
-        } else if (receipt.reason_code) |code| {
-            break :blk try std.fmt.bufPrint(&reason_buf, "posture={s}; fs_scope={s}; reason={s}", .{ posture_str, fs_scope, code });
-        } else {
-            break :blk try std.fmt.bufPrint(&reason_buf, "posture={s}; fs_scope={s}", .{ posture_str, fs_scope });
-        }
-    };
-    const ts = core.time.Timestamp.now(io);
+    const reason = try sandbox.posture.formatAuditReason(&reason_buf, receipt);
+    const ts = core.time.Timestamp.now(audit_context.io);
     const ev: core.event.Event = .{
         .session_id = session.id,
         .event_id = try core.event.generateEventId(ts),
@@ -1108,21 +1059,7 @@ fn appendSandboxPostureEvent(
             .ci_may_proceed = true,
         },
     };
-    try core_api.appendAuditEvent(writer, ev);
-}
-
-fn auditSandboxPosture(
-    audit_context: anytype,
-    session: core.session.Session,
-    receipt: sandbox.posture.AttachReceipt,
-) !void {
-    if (audit_context.writer == null) return;
-    try appendSandboxPostureEvent(
-        audit_context.io,
-        &audit_context.writer.?,
-        session,
-        receipt,
-    );
+    try core_api.appendAuditEvent(&audit_context.writer.?, ev);
 }
 
 fn printSessionStart(
@@ -1589,12 +1526,9 @@ test "run command guard allows safe command and creates session shim directory" 
 }
 
 
-test "sandbox_posture event type serializes and ordinary EACCES is never os_fs_deny" {
+test "sandbox_posture event type serializes" {
     try std.testing.expectEqualStrings("sandbox_posture", core.event.EventType.sandbox_posture.toString());
     try std.testing.expectEqualStrings("os_fs_deny", core.event.EventType.os_fs_deny.toString());
-    // Ordinary Unix AccessDenied / EACCES maps to file_*_denied — never auto-emit os_fs_deny.
-    try std.testing.expectEqual(core.event.EventType.file_read_denied, core.event.eventTypeForOrdinaryFsDeny(.read));
-    try std.testing.expectEqual(core.event.EventType.file_write_denied, core.event.eventTypeForOrdinaryFsDeny(.write));
 
     // Serialize a sandbox_posture event the same way the audit hash chain does.
     const hash_chain = @import("orca_core").audit.hash_chain;

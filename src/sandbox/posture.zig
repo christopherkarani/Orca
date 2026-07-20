@@ -5,18 +5,6 @@
 //! child attach handshake + profile hash recording (S-GLO-01).
 
 const std = @import("std");
-const backend = @import("backend.zig");
-
-/// Doctor / capability-probe surface (no live session).
-pub const CapabilityAvailability = enum {
-    available,
-    unavailable,
-    failed,
-
-    pub fn toString(self: CapabilityAvailability) []const u8 {
-        return @tagName(self);
-    }
-};
 
 /// Live session posture after launch attempt.
 pub const SessionPosture = enum {
@@ -90,22 +78,6 @@ pub const AttachReceipt = struct {
     }
 };
 
-/// Map doctor-facing capability from backend FeatureReport for strong_sandbox.
-/// Probes that only detect APIs report available/unavailable/failed — never active session posture.
-pub fn doctorAvailabilityFromLevel(level: backend.Level) CapabilityAvailability {
-    return switch (level) {
-        .active => .available, // API path wrongly active should still be framed as capability for doctor
-        .partial, .limited, .observe_only, .wrapper_only => .available,
-        .failed => .failed,
-        .unavailable, .unsupported => .unavailable,
-    };
-}
-
-/// Capability probe must never authorize a live active claim.
-pub fn sessionPostureFromProbeOnly(_: backend.Level) SessionPosture {
-    return .unavailable;
-}
-
 /// Build an active receipt only when all attach conditions hold.
 pub fn activeReceipt(
     mechanism: BackendMechanism,
@@ -175,13 +147,20 @@ pub fn formatSessionBanner(buf: []u8, receipt: AttachReceipt) ![]const u8 {
     };
 }
 
-test "probe-only levels never yield active session posture (S-GLO-01)" {
-    inline for (std.meta.tags(backend.Level)) |level| {
-        try std.testing.expectEqual(SessionPosture.unavailable, sessionPostureFromProbeOnly(level));
+/// Compact audit reason for `sandbox_posture` events (no SBPL / Landlock rule text).
+pub fn formatAuditReason(buf: []u8, receipt: AttachReceipt) ![]const u8 {
+    const posture_str = receipt.posture.toString();
+    const fs_scope = receipt.fs_scope;
+    if (receipt.profileHashSlice()) |hash| {
+        return try std.fmt.bufPrint(buf, "posture={s}; profile_hash={s}; fs_scope={s}", .{ posture_str, hash, fs_scope });
+    } else if (receipt.reason_code) |code| {
+        return try std.fmt.bufPrint(buf, "posture={s}; fs_scope={s}; reason={s}", .{ posture_str, fs_scope, code });
+    } else {
+        return try std.fmt.bufPrint(buf, "posture={s}; fs_scope={s}", .{ posture_str, fs_scope });
     }
 }
 
-test "active receipt requires mechanism and profile hash" {
+test "active receipt requires mechanism and profile hash (S-GLO-01)" {
     const incomplete = AttachReceipt{
         .posture = .active,
         .mechanism = .none,
@@ -215,10 +194,4 @@ test "session banner is mechanism-neutral (S-GLO-03)" {
     try std.testing.expect(std.mem.indexOf(u8, line, "Seatbelt") == null);
     try std.testing.expect(std.mem.indexOf(u8, line, "Landlock") == null);
     try std.testing.expect(std.mem.indexOf(u8, line, "network: unrestricted") != null);
-}
-
-test "doctor availability separates from session active" {
-    try std.testing.expectEqual(CapabilityAvailability.available, doctorAvailabilityFromLevel(.partial));
-    try std.testing.expectEqual(CapabilityAvailability.unavailable, doctorAvailabilityFromLevel(.unavailable));
-    try std.testing.expectEqual(CapabilityAvailability.failed, doctorAvailabilityFromLevel(.failed));
 }

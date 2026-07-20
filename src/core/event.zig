@@ -64,15 +64,6 @@ pub const EventType = enum {
     }
 };
 
-/// Map ordinary filesystem denials (including Unix EACCES / AccessDenied) to audit event types.
-/// Never returns os_fs_deny — that type is reserved and not auto-emitted from errno.
-pub fn eventTypeForOrdinaryFsDeny(op: enum { read, write }) EventType {
-    return switch (op) {
-        .read => .file_read_denied,
-        .write => .file_write_denied,
-    };
-}
-
 pub const EventId = struct {
     value: [limits.max_event_id_len]u8,
     len: usize,
@@ -161,13 +152,9 @@ test "event type string conversion works" {
 test "sandbox_posture and os_fs_deny event types serialize" {
     try std.testing.expectEqualStrings("sandbox_posture", EventType.sandbox_posture.toString());
     try std.testing.expectEqualStrings("os_fs_deny", EventType.os_fs_deny.toString());
-}
-
-test "ordinary EACCES maps to file deny types never os_fs_deny" {
-    try std.testing.expectEqual(EventType.file_read_denied, eventTypeForOrdinaryFsDeny(.read));
-    try std.testing.expectEqual(EventType.file_write_denied, eventTypeForOrdinaryFsDeny(.write));
-    try std.testing.expect(eventTypeForOrdinaryFsDeny(.read) != .os_fs_deny);
-    try std.testing.expect(eventTypeForOrdinaryFsDeny(.write) != .os_fs_deny);
+    // Ordinary file denials are distinct from reserved os_fs_deny.
+    try std.testing.expectEqualStrings("file_read_denied", EventType.file_read_denied.toString());
+    try std.testing.expectEqualStrings("file_write_denied", EventType.file_write_denied.toString());
 }
 
 test "event ids and model can be created deterministically enough for core tests" {

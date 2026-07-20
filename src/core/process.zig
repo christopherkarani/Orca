@@ -114,6 +114,9 @@ pub const PreparedChild = struct {
     }
 
     fn spawnCustom(self: *PreparedChild, hook: CustomSpawn) !void {
+        // Custom hooks that box the agent (apply_posix) must only return after a
+        // proven child-side apply handshake. os_child_apply_used is set only then —
+        // never on bare fork success alone (S-GLO-01).
         const child = try hook.spawnFn(hook.context, .{
             .io = self.io,
             .allocator = self.allocator,
@@ -125,6 +128,7 @@ pub const PreparedChild = struct {
         self.child = child;
         switch (builtin.os.tag) {
             .linux, .macos => {
+                // Child setpgid(0,0) makes pgid == pid; kill(-pgid) cleans the group.
                 if (child.id) |pid| self.process_group_id = pid;
             },
             else => {},

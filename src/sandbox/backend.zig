@@ -166,6 +166,9 @@ pub const StdioBehavior = enum {
     ignore,
 };
 
+/// Scaffold / unit-test surface only (M-15). Production agent launch uses
+/// `sandbox.apply.applyBeforeExec` + `process.OsChildApply` / `apply_posix`, not this path.
+/// `PreparedSandbox` must never alone authorize session `active` (S-GLO-01).
 pub const PrepareRequest = struct {
     io: std.Io,
     argv: []const []const u8,
@@ -174,6 +177,8 @@ pub const PrepareRequest = struct {
     env_map: ?*const std.process.Environ.Map = null,
 };
 
+/// Scaffold sandbox process handle for tests and doctor capability paths.
+/// Not the production `orca run` attach path (see apply.zig / apply_posix.zig).
 pub const PreparedSandbox = struct {
     io: std.Io,
     argv: []const []const u8,

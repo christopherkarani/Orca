@@ -266,6 +266,4 @@ test "os_fs_deny type serializes but is reserved (not ordinary EACCES)" {
     const canonical = try canonicalEventAlloc(std.testing.allocator, ev, null);
     defer std.testing.allocator.free(canonical);
     try std.testing.expect(std.mem.indexOf(u8, canonical, "\"type\":\"os_fs_deny\"") != null);
-    // Ordinary AccessDenied mapping stays on file_*_denied.
-    try std.testing.expectEqual(core.event.EventType.file_read_denied, core.event.eventTypeForOrdinaryFsDeny(.read));
 }
