@@ -28,6 +28,8 @@ const RunOptions = struct {
     /// Set by `--network` / `--no-network`. Null means apply agent-primary default (ask).
     network_mode: ?policy.schema.NetworkMode = null,
     network_backend: ?policy.schema.NetworkBackend = null,
+    /// OS FS sandbox mode (`--os-sandbox`). Default auto (on when available).
+    os_sandbox: sandbox.posture.OsSandboxMode = .auto,
     allow_network_values: [32][]const u8 = undefined,
     allow_network_count: usize = 0,
     required_backend_values: [16]sandbox.backend.Feature = undefined,
@@ -130,6 +132,25 @@ fn commandWithStdioAndEnv(io: std.Io, argv: []const []const u8, stdout: anytype,
     }
     const backend_report = sandbox.backend.detect(core.platform.detectOs());
     try installBackendEnvironment(&filtered_env.env_map, backend_report);
+
+    // Production apply-before-exec seam (U04): profile + env scrub + platform stub.
+    // mode=on fails closed when backend unavailable; mode=auto degrades; mode=off disables.
+    const apply_result = sandbox.apply.applyBeforeExec(.{
+        .allocator = allocator,
+        .mode = options.os_sandbox,
+        .workspace_root = workspace_root_for_policy,
+        .env_map = &filtered_env.env_map,
+    }) catch |err| switch (err) {
+        error.RequireFailed => {
+            try stderr.print(
+                "orca run: OS sandbox required (--os-sandbox on) but unavailable ({s}).\n",
+                .{"backend_not_implemented"},
+            );
+            return exit_codes.unsupported;
+        },
+        error.OutOfMemory => return error.OutOfMemory,
+    };
+    _ = apply_result;
 
     const StartPrinter = struct {
         io: std.Io,
@@ -523,6 +544,12 @@ fn commandWithStdioAndEnv(io: std.Io, argv: []const []const u8, stdout: anytype,
         .stdio = stdio,
         .env_map = &filtered_env.env_map,
         .env_redactions = filtered_env.redactions,
+        .os_sandbox_mode = switch (options.os_sandbox) {
+            .auto => .auto,
+            .on => .on,
+            .off => .off,
+        },
+        .os_sandbox_apply_done = true,
         .before_spawn = before_spawn,
         .before_process_launch = if (audit_enabled) supervisor.StartHook{
             .context = &command_guard_context,
@@ -542,6 +569,10 @@ fn commandWithStdioAndEnv(io: std.Io, argv: []const []const u8, stdout: anytype,
         error.InvalidCommand => {
             try stderr.writeAll("orca run: missing command after '--'.\n");
             return exit_codes.usage;
+        },
+        error.OsSandboxApplyRequired => {
+            try stderr.writeAll("orca run: OS sandbox apply required but was not performed.\n");
+            return exit_codes.unsupported;
         },
         error.FileNotFound => {
             try suggestions.writeSanitizedValue(stderr, "orca run: workspace not found: ", options.workspace orelse ".", "\n");
@@ -799,6 +830,16 @@ fn parseOptions(io: std.Io, argv: []const []const u8, stdout: anytype, stderr: a
                 try suggestions.writeInvalidValue(stderr, "orca run", "--network-backend", argv[index], &.{ "decision-only", "proxy" }, "run");
                 return error.Usage;
             };
+        } else if (std.mem.eql(u8, arg, "--os-sandbox")) {
+            index += 1;
+            if (index >= argv.len) {
+                try stderr.writeAll("orca run: --os-sandbox requires auto, on, or off.\n");
+                return error.Usage;
+            }
+            options.os_sandbox = sandbox.posture.OsSandboxMode.parse(argv[index]) orelse {
+                try suggestions.writeInvalidValue(stderr, "orca run", "--os-sandbox", argv[index], &.{ "auto", "on", "off" }, "run");
+                return error.Usage;
+            };
         } else if (std.mem.eql(u8, arg, "--require-backend")) {
             index += 1;
             if (index >= argv.len) {
@@ -815,7 +856,7 @@ fn parseOptions(io: std.Io, argv: []const []const u8, stdout: anytype, stderr: a
             };
             options.required_backend_count += 1;
         } else if (std.mem.startsWith(u8, arg, "-")) {
-            try suggestions.writeUnknownOption(stderr, "orca run", arg, &.{ "--workspace", "--mode", "--policy", "--session-name", "--no-secrets", "--secretless", "--inherit-env", "--no-network", "--allow-network", "--network", "--network-backend", "--require-backend", "--help", "-h" }, "run");
+            try suggestions.writeUnknownOption(stderr, "orca run", arg, &.{ "--workspace", "--mode", "--policy", "--session-name", "--no-secrets", "--secretless", "--inherit-env", "--no-network", "--allow-network", "--network", "--network-backend", "--os-sandbox", "--require-backend", "--help", "-h" }, "run");
             return error.Usage;
         } else {
             try stderr.writeAll("orca run: expected '--' before the command you want to run.\n" ++
@@ -1999,4 +2040,97 @@ test "deny block keeps exit code and does not print the flat line" {
     try std.testing.expectEqual(exit_codes.denial, code);
     // The flat one-liner is fully replaced.
     try std.testing.expect(std.mem.indexOf(u8, stderr_writer.buffered(), "orca run: command denied by command guard.\n") == null);
+}
+
+test "parse --os-sandbox auto|on|off; invalid fails usage" {
+    var stdout_buf: [512]u8 = undefined;
+    var stderr_buf: [512]u8 = undefined;
+    var stdout_writer: std.Io.Writer = .fixed(&stdout_buf);
+    var stderr_writer: std.Io.Writer = .fixed(&stderr_buf);
+
+    // Invalid value
+    {
+        stdout_writer = .fixed(&stdout_buf);
+        stderr_writer = .fixed(&stderr_buf);
+        const code = try command(std.testing.io, &.{ "--os-sandbox", "seatbelt", "--", "true" }, &stdout_writer, &stderr_writer);
+        try std.testing.expectEqual(exit_codes.usage, code);
+        try std.testing.expect(std.mem.indexOf(u8, stderr_writer.buffered(), "invalid --os-sandbox value") != null);
+    }
+    // Missing value
+    {
+        stdout_writer = .fixed(&stdout_buf);
+        stderr_writer = .fixed(&stderr_buf);
+        const code = try command(std.testing.io, &.{ "--os-sandbox" }, &stdout_writer, &stderr_writer);
+        try std.testing.expectEqual(exit_codes.usage, code);
+    }
+}
+
+test "run --os-sandbox on fails closed without backend (no agent)" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const root = try tmp.dir.realPathFileAlloc(std.testing.io, ".", std.testing.allocator);
+    defer std.testing.allocator.free(root);
+
+    var stdout_buf: [2048]u8 = undefined;
+    var stderr_buf: [2048]u8 = undefined;
+    var stdout_writer: std.Io.Writer = .fixed(&stdout_buf);
+    var stderr_writer: std.Io.Writer = .fixed(&stderr_buf);
+
+    const code = try commandForGuardTestWithShellEvaluator(
+        &.{ "--workspace", root, "--os-sandbox", "on", "--", "true" },
+        &stdout_writer,
+        &stderr_writer,
+        .ignore,
+        shell_eval.mockDaemonAllowEvaluator,
+    );
+    try std.testing.expectEqual(exit_codes.unsupported, code);
+    try std.testing.expect(std.mem.indexOf(u8, stderr_writer.buffered(), "OS sandbox required") != null);
+    // No session audit dir should be created for spawn (apply fails before supervisor).
+}
+
+test "run --os-sandbox off succeeds with disabled path" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const root = try tmp.dir.realPathFileAlloc(std.testing.io, ".", std.testing.allocator);
+    defer std.testing.allocator.free(root);
+
+    var stdout_buf: [2048]u8 = undefined;
+    var stderr_buf: [2048]u8 = undefined;
+    var stdout_writer: std.Io.Writer = .fixed(&stdout_buf);
+    var stderr_writer: std.Io.Writer = .fixed(&stderr_buf);
+
+    const code = try commandForGuardTestWithShellEvaluator(
+        &.{ "--workspace", root, "--os-sandbox", "off", "--", "true" },
+        &stdout_writer,
+        &stderr_writer,
+        .ignore,
+        shell_eval.mockDaemonAllowEvaluator,
+    );
+    try std.testing.expectEqual(exit_codes.success, code);
+}
+
+test "run --os-sandbox auto degrades when backend unavailable" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const root = try tmp.dir.realPathFileAlloc(std.testing.io, ".", std.testing.allocator);
+    defer std.testing.allocator.free(root);
+
+    var stdout_buf: [2048]u8 = undefined;
+    var stderr_buf: [2048]u8 = undefined;
+    var stdout_writer: std.Io.Writer = .fixed(&stdout_buf);
+    var stderr_writer: std.Io.Writer = .fixed(&stderr_buf);
+
+    const code = try commandForGuardTestWithShellEvaluator(
+        &.{ "--workspace", root, "--os-sandbox", "auto", "--", "true" },
+        &stdout_writer,
+        &stderr_writer,
+        .ignore,
+        shell_eval.mockDaemonAllowEvaluator,
+    );
+    try std.testing.expectEqual(exit_codes.success, code);
+}
+
+test "RunOptions default os_sandbox is auto" {
+    const defaults: RunOptions = .{};
+    try std.testing.expectEqual(sandbox.posture.OsSandboxMode.auto, defaults.os_sandbox);
 }

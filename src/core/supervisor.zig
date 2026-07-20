@@ -11,6 +11,14 @@ const util = @import("util.zig");
 
 pub const StdioBehavior = process.StdioBehavior;
 
+/// OS FS sandbox mode for this launch (mirrors sandbox.posture.OsSandboxMode tags).
+/// Production apply runs in cli/run via sandbox.apply.applyBeforeExec before spawn.
+pub const OsSandboxMode = enum {
+    auto,
+    on,
+    off,
+};
+
 pub const RunConfig = struct {
     command: []const u8,
     args: []const []const u8 = &.{},
@@ -21,6 +29,10 @@ pub const RunConfig = struct {
     stdio: StdioBehavior = .inherit,
     env_map: ?*const std.process.Environ.Map = null,
     env_redactions: []const EnvRedactionRecord = &.{},
+    /// OS sandbox mode for this session. Apply runs in cli/run before this config is used.
+    os_sandbox_mode: OsSandboxMode = .auto,
+    /// True when sandbox.apply.applyBeforeExec already ran for this launch.
+    os_sandbox_apply_done: bool = false,
     before_spawn: ?StartHook = null,
     before_process_launch: ?StartHook = null,
     on_session_start: ?StartHook = null,
@@ -155,6 +167,15 @@ pub fn run(io: std.Io, allocator: std.mem.Allocator, config: RunConfig) !Session
     defer allocator.free(argv);
     argv[0] = config.command;
     @memcpy(argv[1..], config.args);
+
+    // Production OS FS apply (U04): cli/run calls sandbox.apply.applyBeforeExec before
+    // supervisor.run when launching agents. Mode off may skip apply; on/auto must set
+    // os_sandbox_apply_done. Scaffold backend.prepare is not this path.
+    if (config.os_sandbox_mode != .off and !config.os_sandbox_apply_done) {
+        // Soft guard for miswired callers: do not claim apply happened.
+        // Fail closed only when mode is `on` (required).
+        if (config.os_sandbox_mode == .on) return error.OsSandboxApplyRequired;
+    }
 
     var prepared = process.prepareChild(io, allocator, .{
         .io = io,

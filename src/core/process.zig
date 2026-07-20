@@ -1,3 +1,12 @@
+//! Child process preparation for production agent launch.
+//!
+//! Production path:
+//!   sandbox.apply.applyBeforeExec → supervisor.run → prepareChild → std.process.spawn
+//!
+//! When OS sandbox mode is not `off`, the CLI runs applyBeforeExec first (profile
+//! compile, env scrub, platform apply stub/real). prepareChild consumes the resulting
+//! scrubbed env_map. FD scrub is child-side only (see sandbox/fd_scrub.zig / apply.zig).
+
 const std = @import("std");
 const builtin = @import("builtin");
 

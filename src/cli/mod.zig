@@ -674,7 +674,7 @@ test "env command appears in help and dispatches correctly" {
 }
 
 test "command-specific help works through help command and command flag" {
-    var stdout_buf: [2048]u8 = undefined;
+    var stdout_buf: [4096]u8 = undefined;
     var stderr_buf: [256]u8 = undefined;
     var stdout_writer: std.Io.Writer = .fixed(&stdout_buf);
     var stderr_writer: std.Io.Writer = .fixed(&stderr_buf);
