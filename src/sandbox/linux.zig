@@ -29,8 +29,9 @@ pub fn detect() backend.ReportSet {
     const cgroups = detectCgroups();
     backend.setReport(&reports, .cgroups, cgroups.level, cgroups.note);
 
+    // Capability probe may show backend APIs as partial; session active requires apply+attach.
     const strong_level: backend.Level = .unavailable;
-    backend.setReport(&reports, .strong_sandbox, strong_level, "no namespace, seccomp, or Landlock restrictions are installed by this backend");
+    backend.setReport(&reports, .strong_sandbox, strong_level, "OS filesystem sandbox not active: apply-before-exec is not wired on the production launch path; capability probes are not a live session claim");
 
     return .{
         .os = .linux,

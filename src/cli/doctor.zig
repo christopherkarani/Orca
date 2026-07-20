@@ -193,6 +193,20 @@ fn parseDoctorOptions(argv: []const []const u8, stderr: anytype) !DoctorOptions 
     return options;
 }
 
+/// Strong sandbox: doctor must never surface probe-only `active` (S-GLO-01).
+/// Live sessions may report active only after apply+attach handshake.
+fn doctorDisplayLevel(feature: sandbox.backend.Feature, level: sandbox.backend.Level) sandbox.backend.Level {
+    if (feature == .strong_sandbox and level == .active) return .unavailable;
+    return level;
+}
+
+fn doctorDisplayNote(feature: sandbox.backend.Feature, level: sandbox.backend.Level, note: []const u8) []const u8 {
+    if (feature == .strong_sandbox and level == .active) {
+        return "capability probe claimed active without attach; reporting unavailable (S-GLO-01)";
+    }
+    return note;
+}
+
 fn countCapabilitySummary(os: core.platform.Os, backend_report: sandbox.backend.ReportSet) struct { active: usize, limited: usize, unavailable: usize } {
     var active_count: usize = 0;
     var limited_count: usize = 0;
@@ -200,7 +214,7 @@ fn countCapabilitySummary(os: core.platform.Os, backend_report: sandbox.backend.
 
     for (doctor_capabilities) |item| {
         if (item.feature) |feature| {
-            switch (backend_report.get(feature).level) {
+            switch (doctorDisplayLevel(feature, backend_report.get(feature).level)) {
                 .active => active_count += 1,
                 .partial, .limited, .observe_only, .wrapper_only => limited_count += 1,
                 .unavailable, .unsupported, .failed => unavailable_count += 1,
@@ -291,11 +305,13 @@ fn writeReport(io: std.Io, stdout: anytype, os: core.platform.Os, backend_report
     for (doctor_capabilities) |item| {
         if (item.feature) |feature| {
             const report = backend_report.get(feature);
-            const cg = levelColorAndGlyph(report.level);
+            const display_level = doctorDisplayLevel(feature, report.level);
+            const display_note = doctorDisplayNote(feature, report.level, report.note);
+            const cg = levelColorAndGlyph(display_level);
             if (style.useColor(io, stdout)) {
-                try stdout.print("  {s} {s}: {s}{s}{s} ({s})\n", .{ cg.glyph, item.label, cg.color, report.level.toString(), style.Style.reset, report.note });
+                try stdout.print("  {s} {s}: {s}{s}{s} ({s})\n", .{ cg.glyph, item.label, cg.color, display_level.toString(), style.Style.reset, display_note });
             } else {
-                try stdout.print("  {s} {s}: {s} ({s})\n", .{ cg.glyph, item.label, report.level.toString(), report.note });
+                try stdout.print("  {s} {s}: {s} ({s})\n", .{ cg.glyph, item.label, display_level.toString(), display_note });
             }
         } else if (item.capability) |capability| {
             const report = core.platform.reportCapability(os, capability);
@@ -371,10 +387,11 @@ fn writeDefaultPanels(
     for (doctor_capabilities, 0..) |item, index| {
         if (item.feature) |feature| {
             const report = backend_report.get(feature);
+            const display_level = doctorDisplayLevel(feature, report.level);
             capability_lines[index] = try std.fmt.bufPrint(&capability_storage[index], "{s}  {s}: {s}", .{
-                levelColorAndGlyph(report.level).glyph,
+                levelColorAndGlyph(display_level).glyph,
                 item.label,
-                report.level.toString(),
+                display_level.toString(),
             });
         } else if (item.capability) |capability| {
             const report = core.platform.reportCapability(os, capability);
@@ -510,11 +527,15 @@ fn stateColorAndGlyph(state: core.platform.CapabilityState) struct { color: []co
 
 fn writeBackendLine(io: std.Io, stdout: anytype, backend_report: sandbox.backend.ReportSet, feature: sandbox.backend.Feature) !void {
     const report = backend_report.get(feature);
-    const cg = levelColorAndGlyph(report.level);
+    // Strong sandbox: doctor reports capability level only. Live sessions may report
+    // active only after apply+attach (S-GLO-01). Never imply OS-enforced from a probe.
+    const display_level = doctorDisplayLevel(feature, report.level);
+    const display_note = doctorDisplayNote(feature, report.level, report.note);
+    const display_cg = levelColorAndGlyph(display_level);
     if (style.useColor(io, stdout)) {
-        try stdout.print("  {s} {s}: {s}{s}{s} ({s})\n", .{ cg.glyph, report.feature.label(), cg.color, report.level.toString(), style.Style.reset, report.note });
+        try stdout.print("  {s} {s}: {s}{s}{s} ({s})\n", .{ display_cg.glyph, report.feature.label(), display_cg.color, display_level.toString(), style.Style.reset, display_note });
     } else {
-        try stdout.print("  {s} {s}: {s} ({s})\n", .{ cg.glyph, report.feature.label(), report.level.toString(), report.note });
+        try stdout.print("  {s} {s}: {s} ({s})\n", .{ display_cg.glyph, report.feature.label(), display_level.toString(), display_note });
     }
 }
 
@@ -973,6 +994,35 @@ test "doctor can render macOS backend details from an injected report" {
     try std.testing.expect(std.mem.indexOf(u8, written, "strong sandbox: unavailable") != null);
     try std.testing.expect(std.mem.indexOf(u8, written, "mcp stdio proxy: active") != null);
     try std.testing.expect(std.mem.indexOf(u8, written, "audit/replay: active") != null);
+}
+
+test "doctor never prints strong sandbox active from capability probe alone (S-GLO-01)" {
+    var stdout_buf: [32768]u8 = undefined;
+    var stdout_writer: std.Io.Writer = .fixed(&stdout_buf);
+
+    // Forge a dishonest report that claims strong_sandbox active without attach.
+    var reports = sandbox.backend.baseReports(.macos);
+    sandbox.backend.setReport(&reports, .strong_sandbox, .active, "forged probe-only active");
+    const forged: sandbox.backend.ReportSet = .{
+        .os = .macos,
+        .backend_name = "macos",
+        .fallback_level = .partial,
+        .fallback_note = "test",
+        .reports = reports,
+    };
+    var context = try testContext(std.testing.allocator, .{});
+    defer context.deinit();
+
+    try writeReport(std.testing.io, &stdout_writer, .macos, forged, context, true);
+    const written = stdout_writer.buffered();
+    try std.testing.expect(std.mem.indexOf(u8, written, "strong sandbox: active") == null);
+    try std.testing.expect(std.mem.indexOf(u8, written, "strong sandbox: unavailable") != null);
+    try std.testing.expect(std.mem.indexOf(u8, written, "S-GLO-01") != null);
+    // Forged probe note must not leak through after demotion.
+    try std.testing.expect(std.mem.indexOf(u8, written, "forged probe-only active") == null);
+    // Default doctor copy stays mechanism-neutral (verbose may name Landlock/Seatbelt later).
+    try std.testing.expect(std.mem.indexOf(u8, written, "Seatbelt") == null);
+    try std.testing.expect(std.mem.indexOf(u8, written, "Landlock") == null);
 }
 
 test "doctor can render Windows backend details from an injected report" {

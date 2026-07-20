@@ -18,7 +18,7 @@ pub fn detect() backend.ReportSet {
     backend.setReport(&reports, .seccomp, .unsupported, "Linux seccomp-bpf is not a macOS feature");
     backend.setReport(&reports, .landlock, .unsupported, "Linux Landlock is not a macOS feature");
     backend.setReport(&reports, .cgroups, .unsupported, "Linux cgroup cleanup is not a macOS feature");
-    backend.setReport(&reports, .strong_sandbox, .unavailable, "no macOS Sandbox.app profile, Endpoint Security entitlement, kernel extension, or admin-only sandbox is installed by default");
+    backend.setReport(&reports, .strong_sandbox, .unavailable, "OS filesystem sandbox not active: apply-before-exec is not wired on the production launch path; capability probes are not a live session claim");
 
     return .{
         .os = .macos,
