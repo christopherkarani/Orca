@@ -379,7 +379,10 @@ test "macOS backend is selected explicitly instead of generic fallback" {
     try std.testing.expectEqualStrings("macos", report.backend_name);
     try std.testing.expectEqual(Level.active, report.get(.env_filtering).level);
     try std.testing.expectEqual(Level.wrapper_only, report.get(.path_shims).level);
-    try std.testing.expectEqual(Level.unavailable, report.get(.strong_sandbox).level);
+    // Capability probe: partial on matrix hosts with sandbox_init; never live active.
+    const strong = report.get(.strong_sandbox).level;
+    try std.testing.expect(strong == .partial or strong == .unavailable);
+    try std.testing.expect(strong != .active);
 }
 
 test "Windows backend is selected explicitly instead of generic fallback" {

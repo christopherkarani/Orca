@@ -1,8 +1,10 @@
 //! macOS custom Seatbelt apply (deprecated sandbox_init), version-gated.
 //!
-//! Advertised matrix: macOS 14 and macOS 15 only (PLATFORM_MATRIX_FREEZE).
-//! Outside the matrix → unavailable. Nested re-apply is not supported:
-//! sandbox_init fails if the process is already sandboxed; children inherit.
+//! Advertised matrix: macOS product majors 14 through 26 inclusive.
+//! Proven locally on macOS 26 (sandbox_init apply + FS deny) when the unit
+//! tests in this file pass on the host. Outside the matrix → unavailable.
+//! Nested re-apply is not supported: sandbox_init fails if the process is
+//! already sandboxed; children inherit.
 //!
 //! `applyInChild` must run only after fork / before exec (never on the Orca
 //! parent). Parent-side code uses `evaluateSupport` + profile render only.
@@ -12,17 +14,19 @@ const builtin = @import("builtin");
 const posture = @import("posture.zig");
 const profile = @import("profile.zig");
 const macos_profile = @import("macos_profile.zig");
+const canary = @import("canary.zig");
 
 /// Product major versions that may attempt custom Seatbelt attach.
+/// Inclusive range: Sonoma (14) through the current proven host major (26).
 pub const matrix_major_min: u32 = 14;
-pub const matrix_major_max: u32 = 15;
+pub const matrix_major_max: u32 = 26;
 
 pub const SupportStatus = enum {
     /// Running macOS major is in the advertised matrix and sandbox_init resolves.
     supported,
     /// Not building/running on macOS.
     not_macos,
-    /// macOS major outside 14–15 (e.g. 13, 16, 26).
+    /// macOS major outside 14–26 (e.g. 13, 27+).
     version_unsupported,
     /// sandbox_init could not be resolved via dlsym.
     symbol_unavailable,
@@ -46,7 +50,7 @@ pub const MacOsVersion = struct {
     minor: u32,
 };
 
-/// True when major is in the frozen Seatbelt matrix (14 or 15).
+/// True when major is in the Seatbelt matrix (14 through 26 inclusive).
 pub fn isMatrixMajor(major: u32) bool {
     return major >= matrix_major_min and major <= matrix_major_max;
 }
@@ -214,13 +218,16 @@ pub fn verboseMechanismName() []const u8 {
 
 // ── tests ──────────────────────────────────────────────────────────────────
 
-test "matrix accepts only macos 14 and 15 majors" {
+test "matrix accepts macos majors 14 through 26 inclusive" {
     try std.testing.expect(isMatrixMajor(14));
     try std.testing.expect(isMatrixMajor(15));
+    try std.testing.expect(isMatrixMajor(16));
+    try std.testing.expect(isMatrixMajor(26));
     try std.testing.expect(!isMatrixMajor(13));
-    try std.testing.expect(!isMatrixMajor(16));
-    try std.testing.expect(!isMatrixMajor(26));
+    try std.testing.expect(!isMatrixMajor(27));
     try std.testing.expect(!isMatrixMajor(0));
+    try std.testing.expectEqual(@as(u32, 14), matrix_major_min);
+    try std.testing.expectEqual(@as(u32, 26), matrix_major_max);
 }
 
 test "parseProductVersion reads major.minor" {
@@ -242,8 +249,9 @@ test "evaluateSupportWith encodes version gate" {
     }
     try std.testing.expectEqual(SupportStatus.supported, evaluateSupportWith(14, true));
     try std.testing.expectEqual(SupportStatus.supported, evaluateSupportWith(15, true));
-    try std.testing.expectEqual(SupportStatus.version_unsupported, evaluateSupportWith(26, true));
+    try std.testing.expectEqual(SupportStatus.supported, evaluateSupportWith(26, true));
     try std.testing.expectEqual(SupportStatus.version_unsupported, evaluateSupportWith(13, true));
+    try std.testing.expectEqual(SupportStatus.version_unsupported, evaluateSupportWith(27, true));
     try std.testing.expectEqual(SupportStatus.symbol_unavailable, evaluateSupportWith(14, false));
     try std.testing.expectEqualStrings("macos_version_unsupported", SupportStatus.version_unsupported.reasonCode());
 }
@@ -336,6 +344,137 @@ test "applyInChild succeeds for minimal profile in forked child" {
     try std.testing.expect(exited);
     const exit_code: u8 = @intCast((status >> 8) & 0xff);
     try std.testing.expectEqual(@as(u8, 0), exit_code);
+}
+
+// CTRL template: unsandboxed canary readable; sandboxed child denies outside grant
+// and allows workspace neighbor read/write. Uses prepare SBPL + applyInChild.
+// Exit codes from child: 0=ok, 2=apply fail, 3=outside readable (leak), 4=ws read fail, 5=ws write fail.
+test "real FS deny: outside canary denied; workspace readable and writable" {
+    if (builtin.os.tag != .macos) return error.SkipZigTest;
+    if (!sandboxInitAvailable()) return error.SkipZigTest;
+
+    const ver = try detectProductVersion();
+    // Only claim matrix enforcement when this host major is in the advertised range.
+    try std.testing.expect(isMatrixMajor(ver.major));
+    try std.testing.expectEqual(SupportStatus.supported, evaluateSupport());
+
+    const allocator = std.testing.allocator;
+    const io = std.testing.io;
+
+    var ws_tmp = std.testing.tmpDir(.{});
+    defer ws_tmp.cleanup();
+    // realPath so Seatbelt grants match kernel paths (/private/var vs /var).
+    const ws_root = try ws_tmp.dir.realPathFileAlloc(io, ".", allocator);
+    defer allocator.free(ws_root);
+
+    var out_tmp = std.testing.tmpDir(.{});
+    defer out_tmp.cleanup();
+    const out_root = try out_tmp.dir.realPathFileAlloc(io, ".", allocator);
+    defer allocator.free(out_root);
+
+    var synth = try canary.generate(allocator);
+    defer synth.deinit();
+
+    // Outside canary (must NOT be under workspace grant).
+    try out_tmp.dir.writeFile(io, .{ .sub_path = "canary.txt", .data = synth.body });
+    const canary_path = try std.fs.path.join(allocator, &.{ out_root, "canary.txt" });
+    defer allocator.free(canary_path);
+    const canary_z = try allocator.dupeZ(u8, canary_path);
+    defer allocator.free(canary_z);
+
+    // Workspace neighbor (must remain readable/writable under grant).
+    try ws_tmp.dir.writeFile(io, .{ .sub_path = "neighbor.txt", .data = "WORKSPACE_NEIGHBOR_OK" });
+    const neighbor_path = try std.fs.path.join(allocator, &.{ ws_root, "neighbor.txt" });
+    defer allocator.free(neighbor_path);
+    const neighbor_z = try allocator.dupeZ(u8, neighbor_path);
+    defer allocator.free(neighbor_z);
+
+    const write_probe_path = try std.fs.path.join(allocator, &.{ ws_root, "write_probe.txt" });
+    defer allocator.free(write_probe_path);
+    const write_probe_z = try allocator.dupeZ(u8, write_probe_path);
+    defer allocator.free(write_probe_z);
+
+    // CTRL-BASELINE: unsandboxed parent can read the outside canary.
+    {
+        const baseline = try std.Io.Dir.cwd().readFileAlloc(io, canary_path, allocator, .limited(4096));
+        defer allocator.free(baseline);
+        try std.testing.expectEqualStrings(synth.body, baseline);
+    }
+    // Neighbor also readable without sandbox.
+    {
+        const baseline_ws = try std.Io.Dir.cwd().readFileAlloc(io, neighbor_path, allocator, .limited(4096));
+        defer allocator.free(baseline_ws);
+        try std.testing.expectEqualStrings("WORKSPACE_NEIGHBOR_OK", baseline_ws);
+    }
+
+    // Prepare real product SBPL from compiled profile (not a hand-rolled minimal string).
+    var compiled = try profile.compileProfile(allocator, .{
+        .workspace_root = ws_root,
+        .include_tmp = false,
+    });
+    defer compiled.deinit();
+    // Outside path must not sit under the workspace grant.
+    try std.testing.expect(!compiled.isAgentWritable(canary_path));
+    try std.testing.expect(compiled.isAgentWritable(neighbor_path));
+
+    const prepared = prepareForChildApply(allocator, &compiled);
+    defer if (prepared.sbpl_z) |p| allocator.free(p);
+    try std.testing.expectEqual(.prepared, prepared.status);
+    try std.testing.expect(prepared.sbpl_z != null);
+    const sbpl_z = prepared.sbpl_z.?;
+
+    const pid = std.c.fork();
+    if (pid < 0) return error.SkipZigTest;
+    if (pid == 0) {
+        applyInChild(sbpl_z.ptr) catch std.c._exit(2);
+
+        // TEST-DENY: outside canary must not be readable.
+        const outside_fd = std.c.open(canary_z.ptr, .{ .ACCMODE = .RDONLY });
+        if (outside_fd >= 0) {
+            _ = std.c.close(outside_fd);
+            std.c._exit(3); // leak — outside grant hole
+        }
+
+        // Workspace neighbor must still be readable.
+        const ws_fd = std.c.open(neighbor_z.ptr, .{ .ACCMODE = .RDONLY });
+        if (ws_fd < 0) std.c._exit(4);
+        var buf: [64]u8 = undefined;
+        const n = std.c.read(ws_fd, &buf, buf.len);
+        _ = std.c.close(ws_fd);
+        if (n < 0) std.c._exit(4);
+        if (n != "WORKSPACE_NEIGHBOR_OK".len) std.c._exit(4);
+        if (!std.mem.eql(u8, buf[0..@intCast(n)], "WORKSPACE_NEIGHBOR_OK")) std.c._exit(4);
+
+        // Workspace write must succeed.
+        const wfd = std.c.open(write_probe_z.ptr, .{ .ACCMODE = .WRONLY, .CREAT = true, .TRUNC = true }, @as(std.c.mode_t, 0o600));
+        if (wfd < 0) std.c._exit(5);
+        const wrote = std.c.write(wfd, "wrote", 5);
+        _ = std.c.close(wfd);
+        if (wrote != 5) std.c._exit(5);
+
+        std.c._exit(0);
+    }
+
+    var status: c_int = 0;
+    _ = std.c.waitpid(pid, &status, 0);
+    const exited = (status & 0x7f) == 0;
+    try std.testing.expect(exited);
+    const exit_code: u8 = @intCast((status >> 8) & 0xff);
+    // Surface distinct failures for the proof report (do not collapse to a single assert).
+    switch (exit_code) {
+        0 => {},
+        2 => return error.SeatbeltApplyFailedOnHost,
+        3 => return error.OutsideCanaryReadableUnderSandbox,
+        4 => return error.WorkspaceNeighborUnreadableUnderSandbox,
+        5 => return error.WorkspaceWriteFailedUnderSandbox,
+        else => return error.UnexpectedSandboxChildExit,
+    }
+    try std.testing.expectEqual(@as(u8, 0), exit_code);
+
+    // Parent can still read the write probe produced by the sandboxed child.
+    const probe = try std.Io.Dir.cwd().readFileAlloc(io, write_probe_path, allocator, .limited(64));
+    defer allocator.free(probe);
+    try std.testing.expectEqualStrings("wrote", probe);
 }
 
 test "verbose mechanism name is Seatbelt (verbose paths only)" {

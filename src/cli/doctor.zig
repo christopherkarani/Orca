@@ -991,7 +991,11 @@ test "doctor can render macOS backend details from an injected report" {
     try std.testing.expect(std.mem.indexOf(u8, written, "shell shims: wrapper-only") != null);
     try std.testing.expect(std.mem.indexOf(u8, written, "process supervision: active") != null);
     try std.testing.expect(std.mem.indexOf(u8, written, "transparent network enforcement: limited") != null);
-    try std.testing.expect(std.mem.indexOf(u8, written, "strong sandbox: unavailable") != null);
+    // partial on matrix macOS with sandbox_init; unavailable outside matrix — never active from probe.
+    const strong_unavail = std.mem.indexOf(u8, written, "strong sandbox: unavailable") != null;
+    const strong_partial = std.mem.indexOf(u8, written, "strong sandbox: partial") != null;
+    try std.testing.expect(strong_unavail or strong_partial);
+    try std.testing.expect(std.mem.indexOf(u8, written, "strong sandbox: active") == null);
     try std.testing.expect(std.mem.indexOf(u8, written, "mcp stdio proxy: active") != null);
     try std.testing.expect(std.mem.indexOf(u8, written, "audit/replay: active") != null);
 }

@@ -20,7 +20,7 @@ pub fn detect() backend.ReportSet {
     backend.setReport(&reports, .landlock, .unsupported, "Linux Landlock is not a macOS feature");
     backend.setReport(&reports, .cgroups, .unsupported, "Linux cgroup cleanup is not a macOS feature");
 
-    // Strong sandbox: version-gated deprecated custom profile API (matrix 14/15).
+    // Strong sandbox: version-gated deprecated custom profile API (matrix majors 14–26).
     // Capability probes never authorize a live session `active` claim (S-GLO-01).
     const support = if (builtin.os.tag == .macos)
         macos_seatbelt.evaluateSupport()
@@ -34,7 +34,7 @@ pub fn detect() backend.ReportSet {
     };
     const strong_note: []const u8 = switch (support) {
         .supported => "OS filesystem sandbox API present on a supported macOS version; session active only after apply-before-exec child attach and profile hash",
-        .version_unsupported => "OS filesystem sandbox unavailable: running macOS is outside the advertised support matrix (14/15); capability probes are not a live session claim",
+        .version_unsupported => "OS filesystem sandbox unavailable: running macOS is outside the advertised support matrix (14–26); capability probes are not a live session claim",
         .symbol_unavailable => "OS filesystem sandbox unavailable: sandbox apply symbol not resolvable; capability probes are not a live session claim",
         .not_macos => "OS filesystem sandbox is a macOS feature",
     };

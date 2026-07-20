@@ -2299,13 +2299,17 @@ test "run --os-sandbox on fails closed without backend (no agent)" {
         .ignore,
         shell_eval.mockDaemonAllowEvaluator,
     );
-    // On Linux with Landlock + real workspace this may succeed; elsewhere fail-closed.
+    // Linux Landlock or macOS Seatbelt (matrix majors) may attach; elsewhere fail-closed.
     if (code == exit_codes.unsupported) {
         try std.testing.expect(std.mem.indexOf(u8, stderr_writer.buffered(), "OS sandbox required") != null);
         // Real reason_code — not the U04 placeholder.
         try std.testing.expect(std.mem.indexOf(u8, stderr_writer.buffered(), "backend_not_implemented") == null or builtin.os.tag != .macos);
+        // Outside matrix (or symbol missing): version/symbol reasons only.
         if (builtin.os.tag == .macos) {
-            try std.testing.expect(std.mem.indexOf(u8, stderr_writer.buffered(), "macos_version_unsupported") != null);
+            const err = stderr_writer.buffered();
+            const version_gate = std.mem.indexOf(u8, err, "macos_version_unsupported") != null;
+            const symbol_gate = std.mem.indexOf(u8, err, "sandbox_init_unavailable") != null;
+            try std.testing.expect(version_gate or symbol_gate);
         }
     } else {
         try std.testing.expectEqual(exit_codes.success, code);

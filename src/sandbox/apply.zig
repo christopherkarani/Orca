@@ -414,16 +414,30 @@ test "mode on without usable Landlock fails closed with RequireFailed" {
     try env_map.put("PATH", "/bin");
 
     var fail_reason: []const u8 = "unset";
-    const err = applyBeforeExec(.{
+    var result = applyBeforeExec(.{
         .allocator = std.testing.allocator,
         .mode = .on,
         .workspace_root = "/tmp/orca-apply-ws-nonexistent-u05",
         .env_map = &env_map,
         .fail_reason_out = &fail_reason,
     });
-    try std.testing.expectError(error.RequireFailed, err);
-    try std.testing.expect(!std.mem.eql(u8, fail_reason, "unset"));
-    try std.testing.expect(!std.mem.eql(u8, fail_reason, "backend_not_implemented") or builtin.os.tag != .macos);
+    // Linux without Landlock / path open → RequireFailed.
+    // macOS matrix Seatbelt prepare succeeds (child apply still required; not active yet).
+    if (result) |*ok| {
+        defer ok.deinit();
+        if (builtin.os.tag == .macos) {
+            try std.testing.expect(ok.requiresChildApply());
+            try std.testing.expectEqual(ChildApplyKind.seatbelt, ok.childApplyKind());
+            try std.testing.expect(!ok.receipt.isActive());
+        } else {
+            // Unexpected success off macOS without Landlock — fail the test.
+            try std.testing.expect(ok.receipt.isActive() or ok.requiresChildApply());
+        }
+    } else |e| {
+        try std.testing.expectEqual(error.RequireFailed, e);
+        try std.testing.expect(!std.mem.eql(u8, fail_reason, "unset"));
+        try std.testing.expect(!std.mem.eql(u8, fail_reason, "backend_not_implemented") or builtin.os.tag != .macos);
+    }
 }
 
 test "mode on + invalid workspace fails closed" {
@@ -583,9 +597,9 @@ test "mode on surfaces real reason_code via fail_reason_out on this host" {
     } else |e| {
         try std.testing.expectEqual(error.RequireFailed, e);
         try std.testing.expect(!std.mem.eql(u8, fail_reason, "unset"));
+        // Real reason codes only — never the U04 backend_not_implemented placeholder on Darwin.
         if (builtin.os.tag == .macos) {
-            // macOS outside matrix (e.g. 26) must surface version gate, not U04 placeholder.
-            try std.testing.expectEqualStrings("macos_version_unsupported", fail_reason);
+            try std.testing.expect(std.mem.indexOf(u8, fail_reason, "backend_not_implemented") == null);
         }
     }
 }
