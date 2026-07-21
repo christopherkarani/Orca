@@ -20,8 +20,8 @@ Status: `todo` | `ci-green` (set `ci-green` only when the named job runs the fil
 | Hook missing/empty shell command fail-closed | `phase2f shell tool with missing command fails closed before daemon evaluation` (+ empty variant) | zig-test | ci-green | | |
 | Hook unit: daemon unavailable | `hook daemon unavailable blocks shell command` | zig-test (lib) | ci-green | | See checklist for more unit rows |
 | Run denies shell when daemon unavailable | `phase2f run denies shell commands when daemon is unavailable` | zig-test | ci-green | | CLI path |
-| OS sandbox adversarial (linux) | `scripts/os-sandbox-adversarial-e2e.sh --case ci-linux` | `ci.yml` os-sandbox (ubuntu-latest matrix) | ci-green | | Exists in CI; `--require-attach` |
-| OS sandbox adversarial (macos) | `scripts/os-sandbox-adversarial-e2e.sh --case ci-macos` | `ci.yml` os-sandbox (macos-14 matrix) | ci-green | | Exists in CI; `--require-attach` |
+| OS sandbox adversarial (linux) | `scripts/os-sandbox-adversarial-e2e.sh --case ci-linux` | `ci.yml` os-sandbox (ubuntu-latest matrix) | todo | | Job exists in CI with `--require-attach`; not yet proven on tip (`last_run_url` unset) |
+| OS sandbox adversarial (macos) | `scripts/os-sandbox-adversarial-e2e.sh --case ci-macos` | `ci.yml` os-sandbox (macos-14 matrix) | todo | | Job exists in CI with `--require-attach`; not yet proven on tip (`last_run_url` unset) |
 | MCP proxy fail-closed (unit set) | `proxy fails closed` / malformed transport filters in `src/mcp/proxy.zig` | zig-test | ci-green | | Expand residual via checklist |
 | Policy presets validate | `orca policy check` loop over `policies/presets` | `test.yml` | ci-green | | Already in test.yml |
 | Per-host daemon-down wire residual (opencode/openclaw/hermes/claude shell) | checklist todos under `hook-residual-fail-closed` | zig-test | todo | | Z1 residual slice |

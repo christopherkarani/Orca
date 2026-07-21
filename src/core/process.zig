@@ -82,6 +82,9 @@ pub const PreparedChild = struct {
     child: ?std.process.Child = null,
     process_group_cleanup: bool = false,
     process_group_id: ?std.posix.pid_t = null,
+    /// Sticky POSIX pid captured at spawn. Survives `Child.kill`/`wait` nulling
+    /// `child.id` so parent error cleanup can still SIGKILL+waitpid (M-4).
+    posix_pid: ?std.posix.pid_t = null,
     spawned: bool = false,
     /// True when the custom spawn hook returned successfully.
     /// Does **not** prove OS child apply handshake — that is attach-receipt /
@@ -96,6 +99,19 @@ pub const PreparedChild = struct {
         }
     }
 
+    fn recordSpawnedPid(self: *PreparedChild, child: std.process.Child) void {
+        switch (builtin.os.tag) {
+            .linux, .macos, .freebsd, .netbsd, .openbsd, .dragonfly => {
+                if (child.id) |pid| {
+                    self.posix_pid = pid;
+                    // Child setpgid(0,0) makes pgid == pid; kill(-pgid) cleans the group.
+                    self.process_group_id = pid;
+                }
+            },
+            else => {},
+        }
+    }
+
     fn spawnPlain(self: *PreparedChild) !void {
         const child = try std.process.spawn(self.io, .{
             .argv = self.argv,
@@ -106,12 +122,7 @@ pub const PreparedChild = struct {
             .stderr = mapStdio(self.stdio),
         });
         self.child = child;
-        switch (builtin.os.tag) {
-            .linux, .macos => {
-                if (child.id) |pid| self.process_group_id = pid;
-            },
-            else => {},
-        }
+        self.recordSpawnedPid(child);
         self.spawned = true;
         self.custom_spawn_used = false;
     }
@@ -129,13 +140,7 @@ pub const PreparedChild = struct {
             .stdio = self.stdio,
         });
         self.child = child;
-        switch (builtin.os.tag) {
-            .linux, .macos => {
-                // Child setpgid(0,0) makes pgid == pid; kill(-pgid) cleans the group.
-                if (child.id) |pid| self.process_group_id = pid;
-            },
-            else => {},
-        }
+        self.recordSpawnedPid(child);
         self.spawned = true;
         self.custom_spawn_used = true;
     }
@@ -153,40 +158,61 @@ pub const PreparedChild = struct {
     /// Kill the spawned agent (and process group when enabled), then **reap**.
     ///
     /// Must wait/reap before any parent free of fork-shared argv/env (COW
-    /// free-before-reap). `std.process.Child.kill` already waits, but we capture
-    /// the pid first and run an EINTR-retry waitpid so a partial Io kill path
-    /// cannot leave the child unreaped.
+    /// free-before-reap). `std.process.Child.kill` already waits, but we use a
+    /// sticky spawn-time pid and an EINTR-retry waitpid so a partial Io kill
+    /// path (or a nulled `child.id`) cannot leave the child unreaped (M-4).
+    ///
+    /// Main-thread only. Must not run concurrently with `wait` (see
+    /// `terminateForHealthFailure`).
     pub fn terminateAfterParentError(self: *PreparedChild) void {
         if (!self.spawned) return;
-        const child = &(self.child orelse return);
-        // Capture before kill nulls `child.id`.
-        const posix_pid: ?std.posix.pid_t = switch (builtin.os.tag) {
-            .linux, .macos, .freebsd, .netbsd, .openbsd, .dragonfly => child.id,
-            else => null,
-        };
+        const sticky = self.stickyPosixPid();
         if (self.process_group_cleanup) {
             if (self.process_group_id) |pgid| killProcessGroup(pgid);
         }
-        child.kill(self.io);
-        if (posix_pid) |pid| waitpidEintr(pid);
+        if (self.child) |*child| {
+            // Child.kill waits and nulls id when id is still set. If id is
+            // already null (failed partial wait), fall through to sticky waitpid.
+            if (child.id != null) {
+                child.kill(self.io);
+            } else {
+                signalKillPid(sticky);
+            }
+        } else {
+            signalKillPid(sticky);
+        }
+        if (sticky) |pid| waitpidEintr(pid);
         self.spawned = false;
         self.process_group_id = null;
     }
 
+    /// Health-monitor path: **signal only**, never wait/reap.
+    ///
+    /// Concurrent waitpid on the same Child is double-free under Zig 0.16
+    /// (ECHILD). The main `wait()` path is the sole reaper (M-6). Prefer
+    /// process-group SIGKILL so the blocked main waiter unblocks promptly.
     pub fn terminateForHealthFailure(self: *PreparedChild) void {
         if (!self.spawned) return;
-        const child = &(self.child orelse return);
-        const posix_pid: ?std.posix.pid_t = switch (builtin.os.tag) {
-            .linux, .macos, .freebsd, .netbsd, .openbsd, .dragonfly => child.id,
-            else => null,
-        };
         if (self.process_group_cleanup) {
-            if (self.process_group_id) |pgid| killProcessGroup(pgid);
+            if (self.process_group_id) |pgid| {
+                killProcessGroup(pgid);
+                return;
+            }
         }
-        child.kill(self.io);
-        if (posix_pid) |pid| waitpidEintr(pid);
-        self.spawned = false;
-        self.process_group_id = null;
+        // No process group: SIGKILL sticky pid without waitpid / without
+        // touching child.id so the main waiter remains the only reaper.
+        signalKillPid(self.stickyPosixPid());
+    }
+
+    fn stickyPosixPid(self: *const PreparedChild) ?std.posix.pid_t {
+        if (self.posix_pid) |pid| return pid;
+        switch (builtin.os.tag) {
+            .linux, .macos, .freebsd, .netbsd, .openbsd, .dragonfly => {
+                if (self.child) |child| return child.id;
+            },
+            else => {},
+        }
+        return null;
     }
 
     fn cleanupProcessGroup(self: *PreparedChild) void {
@@ -225,6 +251,15 @@ fn killProcessGroup(pgid: std.posix.pid_t) void {
         else => {
             std.posix.kill(-pgid, std.posix.SIG.KILL) catch {};
         },
+    }
+}
+
+fn signalKillPid(pid: ?std.posix.pid_t) void {
+    const p = pid orelse return;
+    if (p <= 0) return;
+    switch (builtin.os.tag) {
+        .windows, .wasi => return,
+        else => std.posix.kill(p, std.posix.SIG.KILL) catch {},
     }
 }
 
@@ -340,6 +375,7 @@ test "terminateAfterParentError reaps child so free-after is not free-before-rea
     });
     prepared.child = child;
     prepared.spawned = true;
+    prepared.posix_pid = pid;
     prepared.process_group_id = pid;
     prepared.process_group_cleanup = true;
 
@@ -356,4 +392,76 @@ test "terminateAfterParentError reaps child so free-after is not free-before-rea
         return error.TestUnexpectedResult;
     }
     // rc < 0 (ECHILD) or rc == pid both mean reaped / not running.
+}
+
+test "terminateAfterParentError uses sticky posix_pid when child.id already null" {
+    if (builtin.os.tag == .windows or builtin.os.tag == .wasi) return error.SkipZigTest;
+
+    const child = try std.process.spawn(std.testing.io, .{
+        .argv = &[_][]const u8{ "/bin/sleep", "30" },
+        .stdin = .ignore,
+        .stdout = .ignore,
+        .stderr = .ignore,
+    });
+    const pid = child.id orelse return error.SkipZigTest;
+
+    var prepared = prepareChild(std.testing.io, std.testing.allocator, .{
+        .io = std.testing.io,
+        .argv = &[_][]const u8{ "/bin/sleep", "30" },
+        .workspace_root = ".",
+        .stdio = .ignore,
+    });
+    // Simulate a failed partial wait that nulled Child.id while the process lives.
+    var zombie_handle = child;
+    zombie_handle.id = null;
+    prepared.child = zombie_handle;
+    prepared.spawned = true;
+    prepared.posix_pid = pid;
+    prepared.process_group_id = pid;
+    prepared.process_group_cleanup = true;
+
+    prepared.terminateAfterParentError();
+    try std.testing.expect(!prepared.spawned);
+
+    var status: c_int = 0;
+    const rc = std.c.waitpid(pid, &status, 1);
+    if (rc == 0) {
+        _ = std.posix.kill(pid, std.posix.SIG.KILL) catch {};
+        waitpidEintr(pid);
+        return error.TestUnexpectedResult;
+    }
+}
+
+test "terminateForHealthFailure signals without reaping so main wait is sole reaper" {
+    if (builtin.os.tag == .windows or builtin.os.tag == .wasi) return error.SkipZigTest;
+
+    const child = try std.process.spawn(std.testing.io, .{
+        .argv = &[_][]const u8{ "/bin/sleep", "30" },
+        .stdin = .ignore,
+        .stdout = .ignore,
+        .stderr = .ignore,
+    });
+    const pid = child.id orelse return error.SkipZigTest;
+
+    var prepared = prepareChild(std.testing.io, std.testing.allocator, .{
+        .io = std.testing.io,
+        .argv = &[_][]const u8{ "/bin/sleep", "30" },
+        .workspace_root = ".",
+        .stdio = .ignore,
+    });
+    prepared.child = child;
+    prepared.spawned = true;
+    prepared.posix_pid = pid;
+    prepared.process_group_id = pid;
+    prepared.process_group_cleanup = true;
+
+    prepared.terminateForHealthFailure();
+    // Must remain spawned with a live Child handle for the main waiter.
+    try std.testing.expect(prepared.spawned);
+    try std.testing.expect(prepared.child.?.id != null);
+
+    // Sole reaper path (mirrors supervisor after health signal).
+    const term = try prepared.wait();
+    try std.testing.expect(term == .signal or term == .exited);
+    try std.testing.expect(!prepared.spawned);
 }

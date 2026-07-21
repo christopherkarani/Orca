@@ -47,4 +47,6 @@ Linux capability varies by distro, kernel, container, and sysctl configuration. 
 
 ## Hardlink residual
 
-Landlock grant expansion skips symlinks (`DT_LNK` / `O_NOFOLLOW`) but does **not** filter hardlinks. A hardlink planted inside a granted workspace path to a same-filesystem inode outside the intended tree can become a `PATH_BENEATH` surface for that inode after attach. Symlink escape is covered; same-FS hardlink planting under the workspace is an accepted residual for this surface.
+Landlock grant expansion skips symlinks (`DT_LNK`) and install opens use `O_NOFOLLOW`. Non-directory expand leaves with `st_nlink > 1` are also skipped so a pre-planted hardlink to an outside same-FS inode does not become an RW `PATH_BENEATH` surface. Directories are never skipped on nlink (normal dir nlink ≥ 2).
+
+**Residual after the nlink filter:** hardlinks created *after* plan build (Landlock is path-based; the expand snapshot does not re-check nlink at install), plus expand-plan → child-open path TOCTOU (workspace write between parent plan and child `O_PATH` open can still replace a grant leaf). Legitimate multi-linked files under the workspace also lose leaf RW (write via another single-link name, or parent dir grant when expand does not apply).

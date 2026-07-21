@@ -90,6 +90,7 @@ fn healthMonitorLoop(context: *HealthMonitorThreadContext) void {
     while (!context.stop.load(.acquire)) {
         if (!context.monitor.callback(context.monitor.context)) {
             context.failed.store(true, .release);
+            // Signal only — never wait/reap; main prepared.wait() is sole reaper (M-6).
             context.prepared.terminateForHealthFailure();
             return;
         }
@@ -181,9 +182,13 @@ pub fn run(io: std.Io, allocator: std.mem.Allocator, config: RunConfig) !Session
         error.FileNotFound => return error.CommandNotFound,
         else => return err,
     };
-    prepared.waitForSpawn() catch |err| switch (err) {
-        error.FileNotFound => return error.CommandNotFound,
-        else => return err,
+    // Spawn succeeded: any later parent error must kill+reap (M-4 free-before-reap).
+    prepared.waitForSpawn() catch |err| {
+        prepared.terminateAfterParentError();
+        return switch (err) {
+            error.FileNotFound => error.CommandNotFound,
+            else => err,
+        };
     };
 
     if (config.custom_spawn_used_out) |out| {
@@ -217,14 +222,22 @@ pub fn run(io: std.Io, allocator: std.mem.Allocator, config: RunConfig) !Session
             .stop = &health_stop,
             .failed = &health_failed,
         };
-        health_thread = try std.Thread.spawn(.{}, healthMonitorLoop, .{&health_context});
+        // After spawn succeeds, any parent error must reap the child (M-4).
+        health_thread = std.Thread.spawn(.{}, healthMonitorLoop, .{&health_context}) catch |err| {
+            prepared.terminateAfterParentError();
+            return err;
+        };
     }
     defer {
         health_stop.store(true, .release);
         if (health_thread) |thread| thread.join();
     }
 
-    const term = try prepared.wait();
+    // Sole reaper for the agent child. Health monitor only signals (M-6).
+    const term = prepared.wait() catch |err| {
+        prepared.terminateAfterParentError();
+        return err;
+    };
 
     const ended_at = time.Timestamp.now(io);
     session.ended_at = ended_at;
@@ -544,7 +557,7 @@ test "child non-zero exit code is propagated" {
 }
 
 test "missing child command returns useful typed error" {
-    try std.testing.expectError(error.CommandNotFound, run(std.testing.allocator, .{
+    try std.testing.expectError(error.CommandNotFound, run(std.testing.io, std.testing.allocator, .{
         .command = "orca-definitely-missing-command",
         .workspace = ".",
         .stdio = .ignore,
@@ -556,7 +569,7 @@ test "session start hook failure cleans up spawned child and returns hook error"
 
     var context: FailingHookContext = .{};
     const started = std.time.milliTimestamp();
-    try std.testing.expectError(error.IntentionalHookFailure, run(std.testing.allocator, .{
+    try std.testing.expectError(error.IntentionalHookFailure, run(std.testing.io, std.testing.allocator, .{
         .command = "/bin/sh",
         .args = &.{ "-c", "sleep 0.1" },
         .workspace = ".",

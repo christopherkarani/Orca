@@ -366,12 +366,13 @@ fn closeFd(fd: i32) void {
 }
 
 /// Monotonic milliseconds for handshake deadline tracking (M-5).
-fn handshakeMonotonicMs() i64 {
+/// Returns null if `clock_gettime` fails — callers must never treat failure as
+/// `now = 0` against a real deadline (that either false-timeouts immediately
+/// when the clock recovers, or extends the wait unboundedly if it fails mid-loop).
+fn handshakeMonotonicMs() ?i64 {
     var ts: std.c.timespec = undefined;
     if (std.c.clock_gettime(std.c.CLOCK.MONOTONIC, &ts) != 0) {
-        // Clock failure: return 0 so the outer poll still uses its own timeout
-        // bound rather than spinning forever on a broken clock.
-        return 0;
+        return null;
     }
     return @as(i64, @intCast(ts.sec)) * std.time.ms_per_s +
         @divTrunc(@as(i64, @intCast(ts.nsec)), std.time.ns_per_ms);
@@ -404,8 +405,18 @@ fn failHandshake(child_pid: i32) void {
 /// (M-5). Read retries EINTR until 1 byte or hard error (M-7). All failure
 /// exits kill+reap via failHandshake (M-38).
 /// Returns true only when the status_ok byte is received.
+///
+/// Clock policy (M-5): when the start clock works, poll timeouts follow
+/// `deadline - now`. If the start clock fails — or fails mid-handshake —
+/// never substitute `now = 0`; fall back to a pure poll-timeout budget totaling
+/// `status_handshake_timeout_ms` (single/few slices, no broken wall math).
 fn readStatusOk(read_fd: i32, child_pid: i32) bool {
-    const deadline_ms = handshakeMonotonicMs() + status_handshake_timeout_ms;
+    const start_ms = handshakeMonotonicMs();
+    const use_deadline = start_ms != null;
+    const deadline_ms: i64 = if (start_ms) |s| s + status_handshake_timeout_ms else 0;
+    // Pure budget used when the start clock failed, or if the clock fails later.
+    var budget_ms: i32 = status_handshake_timeout_ms;
+
     var fds = [_]std.posix.pollfd{.{
         .fd = read_fd,
         .events = std.posix.POLL.IN,
@@ -413,16 +424,31 @@ fn readStatusOk(read_fd: i32, child_pid: i32) bool {
     }};
 
     while (true) {
-        const now = handshakeMonotonicMs();
-        const remaining_i64 = deadline_ms - now;
-        if (remaining_i64 <= 0) {
+        const remaining: i32 = if (use_deadline) blk: {
+            if (handshakeMonotonicMs()) |now| {
+                const remaining_i64 = deadline_ms - now;
+                if (remaining_i64 <= 0) {
+                    failHandshake(child_pid);
+                    return false;
+                }
+                const r: i32 = @intCast(@min(remaining_i64, @as(i64, std.math.maxInt(i32))));
+                // Keep budget coherent so a later clock failure still bounds the wait.
+                budget_ms = r;
+                break :blk r;
+            } else {
+                // Mid-handshake clock failure: pure budget, no now=0 math.
+                break :blk budget_ms;
+            }
+        } else budget_ms;
+
+        if (remaining <= 0) {
             failHandshake(child_pid);
             return false;
         }
-        const remaining: i32 = @intCast(@min(remaining_i64, @as(i64, std.math.maxInt(i32))));
 
         // std.posix.poll already retries EINTR internally; we pass the remaining
-        // slice of the deadline so restarts cannot extend past the true timeout.
+        // slice of the deadline (or pure budget) so restarts cannot extend past
+        // the true timeout when the clock is healthy.
         const ready = std.posix.poll(&fds, remaining) catch {
             // Non-EINTR poll failure.
             failHandshake(child_pid);

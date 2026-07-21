@@ -11,7 +11,12 @@ const std = @import("std");
 /// Pre-created on the attach path so Landlock child-expand can PATH_BENEATH it.
 pub const workspace_session_tmp_name = ".orca-tmp";
 
-/// Classic system temp fallback when workspace session temp cannot be prepared.
+/// Classic system temp path literal (`/tmp`).
+///
+/// **Not** an attach rewrite target under production defaults: `include_tmp` is false
+/// so bare classic temp is not agent-writable. When `{workspace}/.orca-tmp` cannot be
+/// prepared, apply fails closed with `session_tmp_prepare_failed` rather than pointing
+/// TMPDIR here (M-8 honesty). Kept as a named constant for grant comparisons / docs.
 pub const classic_tmp_fallback = "/tmp";
 
 /// Absolute path for the preferred attach TMPDIR under `workspace_root`.

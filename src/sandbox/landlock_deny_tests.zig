@@ -171,6 +171,8 @@ test "real FS deny under production defaults: outside denied; neighbor RW; contr
     var ws_tmp = std.testing.tmpDir(.{});
     defer ws_tmp.cleanup();
     try ws_tmp.dir.createDirPath(io, ".orca");
+    // Production attach pre-creates session tmp so Landlock expand sees an RW leaf.
+    try ws_tmp.dir.createDirPath(io, ".orca-tmp");
     try ws_tmp.dir.writeFile(io, .{ .sub_path = "neighbor.txt", .data = "WORKSPACE_NEIGHBOR_OK" });
     const ws_root = try ws_tmp.dir.realPathFileAlloc(io, ".", allocator);
     defer allocator.free(ws_root);
@@ -197,6 +199,8 @@ test "real FS deny under production defaults: outside denied; neighbor RW; contr
     defer allocator.free(neighbor_path);
     const control_write = try std.fs.path.join(allocator, &.{ ws_root, ".orca", "policy.yaml" });
     defer allocator.free(control_write);
+    const session_tmp_probe = try std.fs.path.join(allocator, &.{ ws_root, ".orca-tmp", ".orca-ll-prod-session-probe" });
+    defer allocator.free(session_tmp_probe);
 
     // Production defaults: system_ro_prefixes null → system RO + device RW;
     // classic /tmp is NOT RW-granted (session-tmp under workspace only).
@@ -207,6 +211,7 @@ test "real FS deny under production defaults: outside denied; neighbor RW; contr
     try std.testing.expect(!compiled.hasGrant("/tmp", .rw));
     try std.testing.expect(!compiled.isAgentWritable(canary_path));
     try std.testing.expect(compiled.isAgentWritable(neighbor_path));
+    try std.testing.expect(compiled.isAgentWritable(session_tmp_probe));
     try std.testing.expect(!compiled.isAgentWritable(control_write));
 
     var plan = try buildChildLandlockPlan(allocator, &compiled);
@@ -253,7 +258,8 @@ test "real FS deny under production defaults: outside denied; neighbor RW; contr
             linux.exit(6);
         }
 
-        // Production tmp grant still present (scratch under /tmp must be openable RW).
+        // Classic /tmp must NOT be RW under production defaults (M-8). Success
+        // here is a grant-width hole — fail closed with exit 11.
         const tmp_probe = "/tmp/.orca-ll-prod-tmp-probe";
         @memcpy(path_buf[0..tmp_probe.len], tmp_probe);
         path_buf[tmp_probe.len] = 0;
@@ -262,9 +268,23 @@ test "real FS deny under production defaults: outside denied; neighbor RW; contr
             .{ .ACCMODE = .WRONLY, .CREAT = true, .TRUNC = true, .CLOEXEC = true },
             0o600,
         );
-        if (linux.errno(tfd) != .SUCCESS) linux.exit(11);
-        _ = linux.close(@intCast(tfd));
-        _ = linux.unlink(path_buf[0..tmp_probe.len :0].ptr);
+        if (linux.errno(tfd) == .SUCCESS) {
+            _ = linux.close(@intCast(tfd));
+            _ = linux.unlink(path_buf[0..tmp_probe.len :0].ptr);
+            linux.exit(11);
+        }
+
+        // Session temp under workspace `.orca-tmp` remains the RW scratch surface.
+        @memcpy(path_buf[0..session_tmp_probe.len], session_tmp_probe);
+        path_buf[session_tmp_probe.len] = 0;
+        const sfd = linux.open(
+            path_buf[0..session_tmp_probe.len :0].ptr,
+            .{ .ACCMODE = .WRONLY, .CREAT = true, .TRUNC = true, .CLOEXEC = true },
+            0o600,
+        );
+        if (linux.errno(sfd) != .SUCCESS) linux.exit(12);
+        _ = linux.close(@intCast(sfd));
+        _ = linux.unlink(path_buf[0..session_tmp_probe.len :0].ptr);
 
         linux.exit(0);
     }
@@ -286,7 +306,8 @@ test "real FS deny under production defaults: outside denied; neighbor RW; contr
         4 => return error.WorkspaceNeighborUnreadableUnderSandbox,
         5 => return error.WorkspaceWriteFailedUnderSandbox,
         6 => return error.ControlRootWritableUnderSandbox,
-        11 => return error.ProductionTmpNotWritableUnderSandbox,
+        11 => return error.ProductionTmpWritableUnderSandbox,
+        12 => return error.SessionTmpNotWritableUnderSandbox,
         else => return error.UnexpectedSandboxProbeExit,
     }
 }

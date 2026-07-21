@@ -312,6 +312,11 @@ pub fn compileProfile(allocator: std.mem.Allocator, options: CompileOptions) !Co
     const workspace_root = try canonicalizeAbsolute(allocator, options.workspace_root);
     errdefer allocator.free(workspace_root);
 
+    // M-2: workspace at filesystem root would compile a full-tree RW grant
+    // (`isPathWithin` treats "/" as covering every absolute path). Fail closed.
+    // Also rejects inputs that canonicalize to root (`/.`, `/foo/..`, `//`).
+    if (workspace_root.len == 1 and workspace_root[0] == '/') return error.InvalidWorkspace;
+
     var grants_list: std.ArrayList(PathGrant) = .empty;
     errdefer {
         for (grants_list.items) |g| allocator.free(g.path);
@@ -647,6 +652,44 @@ test "P1-U-06 empty and relative workspace fail closed" {
     try std.testing.expectError(error.InvalidWorkspace, compileProfile(allocator, .{
         .workspace_root = "workspace",
     }));
+}
+
+test "M-2 workspace at filesystem root fails closed" {
+    const allocator = std.testing.allocator;
+
+    // Bare root would grant full-tree RW via isPathWithin("/", ...).
+    try std.testing.expectError(error.InvalidWorkspace, compileProfile(allocator, .{
+        .workspace_root = "/",
+        .system_ro_prefixes = &[_][]const u8{"/usr"},
+    }));
+    // Lexical forms that canonicalize to root must also fail closed.
+    try std.testing.expectError(error.InvalidWorkspace, compileProfile(allocator, .{
+        .workspace_root = "/.",
+        .system_ro_prefixes = &[_][]const u8{"/usr"},
+    }));
+    try std.testing.expectError(error.InvalidWorkspace, compileProfile(allocator, .{
+        .workspace_root = "/foo/..",
+        .system_ro_prefixes = &[_][]const u8{"/usr"},
+    }));
+    try std.testing.expectError(error.InvalidWorkspace, compileProfile(allocator, .{
+        .workspace_root = "//",
+        .system_ro_prefixes = &[_][]const u8{"/usr"},
+    }));
+
+    // Normal absolute workspaces still compile (including single-component roots).
+    var normal = try compileProfile(allocator, .{
+        .workspace_root = "/workspace/proj",
+        .system_ro_prefixes = &[_][]const u8{"/usr"},
+    });
+    defer normal.deinit();
+    try std.testing.expect(normal.hasGrant("/workspace/proj", .rw));
+
+    var single = try compileProfile(allocator, .{
+        .workspace_root = "/tmp/orca-profile-m2-ws",
+        .system_ro_prefixes = &[_][]const u8{"/usr"},
+    });
+    defer single.deinit();
+    try std.testing.expect(single.hasGrant("/tmp/orca-profile-m2-ws", .rw));
 }
 
 test "P1-U-07 determinism: same inputs yield same canonical bytes and hash" {

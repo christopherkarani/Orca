@@ -30,6 +30,13 @@
 //!
 //! HOME grants may be restricted separately by FS profile apply; this module
 //! does not strip HOME from the allowlist (agents need a home path string).
+//!
+//! ## Proxy env (M-3)
+//! Proxy keys (`HTTP(S)_PROXY` / `ALL_PROXY` / `NO_PROXY`, both cases) are on the
+//! allowlist so Orca loopback inject survives attach. Host proxy **values** that
+//! carry URL userinfo (`scheme://user:pass@host`) are rewritten to drop userinfo
+//! (`scheme://host…`) so credentials cannot ride into the child. Prefer Orca
+//! `appendProxyEnvironment` (both cases) so loopback wins over host proxies.
 
 const std = @import("std");
 
@@ -131,6 +138,43 @@ pub const launch_allow_prefixes = [_][]const u8{
     "LC_",
     "XDG_",
 };
+
+/// Proxy mediation keys retained by the launch allowlist (both cases).
+/// Values are sanitized (URL userinfo stripped) when kept on the attach path.
+pub const launch_proxy_keys = [_][]const u8{
+    "HTTP_PROXY",
+    "HTTPS_PROXY",
+    "http_proxy",
+    "https_proxy",
+    "NO_PROXY",
+    "no_proxy",
+    "ALL_PROXY",
+    "all_proxy",
+};
+
+/// True when `name` is a proxy mediation env key (case-sensitive exact match).
+pub fn isProxyEnvKey(name: []const u8) bool {
+    for (launch_proxy_keys) |key| {
+        if (std.mem.eql(u8, name, key)) return true;
+    }
+    return false;
+}
+
+/// If `value` is a URL with userinfo (`scheme://user:pass@host…`), return an
+/// allocated rewrite with userinfo removed (`scheme://host…`). Returns `null`
+/// when there is no userinfo to strip (caller must not free). On success the
+/// caller owns the returned slice.
+pub fn stripProxyUrlUserinfo(allocator: std.mem.Allocator, value: []const u8) error{OutOfMemory}!?[]u8 {
+    const scheme_sep = std.mem.indexOf(u8, value, "://") orelse return null;
+    const after_scheme = value[scheme_sep + 3 ..];
+    if (after_scheme.len == 0) return null;
+    const authority_end_rel = std.mem.indexOfAny(u8, after_scheme, "/?#") orelse after_scheme.len;
+    const authority = after_scheme[0..authority_end_rel];
+    const at = std.mem.indexOfScalar(u8, authority, '@') orelse return null;
+    // Drop everything through '@' in the authority; keep scheme://, host[:port], tail.
+    const host_start = scheme_sep + 3 + at + 1;
+    return try std.fmt.allocPrint(allocator, "{s}{s}", .{ value[0 .. scheme_sep + 3], value[host_start..] });
+}
 
 /// True when `name` is in the scrub denylist (exact or prefix match).
 pub fn shouldScrubKey(name: []const u8) bool {
@@ -235,6 +279,9 @@ pub fn scrubEnvMapInPlace(env_map: *std.process.Environ.Map) error{OutOfMemory}!
 /// Fail closed on OOM while collecting keys (same contract as denylist scrub).
 /// Called from `applyBeforeExec` only when prepare yields child-apply materials
 /// (not on pure grade-drop), after denylist `scrubEnvMapInPlace`.
+///
+/// After removals, retained proxy URL values have userinfo stripped so host
+/// proxy credentials cannot pass into the sandboxed child (M-3).
 pub fn applyLaunchAllowlistInPlace(env_map: *std.process.Environ.Map) error{OutOfMemory}!usize {
     var to_remove: std.ArrayList([]u8) = .empty;
     defer {
@@ -265,7 +312,49 @@ pub fn applyLaunchAllowlistInPlace(env_map: *std.process.Environ.Map) error{OutO
     }
 
     if (incomplete) return error.OutOfMemory;
+
+    // Sanitize retained proxy values after the key set is final.
+    try sanitizeRetainedProxyEnvInPlace(env_map);
     return removed;
+}
+
+/// Strip URL userinfo from retained proxy env values in place.
+/// Non-proxy keys and values without userinfo are left unchanged.
+pub fn sanitizeRetainedProxyEnvInPlace(env_map: *std.process.Environ.Map) error{OutOfMemory}!void {
+    const Rewrite = struct {
+        name: []u8,
+        value: []u8,
+    };
+    var rewrites: std.ArrayList(Rewrite) = .empty;
+    defer {
+        for (rewrites.items) |item| {
+            env_map.allocator.free(item.name);
+            env_map.allocator.free(item.value);
+        }
+        rewrites.deinit(env_map.allocator);
+    }
+
+    var it = env_map.iterator();
+    while (it.next()) |entry| {
+        const name = entry.key_ptr.*;
+        if (!isProxyEnvKey(name)) continue;
+        const value = entry.value_ptr.*;
+        const stripped = (stripProxyUrlUserinfo(env_map.allocator, value) catch return error.OutOfMemory) orelse continue;
+        const owned_name = env_map.allocator.dupe(u8, name) catch {
+            env_map.allocator.free(stripped);
+            return error.OutOfMemory;
+        };
+        rewrites.append(env_map.allocator, .{ .name = owned_name, .value = stripped }) catch {
+            env_map.allocator.free(owned_name);
+            env_map.allocator.free(stripped);
+            return error.OutOfMemory;
+        };
+    }
+
+    for (rewrites.items) |item| {
+        // Environ.Map.put copies key/value; our temps are freed in defer.
+        try env_map.put(item.name, item.value);
+    }
 }
 
 test "shouldScrubKey removes LD_PRELOAD LD_LIBRARY_PATH BASH_ENV ENV ZDOTDIR" {
@@ -519,4 +608,98 @@ test "applyLaunchAllowlistInPlace strips non-allowlisted keys" {
     try std.testing.expectEqualStrings("/etc/ssl/node-ca.pem", env_map.get("NODE_EXTRA_CA_CERTS").?);
     try std.testing.expectEqualStrings("/etc/ssl/git-ca.pem", env_map.get("GIT_SSL_CAINFO").?);
     try std.testing.expect(env_map.get("SSH_AUTH_SOCK") == null);
+}
+
+test "stripProxyUrlUserinfo removes user:pass from proxy URLs" {
+    const stripped = try stripProxyUrlUserinfo(std.testing.allocator, "http://user:s3cret@proxy.example.com:8080");
+    try std.testing.expect(stripped != null);
+    defer std.testing.allocator.free(stripped.?);
+    try std.testing.expectEqualStrings("http://proxy.example.com:8080", stripped.?);
+
+    const with_path = try stripProxyUrlUserinfo(std.testing.allocator, "https://alice:pw@corp.proxy/path?q=1");
+    try std.testing.expect(with_path != null);
+    defer std.testing.allocator.free(with_path.?);
+    try std.testing.expectEqualStrings("https://corp.proxy/path?q=1", with_path.?);
+
+    // No userinfo → null (no allocation).
+    try std.testing.expect(try stripProxyUrlUserinfo(std.testing.allocator, "http://127.0.0.1:9") == null);
+    try std.testing.expect(try stripProxyUrlUserinfo(std.testing.allocator, "localhost,127.0.0.1") == null);
+}
+
+test "applyLaunchAllowlistInPlace redacts credentialed host proxy URLs (M-3)" {
+    var env_map = std.process.Environ.Map.init(std.testing.allocator);
+    defer env_map.deinit();
+    try env_map.put("PATH", "/bin");
+    try env_map.put("HTTP_PROXY", "http://user:s3cretPass@evil-proxy.example:3128");
+    try env_map.put("https_proxy", "https://alice:hunter2@corp.proxy:8443");
+    try env_map.put("ALL_PROXY", "socks5://tok:en@socks.internal");
+    try env_map.put("NO_PROXY", "localhost,127.0.0.1");
+    try env_map.put("OPENAI_API_KEY", "sk-should-strip");
+
+    _ = try applyLaunchAllowlistInPlace(&env_map);
+
+    // Credentialed proxy URLs must not survive attach allowlist with user:pass intact.
+    const http = env_map.get("HTTP_PROXY").?;
+    try std.testing.expect(std.mem.indexOf(u8, http, "user:") == null);
+    try std.testing.expect(std.mem.indexOf(u8, http, "s3cretPass") == null);
+    try std.testing.expect(std.mem.indexOf(u8, http, "@") == null);
+    try std.testing.expectEqualStrings("http://evil-proxy.example:3128", http);
+
+    const https = env_map.get("https_proxy").?;
+    try std.testing.expect(std.mem.indexOf(u8, https, "alice:") == null);
+    try std.testing.expect(std.mem.indexOf(u8, https, "hunter2") == null);
+    try std.testing.expectEqualStrings("https://corp.proxy:8443", https);
+
+    const all = env_map.get("ALL_PROXY").?;
+    try std.testing.expect(std.mem.indexOf(u8, all, "tok:") == null);
+    try std.testing.expectEqualStrings("socks5://socks.internal", all);
+
+    // NO_PROXY host list unchanged; secrets still stripped.
+    try std.testing.expectEqualStrings("localhost,127.0.0.1", env_map.get("NO_PROXY").?);
+    try std.testing.expect(env_map.get("OPENAI_API_KEY") == null);
+
+    // Orca loopback inject without userinfo is preserved as-is.
+    try env_map.put("HTTP_PROXY", "http://127.0.0.1:9");
+    try env_map.put("http_proxy", "http://127.0.0.1:9");
+    _ = try applyLaunchAllowlistInPlace(&env_map);
+    try std.testing.expectEqualStrings("http://127.0.0.1:9", env_map.get("HTTP_PROXY").?);
+    try std.testing.expectEqualStrings("http://127.0.0.1:9", env_map.get("http_proxy").?);
+}
+
+test "appendProxyEnvironment dual-case inject wins over host proxies (M-3)" {
+    // Production inject lives in policy.network_eval; covered here so test-lib
+    // actually executes it (orca_core package tests do not pull network_eval).
+    const network_eval = @import("orca_core").policy.network_eval;
+    var env_map = std.process.Environ.Map.init(std.testing.allocator);
+    defer env_map.deinit();
+
+    try env_map.put("HTTP_PROXY", "http://user:pass@host-proxy.example:8080");
+    try env_map.put("http_proxy", "http://user:pass@host-proxy.example:8080");
+    try env_map.put("HTTPS_PROXY", "http://user:pass@host-proxy.example:8080");
+    try env_map.put("https_proxy", "http://user:pass@host-proxy.example:8080");
+    try env_map.put("ALL_PROXY", "socks5://tok:en@socks.example");
+    try env_map.put("all_proxy", "socks5://tok:en@socks.example");
+    try env_map.put("NO_PROXY", "evil.example");
+    try env_map.put("no_proxy", "evil.example");
+
+    const orca_url = "http://127.0.0.1:18443";
+    const orca_no = "localhost,127.0.0.1,::1";
+    try network_eval.appendProxyEnvironment(&env_map, orca_url, orca_no);
+
+    try std.testing.expectEqualStrings(orca_url, env_map.get("HTTP_PROXY").?);
+    try std.testing.expectEqualStrings(orca_url, env_map.get("http_proxy").?);
+    try std.testing.expectEqualStrings(orca_url, env_map.get("HTTPS_PROXY").?);
+    try std.testing.expectEqualStrings(orca_url, env_map.get("https_proxy").?);
+    try std.testing.expectEqualStrings(orca_url, env_map.get("ALL_PROXY").?);
+    try std.testing.expectEqualStrings(orca_url, env_map.get("all_proxy").?);
+    try std.testing.expectEqualStrings(orca_no, env_map.get("NO_PROXY").?);
+    try std.testing.expectEqualStrings(orca_no, env_map.get("no_proxy").?);
+    try std.testing.expectEqualStrings("proxy-mediated", env_map.get("ORCA_NETWORK_ENFORCEMENT").?);
+
+    // After inject + allowlist, Orca loopback survives and host credentials stay gone.
+    _ = try applyLaunchAllowlistInPlace(&env_map);
+    try std.testing.expectEqualStrings(orca_url, env_map.get("HTTP_PROXY").?);
+    try std.testing.expectEqualStrings(orca_url, env_map.get("http_proxy").?);
+    try std.testing.expectEqualStrings(orca_url, env_map.get("https_proxy").?);
+    try std.testing.expect(std.mem.indexOf(u8, env_map.get("HTTP_PROXY").?, "user:") == null);
 }

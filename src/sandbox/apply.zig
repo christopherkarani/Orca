@@ -307,29 +307,35 @@ fn isUngrantedHostTmpdir(path: []const u8) bool {
     return false;
 }
 
-/// Rewrite TMPDIR/TMP/TEMP into a granted tree for the attach path.
+/// Rewrite TMPDIR/TMP/TEMP into the workspace session temp for the attach path.
 ///
 /// Host macOS TMPDIR under `/var/folders` is intentionally not granted (canary breadth).
 /// Prefer `{workspace}/.orca-tmp` (workspace RW; mkdir so Landlock expand sees it).
-/// Fall back to classic `/tmp` (production temp RW grant).
 ///
-/// Mutates `env_map` in place. Returns the path written into TMPDIR (map-owned value).
+/// Production defaults keep `include_tmp=false` (no classic `/tmp` RW grant). Do **not**
+/// silently rewrite to classic `/tmp` when session temp cannot be prepared — that path
+/// is agent-unwritable under the sandbox and misleads operators. Fail closed instead
+/// (`error.SessionTmpPrepareFailed`); callers map to `session_tmp_prepare_failed`.
+///
+/// Mutates `env_map` in place only on success. Returns the path written into TMPDIR
+/// (map-owned value).
 pub fn rewriteTempEnvForAttach(
     allocator: std.mem.Allocator,
     env_map: *std.process.Environ.Map,
     workspace_root: []const u8,
-) ![]const u8 {
+) error{ OutOfMemory, SessionTmpPrepareFailed }![]const u8 {
     const preferred = try workspaceSessionTmpPath(allocator, workspace_root);
     defer allocator.free(preferred);
 
     // Create session surface first (shared with Landlock expand precreate).
-    const use_path: []const u8 = if (ensureWorkspaceSessionTmp(workspace_root)) preferred else classic_tmp_fallback;
+    // Fail closed: production materials require session tmp under workspace RW.
+    if (!ensureWorkspaceSessionTmp(workspace_root)) return error.SessionTmpPrepareFailed;
 
     // Map put duplicates via map allocator — preferred stack path is free'd after.
-    try env_map.put("TMPDIR", use_path);
-    try env_map.put("TMP", use_path);
-    try env_map.put("TEMP", use_path);
-    return env_map.get("TMPDIR") orelse classic_tmp_fallback;
+    try env_map.put("TMPDIR", preferred);
+    try env_map.put("TMP", preferred);
+    try env_map.put("TEMP", preferred);
+    return env_map.get("TMPDIR") orelse error.SessionTmpPrepareFailed;
 }
 
 /// Apply OS sandbox policy for the production launch path.
@@ -339,7 +345,9 @@ pub fn rewriteTempEnvForAttach(
 /// - `on` / `auto` + incomplete denylist scrub (OOM) → `error.RequireFailed` (fail closed; reason env_scrub_failed)
 /// - allowlist / TMPDIR rewrite OOM → `error.OutOfMemory` (hard; not RequireFailed)
 /// - launch allowlist runs only when prepare yields child-apply materials
-/// - attach path rewrites TMPDIR/TMP/TEMP into a granted tree
+/// - attach path rewrites TMPDIR/TMP/TEMP into workspace session temp (`.orca-tmp`)
+/// - session-tmp prepare failure under materials → `session_tmp_prepare_failed`
+///   (`on` → RequireFailed; `auto` → failed receipt; never silent classic `/tmp`)
 /// - `on` + unavailable/failed (no child plan) → `error.RequireFailed` (fail closed)
 /// - `on` + prepared child plan → returns materials; receipt stays non-active until promote
 /// - `auto` + unavailable → unavailable receipt; denylist only (provider keys retained)
@@ -421,12 +429,25 @@ pub fn applyBeforeExec(boundary: ApplyBoundary) ApplyError!ApplyResult {
 
     // Launch allowlist only when child-apply materials will be used (prepared_child).
     // Unavailable/failed grade-drop keeps denylist-only env (provider credentials retained).
-    // Attach path also rewrites TMPDIR into a granted tree (R2-2) — host /var/folders is not granted.
+    // Attach path rewrites TMPDIR into workspace session temp (R2-2) — host /var/folders
+    // is not granted, and classic `/tmp` is not RW under production defaults.
     var allowlisted = false;
     if (platform.status == .prepared_child) {
         // Create `{workspace}/.orca-tmp` before Landlock expand enumerates children,
-        // even when env_map is null (rewriteTempEnvForAttach also ensures, when env is present).
-        _ = ensureWorkspaceSessionTmp(boundary.workspace_root);
+        // even when env_map is null (rewriteTempEnvForAttach also ensures when env present).
+        // Fail closed when materials require session tmp (M-8): never lie with classic /tmp.
+        if (!ensureWorkspaceSessionTmp(boundary.workspace_root)) {
+            setFailReason(boundary, "session_tmp_prepare_failed");
+            if (boundary.mode == .on) return error.RequireFailed;
+            return .{
+                .receipt = posture.failedReceipt("session_tmp_prepare_failed"),
+                .env_scrubbed = scrubbed,
+                .env_launch_allowlisted = false,
+                .env_keys_removed = removed,
+                .profile_compiled = true,
+                .profile_hash_hex = hash_copy,
+            };
+        }
         if (boundary.env_map) |env_map| {
             // Allowlist/TMPDIR OOM must stay OutOfMemory (not lossy RequireFailed).
             const allow_removed = env_scrub.applyLaunchAllowlistInPlace(env_map) catch |err| switch (err) {
@@ -434,10 +455,21 @@ pub fn applyBeforeExec(boundary: ApplyBoundary) ApplyError!ApplyResult {
             };
             removed += allow_removed;
             allowlisted = true;
-            // After allowlist keeps TMPDIR key, point it at a granted path.
-            // rewriteTempEnvForAttach only fails with OutOfMemory (alloc / map put).
+            // After allowlist keeps TMPDIR key, point it at workspace session temp.
             _ = rewriteTempEnvForAttach(boundary.allocator, env_map, boundary.workspace_root) catch |err| switch (err) {
                 error.OutOfMemory => return error.OutOfMemory,
+                error.SessionTmpPrepareFailed => {
+                    setFailReason(boundary, "session_tmp_prepare_failed");
+                    if (boundary.mode == .on) return error.RequireFailed;
+                    return .{
+                        .receipt = posture.failedReceipt("session_tmp_prepare_failed"),
+                        .env_scrubbed = scrubbed,
+                        .env_launch_allowlisted = allowlisted,
+                        .env_keys_removed = removed,
+                        .profile_compiled = true,
+                        .profile_hash_hex = hash_copy,
+                    };
+                },
             };
         }
     }
@@ -547,19 +579,8 @@ fn tryMacOsSeatbelt(
             .seatbelt_sbpl_z = null,
             .sbpl_allocator = null,
         },
-        .failed => {
-            // Match profile-compile policy: OOM is hard fail, not soft grade-drop.
-            if (std.mem.eql(u8, prepared.reason_code, "seatbelt_profile_oom")) {
-                return error.OutOfMemory;
-            }
-            return .{
-                .status = .failed,
-                .mechanism = .none,
-                .reason_code = prepared.reason_code,
-                .seatbelt_sbpl_z = null,
-                .sbpl_allocator = null,
-            };
-        },
+        // Single OOM/soft-fail path (M-9): never twin the reason-code match inline.
+        .failed => try mapSeatbeltPrepareFailure(prepared.reason_code),
         .prepared => .{
             .status = .prepared_child,
             .mechanism = .seatbelt,
@@ -1145,18 +1166,46 @@ test "rewriteTempEnvForAttach points TMPDIR at workspace session temp" {
 
     const rewritten = try rewriteTempEnvForAttach(std.testing.allocator, &env_map, root);
     try std.testing.expect(!isUngrantedHostTmpdir(rewritten));
-    try std.testing.expect(std.mem.endsWith(u8, rewritten, "/.orca-tmp") or std.mem.eql(u8, rewritten, classic_tmp_fallback));
+    // Production defaults: session temp only — never silent classic /tmp fallback (M-8).
+    try std.testing.expect(std.mem.endsWith(u8, rewritten, "/.orca-tmp"));
+    try std.testing.expect(!std.mem.eql(u8, rewritten, classic_tmp_fallback));
     try std.testing.expectEqualStrings(rewritten, env_map.get("TMPDIR").?);
     try std.testing.expectEqualStrings(rewritten, env_map.get("TMP").?);
     try std.testing.expectEqualStrings(rewritten, env_map.get("TEMP").?);
 
-    // Preferred path should exist when workspace is real and writable.
-    if (std.mem.endsWith(u8, rewritten, "/.orca-tmp")) {
-        var io_rt: std.Io.Threaded = .init_single_threaded;
-        const io = io_rt.io();
-        var dir = try std.Io.Dir.openDirAbsolute(io, rewritten, .{});
-        dir.close(io);
-    }
+    // Preferred path must exist when rewrite succeeds.
+    var io_rt: std.Io.Threaded = .init_single_threaded;
+    const io = io_rt.io();
+    var dir = try std.Io.Dir.openDirAbsolute(io, rewritten, .{});
+    dir.close(io);
+}
+
+test "rewriteTempEnvForAttach fails closed when session tmp cannot be prepared" {
+    // Empty workspace → ensureWorkspaceSessionTmp returns false; must not rewrite to /tmp.
+    var env_map = std.process.Environ.Map.init(std.testing.allocator);
+    defer env_map.deinit();
+    try env_map.put("TMPDIR", "/var/folders/ns/xmz0/T/");
+    try env_map.put("TMP", "/var/folders/ns/xmz0/T/");
+    try env_map.put("TEMP", "/var/folders/ns/xmz0/T/");
+
+    try std.testing.expectError(
+        error.SessionTmpPrepareFailed,
+        rewriteTempEnvForAttach(std.testing.allocator, &env_map, ""),
+    );
+    // Env must remain unchanged (no lying classic /tmp rewrite).
+    try std.testing.expectEqualStrings("/var/folders/ns/xmz0/T/", env_map.get("TMPDIR").?);
+    try std.testing.expectEqualStrings("/var/folders/ns/xmz0/T/", env_map.get("TMP").?);
+    try std.testing.expectEqualStrings("/var/folders/ns/xmz0/T/", env_map.get("TEMP").?);
+
+    // Over-long workspace also fails ensure (path buffer overflow) without classic fallback.
+    var long_root: [std.fs.max_path_bytes]u8 = undefined;
+    @memset(&long_root, 'x');
+    long_root[0] = '/';
+    try std.testing.expectError(
+        error.SessionTmpPrepareFailed,
+        rewriteTempEnvForAttach(std.testing.allocator, &env_map, long_root[0..]),
+    );
+    try std.testing.expectEqualStrings("/var/folders/ns/xmz0/T/", env_map.get("TMPDIR").?);
 }
 
 test "attach path rewrites host TMPDIR out of var/folders (R2-2)" {
@@ -1187,11 +1236,13 @@ test "attach path rewrites host TMPDIR out of var/folders (R2-2)" {
         const td = env_map.get("TMPDIR") orelse "";
         try std.testing.expect(td.len > 0);
         try std.testing.expect(!isUngrantedHostTmpdir(td));
-        try std.testing.expect(std.mem.endsWith(u8, td, "/.orca-tmp") or std.mem.eql(u8, td, classic_tmp_fallback));
+        // Production defaults: session temp under workspace only (M-8; no classic /tmp).
+        try std.testing.expect(std.mem.endsWith(u8, td, "/.orca-tmp"));
+        try std.testing.expect(!std.mem.eql(u8, td, classic_tmp_fallback));
         // Pure grants: rewritten path must be agent-writable under production model.
         switch (result.materials) {
             .landlock => |*p| {
-                try std.testing.expect(p.isAgentWritable(td) or std.mem.eql(u8, td, classic_tmp_fallback));
+                try std.testing.expect(p.isAgentWritable(td));
             },
             else => {
                 var compiled = try profile.compileProfile(std.testing.allocator, .{
