@@ -14,14 +14,22 @@
 #   ORCA_TEST_FAST=units ./scripts/test-fast.sh
 #
 # Prefer ./scripts/compile-fast.sh check for pure compile iteration.
+# Prefer ./scripts/agent-gate.sh to pick a gate from dirty paths.
 # Use ./scripts/zig build test or ./scripts/verify-pre-merge.sh before merge/CI.
 # See Agents.md → "Verification gates".
+#
+# Note: L1 units are often multi-minute (large monopath lib test binary). Long
+# silent stretches used to mean a pathological OOM-fail test — if silence lasts
+# many minutes with high CPU, sample the test PID (see Agents.md pitfalls).
 
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 cd "${REPO_ROOT}"
+
+# Incremental compile; -j1 keeps test binary runs serial (parallel hangs on some hosts).
+ZIG_BUILD=(./scripts/zig build -fincremental -j1 -Dincremental=true)
 
 mode="${1:-${ORCA_TEST_FAST:-full}}"
 case "${mode}" in
@@ -52,12 +60,12 @@ step_begin "Toolchain check (want 0.16.0 from .zigversion)"
 step_end "toolchain"
 
 step_begin "Build orca CLI"
-./scripts/zig build
+"${ZIG_BUILD[@]}"
 step_end "build"
 
 if [[ "${mode}" == "compile" ]]; then
   step_begin "Compile test-fast artifacts (no run)"
-  ./scripts/zig build compile-test-fast
+  "${ZIG_BUILD[@]}" compile-test-fast
   step_end "compile-test-fast"
   total=$(( $(date +%s) - gate_start ))
   echo "[test-fast] Compile-only gate passed in ${total}s."
@@ -65,7 +73,7 @@ if [[ "${mode}" == "compile" ]]; then
 fi
 
 step_begin "Unit tests (lib + orca_core via test-fast)"
-./scripts/zig build test-fast
+"${ZIG_BUILD[@]}" test-fast
 step_end "units"
 
 if [[ "${mode}" == "units" ]]; then

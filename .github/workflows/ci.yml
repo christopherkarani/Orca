@@ -5,19 +5,21 @@ on:
   pull_request:
 
 jobs:
-  zig:
+  # Fast Zig PR signal (not full suite — full suite lives in test.yml only).
+  zig-fast:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - uses: mlugg/setup-zig@v2
         with:
           version: 0.16.0
-      - run: ./scripts/zig build
-      - run: ./scripts/zig build test
+      - name: Build CLI
+        run: ./scripts/zig build
+      - name: Fast unit tests (lib + orca_core)
+        run: ./scripts/zig build test-fast
   # Landlock (ubuntu) / Seatbelt (macos-14) attach + adversarial e2e.
   # --require-attach is single authority (packaged orca_run + profile_hash + evidence.zig rules).
   # Thin jq checks packaged primary detail only — no third copy of unit dual-proof greps.
-  # e2e runs test-fast once — no separate unit step (avoids double test-fast).
   os-sandbox:
     strategy:
       fail-fast: false
@@ -67,7 +69,10 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: Rust daemon tests
+      - name: Rust daemon lib tests (fast agent-equivalent gate)
+        working-directory: orca-rs
+        run: cargo test --lib
+      - name: Rust daemon full test suite
         working-directory: orca-rs
         run: cargo test
       - name: Rust daemon clippy

@@ -48,6 +48,10 @@ pub fn build(b: *std.Build) void {
     };
     const commit = b.option([]const u8, "commit", "Source commit metadata") orelse "unknown";
     const build_date = b.option([]const u8, "build-date", "UTC build date metadata") orelse "unknown";
+    // Zig 0.16: filters are compile-time (passed to `zig test` as --test-filter), not runtime
+    // argv on the terminal test runner. Use: ./scripts/zig build test-lib -Dtest-filter=Spinner
+    const test_filter = b.option([]const u8, "test-filter", "Only run unit tests whose names contain this substring");
+    const test_filters: []const []const u8 = if (test_filter) |f| b.dupeStrings(&.{f}) else &.{};
 
     const build_options = b.addOptions();
     build_options.addOption([]const u8, "version", version);
@@ -140,16 +144,19 @@ pub fn build(b: *std.Build) void {
 
     const lib_tests = b.addTest(.{
         .root_module = orca_mod,
+        .filters = test_filters,
     });
     const run_lib_tests = addRunTestTerminal(b, lib_tests);
 
     const exe_tests = b.addTest(.{
         .root_module = exe.root_module,
+        .filters = test_filters,
     });
     const run_exe_tests = addRunTestTerminal(b, exe_tests);
 
     const core_package_tests = b.addTest(.{
         .root_module = orca_core_mod,
+        .filters = test_filters,
     });
     const run_core_package_tests = addRunTestTerminal(b, core_package_tests);
     // Independent run steps for focused test targets (do not inherit lib test dependency).
@@ -164,9 +171,39 @@ pub fn build(b: *std.Build) void {
                 .{ .name = "orca_core", .module = orca_core_mod },
             },
         }),
+        .filters = test_filters,
     });
     const run_core_contract_tests = addRunTestTerminal(b, core_contract_tests);
     const run_core_contract_tests_only = addRunTestTerminal(b, core_contract_tests);
+
+    // Domain-sliced test roots: root files live under src/ so relative imports
+    // (e.g. sandbox → env_util) stay inside the module path. Avoids full orca facade
+    // (cli/tui/vaxis/plugin) for focused agent iteration.
+    const sandbox_tests = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/sandbox_slice_root.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .name = "orca_core", .module = orca_core_mod },
+            },
+        }),
+        .filters = test_filters,
+    });
+    const run_sandbox_tests = addRunTestTerminal(b, sandbox_tests);
+
+    const intercept_tests = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/intercept_slice_root.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .name = "orca_core", .module = orca_core_mod },
+            },
+        }),
+        .filters = test_filters,
+    });
+    const run_intercept_tests = addRunTestTerminal(b, intercept_tests);
 
     const cli_package_tests = b.addTest(.{
         .root_module = orca_cli_mod,
@@ -411,6 +448,25 @@ pub fn build(b: *std.Build) void {
 
     const test_core_contract_step = b.step("test-core-contract", "Run packages/core contract tests only");
     test_core_contract_step.dependOn(&run_core_contract_tests_only.step);
+
+    const test_sandbox_step = b.step("test-sandbox", "Run sandbox domain unit tests only (sliced root)");
+    test_sandbox_step.dependOn(&run_sandbox_tests.step);
+
+    // Policy domain: deep `src/policy/*` unit tests currently share Zig 0.16 API debt with
+    // core helpers when rooted outside the monopath. Map `test-policy` to the stable
+    // orca_core package + contract gates (agent-facing "policy/core" slice).
+    const test_policy_step = b.step("test-policy", "Run policy/core package gates (test-core + test-core-contract)");
+    test_policy_step.dependOn(&run_core_package_tests_only.step);
+    test_policy_step.dependOn(&run_core_contract_tests_only.step);
+
+    const test_intercept_step = b.step("test-intercept", "Run intercept domain unit tests only (sliced root)");
+    test_intercept_step.dependOn(&run_intercept_tests.step);
+
+    const compile_test_sandbox_step = b.step("compile-test-sandbox", "Compile sandbox domain tests without running");
+    compile_test_sandbox_step.dependOn(&sandbox_tests.step);
+
+    const compile_test_intercept_step = b.step("compile-test-intercept", "Compile intercept domain tests without running");
+    compile_test_intercept_step.dependOn(&intercept_tests.step);
 
     // Serialize runs so local `zig build test-fast` does not launch three heavy test
     // binaries at once (parallel runs have hung with no output on some hosts).
