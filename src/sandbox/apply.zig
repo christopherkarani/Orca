@@ -41,6 +41,12 @@ pub const ApplyError = error{
     OutOfMemory,
 };
 
+/// Named public error set for `ApplyResult.spawnAgent` (Z-9).
+/// Prefer this over an inferred set that surfaces bare `Unexpected`.
+/// Invariant failures (no child materials, missing SBPL/profile, proof mint fail)
+/// map to `ApplyFailed` so CLI spawn classifiers stay honest.
+pub const SpawnAgentError = apply_posix.SpawnError;
+
 /// What the agent spawn path must do after `applyBeforeExec` (U07).
 pub const ChildApplyKind = enum {
     none,
@@ -73,12 +79,14 @@ pub const ApplyResult = struct {
     env_keys_removed: usize = 0,
     /// Profile was compiled.
     profile_compiled: bool = false,
-    /// Owned hex hash of compiled profile when compile succeeded.
+    /// By-value 64-hex digest of the compiled profile when compile succeeded (not heap-owned).
     profile_hash_hex: ?[64]u8 = null,
     /// Owned compiled profile for Linux Landlock agent-child apply (U07). Free with deinit.
     landlock_profile: ?profile.CompiledProfile = null,
     /// Owned NUL-terminated SBPL for child-side Seatbelt apply (macOS). Free with deinit.
+    /// Requires a paired `allocator` (asserted in `deinit`).
     seatbelt_sbpl_z: ?[:0]u8 = null,
+    /// Allocator that owns `seatbelt_sbpl_z` when non-null. Must be set whenever SBPL is set.
     allocator: ?std.mem.Allocator = null,
 
     pub fn deinit(self: *ApplyResult) void {
@@ -87,7 +95,9 @@ pub const ApplyResult = struct {
             self.landlock_profile = null;
         }
         if (self.seatbelt_sbpl_z) |p| {
-            if (self.allocator) |a| a.free(p);
+            // SBPL ownership is paired with `allocator` — never free via a null/wrong pair.
+            std.debug.assert(self.allocator != null);
+            self.allocator.?.free(p);
             self.seatbelt_sbpl_z = null;
         }
         self.* = undefined;
@@ -148,6 +158,7 @@ pub const ApplyResult = struct {
     /// Spawn the agent with OS FS apply in the child (Landlock / Seatbelt).
     /// Parent stays unrestricted. Blocks until status-pipe proves apply (M-2).
     /// On success, mutates this result to active via a typed attach proof (M-12).
+    /// Errors: `SpawnAgentError` (named; invariants → `ApplyFailed`, never bare `Unexpected`).
     pub fn spawnAgent(
         self: *ApplyResult,
         io: std.Io,
@@ -156,7 +167,7 @@ pub const ApplyResult = struct {
         env_map: ?*const std.process.Environ.Map,
         workspace_root: []const u8,
         stdio: apply_posix.StdioBehavior,
-    ) !SpawnedAgent {
+    ) SpawnAgentError!SpawnedAgent {
         if (argv.len == 0) return error.FileNotFound;
         const resolved = try apply_posix.resolveArgv0(io, allocator, argv[0], env_map);
         defer if (resolved.owned) allocator.free(resolved.path);
@@ -167,9 +178,10 @@ pub const ApplyResult = struct {
         @memcpy(argv_owned[1..], argv[1..]);
 
         const child = switch (self.childApplyKind()) {
-            .none => return error.Unexpected,
+            // No prepared materials: not a generic Unexpected — treat as apply contract fail.
+            .none => return error.ApplyFailed,
             .landlock => blk: {
-                const profile_ptr = &(self.landlock_profile orelse return error.Unexpected);
+                const profile_ptr = &(self.landlock_profile orelse return error.ApplyFailed);
                 break :blk try apply_posix.forkApplyLandlockAndExec(
                     profile_ptr,
                     argv_owned,
@@ -179,7 +191,7 @@ pub const ApplyResult = struct {
                 );
             },
             .seatbelt => blk: {
-                const sbpl = self.seatbelt_sbpl_z orelse return error.Unexpected;
+                const sbpl = self.seatbelt_sbpl_z orelse return error.ApplyFailed;
                 break :blk try apply_posix.forkApplySeatbeltAndExec(
                     sbpl.ptr,
                     argv_owned,
@@ -191,7 +203,7 @@ pub const ApplyResult = struct {
         };
 
         // Handshake proven: mint attach proof and promote receipt atomically.
-        const proof = self.makeAttachProof() orelse return error.Unexpected;
+        const proof = self.makeAttachProof() orelse return error.ApplyFailed;
         self.promoteWithProof(proof);
         return .{ .pid = child.pid, .proof = proof };
     }
@@ -839,6 +851,38 @@ test "promoteWithProof activates only with valid seal matching materials" {
     try std.testing.expect(result.receipt.isActive());
     try std.testing.expectEqual(posture.BackendMechanism.seatbelt, result.receipt.mechanism);
     try std.testing.expect(std.mem.indexOf(u8, result.receipt.fs_scope, "network") == null);
+}
+
+test "SpawnAgentError is a public named set covering ApplyFailed" {
+    // Public contract: callers match `SpawnAgentError`, not inferred Unexpected.
+    const e: SpawnAgentError = error.ApplyFailed;
+    try std.testing.expect(e == error.ApplyFailed);
+    // Other spawn-path failures stay in the same set (CLI classifiers).
+    const fork_e: SpawnAgentError = error.ForkFailed;
+    const unsup: SpawnAgentError = error.Unsupported;
+    try std.testing.expect(fork_e == error.ForkFailed);
+    try std.testing.expect(unsup == error.Unsupported);
+}
+
+test "spawnAgent without child materials returns ApplyFailed not Unexpected" {
+    var result: ApplyResult = .{
+        .receipt = posture.disabledReceipt(),
+        .profile_compiled = false,
+        .profile_hash_hex = null,
+        .landlock_profile = null,
+        .seatbelt_sbpl_z = null,
+        .allocator = null,
+    };
+    defer result.deinit();
+    try std.testing.expectEqual(ChildApplyKind.none, result.childApplyKind());
+    try std.testing.expectError(error.ApplyFailed, result.spawnAgent(
+        std.testing.io,
+        std.testing.allocator,
+        &[_][]const u8{"/usr/bin/true"},
+        null,
+        "/tmp",
+        .ignore,
+    ));
 }
 
 test "spawnAgent promotes with typed proof on macOS Seatbelt" {

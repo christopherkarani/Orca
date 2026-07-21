@@ -58,6 +58,12 @@ const status_handshake_timeout_ms: i32 = 10_000;
 /// apply+chdir success (or dies/times out). On success the parent receives the
 /// child pid; the child never returns.
 ///
+/// **One-shot retain (Z-13):** argv/env/cwd are duplicated with `page_allocator`
+/// before fork and deliberately retained until process exit after a successful
+/// handshake (freeing them races the child's COW/exec address space). Callers
+/// that spawn many agents in one long-lived process must accept that leak or
+/// adopt a longer-lived arena lifecycle later.
+///
 /// Linux only. Does not apply network Landlock.
 pub fn forkApplyLandlockAndExec(
     compiled: *const profile.CompiledProfile,
@@ -74,9 +80,15 @@ pub fn forkApplyLandlockAndExec(
 /// Fork, apply Seatbelt SBPL in the child, scrub FDs, chdir, then execve.
 ///
 /// Parent poll-waits on a status pipe (with deadline) until the child reports
-/// apply+chdir success (or dies/times out). macOS only. `sbpl_z` must remain
-/// valid until the child has exec'd (parent retains ownership — typically until
-/// process exit for a one-shot launch).
+/// apply+chdir success (or dies/times out). macOS only.
+///
+/// **Caller ownership of `sbpl_z`:** must remain valid until the child has
+/// exec'd (parent retains the SBPL — typically until process exit for a
+/// one-shot launch).
+///
+/// **One-shot retain (Z-13):** argv/env/cwd are duplicated with `page_allocator`
+/// before fork and deliberately retained until process exit after a successful
+/// handshake (same COW/exec rationale as `forkApplyLandlockAndExec`).
 pub fn forkApplySeatbeltAndExec(
     sbpl_z: [*:0]const u8,
     argv: []const []const u8,
@@ -100,7 +112,8 @@ fn forkApplyLandlockAndExecLinux(
 
     // Allocate argv/env in the parent before fork. After a successful fork the
     // parent must not free them until the child has exec'd (munmap races).
-    // For a one-shot agent launch we deliberately retain until process exit.
+    // One-shot agent launch: deliberately retain page_allocator buffers until
+    // process exit (documented on the public forkApply* API — Z-13).
     const argv_z = try allocArgvZ(std.heap.page_allocator, argv);
     errdefer freeArgvZ(std.heap.page_allocator, argv_z);
     const envp = try allocEnvpZ(std.heap.page_allocator, env_map);
@@ -201,6 +214,8 @@ fn forkApplySeatbeltAndExecMacOs(
     cwd: ?[]const u8,
     stdio: StdioBehavior,
 ) SpawnError!ChildPid {
+    // One-shot retain of page_allocator argv/env/cwd until process exit after
+    // successful handshake (see public forkApplySeatbeltAndExec docs — Z-13).
     const argv_z = try allocArgvZ(std.heap.page_allocator, argv);
     errdefer freeArgvZ(std.heap.page_allocator, argv_z);
     const envp = try allocEnvpZ(std.heap.page_allocator, env_map);
