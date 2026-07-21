@@ -4,8 +4,15 @@
 //! contain raw secret values or live canary bodies.
 
 const std = @import("std");
+const util = @import("orca_core").core.util;
 
 pub const schema_version: u16 = 1;
+
+/// Dual-proof CTRL-ATTACH detail tokens allowed when `ctrl_attach.ok` is true.
+/// New production attach proofs must be added here before manifests may claim ok.
+pub const allowlisted_attach_details = [_][]const u8{
+    "zig_real_fs_deny_canary_and_handshake",
+};
 
 pub const ControlResult = struct {
     ok: bool,
@@ -36,11 +43,14 @@ pub const Manifest = struct {
 
     pub fn allControlsPass(self: Manifest) bool {
         // ctrl_prepare is optional/partial and is intentionally not required.
-        return self.ctrl_baseline.ok and
+        if (!(self.ctrl_baseline.ok and
             self.ctrl_attach.ok and
             self.test_deny.ok and
             self.ctrl_neighbor.ok and
-            self.ctrl_off.ok;
+            self.ctrl_off.ok)) return false;
+        // Booleans alone are not enough: attach detail must pass validate quality.
+        self.validate() catch return false;
+        return true;
     }
 
     pub fn validate(self: Manifest) !void {
@@ -60,12 +70,30 @@ pub const Manifest = struct {
             return error.PrepareOnlyAttach;
         }
         // Unit-canary-only attach (no production handshake) is forbidden for enforcement.
-        // Dual-proof details (e.g. zig_real_fs_deny_canary_and_handshake) remain allowed.
         if (std.mem.eql(u8, self.ctrl_attach.detail, "zig_real_fs_deny_canary")) return error.UnitCanaryOnlyAttach;
         // CTRL-ATTACH without TEST-DENY is not an enforcement claim.
         if (self.ctrl_attach.ok and !self.test_deny.ok) return error.AttachWithoutDeny;
+        // When attach claims success, detail must be dual-proof allowlisted (not a freeform denylist).
+        if (self.ctrl_attach.ok and !isAllowlistedAttachDetail(self.ctrl_attach.detail)) {
+            return error.AttachDetailNotAllowlisted;
+        }
     }
 };
+
+fn isAllowlistedAttachDetail(detail: []const u8) bool {
+    for (allowlisted_attach_details) |allowed| {
+        if (std.mem.eql(u8, detail, allowed)) return true;
+    }
+    return false;
+}
+
+fn writeJsonField(w: anytype, key: []const u8, value: []const u8, trailing: []const u8) !void {
+    try w.writeAll("  ");
+    try util.writeJsonString(w, key);
+    try w.writeAll(": ");
+    try util.writeJsonString(w, value);
+    try w.writeAll(trailing);
+}
 
 pub fn writeJson(allocator: std.mem.Allocator, manifest: Manifest) ![]u8 {
     try manifest.validate();
@@ -78,16 +106,20 @@ pub fn writeJson(allocator: std.mem.Allocator, manifest: Manifest) ![]u8 {
     try w.writeAll("  \"gate_ids\": [");
     for (manifest.gate_ids, 0..) |id, i| {
         if (i > 0) try w.writeAll(", ");
-        try w.print("\"{s}\"", .{id});
+        try util.writeJsonString(w, id);
     }
     try w.writeAll("],\n");
-    try w.print("  \"case_id\": \"{s}\",\n", .{manifest.case_id});
-    try w.print("  \"source_commit\": \"{s}\",\n", .{manifest.source_commit});
-    try w.print("  \"binary_sha256\": \"{s}\",\n", .{manifest.binary_sha256});
-    try w.print("  \"platform\": {{\"os\": \"{s}\", \"arch\": \"{s}\"}},\n", .{ manifest.platform_os, manifest.platform_arch });
-    try w.print("  \"backend_id\": \"{s}\",\n", .{manifest.backend_id});
-    try w.print("  \"profile_hash\": \"{s}\",\n", .{manifest.profile_hash});
-    try w.print("  \"command\": \"{s}\",\n", .{manifest.command});
+    try writeJsonField(w, "case_id", manifest.case_id, ",\n");
+    try writeJsonField(w, "source_commit", manifest.source_commit, ",\n");
+    try writeJsonField(w, "binary_sha256", manifest.binary_sha256, ",\n");
+    try w.writeAll("  \"platform\": {\"os\": ");
+    try util.writeJsonString(w, manifest.platform_os);
+    try w.writeAll(", \"arch\": ");
+    try util.writeJsonString(w, manifest.platform_arch);
+    try w.writeAll("},\n");
+    try writeJsonField(w, "backend_id", manifest.backend_id, ",\n");
+    try writeJsonField(w, "profile_hash", manifest.profile_hash, ",\n");
+    try writeJsonField(w, "command", manifest.command, ",\n");
     try w.print("  \"exit_code\": {d},\n", .{manifest.exit_code});
     try w.writeAll("  \"controls\": {\n");
     try writeControl(w, "CTRL-BASELINE", manifest.ctrl_baseline);
@@ -102,14 +134,20 @@ pub fn writeJson(allocator: std.mem.Allocator, manifest: Manifest) ![]u8 {
     try w.writeAll(",\n");
     try writeControl(w, "CTRL-OFF", manifest.ctrl_off);
     try w.writeAll("\n  },\n");
-    try w.print("  \"canary_fingerprint\": \"{s}\",\n", .{manifest.canary_fingerprint});
-    try w.print("  \"rerun\": \"{s}\"\n", .{manifest.rerun});
+    try writeJsonField(w, "canary_fingerprint", manifest.canary_fingerprint, ",\n");
+    try writeJsonField(w, "rerun", manifest.rerun, "\n");
     try w.writeAll("}\n");
     return try aw.toOwnedSlice();
 }
 
 fn writeControl(w: anytype, name: []const u8, result: ControlResult) !void {
-    try w.print("    \"{s}\": {{\"ok\": {}, \"detail\": \"{s}\"}}", .{ name, result.ok, result.detail });
+    try w.writeAll("    ");
+    try util.writeJsonString(w, name);
+    try w.writeAll(": {\"ok\": ");
+    try w.print("{}", .{result.ok});
+    try w.writeAll(", \"detail\": ");
+    try util.writeJsonString(w, result.detail);
+    try w.writeAll("}");
 }
 
 test "evidence manifest rejects empty required fields (P0-I-06)" {
@@ -266,4 +304,87 @@ test "dual-proof attach detail with handshake is allowed" {
     try dual.validate();
     try std.testing.expect(!dual.ctrl_prepare.ok);
     try std.testing.expect(dual.allControlsPass());
+}
+
+test "writeJson escapes quotes backslash and newlines in string fields" {
+    const m = Manifest{
+        .gate_ids = &.{"P1-I-01"},
+        .case_id = "quote\"case",
+        .source_commit = "deadbeef",
+        .binary_sha256 = "00",
+        .platform_os = "linux",
+        .platform_arch = "x86_64",
+        .backend_id = "landlock",
+        .command = "orca run -- \"foo\\bar\"\nbaz",
+        .ctrl_baseline = .{ .ok = true, .detail = "line1\nline2" },
+        .ctrl_prepare = .{ .ok = false, .detail = "prep \"x\"" },
+        .ctrl_attach = .{ .ok = false, .detail = "has \"quotes\" and\\slash" },
+        .test_deny = .{ .ok = false, .detail = "deny\tdetail" },
+        .ctrl_neighbor = .{ .ok = true, .detail = "ok" },
+        .ctrl_off = .{ .ok = true, .detail = "off" },
+        .canary_fingerprint = "fp\"1",
+        .rerun = "rerun\ncmd",
+    };
+    try m.validate();
+    const json = try writeJson(std.testing.allocator, m);
+    defer std.testing.allocator.free(json);
+
+    // Raw unescaped quote/newline must not appear inside string values as bare chars that break JSON.
+    try std.testing.expect(std.mem.indexOf(u8, json, "\\\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, json, "\\n") != null);
+    try std.testing.expect(std.mem.indexOf(u8, json, "\\\\") != null);
+
+    var parsed = try std.json.parseFromSlice(std.json.Value, std.testing.allocator, json, .{});
+    defer parsed.deinit();
+    const root = parsed.value.object;
+    try std.testing.expectEqualStrings("quote\"case", root.get("case_id").?.string);
+    try std.testing.expectEqualStrings("orca run -- \"foo\\bar\"\nbaz", root.get("command").?.string);
+    const controls = root.get("controls").?.object;
+    try std.testing.expectEqualStrings("has \"quotes\" and\\slash", controls.get("CTRL-ATTACH").?.object.get("detail").?.string);
+    try std.testing.expectEqualStrings("line1\nline2", controls.get("CTRL-BASELINE").?.object.get("detail").?.string);
+    try std.testing.expectEqualStrings("fp\"1", root.get("canary_fingerprint").?.string);
+    try std.testing.expectEqualStrings("rerun\ncmd", root.get("rerun").?.string);
+}
+
+test "ctrl_attach ok requires allowlisted dual-proof detail" {
+    const base = Manifest{
+        .gate_ids = &.{"P1-I-01"},
+        .case_id = "home-deny",
+        .source_commit = "deadbeef",
+        .binary_sha256 = "00",
+        .platform_os = "linux",
+        .platform_arch = "x86_64",
+        .backend_id = "landlock",
+        .command = "orca run -- true",
+        .ctrl_baseline = .{ .ok = true },
+        .ctrl_attach = .{ .ok = true, .detail = "" },
+        .test_deny = .{ .ok = true },
+        .ctrl_neighbor = .{ .ok = true },
+        .ctrl_off = .{ .ok = true },
+    };
+    try std.testing.expectError(error.AttachDetailNotAllowlisted, base.validate());
+    try std.testing.expect(!base.allControlsPass());
+
+    var probe_ok = base;
+    probe_ok.ctrl_attach = .{ .ok = true, .detail = "capability_probe_ok" };
+    try std.testing.expectError(error.AttachDetailNotAllowlisted, probe_ok.validate());
+    try std.testing.expect(!probe_ok.allControlsPass());
+
+    var typo = base;
+    typo.ctrl_attach = .{ .ok = true, .detail = "zig_real_fs_deny_canary_and_handshak" };
+    try std.testing.expectError(error.AttachDetailNotAllowlisted, typo.validate());
+    try std.testing.expect(!typo.allControlsPass());
+
+    // ok=false keeps freeform detail (not on allowlist).
+    var freeform = base;
+    freeform.ctrl_attach = .{ .ok = false, .detail = "not_proven_yet" };
+    freeform.test_deny = .{ .ok = false };
+    try freeform.validate();
+    try std.testing.expect(!freeform.allControlsPass());
+
+    // Good dual-proof + deny ok passes validate and allControlsPass.
+    var good = base;
+    good.ctrl_attach = .{ .ok = true, .detail = "zig_real_fs_deny_canary_and_handshake" };
+    try good.validate();
+    try std.testing.expect(good.allControlsPass());
 }
