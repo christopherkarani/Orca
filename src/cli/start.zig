@@ -239,7 +239,7 @@ fn resolveSelectedHosts(
     }
     if (detected_count == 0) {
         try stdout.writeAll("\nNo supported agent hosts detected in PATH.\n");
-        try stdout.writeAll("You can continue without host hooks and use `orca run -- <command>`.\n\n");
+        try stdout.writeAll("Install an agent (claude, codex, …) then re-run `orca start`, or launch with `orca <agent>` once protected.\n\n");
         return .{ .items = &.{}, .owned = false };
     }
 

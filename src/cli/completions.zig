@@ -415,10 +415,11 @@ test "completions expose canonical init history and onboarding flags" {
         shell: []const u8,
         required: []const []const u8,
     }{
-        .{ .shell = "bash", .required = &.{ "init) has_command=true; flags=\"${flags} --preset --mode --ci --force --quiet", "history) has_command=true; flags=\"${flags} --days --strict --live --json --robot --format", "setup) has_command=true; flags=\"${flags} --auto --yes --no-interact --preset" } },
-        .{ .shell = "zsh", .required = &.{ "init) has_command=true; flags+=( '--preset' '--mode' '--ci' '--force' '--quiet'", "history) has_command=true; flags+=( '--days' '--strict' '--live' '--json' '--robot' '--format'", "setup) has_command=true; flags+=( '--auto' '--yes' '--no-interact' '--preset'" } },
-        .{ .shell = "fish", .required = &.{ "__fish_seen_subcommand_from init' -l quiet", "__fish_seen_subcommand_from history' -l robot", "__fish_seen_subcommand_from history' -l format", "__fish_seen_subcommand_from setup' -l no-interact" } },
-        .{ .shell = "powershell", .required = &.{ "'init' { $hasCommand = $true; $flags += @('--preset', '--mode', '--ci', '--force', '--quiet')", "'history' { $hasCommand = $true; $flags += @('--days', '--strict', '--live', '--json', '--robot', '--format')", "'setup' { $hasCommand = $true; $flags += @('--auto', '--yes', '--no-interact', '--preset')" } },
+        // Public onboarding door is `start` (setup/quickstart are hidden / hard-removed).
+        .{ .shell = "bash", .required = &.{ "init) has_command=true; flags=\"${flags} --preset --mode --ci --force --quiet", "history) has_command=true; flags=\"${flags} --days --strict --live --json --robot --format", "start) has_command=true; flags=\"${flags} --auto --yes --no-interact --hosts --preset --skip-verify" } },
+        .{ .shell = "zsh", .required = &.{ "init) has_command=true; flags+=( '--preset' '--mode' '--ci' '--force' '--quiet'", "history) has_command=true; flags+=( '--days' '--strict' '--live' '--json' '--robot' '--format'", "start) has_command=true; flags+=( '--auto' '--yes' '--no-interact' '--hosts' '--preset' '--skip-verify'" } },
+        .{ .shell = "fish", .required = &.{ "__fish_seen_subcommand_from init' -l quiet", "__fish_seen_subcommand_from history' -l robot", "__fish_seen_subcommand_from history' -l format", "__fish_seen_subcommand_from start' -l no-interact" } },
+        .{ .shell = "powershell", .required = &.{ "'init' { $hasCommand = $true; $flags += @('--preset', '--mode', '--ci', '--force', '--quiet')", "'history' { $hasCommand = $true; $flags += @('--days', '--strict', '--live', '--json', '--robot', '--format')", "'start' { $hasCommand = $true; $flags += @('--auto', '--yes', '--no-interact', '--hosts', '--preset', '--skip-verify')" } },
     };
 
     for (cases) |case| {

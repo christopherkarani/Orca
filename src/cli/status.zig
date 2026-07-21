@@ -274,7 +274,7 @@ fn chooseNextStep(
         .degraded => try allocator.dupe(u8, "Restart the daemon: `orca shutdown --daemon` then `orca status`."),
         .compatible => blk: {
             if (!policy_present) {
-                break :blk try allocator.dupe(u8, "Run `orca init --preset generic-agent` (or `orca start`) to create a policy.");
+                break :blk try allocator.dupe(u8, "Run `orca start` to create a policy and get protected.");
             }
             if (!policy_valid) {
                 break :blk try allocator.dupe(u8, "Fix invalid policy (parse/load failed), then re-run `orca status --check` or `orca doctor --check`.");
@@ -282,7 +282,7 @@ fn chooseNextStep(
             if (!packs_known) {
                 break :blk try allocator.dupe(u8, "Daemon is up but packs could not be listed; run `orca doctor`.");
             }
-            break :blk try allocator.dupe(u8, "Protected path looks healthy. Run `orca doctor` for details or `orca run -- <agent>`.");
+            break :blk try allocator.dupe(u8, "Protected path looks healthy. Try `orca claude` (or another host), then `orca replay`.");
         },
     };
 }
@@ -626,7 +626,9 @@ test "status rejects unknown options" {
 test "chooseNextStep requires valid policy for healthy copy" {
     const missing = try chooseNextStep(std.testing.allocator, .compatible, false, false, true);
     defer std.testing.allocator.free(missing);
-    try std.testing.expect(std.mem.indexOf(u8, missing, "init") != null);
+    // Limited / no policy: teach public door `orca start` first (not demoted `init`).
+    try std.testing.expect(std.mem.indexOf(u8, missing, "orca start") != null);
+    try std.testing.expect(std.mem.indexOf(u8, missing, "init") == null);
 
     const invalid = try chooseNextStep(std.testing.allocator, .compatible, true, false, true);
     defer std.testing.allocator.free(invalid);
@@ -636,6 +638,10 @@ test "chooseNextStep requires valid policy for healthy copy" {
     const healthy = try chooseNextStep(std.testing.allocator, .compatible, true, true, true);
     defer std.testing.allocator.free(healthy);
     try std.testing.expect(std.mem.indexOf(u8, healthy, "Protected path looks healthy") != null);
+    // Healthy path: host alias + replay — not demoted `orca run -- <agent>`.
+    try std.testing.expect(std.mem.indexOf(u8, healthy, "orca claude") != null);
+    try std.testing.expect(std.mem.indexOf(u8, healthy, "orca replay") != null);
+    try std.testing.expect(std.mem.indexOf(u8, healthy, "orca run") == null);
 }
 
 // Silence unused imports when tests are filtered

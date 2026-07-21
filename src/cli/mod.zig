@@ -1982,7 +1982,7 @@ test "start help does not advertise protection grade menu or --protection" {
     try std.testing.expectEqualStrings("", stderr_writer.buffered());
 }
 
-test "plugin help and disable re-enable messaging de-emphasize --yes in favor of setup" {
+test "plugin help and disable re-enable messaging de-emphasize --yes in favor of start" {
     var stdout_buf: [2048]u8 = undefined;
     var stderr_buf: [256]u8 = undefined;
     var stdout_writer: std.Io.Writer = .fixed(&stdout_buf);
@@ -1992,9 +1992,10 @@ test "plugin help and disable re-enable messaging de-emphasize --yes in favor of
     try std.testing.expectEqual(exit_codes.success, code);
 
     const output = stdout_writer.buffered();
-    // Primary path is `orca setup` (guided on TTY); messaging updated for Phase 0 stub.
-    try std.testing.expect(std.mem.indexOf(u8, output, "setup") != null);
+    // Primary path is `orca start` (guided on TTY); demoted `orca setup` must not be re-taught.
+    try std.testing.expect(std.mem.indexOf(u8, output, "orca start") != null);
     try std.testing.expect(std.mem.indexOf(u8, output, "guided") != null);
+    try std.testing.expect(std.mem.indexOf(u8, output, "orca setup") == null);
     try std.testing.expectEqualStrings("", stderr_writer.buffered());
 }
 

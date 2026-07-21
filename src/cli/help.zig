@@ -126,39 +126,24 @@ pub const commands =
     },
     .{
         .name = "quickstart",
-        .summary = "One-command onboarding: doctor, init, setup",
-        .usage = "orca quickstart [--auto|--no-interact] [--preset <name>]",
+        .summary = "Removed — use orca start",
+        .usage = "orca start",
         .category = .getting_started,
-        .examples = &.{
-            "orca quickstart",
-            "orca quickstart --auto",
-            "orca quickstart --preset strict-local",
-        },
+        .hidden = true,
+        .examples = &.{},
         .details = &.{
-            "Runs doctor -> init (if needed) -> setup in one command.",
-            "On interactive terminals, setup runs in guided mode.",
-            "Use --auto for non-interactive environments (CI, scripts).",
-            "The compatibility flag --no-interact also selects non-interactive mode.",
-            "Use --preset to choose a policy preset (default: generic-agent).",
+            "`orca quickstart` was removed. Use `orca start` instead.",
         },
     },
     .{
         .name = "setup",
-        .summary = "Guided post-install setup for agent host integrations",
-        .usage = "orca setup [--auto|--yes|--no-interact] [--preset <name>]",
+        .summary = "Removed — use orca start",
+        .usage = "orca start",
         .category = .getting_started,
-        .examples = &.{
-            "orca setup",
-            "orca setup --auto",
-            "orca setup --preset strict-local",
-        },
+        .hidden = true,
+        .examples = &.{},
         .details = &.{
-            "On interactive terminals (TTY), `orca setup` (no flags) enters guided mode with arrow-key host selection.",
-            "Use ↑↓ to navigate, Space to toggle hosts, Enter to confirm.",
-            "Use --auto (or --yes alias) for the fully automatic non-interactive path used by scripts/CI.",
-            "The compatibility flag --no-interact also selects the non-interactive path.",
-            "Use --preset to choose a policy preset (default: generic-agent).",
-            "After setup, run 'orca run -- <your-command>' for immediate protection.",
+            "`orca setup` was removed. Use `orca start` instead.",
         },
     },
     .{
@@ -636,7 +621,7 @@ pub const commands =
         "  orca plugin manifest [codex|claude|opencode|openclaw|hermes|all] [--json]",
         "  orca plugin install                                 # dry-run preview of all hosts (no mutation)",
         "  orca plugin install <codex|claude|opencode|openclaw|hermes|all> [--dry-run|--yes] [--path <path>]",
-        "Primary onboarding path: run `orca setup` (guided interactive selection on TTY terminals).",
+        "Primary onboarding path: run `orca start` (guided interactive selection on TTY terminals).",
         "Bare install never mutates; mutation requires an explicit host or `all` plus --yes (confirm default No on TTY).",
         "Plugin doctor does not print secrets.",
     } },
@@ -904,6 +889,14 @@ pub fn writeCommand(io: std.Io, writer: anytype, name: []const u8) !bool {
         try writeAll(io, writer);
         return true;
     }
+    // Hard-removed onboarding peers: do not re-teach live usage; point at `orca start`.
+    if (std.mem.eql(u8, name, "setup") or std.mem.eql(u8, name, "quickstart")) {
+        try writer.print(
+            "orca: `{s}` was removed. Use `orca start` instead.\nRun 'orca help start' for usage.\n",
+            .{name},
+        );
+        return true;
+    }
     const command = findCommand(name) orelse return false;
     try writer.print("{s}\n\nUsage:\n  {s}\n\n", .{ command.summary, command.usage });
 
@@ -1043,7 +1036,24 @@ test "help --all lists full advanced command surface" {
     try std.testing.expect(helpListsPeerCommand(all, "init"));
     try std.testing.expect(helpListsPeerCommand(all, "mcp"));
     try std.testing.expect(helpListsPeerCommand(all, "env"));
-    // Still present on full surface until hard-delete units remove them
-    try std.testing.expect(helpListsPeerCommand(all, "quickstart"));
-    try std.testing.expect(helpListsPeerCommand(all, "setup"));
+    // Hard-removed peers: not listed as live usage on help --all
+    try std.testing.expect(!helpListsPeerCommand(all, "quickstart"));
+    try std.testing.expect(!helpListsPeerCommand(all, "setup"));
+}
+
+test "help setup and quickstart print removal notice pointing at start" {
+    var buf: [1024]u8 = undefined;
+    var writer: std.Io.Writer = .fixed(&buf);
+    try std.testing.expect(try writeCommand(std.testing.io, &writer, "setup"));
+    const setup_out = writer.buffered();
+    try std.testing.expect(std.mem.indexOf(u8, setup_out, "removed") != null);
+    try std.testing.expect(std.mem.indexOf(u8, setup_out, "orca start") != null);
+    try std.testing.expect(std.mem.indexOf(u8, setup_out, "orca setup --") == null);
+
+    writer = .fixed(&buf);
+    try std.testing.expect(try writeCommand(std.testing.io, &writer, "quickstart"));
+    const qs_out = writer.buffered();
+    try std.testing.expect(std.mem.indexOf(u8, qs_out, "removed") != null);
+    try std.testing.expect(std.mem.indexOf(u8, qs_out, "orca start") != null);
+    try std.testing.expect(std.mem.indexOf(u8, qs_out, "orca quickstart --") == null);
 }
