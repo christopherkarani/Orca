@@ -1,4 +1,4 @@
-//! POSIX fork → OS-FS apply → exec helper (U05/U07).
+//! POSIX fork → OS-FS apply → exec helper.
 //!
 //! Parent Orca stays free. Child installs Landlock (Linux) or Seatbelt (macOS)
 //! then execs the agent. Child order: setpgid → stdio → apply → chdir →
@@ -13,12 +13,14 @@
 //! that handshake (not from probe alone or fork alone). Parent waits with a
 //! poll deadline so a hung child cannot block forever. The subsequent execve
 //! itself cannot be proven before the parent returns — only that setup through
-//! status_ok completed.
+//! status_ok completed. Residual: `status_ok` is strictly pre-exec; an `active`
+//! session may still surface a failed exec (e.g. exit 127) if the agent binary
+//! is missing or not executable after attach.
 //!
 //! - Linux: `forkApplyLandlockAndExec` (parent builds landlock expand plan
-//!   before fork so the child never opendir/readdir — Z-3)
+//!   before fork so the child never opendir/readdir)
 //! - macOS: `forkApplySeatbeltAndExec` (sandbox_init in child only; SBPL
-//!   pre-rendered in parent — Z-4 residual documented in macos_seatbelt.zig)
+//!   pre-rendered in parent — multi-thread residual documented in macos_seatbelt.zig)
 //! - Other: Unsupported
 
 const std = @import("std");
@@ -27,6 +29,7 @@ const profile = @import("profile.zig");
 const landlock = @import("landlock.zig");
 const fd_scrub = @import("fd_scrub.zig");
 const macos_seatbelt = @import("macos_seatbelt.zig");
+const session_tmp = @import("session_tmp.zig");
 
 pub const SpawnError = error{
     Unsupported,
@@ -35,7 +38,6 @@ pub const SpawnError = error{
     ExecFailed,
     OutOfMemory,
     FileNotFound,
-    AccessDenied,
 };
 
 /// Match core.process.StdioBehavior without importing core (module boundary).
@@ -44,14 +46,8 @@ pub const StdioBehavior = enum {
     ignore,
 };
 
-/// Result of a successful parent-side fork after child apply handshake.
-/// Prefer `SpawnLease` for ownership of retained argv/env buffers (M-17).
-pub const ChildPid = struct {
-    pid: i32,
-};
-
 /// Owns page_allocator buffers retained across fork until the child is reaped
-/// or the parent process exits (Z-13 / M-17).
+/// or the parent process exits.
 ///
 /// After a successful handshake the child is about to `execve`; free only after
 /// `waitpid` has reaped the child (or on process exit). `ApplyResult.deinit`
@@ -91,9 +87,11 @@ pub const SpawnLease = struct {
 const status_ok: u8 = 1;
 
 /// Parent waits at most this long for the child apply handshake (ms).
-/// Hung children must not block `orca run` forever (M-11).
+/// Hung children must not block `orca run` forever.
 const status_handshake_timeout_ms: i32 = 10_000;
 
+/// Child-side apply payload (plan pointer must address stable storage for the
+/// lifetime of the forked child setup path).
 const ChildOsApply = union(enum) {
     landlock: struct {
         compiled: *const profile.CompiledProfile,
@@ -102,6 +100,14 @@ const ChildOsApply = union(enum) {
     seatbelt: struct {
         sbpl_z: [*:0]const u8,
     },
+};
+
+/// Parent-side apply selection before the Landlock plan is bound into stable
+/// storage. Avoids constructing `ChildOsApply.landlock` with an undefined plan
+/// pointer that is later rewritten (M-24).
+const ParentApplySpec = union(enum) {
+    landlock: *const profile.CompiledProfile,
+    seatbelt: [*:0]const u8,
 };
 
 /// Fork, apply Landlock in the child from `compiled`, chdir, preflight, scrub
@@ -140,7 +146,7 @@ pub fn forkApplySeatbeltAndExec(
 ) SpawnError!SpawnLease {
     if (builtin.os.tag != .macos) return error.Unsupported;
     if (argv.len == 0) return error.ExecFailed;
-    return forkApplyAndExecCommon(.{ .seatbelt = .{ .sbpl_z = sbpl_z } }, null, argv, env_map, cwd, stdio);
+    return forkApplyAndExecCommon(.{ .seatbelt = sbpl_z }, null, argv, env_map, cwd, stdio);
 }
 
 fn forkApplyAndExecLandlock(
@@ -152,22 +158,10 @@ fn forkApplyAndExecLandlock(
 ) SpawnError!SpawnLease {
     const allocator = std.heap.page_allocator;
 
-    // M-18: ensure `{workspace}/.orca-tmp` exists *before* expand enumeration.
-    {
-        var path_buf: [std.fs.max_path_bytes]u8 = undefined;
-        const name = ".orca-tmp";
-        const needed = compiled.workspace_root.len + 1 + name.len;
-        if (needed <= path_buf.len and compiled.workspace_root.len > 0) {
-            @memcpy(path_buf[0..compiled.workspace_root.len], compiled.workspace_root);
-            path_buf[compiled.workspace_root.len] = '/';
-            @memcpy(path_buf[compiled.workspace_root.len + 1 ..][0..name.len], name);
-            var io_rt: std.Io.Threaded = .init_single_threaded;
-            const io = io_rt.io();
-            std.Io.Dir.cwd().createDirPath(io, path_buf[0..needed]) catch {};
-        }
-    }
+    // Ensure `{workspace}/.orca-tmp` exists *before* expand enumeration (shared with apply).
+    _ = session_tmp.ensureWorkspaceSessionTmp(compiled.workspace_root);
 
-    // Z-3: enumerate control-expand paths in the parent before fork.
+    // Enumerate control-expand paths in the parent before fork.
     // Ownership transfers into forkApplyAndExecCommon / SpawnLease (no local errdefer).
     const expand_plan = landlock.buildChildLandlockPlan(allocator, compiled) catch |err| switch (err) {
         error.OutOfMemory => return error.OutOfMemory,
@@ -175,7 +169,7 @@ fn forkApplyAndExecLandlock(
     };
 
     return forkApplyAndExecCommon(
-        .{ .landlock = .{ .compiled = compiled, .plan = undefined } },
+        .{ .landlock = compiled },
         expand_plan,
         argv,
         env_map,
@@ -184,12 +178,12 @@ fn forkApplyAndExecLandlock(
     );
 }
 
-/// Unified parent protocol for Landlock and Seatbelt (M-7). Only the child
+/// Unified parent protocol for Landlock and Seatbelt. Only the child
 /// apply step differs. When `pending_plan` is non-null it is moved into the
 /// returned lease on success (or freed via errdefer path on failure inside
 /// the landlock wrapper).
 fn forkApplyAndExecCommon(
-    child_apply: ChildOsApply,
+    spec: ParentApplySpec,
     pending_plan: ?landlock.ChildLandlockPlan,
     argv: []const []const u8,
     env_map: ?*const std.process.Environ.Map,
@@ -200,14 +194,14 @@ fn forkApplyAndExecCommon(
     var plan_holder = pending_plan;
     errdefer if (plan_holder) |*p| p.deinit();
 
-    // Re-bind landlock plan pointer to holder storage (stable for child).
-    var apply = child_apply;
-    if (plan_holder) |*p| {
-        apply = .{ .landlock = .{
-            .compiled = child_apply.landlock.compiled,
-            .plan = p,
-        } };
-    }
+    // Build ChildOsApply only after plan is in stable plan_holder storage (M-24).
+    const resolved_apply: ChildOsApply = switch (spec) {
+        .landlock => |compiled| .{ .landlock = .{
+            .compiled = compiled,
+            .plan = if (plan_holder) |*p| p else return error.ApplyFailed,
+        } },
+        .seatbelt => |sbpl_z| .{ .seatbelt = .{ .sbpl_z = sbpl_z } },
+    };
 
     const argv_z = try allocArgvZ(allocator, argv);
     errdefer freeArgvZ(allocator, argv_z);
@@ -233,7 +227,7 @@ fn forkApplyAndExecCommon(
             const pid_rc = linux.fork();
             if (linux.errno(pid_rc) != .SUCCESS) return error.ForkFailed;
             if (pid_rc == 0) {
-                runChildAfterFork(apply, argv_z, envp, cwd_z, stdio, status_r, status_w);
+                runChildAfterFork(resolved_apply, argv_z, envp, cwd_z, stdio, status_r, status_w);
             }
             break :blk @intCast(pid_rc);
         },
@@ -241,7 +235,7 @@ fn forkApplyAndExecCommon(
             const pid = std.c.fork();
             if (pid < 0) return error.ForkFailed;
             if (pid == 0) {
-                runChildAfterFork(apply, argv_z, envp, cwd_z, stdio, status_r, status_w);
+                runChildAfterFork(resolved_apply, argv_z, envp, cwd_z, stdio, status_r, status_w);
             }
             break :blk pid;
         },
@@ -250,13 +244,11 @@ fn forkApplyAndExecCommon(
 
     closeFd(status_w);
     status_w = -1;
+    // On failure, readStatusOk already kill+reaped via failHandshake (M-38).
     const ok = readStatusOk(status_r, child_pid);
     closeFd(status_r);
     status_r = -1;
-    if (!ok) {
-        killAndReapChild(child_pid);
-        return error.ApplyFailed;
-    }
+    if (!ok) return error.ApplyFailed;
 
     // Transfer ownership into lease (disarm plan errdefer).
     const moved_plan = plan_holder;
@@ -332,8 +324,6 @@ fn runChildAfterFork(
     }
 }
 
-// ── preflight ──────────────────────────────────────────────────────────────
-
 /// Best-effort check that `path` is readable+executable under the current box.
 /// Runs in the child after apply and optional chdir; failure fails the handshake
 /// so the parent does not promote session `active` (F-4).
@@ -349,8 +339,6 @@ fn preflightExecTarget(path: [*:0]const u8) bool {
     }
 }
 
-// ── status pipe ────────────────────────────────────────────────────────────
-
 fn openStatusPipe() error{PipeFailed}![2]i32 {
     var fds: [2]std.c.fd_t = undefined;
     // Prefer pipe2(CLOEXEC) so a missed close cannot leak into exec.
@@ -360,7 +348,7 @@ fn openStatusPipe() error{PipeFailed}![2]i32 {
     } else {
         if (std.c.pipe(&fds) != 0) return error.PipeFailed;
         // Fail closed if CLOEXEC cannot be set — a non-CLOEXEC pipe end can leak
-        // into a later exec if a close is missed (M-11).
+        // into a later exec if a close is missed.
         if (std.c.fcntl(fds[0], std.c.F.SETFD, @as(c_int, std.c.FD_CLOEXEC)) == -1 or
             std.c.fcntl(fds[1], std.c.F.SETFD, @as(c_int, std.c.FD_CLOEXEC)) == -1)
         {
@@ -377,34 +365,90 @@ fn closeFd(fd: i32) void {
     _ = std.c.close(fd);
 }
 
-fn writeStatusOk(write_fd: i32) bool {
-    var buf = [_]u8{status_ok};
-    const n = std.c.write(write_fd, &buf, 1);
-    return n == 1;
+/// Monotonic milliseconds for handshake deadline tracking (M-5).
+fn handshakeMonotonicMs() i64 {
+    var ts: std.c.timespec = undefined;
+    if (std.c.clock_gettime(std.c.CLOCK.MONOTONIC, &ts) != 0) {
+        // Clock failure: return 0 so the outer poll still uses its own timeout
+        // bound rather than spinning forever on a broken clock.
+        return 0;
+    }
+    return @as(i64, @intCast(ts.sec)) * std.time.ms_per_s +
+        @divTrunc(@as(i64, @intCast(ts.nsec)), std.time.ns_per_ms);
 }
 
-/// Wait for the single-byte apply handshake with a deadline (M-11).
-/// On timeout, kills the child process group so a hung child cannot hang orca.
+/// True when a libc call returned -1 with EINTR (thread-local errno).
+fn libcEintr(rc: anytype) bool {
+    return std.c.errno(rc) == .INTR;
+}
+
+fn writeStatusOk(write_fd: i32) bool {
+    var buf = [_]u8{status_ok};
+    // Retry on EINTR until the single status byte is written or a hard error (M-7).
+    while (true) {
+        const n = std.c.write(write_fd, &buf, 1);
+        if (n == 1) return true;
+        if (libcEintr(n)) continue;
+        return false;
+    }
+}
+
+/// Kill + reap on every handshake failure exit so the parent never returns
+/// ApplyFailed with a live unreaped child (M-38).
+fn failHandshake(child_pid: i32) void {
+    killAndReapChild(child_pid);
+}
+
+/// Wait for the single-byte apply handshake with a true remaining deadline.
+/// Poll loops until readable success, true timeout, or non-EINTR poll failure
+/// (M-5). Read retries EINTR until 1 byte or hard error (M-7). All failure
+/// exits kill+reap via failHandshake (M-38).
 /// Returns true only when the status_ok byte is received.
 fn readStatusOk(read_fd: i32, child_pid: i32) bool {
+    const deadline_ms = handshakeMonotonicMs() + status_handshake_timeout_ms;
     var fds = [_]std.posix.pollfd{.{
         .fd = read_fd,
         .events = std.posix.POLL.IN,
         .revents = 0,
     }};
-    const ready = std.posix.poll(&fds, status_handshake_timeout_ms) catch {
-        killProcessGroup(child_pid);
-        return false;
-    };
-    if (ready == 0) {
-        // Deadline exceeded — child never reported apply success.
-        killProcessGroup(child_pid);
-        return false;
+
+    while (true) {
+        const now = handshakeMonotonicMs();
+        const remaining_i64 = deadline_ms - now;
+        if (remaining_i64 <= 0) {
+            failHandshake(child_pid);
+            return false;
+        }
+        const remaining: i32 = @intCast(@min(remaining_i64, @as(i64, std.math.maxInt(i32))));
+
+        // std.posix.poll already retries EINTR internally; we pass the remaining
+        // slice of the deadline so restarts cannot extend past the true timeout.
+        const ready = std.posix.poll(&fds, remaining) catch {
+            // Non-EINTR poll failure.
+            failHandshake(child_pid);
+            return false;
+        };
+        if (ready == 0) {
+            // Poll waited the full remaining slice with no events → true timeout.
+            failHandshake(child_pid);
+            return false;
+        }
+
+        // Readable, hung-up, or error: read with EINTR retry until 1 byte or hard error.
+        var buf: [1]u8 = undefined;
+        while (true) {
+            const n = std.c.read(read_fd, &buf, 1);
+            if (n == 1) {
+                if (buf[0] == status_ok) return true;
+                failHandshake(child_pid);
+                return false;
+            }
+            if (libcEintr(n)) continue;
+            // EOF (0) or hard error — apply/setup did not complete.
+            failHandshake(child_pid);
+            return false;
+        }
     }
-    // Readable, hung-up, or error: attempt the single-byte read.
-    var buf: [1]u8 = undefined;
-    const n = std.c.read(read_fd, &buf, 1);
-    return n == 1 and buf[0] == status_ok;
 }
 
 /// Best-effort: signal the process group (negative pid) then the pid itself.
@@ -415,7 +459,7 @@ fn killProcessGroup(pid: i32) void {
 }
 
 /// Best-effort kill process group + pid and reap (public for post-handshake
-/// promote hard-fail cleanup in `apply.spawnAgent` — M-3).
+/// promote hard-fail cleanup in `apply.spawnAgent`).
 pub fn killAndReapChild(pid: i32) void {
     killProcessGroup(pid);
     var status: c_int = 0;
@@ -425,12 +469,11 @@ pub fn killAndReapChild(pid: i32) void {
     while (true) {
         const rc = std.c.waitpid(pid, &status, 0);
         if (rc >= 0) break;
-        if (std.posix.errno(@as(isize, rc)) == .INTR) continue;
+        if (libcEintr(rc)) continue;
         break;
     }
 }
 
-// ── stdio ──────────────────────────────────────────────────────────────────
 
 fn applyStdioInChild(stdio: StdioBehavior) error{StdioFailed}!void {
     switch (stdio) {
@@ -449,7 +492,6 @@ fn redirectStdioToDevNull() error{StdioFailed}!void {
     if (std.c.dup2(null_fd, 2) < 0) return error.StdioFailed;
 }
 
-// ── argv / env ─────────────────────────────────────────────────────────────
 
 const AllocatedEnvp = struct {
     /// Null-terminated envp for execve.
@@ -458,13 +500,20 @@ const AllocatedEnvp = struct {
     owned: bool,
 };
 
+/// Free a C string allocated by `allocator.dupeZ` (content + trailing NUL).
+/// `std.mem.span` alone yields a `[:0]` view whose free must absorb the sentinel.
+fn freeDupeZ(allocator: std.mem.Allocator, z: [*:0]const u8) void {
+    const owned: [:0]const u8 = std.mem.span(z);
+    allocator.free(owned);
+}
+
 fn allocArgvZ(allocator: std.mem.Allocator, argv: []const []const u8) SpawnError![:null]?[*:0]const u8 {
     var list = allocator.alloc(?[*:0]const u8, argv.len + 1) catch return error.OutOfMemory;
-    // Null-init so errdefer free of optionals is safe on mid-loop OOM (M-7).
+    // Null-init so errdefer free of optionals is safe on mid-loop OOM.
     @memset(list, null);
     errdefer {
         for (list[0..argv.len]) |p| {
-            if (p) |z| allocator.free(std.mem.span(z));
+            if (p) |z| freeDupeZ(allocator, z);
         }
         allocator.free(list);
     }
@@ -477,7 +526,7 @@ fn allocArgvZ(allocator: std.mem.Allocator, argv: []const []const u8) SpawnError
 
 fn freeArgvZ(allocator: std.mem.Allocator, argv_z: [:null]?[*:0]const u8) void {
     for (argv_z) |p| {
-        if (p) |z| allocator.free(std.mem.span(z));
+        if (p) |z| freeDupeZ(allocator, z);
     }
     // Free the null-terminated pointer array (len + trailing null slot).
     const base: [*]?[*:0]const u8 = @ptrCast(argv_z.ptr);
@@ -503,12 +552,12 @@ fn allocEnvpZ(allocator: std.mem.Allocator, env_map: ?*const std.process.Environ
     while (it.next()) |_| count += 1;
 
     var list = allocator.alloc(?[*:0]const u8, count + 1) catch return error.OutOfMemory;
-    // Null-init so errdefer free of optionals is safe on mid-loop OOM (M-7).
+    // Null-init so errdefer free of optionals is safe on mid-loop OOM.
     @memset(list, null);
     errdefer {
         var i: usize = 0;
         while (i < count) : (i += 1) {
-            if (list[i]) |z| allocator.free(std.mem.span(z));
+            if (list[i]) |z| freeDupeZ(allocator, z);
         }
         allocator.free(list);
     }
@@ -527,7 +576,7 @@ fn allocEnvpZ(allocator: std.mem.Allocator, env_map: ?*const std.process.Environ
 fn freeEnvpZ(allocator: std.mem.Allocator, envp: AllocatedEnvp) void {
     if (!envp.owned) return;
     for (envp.ptr) |p| {
-        if (p) |z| allocator.free(std.mem.span(z));
+        if (p) |z| freeDupeZ(allocator, z);
     }
     const base: [*]?[*:0]const u8 = @ptrCast(envp.ptr.ptr);
     allocator.free(base[0 .. envp.ptr.len + 1]);
@@ -535,7 +584,7 @@ fn freeEnvpZ(allocator: std.mem.Allocator, envp: AllocatedEnvp) void {
 
 /// Resolve argv[0] to an absolute path for exec.
 /// When `env_map` is provided and contains PATH, that PATH is used (child env);
-/// otherwise falls back to the process getenv PATH (M-8).
+/// otherwise falls back to the process getenv PATH.
 /// Caller owns the returned slice when `owned` is true.
 pub fn resolveArgv0(
     io: std.Io,
@@ -572,7 +621,21 @@ pub fn resolveArgv0(
     return error.FileNotFound;
 }
 
-// ── tests ──────────────────────────────────────────────────────────────────
+/// waitpid with EINTR retry for tests — always reap before lease deinit (M-27).
+fn waitpidRetry(pid: i32) !c_int {
+    var status: c_int = 0;
+    while (true) {
+        const rc = std.c.waitpid(pid, &status, 0);
+        if (rc >= 0) return status;
+        if (libcEintr(rc)) continue;
+        return error.TestUnexpectedResult;
+    }
+}
+
+fn expectExitedZero(status: c_int) !void {
+    try std.testing.expect((status & 0x7f) == 0);
+    try std.testing.expectEqual(@as(u8, 0), @as(u8, @intCast((status >> 8) & 0xff)));
+}
 
 test "forkApplyLandlockAndExec is unsupported off Linux" {
     if (builtin.os.tag == .linux) return error.SkipZigTest;
@@ -622,6 +685,7 @@ test "forkApplyLandlockAndExec applies then execs on Linux with handshake" {
     };
 
     // Parent only gets a pid after child apply+chdir status pipe succeeds.
+    // Successful handshake proves status_w was retained through fd_scrub (M-17).
     var child = try forkApplyLandlockAndExec(
         &compiled,
         &[_][]const u8{true_path},
@@ -630,17 +694,8 @@ test "forkApplyLandlockAndExec applies then execs on Linux with handshake" {
         .inherit,
     );
     defer child.deinit();
-    var status: c_int = 0;
-    while (true) {
-        const rc = std.c.waitpid(child.pid, &status, 0);
-        if (rc >= 0) break;
-        if (std.posix.errno(@as(isize, rc)) == .INTR) continue;
-        return error.TestUnexpectedResult;
-    }
-    const exited = (status & 0x7f) == 0;
-    try std.testing.expect(exited);
-    const exit_code: u8 = @intCast((status >> 8) & 0xff);
-    try std.testing.expectEqual(@as(u8, 0), exit_code);
+    const status = try waitpidRetry(child.pid);
+    try expectExitedZero(status);
 }
 
 test "forkApplyLandlockAndExec fails handshake on bad chdir" {
@@ -722,14 +777,10 @@ test "forkApplySeatbeltAndExec applies then execs on macOS with handshake" {
     // Seatbelt apply works even outside product matrix for this low-level helper;
     // product gating is in macos_seatbelt.evaluateSupport / applyBeforeExec.
     // Parent only gets a pid after child apply status pipe succeeds.
+    // Successful handshake proves status_w was retained through fd_scrub (M-17).
     var child = try forkApplySeatbeltAndExec(sbpl_z.ptr, &[_][]const u8{"/usr/bin/true"}, null, null, .inherit);
     defer child.deinit();
-    var status: c_int = 0;
-    _ = std.c.waitpid(child.pid, &status, 0);
-    const exited = (status & 0x7f) == 0;
-    try std.testing.expect(exited);
-    const exit_code: u8 = @intCast((status >> 8) & 0xff);
-    try std.testing.expectEqual(@as(u8, 0), exit_code);
+    try expectExitedZero(try waitpidRetry(child.pid));
 }
 
 test "forkApplySeatbeltAndExec honors stdio ignore on macOS" {
@@ -746,10 +797,7 @@ test "forkApplySeatbeltAndExec honors stdio ignore on macOS" {
         .ignore,
     );
     defer child.deinit();
-    var status: c_int = 0;
-    _ = std.c.waitpid(child.pid, &status, 0);
-    try std.testing.expect((status & 0x7f) == 0);
-    try std.testing.expectEqual(@as(u8, 0), @as(u8, @intCast((status >> 8) & 0xff)));
+    try expectExitedZero(try waitpidRetry(child.pid));
 }
 
 test "forkApplySeatbeltAndExec establishes process group leadership on macOS" {
@@ -773,10 +821,7 @@ test "forkApplySeatbeltAndExec establishes process group leadership on macOS" {
     const pgid = getpgid(child.pid);
     try std.testing.expect(pgid > 0);
     try std.testing.expectEqual(child.pid, pgid);
-    var status: c_int = 0;
-    _ = std.c.waitpid(child.pid, &status, 0);
-    try std.testing.expect((status & 0x7f) == 0);
-    try std.testing.expectEqual(@as(u8, 0), @as(u8, @intCast((status >> 8) & 0xff)));
+    try expectExitedZero(try waitpidRetry(child.pid));
 }
 
 test "null env_map inherits process environ (not empty)" {
@@ -795,10 +840,7 @@ test "null env_map inherits process environ (not empty)" {
         .ignore,
     );
     defer child.deinit();
-    var status: c_int = 0;
-    _ = std.c.waitpid(child.pid, &status, 0);
-    try std.testing.expect((status & 0x7f) == 0);
-    try std.testing.expectEqual(@as(u8, 0), @as(u8, @intCast((status >> 8) & 0xff)));
+    try expectExitedZero(try waitpidRetry(child.pid));
 }
 
 test "resolveArgv0 finds absolute and PATH binaries" {
@@ -835,7 +877,7 @@ test "forkApplySeatbeltAndExec fails handshake on bad chdir" {
     const sbpl_z = try std.testing.allocator.dupeZ(u8, permissive_test_sbpl);
     defer std.testing.allocator.free(sbpl_z);
 
-    // chdir failure must not write status_ok — parent sees ApplyFailed (M-2).
+    // chdir failure must not write status_ok — parent sees ApplyFailed.
     try std.testing.expectError(error.ApplyFailed, forkApplySeatbeltAndExec(
         sbpl_z.ptr,
         &[_][]const u8{"/usr/bin/true"},
@@ -843,4 +885,167 @@ test "forkApplySeatbeltAndExec fails handshake on bad chdir" {
         "/no/such/orca/cwd/for/handshake/test",
         .inherit,
     ));
+}
+
+// --- Order-of-ops / handshake invariants (M-17) ---
+
+test "apply fail does not write status_ok (seatbelt invalid SBPL)" {
+    // Order: apply → … → status_ok. Apply failure must fail-closed with no handshake.
+    if (builtin.os.tag != .macos) return error.SkipZigTest;
+
+    const bad_sbpl = try std.testing.allocator.dupeZ(u8, "(version 1)\n(this is not valid sbpl\n");
+    defer std.testing.allocator.free(bad_sbpl);
+
+    try std.testing.expectError(error.ApplyFailed, forkApplySeatbeltAndExec(
+        bad_sbpl.ptr,
+        &[_][]const u8{"/usr/bin/true"},
+        null,
+        null,
+        .inherit,
+    ));
+}
+
+test "preflight fail does not write status_ok (missing exec target)" {
+    // Preflight is after apply/chdir and before fd_scrub/status_ok; failure must not handshake.
+    if (builtin.os.tag == .macos) {
+        const sbpl_z = try std.testing.allocator.dupeZ(u8, permissive_test_sbpl);
+        defer std.testing.allocator.free(sbpl_z);
+        try std.testing.expectError(error.ApplyFailed, forkApplySeatbeltAndExec(
+            sbpl_z.ptr,
+            &[_][]const u8{"/no/such/orca/exec/target/for/preflight"},
+            null,
+            null,
+            .inherit,
+        ));
+        return;
+    }
+    if (builtin.os.tag != .linux) return error.SkipZigTest;
+    if (landlock.probeAbi() == null) return error.SkipZigTest;
+
+    const allocator = std.testing.allocator;
+    const io = std.testing.io;
+    var ws_tmp = std.testing.tmpDir(.{});
+    defer ws_tmp.cleanup();
+    try ws_tmp.dir.createDirPath(io, ".orca");
+    const ws_root = try ws_tmp.dir.realPathFileAlloc(io, ".", allocator);
+    defer allocator.free(ws_root);
+
+    var compiled = try profile.compileProfile(allocator, .{
+        .workspace_root = ws_root,
+        .system_ro_prefixes = &[_][]const u8{ "/usr", "/bin", "/sbin", "/lib", "/lib64" },
+        .include_tmp = false,
+    });
+    defer compiled.deinit();
+
+    try std.testing.expectError(error.ApplyFailed, forkApplyLandlockAndExec(
+        &compiled,
+        &[_][]const u8{"/no/such/orca/exec/target/for/preflight"},
+        null,
+        ws_root,
+        .inherit,
+    ));
+}
+
+test "fd scrub keep-set retains status_w and closes non-kept FDs" {
+    // Mirrors production keep `{0,1,2,status_w}` used after apply/chdir/preflight.
+    const status_w: i32 = 17;
+    const keep = [_]i32{ 0, 1, 2, status_w };
+    try std.testing.expect(fd_scrub.isKeptFd(status_w, &keep));
+    try std.testing.expect(!fd_scrub.shouldCloseFd(status_w, &keep));
+    try std.testing.expect(fd_scrub.shouldCloseFd(18, &keep));
+    try std.testing.expect(fd_scrub.shouldCloseFd(42, &keep));
+    try std.testing.expect(!fd_scrub.shouldCloseFd(0, &keep));
+}
+
+test "planted non-kept FD is closed after successful handshake" {
+    // Parent plants FD 42; child inherits it; fd_scrub must close it before status_ok/exec.
+    // Handshake success + child seeing FD closed proves scrub-before-handshake order (M-17).
+    if (builtin.os.tag != .macos and builtin.os.tag != .linux) return error.SkipZigTest;
+
+    const plant_fd: i32 = 42;
+    const marker = std.c.open("/dev/null", .{ .ACCMODE = .RDONLY });
+    if (marker < 0) return error.SkipZigTest;
+    defer _ = std.c.close(marker);
+    // Ensure plant slot is free then occupy it so the child inherits it.
+    _ = std.c.close(plant_fd);
+    if (std.c.dup2(marker, plant_fd) < 0) return error.SkipZigTest;
+    defer _ = std.c.close(plant_fd);
+
+    // Portable: try to dup FD 42 as stdin of a subshell. Succeeds only if open.
+    // Exit 0 when closed (scrub worked); exit 1 if still inherited.
+    const check_closed =
+        \\if ( exec 3<&42 ) 2>/dev/null; then exit 1; else exit 0; fi
+    ;
+
+    if (builtin.os.tag == .macos) {
+        const sbpl_z = try std.testing.allocator.dupeZ(u8, permissive_test_sbpl);
+        defer std.testing.allocator.free(sbpl_z);
+        var child = try forkApplySeatbeltAndExec(
+            sbpl_z.ptr,
+            &[_][]const u8{ "/bin/sh", "-c", check_closed },
+            null,
+            null,
+            .ignore,
+        );
+        defer child.deinit();
+        try expectExitedZero(try waitpidRetry(child.pid));
+        return;
+    }
+
+    // Linux Landlock path.
+    if (landlock.probeAbi() == null) return error.SkipZigTest;
+    const allocator = std.testing.allocator;
+    const io = std.testing.io;
+    var ws_tmp = std.testing.tmpDir(.{});
+    defer ws_tmp.cleanup();
+    try ws_tmp.dir.createDirPath(io, ".orca");
+    const ws_root = try ws_tmp.dir.realPathFileAlloc(io, ".", allocator);
+    defer allocator.free(ws_root);
+
+    var compiled = try profile.compileProfile(allocator, .{
+        .workspace_root = ws_root,
+        .system_ro_prefixes = &[_][]const u8{ "/usr", "/bin", "/sbin", "/lib", "/lib64" },
+        .include_tmp = false,
+    });
+    defer compiled.deinit();
+
+    const sh_path = blk: {
+        std.Io.Dir.cwd().access(io, "/bin/sh", .{}) catch {
+            std.Io.Dir.cwd().access(io, "/usr/bin/sh", .{}) catch return error.SkipZigTest;
+            break :blk "/usr/bin/sh";
+        };
+        break :blk "/bin/sh";
+    };
+
+    var child = try forkApplyLandlockAndExec(
+        &compiled,
+        &[_][]const u8{ sh_path, "-c", check_closed },
+        null,
+        ws_root,
+        .ignore,
+    );
+    defer child.deinit();
+    try expectExitedZero(try waitpidRetry(child.pid));
+}
+
+test "allocArgvZ freeArgvZ round-trip with testing.allocator" {
+    const allocator = std.testing.allocator;
+    const argv_z = try allocArgvZ(allocator, &[_][]const u8{ "echo", "hello world", "" });
+    freeArgvZ(allocator, argv_z);
+}
+
+test "allocEnvpZ freeEnvpZ owned map round-trip with testing.allocator" {
+    const allocator = std.testing.allocator;
+    var map = std.process.Environ.Map.init(allocator);
+    defer map.deinit();
+    try map.put("FOO", "bar");
+    try map.put("EMPTY", "");
+    const envp = try allocEnvpZ(allocator, &map);
+    freeEnvpZ(allocator, envp);
+}
+
+test "freeDupeZ matches dupeZ allocation size under testing.allocator" {
+    const allocator = std.testing.allocator;
+    const z = try allocator.dupeZ(u8, "sentinel-free");
+    freeDupeZ(allocator, z.ptr);
 }

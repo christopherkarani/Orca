@@ -193,7 +193,7 @@ fn parseDoctorOptions(argv: []const []const u8, stderr: anytype) !DoctorOptions 
     return options;
 }
 
-/// Strong sandbox: doctor must never surface probe-only `active` (S-GLO-01).
+/// Strong sandbox: doctor must never surface probe-only `active`.
 /// Live sessions may report active only after apply+attach handshake.
 fn doctorDisplayLevel(feature: sandbox.backend.Feature, level: sandbox.backend.Level) sandbox.backend.Level {
     if (feature == .strong_sandbox and level == .active) return .unavailable;
@@ -202,7 +202,7 @@ fn doctorDisplayLevel(feature: sandbox.backend.Feature, level: sandbox.backend.L
 
 fn doctorDisplayNote(feature: sandbox.backend.Feature, level: sandbox.backend.Level, note: []const u8) []const u8 {
     if (feature == .strong_sandbox and level == .active) {
-        return "capability probe claimed active without attach; reporting unavailable (S-GLO-01)";
+        return "capability probe claimed active without attach; reporting unavailable";
     }
     return note;
 }
@@ -528,7 +528,7 @@ fn stateColorAndGlyph(state: core.platform.CapabilityState) struct { color: []co
 fn writeBackendLine(io: std.Io, stdout: anytype, backend_report: sandbox.backend.ReportSet, feature: sandbox.backend.Feature) !void {
     const report = backend_report.get(feature);
     // Strong sandbox: doctor reports capability level only. Live sessions may report
-    // active only after apply+attach (S-GLO-01). Never imply OS-enforced from a probe.
+    // active only after apply+attach. Never imply OS-enforced from a probe.
     const display_level = doctorDisplayLevel(feature, report.level);
     const display_note = doctorDisplayNote(feature, report.level, report.note);
     const display_cg = levelColorAndGlyph(display_level);
@@ -1000,7 +1000,8 @@ test "doctor can render macOS backend details from an injected report" {
     try std.testing.expect(std.mem.indexOf(u8, written, "audit/replay: active") != null);
 }
 
-test "doctor never prints strong sandbox active from capability probe alone (S-GLO-01)" {
+// Internal id S-GLO-01: probe-only active must never reach operator-facing doctor output.
+test "doctor never prints strong sandbox active from capability probe alone" {
     var stdout_buf: [32768]u8 = undefined;
     var stdout_writer: std.Io.Writer = .fixed(&stdout_buf);
 
@@ -1021,7 +1022,9 @@ test "doctor never prints strong sandbox active from capability probe alone (S-G
     const written = stdout_writer.buffered();
     try std.testing.expect(std.mem.indexOf(u8, written, "strong sandbox: active") == null);
     try std.testing.expect(std.mem.indexOf(u8, written, "strong sandbox: unavailable") != null);
-    try std.testing.expect(std.mem.indexOf(u8, written, "S-GLO-01") != null);
+    try std.testing.expect(std.mem.indexOf(u8, written, "without attach") != null);
+    // Ticket IDs must not appear in operator-facing doctor text.
+    try std.testing.expect(std.mem.indexOf(u8, written, "S-GLO-01") == null);
     // Forged probe note must not leak through after demotion.
     try std.testing.expect(std.mem.indexOf(u8, written, "forged probe-only active") == null);
     // Default doctor copy stays mechanism-neutral (verbose may name Landlock/Seatbelt later).

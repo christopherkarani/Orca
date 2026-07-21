@@ -243,7 +243,7 @@ test "Windows capability detector is honest about wrapper and unavailable protec
     try std.testing.expect(!report.featureAvailable(.strong_sandbox));
 }
 
-// M-13: no scaffold prepare path on Windows either.
+// No scaffold prepare path on Windows either.
 test "Windows process cleanup status is partial until Job Objects are installed" {
     const report = detect();
     try std.testing.expectEqual(backend.Level.partial, report.get(.process_supervision).level);

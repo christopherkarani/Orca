@@ -1,4 +1,4 @@
-//! Immutable evidence manifest for security gate verification (P0-I-06, S-GLO-09).
+//! Immutable evidence manifest for security gate verification (S-GLO-09).
 //!
 //! Evidence files live under gitignored planning/security/evidence/ and must never
 //! contain raw secret values or live canary bodies.
@@ -10,7 +10,7 @@ pub const schema_version: u16 = 1;
 
 /// Dual-proof CTRL-ATTACH detail tokens allowed when `ctrl_attach.ok` is true.
 /// New production attach proofs must be added here before manifests may claim ok.
-// Unit dual-proof (test-fast greps) and packaged binary attach (M-3 residual).
+// Unit dual-proof (test-fast greps) and packaged binary attach.
 pub const allowlisted_attach_details = [_][]const u8{
     "zig_real_fs_deny_canary_and_handshake",
     "orca_run_os_sandbox_on_active",
@@ -79,7 +79,7 @@ pub const Manifest = struct {
         if (self.ctrl_attach.ok and !isAllowlistedAttachDetail(self.ctrl_attach.detail)) {
             return error.AttachDetailNotAllowlisted;
         }
-        // Packaged binary attach must carry a real profile hash (M-3 residual).
+        // Packaged binary attach must carry a real profile hash.
         if (self.ctrl_attach.ok and
             std.mem.eql(u8, self.ctrl_attach.detail, "orca_run_os_sandbox_on_active") and
             self.profile_hash.len != 64)
@@ -159,7 +159,7 @@ fn writeControl(w: anytype, name: []const u8, result: ControlResult) !void {
     try w.writeAll("}");
 }
 
-test "evidence manifest rejects empty required fields (P0-I-06)" {
+test "evidence manifest rejects empty required fields" {
     const incomplete = Manifest{
         .gate_ids = &.{},
         .case_id = "",
@@ -396,4 +396,87 @@ test "ctrl_attach ok requires allowlisted dual-proof detail" {
     good.ctrl_attach = .{ .ok = true, .detail = "zig_real_fs_deny_canary_and_handshake" };
     try good.validate();
     try std.testing.expect(good.allControlsPass());
+}
+
+test "e2e-shaped unit dual-proof manifest validates and allControlsPass" {
+    // Mirrors scripts/os-sandbox-adversarial-e2e.sh unit dual-proof emission.
+    const unit = Manifest{
+        .gate_ids = &.{ "P1-I-01", "P0-I-06", "M-11", "M-12", "F-1", "F-5" },
+        .case_id = "ci-linux",
+        .source_commit = "deadbeef",
+        .binary_sha256 = "aabbccdd",
+        .platform_os = "linux",
+        .platform_arch = "x86_64",
+        .backend_id = "landlock",
+        .profile_hash = "",
+        .command = "./scripts/zig build test-fast (sandbox apply real-FS-deny proofs only for CTRL-ATTACH)",
+        .exit_code = 0,
+        .ctrl_baseline = .{ .ok = true, .detail = "binary_present" },
+        .ctrl_prepare = .{ .ok = true, .detail = "zig_fork_apply_handshake" },
+        .ctrl_attach = .{ .ok = true, .detail = "zig_real_fs_deny_canary_and_handshake" },
+        .test_deny = .{ .ok = true, .detail = "outside_unreadable_under_sandbox" },
+        .ctrl_neighbor = .{ .ok = true, .detail = "workspace_neighbor_rw" },
+        .ctrl_off = .{ .ok = true, .detail = "apply_mode_off_disabled_receipt" },
+        .canary_fingerprint = "zig-unit:real-fs-deny",
+        .rerun = "./scripts/os-sandbox-adversarial-e2e.sh --case ci-linux",
+    };
+    try unit.validate();
+    try std.testing.expect(unit.allControlsPass());
+    const json = try writeJson(std.testing.allocator, unit);
+    defer std.testing.allocator.free(json);
+    try std.testing.expect(std.mem.indexOf(u8, json, "zig_real_fs_deny_canary_and_handshake") != null);
+}
+
+test "e2e-shaped packaged orca_run attach requires 64-hex profile_hash" {
+    const hash64 = "abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789";
+    var packaged = Manifest{
+        .gate_ids = &.{ "P1-I-01", "P0-I-06", "M-11", "M-12", "F-1", "F-5" },
+        .case_id = "ci-linux",
+        .source_commit = "deadbeef",
+        .binary_sha256 = "aabbccdd",
+        .platform_os = "linux",
+        .platform_arch = "x86_64",
+        .backend_id = "landlock",
+        .profile_hash = "",
+        .command = "orca run --os-sandbox on -- /usr/bin/true (+ test-fast dual-proof support)",
+        .exit_code = 0,
+        .ctrl_baseline = .{ .ok = true, .detail = "binary_present" },
+        .ctrl_prepare = .{ .ok = true, .detail = "zig_fork_apply_handshake" },
+        .ctrl_attach = .{ .ok = true, .detail = "orca_run_os_sandbox_on_active" },
+        .test_deny = .{ .ok = true, .detail = "outside_unreadable_under_sandbox" },
+        .ctrl_neighbor = .{ .ok = true, .detail = "workspace_neighbor_rw" },
+        .ctrl_off = .{ .ok = true, .detail = "apply_mode_off_disabled_receipt" },
+        .canary_fingerprint = "packaged:orca_run_os_sandbox_on_active",
+        .rerun = "./scripts/os-sandbox-adversarial-e2e.sh --case ci-linux",
+    };
+    try std.testing.expectError(error.MissingProfileHash, packaged.validate());
+    try std.testing.expect(!packaged.allControlsPass());
+
+    packaged.profile_hash = hash64;
+    try packaged.validate();
+    try std.testing.expect(packaged.allControlsPass());
+    const json = try writeJson(std.testing.allocator, packaged);
+    defer std.testing.allocator.free(json);
+    try std.testing.expect(std.mem.indexOf(u8, json, "orca_run_os_sandbox_on_active") != null);
+    try std.testing.expect(std.mem.indexOf(u8, json, hash64) != null);
+}
+
+test "e2e-shaped attach without TEST-DENY fails validate" {
+    const bad = Manifest{
+        .gate_ids = &.{"P1-I-01"},
+        .case_id = "banner-only",
+        .source_commit = "deadbeef",
+        .binary_sha256 = "00",
+        .platform_os = "linux",
+        .platform_arch = "x86_64",
+        .backend_id = "landlock",
+        .profile_hash = "abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789",
+        .command = "orca run --os-sandbox on",
+        .ctrl_baseline = .{ .ok = true },
+        .ctrl_attach = .{ .ok = true, .detail = "orca_run_os_sandbox_on_active" },
+        .test_deny = .{ .ok = false, .detail = "not_proven" },
+        .ctrl_neighbor = .{ .ok = true },
+        .ctrl_off = .{ .ok = true },
+    };
+    try std.testing.expectError(error.AttachWithoutDeny, bad.validate());
 }

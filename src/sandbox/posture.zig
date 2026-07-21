@@ -10,7 +10,7 @@ const std = @import("std");
 pub const SessionPosture = enum {
     active,
     /// Parent prepared child-apply materials; session is not active until
-    /// status-pipe promote (M-9). Distinct from grade-drop `unavailable`.
+    /// status-pipe promote. Distinct from grade-drop `unavailable`.
     prepared,
     unavailable,
     failed,
@@ -134,7 +134,7 @@ pub fn unavailableReceipt(reason_code: []const u8) AttachReceipt {
     };
 }
 
-/// Parent prepared child-apply materials; not session-active (M-9 / S-GLO-01).
+/// Parent prepared child-apply materials; not session-active (S-GLO-01).
 pub fn preparedReceipt(mechanism: BackendMechanism, reason_code: []const u8) AttachReceipt {
     return .{
         .posture = .prepared,
@@ -157,9 +157,9 @@ pub fn failedReceipt(reason_code: []const u8) AttachReceipt {
 
 /// Default user-facing banner language (mechanism-neutral).
 ///
-/// Active path runs the launch allowlist on child env before attach (M-2 / M-20):
-/// secret/provider keys are stripped, but intentional keepers (SSH_AUTH_SOCK,
-/// TLS CA bundle vars) may remain — do not imply total credential wipe.
+/// Active path runs the launch allowlist on child env before attach:
+/// secret/provider keys are stripped; SSH_AUTH_SOCK is stripped by default;
+/// TLS CA bundle vars may remain — do not imply total credential wipe.
 ///
 /// Unavailable/failed grade-drop keeps denylist-only scrub (injection keys
 /// removed; provider credentials retained) — surface that honesty explicitly.
@@ -170,7 +170,7 @@ pub fn formatSessionBanner(buf: []u8, receipt: AttachReceipt) ![]const u8 {
             "OS sandbox: active (filesystem: {s}; network: unrestricted; credentials: launch-allowlist (secrets stripped; agent sockets/certs may remain); tools: wrapper-mediated)",
             .{receipt.fs_scope},
         ),
-        // Prepared materials must never read as active or as a grade-drop failure (M-9).
+        // Prepared materials must never read as active or as a grade-drop failure.
         .prepared => if (receipt.reason_code) |reason|
             try std.fmt.bufPrint(buf, "OS sandbox: prepared ({s}; attach pending child apply)", .{reason})
         else
@@ -267,7 +267,7 @@ test "session banner is mechanism-neutral (S-GLO-03)" {
     try std.testing.expect(std.mem.indexOf(u8, line, "Seatbelt") == null);
     try std.testing.expect(std.mem.indexOf(u8, line, "Landlock") == null);
     try std.testing.expect(std.mem.indexOf(u8, line, "network: unrestricted") != null);
-    // M-2 residual: secrets stripped, but intentional keepers may remain (not total wipe).
+    // Secrets stripped, but intentional keepers may remain (not total wipe).
     try std.testing.expect(std.mem.indexOf(u8, line, "launch-allowlist") != null);
     try std.testing.expect(std.mem.indexOf(u8, line, "secrets stripped") != null);
     try std.testing.expect(std.mem.indexOf(u8, line, "agent sockets/certs may remain") != null);
@@ -294,9 +294,9 @@ test "grade-drop unavailable/failed banners mention credentials retained" {
     try std.testing.expect(std.mem.indexOf(u8, bare_line, "credentials retained") != null);
 }
 
-test "M-12 landlock fs_scope surfaces root RO create-at-root contract" {
+test "landlock fs_scope surfaces root RO create-at-root contract" {
     var buf: [320]u8 = undefined;
-    // Production Landlock receipt string (apply.promoteWithProof).
+    // Production Landlock receipt string (apply.activateAfterHandshake).
     const active = try activeReceipt(.landlock, test_hash_64, "workspace child RW, root RO, system RO, platform tmp RW, no home");
     const line = try formatSessionBanner(&buf, active);
     try std.testing.expect(std.mem.indexOf(u8, line, "workspace child RW") != null);

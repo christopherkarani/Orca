@@ -25,7 +25,7 @@ Run:
 `orca run --os-sandbox auto|on|off` (default `auto`) can attach a Landlock filesystem boundary to the agent child:
 
 - **Probe ≠ session-attach.** Doctor Landlock / strong-sandbox reports are capability evidence only. Doctor never reports a live session as `active` from a probe alone.
-- **Session-attach** is claimable only after apply-before-exec child attach succeeds for that run (with a profile hash).
+- **Session-attach** is claimable only after apply-before-exec child attach succeeds for that run (with a profile hash). The pre-exec status handshake (`status_ok`) does not prove `execve`; an `active` session can still fail at exec (e.g. exit 127).
 - **FS scope (Landlock):** workspace child RW with workspace-root RO — create/write at the workspace root is denied; Seatbelt (macOS) allows full workspace subpath RW including create-at-root.
 - **`auto`** attaches when the host supports Landlock ABI ≥ 1 and degrades loudly when it does not.
 - **`on`** fails closed when attach cannot complete.
@@ -44,3 +44,7 @@ If kernel features are unavailable, Orca falls back to wrapper/proxy, staged-wri
 ## Limitations
 
 Linux capability varies by distro, kernel, container, and sysctl configuration. Do not treat doctor probes as transparent filesystem enforcement for an arbitrary process; trust OS-enforced FS isolation only for sessions that completed child attach.
+
+## Hardlink residual
+
+Landlock grant expansion skips symlinks (`DT_LNK` / `O_NOFOLLOW`) but does **not** filter hardlinks. A hardlink planted inside a granted workspace path to a same-filesystem inode outside the intended tree can become a `PATH_BENEATH` surface for that inode after attach. Symlink escape is covered; same-FS hardlink planting under the workspace is an accepted residual for this surface.

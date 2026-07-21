@@ -3,12 +3,14 @@ const builtin = @import("builtin");
 
 const platform = @import("orca_core").platform;
 const backend = @import("backend.zig");
+/// Single source of truth for Landlock ABI availability (M-16). Doctor/detect
+/// must not re-implement landlock_create_ruleset VERSION probe independently of attach.
+const landlock_mod = @import("landlock.zig");
 
 pub const implemented = true;
 
 const CLONE_NEWNS: usize = 0x00020000;
 const CLONE_NEWUSER: usize = 0x10000000;
-const LANDLOCK_CREATE_RULESET_VERSION: usize = 1;
 
 pub fn detect() backend.ReportSet {
     var reports = backend.baseReports(.linux);
@@ -103,14 +105,23 @@ fn detectSeccomp() Probe {
 
 fn detectLandlock() Probe {
     if (builtin.os.tag != .linux) return .{ .level = .unsupported, .note = "not running on Linux" };
-    const linux = std.os.linux;
-    const rc = linux.syscall3(.landlock_create_ruleset, 0, 0, LANDLOCK_CREATE_RULESET_VERSION);
-    return switch (std.posix.errno(rc)) {
-        .SUCCESS => .{ .level = .partial, .note = "Landlock ABI is available; session active only after child apply-before-exec" },
-        .NOSYS => .{ .level = .unavailable, .note = "Landlock syscalls are unavailable" },
-        .OPNOTSUPP, .INVAL => .{ .level = .unavailable, .note = "Landlock ABI probing is unsupported by this kernel" },
-        .ACCES, .PERM => .{ .level = .unavailable, .note = "Landlock probing denied by the current runtime" },
-        else => .{ .level = .failed, .note = "Landlock probing failed" },
+    // Share probe with attach (`landlock_mod.isAbiAvailable` / `probeAbi`) so doctor
+    // and prepare cannot drift on ABI floor or flag constants.
+    const info = landlock_mod.probeAbi() orelse {
+        return .{
+            .level = .unavailable,
+            .note = "Landlock syscalls are unavailable or ABI probing failed",
+        };
+    };
+    if (info.version < landlock_mod.MIN_ABI) {
+        return .{
+            .level = .unavailable,
+            .note = "Landlock ABI is older than the minimum required version",
+        };
+    }
+    return .{
+        .level = .partial,
+        .note = "Landlock ABI is available; session active only after child apply-before-exec",
     };
 }
 
@@ -161,7 +172,23 @@ test "Linux capability detector is target-gated and honest" {
     }
 }
 
-// M-13: no scaffold prepare path — production attach is apply_posix only.
+// M-16: doctor detectLandlock must track landlock.isAbiAvailable (single probe).
+test "detectLandlock tracks landlock.isAbiAvailable" {
+    if (builtin.os.tag != .linux) return error.SkipZigTest;
+
+    const report = detect();
+    const ll = report.get(.landlock);
+    if (landlock_mod.isAbiAvailable()) {
+        try std.testing.expect(ll.level == .partial or ll.level == .active or ll.level == .limited);
+        try std.testing.expect(report.get(.strong_sandbox).level == .partial);
+    } else {
+        try std.testing.expect(ll.level == .unavailable or ll.level == .failed);
+        try std.testing.expect(report.get(.strong_sandbox).level != .partial);
+        try std.testing.expect(report.get(.strong_sandbox).level != .active);
+    }
+}
+
+// No scaffold prepare path — production attach is apply_posix only.
 // Process-group leadership for agent spawn is proven in apply_posix tests.
 test "Linux process group spawn runs simple command" {
     if (builtin.os.tag != .linux) return error.SkipZigTest;

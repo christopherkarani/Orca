@@ -161,7 +161,7 @@ pub const ReportSet = struct {
 };
 
 /// Production agent launch is exclusively `apply.applyBeforeExec` +
-/// `process.OsChildApply` / `apply_posix` (M-13). Capability detection lives
+/// `process.OsChildApply` / `apply_posix`. Capability detection lives
 /// here; there is no scaffold spawn path that could be mistaken for attach.
 
 pub fn detect(os: platform.Os) ReportSet {

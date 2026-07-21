@@ -91,6 +91,7 @@ test {
     _ = doctor;
     _ = history;
     _ = danger_confirmation;
+    _ = run_command;
     _ = run_os_sandbox;
     // Surfaces touched by production-readiness hardening (M1–M4).
     _ = completions;

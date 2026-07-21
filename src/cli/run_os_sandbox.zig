@@ -1,4 +1,4 @@
-//! OS filesystem sandbox helpers for `orca run` (M-14).
+//! OS filesystem sandbox helpers for `orca run`.
 //!
 //! Keeps apply-before-exec wiring, spawn hooks, auto-degrade messaging, and
 //! posture audit/banner helpers out of the main `run.zig` orchestration file.
@@ -36,7 +36,7 @@ pub fn applyForRun(
     }) catch |err| switch (err) {
         error.RequireFailed => {
             // Incomplete env scrub fails closed on both on and auto; wording must not
-            // always claim the user passed `--os-sandbox on` (practices-6).
+            // always claim the user passed `--os-sandbox on`.
             switch (mode) {
                 .on => try stderr.print(
                     "orca run: OS sandbox required (--os-sandbox on) but unavailable ({s}).\n",
@@ -59,7 +59,7 @@ pub fn applyForRun(
 }
 
 /// True when `err` is a sandbox child-apply/spawn failure that must not look like a
-/// generic command launch issue (F-3 / practices-1).
+/// generic command launch issue.
 pub fn isSandboxSpawnFailure(err: anyerror) bool {
     return err == error.ApplyFailed or err == error.ForkFailed or err == error.Unsupported or err == error.ExecFailed;
 }
@@ -120,7 +120,7 @@ pub const SandboxSpawnCtx = struct {
             .inherit => .inherit,
             .ignore => .ignore,
         };
-        // spawnAgent mints ChildAttachProof and promotes receipt (M-12).
+        // spawnAgent activates receipt after child handshake.
         const spawned = try self.apply_result.spawnAgent(
             request.io,
             request.allocator,
@@ -162,7 +162,7 @@ pub fn auditSandboxPosture(
 /// Format mechanism-neutral OS sandbox banner line for session start.
 pub fn formatOsSandboxBannerLine(buf: []u8, receipt: sandbox.posture.AttachReceipt) []const u8 {
     // Thin wrapper: on format overflow, keep the receipt posture tag only.
-    // Never invent "unavailable" for an active/disabled/failed receipt (Z-17).
+    // Never invent "unavailable" for an active/disabled/failed receipt.
     return sandbox.posture.formatSessionBanner(buf, receipt) catch switch (receipt.posture) {
         .active => "OS sandbox: active",
         .prepared => "OS sandbox: prepared",
@@ -171,8 +171,6 @@ pub fn formatOsSandboxBannerLine(buf: []u8, receipt: sandbox.posture.AttachRecei
         .disabled => "OS sandbox: disabled",
     };
 }
-
-// ── tests ──────────────────────────────────────────────────────────────────
 
 test "isSandboxSpawnFailure classifies ApplyFailed ForkFailed Unsupported ExecFailed; not FileNotFound" {
     try std.testing.expect(isSandboxSpawnFailure(error.ApplyFailed));
@@ -206,7 +204,7 @@ test "formatOsSandboxBannerLine does not invent unavailable for active on format
     try std.testing.expect(std.mem.startsWith(u8, line, "OS sandbox:"));
 }
 
-test "auto degrade warns only when no child plan" {
+test "warnAutoDegrade is silent for disabled posture (mode off materials)" {
     var stderr_buf: [512]u8 = undefined;
     var stderr_writer: std.Io.Writer = .fixed(&stderr_buf);
     const result = try sandbox.apply.applyBeforeExec(.{
@@ -215,7 +213,7 @@ test "auto degrade warns only when no child plan" {
         .workspace_root = "/tmp/ws",
         .env_map = null,
     });
-    // mode off → disabled, no warn
+    // mode off → disabled receipt; even under .auto mode flag, no grade-drop warn.
     try warnAutoDegrade(.auto, &result, &stderr_writer);
     try std.testing.expectEqual(@as(usize, 0), stderr_writer.buffered().len);
 }
@@ -228,9 +226,19 @@ test "apply materials alone never authorize active" {
         .env_map = null,
     });
     defer result.deinit();
-    // promoteWithProof is file-private; materials/receipt from apply must stay non-active.
+    // activateAfterHandshake is file-private; materials/receipt from apply must stay non-active.
     try std.testing.expect(!result.receipt.isActive());
     try std.testing.expectEqual(sandbox.apply.ChildApplyKind.none, result.childApplyKind());
+}
+
+/// M-27: waitpid with EINTR retry for integration tests (mirrors apply_posix).
+fn waitpidRetry(pid: std.c.pid_t, status: *c_int) void {
+    while (true) {
+        const rc = std.c.waitpid(pid, status, 0);
+        if (rc >= 0) return;
+        if (std.c.errno(rc) == .INTR) continue;
+        return;
+    }
 }
 
 test "run path spawnAgent attach when Seatbelt available" {
@@ -260,7 +268,7 @@ test "run path spawnAgent attach when Seatbelt available" {
     });
     defer apply_result.deinit();
     try std.testing.expectEqual(sandbox.apply.ChildApplyKind.seatbelt, apply_result.childApplyKind());
-    // M-20: secret stripped by launch allowlist
+    // Secret stripped by launch allowlist.
     try std.testing.expect(env_map.get("OPENAI_API_KEY") == null);
     try std.testing.expect(env_map.get("PATH") != null);
 
@@ -281,7 +289,65 @@ test "run path spawnAgent attach when Seatbelt available" {
 
     var status: c_int = 0;
     if (child.id) |pid| {
-        _ = std.c.waitpid(pid, &status, 0);
+        waitpidRetry(pid, &status);
+    }
+    try std.testing.expect((status & 0x7f) == 0);
+}
+
+// M-29: Linux mirror of the macOS spawnAgent attach integration above.
+test "run path spawnAgent attach when Landlock available" {
+    if (builtin.os.tag != .linux) return error.SkipZigTest;
+    if (!sandbox.landlock.isAbiAvailable()) return error.SkipZigTest;
+
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try tmp.dir.createDirPath(std.testing.io, ".orca");
+    try tmp.dir.writeFile(std.testing.io, .{ .sub_path = "neighbor.txt", .data = "ok" });
+    const root = try tmp.dir.realPathFileAlloc(std.testing.io, ".", std.testing.allocator);
+    defer std.testing.allocator.free(root);
+
+    var env_map = std.process.Environ.Map.init(std.testing.allocator);
+    defer env_map.deinit();
+    try env_map.put("PATH", "/usr/bin:/bin");
+    try env_map.put("HOME", "/tmp");
+    try env_map.put("OPENAI_API_KEY", "sk-should-be-stripped");
+
+    var apply_result = try sandbox.apply.applyBeforeExec(.{
+        .allocator = std.testing.allocator,
+        .mode = .on,
+        .workspace_root = root,
+        .env_map = &env_map,
+    });
+    defer apply_result.deinit();
+    try std.testing.expectEqual(sandbox.apply.ChildApplyKind.landlock, apply_result.childApplyKind());
+    try std.testing.expect(env_map.get("OPENAI_API_KEY") == null);
+    try std.testing.expect(env_map.get("PATH") != null);
+
+    var ctx: SandboxSpawnCtx = undefined;
+    const os_apply = buildOsChildApply(&apply_result, &ctx);
+    try std.testing.expect(os_apply == .custom);
+
+    const true_bin: []const u8 = blk: {
+        std.Io.Dir.cwd().access(std.testing.io, "/usr/bin/true", .{}) catch break :blk "/bin/true";
+        break :blk "/usr/bin/true";
+    };
+
+    const child = try SandboxSpawnCtx.spawn(@ptrCast(&ctx), .{
+        .io = std.testing.io,
+        .allocator = std.testing.allocator,
+        .argv = &[_][]const u8{true_bin},
+        .workspace_root = root,
+        .env_map = &env_map,
+        .stdio = .ignore,
+    });
+    try std.testing.expect(apply_result.receipt.isActive());
+    try std.testing.expectEqual(sandbox.posture.BackendMechanism.landlock, apply_result.receipt.mechanism);
+    try std.testing.expect(apply_result.receipt.profileHashSlice() != null);
+    try std.testing.expectEqual(@as(usize, 64), apply_result.receipt.profileHashSlice().?.len);
+
+    var status: c_int = 0;
+    if (child.id) |pid| {
+        waitpidRetry(pid, &status);
     }
     try std.testing.expect((status & 0x7f) == 0);
 }

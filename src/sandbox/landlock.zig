@@ -1,4 +1,4 @@
-//! Linux Landlock FS apply (U05 / Slice 9).
+//! Linux Landlock FS apply.
 //!
 //! Sequence:
 //!   **Parent (before fork):** `buildChildLandlockPlan` enumerates control-expand
@@ -12,6 +12,35 @@
 //!
 //! On non-Linux: compile-time stubs; probes return unavailable; apply errors.
 //! Parent-side expand helpers still run for unit tests on any POSIX host.
+//!
+//! ## Residual / hardening notes
+//!
+//! **Hardlinks (M-12):** Expand skips symlink children (`DT_LNK`) and install uses
+//! `O_NOFOLLOW`. Non-directory expand leaves with `st_nlink > 1` are also skipped
+//! so a pre-planted hardlink to an outside same-FS inode does not become an RW
+//! PATH_BENEATH surface. Residual: legitimate multi-linked files under the
+//! workspace lose leaf RW (write via another single-link name, or parent dir grant
+//! when expand does not apply). Directories are never skipped on nlink (normal
+//! dir nlink ≥ 2). Landlock remains path-based — hardlinks created *after* plan
+//! build are outside this filter.
+//!
+//! **Realpath at install (M-13):** Grant paths are realpath'd when possible before
+//! `O_PATH|O_NOFOLLOW` open so merged-usr symlink prefixes (`/lib` → `/usr/lib`)
+//! install as the kernel-visible path. Lexical path is retried if realpath fails.
+//! Optional (non-required) RO opens may still soft-skip when neither form opens.
+//!
+//! **ABI probe:** `probeAbi` / `isAbiAvailable` are the single source of truth;
+//! `linux.detectLandlock` must call them (not re-syscall).
+//!
+//! **TOCTOU expand plan → child open (M-37 residual):** The parent plan is a
+//! snapshot: expand enumerates and opens later in the child. Between plan build
+//! and child `O_PATH` open, an attacker with concurrent write access to the
+//! workspace can replace a grant leaf (unlink/rename/symlink swap). Mitigations
+//! already applied: `O_NOFOLLOW` on install opens, hardlink nlink skip on expand
+//! leaves, realpath-at-install when possible. Residual: no kernel-level
+//! handle-based grant binding from parent expand to child restrict; path-based
+//! Landlock cannot fully close this race without redesign (e.g. pass open FDs
+//! across fork). Partial-ok documented residual, not a silent claim of closure.
 
 const std = @import("std");
 const builtin = @import("builtin");
@@ -108,7 +137,7 @@ pub fn isAbiAvailable() bool {
     return info.version >= MIN_ABI;
 }
 
-/// Parent-side surfaces for one RW grant that needs control expand (Z-3).
+/// Parent-side surfaces for one RW grant that needs control expand.
 /// Built before fork; the child only installs PATH_BENEATH from these paths.
 pub const ControlExpandSurfaces = struct {
     allocator: std.mem.Allocator,
@@ -131,14 +160,16 @@ pub const ControlExpandSurfaces = struct {
     }
 };
 
-/// Owned multi-grant expand plan consumed by child `applySelf` (Z-3).
+/// Owned multi-grant expand plan consumed by child `applySelf`.
 /// Parent builds this before fork; after fork the child must not re-enumerate.
+/// Self-contained under `allocator`: grant paths are duped so the plan does not
+/// borrow `CompiledProfile` storage (safe if materials deinit order changes).
 pub const ChildLandlockPlan = struct {
     allocator: std.mem.Allocator,
     expands: []ExpandByGrant,
 
     pub const ExpandByGrant = struct {
-        /// Borrowed from `CompiledProfile.grants` — not owned.
+        /// Owned by `ChildLandlockPlan.allocator` (duped at plan build).
         grant_path: []const u8,
         surfaces: ControlExpandSurfaces,
     };
@@ -146,6 +177,7 @@ pub const ChildLandlockPlan = struct {
     pub fn deinit(self: *ChildLandlockPlan) void {
         for (self.expands) |*entry| {
             entry.surfaces.deinit();
+            self.allocator.free(entry.grant_path);
         }
         self.allocator.free(self.expands);
         self.* = undefined;
@@ -172,7 +204,7 @@ fn appendOwnedPath(list: *std.ArrayList([]const u8), allocator: std.mem.Allocato
 
 /// Parent-side (or single-threaded): enumerate control-expand RO/RW PATH_BENEATH
 /// surfaces for one RW grant. May allocate and call opendir/readdir — **never**
-/// invoke after a multi-threaded fork (Z-3).
+/// invoke after a multi-threaded fork.
 pub fn buildControlExpandSurfaces(
     allocator: std.mem.Allocator,
     grant_path: []const u8,
@@ -196,11 +228,18 @@ pub fn buildControlExpandSurfaces(
 
     try collectExpandSurfaces(allocator, grant_path, control_roots, &expand_roots, &control_ro, &rw_paths);
 
+    // Sequential toOwnedSlice with errdefer on already-owned slices (mirror profile.compileProfile).
+    const expand_roots_owned = try expand_roots.toOwnedSlice(allocator);
+    errdefer freeOwnedPaths(allocator, expand_roots_owned);
+    const control_ro_owned = try control_ro.toOwnedSlice(allocator);
+    errdefer freeOwnedPaths(allocator, control_ro_owned);
+    const rw_paths_owned = try rw_paths.toOwnedSlice(allocator);
+
     return .{
         .allocator = allocator,
-        .expand_roots = try expand_roots.toOwnedSlice(allocator),
-        .control_ro_paths = try control_ro.toOwnedSlice(allocator),
-        .rw_paths = try rw_paths.toOwnedSlice(allocator),
+        .expand_roots = expand_roots_owned,
+        .control_ro_paths = control_ro_owned,
+        .rw_paths = rw_paths_owned,
     };
 }
 
@@ -252,12 +291,37 @@ fn collectExpandSurfaces(
             try collectExpandSurfaces(allocator, joined, control_roots, expand_roots, control_ro, rw_paths);
             continue;
         }
+        // Skip non-dir hardlinks (nlink > 1): a planted hardlink to an outside
+        // same-FS secret must not become a PATH_BENEATH RW surface (M-12).
+        if (leafIsHardlinkedNonDir(joined)) {
+            allocator.free(joined);
+            continue;
+        }
         // Leaf RW surface — transfer ownership into rw_paths.
         rw_paths.append(allocator, joined) catch |err| {
             allocator.free(joined);
             return err;
         };
     }
+}
+
+/// True when `path` is a non-directory with st_nlink > 1 (hardlink residual filter).
+/// Directories are never treated as hardlink leaves (normal dir nlink ≥ 2).
+/// On open/stat failure returns false (install may still soft-skip later).
+fn leafIsHardlinkedNonDir(path: []const u8) bool {
+    if (builtin.os.tag == .windows) return false;
+    if (path.len == 0 or !std.fs.path.isAbsolute(path)) return false;
+
+    var threaded: std.Io.Threaded = .init_single_threaded;
+    const io = threaded.io();
+    const file = std.Io.Dir.openFileAbsolute(io, path, .{
+        .path_only = true,
+        .follow_symlinks = false,
+    }) catch return false;
+    defer file.close(io);
+    const st = file.stat(io) catch return false;
+    if (st.kind == .directory) return false;
+    return st.nlink > 1;
 }
 
 /// Parent-side: build expand surfaces for every RW grant that needs control expand.
@@ -267,7 +331,11 @@ pub fn buildChildLandlockPlan(
 ) !ChildLandlockPlan {
     var expands: std.ArrayList(ChildLandlockPlan.ExpandByGrant) = .empty;
     errdefer {
-        for (expands.items) |*e| e.surfaces.deinit();
+        // Plan owns grant_path (M-26); free path + surfaces on partial build failure.
+        for (expands.items) |*e| {
+            allocator.free(e.grant_path);
+            e.surfaces.deinit();
+        }
         expands.deinit(allocator);
     }
 
@@ -276,8 +344,12 @@ pub fn buildChildLandlockPlan(
         if (!rwGrantNeedsControlExpand(grant.path, compiled.control_roots)) continue;
         var surfaces = try buildControlExpandSurfaces(allocator, grant.path, compiled.control_roots);
         errdefer surfaces.deinit();
+        // Dupe grant path so the plan is self-contained (M-26); surfacesFor and
+        // child apply must not depend on CompiledProfile lifetime after plan build.
+        const owned_grant_path = try allocator.dupe(u8, grant.path);
+        errdefer allocator.free(owned_grant_path);
         try expands.append(allocator, .{
-            .grant_path = grant.path,
+            .grant_path = owned_grant_path,
             .surfaces = surfaces,
         });
     }
@@ -292,20 +364,18 @@ pub fn buildChildLandlockPlan(
 /// parent-precomputed `plan` for control-expand grants.
 /// Must only be called in a forked child (or a dedicated sandbox helper).
 /// Does not exec — caller performs exec after success.
-/// Child path never calls opendir/readdir (Z-3).
+/// Child path never calls opendir/readdir.
 pub fn applySelf(compiled: *const profile.CompiledProfile, plan: *const ChildLandlockPlan) ApplyError!void {
     if (builtin.os.tag != .linux) return error.Unsupported;
     try applySelfLinux(compiled, plan);
 }
 
 /// Fork a child, apply Landlock, exit 0 on success / 1 on failure.
-/// Parent builds the expand plan before fork (Z-3). Parent stays unrestricted.
+/// Parent builds the expand plan before fork. Parent stays unrestricted.
 pub fn verifyApplyInChild(compiled: *const profile.CompiledProfile) ApplyError!void {
     if (builtin.os.tag != .linux) return error.Unsupported;
     try verifyApplyInChildLinux(compiled);
 }
-
-// ── Linux implementation ───────────────────────────────────────────────────
 
 const RulesetAttr = extern struct {
     handled_access_fs: u64,
@@ -329,7 +399,7 @@ fn probeAbiLinux() ?AbiInfo {
 
 /// True when `path` is `root` or a descendant of `root`.
 /// Delegates to the portable profile helper so `/` and prefix-boundary rules match
-/// profile/macos (M-5: bare `/` must cover control expand when workspace is `/`).
+/// profile/macos (bare `/` must cover control expand when workspace is `/`).
 fn pathIsWithin(path: []const u8, root: []const u8) bool {
     return profile.isPathWithin(path, root);
 }
@@ -355,6 +425,32 @@ pub fn rwGrantNeedsControlExpand(path: []const u8, control_roots: []const []cons
     return grantCoversControlRoot(path, control_roots);
 }
 
+/// Resolve `path` for Landlock open: try `realpath` first so merged-usr symlink
+/// prefixes install on the kernel-visible path, then fall back to lexical `path`.
+/// Both forms are still opened with `O_NOFOLLOW` by the caller.
+fn resolvePathForGrant(path: []const u8, out: *[std.fs.max_path_bytes]u8) []const u8 {
+    if (path.len == 0 or path.len >= std.fs.max_path_bytes) return path;
+    var in_buf: [std.fs.max_path_bytes]u8 = undefined;
+    @memcpy(in_buf[0..path.len], path);
+    in_buf[path.len] = 0;
+    const resolved = std.c.realpath(in_buf[0..path.len :0].ptr, out) orelse return path;
+    return std.mem.span(resolved);
+}
+
+fn openPathBeneathFd(path: []const u8) ?i32 {
+    if (builtin.os.tag != .linux) return null;
+    const linux = std.os.linux;
+    if (path.len == 0 or path.len >= std.fs.max_path_bytes) return null;
+    var path_buf: [std.fs.max_path_bytes]u8 = undefined;
+    @memcpy(path_buf[0..path.len], path);
+    path_buf[path.len] = 0;
+    const path_z: [*:0]const u8 = path_buf[0..path.len :0].ptr;
+    // O_NOFOLLOW: never PATH_BENEATH-follow a symlink at the grant node.
+    const open_rc = linux.open(path_z, .{ .PATH = true, .CLOEXEC = true, .NOFOLLOW = true }, 0);
+    if (linux.errno(open_rc) != .SUCCESS) return null;
+    return @intCast(open_rc);
+}
+
 fn addPathBeneathRule(
     ruleset_fd: i32,
     path: []const u8,
@@ -364,22 +460,23 @@ fn addPathBeneathRule(
     if (builtin.os.tag != .linux) return error.Unsupported;
     const linux = std.os.linux;
     if (allowed == 0) return false;
-    var path_buf: [std.fs.max_path_bytes]u8 = undefined;
-    if (path.len == 0 or path.len >= path_buf.len) {
+    if (path.len == 0 or path.len >= std.fs.max_path_bytes) {
         if (required) return error.PathOpenFailed;
         return false;
     }
-    @memcpy(path_buf[0..path.len], path);
-    path_buf[path.len] = 0;
-    const path_z: [*:0]const u8 = path_buf[0..path.len :0].ptr;
 
-    // O_NOFOLLOW: never PATH_BENEATH-follow a symlink to an outside target (M-3).
-    const open_rc = linux.open(path_z, .{ .PATH = true, .CLOEXEC = true, .NOFOLLOW = true }, 0);
-    if (linux.errno(open_rc) != .SUCCESS) {
-        if (required) return error.PathOpenFailed;
-        return false;
-    }
-    const path_fd: i32 = @intCast(open_rc);
+    // Prefer realpath so lexical symlink prefixes (e.g. /lib → /usr/lib) become
+    // openable under O_NOFOLLOW. Fall back to lexical path when realpath fails
+    // (missing optional RO prefix). Retry lexical if the resolved open fails.
+    var real_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const resolved = resolvePathForGrant(path, &real_buf);
+
+    const path_fd = openPathBeneathFd(resolved) orelse
+        (if (!std.mem.eql(u8, resolved, path)) openPathBeneathFd(path) else null) orelse
+        {
+            if (required) return error.PathOpenFailed;
+            return false;
+        };
     defer _ = linux.close(path_fd);
 
     var beneath = PathBeneathAttr{
@@ -401,7 +498,7 @@ fn addPathBeneathRule(
 }
 
 /// Install PATH_BENEATH rules from parent-precomputed expand surfaces.
-/// Child-only: open + landlock_add_rule — **no** opendir/readdir (Z-3).
+/// Child-only: open + landlock_add_rule — **no** opendir/readdir.
 ///
 /// Semantics (unchanged from historical in-child expand):
 /// - RO on expand roots (chdir/list/walk; no MAKE/WRITE)
@@ -409,7 +506,7 @@ fn addPathBeneathRule(
 /// - RW on leaf non-control children
 ///
 /// Landlock cannot deny a subpath of a granted PATH_BENEATH, so we never install
-/// a single RW (or MAKE) rule on a directory that contains a control root (M-1).
+/// a single RW (or MAKE) rule on a directory that contains a control root.
 /// Returns true only when at least one usable RW child surface was installed.
 fn addRwGrantFromSurfaces(
     ruleset_fd: i32,
@@ -422,7 +519,7 @@ fn addRwGrantFromSurfaces(
     var any_rw = false;
 
     for (surfaces.expand_roots) |root| {
-        // RO on expand roots so chdir/list/search works (M-1); WRITE/MAKE off (M-6).
+        // RO on expand roots so chdir/list/search works; WRITE/MAKE off.
         _ = try addPathBeneathRule(ruleset_fd, root, ro, true);
     }
     for (surfaces.control_ro_paths) |root| {
@@ -465,7 +562,7 @@ fn applySelfLinux(compiled: *const profile.CompiledProfile, plan: *const ChildLa
         if (allowed == 0) continue;
 
         if (grant.mode == .rw and rwGrantNeedsControlExpand(grant.path, compiled.control_roots)) {
-            // Parent must have precomputed surfaces; child never re-enumerates (Z-3).
+            // Parent must have precomputed surfaces; child never re-enumerates.
             const surfaces = plan.surfacesFor(grant.path) orelse return error.ApplyFailed;
             if (try addRwGrantFromSurfaces(ruleset_fd, surfaces, abi)) {
                 if (std.mem.eql(u8, grant.path, compiled.workspace_root) or
@@ -509,7 +606,7 @@ fn applySelfLinux(compiled: *const profile.CompiledProfile, plan: *const ChildLa
 fn verifyApplyInChildLinux(compiled: *const profile.CompiledProfile) ApplyError!void {
     const linux = std.os.linux;
 
-    // Parent-side expand plan before fork (Z-3). Child only installs from plan.
+    // Parent-side expand plan before fork. Child only installs from plan.
     var plan = buildChildLandlockPlan(std.heap.page_allocator, compiled) catch return error.ApplyFailed;
     defer plan.deinit();
 
@@ -539,8 +636,6 @@ fn verifyApplyInChildLinux(compiled: *const profile.CompiledProfile) ApplyError!
     const code = (status >> 8) & 0xff;
     if (code != 0) return error.ApplyFailed;
 }
-
-// ── tests ──────────────────────────────────────────────────────────────────
 
 test "pure ABI rights masks are filesystem-only and grow with ABI" {
     const a1 = handledFsRights(1);
@@ -592,7 +687,7 @@ test "probeAbi is null on non-Linux; applySelf unsupported off Linux" {
     }
 }
 
-// Z-3: parent-side expand helper builds child path lists from a temp dir layout.
+// Parent-side expand helper builds child path lists from a temp dir layout.
 test "buildControlExpandSurfaces enumerates RW children and skips control + symlinks" {
     if (builtin.os.tag == .windows) return error.SkipZigTest;
 
@@ -611,7 +706,7 @@ test "buildControlExpandSurfaces enumerates RW children and skips control + syml
     const control = try std.fs.path.join(allocator, &.{ ws_root, ".orca" });
     defer allocator.free(control);
 
-    // Plant a symlink child that must not become an RW surface (M-3 parity).
+    // Plant a symlink child that must not become an RW surface.
     const link_path = try std.fs.path.join(allocator, &.{ ws_root, "escape_link" });
     defer allocator.free(link_path);
     std.Io.Dir.cwd().symLink(io, control, link_path, .{}) catch |err| switch (err) {
@@ -707,7 +802,7 @@ test "verifyApplyInChild and applySelf skip or run on Linux only" {
     if (probeAbi() == null) return error.SkipZigTest;
 
     // Real workspace under tmp so O_PATH succeeds. Need a non-control child so
-    // control-root expand can install an RW PATH_BENEATH (M-1).
+    // control-root expand can install an RW PATH_BENEATH.
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
     try tmp.dir.writeFile(std.testing.io, .{ .sub_path = "neighbor.txt", .data = "ok" });
@@ -715,8 +810,8 @@ test "verifyApplyInChild and applySelf skip or run on Linux only" {
     const root = try tmp.dir.realPathFileAlloc(std.testing.io, ".", std.testing.allocator);
     defer std.testing.allocator.free(root);
 
-    // Production system RO defaults without temp trees (M-6). include_tmp stays
-    // false so test tmpDirs under /tmp are not swallowed by the M-8 temp grant.
+    // Production system RO defaults without temp trees. include_tmp stays
+    // false so test tmpDirs under /tmp are not swallowed by the production temp grant.
     var compiled = try profile.compileProfile(std.testing.allocator, .{
         .workspace_root = root,
         .system_ro_prefixes = profile.defaultSystemRoPrefixes(),
@@ -727,7 +822,7 @@ test "verifyApplyInChild and applySelf skip or run on Linux only" {
     try verifyApplyInChild(&compiled);
 }
 
-// M-18: empty workspace with only the default control root has no RW leaf until
+// Empty workspace with only the default control root has no RW leaf until
 // attach pre-creates `{workspace}/.orca-tmp`. Production apply/apply_posix do that
 // before buildChildLandlockPlan; this test asserts the expand contract.
 test "empty workspace only control root gains RW after session tmp precreate" {
@@ -758,7 +853,7 @@ test "empty workspace only control root gains RW after session tmp precreate" {
         try std.testing.expect(!surfaces.anyRw());
     }
 
-    // Production attach precreate (apply.ensureWorkspaceSessionTmp / apply_posix).
+    // Production attach precreate (session_tmp.ensureWorkspaceSessionTmp / apply_posix).
     try tmp.dir.createDirPath(io, ".orca-tmp");
 
     var plan = try buildChildLandlockPlan(allocator, &compiled);
@@ -783,7 +878,77 @@ test "rwGrantNeedsControlExpand when workspace contains control roots" {
     try std.testing.expect(!rwGrantNeedsControlExpand("/tmp", &[_][]const u8{"/ws/.orca"}));
 }
 
-test "M-5 pathIsWithin and control expand treat filesystem root correctly" {
+// Hardlink residual filter (M-12): same-FS hardlink to an outside secret must
+// not become an RW PATH_BENEATH leaf. Uses one tmpDir so link(2) stays on-FS.
+test "buildControlExpandSurfaces skips hardlinked non-dir leaves" {
+    if (builtin.os.tag == .windows) return error.SkipZigTest;
+
+    const allocator = std.testing.allocator;
+    const io = std.testing.io;
+
+    var parent = std.testing.tmpDir(.{});
+    defer parent.cleanup();
+    try parent.dir.createDirPath(io, "ws/.orca");
+    try parent.dir.writeFile(io, .{ .sub_path = "ws/neighbor.txt", .data = "ok" });
+    try parent.dir.createDirPath(io, "out");
+    try parent.dir.writeFile(io, .{ .sub_path = "out/secret.txt", .data = "OUTSIDE_SECRET" });
+
+    // Plant ws/escape_hl → same inode as out/secret.txt.
+    parent.dir.hardLink("out/secret.txt", parent.dir, "ws/escape_hl", io, .{}) catch |err| switch (err) {
+        error.AccessDenied, error.PermissionDenied, error.ReadOnlyFileSystem, error.OperationUnsupported, error.CrossDevice => return error.SkipZigTest,
+        else => return err,
+    };
+
+    const ws_root = try parent.dir.realPathFileAlloc(io, "ws", allocator);
+    defer allocator.free(ws_root);
+    const control = try std.fs.path.join(allocator, &.{ ws_root, ".orca" });
+    defer allocator.free(control);
+    const hardlink_path = try std.fmt.allocPrint(allocator, "{s}/escape_hl", .{ws_root});
+    defer allocator.free(hardlink_path);
+    const neighbor = try std.fmt.allocPrint(allocator, "{s}/neighbor.txt", .{ws_root});
+    defer allocator.free(neighbor);
+
+    var surfaces = try buildControlExpandSurfaces(allocator, ws_root, &[_][]const u8{control});
+    defer surfaces.deinit();
+
+    var saw_neighbor = false;
+    for (surfaces.rw_paths) |p| {
+        try std.testing.expect(!std.mem.eql(u8, p, hardlink_path));
+        if (std.mem.eql(u8, p, neighbor)) saw_neighbor = true;
+    }
+    try std.testing.expect(saw_neighbor);
+    try std.testing.expect(leafIsHardlinkedNonDir(hardlink_path));
+}
+
+test "ChildLandlockPlan owns grant_path independent of profile lifetime" {
+    if (builtin.os.tag == .windows) return error.SkipZigTest;
+
+    const allocator = std.testing.allocator;
+    const io = std.testing.io;
+
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try tmp.dir.createDirPath(io, ".orca");
+    try tmp.dir.writeFile(io, .{ .sub_path = "neighbor.txt", .data = "ok" });
+    const root = try tmp.dir.realPathFileAlloc(io, ".", allocator);
+    defer allocator.free(root);
+
+    var compiled = try profile.compileProfile(allocator, .{
+        .workspace_root = root,
+        .system_ro_prefixes = &[_][]const u8{"/usr"},
+        .include_tmp = false,
+    });
+    var plan = try buildChildLandlockPlan(allocator, &compiled);
+    // Free profile before plan — plan grant_path must not dangle (M-26).
+    compiled.deinit();
+    defer plan.deinit();
+
+    try std.testing.expect(plan.expands.len >= 1);
+    try std.testing.expectEqualStrings(root, plan.expands[0].grant_path);
+    try std.testing.expect(plan.surfacesFor(root) != null);
+}
+
+test "pathIsWithin and control expand treat filesystem root correctly" {
     // Without the `/` special-case, pathIsWithin("/etc", "/") is false and
     // rwGrantNeedsControlExpand("/", &.{"/.orca"}) skips expand → full RW on `/`.
     try std.testing.expect(pathIsWithin("/", "/"));
@@ -795,7 +960,7 @@ test "M-5 pathIsWithin and control expand treat filesystem root correctly" {
     try std.testing.expect(!pathIsWithin("relative", "/"));
 }
 
-// Real-FS deny / expand integration tests live in landlock_deny_tests.zig (M-8).
+// Real-FS deny / expand integration tests live in landlock_deny_tests.zig.
 test {
     _ = @import("landlock_deny_tests.zig");
 }

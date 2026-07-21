@@ -1,6 +1,5 @@
-# Synthetic test-fast log: Linux production-defaults deny OK + Landlock handshake
-# → unit dual-proof CTRL-ATTACH (local only; --require-attach still needs packaged).
-1/99 real FS deny under production defaults: outside denied; neighbor RW; control not writable...OK
+# Synthetic test-fast log: isolated include_tmp=false deny + handshake, NO production-defaults.
+# M-1: isolated alone must not paint TEST-DENY or unit dual-proof CTRL-ATTACH on Linux.
 1/99 real FS deny: outside denied; neighbor RW; control root not writable...OK
 1/99 real FS deny: outside canary denied; workspace readable and writable...SKIP
 1/99 forkApplyLandlockAndExec applies then execs on Linux with handshake...OK

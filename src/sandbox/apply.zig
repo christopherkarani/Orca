@@ -1,17 +1,17 @@
-//! Single ApplyBeforeExec boundary for production agent launch (P0-A-03 / P1-PRE-03).
+//! Single ApplyBeforeExec boundary for production agent launch.
 //!
-//! Production path (U04–U07):
+//! Production path:
 //!   cli/run → applyBeforeExec → supervisor.run → process.prepareChild
 //!     → sandboxed spawn (apply_posix) or std.process.spawn
 //!
-//! Scaffold `backend.prepare` was removed (M-13). Production attach is exclusively
+//! Scaffold `backend.prepare` was removed. Production attach is exclusively
 //! applyBeforeExec + apply_posix child apply; capability detect stays in backend.
 //!
 //! This module:
 //! - compiles a pure FS profile (`profile.compileProfile`)
 //! - scrubs loader/startup injection env (`env_scrub`)
-//! - attempts platform OS prepare: Landlock on Linux (U05); Seatbelt on macOS (U06)
-//! - retains child-apply materials so U07 can box the *agent* process
+//! - attempts platform OS prepare: Landlock on Linux; Seatbelt on macOS
+//! - retains child-apply materials (`ChildMaterials` union) so spawn can box the *agent* process
 //!
 //! Landlock restrict_self and Seatbelt sandbox_init run only in a **forked child**
 //! so the parent Orca process stays free. Production agent exec must use
@@ -29,6 +29,13 @@ const env_scrub = @import("env_scrub.zig");
 const landlock = @import("landlock.zig");
 const macos_seatbelt = @import("macos_seatbelt.zig");
 const apply_posix = @import("apply_posix.zig");
+const session_tmp = @import("session_tmp.zig");
+
+/// Re-export session-tmp surface for callers that only import apply.
+pub const workspace_session_tmp_name = session_tmp.workspace_session_tmp_name;
+pub const classic_tmp_fallback = session_tmp.classic_tmp_fallback;
+pub const workspaceSessionTmpPath = session_tmp.workspaceSessionTmpPath;
+pub const ensureWorkspaceSessionTmp = session_tmp.ensureWorkspaceSessionTmp;
 
 /// Re-export mode for callers that only touch apply.
 pub const OsSandboxMode = posture.OsSandboxMode;
@@ -41,17 +48,50 @@ pub const ApplyError = error{
     OutOfMemory,
 };
 
-/// Named public error set for `ApplyResult.spawnAgent` (Z-9).
+/// Named public error set for `ApplyResult.spawnAgent`.
 /// Prefer this over an inferred set that surfaces bare `Unexpected`.
 /// Invariant failures (no child materials, missing SBPL/profile, proof mint fail)
 /// map to `ApplyFailed` so CLI spawn classifiers stay honest.
 pub const SpawnAgentError = apply_posix.SpawnError;
 
-/// What the agent spawn path must do after `applyBeforeExec` (U07).
+/// What the agent spawn path must do after `applyBeforeExec`.
+/// Tag matches `ChildMaterials` so kind is derived from materials.
 pub const ChildApplyKind = enum {
     none,
     landlock,
     seatbelt,
+};
+
+/// Owned child-apply materials for agent spawn.
+/// Invalid both-set states are unrepresentable: at most one backend payload.
+pub const ChildMaterials = union(enum) {
+    none,
+    landlock: profile.CompiledProfile,
+    seatbelt: struct {
+        sbpl_z: [:0]u8,
+        allocator: std.mem.Allocator,
+        /// Precomputed at prepare from `CompiledProfile.effectiveFsScopeSummary(.seatbelt)`.
+        /// Static string (not heap-owned). Used on activate so receipts cannot drift
+        /// from a second hardcoded source of truth.
+        fs_scope: []const u8,
+    },
+
+    pub fn deinit(self: *ChildMaterials) void {
+        switch (self.*) {
+            .none => {},
+            .landlock => |*p| p.deinit(),
+            .seatbelt => |*s| s.allocator.free(s.sbpl_z),
+        }
+        self.* = .none;
+    }
+
+    pub fn kind(self: ChildMaterials) ChildApplyKind {
+        return switch (self) {
+            .none => .none,
+            .landlock => .landlock,
+            .seatbelt => .seatbelt,
+        };
+    }
 };
 
 /// Inputs for the single apply-before-exec seam.
@@ -73,7 +113,7 @@ pub const ApplyResult = struct {
     receipt: AttachReceipt,
     /// True when denylist env scrub ran against env_map.
     env_scrubbed: bool = false,
-    /// True when launch allowlist ran (only with child-apply materials; M-2).
+    /// True when launch allowlist ran (only with child-apply materials).
     env_launch_allowlisted: bool = false,
     /// Count of keys removed by denylist + optional launch allowlist (0 if none).
     env_keys_removed: usize = 0,
@@ -81,40 +121,27 @@ pub const ApplyResult = struct {
     profile_compiled: bool = false,
     /// By-value 64-hex digest of the compiled profile when compile succeeded (not heap-owned).
     profile_hash_hex: ?[64]u8 = null,
-    /// Owned compiled profile for Linux Landlock agent-child apply (U07). Free with deinit.
-    landlock_profile: ?profile.CompiledProfile = null,
-    /// Owned NUL-terminated SBPL for child-side Seatbelt apply (macOS). Free with deinit.
-    /// Requires a paired `allocator` (asserted in `deinit`).
-    seatbelt_sbpl_z: ?[:0]u8 = null,
-    /// Allocator that owns `seatbelt_sbpl_z` when non-null. Must be set whenever SBPL is set.
-    allocator: ?std.mem.Allocator = null,
-    /// Retained fork buffers for the last successful sandboxed spawn (M-17).
+    /// Owned child-apply materials. Free with deinit. Default `.none`.
+    materials: ChildMaterials = .none,
+    /// Retained fork buffers for the last successful sandboxed spawn.
     /// Freed in `deinit` after the supervisor has waited/reaped the child.
     spawn_lease: ?apply_posix.SpawnLease = null,
 
     pub fn deinit(self: *ApplyResult) void {
         if (self.spawn_lease) |*lease| {
+            // Production path waits/reaps via PreparedChild before deinit.
+            // Multi-spawn and error paths must killAndReap before free; deinit
+            // does not kill (pid may already be reaped — SIGKILL would race reuse).
             lease.deinit();
             self.spawn_lease = null;
         }
-        if (self.landlock_profile) |*p| {
-            p.deinit();
-            self.landlock_profile = null;
-        }
-        if (self.seatbelt_sbpl_z) |p| {
-            // SBPL ownership is paired with `allocator` — never free via a null/wrong pair.
-            std.debug.assert(self.allocator != null);
-            self.allocator.?.free(p);
-            self.seatbelt_sbpl_z = null;
-        }
+        self.materials.deinit();
         self.* = undefined;
     }
 
-    /// Kind of child-side OS apply the spawn path must perform.
+    /// Kind of child-side OS apply the spawn path must perform (derived from materials tag).
     pub fn childApplyKind(self: ApplyResult) ChildApplyKind {
-        if (self.landlock_profile != null) return .landlock;
-        if (self.seatbelt_sbpl_z != null) return .seatbelt;
-        return .none;
+        return self.materials.kind();
     }
 
     /// True when spawn must use apply_posix (agent would otherwise be unboxed).
@@ -122,16 +149,14 @@ pub const ApplyResult = struct {
         return self.childApplyKind() != .none;
     }
 
-    /// Proof that agent-child OS FS apply handshake succeeded (M-12).
-    /// Only `spawnAgent` constructs a valid proof; `promoteWithProof` rejects forgeries
-    /// that do not match prepared materials + magic seal.
+    /// Proof that agent-child OS FS apply handshake succeeded.
+    /// Only `activateAfterHandshake` (via `spawnAgent`) constructs this after a real
+    /// fork status-pipe success. No cross-module mint — magic seal dropped (same-module).
     pub const ChildAttachProof = struct {
         mechanism: posture.BackendMechanism,
-        /// Must equal `attach_proof_magic` — set only by `spawnAgent`.
-        magic: u64,
 
         pub fn isValid(self: ChildAttachProof) bool {
-            return self.magic == attach_proof_magic and self.mechanism != .none;
+            return self.mechanism != .none;
         }
     };
 
@@ -141,46 +166,33 @@ pub const ApplyResult = struct {
         proof: ChildAttachProof,
     };
 
-    /// Promote to session-active only with a valid `ChildAttachProof` from `spawnAgent`.
-    /// Bare materials alone never authorize active (S-GLO-01).
-    /// Hard-fails (never soft-skips): invalid magic/kind, mechanism mismatch,
-    /// missing hash, or activeReceipt construction failure (M-3).
-    /// File-private: not a public capability API (M-6 soft-seal fix).
-    fn promoteWithProof(self: *ApplyResult, proof: ChildAttachProof) error{ApplyFailed}!void {
-        if (!proof.isValid()) return error.ApplyFailed;
-        const kind = self.childApplyKind();
-        const matches = switch (kind) {
-            .none => false,
-            .landlock => proof.mechanism == .landlock,
-            .seatbelt => proof.mechanism == .seatbelt,
-        };
-        if (!matches) return error.ApplyFailed;
+    /// Build active receipt from materials after proven child handshake.
+    /// File-private: only `spawnAgent` calls this. Bare materials alone never
+    /// authorize active (S-GLO-01). Hard-fails on missing materials/hash or
+    /// activeReceipt construction failure — never soft-skips.
+    fn activateAfterHandshake(self: *ApplyResult) error{ApplyFailed}!ChildAttachProof {
         const hash = self.profile_hash_hex orelse return error.ApplyFailed;
-        // profile_hash_hex is always full 64 hex from compile; reject closed if not.
-        // M-10: prefer backend-effective scope from the compiled profile when available.
-        const scope: []const u8 = blk: {
-            if (self.landlock_profile) |*p| {
-                if (proof.mechanism == .landlock) break :blk p.effectiveFsScopeSummary(.landlock);
-            }
-            // Seatbelt SBPL is a string; production always includes platform tmp + mach residual.
-            break :blk switch (proof.mechanism) {
-                .landlock => "workspace child RW, root RO, system RO, platform tmp RW, no home",
-                .seatbelt => "workspace RW, system RO, platform tmp RW, no home, mach-lookup residual",
-                .none => "none",
-            };
-        };
-        switch (proof.mechanism) {
-            .landlock => self.receipt = posture.activeReceipt(.landlock, hash[0..], scope) catch return error.ApplyFailed,
-            .seatbelt => self.receipt = posture.activeReceipt(.seatbelt, hash[0..], scope) catch return error.ApplyFailed,
+        switch (self.materials) {
             .none => return error.ApplyFailed,
+            .landlock => |*p| {
+                const scope = p.effectiveFsScopeSummary(.landlock);
+                self.receipt = posture.activeReceipt(.landlock, hash[0..], scope) catch return error.ApplyFailed;
+                return .{ .mechanism = .landlock };
+            },
+            .seatbelt => |*s| {
+                // Scope was precomputed at prepare from the compiled profile (single source).
+                const scope = s.fs_scope;
+                self.receipt = posture.activeReceipt(.seatbelt, hash[0..], scope) catch return error.ApplyFailed;
+                return .{ .mechanism = .seatbelt };
+            },
         }
     }
 
     /// Spawn the agent with OS FS apply in the child (Landlock / Seatbelt).
-    /// Parent stays unrestricted. Blocks until status-pipe proves apply (M-2).
-    /// On success, mutates this result to active via a typed attach proof (M-12).
-    /// After a successful child handshake, promote failure kills/reaps the child
-    /// and returns `ApplyFailed` (M-3) — never a live agent without an active receipt.
+    /// Parent stays unrestricted. Blocks until status-pipe proves apply.
+    /// On success, mutates this result to active via `activateAfterHandshake`.
+    /// After a successful child handshake, activate failure kills/reaps the child
+    /// and returns `ApplyFailed` — never a live agent without an active receipt.
     /// Errors: `SpawnAgentError` (named; invariants → `ApplyFailed`, never bare `Unexpected`).
     pub fn spawnAgent(
         self: *ApplyResult,
@@ -191,7 +203,8 @@ pub const ApplyResult = struct {
         workspace_root: []const u8,
         stdio: apply_posix.StdioBehavior,
     ) SpawnAgentError!SpawnedAgent {
-        if (argv.len == 0) return error.FileNotFound;
+        // Match apply_posix empty-argv contract (ExecFailed, not FileNotFound).
+        if (argv.len == 0) return error.ExecFailed;
         const resolved = try apply_posix.resolveArgv0(io, allocator, argv[0], env_map);
         defer if (resolved.owned) allocator.free(resolved.path);
 
@@ -200,46 +213,37 @@ pub const ApplyResult = struct {
         argv_owned[0] = resolved.path;
         @memcpy(argv_owned[1..], argv[1..]);
 
-        // Drop any prior lease (should not happen on one-shot run; multi-spawn safe).
+        // Drop any prior lease: kill+reap first. Freeing retained argv/env while
+        // the prior child still runs is free-before-reap (fork COW UAF). One-shot
+        // run never hits this; multi-spawn / retry paths must not free live buffers.
         if (self.spawn_lease) |*old| {
+            if (old.pid > 0) apply_posix.killAndReapChild(old.pid);
             old.deinit();
             self.spawn_lease = null;
         }
 
-        var lease = switch (self.childApplyKind()) {
-            // No prepared materials: not a generic Unexpected — treat as apply contract fail.
+        // Single switch on materials tag — invalid dual-backend state unrepresentable.
+        var lease = switch (self.materials) {
             .none => return error.ApplyFailed,
-            .landlock => blk: {
-                const profile_ptr = &(self.landlock_profile orelse return error.ApplyFailed);
-                break :blk try apply_posix.forkApplyLandlockAndExec(
-                    profile_ptr,
-                    argv_owned,
-                    env_map,
-                    workspace_root,
-                    stdio,
-                );
-            },
-            .seatbelt => blk: {
-                const sbpl = self.seatbelt_sbpl_z orelse return error.ApplyFailed;
-                break :blk try apply_posix.forkApplySeatbeltAndExec(
-                    sbpl.ptr,
-                    argv_owned,
-                    env_map,
-                    workspace_root,
-                    stdio,
-                );
-            },
+            .landlock => |*profile_ptr| try apply_posix.forkApplyLandlockAndExec(
+                profile_ptr,
+                argv_owned,
+                env_map,
+                workspace_root,
+                stdio,
+            ),
+            .seatbelt => |*sb| try apply_posix.forkApplySeatbeltAndExec(
+                sb.sbpl_z.ptr,
+                argv_owned,
+                env_map,
+                workspace_root,
+                stdio,
+            ),
         };
 
-        // Handshake proven: mint attach proof and promote receipt atomically.
-        // Promote is hard-fail after fork — kill/reap so we never return a live
-        // agent without an active session receipt (M-3).
-        const proof = self.makeAttachProof() orelse {
-            apply_posix.killAndReapChild(lease.pid);
-            lease.deinit();
-            return error.ApplyFailed;
-        };
-        self.promoteWithProof(proof) catch {
+        // Handshake proven: activate receipt from materials. Hard-fail after fork —
+        // kill/reap so we never return a live agent without an active session receipt.
+        const proof = self.activateAfterHandshake() catch {
             apply_posix.killAndReapChild(lease.pid);
             lease.deinit();
             return error.ApplyFailed;
@@ -248,22 +252,11 @@ pub const ApplyResult = struct {
         self.spawn_lease = lease;
         return .{ .pid = pid, .proof = proof };
     }
-
-    fn makeAttachProof(self: *const ApplyResult) ?ChildAttachProof {
-        return switch (self.childApplyKind()) {
-            .none => null,
-            .landlock => .{ .mechanism = .landlock, .magic = attach_proof_magic },
-            .seatbelt => .{ .mechanism = .seatbelt, .magic = attach_proof_magic },
-        };
-    }
 };
-
-/// Magic seal for `ChildAttachProof` (only `spawnAgent` / `makeAttachProof` set this).
-const attach_proof_magic: u64 = 0x4f5243415f415450; // "ORCA_ATP"
 
 /// Platform prepare outcome from Landlock/Seatbelt (parent seam only).
 /// Parent seam never returns a live-session attach: only prepared_child materials
-/// (or unavailable/failed). Session `active` requires child status-pipe + promote.
+/// (or unavailable/failed). Session `active` requires child status-pipe + activate.
 const PlatformApplyStatus = enum {
     /// Backend not present / not implemented for this build.
     unavailable,
@@ -277,24 +270,31 @@ const PlatformApplyOutcome = struct {
     status: PlatformApplyStatus,
     mechanism: posture.BackendMechanism = .none,
     reason_code: []const u8,
+    /// Owned NUL-terminated SBPL when Seatbelt prepare succeeded. Free via `deinit`
+    /// unless transferred with `takeSeatbeltSbpl`.
     seatbelt_sbpl_z: ?[:0]u8 = null,
+    /// Allocator that owns `seatbelt_sbpl_z` when non-null.
+    sbpl_allocator: ?std.mem.Allocator = null,
+
+    pub fn deinit(self: *PlatformApplyOutcome) void {
+        if (self.seatbelt_sbpl_z) |p| {
+            if (self.sbpl_allocator) |a| a.free(p);
+            self.seatbelt_sbpl_z = null;
+            self.sbpl_allocator = null;
+        }
+    }
+
+    /// Transfer SBPL ownership to the caller; `deinit` will not free it.
+    pub fn takeSeatbeltSbpl(self: *PlatformApplyOutcome) ?[:0]u8 {
+        const p = self.seatbelt_sbpl_z;
+        self.seatbelt_sbpl_z = null;
+        self.sbpl_allocator = null;
+        return p;
+    }
 };
 
 fn setFailReason(boundary: ApplyBoundary, reason: []const u8) void {
     if (boundary.fail_reason_out) |out| out.* = reason;
-}
-
-/// Relative session temp directory under the workspace (always covered by workspace RW).
-/// Pre-created on the attach path so Landlock child-expand can PATH_BENEATH it.
-pub const workspace_session_tmp_name = ".orca-tmp";
-
-/// Classic system temp fallback when workspace session temp cannot be prepared.
-pub const classic_tmp_fallback = "/tmp";
-
-/// Absolute path for the preferred attach TMPDIR under `workspace_root`.
-/// Caller owns the returned slice.
-pub fn workspaceSessionTmpPath(allocator: std.mem.Allocator, workspace_root: []const u8) ![]u8 {
-    return std.fmt.allocPrint(allocator, "{s}/{s}", .{ workspace_root, workspace_session_tmp_name });
 }
 
 /// Pure: true when `path` is a macOS per-user `/var/folders/...` temp (not granted).
@@ -307,36 +307,7 @@ fn isUngrantedHostTmpdir(path: []const u8) bool {
     return false;
 }
 
-/// Best-effort create `{workspace}/.orca-tmp` so Landlock control-expand can
-/// PATH_BENEATH a RW child even when the workspace only has control roots (M-18).
-/// Must run **before** `buildChildLandlockPlan` / child attach enumeration.
-/// Returns true when the preferred session path exists after the attempt.
-pub fn ensureWorkspaceSessionTmp(workspace_root: []const u8) bool {
-    if (workspace_root.len == 0) return false;
-    var path_buf: [std.fs.max_path_bytes]u8 = undefined;
-    const needed = workspace_root.len + 1 + workspace_session_tmp_name.len;
-    if (needed > path_buf.len) return false;
-    @memcpy(path_buf[0..workspace_root.len], workspace_root);
-    path_buf[workspace_root.len] = '/';
-    @memcpy(
-        path_buf[workspace_root.len + 1 ..][0..workspace_session_tmp_name.len],
-        workspace_session_tmp_name,
-    );
-    const preferred = path_buf[0..needed];
-
-    var io_rt: std.Io.Threaded = .init_single_threaded;
-    const io = io_rt.io();
-    std.Io.Dir.cwd().createDirPath(io, preferred) catch {};
-    if (std.Io.Dir.openDirAbsolute(io, preferred, .{})) |dir_opened| {
-        var dir = dir_opened;
-        dir.close(io);
-        return true;
-    } else |_| {
-        return false;
-    }
-}
-
-/// Rewrite TMPDIR/TMP/TEMP into a granted tree for the attach path (M-8 / R2-2).
+/// Rewrite TMPDIR/TMP/TEMP into a granted tree for the attach path.
 ///
 /// Host macOS TMPDIR under `/var/folders` is intentionally not granted (canary breadth).
 /// Prefer `{workspace}/.orca-tmp` (workspace RW; mkdir so Landlock expand sees it).
@@ -351,7 +322,7 @@ pub fn rewriteTempEnvForAttach(
     const preferred = try workspaceSessionTmpPath(allocator, workspace_root);
     defer allocator.free(preferred);
 
-    // Create session surface first (shared with Landlock expand precreate — M-18).
+    // Create session surface first (shared with Landlock expand precreate).
     const use_path: []const u8 = if (ensureWorkspaceSessionTmp(workspace_root)) preferred else classic_tmp_fallback;
 
     // Map put duplicates via map allocator — preferred stack path is free'd after.
@@ -365,13 +336,14 @@ pub fn rewriteTempEnvForAttach(
 ///
 /// - `off` → disabled receipt; no profile/platform apply; no env scrub at this seam
 /// - `on` / `auto` → compile profile, denylist-scrub env, attempt platform apply
-/// - `on` / `auto` + incomplete env scrub (OOM) → `error.RequireFailed` (fail closed; M-3)
-/// - launch allowlist (M-20) runs only when prepare yields child-apply materials (M-2)
-/// - attach path rewrites TMPDIR/TMP/TEMP into a granted tree (M-8 / R2-2)
+/// - `on` / `auto` + incomplete denylist scrub (OOM) → `error.RequireFailed` (fail closed; reason env_scrub_failed)
+/// - allowlist / TMPDIR rewrite OOM → `error.OutOfMemory` (hard; not RequireFailed)
+/// - launch allowlist runs only when prepare yields child-apply materials
+/// - attach path rewrites TMPDIR/TMP/TEMP into a granted tree
 /// - `on` + unavailable/failed (no child plan) → `error.RequireFailed` (fail closed)
 /// - `on` + prepared child plan → returns materials; receipt stays non-active until promote
-/// - `auto` + unavailable → unavailable receipt; denylist only (provider keys retained; M-2)
-/// - Session `active` only after agent-child apply handshake + `promoteWithProof` (S-GLO-01)
+/// - `auto` + unavailable → unavailable receipt; denylist only (provider keys retained)
+/// - Session `active` only after agent-child apply handshake + `activateAfterHandshake` (S-GLO-01)
 pub fn applyBeforeExec(boundary: ApplyBoundary) ApplyError!ApplyResult {
     switch (boundary.mode) {
         .off => return .{
@@ -385,7 +357,7 @@ pub fn applyBeforeExec(boundary: ApplyBoundary) ApplyError!ApplyResult {
     }
 
     // Compile pure profile (grants model only — no syscalls).
-    // OOM is never a soft grade-drop (M-9): propagate so callers fail closed hard.
+    // OOM is never a soft grade-drop: propagate so callers fail closed hard.
     // InvalidWorkspace / other compile failures → profile_compile_failed (on→RequireFailed, auto→unavailable).
     var compiled = profile.compileProfile(boundary.allocator, .{
         .workspace_root = boundary.workspace_root,
@@ -430,7 +402,7 @@ pub fn applyBeforeExec(boundary: ApplyBoundary) ApplyError!ApplyResult {
     @memcpy(hash_copy[0..], compiled.hash());
 
     // Denylist scrub always on on/auto (injection fail-closed). Launch allowlist is
-    // deferred until after prepare so pure grade-drop does not strip provider keys (M-2).
+    // deferred until after prepare so pure grade-drop does not strip provider keys.
     var removed: usize = 0;
     var scrubbed = false;
     if (boundary.env_map) |env_map| {
@@ -443,38 +415,38 @@ pub fn applyBeforeExec(boundary: ApplyBoundary) ApplyError!ApplyResult {
 
     // Platform OS prepare — Linux Landlock ABI probe; macOS Seatbelt prepare.
     // FD scrub / real attach run only in the forked agent child (`apply_posix`), never here.
-    const platform = tryPlatformApply(boundary.allocator, &compiled);
+    // OOM on Seatbelt prepare propagates as `error.OutOfMemory` (never soft .failed).
+    var platform = try tryPlatformApply(boundary.allocator, &compiled);
+    defer platform.deinit();
 
     // Launch allowlist only when child-apply materials will be used (prepared_child).
     // Unavailable/failed grade-drop keeps denylist-only env (provider credentials retained).
     // Attach path also rewrites TMPDIR into a granted tree (R2-2) — host /var/folders is not granted.
     var allowlisted = false;
     if (platform.status == .prepared_child) {
-        // M-18: create `{workspace}/.orca-tmp` before Landlock expand enumerates children,
+        // Create `{workspace}/.orca-tmp` before Landlock expand enumerates children,
         // even when env_map is null (rewriteTempEnvForAttach also ensures, when env is present).
         _ = ensureWorkspaceSessionTmp(boundary.workspace_root);
         if (boundary.env_map) |env_map| {
-            const allow_removed = env_scrub.applyLaunchAllowlistInPlace(env_map) catch {
-                setFailReason(boundary, "env_allowlist_failed");
-                if (platform.seatbelt_sbpl_z) |p| boundary.allocator.free(p);
-                return error.RequireFailed;
+            // Allowlist/TMPDIR OOM must stay OutOfMemory (not lossy RequireFailed).
+            const allow_removed = env_scrub.applyLaunchAllowlistInPlace(env_map) catch |err| switch (err) {
+                error.OutOfMemory => return error.OutOfMemory,
             };
             removed += allow_removed;
             allowlisted = true;
-            // M-8 / R2-2: after allowlist keeps TMPDIR key, point it at a granted path.
-            _ = rewriteTempEnvForAttach(boundary.allocator, env_map, boundary.workspace_root) catch {
-                setFailReason(boundary, "tmpdir_rewrite_failed");
-                if (platform.seatbelt_sbpl_z) |p| boundary.allocator.free(p);
-                return error.RequireFailed;
+            // After allowlist keeps TMPDIR key, point it at a granted path.
+            // rewriteTempEnvForAttach only fails with OutOfMemory (alloc / map put).
+            _ = rewriteTempEnvForAttach(boundary.allocator, env_map, boundary.workspace_root) catch |err| switch (err) {
+                error.OutOfMemory => return error.OutOfMemory,
             };
         }
     }
 
     switch (platform.status) {
         .prepared_child => {
-            // Parent prepare only — not active until proven agent-child apply (U07 / status pipe).
-            // M-9: posture is `prepared`, not grade-drop `unavailable`.
-            // Linux: transfer landlock profile. macOS: keep SBPL. Spawn path applies then promotes.
+            // Parent prepare only — not active until proven agent-child apply (status pipe).
+            // Posture is `prepared`, not grade-drop `unavailable`.
+            // Linux: transfer landlock profile. macOS: keep SBPL. Spawn path applies then activates.
             if (platform.mechanism == .landlock) {
                 transfer_landlock = true;
                 return .{
@@ -484,10 +456,24 @@ pub fn applyBeforeExec(boundary: ApplyBoundary) ApplyError!ApplyResult {
                     .env_keys_removed = removed,
                     .profile_compiled = true,
                     .profile_hash_hex = hash_copy,
-                    .landlock_profile = compiled,
-                    .allocator = boundary.allocator,
+                    .materials = .{ .landlock = compiled },
                 };
             }
+            const sbpl_z = platform.takeSeatbeltSbpl() orelse {
+                // prepared_child + seatbelt without SBPL is a contract bug — fail closed.
+                setFailReason(boundary, "seatbelt_sbpl_missing");
+                if (boundary.mode == .on) return error.RequireFailed;
+                return .{
+                    .receipt = posture.failedReceipt("seatbelt_sbpl_missing"),
+                    .env_scrubbed = scrubbed,
+                    .env_launch_allowlisted = allowlisted,
+                    .env_keys_removed = removed,
+                    .profile_compiled = true,
+                    .profile_hash_hex = hash_copy,
+                };
+            };
+            // Precompute scope while `compiled` is still alive (static summary string).
+            const seatbelt_scope = compiled.effectiveFsScopeSummary(.seatbelt);
             return .{
                 .receipt = posture.preparedReceipt(.seatbelt, platform.reason_code),
                 .env_scrubbed = scrubbed,
@@ -495,12 +481,14 @@ pub fn applyBeforeExec(boundary: ApplyBoundary) ApplyError!ApplyResult {
                 .env_keys_removed = removed,
                 .profile_compiled = true,
                 .profile_hash_hex = hash_copy,
-                .seatbelt_sbpl_z = platform.seatbelt_sbpl_z,
-                .allocator = boundary.allocator,
+                .materials = .{ .seatbelt = .{
+                    .sbpl_z = sbpl_z,
+                    .allocator = boundary.allocator,
+                    .fs_scope = seatbelt_scope,
+                } },
             };
         },
         .unavailable => {
-            if (platform.seatbelt_sbpl_z) |p| boundary.allocator.free(p);
             setFailReason(boundary, platform.reason_code);
             if (boundary.mode == .on) return error.RequireFailed;
             return .{
@@ -513,7 +501,6 @@ pub fn applyBeforeExec(boundary: ApplyBoundary) ApplyError!ApplyResult {
             };
         },
         .failed => {
-            if (platform.seatbelt_sbpl_z) |p| boundary.allocator.free(p);
             setFailReason(boundary, platform.reason_code);
             if (boundary.mode == .on) return error.RequireFailed;
             return .{
@@ -531,13 +518,14 @@ pub fn applyBeforeExec(boundary: ApplyBoundary) ApplyError!ApplyResult {
 /// Platform prepare: Linux → Landlock ABI probe + prepared child plan; macOS → Seatbelt prepare.
 /// Neither path returns session-active from the parent seam alone.
 /// Mode on/auto fail-closed is enforced by the caller (`applyBeforeExec`), not here.
+/// Seatbelt OOM surfaces as `error.OutOfMemory` (never soft `.failed`).
 fn tryPlatformApply(
     allocator: std.mem.Allocator,
     compiled: *const profile.CompiledProfile,
-) PlatformApplyOutcome {
+) ApplyError!PlatformApplyOutcome {
     return switch (builtin.os.tag) {
         .linux => tryPlatformApplyLinux(),
-        .macos => tryMacOsSeatbelt(allocator, compiled),
+        .macos => try tryMacOsSeatbelt(allocator, compiled),
         else => .{
             .status = .unavailable,
             .mechanism = .none,
@@ -549,7 +537,7 @@ fn tryPlatformApply(
 fn tryMacOsSeatbelt(
     allocator: std.mem.Allocator,
     compiled: *const profile.CompiledProfile,
-) PlatformApplyOutcome {
+) ApplyError!PlatformApplyOutcome {
     const prepared = macos_seatbelt.prepareForChildApply(allocator, compiled);
     return switch (prepared.status) {
         .unavailable => .{
@@ -557,23 +545,45 @@ fn tryMacOsSeatbelt(
             .mechanism = .none,
             .reason_code = prepared.reason_code,
             .seatbelt_sbpl_z = null,
+            .sbpl_allocator = null,
         },
-        .failed => .{
-            .status = .failed,
-            .mechanism = .none,
-            .reason_code = prepared.reason_code,
-            .seatbelt_sbpl_z = null,
+        .failed => {
+            // Match profile-compile policy: OOM is hard fail, not soft grade-drop.
+            if (std.mem.eql(u8, prepared.reason_code, "seatbelt_profile_oom")) {
+                return error.OutOfMemory;
+            }
+            return .{
+                .status = .failed,
+                .mechanism = .none,
+                .reason_code = prepared.reason_code,
+                .seatbelt_sbpl_z = null,
+                .sbpl_allocator = null,
+            };
         },
         .prepared => .{
             .status = .prepared_child,
             .mechanism = .seatbelt,
             .reason_code = "seatbelt_child_apply_required",
             .seatbelt_sbpl_z = prepared.sbpl_z,
+            .sbpl_allocator = allocator,
         },
     };
 }
 
-/// Linux prepare: ABI probe only (M-15). Do not double-apply via verifyApplyInChild
+/// Map Seatbelt prepare fail reason codes: OOM → hard `OutOfMemory`, else soft failed.
+/// Exposed for unit tests of the OOM fail-closed contract (M-15).
+fn mapSeatbeltPrepareFailure(reason_code: []const u8) ApplyError!PlatformApplyOutcome {
+    if (std.mem.eql(u8, reason_code, "seatbelt_profile_oom")) return error.OutOfMemory;
+    return .{
+        .status = .failed,
+        .mechanism = .none,
+        .reason_code = reason_code,
+        .seatbelt_sbpl_z = null,
+        .sbpl_allocator = null,
+    };
+}
+
+/// Linux prepare: ABI probe only. Do not double-apply via verifyApplyInChild
 /// on the production hot path — real Landlock attach is the agent child in apply_posix.
 /// `landlock.verifyApplyInChild` remains available for unit tests in landlock.zig.
 fn tryPlatformApplyLinux() PlatformApplyOutcome {
@@ -591,8 +601,6 @@ fn tryPlatformApplyLinux() PlatformApplyOutcome {
         .reason_code = "landlock_child_apply_required",
     };
 }
-
-// ── tests ──────────────────────────────────────────────────────────────────
 
 test "mode off returns disabled receipt without scrub or active claim" {
     var env_map = std.process.Environ.Map.init(std.testing.allocator);
@@ -624,7 +632,7 @@ test "mode auto without Landlock returns unavailable and scrubs env" {
     try env_map.put("PATH", "/usr/bin");
     try env_map.put("ORCA_SESSION_ID", "s1");
 
-    // Parent prepare is ABI/backend probe only (M-15) — missing path is not a parent failure.
+    // Parent prepare is ABI/backend probe only — missing path is not a parent failure.
     // Denylist scrub must still run; session stays non-active until agent-child apply + promote.
     var result = try applyBeforeExec(.{
         .allocator = std.testing.allocator,
@@ -646,11 +654,11 @@ test "mode auto without Landlock returns unavailable and scrubs env" {
     // Linux without ABI: landlock_unavailable;
     // Linux with ABI: prepared (landlock_child_apply_required) — attach is spawn path.
     try std.testing.expect(result.receipt.posture == .unavailable or result.receipt.posture == .failed or result.receipt.posture == .prepared);
-    // Allowlist only with child-apply materials (M-2).
+    // Allowlist only with child-apply materials.
     try std.testing.expectEqual(result.requiresChildApply(), result.env_launch_allowlisted);
 }
 
-test "auto grade-drop retains provider keys; attach path allowlists (M-2)" {
+test "auto grade-drop retains provider keys; attach path allowlists" {
     // Inherit-like env: provider credentials + injection key.
     // Denylist always strips injection. Launch allowlist only when materials require child apply.
     var env_map = std.process.Environ.Map.init(std.testing.allocator);
@@ -677,14 +685,14 @@ test "auto grade-drop retains provider keys; attach path allowlists (M-2)" {
     try std.testing.expectEqualStrings("/usr/bin:/bin", env_map.get("PATH").?);
 
     if (result.requiresChildApply()) {
-        // Attach path: launch allowlist strips secrets; TLS/SSH keepers retained (M-9).
+        // Attach path: launch allowlist strips secrets and SSH_AUTH_SOCK; TLS trust kept.
         try std.testing.expect(result.env_launch_allowlisted);
         try std.testing.expect(env_map.get("OPENAI_API_KEY") == null);
         try std.testing.expect(env_map.get("AWS_SECRET_ACCESS_KEY") == null);
         try std.testing.expectEqualStrings("/etc/ssl/cert.pem", env_map.get("SSL_CERT_FILE").?);
-        try std.testing.expectEqualStrings("/tmp/ssh-agent.sock", env_map.get("SSH_AUTH_SOCK").?);
+        try std.testing.expect(env_map.get("SSH_AUTH_SOCK") == null);
     } else {
-        // Pure grade-drop unavailable/failed: provider keys retained (M-2).
+        // Pure grade-drop unavailable/failed: provider keys retained (no allowlist).
         try std.testing.expect(!result.env_launch_allowlisted);
         try std.testing.expectEqualStrings("sk-retain-on-grade-drop", env_map.get("OPENAI_API_KEY").?);
         try std.testing.expectEqualStrings("aws-secret-retain", env_map.get("AWS_SECRET_ACCESS_KEY").?);
@@ -785,7 +793,7 @@ test "mode auto + invalid workspace degrades to unavailable" {
 }
 
 test "profile compile OutOfMemory propagates (never soft unavailable)" {
-    // M-9: OOM on compile is hard failure for both on and auto — not grade-drop.
+    // OOM on compile is hard failure for both on and auto — not grade-drop.
     const modes = [_]OsSandboxMode{ .on, .auto };
     for (modes) |mode| {
         var failing = std.testing.FailingAllocator.init(std.testing.allocator, .{ .fail_index = 0 });
@@ -798,6 +806,42 @@ test "profile compile OutOfMemory propagates (never soft unavailable)" {
         try std.testing.expectError(error.OutOfMemory, err);
         try std.testing.expect(failing.has_induced_failure);
     }
+}
+
+test "seatbelt prepare OOM maps to OutOfMemory not soft failed" {
+    // seatbelt_profile_oom must hard-fail like profile compile OOM (M-15).
+    try std.testing.expectError(error.OutOfMemory, mapSeatbeltPrepareFailure("seatbelt_profile_oom"));
+    var soft = try mapSeatbeltPrepareFailure("seatbelt_profile_render_failed");
+    defer soft.deinit();
+    try std.testing.expectEqual(PlatformApplyStatus.failed, soft.status);
+    try std.testing.expectEqualStrings("seatbelt_profile_render_failed", soft.reason_code);
+}
+
+test "PlatformApplyOutcome deinit frees owned SBPL" {
+    const sbpl = try std.testing.allocator.dupeZ(u8, "(version 1)\n(deny default)\n");
+    var outcome: PlatformApplyOutcome = .{
+        .status = .prepared_child,
+        .mechanism = .seatbelt,
+        .reason_code = "seatbelt_child_apply_required",
+        .seatbelt_sbpl_z = sbpl,
+        .sbpl_allocator = std.testing.allocator,
+    };
+    // take transfers ownership — deinit must not double-free.
+    const taken = outcome.takeSeatbeltSbpl();
+    try std.testing.expect(taken != null);
+    outcome.deinit();
+    std.testing.allocator.free(taken.?);
+
+    const sbpl2 = try std.testing.allocator.dupeZ(u8, "(version 1)\n");
+    var outcome2: PlatformApplyOutcome = .{
+        .status = .prepared_child,
+        .mechanism = .seatbelt,
+        .reason_code = "seatbelt_child_apply_required",
+        .seatbelt_sbpl_z = sbpl2,
+        .sbpl_allocator = std.testing.allocator,
+    };
+    outcome2.deinit(); // frees sbpl2
+    try std.testing.expect(outcome2.seatbelt_sbpl_z == null);
 }
 
 test "non-Linux never yields active receipt from apply seam without child spawn" {
@@ -852,27 +896,26 @@ test "Linux Landlock prepares child plan without claiming active" {
     });
     defer result.deinit();
 
-    // ABI available → prepared plan without parent-side Landlock apply (M-15); not session active.
+    // ABI available → prepared plan without parent-side Landlock apply; not session active.
     try std.testing.expect(!result.receipt.isActive());
     try std.testing.expectEqual(posture.SessionPosture.prepared, result.receipt.posture);
     try std.testing.expectEqual(ChildApplyKind.landlock, result.childApplyKind());
-    try std.testing.expect(result.landlock_profile != null);
+    try std.testing.expectEqual(std.meta.Tag(ChildMaterials).landlock, std.meta.activeTag(result.materials));
     try std.testing.expect(result.profile_hash_hex != null);
     try std.testing.expectEqualStrings("landlock_child_apply_required", result.receipt.reason_code.?);
 
-    // M-12 / M-3: bare materials never activate; invalid proof hard-fails.
-    try std.testing.expectError(error.ApplyFailed, result.promoteWithProof(.{ .mechanism = .landlock, .magic = 0 }));
+    // S-GLO-01: bare materials never authorize active until activateAfterHandshake.
     try std.testing.expect(!result.receipt.isActive());
-    const forged_wrong_mech = ApplyResult.ChildAttachProof{ .mechanism = .seatbelt, .magic = attach_proof_magic };
-    try std.testing.expectError(error.ApplyFailed, result.promoteWithProof(forged_wrong_mech));
-    try std.testing.expect(!result.receipt.isActive());
-    // Valid proof matching landlock materials promotes.
-    try result.promoteWithProof(.{ .mechanism = .landlock, .magic = attach_proof_magic });
+    // Same-module activate after (simulated) handshake builds active receipt.
+    const proof = try result.activateAfterHandshake();
+    try std.testing.expect(proof.isValid());
+    try std.testing.expectEqual(posture.BackendMechanism.landlock, proof.mechanism);
     try std.testing.expect(result.receipt.isActive());
     try std.testing.expectEqual(posture.BackendMechanism.landlock, result.receipt.mechanism);
     try std.testing.expect(std.mem.indexOf(u8, result.receipt.fs_scope, "workspace child RW") != null);
     try std.testing.expect(std.mem.indexOf(u8, result.receipt.fs_scope, "root RO") != null);
-    try std.testing.expect(std.mem.indexOf(u8, result.receipt.fs_scope, "platform tmp RW") != null);
+    // Default include_tmp=false → no classic platform tmp RW claim.
+    try std.testing.expect(std.mem.indexOf(u8, result.receipt.fs_scope, "platform tmp RW") == null);
     try std.testing.expect(std.mem.indexOf(u8, result.receipt.fs_scope, "no home") != null);
     const hash_view = result.receipt.profileHashSlice().?;
     try std.testing.expectEqual(@as(usize, 64), hash_view.len);
@@ -898,47 +941,89 @@ test "never claims network in active landlock fs_scope" {
     try std.testing.expect(std.mem.indexOf(u8, complete.fs_scope, "platform tmp RW") != null);
 }
 
-test "promoteWithProof activates only with valid seal matching materials" {
+test "activateAfterHandshake activates from materials; materials alone stay inactive" {
     const hash: [64]u8 = .{'a'} ** 64;
+    const sbpl = try std.testing.allocator.dupeZ(u8, "(version 1)\n");
+    // Precomputed scope with classic tmp (opt-in) — activate must use this verbatim.
+    const scope_with_tmp = "workspace RW, system RO, platform tmp RW, no home, control write-deny (readable), mach-lookup residual";
     var result: ApplyResult = .{
         .receipt = posture.preparedReceipt(.seatbelt, "seatbelt_child_apply_required"),
         .profile_compiled = true,
         .profile_hash_hex = hash,
-        .seatbelt_sbpl_z = null,
-        .allocator = std.testing.allocator,
+        .materials = .{ .seatbelt = .{
+            .sbpl_z = sbpl,
+            .allocator = std.testing.allocator,
+            .fs_scope = scope_with_tmp,
+        } },
     };
-    result.seatbelt_sbpl_z = try std.testing.allocator.dupeZ(u8, "(version 1)\n");
     defer result.deinit();
 
     try std.testing.expectEqual(ChildApplyKind.seatbelt, result.childApplyKind());
+    // S-GLO-01: materials alone never yield isActive.
     try std.testing.expect(!result.receipt.isActive());
-    // Zero magic hard-fails (M-3); receipt stays inactive.
-    try std.testing.expectError(error.ApplyFailed, result.promoteWithProof(.{ .mechanism = .seatbelt, .magic = 0 }));
-    try std.testing.expect(!result.receipt.isActive());
-    try result.promoteWithProof(.{ .mechanism = .seatbelt, .magic = attach_proof_magic });
+    const proof = try result.activateAfterHandshake();
+    try std.testing.expect(proof.isValid());
+    try std.testing.expectEqual(posture.BackendMechanism.seatbelt, proof.mechanism);
     try std.testing.expect(result.receipt.isActive());
     try std.testing.expectEqual(posture.BackendMechanism.seatbelt, result.receipt.mechanism);
+    try std.testing.expectEqualStrings(scope_with_tmp, result.receipt.fs_scope);
     try std.testing.expect(std.mem.indexOf(u8, result.receipt.fs_scope, "network") == null);
     try std.testing.expect(std.mem.indexOf(u8, result.receipt.fs_scope, "platform tmp RW") != null);
     try std.testing.expect(std.mem.indexOf(u8, result.receipt.fs_scope, "no home") != null);
     try std.testing.expect(std.mem.indexOf(u8, result.receipt.fs_scope, "mach-lookup residual") != null);
 }
 
-test "promoteWithProof hard-fails on missing profile hash" {
+test "seatbelt activate uses precomputed fs_scope without platform tmp by default" {
+    const hash: [64]u8 = .{'c'} ** 64;
+    const sbpl = try std.testing.allocator.dupeZ(u8, "(version 1)\n");
+    // Production default (include_tmp=false) summary from profile.effectiveFsScopeSummary(.seatbelt).
+    const no_tmp_scope = "workspace RW, system RO, no home, control write-deny (readable), mach-lookup residual";
+    var result: ApplyResult = .{
+        .receipt = posture.preparedReceipt(.seatbelt, "seatbelt_child_apply_required"),
+        .profile_compiled = true,
+        .profile_hash_hex = hash,
+        .materials = .{ .seatbelt = .{
+            .sbpl_z = sbpl,
+            .allocator = std.testing.allocator,
+            .fs_scope = no_tmp_scope,
+        } },
+    };
+    defer result.deinit();
+
+    _ = try result.activateAfterHandshake();
+    try std.testing.expect(result.receipt.isActive());
+    try std.testing.expectEqualStrings(no_tmp_scope, result.receipt.fs_scope);
+    try std.testing.expect(std.mem.indexOf(u8, result.receipt.fs_scope, "platform tmp") == null);
+}
+
+test "activateAfterHandshake hard-fails on missing profile hash" {
+    const sbpl = try std.testing.allocator.dupeZ(u8, "(version 1)\n");
     var result: ApplyResult = .{
         .receipt = posture.preparedReceipt(.seatbelt, "seatbelt_child_apply_required"),
         .profile_compiled = true,
         .profile_hash_hex = null,
-        .seatbelt_sbpl_z = null,
-        .allocator = std.testing.allocator,
+        .materials = .{ .seatbelt = .{
+            .sbpl_z = sbpl,
+            .allocator = std.testing.allocator,
+            .fs_scope = "workspace RW, system RO, no home, control write-deny (readable), mach-lookup residual",
+        } },
     };
-    result.seatbelt_sbpl_z = try std.testing.allocator.dupeZ(u8, "(version 1)\n");
     defer result.deinit();
 
-    try std.testing.expectError(
-        error.ApplyFailed,
-        result.promoteWithProof(.{ .mechanism = .seatbelt, .magic = attach_proof_magic }),
-    );
+    try std.testing.expectError(error.ApplyFailed, result.activateAfterHandshake());
+    try std.testing.expect(!result.receipt.isActive());
+}
+
+test "activateAfterHandshake hard-fails without materials" {
+    const hash: [64]u8 = .{'b'} ** 64;
+    var result: ApplyResult = .{
+        .receipt = posture.preparedReceipt(.landlock, "landlock_child_apply_required"),
+        .profile_compiled = true,
+        .profile_hash_hex = hash,
+        .materials = .none,
+    };
+    defer result.deinit();
+    try std.testing.expectError(error.ApplyFailed, result.activateAfterHandshake());
     try std.testing.expect(!result.receipt.isActive());
 }
 
@@ -947,9 +1032,7 @@ test "spawnAgent without child materials returns ApplyFailed not Unexpected" {
         .receipt = posture.disabledReceipt(),
         .profile_compiled = false,
         .profile_hash_hex = null,
-        .landlock_profile = null,
-        .seatbelt_sbpl_z = null,
-        .allocator = null,
+        .materials = .none,
     };
     defer result.deinit();
     try std.testing.expectEqual(ChildApplyKind.none, result.childApplyKind());
@@ -1022,7 +1105,7 @@ test "mode on surfaces real reason_code via fail_reason_out on this host" {
     } else |e| {
         try std.testing.expectEqual(error.RequireFailed, e);
         try std.testing.expect(!std.mem.eql(u8, fail_reason, "unset"));
-        // Real reason codes only — never the U04 backend_not_implemented placeholder on Darwin.
+        // Real reason codes only — never the backend_not_implemented placeholder on Darwin.
         if (builtin.os.tag == .macos) {
             try std.testing.expect(std.mem.indexOf(u8, fail_reason, "backend_not_implemented") == null);
         }
@@ -1106,14 +1189,17 @@ test "attach path rewrites host TMPDIR out of var/folders (R2-2)" {
         try std.testing.expect(!isUngrantedHostTmpdir(td));
         try std.testing.expect(std.mem.endsWith(u8, td, "/.orca-tmp") or std.mem.eql(u8, td, classic_tmp_fallback));
         // Pure grants: rewritten path must be agent-writable under production model.
-        if (result.landlock_profile) |*p| {
-            try std.testing.expect(p.isAgentWritable(td) or std.mem.eql(u8, td, classic_tmp_fallback));
-        } else {
-            var compiled = try profile.compileProfile(std.testing.allocator, .{
-                .workspace_root = root,
-            });
-            defer compiled.deinit();
-            try std.testing.expect(compiled.isAgentWritable(td));
+        switch (result.materials) {
+            .landlock => |*p| {
+                try std.testing.expect(p.isAgentWritable(td) or std.mem.eql(u8, td, classic_tmp_fallback));
+            },
+            else => {
+                var compiled = try profile.compileProfile(std.testing.allocator, .{
+                    .workspace_root = root,
+                });
+                defer compiled.deinit();
+                try std.testing.expect(compiled.isAgentWritable(td));
+            },
         }
     } else {
         // Grade-drop: no rewrite (attach-only contract).

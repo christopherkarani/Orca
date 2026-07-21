@@ -1,0 +1,7 @@
+# Synthetic test-fast log: macOS isolated deny OK + Seatbelt handshake → unit dual-proof.
+# (No macOS production-defaults real FS deny title yet; isolated is TEST-DENY on darwin.)
+1/99 real FS deny: outside canary denied; workspace readable and writable...OK
+1/99 real FS deny: outside denied; neighbor RW; control root not writable...SKIP
+1/99 forkApplySeatbeltAndExec applies then execs on macOS with handshake...OK
+1/99 parent apply seam never claims active (probe/prepare only)...OK
+1/99 mode off returns disabled receipt without scrub or active claim...OK

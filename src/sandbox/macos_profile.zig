@@ -6,9 +6,17 @@
 //! - system RO prefixes from grants
 //! - no broad $HOME grant
 //! - process/mach/network baseline so a sandboxed child can still exec
+//!
+//! Path form (M-28): Seatbelt `subpath` filters on product majors match the
+//! normalized `/Users/…` firmlink form. Realpath often returns
+//! `/System/Volumes/Data/Users/…`; we strip the Data prefix for SBPL emission
+//! so grants are live-effective. Data-form path strings are not dual-emitted.
 
 const std = @import("std");
 const profile = @import("profile.zig");
+
+/// Data-volume prefix stripped when emitting Users-tree grants (see `sbplEmitPath`).
+const data_volume_prefix = "/System/Volumes/Data";
 
 /// Render a custom SBPL profile string from a compiled grant model.
 /// Caller owns the returned slice.
@@ -20,15 +28,18 @@ pub fn renderSbpl(allocator: std.mem.Allocator, compiled: *const profile.Compile
     try out.appendSlice(allocator, "(deny default)\n");
     try out.appendSlice(allocator, "\n");
 
-    // Baseline: process lifecycle, signals, sysctl, mach, and network (FS scope only).
-    // Metadata is scoped to root literals + granted trees only (M-4) — never bare
+    // Baseline: process lifecycle, signals, sysctl, mach, and network.
+    // Intentional non-goals (FS confinement only — not process/IPC/network isolation):
+    // unrestricted process*, mach-lookup, network*. See docs/platform-macos.md.
+    // Metadata is scoped to root literals + granted trees only — never bare
     // (allow file-read-metadata) which enables host-wide path discovery.
     try out.appendSlice(allocator,
-        \\;; process / IPC baseline (FS confinement is the product surface)
+        \\;; process / IPC baseline (FS confinement is the product surface;
+        \\;; process*/mach-lookup/network* are intentional non-goals — not isolation)
         \\(allow process*)
         \\(allow signal)
         \\(allow sysctl-read)
-        \\;; M-4: mach-lookup required for dyld; omit mach-register (no host service registration)
+        \\;; mach-lookup required for dyld; omit mach-register (no host service registration)
         \\(allow mach-lookup)
         \\(allow network*)
         \\
@@ -45,16 +56,16 @@ pub fn renderSbpl(allocator: std.mem.Allocator, compiled: *const profile.Compile
         \\(allow file-ioctl (subpath "/dev"))
         \\(allow file-read-metadata (subpath "/private/var/db/dyld"))
         \\(allow file-read* (subpath "/private/var/db/dyld"))
-        \\;; device writes: only null/urandom (not bare /dev — M-4)
+        \\;; device writes: only null/urandom (not bare /dev)
         \\(allow file-write* (literal "/dev/null"))
         \\(allow file-write* (literal "/dev/urandom"))
         \\
     );
 
-    // Path grants from the portable profile model.
+    // Path grants from the portable profile model (Users-form when under Data/Users).
     try out.appendSlice(allocator, ";; compiled path grants\n");
     for (compiled.grants) |g| {
-        // Metadata only under granted trees (M-4).
+        // Metadata only under granted trees.
         try appendAllowSubpath(&out, allocator, "file-read-metadata", g.path);
         switch (g.mode) {
             .ro, .exec => {
@@ -77,29 +88,32 @@ pub fn renderSbpl(allocator: std.mem.Allocator, compiled: *const profile.Compile
         }
     }
 
-    // M-1 / R2-1: deny Data-volume firmlink surface (homes / host secrets).
+    // Deny Data-volume firmlink surface (homes / host secrets).
     // Scope is `/System/Volumes/Data` only — not all of `/System/Volumes` (Preboot,
     // Update, etc. are not the secret-home surface). Deny is emitted *after* grants so
     // last-match blocks bare `/System` custom grants that would otherwise open Data.
     //
-    // Critical: production workspaces often realpath to `/System/Volumes/Data/Users/…`.
-    // A trailing deny alone would clobber those workspace grants under last-match.
-    // Re-emit allows for every compiled grant under Data so workspace (and any other
-    // intentional grant) wins last-match while non-workspace Data homes stay denied.
+    // Workspace grants under Data/Users are emitted as Users-form (see sbplEmitPath),
+    // which Seatbelt matches live; the Data deny still blocks Data-form opens of
+    // sibling homes. Non-Users Data grants (rare) are re-allowed after the deny.
     try out.appendSlice(allocator,
         \\
-        \\;; deny data-volume firmlink surface (homes / host secrets); re-allow grants below
+        \\;; deny data-volume firmlink surface (homes / host secrets); re-allow non-Users Data grants below
         \\(deny file-read* (subpath "/System/Volumes/Data"))
         \\(deny file-read-metadata (subpath "/System/Volumes/Data"))
         \\(deny process-exec (subpath "/System/Volumes/Data"))
         \\
     );
 
+    // Re-allow only grants that remain Data-form after sbplEmitPath (not Users-mapped).
+    // Users-form emissions are outside the Data deny subpath string and need no re-allow.
     var reallowed = false;
     for (compiled.grants) |g| {
         if (!grantUnderDataVolume(g.path)) continue;
+        // Users-tree grants already emit as /Users/… — skip redundant re-allow.
+        if (sbplMapsToUsersForm(g.path)) continue;
         if (!reallowed) {
-            try out.appendSlice(allocator, ";; re-allow grants under /System/Volumes/Data (last-match after Data deny)\n");
+            try out.appendSlice(allocator, ";; re-allow non-Users grants under /System/Volumes/Data (last-match after Data deny)\n");
             reallowed = true;
         }
         try appendAllowSubpath(&out, allocator, "file-read-metadata", g.path);
@@ -121,8 +135,30 @@ pub fn renderSbpl(allocator: std.mem.Allocator, compiled: *const profile.Compile
 
 /// True when a grant path is exactly Data volume or a strict descendant (realpath workspace).
 fn grantUnderDataVolume(path: []const u8) bool {
-    const data = "/System/Volumes/Data";
-    return profile.isPathWithin(path, data);
+    return profile.isPathWithin(path, data_volume_prefix);
+}
+
+/// True when `sbplEmitPath` would strip `/System/Volumes/Data` → `/Users/…`.
+fn sbplMapsToUsersForm(path: []const u8) bool {
+    return !std.mem.eql(u8, sbplEmitPath(path), path);
+}
+
+/// Normalize paths for SBPL emission: prefer Users-form when realpath is under
+/// `/System/Volumes/Data/Users/…`. Seatbelt subpath filters match `/Users/…` on
+/// matrix hosts; Data-form grant strings are not live-effective for workspace RW.
+///
+/// Only the Data+Users firmlink surface is rewritten (component-bounded). Other
+/// Data paths (e.g. `/System/Volumes/Data/private/…`) pass through unchanged.
+fn sbplEmitPath(path: []const u8) []const u8 {
+    // /System/Volumes/Data/Users or /System/Volumes/Data/Users/…
+    const users_under_data = data_volume_prefix ++ "/Users";
+    if (std.mem.eql(u8, path, users_under_data)) {
+        return path[data_volume_prefix.len..]; // "/Users"
+    }
+    if (std.mem.startsWith(u8, path, users_under_data ++ "/")) {
+        return path[data_volume_prefix.len..]; // "/Users/…"
+    }
+    return path;
 }
 
 fn appendAllowSubpath(
@@ -131,10 +167,11 @@ fn appendAllowSubpath(
     op: []const u8,
     path: []const u8,
 ) !void {
+    const emit = sbplEmitPath(path);
     try out.appendSlice(allocator, "(allow ");
     try out.appendSlice(allocator, op);
     try out.appendSlice(allocator, " (subpath \"");
-    try appendEscaped(out, allocator, path);
+    try appendEscaped(out, allocator, emit);
     try out.appendSlice(allocator, "\"))\n");
 }
 
@@ -144,10 +181,11 @@ fn appendDenySubpath(
     op: []const u8,
     path: []const u8,
 ) !void {
+    const emit = sbplEmitPath(path);
     try out.appendSlice(allocator, "(deny ");
     try out.appendSlice(allocator, op);
     try out.appendSlice(allocator, " (subpath \"");
-    try appendEscaped(out, allocator, path);
+    try appendEscaped(out, allocator, emit);
     try out.appendSlice(allocator, "\"))\n");
 }
 
@@ -157,15 +195,16 @@ fn appendAllowWriteMinusControls(
     path: []const u8,
     control_roots: []const []const u8,
 ) !void {
+    const emit = sbplEmitPath(path);
     // (allow file-write* (require-all (subpath "ws") (require-not (subpath "ctrl")) ...))
     try out.appendSlice(allocator, "(allow file-write* (require-all (subpath \"");
-    try appendEscaped(out, allocator, path);
+    try appendEscaped(out, allocator, emit);
     try out.appendSlice(allocator, "\")");
     for (control_roots) |root| {
-        // Only carve controls that sit under this RW grant.
+        // Only carve controls that sit under this RW grant (lexical on original paths).
         if (!profile.isPathWithin(root, path) and !std.mem.eql(u8, root, path)) continue;
         try out.appendSlice(allocator, " (require-not (subpath \"");
-        try appendEscaped(out, allocator, root);
+        try appendEscaped(out, allocator, sbplEmitPath(root));
         try out.appendSlice(allocator, "\"))");
     }
     try out.appendSlice(allocator, "))\n");
@@ -192,8 +231,6 @@ pub fn sbplGrantsHome(sbpl: []const u8, home: []const u8) bool {
     // Search for the needle and ensure the next char after home in the path is `"`.
     return std.mem.indexOf(u8, sbpl, needle) != null;
 }
-
-// ── tests ──────────────────────────────────────────────────────────────────
 
 test "SBPL denies default and grants workspace RW" {
     const allocator = std.testing.allocator;
@@ -287,7 +324,7 @@ test "SBPL escapes quotes and backslashes in paths" {
     try std.testing.expect(std.mem.indexOf(u8, sbpl, escaped_control) != null);
 }
 
-test "SBPL never emits bare unrestricted file-read-metadata (M-4)" {
+test "SBPL never emits bare unrestricted file-read-metadata" {
     const allocator = std.testing.allocator;
     var compiled = try profile.compileProfile(allocator, .{
         .workspace_root = "/tmp/orca-sbpl-meta",
@@ -305,7 +342,7 @@ test "SBPL never emits bare unrestricted file-read-metadata (M-4)" {
     try std.testing.expect(std.mem.indexOf(u8, sbpl, "(allow file-read-metadata (subpath \"/usr\"))") != null);
 }
 
-test "SBPL narrows /dev writes to null and urandom only (M-4)" {
+test "SBPL narrows /dev writes to null and urandom only" {
     const allocator = std.testing.allocator;
     var compiled = try profile.compileProfile(allocator, .{
         .workspace_root = "/tmp/orca-sbpl-dev",
@@ -324,12 +361,12 @@ test "SBPL narrows /dev writes to null and urandom only (M-4)" {
     // Read/ioctl remain broad for exec (TTY, null reads, etc.).
     try std.testing.expect(std.mem.indexOf(u8, sbpl, "(allow file-read* (subpath \"/dev\"))") != null);
     try std.testing.expect(std.mem.indexOf(u8, sbpl, "(allow file-ioctl (subpath \"/dev\"))") != null);
-    // mach-lookup remains (dyld); mach-register is no longer granted (M-4 residual tighten).
+    // mach-lookup remains (dyld); mach-register is no longer granted.
     try std.testing.expect(std.mem.indexOf(u8, sbpl, "(allow mach-lookup)") != null);
     try std.testing.expect(std.mem.indexOf(u8, sbpl, "(allow mach-register)") == null);
 }
 
-test "SBPL denies /System/Volumes/Data even if bare /System is granted (M-1)" {
+test "SBPL denies /System/Volumes/Data even if bare /System is granted" {
     const allocator = std.testing.allocator;
     var compiled = try profile.compileProfile(allocator, .{
         .workspace_root = "/tmp/orca-sbpl-sys",
@@ -348,20 +385,20 @@ test "SBPL denies /System/Volumes/Data even if bare /System is granted (M-1)" {
     try std.testing.expect(std.mem.indexOf(u8, sbpl, "(deny file-read* (subpath \"/System/Volumes\"))") == null);
 }
 
-test "SBPL re-allows Data-volume realpath workspace after Data deny (R2-1)" {
+test "SBPL emits Users-form for Data-volume realpath workspace (M-28 / R2-1)" {
     const allocator = std.testing.allocator;
     // Model macOS firmlink realpath: /Users/… → /System/Volumes/Data/Users/…
-    const ws = "/System/Volumes/Data/Users/dev/projects/app";
+    const ws_data = "/System/Volumes/Data/Users/dev/projects/app";
     var compiled = try profile.compileProfile(allocator, .{
-        .workspace_root = ws,
+        .workspace_root = ws_data,
         .system_ro_prefixes = &[_][]const u8{ "/usr", "/bin" },
         .include_tmp = false,
     });
     defer compiled.deinit();
 
     // Pure model: workspace under Data remains granted; sibling home secrets are not.
-    try std.testing.expect(compiled.isGrantedReadable(ws));
-    try std.testing.expect(compiled.isAgentWritable(ws));
+    try std.testing.expect(compiled.isGrantedReadable(ws_data));
+    try std.testing.expect(compiled.isAgentWritable(ws_data));
     try std.testing.expect(compiled.isGrantedReadable("/System/Volumes/Data/Users/dev/projects/app/src/main.zig"));
     try std.testing.expect(!compiled.isGrantedReadable("/System/Volumes/Data/Users/dev/.ssh/id_rsa"));
     try std.testing.expect(!compiled.isGrantedReadable("/System/Volumes/Data/Users/other/secret"));
@@ -369,21 +406,45 @@ test "SBPL re-allows Data-volume realpath workspace after Data deny (R2-1)" {
     const sbpl = try renderSbpl(allocator, &compiled);
     defer allocator.free(sbpl);
 
-    const deny_read = "(deny file-read* (subpath \"/System/Volumes/Data\"))";
-    const allow_ws = "(allow file-read* (subpath \"/System/Volumes/Data/Users/dev/projects/app\"))";
-    const deny_pos = std.mem.indexOf(u8, sbpl, deny_read) orelse {
-        try std.testing.expect(false);
-        return;
-    };
-    // Last re-allow for this workspace path must appear *after* the Data deny.
-    const after_deny = sbpl[deny_pos..];
-    try std.testing.expect(std.mem.indexOf(u8, after_deny, allow_ws) != null);
-    try std.testing.expect(std.mem.indexOf(u8, after_deny, "(allow file-write*") != null);
+    // Seatbelt matches Users-form; emit /Users/… not Data-form grant strings.
+    const allow_ws_users = "(allow file-read* (subpath \"/Users/dev/projects/app\"))";
+    try std.testing.expect(std.mem.indexOf(u8, sbpl, allow_ws_users) != null);
+    try std.testing.expect(std.mem.indexOf(u8, sbpl, "(subpath \"/System/Volumes/Data/Users/dev/projects/app\")") == null);
+    // Control carve-out also Users-form.
+    try std.testing.expect(std.mem.indexOf(u8, sbpl, "(require-not (subpath \"/Users/dev/projects/app/.orca\"))") != null);
+    try std.testing.expect(std.mem.indexOf(u8, sbpl, "(deny file-write* (subpath \"/Users/dev/projects/app/.orca\"))") != null);
+    // Data deny still present (blocks Data-form sibling opens).
+    try std.testing.expect(std.mem.indexOf(u8, sbpl, "(deny file-read* (subpath \"/System/Volumes/Data\"))") != null);
+    // Users-mapped workspace needs no Data re-allow section.
+    try std.testing.expect(std.mem.indexOf(u8, sbpl, "re-allow non-Users grants under /System/Volumes/Data") == null);
     // Non-workspace Data home must not appear as a grant.
     try std.testing.expect(std.mem.indexOf(u8, sbpl, "(subpath \"/System/Volumes/Data/Users/dev/.ssh\")") == null);
+    try std.testing.expect(std.mem.indexOf(u8, sbpl, "(subpath \"/Users/dev/.ssh\")") == null);
 }
 
-test "SBPL production defaults omit bare /System and /Library grants (M-1 M-7)" {
+test "sbplEmitPath strips Data prefix only under Users tree" {
+    try std.testing.expectEqualStrings(
+        "/Users/dev/projects/app",
+        sbplEmitPath("/System/Volumes/Data/Users/dev/projects/app"),
+    );
+    try std.testing.expectEqualStrings("/Users", sbplEmitPath("/System/Volumes/Data/Users"));
+    // Non-Users Data paths pass through (not dual-mapped).
+    try std.testing.expectEqualStrings(
+        "/System/Volumes/Data/private/tmp",
+        sbplEmitPath("/System/Volumes/Data/private/tmp"),
+    );
+    // Component boundary: UsersFoo must not strip.
+    try std.testing.expectEqualStrings(
+        "/System/Volumes/Data/UsersFoo",
+        sbplEmitPath("/System/Volumes/Data/UsersFoo"),
+    );
+    // Already Users-form: unchanged.
+    try std.testing.expectEqualStrings("/Users/dev/app", sbplEmitPath("/Users/dev/app"));
+    // Unrelated paths unchanged.
+    try std.testing.expectEqualStrings("/tmp/ws", sbplEmitPath("/tmp/ws"));
+}
+
+test "SBPL production defaults omit bare /System and /Library grants" {
     if (@import("builtin").os.tag != .macos) return error.SkipZigTest;
 
     const allocator = std.testing.allocator;

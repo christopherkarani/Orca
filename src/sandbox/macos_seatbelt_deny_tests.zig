@@ -1,0 +1,487 @@
+//! Seatbelt real-FS deny and canary integration tests.
+//! Imported from macos_seatbelt.zig so production apply code stays scannable.
+//! Mirrors landlock_deny_tests.zig.
+
+const std = @import("std");
+const builtin = @import("builtin");
+const profile = @import("profile.zig");
+const canary = @import("canary.zig");
+const macos_seatbelt = @import("macos_seatbelt.zig");
+
+const sandboxInitAvailable = macos_seatbelt.sandboxInitAvailable;
+const detectProductVersion = macos_seatbelt.detectProductVersion;
+const isMatrixMajor = macos_seatbelt.isMatrixMajor;
+const evaluateSupport = macos_seatbelt.evaluateSupport;
+const prepareForChildApply = macos_seatbelt.prepareForChildApply;
+const applyInChild = macos_seatbelt.applyInChild;
+const SupportStatus = macos_seatbelt.SupportStatus;
+
+// CTRL template: unsandboxed canary readable; sandboxed child denies outside grant,
+// allows workspace neighbor read/write, and denies control-root write.
+// Uses prepare SBPL + applyInChild.
+// Exit codes from child: 0=ok, 2=apply fail, 3=outside readable (leak), 4=ws read fail,
+// 5=ws write fail, 6=control root writable (leak).
+test "real FS deny: outside canary denied; workspace readable and writable" {
+    if (builtin.os.tag != .macos) return error.SkipZigTest;
+    if (!sandboxInitAvailable()) return error.SkipZigTest;
+
+    const ver = try detectProductVersion();
+    // Only claim matrix enforcement when this host major is in the advertised range.
+    try std.testing.expect(isMatrixMajor(ver.major));
+    try std.testing.expectEqual(SupportStatus.supported, evaluateSupport());
+
+    const allocator = std.testing.allocator;
+    const io = std.testing.io;
+
+    var ws_tmp = std.testing.tmpDir(.{});
+    defer ws_tmp.cleanup();
+    // Control root must exist under the workspace before apply so the write probe
+    // targets a real path (profile always carves {workspace}/.orca).
+    try ws_tmp.dir.createDirPath(io, ".orca");
+    // realPath so Seatbelt grants match kernel paths (/private/var vs /var).
+    const ws_root = try ws_tmp.dir.realPathFileAlloc(io, ".", allocator);
+    defer allocator.free(ws_root);
+
+    var out_tmp = std.testing.tmpDir(.{});
+    defer out_tmp.cleanup();
+    const out_root = try out_tmp.dir.realPathFileAlloc(io, ".", allocator);
+    defer allocator.free(out_root);
+
+    var synth = try canary.generate(allocator);
+    defer synth.deinit();
+
+    // Outside canary (must NOT be under workspace grant).
+    try out_tmp.dir.writeFile(io, .{ .sub_path = "canary.txt", .data = synth.body });
+    const canary_path = try std.fs.path.join(allocator, &.{ out_root, "canary.txt" });
+    defer allocator.free(canary_path);
+    const canary_z = try allocator.dupeZ(u8, canary_path);
+    defer allocator.free(canary_z);
+
+    // Workspace neighbor (must remain readable/writable under grant).
+    try ws_tmp.dir.writeFile(io, .{ .sub_path = "neighbor.txt", .data = "WORKSPACE_NEIGHBOR_OK" });
+    const neighbor_path = try std.fs.path.join(allocator, &.{ ws_root, "neighbor.txt" });
+    defer allocator.free(neighbor_path);
+    const neighbor_z = try allocator.dupeZ(u8, neighbor_path);
+    defer allocator.free(neighbor_z);
+
+    const write_probe_path = try std.fs.path.join(allocator, &.{ ws_root, "write_probe.txt" });
+    defer allocator.free(write_probe_path);
+    const write_probe_z = try allocator.dupeZ(u8, write_probe_path);
+    defer allocator.free(write_probe_z);
+
+    const control_write_path = try std.fs.path.join(allocator, &.{ ws_root, ".orca", "policy.yaml" });
+    defer allocator.free(control_write_path);
+    const control_write_z = try allocator.dupeZ(u8, control_write_path);
+    defer allocator.free(control_write_z);
+
+    // CTRL-BASELINE: unsandboxed parent can read the outside canary.
+    {
+        const baseline = try std.Io.Dir.cwd().readFileAlloc(io, canary_path, allocator, .limited(4096));
+        defer allocator.free(baseline);
+        try std.testing.expectEqualStrings(synth.body, baseline);
+    }
+    // Neighbor also readable without sandbox.
+    {
+        const baseline_ws = try std.Io.Dir.cwd().readFileAlloc(io, neighbor_path, allocator, .limited(4096));
+        defer allocator.free(baseline_ws);
+        try std.testing.expectEqualStrings("WORKSPACE_NEIGHBOR_OK", baseline_ws);
+    }
+
+    // Prepare real product SBPL from compiled profile (not a hand-rolled minimal string).
+    var compiled = try profile.compileProfile(allocator, .{
+        .workspace_root = ws_root,
+        .include_tmp = false,
+    });
+    defer compiled.deinit();
+    // Outside path must not sit under the workspace grant.
+    try std.testing.expect(!compiled.isAgentWritable(canary_path));
+    try std.testing.expect(compiled.isAgentWritable(neighbor_path));
+    // Control path under workspace must not be agent-writable (profile carves .orca).
+    try std.testing.expect(!compiled.isAgentWritable(control_write_path));
+
+    const prepared = prepareForChildApply(allocator, &compiled);
+    defer if (prepared.sbpl_z) |p| allocator.free(p);
+    try std.testing.expectEqual(.prepared, prepared.status);
+    try std.testing.expect(prepared.sbpl_z != null);
+    const sbpl_z = prepared.sbpl_z.?;
+
+    const pid = std.c.fork();
+    if (pid < 0) return error.SkipZigTest;
+    if (pid == 0) {
+        applyInChild(sbpl_z.ptr) catch std.c._exit(2);
+
+        // TEST-DENY: outside canary must not be readable.
+        const outside_fd = std.c.open(canary_z.ptr, .{ .ACCMODE = .RDONLY });
+        if (outside_fd >= 0) {
+            _ = std.c.close(outside_fd);
+            std.c._exit(3); // leak — outside grant hole
+        }
+
+        // Workspace neighbor must still be readable.
+        const ws_fd = std.c.open(neighbor_z.ptr, .{ .ACCMODE = .RDONLY });
+        if (ws_fd < 0) std.c._exit(4);
+        var buf: [64]u8 = undefined;
+        const n = std.c.read(ws_fd, &buf, buf.len);
+        _ = std.c.close(ws_fd);
+        if (n < 0) std.c._exit(4);
+        if (n != "WORKSPACE_NEIGHBOR_OK".len) std.c._exit(4);
+        if (!std.mem.eql(u8, buf[0..@intCast(n)], "WORKSPACE_NEIGHBOR_OK")) std.c._exit(4);
+
+        // Workspace write must succeed.
+        const wfd = std.c.open(write_probe_z.ptr, .{ .ACCMODE = .WRONLY, .CREAT = true, .TRUNC = true }, @as(std.c.mode_t, 0o600));
+        if (wfd < 0) std.c._exit(5);
+        const wrote = std.c.write(wfd, "wrote", 5);
+        _ = std.c.close(wfd);
+        if (wrote != 5) std.c._exit(5);
+
+        // F-3: control root write must fail under live Seatbelt (not SBPL string only).
+        const cfd = std.c.open(
+            control_write_z.ptr,
+            .{ .ACCMODE = .WRONLY, .CREAT = true, .TRUNC = true },
+            @as(std.c.mode_t, 0o600),
+        );
+        if (cfd >= 0) {
+            _ = std.c.close(cfd);
+            std.c._exit(6); // control write leak
+        }
+
+        std.c._exit(0);
+    }
+
+    var status: c_int = 0;
+    _ = std.c.waitpid(pid, &status, 0);
+    const exited = (status & 0x7f) == 0;
+    try std.testing.expect(exited);
+    const exit_code: u8 = @intCast((status >> 8) & 0xff);
+    // Surface distinct failures for the proof report (do not collapse to a single assert).
+    switch (exit_code) {
+        0 => {},
+        2 => return error.SeatbeltApplyFailedOnHost,
+        3 => return error.OutsideCanaryReadableUnderSandbox,
+        4 => return error.WorkspaceNeighborUnreadableUnderSandbox,
+        5 => return error.WorkspaceWriteFailedUnderSandbox,
+        6 => return error.ControlRootWritableUnderSandbox,
+        else => return error.UnexpectedSandboxChildExit,
+    }
+    try std.testing.expectEqual(@as(u8, 0), exit_code);
+
+    // Parent can still read the write probe produced by the sandboxed child.
+    const probe = try std.Io.Dir.cwd().readFileAlloc(io, write_probe_path, allocator, .limited(64));
+    defer allocator.free(probe);
+    try std.testing.expectEqualStrings("wrote", probe);
+
+    // Control file must not have been created by the sandboxed child.
+    const ctrl_probe = std.Io.Dir.cwd().access(io, control_write_path, .{});
+    try std.testing.expectError(error.FileNotFound, ctrl_probe);
+}
+
+var data_scratch_seq: std.atomic.Value(u64) = .init(1);
+
+/// Plant live R2-1 canaries on the home firmlink surface (content lives on the Data
+/// volume). Prefer `$HOME/Library/Caches` — Seatbelt `subpath` filters match the
+/// normalized `/Users/…` form, not `/System/Volumes/Data/…` path strings (live probe
+/// on macOS 14–26: Data-form subpath grants never open; Users-form grants do).
+/// Returns owned scratch path or null when no writable home surface exists.
+fn tryHomeFirmlinkScratchBase(allocator: std.mem.Allocator, io: anytype) ?[]u8 {
+    const home_z = std.c.getenv("HOME") orelse return null;
+    const home = std.mem.span(home_z);
+    if (home.len < 2 or home[0] != '/') return null;
+
+    const caches = std.fmt.allocPrint(allocator, "{s}/Library/Caches", .{home}) catch return null;
+    defer allocator.free(caches);
+    std.Io.Dir.cwd().access(io, caches, .{}) catch return null;
+
+    const seq = data_scratch_seq.fetchAdd(1, .monotonic);
+    const scratch = std.fmt.allocPrint(allocator, "{s}/orca-sb-data-{d}-{d}", .{
+        caches,
+        std.c.getpid(),
+        seq,
+    }) catch return null;
+    std.Io.Dir.cwd().createDirPath(io, scratch) catch {
+        allocator.free(scratch);
+        return null;
+    };
+    return scratch;
+}
+
+/// When `users_path` is under `/Users/…`, return owned `/System/Volumes/Data` + path.
+/// Null when not a Users-form path (caller skips Data-form dual open).
+fn dataFormPath(allocator: std.mem.Allocator, users_path: []const u8) ?[]u8 {
+    if (!profile.isPathWithin(users_path, "/Users") and !std.mem.eql(u8, users_path, "/Users")) {
+        return null;
+    }
+    return std.fmt.allocPrint(allocator, "/System/Volumes/Data{s}", .{users_path}) catch null;
+}
+
+// R3-2: live-ish Seatbelt canary for R2-1 home/Data firmlink composition.
+//
+// Seatbelt path filters evaluate the *normalized* `/Users/…` form. Planting the
+// workspace grant as a Data-form string (`/System/Volumes/Data/Users/…`) fails open
+// even without a Data deny. Strongest feasible live proof on matrix hosts:
+//   1. workspace + sibling on $HOME caches (Data firmlink content; Users-form paths)
+//   2. product SBPL still emits Data deny (composition present)
+//   3. sibling denied via Users-form open and via explicit Data-form open
+//   4. workspace neighbor readable + writable
+// Pure/SBPL last-match keepers above still prove Data-form string order for hosts
+// whose realpath returns Data-form paths.
+// Exit: 0=ok, 2=apply fail, 3=sibling readable, 4=ws read fail, 5=ws write fail,
+//       7=Data-form sibling readable.
+test "real FS deny: Data-volume sibling secret denied; workspace RW (R2-1)" {
+    if (builtin.os.tag != .macos) return error.SkipZigTest;
+    if (!sandboxInitAvailable()) return error.SkipZigTest;
+
+    const ver = try detectProductVersion();
+    try std.testing.expect(isMatrixMajor(ver.major));
+    try std.testing.expectEqual(SupportStatus.supported, evaluateSupport());
+
+    const allocator = std.testing.allocator;
+    const io = std.testing.io;
+
+    // Prefer home firmlink surface. Skip when $HOME caches unavailable (rare CI).
+    const scratch = tryHomeFirmlinkScratchBase(allocator, io) orelse return error.SkipZigTest;
+    defer {
+        std.Io.Dir.cwd().deleteTree(io, scratch) catch {};
+        allocator.free(scratch);
+    }
+
+    const ws_rel = try std.fs.path.join(allocator, &.{ scratch, "workspace" });
+    defer allocator.free(ws_rel);
+    const sibling_rel = try std.fs.path.join(allocator, &.{ scratch, "sibling" });
+    defer allocator.free(sibling_rel);
+
+    try std.Io.Dir.cwd().createDirPath(io, ws_rel);
+    try std.Io.Dir.cwd().createDirPath(io, sibling_rel);
+
+    const ws_root = try std.Io.Dir.realPathFileAbsoluteAlloc(io, ws_rel, allocator);
+    defer allocator.free(ws_root);
+
+    var synth = try canary.generate(allocator);
+    defer synth.deinit();
+
+    const secret_path = try std.fs.path.join(allocator, &.{ sibling_rel, "secret.txt" });
+    defer allocator.free(secret_path);
+    try std.Io.Dir.cwd().writeFile(io, .{ .sub_path = secret_path, .data = synth.body });
+    const secret_real = try std.Io.Dir.realPathFileAbsoluteAlloc(io, secret_path, allocator);
+    defer allocator.free(secret_real);
+    const secret_z = try allocator.dupeZ(u8, secret_real);
+    defer allocator.free(secret_z);
+
+    // Dual open: explicit Data-form path to the same vnode (when under /Users).
+    const secret_data_owned = dataFormPath(allocator, secret_real);
+    defer if (secret_data_owned) |p| allocator.free(p);
+    const secret_data_z: ?[:0]u8 = if (secret_data_owned) |p| try allocator.dupeZ(u8, p) else null;
+    defer if (secret_data_z) |p| allocator.free(p);
+
+    const neighbor_path = try std.fs.path.join(allocator, &.{ ws_root, "neighbor.txt" });
+    defer allocator.free(neighbor_path);
+    try std.Io.Dir.cwd().writeFile(io, .{ .sub_path = neighbor_path, .data = "DATA_WS_NEIGHBOR_OK" });
+    const neighbor_z = try allocator.dupeZ(u8, neighbor_path);
+    defer allocator.free(neighbor_z);
+
+    const write_probe_path = try std.fs.path.join(allocator, &.{ ws_root, "write_probe.txt" });
+    defer allocator.free(write_probe_path);
+    const write_probe_z = try allocator.dupeZ(u8, write_probe_path);
+    defer allocator.free(write_probe_z);
+
+    // CTRL-BASELINE: unsandboxed parent can read the sibling secret (both forms).
+    {
+        const baseline = try std.Io.Dir.cwd().readFileAlloc(io, secret_real, allocator, .limited(4096));
+        defer allocator.free(baseline);
+        try std.testing.expectEqualStrings(synth.body, baseline);
+    }
+    if (secret_data_owned) |dp| {
+        const baseline_d = try std.Io.Dir.cwd().readFileAlloc(io, dp, allocator, .limited(4096));
+        defer allocator.free(baseline_d);
+        try std.testing.expectEqualStrings(synth.body, baseline_d);
+    }
+
+    // No production temp grants — sibling must not ride `/private/tmp` RW.
+    var compiled = try profile.compileProfile(allocator, .{
+        .workspace_root = ws_root,
+        .system_ro_prefixes = profile.defaultSystemRoPrefixes(),
+        .include_tmp = false,
+    });
+    defer compiled.deinit();
+    try std.testing.expect(compiled.isAgentWritable(neighbor_path));
+    try std.testing.expect(!compiled.isGrantedReadable(secret_real));
+    try std.testing.expect(!compiled.isAgentWritable(secret_real));
+
+    const prepared = prepareForChildApply(allocator, &compiled);
+    defer if (prepared.sbpl_z) |p| allocator.free(p);
+    try std.testing.expectEqual(.prepared, prepared.status);
+    const sbpl = prepared.sbpl_z.?;
+    // Product SBPL always emits Data deny (R2-1 composition), even when workspace
+    // realpath is Users-form (re-allow only appears when a grant sits under Data).
+    try std.testing.expect(std.mem.indexOf(u8, sbpl, "(deny file-read* (subpath \"/System/Volumes/Data\"))") != null);
+
+    const pid = std.c.fork();
+    if (pid < 0) return error.SkipZigTest;
+    if (pid == 0) {
+        applyInChild(sbpl.ptr) catch std.c._exit(2);
+
+        // Sibling outside workspace must not be readable (Users-form open).
+        const sfd = std.c.open(secret_z.ptr, .{ .ACCMODE = .RDONLY });
+        if (sfd >= 0) {
+            _ = std.c.close(sfd);
+            std.c._exit(3);
+        }
+
+        // Explicit Data-form open of the same secret must also fail.
+        if (secret_data_z) |dz| {
+            const dfd = std.c.open(dz.ptr, .{ .ACCMODE = .RDONLY });
+            if (dfd >= 0) {
+                _ = std.c.close(dfd);
+                std.c._exit(7);
+            }
+        }
+
+        const nfd = std.c.open(neighbor_z.ptr, .{ .ACCMODE = .RDONLY });
+        if (nfd < 0) std.c._exit(4);
+        var buf: [64]u8 = undefined;
+        const n = std.c.read(nfd, &buf, buf.len);
+        _ = std.c.close(nfd);
+        if (n != "DATA_WS_NEIGHBOR_OK".len) std.c._exit(4);
+        if (!std.mem.eql(u8, buf[0..@intCast(n)], "DATA_WS_NEIGHBOR_OK")) std.c._exit(4);
+
+        const wfd = std.c.open(write_probe_z.ptr, .{ .ACCMODE = .WRONLY, .CREAT = true, .TRUNC = true }, @as(std.c.mode_t, 0o600));
+        if (wfd < 0) std.c._exit(5);
+        const wrote = std.c.write(wfd, "data-ok", 7);
+        _ = std.c.close(wfd);
+        if (wrote != 7) std.c._exit(5);
+
+        std.c._exit(0);
+    }
+
+    var status: c_int = 0;
+    _ = std.c.waitpid(pid, &status, 0);
+    const exited = (status & 0x7f) == 0;
+    try std.testing.expect(exited);
+    const exit_code: u8 = @intCast((status >> 8) & 0xff);
+    switch (exit_code) {
+        0 => {},
+        2 => return error.SeatbeltApplyFailedOnHost,
+        3 => return error.DataVolumeSiblingReadableUnderSandbox,
+        4 => return error.DataVolumeWorkspaceUnreadableUnderSandbox,
+        5 => return error.DataVolumeWorkspaceWriteFailedUnderSandbox,
+        7 => return error.DataFormSiblingReadableUnderSandbox,
+        else => return error.UnexpectedSandboxChildExit,
+    }
+
+    const probe = try std.Io.Dir.cwd().readFileAlloc(io, write_probe_path, allocator, .limited(64));
+    defer allocator.free(probe);
+    try std.testing.expectEqualStrings("data-ok", probe);
+}
+
+// Planted workspace symlink to an outside path must not make outside content
+// readable under real Seatbelt apply (path policy follows final target).
+// Exit: 0=ok, 2=apply fail, 3=outside direct readable, 4=neighbor fail, 9=symlink escape.
+test "real FS deny: workspace symlink to outside is not readable" {
+    if (builtin.os.tag != .macos) return error.SkipZigTest;
+    if (!sandboxInitAvailable()) return error.SkipZigTest;
+
+    const ver = try detectProductVersion();
+    try std.testing.expect(isMatrixMajor(ver.major));
+    try std.testing.expectEqual(SupportStatus.supported, evaluateSupport());
+
+    const allocator = std.testing.allocator;
+    const io = std.testing.io;
+
+    var ws_tmp = std.testing.tmpDir(.{});
+    defer ws_tmp.cleanup();
+    try ws_tmp.dir.createDirPath(io, ".orca");
+    try ws_tmp.dir.writeFile(io, .{ .sub_path = "neighbor.txt", .data = "NEIGHBOR" });
+    const ws_root = try ws_tmp.dir.realPathFileAlloc(io, ".", allocator);
+    defer allocator.free(ws_root);
+
+    var out_tmp = std.testing.tmpDir(.{});
+    defer out_tmp.cleanup();
+    var synth = try canary.generate(allocator);
+    defer synth.deinit();
+    try out_tmp.dir.writeFile(io, .{ .sub_path = "secret.txt", .data = synth.body });
+    const out_root = try out_tmp.dir.realPathFileAlloc(io, ".", allocator);
+    defer allocator.free(out_root);
+
+    const secret_path = try std.fs.path.join(allocator, &.{ out_root, "secret.txt" });
+    defer allocator.free(secret_path);
+    const link_path = try std.fs.path.join(allocator, &.{ ws_root, "escape_link" });
+    defer allocator.free(link_path);
+
+    std.Io.Dir.cwd().symLink(io, secret_path, link_path, .{}) catch |err| switch (err) {
+        error.PermissionDenied => return error.SkipZigTest,
+        else => return err,
+    };
+
+    const neighbor_path = try std.fs.path.join(allocator, &.{ ws_root, "neighbor.txt" });
+    defer allocator.free(neighbor_path);
+
+    // CTRL-BASELINE: unsandboxed parent can read outside via the planted symlink.
+    {
+        const via_link = try std.Io.Dir.cwd().readFileAlloc(io, link_path, allocator, .limited(4096));
+        defer allocator.free(via_link);
+        try std.testing.expectEqualStrings(synth.body, via_link);
+    }
+
+    var compiled = try profile.compileProfile(allocator, .{
+        .workspace_root = ws_root,
+        .include_tmp = false,
+    });
+    defer compiled.deinit();
+    try std.testing.expect(!compiled.isGrantedReadable(secret_path));
+    try std.testing.expect(compiled.isGrantedReadable(neighbor_path));
+
+    const prepared = prepareForChildApply(allocator, &compiled);
+    defer if (prepared.sbpl_z) |p| allocator.free(p);
+    try std.testing.expectEqual(.prepared, prepared.status);
+    const sbpl_z = prepared.sbpl_z.?;
+
+    const secret_z = try allocator.dupeZ(u8, secret_path);
+    defer allocator.free(secret_z);
+    const link_z = try allocator.dupeZ(u8, link_path);
+    defer allocator.free(link_z);
+    const neighbor_z = try allocator.dupeZ(u8, neighbor_path);
+    defer allocator.free(neighbor_z);
+
+    const pid = std.c.fork();
+    if (pid < 0) return error.SkipZigTest;
+    if (pid == 0) {
+        applyInChild(sbpl_z.ptr) catch std.c._exit(2);
+
+        // Outside real path must not be readable.
+        const out_fd = std.c.open(secret_z.ptr, .{ .ACCMODE = .RDONLY });
+        if (out_fd >= 0) {
+            _ = std.c.close(out_fd);
+            std.c._exit(3);
+        }
+
+        // Via workspace symlink: outside content must still be denied.
+        const link_fd = std.c.open(link_z.ptr, .{ .ACCMODE = .RDONLY });
+        if (link_fd >= 0) {
+            _ = std.c.close(link_fd);
+            std.c._exit(9);
+        }
+
+        const nfd = std.c.open(neighbor_z.ptr, .{ .ACCMODE = .RDONLY });
+        if (nfd < 0) std.c._exit(4);
+        var buf: [16]u8 = undefined;
+        const n = std.c.read(nfd, &buf, buf.len);
+        _ = std.c.close(nfd);
+        if (n != "NEIGHBOR".len) std.c._exit(4);
+        if (!std.mem.eql(u8, buf[0..@intCast(n)], "NEIGHBOR")) std.c._exit(4);
+
+        std.c._exit(0);
+    }
+
+    var status: c_int = 0;
+    _ = std.c.waitpid(pid, &status, 0);
+    const exited = (status & 0x7f) == 0;
+    try std.testing.expect(exited);
+    const exit_code: u8 = @intCast((status >> 8) & 0xff);
+    switch (exit_code) {
+        0 => {},
+        2 => return error.SeatbeltApplyFailedOnHost,
+        3 => return error.OutsideCanaryReadableUnderSandbox,
+        4 => return error.WorkspaceNeighborUnreadableUnderSandbox,
+        9 => return error.SymlinkEscapeReadableUnderSandbox,
+        else => return error.UnexpectedSandboxProbeExit,
+    }
+}

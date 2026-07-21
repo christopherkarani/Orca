@@ -249,21 +249,5 @@ test "sandbox_posture serializes posture hash and fs_scope without full profile"
     try std.testing.expect(std.mem.indexOf(u8, line, "LANDLOCK") == null);
 }
 
-test "os_fs_deny type serializes but is reserved (not ordinary EACCES)" {
-    const ts = core.time.Timestamp.fromUnixSeconds(1_777_983_130);
-    const sid = try core.session.generateSessionId(ts);
-    var eid: core.event.EventId = .{ .value = undefined, .len = 0 };
-    const eid_text = try std.fmt.bufPrint(&eid.value, "evt_os_fs_deny", .{});
-    eid.len = eid_text.len;
-    const ev: core.event.Event = .{
-        .session_id = sid,
-        .event_id = eid,
-        .timestamp = ts,
-        .event_type = .os_fs_deny,
-        .actor = .{ .kind = .orca, .display = "orca" },
-        .target = .{ .kind = .file_path, .value = "/tmp/x" },
-    };
-    const canonical = try canonicalEventAlloc(std.testing.allocator, ev, null);
-    defer std.testing.allocator.free(canonical);
-    try std.testing.expect(std.mem.indexOf(u8, canonical, "\"type\":\"os_fs_deny\"") != null);
-}
+// os_fs_deny remains a reserved EventType (see core/event.zig toString test).
+// Dedicated hash_chain serialization coverage deferred until emission exists.

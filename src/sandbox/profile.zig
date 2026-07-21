@@ -1,7 +1,9 @@
 //! OS-filesystem sandbox profile model (P1-U).
 //!
 //! Compiles a deterministic grant list: workspace RW (minus trusted Orca control
-//! roots), system RO prefixes, optional explicit tmp — never a broad $HOME grant.
+//! roots; control remains readable / write-deny), system RO prefixes, optional
+//! classic tmp when `include_tmp` — never a broad $HOME grant and never automatic
+//! bare `/tmp` on production defaults (session temp is workspace-scoped).
 //! No Landlock/Seatbelt apply lives here; this is the portable grant model only.
 //!
 //! Grant queries (`isAgentWritable`, `hasGrant`, path math) are pure over the
@@ -37,13 +39,17 @@ pub const CompileOptions = struct {
     /// Extra trusted control roots (absolute, or relative to workspace).
     /// Always combined with `{workspace}/.orca`.
     control_roots: []const []const u8 = &.{},
-    /// When true, add explicit RW grants for platform temp trees (`tmp_path` plus
-    /// `defaultTmpPrefixes`). Production callers that leave `system_ro_prefixes`
-    /// null also get temp grants even when this is false (TMPDIR contract, M-8).
+    /// When true, add explicit RW grants for classic platform temp trees
+    /// (`tmp_path` plus `defaultTmpPrefixes`). **Default false:** production
+    /// attach rewrites TMPDIR into workspace session temp (`.orca-tmp`), which
+    /// is already covered by the workspace RW grant. Do not auto-grant bare
+    /// `/tmp` / `/var/tmp` trees on production defaults (M-8 grant-width).
+    /// Attach / apply should keep this false unless intentionally opting into
+    /// classic system-tmp RW.
     include_tmp: bool = false,
     tmp_path: []const u8 = "/tmp",
     /// Override default system RO prefixes (tests / platforms). Null = use defaults.
-    /// Null also opts production into default temp RW grants (M-8).
+    /// Null also opts production into Linux device RW nodes (`/dev/null`, urandom).
     system_ro_prefixes: ?[]const []const u8 = null,
 };
 
@@ -108,7 +114,7 @@ pub const CompiledProfile = struct {
         return false;
     }
 
-    /// Landlock-effective writability (M-10): same as portable RW intent except
+    /// Landlock-effective writability: same as portable RW intent except
     /// workspace-root create is treated as denied when control expand applies
     /// (root RO + child RW). Paths strictly under the workspace root still use
     /// portable RW semantics. Seatbelt should use `isAgentWritable` instead.
@@ -119,30 +125,30 @@ pub const CompiledProfile = struct {
         return true;
     }
 
-    /// Operator-facing effective FS scope summary for active receipts (M-10).
+    /// Operator-facing effective FS scope summary for active receipts.
+    ///
+    /// Control roots are write-denied (`isAgentWritable` false) but remain
+    /// content-readable under the parent workspace grant in the pure model
+    /// (Landlock RO expand / Seatbelt write-deny carve-out) — honesty says
+    /// "control write-deny (readable)", not full control isolation.
     /// `landlock`: workspace child RW, root RO, system RO, platform tmp when granted, no home.
     /// `seatbelt`: workspace RW, system RO, platform tmp when granted, no home, mach-lookup residual.
     pub fn effectiveFsScopeSummary(self: *const CompiledProfile, backend: enum { landlock, seatbelt }) []const u8 {
         const has_tmp = blk: {
             for (self.grants) |g| {
-                if (g.mode != .rw) continue;
-                if (std.mem.eql(u8, g.path, "/tmp") or
-                    std.mem.eql(u8, g.path, "/var/tmp") or
-                    std.mem.eql(u8, g.path, "/private/tmp") or
-                    std.mem.eql(u8, g.path, "/private/var/tmp"))
-                    break :blk true;
+                if (g.mode == .rw and isClassicTmpPath(g.path)) break :blk true;
             }
             break :blk false;
         };
         return switch (backend) {
             .landlock => if (has_tmp)
-                "workspace child RW, root RO, system RO, platform tmp RW, no home"
+                "workspace child RW, root RO, system RO, platform tmp RW, no home, control write-deny (readable)"
             else
-                "workspace child RW, root RO, system RO, no home",
+                "workspace child RW, root RO, system RO, no home, control write-deny (readable)",
             .seatbelt => if (has_tmp)
-                "workspace RW, system RO, platform tmp RW, no home, mach-lookup residual"
+                "workspace RW, system RO, platform tmp RW, no home, control write-deny (readable), mach-lookup residual"
             else
-                "workspace RW, system RO, no home, mach-lookup residual",
+                "workspace RW, system RO, no home, control write-deny (readable), mach-lookup residual",
         };
     }
 
@@ -202,7 +208,7 @@ fn assertControlRootSafe(io: std.Io, path: []const u8) error{InvalidControlRoot}
 /// or bare `/Library` (keychain / host config). Only sealed framework/dyld trees.
 /// Linux: include `/lib64`, `/etc`, `/dev`, and narrow `/proc/self` +
 /// `/proc/thread-self` for dynlinker / NSS / devices / self-procfs under Landlock
-/// (R2-3 / M-1). Never bare `/proc` (same-uid peer environ/cmdline). `/dev` stays
+/// Never bare `/proc` (same-uid peer environ/cmdline). `/dev` stays
 /// RO; writable device nodes are separate.
 pub fn defaultSystemRoPrefixes() []const []const u8 {
     return switch (builtin.os.tag) {
@@ -211,10 +217,10 @@ pub fn defaultSystemRoPrefixes() []const []const u8 {
             "/bin",
             "/sbin",
             "/lib",
-            // Sealed system trees only — never bare `/System` (M-1 data-volume hole).
+            // Sealed system trees only — never bare `/System` (data-volume hole).
             "/System/Library",
             "/System/Cryptexes",
-            // Framework surface only — never bare `/Library` (M-7 keychain/config).
+            // Framework surface only — never bare `/Library` (keychain/config).
             "/Library/Frameworks",
             "/Library/Apple",
         },
@@ -247,12 +253,34 @@ pub fn defaultDeviceRwPaths() []const []const u8 {
     };
 }
 
-/// Extra writable temp prefixes when temp is included.
+/// Classic system temp path literals (Linux + macOS forms).
+///
+/// Shared by grant compile (`defaultTmpPrefixes` is the platform subset) and
+/// `effectiveFsScopeSummary` so "platform tmp RW" detection cannot drift from
+/// the paths compile actually grants (M-25).
+pub fn classicTmpPathLiterals() []const []const u8 {
+    return &[_][]const u8{
+        "/tmp",
+        "/var/tmp",
+        "/private/tmp",
+        "/private/var/tmp",
+    };
+}
+
+/// True when `path` is exactly a classic system temp tree root.
+pub fn isClassicTmpPath(path: []const u8) bool {
+    for (classicTmpPathLiterals()) |p| {
+        if (std.mem.eql(u8, path, p)) return true;
+    }
+    return false;
+}
+
+/// Extra writable temp prefixes when `include_tmp` is true.
 ///
 /// Scoped to classic system temp trees only — not `/private/var/folders` (macOS
 /// per-user TMPDIR parent), which is too broad and would swallow outside canaries
-/// under testing.tmpDir. Production attach grants `/tmp` and apply rewrites TMPDIR
-/// into a granted tree (`workspace/.orca-tmp` or classic `/tmp`) on attach (M-8 / R2-2).
+/// under testing.tmpDir. Production attach keeps `include_tmp=false` and rewrites
+/// TMPDIR into workspace session temp (`.orca-tmp`, covered by workspace RW).
 pub fn defaultTmpPrefixes() []const []const u8 {
     return switch (builtin.os.tag) {
         .macos => &[_][]const u8{
@@ -310,10 +338,11 @@ pub fn compileProfile(allocator: std.mem.Allocator, options: CompileOptions) !Co
         };
     }
 
-    // Writable temp: explicit include_tmp, or production defaults (M-8 TMPDIR contract).
+    // Writable classic temp only when explicitly requested (`include_tmp`).
+    // Production defaults do **not** auto-grant bare /tmp|/var/tmp: attach rewrites
+    // TMPDIR into workspace session temp under workspace RW (M-8 grant-width).
     // Never ambient HOME — only platform temp trees + optional override path.
-    const want_tmp = options.include_tmp or use_production_defaults;
-    if (want_tmp) {
+    if (options.include_tmp) {
         try appendUniqueRwGrant(&grants_list, allocator, options.tmp_path);
         for (defaultTmpPrefixes()) |tmp_prefix| {
             try appendUniqueRwGrant(&grants_list, allocator, tmp_prefix);
@@ -737,7 +766,7 @@ test "isPathWithin handles filesystem root and prefix boundaries" {
     try std.testing.expect(!isPathWithin("/etc", ""));
 }
 
-test "M-1 macOS defaults never grant bare /System or data-volume homes" {
+test "macOS defaults never grant bare /System or data-volume homes" {
     if (builtin.os.tag != .macos) return error.SkipZigTest;
 
     const allocator = std.testing.allocator;
@@ -758,7 +787,7 @@ test "M-1 macOS defaults never grant bare /System or data-volume homes" {
     try std.testing.expect(compiled.isGrantedReadable("/System/Library/Frameworks"));
 }
 
-test "M-7 macOS defaults never grant bare /Library (keychain surface)" {
+test "macOS defaults never grant bare /Library (keychain surface)" {
     if (builtin.os.tag != .macos) return error.SkipZigTest;
 
     const allocator = std.testing.allocator;
@@ -774,7 +803,7 @@ test "M-7 macOS defaults never grant bare /Library (keychain surface)" {
     try std.testing.expect(compiled.isGrantedReadable("/Library/Frameworks/Some.framework"));
 }
 
-test "M-6 Linux defaults include lib64 etc and dev" {
+test "Linux defaults include lib64 etc and dev" {
     if (builtin.os.tag == .macos or builtin.os.tag == .windows) return error.SkipZigTest;
 
     const prefixes = defaultSystemRoPrefixes();
@@ -795,7 +824,7 @@ test "M-6 Linux defaults include lib64 etc and dev" {
     try std.testing.expect(saw_lib64);
     try std.testing.expect(saw_etc);
     try std.testing.expect(saw_dev);
-    // M-1: narrow procfs — self/thread-self only, never bare /proc.
+    // Narrow procfs — self/thread-self only, never bare /proc.
     try std.testing.expect(saw_proc_self);
     try std.testing.expect(saw_proc_thread_self);
     try std.testing.expect(!saw_bare_proc);
@@ -869,10 +898,10 @@ test "R2-1 pure model grants Data-volume realpath workspace not sibling homes" {
     try std.testing.expect(!compiled.isGrantedReadable("/System/Volumes/Data/private/var/db"));
 }
 
-test "M-8 production defaults grant writable temp trees" {
+test "production defaults omit classic tmp RW (session-tmp surface)" {
     const allocator = std.testing.allocator;
 
-    // Explicit custom prefixes + include_tmp false → no tmp (unit isolation).
+    // Explicit custom prefixes + include_tmp false → no classic tmp.
     var without = try compileProfile(allocator, .{
         .workspace_root = "/workspace/a",
         .system_ro_prefixes = &[_][]const u8{"/usr"},
@@ -881,12 +910,76 @@ test "M-8 production defaults grant writable temp trees" {
     defer without.deinit();
     try std.testing.expect(!without.hasGrant("/tmp", .rw));
 
-    // Production path (null system_ro_prefixes) always includes temp RW (M-8).
+    // Production path (null system_ro_prefixes) also omits classic tmp RW:
+    // session temp lives under workspace (`.orca-tmp`) via attach rewrite.
     var prod = try compileProfile(allocator, .{
         .workspace_root = "/workspace/a",
         .include_tmp = false,
     });
     defer prod.deinit();
-    try std.testing.expect(prod.hasGrant("/tmp", .rw));
-    try std.testing.expect(prod.isAgentWritable("/tmp/orca-scratch"));
+    try std.testing.expect(!prod.hasGrant("/tmp", .rw));
+    try std.testing.expect(!prod.hasGrant("/var/tmp", .rw));
+    try std.testing.expect(!prod.hasGrant("/private/tmp", .rw));
+    try std.testing.expect(!prod.hasGrant("/private/var/tmp", .rw));
+    try std.testing.expect(!prod.isAgentWritable("/tmp/orca-scratch"));
+    // Workspace session temp path remains agent-writable via workspace RW.
+    try std.testing.expect(prod.isAgentWritable("/workspace/a/.orca-tmp"));
+    try std.testing.expect(prod.isAgentWritable("/workspace/a/.orca-tmp/scratch"));
+    // Device grants still install on production defaults (Linux).
+    if (builtin.os.tag == .linux) {
+        try std.testing.expect(prod.hasGrant("/dev/null", .rw));
+        try std.testing.expect(prod.hasGrant("/dev/urandom", .rw));
+    }
+    // Scope honesty: no platform tmp claim; control write-deny noted as readable.
+    const landlock_scope = prod.effectiveFsScopeSummary(.landlock);
+    try std.testing.expect(std.mem.indexOf(u8, landlock_scope, "platform tmp RW") == null);
+    try std.testing.expect(std.mem.indexOf(u8, landlock_scope, "control write-deny (readable)") != null);
+    try std.testing.expect(std.mem.indexOf(u8, landlock_scope, "no home") != null);
+
+    // Opt-in classic tmp still works and is reflected in the summary.
+    var with_tmp = try compileProfile(allocator, .{
+        .workspace_root = "/workspace/a",
+        .include_tmp = true,
+        .tmp_path = "/tmp",
+    });
+    defer with_tmp.deinit();
+    try std.testing.expect(with_tmp.hasGrant("/tmp", .rw));
+    try std.testing.expect(with_tmp.isAgentWritable("/tmp/orca-scratch"));
+    const with_scope = with_tmp.effectiveFsScopeSummary(.landlock);
+    try std.testing.expect(std.mem.indexOf(u8, with_scope, "platform tmp RW") != null);
+    try std.testing.expect(std.mem.indexOf(u8, with_scope, "control write-deny (readable)") != null);
+}
+
+test "isClassicTmpPath matches grant and summary literals" {
+    try std.testing.expect(isClassicTmpPath("/tmp"));
+    try std.testing.expect(isClassicTmpPath("/var/tmp"));
+    try std.testing.expect(isClassicTmpPath("/private/tmp"));
+    try std.testing.expect(isClassicTmpPath("/private/var/tmp"));
+    try std.testing.expect(!isClassicTmpPath("/tmp/subdir"));
+    try std.testing.expect(!isClassicTmpPath("/var/folders/xx/T"));
+    try std.testing.expect(!isClassicTmpPath("/workspace/.orca-tmp"));
+    // Platform default prefixes are a subset of the shared classic list.
+    for (defaultTmpPrefixes()) |p| {
+        try std.testing.expect(isClassicTmpPath(p));
+    }
+}
+
+test "control root is write-deny only and remains readable under pure model" {
+    const allocator = std.testing.allocator;
+    const ws = "/workspace/proj";
+    var profile = try compileProfile(allocator, .{
+        .workspace_root = ws,
+        .system_ro_prefixes = &[_][]const u8{"/usr"},
+        .include_tmp = false,
+    });
+    defer profile.deinit();
+
+    // Write-deny: control is never agent-writable.
+    try std.testing.expect(!profile.isAgentWritable("/workspace/proj/.orca/policy.yaml"));
+    try std.testing.expect(profile.isControlPath("/workspace/proj/.orca/policy.yaml"));
+    // Readable via parent workspace grant (pure model; backends may RO-narrow).
+    try std.testing.expect(profile.isGrantedReadable("/workspace/proj/.orca/policy.yaml"));
+    const seatbelt_scope = profile.effectiveFsScopeSummary(.seatbelt);
+    try std.testing.expect(std.mem.indexOf(u8, seatbelt_scope, "control write-deny (readable)") != null);
+    try std.testing.expect(std.mem.indexOf(u8, seatbelt_scope, "mach-lookup residual") != null);
 }

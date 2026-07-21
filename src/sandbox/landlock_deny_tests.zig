@@ -1,4 +1,4 @@
-//! Landlock real-FS deny and expand integration tests (M-8 extraction).
+//! Landlock real-FS deny and expand integration tests.
 //! Imported from landlock.zig so production apply code stays scannable.
 
 const std = @import("std");
@@ -39,7 +39,7 @@ test "real FS deny: outside denied; neighbor RW; control root not writable" {
     const control_write = try std.fs.path.join(allocator, &.{ ws_root, ".orca", "policy.yaml" });
     defer allocator.free(control_write);
 
-    // Production system RO defaults without temp RW (M-6; canaries live under tmpDir).
+    // Production system RO defaults without temp RW (canaries live under tmpDir).
     var compiled = try profile.compileProfile(allocator, .{
         .workspace_root = ws_root,
         .system_ro_prefixes = profile.defaultSystemRoPrefixes(),
@@ -50,7 +50,7 @@ test "real FS deny: outside denied; neighbor RW; control root not writable" {
     try std.testing.expect(compiled.isAgentWritable(neighbor_path));
     try std.testing.expect(!compiled.isAgentWritable(control_write));
 
-    // Parent-side expand plan before fork (Z-3).
+    // Parent-side expand plan before fork (child never opendir/readdir).
     var plan = try buildChildLandlockPlan(allocator, &compiled);
     defer plan.deinit();
 
@@ -86,7 +86,7 @@ test "real FS deny: outside denied; neighbor RW; control root not writable" {
         _ = linux.close(@intCast(wfd));
         if (wrote != 6) linux.exit(5);
 
-        // Control root write must fail (M-1).
+        // Control root write must fail.
         @memcpy(path_buf[0..control_write.len], control_write);
         path_buf[control_write.len] = 0;
         const cfd = linux.open(
@@ -153,10 +153,147 @@ test "real FS deny: outside denied; neighbor RW; control root not writable" {
     }
 }
 
-// M-1 / M-6: control expand installs RO on workspace root so chdir/list work,
-// while MAKE/WRITE stay off the root. Create-at-workspace-root is therefore
-// denied under Landlock (MAKE not on RO). Seatbelt may still allow create-at-root
-// under full-subpath RW minus controls — intentional cross-platform semantic drift.
+// Production-defaults canary: null system_ro_prefixes installs system RO +
+// device RW (same as production apply). Classic /tmp is NOT RW-granted by
+// default (session temp lives under workspace `.orca-tmp`). Outside canary
+// must live outside the workspace — testing.tmpDir is under /tmp and is
+// agent-unwritable under production defaults (good for deny of bare /tmp).
+// Unit canaries above keep include_tmp=false isolation; this test proves the
+// production grant set still denies outside + control write and allows neighbor.
+test "real FS deny under production defaults: outside denied; neighbor RW; control not writable" {
+    if (builtin.os.tag != .linux) return error.SkipZigTest;
+    if (probeAbi() == null) return error.SkipZigTest;
+
+    const allocator = std.testing.allocator;
+    const io = std.testing.io;
+    const linux = std.os.linux;
+
+    var ws_tmp = std.testing.tmpDir(.{});
+    defer ws_tmp.cleanup();
+    try ws_tmp.dir.createDirPath(io, ".orca");
+    try ws_tmp.dir.writeFile(io, .{ .sub_path = "neighbor.txt", .data = "WORKSPACE_NEIGHBOR_OK" });
+    const ws_root = try ws_tmp.dir.realPathFileAlloc(io, ".", allocator);
+    defer allocator.free(ws_root);
+
+    // Outside secret under $HOME. Skip if HOME unusable.
+    const home = std.posix.getenv("HOME") orelse return error.SkipZigTest;
+    if (home.len == 0 or home[0] != '/') return error.SkipZigTest;
+    // Refuse if HOME is under a classic tmp prefix (edge case only when
+    // include_tmp is forced true; production defaults omit classic tmp RW).
+    for (profile.defaultTmpPrefixes()) |tmp_prefix| {
+        if (profile.isPathWithin(home, tmp_prefix)) return error.SkipZigTest;
+    }
+
+    const outside_dir = try std.fs.path.join(allocator, &.{ home, ".orca-ll-prod-canary" });
+    defer allocator.free(outside_dir);
+    std.Io.Dir.cwd().makePath(io, outside_dir) catch return error.SkipZigTest;
+    defer std.Io.Dir.cwd().deleteTree(io, outside_dir) catch {};
+
+    const canary_path = try std.fs.path.join(allocator, &.{ outside_dir, "canary.txt" });
+    defer allocator.free(canary_path);
+    std.Io.Dir.cwd().writeFile(io, .{ .sub_path = canary_path, .data = "OUTSIDE_SECRET_PROD" }) catch return error.SkipZigTest;
+
+    const neighbor_path = try std.fs.path.join(allocator, &.{ ws_root, "neighbor.txt" });
+    defer allocator.free(neighbor_path);
+    const control_write = try std.fs.path.join(allocator, &.{ ws_root, ".orca", "policy.yaml" });
+    defer allocator.free(control_write);
+
+    // Production defaults: system_ro_prefixes null → system RO + device RW;
+    // classic /tmp is NOT RW-granted (session-tmp under workspace only).
+    var compiled = try profile.compileProfile(allocator, .{
+        .workspace_root = ws_root,
+    });
+    defer compiled.deinit();
+    try std.testing.expect(!compiled.hasGrant("/tmp", .rw));
+    try std.testing.expect(!compiled.isAgentWritable(canary_path));
+    try std.testing.expect(compiled.isAgentWritable(neighbor_path));
+    try std.testing.expect(!compiled.isAgentWritable(control_write));
+
+    var plan = try buildChildLandlockPlan(allocator, &compiled);
+    defer plan.deinit();
+
+    const pid_rc = linux.fork();
+    if (linux.errno(pid_rc) != .SUCCESS) return error.SkipZigTest;
+    if (pid_rc == 0) {
+        applySelf(&compiled, &plan) catch linux.exit(2);
+
+        var path_buf: [std.fs.max_path_bytes]u8 = undefined;
+        @memcpy(path_buf[0..canary_path.len], canary_path);
+        path_buf[canary_path.len] = 0;
+        const outside_fd = linux.open(path_buf[0..canary_path.len :0].ptr, .{ .CLOEXEC = true }, 0);
+        if (linux.errno(outside_fd) == .SUCCESS) {
+            _ = linux.close(@intCast(outside_fd));
+            linux.exit(3);
+        }
+
+        @memcpy(path_buf[0..neighbor_path.len], neighbor_path);
+        path_buf[neighbor_path.len] = 0;
+        const ws_fd = linux.open(path_buf[0..neighbor_path.len :0].ptr, .{ .CLOEXEC = true }, 0);
+        if (linux.errno(ws_fd) != .SUCCESS) linux.exit(4);
+        var buf: [64]u8 = undefined;
+        const n = linux.read(@intCast(ws_fd), &buf, buf.len);
+        _ = linux.close(@intCast(ws_fd));
+        if (n != "WORKSPACE_NEIGHBOR_OK".len) linux.exit(4);
+
+        const wfd = linux.open(path_buf[0..neighbor_path.len :0].ptr, .{ .ACCMODE = .WRONLY, .CLOEXEC = true }, 0);
+        if (linux.errno(wfd) != .SUCCESS) linux.exit(5);
+        const wrote = linux.write(@intCast(wfd), "wrote!", 6);
+        _ = linux.close(@intCast(wfd));
+        if (wrote != 6) linux.exit(5);
+
+        @memcpy(path_buf[0..control_write.len], control_write);
+        path_buf[control_write.len] = 0;
+        const cfd = linux.open(
+            path_buf[0..control_write.len :0].ptr,
+            .{ .ACCMODE = .WRONLY, .CREAT = true, .TRUNC = true, .CLOEXEC = true },
+            0o600,
+        );
+        if (linux.errno(cfd) == .SUCCESS) {
+            _ = linux.close(@intCast(cfd));
+            linux.exit(6);
+        }
+
+        // Production tmp grant still present (scratch under /tmp must be openable RW).
+        const tmp_probe = "/tmp/.orca-ll-prod-tmp-probe";
+        @memcpy(path_buf[0..tmp_probe.len], tmp_probe);
+        path_buf[tmp_probe.len] = 0;
+        const tfd = linux.open(
+            path_buf[0..tmp_probe.len :0].ptr,
+            .{ .ACCMODE = .WRONLY, .CREAT = true, .TRUNC = true, .CLOEXEC = true },
+            0o600,
+        );
+        if (linux.errno(tfd) != .SUCCESS) linux.exit(11);
+        _ = linux.close(@intCast(tfd));
+        _ = linux.unlink(path_buf[0..tmp_probe.len :0].ptr);
+
+        linux.exit(0);
+    }
+
+    const child_pid: i32 = @intCast(pid_rc);
+    var status: u32 = 0;
+    while (true) {
+        const w = linux.waitpid(child_pid, &status, 0);
+        if (linux.errno(w) == .INTR) continue;
+        if (linux.errno(w) != .SUCCESS) return error.ApplyFailed;
+        break;
+    }
+    if ((status & 0x7f) != 0) return error.ApplyFailed;
+    const code = (status >> 8) & 0xff;
+    switch (code) {
+        0 => {},
+        2 => return error.LandlockApplyFailedOnHost,
+        3 => return error.OutsideCanaryReadableUnderSandbox,
+        4 => return error.WorkspaceNeighborUnreadableUnderSandbox,
+        5 => return error.WorkspaceWriteFailedUnderSandbox,
+        6 => return error.ControlRootWritableUnderSandbox,
+        11 => return error.ProductionTmpNotWritableUnderSandbox,
+        else => return error.UnexpectedSandboxProbeExit,
+    }
+}
+
+// Create-at-workspace-root is denied under Landlock (root RO after control expand;
+// MAKE not granted). Seatbelt may still allow create-at-root under full-subpath RW
+// minus controls — intentional Landlock-effective scope, not Seatbelt parity.
 // Banner "workspace RW" remains honest when a child RW surface exists.
 test "control expand: chdir workspace root works; create at root denied; control not writable" {
     if (builtin.os.tag != .linux) return error.SkipZigTest;
@@ -180,7 +317,7 @@ test "control expand: chdir workspace root works; create at root denied; control
     const control_write = try std.fs.path.join(allocator, &.{ ws_root, ".orca", "policy.yaml" });
     defer allocator.free(control_write);
 
-    // Production system RO defaults without temp RW (M-6).
+    // Production system RO defaults without temp RW.
     var compiled = try profile.compileProfile(allocator, .{
         .workspace_root = ws_root,
         .system_ro_prefixes = profile.defaultSystemRoPrefixes(),
@@ -199,10 +336,10 @@ test "control expand: chdir workspace root works; create at root denied; control
         var path_buf: [std.fs.max_path_bytes]u8 = undefined;
         @memcpy(path_buf[0..ws_root.len], ws_root);
         path_buf[ws_root.len] = 0;
-        // Root RO must allow search/chdir into the workspace (M-1).
+        // Root RO must allow search/chdir into the workspace.
         if (linux.chdir(path_buf[0..ws_root.len :0].ptr) != 0) linux.exit(7);
 
-        // Create-at-root denied: root is RO (MAKE not granted). M-6 honesty.
+        // Create-at-root denied: root is RO (MAKE not granted).
         @memcpy(path_buf[0..at_root_path.len], at_root_path);
         path_buf[at_root_path.len] = 0;
         const create_fd = linux.open(
@@ -261,7 +398,7 @@ test "control expand: chdir workspace root works; create at root denied; control
     }
 }
 
-// M-3: planted workspace symlink to an outside path must not become a PATH_BENEATH
+// Planted workspace symlink to an outside path must not become a PATH_BENEATH
 // RW/RO grant on the outside target (O_NOFOLLOW + skip .sym_link during expand).
 test "symlink to outside is not granted by control expand" {
     if (builtin.os.tag != .linux) return error.SkipZigTest;
@@ -298,7 +435,7 @@ test "symlink to outside is not granted by control expand" {
     const neighbor_path = try std.fs.path.join(allocator, &.{ ws_root, "neighbor.txt" });
     defer allocator.free(neighbor_path);
 
-    // Production system RO defaults without temp RW (M-6).
+    // Production system RO defaults without temp RW.
     var compiled = try profile.compileProfile(allocator, .{
         .workspace_root = ws_root,
         .system_ro_prefixes = profile.defaultSystemRoPrefixes(),
@@ -371,6 +508,215 @@ test "symlink to outside is not granted by control expand" {
         4 => return error.WorkspaceNeighborUnreadableUnderSandbox,
         9 => return error.SymlinkEscapeReadableUnderSandbox,
         10 => return error.SymlinkEscapeWritableUnderSandbox,
+        else => return error.UnexpectedSandboxProbeExit,
+    }
+}
+
+// Hardlink residual canary (M-12): same-FS hardlink to an outside secret must
+// not be readable/writable under the sandboxed child (expand skips nlink>1 leaves).
+test "hardlink to outside is not granted by control expand" {
+    if (builtin.os.tag != .linux) return error.SkipZigTest;
+    if (probeAbi() == null) return error.SkipZigTest;
+
+    const allocator = std.testing.allocator;
+    const io = std.testing.io;
+    const linux = std.os.linux;
+
+    // Single tmpDir so link(2) stays on the same filesystem.
+    var parent = std.testing.tmpDir(.{});
+    defer parent.cleanup();
+    try parent.dir.createDirPath(io, "ws/.orca");
+    try parent.dir.writeFile(io, .{ .sub_path = "ws/neighbor.txt", .data = "NEIGHBOR" });
+    try parent.dir.createDirPath(io, "out");
+    try parent.dir.writeFile(io, .{ .sub_path = "out/secret.txt", .data = "OUTSIDE_SECRET" });
+
+    parent.dir.hardLink("out/secret.txt", parent.dir, "ws/escape_hl", io, .{}) catch |err| switch (err) {
+        error.AccessDenied, error.PermissionDenied, error.ReadOnlyFileSystem, error.OperationUnsupported, error.CrossDevice => return error.SkipZigTest,
+        else => return err,
+    };
+
+    const ws_root = try parent.dir.realPathFileAlloc(io, "ws", allocator);
+    defer allocator.free(ws_root);
+    const secret_path = try parent.dir.realPathFileAlloc(io, "out/secret.txt", allocator);
+    defer allocator.free(secret_path);
+    const hardlink_path = try std.fs.path.join(allocator, &.{ ws_root, "escape_hl" });
+    defer allocator.free(hardlink_path);
+    const neighbor_path = try std.fs.path.join(allocator, &.{ ws_root, "neighbor.txt" });
+    defer allocator.free(neighbor_path);
+
+    var compiled = try profile.compileProfile(allocator, .{
+        .workspace_root = ws_root,
+        .system_ro_prefixes = profile.defaultSystemRoPrefixes(),
+        .include_tmp = false,
+    });
+    defer compiled.deinit();
+
+    var plan = try buildChildLandlockPlan(allocator, &compiled);
+    defer plan.deinit();
+    // Plan must not list the hardlink as an RW surface.
+    if (plan.surfacesFor(ws_root)) |surfaces| {
+        for (surfaces.rw_paths) |p| {
+            try std.testing.expect(!std.mem.eql(u8, p, hardlink_path));
+        }
+    }
+
+    const pid_rc = linux.fork();
+    if (linux.errno(pid_rc) != .SUCCESS) return error.SkipZigTest;
+    if (pid_rc == 0) {
+        applySelf(&compiled, &plan) catch linux.exit(2);
+
+        var path_buf: [std.fs.max_path_bytes]u8 = undefined;
+
+        // Outside real path must not be readable.
+        @memcpy(path_buf[0..secret_path.len], secret_path);
+        path_buf[secret_path.len] = 0;
+        const out_fd = linux.open(path_buf[0..secret_path.len :0].ptr, .{ .CLOEXEC = true }, 0);
+        if (linux.errno(out_fd) == .SUCCESS) {
+            _ = linux.close(@intCast(out_fd));
+            linux.exit(3);
+        }
+
+        // Via workspace hardlink: also must not grant the outside inode.
+        @memcpy(path_buf[0..hardlink_path.len], hardlink_path);
+        path_buf[hardlink_path.len] = 0;
+        const hl_fd = linux.open(path_buf[0..hardlink_path.len :0].ptr, .{ .CLOEXEC = true }, 0);
+        if (linux.errno(hl_fd) == .SUCCESS) {
+            _ = linux.close(@intCast(hl_fd));
+            linux.exit(11); // hardlink escape: outside readable via planted hardlink
+        }
+
+        // Neighbor RW still present.
+        @memcpy(path_buf[0..neighbor_path.len], neighbor_path);
+        path_buf[neighbor_path.len] = 0;
+        const nfd = linux.open(path_buf[0..neighbor_path.len :0].ptr, .{ .CLOEXEC = true }, 0);
+        if (linux.errno(nfd) != .SUCCESS) linux.exit(4);
+        _ = linux.close(@intCast(nfd));
+
+        linux.exit(0);
+    }
+
+    const child_pid: i32 = @intCast(pid_rc);
+    var status: u32 = 0;
+    while (true) {
+        const w = linux.waitpid(child_pid, &status, 0);
+        if (linux.errno(w) == .INTR) continue;
+        if (linux.errno(w) != .SUCCESS) return error.ApplyFailed;
+        break;
+    }
+    if ((status & 0x7f) != 0) return error.ApplyFailed;
+    const code = (status >> 8) & 0xff;
+    switch (code) {
+        0 => {},
+        2 => return error.LandlockApplyFailedOnHost,
+        3 => return error.OutsideCanaryReadableUnderSandbox,
+        4 => return error.WorkspaceNeighborUnreadableUnderSandbox,
+        11 => return error.HardlinkEscapeReadableUnderSandbox,
+        else => return error.UnexpectedSandboxProbeExit,
+    }
+}
+
+// Inheritance canary: Landlock rules must survive nested exec into a grandchild.
+// Parent builds plan → child applySelf → exec /bin/sh -c → shell -c probes
+// (outside read + control write must still fail; neighbor read must work).
+test "landlock inheritance: grandchild after nested exec still denies outside and control write" {
+    if (builtin.os.tag != .linux) return error.SkipZigTest;
+    if (probeAbi() == null) return error.SkipZigTest;
+
+    const allocator = std.testing.allocator;
+    const io = std.testing.io;
+    const linux = std.os.linux;
+
+    // Shell must be readable under system RO grants after restrict_self.
+    const sh_path: [:0]const u8 = blk: {
+        std.Io.Dir.cwd().access(io, "/bin/sh", .{}) catch {
+            std.Io.Dir.cwd().access(io, "/usr/bin/sh", .{}) catch return error.SkipZigTest;
+            break :blk "/usr/bin/sh";
+        };
+        break :blk "/bin/sh";
+    };
+
+    var ws_tmp = std.testing.tmpDir(.{});
+    defer ws_tmp.cleanup();
+    try ws_tmp.dir.createDirPath(io, ".orca");
+    try ws_tmp.dir.writeFile(io, .{ .sub_path = "neighbor.txt", .data = "WORKSPACE_NEIGHBOR_OK" });
+    const ws_root = try ws_tmp.dir.realPathFileAlloc(io, ".", allocator);
+    defer allocator.free(ws_root);
+
+    var out_tmp = std.testing.tmpDir(.{});
+    defer out_tmp.cleanup();
+    try out_tmp.dir.writeFile(io, .{ .sub_path = "canary.txt", .data = "OUTSIDE_SECRET" });
+    const out_root = try out_tmp.dir.realPathFileAlloc(io, ".", allocator);
+    defer allocator.free(out_root);
+
+    const canary_path = try std.fs.path.join(allocator, &.{ out_root, "canary.txt" });
+    defer allocator.free(canary_path);
+    const neighbor_path = try std.fs.path.join(allocator, &.{ ws_root, "neighbor.txt" });
+    defer allocator.free(neighbor_path);
+    const control_write = try std.fs.path.join(allocator, &.{ ws_root, ".orca", "policy.yaml" });
+    defer allocator.free(control_write);
+
+    // Paths from tmpDir have no single quotes; embed into the probe script.
+    // Outer shell re-execs an inner sh -c so the probes run in a true grandchild.
+    // Avoid 2>/dev/null: custom system_ro_prefixes skip production /dev/null RW.
+    const probe_script = try std.fmt.allocPrint(
+        allocator,
+        \\exec '{s}' -c '
+        \\if test -r "{s}"; then exit 3; fi
+        \\if (printf x > "{s}"); then exit 6; fi
+        \\if ! test -r "{s}"; then exit 4; fi
+        \\exit 0
+        \\'
+    ,
+        .{ sh_path, canary_path, control_write, neighbor_path },
+    );
+    defer allocator.free(probe_script);
+    const probe_z = try allocator.dupeZ(u8, probe_script);
+    defer allocator.free(probe_z);
+
+    var compiled = try profile.compileProfile(allocator, .{
+        .workspace_root = ws_root,
+        .system_ro_prefixes = profile.defaultSystemRoPrefixes(),
+        .include_tmp = false,
+    });
+    defer compiled.deinit();
+    try std.testing.expect(!compiled.isAgentWritable(canary_path));
+    try std.testing.expect(compiled.isAgentWritable(neighbor_path));
+    try std.testing.expect(!compiled.isAgentWritable(control_write));
+
+    var plan = try buildChildLandlockPlan(allocator, &compiled);
+    defer plan.deinit();
+
+    const pid_rc = linux.fork();
+    if (linux.errno(pid_rc) != .SUCCESS) return error.SkipZigTest;
+    if (pid_rc == 0) {
+        applySelf(&compiled, &plan) catch linux.exit(2);
+
+        // Child image becomes shell; Landlock domain must inherit across exec.
+        const argv = [_:null]?[*:0]const u8{ sh_path.ptr, "-c", probe_z.ptr };
+        // Minimal PATH so nested exec can resolve sh by absolute path only (argv0 absolute).
+        const path_env: [:0]const u8 = "PATH=/usr/bin:/bin";
+        const envp = [_:null]?[*:0]const u8{ path_env.ptr };
+        _ = linux.execve(sh_path.ptr, &argv, &envp);
+        linux.exit(11); // exec failed — shell not usable under sandbox
+    }
+
+    const child_pid: i32 = @intCast(pid_rc);
+    var status: u32 = 0;
+    while (true) {
+        const w = linux.waitpid(child_pid, &status, 0);
+        if (linux.errno(w) == .INTR) continue;
+        if (linux.errno(w) != .SUCCESS) return error.ApplyFailed;
+        break;
+    }
+    if ((status & 0x7f) != 0) return error.ApplyFailed;
+    const code = (status >> 8) & 0xff;
+    switch (code) {
+        0 => {},
+        2 => return error.LandlockApplyFailedOnHost,
+        3 => return error.OutsideCanaryReadableUnderSandboxAfterExec,
+        4 => return error.WorkspaceNeighborUnreadableUnderSandboxAfterExec,
+        6 => return error.ControlRootWritableUnderSandboxAfterExec,
+        11 => return error.ShellExecFailedUnderSandbox,
         else => return error.UnexpectedSandboxProbeExit,
     }
 }

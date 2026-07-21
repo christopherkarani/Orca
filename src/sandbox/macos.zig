@@ -77,7 +77,7 @@ test "macOS strong_sandbox tracks version matrix without live active claim" {
     try std.testing.expect(report.get(.strong_sandbox).level != .active);
 }
 
-// M-13: no scaffold prepare path — production attach is apply_posix only.
+// No scaffold prepare path — production attach is apply_posix only.
 // Process-group leadership for agent spawn is proven in apply_posix tests.
 test "macOS process group spawn runs simple command" {
     if (builtin.os.tag != .macos) return error.SkipZigTest;

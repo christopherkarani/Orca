@@ -150,23 +150,43 @@ pub const PreparedChild = struct {
         return term;
     }
 
+    /// Kill the spawned agent (and process group when enabled), then **reap**.
+    ///
+    /// Must wait/reap before any parent free of fork-shared argv/env (COW
+    /// free-before-reap). `std.process.Child.kill` already waits, but we capture
+    /// the pid first and run an EINTR-retry waitpid so a partial Io kill path
+    /// cannot leave the child unreaped.
     pub fn terminateAfterParentError(self: *PreparedChild) void {
         if (!self.spawned) return;
         const child = &(self.child orelse return);
+        // Capture before kill nulls `child.id`.
+        const posix_pid: ?std.posix.pid_t = switch (builtin.os.tag) {
+            .linux, .macos, .freebsd, .netbsd, .openbsd, .dragonfly => child.id,
+            else => null,
+        };
         if (self.process_group_cleanup) {
             if (self.process_group_id) |pgid| killProcessGroup(pgid);
         }
         child.kill(self.io);
+        if (posix_pid) |pid| waitpidEintr(pid);
         self.spawned = false;
+        self.process_group_id = null;
     }
 
     pub fn terminateForHealthFailure(self: *PreparedChild) void {
         if (!self.spawned) return;
         const child = &(self.child orelse return);
+        const posix_pid: ?std.posix.pid_t = switch (builtin.os.tag) {
+            .linux, .macos, .freebsd, .netbsd, .openbsd, .dragonfly => child.id,
+            else => null,
+        };
         if (self.process_group_cleanup) {
             if (self.process_group_id) |pgid| killProcessGroup(pgid);
         }
         child.kill(self.io);
+        if (posix_pid) |pid| waitpidEintr(pid);
+        self.spawned = false;
+        self.process_group_id = null;
     }
 
     fn cleanupProcessGroup(self: *PreparedChild) void {
@@ -204,6 +224,24 @@ fn killProcessGroup(pgid: std.posix.pid_t) void {
         .windows, .wasi => return,
         else => {
             std.posix.kill(-pgid, std.posix.SIG.KILL) catch {};
+        },
+    }
+}
+
+/// Best-effort waitpid with EINTR retry. Idempotent when the child was already
+/// reaped (`ECHILD`). Core-side only — must not import sandbox `killAndReapChild`.
+fn waitpidEintr(pid: std.posix.pid_t) void {
+    if (pid <= 0) return;
+    switch (builtin.os.tag) {
+        .windows, .wasi => return,
+        else => {
+            var status: c_int = 0;
+            while (true) {
+                const rc = std.c.waitpid(pid, &status, 0);
+                if (rc >= 0) break;
+                if (std.posix.errno(@as(isize, rc)) == .INTR) continue;
+                break;
+            }
         },
     }
 }
@@ -280,4 +318,42 @@ test "custom spawn hook sets custom_spawn_used without claiming handshake" {
     const term = try prepared.wait();
     try std.testing.expect(term == .exited);
     try std.testing.expectEqual(@as(u8, 0), term.exited);
+}
+
+test "terminateAfterParentError reaps child so free-after is not free-before-reap" {
+    if (builtin.os.tag == .windows or builtin.os.tag == .wasi) return error.SkipZigTest;
+
+    // Sleep long enough that kill is required; terminate must reap (not leave a zombie).
+    const child = try std.process.spawn(std.testing.io, .{
+        .argv = &[_][]const u8{ "/bin/sleep", "30" },
+        .stdin = .ignore,
+        .stdout = .ignore,
+        .stderr = .ignore,
+    });
+    const pid = child.id orelse return error.SkipZigTest;
+
+    var prepared = prepareChild(std.testing.io, std.testing.allocator, .{
+        .io = std.testing.io,
+        .argv = &[_][]const u8{ "/bin/sleep", "30" },
+        .workspace_root = ".",
+        .stdio = .ignore,
+    });
+    prepared.child = child;
+    prepared.spawned = true;
+    prepared.process_group_id = pid;
+    prepared.process_group_cleanup = true;
+
+    prepared.terminateAfterParentError();
+    try std.testing.expect(!prepared.spawned);
+    try std.testing.expect(prepared.child.?.id == null);
+
+    // Child must not still be running: NOHANG waitpid returns 0 only if alive.
+    var status: c_int = 0;
+    const rc = std.c.waitpid(pid, &status, 1); // WNOHANG == 1 on Linux/macOS
+    if (rc == 0) {
+        _ = std.posix.kill(pid, std.posix.SIG.KILL) catch {};
+        waitpidEintr(pid);
+        return error.TestUnexpectedResult;
+    }
+    // rc < 0 (ECHILD) or rc == pid both mean reaped / not running.
 }

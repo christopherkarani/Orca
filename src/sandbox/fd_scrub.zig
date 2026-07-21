@@ -1,4 +1,4 @@
-//! Inherited file-descriptor scrub for agent launch (P0-I-05).
+//! Inherited file-descriptor scrub for agent launch.
 //!
 //! Closes FDs above stdio so a child agent process does not inherit sockets,
 //! log handles, or other parent FDs. Unit-testable via pure list/predicate
@@ -7,13 +7,15 @@
 //! Called from the post-fork child path in `apply_posix` before exec (not in
 //! the parent). Keep set defaults to stdin/stdout/stderr.
 //!
-//! Bound policy (FN residuals after M-3):
+//! Bound policy:
 //! - Prefer max(usable soft, usable hard) so a soft rlimit drop still walks up
-//!   to hard (FN-2).
-//! - When soft/hard are unbounded (or hard cannot cap the table), scrub to
-//!   `open_max_ceiling` — never a low Darwin `OPEN_MAX` platform hint (FN-1).
-//! - Prefer `close_range` / `closefrom` when available so a 1M walk cannot burn
-//!   the parent handshake budget (FN-3); fall back to an O(open_max) close loop.
+//!   to hard when both are finite.
+//! - When hard is unbounded (common on Darwin), do **not** walk 1M FDs: use
+//!   `max(finite soft, open_max_walk_ceiling)` so the close loop stays inside
+//!   the parent handshake budget. Never a low Darwin `OPEN_MAX` (~10k) alone.
+//! - Prefer `close_range` / `closefrom` when available (Linux/BSD) so no walk
+//!   is needed; on Darwin fall back to `/dev/fd` live enumeration, then the
+//!   practical walk bound.
 
 const std = @import("std");
 const builtin = @import("builtin");
@@ -21,14 +23,22 @@ const builtin = @import("builtin");
 /// Default keep set: stdin, stdout, stderr.
 pub const default_keep_fds = [_]i32{ 0, 1, 2 };
 
-/// Absolute ceiling for FD scrub loops when rlimit is infinite or huge.
-/// Large enough for raised NOFILE limits; bounds worst-case close cost.
-/// Prefer overshooting a high ceiling over under-scrubbing high inherited FDs (M-3).
+/// Absolute clamp for a *finite* rlimit that is absurdly large.
+/// Not used as the walk target when hard NOFILE is unbounded (see walk ceiling).
 pub const open_max_ceiling: i32 = 1 << 20; // 1_048_576
+
+/// Practical upper bound for the per-FD close walk when range-close is
+/// unavailable and hard NOFILE is unbounded/infinite (typical Darwin).
+/// Large enough for raised soft limits in agent parents; small enough that
+/// ~64k best-effort `close` calls fit under a multi-second handshake budget.
+pub const open_max_walk_ceiling: i32 = 1 << 16; // 65_536
 
 /// Max keep-set entries handled by pure range helpers / range-close path.
 /// Production keep is `{0,1,2,status_w}` (4); tests may use a few more.
 pub const max_keep_fds: usize = 64;
+
+/// Stack capacity for `/dev/fd` live-FD collection before falling back to walk.
+const dev_fd_collect_cap: usize = 4096;
 
 /// True when `fd` is listed in `keep` (should not be closed).
 pub fn isKeptFd(fd: i32, keep: []const i32) bool {
@@ -79,22 +89,25 @@ pub fn closeFdsWith(open_max: i32, keep: []const i32, close_fn: CloseFn) usize {
     return closed;
 }
 
-/// Pure: resolve scrub upper bound from soft/hard NOFILE limits and an optional
-/// platform hint (e.g. Darwin `OPEN_MAX`, sysconf).
+/// Pure: resolve scrub **walk** upper bound from soft/hard NOFILE limits and an
+/// optional platform hint (e.g. Darwin `OPEN_MAX`, sysconf).
+///
+/// Used only when range-close (`close_range` / `closefrom`) and `/dev/fd`
+/// enumeration are unavailable — this is the budget-sensitive path.
 ///
 /// - Prefer `max(usable soft, usable hard)` so soft-first cannot under-scrub
-///   when hard is higher (FN-2 finite-hard path).
-/// - When hard is unbounded (infinity-shaped), use `open_max_ceiling` so FDs
-///   that survive a soft rlimit drop above soft are still visited (FN-2).
-/// - When soft and hard are both unusable/unbounded, use `open_max_ceiling` —
-///   never a low Darwin `OPEN_MAX` (~10240) platform hint (FN-1).
+///   when hard is higher (finite-hard path).
+/// - When hard is unbounded (infinity-shaped), use
+///   `max(finite soft, open_max_walk_ceiling)` clamped to `open_max_ceiling` —
+///   never a blind 1M walk and never a low Darwin `OPEN_MAX` (~10240) alone.
+/// - When soft and hard are both unusable/unbounded, use `open_max_walk_ceiling`.
 /// - `platform_hint` is retained for API stability / diagnostics but is **not**
 ///   used as a low exclusive upper bound under unbounded rlimits.
 ///
 /// Values `0` mean unavailable. Values above `maxInt(i32)` (RLIM_INFINITY and
 /// peers) are treated as unbounded.
 pub fn resolveOpenMax(soft: u64, hard: u64, platform_hint: i32) i32 {
-    _ = platform_hint; // intentionally ignored as a low upper bound (FN-1)
+    _ = platform_hint; // intentionally ignored as a low upper bound
     const soft_u = usableOpenMaxBound(soft);
     const hard_u = usableOpenMaxBound(hard);
 
@@ -103,16 +116,20 @@ pub fn resolveOpenMax(soft: u64, hard: u64, platform_hint: i32) i32 {
         if (soft_u) |n| bound = @max(bound, n);
         if (hard_u) |n| bound = @max(bound, n);
 
-        // Soft finite + hard unbounded: existing FDs may sit above soft after a
-        // setrlimit soft drop. Hard cannot cap the table → walk to ceiling.
+        // Soft finite + hard unbounded: live FDs may sit above soft after a
+        // setrlimit soft drop. Do not walk open_max_ceiling (1M) — that burns
+        // the parent handshake budget on Darwin. Prefer practical walk ceiling
+        // at least as high as soft; /dev/fd enumeration covers sparse high FDs.
         if (hard_u == null and isRlimitUnbounded(hard)) {
-            return open_max_ceiling;
+            const soft_n: i32 = soft_u orelse 0;
+            const candidate = @max(soft_n, open_max_walk_ceiling);
+            return @min(candidate, open_max_ceiling);
         }
         if (bound > 0) return bound;
     }
 
-    // Both unusable (0/0) or both unbounded (inf/inf): ceiling, not OPEN_MAX.
-    return open_max_ceiling;
+    // Both unusable (0/0) or both unbounded (inf/inf): practical walk ceiling.
+    return open_max_walk_ceiling;
 }
 
 /// Map a raw rlimit value to a usable positive i32 scrub bound, or null if
@@ -143,7 +160,7 @@ fn rlimAsU64(v: std.posix.rlim_t) u64 {
 
 /// Best-effort platform hint when rlimit soft/hard are unbounded.
 /// Retained for diagnostics / future use; `resolveOpenMax` does not treat a
-/// low hint as the exclusive upper bound (FN-1).
+/// low hint as the exclusive upper bound.
 fn platformOpenMaxHint() i32 {
     if (comptime builtin.os.tag.isDarwin()) {
         return @intCast(std.c.OPEN_MAX);
@@ -310,16 +327,60 @@ fn resolveClosefromSymbol() ?*anyopaque {
     return std.c.dlsym(handle, "closefrom");
 }
 
+/// Enumerate live FDs via `/dev/fd` (or `/proc/self/fd` symlink) and close
+/// non-kept ones. Preferred on Darwin where `close_range`/`closefrom` are
+/// absent: O(live FDs) instead of O(open_max) up to 1M.
+///
+/// Returns true when the directory was fully enumerated (caller may skip the
+/// walk). Returns false on open/read failure or when the live set overflowed
+/// the stack collect buffer (caller should fall back to the bounded walk).
+/// Collect-then-close so we never close the directory FD mid-readdir.
+fn tryCloseViaDevFd(keep: []const i32) bool {
+    switch (builtin.os.tag) {
+        .windows, .wasi => return false,
+        else => {},
+    }
+
+    const dir = std.c.opendir("/dev/fd") orelse return false;
+
+    var to_close: [dev_fd_collect_cap]i32 = undefined;
+    var n: usize = 0;
+    var overflowed = false;
+
+    while (true) {
+        const entry = std.c.readdir(dir) orelse break;
+        const name = std.mem.sliceTo(entry.name[0..], 0);
+        if (name.len == 0 or name[0] == '.') continue;
+        const fd = std.fmt.parseInt(i32, name, 10) catch continue;
+        if (!shouldCloseFd(fd, keep)) continue;
+        if (n >= to_close.len) {
+            overflowed = true;
+            break;
+        }
+        to_close[n] = fd;
+        n += 1;
+    }
+    _ = std.c.closedir(dir);
+
+    for (to_close[0..n]) |fd| {
+        bestEffortClose(fd);
+    }
+    // Incomplete collection → walk for residual high/unseen slots.
+    return !overflowed;
+}
+
 /// Close inherited FDs above the keep set (default: keep 0/1/2).
 /// Best-effort: ignores close errors (EBADF for already-closed slots).
 /// Call from the post-fork child before exec (see `apply_posix`).
 ///
 /// Prefers platform range-close (`close_range` / `closefrom`) when available
-/// so scrub cost stays well under the parent handshake budget; falls back to
-/// an O(open_max) walk bounded by `resolveOpenMax`.
+/// so scrub cost stays well under the parent handshake budget. On Darwin
+/// (no range-close), prefers `/dev/fd` live enumeration, then an O(open_max)
+/// walk bounded by `resolveOpenMax` (practical ceiling when hard is infinite).
 pub fn closeInheritedFds(keep: []const i32) void {
     if (tryPlatformRangeClose(keep)) return;
     if (tryPlatformClosefrom(keep)) return;
+    if (tryCloseViaDevFd(keep)) return;
     const open_max = platformOpenMax();
     if (open_max <= 0) return;
     _ = closeFdsWith(open_max, keep, bestEffortClose);
@@ -329,8 +390,6 @@ pub fn closeInheritedFds(keep: []const i32) void {
 pub fn closeInheritedFdsDefault() void {
     closeInheritedFds(&default_keep_fds);
 }
-
-// ── tests ──────────────────────────────────────────────────────────────────
 
 test "default keep is 0 1 2" {
     try std.testing.expectEqual(@as(usize, 3), default_keep_fds.len);
@@ -428,7 +487,7 @@ test "closeInheritedFds is callable without panic on posix" {
     }
 }
 
-test "resolveOpenMax uses max of finite soft and hard (FN-2)" {
+test "resolveOpenMax uses max of finite soft and hard" {
     // Soft-first would return 1024 and miss FDs opened under a higher soft before drop.
     try std.testing.expectEqual(@as(i32, 65536), resolveOpenMax(1024, 65536, 0));
     try std.testing.expectEqual(@as(i32, 8192), resolveOpenMax(8192, 4096, 0));
@@ -443,38 +502,56 @@ test "resolveOpenMax prefers hard when soft is infinity or zero" {
     try std.testing.expectEqual(@as(i32, 512), resolveOpenMax(0, 512, 0));
 }
 
-test "resolveOpenMax soft+hard unbounded prefers ceiling over Darwin OPEN_MAX (FN-1)" {
+test "resolveOpenMax soft+hard unbounded prefers walk ceiling over Darwin OPEN_MAX" {
     const inf = std.math.maxInt(u64);
     // Platform hint 10240 must NOT win — that was the Darwin residual under-scrub.
-    try std.testing.expectEqual(open_max_ceiling, resolveOpenMax(inf, inf, 10240));
-    try std.testing.expectEqual(open_max_ceiling, resolveOpenMax(0, inf, 10240));
-    try std.testing.expectEqual(open_max_ceiling, resolveOpenMax(inf, 0, 10240));
+    // Unbounded hard must NOT use open_max_ceiling (1M) — handshake budget.
+    try std.testing.expectEqual(open_max_walk_ceiling, resolveOpenMax(inf, inf, 10240));
+    try std.testing.expectEqual(open_max_walk_ceiling, resolveOpenMax(0, inf, 10240));
+    try std.testing.expectEqual(open_max_walk_ceiling, resolveOpenMax(inf, 0, 10240));
     try std.testing.expect(resolveOpenMax(inf, inf, 10240) > 10240);
+    try std.testing.expect(resolveOpenMax(inf, inf, 10240) < open_max_ceiling);
 }
 
-test "resolveOpenMax soft finite hard unbounded uses ceiling (FN-2 soft-drop)" {
-    // After soft drop, live FDs above soft remain; hard inf cannot cap → ceiling.
+test "resolveOpenMax soft finite hard unbounded uses practical walk bound" {
+    // After soft drop, live FDs above soft remain; hard inf cannot cap the table.
+    // Walk max(soft, walk_ceiling) — not 1M — when range-close is unavailable.
     const inf = std.math.maxInt(u64);
-    try std.testing.expectEqual(open_max_ceiling, resolveOpenMax(1024, inf, 10240));
-    try std.testing.expectEqual(open_max_ceiling, resolveOpenMax(8192, inf, 0));
+    try std.testing.expectEqual(open_max_walk_ceiling, resolveOpenMax(1024, inf, 10240));
+    try std.testing.expectEqual(open_max_walk_ceiling, resolveOpenMax(8192, inf, 0));
+    // Soft above walk ceiling still preferred (finite soft raised before drop).
+    const raised: u64 = @as(u64, @intCast(open_max_walk_ceiling)) + 4096;
+    try std.testing.expectEqual(@as(i32, @intCast(raised)), resolveOpenMax(raised, inf, 0));
 }
 
-test "resolveOpenMax infinity/large soft does not fall back to 1024" {
-    // M-3: RLIM_INFINITY / >i32-max must not silently under-scrub at 1024.
+test "resolveOpenMax infinity/large soft does not fall back to 1024 or 1M walk" {
+    // RLIM_INFINITY / >i32-max must not under-scrub at 1024 nor burn 1M closes.
     const inf = std.math.maxInt(u64);
     const darwin_inf: u64 = (1 << 63) - 1; // Darwin RLIM_INFINITY shape
-    try std.testing.expectEqual(open_max_ceiling, resolveOpenMax(inf, inf, 0));
-    try std.testing.expectEqual(open_max_ceiling, resolveOpenMax(darwin_inf, darwin_inf, 0));
+    try std.testing.expectEqual(open_max_walk_ceiling, resolveOpenMax(inf, inf, 0));
+    try std.testing.expectEqual(open_max_walk_ceiling, resolveOpenMax(darwin_inf, darwin_inf, 0));
     try std.testing.expect(resolveOpenMax(inf, inf, 0) > 1024);
+    try std.testing.expect(resolveOpenMax(inf, inf, 0) <= open_max_walk_ceiling);
     // Soft above i32 max with finite hard still picks hard.
     try std.testing.expectEqual(@as(i32, 65536), resolveOpenMax(inf, 65536, 1024));
 }
 
-test "resolveOpenMax clamps huge finite soft to ceiling" {
+test "resolveOpenMax clamps huge finite soft to absolute ceiling" {
     const huge: u64 = @as(u64, @intCast(open_max_ceiling)) + 100;
     try std.testing.expectEqual(open_max_ceiling, resolveOpenMax(huge, 0, 0));
-    // Both huge finite → ceiling clamp via usableOpenMaxBound
+    // Both huge finite → absolute ceiling clamp via usableOpenMaxBound
     try std.testing.expectEqual(open_max_ceiling, resolveOpenMax(huge, huge, 0));
+}
+
+test "resolveOpenMax walk bound stays practical when range path unavailable" {
+    // Pure contract for Darwin fallback: hard unbounded → walk ceiling class.
+    const inf = std.math.maxInt(u64);
+    const soft_drop = resolveOpenMax(256, inf, 10240);
+    try std.testing.expectEqual(open_max_walk_ceiling, soft_drop);
+    try std.testing.expect(soft_drop >= 16 * 1024);
+    try std.testing.expect(soft_drop <= 64 * 1024);
+    // Finite hard still wins max(soft, hard) even when large.
+    try std.testing.expectEqual(@as(i32, 20000), resolveOpenMax(1024, 20000, 0));
 }
 
 test "platformOpenMax is positive and above stdio on posix" {
@@ -482,6 +559,14 @@ test "platformOpenMax is positive and above stdio on posix" {
     const n = platformOpenMax();
     try std.testing.expect(n > 3);
     try std.testing.expect(n <= open_max_ceiling);
+    // When hard is unbounded (typical Darwin), walk must not target 1M.
+    if (std.posix.getrlimit(.NOFILE)) |limits| {
+        const hard = rlimAsU64(limits.max);
+        if (isRlimitUnbounded(hard)) {
+            try std.testing.expect(n <= open_max_walk_ceiling or n == resolveOpenMax(rlimAsU64(limits.cur), hard, 0));
+            try std.testing.expect(n < open_max_ceiling);
+        }
+    } else |_| {}
 }
 
 test "sortedUniqueKeep sorts dedupes and filters" {
@@ -521,11 +606,13 @@ test "fillCloseRanges empty when open_max is 0" {
     try std.testing.expectEqual(@as(usize, 0), n);
 }
 
-test "closeFdsWith high open_max reaches FDs above Darwin OPEN_MAX (FN-1 plant)" {
-    // Pure mock: bound from resolveOpenMax(inf,inf,10240) must include FD 12000.
+test "closeFdsWith high open_max reaches FDs above Darwin OPEN_MAX (plant)" {
+    // Pure mock: walk bound from resolveOpenMax(inf,inf,10240) must include FD 12000
+    // (above Darwin OPEN_MAX ~10240) without requiring a 1M walk.
     const inf = std.math.maxInt(u64);
     const open_max = resolveOpenMax(inf, inf, 10240);
     try std.testing.expect(open_max > 12000);
+    try std.testing.expectEqual(open_max_walk_ceiling, open_max);
 
     const Mock = struct {
         var saw_high: bool = false;
@@ -547,7 +634,29 @@ test "closeFdsWith high open_max reaches FDs above Darwin OPEN_MAX (FN-1 plant)"
     try std.testing.expect(!Mock.saw_keep);
 }
 
-test "closeFdsWith after soft-drop bound still visits high hard FD (FN-2 plant)" {
+test "tryCloseViaDevFd enumerates live FDs when keep covers them" {
+    if (builtin.os.tag == .windows or builtin.os.tag == .wasi) return error.SkipZigTest;
+    // Snapshot live FDs into keep so the call is a pure enumeration smoke test
+    // (no closes that could tear down the test process).
+    const dir = std.c.opendir("/dev/fd") orelse return error.SkipZigTest;
+    var keep: [dev_fd_collect_cap]i32 = undefined;
+    var n: usize = 0;
+    while (true) {
+        const entry = std.c.readdir(dir) orelse break;
+        const name = std.mem.sliceTo(entry.name[0..], 0);
+        if (name.len == 0 or name[0] == '.') continue;
+        const fd = std.fmt.parseInt(i32, name, 10) catch continue;
+        if (n < keep.len) {
+            keep[n] = fd;
+            n += 1;
+        }
+    }
+    _ = std.c.closedir(dir);
+    try std.testing.expect(n > 0);
+    try std.testing.expect(tryCloseViaDevFd(keep[0..n]));
+}
+
+test "closeFdsWith after soft-drop bound still visits high hard FD (plant)" {
     // soft=1024, hard=20000 → bound 20000; planted FD 15000 must be closed.
     const open_max = resolveOpenMax(1024, 20000, 0);
     try std.testing.expectEqual(@as(i32, 20000), open_max);
