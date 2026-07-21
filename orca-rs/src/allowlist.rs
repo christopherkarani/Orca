@@ -100,15 +100,6 @@ pub enum AllowSelector {
 }
 
 impl AllowSelector {
-    #[must_use]
-    pub const fn kind_label(&self) -> &'static str {
-        match self {
-            Self::Rule(_) => "rule",
-            Self::ExactCommand(_) => "exact_command",
-            Self::CommandPrefix(_) => "command_prefix",
-            Self::RegexPattern(_) => "pattern",
-        }
-    }
 }
 
 /// A single allowlist entry.
@@ -352,20 +343,6 @@ impl LayeredAllowlist {
         self.match_rule_at_path(pack_id, pattern_name, None)
     }
 
-    /// Find the first allowlist entry that matches an exact command string.
-    ///
-    /// This is a backward-compatible wrapper around `match_exact_command_at_path` with `cwd = None`.
-    /// For path-aware matching, use `match_exact_command_at_path` instead.
-    #[must_use]
-    pub fn match_exact_command(&self, command: &str) -> Option<AllowlistHit<'_>> {
-        self.match_exact_command_at_path(command, None)
-    }
-
-    /// Find the first allowlist entry that matches a command prefix.
-    #[must_use]
-    pub fn match_command_prefix(&self, command: &str) -> Option<AllowlistHit<'_>> {
-        self.match_command_prefix_at_path(command, None)
-    }
 
     // =========================================================================
     // Path-aware matching methods (Epic 5: Context-Aware Allowlisting)
@@ -910,65 +887,6 @@ pub const fn has_required_risk_ack(entry: &AllowEntry) -> bool {
     }
 }
 
-/// Check if the current working directory matches the path patterns in an allowlist entry.
-///
-/// Returns `true` if:
-/// - No paths are specified (None) - the rule applies globally
-/// - The paths list is empty - the rule applies globally
-/// - Any path pattern matches the given CWD using glob matching
-///
-/// Glob semantics:
-/// - `*` matches any single path component
-/// - `**` matches zero or more path components
-/// - `?` matches any single character
-/// - `[abc]` matches any char in brackets
-#[must_use]
-pub fn path_matches(entry: &AllowEntry, cwd: &Path) -> bool {
-    let Some(ref patterns) = entry.paths else {
-        // No paths specified = global allow
-        return true;
-    };
-
-    if patterns.is_empty() {
-        // Empty paths list = global allow
-        return true;
-    }
-
-    let cwd_str = cwd.to_string_lossy();
-
-    for pattern in patterns {
-        // Handle special case: "*" alone means global allow
-        if pattern == "*" {
-            return true;
-        }
-
-        // Use glob pattern matching
-        match glob::Pattern::new(pattern) {
-            Ok(glob_pattern) => {
-                // Try matching the path directly
-                if glob_pattern.matches(&cwd_str) {
-                    return true;
-                }
-                // Also try with normalized path (resolved symlinks)
-                if let Ok(canonical) = cwd.canonicalize() {
-                    if glob_pattern.matches(&canonical.to_string_lossy()) {
-                        return true;
-                    }
-                }
-            }
-            Err(e) => {
-                // Invalid glob pattern - log warning and continue
-                tracing::warn!(
-                    pattern = pattern,
-                    error = %e,
-                    "invalid glob pattern in allowlist entry, skipping"
-                );
-            }
-        }
-    }
-
-    false
-}
 
 /// Check if an allowlist entry passes basic validity checks (without path matching).
 ///
@@ -986,18 +904,6 @@ pub fn is_entry_valid(entry: &AllowEntry) -> bool {
     is_entry_valid_with_session(entry, current_session_id.as_deref())
 }
 
-/// Check if an allowlist entry is valid for matching at a specific path.
-///
-/// An entry is valid at a path if:
-/// - It passes basic validity checks (not expired, session scope matches, conditions met, risk ack)
-/// - The path matches the entry's path patterns (if specified)
-///
-/// If `cwd` is None, path matching is skipped (entry applies if basic validity passes).
-#[must_use]
-pub fn is_entry_valid_at_path(entry: &AllowEntry, cwd: Option<&Path>) -> bool {
-    let current_session_id = current_session_id();
-    is_entry_valid_at_path_with_session(entry, cwd, current_session_id.as_deref())
-}
 
 #[must_use]
 fn is_entry_valid_with_session(entry: &AllowEntry, current_session_id: Option<&str>) -> bool {
@@ -1239,9 +1145,6 @@ pub fn entry_path_matches(entry: &AllowEntry, path: &str) -> bool {
     path_matches_patterns(path, entry.paths.as_deref())
 }
 
-/// Resolve a path for consistent matching.
-///
-/// Handles symlink resolution (optional), relative-to-absolute conversion,
 /// and path separator normalization.
 pub fn resolve_path_for_matching(
     path: &str,

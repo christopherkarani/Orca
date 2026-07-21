@@ -129,15 +129,6 @@ impl<R: Read> SimulateParser<R> {
         self
     }
 
-    /// Get current parsing statistics.
-    pub const fn stats(&self) -> &ParseStats {
-        &self.stats
-    }
-
-    /// Consume the parser and return final statistics.
-    pub fn into_stats(self) -> ParseStats {
-        self.stats
-    }
 
     /// Parse the next line from input.
     ///

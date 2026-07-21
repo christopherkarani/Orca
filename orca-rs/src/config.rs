@@ -768,7 +768,6 @@ impl ResponseConfig {
         }
     }
 
-    /// Parse this config's history_window using `parse_history_window`,
     /// falling back to 24h if the string is malformed.
     #[must_use]
     pub fn history_window_duration(&self) -> chrono::Duration {
@@ -1964,15 +1963,6 @@ impl AllowlistRule {
         Ok(())
     }
 
-    /// Ensure the rule has a created_at timestamp.
-    ///
-    /// If `created_at` is not set and a TTL is specified, this sets it to the
-    /// current time. This should be called when loading rules from config.
-    pub fn ensure_created_at(&mut self) {
-        if self.created_at.is_none() && (self.ttl.is_some() || self.ttl_seconds.is_some()) {
-            self.created_at = Some(Utc::now().to_rfc3339());
-        }
-    }
 
     /// Get the effective TTL in seconds, if any.
     ///
@@ -2588,17 +2578,6 @@ impl AgentsConfig {
         })
     }
 
-    /// Get the effective trust level for an agent.
-    #[must_use]
-    pub fn trust_level_for(&self, agent_key: &str) -> TrustLevel {
-        self.profile_for(agent_key).trust_level
-    }
-
-    /// Check if allowlists are disabled for an agent.
-    #[must_use]
-    pub fn allowlist_disabled_for(&self, agent_key: &str) -> bool {
-        self.profile_for(agent_key).disabled_allowlist
-    }
 
     /// Get the profile for an agent using its config key.
     ///
@@ -3933,84 +3912,8 @@ impl Config {
         self.heredoc.settings()
     }
 
-    /// Get the path to the user config file (creates dir if needed).
-    #[must_use]
-    pub fn user_config_path() -> Option<PathBuf> {
-        let config_dir = if let Ok(xdg_home) = env::var("XDG_CONFIG_HOME") {
-            resolve_config_path_value(&xdg_home, None)
-        } else {
-            None
-        };
 
-        let config_dir = if let Some(config_dir) = config_dir {
-            config_dir
-        } else if let Some(home) = dirs::home_dir() {
-            let xdg_dir = home.join(".config").join(CONFIG_DIR);
-            if xdg_dir.exists() {
-                home.join(".config")
-            } else {
-                dirs::config_dir().unwrap_or_else(|| home.join(".config"))
-            }
-        } else {
-            dirs::config_dir()?
-        };
-        let guard_dir = config_dir.join(CONFIG_DIR);
 
-        // Create directory if it doesn't exist
-        if !guard_dir.exists() {
-            fs::create_dir_all(&guard_dir).ok()?;
-        }
-
-        Some(guard_dir.join(CONFIG_FILE_NAME))
-    }
-
-    /// Save configuration to the user config file.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the config directory cannot be determined/created,
-    /// serialization fails, or the config file cannot be written.
-    pub fn save_to_user_config(&self) -> Result<PathBuf, String> {
-        let path = Self::user_config_path().ok_or("Could not determine config directory")?;
-
-        let content =
-            toml::to_string_pretty(self).map_err(|e| format!("Failed to serialize config: {e}"))?;
-
-        fs::write(&path, content).map_err(|e| format!("Failed to write config: {e}"))?;
-
-        Ok(path)
-    }
-
-    /// Generate a default configuration with common packs enabled.
-    #[must_use]
-    pub fn generate_default() -> Self {
-        Self {
-            general: GeneralConfig::default(),
-            output: OutputConfig::default(),
-            theme: ThemeConfig::default(),
-            packs: PacksConfig {
-                enabled: vec![
-                    // Core is implicit, but list common ones
-                    "database.postgresql".to_string(),
-                    "containers.docker".to_string(),
-                ],
-                disabled: vec![],
-                custom_paths: vec![],
-            },
-            policy: PolicyConfig::default(),
-            overrides: OverridesConfig::default(),
-            allowlist: AllowlistConfig::default(),
-            heredoc: HeredocConfig::default(),
-            confidence: ConfidenceConfig::default(),
-            logging: crate::logging::LoggingConfig::default(),
-            history: HistoryConfig::default(),
-            git_awareness: GitAwarenessConfig::default(),
-            agents: AgentsConfig::default(),
-            response: ResponseConfig::default(),
-            projects: std::collections::HashMap::new(),
-            interactive: crate::interactive::InteractiveConfig::default(),
-        }
-    }
 
     /// Generate a sample configuration string with comments.
     #[must_use]

@@ -188,11 +188,6 @@ impl HistoryWriter {
         }
     }
 
-    /// Get the session ID for this writer instance.
-    #[must_use]
-    pub fn session_id(&self) -> &str {
-        &self.session_id
-    }
 
     #[must_use]
     pub fn flush_handle(&self) -> Option<HistoryFlushHandle> {
@@ -219,13 +214,6 @@ impl HistoryWriter {
         }
     }
 
-    /// Request a flush without waiting for completion.
-    pub fn flush(&self) {
-        if let Some(sender) = &self.sender {
-            let (ack_tx, _ack_rx) = mpsc::channel();
-            let _ = sender.send(HistoryMessage::Flush(ack_tx));
-        }
-    }
 
     /// Flush and wait for pending writes to complete.
     pub fn flush_sync(&self) {

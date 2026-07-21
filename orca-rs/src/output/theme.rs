@@ -115,11 +115,6 @@ impl Default for Theme {
 }
 
 impl Theme {
-    /// Creates a new theme with default rich terminal colors.
-    #[must_use]
-    pub fn new() -> Self {
-        Self::default()
-    }
 
     /// Creates a theme using a colorblind-safe palette.
     #[must_use]
@@ -196,6 +191,7 @@ impl Theme {
             ..Self::default()
         }
     }
+
 
     /// Disables colors while preserving the current border style.
     #[must_use]

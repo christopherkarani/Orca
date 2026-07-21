@@ -13,7 +13,7 @@ use crate::packs::PatternSuggestion;
 use colored::Colorize;
 use serde::{Deserialize, Serialize};
 use std::borrow::Cow;
-use std::io::{self, IsTerminal, Read, Write};
+use std::io::{self, Read, Write};
 use std::time::Duration;
 
 /// Input structure from supported hook protocols.
@@ -728,17 +728,6 @@ pub fn extract_command(input: &HookInput) -> Option<String> {
     extract_command_with_protocol(input).map(|(command, _)| command)
 }
 
-/// Configure colored output based on TTY detection.
-pub fn configure_colors() {
-    if std::env::var_os("NO_COLOR").is_some() || crate::output::env_flag_enabled("ORCA_NO_COLOR") {
-        colored::control::set_override(false);
-        return;
-    }
-
-    if !io::stderr().is_terminal() {
-        colored::control::set_override(false);
-    }
-}
 
 /// Format the explain hint line for copy-paste convenience.
 fn format_explain_hint(command: &str) -> String {
@@ -981,36 +970,6 @@ fn pattern_suggestion_alternatives(
     alternatives
 }
 
-/// Print a colorful warning to stderr for human visibility.
-#[allow(clippy::too_many_lines)]
-pub fn print_colorful_warning(
-    command: &str,
-    reason: &str,
-    pack: Option<&str>,
-    pattern: Option<&str>,
-    explanation: Option<&str>,
-    allow_once_code: Option<&str>,
-    matched_span: Option<&MatchSpan>,
-    pattern_suggestions: &[PatternSuggestion],
-    severity: Option<crate::packs::Severity>,
-) {
-    let stderr = io::stderr();
-    let mut handle = stderr.lock();
-    print_colorful_warning_to(
-        &mut handle,
-        command,
-        reason,
-        pack,
-        pattern,
-        explanation,
-        allow_once_code,
-        matched_span,
-        pattern_suggestions,
-        severity,
-        None,
-        WarningAudience::HumanOperator,
-    );
-}
 
 /// Truncate a string for display, appending "..." if truncated.
 fn truncate_for_display(s: &str, max_len: usize) -> String {
@@ -1301,34 +1260,6 @@ pub fn fail_closed_hook_deny(protocol: HookProtocol, command: &str, reason: &str
     }
 }
 
-
-pub fn output_denial(
-    command: &str,
-    reason: &str,
-    pack: Option<&str>,
-    pattern: Option<&str>,
-    explanation: Option<&str>,
-    allow_once: Option<&AllowOnceInfo>,
-    matched_span: Option<&MatchSpan>,
-    severity: Option<crate::packs::Severity>,
-    confidence: Option<f64>,
-    pattern_suggestions: &[PatternSuggestion],
-) {
-    output_denial_for_protocol(
-        HookProtocol::ClaudeCompatible,
-        command,
-        reason,
-        pack,
-        pattern,
-        explanation,
-        allow_once,
-        matched_span,
-        severity,
-        confidence,
-        pattern_suggestions,
-        None,
-    );
-}
 
 /// Write a warning response to arbitrary stdout/stderr writers (test seam).
 #[cold]

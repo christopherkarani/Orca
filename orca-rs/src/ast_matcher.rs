@@ -221,15 +221,6 @@ impl AstMatcher {
         }
     }
 
-    /// Create a matcher with custom patterns.
-    #[must_use]
-    #[allow(clippy::missing_const_for_fn)] // HashMap is not const-constructible
-    pub fn with_patterns(patterns: HashMap<ScriptLanguage, Vec<CompiledPattern>>) -> Self {
-        Self {
-            patterns: precompile_patterns(patterns),
-            timeout: Duration::from_millis(AST_TIMEOUT_MS),
-        }
-    }
 
     /// Create a matcher with custom timeout.
     #[must_use]

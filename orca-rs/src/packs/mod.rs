@@ -35,7 +35,6 @@ pub mod payment;
 pub mod platform;
 pub mod regex_engine;
 pub mod remote;
-pub mod safe;
 pub mod search;
 pub mod secrets;
 pub mod storage;
@@ -800,11 +799,6 @@ impl PackEntry {
             .any(|kw| keyword_matches_substring(cmd, kw))
     }
 
-    /// Check if the pack has been built yet.
-    #[cfg(test)]
-    pub fn is_built(&self) -> bool {
-        self.instance.get().is_some()
-    }
 }
 
 /// Registry of all available packs.
@@ -840,10 +834,6 @@ pub struct EnabledKeywordIndex {
 }
 
 impl EnabledKeywordIndex {
-    #[must_use]
-    pub const fn pack_count(&self) -> usize {
-        self.pack_count
-    }
 
     /// Fast check: does the command contain any AC-indexed keyword at all?
     ///
@@ -1548,11 +1538,6 @@ impl PackRegistry {
         }
     }
 
-    /// Get the number of registered packs.
-    #[must_use]
-    pub fn pack_count(&self) -> usize {
-        self.entries.len()
-    }
 
     /// Get a pack by ID.
     ///
@@ -1976,11 +1961,6 @@ impl ExternalPackStore {
         &self.warnings
     }
 
-    /// Check if any external packs are loaded.
-    #[must_use]
-    pub fn is_empty(&self) -> bool {
-        self.packs.is_empty()
-    }
 
     /// Get the number of loaded packs.
     #[must_use]
@@ -1988,89 +1968,7 @@ impl ExternalPackStore {
         self.packs.len()
     }
 
-    /// Check a command against all external packs.
-    ///
-    /// Returns the first match found, or None if no patterns match.
-    #[must_use]
-    pub fn check_command(&self, cmd: &str, enabled_ids: &HashSet<String>) -> Option<CheckResult> {
-        // Check safe patterns first (across all enabled external packs)
-        for (id, pack) in &self.packs {
-            if !enabled_ids.contains(id) {
-                continue;
-            }
-            if pack.matches_safe(cmd) {
-                return Some(CheckResult::allowed());
-            }
-        }
 
-        // Check destructive patterns
-        for (id, pack) in &self.packs {
-            if !enabled_ids.contains(id) {
-                continue;
-            }
-            if let Some(matched) = pack.matches_destructive(cmd) {
-                return Some(CheckResult {
-                    blocked: true,
-                    reason: Some(matched.reason.to_string()),
-                    pack_id: Some(id.clone()),
-                    pattern_name: matched.name.map(ToString::to_string),
-                    severity: Some(matched.severity),
-                    decision_mode: Some(matched.severity.default_mode()),
-                });
-            }
-        }
-
-        None
-    }
-
-    /// Check a command against all external packs, returning full match info.
-    ///
-    /// This is like `check_command` but returns additional details (explanation)
-    /// needed for building `PatternMatch` in main.rs.
-    #[must_use]
-    pub fn check_command_with_details(
-        &self,
-        cmd: &str,
-        enabled_ids: &HashSet<String>,
-    ) -> Option<ExternalCheckResult> {
-        // Check safe patterns first (across all enabled external packs)
-        for (id, pack) in &self.packs {
-            if !enabled_ids.contains(id) {
-                continue;
-            }
-            if pack.matches_safe(cmd) {
-                return Some(ExternalCheckResult {
-                    blocked: false,
-                    reason: None,
-                    pack_id: None,
-                    pattern_name: None,
-                    severity: None,
-                    decision_mode: None,
-                    explanation: None,
-                });
-            }
-        }
-
-        // Check destructive patterns
-        for (id, pack) in &self.packs {
-            if !enabled_ids.contains(id) {
-                continue;
-            }
-            if let Some(matched) = pack.matches_destructive(cmd) {
-                return Some(ExternalCheckResult {
-                    blocked: true,
-                    reason: Some(matched.reason.to_string()),
-                    pack_id: Some(id.clone()),
-                    pattern_name: matched.name.map(ToString::to_string),
-                    severity: Some(matched.severity),
-                    decision_mode: Some(matched.severity.default_mode()),
-                    explanation: matched.explanation.map(ToString::to_string),
-                });
-            }
-        }
-
-        None
-    }
 }
 
 /// Extended result from external pack checking (includes explanation).

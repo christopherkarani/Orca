@@ -416,12 +416,6 @@ impl OrcaTree {
         self
     }
 
-    /// Add multiple children to the root.
-    #[must_use]
-    pub fn children(mut self, nodes: impl IntoIterator<Item = TreeNode>) -> Self {
-        self.root.children.extend(nodes);
-        self
-    }
 
     /// Render the tree using rich_rust (when feature enabled).
     #[cfg(feature = "rich-output")]

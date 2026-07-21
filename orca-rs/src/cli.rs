@@ -90,17 +90,7 @@ pub enum OutputFormat {
 }
 
 impl OutputFormat {
-    /// Returns true if this format produces JSON output.
-    #[must_use]
-    pub const fn is_json(&self) -> bool {
-        matches!(self, Self::Json | Self::Jsonl)
-    }
 
-    /// Returns true if this format is human-readable.
-    #[must_use]
-    pub const fn is_human_readable(&self) -> bool {
-        matches!(self, Self::Pretty | Self::Compact)
-    }
 }
 
 /// High-performance Claude Code hook for blocking destructive commands.

@@ -174,34 +174,6 @@ impl TestResultBox {
         matches!(self.result, TestOutcome::Blocked { .. })
     }
 
-    /// Render the test result box with the given theme.
-    #[must_use]
-    pub fn render(&self, theme: &Theme) -> String {
-        #[cfg(feature = "rich-output")]
-        {
-            self.render_rich(theme)
-        }
-        #[cfg(not(feature = "rich-output"))]
-        match theme.border_style {
-            BorderStyle::Unicode => {
-                let output = self.render_unicode(theme);
-                if theme.colors_enabled {
-                    output
-                } else {
-                    strip_ansi_codes(&output)
-                }
-            }
-            BorderStyle::Ascii => self.render_ascii(theme),
-            BorderStyle::None => {
-                let output = self.render_minimal(theme);
-                if theme.colors_enabled {
-                    output
-                } else {
-                    strip_ansi_codes(&output)
-                }
-            }
-        }
-    }
 
     /// Render with rich_rust (Premium UI).
     #[cfg(feature = "rich-output")]

@@ -106,25 +106,6 @@ impl ScanProgress {
         Some(Self::new(total_files))
     }
 
-    /// Creates a progress bar with a custom style.
-    #[must_use]
-    pub fn with_style(total_files: u64, style: ScanProgressStyle) -> Self {
-        let bar = ProgressBar::new(total_files);
-        bar.set_style(style.to_indicatif_style());
-        bar.enable_steady_tick(Duration::from_millis(SPINNER_TICK_MS));
-
-        Self {
-            bar,
-            show_file_names: style.show_file_names,
-        }
-    }
-
-    /// Disables file name display in the progress message.
-    #[must_use]
-    pub fn without_file_names(mut self) -> Self {
-        self.show_file_names = false;
-        self
-    }
 
     /// Advances the progress bar and optionally displays the current file.
     pub fn tick(&self, file_path: &str) {
@@ -136,10 +117,6 @@ impl ScanProgress {
         self.bar.inc(1);
     }
 
-    /// Advances the progress bar without updating the message.
-    pub fn tick_silent(&self) {
-        self.bar.inc(1);
-    }
 
     /// Marks the progress bar as complete with a final message.
     pub fn finish(&self, message: &str) {
@@ -151,16 +128,6 @@ impl ScanProgress {
         self.bar.finish_and_clear();
     }
 
-    /// Sets the total file count (useful when count isn't known upfront).
-    pub fn set_length(&self, len: u64) {
-        self.bar.set_length(len);
-    }
-
-    /// Returns whether the progress bar is finished.
-    #[must_use]
-    pub fn is_finished(&self) -> bool {
-        self.bar.is_finished()
-    }
 
     /// Returns the current progress as a fraction (0.0 - 1.0).
     #[must_use]
@@ -244,16 +211,6 @@ impl ScanProgressStyle {
         }
     }
 
-    /// Creates a verbose progress style with file name display.
-    #[must_use]
-    pub fn verbose() -> Self {
-        Self {
-            template: "{spinner:.green} [{bar:40.cyan/blue}] {pos}/{len} ({eta}) {wide_msg}"
-                .to_string(),
-            progress_chars: "█▓░".to_string(),
-            show_file_names: true,
-        }
-    }
 
     /// Converts to an indicatif `ProgressStyle`.
     fn to_indicatif_style(&self) -> ProgressStyle {
@@ -550,21 +507,6 @@ impl MaybeProgress {
         }
     }
 
-    /// Advances without updating message.
-    pub fn tick_silent(&self) {
-        match self {
-            Self::Real(p) => p.tick_silent(),
-            Self::Noop(p) => p.tick_silent(),
-        }
-    }
-
-    /// Finishes with a message.
-    pub fn finish(&self, message: &str) {
-        match self {
-            Self::Real(p) => p.finish(message),
-            Self::Noop(p) => p.finish(message),
-        }
-    }
 
     /// Finishes and clears.
     pub fn finish_and_clear(&self) {

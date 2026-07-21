@@ -119,14 +119,6 @@ impl Agent {
         )
     }
 
-    /// Returns `true` if this is a custom, non-built-in agent name.
-    ///
-    /// Whether a built-in agent was explicitly specified is stored on
-    /// [`DetectionResult::method`], not on the [`Agent`] enum.
-    #[must_use]
-    pub const fn is_explicit(&self) -> bool {
-        matches!(self, Self::Custom(_))
-    }
 
     /// Parse an agent name string into an Agent enum.
     ///

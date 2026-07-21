@@ -848,30 +848,6 @@ impl EvaluationResult {
         );
     }
 
-    /// Convenience: query the supplied [`HistoryDb`] for the number of
-    /// times this command's `command_hash` was blocked within
-    /// `config.history_window`, then apply graduation. On any history
-    /// query error, falls back to session-only graduation (fail-open) so
-    /// the hot path never errors out.
-    pub fn apply_graduation_with_history_db(
-        &mut self,
-        command: &str,
-        history: &crate::history::HistoryDb,
-        config: &crate::config::ResponseConfig,
-    ) {
-        if !config.is_enabled() {
-            return;
-        }
-        let window = config.history_window_duration();
-        let history_count = match history.count_command_blocks_in_window(command, window) {
-            Ok(n) => Some(n),
-            Err(e) => {
-                tracing::debug!(error = %e, "history count query failed; falling back to session-only graduation");
-                None
-            }
-        };
-        self.apply_graduation_with_history_count(history_count, config);
-    }
 
     /// Record the command in session tracking and apply graduation.
     ///
@@ -1158,33 +1134,8 @@ pub struct DetailedEvaluationResult {
 }
 
 impl DetailedEvaluationResult {
-    /// Check if the command was allowed.
-    #[inline]
-    #[must_use]
-    pub fn is_allowed(&self) -> bool {
-        self.result.is_allowed()
-    }
 
-    /// Check if the command was denied.
-    #[inline]
-    #[must_use]
-    pub fn is_denied(&self) -> bool {
-        self.result.is_denied()
-    }
 
-    /// Get the core evaluation result.
-    #[inline]
-    #[must_use]
-    pub fn into_result(self) -> EvaluationResult {
-        self.result
-    }
-
-    /// Get a reference to the core evaluation result.
-    #[inline]
-    #[must_use]
-    pub const fn result(&self) -> &EvaluationResult {
-        &self.result
-    }
 }
 
 /// Evaluate a command with detailed timing and diagnostic information.

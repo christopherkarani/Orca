@@ -462,20 +462,6 @@ impl OrcaError {
         }
     }
 
-    /// Create a new error with context.
-    #[must_use]
-    pub fn with_context(
-        code: ErrorCode,
-        message: impl Into<String>,
-        context: HashMap<String, serde_json::Value>,
-    ) -> Self {
-        Self {
-            code: code.as_str().to_string(),
-            category: code.category(),
-            message: message.into(),
-            context,
-        }
-    }
 
     /// Add a context field to the error.
     #[must_use]
@@ -502,16 +488,6 @@ impl OrcaError {
         .add_context("pattern_name", pattern_name)
     }
 
-    /// Create a pattern match timeout error.
-    #[must_use]
-    pub fn pattern_match_timeout(pattern_name: &str, timeout_ms: u64) -> Self {
-        Self::new(
-            ErrorCode::PatternMatchTimeout,
-            format!("Pattern '{pattern_name}' match timed out after {timeout_ms}ms"),
-        )
-        .add_context("pattern_name", pattern_name)
-        .add_context("timeout_ms", timeout_ms)
-    }
 
     /// Create a JSON parse error.
     #[must_use]
@@ -542,74 +518,6 @@ impl OrcaError {
         .add_context("path", path)
     }
 
-    /// Create a config parse error.
-    #[must_use]
-    pub fn config_parse_error(path: &str, details: &str) -> Self {
-        Self::new(
-            ErrorCode::ConfigParseError,
-            format!("Failed to parse configuration file '{path}': {details}"),
-        )
-        .add_context("path", path)
-    }
-
-    /// Create an allowlist load error.
-    #[must_use]
-    pub fn allowlist_load_error(layer: &str, path: &str, details: &str) -> Self {
-        Self::new(
-            ErrorCode::AllowlistLoadError,
-            format!("Failed to load {layer} allowlist from '{path}': {details}"),
-        )
-        .add_context("layer", layer)
-        .add_context("path", path)
-    }
-
-    /// Create an invalid rule ID format error.
-    #[must_use]
-    pub fn invalid_rule_id_format(rule_id: &str, details: &str) -> Self {
-        Self::new(
-            ErrorCode::InvalidRuleIdFormat,
-            format!("Invalid rule ID format '{rule_id}': {details}"),
-        )
-        .add_context("rule_id", rule_id)
-    }
-
-    /// Create an external pack load error.
-    #[must_use]
-    pub fn external_pack_load_failed(path: &str, details: &str) -> Self {
-        Self::new(
-            ErrorCode::ExternalPackLoadFailed,
-            format!("Failed to load external pack from '{path}': {details}"),
-        )
-        .add_context("path", path)
-    }
-
-    /// Create a hook protocol error.
-    #[must_use]
-    pub fn hook_protocol_error(details: &str) -> Self {
-        Self::new(
-            ErrorCode::HookProtocolError,
-            format!("Hook protocol error: {details}"),
-        )
-    }
-
-    /// Create a stdin read error.
-    #[must_use]
-    pub fn stdin_read_error(details: &str) -> Self {
-        Self::new(
-            ErrorCode::StdinReadError,
-            format!("Failed to read from stdin: {details}"),
-        )
-    }
-
-    /// Create a file scan error.
-    #[must_use]
-    pub fn file_scan_error(file: &str, details: &str) -> Self {
-        Self::new(
-            ErrorCode::FileScanError,
-            format!("Error scanning file '{file}': {details}"),
-        )
-        .add_context("file", file)
-    }
 
     /// Convert to JSON string.
     #[must_use]
@@ -622,11 +530,6 @@ impl OrcaError {
         })
     }
 
-    /// Convert to pretty-printed JSON string.
-    #[must_use]
-    pub fn to_json_pretty(&self) -> String {
-        serde_json::to_string_pretty(self).unwrap_or_else(|_| self.to_json())
-    }
 }
 
 impl fmt::Display for OrcaError {
@@ -657,11 +560,6 @@ impl ErrorResponse {
         serde_json::to_string(self).unwrap_or_else(|_| self.error.to_json())
     }
 
-    /// Convert to pretty-printed JSON string.
-    #[must_use]
-    pub fn to_json_pretty(&self) -> String {
-        serde_json::to_string_pretty(self).unwrap_or_else(|_| self.to_json())
-    }
 }
 
 #[cfg(test)]

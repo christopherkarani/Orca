@@ -115,19 +115,7 @@ impl Span {
         &command[self.byte_range.clone()]
     }
 
-    /// Returns the length of this span in bytes.
-    #[inline]
-    #[must_use]
-    pub const fn len(&self) -> usize {
-        self.byte_range.end - self.byte_range.start
-    }
 
-    /// Returns true if this span is empty.
-    #[inline]
-    #[must_use]
-    pub const fn is_empty(&self) -> bool {
-        self.byte_range.start == self.byte_range.end
-    }
 }
 
 type SpanVec = SmallVec<[Span; 32]>;
@@ -174,10 +162,6 @@ impl CommandSpans {
             .filter(|s| s.kind.requires_pattern_check())
     }
 
-    /// Get only data spans (safe to skip).
-    pub fn data_spans(&self) -> impl Iterator<Item = &Span> {
-        self.spans.iter().filter(|s| s.kind.is_safe_data())
-    }
 
     /// Returns true if any span requires pattern checking.
     #[must_use]
@@ -185,11 +169,6 @@ impl CommandSpans {
         self.spans.iter().any(|s| s.kind.requires_pattern_check())
     }
 
-    /// Returns true if the entire command is safe data (rare).
-    #[must_use]
-    pub fn is_all_data(&self) -> bool {
-        !self.spans.is_empty() && self.spans.iter().all(|s| s.kind.is_safe_data())
-    }
 
     /// Extract the text content for all executable spans.
     #[must_use]
@@ -753,20 +732,6 @@ pub struct SafeFlagEntry {
 }
 
 impl SafeFlagEntry {
-    /// Create a new entry with both short and long flags.
-    #[must_use]
-    pub const fn new(
-        command: &'static str,
-        short_flag: Option<&'static str>,
-        long_flag: Option<&'static str>,
-    ) -> Self {
-        Self {
-            command,
-            short_flag,
-            long_flag,
-            multi_value: false,
-        }
-    }
 
     /// Create an entry with only a short flag.
     #[must_use]
@@ -812,20 +777,6 @@ impl SafeFlagEntry {
         }
     }
 
-    /// Create an entry with both short and long flags that can take multiple values.
-    #[must_use]
-    pub const fn both_multi(
-        command: &'static str,
-        short: &'static str,
-        long: &'static str,
-    ) -> Self {
-        Self {
-            command,
-            short_flag: Some(short),
-            long_flag: Some(long),
-            multi_value: true,
-        }
-    }
 }
 
 /// The default safe string registry with v1 entries.

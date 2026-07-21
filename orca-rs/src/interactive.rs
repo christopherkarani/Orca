@@ -241,11 +241,6 @@ impl Default for InteractiveConfig {
 }
 
 impl InteractiveConfig {
-    /// Create a new interactive config with default values.
-    #[must_use]
-    pub fn new() -> Self {
-        Self::default()
-    }
 
     /// Get the timeout as a `Duration`.
     #[must_use]

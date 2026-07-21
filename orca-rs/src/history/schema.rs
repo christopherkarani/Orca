@@ -401,15 +401,6 @@ impl CommandEntry {
         self.rule_id.clone().or_else(|| self.compute_rule_id())
     }
 
-    /// Ensure `rule_id` is set from `pack_id` and `pattern_name` if not already set.
-    /// Returns true if `rule_id` was set or already present.
-    pub fn ensure_rule_id(&mut self) -> bool {
-        if self.rule_id.is_some() {
-            return true;
-        }
-        self.rule_id = self.compute_rule_id();
-        self.rule_id.is_some()
-    }
 }
 
 /// Aggregate outcome counts for history stats.
@@ -1036,30 +1027,6 @@ impl HistoryDb {
         Ok(count_to_u32(sv_to_i64(&row.values()[0])))
     }
 
-    /// Count occurrences of a specific command (by `command_hash`) blocked
-    /// within the given lookback window. Used by the graduated-response
-    /// system to escalate Standard/Lenient mode based on cross-process
-    /// repetition that the in-process session counter cannot observe.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the underlying SQL query fails.
-    pub fn count_command_blocks_in_window(
-        &self,
-        command: &str,
-        window: Duration,
-    ) -> Result<u32, HistoryError> {
-        let hash = command_hash_for(command);
-        let cutoff_ts = format_timestamp(Utc::now() - window);
-        let row = self.conn.query_row_with_params(
-            "SELECT COUNT(*) FROM commands
-             WHERE command_hash = ?1
-               AND outcome = 'deny'
-               AND timestamp >= ?2",
-            &[text_sv(hash), text_sv(cutoff_ts)],
-        )?;
-        Ok(count_to_u32(sv_to_i64(&row.values()[0])))
-    }
 
     /// Prune history entries older than the specified number of days.
     ///
@@ -1834,17 +1801,6 @@ impl HistoryDb {
         Ok(())
     }
 
-    /// Checkpoint with TRUNCATE mode (resets WAL file).
-    ///
-    /// This is more aggressive and may block briefly, but reclaims disk space.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the checkpoint fails.
-    pub fn checkpoint_truncate(&self) -> Result<(), HistoryError> {
-        self.conn.execute("PRAGMA wal_checkpoint(TRUNCATE);")?;
-        Ok(())
-    }
 
     // ========================================================================
     // Auto-Prune Support
@@ -1900,71 +1856,6 @@ impl HistoryDb {
     // Statistics Cache
     // ========================================================================
 
-    /// Get a cached statistic value.
-    ///
-    /// Returns None if the key doesn't exist or is stale (older than `max_age_secs`).
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the query fails.
-    pub fn get_cached_stat(
-        &self,
-        key: &str,
-        max_age_secs: i64,
-    ) -> Result<Option<i64>, HistoryError> {
-        let result = self.conn.query_row_with_params(
-            "SELECT value, updated_at FROM stats_cache WHERE key = ?1",
-            &[text_sv(key)],
-        );
-
-        match result {
-            Ok(row) => {
-                let vals = row.values();
-                let value = sv_to_i64(&vals[0]);
-                let updated_at = sv_to_string(&vals[1]);
-                if let Ok(updated) = chrono::DateTime::parse_from_rfc3339(&updated_at) {
-                    let age_secs = (Utc::now() - updated.with_timezone(&Utc)).num_seconds();
-                    if age_secs <= max_age_secs {
-                        return Ok(Some(value));
-                    }
-                }
-                Ok(None) // Stale or invalid timestamp
-            }
-            Err(_) => Ok(None),
-        }
-    }
-
-    /// Update a cached statistic value.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the upsert fails.
-    pub fn update_cached_stat(&self, key: &str, value: i64) -> Result<(), HistoryError> {
-        let now = format_timestamp(Utc::now());
-        self.conn.execute_with_params(
-            "INSERT INTO stats_cache (key, value, updated_at) VALUES (?1, ?2, ?3)
-             ON CONFLICT(key) DO UPDATE SET value = ?2, updated_at = ?3",
-            &[text_sv(key), SqliteValue::Integer(value), text_sv(now)],
-        )?;
-        Ok(())
-    }
-
-    /// Increment a cached statistic value atomically.
-    ///
-    /// Creates the key with value 1 if it doesn't exist.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the operation fails.
-    pub fn increment_cached_stat(&self, key: &str) -> Result<(), HistoryError> {
-        let now = format_timestamp(Utc::now());
-        self.conn.execute_with_params(
-            "INSERT INTO stats_cache (key, value, updated_at) VALUES (?1, 1, ?2)
-             ON CONFLICT(key) DO UPDATE SET value = value + 1, updated_at = ?2",
-            &[text_sv(key), text_sv(now)],
-        )?;
-        Ok(())
-    }
 
     // ========================================================================
     // Health Check

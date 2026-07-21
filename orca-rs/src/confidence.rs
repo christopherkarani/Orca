@@ -85,23 +85,6 @@ impl ConfidenceSignal {
         }
     }
 
-    /// Human-readable description of this signal.
-    #[must_use]
-    pub const fn description(self) -> &'static str {
-        match self {
-            Self::ExecutedSpan => "match is in executed code",
-            Self::InlineCodeSpan => "match is in inline code (bash -c, python -c, etc.)",
-            Self::DataSpan => "match is in a data string (single-quoted)",
-            Self::CommentSpan => "match is in a comment",
-            Self::ArgumentSpan => "match is in a string argument to a safe command",
-            Self::HeredocBodySpan => "match is in a heredoc body",
-            Self::UnknownSpan => "match context is ambiguous",
-            Self::SanitizedRegion => "match was in a region masked by sanitization",
-            Self::ExecutionOperatorsNearby => "execution operators (|, ;, &&) found nearby",
-            Self::CommandPosition => "match is at command position",
-            Self::ArgumentPosition => "match is in argument position",
-        }
-    }
 }
 
 /// A confidence score with the signals that contributed to it.
@@ -130,16 +113,6 @@ impl ConfidenceScore {
         }
     }
 
-    /// Create a low confidence score.
-    #[must_use]
-    pub fn low(signal: ConfidenceSignal) -> Self {
-        let mut signals = SmallVec::new();
-        signals.push(signal);
-        Self {
-            value: signal.weight(),
-            signals,
-        }
-    }
 
     /// Add a signal and adjust the score.
     pub fn add_signal(&mut self, signal: ConfidenceSignal) {
