@@ -2163,7 +2163,12 @@ test "deny block keeps exit code and does not print the flat line" {
     try std.testing.expect(std.mem.indexOf(u8, stderr_writer.buffered(), "orca run: command denied by command guard.\n") == null);
 }
 
-test "parse --os-sandbox auto|on|off; invalid fails usage" {
+test "parse --os-sandbox accepts auto|on|off; invalid and missing fail usage" {
+    // Valid tokens match OsSandboxMode (CLI uses the same parser).
+    try std.testing.expectEqual(sandbox.posture.OsSandboxMode.auto, sandbox.posture.OsSandboxMode.parse("auto").?);
+    try std.testing.expectEqual(sandbox.posture.OsSandboxMode.on, sandbox.posture.OsSandboxMode.parse("on").?);
+    try std.testing.expectEqual(sandbox.posture.OsSandboxMode.off, sandbox.posture.OsSandboxMode.parse("off").?);
+
     var stdout_buf: [512]u8 = undefined;
     var stderr_buf: [512]u8 = undefined;
     var stdout_writer: std.Io.Writer = .fixed(&stdout_buf);

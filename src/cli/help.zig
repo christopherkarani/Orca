@@ -72,7 +72,7 @@ pub const commands =
                 "Options: --workspace <path>, --mode observe|ask|strict|ci, --policy <path>, --session-name <name>, --no-secrets, --secretless, --inherit-env, --no-network, --allow-network <domain>, --network observe|ask|allowlist|open|off, --network-backend decision-only|proxy, --os-sandbox auto|on|off, --require-backend <capability>, --help",
                 "Strict and CI modes default to environments without secret access. --secretless replaces policy-visible secret env values with non-resolving orca-secret:// local-dummy references (not usable as raw model API keys; opt-in strip/demo only — not day-1 model auth). --inherit-env is allowed only when the selected policy permits inheritance.",
                 "Network flags update the run-time policy and audit network decisions. --network-backend proxy starts an explicit localhost proxy and injects HTTP_PROXY/HTTPS_PROXY/ALL_PROXY; HTTPS CONNECT is host/port only without interception.",
-                "--os-sandbox auto|on|off controls the OS filesystem sandbox (default auto). on fails closed when the platform backend cannot attach; auto degrades loudly when unavailable; off disables OS apply.",
+                "--os-sandbox auto|on|off controls the OS filesystem sandbox (default auto). on fails closed when the platform backend cannot attach. auto: degrades loudly when no backend plan exists; fails closed on incomplete env scrub/allowlist; fails closed if attach fails after materials are prepared. off disables OS apply.",
                 "Linux (Landlock): when active, the session banner reports workspace child RW with workspace-root RO — create/write at the workspace root is denied; write works under pre-existing non-control children. macOS (Seatbelt): full workspace subpath RW minus control-root carve-outs (create-at-root allowed). Neither path is network-sandboxed.",
                 "Linux uses platform feature detection where available. Optional kernel features are reported honestly and are not claimed active unless actually active.",
             },
@@ -833,6 +833,22 @@ pub fn findCommand(name: []const u8) ?CommandInfo {
         if (std.mem.eql(u8, command.name, name)) return command;
     }
     return null;
+}
+
+test "run help documents --os-sandbox auto degrade and fail-closed paths" {
+    const info = findCommand("run") orelse return error.TestUnexpectedResult;
+    var joined: [4096]u8 = undefined;
+    var w: std.Io.Writer = .fixed(&joined);
+    for (info.details) |line| {
+        try w.writeAll(line);
+        try w.writeAll("\n");
+    }
+    const text = w.buffered();
+    try std.testing.expect(std.mem.indexOf(u8, text, "--os-sandbox auto|on|off") != null);
+    // Three auto outcomes (Z-6): degrade when no backend plan; scrub fail-closed; attach fail-closed.
+    try std.testing.expect(std.mem.indexOf(u8, text, "degrades loudly when no backend plan exists") != null);
+    try std.testing.expect(std.mem.indexOf(u8, text, "fails closed on incomplete env scrub/allowlist") != null);
+    try std.testing.expect(std.mem.indexOf(u8, text, "fails closed if attach fails after materials are prepared") != null);
 }
 
 test "host launch allowlist is the single source for help alias entries" {

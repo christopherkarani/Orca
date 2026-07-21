@@ -160,11 +160,49 @@ pub fn auditSandboxPosture(
 
 /// Format mechanism-neutral OS sandbox banner line for session start.
 pub fn formatOsSandboxBannerLine(buf: []u8, receipt: sandbox.posture.AttachReceipt) []const u8 {
-    // Thin wrapper: catch maps OOM/format overflow to a safe fallback string.
-    return sandbox.posture.formatSessionBanner(buf, receipt) catch "OS sandbox: unavailable";
+    // Thin wrapper: on format overflow, keep the receipt posture tag only.
+    // Never invent "unavailable" for an active/disabled/failed receipt (Z-17).
+    return sandbox.posture.formatSessionBanner(buf, receipt) catch switch (receipt.posture) {
+        .active => "OS sandbox: active",
+        .unavailable => "OS sandbox: unavailable",
+        .failed => "OS sandbox: failed",
+        .disabled => "OS sandbox: disabled",
+    };
 }
 
 // ── tests ──────────────────────────────────────────────────────────────────
+
+test "isSandboxSpawnFailure classifies ApplyFailed ForkFailed Unsupported ExecFailed; not FileNotFound" {
+    try std.testing.expect(isSandboxSpawnFailure(error.ApplyFailed));
+    try std.testing.expect(isSandboxSpawnFailure(error.ForkFailed));
+    try std.testing.expect(isSandboxSpawnFailure(error.Unsupported));
+    try std.testing.expect(isSandboxSpawnFailure(error.ExecFailed));
+    try std.testing.expect(!isSandboxSpawnFailure(error.FileNotFound));
+}
+
+test "sandboxSpawnFailReason maps classified spawn errors" {
+    try std.testing.expectEqualStrings("child_apply_failed", sandboxSpawnFailReason(error.ApplyFailed));
+    try std.testing.expectEqualStrings("sandbox_fork_failed", sandboxSpawnFailReason(error.ForkFailed));
+    try std.testing.expectEqualStrings("sandbox_backend_unsupported", sandboxSpawnFailReason(error.Unsupported));
+    try std.testing.expectEqualStrings("sandbox_exec_failed", sandboxSpawnFailReason(error.ExecFailed));
+    // Unrelated errors fall through to a generic reason (not classified true above).
+    try std.testing.expectEqualStrings("sandbox_spawn_failed", sandboxSpawnFailReason(error.FileNotFound));
+}
+
+test "formatOsSandboxBannerLine does not invent unavailable for active on format error" {
+    // Tiny buffer forces formatSessionBanner NoSpaceLeft; fallback must keep posture tag.
+    var tiny: [8]u8 = undefined;
+    const active = sandbox.posture.activeReceipt(
+        .landlock,
+        "abcd0123abcd0123abcd0123abcd0123abcd0123abcd0123abcd0123abcd0123",
+        "workspace child RW, root RO, system RO, no home",
+    );
+    try std.testing.expect(active.posture == .active);
+    const line = formatOsSandboxBannerLine(&tiny, active);
+    try std.testing.expect(std.mem.indexOf(u8, line, "unavailable") == null);
+    try std.testing.expect(std.mem.indexOf(u8, line, "active") != null);
+    try std.testing.expect(std.mem.startsWith(u8, line, "OS sandbox:"));
+}
 
 test "auto degrade warns only when no child plan" {
     var stderr_buf: [512]u8 = undefined;
