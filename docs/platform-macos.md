@@ -36,7 +36,7 @@ Protected agent launches (`orca <agent>`) use the run engine and can attach a cu
 
 ## Network route forcing
 
-When the proxy backend is active and OS sandbox attach succeeds, Orca renders the child Seatbelt profile without broad `(allow network*)` and permits outbound TCP only to the Orca loopback proxy port. The runtime banner reports `network: proxy route-forced...`, and the child env exports `ORCA_PROXY_ROUTE_FORCED=true` plus `ORCA_TRANSPARENT_NETWORK_ENFORCEMENT=tcp-port-route-forced` (TCP route-force honesty label; Seatbelt still does not claim full XPC/mach isolation).
+When the proxy backend is active and OS sandbox attach succeeds, Orca renders the child Seatbelt profile without broad `(allow network*)` and permits outbound TCP only to the Orca loopback proxy port. Inbound TCP and bind remain allowed so agents can still start listeners (dev servers, test databases, ephemeral binds); route forcing is outbound connect mediation, not a listener lockdown (same product intent as Landlock connect-only rules). The runtime banner reports `network: proxy route-forced...`, and the child env exports `ORCA_PROXY_ROUTE_FORCED=true` plus `ORCA_TRANSPARENT_NETWORK_ENFORCEMENT=tcp-port-route-forced` (TCP route-force honesty label; Seatbelt still does not claim full XPC/mach isolation).
 
 Proxy startup alone is not enough: without a route-forced OS sandbox session, the child env reports `ORCA_PROXY_ROUTE_FORCED=false`, and `--require-backend network_enforce` fails closed.
 
@@ -62,7 +62,7 @@ Baseline SBPL intentionally allows (product residual, not a claim of confinement
 | `(allow mach-lookup)` | dyld / system mach services (unfiltered) | Unrestricted mach service lookup; not a service allowlist |
 | `(allow network*)` | Agent network use when route forcing is not requested | Network is unconstrained by the FS-only profile |
 
-When route forcing is requested, the broad network grant is omitted and replaced with a single `network-outbound` TCP rule for the local proxy port.
+When route forcing is requested, the broad network grant is omitted and replaced with: unrestricted `(allow network-inbound)` / `(allow network-bind)`, plus a single `network-outbound` TCP rule for the local proxy port.
 
 **FS claims that remain accurate** when session-attach succeeds: workspace RW (minus control-root write carve-outs), system RO prefixes, no broad `$HOME` grant, and deny of the `/System/Volumes/Data` firmlink home surface (with workspace grants emitted as `/Users/…` form so Seatbelt path filters match live).
 

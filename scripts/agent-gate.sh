@@ -5,7 +5,7 @@
 #   ./scripts/agent-gate.sh                 # auto from git dirty + staged paths
 #   ./scripts/agent-gate.sh --dry-run       # print chosen command only
 #   ./scripts/agent-gate.sh --paths a.zig b.rs
-#   ./scripts/agent-gate.sh compile|units|full|check|core|rust|dx|sandbox|policy|intercept|dashboard|plugin
+#   ./scripts/agent-gate.sh compile|units|full|check|core|rust|dx|sandbox|policy|intercept|dashboard|plugin|scripts
 #
 # Explicit modes always run that gate. Auto mode uses path heuristics.
 # Domain slices: prefer test-slice.sh for -Dtest-filter; agent-gate picks the slice.
@@ -38,6 +38,7 @@ Modes:
   rust        cargo test --lib in orca-rs/
   dashboard   npm test in orca-dashboard-ui/
   plugin      package-local tests for dirty integrations/*-plugin paths
+  scripts     bash -n (+ light dry-run smoke) for dirty scripts/**
   auto        (default) choose from dirty paths / --paths
 EOF
 }
@@ -53,7 +54,7 @@ while [[ $# -gt 0 ]]; do
       done
       ;;
     -h|--help) usage; exit 0 ;;
-    check|compile|units|full|core|sandbox|policy|intercept|dx|rust|dashboard|plugin|auto)
+    check|compile|units|full|core|sandbox|policy|intercept|dx|rust|dashboard|plugin|scripts|auto)
       mode="$1"
       shift
       ;;
@@ -211,10 +212,20 @@ choose_auto() {
     if [[ -z "${zig_gate}" ]]; then
       zig_gate=units
     fi
-    # Mixed Zig + orca-rs: run both stacks so auto cannot green only half (Codex).
+    # Mixed Zig + other stacks: append every relevant package gate so auto
+    # cannot green after validating only half of a cross-stack change (Codex).
     local out="${zig_gate}"
     if [[ "${has_rust}" -eq 1 ]]; then
       out+=" rust"
+    fi
+    if [[ "${has_dashboard}" -eq 1 ]]; then
+      out+=" dashboard"
+    fi
+    if [[ "${has_plugin}" -eq 1 ]]; then
+      out+=" plugin"
+    fi
+    if [[ "${has_scripts}" -eq 1 ]]; then
+      out+=" scripts"
     fi
     echo "${out}"
     return
@@ -232,11 +243,19 @@ choose_auto() {
     if [[ "${has_rust}" -eq 1 ]]; then
       out+=" rust"
     fi
+    if [[ "${has_scripts}" -eq 1 ]]; then
+      out+=" scripts"
+    fi
     echo "${out}"
     return
   fi
+  # scripts/** only: bash -n + light smoke — not unrelated Zig compile-fast.
   if [[ "${has_scripts}" -eq 1 ]]; then
-    echo check
+    local out="scripts"
+    if [[ "${has_rust}" -eq 1 ]]; then
+      out+=" rust"
+    fi
+    echo "${out}"
     return
   fi
   if [[ "${has_other}" -eq 1 ]]; then
@@ -244,6 +263,82 @@ choose_auto() {
     return
   fi
   echo check
+}
+
+# Shell scripts under scripts/ that path heuristics should syntax-check.
+script_sh_paths() {
+  local p
+  if [[ ${#paths[@]} -eq 0 ]]; then
+    # Forced `scripts` mode with no path list: syntax-check this gate itself.
+    printf '%s\n' "scripts/agent-gate.sh"
+    return
+  fi
+  for p in "${paths[@]}"; do
+    case "${p}" in
+      scripts/*.sh|scripts/*/*.sh) printf '%s\n' "${p}" ;;
+    esac
+  done
+}
+
+run_scripts_gate() {
+  local -a sh_files=()
+  local f
+  local saw_agent_gate=0
+
+  while IFS= read -r f; do
+    [[ -n "${f}" ]] || continue
+    sh_files+=("${f}")
+    if [[ "${f}" == "scripts/agent-gate.sh" ]]; then
+      saw_agent_gate=1
+    fi
+  done < <(script_sh_paths)
+
+  if [[ ${#sh_files[@]} -eq 0 ]]; then
+    echo "[agent-gate] scripts gate: no scripts/**/*.sh paths to check"
+    return 0
+  fi
+
+  for f in "${sh_files[@]}"; do
+    if [[ ! -f "${f}" ]]; then
+      echo "[agent-gate] scripts gate: skip missing ${f}"
+      continue
+    fi
+    if [[ "${dry_run}" -eq 1 ]]; then
+      echo "[agent-gate] dry-run: bash -n ${f}"
+    else
+      echo "[agent-gate] bash -n ${f}"
+      bash -n "${f}"
+    fi
+  done
+
+  # Light smoke when agent-gate itself changed: selection must compose mixed gates.
+  if [[ "${saw_agent_gate}" -eq 1 ]]; then
+    local smoke_cmd=(
+      ./scripts/agent-gate.sh --dry-run
+      --paths src/cli/run.zig orca-dashboard-ui/app/dashboard.ts scripts/test-fast.sh
+    )
+    if [[ "${dry_run}" -eq 1 ]]; then
+      echo "[agent-gate] dry-run: ${smoke_cmd[*]}"
+    else
+      echo "[agent-gate] scripts smoke: agent-gate mixed-path dry-run"
+      local out
+      out="$("${smoke_cmd[@]}")"
+      printf '%s\n' "${out}"
+      # Expect Zig + dashboard + scripts; fail closed if composition regresses.
+      if ! printf '%s\n' "${out}" | grep -q 'selected=units'; then
+        echo "error: agent-gate smoke expected units in selection" >&2
+        exit 3
+      fi
+      if ! printf '%s\n' "${out}" | grep -q 'dashboard'; then
+        echo "error: agent-gate smoke expected dashboard in selection" >&2
+        exit 3
+      fi
+      if ! printf '%s\n' "${out}" | grep -q 'scripts'; then
+        echo "error: agent-gate smoke expected scripts in selection" >&2
+        exit 3
+      fi
+    fi
+  fi
 }
 
 run_dashboard_gate() {
@@ -318,6 +413,10 @@ run_gate() {
   fi
   if [[ "${g}" == "plugin" ]]; then
     run_plugin_gate
+    return
+  fi
+  if [[ "${g}" == "scripts" ]]; then
+    run_scripts_gate
     return
   fi
 

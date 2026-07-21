@@ -34,9 +34,11 @@ pub fn renderSbpl(allocator: std.mem.Allocator, compiled: *const profile.Compile
 
 /// Render a custom SBPL profile string with optional child network route forcing.
 /// Route forcing removes broad `network*` and permits outbound TCP only to the
-/// local proxy port. macOS Seatbelt accepts `localhost` (not numeric loopback)
-/// for TCP address filters; live tests prove that filter still matches numeric
-/// `127.0.0.1` client connects, avoiding DNS inside the sandboxed child.
+/// local proxy port, while keeping inbound/bind unrestricted so agents can still
+/// start listeners (dev servers, test DBs, ephemeral binds) — matching Landlock's
+/// connect-only mediation. macOS Seatbelt accepts `localhost` (not numeric
+/// loopback) for TCP address filters; live tests prove that filter still matches
+/// numeric `127.0.0.1` client connects, avoiding DNS inside the sandboxed child.
 pub fn renderSbplWithOptions(
     allocator: std.mem.Allocator,
     compiled: *const profile.CompiledProfile,
@@ -66,8 +68,14 @@ pub fn renderSbplWithOptions(
         \\
     );
     if (options.network_route_forcing) |route| {
+        // Outbound: only the Orca loopback proxy. Inbound/bind stay open — route
+        // forcing is connect mediation, not a listener lockdown (parity with
+        // Landlock ACCESS_NET_CONNECT_TCP-only handling).
         const line = try std.fmt.allocPrint(allocator,
-            \\;; network route forcing: child outbound TCP may reach only the Orca loopback proxy
+            \\;; network route forcing: outbound TCP only to Orca loopback proxy;
+            \\;; inbound/bind unrestricted (dev servers, ephemeral listeners)
+            \\(allow network-inbound)
+            \\(allow network-bind)
             \\(allow network-outbound (remote tcp "localhost:{d}"))
             \\
         , .{route.proxy_port});
@@ -422,6 +430,10 @@ test "SBPL route forcing removes broad network and allows only proxy TCP port" {
     try std.testing.expect(std.mem.indexOf(u8, sbpl, "(remote tcp \"*:43123\")") == null);
     try std.testing.expect(std.mem.indexOf(u8, sbpl, "(remote tcp)") == null);
     try std.testing.expect(std.mem.indexOf(u8, sbpl, "(remote udp)") == null);
+    // Inbound/bind must remain allowed so route-forced agents can listen.
+    try std.testing.expect(std.mem.indexOf(u8, sbpl, "(allow network-inbound)") != null);
+    try std.testing.expect(std.mem.indexOf(u8, sbpl, "(allow network-bind)") != null);
+    try std.testing.expect(std.mem.indexOf(u8, sbpl, "(allow network-outbound (remote tcp \"localhost:43123\"))") != null);
 }
 
 test "SBPL default remains explicit unrestricted network" {

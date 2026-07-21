@@ -195,7 +195,7 @@ pub const ApplyResult = struct {
         const network_scope: []const u8 = if (self.network_route_forced)
             switch (mechanism) {
                 .landlock => "proxy route-forced (TCP connect port-scoped to proxy port; not address-scoped; UDP unrestricted)",
-                .seatbelt => "proxy route-forced (outbound TCP to Orca loopback proxy only)",
+                .seatbelt => "proxy route-forced (outbound TCP to Orca loopback proxy only; inbound/bind unrestricted)",
                 .none => unreachable,
             }
         else
@@ -1104,7 +1104,7 @@ test "activateAfterHandshake sets seatbelt loopback route-forced network_scope" 
     _ = try result.activateAfterHandshake();
     try std.testing.expect(result.receipt.isActive());
     try std.testing.expectEqualStrings(
-        "proxy route-forced (outbound TCP to Orca loopback proxy only)",
+        "proxy route-forced (outbound TCP to Orca loopback proxy only; inbound/bind unrestricted)",
         result.receipt.network_scope,
     );
     // Unforced path stays unrestricted.
