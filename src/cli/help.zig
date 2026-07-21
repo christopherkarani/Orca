@@ -534,7 +534,7 @@ pub const commands =
         "OpenClaw: runs 'openclaw plugins uninstall orca-openclaw-plugin'",
         "Hermes: runs 'hermes plugins disable orca' and removes ~/.hermes/plugins/orca/",
         "Codex / Claude: removes known plugin paths (host-managed install locations).",
-        "Restart protection later with: orca setup (guided) or orca plugin install <host>",
+        "Restart protection later with: orca start",
     } },
     .{ .name = "uninstall", .summary = "Uninstall Orca from this machine", .usage = "orca uninstall [--plugins-only] [--keep-config] [--yes]", .category = .integrations, .details = &.{
         "Completely removes Orca and its integrations from the machine.",

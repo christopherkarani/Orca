@@ -12,22 +12,24 @@ That is powerful.
 
 It is also dangerous.
 
-Orca is **graded mediation** (`hook` | `wrapper` | `proxy` | `OS-enforced`), not a universal sandbox. Default `orca run` is typically **wrapper** (PATH shims). See [Protection grades](#protection-grades).
+Orca is **graded mediation** (not a universal sandbox): it evaluates actions on paths it actually mediates. Day-1 path is Safe Launch — get protected, run your agent, check status, review the session. See [Protection grades](#protection-grades) for what that guarantee means.
 
 ```bash
 # Install
 brew tap christopherkarani/orca
 brew install --formula orca
 
-# Initialize a policy
-orca init --preset generic-agent
+# Get protected (policy + hosts + Ask on risk)
+orca start
 
-# Run an agent with guardrails
-orca run -- claude
-orca run -- codex
-orca run -- hermes
-orca run -- openclaw
-orca run -- opencode
+# Run your agent
+orca claude
+# or: orca codex | orca pi | orca opencode | orca openclaw | orca hermes
+
+# Glance status · review last session · off-ramp
+orca status
+orca replay
+orca stop
 ```
 
 This project is free and open source under Apache 2.0. If Orca is useful to you, please star the repository — it helps visibility and keeps development going.
@@ -141,7 +143,7 @@ Result:
 Command was not executed.
 ```
 
-For actions that might be valid but risky, Orca can ask first:
+For actions that might be valid but risky, Orca asks in plain language:
 
 ```text
 Approval required
@@ -152,8 +154,11 @@ git push origin main
 Reason:
 Pushing to a protected branch requires human approval.
 
-Approve? [y/N]
+  [a] Once — allow this time
+  [A] Always this session
+  [d] Never / Deny
 ```
+
 
 ---
 
@@ -183,18 +188,19 @@ Actions on a mediation path are evaluated against your policy. Paths that bypass
 
 | Agent                  | Usage                                |
 | ---------------------- | ------------------------------------ |
-| Claude Code            | `orca run -- claude`                 |
-| Codex CLI              | `orca run -- codex`                  |
-| Hermes                 | `orca run -- hermes`                 |
-| OpenClaw               | `orca run -- openclaw`               |
-| OpenCode               | `orca run -- opencode`               |
-| Cursor / custom agents | use Orca as a wrapper or policy hook |
+| Claude Code            | `orca claude`                        |
+| Codex CLI              | `orca codex`                         |
+| Pi                     | `orca pi`                            |
+| OpenCode               | `orca opencode`                      |
+| OpenClaw               | `orca openclaw`                      |
+| Hermes                 | `orca hermes`                        |
+| Cursor / custom agents | advanced: `orca run -- <agent>`      |
 
-One policy file can protect multiple agents.
+One policy file can protect multiple agents. Host aliases are the taught launch path; `orca run` remains the engine for custom agents and CI.
 
 ---
 
-## Quick start
+## Quick start (Safe Launch)
 
 ### 1. Install Orca
 
@@ -209,125 +215,76 @@ Or use the install script:
 curl -fsSL https://raw.githubusercontent.com/christopherkarani/Orca/main/scripts/install.sh | sh
 ```
 
-Verify your setup:
+---
+
+### 2. Get protected
 
 ```bash
-orca doctor
+orca start
 ```
+
+`orca start` is the only day-1 onboarding door. It creates a policy when missing (Ask on risk), wires host integrations, and verifies core readiness. Re-run it to repair or update hosts.
+
+Then check the traffic light:
+
+```bash
+orca status
+```
+
+You should see **Protected** or **Limited**, plus a plain-language note that some paths can still bypass. Use `orca doctor` only when you need a deep capability matrix.
 
 ---
 
-### 2. Create a policy
+### 3. Run your agent
 
 ```bash
-orca init --preset generic-agent
-```
-
-This creates:
-
-```text
-.orca/policy.yaml
-```
-
-Example policy:
-
-```yaml
-mode: ask
-
-commands:
-  default: ask
-
-  allow:
-    - "git status"
-    - "git diff *"
-    - "npm test"
-    - "zig build *"
-
-  deny:
-    - "rm -rf *"
-    - "sudo *"
-    - "curl * | sh"
-    - "git reset --hard *"
-    - "terraform destroy *"
-    - "kubectl delete *"
-
-  approval:
-    - "git push *"
-    - "git push --force *"
-    - "aws * delete*"
-    - "gcloud * delete*"
-
-files:
-  read:
-    deny:
-      - "./.env"
-      - "~/.ssh/**"
-      - "**/*secret*"
-      - "**/*token*"
-
-  write:
-    approval:
-      - "./config/**"
-      - "./.github/**"
-      - "./infra/**"
-
-network:
-  default: ask
-  deny:
-    - "pastebin.com"
-    - "paste.rs"
-    - "webhook.site"
-  allow:
-    - "github.com"
-    - "api.github.com"
-```
-
----
-
-### 3. Run your agent through Orca
-
-```bash
-orca run -- claude
+orca claude
 ```
 
 ```bash
-orca run -- codex
+orca codex
 ```
 
 ```bash
-orca run -- hermes
+orca hermes
 ```
+
+When something looks risky, the interactive prompt offers **Once** / **Always** / **Never** — no rule ids required.
+
+Review what happened:
 
 ```bash
-orca run -- openclaw
+orca replay
 ```
 
-In interactive mode, Orca can ask before risky actions.
+Bare `orca replay` shows the last session; denied actions are highlighted. Off-ramp:
 
-In CI mode, Orca fails closed:
+```bash
+orca stop
+```
+
+For CI / automation (fails closed, no prompts), use the run engine:
 
 ```bash
 orca run --ci -- codex --prompt "Refactor auth"
 ```
 
-No prompts. Risky actions on the mediation path are blocked automatically.
-
 ---
 
 ## Protection grades
 
-Orca is **graded mediation**, not a universal OS sandbox. Canonical definitions, bypass classes, and the map from doctor / `orca start --protection` labels live in **[docs/compatibility.md](docs/compatibility.md#protection-grades-canonical)** (also linked from [docs/threat-model.md](docs/threat-model.md)).
+Orca is **graded mediation**, not a universal OS sandbox. Canonical definitions and bypass classes live in **[docs/compatibility.md](docs/compatibility.md#protection-grades-canonical)** (also linked from [docs/threat-model.md](docs/threat-model.md)).
 
 | Grade | Meaning | Typical surface |
 | --- | --- | --- |
 | `hook` | Host invokes Orca and honors veto | Native plugin / host hook that fires |
-| `wrapper` | PATH shims / `orca run` | Finite executable list; absolute paths may bypass |
+| `wrapper` | PATH shims / agent launch under Orca | Finite executable list; absolute paths may bypass |
 | `proxy` | Traffic must traverse an Orca proxy | MCP / optional network proxies |
-| `OS-enforced` | Kernel/sandbox backend enforcing for that session | After `orca run` child session-attach succeeds (`--os-sandbox`); doctor probes alone are not enough |
+| `OS-enforced` | Kernel/sandbox backend enforcing for that session | After child session-attach succeeds (`orca run --os-sandbox`); doctor probes alone are not enough |
 
-**Default `orca run`:** typically **`wrapper`**, plus optional OS FS session-attach under `--os-sandbox auto|on|off` (default `auto`). **`hook`** only when the host fires and honors veto. **`OS-enforced`** FS isolation only after a successful Landlock (Linux) or Seatbelt (macOS) attach for that child — not a doctor capability probe.
+**Safe Launch default:** `orca start` auto-selects the best available **Ask on risk** posture (hooks + wrappers when available). Day-1 status is **Protected | Limited | Off** with an honest caveat — not a grade matrix. **`OS-enforced`** FS isolation only after a successful Landlock (Linux) or Seatbelt (macOS) attach for that child.
 
-Quick map: doctor `wrapper-only` → grade `wrapper`; `orca start --protection firewall` → primarily `wrapper` (CLI label, not kernel firewall); `--protection maximum` → aspirational multi-grade (`hook` + `wrapper`), **not** `OS-enforced` unless that session completed child attach.
+Power users: `orca help --all` lists the full surface (`run`, `doctor`, `policy`, …).
 
 ---
 
@@ -342,7 +299,8 @@ orca demo blocked-action
 Then inspect what happened:
 
 ```bash
-orca replay --session last --only denied --verify
+orca replay
+orca replay --only denied --verify
 ```
 
 No AI agent required. No files are harmed.
@@ -385,10 +343,11 @@ No cloud service is required.
 Let Claude Code, Codex, or Hermes work longer without babysitting every command.
 
 ```bash
-orca run -- claude
+orca start
+orca claude
 ```
 
-Use Orca to ask before risky actions and block destructive ones.
+Use Orca to ask (Once / Always / Never) before risky actions and block destructive ones.
 
 ---
 
@@ -408,7 +367,8 @@ Protect:
 * destructive shell commands
 
 ```bash
-orca run -- hermes
+orca start
+orca hermes
 ```
 
 ---
@@ -459,9 +419,9 @@ Orca is designed to be honest about what it does and does not protect.
 
 ### What Orca does (when mediation is active)
 
-* launches agents through a policy-controlled process (`orca run` / wrapper grade)
+* launches agents through a policy-controlled process (`orca <agent>` / wrapper grade; `orca run` is the engine)
 * evaluates shell commands that hit PATH shims or host hooks that fire and honor veto
-* mediates file access on Orca-mediated write paths (staged writes; OS FS enforcement only after `orca run --os-sandbox` session-attach succeeds)
+* mediates file access on Orca-mediated write paths (staged writes; OS FS enforcement only after session-attach succeeds)
 * filters sensitive environment variables for Orca-launched children
 * detects secret-like access patterns on mediated paths and redacts audit output
 * applies network **decisions** for mediated traffic; blocks only when a proxy or OS-enforced backend is actually in path
@@ -514,22 +474,18 @@ orca run --ci -- hermes
 
 After each session, Orca stores a local audit trail.
 
-Review denied actions:
+Last session timeline (denials highlighted):
 
 ```bash
-orca replay --session last --only denied
+orca replay
 ```
 
-Verify integrity:
+Denied actions only / verify integrity / JSON:
 
 ```bash
-orca replay --session last --verify
-```
-
-Export JSON:
-
-```bash
-orca replay --session last --json
+orca replay --only denied
+orca replay --verify
+orca replay --json
 ```
 
 Session artifacts live under:
@@ -562,29 +518,25 @@ private keys
 high-entropy tokens
 ```
 
-Run with secretless mode:
+Secretless mode (advanced — not day-1) replaces raw values with broker references before the agent sees them. Coding agents that need env API keys often will not authenticate under secretless; prefer Safe Launch unless you know you need it. See [docs/credentials.md](docs/credentials.md).
 
 ```bash
 orca run --secretless -- claude
 ```
 
-In secretless mode, Orca replaces raw values with broker references before the agent sees them.
-
-The agent gets a reference.
-
-Not the secret.
-
 ---
 
 ## Native plugins
 
-`orca run` (grade **`wrapper`**) is the default mediation path for launching an agent under Orca. It is **not** OS-enforced by default and is not automatically stronger than a host **`hook`** that actually fires and honors veto — those grades stack when both are active. Kernel-level FS strength requires **`OS-enforced`** session-attach (`orca run --os-sandbox` + successful Landlock/Seatbelt child attach; doctor probes alone do not claim a live session).
+Safe Launch (`orca start` + `orca <agent>`) wires the usual wrapper path and host hooks when available. Wrapper mediation is **not** OS-enforced by default and is not automatically stronger than a host **`hook`** that actually fires and honors veto — those grades stack when both are active. Kernel-level FS strength requires **`OS-enforced`** session-attach (successful Landlock/Seatbelt child attach; doctor probes alone do not claim a live session).
 
-Some agents also support native plugins or hooks for deeper integration (grade **`hook`** when hooks fire and honor veto).
+Some agents also support native plugins or hooks for deeper integration (grade **`hook`** when hooks fire and honor veto). Prefer `orca start` for first-time host wiring.
 
 ### Hermes
 
 ```bash
+orca start --hosts hermes
+# or repair later:
 orca plugin install hermes --yes
 hermes plugins enable orca
 orca plugin doctor hermes
@@ -595,7 +547,7 @@ orca plugin doctor hermes
 **Supported protection path** (grade **`wrapper`**):
 
 ```bash
-orca run -- openclaw
+orca openclaw
 ```
 
 Optional plugin install (local path / `orca plugin install openclaw`) is install plumbing only — it does **not** prove **`hook`** enforcement. npm, ClawHub, and CLI-metadata loads of the native plugin are **`unprotected`**: OpenClaw currently no-ops `api.on`, so tool hooks do not fire and cannot block. See [`integrations/openclaw-plugin/README.md`](integrations/openclaw-plugin/README.md) and [protection grades](#protection-grades).
@@ -676,7 +628,7 @@ Longer-term:
 ## Documentation
 
 * [Install](docs/install.md)
-* [Quickstart](docs/quickstart.md)
+* [Quickstart (Safe Launch)](docs/quickstart.md)
 * [Policy reference](docs/policy.md)
 * [Credentials](docs/credentials.md)
 * [Replay](docs/replay.md)
@@ -684,14 +636,16 @@ Longer-term:
 * [Plugin security model](docs/integrations/plugin-security-model.md)
 * [Plugin troubleshooting](docs/integrations/plugin-troubleshooting.md)
 
+Default CLI help teaches Safe Launch only; full surface: `orca help --all`.
+
 ---
 
 ## Development
 
 ```bash
-zig build
-zig build test
-./zig-out/bin/orca --help
+./scripts/zig build
+./scripts/zig build test
+./zig-out/bin/orca help
 ./zig-out/bin/orca redteam --ci
 ```
 

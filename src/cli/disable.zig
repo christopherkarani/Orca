@@ -135,7 +135,7 @@ pub fn command(io: std.Io, argv: []const []const u8, stdout: anytype, stderr: an
         try stdout.print("⚠️  Disabled {d} plugin(s), {d} failed.\n", .{ success_count, fail_count });
     }
     try stdout.writeAll("Orca binary and policy files remain in place.\n");
-    try stdout.writeAll("Restart protection with: orca setup (guided) or orca plugin install <host>\n");
+    try stdout.writeAll("Restart protection with: orca start\n");
     return exit_codes.success;
 }
 

@@ -1,4 +1,6 @@
-# Quickstart
+# Quickstart (Safe Launch)
+
+Protected agent in a few minutes. Taught path only — no parallel setup/quickstart doors.
 
 ## 1. Build Or Install
 
@@ -12,58 +14,108 @@ From a clean checkout:
 
 The repository is pinned to Zig `0.16.0` (use `./scripts/zig` or `direnv allow` if system `zig` differs). After policy or CLI changes, run `./scripts/test-fast.sh`; run `./scripts/zig build test` before opening a PR. Release installs are covered in [install.md](install.md).
 
-## 2. Initialize A Policy
+For a package install (Homebrew, install script), see [install.md](install.md), then continue from step 2 with `orca` on your `PATH`.
+
+## 2. Get Protected
 
 ```sh
-./zig-out/bin/orca init --preset generic-agent
-./zig-out/bin/orca policy check .orca/policy.yaml
+./zig-out/bin/orca start
 ```
 
-Review the generated policy before using it for real work.
+`orca start` is the **only** onboarding door:
 
-The policy created by `init --preset generic-agent` (and `setup --auto`) is tuned for local coding agents: common dev commands (including plain `curl`, not `curl | sh`) are allowed, pipe-to-shell and `rm -rf` stay denied, and network egress defaults to `ask` with curated allow/ask hosts. Broad read protections for shell histories/browser data/macOS Library paths, staged writes, and explicit deny for `.git/**` and `.orca/**` (bare and `./` forms) remain. Edit `.orca/policy.yaml` for your workflow. Use `orca policy explain command 'your cmd'` and `orca policy explain network api.openai.com` to explore decisions.
+- creates `.orca/policy.yaml` when missing (Ask on risk / `generic-agent` preset)
+- wires host integrations
+- verifies core readiness (daemon + policy)
+- prints next steps: run an agent, then `status` / `replay`
 
-## 3. Check Local Capabilities
+Non-interactive / CI-friendly:
 
 ```sh
-./zig-out/bin/orca doctor
+./zig-out/bin/orca start --auto
+./zig-out/bin/orca start --auto --hosts claude,codex
 ```
 
-`doctor` is the source of truth for whether a feature is `active`, `partial`, `wrapper-only`, `observe-only`, `limited`, or `unavailable` on your platform.
+Public peers `orca setup` and `orca quickstart` are removed — use `orca start`. Power/CI scaffolding may still use advanced commands via `orca help --all`.
 
-## 4. Run A Protected Command
+## 3. Check Status
+
+```sh
+./zig-out/bin/orca status
+```
+
+Human output is a traffic light:
+
+| State | Meaning (glance) |
+| --- | --- |
+| **Protected** | Daemon ready + valid policy |
+| **Limited** | Daemon ready but policy missing/invalid |
+| **Off** | Daemon unavailable / incompatible |
+
+When not Off, status adds one honest note: mediation covers agents started via Orca; some paths can still bypass. For a deep capability matrix, use `orca doctor` (advanced).
+
+## 4. Run A Protected Agent
+
+Host aliases are the taught launch path:
+
+```sh
+./zig-out/bin/orca claude
+# or: codex | pi | opencode | openclaw | hermes
+```
+
+When a risky action needs approval, interactive sessions offer **Once** / **Always** / **Never** (no rule ids required). Session artifacts land under `.orca/sessions/<session-id>/`.
+
+Custom agents and automation still use the run engine (not the day-1 story):
 
 ```sh
 ./zig-out/bin/orca run -- echo hello
+./zig-out/bin/orca run --ci -- your-agent …
 ```
 
-Orca writes audit artifacts under `.orca/sessions/<session-id>/`.
+Orca is graded mediation, not a universal sandbox. Absolute paths, non-shimmed binaries, non-proxy traffic, and non-firing host hooks can still bypass. Canonical grades: [compatibility.md](compatibility.md#protection-grades-canonical).
 
-**Protection grade:** default `orca run` is typically **`wrapper`** (PATH shims). Absolute paths, non-shimmed binaries, non-proxy traffic, and non-firing host hooks can still bypass. Canonical grades and vocabulary map: [compatibility.md](compatibility.md#protection-grades-canonical).
-
-## 5. Replay The Session
+## 5. Replay The Last Session
 
 ```sh
-./zig-out/bin/orca replay --session last
-./zig-out/bin/orca replay --session last --verify
-./zig-out/bin/orca replay --session last --only denied --verify
+./zig-out/bin/orca replay
 ```
 
-`--verify` checks the tamper-evident hash chain.
-
-## 6. Export A Local Safety Report
-
-Report export is gated to a local Pro/Team license. Development builds include offline test licenses so the product gate can be exercised without a hosted service:
+Bare `orca replay` loads the **last** session and highlights denied actions. Useful flags:
 
 ```sh
-./zig-out/bin/orca license status
-./zig-out/bin/orca license activate dev-pro
-./zig-out/bin/orca report --session last --format markdown
+./zig-out/bin/orca replay --only denied
+./zig-out/bin/orca replay --verify
+./zig-out/bin/orca replay --list
 ```
 
-Free mode still allows `orca run`, policy checks, and basic replay.
+`--verify` checks the tamper-evident hash chain. If there are no sessions yet, replay points you back to `orca start` then `orca <agent>`.
 
-## 7. Check CI Readiness
+## 6. Stop Protection
+
+```sh
+./zig-out/bin/orca stop
+```
+
+Removes host plugin registrations; binary and policy stay. Restart later with `orca start`.
+
+## 7. Optional: Demo, Dashboard, CI, Red-team
+
+Safe local blocked-action demo (no real damage):
+
+```sh
+./zig-out/bin/orca demo blocked-action
+./zig-out/bin/orca replay
+```
+
+Local dashboard:
+
+```sh
+./zig-out/bin/orca dashboard
+```
+
+Open `http://127.0.0.1:7742` for health, policy, sessions, and denials. Optional; uses existing CLI/Core paths.
+
+CI readiness and packs (advanced):
 
 ```sh
 ./zig-out/bin/orca policy packs
@@ -71,38 +123,19 @@ Free mode still allows `orca run`, policy checks, and basic replay.
 ./zig-out/bin/orca ci check --format markdown
 ```
 
-`orca ci check` validates `.orca/policy.yaml`, rejects dangerous obvious defaults, and runs a focused CI-safe red-team fixture.
-Packaged installs use `ORCA_RESOURCE_ROOT` to find those fixtures when the command runs outside the source checkout.
-
-## 8. Try Demo Mode
-
-```sh
-./zig-out/bin/orca demo blocked-action
-./zig-out/bin/orca replay --session last --only denied --verify
-```
-
-The demo creates safe local audit evidence for a blocked destructive command. It does not execute the command.
-
-## 9. Open The Local Dashboard
-
-```sh
-./zig-out/bin/orca dashboard
-```
-
-Open `http://127.0.0.1:7742` to inspect health, policy status, OpenClaw/Hermes setup, recent sessions, and denied actions. The dashboard is optional and uses existing Orca CLI/Core paths.
-
-## 10. Run Red-team Fixtures
+Engine self-test fixtures (not your workspace policy):
 
 ```sh
 ./zig-out/bin/orca redteam --ci
 ```
 
-The suite is deterministic and uses synthetic fixtures only.
+Report export is gated to a local Pro/Team license; free mode still allows Safe Launch, policy checks, and replay. See `orca help --all` and [license](../ORCA_CLI_COMMANDS.md) notes.
 
 ## Next Steps
 
-- Learn policies in [policy.md](policy.md).
-- Use the local dashboard with [dashboard.md](dashboard.md).
-- Run the local [leaky-agent demo](../examples/leaky-agent-demo/README.md).
-- Proxy an MCP server with [mcp.md](mcp.md).
-- Review staged writes with [filesystem-staging.md](filesystem-staging.md).
+- Full CLI surface: `orca help --all`
+- Policies: [policy.md](policy.md)
+- Dashboard: [dashboard.md](dashboard.md)
+- [Leaky-agent demo](../examples/leaky-agent-demo/README.md)
+- MCP proxy: [mcp.md](mcp.md)
+- Staged writes: [filesystem-staging.md](filesystem-staging.md)

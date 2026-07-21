@@ -10,12 +10,12 @@ For piping, scripting, CI logs, or terminals that mis-render colour, force plain
 
 ```sh
 orca --no-rich decide command --json '{"command":"rm -rf /"}' --human
-ORCA_NO_RICH=1 orca history
+ORCA_NO_RICH=1 orca replay
 ```
 
 `--no-rich` disables colour and animation but keeps the full information content — panels become ASCII, badges become `[ALLOW]`/`[DENY]`, and risk meters become text bars. It never affects `--json`/`--robot` machine output, which stays byte-stable regardless.
 
-Interactive alt-screen views are opt-in: `orca history --live` shows the current history stats snapshot, and `orca replay --session last --tui` shows a scrollable replay timeline. Both require an interactive rich terminal and are rejected with machine output modes such as `--json`.
+Interactive alt-screen views are opt-in: `orca replay --tui` shows a scrollable timeline for the last session (or `orca replay --session <id> --tui`). Advanced `orca history --live` remains available via `orca help --all`. Alt-screen views require an interactive rich terminal and are rejected with machine output modes such as `--json`.
 
 ## Dashboard
 
@@ -48,7 +48,7 @@ git push --force
 
 ## Approvals
 
-Interactive `ask` mode can prompt. Approval scopes are once or session. CI mode never prompts; ask becomes deny.
+Interactive Ask mode prompts in plain language: **Once** (this invocation), **Always** (this session), **Never** (deny). No rule ids required for day-1 recovery. Advanced CLI fallbacks (`orca allow-once`, allowlist) remain when the prompt is gone — see `orca help --all`. CI mode never prompts; ask becomes deny.
 
 ## Shims And Wrappers
 
