@@ -53,6 +53,20 @@ jobs:
       - name: OS sandbox e2e selftest (fixtures only)
         shell: bash
         run: ORCA_E2E_SELFTEST=1 ./scripts/os-sandbox-adversarial-e2e.sh
+      # release-dry-run → install-layout-smoke requires orca-dashboard-ui/dist.
+      # Dashboard CI is a separate path-filtered job (no shared FS/artifacts), so
+      # build the production bundle here before packaging.
+      - name: Setup Node.js (dashboard bundle for release dry-run)
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22.6.0
+          cache: npm
+          cache-dependency-path: orca-dashboard-ui/package-lock.json
+      - name: Build dashboard production bundle
+        working-directory: orca-dashboard-ui
+        run: |
+          npm ci
+          npm run build
       - name: Release dry-run
         shell: bash
         run: ./scripts/release-dry-run.sh

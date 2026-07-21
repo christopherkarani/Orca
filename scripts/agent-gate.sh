@@ -146,25 +146,25 @@ choose_auto() {
     return
   fi
   if [[ "${has_policy}" -eq 1 && "${has_zig}" -eq 0 ]]; then
-    echo dx
+    # Mixed policy + rust still needs both when rust paths are present.
+    if [[ "${has_rust}" -eq 1 ]]; then
+      echo "dx rust"
+    else
+      echo dx
+    fi
     return
   fi
   if [[ "${has_zig}" -eq 1 ]]; then
+    local zig_gate=""
     # Prefer domain slices when dirty paths stay inside one domain.
     if [[ "${has_sandbox}" -eq 1 && "${only_sandbox}" -eq 1 ]]; then
-      echo sandbox
-      return
-    fi
-    if [[ "${has_intercept}" -eq 1 && "${only_intercept}" -eq 1 ]]; then
-      echo intercept
-      return
-    fi
-    if [[ "${has_policy_src}" -eq 1 && "${only_policy_src}" -eq 1 ]]; then
-      echo policy
-      return
-    fi
-    # Core-only surface → focused core tests (still cheap).
-    if [[ "${has_core}" -eq 1 ]]; then
+      zig_gate=sandbox
+    elif [[ "${has_intercept}" -eq 1 && "${only_intercept}" -eq 1 ]]; then
+      zig_gate=intercept
+    elif [[ "${has_policy_src}" -eq 1 && "${only_policy_src}" -eq 1 ]]; then
+      zig_gate=policy
+    elif [[ "${has_core}" -eq 1 ]]; then
+      # Core-only surface → focused core tests (still cheap).
       local non_core=0
       for p in "${paths[@]}"; do
         case "${p}" in
@@ -173,11 +173,18 @@ choose_auto() {
         esac
       done
       if [[ "${non_core}" -eq 0 ]]; then
-        echo core
-        return
+        zig_gate=core
       fi
     fi
-    echo units
+    if [[ -z "${zig_gate}" ]]; then
+      zig_gate=units
+    fi
+    # Mixed Zig + orca-rs: run both stacks so auto cannot green only half (Codex).
+    if [[ "${has_rust}" -eq 1 ]]; then
+      echo "${zig_gate} rust"
+    else
+      echo "${zig_gate}"
+    fi
     return
   fi
   if [[ "${has_scripts}" -eq 1 ]]; then
@@ -248,4 +255,9 @@ else
   selected="${mode}"
 fi
 
-run_gate "${selected}"
+# Auto may emit multiple gates (e.g. "units rust") for mixed Zig+Rust dirty trees.
+# shellcheck disable=SC2206
+gates=( ${selected} )
+for g in "${gates[@]}"; do
+  run_gate "${g}"
+done

@@ -43,6 +43,7 @@ When the proxy backend is active and Landlock ABI **>= 4** is available, Orca ad
 |---|---|
 | TCP connect | **Port-scoped only** — allowed TCP connects to the proxy **port** from the child, to **any remote IP** on that port (not address-scoped to 127.0.0.1) |
 | Other TCP ports | Denied (ordinary proxy-bypass to :80/:443 etc.) |
+| TCP bind / listen | **Unrestricted** — `handled_access_net` is CONNECT-only so agents can still bind dev servers; route forcing does not claim inbound TCP control |
 | UDP / QUIC | **Unrestricted** under Landlock route force — no Landlock UDP net rules |
 | vs macOS Seatbelt | Seatbelt can express localhost:port outbound TCP; Landlock cannot |
 

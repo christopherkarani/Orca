@@ -117,11 +117,18 @@ pub fn handledFsRights(abi: u32) u64 {
     return rights;
 }
 
-/// Pure: handled network rights for route forcing. TCP bind/connect landed in
-/// Landlock ABI 4. UDP is not included here.
+/// Pure: handled network rights for route forcing.
+///
+/// Only `ACCESS_NET_CONNECT_TCP` is handled: route forcing is an *outbound*
+/// mediation control (force TCP connects onto the proxy port). Including
+/// `ACCESS_NET_BIND_TCP` in `handled_access_net` without a matching allow rule
+/// would deny every TCP bind (dev servers, ephemeral listeners) even though
+/// product docs only claim outbound TCP restriction. UDP is not included.
+/// `ACCESS_NET_BIND_TCP` remains declared for ABI completeness / future bind
+/// policy, but is intentionally not handled here.
 pub fn handledNetRights(abi: u32) u64 {
     if (abi < MIN_TCP_ROUTE_FORCE_ABI) return 0;
-    return ACCESS_NET_BIND_TCP | ACCESS_NET_CONNECT_TCP;
+    return ACCESS_NET_CONNECT_TCP;
 }
 
 pub fn supportsTcpRouteForcing() bool {
@@ -737,9 +744,11 @@ test "pure TCP route forcing rights start at Landlock ABI 4" {
     try std.testing.expectEqual(@as(u64, 0), handledNetRights(1));
     try std.testing.expectEqual(@as(u64, 0), handledNetRights(3));
     const abi4 = handledNetRights(4);
-    try std.testing.expect((abi4 & ACCESS_NET_BIND_TCP) != 0);
+    // Outbound-only: CONNECT is handled; BIND must not be (would deny all listeners).
     try std.testing.expect((abi4 & ACCESS_NET_CONNECT_TCP) != 0);
+    try std.testing.expect((abi4 & ACCESS_NET_BIND_TCP) == 0);
     try std.testing.expectEqual(abi4, handledNetRights(5));
+    try std.testing.expectEqual(ACCESS_NET_CONNECT_TCP, abi4);
 }
 
 test "pure allowedAccessForMode RO is subset of RW and of handled mask" {
