@@ -287,8 +287,54 @@ fn chooseNextStep(
     };
 }
 
+/// Operator-facing three-way protection posture (human status only; not JSON wire).
+const ProtectionPosture = enum {
+    protected,
+    limited,
+    off,
+
+    pub fn label(self: ProtectionPosture) []const u8 {
+        return switch (self) {
+            .protected => "Protected",
+            .limited => "Limited",
+            .off => "Off",
+        };
+    }
+};
+
+/// Plain-language honesty line when mediation is active but not a universal OS sandbox.
+/// Status cannot prove live OS-enforced attach, so Protected/Limited always show this.
+const mediation_caveat_line =
+    "Blocks dangerous actions for agents started via Orca; some paths can still bypass.";
+
+/// Map daemon + policy readiness into Protected | Limited | Off.
+/// - Off: daemon cannot mediate
+/// - Limited: daemon up but policy missing/invalid (setup incomplete)
+/// - Protected: core mediation path ready (wrapper/hook — not OS-enforced claim)
+fn assessProtectionPosture(
+    daemon: onboarding.DaemonHealthStatus,
+    policy_present: bool,
+    policy_valid: bool,
+) ProtectionPosture {
+    if (daemon != .compatible) return .off;
+    if (!policy_present or !policy_valid) return .limited;
+    return .protected;
+}
+
+fn mediationCaveat(posture: ProtectionPosture) ?[]const u8 {
+    return switch (posture) {
+        .off => null,
+        .limited, .protected => mediation_caveat_line,
+    };
+}
+
 fn writeHuman(stdout: anytype, s: Snapshot) !void {
+    const posture = assessProtectionPosture(s.daemon_health, s.policy_present, s.policy_valid);
     try stdout.writeAll("Orca status\n");
+    try stdout.print("  State:     {s}\n", .{posture.label()});
+    if (mediationCaveat(posture)) |caveat| {
+        try stdout.print("  Note:      {s}\n", .{caveat});
+    }
     try stdout.print("  Daemon:    {s}  ({s})\n", .{ s.daemon_health.label(), s.daemon_detail });
     if (s.policy_present) {
         try stdout.writeAll("  Policy:    ");
@@ -361,6 +407,84 @@ fn mockDaemonDown(_: std.mem.Allocator, _: bool) anyerror!void {
     return error.SocketConnectFailed;
 }
 
+test "assessProtectionPosture maps to Protected Limited Off" {
+    try std.testing.expectEqual(ProtectionPosture.off, assessProtectionPosture(.unavailable, true, true));
+    try std.testing.expectEqual(ProtectionPosture.off, assessProtectionPosture(.incompatible, true, true));
+    try std.testing.expectEqual(ProtectionPosture.off, assessProtectionPosture(.degraded, false, false));
+    try std.testing.expectEqual(ProtectionPosture.limited, assessProtectionPosture(.compatible, false, false));
+    try std.testing.expectEqual(ProtectionPosture.limited, assessProtectionPosture(.compatible, true, false));
+    try std.testing.expectEqual(ProtectionPosture.protected, assessProtectionPosture(.compatible, true, true));
+    try std.testing.expectEqualStrings("Protected", ProtectionPosture.protected.label());
+    try std.testing.expectEqualStrings("Limited", ProtectionPosture.limited.label());
+    try std.testing.expectEqualStrings("Off", ProtectionPosture.off.label());
+}
+
+test "mediationCaveat present when not Off" {
+    try std.testing.expect(mediationCaveat(.off) == null);
+    const protected_note = mediationCaveat(.protected).?;
+    const limited_note = mediationCaveat(.limited).?;
+    try std.testing.expect(std.mem.indexOf(u8, protected_note, "Blocks dangerous actions for agents started via Orca") != null);
+    try std.testing.expect(std.mem.indexOf(u8, protected_note, "some paths can still bypass") != null);
+    try std.testing.expectEqualStrings(protected_note, limited_note);
+}
+
+fn fixtureSnapshot(
+    daemon: onboarding.DaemonHealthStatus,
+    policy_present: bool,
+    policy_valid: bool,
+) Snapshot {
+    return .{
+        .daemon_health = daemon,
+        .daemon_detail = "detail",
+        .policy_path = "/tmp/.orca/policy.yaml",
+        .policy_present = policy_present,
+        .policy_valid = policy_valid,
+        .policy_error = null,
+        .policy_mode = if (policy_present) "ask" else null,
+        .policy_preset = if (policy_present) "generic-agent" else null,
+        .hosts_summary = "none detected · pi:not managed",
+        .packs_summary_line = "unknown",
+        .packs_known = false,
+        .packs_opt_in_count = 0,
+        .packs_opt_in = &.{},
+        .next_step = "next",
+        .readiness = readiness.assess(daemon, policy_present, policy_valid),
+    };
+}
+
+test "writeHuman Protected shows State and mediation caveat" {
+    var buf: [2048]u8 = undefined;
+    var w: std.Io.Writer = .fixed(&buf);
+    try writeHuman(&w, fixtureSnapshot(.compatible, true, true));
+    const out = w.buffered();
+    try std.testing.expect(std.mem.indexOf(u8, out, "State:     Protected") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "State:     Limited") == null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "State:     Off") == null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "Note:") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "Blocks dangerous actions for agents started via Orca") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "some paths can still bypass") != null);
+}
+
+test "writeHuman Limited shows State and mediation caveat" {
+    var buf: [2048]u8 = undefined;
+    var w: std.Io.Writer = .fixed(&buf);
+    try writeHuman(&w, fixtureSnapshot(.compatible, false, false));
+    const out = w.buffered();
+    try std.testing.expect(std.mem.indexOf(u8, out, "State:     Limited") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "Note:") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "Blocks dangerous actions for agents started via Orca") != null);
+}
+
+test "writeHuman Off shows State without mediation caveat" {
+    var buf: [2048]u8 = undefined;
+    var w: std.Io.Writer = .fixed(&buf);
+    try writeHuman(&w, fixtureSnapshot(.unavailable, false, false));
+    const out = w.buffered();
+    try std.testing.expect(std.mem.indexOf(u8, out, "State:     Off") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "Note:") == null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "Blocks dangerous actions") == null);
+}
+
 test "status human healthy path shows section labels" {
     var stdout_buf: [4096]u8 = undefined;
     var stderr_buf: [256]u8 = undefined;
@@ -371,6 +495,14 @@ test "status human healthy path shows section labels" {
     try std.testing.expectEqual(exit_codes.success, code);
     const out = stdout_writer.buffered();
     try std.testing.expect(std.mem.indexOf(u8, out, "Orca status") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "State:") != null);
+    // Three-way posture: daemon mock is ok → Protected or Limited depending on workspace policy.
+    const has_protected = std.mem.indexOf(u8, out, "Protected") != null;
+    const has_limited = std.mem.indexOf(u8, out, "State:     Limited") != null;
+    try std.testing.expect(has_protected or has_limited);
+    if (has_protected or has_limited) {
+        try std.testing.expect(std.mem.indexOf(u8, out, "Blocks dangerous actions for agents started via Orca") != null);
+    }
     try std.testing.expect(std.mem.indexOf(u8, out, "Daemon:") != null);
     try std.testing.expect(std.mem.indexOf(u8, out, "healthy") != null);
     try std.testing.expect(std.mem.indexOf(u8, out, "Policy:") != null);
@@ -389,6 +521,8 @@ test "status daemon unavailable path still exits 0 without --check" {
     const code = try commandWithDeps(fakePacksFail, mockDaemonDown, std.testing.io, &.{}, &stdout_writer, &stderr_writer);
     try std.testing.expectEqual(exit_codes.success, code);
     const out = stdout_writer.buffered();
+    try std.testing.expect(std.mem.indexOf(u8, out, "State:     Off") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "Blocks dangerous actions") == null);
     try std.testing.expect(std.mem.indexOf(u8, out, "unavailable") != null);
     try std.testing.expect(std.mem.indexOf(u8, out, "Packs:") != null);
     try std.testing.expect(std.mem.indexOf(u8, out, "unknown") != null or std.mem.indexOf(u8, out, "fails closed") != null);
