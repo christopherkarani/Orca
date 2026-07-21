@@ -170,23 +170,45 @@ choose_auto() {
     esac
   done
 
-  if [[ "${only_md}" -eq 1 && "${has_zig}" -eq 0 && "${has_rust}" -eq 0 && "${has_dashboard}" -eq 0 && "${has_plugin}" -eq 0 ]]; then
+  if [[ "${only_md}" -eq 1 && "${has_zig}" -eq 0 && "${has_rust}" -eq 0 && "${has_dashboard}" -eq 0 && "${has_plugin}" -eq 0 && "${has_policy}" -eq 0 && "${has_scripts}" -eq 0 ]]; then
     echo check
     return
   fi
-  if [[ "${has_rust}" -eq 1 && "${has_zig}" -eq 0 && "${has_policy}" -eq 0 && "${has_dashboard}" -eq 0 && "${has_plugin}" -eq 0 ]]; then
-    echo rust
-    return
-  fi
-  if [[ "${has_policy}" -eq 1 && "${has_zig}" -eq 0 ]]; then
-    # Mixed policy + rust still needs both when rust paths are present.
+
+  # Append companion package gates to a primary selection. Mixed dirty trees
+  # must never green after validating only one stack (Codex P2).
+  append_package_gates() {
+    local out="$1"
     if [[ "${has_rust}" -eq 1 ]]; then
-      echo "dx rust"
-    else
-      echo dx
+      case " ${out} " in
+        *" rust "*) ;;
+        *) out+=" rust" ;;
+      esac
     fi
-    return
-  fi
+    if [[ "${has_dashboard}" -eq 1 ]]; then
+      case " ${out} " in
+        *" dashboard "*) ;;
+        *) out+=" dashboard" ;;
+      esac
+    fi
+    if [[ "${has_plugin}" -eq 1 ]]; then
+      case " ${out} " in
+        *" plugin "*) ;;
+        *) out+=" plugin" ;;
+      esac
+    fi
+    if [[ "${has_scripts}" -eq 1 ]]; then
+      case " ${out} " in
+        *" scripts "*) ;;
+        *) out+=" scripts" ;;
+      esac
+    fi
+    # shellcheck disable=SC2086
+    # Trim leading space if primary was empty.
+    out="${out# }"
+    printf '%s\n' "${out}"
+  }
+
   if [[ "${has_zig}" -eq 1 ]]; then
     local zig_gate=""
     # Prefer domain slices when dirty paths stay inside one domain.
@@ -212,50 +234,20 @@ choose_auto() {
     if [[ -z "${zig_gate}" ]]; then
       zig_gate=units
     fi
-    # Mixed Zig + other stacks: append every relevant package gate so auto
-    # cannot green after validating only half of a cross-stack change (Codex).
-    local out="${zig_gate}"
-    if [[ "${has_rust}" -eq 1 ]]; then
-      out+=" rust"
-    fi
-    if [[ "${has_dashboard}" -eq 1 ]]; then
-      out+=" dashboard"
-    fi
-    if [[ "${has_plugin}" -eq 1 ]]; then
-      out+=" plugin"
-    fi
-    if [[ "${has_scripts}" -eq 1 ]]; then
-      out+=" scripts"
-    fi
-    echo "${out}"
+    append_package_gates "${zig_gate}"
     return
   fi
-  # Package-local surfaces (no Zig): never green via compile-fast check alone.
-  if [[ "${has_dashboard}" -eq 1 || "${has_plugin}" -eq 1 ]]; then
-    local out=""
-    if [[ "${has_dashboard}" -eq 1 ]]; then
-      out="dashboard"
-    fi
-    if [[ "${has_plugin}" -eq 1 ]]; then
-      if [[ -n "${out}" ]]; then out+=" "; fi
-      out+="plugin"
-    fi
-    if [[ "${has_rust}" -eq 1 ]]; then
-      out+=" rust"
-    fi
-    if [[ "${has_scripts}" -eq 1 ]]; then
-      out+=" scripts"
-    fi
-    echo "${out}"
-    return
+
+  # Non-Zig trees: compose every relevant package gate (no early single-stack
+  # return that drops scripts/dashboard/plugin companions).
+  local primary=""
+  if [[ "${has_policy}" -eq 1 ]]; then
+    primary="dx"
   fi
-  # scripts/** only: bash -n + light smoke — not unrelated Zig compile-fast.
-  if [[ "${has_scripts}" -eq 1 ]]; then
-    local out="scripts"
-    if [[ "${has_rust}" -eq 1 ]]; then
-      out+=" rust"
-    fi
-    echo "${out}"
+  local composed
+  composed="$(append_package_gates "${primary}")"
+  if [[ -n "${composed}" ]]; then
+    echo "${composed}"
     return
   fi
   if [[ "${has_other}" -eq 1 ]]; then
@@ -313,31 +305,54 @@ run_scripts_gate() {
 
   # Light smoke when agent-gate itself changed: selection must compose mixed gates.
   if [[ "${saw_agent_gate}" -eq 1 ]]; then
-    local smoke_cmd=(
-      ./scripts/agent-gate.sh --dry-run
-      --paths src/cli/run.zig orca-dashboard-ui/app/dashboard.ts scripts/test-fast.sh
-    )
-    if [[ "${dry_run}" -eq 1 ]]; then
-      echo "[agent-gate] dry-run: ${smoke_cmd[*]}"
-    else
-      echo "[agent-gate] scripts smoke: agent-gate mixed-path dry-run"
+    agent_gate_smoke_case() {
+      # Usage: agent_gate_smoke_case LABEL EXPECT_TOKEN... -- PATH...
+      local label="$1"
+      shift
+      local -a expect=()
+      local -a smoke_paths=()
+      local seen_sep=0
+      local arg
+      for arg in "$@"; do
+        if [[ "${seen_sep}" -eq 0 && "${arg}" == "--" ]]; then
+          seen_sep=1
+          continue
+        fi
+        if [[ "${seen_sep}" -eq 0 ]]; then
+          expect+=("${arg}")
+        else
+          smoke_paths+=("${arg}")
+        fi
+      done
+      if [[ "${dry_run}" -eq 1 ]]; then
+        echo "[agent-gate] dry-run: smoke ${label} --paths ${smoke_paths[*]}"
+        return 0
+      fi
+      echo "[agent-gate] scripts smoke: ${label}"
       local out
-      out="$("${smoke_cmd[@]}")"
+      out="$(./scripts/agent-gate.sh --dry-run --paths "${smoke_paths[@]}")"
       printf '%s\n' "${out}"
-      # Expect Zig + dashboard + scripts; fail closed if composition regresses.
-      if ! printf '%s\n' "${out}" | grep -q 'selected=units'; then
-        echo "error: agent-gate smoke expected units in selection" >&2
-        exit 3
-      fi
-      if ! printf '%s\n' "${out}" | grep -q 'dashboard'; then
-        echo "error: agent-gate smoke expected dashboard in selection" >&2
-        exit 3
-      fi
-      if ! printf '%s\n' "${out}" | grep -q 'scripts'; then
-        echo "error: agent-gate smoke expected scripts in selection" >&2
-        exit 3
-      fi
-    fi
+      local token
+      for token in "${expect[@]}"; do
+        if ! printf '%s\n' "${out}" | grep -q "${token}"; then
+          echo "error: agent-gate smoke (${label}) expected '${token}' in selection" >&2
+          exit 3
+        fi
+      done
+    }
+
+    agent_gate_smoke_case "zig+dashboard+scripts" \
+      selected=units dashboard scripts -- \
+      src/cli/run.zig orca-dashboard-ui/app/dashboard.ts scripts/test-fast.sh
+
+    # Codex P2: non-Zig mixed trees must compose every gate.
+    agent_gate_smoke_case "rust+scripts" \
+      selected=rust scripts -- \
+      orca-rs/src/lib.rs scripts/test-fast.sh
+
+    agent_gate_smoke_case "policy+dashboard" \
+      selected=dx dashboard -- \
+      policies/default.yaml orca-dashboard-ui/app/foo.ts
   fi
 }
 
