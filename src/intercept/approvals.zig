@@ -69,30 +69,46 @@ pub fn prompt(reader: *std.Io.Reader, writer: anytype, request: PromptRequest) !
         request.risk_reason,
         request.policy_reason,
     });
+    // Secondary detail only — recovery is Once/Always/Never, not rule ids.
     if (request.matched_rule) |rule| try writer.print("  matched rule: {s}\n", .{rule});
     try writer.writeAll(
         \\
         \\Options:
-        \\  [a] allow once
-        \\  [A] allow for this session
-        \\  [d] deny
-        \\  [?] explain risk
+        \\  [a] Once — allow this time
+        \\  [A] Always this session
+        \\  [d] Never / Deny
+        \\  [?] Explain risk
         \\
-        \\Choice:
+        \\Choice (once / always / never):
     );
 
     while (true) {
         const line = (try reader.takeDelimiter('\n')) orelse return .deny;
         const trimmed = std.mem.trim(u8, line, " \t\r\n");
-        if (std.mem.eql(u8, trimmed, "a")) return .allow_once;
-        if (std.mem.eql(u8, trimmed, "A")) return .allow_session;
-        if (std.mem.eql(u8, trimmed, "d") or trimmed.len == 0) return .deny;
+        if (parseChoice(trimmed)) |choice| return choice;
         if (std.mem.eql(u8, trimmed, "?")) {
-            try writer.print("\nRisk explanation: {s}\nChoice: ", .{request.risk_reason});
+            try writer.print("\nRisk explanation: {s}\nChoice (once / always / never): ", .{request.risk_reason});
             continue;
         }
-        try writer.writeAll("Choose a, A, d, or ?. Choice: ");
+        try writer.writeAll("Choose once, always, never (or a, A, d, ?). Choice: ");
     }
+}
+
+/// Map interactive input to an approval choice.
+/// Shortcuts: `a` Once, `A` Always (session), `d` Never.
+/// Words (case-insensitive): once | always | session | never | deny.
+/// Empty line denies (fail closed). Rule ids are never required.
+fn parseChoice(trimmed: []const u8) ?ApprovalChoice {
+    if (trimmed.len == 0) return .deny;
+    if (std.mem.eql(u8, trimmed, "a")) return .allow_once;
+    if (std.mem.eql(u8, trimmed, "A")) return .allow_session;
+    if (std.mem.eql(u8, trimmed, "d")) return .deny;
+
+    // Word forms — case-insensitive so "Once" / "ALWAYS" work.
+    if (std.ascii.eqlIgnoreCase(trimmed, "once")) return .allow_once;
+    if (std.ascii.eqlIgnoreCase(trimmed, "always") or std.ascii.eqlIgnoreCase(trimmed, "session")) return .allow_session;
+    if (std.ascii.eqlIgnoreCase(trimmed, "never") or std.ascii.eqlIgnoreCase(trimmed, "deny")) return .deny;
+    return null;
 }
 
 pub fn applyApproval(
@@ -143,4 +159,124 @@ test "approval prompt supports explain and session allow" {
     });
     try std.testing.expectEqual(ApprovalChoice.allow_session, choice);
     try std.testing.expect(std.mem.indexOf(u8, output_writer.buffered(), "Risk explanation") != null);
+}
+
+test "approval prompt presents Once Always Never labels" {
+    var input: std.Io.Reader = .fixed("d\n");
+    var output_buf: [1024]u8 = undefined;
+    var output_writer: std.Io.Writer = .fixed(&output_buf);
+    const choice = try prompt(&input, &output_writer, .{
+        .command = "rm -rf /tmp/x",
+        .risk_class = "destructive",
+        .risk_reason = "can delete files",
+        .policy_reason = "commands.default: ask",
+        .matched_rule = "core.filesystem:destructive_rm",
+    });
+    try std.testing.expectEqual(ApprovalChoice.deny, choice);
+    const out = output_writer.buffered();
+    try std.testing.expect(std.mem.indexOf(u8, out, "Once") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "Always") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "Never") != null);
+    // Rule id is secondary detail, not the recovery path.
+    try std.testing.expect(std.mem.indexOf(u8, out, "matched rule: core.filesystem:destructive_rm") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "allowlist") == null);
+}
+
+test "approval prompt maps once always never words without rule ids" {
+    {
+        var input: std.Io.Reader = .fixed("once\n");
+        var output_buf: [512]u8 = undefined;
+        var output_writer: std.Io.Writer = .fixed(&output_buf);
+        const choice = try prompt(&input, &output_writer, .{
+            .command = "npm install",
+            .risk_class = "package_install",
+            .risk_reason = "scripts",
+            .policy_reason = "ask",
+        });
+        try std.testing.expectEqual(ApprovalChoice.allow_once, choice);
+    }
+    {
+        var input: std.Io.Reader = .fixed("always\n");
+        var output_buf: [512]u8 = undefined;
+        var output_writer: std.Io.Writer = .fixed(&output_buf);
+        const choice = try prompt(&input, &output_writer, .{
+            .command = "npm install",
+            .risk_class = "package_install",
+            .risk_reason = "scripts",
+            .policy_reason = "ask",
+        });
+        try std.testing.expectEqual(ApprovalChoice.allow_session, choice);
+    }
+    {
+        var input: std.Io.Reader = .fixed("session\n");
+        var output_buf: [512]u8 = undefined;
+        var output_writer: std.Io.Writer = .fixed(&output_buf);
+        const choice = try prompt(&input, &output_writer, .{
+            .command = "npm install",
+            .risk_class = "package_install",
+            .risk_reason = "scripts",
+            .policy_reason = "ask",
+        });
+        try std.testing.expectEqual(ApprovalChoice.allow_session, choice);
+    }
+    {
+        var input: std.Io.Reader = .fixed("never\n");
+        var output_buf: [512]u8 = undefined;
+        var output_writer: std.Io.Writer = .fixed(&output_buf);
+        const choice = try prompt(&input, &output_writer, .{
+            .command = "npm install",
+            .risk_class = "package_install",
+            .risk_reason = "scripts",
+            .policy_reason = "ask",
+        });
+        try std.testing.expectEqual(ApprovalChoice.deny, choice);
+    }
+    {
+        var input: std.Io.Reader = .fixed("deny\n");
+        var output_buf: [512]u8 = undefined;
+        var output_writer: std.Io.Writer = .fixed(&output_buf);
+        const choice = try prompt(&input, &output_writer, .{
+            .command = "npm install",
+            .risk_class = "package_install",
+            .risk_reason = "scripts",
+            .policy_reason = "ask",
+        });
+        try std.testing.expectEqual(ApprovalChoice.deny, choice);
+    }
+}
+
+test "approval prompt keeps a A d shortcuts" {
+    {
+        var input: std.Io.Reader = .fixed("a\n");
+        var output_buf: [512]u8 = undefined;
+        var output_writer: std.Io.Writer = .fixed(&output_buf);
+        try std.testing.expectEqual(ApprovalChoice.allow_once, try prompt(&input, &output_writer, .{
+            .command = "x",
+            .risk_class = "r",
+            .risk_reason = "r",
+            .policy_reason = "p",
+        }));
+    }
+    {
+        var input: std.Io.Reader = .fixed("A\n");
+        var output_buf: [512]u8 = undefined;
+        var output_writer: std.Io.Writer = .fixed(&output_buf);
+        try std.testing.expectEqual(ApprovalChoice.allow_session, try prompt(&input, &output_writer, .{
+            .command = "x",
+            .risk_class = "r",
+            .risk_reason = "r",
+            .policy_reason = "p",
+        }));
+    }
+    {
+        var input: std.Io.Reader = .fixed("d\n");
+        var output_buf: [512]u8 = undefined;
+        var output_writer: std.Io.Writer = .fixed(&output_buf);
+        try std.testing.expectEqual(ApprovalChoice.deny, try prompt(&input, &output_writer, .{
+            .command = "x",
+            .risk_class = "r",
+            .risk_reason = "r",
+            .policy_reason = "p",
+        }));
+    }
 }
