@@ -128,21 +128,28 @@ pub fn failedReceipt(reason_code: []const u8) AttachReceipt {
 }
 
 /// Default user-facing banner language (mechanism-neutral).
+///
+/// Active path runs the launch allowlist on child env before attach (M-2 / M-20):
+/// secret/provider keys are stripped, but intentional keepers (SSH_AUTH_SOCK,
+/// TLS CA bundle vars) may remain — do not imply total credential wipe.
+///
+/// Unavailable/failed grade-drop keeps denylist-only scrub (injection keys
+/// removed; provider credentials retained) — surface that honesty explicitly.
 pub fn formatSessionBanner(buf: []u8, receipt: AttachReceipt) ![]const u8 {
     return switch (receipt.posture) {
         .active => try std.fmt.bufPrint(
             buf,
-            "OS sandbox: active (filesystem: {s}; network: unrestricted; credentials: session env as configured; tools: wrapper-mediated)",
+            "OS sandbox: active (filesystem: {s}; network: unrestricted; credentials: launch-allowlist (secrets stripped; agent sockets/certs may remain); tools: wrapper-mediated)",
             .{receipt.fs_scope},
         ),
         .unavailable => if (receipt.reason_code) |reason|
-            try std.fmt.bufPrint(buf, "OS sandbox: unavailable ({s})", .{reason})
+            try std.fmt.bufPrint(buf, "OS sandbox: unavailable ({s}; credentials retained)", .{reason})
         else
-            try std.fmt.bufPrint(buf, "OS sandbox: unavailable", .{}),
+            try std.fmt.bufPrint(buf, "OS sandbox: unavailable (credentials retained)", .{}),
         .failed => if (receipt.reason_code) |reason|
-            try std.fmt.bufPrint(buf, "OS sandbox: failed ({s})", .{reason})
+            try std.fmt.bufPrint(buf, "OS sandbox: failed ({s}; credentials retained)", .{reason})
         else
-            try std.fmt.bufPrint(buf, "OS sandbox: failed", .{}),
+            try std.fmt.bufPrint(buf, "OS sandbox: failed (credentials retained)", .{}),
         .disabled => try std.fmt.bufPrint(buf, "OS sandbox: disabled", .{}),
     };
 }
@@ -187,11 +194,46 @@ test "os-sandbox mode parse" {
 }
 
 test "session banner is mechanism-neutral (S-GLO-03)" {
-    var buf: [256]u8 = undefined;
+    var buf: [320]u8 = undefined;
     const active = activeReceipt(.seatbelt, "deadbeef", "workspace RW, system RO, no home");
     const line = try formatSessionBanner(&buf, active);
     try std.testing.expect(std.mem.indexOf(u8, line, "OS sandbox: active") != null);
     try std.testing.expect(std.mem.indexOf(u8, line, "Seatbelt") == null);
     try std.testing.expect(std.mem.indexOf(u8, line, "Landlock") == null);
     try std.testing.expect(std.mem.indexOf(u8, line, "network: unrestricted") != null);
+    // M-2 residual: secrets stripped, but intentional keepers may remain (not total wipe).
+    try std.testing.expect(std.mem.indexOf(u8, line, "launch-allowlist") != null);
+    try std.testing.expect(std.mem.indexOf(u8, line, "secrets stripped") != null);
+    try std.testing.expect(std.mem.indexOf(u8, line, "agent sockets/certs may remain") != null);
+    try std.testing.expect(std.mem.indexOf(u8, line, "as configured") == null);
+}
+
+test "grade-drop unavailable/failed banners mention credentials retained" {
+    var buf: [256]u8 = undefined;
+    const unavail = unavailableReceipt("backend_missing");
+    const u_line = try formatSessionBanner(&buf, unavail);
+    try std.testing.expect(std.mem.indexOf(u8, u_line, "OS sandbox: unavailable") != null);
+    try std.testing.expect(std.mem.indexOf(u8, u_line, "backend_missing") != null);
+    try std.testing.expect(std.mem.indexOf(u8, u_line, "credentials retained") != null);
+
+    const failed = failedReceipt("apply_failed");
+    const f_line = try formatSessionBanner(&buf, failed);
+    try std.testing.expect(std.mem.indexOf(u8, f_line, "OS sandbox: failed") != null);
+    try std.testing.expect(std.mem.indexOf(u8, f_line, "apply_failed") != null);
+    try std.testing.expect(std.mem.indexOf(u8, f_line, "credentials retained") != null);
+
+    // No reason_code still surfaces credential honesty.
+    const bare = AttachReceipt{ .posture = .unavailable };
+    const bare_line = try formatSessionBanner(&buf, bare);
+    try std.testing.expect(std.mem.indexOf(u8, bare_line, "credentials retained") != null);
+}
+
+test "M-12 landlock fs_scope surfaces root RO create-at-root contract" {
+    var buf: [320]u8 = undefined;
+    // Production Landlock receipt string (apply.promoteWithProof).
+    const active = activeReceipt(.landlock, "abcd", "workspace child RW, root RO, system RO, no home");
+    const line = try formatSessionBanner(&buf, active);
+    try std.testing.expect(std.mem.indexOf(u8, line, "workspace child RW") != null);
+    try std.testing.expect(std.mem.indexOf(u8, line, "root RO") != null);
+    try std.testing.expect(std.mem.indexOf(u8, line, "Landlock") == null); // still mechanism-neutral
 }

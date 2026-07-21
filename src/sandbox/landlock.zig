@@ -142,11 +142,10 @@ fn probeAbiLinux() ?AbiInfo {
 }
 
 /// True when `path` is `root` or a descendant of `root`.
+/// Delegates to the portable profile helper so `/` and prefix-boundary rules match
+/// profile/macos (M-5: bare `/` must cover control expand when workspace is `/`).
 fn pathIsWithin(path: []const u8, root: []const u8) bool {
-    if (std.mem.eql(u8, path, root)) return true;
-    if (root.len == 0 or path.len <= root.len) return false;
-    if (!std.mem.startsWith(u8, path, root)) return false;
-    return path[root.len] == '/';
+    return profile.isPathWithin(path, root);
 }
 
 /// True when any control root is under (or equal to) `path`.
@@ -254,48 +253,39 @@ fn addRwGrantExcludingControls(
         return false;
     }
 
-    // RO on the grant directory so readdir(".") / listing workspace works without
-    // granting MAKE/WRITE that would cover control subtrees (F-2).
-    if (!try addPathBeneathRule(ruleset_fd, grant_path, ro, true)) {
-        return error.PathOpenFailed;
-    }
+    // Enumerate immediate children with libc opendir/readdir only (M-7).
+    // applySelf runs post-fork in a multi-threaded parent (proxy may already be
+    // live); Zig Io.Dir.iterate may allocate and is not async-signal-safe.
+    // O_NOFOLLOW on grant open is handled by addPathBeneathRule for each child.
+    var path_buf: [std.fs.max_path_bytes]u8 = undefined;
+    if (grant_path.len == 0 or grant_path.len >= path_buf.len) return error.PathOpenFailed;
+    @memcpy(path_buf[0..grant_path.len], grant_path);
+    path_buf[grant_path.len] = 0;
+    const dir = std.c.opendir(path_buf[0..grant_path.len :0].ptr) orelse return error.PathOpenFailed;
+    defer _ = std.c.closedir(dir);
 
-    // Enumerate immediate children; grant RW only outside control trees.
-    // follow_symlinks=false: open of a symlink grant path fails closed (M-3).
-    var threaded: std.Io.Threaded = .init_single_threaded;
-    const io = threaded.io();
-    var dir = std.Io.Dir.openDirAbsolute(io, grant_path, .{
-        .iterate = true,
-        .follow_symlinks = false,
-    }) catch {
-        // Missing dir or symlink grant path on RW grant → fail closed.
-        return error.PathOpenFailed;
-    };
-    defer dir.close(io);
+    while (true) {
+        // readdir: null means EOF (or rare error); best-effort fail-closed on open later.
+        const entry = std.c.readdir(dir) orelse break;
+        const name = std.mem.sliceTo(entry.name[0..], 0);
+        if (name.len == 0 or std.mem.eql(u8, name, ".") or std.mem.eql(u8, name, "..")) continue;
 
-    var it = dir.iterate();
-    while (it.next(io) catch return error.PathOpenFailed) |entry| {
-        // Never expand or RW-grant a symlink entry (outside escape via PATH_BENEATH).
-        if (entry.kind == .sym_link) continue;
+        // Skip symlink children (DT_LNK). DT_UNKNOWN still goes through O_NOFOLLOW open.
+        if (entry.type == std.c.DT.LNK) continue;
 
-        // Join grant_path / name without allocating when possible.
         var child_buf: [std.fs.max_path_bytes]u8 = undefined;
-        const joined = std.fmt.bufPrint(&child_buf, "{s}/{s}", .{ grant_path, entry.name }) catch {
+        const joined = std.fmt.bufPrint(&child_buf, "{s}/{s}", .{ grant_path, name }) catch {
             return error.PathOpenFailed;
         };
         if (isControlPath(joined, control_roots)) {
-            // Already RO-granted above when control root matches; skip RW.
             continue;
         }
         if (grantCoversControlRoot(joined, control_roots)) {
-            // Nested control under a child directory: expand that child further.
             if (try addRwGrantExcludingControls(ruleset_fd, joined, control_roots, abi)) {
                 any_rw = true;
             }
             continue;
         }
-        // O_NOFOLLOW rejects symlinks (e.g. DT_UNKNOWN mis-kind): skip that entry.
-        // If no usable RW children remain, applySelf fails closed via any_rw.
         if (try addPathBeneathRule(ruleset_fd, joined, rw, false)) {
             any_rw = true;
         }
@@ -463,9 +453,11 @@ test "verifyApplyInChild and applySelf skip or run on Linux only" {
     const root = try tmp.dir.realPathFileAlloc(std.testing.io, ".", std.testing.allocator);
     defer std.testing.allocator.free(root);
 
+    // Production system RO defaults without temp trees (M-6). include_tmp stays
+    // false so test tmpDirs under /tmp are not swallowed by the M-8 temp grant.
     var compiled = try profile.compileProfile(std.testing.allocator, .{
         .workspace_root = root,
-        .system_ro_prefixes = &[_][]const u8{ "/usr", "/bin" },
+        .system_ro_prefixes = profile.defaultSystemRoPrefixes(),
         .include_tmp = false,
     });
     defer compiled.deinit();
@@ -478,6 +470,18 @@ test "rwGrantNeedsControlExpand when workspace contains control roots" {
     try std.testing.expect(rwGrantNeedsControlExpand("/ws", &[_][]const u8{"/ws"}));
     try std.testing.expect(!rwGrantNeedsControlExpand("/ws/src", &[_][]const u8{"/ws/.orca"}));
     try std.testing.expect(!rwGrantNeedsControlExpand("/tmp", &[_][]const u8{"/ws/.orca"}));
+}
+
+test "M-5 pathIsWithin and control expand treat filesystem root correctly" {
+    // Without the `/` special-case, pathIsWithin("/etc", "/") is false and
+    // rwGrantNeedsControlExpand("/", &.{"/.orca"}) skips expand → full RW on `/`.
+    try std.testing.expect(pathIsWithin("/", "/"));
+    try std.testing.expect(pathIsWithin("/etc", "/"));
+    try std.testing.expect(pathIsWithin("/tmp/ws/.orca", "/"));
+    try std.testing.expect(pathIsWithin("/.orca", "/"));
+    try std.testing.expect(rwGrantNeedsControlExpand("/", &[_][]const u8{"/.orca"}));
+    try std.testing.expect(rwGrantNeedsControlExpand("/", &[_][]const u8{"/tmp/.orca"}));
+    try std.testing.expect(!pathIsWithin("relative", "/"));
 }
 
 test "real FS deny: outside denied; neighbor RW; control root not writable" {
@@ -508,9 +512,10 @@ test "real FS deny: outside denied; neighbor RW; control root not writable" {
     const control_write = try std.fs.path.join(allocator, &.{ ws_root, ".orca", "policy.yaml" });
     defer allocator.free(control_write);
 
+    // Production system RO defaults without temp RW (M-6; canaries live under tmpDir).
     var compiled = try profile.compileProfile(allocator, .{
         .workspace_root = ws_root,
-        .system_ro_prefixes = &[_][]const u8{ "/usr", "/bin", "/lib" },
+        .system_ro_prefixes = profile.defaultSystemRoPrefixes(),
         .include_tmp = false,
     });
     defer compiled.deinit();
@@ -644,9 +649,10 @@ test "control expand: chdir workspace root works; create at root denied; control
     const control_write = try std.fs.path.join(allocator, &.{ ws_root, ".orca", "policy.yaml" });
     defer allocator.free(control_write);
 
+    // Production system RO defaults without temp RW (M-6).
     var compiled = try profile.compileProfile(allocator, .{
         .workspace_root = ws_root,
-        .system_ro_prefixes = &[_][]const u8{ "/usr", "/bin", "/lib" },
+        .system_ro_prefixes = profile.defaultSystemRoPrefixes(),
         .include_tmp = false,
     });
     defer compiled.deinit();
@@ -758,9 +764,10 @@ test "symlink to outside is not granted by control expand" {
     const neighbor_path = try std.fs.path.join(allocator, &.{ ws_root, "neighbor.txt" });
     defer allocator.free(neighbor_path);
 
+    // Production system RO defaults without temp RW (M-6).
     var compiled = try profile.compileProfile(allocator, .{
         .workspace_root = ws_root,
-        .system_ro_prefixes = &[_][]const u8{ "/usr", "/bin", "/lib" },
+        .system_ro_prefixes = profile.defaultSystemRoPrefixes(),
         .include_tmp = false,
     });
     defer compiled.deinit();

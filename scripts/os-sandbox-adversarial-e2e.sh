@@ -89,12 +89,19 @@ exit_code=0
 linux_deny_required=false
 
 # --- Zig production-path proofs (apply_posix / landlock / seatbelt) ----------
+# Single test-fast run produces both unit results and evidence greps (CI must not
+# double-run test-fast before calling this script).
 echo "Running sandbox apply/landlock/seatbelt proofs via test-fast..."
 set +e
 TEST_LOG="$(mktemp)"
 ./scripts/zig build test-fast >"$TEST_LOG" 2>&1
 TEST_RC=$?
 set -e
+
+if [[ ! -s "$TEST_LOG" ]]; then
+  echo "FAIL: test-fast produced empty log; cannot prove sandbox evidence" >&2
+  exit 1
+fi
 
 # CTRL-PREPARE only — probe/prepare greps never authorize CTRL-ATTACH.
 if grep -qE 'Linux Landlock prepares child plan without claiming active\.\.\.OK' "$TEST_LOG" \
@@ -221,6 +228,13 @@ cat >"$MANIFEST" <<JSON
 }
 JSON
 
+# Fail closed if evidence artifact is missing or empty (M-11).
+if [[ ! -s "$MANIFEST" ]]; then
+  echo "FAIL: evidence manifest missing or empty: $MANIFEST" >&2
+  rm -f "$TEST_LOG"
+  exit 1
+fi
+
 rm -f "$TEST_LOG"
 
 echo "Wrote evidence: $MANIFEST"
@@ -233,6 +247,12 @@ fi
 # F-5: Linux ABI/prepare present but real FS deny not green is fail.
 if [[ "$linux_deny_required" == true && "$test_deny_ok" != true ]]; then
   echo "FAIL: Linux Landlock ABI/prepare path ran but real FS deny was not OK (F-5)" >&2
+  exit 1
+fi
+
+# Mode-off receipt is always expected from the Zig suite (not platform-gated).
+if [[ "$ctrl_off_ok" != true ]]; then
+  echo "FAIL: expected CTRL-OFF (mode off receipt) evidence missing from test-fast log" >&2
   exit 1
 fi
 

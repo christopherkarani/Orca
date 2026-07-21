@@ -17,10 +17,13 @@
 //! - `PATH`, `HOME`, `LANG`, `TERM`
 //! - `ORCA_*` session vars when present
 //!
-//! ## Launch allowlist (M-20 / P0-I-05 complete form on sandbox path)
-//! After denylist scrub, `applyBeforeExec` (mode on/auto) also applies a
-//! **launch allowlist**: only known-safe runtime/session keys remain. Secrets,
-//! provider credentials, and arbitrary host env vars are stripped. Policy-level
+//! ## Launch allowlist (M-20 / P0-I-05 complete form on sandbox attach path)
+//! After denylist scrub, `applyBeforeExec` applies a **launch allowlist** only
+//! when prepare produces child-apply materials (not on pure grade-drop
+//! unavailable; M-2). Only known-safe runtime/session keys remain. Secrets,
+//! provider credentials, and arbitrary host env vars are stripped. TLS trust
+//! (`SSL_CERT_*`, `*_CA_BUNDLE`, `NODE_EXTRA_CA_CERTS`, `GIT_SSL_CAINFO`) and
+//! agent-auth sock vars (`SSH_AUTH_SOCK`) are retained (M-9). Policy-level
 //! filtering in `intercept/env.zig` still runs first; `--secretless` rewrites
 //! secret-like values before this allowlist.
 //!
@@ -110,6 +113,15 @@ pub const launch_allow_exact = [_][]const u8{
     "no_proxy",
     "ALL_PROXY",
     "all_proxy",
+    // TLS trust roots (M-9) — needed for HTTPS agent/tool traffic under allowlist.
+    "SSL_CERT_FILE",
+    "SSL_CERT_DIR",
+    "REQUESTS_CA_BUNDLE",
+    "CURL_CA_BUNDLE",
+    "NODE_EXTRA_CA_CERTS",
+    "GIT_SSL_CAINFO",
+    // SSH agent socket for git/ssh agent workflows (M-9).
+    "SSH_AUTH_SOCK",
 };
 
 /// Prefixes retained by the launch allowlist (in addition to exact keys).
@@ -220,7 +232,8 @@ pub fn scrubEnvMapInPlace(env_map: *std.process.Environ.Map) error{OutOfMemory}!
 /// Remove keys not on the launch allowlist. Returns count of removals.
 ///
 /// Fail closed on OOM while collecting keys (same contract as denylist scrub).
-/// Intended for sandbox on/auto after `scrubEnvMapInPlace`.
+/// Called from `applyBeforeExec` only when prepare yields child-apply materials
+/// (not on pure grade-drop; M-2), after denylist `scrubEnvMapInPlace`.
 pub fn applyLaunchAllowlistInPlace(env_map: *std.process.Environ.Map) error{OutOfMemory}!usize {
     var to_remove: std.ArrayList([]u8) = .empty;
     defer {
@@ -461,6 +474,16 @@ test "launch allowlist keeps runtime keys and strips secrets" {
     try std.testing.expect(!isLaunchAllowlisted("SSLKEYLOGFILE"));
 }
 
+test "launch allowlist keeps TLS trust and SSH_AUTH_SOCK (M-9)" {
+    try std.testing.expect(isLaunchAllowlisted("SSL_CERT_FILE"));
+    try std.testing.expect(isLaunchAllowlisted("SSL_CERT_DIR"));
+    try std.testing.expect(isLaunchAllowlisted("REQUESTS_CA_BUNDLE"));
+    try std.testing.expect(isLaunchAllowlisted("CURL_CA_BUNDLE"));
+    try std.testing.expect(isLaunchAllowlisted("NODE_EXTRA_CA_CERTS"));
+    try std.testing.expect(isLaunchAllowlisted("GIT_SSL_CAINFO"));
+    try std.testing.expect(isLaunchAllowlisted("SSH_AUTH_SOCK"));
+}
+
 test "applyLaunchAllowlistInPlace strips non-allowlisted keys" {
     var env_map = std.process.Environ.Map.init(std.testing.allocator);
     defer env_map.deinit();
@@ -471,6 +494,10 @@ test "applyLaunchAllowlistInPlace strips non-allowlisted keys" {
     try env_map.put("AWS_SECRET_ACCESS_KEY", "secret");
     try env_map.put("RANDOM_HOST_VAR", "x");
     try env_map.put("GITHUB_TOKEN", "orca-secret://local-dummy/env/GITHUB_TOKEN/abc");
+    try env_map.put("SSL_CERT_FILE", "/etc/ssl/cert.pem");
+    try env_map.put("NODE_EXTRA_CA_CERTS", "/etc/ssl/node-ca.pem");
+    try env_map.put("GIT_SSL_CAINFO", "/etc/ssl/git-ca.pem");
+    try env_map.put("SSH_AUTH_SOCK", "/tmp/ssh-agent.sock");
 
     const removed = try applyLaunchAllowlistInPlace(&env_map);
     try std.testing.expectEqual(@as(usize, 3), removed);
@@ -482,4 +509,9 @@ test "applyLaunchAllowlistInPlace strips non-allowlisted keys" {
     try std.testing.expect(env_map.get("RANDOM_HOST_VAR") == null);
     // Secretless refs survive allowlist (key present, non-resolving value).
     try std.testing.expect(std.mem.startsWith(u8, env_map.get("GITHUB_TOKEN").?, "orca-secret://"));
+    // M-9 keepers (TLS trust + agent socket; not total credential wipe).
+    try std.testing.expectEqualStrings("/etc/ssl/cert.pem", env_map.get("SSL_CERT_FILE").?);
+    try std.testing.expectEqualStrings("/etc/ssl/node-ca.pem", env_map.get("NODE_EXTRA_CA_CERTS").?);
+    try std.testing.expectEqualStrings("/etc/ssl/git-ca.pem", env_map.get("GIT_SSL_CAINFO").?);
+    try std.testing.expectEqualStrings("/tmp/ssh-agent.sock", env_map.get("SSH_AUTH_SOCK").?);
 }

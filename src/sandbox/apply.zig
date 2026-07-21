@@ -65,9 +65,11 @@ pub const ApplyBoundary = struct {
 
 pub const ApplyResult = struct {
     receipt: AttachReceipt,
-    /// True when env_scrub ran against env_map.
+    /// True when denylist env scrub ran against env_map.
     env_scrubbed: bool = false,
-    /// Count of keys removed by env scrub (0 if not scrubbed).
+    /// True when launch allowlist ran (only with child-apply materials; M-2).
+    env_launch_allowlisted: bool = false,
+    /// Count of keys removed by denylist + optional launch allowlist (0 if none).
     env_keys_removed: usize = 0,
     /// Profile was compiled.
     profile_compiled: bool = false,
@@ -89,10 +91,6 @@ pub const ApplyResult = struct {
             self.seatbelt_sbpl_z = null;
         }
         self.* = undefined;
-    }
-
-    pub fn mayReportActive(self: ApplyResult) bool {
-        return self.receipt.isActive();
     }
 
     /// Kind of child-side OS apply the spawn path must perform.
@@ -128,7 +126,8 @@ pub const ApplyResult = struct {
 
     /// Promote to session-active only with a valid `ChildAttachProof` from `spawnAgent`.
     /// Bare materials alone never authorize active (S-GLO-01).
-    pub fn promoteWithProof(self: *ApplyResult, proof: ChildAttachProof) void {
+    /// File-private: not a public capability API (M-6 soft-seal fix).
+    fn promoteWithProof(self: *ApplyResult, proof: ChildAttachProof) void {
         if (!proof.isValid()) return;
         const kind = self.childApplyKind();
         const matches = switch (kind) {
@@ -139,7 +138,8 @@ pub const ApplyResult = struct {
         if (!matches) return;
         const hash = self.profile_hash_hex orelse return;
         switch (proof.mechanism) {
-            .landlock => self.receipt = posture.activeReceipt(.landlock, hash[0..], "workspace RW, system RO, no home"),
+            // Landlock expand: RW only on pre-existing non-control children; root is RO (M-6 / F-2).
+            .landlock => self.receipt = posture.activeReceipt(.landlock, hash[0..], "workspace child RW, root RO, system RO, no home"),
             .seatbelt => self.receipt = posture.activeReceipt(.seatbelt, hash[0..], "workspace RW, system RO, no home"),
             .none => {},
         }
@@ -231,20 +231,81 @@ fn setFailReason(boundary: ApplyBoundary, reason: []const u8) void {
     if (boundary.fail_reason_out) |out| out.* = reason;
 }
 
+/// Relative session temp directory under the workspace (always covered by workspace RW).
+/// Pre-created on the attach path so Landlock child-expand can PATH_BENEATH it.
+pub const workspace_session_tmp_name = ".orca-tmp";
+
+/// Classic system temp fallback when workspace session temp cannot be prepared.
+pub const classic_tmp_fallback = "/tmp";
+
+/// Absolute path for the preferred attach TMPDIR under `workspace_root`.
+/// Caller owns the returned slice.
+pub fn workspaceSessionTmpPath(allocator: std.mem.Allocator, workspace_root: []const u8) ![]u8 {
+    return std.fmt.allocPrint(allocator, "{s}/{s}", .{ workspace_root, workspace_session_tmp_name });
+}
+
+/// Pure: true when `path` is a macOS per-user `/var/folders/...` temp (not granted).
+pub fn isUngrantedHostTmpdir(path: []const u8) bool {
+    if (path.len == 0) return false;
+    // macOS default TMPDIR shape: /var/folders/… or /private/var/folders/…
+    if (std.mem.startsWith(u8, path, "/var/folders/")) return true;
+    if (std.mem.startsWith(u8, path, "/private/var/folders/")) return true;
+    return false;
+}
+
+/// Rewrite TMPDIR/TMP/TEMP into a granted tree for the attach path (M-8 / R2-2).
+///
+/// Host macOS TMPDIR under `/var/folders` is intentionally not granted (canary breadth).
+/// Prefer `{workspace}/.orca-tmp` (workspace RW; mkdir so Landlock expand sees it).
+/// Fall back to classic `/tmp` (production temp RW grant).
+///
+/// Mutates `env_map` in place. Returns the path written into TMPDIR (map-owned value).
+pub fn rewriteTempEnvForAttach(
+    allocator: std.mem.Allocator,
+    env_map: *std.process.Environ.Map,
+    workspace_root: []const u8,
+) ![]const u8 {
+    const preferred = try workspaceSessionTmpPath(allocator, workspace_root);
+    defer allocator.free(preferred);
+
+    // Best-effort create so Landlock child-expand and agents can use it immediately.
+    // Failures fall through to classic /tmp (still RW under production grants).
+    var io_rt: std.Io.Threaded = .init_single_threaded;
+    const io = io_rt.io();
+    var use_path: []const u8 = classic_tmp_fallback;
+    std.Io.Dir.cwd().createDirPath(io, preferred) catch {};
+    if (std.Io.Dir.openDirAbsolute(io, preferred, .{})) |dir_opened| {
+        var dir = dir_opened;
+        dir.close(io);
+        use_path = preferred;
+    } else |_| {
+        use_path = classic_tmp_fallback;
+    }
+
+    // Map put duplicates via map allocator — preferred stack path is free'd after.
+    try env_map.put("TMPDIR", use_path);
+    try env_map.put("TMP", use_path);
+    try env_map.put("TEMP", use_path);
+    return env_map.get("TMPDIR") orelse classic_tmp_fallback;
+}
+
 /// Apply OS sandbox policy for the production launch path.
 ///
 /// - `off` → disabled receipt; no profile/platform apply; no env scrub at this seam
-/// - `on` / `auto` → compile profile, scrub env, attempt platform apply
+/// - `on` / `auto` → compile profile, denylist-scrub env, attempt platform apply
 /// - `on` / `auto` + incomplete env scrub (OOM) → `error.RequireFailed` (fail closed; M-3)
+/// - launch allowlist (M-20) runs only when prepare yields child-apply materials (M-2)
+/// - attach path rewrites TMPDIR/TMP/TEMP into a granted tree (M-8 / R2-2)
 /// - `on` + unavailable/failed (no child plan) → `error.RequireFailed` (fail closed)
 /// - `on` + prepared child plan → returns materials; receipt stays non-active until promote
-/// - `auto` + unavailable → unavailable receipt; caller may still spawn (interactive degrade)
+/// - `auto` + unavailable → unavailable receipt; denylist only (provider keys retained; M-2)
 /// - Session `active` only after agent-child apply handshake + `promoteWithProof` (S-GLO-01)
 pub fn applyBeforeExec(boundary: ApplyBoundary) ApplyError!ApplyResult {
     switch (boundary.mode) {
         .off => return .{
             .receipt = posture.disabledReceipt(),
             .env_scrubbed = false,
+            .env_launch_allowlisted = false,
             .env_keys_removed = 0,
             .profile_compiled = false,
         },
@@ -266,6 +327,7 @@ pub fn applyBeforeExec(boundary: ApplyBoundary) ApplyError!ApplyResult {
             return .{
                 .receipt = posture.unavailableReceipt("profile_compile_failed"),
                 .env_scrubbed = false,
+                .env_launch_allowlisted = false,
                 .profile_compiled = false,
             };
         },
@@ -273,13 +335,30 @@ pub fn applyBeforeExec(boundary: ApplyBoundary) ApplyError!ApplyResult {
     var transfer_landlock = false;
     defer if (!transfer_landlock) compiled.deinit();
 
+    // F-1: reject symlink/non-dir control roots before platform prepare (path alias).
+    var control_io_rt: std.Io.Threaded = .init_single_threaded;
+    const control_io = control_io_rt.io();
+    compiled.validateControlRootsOnDisk(control_io) catch {
+        setFailReason(boundary, "control_root_unsafe");
+        if (boundary.mode == .on) return error.RequireFailed;
+        return .{
+            .receipt = posture.unavailableReceipt("control_root_unsafe"),
+            .env_scrubbed = false,
+            .env_launch_allowlisted = false,
+            .profile_compiled = true,
+            .profile_hash_hex = blk: {
+                var h: [64]u8 = undefined;
+                @memcpy(h[0..], compiled.hash());
+                break :blk h;
+            },
+        };
+    };
+
     var hash_copy: [64]u8 = undefined;
     @memcpy(hash_copy[0..], compiled.hash());
 
-    // Launch hygiene on child env (on/auto):
-    // 1) denylist scrub (injection keys)
-    // 2) launch allowlist (M-20) — only safe runtime/session keys remain
-    // Fail closed on incomplete scrub/allowlist (OOM mid-scan).
+    // Denylist scrub always on on/auto (injection fail-closed). Launch allowlist is
+    // deferred until after prepare so pure grade-drop does not strip provider keys (M-2).
     var removed: usize = 0;
     var scrubbed = false;
     if (boundary.env_map) |env_map| {
@@ -287,17 +366,34 @@ pub fn applyBeforeExec(boundary: ApplyBoundary) ApplyError!ApplyResult {
             setFailReason(boundary, "env_scrub_failed");
             return error.RequireFailed;
         };
-        const allow_removed = env_scrub.applyLaunchAllowlistInPlace(env_map) catch {
-            setFailReason(boundary, "env_allowlist_failed");
-            return error.RequireFailed;
-        };
-        removed += allow_removed;
         scrubbed = true;
     }
 
     // Platform OS prepare — Linux Landlock ABI probe; macOS Seatbelt prepare.
     // FD scrub / real attach run only in the forked agent child (`apply_posix`), never here.
     const platform = tryPlatformApply(boundary.allocator, boundary.mode, &compiled);
+
+    // Launch allowlist only when child-apply materials will be used (prepared_child).
+    // Unavailable/failed grade-drop keeps denylist-only env (provider credentials retained).
+    // Attach path also rewrites TMPDIR into a granted tree (R2-2) — host /var/folders is not granted.
+    var allowlisted = false;
+    if (platform.status == .prepared_child) {
+        if (boundary.env_map) |env_map| {
+            const allow_removed = env_scrub.applyLaunchAllowlistInPlace(env_map) catch {
+                setFailReason(boundary, "env_allowlist_failed");
+                if (platform.seatbelt_sbpl_z) |p| boundary.allocator.free(p);
+                return error.RequireFailed;
+            };
+            removed += allow_removed;
+            allowlisted = true;
+            // M-8 / R2-2: after allowlist keeps TMPDIR key, point it at a granted path.
+            _ = rewriteTempEnvForAttach(boundary.allocator, env_map, boundary.workspace_root) catch {
+                setFailReason(boundary, "tmpdir_rewrite_failed");
+                if (platform.seatbelt_sbpl_z) |p| boundary.allocator.free(p);
+                return error.RequireFailed;
+            };
+        }
+    }
 
     switch (platform.status) {
         .prepared_child => {
@@ -308,6 +404,7 @@ pub fn applyBeforeExec(boundary: ApplyBoundary) ApplyError!ApplyResult {
                 return .{
                     .receipt = posture.unavailableReceipt(platform.reason_code),
                     .env_scrubbed = scrubbed,
+                    .env_launch_allowlisted = allowlisted,
                     .env_keys_removed = removed,
                     .profile_compiled = true,
                     .profile_hash_hex = hash_copy,
@@ -318,6 +415,7 @@ pub fn applyBeforeExec(boundary: ApplyBoundary) ApplyError!ApplyResult {
             return .{
                 .receipt = posture.unavailableReceipt(platform.reason_code),
                 .env_scrubbed = scrubbed,
+                .env_launch_allowlisted = allowlisted,
                 .env_keys_removed = removed,
                 .profile_compiled = true,
                 .profile_hash_hex = hash_copy,
@@ -332,6 +430,7 @@ pub fn applyBeforeExec(boundary: ApplyBoundary) ApplyError!ApplyResult {
             return .{
                 .receipt = posture.unavailableReceipt(platform.reason_code),
                 .env_scrubbed = scrubbed,
+                .env_launch_allowlisted = false,
                 .env_keys_removed = removed,
                 .profile_compiled = true,
                 .profile_hash_hex = hash_copy,
@@ -344,6 +443,7 @@ pub fn applyBeforeExec(boundary: ApplyBoundary) ApplyError!ApplyResult {
             return .{
                 .receipt = posture.failedReceipt(platform.reason_code),
                 .env_scrubbed = scrubbed,
+                .env_launch_allowlisted = false,
                 .env_keys_removed = removed,
                 .profile_compiled = true,
                 .profile_hash_hex = hash_copy,
@@ -434,7 +534,6 @@ test "mode off returns disabled receipt without scrub or active claim" {
 
     try std.testing.expectEqual(posture.SessionPosture.disabled, result.receipt.posture);
     try std.testing.expect(!result.receipt.isActive());
-    try std.testing.expect(!result.mayReportActive());
     try std.testing.expect(!result.env_scrubbed);
     try std.testing.expect(!result.profile_compiled);
     // Off path does not scrub at this seam (policy env filter still applies upstream).
@@ -451,7 +550,7 @@ test "mode auto without Landlock returns unavailable and scrubs env" {
     try env_map.put("ORCA_SESSION_ID", "s1");
 
     // Parent prepare is ABI/backend probe only (M-15) — missing path is not a parent failure.
-    // Scrub must still run; session stays non-active until agent-child apply + promote.
+    // Denylist scrub must still run; session stays non-active until agent-child apply + promote.
     var result = try applyBeforeExec(.{
         .allocator = std.testing.allocator,
         .mode = .auto,
@@ -462,7 +561,6 @@ test "mode auto without Landlock returns unavailable and scrubs env" {
 
     try std.testing.expect(result.receipt.posture != .active);
     try std.testing.expect(!result.receipt.isActive());
-    try std.testing.expect(!result.mayReportActive());
     try std.testing.expect(result.env_scrubbed);
     try std.testing.expect(result.profile_compiled);
     try std.testing.expect(result.profile_hash_hex != null);
@@ -473,6 +571,52 @@ test "mode auto without Landlock returns unavailable and scrubs env" {
     // Linux without ABI: landlock_unavailable;
     // Linux with ABI: prepared_child (landlock_child_apply_required) — attach failure is spawn path.
     try std.testing.expect(result.receipt.posture == .unavailable or result.receipt.posture == .failed);
+    // Allowlist only with child-apply materials (M-2).
+    try std.testing.expectEqual(result.requiresChildApply(), result.env_launch_allowlisted);
+}
+
+test "auto grade-drop retains provider keys; attach path allowlists (M-2)" {
+    // Inherit-like env: provider credentials + injection key.
+    // Denylist always strips injection. Launch allowlist only when materials require child apply.
+    var env_map = std.process.Environ.Map.init(std.testing.allocator);
+    defer env_map.deinit();
+    try env_map.put("PATH", "/usr/bin:/bin");
+    try env_map.put("HOME", "/tmp");
+    try env_map.put("OPENAI_API_KEY", "sk-retain-on-grade-drop");
+    try env_map.put("AWS_SECRET_ACCESS_KEY", "aws-secret-retain");
+    try env_map.put("LD_PRELOAD", "evil.so");
+    try env_map.put("SSL_CERT_FILE", "/etc/ssl/cert.pem");
+    try env_map.put("SSH_AUTH_SOCK", "/tmp/ssh-agent.sock");
+
+    var result = try applyBeforeExec(.{
+        .allocator = std.testing.allocator,
+        .mode = .auto,
+        .workspace_root = "/tmp/orca-apply-ws-m2-allowlist",
+        .env_map = &env_map,
+    });
+    defer result.deinit();
+
+    // Injection denylist always runs on auto.
+    try std.testing.expect(result.env_scrubbed);
+    try std.testing.expect(env_map.get("LD_PRELOAD") == null);
+    try std.testing.expectEqualStrings("/usr/bin:/bin", env_map.get("PATH").?);
+
+    if (result.requiresChildApply()) {
+        // Attach path: launch allowlist strips secrets; TLS/SSH keepers retained (M-9).
+        try std.testing.expect(result.env_launch_allowlisted);
+        try std.testing.expect(env_map.get("OPENAI_API_KEY") == null);
+        try std.testing.expect(env_map.get("AWS_SECRET_ACCESS_KEY") == null);
+        try std.testing.expectEqualStrings("/etc/ssl/cert.pem", env_map.get("SSL_CERT_FILE").?);
+        try std.testing.expectEqualStrings("/tmp/ssh-agent.sock", env_map.get("SSH_AUTH_SOCK").?);
+    } else {
+        // Pure grade-drop unavailable/failed: provider keys retained (M-2).
+        try std.testing.expect(!result.env_launch_allowlisted);
+        try std.testing.expectEqualStrings("sk-retain-on-grade-drop", env_map.get("OPENAI_API_KEY").?);
+        try std.testing.expectEqualStrings("aws-secret-retain", env_map.get("AWS_SECRET_ACCESS_KEY").?);
+        try std.testing.expectEqualStrings("/etc/ssl/cert.pem", env_map.get("SSL_CERT_FILE").?);
+        try std.testing.expectEqualStrings("/tmp/ssh-agent.sock", env_map.get("SSH_AUTH_SOCK").?);
+        try std.testing.expect(result.receipt.posture == .unavailable or result.receipt.posture == .failed);
+    }
 }
 
 test "mode on without usable Landlock fails closed with RequireFailed" {
@@ -595,7 +739,6 @@ test "non-Linux never yields active receipt from apply seam without child spawn"
         defer result.deinit();
         try std.testing.expect(result.receipt.posture != .active);
         try std.testing.expect(!result.receipt.isActive());
-        try std.testing.expect(!result.mayReportActive());
         try std.testing.expect(!result.receipt.posture.isOsEnforced());
     }
 }
@@ -610,8 +753,7 @@ test "parent apply seam never claims active (probe/prepare only)" {
     defer result.deinit();
     // S-GLO-01: applyBeforeExec must not authorize session active from probe alone.
     try std.testing.expect(!result.receipt.isActive());
-    try std.testing.expect(!result.mayReportActive());
-    try std.testing.expectEqual(result.receipt.isActive(), result.mayReportActive());
+
     if (result.requiresChildApply()) {
         try std.testing.expect(result.childApplyKind() == .landlock or result.childApplyKind() == .seatbelt);
     }
@@ -637,7 +779,6 @@ test "Linux Landlock prepares child plan without claiming active" {
 
     // ABI available → prepared plan without parent-side Landlock apply (M-15); not session active.
     try std.testing.expect(!result.receipt.isActive());
-    try std.testing.expect(!result.mayReportActive());
     try std.testing.expectEqual(ChildApplyKind.landlock, result.childApplyKind());
     try std.testing.expect(result.landlock_profile != null);
     try std.testing.expect(result.profile_hash_hex != null);
@@ -652,8 +793,9 @@ test "Linux Landlock prepares child plan without claiming active" {
     // Valid proof matching landlock materials promotes.
     result.promoteWithProof(.{ .mechanism = .landlock, .magic = attach_proof_magic });
     try std.testing.expect(result.receipt.isActive());
-    try std.testing.expect(result.mayReportActive());
     try std.testing.expectEqual(posture.BackendMechanism.landlock, result.receipt.mechanism);
+    try std.testing.expect(std.mem.indexOf(u8, result.receipt.fs_scope, "workspace child RW") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.receipt.fs_scope, "root RO") != null);
     const hash_view = result.receipt.profileHashSlice().?;
     try std.testing.expectEqual(@as(usize, 64), hash_view.len);
     try std.testing.expectEqualStrings(result.profile_hash_hex.?[0..], hash_view);
@@ -671,8 +813,9 @@ test "Linux Landlock prepares child plan without claiming active" {
 }
 
 test "never claims network in active landlock fs_scope" {
-    const complete = posture.activeReceipt(.landlock, "abcd", "workspace RW, system RO, no home");
+    const complete = posture.activeReceipt(.landlock, "abcd", "workspace child RW, root RO, system RO, no home");
     try std.testing.expect(std.mem.indexOf(u8, complete.fs_scope, "network") == null);
+    try std.testing.expect(std.mem.indexOf(u8, complete.fs_scope, "root RO") != null);
 }
 
 test "promoteWithProof activates only with valid seal matching materials" {
@@ -771,4 +914,86 @@ test "session banner helper remains mechanism-neutral for apply receipts" {
     try std.testing.expect(std.mem.indexOf(u8, line, "OS sandbox: active") != null);
     try std.testing.expect(std.mem.indexOf(u8, line, "Seatbelt") == null);
     try std.testing.expect(std.mem.indexOf(u8, line, "Landlock") == null);
+}
+
+test "isUngrantedHostTmpdir detects macOS var/folders shapes" {
+    try std.testing.expect(isUngrantedHostTmpdir("/var/folders/xx/yy/T/"));
+    try std.testing.expect(isUngrantedHostTmpdir("/private/var/folders/xx/yy/T"));
+    try std.testing.expect(!isUngrantedHostTmpdir("/tmp"));
+    try std.testing.expect(!isUngrantedHostTmpdir("/private/tmp"));
+    try std.testing.expect(!isUngrantedHostTmpdir("/workspace/.orca-tmp"));
+}
+
+test "rewriteTempEnvForAttach points TMPDIR at workspace session temp" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const root = try tmp.dir.realPathFileAlloc(std.testing.io, ".", std.testing.allocator);
+    defer std.testing.allocator.free(root);
+
+    var env_map = std.process.Environ.Map.init(std.testing.allocator);
+    defer env_map.deinit();
+    // Simulate macOS host TMPDIR (ungranted under Seatbelt defaults).
+    try env_map.put("TMPDIR", "/var/folders/ns/xmz0/T/");
+    try env_map.put("TMP", "/var/folders/ns/xmz0/T/");
+    try env_map.put("TEMP", "/var/folders/ns/xmz0/T/");
+
+    const rewritten = try rewriteTempEnvForAttach(std.testing.allocator, &env_map, root);
+    try std.testing.expect(!isUngrantedHostTmpdir(rewritten));
+    try std.testing.expect(std.mem.endsWith(u8, rewritten, "/.orca-tmp") or std.mem.eql(u8, rewritten, classic_tmp_fallback));
+    try std.testing.expectEqualStrings(rewritten, env_map.get("TMPDIR").?);
+    try std.testing.expectEqualStrings(rewritten, env_map.get("TMP").?);
+    try std.testing.expectEqualStrings(rewritten, env_map.get("TEMP").?);
+
+    // Preferred path should exist when workspace is real and writable.
+    if (std.mem.endsWith(u8, rewritten, "/.orca-tmp")) {
+        var io_rt: std.Io.Threaded = .init_single_threaded;
+        const io = io_rt.io();
+        var dir = try std.Io.Dir.openDirAbsolute(io, rewritten, .{});
+        dir.close(io);
+    }
+}
+
+test "attach path rewrites host TMPDIR out of var/folders (R2-2)" {
+    // Only meaningful when prepare yields child-apply materials (macOS Seatbelt / Linux Landlock).
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try tmp.dir.createDirPath(std.testing.io, ".orca");
+    const root = try tmp.dir.realPathFileAlloc(std.testing.io, ".", std.testing.allocator);
+    defer std.testing.allocator.free(root);
+
+    var env_map = std.process.Environ.Map.init(std.testing.allocator);
+    defer env_map.deinit();
+    try env_map.put("PATH", "/usr/bin:/bin");
+    try env_map.put("HOME", "/tmp");
+    try env_map.put("TMPDIR", "/var/folders/xx/yy/T/");
+    try env_map.put("LD_PRELOAD", "evil.so");
+
+    var result = try applyBeforeExec(.{
+        .allocator = std.testing.allocator,
+        .mode = .auto,
+        .workspace_root = root,
+        .env_map = &env_map,
+    });
+    defer result.deinit();
+
+    try std.testing.expect(env_map.get("LD_PRELOAD") == null);
+    if (result.requiresChildApply()) {
+        const td = env_map.get("TMPDIR") orelse "";
+        try std.testing.expect(td.len > 0);
+        try std.testing.expect(!isUngrantedHostTmpdir(td));
+        try std.testing.expect(std.mem.endsWith(u8, td, "/.orca-tmp") or std.mem.eql(u8, td, classic_tmp_fallback));
+        // Pure grants: rewritten path must be agent-writable under production model.
+        if (result.landlock_profile) |*p| {
+            try std.testing.expect(p.isAgentWritable(td) or std.mem.eql(u8, td, classic_tmp_fallback));
+        } else {
+            var compiled = try profile.compileProfile(std.testing.allocator, .{
+                .workspace_root = root,
+            });
+            defer compiled.deinit();
+            try std.testing.expect(compiled.isAgentWritable(td));
+        }
+    } else {
+        // Grade-drop: no rewrite (attach-only contract).
+        try std.testing.expectEqualStrings("/var/folders/xx/yy/T/", env_map.get("TMPDIR").?);
+    }
 }

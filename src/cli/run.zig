@@ -660,8 +660,58 @@ fn commandWithStdioAndEnv(io: std.Io, argv: []const []const u8, stdout: anytype,
             try stderr.writeAll("orca run: required backend feature is unavailable.\n");
             return exit_codes.unsupported;
         },
-        else => {
-            try stderr.print("orca run: failed to launch child: {s}\n", .{@errorName(err)});
+        else => |launch_err| {
+            // F-3: sandboxed child apply/handshake failure is fail-closed with sandbox
+            // language — never a bare "failed to launch child: ApplyFailed".
+            if (run_os_sandbox.isSandboxSpawnFailure(launch_err) and apply_result.requiresChildApply()) {
+                const reason = run_os_sandbox.sandboxSpawnFailReason(launch_err);
+                if (audit_context.writer) |*writer| {
+                    if (audit_context.session) |session| {
+                        // Failed posture before session_exit (practices-2).
+                        const fail_receipt = sandbox.posture.failedReceipt(reason);
+                        try run_os_sandbox.auditSandboxPosture(&audit_context, session, fail_receipt);
+                        var ended = session;
+                        if (audit_context.workspace_root_owned) |root| ended.workspace_root = root;
+                        ended.ended_at = core.time.Timestamp.now(audit_context.io);
+                        const ts = ended.ended_at.?;
+                        const ev: core.event.Event = .{
+                            .session_id = ended.id,
+                            .event_id = try core.event.generateEventId(ts),
+                            .timestamp = ts,
+                            .event_type = .session_exit,
+                            .actor = .{ .kind = .orca, .display = "orca" },
+                            .target = .{ .kind = .session, .value = ended.id.slice() },
+                        };
+                        try core_api.appendAuditEvent(writer, ev);
+                        const final_hash = writer.finalHash() orelse "";
+                        try core_api.writeAuditSummary(allocator, writer.session_dir_path, .{
+                            .session = ended,
+                            .status = .{ .exited = exit_codes.unsupported },
+                            .event_count = writer.event_count,
+                            .final_event_hash = final_hash,
+                            .policy = loaded_policy.path,
+                            .product_label = "Orca",
+                        });
+                        try writeLastPointerNoMakePath(allocator, ended.workspace_root, ended.id.slice());
+                    }
+                }
+                switch (options.os_sandbox) {
+                    .on => try stderr.print(
+                        "orca run: OS sandbox required (--os-sandbox on) but attach failed ({s}).\n",
+                        .{reason},
+                    ),
+                    .auto => try stderr.print(
+                        "orca run: OS sandbox attach failed under --os-sandbox auto ({s}); not launching unboxed agent.\n",
+                        .{reason},
+                    ),
+                    .off => try stderr.print(
+                        "orca run: OS sandbox attach failed ({s}).\n",
+                        .{reason},
+                    ),
+                }
+                return exit_codes.unsupported;
+            }
+            try stderr.print("orca run: failed to launch child: {s}\n", .{@errorName(launch_err)});
             return exit_codes.general;
         },
     };
@@ -1007,7 +1057,8 @@ fn printSessionStart(
     try tui.render.keyValue(io, stdout, rows[0..count]);
     try writeSessionPosture(stdout, network_mode, secretless);
     // Mechanism-neutral OS sandbox line (S-GLO-03) — never "Seatbelt"/"Landlock" here.
-    var os_line_buf: [256]u8 = undefined;
+    // 320 leaves headroom for long fs_scope + credentials honesty clause.
+    var os_line_buf: [320]u8 = undefined;
     const os_line = run_os_sandbox.formatOsSandboxBannerLine(&os_line_buf, os_receipt);
     try stdout.print("{s}\n", .{os_line});
     try stdout.writeAll("\n");
@@ -2237,10 +2288,19 @@ test "RunOptions default os_sandbox is auto" {
 
 // M-18: full production `orca run` attach when OS backend is available.
 test "orca run --os-sandbox on attaches and banners active when backend available" {
-    if (builtin.os.tag != .macos) return error.SkipZigTest;
-    if (!sandbox.macos_seatbelt.sandboxInitAvailable()) return error.SkipZigTest;
-    const ver = sandbox.macos_seatbelt.detectProductVersion() catch return error.SkipZigTest;
-    if (!sandbox.macos_seatbelt.isMatrixMajor(ver.major)) return error.SkipZigTest;
+    const true_bin: []const u8 = switch (builtin.os.tag) {
+        .macos => "/usr/bin/true",
+        .linux => blk: {
+            if (!sandbox.landlock.isAbiAvailable()) return error.SkipZigTest;
+            break :blk "/usr/bin/true";
+        },
+        else => return error.SkipZigTest,
+    };
+    if (builtin.os.tag == .macos) {
+        if (!sandbox.macos_seatbelt.sandboxInitAvailable()) return error.SkipZigTest;
+        const ver = sandbox.macos_seatbelt.detectProductVersion() catch return error.SkipZigTest;
+        if (!sandbox.macos_seatbelt.isMatrixMajor(ver.major)) return error.SkipZigTest;
+    }
 
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
@@ -2255,7 +2315,7 @@ test "orca run --os-sandbox on attaches and banners active when backend availabl
     var stderr_writer: std.Io.Writer = .fixed(&stderr_buf);
 
     const code = try commandForGuardTestWithShellEvaluator(
-        &.{ "--workspace", root, "--os-sandbox", "on", "--", "/usr/bin/true" },
+        &.{ "--workspace", root, "--os-sandbox", "on", "--", true_bin },
         &stdout_writer,
         &stderr_writer,
         .ignore,
@@ -2267,6 +2327,47 @@ test "orca run --os-sandbox on attaches and banners active when backend availabl
     try std.testing.expect(std.mem.indexOf(u8, out, "Seatbelt") == null);
     try std.testing.expect(std.mem.indexOf(u8, out, "Landlock") == null);
     try std.testing.expect(std.mem.indexOf(u8, out, "network: unrestricted") != null);
+    if (builtin.os.tag == .linux) {
+        try std.testing.expect(std.mem.indexOf(u8, out, "workspace child RW") != null or std.mem.indexOf(u8, out, "root RO") != null);
+    }
+}
+
+// F-5: default auto path (omit --os-sandbox) attaches when backend present.
+test "orca run default auto attaches when backend available" {
+    if (builtin.os.tag == .macos) {
+        if (!sandbox.macos_seatbelt.sandboxInitAvailable()) return error.SkipZigTest;
+        const ver = sandbox.macos_seatbelt.detectProductVersion() catch return error.SkipZigTest;
+        if (!sandbox.macos_seatbelt.isMatrixMajor(ver.major)) return error.SkipZigTest;
+    } else if (builtin.os.tag == .linux) {
+        if (!sandbox.landlock.isAbiAvailable()) return error.SkipZigTest;
+    } else return error.SkipZigTest;
+
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try tmp.dir.createDirPath(std.testing.io, ".orca");
+    try tmp.dir.writeFile(std.testing.io, .{ .sub_path = "neighbor.txt", .data = "ok" });
+    const root = try tmp.dir.realPathFileAlloc(std.testing.io, ".", std.testing.allocator);
+    defer std.testing.allocator.free(root);
+
+    var stdout_buf: [8192]u8 = undefined;
+    var stderr_buf: [4096]u8 = undefined;
+    var stdout_writer: std.Io.Writer = .fixed(&stdout_buf);
+    var stderr_writer: std.Io.Writer = .fixed(&stderr_buf);
+
+    const true_bin: []const u8 = if (builtin.os.tag == .macos) "/usr/bin/true" else "/usr/bin/true";
+    // Intentionally omit --os-sandbox so default .auto is used.
+    const code = try commandForGuardTestWithShellEvaluator(
+        &.{ "--workspace", root, "--", true_bin },
+        &stdout_writer,
+        &stderr_writer,
+        .ignore,
+        shell_eval.mockDaemonAllowEvaluator,
+    );
+    try std.testing.expectEqual(exit_codes.success, code);
+    const out = stdout_writer.buffered();
+    try std.testing.expect(std.mem.indexOf(u8, out, "OS sandbox: active") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "Seatbelt") == null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "Landlock") == null);
 }
 
 test "session start banner is mechanism-neutral for disabled OS sandbox" {

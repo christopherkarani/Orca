@@ -35,15 +35,44 @@ pub fn applyForRun(
         .fail_reason_out = &fail_reason,
     }) catch |err| switch (err) {
         error.RequireFailed => {
-            try stderr.print(
-                "orca run: OS sandbox required (--os-sandbox on) but unavailable ({s}).\n",
-                .{fail_reason},
-            );
+            // Incomplete env scrub fails closed on both on and auto; wording must not
+            // always claim the user passed `--os-sandbox on` (practices-6).
+            switch (mode) {
+                .on => try stderr.print(
+                    "orca run: OS sandbox required (--os-sandbox on) but unavailable ({s}).\n",
+                    .{fail_reason},
+                ),
+                .auto => try stderr.print(
+                    "orca run: OS sandbox failed closed under --os-sandbox auto ({s}).\n",
+                    .{fail_reason},
+                ),
+                .off => try stderr.print(
+                    "orca run: OS sandbox unavailable ({s}).\n",
+                    .{fail_reason},
+                ),
+            }
             return .{ .require_failed = exit_codes.unsupported };
         },
         error.OutOfMemory => return error.OutOfMemory,
     };
     return .{ .ok = result };
+}
+
+/// True when `err` is a sandbox child-apply/spawn failure that must not look like a
+/// generic command launch issue (F-3 / practices-1).
+pub fn isSandboxSpawnFailure(err: anyerror) bool {
+    return err == error.ApplyFailed or err == error.ForkFailed or err == error.Unsupported or err == error.ExecFailed;
+}
+
+/// Operator-facing reason for a failed sandboxed spawn.
+pub fn sandboxSpawnFailReason(err: anyerror) []const u8 {
+    return switch (err) {
+        error.ApplyFailed => "child_apply_failed",
+        error.ForkFailed => "sandbox_fork_failed",
+        error.Unsupported => "sandbox_backend_unsupported",
+        error.ExecFailed => "sandbox_exec_failed",
+        else => "sandbox_spawn_failed",
+    };
 }
 
 /// Loud grade-drop warning for `--os-sandbox auto` when no child apply plan exists.
@@ -131,6 +160,7 @@ pub fn auditSandboxPosture(
 
 /// Format mechanism-neutral OS sandbox banner line for session start.
 pub fn formatOsSandboxBannerLine(buf: []u8, receipt: sandbox.posture.AttachReceipt) []const u8 {
+    // Thin wrapper: catch maps OOM/format overflow to a safe fallback string.
     return sandbox.posture.formatSessionBanner(buf, receipt) catch "OS sandbox: unavailable";
 }
 
@@ -150,16 +180,17 @@ test "auto degrade warns only when no child plan" {
     try std.testing.expectEqual(@as(usize, 0), stderr_writer.buffered().len);
 }
 
-test "ChildAttachProof invalid magic does not activate" {
+test "apply materials alone never authorize active" {
     var result = try sandbox.apply.applyBeforeExec(.{
         .allocator = std.testing.allocator,
         .mode = .off,
         .workspace_root = "/tmp/ws",
         .env_map = null,
     });
+    defer result.deinit();
+    // promoteWithProof is file-private; materials/receipt from apply must stay non-active.
     try std.testing.expect(!result.receipt.isActive());
-    result.promoteWithProof(.{ .mechanism = .seatbelt, .magic = 0 });
-    try std.testing.expect(!result.receipt.isActive());
+    try std.testing.expectEqual(sandbox.apply.ChildApplyKind.none, result.childApplyKind());
 }
 
 test "run path spawnAgent attach when Seatbelt available" {

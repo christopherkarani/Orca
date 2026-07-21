@@ -17,17 +17,30 @@ Run:
 | MCP stdio proxy | active |
 | Network decision engine | active |
 | Transparent network enforcement | observe-only |
-| Transparent filesystem enforcement | unavailable by default; staged writes are active |
-| Strong sandbox | unavailable |
+| Transparent filesystem enforcement | staged writes always; Landlock session-attach when available |
+| Strong sandbox | session-attach via Landlock when ABI ≥ 1 (kernel 5.13+); otherwise unavailable |
+
+## OS filesystem sandbox (`orca run`)
+
+`orca run --os-sandbox auto|on|off` (default `auto`) can attach a Landlock filesystem boundary to the agent child:
+
+- **Probe ≠ session-attach.** Doctor Landlock / strong-sandbox reports are capability evidence only. Doctor never reports a live session as `active` from a probe alone.
+- **Session-attach** is claimable only after apply-before-exec child attach succeeds for that run (with a profile hash).
+- **FS scope (Landlock):** workspace child RW with workspace-root RO — create/write at the workspace root is denied; Seatbelt (macOS) allows full workspace subpath RW including create-at-root.
+- **`auto`** attaches when the host supports Landlock ABI ≥ 1 and degrades loudly when it does not.
+- **`on`** fails closed when attach cannot complete.
+- **`off`** disables OS apply.
+
+Requirements: Linux kernel **5.13+** with Landlock **ABI ≥ 1**. Containers and host policy can still make Landlock unavailable.
 
 ## Backend Features
 
-Doctor may report user namespaces, mount namespaces, seccomp, Landlock, cgroups, network observation, audit/replay, and strong sandbox state. Kernel feature probes are capability evidence only; v1.1.0 does not install namespace, seccomp, or Landlock restrictions as an active strong sandbox.
+Doctor may report user namespaces, mount namespaces, seccomp, Landlock, cgroups, network observation, audit/replay, and strong sandbox capability. Kernel feature probes are not a live session claim. Landlock restrictions are installed only on the `orca run` child path when `--os-sandbox` allows attach and the host supports it.
 
 ## Fallback
 
-If kernel features are unavailable, Orca falls back to wrapper/proxy, staged-write, policy, and audit controls. Required backend features fail closed when requested with `--require-backend`.
+If kernel features are unavailable, Orca falls back to wrapper/proxy, staged-write, policy, and audit controls. Required backend features fail closed when requested with `--require-backend` or `--os-sandbox on`.
 
 ## Limitations
 
-Linux capability varies by distro, kernel, container, and sysctl configuration. Do not assume transparent filesystem enforcement or strong sandboxing; v1.1.0 reports those as unavailable unless a future backend installs active OS restrictions.
+Linux capability varies by distro, kernel, container, and sysctl configuration. Do not treat doctor probes as transparent filesystem enforcement for an arbitrary process; trust OS-enforced FS isolation only for sessions that completed child attach.
