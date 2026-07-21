@@ -40,7 +40,7 @@ Orca does not promise perfect sandboxing, protection outside Orca-launched sessi
 
 Wrapper and proxy controls are not the same as OS-level enforcement. macOS and Windows currently report transparent file and network enforcement as limited. Linux capability depends on kernel and host settings.
 
-Protection is **graded** (`hook` | `wrapper` | `proxy` | `OS-enforced`). Canonical definitions and the map from doctor / `orca start --protection` labels live in [compatibility.md](compatibility.md#protection-grades-canonical).
+Protection is **graded** (`hook` | `wrapper` | `proxy` | `OS-enforced`). Canonical definitions and the map from doctor / platform reports (and the public `orca start` **Ask on risk** default) live in [compatibility.md](compatibility.md#protection-grades-canonical).
 
 ## Fail-closed Behavior
 

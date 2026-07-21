@@ -28,7 +28,22 @@ pub const ReplayEvent = struct {
         allocator.free(self.target_value);
         if (self.decision_result) |value| allocator.free(value);
     }
+
+    /// True when the event is a denial for filtering / human emphasis.
+    /// Matches `only_denied` load-path semantics: type ends with `_denied`, or
+    /// decision result is `deny` (covers non-`*_denied` types that still deny).
+    pub fn isDenied(self: ReplayEvent) bool {
+        return isDeniedFields(self.event_type, self.decision_result);
+    }
 };
+
+/// Shared deny classifier for event type + optional decision result strings.
+/// Used by JSON load filtering and by CLI human/TUI replay rendering.
+pub fn isDeniedFields(event_type: []const u8, decision_result: ?[]const u8) bool {
+    if (std.mem.endsWith(u8, event_type, "_denied")) return true;
+    if (decision_result) |result| return std.mem.eql(u8, result, "deny");
+    return false;
+}
 
 pub const ReplaySession = struct {
     allocator: std.mem.Allocator,
@@ -475,12 +490,17 @@ fn eventFromJson(allocator: std.mem.Allocator, raw: []const u8, value: std.json.
 fn isDenied(value: std.json.Value) bool {
     const object = expectObject(value) catch return false;
     const event_type = expectString(requiredField(object, "type") catch return false) catch return false;
-    if (std.mem.endsWith(u8, event_type, "_denied")) return true;
-    const decision = object.get("decision") orelse return false;
-    if (decision == .null) return false;
-    const decision_object = expectObject(decision) catch return false;
-    const result = decision_object.get("result") orelse return false;
-    return result == .string and std.mem.eql(u8, result.string, "deny");
+    var decision_result: ?[]const u8 = null;
+    if (object.get("decision")) |decision| {
+        if (decision != .null) {
+            if (expectObject(decision)) |decision_object| {
+                if (decision_object.get("result")) |result| {
+                    if (result == .string) decision_result = result.string;
+                }
+            } else |_| {}
+        }
+    }
+    return isDeniedFields(event_type, decision_result);
 }
 
 fn decisionResultFromValue(allocator: std.mem.Allocator, value: std.json.Value) !?[]u8 {

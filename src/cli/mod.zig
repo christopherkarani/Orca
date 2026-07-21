@@ -72,6 +72,8 @@ test {
     _ = start;
     _ = setup;
     _ = quickstart;
+    _ = help;
+    _ = disable;
     _ = @import("spinner.zig");
     // Pull daemon UDS/IPC/trust/error tests into the test binary.
     _ = daemon;
@@ -98,6 +100,8 @@ test {
     _ = dashboard_command;
     _ = feed_writer;
     _ = host_launch;
+    // M-4: deny classifier / human DENY badge for non-command_denied events.
+    _ = replay;
 }
 
 pub const version = build_options.version;
@@ -421,8 +425,8 @@ fn runWithCwdUsing(
     if (std.mem.eql(u8, command, "run")) return run_command.command(io, argv[1..], stdout, stderr);
     if (std.mem.eql(u8, command, "start")) return start.command(io, cwd, argv[1..], stdout, stderr);
     // Hard-remove public onboarding peers: single door is `orca start`.
-    if (std.mem.eql(u8, command, "quickstart")) {
-        try stderr.writeAll("orca: `quickstart` was removed. Use `orca start` instead.\nRun 'orca help start' for usage.\n");
+    if (std.mem.eql(u8, command, "quickstart") or std.mem.eql(u8, command, "setup")) {
+        try help.writeRemovedOnboardingPeer(stderr, command);
         return exit_codes.usage;
     }
     if (std.mem.eql(u8, command, "init")) return init.command(io, cwd, argv[1..], stdout, stderr);
@@ -440,10 +444,6 @@ fn runWithCwdUsing(
     if (std.mem.eql(u8, command, "completions")) return completions.command(io, argv[1..], stdout, stderr);
     if (std.mem.eql(u8, command, "shim")) return shim.command(io, environ_map, argv[1..], stdout, stderr);
     if (std.mem.eql(u8, command, "plugin")) return plugin.command(io, argv[1..], stdout, stderr);
-    if (std.mem.eql(u8, command, "setup")) {
-        try stderr.writeAll("orca: `setup` was removed. Use `orca start` instead.\nRun 'orca help start' for usage.\n");
-        return exit_codes.usage;
-    }
     if (std.mem.eql(u8, command, "decide")) return decide.command(io, argv[1..], stdout, stderr);
     if (std.mem.eql(u8, command, "evaluate")) return evaluate.command(io, argv[1..], stdout, stderr);
     if (std.mem.eql(u8, command, "hook")) return hook.command(io, argv[1..], stdout, stderr);

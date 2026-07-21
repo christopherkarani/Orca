@@ -1,5 +1,8 @@
 const std = @import("std");
 
+const core_api = @import("orca_core").api;
+const orca_policy = @import("orca_core").policy;
+
 const exit_codes = @import("exit_codes.zig");
 const help = @import("help.zig");
 const style = @import("style.zig");
@@ -63,10 +66,11 @@ pub fn runStart(
     const workspace_root = try onboarding.resolveWorkspaceRootFromCwd(io, allocator, cwd);
     defer allocator.free(workspace_root);
 
-    // Auto-select best available Ask posture — no interactive grade menu.
+    // Auto-select best available setup path — no interactive grade menu.
+    // Active protection wording is deferred until after ensurePolicy (existing mode may differ).
     const protection = resolveProtectionMode(flags);
-    try stdout.writeAll("Protection: Ask on risk (auto).\n");
-    try stdout.writeAll("  Blocks dangerous agent actions; common dev commands stay smooth.\n\n");
+    try stdout.writeAll("Setup path: Ask on risk (auto).\n");
+    try stdout.writeAll("  Existing policy is preserved; claims below follow the policy file mode.\n\n");
 
     var doctor_report = try plugin.collectPluginDoctorReport(io, allocator);
     defer plugin.deinitPluginDoctorReport(&doctor_report, allocator);
@@ -85,10 +89,18 @@ pub fn runStart(
         .missing = "Creating .orca/policy.yaml...\n",
         .exists = "Policy already exists — leaving it unchanged.\n",
     });
+    var policy_mode: ?[]const u8 = null;
+    defer if (policy_mode) |m| allocator.free(m);
     if (policy_code != exit_codes.success) {
         try tui.render.stepLine(io, stdout, .failed, "Policy", "Policy setup failed.", 80);
         failures += 1;
     } else {
+        policy_mode = readWorkspacePolicyMode(io, allocator, workspace_root);
+        if (policy_mode) |mode| {
+            if (!policyModeIsAskEquivalent(mode)) {
+                try stdout.print("  Note: policy mode={s} (not Ask) — existing policy left unchanged.\n", .{mode});
+            }
+        }
         try tui.render.stepLine(io, stdout, .done, "Policy", if (policy_existed) "Existing policy preserved." else "Policy created.", 80);
     }
 
@@ -108,7 +120,7 @@ pub fn runStart(
         daemon_check = try onboarding.checkDaemonHealth(allocator, true, daemon_check_fn);
         const daemon_ok = daemon_check.status == .compatible;
         protection_active = protection_active or daemon_ok;
-        try tui.render.stepLine(io, stdout, if (daemon_ok) .done else .failed, "Daemon", if (daemon_ok) "Ready for Command Guard" else daemon_check.remediation, 80);
+        try tui.render.stepLine(io, stdout, if (daemon_ok) .done else .failed, "Daemon", if (daemon_ok) "Ready for shell mediation" else daemon_check.remediation, 80);
         if (!daemon_ok) {
             try stdout.print("  Status: {s}\n", .{daemon_check.status.label()});
             try stdout.print("  Detail: {s}\n", .{daemon_check.detail});
@@ -116,7 +128,7 @@ pub fn runStart(
         }
     } else {
         daemon_check = try onboarding.checkDaemonHealth(allocator, false, daemon_check_fn);
-        try tui.render.stepLine(io, stdout, .done, "Daemon", "Not required for Firewall-only mode", 80);
+        try tui.render.stepLine(io, stdout, .done, "Daemon", "Not required for this setup path", 80);
         protection_active = onboarding.verifyFirewallReady(io, workspace_root);
     }
 
@@ -138,7 +150,7 @@ pub fn runStart(
             try tui.render.stepLine(io, stdout, .failed, "Hosts", "Integration failed. Run `orca plugin doctor`", 80);
         }
     } else {
-        try tui.render.stepLine(io, stdout, .done, "Hosts", "Skipped for Firewall-only mode", 80);
+        try tui.render.stepLine(io, stdout, .done, "Hosts", "Skipped for this setup path", 80);
         protection_active = onboarding.verifyFirewallReady(io, workspace_root);
     }
 
@@ -178,7 +190,7 @@ pub fn runStart(
 
     try stdout.writeAll("\n");
     if (failures > 0) {
-        try writeFailureSummary(io, stdout, protection, selected_hosts.items, configured_hosts.items, daemon_check, verification, protection_active);
+        try writeFailureSummary(io, stdout, selected_hosts.items, configured_hosts.items, daemon_check, verification, protection_active, policy_mode);
         return exit_codes.general;
     }
 
@@ -193,6 +205,7 @@ pub fn runStart(
         configured_hosts.items,
         daemon_check,
         verification,
+        policy_mode,
     );
     return exit_codes.success;
 }
@@ -202,6 +215,25 @@ pub fn runStart(
 fn resolveProtectionMode(flags: onboarding.StartFlags) onboarding.ProtectionMode {
     if (flags.protection) |mode| return mode;
     return onboarding.defaultProtectionMode();
+}
+
+/// Modes that ask or enforce on risk. observe/trusted soften and must not claim Ask protection.
+/// Matches status `policyModeIsMediating` vocabulary (ask/strict/ci/redteam).
+fn policyModeIsAskEquivalent(mode: []const u8) bool {
+    const parsed = orca_policy.schema.Mode.parse(mode) orelse return false;
+    return switch (parsed) {
+        .ask, .strict, .ci, .redteam => true,
+        .observe, .trusted => false,
+    };
+}
+
+/// Load workspace policy mode after ensurePolicy. Returns null when missing/unreadable.
+fn readWorkspacePolicyMode(io: std.Io, allocator: std.mem.Allocator, workspace_root: []const u8) ?[]const u8 {
+    const path = onboarding.policyPath(allocator, workspace_root) catch return null;
+    defer allocator.free(path);
+    var loaded = core_api.loadPolicyFile(io, allocator, path) catch return null;
+    defer loaded.deinit();
+    return allocator.dupe(u8, loaded.mode().toString()) catch null;
 }
 
 const SelectedHosts = struct {
@@ -346,8 +378,22 @@ fn writeSuccessEndCard(
     configured_hosts: []const []const u8,
     daemon_check: onboarding.DaemonCheck,
     verification: ?onboarding.VerificationOutcome,
+    policy_mode: ?[]const u8,
 ) !void {
-    try tui.render.callout(io, stdout, .success, "You are protected", "Orca is configured for this workspace.");
+    const mode = policy_mode orelse "unknown";
+    const ask_equivalent = policyModeIsAskEquivalent(mode);
+    if (ask_equivalent) {
+        try tui.render.callout(io, stdout, .success, "You are protected", "Orca is configured for this workspace.");
+    } else {
+        // Prefer honest residual over silent overclaim when existing observe/trusted policy was kept.
+        const residual_body = try std.fmt.allocPrint(
+            allocator,
+            "Configured, but policy mode={s} is not Ask. Existing policy was preserved.",
+            .{mode},
+        );
+        defer allocator.free(residual_body);
+        try tui.render.callout(io, stdout, .warn, "Setup complete — residual policy mode", residual_body);
+    }
     try stdout.writeAll("\n");
 
     const policy_path = try std.fs.path.join(allocator, &.{ workspace_root, ".orca", "policy.yaml" });
@@ -365,8 +411,13 @@ fn writeSuccessEndCard(
     defer allocator.free(daemon_status_line);
     const policy_status_line = try std.fmt.allocPrint(allocator, "Policy       {s}", .{policy_line});
     defer allocator.free(policy_status_line);
-    // Plain-language posture — no command-guard/firewall/maximum grade labels.
-    const protection_status_line = try allocator.dupe(u8, "Protection   Ask on risk");
+    // Honesty: surface real mode; only claim "Ask on risk" when mode is ask.
+    const protection_status_line = if (std.mem.eql(u8, mode, "ask"))
+        try allocator.dupe(u8, "Protection   Ask on risk")
+    else if (ask_equivalent)
+        try std.fmt.allocPrint(allocator, "Protection   mode={s} (enforcing)", .{mode})
+    else
+        try std.fmt.allocPrint(allocator, "Protection   mode={s} (not Ask)", .{mode});
     defer allocator.free(protection_status_line);
     const verify_status_line = try std.fmt.allocPrint(allocator, "Verify       {s}", .{verify_line});
     defer allocator.free(verify_status_line);
@@ -381,7 +432,7 @@ fn writeSuccessEndCard(
         host_lines.deinit(allocator);
     }
     if (!protection.needsCommandGuard()) {
-        try host_lines.append(allocator, try allocator.dupe(u8, "hooks skipped (Firewall-only mode)"));
+        try host_lines.append(allocator, try allocator.dupe(u8, "hooks skipped (shell mediation off)"));
         for (selected_hosts) |host| {
             try host_lines.append(allocator, try std.fmt.allocPrint(allocator, "  {s}  skipped", .{host}));
         }
@@ -419,16 +470,26 @@ fn hostInList(name: []const u8, list: []const []const u8) bool {
 fn writeFailureSummary(
     io: std.Io,
     stdout: anytype,
-    protection: onboarding.ProtectionMode,
     selected_hosts: []const []const u8,
     configured_hosts: []const []const u8,
     daemon_check: onboarding.DaemonCheck,
     verification: ?onboarding.VerificationOutcome,
     protection_active: bool,
+    policy_mode: ?[]const u8,
 ) !void {
     try style.maybeColor(io, stdout, style.Style.red, "Setup incomplete");
     try stdout.writeAll("\n\n");
-    try stdout.writeAll("Protection posture: Ask on risk (auto)\n");
+    if (policy_mode) |mode| {
+        if (std.mem.eql(u8, mode, "ask")) {
+            try stdout.writeAll("Protection posture: Ask on risk\n");
+        } else if (policyModeIsAskEquivalent(mode)) {
+            try stdout.print("Protection posture: mode={s} (enforcing)\n", .{mode});
+        } else {
+            try stdout.print("Protection posture: mode={s} (not Ask)\n", .{mode});
+        }
+    } else {
+        try stdout.writeAll("Protection posture: setup path Ask on risk (auto); policy mode unread\n");
+    }
     try stdout.print("Protection active now: {s}\n", .{if (protection_active) "partially or fully" else "no"});
     try stdout.print("Daemon: {s} — {s}\n", .{ daemon_check.status.label(), daemon_check.detail });
     if (verification) |v| try stdout.print("Verification: {s}\n", .{v.detail});
@@ -452,7 +513,6 @@ fn writeFailureSummary(
     try stdout.writeAll("  orca plugin doctor\n");
     try stdout.writeAll("  orca doctor --verbose\n");
     try stdout.writeAll("  orca start --auto\n");
-    _ = protection;
 }
 
 fn flushIfSupported(writer: anytype) !void {
@@ -546,7 +606,7 @@ test "start reports failure when daemon required but unavailable" {
     try std.testing.expect(std.mem.indexOf(u8, stdout_writer.buffered(), "Protection active now: no") != null);
 }
 
-test "start firewall mode verifies without daemon or shell evaluator" {
+test "start firewall path verifies without daemon or shell evaluator" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
     try tmp.dir.createDir(std.testing.io, ".git", .default_dir);
@@ -578,7 +638,72 @@ test "start firewall mode verifies without daemon or shell evaluator" {
         null,
     );
     try std.testing.expectEqual(exit_codes.success, code);
-    try std.testing.expect(std.mem.indexOf(u8, stdout_writer.buffered(), "Firewall-only mode") != null);
+    // Plain-language setup path (no Command Guard / Firewall grade labels on step lines).
+    try std.testing.expect(std.mem.indexOf(u8, stdout_writer.buffered(), "Not required for this setup path") != null);
+    try std.testing.expect(std.mem.indexOf(u8, stdout_writer.buffered(), "Command Guard") == null);
+}
+
+test "start with existing observe policy does not claim Ask protection" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    // Pre-seed observe policy — ensurePolicy must leave it unchanged.
+    try tmp.dir.createDirPath(std.testing.io, ".orca");
+    {
+        const file = try tmp.dir.createFile(std.testing.io, ".orca/policy.yaml", .{});
+        defer file.close(std.testing.io);
+        try file.writeStreamingAll(std.testing.io,
+            \\version: 1
+            \\mode: observe
+            \\
+        );
+    }
+
+    var stdout_buf: [16384]u8 = undefined;
+    var stderr_buf: [1024]u8 = undefined;
+    var stdout_writer: std.Io.Writer = .fixed(&stdout_buf);
+    var stderr_writer: std.Io.Writer = .fixed(&stderr_buf);
+
+    const flags = onboarding.StartFlags{
+        .auto = true,
+        .protection = .firewall,
+        .skip_verify = true,
+    };
+    const mock_checker = struct {
+        fn check(_: std.mem.Allocator, _: bool) !void {}
+    }.check;
+
+    const code = try runStart(
+        std.testing.io,
+        tmp.dir,
+        flags,
+        &stdout_writer,
+        &stderr_writer,
+        mock_checker,
+        onboarding.mockOnboardingEvaluator,
+    );
+    try std.testing.expectEqual(exit_codes.success, code);
+
+    const output = stdout_writer.buffered();
+    try std.testing.expect(std.mem.indexOf(u8, output, "policy mode=observe") != null);
+    try std.testing.expect(std.mem.indexOf(u8, output, "not Ask") != null);
+    try std.testing.expect(std.mem.indexOf(u8, output, "You are protected") == null);
+    // Residual callout, not full Ask protection claim.
+    try std.testing.expect(std.mem.indexOf(u8, output, "residual policy mode") != null or std.mem.indexOf(u8, output, "Setup complete") != null);
+    // Policy file still observe.
+    const policy = try tmp.dir.readFileAlloc(std.testing.io, ".orca/policy.yaml", std.testing.allocator, .limited(4096));
+    defer std.testing.allocator.free(policy);
+    try std.testing.expect(std.mem.indexOf(u8, policy, "mode: observe") != null);
+}
+
+test "policyModeIsAskEquivalent covers ask/enforce not observe/trusted" {
+    try std.testing.expect(policyModeIsAskEquivalent("ask"));
+    try std.testing.expect(policyModeIsAskEquivalent("strict"));
+    try std.testing.expect(policyModeIsAskEquivalent("ci"));
+    try std.testing.expect(policyModeIsAskEquivalent("redteam"));
+    try std.testing.expect(!policyModeIsAskEquivalent("observe"));
+    try std.testing.expect(!policyModeIsAskEquivalent("trusted"));
+    try std.testing.expect(!policyModeIsAskEquivalent("unknown"));
 }
 
 test "start verification failure detected by allow-only mock evaluator" {
@@ -633,5 +758,6 @@ test "start auto default path has no protection grade menu jargon in stdout" {
     try std.testing.expect(std.mem.indexOf(u8, output, "Choose your protection mode") == null);
     try std.testing.expect(std.mem.indexOf(u8, output, "Command Guard") == null);
     try std.testing.expect(std.mem.indexOf(u8, output, "Maximum Protection") == null);
+    try std.testing.expect(std.mem.indexOf(u8, output, "Firewall-only mode") == null);
     try std.testing.expect(std.mem.indexOf(u8, output, "Ask on risk") != null);
 }

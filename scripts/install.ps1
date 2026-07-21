@@ -233,7 +233,7 @@ function Write-SuccessReceipt {
     Write-Host ""
     Write-Ui "  Then" White
     Write-Host "    orca doctor"
-    Write-Host "    orca setup          # guided host wiring (default on interactive terminals)"
+    Write-Host "    orca start          # guided host wiring (default on interactive terminals)"
 
     Write-Host ""
     Write-Ui "  Details" DarkGray

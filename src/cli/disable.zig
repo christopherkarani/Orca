@@ -425,3 +425,17 @@ test "stop accepts legacy -all spelling but requires confirmation in non-TTY" {
     try std.testing.expectEqual(exit_codes.usage, code);
     try std.testing.expect(std.mem.indexOf(u8, stderr_writer.buffered(), "--yes") != null);
 }
+
+test "stop success output points at orca start not setup" {
+    var stdout_buf: [4096]u8 = undefined;
+    var stderr_buf: [256]u8 = undefined;
+    var stdout_writer: std.Io.Writer = .fixed(&stdout_buf);
+    var stderr_writer: std.Io.Writer = .fixed(&stderr_buf);
+
+    // --yes skips confirmation; no plugins required for footer messaging.
+    const code = try command(std.testing.io, &.{"--yes"}, &stdout_writer, &stderr_writer);
+    try std.testing.expectEqual(exit_codes.success, code);
+    const out = stdout_writer.buffered();
+    try std.testing.expect(std.mem.indexOf(u8, out, "orca start") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "orca setup") == null);
+}

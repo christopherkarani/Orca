@@ -882,6 +882,15 @@ fn writeCommandRow(io: std.Io, writer: anytype, name: []const u8, name_width: us
     try writer.writeAll("\n");
 }
 
+/// Single notice for hard-removed onboarding peers (`setup` / `quickstart`).
+/// Used by top-level dispatch and `writeCommand` so wording cannot drift.
+pub fn writeRemovedOnboardingPeer(writer: anytype, name: []const u8) !void {
+    try writer.print(
+        "orca: `{s}` was removed. Use `orca start` instead.\nRun 'orca help start' for usage.\n",
+        .{name},
+    );
+}
+
 pub fn writeCommand(io: std.Io, writer: anytype, name: []const u8) !bool {
     // Progressive disclosure: `orca help --all` reuses the existing single-arg
     // help dispatch path without changing top-level argv parsing.
@@ -891,10 +900,7 @@ pub fn writeCommand(io: std.Io, writer: anytype, name: []const u8) !bool {
     }
     // Hard-removed onboarding peers: do not re-teach live usage; point at `orca start`.
     if (std.mem.eql(u8, name, "setup") or std.mem.eql(u8, name, "quickstart")) {
-        try writer.print(
-            "orca: `{s}` was removed. Use `orca start` instead.\nRun 'orca help start' for usage.\n",
-            .{name},
-        );
+        try writeRemovedOnboardingPeer(writer, name);
         return true;
     }
     const command = findCommand(name) orelse return false;

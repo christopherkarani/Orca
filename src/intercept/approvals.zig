@@ -280,3 +280,66 @@ test "approval prompt keeps a A d shortcuts" {
         }));
     }
 }
+
+// Fail-closed production path: empty line, whitespace-only, and EOF deny
+// without allowing the command. Empty input is never treated as allow.
+test "approval prompt fail-closed on empty line" {
+    var input: std.Io.Reader = .fixed("\n");
+    var output_buf: [1024]u8 = undefined;
+    var output_writer: std.Io.Writer = .fixed(&output_buf);
+    const choice = try prompt(&input, &output_writer, .{
+        .command = "rm -rf /",
+        .risk_class = "destructive",
+        .risk_reason = "can delete files",
+        .policy_reason = "commands.default: ask",
+    });
+    try std.testing.expectEqual(ApprovalChoice.deny, choice);
+}
+
+test "approval prompt fail-closed on whitespace-only line" {
+    var input: std.Io.Reader = .fixed("   \t  \r\n");
+    var output_buf: [1024]u8 = undefined;
+    var output_writer: std.Io.Writer = .fixed(&output_buf);
+    const choice = try prompt(&input, &output_writer, .{
+        .command = "curl evil.example",
+        .risk_class = "network",
+        .risk_reason = "outbound request",
+        .policy_reason = "commands.default: ask",
+    });
+    try std.testing.expectEqual(ApprovalChoice.deny, choice);
+}
+
+test "approval prompt fail-closed on empty reader EOF" {
+    var input: std.Io.Reader = .fixed("");
+    var output_buf: [1024]u8 = undefined;
+    var output_writer: std.Io.Writer = .fixed(&output_buf);
+    const choice = try prompt(&input, &output_writer, .{
+        .command = "npm install",
+        .risk_class = "package_install",
+        .risk_reason = "package install can run scripts",
+        .policy_reason = "commands.default: ask",
+    });
+    try std.testing.expectEqual(ApprovalChoice.deny, choice);
+}
+
+test "approval prompt re-prompts on garbage then denies never" {
+    var input: std.Io.Reader = .fixed("xyz\nnever\n");
+    var output_buf: [2048]u8 = undefined;
+    var output_writer: std.Io.Writer = .fixed(&output_buf);
+    const choice = try prompt(&input, &output_writer, .{
+        .command = "npm install",
+        .risk_class = "package_install",
+        .risk_reason = "scripts",
+        .policy_reason = "ask",
+    });
+    try std.testing.expectEqual(ApprovalChoice.deny, choice);
+    const out = output_writer.buffered();
+    try std.testing.expect(std.mem.indexOf(u8, out, "Choose once, always, never") != null);
+}
+
+test "parseChoice empty string denies fail-closed" {
+    // prompt trims before calling parseChoice; empty after trim is deny.
+    try std.testing.expectEqual(ApprovalChoice.deny, parseChoice("").?);
+    // Untrimmed whitespace is invalid input at this layer (returns null → re-prompt).
+    try std.testing.expect(parseChoice("   ") == null);
+}
