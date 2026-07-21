@@ -1,3 +1,6 @@
+//! Host-integration setup library used by onboarding flows.
+//! Public CLI door is `orca start` — top-level `orca setup` is hard-removed from the dispatcher.
+
 const std = @import("std");
 
 const exit_codes = @import("exit_codes.zig");
@@ -10,6 +13,8 @@ const spinner_pkg = @import("spinner.zig");
 const build_options = @import("build_options");
 const tui = @import("../tui/mod.zig");
 
+/// Library entry for host wiring (policy ensure + plugin install + smoke).
+/// Prefer `orca start` for the public product path.
 pub fn command(io: std.Io, cwd: std.Io.Dir, argv: []const []const u8, stdout: anytype, stderr: anytype) !u8 {
     if (argv.len == 0) {
         if (onboarding.interactiveSetupDesired(io)) {
@@ -181,12 +186,12 @@ fn runAutoSetup(io: std.Io, cwd: std.Io.Dir, preset: []const u8, stdout: anytype
 
     if (!any_detected) {
         try stdout.writeAll("\nNo agent hosts detected in PATH.\n");
-        try stdout.writeAll("Install a supported host and run 'orca setup --auto' (non-interactive) again.\n");
+        try stdout.writeAll("Install a supported host and run `orca start --auto` again.\n");
     }
 
     if (failure_count > 0) {
         try stdout.print("\nSetup finished with {d} failure(s).\n", .{failure_count});
-        try stdout.writeAll("Review the messages above and re-run 'orca setup --auto' (non-interactive) after fixing blockers.\n");
+        try stdout.writeAll("Review the messages above and re-run `orca start --auto` after fixing blockers.\n");
         return exit_codes.general;
     }
 
@@ -201,8 +206,8 @@ fn runAutoSetup(io: std.Io, cwd: std.Io.Dir, preset: []const u8, stdout: anytype
     }
 
     try style.maybeColor(io, stdout, style.Style.green, style.Glyph.party ++ " Setup complete!");
-    try stdout.writeAll("\nRun 'orca run -- <command>' to start a protected session.\n");
-    try stdout.writeAll("Live host E2E (optional): ./scripts/host-live-e2e.sh\n");
+    try stdout.writeAll("\nNext: orca claude  (or codex / pi / …) · orca status · orca replay\n");
+    try stdout.writeAll("Re-run: orca start --auto\n");
     return exit_codes.success;
 }
 
@@ -463,7 +468,7 @@ fn runGuidedSetup(
     try stdout.writeAll("\n");
 
     if (failure_count > 0) {
-        try stdout.writeAll("Review the messages above and re-run `orca setup` after fixing blockers.\n");
+        try stdout.writeAll("Review the messages above and re-run `orca start` after fixing blockers.\n");
         return exit_codes.general;
     }
 

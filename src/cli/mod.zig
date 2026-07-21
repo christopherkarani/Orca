@@ -420,7 +420,11 @@ fn runWithCwdUsing(
 
     if (std.mem.eql(u8, command, "run")) return run_command.command(io, argv[1..], stdout, stderr);
     if (std.mem.eql(u8, command, "start")) return start.command(io, cwd, argv[1..], stdout, stderr);
-    if (std.mem.eql(u8, command, "quickstart")) return quickstart.command(io, cwd, argv[1..], stdout, stderr);
+    // Hard-remove public onboarding peers: single door is `orca start`.
+    if (std.mem.eql(u8, command, "quickstart")) {
+        try stderr.writeAll("orca: `quickstart` was removed. Use `orca start` instead.\nRun 'orca help start' for usage.\n");
+        return exit_codes.usage;
+    }
     if (std.mem.eql(u8, command, "init")) return init.command(io, cwd, argv[1..], stdout, stderr);
     if (std.mem.eql(u8, command, "status")) return status.command(io, argv[1..], stdout, stderr);
     if (std.mem.eql(u8, command, "doctor")) return doctor.command(io, argv[1..], stdout, stderr);
@@ -436,7 +440,10 @@ fn runWithCwdUsing(
     if (std.mem.eql(u8, command, "completions")) return completions.command(io, argv[1..], stdout, stderr);
     if (std.mem.eql(u8, command, "shim")) return shim.command(io, environ_map, argv[1..], stdout, stderr);
     if (std.mem.eql(u8, command, "plugin")) return plugin.command(io, argv[1..], stdout, stderr);
-    if (std.mem.eql(u8, command, "setup")) return setup.command(io, cwd, argv[1..], stdout, stderr);
+    if (std.mem.eql(u8, command, "setup")) {
+        try stderr.writeAll("orca: `setup` was removed. Use `orca start` instead.\nRun 'orca help start' for usage.\n");
+        return exit_codes.usage;
+    }
     if (std.mem.eql(u8, command, "decide")) return decide.command(io, argv[1..], stdout, stderr);
     if (std.mem.eql(u8, command, "evaluate")) return evaluate.command(io, argv[1..], stdout, stderr);
     if (std.mem.eql(u8, command, "hook")) return hook.command(io, argv[1..], stdout, stderr);
@@ -1115,9 +1122,7 @@ test "human parser families suggest valid flags and exact help remediation" {
         .{ .argv = &.{ "apply", "--sesion" }, .suggestion = "--session", .help_command = "apply" },
         .{ .argv = &.{ "discard", "--sesion" }, .suggestion = "--session", .help_command = "discard" },
         .{ .argv = &.{ "plugin", "instal" }, .suggestion = "install", .help_command = "plugin" },
-        .{ .argv = &.{ "setup", "--atuo" }, .suggestion = "--auto", .help_command = "setup" },
-        .{ .argv = &.{ "quickstart", "--atuo" }, .suggestion = "--auto", .help_command = "quickstart" },
-        .{ .argv = &.{ "start", "--protetion" }, .suggestion = "--protection", .help_command = "start" },
+        .{ .argv = &.{ "start", "--preest" }, .suggestion = "--preset", .help_command = "start" },
         .{ .argv = &.{ "run", "--workspce" }, .suggestion = "--workspace", .help_command = "run" },
         .{ .argv = &.{ "packs", "--filtre" }, .suggestion = "--filter", .help_command = "packs" },
     };
@@ -1812,11 +1817,11 @@ test "doctor dispatch --verbose prints platform capabilities" {
     try std.testing.expectEqualStrings("", stderr_writer.buffered());
 }
 
-test "start dispatch appears in help and runs with --auto in temp workspace" {
+test "start dispatch appears in help and runs with --auto --skip-verify (no protection flag)" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
 
-    var stdout_buf: [8192]u8 = undefined;
+    var stdout_buf: [16384]u8 = undefined;
     var stderr_buf: [512]u8 = undefined;
     var stdout_writer: std.Io.Writer = .fixed(&stdout_buf);
     var stderr_writer: std.Io.Writer = .fixed(&stderr_buf);
@@ -1827,82 +1832,67 @@ test "start dispatch appears in help and runs with --auto in temp workspace" {
 
     stdout_writer = .fixed(&stdout_buf);
     stderr_writer = .fixed(&stderr_buf);
-    const code = try testRunWithCwd(tmp.dir, &.{ "start", "--auto", "--protection", "firewall", "--skip-verify" }, &stdout_writer, &stderr_writer);
-    try std.testing.expectEqual(exit_codes.success, code);
-    try std.testing.expect(std.mem.indexOf(u8, stdout_writer.buffered(), "\u{1F6E1}  Orca") != null);
+    // Public path: no --protection. Exit may be general if daemon unavailable on the host.
+    const code = try testRunWithCwd(tmp.dir, &.{ "start", "--auto", "--skip-verify" }, &stdout_writer, &stderr_writer);
+    const output = stdout_writer.buffered();
+    try std.testing.expect(code == exit_codes.success or code == exit_codes.general);
+    try std.testing.expect(std.mem.indexOf(u8, output, "\u{1F6E1}  Orca") != null);
+    try std.testing.expect(std.mem.indexOf(u8, output, "Ask on risk") != null);
+    try std.testing.expect(std.mem.indexOf(u8, output, "Choose your protection mode") == null);
+    try std.testing.expect(std.mem.indexOf(u8, output, "command-guard") == null);
+    try std.testing.expect(std.mem.indexOf(u8, output, "Maximum Protection") == null);
 }
 
-test "start auto-runs on non-TTY without --auto" {
-    var tmp = std.testing.tmpDir(.{});
-    defer tmp.cleanup();
-
-    var stdout_buf: [8192]u8 = undefined;
-    var stderr_buf: [512]u8 = undefined;
-    var stdout_writer: std.Io.Writer = .fixed(&stdout_buf);
-    var stderr_writer: std.Io.Writer = .fixed(&stderr_buf);
-
-    const code = try testRunWithCwd(tmp.dir, &.{ "start", "--protection", "firewall", "--skip-verify" }, &stdout_writer, &stderr_writer);
-    try std.testing.expectEqual(exit_codes.success, code);
-    try std.testing.expect(std.mem.indexOf(u8, stdout_writer.buffered(), "\u{1F6E1}  Orca") != null);
-    try std.testing.expectEqualStrings("", stderr_writer.buffered());
-}
-
-test "quickstart dispatch runs and prints steps" {
+test "start auto-runs on non-TTY without --auto and without protection flag" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
 
     var stdout_buf: [16384]u8 = undefined;
-    var stderr_buf: [1024]u8 = undefined;
+    var stderr_buf: [512]u8 = undefined;
     var stdout_writer: std.Io.Writer = .fixed(&stdout_buf);
     var stderr_writer: std.Io.Writer = .fixed(&stderr_buf);
 
-    // Use --auto so non-TTY guided setup is not required.
-    const code = try testRunWithCwd(tmp.dir, &.{ "quickstart", "--auto" }, &stdout_writer, &stderr_writer);
-
+    const code = try testRunWithCwd(tmp.dir, &.{ "start", "--skip-verify" }, &stdout_writer, &stderr_writer);
     const output = stdout_writer.buffered();
+    try std.testing.expect(code == exit_codes.success or code == exit_codes.general);
     try std.testing.expect(std.mem.indexOf(u8, output, "\u{1F6E1}  Orca") != null);
-    try std.testing.expect(std.mem.indexOf(u8, output, "Step 1 — System check") != null);
-    // Exit 0 only when core ready and setup succeeded; never claim ready on failure.
-    if (code == exit_codes.success) {
-        try std.testing.expect(std.mem.indexOf(u8, output, "Step 2 — Policy") != null);
-        try std.testing.expect(std.mem.indexOf(u8, output, "Step 3 — Host integrations") != null);
-        try std.testing.expect(std.mem.indexOf(u8, output, "Core protection is ready") != null);
-        try std.testing.expect(std.mem.indexOf(u8, output, "daemon:") != null);
-    } else {
-        try std.testing.expect(std.mem.indexOf(u8, output, "Core protection is ready") == null);
-        try std.testing.expect(std.mem.indexOf(u8, output, "daemon:") != null or std.mem.indexOf(u8, output, "Daemon not ready") != null or std.mem.indexOf(u8, output, "Doctor found issues") != null or std.mem.indexOf(u8, output, "setup finished") != null);
-    }
+    try std.testing.expect(std.mem.indexOf(u8, output, "Ask on risk") != null);
+    try std.testing.expect(std.mem.indexOf(u8, output, "Choose your protection mode") == null);
 }
 
-test "quickstart skips init when policy exists" {
-    var tmp = std.testing.tmpDir(.{});
-    defer tmp.cleanup();
-
-    try tmp.dir.createDirPath(std.testing.io, ".orca");
-    {
-        const file = try tmp.dir.createFile(std.testing.io, ".orca/policy.yaml", .{});
-        defer file.close(std.testing.io);
-        try file.writeStreamingAll(std.testing.io, "version: 1\nmode: observe\n");
-    }
-
-    var stdout_buf: [65536]u8 = undefined;
+test "start rejects public --protection flag with usage" {
+    var stdout_buf: [4096]u8 = undefined;
     var stderr_buf: [1024]u8 = undefined;
     var stdout_writer: std.Io.Writer = .fixed(&stdout_buf);
     var stderr_writer: std.Io.Writer = .fixed(&stderr_buf);
 
-    // Policy skip path runs after daemon check; may exit nonzero if daemon/setup not ready.
-    const code = try testRunWithCwd(tmp.dir, &.{ "quickstart", "--auto" }, &stdout_writer, &stderr_writer);
+    const code = try testRun(&.{ "start", "--auto", "--protection", "firewall", "--skip-verify" }, &stdout_writer, &stderr_writer);
+    try std.testing.expectEqual(exit_codes.usage, code);
+    try std.testing.expect(std.mem.indexOf(u8, stderr_writer.buffered(), "unknown option") != null or std.mem.indexOf(u8, stderr_writer.buffered(), "--protection") != null);
+}
 
-    const output = stdout_writer.buffered();
-    // When daemon is up we reach policy step; if daemon down we fail earlier honestly.
-    if (std.mem.indexOf(u8, output, "Step 2 — Policy") != null) {
-        try std.testing.expect(std.mem.indexOf(u8, output, "already exists — skipping init") != null);
-    } else {
-        try std.testing.expect(std.mem.indexOf(u8, output, "Daemon not ready") != null or std.mem.indexOf(u8, output, "daemon:") != null);
-    }
-    if (code != exit_codes.success) {
-        try std.testing.expect(std.mem.indexOf(u8, output, "Core protection is ready") == null);
-    }
+test "quickstart dispatch is hard-removed and points to orca start" {
+    var stdout_buf: [4096]u8 = undefined;
+    var stderr_buf: [1024]u8 = undefined;
+    var stdout_writer: std.Io.Writer = .fixed(&stdout_buf);
+    var stderr_writer: std.Io.Writer = .fixed(&stderr_buf);
+
+    const code = try testRun(&.{"quickstart"}, &stdout_writer, &stderr_writer);
+    try std.testing.expectEqual(exit_codes.usage, code);
+    try std.testing.expect(std.mem.indexOf(u8, stderr_writer.buffered(), "orca start") != null);
+    try std.testing.expect(std.mem.indexOf(u8, stderr_writer.buffered(), "removed") != null or std.mem.indexOf(u8, stderr_writer.buffered(), "Use") != null);
+}
+
+test "setup dispatch is hard-removed and points to orca start" {
+    var stdout_buf: [4096]u8 = undefined;
+    var stderr_buf: [1024]u8 = undefined;
+    var stdout_writer: std.Io.Writer = .fixed(&stdout_buf);
+    var stderr_writer: std.Io.Writer = .fixed(&stderr_buf);
+
+    const code = try testRun(&.{"setup"}, &stdout_writer, &stderr_writer);
+    try std.testing.expectEqual(exit_codes.usage, code);
+    try std.testing.expect(std.mem.indexOf(u8, stderr_writer.buffered(), "orca start") != null);
+    try std.testing.expect(std.mem.indexOf(u8, stderr_writer.buffered(), "removed") != null or std.mem.indexOf(u8, stderr_writer.buffered(), "Use") != null);
 }
 
 test "stop dispatch is the public disable command" {
@@ -1973,19 +1963,22 @@ test "run dispatch launches child command" {
 // to describe the new default guided behavior and de-emphasize --yes.
 // ---------------------------------------------------------------------------
 
-test "setup help describes guided interactive default on TTY and de-emphasizes --auto for primary path" {
-    var stdout_buf: [2048]u8 = undefined;
+test "start help does not advertise protection grade menu or --protection" {
+    var stdout_buf: [4096]u8 = undefined;
     var stderr_buf: [256]u8 = undefined;
     var stdout_writer: std.Io.Writer = .fixed(&stdout_buf);
     var stderr_writer: std.Io.Writer = .fixed(&stderr_buf);
 
-    const code = try testRun(&.{ "help", "setup" }, &stdout_writer, &stderr_writer);
+    const code = try testRun(&.{ "help", "start" }, &stdout_writer, &stderr_writer);
     try std.testing.expectEqual(exit_codes.success, code);
 
     const output = stdout_writer.buffered();
-    // Accurate for Phase 3 guided flow: mentions guided mode and arrow-key selection.
-    try std.testing.expect(std.mem.indexOf(u8, output, "guided") != null);
-    try std.testing.expect(std.mem.indexOf(u8, output, "arrow") != null or std.mem.indexOf(u8, output, "--auto") != null);
+    try std.testing.expect(std.mem.indexOf(u8, output, "orca start") != null);
+    try std.testing.expect(std.mem.indexOf(u8, output, "--protection") == null);
+    try std.testing.expect(std.mem.indexOf(u8, output, "command-guard") == null);
+    try std.testing.expect(std.mem.indexOf(u8, output, "firewall") == null);
+    try std.testing.expect(std.mem.indexOf(u8, output, "maximum") == null);
+    try std.testing.expect(std.mem.indexOf(u8, output, "Choose your protection") == null);
     try std.testing.expectEqualStrings("", stderr_writer.buffered());
 }
 

@@ -63,8 +63,10 @@ pub fn runStart(
     const workspace_root = try onboarding.resolveWorkspaceRootFromCwd(io, allocator, cwd);
     defer allocator.free(workspace_root);
 
-    const protection = try resolveProtectionMode(io, allocator, flags, stdout, stderr);
-    try stdout.print("Protection mode: {s}\n  {s}\n\n", .{ protection.label(), protection.description() });
+    // Auto-select best available Ask posture — no interactive grade menu.
+    const protection = resolveProtectionMode(flags);
+    try stdout.writeAll("Protection: Ask on risk (auto).\n");
+    try stdout.writeAll("  Blocks dangerous agent actions; common dev commands stay smooth.\n\n");
 
     var doctor_report = try plugin.collectPluginDoctorReport(io, allocator);
     defer plugin.deinitPluginDoctorReport(&doctor_report, allocator);
@@ -195,27 +197,11 @@ pub fn runStart(
     return exit_codes.success;
 }
 
-fn resolveProtectionMode(
-    io: std.Io,
-    allocator: std.mem.Allocator,
-    flags: onboarding.StartFlags,
-    stdout: anytype,
-    stderr: anytype,
-) !onboarding.ProtectionMode {
-    _ = stderr;
+/// Resolves protection posture without an interactive grade menu.
+/// Programmatic `StartFlags.protection` remains for tests/internal callers only.
+fn resolveProtectionMode(flags: onboarding.StartFlags) onboarding.ProtectionMode {
     if (flags.protection) |mode| return mode;
-    if (flags.auto) return onboarding.defaultProtectionMode();
-
-    const options = [_]tui.prompt.SelectionOption{
-        .{ .label = "Command Guard", .description = "hook-based shell blocking", .id = "command_guard" },
-        .{ .label = "Firewall", .description = "sandboxed `orca run` sessions", .id = "firewall" },
-        .{ .label = "Maximum Protection", .description = "both (recommended)", .id = "maximum_protection" },
-    };
-    const idx = try tui.prompt.select(io, allocator, stdout, &options, 2, "Choose your protection mode", null);
-    const selected = idx orelse 2;
-    if (selected == 0) return .command_guard;
-    if (selected == 1) return .firewall;
-    return .maximum_protection;
+    return onboarding.defaultProtectionMode();
 }
 
 const SelectedHosts = struct {
@@ -370,8 +356,6 @@ fn writeSuccessEndCard(
     defer allocator.free(policy_line);
     const daemon_line = try std.fmt.allocPrint(allocator, "{s}", .{daemon_check.status.label()});
     defer allocator.free(daemon_line);
-    const protection_line = try std.fmt.allocPrint(allocator, "{s}", .{protection.label()});
-    defer allocator.free(protection_line);
     const verify_line: []const u8 = if (verification) |v|
         if (v.passed()) "passed" else "failed"
     else
@@ -381,7 +365,8 @@ fn writeSuccessEndCard(
     defer allocator.free(daemon_status_line);
     const policy_status_line = try std.fmt.allocPrint(allocator, "Policy       {s}", .{policy_line});
     defer allocator.free(policy_status_line);
-    const protection_status_line = try std.fmt.allocPrint(allocator, "Protection   {s}", .{protection_line});
+    // Plain-language posture — no command-guard/firewall/maximum grade labels.
+    const protection_status_line = try allocator.dupe(u8, "Protection   Ask on risk");
     defer allocator.free(protection_status_line);
     const verify_status_line = try std.fmt.allocPrint(allocator, "Verify       {s}", .{verify_line});
     defer allocator.free(verify_status_line);
@@ -414,17 +399,13 @@ fn writeSuccessEndCard(
 
     try tui.theme.paintBold(io, stdout, .brand, "Try next");
     try stdout.writeAll("\n");
-    try stdout.writeAll("  orca demo blocked-action\n");
-    try stdout.writeAll("  orca test \"git reset --hard\"\n");
-    if (protection.needsFirewall()) {
-        try stdout.writeAll("  orca run -- echo hello\n");
-    } else {
-        try stdout.writeAll("  orca doctor\n");
-    }
+    try stdout.writeAll("  orca claude          # or codex / pi / opencode / …\n");
+    try stdout.writeAll("  orca status\n");
+    try stdout.writeAll("  orca replay\n");
     try stdout.writeAll("\n");
-    try tui.theme.paint(io, stdout, .muted, "Pi: pi install npm:@orca-sec/pi-orca · process env/network: orca run -- pi");
+    try tui.theme.paint(io, stdout, .muted, "Pi: pi install npm:@orca-sec/pi-orca");
     try stdout.writeAll("\n");
-    try tui.theme.paint(io, stdout, .muted, "Diagnostics: orca doctor · orca dashboard · ./scripts/host-live-e2e.sh · orca start (re-run safely)");
+    try tui.theme.paint(io, stdout, .muted, "Re-run safely: orca start · off-ramp: orca stop");
     try stdout.writeAll("\n");
 }
 
@@ -447,7 +428,7 @@ fn writeFailureSummary(
 ) !void {
     try style.maybeColor(io, stdout, style.Style.red, "Setup incomplete");
     try stdout.writeAll("\n\n");
-    try stdout.print("Protection mode selected: {s}\n", .{protection.label()});
+    try stdout.writeAll("Protection posture: Ask on risk (auto)\n");
     try stdout.print("Protection active now: {s}\n", .{if (protection_active) "partially or fully" else "no"});
     try stdout.print("Daemon: {s} — {s}\n", .{ daemon_check.status.label(), daemon_check.detail });
     if (verification) |v| try stdout.print("Verification: {s}\n", .{v.detail});
@@ -471,6 +452,7 @@ fn writeFailureSummary(
     try stdout.writeAll("  orca plugin doctor\n");
     try stdout.writeAll("  orca doctor --verbose\n");
     try stdout.writeAll("  orca start --auto\n");
+    _ = protection;
 }
 
 fn flushIfSupported(writer: anytype) !void {
@@ -517,13 +499,16 @@ test "start auto mode with mock daemon completes in temp workspace" {
 
     const output = stdout_writer.buffered();
     try std.testing.expect(std.mem.indexOf(u8, output, "\u{1F6E1}  Orca") != null);
-    try std.testing.expect(std.mem.indexOf(u8, output, "Firewall") != null);
+    try std.testing.expect(std.mem.indexOf(u8, output, "Ask on risk") != null);
     try std.testing.expect(std.mem.indexOf(u8, output, "You are protected") != null);
     try std.testing.expect(std.mem.indexOf(u8, output, "Daemon") != null);
     try std.testing.expect(std.mem.indexOf(u8, output, "Policy") != null);
     try std.testing.expect(std.mem.indexOf(u8, output, "Hosts") != null);
-    try std.testing.expect(std.mem.indexOf(u8, output, "orca demo blocked-action") != null);
-    try std.testing.expect(std.mem.indexOf(u8, output, "orca test \"git reset --hard\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, output, "orca claude") != null);
+    try std.testing.expect(std.mem.indexOf(u8, output, "orca status") != null);
+    // No interactive grade menu on the Safe Launch path.
+    try std.testing.expect(std.mem.indexOf(u8, output, "Choose your protection mode") == null);
+    try std.testing.expect(std.mem.indexOf(u8, output, "command-guard") == null);
 }
 
 test "start reports failure when daemon required but unavailable" {
@@ -605,18 +590,48 @@ test "start verification failure detected by allow-only mock evaluator" {
     try std.testing.expect(!outcome.passed());
 }
 
-test "start protection mode prompt selects default via injected reader" {
-    tui.theme.resetCache();
-    var buf: [4096]u8 = undefined;
-    var w: std.Io.Writer = .fixed(&buf);
-    var in = std.Io.Reader.fixed("enter\n");
+test "start resolveProtectionMode auto-selects default without interactive menu" {
+    const auto_flags = onboarding.StartFlags{ .auto = true };
+    try std.testing.expectEqual(onboarding.defaultProtectionMode(), resolveProtectionMode(auto_flags));
 
-    const options = [_]tui.prompt.SelectionOption{
-        .{ .label = "Command Guard", .description = "hook-based shell blocking", .id = "command_guard" },
-        .{ .label = "Firewall", .description = "sandboxed `orca run` sessions", .id = "firewall" },
-        .{ .label = "Maximum Protection", .description = "both (recommended)", .id = "maximum_protection" },
+    const interactive_flags = onboarding.StartFlags{};
+    try std.testing.expectEqual(onboarding.defaultProtectionMode(), resolveProtectionMode(interactive_flags));
+
+    const override_flags = onboarding.StartFlags{ .protection = .firewall };
+    try std.testing.expectEqual(onboarding.ProtectionMode.firewall, resolveProtectionMode(override_flags));
+}
+
+test "start auto default path has no protection grade menu jargon in stdout" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    var stdout_buf: [16384]u8 = undefined;
+    var stderr_buf: [1024]u8 = undefined;
+    var stdout_writer: std.Io.Writer = .fixed(&stdout_buf);
+    var stderr_writer: std.Io.Writer = .fixed(&stderr_buf);
+
+    // Programmatic firewall keeps this test daemon-independent while proving no menu.
+    const flags = onboarding.StartFlags{
+        .auto = true,
+        .protection = .firewall,
+        .skip_verify = true,
     };
+    const mock_checker = struct {
+        fn check(_: std.mem.Allocator, _: bool) !void {}
+    }.check;
 
-    const idx = try tui.prompt.select(std.testing.io, std.testing.allocator, &w, &options, 2, "Choose your protection mode", &in);
-    try std.testing.expectEqual(@as(?usize, 2), idx);
+    _ = try runStart(
+        std.testing.io,
+        tmp.dir,
+        flags,
+        &stdout_writer,
+        &stderr_writer,
+        mock_checker,
+        onboarding.mockOnboardingEvaluator,
+    );
+    const output = stdout_writer.buffered();
+    try std.testing.expect(std.mem.indexOf(u8, output, "Choose your protection mode") == null);
+    try std.testing.expect(std.mem.indexOf(u8, output, "Command Guard") == null);
+    try std.testing.expect(std.mem.indexOf(u8, output, "Maximum Protection") == null);
+    try std.testing.expect(std.mem.indexOf(u8, output, "Ask on risk") != null);
 }

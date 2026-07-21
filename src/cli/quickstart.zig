@@ -1,3 +1,6 @@
+//! Legacy quickstart flow retained as a library for tests/internal composition.
+//! Public CLI door is `orca start` — top-level `orca quickstart` is hard-removed from the dispatcher.
+
 const std = @import("std");
 
 const exit_codes = @import("exit_codes.zig");
@@ -9,6 +12,7 @@ const readiness = @import("readiness.zig");
 const build_options = @import("build_options");
 const tui = @import("../tui/mod.zig");
 
+/// Library entry (doctor → policy → setup). Prefer `orca start` for the public product path.
 pub fn command(io: std.Io, cwd: std.Io.Dir, argv: []const []const u8, stdout: anytype, stderr: anytype) !u8 {
     return commandWithDaemonChecker(null, io, cwd, argv, stdout, stderr);
 }
@@ -96,7 +100,7 @@ fn commandWithDaemonChecker(
         try stdout.print("{s}\n", .{daemon_check.remediation});
         // Cached assessment — do not re-probe daemon/policy for the receipt.
         try writeReceipt(stdout, readiness.assess(daemon_check.status, false, false), false);
-        try stdout.writeAll("Fix the daemon, then re-run `orca quickstart` (or `orca doctor --check`).\n");
+        try stdout.writeAll("Fix the daemon, then re-run `orca start` (or `orca doctor --check`).\n");
         return exit_codes.general;
     }
     try tui.render.stepLine(io, stdout, .done, "Step 1 — System check", "daemon compatible", 0);
@@ -152,11 +156,11 @@ fn commandWithDaemonChecker(
     try writeReceipt(stdout, core, true);
     try stdout.writeAll("Core protection is ready (daemon + policy). Host integrations reported above may still need setup.\n");
     try stdout.writeAll("\nStart protecting your sessions:\n");
-    try stdout.writeAll("  orca run -- <your-command>\n");
+    try stdout.writeAll("  orca claude   # or codex / pi / opencode / …\n");
     try stdout.writeAll("\nUseful next steps:\n");
-    try stdout.writeAll("  orca status --check   Automation readiness check\n");
-    try stdout.writeAll("  orca doctor --check   Deep diagnostic with exit contract\n");
-    try stdout.writeAll("  orca help run         Learn about running commands\n");
+    try stdout.writeAll("  orca status\n");
+    try stdout.writeAll("  orca replay\n");
+    try stdout.writeAll("  orca start    Re-run Safe Launch if hosts need repair\n");
 
     return exit_codes.success;
 }
