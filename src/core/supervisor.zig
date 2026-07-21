@@ -24,8 +24,9 @@ pub const RunConfig = struct {
     /// When set, agent spawn applies Landlock/Seatbelt in the child before exec (U07).
     /// Production path: cli/run runs applyBeforeExec first, then passes custom spawn here.
     os_child_apply: process.OsChildApply = .none,
-    /// Set true after a successful sandboxed spawn (status-pipe handshake proven).
-    os_child_apply_used_out: ?*bool = null,
+    /// Set true when the custom spawn hook returned successfully.
+    /// Does not prove status-pipe OS apply handshake — use attach receipt / spawnAgent.
+    custom_spawn_used_out: ?*bool = null,
     before_spawn: ?StartHook = null,
     before_process_launch: ?StartHook = null,
     on_session_start: ?StartHook = null,
@@ -182,8 +183,8 @@ pub fn run(io: std.Io, allocator: std.mem.Allocator, config: RunConfig) !Session
         else => return err,
     };
 
-    if (config.os_child_apply_used_out) |out| {
-        out.* = prepared.os_child_apply_used;
+    if (config.custom_spawn_used_out) |out| {
+        out.* = prepared.custom_spawn_used;
     }
 
     if (config.on_session_start) |hook| {

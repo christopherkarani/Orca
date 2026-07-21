@@ -83,8 +83,11 @@ pub const PreparedChild = struct {
     process_group_cleanup: bool = false,
     process_group_id: ?std.posix.pid_t = null,
     spawned: bool = false,
-    /// True when the agent child used the custom (sandboxed) spawn path.
-    os_child_apply_used: bool = false,
+    /// True when the custom spawn hook returned successfully.
+    /// Does **not** prove OS child apply handshake — that is attach-receipt /
+    /// `spawnAgent` territory (S-GLO-01). Renamed from `os_child_apply_used`
+    /// which overclaimed handshake semantics (Z-8).
+    custom_spawn_used: bool = false,
 
     pub fn spawn(self: *PreparedChild) !void {
         switch (self.os_child_apply) {
@@ -110,13 +113,13 @@ pub const PreparedChild = struct {
             else => {},
         }
         self.spawned = true;
-        self.os_child_apply_used = false;
+        self.custom_spawn_used = false;
     }
 
     fn spawnCustom(self: *PreparedChild, hook: CustomSpawn) !void {
-        // Custom hooks that box the agent (apply_posix) must only return after a
-        // proven child-side apply handshake. os_child_apply_used is set only then —
-        // never on bare fork success alone (S-GLO-01).
+        // Flag means "custom hook returned", not "handshake proven". Production
+        // sandboxed hooks (spawnAgent / apply_posix) must only return after a
+        // status-pipe handshake; this bool does not re-check that contract.
         const child = try hook.spawnFn(hook.context, .{
             .io = self.io,
             .allocator = self.allocator,
@@ -134,7 +137,7 @@ pub const PreparedChild = struct {
             else => {},
         }
         self.spawned = true;
-        self.os_child_apply_used = true;
+        self.custom_spawn_used = true;
     }
 
     pub fn waitForSpawn(_: *PreparedChild) !void {}
@@ -230,10 +233,10 @@ test "prepareChild defaults to no OS child apply" {
         .workspace_root = ".",
     });
     try std.testing.expect(prepared.os_child_apply == .none);
-    try std.testing.expect(!prepared.os_child_apply_used);
+    try std.testing.expect(!prepared.custom_spawn_used);
 }
 
-test "custom spawn hook is used when configured" {
+test "custom spawn hook sets custom_spawn_used without claiming handshake" {
     if (builtin.os.tag == .windows) return error.SkipZigTest;
 
     const Ctx = struct {
@@ -242,6 +245,8 @@ test "custom spawn hook is used when configured" {
             const self: *@This() = @ptrCast(@alignCast(context));
             self.called = true;
             // Resolve true and fork/exec without sandbox for the unit test.
+            // This deliberately has no OS apply handshake — custom_spawn_used
+            // must still become true (flag = hook returned, not attach proven).
             const child = try std.process.spawn(request.io, .{
                 .argv = &[_][]const u8{"/usr/bin/true"},
                 .cwd = .{ .path = request.workspace_root },
@@ -271,7 +276,7 @@ test "custom spawn hook is used when configured" {
     });
     try prepared.spawn();
     try std.testing.expect(ctx.called);
-    try std.testing.expect(prepared.os_child_apply_used);
+    try std.testing.expect(prepared.custom_spawn_used);
     const term = try prepared.wait();
     try std.testing.expect(term == .exited);
     try std.testing.expectEqual(@as(u8, 0), term.exited);

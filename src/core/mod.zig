@@ -23,4 +23,5 @@ test {
     _ = supervisor;
     _ = limits;
     _ = util;
+    _ = process;
 }
