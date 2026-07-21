@@ -598,22 +598,18 @@ test "help output is grouped, complete, and excludes hidden commands" {
     var stdout_writer: std.Io.Writer = .fixed(&stdout_buf);
     var stderr_writer: std.Io.Writer = .fixed(&stderr_buf);
 
+    // Default help is progressive disclosure (Safe Launch only).
     const code = try testRun(&.{"--help"}, &stdout_writer, &stderr_writer);
     try std.testing.expectEqual(exit_codes.success, code);
 
     const output = stdout_writer.buffered();
-    // Title and category headers present
     try std.testing.expect(std.mem.indexOf(u8, output, "Orca") != null);
     try std.testing.expect(std.mem.indexOf(u8, output, "Common tasks") != null);
     try std.testing.expect(std.mem.indexOf(u8, output, "Get protected") != null);
     try std.testing.expect(std.mem.indexOf(u8, output, "orca start") != null);
     try std.testing.expect(std.mem.indexOf(u8, output, "orca explain") != null);
-    try std.testing.expect(std.mem.indexOf(u8, output, "Getting Started") != null);
-    try std.testing.expect(std.mem.indexOf(u8, output, "Core Workflow") != null);
-    try std.testing.expect(std.mem.indexOf(u8, output, "Diagnostics & Reporting") != null);
-    // Visible commands present
-    try std.testing.expect(std.mem.indexOf(u8, output, "run") != null);
-    try std.testing.expect(std.mem.indexOf(u8, output, "env") != null);
+    try std.testing.expect(std.mem.indexOf(u8, output, "orca replay") != null);
+    try std.testing.expect(std.mem.indexOf(u8, output, "help --all") != null);
     // Phase 7 Task E: the --no-rich / ORCA_NO_RICH escape hatch is discoverable
     // from the top-level help (global-options surface).
     try std.testing.expect(std.mem.indexOf(u8, output, "Global options") != null);
@@ -621,15 +617,30 @@ test "help output is grouped, complete, and excludes hidden commands" {
     // Hidden internal command absent
     try std.testing.expect(std.mem.indexOf(u8, output, "shim") == null);
     try std.testing.expectEqualStrings("", stderr_writer.buffered());
+
+    // Full surface via help --all
+    stdout_writer = .fixed(&stdout_buf);
+    stderr_writer = .fixed(&stderr_buf);
+    const all_code = try testRun(&.{ "help", "--all" }, &stdout_writer, &stderr_writer);
+    try std.testing.expectEqual(exit_codes.success, all_code);
+    const all = stdout_writer.buffered();
+    try std.testing.expect(std.mem.indexOf(u8, all, "Getting Started") != null);
+    try std.testing.expect(std.mem.indexOf(u8, all, "Core Workflow") != null);
+    try std.testing.expect(std.mem.indexOf(u8, all, "Diagnostics & Reporting") != null);
+    try std.testing.expect(std.mem.indexOf(u8, all, "run") != null);
+    try std.testing.expect(std.mem.indexOf(u8, all, "env") != null);
+    try std.testing.expect(std.mem.indexOf(u8, all, "shim") == null);
+    try std.testing.expectEqualStrings("", stderr_writer.buffered());
 }
 
 test "help output uses human-friendly summaries" {
-    var stdout_buf: [16384]u8 = undefined;
+    var stdout_buf: [32768]u8 = undefined;
     var stdout_writer: std.Io.Writer = .fixed(&stdout_buf);
     var empty_buf: [0]u8 = undefined;
     var stderr_writer: std.Io.Writer = .fixed(&empty_buf);
 
-    _ = try testRun(&.{"--help"}, &stdout_writer, &stderr_writer);
+    // Friendly advanced summaries live on the full surface.
+    _ = try testRun(&.{ "help", "--all" }, &stdout_writer, &stderr_writer);
     const output = stdout_writer.buffered();
 
     // Old jargon should be gone from summaries
@@ -656,13 +667,13 @@ test "help disambiguates explain vs policy explain" {
 }
 
 test "env command appears in help and dispatches correctly" {
-    var stdout_buf: [16384]u8 = undefined;
+    var stdout_buf: [32768]u8 = undefined;
     var stderr_buf: [256]u8 = undefined;
     var stdout_writer: std.Io.Writer = .fixed(&stdout_buf);
     var stderr_writer: std.Io.Writer = .fixed(&stderr_buf);
 
-    // env appears in grouped help
-    const help_code = try testRun(&.{"--help"}, &stdout_writer, &stderr_writer);
+    // env is advanced: listed on help --all, not default Safe Launch help
+    const help_code = try testRun(&.{ "help", "--all" }, &stdout_writer, &stderr_writer);
     try std.testing.expectEqual(exit_codes.success, help_code);
     try std.testing.expect(std.mem.indexOf(u8, stdout_writer.buffered(), "env") != null);
     try std.testing.expect(std.mem.indexOf(u8, stdout_writer.buffered(), "Print shell environment") != null);
@@ -1195,28 +1206,34 @@ test "version --json suppresses the brand banner (machine contract)" {
 }
 
 test "top help renders brand banner, accent categories, and try-next hint" {
-    var stdout_buf: [16384]u8 = undefined;
+    var stdout_buf: [32768]u8 = undefined;
     var stderr_buf: [256]u8 = undefined;
     var stdout_writer: std.Io.Writer = .fixed(&stdout_buf);
     var stderr_writer: std.Io.Writer = .fixed(&stderr_buf);
 
+    // Default Safe Launch help
     const code = try testRun(&.{"--help"}, &stdout_writer, &stderr_writer);
     try std.testing.expectEqual(exit_codes.success, code);
     const out = stdout_writer.buffered();
-    // Brand banner opens the help.
     try std.testing.expect(std.mem.indexOf(u8, out, "\u{1F6E1}  Orca") != null);
-    // Accent category headers retained.
-    try std.testing.expect(std.mem.indexOf(u8, out, "Getting Started") != null);
-    try std.testing.expect(std.mem.indexOf(u8, out, "Core Workflow") != null);
-    try std.testing.expect(std.mem.indexOf(u8, out, "Diagnostics & Reporting") != null);
-    // Two-column command + summary retained.
-    try std.testing.expect(std.mem.indexOf(u8, out, "Print shell environment") != null);
-    try std.testing.expect(std.mem.indexOf(u8, out, "Receive events from AI agent hosts") != null);
-    // Task paths and try-next hint present.
     try std.testing.expect(std.mem.indexOf(u8, out, "Common tasks") != null);
     try std.testing.expect(std.mem.indexOf(u8, out, "orca start") != null);
-    // Hidden internal command still absent.
+    try std.testing.expect(std.mem.indexOf(u8, out, "help --all") != null);
     try std.testing.expect(std.mem.indexOf(u8, out, "shim") == null);
+    try std.testing.expectEqualStrings("", stderr_writer.buffered());
+
+    // Full surface retains category headers and advanced summaries
+    stdout_writer = .fixed(&stdout_buf);
+    stderr_writer = .fixed(&stderr_buf);
+    const all_code = try testRun(&.{ "help", "--all" }, &stdout_writer, &stderr_writer);
+    try std.testing.expectEqual(exit_codes.success, all_code);
+    const all = stdout_writer.buffered();
+    try std.testing.expect(std.mem.indexOf(u8, all, "Getting Started") != null);
+    try std.testing.expect(std.mem.indexOf(u8, all, "Core Workflow") != null);
+    try std.testing.expect(std.mem.indexOf(u8, all, "Diagnostics & Reporting") != null);
+    try std.testing.expect(std.mem.indexOf(u8, all, "Print shell environment") != null);
+    try std.testing.expect(std.mem.indexOf(u8, all, "Receive events from AI agent hosts") != null);
+    try std.testing.expect(std.mem.indexOf(u8, all, "shim") == null);
     try std.testing.expectEqualStrings("", stderr_writer.buffered());
 }
 
