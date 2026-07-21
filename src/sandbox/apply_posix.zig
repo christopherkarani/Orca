@@ -11,8 +11,10 @@
 //! handshake (not from probe alone or fork alone). Parent waits with a
 //! poll deadline so a hung child cannot block forever.
 //!
-//! - Linux: `forkApplyLandlockAndExec`
-//! - macOS: `forkApplySeatbeltAndExec` (sandbox_init in child only)
+//! - Linux: `forkApplyLandlockAndExec` (parent builds landlock expand plan
+//!   before fork so the child never opendir/readdir — Z-3)
+//! - macOS: `forkApplySeatbeltAndExec` (sandbox_init in child only; SBPL
+//!   pre-rendered in parent — Z-4 residual documented in macos_seatbelt.zig)
 //! - Other: Unsupported
 
 const std = @import("std");
@@ -111,6 +113,17 @@ fn forkApplyLandlockAndExecLinux(
         null;
     errdefer if (cwd_z) |z| std.heap.page_allocator.free(z);
 
+    // Z-3: enumerate control-expand paths in the parent before fork. Child apply
+    // only installs PATH_BENEATH from this plan (no opendir/readdir post-fork).
+    // One-shot launch: retain plan until process exit (same as argv/env).
+    var expand_plan = landlock.buildChildLandlockPlan(std.heap.page_allocator, compiled) catch |err| switch (err) {
+        error.OutOfMemory => return error.OutOfMemory,
+        else => return error.ApplyFailed,
+    };
+    // On successful handshake we deliberately leak the plan (child still needs it
+    // until execve); on failure free via errdefer.
+    errdefer expand_plan.deinit();
+
     const pipe_fds = openStatusPipe() catch return error.ForkFailed;
     var status_r = pipe_fds[0];
     var status_w = pipe_fds[1];
@@ -140,7 +153,7 @@ fn forkApplyLandlockAndExecLinux(
             linux.exit(127);
         };
 
-        landlock.applySelf(compiled) catch {
+        landlock.applySelf(compiled, &expand_plan) catch {
             closeFd(status_w);
             linux.exit(127);
         };
