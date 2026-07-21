@@ -84,6 +84,8 @@ jobs:
           filters: |
             dashboard:
               - 'orca-dashboard-ui/**'
+              # Legacy assets loaded by dashboard-contract.test.ts (remediation helpers).
+              - 'src/dashboard/**'
       - name: Setup Node.js
         if: steps.filter.outputs.dashboard == 'true'
         uses: actions/setup-node@v4
@@ -100,4 +102,4 @@ jobs:
           npm run build
       - name: Skip notice
         if: steps.filter.outputs.dashboard != 'true'
-        run: echo "No orca-dashboard-ui changes; skipping dashboard job work."
+        run: echo "No orca-dashboard-ui or src/dashboard changes; skipping dashboard job work."

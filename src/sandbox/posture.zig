@@ -166,6 +166,14 @@ pub fn failedReceipt(reason_code: []const u8) AttachReceipt {
     };
 }
 
+/// Buffer size for `formatSessionBanner` / session-start OS line in `run.zig`.
+///
+/// Must fit the longest production active banner: fixed template (~151) +
+/// landlock fs_scope with platform tmp (~95) + route-forced network_scope (~96)
+/// ≈ 342. 320 was too small (route-forced default no-tmp is already 325) and
+/// caused silent fallback to bare `OS sandbox: active`.
+pub const session_banner_buf_len: usize = 512;
+
 /// Default user-facing banner language (mechanism-neutral).
 ///
 /// Active path runs the launch allowlist on child env before attach:
@@ -328,7 +336,7 @@ test "activeReceiptWithNetwork + banner surfaces route-forced network_scope" {
     try std.testing.expect(landlock.isActive());
     try std.testing.expectEqualStrings(landlock_scope, landlock.network_scope);
 
-    var buf: [400]u8 = undefined;
+    var buf: [session_banner_buf_len]u8 = undefined;
     const landlock_line = try formatSessionBanner(&buf, landlock);
     try std.testing.expect(std.mem.indexOf(u8, landlock_line, "network: proxy route-forced") != null);
     try std.testing.expect(std.mem.indexOf(u8, landlock_line, "port-scoped") != null);
@@ -347,4 +355,23 @@ test "activeReceiptWithNetwork + banner surfaces route-forced network_scope" {
     const seatbelt_line = try formatSessionBanner(&buf, seatbelt);
     try std.testing.expect(std.mem.indexOf(u8, seatbelt_line, "loopback proxy only") != null);
     try std.testing.expect(std.mem.indexOf(u8, seatbelt_line, "Seatbelt") == null);
+}
+
+test "session_banner_buf_len fits production landlock route-forced scopes" {
+    // Regression: 320 overflowed (325 default no-tmp, 342 with platform tmp) and
+    // hid port-scoped / UDP residual behind bare "OS sandbox: active".
+    const landlock_scope = "proxy route-forced (TCP connect port-scoped to proxy port; not address-scoped; UDP unrestricted)";
+    const fs_with_tmp = "workspace child RW, root RO, system RO, platform tmp RW, no home, control write-deny (readable)";
+    const receipt = try activeReceiptWithNetwork(.landlock, test_hash_64, fs_with_tmp, landlock_scope);
+
+    var buf: [session_banner_buf_len]u8 = undefined;
+    const line = try formatSessionBanner(&buf, receipt);
+    try std.testing.expect(line.len > 320);
+    try std.testing.expect(std.mem.indexOf(u8, line, "port-scoped") != null);
+    try std.testing.expect(std.mem.indexOf(u8, line, "UDP unrestricted") != null);
+    try std.testing.expect(std.mem.indexOf(u8, line, "platform tmp RW") != null);
+
+    // The previous production size must fail for this receipt (guards constant drift).
+    var tiny: [320]u8 = undefined;
+    try std.testing.expectError(error.NoSpaceLeft, formatSessionBanner(&tiny, receipt));
 }

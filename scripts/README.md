@@ -26,7 +26,7 @@ Coding agents and humans should use the **narrowest** gate. Full details and pat
 
 - **`compile-fast.sh`**: compile-only modes use incremental + default `-j`; run modes use `-j1` (serial tests; avoids host hangs).
 - **`test-fast.sh`**: `compile` | `units` | `full` (default). Env override: `ORCA_TEST_FAST=units`. Uses incremental + `-j1`.
-- **`agent-gate.sh`**: `auto` (default from git dirty paths) or forced `check|compile|units|full|core|sandbox|policy|intercept|dx|rust`.
+- **`agent-gate.sh`**: `auto` (default from git dirty paths) or forced `check|compile|units|full|core|sandbox|policy|intercept|dx|rust|dashboard|plugin`.
 - **`test-slice.sh`**: domain gates + `--filter` → `-Dtest-filter` (Zig 0.16 compile-time; not runtime `-- --test-filter`).
 - **`compile-test-fast`** (build.zig) matches **`test-fast`** membership (not the full suite).
 

@@ -1090,8 +1090,8 @@ fn printSessionStart(
     try tui.render.keyValue(io, stdout, rows[0..count]);
     try writeSessionPosture(stdout, network_mode, secretless);
     // Mechanism-neutral OS sandbox line (S-GLO-03) — never "Seatbelt"/"Landlock" here.
-    // 320 leaves headroom for long fs_scope + credentials honesty clause.
-    var os_line_buf: [320]u8 = undefined;
+    // Sized for longest production landlock route-forced banner (see posture.session_banner_buf_len).
+    var os_line_buf: [sandbox.posture.session_banner_buf_len]u8 = undefined;
     const os_line = run_os_sandbox.formatOsSandboxBannerLine(&os_line_buf, os_receipt);
     try stdout.print("{s}\n", .{os_line});
     try stdout.writeAll("\n");

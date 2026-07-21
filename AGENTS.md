@@ -134,8 +134,8 @@ ORCA_TEST_FAST=units ./scripts/test-fast.sh
 | `packages/core/**` only | `./scripts/agent-gate.sh core` or `zig build test-core` + `test-core-contract` |
 | `policies/**`, init/preset DX | L0 + `./scripts/quick-install-dx-verify.sh` (or L2 full) |
 | `orca-rs/**` only | `./scripts/agent-gate.sh rust` or `(cd orca-rs && cargo test --lib)` |
-| `integrations/*-plugin/**` | package-local `npm test` / plugin scripts — **not** full Zig suite |
-| `orca-dashboard-ui/**` | `npm test` / build **in that directory only** (CI path-filtered) |
+| `integrations/*-plugin/**` | `./scripts/agent-gate.sh plugin` (package-local `npm test` / python unittest) — **not** full Zig suite |
+| `orca-dashboard-ui/**` or `src/dashboard/**` | `./scripts/agent-gate.sh dashboard` (`npm test` in `orca-dashboard-ui/`; CI path-filtered) |
 | `scripts/**` only | `bash -n` + the script’s own smoke; avoid L3 unless the script is a gate itself |
 | Mixed Zig + Rust | Run **each stack’s** narrow gate; never assume one covers the other |
 
