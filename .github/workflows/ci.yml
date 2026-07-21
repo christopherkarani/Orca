@@ -24,10 +24,10 @@ jobs:
           version: 0.16.0
       - name: Build orca
         run: ./scripts/zig build
-      - name: Adversarial OS sandbox e2e + evidence (includes test-fast)
+      - name: Adversarial OS sandbox e2e + evidence (includes test-fast; require attach)
         run: |
           mkdir -p planning/security/evidence
-          ./scripts/os-sandbox-adversarial-e2e.sh --case ci-linux --binary ./zig-out/bin/orca --out planning/security/evidence
+          ./scripts/os-sandbox-adversarial-e2e.sh --require-attach --case ci-linux --binary ./zig-out/bin/orca --out planning/security/evidence
           test -n "$(ls planning/security/evidence/ci-linux-*.json 2>/dev/null)"
       - name: Upload evidence artifacts
         if: always()
@@ -47,10 +47,10 @@ jobs:
           version: 0.16.0
       - name: Build orca
         run: ./scripts/zig build
-      - name: Adversarial OS sandbox e2e + evidence on macos-14 (includes test-fast)
+      - name: Adversarial OS sandbox e2e + evidence on macos-14 (includes test-fast; require attach)
         run: |
           mkdir -p planning/security/evidence
-          ./scripts/os-sandbox-adversarial-e2e.sh --case ci-macos --binary ./zig-out/bin/orca --out planning/security/evidence
+          ./scripts/os-sandbox-adversarial-e2e.sh --require-attach --case ci-macos --binary ./zig-out/bin/orca --out planning/security/evidence
           test -n "$(ls planning/security/evidence/ci-macos-*.json 2>/dev/null)"
       - name: Upload evidence artifacts
         if: always()
