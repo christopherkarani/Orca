@@ -16,7 +16,7 @@ pub use execute_daemon_cli_at as execute_cli_at;
 mod tests {
     use super::*;
     use crate::exit_codes::{EXIT_PARSE_ERROR, EXIT_SUCCESS};
-    use crate::update::current_version;
+    use crate::branding::current_version;
 
     #[test]
     fn version_subcommand_returns_pkg_version_on_stdout() {

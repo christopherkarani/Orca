@@ -519,23 +519,6 @@ fn test_subcommand_help_flag_is_not_hijacked_by_top_level_help() {
 }
 
 #[test]
-fn test_update_version_flag_is_not_hijacked_by_top_level_version() {
-    let output = run_orca_isolated(&["update", "--version", "v0.2.0", "--help"], None);
-    let combined = format!("{}{}", stdout_text(&output), stderr_text(&output));
-
-    assert_eq!(
-        output.status.code(),
-        Some(0),
-        "update --version plus help should show update help, not top-level version\nstdout: {}\nstderr: {}",
-        stdout_text(&output),
-        stderr_text(&output)
-    );
-    assert!(combined.contains("Usage: orca-daemon update [OPTIONS]"));
-    assert!(combined.contains("--version <VERSION>"));
-    assert!(!stdout_text(&output).starts_with(env!("CARGO_PKG_VERSION")));
-}
-
-#[test]
 fn test_verbose_output_includes_diagnostics() {
     let output = run_orca_isolated(&["test", "--verbose", "git reset --hard"], None);
     let stdout = stdout_text(&output);

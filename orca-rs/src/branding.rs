@@ -29,3 +29,9 @@ pub const GITHUB_REPO: &str = "Orca";
 
 /// Full GitHub repository URL.
 pub const GITHUB_REPO_URL: &str = "https://github.com/christopherkarani/Orca";
+
+/// Package version from `Cargo.toml` (`CARGO_PKG_VERSION`).
+#[must_use]
+pub const fn current_version() -> &'static str {
+    env!("CARGO_PKG_VERSION")
+}

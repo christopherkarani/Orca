@@ -1026,10 +1026,6 @@ fn print_help() {
         "explain".green()
     );
     eprintln!(
-        "    {}       Check installation and hook registration",
-        "doctor".green()
-    );
-    eprintln!(
         "    {}        List all available packs and their status",
         "packs".green()
     );
@@ -1060,26 +1056,6 @@ fn print_help() {
     );
     eprintln!("    {}       Show current configuration", "config".green());
     eprintln!(
-        "    {}         Generate a sample configuration file",
-        "init".green()
-    );
-    eprintln!(
-        "    {}      Install the hook into Claude Code settings",
-        "install".green()
-    );
-    eprintln!(
-        "    {}    Remove the hook from Claude Code settings",
-        "uninstall".green()
-    );
-    eprintln!(
-        "    {}       Update orca to the latest release",
-        "update".green()
-    );
-    eprintln!(
-        "    {}        Show local statistics from the log file",
-        "stats".green()
-    );
-    eprintln!(
         "    {}      Query command history database",
         "history".green()
     );
@@ -1087,22 +1063,9 @@ fn print_help() {
         "    {}  Suggest allowlist patterns from history",
         "suggest-allowlist".green()
     );
-    eprintln!("    {}       Run regression corpus tests", "corpus".green());
     eprintln!(
         "    {}         Run in explicit hook mode (batch support)",
         "hook".green()
-    );
-    eprintln!(
-        "    {}  Generate shell completion scripts",
-        "completions".green()
-    );
-    eprintln!(
-        "    {}          Developer tools for pack development",
-        "dev".green()
-    );
-    eprintln!(
-        "    {}   Start MCP server for agent integration",
-        "mcp-server".green()
     );
     eprintln!();
     eprintln!(
@@ -1228,9 +1191,9 @@ mod tests {
         }
 
         #[test]
-        fn update_version_flag_is_not_top_level_version() {
+        fn subcommand_version_flag_is_not_top_level_version() {
             assert!(!top_level_flag_requested(
-                &args(&["orca", "update", "--version", "v0.2.0"]),
+                &args(&["orca", "test", "--version"]),
                 "--version",
                 "-V"
             ));

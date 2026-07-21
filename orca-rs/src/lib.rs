@@ -71,17 +71,14 @@ pub mod context;
 pub mod daemon;
 pub mod daemon_cli;
 pub mod daemon_protocol;
-pub mod error_codes;
 pub mod evaluator;
 pub mod exit_codes;
-pub mod git;
 pub mod heredoc;
 pub mod highlight;
 pub mod history;
 pub mod hook;
 pub mod interactive;
 pub mod logging;
-pub mod mcp;
 pub mod normalize;
 pub mod output;
 pub mod packs;
@@ -92,11 +89,9 @@ pub mod sarif;
 pub mod scan;
 pub mod session;
 pub mod simulate;
-pub mod stats;
 pub mod suggest;
 pub mod suggestions;
 pub mod trace;
-pub mod update;
 
 // Re-export commonly used types
 pub use allowlist::{
@@ -105,16 +100,14 @@ pub use allowlist::{
 };
 pub use branding::{
     CLI_NAME, CONFIG_DIR, ENV_PREFIX, GITHUB_OWNER, GITHUB_REPO, GITHUB_REPO_URL, PRODUCT_NAME,
-    PROJECT_CONFIG_FILE, PROJECT_DATA_DIR,
+    PROJECT_CONFIG_FILE, PROJECT_DATA_DIR, current_version,
 };
 pub use config::Config;
-pub use error_codes::{ErrorCategory, ErrorCode, ErrorResponse, OrcaError};
 
 pub use evaluator::{
-    BypassMethod, ConfidenceResult, DetailedEvaluationResult, EvaluationDecision, EvaluationResult,
-    GraduatedResponse, LegacyDestructivePattern, LegacySafePattern, MatchSource, MatchSpan,
-    PatternMatch, apply_confidence_scoring, determine_graduated_response, evaluate_command,
-    evaluate_command_with_deadline, evaluate_command_with_pack_order,
+    BypassMethod, ConfidenceResult, EvaluationDecision, EvaluationResult, GraduatedResponse,
+    MatchSource, MatchSpan, PatternMatch, apply_confidence_scoring, determine_graduated_response,
+    evaluate_command, evaluate_command_with_deadline, evaluate_command_with_pack_order,
     evaluate_command_with_pack_order_at_path, evaluate_command_with_pack_order_deadline,
     evaluate_command_with_pack_order_deadline_at_path,
 };
@@ -198,12 +191,6 @@ pub use simulate::{
     SimulateInputFormat, SimulateLimits, SimulateParser,
 };
 
-// Re-export stats types for `orca stats`
-pub use stats::{
-    AggregatedStats, Decision as StatsDecision, PackStats, ParsedLogEntry,
-    format_stats_json, format_stats_pretty, parse_log_file,
-};
-
 // Re-export performance budget types
 pub use perf::{
     ABSOLUTE_MAX, Budget, BudgetStatus, Deadline, FAST_PATH,
@@ -236,12 +223,6 @@ pub use interactive::{
     check_interactive_available, generate_verification_code, run_interactive_prompt,
 };
 
-// Re-export git branch detection types
-pub use git::{
-    BranchInfo, clear_cache as clear_git_cache, get_branch_info, get_branch_info_at_path,
-    get_current_branch, is_in_git_repo_at_path,
-};
-
 // Re-export agent detection types
 pub use agent::{
     Agent, DetectionMethod, DetectionResult, clear_cache as clear_agent_cache, detect_agent,
@@ -254,11 +235,6 @@ pub use output::{
     ThemePalette, auto_theme, format_escalation_message,
     init as init_output, should_use_rich_output, supports_256_colors, terminal_height,
     terminal_width,
-};
-
-// Re-export update types for self-update version check
-pub use update::{
-    CACHE_DURATION, VersionCheckError, VersionCheckResult, check_for_update, current_version, format_check_result, format_check_result_json,
 };
 
 // Re-export session occurrence tracking types for graduated response system
