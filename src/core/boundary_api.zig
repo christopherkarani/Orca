@@ -12,6 +12,7 @@ pub const ExplainKind = policy_engine.explain.ExplainKind;
 pub const Preset = policy_engine.presets.Preset;
 pub const ReplayOptions = audit.replay.ReplayOptions;
 pub const ReplayEvent = audit.replay.ReplayEvent;
+pub const isDeniedFields = audit.replay.isDeniedFields;
 pub const ReplaySession = audit.replay.ReplaySession;
 pub const VerifyResult = audit.replay.VerifyResult;
 pub const ParseIntegrityFailed = audit.replay.ParseIntegrityFailed;

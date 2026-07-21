@@ -424,7 +424,7 @@ print_success() {
   printf '\n'
   printf '  %sThen%s\n' "$C_BOLD" "$C_RESET"
   printf '    orca doctor\n'
-  printf '    orca setup          %s# guided host wiring (TTY); --auto for CI%s\n' "$C_DIM" "$C_RESET"
+  printf '    orca start          %s# guided host wiring (TTY); --auto for CI%s\n' "$C_DIM" "$C_RESET"
 
   if [ "$missing_dashboard" -eq 1 ]; then
     printf '\n'

@@ -274,7 +274,7 @@ fn chooseNextStep(
         .degraded => try allocator.dupe(u8, "Restart the daemon: `orca shutdown --daemon` then `orca status`."),
         .compatible => blk: {
             if (!policy_present) {
-                break :blk try allocator.dupe(u8, "Run `orca init --preset generic-agent` (or `orca start`) to create a policy.");
+                break :blk try allocator.dupe(u8, "Run `orca start` to create a policy and get protected.");
             }
             if (!policy_valid) {
                 break :blk try allocator.dupe(u8, "Fix invalid policy (parse/load failed), then re-run `orca status --check` or `orca doctor --check`.");
@@ -282,13 +282,76 @@ fn chooseNextStep(
             if (!packs_known) {
                 break :blk try allocator.dupe(u8, "Daemon is up but packs could not be listed; run `orca doctor`.");
             }
-            break :blk try allocator.dupe(u8, "Protected path looks healthy. Run `orca doctor` for details or `orca run -- <agent>`.");
+            break :blk try allocator.dupe(u8, "Protected path looks healthy. Try `orca claude` (or another host), then `orca replay`.");
         },
     };
 }
 
+/// Operator-facing three-way protection posture (human status only; not JSON wire).
+const ProtectionPosture = enum {
+    protected,
+    limited,
+    off,
+
+    pub fn label(self: ProtectionPosture) []const u8 {
+        return switch (self) {
+            .protected => "Protected",
+            .limited => "Limited",
+            .off => "Off",
+        };
+    }
+};
+
+/// Plain-language honesty when Protected: mediation asks/blocks but is not a universal OS sandbox.
+/// Status cannot prove live OS-enforced attach.
+const mediation_bypass_caveat =
+    "Blocks dangerous actions for agents started via Orca; some paths can still bypass.";
+
+/// Limited: daemon may be up, but setup is incomplete or mode is not asking/enforcing.
+const limited_caveat_line =
+    "Not fully protected yet — setup incomplete or policy not in ask/strict mode.";
+
+/// True when policy mode actively asks or enforces (not observe/trusted).
+fn policyModeIsMediating(policy_mode: ?[]const u8) bool {
+    const mode_str = policy_mode orelse return false;
+    const mode = orca_policy.schema.Mode.parse(mode_str) orelse return false;
+    return switch (mode) {
+        .ask, .strict, .ci, .redteam => true,
+        .observe, .trusted => false,
+    };
+}
+
+/// Map daemon + policy readiness + mode into Protected | Limited | Off.
+/// - Off: daemon cannot mediate
+/// - Limited: daemon up but policy missing/invalid, or mode does not ask/enforce (e.g. observe)
+/// - Protected: core path ready and mode is ask-equivalent or enforcing (wrapper/hook — not OS claim)
+fn assessProtectionPosture(
+    daemon: onboarding.DaemonHealthStatus,
+    policy_present: bool,
+    policy_valid: bool,
+    policy_mode: ?[]const u8,
+) ProtectionPosture {
+    if (daemon != .compatible) return .off;
+    if (!policy_present or !policy_valid) return .limited;
+    if (!policyModeIsMediating(policy_mode)) return .limited;
+    return .protected;
+}
+
+fn mediationCaveat(posture: ProtectionPosture) ?[]const u8 {
+    return switch (posture) {
+        .off => null,
+        .limited => limited_caveat_line,
+        .protected => mediation_bypass_caveat,
+    };
+}
+
 fn writeHuman(stdout: anytype, s: Snapshot) !void {
+    const posture = assessProtectionPosture(s.daemon_health, s.policy_present, s.policy_valid, s.policy_mode);
     try stdout.writeAll("Orca status\n");
+    try stdout.print("  State:     {s}\n", .{posture.label()});
+    if (mediationCaveat(posture)) |caveat| {
+        try stdout.print("  Note:      {s}\n", .{caveat});
+    }
     try stdout.print("  Daemon:    {s}  ({s})\n", .{ s.daemon_health.label(), s.daemon_detail });
     if (s.policy_present) {
         try stdout.writeAll("  Policy:    ");
@@ -361,6 +424,118 @@ fn mockDaemonDown(_: std.mem.Allocator, _: bool) anyerror!void {
     return error.SocketConnectFailed;
 }
 
+test "assessProtectionPosture maps to Protected Limited Off" {
+    try std.testing.expectEqual(ProtectionPosture.off, assessProtectionPosture(.unavailable, true, true, "ask"));
+    try std.testing.expectEqual(ProtectionPosture.off, assessProtectionPosture(.incompatible, true, true, "ask"));
+    try std.testing.expectEqual(ProtectionPosture.off, assessProtectionPosture(.degraded, false, false, null));
+    try std.testing.expectEqual(ProtectionPosture.limited, assessProtectionPosture(.compatible, false, false, null));
+    try std.testing.expectEqual(ProtectionPosture.limited, assessProtectionPosture(.compatible, true, false, "ask"));
+    // Valid policy + ask/strict → Protected
+    try std.testing.expectEqual(ProtectionPosture.protected, assessProtectionPosture(.compatible, true, true, "ask"));
+    try std.testing.expectEqual(ProtectionPosture.protected, assessProtectionPosture(.compatible, true, true, "strict"));
+    try std.testing.expectEqual(ProtectionPosture.protected, assessProtectionPosture(.compatible, true, true, "ci"));
+    try std.testing.expectEqual(ProtectionPosture.protected, assessProtectionPosture(.compatible, true, true, "redteam"));
+    // observe/trusted/null/unknown: valid policy but not actually asking/blocking → Limited
+    try std.testing.expectEqual(ProtectionPosture.limited, assessProtectionPosture(.compatible, true, true, "observe"));
+    try std.testing.expectEqual(ProtectionPosture.limited, assessProtectionPosture(.compatible, true, true, "trusted"));
+    try std.testing.expectEqual(ProtectionPosture.limited, assessProtectionPosture(.compatible, true, true, null));
+    try std.testing.expectEqual(ProtectionPosture.limited, assessProtectionPosture(.compatible, true, true, "mystery"));
+    try std.testing.expectEqualStrings("Protected", ProtectionPosture.protected.label());
+    try std.testing.expectEqualStrings("Limited", ProtectionPosture.limited.label());
+    try std.testing.expectEqualStrings("Off", ProtectionPosture.off.label());
+}
+
+test "mediationCaveat distinct for Protected vs Limited" {
+    try std.testing.expect(mediationCaveat(.off) == null);
+    const protected_note = mediationCaveat(.protected).?;
+    const limited_note = mediationCaveat(.limited).?;
+    try std.testing.expect(std.mem.indexOf(u8, protected_note, "Blocks dangerous actions for agents started via Orca") != null);
+    try std.testing.expect(std.mem.indexOf(u8, protected_note, "some paths can still bypass") != null);
+    // Limited must not reuse the affirmative blocking caveat.
+    try std.testing.expect(std.mem.indexOf(u8, limited_note, "Blocks dangerous actions") == null);
+    try std.testing.expect(std.mem.indexOf(u8, limited_note, "Not fully protected yet") != null);
+    try std.testing.expect(!std.mem.eql(u8, protected_note, limited_note));
+}
+
+fn fixtureSnapshot(
+    daemon: onboarding.DaemonHealthStatus,
+    policy_present: bool,
+    policy_valid: bool,
+) Snapshot {
+    return fixtureSnapshotMode(daemon, policy_present, policy_valid, if (policy_present) "ask" else null);
+}
+
+fn fixtureSnapshotMode(
+    daemon: onboarding.DaemonHealthStatus,
+    policy_present: bool,
+    policy_valid: bool,
+    policy_mode: ?[]const u8,
+) Snapshot {
+    return .{
+        .daemon_health = daemon,
+        .daemon_detail = "detail",
+        .policy_path = "/tmp/.orca/policy.yaml",
+        .policy_present = policy_present,
+        .policy_valid = policy_valid,
+        .policy_error = null,
+        .policy_mode = policy_mode,
+        .policy_preset = if (policy_present) "generic-agent" else null,
+        .hosts_summary = "none detected · pi:not managed",
+        .packs_summary_line = "unknown",
+        .packs_known = false,
+        .packs_opt_in_count = 0,
+        .packs_opt_in = &.{},
+        .next_step = "next",
+        .readiness = readiness.assess(daemon, policy_present, policy_valid),
+    };
+}
+
+test "writeHuman Protected shows State and mediation bypass caveat" {
+    var buf: [2048]u8 = undefined;
+    var w: std.Io.Writer = .fixed(&buf);
+    try writeHuman(&w, fixtureSnapshot(.compatible, true, true));
+    const out = w.buffered();
+    try std.testing.expect(std.mem.indexOf(u8, out, "State:     Protected") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "State:     Limited") == null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "State:     Off") == null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "Note:") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "Blocks dangerous actions for agents started via Orca") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "some paths can still bypass") != null);
+}
+
+test "writeHuman Limited (missing policy) shows incomplete note not blocking caveat" {
+    var buf: [2048]u8 = undefined;
+    var w: std.Io.Writer = .fixed(&buf);
+    try writeHuman(&w, fixtureSnapshot(.compatible, false, false));
+    const out = w.buffered();
+    try std.testing.expect(std.mem.indexOf(u8, out, "State:     Limited") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "Note:") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "Not fully protected yet") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "Blocks dangerous actions") == null);
+}
+
+test "writeHuman observe mode is Limited not Protected with blocking claim" {
+    var buf: [2048]u8 = undefined;
+    var w: std.Io.Writer = .fixed(&buf);
+    try writeHuman(&w, fixtureSnapshotMode(.compatible, true, true, "observe"));
+    const out = w.buffered();
+    try std.testing.expect(std.mem.indexOf(u8, out, "State:     Limited") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "State:     Protected") == null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "mode=observe") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "Not fully protected yet") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "Blocks dangerous actions") == null);
+}
+
+test "writeHuman Off shows State without mediation caveat" {
+    var buf: [2048]u8 = undefined;
+    var w: std.Io.Writer = .fixed(&buf);
+    try writeHuman(&w, fixtureSnapshot(.unavailable, false, false));
+    const out = w.buffered();
+    try std.testing.expect(std.mem.indexOf(u8, out, "State:     Off") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "Note:") == null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "Blocks dangerous actions") == null);
+}
+
 test "status human healthy path shows section labels" {
     var stdout_buf: [4096]u8 = undefined;
     var stderr_buf: [256]u8 = undefined;
@@ -371,6 +546,18 @@ test "status human healthy path shows section labels" {
     try std.testing.expectEqual(exit_codes.success, code);
     const out = stdout_writer.buffered();
     try std.testing.expect(std.mem.indexOf(u8, out, "Orca status") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "State:") != null);
+    // Three-way posture: daemon mock is ok → Protected or Limited depending on workspace policy/mode.
+    const has_protected = std.mem.indexOf(u8, out, "State:     Protected") != null;
+    const has_limited = std.mem.indexOf(u8, out, "State:     Limited") != null;
+    try std.testing.expect(has_protected or has_limited);
+    if (has_protected) {
+        try std.testing.expect(std.mem.indexOf(u8, out, "Blocks dangerous actions for agents started via Orca") != null);
+    }
+    if (has_limited) {
+        try std.testing.expect(std.mem.indexOf(u8, out, "Not fully protected yet") != null);
+        try std.testing.expect(std.mem.indexOf(u8, out, "Blocks dangerous actions") == null);
+    }
     try std.testing.expect(std.mem.indexOf(u8, out, "Daemon:") != null);
     try std.testing.expect(std.mem.indexOf(u8, out, "healthy") != null);
     try std.testing.expect(std.mem.indexOf(u8, out, "Policy:") != null);
@@ -389,6 +576,8 @@ test "status daemon unavailable path still exits 0 without --check" {
     const code = try commandWithDeps(fakePacksFail, mockDaemonDown, std.testing.io, &.{}, &stdout_writer, &stderr_writer);
     try std.testing.expectEqual(exit_codes.success, code);
     const out = stdout_writer.buffered();
+    try std.testing.expect(std.mem.indexOf(u8, out, "State:     Off") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "Blocks dangerous actions") == null);
     try std.testing.expect(std.mem.indexOf(u8, out, "unavailable") != null);
     try std.testing.expect(std.mem.indexOf(u8, out, "Packs:") != null);
     try std.testing.expect(std.mem.indexOf(u8, out, "unknown") != null or std.mem.indexOf(u8, out, "fails closed") != null);
@@ -492,7 +681,9 @@ test "status rejects unknown options" {
 test "chooseNextStep requires valid policy for healthy copy" {
     const missing = try chooseNextStep(std.testing.allocator, .compatible, false, false, true);
     defer std.testing.allocator.free(missing);
-    try std.testing.expect(std.mem.indexOf(u8, missing, "init") != null);
+    // Limited / no policy: teach public door `orca start` first (not demoted `init`).
+    try std.testing.expect(std.mem.indexOf(u8, missing, "orca start") != null);
+    try std.testing.expect(std.mem.indexOf(u8, missing, "init") == null);
 
     const invalid = try chooseNextStep(std.testing.allocator, .compatible, true, false, true);
     defer std.testing.allocator.free(invalid);
@@ -502,6 +693,10 @@ test "chooseNextStep requires valid policy for healthy copy" {
     const healthy = try chooseNextStep(std.testing.allocator, .compatible, true, true, true);
     defer std.testing.allocator.free(healthy);
     try std.testing.expect(std.mem.indexOf(u8, healthy, "Protected path looks healthy") != null);
+    // Healthy path: host alias + replay — not demoted `orca run -- <agent>`.
+    try std.testing.expect(std.mem.indexOf(u8, healthy, "orca claude") != null);
+    try std.testing.expect(std.mem.indexOf(u8, healthy, "orca replay") != null);
+    try std.testing.expect(std.mem.indexOf(u8, healthy, "orca run") == null);
 }
 
 // Silence unused imports when tests are filtered

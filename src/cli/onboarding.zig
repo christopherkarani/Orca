@@ -440,18 +440,9 @@ pub fn parseStartFlags(argv: []const []const u8, stderr: anytype) !StartFlags {
             flags.preset = argv[index];
             continue;
         }
-        if (std.mem.eql(u8, arg, "--protection")) {
-            index += 1;
-            if (index >= argv.len) {
-                try stderr.writeAll("orca start: --protection requires command-guard|firewall|maximum.\n");
-                return error.Usage;
-            }
-            flags.protection = ProtectionMode.parse(argv[index]) orelse {
-                try stderr.writeAll("orca start: unknown protection mode. Use command-guard, firewall, or maximum.\n");
-                return error.Usage;
-            };
-            continue;
-        }
+        // --protection is intentionally not a public flag (no grade menu on Safe Launch).
+        // ProtectionMode is selected automatically via defaultProtectionMode(); tests/internal
+        // callers may still set StartFlags.protection programmatically.
         if (std.mem.eql(u8, arg, "--hosts")) {
             index += 1;
             if (index >= argv.len) {
@@ -461,7 +452,7 @@ pub fn parseStartFlags(argv: []const []const u8, stderr: anytype) !StartFlags {
             flags.hosts_csv = argv[index];
             continue;
         }
-        try suggestions.writeUnknownOption(stderr, "orca start", arg, &.{ "--auto", "--yes", "--no-interact", "--skip-verify", "--preset", "--protection", "--hosts" }, "start");
+        try suggestions.writeUnknownOption(stderr, "orca start", arg, &.{ "--auto", "--yes", "--no-interact", "--skip-verify", "--preset", "--hosts" }, "start");
         return error.Usage;
     }
     return flags;
@@ -528,17 +519,34 @@ test "onboarding hostHookEvent maps hooks and rejects Pi coverage labels" {
     try std.testing.expect(hookEventFromGate("future-host", "bash+write") == null);
 }
 
-test "onboarding parseStartFlags accepts protection and hosts" {
+test "onboarding parseStartFlags accepts hosts and preset without protection flag" {
     var stderr_buf: [256]u8 = undefined;
     var stderr_writer: std.Io.Writer = .fixed(&stderr_buf);
 
     const flags = try parseStartFlags(
-        &.{ "--auto", "--protection", "firewall", "--hosts", "codex,claude", "--preset", "generic-agent" },
+        &.{ "--auto", "--hosts", "codex,claude", "--preset", "generic-agent", "--skip-verify" },
         &stderr_writer,
     );
     try std.testing.expect(flags.auto);
-    try std.testing.expectEqual(ProtectionMode.firewall, flags.protection.?);
+    try std.testing.expect(flags.skip_verify);
+    try std.testing.expect(flags.protection == null);
     try std.testing.expectEqualStrings("codex,claude", flags.hosts_csv.?);
+    try std.testing.expectEqualStrings("generic-agent", flags.preset);
+}
+
+test "onboarding parseStartFlags rejects public protection flag" {
+    var stderr_buf: [512]u8 = undefined;
+    var stderr_writer: std.Io.Writer = .fixed(&stderr_buf);
+
+    const result = parseStartFlags(&.{ "--auto", "--protection", "firewall" }, &stderr_writer);
+    try std.testing.expectError(error.Usage, result);
+    try std.testing.expect(std.mem.indexOf(u8, stderr_writer.buffered(), "--protection") != null or std.mem.indexOf(u8, stderr_writer.buffered(), "unknown option") != null);
+}
+
+test "onboarding default protection is maximum (best available Ask posture path)" {
+    try std.testing.expectEqual(ProtectionMode.maximum_protection, defaultProtectionMode());
+    try std.testing.expect(defaultProtectionMode().needsCommandGuard());
+    try std.testing.expect(defaultProtectionMode().needsFirewall());
 }
 
 test "onboarding parseHostsCsv validates supported hosts" {

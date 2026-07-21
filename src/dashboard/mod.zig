@@ -461,20 +461,21 @@ fn writePluginCardJson(
     try writer.writeAll(",\"doctor_command\":");
     try core.util.writeJsonString(writer, doctor_command);
     try writer.writeAll(",\"setup_commands\":[");
+    // Safe Launch taught path only — orca start + host aliases + status (not demoted setup/init/run).
     if (std.mem.eql(u8, id, "openclaw")) {
         try writeStringArray(writer, &.{
-            "orca init --preset generic-agent",
+            "orca start",
             "openclaw plugins install clawhub:orca-openclaw-plugin",
             "orca plugin doctor openclaw",
-            "orca run -- openclaw",
+            "orca openclaw",
+            "orca status",
         });
     } else {
         try writeStringArray(writer, &.{
-            "orca init --preset generic-agent",
-            "orca setup",
+            "orca start",
             "orca plugin doctor hermes",
-            "orca plugin doctor hermes",
-            "orca run -- hermes",
+            "orca hermes",
+            "orca status",
         });
     }
     try writer.writeAll("]}");
@@ -765,6 +766,11 @@ test "status json includes policy and protected agent cards" {
     try std.testing.expect(std.mem.indexOf(u8, out.items, "\"verify_commands\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, out.items, "\"openclaw\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, out.items, "\"hermes\"") != null);
+    // Phase 7 Safe Launch: plugin setup_commands must not re-teach demoted doors.
+    try std.testing.expect(std.mem.indexOf(u8, out.items, "orca setup") == null);
+    try std.testing.expect(std.mem.indexOf(u8, out.items, "orca start") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out.items, "orca openclaw") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out.items, "orca hermes") != null);
 }
 
 test "dashboard assets expose dedicated secretless view" {

@@ -11,12 +11,16 @@ Orca writes per-session artifacts under `.orca/sessions/<session-id>/`.
 
 ## Commands
 
+Bare `orca replay` loads the **last** session and highlights denied actions. No sessions yet → friendly empty state pointing at Safe Launch (`orca start` then `orca <agent>`).
+
 ```sh
-./zig-out/bin/orca replay --session last
-./zig-out/bin/orca replay --session last --json
-./zig-out/bin/orca replay --session last --only denied
-./zig-out/bin/orca replay --session last --verify
-./zig-out/bin/orca replay --session last --tui
+./zig-out/bin/orca replay
+./zig-out/bin/orca replay --json
+./zig-out/bin/orca replay --only denied
+./zig-out/bin/orca replay --verify
+./zig-out/bin/orca replay --tui
+./zig-out/bin/orca replay --session <id>
+./zig-out/bin/orca replay --list
 ```
 
 ## Alt-screen timeline

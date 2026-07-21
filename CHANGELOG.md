@@ -2,6 +2,18 @@
 
 ## Unreleased
 
+### Changed
+- **Product language cut (Safe Launch)** — public day-1 path is now:
+  - `orca start` → `orca <agent>` → `orca status` → `orca replay` (+ `orca stop` off-ramp)
+  - Default help shows only public verbs; full surface via `orca help --all`
+  - Public onboarding peers **`orca quickstart`** and **`orca setup`** are hard-removed (use `orca start`; logic retained as library for internal composition)
+  - `orca start` auto-selects **Ask on risk** (no public `--protection` grade menu)
+  - Human `orca status` is traffic light **Protected | Limited | Off** plus one mediation caveat
+  - Bare `orca replay` loads the last session; denials visually dominant; empty state teaches Safe Launch
+  - Interactive deny offers **Once / Always / Never** (prompt-native; CLI allow/allow-once remain advanced fallback)
+  - Host aliases (`orca claude`, `orca codex`, …) are the taught launch path; `orca run` is the engine / advanced escape hatch
+  - Docs/README/quickstart/CLI reference rewritten for the cut; stop next-step points to `orca start`
+
 ### Added
 - **Phase D residual classifier** — optional `effects.classifier: local` (alias `local-embed`) runs pure-Zig prototype/token similarity on tools that catalog/structural/packs leave under-classified. Default **off**. Raise-only; matchers `classifier.local.*`; fail-closed in strict/ci/redteam when enabled but unavailable. No cloud classification; no new deps.
 - **Effect-class policy** (`effects:`) classifies host/MCP tool names into semantic effects (`comms.message`, `comms.publish`, `money.transfer`, …) so users can deny messaging/social tools without listing every name.

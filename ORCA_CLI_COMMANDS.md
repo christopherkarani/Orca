@@ -1,11 +1,23 @@
 # Orca CLI Command Reference
 
-> Generated from source at `src/cli/mod.zig`, `src/cli/help.zig`, `src/main.zig`, and individual command modules.
-> Version: 1.1.5 (from `VERSION`)
-> Product: **Orca** — Graded policy mediation for AI agent actions (Codex, Claude Code, OpenCode, OpenClaw, Hermes)
+> Aligned with Safe Launch product surface (`src/cli/help.zig`, `src/cli/mod.zig`, command modules).
+> Version: 1.2.8 (from `VERSION`)
+> Product: **Orca** — Graded policy mediation for AI agent actions (Codex, Claude Code, OpenCode, OpenClaw, Hermes, Pi)
 
 Orca ships **one** CLI binary:
 - **`orca`** — Desktop/CI policy mediation for AI agents (main product; grades: hook | wrapper | proxy | OS-enforced)
+
+**Safe Launch (taught path):**
+
+```text
+orca start
+orca claude | codex | pi | opencode | openclaw | hermes
+orca status
+orca replay
+orca stop
+```
+
+Default `orca help` lists only public verbs. Full surface: `orca help --all`.
 
 ---
 
@@ -13,36 +25,51 @@ Orca ships **one** CLI binary:
 
 Invocation: `orca <command> [options]`
 
+### Public (Safe Launch)
+
 | Command | Summary | Source File |
 |---------|---------|-------------|
-| `run` | Run a command under Orca | `src/cli/run.zig` |
-| `init` | Create an Orca policy | `src/cli/init.zig` |
-| `setup` | Guided post-install setup for agent host integrations | `src/cli/setup.zig` |
+| `start` | Get protected: policy, hosts, Ask on risk, verify | `src/cli/start.zig` |
+| `stop` | Stop Orca protection for host agents | `src/cli/disable.zig` |
+| `claude` / `codex` / `pi` / `opencode` / `openclaw` / `hermes` | Launch host under Orca (alias → run engine) | `src/cli/host_launch.zig` |
+| `status` | Traffic light: Protected \| Limited \| Off + caveat | `src/cli/status.zig` |
+| `replay` | Replay last session (denials dominant) | `src/cli/replay.zig` |
+| `explain` | Why a shell command is blocked or allowed | (Rust packs / CLI) |
+| `help` | Show help (`help --all` = full surface) | `src/cli/help.zig` |
+
+### Advanced / integration (via `orca help --all`)
+
+| Command | Summary | Source File |
+|---------|---------|-------------|
+| `run` | Run engine / custom agents / CI | `src/cli/run.zig` |
+| `init` | Create an Orca policy (power/CI scaffold) | `src/cli/init.zig` |
 | `doctor` | Show platform capabilities | `src/cli/doctor.zig` |
 | `policy` | Validate, explain, and apply policies | `src/cli/policy.zig` |
 | `credentials` | Check Secretless credential brokers | `src/cli/credentials.zig` |
 | `report` | Export a local safety report | `src/cli/report.zig` |
 | `license` | Manage local offline licenses | `src/cli/license.zig` |
-| `replay` | Replay an audit session | `src/cli/replay.zig` |
-| `diff` | Show staged writes | `src/cli/diff.zig` |
-| `apply` | Apply staged writes | `src/cli/apply.zig` |
-| `discard` | Discard staged writes | `src/cli/discard.zig` |
-| `mcp` | MCP proxy and inspection commands | `src/cli/mcp.zig` |
+| `history` | Advanced history/stats (review verb is `replay`) | `src/cli/history.zig` |
+| `diff` / `apply` / `discard` | Staged writes | `src/cli/*.zig` |
+| `mcp` | MCP proxy and inspection | `src/cli/mcp.zig` |
 | `redteam` | Run red-team fixtures | `src/cli/redteam.zig` |
 | `completions` | Generate shell completions | `src/cli/completions.zig` |
 | `shim` | Internal PATH shim callback | `src/cli/shim.zig` |
 | `version` | Print version | `src/cli/version.zig` |
 | `plugin` | Plugin management and diagnostics | `src/cli/plugin.zig` |
-| `decide` | Evaluate a policy decision for host plugins | `src/cli/decide.zig` |
-| `hook` | Host-specific hook adapter | `src/cli/hook.zig` |
-| `dashboard` | Start the local Orca dashboard | `src/cli/dashboard.zig` |
-| `ci` | Run local CI readiness checks | `src/cli/ci.zig` |
-| `demo` | Create safe local demo evidence | `src/cli/demo.zig` |
-| `disable` | Disable Orca plugins from host agents | `src/cli/disable.zig` |
+| `decide` / `hook` / `evaluate` | Integration APIs | `src/cli/*.zig` |
+| `dashboard` | Local Orca dashboard | `src/cli/dashboard.zig` |
+| `ci` | Local CI readiness checks | `src/cli/ci.zig` |
+| `demo` | Safe local demo evidence | `src/cli/demo.zig` |
 | `uninstall` | Uninstall Orca from this machine | `src/cli/uninstall.zig` |
-| `help` | Show help | `src/cli/help.zig` |
 | `env` | Print install environment for shell activation | `src/cli/mod.zig` |
 | `--print-install-env` | Hidden flag (same as `env`) | `src/cli/mod.zig` |
+
+### Removed as public peers
+
+| Command | Status |
+|---------|--------|
+| `quickstart` | Hard-removed from dispatcher — use `orca start` |
+| `setup` | Hard-removed from dispatcher — use `orca start` (library retained internally) |
 
 ### Exit Codes (`src/cli/exit_codes.zig`)
 
@@ -62,9 +89,35 @@ Invocation: `orca <command> [options]`
 
 ## Command Details
 
+### `orca start`
+
+Single public onboarding door. Creates policy when missing, wires hosts, defaults to **Ask on risk**, verifies readiness. No public `--protection` grade menu.
+
+**Usage:** `orca start [--auto|--yes|--no-interact] [--hosts <list>] [--preset <name>] [--skip-verify]`
+
+**Examples:** `orca start` · `orca start --auto` · `orca start --auto --hosts codex,claude`
+
+---
+
+### `orca status`
+
+Human traffic light: **Protected | Limited | Off**, plus one mediation caveat when not Off. Machine `--json` / `--check` keep existing contracts.
+
+**Usage:** `orca status [--json] [--check]`
+
+---
+
+### `orca stop`
+
+Disable Orca plugins from host agents (binary and policy remain). Restart with `orca start`.
+
+**Usage:** `orca stop [codex|claude|cursor|opencode|openclaw|hermes|all] [--yes]`
+
+---
+
 ### `orca run`
 
-Run a command under Orca supervision — filters environment through policy, checks the command through Command Guard, writes audit artifacts, and mirrors the child exit code.
+**Advanced / engine.** Run a command under Orca supervision — filters environment through policy, checks the command through Command Guard, writes audit artifacts, and mirrors the child exit code. Day-1 launch uses host aliases (`orca claude`, …) instead of teaching `orca run`.
 
 **Usage:** `orca run [options] -- <command> [args...]`
 
@@ -95,7 +148,7 @@ Run a command under Orca supervision — filters environment through policy, che
 
 ### `orca init`
 
-Create an Orca policy file (`.orca/policy.yaml`) in the current directory.
+**Advanced.** Create an Orca policy file (`.orca/policy.yaml`) in the current directory. Day-1 users should prefer `orca start`, which creates a policy when missing.
 
 **Usage:** `orca init [--preset <name>] [--mode <mode>] [--ci] [--force] [--quiet]`
 
@@ -116,19 +169,9 @@ Create an Orca policy file (`.orca/policy.yaml`) in the current directory.
 
 ---
 
-### `orca setup`
+### `orca setup` / `orca quickstart` (removed)
 
-Guided post-install setup for agent host integrations. On interactive terminals, launches a selector. Use `--auto` for non-interactive/scripting mode.
-
-**Usage:** `orca setup [--auto] [--preset <name>]`
-
-**Default preset:** `generic-agent`
-
-**Flags:**
-| Flag | Description |
-|------|-------------|
-| `--auto` / `--yes` | Non-interactive automatic mode (for scripts/CI) |
-| `--preset <name>` | Policy preset to use |
+Public dispatcher peers are **hard-removed**. Invoking them exits with a usage error pointing at `orca start`. Internal library entry points may remain for tests/composition.
 
 ---
 
@@ -204,17 +247,20 @@ Manage local offline licenses.
 
 ### `orca replay`
 
-Replay an audit session — renders a timeline and can verify the event hash chain.
+Replay an audit session — renders a timeline and can verify the event hash chain. **Bare `orca replay`** loads the last session and emphasizes denied actions. Empty sessions print a Safe Launch hint (`orca start` then `orca <agent>`).
 
-**Usage:** `orca replay [--session <id|last>] [--json] [--only denied] [--verify]`
+**Usage:** `orca replay [--list] [--session <id|last>] [--json] [--only denied] [--verify] [--tui]`
 
 **Flags:**
 | Flag | Description |
 |------|-------------|
-| `--session <id\|last>` | Session ID (default: interactive selection) |
+| (none) | Load last session timeline |
+| `--list` | List sessions |
+| `--session <id\|last>` | Session ID (default: `last`) |
 | `--json` | JSON output |
 | `--only denied` | Show only denied actions |
 | `--verify` | Verify hash chain |
+| `--tui` | Interactive alt-screen timeline |
 
 ---
 

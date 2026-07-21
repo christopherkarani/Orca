@@ -22,6 +22,8 @@ pub const CommandInfo = struct {
     examples: []const []const u8 = &.{},
     additional_completion_flags: []const []const u8 = &.{},
     category: Category = .advanced,
+    /// When true, listed on default root help (Safe Launch progressive disclosure).
+    public: bool = false,
     hidden: bool = false,
 };
 
@@ -29,9 +31,10 @@ pub const CommandInfo = struct {
 fn hostAliasCommand(comptime host: []const u8) CommandInfo {
     return .{
         .name = host,
-        .summary = "Launch " ++ host ++ " under Orca (alias for orca run -- " ++ host ++ ")",
+        .summary = "Launch " ++ host ++ " under Orca protection",
         .usage = "orca " ++ host ++ " [agent-args...]",
         .category = .core_workflow,
+        .public = true,
         .examples = &.{"orca " ++ host},
         .details = &.{
             "Thin host launch alias: equivalent to `orca run -- " ++ host ++ " [agent-args...]`.",
@@ -99,64 +102,48 @@ pub const commands =
     },
     .{
         .name = "start",
-        .summary = "Guided paid-beta onboarding: protection mode, hosts, verification",
-        .usage = "orca start [--auto|--yes|--no-interact] [--protection command-guard|firewall|maximum] [--hosts <list>] [--preset <name>] [--skip-verify]",
+        .summary = "Get protected: wire hosts, policy, and Ask posture",
+        .usage = "orca start [--auto|--yes|--no-interact] [--hosts <list>] [--preset <name>] [--skip-verify]",
         .category = .getting_started,
+        .public = true,
         .examples = &.{
             "orca start",
-            "orca start --auto --protection maximum",
-            "orca start --auto --protection command-guard --hosts codex,claude",
+            "orca start --auto",
+            "orca start --auto --hosts codex,claude",
         },
         .details = &.{
-            "Primary first-run onboarding for paid beta users.",
-            "Explains changes before writing files, preserves existing policy unless you use `orca init --force`.",
-            "Protection mode flags map to grades (not a second taxonomy):",
-            "command-guard ≈ hook (+ daemon for shell eval);",
-            "firewall ≈ wrapper (`orca run`/shims — CLI label, not kernel firewall);",
-            "maximum ≈ hook+wrapper aspirational, not OS-enforced from doctor probes; OS FS isolation requires `orca run --os-sandbox` session-attach (probe ≠ live claim).",
-            "On interactive terminals, prompts for protection mode and host integrations.",
+            "Primary first-run onboarding — the only Safe Launch door.",
+            "Creates a policy if missing (Ask on risk by default via generic-agent preset).",
+            "Wires detected host integrations and verifies daemon/hook paths when available.",
+            "Auto-selects the best available Ask posture — no protection-grade menu.",
+            "On interactive terminals, prompts only for host selection when hosts are detected.",
             "On non-TTY terminals, auto-selects safe defaults (no --auto required).",
-            "Use --auto to force non-interactive mode on a TTY; combine with --protection and --hosts.",
+            "Use --auto to force non-interactive mode on a TTY; optional --hosts and --preset.",
             "Compatibility flags --yes and --no-interact also select non-interactive mode.",
-            "Verifies daemon health, safe allow and dangerous deny fixtures, and selected integration paths.",
+            "Next steps after start: orca <agent> · orca status · orca replay.",
             "Re-run safely to repair or update an existing setup.",
         },
     },
     .{
         .name = "quickstart",
-        .summary = "One-command onboarding: doctor, init, setup",
-        .usage = "orca quickstart [--auto|--no-interact] [--preset <name>]",
+        .summary = "Removed — use orca start",
+        .usage = "orca start",
         .category = .getting_started,
-        .examples = &.{
-            "orca quickstart",
-            "orca quickstart --auto",
-            "orca quickstart --preset strict-local",
-        },
+        .hidden = true,
+        .examples = &.{},
         .details = &.{
-            "Runs doctor -> init (if needed) -> setup in one command.",
-            "On interactive terminals, setup runs in guided mode.",
-            "Use --auto for non-interactive environments (CI, scripts).",
-            "The compatibility flag --no-interact also selects non-interactive mode.",
-            "Use --preset to choose a policy preset (default: generic-agent).",
+            "`orca quickstart` was removed. Use `orca start` instead.",
         },
     },
     .{
         .name = "setup",
-        .summary = "Guided post-install setup for agent host integrations",
-        .usage = "orca setup [--auto|--yes|--no-interact] [--preset <name>]",
+        .summary = "Removed — use orca start",
+        .usage = "orca start",
         .category = .getting_started,
-        .examples = &.{
-            "orca setup",
-            "orca setup --auto",
-            "orca setup --preset strict-local",
-        },
+        .hidden = true,
+        .examples = &.{},
         .details = &.{
-            "On interactive terminals (TTY), `orca setup` (no flags) enters guided mode with arrow-key host selection.",
-            "Use ↑↓ to navigate, Space to toggle hosts, Enter to confirm.",
-            "Use --auto (or --yes alias) for the fully automatic non-interactive path used by scripts/CI.",
-            "The compatibility flag --no-interact also selects the non-interactive path.",
-            "Use --preset to choose a policy preset (default: generic-agent).",
-            "After setup, run 'orca run -- <your-command>' for immediate protection.",
+            "`orca setup` was removed. Use `orca start` instead.",
         },
     },
     .{
@@ -174,6 +161,7 @@ pub const commands =
         .summary = "One-glance protection snapshot",
         .usage = "orca status [--json] [--check]",
         .category = .getting_started,
+        .public = true,
         .examples = &.{
             "orca status",
             "orca status --json",
@@ -275,6 +263,7 @@ pub const commands =
         .summary = "Explain why a shell command is blocked or allowed (Rust packs)",
         .usage = "orca explain <command> [options]",
         .category = .core_workflow,
+        .public = true,
         .examples = &.{
             "orca explain \"git reset --hard\"",
             "orca explain \"rm -rf /tmp/x\" --format json",
@@ -518,7 +507,7 @@ pub const commands =
         "Removes $HOME/.orca/daemon.sock and daemon.pid when shutdown succeeds.",
         "When the daemon is not running, stale artifacts are cleaned when safe.",
     } },
-    .{ .name = "stop", .summary = "Stop Orca protection for host agents", .usage = "orca stop [codex|claude|cursor|opencode|openclaw|hermes|all] [--yes]", .category = .integrations, .examples = &.{
+    .{ .name = "stop", .summary = "Stop Orca protection for host agents", .usage = "orca stop [codex|claude|cursor|opencode|openclaw|hermes|all] [--yes]", .category = .integrations, .public = true, .examples = &.{
         "orca stop",
         "orca stop codex",
         "orca stop cursor",
@@ -530,7 +519,7 @@ pub const commands =
         "OpenClaw: runs 'openclaw plugins uninstall orca-openclaw-plugin'",
         "Hermes: runs 'hermes plugins disable orca' and removes ~/.hermes/plugins/orca/",
         "Codex / Claude: removes known plugin paths (host-managed install locations).",
-        "Restart protection later with: orca setup (guided) or orca plugin install <host>",
+        "Restart protection later with: orca start",
     } },
     .{ .name = "uninstall", .summary = "Uninstall Orca from this machine", .usage = "orca uninstall [--plugins-only] [--keep-config] [--yes]", .category = .integrations, .details = &.{
         "Completely removes Orca and its integrations from the machine.",
@@ -545,7 +534,7 @@ pub const commands =
         "Local workspace .orca/ directories are not removed automatically;",
         "run 'find . -type d -name .orca' to locate them manually.",
     } },
-    .{ .name = "replay", .summary = "Replay an audit session", .usage = "orca replay [--list] [--session <id|last>] [--json] [--only denied] [--verify] [--tui]", .category = .core_workflow, .examples = &.{
+    .{ .name = "replay", .summary = "Replay an audit session", .usage = "orca replay [--list] [--session <id|last>] [--json] [--only denied] [--verify] [--tui]", .category = .core_workflow, .public = true, .examples = &.{
         "orca replay",
         "orca replay --list",
         "orca replay --session last",
@@ -632,7 +621,7 @@ pub const commands =
         "  orca plugin manifest [codex|claude|opencode|openclaw|hermes|all] [--json]",
         "  orca plugin install                                 # dry-run preview of all hosts (no mutation)",
         "  orca plugin install <codex|claude|opencode|openclaw|hermes|all> [--dry-run|--yes] [--path <path>]",
-        "Primary onboarding path: run `orca setup` (guided interactive selection on TTY terminals).",
+        "Primary onboarding path: run `orca start` (guided interactive selection on TTY terminals).",
         "Bare install never mutates; mutation requires an explicit host or `all` plus --yes (confirm default No on TTY).",
         "Plugin doctor does not print secrets.",
     } },
@@ -706,27 +695,68 @@ pub const commands =
         "LAN and non-loopback binds (for example 0.0.0.0) are rejected; the dashboard is intentionally localhost-only.",
         "Use --once to serve one request for smoke tests and automation.",
     } },
-    .{ .name = "help", .summary = "Show help", .usage = "orca help [command]", .category = .getting_started, .details = &.{"Shows top-level help or command-specific help."} },
+    .{ .name = "help", .summary = "Show help", .usage = "orca help [command|--all]", .category = .getting_started, .details = &.{
+        "Shows Safe Launch help by default (public verbs only).",
+        "Use `orca help --all` for the full command surface.",
+        "Use `orca help <command>` for command-specific help.",
+    } },
 };
 
+/// Prefix of Safe Launch teaching order (host aliases inserted after stop).
+const public_help_prefix = [_][]const u8{ "start", "stop" };
+/// Suffix of Safe Launch teaching order (after host aliases).
+const public_help_suffix = [_][]const u8{ "status", "replay", "explain" };
+
+pub const WriteMode = enum {
+    /// Safe Launch surface only (default `orca` / `orca help`).
+    public,
+    /// Full command surface (`orca help --all`).
+    all,
+};
+
+/// Default root help: public Safe Launch verbs only.
 pub fn write(io: std.Io, writer: anytype) !void {
+    try writeWithMode(io, writer, .public);
+}
+
+/// Full root help including advanced / power commands.
+pub fn writeAll(io: std.Io, writer: anytype) !void {
+    try writeWithMode(io, writer, .all);
+}
+
+pub fn writeWithMode(io: std.Io, writer: anytype, mode: WriteMode) !void {
     // Compact brand header (Phase 2 brand cohesion).
     try tui.render.banner(io, writer, build_options.version, null);
     try tui.theme.paint(io, writer, .muted, "Graded policy mediation for AI agent actions");
     try writer.writeAll("\n\n");
     try writer.writeAll("Usage:\n  orca <command> [options]\n\n");
 
-    // Task-oriented primary paths (P0 "one product" discoverability).
+    // Task-oriented primary paths — Safe Launch loop on default; richer on --all.
     try writer.writeAll("  ");
     try tui.theme.paintBold(io, writer, .brand, "Common tasks");
     try writer.writeAll("\n");
-    const tasks = [_]struct { label: []const u8, cmd: []const u8 }{
+    const Task = struct { label: []const u8, cmd: []const u8 };
+    const public_tasks = [_]Task{
+        .{ .label = "Get protected", .cmd = "orca start" },
+        .{ .label = "Run an agent", .cmd = "orca claude  (or: codex | pi | opencode | openclaw | hermes)" },
+        .{ .label = "See status", .cmd = "orca status" },
+        .{ .label = "Review session", .cmd = "orca replay" },
+        .{ .label = "Why blocked?", .cmd = "orca explain \"…\"" },
+        .{ .label = "Stop protection", .cmd = "orca stop" },
+    };
+    const all_tasks = [_]Task{
         .{ .label = "Get protected", .cmd = "orca start" },
         .{ .label = "See status", .cmd = "orca status" },
         .{ .label = "Deep diagnose", .cmd = "orca doctor" },
         .{ .label = "Why blocked?", .cmd = "orca explain \"…\"" },
         .{ .label = "Run an agent", .cmd = "orca claude  (or: orca pi | orca run -- <agent>)" },
         .{ .label = "Wire a host", .cmd = "orca plugin install" },
+        .{ .label = "Review session", .cmd = "orca replay" },
+        .{ .label = "Stop protection", .cmd = "orca stop" },
+    };
+    const tasks: []const Task = switch (mode) {
+        .public => &public_tasks,
+        .all => &all_tasks,
     };
     var task_label_width: usize = 0;
     for (tasks) |task| {
@@ -741,37 +771,65 @@ pub fn write(io: std.Io, writer: anytype) !void {
         try writer.writeAll("\n");
     }
     try writer.writeAll("\n");
-    try writer.writeAll("  ");
-    try tui.theme.paint(io, writer, .muted, "Shell deny remediation: orca explain / allow-once / allowlist (daemon). Policy files: orca policy explain.");
-    try writer.writeAll("\n\n");
+    if (mode == .all) {
+        try writer.writeAll("  ");
+        try tui.theme.paint(io, writer, .muted, "Shell deny remediation: orca explain / allow-once / allowlist (daemon). Policy files: orca policy explain.");
+        try writer.writeAll("\n\n");
+    }
 
-    // Compute a uniform command-name column width across all visible commands.
+    // Compute a uniform command-name column width across listed commands.
     var name_width: usize = 0;
     for (commands) |cmd| {
         if (cmd.hidden) continue;
+        if (mode == .public and !cmd.public) continue;
         const w = tui.render.displayWidth(cmd.name);
         if (w > name_width) name_width = w;
     }
 
-    const categories = comptime std.enums.values(Category);
-    for (categories) |cat| {
-        if (cat == .internal) continue; // hide internal group entirely
-        var any = false;
-        for (commands) |cmd| {
-            if (cmd.hidden or cmd.category != cat) continue;
-            if (!any) {
-                try writer.writeAll("  ");
-                try tui.theme.paintBold(io, writer, .brand, categoryTitle(cat));
-                try writer.writeAll("\n");
-                any = true;
-            }
-            try writer.writeAll("    ");
-            try tui.theme.paint(io, writer, .text_bright, cmd.name);
-            try tui.render.writePadded(writer, "", name_width - tui.render.displayWidth(cmd.name) + 2);
-            try writer.writeAll(cmd.summary);
+    switch (mode) {
+        .public => {
+            try writer.writeAll("  ");
+            try tui.theme.paintBold(io, writer, .brand, "Commands");
             try writer.writeAll("\n");
-        }
-        if (any) try writer.writeAll("\n");
+            // Teaching order: start → stop → host aliases → status → replay → explain
+            for (public_help_prefix) |name| {
+                try writeCommandRow(io, writer, name, name_width);
+            }
+            for (host_launch.host_launch_aliases) |host| {
+                try writeCommandRow(io, writer, host, name_width);
+            }
+            for (public_help_suffix) |name| {
+                try writeCommandRow(io, writer, name, name_width);
+            }
+            try writer.writeAll("\n");
+            try writer.writeAll("  ");
+            try tui.theme.paint(io, writer, .muted, "Power features:");
+            try writer.writeAll(" ");
+            try tui.theme.paint(io, writer, .text_bright, "orca help --all");
+            try writer.writeAll("\n\n");
+        },
+        .all => {
+            const categories = comptime std.enums.values(Category);
+            for (categories) |cat| {
+                if (cat == .internal) continue; // hide internal group entirely
+                var any = false;
+                for (commands) |cmd| {
+                    if (cmd.hidden or cmd.category != cat) continue;
+                    if (!any) {
+                        try writer.writeAll("  ");
+                        try tui.theme.paintBold(io, writer, .brand, categoryTitle(cat));
+                        try writer.writeAll("\n");
+                        any = true;
+                    }
+                    try writer.writeAll("    ");
+                    try tui.theme.paint(io, writer, .text_bright, cmd.name);
+                    try tui.render.writePadded(writer, "", name_width - tui.render.displayWidth(cmd.name) + 2);
+                    try writer.writeAll(cmd.summary);
+                    try writer.writeAll("\n");
+                }
+                if (any) try writer.writeAll("\n");
+            }
+        },
     }
 
     // Global options (Phase 7 discoverability): surface the --no-rich /
@@ -793,8 +851,13 @@ pub fn write(io: std.Io, writer: anytype) !void {
     try writer.writeAll(" run ");
     try tui.theme.paint(io, writer, .text_bright, "orca start");
     try writer.writeAll(" to get protected, or ");
-    try tui.theme.paint(io, writer, .text_bright, "orca help <command>");
-    try writer.writeAll(" for details.\n");
+    if (mode == .public) {
+        try tui.theme.paint(io, writer, .text_bright, "orca help --all");
+        try writer.writeAll(" for the full surface.\n");
+    } else {
+        try tui.theme.paint(io, writer, .text_bright, "orca help <command>");
+        try writer.writeAll(" for details.\n");
+    }
 }
 
 fn categoryTitle(cat: Category) []const u8 {
@@ -809,8 +872,37 @@ fn categoryTitle(cat: Category) []const u8 {
     };
 }
 
+fn writeCommandRow(io: std.Io, writer: anytype, name: []const u8, name_width: usize) !void {
+    const cmd = findCommand(name) orelse return;
+    if (cmd.hidden or !cmd.public) return;
+    try writer.writeAll("    ");
+    try tui.theme.paint(io, writer, .text_bright, cmd.name);
+    try tui.render.writePadded(writer, "", name_width - tui.render.displayWidth(cmd.name) + 2);
+    try writer.writeAll(cmd.summary);
+    try writer.writeAll("\n");
+}
+
+/// Single notice for hard-removed onboarding peers (`setup` / `quickstart`).
+/// Used by top-level dispatch and `writeCommand` so wording cannot drift.
+pub fn writeRemovedOnboardingPeer(writer: anytype, name: []const u8) !void {
+    try writer.print(
+        "orca: `{s}` was removed. Use `orca start` instead.\nRun 'orca help start' for usage.\n",
+        .{name},
+    );
+}
+
 pub fn writeCommand(io: std.Io, writer: anytype, name: []const u8) !bool {
-    _ = io;
+    // Progressive disclosure: `orca help --all` reuses the existing single-arg
+    // help dispatch path without changing top-level argv parsing.
+    if (std.mem.eql(u8, name, "--all") or std.mem.eql(u8, name, "all")) {
+        try writeAll(io, writer);
+        return true;
+    }
+    // Hard-removed onboarding peers: do not re-teach live usage; point at `orca start`.
+    if (std.mem.eql(u8, name, "setup") or std.mem.eql(u8, name, "quickstart")) {
+        try writeRemovedOnboardingPeer(writer, name);
+        return true;
+    }
     const command = findCommand(name) orelse return false;
     try writer.print("{s}\n\nUsage:\n  {s}\n\n", .{ command.summary, command.usage });
 
@@ -885,4 +977,89 @@ test "top help and per-host help surface claude and pi aliases" {
     writer = .fixed(&buf);
     try std.testing.expect(try writeCommand(std.testing.io, &writer, "pi"));
     try std.testing.expect(std.mem.indexOf(u8, writer.buffered(), "orca run -- pi") != null);
+}
+
+/// True when root help lists `name` as a left-column peer command (not Common tasks / prose).
+fn helpListsPeerCommand(text: []const u8, name: []const u8) bool {
+    var lines = std.mem.splitScalar(u8, text, '\n');
+    while (lines.next()) |line| {
+        if (!std.mem.startsWith(u8, line, "    ")) continue;
+        if (std.mem.startsWith(u8, line, "    --")) continue;
+        const rest = line[4..];
+        if (rest.len <= name.len) continue;
+        if (std.mem.startsWith(u8, rest, name) and rest[name.len] == ' ') return true;
+    }
+    return false;
+}
+
+test "default root help shows only public Safe Launch verbs" {
+    var buf: [24576]u8 = undefined;
+    var writer: std.Io.Writer = .fixed(&buf);
+    try write(std.testing.io, &writer);
+    const top = writer.buffered();
+
+    // Public Safe Launch verbs as command peers
+    try std.testing.expect(helpListsPeerCommand(top, "start"));
+    try std.testing.expect(helpListsPeerCommand(top, "stop"));
+    try std.testing.expect(helpListsPeerCommand(top, "status"));
+    try std.testing.expect(helpListsPeerCommand(top, "replay"));
+    try std.testing.expect(helpListsPeerCommand(top, "explain"));
+    for (host_launch.host_launch_aliases) |host| {
+        try std.testing.expect(helpListsPeerCommand(top, host));
+    }
+
+    // Common tasks teach start → agent → status → replay
+    try std.testing.expect(std.mem.indexOf(u8, top, "orca start") != null);
+    try std.testing.expect(std.mem.indexOf(u8, top, "orca status") != null);
+    try std.testing.expect(std.mem.indexOf(u8, top, "orca replay") != null);
+    try std.testing.expect(std.mem.indexOf(u8, top, "orca claude") != null);
+
+    // Progressive disclosure escape hatch
+    try std.testing.expect(std.mem.indexOf(u8, top, "help --all") != null);
+
+    // Not Getting Started / public peers
+    try std.testing.expect(!helpListsPeerCommand(top, "quickstart"));
+    try std.testing.expect(!helpListsPeerCommand(top, "setup"));
+    try std.testing.expect(!helpListsPeerCommand(top, "init"));
+    try std.testing.expect(!helpListsPeerCommand(top, "run"));
+    try std.testing.expect(!helpListsPeerCommand(top, "doctor"));
+    try std.testing.expect(!helpListsPeerCommand(top, "history"));
+    try std.testing.expect(!helpListsPeerCommand(top, "policy"));
+    try std.testing.expect(!helpListsPeerCommand(top, "mcp"));
+}
+
+test "help --all lists full advanced command surface" {
+    var buf: [32768]u8 = undefined;
+    var writer: std.Io.Writer = .fixed(&buf);
+    try std.testing.expect(try writeCommand(std.testing.io, &writer, "--all"));
+    const all = writer.buffered();
+
+    try std.testing.expect(helpListsPeerCommand(all, "start"));
+    try std.testing.expect(helpListsPeerCommand(all, "run"));
+    try std.testing.expect(helpListsPeerCommand(all, "doctor"));
+    try std.testing.expect(helpListsPeerCommand(all, "policy"));
+    try std.testing.expect(helpListsPeerCommand(all, "history"));
+    try std.testing.expect(helpListsPeerCommand(all, "init"));
+    try std.testing.expect(helpListsPeerCommand(all, "mcp"));
+    try std.testing.expect(helpListsPeerCommand(all, "env"));
+    // Hard-removed peers: not listed as live usage on help --all
+    try std.testing.expect(!helpListsPeerCommand(all, "quickstart"));
+    try std.testing.expect(!helpListsPeerCommand(all, "setup"));
+}
+
+test "help setup and quickstart print removal notice pointing at start" {
+    var buf: [1024]u8 = undefined;
+    var writer: std.Io.Writer = .fixed(&buf);
+    try std.testing.expect(try writeCommand(std.testing.io, &writer, "setup"));
+    const setup_out = writer.buffered();
+    try std.testing.expect(std.mem.indexOf(u8, setup_out, "removed") != null);
+    try std.testing.expect(std.mem.indexOf(u8, setup_out, "orca start") != null);
+    try std.testing.expect(std.mem.indexOf(u8, setup_out, "orca setup --") == null);
+
+    writer = .fixed(&buf);
+    try std.testing.expect(try writeCommand(std.testing.io, &writer, "quickstart"));
+    const qs_out = writer.buffered();
+    try std.testing.expect(std.mem.indexOf(u8, qs_out, "removed") != null);
+    try std.testing.expect(std.mem.indexOf(u8, qs_out, "orca start") != null);
+    try std.testing.expect(std.mem.indexOf(u8, qs_out, "orca quickstart --") == null);
 }
