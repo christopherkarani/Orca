@@ -267,16 +267,7 @@ run_e2e_selftest() {
     echo "OK fixture linux-deny-ok-and-handshake: --require-attach passes"
   fi
 
-  # Darwin host: Linux deny SKIP alone must not platform_skip on macOS.
-  f="$FIXTURE_DIR/linux-host-deny-skip.log"
-  classify_from_test_log "$f" "darwin"
-  if [[ "$attach_detail" == "platform_skip_no_backend_on_host" ]]; then
-    # linux-host-deny-skip has macOS line as SKIP too — on darwin that IS host skip.
-    # Use linux-deny-ok-no-handshake instead: linux OK + macOS SKIP on darwin host
-    # means host (macOS) deny SKIP without OK → platform_skip is correct for darwin.
-    :
-  fi
-  # Explicit: log with only Linux SKIP (no macOS line) on darwin → not platform_skip.
+  # Darwin host: log with only Linux SKIP (no macOS line) → not platform_skip.
   local tmp_darwin
   tmp_darwin="$(mktemp)"
   cat >"$tmp_darwin" <<'EOF'
@@ -392,7 +383,57 @@ if [[ "$ctrl_attach_ok" == true && "$test_deny_ok" != true ]]; then
 fi
 
 MANIFEST="$OUT_DIR/${CASE_ID}-${OS_NAME}-${ARCH_NAME}.json"
-cat >"$MANIFEST" <<JSON
+# Prefer jq for string-safe JSON (M-9); heredoc fallback when jq is absent.
+if command -v jq >/dev/null 2>&1; then
+  jq -n \
+    --argjson schema_version 1 \
+    --argjson gate_ids '["P1-I-01", "P0-I-06", "M-11", "M-12", "F-1", "F-5"]' \
+    --arg case_id "$CASE_ID" \
+    --arg source_commit "$COMMIT" \
+    --arg binary_sha256 "$BINARY_SHA" \
+    --arg os "$OS_NAME" \
+    --arg arch "$ARCH_NAME" \
+    --arg backend_id "$backend_id" \
+    --arg profile_hash "" \
+    --arg command './scripts/zig build test-fast (sandbox apply real-FS-deny proofs only for CTRL-ATTACH)' \
+    --argjson exit_code "$exit_code" \
+    --argjson ctrl_baseline_ok "$(bool_json "$ctrl_baseline_ok")" \
+    --argjson ctrl_prepare_ok "$(bool_json "$ctrl_prepare_ok")" \
+    --arg prepare_detail "$prepare_detail" \
+    --argjson ctrl_attach_ok "$(bool_json "$ctrl_attach_ok")" \
+    --arg attach_detail "$attach_detail" \
+    --argjson test_deny_ok "$(bool_json "$test_deny_ok")" \
+    --arg deny_detail "$deny_detail" \
+    --argjson ctrl_neighbor_ok "$(bool_json "$ctrl_neighbor_ok")" \
+    --arg neighbor_detail "$neighbor_detail" \
+    --argjson ctrl_off_ok "$(bool_json "$ctrl_off_ok")" \
+    --arg off_detail "$off_detail" \
+    --arg canary_fingerprint "zig-unit:real-fs-deny" \
+    --arg rerun "./scripts/os-sandbox-adversarial-e2e.sh --case ${CASE_ID}" \
+    '{
+      schema_version: $schema_version,
+      gate_ids: $gate_ids,
+      case_id: $case_id,
+      source_commit: $source_commit,
+      binary_sha256: $binary_sha256,
+      platform: {os: $os, arch: $arch},
+      backend_id: $backend_id,
+      profile_hash: $profile_hash,
+      command: $command,
+      exit_code: $exit_code,
+      controls: {
+        "CTRL-BASELINE": {ok: $ctrl_baseline_ok, detail: "binary_present"},
+        "CTRL-PREPARE": {ok: $ctrl_prepare_ok, detail: $prepare_detail},
+        "CTRL-ATTACH": {ok: $ctrl_attach_ok, detail: $attach_detail},
+        "TEST-DENY": {ok: $test_deny_ok, detail: $deny_detail},
+        "CTRL-NEIGHBOR": {ok: $ctrl_neighbor_ok, detail: $neighbor_detail},
+        "CTRL-OFF": {ok: $ctrl_off_ok, detail: $off_detail}
+      },
+      canary_fingerprint: $canary_fingerprint,
+      rerun: $rerun
+    }' >"$MANIFEST"
+else
+  cat >"$MANIFEST" <<JSON
 {
   "schema_version": 1,
   "gate_ids": ["P1-I-01", "P0-I-06", "M-11", "M-12", "F-1", "F-5"],
@@ -416,6 +457,7 @@ cat >"$MANIFEST" <<JSON
   "rerun": "./scripts/os-sandbox-adversarial-e2e.sh --case ${CASE_ID}"
 }
 JSON
+fi
 
 # Fail closed if evidence artifact is missing or empty (M-11).
 if [[ ! -s "$MANIFEST" ]]; then

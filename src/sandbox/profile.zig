@@ -161,8 +161,10 @@ fn assertControlRootSafe(io: std.Io, path: []const u8) error{InvalidControlRoot}
 ///
 /// macOS: never grant bare `/System` (covers `/System/Volumes/Data` homes/secrets)
 /// or bare `/Library` (keychain / host config). Only sealed framework/dyld trees.
-/// Linux: include `/lib64`, `/etc`, `/dev`, `/proc` for dynlinker / NSS / devices /
-/// procfs under Landlock (R2-3). `/dev` stays RO; writable device nodes are separate.
+/// Linux: include `/lib64`, `/etc`, `/dev`, and narrow `/proc/self` +
+/// `/proc/thread-self` for dynlinker / NSS / devices / self-procfs under Landlock
+/// (R2-3 / M-1). Never bare `/proc` (same-uid peer environ/cmdline). `/dev` stays
+/// RO; writable device nodes are separate.
 pub fn defaultSystemRoPrefixes() []const []const u8 {
     return switch (builtin.os.tag) {
         .macos => &[_][]const u8{
@@ -185,9 +187,10 @@ pub fn defaultSystemRoPrefixes() []const []const u8 {
             "/lib64",
             "/etc",
             "/dev",
-            // Common agent/runtime need (self maps, fds, cmdline). Not a secret surface
-            // beyond what the process already owns; DAC still gates privileged proc files.
-            "/proc",
+            // Self/thread-self only — bare `/proc` exposes other PIDs' environ/cmdline
+            // (DAC often still allows same-uid). Dynlink needs maps/fds via /proc/self.
+            "/proc/self",
+            "/proc/thread-self",
         },
     };
 }
@@ -739,17 +742,24 @@ test "M-6 Linux defaults include lib64 etc and dev" {
     var saw_lib64 = false;
     var saw_etc = false;
     var saw_dev = false;
-    var saw_proc = false;
+    var saw_proc_self = false;
+    var saw_proc_thread_self = false;
+    var saw_bare_proc = false;
     for (prefixes) |p| {
         if (std.mem.eql(u8, p, "/lib64")) saw_lib64 = true;
         if (std.mem.eql(u8, p, "/etc")) saw_etc = true;
         if (std.mem.eql(u8, p, "/dev")) saw_dev = true;
-        if (std.mem.eql(u8, p, "/proc")) saw_proc = true;
+        if (std.mem.eql(u8, p, "/proc/self")) saw_proc_self = true;
+        if (std.mem.eql(u8, p, "/proc/thread-self")) saw_proc_thread_self = true;
+        if (std.mem.eql(u8, p, "/proc")) saw_bare_proc = true;
     }
     try std.testing.expect(saw_lib64);
     try std.testing.expect(saw_etc);
     try std.testing.expect(saw_dev);
-    try std.testing.expect(saw_proc);
+    // M-1: narrow procfs — self/thread-self only, never bare /proc.
+    try std.testing.expect(saw_proc_self);
+    try std.testing.expect(saw_proc_thread_self);
+    try std.testing.expect(!saw_bare_proc);
 
     const allocator = std.testing.allocator;
     var compiled = try compileProfile(allocator, .{
@@ -759,8 +769,15 @@ test "M-6 Linux defaults include lib64 etc and dev" {
     try std.testing.expect(compiled.hasGrant("/lib64", .ro));
     try std.testing.expect(compiled.hasGrant("/etc", .ro));
     try std.testing.expect(compiled.hasGrant("/dev", .ro));
-    try std.testing.expect(compiled.hasGrant("/proc", .ro));
+    try std.testing.expect(compiled.hasGrant("/proc/self", .ro));
+    try std.testing.expect(compiled.hasGrant("/proc/thread-self", .ro));
+    try std.testing.expect(!compiled.hasGrant("/proc", .ro));
     try std.testing.expect(compiled.isGrantedReadable("/proc/self/status"));
+    try std.testing.expect(compiled.isGrantedReadable("/proc/self/maps"));
+    try std.testing.expect(compiled.isGrantedReadable("/proc/thread-self/status"));
+    // Peer PIDs under bare /proc must not be readable via the grant model.
+    try std.testing.expect(!compiled.isGrantedReadable("/proc/1/environ"));
+    try std.testing.expect(!compiled.isGrantedReadable("/proc/1/cmdline"));
 }
 
 test "R2-3 Linux production grants writable device nodes without full /dev RW" {

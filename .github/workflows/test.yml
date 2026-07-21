@@ -56,6 +56,9 @@ jobs:
           python3 -m json.tool packaging/scoop/orca.json >/dev/null
           python3 -m json.tool packaging/npm/package.json >/dev/null
           grep -q checksum packaging/docker/Dockerfile
+      - name: OS sandbox e2e selftest (fixtures only)
+        shell: bash
+        run: ORCA_E2E_SELFTEST=1 ./scripts/os-sandbox-adversarial-e2e.sh
       - name: Release dry-run
         shell: bash
         run: ./scripts/release-dry-run.sh

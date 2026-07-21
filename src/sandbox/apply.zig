@@ -136,29 +136,33 @@ pub const ApplyResult = struct {
 
     /// Promote to session-active only with a valid `ChildAttachProof` from `spawnAgent`.
     /// Bare materials alone never authorize active (S-GLO-01).
+    /// Hard-fails (never soft-skips): invalid magic/kind, mechanism mismatch,
+    /// missing hash, or activeReceipt construction failure (M-3).
     /// File-private: not a public capability API (M-6 soft-seal fix).
-    fn promoteWithProof(self: *ApplyResult, proof: ChildAttachProof) void {
-        if (!proof.isValid()) return;
+    fn promoteWithProof(self: *ApplyResult, proof: ChildAttachProof) error{ApplyFailed}!void {
+        if (!proof.isValid()) return error.ApplyFailed;
         const kind = self.childApplyKind();
         const matches = switch (kind) {
             .none => false,
             .landlock => proof.mechanism == .landlock,
             .seatbelt => proof.mechanism == .seatbelt,
         };
-        if (!matches) return;
-        const hash = self.profile_hash_hex orelse return;
+        if (!matches) return error.ApplyFailed;
+        const hash = self.profile_hash_hex orelse return error.ApplyFailed;
         // profile_hash_hex is always full 64 hex from compile; reject closed if not.
         switch (proof.mechanism) {
             // Landlock expand: RW only on pre-existing non-control children; root is RO (M-6 / F-2).
-            .landlock => self.receipt = posture.activeReceipt(.landlock, hash[0..], "workspace child RW, root RO, system RO, no home") catch return,
-            .seatbelt => self.receipt = posture.activeReceipt(.seatbelt, hash[0..], "workspace RW, system RO, no home") catch return,
-            .none => {},
+            .landlock => self.receipt = posture.activeReceipt(.landlock, hash[0..], "workspace child RW, root RO, system RO, no home") catch return error.ApplyFailed,
+            .seatbelt => self.receipt = posture.activeReceipt(.seatbelt, hash[0..], "workspace RW, system RO, no home") catch return error.ApplyFailed,
+            .none => return error.ApplyFailed,
         }
     }
 
     /// Spawn the agent with OS FS apply in the child (Landlock / Seatbelt).
     /// Parent stays unrestricted. Blocks until status-pipe proves apply (M-2).
     /// On success, mutates this result to active via a typed attach proof (M-12).
+    /// After a successful child handshake, promote failure kills/reaps the child
+    /// and returns `ApplyFailed` (M-3) — never a live agent without an active receipt.
     /// Errors: `SpawnAgentError` (named; invariants → `ApplyFailed`, never bare `Unexpected`).
     pub fn spawnAgent(
         self: *ApplyResult,
@@ -204,8 +208,16 @@ pub const ApplyResult = struct {
         };
 
         // Handshake proven: mint attach proof and promote receipt atomically.
-        const proof = self.makeAttachProof() orelse return error.ApplyFailed;
-        self.promoteWithProof(proof);
+        // Promote is hard-fail after fork — kill/reap so we never return a live
+        // agent without an active session receipt (M-3).
+        const proof = self.makeAttachProof() orelse {
+            apply_posix.killAndReapChild(child.pid);
+            return error.ApplyFailed;
+        };
+        self.promoteWithProof(proof) catch {
+            apply_posix.killAndReapChild(child.pid);
+            return error.ApplyFailed;
+        };
         return .{ .pid = child.pid, .proof = proof };
     }
 
@@ -384,7 +396,7 @@ pub fn applyBeforeExec(boundary: ApplyBoundary) ApplyError!ApplyResult {
 
     // Platform OS prepare — Linux Landlock ABI probe; macOS Seatbelt prepare.
     // FD scrub / real attach run only in the forked agent child (`apply_posix`), never here.
-    const platform = tryPlatformApply(boundary.allocator, boundary.mode, &compiled);
+    const platform = tryPlatformApply(boundary.allocator, &compiled);
 
     // Launch allowlist only when child-apply materials will be used (prepared_child).
     // Unavailable/failed grade-drop keeps denylist-only env (provider credentials retained).
@@ -467,12 +479,11 @@ pub fn applyBeforeExec(boundary: ApplyBoundary) ApplyError!ApplyResult {
 
 /// Platform prepare: Linux → Landlock ABI probe + prepared child plan; macOS → Seatbelt prepare.
 /// Neither path returns session-active from the parent seam alone.
+/// Mode on/auto fail-closed is enforced by the caller (`applyBeforeExec`), not here.
 fn tryPlatformApply(
     allocator: std.mem.Allocator,
-    mode: OsSandboxMode,
     compiled: *const profile.CompiledProfile,
 ) PlatformApplyOutcome {
-    _ = mode;
     return switch (builtin.os.tag) {
         .linux => tryPlatformApplyLinux(),
         .macos => tryMacOsSeatbelt(allocator, compiled),
@@ -797,14 +808,14 @@ test "Linux Landlock prepares child plan without claiming active" {
     try std.testing.expect(result.profile_hash_hex != null);
     try std.testing.expectEqualStrings("landlock_child_apply_required", result.receipt.reason_code.?);
 
-    // M-12: bare materials never activate; only typed proof from spawn path.
-    result.promoteWithProof(.{ .mechanism = .landlock, .magic = 0 });
+    // M-12 / M-3: bare materials never activate; invalid proof hard-fails.
+    try std.testing.expectError(error.ApplyFailed, result.promoteWithProof(.{ .mechanism = .landlock, .magic = 0 }));
     try std.testing.expect(!result.receipt.isActive());
     const forged_wrong_mech = ApplyResult.ChildAttachProof{ .mechanism = .seatbelt, .magic = attach_proof_magic };
-    result.promoteWithProof(forged_wrong_mech);
+    try std.testing.expectError(error.ApplyFailed, result.promoteWithProof(forged_wrong_mech));
     try std.testing.expect(!result.receipt.isActive());
     // Valid proof matching landlock materials promotes.
-    result.promoteWithProof(.{ .mechanism = .landlock, .magic = attach_proof_magic });
+    try result.promoteWithProof(.{ .mechanism = .landlock, .magic = attach_proof_magic });
     try std.testing.expect(result.receipt.isActive());
     try std.testing.expectEqual(posture.BackendMechanism.landlock, result.receipt.mechanism);
     try std.testing.expect(std.mem.indexOf(u8, result.receipt.fs_scope, "workspace child RW") != null);
@@ -846,13 +857,31 @@ test "promoteWithProof activates only with valid seal matching materials" {
 
     try std.testing.expectEqual(ChildApplyKind.seatbelt, result.childApplyKind());
     try std.testing.expect(!result.receipt.isActive());
-    // Zero magic rejected.
-    result.promoteWithProof(.{ .mechanism = .seatbelt, .magic = 0 });
+    // Zero magic hard-fails (M-3); receipt stays inactive.
+    try std.testing.expectError(error.ApplyFailed, result.promoteWithProof(.{ .mechanism = .seatbelt, .magic = 0 }));
     try std.testing.expect(!result.receipt.isActive());
-    result.promoteWithProof(.{ .mechanism = .seatbelt, .magic = attach_proof_magic });
+    try result.promoteWithProof(.{ .mechanism = .seatbelt, .magic = attach_proof_magic });
     try std.testing.expect(result.receipt.isActive());
     try std.testing.expectEqual(posture.BackendMechanism.seatbelt, result.receipt.mechanism);
     try std.testing.expect(std.mem.indexOf(u8, result.receipt.fs_scope, "network") == null);
+}
+
+test "promoteWithProof hard-fails on missing profile hash" {
+    var result: ApplyResult = .{
+        .receipt = posture.unavailableReceipt("seatbelt_child_apply_required"),
+        .profile_compiled = true,
+        .profile_hash_hex = null,
+        .seatbelt_sbpl_z = null,
+        .allocator = std.testing.allocator,
+    };
+    result.seatbelt_sbpl_z = try std.testing.allocator.dupeZ(u8, "(version 1)\n");
+    defer result.deinit();
+
+    try std.testing.expectError(
+        error.ApplyFailed,
+        result.promoteWithProof(.{ .mechanism = .seatbelt, .magic = attach_proof_magic }),
+    );
+    try std.testing.expect(!result.receipt.isActive());
 }
 
 test "SpawnAgentError is a public named set covering ApplyFailed" {

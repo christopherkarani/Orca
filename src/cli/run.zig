@@ -2357,10 +2357,9 @@ test "orca run default auto attaches when backend available" {
     var stdout_writer: std.Io.Writer = .fixed(&stdout_buf);
     var stderr_writer: std.Io.Writer = .fixed(&stderr_buf);
 
-    const true_bin: []const u8 = if (builtin.os.tag == .macos) "/usr/bin/true" else "/usr/bin/true";
     // Intentionally omit --os-sandbox so default .auto is used.
     const code = try commandForGuardTestWithShellEvaluator(
-        &.{ "--workspace", root, "--", true_bin },
+        &.{ "--workspace", root, "--", "/usr/bin/true" },
         &stdout_writer,
         &stderr_writer,
         .ignore,

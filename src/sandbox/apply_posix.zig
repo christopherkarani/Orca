@@ -397,7 +397,9 @@ fn killProcessGroup(pid: i32) void {
     std.posix.kill(pid, std.posix.SIG.KILL) catch {};
 }
 
-fn killAndReapChild(pid: i32) void {
+/// Best-effort kill process group + pid and reap (public for post-handshake
+/// promote hard-fail cleanup in `apply.spawnAgent` — M-3).
+pub fn killAndReapChild(pid: i32) void {
     killProcessGroup(pid);
     var status: c_int = 0;
     // Retry waitpid on EINTR so parent does not free argv/env while the child

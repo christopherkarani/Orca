@@ -29,6 +29,20 @@ jobs:
           mkdir -p planning/security/evidence
           ./scripts/os-sandbox-adversarial-e2e.sh --require-attach --case ci-linux --binary ./zig-out/bin/orca --out planning/security/evidence
           test -n "$(ls planning/security/evidence/ci-linux-*.json 2>/dev/null)"
+          # M-4: re-assert CTRL-ATTACH dual-proof on newest evidence JSON (defense-in-depth with --require-attach).
+          command -v jq >/dev/null || { echo "FAIL: jq required for CTRL-ATTACH evidence assert"; exit 1; }
+          newest="$(ls -t planning/security/evidence/ci-linux-*.json | head -1)"
+          jq -e '
+            .controls["CTRL-ATTACH"].ok == true
+            and (
+              .controls["CTRL-ATTACH"].detail == "zig_real_fs_deny_canary_and_handshake"
+              or (.controls["CTRL-ATTACH"].detail | test("canary_and_handshake"))
+            )
+          ' "$newest" || {
+            echo "FAIL: CTRL-ATTACH dual-proof missing in $newest"
+            jq '.controls["CTRL-ATTACH"]' "$newest" || true
+            exit 1
+          }
       - name: Upload evidence artifacts
         if: always()
         uses: actions/upload-artifact@v4
@@ -52,6 +66,20 @@ jobs:
           mkdir -p planning/security/evidence
           ./scripts/os-sandbox-adversarial-e2e.sh --require-attach --case ci-macos --binary ./zig-out/bin/orca --out planning/security/evidence
           test -n "$(ls planning/security/evidence/ci-macos-*.json 2>/dev/null)"
+          # M-4: re-assert CTRL-ATTACH dual-proof on newest evidence JSON (defense-in-depth with --require-attach).
+          command -v jq >/dev/null || { echo "FAIL: jq required for CTRL-ATTACH evidence assert"; exit 1; }
+          newest="$(ls -t planning/security/evidence/ci-macos-*.json | head -1)"
+          jq -e '
+            .controls["CTRL-ATTACH"].ok == true
+            and (
+              .controls["CTRL-ATTACH"].detail == "zig_real_fs_deny_canary_and_handshake"
+              or (.controls["CTRL-ATTACH"].detail | test("canary_and_handshake"))
+            )
+          ' "$newest" || {
+            echo "FAIL: CTRL-ATTACH dual-proof missing in $newest"
+            jq '.controls["CTRL-ATTACH"]' "$newest" || true
+            exit 1
+          }
       - name: Upload evidence artifacts
         if: always()
         uses: actions/upload-artifact@v4
