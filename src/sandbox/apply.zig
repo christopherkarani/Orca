@@ -147,10 +147,11 @@ pub const ApplyResult = struct {
         };
         if (!matches) return;
         const hash = self.profile_hash_hex orelse return;
+        // profile_hash_hex is always full 64 hex from compile; reject closed if not.
         switch (proof.mechanism) {
             // Landlock expand: RW only on pre-existing non-control children; root is RO (M-6 / F-2).
-            .landlock => self.receipt = posture.activeReceipt(.landlock, hash[0..], "workspace child RW, root RO, system RO, no home"),
-            .seatbelt => self.receipt = posture.activeReceipt(.seatbelt, hash[0..], "workspace RW, system RO, no home"),
+            .landlock => self.receipt = posture.activeReceipt(.landlock, hash[0..], "workspace child RW, root RO, system RO, no home") catch return,
+            .seatbelt => self.receipt = posture.activeReceipt(.seatbelt, hash[0..], "workspace RW, system RO, no home") catch return,
             .none => {},
         }
     }
@@ -825,7 +826,8 @@ test "Linux Landlock prepares child plan without claiming active" {
 }
 
 test "never claims network in active landlock fs_scope" {
-    const complete = posture.activeReceipt(.landlock, "abcd", "workspace child RW, root RO, system RO, no home");
+    const hash64 = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+    const complete = try posture.activeReceipt(.landlock, hash64, "workspace child RW, root RO, system RO, no home");
     try std.testing.expect(std.mem.indexOf(u8, complete.fs_scope, "network") == null);
     try std.testing.expect(std.mem.indexOf(u8, complete.fs_scope, "root RO") != null);
 }
@@ -953,7 +955,8 @@ test "mode on surfaces real reason_code via fail_reason_out on this host" {
 
 test "session banner helper remains mechanism-neutral for apply receipts" {
     var buf: [256]u8 = undefined;
-    const active = posture.activeReceipt(.seatbelt, "deadbeef", "workspace RW, system RO, no home");
+    const hash64 = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+    const active = try posture.activeReceipt(.seatbelt, hash64, "workspace RW, system RO, no home");
     const line = try posture.formatSessionBanner(&buf, active);
     try std.testing.expect(std.mem.indexOf(u8, line, "OS sandbox: active") != null);
     try std.testing.expect(std.mem.indexOf(u8, line, "Seatbelt") == null);

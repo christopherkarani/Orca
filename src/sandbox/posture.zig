@@ -78,16 +78,30 @@ pub const AttachReceipt = struct {
     }
 };
 
+/// True when `s` is exactly 64 ASCII hex digits (`0-9`, `a-f`, `A-F`).
+/// Production profile hashes are lowercase SHA-256 hex; uppercase is accepted for callers.
+pub fn isValidProfileHashHex(s: []const u8) bool {
+    if (s.len != 64) return false;
+    for (s) |c| {
+        if (!std.ascii.isHex(c)) return false;
+    }
+    return true;
+}
+
 /// Build an active receipt only when all attach conditions hold.
+///
+/// `profile_hash_hex` must be exactly 64 hex digits (SHA-256 hex of the compiled
+/// profile). Empty, short, long, or non-hex inputs are rejected with
+/// `error.InvalidProfileHash` — never zero-padded into a fake full hash.
 pub fn activeReceipt(
     mechanism: BackendMechanism,
     profile_hash_hex: []const u8,
     fs_scope: []const u8,
-) AttachReceipt {
+) error{InvalidProfileHash}!AttachReceipt {
+    if (!isValidProfileHashHex(profile_hash_hex)) return error.InvalidProfileHash;
     // Copy into owned fixed storage (N1: no borrow of caller-owned / ephemeral memory).
-    var hex: [64]u8 = .{'0'} ** 64;
-    const n = @min(profile_hash_hex.len, 64);
-    @memcpy(hex[0..n], profile_hash_hex[0..n]);
+    var hex: [64]u8 = undefined;
+    @memcpy(&hex, profile_hash_hex[0..64]);
     return .{
         .posture = .active,
         .mechanism = mechanism,
@@ -167,6 +181,9 @@ pub fn formatAuditReason(buf: []u8, receipt: AttachReceipt) ![]const u8 {
     }
 }
 
+/// Test fixture: full 64-char lowercase hex (SHA-256 width). Not a real profile hash.
+const test_hash_64 = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+
 test "active receipt requires mechanism and profile hash (S-GLO-01)" {
     const incomplete = AttachReceipt{
         .posture = .active,
@@ -175,9 +192,38 @@ test "active receipt requires mechanism and profile hash (S-GLO-01)" {
     };
     try std.testing.expect(!incomplete.isActive());
 
-    const complete = activeReceipt(.landlock, "abc123", "workspace RW, system RO, no home");
+    const complete = try activeReceipt(.landlock, test_hash_64, "workspace RW, system RO, no home");
     try std.testing.expect(complete.isActive());
     try std.testing.expect(complete.posture.isOsEnforced());
+    try std.testing.expectEqualStrings(test_hash_64, complete.profileHashSlice().?);
+}
+
+test "activeReceipt rejects empty, short, long, and non-hex profile hashes" {
+    try std.testing.expectError(error.InvalidProfileHash, activeReceipt(.landlock, "", "workspace RW"));
+    try std.testing.expectError(error.InvalidProfileHash, activeReceipt(.landlock, "abcd", "workspace RW"));
+    try std.testing.expectError(error.InvalidProfileHash, activeReceipt(.seatbelt, "abc123", "workspace RW"));
+    try std.testing.expectError(error.InvalidProfileHash, activeReceipt(.landlock, "deadbeef", "workspace RW"));
+    // 63 hex digits
+    try std.testing.expectError(error.InvalidProfileHash, activeReceipt(.landlock, test_hash_64[0..63], "workspace RW"));
+    // 65 hex digits
+    try std.testing.expectError(error.InvalidProfileHash, activeReceipt(.landlock, test_hash_64 ++ "0", "workspace RW"));
+    // non-hex in an otherwise 64-length string
+    const bad_hex = "g123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+    try std.testing.expectEqual(@as(usize, 64), bad_hex.len);
+    try std.testing.expectError(error.InvalidProfileHash, activeReceipt(.landlock, bad_hex, "workspace RW"));
+}
+
+test "activeReceipt accepts full 64 hex (lower and upper)" {
+    const lower = try activeReceipt(.landlock, test_hash_64, "workspace child RW, root RO, system RO, no home");
+    try std.testing.expect(lower.isActive());
+    try std.testing.expectEqual(BackendMechanism.landlock, lower.mechanism);
+    try std.testing.expectEqualStrings(test_hash_64, lower.profileHashSlice().?);
+
+    const upper_src = "ABCDEF0123456789ABCDEF0123456789ABCDEF0123456789ABCDEF0123456789";
+    try std.testing.expectEqual(@as(usize, 64), upper_src.len);
+    const upper = try activeReceipt(.seatbelt, upper_src, "workspace RW, system RO, no home");
+    try std.testing.expect(upper.isActive());
+    try std.testing.expectEqualStrings(upper_src, upper.profileHashSlice().?);
 }
 
 test "disabled and unavailable receipts are not OS-enforced" {
@@ -195,7 +241,7 @@ test "os-sandbox mode parse" {
 
 test "session banner is mechanism-neutral (S-GLO-03)" {
     var buf: [320]u8 = undefined;
-    const active = activeReceipt(.seatbelt, "deadbeef", "workspace RW, system RO, no home");
+    const active = try activeReceipt(.seatbelt, test_hash_64, "workspace RW, system RO, no home");
     const line = try formatSessionBanner(&buf, active);
     try std.testing.expect(std.mem.indexOf(u8, line, "OS sandbox: active") != null);
     try std.testing.expect(std.mem.indexOf(u8, line, "Seatbelt") == null);
@@ -231,7 +277,7 @@ test "grade-drop unavailable/failed banners mention credentials retained" {
 test "M-12 landlock fs_scope surfaces root RO create-at-root contract" {
     var buf: [320]u8 = undefined;
     // Production Landlock receipt string (apply.promoteWithProof).
-    const active = activeReceipt(.landlock, "abcd", "workspace child RW, root RO, system RO, no home");
+    const active = try activeReceipt(.landlock, test_hash_64, "workspace child RW, root RO, system RO, no home");
     const line = try formatSessionBanner(&buf, active);
     try std.testing.expect(std.mem.indexOf(u8, line, "workspace child RW") != null);
     try std.testing.expect(std.mem.indexOf(u8, line, "root RO") != null);

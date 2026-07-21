@@ -1,8 +1,13 @@
-//! Pure OS-filesystem sandbox profile model (P1-U).
+//! OS-filesystem sandbox profile model (P1-U).
 //!
 //! Compiles a deterministic grant list: workspace RW (minus trusted Orca control
 //! roots), system RO prefixes, optional explicit tmp — never a broad $HOME grant.
 //! No Landlock/Seatbelt apply lives here; this is the portable grant model only.
+//!
+//! Grant queries (`isAgentWritable`, `hasGrant`, path math) are pure over the
+//! compiled in-memory model. The sole intentional FS I/O is
+//! `validateControlRootsOnDisk` (symlink / non-directory control-root check),
+//! which is opt-in at apply time — do not treat the module as pure overall.
 
 const std = @import("std");
 const builtin = @import("builtin");
@@ -85,13 +90,15 @@ pub const CompiledProfile = struct {
         return false;
     }
 
-    /// Agent-writable only under an RW grant and outside all control roots.
+    /// Intent grant query: true when the compiled profile grants RW to `path`
+    /// and the path is outside all control roots.
     ///
-    /// Pure grant model (Seatbelt-shaped). Linux Landlock expands RW parents that
-    /// contain control roots into child RW + parent RO, so **create-at-workspace-root**
-    /// may be denied by the OS even when this returns true for paths under the
-    /// workspace (see landlock.addRwGrantExcludingControls). Prefer writing under
-    /// existing workspace children for portable agent I/O.
+    /// This is **not** Landlock-effective (or Seatbelt-effective) writability.
+    /// It answers only the portable grant model. Linux Landlock expands RW parents
+    /// that contain control roots into child RW + parent RO, so
+    /// **create-at-workspace-root** may be denied by the OS even when this returns
+    /// true for paths under the workspace (see landlock.addRwGrantExcludingControls).
+    /// Prefer writing under existing workspace children for portable agent I/O.
     pub fn isAgentWritable(self: *const CompiledProfile, path: []const u8) bool {
         if (self.isControlPath(path)) return false;
         for (self.grants) |g| {
@@ -229,8 +236,6 @@ pub fn isPathWithin(path: []const u8, root: []const u8) bool {
     if (root.len == 1 and root[0] == '/') return path.len > 1 and path[0] == '/';
     return path[root.len] == '/';
 }
-
-
 
 /// Compile a pure profile. Fail closed on empty/invalid workspace — never open grants.
 pub fn compileProfile(allocator: std.mem.Allocator, options: CompileOptions) !CompiledProfile {

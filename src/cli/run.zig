@@ -1024,7 +1024,6 @@ fn coreModeToPolicyMode(mode: core.types.Mode) policy.schema.Mode {
     };
 }
 
-
 fn writeSessionPosture(stdout: anytype, network_mode: policy.schema.NetworkMode, secretless: bool) !void {
     try stdout.print(
         "Posture: network={s} secretless={s}  (override: --network … | --no-network | --secretless)\n",
@@ -1495,7 +1494,6 @@ test "run command guard allows safe command and creates session shim directory" 
     defer std.testing.allocator.free(events);
     try std.testing.expect(std.mem.indexOf(u8, events, "\"type\":\"command_allowed\"") != null);
 }
-
 
 test "sandbox_posture event type serializes" {
     try std.testing.expectEqualStrings("sandbox_posture", core.event.EventType.sandbox_posture.toString());
@@ -2186,7 +2184,7 @@ test "parse --os-sandbox accepts auto|on|off; invalid and missing fail usage" {
     {
         stdout_writer = .fixed(&stdout_buf);
         stderr_writer = .fixed(&stderr_buf);
-        const code = try command(std.testing.io, &.{ "--os-sandbox" }, &stdout_writer, &stderr_writer);
+        const code = try command(std.testing.io, &.{"--os-sandbox"}, &stdout_writer, &stderr_writer);
         try std.testing.expectEqual(exit_codes.usage, code);
     }
 }
@@ -2395,7 +2393,8 @@ test "session start banner is mechanism-neutral for disabled OS sandbox" {
     try std.testing.expect(std.mem.indexOf(u8, out, "Landlock") == null);
 
     writer = .fixed(&buf);
-    try printSessionStart(std.testing.io, &writer, session, .ask, false, sandbox.posture.activeReceipt(.seatbelt, "abcd", "workspace RW, system RO, no home"));
+    const active_hash = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+    try printSessionStart(std.testing.io, &writer, session, .ask, false, try sandbox.posture.activeReceipt(.seatbelt, active_hash, "workspace RW, system RO, no home"));
     const active_out = writer.buffered();
     try std.testing.expect(std.mem.indexOf(u8, active_out, "OS sandbox: active") != null);
     try std.testing.expect(std.mem.indexOf(u8, active_out, "Seatbelt") == null);
