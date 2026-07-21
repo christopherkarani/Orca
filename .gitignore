@@ -221,3 +221,7 @@ hello_write.txt
 e2e_*.log
 .ntm/
 .skynex/
+
+# --- Local agent / GTM (never track) ---
+.grok/
+gtm/
