@@ -36,7 +36,7 @@ Protected agent launches (`orca <agent>`) use the run engine and can attach a cu
 
 ## Network route forcing
 
-When the proxy backend is active and OS sandbox attach succeeds, Orca renders the child Seatbelt profile without broad `(allow network*)` and permits outbound TCP only to the Orca loopback proxy port. The runtime banner reports `network: proxy route-forced...`, and the child env exports `ORCA_PROXY_ROUTE_FORCED=true` plus `ORCA_TRANSPARENT_NETWORK_ENFORCEMENT=active`.
+When the proxy backend is active and OS sandbox attach succeeds, Orca renders the child Seatbelt profile without broad `(allow network*)` and permits outbound TCP only to the Orca loopback proxy port. The runtime banner reports `network: proxy route-forced...`, and the child env exports `ORCA_PROXY_ROUTE_FORCED=true` plus `ORCA_TRANSPARENT_NETWORK_ENFORCEMENT=tcp-port-route-forced` (TCP route-force honesty label; Seatbelt still does not claim full XPC/mach isolation).
 
 Proxy startup alone is not enough: without a route-forced OS sandbox session, the child env reports `ORCA_PROXY_ROUTE_FORCED=false`, and `--require-backend network_enforce` fails closed.
 

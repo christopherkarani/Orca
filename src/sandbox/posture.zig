@@ -315,3 +315,36 @@ test "landlock fs_scope surfaces root RO create-at-root contract" {
     try std.testing.expect(std.mem.indexOf(u8, line, "platform tmp RW") != null);
     try std.testing.expect(std.mem.indexOf(u8, line, "Landlock") == null); // still mechanism-neutral
 }
+
+test "activeReceiptWithNetwork + banner surfaces route-forced network_scope" {
+    // Production Landlock route-forced string (apply.activateAfterHandshake M-1).
+    const landlock_scope = "proxy route-forced (TCP connect port-scoped to proxy port; not address-scoped; UDP unrestricted)";
+    const landlock = try activeReceiptWithNetwork(
+        .landlock,
+        test_hash_64,
+        "workspace child RW, root RO, system RO, no home",
+        landlock_scope,
+    );
+    try std.testing.expect(landlock.isActive());
+    try std.testing.expectEqualStrings(landlock_scope, landlock.network_scope);
+
+    var buf: [400]u8 = undefined;
+    const landlock_line = try formatSessionBanner(&buf, landlock);
+    try std.testing.expect(std.mem.indexOf(u8, landlock_line, "network: proxy route-forced") != null);
+    try std.testing.expect(std.mem.indexOf(u8, landlock_line, "port-scoped") != null);
+    try std.testing.expect(std.mem.indexOf(u8, landlock_line, "UDP unrestricted") != null);
+    try std.testing.expect(std.mem.indexOf(u8, landlock_line, "Landlock") == null); // mechanism-neutral banner
+
+    // Seatbelt keeps loopback-only wording (localhost:port SBPL).
+    const seatbelt_scope = "proxy route-forced (outbound TCP to Orca loopback proxy only)";
+    const seatbelt = try activeReceiptWithNetwork(
+        .seatbelt,
+        test_hash_64,
+        "workspace RW, system RO, no home",
+        seatbelt_scope,
+    );
+    try std.testing.expectEqualStrings(seatbelt_scope, seatbelt.network_scope);
+    const seatbelt_line = try formatSessionBanner(&buf, seatbelt);
+    try std.testing.expect(std.mem.indexOf(u8, seatbelt_line, "loopback proxy only") != null);
+    try std.testing.expect(std.mem.indexOf(u8, seatbelt_line, "Seatbelt") == null);
+}

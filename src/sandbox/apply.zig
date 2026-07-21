@@ -180,29 +180,33 @@ pub const ApplyResult = struct {
     /// File-private: only `spawnAgent` calls this. Bare materials alone never
     /// authorize active (S-GLO-01). Hard-fails on missing materials/hash or
     /// activeReceipt construction failure — never soft-skips.
+    ///
+    /// Network scope is mechanism-specific when route-forced (M-1 honesty):
+    /// Landlock is TCP port-scoped only (any remote IP; UDP unrestricted);
+    /// Seatbelt is loopback-proxy TCP only (localhost:port SBPL).
     fn activateAfterHandshake(self: *ApplyResult) error{ApplyFailed}!ChildAttachProof {
         const hash = self.profile_hash_hex orelse return error.ApplyFailed;
-        const route_forced_scope = "proxy route-forced (outbound TCP to Orca loopback proxy only)";
-        switch (self.materials) {
+        const mechanism: posture.BackendMechanism = switch (self.materials) {
             .none => return error.ApplyFailed,
-            .landlock => |*p| {
-                const scope = p.compiled.effectiveFsScopeSummary(.landlock);
-                self.receipt = if (self.network_route_forced)
-                    posture.activeReceiptWithNetwork(.landlock, hash[0..], scope, route_forced_scope) catch return error.ApplyFailed
-                else
-                    posture.activeReceipt(.landlock, hash[0..], scope) catch return error.ApplyFailed;
-                return .{ .mechanism = .landlock };
-            },
-            .seatbelt => |*s| {
-                // Scope was precomputed at prepare from the compiled profile (single source).
-                const scope = s.fs_scope;
-                self.receipt = if (self.network_route_forced)
-                    posture.activeReceiptWithNetwork(.seatbelt, hash[0..], scope, route_forced_scope) catch return error.ApplyFailed
-                else
-                    posture.activeReceipt(.seatbelt, hash[0..], scope) catch return error.ApplyFailed;
-                return .{ .mechanism = .seatbelt };
-            },
-        }
+            .landlock => .landlock,
+            .seatbelt => .seatbelt,
+        };
+        // Resolve network_scope once per mechanism (M-15: no duplicated receipt arms).
+        const network_scope: []const u8 = if (self.network_route_forced)
+            switch (mechanism) {
+                .landlock => "proxy route-forced (TCP connect port-scoped to proxy port; not address-scoped; UDP unrestricted)",
+                .seatbelt => "proxy route-forced (outbound TCP to Orca loopback proxy only)",
+                .none => unreachable,
+            }
+        else
+            "unrestricted";
+        const fs_scope: []const u8 = switch (self.materials) {
+            .none => unreachable,
+            .landlock => |*p| p.compiled.effectiveFsScopeSummary(.landlock),
+            .seatbelt => |*s| s.fs_scope, // precomputed at prepare (single source)
+        };
+        self.receipt = posture.activeReceiptWithNetwork(mechanism, hash[0..], fs_scope, network_scope) catch return error.ApplyFailed;
+        return .{ .mechanism = mechanism };
     }
 
     /// Spawn the agent with OS FS apply in the child (Landlock / Seatbelt).
@@ -1078,6 +1082,93 @@ test "activateAfterHandshake hard-fails on missing profile hash" {
 
     try std.testing.expectError(error.ApplyFailed, result.activateAfterHandshake());
     try std.testing.expect(!result.receipt.isActive());
+}
+
+test "activateAfterHandshake sets seatbelt loopback route-forced network_scope" {
+    const hash: [64]u8 = .{'e'} ** 64;
+    const sbpl = try std.testing.allocator.dupeZ(u8, "(version 1)\n");
+    const fs_scope = "workspace RW, system RO, no home, control write-deny (readable), mach-lookup residual";
+    var result: ApplyResult = .{
+        .receipt = posture.preparedReceipt(.seatbelt, "seatbelt_child_apply_required"),
+        .profile_compiled = true,
+        .profile_hash_hex = hash,
+        .network_route_forced = true,
+        .materials = .{ .seatbelt = .{
+            .sbpl_z = sbpl,
+            .allocator = std.testing.allocator,
+            .fs_scope = fs_scope,
+        } },
+    };
+    defer result.deinit();
+
+    _ = try result.activateAfterHandshake();
+    try std.testing.expect(result.receipt.isActive());
+    try std.testing.expectEqualStrings(
+        "proxy route-forced (outbound TCP to Orca loopback proxy only)",
+        result.receipt.network_scope,
+    );
+    // Unforced path stays unrestricted.
+    var unforced: ApplyResult = .{
+        .receipt = posture.preparedReceipt(.seatbelt, "seatbelt_child_apply_required"),
+        .profile_compiled = true,
+        .profile_hash_hex = hash,
+        .network_route_forced = false,
+        .materials = .{ .seatbelt = .{
+            .sbpl_z = try std.testing.allocator.dupeZ(u8, "(version 1)\n"),
+            .allocator = std.testing.allocator,
+            .fs_scope = fs_scope,
+        } },
+    };
+    defer unforced.deinit();
+    _ = try unforced.activateAfterHandshake();
+    try std.testing.expectEqualStrings("unrestricted", unforced.receipt.network_scope);
+}
+
+test "require_network_route_forcing without proxy port fails closed" {
+    // Fail-closed before platform grade-drop: no port → no route force materials.
+    var fail_reason: []const u8 = "unset";
+    const err = applyBeforeExec(.{
+        .allocator = std.testing.allocator,
+        .mode = .on,
+        .workspace_root = "/tmp/orca-apply-ws-route-force-req",
+        .env_map = null,
+        .network_proxy_port = null,
+        .require_network_route_forcing = true,
+        .fail_reason_out = &fail_reason,
+    });
+    try std.testing.expectError(error.RequireFailed, err);
+    try std.testing.expectEqualStrings("network_route_forcing_unavailable", fail_reason);
+}
+
+test "activateAfterHandshake landlock route-forced network_scope is port-scoped not loopback" {
+    if (builtin.os.tag != .linux) return error.SkipZigTest;
+    if (!landlock.isAbiAvailable()) return error.SkipZigTest;
+
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const root = try tmp.dir.realPathFileAlloc(std.testing.io, ".", std.testing.allocator);
+    defer std.testing.allocator.free(root);
+
+    var result = try applyBeforeExec(.{
+        .allocator = std.testing.allocator,
+        .mode = .on,
+        .workspace_root = root,
+        .env_map = null,
+        .network_proxy_port = 43123,
+    });
+    defer result.deinit();
+
+    try std.testing.expectEqual(ChildApplyKind.landlock, result.childApplyKind());
+    // Without ABI>=4 TCP support, materials may still prepare FS-only (not route-forced).
+    if (!result.network_route_forced) return error.SkipZigTest;
+
+    _ = try result.activateAfterHandshake();
+    try std.testing.expect(result.receipt.isActive());
+    try std.testing.expectEqualStrings(
+        "proxy route-forced (TCP connect port-scoped to proxy port; not address-scoped; UDP unrestricted)",
+        result.receipt.network_scope,
+    );
+    try std.testing.expect(std.mem.indexOf(u8, result.receipt.network_scope, "loopback") == null);
 }
 
 test "activateAfterHandshake hard-fails without materials" {

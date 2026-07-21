@@ -96,13 +96,31 @@ pub const Runtime = struct {
     }
 
     pub fn deinit(self: *Runtime) void {
+        const io = self.state.threaded.io();
         self.state.stop.store(true, .release);
-        wake(self.state.threaded.io(), self.state.bind_port);
+        wake(io, self.state.bind_port);
         if (self.state.thread_started) {
             self.state.thread.join();
         }
-        self.waitForIdle(2 * std.time.ns_per_s) catch {};
-        self.state.server.deinit(self.state.threaded.io());
+        // Detached connection workers can stall in readHeaders (5s) and/or tunnel
+        // idle (3s). The deinit wait must exceed the longest worker stall so we
+        // do not free State while active_connections > 0 (M-5 free-before-join).
+        const idle_budget_ns: u64 = 8 * std.time.ns_per_s;
+        var server_closed = false;
+        self.waitForIdle(idle_budget_ns) catch {
+            // Force-close the accept socket, then wait once more so half-open
+            // workers can observe peer close / idle timeouts before destroy.
+            self.state.server.deinit(io);
+            server_closed = true;
+            self.waitForIdle(idle_budget_ns) catch {
+                // Residual: if workers remain busy after two budgets, destroy
+                // still races detached threads. Full joinable workers are out of
+                // scope for this partial fix.
+            };
+        };
+        if (!server_closed) {
+            self.state.server.deinit(io);
+        }
         for (self.state.audit_events.items) |ev| ev.deinit(self.state.allocator);
         self.state.audit_events.deinit(self.state.allocator);
         self.state.allocator.free(self.state.bind_url);
@@ -170,8 +188,16 @@ pub fn listen(
     var threaded: std.Io.Threaded = .init_single_threaded;
     const io = threaded.io();
     const address = try std.Io.net.IpAddress.parse("127.0.0.1", 0);
-    var server = try address.listen(io, .{ .reuse_address = true });
+    // Production mediation listener: no SO_REUSEADDR/SO_REUSEPORT. Ephemeral
+    // ports do not need rebind, and reuse would enable MitM rebind after proxy
+    // death on a route-forced fixed port (M-7). Test-only upstream helpers may
+    // still set reuse_address = true.
+    var server = try address.listen(io, .{ .reuse_address = false });
     errdefer server.deinit(io);
+    // Defense-in-depth: explicit FD_CLOEXEC before sandboxed agent fork (M-4).
+    // Zig's netListenIp usually applies SOCK_CLOEXEC already; fail closed if we
+    // cannot set the flag. Child fd scrub remains the keep-set close path.
+    try setServerSocketCloexec(server.socket.handle);
     const port = server.socket.address.getPort();
     const bind_url = try std.fmt.allocPrint(allocator, "http://127.0.0.1:{d}", .{port});
     errdefer allocator.free(bind_url);
@@ -188,6 +214,19 @@ pub fn listen(
         .threaded = threaded,
     };
     return .{ .state = state };
+}
+
+/// Set FD_CLOEXEC on the proxy listen socket when the platform supports fcntl.
+/// Fail closed on fcntl error so a non-CLOEXEC listen FD cannot leak into the
+/// agent child if scrub misses a FD under pressure.
+fn setServerSocketCloexec(handle: std.Io.net.Socket.Handle) !void {
+    switch (@import("builtin").os.tag) {
+        .windows, .wasi => {},
+        else => {
+            if (std.c.fcntl(handle, std.c.F.SETFD, @as(c_int, std.c.FD_CLOEXEC)) == -1)
+                return error.Unexpected;
+        },
+    }
 }
 
 /// Bind and immediately start the accept-loop thread (legacy / tests).

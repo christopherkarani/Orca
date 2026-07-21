@@ -129,7 +129,7 @@ fn commandWithStdioAndEnv(io: std.Io, argv: []const []const u8, stdout: anytype,
             try intercept.network.appendProxyEnvironment(&filtered_env.env_map, runtime.bindUrl(), "localhost,127.0.0.1,::1");
             try filtered_env.env_map.put("ORCA_PROXY_MEDIATED_NETWORK_ENFORCEMENT", "active");
             try filtered_env.env_map.put("ORCA_PROXY_BIND", runtime.bindUrl());
-            try filtered_env.env_map.put("ORCA_PROXY_ROUTE_FORCED", "false");
+            // ORCA_PROXY_ROUTE_FORCED=false is set by appendProxyEnvironment; only flip to true when route-forced below.
             try filtered_env.env_map.put("ORCA_PROXY_HTTPS_VISIBILITY", "host-port-only");
             try filtered_env.env_map.put("ORCA_PROXY_METHOD_PATH_VISIBILITY", "http-and-cooperative-hooks");
         }
@@ -153,8 +153,10 @@ fn commandWithStdioAndEnv(io: std.Io, argv: []const []const u8, stdout: anytype,
     defer apply_result.deinit();
     if (proxy_runtime != null and apply_result.network_route_forced) {
         try filtered_env.env_map.put("ORCA_PROXY_ROUTE_FORCED", "true");
-        try filtered_env.env_map.put("ORCA_TRANSPARENT_NETWORK_ENFORCEMENT", "active");
-        try filtered_env.env_map.put("ORCA_BACKEND_NETWORK_ENFORCEMENT", "active");
+        // Honest for both Seatbelt and Landlock: this feature is TCP localhost
+        // proxy-port scoped (not full transparent network / not UDP-scoped).
+        try filtered_env.env_map.put("ORCA_TRANSPARENT_NETWORK_ENFORCEMENT", "tcp-port-route-forced");
+        try filtered_env.env_map.put("ORCA_BACKEND_NETWORK_ENFORCEMENT", "tcp-port-route-forced");
     }
     try run_os_sandbox.warnAutoDegrade(options.os_sandbox, &apply_result, stderr);
 
@@ -295,13 +297,15 @@ fn commandWithStdioAndEnv(io: std.Io, argv: []const []const u8, stdout: anytype,
             const self: *@This() = @ptrCast(@alignCast(context));
             try self.installShims(session);
             try self.auditBackendCapability(session);
-            if (self.backend_report.firstMissingRequired(self.required_backend_features)) |missing| {
-                if (!(missing.feature == .network_proxy_enforce and self.proxy_bind != null) and
-                    !(missing.feature == .network_enforce and self.network_route_forced))
-                {
-                    try self.auditBackendRequirementDenied(session, missing);
-                    return error.BackendRequirementUnavailable;
-                }
+            // Check *every* required feature. Exceptions (proxy bind / route force)
+            // skip only that feature — never short-circuit remaining requirements (M-6).
+            for (self.required_backend_features) |feature| {
+                if (self.backend_report.featureSatisfiesRequirement(feature)) continue;
+                if (feature == .network_proxy_enforce and self.proxy_bind != null) continue;
+                if (feature == .network_enforce and self.network_route_forced) continue;
+                const missing = self.backend_report.get(feature);
+                try self.auditBackendRequirementDenied(session, missing);
+                return error.BackendRequirementUnavailable;
             }
             if (self.proxy_bind) |bind| try self.auditNetworkDecision(session, bind, .network_proxy_start, .{ .result = .observe, .reason = "proxy-mediated network backend started", .ci_may_proceed = true });
             try self.auditNetworkStartupEvents(session);
@@ -574,7 +578,12 @@ fn commandWithStdioAndEnv(io: std.Io, argv: []const []const u8, stdout: anytype,
         .workspace_root = workspace_root_for_policy,
         .shell_evaluator = shell_evaluator,
     };
-    const proxy_fail_closed = proxy_runtime != null and proxy_required_by_backend and (effective_policy_mode == .strict or effective_policy_mode == .ci or requiresBackend(options, .network_proxy_enforce));
+    // Fail closed if proxy dies when policy/backend requires it, or when the
+    // session is route-forced onto the proxy port (M-7).
+    const proxy_fail_closed = proxy_runtime != null and (
+        (proxy_required_by_backend and (effective_policy_mode == .strict or effective_policy_mode == .ci or requiresBackend(options, .network_proxy_enforce))) or
+        apply_result.network_route_forced
+    );
     var proxy_health_context: ProxyHealthContext = undefined;
     const health_monitor: ?supervisor.HealthMonitor = if (proxy_fail_closed) blk: {
         proxy_health_context = .{ .runtime = &proxy_runtime.? };
@@ -1849,7 +1858,19 @@ test "run require-backend fails closed when requested feature is unavailable" {
     var stdout_writer: std.Io.Writer = .fixed(&stdout_buf);
     var stderr_writer: std.Io.Writer = .fixed(&stderr_buf);
 
-    const code = try command(std.testing.io, &.{ "--workspace", root, "--mode", "ci", "--require-backend", "network_enforce", "--", "true" }, &stdout_writer, &stderr_writer);
+    // Pin --os-sandbox off so this asserts the *backend capability* fail-closed path.
+    // Default --os-sandbox auto + require-backend network_enforce sets
+    // require_network_route_forcing on applyBeforeExec; when route forcing is
+    // unavailable the OS-sandbox layer fail-closes first with
+    // "network_route_forcing_unavailable" and never reaches BackendRequirementUnavailable.
+    // Sibling: "run proxy backend does not satisfy transparent network enforcement requirement".
+    const code = try command(std.testing.io, &.{
+        "--workspace",      root,
+        "--mode",           "ci",
+        "--os-sandbox",     "off",
+        "--require-backend", "network_enforce",
+        "--",               "true",
+    }, &stdout_writer, &stderr_writer);
     try std.testing.expectEqual(exit_codes.unsupported, code);
     try std.testing.expect(std.mem.indexOf(u8, stderr_writer.buffered(), "required backend feature is unavailable") != null);
 
@@ -1857,6 +1878,68 @@ test "run require-backend fails closed when requested feature is unavailable" {
     defer std.testing.allocator.free(events);
     try std.testing.expect(std.mem.indexOf(u8, events, "\"type\":\"backend_capability\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, events, "required backend feature unavailable") != null);
+}
+
+test "run require-backend network_enforce with os-sandbox auto fails closed on route forcing" {
+    // Documents the coupled path: require-backend network_enforce forces
+    // applyBeforeExec network route forcing; auto mode fail-closes there when
+    // transparent route forcing is unavailable (no proxy bind / no backend).
+    if (builtin.os.tag == .windows) return error.SkipZigTest;
+
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const root = try tmp.dir.realPathFileAlloc(std.testing.io, ".", std.testing.allocator);
+    defer std.testing.allocator.free(root);
+
+    var stdout_buf: [2048]u8 = undefined;
+    var stderr_buf: [2048]u8 = undefined;
+    var stdout_writer: std.Io.Writer = .fixed(&stdout_buf);
+    var stderr_writer: std.Io.Writer = .fixed(&stderr_buf);
+
+    const code = try command(std.testing.io, &.{
+        "--workspace",       root,
+        "--mode",            "ci",
+        "--os-sandbox",      "auto",
+        "--require-backend", "network_enforce",
+        "--",                "true",
+    }, &stdout_writer, &stderr_writer);
+    try std.testing.expectEqual(exit_codes.unsupported, code);
+    const err = stderr_writer.buffered();
+    // Either layer is fail-closed; auto path currently hits OS apply first.
+    const os_route = std.mem.indexOf(u8, err, "network_route_forcing_unavailable") != null;
+    const backend_msg = std.mem.indexOf(u8, err, "required backend feature is unavailable") != null;
+    try std.testing.expect(os_route or backend_msg);
+}
+
+test "run require-backend multi-feature does not short-circuit after network-proxy exception" {
+    // M-6: an exception for network-proxy (live proxy bind) must not skip other
+    // unsatisfied --require-backend features. Order network-proxy first so the
+    // old firstMissingRequired short-circuit would have wrongly allowed launch.
+    if (builtin.os.tag == .windows) return error.SkipZigTest;
+
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const root = try tmp.dir.realPathFileAlloc(std.testing.io, ".", std.testing.allocator);
+    defer std.testing.allocator.free(root);
+
+    var stdout_buf: [2048]u8 = undefined;
+    var stderr_buf: [2048]u8 = undefined;
+    var stdout_writer: std.Io.Writer = .fixed(&stdout_buf);
+    var stderr_writer: std.Io.Writer = .fixed(&stderr_buf);
+
+    // os-sandbox off: proxy can start, but network_enforce is not route-forced.
+    // network-proxy is session-satisfied via proxy_bind; network_enforce is not.
+    const code = try command(std.testing.io, &.{
+        "--workspace",       root,
+        "--mode",            "ci",
+        "--os-sandbox",      "off",
+        "--network-backend", "proxy",
+        "--require-backend", "network-proxy",
+        "--require-backend", "network_enforce",
+        "--",                "true",
+    }, &stdout_writer, &stderr_writer);
+    try std.testing.expectEqual(exit_codes.unsupported, code);
+    try std.testing.expect(std.mem.indexOf(u8, stderr_writer.buffered(), "required backend feature is unavailable") != null);
 }
 
 test "run shell evaluation forwards command and cwd to daemon Evaluate" {

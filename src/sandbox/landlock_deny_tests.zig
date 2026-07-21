@@ -218,8 +218,9 @@ test "real network route forcing: proxy port allowed and neighboring loopback po
     switch (code) {
         0 => {},
         2 => return error.LandlockApplyFailedOnHost,
-        3 => return error.OutsideCanaryReadableUnderSandboxAfterExec,
-        4 => return error.WorkspaceNeighborUnreadableUnderSandboxAfterExec,
+        // Network route-force canary (not FS): denied port connectable / proxy port unreachable.
+        3 => return error.DeniedPortConnectableUnderRouteForce,
+        4 => return error.ProxyPortUnreachableUnderRouteForce,
         else => return error.UnexpectedSandboxProbeExit,
     }
 }

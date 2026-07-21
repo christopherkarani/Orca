@@ -200,25 +200,16 @@ pub fn prepareForChildApply(
     return prepareForChildApplyWithOptions(allocator, compiled, evaluateSupport(), .{});
 }
 
-pub fn prepareForChildApplyWithOptions(
-    allocator: std.mem.Allocator,
-    compiled: *const profile.CompiledProfile,
-    support: SupportStatus,
-    options: PrepareOptions,
-) ParentApplyOutcome {
-    return prepareForChildApplyWithOptionsInternal(allocator, compiled, support, options);
-}
-
 /// Testable prepare with injected support status.
 pub fn prepareForChildApplyWith(
     allocator: std.mem.Allocator,
     compiled: *const profile.CompiledProfile,
     support: SupportStatus,
 ) ParentApplyOutcome {
-    return prepareForChildApplyWithOptionsInternal(allocator, compiled, support, .{});
+    return prepareForChildApplyWithOptions(allocator, compiled, support, .{});
 }
 
-fn prepareForChildApplyWithOptionsInternal(
+pub fn prepareForChildApplyWithOptions(
     allocator: std.mem.Allocator,
     compiled: *const profile.CompiledProfile,
     support: SupportStatus,

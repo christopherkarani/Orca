@@ -35,9 +35,18 @@ Requirements: Linux kernel **5.13+** with Landlock **ABI ≥ 1**. Containers and
 
 ## Network route forcing
 
-When the proxy backend is active and Landlock ABI **>= 4** is available, Orca adds Landlock TCP network rules to the same child `restrict_self` call as the filesystem profile. The route-forced child can connect to the Orca proxy TCP port and is denied on neighboring loopback TCP ports; the child env exports `ORCA_PROXY_ROUTE_FORCED=true` and `ORCA_TRANSPARENT_NETWORK_ENFORCEMENT=active`.
+When the proxy backend is active and Landlock ABI **>= 4** is available, Orca adds Landlock TCP network rules to the same child `restrict_self` call as the filesystem profile. The child env exports `ORCA_PROXY_ROUTE_FORCED=true` and `ORCA_TRANSPARENT_NETWORK_ENFORCEMENT=tcp-port-route-forced` (TCP port-scoped residual; not unqualified transparent-active).
 
-Landlock network rules are TCP **port-scoped**, not address-scoped. This blocks ordinary proxy-ignoring clients that connect to normal ports such as 80/443, but it cannot express "only 127.0.0.1 on this port" on Linux. Linux matrix evidence must therefore include the Landlock route-forcing canary and keep this residual visible.
+**Honest Landlock network residual (do not describe as loopback-only):**
+
+| Claim | Landlock reality |
+|---|---|
+| TCP connect | **Port-scoped only** — allowed TCP connects to the proxy **port** from the child, to **any remote IP** on that port (not address-scoped to 127.0.0.1) |
+| Other TCP ports | Denied (ordinary proxy-bypass to :80/:443 etc.) |
+| UDP / QUIC | **Unrestricted** under Landlock route force — no Landlock UDP net rules |
+| vs macOS Seatbelt | Seatbelt can express localhost:port outbound TCP; Landlock cannot |
+
+This blocks ordinary proxy-ignoring TCP clients that dial normal ports, but it is **not** "outbound TCP to Orca loopback proxy only." Linux matrix evidence must include the Landlock route-forcing canary and keep this residual visible.
 
 ## Backend Features
 

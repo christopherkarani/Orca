@@ -18,7 +18,14 @@ const SupportStatus = macos_seatbelt.SupportStatus;
 
 fn waitExitCode(pid: std.c.pid_t) !u8 {
     var status: c_int = 0;
-    _ = std.c.waitpid(pid, &status, 0);
+    // Retry waitpid on EINTR. On other failure return error — do not invent exit 0
+    // from the zero-initialized status when waitpid never reaped the child.
+    while (true) {
+        const rc = std.c.waitpid(pid, &status, 0);
+        if (rc >= 0) break;
+        if (std.c.errno(rc) == .INTR) continue;
+        return error.WaitpidFailed;
+    }
     try std.testing.expect((status & 0x7f) == 0);
     return @intCast((status >> 8) & 0xff);
 }

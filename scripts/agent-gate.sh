@@ -97,7 +97,7 @@ choose_auto() {
       packages/core/*|src/core/*|src/core_engine.zig|src/policy/*|src/audit/*) has_core=1 ;;
     esac
     case "${p}" in
-      src/sandbox/*|tests/slices/sandbox.zig) has_sandbox=1 ;;
+      src/sandbox/*|src/sandbox_slice_root.zig) has_sandbox=1 ;;
       *)
         case "${p}" in
           *.md|docs/*|planning/*|.grok/*) ;;
@@ -106,7 +106,7 @@ choose_auto() {
         ;;
     esac
     case "${p}" in
-      src/intercept/*|tests/slices/intercept.zig) has_intercept=1 ;;
+      src/intercept/*|src/intercept_slice_root.zig) has_intercept=1 ;;
       *)
         case "${p}" in
           *.md|docs/*|planning/*|.grok/*) ;;
@@ -115,7 +115,7 @@ choose_auto() {
         ;;
     esac
     case "${p}" in
-      src/policy/*|tests/slices/policy.zig) has_policy_src=1 ;;
+      src/policy/*) has_policy_src=1 ;;
       *)
         case "${p}" in
           *.md|docs/*|planning/*|.grok/*|packages/core/*|src/core/*|src/core_engine.zig|src/audit/*) ;;
