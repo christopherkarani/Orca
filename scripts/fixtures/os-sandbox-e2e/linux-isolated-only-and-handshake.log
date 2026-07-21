@@ -1,0 +1,8 @@
+# Synthetic test-fast log: isolated include_tmp=false deny + handshake, NO production-defaults.
+# M-1: isolated alone must not paint TEST-DENY or unit dual-proof CTRL-ATTACH on Linux.
+1/99 real FS deny: outside denied; neighbor RW; control root not writable...OK
+1/99 real FS deny: outside canary denied; workspace readable and writable...SKIP
+1/99 forkApplyLandlockAndExec applies then execs on Linux with handshake...OK
+1/99 Linux Landlock prepares child plan without claiming active...OK
+1/99 parent apply seam never claims active (probe/prepare only)...OK
+1/99 mode off returns disabled receipt without scrub or active claim...OK

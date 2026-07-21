@@ -6,6 +6,7 @@ pub const args = @import("args.zig");
 pub const exit_codes = @import("exit_codes.zig");
 pub const help = @import("help.zig");
 pub const run_command = @import("run.zig");
+pub const run_os_sandbox = @import("run_os_sandbox.zig");
 pub const host_launch = @import("host_launch.zig");
 pub const init = @import("init.zig");
 pub const doctor = @import("doctor.zig");
@@ -90,6 +91,8 @@ test {
     _ = doctor;
     _ = history;
     _ = danger_confirmation;
+    _ = run_command;
+    _ = run_os_sandbox;
     // Surfaces touched by production-readiness hardening (M1–M4).
     _ = completions;
     _ = dashboard_command;
@@ -674,7 +677,7 @@ test "env command appears in help and dispatches correctly" {
 }
 
 test "command-specific help works through help command and command flag" {
-    var stdout_buf: [2048]u8 = undefined;
+    var stdout_buf: [4096]u8 = undefined;
     var stderr_buf: [256]u8 = undefined;
     var stdout_writer: std.Io.Writer = .fixed(&stdout_buf);
     var stderr_writer: std.Io.Writer = .fixed(&stderr_buf);
@@ -1935,7 +1938,7 @@ test "run dispatch launches child command" {
     var stdout_writer: std.Io.Writer = .fixed(&stdout_buf);
     var stderr_writer: std.Io.Writer = .fixed(&stderr_buf);
 
-    const code = try run_command.commandForTest(&.{ "--", "zig", "version" }, &stdout_writer, &stderr_writer, .ignore);
+    const code = try run_command.commandForTest(&.{ "--os-sandbox", "off", "--", "zig", "version" }, &stdout_writer, &stderr_writer, .ignore);
     try std.testing.expectEqual(exit_codes.success, code);
     // Phase 2: printSessionStart now renders the shared brand banner + key-value
     // grid (the hand-rolled shield line is retired). The session shield +
@@ -1943,6 +1946,7 @@ test "run dispatch launches child command" {
     try std.testing.expect(std.mem.indexOf(u8, stdout_writer.buffered(), "\u{1F6E1}  Orca") != null);
     try std.testing.expect(std.mem.indexOf(u8, stdout_writer.buffered(), "watching this session") != null);
     try std.testing.expect(std.mem.indexOf(u8, stdout_writer.buffered(), "Session ended cleanly") != null);
+    try std.testing.expect(std.mem.indexOf(u8, stdout_writer.buffered(), "OS sandbox: disabled") != null);
     try std.testing.expectEqualStrings("", stderr_writer.buffered());
 }
 

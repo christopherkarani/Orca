@@ -45,10 +45,6 @@ pub fn detect() backend.ReportSet {
     };
 }
 
-pub fn prepare(allocator: std.mem.Allocator, request: backend.PrepareRequest, report: backend.ReportSet) backend.PreparedSandbox {
-    return backend.prepareFallback(allocator, request, report);
-}
-
 pub fn processEnvRoots(allocator: std.mem.Allocator) !?EnvRoots {
     const env_util = @import("../env_util.zig");
     var env_map = try env_util.createProcessMap(allocator);
@@ -247,22 +243,7 @@ test "Windows capability detector is honest about wrapper and unavailable protec
     try std.testing.expect(!report.featureAvailable(.strong_sandbox));
 }
 
-test "Windows backend launch can run a simple command" {
-    if (builtin.os.tag != .windows) return error.SkipZigTest;
-
-    var argv = [_][]const u8{ "cmd.exe", "/c", "exit", "0" };
-    var prepared = prepare(std.testing.allocator, .{
-        .io = std.testing.io,
-        .argv = &argv,
-        .workspace_root = ".",
-        .stdio = .ignore,
-    }, detect());
-    try prepared.spawn();
-    try prepared.waitForSpawn();
-    const term = try prepared.wait();
-    try std.testing.expectEqual(std.process.Child.Term{ .exited = 0 }, term);
-}
-
+// No scaffold prepare path on Windows either.
 test "Windows process cleanup status is partial until Job Objects are installed" {
     const report = detect();
     try std.testing.expectEqual(backend.Level.partial, report.get(.process_supervision).level);

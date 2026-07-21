@@ -560,11 +560,22 @@ pub fn redactedDestinationAlloc(allocator: std.mem.Allocator, destination: Desti
     return try list.toOwnedSlice(allocator);
 }
 
+/// Inject Orca loopback proxy mediation into the child env map.
+///
+/// Sets **both** uppercase and lowercase of `HTTP_PROXY`, `HTTPS_PROXY`,
+/// `ALL_PROXY`, and `NO_PROXY` so host lowercase proxies cannot bypass Orca
+/// inject (M-3 / fn-security-1). `put` overwrites any pre-existing host values
+/// for those keys. Callers should prefer this after host env filtering and
+/// before attach allowlist so loopback wins.
 pub fn appendProxyEnvironment(env_map: *std.process.Environ.Map, proxy_url: []const u8, no_proxy: []const u8) !void {
     try env_map.put("HTTP_PROXY", proxy_url);
+    try env_map.put("http_proxy", proxy_url);
     try env_map.put("HTTPS_PROXY", proxy_url);
+    try env_map.put("https_proxy", proxy_url);
     try env_map.put("ALL_PROXY", proxy_url);
+    try env_map.put("all_proxy", proxy_url);
     try env_map.put("NO_PROXY", no_proxy);
+    try env_map.put("no_proxy", no_proxy);
     try env_map.put("ORCA_NETWORK_ENFORCEMENT", "proxy-mediated");
 }
 
@@ -1301,4 +1312,43 @@ test "network effect tags absent when effects section missing" {
     });
     defer allowed.deinit(std.testing.allocator);
     try std.testing.expectEqual(core.decision.DecisionResult.allow, allowed.decision.result);
+}
+
+test "appendProxyEnvironment sets both cases and overwrites host proxies (M-3)" {
+    var env_map = std.process.Environ.Map.init(std.testing.allocator);
+    defer env_map.deinit();
+
+    // Host proxies (including credentialed lowercase) must not survive inject.
+    try env_map.put("HTTP_PROXY", "http://user:pass@host-proxy.example:8080");
+    try env_map.put("http_proxy", "http://user:pass@host-proxy.example:8080");
+    try env_map.put("HTTPS_PROXY", "http://user:pass@host-proxy.example:8080");
+    try env_map.put("https_proxy", "http://user:pass@host-proxy.example:8080");
+    try env_map.put("ALL_PROXY", "socks5://tok:en@socks.example");
+    try env_map.put("all_proxy", "socks5://tok:en@socks.example");
+    try env_map.put("NO_PROXY", "evil.example");
+    try env_map.put("no_proxy", "evil.example");
+
+    const orca_url = "http://127.0.0.1:18443";
+    const orca_no = "localhost,127.0.0.1,::1";
+    try appendProxyEnvironment(&env_map, orca_url, orca_no);
+
+    // Both casings point at Orca loopback (Orca inject wins).
+    try std.testing.expectEqualStrings(orca_url, env_map.get("HTTP_PROXY").?);
+    try std.testing.expectEqualStrings(orca_url, env_map.get("http_proxy").?);
+    try std.testing.expectEqualStrings(orca_url, env_map.get("HTTPS_PROXY").?);
+    try std.testing.expectEqualStrings(orca_url, env_map.get("https_proxy").?);
+    try std.testing.expectEqualStrings(orca_url, env_map.get("ALL_PROXY").?);
+    try std.testing.expectEqualStrings(orca_url, env_map.get("all_proxy").?);
+    try std.testing.expectEqualStrings(orca_no, env_map.get("NO_PROXY").?);
+    try std.testing.expectEqualStrings(orca_no, env_map.get("no_proxy").?);
+    try std.testing.expectEqualStrings("proxy-mediated", env_map.get("ORCA_NETWORK_ENFORCEMENT").?);
+
+    // No host credential residue in any proxy value.
+    inline for (.{ "HTTP_PROXY", "http_proxy", "HTTPS_PROXY", "https_proxy", "ALL_PROXY", "all_proxy" }) |key| {
+        const v = env_map.get(key).?;
+        try std.testing.expect(std.mem.indexOf(u8, v, "user:") == null);
+        try std.testing.expect(std.mem.indexOf(u8, v, "pass") == null);
+        try std.testing.expect(std.mem.indexOf(u8, v, "host-proxy") == null);
+        try std.testing.expect(std.mem.indexOf(u8, v, "tok:") == null);
+    }
 }

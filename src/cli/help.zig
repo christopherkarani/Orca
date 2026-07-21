@@ -62,15 +62,18 @@ pub const commands =
                 "orca run --network allowlist -- pi",
                 "orca run --no-network --no-secrets -- echo 'offline'",
                 "orca run --secretless --network-backend proxy -- <command>",
+                "orca run --os-sandbox on -- <command>",
             },
-            .additional_completion_flags = &.{ "--workspace", "--policy", "--session-name", "--secretless", "--inherit-env", "--allow-network", "--network", "--network-backend", "--require-backend" },
+            .additional_completion_flags = &.{ "--workspace", "--policy", "--session-name", "--secretless", "--inherit-env", "--allow-network", "--network", "--network-backend", "--os-sandbox", "--require-backend" },
             .details = &.{
                 "Starts a protected session, filters the child environment through policy, checks the command through a command safety check, writes audit artifacts, and mirrors the child exit code.",
                 "Agent-primary defaults: network mode is ask when --network/--no-network are omitted (overrides policy network.mode for this run). Secretless stays off unless --secretless. Opt-outs: --network open|allowlist|observe|off|ask, --no-network.",
                 "Host launch aliases (orca claude, orca pi, …) rewrite to this command with no extra flags — same defaults. Pass Orca run flags only on `orca run`, not after a host alias name.",
-                "Options: --workspace <path>, --mode observe|ask|strict|ci, --policy <path>, --session-name <name>, --no-secrets, --secretless, --inherit-env, --no-network, --allow-network <domain>, --network observe|ask|allowlist|open|off, --network-backend decision-only|proxy, --require-backend <capability>, --help",
+                "Options: --workspace <path>, --mode observe|ask|strict|ci, --policy <path>, --session-name <name>, --no-secrets, --secretless, --inherit-env, --no-network, --allow-network <domain>, --network observe|ask|allowlist|open|off, --network-backend decision-only|proxy, --os-sandbox auto|on|off, --require-backend <capability>, --help",
                 "Strict and CI modes default to environments without secret access. --secretless replaces policy-visible secret env values with non-resolving orca-secret:// local-dummy references (not usable as raw model API keys; opt-in strip/demo only — not day-1 model auth). --inherit-env is allowed only when the selected policy permits inheritance.",
                 "Network flags update the run-time policy and audit network decisions. --network-backend proxy starts an explicit localhost proxy and injects HTTP_PROXY/HTTPS_PROXY/ALL_PROXY; HTTPS CONNECT is host/port only without interception.",
+                "--os-sandbox auto|on|off controls the OS filesystem sandbox (default auto). on fails closed when the platform backend cannot attach. auto: degrades loudly when no backend plan exists; fails closed on incomplete env scrub/allowlist; fails closed if attach fails after materials are prepared. off disables OS apply.",
+                "Linux (Landlock): when active, the session banner reports workspace child RW with workspace-root RO — create/write at the workspace root is denied; write works under pre-existing non-control children. macOS (Seatbelt): full workspace subpath RW minus control-root carve-outs (create-at-root allowed). Neither path is network-sandboxed.",
                 "Linux uses platform feature detection where available. Optional kernel features are reported honestly and are not claimed active unless actually active.",
             },
         },
@@ -110,7 +113,7 @@ pub const commands =
             "Protection mode flags map to grades (not a second taxonomy):",
             "command-guard ≈ hook (+ daemon for shell eval);",
             "firewall ≈ wrapper (`orca run`/shims — CLI label, not kernel firewall);",
-            "maximum ≈ hook+wrapper aspirational, not OS-enforced unless doctor reports active.",
+            "maximum ≈ hook+wrapper aspirational, not OS-enforced from doctor probes; OS FS isolation requires `orca run --os-sandbox` session-attach (probe ≠ live claim).",
             "On interactive terminals, prompts for protection mode and host integrations.",
             "On non-TTY terminals, auto-selects safe defaults (no --auto required).",
             "Use --auto to force non-interactive mode on a TTY; combine with --protection and --hosts.",
@@ -830,6 +833,22 @@ pub fn findCommand(name: []const u8) ?CommandInfo {
         if (std.mem.eql(u8, command.name, name)) return command;
     }
     return null;
+}
+
+test "run help documents --os-sandbox auto degrade and fail-closed paths" {
+    const info = findCommand("run") orelse return error.TestUnexpectedResult;
+    var joined: [4096]u8 = undefined;
+    var w: std.Io.Writer = .fixed(&joined);
+    for (info.details) |line| {
+        try w.writeAll(line);
+        try w.writeAll("\n");
+    }
+    const text = w.buffered();
+    try std.testing.expect(std.mem.indexOf(u8, text, "--os-sandbox auto|on|off") != null);
+    // Three auto outcomes (Z-6): degrade when no backend plan; scrub fail-closed; attach fail-closed.
+    try std.testing.expect(std.mem.indexOf(u8, text, "degrades loudly when no backend plan exists") != null);
+    try std.testing.expect(std.mem.indexOf(u8, text, "fails closed on incomplete env scrub/allowlist") != null);
+    try std.testing.expect(std.mem.indexOf(u8, text, "fails closed if attach fails after materials are prepared") != null);
 }
 
 test "host launch allowlist is the single source for help alias entries" {

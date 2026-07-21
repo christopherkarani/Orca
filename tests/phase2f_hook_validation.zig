@@ -470,7 +470,7 @@ test "phase2f run denies shell commands when daemon is unavailable" {
     );
 }
 
-test "phase2f malformed hook JSON preserves parse error behavior" {
+test "phase2f malformed hook JSON fails closed with block decision" {
     if (!fileExists(orca_bin)) return;
 
     const allocator = std.testing.allocator;
@@ -478,8 +478,14 @@ test "phase2f malformed hook JSON preserves parse error behavior" {
     defer allocator.free(result.stdout);
     defer allocator.free(result.stderr);
 
-    try std.testing.expect(result.code != exit_codes.success or result.stdout.len == 0);
-    try std.testing.expect(result.stderr.len > 0);
+    // Claude PreToolUse pre-eval failures fail closed with structured block JSON
+    // (exit 0) so hosts that require JSON still deny rather than hang on empty output.
+    try std.testing.expectEqual(exit_codes.success, result.code);
+    var parsed = try std.json.parseFromSlice(std.json.Value, allocator, result.stdout, .{});
+    defer parsed.deinit();
+    try std.testing.expectEqualStrings("block", parsed.value.object.get("decision").?.string);
+    const reason = parsed.value.object.get("reason").?.string;
+    try std.testing.expect(std.mem.indexOf(u8, reason, "invalid JSON") != null);
 }
 
 test "phase2f unknown host is rejected at CLI boundary" {

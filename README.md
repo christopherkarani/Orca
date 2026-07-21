@@ -323,11 +323,11 @@ Orca is **graded mediation**, not a universal OS sandbox. Canonical definitions,
 | `hook` | Host invokes Orca and honors veto | Native plugin / host hook that fires |
 | `wrapper` | PATH shims / `orca run` | Finite executable list; absolute paths may bypass |
 | `proxy` | Traffic must traverse an Orca proxy | MCP / optional network proxies |
-| `OS-enforced` | Kernel/sandbox backend enforcing | Only when `orca doctor` reports active |
+| `OS-enforced` | Kernel/sandbox backend enforcing for that session | After `orca run` child session-attach succeeds (`--os-sandbox`); doctor probes alone are not enough |
 
-**Default `orca run`:** typically **`wrapper`**. **`hook`** only when the host fires and honors veto. **`OS-enforced`** only when doctor reports the backend active.
+**Default `orca run`:** typically **`wrapper`**, plus optional OS FS session-attach under `--os-sandbox auto|on|off` (default `auto`). **`hook`** only when the host fires and honors veto. **`OS-enforced`** FS isolation only after a successful Landlock (Linux) or Seatbelt (macOS) attach for that child — not a doctor capability probe.
 
-Quick map: doctor `wrapper-only` → grade `wrapper`; `orca start --protection firewall` → primarily `wrapper` (CLI label, not kernel firewall); `--protection maximum` → aspirational multi-grade (`hook` + `wrapper`), **not** `OS-enforced` unless doctor confirms.
+Quick map: doctor `wrapper-only` → grade `wrapper`; `orca start --protection firewall` → primarily `wrapper` (CLI label, not kernel firewall); `--protection maximum` → aspirational multi-grade (`hook` + `wrapper`), **not** `OS-enforced` unless that session completed child attach.
 
 ---
 
@@ -461,7 +461,7 @@ Orca is designed to be honest about what it does and does not protect.
 
 * launches agents through a policy-controlled process (`orca run` / wrapper grade)
 * evaluates shell commands that hit PATH shims or host hooks that fire and honor veto
-* mediates file access on Orca-mediated write paths (staged writes; OS FS enforcement only if doctor reports active)
+* mediates file access on Orca-mediated write paths (staged writes; OS FS enforcement only after `orca run --os-sandbox` session-attach succeeds)
 * filters sensitive environment variables for Orca-launched children
 * detects secret-like access patterns on mediated paths and redacts audit output
 * applies network **decisions** for mediated traffic; blocks only when a proxy or OS-enforced backend is actually in path
@@ -578,7 +578,7 @@ Not the secret.
 
 ## Native plugins
 
-`orca run` (grade **`wrapper`**) is the default mediation path for launching an agent under Orca. It is **not** OS-enforced and is not automatically stronger than a host **`hook`** that actually fires and honors veto — those grades stack when both are active. Kernel-level strength requires **`OS-enforced`** (rare; check `orca doctor`).
+`orca run` (grade **`wrapper`**) is the default mediation path for launching an agent under Orca. It is **not** OS-enforced by default and is not automatically stronger than a host **`hook`** that actually fires and honors veto — those grades stack when both are active. Kernel-level FS strength requires **`OS-enforced`** session-attach (`orca run --os-sandbox` + successful Landlock/Seatbelt child attach; doctor probes alone do not claim a live session).
 
 Some agents also support native plugins or hooks for deeper integration (grade **`hook`** when hooks fire and honor veto).
 

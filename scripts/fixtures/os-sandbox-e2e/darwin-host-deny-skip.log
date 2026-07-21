@@ -1,0 +1,6 @@
+# Synthetic test-fast log: macOS host real FS deny SKIP + Linux SKIP.
+# Z-1: host deny SKIP → platform_skip_no_backend_on_host.
+1/99 real FS deny: outside canary denied; workspace readable and writable...SKIP
+1/99 real FS deny: outside denied; neighbor RW; control root not writable...SKIP
+1/99 parent apply seam never claims active (probe/prepare only)...OK
+1/99 mode off returns disabled receipt without scrub or active claim...OK

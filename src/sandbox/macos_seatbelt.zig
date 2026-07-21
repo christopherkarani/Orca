@@ -1,0 +1,408 @@
+//! macOS custom Seatbelt apply (deprecated sandbox_init), version-gated.
+//!
+//! Advertised matrix: macOS product majors 14 through 26 inclusive.
+//! Proven locally on macOS 26 (sandbox_init apply + FS deny) when the unit
+//! tests in this file pass on the host. Outside the matrix → unavailable.
+//! Nested re-apply is not supported: sandbox_init fails if the process is
+//! already sandboxed; children inherit.
+//!
+//! `applyInChild` must run only after fork / before exec (never on the Orca
+//! parent). Parent-side code uses `evaluateSupport` + profile render only.
+//!
+//! ## Multi-thread / fork residual
+//!
+//! `sandbox_init` is **not** async-signal-safe and is not defined for use in a
+//! multi-threaded process after fork. Orca's parent may already have threads
+//! (e.g. proxy/runtime) when `forkApplySeatbeltAndExec` runs.
+//!
+//! **Mitigations (production path):**
+//! 1. SBPL is fully pre-rendered in the parent (`prepareForChildApply` /
+//!    `renderSbpl`) — the child never compiles profiles or walks the FS for
+//!    policy.
+//! 2. Child critical section is intentionally short: stdio redirect →
+//!    `dlsym` + `sandbox_init` → chdir/preflight → FD scrub (keep status_w) →
+//!    status handshake → close status_w → `execve`. No heap enumeration, no
+//!    additional thread starts between fork and exec.
+//! 3. Parent retains the NUL-terminated SBPL buffer until exec (no free race).
+//!
+//! **Residual risk (accepted, documented):** `sandbox_init` itself may still
+//! touch liberally-locked or malloc-backed libsystem state under a multi-
+//! threaded parent. We do not pause/join proxy threads around fork (would
+//! couple sandbox to cli/run lifecycle). Prefer a short child path + honest
+//! residual over a large proxy rewrite. Nested re-apply remains unsupported.
+
+const std = @import("std");
+const builtin = @import("builtin");
+const posture = @import("posture.zig");
+const profile = @import("profile.zig");
+const macos_profile = @import("macos_profile.zig");
+
+/// Product major versions that may attempt custom Seatbelt attach.
+/// Inclusive range: Sonoma (14) through the current proven host major (26).
+pub const matrix_major_min: u32 = 14;
+pub const matrix_major_max: u32 = 26;
+
+pub const SupportStatus = enum {
+    /// Running macOS major is in the advertised matrix and sandbox_init resolves.
+    supported,
+    /// Not building/running on macOS.
+    not_macos,
+    /// macOS major outside 14–26 (e.g. 13, 27+).
+    version_unsupported,
+    /// sandbox_init could not be resolved via dlsym.
+    symbol_unavailable,
+
+    pub fn reasonCode(self: SupportStatus) []const u8 {
+        return switch (self) {
+            .supported => "seatbelt_supported",
+            .not_macos => "not_macos",
+            .version_unsupported => "macos_version_unsupported",
+            .symbol_unavailable => "sandbox_init_unavailable",
+        };
+    }
+
+    pub fn isSupported(self: SupportStatus) bool {
+        return self == .supported;
+    }
+};
+
+pub const MacOsVersion = struct {
+    major: u32,
+    minor: u32,
+};
+
+/// True when major is in the Seatbelt matrix (14 through 26 inclusive).
+pub fn isMatrixMajor(major: u32) bool {
+    return major >= matrix_major_min and major <= matrix_major_max;
+}
+
+/// Parse `kern.osproductversion` / `sw_vers` style strings (`14.5`, `15.0`, `26.0`).
+pub fn parseProductVersion(text: []const u8) !MacOsVersion {
+    const trimmed = std.mem.trim(u8, text, " \t\r\n");
+    if (trimmed.len == 0) return error.InvalidVersion;
+    var it = std.mem.splitScalar(u8, trimmed, '.');
+    const major_s = it.next() orelse return error.InvalidVersion;
+    const minor_s = it.next() orelse "0";
+    const major = std.fmt.parseInt(u32, major_s, 10) catch return error.InvalidVersion;
+    const minor = std.fmt.parseInt(u32, minor_s, 10) catch return error.InvalidVersion;
+    return .{ .major = major, .minor = minor };
+}
+
+/// Read running product version via sysctl. macOS only.
+pub fn detectProductVersion() !MacOsVersion {
+    if (builtin.os.tag != .macos) return error.NotMacOs;
+    var buf: [64]u8 = undefined;
+    var len: usize = buf.len;
+    const rc = std.c.sysctlbyname("kern.osproductversion", &buf, &len, null, 0);
+    if (rc != 0) return error.SysctlFailed;
+    // sysctl may include a trailing NUL in len.
+    var slice = buf[0..len];
+    if (slice.len > 0 and slice[slice.len - 1] == 0) slice = slice[0 .. slice.len - 1];
+    return parseProductVersion(slice);
+}
+
+const SandboxInitFn = *const fn (profile: [*:0]const u8, flags: u64, errorbuf: *?[*:0]u8) callconv(.c) c_int;
+const SandboxFreeErrorFn = *const fn (errorbuf: ?[*:0]u8) callconv(.c) void;
+
+/// Darwin RTLD_DEFAULT ((void *)-2): search the default process namespace.
+/// `dlsym(null, …)` returns null on macOS; RTLD_DEFAULT is required.
+fn rtldDefault() ?*anyopaque {
+    return @ptrFromInt(@as(usize, @bitCast(@as(isize, -2))));
+}
+
+fn resolveSandboxInit() ?SandboxInitFn {
+    if (builtin.os.tag != .macos) return null;
+    const sym = std.c.dlsym(rtldDefault(), "sandbox_init") orelse return null;
+    return @ptrCast(@alignCast(sym));
+}
+
+fn resolveSandboxFreeError() ?SandboxFreeErrorFn {
+    if (builtin.os.tag != .macos) return null;
+    const sym = std.c.dlsym(rtldDefault(), "sandbox_free_error") orelse return null;
+    return @ptrCast(@alignCast(sym));
+}
+
+/// Whether sandbox_init is resolvable (dlsym). Pure capability; not a session claim.
+pub fn sandboxInitAvailable() bool {
+    return resolveSandboxInit() != null;
+}
+
+/// Parent-side support evaluation (no apply).
+pub fn evaluateSupport() SupportStatus {
+    if (builtin.os.tag != .macos) return .not_macos;
+    const ver = detectProductVersion() catch return .version_unsupported;
+    if (!isMatrixMajor(ver.major)) return .version_unsupported;
+    if (!sandboxInitAvailable()) return .symbol_unavailable;
+    return .supported;
+}
+
+/// Injected evaluation for tests (no sysctl).
+pub fn evaluateSupportWith(major: u32, symbol_ok: bool) SupportStatus {
+    if (builtin.os.tag != .macos) return .not_macos;
+    if (!isMatrixMajor(major)) return .version_unsupported;
+    if (!symbol_ok) return .symbol_unavailable;
+    return .supported;
+}
+
+pub const ApplyInChildError = error{
+    NotMacOs,
+    SymbolUnavailable,
+    ApplyFailed,
+};
+
+/// Apply a custom SBPL profile to the **current** process via deprecated sandbox_init.
+///
+/// Must only be called in the post-fork child before exec (or in isolation tests).
+/// Applying in the Orca parent would confine the CLI itself.
+///
+/// Nested apply is not supported: if already sandboxed, returns ApplyFailed.
+/// Inheritance is the only composition model for descendants.
+///
+/// Child work is intentionally minimal: resolve symbols +
+/// sandbox_init only — SBPL must already be parent-rendered. See module docs.
+pub fn applyInChild(sbpl_z: [*:0]const u8) ApplyInChildError!void {
+    if (builtin.os.tag != .macos) return error.NotMacOs;
+    const init_fn = resolveSandboxInit() orelse return error.SymbolUnavailable;
+    const free_fn = resolveSandboxFreeError();
+
+    var err_ptr: ?[*:0]u8 = null;
+    // flags=0: custom SBPL string (private usage of the deprecated API).
+    const rc = init_fn(sbpl_z, 0, &err_ptr);
+    defer if (err_ptr) |e| {
+        if (free_fn) |f| f(e);
+    };
+    if (rc != 0) return error.ApplyFailed;
+}
+
+/// Platform outcome used by apply.zig (parent path).
+pub const ParentApplyOutcome = struct {
+    status: enum { prepared, unavailable, failed },
+    mechanism: posture.BackendMechanism = .none,
+    reason_code: []const u8,
+    /// Owned NUL-terminated SBPL when prepared (for child-side apply). Caller frees.
+    sbpl_z: ?[:0]u8 = null,
+};
+
+/// Parent-side Seatbelt prepare: version gate, symbol check, SBPL render.
+/// Does **not** call sandbox_init (that is child-only). Never reports attach.
+///
+/// On success (`prepared`), the caller must apply `sbpl_z` in the child before
+/// exec and only then claim session active. Until that child apply succeeds,
+/// production posture remains unavailable/failed.
+pub fn prepareForChildApply(
+    allocator: std.mem.Allocator,
+    compiled: *const profile.CompiledProfile,
+) ParentApplyOutcome {
+    return prepareForChildApplyWith(allocator, compiled, evaluateSupport());
+}
+
+/// Testable prepare with injected support status.
+pub fn prepareForChildApplyWith(
+    allocator: std.mem.Allocator,
+    compiled: *const profile.CompiledProfile,
+    support: SupportStatus,
+) ParentApplyOutcome {
+    if (!support.isSupported()) {
+        return .{
+            .status = .unavailable,
+            .mechanism = .none,
+            .reason_code = support.reasonCode(),
+        };
+    }
+
+    // OOM must use seatbelt_profile_oom so apply maps to hard OutOfMemory (not soft failed).
+    const sbpl = macos_profile.renderSbpl(allocator, compiled) catch |err| {
+        return .{
+            .status = .failed,
+            .mechanism = .none,
+            .reason_code = if (err == error.OutOfMemory)
+                "seatbelt_profile_oom"
+            else
+                "seatbelt_profile_render_failed",
+        };
+    };
+    defer allocator.free(sbpl);
+
+    const sbpl_z = allocator.dupeZ(u8, sbpl) catch {
+        return .{
+            .status = .failed,
+            .mechanism = .none,
+            .reason_code = "seatbelt_profile_oom",
+        };
+    };
+
+    return .{
+        .status = .prepared,
+        .mechanism = .seatbelt,
+        .reason_code = "seatbelt_prepared",
+        .sbpl_z = sbpl_z,
+    };
+}
+
+
+test "matrix accepts macos majors 14 through 26 inclusive" {
+    try std.testing.expect(isMatrixMajor(14));
+    try std.testing.expect(isMatrixMajor(15));
+    try std.testing.expect(isMatrixMajor(16));
+    try std.testing.expect(isMatrixMajor(26));
+    try std.testing.expect(!isMatrixMajor(13));
+    try std.testing.expect(!isMatrixMajor(27));
+    try std.testing.expect(!isMatrixMajor(0));
+    try std.testing.expectEqual(@as(u32, 14), matrix_major_min);
+    try std.testing.expectEqual(@as(u32, 26), matrix_major_max);
+}
+
+test "parseProductVersion reads major.minor" {
+    const v = try parseProductVersion("15.4");
+    try std.testing.expectEqual(@as(u32, 15), v.major);
+    try std.testing.expectEqual(@as(u32, 4), v.minor);
+    const v2 = try parseProductVersion("14.0\n");
+    try std.testing.expectEqual(@as(u32, 14), v2.major);
+    const v3 = try parseProductVersion("26.0");
+    try std.testing.expectEqual(@as(u32, 26), v3.major);
+    try std.testing.expectError(error.InvalidVersion, parseProductVersion(""));
+    try std.testing.expectError(error.InvalidVersion, parseProductVersion("abc"));
+}
+
+test "evaluateSupportWith encodes version gate" {
+    if (builtin.os.tag != .macos) {
+        try std.testing.expectEqual(SupportStatus.not_macos, evaluateSupportWith(14, true));
+        return;
+    }
+    try std.testing.expectEqual(SupportStatus.supported, evaluateSupportWith(14, true));
+    try std.testing.expectEqual(SupportStatus.supported, evaluateSupportWith(15, true));
+    try std.testing.expectEqual(SupportStatus.supported, evaluateSupportWith(26, true));
+    try std.testing.expectEqual(SupportStatus.version_unsupported, evaluateSupportWith(13, true));
+    try std.testing.expectEqual(SupportStatus.version_unsupported, evaluateSupportWith(27, true));
+    try std.testing.expectEqual(SupportStatus.symbol_unavailable, evaluateSupportWith(14, false));
+    try std.testing.expectEqualStrings("macos_version_unsupported", SupportStatus.version_unsupported.reasonCode());
+}
+
+test "evaluateSupport on this host matches matrix freeze" {
+    if (builtin.os.tag != .macos) return error.SkipZigTest;
+    const status = evaluateSupport();
+    const ver = try detectProductVersion();
+    if (isMatrixMajor(ver.major) and sandboxInitAvailable()) {
+        try std.testing.expectEqual(SupportStatus.supported, status);
+    } else if (!isMatrixMajor(ver.major)) {
+        try std.testing.expectEqual(SupportStatus.version_unsupported, status);
+    }
+}
+
+test "sandbox_init is resolvable on macOS via dlsym" {
+    if (builtin.os.tag != .macos) return error.SkipZigTest;
+    try std.testing.expect(sandboxInitAvailable());
+}
+
+test "prepareForChildApply unavailable outside matrix" {
+    if (builtin.os.tag != .macos) return error.SkipZigTest;
+    const allocator = std.testing.allocator;
+    var compiled = try profile.compileProfile(allocator, .{
+        .workspace_root = "/tmp/orca-seatbelt-ws",
+        .system_ro_prefixes = &[_][]const u8{"/usr"},
+    });
+    defer compiled.deinit();
+
+    const out = prepareForChildApplyWith(allocator, &compiled, .version_unsupported);
+    try std.testing.expectEqual(.unavailable, out.status);
+    try std.testing.expectEqual(posture.BackendMechanism.none, out.mechanism);
+    try std.testing.expectEqualStrings("macos_version_unsupported", out.reason_code);
+    try std.testing.expect(out.sbpl_z == null);
+}
+
+test "prepareForChildApply yields SBPL when supported" {
+    if (builtin.os.tag != .macos) return error.SkipZigTest;
+    const allocator = std.testing.allocator;
+    var compiled = try profile.compileProfile(allocator, .{
+        .workspace_root = "/tmp/orca-seatbelt-ws",
+        .system_ro_prefixes = &[_][]const u8{ "/usr", "/bin" },
+    });
+    defer compiled.deinit();
+
+    const out = prepareForChildApplyWith(allocator, &compiled, .supported);
+    defer if (out.sbpl_z) |p| allocator.free(p);
+    try std.testing.expectEqual(.prepared, out.status);
+    try std.testing.expectEqual(posture.BackendMechanism.seatbelt, out.mechanism);
+    try std.testing.expect(out.sbpl_z != null);
+    try std.testing.expect(std.mem.indexOf(u8, out.sbpl_z.?, "(deny default)") != null);
+}
+
+test "applyInChild succeeds for minimal profile in forked child" {
+    if (builtin.os.tag != .macos) return error.SkipZigTest;
+
+    // Fork so the test process itself is not permanently sandboxed.
+    const pid = std.c.fork();
+    if (pid < 0) return error.SkipZigTest;
+    if (pid == 0) {
+        const sbpl =
+            \\(version 1)
+            \\(deny default)
+            \\(allow process*)
+            \\(allow signal)
+            \\(allow sysctl-read)
+            \\(allow mach-lookup)
+            \\(allow file-read-metadata)
+            \\(allow file-read* (literal "/"))
+            \\(allow file-read* (subpath "/usr"))
+            \\(allow file-read* (subpath "/bin"))
+            \\(allow file-read* (subpath "/System"))
+            \\(allow file-read* (subpath "/Library"))
+            \\(allow file-read* (subpath "/dev"))
+            \\(allow file-read* (subpath "/private/var/db/dyld"))
+            \\(allow file-ioctl (subpath "/dev"))
+            \\
+        ;
+        applyInChild(sbpl) catch std.c._exit(2);
+        // Nested composition is not a product feature (inheritance only).
+        // Some OS versions return an error on re-apply; others ignore with rc=0.
+        // Either way Orca must not claim a second attach succeeded.
+        applyInChild(sbpl) catch {};
+        std.c._exit(0);
+    }
+    var status: c_int = 0;
+    _ = std.c.waitpid(pid, &status, 0);
+    // WIFEXITED: low 7 bits 0; exit status in bits 8..15
+    const exited = (status & 0x7f) == 0;
+    try std.testing.expect(exited);
+    const exit_code: u8 = @intCast((status >> 8) & 0xff);
+    try std.testing.expectEqual(@as(u8, 0), exit_code);
+}
+
+test "default support reason codes never claim nested apply" {
+    // Inheritance-only composition is a documentation/API contract.
+    try std.testing.expectEqualStrings("macos_version_unsupported", SupportStatus.version_unsupported.reasonCode());
+    try std.testing.expectEqualStrings("sandbox_init_unavailable", SupportStatus.symbol_unavailable.reasonCode());
+}
+
+// R2-1 / M-28: pure prepare path — Data-form realpath workspace emits Users-form SBPL.
+// Seatbelt subpath filters match /Users/…; Data deny still blocks Data-form sibling opens.
+// Always runs (no sandbox_init); complements macos_profile SBPL unit tests.
+test "prepare SBPL emits Users-form for Data-volume workspace (M-28 / R2-1)" {
+    const allocator = std.testing.allocator;
+    const ws = "/System/Volumes/Data/Users/dev/projects/app";
+    var compiled = try profile.compileProfile(allocator, .{
+        .workspace_root = ws,
+        .system_ro_prefixes = &[_][]const u8{ "/usr", "/bin" },
+        .include_tmp = false,
+    });
+    defer compiled.deinit();
+
+    try std.testing.expect(compiled.isGrantedReadable(ws));
+    try std.testing.expect(!compiled.isGrantedReadable("/System/Volumes/Data/Users/dev/.ssh/id_rsa"));
+    try std.testing.expect(!compiled.isGrantedReadable("/System/Volumes/Data/Users/other/secret"));
+
+    const prepared = prepareForChildApplyWith(allocator, &compiled, .supported);
+    defer if (prepared.sbpl_z) |p| allocator.free(p);
+    try std.testing.expectEqual(.prepared, prepared.status);
+    const sbpl = prepared.sbpl_z.?;
+
+    try std.testing.expect(std.mem.indexOf(u8, sbpl, "(deny file-read* (subpath \"/System/Volumes/Data\"))") != null);
+    try std.testing.expect(std.mem.indexOf(u8, sbpl, "(allow file-read* (subpath \"/Users/dev/projects/app\"))") != null);
+    try std.testing.expect(std.mem.indexOf(u8, sbpl, "(subpath \"/System/Volumes/Data/Users/dev/projects/app\")") == null);
+    try std.testing.expect(std.mem.indexOf(u8, sbpl, "(subpath \"/System/Volumes/Data/Users/dev/.ssh\")") == null);
+}
+
+// Real-FS deny / canary integration tests live in macos_seatbelt_deny_tests.zig.
+test {
+    _ = @import("macos_seatbelt_deny_tests.zig");
+}

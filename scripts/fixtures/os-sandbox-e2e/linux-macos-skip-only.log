@@ -1,0 +1,5 @@
+# Synthetic test-fast log: Linux host sees only the macOS real-FS-deny SKIP line.
+# Z-1: must NOT set platform_skip (opposite-OS SKIP is not host deny skip).
+1/99 real FS deny: outside canary denied; workspace readable and writable...SKIP
+1/99 parent apply seam never claims active (probe/prepare only)...OK
+1/99 mode off returns disabled receipt without scrub or active claim...OK

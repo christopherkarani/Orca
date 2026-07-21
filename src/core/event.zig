@@ -14,6 +14,12 @@ pub const EventType = enum {
     session_exit,
     policy_loaded,
     backend_capability,
+    /// Live session OS FS sandbox posture (posture string, optional profile hash, fs_scope).
+    /// Emitted once at session start after apply/attach; never carries full profile text.
+    sandbox_posture,
+    /// Reserved for explicit OS-sandbox denial telemetry. Must never be auto-emitted from
+    /// ordinary Unix EACCES / AccessDenied on wrapper-mediated file ops (use file_*_denied).
+    os_fs_deny,
     process_launch,
     file_read_attempt,
     file_read_allowed,
@@ -141,6 +147,14 @@ pub fn generateEventId(now: time.Timestamp) !EventId {
 test "event type string conversion works" {
     try std.testing.expectEqualStrings("session_start", EventType.session_start.toString());
     try std.testing.expectEqualStrings("mcp_sampling_request", EventType.mcp_sampling_request.toString());
+}
+
+test "sandbox_posture and os_fs_deny event types serialize" {
+    try std.testing.expectEqualStrings("sandbox_posture", EventType.sandbox_posture.toString());
+    try std.testing.expectEqualStrings("os_fs_deny", EventType.os_fs_deny.toString());
+    // Ordinary file denials are distinct from reserved os_fs_deny.
+    try std.testing.expectEqualStrings("file_read_denied", EventType.file_read_denied.toString());
+    try std.testing.expectEqualStrings("file_write_denied", EventType.file_write_denied.toString());
 }
 
 test "event ids and model can be created deterministically enough for core tests" {

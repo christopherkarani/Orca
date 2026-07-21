@@ -74,9 +74,9 @@ pub fn defaultCapabilityState(os: Os, capability: Capability) CapabilityState {
         => .partial,
         .shell_wrapping,
         .network_proxy_enforce,
-        .strong_sandbox,
         => .limited,
         .network_enforce,
+        .strong_sandbox,
         => .unavailable,
     };
 }
@@ -93,7 +93,7 @@ pub fn reportCapability(os: Os, capability: Capability) CapabilityReport {
         .network_observe => .partial,
         .network_proxy_enforce => .limited,
         .network_enforce => .unavailable,
-        else => defaultCapabilityState(os, capability),
+        .strong_sandbox => .unavailable,
     };
     return .{
         .capability = capability,
@@ -121,7 +121,7 @@ pub fn reportCapability(os: Os, capability: Capability) CapabilityReport {
             .unknown => "backend state is unknown",
             .unavailable => switch (capability) {
                 .network_enforce => "transparent OS-level network enforcement is not implemented in Phase 12",
-                .strong_sandbox => "strong OS-level sandboxing is backend-specific and not universally available",
+                .strong_sandbox => "OS filesystem sandbox is not active until apply-before-exec succeeds; capability probes alone never mean active",
                 else => "not available on this platform",
             },
             else => "backend reported capability",
@@ -136,4 +136,12 @@ test "platform detection returns valid enum and capabilities are non-boolean" {
     const report = reportCapability(os, .strong_sandbox);
     try std.testing.expectEqual(Capability.strong_sandbox, report.capability);
     try std.testing.expect(report.state == .unavailable or report.state == .unknown);
+}
+
+test "strong_sandbox is never active from platform defaults (S-GLO-01)" {
+    inline for (.{ Os.linux, Os.macos, Os.windows, Os.freebsd, Os.unknown }) |os| {
+        const report = reportCapability(os, .strong_sandbox);
+        try std.testing.expect(report.state != .active);
+        try std.testing.expectEqual(CapabilityState.unavailable, defaultCapabilityState(os, .strong_sandbox));
+    }
 }

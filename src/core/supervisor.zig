@@ -21,8 +21,17 @@ pub const RunConfig = struct {
     stdio: StdioBehavior = .inherit,
     env_map: ?*const std.process.Environ.Map = null,
     env_redactions: []const EnvRedactionRecord = &.{},
+    /// When set, agent spawn applies Landlock/Seatbelt in the child before exec (U07).
+    /// Production path: cli/run runs applyBeforeExec first, then passes custom spawn here.
+    os_child_apply: process.OsChildApply = .none,
+    /// Set true when the custom spawn hook returned successfully.
+    /// Does not prove status-pipe OS apply handshake — use attach receipt / spawnAgent.
+    custom_spawn_used_out: ?*bool = null,
     before_spawn: ?StartHook = null,
     before_process_launch: ?StartHook = null,
+    /// Runs after the agent child is forked/spawned but before on_session_start.
+    /// Used to start proxy accept threads after sandboxed Seatbelt fork (M-5).
+    after_process_spawn: ?StartHook = null,
     on_session_start: ?StartHook = null,
     on_event: ?EventHook = null,
     health_monitor: ?HealthMonitor = null,
@@ -81,6 +90,7 @@ fn healthMonitorLoop(context: *HealthMonitorThreadContext) void {
     while (!context.stop.load(.acquire)) {
         if (!context.monitor.callback(context.monitor.context)) {
             context.failed.store(true, .release);
+            // Signal only — never wait/reap; main prepared.wait() is sole reaper (M-6).
             context.prepared.terminateForHealthFailure();
             return;
         }
@@ -156,22 +166,43 @@ pub fn run(io: std.Io, allocator: std.mem.Allocator, config: RunConfig) !Session
     argv[0] = config.command;
     @memcpy(argv[1..], config.args);
 
+    // Production OS FS apply: cli/run calls sandbox.apply.applyBeforeExec before
+    // supervisor.run, then passes os_child_apply for the agent spawn (no scaffold path).
+
     var prepared = process.prepareChild(io, allocator, .{
         .io = io,
         .argv = argv,
         .workspace_root = workspace_root,
         .stdio = config.stdio,
         .env_map = config.env_map,
+        .os_child_apply = config.os_child_apply,
     });
 
     prepared.spawn() catch |err| switch (err) {
         error.FileNotFound => return error.CommandNotFound,
         else => return err,
     };
-    prepared.waitForSpawn() catch |err| switch (err) {
-        error.FileNotFound => return error.CommandNotFound,
-        else => return err,
+    // Spawn succeeded: any later parent error must kill+reap (M-4 free-before-reap).
+    prepared.waitForSpawn() catch |err| {
+        prepared.terminateAfterParentError();
+        return switch (err) {
+            error.FileNotFound => error.CommandNotFound,
+            else => err,
+        };
     };
+
+    if (config.custom_spawn_used_out) |out| {
+        out.* = prepared.custom_spawn_used;
+    }
+
+    // After fork: start deferred services (e.g. proxy accept loop) while the
+    // child has already completed sandboxed apply (M-5 single-thread fork).
+    if (config.after_process_spawn) |hook| {
+        hook.callback(hook.context, session) catch |err| {
+            prepared.terminateAfterParentError();
+            return err;
+        };
+    }
 
     if (config.on_session_start) |hook| {
         hook.callback(hook.context, session) catch |err| {
@@ -191,14 +222,22 @@ pub fn run(io: std.Io, allocator: std.mem.Allocator, config: RunConfig) !Session
             .stop = &health_stop,
             .failed = &health_failed,
         };
-        health_thread = try std.Thread.spawn(.{}, healthMonitorLoop, .{&health_context});
+        // After spawn succeeds, any parent error must reap the child (M-4).
+        health_thread = std.Thread.spawn(.{}, healthMonitorLoop, .{&health_context}) catch |err| {
+            prepared.terminateAfterParentError();
+            return err;
+        };
     }
     defer {
         health_stop.store(true, .release);
         if (health_thread) |thread| thread.join();
     }
 
-    const term = try prepared.wait();
+    // Sole reaper for the agent child. Health monitor only signals (M-6).
+    const term = prepared.wait() catch |err| {
+        prepared.terminateAfterParentError();
+        return err;
+    };
 
     const ended_at = time.Timestamp.now(io);
     session.ended_at = ended_at;
@@ -518,7 +557,7 @@ test "child non-zero exit code is propagated" {
 }
 
 test "missing child command returns useful typed error" {
-    try std.testing.expectError(error.CommandNotFound, run(std.testing.allocator, .{
+    try std.testing.expectError(error.CommandNotFound, run(std.testing.io, std.testing.allocator, .{
         .command = "orca-definitely-missing-command",
         .workspace = ".",
         .stdio = .ignore,
@@ -530,7 +569,7 @@ test "session start hook failure cleans up spawned child and returns hook error"
 
     var context: FailingHookContext = .{};
     const started = std.time.milliTimestamp();
-    try std.testing.expectError(error.IntentionalHookFailure, run(std.testing.allocator, .{
+    try std.testing.expectError(error.IntentionalHookFailure, run(std.testing.io, std.testing.allocator, .{
         .command = "/bin/sh",
         .args = &.{ "-c", "sleep 0.1" },
         .workspace = ".",

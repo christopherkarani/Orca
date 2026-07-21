@@ -1,0 +1,7 @@
+# Synthetic test-fast log: Linux production-defaults deny OK, no production handshake.
+# TEST-DENY ok; attach_detail=zig_unit_fs_deny_without_production_handshake.
+1/99 real FS deny under production defaults: outside denied; neighbor RW; control not writable...OK
+1/99 real FS deny: outside denied; neighbor RW; control root not writable...OK
+1/99 real FS deny: outside canary denied; workspace readable and writable...SKIP
+1/99 parent apply seam never claims active (probe/prepare only)...OK
+1/99 mode off returns disabled receipt without scrub or active claim...OK

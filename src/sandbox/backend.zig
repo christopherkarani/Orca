@@ -1,6 +1,5 @@
 const std = @import("std");
 const builtin = @import("builtin");
-
 const platform = @import("orca_core").platform;
 const linux_backend = @import("linux.zig");
 const macos_backend = @import("macos.zig");
@@ -161,83 +160,9 @@ pub const ReportSet = struct {
     }
 };
 
-pub const StdioBehavior = enum {
-    inherit,
-    ignore,
-};
-
-pub const PrepareRequest = struct {
-    io: std.Io,
-    argv: []const []const u8,
-    workspace_root: []const u8,
-    stdio: StdioBehavior = .inherit,
-    env_map: ?*const std.process.Environ.Map = null,
-};
-
-pub const PreparedSandbox = struct {
-    io: std.Io,
-    argv: []const []const u8,
-    workspace_root: []const u8,
-    env_map: ?*const std.process.Environ.Map,
-    stdio: StdioBehavior,
-    child: ?std.process.Child = null,
-    report: ReportSet,
-    process_group_cleanup: bool = false,
-    process_group_id: ?std.posix.pid_t = null,
-    use_process_group: bool = false,
-    spawned: bool = false,
-
-    pub fn spawn(self: *PreparedSandbox) !void {
-        var options: std.process.SpawnOptions = .{
-            .argv = self.argv,
-            .cwd = .{ .path = self.workspace_root },
-            .environ_map = self.env_map,
-            .stdin = mapStdio(self.stdio),
-            .stdout = mapStdio(self.stdio),
-            .stderr = mapStdio(self.stdio),
-        };
-        if (self.use_process_group) options.pgid = 0;
-        const child = try std.process.spawn(self.io, options);
-        self.child = child;
-        switch (builtin.os.tag) {
-            .linux, .macos => {
-                if (self.process_group_cleanup) {
-                    if (child.id) |pid| self.process_group_id = pid;
-                }
-            },
-            else => {},
-        }
-        self.spawned = true;
-    }
-
-    /// In Zig 0.16 `std.process.spawn` is synchronous; the child is fully
-    /// spawned when it returns. This no-op preserves the API surface for
-    /// callers that previously needed to wait for the spawn to complete.
-    pub fn waitForSpawn(_: *PreparedSandbox) !void {}
-
-    pub fn wait(self: *PreparedSandbox) !std.process.Child.Term {
-        const child = &(self.child orelse return error.InvalidState);
-        const term = try child.wait(self.io);
-        self.spawned = false;
-        self.cleanupProcessGroup();
-        return term;
-    }
-
-    pub fn terminateAfterParentError(self: *PreparedSandbox) void {
-        if (!self.spawned) return;
-        if (self.process_group_cleanup) {
-            if (self.process_group_id) |pgid| killProcessGroup(self.io, pgid);
-        }
-        const child = &(self.child orelse return);
-        child.kill(self.io);
-        self.spawned = false;
-    }
-
-    fn cleanupProcessGroup(self: *PreparedSandbox) void {
-        if (!self.process_group_cleanup) return;
-        if (self.process_group_id) |pgid| killProcessGroup(self.io, pgid);
-    }
-};
+/// Production agent launch is exclusively `apply.applyBeforeExec` +
+/// `process.OsChildApply` / `apply_posix`. Capability detection lives
+/// here; there is no scaffold spawn path that could be mistaken for attach.
 
 pub fn detect(os: platform.Os) ReportSet {
     return switch (os) {
@@ -246,20 +171,6 @@ pub fn detect(os: platform.Os) ReportSet {
         .windows => windows_backend.detect(),
         else => fallbackReport(os),
     };
-}
-
-pub fn prepare(allocator: std.mem.Allocator, request: PrepareRequest) PreparedSandbox {
-    const report = detect(platform.detectOs());
-    if (builtin.os.tag == .linux and report.os == .linux) {
-        return linux_backend.prepare(allocator, request, report);
-    }
-    if (builtin.os.tag == .macos and report.os == .macos) {
-        return macos_backend.prepare(allocator, request, report);
-    }
-    if (builtin.os.tag == .windows and report.os == .windows) {
-        return windows_backend.prepare(allocator, request, report);
-    }
-    return prepareFallback(allocator, request, report);
 }
 
 pub fn killProcessGroup(io: std.Io, pgid: std.posix.pid_t) void {
@@ -272,32 +183,6 @@ pub fn killProcessGroup(io: std.Io, pgid: std.posix.pid_t) void {
             std.posix.kill(-pgid, std.posix.SIG.KILL) catch {};
         },
     }
-}
-
-fn supportsPosixProcessGroups() bool {
-    return switch (builtin.os.tag) {
-        .windows, .wasi => false,
-        else => true,
-    };
-}
-
-pub fn prepareFallback(_: std.mem.Allocator, request: PrepareRequest, report: ReportSet) PreparedSandbox {
-    return .{
-        .io = request.io,
-        .argv = request.argv,
-        .workspace_root = request.workspace_root,
-        .env_map = request.env_map,
-        .stdio = request.stdio,
-        .report = report,
-        .process_group_cleanup = supportsPosixProcessGroups(),
-    };
-}
-
-fn mapStdio(behavior: StdioBehavior) std.process.SpawnOptions.StdIo {
-    return switch (behavior) {
-        .inherit => .inherit,
-        .ignore => .ignore,
-    };
 }
 
 pub fn fallbackReport(os: platform.Os) ReportSet {
@@ -379,7 +264,10 @@ test "macOS backend is selected explicitly instead of generic fallback" {
     try std.testing.expectEqualStrings("macos", report.backend_name);
     try std.testing.expectEqual(Level.active, report.get(.env_filtering).level);
     try std.testing.expectEqual(Level.wrapper_only, report.get(.path_shims).level);
-    try std.testing.expectEqual(Level.unavailable, report.get(.strong_sandbox).level);
+    // Capability probe: partial on matrix hosts with sandbox_init; never live active.
+    const strong = report.get(.strong_sandbox).level;
+    try std.testing.expect(strong == .partial or strong == .unavailable);
+    try std.testing.expect(strong != .active);
 }
 
 test "Windows backend is selected explicitly instead of generic fallback" {

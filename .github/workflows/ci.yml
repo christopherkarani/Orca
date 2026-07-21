@@ -14,6 +14,55 @@ jobs:
           version: 0.16.0
       - run: ./scripts/zig build
       - run: ./scripts/zig build test
+  # Landlock (ubuntu) / Seatbelt (macos-14) attach + adversarial e2e.
+  # --require-attach is single authority (packaged orca_run + profile_hash + evidence.zig rules).
+  # Thin jq checks packaged primary detail only — no third copy of unit dual-proof greps.
+  # e2e runs test-fast once — no separate unit step (avoids double test-fast).
+  os-sandbox:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runs-on: ubuntu-latest
+            case_id: ci-linux
+            artifact_name: os-sandbox-evidence-linux
+          - runs-on: macos-14
+            case_id: ci-macos
+            artifact_name: os-sandbox-evidence-macos
+    runs-on: ${{ matrix.runs-on }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: mlugg/setup-zig@v2
+        with:
+          version: 0.16.0
+      - name: Build orca
+        run: ./scripts/zig build
+      - name: Adversarial OS sandbox e2e + evidence (require attach)
+        env:
+          CASE_ID: ${{ matrix.case_id }}
+        run: |
+          mkdir -p planning/security/evidence
+          ./scripts/os-sandbox-adversarial-e2e.sh \
+            --require-attach \
+            --case "$CASE_ID" \
+            --binary ./zig-out/bin/orca \
+            --out planning/security/evidence
+          test -n "$(ls "planning/security/evidence/${CASE_ID}"-*.json 2>/dev/null)"
+          newest="$(ls -t "planning/security/evidence/${CASE_ID}"-*.json | head -1)"
+          # Packaged primary attach + 64-hex hash + TEST-DENY (defense-in-depth with --require-attach).
+          jq -e '
+            .controls["CTRL-ATTACH"].ok == true
+            and .controls["CTRL-ATTACH"].detail == "orca_run_os_sandbox_on_active"
+            and (.profile_hash | length) == 64
+            and .controls["TEST-DENY"].ok == true
+          ' "$newest"
+      - name: Upload evidence artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact_name }}
+          path: planning/security/evidence/
+          if-no-files-found: error
   rust-daemon:
     runs-on: ubuntu-latest
     steps:

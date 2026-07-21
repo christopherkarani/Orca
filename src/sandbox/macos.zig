@@ -3,6 +3,7 @@ const builtin = @import("builtin");
 
 const backend = @import("backend.zig");
 const platform = @import("orca_core").platform;
+const macos_seatbelt = @import("macos_seatbelt.zig");
 
 pub const implemented = true;
 
@@ -18,7 +19,26 @@ pub fn detect() backend.ReportSet {
     backend.setReport(&reports, .seccomp, .unsupported, "Linux seccomp-bpf is not a macOS feature");
     backend.setReport(&reports, .landlock, .unsupported, "Linux Landlock is not a macOS feature");
     backend.setReport(&reports, .cgroups, .unsupported, "Linux cgroup cleanup is not a macOS feature");
-    backend.setReport(&reports, .strong_sandbox, .unavailable, "no macOS Sandbox.app profile, Endpoint Security entitlement, kernel extension, or admin-only sandbox is installed by default");
+
+    // Strong sandbox: version-gated deprecated custom profile API (matrix majors 14–26).
+    // Capability probes never authorize a live session `active` claim (S-GLO-01).
+    const support = if (builtin.os.tag == .macos)
+        macos_seatbelt.evaluateSupport()
+    else
+        macos_seatbelt.SupportStatus.not_macos;
+
+    const strong_level: backend.Level = switch (support) {
+        // API path present on advertised matrix — still not a live session attach.
+        .supported => .partial,
+        .version_unsupported, .symbol_unavailable, .not_macos => .unavailable,
+    };
+    const strong_note: []const u8 = switch (support) {
+        .supported => "OS filesystem sandbox API present on a supported macOS version; session active only after apply-before-exec child attach and profile hash",
+        .version_unsupported => "OS filesystem sandbox unavailable: running macOS is outside the advertised support matrix (14–26); capability probes are not a live session claim",
+        .symbol_unavailable => "OS filesystem sandbox unavailable: sandbox apply symbol not resolvable; capability probes are not a live session claim",
+        .not_macos => "OS filesystem sandbox is a macOS feature",
+    };
+    backend.setReport(&reports, .strong_sandbox, strong_level, strong_note);
 
     return .{
         .os = .macos,
@@ -27,15 +47,6 @@ pub fn detect() backend.ReportSet {
         .fallback_note = "macOS backend uses practical local wrapper controls, staging, env filtering, MCP proxying, audit, and process supervision",
         .reports = reports,
     };
-}
-
-pub fn prepare(allocator: std.mem.Allocator, request: backend.PrepareRequest, report: backend.ReportSet) backend.PreparedSandbox {
-    var prepared = backend.prepareFallback(allocator, request, report);
-    if (builtin.os.tag == .macos) {
-        prepared.use_process_group = true;
-        prepared.process_group_cleanup = true;
-    }
-    return prepared;
 }
 
 test "macOS capability detector is honest about wrapper and unavailable protections" {
@@ -48,69 +59,36 @@ test "macOS capability detector is honest about wrapper and unavailable protecti
     try std.testing.expectEqual(backend.Level.wrapper_only, report.get(.path_shims).level);
     try std.testing.expectEqual(backend.Level.active, report.get(.process_supervision).level);
     try std.testing.expectEqual(backend.Level.limited, report.get(.network_enforce).level);
-    try std.testing.expectEqual(backend.Level.unavailable, report.get(.strong_sandbox).level);
-    try std.testing.expect(!report.featureAvailable(.strong_sandbox));
+    // strong_sandbox never active from detect (S-GLO-01).
+    try std.testing.expect(report.get(.strong_sandbox).level != .active);
+    try std.testing.expect(!report.featureAvailable(.strong_sandbox) or report.get(.strong_sandbox).level == .partial);
+    // Default doctor notes stay mechanism-neutral (no "Seatbelt" branding).
+    try std.testing.expect(std.mem.indexOf(u8, report.get(.strong_sandbox).note, "Seatbelt") == null);
 }
 
-test "macOS launch can run a simple command" {
+test "macOS strong_sandbox tracks version matrix without live active claim" {
     if (builtin.os.tag != .macos) return error.SkipZigTest;
-
-    var argv = [_][]const u8{"true"};
-    var prepared = prepare(std.testing.allocator, .{
-        .io = std.testing.io,
-        .argv = &argv,
-        .workspace_root = ".",
-        .stdio = .ignore,
-    }, detect());
-    try prepared.spawn();
-    try prepared.waitForSpawn();
-    const term = try prepared.wait();
-    try std.testing.expectEqual(std.process.Child.Term{ .exited = 0 }, term);
-}
-
-test "macOS process supervision uses process group cleanup" {
-    if (builtin.os.tag != .macos) return error.SkipZigTest;
-
-    var argv = [_][]const u8{"true"};
-    const prepared = prepare(std.testing.allocator, .{
-        .io = std.testing.io,
-        .argv = &argv,
-        .workspace_root = ".",
-        .stdio = .ignore,
-    }, detect());
-    try std.testing.expect(prepared.process_group_cleanup);
-}
-
-test "macOS process supervision cleans up same-process-group descendants" {
-    if (builtin.os.tag != .macos) return error.SkipZigTest;
-
-    var tmp = std.testing.tmpDir(.{});
-    defer tmp.cleanup();
-    const root = try tmp.dir.realPathFileAlloc(std.testing.io, ".", std.testing.allocator);
-    defer std.testing.allocator.free(root);
-
-    var argv = [_][]const u8{ "/bin/sh", "-c", "sleep 30 & echo $! > child.pid" };
-    var prepared = prepare(std.testing.allocator, .{
-        .io = std.testing.io,
-        .argv = &argv,
-        .workspace_root = root,
-        .stdio = .ignore,
-    }, detect());
-    try prepared.spawn();
-    try prepared.waitForSpawn();
-    const term = try prepared.wait();
-    try std.testing.expectEqual(std.process.Child.Term{ .exited = 0 }, term);
-
-    const pid_text = try tmp.dir.readFileAlloc(std.testing.io, "child.pid", std.testing.allocator, .limited(64));
-    defer std.testing.allocator.free(pid_text);
-    const pid = try std.fmt.parseInt(std.posix.pid_t, std.mem.trim(u8, pid_text, " \t\r\n"), 10);
-    var attempts: usize = 0;
-    while (attempts < 20) : (attempts += 1) {
-        std.Io.sleep(std.testing.io, std.Io.Duration.fromNanoseconds(50 * std.time.ns_per_ms), .awake) catch {};
-        std.posix.kill(pid, @enumFromInt(0)) catch |err| switch (err) {
-            error.ProcessNotFound => return,
-            else => return err,
-        };
+    const report = detect();
+    const support = macos_seatbelt.evaluateSupport();
+    switch (support) {
+        .supported => try std.testing.expectEqual(backend.Level.partial, report.get(.strong_sandbox).level),
+        else => try std.testing.expectEqual(backend.Level.unavailable, report.get(.strong_sandbox).level),
     }
-    return error.ProcessTreeCleanupFailed;
+    try std.testing.expect(report.get(.strong_sandbox).level != .active);
+}
+
+// No scaffold prepare path — production attach is apply_posix only.
+// Process-group leadership for agent spawn is proven in apply_posix tests.
+test "macOS process group spawn runs simple command" {
+    if (builtin.os.tag != .macos) return error.SkipZigTest;
+
+    var child = try std.process.spawn(std.testing.io, .{
+        .argv = &[_][]const u8{"/usr/bin/true"},
+        .stdin = .ignore,
+        .stdout = .ignore,
+        .stderr = .ignore,
+        .pgid = 0,
+    });
+    const term = try child.wait(std.testing.io);
+    try std.testing.expectEqual(std.process.Child.Term{ .exited = 0 }, term);
 }
