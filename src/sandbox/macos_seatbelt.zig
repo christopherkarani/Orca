@@ -8,6 +8,28 @@
 //!
 //! `applyInChild` must run only after fork / before exec (never on the Orca
 //! parent). Parent-side code uses `evaluateSupport` + profile render only.
+//!
+//! ## Multi-thread / fork residual (Z-4)
+//!
+//! `sandbox_init` is **not** async-signal-safe and is not defined for use in a
+//! multi-threaded process after fork. Orca's parent may already have threads
+//! (e.g. proxy/runtime) when `forkApplySeatbeltAndExec` runs.
+//!
+//! **Mitigations (production path):**
+//! 1. SBPL is fully pre-rendered in the parent (`prepareForChildApply` /
+//!    `renderSbpl`) — the child never compiles profiles or walks the FS for
+//!    policy.
+//! 2. Child critical section is intentionally short: stdio redirect →
+//!    `dlsym` + `sandbox_init` → chdir/preflight → status handshake → FD scrub
+//!    → `execve`. No heap enumeration, no additional thread starts between
+//!    fork and exec.
+//! 3. Parent retains the NUL-terminated SBPL buffer until exec (no free race).
+//!
+//! **Residual risk (accepted, documented):** `sandbox_init` itself may still
+//! touch liberally-locked or malloc-backed libsystem state under a multi-
+//! threaded parent. We do not pause/join proxy threads around fork (would
+//! couple sandbox to cli/run lifecycle). Prefer a short child path + honest
+//! residual over a large proxy rewrite. Nested re-apply remains unsupported.
 
 const std = @import("std");
 const builtin = @import("builtin");
@@ -136,6 +158,9 @@ pub const ApplyInChildError = error{
 ///
 /// Nested apply is not supported: if already sandboxed, returns ApplyFailed.
 /// Inheritance is the only composition model for descendants.
+///
+/// Child work is intentionally minimal (Z-4 residual): resolve symbols +
+/// sandbox_init only — SBPL must already be parent-rendered. See module docs.
 pub fn applyInChild(sbpl_z: [*:0]const u8) ApplyInChildError!void {
     if (builtin.os.tag != .macos) return error.NotMacOs;
     const init_fn = resolveSandboxInit() orelse return error.SymbolUnavailable;
