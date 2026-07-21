@@ -64,17 +64,6 @@ impl Budget {
         }
     }
 
-    /// Check if a duration exceeds the warning threshold.
-    #[must_use]
-    pub fn exceeds_warning(&self, duration: Duration) -> bool {
-        duration > self.warning
-    }
-
-    /// Check if a duration exceeds the panic threshold.
-    #[must_use]
-    pub fn exceeds_panic(&self, duration: Duration) -> bool {
-        duration > self.panic
-    }
 
     /// Return the appropriate status for a duration.
     #[must_use]

@@ -12,5 +12,16 @@ pub const effects = @import("effects/mod.zig");
 pub const phase = "07-policy-engine";
 
 test {
+    // Re-export policy submodules so monopath / package gates discover their tests
+    // (mirrors sandbox/mod.zig discovery pattern).
+    _ = schema;
+    _ = load;
+    _ = validate;
+    _ = compile;
+    _ = evaluate;
+    _ = explain;
+    _ = matchers;
+    _ = network_eval;
+    _ = presets;
     _ = effects;
 }

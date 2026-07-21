@@ -292,15 +292,6 @@ impl LazyCompiledRegex {
         }
     }
 
-    /// Create a new lazy regex pattern from an owned string.
-    #[must_use]
-    #[allow(clippy::missing_const_for_fn)]
-    pub fn new_owned(pattern: String) -> Self {
-        Self {
-            pattern: PatternText::Owned(pattern),
-            compiled: OnceLock::new(),
-        }
-    }
 
     /// Get or compile the regex.
     ///

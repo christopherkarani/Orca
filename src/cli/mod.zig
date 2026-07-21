@@ -705,7 +705,7 @@ test "command-specific help works through help command and command flag" {
     try std.testing.expectEqual(exit_codes.success, code);
     try std.testing.expect(std.mem.indexOf(u8, stdout_writer.buffered(), "orca run") != null);
     try std.testing.expect(std.mem.indexOf(u8, stdout_writer.buffered(), "Examples:") != null);
-    try std.testing.expect(std.mem.indexOf(u8, stdout_writer.buffered(), "orca run -- claude") != null);
+    try std.testing.expect(std.mem.indexOf(u8, stdout_writer.buffered(), "orca run -- <custom-command>") != null);
     try std.testing.expect(std.mem.indexOf(u8, stdout_writer.buffered(), "network mode is ask") != null);
     try std.testing.expectEqualStrings("", stderr_writer.buffered());
 
@@ -727,7 +727,7 @@ test "help run includes examples section" {
 
     const output = stdout_writer.buffered();
     try std.testing.expect(std.mem.indexOf(u8, output, "Examples:") != null);
-    try std.testing.expect(std.mem.indexOf(u8, output, "orca run -- claude") != null);
+    try std.testing.expect(std.mem.indexOf(u8, output, "orca run -- <custom-command>") != null);
     try std.testing.expect(std.mem.indexOf(u8, output, "orca claude") != null);
     try std.testing.expect(std.mem.indexOf(u8, output, "Secretless stays off") != null);
     try std.testing.expectEqualStrings("", stderr_writer.buffered());
@@ -969,7 +969,7 @@ test "phase A proxy commands construct daemon argv and render success" {
     try std.testing.expect(!isDaemonLocalMutatingInvocation("allowlist", &.{"list"}));
     try std.testing.expect(isDaemonLocalMutatingInvocation("suggest-allowlist", &.{ "--apply", "1" }));
     try std.testing.expect(isDaemonLocalMutatingInvocation("suggest-allowlist", &.{ "--undo", "60" }));
-    try std.testing.expect(!isDaemonLocalMutatingInvocation("suggest-allowlist", &.{ "--non-interactive" }));
+    try std.testing.expect(!isDaemonLocalMutatingInvocation("suggest-allowlist", &.{"--non-interactive"}));
     try std.testing.expect(!isDaemonProxyCommand("doctor"));
     try std.testing.expect(!isDaemonProxyCommand("init"));
 

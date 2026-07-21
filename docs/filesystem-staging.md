@@ -29,11 +29,11 @@ Path traversal and symlink escape attempts are treated as security-sensitive and
 
 ## Current Interception Limitations
 
-Staging applies to Orca-mediated writes. It is not universal transparent filesystem interception. OS FS isolation is **session-attach** only: claimable after `orca run --os-sandbox` child apply succeeds for that run — doctor capability probes alone are not a live session claim.
+Staging applies to Orca-mediated writes. It is not universal transparent filesystem interception. OS FS isolation is **session-attach** only: claimable after protected agent child apply succeeds for that session — doctor capability probes alone are not a live session claim.
 
 ## Platform Notes
 
-- **Linux:** staged writes always; Landlock session-attach when ABI ≥ 1 (kernel 5.13+) via `orca run --os-sandbox auto|on|off` (default `auto`). CI attach evidence: linux amd64.
+- **Linux:** staged writes always; Landlock session-attach when ABI ≥ 1 (kernel 5.13+) on protected agent child launches. CI attach evidence: linux amd64.
 - **macOS:** staged writes always; Seatbelt session-attach on product majors 14–26 (capability gate) via the same `--os-sandbox` flag. CI attach evidence: macos-14; other majors local until freeze jobs cover them.
 - **Windows:** transparent filesystem enforcement remains limited; no Landlock/Seatbelt-equivalent attach path yet.
 

@@ -80,14 +80,6 @@ pub fn get_count(command: &str) -> u32 {
         .unwrap_or(0)
 }
 
-/// Get the session ID associated with the current tracker.
-#[must_use]
-pub fn session_id() -> Option<String> {
-    let guard = SESSION_STATE
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
-    guard.as_ref().and_then(|t| t.session_id.clone())
-}
 
 /// Total number of distinct command hashes tracked in this session.
 #[must_use]

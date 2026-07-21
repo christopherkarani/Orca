@@ -183,6 +183,10 @@ pub const ParentApplyOutcome = struct {
     sbpl_z: ?[:0]u8 = null,
 };
 
+pub const PrepareOptions = struct {
+    network_route_forcing: ?macos_profile.NetworkRouteForcing = null,
+};
+
 /// Parent-side Seatbelt prepare: version gate, symbol check, SBPL render.
 /// Does **not** call sandbox_init (that is child-only). Never reports attach.
 ///
@@ -193,7 +197,7 @@ pub fn prepareForChildApply(
     allocator: std.mem.Allocator,
     compiled: *const profile.CompiledProfile,
 ) ParentApplyOutcome {
-    return prepareForChildApplyWith(allocator, compiled, evaluateSupport());
+    return prepareForChildApplyWithOptions(allocator, compiled, evaluateSupport(), .{});
 }
 
 /// Testable prepare with injected support status.
@@ -201,6 +205,15 @@ pub fn prepareForChildApplyWith(
     allocator: std.mem.Allocator,
     compiled: *const profile.CompiledProfile,
     support: SupportStatus,
+) ParentApplyOutcome {
+    return prepareForChildApplyWithOptions(allocator, compiled, support, .{});
+}
+
+pub fn prepareForChildApplyWithOptions(
+    allocator: std.mem.Allocator,
+    compiled: *const profile.CompiledProfile,
+    support: SupportStatus,
+    options: PrepareOptions,
 ) ParentApplyOutcome {
     if (!support.isSupported()) {
         return .{
@@ -211,7 +224,9 @@ pub fn prepareForChildApplyWith(
     }
 
     // OOM must use seatbelt_profile_oom so apply maps to hard OutOfMemory (not soft failed).
-    const sbpl = macos_profile.renderSbpl(allocator, compiled) catch |err| {
+    const sbpl = macos_profile.renderSbplWithOptions(allocator, compiled, .{
+        .network_route_forcing = options.network_route_forcing,
+    }) catch |err| {
         return .{
             .status = .failed,
             .mechanism = .none,
@@ -238,7 +253,6 @@ pub fn prepareForChildApplyWith(
         .sbpl_z = sbpl_z,
     };
 }
-
 
 test "matrix accepts macos majors 14 through 26 inclusive" {
     try std.testing.expect(isMatrixMajor(14));

@@ -109,22 +109,25 @@ pub use branding::{
 };
 pub use config::Config;
 pub use error_codes::{ErrorCategory, ErrorCode, ErrorResponse, OrcaError};
+
 pub use evaluator::{
     BypassMethod, ConfidenceResult, DetailedEvaluationResult, EvaluationDecision, EvaluationResult,
     GraduatedResponse, LegacyDestructivePattern, LegacySafePattern, MatchSource, MatchSpan,
     PatternMatch, apply_confidence_scoring, determine_graduated_response, evaluate_command,
     evaluate_command_with_deadline, evaluate_command_with_pack_order,
     evaluate_command_with_pack_order_at_path, evaluate_command_with_pack_order_deadline,
-    evaluate_command_with_pack_order_deadline_at_path, evaluate_detailed,
-    evaluate_detailed_with_allowlists,
+    evaluate_command_with_pack_order_deadline_at_path,
 };
 pub use exit_codes::{
     EXIT_CONFIG_ERROR, EXIT_DENIED, EXIT_IO_ERROR, EXIT_PARSE_ERROR, EXIT_SUCCESS, EXIT_WARNING,
-    ToExitCode, exit_with, to_exit_code,
+    to_exit_code,
 };
 pub use hook::{HookInput, HookOutput, HookResult, HookSpecificOutput};
-pub use packs::external::{ExternalPack, parse_pack_file, parse_pack_string};
+
+pub use packs::external::{ExternalPack, parse_pack_string};
+
 pub use packs::{Pack, PackId, PackRegistry, PatternSuggestion, Platform};
+
 pub use pending_exceptions::{
     AllowOnceEntry, AllowOnceScopeKind, AllowOnceStore, PendingExceptionRecord,
     PendingExceptionStore,
@@ -132,6 +135,7 @@ pub use pending_exceptions::{
 
 // Re-export dual regex engine abstraction (from regex safety audit)
 pub use packs::regex_engine::{BACKTRACK_LIMIT, CompiledRegex, needs_backtracking_engine};
+
 
 // Re-export context types
 pub use context::{
@@ -162,7 +166,7 @@ pub use trace::{
 
 // Re-export highlight types for terminal span highlighting
 pub use highlight::{
-    HighlightSpan, HighlightedCommand, configure_colors as configure_highlight_colors,
+    HighlightSpan, HighlightedCommand,
     format_highlighted_command, format_highlighted_command_auto, format_highlighted_command_multi,
     should_use_color,
 };
@@ -176,6 +180,7 @@ pub use suggest::{
     generate_pattern_from_cluster,
 };
 pub use suggestions::{Suggestion, SuggestionKind, get_suggestion_by_kind, get_suggestions};
+
 
 // Re-export scan types for `orca scan`
 pub use scan::{
@@ -195,25 +200,26 @@ pub use simulate::{
 
 // Re-export stats types for `orca stats`
 pub use stats::{
-    AggregatedStats, DEFAULT_PERIOD_SECS, Decision as StatsDecision, PackStats, ParsedLogEntry,
+    AggregatedStats, Decision as StatsDecision, PackStats, ParsedLogEntry,
     format_stats_json, format_stats_pretty, parse_log_file,
 };
 
 // Re-export performance budget types
 pub use perf::{
-    ABSOLUTE_MAX, Budget, BudgetStatus, Deadline, FAIL_OPEN_THRESHOLD_MS, FAST_PATH,
-    FAST_PATH_BUDGET_US, FULL_HEREDOC_PIPELINE, HEREDOC_EXTRACT, HEREDOC_TRIGGER,
-    HOOK_EVALUATION_BUDGET, HOOK_EVALUATION_BUDGET_MS, LANGUAGE_DETECT, PATTERN_MATCH,
-    QUICK_REJECT, SLOW_PATH_BUDGET_MS, should_fail_open,
+    ABSOLUTE_MAX, Budget, BudgetStatus, Deadline, FAST_PATH,
+    FULL_HEREDOC_PIPELINE, HEREDOC_EXTRACT, HEREDOC_TRIGGER,
+    HOOK_EVALUATION_BUDGET, HOOK_EVALUATION_BUDGET_MS, PATTERN_MATCH,
+    QUICK_REJECT, should_fail_open,
 };
 
 // Re-export normalize types for wrapper stripping
 pub use normalize::{NormalizedCommand, StrippedWrapper, strip_wrapper_prefixes};
 
+
 // Re-export confidence types for pattern match confidence scoring
 pub use confidence::{
     ConfidenceContext, ConfidenceScore, ConfidenceSignal, DEFAULT_WARN_THRESHOLD,
-    compute_match_confidence, should_downgrade_to_warn,
+    compute_match_confidence,
 };
 
 // Re-export history types for command tracking
@@ -233,7 +239,7 @@ pub use interactive::{
 // Re-export git branch detection types
 pub use git::{
     BranchInfo, clear_cache as clear_git_cache, get_branch_info, get_branch_info_at_path,
-    get_current_branch, is_in_git_repo, is_in_git_repo_at_path,
+    get_current_branch, is_in_git_repo_at_path,
 };
 
 // Re-export agent detection types
@@ -245,16 +251,16 @@ pub use agent::{
 // Re-export output types for TUI/CLI visual formatting
 pub use output::{
     BorderStyle, DenialBox, EscalationContext, Severity as OutputSeverity, SeverityColors, Theme,
-    ThemePalette, auto_theme, auto_theme_with_config, format_escalation_message,
+    ThemePalette, auto_theme, format_escalation_message,
     init as init_output, should_use_rich_output, supports_256_colors, terminal_height,
     terminal_width,
 };
 
 // Re-export update types for self-update version check
 pub use update::{
-    CACHE_DURATION, VersionCheckError, VersionCheckResult, check_for_update, clear_cache,
-    current_version, format_check_result, format_check_result_json,
+    CACHE_DURATION, VersionCheckError, VersionCheckResult, check_for_update, current_version, format_check_result, format_check_result_json,
 };
 
 // Re-export session occurrence tracking types for graduated response system
 pub use session::{OccurrenceSnapshot, hash_command as session_hash_command};
+

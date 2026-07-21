@@ -178,7 +178,7 @@ Secret scan: **passed**.
 - ClawHub package `orca-openclaw-plugin@1.1.3` is published.
 - The OpenClaw plugin does not add MCP server behavior or drone-specific plugin features.
 - Hooks are advisory for informational events; blocking hooks depend on OpenClaw honoring thrown errors.
-- The strongest local protection remains `orca run -- openclaw`.
+- The strongest local protection remains `orca openclaw`.
 
 ## Whether npm publication is ready
 

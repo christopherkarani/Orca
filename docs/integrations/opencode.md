@@ -15,12 +15,12 @@ The plugin provides native hooks and guardrails inside OpenCode, routing lifecyc
 The strongest protection for OpenCode sessions is running the host through Orca:
 
 ```bash
-orca run -- opencode
+orca opencode
 ```
 
-The plugin adds native hooks and guardrails inside OpenCode, but `orca run -- opencode` is the strongest protection because the agent session itself is launched as an Orca-managed child process with filtered environment variables and full policy enforcement.
+The plugin adds native hooks and guardrails inside OpenCode, but `orca opencode` is the strongest protection because the agent session itself is launched as an Orca-managed child process with filtered environment variables and full policy enforcement.
 
-The strongest local protection remains running OpenCode through `orca run -- opencode`; the OpenCode plugin provides native hooks and guardrails inside OpenCode.
+The strongest local protection remains running OpenCode through `orca opencode`; the OpenCode plugin provides native hooks and guardrails inside OpenCode.
 
 ## Prerequisites
 
@@ -242,7 +242,7 @@ The plugin uses synthetic test secrets (e.g., `fake_p05_secret_value`) in fixtur
 ## Limitations
 
 - Hooks are advisory; enforcement depends on OpenCode host support.
-- The strongest protection is `orca run -- opencode`.
+- The strongest protection is `orca opencode`.
 - Plugin installation is a preview/dry-run by default.
 - No telemetry is collected.
 - The OpenCode plugin does not add MCP server behavior or drone-specific plugin features.

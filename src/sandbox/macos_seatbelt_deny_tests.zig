@@ -16,6 +16,34 @@ const prepareForChildApply = macos_seatbelt.prepareForChildApply;
 const applyInChild = macos_seatbelt.applyInChild;
 const SupportStatus = macos_seatbelt.SupportStatus;
 
+fn waitExitCode(pid: std.c.pid_t) !u8 {
+    var status: c_int = 0;
+    // Retry waitpid on EINTR. On other failure return error — do not invent exit 0
+    // from the zero-initialized status when waitpid never reaped the child.
+    while (true) {
+        const rc = std.c.waitpid(pid, &status, 0);
+        if (rc >= 0) break;
+        if (std.c.errno(rc) == .INTR) continue;
+        return error.WaitpidFailed;
+    }
+    try std.testing.expect((status & 0x7f) == 0);
+    return @intCast((status >> 8) & 0xff);
+}
+
+fn childExecNc(port_text: [*:0]const u8) noreturn {
+    const argv = [_:null]?[*:0]const u8{
+        "nc",
+        "-z",
+        "-G",
+        "1",
+        "127.0.0.1",
+        port_text,
+        null,
+    };
+    _ = std.c.execve("/usr/bin/nc", @ptrCast(&argv), @ptrCast(std.c.environ));
+    std.c._exit(8);
+}
+
 // CTRL template: unsandboxed canary readable; sandboxed child denies outside grant,
 // allows workspace neighbor read/write, and denies control-root write.
 // Uses prepare SBPL + applyInChild.
@@ -173,6 +201,71 @@ test "real FS deny: outside canary denied; workspace readable and writable" {
     // Control file must not have been created by the sandboxed child.
     const ctrl_probe = std.Io.Dir.cwd().access(io, control_write_path, .{});
     try std.testing.expectError(error.FileNotFound, ctrl_probe);
+}
+
+test "real network route forcing: proxy port allowed and neighboring loopback port denied" {
+    if (builtin.os.tag != .macos) return error.SkipZigTest;
+    if (!sandboxInitAvailable()) return error.SkipZigTest;
+    const ver = try detectProductVersion();
+    try std.testing.expect(isMatrixMajor(ver.major));
+
+    const allocator = std.testing.allocator;
+    const io = std.testing.io;
+
+    var allowed_server = try (try std.Io.net.IpAddress.parse("127.0.0.1", 0)).listen(io, .{ .reuse_address = true });
+    defer allowed_server.deinit(io);
+    const allowed_port = allowed_server.socket.address.getPort();
+
+    var denied_server = try (try std.Io.net.IpAddress.parse("127.0.0.1", 0)).listen(io, .{ .reuse_address = true });
+    defer denied_server.deinit(io);
+    const denied_port = denied_server.socket.address.getPort();
+    if (allowed_port == denied_port) return error.SkipZigTest;
+
+    var ws_tmp = std.testing.tmpDir(.{});
+    defer ws_tmp.cleanup();
+    try ws_tmp.dir.createDirPath(io, ".orca");
+    const ws_root = try ws_tmp.dir.realPathFileAlloc(io, ".", allocator);
+    defer allocator.free(ws_root);
+
+    var compiled = try profile.compileProfile(allocator, .{
+        .workspace_root = ws_root,
+        .include_tmp = false,
+    });
+    defer compiled.deinit();
+
+    const prepared = macos_seatbelt.prepareForChildApplyWithOptions(
+        allocator,
+        &compiled,
+        .supported,
+        .{ .network_route_forcing = .{ .proxy_port = allowed_port } },
+    );
+    defer if (prepared.sbpl_z) |p| allocator.free(p);
+    try std.testing.expectEqual(.prepared, prepared.status);
+    const sbpl_z = prepared.sbpl_z orelse return error.SeatbeltApplyFailedOnHost;
+
+    const denied_pid = std.c.fork();
+    if (denied_pid < 0) return error.SkipZigTest;
+    if (denied_pid == 0) {
+        applyInChild(sbpl_z.ptr) catch std.c._exit(2);
+        var port_buf: [8]u8 = undefined;
+        const port_text = std.fmt.bufPrintZ(&port_buf, "{d}", .{denied_port}) catch std.c._exit(7);
+        childExecNc(port_text.ptr);
+    }
+    const denied_code = try waitExitCode(denied_pid);
+    try std.testing.expect(denied_code != 0);
+    try std.testing.expect(denied_code != 2);
+    try std.testing.expect(denied_code != 8);
+
+    const allowed_pid = std.c.fork();
+    if (allowed_pid < 0) return error.SkipZigTest;
+    if (allowed_pid == 0) {
+        applyInChild(sbpl_z.ptr) catch std.c._exit(2);
+        var port_buf: [8]u8 = undefined;
+        const port_text = std.fmt.bufPrintZ(&port_buf, "{d}", .{allowed_port}) catch std.c._exit(7);
+        childExecNc(port_text.ptr);
+    }
+    const allowed_code = try waitExitCode(allowed_pid);
+    try std.testing.expectEqual(@as(u8, 0), allowed_code);
 }
 
 var data_scratch_seq: std.atomic.Value(u64) = .init(1);

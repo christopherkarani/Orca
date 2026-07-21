@@ -15,12 +15,12 @@ The plugin provides native hooks and guardrails inside OpenClaw, routing lifecyc
 The strongest protection for OpenClaw sessions is running the host through Orca:
 
 ```bash
-orca run -- openclaw
+orca openclaw
 ```
 
-The plugin adds native hooks and guardrails inside OpenClaw, but `orca run -- openclaw` is the strongest protection because the agent session itself is launched as an Orca-managed child process with filtered environment variables and full policy enforcement.
+The plugin adds native hooks and guardrails inside OpenClaw, but `orca openclaw` is the strongest protection because the agent session itself is launched as an Orca-managed child process with filtered environment variables and full policy enforcement.
 
-The strongest local protection remains running OpenClaw through `orca run -- openclaw`; the OpenClaw plugin provides native guardrails where OpenClaw plugin hooks support them.
+The strongest local protection remains running OpenClaw through `orca openclaw`; the OpenClaw plugin provides native guardrails where OpenClaw plugin hooks support them.
 
 ## Prerequisites
 
@@ -41,7 +41,7 @@ openclaw plugins install ./integrations/openclaw-plugin
 
 ### npm install — unprotected
 
-npm install of this plugin is **`unprotected`**: OpenClaw currently loads npm plugins in CLI-metadata mode where `api.on` is a no-op, so hooks do not fire and cannot block tools. Prefer `orca run -- openclaw` (grade **`wrapper`**).
+npm install of this plugin is **`unprotected`**: OpenClaw currently loads npm plugins in CLI-metadata mode where `api.on` is a no-op, so hooks do not fire and cannot block tools. Prefer `orca openclaw` (grade **`wrapper`**).
 
 ```bash
 # distribution only — not an enforcement install
@@ -66,7 +66,7 @@ openclaw plugins doctor
 
 ### ClawHub install — unprotected
 
-ClawHub install has the same limitation as npm: **`unprotected`** (hooks no-op in current CLI-metadata mode). Prefer `orca run -- openclaw`.
+ClawHub install has the same limitation as npm: **`unprotected`** (hooks no-op in current CLI-metadata mode). Prefer `orca openclaw`.
 
 ```bash
 openclaw plugins install clawhub:orca-openclaw-plugin
@@ -209,7 +209,7 @@ The plugin uses synthetic test secrets in fixtures only. If you see redaction wa
 ## Limitations
 
 - Hooks are advisory; enforcement depends on OpenClaw host support.
-- The strongest protection is `orca run -- openclaw`.
+- The strongest protection is `orca openclaw`.
 - Plugin installation is a preview/dry-run by default.
 - No telemetry is collected.
 - npm package `orca-openclaw-plugin@1.1.3` is published.

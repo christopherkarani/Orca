@@ -301,10 +301,6 @@ impl TraceCollector {
         self.normalized_command = Some(normalized.to_string());
     }
 
-    /// Set the sanitized command.
-    pub fn set_sanitized(&mut self, sanitized: &str) {
-        self.sanitized_command = Some(sanitized.to_string());
-    }
 
     /// Set match information.
     pub fn set_match(&mut self, info: MatchInfo) {
@@ -316,10 +312,6 @@ impl TraceCollector {
         self.allowlist_info = Some(info);
     }
 
-    /// Set pack summary.
-    pub fn set_pack_summary(&mut self, summary: PackSummary) {
-        self.pack_summary = Some(summary);
-    }
 
     /// Mark whether evaluation skipped deeper analysis due to budget.
     pub const fn set_budget_skip(&mut self, skipped: bool) {
@@ -359,13 +351,6 @@ impl ExplainTrace {
         self.allowlist_info.is_some()
     }
 
-    /// Get the first match (either from denial or allowlist).
-    #[must_use]
-    pub fn first_match(&self) -> Option<&MatchInfo> {
-        self.match_info
-            .as_ref()
-            .or_else(|| self.allowlist_info.as_ref().map(|a| &a.original_match))
-    }
 
     /// Find a step by name.
     #[must_use]
@@ -402,11 +387,6 @@ impl ExplainTrace {
         )
     }
 
-    /// Get the reason for the decision (from match info).
-    #[must_use]
-    pub fn reason(&self) -> Option<&str> {
-        self.match_info.as_ref().map(|m| m.reason.as_str())
-    }
 
     /// Format the trace as human-readable pretty output.
     ///

@@ -176,7 +176,7 @@ Result: **10/10 fixtures passed (100%)**
 - The package is not yet published to the npm registry. Publish when ready with `npm publish` from `integrations/opencode-plugin/`.
 - The `@opencode-ai/plugin` peer dependency was removed because the exact OpenCode plugin types package name is uncertain.
 - Hooks are advisory; enforcement depends on OpenCode host support.
-- The strongest protection remains `orca run -- opencode`.
+- The strongest protection remains `orca opencode`.
 - Plugin requires `orca` to be installed separately and available on PATH.
 
 ## Security Invariants Verified

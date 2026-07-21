@@ -338,12 +338,21 @@ pub fn collectPluginDoctorReportWithHermesSmoke(
         .common = pluginDirExists(io, allocator, "integrations/common"),
     };
 
+    // One PATH snapshot for all host lookups — avoids rebuilding the full process
+    // env map five times (and multiplies badly under checkAllAllocationFailures).
+    const path_value: ?[]u8 = blk: {
+        var env_map = env_util.createProcessMap(allocator) catch break :blk null;
+        defer env_map.deinit();
+        break :blk env_util.getOwned(&env_map, allocator, "PATH") catch null;
+    };
+    defer if (path_value) |p| allocator.free(p);
+
     const host_bins = HostBinaryStatus{
-        .codex = binaryInPath(io, allocator, "codex"),
-        .claude = binaryInPath(io, allocator, "claude"),
-        .opencode = binaryInPath(io, allocator, "opencode"),
-        .openclaw = binaryInPath(io, allocator, "openclaw"),
-        .hermes = binaryInPath(io, allocator, "hermes"),
+        .codex = if (path_value) |p| binaryOnSearchPath(io, allocator, p, "codex") else false,
+        .claude = if (path_value) |p| binaryOnSearchPath(io, allocator, p, "claude") else false,
+        .opencode = if (path_value) |p| binaryOnSearchPath(io, allocator, p, "opencode") else false,
+        .openclaw = if (path_value) |p| binaryOnSearchPath(io, allocator, p, "openclaw") else false,
+        .hermes = if (path_value) |p| binaryOnSearchPath(io, allocator, p, "hermes") else false,
     };
 
     // Check OpenCode-specific plugin paths
@@ -2026,12 +2035,8 @@ pub fn hasPath(root: []const u8, relative: []const u8) bool {
     return fileExistsAbsolute(io, path);
 }
 
-pub fn binaryInPath(io: std.Io, allocator: std.mem.Allocator, binary_name: []const u8) bool {
-    var env_map = env_util.createProcessMap(allocator) catch return false;
-    defer env_map.deinit();
-    const path_owned = env_util.getOwned(&env_map, allocator, "PATH") catch return false;
-    const path_value = path_owned orelse return false;
-    defer allocator.free(path_value);
+/// Walk a pre-resolved PATH string for `binary_name` (and `.exe` on Windows).
+pub fn binaryOnSearchPath(io: std.Io, allocator: std.mem.Allocator, path_value: []const u8, binary_name: []const u8) bool {
     var parts = std.mem.splitScalar(u8, path_value, std.fs.path.delimiter);
     while (parts.next()) |dir| {
         if (dir.len == 0) continue;
@@ -2045,6 +2050,15 @@ pub fn binaryInPath(io: std.Io, allocator: std.mem.Allocator, binary_name: []con
         }
     }
     return false;
+}
+
+pub fn binaryInPath(io: std.Io, allocator: std.mem.Allocator, binary_name: []const u8) bool {
+    var env_map = env_util.createProcessMap(allocator) catch return false;
+    defer env_map.deinit();
+    const path_owned = env_util.getOwned(&env_map, allocator, "PATH") catch return false;
+    const path_value = path_owned orelse return false;
+    defer allocator.free(path_value);
+    return binaryOnSearchPath(io, allocator, path_value, binary_name);
 }
 
 pub fn writeJsonString(writer: anytype, value: []const u8) !void {
@@ -2227,13 +2241,96 @@ test "host install outcome trusts refreshed doctor state over child exit" {
     try std.testing.expectEqual(HostInstallOutcome.failed, classifyHostInstallOutcome(17, false));
 }
 
-fn collectPluginDoctorReportFailureHarness(allocator: std.mem.Allocator) !void {
-    var report = try collectPluginDoctorReportWithHermesSmoke(std.testing.io, allocator, true);
+/// Owned-field graph that mirrors `PluginDoctorReport` ownership (cwd, paths,
+/// warnings, binary path, policy_error) without full FS/PATH/doctor discovery.
+///
+/// Full `collectPluginDoctorReportWithHermesSmoke` must **not** be wrapped in
+/// `checkAllAllocationFailures`: that re-runs PATH/env/FS work once per alloc
+/// site and freezes `test-lib` for minutes with no progress output (false hang).
+fn pluginDoctorReportOwnedFieldsHarness(allocator: std.mem.Allocator) !void {
+    const cwd = try allocator.dupeZ(u8, ".");
+    errdefer allocator.free(cwd);
+    const workspace_root = try allocator.dupe(u8, ".");
+    errdefer allocator.free(workspace_root);
+    const mcp_support_status = try allocator.dupe(u8, "stdio proxy active; HTTP transport deferred");
+    errdefer allocator.free(mcp_support_status);
+    const platform_summary = try allocator.dupe(u8, "test-os / none / none");
+    errdefer allocator.free(platform_summary);
+    const policy_error = try allocator.dupe(u8, "sample-policy-error");
+    errdefer allocator.free(policy_error);
+    const binary_path = try allocator.dupeZ(u8, "/tmp/orca-test-bin");
+    errdefer allocator.free(binary_path);
+
+    var warnings: std.ArrayList([]const u8) = .empty;
+    errdefer {
+        for (warnings.items) |w| allocator.free(w);
+        warnings.deinit(allocator);
+    }
+    try appendWarning(allocator, &warnings, "first warning");
+    try appendWarning(allocator, &warnings, "second warning");
+    const warning_items = try warnings.toOwnedSlice(allocator);
+
+    var report: PluginDoctorReport = .{
+        .orca_version = "test",
+        .orca_binary_path = binary_path,
+        .cwd = cwd,
+        .workspace_root = workspace_root,
+        .policy_present = true,
+        .policy_valid = false,
+        .policy_error = policy_error,
+        .audit_replay_available = false,
+        .mcp_support_status = mcp_support_status,
+        .plugin_directories = .{ .codex = true, .claude = true, .opencode = true, .openclaw = true, .hermes = true, .common = true },
+        .host_binaries = .{ .codex = false, .claude = false, .opencode = false, .openclaw = false, .hermes = false },
+        .opencode_paths = .{ .project_plugin_exists = false, .global_plugin_exists = false, .config_references_plugin = false },
+        .openclaw_paths = .{
+            .host_plugin_installed = false,
+            .plugin_manifest_exists = false,
+            .package_json_exists = false,
+            .source_exists = false,
+            .detection_note = "test",
+        },
+        .hermes_paths = .{
+            .repo_manifest_exists = false,
+            .repo_source_exists = false,
+            .user_manifest_exists = false,
+            .user_source_exists = false,
+            .config_references_plugin = false,
+        },
+        .hermes_hook_smoke_passed = true,
+        .marketplace = .{
+            .codex_marketplace = false,
+            .claude_marketplace = false,
+            .codex_plugin_manifest = true,
+            .claude_plugin_manifest = true,
+            .codex_user_plugin = false,
+            .claude_user_plugin = false,
+        },
+        .platform_summary = platform_summary,
+        .warnings = warning_items,
+    };
     defer deinitPluginDoctorReport(&report, allocator);
 }
 
 test "plugin doctor report cleans up allocation failure paths" {
-    try std.testing.checkAllAllocationFailures(std.testing.allocator, collectPluginDoctorReportFailureHarness, .{});
+    try std.testing.checkAllAllocationFailures(std.testing.allocator, pluginDoctorReportOwnedFieldsHarness, .{});
+}
+
+test "binaryOnSearchPath finds names on a synthetic PATH" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const io = std.testing.io;
+    const allocator = std.testing.allocator;
+
+    const dir_path = try tmp.dir.realPathFileAlloc(io, ".", allocator);
+    defer allocator.free(dir_path);
+
+    // Empty dir → miss.
+    try std.testing.expect(!binaryOnSearchPath(io, allocator, dir_path, "orca-not-present-xyz"));
+
+    // Create a file that looks like a binary entry.
+    try tmp.dir.writeFile(io, .{ .sub_path = "fake-host-bin", .data = "x" });
+    try std.testing.expect(binaryOnSearchPath(io, allocator, dir_path, "fake-host-bin"));
 }
 
 test "plugin doctor --json emits valid JSON" {

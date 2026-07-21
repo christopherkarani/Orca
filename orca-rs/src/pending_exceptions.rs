@@ -436,10 +436,6 @@ impl AllowOnceStore {
         Self { path }
     }
 
-    #[must_use]
-    pub fn path(&self) -> &Path {
-        &self.path
-    }
 
     /// Resolve the default path (env override or `~/.config/orca/..`).
     #[must_use]
@@ -1070,20 +1066,6 @@ pub fn log_code_issued(
     log_allow_once_event(log_file, &entry, format)
 }
 
-/// Log a code resolution event (when an allow-once entry is created from a pending code).
-///
-/// # Errors
-///
-/// Returns any I/O errors encountered while opening or appending to the log file.
-pub fn log_code_resolved(
-    log_file: &str,
-    allow_entry: &AllowOnceEntry,
-    redaction: &RedactionConfig,
-    format: AllowOnceLogFormat,
-) -> io::Result<()> {
-    let entry = AllowOnceLogEntry::code_resolved(allow_entry, redaction);
-    log_allow_once_event(log_file, &entry, format)
-}
 
 /// Log an allow grant event (when a command is allowed by an allow-once entry).
 ///

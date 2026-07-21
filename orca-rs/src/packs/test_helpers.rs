@@ -547,7 +547,7 @@ pub fn assert_unique_pattern_names(pack: &Pack) {
 // Logging Integration
 // ============================================================================
 
-use crate::logging::{PackTestLogConfig, PackTestLogger};
+use crate::logging::PackTestLogger;
 
 /// A test runner that integrates with `PackTestLogger` for structured output.
 ///
@@ -569,14 +569,6 @@ pub struct LoggedPackTestRunner<'a> {
 }
 
 impl<'a> LoggedPackTestRunner<'a> {
-    /// Create a new test runner for a pack.
-    #[must_use]
-    pub fn new(pack: &'a Pack, config: PackTestLogConfig) -> Self {
-        Self {
-            pack,
-            logger: PackTestLogger::new(&pack.id, &config),
-        }
-    }
 
     /// Create a test runner with debug-mode logging.
     #[must_use]
@@ -678,17 +670,6 @@ impl<'a> LoggedPackTestRunner<'a> {
         }
     }
 
-    /// Run a batch of blocking assertions.
-    ///
-    /// # Panics
-    ///
-    /// Panics if any command is not blocked or has unexpected reason.
-    #[track_caller]
-    pub fn test_batch_blocks(&mut self, commands: &[&str], reason_substring: &str) {
-        for cmd in commands {
-            self.assert_blocks(cmd, reason_substring);
-        }
-    }
 
     /// Run a batch of allowing assertions.
     ///
@@ -1269,20 +1250,6 @@ pub fn verify_corpus_case(case: &CorpusTestCase, category: CorpusCategory) -> Re
     Ok(())
 }
 
-/// Assert a command produces the expected snapshot.
-///
-/// Panics with a detailed diff if the snapshots don't match.
-///
-/// # Panics
-///
-/// Panics if the actual evaluation result doesn't match the expected snapshot.
-#[track_caller]
-pub fn assert_eval_snapshot(command: &str, expected: &EvalSnapshot) {
-    let actual = eval_snapshot(command);
-    if let Some(diff) = diff_snapshots(expected, &actual) {
-        panic!("Evaluation snapshot mismatch:\n{diff}");
-    }
-}
 
 /// Assert a command produces a specific decision.
 ///

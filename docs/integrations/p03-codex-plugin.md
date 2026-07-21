@@ -191,7 +191,7 @@ Result: Pass.
 ## Known Limitations
 
 - Hooks are advisory; enforcement depends on Codex host support.
-- The strongest protection remains `orca run -- <codex-command>`.
+- The strongest protection remains `orca codex`.
 - Plugin installation is preview/dry-run by default.
 - Official marketplace availability is not yet implemented.
 - The `orca plugin install` command does not yet perform actual host plugin installation.

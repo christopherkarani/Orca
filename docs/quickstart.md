@@ -65,11 +65,11 @@ Host aliases are the taught launch path:
 
 When a risky action needs approval, interactive sessions offer **Once** / **Always** / **Never** (no rule ids required). Session artifacts land under `.orca/sessions/<session-id>/`.
 
-Custom agents and automation still use the run engine (not the day-1 story):
+Custom commands and CI automation still use the advanced run engine (not the day-1 agent launch path):
 
 ```sh
 ./zig-out/bin/orca run -- echo hello
-./zig-out/bin/orca run --ci -- your-agent …
+./zig-out/bin/orca run --ci -- ./scripts/agent-task.sh
 ```
 
 Orca is graded mediation, not a universal sandbox. Absolute paths, non-shimmed binaries, non-proxy traffic, and non-firing host hooks can still bypass. Canonical grades: [compatibility.md](compatibility.md#protection-grades-canonical).

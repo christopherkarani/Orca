@@ -4,7 +4,7 @@
 
 This phase adds native OpenCode plugin support to Orca. Users can now use Orca with OpenCode in two ways:
 
-1. **Strongest protection**: `orca run -- opencode`
+1. **Strongest protection**: `orca opencode`
 2. **Native OpenCode plugin guardrails**: OpenCode plugin hooks call the Orca CLI for policy decisions, secret checks, and diagnostics.
 
 ## Commands Added
@@ -142,7 +142,7 @@ OpenCode binary was detected in PATH. Local host validation was not performed be
 ## Known Limitations
 
 - OpenCode plugin hooks are advisory; actual enforcement depends on OpenCode host capabilities.
-- The strongest local protection remains `orca run -- opencode`.
+- The strongest local protection remains `orca opencode`.
 - OpenCode does not use skills in the same sense as Codex/Claude; the plugin provides hooks and documentation only.
 - Official npm/marketplace distribution is not yet implemented.
 - Plugin installation is preview/dry-run by default.

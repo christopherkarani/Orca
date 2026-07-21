@@ -24,6 +24,10 @@ pub const Runtime = struct {
         return self.state.bind_url;
     }
 
+    pub fn bindPort(self: Runtime) u16 {
+        return self.state.bind_port;
+    }
+
     /// True when the accept-loop thread has been started (M-5).
     pub fn isServing(self: Runtime) bool {
         return self.state.serving.load(.acquire);
@@ -92,13 +96,31 @@ pub const Runtime = struct {
     }
 
     pub fn deinit(self: *Runtime) void {
+        const io = self.state.threaded.io();
         self.state.stop.store(true, .release);
-        wake(self.state.threaded.io(), self.state.bind_port);
+        wake(io, self.state.bind_port);
         if (self.state.thread_started) {
             self.state.thread.join();
         }
-        self.waitForIdle(2 * std.time.ns_per_s) catch {};
-        self.state.server.deinit(self.state.threaded.io());
+        // Detached connection workers can stall in readHeaders (5s) and/or tunnel
+        // idle (3s). The deinit wait must exceed the longest worker stall so we
+        // do not free State while active_connections > 0 (M-5 free-before-join).
+        const idle_budget_ns: u64 = 8 * std.time.ns_per_s;
+        var server_closed = false;
+        self.waitForIdle(idle_budget_ns) catch {
+            // Force-close the accept socket, then wait once more so half-open
+            // workers can observe peer close / idle timeouts before destroy.
+            self.state.server.deinit(io);
+            server_closed = true;
+            self.waitForIdle(idle_budget_ns) catch {
+                // Residual: if workers remain busy after two budgets, destroy
+                // still races detached threads. Full joinable workers are out of
+                // scope for this partial fix.
+            };
+        };
+        if (!server_closed) {
+            self.state.server.deinit(io);
+        }
         for (self.state.audit_events.items) |ev| ev.deinit(self.state.allocator);
         self.state.audit_events.deinit(self.state.allocator);
         self.state.allocator.free(self.state.bind_url);
@@ -166,8 +188,16 @@ pub fn listen(
     var threaded: std.Io.Threaded = .init_single_threaded;
     const io = threaded.io();
     const address = try std.Io.net.IpAddress.parse("127.0.0.1", 0);
-    var server = try address.listen(io, .{ .reuse_address = true });
+    // Production mediation listener: no SO_REUSEADDR/SO_REUSEPORT. Ephemeral
+    // ports do not need rebind, and reuse would enable MitM rebind after proxy
+    // death on a route-forced fixed port (M-7). Test-only upstream helpers may
+    // still set reuse_address = true.
+    var server = try address.listen(io, .{ .reuse_address = false });
     errdefer server.deinit(io);
+    // Defense-in-depth: explicit FD_CLOEXEC before sandboxed agent fork (M-4).
+    // Zig's netListenIp usually applies SOCK_CLOEXEC already; fail closed if we
+    // cannot set the flag. Child fd scrub remains the keep-set close path.
+    try setServerSocketCloexec(server.socket.handle);
     const port = server.socket.address.getPort();
     const bind_url = try std.fmt.allocPrint(allocator, "http://127.0.0.1:{d}", .{port});
     errdefer allocator.free(bind_url);
@@ -184,6 +214,19 @@ pub fn listen(
         .threaded = threaded,
     };
     return .{ .state = state };
+}
+
+/// Set FD_CLOEXEC on the proxy listen socket when the platform supports fcntl.
+/// Fail closed on fcntl error so a non-CLOEXEC listen FD cannot leak into the
+/// agent child if scrub misses a FD under pressure.
+fn setServerSocketCloexec(handle: std.Io.net.Socket.Handle) !void {
+    switch (@import("builtin").os.tag) {
+        .windows, .wasi => {},
+        else => {
+            if (std.c.fcntl(handle, std.c.F.SETFD, @as(c_int, std.c.FD_CLOEXEC)) == -1)
+                return error.Unexpected;
+        },
+    }
 }
 
 /// Bind and immediately start the accept-loop thread (legacy / tests).
@@ -561,6 +604,140 @@ test "proxy forwards delayed HTTP request bodies and records request audit event
     try std.testing.expect(std.mem.indexOf(u8, events[0].target, "127.0.0.1") != null);
 }
 
+test "proxy denies controlled HTTP endpoint before upstream connect" {
+    if (@import("builtin").os.tag == .windows) return error.SkipZigTest;
+
+    const io = std.testing.io;
+    const upstream_address = try std.Io.net.IpAddress.parse("127.0.0.1", 0);
+    var upstream = try upstream_address.listen(io, .{ .reuse_address = true });
+    defer upstream.deinit(io);
+    const upstream_port = upstream.socket.address.getPort();
+
+    const policy_text = try std.fmt.allocPrint(std.testing.allocator,
+        \\version: 1
+        \\mode: strict
+        \\network:
+        \\  mode: open
+        \\  backend: proxy
+        \\  deny:
+        \\    - "127.0.0.1:{d}"
+    , .{upstream_port});
+    defer std.testing.allocator.free(policy_text);
+    var loaded = try @import("orca_core").policy.load.parseFromSlice(std.testing.allocator, policy_text, "proxy-http-deny.yaml");
+    defer loaded.deinit();
+
+    var upstream_state: TestDenyServerState = .{ .server = &upstream, .io = io };
+    const upstream_thread = try std.Thread.spawn(.{}, testDenyServerNoConnect, .{&upstream_state});
+    defer upstream_thread.join();
+
+    var runtime = try start(std.testing.allocator, &loaded, .strict);
+    defer runtime.deinit();
+    std.Io.sleep(io, std.Io.Duration.fromNanoseconds(50 * std.time.ns_per_ms), .awake) catch {};
+
+    const proxy_port = try bindPort(runtime.bindUrl());
+    const proxy_addr = try std.Io.net.IpAddress.parse("127.0.0.1", proxy_port);
+    var client = try std.Io.net.IpAddress.connect(&proxy_addr, io, .{ .mode = .stream });
+    defer client.close(io);
+
+    var request_buf: [256]u8 = undefined;
+    const request = try std.fmt.bufPrint(
+        &request_buf,
+        "GET http://127.0.0.1:{d}/secret HTTP/1.1\r\nHost: 127.0.0.1:{d}\r\nConnection: close\r\n\r\n",
+        .{ upstream_port, upstream_port },
+    );
+    var client_write_buf: [512]u8 = undefined;
+    var client_writer = client.writer(io, &client_write_buf);
+    try client_writer.interface.writeAll(request);
+    try client_writer.interface.flush();
+
+    var response_buf: [512]u8 = undefined;
+    const response_len = try readHttpResponse(io, client, &response_buf);
+    try std.testing.expect(std.mem.indexOf(u8, response_buf[0..response_len], "403 Forbidden") != null);
+
+    try runtime.waitForIdle(2 * std.time.ns_per_s);
+    const events = try runtime.snapshotAuditEvents(std.testing.allocator);
+    defer runtime.freeAuditEvents(std.testing.allocator, events);
+    try std.testing.expectEqual(@as(usize, 2), events.len);
+    try std.testing.expectEqual(@import("orca_core").core.event.EventType.network_connect_attempt, events[0].event_type);
+    try std.testing.expectEqual(@import("orca_core").core.event.EventType.network_connect_denied, events[1].event_type);
+    try std.testing.expectEqual(@import("orca_core").core.decision.DecisionResult.deny, events[1].result.?);
+    try std.testing.expect(std.mem.indexOf(u8, events[1].reason.?, "explicit network deny") != null);
+    try std.testing.expect(!upstream_state.accepted.load(.acquire));
+}
+
+test "proxy applies HTTP method and path policy while CONNECT remains host-port only" {
+    if (@import("builtin").os.tag == .windows) return error.SkipZigTest;
+
+    const io = std.testing.io;
+    const upstream_address = try std.Io.net.IpAddress.parse("127.0.0.1", 0);
+    var upstream = try upstream_address.listen(io, .{ .reuse_address = true });
+    defer upstream.deinit(io);
+    const upstream_port = upstream.socket.address.getPort();
+
+    const policy_text = try std.fmt.allocPrint(std.testing.allocator,
+        \\version: 1
+        \\mode: strict
+        \\network:
+        \\  mode: open
+        \\  backend: proxy
+        \\services:
+        \\  local_test:
+        \\    hosts:
+        \\      - "127.0.0.1:{d}"
+        \\    methods:
+        \\      - "GET"
+        \\    paths:
+        \\      deny:
+        \\        - "/secret"
+        \\    unmatched: allow
+    , .{upstream_port});
+    defer std.testing.allocator.free(policy_text);
+    var loaded = try @import("orca_core").policy.load.parseFromSlice(std.testing.allocator, policy_text, "proxy-service-deny.yaml");
+    defer loaded.deinit();
+
+    var runtime = try start(std.testing.allocator, &loaded, .strict);
+    defer runtime.deinit();
+    std.Io.sleep(io, std.Io.Duration.fromNanoseconds(50 * std.time.ns_per_ms), .awake) catch {};
+
+    const proxy_port = try bindPort(runtime.bindUrl());
+    const proxy_addr = try std.Io.net.IpAddress.parse("127.0.0.1", proxy_port);
+
+    {
+        var client = try std.Io.net.IpAddress.connect(&proxy_addr, io, .{ .mode = .stream });
+        defer client.close(io);
+        var request_buf: [256]u8 = undefined;
+        const request = try std.fmt.bufPrint(
+            &request_buf,
+            "GET http://127.0.0.1:{d}/secret HTTP/1.1\r\nHost: 127.0.0.1:{d}\r\nConnection: close\r\n\r\n",
+            .{ upstream_port, upstream_port },
+        );
+        var client_write_buf: [512]u8 = undefined;
+        var client_writer = client.writer(io, &client_write_buf);
+        try client_writer.interface.writeAll(request);
+        try client_writer.interface.flush();
+        var response_buf: [512]u8 = undefined;
+        const response_len = try readHttpResponse(io, client, &response_buf);
+        try std.testing.expect(std.mem.indexOf(u8, response_buf[0..response_len], "403 Forbidden") != null);
+    }
+
+    try runtime.waitForIdle(2 * std.time.ns_per_s);
+    const events = try runtime.snapshotAuditEvents(std.testing.allocator);
+    defer runtime.freeAuditEvents(std.testing.allocator, events);
+    try std.testing.expect(events.len >= 2);
+    try std.testing.expectEqual(@import("orca_core").core.event.EventType.network_connect_denied, events[1].event_type);
+    try std.testing.expect(std.mem.indexOf(u8, events[1].reason.?, "service path deny") != null);
+
+    var connect_target_buf: [32]u8 = undefined;
+    const connect_target = try std.fmt.bufPrint(&connect_target_buf, "127.0.0.1:{d}", .{upstream_port});
+    var connect_decision = try network.evaluate(std.testing.allocator, &loaded, .strict, connect_target, .{
+        .enforcement_mode = .proxy_mediated,
+        .method = null,
+    });
+    defer connect_decision.deinit(std.testing.allocator);
+    try std.testing.expectEqual(@import("orca_core").core.decision.DecisionResult.allow, connect_decision.decision.result);
+    try std.testing.expectEqualStrings("services.local_test.unmatched", connect_decision.decision.rule_id.?);
+}
+
 const TestHttpServerState = struct {
     server: *std.Io.net.Server,
     io: std.Io,
@@ -609,6 +786,25 @@ fn testHttpServer(state: *TestHttpServerState) void {
     var writer = stream.writer(state.io, &write_buf);
     writer.interface.writeAll(text) catch {};
     writer.interface.flush() catch {};
+}
+
+const TestDenyServerState = struct {
+    server: *std.Io.net.Server,
+    io: std.Io,
+    accepted: std.atomic.Value(bool) = .init(false),
+};
+
+fn testDenyServerNoConnect(state: *TestDenyServerState) void {
+    var listen_fd = [_]std.posix.pollfd{.{
+        .fd = state.server.socket.handle,
+        .events = std.posix.POLL.IN,
+        .revents = 0,
+    }};
+    const ready = std.posix.poll(&listen_fd, 500) catch return;
+    if (ready == 0) return;
+    var stream = state.server.accept(state.io) catch return;
+    defer stream.close(state.io);
+    state.accepted.store(true, .release);
 }
 
 fn readHttpResponse(io: std.Io, stream: std.Io.net.Stream, buffer: []u8) !usize {

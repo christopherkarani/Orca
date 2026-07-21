@@ -11,6 +11,15 @@ const buildChildLandlockPlan = landlock.buildChildLandlockPlan;
 const probeAbi = landlock.probeAbi;
 const verifyApplyInChild = landlock.verifyApplyInChild;
 
+fn childConnectsTcp4(port: u16) bool {
+    var threaded: std.Io.Threaded = .init_single_threaded;
+    const io = threaded.io();
+    const address = std.Io.net.IpAddress.parse("127.0.0.1", port) catch return false;
+    var stream = address.connect(io, .{ .mode = .stream }) catch return false;
+    stream.close(io);
+    return true;
+}
+
 test "real FS deny: outside denied; neighbor RW; control root not writable" {
     if (builtin.os.tag != .linux) return error.SkipZigTest;
     if (probeAbi() == null) return error.SkipZigTest;
@@ -57,7 +66,7 @@ test "real FS deny: outside denied; neighbor RW; control root not writable" {
     const pid_rc = linux.fork();
     if (linux.errno(pid_rc) != .SUCCESS) return error.SkipZigTest;
     if (pid_rc == 0) {
-        applySelf(&compiled, &plan) catch linux.exit(2);
+        applySelf(&compiled, &plan, null) catch linux.exit(2);
 
         // Outside canary must not be readable.
         var path_buf: [std.fs.max_path_bytes]u8 = undefined;
@@ -153,6 +162,69 @@ test "real FS deny: outside denied; neighbor RW; control root not writable" {
     }
 }
 
+test "real network route forcing: proxy port allowed and neighboring loopback port denied" {
+    if (builtin.os.tag != .linux) return error.SkipZigTest;
+    const abi = probeAbi() orelse return error.SkipZigTest;
+    if (abi.version < landlock.MIN_TCP_ROUTE_FORCE_ABI) return error.SkipZigTest;
+
+    const allocator = std.testing.allocator;
+    const io = std.testing.io;
+    const linux = std.os.linux;
+
+    var allowed_server = try (try std.Io.net.IpAddress.parse("127.0.0.1", 0)).listen(io, .{ .reuse_address = true });
+    defer allowed_server.deinit(io);
+    const allowed_port = allowed_server.socket.address.getPort();
+
+    var denied_server = try (try std.Io.net.IpAddress.parse("127.0.0.1", 0)).listen(io, .{ .reuse_address = true });
+    defer denied_server.deinit(io);
+    const denied_port = denied_server.socket.address.getPort();
+    if (allowed_port == denied_port) return error.SkipZigTest;
+
+    var ws_tmp = std.testing.tmpDir(.{});
+    defer ws_tmp.cleanup();
+    try ws_tmp.dir.createDirPath(io, ".orca");
+    const ws_root = try ws_tmp.dir.realPathFileAlloc(io, ".", allocator);
+    defer allocator.free(ws_root);
+
+    var compiled = try profile.compileProfile(allocator, .{
+        .workspace_root = ws_root,
+        .system_ro_prefixes = profile.defaultSystemRoPrefixes(),
+        .include_tmp = false,
+    });
+    defer compiled.deinit();
+
+    var plan = try buildChildLandlockPlan(allocator, &compiled);
+    defer plan.deinit();
+
+    const pid_rc = linux.fork();
+    if (linux.errno(pid_rc) != .SUCCESS) return error.SkipZigTest;
+    if (pid_rc == 0) {
+        applySelf(&compiled, &plan, .{ .proxy_port = allowed_port }) catch linux.exit(2);
+        if (childConnectsTcp4(denied_port)) linux.exit(3);
+        if (!childConnectsTcp4(allowed_port)) linux.exit(4);
+        linux.exit(0);
+    }
+
+    const child_pid: i32 = @intCast(pid_rc);
+    var status: u32 = 0;
+    while (true) {
+        const w = linux.waitpid(child_pid, &status, 0);
+        if (linux.errno(w) == .INTR) continue;
+        if (linux.errno(w) != .SUCCESS) return error.ApplyFailed;
+        break;
+    }
+    if ((status & 0x7f) != 0) return error.ApplyFailed;
+    const code = (status >> 8) & 0xff;
+    switch (code) {
+        0 => {},
+        2 => return error.LandlockApplyFailedOnHost,
+        // Network route-force canary (not FS): denied port connectable / proxy port unreachable.
+        3 => return error.DeniedPortConnectableUnderRouteForce,
+        4 => return error.ProxyPortUnreachableUnderRouteForce,
+        else => return error.UnexpectedSandboxProbeExit,
+    }
+}
+
 // Production-defaults canary: null system_ro_prefixes installs system RO +
 // device RW (same as production apply). Classic /tmp is NOT RW-granted by
 // default (session temp lives under workspace `.orca-tmp`). Outside canary
@@ -220,7 +292,7 @@ test "real FS deny under production defaults: outside denied; neighbor RW; contr
     const pid_rc = linux.fork();
     if (linux.errno(pid_rc) != .SUCCESS) return error.SkipZigTest;
     if (pid_rc == 0) {
-        applySelf(&compiled, &plan) catch linux.exit(2);
+        applySelf(&compiled, &plan, null) catch linux.exit(2);
 
         var path_buf: [std.fs.max_path_bytes]u8 = undefined;
         @memcpy(path_buf[0..canary_path.len], canary_path);
@@ -352,7 +424,7 @@ test "control expand: chdir workspace root works; create at root denied; control
     const pid_rc = linux.fork();
     if (linux.errno(pid_rc) != .SUCCESS) return error.SkipZigTest;
     if (pid_rc == 0) {
-        applySelf(&compiled, &plan) catch linux.exit(2);
+        applySelf(&compiled, &plan, null) catch linux.exit(2);
 
         var path_buf: [std.fs.max_path_bytes]u8 = undefined;
         @memcpy(path_buf[0..ws_root.len], ws_root);
@@ -470,7 +542,7 @@ test "symlink to outside is not granted by control expand" {
     const pid_rc = linux.fork();
     if (linux.errno(pid_rc) != .SUCCESS) return error.SkipZigTest;
     if (pid_rc == 0) {
-        applySelf(&compiled, &plan) catch linux.exit(2);
+        applySelf(&compiled, &plan, null) catch linux.exit(2);
 
         var path_buf: [std.fs.max_path_bytes]u8 = undefined;
 
@@ -584,7 +656,7 @@ test "hardlink to outside is not granted by control expand" {
     const pid_rc = linux.fork();
     if (linux.errno(pid_rc) != .SUCCESS) return error.SkipZigTest;
     if (pid_rc == 0) {
-        applySelf(&compiled, &plan) catch linux.exit(2);
+        applySelf(&compiled, &plan, null) catch linux.exit(2);
 
         var path_buf: [std.fs.max_path_bytes]u8 = undefined;
 
@@ -710,13 +782,13 @@ test "landlock inheritance: grandchild after nested exec still denies outside an
     const pid_rc = linux.fork();
     if (linux.errno(pid_rc) != .SUCCESS) return error.SkipZigTest;
     if (pid_rc == 0) {
-        applySelf(&compiled, &plan) catch linux.exit(2);
+        applySelf(&compiled, &plan, null) catch linux.exit(2);
 
         // Child image becomes shell; Landlock domain must inherit across exec.
         const argv = [_:null]?[*:0]const u8{ sh_path.ptr, "-c", probe_z.ptr };
         // Minimal PATH so nested exec can resolve sh by absolute path only (argv0 absolute).
         const path_env: [:0]const u8 = "PATH=/usr/bin:/bin";
-        const envp = [_:null]?[*:0]const u8{ path_env.ptr };
+        const envp = [_:null]?[*:0]const u8{path_env.ptr};
         _ = linux.execve(sh_path.ptr, &argv, &envp);
         linux.exit(11); // exec failed — shell not usable under sandbox
     }
@@ -742,8 +814,11 @@ test "landlock inheritance: grandchild after nested exec still denies outside an
     }
 }
 
-test "never claims network landlock in public constants" {
+test "Landlock network declarations stay TCP port scoped only" {
     try std.testing.expect(@hasDecl(landlock, "handledFsRights"));
-    try std.testing.expect(!@hasDecl(landlock, "handledNetRights"));
-    try std.testing.expect(!@hasDecl(landlock, "ACCESS_NET_BIND_TCP"));
+    try std.testing.expect(@hasDecl(landlock, "handledNetRights"));
+    try std.testing.expect(@hasDecl(landlock, "ACCESS_NET_BIND_TCP"));
+    try std.testing.expect(@hasDecl(landlock, "ACCESS_NET_CONNECT_TCP"));
+    try std.testing.expect(!@hasDecl(landlock, "ACCESS_NET_CONNECT_UDP"));
+    try std.testing.expect(!@hasDecl(landlock, "ACCESS_NET_REMOTE_ADDR"));
 }

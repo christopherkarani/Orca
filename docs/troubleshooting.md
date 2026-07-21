@@ -21,7 +21,9 @@ eval "$(./scripts/ensure-zig-toolchain.sh --export)"   # or: direnv allow
 Day-to-day verification after policy/CLI changes:
 
 ```sh
-./scripts/test-fast.sh          # build + test-fast + quick-install matrix
+./scripts/compile-fast.sh       # fastest compile check (iteration)
+./scripts/test-fast.sh          # full local gate (build + units + quick-install)
+./scripts/test-fast.sh units    # units only (no quick-install)
 ./scripts/zig build test        # full suite before merge/CI
 ```
 

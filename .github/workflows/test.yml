@@ -5,26 +5,15 @@ on:
   pull_request:
 
 jobs:
-  test:
+  # Single full Zig suite (do not also run full `zig build test` in ci.yml).
+  zig-full:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - uses: mlugg/setup-zig@v2
         with:
           version: 0.16.0
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: 22.6.0
-          cache: npm
-          cache-dependency-path: orca-dashboard-ui/package-lock.json
-      - name: Dashboard tests and production build
-        working-directory: orca-dashboard-ui
-        run: |
-          npm ci
-          npm test
-          npm run build
-      - name: Unit tests
+      - name: Full Zig unit / phase / fuzz suite
         run: ./scripts/zig build test
       - name: First-user install and uninstall regressions
         run: |
@@ -52,6 +41,11 @@ jobs:
           bash -n scripts/release-dry-run.sh
           bash -n scripts/docker-install-layout-smoke-test.sh
           bash -n scripts/os-sandbox-adversarial-e2e.sh
+          bash -n scripts/compile-fast.sh
+          bash -n scripts/test-fast.sh
+          bash -n scripts/agent-gate.sh
+          bash -n scripts/test-slice.sh
+          bash -n scripts/ci-local-fast.sh
           ruby -c packaging/homebrew/Formula/orca.rb
           python3 -m json.tool packaging/scoop/orca.json >/dev/null
           python3 -m json.tool packaging/npm/package.json >/dev/null
@@ -59,6 +53,53 @@ jobs:
       - name: OS sandbox e2e selftest (fixtures only)
         shell: bash
         run: ORCA_E2E_SELFTEST=1 ./scripts/os-sandbox-adversarial-e2e.sh
+      # release-dry-run → install-layout-smoke requires orca-dashboard-ui/dist.
+      # Dashboard CI is a separate path-filtered job (no shared FS/artifacts), so
+      # build the production bundle here before packaging.
+      - name: Setup Node.js (dashboard bundle for release dry-run)
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22.6.0
+          cache: npm
+          cache-dependency-path: orca-dashboard-ui/package-lock.json
+      - name: Build dashboard production bundle
+        working-directory: orca-dashboard-ui
+        run: |
+          npm ci
+          npm run build
       - name: Release dry-run
         shell: bash
         run: ./scripts/release-dry-run.sh
+
+  # Dashboard only when UI tree changes (path filter via dorny/paths-filter).
+  dashboard:
+    runs-on: ubuntu-latest
+    outputs:
+      should_run: ${{ steps.filter.outputs.dashboard }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dorny/paths-filter@v3
+        id: filter
+        with:
+          filters: |
+            dashboard:
+              - 'orca-dashboard-ui/**'
+              # Legacy assets loaded by dashboard-contract.test.ts (remediation helpers).
+              - 'src/dashboard/**'
+      - name: Setup Node.js
+        if: steps.filter.outputs.dashboard == 'true'
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22.6.0
+          cache: npm
+          cache-dependency-path: orca-dashboard-ui/package-lock.json
+      - name: Dashboard tests and production build
+        if: steps.filter.outputs.dashboard == 'true'
+        working-directory: orca-dashboard-ui
+        run: |
+          npm ci
+          npm test
+          npm run build
+      - name: Skip notice
+        if: steps.filter.outputs.dashboard != 'true'
+        run: echo "No orca-dashboard-ui or src/dashboard changes; skipping dashboard job work."

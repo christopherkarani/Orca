@@ -201,14 +201,6 @@ pub fn list_backups() -> Result<Vec<BackupEntry>, VersionCheckError> {
     Ok(entries)
 }
 
-/// Create a backup of the current orca binary before updating.
-///
-/// # Errors
-///
-/// Returns `VersionCheckError::BackupError` if the backup cannot be created.
-pub fn create_backup() -> Result<PathBuf, VersionCheckError> {
-    create_backup_preserving(None)
-}
 
 fn create_backup_preserving(
     preserve_artifact_name: Option<&str>,
@@ -800,19 +792,6 @@ pub fn format_check_result_json(result: &VersionCheckResult) -> Result<String, V
         .map_err(|e| VersionCheckError::ParseError(format!("Failed to serialize result: {e}")))
 }
 
-/// Spawn a background thread to check for updates.
-///
-/// This function returns immediately. The check runs in the background and
-/// caches the result for future calls to [`get_update_notice`].
-///
-/// This is fire-and-forget: errors are silently ignored since this is
-/// a non-critical enhancement.
-pub fn spawn_background_check() {
-    std::thread::spawn(|| {
-        // Silent check - ignore all errors
-        let _ = check_for_update(false);
-    });
-}
 
 /// Get an update notice from the cache without blocking.
 ///
@@ -845,14 +824,6 @@ pub fn get_update_notice(use_color: bool) -> Option<String> {
     Some(notice)
 }
 
-/// Check if update checking is enabled via environment variable.
-///
-/// Returns `false` if `ORCA_NO_UPDATE_CHECK` is enabled. Documented falsey
-/// values such as `0`, `false`, `no`, and `off` do not disable update checks.
-#[must_use]
-pub fn is_update_check_enabled() -> bool {
-    is_update_check_enabled_with(|key| std::env::var(key).ok())
-}
 
 fn is_update_check_enabled_with<F>(mut get_env: F) -> bool
 where

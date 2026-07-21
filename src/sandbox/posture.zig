@@ -68,6 +68,7 @@ pub const AttachReceipt = struct {
     /// Owned hex hash when active (fixed storage — avoids UAF on returned receipts).
     profile_hash_hex: ?[64]u8 = null,
     fs_scope: []const u8 = "none",
+    network_scope: []const u8 = "unrestricted",
     reason_code: ?[]const u8 = null,
 
     pub fn isActive(self: AttachReceipt) bool {
@@ -101,6 +102,15 @@ pub fn activeReceipt(
     profile_hash_hex: []const u8,
     fs_scope: []const u8,
 ) error{InvalidProfileHash}!AttachReceipt {
+    return activeReceiptWithNetwork(mechanism, profile_hash_hex, fs_scope, "unrestricted");
+}
+
+pub fn activeReceiptWithNetwork(
+    mechanism: BackendMechanism,
+    profile_hash_hex: []const u8,
+    fs_scope: []const u8,
+    network_scope: []const u8,
+) error{InvalidProfileHash}!AttachReceipt {
     if (!isValidProfileHashHex(profile_hash_hex)) return error.InvalidProfileHash;
     // Copy into owned fixed storage (N1: no borrow of caller-owned / ephemeral memory).
     var hex: [64]u8 = undefined;
@@ -110,6 +120,7 @@ pub fn activeReceipt(
         .mechanism = mechanism,
         .profile_hash_hex = hex,
         .fs_scope = fs_scope,
+        .network_scope = network_scope,
         .reason_code = null,
     };
 }
@@ -155,6 +166,14 @@ pub fn failedReceipt(reason_code: []const u8) AttachReceipt {
     };
 }
 
+/// Buffer size for `formatSessionBanner` / session-start OS line in `run.zig`.
+///
+/// Must fit the longest production active banner: fixed template (~151) +
+/// landlock fs_scope with platform tmp (~95) + route-forced network_scope (~96)
+/// ≈ 342. 320 was too small (route-forced default no-tmp is already 325) and
+/// caused silent fallback to bare `OS sandbox: active`.
+pub const session_banner_buf_len: usize = 512;
+
 /// Default user-facing banner language (mechanism-neutral).
 ///
 /// Active path runs the launch allowlist on child env before attach:
@@ -167,8 +186,8 @@ pub fn formatSessionBanner(buf: []u8, receipt: AttachReceipt) ![]const u8 {
     return switch (receipt.posture) {
         .active => try std.fmt.bufPrint(
             buf,
-            "OS sandbox: active (filesystem: {s}; network: unrestricted; credentials: launch-allowlist (secrets stripped; agent sockets/certs may remain); tools: wrapper-mediated)",
-            .{receipt.fs_scope},
+            "OS sandbox: active (filesystem: {s}; network: {s}; credentials: launch-allowlist (secrets stripped; agent sockets/certs may remain); tools: wrapper-mediated)",
+            .{ receipt.fs_scope, receipt.network_scope },
         ),
         // Prepared materials must never read as active or as a grade-drop failure.
         .prepared => if (receipt.reason_code) |reason|
@@ -192,11 +211,11 @@ pub fn formatAuditReason(buf: []u8, receipt: AttachReceipt) ![]const u8 {
     const posture_str = receipt.posture.toString();
     const fs_scope = receipt.fs_scope;
     if (receipt.profileHashSlice()) |hash| {
-        return try std.fmt.bufPrint(buf, "posture={s}; profile_hash={s}; fs_scope={s}", .{ posture_str, hash, fs_scope });
+        return try std.fmt.bufPrint(buf, "posture={s}; profile_hash={s}; fs_scope={s}; network_scope={s}", .{ posture_str, hash, fs_scope, receipt.network_scope });
     } else if (receipt.reason_code) |code| {
-        return try std.fmt.bufPrint(buf, "posture={s}; fs_scope={s}; reason={s}", .{ posture_str, fs_scope, code });
+        return try std.fmt.bufPrint(buf, "posture={s}; fs_scope={s}; network_scope={s}; reason={s}", .{ posture_str, fs_scope, receipt.network_scope, code });
     } else {
-        return try std.fmt.bufPrint(buf, "posture={s}; fs_scope={s}", .{ posture_str, fs_scope });
+        return try std.fmt.bufPrint(buf, "posture={s}; fs_scope={s}; network_scope={s}", .{ posture_str, fs_scope, receipt.network_scope });
     }
 }
 
@@ -303,4 +322,57 @@ test "landlock fs_scope surfaces root RO create-at-root contract" {
     try std.testing.expect(std.mem.indexOf(u8, line, "root RO") != null);
     try std.testing.expect(std.mem.indexOf(u8, line, "platform tmp RW") != null);
     try std.testing.expect(std.mem.indexOf(u8, line, "Landlock") == null); // still mechanism-neutral
+}
+
+test "activeReceiptWithNetwork + banner surfaces route-forced network_scope" {
+    // Production Landlock route-forced string (apply.activateAfterHandshake M-1).
+    const landlock_scope = "proxy route-forced (TCP connect port-scoped to proxy port; not address-scoped; UDP unrestricted)";
+    const landlock = try activeReceiptWithNetwork(
+        .landlock,
+        test_hash_64,
+        "workspace child RW, root RO, system RO, no home",
+        landlock_scope,
+    );
+    try std.testing.expect(landlock.isActive());
+    try std.testing.expectEqualStrings(landlock_scope, landlock.network_scope);
+
+    var buf: [session_banner_buf_len]u8 = undefined;
+    const landlock_line = try formatSessionBanner(&buf, landlock);
+    try std.testing.expect(std.mem.indexOf(u8, landlock_line, "network: proxy route-forced") != null);
+    try std.testing.expect(std.mem.indexOf(u8, landlock_line, "port-scoped") != null);
+    try std.testing.expect(std.mem.indexOf(u8, landlock_line, "UDP unrestricted") != null);
+    try std.testing.expect(std.mem.indexOf(u8, landlock_line, "Landlock") == null); // mechanism-neutral banner
+
+    // Seatbelt: outbound loopback proxy only; inbound/bind residual is explicit.
+    const seatbelt_scope = "proxy route-forced (outbound TCP to Orca loopback proxy only; inbound/bind unrestricted)";
+    const seatbelt = try activeReceiptWithNetwork(
+        .seatbelt,
+        test_hash_64,
+        "workspace RW, system RO, no home",
+        seatbelt_scope,
+    );
+    try std.testing.expectEqualStrings(seatbelt_scope, seatbelt.network_scope);
+    const seatbelt_line = try formatSessionBanner(&buf, seatbelt);
+    try std.testing.expect(std.mem.indexOf(u8, seatbelt_line, "loopback proxy only") != null);
+    try std.testing.expect(std.mem.indexOf(u8, seatbelt_line, "inbound/bind unrestricted") != null);
+    try std.testing.expect(std.mem.indexOf(u8, seatbelt_line, "Seatbelt") == null);
+}
+
+test "session_banner_buf_len fits production landlock route-forced scopes" {
+    // Regression: 320 overflowed (325 default no-tmp, 342 with platform tmp) and
+    // hid port-scoped / UDP residual behind bare "OS sandbox: active".
+    const landlock_scope = "proxy route-forced (TCP connect port-scoped to proxy port; not address-scoped; UDP unrestricted)";
+    const fs_with_tmp = "workspace child RW, root RO, system RO, platform tmp RW, no home, control write-deny (readable)";
+    const receipt = try activeReceiptWithNetwork(.landlock, test_hash_64, fs_with_tmp, landlock_scope);
+
+    var buf: [session_banner_buf_len]u8 = undefined;
+    const line = try formatSessionBanner(&buf, receipt);
+    try std.testing.expect(line.len > 320);
+    try std.testing.expect(std.mem.indexOf(u8, line, "port-scoped") != null);
+    try std.testing.expect(std.mem.indexOf(u8, line, "UDP unrestricted") != null);
+    try std.testing.expect(std.mem.indexOf(u8, line, "platform tmp RW") != null);
+
+    // The previous production size must fail for this receipt (guards constant drift).
+    var tiny: [320]u8 = undefined;
+    try std.testing.expectError(error.NoSpaceLeft, formatSessionBanner(&tiny, receipt));
 }

@@ -158,7 +158,7 @@ cat tests/plugin-fixtures/openclaw/tool_command_safe.json \
 - **`clawhub:` install protocol requires recent OpenClaw.** Older OpenClaw versions may not support `clawhub:` installs. Use local path or npm install as fallback.
 - **Local path install may show runtime warnings.** OpenClaw local path installs load TypeScript source directly and may show context-shape warnings depending on OpenClaw version. The npm package (with compiled `dist/index.js`) is the recommended distribution format.
 - **Hooks are advisory for informational events.** Blocking hooks depend on OpenClaw honoring thrown errors.
-- **The strongest protection remains `orca run -- openclaw`.**
+- **The strongest protection remains `orca openclaw`.**
 - **No telemetry is collected.**
 - **No MCP server behavior is added.**
 - **No drone-specific plugin features are added.**

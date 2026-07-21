@@ -191,7 +191,7 @@ The plugin uses synthetic test secrets (e.g., `fake_p05_secret_value`) in fixtur
 ## Limitations
 
 - Hooks are advisory; enforcement depends on Codex host support.
-- The strongest protection is `orca run -- <codex-command>`.
+- The strongest protection is `orca codex`.
 - Plugin installation is a preview/dry-run by default.
 - No telemetry is collected.
 - Official marketplace availability is not yet implemented.
