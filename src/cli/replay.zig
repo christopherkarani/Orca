@@ -112,6 +112,16 @@ fn replaySession(
     return exit_codes.success;
 }
 
+fn isDeniedEventType(event_type: []const u8) bool {
+    return std.mem.eql(u8, event_type, "command_denied");
+}
+
+const ReplayTimelineRow = struct {
+    icon: []const u8,
+    detail: []const u8,
+    denied: bool,
+};
+
 fn writeReplayHuman(
     io: std.Io,
     allocator: std.mem.Allocator,
@@ -127,8 +137,32 @@ fn writeReplayHuman(
     });
     try stdout.writeByte('\n');
 
-    const timeline_events = try allocator.alloc(tui.render.TimelineEvent, session.events.len);
-    defer allocator.free(timeline_events);
+    // Dominant summary when denials are present (demo gold: bare `orca replay`).
+    var denied_count: usize = 0;
+    for (session.events) |event| {
+        if (isDeniedEventType(event.event_type)) denied_count += 1;
+    }
+    if (denied_count > 0) {
+        var deny_body: std.ArrayList(u8) = .empty;
+        defer deny_body.deinit(allocator);
+        try deny_body.print(allocator, "{d} action(s) blocked:", .{denied_count});
+        var listed: usize = 0;
+        for (session.events) |event| {
+            if (!isDeniedEventType(event.event_type)) continue;
+            if (listed == 0) {
+                try deny_body.print(allocator, " {s}", .{event.target_value});
+            } else {
+                try deny_body.print(allocator, " · {s}", .{event.target_value});
+            }
+            listed += 1;
+        }
+        try tui.render.callout(io, stdout, .danger, "Denied actions", deny_body.items);
+        try stdout.writeByte('\n');
+    }
+
+    // Build grouped timeline rows (collapse runs of secret_redacted).
+    const rows = try allocator.alloc(ReplayTimelineRow, session.events.len);
+    defer allocator.free(rows);
     const owned_details = try allocator.alloc(?[]u8, session.events.len);
     defer allocator.free(owned_details);
     @memset(owned_details, null);
@@ -161,15 +195,44 @@ fn writeReplayHuman(
                 event.target_value,
             });
         owned_details[timeline_len] = detail;
-        timeline_events[timeline_len] = .{ .label = replayEventIcon(event.event_type), .detail = detail };
+        rows[timeline_len] = .{
+            .icon = replayEventIcon(event.event_type),
+            .detail = detail,
+            .denied = isDeniedEventType(event.event_type),
+        };
         timeline_len += 1;
         event_index += group_len;
     }
 
-    try tui.render.timeline(io, stdout, timeline_events[0..timeline_len]);
+    // Custom timeline: denied rows use danger token + DENY badge so they dominate.
+    try writeReplayTimeline(io, stdout, rows[0..timeline_len]);
     if (show_verify) {
         try stdout.writeByte('\n');
         try tui.render.callout(io, stdout, if (session.verified) .success else .warn, "Hash chain", if (session.verified) "verified" else "not verified");
+    }
+}
+
+/// Render a timeline with deny rows visually dominant (danger paint + DENY badge).
+/// Non-deny rows match `tui.render.timeline` plain-mode structure (`├ icon  detail`).
+fn writeReplayTimeline(io: std.Io, stdout: anytype, rows: []const ReplayTimelineRow) !void {
+    for (rows, 0..) |row, index| {
+        try stdout.writeAll("  ");
+        try tui.theme.paint(io, stdout, .muted, if (index + 1 == rows.len) "└" else "├");
+        try stdout.writeAll(" ");
+        if (row.denied) {
+            try tui.theme.paintBold(io, stdout, .danger, row.icon);
+            try stdout.writeAll(" ");
+            try tui.render.badge(io, stdout, .deny);
+            try stdout.writeAll("  ");
+            if (row.detail.len > 0) try tui.theme.paint(io, stdout, .danger, row.detail);
+        } else {
+            try tui.theme.paintBold(io, stdout, .text_bright, row.icon);
+            if (row.detail.len > 0) {
+                try stdout.writeAll("  ");
+                try tui.terminal_text.write(stdout, row.detail, .single_line);
+            }
+        }
+        try stdout.writeAll("\n");
     }
 }
 
@@ -214,9 +277,15 @@ fn buildTimelineLinesForTui(allocator: std.mem.Allocator, session: core_api.Repl
             }
         }
         const icon = replayEventIcon(event.event_type);
+        const denied = isDeniedEventType(event.event_type);
         const line = if (group_len > 1)
             try std.fmt.allocPrint(allocator, "{s}  {s} · {s} · {d} secret redactions · {s}", .{
                 icon, event.timestamp, event.event_type, group_len, event.target_value,
+            })
+        else if (denied)
+            // Prefix DENY so the alt-screen list keeps denials scannable without colour.
+            try std.fmt.allocPrint(allocator, "{s} [DENY]  {s} · {s} · {s}", .{
+                icon, event.timestamp, event.event_type, event.target_value,
             })
         else
             try std.fmt.allocPrint(allocator, "{s}  {s} · {s} · {s}", .{
@@ -234,13 +303,20 @@ fn freeTimelineLines(allocator: std.mem.Allocator, lines: [][]const u8) void {
     allocator.free(lines);
 }
 
+/// Friendly empty-state copy for bare `orca replay` / `--list` when nothing is recorded.
+/// Points operators at Safe Launch (`start` + agent), never a raw FileNotFound dump.
+const empty_sessions_hint =
+    \\No sessions yet. Run `orca start` then `orca <agent>` (for example `orca claude`) to create a protected session.
+    \\
+;
+
 fn listSessions(io: std.Io, allocator: std.mem.Allocator, workspace_root: []const u8, stdout: anytype) !u8 {
     const sessions_dir = try std.fs.path.join(allocator, &.{ workspace_root, ".orca", "sessions" });
     defer allocator.free(sessions_dir);
 
     var dir = std.Io.Dir.cwd().openDir(io, sessions_dir, .{ .iterate = true }) catch |err| switch (err) {
         error.FileNotFound => {
-            try stdout.writeAll("No sessions found. Run `orca run -- <command>` to create one.\n");
+            try stdout.writeAll(empty_sessions_hint);
             return exit_codes.success;
         },
         else => return err,
@@ -258,7 +334,8 @@ fn listSessions(io: std.Io, allocator: std.mem.Allocator, workspace_root: []cons
     }
 
     if (count == 0) {
-        try stdout.writeAll("\nNo sessions found. Run `orca run -- <command>` to create one.\n");
+        try stdout.writeAll("\n");
+        try stdout.writeAll(empty_sessions_hint);
     } else {
         try stdout.print("\n{d} session(s) found.\n", .{count});
         try stdout.writeAll("Run `orca replay --session <id>` to view a session.\n");
@@ -367,7 +444,7 @@ test "replay --list prints sessions or friendly empty message" {
     try std.testing.expect(std.mem.indexOf(u8, output, "session-b") != null);
 }
 
-test "replay with no args and no sessions lists instead of erroring" {
+test "replay with no args and no sessions shows friendly empty state" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
 
@@ -391,8 +468,80 @@ test "replay with no args and no sessions lists instead of erroring" {
     const code = try command(std.testing.io, &.{}, &stdout_writer, &stderr_writer);
     try std.testing.expectEqual(exit_codes.success, code);
     const output = stdout_writer.buffered();
-    try std.testing.expect(std.mem.indexOf(u8, output, "No sessions found") != null);
+    // Friendly empty state — not a raw FileNotFound dump; points at Safe Launch.
+    try std.testing.expect(std.mem.indexOf(u8, output, "No sessions") != null);
+    try std.testing.expect(std.mem.indexOf(u8, output, "orca start") != null);
+    try std.testing.expect(std.mem.indexOf(u8, output, "orca <agent>") != null or std.mem.indexOf(u8, output, "agent") != null);
+    try std.testing.expect(std.mem.indexOf(u8, output, "FileNotFound") == null);
     try std.testing.expectEqualStrings("", stderr_writer.buffered());
+}
+
+test "replay with no args loads last session timeline" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const root = try tmp.dir.realPathFileAlloc(std.testing.io, ".", std.testing.allocator);
+    defer std.testing.allocator.free(root);
+    try tmp.dir.createDirPath(std.testing.io, ".orca");
+    {
+        const policy_file = try tmp.dir.createFile(std.testing.io, ".orca/policy.yaml", .{});
+        defer policy_file.close(std.testing.io);
+        try policy_file.writeStreamingAll(std.testing.io, "version: 1\nmode: strict\n");
+    }
+    const session_id = try writeReplayTimelineFixture(std.testing.io, std.testing.allocator, root);
+    defer std.testing.allocator.free(session_id);
+
+    const previous_cwd = try std.Io.Dir.cwd().realPathFileAlloc(std.testing.io, ".", std.testing.allocator);
+    defer std.testing.allocator.free(previous_cwd);
+    try std.process.setCurrentDir(std.testing.io, tmp.dir);
+    defer std.process.setCurrentPath(std.testing.io, previous_cwd) catch {};
+
+    var stdout_buf: [4096]u8 = undefined;
+    var stderr_buf: [512]u8 = undefined;
+    var stdout_writer: std.Io.Writer = .fixed(&stdout_buf);
+    var stderr_writer: std.Io.Writer = .fixed(&stderr_buf);
+
+    // Bare `orca replay` — no --session required; defaults to last.
+    const code = try command(std.testing.io, &.{}, &stdout_writer, &stderr_writer);
+    try std.testing.expectEqual(exit_codes.success, code);
+    try std.testing.expectEqualStrings("", stderr_writer.buffered());
+    const output = stdout_writer.buffered();
+    try std.testing.expect(std.mem.indexOf(u8, output, session_id) != null);
+    try std.testing.expect(std.mem.indexOf(u8, output, "3 secret redactions") != null);
+}
+
+test "replay human timeline emphasizes denied actions" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const root = try tmp.dir.realPathFileAlloc(std.testing.io, ".", std.testing.allocator);
+    defer std.testing.allocator.free(root);
+    try tmp.dir.createDirPath(std.testing.io, ".orca");
+    {
+        const policy_file = try tmp.dir.createFile(std.testing.io, ".orca/policy.yaml", .{});
+        defer policy_file.close(std.testing.io);
+        try policy_file.writeStreamingAll(std.testing.io, "version: 1\nmode: strict\n");
+    }
+    const session_id = try writeReplayDenyFixture(std.testing.io, std.testing.allocator, root);
+    defer std.testing.allocator.free(session_id);
+
+    const previous_cwd = try std.Io.Dir.cwd().realPathFileAlloc(std.testing.io, ".", std.testing.allocator);
+    defer std.testing.allocator.free(previous_cwd);
+    try std.process.setCurrentDir(std.testing.io, tmp.dir);
+    defer std.process.setCurrentPath(std.testing.io, previous_cwd) catch {};
+
+    var stdout_buf: [4096]u8 = undefined;
+    var stderr_buf: [512]u8 = undefined;
+    var stdout_writer: std.Io.Writer = .fixed(&stdout_buf);
+    var stderr_writer: std.Io.Writer = .fixed(&stderr_buf);
+
+    const code = try command(std.testing.io, &.{}, &stdout_writer, &stderr_writer);
+    try std.testing.expectEqual(exit_codes.success, code);
+    try std.testing.expectEqualStrings("", stderr_writer.buffered());
+    const output = stdout_writer.buffered();
+    // Denied actions visually dominant: summary callout + DENY badge on the row.
+    try std.testing.expect(std.mem.indexOf(u8, output, "Denied") != null);
+    try std.testing.expect(std.mem.indexOf(u8, output, "[DENY]") != null or std.mem.indexOf(u8, output, "DENY") != null);
+    try std.testing.expect(std.mem.indexOf(u8, output, "rm -rf /") != null);
+    try std.testing.expect(std.mem.indexOf(u8, output, "command_denied") != null);
 }
 
 fn writeReplayTimelineFixture(io: std.Io, allocator: std.mem.Allocator, workspace_root: []const u8) ![]u8 {
@@ -447,6 +596,66 @@ fn writeReplayTimelineFixture(io: std.Io, allocator: std.mem.Allocator, workspac
     try core_api.writeAuditSummary(allocator, audit_writer.sessionDirPath(), .{
         .session = session,
         .status = .{ .exited = 0 },
+        .event_count = audit_writer.event_count,
+        .final_event_hash = audit_writer.finalHash() orelse "",
+        .policy = ".orca/policy.yaml",
+        .product_label = "Orca",
+    });
+    return allocator.dupe(u8, audit_writer.session_id.slice());
+}
+
+/// Session fixture with one allowed and one denied command (for deny-emphasis tests).
+fn writeReplayDenyFixture(io: std.Io, allocator: std.mem.Allocator, workspace_root: []const u8) ![]u8 {
+    const now = core.time.Timestamp.fromUnixSeconds(1_777_983_130);
+    var session_id: core.session.SessionId = .{ .value = undefined, .len = 0 };
+    const session_id_text = try std.fmt.bufPrint(&session_id.value, "replay-deny-fixture", .{});
+    session_id.len = session_id_text.len;
+    const session = core.session.Session{
+        .id = session_id,
+        .started_at = now,
+        .ended_at = now,
+        .command = "orca",
+        .args = &.{ "run", "--", "echo", "ok" },
+        .workspace_root = workspace_root,
+        .session_name = "replay-deny-test",
+        .mode = .strict,
+        .platform = core.platform.detectOs(),
+    };
+    var audit_writer = try core_api.createAuditWriter(io, allocator, session);
+    defer audit_writer.deinit();
+
+    var allowed_id: core.event.EventId = .{ .value = undefined, .len = 0 };
+    const allowed_id_text = try std.fmt.bufPrint(&allowed_id.value, "allowed", .{});
+    allowed_id.len = allowed_id_text.len;
+    const allowed = try core_api.createAuditEvent(.{
+        .session_id = session.id,
+        .event_id = allowed_id,
+        .timestamp = now,
+        .event_type = .command_allowed,
+        .actor = .{ .kind = .orca, .display = "orca" },
+        .target = .{ .kind = .command, .value = "echo ok" },
+        .decision = core_api.makeDecision(.{ .result = .allow, .reason = "allowed" }),
+    });
+    try core_api.appendAuditEvent(&audit_writer, allowed);
+
+    var denied_id: core.event.EventId = .{ .value = undefined, .len = 0 };
+    const denied_id_text = try std.fmt.bufPrint(&denied_id.value, "denied", .{});
+    denied_id.len = denied_id_text.len;
+    const denied = try core_api.createAuditEvent(.{
+        .session_id = session.id,
+        .event_id = denied_id,
+        .timestamp = now,
+        .event_type = .command_denied,
+        .actor = .{ .kind = .orca, .display = "orca" },
+        .target = .{ .kind = .command, .value = "rm -rf /" },
+        .decision = core_api.makeDecision(.{ .result = .deny, .reason = "blocked by policy" }),
+    });
+    try core_api.appendAuditEvent(&audit_writer, denied);
+
+    try audit_writer.writeLastPointer();
+    try core_api.writeAuditSummary(allocator, audit_writer.sessionDirPath(), .{
+        .session = session,
+        .status = .{ .exited = 1 },
         .event_count = audit_writer.event_count,
         .final_event_hash = audit_writer.finalHash() orelse "",
         .policy = ".orca/policy.yaml",
