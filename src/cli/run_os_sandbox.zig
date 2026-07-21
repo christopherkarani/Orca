@@ -192,7 +192,7 @@ test "sandboxSpawnFailReason maps classified spawn errors" {
 test "formatOsSandboxBannerLine does not invent unavailable for active on format error" {
     // Tiny buffer forces formatSessionBanner NoSpaceLeft; fallback must keep posture tag.
     var tiny: [8]u8 = undefined;
-    const active = sandbox.posture.activeReceipt(
+    const active = try sandbox.posture.activeReceipt(
         .landlock,
         "abcd0123abcd0123abcd0123abcd0123abcd0123abcd0123abcd0123abcd0123",
         "workspace child RW, root RO, system RO, no home",
