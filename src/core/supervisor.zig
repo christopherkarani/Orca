@@ -29,6 +29,9 @@ pub const RunConfig = struct {
     custom_spawn_used_out: ?*bool = null,
     before_spawn: ?StartHook = null,
     before_process_launch: ?StartHook = null,
+    /// Runs after the agent child is forked/spawned but before on_session_start.
+    /// Used to start proxy accept threads after sandboxed Seatbelt fork (M-5).
+    after_process_spawn: ?StartHook = null,
     on_session_start: ?StartHook = null,
     on_event: ?EventHook = null,
     health_monitor: ?HealthMonitor = null,
@@ -185,6 +188,15 @@ pub fn run(io: std.Io, allocator: std.mem.Allocator, config: RunConfig) !Session
 
     if (config.custom_spawn_used_out) |out| {
         out.* = prepared.custom_spawn_used;
+    }
+
+    // After fork: start deferred services (e.g. proxy accept loop) while the
+    // child has already completed sandboxed apply (M-5 single-thread fork).
+    if (config.after_process_spawn) |hook| {
+        hook.callback(hook.context, session) catch |err| {
+            prepared.terminateAfterParentError();
+            return err;
+        };
     }
 
     if (config.on_session_start) |hook| {

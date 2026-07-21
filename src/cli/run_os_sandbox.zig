@@ -90,7 +90,8 @@ pub fn warnAutoDegrade(
                 .{reason},
             );
         },
-        .active, .disabled => {},
+        // prepared has child materials — not a grade drop.
+        .active, .prepared, .disabled => {},
     }
 }
 
@@ -164,6 +165,7 @@ pub fn formatOsSandboxBannerLine(buf: []u8, receipt: sandbox.posture.AttachRecei
     // Never invent "unavailable" for an active/disabled/failed receipt (Z-17).
     return sandbox.posture.formatSessionBanner(buf, receipt) catch switch (receipt.posture) {
         .active => "OS sandbox: active",
+        .prepared => "OS sandbox: prepared",
         .unavailable => "OS sandbox: unavailable",
         .failed => "OS sandbox: failed",
         .disabled => "OS sandbox: disabled",
@@ -195,7 +197,7 @@ test "formatOsSandboxBannerLine does not invent unavailable for active on format
     const active = try sandbox.posture.activeReceipt(
         .landlock,
         "abcd0123abcd0123abcd0123abcd0123abcd0123abcd0123abcd0123abcd0123",
-        "workspace child RW, root RO, system RO, no home",
+        "workspace child RW, root RO, system RO, platform tmp RW, no home",
     );
     try std.testing.expect(active.posture == .active);
     const line = formatOsSandboxBannerLine(&tiny, active);

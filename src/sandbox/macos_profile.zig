@@ -28,8 +28,8 @@ pub fn renderSbpl(allocator: std.mem.Allocator, compiled: *const profile.Compile
         \\(allow process*)
         \\(allow signal)
         \\(allow sysctl-read)
+        \\;; M-4: mach-lookup required for dyld; omit mach-register (no host service registration)
         \\(allow mach-lookup)
-        \\(allow mach-register)
         \\(allow network*)
         \\
         \\;; dyld / device / root path components needed for exec (content + metadata)
@@ -45,7 +45,9 @@ pub fn renderSbpl(allocator: std.mem.Allocator, compiled: *const profile.Compile
         \\(allow file-ioctl (subpath "/dev"))
         \\(allow file-read-metadata (subpath "/private/var/db/dyld"))
         \\(allow file-read* (subpath "/private/var/db/dyld"))
-        \\(allow file-write* (subpath "/dev"))
+        \\;; device writes: only null/urandom (not bare /dev — M-4)
+        \\(allow file-write* (literal "/dev/null"))
+        \\(allow file-write* (literal "/dev/urandom"))
         \\
     );
 
@@ -301,6 +303,30 @@ test "SBPL never emits bare unrestricted file-read-metadata (M-4)" {
     try std.testing.expect(std.mem.indexOf(u8, sbpl, "(allow file-read-metadata (literal \"/\")") != null);
     try std.testing.expect(std.mem.indexOf(u8, sbpl, "(allow file-read-metadata (subpath \"/tmp/orca-sbpl-meta\"))") != null);
     try std.testing.expect(std.mem.indexOf(u8, sbpl, "(allow file-read-metadata (subpath \"/usr\"))") != null);
+}
+
+test "SBPL narrows /dev writes to null and urandom only (M-4)" {
+    const allocator = std.testing.allocator;
+    var compiled = try profile.compileProfile(allocator, .{
+        .workspace_root = "/tmp/orca-sbpl-dev",
+        .system_ro_prefixes = &[_][]const u8{ "/usr", "/bin" },
+    });
+    defer compiled.deinit();
+
+    const sbpl = try renderSbpl(allocator, &compiled);
+    defer allocator.free(sbpl);
+
+    // Broad /dev write grant must not appear.
+    try std.testing.expect(std.mem.indexOf(u8, sbpl, "(allow file-write* (subpath \"/dev\"))") == null);
+    // Narrow device nodes required for exec/stdio.
+    try std.testing.expect(std.mem.indexOf(u8, sbpl, "(allow file-write* (literal \"/dev/null\"))") != null);
+    try std.testing.expect(std.mem.indexOf(u8, sbpl, "(allow file-write* (literal \"/dev/urandom\"))") != null);
+    // Read/ioctl remain broad for exec (TTY, null reads, etc.).
+    try std.testing.expect(std.mem.indexOf(u8, sbpl, "(allow file-read* (subpath \"/dev\"))") != null);
+    try std.testing.expect(std.mem.indexOf(u8, sbpl, "(allow file-ioctl (subpath \"/dev\"))") != null);
+    // mach-lookup remains (dyld); mach-register is no longer granted (M-4 residual tighten).
+    try std.testing.expect(std.mem.indexOf(u8, sbpl, "(allow mach-lookup)") != null);
+    try std.testing.expect(std.mem.indexOf(u8, sbpl, "(allow mach-register)") == null);
 }
 
 test "SBPL denies /System/Volumes/Data even if bare /System is granted (M-1)" {

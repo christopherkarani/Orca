@@ -115,7 +115,9 @@ fn commandWithStdioAndEnv(io: std.Io, argv: []const []const u8, stdout: anytype,
     defer if (proxy_runtime) |*runtime| runtime.deinit();
     const proxy_required_by_backend = loaded_policy.innerPtr().network.effectiveBackend() == .proxy;
     if (proxy_required_by_backend) {
-        proxy_runtime = intercept.proxy.start(allocator, loaded_policy.innerPtr(), effective_policy_mode) catch |err| blk: {
+        // M-5: bind only (no accept thread) so Seatbelt fork stays single-threaded.
+        // startServing runs after the agent child is forked (after_process_spawn).
+        proxy_runtime = intercept.proxy.listen(allocator, loaded_policy.innerPtr(), effective_policy_mode) catch |err| blk: {
             if (effective_policy_mode == .strict or effective_policy_mode == .ci or requiresBackend(options, .network_enforce)) {
                 try stderr.print("orca run: proxy network backend unavailable: {s}\n", .{@errorName(err)});
                 return exit_codes.unsupported;
@@ -542,6 +544,18 @@ fn commandWithStdioAndEnv(io: std.Io, argv: []const []const u8, stdout: anytype,
     var sandbox_spawn_ctx: run_os_sandbox.SandboxSpawnCtx = undefined;
     const os_child_apply = run_os_sandbox.buildOsChildApply(&apply_result, &sandbox_spawn_ctx);
 
+    // M-5: start proxy accept loop only after the agent child is forked.
+    const ProxyServeCtx = struct {
+        runtime: ?*intercept.proxy.Runtime,
+        pub fn afterSpawn(context: *anyopaque, _: core.session.Session) !void {
+            const self: *@This() = @ptrCast(@alignCast(context));
+            if (self.runtime) |rt| {
+                try rt.startServing();
+            }
+        }
+    };
+    var proxy_serve_ctx: ProxyServeCtx = .{ .runtime = if (proxy_runtime != null) &proxy_runtime.? else null };
+
     var result = supervisor.run(io, allocator, .{
         .command = options.command_argv[0],
         .args = options.command_argv[1..],
@@ -557,6 +571,10 @@ fn commandWithStdioAndEnv(io: std.Io, argv: []const []const u8, stdout: anytype,
         .before_process_launch = if (audit_enabled) supervisor.StartHook{
             .context = &command_guard_context,
             .callback = CommandGuardContext.beforeProcessLaunch,
+        } else null,
+        .after_process_spawn = if (proxy_runtime != null) supervisor.StartHook{
+            .context = &proxy_serve_ctx,
+            .callback = ProxyServeCtx.afterSpawn,
         } else null,
         .on_session_start = .{
             .context = &start_printer,
@@ -2393,7 +2411,7 @@ test "session start banner is mechanism-neutral for disabled OS sandbox" {
 
     writer = .fixed(&buf);
     const active_hash = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
-    try printSessionStart(std.testing.io, &writer, session, .ask, false, try sandbox.posture.activeReceipt(.seatbelt, active_hash, "workspace RW, system RO, no home"));
+    try printSessionStart(std.testing.io, &writer, session, .ask, false, try sandbox.posture.activeReceipt(.seatbelt, active_hash, "workspace RW, system RO, platform tmp RW, no home"));
     const active_out = writer.buffered();
     try std.testing.expect(std.mem.indexOf(u8, active_out, "OS sandbox: active") != null);
     try std.testing.expect(std.mem.indexOf(u8, active_out, "Seatbelt") == null);

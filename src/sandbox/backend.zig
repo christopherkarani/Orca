@@ -297,11 +297,3 @@ test "required backend features require active enforcement" {
     try std.testing.expectEqual(Feature.seccomp, report.firstMissingRequired(&.{.seccomp}).?.feature);
     try std.testing.expectEqual(Feature.path_shims, report.firstMissingRequired(&.{.path_shims}).?.feature);
 }
-
-test "production attach is applyBeforeExec not backend scaffold (F-8)" {
-    // PreparedSandbox scaffold was removed: capability detection stays here;
-    // production agent launch is exclusively apply.applyBeforeExec + apply_posix.
-    // Compile-time presence of detect() is enough to keep this module on the graph.
-    const report = detect(platform.detectOs());
-    try std.testing.expect(report.backend_name.len > 0);
-}

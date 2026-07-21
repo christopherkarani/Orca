@@ -33,8 +33,8 @@ Staging applies to Orca-mediated writes. It is not universal transparent filesys
 
 ## Platform Notes
 
-- **Linux:** staged writes always; Landlock session-attach when ABI ≥ 1 (kernel 5.13+) via `orca run --os-sandbox auto|on|off` (default `auto`).
-- **macOS:** staged writes always; Seatbelt session-attach on product majors 14–26 via the same `--os-sandbox` flag.
+- **Linux:** staged writes always; Landlock session-attach when ABI ≥ 1 (kernel 5.13+) via `orca run --os-sandbox auto|on|off` (default `auto`). CI attach evidence: linux amd64.
+- **macOS:** staged writes always; Seatbelt session-attach on product majors 14–26 (capability gate) via the same `--os-sandbox` flag. CI attach evidence: macos-14; other majors local until freeze jobs cover them.
 - **Windows:** transparent filesystem enforcement remains limited; no Landlock/Seatbelt-equivalent attach path yet.
 
 See [platform-linux.md](platform-linux.md), [platform-macos.md](platform-macos.md), and [compatibility.md](compatibility.md#protection-grades-canonical).

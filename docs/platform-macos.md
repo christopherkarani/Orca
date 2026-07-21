@@ -21,7 +21,7 @@ Current macOS local output reports process supervision, env filtering, staged wr
 | Network observation | observe-only |
 | Transparent network enforcement | limited |
 | Transparent file enforcement | limited; Seatbelt session-attach when available |
-| Strong sandbox | session-attach via Seatbelt on product majors 14–26; otherwise unavailable |
+| Strong sandbox | session-attach via Seatbelt on product majors 14–26 (capability gate); otherwise unavailable |
 
 ## OS filesystem sandbox (`orca run`)
 
@@ -34,7 +34,7 @@ Current macOS local output reports process supervision, env filtering, staged wr
 - **`on`** fails closed when attach cannot complete.
 - **`off`** disables OS apply.
 
-Advertised matrix: macOS product majors **14 through 26** inclusive (version-gated). Outside the matrix → unavailable. Nested re-apply is not supported; children inherit the first successful apply.
+**Version gate vs CI evidence:** Seatbelt **capability** remains product majors **14–26** inclusive (version-gated). Outside the matrix → unavailable. **CI attach evidence** is currently collected on **macos-14** only (plus Linux amd64 for Landlock); other matrix majors are local/capability until freeze CI jobs cover them — not silently CI-proven for 14–26. Nested re-apply is not supported; children inherit the first successful apply.
 
 ## Protected Paths
 

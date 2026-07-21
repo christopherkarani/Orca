@@ -26,7 +26,7 @@ Doctor / platform reports and `orca start --protection` labels are **not** a sec
 | doctor `wrapper-only` (command guard / PATH shims) | `wrapper` | Not transparent OS enforcement |
 | doctor sandbox / strong sandbox `partial` (API present) | probe only | Capability evidence; **not** a live session claim |
 | doctor sandbox / transparent FS or network `active` | `OS-enforced` | Rare; doctor never marks session active from probe alone |
-| `orca run --os-sandbox` auto/on + successful child attach | `OS-enforced` (FS, that session) | Landlock ABI ≥ 1 (kernel 5.13+) or Seatbelt majors 14–26 |
+| `orca run --os-sandbox` auto/on + successful child attach | `OS-enforced` (FS, that session) | Landlock ABI ≥ 1 (kernel 5.13+) or Seatbelt majors 14–26 (capability gate; CI attach evidence: linux amd64 + macos-14) |
 | doctor `observe-only` / `limited` / `unavailable` | no enforcement claim | Decision or partial path only |
 | MCP stdio proxy `active` | `proxy` (MCP path) | Only for mediated MCP traffic |
 | `orca start --protection command-guard` | primarily `hook` (+ daemon for shell eval) | Host hooks only if they fire and honor veto |
@@ -55,7 +55,7 @@ Reserve marketing “firewall” / “maximum protection” for a **verified** m
 | Proxy-mediated network enforcement | unavailable | unavailable | unavailable |
 | Transparent network enforcement | observe-only | limited | limited |
 | Transparent filesystem enforcement | staged writes; Landlock attach when available | limited; Seatbelt attach when available | limited |
-| Strong sandbox (session-attach) | Landlock when ABI ≥ 1 (kernel 5.13+); else unavailable | Seatbelt when product major 14–26; else unavailable | unavailable |
+| Strong sandbox (session-attach) | Landlock when ABI ≥ 1 (kernel 5.13+); else unavailable | Seatbelt capability majors 14–26; else unavailable | unavailable |
 | `orca run --os-sandbox` | auto \| on \| off (default auto) | auto \| on \| off (default auto) | off / unavailable |
 | Process cleanup | active or partial | active | partial |
 | Red-team suite | active | active | active |
@@ -63,3 +63,5 @@ Reserve marketing “firewall” / “maximum protection” for a **verified** m
 `wrapper-only` means Orca-mediated command paths are protected by shims or wrappers (grade **`wrapper`**). It is not transparent OS enforcement.
 
 **Probe vs session-attach:** Doctor and platform matrices may report sandbox **capability** (`partial` / API present). That is not a live session `active` claim. Trust **`OS-enforced`** filesystem isolation only for an `orca run` session that completed child apply-before-exec attach (profile hash present). Use `--os-sandbox on` to fail closed when attach cannot complete.
+
+**Capability matrix vs CI attach evidence:** Landlock/Seatbelt version gates (Linux ABI ≥ 1; macOS product majors 14–26) describe **where attach may run**. Continuous **CI attach evidence** today is **linux amd64** and **macos-14** only; other OS/arch/major cells are local until freeze jobs exist — do not treat every gated major as CI-proven.

@@ -24,12 +24,27 @@ pub const Runtime = struct {
         return self.state.bind_url;
     }
 
+    /// True when the accept-loop thread has been started (M-5).
+    pub fn isServing(self: Runtime) bool {
+        return self.state.serving.load(.acquire);
+    }
+
     pub fn isHealthy(self: Runtime) bool {
+        if (!self.state.serving.load(.acquire)) return true;
         return !self.state.stop.load(.acquire) and !self.state.failed.load(.acquire);
     }
 
     pub fn failed(self: Runtime) bool {
         return self.state.failed.load(.acquire);
+    }
+
+    /// Start the accept-loop thread. Safe to call once after `listen`.
+    /// Call after sandboxed agent fork so Seatbelt `sandbox_init` is not
+    /// raced with a multi-threaded parent (M-5).
+    pub fn startServing(self: *Runtime) !void {
+        if (self.state.serving.swap(true, .acq_rel)) return;
+        self.state.thread = try std.Thread.spawn(.{}, serverLoop, .{self.state});
+        self.state.thread_started = true;
     }
 
     pub fn waitForIdle(self: Runtime, timeout_ns: u64) !void {
@@ -79,7 +94,9 @@ pub const Runtime = struct {
     pub fn deinit(self: *Runtime) void {
         self.state.stop.store(true, .release);
         wake(self.state.threaded.io(), self.state.bind_port);
-        self.state.thread.join();
+        if (self.state.thread_started) {
+            self.state.thread.join();
+        }
         self.waitForIdle(2 * std.time.ns_per_s) catch {};
         self.state.server.deinit(self.state.threaded.io());
         for (self.state.audit_events.items) |ev| ev.deinit(self.state.allocator);
@@ -99,11 +116,13 @@ const State = struct {
     effective_mode: schema.Mode,
     stop: std.atomic.Value(bool) = .init(false),
     failed: std.atomic.Value(bool) = .init(false),
+    serving: std.atomic.Value(bool) = .init(false),
     active_connections: std.atomic.Value(usize) = .init(0),
     audit_mutex: std.Io.Mutex = .init,
     audit_events: std.ArrayList(AuditEvent) = .empty,
     threaded: std.Io.Threaded = undefined,
     thread: std.Thread = undefined,
+    thread_started: bool = false,
 
     fn record(self: *State, event_type: core.event.EventType, target: []const u8, maybe_decision: ?core.decision.Decision) !void {
         const owned_target = try self.allocator.dupe(u8, target);
@@ -135,7 +154,11 @@ const ParsedRequest = struct {
     headers_end: usize,
 };
 
-pub fn start(
+/// Bind the proxy listener without starting the accept-loop thread (M-5).
+/// Returns a Runtime that can inject bind URL into the agent env while the
+/// parent stays single-threaded for sandboxed fork. Call `startServing` after
+/// the agent child has been forked (or use `start` for the legacy all-in-one path).
+pub fn listen(
     allocator: std.mem.Allocator,
     selected_policy: *const schema.Policy,
     effective_mode: schema.Mode,
@@ -160,8 +183,19 @@ pub fn start(
         .effective_mode = effective_mode,
         .threaded = threaded,
     };
-    state.thread = try std.Thread.spawn(.{}, serverLoop, .{state});
     return .{ .state = state };
+}
+
+/// Bind and immediately start the accept-loop thread (legacy / tests).
+pub fn start(
+    allocator: std.mem.Allocator,
+    selected_policy: *const schema.Policy,
+    effective_mode: schema.Mode,
+) !Runtime {
+    var runtime = try listen(allocator, selected_policy, effective_mode);
+    errdefer runtime.deinit();
+    try runtime.startServing();
+    return runtime;
 }
 
 fn serverLoop(state: *State) void {

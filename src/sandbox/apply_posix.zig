@@ -1,15 +1,19 @@
 //! POSIX fork → OS-FS apply → exec helper (U05/U07).
 //!
 //! Parent Orca stays free. Child installs Landlock (Linux) or Seatbelt (macOS)
-//! then execs the agent. Child order: setpgid → stdio → apply → fd_scrub →
-//! chdir → status_ok → exec. FD scrub keeps the status-pipe write end open
-//! until after the handshake byte is sent.
+//! then execs the agent. Child order: setpgid → stdio → apply → chdir →
+//! preflight → fd_scrub (keep `{0,1,2,status_w}`) → status_ok → close
+//! status_w → execve. Scrub runs before the handshake so the parent never
+//! promotes attach while inherited FDs are still open; after status_ok only
+//! the write end is closed (no second full scrub).
 //!
 //! Honesty (S-GLO-01): a pre-exec status pipe proves child apply *and*
-//! required pre-exec setup (including chdir) succeeded before the parent
-//! returns a live child pid. Session `active` is promoted only after that
-//! handshake (not from probe alone or fork alone). Parent waits with a
-//! poll deadline so a hung child cannot block forever.
+//! required pre-exec setup (chdir, preflight, FD scrub) succeeded before the
+//! parent returns a live child pid. Session `active` is promoted only after
+//! that handshake (not from probe alone or fork alone). Parent waits with a
+//! poll deadline so a hung child cannot block forever. The subsequent execve
+//! itself cannot be proven before the parent returns — only that setup through
+//! status_ok completed.
 //!
 //! - Linux: `forkApplyLandlockAndExec` (parent builds landlock expand plan
 //!   before fork so the child never opendir/readdir — Z-3)
@@ -41,30 +45,70 @@ pub const StdioBehavior = enum {
 };
 
 /// Result of a successful parent-side fork after child apply handshake.
+/// Prefer `SpawnLease` for ownership of retained argv/env buffers (M-17).
 pub const ChildPid = struct {
     pid: i32,
 };
 
+/// Owns page_allocator buffers retained across fork until the child is reaped
+/// or the parent process exits (Z-13 / M-17).
+///
+/// After a successful handshake the child is about to `execve`; free only after
+/// `waitpid` has reaped the child (or on process exit). `ApplyResult.deinit`
+/// frees the lease after the supervisor wait completes on the production path.
+pub const SpawnLease = struct {
+    pid: i32,
+    allocator: std.mem.Allocator,
+    argv_z: ?[:null]?[*:0]const u8 = null,
+    envp: ?AllocatedEnvp = null,
+    cwd_z: ?[:0]const u8 = null,
+    expand_plan: ?landlock.ChildLandlockPlan = null,
+
+    pub fn deinit(self: *SpawnLease) void {
+        if (self.argv_z) |a| {
+            freeArgvZ(self.allocator, a);
+            self.argv_z = null;
+        }
+        if (self.envp) |e| {
+            freeEnvpZ(self.allocator, e);
+            self.envp = null;
+        }
+        if (self.cwd_z) |z| {
+            self.allocator.free(z);
+            self.cwd_z = null;
+        }
+        if (self.expand_plan) |*plan| {
+            plan.deinit();
+            self.expand_plan = null;
+        }
+        self.pid = -1;
+    }
+};
+
 /// Single-byte status pipe protocol: child writes this after successful apply
-/// *and* required pre-exec setup (including chdir). Parent must not promote
-/// session active until this byte is received.
+/// *and* required pre-exec setup (chdir, preflight, FD scrub with status_w
+/// kept). Parent must not promote session active until this byte is received.
 const status_ok: u8 = 1;
 
 /// Parent waits at most this long for the child apply handshake (ms).
 /// Hung children must not block `orca run` forever (M-11).
 const status_handshake_timeout_ms: i32 = 10_000;
 
-/// Fork, apply Landlock in the child from `compiled`, scrub FDs, chdir, then execve.
+const ChildOsApply = union(enum) {
+    landlock: struct {
+        compiled: *const profile.CompiledProfile,
+        plan: *const landlock.ChildLandlockPlan,
+    },
+    seatbelt: struct {
+        sbpl_z: [*:0]const u8,
+    },
+};
+
+/// Fork, apply Landlock in the child from `compiled`, chdir, preflight, scrub
+/// FDs (keep status_w), handshake, then execve.
 ///
-/// Parent poll-waits on a status pipe (with deadline) until the child reports
-/// apply+chdir success (or dies/times out). On success the parent receives the
-/// child pid; the child never returns.
-///
-/// **One-shot retain (Z-13):** argv/env/cwd are duplicated with `page_allocator`
-/// before fork and deliberately retained until process exit after a successful
-/// handshake (freeing them races the child's COW/exec address space). Callers
-/// that spawn many agents in one long-lived process must accept that leak or
-/// adopt a longer-lived arena lifecycle later.
+/// Returns a `SpawnLease` owning retained argv/env/plan buffers. Caller must
+/// `deinit` the lease after reaping the child (or process exit).
 ///
 /// Linux only. Does not apply network Landlock.
 pub fn forkApplyLandlockAndExec(
@@ -73,69 +117,107 @@ pub fn forkApplyLandlockAndExec(
     env_map: ?*const std.process.Environ.Map,
     cwd: ?[]const u8,
     stdio: StdioBehavior,
-) SpawnError!ChildPid {
+) SpawnError!SpawnLease {
     if (builtin.os.tag != .linux) return error.Unsupported;
     if (argv.len == 0) return error.ExecFailed;
-    return forkApplyLandlockAndExecLinux(compiled, argv, env_map, cwd, stdio);
+    return forkApplyAndExecLandlock(compiled, argv, env_map, cwd, stdio);
 }
 
-/// Fork, apply Seatbelt SBPL in the child, scrub FDs, chdir, then execve.
-///
-/// Parent poll-waits on a status pipe (with deadline) until the child reports
-/// apply+chdir success (or dies/times out). macOS only.
+/// Fork, apply Seatbelt SBPL in the child, chdir, preflight, scrub FDs (keep
+/// status_w), handshake, then execve. macOS only.
 ///
 /// **Caller ownership of `sbpl_z`:** must remain valid until the child has
 /// exec'd (parent retains the SBPL — typically until process exit for a
 /// one-shot launch).
 ///
-/// **One-shot retain (Z-13):** argv/env/cwd are duplicated with `page_allocator`
-/// before fork and deliberately retained until process exit after a successful
-/// handshake (same COW/exec rationale as `forkApplyLandlockAndExec`).
+/// Returns a `SpawnLease` — free after reaping the child.
 pub fn forkApplySeatbeltAndExec(
     sbpl_z: [*:0]const u8,
     argv: []const []const u8,
     env_map: ?*const std.process.Environ.Map,
     cwd: ?[]const u8,
     stdio: StdioBehavior,
-) SpawnError!ChildPid {
+) SpawnError!SpawnLease {
     if (builtin.os.tag != .macos) return error.Unsupported;
     if (argv.len == 0) return error.ExecFailed;
-    return forkApplySeatbeltAndExecMacOs(sbpl_z, argv, env_map, cwd, stdio);
+    return forkApplyAndExecCommon(.{ .seatbelt = .{ .sbpl_z = sbpl_z } }, null, argv, env_map, cwd, stdio);
 }
 
-fn forkApplyLandlockAndExecLinux(
+fn forkApplyAndExecLandlock(
     compiled: *const profile.CompiledProfile,
     argv: []const []const u8,
     env_map: ?*const std.process.Environ.Map,
     cwd: ?[]const u8,
     stdio: StdioBehavior,
-) SpawnError!ChildPid {
-    const linux = std.os.linux;
+) SpawnError!SpawnLease {
+    const allocator = std.heap.page_allocator;
 
-    // Allocate argv/env in the parent before fork. After a successful fork the
-    // parent must not free them until the child has exec'd (munmap races).
-    // One-shot agent launch: deliberately retain page_allocator buffers until
-    // process exit (documented on the public forkApply* API — Z-13).
-    const argv_z = try allocArgvZ(std.heap.page_allocator, argv);
-    errdefer freeArgvZ(std.heap.page_allocator, argv_z);
-    const envp = try allocEnvpZ(std.heap.page_allocator, env_map);
-    errdefer freeEnvpZ(std.heap.page_allocator, envp);
-    const cwd_z: ?[:0]const u8 = if (cwd) |c|
-        (std.heap.page_allocator.dupeZ(u8, c) catch return error.OutOfMemory)
-    else
-        null;
-    errdefer if (cwd_z) |z| std.heap.page_allocator.free(z);
+    // M-18: ensure `{workspace}/.orca-tmp` exists *before* expand enumeration.
+    {
+        var path_buf: [std.fs.max_path_bytes]u8 = undefined;
+        const name = ".orca-tmp";
+        const needed = compiled.workspace_root.len + 1 + name.len;
+        if (needed <= path_buf.len and compiled.workspace_root.len > 0) {
+            @memcpy(path_buf[0..compiled.workspace_root.len], compiled.workspace_root);
+            path_buf[compiled.workspace_root.len] = '/';
+            @memcpy(path_buf[compiled.workspace_root.len + 1 ..][0..name.len], name);
+            var io_rt: std.Io.Threaded = .init_single_threaded;
+            const io = io_rt.io();
+            std.Io.Dir.cwd().createDirPath(io, path_buf[0..needed]) catch {};
+        }
+    }
 
-    // Z-3: enumerate control-expand paths in the parent before fork. Child apply
-    // only installs PATH_BENEATH from this plan (no opendir/readdir post-fork).
-    // One-shot launch: retain plan until process exit (same as argv/env).
-    var expand_plan = landlock.buildChildLandlockPlan(std.heap.page_allocator, compiled) catch |err| switch (err) {
+    // Z-3: enumerate control-expand paths in the parent before fork.
+    // Ownership transfers into forkApplyAndExecCommon / SpawnLease (no local errdefer).
+    const expand_plan = landlock.buildChildLandlockPlan(allocator, compiled) catch |err| switch (err) {
         error.OutOfMemory => return error.OutOfMemory,
         else => return error.ApplyFailed,
     };
-    // On successful handshake we deliberately leak the plan (child still needs it
-    // until execve); on failure free via errdefer.
-    errdefer expand_plan.deinit();
+
+    return forkApplyAndExecCommon(
+        .{ .landlock = .{ .compiled = compiled, .plan = undefined } },
+        expand_plan,
+        argv,
+        env_map,
+        cwd,
+        stdio,
+    );
+}
+
+/// Unified parent protocol for Landlock and Seatbelt (M-7). Only the child
+/// apply step differs. When `pending_plan` is non-null it is moved into the
+/// returned lease on success (or freed via errdefer path on failure inside
+/// the landlock wrapper).
+fn forkApplyAndExecCommon(
+    child_apply: ChildOsApply,
+    pending_plan: ?landlock.ChildLandlockPlan,
+    argv: []const []const u8,
+    env_map: ?*const std.process.Environ.Map,
+    cwd: ?[]const u8,
+    stdio: StdioBehavior,
+) SpawnError!SpawnLease {
+    const allocator = std.heap.page_allocator;
+    var plan_holder = pending_plan;
+    errdefer if (plan_holder) |*p| p.deinit();
+
+    // Re-bind landlock plan pointer to holder storage (stable for child).
+    var apply = child_apply;
+    if (plan_holder) |*p| {
+        apply = .{ .landlock = .{
+            .compiled = child_apply.landlock.compiled,
+            .plan = p,
+        } };
+    }
+
+    const argv_z = try allocArgvZ(allocator, argv);
+    errdefer freeArgvZ(allocator, argv_z);
+    const envp = try allocEnvpZ(allocator, env_map);
+    errdefer freeEnvpZ(allocator, envp);
+    const cwd_z: ?[:0]const u8 = if (cwd) |c|
+        (allocator.dupeZ(u8, c) catch return error.OutOfMemory)
+    else
+        null;
+    errdefer if (cwd_z) |z| allocator.free(z);
 
     const pipe_fds = openStatusPipe() catch return error.ForkFailed;
     var status_r = pipe_fds[0];
@@ -145,68 +227,29 @@ fn forkApplyLandlockAndExecLinux(
         closeFd(status_w);
     }
 
-    const pid_rc = linux.fork();
-    if (linux.errno(pid_rc) != .SUCCESS) return error.ForkFailed;
-
-    if (pid_rc == 0) {
-        // Child path — never returns to parent logic (order: module docs).
-        closeFd(status_r);
-        status_r = -1;
-
-        // Process-group leadership so parent kill(-pgid) reaps grandchildren.
-        if (std.c.setpgid(0, 0) != 0) {
-            closeFd(status_w);
-            linux.exit(127);
-        }
-
-        // Stdio redirect before confinement: open(/dev/null) must not depend on
-        // post-apply path grants (and must fail the handshake if it fails).
-        applyStdioInChild(stdio) catch {
-            closeFd(status_w);
-            linux.exit(127);
-        };
-
-        landlock.applySelf(compiled, &expand_plan) catch {
-            closeFd(status_w);
-            linux.exit(127);
-        };
-
-        // chdir + argv0 preflight under the box before handshake (F-4): parent must
-        // not promote active if the agent binary is unreadable/unexecutable under grants.
-        if (cwd_z) |z| {
-            if (linux.chdir(z.ptr) != 0) {
-                closeFd(status_w);
-                linux.exit(127);
+    const child_pid: i32 = switch (builtin.os.tag) {
+        .linux => blk: {
+            const linux = std.os.linux;
+            const pid_rc = linux.fork();
+            if (linux.errno(pid_rc) != .SUCCESS) return error.ForkFailed;
+            if (pid_rc == 0) {
+                runChildAfterFork(apply, argv_z, envp, cwd_z, stdio, status_r, status_w);
             }
-        }
+            break :blk @intCast(pid_rc);
+        },
+        .macos => blk: {
+            const pid = std.c.fork();
+            if (pid < 0) return error.ForkFailed;
+            if (pid == 0) {
+                runChildAfterFork(apply, argv_z, envp, cwd_z, stdio, status_r, status_w);
+            }
+            break :blk pid;
+        },
+        else => return error.Unsupported,
+    };
 
-        const path = argv_z[0] orelse {
-            closeFd(status_w);
-            linux.exit(127);
-        };
-        if (!preflightExecTarget(path)) {
-            closeFd(status_w);
-            linux.exit(127);
-        }
-
-        // Prove apply + launch preflight to parent (S-GLO-01 handshake).
-        if (!writeStatusOk(status_w)) {
-            closeFd(status_w);
-            linux.exit(127);
-        }
-        closeFd(status_w);
-        status_w = -1;
-
-        fd_scrub.closeInheritedFdsDefault();
-
-        _ = linux.execve(path, argv_z.ptr, envp.ptr.ptr);
-        linux.exit(127);
-    }
-
-    // Parent: wait for apply handshake (never promote from fork alone).
     closeFd(status_w);
     status_w = -1;
-    const child_pid: i32 = @intCast(pid_rc);
     const ok = readStatusOk(status_r, child_pid);
     closeFd(status_r);
     status_r = -1;
@@ -215,104 +258,78 @@ fn forkApplyLandlockAndExecLinux(
         return error.ApplyFailed;
     }
 
-    // Successful handshake: disarm errdefers by "forgetting" free (child still needs
-    // the buffers until execve replaces the address space).
-    return .{ .pid = child_pid };
+    // Transfer ownership into lease (disarm plan errdefer).
+    const moved_plan = plan_holder;
+    plan_holder = null;
+    return .{
+        .pid = child_pid,
+        .allocator = allocator,
+        .argv_z = argv_z,
+        .envp = envp,
+        .cwd_z = cwd_z,
+        .expand_plan = moved_plan,
+    };
 }
 
-fn forkApplySeatbeltAndExecMacOs(
-    sbpl_z: [*:0]const u8,
-    argv: []const []const u8,
-    env_map: ?*const std.process.Environ.Map,
-    cwd: ?[]const u8,
+/// Child-only path after fork. Never returns.
+fn runChildAfterFork(
+    child_apply: ChildOsApply,
+    argv_z: [:null]?[*:0]const u8,
+    envp: AllocatedEnvp,
+    cwd_z: ?[:0]const u8,
     stdio: StdioBehavior,
-) SpawnError!ChildPid {
-    // One-shot retain of page_allocator argv/env/cwd until process exit after
-    // successful handshake (see public forkApplySeatbeltAndExec docs — Z-13).
-    const argv_z = try allocArgvZ(std.heap.page_allocator, argv);
-    errdefer freeArgvZ(std.heap.page_allocator, argv_z);
-    const envp = try allocEnvpZ(std.heap.page_allocator, env_map);
-    errdefer freeEnvpZ(std.heap.page_allocator, envp);
-    const cwd_z: ?[:0]const u8 = if (cwd) |c|
-        (std.heap.page_allocator.dupeZ(u8, c) catch return error.OutOfMemory)
-    else
-        null;
-    errdefer if (cwd_z) |z| std.heap.page_allocator.free(z);
+    status_r: i32,
+    status_w_in: i32,
+) noreturn {
+    const status_w = status_w_in;
+    closeFd(status_r);
 
-    const pipe_fds = openStatusPipe() catch return error.ForkFailed;
-    var status_r = pipe_fds[0];
-    var status_w = pipe_fds[1];
-    errdefer {
-        closeFd(status_r);
-        closeFd(status_w);
-    }
-
-    const pid = std.c.fork();
-    if (pid < 0) return error.ForkFailed;
-
-    if (pid == 0) {
-        // Child path — never returns to parent logic (order: module docs).
-        closeFd(status_r);
-        status_r = -1;
-
-        if (std.c.setpgid(0, 0) != 0) {
-            closeFd(status_w);
-            std.c._exit(127);
-        }
-
-        // Stdio before Seatbelt: RDWR open of /dev/null must not require post-apply
-        // write grants, and failures must fail the parent handshake (not exit 127 after ok).
-        applyStdioInChild(stdio) catch {
-            closeFd(status_w);
-            std.c._exit(127);
-        };
-
-        macos_seatbelt.applyInChild(sbpl_z) catch {
-            closeFd(status_w);
-            std.c._exit(127);
-        };
-
-        // chdir + argv0 preflight under the box before handshake (F-4).
-        if (cwd_z) |z| {
-            if (std.c.chdir(z.ptr) != 0) {
-                closeFd(status_w);
-                std.c._exit(127);
+    const failExit = struct {
+        fn call(status_w_fd: i32) noreturn {
+            closeFd(status_w_fd);
+            switch (builtin.os.tag) {
+                .linux => std.os.linux.exit(127),
+                else => std.c._exit(127),
             }
         }
+    }.call;
 
-        const path = argv_z[0] orelse {
-            closeFd(status_w);
-            std.c._exit(127);
+    if (std.c.setpgid(0, 0) != 0) failExit(status_w);
+
+    applyStdioInChild(stdio) catch failExit(status_w);
+
+    switch (child_apply) {
+        .landlock => |ll| landlock.applySelf(ll.compiled, ll.plan) catch failExit(status_w),
+        .seatbelt => |sb| macos_seatbelt.applyInChild(sb.sbpl_z) catch failExit(status_w),
+    }
+
+    if (cwd_z) |z| {
+        const chdir_rc: isize = switch (builtin.os.tag) {
+            .linux => std.os.linux.chdir(z.ptr),
+            else => std.c.chdir(z.ptr),
         };
-        if (!preflightExecTarget(path)) {
-            closeFd(status_w);
-            std.c._exit(127);
-        }
-
-        if (!writeStatusOk(status_w)) {
-            closeFd(status_w);
-            std.c._exit(127);
-        }
-        closeFd(status_w);
-        status_w = -1;
-
-        fd_scrub.closeInheritedFdsDefault();
-
-        _ = std.c.execve(path, @ptrCast(argv_z.ptr), @ptrCast(envp.ptr.ptr));
-        std.c._exit(127);
+        if (chdir_rc != 0) failExit(status_w);
     }
 
+    const path = argv_z[0] orelse failExit(status_w);
+    if (!preflightExecTarget(path)) failExit(status_w);
+
+    const keep_fds = [_]i32{ 0, 1, 2, status_w };
+    fd_scrub.closeInheritedFds(&keep_fds);
+
+    if (!writeStatusOk(status_w)) failExit(status_w);
     closeFd(status_w);
-    status_w = -1;
-    const ok = readStatusOk(status_r, pid);
-    closeFd(status_r);
-    status_r = -1;
-    if (!ok) {
-        killAndReapChild(pid);
-        return error.ApplyFailed;
-    }
 
-    return .{ .pid = pid };
+    switch (builtin.os.tag) {
+        .linux => {
+            _ = std.os.linux.execve(path, argv_z.ptr, envp.ptr.ptr);
+            std.os.linux.exit(127);
+        },
+        else => {
+            _ = std.c.execve(path, @ptrCast(argv_z.ptr), @ptrCast(envp.ptr.ptr));
+            std.c._exit(127);
+        },
+    }
 }
 
 // ── preflight ──────────────────────────────────────────────────────────────
@@ -605,13 +622,14 @@ test "forkApplyLandlockAndExec applies then execs on Linux with handshake" {
     };
 
     // Parent only gets a pid after child apply+chdir status pipe succeeds.
-    const child = try forkApplyLandlockAndExec(
+    var child = try forkApplyLandlockAndExec(
         &compiled,
         &[_][]const u8{true_path},
         null,
         ws_root,
         .inherit,
     );
+    defer child.deinit();
     var status: c_int = 0;
     while (true) {
         const rc = std.c.waitpid(child.pid, &status, 0);
@@ -674,34 +692,38 @@ test "forkApplySeatbeltAndExec is unsupported off macOS" {
     ));
 }
 
+/// Permissive Seatbelt profile shared by low-level fork/exec handshake tests.
+/// Product grants are narrower; this only proves apply → exec plumbing on matrix macOS.
+const permissive_test_sbpl =
+    \\(version 1)
+    \\(deny default)
+    \\(allow process*)
+    \\(allow signal)
+    \\(allow sysctl-read)
+    \\(allow mach-lookup)
+    \\(allow file-read-metadata)
+    \\(allow file-read* (literal "/"))
+    \\(allow file-read* (subpath "/usr"))
+    \\(allow file-read* (subpath "/bin"))
+    \\(allow file-read* (subpath "/System"))
+    \\(allow file-read* (subpath "/Library"))
+    \\(allow file-read* (subpath "/dev"))
+    \\(allow file-read* (subpath "/private/var/db/dyld"))
+    \\(allow file-ioctl (subpath "/dev"))
+    \\
+;
+
 test "forkApplySeatbeltAndExec applies then execs on macOS with handshake" {
     if (builtin.os.tag != .macos) return error.SkipZigTest;
 
-    const sbpl =
-        \\(version 1)
-        \\(deny default)
-        \\(allow process*)
-        \\(allow signal)
-        \\(allow sysctl-read)
-        \\(allow mach-lookup)
-        \\(allow file-read-metadata)
-        \\(allow file-read* (literal "/"))
-        \\(allow file-read* (subpath "/usr"))
-        \\(allow file-read* (subpath "/bin"))
-        \\(allow file-read* (subpath "/System"))
-        \\(allow file-read* (subpath "/Library"))
-        \\(allow file-read* (subpath "/dev"))
-        \\(allow file-read* (subpath "/private/var/db/dyld"))
-        \\(allow file-ioctl (subpath "/dev"))
-        \\
-    ;
-    const sbpl_z = try std.testing.allocator.dupeZ(u8, sbpl);
+    const sbpl_z = try std.testing.allocator.dupeZ(u8, permissive_test_sbpl);
     defer std.testing.allocator.free(sbpl_z);
 
     // Seatbelt apply works even outside product matrix for this low-level helper;
     // product gating is in macos_seatbelt.evaluateSupport / applyBeforeExec.
     // Parent only gets a pid after child apply status pipe succeeds.
-    const child = try forkApplySeatbeltAndExec(sbpl_z.ptr, &[_][]const u8{"/usr/bin/true"}, null, null, .inherit);
+    var child = try forkApplySeatbeltAndExec(sbpl_z.ptr, &[_][]const u8{"/usr/bin/true"}, null, null, .inherit);
+    defer child.deinit();
     var status: c_int = 0;
     _ = std.c.waitpid(child.pid, &status, 0);
     const exited = (status & 0x7f) == 0;
@@ -713,34 +735,17 @@ test "forkApplySeatbeltAndExec applies then execs on macOS with handshake" {
 test "forkApplySeatbeltAndExec honors stdio ignore on macOS" {
     if (builtin.os.tag != .macos) return error.SkipZigTest;
 
-    const sbpl =
-        \\(version 1)
-        \\(deny default)
-        \\(allow process*)
-        \\(allow signal)
-        \\(allow sysctl-read)
-        \\(allow mach-lookup)
-        \\(allow file-read-metadata)
-        \\(allow file-read* (literal "/"))
-        \\(allow file-read* (subpath "/usr"))
-        \\(allow file-read* (subpath "/bin"))
-        \\(allow file-read* (subpath "/System"))
-        \\(allow file-read* (subpath "/Library"))
-        \\(allow file-read* (subpath "/dev"))
-        \\(allow file-read* (subpath "/private/var/db/dyld"))
-        \\(allow file-ioctl (subpath "/dev"))
-        \\
-    ;
-    const sbpl_z = try std.testing.allocator.dupeZ(u8, sbpl);
+    const sbpl_z = try std.testing.allocator.dupeZ(u8, permissive_test_sbpl);
     defer std.testing.allocator.free(sbpl_z);
 
-    const child = try forkApplySeatbeltAndExec(
+    var child = try forkApplySeatbeltAndExec(
         sbpl_z.ptr,
         &[_][]const u8{ "/bin/sh", "-c", "echo should-not-appear-on-parent-stdout" },
         null,
         null,
         .ignore,
     );
+    defer child.deinit();
     var status: c_int = 0;
     _ = std.c.waitpid(child.pid, &status, 0);
     try std.testing.expect((status & 0x7f) == 0);
@@ -750,35 +755,18 @@ test "forkApplySeatbeltAndExec honors stdio ignore on macOS" {
 test "forkApplySeatbeltAndExec establishes process group leadership on macOS" {
     if (builtin.os.tag != .macos) return error.SkipZigTest;
 
-    const sbpl =
-        \\(version 1)
-        \\(deny default)
-        \\(allow process*)
-        \\(allow signal)
-        \\(allow sysctl-read)
-        \\(allow mach-lookup)
-        \\(allow file-read-metadata)
-        \\(allow file-read* (literal "/"))
-        \\(allow file-read* (subpath "/usr"))
-        \\(allow file-read* (subpath "/bin"))
-        \\(allow file-read* (subpath "/System"))
-        \\(allow file-read* (subpath "/Library"))
-        \\(allow file-read* (subpath "/dev"))
-        \\(allow file-read* (subpath "/private/var/db/dyld"))
-        \\(allow file-ioctl (subpath "/dev"))
-        \\
-    ;
-    const sbpl_z = try std.testing.allocator.dupeZ(u8, sbpl);
+    const sbpl_z = try std.testing.allocator.dupeZ(u8, permissive_test_sbpl);
     defer std.testing.allocator.free(sbpl_z);
 
     // After setpgid(0,0) in child, parent getpgid(pid) must equal pid (group leader).
-    const child = try forkApplySeatbeltAndExec(
+    var child = try forkApplySeatbeltAndExec(
         sbpl_z.ptr,
         &[_][]const u8{ "/bin/sh", "-c", "sleep 0.15" },
         null,
         null,
         .ignore,
     );
+    defer child.deinit();
     const getpgid = struct {
         extern "c" fn getpgid(pid: std.c.pid_t) std.c.pid_t;
     }.getpgid;
@@ -795,35 +783,18 @@ test "null env_map inherits process environ (not empty)" {
     // allocEnvpZ is private; exercise via a short child that checks PATH is set.
     if (builtin.os.tag != .macos) return error.SkipZigTest;
 
-    const sbpl =
-        \\(version 1)
-        \\(deny default)
-        \\(allow process*)
-        \\(allow signal)
-        \\(allow sysctl-read)
-        \\(allow mach-lookup)
-        \\(allow file-read-metadata)
-        \\(allow file-read* (literal "/"))
-        \\(allow file-read* (subpath "/usr"))
-        \\(allow file-read* (subpath "/bin"))
-        \\(allow file-read* (subpath "/System"))
-        \\(allow file-read* (subpath "/Library"))
-        \\(allow file-read* (subpath "/dev"))
-        \\(allow file-read* (subpath "/private/var/db/dyld"))
-        \\(allow file-ioctl (subpath "/dev"))
-        \\
-    ;
-    const sbpl_z = try std.testing.allocator.dupeZ(u8, sbpl);
+    const sbpl_z = try std.testing.allocator.dupeZ(u8, permissive_test_sbpl);
     defer std.testing.allocator.free(sbpl_z);
 
     // With null env_map, PATH from parent must still be present (inherit).
-    const child = try forkApplySeatbeltAndExec(
+    var child = try forkApplySeatbeltAndExec(
         sbpl_z.ptr,
         &[_][]const u8{ "/bin/sh", "-c", "test -n \"$PATH\"" },
         null,
         null,
         .ignore,
     );
+    defer child.deinit();
     var status: c_int = 0;
     _ = std.c.waitpid(child.pid, &status, 0);
     try std.testing.expect((status & 0x7f) == 0);
@@ -861,25 +832,7 @@ test "resolveArgv0 prefers PATH from env_map over process" {
 test "forkApplySeatbeltAndExec fails handshake on bad chdir" {
     if (builtin.os.tag != .macos) return error.SkipZigTest;
 
-    const sbpl =
-        \\(version 1)
-        \\(deny default)
-        \\(allow process*)
-        \\(allow signal)
-        \\(allow sysctl-read)
-        \\(allow mach-lookup)
-        \\(allow file-read-metadata)
-        \\(allow file-read* (literal "/"))
-        \\(allow file-read* (subpath "/usr"))
-        \\(allow file-read* (subpath "/bin"))
-        \\(allow file-read* (subpath "/System"))
-        \\(allow file-read* (subpath "/Library"))
-        \\(allow file-read* (subpath "/dev"))
-        \\(allow file-read* (subpath "/private/var/db/dyld"))
-        \\(allow file-ioctl (subpath "/dev"))
-        \\
-    ;
-    const sbpl_z = try std.testing.allocator.dupeZ(u8, sbpl);
+    const sbpl_z = try std.testing.allocator.dupeZ(u8, permissive_test_sbpl);
     defer std.testing.allocator.free(sbpl_z);
 
     // chdir failure must not write status_ok — parent sees ApplyFailed (M-2).

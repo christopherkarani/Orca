@@ -102,8 +102,8 @@ pub const launch_allow_exact = [_][]const u8{
     "TERM_PROGRAM",
     "TERM_PROGRAM_VERSION",
     "SHLVL",
-    "EDITOR",
-    "VISUAL",
+    // EDITOR/VISUAL intentionally omitted (M-12): host editor preference can
+    // influence agent tooling; keep SHELL/SSH_AUTH_SOCK for shell/git workflows.
     // Proxy/network mediation vars installed by Orca itself for the session.
     "HTTP_PROXY",
     "HTTPS_PROXY",
@@ -468,10 +468,14 @@ test "launch allowlist keeps runtime keys and strips secrets" {
     try std.testing.expect(isLaunchAllowlisted("LC_ALL"));
     try std.testing.expect(isLaunchAllowlisted("XDG_RUNTIME_DIR"));
     try std.testing.expect(isLaunchAllowlisted("TMPDIR"));
+    try std.testing.expect(isLaunchAllowlisted("SHELL"));
     try std.testing.expect(!isLaunchAllowlisted("OPENAI_API_KEY"));
     try std.testing.expect(!isLaunchAllowlisted("AWS_SECRET_ACCESS_KEY"));
     try std.testing.expect(!isLaunchAllowlisted("MY_CUSTOM_TOKEN"));
     try std.testing.expect(!isLaunchAllowlisted("SSLKEYLOGFILE"));
+    // M-12: host editor preference must not ride the attach allowlist.
+    try std.testing.expect(!isLaunchAllowlisted("EDITOR"));
+    try std.testing.expect(!isLaunchAllowlisted("VISUAL"));
 }
 
 test "launch allowlist keeps TLS trust and SSH_AUTH_SOCK (M-9)" {

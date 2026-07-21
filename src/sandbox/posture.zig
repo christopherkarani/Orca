@@ -9,6 +9,9 @@ const std = @import("std");
 /// Live session posture after launch attempt.
 pub const SessionPosture = enum {
     active,
+    /// Parent prepared child-apply materials; session is not active until
+    /// status-pipe promote (M-9). Distinct from grade-drop `unavailable`.
+    prepared,
     unavailable,
     failed,
     disabled,
@@ -131,6 +134,17 @@ pub fn unavailableReceipt(reason_code: []const u8) AttachReceipt {
     };
 }
 
+/// Parent prepared child-apply materials; not session-active (M-9 / S-GLO-01).
+pub fn preparedReceipt(mechanism: BackendMechanism, reason_code: []const u8) AttachReceipt {
+    return .{
+        .posture = .prepared,
+        .mechanism = mechanism,
+        .profile_hash_hex = null,
+        .fs_scope = "none",
+        .reason_code = reason_code,
+    };
+}
+
 pub fn failedReceipt(reason_code: []const u8) AttachReceipt {
     return .{
         .posture = .failed,
@@ -156,6 +170,11 @@ pub fn formatSessionBanner(buf: []u8, receipt: AttachReceipt) ![]const u8 {
             "OS sandbox: active (filesystem: {s}; network: unrestricted; credentials: launch-allowlist (secrets stripped; agent sockets/certs may remain); tools: wrapper-mediated)",
             .{receipt.fs_scope},
         ),
+        // Prepared materials must never read as active or as a grade-drop failure (M-9).
+        .prepared => if (receipt.reason_code) |reason|
+            try std.fmt.bufPrint(buf, "OS sandbox: prepared ({s}; attach pending child apply)", .{reason})
+        else
+            try std.fmt.bufPrint(buf, "OS sandbox: prepared (attach pending child apply)", .{}),
         .unavailable => if (receipt.reason_code) |reason|
             try std.fmt.bufPrint(buf, "OS sandbox: unavailable ({s}; credentials retained)", .{reason})
         else
@@ -192,7 +211,7 @@ test "active receipt requires mechanism and profile hash (S-GLO-01)" {
     };
     try std.testing.expect(!incomplete.isActive());
 
-    const complete = try activeReceipt(.landlock, test_hash_64, "workspace RW, system RO, no home");
+    const complete = try activeReceipt(.landlock, test_hash_64, "workspace RW, system RO, platform tmp RW, no home");
     try std.testing.expect(complete.isActive());
     try std.testing.expect(complete.posture.isOsEnforced());
     try std.testing.expectEqualStrings(test_hash_64, complete.profileHashSlice().?);
@@ -214,14 +233,14 @@ test "activeReceipt rejects empty, short, long, and non-hex profile hashes" {
 }
 
 test "activeReceipt accepts full 64 hex (lower and upper)" {
-    const lower = try activeReceipt(.landlock, test_hash_64, "workspace child RW, root RO, system RO, no home");
+    const lower = try activeReceipt(.landlock, test_hash_64, "workspace child RW, root RO, system RO, platform tmp RW, no home");
     try std.testing.expect(lower.isActive());
     try std.testing.expectEqual(BackendMechanism.landlock, lower.mechanism);
     try std.testing.expectEqualStrings(test_hash_64, lower.profileHashSlice().?);
 
     const upper_src = "ABCDEF0123456789ABCDEF0123456789ABCDEF0123456789ABCDEF0123456789";
     try std.testing.expectEqual(@as(usize, 64), upper_src.len);
-    const upper = try activeReceipt(.seatbelt, upper_src, "workspace RW, system RO, no home");
+    const upper = try activeReceipt(.seatbelt, upper_src, "workspace RW, system RO, platform tmp RW, no home");
     try std.testing.expect(upper.isActive());
     try std.testing.expectEqualStrings(upper_src, upper.profileHashSlice().?);
 }
@@ -241,9 +260,10 @@ test "os-sandbox mode parse" {
 
 test "session banner is mechanism-neutral (S-GLO-03)" {
     var buf: [320]u8 = undefined;
-    const active = try activeReceipt(.seatbelt, test_hash_64, "workspace RW, system RO, no home");
+    const active = try activeReceipt(.seatbelt, test_hash_64, "workspace RW, system RO, platform tmp RW, no home");
     const line = try formatSessionBanner(&buf, active);
     try std.testing.expect(std.mem.indexOf(u8, line, "OS sandbox: active") != null);
+    try std.testing.expect(std.mem.indexOf(u8, line, "platform tmp RW") != null);
     try std.testing.expect(std.mem.indexOf(u8, line, "Seatbelt") == null);
     try std.testing.expect(std.mem.indexOf(u8, line, "Landlock") == null);
     try std.testing.expect(std.mem.indexOf(u8, line, "network: unrestricted") != null);
@@ -277,9 +297,10 @@ test "grade-drop unavailable/failed banners mention credentials retained" {
 test "M-12 landlock fs_scope surfaces root RO create-at-root contract" {
     var buf: [320]u8 = undefined;
     // Production Landlock receipt string (apply.promoteWithProof).
-    const active = try activeReceipt(.landlock, test_hash_64, "workspace child RW, root RO, system RO, no home");
+    const active = try activeReceipt(.landlock, test_hash_64, "workspace child RW, root RO, system RO, platform tmp RW, no home");
     const line = try formatSessionBanner(&buf, active);
     try std.testing.expect(std.mem.indexOf(u8, line, "workspace child RW") != null);
     try std.testing.expect(std.mem.indexOf(u8, line, "root RO") != null);
+    try std.testing.expect(std.mem.indexOf(u8, line, "platform tmp RW") != null);
     try std.testing.expect(std.mem.indexOf(u8, line, "Landlock") == null); // still mechanism-neutral
 }

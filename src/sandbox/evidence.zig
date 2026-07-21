@@ -10,8 +10,10 @@ pub const schema_version: u16 = 1;
 
 /// Dual-proof CTRL-ATTACH detail tokens allowed when `ctrl_attach.ok` is true.
 /// New production attach proofs must be added here before manifests may claim ok.
+// Unit dual-proof (test-fast greps) and packaged binary attach (M-3 residual).
 pub const allowlisted_attach_details = [_][]const u8{
     "zig_real_fs_deny_canary_and_handshake",
+    "orca_run_os_sandbox_on_active",
 };
 
 pub const ControlResult = struct {
@@ -76,6 +78,13 @@ pub const Manifest = struct {
         // When attach claims success, detail must be dual-proof allowlisted (not a freeform denylist).
         if (self.ctrl_attach.ok and !isAllowlistedAttachDetail(self.ctrl_attach.detail)) {
             return error.AttachDetailNotAllowlisted;
+        }
+        // Packaged binary attach must carry a real profile hash (M-3 residual).
+        if (self.ctrl_attach.ok and
+            std.mem.eql(u8, self.ctrl_attach.detail, "orca_run_os_sandbox_on_active") and
+            self.profile_hash.len != 64)
+        {
+            return error.MissingProfileHash;
         }
     }
 };

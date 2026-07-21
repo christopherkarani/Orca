@@ -99,12 +99,51 @@ pub const CompiledProfile = struct {
     /// **create-at-workspace-root** may be denied by the OS even when this returns
     /// true for paths under the workspace (see landlock.addRwGrantExcludingControls).
     /// Prefer writing under existing workspace children for portable agent I/O.
+    /// For Landlock-effective create-at-root, use `isLandlockEffectiveWritable`.
     pub fn isAgentWritable(self: *const CompiledProfile, path: []const u8) bool {
         if (self.isControlPath(path)) return false;
         for (self.grants) |g| {
             if (g.mode == .rw and isPathWithin(path, g.path)) return true;
         }
         return false;
+    }
+
+    /// Landlock-effective writability (M-10): same as portable RW intent except
+    /// workspace-root create is treated as denied when control expand applies
+    /// (root RO + child RW). Paths strictly under the workspace root still use
+    /// portable RW semantics. Seatbelt should use `isAgentWritable` instead.
+    pub fn isLandlockEffectiveWritable(self: *const CompiledProfile, path: []const u8) bool {
+        if (!self.isAgentWritable(path)) return false;
+        // Exact workspace root: create-at-root denied under Landlock expand.
+        if (pathEqual(path, self.workspace_root)) return false;
+        return true;
+    }
+
+    /// Operator-facing effective FS scope summary for active receipts (M-10).
+    /// `landlock`: workspace child RW, root RO, system RO, platform tmp when granted, no home.
+    /// `seatbelt`: workspace RW, system RO, platform tmp when granted, no home, mach-lookup residual.
+    pub fn effectiveFsScopeSummary(self: *const CompiledProfile, backend: enum { landlock, seatbelt }) []const u8 {
+        const has_tmp = blk: {
+            for (self.grants) |g| {
+                if (g.mode != .rw) continue;
+                if (std.mem.eql(u8, g.path, "/tmp") or
+                    std.mem.eql(u8, g.path, "/var/tmp") or
+                    std.mem.eql(u8, g.path, "/private/tmp") or
+                    std.mem.eql(u8, g.path, "/private/var/tmp"))
+                    break :blk true;
+            }
+            break :blk false;
+        };
+        return switch (backend) {
+            .landlock => if (has_tmp)
+                "workspace child RW, root RO, system RO, platform tmp RW, no home"
+            else
+                "workspace child RW, root RO, system RO, no home",
+            .seatbelt => if (has_tmp)
+                "workspace RW, system RO, platform tmp RW, no home, mach-lookup residual"
+            else
+                "workspace RW, system RO, no home, mach-lookup residual",
+        };
     }
 
     /// True if any grant is exactly `home` (broad HOME). Workspace *under* home is fine.

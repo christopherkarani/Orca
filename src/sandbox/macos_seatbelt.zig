@@ -20,9 +20,9 @@
 //!    `renderSbpl`) — the child never compiles profiles or walks the FS for
 //!    policy.
 //! 2. Child critical section is intentionally short: stdio redirect →
-//!    `dlsym` + `sandbox_init` → chdir/preflight → status handshake → FD scrub
-//!    → `execve`. No heap enumeration, no additional thread starts between
-//!    fork and exec.
+//!    `dlsym` + `sandbox_init` → chdir/preflight → FD scrub (keep status_w) →
+//!    status handshake → close status_w → `execve`. No heap enumeration, no
+//!    additional thread starts between fork and exec.
 //! 3. Parent retains the NUL-terminated SBPL buffer until exec (no free race).
 //!
 //! **Residual risk (accepted, documented):** `sandbox_init` itself may still
