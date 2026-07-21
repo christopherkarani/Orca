@@ -211,7 +211,7 @@ Result: Pass.
 ## Known Limitations
 
 - Hooks are advisory; enforcement depends on Claude Code host support.
-- The strongest protection remains `orca run -- <claude-code-command>`.
+- The strongest protection remains `orca claude`.
 - Plugin installation is preview/dry-run by default.
 - Official marketplace availability is not yet implemented.
 - The `orca plugin install` command does not yet perform actual host plugin installation.

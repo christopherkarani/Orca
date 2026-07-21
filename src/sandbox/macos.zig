@@ -13,7 +13,7 @@ pub fn detect() backend.ReportSet {
     backend.setReport(&reports, .shell_wrapping, .wrapper_only, "sh, bash, and zsh are wrapped when resolved through the Orca shim PATH");
     backend.setReport(&reports, .path_shims, .wrapper_only, "Orca prepends session shims to PATH for wrapper-mediated command checks");
     backend.setReport(&reports, .network_observe, .observe_only, "network policy decisions are audited for Orca-mediated actions");
-    backend.setReport(&reports, .network_enforce, .limited, "transparent macOS network enforcement is not installed; only wrapper/proxy-mediated hooks are available");
+    backend.setReport(&reports, .network_enforce, .unavailable, "transparent macOS network enforcement is not installed; only wrapper/proxy-mediated hooks are available");
     backend.setReport(&reports, .user_namespaces, .unsupported, "Linux user namespaces are not a macOS feature");
     backend.setReport(&reports, .mount_namespaces, .unsupported, "Linux mount namespaces are not a macOS feature");
     backend.setReport(&reports, .seccomp, .unsupported, "Linux seccomp-bpf is not a macOS feature");
@@ -58,7 +58,7 @@ test "macOS capability detector is honest about wrapper and unavailable protecti
     try std.testing.expectEqual(backend.Level.wrapper_only, report.get(.shell_wrapping).level);
     try std.testing.expectEqual(backend.Level.wrapper_only, report.get(.path_shims).level);
     try std.testing.expectEqual(backend.Level.active, report.get(.process_supervision).level);
-    try std.testing.expectEqual(backend.Level.limited, report.get(.network_enforce).level);
+    try std.testing.expectEqual(backend.Level.unavailable, report.get(.network_enforce).level);
     // strong_sandbox never active from detect (S-GLO-01).
     try std.testing.expect(report.get(.strong_sandbox).level != .active);
     try std.testing.expect(!report.featureAvailable(.strong_sandbox) or report.get(.strong_sandbox).level == .partial);

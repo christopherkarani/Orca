@@ -24,6 +24,10 @@ pub const Runtime = struct {
         return self.state.bind_url;
     }
 
+    pub fn bindPort(self: Runtime) u16 {
+        return self.state.bind_port;
+    }
+
     /// True when the accept-loop thread has been started (M-5).
     pub fn isServing(self: Runtime) bool {
         return self.state.serving.load(.acquire);
@@ -561,6 +565,140 @@ test "proxy forwards delayed HTTP request bodies and records request audit event
     try std.testing.expect(std.mem.indexOf(u8, events[0].target, "127.0.0.1") != null);
 }
 
+test "proxy denies controlled HTTP endpoint before upstream connect" {
+    if (@import("builtin").os.tag == .windows) return error.SkipZigTest;
+
+    const io = std.testing.io;
+    const upstream_address = try std.Io.net.IpAddress.parse("127.0.0.1", 0);
+    var upstream = try upstream_address.listen(io, .{ .reuse_address = true });
+    defer upstream.deinit(io);
+    const upstream_port = upstream.socket.address.getPort();
+
+    const policy_text = try std.fmt.allocPrint(std.testing.allocator,
+        \\version: 1
+        \\mode: strict
+        \\network:
+        \\  mode: open
+        \\  backend: proxy
+        \\  deny:
+        \\    - "127.0.0.1:{d}"
+    , .{upstream_port});
+    defer std.testing.allocator.free(policy_text);
+    var loaded = try @import("orca_core").policy.load.parseFromSlice(std.testing.allocator, policy_text, "proxy-http-deny.yaml");
+    defer loaded.deinit();
+
+    var upstream_state: TestDenyServerState = .{ .server = &upstream, .io = io };
+    const upstream_thread = try std.Thread.spawn(.{}, testDenyServerNoConnect, .{&upstream_state});
+    defer upstream_thread.join();
+
+    var runtime = try start(std.testing.allocator, &loaded, .strict);
+    defer runtime.deinit();
+    std.Io.sleep(io, std.Io.Duration.fromNanoseconds(50 * std.time.ns_per_ms), .awake) catch {};
+
+    const proxy_port = try bindPort(runtime.bindUrl());
+    const proxy_addr = try std.Io.net.IpAddress.parse("127.0.0.1", proxy_port);
+    var client = try std.Io.net.IpAddress.connect(&proxy_addr, io, .{ .mode = .stream });
+    defer client.close(io);
+
+    var request_buf: [256]u8 = undefined;
+    const request = try std.fmt.bufPrint(
+        &request_buf,
+        "GET http://127.0.0.1:{d}/secret HTTP/1.1\r\nHost: 127.0.0.1:{d}\r\nConnection: close\r\n\r\n",
+        .{ upstream_port, upstream_port },
+    );
+    var client_write_buf: [512]u8 = undefined;
+    var client_writer = client.writer(io, &client_write_buf);
+    try client_writer.interface.writeAll(request);
+    try client_writer.interface.flush();
+
+    var response_buf: [512]u8 = undefined;
+    const response_len = try readHttpResponse(io, client, &response_buf);
+    try std.testing.expect(std.mem.indexOf(u8, response_buf[0..response_len], "403 Forbidden") != null);
+
+    try runtime.waitForIdle(2 * std.time.ns_per_s);
+    const events = try runtime.snapshotAuditEvents(std.testing.allocator);
+    defer runtime.freeAuditEvents(std.testing.allocator, events);
+    try std.testing.expectEqual(@as(usize, 2), events.len);
+    try std.testing.expectEqual(@import("orca_core").core.event.EventType.network_connect_attempt, events[0].event_type);
+    try std.testing.expectEqual(@import("orca_core").core.event.EventType.network_connect_denied, events[1].event_type);
+    try std.testing.expectEqual(@import("orca_core").core.decision.DecisionResult.deny, events[1].result.?);
+    try std.testing.expect(std.mem.indexOf(u8, events[1].reason.?, "explicit network deny") != null);
+    try std.testing.expect(!upstream_state.accepted.load(.acquire));
+}
+
+test "proxy applies HTTP method and path policy while CONNECT remains host-port only" {
+    if (@import("builtin").os.tag == .windows) return error.SkipZigTest;
+
+    const io = std.testing.io;
+    const upstream_address = try std.Io.net.IpAddress.parse("127.0.0.1", 0);
+    var upstream = try upstream_address.listen(io, .{ .reuse_address = true });
+    defer upstream.deinit(io);
+    const upstream_port = upstream.socket.address.getPort();
+
+    const policy_text = try std.fmt.allocPrint(std.testing.allocator,
+        \\version: 1
+        \\mode: strict
+        \\network:
+        \\  mode: open
+        \\  backend: proxy
+        \\services:
+        \\  local_test:
+        \\    hosts:
+        \\      - "127.0.0.1:{d}"
+        \\    methods:
+        \\      - "GET"
+        \\    paths:
+        \\      deny:
+        \\        - "/secret"
+        \\    unmatched: allow
+    , .{upstream_port});
+    defer std.testing.allocator.free(policy_text);
+    var loaded = try @import("orca_core").policy.load.parseFromSlice(std.testing.allocator, policy_text, "proxy-service-deny.yaml");
+    defer loaded.deinit();
+
+    var runtime = try start(std.testing.allocator, &loaded, .strict);
+    defer runtime.deinit();
+    std.Io.sleep(io, std.Io.Duration.fromNanoseconds(50 * std.time.ns_per_ms), .awake) catch {};
+
+    const proxy_port = try bindPort(runtime.bindUrl());
+    const proxy_addr = try std.Io.net.IpAddress.parse("127.0.0.1", proxy_port);
+
+    {
+        var client = try std.Io.net.IpAddress.connect(&proxy_addr, io, .{ .mode = .stream });
+        defer client.close(io);
+        var request_buf: [256]u8 = undefined;
+        const request = try std.fmt.bufPrint(
+            &request_buf,
+            "GET http://127.0.0.1:{d}/secret HTTP/1.1\r\nHost: 127.0.0.1:{d}\r\nConnection: close\r\n\r\n",
+            .{ upstream_port, upstream_port },
+        );
+        var client_write_buf: [512]u8 = undefined;
+        var client_writer = client.writer(io, &client_write_buf);
+        try client_writer.interface.writeAll(request);
+        try client_writer.interface.flush();
+        var response_buf: [512]u8 = undefined;
+        const response_len = try readHttpResponse(io, client, &response_buf);
+        try std.testing.expect(std.mem.indexOf(u8, response_buf[0..response_len], "403 Forbidden") != null);
+    }
+
+    try runtime.waitForIdle(2 * std.time.ns_per_s);
+    const events = try runtime.snapshotAuditEvents(std.testing.allocator);
+    defer runtime.freeAuditEvents(std.testing.allocator, events);
+    try std.testing.expect(events.len >= 2);
+    try std.testing.expectEqual(@import("orca_core").core.event.EventType.network_connect_denied, events[1].event_type);
+    try std.testing.expect(std.mem.indexOf(u8, events[1].reason.?, "service path deny") != null);
+
+    var connect_target_buf: [32]u8 = undefined;
+    const connect_target = try std.fmt.bufPrint(&connect_target_buf, "127.0.0.1:{d}", .{upstream_port});
+    var connect_decision = try network.evaluate(std.testing.allocator, &loaded, .strict, connect_target, .{
+        .enforcement_mode = .proxy_mediated,
+        .method = null,
+    });
+    defer connect_decision.deinit(std.testing.allocator);
+    try std.testing.expectEqual(@import("orca_core").core.decision.DecisionResult.allow, connect_decision.decision.result);
+    try std.testing.expectEqualStrings("services.local_test.unmatched", connect_decision.decision.rule_id.?);
+}
+
 const TestHttpServerState = struct {
     server: *std.Io.net.Server,
     io: std.Io,
@@ -609,6 +747,25 @@ fn testHttpServer(state: *TestHttpServerState) void {
     var writer = stream.writer(state.io, &write_buf);
     writer.interface.writeAll(text) catch {};
     writer.interface.flush() catch {};
+}
+
+const TestDenyServerState = struct {
+    server: *std.Io.net.Server,
+    io: std.Io,
+    accepted: std.atomic.Value(bool) = .init(false),
+};
+
+fn testDenyServerNoConnect(state: *TestDenyServerState) void {
+    var listen_fd = [_]std.posix.pollfd{.{
+        .fd = state.server.socket.handle,
+        .events = std.posix.POLL.IN,
+        .revents = 0,
+    }};
+    const ready = std.posix.poll(&listen_fd, 500) catch return;
+    if (ready == 0) return;
+    var stream = state.server.accept(state.io) catch return;
+    defer stream.close(state.io);
+    state.accepted.store(true, .release);
 }
 
 fn readHttpResponse(io: std.Io, stream: std.Io.net.Stream, buffer: []u8) !usize {

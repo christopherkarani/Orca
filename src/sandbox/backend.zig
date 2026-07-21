@@ -14,6 +14,7 @@ pub const Feature = enum {
     path_shims,
     mcp_stdio_proxy,
     network_observe,
+    network_proxy_enforce,
     network_enforce,
     process_supervision,
     user_namespaces,
@@ -37,6 +38,7 @@ pub const Feature = enum {
             .path_shims => "PATH shims",
             .mcp_stdio_proxy => "mcp stdio proxy",
             .network_observe => "network observation",
+            .network_proxy_enforce => "proxy-mediated network enforcement",
             .network_enforce => "transparent network enforcement",
             .process_supervision => "process supervision",
             .user_namespaces => "user namespace",
@@ -58,6 +60,10 @@ pub const Feature = enum {
 
     fn aliasMatches(self: Feature, value: []const u8) bool {
         return switch (self) {
+            .network_proxy_enforce => featureNameMatches(value, "network proxy") or
+                featureNameMatches(value, "network proxy enforce") or
+                featureNameMatches(value, "network proxy enforcement") or
+                featureNameMatches(value, "proxy mediated network enforcement"),
             .network_enforce => featureNameMatches(value, "network enforcement"),
             else => false,
         };
@@ -120,6 +126,7 @@ pub const feature_order = [_]Feature{
     .path_shims,
     .mcp_stdio_proxy,
     .network_observe,
+    .network_proxy_enforce,
     .network_enforce,
     .process_supervision,
     .user_namespaces,
@@ -163,7 +170,6 @@ pub const ReportSet = struct {
 /// Production agent launch is exclusively `apply.applyBeforeExec` +
 /// `process.OsChildApply` / `apply_posix`. Capability detection lives
 /// here; there is no scaffold spawn path that could be mistaken for attach.
-
 pub fn detect(os: platform.Os) ReportSet {
     return switch (os) {
         .linux => linux_backend.detect(),
@@ -221,6 +227,7 @@ pub fn baseReports(os: platform.Os) [feature_order.len]FeatureReport {
     setReport(&reports, .path_shims, .wrapper_only, "session PATH shims are wrapper-level");
     setReport(&reports, .mcp_stdio_proxy, .active, "stdio MCP proxy enforcement is implemented for mediated MCP traffic");
     setReport(&reports, .network_observe, .observe_only, "network policy decisions and audit observations are implemented");
+    setReport(&reports, .network_proxy_enforce, .limited, "explicit loopback proxy is available when requested; route forcing requires per-session OS sandbox attach");
     setReport(&reports, .network_enforce, .observe_only, "transparent network enforcement is not active; decisions are observed and audited");
     return reports;
 }
@@ -245,6 +252,9 @@ test "backend capability levels are explicit and parseable" {
     try std.testing.expectEqual(Feature.network_enforce, Feature.parse("network enforcement").?);
     try std.testing.expectEqual(Feature.network_enforce, Feature.parse("network-enforcement").?);
     try std.testing.expectEqual(Feature.network_enforce, Feature.parse("transparent network enforcement").?);
+    try std.testing.expectEqual(Feature.network_proxy_enforce, Feature.parse("network-proxy").?);
+    try std.testing.expectEqual(Feature.network_proxy_enforce, Feature.parse("network proxy enforcement").?);
+    try std.testing.expectEqual(Feature.network_proxy_enforce, Feature.parse("proxy-mediated network enforcement").?);
     try std.testing.expectEqual(Feature.strong_sandbox, Feature.parse("strong_sandbox").?);
 }
 
@@ -294,6 +304,7 @@ test "required backend features require active enforcement" {
 
     try std.testing.expect(report.firstMissingRequired(&.{.env_filtering}) == null);
     try std.testing.expectEqual(Feature.network_enforce, report.firstMissingRequired(&.{.network_enforce}).?.feature);
+    try std.testing.expectEqual(Feature.network_proxy_enforce, report.firstMissingRequired(&.{.network_proxy_enforce}).?.feature);
     try std.testing.expectEqual(Feature.seccomp, report.firstMissingRequired(&.{.seccomp}).?.feature);
     try std.testing.expectEqual(Feature.path_shims, report.firstMissingRequired(&.{.path_shims}).?.feature);
 }

@@ -28,7 +28,7 @@ pub fn detect() backend.ReportSet {
     backend.setReport(&reports, .shell_wrapping, .wrapper_only, "cmd.exe, powershell.exe, and pwsh.exe are guarded when resolved through Orca PATH shims");
     backend.setReport(&reports, .path_shims, .wrapper_only, "Orca prepends session .cmd shims to PATH for wrapper-mediated command checks");
     backend.setReport(&reports, .network_observe, .observe_only, "network policy decisions are audited for Orca-mediated actions");
-    backend.setReport(&reports, .network_enforce, .limited, "transparent Windows network enforcement is not installed; only wrapper/proxy-mediated hooks are available");
+    backend.setReport(&reports, .network_enforce, .unavailable, "transparent Windows network enforcement is not installed; only wrapper/proxy-mediated hooks are available");
     backend.setReport(&reports, .user_namespaces, .unsupported, "Linux user namespaces are not a Windows feature");
     backend.setReport(&reports, .mount_namespaces, .unsupported, "Linux mount namespaces are not a Windows feature");
     backend.setReport(&reports, .seccomp, .unsupported, "Linux seccomp-bpf is not a Windows feature");
@@ -238,7 +238,7 @@ test "Windows capability detector is honest about wrapper and unavailable protec
     try std.testing.expectEqual(backend.Level.wrapper_only, report.get(.shell_wrapping).level);
     try std.testing.expectEqual(backend.Level.wrapper_only, report.get(.path_shims).level);
     try std.testing.expectEqual(backend.Level.partial, report.get(.process_supervision).level);
-    try std.testing.expectEqual(backend.Level.limited, report.get(.network_enforce).level);
+    try std.testing.expectEqual(backend.Level.unavailable, report.get(.network_enforce).level);
     try std.testing.expectEqual(backend.Level.unavailable, report.get(.strong_sandbox).level);
     try std.testing.expect(!report.featureAvailable(.strong_sandbox));
 }

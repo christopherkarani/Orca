@@ -194,9 +194,9 @@ Actions on a mediation path are evaluated against your policy. Paths that bypass
 | OpenCode               | `orca opencode`                      |
 | OpenClaw               | `orca openclaw`                      |
 | Hermes                 | `orca hermes`                        |
-| Cursor / custom agents | advanced: `orca run -- <agent>`      |
+| Custom commands        | advanced: `orca run -- <command>`    |
 
-One policy file can protect multiple agents. Host aliases are the taught launch path; `orca run` remains the engine for custom agents and CI.
+One policy file can protect multiple agents. Host aliases (`orca <agent>`) are the taught launch path; `orca run` remains the advanced engine for custom commands and CI flags.
 
 ---
 
@@ -266,7 +266,7 @@ orca stop
 For CI / automation (fails closed, no prompts), use the run engine:
 
 ```bash
-orca run --ci -- codex --prompt "Refactor auth"
+orca run --ci -- ./scripts/agent-task.sh
 ```
 
 ---
@@ -280,7 +280,7 @@ Orca is **graded mediation**, not a universal OS sandbox. Canonical definitions 
 | `hook` | Host invokes Orca and honors veto | Native plugin / host hook that fires |
 | `wrapper` | PATH shims / agent launch under Orca | Finite executable list; absolute paths may bypass |
 | `proxy` | Traffic must traverse an Orca proxy | MCP / optional network proxies |
-| `OS-enforced` | Kernel/sandbox backend enforcing for that session | After child session-attach succeeds (`orca run --os-sandbox`); doctor probes alone are not enough |
+| `OS-enforced` | Kernel/sandbox backend enforcing for that session | After protected child session-attach succeeds; doctor probes alone are not enough |
 
 **Safe Launch default:** `orca start` auto-selects the best available **Ask on risk** posture (hooks + wrappers when available). Day-1 status is **Protected | Limited | Off** with an honest caveat — not a grade matrix. **`OS-enforced`** FS isolation only after a successful Landlock (Linux) or Seatbelt (macOS) attach for that child.
 
@@ -392,7 +392,7 @@ No more one-off scripts per person.
 Run autonomous agents in CI without interactive approval.
 
 ```bash
-orca run --ci -- codex --prompt "Update the migration scripts"
+orca run --ci -- ./scripts/agent-task.sh
 ```
 
 In CI, Orca converts `ask` into `deny`.
@@ -465,7 +465,7 @@ mode: ask
 For automation:
 
 ```bash
-orca run --ci -- hermes
+orca run --ci -- ./scripts/agent-task.sh
 ```
 
 ---
@@ -521,7 +521,7 @@ high-entropy tokens
 Secretless mode (advanced — not day-1) replaces raw values with broker references before the agent sees them. Coding agents that need env API keys often will not authenticate under secretless; prefer Safe Launch unless you know you need it. See [docs/credentials.md](docs/credentials.md).
 
 ```bash
-orca run --secretless -- claude
+orca run --secretless -- <custom-command>
 ```
 
 ---

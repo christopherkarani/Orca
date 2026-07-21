@@ -203,7 +203,7 @@ The marketplace catalog uses a relative path (`../claude-code-plugin`). If your 
 ## Limitations
 
 - Hooks are advisory; enforcement depends on Claude Code host support.
-- The strongest protection is `orca run -- <claude-code-command>`.
+- The strongest protection is `orca claude`.
 - Plugin installation is a preview/dry-run by default.
 - No telemetry is collected.
 - Official marketplace availability is not yet implemented.

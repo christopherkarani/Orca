@@ -196,7 +196,7 @@ Result: **10/10 fixtures passed (100%)** ✓
 2. **`clawhub:` install protocol requires recent OpenClaw.** Older OpenClaw versions may not support `clawhub:` installs. Use local path or npm install as fallback.
 3. **Local path install may show runtime warnings.** OpenClaw loads TypeScript source directly from local paths, which may cause context-shape mismatches. The npm/ClawHub distribution uses compiled `dist/index.js`.
 4. **Hooks are advisory for informational events.** Blocking depends on OpenClaw honoring thrown errors.
-5. **The strongest protection remains `orca run -- openclaw`.**
+5. **The strongest protection remains `orca openclaw`.**
 
 ## Manual Actions Already Completed
 

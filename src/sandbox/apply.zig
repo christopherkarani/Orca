@@ -66,7 +66,10 @@ pub const ChildApplyKind = enum {
 /// Invalid both-set states are unrepresentable: at most one backend payload.
 pub const ChildMaterials = union(enum) {
     none,
-    landlock: profile.CompiledProfile,
+    landlock: struct {
+        compiled: profile.CompiledProfile,
+        route_forcing: ?landlock.RouteForcing = null,
+    },
     seatbelt: struct {
         sbpl_z: [:0]u8,
         allocator: std.mem.Allocator,
@@ -79,7 +82,7 @@ pub const ChildMaterials = union(enum) {
     pub fn deinit(self: *ChildMaterials) void {
         switch (self.*) {
             .none => {},
-            .landlock => |*p| p.deinit(),
+            .landlock => |*p| p.compiled.deinit(),
             .seatbelt => |*s| s.allocator.free(s.sbpl_z),
         }
         self.* = .none;
@@ -105,6 +108,10 @@ pub const ApplyBoundary = struct {
     /// Extra profile options.
     include_tmp: bool = false,
     control_roots: []const []const u8 = &.{},
+    /// Optional per-launch proxy TCP port. When set, supported platforms install
+    /// child network rules that force outbound TCP through the loopback proxy.
+    network_proxy_port: ?u16 = null,
+    require_network_route_forcing: bool = false,
     /// When `error.RequireFailed` is returned, set to a static reason code if non-null.
     fail_reason_out: ?*[]const u8 = null,
 };
@@ -123,6 +130,9 @@ pub const ApplyResult = struct {
     profile_hash_hex: ?[64]u8 = null,
     /// Owned child-apply materials. Free with deinit. Default `.none`.
     materials: ChildMaterials = .none,
+    /// True only when child-apply materials include OS network rules for the
+    /// current proxy listener. This is per-launch, not a static doctor claim.
+    network_route_forced: bool = false,
     /// Retained fork buffers for the last successful sandboxed spawn.
     /// Freed in `deinit` after the supervisor has waited/reaped the child.
     spawn_lease: ?apply_posix.SpawnLease = null,
@@ -172,17 +182,24 @@ pub const ApplyResult = struct {
     /// activeReceipt construction failure — never soft-skips.
     fn activateAfterHandshake(self: *ApplyResult) error{ApplyFailed}!ChildAttachProof {
         const hash = self.profile_hash_hex orelse return error.ApplyFailed;
+        const route_forced_scope = "proxy route-forced (outbound TCP to Orca loopback proxy only)";
         switch (self.materials) {
             .none => return error.ApplyFailed,
             .landlock => |*p| {
-                const scope = p.effectiveFsScopeSummary(.landlock);
-                self.receipt = posture.activeReceipt(.landlock, hash[0..], scope) catch return error.ApplyFailed;
+                const scope = p.compiled.effectiveFsScopeSummary(.landlock);
+                self.receipt = if (self.network_route_forced)
+                    posture.activeReceiptWithNetwork(.landlock, hash[0..], scope, route_forced_scope) catch return error.ApplyFailed
+                else
+                    posture.activeReceipt(.landlock, hash[0..], scope) catch return error.ApplyFailed;
                 return .{ .mechanism = .landlock };
             },
             .seatbelt => |*s| {
                 // Scope was precomputed at prepare from the compiled profile (single source).
                 const scope = s.fs_scope;
-                self.receipt = posture.activeReceipt(.seatbelt, hash[0..], scope) catch return error.ApplyFailed;
+                self.receipt = if (self.network_route_forced)
+                    posture.activeReceiptWithNetwork(.seatbelt, hash[0..], scope, route_forced_scope) catch return error.ApplyFailed
+                else
+                    posture.activeReceipt(.seatbelt, hash[0..], scope) catch return error.ApplyFailed;
                 return .{ .mechanism = .seatbelt };
             },
         }
@@ -225,8 +242,9 @@ pub const ApplyResult = struct {
         // Single switch on materials tag — invalid dual-backend state unrepresentable.
         var lease = switch (self.materials) {
             .none => return error.ApplyFailed,
-            .landlock => |*profile_ptr| try apply_posix.forkApplyLandlockAndExec(
-                profile_ptr,
+            .landlock => |*ll| try apply_posix.forkApplyLandlockAndExec(
+                &ll.compiled,
+                ll.route_forcing,
                 argv_owned,
                 env_map,
                 workspace_root,
@@ -270,6 +288,8 @@ const PlatformApplyOutcome = struct {
     status: PlatformApplyStatus,
     mechanism: posture.BackendMechanism = .none,
     reason_code: []const u8,
+    network_route_forced: bool = false,
+    landlock_route_forcing: ?landlock.RouteForcing = null,
     /// Owned NUL-terminated SBPL when Seatbelt prepare succeeded. Free via `deinit`
     /// unless transferred with `takeSeatbeltSbpl`.
     seatbelt_sbpl_z: ?[:0]u8 = null,
@@ -424,8 +444,13 @@ pub fn applyBeforeExec(boundary: ApplyBoundary) ApplyError!ApplyResult {
     // Platform OS prepare — Linux Landlock ABI probe; macOS Seatbelt prepare.
     // FD scrub / real attach run only in the forked agent child (`apply_posix`), never here.
     // OOM on Seatbelt prepare propagates as `error.OutOfMemory` (never soft .failed).
-    var platform = try tryPlatformApply(boundary.allocator, &compiled);
+    var platform = try tryPlatformApply(boundary.allocator, &compiled, boundary.network_proxy_port);
     defer platform.deinit();
+
+    if (boundary.require_network_route_forcing and !platform.network_route_forced) {
+        setFailReason(boundary, "network_route_forcing_unavailable");
+        return error.RequireFailed;
+    }
 
     // Launch allowlist only when child-apply materials will be used (prepared_child).
     // Unavailable/failed grade-drop keeps denylist-only env (provider credentials retained).
@@ -488,7 +513,11 @@ pub fn applyBeforeExec(boundary: ApplyBoundary) ApplyError!ApplyResult {
                     .env_keys_removed = removed,
                     .profile_compiled = true,
                     .profile_hash_hex = hash_copy,
-                    .materials = .{ .landlock = compiled },
+                    .materials = .{ .landlock = .{
+                        .compiled = compiled,
+                        .route_forcing = platform.landlock_route_forcing,
+                    } },
+                    .network_route_forced = platform.network_route_forced,
                 };
             }
             const sbpl_z = platform.takeSeatbeltSbpl() orelse {
@@ -518,6 +547,7 @@ pub fn applyBeforeExec(boundary: ApplyBoundary) ApplyError!ApplyResult {
                     .allocator = boundary.allocator,
                     .fs_scope = seatbelt_scope,
                 } },
+                .network_route_forced = platform.network_route_forced,
             };
         },
         .unavailable => {
@@ -554,10 +584,11 @@ pub fn applyBeforeExec(boundary: ApplyBoundary) ApplyError!ApplyResult {
 fn tryPlatformApply(
     allocator: std.mem.Allocator,
     compiled: *const profile.CompiledProfile,
+    network_proxy_port: ?u16,
 ) ApplyError!PlatformApplyOutcome {
     return switch (builtin.os.tag) {
-        .linux => tryPlatformApplyLinux(),
-        .macos => try tryMacOsSeatbelt(allocator, compiled),
+        .linux => tryPlatformApplyLinux(network_proxy_port),
+        .macos => try tryMacOsSeatbelt(allocator, compiled, network_proxy_port),
         else => .{
             .status = .unavailable,
             .mechanism = .none,
@@ -569,8 +600,14 @@ fn tryPlatformApply(
 fn tryMacOsSeatbelt(
     allocator: std.mem.Allocator,
     compiled: *const profile.CompiledProfile,
+    network_proxy_port: ?u16,
 ) ApplyError!PlatformApplyOutcome {
-    const prepared = macos_seatbelt.prepareForChildApply(allocator, compiled);
+    const prepared = macos_seatbelt.prepareForChildApplyWithOptions(
+        allocator,
+        compiled,
+        macos_seatbelt.evaluateSupport(),
+        .{ .network_route_forcing = if (network_proxy_port) |port| .{ .proxy_port = port } else null },
+    );
     return switch (prepared.status) {
         .unavailable => .{
             .status = .unavailable,
@@ -587,6 +624,7 @@ fn tryMacOsSeatbelt(
             .reason_code = "seatbelt_child_apply_required",
             .seatbelt_sbpl_z = prepared.sbpl_z,
             .sbpl_allocator = allocator,
+            .network_route_forced = network_proxy_port != null,
         },
     };
 }
@@ -607,7 +645,7 @@ fn mapSeatbeltPrepareFailure(reason_code: []const u8) ApplyError!PlatformApplyOu
 /// Linux prepare: ABI probe only. Do not double-apply via verifyApplyInChild
 /// on the production hot path — real Landlock attach is the agent child in apply_posix.
 /// `landlock.verifyApplyInChild` remains available for unit tests in landlock.zig.
-fn tryPlatformApplyLinux() PlatformApplyOutcome {
+fn tryPlatformApplyLinux(network_proxy_port: ?u16) PlatformApplyOutcome {
     if (!landlock.isAbiAvailable()) {
         return .{
             .status = .unavailable,
@@ -616,10 +654,17 @@ fn tryPlatformApplyLinux() PlatformApplyOutcome {
         };
     }
 
+    const route_forcing: ?landlock.RouteForcing = if (network_proxy_port) |port|
+        if (landlock.supportsTcpRouteForcing()) .{ .proxy_port = port } else null
+    else
+        null;
+
     return .{
         .status = .prepared_child,
         .mechanism = .landlock,
         .reason_code = "landlock_child_apply_required",
+        .network_route_forced = route_forcing != null,
+        .landlock_route_forcing = route_forcing,
     };
 }
 
@@ -1242,7 +1287,7 @@ test "attach path rewrites host TMPDIR out of var/folders (R2-2)" {
         // Pure grants: rewritten path must be agent-writable under production model.
         switch (result.materials) {
             .landlock => |*p| {
-                try std.testing.expect(p.isAgentWritable(td));
+                try std.testing.expect(p.compiled.isAgentWritable(td));
             },
             else => {
                 var compiled = try profile.compileProfile(std.testing.allocator, .{

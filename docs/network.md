@@ -11,9 +11,9 @@ Orca includes a network decision engine and wrapper/proxy-mediated hooks.
 - `open`: allow decisions.
 
 ```sh
-./zig-out/bin/orca run --no-network -- <command>
-./zig-out/bin/orca run --network allowlist --allow-network api.github.com -- <command>
-./zig-out/bin/orca run --secretless --network-backend proxy -- <command>
+./zig-out/bin/orca claude
+./zig-out/bin/orca codex
+./zig-out/bin/orca run --network allowlist --allow-network api.github.com -- <custom-command>
 ```
 
 ## Policy
@@ -63,7 +63,7 @@ The `credentials.use` value is a reference name for policy, audit, and external 
 
 ## Proxy Backend
 
-`network.backend: proxy` or `orca run --network-backend proxy` starts an explicit loopback proxy for the child process and injects `HTTP_PROXY`, `HTTPS_PROXY`, `ALL_PROXY`, `NO_PROXY`, and `ORCA_NETWORK_ENFORCEMENT=proxy-mediated`.
+`network.backend: proxy` starts an explicit loopback proxy for protected agent launches (`orca <agent>`) and the advanced run engine. `orca run --network-backend proxy` is still available for custom commands. The proxy path injects `HTTP_PROXY`, `HTTPS_PROXY`, `ALL_PROXY`, `NO_PROXY`, `ORCA_NETWORK_ENFORCEMENT=proxy-mediated`, and `ORCA_PROXY_ROUTE_FORCED`.
 
 - HTTP requests are evaluated with host, port, method, and path visibility.
 - HTTPS `CONNECT` requests are evaluated by host and port only.
@@ -71,8 +71,9 @@ The `credentials.use` value is a reference name for policy, audit, and external 
 - The proxy accepts concurrent client connections and uses full-duplex forwarding after the first request bytes, which supports delayed request bodies, streaming bodies, and chunked-style uploads at the proxy layer.
 - If proxy enforcement is required and the proxy fails while the child is running, Orca terminates the child and records a fail-closed proxy stop event.
 - Orca does not perform HTTPS MITM.
-- Transparent OS-level network interception is not implemented.
-- `--require-backend network_enforce` is satisfied by the explicit proxy backend when it starts successfully; otherwise strict/CI required runs fail closed.
+- Proxy startup alone is not route forcing. `ORCA_PROXY_ROUTE_FORCED=false` means the child received proxy env only.
+- With `network.backend: proxy` plus OS sandbox attach, Orca installs child OS network rules where supported and exports `ORCA_PROXY_ROUTE_FORCED=true`. macOS Seatbelt allows outbound TCP only to the Orca loopback proxy port. Linux Landlock uses ABI >= 4 TCP port rules; those are port-scoped, not address-scoped.
+- `--require-backend network-proxy` is satisfied only when the explicit proxy backend starts successfully. `--require-backend network_enforce` is satisfied only by a route-forced OS sandbox session, not by proxy startup alone.
 
 ## Exfiltration Heuristics
 

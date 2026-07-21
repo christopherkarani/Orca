@@ -396,11 +396,12 @@ pub fn build(b: *std.Build) void {
     const compile_test_lib_step = b.step("compile-test-lib", "Compile orca lib unit tests without running");
     compile_test_lib_step.dependOn(&lib_tests.step);
 
+    // Keep membership identical to `test-fast` (lib + orca_core package + core contract).
+    // daemon_ipc_hardening is full-suite only (`test` step), not the fast gate.
     const compile_test_fast_step = b.step("compile-test-fast", "Compile test-fast artifacts without running");
     compile_test_fast_step.dependOn(&lib_tests.step);
     compile_test_fast_step.dependOn(&core_package_tests.step);
     compile_test_fast_step.dependOn(&core_contract_tests.step);
-    compile_test_fast_step.dependOn(&daemon_ipc_hardening_tests.step);
 
     const test_lib_step = b.step("test-lib", "Run orca lib inline tests only");
     test_lib_step.dependOn(&run_lib_tests.step);

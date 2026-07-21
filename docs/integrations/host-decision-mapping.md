@@ -44,7 +44,7 @@ Most hosts **cannot** veto or open approve-and-resume on prompt submission. Orca
 
 | Host | Event | Enforcement of `ask`/`block` | Allowed surface |
 |---|---|---|---|
-| **Hermes** | `pre_llm_call` | **None** via plugin | Advisory `context` only; notes **must not** claim enforcement. Outer gate: `orca run -- hermes`. |
+| **Hermes** | `pre_llm_call` | **None** via plugin | Advisory `context` only; notes **must not** claim enforcement. Outer gate: `orca hermes`. |
 | **OpenClaw** | prompt hooks | Limited | Prefer honest limitations over fake notes. |
 | **OpenCode** | prompt hooks | Limited | Same. |
 | **Claude / Codex** | `UserPromptSubmit` | Advisory / redaction | `warn` for secrets; not a full deny boundary. |
@@ -70,8 +70,8 @@ other  → block fail-closed
 
 ```text
 warn / context_only → {"context":"Orca policy note (warn/observe, advisory only): ..."}
-ask                 → {"context":"... not an approval gate ... Prefer orca run -- hermes"}
-block               → {"context":"... host cannot veto pre_llm_call ... Prefer orca run -- hermes"}
+ask                 → {"context":"... not an approval gate ... Prefer orca hermes"}
+block               → {"context":"... host cannot veto pre_llm_call ... Prefer orca hermes"}
 ```
 
 ## Capability schema

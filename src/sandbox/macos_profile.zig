@@ -18,9 +18,30 @@ const profile = @import("profile.zig");
 /// Data-volume prefix stripped when emitting Users-tree grants (see `sbplEmitPath`).
 const data_volume_prefix = "/System/Volumes/Data";
 
+pub const NetworkRouteForcing = struct {
+    proxy_port: u16,
+};
+
+pub const RenderOptions = struct {
+    network_route_forcing: ?NetworkRouteForcing = null,
+};
+
 /// Render a custom SBPL profile string from a compiled grant model.
 /// Caller owns the returned slice.
 pub fn renderSbpl(allocator: std.mem.Allocator, compiled: *const profile.CompiledProfile) ![]u8 {
+    return renderSbplWithOptions(allocator, compiled, .{});
+}
+
+/// Render a custom SBPL profile string with optional child network route forcing.
+/// Route forcing removes broad `network*` and permits outbound TCP only to the
+/// local proxy port. macOS Seatbelt accepts `localhost` (not numeric loopback)
+/// for TCP address filters; live tests prove that filter still matches numeric
+/// `127.0.0.1` client connects, avoiding DNS inside the sandboxed child.
+pub fn renderSbplWithOptions(
+    allocator: std.mem.Allocator,
+    compiled: *const profile.CompiledProfile,
+    options: RenderOptions,
+) ![]u8 {
     var out: std.ArrayList(u8) = .empty;
     errdefer out.deinit(allocator);
 
@@ -28,21 +49,38 @@ pub fn renderSbpl(allocator: std.mem.Allocator, compiled: *const profile.Compile
     try out.appendSlice(allocator, "(deny default)\n");
     try out.appendSlice(allocator, "\n");
 
-    // Baseline: process lifecycle, signals, sysctl, mach, and network.
+    // Baseline: process lifecycle, signals, sysctl, mach, and optional network.
     // Intentional non-goals (FS confinement only — not process/IPC/network isolation):
-    // unrestricted process*, mach-lookup, network*. See docs/platform-macos.md.
+    // unrestricted process*, mach-lookup. Network is unrestricted only when route
+    // forcing is not requested. See docs/platform-macos.md.
     // Metadata is scoped to root literals + granted trees only — never bare
     // (allow file-read-metadata) which enables host-wide path discovery.
     try out.appendSlice(allocator,
         \\;; process / IPC baseline (FS confinement is the product surface;
-        \\;; process*/mach-lookup/network* are intentional non-goals — not isolation)
+        \\;; process*/mach-lookup are intentional residuals — not isolation)
         \\(allow process*)
         \\(allow signal)
         \\(allow sysctl-read)
         \\;; mach-lookup required for dyld; omit mach-register (no host service registration)
         \\(allow mach-lookup)
-        \\(allow network*)
         \\
+    );
+    if (options.network_route_forcing) |route| {
+        const line = try std.fmt.allocPrint(allocator,
+            \\;; network route forcing: child outbound TCP may reach only the Orca loopback proxy
+            \\(allow network-outbound (remote tcp "localhost:{d}"))
+            \\
+        , .{route.proxy_port});
+        defer allocator.free(line);
+        try out.appendSlice(allocator, line);
+    } else {
+        try out.appendSlice(allocator,
+            \\;; network unrestricted unless the launcher requested proxy route forcing
+            \\(allow network*)
+            \\
+        );
+    }
+    try out.appendSlice(allocator,
         \\;; dyld / device / root path components needed for exec (content + metadata)
         \\(allow file-read-metadata (literal "/"))
         \\(allow file-read-metadata (literal "/private"))
@@ -364,6 +402,40 @@ test "SBPL narrows /dev writes to null and urandom only" {
     // mach-lookup remains (dyld); mach-register is no longer granted.
     try std.testing.expect(std.mem.indexOf(u8, sbpl, "(allow mach-lookup)") != null);
     try std.testing.expect(std.mem.indexOf(u8, sbpl, "(allow mach-register)") == null);
+}
+
+test "SBPL route forcing removes broad network and allows only proxy TCP port" {
+    const allocator = std.testing.allocator;
+    var compiled = try profile.compileProfile(allocator, .{
+        .workspace_root = "/tmp/orca-sbpl-route",
+        .system_ro_prefixes = &[_][]const u8{ "/usr", "/bin" },
+    });
+    defer compiled.deinit();
+
+    const sbpl = try renderSbplWithOptions(allocator, &compiled, .{
+        .network_route_forcing = .{ .proxy_port = 43123 },
+    });
+    defer allocator.free(sbpl);
+
+    try std.testing.expect(std.mem.indexOf(u8, sbpl, "(allow network*)") == null);
+    try std.testing.expect(std.mem.indexOf(u8, sbpl, "(remote tcp \"localhost:43123\")") != null);
+    try std.testing.expect(std.mem.indexOf(u8, sbpl, "(remote tcp \"*:43123\")") == null);
+    try std.testing.expect(std.mem.indexOf(u8, sbpl, "(remote tcp)") == null);
+    try std.testing.expect(std.mem.indexOf(u8, sbpl, "(remote udp)") == null);
+}
+
+test "SBPL default remains explicit unrestricted network" {
+    const allocator = std.testing.allocator;
+    var compiled = try profile.compileProfile(allocator, .{
+        .workspace_root = "/tmp/orca-sbpl-network-default",
+        .system_ro_prefixes = &[_][]const u8{"/usr"},
+    });
+    defer compiled.deinit();
+
+    const sbpl = try renderSbpl(allocator, &compiled);
+    defer allocator.free(sbpl);
+
+    try std.testing.expect(std.mem.indexOf(u8, sbpl, "(allow network*)") != null);
 }
 
 test "SBPL denies /System/Volumes/Data even if bare /System is granted" {

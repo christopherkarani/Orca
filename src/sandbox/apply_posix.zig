@@ -96,6 +96,7 @@ const ChildOsApply = union(enum) {
     landlock: struct {
         compiled: *const profile.CompiledProfile,
         plan: *const landlock.ChildLandlockPlan,
+        route_forcing: ?landlock.RouteForcing,
     },
     seatbelt: struct {
         sbpl_z: [*:0]const u8,
@@ -106,7 +107,10 @@ const ChildOsApply = union(enum) {
 /// storage. Avoids constructing `ChildOsApply.landlock` with an undefined plan
 /// pointer that is later rewritten (M-24).
 const ParentApplySpec = union(enum) {
-    landlock: *const profile.CompiledProfile,
+    landlock: struct {
+        compiled: *const profile.CompiledProfile,
+        route_forcing: ?landlock.RouteForcing,
+    },
     seatbelt: [*:0]const u8,
 };
 
@@ -116,9 +120,10 @@ const ParentApplySpec = union(enum) {
 /// Returns a `SpawnLease` owning retained argv/env/plan buffers. Caller must
 /// `deinit` the lease after reaping the child (or process exit).
 ///
-/// Linux only. Does not apply network Landlock.
+/// Linux only. Optional route forcing uses Landlock TCP port rules.
 pub fn forkApplyLandlockAndExec(
     compiled: *const profile.CompiledProfile,
+    route_forcing: ?landlock.RouteForcing,
     argv: []const []const u8,
     env_map: ?*const std.process.Environ.Map,
     cwd: ?[]const u8,
@@ -126,7 +131,7 @@ pub fn forkApplyLandlockAndExec(
 ) SpawnError!SpawnLease {
     if (builtin.os.tag != .linux) return error.Unsupported;
     if (argv.len == 0) return error.ExecFailed;
-    return forkApplyAndExecLandlock(compiled, argv, env_map, cwd, stdio);
+    return forkApplyAndExecLandlock(compiled, route_forcing, argv, env_map, cwd, stdio);
 }
 
 /// Fork, apply Seatbelt SBPL in the child, chdir, preflight, scrub FDs (keep
@@ -151,6 +156,7 @@ pub fn forkApplySeatbeltAndExec(
 
 fn forkApplyAndExecLandlock(
     compiled: *const profile.CompiledProfile,
+    route_forcing: ?landlock.RouteForcing,
     argv: []const []const u8,
     env_map: ?*const std.process.Environ.Map,
     cwd: ?[]const u8,
@@ -169,7 +175,7 @@ fn forkApplyAndExecLandlock(
     };
 
     return forkApplyAndExecCommon(
-        .{ .landlock = compiled },
+        .{ .landlock = .{ .compiled = compiled, .route_forcing = route_forcing } },
         expand_plan,
         argv,
         env_map,
@@ -196,9 +202,10 @@ fn forkApplyAndExecCommon(
 
     // Build ChildOsApply only after plan is in stable plan_holder storage (M-24).
     const resolved_apply: ChildOsApply = switch (spec) {
-        .landlock => |compiled| .{ .landlock = .{
-            .compiled = compiled,
+        .landlock => |ll| .{ .landlock = .{
+            .compiled = ll.compiled,
             .plan = if (plan_holder) |*p| p else return error.ApplyFailed,
+            .route_forcing = ll.route_forcing,
         } },
         .seatbelt => |sbpl_z| .{ .seatbelt = .{ .sbpl_z = sbpl_z } },
     };
@@ -291,7 +298,7 @@ fn runChildAfterFork(
     applyStdioInChild(stdio) catch failExit(status_w);
 
     switch (child_apply) {
-        .landlock => |ll| landlock.applySelf(ll.compiled, ll.plan) catch failExit(status_w),
+        .landlock => |ll| landlock.applySelf(ll.compiled, ll.plan, ll.route_forcing) catch failExit(status_w),
         .seatbelt => |sb| macos_seatbelt.applyInChild(sb.sbpl_z) catch failExit(status_w),
     }
 
@@ -500,7 +507,6 @@ pub fn killAndReapChild(pid: i32) void {
     }
 }
 
-
 fn applyStdioInChild(stdio: StdioBehavior) error{StdioFailed}!void {
     switch (stdio) {
         .inherit => {},
@@ -517,7 +523,6 @@ fn redirectStdioToDevNull() error{StdioFailed}!void {
     if (std.c.dup2(null_fd, 1) < 0) return error.StdioFailed;
     if (std.c.dup2(null_fd, 2) < 0) return error.StdioFailed;
 }
-
 
 const AllocatedEnvp = struct {
     /// Null-terminated envp for execve.
@@ -674,6 +679,7 @@ test "forkApplyLandlockAndExec is unsupported off Linux" {
             .canonical_bytes = "",
             .hash_hex = .{'0'} ** 64,
         },
+        null,
         &[_][]const u8{"/bin/true"},
         null,
         null,
@@ -714,6 +720,7 @@ test "forkApplyLandlockAndExec applies then execs on Linux with handshake" {
     // Successful handshake proves status_w was retained through fd_scrub (M-17).
     var child = try forkApplyLandlockAndExec(
         &compiled,
+        null,
         &[_][]const u8{true_path},
         null,
         ws_root,
@@ -755,6 +762,7 @@ test "forkApplyLandlockAndExec fails handshake on bad chdir" {
     // chdir failure must not write status_ok — parent sees ApplyFailed.
     try std.testing.expectError(error.ApplyFailed, forkApplyLandlockAndExec(
         &compiled,
+        null,
         &[_][]const u8{true_path},
         null,
         "/no/such/orca/cwd/for/handshake/test",
@@ -965,6 +973,7 @@ test "preflight fail does not write status_ok (missing exec target)" {
 
     try std.testing.expectError(error.ApplyFailed, forkApplyLandlockAndExec(
         &compiled,
+        null,
         &[_][]const u8{"/no/such/orca/exec/target/for/preflight"},
         null,
         ws_root,
@@ -1045,6 +1054,7 @@ test "planted non-kept FD is closed after successful handshake" {
 
     var child = try forkApplyLandlockAndExec(
         &compiled,
+        null,
         &[_][]const u8{ sh_path, "-c", check_closed },
         null,
         ws_root,

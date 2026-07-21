@@ -68,6 +68,7 @@ pub const AttachReceipt = struct {
     /// Owned hex hash when active (fixed storage — avoids UAF on returned receipts).
     profile_hash_hex: ?[64]u8 = null,
     fs_scope: []const u8 = "none",
+    network_scope: []const u8 = "unrestricted",
     reason_code: ?[]const u8 = null,
 
     pub fn isActive(self: AttachReceipt) bool {
@@ -101,6 +102,15 @@ pub fn activeReceipt(
     profile_hash_hex: []const u8,
     fs_scope: []const u8,
 ) error{InvalidProfileHash}!AttachReceipt {
+    return activeReceiptWithNetwork(mechanism, profile_hash_hex, fs_scope, "unrestricted");
+}
+
+pub fn activeReceiptWithNetwork(
+    mechanism: BackendMechanism,
+    profile_hash_hex: []const u8,
+    fs_scope: []const u8,
+    network_scope: []const u8,
+) error{InvalidProfileHash}!AttachReceipt {
     if (!isValidProfileHashHex(profile_hash_hex)) return error.InvalidProfileHash;
     // Copy into owned fixed storage (N1: no borrow of caller-owned / ephemeral memory).
     var hex: [64]u8 = undefined;
@@ -110,6 +120,7 @@ pub fn activeReceipt(
         .mechanism = mechanism,
         .profile_hash_hex = hex,
         .fs_scope = fs_scope,
+        .network_scope = network_scope,
         .reason_code = null,
     };
 }
@@ -167,8 +178,8 @@ pub fn formatSessionBanner(buf: []u8, receipt: AttachReceipt) ![]const u8 {
     return switch (receipt.posture) {
         .active => try std.fmt.bufPrint(
             buf,
-            "OS sandbox: active (filesystem: {s}; network: unrestricted; credentials: launch-allowlist (secrets stripped; agent sockets/certs may remain); tools: wrapper-mediated)",
-            .{receipt.fs_scope},
+            "OS sandbox: active (filesystem: {s}; network: {s}; credentials: launch-allowlist (secrets stripped; agent sockets/certs may remain); tools: wrapper-mediated)",
+            .{ receipt.fs_scope, receipt.network_scope },
         ),
         // Prepared materials must never read as active or as a grade-drop failure.
         .prepared => if (receipt.reason_code) |reason|
@@ -192,11 +203,11 @@ pub fn formatAuditReason(buf: []u8, receipt: AttachReceipt) ![]const u8 {
     const posture_str = receipt.posture.toString();
     const fs_scope = receipt.fs_scope;
     if (receipt.profileHashSlice()) |hash| {
-        return try std.fmt.bufPrint(buf, "posture={s}; profile_hash={s}; fs_scope={s}", .{ posture_str, hash, fs_scope });
+        return try std.fmt.bufPrint(buf, "posture={s}; profile_hash={s}; fs_scope={s}; network_scope={s}", .{ posture_str, hash, fs_scope, receipt.network_scope });
     } else if (receipt.reason_code) |code| {
-        return try std.fmt.bufPrint(buf, "posture={s}; fs_scope={s}; reason={s}", .{ posture_str, fs_scope, code });
+        return try std.fmt.bufPrint(buf, "posture={s}; fs_scope={s}; network_scope={s}; reason={s}", .{ posture_str, fs_scope, receipt.network_scope, code });
     } else {
-        return try std.fmt.bufPrint(buf, "posture={s}; fs_scope={s}", .{ posture_str, fs_scope });
+        return try std.fmt.bufPrint(buf, "posture={s}; fs_scope={s}; network_scope={s}", .{ posture_str, fs_scope, receipt.network_scope });
     }
 }
 

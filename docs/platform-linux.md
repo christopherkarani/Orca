@@ -16,13 +16,13 @@ Run:
 | Shell/PATH shims | wrapper-only |
 | MCP stdio proxy | active |
 | Network decision engine | active |
-| Transparent network enforcement | observe-only |
+| Transparent network enforcement | per-session when proxy backend + Landlock ABI >= 4 route-forces TCP; otherwise observe-only |
 | Transparent filesystem enforcement | staged writes always; Landlock session-attach when available |
 | Strong sandbox | session-attach via Landlock when ABI ≥ 1 (kernel 5.13+); otherwise unavailable |
 
-## OS filesystem sandbox (`orca run`)
+## OS filesystem sandbox
 
-`orca run --os-sandbox auto|on|off` (default `auto`) can attach a Landlock filesystem boundary to the agent child:
+Protected agent launches (`orca <agent>`) use the run engine and can attach a Landlock filesystem boundary to the agent child. Advanced users can force the same path with `orca run --os-sandbox auto|on|off` (default `auto`):
 
 - **Probe ≠ session-attach.** Doctor Landlock / strong-sandbox reports are capability evidence only. Doctor never reports a live session as `active` from a probe alone.
 - **Session-attach** is claimable only after apply-before-exec child attach succeeds for that run (with a profile hash). The pre-exec status handshake (`status_ok`) does not prove `execve`; an `active` session can still fail at exec (e.g. exit 127).
@@ -33,9 +33,15 @@ Run:
 
 Requirements: Linux kernel **5.13+** with Landlock **ABI ≥ 1**. Containers and host policy can still make Landlock unavailable.
 
+## Network route forcing
+
+When the proxy backend is active and Landlock ABI **>= 4** is available, Orca adds Landlock TCP network rules to the same child `restrict_self` call as the filesystem profile. The route-forced child can connect to the Orca proxy TCP port and is denied on neighboring loopback TCP ports; the child env exports `ORCA_PROXY_ROUTE_FORCED=true` and `ORCA_TRANSPARENT_NETWORK_ENFORCEMENT=active`.
+
+Landlock network rules are TCP **port-scoped**, not address-scoped. This blocks ordinary proxy-ignoring clients that connect to normal ports such as 80/443, but it cannot express "only 127.0.0.1 on this port" on Linux. Linux matrix evidence must therefore include the Landlock route-forcing canary and keep this residual visible.
+
 ## Backend Features
 
-Doctor may report user namespaces, mount namespaces, seccomp, Landlock, cgroups, network observation, audit/replay, and strong sandbox capability. Kernel feature probes are not a live session claim. Landlock restrictions are installed only on the `orca run` child path when `--os-sandbox` allows attach and the host supports it.
+Doctor may report user namespaces, mount namespaces, seccomp, Landlock, cgroups, network observation, audit/replay, and strong sandbox capability. Kernel feature probes are not a live session claim. Landlock restrictions are installed only on protected agent child paths when OS sandbox attach is enabled and the host supports it.
 
 ## Fallback
 

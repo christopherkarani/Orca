@@ -24,6 +24,8 @@ pub fn applyForRun(
     mode: sandbox.posture.OsSandboxMode,
     workspace_root: []const u8,
     env_map: *std.process.Environ.Map,
+    network_proxy_port: ?u16,
+    require_network_route_forcing: bool,
     stderr: anytype,
 ) !ApplyForRunOutcome {
     var fail_reason: []const u8 = "unknown";
@@ -32,6 +34,8 @@ pub fn applyForRun(
         .mode = mode,
         .workspace_root = workspace_root,
         .env_map = env_map,
+        .network_proxy_port = network_proxy_port,
+        .require_network_route_forcing = require_network_route_forcing,
         .fail_reason_out = &fail_reason,
     }) catch |err| switch (err) {
         error.RequireFailed => {

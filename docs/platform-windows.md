@@ -17,7 +17,7 @@ Run:
 | cmd and PowerShell wrappers | partial |
 | MCP stdio proxy | active |
 | Network decision engine | active |
-| Transparent network enforcement | limited |
+| Transparent network enforcement | unavailable; wrapper/proxy-mediated only, routes not forced |
 | Transparent file enforcement | limited |
 | Strong sandbox | unavailable unless doctor reports otherwise |
 

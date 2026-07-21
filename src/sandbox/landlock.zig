@@ -7,8 +7,11 @@
 //!   grants from the precomputed plan only (open + landlock syscalls; **no**
 //!   opendir/readdir) → prctl(NO_NEW_PRIVS) → landlock_restrict_self → exec.
 //!
-//! Never box the parent Orca CLI. Network Landlock is **never** claimed (Phase 2).
-//! Only filesystem PATH_BENEATH rules from `CompiledProfile` grants + expand plan.
+//! Never box the parent Orca CLI. Filesystem PATH_BENEATH rules come from
+//! `CompiledProfile` grants + expand plan. Optional Phase 2 TCP route forcing
+//! uses Landlock network port rules in the same child-only restrict_self call.
+//! Landlock network rules are port-scoped, not address-scoped; the launcher must
+//! keep this residual visible in docs/evidence.
 //!
 //! On non-Linux: compile-time stubs; probes return unavailable; apply errors.
 //! Parent-side expand helpers still run for unit tests on any POSIX host.
@@ -51,6 +54,7 @@ pub const CREATE_RULESET_VERSION: u32 = 1 << 0;
 
 /// landlock_add_rule type: filesystem path hierarchy.
 pub const RULE_PATH_BENEATH: u32 = 1;
+pub const RULE_NET_PORT: u32 = 2;
 
 // LANDLOCK_ACCESS_FS_* (uapi/linux/landlock.h)
 pub const ACCESS_FS_EXECUTE: u64 = 1 << 0;
@@ -73,8 +77,13 @@ pub const ACCESS_FS_TRUNCATE: u64 = 1 << 14;
 /// ABI ≥ 5
 pub const ACCESS_FS_IOCTL_DEV: u64 = 1 << 15;
 
+// LANDLOCK_ACCESS_NET_* (uapi/linux/landlock.h), ABI >= 4.
+pub const ACCESS_NET_BIND_TCP: u64 = 1 << 0;
+pub const ACCESS_NET_CONNECT_TCP: u64 = 1 << 1;
+
 /// Minimum ABI we require (kernel 5.13+).
 pub const MIN_ABI: u32 = 1;
+pub const MIN_TCP_ROUTE_FORCE_ABI: u32 = 4;
 
 /// FS rights present in ABI 1.
 pub const FS_RIGHTS_ABI1: u64 = ACCESS_FS_EXECUTE | ACCESS_FS_WRITE_FILE | ACCESS_FS_READ_FILE |
@@ -107,6 +116,24 @@ pub fn handledFsRights(abi: u32) u64 {
     // ABI 4+ adds network — intentionally omitted (no network Landlock claim).
     return rights;
 }
+
+/// Pure: handled network rights for route forcing. TCP bind/connect landed in
+/// Landlock ABI 4. UDP is not included here.
+pub fn handledNetRights(abi: u32) u64 {
+    if (abi < MIN_TCP_ROUTE_FORCE_ABI) return 0;
+    return ACCESS_NET_BIND_TCP | ACCESS_NET_CONNECT_TCP;
+}
+
+pub fn supportsTcpRouteForcing() bool {
+    const info = probeAbi() orelse return false;
+    return handledNetRights(info.version) != 0;
+}
+
+pub const RouteForcing = struct {
+    /// Proxy listener TCP port. Landlock can constrain the port but not the
+    /// remote address; macOS Seatbelt handles address+port.
+    proxy_port: u16,
+};
 
 /// Pure: allowed_access for a single PATH_BENEATH grant under the given ABI.
 pub fn allowedAccessForMode(mode: profile.AccessMode, abi: u32) u64 {
@@ -365,9 +392,13 @@ pub fn buildChildLandlockPlan(
 /// Must only be called in a forked child (or a dedicated sandbox helper).
 /// Does not exec — caller performs exec after success.
 /// Child path never calls opendir/readdir.
-pub fn applySelf(compiled: *const profile.CompiledProfile, plan: *const ChildLandlockPlan) ApplyError!void {
+pub fn applySelf(
+    compiled: *const profile.CompiledProfile,
+    plan: *const ChildLandlockPlan,
+    route_forcing: ?RouteForcing,
+) ApplyError!void {
     if (builtin.os.tag != .linux) return error.Unsupported;
-    try applySelfLinux(compiled, plan);
+    try applySelfLinux(compiled, plan, route_forcing);
 }
 
 /// Fork a child, apply Landlock, exit 0 on success / 1 on failure.
@@ -381,9 +412,19 @@ const RulesetAttr = extern struct {
     handled_access_fs: u64,
 };
 
+const RulesetAttrWithNet = extern struct {
+    handled_access_fs: u64,
+    handled_access_net: u64,
+};
+
 const PathBeneathAttr = extern struct {
     allowed_access: u64,
     parent_fd: i32,
+};
+
+const NetPortAttr = extern struct {
+    allowed_access: u64,
+    port: u64,
 };
 
 fn probeAbiLinux() ?AbiInfo {
@@ -533,21 +574,58 @@ fn addRwGrantFromSurfaces(
     return any_rw;
 }
 
-fn applySelfLinux(compiled: *const profile.CompiledProfile, plan: *const ChildLandlockPlan) ApplyError!void {
+fn addNetPortRule(ruleset_fd: i32, allowed: u64, port: u16) ApplyError!void {
+    if (builtin.os.tag != .linux) return error.Unsupported;
+    const linux = std.os.linux;
+    if (allowed == 0 or port == 0) return error.ApplyFailed;
+    var net = NetPortAttr{
+        .allowed_access = allowed,
+        .port = port,
+    };
+    const add_rc = linux.syscall4(
+        .landlock_add_rule,
+        @as(usize, @intCast(ruleset_fd)),
+        RULE_NET_PORT,
+        @intFromPtr(&net),
+        0,
+    );
+    if (linux.errno(add_rc) != .SUCCESS) return error.ApplyFailed;
+}
+
+fn applySelfLinux(
+    compiled: *const profile.CompiledProfile,
+    plan: *const ChildLandlockPlan,
+    route_forcing: ?RouteForcing,
+) ApplyError!void {
     const linux = std.os.linux;
     const abi_info = probeAbiLinux() orelse return error.Unavailable;
     const abi = abi_info.version;
     if (abi < MIN_ABI) return error.Unavailable;
 
     const handled = handledFsRights(abi);
-    var attr = RulesetAttr{ .handled_access_fs = handled };
+    const handled_net = if (route_forcing != null) handledNetRights(abi) else 0;
+    if (route_forcing != null and handled_net == 0) return error.Unavailable;
 
-    const ruleset_rc = linux.syscall3(
-        .landlock_create_ruleset,
-        @intFromPtr(&attr),
-        @sizeOf(RulesetAttr),
-        0,
-    );
+    const ruleset_rc = if (handled_net == 0) blk: {
+        var attr = RulesetAttr{ .handled_access_fs = handled };
+        break :blk linux.syscall3(
+            .landlock_create_ruleset,
+            @intFromPtr(&attr),
+            @sizeOf(RulesetAttr),
+            0,
+        );
+    } else blk: {
+        var attr = RulesetAttrWithNet{
+            .handled_access_fs = handled,
+            .handled_access_net = handled_net,
+        };
+        break :blk linux.syscall3(
+            .landlock_create_ruleset,
+            @intFromPtr(&attr),
+            @sizeOf(RulesetAttrWithNet),
+            0,
+        );
+    };
     switch (linux.errno(ruleset_rc)) {
         .SUCCESS => {},
         .NOSYS, .OPNOTSUPP, .INVAL => return error.Unavailable,
@@ -586,6 +664,10 @@ fn applySelfLinux(compiled: *const profile.CompiledProfile, plan: *const ChildLa
         }
     }
 
+    if (route_forcing) |route| {
+        try addNetPortRule(ruleset_fd, ACCESS_NET_CONNECT_TCP, route.proxy_port);
+    }
+
     if (!workspace_granted) {
         // No RW workspace rule installed — fail closed (empty box or missing root).
         return error.PathOpenFailed;
@@ -615,7 +697,7 @@ fn verifyApplyInChildLinux(compiled: *const profile.CompiledProfile) ApplyError!
 
     if (pid_rc == 0) {
         // Child: apply then exit. Never return to parent address space logic.
-        applySelfLinux(compiled, &plan) catch {
+        applySelfLinux(compiled, &plan, null) catch {
             linux.exit(1);
         };
         linux.exit(0);
@@ -651,6 +733,15 @@ test "pure ABI rights masks are filesystem-only and grow with ABI" {
     try std.testing.expect((a5 & ACCESS_FS_IOCTL_DEV) != 0);
 }
 
+test "pure TCP route forcing rights start at Landlock ABI 4" {
+    try std.testing.expectEqual(@as(u64, 0), handledNetRights(1));
+    try std.testing.expectEqual(@as(u64, 0), handledNetRights(3));
+    const abi4 = handledNetRights(4);
+    try std.testing.expect((abi4 & ACCESS_NET_BIND_TCP) != 0);
+    try std.testing.expect((abi4 & ACCESS_NET_CONNECT_TCP) != 0);
+    try std.testing.expectEqual(abi4, handledNetRights(5));
+}
+
 test "pure allowedAccessForMode RO is subset of RW and of handled mask" {
     inline for (.{ @as(u32, 1), 2, 3, 5 }) |abi| {
         const handled = handledFsRights(abi);
@@ -683,7 +774,7 @@ test "probeAbi is null on non-Linux; applySelf unsupported off Linux" {
             .control_roots = &.{},
             .canonical_bytes = "",
             .hash_hex = .{'0'} ** 64,
-        }, &empty_plan));
+        }, &empty_plan, null));
     }
 }
 

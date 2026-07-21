@@ -577,6 +577,7 @@ pub fn appendProxyEnvironment(env_map: *std.process.Environ.Map, proxy_url: []co
     try env_map.put("NO_PROXY", no_proxy);
     try env_map.put("no_proxy", no_proxy);
     try env_map.put("ORCA_NETWORK_ENFORCEMENT", "proxy-mediated");
+    try env_map.put("ORCA_PROXY_ROUTE_FORCED", "false");
 }
 
 fn buildDecision(
@@ -1342,6 +1343,7 @@ test "appendProxyEnvironment sets both cases and overwrites host proxies (M-3)" 
     try std.testing.expectEqualStrings(orca_no, env_map.get("NO_PROXY").?);
     try std.testing.expectEqualStrings(orca_no, env_map.get("no_proxy").?);
     try std.testing.expectEqualStrings("proxy-mediated", env_map.get("ORCA_NETWORK_ENFORCEMENT").?);
+    try std.testing.expectEqualStrings("false", env_map.get("ORCA_PROXY_ROUTE_FORCED").?);
 
     // No host credential residue in any proxy value.
     inline for (.{ "HTTP_PROXY", "http_proxy", "HTTPS_PROXY", "https_proxy", "ALL_PROXY", "all_proxy" }) |key| {
