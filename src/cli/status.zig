@@ -316,7 +316,7 @@ fn policyModeIsMediating(policy_mode: ?[]const u8) bool {
     const mode_str = policy_mode orelse return false;
     const mode = orca_policy.schema.Mode.parse(mode_str) orelse return false;
     return switch (mode) {
-        .ask, .strict, .ci, .redteam => true,
+        .ask, .yolo, .strict, .ci, .redteam => true,
         .observe, .trusted => false,
     };
 }

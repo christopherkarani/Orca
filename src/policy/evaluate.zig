@@ -729,7 +729,7 @@ fn explicitOwnedLabel(
 fn riskDecision(allocator: std.mem.Allocator, mode: schema.Mode, risk: Risk) !schema.Evaluation {
     const result: schema.DecisionValue = switch (mode) {
         .observe => .observe,
-        .trusted, .ask => .ask,
+        .trusted, .ask, .yolo => .ask,
         .strict, .ci, .redteam => .deny,
     };
     const explanation = try std.fmt.allocPrint(allocator, "risk heuristic: {s}", .{risk.reason});
@@ -763,7 +763,7 @@ fn defaultDecision(allocator: std.mem.Allocator, mode: schema.Mode, explicit_def
 fn modeDefault(mode: schema.Mode) schema.DecisionValue {
     return switch (mode) {
         .observe => .observe,
-        .ask, .trusted => .ask,
+        .ask, .yolo, .trusted => .ask,
         .strict, .ci, .redteam => .deny,
     };
 }

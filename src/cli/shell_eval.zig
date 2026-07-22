@@ -200,18 +200,26 @@ pub const RiskLevel = enum {
 /// map those engine hits into product outcomes in one place so run/hook/shim
 /// stay aligned.
 ///
-/// | Mode    | Critical (always-deny) | High / unknown | Medium | Low  |
-/// |---------|------------------------|----------------|--------|------|
-/// | observe | deny                   | warn-allow     | allow  | allow|
-/// | ask     | deny                   | ask            | warn   | allow|
-/// | strict  | deny                   | deny           | deny   | allow|
-/// | ci      | deny                   | deny           | deny   | deny |
+/// Mode × severity matrix (plugin vocabulary: allow | warn | ask | block):
 ///
-/// Critical remains deny in every mode (catastrophic always-on rules such as
-/// core.filesystem root wipe / core.git reset --hard). Daemon unavailable is
-/// fail-closed deny and is not routed through this matrix.
+/// | Mode           | Critical (hard fence) | High / unknown | Medium | Low  |
+/// |----------------|-----------------------|----------------|--------|------|
+/// | observe/trusted| block (unsoftenable)  | warn           | allow  | allow|
+/// | ask            | block (unsoftenable)  | ask            | warn   | allow|
+/// | **yolo**       | block (unsoftenable)  | ask            | warn   | allow|
+/// | strict/redteam | block (unsoftenable)  | block          | block  | allow|
+/// | ci             | block (unsoftenable)  | block          | block  | block|
+///
+/// **YOLO = seatbelt hero:** first-class mode sharing the **ask** row — agent
+/// continues under sandbox + hard fence; rare ask only for high/unknown pack
+/// hits. YOLO is **not** refuse-all and **not** disable-security.
+///
+/// **Hard fence:** critical severity always `PluginDecision.block` for every
+/// mode (yolo, ask, strict, …). Catastrophic always-on rules (e.g. root wipe,
+/// git reset --hard) cannot be softened by YOLO, sticky, or allowlist.
+/// Daemon unavailable is fail-closed deny and is not routed through this matrix.
 pub fn pluginDecisionFromModeAndSeverity(mode: policy.schema.Mode, severity: RiskLevel) PluginDecision {
-    // Critical / catastrophic: never softened by mode.
+    // Critical / catastrophic: never softened by mode (YOLO cannot unlock).
     if (severity == .critical) return .block;
 
     return switch (mode) {
@@ -220,7 +228,8 @@ pub fn pluginDecisionFromModeAndSeverity(mode: policy.schema.Mode, severity: Ris
             .medium, .low => .allow,
             .critical => unreachable,
         },
-        .ask => switch (severity) {
+        // YOLO shares the ask matrix (seatbelt hero).
+        .ask, .yolo => switch (severity) {
             .high, .unknown => .ask,
             .medium => .warn,
             .low => .allow,
@@ -249,14 +258,15 @@ pub fn modeSoftenedReason(mode: policy.schema.Mode, severity: RiskLevel, plugin:
     return switch (plugin) {
         .allow => switch (mode) {
             .observe, .trusted => "allowed in observe; would deny in strict",
-            .ask => "allowed in ask mode for low-severity pack hit",
+            // YOLO shares ask soft-allow messaging (seatbelt, not refuse-all).
+            .ask, .yolo => "allowed in ask mode for low-severity pack hit",
             .strict, .redteam => "allowed in strict for low-severity pack hit",
             // CI never softens Deny to allow (matrix always blocks); keep exhaustive.
             .ci => unreachable,
         },
         .warn => switch (mode) {
             .observe, .trusted => "allowed in observe (warn); would deny in strict",
-            .ask => "warning in ask mode; would deny in strict",
+            .ask, .yolo => "warning in ask mode; would deny in strict",
             else => "allowed with warning; would deny in strict",
         },
         .ask => "requires approval in ask mode; would deny in strict",
@@ -988,13 +998,17 @@ test "pluginDecisionFromModeAndSeverity mode groups x severity" {
     };
 
     const observe_modes = [_]policy.schema.Mode{ .observe, .trusted };
+    // YOLO shares the ask matrix (seatbelt hero — not refuse-all).
+    const ask_like_modes = [_]policy.schema.Mode{ .ask, .yolo };
     const strict_modes = [_]policy.schema.Mode{ .strict, .redteam };
 
     for (rows) |row| {
         for (observe_modes) |mode| {
             try std.testing.expectEqual(row.observe_like, pluginDecisionFromModeAndSeverity(mode, row.severity));
         }
-        try std.testing.expectEqual(row.ask, pluginDecisionFromModeAndSeverity(.ask, row.severity));
+        for (ask_like_modes) |mode| {
+            try std.testing.expectEqual(row.ask, pluginDecisionFromModeAndSeverity(mode, row.severity));
+        }
         for (strict_modes) |mode| {
             try std.testing.expectEqual(row.strict_like, pluginDecisionFromModeAndSeverity(mode, row.severity));
         }
@@ -1007,6 +1021,52 @@ test "pluginDecisionFromModeAndSeverity mode groups x severity" {
         try std.testing.expect(pluginDecisionForDaemonDeny(.ci, severity) != .allow);
         try std.testing.expectEqual(PluginDecision.block, pluginDecisionForDaemonDeny(.ci, severity));
     }
+}
+
+test "Mode.parse yolo is first-class and shares ask core mapping" {
+    // Monopath gate exercises shell_eval tests reliably; restate schema contract here.
+    try std.testing.expectEqual(policy.schema.Mode.yolo, policy.schema.Mode.parse("yolo").?);
+    try std.testing.expectEqualStrings("yolo", policy.schema.Mode.yolo.toString());
+    try std.testing.expectEqual(core.types.Mode.ask, policy.schema.Mode.yolo.toCoreMode());
+    try std.testing.expect(!policy.schema.Mode.yolo.isEnforcing());
+}
+
+test "hard fence: critical severity always block for yolo ask and strict" {
+    // YOLO / ask / strict cannot soften catastrophic (hard fence) hits.
+    const hard_fence_modes = [_]policy.schema.Mode{ .yolo, .ask, .strict };
+    for (hard_fence_modes) |mode| {
+        try std.testing.expectEqual(PluginDecision.block, pluginDecisionFromModeAndSeverity(mode, .critical));
+        try std.testing.expectEqual(PluginDecision.block, pluginDecisionForDaemonDeny(mode, .critical));
+    }
+}
+
+test "yolo severity matrix matches ask not refuse-all" {
+    // High/unknown → ask; medium → warn; low → allow (same as ask).
+    try std.testing.expectEqual(PluginDecision.ask, pluginDecisionFromModeAndSeverity(.yolo, .high));
+    try std.testing.expectEqual(PluginDecision.ask, pluginDecisionFromModeAndSeverity(.yolo, .unknown));
+    try std.testing.expectEqual(PluginDecision.warn, pluginDecisionFromModeAndSeverity(.yolo, .medium));
+    try std.testing.expectEqual(PluginDecision.allow, pluginDecisionFromModeAndSeverity(.yolo, .low));
+    // Not refuse-all: high under yolo is ask, under strict is block.
+    try std.testing.expect(pluginDecisionFromModeAndSeverity(.yolo, .high) != pluginDecisionFromModeAndSeverity(.strict, .high));
+    try std.testing.expectEqual(pluginDecisionFromModeAndSeverity(.ask, .high), pluginDecisionFromModeAndSeverity(.yolo, .high));
+    try std.testing.expectEqual(pluginDecisionFromModeAndSeverity(.ask, .medium), pluginDecisionFromModeAndSeverity(.yolo, .medium));
+    try std.testing.expectEqual(pluginDecisionFromModeAndSeverity(.ask, .low), pluginDecisionFromModeAndSeverity(.yolo, .low));
+}
+
+test "modeSoftenedReason handles yolo like ask" {
+    try std.testing.expectEqualStrings(
+        modeSoftenedReason(.ask, .low, .allow),
+        modeSoftenedReason(.yolo, .low, .allow),
+    );
+    try std.testing.expectEqualStrings(
+        modeSoftenedReason(.ask, .medium, .warn),
+        modeSoftenedReason(.yolo, .medium, .warn),
+    );
+    // ask plugin decision reason is mode-agnostic string today; still exercise path.
+    try std.testing.expectEqualStrings(
+        modeSoftenedReason(.ask, .high, .ask),
+        modeSoftenedReason(.yolo, .high, .ask),
+    );
 }
 
 test "riskLevelFromDaemonSeverity maps null to critical and nonsense to unknown" {

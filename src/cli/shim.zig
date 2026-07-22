@@ -238,7 +238,7 @@ fn readSessionShimMode(io: std.Io, allocator: std.mem.Allocator, workspace_root:
 fn modeStrictness(mode: policy.schema.Mode) u8 {
     return switch (mode) {
         .observe, .trusted => 0,
-        .ask => 1,
+        .ask, .yolo => 1,
         .strict, .redteam => 2,
         .ci => 3,
     };
