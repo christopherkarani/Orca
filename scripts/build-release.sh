@@ -7,7 +7,6 @@ BUILD_DATE="${ORCA_BUILD_DATE:-$(date -u +%Y-%m-%dT%H:%M:%SZ)}"
 DIST_DIR="${ORCA_DIST_DIR:-dist}"
 ZIG_OPTIMIZE="${ORCA_ZIG_OPTIMIZE:-ReleaseSafe}"
 RELEASE_PRODUCT="${ORCA_RELEASE_PRODUCT:-all}"
-DAEMON_ARTIFACT_DIR="${ORCA_DAEMON_ARTIFACT_DIR:-}"
 CLI_ARTIFACT_DIR="${ORCA_CLI_ARTIFACT_DIR:-}"
 SIGNING_STATUS="not_configured"
 
@@ -31,24 +30,6 @@ darwin arm64 aarch64-macos tar.gz orca
 linux amd64 x86_64-linux tar.gz orca
 linux arm64 aarch64-linux tar.gz orca
 "
-
-daemon_name_for_os() {
-  case "$1" in
-    windows) printf 'orca-daemon.exe' ;;
-    *) printf 'orca-daemon' ;;
-  esac
-}
-
-rust_target_for() {
-  case "$1-$2" in
-    darwin-amd64) printf 'x86_64-apple-darwin' ;;
-    darwin-arm64) printf 'aarch64-apple-darwin' ;;
-    linux-amd64) printf 'x86_64-unknown-linux-gnu' ;;
-    linux-arm64) printf 'aarch64-unknown-linux-gnu' ;;
-    windows-amd64) printf 'x86_64-pc-windows-msvc' ;;
-    *) return 1 ;;
-  esac
-}
 
 selected_targets() {
   case "$RELEASE_PRODUCT" in
@@ -136,74 +117,7 @@ ${boundary}
 EOF
 }
 
-daemon_artifact_path() {
-  os="$1"
-  arch="$2"
-  daemon_name="$(daemon_name_for_os "$os")"
-
-  if [ -n "$DAEMON_ARTIFACT_DIR" ] && [ -f "${DAEMON_ARTIFACT_DIR}/${os}-${arch}/${daemon_name}" ]; then
-    printf '%s\n' "${DAEMON_ARTIFACT_DIR}/${os}-${arch}/${daemon_name}"
-    return 0
-  fi
-
-  if [ "$os" = "$HOST_OS" ] && [ "$arch" = "$HOST_ARCH" ]; then
-    ./scripts/build-daemon-release.sh "$os" "$arch" "${DIST_DIR}/daemon-artifacts" >/dev/null
-    printf '%s\n' "${DIST_DIR}/daemon-artifacts/${os}-${arch}/${daemon_name}"
-    return 0
-  fi
-
-  printf 'build-release: missing staged daemon artifact for %s-%s; build it via ./scripts/build-daemon-release.sh or provide ORCA_DAEMON_ARTIFACT_DIR\n' "$os" "$arch" >&2
-  exit 1
-}
-
-verify_daemon_binary_target() {
-  os="$1"
-  arch="$2"
-  daemon_path="$3"
-
-  if ! command -v file >/dev/null 2>&1; then
-    printf 'warning: `file` not available; skipping daemon target verification for %s\n' "$daemon_path" >&2
-    return 0
-  fi
-
-  description="$(file "$daemon_path")"
-  case "${os}-${arch}" in
-    darwin-amd64)
-      printf '%s' "$description" | grep -Eq 'Mach-O .*x86_64' || {
-        printf 'build-release: daemon artifact %s is not a darwin-amd64 binary\n' "$daemon_path" >&2
-        exit 1
-      }
-      ;;
-    darwin-arm64)
-      printf '%s' "$description" | grep -Eq 'Mach-O .*arm64' || {
-        printf 'build-release: daemon artifact %s is not a darwin-arm64 binary\n' "$daemon_path" >&2
-        exit 1
-      }
-      ;;
-    linux-amd64)
-      printf '%s' "$description" | grep -Eq 'ELF 64-bit .*x86-64' || {
-        printf 'build-release: daemon artifact %s is not a linux-amd64 binary\n' "$daemon_path" >&2
-        exit 1
-      }
-      ;;
-    linux-arm64)
-      printf '%s' "$description" | grep -Eq 'ELF 64-bit .*ARM aarch64' || {
-        printf 'build-release: daemon artifact %s is not a linux-arm64 binary\n' "$daemon_path" >&2
-        exit 1
-      }
-      ;;
-    windows-amd64)
-      printf '%s' "$description" | grep -Eq 'PE32\+ executable .*x86-64' || {
-        printf 'build-release: daemon artifact %s is not a windows-amd64 binary\n' "$daemon_path" >&2
-        exit 1
-      }
-      ;;
-    *)
-      printf 'build-release: unsupported daemon verification target: %s-%s\n' "$os" "$arch" >&2
-      exit 1
-      ;;
-  esac
-}
+# CLI-only archives: Zig shell_engine evaluates in-process (no orca-daemon product binary).
 
 build_cli_target() {
   os="$1"

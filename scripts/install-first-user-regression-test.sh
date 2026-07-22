@@ -53,13 +53,7 @@ case "${1:-}" in
     ;;
 esac
 EOF
-cat > "${release_root}/bin/orca-daemon" <<'EOF'
-#!/usr/bin/env sh
-case "${1:-}" in
-  version|--version) printf 'orca-daemon 0.0.0\n' ;;
-esac
-EOF
-chmod +x "${release_root}/bin/orca" "${release_root}/bin/orca-daemon"
+chmod +x "${release_root}/bin/orca"
 tar -czf "${artifact_dir}/${artifact}" -C "${tmp_root}" "$(basename "${release_root}")"
 if command -v sha256sum >/dev/null 2>&1; then
   checksum="$(sha256sum "${artifact_dir}/${artifact}" | awk '{print $1}')"

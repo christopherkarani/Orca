@@ -26,7 +26,6 @@ class Orca < Formula
 
   def install
     bin.install "bin/orca"
-    bin.install "bin/orca-daemon"
     pkgshare.install "orca-dashboard-ui"
     pkgshare.install "integrations"
     pkgshare.install "fixtures"

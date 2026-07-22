@@ -205,8 +205,7 @@ function Ensure-ResourceRootEntry($TargetRoot) {
 function Write-SuccessReceipt {
     param(
         [string]$PreviousVersion,
-        [string]$Destination,
-        [string]$DaemonDestination
+        [string]$Destination
     )
 
     if ($Quiet) {
@@ -222,7 +221,7 @@ function Write-SuccessReceipt {
     } else {
         Write-Ui ("  +  Orca v" + $Version + " installed") Green
     }
-    Write-Ui "  Daemon + runtime ready" DarkGray
+    Write-Ui "  CLI + runtime ready (shell_engine in-process)" DarkGray
     Write-Host ""
     Write-Ui "  Activate this session" White
     Write-Ui "  (InstallDir may not be on PATH yet)" DarkGray
@@ -238,7 +237,6 @@ function Write-SuccessReceipt {
     Write-Host ""
     Write-Ui "  Details" DarkGray
     Write-Ui ("    binary   " + $Destination) DarkGray
-    Write-Ui ("    daemon   " + $DaemonDestination) DarkGray
     Write-Ui ("    assets   " + $CurrentLink + " -> " + $ResourceRoot) DarkGray
     Write-Host ""
 }
@@ -252,7 +250,6 @@ $tempDir = Join-Path ([System.IO.Path]::GetTempPath()) "orca-install-$([System.G
 New-Item -ItemType Directory -Path $tempDir | Out-Null
 
 $destination = Join-Path $InstallDir "orca.exe"
-$daemonDestination = Join-Path $InstallDir "orca-daemon.exe"
 
 # Empty = fresh; semver or "installed" = existing CLI at destination.
 $previousVersion = $null
@@ -266,7 +263,7 @@ if (-not $Quiet) {
     Write-Host ""
     Write-Ui ("  Orca · v" + $Version) Cyan
     Write-Ui "  --------------------------------" DarkGray
-    Write-Ui "  Agent runtime protection · policy + daemon" DarkGray
+    Write-Ui "  Agent runtime protection · policy + shell_engine" DarkGray
     Write-Host ("  Platform  " + $os + "/" + $arch)
     Write-Host ("  Target    " + $InstallDir)
     Write-Host ""
@@ -316,10 +313,6 @@ try {
     if (-not $binary) {
         Fail "artifact did not contain orca.exe" "Unexpected archive layout for $artifact."
     }
-    $daemonBinary = Get-ChildItem -LiteralPath $extractRoot.FullName -Recurse -File -Filter "orca-daemon.exe" | Select-Object -First 1
-    if (-not $daemonBinary) {
-        Fail "artifact did not contain orca-daemon.exe" "Unexpected archive layout for $artifact."
-    }
 
     New-Item -ItemType Directory -Force -Path $InstallDir | Out-Null
     if ((Test-Path -LiteralPath $destination) -and $env:ORCA_INSTALL_FORCE -ne "1") {
@@ -327,21 +320,15 @@ try {
             Fail "refusing to overwrite non-Orca file at $destination" "Set ORCA_INSTALL_FORCE=1 to replace it, or choose another ORCA_INSTALL_DIR."
         }
     }
-    if ((Test-Path -LiteralPath $daemonDestination) -and $env:ORCA_INSTALL_FORCE -ne "1") {
-        if (-not (Get-ExistingOrcaInfo $daemonDestination)) {
-            Fail "refusing to overwrite non-Orca file at $daemonDestination" "Set ORCA_INSTALL_FORCE=1 to replace it, or choose another ORCA_INSTALL_DIR."
-        }
-    }
 
     Copy-Item -LiteralPath $binary.FullName -Destination $destination -Force
-    Copy-Item -LiteralPath $daemonBinary.FullName -Destination $daemonDestination -Force
     Install-RuntimeAssets $extractRoot.FullName
-    Write-StepDone "Install binaries + runtime" "orca.exe, orca-daemon.exe, assets"
+    Write-StepDone "Install binaries + runtime" "orca.exe + assets (CLI-only; shell_engine in-process)"
 
     Ensure-ResourceRootEntry $CurrentLink
     Write-StepDone "Configure shell" "ORCA_RESOURCE_ROOT"
 
-    Write-SuccessReceipt -PreviousVersion $previousVersion -Destination $destination -DaemonDestination $daemonDestination
+    Write-SuccessReceipt -PreviousVersion $previousVersion -Destination $destination
 } finally {
     Remove-Item -LiteralPath $tempDir -Recurse -Force -ErrorAction SilentlyContinue
 }

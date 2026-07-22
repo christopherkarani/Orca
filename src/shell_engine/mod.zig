@@ -238,7 +238,8 @@ fn isDataSinkBasename(base: []const u8) bool {
 }
 
 /// True when a `<<` heredoc (not `<<<`) is received by a shell/interpreter path.
-/// Handles whitespace and attached forms: `bash <<EOF`, `/bin/bash<<'EOF'`.
+/// Handles whitespace, attached forms (`/bin/bash<<'EOF'`), and options before
+/// the redirect (`bash -s <<'EOF'`) by resolving argv0 of the simple command.
 fn heredocReceiverIsExecuting(cmd: []const u8) bool {
     var i: usize = 0;
     while (i + 1 < cmd.len) : (i += 1) {
@@ -248,25 +249,139 @@ fn heredocReceiverIsExecuting(cmd: []const u8) bool {
             i += 2;
             continue;
         }
-        // Walk left past whitespace between receiver word and `<<`.
-        var j = i;
-        while (j > 0 and std.ascii.isWhitespace(cmd[j - 1])) : (j -= 1) {}
-        if (j == 0) continue;
-        var start = j;
-        while (start > 0) {
-            const c = cmd[start - 1];
-            if (std.ascii.isWhitespace(c) or c == '|' or c == ';' or c == '&' or
-                c == '(' or c == ')' or c == '`' or c == '$')
-                break;
-            start -= 1;
+        const segment = simpleCommandPrefixBefore(cmd, i);
+        if (segmentArgv0Kind(segment)) |kind| {
+            return switch (kind) {
+                .executing => true,
+                .data_sink => false,
+            };
         }
-        const word = cmd[start..j];
-        if (word.len == 0) continue;
-        const base = commandWordBasename(word);
-        if (isDataSinkBasename(base)) return false;
-        if (isInterpreterBasename(base)) return true;
     }
     return false;
+}
+
+/// Slice of `cmd[0..redirect_at]` that is the current simple command (after the
+/// last `|`, `;`, `&`, newline, or `&&` / `||`).
+fn simpleCommandPrefixBefore(cmd: []const u8, redirect_at: usize) []const u8 {
+    var seg_start: usize = 0;
+    var k: usize = 0;
+    while (k < redirect_at) : (k += 1) {
+        const c = cmd[k];
+        if (c == '\n' or c == ';' or c == '|') {
+            if (c == '|' and k + 1 < redirect_at and cmd[k + 1] == '|') {
+                seg_start = k + 2;
+                k += 1;
+                continue;
+            }
+            seg_start = k + 1;
+            continue;
+        }
+        if (c == '&') {
+            if (k + 1 < redirect_at and cmd[k + 1] == '&') {
+                seg_start = k + 2;
+                k += 1;
+            } else {
+                seg_start = k + 1;
+            }
+        }
+    }
+    while (seg_start < redirect_at and std.ascii.isWhitespace(cmd[seg_start])) : (seg_start += 1) {}
+    return cmd[seg_start..redirect_at];
+}
+
+const ReceiverKind = enum { executing, data_sink };
+
+/// Resolve argv0 of a simple-command prefix (options and env assigns stripped).
+fn segmentArgv0Kind(segment: []const u8) ?ReceiverKind {
+    var i: usize = 0;
+    while (i < segment.len) {
+        while (i < segment.len and std.ascii.isWhitespace(segment[i])) : (i += 1) {}
+        if (i >= segment.len) break;
+
+        // Skip env assignments NAME=value (unquoted simple form).
+        var j = i;
+        while (j < segment.len and (std.ascii.isAlphanumeric(segment[j]) or segment[j] == '_')) : (j += 1) {}
+        if (j > i and j < segment.len and segment[j] == '=') {
+            while (j < segment.len and !std.ascii.isWhitespace(segment[j])) : (j += 1) {}
+            i = j;
+            continue;
+        }
+
+        const word = nextShellWord(segment, &i);
+        if (word.len == 0) break;
+
+        var base = commandWordBasename(word);
+        if (base.len >= 2 and (base[0] == '\'' or base[0] == '"')) {
+            // Strip simple surrounding quotes: 'bash' / "bash"
+            if (base[base.len - 1] == base[0] and base.len >= 2) {
+                base = base[1 .. base.len - 1];
+                base = commandWordBasename(base);
+            }
+        }
+        if (base.len >= 4 and std.ascii.eqlIgnoreCase(base[base.len - 4 ..], ".exe")) {
+            base = base[0 .. base.len - 4];
+        }
+
+        // Known wrappers: keep scanning for the real receiver.
+        if (isHeredocWrapperBasename(base)) {
+            // Consume following option tokens belonging to the wrapper.
+            while (i < segment.len) {
+                var peek = i;
+                while (peek < segment.len and std.ascii.isWhitespace(segment[peek])) : (peek += 1) {}
+                if (peek >= segment.len) break;
+                if (segment[peek] != '-') break;
+                _ = nextShellWord(segment, &i);
+            }
+            continue;
+        }
+
+        if (isDataSinkBasename(base)) return .data_sink;
+        if (isInterpreterBasename(base) or interpreterBasenameLoose(base)) return .executing;
+
+        // Leading option without argv0 yet → keep scanning (rare).
+        if (base.len > 0 and base[0] == '-') continue;
+
+        // Unknown command word is not an executing shell receiver.
+        return null;
+    }
+    return null;
+}
+
+fn isHeredocWrapperBasename(base: []const u8) bool {
+    const wrappers = [_][]const u8{ "sudo", "doas", "env", "nice", "nohup", "command", "time", "stdbuf" };
+    for (wrappers) |w| {
+        if (std.mem.eql(u8, base, w)) return true;
+    }
+    return false;
+}
+
+fn interpreterBasenameLoose(base: []const u8) bool {
+    // python3.11, python3, bash.exe already stripped
+    if (std.mem.startsWith(u8, base, "python")) {
+        const rest = base["python".len..];
+        if (rest.len == 0) return true;
+        for (rest) |c| {
+            if (!std.ascii.isDigit(c) and c != '.') return false;
+        }
+        return true;
+    }
+    return false;
+}
+
+/// Advance `idx` past the next shell word in `s`; return the word slice.
+fn nextShellWord(s: []const u8, idx: *usize) []const u8 {
+    while (idx.* < s.len and std.ascii.isWhitespace(s[idx.*])) : (idx.* += 1) {}
+    if (idx.* >= s.len) return s[idx.*..idx.*];
+    const start = idx.*;
+    const quote = s[start];
+    if (quote == '\'' or quote == '"') {
+        idx.* = start + 1;
+        while (idx.* < s.len and s[idx.*] != quote) : (idx.* += 1) {}
+        if (idx.* < s.len) idx.* += 1;
+        return s[start..idx.*];
+    }
+    while (idx.* < s.len and !std.ascii.isWhitespace(s[idx.*])) : (idx.* += 1) {}
+    return s[start..idx.*];
 }
 
 /// Basename of argv0 with optional `.exe` stripped; true for shells/interpreters.
@@ -909,6 +1024,10 @@ test "evaluateCommand denies attached heredoc on qualified shell" {
         "/bin/bash<<'EOF'\nrm -rf /\nEOF",
         "/bin/sh<<EOF\nrm -rf /\nEOF",
         "bash<<EOF\ngit reset --hard\nEOF",
+        // Options before redirect: argv0 is bash, not -s.
+        "bash -s <<'EOF'\nrm -rf /\nEOF",
+        "/bin/bash -s <<EOF\nrm -rf /\nEOF",
+        "sudo bash -s <<'EOF'\ngit reset --hard\nEOF",
     };
     for (cases) |cmd| {
         var eval = try evaluateCommand(std.testing.allocator, cmd, .{});

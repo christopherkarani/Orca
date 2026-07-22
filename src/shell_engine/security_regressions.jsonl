@@ -43,3 +43,6 @@
 {"command": "echo \"rm -rf /\" | zsh", "expected": "deny", "source": "repro_pipe_to_shell", "description": "echo double-quoted payload piped to zsh"}
 {"command": "echo 'rm -rf /' | /bin/bash", "expected": "deny", "source": "repro_pipe_to_shell", "description": "echo piped to /bin/bash path form"}
 {"command": "echo 'rm -rf /' | cat | bash", "expected": "deny", "source": "repro_pipe_to_shell", "description": "multi-stage pipe eventually feeds bash"}
+{"command": "bash -s <<'EOF'\nrm -rf /\nEOF", "expected": "deny", "source": "codex_p1_heredoc_options", "description": "heredoc after bash -s options still executing"}
+{"command": "/bin/bash -s <<EOF\nrm -rf /\nEOF", "expected": "deny", "source": "codex_p1_heredoc_options", "description": "qualified bash -s heredoc still executing"}
+{"command": "sudo bash -s <<'EOF'\ngit reset --hard\nEOF", "expected": "deny", "source": "codex_p1_heredoc_options", "description": "sudo wrapper then bash -s heredoc"}
