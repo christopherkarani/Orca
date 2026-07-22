@@ -2,9 +2,7 @@
 # Live host E2E: exercise each host's real Orca veto path when the host (or evaluate) is available.
 #
 # Fixture/install smoke (`orca hook …`) proves the CLI entrypoint offline.
-# This script is the optional live path: skip honestly when host/daemon/ORCA_BIN missing.
-# Pi currently exercises the daemon-backed shell evaluation directly; its file-tool
-# extension coverage is reported for context but is not exercised by this script.
+# This script is the optional live path: skip honestly when host/ORCA_BIN missing.
 # Not part of default `test-fast` — do not make CI flaky.
 #
 # Usage:

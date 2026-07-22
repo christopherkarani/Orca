@@ -36,7 +36,7 @@ Modes:
   policy        ./scripts/test-slice.sh policy
   intercept     ./scripts/test-slice.sh intercept
   shell-engine  ./scripts/zig build test-shell-engine (L0.5)
-  rust          alias for shell-engine (orca-rs retired)
+  rust          deprecated alias → shell-engine
   dx            quick-install-dx-verify (builds CLI if needed)
   dashboard     npm test in orca-dashboard-ui/
   plugin        package-local tests for dirty integrations/*-plugin paths
@@ -103,7 +103,7 @@ plugin_dirs_from_paths() {
 
 choose_auto() {
   local p
-  local has_zig=0 has_core=0 has_rust=0 has_policy=0 has_scripts=0 has_other=0
+  local has_zig=0 has_core=0 has_policy=0 has_scripts=0 has_other=0
   local has_sandbox=0 has_intercept=0 has_policy_src=0 has_shell_engine=0
   local has_dashboard=0 has_plugin=0
   local only_md=1
@@ -166,9 +166,6 @@ choose_auto() {
         ;;
     esac
     case "${p}" in
-      orca-rs/*) has_rust=1 ;;
-    esac
-    case "${p}" in
       policies/*|schemas/policy*|src/policy/presets.zig) has_policy=1 ;;
     esac
     case "${p}" in
@@ -181,7 +178,7 @@ choose_auto() {
     esac
   done
 
-  if [[ "${only_md}" -eq 1 && "${has_zig}" -eq 0 && "${has_rust}" -eq 0 && "${has_dashboard}" -eq 0 && "${has_plugin}" -eq 0 && "${has_policy}" -eq 0 && "${has_scripts}" -eq 0 ]]; then
+  if [[ "${only_md}" -eq 1 && "${has_zig}" -eq 0 && "${has_dashboard}" -eq 0 && "${has_plugin}" -eq 0 && "${has_policy}" -eq 0 && "${has_scripts}" -eq 0 ]]; then
     echo check
     return
   fi
@@ -190,12 +187,6 @@ choose_auto() {
   # must never green after validating only one stack (Codex P2).
   append_package_gates() {
     local out="$1"
-    if [[ "${has_rust}" -eq 1 ]]; then
-      case " ${out} " in
-        *" rust "*|*" shell-engine "*) ;;
-        *) out+=" shell-engine" ;;
-      esac
-    fi
     if [[ "${has_dashboard}" -eq 1 ]]; then
       case " ${out} " in
         *" dashboard "*) ;;
@@ -363,11 +354,10 @@ run_scripts_gate() {
       selected=shell-engine -- \
       src/shell_engine/mod.zig src/shell_engine/normalize.zig
 
-    # Codex P2: non-Zig mixed trees must compose every gate.
-    # orca-rs is retired; path still routes to shell-engine companion.
-    agent_gate_smoke_case "rust+scripts" \
-      selected=shell-engine scripts -- \
-      orca-rs/src/lib.rs scripts/test-fast.sh
+    # Mixed non-Zig trees must compose every gate (scripts companion).
+    agent_gate_smoke_case "scripts+dashboard" \
+      selected=dashboard scripts -- \
+      orca-dashboard-ui/app/foo.ts scripts/test-fast.sh
 
     agent_gate_smoke_case "policy+dashboard" \
       selected=dx dashboard -- \
@@ -465,7 +455,7 @@ run_gate() {
       policy) echo "[agent-gate] dry-run: ./scripts/test-slice.sh policy" ;;
       intercept) echo "[agent-gate] dry-run: ./scripts/test-slice.sh intercept" ;;
       dx) echo "[agent-gate] dry-run: ./scripts/quick-install-dx-verify.sh" ;;
-      rust) echo "[agent-gate] dry-run: ./scripts/zig build test-shell-engine (rust alias retired)" ;;
+      rust) echo "[agent-gate] dry-run: ./scripts/zig build test-shell-engine (deprecated rust alias)" ;;
       shell-engine) echo "[agent-gate] dry-run: ./scripts/zig build test-shell-engine" ;;
       *)
         echo "error: internal unknown gate ${g}" >&2
