@@ -1081,4 +1081,17 @@ test "zigEvaluator applies opt-in packs from cwd .orca.toml" {
         defer parsed.deinit();
         try std.testing.expectEqual(daemon.ResponseStatus.deny, daemon.responseStatus(parsed.value.result));
     }
+
+    // Nested working directory under the repo must still load /repo/.orca.toml.
+    try tmp.dir.createDirPath(std.testing.io, "src/nested");
+    const nested = try tmp.dir.realPathFileAlloc(std.testing.io, "src/nested", allocator);
+    defer allocator.free(nested);
+    {
+        var parsed = try zigEvaluator(allocator, .{
+            .command = "docker system prune",
+            .cwd = nested,
+        });
+        defer parsed.deinit();
+        try std.testing.expectEqual(daemon.ResponseStatus.deny, daemon.responseStatus(parsed.value.result));
+    }
 }

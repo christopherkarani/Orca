@@ -3,6 +3,7 @@ const std = @import("std");
 const shell_engine = @import("../shell_engine/mod.zig");
 const shell_eval = @import("shell_eval.zig");
 const pack_config = @import("pack_config.zig");
+const core = @import("orca_core").core;
 
 pub fn command(io: std.Io, argv: []const []const u8, stdout: anytype, stderr: anytype) !u8 {
     if (argv.len == 0 or std.mem.eql(u8, argv[0], "--help") or std.mem.eql(u8, argv[0], "-h")) {
@@ -39,7 +40,11 @@ pub fn command(io: std.Io, argv: []const []const u8, stdout: anytype, stderr: an
     const command_text = try joinArgs(std.heap.smp_allocator, argv[cmd_start..]);
     defer std.heap.smp_allocator.free(command_text);
 
-    var packs = pack_config.loadPackIdsForWorkspace(io, std.heap.smp_allocator, ".") catch |err| switch (err) {
+    // Walk up from cwd so nested directories still load project .orca.toml.
+    const workspace = core.supervisor.resolveWorkspaceRoot(io, std.heap.smp_allocator, null, ".") catch ".";
+    defer if (!std.mem.eql(u8, workspace, ".")) std.heap.smp_allocator.free(workspace);
+
+    var packs = pack_config.loadPackIdsForWorkspace(io, std.heap.smp_allocator, workspace) catch |err| switch (err) {
         error.OutOfMemory => return error.OutOfMemory,
         error.HomeDirectoryNotFound, error.FileNotFound => pack_config.LoadedPackIds{},
         else => {
