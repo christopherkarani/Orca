@@ -1,0 +1,61 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/christopherkarani/Orca/macos/fm-steward/Schemas/classify-response-v1.json",
+  "title": "Orca FM Steward Classify Response v1",
+  "description": "Classifier verdict returned by the Mac FM steward (Phase 3). Normative contract: planning handoff §6.2. Verdict enum is exact: continue | ask | ask_sticky_candidate.",
+  "type": "object",
+  "additionalProperties": true,
+  "required": [
+    "schema_version",
+    "verdict",
+    "why",
+    "timed_out",
+    "fallback",
+    "model_available"
+  ],
+  "properties": {
+    "schema_version": {
+      "type": "integer",
+      "const": 1,
+      "description": "Classify response schema version. Must be 1."
+    },
+    "verdict": {
+      "type": "string",
+      "enum": ["continue", "ask", "ask_sticky_candidate"],
+      "description": "continue = proceed; ask = raise ask (explain required non-empty); ask_sticky_candidate = ask with first-class sticky scope suggestion."
+    },
+    "why": {
+      "type": "string",
+      "description": "One-sentence machine-oriented reason for the verdict."
+    },
+    "explain": {
+      "type": ["string", "null"],
+      "description": "Human-facing explanation. Required non-empty when verdict is ask or ask_sticky_candidate; null on continue / timeout fallback."
+    },
+    "suggested_sticky_scope": {
+      "type": ["string", "null"],
+      "description": "Sticky scope suggestion compatible with policy.sticky (once | session | effect_class). Null when not sticky-candidate."
+    },
+    "suggested_effect_class": {
+      "type": ["string", "null"],
+      "description": "Effect-class hint when suggested_sticky_scope is effect_class."
+    },
+    "timed_out": {
+      "type": "boolean",
+      "description": "True when the steward hit the classify timeout and fell back."
+    },
+    "fallback": {
+      "type": "boolean",
+      "description": "True when verdict is a non-model fallback (timeout or model unavailable)."
+    },
+    "model_available": {
+      "type": "boolean",
+      "description": "Whether a Foundation Model (or rules) backend was available for this classify."
+    },
+    "latency_ms": {
+      "type": ["integer", "null"],
+      "minimum": 0,
+      "description": "End-to-end classify latency in milliseconds."
+    }
+  }
+}

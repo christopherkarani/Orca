@@ -1,0 +1,128 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/christopherkarani/Orca/macos/fm-steward/Schemas/risk-card-v1.json",
+  "title": "Orca FM Steward Risk Card v1",
+  "description": "Structured risk-card request for the Mac FM steward classifier (Phase 3). Normative contract: planning handoff §6.1.",
+  "type": "object",
+  "additionalProperties": true,
+  "required": [
+    "schema_version",
+    "session_id",
+    "tool",
+    "features"
+  ],
+  "properties": {
+    "schema_version": {
+      "type": "integer",
+      "const": 1,
+      "description": "Risk card schema version. Must be 1."
+    },
+    "session_id": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Caller session identifier for sticky / warm-session correlation."
+    },
+    "tool": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Logical tool name (bash, send_email, stub names OK)."
+    },
+    "command": {
+      "type": ["string", "null"],
+      "description": "Optional shell string when tool is shell-like; null for stub tools."
+    },
+    "features": {
+      "type": "object",
+      "description": "Structured feature flags and hints. additionalProperties allowed for forward-compat.",
+      "additionalProperties": true,
+      "properties": {
+        "executed": {
+          "type": "boolean",
+          "description": "False when text is data / grep / assignment, not execution."
+        },
+        "bulk_outbound": {
+          "type": "boolean",
+          "description": "Explicit bulk outbound flag (or derive from recipient_count ≥ threshold)."
+        },
+        "vip": {
+          "type": "boolean",
+          "description": "Recipient matches VIP list / heuristic."
+        },
+        "same_intent": {
+          "type": ["string", "null"],
+          "description": "Repeated safe intent label, e.g. test_loop."
+        },
+        "recipient_count": {
+          "type": ["integer", "null"],
+          "minimum": 0,
+          "description": "Outbound recipient count when applicable."
+        },
+        "recipient_class": {
+          "type": ["string", "null"],
+          "description": "Coarse recipient class (e.g. external, internal)."
+        },
+        "amount": {
+          "type": ["number", "null"],
+          "description": "Monetary amount when tool is payment-like."
+        },
+        "currency": {
+          "type": ["string", "null"],
+          "description": "ISO currency code when amount is set."
+        },
+        "paths": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "Filesystem paths touched by the action."
+        },
+        "effect_hints": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "Coarse ontology strings (e.g. external-message)."
+        },
+        "pack_id": {
+          "type": ["string", "null"],
+          "description": "Optional policy pack identifier."
+        },
+        "namespace": {
+          "type": ["string", "null"],
+          "description": "Optional policy namespace."
+        },
+        "rule_id": {
+          "type": ["string", "null"],
+          "description": "Optional matched rule identifier from pre-FM path."
+        }
+      }
+    },
+    "thresholds": {
+      "type": "object",
+      "description": "Caller-supplied threshold overrides; steward applies defaults if omitted.",
+      "additionalProperties": true,
+      "properties": {
+        "bulk_recipient_min": {
+          "type": ["integer", "null"],
+          "minimum": 0,
+          "description": "Minimum recipient_count treated as bulk outbound."
+        },
+        "vip_list_path": {
+          "type": ["string", "null"],
+          "description": "Optional path to VIP list for the steward."
+        }
+      }
+    },
+    "meta": {
+      "type": "object",
+      "description": "Non-authoritative caller metadata.",
+      "additionalProperties": true,
+      "properties": {
+        "host": {
+          "type": ["string", "null"],
+          "description": "Host label (e.g. fixture, openclaw, claude)."
+        },
+        "cwd": {
+          "type": ["string", "null"],
+          "description": "Working directory at card build time."
+        }
+      }
+    }
+  }
+}

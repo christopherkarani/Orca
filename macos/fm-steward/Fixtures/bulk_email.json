@@ -1,0 +1,29 @@
+{
+  "schema_version": 1,
+  "session_id": "sess-fixture-bulk-email",
+  "tool": "send_email",
+  "command": null,
+  "features": {
+    "executed": true,
+    "bulk_outbound": true,
+    "vip": false,
+    "same_intent": null,
+    "recipient_count": 50000,
+    "recipient_class": "external",
+    "amount": null,
+    "currency": null,
+    "paths": [],
+    "effect_hints": ["external-message"],
+    "pack_id": null,
+    "namespace": null,
+    "rule_id": null
+  },
+  "thresholds": {
+    "bulk_recipient_min": 1000,
+    "vip_list_path": null
+  },
+  "meta": {
+    "host": "fixture",
+    "cwd": null
+  }
+}

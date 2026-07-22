@@ -1,0 +1,29 @@
+{
+  "schema_version": 1,
+  "session_id": "sess-fixture-grep-rm-rf",
+  "tool": "bash",
+  "command": "grep -n 'rm -rf' ./scripts/*.sh",
+  "features": {
+    "executed": false,
+    "bulk_outbound": false,
+    "vip": false,
+    "same_intent": null,
+    "recipient_count": null,
+    "recipient_class": null,
+    "amount": null,
+    "currency": null,
+    "paths": ["./scripts"],
+    "effect_hints": [],
+    "pack_id": null,
+    "namespace": null,
+    "rule_id": null
+  },
+  "thresholds": {
+    "bulk_recipient_min": 1000,
+    "vip_list_path": null
+  },
+  "meta": {
+    "host": "fixture",
+    "cwd": null
+  }
+}
