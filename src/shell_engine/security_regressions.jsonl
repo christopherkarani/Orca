@@ -1,0 +1,32 @@
+{"command": "python3 << \"EOF SPACE\"\nimport shutil\nshutil.rmtree('/tmp/test')\nEOF SPACE", "expected": "deny", "source": "security_regressions_v2.rs", "description": "check_blocked"}
+{"command": "git \"reset\" --hard", "expected": "deny", "source": "security_regressions_v2.rs", "description": "check_blocked"}
+{"command": "sudo /bin/git reset --hard", "expected": "deny", "source": "security_regressions_v2.rs", "description": "check_blocked"}
+{"command": "env /usr/bin/git reset --hard", "expected": "deny", "source": "security_regressions_v2.rs", "description": "check_blocked"}
+{"command": "\"git\" reset --hard", "expected": "deny", "source": "security_regressions_v2.rs", "description": "check_blocked"}
+{"command": "sudo \"/usr/bin/git\" \"reset\" --hard", "expected": "deny", "source": "security_regressions_v2.rs", "description": "check_blocked"}
+{"command": "python3 << \"\"\nimport shutil\nshutil.rmtree('/tmp/test')\n\n", "expected": "deny", "source": "security_regressions_v2.rs", "description": "check_blocked"}
+{"command": "\\git.exe reset --hard", "expected": "deny", "source": "repro_normalization_bypass", "description": "repro_normalization_bypass"}
+{"command": "C:/Git/bin/git.exe reset --hard", "expected": "deny", "source": "repro_normalization_bypass", "description": "repro_normalization_bypass"}
+{"command": "\\rm.exe -rf /", "expected": "deny", "source": "repro_normalization_bypass", "description": "repro_normalization_bypass"}
+{"command": "rm -rf / ; git checkout -b foo", "expected": "deny", "source": "repro_safe_pattern_bypass", "description": "repro_safe_pattern_bypass"}
+{"command": "git checkout -b foo ; rm -rf /", "expected": "deny", "source": "repro_safe_pattern_bypass", "description": "repro_safe_pattern_bypass"}
+{"command": "rm -rf / | git checkout -b foo", "expected": "deny", "source": "repro_safe_pattern_bypass", "description": "repro_safe_pattern_bypass"}
+{"command": "g\\it reset --hard", "expected": "deny", "source": "security_regressions_v3.rs", "description": "internal backslash escape"}
+{"command": "g'i't reset --hard", "expected": "deny", "source": "security_regressions_v3.rs", "description": "mixed quoting concat"}
+{"command": "git re\\\nset --hard", "expected": "deny", "source": "repro_line_continuation_split.rs", "description": "line continuation joins reset"}
+{"command": "git commit -m \\\n\"rm -rf /\"", "expected": "allow", "source": "repro_line_continuation_bypass.rs", "description": "line cont does not unmask commit message"}
+{"command": "ls -la # rm -rf /", "expected": "allow", "source": "repro_comment_fp.rs", "description": "comment FP: destructive text in shell comment"}
+{"command": "echo rm -rf /", "expected": "allow", "source": "repro_echo_fp.rs", "description": "echo unquoted FP: data not executed"}
+{"command": "git commit -m\nrm -rf /", "expected": "deny", "source": "repro_newline_separator.rs", "description": "newline after -m is separator not arg whitespace"}
+{"command": "rm -rf /tmp/safe /etc/passwd", "expected": "deny", "source": "repro_rm_multi_arg.rs", "description": "multi-arg rm with sensitive path alongside temp"}
+{"command": "\ncat <<\\EOF\nrm -rf /\nEOF\n", "expected": "deny", "source": "security_regressions_v3.rs", "description": "backslash-escaped heredoc delimiter must not bypass deny"}
+{"command": "\"git\">/dev/null reset --hard", "expected": "deny", "source": "repro_redirection_bypass.rs", "description": "quoted argv0 attached >/dev/null"}
+{"command": "\"git\"&>/dev/null reset --hard", "expected": "deny", "source": "repro_redirection_bypass.rs", "description": "quoted argv0 attached &>/dev/null"}
+{"command": "\"git\"&>>/dev/null reset --hard", "expected": "deny", "source": "repro_redirection_bypass.rs", "description": "quoted argv0 attached &>>/dev/null"}
+{"command": "git>/dev/null reset --hard", "expected": "deny", "source": "repro_redirection_bypass.rs", "description": "bare argv0 attached >/dev/null"}
+{"command": "git>>/dev/null reset --hard", "expected": "deny", "source": "repro_redirection_bypass.rs", "description": "bare argv0 attached >>/dev/null"}
+{"command": "git&>/dev/null reset --hard", "expected": "deny", "source": "repro_redirection_bypass.rs", "description": "bare argv0 attached &>/dev/null"}
+{"command": "git&>>/dev/null reset --hard", "expected": "deny", "source": "repro_redirection_bypass.rs", "description": "bare argv0 attached &>>/dev/null"}
+{"command": "git >/dev/null reset --hard", "expected": "deny", "source": "repro_redirection_bypass.rs", "description": "spaced redirect mid-command"}
+{"command": "command >>/dev/null git reset --hard", "expected": "deny", "source": "repro_redirection_bypass.rs", "description": "command builtin leading append still exposes git"}
+{"command": "command >> /usr/local/log", "expected": "allow", "source": "repro_redirection_bypass.rs", "description": "command builtin pure append not truncate synthetic"}

@@ -2,6 +2,26 @@ const std = @import("std");
 
 /// Run a test binary in terminal mode (avoiding Zig 0.16 server-mode IPC
 /// which hangs with this project's test suite).
+/// Link PCRE2 + C shim for shell_engine pack regex matching (oracle parity).
+fn addPcre2Shim(b: *std.Build, mod: *std.Build.Module) void {
+    mod.link_libc = true;
+    mod.linkSystemLibrary("pcre2-8", .{});
+    mod.addIncludePath(b.path("src/shell_engine"));
+    // Homebrew (macOS) and common Linux prefixes for local/CI installs.
+    mod.addSystemIncludePath(.{ .cwd_relative = "/opt/homebrew/include" });
+    mod.addLibraryPath(.{ .cwd_relative = "/opt/homebrew/lib" });
+    mod.addSystemIncludePath(.{ .cwd_relative = "/usr/local/include" });
+    mod.addLibraryPath(.{ .cwd_relative = "/usr/local/lib" });
+    mod.addSystemIncludePath(.{ .cwd_relative = "/usr/include" });
+    mod.addLibraryPath(.{ .cwd_relative = "/usr/lib" });
+    mod.addLibraryPath(.{ .cwd_relative = "/usr/lib/x86_64-linux-gnu" });
+    mod.addLibraryPath(.{ .cwd_relative = "/usr/lib/aarch64-linux-gnu" });
+    mod.addCSourceFile(.{
+        .file = b.path("src/shell_engine/pcre2_shim.c"),
+        .flags = &.{"-std=c99"},
+    });
+}
+
 fn addRunTestTerminal(b: *std.Build, exe: *std.Build.Step.Compile) *std.Build.Step.Run {
     const step_name = if (exe.kind == .@"test" and std.mem.eql(u8, exe.name, "test"))
         b.fmt("run {s}", .{@tagName(exe.kind)})
@@ -128,6 +148,8 @@ pub fn build(b: *std.Build) void {
     });
     exe.root_module.link_libc = true;
     exe.root_module.addImport("vaxis", vaxis_mod);
+    addPcre2Shim(b, exe.root_module);
+    addPcre2Shim(b, orca_mod);
 
     b.installArtifact(exe);
     const install_orca = b.addInstallArtifact(exe, .{});
@@ -213,6 +235,7 @@ pub fn build(b: *std.Build) void {
         }),
         .filters = test_filters,
     });
+    addPcre2Shim(b, shell_engine_tests.root_module);
     const run_shell_engine_tests = addRunTestTerminal(b, shell_engine_tests);
 
     const cli_package_tests = b.addTest(.{
@@ -472,7 +495,7 @@ pub fn build(b: *std.Build) void {
     const test_intercept_step = b.step("test-intercept", "Run intercept domain unit tests only (sliced root)");
     test_intercept_step.dependOn(&run_intercept_tests.step);
 
-    const test_shell_engine_step = b.step("test-shell-engine", "Run Zig shell_engine MVP unit + corpus tests");
+    const test_shell_engine_step = b.step("test-shell-engine", "Run Zig shell_engine unit + 100% oracle corpus parity tests");
     test_shell_engine_step.dependOn(&run_shell_engine_tests.step);
 
     const compile_test_sandbox_step = b.step("compile-test-sandbox", "Compile sandbox domain tests without running");
@@ -494,6 +517,7 @@ pub fn build(b: *std.Build) void {
 
     const test_step = b.step("test", "Run unit tests");
     test_step.dependOn(&check_fixture_secrets.step);
+    test_step.dependOn(&run_shell_engine_tests.step);
     test_step.dependOn(&run_lib_tests.step);
     test_step.dependOn(&run_exe_tests.step);
     test_step.dependOn(&run_core_package_tests.step);
