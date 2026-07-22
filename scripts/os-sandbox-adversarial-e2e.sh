@@ -2,8 +2,8 @@
 # Adversarial OS FS sandbox e2e + evidence generator (P0-I-06 / M-11 / M-12 / F-1 / F-5).
 #
 # Primary proofs use the production apply path unit tests (real FS deny canaries,
-# neighbor RW, control-root non-writable). Full `orca run` shell evaluation
-# requires the Rust daemon; when the daemon is unavailable this script still
+# neighbor RW, control-root non-writable). Full `orca run` shell evaluation uses
+# in-process Zig shell_engine; when packaged attach is unavailable this script still
 # records proofs from the Zig test surface.
 #
 # Honesty (S-GLO-09 / dual-proof) — CTRL-ATTACH claim rules:
@@ -682,8 +682,8 @@ if [[ $BIN_RC -eq 0 ]]; then
   mkdir -p "$PACK_WS/.orca"
   set +e
   PACK_OUT="$(mktemp)"
-  # Shell-eval path still needs daemon for shell commands; /usr/bin/true or
-  # /bin/true is a non-shell absolute path and exercises OS apply only.
+  # Use /usr/bin/true (or /bin/true) — a non-shell absolute path — so this
+  # probes OS sandbox attach/apply only, not Zig shell_engine evaluation.
   TRUE_BIN="/usr/bin/true"
   [[ -x "$TRUE_BIN" ]] || TRUE_BIN="/bin/true"
   if [[ -x "$TRUE_BIN" ]]; then

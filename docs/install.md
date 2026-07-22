@@ -3,13 +3,12 @@
 ## Build From Source
 
 ```sh
-./scripts/zig version
-rustc --version
-./scripts/build-all.sh
+./scripts/zig version   # must print 0.16.0
+./scripts/build-all.sh  # or: ./scripts/zig build
 ./zig-out/bin/orca version --json
 ```
 
-Use Zig `0.16.0` (see `.zigversion`; prefer `./scripts/zig`) and the repository's Rust toolchain. `zig build` intentionally does not invoke Cargo; `scripts/build-all.sh` builds the user-facing CLI and required `orca-daemon` companion independently.
+Use Zig `0.16.0` (see `.zigversion`; prefer `./scripts/zig`). The product CLI is Zig-only: shell evaluation runs in-process via `shell_engine` (no Rust toolchain or `orca-daemon` companion). `./scripts/build-all.sh` and `./scripts/zig build` both produce `./zig-out/bin/orca`.
 
 ## Release Artifacts
 
