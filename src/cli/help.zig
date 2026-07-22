@@ -72,7 +72,7 @@ pub const commands =
                 "Starts a protected session, filters the child environment through policy, checks the command through a command safety check, writes audit artifacts, and mirrors the child exit code.",
                 "Agent-primary defaults: network mode is ask when --network/--no-network are omitted (overrides policy network.mode for this run). Secretless stays off unless --secretless. Opt-outs: --network open|allowlist|observe|off|ask, --no-network.",
                 "Host launch aliases (orca claude, orca pi, …) rewrite to this command with no extra flags — same defaults. Pass Orca run flags only on `orca run`, not after a host alias name.",
-                "Options: --workspace <path>, --mode observe|ask|strict|ci, --policy <path>, --session-name <name>, --no-secrets, --secretless, --inherit-env, --no-network, --allow-network <domain>, --network observe|ask|allowlist|open|off, --network-backend decision-only|proxy, --os-sandbox auto|on|off, --require-backend <capability>, --help",
+                "Options: --workspace <path>, --mode observe|ask|yolo|strict|ci, --policy <path>, --session-name <name>, --no-secrets, --secretless, --inherit-env, --no-network, --allow-network <domain>, --network observe|ask|allowlist|open|off, --network-backend decision-only|proxy, --os-sandbox auto|on|off, --require-backend <capability>, --help",
                 "Strict and CI modes default to environments without secret access. --secretless replaces policy-visible secret env values with non-resolving orca-secret:// local-dummy references (not usable as raw model API keys; opt-in strip/demo only — not day-1 model auth). --inherit-env is allowed only when the selected policy permits inheritance.",
                 "Network flags update the run-time policy and audit network decisions. --network-backend proxy starts an explicit localhost proxy and injects HTTP_PROXY/HTTPS_PROXY/ALL_PROXY; HTTPS CONNECT is host/port only without interception.",
                 "--os-sandbox auto|on|off controls the OS filesystem sandbox (default auto). on fails closed when the platform backend cannot attach. auto: degrades loudly when no backend plan exists; fails closed on incomplete env scrub/allowlist; fails closed if attach fails after materials are prepared. off disables OS apply.",
@@ -84,7 +84,7 @@ pub const commands =
         .{
             .name = "init",
             .summary = "Create an Orca policy",
-            .usage = "orca init [--preset <name>] [--mode strict|ask|observe|ci|trusted] [--ci] [--force] [--quiet]",
+            .usage = "orca init [--preset <name>] [--mode strict|ask|yolo|observe|ci|trusted] [--ci] [--force] [--quiet]",
             .category = .getting_started,
             .examples = &.{
                 "orca init --preset generic-agent",
@@ -443,7 +443,7 @@ pub const commands =
         }, .details = &.{
             "Subcommands:",
             "  orca policy check [policy-path]   # default: workspace .orca/policy.yaml (not builtin)",
-            "  orca policy check --preset <observe|ask|strict|ci|redteam|trusted>",
+            "  orca policy check --preset <observe|ask|yolo|strict|ci|redteam|trusted>",
             "  orca policy check builtin:<preset>",
             "  orca policy explain [--policy <path>] <file.read|file.write|env|command|network|mcp|tool> <target> [--method <HTTP_METHOD>]",
             "  orca policy packs",
@@ -584,7 +584,7 @@ pub const commands =
         .{ .name = "mcp", .summary = "Inspect and proxy MCP servers", .usage = "orca mcp <inspect|proxy|list|trust|manifest> [options]", .category = .advanced, .additional_completion_flags = &.{ "--command", "--name", "--policy", "--manifest", "--mode", "--tool", "--server" }, .details = &.{
             "Subcommands:",
             "  orca mcp inspect --command <server> [--name <server-name>] [--policy <path>]",
-            "  orca mcp proxy --command <server> [--name <server-name>] [--policy <path>] [--manifest <path>] [--mode observe|ask|strict|ci]",
+            "  orca mcp proxy --command <server> [--name <server-name>] [--policy <path>] [--manifest <path>] [--mode observe|ask|yolo|strict|ci]",
             "  orca mcp list",
             "  orca mcp trust <server> --tool <tool>",
             "  orca mcp manifest check <manifest.yaml>",
@@ -941,6 +941,38 @@ test "run help documents --os-sandbox auto degrade and fail-closed paths" {
     try std.testing.expect(std.mem.indexOf(u8, text, "degrades loudly when no backend plan exists") != null);
     try std.testing.expect(std.mem.indexOf(u8, text, "fails closed on incomplete env scrub/allowlist") != null);
     try std.testing.expect(std.mem.indexOf(u8, text, "fails closed if attach fails after materials are prepared") != null);
+}
+
+test "mode option lists include yolo" {
+    const run_info = findCommand("run") orelse return error.TestUnexpectedResult;
+    var run_joined: [4096]u8 = undefined;
+    var run_w: std.Io.Writer = .fixed(&run_joined);
+    for (run_info.details) |line| {
+        try run_w.writeAll(line);
+        try run_w.writeAll("\n");
+    }
+    try std.testing.expect(std.mem.indexOf(u8, run_w.buffered(), "observe|ask|yolo|strict|ci") != null);
+
+    const init_info = findCommand("init") orelse return error.TestUnexpectedResult;
+    try std.testing.expect(std.mem.indexOf(u8, init_info.usage, "yolo") != null);
+
+    const policy_info = findCommand("policy") orelse return error.TestUnexpectedResult;
+    var policy_joined: [4096]u8 = undefined;
+    var policy_w: std.Io.Writer = .fixed(&policy_joined);
+    for (policy_info.details) |line| {
+        try policy_w.writeAll(line);
+        try policy_w.writeAll("\n");
+    }
+    try std.testing.expect(std.mem.indexOf(u8, policy_w.buffered(), "observe|ask|yolo|strict|ci|redteam|trusted") != null);
+
+    const mcp_info = findCommand("mcp") orelse return error.TestUnexpectedResult;
+    var mcp_joined: [4096]u8 = undefined;
+    var mcp_w: std.Io.Writer = .fixed(&mcp_joined);
+    for (mcp_info.details) |line| {
+        try mcp_w.writeAll(line);
+        try mcp_w.writeAll("\n");
+    }
+    try std.testing.expect(std.mem.indexOf(u8, mcp_w.buffered(), "observe|ask|yolo|strict|ci") != null);
 }
 
 test "host launch allowlist is the single source for help alias entries" {

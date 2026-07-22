@@ -8,6 +8,10 @@ pub const version: u16 = 1;
 pub const Mode = enum {
     observe,
     ask,
+    /// YOLO + seatbelt: first-class UX mode that shares the **ask** severity matrix.
+    /// Continues under sandbox + hard fence; critical/catastrophe is never softened.
+    /// Maps to core `.ask` via `toCoreMode`; `isEnforcing` is false (not refuse-all).
+    yolo,
     strict,
     ci,
     redteam,
@@ -27,7 +31,7 @@ pub const Mode = enum {
     pub fn toCoreMode(self: Mode) core.types.Mode {
         return switch (self) {
             .observe, .trusted => .observe,
-            .ask => .ask,
+            .ask, .yolo => .ask,
             .strict, .redteam => .strict,
             .ci => .ci,
         };
@@ -37,7 +41,7 @@ pub const Mode = enum {
     pub fn isEnforcing(self: Mode) bool {
         return switch (self) {
             .strict, .ci, .redteam => true,
-            .observe, .ask, .trusted => false,
+            .observe, .ask, .yolo, .trusted => false,
         };
     }
 };
@@ -473,4 +477,12 @@ test "policy modes parse all phase 07 modes" {
     try std.testing.expectEqual(Mode.redteam, Mode.parse("redteam").?);
     try std.testing.expectEqual(Mode.trusted, Mode.parse("trusted").?);
     try std.testing.expectEqual(@as(?Mode, null), Mode.parse("invalid"));
+}
+
+test "Mode.parse yolo is first-class and maps like ask" {
+    // Phase 2: YOLO + seatbelt — explicit mode that shares the ask severity matrix.
+    try std.testing.expectEqual(Mode.yolo, Mode.parse("yolo").?);
+    try std.testing.expectEqualStrings("yolo", Mode.yolo.toString());
+    try std.testing.expectEqual(core.types.Mode.ask, Mode.yolo.toCoreMode());
+    try std.testing.expect(!Mode.yolo.isEnforcing());
 }

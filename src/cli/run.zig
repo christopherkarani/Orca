@@ -335,6 +335,7 @@ fn commandWithStdioAndEnv(io: std.Io, argv: []const []const u8, stdout: anytype,
                 self.shell_evaluator,
                 &rust_metadata,
                 audit_options,
+                self.selected_policy.commands.allow,
             );
             defer command_decision.deinit(self.allocator);
 
@@ -362,6 +363,17 @@ fn commandWithStdioAndEnv(io: std.Io, argv: []const []const u8, stdout: anytype,
                             if (choice == .allow_session) intercept.commands.approved_session_env else intercept.commands.approved_once_env,
                             raw_display,
                         );
+                        // WP3 sticky: record after host ask→allow so later shell eval skips re-ask.
+                        // Prefer session scope for product trust; once path uses once grant.
+                        const sticky_scope: policy.sticky.Scope = if (choice == .allow_session) .session else .once;
+                        const sticky_severity = shell_eval.riskLevelFromScore(command_decision.decision.risk_score orelse 80);
+                        // best-effort sticky; re-ask on failure
+                        shell_eval.recordStickyFromAsk(
+                            shell_eval.getSessionStickyStore(),
+                            raw_display,
+                            sticky_scope,
+                            sticky_severity,
+                        ) catch {};
                         approval_reason = try std.fmt.allocPrint(self.allocator, "user approved command {s}", .{if (choice == .allow_session) "for this session" else "once"});
                         final_decision = .{
                             .result = .allow,

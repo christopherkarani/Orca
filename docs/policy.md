@@ -17,10 +17,40 @@ Commands accept `--policy <path>`. Without it, Orca discovers `.orca/policy.yaml
 
 - `observe`: log decisions without blocking supported actions.
 - `ask`: prompt for risky actions when interactive.
-- `strict`: deny unknown or risky actions unless allowed.
+- `yolo`: **YOLO + seatbelt** — first-class mode for autonomous agent work. Uses the same severity matrix as `ask` (low continues; medium/high may prompt; not refuse-all). The agent continues under sandbox (Seatbelt/Landlock when session-attached) plus the hard fence. Prefer `yolo` over treating “ask on everything” as the hero path. Built-in preset: `orca policy check --preset yolo` / `mode: yolo` in YAML.
+- `strict`: deny unknown or risky actions unless allowed. When a shell **permit-list is configured** for Strict evaluation (`commands.allow` / host permit), commands **off** that list are **refused** (deny, never ask-spam); reason includes `strict: not on allowlist`. On-list does **not** auto-allow high/medium pack hits — the severity matrix still applies after the refuse gate. With an **empty / unconfigured** permit list, Strict keeps the existing severity matrix only (not refuse-all-off-list).
 - `ci`: non-interactive strict behavior; ask becomes deny.
-- `redteam`: strict fixture mode for deterministic tests.
+- `redteam`: strict fixture mode for deterministic tests (strict-like permit refuse when a list is configured).
 - `trusted`: observe-like mode for local trusted workflows.
+
+### Hard fence (unsoftenable)
+
+Critical severity and always-on catastrophe classes (for example `rm -rf /`) are always **denied**. **YOLO**, sticky trust, and Strict permit lists **cannot** unlock the hard fence.
+
+### Sticky trust
+
+After an interactive **ask** that the user allows, Orca can record sticky trust so a later identical command (or effect class) skips re-ask:
+
+| Scope | Behavior |
+|-------|----------|
+| **once** | One subsequent allow for that command fingerprint, then consumed |
+| **session** | Allow that fingerprint until process/session end |
+| **effect-class** | Allow a semantic effect-class id for the session |
+
+Sticky state is **in-memory for the session** only (no on-disk sticky in this phase). Critical / hard-fence denies are **never** recorded as sticky allows.
+
+### Shell evaluation order
+
+For shell mediation (hook / run / shim), decisions follow this order:
+
+1. empty command / evaluator error → deny (fail closed)
+2. engine allow → allow
+3. **critical hard fence** → deny (ignore sticky, mode, and permit)
+4. sticky match (once / session / effect-class) → allow
+5. **strict refuse** off permit-list when mode is strict-like and a list is configured → deny
+6. mode × severity matrix → allow | ask | warn | block
+
+Foundation Models / on-device policy stewards are **not** a shipping claim for Phase 2 YOLO/Strict/sticky — residual upgrade paths (if any) are later work, not required for this layer.
 
 ## Priority
 
@@ -308,8 +338,9 @@ CI never prompts. `ask` decisions become `deny`.
 
 ## Common Workflows
 
-- Start broad: `orca init --preset generic-agent`.
-- Strict local work: `--preset strict-local`.
+- Start broad: `orca init --preset generic-agent` (ask-matrix baseline; edit allowlists as needed).
+- YOLO + seatbelt local autonomy: set `mode: yolo` (or `orca policy check --preset yolo`) so the agent continues under sandbox + hard fence without treating every action as an ask prompt.
+- Strict local work: `--preset strict-local` (`mode: strict` with a sample `commands.allow` permit list — off-list refuse when the host wires that list into shell evaluation).
 - MCP development: `--preset mcp-dev`.
 - CI: `--preset github-actions` and `orca redteam --ci`.
 

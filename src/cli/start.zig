@@ -222,7 +222,7 @@ fn resolveProtectionMode(flags: onboarding.StartFlags) onboarding.ProtectionMode
 fn policyModeIsAskEquivalent(mode: []const u8) bool {
     const parsed = orca_policy.schema.Mode.parse(mode) orelse return false;
     return switch (parsed) {
-        .ask, .strict, .ci, .redteam => true,
+        .ask, .yolo, .strict, .ci, .redteam => true,
         .observe, .trusted => false,
     };
 }

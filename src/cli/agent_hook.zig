@@ -62,10 +62,10 @@ pub fn commandWithEvaluator(
     return evaluatePayload(allocator, payload, stdout, evaluator);
 }
 
-/// Soft modes (observe / ask / trusted) that can weaken pack hits.
+/// Soft modes (observe / ask / yolo / trusted) that can weaken pack hits.
 fn isSoftMode(mode: policy.schema.Mode) bool {
     return switch (mode) {
-        .observe, .ask, .trusted => true,
+        .observe, .ask, .yolo, .trusted => true,
         .strict, .redteam, .ci => false,
     };
 }
@@ -107,7 +107,7 @@ pub fn resolveModeFromEnv() policy.schema.Mode {
 fn modeStrictness(mode: policy.schema.Mode) u8 {
     return switch (mode) {
         .observe, .trusted => 0,
-        .ask => 1,
+        .ask, .yolo => 1,
         .strict, .redteam => 2,
         .ci => 3,
     };

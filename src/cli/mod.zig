@@ -85,6 +85,8 @@ test {
     _ = daemon.errors;
     _ = shutdown;
     _ = shell_eval;
+    // Pull hook.zig tests (daemon evaluate → HookResponse, strict refuse, redaction).
+    _ = hook;
     _ = shell_test;
     _ = shell_explain;
     _ = rust_legacy_stub;

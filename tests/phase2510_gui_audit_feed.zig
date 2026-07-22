@@ -77,6 +77,7 @@ test "phase2510 run deny feed record is zig-backed with pack metadata" {
         shell_eval.mockDaemonDenyEvaluator,
         &metadata,
         audit_options,
+        &.{},
     );
     defer decision.deinit(std.testing.allocator);
     try std.testing.expectEqual(core.decision.DecisionResult.deny, decision.decision.result);
@@ -121,6 +122,7 @@ test "phase2510 run allow feed record when audit options provided" {
         shell_eval.mockDaemonAllowEvaluator,
         null,
         audit_options,
+        &.{},
     );
     defer decision.deinit(std.testing.allocator);
     try std.testing.expectEqual(core.decision.DecisionResult.allow, decision.decision.result);

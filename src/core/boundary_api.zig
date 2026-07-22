@@ -452,7 +452,7 @@ fn evaluateExtensionAction(
 fn modeDefault(mode: policy_engine.schema.Mode) policy_engine.schema.DecisionValue {
     return switch (mode) {
         .observe => .observe,
-        .ask, .trusted => .ask,
+        .ask, .yolo, .trusted => .ask,
         .strict, .ci, .redteam => .deny,
     };
 }

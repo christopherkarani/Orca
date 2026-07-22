@@ -78,7 +78,16 @@ fn execWithEnv(io: std.Io, allocator: std.mem.Allocator, command_argv: []const [
     defer selected.deinit();
     const effective_mode = try shimMode(io, allocator, workspace_root, session_id, &selected.policy, env_map);
 
-    var command_decision = try shell_eval.evaluateCommand(allocator, effective_mode, command_argv, workspace_root, shell_evaluator, null, null);
+    var command_decision = try shell_eval.evaluateCommand(
+        allocator,
+        effective_mode,
+        command_argv,
+        workspace_root,
+        shell_evaluator,
+        null,
+        null,
+        selected.policy.commands.allow,
+    );
     defer command_decision.deinit(allocator);
 
     var final_decision = command_decision.decision;
@@ -238,7 +247,7 @@ fn readSessionShimMode(io: std.Io, allocator: std.mem.Allocator, workspace_root:
 fn modeStrictness(mode: policy.schema.Mode) u8 {
     return switch (mode) {
         .observe, .trusted => 0,
-        .ask => 1,
+        .ask, .yolo => 1,
         .strict, .redteam => 2,
         .ci => 3,
     };
