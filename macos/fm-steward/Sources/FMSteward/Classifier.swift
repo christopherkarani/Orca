@@ -8,7 +8,7 @@ import Foundation
 public struct Classifier: Sendable {
     private let backend: any FoundationModelBackend
 
-    public init(backend: any FoundationModelBackend = UnavailableBackend()) {
+    public init(backend: any FoundationModelBackend = LiveBackend.preferredDefault()) {
         self.backend = backend
     }
 

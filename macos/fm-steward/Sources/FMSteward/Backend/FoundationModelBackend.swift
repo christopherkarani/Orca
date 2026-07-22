@@ -12,5 +12,13 @@ import Foundation
 ///   prefer returning a cheap fallback continue (or exiting promptly) rather
 ///   than a late `ask`.
 public protocol FoundationModelBackend: Sendable {
+    /// Optional warm / preload. Default: no-op.
+    func prepareWarm() async
+
+    /// Classify a risk card after rules pre-pass missed.
     func classify(_ card: RiskCard) async -> ClassifyResponse
+}
+
+extension FoundationModelBackend {
+    public func prepareWarm() async {}
 }

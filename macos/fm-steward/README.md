@@ -1,6 +1,6 @@
 # fm-steward (Phase 3)
 
-Mac-only **Foundation Models steward** package for Orca. Classifies **risk-card-v1** JSON into:
+Mac-only **on-device Apple Foundation Models steward** for Orca (`SystemLanguageModel`, ~3B Apple Intelligence model). Classifies **risk-card-v1** JSON into:
 
 | Verdict | Meaning |
 |---------|---------|
@@ -12,15 +12,16 @@ Phase 3 ships:
 
 - Normative schemas under `Schemas/`
 - Fixture corpus under `Fixtures/` (§6.4 table)
-- Deterministic **rules pre-pass** (works without on-device FM)
-- Injectable `FoundationModelBackend` + warm `StewardSession` with **500ms** default timeout
-- Demo CLI: `fm-steward classify --card <path.json>`
+- Deterministic **rules pre-pass** (works without waiting on silicon for fixtures)
+- **Live `LiveBackend`** using `import FoundationModels` + guided generation (`@Generable`)
+- Warm `StewardSession` (`LanguageModelSession.prewarm`) with **500ms** default timeout for residual FM work
+- Demo CLI: `fm-steward classify --card <path.json> [--live]`
 
 ## Platform
 
 | Platform | Support |
 |----------|---------|
-| **macOS 15+** | Supported (`Package.swift` platforms) |
+| **macOS 26+** | Supported — requires Apple Intelligence / Foundation Models assets (`Package.swift` → `.macOS(.v26)`) |
 | **Linux** | **Skipped** — product path does not use FM. Phase 4 wiring remains Mac-only for this package; Linux continues on policy + hard fence only. |
 
 This package is **not** wired into production Zig hooks in Phase 3 (see [Scope / W4](#scope--not-done-w4)).
@@ -60,12 +61,15 @@ swift run fm-steward classify --card Fixtures/grep_rm_rf.json --timeout-ms 200
 
 ### Behavior notes
 
-- **Default timeout:** `500ms` (`StewardSession.defaultTimeoutMs`). Override with `--timeout-ms N`. Host API for the timeout race is **`StewardSession`** (not bare `Classifier`).
-- **Timeout / unavailable model → `continue`** with `fallback=true` (and `timed_out=true` when the timer wins). Never ask-spam after timeout. Timeout is **cooperative**: backends must honor task cancellation; structured concurrency still joins cancelled children.
+- **On-device model:** `LiveBackend` uses `SystemLanguageModel.default` + `LanguageModelSession.respond(generating: StewardModelOutput.self)`. Check readiness: `LiveBackend.isOnDeviceModelAvailable` / `LiveBackend.availabilityDescription`.
+- **Default backend:** `auto` → live when the on-device model is available, else unavailable. Force with `--live` or `--backend unavailable`.
+- **Rules first, FM residual:** rules pre-pass short-circuits bulk/VIP/`executed=false`/`test_loop`. Gray cards hit the on-device model.
+- **Default timeout:** `500ms` for backend-bound work (`StewardSession`). Override with `--timeout-ms N` (raise for cold FM first token if needed). Host API for the timeout race is **`StewardSession`**.
+- **Warm:** CLI calls `session.warm()` by default (`LanguageModelSession.prewarm`). Use `--no-warm` to skip.
+- **Timeout / unavailable model → `continue`** with `fallback=true` (and `timed_out=true` when the timer wins). Never ask-spam after timeout. Timeout is **cooperative**.
 - **Broken ask* (empty explain) → `continue`** is a soft residual (anti-ask-spam), not hard-fence fail-closed. Hard fence remains Zig-only.
-- **Default backend** is unavailable; the **rules pre-pass** still yields correct fixture verdicts without Apple FM hardware/SDK. Rules hits set `model_available=false` (not live FM).
-- **Host-authoritative cards:** `features.*` and thresholds must be host-computed. `thresholds.vip_list_path` is **host-only metadata** in Phase 3 (steward does not open the path); set `features.vip=true` for VIP soft-ask.
-- **Schema:** `features.namespace` is the shipped field (handoff drafts sometimes said `severity` — use `namespace`).
+- **Rules hits** set `model_available=false`. Live model hits set `model_available=true`.
+- **Host-authoritative cards:** `features.*` and thresholds must be host-computed. `thresholds.vip_list_path` is host-only metadata in Phase 3.
 - Exit code `0` means classify succeeded (including `ask*`). Non-zero is usage/IO/decode failure (including `schema_version != 1` or card file > 1 MiB).
 
 ## Demo (§6.4 fixture table)
@@ -124,11 +128,15 @@ Zig shell security remains the in-process Zig `shell_engine` + policy path. WP6 
 ## Library surface (for dependents)
 
 ```text
-StewardSession  ← preferred host API (warm + ≤500ms timeout race)
+StewardSession  ← preferred host API (warm + timeout race)
 Classifier      ← pure rules + backend (no timeout; tests / composition)
-RulesPrePass / ClassifyPipeline (internal demotion shared)
-FoundationModelBackend + UnavailableBackend + LiveBackend (stub) + SlowBackend (tests)
-RiskCard / ClassifyResponse (Codable, snake_case keys; public constructors via make/factories)
+RulesPrePass / ClassifyPipeline (shared demotion)
+FoundationModelBackend
+  LiveBackend          ← real SystemLanguageModel + guided generation
+  UnavailableBackend   ← fallback continue
+  SlowBackend          ← timeout tests
+RiskCard / ClassifyResponse / StewardModelOutput (@Generable)
 ```
 
 Default session timeout **500ms**. Rules pre-pass short-circuits before backend race.
+Live path requires macOS 26 + Apple Intelligence enabled.
