@@ -7,7 +7,7 @@
   "required": ["version", "mode"],
   "properties": {
     "version": { "const": 1 },
-    "mode": { "enum": ["observe", "ask", "strict", "ci", "redteam", "trusted"] },
+    "mode": { "enum": ["observe", "ask", "yolo", "strict", "ci", "redteam", "trusted"] },
     "workspace": {
       "type": "object",
       "additionalProperties": false,

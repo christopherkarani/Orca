@@ -3,6 +3,8 @@ const std = @import("std");
 pub const Preset = enum {
     observe,
     ask,
+    /// YOLO + seatbelt: `mode: yolo` with the same conservative rule body as ask/strict.
+    yolo,
     strict,
     ci,
     redteam,
@@ -98,6 +100,7 @@ pub fn text(preset: Preset) []const u8 {
     return switch (preset) {
         .observe => observe_policy,
         .ask => ask_policy,
+        .yolo => yolo_policy,
         .strict => strict_policy,
         .ci => ci_policy,
         .redteam => redteam_policy,
@@ -411,6 +414,19 @@ pub const ask_policy =
     \\
 ++ common_strict_rules;
 
+/// YOLO + seatbelt hero preset: same conservative rule body as ask/strict, `mode: yolo`.
+/// Shares the ask severity matrix under sandbox + hard fence; not refuse-all.
+pub const yolo_policy =
+    \\# Orca preset: yolo
+    \\# YOLO + seatbelt: autonomous local agent under sandbox and hard fence.
+    \\# Severity matrix matches ask (not refuse-all). Critical/catastrophe always denied.
+    \\# Sticky trust (once/session/effect-class) may skip re-ask after user allow — never for hard fence.
+    \\
+    \\version: 1
+    \\mode: yolo
+    \\
+++ common_strict_rules;
+
 pub const observe_policy =
     \\version: 1
     \\mode: observe
@@ -566,8 +582,33 @@ pub const trusted_policy =
 test "built-in presets expose required phase 07 policies" {
     try std.testing.expect(std.mem.indexOf(u8, text(.observe), "mode: observe") != null);
     try std.testing.expect(std.mem.indexOf(u8, text(.ask), "mode: ask") != null);
+    try std.testing.expect(std.mem.indexOf(u8, text(.yolo), "mode: yolo") != null);
     try std.testing.expect(std.mem.indexOf(u8, text(.strict), "mode: strict") != null);
     try std.testing.expect(std.mem.indexOf(u8, text(.ci), "mode: ci") != null);
+}
+
+test "yolo preset is YOLO seatbelt with mode yolo and sample allowlist body" {
+    try std.testing.expectEqual(Preset.yolo, Preset.parse("yolo").?);
+    const source = text(.yolo);
+    try std.testing.expect(std.mem.indexOf(u8, source, "mode: yolo") != null);
+    try std.testing.expect(std.mem.indexOf(u8, source, "YOLO") != null);
+    // Inherits common_strict_rules permit sample (same body as strict/ask).
+    try std.testing.expect(std.mem.indexOf(u8, source, "commands:") != null);
+    try std.testing.expect(std.mem.indexOf(u8, source, "git status") != null);
+
+    const load = @import("load.zig");
+    const schema = @import("schema.zig");
+    var policy = try load.parseFromSlice(std.testing.allocator, source, "builtin:yolo");
+    defer policy.deinit();
+    try std.testing.expectEqual(schema.Mode.yolo, policy.mode);
+}
+
+test "strict preset documents mode strict and commands.allow sample" {
+    const source = text(.strict);
+    try std.testing.expect(std.mem.indexOf(u8, source, "mode: strict") != null);
+    try std.testing.expect(std.mem.indexOf(u8, source, "commands:") != null);
+    try std.testing.expect(std.mem.indexOf(u8, source, "  allow:") != null);
+    try std.testing.expect(std.mem.indexOf(u8, source, "git status") != null);
 }
 
 test "phase 18 agent presets are exposed with stable names" {
