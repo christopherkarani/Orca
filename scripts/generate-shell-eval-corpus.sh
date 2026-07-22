@@ -1,29 +1,40 @@
 #!/usr/bin/env bash
-# Regenerate MVP shell-eval goldens from Rust `orca test --format json` when available.
-# Usage: ./scripts/generate-shell-eval-corpus.sh [commands.txt]
-# Without a live daemon/binary, the checked-in JSONL remains the oracle freeze.
+# Regenerate MVP shell-eval goldens from an *independent* oracle binary.
+#
+# Usage:
+#   ORCA_ORACLE_BIN=/path/to/pinned-orca ./scripts/generate-shell-eval-corpus.sh commands.txt
+#
+# Refuses to use this checkout's zig-out binary (that would copy bugs into goldens).
+# Without ORCA_ORACLE_BIN, leaves the checked-in JSONL unchanged.
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 OUT="${ROOT}/src/shell_engine/mvp_corpus.jsonl"
 CMDS="${1:-}"
 
-ORCA_BIN=""
-if command -v orca >/dev/null 2>&1; then
-  ORCA_BIN="$(command -v orca)"
-elif [[ -x "${ROOT}/zig-out/bin/orca" ]]; then
-  ORCA_BIN="${ROOT}/zig-out/bin/orca"
-elif [[ -x "${ROOT}/orca-rs/target/release/orca-daemon" ]]; then
-  ORCA_BIN="${ROOT}/orca-rs/target/release/orca-daemon"
-fi
-
-if [[ -z "${ORCA_BIN}" ]]; then
-  echo "No orca/orca-daemon binary found; leaving ${OUT} unchanged." >&2
+if [[ -z "${ORCA_ORACLE_BIN:-}" ]]; then
+  echo "ORCA_ORACLE_BIN is required (path to an independent, version-pinned orca oracle)." >&2
+  echo "Refusing to regenerate goldens from this checkout's build under test." >&2
+  echo "Leaving ${OUT} unchanged." >&2
   exit 0
 fi
 
+ORCA_BIN="${ORCA_ORACLE_BIN}"
+if [[ ! -x "${ORCA_BIN}" ]]; then
+  echo "ORCA_ORACLE_BIN is not executable: ${ORCA_BIN}" >&2
+  exit 1
+fi
+
+# Hard fail if someone points the oracle at this tree's build output.
+case "${ORCA_BIN}" in
+  "${ROOT}/zig-out/"*|"${ROOT}/.zig-cache/"*)
+    echo "ORCA_ORACLE_BIN must not be this checkout's zig-out/.zig-cache binary: ${ORCA_BIN}" >&2
+    exit 1
+    ;;
+esac
+
 if [[ -z "${CMDS}" ]]; then
-  echo "Pass a commands file (one command per line) to regenerate goldens from Rust." >&2
-  echo "Example: ./scripts/generate-shell-eval-corpus.sh /tmp/cmds.txt" >&2
+  echo "Pass a commands file (one command per line) to regenerate goldens." >&2
+  echo "Example: ORCA_ORACLE_BIN=/opt/orca-oracle/bin/orca ./scripts/generate-shell-eval-corpus.sh /tmp/cmds.txt" >&2
   exit 0
 fi
 
@@ -51,7 +62,7 @@ done <"${CMDS}"
 
 if [[ -s "${tmp}" ]]; then
   mv "${tmp}" "${OUT}"
-  echo "Wrote $(wc -l <"${OUT}") goldens to ${OUT}"
+  echo "Wrote $(wc -l <"${OUT}") goldens to ${OUT} (oracle=${ORCA_BIN})"
 else
   echo "No goldens produced." >&2
   exit 1

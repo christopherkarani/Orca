@@ -797,9 +797,11 @@ fn collectQuotedIdsForKey(
     const array = packsArraySlice(content, key) orelse return;
     var i: usize = 0;
     while (i < array.len) : (i += 1) {
-        if (array[i] != '"') continue;
+        const c = array[i];
+        if (c != '"' and c != '\'') continue;
+        const q = c;
         const start = i + 1;
-        const close = std.mem.indexOfScalar(u8, array[start..], '"') orelse break;
+        const close = std.mem.indexOfScalar(u8, array[start..], q) orelse break;
         const id = array[start .. start + close];
         if (looksLikePackId(id)) {
             const gop = try set.getOrPut(allocator, id);

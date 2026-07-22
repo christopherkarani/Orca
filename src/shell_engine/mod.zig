@@ -323,16 +323,27 @@ fn segmentArgv0Kind(segment: []const u8) ?ReceiverKind {
 
         // Known wrappers: keep scanning for the real receiver.
         if (isHeredocWrapperBasename(base)) {
-            // Consume following option tokens belonging to the wrapper.
+            // Consume following option tokens (+ operands for options that take one).
             while (i < segment.len) {
                 var peek = i;
                 while (peek < segment.len and std.ascii.isWhitespace(segment[peek])) : (peek += 1) {}
                 if (peek >= segment.len) break;
                 if (segment[peek] != '-') break;
-                _ = nextShellWord(segment, &i);
+                const opt = nextShellWord(segment, &i);
+                if (wrapperOptionTakesOperand(base, opt)) {
+                    // Consume the operand unless already attached via `=`.
+                    var peek2 = i;
+                    while (peek2 < segment.len and std.ascii.isWhitespace(segment[peek2])) : (peek2 += 1) {}
+                    if (peek2 < segment.len and segment[peek2] != '-') {
+                        _ = nextShellWord(segment, &i);
+                    }
+                }
             }
             continue;
         }
+
+        // Shell reserved words are syntax, not receivers (`then bash <<EOF`).
+        if (isShellReservedWord(base)) continue;
 
         if (isDataSinkBasename(base)) return .data_sink;
         if (isInterpreterBasename(base) or interpreterBasenameLoose(base)) return .executing;
@@ -344,6 +355,42 @@ fn segmentArgv0Kind(segment: []const u8) ?ReceiverKind {
         return null;
     }
     return null;
+}
+
+fn isShellReservedWord(base: []const u8) bool {
+    const words = [_][]const u8{
+        "if", "then", "else", "elif", "fi", "for", "while", "until", "do", "done",
+        "case", "esac", "in", "!", "{", "}", "[[", "]]", "function", "select", "coproc",
+    };
+    for (words) |w| {
+        if (std.mem.eql(u8, base, w)) return true;
+    }
+    return false;
+}
+
+fn wrapperOptionTakesOperand(wrapper: []const u8, opt: []const u8) bool {
+    if (opt.len == 0) return false;
+    if (std.mem.indexOfScalar(u8, opt, '=')) |_| return false; // --unset=NAME
+    if (std.mem.eql(u8, wrapper, "env")) {
+        return std.mem.eql(u8, opt, "-u") or std.mem.eql(u8, opt, "--unset") or
+            std.mem.eql(u8, opt, "-C") or std.mem.eql(u8, opt, "--chdir") or
+            std.mem.eql(u8, opt, "-S") or std.mem.eql(u8, opt, "--split-string");
+    }
+    if (std.mem.eql(u8, wrapper, "sudo") or std.mem.eql(u8, wrapper, "doas")) {
+        return std.mem.eql(u8, opt, "-u") or std.mem.eql(u8, opt, "-g") or
+            std.mem.eql(u8, opt, "-h") or std.mem.eql(u8, opt, "-C") or
+            std.mem.eql(u8, opt, "-D") or std.mem.eql(u8, opt, "-R") or
+            std.mem.eql(u8, opt, "-T") or std.mem.eql(u8, opt, "-p") or
+            std.mem.eql(u8, opt, "-r") or std.mem.eql(u8, opt, "-t");
+    }
+    if (std.mem.eql(u8, wrapper, "nice")) {
+        return std.mem.eql(u8, opt, "-n") or std.mem.eql(u8, opt, "--adjustment");
+    }
+    if (std.mem.eql(u8, wrapper, "stdbuf")) {
+        return std.mem.eql(u8, opt, "-i") or std.mem.eql(u8, opt, "-o") or std.mem.eql(u8, opt, "-e") or
+            std.mem.eql(u8, opt, "--input") or std.mem.eql(u8, opt, "--output") or std.mem.eql(u8, opt, "--error");
+    }
+    return false;
 }
 
 fn isHeredocWrapperBasename(base: []const u8) bool {
@@ -753,7 +800,11 @@ fn maskNonExecutingHeredoc(allocator: std.mem.Allocator, cmd: []const u8) ![]u8 
                 const body = out[body_start..body_end];
                 // Unquoted delimiters expand $(...) / `...` — leave those bodies matchable.
                 // Literal bodies (no expansions) remain safe to mask for data sinks.
-                if (!delim_quoted and bodyHasShellExpansion(body)) break;
+                if (!delim_quoted and bodyHasShellExpansion(body)) {
+                    // Still scan later << redirects on this command.
+                    i += 1;
+                    continue;
+                }
                 // Mask body only (preserve newlines / whitespace structure).
                 var q = body_start;
                 while (q < body_end) : (q += 1) {
@@ -761,9 +812,14 @@ fn maskNonExecutingHeredoc(allocator: std.mem.Allocator, cmd: []const u8) ![]u8 
                         out[q] = 'x';
                     }
                 }
+                // Resume just after this `<<` so same-line stacked redirects are found
+                // (`cat <<A <<B` …).
+                i += 1;
+                continue;
             }
-            // If terminator not found, leave body unmasked (fail closed).
-            break;
+            // If terminator not found, leave body unmasked (fail closed) and keep scanning.
+            i += 1;
+            continue;
         }
     }
     return out;

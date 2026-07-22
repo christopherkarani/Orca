@@ -16,7 +16,6 @@ sbom_name="orca-core"
 sbom_format="orca-core-release-inventory"
 components='[
   {"name": "orca", "type": "application", "language": "zig", "dependencies": []},
-  {"name": "orca-daemon", "type": "application", "language": "rust", "dependencies": []},
   {"name": "core", "type": "library", "language": "zig", "dependencies": []}
 ]'
 build_targets='[

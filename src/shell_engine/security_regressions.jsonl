@@ -52,3 +52,6 @@
 {"command": "cat <<EOF\n$(rm -rf /)\nEOF", "expected": "deny", "source": "codex_p1_unquoted_heredoc_expand", "description": "unquoted cat heredoc expands command substitution"}
 {"command": "\"/bin/bash\" <<'EOF'\nrm -rf /\nEOF", "expected": "deny", "source": "codex_p1_quoted_path_receiver", "description": "quoted absolute bash path is executing receiver"}
 {"command": "echo ok # explanation; rm -rf /", "expected": "allow", "source": "codex_p2_comment_segment", "description": "commented semicolon must not spawn rm segment"}
+{"command": "env -u FOO bash <<'EOF'\nrm -rf /\nEOF", "expected": "deny", "source": "codex_p1_wrapper_operand", "description": "env -u NAME consumes operand before bash receiver"}
+{"command": "if true; then bash <<'EOF'\nrm -rf /\nEOF\nfi", "expected": "deny", "source": "codex_p1_reserved_word", "description": "then reserved word skipped before bash receiver"}
+{"command": "cat <<A <<B\nfirst\nA\nrm -rf /\nB", "expected": "allow", "source": "codex_p2_multi_heredoc", "description": "both non-executing heredoc bodies masked"}

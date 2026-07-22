@@ -287,7 +287,10 @@ grep -q '"orca"' "$DIST_DIR/release-manifest.json" || fail "release-manifest.jso
 if grep -q '"orca-daemon"' "$DIST_DIR/release-manifest.json"; then
   fail "release-manifest.json still lists orca-daemon product (removed from packaging)"
 fi
-
+if grep -q '"orca-daemon"' "$DIST_DIR/sbom.json"; then
+  fail "sbom.json still lists orca-daemon component (removed from packaging)"
+fi
+grep -q '"orca"' "$DIST_DIR/sbom.json" || fail "sbom.json missing orca component"
 if command -v sha256sum >/dev/null 2>&1; then
   (cd "$DIST_DIR" && sha256sum -c checksums.txt)
 else
