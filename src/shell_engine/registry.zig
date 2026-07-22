@@ -127,30 +127,60 @@ pub const MatchResult = union(enum) {
 };
 
 pub const MatchOptions = struct {
-    /// When true (default), only packs enabled under Rust `Config::default()`.
-    /// Set false to evaluate the full 85-pack set.
+    /// When true (default), only packs enabled under Rust `Config::default()`,
+    /// plus any IDs listed in `extra_enabled`. Set false to evaluate the full
+    /// 85-pack set (still honoring `disabled`).
     default_packs_only: bool = true,
+    /// Opt-in pack IDs to evaluate in addition to the default set.
+    extra_enabled: []const []const u8 = &.{},
+    /// Pack IDs to force-disable (takes precedence over default/extra).
+    disabled: []const []const u8 = &.{},
 };
 
 /// Match packs on a single (already normalized/sanitized) command.
-/// Mirrors Rust `check_command_single`: any safe → allow; else first destructive → deny.
+///
+/// Per-pack safe/destructive ordering: a safe match suppresses destructive
+/// patterns from the **same pack only**. Cross-pack destructives still deny
+/// (e.g. `rm -rf / $(git checkout -b x)` is not allowed by `core.git` safe).
 pub fn matchCommandDetailed(cmd: []const u8) MatchResult {
     return matchCommandDetailedOpts(cmd, .{});
+}
+
+fn packIdListed(pack_id: []const u8, ids: []const []const u8) bool {
+    for (ids) |id| {
+        if (std.mem.eql(u8, pack_id, id)) return true;
+        // Category shorthand used in config: `core` covers all `core.*`.
+        if (std.mem.eql(u8, id, "core") and std.mem.startsWith(u8, pack_id, "core.")) return true;
+    }
+    return false;
+}
+
+fn packIsActive(pack: CompiledPack, opts: MatchOptions) bool {
+    if (packIdListed(pack.id, opts.disabled)) return false;
+    if (!opts.default_packs_only) return true;
+    if (pack.default_enabled) return true;
+    return packIdListed(pack.id, opts.extra_enabled);
 }
 
 pub fn matchCommandDetailedOpts(cmd: []const u8, opts: MatchOptions) MatchResult {
     if (g_packs.len == 0) return .allow_miss;
 
+    var any_safe = false;
     for (g_packs) |pack| {
-        if (opts.default_packs_only and !pack.default_enabled) continue;
+        if (!packIsActive(pack, opts)) continue;
         if (!mightMatch(pack, cmd)) continue;
+
+        var pack_safe = false;
         for (pack.safe) |pat| {
-            if (pat.regex.isMatch(cmd)) return .allow_safe;
+            if (pat.regex.isMatch(cmd)) {
+                pack_safe = true;
+                any_safe = true;
+                break;
+            }
         }
-    }
-    for (g_packs) |pack| {
-        if (opts.default_packs_only and !pack.default_enabled) continue;
-        if (!mightMatch(pack, cmd)) continue;
+        // Same-pack only: skip this pack's destructives, keep scanning others.
+        if (pack_safe) continue;
+
         for (pack.destructive) |pat| {
             if (pat.regex.isMatch(cmd)) {
                 return .{ .deny = .{
@@ -165,6 +195,7 @@ pub fn matchCommandDetailedOpts(cmd: []const u8, opts: MatchOptions) MatchResult
             }
         }
     }
+    if (any_safe) return .allow_safe;
     return .allow_miss;
 }
 
@@ -234,4 +265,32 @@ test "registry compiled pattern counts match embedded oracle totals" {
     const counts = compiledPatternCounts();
     try std.testing.expectEqual(@as(usize, expected_destructive_patterns), counts.destructive);
     try std.testing.expectEqual(@as(usize, expected_safe_patterns), counts.safe);
+}
+
+test "safe match is pack-scoped so cross-pack destructive still denies" {
+    try ensureInit();
+    // core.git safe (checkout -b) must not suppress core.filesystem root wipe.
+    const r = matchCommandDetailed("rm -rf / $(git checkout -b x)");
+    try std.testing.expect(r == .deny);
+    try std.testing.expectEqualStrings("core.filesystem", r.deny.pack_id);
+}
+
+test "opt-in pack via extra_enabled denies docker system prune" {
+    try ensureInit();
+    const baseline = matchCommandDetailedOpts("docker system prune", .{});
+    try std.testing.expect(baseline != .deny);
+
+    const with_docker = matchCommandDetailedOpts("docker system prune", .{
+        .extra_enabled = &.{"containers.docker"},
+    });
+    try std.testing.expect(with_docker == .deny);
+    try std.testing.expectEqualStrings("containers.docker", with_docker.deny.pack_id);
+}
+
+test "disabled pack suppresses default-enabled destructive match" {
+    try ensureInit();
+    const disabled = matchCommandDetailedOpts("mkfs.ext4 /dev/sda1", .{
+        .disabled = &.{"system.disk"},
+    });
+    try std.testing.expect(disabled != .deny);
 }

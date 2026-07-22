@@ -14,6 +14,7 @@ const shell_engine = @import("../shell_engine/mod.zig");
 const daemon = @import("daemon.zig");
 const rust_visibility = @import("rust_visibility.zig");
 const feed_writer = @import("feed_writer.zig");
+const pack_config = @import("pack_config.zig");
 
 pub const ShellCommandEvent = struct {
     command: []const u8,
@@ -97,8 +98,24 @@ fn zigEvaluator(
     allocator: std.mem.Allocator,
     shell_event: ShellCommandEvent,
 ) daemon.DaemonError!std.json.Parsed(daemon.DaemonResponse) {
+    // Load cwd-scoped pack config so opt-in packs / disables actually apply.
+    // Missing config → baseline only. Allocator failure fails closed via OOM.
+    var threaded: std.Io.Threaded = .init_single_threaded;
+    const io = threaded.io();
+    const workspace = shell_event.cwd orelse ".";
+    var packs = pack_config.loadPackIdsForWorkspace(io, allocator, workspace) catch |err| switch (err) {
+        error.OutOfMemory => return error.OutOfMemory,
+        // Unreadable / unexpected config errors: still evaluate baseline rather than
+        // invent pack state. Fail-closed security decisions remain in the engine.
+        else => pack_config.LoadedPackIds{},
+    };
+    defer packs.deinit(allocator);
+
     var eval = shell_engine.evaluateCommand(allocator, shell_event.command, .{
         .cwd = shell_event.cwd,
+        .default_packs_only = true,
+        .extra_enabled = packs.enabled,
+        .disabled = packs.disabled,
     }) catch return error.OutOfMemory;
     defer eval.deinit(allocator);
     return synthesizeDaemonResponseFromZig(allocator, eval);
@@ -998,4 +1015,47 @@ test "mode-softened high severity maps to valid plugin decision vocabulary" {
     try std.testing.expectEqual(PluginDecision.ask, pluginDecisionFromModeAndSeverity(.ask, .high));
     try std.testing.expectEqual(PluginDecision.warn, pluginDecisionFromModeAndSeverity(.observe, .high));
     try std.testing.expectEqual(PluginDecision.block, pluginDecisionFromModeAndSeverity(.strict, .high));
+}
+
+test "zigEvaluator applies opt-in packs from cwd .orca.toml" {
+    const allocator = std.testing.allocator;
+
+    // Clean project workspace without pack config → baseline allows docker prune.
+    var baseline_tmp = std.testing.tmpDir(.{});
+    defer baseline_tmp.cleanup();
+    try baseline_tmp.dir.createDirPath(std.testing.io, ".git");
+    const baseline_root = try baseline_tmp.dir.realPathFileAlloc(std.testing.io, ".", allocator);
+    defer allocator.free(baseline_root);
+    {
+        var parsed = try zigEvaluator(allocator, .{
+            .command = "docker system prune",
+            .cwd = baseline_root,
+        });
+        defer parsed.deinit();
+        try std.testing.expectEqual(daemon.ResponseStatus.allow, daemon.responseStatus(parsed.value.result));
+    }
+
+    // Project config enables containers.docker → deny.
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try tmp.dir.createDirPath(std.testing.io, ".git");
+    const body =
+        \\[packs]
+        \\enabled = ["containers.docker"]
+        \\
+    ;
+    const file = try tmp.dir.createFile(std.testing.io, ".orca.toml", .{});
+    defer file.close(std.testing.io);
+    try file.writeStreamingAll(std.testing.io, body);
+
+    const root = try tmp.dir.realPathFileAlloc(std.testing.io, ".", allocator);
+    defer allocator.free(root);
+    {
+        var parsed = try zigEvaluator(allocator, .{
+            .command = "docker system prune",
+            .cwd = root,
+        });
+        defer parsed.deinit();
+        try std.testing.expectEqual(daemon.ResponseStatus.deny, daemon.responseStatus(parsed.value.result));
+    }
 }

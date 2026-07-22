@@ -59,6 +59,53 @@ pub fn isBaselinePackId(id: []const u8) bool {
     return false;
 }
 
+/// Cwd-scoped pack enable/disable lists for the production Zig shell evaluator.
+pub const LoadedPackIds = struct {
+    enabled: []const []const u8 = &.{},
+    disabled: []const []const u8 = &.{},
+    owned: bool = false,
+
+    pub fn deinit(self: *LoadedPackIds, allocator: std.mem.Allocator) void {
+        if (!self.owned) return;
+        freeOwnedSlice(allocator, self.enabled);
+        freeOwnedSlice(allocator, self.disabled);
+        self.* = undefined;
+    }
+};
+
+/// Load `[packs] enabled` / `disabled` for the workspace (project `.orca.toml` when
+/// git-backed, otherwise user config). Missing config → empty lists (baseline only).
+pub fn loadPackIdsForWorkspace(
+    io: std.Io,
+    allocator: std.mem.Allocator,
+    workspace_root: []const u8,
+) !LoadedPackIds {
+    const resolved = resolvePackConfigPath(io, allocator, workspace_root) catch |err| switch (err) {
+        error.HomeDirectoryNotFound => return .{},
+        else => return err,
+    };
+    defer allocator.free(resolved.path);
+
+    var lists = try loadPackIdLists(io, allocator, resolved.path);
+    errdefer lists.deinit(allocator);
+
+    const enabled = try lists.enabled.toOwnedSlice(allocator);
+    lists.enabled = .empty;
+    errdefer freeOwnedSlice(allocator, enabled);
+
+    const disabled = try lists.disabled.toOwnedSlice(allocator);
+    lists.disabled = .empty;
+
+    // Drop raw file buffer / empty lists.
+    lists.deinit(allocator);
+
+    return .{
+        .enabled = enabled,
+        .disabled = disabled,
+        .owned = true,
+    };
+}
+
 /// Resolve where pack enablement should be written.
 /// Prefers project `.orca.toml` when `.git` is present under workspace_root.
 pub fn resolvePackConfigPath(
@@ -781,6 +828,39 @@ test "isBaselinePackId covers core and system.disk only" {
     try std.testing.expect(!isBaselinePackId("containers.docker"));
     try std.testing.expect(!isBaselinePackId("system.services"));
     try std.testing.expect(!isBaselinePackId("package_managers"));
+}
+
+test "loadPackIdsForWorkspace reads project .orca.toml packs" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try tmp.dir.createDirPath(std.testing.io, ".git");
+    const body =
+        \\[packs]
+        \\enabled = ["containers.docker", "package_managers"]
+        \\disabled = ["system.disk"]
+        \\
+    ;
+    const file = try tmp.dir.createFile(std.testing.io, ".orca.toml", .{});
+    defer file.close(std.testing.io);
+    try file.writeStreamingAll(std.testing.io, body);
+
+    const root = try tmp.dir.realPathFileAlloc(std.testing.io, ".", std.testing.allocator);
+    defer std.testing.allocator.free(root);
+
+    var loaded = try loadPackIdsForWorkspace(std.testing.io, std.testing.allocator, root);
+    defer loaded.deinit(std.testing.allocator);
+
+    try std.testing.expect(loaded.owned);
+    var saw_docker = false;
+    var saw_pkg = false;
+    for (loaded.enabled) |id| {
+        if (std.mem.eql(u8, id, "containers.docker")) saw_docker = true;
+        if (std.mem.eql(u8, id, "package_managers")) saw_pkg = true;
+    }
+    try std.testing.expect(saw_docker);
+    try std.testing.expect(saw_pkg);
+    try std.testing.expect(loaded.disabled.len == 1);
+    try std.testing.expectEqualStrings("system.disk", loaded.disabled[0]);
 }
 
 test "packsArraySlice does not treat disabled as enabled" {

@@ -42,9 +42,14 @@ pub const Evaluation = struct {
 pub const EvaluateOptions = struct {
     cwd: ?[]const u8 = null,
     allowlists: ?allowlist.Layered = null,
-    /// When true (default), only core.* + system.disk (Rust Config::default).
-    /// When false, evaluate the full 85-pack registry.
+    /// When true (default), only core.* + system.disk (Rust Config::default),
+    /// plus any IDs in `extra_enabled`. When false, evaluate the full registry
+    /// (still honoring `disabled`).
     default_packs_only: bool = true,
+    /// Opt-in pack IDs from cwd-scoped config (`[packs] enabled = [...]`).
+    extra_enabled: []const []const u8 = &.{},
+    /// Pack IDs from cwd-scoped config (`[packs] disabled = [...]`).
+    disabled: []const []const u8 = &.{},
 };
 
 /// Evaluate a shell command line.
@@ -65,7 +70,11 @@ pub fn evaluateCommand(allocator: std.mem.Allocator, command: []const u8, option
         return denyStatic("zig.shell:init", "zig.shell", "init-failure", .critical, "Shell pack registry failed to initialize (fail-closed).");
     };
 
-    const match_opts = registry.MatchOptions{ .default_packs_only = options.default_packs_only };
+    const match_opts = registry.MatchOptions{
+        .default_packs_only = options.default_packs_only,
+        .extra_enabled = options.extra_enabled,
+        .disabled = options.disabled,
+    };
 
     var candidates: std.ArrayList([]const u8) = .empty;
     defer candidates.deinit(allocator);
@@ -165,27 +174,75 @@ fn isExecutingContext(cmd: []const u8) bool {
         if (std.mem.indexOf(u8, cmd, "/bash") != null or std.mem.indexOf(u8, cmd, "/python") != null)
             return true;
     }
-    // bash <<EOF (heredoc into shell)
+    // Heredoc into shell/interpreter — including attached forms like `/bin/bash<<'EOF'`.
     if (std.mem.indexOf(u8, cmd, "<<") != null) {
-        const data_sinks = [_][]const u8{ "cat ", "tee ", "grep ", "sed ", "awk ", "wc ", "sort ", "head ", "tail ", "base64 ", "md5", "curl ", "less ", "more " };
-        for (data_sinks) |d| {
-            const t = std.mem.trim(u8, cmd, " \t");
-            if (std.mem.startsWith(u8, t, d)) return false;
-        }
-        // bare shell heredoc
-        for (exec_markers) |m| {
-            if (std.mem.indexOf(u8, cmd, m) != null) return true;
-        }
-        // `bash <<EOF` without trailing space after bash in marker
-        if (std.mem.startsWith(u8, std.mem.trim(u8, cmd, " \t"), "bash") or
-            std.mem.startsWith(u8, std.mem.trim(u8, cmd, " \t"), "sh") or
-            std.mem.startsWith(u8, std.mem.trim(u8, cmd, " \t"), "zsh"))
-            return true;
+        if (heredocReceiverIsExecuting(cmd)) return true;
         return false;
     }
     if (std.mem.indexOf(u8, cmd, "<<<") != null) {
         // here-string often on shell
         return true;
+    }
+    return false;
+}
+
+fn commandWordBasename(word: []const u8) []const u8 {
+    if (std.mem.lastIndexOfScalar(u8, word, '/')) |idx| {
+        if (idx + 1 < word.len) return word[idx + 1 ..];
+    }
+    return word;
+}
+
+fn isInterpreterBasename(base: []const u8) bool {
+    const names = [_][]const u8{
+        "bash", "sh", "zsh", "ksh", "dash", "fish",
+        "python", "python3", "ruby", "perl", "node",
+    };
+    for (names) |n| {
+        if (std.mem.eql(u8, base, n)) return true;
+    }
+    return false;
+}
+
+fn isDataSinkBasename(base: []const u8) bool {
+    const sinks = [_][]const u8{
+        "cat", "tee", "grep", "egrep", "fgrep", "sed", "awk", "wc", "sort",
+        "head", "tail", "base64", "md5", "md5sum", "sha256sum", "curl", "less", "more",
+    };
+    for (sinks) |s| {
+        if (std.mem.eql(u8, base, s)) return true;
+    }
+    return false;
+}
+
+/// True when a `<<` heredoc (not `<<<`) is received by a shell/interpreter path.
+/// Handles whitespace and attached forms: `bash <<EOF`, `/bin/bash<<'EOF'`.
+fn heredocReceiverIsExecuting(cmd: []const u8) bool {
+    var i: usize = 0;
+    while (i + 1 < cmd.len) : (i += 1) {
+        if (cmd[i] != '<' or cmd[i + 1] != '<') continue;
+        // Skip here-string `<<<`.
+        if (i + 2 < cmd.len and cmd[i + 2] == '<') {
+            i += 2;
+            continue;
+        }
+        // Walk left past whitespace between receiver word and `<<`.
+        var j = i;
+        while (j > 0 and std.ascii.isWhitespace(cmd[j - 1])) : (j -= 1) {}
+        if (j == 0) continue;
+        var start = j;
+        while (start > 0) {
+            const c = cmd[start - 1];
+            if (std.ascii.isWhitespace(c) or c == '|' or c == ';' or c == '&' or
+                c == '(' or c == ')' or c == '`' or c == '$')
+                break;
+            start -= 1;
+        }
+        const word = cmd[start..j];
+        if (word.len == 0) continue;
+        const base = commandWordBasename(word);
+        if (isDataSinkBasename(base)) return false;
+        if (isInterpreterBasename(base)) return true;
     }
     return false;
 }
@@ -619,6 +676,59 @@ test "evaluateCommand denies git add with full packs" {
     var eval = try evaluateCommand(std.testing.allocator, "git add .", .{ .default_packs_only = false });
     defer eval.deinit(std.testing.allocator);
     try std.testing.expect(eval.decision == .deny);
+}
+
+test "evaluateCommand denies cross-pack safe plus destructive" {
+    var eval = try evaluateCommand(std.testing.allocator, "rm -rf / $(git checkout -b x)", .{});
+    defer eval.deinit(std.testing.allocator);
+    try std.testing.expect(eval.decision == .deny);
+}
+
+test "evaluateCommand denies echo payload piped to shell" {
+    const cases = [_][]const u8{
+        "echo rm -rf / | sh",
+        "echo 'rm -rf /' | bash",
+        "printf 'rm -rf /' | /bin/sh",
+    };
+    for (cases) |cmd| {
+        var eval = try evaluateCommand(std.testing.allocator, cmd, .{});
+        defer eval.deinit(std.testing.allocator);
+        try std.testing.expect(eval.decision == .deny);
+    }
+}
+
+test "evaluateCommand denies attached heredoc on qualified shell" {
+    const cases = [_][]const u8{
+        "/bin/bash<<'EOF'\nrm -rf /\nEOF",
+        "/bin/sh<<EOF\nrm -rf /\nEOF",
+        "bash<<EOF\ngit reset --hard\nEOF",
+    };
+    for (cases) |cmd| {
+        var eval = try evaluateCommand(std.testing.allocator, cmd, .{});
+        defer eval.deinit(std.testing.allocator);
+        try std.testing.expect(eval.decision == .deny);
+    }
+}
+
+test "evaluateCommand still allows cat attached heredoc data" {
+    const cmd = "cat<<EOF\nrm -rf /\nEOF";
+    var eval = try evaluateCommand(std.testing.allocator, cmd, .{});
+    defer eval.deinit(std.testing.allocator);
+    try std.testing.expect(eval.decision == .allow);
+}
+
+test "evaluateCommand opt-in pack denies docker prune" {
+    var allow_baseline = try evaluateCommand(std.testing.allocator, "docker system prune", .{});
+    defer allow_baseline.deinit(std.testing.allocator);
+    try std.testing.expect(allow_baseline.decision == .allow);
+
+    var deny_opt_in = try evaluateCommand(std.testing.allocator, "docker system prune", .{
+        .extra_enabled = &.{"containers.docker"},
+    });
+    defer deny_opt_in.deinit(std.testing.allocator);
+    try std.testing.expect(deny_opt_in.decision == .deny);
+    try std.testing.expect(deny_opt_in.pack_id != null);
+    try std.testing.expectEqualStrings("containers.docker", deny_opt_in.pack_id.?);
 }
 
 test {

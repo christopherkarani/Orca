@@ -17,8 +17,9 @@ pub fn sanitizeForMatching(allocator: std.mem.Allocator, command: []const u8) ![
     maskComments(out);
 
     // Data-only commands: mask all quoted spans and, for echo/printf, mask
-    // unquoted argv after the command word.
-    if (isDataOnlyCommand(out)) {
+    // unquoted argv after the command word — but NOT when the data is piped
+    // into an interpreter (`echo rm -rf / | sh`), where the payload executes.
+    if (isDataOnlyCommand(out) and !pipesIntoInterpreter(out)) {
         maskAllQuoted(out);
         maskArgsAfterCommand(out);
         return out;
@@ -52,6 +53,83 @@ fn isDataOnlyCommand(cmd: []const u8) bool {
     const data = [_][]const u8{ "echo", "printf", "cat", "tee", "head", "tail", "wc", "sort", "base64", "md5sum", "sha256sum", "less", "more" };
     for (data) |d| {
         if (std.mem.eql(u8, word, d)) return true;
+    }
+    return false;
+}
+
+fn isInterpreterBasename(base: []const u8) bool {
+    const names = [_][]const u8{
+        "sh", "bash", "zsh", "ksh", "dash", "fish",
+        "python", "python3", "ruby", "perl", "node",
+    };
+    for (names) |n| {
+        if (std.mem.eql(u8, base, n)) return true;
+    }
+    return false;
+}
+
+/// True when an unquoted `|` feeds a shell/interpreter (payload becomes executable).
+fn pipesIntoInterpreter(cmd: []const u8) bool {
+    var i: usize = 0;
+    var in_single = false;
+    var in_double = false;
+    while (i < cmd.len) : (i += 1) {
+        const c = cmd[i];
+        if (c == '\\' and !in_single and i + 1 < cmd.len) {
+            i += 1;
+            continue;
+        }
+        if (c == '\'' and !in_double) {
+            in_single = !in_single;
+            continue;
+        }
+        if (c == '"' and !in_single) {
+            in_double = !in_double;
+            continue;
+        }
+        if (in_single or in_double) continue;
+        if (c != '|') continue;
+        // Skip `||`
+        if (i + 1 < cmd.len and cmd[i + 1] == '|') {
+            i += 1;
+            continue;
+        }
+        var j = i + 1;
+        while (j < cmd.len and std.ascii.isWhitespace(cmd[j])) : (j += 1) {}
+        // Optional env/command wrappers before the interpreter word.
+        while (j < cmd.len) {
+            var end = j;
+            while (end < cmd.len and !std.ascii.isWhitespace(cmd[end]) and cmd[end] != '|' and
+                cmd[end] != ';' and cmd[end] != '&' and cmd[end] != '<' and cmd[end] != '>')
+                : (end += 1)
+            {}
+            if (end == j) break;
+            const word = cmd[j..end];
+            const base = basename(word);
+            if (isInterpreterBasename(base)) return true;
+            // Skip common wrappers and keep scanning the pipe RHS first word chain.
+            if (std.mem.eql(u8, base, "env") or std.mem.eql(u8, base, "command") or
+                std.mem.eql(u8, base, "exec") or std.mem.eql(u8, base, "nice") or
+                std.mem.eql(u8, base, "nohup") or std.mem.eql(u8, base, "sudo"))
+            {
+                j = end;
+                while (j < cmd.len and std.ascii.isWhitespace(cmd[j])) : (j += 1) {}
+                // Skip ENV=val for env
+                while (j < cmd.len) {
+                    var k = j;
+                    while (k < cmd.len and !std.ascii.isWhitespace(cmd[k])) : (k += 1) {}
+                    const tok = cmd[j..k];
+                    if (std.mem.indexOfScalar(u8, tok, '=') != null) {
+                        j = k;
+                        while (j < cmd.len and std.ascii.isWhitespace(cmd[j])) : (j += 1) {}
+                        continue;
+                    }
+                    break;
+                }
+                continue;
+            }
+            break;
+        }
     }
     return false;
 }
@@ -193,6 +271,26 @@ test "sanitize masks echo unquoted destructive text" {
 
 test "sanitize masks shell comment body" {
     const s = try sanitizeForMatching(std.testing.allocator, "ls -la # rm -rf /");
+    defer std.testing.allocator.free(s);
+    try std.testing.expect(std.mem.indexOf(u8, s, "rm -rf") == null);
+}
+
+test "sanitize preserves payload piped into interpreter" {
+    const cases = [_][]const u8{
+        "echo rm -rf / | sh",
+        "echo 'rm -rf /' | bash",
+        "printf 'rm -rf /\\n' | /bin/sh",
+        "echo rm -rf / | sudo bash",
+    };
+    for (cases) |cmd| {
+        const s = try sanitizeForMatching(std.testing.allocator, cmd);
+        defer std.testing.allocator.free(s);
+        try std.testing.expect(std.mem.indexOf(u8, s, "rm -rf") != null);
+    }
+}
+
+test "sanitize still masks echo data without interpreter sink" {
+    const s = try sanitizeForMatching(std.testing.allocator, "echo rm -rf / | cat");
     defer std.testing.allocator.free(s);
     try std.testing.expect(std.mem.indexOf(u8, s, "rm -rf") == null);
 }
