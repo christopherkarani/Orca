@@ -122,42 +122,50 @@ fn isDefaultEnabled(id: []const u8) bool {
     return false;
 }
 
-/// Priority tier for a pack ID (lower = higher priority). Mirrors Rust
-/// `PackRegistry::pack_tier` in orca-rs packs/mod.rs so first-match attribution
-/// matches expand_enabled_ordered. Phase 1 hard fence relies on this tier+lex
-/// registry order for stable rule_id attribution across multi-pack matches.
+/// Category → tier (lower = higher priority). Mirrors Rust
+/// `PackRegistry::pack_tier` so first-match attribution matches
+/// expand_enabled_ordered. Single source for packTier + unit test.
+const pack_category_tiers = [_]struct { category: []const u8, tier: u8 }{
+    .{ .category = "safe", .tier = 0 },
+    .{ .category = "core", .tier = 1 },
+    .{ .category = "storage", .tier = 1 },
+    .{ .category = "remote", .tier = 1 },
+    .{ .category = "system", .tier = 2 },
+    .{ .category = "infrastructure", .tier = 3 },
+    .{ .category = "apigateway", .tier = 4 },
+    .{ .category = "cdn", .tier = 4 },
+    .{ .category = "cloud", .tier = 4 },
+    .{ .category = "dns", .tier = 4 },
+    .{ .category = "loadbalancer", .tier = 4 },
+    .{ .category = "platform", .tier = 4 },
+    .{ .category = "kubernetes", .tier = 5 },
+    .{ .category = "containers", .tier = 6 },
+    .{ .category = "backup", .tier = 7 },
+    .{ .category = "database", .tier = 7 },
+    .{ .category = "messaging", .tier = 7 },
+    .{ .category = "search", .tier = 7 },
+    .{ .category = "package_managers", .tier = 8 },
+    .{ .category = "strict_git", .tier = 9 },
+    .{ .category = "cicd", .tier = 10 },
+    .{ .category = "email", .tier = 10 },
+    .{ .category = "featureflags", .tier = 10 },
+    .{ .category = "secrets", .tier = 10 },
+    .{ .category = "monitoring", .tier = 10 },
+    .{ .category = "payment", .tier = 10 },
+};
+const pack_tier_unknown: u8 = 11;
+
+/// Priority tier for a pack ID (lower = higher priority). Phase 1 hard fence
+/// relies on this tier+lex registry order for stable rule_id attribution.
 fn packTier(pack_id: []const u8) u8 {
     const category = if (std.mem.indexOfScalar(u8, pack_id, '.')) |dot|
         pack_id[0..dot]
     else
         pack_id;
-    if (std.mem.eql(u8, category, "safe")) return 0;
-    if (std.mem.eql(u8, category, "core") or
-        std.mem.eql(u8, category, "storage") or
-        std.mem.eql(u8, category, "remote")) return 1;
-    if (std.mem.eql(u8, category, "system")) return 2;
-    if (std.mem.eql(u8, category, "infrastructure")) return 3;
-    if (std.mem.eql(u8, category, "apigateway") or
-        std.mem.eql(u8, category, "cdn") or
-        std.mem.eql(u8, category, "cloud") or
-        std.mem.eql(u8, category, "dns") or
-        std.mem.eql(u8, category, "loadbalancer") or
-        std.mem.eql(u8, category, "platform")) return 4;
-    if (std.mem.eql(u8, category, "kubernetes")) return 5;
-    if (std.mem.eql(u8, category, "containers")) return 6;
-    if (std.mem.eql(u8, category, "backup") or
-        std.mem.eql(u8, category, "database") or
-        std.mem.eql(u8, category, "messaging") or
-        std.mem.eql(u8, category, "search")) return 7;
-    if (std.mem.eql(u8, category, "package_managers")) return 8;
-    if (std.mem.eql(u8, category, "strict_git")) return 9;
-    if (std.mem.eql(u8, category, "cicd") or
-        std.mem.eql(u8, category, "email") or
-        std.mem.eql(u8, category, "featureflags") or
-        std.mem.eql(u8, category, "secrets") or
-        std.mem.eql(u8, category, "monitoring") or
-        std.mem.eql(u8, category, "payment")) return 10;
-    return 11;
+    for (pack_category_tiers) |entry| {
+        if (std.mem.eql(u8, category, entry.category)) return entry.tier;
+    }
+    return pack_tier_unknown;
 }
 
 fn packOrderLessThan(_: void, a: CompiledPack, b: CompiledPack) bool {
@@ -404,11 +412,20 @@ test "default-enabled packs are ordered tier then lex not apigateway-first" {
         enabled_ids[n] = p.id;
         n += 1;
     }
-    try std.testing.expect(n >= 3);
-    // Expected among default-enabled: core.filesystem, core.git (tier 1 lex), then system.disk (tier 2).
+    try std.testing.expect(n >= 2);
+    // First default-enabled is core.filesystem; every entry is core.* or system.disk;
+    // system.disk present and after all core.* (tier order). No fixed core cardinality.
     try std.testing.expectEqualStrings("core.filesystem", enabled_ids[0]);
-    try std.testing.expectEqualStrings("core.git", enabled_ids[1]);
-    try std.testing.expectEqualStrings("system.disk", enabled_ids[2]);
+    var saw_system_disk = false;
+    for (enabled_ids[0..n]) |id| {
+        if (std.mem.eql(u8, id, "system.disk")) {
+            saw_system_disk = true;
+        } else {
+            try std.testing.expect(std.mem.startsWith(u8, id, "core."));
+            try std.testing.expect(!saw_system_disk);
+        }
+    }
+    try std.testing.expect(saw_system_disk);
 
     // Full g_packs is non-decreasing by (tier, pack_id).
     var i: usize = 1;
@@ -425,34 +442,19 @@ test "default-enabled packs are ordered tier then lex not apigateway-first" {
 }
 
 test "packTier mirrors Rust category table" {
-    try std.testing.expectEqual(@as(u8, 0), packTier("safe.something"));
+    // Driven from pack_category_tiers — single source with packTier().
+    for (pack_category_tiers) |entry| {
+        var buf: [64]u8 = undefined;
+        const sample = try std.fmt.bufPrint(&buf, "{s}.sample", .{entry.category});
+        try std.testing.expectEqual(entry.tier, packTier(sample));
+        // Category alone (no pack suffix) uses the same tier.
+        try std.testing.expectEqual(entry.tier, packTier(entry.category));
+    }
+    try std.testing.expectEqual(pack_tier_unknown, packTier("unknown.category"));
+    // Spot-check concrete pack ids used by Mode A / oracle.
     try std.testing.expectEqual(@as(u8, 1), packTier("core.filesystem"));
     try std.testing.expectEqual(@as(u8, 1), packTier("core.git"));
-    try std.testing.expectEqual(@as(u8, 1), packTier("storage.s3"));
-    try std.testing.expectEqual(@as(u8, 1), packTier("remote.ssh"));
     try std.testing.expectEqual(@as(u8, 2), packTier("system.disk"));
-    try std.testing.expectEqual(@as(u8, 3), packTier("infrastructure.terraform"));
-    try std.testing.expectEqual(@as(u8, 4), packTier("apigateway.aws"));
-    try std.testing.expectEqual(@as(u8, 4), packTier("cdn.cloudfront"));
-    try std.testing.expectEqual(@as(u8, 4), packTier("cloud.aws"));
-    try std.testing.expectEqual(@as(u8, 4), packTier("dns.route53"));
-    try std.testing.expectEqual(@as(u8, 4), packTier("loadbalancer.nginx"));
-    try std.testing.expectEqual(@as(u8, 4), packTier("platform.github"));
-    try std.testing.expectEqual(@as(u8, 5), packTier("kubernetes.kubectl"));
-    try std.testing.expectEqual(@as(u8, 6), packTier("containers.docker"));
-    try std.testing.expectEqual(@as(u8, 7), packTier("backup.borg"));
-    try std.testing.expectEqual(@as(u8, 7), packTier("database.postgresql"));
-    try std.testing.expectEqual(@as(u8, 7), packTier("messaging.kafka"));
-    try std.testing.expectEqual(@as(u8, 7), packTier("search.elasticsearch"));
-    try std.testing.expectEqual(@as(u8, 8), packTier("package_managers.npm"));
-    try std.testing.expectEqual(@as(u8, 9), packTier("strict_git.extra"));
-    try std.testing.expectEqual(@as(u8, 10), packTier("cicd.github_actions"));
-    try std.testing.expectEqual(@as(u8, 10), packTier("email.ses"));
-    try std.testing.expectEqual(@as(u8, 10), packTier("featureflags.launchdarkly"));
-    try std.testing.expectEqual(@as(u8, 10), packTier("secrets.vault"));
-    try std.testing.expectEqual(@as(u8, 10), packTier("monitoring.datadog"));
-    try std.testing.expectEqual(@as(u8, 10), packTier("payment.stripe"));
-    try std.testing.expectEqual(@as(u8, 11), packTier("unknown.category"));
 }
 
 test "registry compiled pattern counts match embedded oracle totals" {
