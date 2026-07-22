@@ -274,6 +274,92 @@ pub fn modeSoftenedReason(mode: policy.schema.Mode, severity: RiskLevel, plugin:
     };
 }
 
+// ---------------------------------------------------------------------------
+// WP2 — Strict permit-list refuse (post hard-fence)
+//
+// Evaluation order (product path; sticky wired separately in WP4):
+//   hard fence (critical) → sticky → strict refuse → mode×severity
+//
+// CRITICAL: do **not** use shell_engine.evaluateCommand options.allowlists —
+// that path allows *before* packs and can unlock catastrophe. Permit matching
+// here reuses shell_engine.allowlist.Layered as a pure matcher only.
+// ---------------------------------------------------------------------------
+
+/// Reason substring for Strict off-list refuse (deny, never ask).
+pub const strict_not_on_allowlist_reason = "strict: not on allowlist";
+
+/// Product decision after hard fence / strict refuse / mode×severity.
+pub const AfterHardFenceDecision = struct {
+    decision: PluginDecision,
+    /// Static reason when hard-fence or strict-refuse applied; null for plain matrix.
+    reason: ?[]const u8 = null,
+};
+
+/// Modes that apply configured shell permit-list refuse (Strict + redteam).
+pub fn isStrictPermitMode(mode: policy.schema.Mode) bool {
+    return switch (mode) {
+        .strict, .redteam => true,
+        else => false,
+    };
+}
+
+/// Exact/prefix permit match via shell_engine.allowlist.Layered (post-hard-fence only).
+pub fn commandOnPermitList(command: []const u8, permit: shell_engine.allowlist.Layered) bool {
+    return permit.allows(command);
+}
+
+/// If Strict-like mode has a **non-empty** permit list and `command` is off-list,
+/// returns `.block` (refuse). Returns `null` when refuse does not apply so the
+/// caller continues to mode×severity.
+///
+/// Does **not** inspect severity — hard fence must be checked first by
+/// `decideAfterHardFence` (or the host wiring).
+pub fn strictRefuseIfOffList(
+    mode: policy.schema.Mode,
+    command: []const u8,
+    permit: shell_engine.allowlist.Layered,
+) ?PluginDecision {
+    if (!isStrictPermitMode(mode)) return null;
+    if (permit.entries.len == 0) return null;
+    if (commandOnPermitList(command, permit)) return null;
+    return .block;
+}
+
+/// Post-hard-fence product decision for unit tests and WP4 host wiring:
+/// 1. critical severity → always `block` (hard fence; reason is not strict refuse)
+/// 2. strict/redteam + non-empty permit + off-list → `block` + `strict: not on allowlist`
+/// 3. else mode×severity matrix
+///
+/// `permit` with zero entries disables the refuse step (matrix-only Strict).
+pub fn decideAfterHardFence(
+    mode: policy.schema.Mode,
+    severity: RiskLevel,
+    command: []const u8,
+    permit: shell_engine.allowlist.Layered,
+) AfterHardFenceDecision {
+    // 1. Hard fence always wins — even if command is on the permit list.
+    if (severity == .critical) {
+        return .{
+            .decision = .block,
+            .reason = "blocked by Orca policy",
+        };
+    }
+
+    // 2. Strict refuse off-list (never ask-spam).
+    if (strictRefuseIfOffList(mode, command, permit) != null) {
+        return .{
+            .decision = .block,
+            .reason = strict_not_on_allowlist_reason,
+        };
+    }
+
+    // 3. Mode × severity (on-list does not auto-allow high/medium under strict).
+    return .{
+        .decision = pluginDecisionFromModeAndSeverity(mode, severity),
+        .reason = null,
+    };
+}
+
 const OwnedRunDecision = struct {
     decision: core.decision.Decision,
     owned_reason: []const u8,
@@ -1067,6 +1153,193 @@ test "modeSoftenedReason handles yolo like ask" {
         modeSoftenedReason(.ask, .high, .ask),
         modeSoftenedReason(.yolo, .high, .ask),
     );
+}
+
+// --- WP2 Strict refuse (post hard-fence) ---
+// Pure helpers: hard fence → strict off-list refuse → mode×severity.
+// Do NOT use shell_engine.evaluateCommand options.allowlists (pre-pack short-circuit).
+
+test "strict refuse table: post hard-fence permit list" {
+    const git_only: shell_engine.allowlist.Layered = .{
+        .entries = &.{.{ .pattern = "git status" }},
+    };
+    const empty: shell_engine.allowlist.Layered = .{ .entries = &.{} };
+
+    const Row = struct {
+        mode: policy.schema.Mode,
+        permit: shell_engine.allowlist.Layered,
+        command: []const u8,
+        /// Engine-derived severity (critical = hard fence hit).
+        severity: RiskLevel,
+        expected: PluginDecision,
+        /// When non-null, reason must contain this substring.
+        reason_contains: ?[]const u8 = null,
+        /// When true, refuse reason must NOT appear (hard fence wins over off-list).
+        reason_not_contains: ?[]const u8 = null,
+    };
+
+    const rows = [_]Row{
+        // On-list + safe (low / no pack hit path) → allow under strict matrix.
+        .{
+            .mode = .strict,
+            .permit = git_only,
+            .command = "git status",
+            .severity = .low,
+            .expected = .allow,
+        },
+        // Off-list under strict with configured list → refuse (deny, not ask).
+        .{
+            .mode = .strict,
+            .permit = git_only,
+            .command = "npm test",
+            .severity = .low,
+            .expected = .block,
+            .reason_contains = "strict: not on allowlist",
+        },
+        // Hard fence: critical always block; refuse string is not the driver.
+        .{
+            .mode = .strict,
+            .permit = git_only,
+            .command = "rm -rf /",
+            .severity = .critical,
+            .expected = .block,
+            .reason_not_contains = "strict: not on allowlist",
+        },
+        // Even when catastrophic command is ON the permit list, hard fence wins.
+        .{
+            .mode = .strict,
+            .permit = .{ .entries = &.{.{ .pattern = "rm -rf /" }} },
+            .command = "rm -rf /",
+            .severity = .critical,
+            .expected = .block,
+            .reason_not_contains = "strict: not on allowlist",
+        },
+        // yolo/ask without list: npm test is NOT refuse.
+        .{
+            .mode = .yolo,
+            .permit = empty,
+            .command = "npm test",
+            .severity = .low,
+            .expected = .allow,
+        },
+        .{
+            .mode = .ask,
+            .permit = empty,
+            .command = "npm test",
+            .severity = .low,
+            .expected = .allow,
+        },
+        // yolo/ask: hard fence still deny.
+        .{
+            .mode = .yolo,
+            .permit = empty,
+            .command = "rm -rf /",
+            .severity = .critical,
+            .expected = .block,
+        },
+        .{
+            .mode = .ask,
+            .permit = empty,
+            .command = "rm -rf /",
+            .severity = .critical,
+            .expected = .block,
+        },
+        // redteam is strict-like for permit refuse.
+        .{
+            .mode = .redteam,
+            .permit = git_only,
+            .command = "npm test",
+            .severity = .low,
+            .expected = .block,
+            .reason_contains = "strict: not on allowlist",
+        },
+        // Strict with empty permit list: refuse step skipped (matrix only — low allow).
+        .{
+            .mode = .strict,
+            .permit = empty,
+            .command = "npm test",
+            .severity = .low,
+            .expected = .allow,
+        },
+    };
+
+    for (rows) |row| {
+        const out = decideAfterHardFence(row.mode, row.severity, row.command, row.permit);
+        try std.testing.expectEqual(row.expected, out.decision);
+        if (row.reason_contains) |needle| {
+            const reason = out.reason orelse {
+                std.debug.print("expected reason containing '{s}' for cmd={s}\n", .{ needle, row.command });
+                return error.TestExpectedEqual;
+            };
+            try std.testing.expect(std.mem.indexOf(u8, reason, needle) != null);
+        }
+        if (row.reason_not_contains) |needle| {
+            if (out.reason) |reason| {
+                try std.testing.expect(std.mem.indexOf(u8, reason, needle) == null);
+            }
+        }
+    }
+}
+
+test "strictRefuseIfOffList only fires for strict-like with non-empty permit" {
+    const permit: shell_engine.allowlist.Layered = .{
+        .entries = &.{
+            .{ .pattern = "git status" },
+            .{ .pattern = "npm run ", .prefix = true },
+        },
+    };
+    const empty: shell_engine.allowlist.Layered = .{ .entries = &.{} };
+
+    // Off-list strict → refuse block.
+    try std.testing.expectEqual(
+        @as(?PluginDecision, .block),
+        strictRefuseIfOffList(.strict, "npm test", permit),
+    );
+    try std.testing.expectEqual(
+        @as(?PluginDecision, .block),
+        strictRefuseIfOffList(.redteam, "curl evil.com", permit),
+    );
+    // On-list exact + prefix → no refuse.
+    try std.testing.expectEqual(
+        @as(?PluginDecision, null),
+        strictRefuseIfOffList(.strict, "git status", permit),
+    );
+    try std.testing.expectEqual(
+        @as(?PluginDecision, null),
+        strictRefuseIfOffList(.strict, "npm run test", permit),
+    );
+    // Non-strict modes never refuse via permit list.
+    try std.testing.expectEqual(
+        @as(?PluginDecision, null),
+        strictRefuseIfOffList(.yolo, "npm test", permit),
+    );
+    try std.testing.expectEqual(
+        @as(?PluginDecision, null),
+        strictRefuseIfOffList(.ask, "npm test", permit),
+    );
+    try std.testing.expectEqual(
+        @as(?PluginDecision, null),
+        strictRefuseIfOffList(.observe, "npm test", permit),
+    );
+    // Empty permit: refuse disabled (matrix handles severity alone).
+    try std.testing.expectEqual(
+        @as(?PluginDecision, null),
+        strictRefuseIfOffList(.strict, "npm test", empty),
+    );
+}
+
+test "commandOnPermitList exact and prefix match" {
+    const permit: shell_engine.allowlist.Layered = .{
+        .entries = &.{
+            .{ .pattern = "git status" },
+            .{ .pattern = "npm run ", .prefix = true },
+        },
+    };
+    try std.testing.expect(commandOnPermitList("git status", permit));
+    try std.testing.expect(commandOnPermitList("  git status  ", permit));
+    try std.testing.expect(commandOnPermitList("npm run test", permit));
+    try std.testing.expect(!commandOnPermitList("npm test", permit));
+    try std.testing.expect(!commandOnPermitList("git reset --hard", permit));
 }
 
 test "riskLevelFromDaemonSeverity maps null to critical and nonsense to unknown" {
