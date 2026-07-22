@@ -60,11 +60,7 @@ public struct ClassifyResponse: Codable, Sendable, Equatable {
         modelAvailable: Bool,
         latencyMs: Int? = nil
     ) throws -> ClassifyResponse {
-        if verdict.requiresExplain {
-            guard let explain, !explain.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
-                throw ClassifyResponseError.explainRequired
-            }
-        }
+        try requireExplain(verdict: verdict, explain: explain)
         return ClassifyResponse(
             schemaVersion: schemaVersion,
             verdict: verdict,
@@ -79,8 +75,8 @@ public struct ClassifyResponse: Codable, Sendable, Equatable {
         )
     }
 
-    /// Unchecked memberwise (prefer `make` at call sites that construct ask*).
-    public init(
+    /// Unchecked memberwise for same-module stubs/tests. Prefer `make` for ask*.
+    init(
         schemaVersion: Int = 1,
         verdict: Verdict,
         why: String,
@@ -104,7 +100,7 @@ public struct ClassifyResponse: Codable, Sendable, Equatable {
         self.latencyMs = latencyMs
     }
 
-    /// Continue under rules pre-pass (not a model fallback).
+    /// Continue under rules pre-pass (not a model fallback; `modelAvailable=false`).
     public static func rulesContinue(why: String, latencyMs: Int? = nil) -> ClassifyResponse {
         ClassifyResponse(
             verdict: .continue,
@@ -112,7 +108,7 @@ public struct ClassifyResponse: Codable, Sendable, Equatable {
             explain: nil,
             timedOut: false,
             fallback: false,
-            modelAvailable: true,
+            modelAvailable: false,
             latencyMs: latencyMs
         )
     }
@@ -137,11 +133,15 @@ public struct ClassifyResponse: Codable, Sendable, Equatable {
 
     /// Ensure ask* responses never leave with empty explain (last-line defense).
     public func enforcingExplain() throws -> ClassifyResponse {
+        try Self.requireExplain(verdict: verdict, explain: explain)
+        return self
+    }
+
+    private static func requireExplain(verdict: Verdict, explain: String?) throws {
         if verdict.requiresExplain {
             guard let explain, !explain.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
                 throw ClassifyResponseError.explainRequired
             }
         }
-        return self
     }
 }

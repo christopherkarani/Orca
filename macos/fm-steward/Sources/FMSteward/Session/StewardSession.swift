@@ -3,8 +3,15 @@ import Foundation
 /// Warm, reusable FM steward session with a hard classify timeout.
 ///
 /// Rules pre-pass runs first (no backend wait). Backend-bound work is raced
-/// against `timeoutMs` (default 500). On timeout or broken backend ask*,
-/// returns fallback **continue** — never ask-spam.
+/// against `timeoutMs` (default 500). On timeout, parent cancel, or broken backend
+/// ask*, returns fallback **continue** — never ask-spam.
+///
+/// - Note: Timeout is **cooperative** under structured concurrency: the session
+///   cancels the backend child when the timer wins, but `withTaskGroup` still
+///   joins children. Backends **must** honor task cancellation promptly (see
+///   `FoundationModelBackend`). Phase 3 stubs do; real FM generation must poll
+///   cancel or the caller can block past `timeoutMs` while still returning
+///   `timed_out=true` after the late work ends.
 public actor StewardSession {
     /// Product default: 500ms hard timeout for backend-bound classify work.
     public static let defaultTimeoutMs: Int = 500
@@ -47,18 +54,8 @@ public actor StewardSession {
     public func classify(_ card: RiskCard, timeoutMs: Int? = nil) async -> ClassifyResponse {
         markWarmed()
 
-        // Rules first — never block fixtures / obvious cases on FM latency.
-        if let hit = RulesPrePass.evaluate(card) {
-            // Fail closed on broken ask* (same as backend / Classifier path).
-            if let valid = try? hit.enforcingExplain() {
-                return valid
-            }
-            return .fallbackContinue(
-                why: "Rules returned ask without explain; falling back to continue under policy and hard fence only.",
-                modelAvailable: hit.modelAvailable,
-                timedOut: hit.timedOut,
-                latencyMs: hit.latencyMs
-            )
+        if let hit = ClassifyPipeline.rulesHit(card) {
+            return hit
         }
 
         let bound = Self.clampTimeoutMs(timeoutMs ?? self.timeoutMs)
@@ -82,25 +79,45 @@ public actor StewardSession {
         let start = ContinuousClock.now
         let backend = self.backend
 
-        let outcome: RaceOutcome = await withTaskGroup(of: RaceOutcome.self) { group in
+        let (outcome, firstWinMs): (RaceOutcome, Int) = await withTaskGroup(of: RaceOutcome.self) { group in
             group.addTask {
                 let raw = await backend.classify(card)
+                // Defense in depth: if cancelled after return, do not treat as a win.
+                if Task.isCancelled {
+                    return .timedOut
+                }
                 return .response(raw)
             }
             group.addTask {
                 let ns = UInt64(timeoutMs) * 1_000_000
-                try? await Task.sleep(nanoseconds: ns)
-                return .timedOut
+                do {
+                    try await Task.sleep(nanoseconds: ns)
+                    return .timedOut
+                } catch {
+                    // Cancelled because backend already won (or parent cancelled).
+                    return .timedOut
+                }
             }
 
             let first = await group.next() ?? .timedOut
+            let winMs = Self.elapsedMilliseconds(since: start)
             group.cancelAll()
             // Drain so cancelled children do not leak into later work.
+            // Note: this joins cooperative-cancel backends; non-cooperative work can
+            // still block until completion (document residual; see type docs).
             for await _ in group {}
-            return first
+            return (first, winMs)
         }
 
-        let elapsedMs = Self.elapsedMilliseconds(since: start)
+        // Parent cancel while racing → always soft fallback continue (never ask-spam).
+        if Task.isCancelled {
+            return .fallbackContinue(
+                why: "FM steward classify cancelled; continuing under policy and hard fence only.",
+                modelAvailable: false,
+                timedOut: true,
+                latencyMs: firstWinMs
+            )
+        }
 
         switch outcome {
         case .timedOut:
@@ -108,38 +125,11 @@ public actor StewardSession {
                 why: "FM steward timed out; continuing under policy and hard fence only.",
                 modelAvailable: false,
                 timedOut: true,
-                latencyMs: elapsedMs
+                latencyMs: firstWinMs
             )
         case .response(let raw):
-            return Self.normalizeBackendResponse(raw, latencyMs: elapsedMs)
+            return ClassifyPipeline.normalizeBackend(raw, latencyMs: firstWinMs)
         }
-    }
-
-    /// Mirror Classifier backend path: ask* without explain → fallback continue.
-    private static func normalizeBackendResponse(
-        _ response: ClassifyResponse,
-        latencyMs: Int
-    ) -> ClassifyResponse {
-        if response.verdict.requiresExplain {
-            if let valid = try? response.enforcingExplain() {
-                return withLatency(valid, latencyMs: latencyMs)
-            }
-            return .fallbackContinue(
-                why: "Backend returned ask without explain; falling back to continue under policy and hard fence only.",
-                modelAvailable: response.modelAvailable,
-                timedOut: response.timedOut,
-                latencyMs: latencyMs
-            )
-        }
-        return withLatency(response, latencyMs: latencyMs)
-    }
-
-    private static func withLatency(_ response: ClassifyResponse, latencyMs: Int) -> ClassifyResponse {
-        var copy = response
-        if copy.latencyMs == nil {
-            copy.latencyMs = latencyMs
-        }
-        return copy
     }
 
     private static func elapsedMilliseconds(since start: ContinuousClock.Instant) -> Int {

@@ -105,7 +105,7 @@
         },
         "vip_list_path": {
           "type": ["string", "null"],
-          "description": "Optional path to VIP list for the steward."
+          "description": "Host-only metadata: optional path to a VIP list file. Phase 3 steward does NOT read this path; VIP soft-ask requires features.vip=true (host-authoritative)."
         }
       }
     },

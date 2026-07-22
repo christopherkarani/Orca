@@ -214,12 +214,21 @@ struct VipStickyStressTests {
         #expect(r.suggestedEffectClass == "external-message")
     }
 
-    @Test("bulk ask also suggests sticky effect_class")
-    func bulkSuggestsStickyFields() async {
+    @Test("bulk ask has null sticky fields (schema: only sticky-candidate may set them)")
+    func bulkAskStickyFieldsNull() async {
         let r = await Classifier().classify(card(bulkOutbound: true, recipientCount: 5000))
         #expect(r.verdict == .ask)
-        #expect(r.suggestedStickyScope == "effect_class")
-        #expect(r.suggestedEffectClass != nil)
+        #expect(r.suggestedStickyScope == nil)
+        #expect(r.suggestedEffectClass == nil)
+        #expect(r.modelAvailable == false)
+    }
+
+    @Test("unknown effect_hints map to default external-message")
+    func unknownEffectHintDefault() async {
+        let c = card(vip: true, effectHints: ["*", "all"])
+        let r = await Classifier().classify(c)
+        #expect(r.verdict == .askStickyCandidate)
+        #expect(r.suggestedEffectClass == "external-message")
     }
 }
 

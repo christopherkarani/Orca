@@ -111,10 +111,23 @@ private struct Options {
 
 // MARK: - Classify
 
+/// Max risk-card file size for the demo CLI (1 MiB). Keeps accidental huge paths from OOMing.
+private let maxCardFileBytes = 1_048_576
+
 private func runClassify(cardPath: String, timeoutMs: Int?, human: Bool) async throws {
     let url = URL(fileURLWithPath: cardPath)
     guard FileManager.default.fileExists(atPath: url.path) else {
         throw CLIError("card file not found: \(cardPath)", exitCode: 1)
+    }
+
+    if let attrs = try? FileManager.default.attributesOfItem(atPath: url.path),
+       let size = attrs[.size] as? NSNumber,
+       size.intValue > maxCardFileBytes
+    {
+        throw CLIError(
+            "card file too large (\(size.intValue) bytes; max \(maxCardFileBytes))",
+            exitCode: 1
+        )
     }
 
     let data: Data
@@ -132,8 +145,16 @@ private func runClassify(cardPath: String, timeoutMs: Int?, human: Bool) async t
         throw CLIError("invalid risk-card JSON: \(error.localizedDescription)", exitCode: 1)
     }
 
+    guard card.schemaVersion == 1 else {
+        throw CLIError(
+            "unsupported schema_version \(card.schemaVersion) (expected 1)",
+            exitCode: 1
+        )
+    }
+
     // Default backend UnavailableBackend; rules pre-pass short-circuits fixture table.
     // Clamp so CLI and session agree; 0 / omitted → default; upper bound avoids UInt64 sleep trap.
+    // Host API for timeout is StewardSession (Classifier has no wall-clock race).
     let bound = StewardSession.clampTimeoutMs(timeoutMs ?? StewardSession.defaultTimeoutMs)
     let session = StewardSession(timeoutMs: bound)
     let response = await session.classify(card, timeoutMs: bound)

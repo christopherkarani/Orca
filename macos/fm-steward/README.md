@@ -60,10 +60,13 @@ swift run fm-steward classify --card Fixtures/grep_rm_rf.json --timeout-ms 200
 
 ### Behavior notes
 
-- **Default timeout:** `500ms` (`StewardSession.defaultTimeoutMs`). Override with `--timeout-ms N`.
-- **Timeout / unavailable model → `continue`** with `fallback=true` (and `timed_out=true` when the timer wins). Never hang; never ask-spam after timeout.
-- **Default backend** is unavailable; the **rules pre-pass** still yields correct fixture verdicts without Apple FM hardware/SDK.
-- Exit code `0` means classify succeeded (including `ask*`). Non-zero is usage/IO/decode failure.
+- **Default timeout:** `500ms` (`StewardSession.defaultTimeoutMs`). Override with `--timeout-ms N`. Host API for the timeout race is **`StewardSession`** (not bare `Classifier`).
+- **Timeout / unavailable model → `continue`** with `fallback=true` (and `timed_out=true` when the timer wins). Never ask-spam after timeout. Timeout is **cooperative**: backends must honor task cancellation; structured concurrency still joins cancelled children.
+- **Broken ask* (empty explain) → `continue`** is a soft residual (anti-ask-spam), not hard-fence fail-closed. Hard fence remains Zig-only.
+- **Default backend** is unavailable; the **rules pre-pass** still yields correct fixture verdicts without Apple FM hardware/SDK. Rules hits set `model_available=false` (not live FM).
+- **Host-authoritative cards:** `features.*` and thresholds must be host-computed. `thresholds.vip_list_path` is **host-only metadata** in Phase 3 (steward does not open the path); set `features.vip=true` for VIP soft-ask.
+- **Schema:** `features.namespace` is the shipped field (handoff drafts sometimes said `severity` — use `namespace`).
+- Exit code `0` means classify succeeded (including `ask*`). Non-zero is usage/IO/decode failure (including `schema_version != 1` or card file > 1 MiB).
 
 ## Demo (§6.4 fixture table)
 
@@ -81,10 +84,11 @@ swift run fm-steward classify --card Fixtures/npm_test_loop.json --human
 
 | Fixture | Expected |
 |---------|----------|
-| `Fixtures/bulk_email.json` | `ask` (or sticky) + explain |
-| `Fixtures/vip_email.json` | `ask_sticky_candidate` (or ask) + explain |
+| `Fixtures/bulk_email.json` | `ask` + explain (`suggested_sticky_*` null) |
+| `Fixtures/vip_email.json` | `ask_sticky_candidate` + explain + sticky suggestions |
 | `Fixtures/grep_rm_rf.json` | `continue` |
 | `Fixtures/npm_test_loop.json` | `continue` |
+| `Fixtures/timeout_forced.json` | Neutral card metadata only — timeout proven via `SlowBackend` in unit tests (G3), not static rules |
 
 Optional wrapper:
 
@@ -120,9 +124,11 @@ Zig shell security remains the in-process Zig `shell_engine` + policy path. WP6 
 ## Library surface (for dependents)
 
 ```text
-Classifier / RulesPrePass / StewardSession
+StewardSession  ← preferred host API (warm + ≤500ms timeout race)
+Classifier      ← pure rules + backend (no timeout; tests / composition)
+RulesPrePass / ClassifyPipeline (internal demotion shared)
 FoundationModelBackend + UnavailableBackend + LiveBackend (stub) + SlowBackend (tests)
-RiskCard / ClassifyResponse (Codable, snake_case keys)
+RiskCard / ClassifyResponse (Codable, snake_case keys; public constructors via make/factories)
 ```
 
 Default session timeout **500ms**. Rules pre-pass short-circuits before backend race.

@@ -10,11 +10,11 @@ public struct SlowBackend: FoundationModelBackend {
     public let response: ClassifyResponse
 
     /// - Parameters:
-    ///   - delayMs: Sleep duration before returning `response`.
+    ///   - delayMs: Sleep duration before returning `response` (clamped to session max).
     ///   - response: Canned classify result (defaults to a late **ask** so
     ///     timeout tests can assert the ask never surfaces).
     public init(delayMs: Int = 2000, response: ClassifyResponse? = nil) {
-        self.delayMs = max(0, delayMs)
+        self.delayMs = min(max(0, delayMs), StewardSession.maxTimeoutMs)
         self.response = response ?? ClassifyResponse(
             verdict: .ask,
             why: "SlowBackend late response (must not surface after steward timeout).",
@@ -30,8 +30,13 @@ public struct SlowBackend: FoundationModelBackend {
         do {
             try await Task.sleep(nanoseconds: ns)
         } catch {
-            // Cancelled by StewardSession timeout race — parent ignores this result.
-            return response
+            // Cancelled by StewardSession timeout race — return soft fallback, never late ask.
+            return .fallbackContinue(
+                why: "SlowBackend cancelled; fallback continue (must not surface late ask).",
+                modelAvailable: true,
+                timedOut: true,
+                latencyMs: nil
+            )
         }
         return response
     }

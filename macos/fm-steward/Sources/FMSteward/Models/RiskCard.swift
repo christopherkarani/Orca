@@ -41,8 +41,9 @@ public struct RiskCard: Codable, Sendable, Equatable {
     /// Default bulk recipient threshold when `thresholds.bulk_recipient_min` is omitted.
     public static let defaultBulkRecipientMin: Int = 1000
 
+    /// Effective bulk recipient threshold (clamped; absurd caller overrides → default).
     public var bulkRecipientMin: Int {
-        thresholds?.bulkRecipientMin ?? Self.defaultBulkRecipientMin
+        RulesPrePass.clampBulkRecipientMin(thresholds?.bulkRecipientMin)
     }
 
     public struct Features: Codable, Sendable, Equatable {

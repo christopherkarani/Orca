@@ -1,6 +1,10 @@
 import Foundation
 
 /// Classifies a risk card: rules pre-pass first, then injectable Foundation Models backend.
+///
+/// - Important: This path does **not** enforce the product ≤500ms timeout. Hosts and the CLI
+///   should use `StewardSession` for timeout + cancel. `Classifier` is the pure pipeline
+///   (rules + normalize) for tests and composition.
 public struct Classifier: Sendable {
     private let backend: any FoundationModelBackend
 
@@ -8,36 +12,14 @@ public struct Classifier: Sendable {
         self.backend = backend
     }
 
-    /// Classify `card`. Ask* verdicts always leave with non-empty `explain`
-    /// (rules construct via validating factory; backend responses are re-checked).
-    /// Explain re-check failures fail closed to fallback continue (never surface broken ask*).
+    /// Classify `card` without a wall-clock timeout.
+    ///
+    /// Ask* without non-empty explain demotes to fallback **continue** (anti-ask-spam soft residual).
     public func classify(_ card: RiskCard) async -> ClassifyResponse {
-        if let hit = RulesPrePass.evaluate(card) {
-            // Rules path validates explain on ask*; fail closed if contract is broken.
-            if let valid = try? hit.enforcingExplain() {
-                return valid
-            }
-            return .fallbackContinue(
-                why: "Rules returned ask without explain; falling back to continue under policy and hard fence only.",
-                modelAvailable: hit.modelAvailable,
-                timedOut: hit.timedOut,
-                latencyMs: hit.latencyMs
-            )
+        if let hit = ClassifyPipeline.rulesHit(card) {
+            return hit
         }
-
         let backendResponse = await backend.classify(card)
-        if backendResponse.verdict.requiresExplain {
-            if let valid = try? backendResponse.enforcingExplain() {
-                return valid
-            }
-            // Backend returned ask* without explain — fail closed to fallback continue.
-            return .fallbackContinue(
-                why: "Backend returned ask without explain; falling back to continue under policy and hard fence only.",
-                modelAvailable: backendResponse.modelAvailable,
-                timedOut: backendResponse.timedOut,
-                latencyMs: backendResponse.latencyMs
-            )
-        }
-        return backendResponse
+        return ClassifyPipeline.normalizeBackend(backendResponse)
     }
 }
