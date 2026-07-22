@@ -8,6 +8,7 @@
 - Orca-mediated writes before they reach the workspace.
 - MCP tool calls, resource reads, prompt gets, and sampling requests that pass through the stdio proxy.
 - Host and MCP tool calls classified into effect classes (e.g. `comms.message`) when policy includes an `effects:` section — by tool name catalog, structural argument shapes, network host tags, and Zig-side shell bypass patterns (e.g. `open mailto:`). Host shell PreToolUse / Evaluate is owned by the in-process Zig `shell_engine` (85 oracle packs; default enablement matches Rust `core.*` + `system.disk`; full set available). Corpus decision parity is gated by `zig build test-shell-engine` (100% match). Residual gap: effect-class classification via Zig `shell_bypass` is separate from pack allow/deny — see [shell-engine Rust parity backlog](shell-engine/rust-parity-backlog.md).
+- **Phase 1 hard fence (default shell Evaluate):** Mode A packs only (`core.*` + `system.disk`) with structure smart checks (compound segments, wrappers, assignment/quote data masking, shell/interpreter embeds). Catastrophe classes (`rm -rf` root/home, `git reset --hard` / force-push, `mkfs` / `dd` of devices) deny with stable `rule_id`. Non-executed text (`VAR='rm -rf /'`, `echo 'rm -rf /'`) is not treated as execution. YOLO/Strict policy UX and Foundation Models steward are out of scope for this fence.
 - Audit integrity for Orca-managed sessions.
 
 ## Threat Actors

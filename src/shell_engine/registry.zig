@@ -86,6 +86,9 @@ fn initOnce() !void {
         };
     }
     g_packs = try packs_list.toOwnedSlice(a);
+    // Phase 1 hard fence: tier+lex order (not JSON alpha) for first-match attribution.
+    // Do not rewrite oracle_packs.json — sort code-side after load.
+    std.mem.sort(CompiledPack, g_packs, {}, packOrderLessThan);
 }
 
 fn compilePack(a: std.mem.Allocator, obj: std.json.ObjectMap, id: []const u8) !CompiledPack {
@@ -117,6 +120,59 @@ fn isDefaultEnabled(id: []const u8) bool {
     if (std.mem.startsWith(u8, id, "core.")) return true;
     if (std.mem.eql(u8, id, "system.disk")) return true;
     return false;
+}
+
+/// Category → tier (lower = higher priority). Mirrors Rust
+/// `PackRegistry::pack_tier` so first-match attribution matches
+/// expand_enabled_ordered. Single source for packTier + unit test.
+const pack_category_tiers = [_]struct { category: []const u8, tier: u8 }{
+    .{ .category = "safe", .tier = 0 },
+    .{ .category = "core", .tier = 1 },
+    .{ .category = "storage", .tier = 1 },
+    .{ .category = "remote", .tier = 1 },
+    .{ .category = "system", .tier = 2 },
+    .{ .category = "infrastructure", .tier = 3 },
+    .{ .category = "apigateway", .tier = 4 },
+    .{ .category = "cdn", .tier = 4 },
+    .{ .category = "cloud", .tier = 4 },
+    .{ .category = "dns", .tier = 4 },
+    .{ .category = "loadbalancer", .tier = 4 },
+    .{ .category = "platform", .tier = 4 },
+    .{ .category = "kubernetes", .tier = 5 },
+    .{ .category = "containers", .tier = 6 },
+    .{ .category = "backup", .tier = 7 },
+    .{ .category = "database", .tier = 7 },
+    .{ .category = "messaging", .tier = 7 },
+    .{ .category = "search", .tier = 7 },
+    .{ .category = "package_managers", .tier = 8 },
+    .{ .category = "strict_git", .tier = 9 },
+    .{ .category = "cicd", .tier = 10 },
+    .{ .category = "email", .tier = 10 },
+    .{ .category = "featureflags", .tier = 10 },
+    .{ .category = "secrets", .tier = 10 },
+    .{ .category = "monitoring", .tier = 10 },
+    .{ .category = "payment", .tier = 10 },
+};
+const pack_tier_unknown: u8 = 11;
+
+/// Priority tier for a pack ID (lower = higher priority). Phase 1 hard fence
+/// relies on this tier+lex registry order for stable rule_id attribution.
+fn packTier(pack_id: []const u8) u8 {
+    const category = if (std.mem.indexOfScalar(u8, pack_id, '.')) |dot|
+        pack_id[0..dot]
+    else
+        pack_id;
+    for (pack_category_tiers) |entry| {
+        if (std.mem.eql(u8, category, entry.category)) return entry.tier;
+    }
+    return pack_tier_unknown;
+}
+
+fn packOrderLessThan(_: void, a: CompiledPack, b: CompiledPack) bool {
+    const ta = packTier(a.id);
+    const tb = packTier(b.id);
+    if (ta != tb) return ta < tb;
+    return std.mem.order(u8, a.id, b.id) == .lt;
 }
 
 pub fn ensureInit() !void {
@@ -337,6 +393,68 @@ test "registry loads packs and matches git reset" {
     const r = matchCommandDetailed("git reset --hard");
     try std.testing.expect(r == .deny);
     try std.testing.expectEqualStrings("core.git", r.deny.pack_id);
+}
+
+// Phase 1 hard fence: g_packs must follow Rust expand_enabled_ordered (pack_tier then lex)
+// so first-match attribution is stable — not JSON alphabetical (apigateway-first).
+test "default-enabled packs are ordered tier then lex not apigateway-first" {
+    try ensureInit();
+    try std.testing.expect(g_packs.len >= 3);
+    // Full registry order: tier-1 core.* first, never apigateway (tier 4) first.
+    try std.testing.expectEqualStrings("core.filesystem", g_packs[0].id);
+    try std.testing.expect(!std.mem.startsWith(u8, g_packs[0].id, "apigateway."));
+
+    var enabled_ids: [16][]const u8 = undefined;
+    var n: usize = 0;
+    for (g_packs) |p| {
+        if (!p.default_enabled) continue;
+        if (n >= enabled_ids.len) break;
+        enabled_ids[n] = p.id;
+        n += 1;
+    }
+    try std.testing.expect(n >= 2);
+    // First default-enabled is core.filesystem; every entry is core.* or system.disk;
+    // system.disk present and after all core.* (tier order). No fixed core cardinality.
+    try std.testing.expectEqualStrings("core.filesystem", enabled_ids[0]);
+    var saw_system_disk = false;
+    for (enabled_ids[0..n]) |id| {
+        if (std.mem.eql(u8, id, "system.disk")) {
+            saw_system_disk = true;
+        } else {
+            try std.testing.expect(std.mem.startsWith(u8, id, "core."));
+            try std.testing.expect(!saw_system_disk);
+        }
+    }
+    try std.testing.expect(saw_system_disk);
+
+    // Full g_packs is non-decreasing by (tier, pack_id).
+    var i: usize = 1;
+    while (i < g_packs.len) : (i += 1) {
+        const prev = g_packs[i - 1];
+        const cur = g_packs[i];
+        const tp = packTier(prev.id);
+        const tc = packTier(cur.id);
+        try std.testing.expect(tp <= tc);
+        if (tp == tc) {
+            try std.testing.expect(std.mem.order(u8, prev.id, cur.id) != .gt);
+        }
+    }
+}
+
+test "packTier mirrors Rust category table" {
+    // Driven from pack_category_tiers — single source with packTier().
+    for (pack_category_tiers) |entry| {
+        var buf: [64]u8 = undefined;
+        const sample = try std.fmt.bufPrint(&buf, "{s}.sample", .{entry.category});
+        try std.testing.expectEqual(entry.tier, packTier(sample));
+        // Category alone (no pack suffix) uses the same tier.
+        try std.testing.expectEqual(entry.tier, packTier(entry.category));
+    }
+    try std.testing.expectEqual(pack_tier_unknown, packTier("unknown.category"));
+    // Spot-check concrete pack ids used by Mode A / oracle.
+    try std.testing.expectEqual(@as(u8, 1), packTier("core.filesystem"));
+    try std.testing.expectEqual(@as(u8, 1), packTier("core.git"));
+    try std.testing.expectEqual(@as(u8, 2), packTier("system.disk"));
 }
 
 test "registry compiled pattern counts match embedded oracle totals" {

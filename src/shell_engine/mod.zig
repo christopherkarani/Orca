@@ -3,6 +3,10 @@
 //! Owns security decisions for `orca hook` / `orca run` / shims.
 //! Pack patterns are the frozen orca-rs oracle set (embedded JSON + PCRE2).
 //! Evaluator errors fail closed with deny.
+//!
+//! Phase 1 hard fence (Mode A default packs: core.* + system.disk): structure
+//! smart checks (segments, wrappers, assignment masking, embeds) plus reliable
+//! filesystem/git/disk catastrophe denials. Not YOLO/Strict policy or FM.
 
 const std = @import("std");
 
@@ -1126,6 +1130,62 @@ test "evaluateCommand opt-in pack denies docker prune" {
     try std.testing.expect(deny_opt_in.decision == .deny);
     try std.testing.expect(deny_opt_in.pack_id != null);
     try std.testing.expectEqualStrings("containers.docker", deny_opt_in.pack_id.?);
+}
+
+// Phase 1 WP2 — structure smart checks on Mode A (default packs).
+// Executed compounds/wrappers/embeds deny; assignment/quote data-only allows.
+// Deny rows pin pack-qualified rule_id (mvp_corpus attribution).
+test "phase1 structure smart checks Mode A" {
+    const Case = struct {
+        cmd: []const u8,
+        expect_deny: bool,
+        /// Pack-qualified rule_id when expect_deny (mvp_corpus form).
+        rule_id: ?[]const u8 = null,
+    };
+    const cases = [_]Case{
+        .{ .cmd = "git status; rm -rf /", .expect_deny = true, .rule_id = "core.filesystem:rm-rf-root-home" },
+        .{ .cmd = "sudo git reset --hard", .expect_deny = true, .rule_id = "core.git:reset-hard" },
+        .{ .cmd = "VAR='rm -rf /'; echo \"$VAR\"", .expect_deny = false },
+        .{ .cmd = "echo 'rm -rf /'", .expect_deny = false },
+        .{ .cmd = "bash -c 'rm -rf /'", .expect_deny = true, .rule_id = "core.filesystem:rm-rf-root-home" },
+    };
+    for (cases) |c| {
+        var eval = try evaluateCommand(std.testing.allocator, c.cmd, .{});
+        defer eval.deinit(std.testing.allocator);
+        if (c.expect_deny) {
+            try std.testing.expect(eval.decision == .deny);
+            try std.testing.expect(eval.rule_id != null);
+            if (c.rule_id) |want| {
+                try std.testing.expectEqualStrings(want, eval.rule_id.?);
+            }
+        } else {
+            try std.testing.expect(eval.decision == .allow);
+        }
+    }
+}
+
+// Phase 1 WP3 — hard-fence catastrophe table (Mode A): deny + pack-qualified rule_id.
+test "phase1 hard-fence catastrophe table Mode A" {
+    const Case = struct {
+        cmd: []const u8,
+        /// Full pack:pattern rule_id (mvp_corpus).
+        rule_id: []const u8,
+    };
+    const cases = [_]Case{
+        .{ .cmd = "rm -rf /", .rule_id = "core.filesystem:rm-rf-root-home" },
+        .{ .cmd = "rm -rf ~", .rule_id = "core.filesystem:rm-rf-root-home" },
+        .{ .cmd = "git reset --hard", .rule_id = "core.git:reset-hard" },
+        .{ .cmd = "git push --force origin main", .rule_id = "core.git:push-force-long" },
+        .{ .cmd = "mkfs.ext4 /dev/sda1", .rule_id = "system.disk:mkfs" },
+        .{ .cmd = "dd if=/dev/zero of=/dev/sda", .rule_id = "system.disk:dd-device" },
+    };
+    for (cases) |c| {
+        var eval = try evaluateCommand(std.testing.allocator, c.cmd, .{});
+        defer eval.deinit(std.testing.allocator);
+        try std.testing.expect(eval.decision == .deny);
+        try std.testing.expect(eval.rule_id != null);
+        try std.testing.expectEqualStrings(c.rule_id, eval.rule_id.?);
+    }
 }
 
 test {
