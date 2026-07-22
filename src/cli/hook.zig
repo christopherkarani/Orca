@@ -1232,15 +1232,11 @@ fn buildAgentVisibleDaemonDeny(
         if (deny.rule) |rule| allocator.free(rule);
     }
 
-    // Prefer sticky / static WP4 reason when present; else mode-softened or daemon block reason.
+    // Prefer non-null WP4 reason from decideShellWithPolicy (hard fence / sticky /
+    // strict refuse / fail-closed); else daemon block reason or mode-softened.
     const reason_src: []const u8 = if (decision == .block) blk: {
         if (policy_out) |out| {
-            if (out.reason) |r| {
-                if (std.mem.eql(u8, r, shell_eval.strict_not_on_allowlist_reason) or
-                    std.mem.eql(u8, r, "blocked by Orca policy") or
-                    std.mem.eql(u8, r, shell_eval.sticky_ci_blocked_reason))
-                    break :blk r;
-            }
+            if (out.reason) |r| break :blk r;
         }
         break :blk deny.reason;
     } else if (policy_out) |out| blk: {
@@ -1365,45 +1361,86 @@ fn hookResponseFromDaemonEvaluate(
                     null,
                 );
                 if (policy_out.decision == .block) {
+                    // Stage owned fields with errdefer so partial OOM does not leak.
                     const reason_src = policy_out.reason orelse "blocked by Orca policy";
                     const safe_reason = try core_api.redactAlloc(allocator, reason_src);
                     errdefer allocator.free(safe_reason);
+                    const category = try allocator.dupe(u8, "command");
+                    errdefer allocator.free(category);
+                    const message = try buildMessage(allocator, .block, "command");
+                    errdefer allocator.free(message);
+                    const redactions_owned = try redactions.toOwnedSlice(allocator);
+                    errdefer {
+                        for (redactions_owned) |r| r.deinit(allocator);
+                        allocator.free(redactions_owned);
+                    }
+                    const host_limitations = try limitations.toOwnedSlice(allocator);
                     break :blk HookResponse{
                         .decision = .block,
                         .risk = .high,
-                        .category = try allocator.dupe(u8, "command"),
+                        .category = category,
                         .reason = safe_reason,
                         .rule = null,
-                        .message = try buildMessage(allocator, .block, "command"),
-                        .redactions = try redactions.toOwnedSlice(allocator),
-                        .host_limitations = try limitations.toOwnedSlice(allocator),
+                        .message = message,
+                        .redactions = redactions_owned,
+                        .host_limitations = host_limitations,
                     };
                 }
             }
+            // Stage owned fields with errdefer so partial OOM does not leak.
             const decision = pluginDecisionFromDaemonAllow(result, ci_mode);
             const safe_reason = try core_api.redactAlloc(allocator, daemon.responseReason(result) orelse "command allowed by daemon evaluator");
+            errdefer allocator.free(safe_reason);
+            const category = try allocator.dupe(u8, "command");
+            errdefer allocator.free(category);
+            const message = try buildMessage(allocator, decision, "command");
+            errdefer allocator.free(message);
+            const redactions_owned = try redactions.toOwnedSlice(allocator);
+            errdefer {
+                for (redactions_owned) |r| r.deinit(allocator);
+                allocator.free(redactions_owned);
+            }
+            const host_limitations = try limitations.toOwnedSlice(allocator);
             break :blk HookResponse{
                 .decision = decision,
                 .risk = if (decision == .warn) .medium else .low,
-                .category = try allocator.dupe(u8, "command"),
+                .category = category,
                 .reason = safe_reason,
                 .rule = null,
-                .message = try buildMessage(allocator, decision, "command"),
-                .redactions = try redactions.toOwnedSlice(allocator),
-                .host_limitations = try limitations.toOwnedSlice(allocator),
+                .message = message,
+                .redactions = redactions_owned,
+                .host_limitations = host_limitations,
             };
         },
         .deny => blk: {
             const deny = try buildAgentVisibleDaemonDeny(allocator, result, mode, redactions, shell_command, permit);
+            // Deny owns reason/rule/message/suggestions/remediation; free on later OOM.
+            errdefer {
+                allocator.free(deny.reason);
+                if (deny.rule) |rule| allocator.free(rule);
+                allocator.free(deny.message);
+                for (deny.suggestions) |s| allocator.free(s);
+                if (deny.suggestions.len > 0) allocator.free(deny.suggestions);
+                for (deny.remediation_commands) |c| allocator.free(c);
+                if (deny.remediation_commands.len > 0) allocator.free(deny.remediation_commands);
+            }
+            const category = try allocator.dupe(u8, "command");
+            errdefer allocator.free(category);
+            const redactions_owned = try redactions.toOwnedSlice(allocator);
+            errdefer {
+                for (redactions_owned) |r| r.deinit(allocator);
+                allocator.free(redactions_owned);
+            }
+            const host_limitations = try limitations.toOwnedSlice(allocator);
             break :blk HookResponse{
                 .decision = deny.decision,
                 .risk = deny.risk,
-                .category = try allocator.dupe(u8, "command"),
+                .category = category,
                 .reason = deny.reason,
                 .rule = deny.rule,
                 .message = deny.message,
-                .redactions = try redactions.toOwnedSlice(allocator),
-                .host_limitations = try limitations.toOwnedSlice(allocator),
+                .redactions = redactions_owned,
+                .host_limitations = host_limitations,
                 .suggestions = deny.suggestions,
                 .remediation_commands = deny.remediation_commands,
             };
@@ -2714,6 +2751,87 @@ test "hookResponseFromDaemonEvaluate rejects unexpected daemon payload" {
     defer result.deinit(allocator);
 
     try std.testing.expectEqual(PluginDecision.block, result.decision);
+}
+
+test "hookResponseFromDaemonEvaluate engine allow strict refuse off permit" {
+    // Daemon Allow + strict mode + non-empty permit off-list → product block with
+    // strict refuse reason (not engine allow). Ownership must deinit cleanly.
+    const allocator = std.testing.allocator;
+    const json =
+        \\{"status":"Allow","reason":"packs allowed"}
+    ;
+    var parsed = try std.json.parseFromSlice(std.json.Value, allocator, json, .{});
+    defer parsed.deinit();
+    var redactions: std.ArrayList(RedactionEntry) = .empty;
+    defer {
+        for (redactions.items) |r| r.deinit(allocator);
+        redactions.deinit(allocator);
+    }
+    var limitations: std.ArrayList([]const u8) = .empty;
+    defer {
+        for (limitations.items) |l| allocator.free(l);
+        limitations.deinit(allocator);
+    }
+    const permit: shell_engine.allowlist.Layered = .{
+        .entries = &.{
+            .{ .pattern = "git status" },
+        },
+    };
+    var result = try hookResponseFromDaemonEvaluate(
+        allocator,
+        parsed.value,
+        .strict,
+        &redactions,
+        &limitations,
+        "curl http://evil.example",
+        permit,
+    );
+    defer result.deinit(allocator);
+
+    try std.testing.expectEqual(PluginDecision.block, result.decision);
+    try std.testing.expectEqual(RiskLevel.high, result.risk);
+    try std.testing.expectEqualStrings(shell_eval.strict_not_on_allowlist_reason, result.reason);
+    try std.testing.expectEqualStrings("command", result.category);
+}
+
+test "hookResponseFromDaemonEvaluate deny prefers policy strict refuse reason" {
+    // Daemon Deny with its own reason + high severity + off-list permit under strict
+    // → agent-visible reason is WP4 strict refuse (non-null policy reason), not daemon echo.
+    const allocator = std.testing.allocator;
+    const json =
+        \\{"status":"Deny","reason":"daemon-echo-reason","severity":"high","pack_id":"core.shell"}
+    ;
+    var parsed = try std.json.parseFromSlice(std.json.Value, allocator, json, .{});
+    defer parsed.deinit();
+    var redactions: std.ArrayList(RedactionEntry) = .empty;
+    defer {
+        for (redactions.items) |r| r.deinit(allocator);
+        redactions.deinit(allocator);
+    }
+    var limitations: std.ArrayList([]const u8) = .empty;
+    defer {
+        for (limitations.items) |l| allocator.free(l);
+        limitations.deinit(allocator);
+    }
+    const permit: shell_engine.allowlist.Layered = .{
+        .entries = &.{
+            .{ .pattern = "git status" },
+        },
+    };
+    var result = try hookResponseFromDaemonEvaluate(
+        allocator,
+        parsed.value,
+        .strict,
+        &redactions,
+        &limitations,
+        "curl http://evil.example",
+        permit,
+    );
+    defer result.deinit(allocator);
+
+    try std.testing.expectEqual(PluginDecision.block, result.decision);
+    try std.testing.expectEqualStrings(shell_eval.strict_not_on_allowlist_reason, result.reason);
+    try std.testing.expect(std.mem.indexOf(u8, result.reason, "daemon-echo") == null);
 }
 
 test "hook shell route honors ci mode for daemon warn allow" {

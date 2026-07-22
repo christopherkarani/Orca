@@ -67,7 +67,11 @@ pub const Store = struct {
     }
 
     /// True if fingerprint has session trust or a consumable once grant.
-    /// Once grants are removed on a successful hit.
+    ///
+    /// **Once consume:** a once grant is removed **only when this returns true**.
+    /// Callers that may still deny after a lookup (e.g. hard fence) must not call
+    /// `allows` until the allow decision is committed — see `decideShellWithPolicy`,
+    /// which checks critical / fail-closed / CI **before** calling `allows`.
     pub fn allows(self: *Store, fingerprint: []const u8) bool {
         const fp = normalize(fingerprint);
         if (self.once.getKey(fp)) |owned_key| {
@@ -76,6 +80,12 @@ pub const Store = struct {
             return true;
         }
         return self.session.contains(fp);
+    }
+
+    /// Non-consuming once-grant probe (does not free). Prefer for preflight checks
+    /// when the caller might still deny; use `allows` only when allow is committed.
+    pub fn hasOnce(self: *const Store, fingerprint: []const u8) bool {
+        return self.once.contains(normalize(fingerprint));
     }
 
     pub fn allowsEffectClass(self: *const Store, class_id: []const u8) bool {
@@ -214,4 +224,19 @@ test "sticky fingerprintCommand trims and ignores rule_id for MVP" {
     const b = fingerprintCommand("ls -la", null);
     try std.testing.expectEqualStrings(a, b);
     try std.testing.expectEqualStrings("ls -la", a);
+}
+
+test "sticky hasOnce peeks without consuming once grant" {
+    const allocator = std.testing.allocator;
+    var store = Store.init(allocator);
+    defer store.deinit();
+
+    try store.recordAllowOnce("npm install bad");
+    try std.testing.expect(store.hasOnce("npm install bad"));
+    try std.testing.expect(store.hasOnce("  npm install bad  "));
+    // Peek must not consume.
+    try std.testing.expect(store.hasOnce("npm install bad"));
+    try std.testing.expect(store.allows("npm install bad")); // consume
+    try std.testing.expect(!store.hasOnce("npm install bad"));
+    try std.testing.expect(!store.allows("npm install bad"));
 }

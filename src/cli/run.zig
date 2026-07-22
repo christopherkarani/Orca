@@ -367,6 +367,7 @@ fn commandWithStdioAndEnv(io: std.Io, argv: []const []const u8, stdout: anytype,
                         // Prefer session scope for product trust; once path uses once grant.
                         const sticky_scope: policy.sticky.Scope = if (choice == .allow_session) .session else .once;
                         const sticky_severity = shell_eval.riskLevelFromScore(command_decision.decision.risk_score orelse 80);
+                        // best-effort sticky; re-ask on failure
                         shell_eval.recordStickyFromAsk(
                             shell_eval.getSessionStickyStore(),
                             raw_display,
