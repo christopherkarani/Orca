@@ -4,7 +4,7 @@
 # Usage:
 #   ./scripts/agent-gate.sh                 # auto from git dirty + staged paths
 #   ./scripts/agent-gate.sh --dry-run       # print chosen command only
-#   ./scripts/agent-gate.sh --paths a.zig b.rs
+#   ./scripts/agent-gate.sh --paths a.zig src/shell_engine/mod.zig
 #   ./scripts/agent-gate.sh compile|units|full|check|core|rust|shell-engine|dx|sandbox|policy|intercept|dashboard|plugin|scripts
 #
 # Explicit modes always run that gate. Auto mode uses path heuristics.
@@ -498,7 +498,7 @@ else
   selected="${mode}"
 fi
 
-# Auto may emit multiple gates (e.g. "units rust", "dashboard plugin") for mixed trees.
+# Auto may emit multiple gates (e.g. "units dashboard", "dashboard plugin") for mixed trees.
 # shellcheck disable=SC2206
 gates=( ${selected} )
 for g in "${gates[@]}"; do

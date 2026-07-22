@@ -221,7 +221,7 @@ for host in "${HOSTS[@]}"; do
     log "  readiness: protected (allow+deny pass)"
     pass=$((pass + 1))
   elif [[ "$deny_ok" -eq 1 && "$allow_ok" -eq 0 ]]; then
-    log "  readiness: degraded (deny ok, allow failed — daemon/policy? fix: orca doctor)"
+    log "  readiness: degraded (deny ok, allow failed — policy/eval? fix: orca doctor)"
     # Degraded is not a hard fail for protection proof, but counts as fail for usability gate.
     fail=$((fail + 1))
   elif [[ "$deny_ok" -eq 0 ]]; then

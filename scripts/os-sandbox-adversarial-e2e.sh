@@ -682,8 +682,8 @@ if [[ $BIN_RC -eq 0 ]]; then
   mkdir -p "$PACK_WS/.orca"
   set +e
   PACK_OUT="$(mktemp)"
-  # Shell-eval path still needs daemon for shell commands; /usr/bin/true or
-  # /bin/true is a non-shell absolute path and exercises OS apply only.
+  # Use /usr/bin/true (or /bin/true) — a non-shell absolute path — so this
+  # probes OS sandbox attach/apply only, not Zig shell_engine evaluation.
   TRUE_BIN="/usr/bin/true"
   [[ -x "$TRUE_BIN" ]] || TRUE_BIN="/bin/true"
   if [[ -x "$TRUE_BIN" ]]; then
