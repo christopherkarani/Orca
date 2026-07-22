@@ -24,12 +24,11 @@ git ls-files | rg '(^planning/|^go_to_market/|^customer_pilot/|^tasks/|^reports/
 
 ## Orca Context
 
-- Zig is the primary user-facing CLI.
-- Rust runs the background daemon and evaluator service.
-- Shell commands route through the Rust evaluator; non-shell events stay in Zig.
-- Do not invoke `cargo` from `zig build`.
-- If the daemon is unavailable, `orca hook` must fail closed with `deny`.
-- Read `planning/migration/MERGE_ORCA_RS_INTO_ORCA_CLI_v2.md` for migration work only.
+- Zig is the primary (and sole) user-facing CLI and shell evaluator.
+- Shell command security decisions are owned by the in-process Zig `shell_engine` (default). Set `ORCA_SHELL_EVAL=rust` only if a legacy Rust daemon is present for dual-stack experiments; production path is Zig.
+- Non-shell events (files, network, MCP/tools, effects) stay on the Zig policy path.
+- Do not reintroduce a required Rust daemon for hook/run/shim shell gating.
+- Shell evaluator internal errors fail closed with `deny`.
 
 ## Toolchain
 
@@ -43,7 +42,7 @@ eval "$(./scripts/ensure-zig-toolchain.sh --export)"   # or: direnv allow
 ./scripts/zig version   # must print 0.16.0
 ```
 
-- Rust lives in `orca-rs/` with its own `Cargo.toml` and toolchain file. Keep the Zig and Cargo graphs separate.
+- The former `orca-rs/` Rust daemon crate has been removed from the product tree. Do not add Cargo to `zig build`.
 
 ## Verification gates (read this before every verify loop)
 
@@ -53,10 +52,11 @@ eval "$(./scripts/ensure-zig-toolchain.sh --export)"   # or: direnv allow
 **One-shot path picker for agents:**
 
 ```bash
-./scripts/agent-gate.sh              # auto from git dirty paths
-./scripts/agent-gate.sh --dry-run    # print selection only
-./scripts/agent-gate.sh units        # force L1
+./scripts/agent-gate.sh                  # auto from git dirty paths
+./scripts/agent-gate.sh --dry-run        # print selection only
+./scripts/agent-gate.sh units            # force L1
 ./scripts/agent-gate.sh --paths src/cli/plugin.zig
+./scripts/zig build test-shell-engine    # Zig shell evaluator + MVP corpus
 ```
 
 ### Tier ladder
@@ -64,151 +64,34 @@ eval "$(./scripts/ensure-zig-toolchain.sh --export)"   # or: direnv allow
 | Tier | When | Command | Typical cost |
 |------|------|---------|--------------|
 | **L0 compile** | After every Zig edit; “does it compile?” | `./scripts/compile-fast.sh check` | ~seconds–tens of seconds |
-| **L0 compile tests** | After test-graph / lib-heavy edits | `./scripts/compile-fast.sh test-lib` or `test-fast` | compile only, no run |
+| **L0.5 shell** | `src/shell_engine/**` | `./scripts/zig build test-shell-engine` | seconds |
 | **L0.5 domain** | Edits confined to one domain | `./scripts/test-slice.sh sandbox\|policy\|intercept` | often **seconds–tens of seconds** |
 | **L1 units** | Broad Zig logic needs unit confidence | `./scripts/test-fast.sh units` **or** monopath `test-lib` | **multi-minute** monopath |
 | **L2 product** | Policy/CLI handoff, pre-PR light gate | `./scripts/test-fast.sh` (or `full`) | L1 + ~1s quick-install matrix |
 | **L3 full Zig** | Pre-merge / full suite (single CI job) | `./scripts/zig build test` | full phase/plugin/fuzz suites |
 | **L4 pre-merge** | Explicit pre-merge only | `./scripts/verify-pre-merge.sh` | L2 + L3 + install/uninstall regressions |
 
-```bash
-# L0 — preferred agent iteration for Zig
-./scripts/compile-fast.sh              # = check (CLI only)
-./scripts/compile-fast.sh check
-./scripts/compile-fast.sh test-lib     # compile lib tests, no run
-./scripts/compile-fast.sh test-fast    # compile test-fast set, no run
-./scripts/compile-fast.sh test-lib-run # compile + run lib tests (serial)
-./scripts/compile-fast.sh test-fast-run
-
-# Path-aware shortcut
-./scripts/agent-gate.sh
-
-# L1 / L2 — test-fast.sh modes (incremental + -j1)
-./scripts/test-fast.sh compile         # build CLI + compile test-fast artifacts
-./scripts/test-fast.sh units           # + run unit binaries (no quick-install)
-./scripts/test-fast.sh full            # + quick-install matrix (default)
-./scripts/test-fast.sh                 # same as full
-ORCA_TEST_FAST=units ./scripts/test-fast.sh
-
-# L0.5 domain slices (prefer over monopath when paths stay in-domain)
-./scripts/test-slice.sh sandbox
-./scripts/test-slice.sh policy
-./scripts/test-slice.sh intercept
-./scripts/test-slice.sh sandbox --filter Seatbelt
-./scripts/agent-gate.sh sandbox   # or auto when only src/sandbox/* is dirty
-
-# Name filter (Zig 0.16: compile-time -Dtest-filter, NOT runtime -- --test-filter)
-./scripts/zig build test-lib -Dtest-filter=Spinner
-./scripts/test-slice.sh lib --filter Spinner
-
-# Focused Zig steps (when you know the surface)
-./scripts/zig build check
-./scripts/zig build test-lib
-./scripts/zig build test-core
-./scripts/zig build test-core-contract
-./scripts/zig build test-sandbox
-./scripts/zig build test-policy
-./scripts/zig build test-intercept
-./scripts/zig build test-fast
-./scripts/zig build compile-test-lib
-./scripts/zig build compile-test-fast   # same membership as test-fast (no run)
-
-# Local mirror of fast PR signal
-./scripts/ci-local-fast.sh              # zig units; + rust --lib if orca-rs dirty
-./scripts/ci-local-fast.sh --with-rust
-
-# L3 / L4 — do not use mid-slice
-./scripts/zig build test
-./scripts/verify-pre-merge.sh
-```
-
 ### Path → gate matrix
 
 | Touched paths | Prefer |
 |---------------|--------|
+| `src/shell_engine/**` | **L0.5** `./scripts/zig build test-shell-engine` |
 | Single Zig file, compile check only | **L0** `./scripts/compile-fast.sh check` |
 | `src/sandbox/**` only | **L0.5** `./scripts/test-slice.sh sandbox` / `agent-gate.sh` |
-| `src/policy/**` only | **L0.5** `./scripts/test-slice.sh policy` (core package gates; monopath L1 if needed) |
+| `src/policy/**` only | **L0.5** `./scripts/test-slice.sh policy` |
 | `src/intercept/**` only | **L0.5** `./scripts/test-slice.sh intercept` |
 | `src/**`, `packages/**`, `build.zig` (broad logic) | L0 → **L1** `test-fast.sh units` or `agent-gate.sh` |
-| `packages/core/**` only | `./scripts/agent-gate.sh core` or `zig build test-core` + `test-core-contract` |
-| `policies/**`, init/preset DX | L0 + `./scripts/quick-install-dx-verify.sh` (or L2 full) |
-| `orca-rs/**` only | `./scripts/agent-gate.sh rust` or `(cd orca-rs && cargo test --lib)` |
-| `integrations/*-plugin/**` | `./scripts/agent-gate.sh plugin` (package-local `npm test` / python unittest) — **not** full Zig suite |
-| `orca-dashboard-ui/**` or `src/dashboard/**` | `./scripts/agent-gate.sh dashboard` (`npm test` in `orca-dashboard-ui/`; CI path-filtered) |
 | `scripts/**` only | `bash -n` + the script’s own smoke; avoid L3 unless the script is a gate itself |
-| Mixed Zig + Rust | Run **each stack’s** narrow gate; never assume one covers the other |
-
-### Rust gates
-
-```bash
-cd orca-rs
-cargo test --lib          # default agent gate (fast, large suite)
-cargo test                # broader (integration bins); use when needed
-cargo clippy --all-targets
-cargo build               # debug daemon; prefer over release for iteration
-```
-
-### Script catalog (agent-relevant)
-
-| Script | Role |
-|--------|------|
-| `./scripts/zig` | Pinned Zig 0.16.0 wrapper — **always** use this |
-| `./scripts/ensure-zig-toolchain.sh` | Install/check/export toolchain |
-| `./scripts/compile-fast.sh` | **Fastest** Zig compile iteration (incremental; parallel for compile-only) |
-| `./scripts/test-fast.sh` | L1/L2 gate with `compile` / `units` / `full` modes + step timings + incremental |
-| `./scripts/agent-gate.sh` | Path-aware narrowest gate (auto / dry-run / forced mode; domain slices) |
-| `./scripts/test-slice.sh` | Domain units + `-Dtest-filter` (`sandbox` / `policy` / `intercept` / `lib` / …) |
-| `./scripts/ci-local-fast.sh` | Local mirror of fast PR signal (Zig units ± `cargo test --lib`) |
-| `./scripts/quick-install-dx-verify.sh` | Cheap policy matrix (~1s once CLI is built) |
-| `./scripts/verify-pre-merge.sh` | L4 kitchen sink — **pre-merge only** |
-| `./scripts/assert-zig-build-no-cargo.sh` | Guards dual-stack rule |
-| `./scripts/build-all.sh` | Builds Zig CLI **and** **release** daemon — **not** for everyday iteration |
-| `scripts/README.md` | Iteration gates + release helpers |
-| `tests/slices/README.md` | Domain slice map |
-
-### Optimizations already in place
-
-- `compile-fast.sh` uses `-fincremental -Dincremental=true`. **Compile-only** modes use the default job count; **run** modes use `-j1` so test binaries stay serial (parallel test runs have hung with no output on some hosts).
-- `test-fast.sh` uses the same incremental + `-j1` flags and prints per-step wall times (`[test-fast] … done in Ns`).
-- `build.zig` step `test-fast` serializes lib → core package → core contract for hang avoidance.
-- `compile-test-fast` membership **matches** `test-fast` (lib + orca_core package + core contract). Daemon IPC hardening is full-suite only.
-- Domain steps `test-sandbox` / `test-policy` / `test-intercept` avoid the full CLI/TUI monopath when work stays in-domain.
-- Unit name filters use **`-Dtest-filter=…`** at build time (Zig 0.16 compile filters). Runtime `-- --test-filter` on the terminal runner is invalid.
-- CI: `ci.yml` runs **fast** Zig (`test-fast`) + Rust `--lib` then full; `test.yml` is the **only** full `zig build test` job; dashboard is path-filtered.
-- Tests use `addRunTestTerminal` (`stdio = .inherit`) so Zig 0.16 **server-mode** (`--listen=-`) is avoided — server mode deadlocks if the protocol peer never speaks.
-- Plugin doctor PATH lookups share one env snapshot; OOM-fail tests on doctor use a **tiny owned-field harness**, not full doctor collect (see pitfalls).
 
 ### Pitfalls (do not)
 
 1. **Do not** default every edit to `verify-pre-merge.sh` or `./scripts/zig build test`. Those are L3/L4.
 2. **Do not** treat “test-fast” as a 10-second gate. Budget **minutes** for L1 monopath; prefer domain slices / filters when possible.
-3. **Do not** use `./scripts/build-all.sh` for iteration — it `cargo build --release` the daemon.
-4. **Do not** invoke `cargo` from `zig build` or reverse (dual-stack rule).
-5. **Do not** pipe long builds to `tail`, and do not background `./scripts/zig build test` unless you poll to completion.
-6. **Do not** use `zig build test-lib -- --test-filter …` — that ABRTs under the terminal runner. Use **`-Dtest-filter=…`** or `./scripts/test-slice.sh … --filter …`.
-7. **Do not** run dashboard/plugin npm suites because a Zig/Rust file changed (or vice versa).
-8. **Do not** clear `.zig-cache` / `orca-rs/target` as a first response to a failure — fix the error; caches are large and cold rebuilds hurt.
-9. **Do not** assume Zig and Rust evaluators are interchangeable. Fail closed on daemon unavailability for shell hooks.
-10. **Do not** commit `planning/` task notes, `dist/`, SBOMs, or secret-bearing fixtures (see Repo Boundaries).
-11. **Do not** wrap heavy FS/PATH/env collectors in `std.testing.checkAllAllocationFailures` (e.g. full `collectPluginDoctorReport*`). That re-runs the whole function per alloc index and **looks hung for minutes** with high CPU / growing RSS. Use a small owned-field harness instead.
-12. **Do not** reintroduce default `b.addRunArtifact(test)` for the monopath suite without terminal-mode stdio — server-mode IPC hangs on stdin.
-13. **Do not** assume silence = hang under a TTY: the terminal runner uses Progress and may print little until a long test finishes. Force line mode with `… 2>&1 | cat` if you need per-test lines; if CPU is pegged, `sample <pid>` the test process.
-
-### If test-fast “hangs”
-
-| Symptom | Likely cause | What to do |
-|---------|--------------|------------|
-| High CPU, RSS climbing, no new lines for 1–3+ min | Pathological unit test (historically OOM-fail on full doctor collect) | `sample <pid>`; fix the test, don’t kill the toolchain |
-| Zero CPU, stuck, process args include `--listen=-` | Zig 0.16 server-mode test IPC | Ensure tests use `addRunTestTerminal` / `stdio = .inherit` |
-| Completes in ~few minutes total | Normal L1 monopath cost | Prefer L0 / `agent-gate.sh`; don’t “fix” by skipping verify |
-| Parallel multi-binary run silent | Known host hang | Keep `-j1` and serialized `test-fast` deps |
-
-### Long build hygiene
-
-- Prefer `./scripts/agent-gate.sh` → `./scripts/compile-fast.sh` / `./scripts/test-fast.sh` over ad-hoc `zig build` flag soup.
-- After multi-agent fix waves that touch many modules, re-run **L2 once** before claiming done.
-- Warm caches: second run of L0 should be much cheaper than a cold machine; if every L0 costs multi-minute compile, check toolchain version and whether you are accidentally cleaning caches.
+3. **Do not** invoke `cargo` from `zig build` (dual-stack rule retained as a build hygiene check).
+4. **Do not** pipe long builds to `tail`, and do not background `./scripts/zig build test` unless you poll to completion.
+5. **Do not** use `zig build test-lib -- --test-filter …` — that ABRTs under the terminal runner. Use **`-Dtest-filter=…`** or `./scripts/test-slice.sh … --filter …`.
+6. **Do not** clear `.zig-cache` as a first response to a failure — fix the error; caches are large and cold rebuilds hurt.
+7. **Do not** reintroduce a required Rust daemon for shell PreToolUse / PermissionRequest security decisions.
 
 ## Development Rules
 
@@ -219,24 +102,15 @@ cargo build               # debug daemon; prefer over release for iteration
 - Do not introduce SaaS, telemetry, monetization, or cloud dashboards unless the user asks for them.
 - Do not persist raw secrets in logs, fixtures, reports, docs, tests, or snapshots.
 
-## Long-Running Tasks
-
-- Keep a concise todo list for multi-turn work.
-- Record important decisions and blockers in memory when the task spans turns.
-- After each implemented slice, note what changed and what remains.
-
 ## Code Style
 
 - Zig: `zig fmt`, 4-space indent, 120 column limit.
-- Rust: `cargo fmt` and `cargo clippy`.
 - Follow `.editorconfig` for file-specific spacing.
 
 ## Risk Areas
 
-- Zig and Rust hook evaluators are not interchangeable.
-- Keep Zig and Rust build systems separate.
-- Do not fall back to Zig native evaluation if the daemon is unavailable.
-- Migration phases are ordered; do not skip ahead.
+- Shell security authority is the Zig `shell_engine` (MVP pack coverage). Expanding packs must keep corpus gates green.
+- Fail closed on evaluator errors for shell hooks.
 - The Zig **lib test monopath** (`src/root.zig` + `cli/mod.zig` test pulls) is the main local iteration bottleneck — compensate with L0-first discipline, not by skipping verification entirely.
 
 ## Agent skills

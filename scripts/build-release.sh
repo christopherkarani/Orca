@@ -216,8 +216,6 @@ build_cli_target() {
   work="${DIST_DIR}/work/cli-${os}-${arch}"
   prefix="${work}/prefix"
   root="${work}/orca-v${VERSION}-${os}-${arch}"
-  daemon_name="$(daemon_name_for_os "$os")"
-  daemon_path="$(daemon_artifact_path "$os" "$arch")"
 
   rm -rf "$work"
   mkdir -p "$prefix" "$root/bin"
@@ -254,11 +252,7 @@ build_cli_target() {
   if [ "$os" = "windows" ] && [ -f "$prefix/bin/orca.exe" ]; then
     cp "$prefix/bin/orca.exe" "$root/bin/orca.exe"
   fi
-  verify_daemon_binary_target "$os" "$arch" "$daemon_path"
-  cp -p "$daemon_path" "$root/bin/$daemon_name"
-  if [ "$os" != "windows" ]; then
-    chmod 0755 "$root/bin/$daemon_name"
-  fi
+  # orca-daemon removed: Zig shell_engine evaluates in-process.
   find "$root" -name .DS_Store -delete
 
   if [ "$ext" = "zip" ]; then
@@ -294,7 +288,7 @@ write_release_manifest() {
     {\"name\":\"${name}\",\"sha256\":\"${hash}\"}"
   done
 
-  products_json="[\"orca\", \"orca-daemon\", \"core\"]"
+  products_json="[\"orca\", \"core\"]"
   runtime_assets_json="[\"schemas\", \"policies\", \"fixtures\", \"examples\", \"integrations\", \"packaging\"]"
   schemas_json="[\"schemas/policy-v1.json\", \"schemas/event-v1.json\", \"schemas/mcp-manifest-v1.json\"]"
   fixtures_json="[\"fixtures/shell-abuse/curl-pipe-sh\", \"examples/mcp\", \"examples/network\", \"examples/policies\"]"

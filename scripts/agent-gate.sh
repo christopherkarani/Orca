@@ -446,7 +446,8 @@ run_gate() {
       policy) echo "[agent-gate] dry-run: ./scripts/test-slice.sh policy" ;;
       intercept) echo "[agent-gate] dry-run: ./scripts/test-slice.sh intercept" ;;
       dx) echo "[agent-gate] dry-run: ./scripts/quick-install-dx-verify.sh" ;;
-      rust) echo "[agent-gate] dry-run: (cd orca-rs && cargo test --lib)" ;;
+      rust) echo "[agent-gate] dry-run: ./scripts/zig build test-shell-engine (rust alias retired)" ;;
+      shell-engine) echo "[agent-gate] dry-run: ./scripts/zig build test-shell-engine" ;;
       *)
         echo "error: internal unknown gate ${g}" >&2
         exit 3
@@ -474,7 +475,7 @@ run_gate() {
       fi
       ./scripts/quick-install-dx-verify.sh
       ;;
-    rust) (cd orca-rs && cargo test --lib) ;;
+    rust|shell-engine) ./scripts/zig build test-shell-engine ;;
     *)
       echo "error: internal unknown gate ${g}" >&2
       exit 3

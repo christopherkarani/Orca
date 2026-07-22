@@ -3,6 +3,7 @@ const build_options = @import("build_options");
 
 const core = @import("orca_core").core;
 const daemon = @import("daemon.zig");
+const shell_eval = @import("shell_eval.zig");
 const exit_codes = @import("exit_codes.zig");
 const feed_writer = @import("feed_writer.zig");
 const help = @import("help.zig");
@@ -100,7 +101,15 @@ const MachineResponse = struct {
 };
 
 pub fn command(io: std.Io, argv: []const []const u8, stdout: anytype, stderr: anytype) !u8 {
-    return commandWithEvaluator(io, argv, stdout, stderr, daemon.evaluate);
+    return commandWithEvaluator(io, argv, stdout, stderr, shellEvalBridge);
+}
+
+fn shellEvalBridge(
+    allocator: std.mem.Allocator,
+    command_text: []const u8,
+    cwd: ?[]const u8,
+) daemon.DaemonError!std.json.Parsed(daemon.DaemonResponse) {
+    return shell_eval.defaultEvaluator(allocator, .{ .command = command_text, .cwd = cwd });
 }
 
 fn commandWithEvaluator(io: std.Io, argv: []const []const u8, stdout: anytype, stderr: anytype, evaluator: EvaluatorFn) !u8 {

@@ -19,42 +19,7 @@ permissions:
   contents: write
 
 jobs:
-  daemon-binaries:
-    name: daemon (${{ matrix.target }})
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - runs_on: macos-14
-            target: darwin-arm64
-            target_os: darwin
-            target_arch: arm64
-          - runs_on: macos-15-intel
-            target: darwin-amd64
-            target_os: darwin
-            target_arch: amd64
-          - runs_on: ubuntu-latest
-            target: linux-amd64
-            target_os: linux
-            target_arch: amd64
-          - runs_on: ubuntu-24.04-arm
-            target: linux-arm64
-            target_os: linux
-            target_arch: arm64
-    runs-on: ${{ matrix.runs_on }}
-    steps:
-      - uses: actions/checkout@v4
-      - name: Build staged daemon artifact
-        shell: bash
-        run: ./scripts/build-daemon-release.sh "${{ matrix.target_os }}" "${{ matrix.target_arch }}" "$RUNNER_TEMP/daemon-artifacts"
-      - name: Upload daemon artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: orca-daemon-${{ matrix.target }}
-          path: ${{ runner.temp }}/daemon-artifacts/
-
   release:
-    needs: daemon-binaries
     runs-on: ubuntu-latest
     env:
       ORCA_VERSION: ${{ github.event.inputs.version || github.ref_name }}
@@ -94,12 +59,6 @@ jobs:
             exit 1
           fi
           echo "Dashboard build verified: dark Next.js dashboard present with _next/static/ output."
-      - name: Download daemon artifacts
-        uses: actions/download-artifact@v4
-        with:
-          pattern: orca-daemon-*
-          path: ${{ runner.temp }}/daemon-artifacts
-          merge-multiple: true
       - name: Test before release
         run: ./scripts/zig build test
       - name: Red-team CI
@@ -111,7 +70,7 @@ jobs:
         env:
           ORCA_SIGNING_ENABLED: ${{ github.event.inputs.signing_enabled || '0' }}
           ORCA_SIGNING_COMMAND: ${{ secrets.ORCA_SIGNING_COMMAND }}
-        run: ORCA_VERSION="$ORCA_VERSION" ORCA_COMMIT="$ORCA_COMMIT" ORCA_BUILD_DATE="$ORCA_BUILD_DATE" ORCA_DAEMON_ARTIFACT_DIR="$RUNNER_TEMP/daemon-artifacts" ./scripts/build-release.sh
+        run: ORCA_VERSION="$ORCA_VERSION" ORCA_COMMIT="$ORCA_COMMIT" ORCA_BUILD_DATE="$ORCA_BUILD_DATE" ./scripts/build-release.sh
       - name: Package plugins
         shell: bash
         run: ./scripts/package-plugins.sh

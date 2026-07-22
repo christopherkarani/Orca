@@ -1,8 +1,8 @@
-//! Shared Rust-daemon shell command evaluation for `orca hook`, `orca run`, and shims.
+//! Shared shell command evaluation for `orca hook`, `orca run`, and shims.
 //!
-//! Shell-command security decisions are owned by the Rust daemon. Zig policy YAML
-//! command rules and argv classifiers are not used for the security decision here;
-//! classification metadata is retained for approval UX only.
+//! Security decisions are owned by the in-process Zig shell engine by default
+//! (`ORCA_SHELL_EVAL=zig`). Set `ORCA_SHELL_EVAL=rust` to force the legacy Rust
+//! daemon Evaluate path during dual-stack transition.
 
 const std = @import("std");
 
@@ -10,6 +10,7 @@ const core = @import("orca_core").core;
 const core_api = @import("orca_core").api;
 const policy = @import("orca_core").policy;
 const intercept = @import("../intercept/mod.zig");
+const shell_engine = @import("../shell_engine/mod.zig");
 const daemon = @import("daemon.zig");
 const rust_visibility = @import("rust_visibility.zig");
 const feed_writer = @import("feed_writer.zig");
@@ -35,6 +36,16 @@ pub const ShellAuditOptions = struct {
 
 const event_source_run = rust_visibility.event_source_run;
 
+pub const ShellEvalBackend = enum { zig, rust };
+
+/// Resolve shell evaluator backend. Default is Zig (Phase 4 product MVP).
+pub fn resolveShellEvalBackend() ShellEvalBackend {
+    const value_z = std.c.getenv("ORCA_SHELL_EVAL") orelse return .zig;
+    const value = std.mem.span(value_z);
+    if (std.ascii.eqlIgnoreCase(value, "rust")) return .rust;
+    return .zig;
+}
+
 fn resolveEffectiveCwd(allocator: std.mem.Allocator, cwd: ?[]const u8) daemon.DaemonError![]const u8 {
     const path = cwd orelse ".";
     var threaded: std.Io.Threaded = .init_single_threaded;
@@ -44,13 +55,71 @@ fn resolveEffectiveCwd(allocator: std.mem.Allocator, cwd: ?[]const u8) daemon.Da
     return allocator.dupe(u8, resolved_z) catch error.OutOfMemory;
 }
 
-pub fn defaultEvaluator(
+/// Build a daemon-shaped Evaluate JSON response from a Zig shell_engine result.
+pub fn synthesizeDaemonResponseFromZig(
+    allocator: std.mem.Allocator,
+    eval: shell_engine.Evaluation,
+) daemon.DaemonError!std.json.Parsed(daemon.DaemonResponse) {
+    const status = switch (eval.decision) {
+        .allow => "Allow",
+        .deny => "Deny",
+    };
+    const payload = struct {
+        id: u64 = 1,
+        result: struct {
+            status: []const u8,
+            reason: []const u8,
+            pack_id: ?[]const u8 = null,
+            pattern_name: ?[]const u8 = null,
+            severity: []const u8,
+            explanation: ?[]const u8 = null,
+        },
+    }{
+        .result = .{
+            .status = status,
+            .reason = eval.reason,
+            .pack_id = eval.pack_id,
+            .pattern_name = eval.pattern_name,
+            .severity = eval.severity.toString(),
+            .explanation = eval.explanation,
+        },
+    };
+    const json_str = std.json.Stringify.valueAlloc(allocator, payload, .{}) catch return error.OutOfMemory;
+    defer allocator.free(json_str);
+    return std.json.parseFromSlice(daemon.DaemonResponse, allocator, json_str, .{
+        .allocate = .alloc_always,
+        .ignore_unknown_fields = true,
+    }) catch return error.ResponseParseFailed;
+}
+
+fn zigEvaluator(
+    allocator: std.mem.Allocator,
+    shell_event: ShellCommandEvent,
+) daemon.DaemonError!std.json.Parsed(daemon.DaemonResponse) {
+    var eval = shell_engine.evaluateCommand(allocator, shell_event.command, .{
+        .cwd = shell_event.cwd,
+    }) catch return error.OutOfMemory;
+    defer eval.deinit(allocator);
+    return synthesizeDaemonResponseFromZig(allocator, eval);
+}
+
+fn rustEvaluator(
     allocator: std.mem.Allocator,
     shell_event: ShellCommandEvent,
 ) daemon.DaemonError!std.json.Parsed(daemon.DaemonResponse) {
     const absolute_cwd = try resolveEffectiveCwd(allocator, shell_event.cwd);
     defer allocator.free(absolute_cwd);
     return daemon.evaluate(allocator, shell_event.command, absolute_cwd);
+}
+
+pub fn defaultEvaluator(
+    allocator: std.mem.Allocator,
+    shell_event: ShellCommandEvent,
+) daemon.DaemonError!std.json.Parsed(daemon.DaemonResponse) {
+    return switch (resolveShellEvalBackend()) {
+        .zig => zigEvaluator(allocator, shell_event),
+        .rust => rustEvaluator(allocator, shell_event),
+    };
 }
 
 pub fn daemonUnavailableReason(err: daemon.DaemonError) []const u8 {
@@ -418,6 +487,9 @@ pub fn evaluateCommand(
     defer daemon_response.deinit();
 
     const daemon_status = blk: {
+        if (resolveShellEvalBackend() == .zig and evaluator_override == null) {
+            break :blk try allocator.dupe(u8, "zig");
+        }
         var health = try rust_visibility.probeGuiDaemonHealth(allocator);
         defer health.deinit(allocator);
         break :blk try allocator.dupe(u8, health.status);

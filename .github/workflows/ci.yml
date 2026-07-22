@@ -17,6 +17,8 @@ jobs:
         run: ./scripts/zig build
       - name: Fast unit tests (lib + orca_core)
         run: ./scripts/zig build test-fast
+      - name: Zig shell_engine MVP corpus
+        run: ./scripts/zig build test-shell-engine
   # Landlock (ubuntu) / Seatbelt (macos-14) attach + adversarial e2e.
   # --require-attach is single authority (packaged orca_run + profile_hash + evidence.zig rules).
   # Thin jq checks packaged primary detail only — no third copy of unit dual-proof greps.
@@ -65,16 +67,3 @@ jobs:
           name: ${{ matrix.artifact_name }}
           path: planning/security/evidence/
           if-no-files-found: error
-  rust-daemon:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - name: Rust daemon lib tests (fast agent-equivalent gate)
-        working-directory: orca-rs
-        run: cargo test --lib
-      - name: Rust daemon full test suite
-        working-directory: orca-rs
-        run: cargo test
-      - name: Rust daemon clippy
-        working-directory: orca-rs
-        run: cargo clippy --all-targets

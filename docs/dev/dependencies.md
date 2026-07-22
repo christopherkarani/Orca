@@ -76,3 +76,9 @@ only** for the UI export; they are not linked into `orca` or `orca-daemon`.
   API, authz, and feed aggregation.
 - Testing: `npm test` in `orca-dashboard-ui` (contract tests) and
   `scripts/install-layout-smoke-test.sh` markers for the shipped export.
+
+## Full Zig shell engine (2026-07-21)
+
+New dependency: none.
+
+In-process Zig `shell_engine` uses only the Zig standard library for MVP structured matching. The former Rust `orca-rs` daemon/evaluator crate (including regex-automata and related crates) is removed from the product tree.

@@ -205,6 +205,16 @@ pub fn build(b: *std.Build) void {
     });
     const run_intercept_tests = addRunTestTerminal(b, intercept_tests);
 
+    const shell_engine_tests = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/shell_engine_slice_root.zig"),
+            .target = target,
+            .optimize = optimize,
+        }),
+        .filters = test_filters,
+    });
+    const run_shell_engine_tests = addRunTestTerminal(b, shell_engine_tests);
+
     const cli_package_tests = b.addTest(.{
         .root_module = orca_cli_mod,
     });
@@ -462,11 +472,17 @@ pub fn build(b: *std.Build) void {
     const test_intercept_step = b.step("test-intercept", "Run intercept domain unit tests only (sliced root)");
     test_intercept_step.dependOn(&run_intercept_tests.step);
 
+    const test_shell_engine_step = b.step("test-shell-engine", "Run Zig shell_engine MVP unit + corpus tests");
+    test_shell_engine_step.dependOn(&run_shell_engine_tests.step);
+
     const compile_test_sandbox_step = b.step("compile-test-sandbox", "Compile sandbox domain tests without running");
     compile_test_sandbox_step.dependOn(&sandbox_tests.step);
 
     const compile_test_intercept_step = b.step("compile-test-intercept", "Compile intercept domain tests without running");
     compile_test_intercept_step.dependOn(&intercept_tests.step);
+
+    const compile_test_shell_engine_step = b.step("compile-test-shell-engine", "Compile shell_engine tests without running");
+    compile_test_shell_engine_step.dependOn(&shell_engine_tests.step);
 
     // Serialize runs so local `zig build test-fast` does not launch three heavy test
     // binaries at once (parallel runs have hung with no output on some hosts).
