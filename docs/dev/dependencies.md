@@ -79,7 +79,7 @@ only** for the UI export; they are not linked into `orca` or `orca-daemon`.
 
 ## Full Zig shell engine (2026-07-21, parity 2026-07-22)
 
-New dependency: **PCRE2** (`libpcre2-8`).
+New dependency: **PCRE2** (Zig package `pcre2`, statically linked as `pcre2-8`).
 
 In-process Zig `shell_engine` is the product shell Evaluate authority. Pack
 patterns from the frozen orca-rs oracle (85 packs, ~792 destructive / ~830 safe
@@ -87,6 +87,9 @@ rules) are embedded as JSON and matched with PCRE2 via a thin C shim
 (`src/shell_engine/pcre2_shim.c`). Structured helpers cover multi-segment split,
 wrapper stripping, false-positive sanitize, and heredoc/inline embeds.
 
-- Install (dev/CI): `libpcre2-dev` (Debian/Ubuntu), `pcre2` (Homebrew).
-- Link: `build.zig` `addPcre2Shim` on the `orca` executable and shell_engine tests.
+- Source: `build.zig.zon` dependency on [PCRE2Project/pcre2](https://github.com/PCRE2Project/pcre2)
+  (Zig `build.zig` upstream); compiled per `-Dtarget` so release cross-builds do
+  not need host `libpcre2-dev` / Homebrew `pcre2`.
+- Link: `build.zig` `addPcre2Shim` on the `orca` module and shell_engine tests
+  (static `pcre2-8` + shim; no system library search paths).
 - The former Rust `orca-rs` daemon/evaluator crate is removed from the product tree.

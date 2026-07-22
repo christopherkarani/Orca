@@ -14,6 +14,10 @@
             .url = "git+https://github.com/jacobsandlund/uucode#2826a37a4562284fdacd8fa029d49509cc9bffcd",
             .hash = "uucode-0.2.0-ZZjBPlK5VADj7fdoq7G8LIHzD5o6FSkcBXXrRWr4jnrA",
         },
+        .pcre2 = .{
+            .url = "https://github.com/PCRE2Project/pcre2/archive/5a632d3cf0dbcc6821cfc39cacf88b19f3281791.tar.gz",
+            .hash = "pcre2-10.48.0-DEV-IZ6r65g2XgCWff6LG-A_f0725If3dXLUGB0udhXAA12p",
+        },
     },
     .paths = .{
         "build.zig",

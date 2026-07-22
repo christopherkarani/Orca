@@ -2,23 +2,28 @@ const std = @import("std");
 
 /// Run a test binary in terminal mode (avoiding Zig 0.16 server-mode IPC
 /// which hangs with this project's test suite).
-/// Link PCRE2 + C shim for shell_engine pack regex matching (oracle parity).
-fn addPcre2Shim(b: *std.Build, mod: *std.Build.Module) void {
+/// Link Zig-built static PCRE2 + C shim for shell_engine pack regex matching.
+/// Built from source so host/cross targets (linux/darwin amd64+arm64) do not need
+/// system libpcre2-dev; Windows native CI can keep using the same path later.
+fn addPcre2Shim(
+    b: *std.Build,
+    mod: *std.Build.Module,
+    target: std.Build.ResolvedTarget,
+    optimize: std.builtin.OptimizeMode,
+) void {
     mod.link_libc = true;
-    mod.linkSystemLibrary("pcre2-8", .{});
+    const pcre2_dep = b.dependency("pcre2", .{
+        .target = target,
+        .optimize = optimize,
+        .linkage = .static,
+    });
+    const pcre2_lib = pcre2_dep.artifact("pcre2-8");
+    mod.linkLibrary(pcre2_lib);
     mod.addIncludePath(b.path("src/shell_engine"));
-    // Homebrew (macOS) and common Linux prefixes for local/CI installs.
-    mod.addSystemIncludePath(.{ .cwd_relative = "/opt/homebrew/include" });
-    mod.addLibraryPath(.{ .cwd_relative = "/opt/homebrew/lib" });
-    mod.addSystemIncludePath(.{ .cwd_relative = "/usr/local/include" });
-    mod.addLibraryPath(.{ .cwd_relative = "/usr/local/lib" });
-    mod.addSystemIncludePath(.{ .cwd_relative = "/usr/include" });
-    mod.addLibraryPath(.{ .cwd_relative = "/usr/lib" });
-    mod.addLibraryPath(.{ .cwd_relative = "/usr/lib/x86_64-linux-gnu" });
-    mod.addLibraryPath(.{ .cwd_relative = "/usr/lib/aarch64-linux-gnu" });
+    // Static PCRE2 requires PCRE2_STATIC for the public header macros on all targets.
     mod.addCSourceFile(.{
         .file = b.path("src/shell_engine/pcre2_shim.c"),
-        .flags = &.{"-std=c99"},
+        .flags = &.{ "-std=c99", "-DPCRE2_STATIC" },
     });
 }
 
@@ -150,7 +155,7 @@ pub fn build(b: *std.Build) void {
     exe.root_module.addImport("vaxis", vaxis_mod);
     // Attach once on `orca` (imported by the exe). Linking the same C shim on both
     // exe.root_module and orca_mod duplicates _orca_regex_* symbols at link time.
-    addPcre2Shim(b, orca_mod);
+    addPcre2Shim(b, orca_mod, target, optimize);
 
     b.installArtifact(exe);
     const install_orca = b.addInstallArtifact(exe, .{});
@@ -236,7 +241,7 @@ pub fn build(b: *std.Build) void {
         }),
         .filters = test_filters,
     });
-    addPcre2Shim(b, shell_engine_tests.root_module);
+    addPcre2Shim(b, shell_engine_tests.root_module, target, optimize);
     const run_shell_engine_tests = addRunTestTerminal(b, shell_engine_tests);
 
     const cli_package_tests = b.addTest(.{

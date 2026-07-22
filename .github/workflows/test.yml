@@ -13,8 +13,7 @@ jobs:
       - uses: mlugg/setup-zig@v2
         with:
           version: 0.16.0
-      - name: Install PCRE2 (shell_engine pack regex)
-        run: sudo apt-get update && sudo apt-get install -y libpcre2-dev
+      # PCRE2 is Zig-built from source via build.zig.zon (static link).
       - name: Full Zig unit / phase / fuzz suite
         run: ./scripts/zig build test
       - name: First-user install and uninstall regressions

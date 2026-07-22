@@ -113,7 +113,7 @@ eval "$(./scripts/ensure-zig-toolchain.sh --export)"   # or: direnv allow
 
 ## Risk Areas
 
-- Shell security authority is the Zig `shell_engine` (85 oracle packs + 100% corpus gate). Keep `./scripts/zig build test-shell-engine` green; requires PCRE2 (`libpcre2-dev` / Homebrew `pcre2`).
+- Shell security authority is the Zig `shell_engine` (85 oracle packs + 100% corpus gate). Keep `./scripts/zig build test-shell-engine` green; PCRE2 is linked via the Zig `pcre2` package (static `pcre2-8`).
 - Fail closed on evaluator errors for shell hooks.
 - The Zig **lib test monopath** (`src/root.zig` + `cli/mod.zig` test pulls) is the main local iteration bottleneck — compensate with L0-first discipline, not by skipping verification entirely.
 
