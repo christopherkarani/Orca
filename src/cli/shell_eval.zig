@@ -99,15 +99,28 @@ fn zigEvaluator(
     shell_event: ShellCommandEvent,
 ) daemon.DaemonError!std.json.Parsed(daemon.DaemonResponse) {
     // Load cwd-scoped pack config so opt-in packs / disables actually apply.
-    // Missing config → baseline only. Allocator failure fails closed via OOM.
+    // Missing config → baseline only. Unreadable / oversized config fails closed.
     var threaded: std.Io.Threaded = .init_single_threaded;
     const io = threaded.io();
     const workspace = shell_event.cwd orelse ".";
     var packs = pack_config.loadPackIdsForWorkspace(io, allocator, workspace) catch |err| switch (err) {
         error.OutOfMemory => return error.OutOfMemory,
-        // Unreadable / unexpected config errors: still evaluate baseline rather than
-        // invent pack state. Fail-closed security decisions remain in the engine.
-        else => pack_config.LoadedPackIds{},
+        error.HomeDirectoryNotFound => pack_config.LoadedPackIds{},
+        error.FileNotFound => pack_config.LoadedPackIds{},
+        else => {
+            // Fail closed: do not silently drop opt-in packs under config IO errors.
+            const deny_eval = shell_engine.Evaluation{
+                .decision = .deny,
+                .rule_id = "zig.shell:pack-config",
+                .pack_id = "zig.shell",
+                .pattern_name = "pack-config-load",
+                .severity = .critical,
+                .reason = "Pack configuration could not be loaded (fail-closed).",
+                .explanation = "Workspace/user pack config was unreadable or invalid; shell evaluation denies.",
+                .owned = false,
+            };
+            return synthesizeDaemonResponseFromZig(allocator, deny_eval);
+        },
     };
     defer packs.deinit(allocator);
 

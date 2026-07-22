@@ -217,13 +217,14 @@ fn commandWordBasename(word: []const u8) []const u8 {
 
 fn isInterpreterBasename(base: []const u8) bool {
     const names = [_][]const u8{
-        "bash",   "sh",      "zsh",  "ksh",  "dash", "fish",
-        "python", "python3", "ruby", "perl", "node",
+        "bash", "sh", "zsh", "ksh", "dash", "fish",
+        "ruby", "perl", "node",
     };
     for (names) |n| {
         if (std.mem.eql(u8, base, n)) return true;
     }
-    return false;
+    // python / python3 / python3.14 (versioned suffixes)
+    return interpreterBasenameLoose(base);
 }
 
 fn isDataSinkBasename(base: []const u8) bool {

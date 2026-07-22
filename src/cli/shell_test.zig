@@ -2,9 +2,9 @@
 const std = @import("std");
 const shell_engine = @import("../shell_engine/mod.zig");
 const shell_eval = @import("shell_eval.zig");
+const pack_config = @import("pack_config.zig");
 
 pub fn command(io: std.Io, argv: []const []const u8, stdout: anytype, stderr: anytype) !u8 {
-    _ = io;
     if (argv.len == 0 or std.mem.eql(u8, argv[0], "--help") or std.mem.eql(u8, argv[0], "-h")) {
         try stderr.writeAll(
             \\Usage: orca test [--format json] <command>
@@ -39,7 +39,21 @@ pub fn command(io: std.Io, argv: []const []const u8, stdout: anytype, stderr: an
     const command_text = try joinArgs(std.heap.smp_allocator, argv[cmd_start..]);
     defer std.heap.smp_allocator.free(command_text);
 
-    var eval = try shell_engine.evaluateCommand(std.heap.smp_allocator, command_text, .{});
+    var packs = pack_config.loadPackIdsForWorkspace(io, std.heap.smp_allocator, ".") catch |err| switch (err) {
+        error.OutOfMemory => return error.OutOfMemory,
+        error.HomeDirectoryNotFound, error.FileNotFound => pack_config.LoadedPackIds{},
+        else => {
+            try stderr.writeAll("orca test: pack configuration could not be loaded (fail-closed)\n");
+            return 2;
+        },
+    };
+    defer packs.deinit(std.heap.smp_allocator);
+
+    var eval = try shell_engine.evaluateCommand(std.heap.smp_allocator, command_text, .{
+        .default_packs_only = true,
+        .extra_enabled = packs.enabled,
+        .disabled = packs.disabled,
+    });
     defer eval.deinit(std.heap.smp_allocator);
 
     if (format_json) {

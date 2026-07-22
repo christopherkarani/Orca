@@ -355,7 +355,11 @@ const PackIdLists = struct {
 
 fn loadPackIdLists(io: std.Io, allocator: std.mem.Allocator, config_path: []const u8) !PackIdLists {
     var lists: PackIdLists = .{
-        .existing_raw = readFileIfExists(io, allocator, config_path) catch null,
+        .existing_raw = readFileIfExists(io, allocator, config_path) catch |err| switch (err) {
+            error.FileNotFound => null,
+            // Unreadable / oversize / IO errors must surface so production can fail closed.
+            else => return err,
+        },
     };
     errdefer lists.deinit(allocator);
     if (lists.existing_raw) |raw| {
@@ -700,6 +704,15 @@ fn packsArraySlice(content: []const u8, key: []const u8) ?[]const u8 {
                 continue;
             }
         }
+        // Skip keys that only appear in TOML comments on this line.
+        var line_start = abs;
+        while (line_start > 0 and section[line_start - 1] != '\n' and section[line_start - 1] != '\r') : (line_start -= 1) {}
+        var scan = line_start;
+        while (scan < abs and (section[scan] == ' ' or section[scan] == '\t')) : (scan += 1) {}
+        if (scan < abs and section[scan] == '#') {
+            pos = abs + key.len;
+            continue;
+        }
         // Reject partial token matches (e.g. key="enabled" must not match "disabled").
         const after = abs + key.len;
         if (after < section.len) {
@@ -882,6 +895,21 @@ test "packsArraySlice does not treat disabled as enabled" {
     try std.testing.expect(std.mem.indexOf(u8, enabled, "system.disk") == null);
     try std.testing.expect(std.mem.indexOf(u8, disabled, "system.disk") != null);
     try std.testing.expect(std.mem.indexOf(u8, disabled, "package_managers") == null);
+}
+
+test "packsArraySlice ignores commented-out pack keys" {
+    const content =
+        \\[packs]
+        \\enabled = ["containers.docker"]
+        \\# disabled = ["system.disk"]
+        \\
+    ;
+    try std.testing.expect(packsArraySlice(content, "disabled") == null);
+    const enabled = packsArraySlice(content, "enabled") orelse {
+        try std.testing.expect(false);
+        return;
+    };
+    try std.testing.expect(std.mem.indexOf(u8, enabled, "containers.docker") != null);
 }
 
 test "rewritePacksArrayKey preserves other keys and section order" {

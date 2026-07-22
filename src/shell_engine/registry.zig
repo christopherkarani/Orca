@@ -157,7 +157,8 @@ pub fn packCount() usize {
 fn mightMatch(pack: CompiledPack, cmd: []const u8) bool {
     if (pack.keywords.len == 0) return true;
     for (pack.keywords) |kw| {
-        if (std.mem.indexOf(u8, cmd, kw) != null) return true;
+        // Windows executables are case-insensitive (Git.EXE / RM.EXE).
+        if (std.ascii.indexOfIgnoreCase(cmd, kw) != null) return true;
     }
     return false;
 }
@@ -205,8 +206,13 @@ pub fn matchCommandDetailed(cmd: []const u8) MatchResult {
 fn packIdListed(pack_id: []const u8, ids: []const []const u8) bool {
     for (ids) |id| {
         if (std.mem.eql(u8, pack_id, id)) return true;
-        // Category shorthand used in config: `core` covers all `core.*`.
-        if (std.mem.eql(u8, id, "core") and std.mem.startsWith(u8, pack_id, "core.")) return true;
+        // Category shorthand: `core` → `core.*`, `containers` → `containers.*`.
+        // Any config token without a '.' is treated as a category prefix.
+        if (std.mem.indexOfScalar(u8, id, '.') == null and id.len > 0) {
+            if (pack_id.len > id.len and pack_id[id.len] == '.' and std.mem.startsWith(u8, pack_id, id)) {
+                return true;
+            }
+        }
     }
     return false;
 }
@@ -358,6 +364,15 @@ test "opt-in pack via extra_enabled denies docker system prune" {
     });
     try std.testing.expect(with_docker == .deny);
     try std.testing.expectEqualStrings("containers.docker", with_docker.deny.pack_id);
+}
+
+test "opt-in pack category containers expands to containers.*" {
+    try ensureInit();
+    const with_cat = matchCommandDetailedOpts("docker system prune", .{
+        .extra_enabled = &.{"containers"},
+    });
+    try std.testing.expect(with_cat == .deny);
+    try std.testing.expectEqualStrings("containers.docker", with_cat.deny.pack_id);
 }
 
 test "disabled pack suppresses default-enabled destructive match" {

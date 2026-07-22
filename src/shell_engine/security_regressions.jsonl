@@ -46,3 +46,6 @@
 {"command": "bash -s <<'EOF'\nrm -rf /\nEOF", "expected": "deny", "source": "codex_p1_heredoc_options", "description": "heredoc after bash -s options still executing"}
 {"command": "/bin/bash -s <<EOF\nrm -rf /\nEOF", "expected": "deny", "source": "codex_p1_heredoc_options", "description": "qualified bash -s heredoc still executing"}
 {"command": "sudo bash -s <<'EOF'\ngit reset --hard\nEOF", "expected": "deny", "source": "codex_p1_heredoc_options", "description": "sudo wrapper then bash -s heredoc"}
+{"command": "python3.14 <<'EOF'\nimport shutil; shutil.rmtree('/')\nEOF", "expected": "deny", "source": "codex_p1_python_versioned_heredoc", "description": "versioned python heredoc is executing"}
+{"command": "Git.EXE reset --hard", "expected": "deny", "source": "codex_p1_windows_case", "description": "Windows case-insensitive Git.EXE still denies"}
+{"command": "RM.EXE -rf /", "expected": "deny", "source": "codex_p1_windows_case", "description": "Windows case-insensitive RM.EXE still denies"}

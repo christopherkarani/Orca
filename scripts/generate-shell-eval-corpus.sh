@@ -4,7 +4,7 @@
 # Without a live daemon/binary, the checked-in JSONL remains the oracle freeze.
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-OUT="${ROOT}/tests/fixtures/shell_eval_mvp_corpus.jsonl"
+OUT="${ROOT}/src/shell_engine/mvp_corpus.jsonl"
 CMDS="${1:-}"
 
 ORCA_BIN=""

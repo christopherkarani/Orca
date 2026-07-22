@@ -490,10 +490,30 @@ fn normalizeShellWord(allocator: std.mem.Allocator, raw: []const u8, token_index
         changed = true;
     }
 
+    // Windows command lookup is case-insensitive; lowercase argv0 so pack
+    // keywords/regexes written in lowercase still match `Git.EXE` / `RM.EXE`.
+    if (token_index == 0) {
+        var needs_lower = false;
+        for (word) |c| {
+            if (c >= 'A' and c <= 'Z') {
+                needs_lower = true;
+                break;
+            }
+        }
+        if (needs_lower) {
+            const lower = try allocator.alloc(u8, word.len);
+            for (word, 0..) |c, idx| {
+                lower[idx] = std.ascii.toLower(c);
+            }
+            allocator.free(word);
+            word = lower;
+            changed = true;
+        }
+    }
+
     // If this is a path-like argument (not argv0) that was fully produced from a
     // single quoted span originally, we already keep quotes in the quoted branch.
     // Here bare paths stay as-is.
-    _ = token_index;
 
     if (!changed) {
         allocator.free(word);
