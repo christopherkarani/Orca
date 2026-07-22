@@ -33,6 +33,7 @@
 - Network effect tags now apply on the **runtime proxy** path (`network_eval.evaluate` / `orca run`), not only `policy explain network`.
 - Shell bypass: `open -a`/`-b` option values are skipped; multi-URL `curl` scans every operand; `open`/`curl` require command position (avoids `printf … open mailto:` false positives).
 - Shell bypass: wrappers with options (`sudo -u root curl …`, `env -i open …`, `xargs curl …`), escaped operators (`foo\;`), non-transfer curl values (`--referer`), and lookup-only `command -v`/`-V` are handled correctly.
+- Shell bypass: real newlines are command separators; shell control introducers (`if`/`then`/`!`/…) count as command position when the introducer itself is in command position (avoids `echo if curl` false positives); active `\\n` line continuations do not split commands.
 - Structural arg scan prefers interesting keys/values against decoy padding (including large objects and string-value slot exhaustion); `href`/`uri` share interesting priority with other URL keys; eviction allocates before free (OOM-safe).
 - Shell bypass residual note updated: host shell PreToolUse uses Zig `shell_engine` (MVP); full effect-class parity on compound shell forms remains deferred.
 
