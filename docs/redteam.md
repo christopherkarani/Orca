@@ -11,7 +11,7 @@
 ## What it is not
 
 - **Not** a test of your workspace `.orca/policy.yaml`
-- **Not** a test of the **Rust daemon** shell evaluation path used in production hooks
+- **Not** a test of production hook install / host wiring (shell Evaluate itself is Zig `shell_engine`)
 - **Not** proof that PATH wrappers, host hooks, network proxy, or OS-enforced filesystem backends are active
 - A **100% score does not mean** your workspace is protected
 

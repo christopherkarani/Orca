@@ -5,8 +5,7 @@ pub const shell_engine = @import("shell_engine/mod.zig");
 
 test {
     _ = shell_engine;
-    _ = shell_engine.tokenize;
-    _ = shell_engine.packs;
     _ = shell_engine.allowlist;
+    _ = shell_engine.registry;
     _ = @import("shell_engine/corpus_test.zig");
 }

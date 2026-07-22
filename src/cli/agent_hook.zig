@@ -6,7 +6,7 @@
 //!
 //! Invariants:
 //! - Interactive TTY with no args still shows help (not hook mode).
-//! - Shell commands route through the Rust daemon evaluator (fail-closed when unavailable).
+//! - Shell commands route through the Zig shell_engine by default (fail-closed when unavailable).
 //! - Invalid / non-shell hook input fails open (exit 0, allow) matching Rust hook mode.
 
 const std = @import("std");

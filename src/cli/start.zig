@@ -56,7 +56,7 @@ pub fn runStart(
 
     try tui.render.banner(io, stdout, build_options.version, null);
     try stdout.writeAll(
-        \\Orca will configure protection for your workspace, verify the Rust daemon when needed,
+        \\Orca will configure protection for your workspace, verify shell evaluation when needed,
         \\install host integrations you choose, and run safe verification checks.
         \\Existing policy files are kept unless you run `orca init --force`.
         \\

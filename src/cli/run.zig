@@ -1500,7 +1500,7 @@ test "run command guard denies ci ask without prompting and audits command event
     try std.testing.expect(std.mem.indexOf(u8, events, "\"type\":\"command_denied\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, events, "sk-fakeSyntheticOpenAIKey") == null);
     try std.testing.expect(std.mem.indexOf(u8, events, "shell command (redacted)") != null);
-    try std.testing.expect(std.mem.indexOf(u8, events, "\"decision_source\":\"rust-daemon\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, events, "\"decision_source\":\"zig-native\"") != null);
 }
 
 // Default auto attach + orchestration (shim dir). Skips when no OS backend.

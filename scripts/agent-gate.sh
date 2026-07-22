@@ -5,10 +5,11 @@
 #   ./scripts/agent-gate.sh                 # auto from git dirty + staged paths
 #   ./scripts/agent-gate.sh --dry-run       # print chosen command only
 #   ./scripts/agent-gate.sh --paths a.zig b.rs
-#   ./scripts/agent-gate.sh compile|units|full|check|core|rust|dx|sandbox|policy|intercept|dashboard|plugin|scripts
+#   ./scripts/agent-gate.sh compile|units|full|check|core|rust|shell-engine|dx|sandbox|policy|intercept|dashboard|plugin|scripts
 #
 # Explicit modes always run that gate. Auto mode uses path heuristics.
 # Domain slices: prefer test-slice.sh for -Dtest-filter; agent-gate picks the slice.
+# src/shell_engine/** → L0.5 ./scripts/zig build test-shell-engine
 # See Agents.md → "Verification gates".
 
 set -euo pipefail
@@ -26,20 +27,21 @@ usage() {
 usage: ./scripts/agent-gate.sh [--dry-run] [--paths FILE...] [MODE]
 
 Modes:
-  check       ./scripts/compile-fast.sh check
-  compile     ./scripts/test-fast.sh compile
-  units       ./scripts/test-fast.sh units
-  full        ./scripts/test-fast.sh full
-  core        zig build test-core + test-core-contract
-  sandbox     ./scripts/test-slice.sh sandbox
-  policy      ./scripts/test-slice.sh policy
-  intercept   ./scripts/test-slice.sh intercept
-  dx          quick-install-dx-verify (builds CLI if needed)
-  rust        cargo test --lib in orca-rs/
-  dashboard   npm test in orca-dashboard-ui/
-  plugin      package-local tests for dirty integrations/*-plugin paths
-  scripts     bash -n (+ light dry-run smoke) for dirty scripts/**
-  auto        (default) choose from dirty paths / --paths
+  check         ./scripts/compile-fast.sh check
+  compile       ./scripts/test-fast.sh compile
+  units         ./scripts/test-fast.sh units
+  full          ./scripts/test-fast.sh full
+  core          zig build test-core + test-core-contract
+  sandbox       ./scripts/test-slice.sh sandbox
+  policy        ./scripts/test-slice.sh policy
+  intercept     ./scripts/test-slice.sh intercept
+  shell-engine  ./scripts/zig build test-shell-engine (L0.5)
+  rust          alias for shell-engine (orca-rs retired)
+  dx            quick-install-dx-verify (builds CLI if needed)
+  dashboard     npm test in orca-dashboard-ui/
+  plugin        package-local tests for dirty integrations/*-plugin paths
+  scripts       bash -n (+ light dry-run smoke) for dirty scripts/**
+  auto          (default) choose from dirty paths / --paths
 EOF
 }
 
@@ -54,7 +56,7 @@ while [[ $# -gt 0 ]]; do
       done
       ;;
     -h|--help) usage; exit 0 ;;
-    check|compile|units|full|core|sandbox|policy|intercept|dx|rust|dashboard|plugin|scripts|auto)
+    check|compile|units|full|core|sandbox|policy|intercept|shell-engine|dx|rust|dashboard|plugin|scripts|auto)
       mode="$1"
       shift
       ;;
@@ -102,10 +104,10 @@ plugin_dirs_from_paths() {
 choose_auto() {
   local p
   local has_zig=0 has_core=0 has_rust=0 has_policy=0 has_scripts=0 has_other=0
-  local has_sandbox=0 has_intercept=0 has_policy_src=0
+  local has_sandbox=0 has_intercept=0 has_policy_src=0 has_shell_engine=0
   local has_dashboard=0 has_plugin=0
   local only_md=1
-  local only_sandbox=1 only_intercept=1 only_policy_src=1
+  local only_sandbox=1 only_intercept=1 only_policy_src=1 only_shell_engine=1
 
   if [[ ${#paths[@]} -eq 0 ]]; then
     echo check
@@ -146,6 +148,15 @@ choose_auto() {
         ;;
     esac
     case "${p}" in
+      src/shell_engine/*|src/shell_engine_slice_root.zig) has_shell_engine=1 ;;
+      *)
+        case "${p}" in
+          *.md|docs/*|planning/*|.grok/*) ;;
+          *) only_shell_engine=0 ;;
+        esac
+        ;;
+    esac
+    case "${p}" in
       src/policy/*) has_policy_src=1 ;;
       *)
         case "${p}" in
@@ -181,8 +192,8 @@ choose_auto() {
     local out="$1"
     if [[ "${has_rust}" -eq 1 ]]; then
       case " ${out} " in
-        *" rust "*) ;;
-        *) out+=" rust" ;;
+        *" rust "*|*" shell-engine "*) ;;
+        *) out+=" shell-engine" ;;
       esac
     fi
     if [[ "${has_dashboard}" -eq 1 ]]; then
@@ -212,7 +223,9 @@ choose_auto() {
   if [[ "${has_zig}" -eq 1 ]]; then
     local zig_gate=""
     # Prefer domain slices when dirty paths stay inside one domain.
-    if [[ "${has_sandbox}" -eq 1 && "${only_sandbox}" -eq 1 ]]; then
+    if [[ "${has_shell_engine}" -eq 1 && "${only_shell_engine}" -eq 1 ]]; then
+      zig_gate=shell-engine
+    elif [[ "${has_sandbox}" -eq 1 && "${only_sandbox}" -eq 1 ]]; then
       zig_gate=sandbox
     elif [[ "${has_intercept}" -eq 1 && "${only_intercept}" -eq 1 ]]; then
       zig_gate=intercept
@@ -345,9 +358,15 @@ run_scripts_gate() {
       selected=units dashboard scripts -- \
       src/cli/run.zig orca-dashboard-ui/app/dashboard.ts scripts/test-fast.sh
 
+    # L0.5: pure shell_engine tree → test-shell-engine (not monopath units).
+    agent_gate_smoke_case "shell-engine-only" \
+      selected=shell-engine -- \
+      src/shell_engine/mod.zig src/shell_engine/normalize.zig
+
     # Codex P2: non-Zig mixed trees must compose every gate.
+    # orca-rs is retired; path still routes to shell-engine companion.
     agent_gate_smoke_case "rust+scripts" \
-      selected=rust scripts -- \
+      selected=shell-engine scripts -- \
       orca-rs/src/lib.rs scripts/test-fast.sh
 
     agent_gate_smoke_case "policy+dashboard" \

@@ -35,10 +35,19 @@ void orca_regex_free(orca_regex *re) {
 }
 
 int orca_regex_is_match(orca_regex *re, const char *text, size_t len) {
-    if (!re || !re->code) return 0;
+    if (!re || !re->code) return -1;
+    /* Empty subject is valid (no-match or match of empty patterns); never read past len. */
+    if (!text && len != 0) return -1;
+
     pcre2_match_data *md = pcre2_match_data_create_from_pattern(re->code, NULL);
-    if (!md) return 0;
-    int rc = pcre2_match(re->code, (PCRE2_SPTR)text, (PCRE2_SIZE)len, 0, 0, md, NULL);
+    if (!md) return -2;
+
+    const PCRE2_SPTR subject = text ? (PCRE2_SPTR)text : (PCRE2_SPTR)"";
+    int rc = pcre2_match(re->code, subject, (PCRE2_SIZE)len, 0, 0, md, NULL);
     pcre2_match_data_free(md);
-    return rc >= 0 ? 1 : 0;
+
+    if (rc >= 0) return 1;
+    if (rc == PCRE2_ERROR_NOMATCH) return 0;
+    /* Preserve negative PCRE2 error codes for diagnostics; all mean fail-closed. */
+    return rc < 0 ? rc : -3;
 }

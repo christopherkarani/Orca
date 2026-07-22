@@ -141,8 +141,10 @@ fn detachAttachedRedirections(allocator: std.mem.Allocator, current: *[]u8) !boo
         out.deinit(allocator);
         return false;
     }
+    // Own the rebuilt slice before freeing `current` so OOM leaves current valid.
+    const owned = try out.toOwnedSlice(allocator);
     allocator.free(current.*);
-    current.* = try out.toOwnedSlice(allocator);
+    current.* = owned;
     return true;
 }
 
@@ -179,8 +181,10 @@ fn joinLineContinuations(allocator: std.mem.Allocator, current: *[]u8) !bool {
         try out.append(allocator, s[i]);
         i += 1;
     }
+    // Own the rebuilt slice before freeing `current` so OOM leaves current valid.
+    const owned = try out.toOwnedSlice(allocator);
     allocator.free(current.*);
-    current.* = try out.toOwnedSlice(allocator);
+    current.* = owned;
     return true;
 }
 
@@ -418,8 +422,10 @@ fn dequoteCommandWords(allocator: std.mem.Allocator, current: *[]u8) !bool {
         out.deinit(allocator);
         return false;
     }
+    // Own the rebuilt slice before freeing `current` so OOM leaves current valid.
+    const owned = try out.toOwnedSlice(allocator);
     allocator.free(current.*);
-    current.* = try out.toOwnedSlice(allocator);
+    current.* = owned;
     return true;
 }
 
@@ -473,6 +479,8 @@ fn normalizeShellWord(allocator: std.mem.Allocator, raw: []const u8, token_index
     }
 
     var word = try buf.toOwnedSlice(allocator);
+    // After toOwnedSlice, buf is empty; free `word` on any later OOM (e.g. .exe shorten).
+    errdefer allocator.free(word);
 
     // Strip trailing .exe
     if (word.len >= 4 and std.ascii.eqlIgnoreCase(word[word.len - 4 ..], ".exe")) {
@@ -653,6 +661,7 @@ fn extractDashC(allocator: std.mem.Allocator, command: []const u8, list: *std.Ar
 }
 
 fn extractInterpC(allocator: std.mem.Allocator, command: []const u8, list: *std.ArrayList([]const u8)) !void {
+    // Longer names first so `python3` wins over `python` inside `python3.11.exe`.
     const interps = [_]struct { name: []const u8, flag: []const u8 }{
         .{ .name = "python3", .flag = "-c" },
         .{ .name = "python", .flag = "-c" },
@@ -663,11 +672,17 @@ fn extractInterpC(allocator: std.mem.Allocator, command: []const u8, list: *std.
     for (interps) |ip| {
         var search: usize = 0;
         while (std.mem.indexOfPos(u8, command, search, ip.name)) |idx| {
-            if (idx > 0 and (std.ascii.isAlphanumeric(command[idx - 1]) or command[idx - 1] == '_')) {
+            if (idx > 0 and (std.ascii.isAlphanumeric(command[idx - 1]) or command[idx - 1] == '_' or command[idx - 1] == '.')) {
                 search = idx + ip.name.len;
                 continue;
             }
-            var p = idx + ip.name.len;
+            // Skip version + Windows .exe: python.exe, python3.11.exe, python3.exe
+            var p = skipInterpBinarySuffix(command, idx + ip.name.len);
+            // Require a boundary after the binary token (space, EOL, or flag).
+            if (p < command.len and !std.ascii.isWhitespace(command[p]) and command[p] != '-') {
+                search = idx + ip.name.len;
+                continue;
+            }
             while (p < command.len) {
                 while (p < command.len and std.ascii.isWhitespace(command[p])) : (p += 1) {}
                 if (p >= command.len) break;
@@ -687,6 +702,24 @@ fn extractInterpC(allocator: std.mem.Allocator, command: []const u8, list: *std.
             search = idx + ip.name.len;
         }
     }
+}
+
+/// After an interpreter name (`python` / `python3`), consume optional version
+/// (`.11`, `.11.2`) and optional Windows `.exe` so `python3.11.exe -c` works.
+/// Does not swallow the `.` of `.exe` into the version segment.
+fn skipInterpBinarySuffix(command: []const u8, start: usize) usize {
+    var p = start;
+    // Version: one or more ( '.' DIGITS+ ) — stop before `.exe` (no digits after `.`)
+    while (p < command.len and command[p] == '.') {
+        var r = p + 1;
+        if (r >= command.len or !std.ascii.isDigit(command[r])) break;
+        while (r < command.len and std.ascii.isDigit(command[r])) : (r += 1) {}
+        p = r;
+    }
+    if (p + 4 <= command.len and std.ascii.eqlIgnoreCase(command[p .. p + 4], ".exe")) {
+        p += 4;
+    }
+    return p;
 }
 
 fn takeQuotedOrWord(s: []const u8) []const u8 {
@@ -783,6 +816,20 @@ test "normalize strips command wrapper with leading redirect" {
     var n = try normalizeCommand(std.testing.allocator, "command >>/dev/null git reset --hard");
     defer n.deinit(std.testing.allocator);
     try std.testing.expectEqualStrings("git reset --hard", n.normalized);
+}
+
+test "extractInterpC extracts python.exe -c body" {
+    const embeds = try extractEmbeds(std.testing.allocator, "python.exe -c \"import shutil; shutil.rmtree('/')\"");
+    defer freeEmbeds(std.testing.allocator, embeds);
+    try std.testing.expect(embeds.len >= 1);
+    try std.testing.expect(std.mem.indexOf(u8, embeds[0], "rmtree") != null);
+}
+
+test "extractInterpC extracts python3.11.exe -c body" {
+    const embeds = try extractEmbeds(std.testing.allocator, "python3.11.exe -c \"import shutil; shutil.rmtree('/')\"");
+    defer freeEmbeds(std.testing.allocator, embeds);
+    try std.testing.expect(embeds.len >= 1);
+    try std.testing.expect(std.mem.indexOf(u8, embeds[0], "rmtree") != null);
 }
 
 test "extract bash -c embed" {

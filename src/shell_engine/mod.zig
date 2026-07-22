@@ -7,8 +7,6 @@
 const std = @import("std");
 
 pub const types = @import("types.zig");
-pub const tokenize = @import("tokenize.zig");
-pub const packs = @import("packs.zig");
 pub const allowlist = @import("allowlist.zig");
 pub const registry = @import("registry.zig");
 pub const segments = @import("segments.zig");
@@ -130,25 +128,20 @@ pub fn evaluateCommand(allocator: std.mem.Allocator, command: []const u8, option
     }
 
     for (candidates.items) |cand| {
-        if (try evalOne(allocator, cand, match_opts)) |hit| {
-            const rule_id = try std.fmt.allocPrint(allocator, "{s}:{s}", .{ hit.pack_id, hit.pattern_name });
-            errdefer allocator.free(rule_id);
-            const pack_copy = try allocator.dupe(u8, hit.pack_id);
-            errdefer allocator.free(pack_copy);
-            const pattern_copy = try allocator.dupe(u8, hit.pattern_name);
-            errdefer allocator.free(pattern_copy);
-            const reason_copy = try allocator.dupe(u8, hit.reason);
-            errdefer allocator.free(reason_copy);
-            return .{
-                .decision = .deny,
-                .rule_id = rule_id,
-                .pack_id = pack_copy,
-                .pattern_name = pattern_copy,
-                .severity = hit.severity,
-                .reason = reason_copy,
-                .explanation = null,
-                .owned = true,
-            };
+        if (try evalOne(allocator, cand, match_opts, .{})) |hit| {
+            return try denyFromHit(allocator, hit);
+        }
+    }
+
+    // Data-only | shell/interpreter: sanitize masks LHS payload, bare bash RHS has
+    // no pack hit. Re-evaluate pipeline prefixes that feed an executor without
+    // data-only sanitize so `echo 'rm -rf /' | bash` denies.
+    var pipe_payloads: std.ArrayList([]const u8) = .empty;
+    defer pipe_payloads.deinit(allocator);
+    try appendPipelinePrefixesToExecutor(trimmed, allocator, &pipe_payloads);
+    for (pipe_payloads.items) |cand| {
+        if (try evalOne(allocator, cand, match_opts, .{ .skip_data_sanitize = true })) |hit| {
+            return try denyFromHit(allocator, hit);
         }
     }
 
@@ -156,22 +149,51 @@ pub fn evaluateCommand(allocator: std.mem.Allocator, command: []const u8, option
     return allowStatic("No destructive pack matched.");
 }
 
+fn denyFromHit(allocator: std.mem.Allocator, hit: registry.Hit) !Evaluation {
+    const rule_id = try std.fmt.allocPrint(allocator, "{s}:{s}", .{ hit.pack_id, hit.pattern_name });
+    errdefer allocator.free(rule_id);
+    const pack_copy = try allocator.dupe(u8, hit.pack_id);
+    errdefer allocator.free(pack_copy);
+    const pattern_copy = try allocator.dupe(u8, hit.pattern_name);
+    errdefer allocator.free(pattern_copy);
+    const reason_copy = try allocator.dupe(u8, hit.reason);
+    errdefer allocator.free(reason_copy);
+    return .{
+        .decision = .deny,
+        .rule_id = rule_id,
+        .pack_id = pack_copy,
+        .pattern_name = pattern_copy,
+        .severity = hit.severity,
+        .reason = reason_copy,
+        .explanation = null,
+        .owned = true,
+    };
+}
+
 /// True when the outer command is an executing shell/interpreter (not cat/tee/grep data sinks).
 fn isExecutingContext(cmd: []const u8) bool {
-    const exec_markers = [_][]const u8{
-        "bash ", "bash\t", "sh ", "sh\t", "zsh ", "zsh\t", "ksh ", "dash ",
-        "python ", "python3 ", "ruby ", "perl ", "node ",
-        "/bash ", "/sh ", "/zsh ",
-    };
-    // Also path forms ending with shell names before -c
-    if (std.mem.indexOf(u8, cmd, " -c ") != null or std.mem.indexOf(u8, cmd, " -c'") != null or
-        std.mem.indexOf(u8, cmd, " -c\"") != null or std.mem.indexOf(u8, cmd, " -e ") != null)
-    {
-        for (exec_markers) |m| {
-            if (std.mem.indexOf(u8, cmd, m) != null) return true;
-        }
-        // /usr/bin/bash -c
-        if (std.mem.indexOf(u8, cmd, "/bash") != null or std.mem.indexOf(u8, cmd, "/python") != null)
+    const has_c_or_e = std.mem.indexOf(u8, cmd, " -c ") != null or
+        std.mem.indexOf(u8, cmd, " -c'") != null or
+        std.mem.indexOf(u8, cmd, " -c\"") != null or
+        std.mem.indexOf(u8, cmd, "\t-c ") != null or
+        std.mem.indexOf(u8, cmd, " -e ") != null or
+        std.mem.indexOf(u8, cmd, " -e'") != null or
+        std.mem.indexOf(u8, cmd, " -e\"") != null or
+        // glued forms: python.exe -c"..." / -c'...'
+        std.mem.indexOf(u8, cmd, " -c\"") != null or
+        std.mem.indexOf(u8, cmd, "-c \"") != null or
+        std.mem.indexOf(u8, cmd, "-c '") != null or
+        std.mem.indexOf(u8, cmd, "-c\"") != null or
+        std.mem.indexOf(u8, cmd, "-c'") != null or
+        std.mem.indexOf(u8, cmd, "-e \"") != null or
+        std.mem.indexOf(u8, cmd, "-e'") != null;
+
+    if (has_c_or_e) {
+        // First command word: accept python.exe / python3.11.exe / /usr/bin/python3
+        if (firstArgv0LooksLikeExecutor(cmd)) return true;
+        if (std.mem.indexOf(u8, cmd, "/bash") != null or std.mem.indexOf(u8, cmd, "/python") != null or
+            std.mem.indexOf(u8, cmd, "/ruby") != null or std.mem.indexOf(u8, cmd, "/node") != null or
+            std.mem.indexOf(u8, cmd, "/perl") != null)
             return true;
     }
     // Heredoc into shell/interpreter — including attached forms like `/bin/bash<<'EOF'`.
@@ -195,7 +217,7 @@ fn commandWordBasename(word: []const u8) []const u8 {
 
 fn isInterpreterBasename(base: []const u8) bool {
     const names = [_][]const u8{
-        "bash", "sh", "zsh", "ksh", "dash", "fish",
+        "bash",   "sh",      "zsh",  "ksh",  "dash", "fish",
         "python", "python3", "ruby", "perl", "node",
     };
     for (names) |n| {
@@ -206,8 +228,8 @@ fn isInterpreterBasename(base: []const u8) bool {
 
 fn isDataSinkBasename(base: []const u8) bool {
     const sinks = [_][]const u8{
-        "cat", "tee", "grep", "egrep", "fgrep", "sed", "awk", "wc", "sort",
-        "head", "tail", "base64", "md5", "md5sum", "sha256sum", "curl", "less", "more",
+        "cat",  "tee",  "grep",   "egrep", "fgrep",  "sed",       "awk",  "wc",   "sort",
+        "head", "tail", "base64", "md5",   "md5sum", "sha256sum", "curl", "less", "more",
     };
     for (sinks) |s| {
         if (std.mem.eql(u8, base, s)) return true;
@@ -247,6 +269,58 @@ fn heredocReceiverIsExecuting(cmd: []const u8) bool {
     return false;
 }
 
+/// Basename of argv0 with optional `.exe` stripped; true for shells/interpreters.
+fn firstArgv0LooksLikeExecutor(cmd: []const u8) bool {
+    const t = std.mem.trim(u8, cmd, " \t\r\n");
+    if (t.len == 0) return false;
+    var i: usize = 0;
+    // skip leading env assignments: NAME=val
+    while (i < t.len) {
+        var j = i;
+        while (j < t.len and (std.ascii.isAlphanumeric(t[j]) or t[j] == '_')) : (j += 1) {}
+        if (j > i and j < t.len and t[j] == '=') {
+            while (j < t.len and !std.ascii.isWhitespace(t[j])) : (j += 1) {}
+            while (j < t.len and std.ascii.isWhitespace(t[j])) : (j += 1) {}
+            i = j;
+            continue;
+        }
+        break;
+    }
+    var end = i;
+    while (end < t.len and !std.ascii.isWhitespace(t[end])) : (end += 1) {}
+    var word = t[i..end];
+    // basename
+    if (std.mem.lastIndexOfScalar(u8, word, '/')) |slash| {
+        word = word[slash + 1 ..];
+    }
+    if (std.mem.lastIndexOfScalar(u8, word, '\\')) |slash| {
+        word = word[slash + 1 ..];
+    }
+    // strip .exe
+    if (word.len >= 4 and std.ascii.eqlIgnoreCase(word[word.len - 4 ..], ".exe")) {
+        word = word[0 .. word.len - 4];
+    }
+    // python / python3 / python3.11
+    if (std.mem.startsWith(u8, word, "python")) {
+        const rest = word["python".len..];
+        if (rest.len == 0) return true;
+        // version-only suffix
+        var all_ver = true;
+        for (rest) |c| {
+            if (!std.ascii.isDigit(c) and c != '.') {
+                all_ver = false;
+                break;
+            }
+        }
+        if (all_ver) return true;
+    }
+    const exact = [_][]const u8{ "bash", "sh", "zsh", "ksh", "dash", "ruby", "perl", "node" };
+    for (exact) |e| {
+        if (std.mem.eql(u8, word, e)) return true;
+    }
+    return false;
+}
+
 fn appendSegments(allocator: std.mem.Allocator, candidates: *std.ArrayList([]const u8), cmd: []const u8) !void {
     const segs = try segments.splitCommandSegments(cmd, allocator);
     defer segments.freeSegments(allocator, segs);
@@ -255,7 +329,91 @@ fn appendSegments(allocator: std.mem.Allocator, candidates: *std.ArrayList([]con
     }
 }
 
-fn evalOne(allocator: std.mem.Allocator, cand: []const u8, match_opts: registry.MatchOptions) !?registry.Hit {
+const EvalOneOptions = struct {
+    /// When true, skip data-only sanitize masking (LHS of pipe-to-shell is executing).
+    skip_data_sanitize: bool = false,
+};
+
+/// Collect pipeline prefixes that feed a shell/interpreter via `|` / `|&`.
+/// Items are borrowed slices into `cmd` (caller must keep `cmd` alive).
+fn appendPipelinePrefixesToExecutor(
+    cmd: []const u8,
+    allocator: std.mem.Allocator,
+    out: *std.ArrayList([]const u8),
+) !void {
+    var pipeline_start: usize = 0;
+    var i: usize = 0;
+    var in_single = false;
+    var in_double = false;
+
+    while (i < cmd.len) {
+        const b = cmd[i];
+        if (b == '\\' and !in_single and i + 1 < cmd.len) {
+            i += 2;
+            continue;
+        }
+        if (b == '\'' and !in_double) {
+            in_single = !in_single;
+            i += 1;
+            continue;
+        }
+        if (b == '"' and !in_single) {
+            in_double = !in_double;
+            i += 1;
+            continue;
+        }
+        if (in_single or in_double) {
+            i += 1;
+            continue;
+        }
+
+        // Non-pipe separators end the current pipeline group.
+        if (b == ';' or b == '\n') {
+            pipeline_start = i + 1;
+            i += 1;
+            continue;
+        }
+        if (b == '&') {
+            // `>&` / `&>` redirections are not command separators.
+            if (i > 0 and cmd[i - 1] == '>') {
+                i += 1;
+                continue;
+            }
+            if (i + 1 < cmd.len and cmd[i + 1] == '>') {
+                i += 1;
+                continue;
+            }
+            if (i + 1 < cmd.len and cmd[i + 1] == '&') {
+                pipeline_start = i + 2;
+                i += 2;
+                continue;
+            }
+            pipeline_start = i + 1;
+            i += 1;
+            continue;
+        }
+        if (b == '|') {
+            if (i + 1 < cmd.len and cmd[i + 1] == '|') {
+                pipeline_start = i + 2;
+                i += 2;
+                continue;
+            }
+            var w: usize = 1;
+            if (i + 1 < cmd.len and cmd[i + 1] == '&') w = 2; // |&
+            const rhs_start = i + w;
+            if (firstArgv0LooksLikeExecutor(cmd[rhs_start..])) {
+                const prefix = std.mem.trim(u8, cmd[pipeline_start..i], " \t\r\n");
+                if (prefix.len > 0) try out.append(allocator, prefix);
+            }
+            // Continue scanning; later stages may also be executors.
+            i = rhs_start;
+            continue;
+        }
+        i += 1;
+    }
+}
+
+fn evalOne(allocator: std.mem.Allocator, cand: []const u8, match_opts: registry.MatchOptions, opts: EvalOneOptions) !?registry.Hit {
     const trimmed = std.mem.trim(u8, cand, " \t\r\n");
     if (trimmed.len == 0) return null;
 
@@ -263,10 +421,17 @@ fn evalOne(allocator: std.mem.Allocator, cand: []const u8, match_opts: registry.
     if (isAssignmentOnly(trimmed)) return null;
 
     // Mask non-executing heredoc bodies (cat/tee/grep <<EOF …) so data cannot trigger packs.
-    const masked_hd = try maskNonExecutingHeredoc(allocator, trimmed);
+    // When skip_data_sanitize (pipe-to-shell LHS), leave bodies visible — stdin is executing.
+    const masked_hd = if (opts.skip_data_sanitize)
+        try allocator.dupe(u8, trimmed)
+    else
+        try maskNonExecutingHeredoc(allocator, trimmed);
     defer allocator.free(masked_hd);
 
-    const sanitized = try sanitize.sanitizeForMatching(allocator, masked_hd);
+    const sanitized = if (opts.skip_data_sanitize)
+        try allocator.dupe(u8, masked_hd)
+    else
+        try sanitize.sanitizeForMatching(allocator, masked_hd);
     defer allocator.free(sanitized);
 
     // Language-runtime destructive APIs inside -c/-e bodies (no pack regex covers these).
@@ -379,6 +544,7 @@ fn maskAssignmentValues(allocator: std.mem.Allocator, cmd: []const u8) ![]u8 {
 fn rewriteTempDefault(allocator: std.mem.Allocator, cmd: []const u8) ![]u8 {
     // Map ${TMPDIR:-/tmp} and ${TMPDIR:=/tmp} to $TMPDIR for safe-pattern matching.
     var out = try allocator.dupe(u8, cmd);
+    errdefer allocator.free(out);
     const needles = [_][]const u8{ "${TMPDIR:-/tmp}", "${TMPDIR:=/tmp}", "${TMPDIR-:/tmp}" };
     for (needles) |n| {
         while (std.mem.indexOf(u8, out, n)) |idx| {
@@ -672,6 +838,47 @@ test "evaluateCommand allows command builtin pure append redirect" {
     try std.testing.expect(eval.decision == .allow);
 }
 
+test "evaluateCommand denies python.exe -c shutil.rmtree" {
+    const cases = [_][]const u8{
+        "python.exe -c \"import shutil; shutil.rmtree('/')\"",
+        "python3.11.exe -c \"import shutil; shutil.rmtree('/')\"",
+        "python3.exe -c \"import shutil; shutil.rmtree('/tmp/x')\"",
+    };
+    for (cases) |cmd| {
+        var eval = try evaluateCommand(std.testing.allocator, cmd, .{});
+        defer eval.deinit(std.testing.allocator);
+        try std.testing.expect(eval.decision == .deny);
+    }
+}
+
+test "evaluateCommand denies data-only pipe to shell interpreter" {
+    const cases = [_][]const u8{
+        "echo 'rm -rf /' | bash",
+        "echo 'rm -rf /' | bash -s",
+        "printf 'rm -rf /\\n' | sh",
+        "echo \"rm -rf /\" | zsh",
+        "echo 'rm -rf /' | /bin/bash",
+        "echo 'rm -rf /' | cat | bash",
+    };
+    for (cases) |cmd| {
+        var eval = try evaluateCommand(std.testing.allocator, cmd, .{});
+        defer eval.deinit(std.testing.allocator);
+        try std.testing.expect(eval.decision == .deny);
+    }
+}
+
+test "evaluateCommand still allows echo data without pipe to shell" {
+    var eval = try evaluateCommand(std.testing.allocator, "echo 'rm -rf /'", .{});
+    defer eval.deinit(std.testing.allocator);
+    try std.testing.expect(eval.decision == .allow);
+}
+
+test "evaluateCommand allows harmless pipe to shell" {
+    var eval = try evaluateCommand(std.testing.allocator, "echo hello | bash", .{});
+    defer eval.deinit(std.testing.allocator);
+    try std.testing.expect(eval.decision == .allow);
+}
+
 test "evaluateCommand denies git add with full packs" {
     var eval = try evaluateCommand(std.testing.allocator, "git add .", .{ .default_packs_only = false });
     defer eval.deinit(std.testing.allocator);
@@ -732,8 +939,6 @@ test "evaluateCommand opt-in pack denies docker prune" {
 }
 
 test {
-    _ = tokenize;
-    _ = packs;
     _ = allowlist;
     _ = registry;
     _ = segments;

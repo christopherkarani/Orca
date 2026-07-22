@@ -20,8 +20,10 @@ Intentional allow/deny divergences from the frozen oracle corpus / regressions.
 | `repro_comment_fp` (`ls -la # rm -rf /` → allow) | same JSONL (u01 allow/deny port) |
 | `repro_rm_multi_arg` (multi-arg `rm` with sensitive path → deny) | same JSONL (u01 allow/deny port) |
 | `repro_newline_separator` (newline in commit message / separator → deny) | same JSONL (u01 allow/deny port) |
+| `repro_windows_exe` (`python.exe` / `python3.11.exe -c` shutil.rmtree → deny) | same JSONL + extractInterpC / isExecutingContext |
 | `repro_redirection_bypass` (`git>/dev/null` / quoted argv0 / `command >>/dev/null git …`) | same JSONL + unit tests in `normalize.zig` / `mod.zig` |
-| Remaining `repro_*.rs` / `security_regressions*.rs` that only assert daemon lifecycle, TUI, or non-allow/deny transport | Out of scope per plan non-goals (not decision parity) |
+| Remaining decision-asserting `repro_*.rs` not yet listed | **Must be ported** into `security_regressions.jsonl` (do not leave as silent gap) |
+| Daemon lifecycle / TUI / non-allow-deny transport tests | Out of scope (not decision parity) |
 
 Decision exclusions stay empty: every extractable oracle allow/deny case belongs in corpus or `security_regressions.jsonl`, not here.
 

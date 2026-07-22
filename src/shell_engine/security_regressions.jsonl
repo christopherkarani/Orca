@@ -35,3 +35,11 @@
 {"command": "echo 'rm -rf /' | bash", "expected": "deny", "source": "codex_p1_pipeline_payload", "description": "quoted echo payload piped to bash is executable"}
 {"command": "/bin/bash<<'EOF'\nrm -rf /\nEOF", "expected": "deny", "source": "codex_p1_attached_heredoc", "description": "attached heredoc on qualified bash is executing"}
 {"command": "/bin/sh<<EOF\nrm -rf /\nEOF", "expected": "deny", "source": "codex_p1_attached_heredoc", "description": "attached heredoc on qualified sh is executing"}
+{"command": "python.exe -c \"import shutil; shutil.rmtree('/')\"", "expected": "deny", "source": "repro_windows_exe.rs", "description": "python.exe -c shutil.rmtree root"}
+{"command": "python3.11.exe -c \"import shutil; shutil.rmtree('/')\"", "expected": "deny", "source": "repro_windows_exe.rs", "description": "python3.11.exe -c shutil.rmtree root"}
+{"command": "echo 'rm -rf /' | bash", "expected": "deny", "source": "repro_pipe_to_shell", "description": "data-only echo piped to bash executes payload"}
+{"command": "echo 'rm -rf /' | bash -s", "expected": "deny", "source": "repro_pipe_to_shell", "description": "data-only echo piped to bash -s"}
+{"command": "printf 'rm -rf /\\n' | sh", "expected": "deny", "source": "repro_pipe_to_shell", "description": "printf payload piped to sh"}
+{"command": "echo \"rm -rf /\" | zsh", "expected": "deny", "source": "repro_pipe_to_shell", "description": "echo double-quoted payload piped to zsh"}
+{"command": "echo 'rm -rf /' | /bin/bash", "expected": "deny", "source": "repro_pipe_to_shell", "description": "echo piped to /bin/bash path form"}
+{"command": "echo 'rm -rf /' | cat | bash", "expected": "deny", "source": "repro_pipe_to_shell", "description": "multi-stage pipe eventually feeds bash"}

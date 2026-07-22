@@ -577,6 +577,9 @@ pub fn build(b: *std.Build) void {
             .{ .name = "build_options", .module = build_options_mod },
         },
     });
+    // Same as host `orca_mod`: attach once so shell_engine regex links pcre2_shim + static
+    // pcre2-8 for the Windows cross compile; do not also link on windows_exe.root_module.
+    addPcre2Shim(b, windows_mod, windows_target, optimize);
     const windows_exe = b.addExecutable(.{
         .name = "orca-windows-check",
         .root_module = b.createModule(.{
@@ -589,6 +592,7 @@ pub fn build(b: *std.Build) void {
             },
         }),
     });
+    windows_exe.root_module.link_libc = true;
     const check_windows_step = b.step("check-windows", "Compile Orca for Windows without running it");
     check_windows_step.dependOn(&windows_exe.step);
 }

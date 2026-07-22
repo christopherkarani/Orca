@@ -489,12 +489,15 @@ pub fn evaluateCommand(
             feed_writer.appendRecordBestEffort(options.io, allocator, options.workspace_root, record);
         }
         const unavailable = try failClosedDaemonUnavailableDecision(allocator, err);
+        // Free owned decision if explanation allocation fails before transfer.
+        errdefer unavailable.deinit(allocator);
         const unavailable_msg: []const u8 = if (resolveShellEvalBackend() == .zig and evaluator_override == null)
             "evaluated by Zig shell_engine (unavailable)"
         else
             "evaluated by shell evaluator (unavailable)";
         const explanation = try allocator.dupe(u8, unavailable_msg);
         errdefer allocator.free(explanation);
+        // Success: transfer owned_reason; errdefer deinit does not run.
         const owned_reason = unavailable.owned_reason;
         return .{
             .classification = classification,
@@ -546,6 +549,8 @@ pub fn evaluateCommand(
     }
 
     const translated = try decisionFromDaemonResult(allocator, daemon_response.value.result, effective_mode);
+    // Free owned decision if explanation allocation fails before transfer.
+    errdefer translated.deinit(allocator);
 
     const success_msg: []const u8 = if (resolveShellEvalBackend() == .zig and evaluator_override == null)
         "evaluated by Zig shell_engine"
@@ -554,6 +559,7 @@ pub fn evaluateCommand(
     const explanation = try allocator.dupe(u8, success_msg);
     errdefer allocator.free(explanation);
 
+    // Success: transfer owned fields; errdefer deinit does not run.
     const owned_reason = translated.owned_reason;
     const owned_rule_id = translated.owned_rule_id;
     const owned_remediation = translated.owned_remediation;

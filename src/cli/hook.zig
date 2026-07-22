@@ -1051,7 +1051,8 @@ fn recordHermesHookActivity(
     var health: ?rust_visibility.GuiDaemonHealth = if (shell_tool) rust_visibility.probeGuiDaemonHealth(allocator) catch null else null;
     defer if (health) |*value| value.deinit(allocator);
 
-    const decision_source = if (shell_tool) rust_visibility.decision_source_rust else rust_visibility.decision_source_zig;
+    // Shell PreToolUse uses Zig shell_engine; non-shell hermes activity is zig-native.
+    const decision_source = rust_visibility.decision_source_zig;
     const daemon_status = if (health) |value| value.status else if (shell_tool) "unavailable" else "not_applicable";
     var target_buf: [160]u8 = undefined;
     var record = rust_visibility.buildFeedRecordFromHookActivity(

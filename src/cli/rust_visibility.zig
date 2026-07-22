@@ -301,7 +301,8 @@ pub fn buildFeedRecordFromHookDecision(
         .workspace_root = try allocator.dupe(u8, workspace_root),
         .event_type = try allocator.dupe(u8, hookEventTypeForDecisionTag(decision_tag)),
         .decision = try allocator.dupe(u8, decision_tag),
-        .decision_source = try allocator.dupe(u8, decision_source_rust),
+        // Shell decisions are owned by in-process Zig shell_engine (not rust-daemon).
+        .decision_source = try allocator.dupe(u8, decision_source_zig),
         .event_source = try allocator.dupe(u8, event_source_hook),
         .host = try allocator.dupe(u8, host),
         .daemon_status = try allocator.dupe(u8, daemon_status),
@@ -331,7 +332,7 @@ pub fn metadataFromDaemonResult(
     errdefer if (remediation) |text| allocator.free(text);
 
     return .{
-        .decision_source = try allocator.dupe(u8, decision_source_rust),
+        .decision_source = try allocator.dupe(u8, decision_source_zig),
         .event_source = try allocator.dupe(u8, event_source),
         .host = if (host) |host_name| try allocator.dupe(u8, host_name) else null,
         .daemon_status = try allocator.dupe(u8, daemon_status),
@@ -353,7 +354,7 @@ pub fn metadataForUnavailable(
         else => "unavailable",
     };
     return .{
-        .decision_source = try allocator.dupe(u8, decision_source_rust),
+        .decision_source = try allocator.dupe(u8, decision_source_zig),
         .event_source = try allocator.dupe(u8, event_source),
         .host = if (host) |host_name| try allocator.dupe(u8, host_name) else null,
         .daemon_status = try allocator.dupe(u8, daemon_status),
@@ -387,7 +388,8 @@ pub fn buildFeedRecordFromDaemon(
         .workspace_root = try allocator.dupe(u8, workspace_root),
         .event_type = try allocator.dupe(u8, eventTypeForDecision(decision)),
         .decision = try allocator.dupe(u8, decision),
-        .decision_source = try allocator.dupe(u8, decision_source_rust),
+        // In-process Zig shell_engine is the evaluate authority after cutover.
+        .decision_source = try allocator.dupe(u8, decision_source_zig),
         .event_source = try allocator.dupe(u8, event_source),
         .host = if (host) |host_name| try allocator.dupe(u8, host_name) else null,
         .daemon_status = try allocator.dupe(u8, daemon_status),
@@ -428,7 +430,7 @@ pub fn buildFeedRecordFromUnavailable(
         .workspace_root = try allocator.dupe(u8, workspace_root),
         .event_type = try allocator.dupe(u8, "command_denied"),
         .decision = try allocator.dupe(u8, "deny"),
-        .decision_source = try allocator.dupe(u8, decision_source_rust),
+        .decision_source = try allocator.dupe(u8, decision_source_zig),
         .event_source = try allocator.dupe(u8, event_source),
         .host = if (host) |host_name| try allocator.dupe(u8, host_name) else null,
         .daemon_status = try allocator.dupe(u8, daemon_status),

@@ -30,13 +30,36 @@ const CompiledPack = struct {
 };
 
 var g_packs: []CompiledPack = &.{};
-/// 0=uninit, 1=ok, 2=failed
+/// 0=uninit (or failed+reclaimed, retryable), 1=ok, 3=in-progress
 var g_state: std.atomic.Value(u8) = .init(0);
 var g_arena: std.heap.ArenaAllocator = undefined;
+
+fn freePatternList(patterns: []CompiledPattern) void {
+    for (patterns) |*p| {
+        p.regex.deinit();
+    }
+}
+
+fn freePackList(packs: []CompiledPack) void {
+    for (packs) |*pack| {
+        freePatternList(pack.safe);
+        freePatternList(pack.destructive);
+    }
+}
+
+/// Free C-heap regexes and the process arena after a failed or abandoned init.
+fn reclaimRegistry() void {
+    freePackList(g_packs);
+    g_packs = &.{};
+    g_arena.deinit();
+    g_arena = undefined;
+}
 
 fn initOnce() !void {
     // Process-lifetime arena (not testing allocator — avoids leak noise).
     g_arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
+    errdefer reclaimRegistry();
+
     const a = g_arena.allocator();
 
     const parsed = try std.json.parseFromSlice(std.json.Value, a, packs_json, .{});
@@ -44,33 +67,49 @@ fn initOnce() !void {
     if (root != .array) return error.BadPacksJson;
 
     var packs_list: std.ArrayList(CompiledPack) = .empty;
+    errdefer {
+        // C-heap regexes are not owned by the arena — free before arena teardown.
+        freePackList(packs_list.items);
+        packs_list.deinit(a);
+    }
+
     for (root.array.items) |item| {
         const obj = item.object;
         const id = obj.get("id").?.string;
         if (std.mem.eql(u8, id, "test.deadline")) continue;
 
-        var keywords: std.ArrayList([]const u8) = .empty;
-        if (obj.get("keywords")) |kw| {
-            if (kw == .array) {
-                for (kw.array.items) |k| {
-                    try keywords.append(a, try a.dupe(u8, k.string));
-                }
-            }
-        }
-
-        const safe = try compileList(a, obj.get("safe"));
-        const destructive = try compileList(a, obj.get("destructive"));
-
-        const default_enabled = isDefaultEnabled(id);
-        try packs_list.append(a, .{
-            .id = try a.dupe(u8, id),
-            .keywords = try keywords.toOwnedSlice(a),
-            .safe = safe,
-            .destructive = destructive,
-            .default_enabled = default_enabled,
-        });
+        const pack = try compilePack(a, obj, id);
+        packs_list.append(a, pack) catch |err| {
+            freePatternList(pack.safe);
+            freePatternList(pack.destructive);
+            return err;
+        };
     }
     g_packs = try packs_list.toOwnedSlice(a);
+}
+
+fn compilePack(a: std.mem.Allocator, obj: std.json.ObjectMap, id: []const u8) !CompiledPack {
+    var keywords: std.ArrayList([]const u8) = .empty;
+    if (obj.get("keywords")) |kw| {
+        if (kw == .array) {
+            for (kw.array.items) |k| {
+                try keywords.append(a, try a.dupe(u8, k.string));
+            }
+        }
+    }
+
+    const safe = try compileList(a, obj.get("safe"));
+    errdefer freePatternList(safe);
+    const destructive = try compileList(a, obj.get("destructive"));
+    errdefer freePatternList(destructive);
+
+    return .{
+        .id = try a.dupe(u8, id),
+        .keywords = try keywords.toOwnedSlice(a),
+        .safe = safe,
+        .destructive = destructive,
+        .default_enabled = isDefaultEnabled(id),
+    };
 }
 
 /// Rust default: always enable category `core` (all `core.*`) and `system.disk`.
@@ -81,28 +120,31 @@ fn isDefaultEnabled(id: []const u8) bool {
 }
 
 pub fn ensureInit() !void {
-    const state = g_state.load(.acquire);
-    if (state == 1) return;
-    if (state == 2) return error.RegistryInitFailed;
-
-    // Best-effort single init (evaluate path is typically single-threaded per process).
-    if (g_state.cmpxchgStrong(0, 3, .acq_rel, .acquire)) |cur| {
-        if (cur == 1) return;
-        if (cur == 2) return error.RegistryInitFailed;
-        // another thread is initializing (3) — spin briefly
-        while (g_state.load(.acquire) == 3) {
-            std.atomic.spinLoopHint();
+    // State machine: 0 uninit/retryable, 1 ok, 2 legacy sticky-fail (treated as retryable), 3 in-progress.
+    while (true) {
+        const state = g_state.load(.acquire);
+        if (state == 1) return;
+        if (state == 3) {
+            while (g_state.load(.acquire) == 3) {
+                std.atomic.spinLoopHint();
+            }
+            continue;
         }
-        if (g_state.load(.acquire) == 1) return;
-        return error.RegistryInitFailed;
+        // 0 or 2: attempt to become the initializer.
+        if (g_state.cmpxchgStrong(state, 3, .acq_rel, .acquire)) |_| {
+            continue;
+        }
+        break;
     }
 
     initOnce() catch {
-        g_state.store(2, .release);
+        // initOnce errdefer already reclaimed C heap + arena.
+        g_state.store(0, .release);
         return error.RegistryInitFailed;
     };
     if (g_packs.len == 0) {
-        g_state.store(2, .release);
+        reclaimRegistry();
+        g_state.store(0, .release);
         return error.RegistryInitFailed;
     }
     g_state.store(1, .release);
@@ -137,11 +179,25 @@ pub const MatchOptions = struct {
     disabled: []const []const u8 = &.{},
 };
 
+/// Fail-closed hit when PCRE match infrastructure fails (OOM, null code, other errors).
+/// Static strings — safe for matchDeny → evaluate dupe path without allocation here.
+const match_infra_hit: Hit = .{
+    .pack_id = "zig.shell",
+    .pattern_name = "pcre-match-error",
+    .severity = .critical,
+    .reason = "Pack regex match infrastructure failed (fail-closed).",
+};
+
+fn matchInfraDeny() MatchResult {
+    return .{ .deny = match_infra_hit };
+}
+
 /// Match packs on a single (already normalized/sanitized) command.
 ///
 /// Per-pack safe/destructive ordering: a safe match suppresses destructive
 /// patterns from the **same pack only**. Cross-pack destructives still deny
 /// (e.g. `rm -rf / $(git checkout -b x)` is not allowed by `core.git` safe).
+/// Match infrastructure errors return `.deny` (fail closed), not `.allow_miss`.
 pub fn matchCommandDetailed(cmd: []const u8) MatchResult {
     return matchCommandDetailedOpts(cmd, .{});
 }
@@ -172,7 +228,8 @@ pub fn matchCommandDetailedOpts(cmd: []const u8, opts: MatchOptions) MatchResult
 
         var pack_safe = false;
         for (pack.safe) |pat| {
-            if (pat.regex.isMatch(cmd)) {
+            const matched = pat.regex.isMatch(cmd) catch return matchInfraDeny();
+            if (matched) {
                 pack_safe = true;
                 any_safe = true;
                 break;
@@ -182,7 +239,8 @@ pub fn matchCommandDetailedOpts(cmd: []const u8, opts: MatchOptions) MatchResult
         if (pack_safe) continue;
 
         for (pack.destructive) |pat| {
-            if (pat.regex.isMatch(cmd)) {
+            const matched = pat.regex.isMatch(cmd) catch return matchInfraDeny();
+            if (matched) {
                 return .{ .deny = .{
                     .pack_id = pack.id,
                     .pattern_name = pat.name,
@@ -211,32 +269,47 @@ pub fn defaultEnabledPackCount() usize {
 pub const expected_destructive_patterns: usize = 792;
 pub const expected_safe_patterns: usize = 830;
 
+fn compileOnePattern(a: std.mem.Allocator, pat: std.json.Value) !CompiledPattern {
+    const o = pat.object;
+    const name = if (o.get("name")) |n| (if (n == .string) n.string else "unnamed") else "unnamed";
+    const regex_s = o.get("regex").?.string;
+    const reason = if (o.get("reason")) |r| (if (r == .string) r.string else "") else "";
+    const sev_s = if (o.get("severity")) |s| (if (s == .string) s.string else "high") else "high";
+    const severity: Severity = if (std.mem.eql(u8, sev_s, "critical"))
+        .critical
+    else if (std.mem.eql(u8, sev_s, "medium"))
+        .medium
+    else if (std.mem.eql(u8, sev_s, "low"))
+        .low
+    else
+        .high;
+
+    // Fail closed: do not silently drop patterns (would shrink the guard).
+    var cre = regex_pcre.Regex.compile(regex_s) catch return error.PatternCompileFailed;
+    errdefer cre.deinit();
+    return .{
+        .name = try a.dupe(u8, name),
+        .reason = try a.dupe(u8, reason),
+        .severity = severity,
+        .regex = cre,
+    };
+}
+
 fn compileList(a: std.mem.Allocator, val: ?std.json.Value) ![]CompiledPattern {
     var list: std.ArrayList(CompiledPattern) = .empty;
+    errdefer {
+        for (list.items) |*p| p.regex.deinit();
+        list.deinit(a);
+    }
+
     const arr = if (val) |v| (if (v == .array) v.array.items else &[_]std.json.Value{}) else &[_]std.json.Value{};
     for (arr) |pat| {
-        const o = pat.object;
-        const name = if (o.get("name")) |n| (if (n == .string) n.string else "unnamed") else "unnamed";
-        const regex_s = o.get("regex").?.string;
-        const reason = if (o.get("reason")) |r| (if (r == .string) r.string else "") else "";
-        const sev_s = if (o.get("severity")) |s| (if (s == .string) s.string else "high") else "high";
-        const severity: Severity = if (std.mem.eql(u8, sev_s, "critical"))
-            .critical
-        else if (std.mem.eql(u8, sev_s, "medium"))
-            .medium
-        else if (std.mem.eql(u8, sev_s, "low"))
-            .low
-        else
-            .high;
-
-        // Fail closed: do not silently drop patterns (would shrink the guard).
-        const cre = regex_pcre.Regex.compile(regex_s) catch return error.PatternCompileFailed;
-        try list.append(a, .{
-            .name = try a.dupe(u8, name),
-            .reason = try a.dupe(u8, reason),
-            .severity = severity,
-            .regex = cre,
-        });
+        const compiled = try compileOnePattern(a, pat);
+        list.append(a, compiled) catch |err| {
+            var leaked = compiled;
+            leaked.regex.deinit();
+            return err;
+        };
     }
     return try list.toOwnedSlice(a);
 }
@@ -293,4 +366,12 @@ test "disabled pack suppresses default-enabled destructive match" {
         .disabled = &.{"system.disk"},
     });
     try std.testing.expect(disabled != .deny);
+}
+
+test "match infrastructure error hit is deny not allow_miss" {
+    // Contract: matchInfraDeny is what matchCommandDetailedOpts returns on isMatch error.
+    const r = matchInfraDeny();
+    try std.testing.expect(r == .deny);
+    try std.testing.expectEqualStrings("pcre-match-error", r.deny.pattern_name);
+    try std.testing.expect(r.deny.severity == .critical);
 }

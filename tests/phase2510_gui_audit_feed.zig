@@ -9,7 +9,7 @@ const shell_eval = orca.cli.shell_eval;
 
 const fake_secret = "sk-fakeSyntheticOpenAIKey1234567890";
 
-test "phase2510 hook deny feed record is rust-backed and redacted" {
+test "phase2510 hook deny feed record is zig-backed and redacted" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
     const root = try tmp.dir.realPathFileAlloc(std.testing.io, ".", std.testing.allocator);
@@ -40,7 +40,7 @@ test "phase2510 hook deny feed record is rust-backed and redacted" {
     }
 
     try std.testing.expectEqual(@as(usize, 1), loaded.len);
-    try std.testing.expectEqualStrings("rust-daemon", loaded[0].record.decision_source);
+    try std.testing.expectEqualStrings("zig-native", loaded[0].record.decision_source);
     try std.testing.expectEqualStrings("hook", loaded[0].record.event_source);
     try std.testing.expectEqualStrings(root, loaded[0].record.workspace_root);
     try std.testing.expectEqualStrings("claude", loaded[0].record.host.?);
@@ -52,7 +52,7 @@ test "phase2510 hook deny feed record is rust-backed and redacted" {
     try std.testing.expect(std.mem.indexOf(u8, loaded[0].raw, "matched_text_preview") == null);
 }
 
-test "phase2510 run deny feed record is rust-backed with pack metadata" {
+test "phase2510 run deny feed record is zig-backed with pack metadata" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
     const root = try tmp.dir.realPathFileAlloc(std.testing.io, ".", std.testing.allocator);
@@ -88,14 +88,14 @@ test "phase2510 run deny feed record is rust-backed with pack metadata" {
     }
 
     try std.testing.expect(loaded.len >= 1);
-    try std.testing.expectEqualStrings("rust-daemon", loaded[loaded.len - 1].record.decision_source);
+    try std.testing.expectEqualStrings("zig-native", loaded[loaded.len - 1].record.decision_source);
     try std.testing.expectEqualStrings("run", loaded[loaded.len - 1].record.event_source);
     try std.testing.expectEqualStrings("deny", loaded[loaded.len - 1].record.decision);
     try std.testing.expectEqualStrings("core.filesystem", loaded[loaded.len - 1].record.pack_id.?);
     try std.testing.expectEqualStrings("critical", loaded[loaded.len - 1].record.severity.?);
     try std.testing.expect(std.mem.indexOf(u8, loaded[loaded.len - 1].raw, fake_secret) == null);
     try std.testing.expect(std.mem.indexOf(u8, loaded[loaded.len - 1].raw, "matched_text_preview") == null);
-    try std.testing.expectEqualStrings("rust-daemon", metadata.decision_source.?);
+    try std.testing.expectEqualStrings("zig-native", metadata.decision_source.?);
     try std.testing.expectEqualStrings("run", metadata.event_source.?);
 }
 
@@ -133,7 +133,7 @@ test "phase2510 run allow feed record when audit options provided" {
 
     try std.testing.expect(loaded.len >= 1);
     try std.testing.expectEqualStrings("allow", loaded[loaded.len - 1].record.decision);
-    try std.testing.expectEqualStrings("rust-daemon", loaded[loaded.len - 1].record.decision_source);
+    try std.testing.expectEqualStrings("zig-native", loaded[loaded.len - 1].record.decision_source);
 }
 
 test "phase2510 daemon unavailable and incompatible feed statuses" {
@@ -175,7 +175,7 @@ test "phase2510 daemon unavailable and incompatible feed statuses" {
     try std.testing.expectEqualStrings("incompatible", metadata.daemon_status.?);
 }
 
-test "phase2510 status json exposes daemon health and rust shell feed" {
+test "phase2510 status json exposes daemon health and shell feed" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
     const root = try tmp.dir.realPathFileAlloc(std.testing.io, ".", std.testing.allocator);
@@ -205,7 +205,7 @@ test "phase2510 status json exposes daemon health and rust shell feed" {
 
     try std.testing.expect(std.mem.indexOf(u8, out.items, "\"daemon_health\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, out.items, "\"rust_shell_decisions\"") != null);
-    try std.testing.expect(std.mem.indexOf(u8, out.items, "\"decision_source\":\"rust-daemon\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out.items, "\"decision_source\":\"zig-native\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, out.items, "\"pack_id\":\"git\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, out.items, "\"severity\":\"Critical\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, out.items, "shell command (redacted)") != null);
