@@ -8,6 +8,7 @@ const exit_codes = @import("exit_codes.zig");
 const help = @import("help.zig");
 const daemon = @import("daemon.zig");
 const shell_eval = @import("shell_eval.zig");
+const shell_engine = @import("../shell_engine/mod.zig");
 const rust_visibility = @import("rust_visibility.zig");
 const feed_writer = @import("feed_writer.zig");
 const file_policy_path = @import("file_policy_path.zig");
@@ -825,6 +826,7 @@ fn evaluateHook(
                     host_name,
                     .{ .command = target, .cwd = null },
                     shell_mode,
+                    policy_value.commands.allow,
                     &redactions,
                     &limitations,
                     shell_evaluator,
@@ -922,6 +924,7 @@ fn evaluatePreToolUse(
             host_name,
             shell_event,
             shell_mode,
+            policy_value.commands.allow,
             redactions,
             limitations,
             shell_evaluator,
@@ -955,6 +958,7 @@ fn evaluateShellCommandRoute(
     host_name: []const u8,
     shell_event: ShellCommandEvent,
     mode: policy.schema.Mode,
+    commands_allow: []const []const u8,
     redactions: *std.ArrayList(RedactionEntry),
     limitations: *std.ArrayList([]const u8),
     evaluator_override: ?ShellCommandEvaluatorFn,
@@ -983,6 +987,9 @@ fn evaluateShellCommandRoute(
         }
     }
 
+    const permit = try shell_eval.permitFromCommandsAllow(allocator, commands_allow);
+    defer shell_eval.freePermitEntries(allocator, permit);
+
     return try hookResponseFromDaemonEvaluate(
         allocator,
         daemon_response.value.result,
@@ -990,6 +997,7 @@ fn evaluateShellCommandRoute(
         redactions,
         limitations,
         shell_event.command,
+        permit,
     );
 }
 
@@ -1180,6 +1188,7 @@ fn buildAgentVisibleDaemonDeny(
     mode: policy.schema.Mode,
     redactions: *std.ArrayList(RedactionEntry),
     shell_command: ?[]const u8,
+    permit: shell_engine.allowlist.Layered,
 ) !struct {
     decision: PluginDecision,
     risk: RiskLevel,
@@ -1195,9 +1204,9 @@ fn buildAgentVisibleDaemonDeny(
 
     const shell_risk = shell_eval.riskLevelFromDaemonSeverity(daemon.responseStringField(result, "severity"));
     const risk = hookRiskFromShellRisk(shell_risk);
-    const pack_id = daemon.responseStringField(result, "pack_id");
 
     // WP4 order when command is known: hard fence → sticky → strict refuse → matrix.
+    // Live path: effect_class null (fingerprint-only sticky; not pack_id).
     // Without command, fall back to mode×severity only (legacy test callers).
     const policy_out: ?shell_eval.ShellWithPolicyDecision = if (shell_command) |cmd|
         shell_eval.decideShellWithPolicy(
@@ -1205,9 +1214,9 @@ fn buildAgentVisibleDaemonDeny(
             .deny,
             shell_risk,
             cmd,
-            .{}, // permit from policy.commands.allow deferred (empty = matrix-only Strict)
+            permit,
             shell_eval.getSessionStickyStore(),
-            pack_id,
+            null,
         )
     else
         null;
@@ -1228,7 +1237,8 @@ fn buildAgentVisibleDaemonDeny(
         if (policy_out) |out| {
             if (out.reason) |r| {
                 if (std.mem.eql(u8, r, shell_eval.strict_not_on_allowlist_reason) or
-                    std.mem.eql(u8, r, "blocked by Orca policy"))
+                    std.mem.eql(u8, r, "blocked by Orca policy") or
+                    std.mem.eql(u8, r, shell_eval.sticky_ci_blocked_reason))
                     break :blk r;
             }
         }
@@ -1338,10 +1348,38 @@ fn hookResponseFromDaemonEvaluate(
     redactions: *std.ArrayList(RedactionEntry),
     limitations: *std.ArrayList([]const u8),
     shell_command: ?[]const u8,
+    permit: shell_engine.allowlist.Layered,
 ) !HookResponse {
     const ci_mode = mode == .ci;
     return switch (daemon.responseStatus(result)) {
         .allow => blk: {
+            // Engine allow still applies strict refuse when command + permit known.
+            if (shell_command) |cmd| {
+                const policy_out = shell_eval.decideShellWithPolicy(
+                    mode,
+                    .allow,
+                    .low,
+                    cmd,
+                    permit,
+                    shell_eval.getSessionStickyStore(),
+                    null,
+                );
+                if (policy_out.decision == .block) {
+                    const reason_src = policy_out.reason orelse "blocked by Orca policy";
+                    const safe_reason = try core_api.redactAlloc(allocator, reason_src);
+                    errdefer allocator.free(safe_reason);
+                    break :blk HookResponse{
+                        .decision = .block,
+                        .risk = .high,
+                        .category = try allocator.dupe(u8, "command"),
+                        .reason = safe_reason,
+                        .rule = null,
+                        .message = try buildMessage(allocator, .block, "command"),
+                        .redactions = try redactions.toOwnedSlice(allocator),
+                        .host_limitations = try limitations.toOwnedSlice(allocator),
+                    };
+                }
+            }
             const decision = pluginDecisionFromDaemonAllow(result, ci_mode);
             const safe_reason = try core_api.redactAlloc(allocator, daemon.responseReason(result) orelse "command allowed by daemon evaluator");
             break :blk HookResponse{
@@ -1356,7 +1394,7 @@ fn hookResponseFromDaemonEvaluate(
             };
         },
         .deny => blk: {
-            const deny = try buildAgentVisibleDaemonDeny(allocator, result, mode, redactions, shell_command);
+            const deny = try buildAgentVisibleDaemonDeny(allocator, result, mode, redactions, shell_command, permit);
             break :blk HookResponse{
                 .decision = deny.decision,
                 .risk = deny.risk,
@@ -1970,6 +2008,7 @@ fn runShellRouteWithMode(
         "claude",
         .{ .command = command_text, .cwd = cwd },
         mode,
+        &.{}, // tests use empty permit (matrix-only Strict) unless wired via policy
         &redactions,
         &limitations,
         evaluator,
@@ -2671,7 +2710,7 @@ test "hookResponseFromDaemonEvaluate rejects unexpected daemon payload" {
     var parsed = try daemon.parseResponse(allocator, "{\"id\":1,\"result\":{\"status\":\"Pong\"}}");
     defer parsed.deinit();
 
-    var result = try hookResponseFromDaemonEvaluate(allocator, parsed.value.result, .strict, &redactions, &limitations, null);
+    var result = try hookResponseFromDaemonEvaluate(allocator, parsed.value.result, .strict, &redactions, &limitations, null, .{});
     defer result.deinit(allocator);
 
     try std.testing.expectEqual(PluginDecision.block, result.decision);
@@ -2737,7 +2776,7 @@ test "hook daemon deny includes remediation fields for flexible hosts" {
         for (limitations.items) |l| allocator.free(l);
         limitations.deinit(allocator);
     }
-    var result = try hookResponseFromDaemonEvaluate(allocator, parsed.value, .strict, &redactions, &limitations, null);
+    var result = try hookResponseFromDaemonEvaluate(allocator, parsed.value, .strict, &redactions, &limitations, null, .{});
     defer result.deinit(allocator);
 
     try std.testing.expectEqual(PluginDecision.block, result.decision);
@@ -2873,7 +2912,7 @@ test "hook daemon strings are redacted at agent-visible boundary" {
     defer redactions.deinit(allocator);
     var limitations: std.ArrayList([]const u8) = .empty;
     defer limitations.deinit(allocator);
-    var result = try hookResponseFromDaemonEvaluate(allocator, parsed.value, .strict, &redactions, &limitations, null);
+    var result = try hookResponseFromDaemonEvaluate(allocator, parsed.value, .strict, &redactions, &limitations, null, .{});
     defer result.deinit(allocator);
     try std.testing.expect(std.mem.indexOf(u8, result.reason, sentinel) == null);
     try std.testing.expect(std.mem.indexOf(u8, result.message, sentinel) == null);

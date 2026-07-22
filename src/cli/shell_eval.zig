@@ -278,7 +278,8 @@ pub fn modeSoftenedReason(mode: policy.schema.Mode, severity: RiskLevel, plugin:
 // WP2 — Strict permit-list refuse (post hard-fence)
 //
 // Evaluation order (product path — WP4 `decideShellWithPolicy`):
-//   empty/init error → hard fence (critical) → sticky → strict refuse → mode×severity
+//   empty/init error → (deny) hard fence (critical) → sticky → strict refuse → mode×severity
+//   engine allow still applies strict refuse (off-list block); sticky N/A on allow.
 //
 // CRITICAL: do **not** use shell_engine.evaluateCommand options.allowlists —
 // that path allows *before* packs and can unlock catastrophe. Permit matching
@@ -291,6 +292,44 @@ pub const strict_not_on_allowlist_reason = "strict: not on allowlist";
 
 /// Reason when sticky session/once/effect-class trust skips re-ask.
 pub const sticky_session_trust_reason = "sticky: session trust";
+
+/// Sticky trust is disabled under CI mode (never sticky-allow in CI).
+pub const sticky_ci_blocked_reason = "ci: sticky trust not allowed";
+
+/// Build a Layered permit from `policy.commands.allow` globs.
+///
+/// Patterns ending with `*` become prefix matchers (trailing star stripped for
+/// matching). Exact match otherwise. Entry patterns **borrow** slices from
+/// `allow_globs`; only the entries array is allocator-owned — free with
+/// `freePermitEntries` (only for results from this helper).
+pub fn permitFromCommandsAllow(
+    allocator: std.mem.Allocator,
+    allow_globs: []const []const u8,
+) !shell_engine.allowlist.Layered {
+    if (allow_globs.len == 0) return .{};
+    const entries = try allocator.alloc(shell_engine.allowlist.Entry, allow_globs.len);
+    errdefer allocator.free(entries);
+    for (allow_globs, 0..) |glob, i| {
+        if (glob.len > 0 and glob[glob.len - 1] == '*') {
+            entries[i] = .{
+                .pattern = glob[0 .. glob.len - 1],
+                .prefix = true,
+            };
+        } else {
+            entries[i] = .{
+                .pattern = glob,
+                .prefix = false,
+            };
+        }
+    }
+    return .{ .entries = entries };
+}
+
+/// Free the entries array from `permitFromCommandsAllow`. No-op for empty.
+pub fn freePermitEntries(allocator: std.mem.Allocator, permit: shell_engine.allowlist.Layered) void {
+    if (permit.entries.len == 0) return;
+    allocator.free(permit.entries);
+}
 
 /// Product decision after hard fence / strict refuse / mode×severity.
 pub const AfterHardFenceDecision = struct {
@@ -388,13 +427,15 @@ pub fn decideAfterHardFence(
 ///
 /// Order:
 /// 1. empty command or `error_fail_closed` → block
-/// 2. engine allow → allow
+/// 2. engine allow → strict refuse if off-list; else allow (sticky N/A)
 /// 3. critical severity → block (hard fence; ignore sticky/mode)
-/// 4. sticky fingerprint / effect-class → allow
+/// 4. sticky fingerprint / effect-class → allow (blocked under CI)
 /// 5. strict refuse off-list → block
 /// 6. mode × severity matrix
 ///
 /// `sticky_store` may be null (skip sticky). `allows` may consume once-grants.
+/// Live host paths pass `effect_class = null` (fingerprint-only sticky); tests
+/// may pass an explicit class id for effect-class coverage.
 pub fn decideShellWithPolicy(
     mode: policy.schema.Mode,
     engine: EngineShellOutcome,
@@ -420,8 +461,15 @@ pub fn decideShellWithPolicy(
         };
     }
 
-    // Engine allow: no further policy mediation (graduated SoftBlock is separate).
+    // Engine allow: graduated SoftBlock is separate; still enforce strict permit refuse.
+    // Sticky does not apply (already allow from packs). Hard fence only on deny severity.
     if (engine == .allow) {
+        if (strictRefuseIfOffList(mode, trimmed, permit) != null) {
+            return .{
+                .decision = .block,
+                .reason = strict_not_on_allowlist_reason,
+            };
+        }
         return .{ .decision = .allow, .reason = null };
     }
 
@@ -434,15 +482,18 @@ pub fn decideShellWithPolicy(
     }
 
     // 3. Sticky trust (session / once / effect-class) — after hard fence only.
-    if (sticky_store) |store| {
-        const class_hit = if (effect_class) |class_id| store.allowsEffectClass(class_id) else false;
-        const fp = policy.sticky.fingerprintCommand(trimmed, null);
-        // `allows` may consume a once grant; only call when class did not already hit.
-        if (class_hit or store.allows(fp)) {
-            return .{
-                .decision = .allow,
-                .reason = sticky_session_trust_reason,
-            };
+    // CI skips sticky entirely (never sticky-allow; never consume once grants).
+    if (mode != .ci) {
+        if (sticky_store) |store| {
+            const class_hit = if (effect_class) |class_id| store.allowsEffectClass(class_id) else false;
+            const fp = policy.sticky.fingerprintCommand(trimmed, null);
+            // `allows` may consume a once grant; only call when class did not already hit.
+            if (class_hit or store.allows(fp)) {
+                return .{
+                    .decision = .allow,
+                    .reason = sticky_session_trust_reason,
+                };
+            }
         }
     }
 
@@ -529,6 +580,16 @@ pub fn riskLevelFromDaemonSeverity(severity: ?[]const u8) RiskLevel {
     return .unknown;
 }
 
+/// Map a decision risk_score (from `RiskLevel.toRiskScore`) back to RiskLevel
+/// for sticky record-after-ask. Thresholds match `toRiskScore` midpoints.
+pub fn riskLevelFromScore(score: u8) RiskLevel {
+    if (score >= 95) return .critical;
+    if (score >= 80) return .high;
+    if (score >= 50) return .medium;
+    if (score >= 20) return .low;
+    return .unknown;
+}
+
 pub fn pluginDecisionFromDaemonAllow(result: std.json.Value) PluginDecision {
     const object = switch (result) {
         .object => |map| map,
@@ -605,8 +666,36 @@ pub fn decisionFromDaemonResultWithPolicy(
     opts: DaemonPolicyOpts,
 ) !OwnedRunDecision {
     const ci_mode = mode == .ci;
+    const use_policy = opts.command.len > 0 or opts.sticky != null or opts.permit.entries.len > 0;
     return switch (daemon.responseStatus(result)) {
         .allow => blk: {
+            // WP4: engine allow still applies strict refuse when policy opts present.
+            if (use_policy) {
+                const decided = decideShellWithPolicy(
+                    mode,
+                    .allow,
+                    .low,
+                    opts.command,
+                    opts.permit,
+                    opts.sticky,
+                    opts.effect_class,
+                );
+                if (decided.decision == .block) {
+                    const reason_src = decided.reason orelse "blocked by Orca policy";
+                    const owned = try allocator.dupe(u8, reason_src);
+                    errdefer allocator.free(owned);
+                    break :blk OwnedRunDecision{
+                        .decision = .{
+                            .result = .deny,
+                            .reason = owned,
+                            .risk_score = RiskLevel.high.toRiskScore(),
+                            .requires_user = false,
+                            .ci_may_proceed = false,
+                        },
+                        .owned_reason = owned,
+                    };
+                }
+            }
             const plugin_decision = pluginDecisionFromDaemonAllow(result).applyCiMode(ci_mode);
             const decision_result = decisionResultFromPluginDecision(plugin_decision);
             // Align with hook.zig: daemon allow reasons may embed command fragments / secrets.
@@ -627,10 +716,11 @@ pub fn decisionFromDaemonResultWithPolicy(
         },
         .deny => blk: {
             const risk = riskLevelFromDaemonSeverity(daemon.responseStringField(result, "severity"));
-            const pack_id = opts.effect_class orelse daemon.responseStringField(result, "pack_id");
+            // Live path: fingerprint-only sticky (effect_class null). Do not treat
+            // pack_id as effect-class — that would grant pack-wide sticky trust.
+            // Tests pass an explicit class id via opts.effect_class when needed.
 
             // WP4 path when command / sticky / permit is supplied; else legacy matrix-only.
-            const use_policy = opts.command.len > 0 or opts.sticky != null or opts.permit.entries.len > 0;
             const decided: ?ShellWithPolicyDecision = if (use_policy)
                 decideShellWithPolicy(
                     mode,
@@ -639,7 +729,7 @@ pub fn decisionFromDaemonResultWithPolicy(
                     opts.command,
                     opts.permit,
                     opts.sticky,
-                    pack_id,
+                    opts.effect_class,
                 )
             else
                 null;
@@ -654,6 +744,7 @@ pub fn decisionFromDaemonResultWithPolicy(
                     if (d.reason) |static_reason| {
                         if (std.mem.eql(u8, static_reason, strict_not_on_allowlist_reason) or
                             std.mem.eql(u8, static_reason, "blocked by Orca policy") or
+                            std.mem.eql(u8, static_reason, sticky_ci_blocked_reason) or
                             std.mem.eql(u8, static_reason, "empty command") or
                             std.mem.eql(u8, static_reason, "shell evaluation unavailable"))
                         {
@@ -764,6 +855,9 @@ pub fn failClosedDaemonUnavailableDecision(allocator: std.mem.Allocator, err: da
 
 /// Evaluate a shell command via Zig `shell_engine` and return a run/shim `CommandDecision`.
 /// `ORCA_SHELL_EVAL=rust` fails closed (`RustShellEvalRemoved`) without daemon Evaluate.
+///
+/// `commands_allow` is `policy.commands.allow` (exact or trailing-`*` prefix globs).
+/// Empty disables strict permit refuse (matrix-only Strict).
 pub fn evaluateCommand(
     allocator: std.mem.Allocator,
     effective_mode: policy.schema.Mode,
@@ -772,6 +866,8 @@ pub fn evaluateCommand(
     evaluator_override: ?ShellCommandEvaluatorFn,
     metadata_out: ?*core.event.EventMetadata,
     audit_options: ?ShellAuditOptions,
+    /// `policy.commands.allow` globs; pass empty slice when no permit list is configured.
+    commands_allow: []const []const u8,
 ) !intercept.commands.CommandDecision {
     const display = try intercept.commands.displayArgvAlloc(allocator, argv);
     defer allocator.free(display);
@@ -857,14 +953,19 @@ pub fn evaluateCommand(
         feed_writer.appendRecordBestEffort(options.io, allocator, options.workspace_root, record);
     }
 
-    // WP4: hard fence → sticky → strict refuse → mode×severity (permit empty until policy wire).
+    // WP4: hard fence → sticky → strict refuse → mode×severity.
+    // Permit from policy.commands.allow; effect_class null (fingerprint-only sticky).
+    const permit = try permitFromCommandsAllow(allocator, commands_allow);
+    defer freePermitEntries(allocator, permit);
     const translated = try decisionFromDaemonResultWithPolicy(
         allocator,
         daemon_response.value.result,
         effective_mode,
         .{
             .command = display,
+            .permit = permit,
             .sticky = getSessionStickyStore(),
+            .effect_class = null,
         },
     );
     // Free owned decision if explanation allocation fails before transfer.
@@ -1020,7 +1121,7 @@ pub fn mockDaemonProtocolMismatchEvaluator(allocator: std.mem.Allocator, shell_e
 
 test "shell_eval allows safe command via mock daemon" {
     const allocator = std.testing.allocator;
-    var decision = try evaluateCommand(allocator, .strict, &.{ "git", "status" }, "/tmp/repo", mockDaemonAllowEvaluator, null, null);
+    var decision = try evaluateCommand(allocator, .strict, &.{ "git", "status" }, "/tmp/repo", mockDaemonAllowEvaluator, null, null, &.{});
     defer decision.deinit(allocator);
     try std.testing.expectEqual(core.decision.DecisionResult.allow, decision.decision.result);
     try std.testing.expectEqualStrings("git status", test_last_evaluate_command.?);
@@ -1060,6 +1161,7 @@ test "shell_eval redacts secrets in allow reasons and evaluation errors" {
         mockDaemonAllowWithSecretReasonEvaluator,
         null,
         null,
+        &.{},
     );
     defer allowed.deinit(allocator);
     try std.testing.expectEqual(core.decision.DecisionResult.allow, allowed.decision.result);
@@ -1074,6 +1176,7 @@ test "shell_eval redacts secrets in allow reasons and evaluation errors" {
         mockDaemonErrorWithSecretMessageEvaluator,
         null,
         null,
+        &.{},
     );
     defer engine_err.deinit(allocator);
     try std.testing.expectEqual(core.decision.DecisionResult.deny, engine_err.decision.result);
@@ -1084,7 +1187,7 @@ test "shell_eval redacts secrets in allow reasons and evaluation errors" {
 
 test "shell_eval denies dangerous command via mock daemon" {
     const allocator = std.testing.allocator;
-    var decision = try evaluateCommand(allocator, .strict, &.{ "rm", "-rf", "/" }, null, mockDaemonDenyEvaluator, null, null);
+    var decision = try evaluateCommand(allocator, .strict, &.{ "rm", "-rf", "/" }, null, mockDaemonDenyEvaluator, null, null, &.{});
     defer decision.deinit(allocator);
     try std.testing.expectEqual(core.decision.DecisionResult.deny, decision.decision.result);
     try std.testing.expect(decision.owned_rule_id != null);
@@ -1109,7 +1212,7 @@ test "shell_eval fail_closed is typed on Evaluate failures only" {
         .{ .evaluator = mockDaemonAllowEvaluator, .expect_fail_closed = false },
     };
     for (cases) |case| {
-        var decision = try evaluateCommand(allocator, .strict, &.{ "git", "status" }, null, case.evaluator, null, null);
+        var decision = try evaluateCommand(allocator, .strict, &.{ "git", "status" }, null, case.evaluator, null, null, &.{});
         defer decision.deinit(allocator);
         try std.testing.expectEqual(case.expect_fail_closed, decision.fail_closed);
         if (case.expect_fail_closed) {
@@ -1134,7 +1237,7 @@ test "shell_eval reports a missing command working directory explicitly" {
 
 test "shell_eval ci mode converts warn allow to deny" {
     const allocator = std.testing.allocator;
-    var decision = try evaluateCommand(allocator, .ci, &.{ "git", "status" }, null, mockDaemonWarnAllowEvaluator, null, null);
+    var decision = try evaluateCommand(allocator, .ci, &.{ "git", "status" }, null, mockDaemonWarnAllowEvaluator, null, null, &.{});
     defer decision.deinit(allocator);
     try std.testing.expectEqual(core.decision.DecisionResult.deny, decision.decision.result);
 }
@@ -1188,7 +1291,7 @@ test "default zig evaluator denies destructive rm via shell_engine" {
 test "hook and run parity for safe and dangerous commands" {
     const allocator = std.testing.allocator;
 
-    var safe_run = try evaluateCommand(allocator, .strict, &.{ "git", "status" }, null, mockDaemonAllowEvaluator, null, null);
+    var safe_run = try evaluateCommand(allocator, .strict, &.{ "git", "status" }, null, mockDaemonAllowEvaluator, null, null, &.{});
     defer safe_run.deinit(allocator);
     var safe_daemon = try mockDaemonAllowEvaluator(allocator, .{ .command = "git status", .cwd = null });
     defer safe_daemon.deinit();
@@ -1196,7 +1299,7 @@ test "hook and run parity for safe and dangerous commands" {
     defer safe_hook.deinit(allocator);
     try std.testing.expectEqual(safe_run.decision.result, safe_hook.decision.result);
 
-    var dangerous_run = try evaluateCommand(allocator, .strict, &.{ "rm", "-rf", "/" }, null, mockDaemonDenyEvaluator, null, null);
+    var dangerous_run = try evaluateCommand(allocator, .strict, &.{ "rm", "-rf", "/" }, null, mockDaemonDenyEvaluator, null, null, &.{});
     defer dangerous_run.deinit(allocator);
     var dangerous_daemon = try mockDaemonDenyEvaluator(allocator, .{ .command = "rm -rf /", .cwd = null });
     defer dangerous_daemon.deinit();
@@ -1246,7 +1349,7 @@ test "mode x severity matrix maps daemon denials" {
     };
 
     for (cases) |case| {
-        var decision = try evaluateCommand(allocator, case.mode, &.{ "test", "cmd" }, null, case.evaluator, null, null);
+        var decision = try evaluateCommand(allocator, case.mode, &.{ "test", "cmd" }, null, case.evaluator, null, null, &.{});
         defer decision.deinit(allocator);
         try std.testing.expectEqual(case.expected, decision.decision.result);
         if (case.reason_substr) |substr| {
@@ -1258,13 +1361,13 @@ test "mode x severity matrix maps daemon denials" {
 test "mode matrix: daemon unavailable and engine error deny in observe" {
     const allocator = std.testing.allocator;
 
-    var unavailable = try evaluateCommand(allocator, .observe, &.{ "git", "status" }, null, mockDaemonUnavailableEvaluator, null, null);
+    var unavailable = try evaluateCommand(allocator, .observe, &.{ "git", "status" }, null, mockDaemonUnavailableEvaluator, null, null, &.{});
     defer unavailable.deinit(allocator);
     try std.testing.expectEqual(core.decision.DecisionResult.deny, unavailable.decision.result);
     try std.testing.expect(unavailable.fail_closed);
     try std.testing.expect(std.mem.indexOf(u8, unavailable.decision.reason, "daemon unavailable") != null);
 
-    var engine_err = try evaluateCommand(allocator, .observe, &.{ "git", "status" }, null, mockDaemonErrorEvaluator, null, null);
+    var engine_err = try evaluateCommand(allocator, .observe, &.{ "git", "status" }, null, mockDaemonErrorEvaluator, null, null, &.{});
     defer engine_err.deinit(allocator);
     try std.testing.expectEqual(core.decision.DecisionResult.deny, engine_err.decision.result);
     try std.testing.expect(engine_err.fail_closed);
@@ -1653,9 +1756,129 @@ test "decideShellWithPolicy empty and error fail closed before sticky" {
     const empty_cmd = decideShellWithPolicy(.ask, .deny, .high, "   ", empty, &store, null);
     try std.testing.expectEqual(PluginDecision.block, empty_cmd.decision);
 
-    // Engine allow short-circuits to allow (no sticky needed).
+    // Engine allow with empty permit → allow (strict refuse disabled).
     const allowed = decideShellWithPolicy(.strict, .allow, .low, "npm test", empty, null, null);
     try std.testing.expectEqual(PluginDecision.allow, allowed.decision);
+}
+
+test "decideShellWithPolicy engine allow still applies strict refuse" {
+    const git_only: shell_engine.allowlist.Layered = .{
+        .entries = &.{.{ .pattern = "git status" }},
+    };
+    // Off-list under strict: even engine allow is refused (not auto-allow).
+    const off = decideShellWithPolicy(.strict, .allow, .low, "npm test", git_only, null, null);
+    try std.testing.expectEqual(PluginDecision.block, off.decision);
+    try std.testing.expectEqualStrings(strict_not_on_allowlist_reason, off.reason.?);
+
+    // On-list engine allow → allow.
+    const on = decideShellWithPolicy(.strict, .allow, .low, "git status", git_only, null, null);
+    try std.testing.expectEqual(PluginDecision.allow, on.decision);
+
+    // Non-strict modes do not refuse on engine allow.
+    const yolo = decideShellWithPolicy(.yolo, .allow, .low, "npm test", git_only, null, null);
+    try std.testing.expectEqual(PluginDecision.allow, yolo.decision);
+}
+
+test "decideShellWithPolicy sticky allow blocked under ci" {
+    const allocator = std.testing.allocator;
+    var store = policy.sticky.Store.init(allocator);
+    defer store.deinit();
+    const empty: shell_engine.allowlist.Layered = .{ .entries = &.{} };
+    const cmd = "git push --force";
+    try store.recordAllowSession(policy.sticky.fingerprintCommand(cmd, null));
+
+    // Sticky allows under ask.
+    const ask_ok = decideShellWithPolicy(.ask, .deny, .high, cmd, empty, &store, null);
+    try std.testing.expectEqual(PluginDecision.allow, ask_ok.decision);
+    try std.testing.expectEqualStrings(sticky_session_trust_reason, ask_ok.reason.?);
+
+    // CI skips sticky and matrix-blocks (does not sticky-allow; session grant preserved).
+    const ci_block = decideShellWithPolicy(.ci, .deny, .high, cmd, empty, &store, null);
+    try std.testing.expectEqual(PluginDecision.block, ci_block.decision);
+    try std.testing.expect(ci_block.reason == null or
+        !std.mem.eql(u8, ci_block.reason.?, sticky_session_trust_reason));
+    // Once grant must not be consumed by CI path either.
+    try store.recordAllowOnce(policy.sticky.fingerprintCommand("npm install bad", null));
+    const ci_once = decideShellWithPolicy(.ci, .deny, .high, "npm install bad", empty, &store, null);
+    try std.testing.expectEqual(PluginDecision.block, ci_once.decision);
+    // Session-mode path can still use the once grant after CI skipped it.
+    const ask_once = decideShellWithPolicy(.ask, .deny, .high, "npm install bad", empty, &store, null);
+    try std.testing.expectEqual(PluginDecision.allow, ask_once.decision);
+}
+
+test "decideShellWithPolicy on-list high still matrix-blocks under strict" {
+    // On-list does not auto-allow high/medium — matrix still applies after refuse gate.
+    const git_only: shell_engine.allowlist.Layered = .{
+        .entries = &.{
+            .{ .pattern = "git status" },
+            .{ .pattern = "git push --force" },
+        },
+    };
+    const empty: shell_engine.allowlist.Layered = .{ .entries = &.{} };
+
+    // On-list high → block via matrix (not refuse reason, not allow).
+    const on_high = decideShellWithPolicy(.strict, .deny, .high, "git push --force", git_only, null, null);
+    try std.testing.expectEqual(PluginDecision.block, on_high.decision);
+    try std.testing.expect(on_high.reason == null or
+        std.mem.indexOf(u8, on_high.reason.?, "strict: not on allowlist") == null);
+
+    // On-list medium → block via matrix.
+    const on_med = decideShellWithPolicy(.strict, .deny, .medium, "git status", git_only, null, null);
+    try std.testing.expectEqual(PluginDecision.block, on_med.decision);
+
+    // On-list low → allow via matrix.
+    const on_low = decideShellWithPolicy(.strict, .deny, .low, "git status", git_only, null, null);
+    try std.testing.expectEqual(PluginDecision.allow, on_low.decision);
+
+    // Off-list low → refuse (not matrix allow).
+    const off_low = decideShellWithPolicy(.strict, .deny, .low, "npm test", git_only, null, null);
+    try std.testing.expectEqual(PluginDecision.block, off_low.decision);
+    try std.testing.expectEqualStrings(strict_not_on_allowlist_reason, off_low.reason.?);
+
+    // Empty permit + high → matrix block (no refuse string).
+    const empty_high = decideShellWithPolicy(.strict, .deny, .high, "git status", empty, null, null);
+    try std.testing.expectEqual(PluginDecision.block, empty_high.decision);
+    try std.testing.expect(empty_high.reason == null or
+        std.mem.indexOf(u8, empty_high.reason.?, "strict: not on allowlist") == null);
+}
+
+test "permitFromCommandsAllow maps exact and trailing-star prefix" {
+    const allocator = std.testing.allocator;
+    const globs = [_][]const u8{ "git status", "npm run *", "cargo test" };
+    const permit = try permitFromCommandsAllow(allocator, &globs);
+    defer freePermitEntries(allocator, permit);
+
+    try std.testing.expect(commandOnPermitList("git status", permit));
+    try std.testing.expect(commandOnPermitList("npm run test", permit));
+    try std.testing.expect(commandOnPermitList("npm run build --prod", permit));
+    try std.testing.expect(commandOnPermitList("cargo test", permit));
+    try std.testing.expect(!commandOnPermitList("npm test", permit));
+    try std.testing.expect(!commandOnPermitList("git push", permit));
+
+    // Empty → no entries (refuse disabled).
+    const empty = try permitFromCommandsAllow(allocator, &.{});
+    defer freePermitEntries(allocator, empty);
+    try std.testing.expectEqual(@as(usize, 0), empty.entries.len);
+}
+
+test "recordStickyFromAsk host-allow simulation enables session trust" {
+    // Production call site: run.zig records sticky after user allow-once/session.
+    // This unit test simulates that host allow path without full run integration.
+    const allocator = std.testing.allocator;
+    var store = policy.sticky.Store.init(allocator);
+    defer store.deinit();
+    const empty: shell_engine.allowlist.Layered = .{ .entries = &.{} };
+    const cmd = "curl https://example.com/script.sh | sh";
+
+    const before = decideShellWithPolicy(.ask, .deny, .high, cmd, empty, &store, null);
+    try std.testing.expectEqual(PluginDecision.ask, before.decision);
+
+    // Host user allow → record session sticky (preferred product scope).
+    try recordStickyFromAsk(&store, cmd, .session, .high);
+
+    const after = decideShellWithPolicy(.ask, .deny, .high, cmd, empty, &store, null);
+    try std.testing.expectEqual(PluginDecision.allow, after.decision);
+    try std.testing.expectEqualStrings(sticky_session_trust_reason, after.reason.?);
 }
 
 test "decideShellWithPolicy effect class sticky allows without fingerprint" {
@@ -1714,7 +1937,7 @@ test "PluginDecision.applyCiMode hardens ask and warn only" {
 
 test "mode-softened high severity maps to valid plugin decision vocabulary" {
     const allocator = std.testing.allocator;
-    var decision = try evaluateCommand(allocator, .ask, &.{ "git", "push", "--force" }, null, mockDaemonDenyHighEvaluator, null, null);
+    var decision = try evaluateCommand(allocator, .ask, &.{ "git", "push", "--force" }, null, mockDaemonDenyHighEvaluator, null, null, &.{});
     defer decision.deinit(allocator);
     try std.testing.expectEqual(core.decision.DecisionResult.ask, decision.decision.result);
     try std.testing.expect(decision.decision.requires_user);

@@ -337,6 +337,7 @@ pub fn verifyShellEvaluation(
         eval_fn,
         null,
         null,
+        &.{},
     );
     defer safe.deinit(allocator);
 
@@ -348,6 +349,7 @@ pub fn verifyShellEvaluation(
         eval_fn,
         null,
         null,
+        &.{},
     );
     defer dangerous.deinit(allocator);
 
