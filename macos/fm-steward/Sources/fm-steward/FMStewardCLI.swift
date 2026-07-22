@@ -133,8 +133,10 @@ private func runClassify(cardPath: String, timeoutMs: Int?, human: Bool) async t
     }
 
     // Default backend UnavailableBackend; rules pre-pass short-circuits fixture table.
-    let session = StewardSession(timeoutMs: timeoutMs ?? StewardSession.defaultTimeoutMs)
-    let response = await session.classify(card, timeoutMs: timeoutMs)
+    // Clamp so CLI and session agree; 0 / omitted → default; upper bound avoids UInt64 sleep trap.
+    let bound = StewardSession.clampTimeoutMs(timeoutMs ?? StewardSession.defaultTimeoutMs)
+    let session = StewardSession(timeoutMs: bound)
+    let response = await session.classify(card, timeoutMs: bound)
 
     if human {
         printHuman(response)

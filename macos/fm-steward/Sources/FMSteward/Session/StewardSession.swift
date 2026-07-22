@@ -9,7 +9,11 @@ public actor StewardSession {
     /// Product default: 500ms hard timeout for backend-bound classify work.
     public static let defaultTimeoutMs: Int = 500
 
+    /// Upper bound for `timeoutMs` so `UInt64(ms) * 1_000_000` cannot trap.
+    public static let maxTimeoutMs: Int = 60_000
+
     /// Effective default timeout for this session (overridable per `classify` call).
+    /// Always clamped to `1...maxTimeoutMs` (0 / negative → `defaultTimeoutMs`).
     public nonisolated let timeoutMs: Int
 
     private let backend: any FoundationModelBackend
@@ -20,7 +24,13 @@ public actor StewardSession {
         timeoutMs: Int = StewardSession.defaultTimeoutMs
     ) {
         self.backend = backend
-        self.timeoutMs = max(0, timeoutMs)
+        self.timeoutMs = Self.clampTimeoutMs(timeoutMs)
+    }
+
+    /// Clamp `ms` into a safe sleep range: `≤0` → default; otherwise `1...maxTimeoutMs`.
+    public nonisolated static func clampTimeoutMs(_ ms: Int) -> Int {
+        if ms <= 0 { return defaultTimeoutMs }
+        return min(ms, maxTimeoutMs)
     }
 
     /// Whether the session has been warmed (`warm()` or first `classify`).
@@ -39,10 +49,19 @@ public actor StewardSession {
 
         // Rules first — never block fixtures / obvious cases on FM latency.
         if let hit = RulesPrePass.evaluate(card) {
-            return (try? hit.enforcingExplain()) ?? hit
+            // Fail closed on broken ask* (same as backend / Classifier path).
+            if let valid = try? hit.enforcingExplain() {
+                return valid
+            }
+            return .fallbackContinue(
+                why: "Rules returned ask without explain; falling back to continue under policy and hard fence only.",
+                modelAvailable: hit.modelAvailable,
+                timedOut: hit.timedOut,
+                latencyMs: hit.latencyMs
+            )
         }
 
-        let bound = max(0, timeoutMs ?? self.timeoutMs)
+        let bound = Self.clampTimeoutMs(timeoutMs ?? self.timeoutMs)
         return await raceBackend(card: card, timeoutMs: bound)
     }
 

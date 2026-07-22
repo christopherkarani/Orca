@@ -90,6 +90,28 @@ struct BackendAndExplainTests {
         #expect(!explain.isEmpty)
     }
 
+    @Test("Classifier: backend ask without explain demotes to fallback continue")
+    func classifierBrokenAskDemotesToContinue() async {
+        let card = RiskCard(
+            schemaVersion: 1,
+            sessionId: "sess-broken-ask",
+            tool: "bash",
+            command: "echo hi",
+            features: RiskCard.Features(executed: true, bulkOutbound: false, vip: false, sameIntent: nil),
+            thresholds: nil,
+            meta: nil
+        )
+        let response = await Classifier(backend: BrokenAskBackend()).classify(card)
+
+        #expect(response.verdict == .continue)
+        #expect(response.fallback == true)
+        #expect(response.timedOut == false)
+        #expect(response.modelAvailable == true)
+        #expect(response.explain == nil)
+        #expect(response.verdict != .ask)
+        #expect(response.verdict != .askStickyCandidate)
+    }
+
     @Test("LiveBackend is injectable and returns a valid classify-response")
     func liveBackendValidResponse() async {
         let card = RiskCard(
@@ -104,8 +126,10 @@ struct BackendAndExplainTests {
         let response = await Classifier(backend: LiveBackend()).classify(card)
         #expect(response.schemaVersion == 1)
         #expect(response.verdict == .continue)
-        // Live path is stubbed; may or may not report model_available depending on SDK.
-        #expect(response.fallback == true || response.modelAvailable == true || response.modelAvailable == false)
+        // LiveBackend always fails open to fallback continue; modelAvailable tracks framework presence.
+        #expect(response.fallback == true)
+        #expect(response.timedOut == false)
+        #expect(response.modelAvailable == LiveBackend.isFoundationModelsFrameworkPresent)
     }
 
     @Test("RiskCard + ClassifyResponse Codable round-trip keys match schema snake_case")

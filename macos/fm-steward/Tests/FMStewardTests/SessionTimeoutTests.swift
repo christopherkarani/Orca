@@ -24,6 +24,20 @@ struct SessionTimeoutTests {
         #expect(session.timeoutMs == 500)
     }
 
+    @Test("timeoutMs clamps: 0/negative → default; oversize → maxTimeoutMs")
+    func timeoutMsClamp() {
+        #expect(StewardSession.clampTimeoutMs(0) == StewardSession.defaultTimeoutMs)
+        #expect(StewardSession.clampTimeoutMs(-1) == StewardSession.defaultTimeoutMs)
+        #expect(StewardSession.clampTimeoutMs(100) == 100)
+        #expect(StewardSession.clampTimeoutMs(60_000) == 60_000)
+        #expect(StewardSession.clampTimeoutMs(60_001) == StewardSession.maxTimeoutMs)
+        #expect(StewardSession.clampTimeoutMs(Int.max) == StewardSession.maxTimeoutMs)
+        let zeroSession = StewardSession(backend: UnavailableBackend(), timeoutMs: 0)
+        #expect(zeroSession.timeoutMs == StewardSession.defaultTimeoutMs)
+        let hugeSession = StewardSession(backend: UnavailableBackend(), timeoutMs: Int.max)
+        #expect(hugeSession.timeoutMs == StewardSession.maxTimeoutMs)
+    }
+
     @Test("SlowBackend sleep > timeout → continue + timed_out + fallback; never ask; wall time ~timeout")
     func slowBackendTimesOutNearBound() async {
         // Sleep 2s but session timeout 100ms — must not wait for full sleep and must not surface late ask.
@@ -142,8 +156,8 @@ struct SessionTimeoutTests {
     }
 }
 
-/// Test double: returns ask* with empty explain (invalid).
-private struct BrokenAskBackend: FoundationModelBackend {
+/// Test double: returns ask* with empty explain (invalid). Shared with BackendAndExplainTests.
+struct BrokenAskBackend: FoundationModelBackend {
     func classify(_ card: RiskCard) async -> ClassifyResponse {
         ClassifyResponse(
             verdict: .ask,

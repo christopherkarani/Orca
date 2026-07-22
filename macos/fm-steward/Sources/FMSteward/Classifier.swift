@@ -10,10 +10,19 @@ public struct Classifier: Sendable {
 
     /// Classify `card`. Ask* verdicts always leave with non-empty `explain`
     /// (rules construct via validating factory; backend responses are re-checked).
+    /// Explain re-check failures fail closed to fallback continue (never surface broken ask*).
     public func classify(_ card: RiskCard) async -> ClassifyResponse {
         if let hit = RulesPrePass.evaluate(card) {
-            // Rules path already validates explain on ask*; assert contract for safety.
-            return (try? hit.enforcingExplain()) ?? hit
+            // Rules path validates explain on ask*; fail closed if contract is broken.
+            if let valid = try? hit.enforcingExplain() {
+                return valid
+            }
+            return .fallbackContinue(
+                why: "Rules returned ask without explain; falling back to continue under policy and hard fence only.",
+                modelAvailable: hit.modelAvailable,
+                timedOut: hit.timedOut,
+                latencyMs: hit.latencyMs
+            )
         }
 
         let backendResponse = await backend.classify(card)
