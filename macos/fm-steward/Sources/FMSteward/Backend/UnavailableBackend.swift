@@ -1,6 +1,6 @@
 import Foundation
 
-/// Backend used when Foundation Models are not available (CI, Linux skip path, demos).
+/// Backend used when Foundation Models are not available (CI without AI, Linux skip path).
 /// Always returns fallback continue — never invents ask verdicts.
 public struct UnavailableBackend: FoundationModelBackend {
     public init() {}

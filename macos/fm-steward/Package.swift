@@ -1,10 +1,11 @@
-// swift-tools-version: 6.0
+// swift-tools-version: 6.2
 import PackageDescription
 
 let package = Package(
     name: "fm-steward",
     platforms: [
-        .macOS(.v15),
+        // Foundation Models (on-device SystemLanguageModel) requires macOS 26+.
+        .macOS(.v26),
     ],
     products: [
         .library(name: "FMSteward", targets: ["FMSteward"]),

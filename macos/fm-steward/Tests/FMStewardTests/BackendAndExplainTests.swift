@@ -125,11 +125,17 @@ struct BackendAndExplainTests {
         )
         let response = await Classifier(backend: LiveBackend()).classify(card)
         #expect(response.schemaVersion == 1)
-        #expect(response.verdict == .continue)
-        // LiveBackend always fails open to fallback continue; modelAvailable tracks framework presence.
-        #expect(response.fallback == true)
+        // On-device model may continue (or rarely ask) for a neutral shell card;
+        // never invent deny/allow and never hang-flag unless cancelled.
+        #expect(response.verdict == .continue || response.verdict == .ask || response.verdict == .askStickyCandidate)
         #expect(response.timedOut == false)
-        #expect(response.modelAvailable == LiveBackend.isFoundationModelsFrameworkPresent)
+        if LiveBackend.isOnDeviceModelAvailable {
+            // Real generation or demotion path still reports model presence unless unavailable mid-flight.
+            #expect(response.modelAvailable == true || response.fallback == true)
+        } else {
+            #expect(response.fallback == true)
+            #expect(response.modelAvailable == false)
+        }
     }
 
     @Test("RiskCard + ClassifyResponse Codable round-trip keys match schema snake_case")

@@ -27,7 +27,7 @@ public actor StewardSession {
     private var warmed: Bool = false
 
     public init(
-        backend: any FoundationModelBackend = UnavailableBackend(),
+        backend: any FoundationModelBackend = LiveBackend.preferredDefault(),
         timeoutMs: Int = StewardSession.defaultTimeoutMs
     ) {
         self.backend = backend
@@ -43,10 +43,10 @@ public actor StewardSession {
     /// Whether the session has been warmed (`warm()` or first `classify`).
     public var isWarmed: Bool { warmed }
 
-    /// Mark the session warm for reuse (no cold start required on later classify).
-    /// Phase 3: no on-device model preload; presence of a live session is enough.
-    public func warm() {
+    /// Mark the session warm and preload the backend (on-device model prewarm when live).
+    public func warm() async {
         warmed = true
+        await backend.prepareWarm()
     }
 
     /// Classify `card`. Rules short-circuit without backend; otherwise race backend

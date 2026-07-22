@@ -4,8 +4,9 @@ import FMSteward
 // MARK: - CLI entry
 
 // Phase 3 demo CLI: classify risk-card-v1 JSON via StewardSession.
-// Default backend is UnavailableBackend; rules pre-pass covers fixture table
-// without on-device Foundation Models. Timeout/unavailable → continue.
+// Default backend is LiveBackend when the on-device SystemLanguageModel is
+// available (else UnavailableBackend). Rules pre-pass short-circuits fixtures.
+// Timeout/unavailable → continue.
 
 @main
 enum FMStewardCLI {
@@ -17,8 +18,14 @@ enum FMStewardCLI {
             case .help:
                 printUsage()
                 exit(0)
-            case .classify(let cardPath, let timeoutMs, let human):
-                try await runClassify(cardPath: cardPath, timeoutMs: timeoutMs, human: human)
+            case .classify(let cardPath, let timeoutMs, let human, let backend, let warm):
+                try await runClassify(
+                    cardPath: cardPath,
+                    timeoutMs: timeoutMs,
+                    human: human,
+                    backend: backend,
+                    warm: warm
+                )
             }
         } catch let error as CLIError {
             fputs("error: \(error.message)\n", stderr)
@@ -36,9 +43,15 @@ enum FMStewardCLI {
 
 // MARK: - Commands
 
+private enum BackendChoice: String {
+    case auto
+    case live
+    case unavailable
+}
+
 private enum Command {
     case help
-    case classify(cardPath: String, timeoutMs: Int?, human: Bool)
+    case classify(cardPath: String, timeoutMs: Int?, human: Bool, backend: BackendChoice, warm: Bool)
 }
 
 private struct Options {
@@ -63,6 +76,8 @@ private struct Options {
         var cardPath: String?
         var timeoutMs: Int?
         var human = false
+        var backend: BackendChoice = .auto
+        var warm = true
         var i = 0
         while i < args.count {
             let arg = args[i]
@@ -84,6 +99,19 @@ private struct Options {
                     throw CLIError("--timeout-ms must be a non-negative integer (got '\(args[i])')")
                 }
                 timeoutMs = value
+            case "--backend":
+                i += 1
+                guard i < args.count else {
+                    throw CLIError("--backend requires auto|live|unavailable")
+                }
+                guard let choice = BackendChoice(rawValue: args[i]) else {
+                    throw CLIError("--backend must be auto|live|unavailable (got '\(args[i])')")
+                }
+                backend = choice
+            case "--live":
+                backend = .live
+            case "--no-warm":
+                warm = false
             case "--human":
                 human = true
             case "--json":
@@ -105,7 +133,15 @@ private struct Options {
         guard let cardPath else {
             throw CLIError("classify requires --card <path.json>", showUsage: true)
         }
-        return Options(command: .classify(cardPath: cardPath, timeoutMs: timeoutMs, human: human))
+        return Options(
+            command: .classify(
+                cardPath: cardPath,
+                timeoutMs: timeoutMs,
+                human: human,
+                backend: backend,
+                warm: warm
+            )
+        )
     }
 }
 
@@ -114,7 +150,13 @@ private struct Options {
 /// Max risk-card file size for the demo CLI (1 MiB). Keeps accidental huge paths from OOMing.
 private let maxCardFileBytes = 1_048_576
 
-private func runClassify(cardPath: String, timeoutMs: Int?, human: Bool) async throws {
+private func runClassify(
+    cardPath: String,
+    timeoutMs: Int?,
+    human: Bool,
+    backend: BackendChoice,
+    warm: Bool
+) async throws {
     let url = URL(fileURLWithPath: cardPath)
     guard FileManager.default.fileExists(atPath: url.path) else {
         throw CLIError("card file not found: \(cardPath)", exitCode: 1)
@@ -152,15 +194,29 @@ private func runClassify(cardPath: String, timeoutMs: Int?, human: Bool) async t
         )
     }
 
-    // Default backend UnavailableBackend; rules pre-pass short-circuits fixture table.
-    // Clamp so CLI and session agree; 0 / omitted → default; upper bound avoids UInt64 sleep trap.
-    // Host API for timeout is StewardSession (Classifier has no wall-clock race).
+    // Rules pre-pass short-circuits fixture table; residual gray cards hit LiveBackend
+    // (on-device SystemLanguageModel) when available. Host API for timeout is StewardSession.
     let bound = StewardSession.clampTimeoutMs(timeoutMs ?? StewardSession.defaultTimeoutMs)
-    let session = StewardSession(timeoutMs: bound)
+    let backendImpl: any FoundationModelBackend = switch backend {
+    case .auto:
+        LiveBackend.preferredDefault()
+    case .live:
+        LiveBackend()
+    case .unavailable:
+        UnavailableBackend()
+    }
+    let session = StewardSession(backend: backendImpl, timeoutMs: bound)
+    if warm {
+        await session.warm()
+    }
     let response = await session.classify(card, timeoutMs: bound)
 
     if human {
         printHuman(response)
+        fputs(
+            "backend: \(backend.rawValue) fm_available=\(LiveBackend.isOnDeviceModelAvailable) fm_status=\(LiveBackend.availabilityDescription)\n",
+            stderr
+        )
     } else {
         try printJSON(response)
     }
@@ -211,22 +267,27 @@ private struct CLIError: Error {
 
 private func printUsage(to stream: UnsafeMutablePointer<FILE> = stdout) {
     let text = """
-    fm-steward — Mac-only Foundation Models steward demo CLI (Phase 3)
+    fm-steward — Mac on-device Foundation Models steward (Phase 3)
 
     Usage:
-      fm-steward classify --card <path.json> [--timeout-ms N] [--json|--human]
+      fm-steward classify --card <path.json> [--timeout-ms N] [--backend auto|live|unavailable] [--live] [--no-warm] [--json|--human]
 
     Options:
       --card <path>      Path to a risk-card-v1 JSON file (required)
       --timeout-ms N     Backend timeout in ms (default: \(StewardSession.defaultTimeoutMs))
+      --backend MODE     auto (default: live when on-device model ready) | live | unavailable
+      --live             Force LiveBackend (Apple SystemLanguageModel)
+      --no-warm          Skip session.warm() / model prewarm
       --json             Print classify-response-v1 JSON (default)
       --human            Print compact verdict / why / explain lines
       -h, --help         Show this help
 
     Notes:
-      - Default backend is unavailable; deterministic rules pre-pass handles fixtures.
+      - Rules pre-pass short-circuits obvious fixtures (bulk/vip/executed=false/test_loop).
+      - Residual gray cards use on-device SystemLanguageModel via guided generation.
       - Timeout or unavailable model → verdict continue (fallback), never hang.
       - Production Zig hook wiring (W4) is NOT done in Phase 3.
+      - Requires macOS 26+ with Apple Intelligence / Foundation Models assets.
     """
     fputs(text + "\n", stream)
 }
