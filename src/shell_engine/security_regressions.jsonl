@@ -49,3 +49,6 @@
 {"command": "python3.14 <<'EOF'\nimport shutil; shutil.rmtree('/')\nEOF", "expected": "deny", "source": "codex_p1_python_versioned_heredoc", "description": "versioned python heredoc is executing"}
 {"command": "Git.EXE reset --hard", "expected": "deny", "source": "codex_p1_windows_case", "description": "Windows case-insensitive Git.EXE still denies"}
 {"command": "RM.EXE -rf /", "expected": "deny", "source": "codex_p1_windows_case", "description": "Windows case-insensitive RM.EXE still denies"}
+{"command": "cat <<EOF\n$(rm -rf /)\nEOF", "expected": "deny", "source": "codex_p1_unquoted_heredoc_expand", "description": "unquoted cat heredoc expands command substitution"}
+{"command": "\"/bin/bash\" <<'EOF'\nrm -rf /\nEOF", "expected": "deny", "source": "codex_p1_quoted_path_receiver", "description": "quoted absolute bash path is executing receiver"}
+{"command": "echo ok # explanation; rm -rf /", "expected": "allow", "source": "codex_p2_comment_segment", "description": "commented semicolon must not spawn rm segment"}

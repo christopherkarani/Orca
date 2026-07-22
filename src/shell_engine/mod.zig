@@ -311,14 +311,12 @@ fn segmentArgv0Kind(segment: []const u8) ?ReceiverKind {
         const word = nextShellWord(segment, &i);
         if (word.len == 0) break;
 
-        var base = commandWordBasename(word);
-        if (base.len >= 2 and (base[0] == '\'' or base[0] == '"')) {
-            // Strip simple surrounding quotes: 'bash' / "bash"
-            if (base[base.len - 1] == base[0] and base.len >= 2) {
-                base = base[1 .. base.len - 1];
-                base = commandWordBasename(base);
-            }
+        // Strip surrounding quotes before basename so `"/bin/bash"` → bash.
+        var bare = word;
+        if (bare.len >= 2 and (bare[0] == '\'' or bare[0] == '"') and bare[bare.len - 1] == bare[0]) {
+            bare = bare[1 .. bare.len - 1];
         }
+        var base = commandWordBasename(bare);
         if (base.len >= 4 and std.ascii.eqlIgnoreCase(base[base.len - 4 ..], ".exe")) {
             base = base[0 .. base.len - 4];
         }
@@ -708,8 +706,11 @@ fn maskNonExecutingHeredoc(allocator: std.mem.Allocator, cmd: []const u8) ![]u8 
             while (p < out.len and (out[p] == ' ' or out[p] == '\t')) : (p += 1) {}
 
             // Parse delimiter token (quoted or bare, including leading `\`).
+            // Only quoted delimiters disable shell expansion of the body — safe to mask.
             var delim: []const u8 = "";
+            var delim_quoted = false;
             if (p < out.len and (out[p] == '\'' or out[p] == '"')) {
+                delim_quoted = true;
                 const q = out[p];
                 p += 1;
                 const start = p;
@@ -749,6 +750,10 @@ fn maskNonExecutingHeredoc(allocator: std.mem.Allocator, cmd: []const u8) ![]u8 
             }
 
             if (found_end) |body_end| {
+                const body = out[body_start..body_end];
+                // Unquoted delimiters expand $(...) / `...` — leave those bodies matchable.
+                // Literal bodies (no expansions) remain safe to mask for data sinks.
+                if (!delim_quoted and bodyHasShellExpansion(body)) break;
                 // Mask body only (preserve newlines / whitespace structure).
                 var q = body_start;
                 while (q < body_end) : (q += 1) {
@@ -762,6 +767,15 @@ fn maskNonExecutingHeredoc(allocator: std.mem.Allocator, cmd: []const u8) ![]u8 
         }
     }
     return out;
+}
+
+fn bodyHasShellExpansion(body: []const u8) bool {
+    // Conservative: any unquoted-ish $(, $`, or backtick may expand under unquoted heredoc.
+    if (std.mem.indexOf(u8, body, "$(") != null) return true;
+    if (std.mem.indexOfScalar(u8, body, '`') != null) return true;
+    // ${...} parameter expansion can nest command substitution; treat as expansion surface.
+    if (std.mem.indexOf(u8, body, "${") != null) return true;
+    return false;
 }
 
 fn matchDeny(cmd: []const u8, match_opts: registry.MatchOptions) ?registry.Hit {

@@ -15,6 +15,7 @@ const daemon = @import("daemon.zig");
 const rust_visibility = @import("rust_visibility.zig");
 const feed_writer = @import("feed_writer.zig");
 const pack_config = @import("pack_config.zig");
+const supervisor = core.supervisor;
 
 pub const ShellCommandEvent = struct {
     command: []const u8,
@@ -102,7 +103,10 @@ fn zigEvaluator(
     // Missing config → baseline only. Unreadable / oversized config fails closed.
     var threaded: std.Io.Threaded = .init_single_threaded;
     const io = threaded.io();
-    const workspace = shell_event.cwd orelse ".";
+    // Discover enclosing workspace/repo root so nested cwds still load /repo/.orca.toml.
+    const cwd_hint = shell_event.cwd orelse ".";
+    const workspace = supervisor.resolveWorkspaceRoot(io, allocator, null, cwd_hint) catch cwd_hint;
+    defer if (workspace.ptr != cwd_hint.ptr) allocator.free(workspace);
     var packs = pack_config.loadPackIdsForWorkspace(io, allocator, workspace) catch |err| switch (err) {
         error.OutOfMemory => return error.OutOfMemory,
         error.HomeDirectoryNotFound => pack_config.LoadedPackIds{},

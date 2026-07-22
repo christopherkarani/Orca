@@ -91,6 +91,12 @@ fn collect(
             continue;
         }
 
+        // Unquoted shell comments: rest of line is not active syntax.
+        if (b == '#') {
+            while (i < end and cmd[i] != '\n') : (i += 1) {}
+            continue;
+        }
+
         const split_w: ?usize = blk: {
             if (b == ';' or b == '\n') break :blk 1;
             if (b == '&') {
