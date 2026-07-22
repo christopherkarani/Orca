@@ -252,3 +252,18 @@ Default vocabulary: `needs-triage`, `needs-info`, `ready-for-agent`, `ready-for-
 ### Domain docs
 
 Single-context layout (`CONTEXT.md` + `docs/adr/` at repo root). See `docs/agents/domain.md`.
+
+## Cursor Cloud specific instructions
+
+Environment (installed by the startup update script; do not re-run by hand):
+
+- Zig **0.16.0** via `./scripts/ensure-zig-toolchain.sh --install`; always drive it through `./scripts/zig` (adds the pinned Zig to `PATH` per-invocation — a bare `zig` will not be found).
+- Rust **nightly** is auto-selected by `orca-rs/rust-toolchain.toml`; run `cargo` from inside `orca-rs/` so the override applies. `rustfmt`/`clippy` come from the toolchain file.
+- Node ≥22 is preinstalled. The plugin/dashboard subprojects (`orca-dashboard-ui/`, `orca-pi/`, `integrations/*-plugin/`) are optional add-ons; `npm install` in each dir only if you touch them.
+
+Running/verifying without the Zig CLI:
+
+- The core policy engine is the Rust daemon binary, built at `orca-rs/target/debug/orca-daemon` (it presents itself as `orca`). It runs standalone — no Zig CLI or UDS socket needed for one-shot evaluation.
+- Quick end-to-end checks: `orca-rs/target/debug/orca-daemon test "rm -rf /"` (BLOCKED) vs `... test "ls -la"` (ALLOWED); batch hook flow: `printf '%s\n' '{"tool_name":"Bash","tool_input":{"command":"rm -rf /"}}' | orca-rs/target/debug/orca-daemon hook --batch` → JSONL `{"decision":"deny",...}`.
+
+Known caveat on Linux (as of this setup): the Zig CLI (`./scripts/zig build`) currently fails to compile on the Linux target with two `std.posix`/`std.os.linux` API-shape errors (`daemon_trust.zig` `fstat`, `apply_posix.zig` `chdir`). This is a code-level regression, not an environment problem, and it was not caught because GitHub Actions is billing-locked (`gh run` jobs abort in seconds with "account is locked"). Do not treat a failing Linux `zig build` as a broken toolchain. macOS is the primary Zig target; iterate Zig with `./scripts/compile-fast.sh check` and the tier ladder above.
