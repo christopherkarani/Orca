@@ -5,9 +5,12 @@
 - Verify the real checkout and files before changing anything.
 - Use TDD for non-trivial changes.
 - Keep edits surgical and tied to the request.
-- Default to direct work for small or mechanical tasks.
-- Use subagents only when the task spans multiple files/modules, needs isolated review, or has meaningful architectural risk.
-- If you use subagents, write a short plan first and treat their output as advisory until verified.
+- **Act by default** when the task is clear: local edits, tests, implement/fix loops, and sub-agent spawns do not need human approval. Pause only for ambiguity, architecture forks, or irreversible/shared actions (push, force-push, published PR reviews, deletes the user did not ask for, new dependencies, anything that changes shared remote state).
+- **Direct work** for small or mechanical tasks (typos, one-liners, pure formatting, trivial renames).
+- **Prefer sub-agents** for non-trivial multi-step work. Also use sub-agents for parallel independent work, blast-radius isolation (worktrees), Zig specialist lanes, or explicit orchestration.
+- When multi-step, keep a short internal plan (todos). That is not a request for human go-ahead.
+- Sub-agent output is **advisory until the main agent verifies** it against the tree, tests, and product rules.
+- Full work + review SOP: [`docs/agents/work-and-review.md`](docs/agents/work-and-review.md).
 
 ## Repo Boundaries
 
@@ -97,6 +100,7 @@ eval "$(./scripts/ensure-zig-toolchain.sh --export)"   # or: direnv allow
 
 - Preserve user-owned dirty changes.
 - Verify before calling work complete (with the **narrowest** gate above).
+- **Done gate (substantive code):** after implementation, run the tiered end-of-task adversarial review in [`docs/agents/work-and-review.md`](docs/agents/work-and-review.md). Do not call the work complete while blocking findings remain (unless the user waived them). Auto-fix blockers for at most **2** fix→re-review loops, then escalate.
 - Use conventional commits.
 - Do not add dependencies without documenting them in `docs/dev/dependencies.md`.
 - Do not introduce SaaS, telemetry, monetization, or cloud dashboards unless the user asks for them.
@@ -109,11 +113,25 @@ eval "$(./scripts/ensure-zig-toolchain.sh --export)"   # or: direnv allow
 
 ## Risk Areas
 
-- Shell security authority is the Zig `shell_engine` (MVP pack coverage). Expanding packs must keep corpus gates green.
+- Shell security authority is the Zig `shell_engine` (85 oracle packs + 100% corpus gate). Keep `./scripts/zig build test-shell-engine` green; requires PCRE2 (`libpcre2-dev` / Homebrew `pcre2`).
 - Fail closed on evaluator errors for shell hooks.
 - The Zig **lib test monopath** (`src/root.zig` + `cli/mod.zig` test pulls) is the main local iteration bottleneck — compensate with L0-first discipline, not by skipping verification entirely.
 
 ## Agent skills
+
+### Work, Zig skills, and end-of-task review
+
+Mandatory control loop for non-trivial code work. Details: [`docs/agents/work-and-review.md`](docs/agents/work-and-review.md).
+
+- **Zig skill packs (when touching Zig):** load before writing or reviewing. At minimum `zig-best-practices` for implement/style; add `zig-memory-safety` for alloc/IO/lifetime; `zig-abstractions` for API design; build-system skill for `build.zig` / `build.zig.zon`. Review lanes load code-review / memory-safety / thermo-nuclear as the tier requires.
+- **Instruct every sub-agent** which skill paths to read first. Missing skill → fail/pause; do not improvise “Zig vibes.”
+- **End-of-task review (substantive code only):** spawn real review sub-agents (no self-review cosplay). Tier ladder:
+  - **T1 (default):** Behavior/Correctness + Style/Idioms
+  - **T2 (risk / multi-module / implement-subagent work):** T1 + Safety/Hardening
+  - **T3 (large or architectural):** T2 + Thermo-nuclear code quality
+- Skip mandatory dual+ review for trivial, read-only, or pure docs unless the user asks.
+- Write an untracked note under `planning/reviews/`; do not commit review artifacts unless asked.
+- Reuse an in-session multi-agent review if it already covers the required tier; otherwise top up missing lanes.
 
 ### Issue tracker
 

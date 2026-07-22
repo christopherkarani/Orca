@@ -1,6 +1,6 @@
 //! Minimal shell/command bypass classifiers for Zig command evaluation paths.
 //! When `effects:` is active, these merge into command decisions.
-//! Host shell PreToolUse still primarily uses the Rust daemon — document residual gap.
+//! Host shell PreToolUse is owned by in-process Zig `shell_engine` (not a Rust daemon).
 
 const std = @import("std");
 const catalog = @import("catalog.zig");

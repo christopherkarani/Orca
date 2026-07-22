@@ -17,6 +17,18 @@ jobs:
       - uses: mlugg/setup-zig@v2
         with:
           version: 0.16.0
+      - name: Install PCRE2 (shell_engine pack regex)
+        shell: bash
+        run: |
+          if [ "${{ runner.os }}" = "Linux" ]; then
+            sudo apt-get update && sudo apt-get install -y libpcre2-dev
+          elif [ "${{ runner.os }}" = "macOS" ]; then
+            brew install pcre2
+          elif [ "${{ runner.os }}" = "Windows" ]; then
+            choco install pcre -y || true
+            # vcpkg/MSYS fallback paths are covered by build.zig library search paths
+            pacman -S --noconfirm mingw-w64-x86_64-pcre2 2>/dev/null || true
+          fi
       - name: Build
         shell: bash
         run: ./scripts/zig build
