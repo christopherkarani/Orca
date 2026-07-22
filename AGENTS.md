@@ -28,7 +28,7 @@ git ls-files | rg '(^planning/|^go_to_market/|^customer_pilot/|^tasks/|^reports/
 ## Orca Context
 
 - Zig is the primary (and sole) user-facing CLI and shell evaluator.
-- Shell command security decisions are owned by the in-process Zig `shell_engine` (default). Set `ORCA_SHELL_EVAL=rust` only if a legacy Rust daemon is present for dual-stack experiments; production path is Zig.
+- Shell command security decisions are owned by the in-process Zig `shell_engine`. `ORCA_SHELL_EVAL=rust` is rejected (legacy Rust daemon Evaluate removed); production path is Zig only.
 - Non-shell events (files, network, MCP/tools, effects) stay on the Zig policy path.
 - Do not reintroduce a required Rust daemon for hook/run/shim shell gating.
 - Shell evaluator internal errors fail closed with `deny`.

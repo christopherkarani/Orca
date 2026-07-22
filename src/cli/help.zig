@@ -637,7 +637,7 @@ pub const commands =
             "Debug logs go to stderr only.",
         } },
         .{ .name = "evaluate", .summary = "Stable machine API for shell-command evaluation", .usage = "orca evaluate --json --stdin", .category = .integrations, .details = &.{
-            "Reads a versioned JSON request from stdin and evaluates shell_command events via the Zig shell_engine (default; ORCA_SHELL_EVAL=rust is optional dual-stack only).",
+            "Reads a versioned JSON request from stdin and evaluates shell_command events via the Zig shell_engine (ORCA_SHELL_EVAL=rust is rejected).",
             "Requires schema_version=1, kind=shell_command, command string, and an absolute existing cwd.",
             "Always writes the stable integration JSON response to stdout for invalid input and expected evaluator outcomes.",
             "Exit codes: 0 allow, 2 deny, 3 evaluator failure, 64 invalid input, 1 unexpected internal error.",
@@ -646,7 +646,7 @@ pub const commands =
         .{ .name = "hook", .summary = "Receive events from AI agent hosts", .usage = "orca hook <codex|claude|opencode|openclaw|hermes> <event> [--ci]", .category = .advanced, .details = &.{
             "Reads a JSON payload from stdin, normalizes host-specific events to Orca decisions,",
             "and emits a host-valid JSON response to stdout. Debug logs go to stderr only.",
-            "Shell PreToolUse / PermissionRequest (and equivalent host tool-before events) evaluate commands via the in-process Zig shell_engine (default; ORCA_SHELL_EVAL=rust is optional dual-stack only).",
+            "Shell PreToolUse / PermissionRequest (and equivalent host tool-before events) evaluate commands via the in-process Zig shell_engine (ORCA_SHELL_EVAL=rust is rejected).",
             "Events:",
             "  orca hook codex SessionStart",
             "  orca hook codex UserPromptSubmit",

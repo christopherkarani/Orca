@@ -1,8 +1,8 @@
 //! Shared shell command evaluation for `orca hook`, `orca run`, and shims.
 //!
-//! Security decisions are owned by the in-process Zig shell engine by default
-//! (`ORCA_SHELL_EVAL=zig`). Set `ORCA_SHELL_EVAL=rust` to force the legacy Rust
-//! daemon Evaluate path during dual-stack transition.
+//! Security decisions are owned exclusively by the in-process Zig shell_engine
+//! (default / `ORCA_SHELL_EVAL=zig`). `ORCA_SHELL_EVAL=rust` is rejected — the
+//! legacy Rust daemon Evaluate backend is no longer a supported product path.
 
 const std = @import("std");
 
@@ -38,7 +38,8 @@ const event_source_run = rust_visibility.event_source_run;
 
 pub const ShellEvalBackend = enum { zig, rust };
 
-/// Resolve shell evaluator backend. Default is Zig (Phase 4 product MVP).
+/// Resolve shell evaluator backend. Default is Zig. `.rust` is detected only so
+/// callers can hard-error — it must never select `daemon.evaluate`.
 pub fn resolveShellEvalBackend() ShellEvalBackend {
     const value_z = std.c.getenv("ORCA_SHELL_EVAL") orelse return .zig;
     const value = std.mem.span(value_z);
@@ -107,9 +108,10 @@ fn rustEvaluator(
     allocator: std.mem.Allocator,
     shell_event: ShellCommandEvent,
 ) daemon.DaemonError!std.json.Parsed(daemon.DaemonResponse) {
-    const absolute_cwd = try resolveEffectiveCwd(allocator, shell_event.cwd);
-    defer allocator.free(absolute_cwd);
-    return daemon.evaluate(allocator, shell_event.command, absolute_cwd);
+    _ = allocator;
+    _ = shell_event;
+    // Hard error: never call daemon.evaluate for shell security.
+    return error.RustShellEvalRemoved;
 }
 
 pub fn defaultEvaluator(
@@ -158,7 +160,7 @@ pub const RiskLevel = enum {
     }
 };
 
-/// Mode × severity matrix for shell denials returned by the Rust daemon.
+/// Mode × severity matrix for shell denials returned by the Zig shell evaluator.
 ///
 /// Daemon Evaluate returns Allow/Deny with optional pack severity. Orca modes
 /// map those engine hits into product outcomes in one place so run/hook/shim
@@ -434,7 +436,8 @@ pub fn failClosedDaemonUnavailableDecision(allocator: std.mem.Allocator, err: da
     return failClosedRunDecision(allocator, daemonUnavailableReason(err));
 }
 
-/// Evaluate a shell command via the Rust daemon and return a run/shim `CommandDecision`.
+/// Evaluate a shell command via Zig `shell_engine` and return a run/shim `CommandDecision`.
+/// `ORCA_SHELL_EVAL=rust` fails closed (`RustShellEvalRemoved`) without daemon Evaluate.
 pub fn evaluateCommand(
     allocator: std.mem.Allocator,
     effective_mode: policy.schema.Mode,
@@ -469,7 +472,11 @@ pub fn evaluateCommand(
             feed_writer.appendRecordBestEffort(options.io, allocator, options.workspace_root, record);
         }
         const unavailable = try failClosedDaemonUnavailableDecision(allocator, err);
-        const explanation = try allocator.dupe(u8, "evaluated by Rust daemon (unavailable)");
+        const unavailable_msg: []const u8 = if (resolveShellEvalBackend() == .zig and evaluator_override == null)
+            "evaluated by Zig shell_engine (unavailable)"
+        else
+            "evaluated by shell evaluator (unavailable)";
+        const explanation = try allocator.dupe(u8, unavailable_msg);
         errdefer allocator.free(explanation);
         const owned_reason = unavailable.owned_reason;
         return .{
@@ -523,7 +530,11 @@ pub fn evaluateCommand(
 
     const translated = try decisionFromDaemonResult(allocator, daemon_response.value.result, effective_mode);
 
-    const explanation = try allocator.dupe(u8, "evaluated by Rust daemon");
+    const success_msg: []const u8 = if (resolveShellEvalBackend() == .zig and evaluator_override == null)
+        "evaluated by Zig shell_engine"
+    else
+        "evaluated by shell evaluator";
+    const explanation = try allocator.dupe(u8, success_msg);
     errdefer allocator.free(explanation);
 
     const owned_reason = translated.owned_reason;
@@ -785,6 +796,52 @@ test "shell_eval ci mode converts warn allow to deny" {
     var decision = try evaluateCommand(allocator, .ci, &.{ "git", "status" }, null, mockDaemonWarnAllowEvaluator, null, null);
     defer decision.deinit(allocator);
     try std.testing.expectEqual(core.decision.DecisionResult.deny, decision.decision.result);
+}
+
+extern "c" fn setenv(name: [*:0]const u8, value: [*:0]const u8, overwrite: c_int) c_int;
+extern "c" fn unsetenv(name: [*:0]const u8) c_int;
+
+fn restoreShellEvalEnv(previous: ?[*:0]const u8) void {
+    if (previous) |value| {
+        _ = setenv("ORCA_SHELL_EVAL", value, 1);
+    } else {
+        _ = unsetenv("ORCA_SHELL_EVAL");
+    }
+}
+
+test "resolveShellEvalBackend defaults to zig when unset" {
+    const previous = std.c.getenv("ORCA_SHELL_EVAL");
+    defer restoreShellEvalEnv(previous);
+    _ = unsetenv("ORCA_SHELL_EVAL");
+    try std.testing.expectEqual(ShellEvalBackend.zig, resolveShellEvalBackend());
+}
+
+test "ORCA_SHELL_EVAL=rust rejects without daemon evaluate" {
+    const allocator = std.testing.allocator;
+    const previous = std.c.getenv("ORCA_SHELL_EVAL");
+    defer restoreShellEvalEnv(previous);
+    try std.testing.expectEqual(@as(c_int, 0), setenv("ORCA_SHELL_EVAL", "rust", 1));
+    try std.testing.expectEqual(ShellEvalBackend.rust, resolveShellEvalBackend());
+    try std.testing.expectError(
+        error.RustShellEvalRemoved,
+        defaultEvaluator(allocator, .{ .command = "git status", .cwd = null }),
+    );
+    try std.testing.expectEqualStrings(
+        "ORCA_SHELL_EVAL=rust is no longer supported; Zig shell_engine is the sole Evaluate authority",
+        daemonUnavailableReason(error.RustShellEvalRemoved),
+    );
+}
+
+test "default zig evaluator denies destructive rm via shell_engine" {
+    const allocator = std.testing.allocator;
+    const previous = std.c.getenv("ORCA_SHELL_EVAL");
+    defer restoreShellEvalEnv(previous);
+    _ = unsetenv("ORCA_SHELL_EVAL");
+    try std.testing.expectEqual(ShellEvalBackend.zig, resolveShellEvalBackend());
+
+    var parsed = try defaultEvaluator(allocator, .{ .command = "rm -rf /", .cwd = null });
+    defer parsed.deinit();
+    try std.testing.expectEqual(daemon.ResponseStatus.deny, daemon.responseStatus(parsed.value.result));
 }
 
 test "hook and run parity for safe and dangerous commands" {

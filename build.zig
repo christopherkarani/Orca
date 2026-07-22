@@ -148,7 +148,8 @@ pub fn build(b: *std.Build) void {
     });
     exe.root_module.link_libc = true;
     exe.root_module.addImport("vaxis", vaxis_mod);
-    addPcre2Shim(b, exe.root_module);
+    // Attach once on `orca` (imported by the exe). Linking the same C shim on both
+    // exe.root_module and orca_mod duplicates _orca_regex_* symbols at link time.
     addPcre2Shim(b, orca_mod);
 
     b.installArtifact(exe);

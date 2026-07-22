@@ -1,6 +1,7 @@
 //! `orca test` — evaluate a shell command via the Zig shell engine.
 const std = @import("std");
 const shell_engine = @import("../shell_engine/mod.zig");
+const shell_eval = @import("shell_eval.zig");
 
 pub fn command(io: std.Io, argv: []const []const u8, stdout: anytype, stderr: anytype) !u8 {
     _ = io;
@@ -13,6 +14,11 @@ pub fn command(io: std.Io, argv: []const []const u8, stdout: anytype, stderr: an
             \\
         );
         return 0;
+    }
+
+    if (shell_eval.resolveShellEvalBackend() == .rust) {
+        try stderr.writeAll("orca test: ORCA_SHELL_EVAL=rust is no longer supported; Zig shell_engine is the sole Evaluate authority\n");
+        return 3;
     }
 
     var format_json = false;

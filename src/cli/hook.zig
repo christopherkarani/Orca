@@ -19,15 +19,15 @@ const max_payload_len = 256 * 1024; // 256 KiB
 // Hook evaluator dispatch (Phase 2E / Zig shell engine)
 //
 // PreToolUse shell-command events (and PermissionRequest shell/command) route to
-// the in-process Zig shell engine by default (`ORCA_SHELL_EVAL=zig`). Optional
-// `ORCA_SHELL_EVAL=rust` keeps the legacy Rust daemon Evaluate path.
+// the in-process Zig shell_engine (`ORCA_SHELL_EVAL=zig` or unset).
+// `ORCA_SHELL_EVAL=rust` is rejected — the legacy Rust daemon Evaluate path is gone.
 // Other events (prompt, file permission, session, stop, post-tool, informational,
 // and non-shell PreToolUse) stay on the Zig policy path.
 //
 // Invariants:
-// - Shell security authority is a single backend per process (zig or rust via env).
+// - Shell security authority is the Zig shell_engine only.
 // - Zig evaluator internal errors fail closed (deny).
-// - Legacy rust backend: daemon transport/protocol failures fail closed (deny).
+// - `ORCA_SHELL_EVAL=rust` hard-errors (never calls daemon.evaluate for shell).
 // - Non-shell tools with incidental `command` fields stay on the Zig policy path.
 // - Shell tools with missing/invalid command fields fail closed before evaluation.
 // - File paths for PreToolUse writes and PermissionRequest file ops are normalized

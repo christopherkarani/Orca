@@ -675,7 +675,7 @@ test "help disambiguates explain vs policy explain" {
     try std.testing.expectEqual(exit_codes.success, code);
     const output = stdout_writer.buffered();
     try std.testing.expect(std.mem.indexOf(u8, output, "policy explain") != null);
-    try std.testing.expect(std.mem.indexOf(u8, output, "Rust") != null or std.mem.indexOf(u8, output, "daemon") != null);
+    try std.testing.expect(std.mem.indexOf(u8, output, "Zig shell_engine") != null);
 }
 
 test "env command appears in help and dispatches correctly" {

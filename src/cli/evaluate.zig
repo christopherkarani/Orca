@@ -547,6 +547,11 @@ fn classifyDaemonError(err: daemon.DaemonError) ClassifiedDaemonError {
             .status = .unknown,
             .message = "internal allocation failure during evaluation",
         },
+        error.RustShellEvalRemoved => .{
+            .code = .daemon_unavailable,
+            .status = .unavailable,
+            .message = shell_eval.daemonUnavailableReason(error.RustShellEvalRemoved),
+        },
         else => .{
             .code = .daemon_unavailable,
             .status = .unavailable,

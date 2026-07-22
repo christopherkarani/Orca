@@ -134,6 +134,8 @@ pub const DaemonError = error{
     MissingHandshake,
     HandshakeMalformed,
     ProtocolMismatch,
+    /// `ORCA_SHELL_EVAL=rust` requested; Rust daemon Evaluate is no longer a product path.
+    RustShellEvalRemoved,
 };
 
 pub const DaemonBinarySource = enum {
