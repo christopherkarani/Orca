@@ -8,6 +8,7 @@ pub const matchers = @import("matchers.zig");
 pub const network_eval = @import("network_eval.zig");
 pub const presets = @import("presets.zig");
 pub const effects = @import("effects/mod.zig");
+pub const sticky = @import("sticky.zig");
 
 pub const phase = "07-policy-engine";
 
@@ -24,4 +25,5 @@ test {
     _ = network_eval;
     _ = presets;
     _ = effects;
+    _ = sticky;
 }
