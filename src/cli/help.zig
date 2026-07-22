@@ -201,7 +201,7 @@ pub const commands =
         },
         .{
             .name = "test",
-            .summary = "Test a shell command with Rust safety packs",
+            .summary = "Test a shell command with Zig shell_engine packs",
             .usage = "orca test <command> [options]",
             .category = .core_workflow,
             .examples = &.{
@@ -209,8 +209,8 @@ pub const commands =
                 "orca test \"rm -rf /\" --format json",
             },
             .details = &.{
-                "Proxies to the Rust daemon and evaluates the command with the Rust pack engine.",
-                "The daemon response preserves the Rust CLI stdout, stderr, and exit code.",
+                "Evaluates the command with the in-process Zig shell_engine (oracle pack parity).",
+                "Exit 0 = allow, 2 = deny. Use --format json for structured decision fields.",
             },
         },
         .{
@@ -260,7 +260,7 @@ pub const commands =
         },
         .{
             .name = "explain",
-            .summary = "Explain why a shell command is blocked or allowed (Rust packs)",
+            .summary = "Explain why a shell command is blocked or allowed (Zig shell_engine)",
             .usage = "orca explain <command> [options]",
             .category = .core_workflow,
             .public = true,
@@ -269,9 +269,8 @@ pub const commands =
                 "orca explain \"rm -rf /tmp/x\" --format json",
             },
             .details = &.{
-                "Proxies to the Rust daemon pack decision trace for shell commands.",
+                "Traces pack_id / pattern_name for shell commands via the in-process Zig shell_engine.",
                 "This is different from 'orca policy explain', which explains Zig .orca/policy.yaml rules for files/network/commands.",
-                "Use 'orca explain --help' for the full Rust-backed option set.",
             },
         },
         .{
@@ -595,7 +594,7 @@ pub const commands =
         } },
         .{ .name = "redteam", .summary = "Run built-in fixture engine self-tests (not your workspace policy)", .usage = "orca redteam [path] [--json] [--ci] [--fixture <id>]", .category = .advanced, .details = &.{
             "Runs deterministic local fixtures against the internal builtin:redteam preset with synthetic in-process (Zig) evaluation.",
-            "This is an engine self-test: it does not load .orca/policy.yaml, does not exercise the Rust daemon shell path, and does not prove wrapper/host/proxy/OS enforcement.",
+            "This is an engine self-test: it does not load .orca/policy.yaml, does not exercise host hook install, and does not prove wrapper/host/proxy/OS enforcement.",
             "Reports include provenance (suite_kind, policy, evaluator, real_action_attempted=false). A 100% score is not workspace-policy assurance.",
             "When no path is provided, fixtures are discovered under ./fixtures (or installed resource fixtures).",
             "--json emits a machine-readable report with a provenance object. --ci never prompts and exits non-zero if any required fixture fails or is unsupported.",
@@ -638,15 +637,16 @@ pub const commands =
             "Debug logs go to stderr only.",
         } },
         .{ .name = "evaluate", .summary = "Stable machine API for shell-command evaluation", .usage = "orca evaluate --json --stdin", .category = .integrations, .details = &.{
-            "Reads a versioned JSON request from stdin and evaluates shell_command events through the Rust daemon Evaluate path.",
+            "Reads a versioned JSON request from stdin and evaluates shell_command events via the Zig shell_engine (ORCA_SHELL_EVAL=rust is rejected).",
             "Requires schema_version=1, kind=shell_command, command string, and an absolute existing cwd.",
-            "Always writes the stable integration JSON response to stdout for invalid input and expected daemon outcomes.",
-            "Exit codes: 0 allow, 2 deny, 3 daemon/protocol failure, 64 invalid input, 1 unexpected internal error.",
+            "Always writes the stable integration JSON response to stdout for invalid input and expected evaluator outcomes.",
+            "Exit codes: 0 allow, 2 deny, 3 evaluator failure, 64 invalid input, 1 unexpected internal error.",
             "Designed for external integrations such as Pi bash tool-call evaluation; non-shell evaluation is intentionally unsupported.",
         } },
         .{ .name = "hook", .summary = "Receive events from AI agent hosts", .usage = "orca hook <codex|claude|opencode|openclaw|hermes> <event> [--ci]", .category = .advanced, .details = &.{
             "Reads a JSON payload from stdin, normalizes host-specific events to Orca decisions,",
             "and emits a host-valid JSON response to stdout. Debug logs go to stderr only.",
+            "Shell PreToolUse / PermissionRequest (and equivalent host tool-before events) evaluate commands via the in-process Zig shell_engine (ORCA_SHELL_EVAL=rust is rejected).",
             "Events:",
             "  orca hook codex SessionStart",
             "  orca hook codex UserPromptSubmit",

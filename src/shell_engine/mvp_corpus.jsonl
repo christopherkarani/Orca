@@ -1,0 +1,47 @@
+{"command": "git status", "expected": "allow"}
+{"command": "git log --oneline -10", "expected": "allow"}
+{"command": "ls -la /tmp", "expected": "allow"}
+{"command": "echo hello world", "expected": "allow"}
+{"command": "pwd", "expected": "allow"}
+{"command": "rm -rf /", "expected": "deny", "rule_id": "core.filesystem:rm-rf-root-home"}
+{"command": "rm -rf ~", "expected": "deny", "rule_id": "core.filesystem:rm-rf-root-home"}
+{"command": "rm -rf $HOME", "expected": "deny", "rule_id": "core.filesystem:rm-rf-root-home"}
+{"command": "rm -rf *", "expected": "deny", "rule_id": "core.filesystem:rm-rf-general"}
+{"command": "rm -rf .*", "expected": "deny", "rule_id": "core.filesystem:rm-rf-general"}
+{"command": "rm -rf ./build", "expected": "deny", "rule_id": "core.filesystem:rm-rf-general"}
+{"command": "rm -r -f ./build", "expected": "deny", "rule_id": "core.filesystem:rm-rf-general"}
+{"command": "rm --recursive --force /etc", "expected": "deny", "rule_id": "core.filesystem:rm-rf-root-home"}
+{"command": "find /etc -delete", "expected": "deny", "rule_id": "core.filesystem:find-delete-root-home"}
+{"command": "find . -delete", "expected": "deny", "rule_id": "core.filesystem:find-delete-general"}
+{"command": "shred /tmp/secret", "expected": "allow"}
+{"command": "unlink /etc/passwd", "expected": "deny", "rule_id": "core.filesystem:unlink-root-home"}
+{"command": "git reset --hard", "expected": "deny", "rule_id": "core.git:reset-hard"}
+{"command": "git reset --hard HEAD~5", "expected": "deny", "rule_id": "core.git:reset-hard"}
+{"command": "git clean -fd", "expected": "deny", "rule_id": "core.git:clean-force"}
+{"command": "git clean -fdx", "expected": "deny", "rule_id": "core.git:clean-force"}
+{"command": "git stash drop", "expected": "deny", "rule_id": "core.git:stash-drop"}
+{"command": "git stash clear", "expected": "deny", "rule_id": "core.git:stash-clear"}
+{"command": "git branch -D feature-branch", "expected": "deny", "rule_id": "core.git:branch-force-delete"}
+{"command": "git push --force origin main", "expected": "deny", "rule_id": "core.git:push-force-long"}
+{"command": "git push -f origin main", "expected": "deny", "rule_id": "core.git:push-force-short"}
+{"command": "git checkout -- README.md", "expected": "deny", "rule_id": "core.git:checkout-discard"}
+{"command": "mkfs.ext4 /dev/sda1", "expected": "deny", "rule_id": "system.disk:mkfs"}
+{"command": "mkswap /dev/sdb1", "expected": "deny", "rule_id": "system.disk:mkswap"}
+{"command": "wipefs /dev/sda", "expected": "deny", "rule_id": "system.disk:wipefs"}
+{"command": "fdisk /dev/sda", "expected": "deny", "rule_id": "system.disk:fdisk-edit"}
+{"command": "dd if=/dev/zero of=/dev/sda", "expected": "deny", "rule_id": "system.disk:dd-device"}
+{"command": "lvremove /dev/vg0/lv0", "expected": "deny", "rule_id": "system.disk:lvremove"}
+{"command": "pvremove /dev/sdb", "expected": "deny", "rule_id": "system.disk:pvremove"}
+{"command": "vgremove vg0", "expected": "deny", "rule_id": "system.disk:vgremove"}
+{"command": "btrfs subvolume delete /mnt/snap", "expected": "deny", "rule_id": "system.disk:btrfs-subvolume-delete"}
+{"command": "chmod 777 /tmp/x", "expected": "allow", "note": "default packs exclude system.permissions/services; enable for deny"}
+{"command": "sudo rm -rf /var/log", "expected": "deny", "rule_id": "system.permissions:privilege-escalation"}
+{"command": "systemctl stop nginx", "expected": "allow", "note": "default packs exclude system.permissions/services; enable for deny"}
+{"command": "systemctl disable sshd", "expected": "allow", "note": "default packs exclude system.permissions/services; enable for deny"}
+{"command": "mv /etc /tmp/x", "expected": "deny", "rule_id": "core.filesystem:mv-sensitive-source-root-home"}
+{"command": "tar --remove-files -cf /tmp/a.tar ./src", "expected": "deny", "rule_id": "core.filesystem:tar-remove-files-general"}
+{"command": "truncate -s 0 /tmp/file", "expected": "allow"}
+{"command": "git restore README.md", "expected": "deny", "rule_id": "strict_git:restore-worktree"}
+{"command": "true", "expected": "allow"}
+{"command": "whoami", "expected": "allow"}
+{"command": "uname -a", "expected": "allow"}

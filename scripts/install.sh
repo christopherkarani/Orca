@@ -254,12 +254,12 @@ Offline:  set ORCA_ARTIFACT_DIR after verifying checksums by hand."
   fi
 }
 
-# Exit 0 if candidate looks like Orca/orca-daemon; print semver (may be empty) on stdout.
+# Exit 0 if candidate looks like the Orca CLI; print semver (may be empty) on stdout.
 probe_existing_orca() {
   candidate="$1"
   [ -e "$candidate" ] || return 1
   out="$("$candidate" version 2>/dev/null)" || out="$("$candidate" --version 2>/dev/null)" || return 1
-  printf '%s\n' "$out" | grep -Eqi '"product"[[:space:]]*:[[:space:]]*"orca"|^orca(-daemon)?([[:space:]]|$)|^[0-9]+\.[0-9]+\.[0-9]+' || return 1
+  printf '%s\n' "$out" | grep -Eqi '"product"[[:space:]]*:[[:space:]]*"orca"|^orca([[:space:]]|$)|^[0-9]+\.[0-9]+\.[0-9]+' || return 1
   printf '%s\n' "$out" | sed -n 's/.*\([0-9][0-9]*\.[0-9][0-9]*\.[0-9][0-9]*\).*/\1/p' | head -n1 || true
   return 0
 }
@@ -446,7 +446,6 @@ OS="$(detect_os)"
 ARCH="$(detect_arch)"
 ARTIFACT="orca-v${VERSION}-${OS}-${ARCH}.tar.gz"
 DESTINATION="$INSTALL_DIR/orca"
-DAEMON_DESTINATION="$INSTALL_DIR/orca-daemon"
 
 # Empty = fresh install; semver or "installed" = existing CLI at destination.
 PREVIOUS_VERSION=""
@@ -503,14 +502,10 @@ EXTRACT_ROOT="$(find "$TMP_DIR" -mindepth 1 -maxdepth 1 -type d | head -n 1)"
 FOUND_BIN="$(find "$EXTRACT_ROOT" -type f -name orca -perm -111 | head -n 1)"
 [ -n "$FOUND_BIN" ] || fail "artifact did not contain an executable orca binary" \
   "Unexpected archive layout for ${ARTIFACT}."
-FOUND_DAEMON="$(find "$EXTRACT_ROOT" -type f -name orca-daemon -perm -111 | head -n 1)"
-[ -n "$FOUND_DAEMON" ] || fail "artifact did not contain an executable orca-daemon binary" \
-  "Unexpected archive layout for ${ARTIFACT}."
 
 safe_install "$FOUND_BIN" "$DESTINATION"
-safe_install "$FOUND_DAEMON" "$DAEMON_DESTINATION"
 install_runtime_assets "$EXTRACT_ROOT"
-step_done "Install binaries + runtime" "orca, orca-daemon, assets"
+step_done "Install binaries + runtime" "orca + assets (CLI-only; shell_engine in-process)"
 
 ensure_path_entry "$INSTALL_DIR"
 ensure_resource_root_entry "$CURRENT_LINK"

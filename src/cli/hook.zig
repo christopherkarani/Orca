@@ -16,17 +16,19 @@ const file_policy_path = @import("file_policy_path.zig");
 const max_payload_len = 256 * 1024; // 256 KiB
 
 // ---------------------------------------------------------------------------
-// Hook evaluator dispatch (Phase 2E)
+// Hook evaluator dispatch (Phase 2E / Zig shell engine)
 //
 // PreToolUse shell-command events (and PermissionRequest shell/command) route to
-// the Rust daemon `Evaluate` method. Other events (prompt, file permission,
-// session, stop, post-tool, informational, and non-shell PreToolUse) stay on the
-// Zig policy path.
+// the in-process Zig shell_engine (`ORCA_SHELL_EVAL=zig` or unset).
+// `ORCA_SHELL_EVAL=rust` is rejected — the legacy Rust daemon Evaluate path is gone.
+// Other events (prompt, file permission, session, stop, post-tool, informational,
+// and non-shell PreToolUse) stay on the Zig policy path.
 //
 // Invariants:
-// - No shell-command PreToolUse/PermissionRequest may fall back to Zig native command evaluation.
-// - Daemon transport or protocol failures for shell commands fail closed (deny).
-// - Non-shell tools with incidental `command` fields stay on the Zig path.
+// - Shell security authority is the Zig shell_engine only.
+// - Zig evaluator internal errors fail closed (deny).
+// - `ORCA_SHELL_EVAL=rust` hard-errors (never calls daemon.evaluate for shell).
+// - Non-shell tools with incidental `command` fields stay on the Zig policy path.
 // - Shell tools with missing/invalid command fields fail closed before evaluation.
 // - File paths for PreToolUse writes and PermissionRequest file ops are normalized
 //   like `orca decide` (symlink escape / outside-workspace fail closed).
@@ -964,7 +966,7 @@ fn evaluateShellCommandRoute(
             allocator,
             "command",
             daemonUnavailableReason(err),
-            "Shell command blocked: Orca daemon evaluation unavailable.",
+            "Shell command blocked: Orca shell evaluation unavailable.",
             redactions,
             limitations,
         );
@@ -972,9 +974,13 @@ fn evaluateShellCommandRoute(
     defer daemon_response.deinit();
 
     if (!std.mem.eql(u8, host_name, "hermes")) {
-        var health = try rust_visibility.probeGuiDaemonHealth(allocator);
-        defer health.deinit(allocator);
-        recordShellHookDecision(io, allocator, workspace_root, host_name, health.status, daemon_response.value.result);
+        if (shell_eval.resolveShellEvalBackend() == .zig and evaluator_override == null) {
+            recordShellHookDecision(io, allocator, workspace_root, host_name, "zig", daemon_response.value.result);
+        } else {
+            var health = try rust_visibility.probeGuiDaemonHealth(allocator);
+            defer health.deinit(allocator);
+            recordShellHookDecision(io, allocator, workspace_root, host_name, health.status, daemon_response.value.result);
+        }
     }
 
     return try hookResponseFromDaemonEvaluate(
@@ -1045,7 +1051,8 @@ fn recordHermesHookActivity(
     var health: ?rust_visibility.GuiDaemonHealth = if (shell_tool) rust_visibility.probeGuiDaemonHealth(allocator) catch null else null;
     defer if (health) |*value| value.deinit(allocator);
 
-    const decision_source = if (shell_tool) rust_visibility.decision_source_rust else rust_visibility.decision_source_zig;
+    // Shell PreToolUse uses Zig shell_engine; non-shell hermes activity is zig-native.
+    const decision_source = rust_visibility.decision_source_zig;
     const daemon_status = if (health) |value| value.status else if (shell_tool) "unavailable" else "not_applicable";
     var target_buf: [160]u8 = undefined;
     var record = rust_visibility.buildFeedRecordFromHookActivity(

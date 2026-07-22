@@ -61,9 +61,11 @@ trap cleanup EXIT INT TERM
 tar -xzf "${ARTIFACT}" -C "${TMP_ROOT}"
 STAGE_ROOT="${TMP_ROOT}/orca-v${VERSION}-${OS}-${ARCH}"
 ORCA_BIN="${STAGE_ROOT}/bin/orca"
-DAEMON_BIN="${STAGE_ROOT}/bin/orca-daemon"
+# Product packaging is CLI-only; Zig shell_engine evaluates shell in-process.
 [[ -x "${ORCA_BIN}" ]] || fail "staged orca binary is missing or not executable"
-[[ -x "${DAEMON_BIN}" ]] || fail "staged orca-daemon binary is missing or not executable"
+if [[ -e "${STAGE_ROOT}/bin/orca-daemon" ]]; then
+  fail "staged release unexpectedly contains orca-daemon (daemon removed from product packaging)"
+fi
 
 TMP_HOME="${TMP_ROOT}/home"
 mkdir -p "${TMP_HOME}/workspace"
@@ -75,11 +77,11 @@ export ORCA_RESOURCE_ROOT="${STAGE_ROOT}"
 version_output="$("${ORCA_BIN}" version)"
 assert_contains "${version_output}" "Version"
 assert_contains "${version_output}" "${VERSION}"
-assert_contains "${version_output}" "Daemon"
 
+# Doctor should run without a companion daemon binary in the archive.
 doctor_output="$("${ORCA_BIN}" doctor --verbose)"
-assert_contains "${doctor_output}" "daemon health: compatible"
-assert_contains "${doctor_output}" "daemon binary:"
+assert_contains "${doctor_output}" "Orca Doctor"
+assert_contains "${doctor_output}" "Version: ${VERSION}"
 
 "${ORCA_BIN}" packs --help >/dev/null
 
@@ -88,22 +90,16 @@ safe_fixture="${REPO_ROOT}/tests/plugin-fixtures/claude/pre_tool_use_command_saf
 [[ -f "${dangerous_fixture}" ]] || fail "missing dangerous hook fixture"
 [[ -f "${safe_fixture}" ]] || fail "missing safe hook fixture"
 
+# Shell PreToolUse is owned by in-process Zig shell_engine (not a daemon IPC path).
 dangerous_output="$("${ORCA_BIN}" hook claude PreToolUse <"${dangerous_fixture}")"
 assert_json_field "${dangerous_output}" "decision" "block"
 
-mv "${DAEMON_BIN}" "${DAEMON_BIN}.bak"
-
-degraded_version="$("${ORCA_BIN}" version)"
-assert_contains "${degraded_version}" "Daemon"
-assert_contains "${degraded_version}" "unavailable"
-
-degraded_doctor="$("${ORCA_BIN}" doctor --verbose)"
-assert_contains "${degraded_doctor}" "daemon health: unavailable"
-assert_contains "${degraded_doctor}" "orca-daemon binary not found"
-
-fail_closed_output="$("${ORCA_BIN}" hook claude PreToolUse <"${safe_fixture}")"
-assert_json_field "${fail_closed_output}" "decision" "block"
-assert_contains "${fail_closed_output}" "daemon unavailable"
+safe_output="$("${ORCA_BIN}" hook claude PreToolUse <"${safe_fixture}")"
+assert_json_field "${safe_output}" "decision" "allow"
+# Daemon-unavailable fail-closed narrative is obsolete for shell hooks.
+if [[ "${safe_output}" == *"daemon unavailable"* ]]; then
+  fail "safe hook decision unexpectedly cited daemon unavailable (shell_engine path)"
+fi
 
 [[ -d "${STAGE_ROOT}/orca-dashboard-ui/dist" ]] || fail "staged release missing orca-dashboard-ui/dist"
 [[ -f "${STAGE_ROOT}/orca-dashboard-ui/dist/index.html" ]] || fail "staged dashboard bundle missing index.html"

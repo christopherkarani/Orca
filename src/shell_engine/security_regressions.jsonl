@@ -1,0 +1,57 @@
+{"command": "python3 << \"EOF SPACE\"\nimport shutil\nshutil.rmtree('/tmp/test')\nEOF SPACE", "expected": "deny", "source": "security_regressions_v2.rs", "description": "check_blocked"}
+{"command": "git \"reset\" --hard", "expected": "deny", "source": "security_regressions_v2.rs", "description": "check_blocked"}
+{"command": "sudo /bin/git reset --hard", "expected": "deny", "source": "security_regressions_v2.rs", "description": "check_blocked"}
+{"command": "env /usr/bin/git reset --hard", "expected": "deny", "source": "security_regressions_v2.rs", "description": "check_blocked"}
+{"command": "\"git\" reset --hard", "expected": "deny", "source": "security_regressions_v2.rs", "description": "check_blocked"}
+{"command": "sudo \"/usr/bin/git\" \"reset\" --hard", "expected": "deny", "source": "security_regressions_v2.rs", "description": "check_blocked"}
+{"command": "python3 << \"\"\nimport shutil\nshutil.rmtree('/tmp/test')\n\n", "expected": "deny", "source": "security_regressions_v2.rs", "description": "check_blocked"}
+{"command": "\\git.exe reset --hard", "expected": "deny", "source": "repro_normalization_bypass", "description": "repro_normalization_bypass"}
+{"command": "C:/Git/bin/git.exe reset --hard", "expected": "deny", "source": "repro_normalization_bypass", "description": "repro_normalization_bypass"}
+{"command": "\\rm.exe -rf /", "expected": "deny", "source": "repro_normalization_bypass", "description": "repro_normalization_bypass"}
+{"command": "rm -rf / ; git checkout -b foo", "expected": "deny", "source": "repro_safe_pattern_bypass", "description": "repro_safe_pattern_bypass"}
+{"command": "git checkout -b foo ; rm -rf /", "expected": "deny", "source": "repro_safe_pattern_bypass", "description": "repro_safe_pattern_bypass"}
+{"command": "rm -rf / | git checkout -b foo", "expected": "deny", "source": "repro_safe_pattern_bypass", "description": "repro_safe_pattern_bypass"}
+{"command": "g\\it reset --hard", "expected": "deny", "source": "security_regressions_v3.rs", "description": "internal backslash escape"}
+{"command": "g'i't reset --hard", "expected": "deny", "source": "security_regressions_v3.rs", "description": "mixed quoting concat"}
+{"command": "git re\\\nset --hard", "expected": "deny", "source": "repro_line_continuation_split.rs", "description": "line continuation joins reset"}
+{"command": "git commit -m \\\n\"rm -rf /\"", "expected": "allow", "source": "repro_line_continuation_bypass.rs", "description": "line cont does not unmask commit message"}
+{"command": "ls -la # rm -rf /", "expected": "allow", "source": "repro_comment_fp.rs", "description": "comment FP: destructive text in shell comment"}
+{"command": "echo rm -rf /", "expected": "allow", "source": "repro_echo_fp.rs", "description": "echo unquoted FP: data not executed"}
+{"command": "git commit -m\nrm -rf /", "expected": "deny", "source": "repro_newline_separator.rs", "description": "newline after -m is separator not arg whitespace"}
+{"command": "rm -rf /tmp/safe /etc/passwd", "expected": "deny", "source": "repro_rm_multi_arg.rs", "description": "multi-arg rm with sensitive path alongside temp"}
+{"command": "\ncat <<\\EOF\nrm -rf /\nEOF\n", "expected": "deny", "source": "security_regressions_v3.rs", "description": "backslash-escaped heredoc delimiter must not bypass deny"}
+{"command": "\"git\">/dev/null reset --hard", "expected": "deny", "source": "repro_redirection_bypass.rs", "description": "quoted argv0 attached >/dev/null"}
+{"command": "\"git\"&>/dev/null reset --hard", "expected": "deny", "source": "repro_redirection_bypass.rs", "description": "quoted argv0 attached &>/dev/null"}
+{"command": "\"git\"&>>/dev/null reset --hard", "expected": "deny", "source": "repro_redirection_bypass.rs", "description": "quoted argv0 attached &>>/dev/null"}
+{"command": "git>/dev/null reset --hard", "expected": "deny", "source": "repro_redirection_bypass.rs", "description": "bare argv0 attached >/dev/null"}
+{"command": "git>>/dev/null reset --hard", "expected": "deny", "source": "repro_redirection_bypass.rs", "description": "bare argv0 attached >>/dev/null"}
+{"command": "git&>/dev/null reset --hard", "expected": "deny", "source": "repro_redirection_bypass.rs", "description": "bare argv0 attached &>/dev/null"}
+{"command": "git&>>/dev/null reset --hard", "expected": "deny", "source": "repro_redirection_bypass.rs", "description": "bare argv0 attached &>>/dev/null"}
+{"command": "git >/dev/null reset --hard", "expected": "deny", "source": "repro_redirection_bypass.rs", "description": "spaced redirect mid-command"}
+{"command": "command >>/dev/null git reset --hard", "expected": "deny", "source": "repro_redirection_bypass.rs", "description": "command builtin leading append still exposes git"}
+{"command": "command >> /usr/local/log", "expected": "allow", "source": "repro_redirection_bypass.rs", "description": "command builtin pure append not truncate synthetic"}
+{"command": "rm -rf / $(git checkout -b x)", "expected": "deny", "source": "codex_p1_safe_pack_scope", "description": "safe match must not suppress cross-pack destructive"}
+{"command": "echo rm -rf / | sh", "expected": "deny", "source": "codex_p1_pipeline_payload", "description": "echo payload piped to sh is executable"}
+{"command": "echo 'rm -rf /' | bash", "expected": "deny", "source": "codex_p1_pipeline_payload", "description": "quoted echo payload piped to bash is executable"}
+{"command": "/bin/bash<<'EOF'\nrm -rf /\nEOF", "expected": "deny", "source": "codex_p1_attached_heredoc", "description": "attached heredoc on qualified bash is executing"}
+{"command": "/bin/sh<<EOF\nrm -rf /\nEOF", "expected": "deny", "source": "codex_p1_attached_heredoc", "description": "attached heredoc on qualified sh is executing"}
+{"command": "python.exe -c \"import shutil; shutil.rmtree('/')\"", "expected": "deny", "source": "repro_windows_exe.rs", "description": "python.exe -c shutil.rmtree root"}
+{"command": "python3.11.exe -c \"import shutil; shutil.rmtree('/')\"", "expected": "deny", "source": "repro_windows_exe.rs", "description": "python3.11.exe -c shutil.rmtree root"}
+{"command": "echo 'rm -rf /' | bash", "expected": "deny", "source": "repro_pipe_to_shell", "description": "data-only echo piped to bash executes payload"}
+{"command": "echo 'rm -rf /' | bash -s", "expected": "deny", "source": "repro_pipe_to_shell", "description": "data-only echo piped to bash -s"}
+{"command": "printf 'rm -rf /\\n' | sh", "expected": "deny", "source": "repro_pipe_to_shell", "description": "printf payload piped to sh"}
+{"command": "echo \"rm -rf /\" | zsh", "expected": "deny", "source": "repro_pipe_to_shell", "description": "echo double-quoted payload piped to zsh"}
+{"command": "echo 'rm -rf /' | /bin/bash", "expected": "deny", "source": "repro_pipe_to_shell", "description": "echo piped to /bin/bash path form"}
+{"command": "echo 'rm -rf /' | cat | bash", "expected": "deny", "source": "repro_pipe_to_shell", "description": "multi-stage pipe eventually feeds bash"}
+{"command": "bash -s <<'EOF'\nrm -rf /\nEOF", "expected": "deny", "source": "codex_p1_heredoc_options", "description": "heredoc after bash -s options still executing"}
+{"command": "/bin/bash -s <<EOF\nrm -rf /\nEOF", "expected": "deny", "source": "codex_p1_heredoc_options", "description": "qualified bash -s heredoc still executing"}
+{"command": "sudo bash -s <<'EOF'\ngit reset --hard\nEOF", "expected": "deny", "source": "codex_p1_heredoc_options", "description": "sudo wrapper then bash -s heredoc"}
+{"command": "python3.14 <<'EOF'\nimport shutil; shutil.rmtree('/')\nEOF", "expected": "deny", "source": "codex_p1_python_versioned_heredoc", "description": "versioned python heredoc is executing"}
+{"command": "Git.EXE reset --hard", "expected": "deny", "source": "codex_p1_windows_case", "description": "Windows case-insensitive Git.EXE still denies"}
+{"command": "RM.EXE -rf /", "expected": "deny", "source": "codex_p1_windows_case", "description": "Windows case-insensitive RM.EXE still denies"}
+{"command": "cat <<EOF\n$(rm -rf /)\nEOF", "expected": "deny", "source": "codex_p1_unquoted_heredoc_expand", "description": "unquoted cat heredoc expands command substitution"}
+{"command": "\"/bin/bash\" <<'EOF'\nrm -rf /\nEOF", "expected": "deny", "source": "codex_p1_quoted_path_receiver", "description": "quoted absolute bash path is executing receiver"}
+{"command": "echo ok # explanation; rm -rf /", "expected": "allow", "source": "codex_p2_comment_segment", "description": "commented semicolon must not spawn rm segment"}
+{"command": "env -u FOO bash <<'EOF'\nrm -rf /\nEOF", "expected": "deny", "source": "codex_p1_wrapper_operand", "description": "env -u NAME consumes operand before bash receiver"}
+{"command": "if true; then bash <<'EOF'\nrm -rf /\nEOF\nfi", "expected": "deny", "source": "codex_p1_reserved_word", "description": "then reserved word skipped before bash receiver"}
+{"command": "cat <<A <<B\nfirst\nA\nrm -rf /\nB", "expected": "allow", "source": "codex_p2_multi_heredoc", "description": "both non-executing heredoc bodies masked"}

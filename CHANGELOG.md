@@ -3,6 +3,7 @@
 ## Unreleased
 
 ### Changed
+- **Full Zig shell evaluator (MVP)** — `orca hook` / `orca run` / shims evaluate shell commands in-process via `src/shell_engine` by default (`ORCA_SHELL_EVAL=zig`). Daemon-down no longer gates shell PreToolUse. `orca test` / `orca explain` are Zig-native. Former Rust ExecuteCli surfaces (`scan`, `simulate`, `packs`, `history`, allowlist mutators, …) stub until ported. The `orca-rs` crate is removed from the tree.
 - **Product language cut (Safe Launch)** — public day-1 path is now:
   - `orca start` → `orca <agent>` → `orca status` → `orca replay` (+ `orca stop` off-ramp)
   - Default help shows only public verbs; full surface via `orca help --all`
@@ -23,7 +24,7 @@
 - `effects.default` applies to unclassified tool names (catalog misses), matching surface-default semantics.
 - **Phase B structural classification** — tools renamed as `notify`/`helper` still match effects from argument key sets (e.g. `{to, body}`) and bounded value shapes; reasons use `structural.*` matcher ids (no secret values).
 - **Network effect tags** — when `effects:` is active, curated hosts (e.g. `api.twitter.com` → `comms.publish`) merge into network evaluation (`network_tag.*` matchers).
-- **Shell bypass (Zig command path)** — `open mailto:…` (and optional curl-to-tagged-host) merges effects on Zig command evaluation (`shell_bypass.*`); host shell PreToolUse still primarily uses Rust packs (documented residual gap).
+- **Shell bypass (Zig command path)** — `open mailto:…` (and optional curl-to-tagged-host) merges effects on Zig command evaluation (`shell_bypass.*`); host shell PreToolUse uses Zig `shell_engine` MVP packs (documented residual gap vs full effect-class parity).
 - `orca policy explain tool <name> --args '<json-object>'` for structural demos (size-bounded).
 - **Phase C discovery** — `orca mcp inspect` prints inferred effects per tool; `orca tools classify <name> [--args] [--policy]` for interactive classification (no secret values in output).
 - **User effect packs** — YAML in `.orca/effect-packs/` and `~/.config/orca/effect-packs/` add names/tokens/structural key-sets (`pack.<id>.*` matchers). Classification-only; decisions still require policy `effects:`. Invalid packs fail closed. Example: `examples/effect-packs/demo.yaml`.
@@ -33,6 +34,7 @@
 - Shell bypass: `open -a`/`-b` option values are skipped; multi-URL `curl` scans every operand; `open`/`curl` require command position (avoids `printf … open mailto:` false positives).
 - Shell bypass: wrappers with options (`sudo -u root curl …`, `env -i open …`, `xargs curl …`), escaped operators (`foo\;`), non-transfer curl values (`--referer`), and lookup-only `command -v`/`-V` are handled correctly.
 - Structural arg scan prefers interesting keys/values against decoy padding (including large objects and string-value slot exhaustion); `href`/`uri` share interesting priority with other URL keys; eviction allocates before free (OOM-safe).
+- Shell bypass residual note updated: host shell PreToolUse uses Zig `shell_engine` (MVP); full effect-class parity on compound shell forms remains deferred.
 
 ## v1.2.8 - 2026-07-04
 

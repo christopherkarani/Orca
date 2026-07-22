@@ -1,5 +1,6 @@
 # syntax=docker/dockerfile:1
-FROM rust:1-bookworm AS build
+# CLI-only release image (Zig shell_engine in-process; no orca-daemon).
+FROM debian:bookworm-slim AS build
 
 ARG TARGETARCH
 ARG ORCA_VERSION
@@ -25,10 +26,8 @@ RUN case "$TARGETARCH" in \
       -Dcommit="$ORCA_COMMIT" \
       -Dbuild-date="$ORCA_BUILD_DATE" \
       --prefix /tmp/orca-cli \
-    && ./scripts/build-daemon-release.sh linux "$TARGETARCH" /tmp/orca-daemon \
     && mkdir -p "/out/linux-$TARGETARCH" \
-    && cp -p /tmp/orca-cli/bin/orca "/out/linux-$TARGETARCH/orca" \
-    && cp -p "/tmp/orca-daemon/linux-$TARGETARCH/orca-daemon" "/out/linux-$TARGETARCH/orca-daemon"
+    && cp -p /tmp/orca-cli/bin/orca "/out/linux-$TARGETARCH/orca"
 
 FROM scratch
 COPY --from=build /out/ /

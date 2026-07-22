@@ -3,7 +3,7 @@
 
 const std = @import("std");
 
-/// Tool names that always route through the Rust daemon shell evaluator.
+/// Tool names that always route through the shell evaluator (Zig shell_engine by default).
 pub const shell_tool_names = [_][]const u8{
     "bash",
     "shell",

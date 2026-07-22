@@ -30,12 +30,14 @@ test "phase 44 VERSION matches install script defaults" {
     try expectContains(install_sh, "../VERSION");
     try expectContains(install_sh, "ORCA_RESOURCE_ROOT");
     try expectContains(install_sh, "integrations");
-    try expectContains(install_sh, "orca-daemon");
+    try expectContains(install_sh, "CLI-only");
+    try expectContains(install_sh, "shell_engine");
 
     const build_release = try readFile("scripts/build-release.sh");
     defer std.testing.allocator.free(build_release);
     try expectContains(build_release, "../VERSION");
-    try expectContains(build_release, "orca-daemon");
+    try expectContains(build_release, "CLI-only");
+    try expectContains(build_release, "shell_engine");
     try expectContains(build_release, "if [ -d \"orca-dashboard-ui/dist\" ]");
     try expectContains(build_release, "cp -R orca-dashboard-ui/dist");
 
@@ -47,25 +49,29 @@ test "phase 44 VERSION matches install script defaults" {
     defer std.testing.allocator.free(install_ps1);
     try expectContains(install_ps1, "VERSION");
     try expectContains(install_ps1, "ORCA_RESOURCE_ROOT");
-    try expectContains(install_ps1, "orca-daemon");
+    try expectContains(install_ps1, "CLI-only");
+    try expectContains(install_ps1, "shell_engine");
 
     const homebrew = try readFile("packaging/homebrew/Formula/orca.rb");
     defer std.testing.allocator.free(homebrew);
     const version_needle = try std.fmt.allocPrint(std.testing.allocator, "version \"{s}\"", .{canonical});
     defer std.testing.allocator.free(version_needle);
     try expectContains(homebrew, version_needle);
-    try expectContains(homebrew, "bin.install \"bin/orca-daemon\"");
+    try expectContains(homebrew, "bin.install \"bin/orca\"");
+    try std.testing.expect(std.mem.indexOf(u8, homebrew, "bin.install \"bin/orca-daemon\"") == null);
     try expectContains(homebrew, "pkgshare.install \"orca-dashboard-ui\"");
 
     const npm_launcher = try readFile("packaging/npm/bin/orca.js");
     defer std.testing.allocator.free(npm_launcher);
     try expectContains(npm_launcher, "\"orca-dashboard-ui\"");
+    try std.testing.expect(std.mem.indexOf(u8, npm_launcher, "orca-daemon") == null);
 
     const dockerfile = try readFile("packaging/docker/Dockerfile");
     defer std.testing.allocator.free(dockerfile);
     try expectContains(dockerfile, "COPY orca /opt/orca");
     try expectContains(dockerfile, "ORCA_RESOURCE_ROOT=\"/opt/orca\"");
     try expectContains(dockerfile, "USER orca");
+    try expectContains(dockerfile, "test ! -e /opt/orca/bin/orca-daemon");
 }
 
 test "dashboard CI and release workflows honor the declared Node engine" {

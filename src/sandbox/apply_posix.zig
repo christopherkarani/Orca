@@ -303,11 +303,11 @@ fn runChildAfterFork(
     }
 
     if (cwd_z) |z| {
-        const chdir_rc: isize = switch (builtin.os.tag) {
-            .linux => std.os.linux.chdir(z.ptr),
-            else => std.c.chdir(z.ptr),
+        const chdir_failed = switch (builtin.os.tag) {
+            .linux => std.os.linux.chdir(z.ptr) != 0,
+            else => std.c.chdir(z.ptr) != 0,
         };
-        if (chdir_rc != 0) failExit(status_w);
+        if (chdir_failed) failExit(status_w);
     }
 
     const path = argv_z[0] orelse failExit(status_w);

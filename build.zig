@@ -2,6 +2,31 @@ const std = @import("std");
 
 /// Run a test binary in terminal mode (avoiding Zig 0.16 server-mode IPC
 /// which hangs with this project's test suite).
+/// Link Zig-built static PCRE2 + C shim for shell_engine pack regex matching.
+/// Built from source so host/cross targets (linux/darwin amd64+arm64) do not need
+/// system libpcre2-dev; Windows native CI can keep using the same path later.
+fn addPcre2Shim(
+    b: *std.Build,
+    mod: *std.Build.Module,
+    target: std.Build.ResolvedTarget,
+    optimize: std.builtin.OptimizeMode,
+) void {
+    mod.link_libc = true;
+    const pcre2_dep = b.dependency("pcre2", .{
+        .target = target,
+        .optimize = optimize,
+        .linkage = .static,
+    });
+    const pcre2_lib = pcre2_dep.artifact("pcre2-8");
+    mod.linkLibrary(pcre2_lib);
+    mod.addIncludePath(b.path("src/shell_engine"));
+    // Static PCRE2 requires PCRE2_STATIC for the public header macros on all targets.
+    mod.addCSourceFile(.{
+        .file = b.path("src/shell_engine/pcre2_shim.c"),
+        .flags = &.{ "-std=c99", "-DPCRE2_STATIC" },
+    });
+}
+
 fn addRunTestTerminal(b: *std.Build, exe: *std.Build.Step.Compile) *std.Build.Step.Run {
     const step_name = if (exe.kind == .@"test" and std.mem.eql(u8, exe.name, "test"))
         b.fmt("run {s}", .{@tagName(exe.kind)})
@@ -128,6 +153,9 @@ pub fn build(b: *std.Build) void {
     });
     exe.root_module.link_libc = true;
     exe.root_module.addImport("vaxis", vaxis_mod);
+    // Attach once on `orca` (imported by the exe). Linking the same C shim on both
+    // exe.root_module and orca_mod duplicates _orca_regex_* symbols at link time.
+    addPcre2Shim(b, orca_mod, target, optimize);
 
     b.installArtifact(exe);
     const install_orca = b.addInstallArtifact(exe, .{});
@@ -204,6 +232,17 @@ pub fn build(b: *std.Build) void {
         .filters = test_filters,
     });
     const run_intercept_tests = addRunTestTerminal(b, intercept_tests);
+
+    const shell_engine_tests = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/shell_engine_slice_root.zig"),
+            .target = target,
+            .optimize = optimize,
+        }),
+        .filters = test_filters,
+    });
+    addPcre2Shim(b, shell_engine_tests.root_module, target, optimize);
+    const run_shell_engine_tests = addRunTestTerminal(b, shell_engine_tests);
 
     const cli_package_tests = b.addTest(.{
         .root_module = orca_cli_mod,
@@ -462,11 +501,17 @@ pub fn build(b: *std.Build) void {
     const test_intercept_step = b.step("test-intercept", "Run intercept domain unit tests only (sliced root)");
     test_intercept_step.dependOn(&run_intercept_tests.step);
 
+    const test_shell_engine_step = b.step("test-shell-engine", "Run Zig shell_engine unit + 100% oracle corpus parity tests");
+    test_shell_engine_step.dependOn(&run_shell_engine_tests.step);
+
     const compile_test_sandbox_step = b.step("compile-test-sandbox", "Compile sandbox domain tests without running");
     compile_test_sandbox_step.dependOn(&sandbox_tests.step);
 
     const compile_test_intercept_step = b.step("compile-test-intercept", "Compile intercept domain tests without running");
     compile_test_intercept_step.dependOn(&intercept_tests.step);
+
+    const compile_test_shell_engine_step = b.step("compile-test-shell-engine", "Compile shell_engine tests without running");
+    compile_test_shell_engine_step.dependOn(&shell_engine_tests.step);
 
     // Serialize runs so local `zig build test-fast` does not launch three heavy test
     // binaries at once (parallel runs have hung with no output on some hosts).
@@ -478,6 +523,7 @@ pub fn build(b: *std.Build) void {
 
     const test_step = b.step("test", "Run unit tests");
     test_step.dependOn(&check_fixture_secrets.step);
+    test_step.dependOn(&run_shell_engine_tests.step);
     test_step.dependOn(&run_lib_tests.step);
     test_step.dependOn(&run_exe_tests.step);
     test_step.dependOn(&run_core_package_tests.step);
@@ -531,6 +577,9 @@ pub fn build(b: *std.Build) void {
             .{ .name = "build_options", .module = build_options_mod },
         },
     });
+    // Same as host `orca_mod`: attach once so shell_engine regex links pcre2_shim + static
+    // pcre2-8 for the Windows cross compile; do not also link on windows_exe.root_module.
+    addPcre2Shim(b, windows_mod, windows_target, optimize);
     const windows_exe = b.addExecutable(.{
         .name = "orca-windows-check",
         .root_module = b.createModule(.{
@@ -543,6 +592,7 @@ pub fn build(b: *std.Build) void {
             },
         }),
     });
+    windows_exe.root_module.link_libc = true;
     const check_windows_step = b.step("check-windows", "Compile Orca for Windows without running it");
     check_windows_step.dependOn(&windows_exe.step);
 }

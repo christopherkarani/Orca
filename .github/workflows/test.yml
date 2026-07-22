@@ -13,6 +13,7 @@ jobs:
       - uses: mlugg/setup-zig@v2
         with:
           version: 0.16.0
+      # PCRE2 is Zig-built from source via build.zig.zon (static link).
       - name: Full Zig unit / phase / fuzz suite
         run: ./scripts/zig build test
       - name: First-user install and uninstall regressions

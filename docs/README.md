@@ -12,6 +12,8 @@ Launch docs:
 - `compatibility.md`: platform matrix, **protection grades** (canonical), and doctor / start vocabulary map.
 - `dashboard.md`: localhost dashboard launch, fixed local actions, policy editing, sessions, and denied-action timeline.
 - `threat-model.md`: assets, actors, trust boundaries, non-goals, and limitations.
+- `shell-engine/rust-parity-backlog.md`: Zig `shell_engine` checklist to regain 100% Rust pack/corpus parity after the daemon cutover.
+- `shell-engine/GOAL-parity-prompt.md`: pasteable `/goal` prompt for an agent to drive that parity to completion.
 - `policy.md`: schema, modes, priorities, examples, and CI behavior.
 - `mcp.md`: stdio MCP inspect/proxy, manifests, mediated methods, and limits.
 - `redteam.md`: fixture categories, CI mode, JSON output, and adding fixtures.

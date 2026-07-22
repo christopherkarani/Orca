@@ -59,6 +59,53 @@ pub fn isBaselinePackId(id: []const u8) bool {
     return false;
 }
 
+/// Cwd-scoped pack enable/disable lists for the production Zig shell evaluator.
+pub const LoadedPackIds = struct {
+    enabled: []const []const u8 = &.{},
+    disabled: []const []const u8 = &.{},
+    owned: bool = false,
+
+    pub fn deinit(self: *LoadedPackIds, allocator: std.mem.Allocator) void {
+        if (!self.owned) return;
+        freeOwnedSlice(allocator, self.enabled);
+        freeOwnedSlice(allocator, self.disabled);
+        self.* = undefined;
+    }
+};
+
+/// Load `[packs] enabled` / `disabled` for the workspace (project `.orca.toml` when
+/// git-backed, otherwise user config). Missing config → empty lists (baseline only).
+pub fn loadPackIdsForWorkspace(
+    io: std.Io,
+    allocator: std.mem.Allocator,
+    workspace_root: []const u8,
+) !LoadedPackIds {
+    const resolved = resolvePackConfigPath(io, allocator, workspace_root) catch |err| switch (err) {
+        error.HomeDirectoryNotFound => return .{},
+        else => return err,
+    };
+    defer allocator.free(resolved.path);
+
+    var lists = try loadPackIdLists(io, allocator, resolved.path);
+    errdefer lists.deinit(allocator);
+
+    const enabled = try lists.enabled.toOwnedSlice(allocator);
+    lists.enabled = .empty;
+    errdefer freeOwnedSlice(allocator, enabled);
+
+    const disabled = try lists.disabled.toOwnedSlice(allocator);
+    lists.disabled = .empty;
+
+    // Drop raw file buffer / empty lists.
+    lists.deinit(allocator);
+
+    return .{
+        .enabled = enabled,
+        .disabled = disabled,
+        .owned = true,
+    };
+}
+
 /// Resolve where pack enablement should be written.
 /// Prefers project `.orca.toml` when `.git` is present under workspace_root.
 pub fn resolvePackConfigPath(
@@ -308,7 +355,11 @@ const PackIdLists = struct {
 
 fn loadPackIdLists(io: std.Io, allocator: std.mem.Allocator, config_path: []const u8) !PackIdLists {
     var lists: PackIdLists = .{
-        .existing_raw = readFileIfExists(io, allocator, config_path) catch null,
+        .existing_raw = readFileIfExists(io, allocator, config_path) catch |err| switch (err) {
+            error.FileNotFound => null,
+            // Unreadable / oversize / IO errors must surface so production can fail closed.
+            else => return err,
+        },
     };
     errdefer lists.deinit(allocator);
     if (lists.existing_raw) |raw| {
@@ -653,6 +704,15 @@ fn packsArraySlice(content: []const u8, key: []const u8) ?[]const u8 {
                 continue;
             }
         }
+        // Skip keys that only appear in TOML comments on this line.
+        var line_start = abs;
+        while (line_start > 0 and section[line_start - 1] != '\n' and section[line_start - 1] != '\r') : (line_start -= 1) {}
+        var scan = line_start;
+        while (scan < abs and (section[scan] == ' ' or section[scan] == '\t')) : (scan += 1) {}
+        if (scan < abs and section[scan] == '#') {
+            pos = abs + key.len;
+            continue;
+        }
         // Reject partial token matches (e.g. key="enabled" must not match "disabled").
         const after = abs + key.len;
         if (after < section.len) {
@@ -737,9 +797,11 @@ fn collectQuotedIdsForKey(
     const array = packsArraySlice(content, key) orelse return;
     var i: usize = 0;
     while (i < array.len) : (i += 1) {
-        if (array[i] != '"') continue;
+        const c = array[i];
+        if (c != '"' and c != '\'') continue;
+        const q = c;
         const start = i + 1;
-        const close = std.mem.indexOfScalar(u8, array[start..], '"') orelse break;
+        const close = std.mem.indexOfScalar(u8, array[start..], q) orelse break;
         const id = array[start .. start + close];
         if (looksLikePackId(id)) {
             const gop = try set.getOrPut(allocator, id);
@@ -783,6 +845,39 @@ test "isBaselinePackId covers core and system.disk only" {
     try std.testing.expect(!isBaselinePackId("package_managers"));
 }
 
+test "loadPackIdsForWorkspace reads project .orca.toml packs" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try tmp.dir.createDirPath(std.testing.io, ".git");
+    const body =
+        \\[packs]
+        \\enabled = ["containers.docker", "package_managers"]
+        \\disabled = ["system.disk"]
+        \\
+    ;
+    const file = try tmp.dir.createFile(std.testing.io, ".orca.toml", .{});
+    defer file.close(std.testing.io);
+    try file.writeStreamingAll(std.testing.io, body);
+
+    const root = try tmp.dir.realPathFileAlloc(std.testing.io, ".", std.testing.allocator);
+    defer std.testing.allocator.free(root);
+
+    var loaded = try loadPackIdsForWorkspace(std.testing.io, std.testing.allocator, root);
+    defer loaded.deinit(std.testing.allocator);
+
+    try std.testing.expect(loaded.owned);
+    var saw_docker = false;
+    var saw_pkg = false;
+    for (loaded.enabled) |id| {
+        if (std.mem.eql(u8, id, "containers.docker")) saw_docker = true;
+        if (std.mem.eql(u8, id, "package_managers")) saw_pkg = true;
+    }
+    try std.testing.expect(saw_docker);
+    try std.testing.expect(saw_pkg);
+    try std.testing.expect(loaded.disabled.len == 1);
+    try std.testing.expectEqualStrings("system.disk", loaded.disabled[0]);
+}
+
 test "packsArraySlice does not treat disabled as enabled" {
     const content =
         \\[packs]
@@ -802,6 +897,21 @@ test "packsArraySlice does not treat disabled as enabled" {
     try std.testing.expect(std.mem.indexOf(u8, enabled, "system.disk") == null);
     try std.testing.expect(std.mem.indexOf(u8, disabled, "system.disk") != null);
     try std.testing.expect(std.mem.indexOf(u8, disabled, "package_managers") == null);
+}
+
+test "packsArraySlice ignores commented-out pack keys" {
+    const content =
+        \\[packs]
+        \\enabled = ["containers.docker"]
+        \\# disabled = ["system.disk"]
+        \\
+    ;
+    try std.testing.expect(packsArraySlice(content, "disabled") == null);
+    const enabled = packsArraySlice(content, "enabled") orelse {
+        try std.testing.expect(false);
+        return;
+    };
+    try std.testing.expect(std.mem.indexOf(u8, enabled, "containers.docker") != null);
 }
 
 test "rewritePacksArrayKey preserves other keys and section order" {

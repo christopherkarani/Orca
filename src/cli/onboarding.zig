@@ -37,7 +37,7 @@ pub const ProtectionMode = enum {
 
     pub fn description(self: ProtectionMode) []const u8 {
         return switch (self) {
-            .command_guard => "Hook-based shell command blocking via the Rust daemon (fast, host-integrated).",
+            .command_guard => "Hook-based shell command blocking via the in-process Zig shell_engine (fast, host-integrated).",
             .firewall => "Sandboxed sessions through `orca run` with network, file, and secret policies.",
             .maximum_protection => "Command Guard plus Firewall together (recommended).",
         };

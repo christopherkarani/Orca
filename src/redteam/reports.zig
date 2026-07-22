@@ -9,7 +9,7 @@ const tui = @import("../tui/mod.zig");
 pub const implemented = true;
 
 /// Fixed provenance for the current fixture-engine suite.
-/// Not workspace policy; not Rust daemon / host enforcement.
+/// Not workspace policy; not host-hook install / OS enforcement.
 pub const suite_kind = "engine-self-test";
 pub const policy_id = "builtin:redteam";
 pub const policy_path = "preset:redteam";

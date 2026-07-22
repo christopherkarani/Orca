@@ -56,7 +56,7 @@ pub fn runStart(
 
     try tui.render.banner(io, stdout, build_options.version, null);
     try stdout.writeAll(
-        \\Orca will configure protection for your workspace, verify the Rust daemon when needed,
+        \\Orca will configure protection for your workspace, verify shell evaluation when needed,
         \\install host integrations you choose, and run safe verification checks.
         \\Existing policy files are kept unless you run `orca init --force`.
         \\
@@ -117,18 +117,18 @@ pub fn runStart(
 
     var daemon_check: onboarding.DaemonCheck = undefined;
     if (protection.needsCommandGuard()) {
-        daemon_check = try onboarding.checkDaemonHealth(allocator, true, daemon_check_fn);
-        const daemon_ok = daemon_check.status == .compatible;
-        protection_active = protection_active or daemon_ok;
-        try tui.render.stepLine(io, stdout, if (daemon_ok) .done else .failed, "Daemon", if (daemon_ok) "Ready for shell mediation" else daemon_check.remediation, 80);
-        if (!daemon_ok) {
-            try stdout.print("  Status: {s}\n", .{daemon_check.status.label()});
-            try stdout.print("  Detail: {s}\n", .{daemon_check.detail});
-            failures += 1;
-        }
+        // CLI-only product: shell mediation is in-process Zig shell_engine.
+        // Do not require the removed orca-daemon binary for start/onboarding.
+        daemon_check = .{
+            .status = .compatible,
+            .detail = "in-process Zig shell_engine",
+            .remediation = "Shell evaluation uses the CLI binary (no companion daemon).",
+        };
+        protection_active = true;
+        try tui.render.stepLine(io, stdout, .done, "Command guard", "Zig shell_engine ready (in-process)", 80);
     } else {
         daemon_check = try onboarding.checkDaemonHealth(allocator, false, daemon_check_fn);
-        try tui.render.stepLine(io, stdout, .done, "Daemon", "Not required for this setup path", 80);
+        try tui.render.stepLine(io, stdout, .done, "Command guard", "Not required for this setup path", 80);
         protection_active = onboarding.verifyFirewallReady(io, workspace_root);
     }
 
@@ -157,7 +157,7 @@ pub fn runStart(
     var verification: ?onboarding.VerificationOutcome = null;
     if (!flags.skip_verify and failures == 0) {
         if (protection.needsCommandGuard() and daemon_check.status != .compatible) {
-            try tui.render.stepLine(io, stdout, .failed, "Verify", "Skipped shell verification because the daemon is unavailable", 80);
+            try tui.render.stepLine(io, stdout, .failed, "Verify", "Skipped shell verification because command guard is unavailable", 80);
             failures += 1;
         } else {
             const eval_fn = shell_evaluator orelse shell_eval.defaultEvaluator;

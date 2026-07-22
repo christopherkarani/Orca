@@ -48,6 +48,9 @@ pub const daemon = @import("daemon.zig");
 pub const daemon_uds = @import("daemon_uds.zig");
 pub const shutdown = @import("shutdown.zig");
 pub const shell_eval = @import("shell_eval.zig");
+pub const shell_test = @import("shell_test.zig");
+pub const shell_explain = @import("shell_explain.zig");
+pub const rust_legacy_stub = @import("rust_legacy_stub.zig");
 pub const rust_visibility = @import("rust_visibility.zig");
 pub const feed_writer = @import("feed_writer.zig");
 pub const agent_hook = @import("agent_hook.zig");
@@ -82,6 +85,9 @@ test {
     _ = daemon.errors;
     _ = shutdown;
     _ = shell_eval;
+    _ = shell_test;
+    _ = shell_explain;
+    _ = rust_legacy_stub;
     _ = rust_visibility;
     _ = evaluate;
     _ = agent_hook;
@@ -297,6 +303,9 @@ fn runWithCwdUsing(
     stdout: anytype,
     stderr: anytype,
 ) !u8 {
+    _ = daemon_execute;
+    _ = packs_command;
+    _ = history_command;
     const allocator = std.heap.smp_allocator;
     const global_args = try parseGlobalArgs(allocator, argv_input);
     defer if (global_args.owned) allocator.free(global_args.argv);
@@ -388,26 +397,25 @@ fn runWithCwdUsing(
     }
 
     if (std.mem.eql(u8, command, "packs")) {
-        return packs_command(io, argv[1..], stdout, stderr) catch |err| {
-            try stderr.print("orca packs: {s}: {s}\n", .{ daemonErrorLabel(err), @errorName(err) });
-            return exit_codes.general;
-        };
+        return rust_legacy_stub.unavailable("packs", stderr);
     }
 
     if (std.mem.eql(u8, command, "history")) {
-        return history_command(io, argv[1..], stdout, stderr) catch |err| {
-            try stderr.print("orca history: {s}: {s}\n", .{ daemonErrorLabel(err), @errorName(err) });
-            return exit_codes.general;
-        };
+        return rust_legacy_stub.unavailable("history", stderr);
     }
 
-    // R03: mutating policy commands spawn orca-daemon locally (not ExecuteCli UDS).
+    // R03: mutating policy commands previously spawned orca-daemon locally.
+    // Pure Zig conversion: stub until Zig allowlist writers land.
     if (isDaemonLocalMutatingInvocation(command, argv[1..])) {
-        return runLocalDaemonCommand(command, argv[1..], stdout, stderr);
+        return rust_legacy_stub.unavailable(command, stderr);
     }
+    // Former ExecuteCli proxies (scan/simulate/…) — not yet ported.
     if (isDaemonProxyCommand(command)) {
-        return proxyDaemonCommand(daemon_execute, command, argv[1..], io, stdout, stderr);
+        return rust_legacy_stub.unavailable(command, stderr);
     }
+
+    if (std.mem.eql(u8, command, "test")) return shell_test.command(io, argv[1..], stdout, stderr);
+    if (std.mem.eql(u8, command, "explain")) return shell_explain.command(io, argv[1..], stdout, stderr);
 
     // Highest-value DX helper for installers, Homebrew post-install hooks, npm wrapper,
     // power users, and immediate shell activation. Now layout-aware (selfExePath) and
@@ -480,14 +488,11 @@ fn proxyVersionCommand(comptime execute_cli: anytype, io: std.Io, stdout: anytyp
     };
 }
 
-/// Top-level commands proxied through the Rust daemon via ExecuteCli (read-only).
-/// Packs/history have richer Zig wrappers; these use argv passthrough.
-/// Mutating commands (`allow`, …) use `runLocalDaemonCommand` instead — R03.
+/// Top-level commands that previously proxied through the Rust daemon via ExecuteCli.
+/// `test` / `explain` are Zig-native; remaining entries stub until ported or dropped.
 fn isDaemonProxyCommand(command: []const u8) bool {
-    return std.mem.eql(u8, command, "test") or
-        std.mem.eql(u8, command, "scan") or
+    return std.mem.eql(u8, command, "scan") or
         std.mem.eql(u8, command, "precommit") or
-        std.mem.eql(u8, command, "explain") or
         std.mem.eql(u8, command, "allowlist") or
         std.mem.eql(u8, command, "classify") or
         std.mem.eql(u8, command, "suggest-allowlist") or
@@ -670,7 +675,7 @@ test "help disambiguates explain vs policy explain" {
     try std.testing.expectEqual(exit_codes.success, code);
     const output = stdout_writer.buffered();
     try std.testing.expect(std.mem.indexOf(u8, output, "policy explain") != null);
-    try std.testing.expect(std.mem.indexOf(u8, output, "Rust") != null or std.mem.indexOf(u8, output, "daemon") != null);
+    try std.testing.expect(std.mem.indexOf(u8, output, "Zig shell_engine") != null);
 }
 
 test "env command appears in help and dispatches correctly" {
@@ -953,7 +958,8 @@ test "phase A proxy commands construct daemon argv and render success" {
     var stdout_writer: std.Io.Writer = .fixed(&stdout_buf);
     var stderr_writer: std.Io.Writer = .fixed(&stderr_buf);
 
-    try std.testing.expect(isDaemonProxyCommand("explain"));
+    try std.testing.expect(!isDaemonProxyCommand("explain"));
+    try std.testing.expect(!isDaemonProxyCommand("test"));
     try std.testing.expect(isDaemonProxyCommand("allowlist"));
     try std.testing.expect(!isDaemonProxyCommand("allow"));
     try std.testing.expect(!isDaemonProxyCommand("unallow"));
@@ -973,12 +979,7 @@ test "phase A proxy commands construct daemon argv and render success" {
     try std.testing.expect(!isDaemonProxyCommand("doctor"));
     try std.testing.expect(!isDaemonProxyCommand("init"));
 
-    const explain_code = try proxyDaemonCommand(fakeExplainProxySuccess, "explain", &.{"git reset --hard"}, std.testing.io, &stdout_writer, &stderr_writer);
-    try std.testing.expectEqual(exit_codes.success, explain_code);
-    try std.testing.expectEqualStrings("explain ok\n", stdout_writer.buffered());
-
-    stdout_writer = .fixed(&stdout_buf);
-    stderr_writer = .fixed(&stderr_buf);
+    // Direct proxyDaemonCommand helper still works for remaining stubbed ExecuteCli surfaces.
     const allowlist_code = try proxyDaemonCommand(fakeAllowlistProxySuccess, "allowlist", &.{"list"}, std.testing.io, &stdout_writer, &stderr_writer);
     try std.testing.expectEqual(exit_codes.success, allowlist_code);
     try std.testing.expectEqualStrings("allowlist ok\n", stdout_writer.buffered());
@@ -1380,25 +1381,28 @@ fn fakeRawMcp(_: std.Io, argv: []const []const u8, stdout: anytype, _: anytype) 
     return 10;
 }
 
-test "public dispatch preserves daemon robot export and MCP protocol bytes exactly" {
-    const Case = struct { argv: []const []const u8, expected: []const u8, code: u8 };
+test "public dispatch preserves MCP protocol bytes; Zig-native test/explain no longer daemon-proxy" {
+    const Case = struct { argv: []const []const u8, expected_substr: []const u8, code: u8 };
     const cases = [_]Case{
-        .{ .argv = &.{ "test", "git status" }, .expected = "daemon:test\n", .code = 7 },
-        .{ .argv = &.{ "packs", "--robot" }, .expected = "packs-robot\n", .code = 8 },
-        .{ .argv = &.{ "history", "export" }, .expected = "history-export\n", .code = 9 },
-        .{ .argv = &.{ "mcp", "proxy", "--command", "server" }, .expected = "{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"tools\":[]}}\n", .code = 10 },
+        // Zig shell_engine: allow git status → exit 0, JSON/text decision output.
+        .{ .argv = &.{ "test", "git status" }, .expected_substr = "allow", .code = 0 },
+        // Former daemon surfaces stub until ported.
+        .{ .argv = &.{ "packs", "--robot" }, .expected_substr = "not yet ported", .code = 1 },
+        .{ .argv = &.{ "history", "export" }, .expected_substr = "not yet ported", .code = 1 },
+        .{ .argv = &.{ "mcp", "proxy", "--command", "server" }, .expected_substr = "{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"tools\":[]}}", .code = 10 },
     };
     var env_map = try std.process.Environ.createMap(std.process.Environ.empty, std.testing.allocator);
     defer env_map.deinit();
     for (cases) |case| {
-        var stdout_buf: [256]u8 = undefined;
-        var stderr_buf: [256]u8 = undefined;
+        var stdout_buf: [1024]u8 = undefined;
+        var stderr_buf: [1024]u8 = undefined;
         var stdout_writer: std.Io.Writer = .fixed(&stdout_buf);
         var stderr_writer: std.Io.Writer = .fixed(&stderr_buf);
         const code = try runWithCwdUsing(fakeRawDaemon, fakeRawPacks, fakeRawHistory, fakeRawMcp, std.testing.io, &env_map, std.Io.Dir.cwd(), case.argv, &stdout_writer, &stderr_writer);
         try std.testing.expectEqual(case.code, code);
-        try std.testing.expectEqualStrings(case.expected, stdout_writer.buffered());
-        try std.testing.expectEqualStrings("", stderr_writer.buffered());
+        const combined = try std.fmt.allocPrint(std.testing.allocator, "{s}{s}", .{ stdout_writer.buffered(), stderr_writer.buffered() });
+        defer std.testing.allocator.free(combined);
+        try std.testing.expect(std.mem.indexOf(u8, combined, case.expected_substr) != null);
     }
 }
 

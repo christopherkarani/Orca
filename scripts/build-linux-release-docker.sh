@@ -32,8 +32,12 @@ for arch in amd64 arm64; do
     "${REPO_ROOT}"
 
   test -x "${OUT_DIR}/linux-${arch}/orca"
-  test -x "${OUT_DIR}/linux-${arch}/orca-daemon"
-  file "${OUT_DIR}/linux-${arch}/orca" "${OUT_DIR}/linux-${arch}/orca-daemon"
+  # CLI-only product; orca-daemon is no longer packaged (Zig shell_engine in-process).
+  if [[ -e "${OUT_DIR}/linux-${arch}/orca-daemon" ]]; then
+    echo "build-linux-release-docker: unexpected orca-daemon under ${OUT_DIR}/linux-${arch}" >&2
+    exit 1
+  fi
+  file "${OUT_DIR}/linux-${arch}/orca"
 done
 
 echo "Docker-built Linux release binaries staged in ${OUT_DIR}"

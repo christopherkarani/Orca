@@ -179,6 +179,36 @@ require_package_hashes() {
   done
 }
 
+# Orca product archives ship the Zig CLI only (shell evaluation is in-process
+# shell_engine). Do not require orca-daemon in archives or the release manifest.
+forbid_orca_archive_binary() {
+  pattern="$1"
+  binary="$2"
+  found=0
+  for artifact in $pattern; do
+    [ -f "$artifact" ] || continue
+    found=1
+    name="$(basename "$artifact")"
+    case "$name" in
+      *.tar.gz)
+        if tar -tzf "$artifact" | grep -q "^[^/]*/bin/$binary$"; then
+          fail "artifact $name unexpectedly contains bin/$binary (daemon removed from product packaging)"
+        fi
+        ;;
+      *.zip)
+        command -v unzip >/dev/null 2>&1 || fail "unzip is required to inspect $name"
+        if unzip -Z1 "$artifact" | grep -q "^[^/]*/bin/$binary$"; then
+          fail "artifact $name unexpectedly contains bin/$binary (daemon removed from product packaging)"
+        fi
+        ;;
+      *)
+        fail "unsupported archive format: $name"
+        ;;
+    esac
+  done
+  [ "$found" = "1" ] || fail "missing artifact pattern $pattern"
+}
+
 require_release_artifacts() {
   case "$RELEASE_PRODUCT" in
     all | cli)
@@ -187,13 +217,13 @@ require_release_artifacts() {
       require_artifact "$DIST_DIR/orca-v*-linux-amd64.tar.gz"
       require_artifact "$DIST_DIR/orca-v*-linux-arm64.tar.gz"
       require_orca_archive_binary "$DIST_DIR/orca-v*-darwin-amd64.tar.gz" "orca"
-      require_orca_archive_binary "$DIST_DIR/orca-v*-darwin-amd64.tar.gz" "orca-daemon"
+      forbid_orca_archive_binary "$DIST_DIR/orca-v*-darwin-amd64.tar.gz" "orca-daemon"
       require_orca_archive_binary "$DIST_DIR/orca-v*-darwin-arm64.tar.gz" "orca"
-      require_orca_archive_binary "$DIST_DIR/orca-v*-darwin-arm64.tar.gz" "orca-daemon"
+      forbid_orca_archive_binary "$DIST_DIR/orca-v*-darwin-arm64.tar.gz" "orca-daemon"
       require_orca_archive_binary "$DIST_DIR/orca-v*-linux-amd64.tar.gz" "orca"
-      require_orca_archive_binary "$DIST_DIR/orca-v*-linux-amd64.tar.gz" "orca-daemon"
+      forbid_orca_archive_binary "$DIST_DIR/orca-v*-linux-amd64.tar.gz" "orca-daemon"
       require_orca_archive_binary "$DIST_DIR/orca-v*-linux-arm64.tar.gz" "orca"
-      require_orca_archive_binary "$DIST_DIR/orca-v*-linux-arm64.tar.gz" "orca-daemon"
+      forbid_orca_archive_binary "$DIST_DIR/orca-v*-linux-arm64.tar.gz" "orca-daemon"
       require_orca_archive_excludes "$DIST_DIR/orca-v*-darwin-amd64.tar.gz"
       require_orca_archive_excludes "$DIST_DIR/orca-v*-darwin-arm64.tar.gz"
       require_orca_archive_excludes "$DIST_DIR/orca-v*-linux-amd64.tar.gz"
@@ -204,31 +234,31 @@ require_release_artifacts() {
         darwin-amd64)
           require_artifact "$DIST_DIR/orca-v*-darwin-amd64.tar.gz"
           require_orca_archive_binary "$DIST_DIR/orca-v*-darwin-amd64.tar.gz" "orca"
-          require_orca_archive_binary "$DIST_DIR/orca-v*-darwin-amd64.tar.gz" "orca-daemon"
+          forbid_orca_archive_binary "$DIST_DIR/orca-v*-darwin-amd64.tar.gz" "orca-daemon"
           require_orca_archive_excludes "$DIST_DIR/orca-v*-darwin-amd64.tar.gz"
           ;;
         darwin-arm64)
           require_artifact "$DIST_DIR/orca-v*-darwin-arm64.tar.gz"
           require_orca_archive_binary "$DIST_DIR/orca-v*-darwin-arm64.tar.gz" "orca"
-          require_orca_archive_binary "$DIST_DIR/orca-v*-darwin-arm64.tar.gz" "orca-daemon"
+          forbid_orca_archive_binary "$DIST_DIR/orca-v*-darwin-arm64.tar.gz" "orca-daemon"
           require_orca_archive_excludes "$DIST_DIR/orca-v*-darwin-arm64.tar.gz"
           ;;
         linux-amd64)
           require_artifact "$DIST_DIR/orca-v*-linux-amd64.tar.gz"
           require_orca_archive_binary "$DIST_DIR/orca-v*-linux-amd64.tar.gz" "orca"
-          require_orca_archive_binary "$DIST_DIR/orca-v*-linux-amd64.tar.gz" "orca-daemon"
+          forbid_orca_archive_binary "$DIST_DIR/orca-v*-linux-amd64.tar.gz" "orca-daemon"
           require_orca_archive_excludes "$DIST_DIR/orca-v*-linux-amd64.tar.gz"
           ;;
         linux-arm64)
           require_artifact "$DIST_DIR/orca-v*-linux-arm64.tar.gz"
           require_orca_archive_binary "$DIST_DIR/orca-v*-linux-arm64.tar.gz" "orca"
-          require_orca_archive_binary "$DIST_DIR/orca-v*-linux-arm64.tar.gz" "orca-daemon"
+          forbid_orca_archive_binary "$DIST_DIR/orca-v*-linux-arm64.tar.gz" "orca-daemon"
           require_orca_archive_excludes "$DIST_DIR/orca-v*-linux-arm64.tar.gz"
           ;;
         windows-amd64)
           require_artifact "$DIST_DIR/orca-v*-windows-amd64.zip"
           require_orca_archive_binary "$DIST_DIR/orca-v*-windows-amd64.zip" "orca.exe"
-          require_orca_archive_binary "$DIST_DIR/orca-v*-windows-amd64.zip" "orca-daemon.exe"
+          forbid_orca_archive_binary "$DIST_DIR/orca-v*-windows-amd64.zip" "orca-daemon.exe"
           require_orca_archive_excludes "$DIST_DIR/orca-v*-windows-amd64.zip"
           ;;
         *)
@@ -253,8 +283,14 @@ if [ "$RELEASE_PRODUCT" != "host" ]; then
 fi
 grep -q '"products_included"' "$DIST_DIR/release-manifest.json" || fail "release-manifest.json missing products_included"
 grep -q '"orca"' "$DIST_DIR/release-manifest.json" || fail "release-manifest.json missing Orca product"
-grep -q '"orca-daemon"' "$DIST_DIR/release-manifest.json" || fail "release-manifest.json missing daemon product"
-
+# Daemon product was removed; packaging is CLI + core only (Zig shell_engine in-process).
+if grep -q '"orca-daemon"' "$DIST_DIR/release-manifest.json"; then
+  fail "release-manifest.json still lists orca-daemon product (removed from packaging)"
+fi
+if grep -q '"orca-daemon"' "$DIST_DIR/sbom.json"; then
+  fail "sbom.json still lists orca-daemon component (removed from packaging)"
+fi
+grep -q '"orca"' "$DIST_DIR/sbom.json" || fail "sbom.json missing orca component"
 if command -v sha256sum >/dev/null 2>&1; then
   (cd "$DIST_DIR" && sha256sum -c checksums.txt)
 else

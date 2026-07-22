@@ -259,11 +259,11 @@ never raw email/body/token values.
 
 ### Residual gaps
 
-- **Host shell PreToolUse** still primarily uses the **Rust daemon** and
-  `commands` packs. Phase B shell effect patterns apply on the **Zig** command
-  evaluation path; full Rust-pack parity (including effect packs on that path)
-  is not claimed. Network effect tags still catch many `curl`-style bypasses
-  when the network path is evaluated (including the proxy).
+- **Host shell PreToolUse** is owned by the in-process Zig **`shell_engine`**
+  (oracle pack parity; default enablement matches Rust `core.*` + `system.disk`).
+  `ORCA_SHELL_EVAL=rust` is rejected — there is no supported dual-stack Evaluate
+  backend. Network effect tags still catch many
+  `curl`-style bypasses when the network path is evaluated (including the proxy).
 - Structural classification is top-level + one nested object level of keys
   (interesting keys preferred against padding); deeper nesting or stringified
   JSON args are not fully covered.

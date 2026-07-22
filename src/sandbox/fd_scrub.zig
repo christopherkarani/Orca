@@ -258,7 +258,7 @@ fn bestEffortClose(fd: i32) void {
 fn linuxCloseRange(first: i32, last: i32) bool {
     if (builtin.os.tag != .linux) return false;
     const linux = std.os.linux;
-    const rc = linux.close_range(first, last, .{});
+    const rc = linux.close_range(first, last, .{ .UNSHARE = false, .CLOEXEC = false });
     return linux.errno(rc) == .SUCCESS;
 }
 

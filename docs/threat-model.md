@@ -7,7 +7,7 @@
 - Protected paths such as `.env`, SSH keys, cloud credentials, and browser credential stores.
 - Orca-mediated writes before they reach the workspace.
 - MCP tool calls, resource reads, prompt gets, and sampling requests that pass through the stdio proxy.
-- Host and MCP tool calls classified into effect classes (e.g. `comms.message`) when policy includes an `effects:` section — by tool name catalog, structural argument shapes, network host tags, and Zig-side shell bypass patterns (e.g. `open mailto:`). Residual gap: host shell PreToolUse still primarily uses Rust packs; full shell effect parity is not claimed.
+- Host and MCP tool calls classified into effect classes (e.g. `comms.message`) when policy includes an `effects:` section — by tool name catalog, structural argument shapes, network host tags, and Zig-side shell bypass patterns (e.g. `open mailto:`). Host shell PreToolUse / Evaluate is owned by the in-process Zig `shell_engine` (85 oracle packs; default enablement matches Rust `core.*` + `system.disk`; full set available). Corpus decision parity is gated by `zig build test-shell-engine` (100% match). Residual gap: effect-class classification via Zig `shell_bypass` is separate from pack allow/deny — see [shell-engine Rust parity backlog](shell-engine/rust-parity-backlog.md).
 - Audit integrity for Orca-managed sessions.
 
 ## Threat Actors

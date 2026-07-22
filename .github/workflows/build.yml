@@ -17,6 +17,7 @@ jobs:
       - uses: mlugg/setup-zig@v2
         with:
           version: 0.16.0
+      # PCRE2 is built from source via build.zig.zon (static link); no system package required.
       - name: Build
         shell: bash
         run: ./scripts/zig build
