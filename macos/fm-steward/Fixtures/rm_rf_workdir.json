@@ -1,0 +1,29 @@
+{
+  "schema_version": 1,
+  "session_id": "sess-fixture-rm-rf-workdir",
+  "tool": "bash",
+  "command": "rm -rf ~/Documents/project-backup",
+  "features": {
+    "executed": true,
+    "bulk_outbound": null,
+    "vip": null,
+    "same_intent": null,
+    "recipient_count": null,
+    "recipient_class": null,
+    "amount": null,
+    "currency": null,
+    "paths": ["~/Documents/project-backup"],
+    "effect_hints": ["shell", "file"],
+    "pack_id": null,
+    "namespace": null,
+    "rule_id": null
+  },
+  "thresholds": {
+    "bulk_recipient_min": null,
+    "vip_list_path": null
+  },
+  "meta": {
+    "host": "fixture",
+    "cwd": "/Users/demo/project"
+  }
+}
