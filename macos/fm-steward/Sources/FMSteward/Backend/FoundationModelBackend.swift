@@ -17,8 +17,17 @@ public protocol FoundationModelBackend: Sendable {
 
     /// Classify a risk card after rules pre-pass missed.
     func classify(_ card: RiskCard) async -> ClassifyResponse
+
+    /// Residual classify with optional few-shot examples (assist only).
+    /// Default ignores `fewShots` and calls `classify(_:)`.
+    func classify(_ card: RiskCard, fewShots: [FewShotExample]) async -> ClassifyResponse
 }
 
 extension FoundationModelBackend {
     public func prepareWarm() async {}
+
+    public func classify(_ card: RiskCard, fewShots: [FewShotExample]) async -> ClassifyResponse {
+        _ = fewShots
+        return await classify(card)
+    }
 }
