@@ -1,6 +1,11 @@
 # fm-steward (Phase 3)
 
-Mac-only **on-device Apple Foundation Models steward** for Orca (`SystemLanguageModel`, ~3B Apple Intelligence model). Classifies **risk-card-v1** JSON into:
+Mac-only **on-device Apple Foundation Models steward** for Orca (`SystemLanguageModel`).
+
+**v1 focus: dangerous shell / agent commands** (soft-interrupt nuance after policy + hard fence).  
+Email bulk/VIP / pay adapters are **out of v1 product corpus** — architecture stubs only under `residual-knowledge/`.
+
+Classifies **risk-card-v1** JSON into:
 
 | Verdict | Meaning |
 |---------|---------|
@@ -11,20 +16,35 @@ Mac-only **on-device Apple Foundation Models steward** for Orca (`SystemLanguage
 Phase 3 ships:
 
 - Normative schemas under `Schemas/`
-- Fixture corpus under `Fixtures/` (§6.4 table)
-- Deterministic **rules pre-pass** (works without waiting on silicon for fixtures)
+- Shell fixture corpus under `Fixtures/`
+- Deterministic **rules pre-pass** (safe shapes + hard-danger ask + residual FM)
 - **Live `LiveBackend`** using `import FoundationModels` + guided generation (`@Generable`)
-- Warm `StewardSession` (`LanguageModelSession.prewarm`) with **500ms** default timeout for residual FM work
-- Demo CLI: `fm-steward classify --card <path.json> [--live]`
+- Warm `StewardSession` with timeout race for residual FM work
+- **Residual Wax few-shot assist** (text mode): YAML packs → compiled seed → `.wax` → k≤3 neighbors
+- Demo CLI: `fm-steward classify --card <path.json> [--live] [--few-shot auto|off|wax]`
 
 ## Platform
 
 | Platform | Support |
 |----------|---------|
-| **macOS 26+** | Supported — requires Apple Intelligence / Foundation Models assets (`Package.swift` → `.macOS(.v26)`) |
-| **Linux** | **Skipped** — product path does not use FM. Phase 4 wiring remains Mac-only for this package; Linux continues on policy + hard fence only. |
+| **macOS 26+** | Supported — requires Apple Intelligence / Foundation Models assets |
+| **Linux** | **Skipped** — product path does not use FM |
 
 This package is **not** wired into production Zig hooks in Phase 3 (see [Scope / W4](#scope--not-done-w4)).
+
+## Security honesty
+
+**FM + Wax are residual assist only — not sole security.**
+
+| Layer | Role |
+|-------|------|
+| Zig hard fence | Catastrophe **deny** |
+| Policy / YOLO / sticky | Host product |
+| Rules pre-pass | Clear continue / hard-ask |
+| Wax few-shots | Gray **examples** for residual FM (never deny/allow) |
+| On-device FM | Soft `continue` \| `ask` \| `ask_sticky_candidate` |
+
+Wax never unlocks hard deny. Fail-open: store/search errors → empty few-shots → normal FM/unavailable path.
 
 ## Build
 
@@ -33,110 +53,115 @@ cd macos/fm-steward
 swift build
 ```
 
-Executable product: `.build/debug/fm-steward` (or `swift run fm-steward …`).
-
 ## Test
 
 ```bash
 cd macos/fm-steward
+python3 scripts/compile-residual-knowledge.py --check
 swift test
+bash Fixtures/validate.sh
 ```
 
-Covers fixture table, backend/explain contracts, and session timeout fallback.
+## Residual knowledge packs
+
+Human-authored **ambiguous coding-agent** examples live under `residual-knowledge/`:
+
+```text
+residual-knowledge/shell/*.yaml
+residual-knowledge/containers/*.yaml
+residual-knowledge/email|pay|social/   # stubs only (not implemented)
+```
+
+Compile to the checked-in seed artifact:
+
+```bash
+python3 scripts/compile-residual-knowledge.py          # write Fixtures/ambig-fewshot/seed.json
+python3 scripts/compile-residual-knowledge.py --check  # CI / pre-commit gate
+python3 scripts/compile-residual-knowledge.py --self-test
+```
+
+**Pipeline:** YAML packs → `seed.json` → text-mode `.wax` (seeded on first use or seed-hash change) → residual classify retrieves k≤3 → `LiveBackend.prompt` injects neighbors → FM decides.
+
+See [`residual-knowledge/README.md`](residual-knowledge/README.md) for authoring rules and multi-domain employee architecture (docs/stubs only).
 
 ## CLI
 
 ```bash
 cd macos/fm-steward
 
-# Pretty JSON classify-response-v1 (default)
-swift run fm-steward classify --card Fixtures/bulk_email.json
+# Safe / rules short-circuit
+swift run fm-steward classify --card Fixtures/grep_rm_rf.json --human
+swift run fm-steward classify --card Fixtures/npm_test_loop.json --human
 
-# Compact human lines
-swift run fm-steward classify --card Fixtures/vip_email.json --human
+# Clear danger (deterministic hard-ask; no FM / no Wax)
+swift run fm-steward classify --card Fixtures/curl_pipe_sh.json --human
+swift run fm-steward classify --card Fixtures/rm_rf_workdir.json --human
 
-# Override backend timeout (default 500ms)
-swift run fm-steward classify --card Fixtures/grep_rm_rf.json --timeout-ms 200
+# Residual gray (default --few-shot auto; live FM when available)
+swift run fm-steward classify --card Fixtures/npm_test_loop.json --live --human
+# pure FM residual (no few-shot):
+swift run fm-steward classify --card Fixtures/npm_test_loop.json --few-shot off --live --human
+
+# Full live prompt/output matrix
+swift run fm-steward probe-matrix
+
+# Pure-FM viability (always no few-shot)
+swift run fm-steward eval-danger
 ```
 
 ### Behavior notes
 
-- **On-device model:** `LiveBackend` uses `SystemLanguageModel.default` + `LanguageModelSession.respond(generating: StewardModelOutput.self)`. Check readiness: `LiveBackend.isOnDeviceModelAvailable` / `LiveBackend.availabilityDescription`.
-- **Default backend:** `auto` → live when the on-device model is available, else unavailable. Force with `--live` or `--backend unavailable`.
-- **Rules first, FM residual:** rules pre-pass short-circuits bulk/VIP/`executed=false`/`test_loop`. Gray cards hit the on-device model.
-- **Default timeout:** `500ms` for backend-bound work (`StewardSession`). Override with `--timeout-ms N` (raise for cold FM first token if needed). Host API for the timeout race is **`StewardSession`**.
-- **Warm:** CLI calls `session.warm()` by default (`LanguageModelSession.prewarm`). Use `--no-warm` to skip.
-- **Timeout / unavailable model → `continue`** with `fallback=true` (and `timed_out=true` when the timer wins). Never ask-spam after timeout. Timeout is **cooperative**.
-- **Broken ask* (empty explain) → `continue`** is a soft residual (anti-ask-spam), not hard-fence fail-closed. Hard fence remains Zig-only.
-- **Rules hits** set `model_available=false`. Live model hits set `model_available=true`.
-- **Host-authoritative cards:** `features.*` and thresholds must be host-computed. `thresholds.vip_list_path` is host-only metadata in Phase 3.
-- Exit code `0` means classify succeeded (including `ask*`). Non-zero is usage/IO/decode failure (including `schema_version != 1` or card file > 1 MiB).
+- **v1 scope:** shell/command danger nuance only. Do not use email bulk/VIP demos as the product bar.
+- **On-device model:** `SystemLanguageModel.default` + guided generation. Check `LiveBackend.isOnDeviceModelAvailable`.
+- **Rules first (order):**
+  1. `executed=false` → continue  
+  2. `same_intent=test_loop` → continue  
+  3. `CommandShape` safe shapes (echo/search/comment/print/var+echo/allowlisted dev clean) → continue  
+  4. `HardDangerRules` clear catastrophe / exfil / RCE → **ask**  
+  5. else residual: **Wax text few-shots (k≤3)** + **LiveBackend** FM  
+- **Few-shot default:** `--few-shot auto` when seed is present; reseed if store missing or seed content hash ≠ `*.wax.seedsha`. Fail-open on auto. Use `off` for pure-FM comparisons. `eval-danger` is always pure-FM.
+- **Hard fence** remains Zig (catastrophe deny). FM never unlocks hard deny; offline/timeout → continue.
+- **Default timeout:** `3000ms` (raise with `--timeout-ms` for cold first token). Prefer **`StewardSession`** as host API.
+- **Fresh LanguageModelSession per classify** so multi-card runs do not exceed the 4K context window.
+- **Wax:** SPM pin ≥ **0.1.25**, `traits: []` (text mode; no MiniLM). See `docs/dev/dependencies.md`.
 
-## Demo (§6.4 fixture table)
+## Demo (v1 shell fixtures)
 
-Copy-paste from `macos/fm-steward`:
-
-```bash
-# ask + non-empty explain
-swift run fm-steward classify --card Fixtures/bulk_email.json --human
-swift run fm-steward classify --card Fixtures/vip_email.json --human
-
-# continue (safe / non-executed / test loop)
-swift run fm-steward classify --card Fixtures/grep_rm_rf.json --human
-swift run fm-steward classify --card Fixtures/npm_test_loop.json --human
-```
-
-| Fixture | Expected |
-|---------|----------|
-| `Fixtures/bulk_email.json` | `ask` + explain (`suggested_sticky_*` null) |
-| `Fixtures/vip_email.json` | `ask_sticky_candidate` + explain + sticky suggestions |
-| `Fixtures/grep_rm_rf.json` | `continue` |
-| `Fixtures/npm_test_loop.json` | `continue` |
-| `Fixtures/timeout_forced.json` | Neutral card metadata only — timeout proven via `SlowBackend` in unit tests (G3), not static rules |
-
-Optional wrapper:
+| Fixture | Expected (product path) |
+|---------|-------------------------|
+| `Fixtures/grep_rm_rf.json` | `continue` (rules: not executed) |
+| `Fixtures/npm_test_loop.json` | `continue` (rules: test_loop) |
+| `Fixtures/curl_pipe_sh.json` | `ask` (HardDangerRules: curl\|sh) |
+| `Fixtures/rm_rf_workdir.json` | `ask` (HardDangerRules: home path wipe) |
+| `Fixtures/timeout_forced.json` | Neutral card metadata; timeout proven via `SlowBackend` tests |
 
 ```bash
 ./scripts/demo.sh
-# or: ./scripts/demo.sh --json
 ```
-
-## Schemas & fixtures
-
-- `Schemas/risk-card-v1.json` — request contract  
-- `Schemas/classify-response-v1.json` — response contract (`continue` \| `ask` \| `ask_sticky_candidate`)  
-- `Fixtures/*.json` — demo/CI cards  
-- `Fixtures/validate.sh` — lightweight required-field check  
 
 ## Scope / not done (W4)
 
-**W4 production hook wiring is NOT done.** Phase 3 deliberately does **not** call FM from:
-
-- `src/cli/hook.zig`
-- `src/cli/shell_eval.zig`
-- production `decideShellWithPolicy` path
+**W4 production hook wiring is NOT done.** Phase 3 does not call FM from `hook.zig` / `shell_eval.zig`.
 
 ### G5 negative-scope check
 
 ```bash
-# From repo root — must not show production FM symbols in hook/shell_eval
 rg -n 'fm_steward|FmVerdict|classifyRiskCard' src/cli/hook.zig src/cli/shell_eval.zig || true
 ```
 
-Zig shell security remains the in-process Zig `shell_engine` + policy path. WP6 UDS IPC / Phase 4 product wiring is out of scope here.
+Host sticky UI / always-allow storage / employee email·pay·social seed bodies → later phases (architecture documented under `residual-knowledge/`).
 
-## Library surface (for dependents)
+## Library surface
 
 ```text
-StewardSession  ← preferred host API (warm + timeout race)
-Classifier      ← pure rules + backend (no timeout; tests / composition)
-RulesPrePass / ClassifyPipeline (shared demotion)
-FoundationModelBackend
-  LiveBackend          ← real SystemLanguageModel + guided generation
-  UnavailableBackend   ← fallback continue
-  SlowBackend          ← timeout tests
-RiskCard / ClassifyResponse / StewardModelOutput (@Generable)
+StewardSession     ← preferred host API (warm + timeout race; default 3000ms)
+Classifier         ← pure rules + backend
+RulesPrePass       ← executed=false → test_loop → CommandShape → HardDanger → residual FM
+CommandShape       ← safe skip shapes (no pipe exfil on search/echo)
+HardDangerRules    ← deterministic soft-ask for clear danger
+FewShotRetriever   ← protocol + Null / Static / WaxFewShotStore (text)
+FewShotSeedBootstrap ← seed SHA-256 reseed helpers
+LiveBackend        ← real SystemLanguageModel, shell-focused prompt + few-shot block
+UnavailableBackend / SlowBackend
+RiskCard / ClassifyResponse / StewardModelOutput
 ```
-
-Default session timeout **500ms**. Rules pre-pass short-circuits before backend race.
-Live path requires macOS 26 + Apple Intelligence enabled.
