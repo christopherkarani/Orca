@@ -1,6 +1,5 @@
 #!/usr/bin/env bash
-# Demo bar for Phase 3 fm-steward fixtures (§6.4).
-# Run from anywhere; resolves package root relative to this script.
+# Demo bar for Phase 3 fm-steward — v1 shell fixtures.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -14,18 +13,19 @@ fi
 run_one() {
   local card="$1"
   local label="$2"
+  local extra=("${@:3}")
   echo "======== ${label} (${card}) ========"
-  swift run fm-steward classify --card "Fixtures/${card}" ${MODE_FLAG}
+  swift run fm-steward classify --card "Fixtures/${card}" ${MODE_FLAG} "${extra[@]}"
   echo
 }
 
-echo "fm-steward demo (rules pre-pass; default timeout 500ms)"
+echo "fm-steward demo (v1 shell focus; rules + live FM residual)"
 echo "Package: ${ROOT}"
 echo
 
-run_one "bulk_email.json" "bulk outbound → ask + explain"
-run_one "vip_email.json" "VIP → ask_sticky_candidate + explain"
-run_one "grep_rm_rf.json" "non-executed grep → continue"
-run_one "npm_test_loop.json" "test loop → continue"
+run_one "grep_rm_rf.json" "non-executed grep → continue (rules)" --backend unavailable
+run_one "npm_test_loop.json" "test loop → continue (rules)" --backend unavailable
+run_one "curl_pipe_sh.json" "curl|bash danger → hard-ask (rules)" --backend unavailable
+run_one "rm_rf_workdir.json" "rm -rf ~/Documents… → hard-ask (rules)" --backend unavailable
 
-echo "Done. (W4 hook wiring NOT done; Linux product path skips FM.)"
+echo "Done. (W4 hook wiring NOT done; email bulk/VIP out of v1; Linux skips FM.)"

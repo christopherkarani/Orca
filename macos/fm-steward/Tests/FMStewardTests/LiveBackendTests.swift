@@ -7,7 +7,6 @@ struct LiveBackendTests {
     @Test("framework + availability probes are coherent")
     func availabilityProbes() {
         #expect(LiveBackend.isFoundationModelsFrameworkPresent == true)
-        // Runtime may still be unavailable without Apple Intelligence assets.
         _ = LiveBackend.isOnDeviceModelAvailable
         #expect(!LiveBackend.availabilityDescription.isEmpty)
     }
@@ -24,7 +23,6 @@ struct LiveBackendTests {
         let response = await backend.classify(card)
         #expect(response.schemaVersion == 1)
         if LiveBackend.isOnDeviceModelAvailable {
-            // Live path: either a real model verdict or soft fallback after error.
             #expect(response.modelAvailable == true || response.fallback == true)
         } else {
             #expect(response.fallback == true)
@@ -33,23 +31,19 @@ struct LiveBackendTests {
     }
 
     @Test(
-        "gray card without rules hit uses LiveBackend (on-device) when available",
+        "gray shell card without rules hit uses LiveBackend when available",
         .enabled(if: LiveBackend.isOnDeviceModelAvailable)
     )
-    func grayCardHitsLiveModel() async {
-        // No rules: executed true, not vip/bulk/test_loop.
+    func grayShellHitsLiveModel() async {
         let card = RiskCard(
             sessionId: "gray-live",
-            tool: "send_email",
-            command: nil,
+            tool: "bash",
+            command: "make release",
             features: RiskCard.Features(
                 executed: true,
-                bulkOutbound: false,
-                vip: false,
                 sameIntent: nil,
-                recipientCount: 3,
-                recipientClass: "external",
-                effectHints: ["external-message"]
+                paths: nil,
+                effectHints: ["shell"]
             )
         )
         #expect(RulesPrePass.evaluate(card) == nil)
@@ -60,8 +54,6 @@ struct LiveBackendTests {
 
         #expect(response.schemaVersion == 1)
         #expect(response.timedOut == false)
-        // Real generation should not look like pure unavailable fallback.
-        // modelAvailable true on success; fallback only on generation error.
         if response.fallback {
             #expect(response.verdict == .continue)
             #expect(response.modelAvailable == true)
@@ -78,21 +70,15 @@ struct LiveBackendTests {
     }
 
     @Test(
-        "StewardSession warm + live classify for residual gray card",
+        "StewardSession warm + live classify for residual shell card",
         .enabled(if: LiveBackend.isOnDeviceModelAvailable)
     )
     func sessionWarmLive() async {
         let card = RiskCard(
             sessionId: "session-live",
-            tool: "browser",
-            command: nil,
-            features: RiskCard.Features(
-                executed: true,
-                bulkOutbound: false,
-                vip: false,
-                recipientCount: 1,
-                effectHints: ["browser"]
-            )
+            tool: "bash",
+            command: "git push --force origin main",
+            features: RiskCard.Features(executed: true, effectHints: ["shell"])
         )
         let session = StewardSession(backend: LiveBackend(), timeoutMs: 5_000)
         await session.warm()
@@ -102,20 +88,33 @@ struct LiveBackendTests {
         #expect(response.verdict != .ask || !(response.explain ?? "").isEmpty)
     }
 
-    @Test("prompt builder is compact and includes tool")
+    @Test("prompt builder is shell-focused, caps command, and requires print/search continue")
     func promptBuilder() {
         #if canImport(FoundationModels)
+        let longCmd = String(repeating: "x", count: 500)
         let card = RiskCard(
             sessionId: "p",
-            tool: "send_email",
-            command: String(repeating: "x", count: 500),
-            features: RiskCard.Features(executed: true, vip: true)
+            tool: "bash",
+            command: longCmd,
+            features: RiskCard.Features(executed: true, paths: ["./a"])
         )
         let prompt = LiveBackend.prompt(for: card)
-        #expect(prompt.contains("tool: send_email"))
-        #expect(prompt.contains("features.vip: true"))
-        // Command clipped to ~400 chars + ellipsis, not full 500.
+        #expect(prompt.contains("tool: bash"))
+        #expect(prompt.contains("command:"))
+        #expect(prompt.contains("features.executed:"))
+        #expect(prompt.contains("If the command only prints, searches, or comments about danger without executing it, verdict must be continue."))
+        #expect(!prompt.contains("bulk_outbound"))
+        #expect(!prompt.contains("vip"))
+        // Command capped at 300 + ellipsis — full 500-char body must not appear.
+        #expect(!prompt.contains(longCmd))
+        #expect(prompt.contains(String(longCmd.prefix(300)) + "…"))
         #expect(prompt.count < 900)
+
+        let instructions = LiveBackend.systemInstructions
+        #expect(instructions.contains("NEGATIVE"))
+        #expect(instructions.contains("POSITIVE"))
+        #expect(instructions.contains("echo") || instructions.contains("printf"))
+        #expect(instructions.contains("Residual bias") || instructions.contains("always ask"))
         #endif
     }
 }

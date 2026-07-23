@@ -2,12 +2,12 @@ import Foundation
 import Testing
 @testable import FMSteward
 
-/// §6.4 fixture table + unit acceptance: rules pre-pass via Classifier.
-@Suite("Fixture table (§6.4)")
+/// v1 shell fixture table: rules short-circuit safe cases; danger cases hit backend.
+@Suite("Fixture table (v1 shell)")
 struct FixtureTableTests {
     private let classifier = Classifier(backend: UnavailableBackend())
 
-    @Test("grep_rm_rf: executed=false → continue")
+    @Test("grep_rm_rf: executed=false → continue (rules)")
     func grepRmRfContinues() async throws {
         let card = try loadFixture("grep_rm_rf")
         let response = await classifier.classify(card)
@@ -16,9 +16,10 @@ struct FixtureTableTests {
         #expect(response.schemaVersion == 1)
         #expect(response.timedOut == false)
         #expect(response.fallback == false)
+        #expect(response.modelAvailable == false)
     }
 
-    @Test("npm_test_loop: same_intent=test_loop → continue")
+    @Test("npm_test_loop: same_intent=test_loop → continue (rules)")
     func npmTestLoopContinues() async throws {
         let card = try loadFixture("npm_test_loop")
         let response = await classifier.classify(card)
@@ -26,30 +27,30 @@ struct FixtureTableTests {
         #expect(response.verdict == .continue)
         #expect(response.timedOut == false)
         #expect(response.fallback == false)
+        #expect(response.modelAvailable == false)
     }
 
-    @Test("bulk_email: bulk_outbound → ask or ask_sticky_candidate with non-empty explain")
-    func bulkEmailAsksWithExplain() async throws {
-        let card = try loadFixture("bulk_email")
+    @Test("curl_pipe_sh: hard-danger rules ask even without FM")
+    func curlPipeShHardAsk() async throws {
+        let card = try loadFixture("curl_pipe_sh")
+        let hit = RulesPrePass.evaluate(card)
+        #expect(hit?.verdict == .ask)
         let response = await classifier.classify(card)
-
-        #expect(response.verdict == .ask || response.verdict == .askStickyCandidate)
-        let explain = try #require(response.explain)
-        #expect(!explain.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-        #expect(response.timedOut == false)
+        #expect(response.verdict == .ask)
         #expect(response.fallback == false)
+        #expect(!(response.explain ?? "").isEmpty)
     }
 
-    @Test("vip_email: vip → ask or ask_sticky_candidate with non-empty explain")
-    func vipEmailAsksWithExplain() async throws {
-        let card = try loadFixture("vip_email")
+    @Test("rm_rf_workdir: home data wipe → hard-ask (not allowlisted clean)")
+    func rmRfWorkdirHardAsk() async throws {
+        let card = try loadFixture("rm_rf_workdir")
+        // rm -rf ~/Documents/… — HardDanger home path (not CommandShape safe clean)
+        #expect(RulesPrePass.evaluate(card)?.verdict == .ask)
         let response = await classifier.classify(card)
 
-        #expect(response.verdict == .ask || response.verdict == .askStickyCandidate)
-        let explain = try #require(response.explain)
-        #expect(!explain.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-        #expect(response.timedOut == false)
+        #expect(response.verdict == .ask)
         #expect(response.fallback == false)
+        #expect(!(response.explain ?? "").isEmpty)
     }
 }
 
