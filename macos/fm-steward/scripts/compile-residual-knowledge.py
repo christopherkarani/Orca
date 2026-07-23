@@ -17,7 +17,7 @@ from __future__ import annotations
 
 import argparse
 import json
-import re
+import os
 import sys
 import tempfile
 from pathlib import Path
@@ -382,7 +382,9 @@ def compile_seed(root: Path | None = None) -> list[dict[str, Any]]:
 def write_seed(examples: list[dict[str, Any]], out: Path) -> None:
     out.parent.mkdir(parents=True, exist_ok=True)
     text = json.dumps(examples, indent=2, ensure_ascii=False) + "\n"
-    out.write_text(text, encoding="utf-8")
+    tmp = out.with_suffix(out.suffix + ".tmp")
+    tmp.write_text(text, encoding="utf-8")
+    os.replace(tmp, out)
 
 
 def check_mode(root: Path | None = None) -> None:
@@ -409,42 +411,6 @@ def check_mode(root: Path | None = None) -> None:
 
 def self_test() -> None:
     failures: list[str] = []
-
-    def expect_fail(label: str, yaml_text: str, needle: str) -> None:
-        with tempfile.TemporaryDirectory() as td:
-            root = Path(td)
-            pack_dir = root / "residual-knowledge" / "shell"
-            pack_dir.mkdir(parents=True)
-            (pack_dir / "bad.yaml").write_text(yaml_text, encoding="utf-8")
-            # also need required packs stub — self-test tests unit validate paths differently
-            try:
-                load_pack(pack_dir / "bad.yaml")
-                # minimal validate of single pack via hack: call collect with required relaxed
-            except CompileError as e:
-                if needle.lower() not in str(e).lower():
-                    failures.append(f"{label}: expected {needle!r} in {e}")
-                return
-            # parse ok — try full compile which will fail missing required packs
-            try:
-                compile_seed(root)
-                failures.append(f"{label}: expected failure")
-            except CompileError as e:
-                if needle.lower() not in str(e).lower():
-                    # may fail on missing required first
-                    if "invalid verdict" in needle.lower() or "exclusion" in needle.lower():
-                        # inject into validate path
-                        pass
-                    if needle.lower() not in str(e).lower() and "missing required" in str(e).lower():
-                        # re-run entry-level checks manually
-                        data = load_pack(pack_dir / "bad.yaml")
-                        try:
-                            validate_and_collect([(pack_dir / "bad.yaml", data)])
-                            failures.append(f"{label}: expected validation failure for {needle!r}")
-                        except CompileError as e2:
-                            if needle.lower() not in str(e2).lower():
-                                failures.append(f"{label}: expected {needle!r} in {e2}")
-                    elif needle.lower() not in str(e).lower():
-                        failures.append(f"{label}: expected {needle!r} in {e}")
 
     # Invalid verdict
     bad_verdict = """

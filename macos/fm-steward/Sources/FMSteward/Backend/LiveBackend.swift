@@ -214,6 +214,22 @@ public actor LiveBackend: FoundationModelBackend {
                 mapped: mapped
             )
         } catch {
+            if Task.isCancelled {
+                let mapped = cancelFallback()
+                return Trace(
+                    systemInstructions: Self.systemInstructions,
+                    prompt: prompt,
+                    latencyMs: elapsedMs(since: start),
+                    availability: Self.availabilityDescription,
+                    error: "cancelled_catch",
+                    rawVerdict: nil,
+                    rawWhy: nil,
+                    rawExplain: nil,
+                    rawSuggestedStickyScope: nil,
+                    rawSuggestedEffectClass: nil,
+                    mapped: mapped
+                )
+            }
             let mapped = ClassifyResponse.fallbackContinue(
                 why:
                     "Foundation Model generation failed (\(error.localizedDescription)); continuing under policy and hard fence only.",
@@ -358,8 +374,12 @@ public actor LiveBackend: FoundationModelBackend {
     }
 
     nonisolated private static func clip(_ s: String, max: Int) -> String {
-        if s.count <= max { return s }
-        return String(s.prefix(max)) + "…"
+        // Flatten newlines so few-shot blocks cannot inject extra prompt structure.
+        let flat = s.replacingOccurrences(of: "\r\n", with: " ")
+            .replacingOccurrences(of: "\n", with: " ")
+            .replacingOccurrences(of: "\r", with: " ")
+        if flat.count <= max { return flat }
+        return String(flat.prefix(max)) + "…"
     }
 
     nonisolated static let systemInstructions = """

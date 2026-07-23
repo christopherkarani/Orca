@@ -134,15 +134,25 @@ public actor WaxFewShotStore: FewShotRetriever {
 
     #if canImport(Wax)
     private func ensureOpen(create: Bool) async throws {
-        if memory != nil { return }
-        if openFailed, !create { return }
+        // Reseed must force-close + replace store; early-return on live memory would append.
+        if create {
+            if let memory {
+                try? await memory.close()
+            }
+            self.memory = nil
+            openFailed = false
+        } else if memory != nil {
+            return
+        }
+        // Fail-open for a single open attempt only — do not permanently disable retrieve.
+        // (openFailed retained for diagnostics; always retry when memory is nil.)
 
         let fm = FileManager.default
         let dir = storeURL.deletingLastPathComponent()
         try fm.createDirectory(at: dir, withIntermediateDirectories: true)
 
         if create, fm.fileExists(atPath: storeURL.path) {
-            try? fm.removeItem(at: storeURL)
+            try fm.removeItem(at: storeURL)
         }
 
         do {
@@ -175,8 +185,10 @@ public actor WaxFewShotStore: FewShotRetriever {
         if let parsed = FewShotExample.parseDocument(item.text) {
             return parsed
         }
-        let verdict = meta["verdict"] ?? "continue"
-        guard FewShotExample.validVerdicts.contains(verdict) else { return nil }
+        // Drop hits without an explicit valid verdict — never invent "continue".
+        guard let verdict = meta["verdict"], FewShotExample.validVerdicts.contains(verdict) else {
+            return nil
+        }
         var command = ""
         for line in item.text.split(separator: "\n") {
             let s = String(line)

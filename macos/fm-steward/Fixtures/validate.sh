@@ -8,8 +8,8 @@
 # Exit 0 when:
 #   - risk-card-v1 + classify-response-v1 schemas exist and are valid JSON
 #   - classify-response-v1 verdict enum contains continue | ask | ask_sticky_candidate
-#   - §6.4 fixture cards exist with schema_version=1 and required core fields
-#   - fixture-specific feature constraints match handoff §6.4
+#   - v1 shell fixture cards exist with schema_version=1 and required core fields
+#   - fixture-specific feature constraints match shell demo bar
 #
 # Dependencies: bash, python3 (stdlib only).
 
@@ -35,8 +35,8 @@ for f in \
     "${SCHEMAS}/classify-response-v1.json" \
     "${FIXTURES}/grep_rm_rf.json" \
     "${FIXTURES}/npm_test_loop.json" \
-    "${FIXTURES}/bulk_email.json" \
-    "${FIXTURES}/vip_email.json"
+    "${FIXTURES}/curl_pipe_sh.json" \
+    "${FIXTURES}/rm_rf_workdir.json"
 do
     [[ -f "$f" ]] || fail "missing required file: $f"
 done
@@ -101,7 +101,8 @@ if cls_schema is not None:
 
 # Fixtures — required core fields + schema_version == 1
 CORE_REQUIRED = ("schema_version", "session_id", "tool", "features")
-FIXTURE_IDS = ("grep_rm_rf", "npm_test_loop", "bulk_email", "vip_email")
+# v1 shell-focused fixture table (email bulk/VIP demos removed)
+FIXTURE_IDS = ("grep_rm_rf", "npm_test_loop", "curl_pipe_sh", "rm_rf_workdir")
 
 cards = {}
 for fid in FIXTURE_IDS:
@@ -116,7 +117,7 @@ for fid in FIXTURE_IDS:
     features = card.get("features")
     require(isinstance(features, dict), f"{fid}: features must be object")
 
-# §6.4 feature constraints
+# Shell fixture constraints
 if "grep_rm_rf" in cards:
     c = cards["grep_rm_rf"]
     require(c.get("tool") == "bash", "grep_rm_rf: tool must be bash")
@@ -129,17 +130,19 @@ if "npm_test_loop" in cards:
     require(c["features"].get("same_intent") == "test_loop",
             "npm_test_loop: features.same_intent must be test_loop")
 
-if "bulk_email" in cards:
-    c = cards["bulk_email"]
-    require(c.get("tool") == "send_email", "bulk_email: tool must be send_email")
-    require(c["features"].get("bulk_outbound") is True, "bulk_email: bulk_outbound must be true")
-    require(c["features"].get("recipient_count") == 50000,
-            "bulk_email: recipient_count must be 50000")
+if "curl_pipe_sh" in cards:
+    c = cards["curl_pipe_sh"]
+    require(c.get("tool") == "bash", "curl_pipe_sh: tool must be bash")
+    require(c["features"].get("executed") is True, "curl_pipe_sh: executed must be true")
+    cmd = (c.get("command") or "").lower()
+    require("curl" in cmd and "bash" in cmd, "curl_pipe_sh: command must be curl|bash style")
 
-if "vip_email" in cards:
-    c = cards["vip_email"]
-    require(c.get("tool") == "send_email", "vip_email: tool must be send_email")
-    require(c["features"].get("vip") is True, "vip_email: vip must be true")
+if "rm_rf_workdir" in cards:
+    c = cards["rm_rf_workdir"]
+    require(c.get("tool") == "bash", "rm_rf_workdir: tool must be bash")
+    require(c["features"].get("executed") is True, "rm_rf_workdir: executed must be true")
+    cmd = c.get("command") or ""
+    require("rm" in cmd and "-rf" in cmd, "rm_rf_workdir: command must be rm -rf style")
 
 if errors:
     for e in errors:
@@ -149,8 +152,20 @@ if errors:
 print("OK: schemas structural contract")
 print("OK: classify-response verdict enum exact")
 print("OK: fixtures schema_version=1 + required fields")
-print("OK: §6.4 fixture feature constraints")
+print("OK: v1 shell fixture constraints")
 PY
+
+# Residual knowledge packs → seed (YAML source of truth)
+if [[ -f "${ROOT}/scripts/compile-residual-knowledge.py" ]]; then
+    python3 "${ROOT}/scripts/compile-residual-knowledge.py" --self-test \
+        || fail "compile-residual-knowledge.py --self-test"
+    pass "residual-knowledge compiler self-test"
+    if [[ -d "${ROOT}/residual-knowledge" ]]; then
+        python3 "${ROOT}/scripts/compile-residual-knowledge.py" --check \
+            || fail "compile-residual-knowledge.py --check (seed stale vs YAML packs)"
+        pass "residual-knowledge seed matches packs"
+    fi
+fi
 
 echo "PASS: fm-steward Schemas + Fixtures contract validation"
 exit 0
