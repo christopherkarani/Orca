@@ -447,6 +447,14 @@ export async function runOrcaEvaluate(
 	if (decision === "allow" && result.code === 0) {
 		return { kind: "allow", response: parsed };
 	}
+	// evaluate ask uses exit 0 with decision "ask" (allow/deny exit contract preserved).
+	if (decision === "ask" && (result.code === 0 || result.code === null)) {
+		return {
+			kind: "ask",
+			reason: sanitizeVisibleText(getDecisionReason(parsed)),
+			response: parsed,
+		};
+	}
 	if (decision === "deny") {
 		return { kind: "deny", reason: safeOrcaReason(parsed), response: parsed };
 	}
