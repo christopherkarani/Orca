@@ -19,6 +19,9 @@ public enum WaxSearchMode: String, Sendable, Equatable {
 public actor WaxFewShotStore: FewShotRetriever {
     public static let defaultLimit: Int = 3
 
+    /// Cap search query length (matches LiveBackend residual command clip).
+    public static let searchQueryClip: Int = 300
+
     private let storeURL: URL
     private let searchMode: WaxSearchMode
     #if canImport(Wax)
@@ -71,8 +74,15 @@ public actor WaxFewShotStore: FewShotRetriever {
     }
 
     public func retrieve(for card: RiskCard, limit: Int) async -> [FewShotExample] {
-        let query = card.command?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-        guard !query.isEmpty else { return [] }
+        let raw = card.command?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        guard !raw.isEmpty else { return [] }
+        // Bound FTS/query size — same 300-char residual command clip as LiveBackend.prompt.
+        let query: String
+        if raw.count > Self.searchQueryClip {
+            query = String(raw.prefix(Self.searchQueryClip))
+        } else {
+            query = raw
+        }
         let k = max(0, min(limit, 8))
         guard k > 0 else { return [] }
 

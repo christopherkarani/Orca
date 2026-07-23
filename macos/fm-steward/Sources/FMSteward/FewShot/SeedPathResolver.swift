@@ -7,16 +7,25 @@ import Foundation
 /// Seed path selection is **existence-checked** and ordered:
 ///
 /// 1. **Explicit** seed URL (CLI / host override) — if the file exists
-/// 2. **App Support copy** — product seed under Application Support
-///    (`Orca/fm-steward/seed.json`) when present (operator-installed or
-///    mirrored copy; does not require the package tree)
-/// 3. **Package fixture** — checked-in `Fixtures/ambig-fewshot/seed.json`
-///    when the package root is available (dev / CLI adjacent layout)
-/// 4. **`nil`** — no seed found; Runtime `.auto` fail-open → pure residual FM
+/// 2. When **both** App Support and package seeds exist:
+///    - Prefer **package** unless content SHA-256 is equal (true copy of package) —
+///      in which case App Support may be returned (operator-local mirror)
+/// 3. Else first existing of: App Support → package → nil
 ///
-/// This type is a pure path helper: it does **not** load seed JSON, reseed Wax,
-/// or talk to `FewShotRuntime`. Callers pass concrete layer URLs (or use
-/// `productAppSupportSeedURL()` for the App Support default).
+/// # Trust model (assist only)
+///
+/// App Support `seed.json` is **operator-trusted** (same-user FS). When it
+/// diverges from the package curated seed, product resolve prefers the package
+/// fixture so a poisoned/stale App Support copy cannot shadow curated content
+/// without an explicit `--seed` override. This is **not** a multi-user security
+/// fence and does not replace Zig hard deny.
+///
+/// This type is a pure path helper: it does **not** load seed JSON into Wax,
+/// reseed, or talk to `FewShotRuntime`. For first-run materialization of App
+/// Support from the package fixture, call
+/// `FewShotSeedBootstrap.bootstrapAppSupportSeedIfNeeded` **before** resolve.
+/// Callers pass concrete layer URLs (or use `productAppSupportSeedURL()` for
+/// the App Support default).
 ///
 /// Existence means a **regular file** (directories do not win).
 public enum SeedPathResolver: Sendable {
@@ -33,14 +42,14 @@ public enum SeedPathResolver: Sendable {
             .appendingPathComponent(seedFileName, isDirectory: false)
     }
 
-    /// Resolve seed path: explicit → App Support copy → package fixture → nil.
+    /// Resolve seed path with package preference on content divergence.
     ///
     /// - Parameters:
     ///   - explicit: Host/CLI override (e.g. `--seed`); skipped when nil or missing.
     ///   - appSupportSeed: Product App Support seed copy URL; skipped when nil/missing.
     ///   - packageSeed: Package `Fixtures/ambig-fewshot/seed.json`; skipped when nil/missing.
     ///   - fileManager: Inject for tests; defaults to `.default`.
-    /// - Returns: First existing **file** URL in order, or `nil` if none exist.
+    /// - Returns: Chosen existing **file** URL, or `nil` if none exist.
     public static func resolve(
         explicit: URL?,
         appSupportSeed: URL?,
@@ -50,10 +59,21 @@ public enum SeedPathResolver: Sendable {
         if let explicit, isExistingFile(explicit, fileManager: fileManager) {
             return explicit
         }
-        if let appSupportSeed, isExistingFile(appSupportSeed, fileManager: fileManager) {
+
+        let appSupportOK = appSupportSeed.map { isExistingFile($0, fileManager: fileManager) } ?? false
+        let packageOK = packageSeed.map { isExistingFile($0, fileManager: fileManager) } ?? false
+
+        if appSupportOK, packageOK, let appSupportSeed, let packageSeed {
+            // Both present: prefer package unless bytes match (true copy).
+            if contentSHA256Equal(appSupportSeed, packageSeed) {
+                return appSupportSeed
+            }
+            return packageSeed
+        }
+        if appSupportOK, let appSupportSeed {
             return appSupportSeed
         }
-        if let packageSeed, isExistingFile(packageSeed, fileManager: fileManager) {
+        if packageOK, let packageSeed {
             return packageSeed
         }
         return nil
@@ -66,5 +86,16 @@ public enum SeedPathResolver: Sendable {
             return false
         }
         return !isDir.boolValue
+    }
+
+    /// Content-equal check via SHA-256 of file bytes (size-capped seed policy).
+    /// Returns false on any read/hash failure (fail toward package preference).
+    private static func contentSHA256Equal(_ a: URL, _ b: URL) -> Bool {
+        guard let ha = try? FewShotSeedBootstrap.seedContentSHA256(of: a),
+              let hb = try? FewShotSeedBootstrap.seedContentSHA256(of: b)
+        else {
+            return false
+        }
+        return ha == hb
     }
 }

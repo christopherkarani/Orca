@@ -3,8 +3,10 @@ import Foundation
 /// Product and override paths for the residual Wax few-shot store.
 ///
 /// Default product location: Application Support / Orca / fm-steward / ambig.wax.
-/// Sidecar reseed hash lives at `ambig.wax.seedsha` (see `FewShotSeedBootstrap`);
-/// this type only resolves store URLs and parent directories.
+/// Sidecar reseed key lives at `ambig.wax.seedsha`
+/// (`v{N}:<seed-sha256>:<store-sha256>`; see `FewShotSeedBootstrap`);
+/// reseed lock at `ambig.wax.reseed.lock`.
+/// This type only resolves store URLs and parent directories.
 public enum FewShotStorePaths: Sendable {
     /// On-disk file name for the residual Wax store.
     public static let storeFileName = "ambig.wax"

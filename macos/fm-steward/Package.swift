@@ -13,9 +13,9 @@ let package = Package(
     ],
     dependencies: [
         // On-device few-shot retrieval for residual FM (assist only; not security authority).
-        // Pin ≥ 0.1.25 — 0.1.24 SPM checkout failed on a broken homebrew-wax submodule.
-        // traits: [] disables default MiniLM so text-mode CI stays lean.
-        .package(url: "https://github.com/christopherkarani/Wax.git", from: "0.1.25", traits: []),
+        // Exact pin matches Package.resolved (0.1.25). 0.1.24 SPM checkout failed on a
+        // broken homebrew-wax submodule. traits: [] disables default MiniLM for lean CI.
+        .package(url: "https://github.com/christopherkarani/Wax.git", exact: "0.1.25", traits: []),
     ],
     targets: [
         .target(

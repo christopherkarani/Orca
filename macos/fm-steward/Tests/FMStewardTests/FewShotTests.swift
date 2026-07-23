@@ -200,7 +200,31 @@ struct FewShotTests {
         #expect(defaulted.documentText().contains("domain=shell"))
     }
 
-    @Test("seed-hash reseed: missing store or hash mismatch")
+    @Test("parseDocument with command but no verdict returns nil")
+    func parseDocumentMissingVerdictReturnsNil() {
+        let doc = """
+        [shell-ambig] id=A_missing tags=ambig,test
+        command: npm install lodash
+        why: missing verdict must not invent continue
+        """
+        #expect(FewShotExample.parseDocument(doc) == nil)
+
+        let emptyVerdict = """
+        [shell-ambig] verdict= tags=ambig
+        command: brew install jq
+        why: empty verdict token
+        """
+        #expect(FewShotExample.parseDocument(emptyVerdict) == nil)
+
+        let invalidVerdict = """
+        [shell-ambig] verdict=allow tags=ambig
+        command: brew install jq
+        why: deny/allow not soft labels
+        """
+        #expect(FewShotExample.parseDocument(invalidVerdict) == nil)
+    }
+
+    @Test("seed-hash reseed: missing store, hash mismatch, store fingerprint")
     func seedHashReseed() throws {
         let dir = FileManager.default.temporaryDirectory
             .appendingPathComponent("fm-steward-reseed-\(UUID().uuidString)", isDirectory: true)
@@ -214,7 +238,7 @@ struct FewShotTests {
         #expect(FewShotSeedBootstrap.needsReseed(storeURL: storeURL, seedURL: seedURL))
 
         // Store present, sidecar missing → needs reseed
-        try Data().write(to: storeURL)
+        try Data("wax-body-v1".utf8).write(to: storeURL)
         let sidecar = FewShotSeedBootstrap.seedHashSidecarURL(for: storeURL)
         #expect(!FileManager.default.fileExists(atPath: sidecar.path))
         #expect(FewShotSeedBootstrap.needsReseed(storeURL: storeURL, seedURL: seedURL))
@@ -223,15 +247,100 @@ struct FewShotTests {
         try "deadbeef".write(to: sidecar, atomically: true, encoding: .utf8)
         #expect(FewShotSeedBootstrap.needsReseed(storeURL: storeURL, seedURL: seedURL))
 
-        // Matching hash → no reseed
-        let hash = try FewShotSeedBootstrap.seedContentSHA256(of: seedURL)
-        try FewShotSeedBootstrap.recordSeedHash(storeURL: storeURL, hash: hash)
+        // Matching versioned seed+store fingerprint → no reseed
+        let seedHash = try FewShotSeedBootstrap.seedContentSHA256(of: seedURL)
+        let storeHash = try FewShotSeedBootstrap.storeContentSHA256(of: storeURL)
+        try FewShotSeedBootstrap.recordSeedHash(storeURL: storeURL, seedHash: seedHash)
         #expect(!FewShotSeedBootstrap.needsReseed(storeURL: storeURL, seedURL: seedURL))
         #expect(FileManager.default.fileExists(atPath: sidecar.path))
+        let recorded = try String(contentsOf: sidecar, encoding: .utf8)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        #expect(recorded == FewShotSeedBootstrap.encodeSidecarValue(seedHash: seedHash, storeHash: storeHash))
+        #expect(recorded.hasPrefix("v\(FewShotSeedBootstrap.storeFormatVersion):"))
+        #expect(recorded.split(separator: ":").count == 3)
 
-        // Hash change (simulate seed edit by writing different sidecar)
-        try "00\(hash.dropFirst(2))".write(to: sidecar, atomically: true, encoding: .utf8)
+        // Bare legacy hash (no vN:) → needs reseed (format version gate)
+        try seedHash.write(to: sidecar, atomically: true, encoding: .utf8)
         #expect(FewShotSeedBootstrap.needsReseed(storeURL: storeURL, seedURL: seedURL))
+
+        // Legacy two-field `vN:seed` (missing store field) → needs reseed while store exists
+        try "v\(FewShotSeedBootstrap.storeFormatVersion):\(seedHash)"
+            .write(to: sidecar, atomically: true, encoding: .utf8)
+        #expect(FewShotSeedBootstrap.needsReseed(storeURL: storeURL, seedURL: seedURL))
+        let legacyParsed = FewShotSeedBootstrap.parseSidecarValue(
+            "v\(FewShotSeedBootstrap.storeFormatVersion):\(seedHash)"
+        )
+        #expect(legacyParsed != nil)
+        #expect(legacyParsed?.storeHash == nil)
+        #expect(legacyParsed?.seedHash == seedHash)
+
+        // Wrong format version → needs reseed
+        try FewShotSeedBootstrap.encodeSidecarValue(seedHash: seedHash, storeHash: storeHash, version: 99)
+            .write(to: sidecar, atomically: true, encoding: .utf8)
+        #expect(FewShotSeedBootstrap.needsReseed(storeURL: storeURL, seedURL: seedURL))
+
+        // Restore matching current version
+        try FewShotSeedBootstrap.recordSeedHash(storeURL: storeURL, seedHash: seedHash)
+        #expect(!FewShotSeedBootstrap.needsReseed(storeURL: storeURL, seedURL: seedURL))
+
+        // Seed hash change (simulate seed edit by writing different sidecar under current version)
+        try FewShotSeedBootstrap.encodeSidecarValue(
+            seedHash: "00\(seedHash.dropFirst(2))",
+            storeHash: storeHash
+        )
+        .write(to: sidecar, atomically: true, encoding: .utf8)
+        #expect(FewShotSeedBootstrap.needsReseed(storeURL: storeURL, seedURL: seedURL))
+
+        // Divergent store bytes + matching seed hash → needsReseed true (R1 store integrity)
+        try FewShotSeedBootstrap.recordSeedHash(storeURL: storeURL, seedHash: seedHash)
+        #expect(!FewShotSeedBootstrap.needsReseed(storeURL: storeURL, seedURL: seedURL))
+        try Data("poisoned-store-body".utf8).write(to: storeURL)
+        #expect(FewShotSeedBootstrap.needsReseed(storeURL: storeURL, seedURL: seedURL))
+
+        // Happy fingerprint after re-record on current store → false
+        try FewShotSeedBootstrap.recordSeedHash(storeURL: storeURL, seedHash: seedHash)
+        #expect(!FewShotSeedBootstrap.needsReseed(storeURL: storeURL, seedURL: seedURL))
+        let happyStoreHash = try FewShotSeedBootstrap.storeContentSHA256(of: storeURL)
+        let happyRecorded = try String(contentsOf: sidecar, encoding: .utf8)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        #expect(happyRecorded == FewShotSeedBootstrap.encodeSidecarValue(
+            seedHash: seedHash,
+            storeHash: happyStoreHash
+        ))
+    }
+
+    @Test("bootstrapAppSupportSeedIfNeeded copies package seed when dest missing")
+    func bootstrapAppSupportSeedFirstRun() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("fm-steward-bootstrap-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let package = root.appendingPathComponent("package/seed.json")
+        let appSupport = root.appendingPathComponent("appsupport/seed.json")
+        try FileManager.default.createDirectory(
+            at: package.deletingLastPathComponent(),
+            withIntermediateDirectories: true
+        )
+        try #"[{"command":"npm install x","expected_verdict":"continue","why":"t"}]"#
+            .write(to: package, atomically: true, encoding: .utf8)
+
+        #expect(!FileManager.default.fileExists(atPath: appSupport.path))
+        let copied = try FewShotSeedBootstrap.bootstrapAppSupportSeedIfNeeded(
+            from: package,
+            to: appSupport
+        )
+        #expect(copied == true)
+        #expect(FileManager.default.fileExists(atPath: appSupport.path))
+        let body = try String(contentsOf: appSupport, encoding: .utf8)
+        #expect(body.contains("npm install"))
+
+        // Second call is a no-op (dest present).
+        let again = try FewShotSeedBootstrap.bootstrapAppSupportSeedIfNeeded(
+            from: package,
+            to: appSupport
+        )
+        #expect(again == false)
     }
 
     // MARK: - Fail-open

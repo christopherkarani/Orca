@@ -115,3 +115,21 @@ YAML packs  →  compile-residual-knowledge.py  →  Fixtures/ambig-fewshot/seed
 ```
 
 Reseed when the `.wax` store is missing **or** seed content SHA-256 ≠ sidecar `*.wax.seedsha`.
+
+## Neighbor filter (deferred — P2)
+
+**Token / tag neighbor filtering is deferred** until `scripts/residual-stress-matrix.sh --live`
+shows systematic **wrong-neighbor bias** (e.g. residual gray cards repeatedly pull
+irrelevant pack families that degrade FM soft verdicts).
+
+Until then:
+
+| Rule | Meaning |
+|------|---------|
+| No forced verdict from score | Retrieval similarity **never** sets `continue` / `ask` / `ask_sticky_candidate` |
+| Assist only | Neighbors are prompt guidance; **FM decides** the soft verdict |
+| Measure first | Use residual-stress-matrix residual gray dump (`verdict_off` vs `verdict_auto`, hits) before adding filters |
+
+Do **not** pre-emptively gate neighbors by token overlap or tags without matrix evidence.
+If bias appears, design a narrow filter and re-run the matrix; still never promote
+retrieval score into an authoritative verdict.

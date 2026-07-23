@@ -279,6 +279,11 @@ private func runClassify(
     let response = await session.classify(card, timeoutMs: bound)
     let hits = await session.lastFewShotHits
 
+    // One-shot CLI: close Wax store after classify so handles do not linger.
+    if let store = retriever as? WaxFewShotStore {
+        await store.close()
+    }
+
     if human {
         printHuman(response)
         print("few_shot_hits: \(hits)")
@@ -327,9 +332,20 @@ private func makeFewShotRetriever(
 
     let packageSeed = packageRootForCLI()
         .appendingPathComponent("Fixtures/ambig-fewshot/seed.json")
+    let appSupportSeed = SeedPathResolver.productAppSupportSeedURL()
+
+    // First-run bootstrap: copy package seed → App Support when product seed missing.
+    // After copy, resolve prefers App Support (operator-mirrored path) over package tree.
+    if mode != .off {
+        _ = try? FewShotSeedBootstrap.bootstrapAppSupportSeedIfNeeded(
+            from: packageSeed,
+            to: appSupportSeed
+        )
+    }
+
     let resolvedSeed = SeedPathResolver.resolve(
         explicit: seedPath.map { URL(fileURLWithPath: $0) },
-        appSupportSeed: SeedPathResolver.productAppSupportSeedURL(),
+        appSupportSeed: appSupportSeed,
         packageSeed: packageSeed
     )
 
@@ -776,7 +792,8 @@ private func printUsage(to stream: UnsafeMutablePointer<FILE> = stdout) {
       - Rules: executed=false / test_loop / safe shapes → continue; HardDanger clear danger → ask; else residual FM.
       - Residual gray: Wax text few-shots from residual-knowledge packs (assist only) then SystemLanguageModel.
       - Default --few-shot auto: SeedPathResolver + FewShotRuntime; product store under Application Support.
-      - Reseed when store missing or seed hash changes (library Runtime / Bootstrap — not CLI).
+      - First-run: package Fixtures seed is copied into App Support seed.json when missing (library bootstrap).
+      - Reseed when store missing, seed hash changes, or store format version bumps (*.wax.seedsha vN:sha).
       - Wax / few-shot never runs on rules path; never unlocks hard deny; fail-open on auto errors.
       - eval-danger stays pure-FM (no few-shot) so viability scores stay comparable.
       - Timeout or unavailable model → verdict continue (fallback), never hang.

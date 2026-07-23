@@ -177,8 +177,15 @@ struct FewShotRuntimeTests {
 
         let recorded = try String(contentsOf: sidecar, encoding: .utf8)
             .trimmingCharacters(in: .whitespacesAndNewlines)
-        let expected = try FewShotSeedBootstrap.seedContentSHA256(of: seedURL)
+        let expectedSeedHash = try FewShotSeedBootstrap.seedContentSHA256(of: seedURL)
+        let expectedStoreHash = try FewShotSeedBootstrap.storeContentSHA256(of: storeURL)
+        let expected = FewShotSeedBootstrap.encodeSidecarValue(
+            seedHash: expectedSeedHash,
+            storeHash: expectedStoreHash
+        )
         #expect(recorded == expected)
+        #expect(recorded.hasPrefix("v\(FewShotSeedBootstrap.storeFormatVersion):"))
+        #expect(recorded.split(separator: ":").count == 3)
         #expect(!FewShotSeedBootstrap.needsReseed(storeURL: storeURL, seedURL: seedURL))
     }
 
@@ -207,7 +214,12 @@ struct FewShotRuntimeTests {
         let sidecar = FewShotSeedBootstrap.seedHashSidecarURL(for: storeURL)
         let hashBefore = try String(contentsOf: sidecar, encoding: .utf8)
             .trimmingCharacters(in: .whitespacesAndNewlines)
-        let expected = try FewShotSeedBootstrap.seedContentSHA256(of: seedURL)
+        let expectedSeedHash = try FewShotSeedBootstrap.seedContentSHA256(of: seedURL)
+        let expectedStoreHash = try FewShotSeedBootstrap.storeContentSHA256(of: storeURL)
+        let expected = FewShotSeedBootstrap.encodeSidecarValue(
+            seedHash: expectedSeedHash,
+            storeHash: expectedStoreHash
+        )
         #expect(hashBefore == expected)
         #expect(!FewShotSeedBootstrap.needsReseed(storeURL: storeURL, seedURL: seedURL))
 
@@ -279,5 +291,62 @@ struct FewShotRuntimeTests {
         #expect(hasInstall)
 
         await closeIfWax(retriever)
+    }
+
+    // MARK: - R6 concurrent reseed stress
+
+    @Test("R6 concurrent makeRetriever(.auto) ≥4 tasks: usable or Null, no crash")
+    func concurrentAutoReseedStress() async throws {
+        guard WaxFewShotStore.isWaxLinked else { return }
+
+        let root = try tempRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let seedURL = packageSeedURL()
+        #expect(FileManager.default.fileExists(atPath: seedURL.path))
+        let storeURL = root.appendingPathComponent("ambig.wax")
+        #expect(!FileManager.default.fileExists(atPath: storeURL.path))
+
+        let taskCount = 4
+        let results: [any FewShotRetriever] = try await withThrowingTaskGroup(
+            of: (any FewShotRetriever).self
+        ) { group in
+            for _ in 0..<taskCount {
+                group.addTask {
+                    try await FewShotRuntime.makeRetriever(
+                        mode: .auto,
+                        seedURL: seedURL,
+                        storeURL: storeURL,
+                        searchMode: .text
+                    )
+                }
+            }
+            var collected: [any FewShotRetriever] = []
+            for try await retriever in group {
+                collected.append(retriever)
+            }
+            return collected
+        }
+
+        #expect(results.count == taskCount)
+        // Each result is usable Wax or fail-open Null — never crash / throw from .auto.
+        for r in results {
+            #expect(r is WaxFewShotStore || r is NullFewShotRetriever)
+            await closeIfWax(r)
+        }
+
+        // Post single-threaded auto succeeds or Null cleanly (store may already be valid).
+        let post = try await FewShotRuntime.makeRetriever(
+            mode: .auto,
+            seedURL: seedURL,
+            storeURL: storeURL,
+            searchMode: .text
+        )
+        #expect(post is WaxFewShotStore || post is NullFewShotRetriever)
+        if post is WaxFewShotStore {
+            #expect(FileManager.default.fileExists(atPath: storeURL.path))
+            #expect(!FewShotSeedBootstrap.needsReseed(storeURL: storeURL, seedURL: seedURL))
+        }
+        await closeIfWax(post)
     }
 }

@@ -77,11 +77,13 @@ public struct FewShotExample: Sendable, Equatable, Codable {
     }
 
     /// Parse a Wax document (or seed-shaped text) back into an example. Fail-open → nil.
+    ///
+    /// Requires an explicit valid `verdict=` token; does **not** invent `continue`.
     public static func parseDocument(_ text: String) -> FewShotExample? {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard trimmed.contains("[shell-ambig]") else { return nil }
 
-        var verdict = "continue"
+        var verdict: String?
         var tags: [String] = []
         var command = ""
         var why = ""
@@ -93,8 +95,9 @@ public struct FewShotExample: Sendable, Equatable, Codable {
             if s.hasPrefix("[shell-ambig]") {
                 if let vRange = s.range(of: "verdict=") {
                     let rest = s[vRange.upperBound...]
-                    let token = rest.split(separator: " ").first.map(String.init) ?? "continue"
-                    verdict = token
+                    if let token = rest.split(separator: " ").first.map(String.init), !token.isEmpty {
+                        verdict = token
+                    }
                 }
                 if let tRange = s.range(of: "tags=") {
                     let rest = s[tRange.upperBound...]
@@ -119,7 +122,12 @@ public struct FewShotExample: Sendable, Equatable, Codable {
             }
         }
 
-        guard !command.isEmpty, validVerdicts.contains(verdict) else { return nil }
+        guard !command.isEmpty,
+              let verdict,
+              validVerdicts.contains(verdict)
+        else {
+            return nil
+        }
         return FewShotExample(
             id: id,
             command: command,

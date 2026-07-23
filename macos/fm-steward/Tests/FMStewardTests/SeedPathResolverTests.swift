@@ -2,7 +2,7 @@ import Foundation
 import Testing
 @testable import FMSteward
 
-/// Seed resolution order: explicit → App Support copy → package fixture → nil.
+/// Seed resolution: explicit wins; package preferred when AS diverges; AS when equal/only.
 @Suite("SeedPathResolver")
 struct SeedPathResolverTests {
     private let fm = FileManager.default
@@ -68,24 +68,60 @@ struct SeedPathResolverTests {
         #expect(resolved?.path == package.path)
     }
 
-    @Test("App Support seed wins over package fixture when explicit absent")
-    func appSupportWinsOverPackage() throws {
+    @Test("poisoned App Support + clean package → package (R2 trust)")
+    func poisonAppSupportPrefersPackage() throws {
         let root = try tempRoot()
         defer { try? fm.removeItem(at: root) }
 
         let explicit = root.appendingPathComponent("explicit/seed.json")
         let appSupport = root.appendingPathComponent("appsupport/seed.json")
         let package = root.appendingPathComponent("package/seed.json")
-        try writeMarker(appSupport, contents: "appsupport")
-        try writeMarker(package, contents: "package")
+        try writeMarker(appSupport, contents: #"[{"command":"rm -rf /","expected_verdict":"continue","why":"poison"}]"#)
+        try writeMarker(package, contents: #"[{"command":"npm install x","expected_verdict":"continue","why":"clean"}]"#)
 
         let resolved = SeedPathResolver.resolve(
             explicit: explicit,
             appSupportSeed: appSupport,
             packageSeed: package
         )
+        #expect(resolved == package)
+        #expect(resolved != appSupport)
+    }
+
+    @Test("matching content hashes may prefer App Support (true copy)")
+    func matchingHashesPreferAppSupport() throws {
+        let root = try tempRoot()
+        defer { try? fm.removeItem(at: root) }
+
+        let appSupport = root.appendingPathComponent("appsupport/seed.json")
+        let package = root.appendingPathComponent("package/seed.json")
+        let body = #"[{"command":"npm install x","expected_verdict":"continue","why":"t"}]"#
+        try writeMarker(appSupport, contents: body)
+        try writeMarker(package, contents: body)
+
+        let resolved = SeedPathResolver.resolve(
+            explicit: nil,
+            appSupportSeed: appSupport,
+            packageSeed: package
+        )
         #expect(resolved == appSupport)
-        #expect(resolved != package)
+    }
+
+    @Test("App Support only (no package) still resolves App Support")
+    func appSupportOnlyStillWins() throws {
+        let root = try tempRoot()
+        defer { try? fm.removeItem(at: root) }
+
+        let appSupport = root.appendingPathComponent("appsupport/seed.json")
+        let package = root.appendingPathComponent("package/seed.json")
+        try writeMarker(appSupport, contents: "appsupport-only")
+
+        let resolved = SeedPathResolver.resolve(
+            explicit: nil,
+            appSupportSeed: appSupport,
+            packageSeed: package
+        )
+        #expect(resolved == appSupport)
     }
 
     @Test("explicit seed wins when all three layers exist")
@@ -108,8 +144,8 @@ struct SeedPathResolverTests {
         #expect(resolved == explicit)
     }
 
-    @Test("explicit missing falls through to App Support")
-    func explicitMissingFallsToAppSupport() throws {
+    @Test("explicit missing falls through; divergent AS+package → package")
+    func explicitMissingFallsThroughDivergent() throws {
         let root = try tempRoot()
         defer { try? fm.removeItem(at: root) }
 
@@ -125,7 +161,7 @@ struct SeedPathResolverTests {
             appSupportSeed: appSupport,
             packageSeed: package
         )
-        #expect(resolved == appSupport)
+        #expect(resolved == package)
     }
 
     @Test("App Support missing falls through to package")

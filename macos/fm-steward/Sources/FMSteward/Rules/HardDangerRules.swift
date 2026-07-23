@@ -4,10 +4,24 @@ import Foundation
 /// Complements Zig hard fence (which may deny some of these entirely in production).
 /// These never unlock deny→allow; they only force **ask** with explain.
 public enum HardDangerRules {
+    /// Path-optional shell binary: `bash`, `/bin/sh`, `/usr/bin/zsh`,
+    /// `/usr/local/bin/bash`, `/opt/homebrew/bin/zsh`, etc.
+    /// Covers bash|sh|zsh|dash|ksh|fish (case-insensitive at match time).
+    private static let shellBin =
+        #"(?:/(?:bin|usr/bin|usr/local/bin|opt/homebrew/bin)/)?(?:(?:ba)?sh|zsh|dash|ksh|fish)\b"#
+
+    /// Optional `sudo` with short flags (`-E`, `-n`, `-i`, `-s`, `-H`, … or `-u user`)
+    /// then optional `env`/`command`. `-u user` is matched before bare short clusters.
+    private static let shellPrefix =
+        #"(?:sudo\s+(?:(?:-u\s+\S+|-[A-Za-z]+)\s+)*)?(?:(?:env|command)\s+)?"#
+
+    /// Full pipe/exec sink: optional sudo/env wrappers + path-optional shell.
+    private static var shellSink: String { shellPrefix + shellBin }
+
     /// If matched, returns an ask* response; else nil (fall through to FM).
     public static func evaluate(_ card: RiskCard) -> ClassifyResponse? {
-        guard let command = card.command?.trimmingCharacters(in: .whitespacesAndNewlines),
-              !command.isEmpty
+        guard let raw = card.command?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !raw.isEmpty
         else {
             return nil
         }
@@ -15,6 +29,9 @@ public enum HardDangerRules {
         if card.features.executed == false {
             return nil
         }
+
+        // Collapse newlines / runs of whitespace so multi-line pipe-to-shell cannot bypass.
+        let command = normalizeCommand(raw)
 
         // Match case-insensitively on the original string. Do **not** lowercase first:
         // lowercasing turns `tar -C /` into `tar -c /` and breaks case-sensitive `-C` patterns.
@@ -25,7 +42,8 @@ public enum HardDangerRules {
             (#"rm\s+(-[a-zA-Z]*r[a-zA-Z]*|--recursive).*/\s*$|rm\s+(-[a-zA-Z]*r[a-zA-Z]*|--recursive).*\s+/"#,
              "Recursive rm targeting filesystem root.",
              "This command recursively deletes from the filesystem root. Confirm before running."),
-            (#"rm\s+(-[a-zA-Z]*r[a-zA-Z]*|--recursive).*(~|/users|/home|/library|/system)"#,
+            // Home / system paths, including $HOME / ${HOME} (any case).
+            (#"rm\s+(-[a-zA-Z]*r[a-zA-Z]*|--recursive).*(~|/users|/home|/library|/system|\$\{home\}|\$home\b)"#,
              "Recursive rm of home or system paths.",
              "This command recursively deletes home or system paths. Confirm before running."),
             // Obfuscated rm: ${IFS}, $IFS, and quote-split r""m style.
@@ -39,36 +57,36 @@ public enum HardDangerRules {
              "Disk erase / format tool.",
              "This command erases or formats a disk. Confirm before running."),
             // curl/wget piped to shell (including nested in bash -c '…').
-            (#"\b(curl|wget)\b[^\n]*\|\s*(sudo\s+)?(ba)?sh\b"#,
+            (#"\b(curl|wget)\b.*\|\s*"# + shellSink,
              "Download piped into a shell.",
              "This downloads and executes remote code via a shell pipe. Confirm before running."),
             // Multi-stage: download to file then run with a shell.
-            (#"\b(curl|wget)\b[^\n]*(-o|--output)\s+\S+[^\n]*(&&|;)\s*(sudo\s+)?(ba)?sh\b"#,
+            (#"\b(curl|wget)\b.*(-o|--output)\s+\S+.*(&&|;)\s*"# + shellSink,
              "Download to file then execute with a shell.",
              "This downloads a script and then runs it. Confirm before running."),
-            // bash -c "$(curl …)" / bash -c 'curl …'
-            (#"\b(ba)?sh\b\s+-c\b[^\n]*\b(curl|wget)\b"#,
+            // bash -c "$(curl …)" / zsh -c 'curl …' / /bin/bash -c …
+            (#"\b"# + shellBin + #"\s+-c\b.*\b(curl|wget)\b"#,
              "Shell -c invoking curl/wget.",
              "This runs a shell that fetches remote content. Confirm before running."),
-            // Process substitution: bash <(curl …)
-            (#"\b(ba)?sh\b\s+<\([^\n]*\b(curl|wget)\b"#,
+            // Process substitution: bash <(curl …) / zsh <(wget …)
+            (#"\b"# + shellBin + #"\s+<\(.*\b(curl|wget)\b"#,
              "Shell process-substitution of remote download.",
              "This executes a remote download via process substitution. Confirm before running."),
-            (#"\bbase64\b[^\n]*\|\s*(ba)?sh\b"#,
+            (#"\bbase64\b.*\|\s*"# + shellSink,
              "Base64 decode piped into shell.",
              "This decodes and executes a payload in a shell. Confirm before running."),
             // Secret-ish paths or general pipe to network tools (exfil sinks).
-            (#"\bcat\s+[^\n]*(\.ssh|/id_|credentials|\.env|secrets)[^\n]*\|\s*(curl|nc|ncat|wget)\b"#,
+            (#"\bcat\s+.*(\.ssh|/id_|credentials|\.env|secrets).*\|\s*(curl|nc|ncat|wget)\b"#,
              "Secret file piped to network tool.",
              "This may exfiltrate secrets over the network. Confirm before running."),
             (#"\|\s*(curl|nc|ncat|wget)\b"#,
              "Pipeline into a network tool.",
              "This pipes data into a network client (possible exfil). Confirm before running."),
             // tar extract onto filesystem root (-C / or --directory /).
-            (#"\btar\b[^\n]*(-C|--directory)\s*/($|\s)"#,
+            (#"\btar\b.*(-C|--directory)\s*/($|\s)"#,
              "tar extract into filesystem root.",
              "Extracting an archive onto / can overwrite system files. Confirm before running."),
-            (#"\btar\b[^\n]*(-C|--directory)=/"#,
+            (#"\btar\b.*(-C|--directory)=/"#,
              "tar extract into filesystem root.",
              "Extracting an archive onto / can overwrite system files. Confirm before running."),
             (#"/dev/tcp/|bash\s+-i\s+>&"#,
@@ -92,7 +110,7 @@ public enum HardDangerRules {
             (#"os\.system\s*\(\s*['\"]rm\s+"#,
              "Python os.system recursive delete.",
              "This runs a destructive rm via Python. Confirm before running."),
-            (#"\bfind\b[^\n]*-delete\b"#,
+            (#"\bfind\b.*-delete\b"#,
              "find with -delete.",
              "This bulk-deletes files via find -delete. Confirm before running."),
             (#"\bxargs\s+rm\b|\bxargs\s+.*\brm\b"#,
@@ -106,6 +124,14 @@ public enum HardDangerRules {
             }
         }
         return nil
+    }
+
+    /// Collapse `\r`/`\n` and runs of whitespace to a single space so multi-line
+    /// `curl …\n| bash` cannot bypass pipe-to-shell patterns.
+    static func normalizeCommand(_ command: String) -> String {
+        command
+            .split(whereSeparator: \.isWhitespace)
+            .joined(separator: " ")
     }
 
     private static func hardAsk(why: String, explain: String) -> ClassifyResponse {

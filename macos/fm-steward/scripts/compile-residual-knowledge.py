@@ -36,6 +36,9 @@ REQUIRED_PACK_SUFFIXES = (
 )
 
 # Global smoke exclusions (ambiguous-only seed).
+# Keep in lockstep with FewShotSeedLoader.globalHardRuleExclusions and HardDanger
+# catastrophe / RCE / exfil smokes (pipe-to-shell, force-push, base64|shell, secret|curl).
+# Legal residual greys (npm install, rm -rf ./build, git push -u origin feature/…) must load.
 GLOBAL_EXCLUSIONS = (
     "rm -rf /",
     "rm -rf/",
@@ -43,10 +46,53 @@ GLOBAL_EXCLUSIONS = (
     "|bash",
     "| sh",
     "|sh",
+    "| zsh",
+    "|zsh",
+    "| fish",
+    "|fish",
+    "| dash",
+    "|dash",
+    "| ksh",
+    "|ksh",
+    "| /bin/bash",
+    "|/bin/bash",
+    "| /bin/sh",
+    "|/bin/sh",
+    "| /bin/zsh",
+    "|/bin/zsh",
+    "| /usr/bin/bash",
+    "|/usr/bin/bash",
+    "| /usr/bin/zsh",
+    "|/usr/bin/zsh",
+    "| /usr/bin/fish",
+    "|/usr/bin/fish",
+    "| /bin/dash",
+    "|/bin/dash",
+    "| /bin/ksh",
+    "|/bin/ksh",
     "curl|bash",
     "curl|sh",
+    "curl|zsh",
+    "curl|fish",
+    "curl|dash",
+    "curl|ksh",
     "wget|bash",
     "wget|sh",
+    "wget|zsh",
+    "wget|fish",
+    "wget|dash",
+    "wget|ksh",
+    # HardDanger catastrophe smokes (force-push, base64|shell, secret-exfil).
+    "git push --force",
+    "git push -f",
+    "base64 | bash",
+    "base64|bash",
+    "base64 | sh",
+    "base64|sh",
+    ".ssh | curl",
+    ".ssh|curl",
+    "credentials | curl",
+    "credentials|curl",
 )
 
 

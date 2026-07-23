@@ -80,7 +80,7 @@ python3 scripts/compile-residual-knowledge.py --check  # CI / pre-commit gate
 python3 scripts/compile-residual-knowledge.py --self-test
 ```
 
-**Pipeline:** YAML packs → `seed.json` → text-mode `.wax` (seeded on first use or seed-hash change) → residual classify retrieves k≤3 → `LiveBackend.prompt` injects neighbors → FM decides.
+**Pipeline:** YAML packs → `seed.json` → text-mode `.wax` (seeded on first use, seed-hash change, or store format version bump) → residual classify retrieves k≤3 under the session timeout budget → `LiveBackend.prompt` injects neighbors → FM decides.
 
 See [`residual-knowledge/README.md`](residual-knowledge/README.md) for authoring rules and multi-domain employee architecture (docs/stubs only).
 
@@ -119,11 +119,12 @@ swift run fm-steward eval-danger
   3. `CommandShape` safe shapes (echo/search/comment/print/var+echo/allowlisted dev clean) → continue  
   4. `HardDangerRules` clear catastrophe / exfil / RCE → **ask**  
   5. else residual: **Wax text few-shots (k≤3)** + **LiveBackend** FM  
-- **Few-shot default:** `--few-shot auto` when seed is present; reseed if store missing or seed content hash ≠ `*.wax.seedsha`. Fail-open on auto. Use `off` for pure-FM comparisons. `eval-danger` is always pure-FM.
+- **Few-shot default:** `--few-shot auto` when seed is present; reseed if store missing, seed/store content hash ≠ sidecar, or store format version bumps (`*.wax.seedsha` payload `v{N}:<seed-sha256>:<store-sha256>`). Fail-open on auto. Use `off` for pure-FM comparisons. `eval-danger` is always pure-FM.
+- **First-run seed:** when Application Support `seed.json` is missing but package `Fixtures/ambig-fewshot/seed.json` exists, CLI/library bootstrap copies package → App Support (`FewShotSeedBootstrap.bootstrapAppSupportSeedIfNeeded`). Hosts should call the same helper before resolve for installed products.
 - **Hard fence** remains Zig (catastrophe deny). FM never unlocks hard deny; offline/timeout → continue.
-- **Default timeout:** `3000ms` (raise with `--timeout-ms` for cold first token). Prefer **`StewardSession`** as host API.
+- **Default timeout:** `3000ms` bounds residual **retrieve + backend** (raise with `--timeout-ms` for cold first token). Prefer **`StewardSession`** as host API.
 - **Fresh LanguageModelSession per classify** so multi-card runs do not exceed the 4K context window.
-- **Wax:** SPM pin ≥ **0.1.25**, `traits: []` (text mode; no MiniLM). See `docs/dev/dependencies.md`.
+- **Wax:** SPM pin exact **0.1.25**, `traits: []` (text mode; no MiniLM). See `docs/dev/dependencies.md`.
 
 ## Demo (v1 shell fixtures)
 
@@ -161,9 +162,9 @@ CommandShape       ← safe skip shapes (no pipe exfil on search/echo)
 HardDangerRules    ← deterministic soft-ask for clear danger
 FewShotRuntime     ← product factory: makeRetriever (off / auto / wax)
 FewShotStorePaths  ← App Support ambig.wax (+ ensureParentDirectory)
-SeedPathResolver   ← explicit → App Support seed.json → package fixture → nil
+SeedPathResolver   ← explicit → (AS↔package content pin) → package on diverge → nil
 FewShotRetriever   ← protocol + Null / Static / WaxFewShotStore (text)
-FewShotSeedBootstrap ← seed SHA-256 reseed helpers (*.wax.seedsha sidecar)
+FewShotSeedBootstrap ← seed reseed helpers (vN:seed:store sidecar, reseed flock, App Support seed bootstrap)
 LiveBackend        ← real SystemLanguageModel, shell-focused prompt + few-shot block
 UnavailableBackend / SlowBackend
 RiskCard / ClassifyResponse / StewardModelOutput
@@ -191,17 +192,22 @@ bash scripts/residual-stress-matrix.sh --live       # offline + live residual du
 bash macos/fm-steward/scripts/residual-stress-matrix.sh
 ```
 
-The residual-matrix / residual-stress-matrix gate asserts rules short-circuits never
-consult few-shot (`few_shot_hits` / spy callCount == 0). Live residual dump soft-SKIPs
-when on-device FM is unavailable (exit 0). **Run residual-stress-matrix before host
-attach.** Do not enable few-shot on `eval-danger` (pure-FM only).
+The residual-stress-matrix **offline** path is the **rules isolation hard gate**
+(`few_shot_hits` / spy callCount == 0). Live residual dump soft-SKIPs when on-device
+FM is unavailable (exit 0) and does **not** claim attach residual is proven after a
+live SKIP — only “rules isolation hard gate PASS.” When live runs, it uses a **temp
+`--wax-store` + package `--seed`** (never product App Support), dumps residual grays
+with few-shot **off vs auto**, and asserts rules short-circuit **expected verdict**
+(e.g. `ask` for hard-danger `curl|bash`) plus hits==0. **Run residual-stress-matrix
+before host attach.** Do not enable few-shot on `eval-danger` (pure-FM only).
 
 ### Store layout (product default)
 
 | Artifact | Path |
 |----------|------|
 | Wax store | `~/Library/Application Support/Orca/fm-steward/ambig.wax` |
-| Seed-hash sidecar | `~/Library/Application Support/Orca/fm-steward/ambig.wax.seedsha` |
+| Seed-hash sidecar | `~/Library/Application Support/Orca/fm-steward/ambig.wax.seedsha` (`v{N}:<seed-sha256>:<store-sha256>`) |
+| Reseed lock | `~/Library/Application Support/Orca/fm-steward/ambig.wax.reseed.lock` |
 | Optional seed copy | `~/Library/Application Support/Orca/fm-steward/seed.json` |
 
 Resolved via `FewShotStorePaths.productStoreURL()` / `storeURL(override:)`. Hosts may
@@ -209,12 +215,21 @@ override the store URL for tests or ops; product default is **not** a temp direc
 
 ### Seed resolution order
 
-Existence-checked (regular file only); first hit wins — `SeedPathResolver.resolve`:
+Existence-checked (regular file only) — `SeedPathResolver.resolve`:
 
-1. **Explicit** seed URL (host / CLI `--seed` override)
-2. **App Support** `…/Orca/fm-steward/seed.json` (`SeedPathResolver.productAppSupportSeedURL()`)
-3. **Package fixture** `Fixtures/ambig-fewshot/seed.json` when package root is available
-4. **`nil`** — no seed found
+1. **Explicit** seed URL (host / CLI `--seed` override) if the file exists
+2. When **both** App Support and package seeds exist: prefer **package** unless
+   content SHA-256 is equal (true copy) — then App Support may be returned
+3. Else first existing of: **App Support** → **package** → **`nil`**
+
+**Trust model (assist only):** App Support `seed.json` is operator-trusted (same-user
+FS). Divergent App Support content does not shadow the package curated seed without
+an explicit `--seed` override. This is **not** a multi-user security fence.
+
+**First-run bootstrap (P2):** before resolve, call
+`FewShotSeedBootstrap.bootstrapAppSupportSeedIfNeeded(from: packageSeed, to: appSupportSeed)`
+so a missing App Support copy is materialized from the package fixture. CLI does this
+for product `auto`/`wax`. Idempotent when App Support already has `seed.json`.
 
 | Mode (`FewShotMode`) | Missing seed / load failure |
 |----------------------|-----------------------------|
@@ -222,19 +237,36 @@ Existence-checked (regular file only); first hit wins — `SeedPathResolver.reso
 | `.wax` | Throws (`seedNotFound` / `seedFailed`) |
 | `.off` | Always null retriever |
 
-Reseed when the store is missing **or** seed content hash ≠ sidecar `*.wax.seedsha`
-(owned by `FewShotRuntime` / `FewShotSeedBootstrap`, not the host).
+Reseed when the store is missing **or** sidecar is missing / unparseable **or**
+format version ≠ `FewShotSeedBootstrap.storeFormatVersion` **or** seed content hash
+≠ sidecar **or** store content hash ≠ sidecar (`v{N}:<seed-sha256>:<store-sha256>`
+on `*.wax.seedsha`; legacy `vN:seed` without store field forces reseed). **Assist
+integrity only** — not multi-user security. Runtime opens without the reseed lock
+when the fingerprint already matches; otherwise holds exclusive `flock` (+ process-local
+process-local gate) on `*.wax.reseed.lock` around needsReseed → seed → recordSeedHash;
+`.auto` fail-opens Null on lock contention.
 
 ### Host wiring sketch
 
 ```swift
 import FMSteward
 
+let appSupportSeed = SeedPathResolver.productAppSupportSeedURL()
+let packageSeed = packageFixtureSeedURL  // or nil in installed hosts without package tree
+
+// 0) First-run: materialize App Support seed from package when missing
+if let packageSeed {
+    _ = try? FewShotSeedBootstrap.bootstrapAppSupportSeedIfNeeded(
+        from: packageSeed,
+        to: appSupportSeed
+    )
+}
+
 // 1) Resolve seed (explicit → App Support → package fixture → nil)
 let seedURL = SeedPathResolver.resolve(
     explicit: hostSeedOverride,                         // or nil
-    appSupportSeed: SeedPathResolver.productAppSupportSeedURL(),
-    packageSeed: packageFixtureSeedURL                  // or nil in installed hosts
+    appSupportSeed: appSupportSeed,
+    packageSeed: packageSeed
 )
 
 // 2) Product store under Application Support
@@ -258,13 +290,14 @@ if let seedURL {
     retriever = NullFewShotRetriever()  // auto / off without seed
 }
 
-// 4) Preferred host API — residual few-shot + timeout race
+// 4) Preferred host API — residual few-shot + timeout race (retrieve+backend)
 let session = StewardSession(
     backend: LiveBackend.preferredDefault(),
     fewShotRetriever: retriever
 )
 await session.warm()
 let response = await session.classify(card)
+// Hosts that open Wax should close when done: await (retriever as? WaxFewShotStore)?.close()
 ```
 
 ### Honesty (Phase 3 attach)

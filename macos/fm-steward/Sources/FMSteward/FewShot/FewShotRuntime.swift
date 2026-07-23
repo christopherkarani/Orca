@@ -16,11 +16,17 @@ public enum FewShotMode: String, Sendable, Equatable {
 ///
 /// Product law:
 /// - `.off` → `NullFewShotRetriever`
-/// - `.auto` → fail-open to Null on missing seed, load throw, open/seed failure, or Wax unlinked
-/// - `.wax` → throws on missing seed / load / open failure / Wax unlinked
+/// - `.auto` → fail-open to Null on missing seed, load throw, open/seed failure,
+///   reseed-lock contention, or Wax unlinked
+/// - `.wax` → throws on missing seed / load / open failure / Wax unlinked / lock fail
 /// - Default search mode is **text** (CI-safe; no embedder required)
 ///
-/// Reseed when store is missing **or** seed content hash ≠ sidecar (`*.wax.seedsha`).
+/// Reseed when store is missing **or** seed/store content hash / format version ≠
+/// sidecar (`*.wax.seedsha`, payload `v{N}:<seed-sha256>:<store-sha256>`).
+///
+/// **Lock policy (R6):** when `needsReseed` is false, open the store **without**
+/// the exclusive reseed lock (fast path). When reseed is needed, take flock +
+/// process-local lock, recheck under lock, then seed → recordSeedHash.
 /// Callers supply resolved `seedURL` / `storeURL` (CLI/resolver owns path discovery).
 public enum FewShotRuntime: Sendable {
     /// Product default search mode for residual few-shot (text-only, deterministic CI).
@@ -78,21 +84,63 @@ public enum FewShotRuntime: Sendable {
                 return NullFewShotRetriever()
             }
 
-            let store = WaxFewShotStore(storeURL: storeURL, searchMode: searchMode)
-            let needsSeed = FewShotSeedBootstrap.needsReseed(storeURL: storeURL, seedURL: seedURL)
-            if needsSeed {
-                do {
-                    try await store.seed(fromSeedJSON: seedURL)
-                    try FewShotSeedBootstrap.recordSeedHash(storeURL: storeURL, seedURL: seedURL)
-                } catch {
-                    if mode == .wax {
-                        throw Error.seedFailed(String(describing: error))
-                    }
-                    // auto fail-open (load throw, open fail, etc.)
-                    return NullFewShotRetriever()
-                }
+            // Fast path: store + sidecar fingerprint already valid — open without reseed lock.
+            if !FewShotSeedBootstrap.needsReseed(storeURL: storeURL, seedURL: seedURL) {
+                return WaxFewShotStore(storeURL: storeURL, searchMode: searchMode)
             }
-            return store
+
+            // Slow path: exclusive ownership for needsReseed → seed → recordSeedHash.
+            do {
+                return try await FewShotSeedBootstrap.withReseedLock(storeURL: storeURL) {
+                    try await openOrSeedStore(
+                        mode: mode,
+                        seedURL: seedURL,
+                        storeURL: storeURL,
+                        searchMode: searchMode
+                    )
+                }
+            } catch let error as FewShotSeedBootstrap.LockError {
+                if mode == .wax {
+                    throw Error.seedFailed(error.description)
+                }
+                // auto: lock contention / open fail → fail-open Null
+                return NullFewShotRetriever()
+            } catch let error as FewShotRuntime.Error {
+                // Strict .wax failures from openOrSeedStore (seedFailed / etc.)
+                throw error
+            } catch {
+                if mode == .wax {
+                    throw Error.seedFailed(String(describing: error))
+                }
+                return NullFewShotRetriever()
+            }
         }
+    }
+
+    /// Under reseed lock: re-check hash, seed if needed, return live store or Null/throw.
+    private static func openOrSeedStore(
+        mode: FewShotMode,
+        seedURL: URL,
+        storeURL: URL,
+        searchMode: WaxSearchMode
+    ) async throws -> any FewShotRetriever {
+        let store = WaxFewShotStore(storeURL: storeURL, searchMode: searchMode)
+        // Re-check under lock (TOCTOU: another process/task may have finished seeding).
+        let needsSeed = FewShotSeedBootstrap.needsReseed(storeURL: storeURL, seedURL: seedURL)
+        if needsSeed {
+            do {
+                try await store.seed(fromSeedJSON: seedURL)
+                // Hashes seed + store bytes on disk into sidecar.
+                try FewShotSeedBootstrap.recordSeedHash(storeURL: storeURL, seedURL: seedURL)
+            } catch {
+                // Fail-open: never leave a half-open store referenced by auto callers.
+                await store.close()
+                if mode == .wax {
+                    throw Error.seedFailed(String(describing: error))
+                }
+                return NullFewShotRetriever()
+            }
+        }
+        return store
     }
 }

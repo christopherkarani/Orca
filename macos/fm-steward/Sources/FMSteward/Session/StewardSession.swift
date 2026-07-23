@@ -2,9 +2,9 @@ import Foundation
 
 /// Warm, reusable FM steward session with a hard classify timeout.
 ///
-/// Rules pre-pass runs first (no backend wait). Backend-bound work is raced
-/// against `timeoutMs` (default 3000). On timeout, parent cancel, or broken backend
-/// ask*, returns fallback **continue** — never ask-spam.
+/// Rules pre-pass runs first (no backend wait). Residual path races
+/// **retrieve + backend** against `timeoutMs` (default 3000). On timeout, parent
+/// cancel, or broken backend ask*, returns fallback **continue** — never ask-spam.
 ///
 /// ## Concurrency / single-flight
 ///
@@ -13,20 +13,23 @@ import Foundation
 /// shared `LiveBackend`) to run parallel Foundation Model generation. Prefer
 /// sequential awaits from one owner; multi-call stress should be serial.
 ///
-/// `raceBackend` spawns only **one** backend child task plus a timer — not
-/// multiple FM classifies. Overlapping `classify` invocations can re-enter at
-/// `await` points after suspension, but session state (`warmed`) is still
-/// actor-protected. `LiveBackend` uses a **fresh** `LanguageModelSession` per
-/// classify so multi-card transcripts never accumulate on the session object.
+/// `raceResidual` spawns only **one** residual child task (few-shot retrieve then
+/// backend classify) plus a timer — not multiple FM classifies. Overlapping
+/// `classify` invocations can re-enter at `await` points after suspension, but
+/// session state (`warmed`) is still actor-protected. `LiveBackend` uses a
+/// **fresh** `LanguageModelSession` per classify so multi-card transcripts never
+/// accumulate on the session object.
 ///
 /// - Note: Timeout is **cooperative** under structured concurrency: the session
-///   cancels the backend child when the timer wins, but `withTaskGroup` still
-///   joins children. Backends **must** honor task cancellation promptly (see
-///   `FoundationModelBackend`). Phase 3 stubs do; real FM generation must poll
-///   cancel or the caller can block past `timeoutMs` while still returning
-///   `timed_out=true` after the late work ends.
+///   cancels the residual child when the timer wins, but `withTaskGroup` still
+///   joins children. Retrievers and backends **must** honor task cancellation
+///   promptly (see `FoundationModelBackend`). Phase 3 stubs do; real FM
+///   generation / Wax open must poll cancel or the caller can block past
+///   `timeoutMs` while still returning `timed_out=true` after the late work ends.
+/// - Note: Prefer fail-open **empty** few-shots over hanging past `timeoutMs`
+///   when retrieve is slow or cancelled.
 public actor StewardSession {
-    /// Product default: 3s hard timeout for backend-bound classify work.
+    /// Product default: 3s hard timeout for residual (retrieve + backend) work.
     /// Residual on-device FM is typically ~1–2.5s; 500ms systematically timed out residual asks.
     public static let defaultTimeoutMs: Int = 3000
 
@@ -44,7 +47,7 @@ public actor StewardSession {
     private let fewShotRetriever: any FewShotRetriever
     private let fewShotLimit: Int
     private var warmed: Bool = false
-    /// Last residual few-shot hit count (0 when rules short-circuit or retriever empty).
+    /// Last residual few-shot hit count (0 when rules short-circuit, timeout, or retriever empty).
     private var lastFewShotHitCount: Int = 0
 
     public init(
@@ -59,7 +62,7 @@ public actor StewardSession {
         self.fewShotLimit = max(0, min(fewShotLimit, 8))
     }
 
-    /// Few-shot hits from the most recent residual classify (0 on rules path).
+    /// Few-shot hits from the most recent residual classify (0 on rules path / timeout).
     public var lastFewShotHits: Int { lastFewShotHitCount }
 
     /// Clamp `ms` into a safe sleep range: `≤0` → default; otherwise `1...maxTimeoutMs`.
@@ -80,8 +83,8 @@ public actor StewardSession {
         await backend.prepareWarm()
     }
 
-    /// Classify `card`. Rules short-circuit without backend; otherwise race backend
-    /// against `timeoutMs` (session default when nil).
+    /// Classify `card`. Rules short-circuit without backend; otherwise race
+    /// residual retrieve + backend against `timeoutMs` (session default when nil).
     ///
     /// Safe under serial multi-call. Do not fan out concurrent classifies on the
     /// same session expecting parallel FM work — actor entry is serialized and
@@ -95,12 +98,9 @@ public actor StewardSession {
             return hit
         }
 
-        // Residual path only: retrieve gray few-shots (fail-open → empty).
-        let fewShots = await fewShotRetriever.retrieve(for: card, limit: fewShotLimit)
-        lastFewShotHitCount = fewShots.count
-
+        // Residual path: retrieve + backend share the hard timeout budget.
         let bound = Self.clampTimeoutMs(timeoutMs ?? self.timeoutMs)
-        return await raceBackend(card: card, fewShots: fewShots, timeoutMs: bound)
+        return await raceResidual(card: card, timeoutMs: bound)
     }
 
     // MARK: - Internals
@@ -112,34 +112,45 @@ public actor StewardSession {
     }
 
     private enum RaceOutcome: Sendable {
-        case response(ClassifyResponse)
+        case response(ClassifyResponse, fewShotHits: Int)
         case timedOut
     }
 
-    /// Race a single backend classify against the hard timeout.
-    /// Latency is measured at **first-win** (backend response or timeout), not
-    /// after draining cancelled children.
+    /// Race residual few-shot retrieve **then** backend classify against the hard
+    /// timeout. First-win latency is measured when either the residual child or
+    /// the timer wins — not after draining cancelled children.
     ///
-    /// `fewShots` are residual-only assist already retrieved outside the race
-    /// (or empty). Rules path never reaches here with a retriever call.
-    private func raceBackend(
+    /// On cancel/timeout during retrieve, few-shots fail-open to empty (product
+    /// law: assist only; never hang past `timeoutMs` for RAG).
+    private func raceResidual(
         card: RiskCard,
-        fewShots: [FewShotExample],
         timeoutMs: Int
     ) async -> ClassifyResponse {
         let start = ContinuousClock.now
         let backend = self.backend
+        let retriever = self.fewShotRetriever
+        let limit = self.fewShotLimit
 
-        // Single-flight backend race: one classify child + one timer (not parallel FM).
+        // Single-flight residual race: one (retrieve→classify) child + one timer.
         // Actor entry is serialized; overlapping callers re-enter only at await points.
         let (outcome, firstWinMs): (RaceOutcome, Int) = await withTaskGroup(of: RaceOutcome.self) { group in
             group.addTask {
-                let raw = await backend.classify(card, fewShots: fewShots)
-                // Defense in depth: if cancelled after return, do not treat as a win.
+                // Fail-open empty few-shots when already cancelled or retrieve is slow.
+                let fewShots: [FewShotExample]
+                if Task.isCancelled {
+                    fewShots = []
+                } else {
+                    fewShots = await retriever.retrieve(for: card, limit: limit)
+                }
+                // Do not start backend work after the timer has won.
                 if Task.isCancelled {
                     return .timedOut
                 }
-                return .response(raw)
+                let raw = await backend.classify(card, fewShots: fewShots)
+                if Task.isCancelled {
+                    return .timedOut
+                }
+                return .response(raw, fewShotHits: fewShots.count)
             }
             group.addTask {
                 let ns = UInt64(timeoutMs) * 1_000_000
@@ -147,7 +158,7 @@ public actor StewardSession {
                     try await Task.sleep(nanoseconds: ns)
                     return .timedOut
                 } catch {
-                    // Cancelled because backend already won (or parent cancelled).
+                    // Cancelled because residual already won (or parent cancelled).
                     return .timedOut
                 }
             }
@@ -157,14 +168,15 @@ public actor StewardSession {
             let winMs = Self.elapsedMilliseconds(since: start)
             group.cancelAll()
             // Drain so cancelled children do not leak into later work.
-            // Note: this joins cooperative-cancel backends; non-cooperative work can
-            // still block until completion (document residual; see type docs).
+            // Note: this joins cooperative-cancel backends/retrievers; non-cooperative
+            // work can still block until completion (document residual; see type docs).
             for await _ in group {}
             return (first, winMs)
         }
 
         // Parent cancel while racing → always soft fallback continue (never ask-spam).
         if Task.isCancelled {
+            lastFewShotHitCount = 0
             return .fallbackContinue(
                 why: "FM steward classify cancelled; continuing under policy and hard fence only.",
                 modelAvailable: false,
@@ -175,13 +187,15 @@ public actor StewardSession {
 
         switch outcome {
         case .timedOut:
+            lastFewShotHitCount = 0
             return .fallbackContinue(
                 why: "FM steward timed out; continuing under policy and hard fence only.",
                 modelAvailable: false,
                 timedOut: true,
                 latencyMs: firstWinMs
             )
-        case .response(let raw):
+        case .response(let raw, let fewShotHits):
+            lastFewShotHitCount = fewShotHits
             return ClassifyPipeline.normalizeBackend(raw, latencyMs: firstWinMs)
         }
     }
