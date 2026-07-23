@@ -77,6 +77,24 @@ public final class LockedCounter: @unchecked Sendable {
 
 /// Load seed JSON array of `FewShotExample`.
 public enum FewShotSeedLoader {
+    /// Hard-rule catastrophe substrings that must never appear in seed commands.
+    ///
+    /// Mirrors `GLOBAL_EXCLUSIONS` in `scripts/compile-residual-knowledge.py`
+    /// (case-insensitive substring match on the command). Keep in sync with the
+    /// compiler smoke list when either side changes.
+    public static let globalHardRuleExclusions: [String] = [
+        "rm -rf /",
+        "rm -rf/",
+        "| bash",
+        "|bash",
+        "| sh",
+        "|sh",
+        "curl|bash",
+        "curl|sh",
+        "wget|bash",
+        "wget|sh",
+    ]
+
     public static func load(from url: URL) throws -> [FewShotExample] {
         let data = try Data(contentsOf: url)
         return try load(from: data)
@@ -92,13 +110,30 @@ public enum FewShotSeedLoader {
             guard !item.command.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
                 throw SeedError.emptyCommand
             }
+            if let pattern = matchingHardRuleExclusion(command: item.command) {
+                throw SeedError.hardRuleExclusion(pattern, command: item.command)
+            }
         }
         return items
+    }
+
+    /// Returns the first global exclusion whose lowercased form is a substring of
+    /// the lowercased command, or nil if clean.
+    public static func matchingHardRuleExclusion(command: String) -> String? {
+        let cmd = command.lowercased()
+        for pattern in globalHardRuleExclusions {
+            if cmd.contains(pattern.lowercased()) {
+                return pattern
+            }
+        }
+        return nil
     }
 
     public enum SeedError: Error, CustomStringConvertible {
         case invalidVerdict(String, command: String)
         case emptyCommand
+        /// Command hits a hard-rule exclusion (mirrors compiler GLOBAL_EXCLUSIONS).
+        case hardRuleExclusion(String, command: String)
 
         public var description: String {
             switch self {
@@ -106,6 +141,8 @@ public enum FewShotSeedLoader {
                 return "invalid expected_verdict '\(v)' for command '\(command)'"
             case .emptyCommand:
                 return "seed example has empty command"
+            case .hardRuleExclusion(let pattern, let command):
+                return "seed command hits hard_rule_exclusion '\(pattern)': '\(command)'"
             }
         }
     }
