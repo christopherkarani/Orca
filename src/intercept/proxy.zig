@@ -738,6 +738,66 @@ test "proxy applies HTTP method and path policy while CONNECT remains host-port 
     try std.testing.expectEqualStrings("services.local_test.unmatched", connect_decision.decision.rule_id.?);
 }
 
+test "proxy does not tunnel a second HTTP request after an allowed first request" {
+    if (@import("builtin").os.tag == .windows) return error.SkipZigTest;
+
+    const io = std.testing.io;
+    const upstream_address = try std.Io.net.IpAddress.parse("127.0.0.1", 0);
+    var upstream = try upstream_address.listen(io, .{ .reuse_address = true });
+    defer upstream.deinit(io);
+    const upstream_port = upstream.socket.address.getPort();
+    var upstream_state: TestPipelinedServerState = .{ .server = &upstream, .io = io };
+    const upstream_thread = try std.Thread.spawn(.{}, testPipelinedServer, .{&upstream_state});
+
+    const policy_text = try std.fmt.allocPrint(std.testing.allocator,
+        \\version: 1
+        \\mode: strict
+        \\network:
+        \\  mode: open
+        \\  backend: proxy
+        \\services:
+        \\  local_test:
+        \\    hosts:
+        \\      - "127.0.0.1:{d}"
+        \\    methods:
+        \\      - "GET"
+        \\    paths:
+        \\      deny:
+        \\        - "/denied"
+        \\    unmatched: allow
+    , .{upstream_port});
+    defer std.testing.allocator.free(policy_text);
+    var loaded = try @import("orca_core").policy.load.parseFromSlice(std.testing.allocator, policy_text, "proxy-pipelining.yaml");
+    defer loaded.deinit();
+
+    var runtime = try start(std.testing.allocator, &loaded, .strict);
+    defer runtime.deinit();
+    std.Io.sleep(io, std.Io.Duration.fromNanoseconds(50 * std.time.ns_per_ms), .awake) catch {};
+
+    const proxy_port = try bindPort(runtime.bindUrl());
+    const proxy_addr = try std.Io.net.IpAddress.parse("127.0.0.1", proxy_port);
+    var client = try std.Io.net.IpAddress.connect(&proxy_addr, io, .{ .mode = .stream });
+    defer client.close(io);
+    var writer_buffer: [1024]u8 = undefined;
+    var writer = client.writer(io, &writer_buffer);
+    try writer.interface.print(
+        "GET http://127.0.0.1:{d}/allowed HTTP/1.1\r\nHost: 127.0.0.1:{d}\r\nConnection: keep-alive\r\n\r\n",
+        .{ upstream_port, upstream_port },
+    );
+    try writer.interface.flush();
+    std.Io.sleep(io, std.Io.Duration.fromNanoseconds(150 * std.time.ns_per_ms), .awake) catch {};
+    try writer.interface.print(
+        "GET http://127.0.0.1:{d}/denied HTTP/1.1\r\nHost: 127.0.0.1:{d}\r\nConnection: close\r\n\r\n",
+        .{ upstream_port, upstream_port },
+    );
+    try writer.interface.flush();
+    std.Io.sleep(io, std.Io.Duration.fromNanoseconds(700 * std.time.ns_per_ms), .awake) catch {};
+    upstream_thread.join();
+
+    try std.testing.expect(upstream_state.saw_allowed.load(.acquire));
+    try std.testing.expect(!upstream_state.saw_denied.load(.acquire));
+}
+
 const TestHttpServerState = struct {
     server: *std.Io.net.Server,
     io: std.Io,
@@ -793,6 +853,40 @@ const TestDenyServerState = struct {
     io: std.Io,
     accepted: std.atomic.Value(bool) = .init(false),
 };
+
+const TestPipelinedServerState = struct {
+    server: *std.Io.net.Server,
+    io: std.Io,
+    saw_allowed: std.atomic.Value(bool) = .init(false),
+    saw_denied: std.atomic.Value(bool) = .init(false),
+};
+
+fn testPipelinedServer(state: *TestPipelinedServerState) void {
+    var stream = state.server.accept(state.io) catch return;
+    defer stream.close(state.io);
+    var buffer: [2048]u8 = undefined;
+    var total: usize = 0;
+    const started = std.Io.Clock.Timestamp.now(state.io, .awake);
+    while (total < buffer.len and started.durationFromNow(state.io).raw.nanoseconds < 600 * std.time.ns_per_ms) {
+        var fds = [_]std.posix.pollfd{.{
+            .fd = stream.socket.handle,
+            .events = std.posix.POLL.IN,
+            .revents = 0,
+        }};
+        const ready = std.posix.poll(&fds, 50) catch break;
+        if (ready == 0) continue;
+        const n = std.posix.read(stream.socket.handle, buffer[total..]) catch break;
+        if (n == 0) break;
+        total += n;
+    }
+    state.saw_allowed.store(std.mem.indexOf(u8, buffer[0..total], "/allowed") != null, .release);
+    state.saw_denied.store(std.mem.indexOf(u8, buffer[0..total], "/denied") != null, .release);
+    const response = "HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nOK";
+    var write_buffer: [128]u8 = undefined;
+    var writer = stream.writer(state.io, &write_buffer);
+    writer.interface.writeAll(response) catch return;
+    writer.interface.flush() catch {};
+}
 
 fn testDenyServerNoConnect(state: *TestDenyServerState) void {
     var listen_fd = [_]std.posix.pollfd{.{
