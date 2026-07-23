@@ -721,10 +721,11 @@ fn fmContextFromOpts(opts: DaemonPolicyOpts) FmShellContext {
 ///
 /// Hard rules:
 /// 1. `.block` → return as-is; **never** call the client
-/// 2. soft (allow|warn|ask) → risk-card-v1 → `Client.classify`
-/// 3. FM continue / timeout / fallback → keep `policy_out` (never invent ask)
-/// 4. FM ask | ask_sticky_candidate → force `.ask` with explain/why reason
-/// 5. May upgrade allow→ask only; never softens block/deny
+/// 2. sticky session trust allow → return as-is; **never** re-ask via FM
+/// 3. soft (allow|warn|ask) → risk-card-v1 → `Client.classify`
+/// 4. FM continue / timeout / fallback → keep `policy_out` (never invent ask)
+/// 5. FM ask | ask_sticky_candidate → force `.ask` with explain/why reason
+/// 6. May upgrade allow→ask only; never softens block/deny
 ///
 /// Ownership: when upgrading to ask, `owned_reason` is allocator-owned (caller
 /// frees via `ShellWithPolicyDecision.freeOwned` or transfers into `OwnedRunDecision`).
@@ -736,6 +737,10 @@ pub fn applyFmSoftSeatbelt(
     // 1. Hard outcomes never reach FM.
     if (policy_out.decision == .block) return policy_out;
     if (ctx.disable_fm) return policy_out;
+    // 2. Sticky session trust is a terminal soft allow — FM must not re-ask.
+    if (policy_out.reason) |r| {
+        if (std.mem.eql(u8, r, sticky_session_trust_reason)) return policy_out;
+    }
     // No command → cannot build a meaningful card; keep soft policy.
     if (std.mem.trim(u8, ctx.command, " \t\r\n").len == 0) return policy_out;
     if (ctx.session_id.len == 0 or ctx.tool.len == 0) return policy_out;
@@ -2946,6 +2951,32 @@ test "Fm soft seatbelt disable_fm skips client" {
 
     try std.testing.expectEqual(PluginDecision.allow, out.decision);
     try std.testing.expectEqual(@as(u32, 0), state.call_count);
+}
+
+test "Fm soft seatbelt sticky session trust skips client and keeps allow" {
+    // Product bar: after sticky session trust returns allow, FM must not re-ask.
+    const allocator = std.testing.allocator;
+    var state = FmFakeState{
+        .verdict = .ask,
+        .why = "would re-ask",
+        .explain = "hard-danger residual",
+    };
+    const client = fakeFmClient(&state);
+
+    var out = try applyFmSoftSeatbelt(allocator, .{
+        .decision = .allow,
+        .reason = sticky_session_trust_reason,
+    }, .{
+        .command = "git push --force",
+        .session_id = "sess-fm-sticky-trust",
+        .client = client,
+    });
+    defer out.freeOwned(allocator);
+
+    try std.testing.expectEqual(PluginDecision.allow, out.decision);
+    try std.testing.expectEqual(@as(u32, 0), state.call_count);
+    try std.testing.expectEqualStrings(sticky_session_trust_reason, out.reason.?);
+    try std.testing.expect(out.owned_reason == null);
 }
 
 test "Fm decisionFromDaemonResultWithPolicy wires soft allow upgrade to ask" {
