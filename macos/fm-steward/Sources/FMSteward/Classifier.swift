@@ -2,9 +2,17 @@ import Foundation
 
 /// Classifies a risk card: rules pre-pass first, then injectable Foundation Models backend.
 ///
-/// - Important: This path does **not** enforce the product ≤500ms timeout. Hosts and the CLI
+/// - Important: This path does **not** enforce the product default timeout (3s). Hosts and the CLI
 ///   should use `StewardSession` for timeout + cancel. `Classifier` is the pure pipeline
 ///   (rules + normalize) for tests and composition.
+///
+/// ## Residual few-shot / RAG — not on this type
+///
+/// `Classifier` has **no** few-shot retriever, no Wax store, and no residual RAG path.
+/// It never accepts or injects neighbor examples. Residual few-shot assist is **only**
+/// composed on `StewardSession` after the host builds a retriever via
+/// `FewShotRuntime.makeRetriever` (see README **Host attach**). Do not bolt a
+/// retriever onto `Classifier` for product hosts.
 public struct Classifier: Sendable {
     private let backend: any FoundationModelBackend
 

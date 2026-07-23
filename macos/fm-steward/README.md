@@ -154,14 +154,125 @@ Host sticky UI / always-allow storage / employee email·pay·social seed bodies 
 ## Library surface
 
 ```text
-StewardSession     ← preferred host API (warm + timeout race; default 3000ms)
-Classifier         ← pure rules + backend
+StewardSession     ← preferred host API (warm + timeout race; residual few-shot; default 3000ms)
+Classifier         ← pure rules + backend only (NO residual few-shot / RAG)
 RulesPrePass       ← executed=false → test_loop → CommandShape → HardDanger → residual FM
 CommandShape       ← safe skip shapes (no pipe exfil on search/echo)
 HardDangerRules    ← deterministic soft-ask for clear danger
+FewShotRuntime     ← product factory: makeRetriever (off / auto / wax)
+FewShotStorePaths  ← App Support ambig.wax (+ ensureParentDirectory)
+SeedPathResolver   ← explicit → App Support seed.json → package fixture → nil
 FewShotRetriever   ← protocol + Null / Static / WaxFewShotStore (text)
-FewShotSeedBootstrap ← seed SHA-256 reseed helpers
+FewShotSeedBootstrap ← seed SHA-256 reseed helpers (*.wax.seedsha sidecar)
 LiveBackend        ← real SystemLanguageModel, shell-focused prompt + few-shot block
 UnavailableBackend / SlowBackend
 RiskCard / ClassifyResponse / StewardModelOutput
 ```
+
+## Host attach
+
+**Product residual path for hosts:** `StewardSession` + `FewShotRuntime.makeRetriever` only.
+
+Do **not** use `Classifier` for residual RAG / few-shot. `Classifier` is the pure
+rules + backend pipeline (tests and composition). It has no retriever, no Wax store,
+and never injects neighbor examples. Residual few-shot assist is composed only on
+`StewardSession` after the host builds a retriever from the library factory.
+
+### Before you attach
+
+Run the residual attach gate (offline hard gate; optional live soft SKIP):
+
+```bash
+# from package root (macos/fm-steward)
+bash scripts/residual-stress-matrix.sh              # offline only (default)
+bash scripts/residual-stress-matrix.sh --live       # offline + live residual dump
+
+# from repo root
+bash macos/fm-steward/scripts/residual-stress-matrix.sh
+```
+
+The residual-matrix / residual-stress-matrix gate asserts rules short-circuits never
+consult few-shot (`few_shot_hits` / spy callCount == 0). Live residual dump soft-SKIPs
+when on-device FM is unavailable (exit 0). **Run residual-stress-matrix before host
+attach.** Do not enable few-shot on `eval-danger` (pure-FM only).
+
+### Store layout (product default)
+
+| Artifact | Path |
+|----------|------|
+| Wax store | `~/Library/Application Support/Orca/fm-steward/ambig.wax` |
+| Seed-hash sidecar | `~/Library/Application Support/Orca/fm-steward/ambig.wax.seedsha` |
+| Optional seed copy | `~/Library/Application Support/Orca/fm-steward/seed.json` |
+
+Resolved via `FewShotStorePaths.productStoreURL()` / `storeURL(override:)`. Hosts may
+override the store URL for tests or ops; product default is **not** a temp directory.
+
+### Seed resolution order
+
+Existence-checked (regular file only); first hit wins — `SeedPathResolver.resolve`:
+
+1. **Explicit** seed URL (host / CLI `--seed` override)
+2. **App Support** `…/Orca/fm-steward/seed.json` (`SeedPathResolver.productAppSupportSeedURL()`)
+3. **Package fixture** `Fixtures/ambig-fewshot/seed.json` when package root is available
+4. **`nil`** — no seed found
+
+| Mode (`FewShotMode`) | Missing seed / load failure |
+|----------------------|-----------------------------|
+| `.auto` (product default) | Fail-open → `NullFewShotRetriever` (pure residual FM) |
+| `.wax` | Throws (`seedNotFound` / `seedFailed`) |
+| `.off` | Always null retriever |
+
+Reseed when the store is missing **or** seed content hash ≠ sidecar `*.wax.seedsha`
+(owned by `FewShotRuntime` / `FewShotSeedBootstrap`, not the host).
+
+### Host wiring sketch
+
+```swift
+import FMSteward
+
+// 1) Resolve seed (explicit → App Support → package fixture → nil)
+let seedURL = SeedPathResolver.resolve(
+    explicit: hostSeedOverride,                         // or nil
+    appSupportSeed: SeedPathResolver.productAppSupportSeedURL(),
+    packageSeed: packageFixtureSeedURL                  // or nil in installed hosts
+)
+
+// 2) Product store under Application Support
+let storeURL = FewShotStorePaths.productStoreURL()
+try? FewShotStorePaths.ensureParentDirectory(for: storeURL)
+
+// 3) Residual retriever — ONLY via FewShotRuntime (not Classifier)
+let mode: FewShotMode = .auto
+let retriever: any FewShotRetriever
+if let seedURL {
+    retriever = try await FewShotRuntime.makeRetriever(
+        mode: mode,
+        seedURL: seedURL,
+        storeURL: storeURL
+        // searchMode defaults to .text (product path)
+    )
+} else if mode == .wax {
+    // no seed → wax must error; auto would use Null
+    throw … // host maps to fail-closed or operator message
+} else {
+    retriever = NullFewShotRetriever()  // auto / off without seed
+}
+
+// 4) Preferred host API — residual few-shot + timeout race
+let session = StewardSession(
+    backend: LiveBackend.preferredDefault(),
+    fewShotRetriever: retriever
+)
+await session.warm()
+let response = await session.classify(card)
+```
+
+### Honesty (Phase 3 attach)
+
+- **Not production Zig hooks yet.** Phase 3 does not call FM from `hook.zig` /
+  `shell_eval.zig` (see [Scope / W4](#scope--not-done-w4)). Host attach here means
+  Mac demo / embed of the Swift library only.
+- **Assist only.** Wax neighbors + on-device FM are residual soft-seatbelt assist —
+  not sole security. Zig hard fence still owns catastrophe deny. Fail-open on
+  store/search errors → empty few-shots → normal FM / unavailable path.
+- Prefer sequential `StewardSession.classify` from one owner (actor single-flight).
