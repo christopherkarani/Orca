@@ -18,7 +18,7 @@ enum FMStewardCLI {
             case .help:
                 printUsage()
                 exit(0)
-            case .classify(let cardPath, let timeoutMs, let human, let backend, let warm, let fewShot, let waxStore):
+            case .classify(let cardPath, let timeoutMs, let human, let backend, let warm, let fewShot, let waxStore, let seed):
                 try await runClassify(
                     cardPath: cardPath,
                     timeoutMs: timeoutMs,
@@ -26,7 +26,8 @@ enum FMStewardCLI {
                     backend: backend,
                     warm: warm,
                     fewShot: fewShot,
-                    waxStorePath: waxStore
+                    waxStorePath: waxStore,
+                    seedPath: seed
                 )
             case .probeMatrix:
                 try await runProbeMatrix()
@@ -55,15 +56,7 @@ private enum BackendChoice: String {
     case unavailable
 }
 
-/// Residual few-shot retrieval mode (rules path never uses this).
-private enum FewShotMode: String {
-    /// No few-shots (pure comparisons / explicit opt-out).
-    case off
-    /// Wax when store or seed available; else null (product default).
-    case auto
-    /// Require Wax store (seeded from package Fixtures if needed).
-    case wax
-}
+// Residual few-shot modes: library `FewShotMode` (off | auto | wax). CLI does not redefine.
 
 private enum Command {
     case help
@@ -74,7 +67,8 @@ private enum Command {
         backend: BackendChoice,
         warm: Bool,
         fewShot: FewShotMode,
-        waxStore: String?
+        waxStore: String?,
+        seed: String?
     )
     /// Force live FM on a card matrix; print system instructions, prompt, raw model output.
     case probeMatrix
@@ -112,6 +106,7 @@ private struct Options {
         var warm = true
         var fewShot: FewShotMode = .auto
         var waxStore: String?
+        var seed: String?
         var i = 0
         while i < args.count {
             let arg = args[i]
@@ -165,6 +160,12 @@ private struct Options {
                     throw CLIError("--wax-store requires a path")
                 }
                 waxStore = args[i]
+            case "--seed":
+                i += 1
+                guard i < args.count else {
+                    throw CLIError("--seed requires a path")
+                }
+                seed = args[i]
             default:
                 if arg.hasPrefix("-") {
                     throw CLIError("unknown option '\(arg)'", showUsage: true)
@@ -190,7 +191,8 @@ private struct Options {
                 backend: backend,
                 warm: warm,
                 fewShot: fewShot,
-                waxStore: waxStore
+                waxStore: waxStore,
+                seed: seed
             )
         )
     }
@@ -208,7 +210,8 @@ private func runClassify(
     backend: BackendChoice,
     warm: Bool,
     fewShot: FewShotMode,
-    waxStorePath: String?
+    waxStorePath: String?,
+    seedPath: String?
 ) async throws {
     let url = URL(fileURLWithPath: cardPath)
     guard FileManager.default.fileExists(atPath: url.path) else {
@@ -260,7 +263,11 @@ private func runClassify(
     case .unavailable:
         UnavailableBackend()
     }
-    let retriever = try await makeFewShotRetriever(mode: fewShot, waxStorePath: waxStorePath)
+    let retriever = try await makeFewShotRetriever(
+        mode: fewShot,
+        waxStorePath: waxStorePath,
+        seedPath: seedPath
+    )
     let session = StewardSession(
         backend: backendImpl,
         timeoutMs: bound,
@@ -286,61 +293,66 @@ private func runClassify(
     // Classify success is always exit 0 (ask is a valid verdict, not a process error).
 }
 
-/// Build residual few-shot retriever. Fail-open on auto: Wax/seed issues → null (empty shots).
-/// Reseed when store is missing **or** seed content hash ≠ sidecar (`*.wax.seedsha`).
+/// Thin CLI adapter: resolve store/seed paths then call library `FewShotRuntime.makeRetriever`.
+/// Product default store is App Support (`FewShotStorePaths`); not temporaryDirectory.
+/// Reseed / fail-open / wax strictness live in Runtime (not duplicated here).
 private func makeFewShotRetriever(
     mode: FewShotMode,
-    waxStorePath: String?
+    waxStorePath: String?,
+    seedPath: String?
 ) async throws -> any FewShotRetriever {
-    switch mode {
-    case .off:
+    if mode == .off {
+        return try await FewShotRuntime.makeRetriever(
+            mode: .off,
+            seedURL: URL(fileURLWithPath: "/dev/null"),
+            storeURL: FewShotStorePaths.productStoreURL()
+        )
+    }
+
+    let storeURL = FewShotStorePaths.storeURL(
+        override: waxStorePath.map { URL(fileURLWithPath: $0) }
+    )
+    do {
+        try FewShotStorePaths.ensureParentDirectory(for: storeURL)
+    } catch {
+        // Product path create failed: auto fail-open Null; wax surfaces the error.
+        if mode == .auto {
+            return NullFewShotRetriever()
+        }
+        throw CLIError(
+            "failed to create store parent directory for \(storeURL.path): \(error.localizedDescription)",
+            exitCode: 1
+        )
+    }
+
+    let packageSeed = packageRootForCLI()
+        .appendingPathComponent("Fixtures/ambig-fewshot/seed.json")
+    let resolvedSeed = SeedPathResolver.resolve(
+        explicit: seedPath.map { URL(fileURLWithPath: $0) },
+        appSupportSeed: SeedPathResolver.productAppSupportSeedURL(),
+        packageSeed: packageSeed
+    )
+
+    guard let seedURL = resolvedSeed else {
+        if mode == .wax {
+            throw CLIError(
+                "seed JSON not found (tried --seed, App Support, package Fixtures)",
+                exitCode: 1
+            )
+        }
+        // auto: no seed → pure residual FM (Runtime would also Null on missing path)
         return NullFewShotRetriever()
-    case .auto, .wax:
-        guard WaxFewShotStore.isWaxLinked else {
-            if mode == .wax {
-                throw CLIError("Wax not linked in this build", exitCode: 1)
-            }
-            return NullFewShotRetriever()
-        }
-        let root = packageRootForCLI()
-        let seedURL = root.appendingPathComponent("Fixtures/ambig-fewshot/seed.json")
-        let storeURL: URL
-        if let waxStorePath {
-            storeURL = URL(fileURLWithPath: waxStorePath)
-        } else {
-            let dir = FileManager.default.temporaryDirectory
-                .appendingPathComponent("fm-steward-fewshot", isDirectory: true)
-            try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
-            storeURL = dir.appendingPathComponent("ambig.wax")
-        }
+    }
 
-        let seedExists = FileManager.default.fileExists(atPath: seedURL.path)
-        if !seedExists {
-            if mode == .wax {
-                throw CLIError("seed JSON not found at \(seedURL.path)", exitCode: 1)
-            }
-            // auto: no seed → pure residual FM
-            return NullFewShotRetriever()
-        }
-
-        let store = WaxFewShotStore(storeURL: storeURL, searchMode: .text)
-        let needsSeed = FewShotSeedBootstrap.needsReseed(storeURL: storeURL, seedURL: seedURL)
-        if needsSeed {
-            do {
-                try await store.seed(fromSeedJSON: seedURL)
-                try FewShotSeedBootstrap.recordSeedHash(storeURL: storeURL, seedURL: seedURL)
-            } catch {
-                if mode == .wax {
-                    throw CLIError(
-                        "failed to seed Wax store: \(error.localizedDescription)",
-                        exitCode: 1
-                    )
-                }
-                // auto fail-open
-                return NullFewShotRetriever()
-            }
-        }
-        return store
+    do {
+        return try await FewShotRuntime.makeRetriever(
+            mode: mode,
+            seedURL: seedURL,
+            storeURL: storeURL,
+            searchMode: FewShotRuntime.defaultSearchMode
+        )
+    } catch let error as FewShotRuntime.Error {
+        throw CLIError(error.description, exitCode: 1)
     }
 }
 
@@ -742,7 +754,7 @@ private func printUsage(to stream: UnsafeMutablePointer<FILE> = stdout) {
     fm-steward — Mac on-device Foundation Models steward (Phase 3)
 
     Usage:
-      fm-steward classify --card <path.json> [--timeout-ms N] [--backend auto|live|unavailable] [--live] [--no-warm] [--few-shot off|auto|wax] [--wax-store <path>] [--json|--human]
+      fm-steward classify --card <path.json> [--timeout-ms N] [--backend auto|live|unavailable] [--live] [--no-warm] [--few-shot off|auto|wax] [--wax-store <path>] [--seed <path>] [--json|--human]
       fm-steward probe-matrix
       fm-steward eval-danger
 
@@ -753,7 +765,8 @@ private func printUsage(to stream: UnsafeMutablePointer<FILE> = stdout) {
       --live             Force LiveBackend (Apple SystemLanguageModel)
       --no-warm          Skip session.warm() / model prewarm
       --few-shot MODE    Residual-only RAG: auto (default) | off | wax
-      --wax-store <path> Path to .wax store (default: temp + seed from Fixtures)
+      --wax-store <path> Path to .wax store (default: Application Support/Orca/fm-steward/ambig.wax)
+      --seed <path>      Explicit residual seed JSON (else App Support seed.json, else package Fixtures)
       --json             Print classify-response-v1 JSON (default)
       --human            Print compact verdict / why / explain lines
       -h, --help         Show this help
@@ -762,7 +775,8 @@ private func printUsage(to stream: UnsafeMutablePointer<FILE> = stdout) {
       - v1 focus: dangerous shell/commands (not email bulk/VIP).
       - Rules: executed=false / test_loop / safe shapes → continue; HardDanger clear danger → ask; else residual FM.
       - Residual gray: Wax text few-shots from residual-knowledge packs (assist only) then SystemLanguageModel.
-      - Default --few-shot auto: seed Fixtures/ambig-fewshot/seed.json → .wax; reseed on missing store or seed hash change.
+      - Default --few-shot auto: SeedPathResolver + FewShotRuntime; product store under Application Support.
+      - Reseed when store missing or seed hash changes (library Runtime / Bootstrap — not CLI).
       - Wax / few-shot never runs on rules path; never unlocks hard deny; fail-open on auto errors.
       - eval-danger stays pure-FM (no few-shot) so viability scores stay comparable.
       - Timeout or unavailable model → verdict continue (fallback), never hang.
