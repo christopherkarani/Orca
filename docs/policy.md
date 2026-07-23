@@ -55,6 +55,7 @@ For shell mediation (hook / run / shim / `orca evaluate`), decisions follow this
    - Default timeout **3000ms** (`StewardSession.defaultTimeoutMs` / product client default)
    - May **upgrade** soft continue → **ask** only (including `ask_sticky_candidate` → ask + optional sticky hints); never softens deny/block
    - Timeout / unavailable / `ORCA_FM_STEWARD=0` → **continue** (keep the soft matrix outcome; never invent ask)
+   - **Sticky session trust is terminal soft allow** — after step 4, step 7 does **not** re-classify (no FM re-ask)
    - **Linux / non-macOS skips** step 7 (no-op continue; no steward binary required)
 
 **Shipping claim:** On macOS, product shell paths (`orca hook`, `orca evaluate`, `orca run` / shim via the product shell choke) may call the on-device FM steward after hard fence + policy matrix. FM is **assist only** — not sole security. Hard fence, pack severity matrix, sticky trust, and Strict refuse remain authoritative. YOLO, sticky, and permit lists still cannot unlock critical deny.
