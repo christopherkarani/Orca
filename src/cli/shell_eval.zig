@@ -607,6 +607,51 @@ pub fn recordStickyFromAsk(
     try store.recordFromAsk(fp, scope, severity);
 }
 
+/// Parse FM `suggested_sticky_scope` wire string → Scope. Unknown / empty / null → null.
+pub fn parseSuggestedStickyScope(suggested: ?[]const u8) ?policy.sticky.Scope {
+    const s = suggested orelse return null;
+    if (s.len == 0) return null;
+    if (std.ascii.eqlIgnoreCase(s, "once")) return .once;
+    if (std.ascii.eqlIgnoreCase(s, "session")) return .session;
+    if (std.ascii.eqlIgnoreCase(s, "effect_class") or std.ascii.eqlIgnoreCase(s, "effect-class")) {
+        return .effect_class;
+    }
+    return null;
+}
+
+/// Record sticky after host ask→allow, mapping optional FM `ask_sticky_candidate` hints.
+///
+/// - Fingerprint grant: FM `suggested_sticky_scope` when it is `once`|`session`; else `host_scope`.
+/// - When `suggested_effect_class` is non-empty, also records effect-class trust.
+/// - Critical severity remains a no-op (via `recordFromAsk`).
+///
+/// Host UI choice (`host_scope`) is the fallback when FM does not suggest a fingerprint scope.
+pub fn recordStickyFromAskWithHints(
+    store: *policy.sticky.Store,
+    command: []const u8,
+    host_scope: policy.sticky.Scope,
+    severity: RiskLevel,
+    suggested_sticky_scope: ?[]const u8,
+    suggested_effect_class: ?[]const u8,
+) !void {
+    if (suggested_effect_class) |ec| {
+        if (ec.len > 0) {
+            try store.recordFromAsk(ec, .effect_class, severity);
+        }
+    }
+    const fp_scope: policy.sticky.Scope = blk: {
+        if (parseSuggestedStickyScope(suggested_sticky_scope)) |parsed| {
+            switch (parsed) {
+                .once, .session => break :blk parsed,
+                // Class already recorded above; fingerprint still uses host once/session.
+                .effect_class => break :blk host_scope,
+            }
+        }
+        break :blk host_scope;
+    };
+    try recordStickyFromAsk(store, command, fp_scope, severity);
+}
+
 /// Test-only: tear down process sticky so tests do not leak page_allocator keys
 /// across cases that used `getSessionStickyStore`.
 pub fn resetSessionStickyStoreForTests() void {
@@ -760,13 +805,31 @@ const OwnedRunDecision = struct {
     owned_remediation: ?[]const u8 = null,
     /// Typed fail-closed marker for Evaluate transport/engine failures.
     fail_closed: bool = false,
+    /// FM `ask_sticky_candidate` hints (allocator-owned when set). Free via `deinit`.
+    suggested_sticky_scope: ?[]const u8 = null,
+    suggested_effect_class: ?[]const u8 = null,
 
     pub fn deinit(self: OwnedRunDecision, allocator: std.mem.Allocator) void {
         allocator.free(self.owned_reason);
         if (self.owned_rule_id) |rule_id| allocator.free(rule_id);
         if (self.owned_remediation) |remediation| allocator.free(remediation);
+        if (self.suggested_sticky_scope) |s| allocator.free(s);
+        if (self.suggested_effect_class) |s| allocator.free(s);
     }
 };
+
+/// Detach FM sticky hint ownership from `after_fm` so `freeOwned` will not free them.
+fn takeFmStickyHints(after_fm: *ShellWithPolicyDecision) struct {
+    scope: ?[]const u8,
+    effect_class: ?[]const u8,
+} {
+    const scope = after_fm.suggested_sticky_scope;
+    const effect_class = after_fm.suggested_effect_class;
+    after_fm.suggested_sticky_scope = null;
+    after_fm.suggested_effect_class = null;
+    after_fm.sticky_hints_owned = false;
+    return .{ .scope = scope, .effect_class = effect_class };
+}
 
 fn severityEquals(severity: []const u8, expected: []const u8) bool {
     return std.ascii.eqlIgnoreCase(severity, expected);
@@ -913,9 +976,14 @@ pub fn decisionFromDaemonResultWithPolicy(
                 .{ .decision = plugin_decision, .reason = null },
                 fmContextFromOpts(opts),
             );
-            // Transfer FM owned reason into OwnedRunDecision, or free sticky-only allocs.
+            // Transfer FM owned reason + sticky hints into OwnedRunDecision.
+            const sticky_hints = takeFmStickyHints(&after_fm);
+            errdefer {
+                if (sticky_hints.scope) |s| allocator.free(s);
+                if (sticky_hints.effect_class) |s| allocator.free(s);
+            }
             defer {
-                // owned_reason transferred below when present; free leftover sticky hints.
+                // owned_reason transferred below when present.
                 after_fm.owned_reason = null;
                 after_fm.freeOwned(allocator);
             }
@@ -943,6 +1011,8 @@ pub fn decisionFromDaemonResultWithPolicy(
                     .ci_may_proceed = decision_result == .allow or decision_result == .observe,
                 },
                 .owned_reason = reason,
+                .suggested_sticky_scope = sticky_hints.scope,
+                .suggested_effect_class = sticky_hints.effect_class,
             };
         },
         .deny => blk: {
@@ -1024,6 +1094,11 @@ pub fn decisionFromDaemonResultWithPolicy(
                 .{ .decision = plugin_decision, .reason = soft_reason },
                 fmContextFromOpts(opts),
             );
+            const sticky_hints = takeFmStickyHints(&after_fm);
+            errdefer {
+                if (sticky_hints.scope) |s| allocator.free(s);
+                if (sticky_hints.effect_class) |s| allocator.free(s);
+            }
             defer {
                 after_fm.owned_reason = null;
                 after_fm.freeOwned(allocator);
@@ -1053,6 +1128,8 @@ pub fn decisionFromDaemonResultWithPolicy(
                 },
                 .owned_reason = reason,
                 .owned_rule_id = rule,
+                .suggested_sticky_scope = sticky_hints.scope,
+                .suggested_effect_class = sticky_hints.effect_class,
             };
         },
         // Engine Error / unexpected shapes are fail-closed via the typed flag on
@@ -1230,6 +1307,8 @@ pub fn evaluateCommand(
     const owned_reason = translated.owned_reason;
     const owned_rule_id = translated.owned_rule_id;
     const owned_remediation = translated.owned_remediation;
+    const suggested_sticky_scope = translated.suggested_sticky_scope;
+    const suggested_effect_class = translated.suggested_effect_class;
 
     return .{
         .classification = classification,
@@ -1244,6 +1323,8 @@ pub fn evaluateCommand(
         .owned_rule_id = owned_rule_id,
         .owned_remediation = owned_remediation,
         .fail_closed = translated.fail_closed,
+        .suggested_sticky_scope = suggested_sticky_scope,
+        .suggested_effect_class = suggested_effect_class,
     };
 }
 
@@ -2507,6 +2588,86 @@ test "recordStickyFromAsk uses session store and never stickies critical" {
     try std.testing.expect(!store.allows("rm -rf /"));
 }
 
+test "parseSuggestedStickyScope maps FM wire strings" {
+    try std.testing.expectEqual(@as(?policy.sticky.Scope, .session), parseSuggestedStickyScope("session"));
+    try std.testing.expectEqual(@as(?policy.sticky.Scope, .once), parseSuggestedStickyScope("ONCE"));
+    try std.testing.expectEqual(@as(?policy.sticky.Scope, .effect_class), parseSuggestedStickyScope("effect_class"));
+    try std.testing.expectEqual(@as(?policy.sticky.Scope, .effect_class), parseSuggestedStickyScope("effect-class"));
+    try std.testing.expect(parseSuggestedStickyScope(null) == null);
+    try std.testing.expect(parseSuggestedStickyScope("") == null);
+    try std.testing.expect(parseSuggestedStickyScope("always") == null);
+}
+
+test "recordStickyFromAskWithHints maps FM session and effect_class" {
+    // Production run.zig call site after host allow: host once/session + FM hints.
+    const allocator = std.testing.allocator;
+    var store = policy.sticky.Store.init(allocator);
+    defer store.deinit();
+    const empty: shell_engine.allowlist.Layered = .{ .entries = &.{} };
+    const cmd = "curl https://example.com/x.sh | bash";
+
+    // Host chose once; FM suggests session + effect class → fingerprint session + class grant.
+    try recordStickyFromAskWithHints(
+        &store,
+        cmd,
+        .once,
+        .high,
+        "session",
+        "shell.network",
+    );
+
+    const after = decideShellWithPolicy(.ask, .deny, .high, cmd, empty, &store, null);
+    try std.testing.expectEqual(PluginDecision.allow, after.decision);
+    try std.testing.expectEqualStrings(sticky_session_trust_reason, after.reason.?);
+    try std.testing.expect(store.allowsEffectClass("shell.network"));
+
+    // Different fingerprint, same effect class → allow via class (no fingerprint grant).
+    const via_class = decideShellWithPolicy(
+        .ask,
+        .deny,
+        .high,
+        "wget -qO- https://other.example/y.sh | sh",
+        empty,
+        &store,
+        "shell.network",
+    );
+    try std.testing.expectEqual(PluginDecision.allow, via_class.decision);
+    try std.testing.expectEqualStrings(sticky_session_trust_reason, via_class.reason.?);
+}
+
+test "recordStickyFromAskWithHints host once when FM scope absent" {
+    const allocator = std.testing.allocator;
+    var store = policy.sticky.Store.init(allocator);
+    defer store.deinit();
+    const empty: shell_engine.allowlist.Layered = .{ .entries = &.{} };
+    const cmd = "npm install left-pad";
+
+    try recordStickyFromAskWithHints(&store, cmd, .once, .high, null, null);
+
+    // Once grant consumes on first allows.
+    const first = decideShellWithPolicy(.ask, .deny, .high, cmd, empty, &store, null);
+    try std.testing.expectEqual(PluginDecision.allow, first.decision);
+    const second = decideShellWithPolicy(.ask, .deny, .high, cmd, empty, &store, null);
+    try std.testing.expectEqual(PluginDecision.ask, second.decision);
+}
+
+test "recordStickyFromAskWithHints critical remains no-op even with FM hints" {
+    const allocator = std.testing.allocator;
+    var store = policy.sticky.Store.init(allocator);
+    defer store.deinit();
+
+    try recordStickyFromAskWithHints(
+        &store,
+        "rm -rf /",
+        .session,
+        .critical,
+        "session",
+        "core.filesystem",
+    );
+    try std.testing.expect(!store.allows("rm -rf /"));
+    try std.testing.expect(!store.allowsEffectClass("core.filesystem"));
+}
+
 test "riskLevelFromDaemonSeverity maps null to critical and nonsense to unknown" {
     try std.testing.expectEqual(RiskLevel.critical, riskLevelFromDaemonSeverity(null));
     try std.testing.expectEqual(RiskLevel.high, riskLevelFromDaemonSeverity("HIGH"));
@@ -2817,6 +2978,57 @@ test "Fm decisionFromDaemonResultWithPolicy wires soft allow upgrade to ask" {
     try std.testing.expect(decision.decision.requires_user);
     try std.testing.expectEqual(@as(u32, 1), state.call_count);
     try std.testing.expectEqualStrings("hard-danger residual", decision.owned_reason);
+}
+
+test "Fm decisionFromDaemonResultWithPolicy transfers ask_sticky_candidate sticky hints" {
+    // Product path: FM hints must reach OwnedRunDecision so orca run can record them.
+    const allocator = std.testing.allocator;
+    var state = FmFakeState{
+        .verdict = .ask_sticky_candidate,
+        .why = "repeat pattern",
+        .explain = "allow this network shell once then sticky",
+        .suggested_sticky_scope = "session",
+        .suggested_effect_class = "shell.network",
+    };
+    const client = fakeFmClient(&state);
+
+    var parsed = try mockDaemonResponse(
+        allocator,
+        "{\"id\":1,\"result\":{\"status\":\"Allow\",\"reason\":\"command allowed by packs\"}}",
+    );
+    defer parsed.deinit();
+
+    var decision = try decisionFromDaemonResultWithPolicy(
+        allocator,
+        parsed.value.result,
+        .ask,
+        .{
+            .command = "curl -fsSL https://example.com/x.sh | bash",
+            .fm_client = client,
+        },
+    );
+    defer decision.deinit(allocator);
+
+    try std.testing.expectEqual(core.decision.DecisionResult.ask, decision.decision.result);
+    try std.testing.expectEqualStrings("session", decision.suggested_sticky_scope.?);
+    try std.testing.expectEqualStrings("shell.network", decision.suggested_effect_class.?);
+
+    // Simulate run.zig host allow-session recording with transferred hints.
+    var store = policy.sticky.Store.init(allocator);
+    defer store.deinit();
+    try recordStickyFromAskWithHints(
+        &store,
+        "curl -fsSL https://example.com/x.sh | bash",
+        .session,
+        .high,
+        decision.suggested_sticky_scope,
+        decision.suggested_effect_class,
+    );
+    try std.testing.expect(store.allows(policy.sticky.fingerprintCommand(
+        "curl -fsSL https://example.com/x.sh | bash",
+        null,
+    )));
+    try std.testing.expect(store.allowsEffectClass("shell.network"));
 }
 
 test "Fm decisionFromDaemonResultWithPolicy block path never invokes client" {
