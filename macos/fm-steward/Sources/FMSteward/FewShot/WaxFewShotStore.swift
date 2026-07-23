@@ -27,7 +27,6 @@ public actor WaxFewShotStore: FewShotRetriever {
     #if canImport(Wax)
     private var memory: Memory?
     #endif
-    private var openFailed: Bool = false
 
     public init(storeURL: URL, searchMode: WaxSearchMode = .text) {
         self.storeURL = storeURL
@@ -87,8 +86,11 @@ public actor WaxFewShotStore: FewShotRetriever {
         guard k > 0 else { return [] }
 
         #if canImport(Wax)
+        // Session timeout may cancel residual retrieve; fail-open empty promptly.
+        if Task.isCancelled { return [] }
         do {
             try await ensureOpen(create: false)
+            if Task.isCancelled { return [] }
             guard let memory else { return [] }
             let mode: Memory.RetrievalMode = switch searchMode {
             case .text: .textOnly
@@ -98,10 +100,16 @@ public actor WaxFewShotStore: FewShotRetriever {
                 query,
                 options: Memory.SearchOptions(topK: k, mode: mode)
             )
+            if Task.isCancelled { return [] }
             var out: [FewShotExample] = []
             var seen = Set<String>()
             for item in results.items {
                 guard let ex = FewShotExample.parseDocument(item.text) ?? parseMetadata(item) else {
+                    continue
+                }
+                // Defense in depth: drop hard-rule catastrophe hits even if a
+                // poisoned/torn store kept a matching sidecar fingerprint.
+                if FewShotSeedLoader.matchingHardRuleExclusion(command: ex.command) != nil {
                     continue
                 }
                 let key = ex.command
@@ -150,12 +158,10 @@ public actor WaxFewShotStore: FewShotRetriever {
                 try? await memory.close()
             }
             self.memory = nil
-            openFailed = false
         } else if memory != nil {
             return
         }
-        // Fail-open for a single open attempt only — do not permanently disable retrieve.
-        // (openFailed retained for diagnostics; always retry when memory is nil.)
+        // Always retry open when memory is nil (fail-open per attempt; no permanent disable).
 
         let fm = FileManager.default
         let dir = storeURL.deletingLastPathComponent()
@@ -179,9 +185,7 @@ public actor WaxFewShotStore: FewShotRetriever {
             )
             let mem = try await Memory(at: storeURL, config: config)
             memory = mem
-            openFailed = false
         } catch {
-            openFailed = true
             memory = nil
             throw error
         }

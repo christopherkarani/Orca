@@ -793,7 +793,7 @@ private func printUsage(to stream: UnsafeMutablePointer<FILE> = stdout) {
       - Residual gray: Wax text few-shots from residual-knowledge packs (assist only) then SystemLanguageModel.
       - Default --few-shot auto: SeedPathResolver + FewShotRuntime; product store under Application Support.
       - First-run: package Fixtures seed is copied into App Support seed.json when missing (library bootstrap).
-      - Reseed when store missing, seed hash changes, or store format version bumps (*.wax.seedsha vN:sha).
+      - Reseed when store missing, seed/store content hash ≠ sidecar, or store format version bumps (*.wax.seedsha payload vN:seedSHA:storeSHA).
       - Wax / few-shot never runs on rules path; never unlocks hard deny; fail-open on auto errors.
       - eval-danger stays pure-FM (no few-shot) so viability scores stay comparable.
       - Timeout or unavailable model → verdict continue (fallback), never hang.

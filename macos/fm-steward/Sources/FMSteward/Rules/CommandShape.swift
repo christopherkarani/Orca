@@ -314,14 +314,6 @@ public enum CommandShape {
         return false
     }
 
-    /// Pipe into a shell interpreter or sudo-wrapped shell.
-    static func pipesToShell(_ s: String) -> Bool {
-        // | bash, | sh, | /bin/zsh, | sudo bash, etc.
-        guard s.contains("|") else { return false }
-        let pattern = #"\|\s*(sudo\s+)?(/?(usr/)?bin/)?(ba)?sh\b|\|\s*(sudo\s+)?(/?(usr/)?bin/)?zsh\b|\|\s*(sudo\s+)?(/?(usr/)?bin/)?dash\b|\|\s*(sudo\s+)?(/?(usr/)?bin/)?ksh\b|\|\s*(sudo\s+)?(/?(usr/)?bin/)?fish\b|\|\s*sudo\b"#
-        return s.range(of: pattern, options: .regularExpression) != nil
-    }
-
     /// Lightweight quote-aware tokenizer (single/double quotes; no escapes beyond dropping quotes).
     static func shellishTokens(_ s: String) -> [String] {
         var tokens: [String] = []

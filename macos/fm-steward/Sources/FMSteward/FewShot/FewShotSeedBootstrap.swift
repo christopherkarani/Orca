@@ -37,14 +37,45 @@ public enum FewShotSeedBootstrap: Sendable {
     /// Poll interval while waiting for the reseed lock.
     public static let reseedLockPollMs: Int = 25
 
-    /// Process-local gate: Darwin `flock` is process-owned (same-PID threads do
-    /// not contend). Actor isolation serializes reseed critical sections without
-    /// holding a blocking `NSLock` across `await` (thread-pool safe).
+    /// Process-local gate: Darwin `flock` is process-owned (same-PID tasks do
+    /// not contend). A plain actor is **reentrant** at `await`, so isolation alone
+    /// cannot serialize concurrent reseeds. This gate is a non-reentrant async
+    /// mutex (busy flag + waiter continuations) that stays exclusive across the
+    /// full `await body()` critical section without a blocking `NSLock` (safe on
+    /// the cooperative thread pool). Cross-process exclusivity still uses flock.
     private actor ProcessLocalReseedGate {
         static let shared = ProcessLocalReseedGate()
 
+        private var busy = false
+        private var waiters: [CheckedContinuation<Void, Never>] = []
+
+        /// Run `body` with exclusive process-local ownership for the entire
+        /// duration of `body`, including across its internal `await` points.
         func run<T: Sendable>(_ body: @Sendable () async throws -> T) async rethrows -> T {
-            try await body()
+            await acquire()
+            defer { release() }
+            return try await body()
+        }
+
+        private func acquire() async {
+            if !busy {
+                busy = true
+                return
+            }
+            await withCheckedContinuation { (cont: CheckedContinuation<Void, Never>) in
+                waiters.append(cont)
+            }
+            // Resumed only after a prior holder handed off; `busy` remains true.
+        }
+
+        private func release() {
+            if waiters.isEmpty {
+                busy = false
+                return
+            }
+            // Hand off exclusivity to the next waiter without clearing `busy`.
+            let next = waiters.removeFirst()
+            next.resume()
         }
     }
 
@@ -253,8 +284,9 @@ public enum FewShotSeedBootstrap: Sendable {
     }
 
     /// Run `body` while holding an exclusive flock on the store's reseed lock file
-    /// **and** a process-local actor gate (Darwin flock does not serialize same-PID
-    /// threads; a blocking `NSLock` across `await` is unsafe on the cooperative pool).
+    /// **and** the process-local non-reentrant async mutex (Darwin flock does not
+    /// serialize same-PID tasks; a blocking `NSLock` across `await` is unsafe on
+    /// the cooperative pool; a bare actor reenters at suspension points).
     ///
     /// Multi-process safe (`flock` LOCK_EX). Polls up to `waitMs` when the lock is
     /// held elsewhere. Callers map `LockError.contentionTimeout` to `.auto` Null
@@ -264,7 +296,7 @@ public enum FewShotSeedBootstrap: Sendable {
         waitMs: Int = reseedLockWaitMs,
         body: @Sendable () async throws -> T
     ) async throws -> T {
-        // Same-process serialization before open/flock (flock is process-owned on Darwin).
+        // Same-process exclusive ownership before open/flock (flock is process-owned on Darwin).
         try await ProcessLocalReseedGate.shared.run {
             try await withReseedLockCrossProcess(
                 storeURL: storeURL,

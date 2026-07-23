@@ -295,7 +295,7 @@ struct FewShotRuntimeTests {
 
     // MARK: - R6 concurrent reseed stress
 
-    @Test("R6 concurrent makeRetriever(.auto) ≥4 tasks: usable or Null, no crash")
+    @Test("R6 concurrent makeRetriever(.auto) ≥4 tasks: exclusive seed + stable sidecar")
     func concurrentAutoReseedStress() async throws {
         guard WaxFewShotStore.isWaxLinked else { return }
 
@@ -306,6 +306,7 @@ struct FewShotRuntimeTests {
         #expect(FileManager.default.fileExists(atPath: seedURL.path))
         let storeURL = root.appendingPathComponent("ambig.wax")
         #expect(!FileManager.default.fileExists(atPath: storeURL.path))
+        #expect(FewShotSeedBootstrap.needsReseed(storeURL: storeURL, seedURL: seedURL))
 
         let taskCount = 4
         let results: [any FewShotRetriever] = try await withThrowingTaskGroup(
@@ -329,24 +330,104 @@ struct FewShotRuntimeTests {
         }
 
         #expect(results.count == taskCount)
-        // Each result is usable Wax or fail-open Null — never crash / throw from .auto.
+        // Process-local non-reentrant gate + flock: same-PID concurrent cold start
+        // should yield live Wax stores (not systemic fail-open to Null under false
+        // contention). Crash-only is insufficient for R6 exclusive-seed ownership.
+        var waxCount = 0
         for r in results {
             #expect(r is WaxFewShotStore || r is NullFewShotRetriever)
+            if r is WaxFewShotStore { waxCount += 1 }
             await closeIfWax(r)
         }
+        #expect(waxCount >= 1)
+        // Under exclusive same-PID ownership, all waiters re-check under lock and
+        // open the already-seeded store — expect every concurrent attach to be Wax.
+        #expect(waxCount == taskCount)
 
-        // Post single-threaded auto succeeds or Null cleanly (store may already be valid).
+        #expect(FileManager.default.fileExists(atPath: storeURL.path))
+        let sidecar = FewShotSeedBootstrap.seedHashSidecarURL(for: storeURL)
+        #expect(FileManager.default.fileExists(atPath: sidecar.path))
+        #expect(!FewShotSeedBootstrap.needsReseed(storeURL: storeURL, seedURL: seedURL))
+
+        // Single stable fingerprint: one seeder wrote seed+store hashes once.
+        let recorded = try String(contentsOf: sidecar, encoding: .utf8)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        let expectedSeedHash = try FewShotSeedBootstrap.seedContentSHA256(of: seedURL)
+        let expectedStoreHash = try FewShotSeedBootstrap.storeContentSHA256(of: storeURL)
+        let expected = FewShotSeedBootstrap.encodeSidecarValue(
+            seedHash: expectedSeedHash,
+            storeHash: expectedStoreHash
+        )
+        #expect(recorded == expected)
+        #expect(recorded.split(separator: ":").count == 3)
+
+        // Post single-threaded auto: fast path, still no reseed thrash.
         let post = try await FewShotRuntime.makeRetriever(
             mode: .auto,
             seedURL: seedURL,
             storeURL: storeURL,
             searchMode: .text
         )
-        #expect(post is WaxFewShotStore || post is NullFewShotRetriever)
-        if post is WaxFewShotStore {
-            #expect(FileManager.default.fileExists(atPath: storeURL.path))
-            #expect(!FewShotSeedBootstrap.needsReseed(storeURL: storeURL, seedURL: seedURL))
-        }
+        #expect(post is WaxFewShotStore)
+        #expect(!FewShotSeedBootstrap.needsReseed(storeURL: storeURL, seedURL: seedURL))
+        let recordedAfter = try String(contentsOf: sidecar, encoding: .utf8)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        #expect(recordedAfter == recorded)
         await closeIfWax(post)
+    }
+
+    // MARK: - Store fingerprint stability (open/search must not thrash reseed)
+
+    @Test("M-12 store fingerprint stable after seed + retrieve + close")
+    func storeFingerprintStableAfterOpenSearch() async throws {
+        guard WaxFewShotStore.isWaxLinked else { return }
+
+        let root = try tempRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let seedURL = packageSeedURL()
+        let storeURL = root.appendingPathComponent("ambig.wax")
+
+        // Seed once via factory (writes store + sidecar).
+        let retriever = try await FewShotRuntime.makeRetriever(
+            mode: .wax,
+            seedURL: seedURL,
+            storeURL: storeURL,
+            searchMode: .text
+        )
+        #expect(retriever is WaxFewShotStore)
+        #expect(!FewShotSeedBootstrap.needsReseed(storeURL: storeURL, seedURL: seedURL))
+
+        let sidecar = FewShotSeedBootstrap.seedHashSidecarURL(for: storeURL)
+        let hashBefore = try String(contentsOf: sidecar, encoding: .utf8)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        let storeHashBefore = try FewShotSeedBootstrap.storeContentSHA256(of: storeURL)
+
+        // Open/search path (retrieve) must not mutate store bytes in a way that
+        // flips needsReseed / thrash-reseeds on the next attach.
+        let hits = await retriever.retrieve(for: grayCard(command: "npm install foo"), limit: 3)
+        #expect(hits.count >= 1)
+        await closeIfWax(retriever)
+
+        let storeHashAfter = try FewShotSeedBootstrap.storeContentSHA256(of: storeURL)
+        let hashAfter = try String(contentsOf: sidecar, encoding: .utf8)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        #expect(storeHashAfter == storeHashBefore)
+        #expect(hashAfter == hashBefore)
+        #expect(!FewShotSeedBootstrap.needsReseed(storeURL: storeURL, seedURL: seedURL))
+
+        // Second factory attach must take the no-reseed fast path (same fingerprint).
+        let second = try await FewShotRuntime.makeRetriever(
+            mode: .auto,
+            seedURL: seedURL,
+            storeURL: storeURL,
+            searchMode: .text
+        )
+        #expect(second is WaxFewShotStore)
+        #expect(!FewShotSeedBootstrap.needsReseed(storeURL: storeURL, seedURL: seedURL))
+        let hashFinal = try String(contentsOf: sidecar, encoding: .utf8)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        #expect(hashFinal == hashBefore)
+        await closeIfWax(second)
     }
 }

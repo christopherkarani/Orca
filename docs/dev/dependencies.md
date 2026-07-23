@@ -82,15 +82,16 @@ only** for the UI export; they are not linked into `orca` or `orca-daemon`.
 New dependency: **Wax** (Swift Package Manager).
 
 - Name: Wax  
-- Source: GitHub [`christopherkarani/Wax`](https://github.com/christopherkarani/Wax) pin **≥ 0.1.25**  
-  (`from: "0.1.25"` in `macos/fm-steward/Package.swift`; resolved `0.1.25`)  
+- Source: GitHub [`christopherkarani/Wax`](https://github.com/christopherkarani/Wax) pin **exact 0.1.25**  
+  (`exact: "0.1.25"` in `macos/fm-steward/Package.swift`; matches `Package.resolved`)  
 - License: Apache-2.0  
 - Why: on-device few-shot retrieval for residual Foundation Model classify; not available in Zig std / Foundation alone as a single-file hybrid memory  
 - Untrusted input: searches agent command strings already present on the host; store is a **curated seed** (`Fixtures/ambig-fewshot/seed.json`), not untrusted web or live agent traffic  
 - Security role: **assist only** for residual FM — never a security authority; runs only after `RulesPrePass` returns nil; never unlocks hard deny; fail-open (empty few-shots) on open/search errors  
 - Platforms: macOS 14+ upstream; fm-steward targets macOS 26+  
 - Search mode: product/CLI default **text** for determinism (`traits: []` disables default MiniLM); hybrid optional when MiniLM trait enabled  
-- Note: **0.1.24** SPM checkout failed on a broken `homebrew-wax` submodule pin; use **0.1.25+**  
+- Note: **0.1.24** SPM checkout failed on a broken `homebrew-wax` submodule pin; pin **exact 0.1.25** (not a `from:` range)  
+
 - Concurrency: open store via `Memory(at:config:)` with a value `Config` (not a non-Sendable configure closure)  
 - Tests: protocol + `StaticFewShotRetriever` / `NullFewShotRetriever`; temp-dir Wax text-mode integration test
 

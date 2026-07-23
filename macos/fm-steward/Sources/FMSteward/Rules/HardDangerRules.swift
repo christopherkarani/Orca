@@ -4,19 +4,33 @@ import Foundation
 /// Complements Zig hard fence (which may deny some of these entirely in production).
 /// These never unlock deny→allow; they only force **ask** with explain.
 public enum HardDangerRules {
-    /// Path-optional shell binary: `bash`, `/bin/sh`, `/usr/bin/zsh`,
-    /// `/usr/local/bin/bash`, `/opt/homebrew/bin/zsh`, etc.
-    /// Covers bash|sh|zsh|dash|ksh|fish (case-insensitive at match time).
+    /// Basename-aware shell binary: `bash`, `sh`, `zsh`, `dash`, `ksh`, `fish`
+    /// with optional path prefix (absolute, relative `./`/`../`, or `~/…`).
+    /// Matches `/opt/local/bin/bash`, `/nix/store/…/bin/bash`, `./bash`, bare names.
     private static let shellBin =
-        #"(?:/(?:bin|usr/bin|usr/local/bin|opt/homebrew/bin)/)?(?:(?:ba)?sh|zsh|dash|ksh|fish)\b"#
+        #"(?:(?:\./|\.\./|~/|/)(?:[^\s/]+/)*)?(?:bash|sh|zsh|dash|ksh|fish)\b"#
 
     /// Optional `sudo` with short flags (`-E`, `-n`, `-i`, `-s`, `-H`, … or `-u user`)
     /// then optional `env`/`command`. `-u user` is matched before bare short clusters.
     private static let shellPrefix =
         #"(?:sudo\s+(?:(?:-u\s+\S+|-[A-Za-z]+)\s+)*)?(?:(?:env|command)\s+)?"#
 
-    /// Full pipe/exec sink: optional sudo/env wrappers + path-optional shell.
-    private static var shellSink: String { shellPrefix + shellBin }
+    /// `sudo -s` / `sudo -i` / `sudo -is` (any short-flag cluster containing `i` or `s`)
+    /// as a shell sink **without** requiring a trailing shell binary.
+    /// Real sudo: `-s`/`-i` already launch a shell.
+    private static let sudoInteractiveShell =
+        #"sudo\s+(?:(?:-u\s+\S+|-[A-Za-z]+)\s+)*(?:-[A-Za-z]*[is][A-Za-z]*)\b"#
+
+    /// Full pipe/exec sink: (optional sudo/env + path-optional shell)
+    /// **or** bare interactive sudo (`sudo -s` / `sudo -i`) with no shell argv.
+    private static var shellSink: String {
+        #"(?:\#(shellPrefix)\#(shellBin)|\#(sudoInteractiveShell))"#
+    }
+
+    /// `$HOME` / `${HOME}` plus parameter-expansion forms that still expand to home:
+    /// `${HOME:-x}`, `${HOME:=x}`, `${HOME:+x}`, `${HOME:?x}`, `${HOME/foo/bar}`, etc.
+    private static let homeEnv =
+        #"\$home\b|\$\{home(?:[-:=?+/%#][^}]*)?\}"#
 
     /// If matched, returns an ask* response; else nil (fall through to FM).
     public static func evaluate(_ card: RiskCard) -> ClassifyResponse? {
@@ -42,8 +56,12 @@ public enum HardDangerRules {
             (#"rm\s+(-[a-zA-Z]*r[a-zA-Z]*|--recursive).*/\s*$|rm\s+(-[a-zA-Z]*r[a-zA-Z]*|--recursive).*\s+/"#,
              "Recursive rm targeting filesystem root.",
              "This command recursively deletes from the filesystem root. Confirm before running."),
-            // Home / system paths, including $HOME / ${HOME} (any case).
-            (#"rm\s+(-[a-zA-Z]*r[a-zA-Z]*|--recursive).*(~|/users|/home|/library|/system|\$\{home\}|\$home\b)"#,
+            // Catastrophic globs: rm -rf /*, rm -rf *, rm -rf ./*
+            (#"rm\s+(-[a-zA-Z]*r[a-zA-Z]*|--recursive).*(?:/\*|\./\*|(?<=\s)\*(?:\s|$))"#,
+             "Recursive rm with catastrophic root/glob wipe.",
+             "This command recursively deletes via a root or wildcard path. Confirm before running."),
+            // Home / system paths, including $HOME / ${HOME} and parameter expansions.
+            (#"rm\s+(-[a-zA-Z]*r[a-zA-Z]*|--recursive).*(~|/users|/home|/library|/system|"# + homeEnv + #")"#,
              "Recursive rm of home or system paths.",
              "This command recursively deletes home or system paths. Confirm before running."),
             // Obfuscated rm: ${IFS}, $IFS, and quote-split r""m style.
@@ -65,13 +83,23 @@ public enum HardDangerRules {
              "Download to file then execute with a shell.",
              "This downloads a script and then runs it. Confirm before running."),
             // bash -c "$(curl …)" / zsh -c 'curl …' / /bin/bash -c …
-            (#"\b"# + shellBin + #"\s+-c\b.*\b(curl|wget)\b"#,
+            // Leading optional path so absolute shell paths match without a word-boundary
+            // between whitespace and `/` (ICU `\b` is word↔nonword only).
+            (#"(?:^|[\s;|&])"# + shellBin + #"\s+-c\b.*\b(curl|wget)\b"#,
              "Shell -c invoking curl/wget.",
              "This runs a shell that fetches remote content. Confirm before running."),
             // Process substitution: bash <(curl …) / zsh <(wget …)
-            (#"\b"# + shellBin + #"\s+<\(.*\b(curl|wget)\b"#,
+            (#"(?:^|[\s;|&])"# + shellBin + #"\s+<\(.*\b(curl|wget)\b"#,
              "Shell process-substitution of remote download.",
              "This executes a remote download via process substitution. Confirm before running."),
+            // eval "$(curl…)" / eval $(wget…) / eval `curl…`
+            (#"\beval\b.*\b(curl|wget)\b"#,
+             "Eval of remote download.",
+             "This evals remote content fetched by curl/wget. Confirm before running."),
+            // source <(curl…) / . <(curl…)
+            (#"(\bsource\b|(?:^|[\s;|&])\.)\s+<\(.*\b(curl|wget)\b"#,
+             "Source process-substitution of remote download.",
+             "This sources remote content via process substitution. Confirm before running."),
             (#"\bbase64\b.*\|\s*"# + shellSink,
              "Base64 decode piped into shell.",
              "This decodes and executes a payload in a shell. Confirm before running."),

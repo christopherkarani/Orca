@@ -117,14 +117,15 @@ pub const Runtime = struct {
         if (!server_closed) {
             self.state.server.deinit(io);
         }
-        // M-6: if detached workers remain after both budgets, abandon reclaim for
-        // process lifetime. Prefer an intentional State leak over UAF destroy of
-        // memory still touched by connectionLoop / handleConnection. Workers
-        // continue to use the leaked State until their own read/idle timeouts.
-        // Full joinable workers (force-close client FDs) are a larger redesign.
-        if (self.state.active_connections.load(.acquire) > 0) {
-            self.* = undefined;
-            return;
+        // M-2/M-3: Do not abandon reclaim while active_connections > 0. State
+        // borrows selected_policy and a caller-owned allocator; returning with
+        // a leaked State still UAFs when the caller frees policy/GPA after
+        // deinit. Prefer blocking until workers drain over intentional leak.
+        // Note: deinit may block for the lifetime of long-lived tunnels
+        // (continuous traffic defeats the 3s tunnel idle timeout).
+        while (self.state.active_connections.load(.acquire) > 0) {
+            const duration = std.Io.Duration.fromNanoseconds(10 * std.time.ns_per_ms);
+            std.Io.sleep(io, duration, .awake) catch {};
         }
         for (self.state.audit_events.items) |ev| ev.deinit(self.state.allocator);
         self.state.audit_events.deinit(self.state.allocator);
@@ -279,12 +280,18 @@ const ConnectionContext = struct {
 };
 
 fn connectionLoop(context: *ConnectionContext) void {
-    const io = context.state.threaded.io();
+    const state = context.state;
+    const io = state.threaded.io();
+    // M-1: cache allocator before fetchSub. Runtime.deinit reclaims State as
+    // soon as active_connections hits 0; touching *State after the last
+    // worker's fetchSub is free-before-join UAF.
     defer {
+        const allocator = context.state.allocator;
         _ = context.state.active_connections.fetchSub(1, .acq_rel);
-        context.state.allocator.destroy(context);
+        // Last *State touch was fetchSub; free ConnectionContext only.
+        allocator.destroy(context);
     }
-    handleConnection(context.state, io, context.client) catch {};
+    handleConnection(state, io, context.client) catch {};
 }
 
 fn handleConnection(state: *State, io: std.Io, client: std.Io.net.Stream) !void {
@@ -363,20 +370,27 @@ pub fn parseRequest(bytes: []const u8) !ParsedRequest {
 
     const host_header = headerValue(bytes[0 .. headers_end - 4], "host") orelse return error.InvalidProxyRequest;
     const parsed_host = try parseAuthority(host_header, 80);
-    // Dial authority must match the authority used for network.evaluate (M-9).
-    // Absolute-form request-target is the policy destination; TCP must use that
-    // host/port, not a diverging Host header (SSRF via Host vs URL mismatch).
+    // Dial authority must match the authority used for network.evaluate (M-9/M-8).
+    // Absolute-form (://) and scheme-less authority-in-target both embed a
+    // destination host: TCP must use that host/port, not a diverging Host
+    // header (SSRF via evaluate-target vs dial-Host mismatch).
     var dial_host = parsed_host.host;
     var dial_port = parsed_host.port;
     var path = target;
-    if (std.mem.indexOf(u8, target, "://")) |_| {
+    // Origin-form starts with '/' (or is empty/*); anything else may embed a host.
+    const target_embeds_authority = blk: {
+        if (std.mem.indexOf(u8, target, "://") != null) break :blk true;
+        if (target.len == 0 or target[0] == '/' or target[0] == '*') break :blk false;
+        break :blk true;
+    };
+    if (target_embeds_authority) {
         const parsed_destination = try network.parseDestination(target);
         path = if (parsed_destination.path.len == 0) "/" else parsed_destination.path;
         const scheme = parsed_destination.scheme orelse "http";
         const default_port: u16 = if (std.ascii.eqlIgnoreCase(scheme, "https")) 443 else 80;
         dial_host = parsed_destination.host;
         dial_port = parsed_destination.port orelse default_port;
-        // Reject dual-authority requests: Host host must equal absolute-form host.
+        // Reject dual-authority: Host host must equal request-target host.
         if (!std.ascii.eqlIgnoreCase(parsed_host.host, dial_host)) return error.InvalidProxyRequest;
     } else {
         path = if (target.len == 0) "/" else target;
@@ -575,6 +589,32 @@ test "proxy absolute-form dial host comes from URL not Host header" {
     const mismatched =
         "GET http://api.github.com/repos/acme/app HTTP/1.1\r\nHost: 169.254.169.254\r\n\r\n";
     try std.testing.expectError(error.InvalidProxyRequest, parseRequest(mismatched));
+}
+
+test "proxy scheme-less request-target Host pivot is rejected" {
+    // M-8: without "://", evaluate would parse destination from the request-target
+    // while dial used Host — reject dual-authority (metadata Host pivot).
+    const mismatched =
+        "GET api.github.com/repos/acme/app HTTP/1.1\r\nHost: 169.254.169.254\r\n\r\n";
+    try std.testing.expectError(error.InvalidProxyRequest, parseRequest(mismatched));
+
+    // Matching Host still dials the request-target authority and exposes path.
+    const matched =
+        "GET api.github.com:8080/repos/acme/app HTTP/1.1\r\nHost: api.github.com\r\n\r\n";
+    const parsed = try parseRequest(matched);
+    try std.testing.expectEqualStrings("api.github.com", parsed.host);
+    try std.testing.expectEqual(@as(?u16, 8080), parsed.port);
+    try std.testing.expectEqualStrings("/repos/acme/app", parsed.path);
+    try std.testing.expectEqualStrings("api.github.com:8080/repos/acme/app", parsed.destination);
+
+    // Origin-form path-only remains Host-dialed (no embedded authority).
+    const origin =
+        "GET /repos/acme/app HTTP/1.1\r\nHost: api.github.com\r\n\r\n";
+    const origin_parsed = try parseRequest(origin);
+    try std.testing.expectEqualStrings("api.github.com", origin_parsed.host);
+    try std.testing.expectEqual(@as(?u16, 80), origin_parsed.port);
+    try std.testing.expectEqualStrings("/repos/acme/app", origin_parsed.path);
+    try std.testing.expectEqualStrings("/repos/acme/app", origin_parsed.destination);
 }
 
 test "proxy forwards delayed HTTP request bodies and records request audit events" {
@@ -880,6 +920,133 @@ test "proxy deinit reclaims state only after connection workers drain" {
     try std.testing.expectEqual(@as(usize, 0), runtime.state.active_connections.load(.acquire));
     // Workers idle: deinit reclaims State (GPA / testing allocator must not report leak).
     runtime.deinit();
+}
+
+test "proxy deinit blocks until workers drain instead of abandoning state" {
+    // M-2/M-3 + M-1: deinit must not return while active_connections > 0
+    // (borrowed selected_policy / last-worker State lifetime). Peer-close the
+    // half-open client so the worker can exit; deinit then reclaims.
+    if (@import("builtin").os.tag == .windows) return error.SkipZigTest;
+
+    var loaded = try @import("orca_core").policy.load.parseFromSlice(std.testing.allocator,
+        \\version: 1
+        \\mode: observe
+        \\network:
+        \\  mode: open
+        \\  backend: proxy
+    , "proxy-deinit-no-abandon.yaml");
+    defer loaded.deinit();
+
+    const io = std.testing.io;
+    var runtime = try start(std.testing.allocator, &loaded, .observe);
+    var needs_deinit = true;
+    errdefer if (needs_deinit) runtime.deinit();
+    std.Io.sleep(io, std.Io.Duration.fromNanoseconds(50 * std.time.ns_per_ms), .awake) catch {};
+
+    const proxy_port = try bindPort(runtime.bindUrl());
+    const proxy_addr = try std.Io.net.IpAddress.parse("127.0.0.1", proxy_port);
+    var client = try std.Io.net.IpAddress.connect(&proxy_addr, io, .{ .mode = .stream });
+    var client_open = true;
+    defer if (client_open) client.close(io);
+
+    var write_buf: [64]u8 = undefined;
+    var writer = client.writer(io, &write_buf);
+    try writer.interface.writeAll("GET /partial HTTP/1.1\r\n");
+    try writer.interface.flush();
+
+    {
+        var threaded: std.Io.Threaded = .init_single_threaded;
+        const wait_io = threaded.io();
+        const started = std.Io.Clock.Timestamp.now(wait_io, .awake);
+        while (runtime.state.active_connections.load(.acquire) == 0) {
+            const elapsed = started.durationFromNow(wait_io).raw.nanoseconds;
+            try std.testing.expect(elapsed <= 2 * std.time.ns_per_s);
+            std.Io.sleep(wait_io, std.Io.Duration.fromNanoseconds(10 * std.time.ns_per_ms), .awake) catch {};
+        }
+    }
+    try std.testing.expect(runtime.state.active_connections.load(.acquire) > 0);
+
+    const DeinitCtx = struct {
+        runtime: *Runtime,
+        done: std.atomic.Value(bool) = .init(false),
+        fn run(ctx: *@This()) void {
+            ctx.runtime.deinit();
+            ctx.done.store(true, .release);
+        }
+    };
+    var deinit_ctx: DeinitCtx = .{ .runtime = &runtime };
+    const deinit_thread = try std.Thread.spawn(.{}, DeinitCtx.run, .{&deinit_ctx});
+    needs_deinit = false;
+
+    // deinit must still be waiting on the live worker (no abandon-return).
+    std.Io.sleep(io, std.Io.Duration.fromNanoseconds(100 * std.time.ns_per_ms), .awake) catch {};
+    try std.testing.expect(!deinit_ctx.done.load(.acquire));
+    try std.testing.expect(runtime.state.active_connections.load(.acquire) > 0);
+
+    client.close(io);
+    client_open = false;
+    deinit_thread.join();
+    try std.testing.expect(deinit_ctx.done.load(.acquire));
+}
+
+test "proxy scheme-less allowed target does not connect to mismatched Host" {
+    // M-8 integration: scheme-less request-target + metadata-style Host pivot
+    // must not dial the Host peer (mirror absolute-form SSRF regression).
+    if (@import("builtin").os.tag == .windows) return error.SkipZigTest;
+
+    const io = std.testing.io;
+
+    const evil_address = try std.Io.net.IpAddress.parse("127.0.0.1", 0);
+    var evil = try evil_address.listen(io, .{ .reuse_address = true });
+    defer evil.deinit(io);
+    const evil_port = evil.socket.address.getPort();
+    var evil_state: TestDenyServerState = .{ .server = &evil, .io = io };
+    const evil_thread = try std.Thread.spawn(.{}, testDenyServerNoConnectLong, .{&evil_state});
+    defer evil_thread.join();
+
+    const allowed_address = try std.Io.net.IpAddress.parse("127.0.0.1", 0);
+    var allowed = try allowed_address.listen(io, .{ .reuse_address = true });
+    defer allowed.deinit(io);
+    const allowed_port = allowed.socket.address.getPort();
+    var allowed_state: TestHttpServerState = .{ .server = &allowed, .io = io, .expected_body = "" };
+    const allowed_thread = try std.Thread.spawn(.{}, testHttpServer, .{&allowed_state});
+    defer allowed_thread.join();
+
+    var loaded = try @import("orca_core").policy.load.parseFromSlice(std.testing.allocator,
+        \\version: 1
+        \\mode: observe
+        \\network:
+        \\  mode: open
+        \\  backend: proxy
+    , "proxy-host-ssrf-schemeless.yaml");
+    defer loaded.deinit();
+
+    var runtime = try start(std.testing.allocator, &loaded, .observe);
+    defer runtime.deinit();
+    std.Io.sleep(io, std.Io.Duration.fromNanoseconds(50 * std.time.ns_per_ms), .awake) catch {};
+
+    const proxy_port = try bindPort(runtime.bindUrl());
+    const proxy_addr = try std.Io.net.IpAddress.parse("127.0.0.1", proxy_port);
+    var client = try std.Io.net.IpAddress.connect(&proxy_addr, io, .{ .mode = .stream });
+    defer client.close(io);
+
+    // Scheme-less target → allowed listener; Host → evil listener.
+    var request_buf: [320]u8 = undefined;
+    const request = try std.fmt.bufPrint(
+        &request_buf,
+        "GET 127.0.0.1:{d}/ok HTTP/1.1\r\nHost: 127.0.0.1:{d}\r\nConnection: close\r\n\r\n",
+        .{ allowed_port, evil_port },
+    );
+    var client_write_buf: [512]u8 = undefined;
+    var client_writer = client.writer(io, &client_write_buf);
+    try client_writer.interface.writeAll(request);
+    try client_writer.interface.flush();
+
+    var response_buf: [512]u8 = undefined;
+    _ = readHttpResponse(io, client, &response_buf) catch {};
+    try runtime.waitForIdle(2 * std.time.ns_per_s);
+
+    try std.testing.expect(!evil_state.accepted.load(.acquire));
 }
 
 test "proxy does not tunnel a second HTTP request after an allowed first request" {
