@@ -9,6 +9,7 @@ pub const network_eval = @import("network_eval.zig");
 pub const presets = @import("presets.zig");
 pub const effects = @import("effects/mod.zig");
 pub const sticky = @import("sticky.zig");
+pub const risk_card = @import("risk_card.zig");
 
 pub const phase = "07-policy-engine";
 
@@ -26,4 +27,5 @@ test {
     _ = presets;
     _ = effects;
     _ = sticky;
+    _ = risk_card;
 }

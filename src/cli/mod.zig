@@ -62,11 +62,14 @@ pub const readiness = @import("readiness.zig");
 pub const history = @import("history.zig");
 pub const suggestions = @import("suggestions.zig");
 pub const danger_confirmation = @import("danger_confirmation.zig");
+pub const fm_steward_client = @import("fm_steward_client.zig");
 
 test {
     _ = staged_mutation;
     // Ensure the child_process module (and its tests) are pulled into the test binary.
     _ = child_process;
+    // Mac FM steward classify client (parse + fail-open subprocess).
+    _ = fm_steward_client;
     // Pull style tests (TDD for color/TTY/NO_COLOR handling).
     _ = style;
     _ = onboarding;

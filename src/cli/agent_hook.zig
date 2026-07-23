@@ -117,6 +117,12 @@ fn moreRestrictiveMode(a: policy.schema.Mode, b: policy.schema.Mode) policy.sche
     return if (modeStrictness(a) >= modeStrictness(b)) a else b;
 }
 
+/// Options for `evaluatePayloadWithMode` / unit tests that must not hit live FM.
+pub const EvaluatePayloadOpts = struct {
+    /// Skip FM soft seatbelt (tests / host kill). Independent of `ORCA_FM_STEWARD=0`.
+    disable_fm: bool = false,
+};
+
 pub fn evaluatePayload(
     allocator: std.mem.Allocator,
     payload: []const u8,
@@ -132,6 +138,17 @@ pub fn evaluatePayloadWithMode(
     stdout: anytype,
     evaluator: ?ShellCommandEvaluatorFn,
     mode: policy.schema.Mode,
+) !u8 {
+    return evaluatePayloadWithModeOpts(allocator, payload, stdout, evaluator, mode, .{});
+}
+
+pub fn evaluatePayloadWithModeOpts(
+    allocator: std.mem.Allocator,
+    payload: []const u8,
+    stdout: anytype,
+    evaluator: ?ShellCommandEvaluatorFn,
+    mode: policy.schema.Mode,
+    opts: EvaluatePayloadOpts,
 ) !u8 {
     if (std.mem.trim(u8, payload, " \t\r\n").len == 0) {
         return exit_codes.success;
@@ -165,7 +182,22 @@ pub fn evaluatePayloadWithMode(
     };
     defer daemon_response.deinit();
 
-    const decision = try shell_eval.decisionFromDaemonResult(allocator, daemon_response.value.result, mode);
+    // WP4 product path: hard fence → sticky → strict refuse → mode×severity, then FM soft
+    // seatbelt when the shared choke is wired (u3). Bare agent-hook has no policy YAML, so
+    // permit is empty (matrix + sticky only); sticky is process-session store.
+    // Cursor shell still maps `.ask` → deny (no ask UI); agent_hook keeps `.ask` JSON.
+    const decision = try shell_eval.decisionFromDaemonResultWithPolicy(
+        allocator,
+        daemon_response.value.result,
+        mode,
+        .{
+            .command = owned_command,
+            .permit = .{},
+            .sticky = shell_eval.getSessionStickyStore(),
+            .effect_class = null,
+            .disable_fm = opts.disable_fm,
+        },
+    );
     defer decision.deinit(allocator);
 
     switch (decision.decision.result) {
@@ -455,7 +487,10 @@ test "evaluatePayload deny emits hookSpecificOutput and cursor deny JSON" {
     const agent_output = agent_stdout.buffered();
     try std.testing.expect(std.mem.indexOf(u8, agent_output, "\"permissionDecision\":\"deny\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, agent_output, "\"hookEventName\":\"PreToolUse\"") != null);
-    try std.testing.expect(std.mem.indexOf(u8, agent_output, "core.filesystem:destructive_rm") != null);
+    // WP4 hard fence owns reason text ("blocked by Orca policy"); pack rule_id is
+    // forensic metadata on the decision, not always echoed into the host reason.
+    // Remediation tip still attaches when the daemon provided suggestions.
+    try std.testing.expect(std.mem.indexOf(u8, agent_output, "blocked by Orca policy") != null);
     try std.testing.expect(std.mem.indexOf(u8, agent_output, "Tip:") != null);
 
     var cursor_buf: [2048]u8 = undefined;
@@ -464,7 +499,7 @@ test "evaluatePayload deny emits hookSpecificOutput and cursor deny JSON" {
     _ = try evaluatePayload(allocator, cursor_payload, &cursor_stdout, shell_eval.mockDaemonDenyEvaluator);
     const cursor_output = cursor_stdout.buffered();
     try std.testing.expect(std.mem.indexOf(u8, cursor_output, "\"permission\":\"deny\"") != null);
-    try std.testing.expect(std.mem.indexOf(u8, cursor_output, "core.filesystem:destructive_rm") != null);
+    try std.testing.expect(std.mem.indexOf(u8, cursor_output, "blocked by Orca policy") != null);
 }
 
 test "evaluatePayload fails closed on daemon evaluate failures" {
@@ -506,6 +541,10 @@ test "evaluatePayload invalid JSON fails open with no stdout" {
     try std.testing.expectEqual(@as(usize, 0), stdout.buffered().len);
 }
 
+// Matrix / WP4 unit tests are not FM-focused: disable steward so live Mac
+// fm-steward cannot invent ask and break soft allow/warn/ask expectations.
+const test_no_fm = EvaluatePayloadOpts{ .disable_fm = true };
+
 test "ask mode high-severity deny emits ask for agent_hook and deny for cursor" {
     const allocator = std.testing.allocator;
     const agent_payload = "{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"git push --force\"}}";
@@ -513,13 +552,13 @@ test "ask mode high-severity deny emits ask for agent_hook and deny for cursor" 
 
     var agent_buf: [1024]u8 = undefined;
     var agent_stdout: std.Io.Writer = .fixed(&agent_buf);
-    _ = try evaluatePayloadWithMode(allocator, agent_payload, &agent_stdout, shell_eval.mockDaemonDenyHighEvaluator, .ask);
+    _ = try evaluatePayloadWithModeOpts(allocator, agent_payload, &agent_stdout, shell_eval.mockDaemonDenyHighEvaluator, .ask, test_no_fm);
     try std.testing.expect(std.mem.indexOf(u8, agent_stdout.buffered(), "\"permissionDecision\":\"ask\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, agent_stdout.buffered(), "requires approval") != null);
 
     var cursor_buf: [1024]u8 = undefined;
     var cursor_stdout: std.Io.Writer = .fixed(&cursor_buf);
-    _ = try evaluatePayloadWithMode(allocator, cursor_payload, &cursor_stdout, shell_eval.mockDaemonDenyHighEvaluator, .ask);
+    _ = try evaluatePayloadWithModeOpts(allocator, cursor_payload, &cursor_stdout, shell_eval.mockDaemonDenyHighEvaluator, .ask, test_no_fm);
     try std.testing.expect(std.mem.indexOf(u8, cursor_stdout.buffered(), "\"permission\":\"deny\"") != null);
 }
 
@@ -529,13 +568,13 @@ test "observe mode high-severity deny is warn-allow (empty agent / allow cursor)
     var agent_buf: [512]u8 = undefined;
     var agent_stdout: std.Io.Writer = .fixed(&agent_buf);
     const agent_payload = "{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"git push --force\"}}";
-    _ = try evaluatePayloadWithMode(allocator, agent_payload, &agent_stdout, shell_eval.mockDaemonDenyHighEvaluator, .observe);
+    _ = try evaluatePayloadWithModeOpts(allocator, agent_payload, &agent_stdout, shell_eval.mockDaemonDenyHighEvaluator, .observe, test_no_fm);
     try std.testing.expectEqual(@as(usize, 0), agent_stdout.buffered().len);
 
     var cursor_buf: [512]u8 = undefined;
     var cursor_stdout: std.Io.Writer = .fixed(&cursor_buf);
     const cursor_payload = "{\"command\":\"git push --force\",\"cwd\":\"/tmp\"}";
-    _ = try evaluatePayloadWithMode(allocator, cursor_payload, &cursor_stdout, shell_eval.mockDaemonDenyHighEvaluator, .observe);
+    _ = try evaluatePayloadWithModeOpts(allocator, cursor_payload, &cursor_stdout, shell_eval.mockDaemonDenyHighEvaluator, .observe, test_no_fm);
     try std.testing.expect(std.mem.indexOf(u8, cursor_stdout.buffered(), "\"permission\":\"allow\"") != null);
 }
 
@@ -544,7 +583,7 @@ test "SoftBlock allow maps to ask on agent_hook (not silent allow)" {
     var stdout_buf: [1024]u8 = undefined;
     var stdout: std.Io.Writer = .fixed(&stdout_buf);
     const payload = "{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"risky\"}}";
-    _ = try evaluatePayloadWithMode(allocator, payload, &stdout, shell_eval.mockDaemonSoftBlockAllowEvaluator, .strict);
+    _ = try evaluatePayloadWithModeOpts(allocator, payload, &stdout, shell_eval.mockDaemonSoftBlockAllowEvaluator, .strict, test_no_fm);
     try std.testing.expect(std.mem.indexOf(u8, stdout.buffered(), "\"permissionDecision\":\"ask\"") != null);
 }
 
@@ -553,7 +592,7 @@ test "critical deny stays deny even in observe mode" {
     var stdout_buf: [2048]u8 = undefined;
     var stdout: std.Io.Writer = .fixed(&stdout_buf);
     const payload = "{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"rm -rf /\"}}";
-    _ = try evaluatePayloadWithMode(allocator, payload, &stdout, shell_eval.mockDaemonDenyEvaluator, .observe);
+    _ = try evaluatePayloadWithModeOpts(allocator, payload, &stdout, shell_eval.mockDaemonDenyEvaluator, .observe, test_no_fm);
     try std.testing.expect(std.mem.indexOf(u8, stdout.buffered(), "\"permissionDecision\":\"deny\"") != null);
 }
 
@@ -577,4 +616,62 @@ test "resolveModeFromEnv floors soft modes without ORCA_ALLOW_MODE_SOFTEN" {
     // redteam and strict share the same strictness tier (identical mode×severity matrix).
     try std.testing.expectEqual(policy.schema.Mode.strict, moreRestrictiveMode(.strict, .redteam));
     try std.testing.expectEqual(policy.schema.Mode.redteam, moreRestrictiveMode(.redteam, .strict));
+}
+
+// ---------------------------------------------------------------------------
+// WP4 policy opts (command + session sticky + empty permit) — agent_hook path
+// ---------------------------------------------------------------------------
+
+test "WP4 sticky session turns ask-mode high deny into allow on agent_hook" {
+    // Proves decisionFromDaemonResultWithPolicy is used with sticky: bare
+    // decisionFromDaemonResult ignores sticky, so a second high-severity deny would
+    // stay ask. After session sticky, product path softens to allow.
+    // disable_fm: sticky product bar is WP4, not FM; also Fix A skips FM on sticky reason.
+    defer shell_eval.resetSessionStickyStoreForTests();
+    const allocator = std.testing.allocator;
+    const cmd = "git push --force";
+    const agent_payload = "{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"git push --force\"}}";
+    const cursor_payload = "{\"command\":\"git push --force\",\"cwd\":\"/tmp\"}";
+
+    // First hit: no sticky → ask (agent) / deny (cursor maps ask→deny).
+    var agent_buf: [1024]u8 = undefined;
+    var agent_stdout: std.Io.Writer = .fixed(&agent_buf);
+    _ = try evaluatePayloadWithModeOpts(allocator, agent_payload, &agent_stdout, shell_eval.mockDaemonDenyHighEvaluator, .ask, test_no_fm);
+    try std.testing.expect(std.mem.indexOf(u8, agent_stdout.buffered(), "\"permissionDecision\":\"ask\"") != null);
+
+    var cursor_buf: [1024]u8 = undefined;
+    var cursor_stdout: std.Io.Writer = .fixed(&cursor_buf);
+    _ = try evaluatePayloadWithModeOpts(allocator, cursor_payload, &cursor_stdout, shell_eval.mockDaemonDenyHighEvaluator, .ask, test_no_fm);
+    try std.testing.expect(std.mem.indexOf(u8, cursor_stdout.buffered(), "\"permission\":\"deny\"") != null);
+
+    // Record sticky as if the host approved once for this session.
+    try shell_eval.recordStickyFromAsk(shell_eval.getSessionStickyStore(), cmd, .session, .high);
+
+    // Second hit: sticky trust → allow (empty agent stdout / cursor allow JSON).
+    var agent_buf2: [1024]u8 = undefined;
+    var agent_stdout2: std.Io.Writer = .fixed(&agent_buf2);
+    _ = try evaluatePayloadWithModeOpts(allocator, agent_payload, &agent_stdout2, shell_eval.mockDaemonDenyHighEvaluator, .ask, test_no_fm);
+    try std.testing.expectEqual(@as(usize, 0), agent_stdout2.buffered().len);
+
+    var cursor_buf2: [1024]u8 = undefined;
+    var cursor_stdout2: std.Io.Writer = .fixed(&cursor_buf2);
+    _ = try evaluatePayloadWithModeOpts(allocator, cursor_payload, &cursor_stdout2, shell_eval.mockDaemonDenyHighEvaluator, .ask, test_no_fm);
+    try std.testing.expect(std.mem.indexOf(u8, cursor_stdout2.buffered(), "\"permission\":\"allow\"") != null);
+}
+
+test "WP4 sticky cannot soften critical deny on agent_hook" {
+    defer shell_eval.resetSessionStickyStoreForTests();
+    const allocator = std.testing.allocator;
+    const cmd = "rm -rf /";
+    const payload = "{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"rm -rf /\"}}";
+
+    // recordFromAsk is a no-op for critical; also plant a raw session grant and
+    // confirm hard fence still wins via the WithPolicy path.
+    try shell_eval.recordStickyFromAsk(shell_eval.getSessionStickyStore(), cmd, .session, .critical);
+    try shell_eval.getSessionStickyStore().recordAllowSession(policy.sticky.fingerprintCommand(cmd, null));
+
+    var stdout_buf: [2048]u8 = undefined;
+    var stdout: std.Io.Writer = .fixed(&stdout_buf);
+    _ = try evaluatePayloadWithModeOpts(allocator, payload, &stdout, shell_eval.mockDaemonDenyEvaluator, .ask, test_no_fm);
+    try std.testing.expect(std.mem.indexOf(u8, stdout.buffered(), "\"permissionDecision\":\"deny\"") != null);
 }

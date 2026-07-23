@@ -45,11 +45,17 @@ pub const CommandDecision = struct {
     /// protocol mismatch, malformed/unexpected response). Never softenable by
     /// parent approval or mode×severity — only pack Deny / SoftBlock may be approved.
     fail_closed: bool = false,
+    /// FM `ask_sticky_candidate` hints (allocator-owned when set). Free via `deinit`.
+    /// Consumed by `orca run` sticky record after host ask→allow.
+    suggested_sticky_scope: ?[]const u8 = null,
+    suggested_effect_class: ?[]const u8 = null,
 
     pub fn deinit(self: CommandDecision, allocator: std.mem.Allocator) void {
         allocator.free(self.owned_reason);
         if (self.owned_rule_id) |rule_id| allocator.free(rule_id);
         if (self.owned_remediation) |remediation| allocator.free(remediation);
+        if (self.suggested_sticky_scope) |s| allocator.free(s);
+        if (self.suggested_effect_class) |s| allocator.free(s);
         self.policy_evaluation.deinit(allocator);
     }
 };

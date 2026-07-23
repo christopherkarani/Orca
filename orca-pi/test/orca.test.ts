@@ -185,6 +185,16 @@ function denyJson(): string {
 	});
 }
 
+function askJson(): string {
+	return JSON.stringify({
+		decision: "ask",
+		reason: "requires approval in ask mode; would deny in strict",
+		severity: "high",
+		rule_id: "core.git:force-push",
+		daemon: { status: "healthy", compatible: true },
+	});
+}
+
 function errorJson(): string {
 	return JSON.stringify({
 		decision: "error",
@@ -1472,6 +1482,30 @@ test("no shell interpolation is used when invoking Orca", async () => {
 	const request = JSON.parse(calls[0].stdin[0]) as OrcaEvaluateRequest;
 	assert.equal(request.command, "echo safe");
 	assert.equal(request.source.host, "pi");
+});
+
+test("runOrcaEvaluate maps decision ask exit 0 to kind ask", async () => {
+	const { spawn } = makeSpawn([{ code: 0, stdout: askJson() }]);
+	const decision = await runOrcaEvaluate(
+		buildEvaluateRequest("git push --force", {
+			cwd: process.cwd(),
+			mode: "tui",
+		}),
+		{
+			spawn,
+			orcaBin: "orca",
+			timeoutMs: 1_000,
+		},
+	);
+
+	assert.equal(decision.kind, "ask");
+	if (decision.kind === "ask") {
+		assert.match(decision.reason, /requires approval/i);
+		assert.equal(
+			(decision.response as { decision?: string }).decision,
+			"ask",
+		);
+	}
 });
 
 test("oversized Orca output follows unavailable policy", async () => {

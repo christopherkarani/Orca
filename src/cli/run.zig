@@ -363,16 +363,19 @@ fn commandWithStdioAndEnv(io: std.Io, argv: []const []const u8, stdout: anytype,
                             if (choice == .allow_session) intercept.commands.approved_session_env else intercept.commands.approved_once_env,
                             raw_display,
                         );
-                        // WP3 sticky: record after host ask→allow so later shell eval skips re-ask.
+                        // WP3/WP5 sticky: record after host ask→allow so later shell eval skips re-ask.
                         // Prefer session scope for product trust; once path uses once grant.
+                        // Map FM ask_sticky_candidate suggested_sticky_scope / effect_class when present.
                         const sticky_scope: policy.sticky.Scope = if (choice == .allow_session) .session else .once;
                         const sticky_severity = shell_eval.riskLevelFromScore(command_decision.decision.risk_score orelse 80);
                         // best-effort sticky; re-ask on failure
-                        shell_eval.recordStickyFromAsk(
+                        shell_eval.recordStickyFromAskWithHints(
                             shell_eval.getSessionStickyStore(),
                             raw_display,
                             sticky_scope,
                             sticky_severity,
+                            command_decision.suggested_sticky_scope,
+                            command_decision.suggested_effect_class,
                         ) catch {};
                         approval_reason = try std.fmt.allocPrint(self.allocator, "user approved command {s}", .{if (choice == .allow_session) "for this session" else "once"});
                         final_decision = .{
@@ -592,10 +595,8 @@ fn commandWithStdioAndEnv(io: std.Io, argv: []const []const u8, stdout: anytype,
     };
     // Fail closed if proxy dies when policy/backend requires it, or when the
     // session is route-forced onto the proxy port (M-7).
-    const proxy_fail_closed = proxy_runtime != null and (
-        (proxy_required_by_backend and (effective_policy_mode == .strict or effective_policy_mode == .ci or requiresBackend(options, .network_proxy_enforce))) or
-        apply_result.network_route_forced
-    );
+    const proxy_fail_closed = proxy_runtime != null and ((proxy_required_by_backend and (effective_policy_mode == .strict or effective_policy_mode == .ci or requiresBackend(options, .network_proxy_enforce))) or
+        apply_result.network_route_forced);
     var proxy_health_context: ProxyHealthContext = undefined;
     const health_monitor: ?supervisor.HealthMonitor = if (proxy_fail_closed) blk: {
         proxy_health_context = .{ .runtime = &proxy_runtime.? };
@@ -1877,11 +1878,11 @@ test "run require-backend fails closed when requested feature is unavailable" {
     // "network_route_forcing_unavailable" and never reaches BackendRequirementUnavailable.
     // Sibling: "run proxy backend does not satisfy transparent network enforcement requirement".
     const code = try command(std.testing.io, &.{
-        "--workspace",      root,
-        "--mode",           "ci",
-        "--os-sandbox",     "off",
+        "--workspace",       root,
+        "--mode",            "ci",
+        "--os-sandbox",      "off",
         "--require-backend", "network_enforce",
-        "--",               "true",
+        "--",                "true",
     }, &stdout_writer, &stderr_writer);
     try std.testing.expectEqual(exit_codes.unsupported, code);
     try std.testing.expect(std.mem.indexOf(u8, stderr_writer.buffered(), "required backend feature is unavailable") != null);
