@@ -1,2 +1,5 @@
 .build/
 .swiftpm/
+
+# Local Wax checkout (SPM path dep; not vendored in git)
+Vendor/

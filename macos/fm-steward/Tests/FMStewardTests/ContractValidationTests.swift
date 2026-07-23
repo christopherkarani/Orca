@@ -27,7 +27,7 @@ struct ContractValidationTests {
         )
     }
 
-    @Test("absurd bulk_recipient_min clamps to default")
+    @Test("bulk_recipient_min clamp still works for host thresholds")
     func bulkMinClamp() {
         #expect(RulesPrePass.clampBulkRecipientMin(nil) == RiskCard.defaultBulkRecipientMin)
         #expect(RulesPrePass.clampBulkRecipientMin(1000) == 1000)
@@ -35,13 +35,15 @@ struct ContractValidationTests {
         #expect(RulesPrePass.clampBulkRecipientMin(50_000_000) == RiskCard.defaultBulkRecipientMin)
     }
 
-    @Test("unknown effect class falls back to external-message")
+    @Test("unknown effect class falls back to shell")
     func effectClassAllowlist() {
         let card = RiskCard(
             sessionId: "s",
-            tool: "send_email",
-            features: RiskCard.Features(vip: true, effectHints: ["not-a-real-class"])
+            tool: "bash",
+            command: "true",
+            features: RiskCard.Features(executed: true, effectHints: ["not-a-real-class"])
         )
         #expect(RulesPrePass.stickyEffectClass(for: card) == RulesPrePass.defaultEffectClass)
+        #expect(RulesPrePass.defaultEffectClass == "shell")
     }
 }

@@ -5,23 +5,25 @@ import Testing
 @Suite("StewardSession timeout + warm")
 struct SessionTimeoutTests {
     /// Neutral card: no rules pre-pass hit → backend path.
+    /// (echo/printf/grep/safe-clean shapes short-circuit via CommandShape; use residual shell.)
     private func neutralCard(sessionId: String = "sess-timeout") -> RiskCard {
         RiskCard(
             schemaVersion: 1,
             sessionId: sessionId,
             tool: "bash",
-            command: "echo hi",
+            // Residual shell that does not hit CommandShape or HardDangerRules.
+            command: "make release",
             features: RiskCard.Features(executed: true, bulkOutbound: false, vip: false, sameIntent: nil),
             thresholds: nil,
             meta: nil
         )
     }
 
-    @Test("default timeout_ms is 500")
-    func defaultTimeoutIs500() {
-        #expect(StewardSession.defaultTimeoutMs == 500)
+    @Test("default timeout_ms is 3000")
+    func defaultTimeoutIs3000() {
+        #expect(StewardSession.defaultTimeoutMs == 3000)
         let session = StewardSession(backend: UnavailableBackend())
-        #expect(session.timeoutMs == 500)
+        #expect(session.timeoutMs == 3000)
     }
 
     @Test("timeoutMs clamps: 0/negative → default; oversize → maxTimeoutMs")
@@ -123,23 +125,22 @@ struct SessionTimeoutTests {
         }
     }
 
-    @Test("rules pre-pass still short-circuits before backend (bulk asks without waiting on SlowBackend)")
+    @Test("rules pre-pass still short-circuits before backend (executed=false without waiting on SlowBackend)")
     func rulesShortCircuitBeforeBackend() async throws {
         let session = StewardSession(
             backend: SlowBackend(delayMs: 2000),
             timeoutMs: 100
         )
-        let card = try loadFixture("bulk_email")
+        let card = try loadFixture("grep_rm_rf")
 
         let start = ContinuousClock.now
         let response = await session.classify(card)
         let elapsed = ContinuousClock.now - start
 
-        #expect(response.verdict == .ask || response.verdict == .askStickyCandidate)
-        let explain = try #require(response.explain)
-        #expect(!explain.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+        #expect(response.verdict == .continue)
         #expect(response.timedOut == false)
         #expect(response.fallback == false)
+        #expect(response.modelAvailable == false)
         // Must not wait on SlowBackend sleep.
         #expect(elapsed < .milliseconds(500))
     }
