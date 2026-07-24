@@ -5,6 +5,7 @@ const orca_mcp = @import("../mcp/mod.zig");
 const core = @import("orca_core").core;
 const supervisor = core.supervisor;
 const core_api = @import("orca_core").api;
+const brand = @import("brand.zig");
 const exit_codes = @import("exit_codes.zig");
 const help = @import("help.zig");
 const policy = @import("orca_core").policy;
@@ -110,7 +111,7 @@ fn parseOptions(allocator: std.mem.Allocator, argv: []const []const u8, stderr: 
 
 fn inspect(io: std.Io, argv: []const []const u8, stdout: anytype, stderr: anytype) !u8 {
     if (argv.len > 0 and (std.mem.eql(u8, argv[0], "--help") or std.mem.eql(u8, argv[0], "-h"))) {
-        try stdout.writeAll("Usage: orca mcp inspect --command <server> [--name <server-name>] [--policy <path>]\n");
+        try stdout.writeAll("Usage: ryk mcp inspect --command <server> [--name <server-name>] [--policy <path>]\n");
         return exit_codes.success;
     }
     var gpa_state: std.heap.DebugAllocator(.{}) = .init;
@@ -233,7 +234,7 @@ fn writeInspectToolLine(
 
 fn proxy(io: std.Io, argv: []const []const u8, stdout: anytype, stderr: anytype) !u8 {
     if (argv.len > 0 and (std.mem.eql(u8, argv[0], "--help") or std.mem.eql(u8, argv[0], "-h"))) {
-        try stdout.writeAll("Usage: orca mcp proxy --command <server> [--name <server-name>] [--policy <path>] [--manifest <path>] [--mode observe|ask|strict|ci]\n");
+        try stdout.writeAll("Usage: ryk mcp proxy --command <server> [--name <server-name>] [--policy <path>] [--manifest <path>] [--mode observe|ask|strict|ci]\n");
         return exit_codes.success;
     }
     var gpa_state: std.heap.DebugAllocator(.{}) = .init;
@@ -338,7 +339,7 @@ fn proxy(io: std.Io, argv: []const []const u8, stdout: anytype, stderr: anytype)
             .event_count = session_writer.event_count,
             .final_event_hash = session_writer.finalHash() orelse "",
             .policy = loaded.path,
-            .product_label = "Orca",
+            .product_label = brand.product_display,
         });
         try stderr.print("orca mcp proxy: protocol failed: {s}\n", .{@errorName(err)});
         return exit_codes.general;
@@ -352,7 +353,7 @@ fn proxy(io: std.Io, argv: []const []const u8, stdout: anytype, stderr: anytype)
         .event_count = session_writer.event_count,
         .final_event_hash = session_writer.finalHash() orelse "",
         .policy = loaded.path,
-        .product_label = "Orca",
+        .product_label = brand.product_display,
     });
     return exit_codes.success;
 }

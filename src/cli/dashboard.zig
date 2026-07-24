@@ -264,10 +264,18 @@ fn parseOptions(io: std.Io, argv: []const []const u8, stdout: anytype, stderr: a
         try stderr.writeAll("orca dashboard: --workspace and --machine cannot be used together.\n");
         return error.Usage;
     }
-    const environment_workspace = if (std.c.getenv("ORCA_DASHBOARD_WORKSPACE")) |value| blk: {
-        const path = std.mem.span(value);
-        break :blk if (path.len == 0) null else path;
-    } else null;
+    // Prefer RYK_DASHBOARD_WORKSPACE, fall back to ORCA_DASHBOARD_WORKSPACE.
+    const environment_workspace = blk: {
+        if (std.c.getenv("RYK_DASHBOARD_WORKSPACE")) |value| {
+            const path = std.mem.span(value);
+            if (path.len != 0) break :blk path;
+        }
+        if (std.c.getenv("ORCA_DASHBOARD_WORKSPACE")) |value| {
+            const path = std.mem.span(value);
+            if (path.len != 0) break :blk path;
+        }
+        break :blk null;
+    };
     options.workspace = dashboardWorkspaceSelection(explicit_workspace, explicit_machine, environment_workspace);
     return options;
 }
@@ -283,7 +291,7 @@ fn serve(io: std.Io, options: DashboardOptions, stdout: anytype, stderr: anytype
     };
     defer server.deinit(io);
     const mode_label: []const u8 = if (options.workspace != null) "workspace" else "machine";
-    try stdout.print("Orca dashboard listening at http://{s}:{d} ({s} mode)\n", .{ options.host, options.port, mode_label });
+    try stdout.print("ryk dashboard listening at http://{s}:{d} ({s} mode)\n", .{ options.host, options.port, mode_label });
     try flushIfSupported(stdout);
 
     var gpa_state: std.heap.DebugAllocator(.{}) = .init;
@@ -630,7 +638,8 @@ fn parseRequest(bytes: []const u8) !Request {
         .method = method,
         .path = path,
         .body = bytes[body_start .. body_start + content_length],
-        .csrf_token = headerValue(headers, "x-orca-dashboard-token"),
+        // Dual-read Phase 5a: prefer ryk header, accept legacy orca header.
+        .csrf_token = headerValue(headers, "x-ryk-dashboard-token") orelse headerValue(headers, "x-orca-dashboard-token"),
         .host = headerValue(headers, "host"),
         .origin = headerValue(headers, "origin"),
     };

@@ -11,6 +11,7 @@ const credentials_runtime = @import("../intercept/credentials.zig");
 const supervisor = core.supervisor;
 const license_mod = @import("../license.zig");
 const ci_check = @import("../ci_check.zig");
+const brand = @import("../cli/brand.zig");
 const rust_visibility = @import("../cli/rust_visibility.zig");
 const feed_writer = @import("../cli/feed_writer.zig");
 
@@ -1038,7 +1039,7 @@ fn writeDeniedReplayFixture(allocator: std.mem.Allocator, root: []const u8) !voi
         .event_count = writer.event_count,
         .final_event_hash = writer.finalHash().?,
         .policy = ".orca/policy.yaml",
-        .product_label = "Orca",
+        .product_label = brand.product_display,
     });
     _ = &session;
 }
@@ -1067,7 +1068,7 @@ fn writeSecretlessEvidenceFixture(allocator: std.mem.Allocator, root: []const u8
         .event_count = writer.event_count,
         .final_event_hash = writer.finalHash().?,
         .policy = ".orca/policy.yaml",
-        .product_label = "Orca",
+        .product_label = brand.product_display,
     });
     _ = &session;
 }

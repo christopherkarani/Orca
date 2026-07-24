@@ -1,10 +1,10 @@
-# Winget compat template (prefer ChrisKarani.Ryk). Release automation must replace checksums before publishing.
-PackageIdentifier: ChrisKarani.Orca
+# Winget manifest template. Release automation must replace checksums before publishing.
+PackageIdentifier: ChrisKarani.Ryk
 PackageVersion: 1.2.8
-PackageName: ryk (orca compat)
+PackageName: ryk
 Publisher: Chris Karani
 License: Apache-2.0
-ShortDescription: Local runtime firewall for AI agents (compat package id; prefer ryk).
+ShortDescription: Local runtime firewall for AI agents.
 PackageUrl: https://github.com/christopherkarani/Orca
 ManifestType: singleton
 ManifestVersion: 1.6.0
@@ -19,4 +19,4 @@ Installers:
         PortableCommandAlias: orca
     InstallerUrl: https://github.com/christopherkarani/Orca/releases/download/v1.2.8/ryk-v1.2.8-windows-amd64.zip
     InstallerSha256: PLACEHOLDER_WINDOWS_AMD64_SHA256
-ReleaseNotes: Dual-name window — prefer PackageIdentifier ChrisKarani.Ryk. Verify checksums.txt before publishing.
+ReleaseNotes: Primary binary ryk; orca is a PATH compat alias. Verify checksums.txt before publishing.

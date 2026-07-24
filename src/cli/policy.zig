@@ -116,7 +116,7 @@ fn check(io: std.Io, argv: []const []const u8, stdout: anytype, stderr: anytype)
         if (!onboarding.policyExists(io, workspace_root)) {
             defer allocator.free(discovered);
             try stderr.print(
-                "orca policy check: no workspace policy at {s}\nRun `orca init` to create one, or pass a path / --preset <name>.\n",
+                "ryk policy check: no workspace policy at {s}\nRun `ryk init` to create one, or pass a path / --preset <name>.\n",
                 .{discovered},
             );
             return exit_codes.general;
@@ -516,7 +516,7 @@ test "policy check without path validates workspace policy not builtin" {
     } else {
         try std.testing.expectEqual(exit_codes.general, code);
         try std.testing.expect(std.mem.indexOf(u8, stderr_writer.buffered(), "no workspace policy") != null);
-        try std.testing.expect(std.mem.indexOf(u8, stderr_writer.buffered(), "orca init") != null);
+        try std.testing.expect(std.mem.indexOf(u8, stderr_writer.buffered(), "ryk init") != null);
     }
 }
 

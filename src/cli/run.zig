@@ -7,6 +7,7 @@ const core_api = @import("orca_core").api;
 const intercept = @import("../intercept/mod.zig");
 const policy = @import("orca_core").policy;
 const sandbox = @import("../sandbox/mod.zig");
+const brand = @import("brand.zig");
 const exit_codes = @import("exit_codes.zig");
 const help = @import("help.zig");
 const style = @import("style.zig");
@@ -221,7 +222,7 @@ fn commandWithStdioAndEnv(io: std.Io, argv: []const []const u8, stdout: anytype,
                         .event_count = writer.event_count,
                         .final_event_hash = final_hash,
                         .policy = policy_path,
-                        .product_label = "Orca",
+                        .product_label = brand.product_display,
                     });
                     try writeLastPointerNoMakePath(alloc, ended.workspace_root, ended.id.slice());
                 }
@@ -809,7 +810,7 @@ fn commandWithStdioAndEnv(io: std.Io, argv: []const []const u8, stdout: anytype,
             .event_count = writer.event_count,
             .final_event_hash = final_hash,
             .policy = loaded_policy.path,
-            .product_label = "Orca",
+            .product_label = brand.product_display,
         });
         try writer.writeLastPointer();
     }
@@ -1158,7 +1159,7 @@ fn printSessionEnd(io: std.Io, stdout: anytype, result: supervisor.SessionResult
 /// Render the rich "guardian block" for a denied command to a human-facing
 /// writer (stderr). Composes the `tui` design-system primitives:
 ///
-///   ✗  Orca blocked a command            (callout .danger header)
+///   ✗  ryk blocked a command            (callout .danger header)
 ///   ┌──────────────────────────────┐
 ///   │ ✗  <command>                 │     (panel, command as headline)
 ///   ├──────────────────────────────┤
@@ -1193,7 +1194,7 @@ fn renderDenyBlock(
 ) !void {
     // Header.
     try stdout.writeAll("\n");
-    try tui.render.callout(io, stdout, .danger, "Orca blocked a command", "");
+    try tui.render.callout(io, stdout, .danger, "ryk blocked a command", "");
     try stdout.writeAll("\n");
 
     // Compose panel body lines (text-only — safe for the panel's width padding).
@@ -1210,7 +1211,7 @@ fn renderDenyBlock(
         if (std.mem.lastIndexOfScalar(u8, rid, ':')) |idx| break :blk rid[idx + 1 ..];
         break :blk rid;
     } else null;
-    const reason_text = if (reason_key) |rid| tui.reasons.reasonForRule(rid) else "Matched a deny rule in your Orca policy.";
+    const reason_text = if (reason_key) |rid| tui.reasons.reasonForRule(rid) else "Matched a deny rule in your ryk policy.";
     try body.append(allocator, try std.fmt.allocPrint(allocator, "Why        {s}", .{reason_text}));
 
     if (rule_id) |rid| {
@@ -1504,7 +1505,7 @@ test "run command guard denies ci ask without prompting and audits command event
     const code = try commandForGuardTestWithShellEvaluator(&.{ "--workspace", root, "--mode", "ci", "--", "npm", "install", "OPENAI_API_KEY=sk-fakeSyntheticOpenAIKey1234567890" }, &stdout_writer, &stderr_writer, .inherit, shell_eval.mockDaemonDenyEvaluator);
     try std.testing.expectEqual(exit_codes.denial, code);
     // Phase 1 UX: rich guardian block replaces the flat "command denied" line.
-    try std.testing.expect(std.mem.indexOf(u8, stderr_writer.buffered(), "Orca blocked") != null);
+    try std.testing.expect(std.mem.indexOf(u8, stderr_writer.buffered(), "ryk blocked") != null);
     try std.testing.expect(std.mem.indexOf(u8, stderr_writer.buffered(), "✗") != null);
 
     const events = try readLastEvents(std.testing.allocator, root);
@@ -2045,7 +2046,7 @@ test "denial panel and remediation redact argv while evaluator receives original
     const code = try commandForGuardTestWithShellEvaluator(&.{ "--workspace", root, "--mode", "ci", "--", "rm", "-rf", secret_arg }, &stdout_writer, &stderr_writer, .ignore, shell_eval.mockDaemonDenyEvaluator);
     try std.testing.expectEqual(exit_codes.denial, code);
     const rendered = stderr_writer.buffered();
-    try std.testing.expect(std.mem.indexOf(u8, rendered, "Orca blocked") != null);
+    try std.testing.expect(std.mem.indexOf(u8, rendered, "ryk blocked") != null);
     try std.testing.expect(std.mem.indexOf(u8, rendered, "orca explain") != null);
     try std.testing.expect(std.mem.indexOf(u8, rendered, sentinel) == null);
     try std.testing.expect(std.mem.indexOf(u8, shell_eval.test_last_evaluate_command.?, sentinel) != null);
@@ -2065,7 +2066,7 @@ test "run daemon unavailable denies shell command" {
     const code = try commandForGuardTestWithShellEvaluator(&.{ "--workspace", root, "--", "git", "status" }, &stdout_writer, &stderr_writer, .ignore, shell_eval.mockDaemonUnavailableEvaluator);
     try std.testing.expectEqual(exit_codes.denial, code);
     // Phase 1 UX: rich guardian block (graceful-degrade path — no rule id).
-    try std.testing.expect(std.mem.indexOf(u8, stderr_writer.buffered(), "Orca blocked") != null);
+    try std.testing.expect(std.mem.indexOf(u8, stderr_writer.buffered(), "ryk blocked") != null);
 }
 
 test "run daemon protocol mismatch denies shell command" {
@@ -2081,7 +2082,7 @@ test "run daemon protocol mismatch denies shell command" {
 
     const code = try commandForGuardTestWithShellEvaluator(&.{ "--workspace", root, "--", "git", "status" }, &stdout_writer, &stderr_writer, .ignore, shell_eval.mockDaemonProtocolMismatchEvaluator);
     try std.testing.expectEqual(exit_codes.denial, code);
-    try std.testing.expect(std.mem.indexOf(u8, stderr_writer.buffered(), "Orca blocked") != null or std.mem.indexOf(u8, stderr_writer.buffered(), "command denied") != null);
+    try std.testing.expect(std.mem.indexOf(u8, stderr_writer.buffered(), "ryk blocked") != null or std.mem.indexOf(u8, stderr_writer.buffered(), "command denied") != null);
 }
 
 fn readLastSessionId(allocator: std.mem.Allocator, root: []const u8) ![]u8 {
@@ -2191,7 +2192,7 @@ test "deny block renders rich guardian block for rm -rf /" {
 
     // Hero header.
     try std.testing.expect(std.mem.indexOf(u8, err, "✗") != null);
-    try std.testing.expect(std.mem.indexOf(u8, err, "Orca blocked") != null);
+    try std.testing.expect(std.mem.indexOf(u8, err, "ryk blocked") != null);
     // The denied command appears as the panel headline.
     try std.testing.expect(std.mem.indexOf(u8, err, "rm -rf /") != null);
     // Why / Rule / Policy rows inside the panel.
@@ -2250,7 +2251,7 @@ test "deny block graceful-degrades without rule id (daemon unavailable)" {
     const code = try commandForGuardTestWithShellEvaluator(&.{ "--workspace", root, "--", "git", "status" }, &stdout_writer, &stderr_writer, .ignore, shell_eval.mockDaemonUnavailableEvaluator);
     try std.testing.expectEqual(exit_codes.denial, code);
     const err = stderr_writer.buffered();
-    try std.testing.expect(std.mem.indexOf(u8, err, "Orca blocked") != null);
+    try std.testing.expect(std.mem.indexOf(u8, err, "ryk blocked") != null);
     try std.testing.expect(std.mem.indexOf(u8, err, "✗") != null);
     // Rule row shows the em-dash placeholder when no rule id is available.
     try std.testing.expect(std.mem.indexOf(u8, err, "Rule") != null);

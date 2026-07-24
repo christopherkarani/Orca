@@ -18,7 +18,8 @@ pub fn resolveResourcePath(io: std.Io, allocator: std.mem.Allocator, options: Re
     } else {
         var env_map = env_util.createProcessMap(allocator) catch return error.ResourceNotFound;
         defer env_map.deinit();
-        if (try env_util.getOwned(&env_map, allocator, "ORCA_RESOURCE_ROOT")) |resource_root| {
+        // Prefer RYK_RESOURCE_ROOT, fall back to ORCA_RESOURCE_ROOT (Phase 5a dual-read).
+        if (try env_util.getOwnedBrand(&env_map, allocator, "RESOURCE_ROOT")) |resource_root| {
             defer allocator.free(resource_root);
             const candidate = try std.fs.path.join(allocator, &.{ resource_root, relative_path });
             if (pathExists(io, candidate)) return candidate;

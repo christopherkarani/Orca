@@ -246,24 +246,52 @@ export function parseHookResponse(stdout: string, blocking: boolean): OrcaRespon
 }
 
 export function findOrca(cwd?: string): string | null {
-  try {
-    const which = execSync('which orca', { encoding: 'utf-8', stdio: ['pipe', 'pipe', 'ignore'] });
-    const bin = which.trim();
-    if (bin) return bin;
-  } catch {
-    // orca not in PATH
+  // Phase 5a: prefer RYK_BIN, then ORCA_BIN, then PATH ryk then orca.
+  const envBin = (process.env.RYK_BIN ?? process.env.ORCA_BIN)?.trim();
+  if (envBin) {
+    if (envBin.includes('/') || envBin.includes('\\')) {
+      if (!isAbsolute(envBin)) return null;
+      return existsSync(envBin) ? envBin : null;
+    }
+    try {
+      const which = execSync(`which ${envBin}`, {
+        encoding: 'utf-8',
+        stdio: ['pipe', 'pipe', 'ignore'],
+      });
+      const bin = which.trim();
+      if (bin) return bin;
+    } catch {
+      // not on PATH
+    }
+    return null;
+  }
+
+  for (const name of ['ryk', 'orca'] as const) {
+    try {
+      const which = execSync(`which ${name}`, {
+        encoding: 'utf-8',
+        stdio: ['pipe', 'pipe', 'ignore'],
+      });
+      const bin = which.trim();
+      if (bin) return bin;
+    } catch {
+      // not on PATH
+    }
   }
 
   // Dev-only: never trust agent-writable workspace bins in production loads.
-  if (process.env.ORCA_ALLOW_WORKSPACE_BIN === '1') {
-    const candidates = [
-      cwd ? join(cwd, 'zig-out', 'bin', 'orca') : null,
-      cwd ? join(cwd, '..', 'zig-out', 'bin', 'orca') : null,
-      cwd ? join(cwd, '..', '..', 'zig-out', 'bin', 'orca') : null,
-      resolve('zig-out', 'bin', 'orca'),
-      resolve('..', 'zig-out', 'bin', 'orca'),
-      resolve('..', '..', 'zig-out', 'bin', 'orca'),
-    ].filter((p): p is string => p !== null);
+  if (process.env.ORCA_ALLOW_WORKSPACE_BIN === '1' || process.env.RYK_ALLOW_WORKSPACE_BIN === '1') {
+    const candidates: string[] = [];
+    for (const name of ['ryk', 'orca'] as const) {
+      if (cwd) {
+        candidates.push(join(cwd, 'zig-out', 'bin', name));
+        candidates.push(join(cwd, '..', 'zig-out', 'bin', name));
+        candidates.push(join(cwd, '..', '..', 'zig-out', 'bin', name));
+      }
+      candidates.push(resolve('zig-out', 'bin', name));
+      candidates.push(resolve('..', 'zig-out', 'bin', name));
+      candidates.push(resolve('..', '..', 'zig-out', 'bin', name));
+    }
 
     for (const p of candidates) {
       if (existsSync(p)) return p;

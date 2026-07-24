@@ -1,6 +1,6 @@
 {
   "version": "1.2.8",
-  "description": "Local runtime firewall for AI agents (compat manifest; prefer ryk).",
+  "description": "Local runtime firewall for AI agents (primary binary: ryk; orca compat alias).",
   "homepage": "https://github.com/christopherkarani/Orca",
   "license": "Apache-2.0",
   "architecture": {
@@ -29,5 +29,5 @@
       }
     }
   },
-  "notes": "PLACEHOLDER: verify checksums.txt before publishing. Prefer the ryk scoop manifest; this orca entry is dual-name compat. Archive top-level is ryk-v<version>-windows-amd64."
+  "notes": "PLACEHOLDER: verify checksums.txt from the release before publishing this manifest. Primary CLI is ryk; orca is a one-major compat alias. Zip top-level is ryk-v<version>-windows-amd64."
 }
