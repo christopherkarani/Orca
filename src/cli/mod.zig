@@ -3,6 +3,7 @@ const builtin = @import("builtin");
 const build_options = @import("build_options");
 
 pub const args = @import("args.zig");
+pub const brand = @import("brand.zig");
 pub const exit_codes = @import("exit_codes.zig");
 pub const help = @import("help.zig");
 pub const run_command = @import("run.zig");
@@ -65,6 +66,7 @@ pub const danger_confirmation = @import("danger_confirmation.zig");
 pub const fm_steward_client = @import("fm_steward_client.zig");
 
 test {
+    _ = brand;
     _ = staged_mutation;
     // Ensure the child_process module (and its tests) are pulled into the test binary.
     _ = child_process;
@@ -1530,7 +1532,7 @@ fn writeTopLevelReportFixture(io: std.Io, allocator: std.mem.Allocator, workspac
         .event_count = audit_writer.event_count,
         .final_event_hash = audit_writer.finalHash() orelse "",
         .policy = ".orca/policy.yaml",
-        .product_label = "Orca",
+        .product_label = brand.product_display,
     });
     return allocator.dupe(u8, audit_writer.session_id.slice());
 }

@@ -3,6 +3,7 @@ const std = @import("std");
 const core = @import("orca_core").core;
 const supervisor = core.supervisor;
 const core_api = @import("orca_core").api;
+const brand = @import("brand.zig");
 const exit_codes = @import("exit_codes.zig");
 const help = @import("help.zig");
 const tui = @import("../tui/mod.zig");
@@ -648,7 +649,7 @@ fn writeReplayTimelineFixture(io: std.Io, allocator: std.mem.Allocator, workspac
         .event_count = audit_writer.event_count,
         .final_event_hash = audit_writer.finalHash() orelse "",
         .policy = ".orca/policy.yaml",
-        .product_label = "Orca",
+        .product_label = brand.product_display,
     });
     return allocator.dupe(u8, audit_writer.session_id.slice());
 }
@@ -708,7 +709,7 @@ fn writeReplayNetworkDenyFixture(io: std.Io, allocator: std.mem.Allocator, works
         .event_count = audit_writer.event_count,
         .final_event_hash = audit_writer.finalHash() orelse "",
         .policy = ".orca/policy.yaml",
-        .product_label = "Orca",
+        .product_label = brand.product_display,
     });
     return allocator.dupe(u8, audit_writer.session_id.slice());
 }
@@ -768,7 +769,7 @@ fn writeReplayDenyFixture(io: std.Io, allocator: std.mem.Allocator, workspace_ro
         .event_count = audit_writer.event_count,
         .final_event_hash = audit_writer.finalHash() orelse "",
         .policy = ".orca/policy.yaml",
-        .product_label = "Orca",
+        .product_label = brand.product_display,
     });
     return allocator.dupe(u8, audit_writer.session_id.slice());
 }

@@ -459,12 +459,12 @@ fn buildFileNormalizationBlock(allocator: std.mem.Allocator, category: []const u
 
 fn buildMessage(allocator: std.mem.Allocator, decision: PluginDecision, category: []const u8) ![]const u8 {
     return switch (decision) {
-        .allow => try std.fmt.allocPrint(allocator, "{s} allowed by Orca policy.", .{category}),
-        .block => try std.fmt.allocPrint(allocator, "{s} blocked by Orca policy.", .{category}),
-        .warn => try std.fmt.allocPrint(allocator, "{s} flagged by Orca policy. Review before proceeding.", .{category}),
-        .ask => try std.fmt.allocPrint(allocator, "{s} requires user approval per Orca policy.", .{category}),
+        .allow => try std.fmt.allocPrint(allocator, "{s} allowed by ryk policy.", .{category}),
+        .block => try std.fmt.allocPrint(allocator, "{s} blocked by ryk policy.", .{category}),
+        .warn => try std.fmt.allocPrint(allocator, "{s} flagged by ryk policy. Review before proceeding.", .{category}),
+        .ask => try std.fmt.allocPrint(allocator, "{s} requires user approval per ryk policy.", .{category}),
         .context_only => try std.fmt.allocPrint(allocator, "{s} allowed for context only. No side effects permitted.", .{category}),
-        .err => try std.fmt.allocPrint(allocator, "Orca could not evaluate {s}. Fail closed.", .{category}),
+        .err => try std.fmt.allocPrint(allocator, "ryk could not evaluate {s}. Fail closed.", .{category}),
     };
 }
 

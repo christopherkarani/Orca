@@ -305,7 +305,7 @@ const ProtectionPosture = enum {
 /// Plain-language honesty when Protected: mediation asks/blocks but is not a universal OS sandbox.
 /// Status cannot prove live OS-enforced attach.
 const mediation_bypass_caveat =
-    "Blocks dangerous actions for agents started via Orca; some paths can still bypass.";
+    "Blocks dangerous actions for agents started via ryk; some paths can still bypass.";
 
 /// Limited: daemon may be up, but setup is incomplete or mode is not asking/enforcing.
 const limited_caveat_line =
@@ -347,7 +347,7 @@ fn mediationCaveat(posture: ProtectionPosture) ?[]const u8 {
 
 fn writeHuman(stdout: anytype, s: Snapshot) !void {
     const posture = assessProtectionPosture(s.daemon_health, s.policy_present, s.policy_valid, s.policy_mode);
-    try stdout.writeAll("Orca status\n");
+    try stdout.writeAll("ryk status\n");
     try stdout.print("  State:     {s}\n", .{posture.label()});
     if (mediationCaveat(posture)) |caveat| {
         try stdout.print("  Note:      {s}\n", .{caveat});
@@ -449,7 +449,7 @@ test "mediationCaveat distinct for Protected vs Limited" {
     try std.testing.expect(mediationCaveat(.off) == null);
     const protected_note = mediationCaveat(.protected).?;
     const limited_note = mediationCaveat(.limited).?;
-    try std.testing.expect(std.mem.indexOf(u8, protected_note, "Blocks dangerous actions for agents started via Orca") != null);
+    try std.testing.expect(std.mem.indexOf(u8, protected_note, "Blocks dangerous actions for agents started via ryk") != null);
     try std.testing.expect(std.mem.indexOf(u8, protected_note, "some paths can still bypass") != null);
     // Limited must not reuse the affirmative blocking caveat.
     try std.testing.expect(std.mem.indexOf(u8, limited_note, "Blocks dangerous actions") == null);
@@ -499,7 +499,7 @@ test "writeHuman Protected shows State and mediation bypass caveat" {
     try std.testing.expect(std.mem.indexOf(u8, out, "State:     Limited") == null);
     try std.testing.expect(std.mem.indexOf(u8, out, "State:     Off") == null);
     try std.testing.expect(std.mem.indexOf(u8, out, "Note:") != null);
-    try std.testing.expect(std.mem.indexOf(u8, out, "Blocks dangerous actions for agents started via Orca") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "Blocks dangerous actions for agents started via ryk") != null);
     try std.testing.expect(std.mem.indexOf(u8, out, "some paths can still bypass") != null);
 }
 
@@ -545,14 +545,14 @@ test "status human healthy path shows section labels" {
     const code = try commandWithDeps(fakePacksHealthy, mockDaemonOk, std.testing.io, &.{}, &stdout_writer, &stderr_writer);
     try std.testing.expectEqual(exit_codes.success, code);
     const out = stdout_writer.buffered();
-    try std.testing.expect(std.mem.indexOf(u8, out, "Orca status") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "ryk status") != null);
     try std.testing.expect(std.mem.indexOf(u8, out, "State:") != null);
     // Three-way posture: daemon mock is ok → Protected or Limited depending on workspace policy/mode.
     const has_protected = std.mem.indexOf(u8, out, "State:     Protected") != null;
     const has_limited = std.mem.indexOf(u8, out, "State:     Limited") != null;
     try std.testing.expect(has_protected or has_limited);
     if (has_protected) {
-        try std.testing.expect(std.mem.indexOf(u8, out, "Blocks dangerous actions for agents started via Orca") != null);
+        try std.testing.expect(std.mem.indexOf(u8, out, "Blocks dangerous actions for agents started via ryk") != null);
     }
     if (has_limited) {
         try std.testing.expect(std.mem.indexOf(u8, out, "Not fully protected yet") != null);

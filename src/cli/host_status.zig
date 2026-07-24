@@ -248,7 +248,8 @@ fn resolveSmokeBinary(io: std.Io, allocator: std.mem.Allocator) !?[]u8 {
     var env_map = env_util.createProcessMap(allocator) catch null;
     defer if (env_map) |*m| m.deinit();
     if (env_map) |*m| {
-        if (try env_util.getOwned(m, allocator, "ORCA_BIN")) |configured| {
+        // Prefer RYK_BIN, fall back to ORCA_BIN (Phase 5a dual-read).
+        if (try env_util.getOwnedBrand(m, allocator, "BIN")) |configured| {
             if (std.Io.Dir.accessAbsolute(io, configured, .{})) |_| {
                 return configured;
             } else |_| {
@@ -259,8 +260,10 @@ fn resolveSmokeBinary(io: std.Io, allocator: std.mem.Allocator) !?[]u8 {
 
     const self_exe = try std.process.executablePathAlloc(io, allocator);
     const base = std.fs.path.basename(self_exe);
-    // Real CLI binaries are named `orca` (or `orca.exe`). The zig test harness is not.
-    if (std.mem.eql(u8, base, "orca") or std.mem.eql(u8, base, "orca.exe")) {
+    // Real CLI binaries are named `ryk` or legacy `orca` (or `.exe`). The zig test harness is not.
+    if (std.mem.eql(u8, base, "ryk") or std.mem.eql(u8, base, "ryk.exe") or
+        std.mem.eql(u8, base, "orca") or std.mem.eql(u8, base, "orca.exe"))
+    {
         return self_exe;
     }
     allocator.free(self_exe);
